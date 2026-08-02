@@ -37,6 +37,7 @@
 #include "net/peer_scoring.h"
 #include "net/tip_watchdog.h"
 #include "net/zmsg.h"
+#include "zswap/zswap_yardsale.h"
 #include "primitives/block.h"
 #include "sync/sync_planner.h"
 /* lib/net still reaches the controller-owned manifest cache for P2P file
@@ -1135,6 +1136,80 @@ static bool handle_zfileaddr(struct msg_processor *mp, struct p2p_node *node,
     return true;
 }
 
+/* ── ZCL Market: zswap yardsale (atomic ZSLP/ZCL swap ads) ──────── */
+
+static bool handle_zswapquote(struct msg_processor *mp, struct p2p_node *node,
+                              struct byte_stream *s)
+{
+    /* One message carries exactly one signed yardsale ad: the exact
+     * 210-byte zswap_quote.v1 wire. Pre-check the length before decode —
+     * short/trailing payloads are drop-and-ignore (Bitcoin Core parity:
+     * never disconnect a peer over an application-gossip payload). */
+    if (s->size - s->read_pos != ZSWAP_QUOTE_WIRE_BYTES)
+        return true;
+
+    uint8_t wire[ZSWAP_QUOTE_WIRE_BYTES];
+    if (!stream_read(s, wire, sizeof(wire)))
+        return true;
+
+    if (!mp->params) {
+        LOG_WARN("zswap", "zswapquote from peer %s dropped: no chainparams",
+                 node->addr_name);
+        return true;
+    }
+
+    /* The ad's network_genesis_root pins the chain it lives on: our
+     * consensus genesis hash (core/chainparams) is the expected root. */
+    const uint8_t *net_root = mp->params->consensus.hashGenesisBlock.data;
+    int64_t now = (int64_t)platform_time_wall_time_t();
+
+    /* Verify at ingress (signature + network + validity window), dedup on
+     * the quote root, per-peer flood clamp — all inside the yardsale,
+     * reached through the injected ingest port (module-order seam: lib/net
+     * never names a lib/zswap symbol). An invalid/expired ad is dropped
+     * here and NEVER forwarded or stored. */
+    if (!mp->zswap_ad_ingest) {
+        LOG_WARN("zswap",
+                 "zswapquote from peer %s dropped: ingest port unwired",
+                 node->addr_name);
+        return true;
+    }
+    struct zswap_yardsale_ad ad;
+    int result = mp->zswap_ad_ingest(wire, sizeof(wire), net_root,
+                                     (int64_t)node->id, now, &ad,
+                                     mp->zswap_ad_ingest_ctx);
+
+    if (result != ZSWAP_YARDSALE_INGEST_NEW &&
+        result != ZSWAP_YARDSALE_INGEST_DEDUP)
+        return true;
+
+    /* Persist the rebuildable AR projection (new insert or seen bump). */
+    if (mp->zswap_ad_save)
+        (void)mp->zswap_ad_save(&ad, mp->zswap_ad_save_ctx);
+
+    /* Relay-forward only NEW ads (the zfilelist re-gossip idiom adapted to
+     * signed content: the wire has no TTL field — a relay must never alter
+     * signed bytes — so propagation is bounded by dedup-on-root instead;
+     * every node forwards a given quote root at most once). */
+    if (result == ZSWAP_YARDSALE_INGEST_NEW && mp->net_mgr) {
+        zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+        for (size_t pi = 0; pi < mp->net_mgr->num_nodes; pi++) {
+            struct p2p_node *peer = mp->net_mgr->nodes[pi];
+            if (peer->id != node->id &&
+                peer->state >= PEER_HANDSHAKE_COMPLETE &&
+                !peer->disconnect &&
+                peer_supports_fast_sync(peer->services)) {
+                p2p_node_begin_message(peer, ZSWAP_MSG_QUOTE,
+                                       mp->params->pchMessageStart);
+                p2p_node_write_message_data(peer, wire, sizeof(wire));
+                p2p_node_end_message(peer);
+            }
+        }
+        zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+    }
+    return true;
+}
+
 static bool handle_game_msg(struct msg_processor *mp, struct p2p_node *node,
                             struct byte_stream *s)
 {
@@ -1252,6 +1327,7 @@ static const struct msg_dispatch_entry g_msg_dispatch[] = {
     { "zfilechal",    handle_zfilechal,      true,  true,  "market" },
     { "zfileproof",   handle_zfileproof,     true,  true,  "market" },
     { "zfilepay",     handle_zfilepay,       true,  true,  "market" },
+    { "zswapquote",   handle_zswapquote,     true,  true,  "market" },
     /* ── ZCL23 Game ── */
     { "zgame",        handle_game_msg,       true,  true,  "game" },
     /* ── ZCODE package swarm (slice 12; engine above net via hooks) ── */
@@ -1460,6 +1536,26 @@ void msg_processor_set_file_service_save(struct msg_processor *mp,
         return;
     mp->file_service_save = save;
     mp->file_service_save_ctx = ctx;
+}
+
+void msg_processor_set_zswap_ad_save(struct msg_processor *mp,
+                                     msg_zswap_ad_save_fn save,
+                                     void *ctx)
+{
+    if (!mp)
+        return;
+    mp->zswap_ad_save = save;
+    mp->zswap_ad_save_ctx = ctx;
+}
+
+void msg_processor_set_zswap_ad_ingest(struct msg_processor *mp,
+                                       msg_zswap_ad_ingest_fn ingest,
+                                       void *ctx)
+{
+    if (!mp)
+        return;
+    mp->zswap_ad_ingest = ingest;
+    mp->zswap_ad_ingest_ctx = ctx;
 }
 
 void msg_processor_set_snapshot_active(struct msg_processor *mp,

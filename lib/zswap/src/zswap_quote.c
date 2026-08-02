@@ -107,7 +107,7 @@ static enum zswap_quote_error quote_fields(const struct zswap_quote_v1 *quote,
         return ZSWAP_QUOTE_ERR_VERSION;
     if (!root_nonzero(quote->network_genesis_root))
         return ZSWAP_QUOTE_ERR_ROOT_ZERO;
-    if (!root_nonzero(quote->maker_pubkey))
+    if (!root_nonzero(quote->seller_pubkey))
         return ZSWAP_QUOTE_ERR_PUBKEY_ZERO;
     if (!root_nonzero(quote->token_id))
         return ZSWAP_QUOTE_ERR_TOKEN_ID_ZERO;
@@ -117,14 +117,14 @@ static enum zswap_quote_error quote_fields(const struct zswap_quote_v1 *quote,
         return ZSWAP_QUOTE_ERR_AMOUNT;
     if (quote->issued_unix <= 0 || quote->expires_unix <= quote->issued_unix)
         return ZSWAP_QUOTE_ERR_TIME_ORDER;
-    /* A quote is a live advertisement, not a standing order: the lifetime
+    /* A quote is a live for-sale sign with a short fuse: the lifetime
      * cap is structural so seal/encode/decode all refuse a long-lived one. */
     if (quote->expires_unix - quote->issued_unix >
         ZSWAP_QUOTE_MAX_LIFETIME_SECS)
         return ZSWAP_QUOTE_ERR_LIFETIME;
     if (require_signature &&
-        !bytes_nonzero(quote->maker_signature,
-                       sizeof(quote->maker_signature)))
+        !bytes_nonzero(quote->seller_signature,
+                       sizeof(quote->seller_signature)))
         return ZSWAP_QUOTE_ERR_SIGNATURE;
     return ZSWAP_QUOTE_OK;
 }
@@ -160,7 +160,7 @@ static enum zswap_quote_error quote_body(
     put_bytes(out, &off, quote_magic, sizeof(quote_magic));
     put_u16(out, &off, quote->schema_version);
     put_bytes(out, &off, quote->network_genesis_root, 32);
-    put_bytes(out, &off, quote->maker_pubkey, 32);
+    put_bytes(out, &off, quote->seller_pubkey, 32);
     put_u64(out, &off, quote->nonce);
     put_bytes(out, &off, quote->token_id, 32);
     put_u64(out, &off, quote->token_amount);
@@ -180,7 +180,7 @@ enum zswap_quote_error zswap_quote_encode(
         return out ? error : ZSWAP_QUOTE_ERR_NULL;
     error = quote_body(quote, out);
     if (error != ZSWAP_QUOTE_OK) return error;
-    memcpy(out + ZSWAP_QUOTE_BODY_BYTES, quote->maker_signature, 64);
+    memcpy(out + ZSWAP_QUOTE_BODY_BYTES, quote->seller_signature, 64);
     return ZSWAP_QUOTE_OK;
 }
 
@@ -196,14 +196,14 @@ enum zswap_quote_error zswap_quote_decode(
     size_t off = sizeof(quote_magic);
     out->schema_version = get_u16(wire, &off);
     get_bytes(wire, &off, out->network_genesis_root, 32);
-    get_bytes(wire, &off, out->maker_pubkey, 32);
+    get_bytes(wire, &off, out->seller_pubkey, 32);
     out->nonce = get_u64(wire, &off);
     get_bytes(wire, &off, out->token_id, 32);
     out->token_amount = get_u64(wire, &off);
     out->zcl_amount = get_u64(wire, &off);
     out->issued_unix = (int64_t)get_u64(wire, &off);
     out->expires_unix = (int64_t)get_u64(wire, &off);
-    get_bytes(wire, &off, out->maker_signature, 64);
+    get_bytes(wire, &off, out->seller_signature, 64);
     enum zswap_quote_error error = zswap_quote_validate(out);
     if (error != ZSWAP_QUOTE_OK) memset(out, 0, sizeof(*out));
     return error;
@@ -234,18 +234,18 @@ enum zswap_quote_error zswap_quote_root(
 }
 
 enum zswap_quote_error zswap_quote_seal(
-    struct zswap_quote_v1 *quote, const uint8_t maker_secret[32])
+    struct zswap_quote_v1 *quote, const uint8_t seller_secret[32])
 {
-    if (!quote || !maker_secret)
+    if (!quote || !seller_secret)
         return ZSWAP_QUOTE_ERR_NULL;
-    if (!root_nonzero(quote->maker_pubkey))
+    if (!root_nonzero(quote->seller_pubkey))
         return ZSWAP_QUOTE_ERR_PUBKEY_ZERO;
-    /* The maker public key is re-derived from the supplied secret: a secret
+    /* The seller public key is re-derived from the supplied secret: a secret
      * that does not produce the claimed pubkey must never seal — the
      * resulting signature would be unverifiable garbage under either key. */
     uint8_t derived_pk[32], derived_sk[32];
-    ed25519_keypair(derived_pk, derived_sk, maker_secret);
-    if (memcmp(derived_pk, quote->maker_pubkey, 32) != 0)
+    ed25519_keypair(derived_pk, derived_sk, seller_secret);
+    if (memcmp(derived_pk, quote->seller_pubkey, 32) != 0)
         return ZSWAP_QUOTE_ERR_KEY_MISMATCH;
 
     enum zswap_quote_error error = quote_fields(quote, false);
@@ -255,8 +255,8 @@ enum zswap_quote_error zswap_quote_seal(
     error = zswap_quote_body_root(quote, root);
     if (error != ZSWAP_QUOTE_OK) return error;
 
-    ed25519_sign(quote->maker_signature, root, sizeof(root), maker_secret,
-                 quote->maker_pubkey);
+    ed25519_sign(quote->seller_signature, root, sizeof(root), seller_secret,
+                 quote->seller_pubkey);
     return ZSWAP_QUOTE_OK;
 }
 
@@ -274,8 +274,8 @@ enum zswap_quote_error zswap_quote_verify_at(
     uint8_t root[32];
     error = zswap_quote_body_root(quote, root);
     if (error != ZSWAP_QUOTE_OK) return error;
-    if (!ed25519_verify(quote->maker_signature, root, sizeof(root),
-                        quote->maker_pubkey))
+    if (!ed25519_verify(quote->seller_signature, root, sizeof(root),
+                        quote->seller_pubkey))
         return ZSWAP_QUOTE_ERR_SIGNATURE;
     return ZSWAP_QUOTE_OK;
 }

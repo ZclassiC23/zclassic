@@ -726,8 +726,8 @@ bool app_init_services(struct app_context *ctx,
     msg_processor_set_peer_save(svc->msg_processor, boot_save_peer_advisory,
                                 svc);
     msg_processor_set_zmsg_save(svc->msg_processor, boot_save_zmsg, svc);
-    msg_processor_set_file_offer_save(svc->msg_processor,
-                                      boot_save_file_offer, svc);
+    msg_processor_set_file_offer_save(svc->msg_processor, boot_save_file_offer, svc);
+    boot_wire_zswap_yardsale(svc->msg_processor, svc);
     msg_processor_set_file_service_save(svc->msg_processor,
                                         boot_save_file_service, svc);
     msg_processor_set_snapshot_active(svc->msg_processor,

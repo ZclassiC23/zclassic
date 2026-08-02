@@ -60,6 +60,7 @@
 #include "net/rom_fetch.h"
 #include "net/fast_sync.h"
 #include "net/file_service.h"
+#include "zswap/zswap_yardsale.h"
 #include "vcs/package_store.h"
 #include "controllers/messaging_controller.h"
 #include "services/chain_evidence_authority_service.h"

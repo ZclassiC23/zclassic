@@ -28,7 +28,7 @@
 #define ZSQ_TOKEN_AMOUNT 500000ULL
 #define ZSQ_ZCL_AMOUNT 125000000ULL
 
-/* Pinned golden vectors for the fixture below (net[i]=0xA0+i, maker seed
+/* Pinned golden vectors for the fixture below (net[i]=0xA0+i, seller seed
  * 0x11, token[i]=0x40+i, ZSQ_NONCE/ZSQ_TOKEN_AMOUNT/ZSQ_ZCL_AMOUNT,
  * ZSQ_ISSUED/ZSQ_EXPIRES). Empty strings print the computed value and FAIL
  * — a KAT is never a hollow pass. */
@@ -73,7 +73,7 @@ static void zsq_fixture_token(uint8_t token_id[32])
     for (size_t i = 0; i < 32; i++) token_id[i] = (uint8_t)(0x40u + i);
 }
 
-static void zsq_fixture_maker(uint8_t pk[32], uint8_t sk[32])
+static void zsq_fixture_seller(uint8_t pk[32], uint8_t sk[32])
 {
     uint8_t seed[32];
     memset(seed, 0x11, sizeof(seed));
@@ -82,12 +82,12 @@ static void zsq_fixture_maker(uint8_t pk[32], uint8_t sk[32])
 
 /* An unsigned quote with the canonical fixture fields. */
 static bool zsq_quote(struct zswap_quote_v1 *q, const uint8_t net[32],
-                      const uint8_t maker_pk[32])
+                      const uint8_t seller_pk[32])
 {
     memset(q, 0, sizeof(*q));
     q->schema_version = ZSWAP_QUOTE_VERSION;
     memcpy(q->network_genesis_root, net, 32);
-    memcpy(q->maker_pubkey, maker_pk, 32);
+    memcpy(q->seller_pubkey, seller_pk, 32);
     q->nonce = ZSQ_NONCE;
     zsq_fixture_token(q->token_id);
     q->token_amount = ZSQ_TOKEN_AMOUNT;
@@ -107,12 +107,12 @@ static bool zsq_seal(struct zswap_quote_v1 *q)
 static int t_kat(void)
 {
     int failures = 0;
-    uint8_t net[32], maker_pk[32], maker_sk[32];
+    uint8_t net[32], seller_pk[32], seller_sk[32];
     zsq_fixture_net(net);
-    zsq_fixture_maker(maker_pk, maker_sk);
+    zsq_fixture_seller(seller_pk, seller_sk);
     struct zswap_quote_v1 q;
     ZSQ_CHECK("kat: fixture seals",
-              zsq_quote(&q, net, maker_pk) && zsq_seal(&q));
+              zsq_quote(&q, net, seller_pk) && zsq_seal(&q));
 
     uint8_t wire[ZSWAP_QUOTE_WIRE_BYTES];
     uint8_t body[ZSWAP_QUOTE_BODY_BYTES];
@@ -142,12 +142,12 @@ static int t_kat(void)
 static int t_roundtrip(void)
 {
     int failures = 0;
-    uint8_t net[32], maker_pk[32], maker_sk[32];
+    uint8_t net[32], seller_pk[32], seller_sk[32];
     zsq_fixture_net(net);
-    zsq_fixture_maker(maker_pk, maker_sk);
+    zsq_fixture_seller(seller_pk, seller_sk);
     struct zswap_quote_v1 q;
     ZSQ_CHECK("roundtrip: fixture seals",
-              zsq_quote(&q, net, maker_pk) && zsq_seal(&q));
+              zsq_quote(&q, net, seller_pk) && zsq_seal(&q));
     uint8_t wire[ZSWAP_QUOTE_WIRE_BYTES];
     ZSQ_CHECK("roundtrip: encode",
               zswap_quote_encode(&q, wire) == ZSWAP_QUOTE_OK);
@@ -207,20 +207,20 @@ static int t_roundtrip(void)
 static int t_fields(void)
 {
     int failures = 0;
-    uint8_t net[32], maker_pk[32], maker_sk[32];
+    uint8_t net[32], seller_pk[32], seller_sk[32];
     zsq_fixture_net(net);
-    zsq_fixture_maker(maker_pk, maker_sk);
+    zsq_fixture_seller(seller_pk, seller_sk);
     struct zswap_quote_v1 q;
     ZSQ_CHECK("fields: fixture seals",
-              zsq_quote(&q, net, maker_pk) && zsq_seal(&q));
+              zsq_quote(&q, net, seller_pk) && zsq_seal(&q));
 
     struct zswap_quote_v1 x = q;
     memset(x.network_genesis_root, 0, 32);
     ZSQ_CHECK("fields: zero network root",
               zswap_quote_validate(&x) == ZSWAP_QUOTE_ERR_ROOT_ZERO);
     x = q;
-    memset(x.maker_pubkey, 0, 32);
-    ZSQ_CHECK("fields: zero maker pubkey",
+    memset(x.seller_pubkey, 0, 32);
+    ZSQ_CHECK("fields: zero seller pubkey",
               zswap_quote_validate(&x) == ZSWAP_QUOTE_ERR_PUBKEY_ZERO);
     x = q;
     memset(x.token_id, 0, 32);
@@ -255,7 +255,7 @@ static int t_fields(void)
     ZSQ_CHECK("fields: lifetime at cap OK",
               zswap_quote_validate(&x) == ZSWAP_QUOTE_OK);
     x = q;
-    memset(x.maker_signature, 0, 64);
+    memset(x.seller_signature, 0, 64);
     ZSQ_CHECK("fields: zero signature",
               zswap_quote_validate(&x) == ZSWAP_QUOTE_ERR_SIGNATURE);
     x = q;
@@ -271,18 +271,18 @@ static int t_fields(void)
 static int t_seal(void)
 {
     int failures = 0;
-    uint8_t net[32], maker_pk[32], maker_sk[32];
+    uint8_t net[32], seller_pk[32], seller_sk[32];
     zsq_fixture_net(net);
-    zsq_fixture_maker(maker_pk, maker_sk);
+    zsq_fixture_seller(seller_pk, seller_sk);
     struct zswap_quote_v1 q;
-    ZSQ_CHECK("seal: fixture builds", zsq_quote(&q, net, maker_pk));
+    ZSQ_CHECK("seal: fixture builds", zsq_quote(&q, net, seller_pk));
 
     uint8_t other_seed[32];
     memset(other_seed, 0x22, sizeof(other_seed));
     ZSQ_CHECK("seal: NULL rejected",
-              zswap_quote_seal(NULL, maker_sk) == ZSWAP_QUOTE_ERR_NULL &&
+              zswap_quote_seal(NULL, seller_sk) == ZSWAP_QUOTE_ERR_NULL &&
               zswap_quote_seal(&q, NULL) == ZSWAP_QUOTE_ERR_NULL);
-    /* A secret that does not derive the embedded maker key must never
+    /* A secret that does not derive the embedded seller key must never
      * seal — the wire would be unverifiable under either key. */
     struct zswap_quote_v1 x = q;
     ZSQ_CHECK("seal: wrong secret rejected",
@@ -292,13 +292,13 @@ static int t_seal(void)
     x = q;
     x.token_amount = 0;
     ZSQ_CHECK("seal: invalid fields rejected",
-              zswap_quote_seal(&x, maker_sk) == ZSWAP_QUOTE_ERR_AMOUNT);
+              zswap_quote_seal(&x, seller_sk) == ZSWAP_QUOTE_ERR_AMOUNT);
 
     ZSQ_CHECK("seal: good quote seals", zsq_seal(&q));
     /* Ed25519 is deterministic: re-sealing a fresh copy of the same quote
      * yields the identical wire. */
     struct zswap_quote_v1 again;
-    zsq_quote(&again, net, maker_pk);
+    zsq_quote(&again, net, seller_pk);
     ZSQ_CHECK("seal: deterministic",
               zsq_seal(&again) &&
               memcmp(&q, &again, sizeof(q)) == 0);
@@ -308,18 +308,18 @@ static int t_seal(void)
 static int t_verify(void)
 {
     int failures = 0;
-    uint8_t net[32], maker_pk[32], maker_sk[32];
+    uint8_t net[32], seller_pk[32], seller_sk[32];
     zsq_fixture_net(net);
-    zsq_fixture_maker(maker_pk, maker_sk);
+    zsq_fixture_seller(seller_pk, seller_sk);
     struct zswap_quote_v1 q;
     ZSQ_CHECK("verify: fixture seals",
-              zsq_quote(&q, net, maker_pk) && zsq_seal(&q));
+              zsq_quote(&q, net, seller_pk) && zsq_seal(&q));
     ZSQ_CHECK("verify: good quote",
               zswap_quote_verify_at(&q, net, ZSQ_ISSUED) == ZSWAP_QUOTE_OK);
 
     /* A flipped signature byte fails verification. */
     struct zswap_quote_v1 x = q;
-    x.maker_signature[0] ^= 0x01;
+    x.seller_signature[0] ^= 0x01;
     ZSQ_CHECK("verify: signature bit-flip",
               zswap_quote_verify_at(&x, net, ZSQ_ISSUED) ==
                   ZSWAP_QUOTE_ERR_SIGNATURE);
@@ -330,7 +330,7 @@ static int t_verify(void)
     uint8_t other_seed[32];
     memset(other_seed, 0x22, sizeof(other_seed));
     ed25519_keypair(other_pk, other_sk, other_seed);
-    memcpy(x.maker_pubkey, other_pk, 32);
+    memcpy(x.seller_pubkey, other_pk, 32);
     ZSQ_CHECK("verify: wrong signer key",
               zswap_quote_verify_at(&x, net, ZSQ_ISSUED) ==
                   ZSWAP_QUOTE_ERR_SIGNATURE);
@@ -349,12 +349,12 @@ static int t_verify(void)
 static int t_expiry(void)
 {
     int failures = 0;
-    uint8_t net[32], maker_pk[32], maker_sk[32];
+    uint8_t net[32], seller_pk[32], seller_sk[32];
     zsq_fixture_net(net);
-    zsq_fixture_maker(maker_pk, maker_sk);
+    zsq_fixture_seller(seller_pk, seller_sk);
     struct zswap_quote_v1 q;
     ZSQ_CHECK("expiry: fixture seals",
-              zsq_quote(&q, net, maker_pk) && zsq_seal(&q));
+              zsq_quote(&q, net, seller_pk) && zsq_seal(&q));
 
     ZSQ_CHECK("expiry: usable window",
               zswap_quote_validate_at(&q, ZSQ_EXPIRES - 1) ==
@@ -380,12 +380,12 @@ static int t_expiry(void)
 static int t_root_commitment(void)
 {
     int failures = 0;
-    uint8_t net[32], maker_pk[32], maker_sk[32];
+    uint8_t net[32], seller_pk[32], seller_sk[32];
     zsq_fixture_net(net);
-    zsq_fixture_maker(maker_pk, maker_sk);
+    zsq_fixture_seller(seller_pk, seller_sk);
     struct zswap_quote_v1 q;
     ZSQ_CHECK("root: fixture seals",
-              zsq_quote(&q, net, maker_pk) && zsq_seal(&q));
+              zsq_quote(&q, net, seller_pk) && zsq_seal(&q));
     uint8_t body_root[32], full_root[32];
     ZSQ_CHECK("root: computes",
               zswap_quote_body_root(&q, body_root) == ZSWAP_QUOTE_OK &&
@@ -395,7 +395,7 @@ static int t_root_commitment(void)
      * unchanged (the signature is malleation in transport, not a new
      * statement). */
     struct zswap_quote_v1 x = q;
-    x.maker_signature[0] ^= 0x01;
+    x.seller_signature[0] ^= 0x01;
     uint8_t r2[32];
     ZSQ_CHECK("root: body root ignores signature",
               zswap_quote_body_root(&x, r2) == ZSWAP_QUOTE_OK &&
@@ -407,7 +407,7 @@ static int t_root_commitment(void)
               zswap_quote_root(&x, r2) == ZSWAP_QUOTE_OK &&
               memcmp(full_root, r2, 32) != 0);
     struct zswap_quote_v1 other_nonce;
-    zsq_quote(&other_nonce, net, maker_pk);
+    zsq_quote(&other_nonce, net, seller_pk);
     other_nonce.nonce = ZSQ_NONCE + 1;
     ZSQ_CHECK("root: nonce distinguishes quotes",
               zsq_seal(&other_nonce) &&

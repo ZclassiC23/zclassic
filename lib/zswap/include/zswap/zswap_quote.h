@@ -2,9 +2,9 @@
  * purpose: Canonical signed quote wire (zswap_quote.v1) for atomic
  * ZSLP-token/ZCL P2P swaps.
  *
- * A maker publishes a zswap_quote to advertise: "I will sell token_amount
+ * A seller publishes a zswap_quote to advertise: "I will sell token_amount
  * base units of ZSLP token token_id for zcl_amount satoshis ZCL." The quote
- * is a self-authenticating gossip object: the maker's Ed25519 key signs the
+ * is a self-authenticating gossip object: the seller's Ed25519 key signs the
  * canonical domain-separated body, so any peer can verify it standalone —
  * no chain state, no session, no trusted directory. It is not a second
  * identity system: signing reuses the same lib/crypto Ed25519 primitives
@@ -15,7 +15,7 @@
  *     magic                       8   {'Z','S','W','Q','T','E','\r','\n'}
  *     schema_version              2   == ZSWAP_QUOTE_VERSION
  *     network_genesis_root       32   chain the quote lives on
- *     maker_pubkey               32   maker Ed25519 public key (the signer)
+ *     seller_pubkey               32   seller Ed25519 public key (the signer)
  *     nonce                       8   != 0; uniqueness / replay hygiene
  *     token_id                   32   ZSLP token id (node-internal byte order,
  *                                     same convention as zslp/slp.h)
@@ -25,12 +25,12 @@
  *     issued_unix                 8   > 0
  *     expires_unix                8   > issued_unix, and at most
  *                                     ZSWAP_QUOTE_MAX_LIFETIME_SECS after it
- *   maker_signature             64   Ed25519 over body_root by maker_pubkey
+ *   seller_signature             64   Ed25519 over body_root by seller_pubkey
  * Total wire: 210 bytes.
  *
  * body_root = SHA3-256("zcl.zswap.quote.v1" || NUL || body) is the exact
- * statement the maker signs. The quote's own root — the dedup/quote-book
- * key a Stage-2 book indexes by — commits the full wire including the
+ * statement the seller signs. The quote's own root — the dedup key a
+ * Stage-2 yardsale cache indexes by — commits the full wire including the
  * signature:
  *   root = SHA3-256("zcl.zswap.quote.root.v1" || NUL || wire).
  *
@@ -38,13 +38,13 @@
  *   A quote is usable only inside [issued_unix, expires_unix): early use is
  *   NOT_YET_VALID, use at or after expiry is EXPIRED. Lifetimes are capped
  *   at ZSWAP_QUOTE_MAX_LIFETIME_SECS structurally (a quote is a live
- *   advertisement, not a standing order — a maker that still wants to sell
+ *   for-sale sign with a short fuse — a seller that still wants to sell
  *   re-issues with a fresh nonce).
  *   Replay hygiene at the codec level is the nonce plus the root: two
  *   quotes that differ only in nonce have different roots, and a byte-
- *   identical re-gossip has the same root, so a quote book dedups on root
+ *   identical re-gossip has the same root, so a yardsale cache dedups on root
  *   and never needs a heuristic. The codec deliberately does NOT keep a
- *   seen-set — that is the Stage-2 quote book's job.
+ *   seen-set — that is the Stage-2 yardsale cache's job.
  */
 
 #ifndef ZCL_ZSWAP_ZSWAP_QUOTE_H
@@ -90,14 +90,14 @@ const char *zswap_quote_error_string(enum zswap_quote_error error);
 struct zswap_quote_v1 {
     uint16_t schema_version;
     uint8_t network_genesis_root[32];
-    uint8_t maker_pubkey[32];
+    uint8_t seller_pubkey[32];
     uint64_t nonce;
     uint8_t token_id[32];
     uint64_t token_amount;
     uint64_t zcl_amount;
     int64_t issued_unix;
     int64_t expires_unix;
-    uint8_t maker_signature[64];
+    uint8_t seller_signature[64];
 };
 
 /* Structural validation. validate() requires the signature to be non-zero;
@@ -118,26 +118,26 @@ enum zswap_quote_error zswap_quote_encode(
 enum zswap_quote_error zswap_quote_decode(
     const uint8_t *wire, size_t wire_len, struct zswap_quote_v1 *out);
 
-/* The 32-byte statement the maker signs (body only). */
+/* The 32-byte statement the seller signs (body only). */
 enum zswap_quote_error zswap_quote_body_root(
     const struct zswap_quote_v1 *quote, uint8_t out[32]);
-/* The quote's own id: commits the full signed wire. A quote book dedups on
- * this value. */
+/* The quote's own id: commits the full signed wire. A yardsale cache dedups
+ * on this value. */
 enum zswap_quote_error zswap_quote_root(
     const struct zswap_quote_v1 *quote, uint8_t out[32]);
 
-/* Sign the body root with the maker key. The maker public key is re-derived
- * from maker_secret and must equal quote->maker_pubkey (KEY_MISMATCH
+/* Sign the body root with the seller key. The seller public key is re-derived
+ * from seller_secret and must equal quote->seller_pubkey (KEY_MISMATCH
  * otherwise) — a secret that does not produce the claimed pubkey must never
  * seal, since the resulting signature would be unverifiable garbage. Ed25519
  * signing is deterministic (RFC 8032), so sealing is byte deterministic. */
 enum zswap_quote_error zswap_quote_seal(
-    struct zswap_quote_v1 *quote, const uint8_t maker_secret[32]);
+    struct zswap_quote_v1 *quote, const uint8_t seller_secret[32]);
 
 /* Full verification: structural validity at now_unix, the expected network
  * genesis root is pinned, and the Ed25519 signature verifies over the body
- * root under the embedded maker_pubkey. The maker is self-authenticating —
- * any key may advertise; pinning WHICH maker is accepted is the caller's
+ * root under the embedded seller_pubkey. The seller is self-authenticating —
+ * any key may advertise; pinning WHICH seller is accepted is the caller's
  * policy, not the codec's. */
 enum zswap_quote_error zswap_quote_verify_at(
     const struct zswap_quote_v1 *quote,

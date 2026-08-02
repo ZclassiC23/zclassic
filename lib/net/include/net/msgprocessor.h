@@ -35,6 +35,7 @@ struct block_index;
 struct fc_challenge;
 struct fc_response;
 struct msg_block_intake;
+struct zswap_yardsale_ad;
 
 typedef bool (*msg_compact_block_submit_fn)(struct block *block,
                                             struct validation_state *out,
@@ -48,6 +49,18 @@ typedef void (*msg_peer_save_fn)(const struct p2p_node *node, void *ctx);
 typedef bool (*msg_zmsg_save_fn)(const struct zmsg_message *msg, void *ctx);
 typedef bool (*msg_file_offer_save_fn)(const struct file_offer *offer,
                                        void *ctx);
+typedef bool (*msg_zswap_ad_save_fn)(const struct zswap_yardsale_ad *ad,
+                                     void *ctx);
+/* Port seam for the yardsale ingress policy (verify/dedup/clamp/store):
+ * lib/net must not name lib/zswap symbols (module-order ratchet), so the
+ * handler calls the yardsale through this injected port; the composition
+ * root (config/) wires it to zswap_yardsale_ingest_wire. The int result
+ * carries enum zswap_yardsale_ingest values (zswap/zswap_yardsale.h). */
+typedef int (*msg_zswap_ad_ingest_fn)(const uint8_t *wire, size_t wire_len,
+                                      const uint8_t expected_network_genesis[32],
+                                      int64_t peer_id, int64_t now_unix,
+                                      struct zswap_yardsale_ad *out_ad,
+                                      void *ctx);
 typedef bool (*msg_file_service_save_fn)(const uint8_t ip[16],
                                          uint16_t port,
                                          uint16_t p2p_port,
@@ -154,6 +167,10 @@ struct msg_processor {
     void *zmsg_save_ctx;
     msg_file_offer_save_fn file_offer_save;
     void *file_offer_save_ctx;
+    msg_zswap_ad_save_fn zswap_ad_save;
+    void *zswap_ad_save_ctx;
+    msg_zswap_ad_ingest_fn zswap_ad_ingest;
+    void *zswap_ad_ingest_ctx;
     msg_file_service_save_fn file_service_save;
     void *file_service_save_ctx;
     msg_snapshot_active_fn snapshot_active;
@@ -255,6 +272,12 @@ void msg_processor_set_zmsg_save(struct msg_processor *mp,
                                  void *ctx);
 void msg_processor_set_file_offer_save(struct msg_processor *mp,
                                        msg_file_offer_save_fn save,
+                                       void *ctx);
+void msg_processor_set_zswap_ad_save(struct msg_processor *mp,
+                                     msg_zswap_ad_save_fn save,
+                                     void *ctx);
+void msg_processor_set_zswap_ad_ingest(struct msg_processor *mp,
+                                       msg_zswap_ad_ingest_fn ingest,
                                        void *ctx);
 void msg_processor_set_file_service_save(struct msg_processor *mp,
                                          msg_file_service_save_fn save,

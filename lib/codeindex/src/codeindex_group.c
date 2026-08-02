@@ -178,7 +178,7 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/sapling") == 0) return "Sapling zk-SNARK primitives: Groth16 prover, Jubjub/BLS12-381, note encryption, circuits";
     if (strcmp(group, "lib/overlay") == 0) return "overlay SDK: shared OP_RETURN codec + rebuildable-projection scaffold behind ZNAM/ZSLP/ZMSG/ZANC";
     if (strcmp(group, "lib/zslp") == 0) return "Simple Ledger Protocol (SLP) token support encoded in OP_RETURN outputs";
-    if (strcmp(group, "lib/zswap") == 0) return "atomic ZSLP-token/ZCL P2P swaps: the canonical signed quote wire (zswap_quote.v1, pure codec)";
+    if (strcmp(group, "lib/zswap") == 0) return "atomic ZSLP-token/ZCL P2P swaps: the canonical signed quote wire (zswap_quote.v1, pure codec) + the yardsale gossip-ad cache";
     if (strcmp(group, "lib/znam") == 0) return "ZCL Names (ZNAM) on-chain name registry protocol (ENS-inspired)";
     if (strcmp(group, "lib/zanc") == 0) return "ZCL Anchors (ZANC) on-chain SHA2/SHA3 software-package anchoring overlay";
     if (strcmp(group, "lib/zdir") == 0) return "ZCL Directory (ZDIR) on-chain node directory overlay — .onion peer discovery folded from block history";

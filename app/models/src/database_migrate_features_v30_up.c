@@ -700,6 +700,43 @@ int node_db_migrate_features_v30_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 48) {
+        /* v48: zswap YARDSALE ads (zswap_ads) — the rebuildable projection
+         * of verified signed "for sale by owner" ZSLP-token/ZCL gossip ads
+         * (zswap_quote.v1, lib/zswap). One row per quote_root (the dedup
+         * id): wire keeps the exact 210 signed bytes that verified at
+         * ingress, the amount/time columns project the signed body, and
+         * first/last_seen + seen_count are local gossip bookkeeping. A
+         * yardsale cache — remembered signs, never a market or a matching
+         * engine; never consulted by consensus; safe to drop. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zswap_ads ("
+            "quote_root BLOB NOT NULL PRIMARY KEY "
+            "  CHECK(length(quote_root)=32),"
+            "wire BLOB NOT NULL CHECK(length(wire)=210),"
+            "seller_pubkey BLOB NOT NULL CHECK(length(seller_pubkey)=32),"
+            "token_id BLOB NOT NULL CHECK(length(token_id)=32),"
+            "token_amount INTEGER NOT NULL CHECK(token_amount>0),"
+            "zcl_amount INTEGER NOT NULL CHECK(zcl_amount>0),"
+            "issued_unix INTEGER NOT NULL,"
+            "expires_unix INTEGER NOT NULL,"
+            "first_seen_unix INTEGER NOT NULL,"
+            "last_seen_unix INTEGER NOT NULL,"
+            "seen_count INTEGER NOT NULL DEFAULT 1 CHECK(seen_count>=1))"
+            " WITHOUT ROWID");
+
+        /* The browse query filters one token's still-valid ads. */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zswap_ads_token_expiry "
+            "ON zswap_ads(token_id, expires_unix)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('048')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 48);
+        current_ver = 48;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

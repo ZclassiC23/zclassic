@@ -41,28 +41,29 @@ plan/commit with a fee preview.
 1. Same-chain single-tx ZSLP/ZCL swap builder + signer (plan/commit both
    sides; SLP validity proven against the ledger rules; dust/fee math
    exact; either-party broadcast).
-2. Signed order model + gossip: maker-key-signed offer/ask records
+2. Signed yardsale-ad model + gossip: seller-key-signed for-sale records
    (token id, amounts, price, expiry height, nonce), bounded TTL gossip
    reusing the zfile-offer pattern, AR model + validation, per-key rate
    limits, every rejection names the rule.
-3. Orderbook projections + typed commands (`market offer|take|list|cancel`
+3. Yardsale projections (the rebuildable view of heard ads) + typed
+   commands (`market offer|take|list|cancel`
    plan/commit where signing) and the onion market page reading the same
    projections (inheriting the UX design system).
 4. Cross-chain ZSLP HTLC (redeem=SLP SEND; refund; reorg-aware state
    machine on top of the existing swap persistence).
-5. Simulator lane: maker cancel-by-double-spend griefing, expiry races,
+5. Simulator lane: seller cancel-by-double-spend griefing, expiry races,
    secret-reveal front-running, refund races, reorg during settlement,
-   malformed/oversized orders, SLP-invalid settlement attempts, fee
+   malformed/oversized ads, SLP-invalid settlement attempts, fee
    estimation vs built tx vsize.
 
 ## Boundaries
 
 - No consensus or ZSLP-semantics change; swaps are ordinary opt-in
   transactions.
-- v1: full-fill orders only; no automatic broadcast without owner commit;
-  orders are hints — settlement truth is the chain.
-- Order gossip never earns ZCODE Credit by itself; marketplace anti-spam
+- v1: full-fill ads only; no automatic broadcast without owner commit;
+  ads are hints — settlement truth is the chain.
+- Ad gossip never earns ZCODE Credit by itself; yardsale anti-spam
   is rate limits + expiry + (later) earned-credit priority, never a fee
   to list.
-- The marketplace page/commands read the same projections — no second
-  orderbook truth.
+- The yardsale page/commands read the same projections — no second
+  yardsale truth.

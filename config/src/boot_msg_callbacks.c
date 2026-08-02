@@ -24,6 +24,7 @@
 #include "models/zmsg.h"
 #include "models/file_offer.h"
 #include "models/file_service.h"
+#include "models/zswap_ad.h"
 #include "net/msgprocessor.h"
 #include "net/snapshot_sync_contract.h"
 #include "net/peer_lifecycle.h"
@@ -381,6 +382,38 @@ bool boot_save_file_offer(const struct file_offer *offer, void *ctx)
     }
 
     return db_file_offer_save(svc->node_db, offer);
+}
+
+bool boot_save_zswap_ad(const struct zswap_yardsale_ad *ad, void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+
+    if (!svc || !svc->node_db || !svc->node_db->open || !ad) {
+        LOG_WARN("boot", "zswap ad save missing svc=%p ndb=%p ad=%p",
+                 (void *)svc, svc ? (void *)svc->node_db : NULL,
+                 (const void *)ad);
+        return false;
+    }
+
+    return db_zswap_ad_save(svc->node_db, ad);
+}
+
+int boot_zswap_ad_ingest(const uint8_t *wire, size_t wire_len,
+                         const uint8_t expected_network_genesis[32],
+                         int64_t peer_id, int64_t now_unix,
+                         struct zswap_yardsale_ad *out_ad, void *ctx)
+{
+    (void)ctx;
+    return (int)zswap_yardsale_ingest_wire(wire, wire_len,
+                                           expected_network_genesis,
+                                           peer_id, now_unix, out_ad);
+}
+
+void boot_wire_zswap_yardsale(struct msg_processor *mp,
+                              struct boot_svc_ctx *svc)
+{
+    msg_processor_set_zswap_ad_ingest(mp, boot_zswap_ad_ingest, svc);
+    msg_processor_set_zswap_ad_save(mp, boot_save_zswap_ad, svc);
 }
 
 bool boot_save_file_service(const uint8_t ip[16],
