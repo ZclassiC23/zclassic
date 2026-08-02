@@ -468,6 +468,25 @@ sandboxed publishing.** Refactor debt must not jump the queue.
       `chain_active` UAF, same class as the fixed phashBlock bug).
 - [ ] MVP feature e2e proofs: C4 (receive shielded) + C5 (store sell) on a
       funded test wallet.
+      **C5 map (2026-08-02 investigation):** the criterion's gate is the STORE
+      stack (`storebuy_*` + `app.store.*`), NOT the `zmarket_*` P2P market
+      (MVP.md names the market post-MVP; its leaves are PLANNED/unbound).
+      Hermetic gates `store_e2e` + `store_e2e_shielded` are green in
+      `make ci-mvp-gates`; the ◐ gap is only "hermetic/in-process, not yet a
+      full live buyer over the store/onion/file-transfer path" — the buyer
+      drives `store_handle_request` against the LOCAL node.db
+      (app/services/src/store_buyer.c:96-107,254,362). Two upgrade rungs:
+      (A) single-node regtest operator proof (~200-300 lines bash, ~zero C —
+      every leaf READY: list-product → order → pay (real shielded z_sendmany
+      with order memo) → mine → reconcile → collect, bytes == content hash;
+      mirrors C4's make test-shielded-payment shape); (B) the full live
+      buyer: remote-store transport mode in store_buyer*.c (fetch/POST/GET
+      via tor_integration_fetch_onion_blocking, lib/net/src/tor_integration.c:515)
+      ≈ 300-450 lines C + two-node harness cloned from
+      tools/scripts/two_node_peer_tip.sh. Payment leg reuses
+      rpc_z_sendmany / wallet_direct_sendtoaddress — no consensus-adjacent
+      code; `storebuy_pay` hard-refuses mainnet (store_buyer_pay.c:97-98),
+      lifting that is owner-gated spend-guard doctrine.
 
 ### C. OPERATIONAL (network/config, not code; proves C3/C6/C7)
 - [ ] **Prove C3 cold-sync end-to-end between zcl23 nodes** — use the immutable
