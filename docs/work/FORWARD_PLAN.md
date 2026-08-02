@@ -100,6 +100,25 @@
       while the fold is behind. Repro: `zcl-stopwatch-peer` unit journal
       2026-08-01 21:55-22:00 UTC; datadir archive
       `~/.zclassic-c23-fixture-serve.broken-aug01`.
+      **FIXED 2026-08-02 (this commit):** root cause — the bundle install
+      advances the stage cursors (body_fetch = seed+1) but never moves
+      `chainactive`, and both body planners keyed their window bottom on
+      `active_chain_height` alone. Two seed-floor raises, each a no-op on
+      an unseeded node: (a) the block swarm's completion seed at
+      `msgprocessor_snapshot.c` floors `our_h` at
+      `reducer_frontier_provable_tip_cached()` (H*), so the first open
+      piece contains the fold's next-needed height instead of all ~50k
+      pieces tying rarest-first to the lowest indexes and flooding the
+      128-slot intake ring through the 256-deep pipeline; (b)
+      `gap_fill_service`'s window bottom floors `tip_h` at
+      `body_fetch_stage_cursor()−1`, so dl_queue stops filling with
+      below-floor heights and the height-sorted keep-lowest eviction
+      stops refusing the fold-needed successors above the seed. The S2.4
+      validate_headers floor is untouched (it only ever lowers the
+      window as a backstop, never behind the fold). Regression floor:
+      existing gap_fill/swarm/fast_sync groups green; live copy-prove on
+      the aug01 fixture archive is the acceptance gate before the C3
+      stopwatch rerun.
    11. ~~Anchor replay-canary degraded to a genesis-scale bg-validation
       walk~~ **FIXED 2026-08-01** (two commits): `make replay-canary-anchor`
       FAILed `budget_exceeded` at the 5400 s hard budget — bg-validation

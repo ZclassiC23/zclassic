@@ -23,6 +23,7 @@
 #include "net/sync_shadow.h"
 #include "storage/disk_block_io.h"
 #include "coins/coins_view.h"
+#include "jobs/reducer_frontier.h"  // lib-layer-ok:provable-tip-for-seed-floor-swarm-completion
 #include "net/snapshot_sync_contract.h"
 #include "validation/main_state.h"
 #include "util/safe_alloc.h"
@@ -1587,6 +1588,25 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     }
                 }
                 int our_h = active_chain_height(&mp->main_state->chain_active);
+                /* Seed-floor raise: on a bundle/snapshot-seeded node the
+                 * install advances the reducer frontier (H*) past the
+                 * bundle height but never moves chainactive. Seeding the
+                 * swarm's completion from active_chain_height then marks
+                 * ~nothing complete, all ~50k pieces tie rarest-first to
+                 * the LOWEST indexes, the 256-deep per-peer pipeline fills
+                 * with h=1.. pieces whose bodies flood the 128-slot
+                 * intake ring, and the fold-needed range above H* never
+                 * enters the queue (FORWARD_PLAN backlog #10, observed
+                 * 2026-08-01: H* frozen at the seed, 256 pieces inflight,
+                 * zero completions). Floor the completion seed at H* so
+                 * the first open piece is the one containing the fold's
+                 * next-needed height. No-op on an unseeded node, where H*
+                 * tracks the active tip. */
+                {
+                    int32_t hstar = reducer_frontier_provable_tip_cached();
+                    if (hstar > our_h)
+                        our_h = hstar;
+                }
                 if (node->blk_manifest_received)
                     printf("Peer %s: block manifest h=%d..%d (%u pieces)\n",
                            node->addr_name, start_h, end_h, num_pieces);
