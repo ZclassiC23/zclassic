@@ -11,6 +11,53 @@ CC := $(ZCL_CCACHE_BIN) $(CC)
 endif
 endif
 
+# Release-build LTO acceleration (ZCL_LTO_ACCEL=1, the default): the canonical
+# build/bin/zclassic23 stops being one monolithic whole-program compile and
+# becomes epoch-keyed per-TU LTO objects (the `release` profile below) plus a
+# single serialized whole-program link. REL_CC is the newest available GCC —
+# only GCC >= 16 speaks -flto-incremental/-flto-partition=cache — resolved in
+# priority order: explicit override, the known toolchain path, PATH, then the
+# ordinary CC as a last resort (per-TU LTO still works there; the WPA cache
+# just stays off). ZCL_LTO_ACCEL=0 disables all of this and selects the old
+# monolithic rule at $(ZCLASSIC23_BIN).
+ZCL_LTO_ACCEL ?= 1
+ifneq ($(ZCL_REL_CC),)
+REL_CC := $(ZCL_REL_CC)
+else ifneq ($(ZCL_GCC16),)
+REL_CC := $(ZCL_GCC16)
+else ifeq ($(shell test -x "$(HOME)/toolchains/gcc-16/root/usr/bin/gcc-16" && echo yes),yes)
+REL_CC := $(HOME)/toolchains/gcc-16/root/usr/bin/gcc-16
+else ifneq ($(shell command -v gcc-16 2>/dev/null),)
+REL_CC := gcc-16
+else
+REL_CC := $(CC)
+endif
+
+# The incremental-LTO cache is repo-scoped by default so it moves with
+# BUILD_DIR and clean-room (ci-reproducible) builds stay hermetic.
+REL_LTO_CACHE_DIR ?= $(BUILD_DIR)/lto-cache
+
+# Probe the resolved compiler exactly once per parse; the result is cached in
+# REL_LTO_PROBE_OK so recipes never re-probe. A failed probe keeps REL_CC (the
+# per-TU epoch objects and the serialized link still work) with the WPA cache
+# flags off. Recursively expanded REL_LTO_INC_FLAGS resolves BUILD_DIR lazily.
+REL_LTO_INC_FLAGS =
+ifeq ($(ZCL_LTO_ACCEL),1)
+REL_LTO_PROBE_DIR := $(shell mktemp -d 2>/dev/null)
+ifneq ($(REL_LTO_PROBE_DIR),)
+REL_LTO_PROBE_OK := $(shell printf 'int main(void){return 0;}\n' > '$(REL_LTO_PROBE_DIR)/main.c' && $(REL_CC) -flto -flto-incremental='$(REL_LTO_PROBE_DIR)/cache' -flto-partition=cache -c -o '$(REL_LTO_PROBE_DIR)/main.o' '$(REL_LTO_PROBE_DIR)/main.c' >/dev/null 2>&1 && echo yes; rm -rf '$(REL_LTO_PROBE_DIR)')
+ifeq ($(REL_LTO_PROBE_OK),yes)
+REL_LTO_INC_FLAGS = -flto-incremental=$(REL_LTO_CACHE_DIR) -flto-partition=cache
+endif
+endif
+endif
+
+ifneq ($(ZCL_CCACHE_BIN),)
+ifeq ($(filter sccache ccache,$(notdir $(firstword $(REL_CC)))),)
+REL_CC := $(ZCL_CCACHE_BIN) $(REL_CC)
+endif
+endif
+
 # Standalone cleanup must never bootstrap vendor archives, generated views, or
 # a compiler merely to delete artifacts. Mixed goals remain ordinary builds.
 ZCL_STANDALONE_CLEAN := $(if $(filter clean coverage-clean,$(MAKECMDGOALS)),$(if $(word 2,$(MAKECMDGOALS)),,1),)
@@ -152,7 +199,7 @@ ZCL_SOURCE_IDENTITY_SESSION := $(BUILD_INVOCATION_PID):$(BUILD_INVOCATION_START)
 # they execute; mixed/default/unknown goals retain the conservative all-profile
 # fallback so a newly-added goal cannot silently lose freshness authority.
 ZCL_EPOCH_ALL_PROFILES := build-only dev dev-asan dev-tsan test-fast \
-	test-strict test-asan test-tsan coverage
+	test-strict test-asan test-tsan coverage release
 ZCL_EPOCH_PROFILES := $(ZCL_EPOCH_ALL_PROFILES)
 ifeq ($(BUILD_EPOCH_CLEAN_ONLY),1)
 ZCL_EPOCH_PROFILES :=
@@ -178,6 +225,11 @@ else ifneq ($(filter dev-tsan zclassic23-dev-tsan,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := dev-tsan
 else ifneq ($(filter coverage coverage-locked,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := coverage
+else ifneq ($(filter zclassic23 all,$(ZCL_EPOCH_SINGLE_GOAL)),)
+# The release binary's per-TU epoch objects are the only compile-epoch work
+# these goals reach; every other binary `all` builds is a direct monolithic
+# compile+link with no epoch profile.
+ZCL_EPOCH_PROFILES := release
 else ifneq ($(filter lint lint-fast watcher-safety-gates dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop t-list templates site-css explorer-css,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES :=
 endif
@@ -609,6 +661,12 @@ CFLAGS = -std=c23 -g -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flt
 LDFLAGS = -pthread -flto=auto -rdynamic $(HARDEN_LDFLAGS)
 CACHED_CFLAGS = $(filter-out -DZCL_BUILD_SOURCE_ID=% -DZCL_BUILD_CLEAN=%,$(CFLAGS))
 BUILD_ONLY_CFLAGS = $(CACHED_CFLAGS) -Wno-deprecated-declarations
+# Release per-TU epoch objects use the exact release flags (CACHED_CFLAGS keeps
+# -O3 -flto=auto) minus the baked identity defines, which only clientversion.o
+# receives — the same shape as build-only. REL_LTO_INC_FLAGS is a link-time
+# input only, so it rides REL_LDFLAGS, not REL_CFLAGS.
+REL_CFLAGS = $(CACHED_CFLAGS) -Wno-deprecated-declarations
+REL_LDFLAGS = $(LDFLAGS) $(REL_LTO_INC_FLAGS)
 ZCL_DEV_OPT ?= -Og
 ZCL_DEV_HOT_OPT ?= -O2
 ZCL_DEV_LINKER ?= $(shell if command -v mold >/dev/null 2>&1; then printf '%s' '-fuse-ld=mold'; elif command -v ld.lld >/dev/null 2>&1; then printf '%s' '-fuse-ld=lld'; fi)
@@ -691,7 +749,7 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 # without changing a tracked TU: compiler/tool/search-root fingerprint,
 # profile name, effective compile flags, effective link inputs, and
 # BUILD_SYSTEM_ID (the root Makefile — which holds every flag variable and
-# per-object/per-pattern override — plus the four epoch driver scripts,
+# per-object/per-pattern override — plus the five epoch driver scripts,
 # hashed by `build-epoch-key.sh build-system-id`). A source edit therefore
 # recompiles exactly the TUs that make's timestamp+depfile graph marks stale
 # inside the STABLE epoch; a flags/Makefile/toolchain edit re-keys every
@@ -703,6 +761,10 @@ BUILD_EPOCH_KEY_TOOL = tools/dev/build-epoch-key.sh
 BUILD_EPOCH_OBJECT_TOOL = tools/dev/compile-epoch-object.sh
 BUILD_EPOCH_PUBLISH_TOOL = tools/dev/publish-build-alias.sh
 BUILD_EPOCH_SESSION_TOOL = tools/dev/build-epoch-session.sh
+# Serializes whole-program LTO links under one checkout-wide flock so
+# concurrent makes cannot run two WPA links at once; per-TU compiles and the
+# link's own LTRANS phase keep jobserver parallelism.
+WPO_LINK_TOOL = tools/dev/wpo-link.sh
 BUILD_EPOCH_KEEP ?= 3
 
 # Checkout-wide counterpart to the per-profile epoch-GC lock above: the
@@ -743,14 +805,22 @@ endif
 # $(1) profile name, $(2) NAME of the profile's *_EPOCH_COMPILE_FLAGS variable,
 # $(3) NAME of its *_EPOCH_LINK_FLAGS variable. Source identity is deliberately
 # NOT an input: see the epoch-section comment above.
+# zcl_compile_epoch_for takes the compiler fingerprint explicitly so a profile
+# compiled by a different toolchain (release uses REL_CC, not CC) can key its
+# epoch against the compiler that actually builds it.
+define zcl_compile_epoch_for
+$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) key "$(1)" "$(2)" "$(strip $($(3)))" "$(strip $($(4)))" "$(BUILD_SYSTEM_ID)" 2>/dev/null))
+endef
 define zcl_compile_epoch
-$(strip $(shell $(BUILD_EPOCH_KEY_TOOL) key "$(BUILD_COMPILER_ID)" "$(1)" "$(strip $($(2)))" "$(strip $($(3)))" "$(BUILD_SYSTEM_ID)" 2>/dev/null))
+$(call zcl_compile_epoch_for,$(BUILD_COMPILER_ID),$(1),$(2),$(3))
 endef
 
 BUILD_ONLY_EPOCH_COMPILE_FLAGS := $(strip $(BUILD_ONLY_CFLAGS) deps=-MD,-MP)
 BUILD_ONLY_EPOCH_LINK_FLAGS := no-link
 DEV_EPOCH_COMPILE_FLAGS := $(strip normal=$(DEV_CFLAGS) hot=$(DEV_HOT_CFLAGS) deps=-MD,-MP)
 DEV_EPOCH_LINK_FLAGS := $(strip $(DEV_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
+REL_EPOCH_COMPILE_FLAGS := $(strip $(REL_CFLAGS) deps=-MD,-MP)
+REL_EPOCH_LINK_FLAGS := $(strip $(REL_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 
 ifneq ($(filter build-only,$(ZCL_EPOCH_PROFILES)),)
 BUILD_ONLY_COMPILE_EPOCH := $(call zcl_compile_epoch,build-only-v2,BUILD_ONLY_EPOCH_COMPILE_FLAGS,BUILD_ONLY_EPOCH_LINK_FLAGS)
@@ -769,6 +839,25 @@ $(error dev compile-epoch derivation failed)
 endif
 else
 DEV_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
+endif
+
+# release: epoch-keyed per-TU LTO objects for the canonical build/bin/zclassic23
+# (ZCL_LTO_ACCEL=1). The epoch fingerprints REL_CC — NOT CC — because that is
+# the compiler that builds and links the profile.
+ifneq ($(filter release,$(ZCL_EPOCH_PROFILES)),)
+REL_COMPILER_ID := $(strip $(shell $(BUILD_EPOCH_KEY_TOOL) compiler-id "$(REL_CC)" "$(CXX)" 2>/dev/null))
+REL_COMPILER_ID_VALID := $(shell printf '%s\n' '$(REL_COMPILER_ID)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
+ifneq ($(REL_COMPILER_ID_VALID),yes)
+$(error release compiler/toolchain fingerprint failed; refusing to select a compile epoch)
+endif
+REL_COMPILE_EPOCH := $(call zcl_compile_epoch_for,$(REL_COMPILER_ID),release-v1,REL_EPOCH_COMPILE_FLAGS,REL_EPOCH_LINK_FLAGS)
+REL_COMPILE_EPOCH_VALID := $(shell printf '%s\n' '$(REL_COMPILE_EPOCH)' | awk '$$0 ~ /^[0-9a-f]{64}$$/ { print "yes" }')
+ifneq ($(REL_COMPILE_EPOCH_VALID),yes)
+$(error release compile-epoch derivation failed)
+endif
+else
+REL_COMPILER_ID := $(ZCL_ZERO_SHA256)
+REL_COMPILE_EPOCH := $(ZCL_ZERO_SHA256)
 endif
 
 DEV_CANDIDATE_BIN = $(BIN_DIR)/dev/epochs/$(DEV_COMPILE_EPOCH)/zclassic23-dev
@@ -828,10 +917,21 @@ DEV_TSAN_LEASE = $(DEV_TSAN_OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
 
 BUILD_ONLY_PROFILE = build-only-v2
 DEV_PROFILE = dev-v2
+REL_PROFILE = release-v1
 BUILD_ONLY_SESSION = $(OBJ_DIR)/.build-session
 DEV_SESSION = $(DEV_OBJ_DIR)/.build-session
 BUILD_ONLY_LEASE = $(OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
 DEV_LEASE = $(DEV_OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
+
+# Release profile object tree: one epoch-keyed directory per (REL_CC, flags,
+# build-system) triple, published through the same session/lease authority as
+# every other profile. Epoch GC retains BUILD_EPOCH_KEEP generations per root.
+REL_OBJ_ROOT = $(BUILD_DIR)/rel-obj
+REL_OBJ_DIR = $(REL_OBJ_ROOT)/epochs/$(REL_COMPILE_EPOCH)
+REL_OBJS = $(patsubst %.c,$(REL_OBJ_DIR)/%.o,$(NODE_ENTRY_SRCS) $(ALL_SRCS))
+REL_LINK_RSP = $(REL_OBJ_DIR)/link-inputs.rsp
+REL_SESSION = $(REL_OBJ_DIR)/.build-session
+REL_LEASE = $(REL_OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
 
 $(BUILD_ONLY_LEASE): FORCE
 	@$(BUILD_EPOCH_SESSION_TOOL) acquire "$(BUILD_ONLY_SESSION)" "$@" \
@@ -865,12 +965,20 @@ $(DEV_TSAN_LEASE): FORCE
 	  "$(DEV_TSAN_EPOCH_COMPILE_FLAGS)" "$(DEV_TSAN_EPOCH_LINK_FLAGS)" \
 	  "$(CC)" "$(CXX)" "$$PPID"
 
+$(REL_LEASE): FORCE
+	@$(BUILD_EPOCH_SESSION_TOOL) acquire "$(REL_SESSION)" "$@" \
+	  "$(REL_OBJ_ROOT)" - "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(REL_COMPILER_ID)" "$(REL_COMPILE_EPOCH)" "$(REL_PROFILE)" \
+	  "$(REL_EPOCH_COMPILE_FLAGS)" "$(REL_EPOCH_LINK_FLAGS)" \
+	  "$(REL_CC)" "$(CXX)" "$$PPID"
+
 # Make normally imports four large immutable depfile graphs even when one
 # profile (or no compiler at all) is requested.  Narrow only an exact,
 # explicitly-known single goal.  Empty/default, mixed, and unknown goals keep
 # the conservative source-wide fallback so a new target cannot accidentally
 # lose header invalidation merely because this table was not updated.
-ZCL_DEPFILE_ALL_PROFILES := build-only dev test-fast test-strict coverage fuzz
+ZCL_DEPFILE_ALL_PROFILES := build-only dev test-fast test-strict coverage fuzz release
 ZCL_DEPFILE_PROFILES := $(ZCL_DEPFILE_ALL_PROFILES)
 ifeq ($(ZCL_HOTSWAP_DEPFILE_LEAN_ONLY),1)
 # The hot-swap loop recipes (plus hotswap-module-so's own single-TU shell
@@ -898,6 +1006,8 @@ else ifneq ($(filter dev-tsan zclassic23-dev-tsan,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev-tsan
 else ifneq ($(filter coverage coverage-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := coverage
+else ifneq ($(filter zclassic23 all,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+ZCL_DEPFILE_PROFILES := release
 else ifneq ($(filter fuzz fuzz-ci fuzz-ci-leaks fuzz-replay fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock fuzz_snapshot fuzz_tx_bundle fuzz_rom_manifest fuzz_overlay fuzz_ecdsa,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := fuzz
 else ifneq ($(filter lint lint-fast watcher-safety-gates dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop,$(ZCL_DEPFILE_SINGLE_GOAL)),)
@@ -909,6 +1019,9 @@ endif
 # exact epoch. There is no mutable "current object directory" symlink.
 ifneq ($(filter build-only,$(ZCL_DEPFILE_PROFILES)),)
 -include $(ALL_OBJS:.o=.d)
+endif
+ifneq ($(filter release,$(ZCL_DEPFILE_PROFILES)),)
+-include $(REL_OBJS:.o=.d)
 endif
 ifneq ($(filter dev,$(ZCL_DEPFILE_PROFILES)),)
 -include $(DEV_OBJS:.o=.d)
@@ -1474,7 +1587,7 @@ $$(BIN_DIR)/$(1): $$(VIEW_GEN_HEADERS) $$(BUILD_IDENTITY_STAMP) $(2) $$(ALL_SRCS
 	@set -eu; \
 	tmp="$$$$(mktemp "$$@.link.XXXXXX")"; \
 	trap 'rm -f "$$$$tmp"' EXIT HUP INT TERM; \
-	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o "$$$$tmp" $$(filter-out $$(VIEW_GEN_HEADERS) $$(BUILD_IDENTITY_STAMP),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3); \
+	$$(WPO_LINK_TOOL) "$$(BUILD_DIR)/.wpo-link.lock" $$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o "$$$$tmp" $$(filter-out $$(VIEW_GEN_HEADERS) $$(BUILD_IDENTITY_STAMP),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3); \
 	tools/dev/source-identity.sh verify-record "$$(BUILD_SOURCE_ID)" "$$(BUILD_CLEAN)" "$$(BUILD_MUTATION)" >/dev/null; \
 	mv -f -- "$$$$tmp" "$$@"; \
 	trap - EXIT HUP INT TERM
@@ -2719,7 +2832,7 @@ $(BIN_DIR)/session: $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) tools/session.c $(ALL_SR
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
 	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(TMPL_GEN) $(BUILD_IDENTITY_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm; \
+	$(WPO_LINK_TOOL) "$(BUILD_DIR)/.wpo-link.lock" $(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(TMPL_GEN) $(BUILD_IDENTITY_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
@@ -2732,7 +2845,7 @@ $(BIN_DIR)/bot: $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) tools/bot.c $(ALL_SRCS)
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
 	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(TMPL_GEN) $(BUILD_IDENTITY_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm; \
+	$(WPO_LINK_TOOL) "$(BUILD_DIR)/.wpo-link.lock" $(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(TMPL_GEN) $(BUILD_IDENTITY_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
@@ -2774,6 +2887,39 @@ zclassic23: $(ZCLASSIC23_BIN)
 # without growing the deployed artifact. The sidecar is staged in a temp
 # dir under its final basename because --add-gnu-debuglink reads the file
 # (stored name + CRC32) at link time.
+ifeq ($(ZCL_LTO_ACCEL),1)
+# Accelerated path: per-TU epoch LTO objects (release profile) + one
+# serialized whole-program link through the flock serializer. GCC's
+# incremental-LTO cache (REL_LTO_INC_FLAGS, when the probe passed) makes the
+# WPA stage incremental across links; the objcopy/strip/debuglink/verify/
+# atomic-rename sequence below is byte-for-byte the monolithic rule's.
+$(REL_LINK_RSP): $(REL_OBJS)
+	@$(file >$@,$(REL_OBJS)) test -s "$@"
+
+$(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(REL_OBJS) $(REL_LINK_RSP) | $(VENDOR_LIBS)
+	@mkdir -p $(dir $@) "$(REL_LTO_CACHE_DIR)"
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	dbg="$@.debug"; \
+	dbgdir="$$(mktemp -d "$@.dbgdir.XXXXXX")"; \
+	trap 'rm -rf "$$tmp" "$$dbgdir"' EXIT HUP INT TERM; \
+	$(WPO_LINK_TOOL) "$(BUILD_DIR)/.wpo-link.lock" $(REL_CC) $(REL_CFLAGS) $(REL_LDFLAGS) -o "$$tmp" "@$(REL_LINK_RSP)" $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	$(BUILD_EPOCH_SESSION_TOOL) verify "$(REL_SESSION)" "$(REL_LEASE)" \
+	  "$(REL_OBJ_ROOT)" - "$(BUILD_EPOCH_KEEP)" "$(BUILD_SOURCE_ID)" \
+	  "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" "$(REL_COMPILER_ID)" \
+	  "$(REL_COMPILE_EPOCH)" "$(REL_PROFILE)" "$(REL_EPOCH_COMPILE_FLAGS)" \
+	  "$(REL_EPOCH_LINK_FLAGS)" "$(REL_CC)" "$(CXX)" "$$PPID" >/dev/null; \
+	objcopy --only-keep-debug "$$tmp" "$$dbgdir/$$(basename "$$dbg")"; \
+	strip -s "$$tmp"; \
+	objcopy --add-gnu-debuglink="$$dbgdir/$$(basename "$$dbg")" "$$tmp"; \
+	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	mv -f -- "$$dbgdir/$$(basename "$$dbg")" "$$dbg"; \
+	rmdir "$$dbgdir"; \
+	trap - EXIT HUP INT TERM
+else
+# ZCL_LTO_ACCEL=0: the original monolithic whole-program compile+link,
+# unchanged.
 $(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(NODE_ENTRY_SRCS) $(ALL_SRCS) | $(VENDOR_LIBS)
 	@mkdir -p $(dir $@)
 	@set -eu; \
@@ -2790,6 +2936,7 @@ $(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(NODE_ENTRY_SRCS
 	mv -f -- "$$dbgdir/$$(basename "$$dbg")" "$$dbg"; \
 	rmdir "$$dbgdir"; \
 	trap - EXIT HUP INT TERM
+endif
 
 .PHONY: zclassic-cli
 zclassic-cli: $(ZCLASSIC_CLI_BIN)
@@ -4858,6 +5005,22 @@ $(OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(BUILD_ONL
 
 # The one TU that bakes display + source identity — see the stamp above.
 $(OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
+
+# Release per-TU LTO objects for build/bin/zclassic23 (ZCL_LTO_ACCEL=1). Same
+# compile-epoch-object.sh dep-mode discipline as build-only — staging dir +
+# atomic mv, .d depfile beside the .o, session/lease authority — but compiled
+# by REL_CC with the full release optimization/LTO flags. clientversion.o
+# carries the identity defines exactly like the build-only tree.
+REL_OBJECT_CFLAGS = $(REL_CFLAGS)
+$(REL_OBJ_DIR)/lib/util/src/clientversion.o: REL_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS)
+$(REL_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(REL_LEASE)
+	@$(BUILD_EPOCH_OBJECT_TOOL) dep "$@" "$<" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(REL_COMPILE_EPOCH)" "$(REL_COMPILER_ID)" "$(REL_SESSION)" -- \
+	  $(REL_CC) $(REL_OBJECT_CFLAGS)
+
+# The release object tree also needs the identity TU refreshed with its stamp.
+$(REL_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 
 # Dev-bin keeps most TUs at -Og for quick debug compiles, but leaves the
 # consensus/crypto/script/validation hot paths at a configurable optimized

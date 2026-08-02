@@ -7,7 +7,7 @@
 # without changing any tracked TU: compiler/tool bytes, profile name,
 # effective compile/link flags, and the build-system fingerprint
 # (build-system-id mode: the root Makefile, which holds every flag variable
-# and per-object override, plus the four epoch driver scripts).  Source edits
+# and per-object override, plus the five epoch driver scripts).  Source edits
 # deliberately do NOT re-key the epoch: make's own timestamp+depfile
 # incrementality recompiles exactly the affected TUs inside the stable epoch,
 # and the identity stamp (BUILD_IDENTITY_STAMP) rebuilds clientversion.o and
@@ -330,9 +330,10 @@ build-system-id)
     # Canonical fingerprint of every build-system input that can change
     # compile/link semantics WITHOUT changing a tracked TU's bytes: the root
     # Makefile (all flag variables and every per-object/per-pattern flag
-    # override) and the four epoch driver scripts (this key tool's algorithm,
-    # the per-object compiler driver, the session/lease/GC authority, and the
-    # candidate publisher).  Editing any of them must re-key every compile
+    # override) and the five epoch driver scripts (this key tool's algorithm,
+    # the per-object compiler driver, the session/lease/GC authority, the
+    # candidate publisher, and the whole-program link serializer).  Editing
+    # any of them must re-key every compile
     # epoch; a stale object must never survive a flags or driver edit.  This
     # is the single source of truth for the list — Make and
     # build-epoch-session.sh both call this mode.
@@ -344,6 +345,7 @@ build-system-id)
         "$SELF_DIR/compile-epoch-object.sh"
         "$SELF_DIR/build-epoch-session.sh"
         "$SELF_DIR/publish-build-alias.sh"
+        "$SELF_DIR/wpo-link.sh"
     )
     WORK="$(mktemp -d "${TMPDIR:-/tmp}/zcl-build-system.XXXXXX")" ||
         fail 'could not create build-system fingerprint workspace'
