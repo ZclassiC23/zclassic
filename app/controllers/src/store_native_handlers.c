@@ -330,7 +330,7 @@ void zcl_native_handle_store_list_product(
     char token_id[STORE_PRODUCT_TOKEN_MAX + 1];
     if (strlen(token_in) > STORE_PRODUCT_TOKEN_MAX) {
         sn_fail(reply, ZCL_COMMAND_EXIT_INVALID, "BAD_TOKEN_ID",
-                "token_id exceeds the 63-character limit", "token_id");
+                "token_id exceeds the 64-character limit", "token_id");
         return;
     }
     (void)snprintf(token_id, sizeof(token_id), "%s", token_in);

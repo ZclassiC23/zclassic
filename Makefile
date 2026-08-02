@@ -3878,6 +3878,32 @@ test-shielded-payment: test_zcl
 test-store-e2e: test_zcl
 	ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=store_e2e $(TEST_ZCL_BIN)
 
+# P11.5b store OPERATOR proof (MVP criterion #5 rung A, full binary).
+#
+# The hermetic store_e2e gates above run the store flow inside test_zcl; this
+# target boots a real build/bin/zclassic23 node on regtest in a throwaway
+# /tmp datadir (isolated 391xx ports, dead -connect sink — never the live
+# node, the oracle, or their datadirs) and drives the whole MVP #5 claim
+# through the native typed CLI an operator uses: app.store.list-product with
+# a binary blob carrying embedded NUL bytes -> catalog -> order (the real
+# CSRF + PoW order route) -> pay (real shielded z_sendmany t->z with the
+# ZCL23ORDER:<id> memo, broadcast to the node's own mempool) -> mined
+# confirmations -> purchases until ready_to_collect -> collect -> cmp the
+# delivered bytes against the original. Prints VERDICT=PASS/SKIP/FAIL with
+# the failing stage named. Params-guarded like test-shielded-payment; the
+# script additionally SKIPs if regtest mining is unavailable. Opt-in; NOT in
+# `make ci`.
+test-store-operator-proof: zclassic23 zcl-rpc
+	@set -eu; \
+	params_dir="$$HOME/.zcash-params"; \
+	for f in sapling-spend.params sapling-output.params sprout-groth16.params sprout-verifying.key; do \
+		if [ ! -r "$$params_dir/$$f" ]; then \
+			echo "test-store-operator-proof: SKIP ($$params_dir/$$f missing)"; \
+			exit 0; \
+		fi; \
+	done; \
+	tools/scripts/store_sell_operator_proof.sh
+
 # ── MVP acceptance gates: hermetic vs fixture-bound ───────────
 #
 # The MVP acceptance tests (docs/MVP.md #2..#7) all self-skip unless

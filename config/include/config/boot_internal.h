@@ -519,4 +519,10 @@ bool boot_park_until_shutdown(const char *gate_name);
  * app_init does `return boot_node_db_open_failed_gate(ctx->datadir);`. */
 bool boot_node_db_open_failed_gate(const char *datadir);
 
+/* ── config/src/boot_regtest_shielded.c ─────────────────────────────────
+ * -regtestshielded: activate Overwinter+Sapling from genesis on a REGTEST
+ * node's runtime chain params only (the zcashd -nuparams equivalent).
+ * No-op unless enabled; warns and does nothing without -regtest. */
+void boot_apply_regtest_shielded(bool enabled, bool regtest);
+
 #endif

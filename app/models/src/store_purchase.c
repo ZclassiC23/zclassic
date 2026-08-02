@@ -61,7 +61,7 @@ bool db_store_purchase_validate(const struct db_store_purchase *p,
         "product_name", "exceeds max length 255");
     validates_custom(errors,
         strlen(p->token_id) <= STORE_PURCHASE_TOKEN_MAX,
-        "token_id", "exceeds max length 63");
+        "token_id", "exceeds max length 64");
     validates_custom(errors,
         strlen(p->payment_addr) <= STORE_PURCHASE_ADDR_MAX,
         "payment_addr", "exceeds max length 127");

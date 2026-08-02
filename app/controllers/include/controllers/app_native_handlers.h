@@ -21,7 +21,8 @@
 extern "C" {
 #endif
 
-/* No args -> zslp_listtokens. */
+/* No args -> zslp_listtokens; wraps the RPC's bare array as
+ * {"tokens":[...]} — the native body contract requires an object. */
 char *zcl_native_zslp_listtokens_body(const struct json_value *args,
                                       struct zcl_native_body_err *err);
 

@@ -308,6 +308,76 @@ static int test_flush_retries_under_write_lock(void)
     return failures;
 }
 
+/* Regression for the 2026-08-02 store-pay failure: the wallet shares ONE
+ * FULLMUTEX connection with every other node.db writer (wallet_sqlite wraps
+ * g_node_db.db; db_service's query_db IS node_db->db), so a competing job
+ * mid-transaction on the SAME connection fails the flush's BEGIN IMMEDIATE
+ * with SQLITE_ERROR "cannot start a transaction within a transaction" —
+ * outside the BUSY family. The flush must treat it as transient contention
+ * (bounded retry, then a CLEAN failure — no crash, no partial state) and,
+ * once the competing COMMIT restores autocommit, succeed and persist.
+ * Deterministic: the competing tx is held and released by this thread
+ * between the two flushes. */
+static int test_flush_retries_under_same_connection_tx(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: flush retries under a same-connection open tx") {
+        clear_passphrase();
+
+        char path[80];
+        snprintf(path, sizeof(path),
+                 "./test-tmp/wallet_sametx_%d.db", (int)getpid());
+        mkdir("./test-tmp", 0755);
+        unlink(path);
+
+        sqlite3 *db = open_fixture_db(path, true);
+        ASSERT(db);
+        sqlite3_exec(db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
+        sqlite3_busy_timeout(db, 100);
+
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open_r(&ws, db).ok);
+
+        struct wallet *w = alloc_wallet();
+        ASSERT(w);
+        struct privkey key;
+        struct pubkey pk;
+        make_test_key(&key, &pk, 0x3D);
+        ASSERT(keystore_add_key(&w->keystore, &key));
+
+        /* The competing writer opens its tx on the SAME connection — the
+         * db-service-job shape (BEGIN now, COMMIT after its work). */
+        ASSERT(sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL)
+               == SQLITE_OK);
+        ASSERT(sqlite3_get_autocommit(db) == 0);
+
+        /* Flush contends: it must fail cleanly after the bounded retries,
+         * never crash and never write partial state. */
+        struct zcl_result busy = wallet_sqlite_flush_r(&ws, w);
+        ASSERT(!busy.ok);
+
+        /* Competing writer commits; the next flush must win and persist. */
+        ASSERT(sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK);
+        ASSERT(sqlite3_get_autocommit(db) == 1);
+
+        struct zcl_result ok = wallet_sqlite_flush_r(&ws, w);
+        ASSERT(ok.ok);
+
+        struct privkey got;
+        privkey_init(&got);
+        ASSERT(wallet_sqlite_read_single_key(&ws, &pk, &got).ok);
+        ASSERT(memcmp(got.vch, key.vch, 32) == 0);
+        memory_cleanse(got.vch, 32);
+
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        free_wallet(w);
+        unlink(path);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_flush_resets_cached_read_cursors(void)
 {
     int failures = 0;
@@ -692,6 +762,7 @@ int test_wallet_persistence_cycle(void)
     failures += test_self_test_passes();
     failures += test_write_then_reopen_preserves_keys();
     failures += test_flush_retries_under_write_lock();
+    failures += test_flush_retries_under_same_connection_tx();
     failures += test_flush_waits_out_transient_lock();
     failures += test_flush_resets_cached_read_cursors();
     failures += test_read_single_key_not_found();

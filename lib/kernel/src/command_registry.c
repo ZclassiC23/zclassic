@@ -986,10 +986,29 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                        json_get_str(value)[0] && strlen(json_get_str(value)) <= 64);
         } else if (strcmp(key, "units") == 0 ||
                    strcmp(key, "supply") == 0) {
-            /* ZSLP amounts are indivisible base units at the wire boundary;
-             * accepting a JSON real here would lose integer precision before
-             * the SLP uint64 encoder sees it. RPC JSON is signed-int bounded. */
+            /* ZSLP amounts are indivisible base units. The backing RPC
+             * parser (zslp_tx_rpc_units, zslp_transaction_rpc.c) takes only
+             * an unsigned decimal string, and the write-handler leaf
+             * (AWN_U64_STR, app_write_native_handlers.c) forwards strings
+             * verbatim and renders a positive JSON_INT to its decimal
+             * string — so both forms are valid here: the string form of the
+             * app_features.def examples ("supply":"1000") and the int form
+             * of the vault.def send-token example ("units":25). The string
+             * rule mirrors the RPC parser: nonempty digits, nonzero, with a
+             * coarse 20-char u64 bound (the RPC owns exact overflow). */
+            const char *s = json_get_str(value);
             type_ok = value->type == JSON_INT && json_get_int(value) > 0;
+            if (!type_ok && value->type == JSON_STR && s && s[0] &&
+                strlen(s) <= 20) {
+                bool nonzero = false;
+                type_ok = true;
+                for (const unsigned char *p = (const unsigned char *)s; *p;
+                     p++) {
+                    if (*p < '0' || *p > '9') { type_ok = false; break; }
+                    if (*p != '0') nonzero = true;
+                }
+                type_ok = type_ok && nonzero;
+            }
         } else if (strcmp(key, "decimals") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
                       json_get_int(value) <= 8;
@@ -1023,6 +1042,17 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
              * default branch would demand a string and reject `--peer_id=3`,
              * which the CLI types as an integer. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "product_id") == 0 ||
+                   strcmp(key, "purchase_id") == 0) {
+            /* app.store.{order,pay,purchases,collect} row ids. The CLI types
+             * a bare integer as JSON_INT and every one of those leaves'
+             * declared examples uses one ("product_id":1). Without this rule
+             * the default branch demands a string, and a numeric string then
+             * fails the handler's json_get_int_or > 0 check — the leaf is
+             * uninvokable from the shell either way. The handler owns the
+             * real unknown-row refusal (UNKNOWN_PRODUCT / UNKNOWN_PURCHASE),
+             * so the only rule here is positive-int. */
+            type_ok = value->type == JSON_INT && json_get_int(value) > 0;
         } else if (strcmp(key, "locktime_blocks") == 0) {
             /* app.swap.{initiate,participate} lock DURATION in blocks from the
              * current tip. Range mirrors swap_locktime_to_absolute()

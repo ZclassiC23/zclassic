@@ -252,6 +252,7 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
         else if (strncmp(argv[i], "-paramsdir=", 11) == 0) ctx->params_dir = argv[i] + 11;
         else if (strcmp(argv[i], "-testnet") == 0) ctx->testnet = true;
         else if (strcmp(argv[i], "-regtest") == 0) ctx->regtest = true;
+        else if (strcmp(argv[i], "-regtestshielded") == 0) ctx->regtest_shielded = true;
         else if (strcmp(argv[i], "-txindex") == 0) ctx->tx_index = true;
         else if (strcmp(argv[i], "-gen") == 0) ctx->gen = true;
         else if (strncmp(argv[i], "-port=", 6) == 0) { ctx->p2p_port = atoi(argv[i]+6); ctx->listen = true; }

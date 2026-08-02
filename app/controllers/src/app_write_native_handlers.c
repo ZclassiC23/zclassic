@@ -26,9 +26,8 @@
 
 enum { AWN_MAX_ARGS = 6 };
 
-/* How one leaf input key is carried into the backing RPC's positional
- * params. The registry input validator has already enforced the JSON type
- * (lib/kernel/src/command_registry.c), so this only picks the encoding. */
+/* How one leaf input key reaches the backing RPC's positional params.
+ * The registry validator enforced the JSON type; this picks the encoding. */
 enum awn_kind { AWN_STR, AWN_INT, AWN_REAL, AWN_U64_STR };
 
 struct awn_arg {
@@ -41,8 +40,7 @@ struct awn_leaf {
     const char *action;        /* plan-stage action label */
     const char *method;        /* backing JSON-RPC method */
     bool plan_commit;          /* leaf declares CONFIRM_PLAN_COMMIT */
-    /* When non-NULL, the RPC's `status` field must equal this for the call to
-     * count as having done its job; anything else is reported BLOCKED. */
+    /* When non-NULL, the RPC's `status` must equal this; else BLOCKED. */
     const char *require_status;
     const char *degraded_code;
     const char *degraded_message;
@@ -109,9 +107,8 @@ static bool awn_u64_string(const struct json_value *v, const char **out)
     return true;
 }
 
-/* Deterministic, non-secret plan token binding a plan preview to its exact
- * parameters (FNV-1a over the leaf path and every supplied value, 16 hex).
- * The operator can compare it across the plan and the committed reply. */
+/* Deterministic, non-secret plan token: FNV-1a over the leaf path and every
+ * supplied value (16 hex), comparable across the plan and committed reply. */
 static void awn_plan_token(char out[17], const char *path,
                            const struct json_value *input)
 {
@@ -147,9 +144,8 @@ static void awn_plan_token(char out[17], const char *path,
 }
 
 /* Re-serialize the caller's own input with confirm:true — the exact document
- * that commits this plan. A next-action naming the same leaf cannot be
- * serialized (the kernel refuses a self-pointing next), so the commit input
- * travels as data, matching the wallet plan/commit precedent. */
+ * that commits this plan. The kernel refuses a self-pointing next-action, so
+ * the commit input travels as data (wallet plan/commit precedent). */
 static void awn_commit_input(const struct json_value *input, char *out,
                              size_t cap)
 {
@@ -187,10 +183,9 @@ static void awn_merge_object(struct json_value *dst,
     }
 }
 
-/* Detect an RPC failure body. node_rpc_call returns the JSON-RPC `error`
- * member verbatim when the call failed, and this node's RPC layer puts a
- * handler's plain-text refusal there as a bare JSON string
- * (lib/rpc/src/httpserver.c), so both shapes are errors. */
+/* Detect an RPC failure body: node_rpc_call returns the JSON-RPC `error`
+ * member verbatim, and a handler's plain-text refusal arrives as a bare
+ * JSON string (lib/rpc/src/httpserver.c) — both shapes are errors. */
 static bool awn_body_is_error(const struct json_value *body,
                               const char **msg_out)
 {
@@ -303,7 +298,14 @@ static void awn_run(const struct zcl_command_request *request,
         }
         case AWN_U64_STR: {
             const char *s = NULL;
-            if (!awn_u64_string(v, &s)) {
+            char ibuf[21]; /* u64 max is 20 digits */
+            if (v && v->type == JSON_INT && json_get_int(v) > 0) {
+                /* Bare-int CLI args (vault.def "units":25) render to the
+                 * RPC's decimal-string form; push_str deep-copies ibuf. */
+                (void)snprintf(ibuf, sizeof(ibuf), "%lld",
+                               (long long)json_get_int(v));
+                s = ibuf;
+            } else if (!awn_u64_string(v, &s)) {
                 rpc_arg_builder_free(&p);
                 char msg[160];
                 (void)snprintf(msg, sizeof(msg),
@@ -474,9 +476,8 @@ void zcl_native_handle_token_burn(
 
 /* ── ZCL Names (ZNAM) ───────────────────────────────────────────────── */
 
-/* Shared by every ZNAM write: the RPC answers status="broadcast" once the tx
- * is signed and admitted, and status="ready" (OP_RETURN hex only) when the
- * node carries no wallet/mempool. */
+/* Shared by every ZNAM write: the RPC answers status="broadcast" once the
+ * tx is signed and admitted, else status="ready" (OP_RETURN hex only). */
 #define AWN_ZNAM_DEGRADED_CODE "NAME_WRITE_NOT_BROADCAST"
 #define AWN_ZNAM_DEGRADED_MSG                                                 \
     "the node built the ZNAM OP_RETURN but did not broadcast it — its "       \
@@ -590,11 +591,10 @@ void zcl_native_handle_name_set_text(
 
 /* ── Messaging (ZMSG) ───────────────────────────────────────────────── */
 
-/* msg_send's first positional argument is the recipient, and its type depends
- * on the channel: a numeric connected-peer id for "p2p", a zs1... shielded
- * address for "onchain". The native leaf keeps them as two distinct, typed
- * input keys (peer_id / to) and picks the one the channel names, so a caller
- * cannot silently address the wrong channel. */
+/* msg_send's first positional argument is the recipient, typed by channel:
+ * numeric peer id for "p2p", zs1... address for "onchain". The leaf keeps
+ * two distinct typed keys (peer_id / to) and picks the one the channel
+ * names, so a caller cannot silently address the wrong channel. */
 void zcl_native_handle_message_send(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {

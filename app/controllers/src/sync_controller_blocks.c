@@ -66,6 +66,7 @@ struct connect_block_async_ctx {
     struct block blk;
     struct block_index pindex;
     struct uint256 hash;
+    const struct wallet *wallet;  /* NULL: block projection only */
     bool copied;
 };
 
@@ -501,8 +502,31 @@ static bool node_db_sync_connect_block_async_write(struct node_db *ndb,
 
     if (!async || !async->copied)
         LOG_FAIL("sync", "connect_block_async_write: invalid ctx");
-    return node_db_sync_connect_block_local(ndb, &async->blk,
-                                            &async->pindex);
+    bool ok = node_db_sync_connect_block_local(ndb, &async->blk,
+                                               &async->pindex);
+    /* Fold the per-tx wallet projection into the SAME job (the regtest
+     * tip-finalize feed): it must run after the block write above — its
+     * time_received lookup reads the blocks row — and inside the same
+     * single-writer enqueue so the feeder thread never blocks on db-service
+     * completion while holding progress_store_tx_lock (the 2026-08-02
+     * mining+catchup AB-BA deadlock). Ownership reads (keystore /
+     * nullifier-spent) run against the live wallet singleton from the db
+     * worker thread — the same reads RPC threads already perform; a key
+     * created between enqueue and write is simply absent from this block's
+     * projection, which the repairable-projection doctrine tolerates. */
+    if (async->wallet) {
+        for (size_t i = 0; i < async->blk.num_vtx; i++) {
+            if (!node_db_sync_wallet_tx_local(ndb, &async->blk.vtx[i],
+                                              async->wallet,
+                                              async->pindex.nHeight, NULL)) {
+                LOG_WARN("sync",
+                         "async projection: wallet_tx sync failed at height "
+                         "%d tx %zu", async->pindex.nHeight, i);
+                ok = false;
+            }
+        }
+    }
+    return ok;
 }
 
 static void node_db_sync_connect_block_async_free(void *ctx)
@@ -534,6 +558,15 @@ bool node_db_sync_connect_block_async(struct node_db *ndb,
                                       const struct block *blk,
                                       const struct block_index *pindex)
 {
+    return node_db_sync_connect_block_async_with_wallet(ndb, blk, pindex,
+                                                        NULL);
+}
+
+bool node_db_sync_connect_block_async_with_wallet(struct node_db *ndb,
+                                                  const struct block *blk,
+                                                  const struct block_index *pindex,
+                                                  const struct wallet *wallet)
+{
     struct db_service *dbsvc = sync_db_service_for(ndb);
     struct connect_block_async_ctx *ctx;
 
@@ -561,6 +594,7 @@ bool node_db_sync_connect_block_async(struct node_db *ndb,
     ctx->pindex = *pindex;
     ctx->hash = *pindex->phashBlock;
     ctx->pindex.phashBlock = &ctx->hash;
+    ctx->wallet = wallet;
     ctx->copied = true;
 
     return db_service_enqueue_write(dbsvc,

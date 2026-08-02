@@ -173,6 +173,16 @@ bool node_db_sync_connect_block(struct node_db *ndb,
 bool node_db_sync_connect_block_async(struct node_db *ndb,
                                       const struct block *blk,
                                       const struct block_index *pindex);
+/* Same fire-and-forget enqueue, plus the per-tx wallet projection folded
+ * into the same db-service job (runs after the block write inside the job,
+ * so its blocks-row time lookup sees this height). Use from a caller that
+ * must NOT block on db-service completion — e.g. the regtest tip-finalize
+ * feed, which runs under progress_store_tx_lock; a synchronous round-trip
+ * there deadlocks AB-BA against any db job that reads progress.kv. */
+bool node_db_sync_connect_block_async_with_wallet(struct node_db *ndb,
+                                                  const struct block *blk,
+                                                  const struct block_index *pindex,
+                                                  const struct wallet *wallet);
 
 /* Called when a transaction is added to the wallet.
  * Tracks wallet-owned UTXOs and marks spent inputs. */

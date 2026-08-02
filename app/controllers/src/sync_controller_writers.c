@@ -105,11 +105,11 @@ struct sapling_spend_sync_ctx {
 };
 
 
-static bool node_db_sync_wallet_tx_local(struct node_db *ndb,
-                                         const struct transaction *tx,
-                                         const struct wallet *w,
-                                         int block_height,
-                                         bool *is_ours_out)
+bool node_db_sync_wallet_tx_local(struct node_db *ndb,
+                                  const struct transaction *tx,
+                                  const struct wallet *w,
+                                  int block_height,
+                                  bool *is_ours_out)
 {
     if (!ndb || !ndb->open || !tx || !w)
         LOG_FAIL("sync", "wallet_tx_local: invalid args (ndb=%p, tx=%p, w=%p)",

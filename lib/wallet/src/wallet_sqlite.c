@@ -1323,6 +1323,19 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
             break;
         }
         bool busy = (rc == SQLITE_BUSY || rc == SQLITE_LOCKED);
+        /* The wallet shares ONE FULLMUTEX connection with every other
+         * node.db writer (wallet_sqlite wraps g_node_db.db; db_service's
+         * query_db IS node_db->db). A db-service job mid-transaction — e.g.
+         * an async projection write enqueued by the regtest tip-finalize
+         * feed — makes this BEGIN fail with SQLITE_ERROR "cannot start a
+         * transaction within a transaction": same-connection contention,
+         * reported outside the BUSY family. It is transient exactly like
+         * BUSY (the competing COMMIT restores autocommit), so retry it on
+         * the same bounded schedule. A tx leaked by THIS thread would spin
+         * the full attempt budget and still fail — the same verdict as
+         * without this clause, only slower, and a leak is a bug either way. */
+        if (!busy && rc == SQLITE_ERROR && !sqlite3_get_autocommit(ws->db))
+            busy = true;
         if (busy && begin_attempt + 1 < WALLET_FLUSH_BEGIN_MAX_ATTEMPTS) {
             LOG_WARN("wallet_sqlite",
                      "flush: BEGIN IMMEDIATE busy (rc=%d), retry %d/%d",

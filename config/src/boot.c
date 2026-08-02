@@ -440,7 +440,7 @@ static bool boot_step_select_chain_and_datadir(struct app_context *ctx)
         chain_params_select(CHAIN_TESTNET);
     else
         chain_params_select(CHAIN_MAIN);
-
+    boot_apply_regtest_shielded(ctx->regtest_shielded, ctx->regtest);
     g_datadir = ctx->datadir;
     g_blog_datadir = ctx->datadir;
     SetDataDir(ctx->datadir);
