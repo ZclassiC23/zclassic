@@ -300,6 +300,7 @@ static int test_runner_exact_selection(void)
          * therefore without recursively acquiring the checkout lock). */
         n = snprintf(command, sizeof(command),
                      "make -n t-fast-exact ONLY=api "
+                     "TEST_PARALLEL_ARGS= "
                      "TEST_PARALLEL_FAST_CANDIDATE=/bin/true "
                      "TEST_PARALLEL_FAST_ACTIVE=/bin/true "
                      "BUILD_SOURCE_RECORD='%s 1 %s' 2>&1",
@@ -313,6 +314,7 @@ static int test_runner_exact_selection(void)
 
         n = snprintf(command, sizeof(command),
                      "make -n t-fast-exact ONLY=api_missing "
+                     "TEST_PARALLEL_ARGS= "
                      "TEST_PARALLEL_FAST_CANDIDATE=/bin/true "
                      "TEST_PARALLEL_FAST_ACTIVE=/bin/true "
                      "BUILD_SOURCE_RECORD='%s 1 %s' 2>&1",
