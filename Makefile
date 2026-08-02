@@ -418,6 +418,9 @@ ifeq ($(ZCL_HOTSWAP_LOOP_ONLY),1)
 GTK_CFLAGS :=
 GTK_LIBS   :=
 GTK_DEF    :=
+QRENCODE_CFLAGS :=
+QRENCODE_LIBS   :=
+QRENCODE_DEF    :=
 WEBKIT_CFLAGS :=
 WEBKIT_LIBS   :=
 WEBKIT_DEF    :=
@@ -425,6 +428,9 @@ else
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 2>/dev/null)
 GTK_LIBS   := $(shell pkg-config --libs gtk+-3.0 2>/dev/null)
 GTK_DEF    := $(if $(GTK_CFLAGS),-DHAVE_GTK,)
+QRENCODE_CFLAGS := $(shell pkg-config --cflags libqrencode 2>/dev/null)
+QRENCODE_LIBS   := $(shell pkg-config --libs libqrencode 2>/dev/null)
+QRENCODE_DEF    := $(if $(QRENCODE_LIBS),-DHAVE_QRENCODE,)
 WEBKIT_CFLAGS := $(shell pkg-config --cflags webkit2gtk-4.1 2>/dev/null)
 WEBKIT_LIBS   := $(shell pkg-config --libs webkit2gtk-4.1 2>/dev/null)
 WEBKIT_DEF    := $(if $(WEBKIT_CFLAGS),-DHAVE_WEBKIT,)
@@ -600,7 +606,7 @@ CFLAGS = -std=c23 -g -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flt
 	$(ZCL_WARN_STRINGOP_OVERFLOW) $(ZCL_WARN_UNUSED_RESULT) \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(TOOLS_INCLUDES) $(DEVLOOP_INCLUDES) \
 	-Ilib/test/include \
-	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE $(BUILD_IDENTITY_CPPFLAGS) -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
+	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE $(BUILD_IDENTITY_CPPFLAGS) -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) $(QRENCODE_DEF) $(QRENCODE_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS) $(if $(ZCL_WITH_RUST),-DZCL_WITH_RUST=1)
 LDFLAGS = -pthread -flto=auto -rdynamic $(HARDEN_LDFLAGS)
 CACHED_CFLAGS = $(filter-out -DZCL_BUILD_SOURCE_ID=% -DZCL_BUILD_CLEAN=%,$(CFLAGS))
@@ -679,7 +685,7 @@ CXX_STDLIB_LDFLAGS := $(if $(CXX_STDLIB_DIR),-L$(CXX_STDLIB_DIR),)
 LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	$(CXX_STDLIB_LDFLAGS) -lstdc++ -lsqlite3 \
 	-levent -levent_openssl -levent_pthreads \
-	-lssl -lcrypto -lz $(if $(ZCL_WITH_RUST),-lrustzcash) -ldl -lpthread -lm
+	-lssl -lcrypto -lz $(if $(ZCL_WITH_RUST),-lrustzcash) $(QRENCODE_LIBS) -ldl -lpthread -lm
 
 # ── Host-local compile epochs ─────────────────────────────────────────────
 # Source bytes remain the portable authority, but they no longer select the

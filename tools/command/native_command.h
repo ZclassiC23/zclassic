@@ -300,6 +300,8 @@ void zcl_native_handle_vault_intent_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_vault_intent_list(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_qr_show(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_vault_swap_redeem(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

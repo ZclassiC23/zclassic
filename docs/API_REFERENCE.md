@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 434 |
+| Registry entries (branches + leaves) | 436 |
 | Top-level roots | 10 |
-| Branches | 98 |
-| Leaves (dispatchable command paths) | 336 |
-| … `ready` (live handler in this build) | 288 |
+| Branches | 99 |
+| Leaves (dispatchable command paths) | 337 |
+| … `ready` (live handler in this build) | 289 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 104 |
+| Leaves with `effect=mutate` | 105 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 79 |
 
@@ -78,7 +78,7 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 112 | 27 | 85 |
 | `config/commands/apps.def` | 9 | 2 | 7 |
-| `config/commands/app_features.def` | 33 | 6 | 27 |
+| `config/commands/app_features.def` | 35 | 7 | 28 |
 | `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 45 | 11 | 34 |
@@ -468,6 +468,12 @@ represented by its children's sections.
 | `app swap list` | ready | read / read / operator · fast/low | **`state`** | `zcl.app_swap_index.v1` | `zclassic23 app swap list --input='{"state":"pending"}'` | List atomic-swap contracts |
 | `app swap initiate` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `my_address`, `counter_address`, `amount`, `locktime_blocks`, `chain`, `confirm` | `zcl.app_swap_contract.v1` | `zclassic23 app swap initiate --input='{"my_address":"t1..","counter_address":"t1..","amount":1,"locktime_blocks":20,"confirm":true}'` | Initiate an atomic swap |
 | `app swap participate` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `my_address`, `counter_address`, `amount`, `locktime_blocks`, `secret_hash`, `chain`, `confirm` | `zcl.app_swap_contract.v1` | `zclassic23 app swap participate --input='{"my_address":"t1..","counter_address":"t1..","amount":1,"locktime_blocks":10,"secret_hash":"<64hex>","confirm":true}'` | Participate in an atomic swap |
+
+#### `app.qr` — QR
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app qr show` | ready | mutate / app-write / operator · foreground/low | **`payload`**, `title` | `zcl.app_qr_show.v1` | `zclassic23 app qr show 'zclassic:t1...?amount=0.01'` | Show a payload as a native QR window |
 
 #### `app.auth` — Public-key challenge/response login
 

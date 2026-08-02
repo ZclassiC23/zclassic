@@ -1000,6 +1000,7 @@ int main(int argc, char **argv)
       failures += test_test_key_io_codec(); }
     { extern int test_test_png_writer(void);
       failures += test_test_png_writer(); }
+    { extern int test_qr(void); failures += test_qr(); }
     { extern int test_shared_validators_zcl_address(void);
       failures += test_shared_validators_zcl_address(); }
     failures += test_script();

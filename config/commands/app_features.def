@@ -39,6 +39,24 @@ ZCL_COMMAND_BRANCH("app.messaging", "app", "Messaging", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.market", "app", "Market", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.store", "app", "Store", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.swap", "app", "Swaps", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.qr", "app", "QR", ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.qr.show", "app.qr", "", "Show a payload as a native QR window",
+    "Encodes one bounded payload locally and opens a GTK/Cairo QR window until "
+    "the operator closes it. The payload is never sent to the node, logged, or "
+    "echoed in the result. The window provides copy and PNG-save controls and "
+    "uses an integer-scaled four-module quiet zone for reliable scanning.", 0,
+    "qr,display,popup,payment,uri,gtk", "zcl.app_qr_show.input.v1",
+    "zcl.app_qr_show.v1", "payload,title", "payload",
+    "zclassic23 app qr show 'zclassic:t1...?amount=0.01'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_qr_show)
 
 /* ── Names (ZNAM) ──────────────────────────────────────────────────── */
 
