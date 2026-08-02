@@ -17,6 +17,11 @@
  *     WATCHDOG=1 send entirely (no datagram observed); reporting
  *     healthy again resumes it
  *
+ *   - the boot_sd_watchdog_pet_decide() decision table (via the
+ *     ZCL_TESTING seam): supervisor-frozen always suppresses; fresh
+ *     healthy verdict, body-gap posture, startup grace, and recent boot
+ *     progress each permit; stale/unhealthy without progress suppresses
+ *
  * Each scenario calls sd_notify_reset_for_testing() first so the
  * module's process-global latch (NOTIFY_SOCKET is read once, matching
  * real systemd semantics) doesn't leak state between scenarios. */
@@ -24,6 +29,7 @@
 #include "test/test_core.h"
 #include "support/pagelocker.h"
 #include "util/sd_notify.h"
+#include "config/boot_internal.h"   /* boot_sd_watchdog_test_pet_decide */
 
 #include <errno.h>
 #include <fcntl.h>
@@ -271,6 +277,44 @@ int test_sd_notify(void)
             unsetenv("NOTIFY_SOCKET");
             sd_notify_reset_for_testing();
         }
+    }
+
+    /* ── pet decision table (boot_sd_watchdog_pet_decide via seam) ──
+     * The dedicated pet thread's pure gate: supervisor liveness, verdict
+     * health/freshness, the body-gap posture forgiveness, startup grace,
+     * and the boot_progress escape hatch. */
+    {
+        const int64_t BOUND = 600LL * 1000000;
+        SDN_CHECK("pet: frozen supervisor stops the ping even when healthy",
+            !boot_sd_watchdog_test_pet_decide(false, true, true, false,
+                                              0, true, BOUND, BOUND));
+        SDN_CHECK("pet: fresh healthy verdict pings",
+            boot_sd_watchdog_test_pet_decide(true, true, true, false,
+                                             1000, false, 0, BOUND));
+        SDN_CHECK("pet: stale healthy verdict without progress does not ping",
+            !boot_sd_watchdog_test_pet_decide(true, true, true, false,
+                                              BOUND + 1, false, 0, BOUND));
+        SDN_CHECK("pet: unhealthy verdict without progress does not ping",
+            !boot_sd_watchdog_test_pet_decide(true, true, false, false,
+                                              1000, false, 0, BOUND));
+        SDN_CHECK("pet: body-gap posture verdict pings (restart cannot fix it)",
+            boot_sd_watchdog_test_pet_decide(true, true, false, true,
+                                             1000, false, 0, BOUND));
+        SDN_CHECK("pet: body-gap posture still bounded by freshness",
+            !boot_sd_watchdog_test_pet_decide(true, true, false, true,
+                                              BOUND + 1, false, 0, BOUND));
+        SDN_CHECK("pet: unhealthy verdict + recent boot progress pings",
+            boot_sd_watchdog_test_pet_decide(true, true, false, false,
+                                             1000, true, 0, BOUND));
+        SDN_CHECK("pet: no verdict inside startup grace pings",
+            boot_sd_watchdog_test_pet_decide(true, false, false, false,
+                                             0, false, BOUND, BOUND));
+        SDN_CHECK("pet: no verdict past grace without progress does not ping",
+            !boot_sd_watchdog_test_pet_decide(true, false, false, false,
+                                              0, false, 0, BOUND));
+        SDN_CHECK("pet: no verdict past grace + progress pings",
+            boot_sd_watchdog_test_pet_decide(true, false, false, false,
+                                             0, true, 0, BOUND));
     }
 
     return failures;

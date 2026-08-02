@@ -396,11 +396,22 @@ bool boot_bg_hash_verify_start(void *ctx);   /* historical block hash verify */
 void boot_bg_hash_verify_stop(void *ctx);
 
 /* ── boot_sd_watchdog.c ─────────────────────────────────────────
- * systemd watchdog heartbeat start/stop adapters (the periodic tick stays
- * private to that TU). Registered by boot_register_runtime_services()
- * (boot_services.c spec table). */
+ * systemd watchdog heartbeat start/stop adapters (the periodic collect
+ * tick + the dedicated pet thread stay private to that TU). Registered by
+ * boot_register_runtime_services() (boot_services.c spec table). */
 bool boot_sd_watchdog_start(void *ctx);   /* arm WATCHDOG=1 heartbeat ring */
 void boot_sd_watchdog_stop(void *ctx);
+
+#ifdef ZCL_TESTING
+/* Test seam for the pure pet decision (lib/test/src/test_sd_notify.c). */
+bool boot_sd_watchdog_test_pet_decide(bool supervisor_alive, bool have_verdict,
+                                      bool verdict_healthy,
+                                      bool body_gap_posture,
+                                      int64_t verdict_age_us,
+                                      bool recent_progress,
+                                      int64_t grace_left_us,
+                                      int64_t verdict_bound_us);
+#endif
 
 /* ── boot_supervisor_backstop.c ──────────────────────────────────
  * Registers the independent supervisor-sweep-heartbeat watcher (Pillar 7

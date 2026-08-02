@@ -239,14 +239,14 @@ static void health_finalize_serving_status(struct node_health_snapshot *snapshot
         health_add_warning(snapshot, snapshot->degraded_reason);
 
     snapshot->warning = snapshot->warning_count > 0;
+    node_health_verdict_publish(snapshot); /* sd pet's only health signal */
 }
 
 void node_health_collect(struct node_health_snapshot *snapshot,
                          struct node_db *ndb,
                          const struct main_state *ms)
 {
-    struct node_health_snapshot empty = {0};
-    char chain_advance_degraded_reason[128] = {0};
+    struct node_health_snapshot empty = {0};    char chain_advance_degraded_reason[128] = {0};
     if (!snapshot) return;
     *snapshot = empty;
 

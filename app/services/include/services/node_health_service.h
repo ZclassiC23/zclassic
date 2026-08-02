@@ -165,6 +165,25 @@ struct node_health_snapshot {
 void node_health_collect(struct node_health_snapshot *snapshot,
                          struct node_db *ndb,
                          const struct main_state *ms);
+
+/* Last-collected verdict, published by node_health_collect() on every call
+ * (health ring, RPC handlers, soak service — last writer wins). Read by the
+ * dedicated sd-watchdog pet thread (config/src/boot_sd_watchdog.c), which
+ * must decide ping/no-ping from CHEAP atomics only — never by running a
+ * collect inline, because a collect can block for minutes on reducer-held
+ * locks during bulk ingest, and that blocking was the pet-starvation source
+ * behind the 2026-08-02 systemd watchdog kill loop.
+ * Returns false when no collect has completed yet this process.
+ * `body_gap_posture_out` (optional) receives the strict "unhealthy SOLELY
+ * because the body-history archive is still unproven" flag — the one state
+ * a systemd restart cannot improve (see node_health_service.c). */
+bool node_health_last_verdict(bool *healthy_out, bool *body_gap_posture_out,
+                              int64_t *publish_us_out);
+
+/* Publish side of the same contract (node_health_verdict.c): called once at
+ * the end of every node_health_collect. Computes the strict body-gap
+ * posture from the finished snapshot. */
+void node_health_verdict_publish(const struct node_health_snapshot *snapshot);
 /* Does the block-source policy consider us to be at the chain tip?
  *
  * This is a HEIGHT-and-source-health question over one bsp_decision: the
