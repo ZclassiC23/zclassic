@@ -333,16 +333,36 @@ vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *p) {
   }
   zcl_ed25519_keypair(online_pub, secret_copy, s->online_seed);
   memory_cleanse(secret_copy, 32);
-  if (memcmp(online_pub, s->delegation.online_pubkey, 32) != 0 ||
-      vcs_zcode_dht_delegation_verify(
-          &s->delegation, s->genesis, p->local_noise_static, 0, NULL,
-          p->now_unix) != VCS_ZCODE_DHT_DELEGATION_OK ||
-      (s->chain_verify && !s->chain_verify(s->chain_ctx, &s->delegation)) ||
-      !vcs_zcode_dht_delegation_node_id(s->self_id, &s->delegation) ||
+  if (memcmp(online_pub, s->delegation.online_pubkey, 32) != 0) {
+    snprintf(s->disabled_reason, sizeof(s->disabled_reason),
+             "ONLINE_KEY_MISMATCH");
+    vcs_zcode_dht_service_set_error(s,
+                                    "delegated online key does not match disk");
+    return s;
+  }
+  enum vcs_zcode_dht_delegation_error delegation_error =
+      vcs_zcode_dht_delegation_verify(&s->delegation, s->genesis,
+                                      p->local_noise_static, 0, NULL,
+                                      p->now_unix);
+  if (delegation_error != VCS_ZCODE_DHT_DELEGATION_OK) {
+    snprintf(s->disabled_reason, sizeof(s->disabled_reason),
+             "DELEGATION_%s",
+             vcs_zcode_dht_delegation_error_string(delegation_error));
+    vcs_zcode_dht_service_set_error(s, "local delegation verification failed");
+    return s;
+  }
+  if (s->chain_verify && !s->chain_verify(s->chain_ctx, &s->delegation)) {
+    snprintf(s->disabled_reason, sizeof(s->disabled_reason),
+             "DELEGATION_CHAIN_INVALID");
+    vcs_zcode_dht_service_set_error(s,
+                                    "local delegation chain check failed");
+    return s;
+  }
+  if (!vcs_zcode_dht_delegation_node_id(s->self_id, &s->delegation) ||
       !vcs_zcode_dht_table_init(s->table, s->self_id)) {
     snprintf(s->disabled_reason, sizeof(s->disabled_reason),
-             "IDENTITY_MISMATCH_OR_STALE");
-    vcs_zcode_dht_service_set_error(s, "local delegation verification failed");
+             "NODE_ID_INVALID");
+    vcs_zcode_dht_service_set_error(s, "local node ID derivation failed");
     return s;
   }
   s->enabled = true;
