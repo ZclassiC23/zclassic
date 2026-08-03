@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 458 |
+| Registry entries (branches + leaves) | 461 |
 | Top-level roots | 11 |
-| Branches | 106 |
-| Leaves (dispatchable command paths) | 352 |
-| … `ready` (live handler in this build) | 304 |
+| Branches | 107 |
+| Leaves (dispatchable command paths) | 354 |
+| … `ready` (live handler in this build) | 306 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
@@ -86,7 +86,7 @@ Per source file:
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 21 | 4 | 17 |
 | `config/commands/zcode.def` | 71 | 16 | 55 |
-| `config/commands/zcode_science.def` | 16 | 5 | 11 |
+| `config/commands/zcode_science.def` | 19 | 6 | 13 |
 | `config/commands/metaverse.def` | 17 | 5 | 12 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
@@ -984,6 +984,13 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode science vote submit` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, `confirm`, `network_genesis_root`, `voter_zid_root`, `signer_pubkey`, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_vote.v1` | `zclassic23 zcode.science.vote.submit --input='{"wire_hex":"<438hex>","confirm":true,"network_genesis_root":"<64hex>","voter_zid_root":"<64hex>","signer_pubkey":"<64hex>"}'` | Submit a curation vote |
+
+#### `zcode.science.rank` — Local discovery ranking
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode science discover` | ready | read / read / operator · foreground/moderate | `search`, `category`, `hardware`, `network_genesis_root`, `now_unix`, `max`, `datadir`, `workspace` | `zcl.zcode_science_discover.v1` | `zclassic23 zcode.science.discover --input='{"category":"active","max":16}'` | Search and rank study properties |
+| `zcode science rank snapshot` | ready | read / read / operator · fast/low | **`workspace`**, `network_genesis_root`, `now_unix` | `zcl.zcode_science_rank_snapshot.v1` | `zclassic23 zcode.science.rank.snapshot --input='{"workspace":"/path/to/workspace"}'` | Discovery graph snapshot |
 
 ### `metaverse` — Sovereign digital property: catalog, rights, receipts
 

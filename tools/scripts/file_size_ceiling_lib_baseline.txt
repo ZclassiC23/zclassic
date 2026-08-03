@@ -83,5 +83,11 @@ lib/vcs/src/package_badge_eligible.c 817
 lib/vcs/src/package_swarm_node.c 1801
 lib/vcs/src/package_service.c 1040
 lib/vcs/src/zcode_contributor_binding.c 983
+# ZCODE Scientific Metaverse S5: the rebuildable discovery-graph projection
+# (lineage union-find collapse, citation-set decode, verified vote seeds,
+# bounded assembly, convergence residual) is one deterministic scan ->
+# assemble -> compute pipeline over the CAS that must stay together;
+# baselined at creation per the zcode_science.c precedent.
+lib/vcs/src/zcode_discovery_projection.c 1112
 lib/vcs/src/zcode_science.c 1411
 lib/zswap/src/zswap_ceremony.c 853

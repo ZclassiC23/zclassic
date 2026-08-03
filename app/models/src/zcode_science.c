@@ -247,6 +247,55 @@ int db_zcode_science_study_list(
         out, (size_t)max, , entry_read(&out[count], st));
 }
 
+/* S5 (additive): the zcode.science.discover filter-first predicate read.
+ * search is a substring over the study/hypothesis root hex (LIKE with
+ * caller-escaped wildcards); category is one of active|expired|retracted,
+ * decided against expires_at and the 0x10000 retraction bit at now_unix.
+ * Deterministic order: root ascending. */
+int db_zcode_science_study_list_filtered(
+    struct node_db *ndb, const char *search_like, const char *category,
+    int64_t now_unix, struct db_zcode_science_entry *out, int max)
+{
+    sqlite3_stmt *st = NULL;
+    if (!ndb || !ndb->open || !out || max <= 0) return 0;
+    char sql[512];
+    int n = snprintf(sql, sizeof(sql),
+        "SELECT " ZCODE_SCIENCE_ENTRY_COLS " FROM zcode_science_studies "
+        "WHERE 1=1");
+    if (n <= 0) return 0;
+    size_t off = (size_t)n;
+    if (search_like)
+        off += (size_t)snprintf(sql + off, sizeof(sql) - off,
+            " AND (root LIKE ? ESCAPE '\\' OR link_root LIKE ? ESCAPE '\\')");
+    if (category && strcmp(category, "active") == 0)
+        off += (size_t)snprintf(sql + off, sizeof(sql) - off,
+            " AND expires_at > ? AND (flags & 65536) = 0");
+    else if (category && strcmp(category, "expired") == 0)
+        off += (size_t)snprintf(sql + off, sizeof(sql) - off,
+            " AND expires_at <= ?");
+    else if (category && strcmp(category, "retracted") == 0)
+        off += (size_t)snprintf(sql + off, sizeof(sql) - off,
+            " AND (flags & 65536) <> 0");
+    if (off >= sizeof(sql) - 24) return 0;
+    off += (size_t)snprintf(sql + off, sizeof(sql) - off,
+        " ORDER BY root ASC");
+    if (off >= sizeof(sql)) return 0;
+    AR_QUERY_LIST(ndb, st, sql, out, (size_t)max,
+        int bind_at = 1;
+        if (search_like) {
+            AR_BIND_TEXT(st, bind_at, search_like);
+            bind_at++;
+            AR_BIND_TEXT(st, bind_at, search_like);
+            bind_at++;
+        }
+        if (category && strcmp(category, "retracted") != 0) {
+            AR_BIND_INT(st, bind_at, now_unix);
+            bind_at++;
+        }
+        (void)bind_at;,
+        entry_read(&out[count], st));
+}
+
 bool db_zcode_science_vote_sequence_seen(
     struct node_db *ndb, const char *voter_zid_root, int64_t sequence,
     const char *except_vote_id)

@@ -87,6 +87,14 @@ ZCODE_SCIENCE_TABLE_DECL(review)
 int db_zcode_science_study_list(
     struct node_db *ndb, struct db_zcode_science_entry *out, int max);
 
+/* S5 (additive): filtered study list for zcode.science.discover's
+ * filter-first step. search_like is a caller-escaped LIKE pattern (or
+ * NULL); category is NULL or one of active|expired|retracted, decided at
+ * now_unix. Deterministic order: root ascending. */
+int db_zcode_science_study_list_filtered(
+    struct node_db *ndb, const char *search_like, const char *category,
+    int64_t now_unix, struct db_zcode_science_entry *out, int max);
+
 /* Vote replay probe: true when a DIFFERENT vote id already carries this
  * voter_zid + sequence (the replay shape admission rejects). */
 bool db_zcode_science_vote_sequence_seen(

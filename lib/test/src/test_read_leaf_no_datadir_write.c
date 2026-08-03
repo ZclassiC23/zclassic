@@ -285,6 +285,14 @@ static const struct rlw_leaf g_rlw_leaves[] = {
     { "zcode.science.work.receipt",
       zcl_native_handle_zcode_science_work_receipt,
       "root", RLW_ZID_PUBKEY, NULL, NULL, NULL },
+    /* The S5 discovery read, covered on the day it landed. Its payload is
+     * the same read-only node.db projection (filter-first in SQL, then the
+     * workspace CAS, which defaults to <datadir>/zcode and simply yields an
+     * empty corpus when absent), so payload_dir stays NULL. Exercised with
+     * a real category so the handler reaches the datadir. */
+    { "zcode.science.discover",
+      zcl_native_handle_zcode_science_discover,
+      "category", "active",     NULL, NULL, NULL },
 };
 
 #define RLW_LEAF_COUNT ((int)(sizeof(g_rlw_leaves) / sizeof(g_rlw_leaves[0])))

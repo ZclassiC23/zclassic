@@ -32,6 +32,10 @@ ZCL_COMMAND_BRANCH("zcode.science.vote", "zcode.science",
                    "Curation votes",
                    ZCL_COMMAND_LAYER_APP)
 
+ZCL_COMMAND_BRANCH("zcode.science.rank", "zcode.science",
+                   "Local discovery ranking",
+                   ZCL_COMMAND_LAYER_APP)
+
 ZCL_COMMAND_READY_COMMAND(
     "zcode.science.study.plan", "zcode.science.study", "",
     "Plan a study submission",
@@ -285,3 +289,57 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_science_vote_submit)
+
+/* S5 (2026-08-03, additive): local discovery PageRank over the rebuildable
+ * science projection. Explanatory only — rank, votes, and mass are never
+ * proof-acceptance, routing, reward, or protocol-control input, and the
+ * evidence-admission path never reads this projection. */
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.science.discover", "zcode.science.rank", "",
+    "Search and rank study properties",
+    "Filters FIRST over the SQL study projection (search is a substring of "
+    "the study or hypothesis root hex; category is the projection state "
+    "active|expired|retracted at now_unix; hardware keeps only studies with "
+    "a projected result carrying that hardware profile root), then ranks "
+    "ONLY the bounded filtered graph (4096 nodes, 64 citation edges per "
+    "node, versions/forks of one lineage collapsed). Entries carry mass, "
+    "mass share in millionths, direct citation count, and seed weight; the "
+    "reply binds the corpus, graph, seed-set, and filter-policy roots, the "
+    "omitted node/edge counts, truncation, coverage mass, and the "
+    "convergence residual. Local and explanatory only: never proof, "
+    "routing, or reward input.", 0,
+    "zcode,science,discover,rank,pagerank",
+    "zcl.zcode_science_discover.input.v1", "zcl.zcode_science_discover.v1",
+    "search,category,hardware,network_genesis_root,now_unix,max,"
+    "datadir,workspace", "",
+    "zclassic23 zcode.science.discover --input='{\"category\":\"active\",\"max\":16}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_READ,
+    ZCL_COMMAND_RISK_READ, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_DETERMINISTIC,
+    zcl_native_handle_zcode_science_discover)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.science.rank.snapshot", "zcode.science.rank", "",
+    "Discovery graph snapshot",
+    "Cheap introspection of the rebuildable discovery projection over the "
+    "workspace CAS: the corpus, graph, and seed-set roots with node, edge, "
+    "seed, and omitted counts — no entries rendered. Zero roots mark the "
+    "empty corpus. Local and explanatory only: never proof, routing, or "
+    "reward input.", 0,
+    "zcode,science,rank,snapshot",
+    "zcl.zcode_science_rank_snapshot.input.v1",
+    "zcl.zcode_science_rank_snapshot.v1",
+    "workspace,network_genesis_root,now_unix", "workspace",
+    "zclassic23 zcode.science.rank.snapshot --input='{\"workspace\":\"/path/to/workspace\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_READ,
+    ZCL_COMMAND_RISK_READ, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_DETERMINISTIC,
+    zcl_native_handle_zcode_science_rank_snapshot)

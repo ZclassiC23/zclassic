@@ -1562,6 +1562,8 @@ int main(int argc, char **argv)
       failures += test_zcode_science_store(); }
     { extern int test_zcode_benchmark_exec(void);
       failures += test_zcode_benchmark_exec(); }
+    { extern int test_zcode_discovery_projection(void);
+      failures += test_zcode_discovery_projection(); }
     { extern int test_metaverse_catalog(void); failures += test_metaverse_catalog(); }
     { extern int test_vcs_devloop(void); failures += test_vcs_devloop(); }
     { extern int test_testcache(void); failures += test_testcache(); }

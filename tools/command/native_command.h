@@ -381,6 +381,16 @@ void zcl_native_handle_zcode_science_review_submit(
 void zcl_native_handle_zcode_science_vote_submit(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* S5: local discovery ranking over the rebuildable science projection
+ * (additive leaves in config/commands/zcode_science.def; handlers live in
+ * native_zcode_science_discover_command.c). Explanatory only — never read
+ * by evidence admission, routing, rewards, or protocol control. */
+void zcl_native_handle_zcode_science_discover(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_science_rank_snapshot(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_yardsale_seller_arm(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
