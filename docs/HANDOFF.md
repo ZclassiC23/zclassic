@@ -58,74 +58,66 @@ is three stacked parts: a NEW_USER 4/hour bootstrap announce quota
 known peer, and a supervisor clock-driven swarm (`net.zcode_swarm` child,
 1 s period, net domain) — the swarm tick previously only fired on inbound
 peer messages, so an idle healthy connection never announced or fetched.
-NOT YET DEPLOYED: the canonical node still runs pinned
-rc-20260728-75afb4361, which predates this and the watchdog fix below.
+NOT YET DEPLOYED: the canonical source ID below predates G2 and the later
+science commits above.
 
-**2026-08-03 06:15 UTC — watchdog kill loop is ACTIVE again on the pinned
-binary.** Eight `FATAL SIGNAL 6` (SIGABRT) crashes between 03:18 and 06:03
-UTC, ~22 min apart, each followed by a clean re-boot that returns to
-gap_vs_oracle=1 with 12-20 peers and onion up (uptime-ledger
-ts=1785737782: served 3203559, gap_vs_oracle=1, 18 peers, nrestarts=55). Signature matches the 2026-08-02 loop exactly:
-systemd `WatchdogSec=600` kills the process after the sd keepalive starves.
-The fix is already on main — `60b989ffa` (dedicated sd pet thread + strict
-body-gap posture) — but the node still runs the pinned rc-20260728-75afb4361
-binary, which predates it. Remedy is an owner-gated redeploy of a current
-release candidate; no code work is outstanding. Re-check with
-`grep 'FATAL SIGNAL 6' ~/.zclassic-c23/node.log | tail` and the ledger's
-`nrestarts` counter.
+**Recovered 2026-08-03; transaction laboratory remains gated.** The canonical
+service had been offline in a watchdog restart loop with its configured checkout
+binary absent. Recovery used the owner-declared intervention path and the
+complete-state bundle at h=3,056,758; no datadir surgery and no canonical wallet
+keys were used. The bundle SHA-256 is
+`6bc3bf5152e5cd38deadc344d563478696d3800f4417e564119319196447ae83`.
+Its copy proof climbed H* from 3,056,758 through 3,203,198, survived restart,
+and matched zclassicd at the checked heights before canonical install. This
+supersedes the earlier same-day pinned-binary watchdog-loop note: the dedicated
+pet-thread fix is present in the recovered binary, but the normal 6G/watchdog
+posture still fails for the separately measured reason recorded below.
 
-The canonical node is holding network tip on the self-verified (cured)
-stack, per the external SLO ledger: `~/.local/state/zclassic23-slo/uptime-ledger.jsonl`
-records canonical served height against `gap_vs_oracle`. Treat any
-"at tip" / "holding tip" claim as unverified until that ledger's most recent
-line confirms it.
+The running inode (re-check `/proc/$(systemctl --user show zclassic23
+-p MainPID --value)/exe`, never a pathname that may have been overwritten) is:
 
-**Running since 2026-07-28 11:11:07 UTC** — source_id
-`b3641f84dcc9ebda…`, artifact sha256 `d6139f80e7c3e74b…`, commit `75afb4361`,
-pinned as `rc-20260728-75afb4361` in `deploy/release-candidates.jsonl`.
-`NRestarts=0`.
+- source ID `6e379d5744d64c6695965e5e61c011a76b6993845d10193fedf8e135379b628c`
+- artifact SHA-256 `2733b1e250a459cb8a7c8e15046c54a9b54454ce4ab67403749e526ad0c6b975`
+- active since 2026-08-03 05:56:55 UTC; `NRestarts=0` at the last check
 
-This corrects an earlier entry here that named source_id `981a8d01e9a1fd35…`
-as deployed at 02:58 UTC. That build is not running and the string resolves to
-nothing in this repository — not a commit, and not the identity of the live
-binary. How the correct value was determined, so it can be re-checked rather
-than believed:
+The first uninterrupted post-recovery SLO window is durable in
+`~/.local/state/zclassic23-slo/uptime-ledger.jsonl`: 61 canonical samples from
+`ts=1785731596` through `1785735219` (3,623 seconds), 100% reachable,
+`node_state_ok=true` throughout, one unchanged active-enter epoch, zero
+restarts, H* 3,203,471 -> 3,203,519, 6-8 peers, and maximum local-oracle gap
+3. Exact same-height zclassicd hash checks passed during and after the window;
+the latest recorded check in this recovery session was h=3,203,568,
+`00000c3408d6e53231696c2005db5243e82268f7965e847f1096d8aa0798dfec`.
+The typed frontier had zero H* blockers and only the normal one-height working
+edge when it was not returning the explicit retryable `progress_store_busy`.
 
-```bash
-# the identity of the inode the process is ACTUALLY executing
-sudo=; pid=$(systemctl --user show zclassic23 -p MainPID --value)
-/proc/$pid/exe agentbuild | grep -oE '"source_id_sha256":"[0-9a-f]{64}"' | head -1
-sha256sum /proc/$pid/exe
-```
+Do **not** start the mainnet transaction laboratory yet. Four acceptance facts
+remain open:
 
-`/proc/<pid>/exe`, not `~/.local/bin/zclassic23-live`: the path can be
-overwritten under a live process, and then the file and the running node
-disagree until the next restart. The binary at that path happens to match today
-(both `d6139f80e7c3e74b…`), which is itself a checked fact rather than an
-assumption.
+1. Off-host hash parity is `NO_EVIDENCE`: the agreement ledger's latest judge
+   saw 12/12 `could-not-ask` samples. Connected peers advertise heights but not
+   hashes from two distinct hosts. The prober deliberately has no public-API
+   bypass; more independent peers must surface learnable hashes. Never lower the
+   two-host floor.
+2. Normal service armor is not yet safe. A watched warm restart at
+   `MemoryHigh=6G` raised `boot.stage_regression` plus critical memory pressure;
+   the health-gated pet sent no post-READY heartbeat, so the 10-minute systemd
+   watchdog would have recreated the abort loop. The operator stopped that run
+   before the deadline and restored `MemoryHigh=24G` plus the explicit
+   `WatchdogSec=0` incident drop-in. `TimeoutStartSec=30min` is restored.
+3. The standing non-consensus blocker is
+   `catalog.sprout_anchor.lag_exceeded` (cursor frozen at 2,124,937). It does not
+   block H* progress, but it remains named and visible.
+4. `make ci-reproducible` aborted build A twice because the source mutation
+   token changed during the LTO build while the byte identity stayed identical
+   and Git stayed clean. No byte comparison occurred; this is a gate blocker,
+   not a reproducibility mismatch. Lint, build-only, the whole-program test
+   binary, and the strict suite (881 groups run, 0 failed) passed.
 
-`tools/scripts/build_drift_probe.sh report` now answers this on demand and
-`deploy/zclassic23-build-drift.timer` (prepared, **not installed**) answers it
-every 5 minutes into `~/.local/state/zclassic23-drift/build-drift-ledger.jsonl`.
-The running build is **82 commits behind** `main` as of 2026-07-29 — expected
-for a pinned proof-lane candidate, and recorded rather than inferred. See
-[`docs/RELEASE_CANDIDATE_PIN.md`](./RELEASE_CANDIDATE_PIN.md).
-
-Post-deploy health, from the external SLO ledger rather than from the node's
-own opinion of itself — `~/.local/state/zclassic23-slo/uptime-ledger.jsonl`,
-`ts=1785213131`:
-
-```json
-{"instance":"canonical","reachable":true,"unreachable_streak":0,
- "served_height":3196636,"oracle_height":3196637,"gap_vs_oracle":1,
- "latency_ms":8}
-```
-
-`gap_vs_oracle=1` against an independent oracle is the claim; the node's own
-`sync=at_tip` is not. Peers recovered to 21 and RSS settled back down from a
-2.7 GB warm-up spike. (The `dev` instance in that same ledger reads
-`reachable:false` with a long unreachable streak — that lane is simply not
-running, and is not evidence of anything about the canonical node.)
+Recovery evidence fixes are in `eacadc76`: the SLO probe now derives the live
+zclassicd port (8023 here), accepts normal spaced JSON, and the installer
+retains the exact prior-generation path in its success banner. No lab wallet,
+key, transaction, or funding was created.
 
 C8 byte-exact UTXO parity (2026-08-02): the producer full-fold lane
 (`~/.zclassic-c23-producer-fold`, from-genesis fold at h=3192878, then live
