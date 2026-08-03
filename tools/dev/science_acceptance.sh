@@ -79,13 +79,16 @@
 #   G3  zcode_science_rebuild had no operator surface (test-only
 #       callers); this proof lands the zcode.science.rebuild leaf as the
 #       sanctioned additive glue.
-#   G4  findings.v1 and the execution-context objects (env policy,
-#       workload, task, candidate, method) have no command-leaf admission
-#       path; seeded via tools/zcode_science_fixture.c through the same
-#       codecs/CAS APIs the landed tests use. Also: the deterministic
-#       now_unix pin (and the science int keys) had no input-validator
-#       rule, so the leaves were uninvokable from the shell — fixed in
-#       lib/kernel/src/command_registry.c as sanctioned glue.
+#   G4  CLOSED 2026-08-03: findings.v1 now has command-leaf admission —
+#       zcode.science.findings.plan|commit (the fixture only composes the
+#       deterministic wire via mkfindings-emit; the leaves store it to CAS
+#       and project it). The remaining fixture-seeded objects are the
+#       execution-context documents (env policy, workload, task,
+#       candidate, method), which are content roots, not ledger objects.
+#       Historical: the deterministic now_unix pin (and the science int
+#       keys) had no input-validator rule, so the leaves were uninvokable
+#       from the shell — fixed in lib/kernel/src/command_registry.c as
+#       sanctioned glue.
 #
 # SAFETY: mirrors isolated_node_env.sh / two_node_peer_tip.sh —
 #   test-tmp/-only datadirs (mktemp -d), 39xxx isolation ports probed with
@@ -339,8 +342,17 @@ run_lifecycle() {
     echo "science-acceptance:     $label reproduction committed: ${L_PA:0:16}… verdict=$verdict (1=replicated 2=contradicted 3=inconclusive; any is a valid observation)"
 
     # findings -> stale review REFUSED -> fresh review -> vote
-    eval "$("$FIX" mkfindings "$dd/zcode" "$L_STUDY" "$L_TASK" "$L_CAND" "$L_RA" 1800 "$salt")"
+    # G4: findings are admitted through the plan|commit leaves (the fixture
+    # only composes the wire; it no longer touches the CAS).
+    eval "$("$FIX" mkfindings-emit "$L_STUDY" "$L_TASK" "$L_CAND" "$L_RA" 1800 "$salt")"
     L_FR="$FINDINGS_ROOT"
+    sa_sci "$dd" zcode.science.findings.plan \
+        "{\"wire_hex\":\"$FINDINGS_WIRE_HEX\",\"now_unix\":$NOW_REVIEW}" >/dev/null
+    out="$(sa_sci "$dd" zcode.science.findings.commit \
+        "{\"wire_hex\":\"$FINDINGS_WIRE_HEX\",\"confirm\":true,\"now_unix\":$NOW_REVIEW}")"
+    [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "$label findings commit refused: $out"
+    [ "$(sa_jget "$out" 'd["data"]["findings_root"]')" = "$L_FR" ] \
+        || sa_die "$label findings root drifted through plan/commit: $out"
     eval "$("$FIX" mkreview "$L_TASK" "$L_CAND" "$L_FR" 1700 1 "$salt")"
     sa_sci "$dd" zcode.science.review.submit \
         "{\"wire_hex\":\"$REVIEW_WIRE\",\"now_unix\":$NOW_REVIEW}" >/dev/null
@@ -658,6 +670,8 @@ echo "science-acceptance:   G2 CLOSED (gated): fresh-node swarm fetch proven nod
 echo "science-acceptance:       NEW_USER bootstrap announce quota (4/h) + deduped per-sync re-announce"
 echo "science-acceptance:       + supervisor clock-driven swarm (net.zcode_swarm, 1 s)"
 echo "science-acceptance:   G3 rebuild had no operator surface — glued: zcode.science.rebuild leaf"
-echo "science-acceptance:   G4 context/findings objects + now_unix pin had no CLI path — glued: fixture tool + validator rules"
+echo "science-acceptance:   G4 CLOSED (gated): findings admitted via zcode.science.findings.plan|commit"
+echo "science-acceptance:       (fixture composes the wire, never touches CAS; review.submit binds"
+echo "science-acceptance:       the CLI-admitted findings). Context objects stay fixture-seeded."
 echo "science-acceptance: PASS"
 exit 0

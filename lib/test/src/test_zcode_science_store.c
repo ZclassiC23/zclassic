@@ -1244,6 +1244,142 @@ static int test_zstore_admit(void)
     return failures;
 }
 
+/* ── 9: findings plan/commit — the command-leaf admission reviews bind ── */
+
+static int test_zstore_findings_plan_commit(void)
+{
+    int failures = 0;
+    TEST("zcode_science_store: findings plan/commit is exact, idempotent, reviewable") {
+        struct node_db ndb = {0};
+        char dir[ZSTORE_DIR_CAP];
+        ASSERT(zstore_setup(&ndb, dir, sizeof(dir)));
+        struct vcs_zcode_study_spec_v1 study;
+        struct vcs_zcode_benchmark_method_v1 method;
+        struct vcs_zcode_hardware_profile_v1 profile;
+        uint8_t task_root[32], candidate_root[32], result_root[32];
+        ASSERT(zstore_seed_context(dir, &study, task_root, candidate_root,
+                                   &method, &profile));
+        struct vcs_zcode_benchmark_result_v2 result;
+        zstore_result_v2(&study, task_root, candidate_root, &method,
+                         &profile, VCS_ZCODE_BENCHMARK_OBSERVED, 1, 33,
+                         &result);
+        ASSERT(zstore_cas_put_result_v2(dir, &result, result_root));
+        struct vcs_zcode_science_findings_v1 findings;
+        zstore_findings(&study, task_root, candidate_root, result_root, 0,
+                        NULL, 1800, &findings);
+        uint8_t wire[VCS_ZCODE_SCIENCE_FINDINGS_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_science_findings_serialize(&findings, wire),
+                  VCS_ZCODE_SCIENCE_OK);
+        uint8_t expected_root[32];
+        char expected_hex[65];
+        ASSERT_EQ(vcs_zcode_science_findings_root(&findings, expected_root),
+                  VCS_ZCODE_SCIENCE_OK);
+        zcl_hex_encode(expected_root, 32, expected_hex);
+        int cas_before = zstore_cas_object_count(dir);
+        /* Plan, then idempotent re-plan of the same request. */
+        struct zcode_science_plan_out plan, replan;
+        ASSERT(zcode_science_findings_plan(&ndb, dir, wire, sizeof(wire),
+                                           1900, &plan).ok);
+        ASSERT(!plan.already_planned);
+        ASSERT_EQ(plan.expires_unix, 1900 + ZCODE_SCIENCE_PLAN_TTL_SECONDS);
+        ASSERT(zcode_science_findings_plan(&ndb, dir, wire, sizeof(wire),
+                                           1901, &replan).ok);
+        ASSERT(replan.already_planned);
+        ASSERT_STR_EQ(replan.plan_root, plan.plan_root);
+        /* Commit requires confirm:true. */
+        struct zcode_science_commit_out commit;
+        ASSERT(!zcode_science_findings_commit(&ndb, dir, wire, sizeof(wire),
+                                              false, 1900, &commit).ok);
+        /* Commit twice: same root, one CAS object. */
+        ASSERT(zcode_science_findings_commit(&ndb, dir, wire, sizeof(wire),
+                                             true, 1900, &commit).ok);
+        ASSERT(!commit.already_committed);
+        ASSERT_STR_EQ(commit.result_root, expected_hex);
+        struct zcode_science_commit_out recommit;
+        ASSERT(zcode_science_findings_commit(&ndb, dir, wire, sizeof(wire),
+                                             true, 1902, &recommit).ok);
+        ASSERT(recommit.already_committed);
+        ASSERT_STR_EQ(recommit.result_root, expected_hex);
+        ASSERT_EQ(zstore_cas_object_count(dir), cas_before + 1);
+        /* A different findings wire is a different request: no plan. */
+        struct vcs_zcode_science_findings_v1 stray_f = findings;
+        stray_f.created_unix = 1801;
+        uint8_t stray_wire[VCS_ZCODE_SCIENCE_FINDINGS_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_science_findings_serialize(&stray_f, stray_wire),
+                  VCS_ZCODE_SCIENCE_OK);
+        struct zcode_science_commit_out stray;
+        ASSERT(!zcode_science_findings_commit(&ndb, dir, stray_wire,
+                                              sizeof(stray_wire), true, 1900,
+                                              &stray).ok);
+        /* Malformed wires never plan: bad magic, truncated length. */
+        uint8_t badmagic[VCS_ZCODE_SCIENCE_FINDINGS_WIRE_BYTES];
+        memcpy(badmagic, wire, sizeof(badmagic));
+        badmagic[0] ^= 1;
+        struct zcode_science_plan_out bad;
+        ASSERT(!zcode_science_findings_plan(&ndb, dir, badmagic,
+                                            sizeof(badmagic), 1900, &bad).ok);
+        ASSERT(!zcode_science_findings_plan(&ndb, dir, wire,
+                                            sizeof(wire) - 1, 1900,
+                                            &bad).ok);
+        /* An expired plan refuses commit. */
+        struct zcode_science_plan_out late_plan;
+        struct zcode_science_commit_out late_commit;
+        ASSERT(zcode_science_findings_plan(&ndb, dir, stray_wire,
+                                           sizeof(stray_wire), 2000,
+                                           &late_plan).ok);
+        ASSERT(!zcode_science_findings_commit(
+            &ndb, dir, stray_wire, sizeof(stray_wire), true,
+            2000 + ZCODE_SCIENCE_PLAN_TTL_SECONDS, &late_commit).ok);
+        /* Projection row mapping: discussed result in link_root, empty
+         * retraction target in aux_root. */
+        struct db_zcode_science_entry row;
+        ASSERT(db_zcode_science_findings_find(&ndb, expected_hex, &row));
+        ASSERT_STR_EQ(row.root, expected_hex);
+        char result_hex[65];
+        zcl_hex_encode(result_root, 32, result_hex);
+        ASSERT_STR_EQ(row.link_root, result_hex);
+        ASSERT_EQ(row.code, findings.severity);
+        ASSERT_EQ(row.flags, findings.flags);
+        ASSERT_EQ(row.sequence, 1);
+        ASSERT_EQ(row.created_at, findings.created_unix);
+        /* Rebuild equivalence: drop + rebuild from CAS, identical row. */
+        struct zcode_science_rebuild_out rebuilt;
+        ASSERT(zcode_science_rebuild(&ndb, dir, 1900, &rebuilt).ok);
+        ASSERT_EQ(rebuilt.findings, 1);
+        struct db_zcode_science_entry after;
+        ASSERT(db_zcode_science_findings_find(&ndb, expected_hex, &after));
+        ASSERT(memcmp(&row, &after, sizeof(row)) == 0);
+        /* The CLI-admitted findings satisfies H1: a fresh review against it
+         * plans and commits. */
+        struct vcs_zcode_review_v1 review;
+        memset(&review, 0, sizeof(review));
+        review.schema_version = VCS_ZCODE_DEV_VERSION;
+        memcpy(review.task_root, task_root, 32);
+        memcpy(review.candidate_root, candidate_root, 32);
+        zstore_root(review.proof_policy_root, 22);
+        zstore_root(review.proof_set_root, 41);
+        memcpy(review.findings_root, expected_root, 32);
+        zstore_root(review.reviewer_pubkey, 45);
+        review.verdict = VCS_ZCODE_REVIEW_APPROVE;
+        review.sequence = 1;
+        review.created_unix = 1900;
+        uint8_t review_wire[VCS_ZCODE_REVIEW_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_review_serialize(&review, review_wire),
+                  VCS_ZCODE_DEV_OK);
+        struct zcode_science_plan_out rplan;
+        struct zcode_science_commit_out rcommit;
+        ASSERT(zcode_science_review_submit(&ndb, dir, review_wire,
+                                           sizeof(review_wire), false, 1900,
+                                           &rplan, &rcommit).ok);
+        ASSERT(zcode_science_review_submit(&ndb, dir, review_wire,
+                                           sizeof(review_wire), true, 1900,
+                                           &rplan, &rcommit).ok);
+        zstore_teardown(&ndb, dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_science_store(void)
 {
     int failures = 0;
@@ -1255,5 +1391,6 @@ int test_zcode_science_store(void)
     failures += test_zstore_votes();
     failures += test_zstore_publish();
     failures += test_zstore_admit();
+    failures += test_zstore_findings_plan_commit();
     return failures;
 }

@@ -32,6 +32,10 @@ ZCL_COMMAND_BRANCH("zcode.science.vote", "zcode.science",
                    "Curation votes",
                    ZCL_COMMAND_LAYER_APP)
 
+ZCL_COMMAND_BRANCH("zcode.science.findings", "zcode.science",
+                   "Findings lifecycle",
+                   ZCL_COMMAND_LAYER_APP)
+
 ZCL_COMMAND_BRANCH("zcode.science.rank", "zcode.science",
                    "Local discovery ranking",
                    ZCL_COMMAND_LAYER_APP)
@@ -116,6 +120,51 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_DETERMINISTIC,
     zcl_native_handle_zcode_science_study_list)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.science.findings.plan", "zcode.science.findings", "",
+    "Plan a findings submission",
+    "Validates the exact science_findings.v1 wire (structural rules: the "
+    "study, task, candidate, result, and proof-set roots it discusses plus "
+    "methods/limitations/conflicts documents and the optional retraction "
+    "target) and persists an exact, expiring (600s) plan binding the wire "
+    "and its request identity hash. No CAS object and no projection row is "
+    "written; re-planning the same request returns the same plan_root.", 0,
+    "zcode,science,findings,plan",
+    "zcl.zcode_science_findings_plan.input.v1", "zcl.zcode_science_plan.v1",
+    "wire_hex,now_unix,datadir,workspace", "wire_hex",
+    "zclassic23 zcode.science.findings.plan --input='{\"wire_hex\":\"<634hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_science_findings_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.science.findings.commit", "zcode.science.findings", "",
+    "Commit planned findings",
+    "With confirm:true and an unexpired plan whose stored wire matches "
+    "wire_hex exactly, stores the science_findings.v1 wire in the CAS "
+    "addressed by its canonical root and updates the rebuildable findings "
+    "projection. Re-committing the same request reattaches to the same "
+    "findings_root; one CAS object is stored. This is the command-leaf "
+    "admission reviews bind against (review.submit requires the findings "
+    "wire in CAS).", 0,
+    "zcode,science,findings,commit,confirm",
+    "zcl.zcode_science_findings_commit.input.v1", "zcl.zcode_science_commit.v1",
+    "wire_hex,confirm,now_unix,datadir,workspace", "wire_hex,confirm",
+    "zclassic23 zcode.science.findings.commit --input='{\"wire_hex\":\"<634hex>\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_science_findings_commit)
 
 ZCL_COMMAND_READY_COMMAND(
     "zcode.science.work.plan", "zcode.science.work", "",

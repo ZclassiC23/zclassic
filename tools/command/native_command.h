@@ -351,6 +351,12 @@ void zcl_native_handle_zcode_science_study_plan(
 void zcl_native_handle_zcode_science_study_commit(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_science_findings_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_science_findings_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_science_study_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

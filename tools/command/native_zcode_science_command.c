@@ -289,6 +289,77 @@ void zcl_native_handle_zcode_science_study_commit(
     (void)json_push_kv_str(&reply->data, "study_root", commit.result_root);
 }
 
+void zcl_native_handle_zcode_science_findings_plan(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    size_t wire_len = 0;
+    uint8_t *wire = zsci_wire(request->input, "wire_hex", &wire_len);
+    if (!wire) {
+        zsci_fail(reply, "BAD_WIRE",
+                  "wire_hex must be the exact science_findings.v1 wire as even lowercase hex",
+                  "zcode.science.findings.plan");
+        return;
+    }
+    struct node_db ndb = {0};
+    if (!zsci_open_db(zsci_datadir(request->input), &ndb)) {
+        free(wire);
+        zsci_fail_service(reply, "DATABASE_OPEN_FAILED",
+                          "the science plan ledger could not be opened",
+                          "zcode.science.findings.plan");
+        return;
+    }
+    char ws[ZSCI_PATH_MAX];
+    struct zcode_science_plan_out plan;
+    struct zcl_result planned = zcode_science_findings_plan(
+        &ndb, zsci_workspace(request->input, ws, sizeof(ws)), wire, wire_len,
+        zsci_now(request->input), &plan);
+    node_db_close(&ndb);
+    free(wire);
+    if (!planned.ok) {
+        zsci_fail_service(reply, "FINDINGS_PLAN_REFUSED", planned.message,
+                          "zcode.science.findings.plan");
+        return;
+    }
+    zsci_push_plan(&reply->data, &plan, "zcode.science.findings.commit");
+}
+
+void zcl_native_handle_zcode_science_findings_commit(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    size_t wire_len = 0;
+    uint8_t *wire = zsci_wire(request->input, "wire_hex", &wire_len);
+    if (!wire) {
+        zsci_fail(reply, "BAD_WIRE",
+                  "wire_hex must repeat the planned science_findings.v1 wire exactly",
+                  "zcode.science.findings.commit");
+        return;
+    }
+    struct node_db ndb = {0};
+    if (!zsci_open_db(zsci_datadir(request->input), &ndb)) {
+        free(wire);
+        zsci_fail_service(reply, "DATABASE_OPEN_FAILED",
+                          "the science plan ledger could not be opened",
+                          "zcode.science.findings.commit");
+        return;
+    }
+    char ws[ZSCI_PATH_MAX];
+    struct zcode_science_commit_out commit;
+    struct zcl_result committed = zcode_science_findings_commit(
+        &ndb, zsci_workspace(request->input, ws, sizeof(ws)), wire, wire_len,
+        zsci_confirm(request->input), zsci_now(request->input), &commit);
+    node_db_close(&ndb);
+    free(wire);
+    if (!committed.ok) {
+        zsci_fail_service(reply, "FINDINGS_COMMIT_REFUSED", committed.message,
+                          "zcode.science.findings.commit");
+        return;
+    }
+    zsci_push_commit(&reply->data, &commit);
+    (void)json_push_kv_str(&reply->data, "findings_root", commit.result_root);
+}
+
 void zcl_native_handle_zcode_science_study_show(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {

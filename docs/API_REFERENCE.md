@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 464 |
+| Registry entries (branches + leaves) | 467 |
 | Top-level roots | 11 |
-| Branches | 107 |
-| Leaves (dispatchable command paths) | 357 |
-| … `ready` (live handler in this build) | 309 |
+| Branches | 108 |
+| Leaves (dispatchable command paths) | 359 |
+| … `ready` (live handler in this build) | 311 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 118 |
+| Leaves with `effect=mutate` | 120 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 82 |
 
@@ -86,7 +86,7 @@ Per source file:
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 21 | 4 | 17 |
 | `config/commands/zcode.def` | 71 | 16 | 55 |
-| `config/commands/zcode_science.def` | 22 | 6 | 16 |
+| `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 17 | 5 | 12 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
@@ -993,6 +993,13 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode science vote submit` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, `confirm`, `network_genesis_root`, `voter_zid_root`, `signer_pubkey`, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_vote.v1` | `zclassic23 zcode.science.vote.submit --input='{"wire_hex":"<438hex>","confirm":true,"network_genesis_root":"<64hex>","voter_zid_root":"<64hex>","signer_pubkey":"<64hex>"}'` | Submit a curation vote |
 
+#### `zcode.science.findings` — Findings lifecycle
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode science findings plan` | ready | mutate / app-write / operator, plan-commit · foreground/low | **`wire_hex`**, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_plan.v1` | `zclassic23 zcode.science.findings.plan --input='{"wire_hex":"<634hex>"}'` | Plan a findings submission |
+| `zcode science findings commit` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, **`confirm`**, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_commit.v1` | `zclassic23 zcode.science.findings.commit --input='{"wire_hex":"<634hex>","confirm":true}'` | Commit planned findings |
+
 #### `zcode.science.rank` — Local discovery ranking
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
@@ -1121,8 +1128,8 @@ promise the same document shape.
 | `zcl.account.v1` | `app.account.show`, `app.account.whoami`, `app.account.add`, `app.account.role`, `app.account.suspend`, `app.account.unsuspend` |
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
 | `zcl.zcode_leaderboard.v1` | `zcode.leaderboard.daily`, `zcode.leaderboard.weekly`, `zcode.leaderboard.monthly`, `zcode.leaderboard.all` |
-| `zcl.zcode_science_plan.v1` | `zcode.science.study.plan`, `zcode.science.work.plan` |
-| `zcl.zcode_science_commit.v1` | `zcode.science.study.commit`, `zcode.science.work.commit` |
+| `zcl.zcode_science_plan.v1` | `zcode.science.study.plan`, `zcode.science.findings.plan`, `zcode.science.work.plan` |
+| `zcl.zcode_science_commit.v1` | `zcode.science.study.commit`, `zcode.science.findings.commit`, `zcode.science.work.commit` |
 | `zcl.zcode_science_work.v1` | `zcode.science.work.status`, `zcode.science.work.receipt` |
 | `zcl.build_job.v1` | `metaverse.build.submit`, `metaverse.build.cancel` |
 | `zcl.build_worker.v1` | `metaverse.build.worker.approve`, `metaverse.build.worker.revoke` |

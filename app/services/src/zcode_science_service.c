@@ -113,7 +113,7 @@ static bool science_load_result_v1(const char *workspace,
 
 /* ── plan plumbing ─────────────────────────────────────────────── */
 
-static struct zcl_result science_plan_open(
+struct zcl_result science_plan_open(
     struct node_db *ndb, const char *kind, const uint8_t *wire,
     size_t wire_len, const uint8_t *aux, size_t aux_len, int64_t now,
     struct zcode_science_plan_out *out)
@@ -156,7 +156,7 @@ static struct zcl_result science_plan_open(
  * agreement, idempotent reattach. On ZCL_OK with *done=true the commit is
  * already satisfied; with *done=false the caller runs evidence validation,
  * CAS storage, and the projection, then science_plan_mark_committed. */
-static struct zcl_result science_commit_prelude(
+struct zcl_result science_commit_prelude(
     struct node_db *ndb, const char *kind, const uint8_t *wire,
     size_t wire_len, const uint8_t *aux, size_t aux_len, bool confirm,
     int64_t now, struct db_zcode_science_plan *plan, bool *done,
@@ -196,7 +196,7 @@ static struct zcl_result science_commit_prelude(
     return ZCL_OK;
 }
 
-static struct zcl_result science_plan_mark_committed(
+struct zcl_result science_plan_mark_committed(
     struct node_db *ndb, struct db_zcode_science_plan *plan,
     const char *result_root_hex)
 {

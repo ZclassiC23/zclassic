@@ -154,6 +154,35 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 51) {
+        /* v51: ZCODE science findings admission (G4) — extend the plan
+         * ledger's kind CHECK with 'findings' for
+         * zcode.science.findings.plan|commit. SQLite cannot ALTER a CHECK
+         * constraint, so the table is rebuilt and rows carry over. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zcode_science_plans_v51 ("
+            "plan_root TEXT PRIMARY KEY CHECK(length(plan_root)=64),"
+            "kind TEXT NOT NULL CHECK(kind IN ('study','work','findings','review','vote')),"
+            "request_hash TEXT NOT NULL UNIQUE CHECK(length(request_hash)=64),"
+            "wire_hex TEXT NOT NULL,"
+            "result_root TEXT NOT NULL CHECK(length(result_root) IN (0,64)),"
+            "state TEXT NOT NULL CHECK(state IN ('PLANNED','COMMITTED')),"
+            "expires_unix INTEGER NOT NULL CHECK(expires_unix>0),"
+            "created_at INTEGER NOT NULL)");
+        node_db_exec(ndb,
+            "INSERT INTO zcode_science_plans_v51 "
+            "SELECT * FROM zcode_science_plans");
+        node_db_exec(ndb, "DROP TABLE zcode_science_plans");
+        node_db_exec(ndb,
+            "ALTER TABLE zcode_science_plans_v51 "
+            "RENAME TO zcode_science_plans");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('051')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 51);
+        current_ver = 51;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

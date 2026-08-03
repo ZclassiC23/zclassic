@@ -15,6 +15,23 @@ tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 
 ## Current state
 
+**2026-08-03 — G4 (findings had no command-leaf admission) CLOSED.**
+New leaves `zcode.science.findings.plan|commit`: exact expiring plan +
+confirm:true commit, durable idempotency, CAS store addressed by the
+canonical root, findings projection in the rebuild-identical mapping.
+Service lives in `app/services/src/zcode_science_findings.c` (E1 split);
+the plan/commit plumbing is exported via `zcode_science_service.h`.
+Schema v51 rebuilds `zcode_science_plans` with the kind CHECK extended
+to 'findings' (SQLite cannot ALTER a CHECK; rows carry over) and the
+model kind allowlist matches. The fixture's new `mkfindings-emit`
+composes the deterministic wire without touching the CAS, so the
+acceptance script now admits findings through the leaves and the fresh
+review binds the CLI-admitted findings (H1). Execution-context documents
+stay fixture-seeded — content roots, not ledger objects. Proven:
+`make test-science-acceptance` PASS with G4 gated CLOSED;
+`t-fast ONLY=zcode_science_store` (new test_zstore_findings_plan_commit)
+plus schema_migration/sqlite/blog groups green.
+
 **2026-08-03 — G1 (science objects have no node-to-node carrier) CLOSED.**
 `zcode.science.publish` mirrors a committed science wire into the package
 store as a one-chunk content.v2 blob (`vcs_blob_put_to`); the blob root is

@@ -114,6 +114,38 @@ struct zcl_result zcode_science_vote_submit(
     struct zcode_science_plan_out *plan_out,
     struct zcode_science_commit_out *commit_out);
 
+/* findings.plan/commit: the findings wire (science_findings.v1) binds the
+ * study, task, candidate, result, and proof-set roots it discusses (plus
+ * methods/limitations/conflicts documents and an optional retraction
+ * target). plan validates the wire structurally; commit is confirm:true +
+ * unexpired plan + exact-wire agreement, stores the wire to CAS addressed
+ * by its canonical root, and updates the findings projection. Findings
+ * carry no submission window — expiry gates plans, never stored evidence. */
+struct zcl_result zcode_science_findings_plan(
+    struct node_db *ndb, const char *workspace,
+    const uint8_t *wire, size_t wire_len, int64_t now,
+    struct zcode_science_plan_out *out);
+struct zcl_result zcode_science_findings_commit(
+    struct node_db *ndb, const char *workspace,
+    const uint8_t *wire, size_t wire_len, bool confirm, int64_t now,
+    struct zcode_science_commit_out *out);
+
+/* Shared plan/commit helpers — internal to the science service translation
+ * units (zcode_science_service.c, zcode_science_findings.c,
+ * zcode_science_carrier.c), not public API. See the file-top contract. */
+struct zcl_result science_plan_open(
+    struct node_db *ndb, const char *kind, const uint8_t *wire,
+    size_t wire_len, const uint8_t *aux, size_t aux_len, int64_t now,
+    struct zcode_science_plan_out *out);
+struct zcl_result science_commit_prelude(
+    struct node_db *ndb, const char *kind, const uint8_t *wire,
+    size_t wire_len, const uint8_t *aux, size_t aux_len, bool confirm,
+    int64_t now, struct db_zcode_science_plan *plan, bool *done,
+    struct zcode_science_commit_out *out);
+struct zcl_result science_plan_mark_committed(
+    struct node_db *ndb, struct db_zcode_science_plan *plan,
+    const char *result_root_hex);
+
 /* Drop the six projection tables and rebuild them from the workspace CAS.
  * Rebuild-equivalence proof: output after rebuild is identical to output
  * before the drop. Plans are not touched. */

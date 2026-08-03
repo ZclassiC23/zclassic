@@ -29,7 +29,8 @@ static bool science_kind_valid(const char *kind)
 {
     return kind &&
            (strcmp(kind, "study") == 0 || strcmp(kind, "work") == 0 ||
-            strcmp(kind, "review") == 0 || strcmp(kind, "vote") == 0);
+            strcmp(kind, "findings") == 0 || strcmp(kind, "review") == 0 ||
+            strcmp(kind, "vote") == 0);
 }
 
 static bool science_wire_hex_valid(const char *wire_hex)
@@ -56,7 +57,7 @@ bool db_zcode_science_plan_validate(
     validates_custom(errors, science_hex(row->plan_root, false),
                      "plan_root", "must be a SHA3 root");
     validates_custom(errors, science_kind_valid(row->kind), "kind",
-                     "must be study, work, review, or vote");
+                     "must be study, work, findings, review, or vote");
     validates_custom(errors, science_hex(row->request_hash, false),
                      "request_hash", "must be a SHA3 request identity");
     validates_custom(errors, science_wire_hex_valid(row->wire_hex),

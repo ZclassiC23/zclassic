@@ -369,27 +369,37 @@ static int cmd_seed_context(const char *workspace, uint8_t salt)
 
 /* ── mkfindings ─────────────────────────────────────────────────────── */
 
+static void fix_compose_findings(const char *study_hex, const char *task_hex,
+                                 const char *candidate_hex,
+                                 const char *result_hex, int64_t created_unix,
+                                 uint8_t salt,
+                                 struct vcs_zcode_science_findings_v1 *findings)
+{
+    memset(findings, 0, sizeof(*findings));
+    findings->schema_version = VCS_ZCODE_SCIENCE_VERSION;
+    if (!fix_hex32(study_hex, findings->study_root) ||
+        !fix_hex32(task_hex, findings->task_root) ||
+        !fix_hex32(candidate_hex, findings->candidate_root) ||
+        !fix_hex32(result_hex, findings->result_root))
+        fix_die("mkfindings: bad root hex");
+    fix_root(findings->proof_set_root, salt, 41);
+    fix_root(findings->methods_root, salt, 42);
+    fix_root(findings->limitations_root, salt, 43);
+    fix_root(findings->conflicts_root, salt, 44);
+    findings->flags = 0;
+    findings->severity = VCS_ZCODE_FINDING_MATERIAL;
+    findings->sequence = 1;
+    findings->created_unix = created_unix;
+}
+
 static int cmd_mkfindings(const char *workspace, const char *study_hex,
                           const char *task_hex, const char *candidate_hex,
                           const char *result_hex, int64_t created_unix,
                           uint8_t salt)
 {
     struct vcs_zcode_science_findings_v1 findings;
-    memset(&findings, 0, sizeof(findings));
-    findings.schema_version = VCS_ZCODE_SCIENCE_VERSION;
-    if (!fix_hex32(study_hex, findings.study_root) ||
-        !fix_hex32(task_hex, findings.task_root) ||
-        !fix_hex32(candidate_hex, findings.candidate_root) ||
-        !fix_hex32(result_hex, findings.result_root))
-        fix_die("mkfindings: bad root hex");
-    fix_root(findings.proof_set_root, salt, 41);
-    fix_root(findings.methods_root, salt, 42);
-    fix_root(findings.limitations_root, salt, 43);
-    fix_root(findings.conflicts_root, salt, 44);
-    findings.flags = 0;
-    findings.severity = VCS_ZCODE_FINDING_MATERIAL;
-    findings.sequence = 1;
-    findings.created_unix = created_unix;
+    fix_compose_findings(study_hex, task_hex, candidate_hex, result_hex,
+                         created_unix, salt, &findings);
     uint8_t wire[VCS_ZCODE_SCIENCE_FINDINGS_WIRE_BYTES];
     uint8_t root[32];
     if (vcs_zcode_science_findings_serialize(&findings, wire) !=
@@ -401,6 +411,35 @@ static int cmd_mkfindings(const char *workspace, const char *study_hex,
     char hex[65];
     fix_hex(root, hex);
     printf("FINDINGS_ROOT=%s\n", hex);
+    return 0;
+}
+
+/* mkfindings-emit: compose the identical deterministic findings wire but do
+ * NOT touch the CAS — print the wire so the caller admits it through the
+ * zcode.science.findings.plan|commit leaves (the G4 command-leaf path the
+ * acceptance proof exercises). */
+static int cmd_mkfindings_emit(const char *study_hex, const char *task_hex,
+                               const char *candidate_hex,
+                               const char *result_hex, int64_t created_unix,
+                               uint8_t salt)
+{
+    struct vcs_zcode_science_findings_v1 findings;
+    fix_compose_findings(study_hex, task_hex, candidate_hex, result_hex,
+                         created_unix, salt, &findings);
+    uint8_t wire[VCS_ZCODE_SCIENCE_FINDINGS_WIRE_BYTES];
+    uint8_t root[32];
+    if (vcs_zcode_science_findings_serialize(&findings, wire) !=
+            VCS_ZCODE_SCIENCE_OK ||
+        vcs_zcode_science_findings_root(&findings, root) !=
+            VCS_ZCODE_SCIENCE_OK)
+        fix_die("findings wire failed");
+    char hex[65];
+    fix_hex(root, hex);
+    printf("FINDINGS_ROOT=%s\n", hex);
+    printf("FINDINGS_WIRE_HEX=");
+    for (size_t i = 0; i < sizeof(wire); i++)
+        printf("%02x", wire[i]);
+    printf("\n");
     return 0;
 }
 
@@ -681,6 +720,8 @@ static int fix_usage(void)
             "  zcode_science_fixture seed-context <workspace> <salt>\n"
             "  zcode_science_fixture mkfindings <workspace> <study> <task>"
             " <candidate> <result> <created_unix> <salt>\n"
+            "  zcode_science_fixture mkfindings-emit <study> <task>"
+            " <candidate> <result> <created_unix> <salt>\n"
             "  zcode_science_fixture mkreview <task> <candidate> <findings>"
             " <created_unix> <sequence> <salt>\n"
             "  zcode_science_fixture mkvote <property_root> <expires_unix>"
@@ -702,6 +743,9 @@ int main(int argc, char **argv)
     if (strcmp(cmd, "mkfindings") == 0 && argc == 9)
         return cmd_mkfindings(argv[2], argv[3], argv[4], argv[5], argv[6],
                               atoll(argv[7]), (uint8_t)atoi(argv[8]));
+    if (strcmp(cmd, "mkfindings-emit") == 0 && argc == 8)
+        return cmd_mkfindings_emit(argv[2], argv[3], argv[4], argv[5],
+                                   atoll(argv[6]), (uint8_t)atoi(argv[7]));
     if (strcmp(cmd, "mkreview") == 0 && argc == 8)
         return cmd_mkreview(argv[2], argv[3], argv[4], atoll(argv[5]),
                             (uint64_t)strtoull(argv[6], NULL, 10),
