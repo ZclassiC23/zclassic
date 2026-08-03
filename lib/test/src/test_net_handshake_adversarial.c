@@ -701,8 +701,35 @@ static int test_honest_handshake_completes(void)
         struct hs_capture cap;
         hs_capture_sent(f.peer_fd, &cap);
         ASSERT(hs_captured_has_command(&cap, "verack"));
+        ssize_t version_at = hs_find_command_header(&cap, "version");
+        ssize_t verack_at = hs_find_command_header(&cap, "verack");
+        ASSERT(version_at >= 0);
+        ASSERT(verack_at > version_at);
 
         stream_free(&version_payload);
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Noise XX sends msg1 before the ordinary message loop runs.  That raw
+ * handshake traffic must not suppress the version message. */
+static int test_outbound_version_after_transport_bytes(void)
+{
+    int failures = 0;
+    TEST("handshake: outbound version follows pre-version transport bytes") {
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, false));
+        f.node.send_bytes = 32; /* Noise XX msg1 was already written. */
+
+        ASSERT(msg_send_messages(&f.mp, &f.node, false));
+        ASSERT(f.node.state == PEER_VERSION_SENT);
+
+        struct hs_capture cap;
+        hs_capture_sent(f.peer_fd, &cap);
+        ASSERT(hs_captured_has_command(&cap, "version"));
+
         hs_fixture_teardown(&f);
         PASS();
     } _test_next:;
@@ -901,6 +928,7 @@ int test_net_handshake_adversarial(void)
     failures += test_addr_timestamp_sanitization_rule();
     failures += test_oversized_user_agent_rejected();
     failures += test_honest_handshake_completes();
+    failures += test_outbound_version_after_transport_bytes();
     failures += test_mempool_requested_once_for_relay_peer();
     failures += test_mempool_not_requested_for_non_relay_peer();
     failures += test_mempool_not_requested_during_ibd();

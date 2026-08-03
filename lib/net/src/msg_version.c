@@ -379,10 +379,15 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
                     (int)strlen(node->addr_name), node->time_offset);
     }
 
-    push_verack(mp, node);
-
+    /* An inbound peer must send its version before its verack.  Sending the
+     * verack first lets an outbound peer mark the handshake complete before
+     * it has processed our advertised service bits; its following version is
+     * then treated as a duplicate and the one-shot v2 capability upgrade can
+     * never run.  Both messages use the same ordered send queue. */
     if (node->inbound)
         push_version(mp, node);
+
+    push_verack(mp, node);
 
     /* Publish immutable handshake metadata before the release transition to
      * HANDSHAKE_COMPLETE.  Diagnostic readers use an acquire state load as
