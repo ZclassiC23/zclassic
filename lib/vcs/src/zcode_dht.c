@@ -31,6 +31,8 @@ const char *vcs_zcode_dht_error_string(enum vcs_zcode_dht_error error)
     case VCS_ZCODE_DHT_ERR_WIRE_SIZE: return "wire-size";
     case VCS_ZCODE_DHT_ERR_WIRE_MAGIC: return "wire-magic";
     case VCS_ZCODE_DHT_ERR_WIRE_ORDER: return "entry-order";
+    case VCS_ZCODE_DHT_ERR_WIRE_KIND: return "wire-kind";
+    case VCS_ZCODE_DHT_ERR_QUERY_ID: return "query-id-zero";
     }
     return "unknown";
 }

@@ -38,6 +38,8 @@ enum vcs_zcode_dht_error {
     VCS_ZCODE_DHT_ERR_WIRE_SIZE,
     VCS_ZCODE_DHT_ERR_WIRE_MAGIC,
     VCS_ZCODE_DHT_ERR_WIRE_ORDER,
+    VCS_ZCODE_DHT_ERR_WIRE_KIND,
+    VCS_ZCODE_DHT_ERR_QUERY_ID,
 };
 
 const char *vcs_zcode_dht_error_string(enum vcs_zcode_dht_error error);
