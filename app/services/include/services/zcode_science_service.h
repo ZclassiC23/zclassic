@@ -124,4 +124,52 @@ struct zcl_result zcode_science_rebuild(
     struct node_db *ndb, const char *workspace, int64_t now,
     struct zcode_science_rebuild_out *out);
 
+/* ── G1 carrier: science objects over the blob swarm ───────────────── */
+
+struct vcs_package_store;
+
+/* The wire kinds science_identify/publish/admit recognise, as stable
+ * operator-visible tokens. */
+#define ZCODE_SCIENCE_KIND_STUDY        "study"
+#define ZCODE_SCIENCE_KIND_RESULT_V1    "result_v1"
+#define ZCODE_SCIENCE_KIND_RESULT_V2    "result_v2"
+#define ZCODE_SCIENCE_KIND_REPRODUCTION "reproduction"
+#define ZCODE_SCIENCE_KIND_FINDINGS     "findings"
+#define ZCODE_SCIENCE_KIND_REVIEW       "review"
+#define ZCODE_SCIENCE_KIND_VOTE         "vote"
+#define ZCODE_SCIENCE_KIND_PROFILE      "hardware_profile"
+#define ZCODE_SCIENCE_KIND_METHOD       "benchmark_method"
+#define ZCODE_SCIENCE_KIND_CAP 24
+
+/* publish: mirror a committed science wire from the workspace CAS into
+ * the package store as a one-chunk blob (vcs/blob_store.h), so the
+ * package swarm carries it to peers. The wire is re-parsed, re-validated,
+ * and its canonical root re-derived and compared against the requested
+ * science root BEFORE mirroring — a corrupted or non-science CAS object
+ * fails by name, never publishes. Returns the blob transport root in
+ * out_blob_root (the science root stays the semantic address) and the
+ * kind token in out_kind. Dual addressing is deliberate: blob root =
+ * transport, science root = meaning, re-derived at admit time. */
+struct zcl_result zcode_science_publish(
+    struct vcs_package_store *store, const char *workspace,
+    const char *science_root_hex,
+    char out_blob_root[65], char out_kind[ZCODE_SCIENCE_KIND_CAP]);
+
+/* admit: the receive half of the G1 carrier. Loads a blob from the
+ * package store (fetch it first — vcs_blob_fetch / the swarm), identifies
+ * the science wire by exact (magic, length), re-derives its canonical
+ * root FROM THE BYTES (never trusted from any claim), stores it in the
+ * workspace CAS addressed by that root, and refreshes the SQL projection
+ * through the proven rebuild path. Idempotent: admitting an object the
+ * CAS already holds succeeds with *out_new=false. Structural validation
+ * only — first-party cryptographic identity checks (vote seals against
+ * an EXPECTED network/zid/signer) stay at submit time; consumers
+ * re-verify at read. Expiry gates first-party submission, never the
+ * admission of valid historical evidence. */
+struct zcl_result zcode_science_admit(
+    struct vcs_package_store *store, struct node_db *ndb,
+    const char *workspace, const char *blob_root_hex, int64_t now,
+    char out_science_root[65], char out_kind[ZCODE_SCIENCE_KIND_CAP],
+    bool *out_new);
+
 #endif /* ZCL_SERVICES_ZCODE_SCIENCE_SERVICE_H */

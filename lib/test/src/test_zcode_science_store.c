@@ -32,7 +32,9 @@
 #include "crypto/ed25519.h"
 #include "models/database.h"
 #include "services/zcode_science_service.h"
+#include "vcs/blob_store.h"
 #include "vcs/build_action.h"
+#include "vcs/package_store.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_science.h"
@@ -1053,6 +1055,195 @@ static int test_zstore_votes(void)
     return failures;
 }
 
+/* ── 7: publish mirrors a committed wire into the blob carrier ─────── */
+
+static int test_zstore_publish(void)
+{
+    int failures = 0;
+    TEST("zcode_science_store: publish mirrors CAS wires into the blob carrier") {
+        struct node_db ndb = {0};
+        char dir[ZSTORE_DIR_CAP];
+        ASSERT(zstore_setup(&ndb, dir, sizeof(dir)));
+        char sdir[ZSTORE_DIR_CAP];
+        int n = snprintf(sdir, sizeof(sdir), "test-tmp/zcode_pubstore_%d_%d",
+                         (int)getpid(), g_zstore_seq++);
+        ASSERT(n > 0 && (size_t)n < sizeof(sdir));
+        {
+            char cmd[ZSTORE_DIR_CAP * 2 + 32];
+            n = snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'",
+                         sdir, sdir);
+            ASSERT(n > 0 && (size_t)n < sizeof(cmd) && system(cmd) == 0);
+        }
+        struct vcs_package_store *store =
+            vcs_package_store_open(sdir, UINT64_C(4) * 1024 * 1024);
+        ASSERT(store != NULL);
+        /* Commit a study so its wire sits in the workspace CAS. */
+        struct vcs_zcode_study_spec_v1 study;
+        zstore_study(&study);
+        uint8_t wire[VCS_ZCODE_STUDY_SPEC_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_study_spec_serialize(&study, wire),
+                  VCS_ZCODE_SCIENCE_OK);
+        struct zcode_science_plan_out plan;
+        struct zcode_science_commit_out commit;
+        ASSERT(zcode_science_study_plan(&ndb, dir, wire, sizeof(wire), 1500,
+                                        &plan).ok);
+        ASSERT(zcode_science_study_commit(&ndb, dir, wire, sizeof(wire),
+                                          true, 1500, &commit).ok);
+        /* Publish: the blob transport root is the pure root of the same
+         * bytes; the science root stays the semantic address. */
+        char blob_hex[65], kind[ZCODE_SCIENCE_KIND_CAP];
+        ASSERT(zcode_science_publish(store, dir, commit.result_root,
+                                     blob_hex, kind).ok);
+        ASSERT_STR_EQ(kind, ZCODE_SCIENCE_KIND_STUDY);
+        uint8_t pure_root[32];
+        ASSERT_EQ(vcs_blob_root_of(wire, sizeof(wire), pure_root),
+                  VCS_BLOB_OK);
+        char pure_hex[65];
+        zcl_hex_encode(pure_root, 32, pure_hex);
+        ASSERT_STR_EQ(blob_hex, pure_hex);
+        /* Round-trip: the carrier returns the exact science wire. */
+        uint8_t got[VCS_ZCODE_STUDY_SPEC_WIRE_BYTES];
+        size_t got_len = 0;
+        ASSERT_EQ(vcs_blob_get_from(store, pure_root, got, sizeof(got),
+                                    &got_len), VCS_BLOB_OK);
+        ASSERT_EQ(got_len, sizeof(wire));
+        ASSERT(memcmp(got, wire, sizeof(wire)) == 0);
+        /* Idempotent: re-publish yields the same transport root. */
+        char blob2[65], kind2[ZCODE_SCIENCE_KIND_CAP];
+        ASSERT(zcode_science_publish(store, dir, commit.result_root,
+                                     blob2, kind2).ok);
+        ASSERT_STR_EQ(blob2, blob_hex);
+        /* Named negatives. */
+        char absent[65];
+        memset(absent, 'a', 64);
+        absent[64] = '\0';
+        ASSERT(!zcode_science_publish(store, dir, absent, blob2,
+                                      kind2).ok); /* not in CAS */
+        ASSERT(!zcode_science_publish(store, dir, "zz", blob2,
+                                      kind2).ok); /* bad hex */
+        /* A CAS object that is not a science wire never publishes. */
+        uint8_t garbage[64], garbage_addr[32];
+        memset(garbage, 0xAB, sizeof(garbage));
+        memset(garbage_addr, 0xCD, 32);
+        ASSERT(vcs_object_put_addressed(dir, garbage_addr, garbage,
+                                        sizeof(garbage)));
+        char garbage_hex[65];
+        zcl_hex_encode(garbage_addr, 32, garbage_hex);
+        ASSERT(!zcode_science_publish(store, dir, garbage_hex, blob2,
+                                      kind2).ok); /* cas-corrupt */
+        ASSERT(!zcode_science_publish(NULL, dir, commit.result_root,
+                                      blob2, kind2).ok); /* null store */
+        vcs_package_store_close(store);
+        zstore_teardown(&ndb, dir);
+        {
+            char cmd[ZSTORE_DIR_CAP + 16];
+            n = snprintf(cmd, sizeof(cmd), "rm -rf '%s'", sdir);
+            if (n > 0 && (size_t)n < sizeof(cmd))
+                (void)system(cmd);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── 8: admit receives a blob-carried wire into CAS + projection ───── */
+
+static int test_zstore_admit(void)
+{
+    int failures = 0;
+    TEST("zcode_science_store: admit derives the science root from blob bytes") {
+        /* Node A: commit + publish. */
+        struct node_db ndb_a = {0};
+        char dir_a[ZSTORE_DIR_CAP];
+        ASSERT(zstore_setup(&ndb_a, dir_a, sizeof(dir_a)));
+        char sdir[ZSTORE_DIR_CAP];
+        int n = snprintf(sdir, sizeof(sdir), "test-tmp/zcode_admstore_%d_%d",
+                         (int)getpid(), g_zstore_seq++);
+        ASSERT(n > 0 && (size_t)n < sizeof(sdir));
+        {
+            char cmd[ZSTORE_DIR_CAP * 2 + 32];
+            n = snprintf(cmd, sizeof(cmd), "rm -rf '%s' && mkdir -p '%s'",
+                         sdir, sdir);
+            ASSERT(n > 0 && (size_t)n < sizeof(cmd) && system(cmd) == 0);
+        }
+        struct vcs_package_store *store =
+            vcs_package_store_open(sdir, UINT64_C(4) * 1024 * 1024);
+        ASSERT(store != NULL);
+        struct vcs_zcode_study_spec_v1 study;
+        zstore_study(&study);
+        uint8_t wire[VCS_ZCODE_STUDY_SPEC_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_study_spec_serialize(&study, wire),
+                  VCS_ZCODE_SCIENCE_OK);
+        struct zcode_science_plan_out plan;
+        struct zcode_science_commit_out commit;
+        ASSERT(zcode_science_study_plan(&ndb_a, dir_a, wire, sizeof(wire),
+                                        1500, &plan).ok);
+        ASSERT(zcode_science_study_commit(&ndb_a, dir_a, wire, sizeof(wire),
+                                          true, 1500, &commit).ok);
+        char blob_hex[65], pub_kind[ZCODE_SCIENCE_KIND_CAP];
+        ASSERT(zcode_science_publish(store, dir_a, commit.result_root,
+                                     blob_hex, pub_kind).ok);
+        /* Node B: a fresh workspace + projection, nothing in CAS. */
+        struct node_db ndb_b = {0};
+        char dir_b[ZSTORE_DIR_CAP];
+        ASSERT(zstore_setup(&ndb_b, dir_b, sizeof(dir_b)));
+        struct db_zcode_science_entry row;
+        bool found = true;
+        ASSERT(zcode_science_study_show(&ndb_b, commit.result_root, &row,
+                                        &found).ok);
+        ASSERT(!found);
+        /* Admit: the science root comes from the blob BYTES, and the
+         * object lands in B's CAS and projection. */
+        char science_hex[65], kind[ZCODE_SCIENCE_KIND_CAP];
+        bool is_new = false;
+        ASSERT(zcode_science_admit(store, &ndb_b, dir_b, blob_hex, 1500,
+                                   science_hex, kind, &is_new).ok);
+        ASSERT(is_new);
+        ASSERT_STR_EQ(kind, ZCODE_SCIENCE_KIND_STUDY);
+        ASSERT_STR_EQ(science_hex, commit.result_root);
+        found = false;
+        ASSERT(zcode_science_study_show(&ndb_b, commit.result_root, &row,
+                                        &found).ok);
+        ASSERT(found);
+        ASSERT_EQ(row.created_at, study.created_unix);
+        ASSERT_EQ(zstore_cas_object_count(dir_b), 1);
+        /* Idempotent: re-admit reports not-new, one CAS object. */
+        is_new = true;
+        ASSERT(zcode_science_admit(store, &ndb_b, dir_b, blob_hex, 1500,
+                                   science_hex, kind, &is_new).ok);
+        ASSERT(!is_new);
+        ASSERT_EQ(zstore_cas_object_count(dir_b), 1);
+        /* Named negatives. */
+        char absent[65];
+        memset(absent, 'b', 64);
+        absent[64] = '\0';
+        ASSERT(!zcode_science_admit(store, &ndb_b, dir_b, absent, 1500,
+                                    science_hex, kind, &is_new).ok);
+        /* A blob that is not a science wire is refused by name. */
+        uint8_t garbage[64];
+        memset(garbage, 0xAB, sizeof(garbage));
+        uint8_t garbage_root[32];
+        ASSERT_EQ(vcs_blob_put_to(store, garbage, sizeof(garbage),
+                                  garbage_root), VCS_BLOB_OK);
+        char garbage_hex[65];
+        zcl_hex_encode(garbage_root, 32, garbage_hex);
+        ASSERT(!zcode_science_admit(store, &ndb_b, dir_b, garbage_hex, 1500,
+                                    science_hex, kind, &is_new).ok);
+        ASSERT_EQ(zstore_cas_object_count(dir_b), 1);
+        vcs_package_store_close(store);
+        zstore_teardown(&ndb_a, dir_a);
+        zstore_teardown(&ndb_b, dir_b);
+        {
+            char cmd[ZSTORE_DIR_CAP + 16];
+            n = snprintf(cmd, sizeof(cmd), "rm -rf '%s'", sdir);
+            if (n > 0 && (size_t)n < sizeof(cmd))
+                (void)system(cmd);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_science_store(void)
 {
     int failures = 0;
@@ -1062,5 +1253,7 @@ int test_zcode_science_store(void)
     failures += test_zstore_evidence();
     failures += test_zstore_review_retraction();
     failures += test_zstore_votes();
+    failures += test_zstore_publish();
+    failures += test_zstore_admit();
     return failures;
 }

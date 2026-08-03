@@ -401,7 +401,7 @@ projection rebuild checks where applicable, and no deployment.
 | S3 | CAS storage, rebuildable science projection, study/work/review/vote plan-commit services and commands | S1, S2 | **landed 2026-08-03 `bbe7f401f`**, main session — `lib/vcs/src/zcode_science_index.c(+h)`, `app/services/src/zcode_science_service.c(+h)`, app/models science projection tables (schema bump 48→49 + validator pin 26→27), `tools/command/native_zcode_science_command.c`, `config/commands/zcode_science.def`, `lib/test/src/test_zcode_science_store.c` |
 | S4 | Closed benchmark/reproduction executors and environment/raw-sample receipts | S1, recipe-derived build graph | **landed 2026-08-03 `08c858042`**, main session — `lib/vcs/src/hardware_profile.c(+h)`, `lib/vcs/src/benchmark_method.c(+h)`, benchmark/reproduction executors + receipt codecs, `zcode.science.work.execute` (additive in `config/commands/zcode_science.def`), `lib/test/src/test_zcode_benchmark_exec.c` |
 | S5 | Deterministic discovery PageRank and golden graphs | S1, S3 | pure core implemented 2026-08-02, primary; **projection/command adapter landed 2026-08-03 `44afe2952`**, main session — `lib/vcs/src/zcode_discovery_projection.c(+h)`, `zcode.science.discover` + `zcode.science.rank.snapshot` commands (additive def), `lib/test/src/test_zcode_discovery_projection.c` — pure core files untouched |
-| S2–S5 v1 acceptance proof | Two-node end-to-end acceptance: preregister → execute → reproduce → findings/review → discover → restart both nodes → rebuild from CAS hashes | S2–S5 | **landed 2026-08-03**, main session — `tools/dev/science_acceptance.sh` (opt-in `make test-science-acceptance`, NOT in `make ci`), `tools/zcode_science_fixture.c`, `zcode.science.rebuild` operator leaf (def + handler + registry int-pin glue). Run 1 PASS including the headline: both nodes SIGTERM + cold boot, `zcode.science.rebuild` byte-identical even after direct SQL wipe of the six projection tables; CAS object count unchanged. Named gaps asserted honestly, not faked: G1 science CAS objects have no node-to-node carrier (S6/S7 territory); G3 rebuild had no operator surface (closed by this slice); G4 findings/context objects have no command-leaf admission yet (fixture seeds them). **G2 CLOSED 2026-08-03** (fresh-node swarm fetch stall) by three stacked fixes — NEW_USER bootstrap announce quota (`VCS_POLICY_FREE_ANNOUNCE_PER_HOUR` 4/h in `lib/vcs/include/vcs/package_policy.h`), deduped per-sync re-announce to every known peer in `boot_zcode_swarm_sync_membership` (engine dedupes per peer), and a supervisor clock-driven swarm (`net.zcode_swarm` child, 1 s period, in `boot_zcode_swarm_wire`) replacing the message-cycle-only tick that gave idle connections zero ticks; the acceptance script's package leg is now a hard regression gate |
+| S2–S5 v1 acceptance proof | Two-node end-to-end acceptance: preregister → execute → reproduce → findings/review → discover → restart both nodes → rebuild from CAS hashes | S2–S5 | **landed 2026-08-03**, main session — `tools/dev/science_acceptance.sh` (opt-in `make test-science-acceptance`, NOT in `make ci`), `tools/zcode_science_fixture.c`, `zcode.science.rebuild` operator leaf (def + handler + registry int-pin glue). Run 1 PASS including the headline: both nodes SIGTERM + cold boot, `zcode.science.rebuild` byte-identical even after direct SQL wipe of the six projection tables; CAS object count unchanged. Named gaps asserted honestly, not faked: G3 rebuild had no operator surface (closed by this slice); G4 findings/context objects have no command-leaf admission yet (fixture seeds them). **G1 CLOSED 2026-08-03** — science objects ride the blob swarm: `zcode.science.publish` mirrors a committed wire into the package store as a one-chunk blob, `zcode.science.fetch` schedules + admits it with science-root re-derivation (never trusting the claimed root); the acceptance run proves A's study lands on B with identical root/kind and `study.show found=true`. The standing limit is recorded under "G1 carrier decision": blob root travels out of band until S6/S7 DHT. **G2 CLOSED 2026-08-03** (fresh-node swarm fetch stall) by three stacked fixes — NEW_USER bootstrap announce quota (`VCS_POLICY_FREE_ANNOUNCE_PER_HOUR` 4/h in `lib/vcs/include/vcs/package_policy.h`), deduped per-sync re-announce to every known peer in `boot_zcode_swarm_sync_membership` (engine dedupes per peer), and a supervisor clock-driven swarm (`net.zcode_swarm` child, 1 s period, in `boot_zcode_swarm_wire`) replacing the message-cycle-only tick that gave idle connections zero ticks; the acceptance script's package leg is now a hard regression gate |
 | S6 | Read-only Noise-bound DHT, persisted contacts, diagnostic dumper | S2 | unclaimed |
 | S7 | Provider STORE, signed acknowledgements, replication/publish/fetch adapters and REST views | S6 | unclaimed |
 | S8 | Evidence checkpoints and ZANC anchors | S2, S7 | unclaimed |
@@ -469,14 +469,24 @@ path, so "reproduce on a second node" cannot work for real. Investigated
   address). The *science root* (`SHA3(domain‖wire)`) stays the semantic
   address and is re-derived from the fetched bytes at admit time — never
   trusted from a claim. The swarm's manifest verification is untouched.
-- Planned surface: `zcode_science_publish()` / `zcode_science_admit()` in
-  `app/services/src/zcode_science_service.c`; `zcode.science.publish` and
-  `zcode.science.fetch` leaves (def + handlers); two-engine round-trip
-  tests; then flip the G1 assertion in `tools/dev/science_acceptance.sh`
-  into a positive proof.
-- Honest limit: the fetcher must learn the *blob root* out of band (the
-  acceptance script already passes roots this way). Automatic root
-  discovery is S6/S7 DHT territory — do not fake it earlier.
+- **CLOSED 2026-08-03**, implemented exactly as recorded above and proven
+  node-to-node: `zcode_science_publish()` / `zcode_science_admit()` in
+  `app/services/src/zcode_science_carrier.c` (publish: CAS load → wire
+  identify → root compare → `vcs_blob_put_to`; admit: `vcs_blob_get_from`
+  → identify → idempotent `put_addressed` → full `zcode_science_rebuild`
+  for the projection), kind tokens + `science_identify_wire()` covering
+  all nine wire types (review/vote share len 219, split by magic),
+  `zcode.science.publish` / `zcode.science.fetch` leaves (def + handlers
+  mirroring `zcode.package.fetch`'s live-store-first / one-shot-store
+  pattern), round-trip tests in `lib/test/src/test_zcode_science_store.c`,
+  and the acceptance script's G1 leg flipped to a positive proof:
+  node A publishes its study pre-restart, node B schedules the fetch and
+  — post-restart, with the hosting node's announce live — admits the
+  blob, re-derives the identical science root and kind, and
+  `study.show found=true` on B. `make test-science-acceptance` PASS.
+- Honest limit (standing): the fetcher must learn the *blob root* out of
+  band (the acceptance script passes roots this way). Automatic root
+  discovery is S6/S7 DHT territory — not faked earlier.
 - A science object >8 KiB (e.g. a large raw-sample manifest) needs a real
   multi-chunk package, not a blob — defer until such an object exists.
 

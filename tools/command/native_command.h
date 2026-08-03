@@ -397,6 +397,18 @@ void zcl_native_handle_zcode_science_rank_snapshot(
 void zcl_native_handle_zcode_science_rebuild(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* G1 carrier: science objects ride the package swarm as one-chunk blobs
+ * (vcs/blob_store.h). publish mirrors a committed CAS wire into the
+ * package store (blob root = transport address, science root = semantic
+ * address, re-derived at admit); fetch schedules the swarm download and
+ * admits the bytes (re-derive root, CAS, projection) once local. Handlers
+ * live in native_zcode_science_command.c. */
+void zcl_native_handle_zcode_science_publish(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_science_fetch(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_yardsale_seller_arm(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

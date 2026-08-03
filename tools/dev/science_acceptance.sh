@@ -52,13 +52,15 @@
 #        object count unchanged throughout.
 #
 # NAMED GAPS (asserted, not worked around — a named gap is a deliverable):
-#   G1  Science CAS objects (study_spec, results, reproductions, findings,
-#       reviews, votes) have NO node-to-node distribution: the zpkgswm
-#       swarm serves only content.v2 package manifests/chunks out of the
-#       package store, and nothing admits science wires into that store or
-#       carries a science root to a peer. Therefore the plan's "B resolves
-#       the study closure FROM A" and "B reproduces A's benchmark" cannot
-#       run node-to-node today; B runs an independent lifecycle instead.
+#   G1  CLOSED. Science CAS objects had no node-to-node path; the carrier
+#       is now the blob swarm (vcs/blob_store.h): zcode.science.publish
+#       mirrors a committed wire into the package store as a one-chunk
+#       content.v2 blob, the clock-driven swarm announces and delivers it,
+#       and zcode.science.fetch re-derives the science root FROM THE BYTES
+#       and admits it into the receiver's CAS + projection. This proof
+#       ships A's study to B below. Honest limit, by design: the receiver
+#       learns the blob root OUT OF BAND (this script passes it) —
+#       automatic root discovery is S6/S7 DHT territory.
 #   G2  CLOSED. The fresh-node package fetch stalled for three stacked
 #       reasons, each fixed and covered by this proof's package leg:
 #       (a) the frozen policy table gave NEW_USER 0 announces/hour, so the
@@ -537,8 +539,8 @@ run_lifecycle "$SA_DD_B" 29 "B"
 B_STUDY="$L_STUDY"; B_RA="$L_RA"; B_PA="$L_PA"
 [ "$B_STUDY" != "$A_STUDY" ] || sa_die "A and B minted the same study root"
 
-# ── [8] GAP G1 assertions: A's science objects never reached B ────────
-sa_step 8 "G1: assert A's science CAS objects have no node-to-node path"
+# ── [8] No-automatic-carrier assertions: nothing crosses unpublished ──
+sa_step 8 "no automatic carrier: A's science objects have not reached B"
 [ "$("$FIX" cas-has "$SA_DD_B/zcode" "$A_STUDY" | grep -c 'PRESENT=0')" = "1" ] \
     || sa_die "A's study wire unexpectedly present in B's CAS"
 [ "$("$FIX" cas-has "$SA_DD_B/zcode" "$A_RA" | grep -c 'PRESENT=0')" = "1" ] \
@@ -554,7 +556,7 @@ case "$(sa_jget "$out" 'd["error"]["message"]')" in
     executor-study-not-in-cas*) : ;;
     *) sa_die "B's refusal named the wrong rule: $out" ;;
 esac
-echo "science-acceptance:     G1 confirmed: B refuses A's study with executor-study-not-in-cas; no science object crossed the wire"
+echo "science-acceptance:     no automatic carrier confirmed: B refuses A's study with executor-study-not-in-cas; nothing crosses unpublished"
 
 # ── [9] PACKAGE LEG: B's swarm fetch of A's package ───────────────────
 sa_step 9 "package leg: poll B's store for the swarm fetch (budget ${PKG_WAIT}s)"
@@ -581,6 +583,22 @@ else
     sa_die "package leg stalled: G2 regressed"
 fi
 
+# ── [9b] G1 CARRIER, publish side: A mirrors its study into a blob ────
+sa_step 9b "G1 carrier: A publishes its study as a swarm blob"
+out="$(sa_sci "$SA_DD_A" zcode.science.publish "{\"root\":\"$A_STUDY\"}")"
+[ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "A science publish failed: $out"
+BLOB_ROOT="$(sa_jget "$out" 'd["data"]["blob_root"]')"
+[ "$(sa_jget "$out" 'd["data"]["kind"]')" = "study" ] \
+    || sa_die "publish reported the wrong kind: $out"
+echo "science-acceptance:     A published study ${A_STUDY:0:16}… as blob ${BLOB_ROOT:0:16}… (one-shot store persist; A announces it from its next store open)"
+# B schedules the download now (one-shot: persists the resumable record);
+# the [10] restart lets A's store rescan announce the blob and B's live
+# engine resume the record and pull it.
+out="$(sa_sci "$SA_DD_B" zcode.science.fetch "{\"blob_root\":\"$BLOB_ROOT\",\"now_unix\":$NOW_STUDY}")"
+[ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "B science fetch schedule failed: $out"
+[ "$(sa_jget "$out" 'd["data"]["admitted"]')" = "False" ] \
+    || sa_die "B admitted a blob it could not have downloaded yet"
+
 # ── [10] restart both nodes (SIGTERM, cold boot, same datadirs) ───────
 sa_step 10 "SIGTERM both nodes; cold boot same datadirs; topology re-forms"
 sa_kill_group "$SA_PGID_A" TERM
@@ -600,6 +618,30 @@ pc_b="$(sa_peer_count "$SA_DD_B" "$B_RPC")"
     || sa_die "topology did not re-form after restart (A=$pc_a B=$pc_b)"
 echo "science-acceptance:     both nodes cold-booted; topology A<->B restored"
 
+# ── [10b] G1 CARRIER, receive side: B admits A's study from the blob ──
+sa_step 10b "G1 carrier: poll B's admit of A's study (budget ${PKG_WAIT}s)"
+ADMITTED=0
+deadline=$(( $(date +%s) + PKG_WAIT ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    out="$(sa_sci "$SA_DD_B" zcode.science.fetch "{\"blob_root\":\"$BLOB_ROOT\",\"now_unix\":$NOW_STUDY}")"
+    [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] \
+        && [ "$(sa_jget "$out" 'd["data"]["admitted"]')" = "True" ] \
+        && { ADMITTED=1; break; }
+    sleep 3
+done
+[ "$ADMITTED" = "1" ] \
+    || { echo "science-acceptance:     G1 REGRESSION: B never admitted A's study blob (last reply: $out)" >&2
+         grep -m5 -i "zcode swarm\|blob" "$SA_DD_B/node.log" 2>/dev/null | sed 's/^/science-acceptance:       B log: /' >&2 || true
+         sa_die "G1 carrier stalled"; }
+[ "$(sa_jget "$out" 'd["data"]["science_root"]')" = "$A_STUDY" ] \
+    || sa_die "B admitted the wrong science root: $out"
+[ "$(sa_jget "$out" 'd["data"]["kind"]')" = "study" ] \
+    || sa_die "B admitted the wrong kind: $out"
+out="$(sa_sci "$SA_DD_B" zcode.science.study.show "{\"study_root\":\"$A_STUDY\"}")"
+[ "$(sa_jget "$out" 'd["data"]["found"]')" = "True" ] \
+    || sa_die "B study.show does not serve A's admitted study"
+echo "science-acceptance:     G1 carrier PROVEN: A's study crossed node-to-node as blob ${BLOB_ROOT:0:16}…; B re-derived the science root from the bytes and projected it"
+
 # ── [11] HEADLINE: reconstruct every object and receipt from hashes ────
 sa_step 11 "rebuild-equivalence + SQL-wipe reconstruction on BOTH nodes"
 rebuild_proof "$SA_DD_A" "A" "$A_STUDY" "$A_RA" "$A_PA"
@@ -608,7 +650,10 @@ rebuild_proof "$SA_DD_B" "B" "$B_STUDY" "$B_RA" "$B_PA"
 # ── verdict ────────────────────────────────────────────────────────────
 echo "science-acceptance: ─────────────────────────────────────────────"
 echo "science-acceptance: NAMED GAPS (asserted, not worked around):"
-echo "science-acceptance:   G1 science CAS objects have no node-to-node distribution (no publisher, no root carrier)"
+echo "science-acceptance:   G1 CLOSED (gated): A's study crossed node-to-node as a swarm blob —"
+echo "science-acceptance:       zcode.science.publish (CAS→blob mirror) + zcode.science.fetch"
+echo "science-acceptance:       (swarm download → root re-derived from bytes → CAS + projection)."
+echo "science-acceptance:       Honest limit: the blob root moves out of band (S6/S7 DHT discovery)."
 echo "science-acceptance:   G2 CLOSED (gated): fresh-node swarm fetch proven node-to-node —"
 echo "science-acceptance:       NEW_USER bootstrap announce quota (4/h) + deduped per-sync re-announce"
 echo "science-acceptance:       + supervisor clock-driven swarm (net.zcode_swarm, 1 s)"

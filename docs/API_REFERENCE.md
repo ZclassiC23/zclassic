@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 462 |
+| Registry entries (branches + leaves) | 464 |
 | Top-level roots | 11 |
 | Branches | 107 |
-| Leaves (dispatchable command paths) | 355 |
-| … `ready` (live handler in this build) | 307 |
+| Leaves (dispatchable command paths) | 357 |
+| … `ready` (live handler in this build) | 309 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 116 |
+| Leaves with `effect=mutate` | 118 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 82 |
 
@@ -86,7 +86,7 @@ Per source file:
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 21 | 4 | 17 |
 | `config/commands/zcode.def` | 71 | 16 | 55 |
-| `config/commands/zcode_science.def` | 20 | 6 | 14 |
+| `config/commands/zcode_science.def` | 22 | 6 | 16 |
 | `config/commands/metaverse.def` | 17 | 5 | 12 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
@@ -959,6 +959,8 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode science rebuild` | ready | mutate / app-write / operator · foreground/moderate | `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_rebuild.v1` | `zclassic23 zcode.science.rebuild --input='{"now_unix":1500}'` | Rebuild the science projection from the CAS |
+| `zcode science publish` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `datadir`, `workspace` | `zcl.zcode_science_publish.v1` | `zclassic23 zcode.science.publish --input='{"root":"<64hex>"}'` | Publish a science object to the swarm as a blob |
+| `zcode science fetch` | ready | mutate / app-write / operator · foreground/moderate | **`blob_root`**, `datadir`, `workspace`, `now_unix` | `zcl.zcode_science_fetch.v1` | `zclassic23 zcode.science.fetch --input='{"blob_root":"<64hex>"}'` | Fetch and admit a blob-carried science object |
 
 #### `zcode.science.study` — Preregistered study lifecycle
 

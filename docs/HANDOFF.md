@@ -15,6 +15,23 @@ tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 
 ## Current state
 
+**2026-08-03 — G1 (science objects have no node-to-node carrier) CLOSED.**
+`zcode.science.publish` mirrors a committed science wire into the package
+store as a one-chunk content.v2 blob (`vcs_blob_put_to`); the blob root is
+the transport address, the science root stays the semantic address and is
+re-derived from the fetched bytes at admit time — never trusted from a
+claim. `zcode.science.fetch` schedules the swarm fetch and admits the blob
+(`vcs_blob_get_from` → wire identify → idempotent `put_addressed` → full
+`zcode_science_rebuild`). Proven in `make test-science-acceptance`: node A
+publishes its study, node B fetches and admits it post-restart with the
+identical science root/kind and `study.show found=true`. Standing limit:
+the blob root travels out of band until S6/S7 DHT root discovery — not
+faked. Files: `app/services/src/zcode_science_carrier.c` (carrier;
+`zcode_science_service.h` declares publish/admit),
+`tools/command/native_zcode_science_command.c`,
+`config/commands/zcode_science.def`, `lib/test/src/test_zcode_science_store.c`,
+`tools/dev/science_acceptance.sh` (G1 leg flipped to positive proof).
+
 **2026-08-03 10:01 UTC — G2 (fresh-node swarm fetch stall) CLOSED on main**
 as `9e375d355`, verified by `make test-science-acceptance` (two fresh nodes;
 B fetched 5 chunks node-to-node and rederived the package root; both nodes

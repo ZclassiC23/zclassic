@@ -11,6 +11,10 @@
 #include "services/zcode_science_service.h"
 #include "util/safe_alloc.h"
 #include "vcs/build_action.h"
+#include "vcs/package_reward.h"
+#include "vcs/package_service.h"
+#include "vcs/package_store.h"
+#include "vcs/package_swarm_node.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -675,4 +679,172 @@ void zcl_native_handle_zcode_science_rebuild(
     (void)json_push_kv_int(&reply->data, "votes", (int64_t)rebuilt.votes);
     (void)json_push_kv_int(&reply->data, "reviews", (int64_t)rebuilt.reviews);
     (void)json_push_kv_str(&reply->data, "authority", "CANONICAL_CAS_WIRE");
+}
+
+/* ── G1 carrier: publish / fetch over the blob swarm ───────────────── */
+
+static bool zsci_store_for(const char *datadir, bool *live,
+                           struct vcs_package_store **out)
+{
+    *out = vcs_package_store_global();
+    *live = *out != NULL;
+    if (*out)
+        return true;
+    *out = vcs_package_store_open(datadir, vcs_package_store_quota_bytes());
+    return *out != NULL;
+}
+
+void zcl_native_handle_zcode_science_publish(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    const char *root_hex = zsci_str(request->input, "root");
+    if (!root_hex || strlen(root_hex) != 64) {
+        zsci_fail(reply, "BAD_ROOT",
+                  "root must be the 64-lowercase-hex science root of a "
+                  "committed object in the workspace CAS",
+                  "zcode.science.publish");
+        return;
+    }
+    const char *datadir = zsci_datadir(request->input);
+    char ws[ZSCI_PATH_MAX];
+    const char *workspace = zsci_workspace(request->input, ws, sizeof(ws));
+    if (!datadir || !workspace) {
+        zsci_fail(reply, "BAD_WORKSPACE",
+                  "datadir/workspace could not be resolved",
+                  "zcode.science.publish");
+        return;
+    }
+    bool live = false;
+    struct vcs_package_store *store = NULL;
+    if (!zsci_store_for(datadir, &live, &store)) {
+        zsci_fail_service(reply, "NO_STORE",
+                          "the package store failed to open",
+                          "zcode.science.publish");
+        return;
+    }
+    char blob_hex[65], kind[ZCODE_SCIENCE_KIND_CAP];
+    struct zcl_result published =
+        zcode_science_publish(store, workspace, root_hex, blob_hex, kind);
+    if (!live)
+        vcs_package_store_close(store);
+    if (!published.ok) {
+        zsci_fail_service(reply, "PUBLISH_REFUSED", published.message,
+                          "zcode.science.publish");
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "science_root", root_hex);
+    (void)json_push_kv_str(&reply->data, "blob_root", blob_hex);
+    (void)json_push_kv_str(&reply->data, "kind", kind);
+    (void)json_push_kv_bool(&reply->data, "live", live);
+    if (!live)
+        (void)json_push_kv_str(
+            &reply->data, "note",
+            "persisted to the on-disk package store; a hosting node picks "
+            "the blob package into its announce set the next time its "
+            "store opens (boot), then the clock-driven swarm carries it "
+            "to every connected peer");
+}
+
+void zcl_native_handle_zcode_science_fetch(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    const char *blob_hex = zsci_str(request->input, "blob_root");
+    uint8_t blob_root[32];
+    if (!blob_hex || strlen(blob_hex) != 64 ||
+        !zcl_hex_decode_lower(blob_hex, blob_root, 32)) {
+        zsci_fail(reply, "BAD_BLOB_ROOT",
+                  "blob_root must be the 64-lowercase-hex transport root "
+                  "returned by zcode.science.publish",
+                  "zcode.science.fetch");
+        return;
+    }
+    const char *datadir = zsci_datadir(request->input);
+    char ws[ZSCI_PATH_MAX];
+    const char *workspace = zsci_workspace(request->input, ws, sizeof(ws));
+    if (!datadir || !workspace) {
+        zsci_fail(reply, "BAD_WORKSPACE",
+                  "datadir/workspace could not be resolved",
+                  "zcode.science.fetch");
+        return;
+    }
+    char zcode_dir[ZSCI_PATH_MAX];
+    int zn = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
+    if (zn <= 0 || (size_t)zn >= sizeof(zcode_dir)) {
+        zsci_fail(reply, "BAD_WORKSPACE", "datadir path too long",
+                  "zcode.science.fetch");
+        return;
+    }
+    bool live_store = false;
+    struct vcs_package_store *store = NULL;
+    if (!zsci_store_for(datadir, &live_store, &store)) {
+        zsci_fail_service(reply, "NO_STORE",
+                          "the package store failed to open",
+                          "zcode.science.fetch");
+        return;
+    }
+    /* Schedule (or resume) the swarm download. Live engine first; the
+     * one-shot fallback only persists the resumable download record —
+     * the next -packagehost=1 boot replays it (same contract as
+     * zcode.package.fetch). */
+    struct vcs_swarm_engine *engine = vcs_swarm_engine_global();
+    bool live_engine = engine != NULL;
+    struct vcs_service_book *book = NULL;
+    if (!live_engine) {
+        book = vcs_service_book_load(zcode_dir);
+        engine = vcs_swarm_engine_create(store, book, zcode_dir, NULL, NULL);
+    }
+    enum vcs_swarm_fetch_result fr = VCS_SWARM_FETCH_NO_STORE;
+    if (engine) {
+        int64_t now = zsci_now(request->input);
+        fr = vcs_swarm_engine_fetch(engine, blob_root, now / 86400,
+                                    (uint64_t)now);
+    }
+    if (!live_engine && engine) {
+        vcs_swarm_engine_free(engine);
+        vcs_service_book_free(book);
+    }
+    if (fr != VCS_SWARM_FETCH_OK && fr != VCS_SWARM_FETCH_ALREADY_COMPLETE) {
+        if (!live_store)
+            vcs_package_store_close(store);
+        zsci_fail_service(reply, "FETCH_REFUSED",
+                          vcs_swarm_fetch_result_string(fr),
+                          "zcode.science.fetch");
+        return;
+    }
+    /* Admit whenever the blob's bytes are already local (already complete,
+     * or just downloaded by the live engine). Absent is not a failure —
+     * the download is scheduled; re-invoke after the swarm delivers. */
+    struct node_db ndb = {0};
+    bool db_open = zsci_open_db(datadir, &ndb);
+    char science_hex[65] = {0}, kind[ZCODE_SCIENCE_KIND_CAP] = {0};
+    bool is_new = false;
+    struct zcl_result admitted = ZCL_ERR(-1, "science-admit-db-unavailable");
+    if (db_open) {
+        admitted = zcode_science_admit(store, &ndb, workspace, blob_hex,
+                                       zsci_now(request->input),
+                                       science_hex, kind, &is_new);
+        node_db_close(&ndb);
+    }
+    if (!live_store)
+        vcs_package_store_close(store);
+    (void)json_push_kv_str(&reply->data, "blob_root", blob_hex);
+    (void)json_push_kv_bool(&reply->data, "live", live_engine);
+    (void)json_push_kv_str(&reply->data, "result",
+                           vcs_swarm_fetch_result_string(fr));
+    (void)json_push_kv_bool(&reply->data, "admitted", admitted.ok);
+    if (admitted.ok) {
+        (void)json_push_kv_str(&reply->data, "science_root", science_hex);
+        (void)json_push_kv_str(&reply->data, "kind", kind);
+        (void)json_push_kv_bool(&reply->data, "new", is_new);
+    } else {
+        (void)json_push_kv_str(&reply->data, "admit_state",
+                               admitted.message);
+        (void)json_push_kv_str(
+            &reply->data, "note",
+            live_engine
+                ? "download scheduled on the live swarm; re-invoke once the blob completes to admit it"
+                : "no live engine: the resumable download record is persisted under <datadir>/zcode/downloads; the next -packagehost=1 boot downloads it, then re-invoke to admit");
+    }
 }
