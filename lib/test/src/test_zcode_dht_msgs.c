@@ -140,10 +140,12 @@ static int test_rejections(void)
                       &m, f.transcript, f.online_seed, wire, sizeof(wire), &len),
                   VCS_ZCODE_DHT_OK);
         struct vcs_zcode_dht_msg parsed;
+        int before_bounds = chain_calls;
         ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len - 1, &f.verify, &parsed),
                   VCS_ZCODE_DHT_ERR_WIRE_SIZE);
         ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len + 1, &f.verify, &parsed),
                   VCS_ZCODE_DHT_ERR_WIRE_SIZE);
+        ASSERT_EQ(chain_calls, before_bounds);
         wire[len - VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES - 1] ^= 1;
         ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &f.verify, &parsed),
                   VCS_ZCODE_DHT_ERR_SIGNATURE);

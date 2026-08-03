@@ -4,10 +4,14 @@
 
 #include "crypto/ed25519.h"
 #include "vcs/zcode_dht_delegation.h"
+#include "vcs/zcode_dht_identity.h"
 #include "zid/zendp.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static void fill32(uint8_t out[32], uint8_t v) { memset(out, v, 32); }
 
@@ -130,6 +134,56 @@ static int test_delegation_tamper(void)
     return failures;
 }
 
+static int test_delegation_identity_files(void)
+{
+    int failures = 0;
+    TEST("zcode dht delegation: identity files are atomic and mode-bound") {
+        char datadir[] = "/tmp/zcl_dht_identity_XXXXXX";
+        ASSERT(mkdtemp(datadir) != NULL);
+        uint8_t seed1[32], pub1[32], seed2[32], pub2[32];
+        char err[192];
+        ASSERT(vcs_zcode_dht_online_key_load_or_create(
+            datadir, seed1, pub1, err, sizeof(err)));
+        ASSERT(vcs_zcode_dht_online_key_load_or_create(
+            datadir, seed2, pub2, err, sizeof(err)));
+        ASSERT(memcmp(seed1, seed2, 32) == 0);
+        ASSERT(memcmp(pub1, pub2, 32) == 0);
+
+        struct vcs_zcode_dht_delegation original, loaded;
+        ASSERT(make_delegation(&original, 9, 1000, 2000, 0x22));
+        ASSERT(vcs_zcode_dht_delegation_save(
+            datadir, &original, err, sizeof(err)));
+        ASSERT(vcs_zcode_dht_delegation_load(
+            datadir, &loaded, err, sizeof(err)));
+        ASSERT_EQ(loaded.doc.seq, 9);
+        ASSERT(memcmp(loaded.doc.signature, original.doc.signature, 64) == 0);
+
+        char online_path[512], delegation_path[512], dht_dir[512];
+        snprintf(dht_dir, sizeof(dht_dir), "%s/zcode/dht", datadir);
+        snprintf(online_path, sizeof(online_path), "%s/%s", dht_dir,
+                 VCS_ZCODE_DHT_ONLINE_KEY_FILE);
+        snprintf(delegation_path, sizeof(delegation_path), "%s/%s", dht_dir,
+                 VCS_ZCODE_DHT_DELEGATION_FILE);
+        struct stat st;
+        ASSERT(stat(online_path, &st) == 0 && (st.st_mode & 0777) == 0600);
+        ASSERT(stat(delegation_path, &st) == 0 &&
+               (st.st_mode & 0777) == 0600);
+        ASSERT(chmod(online_path, 0644) == 0);
+        ASSERT(!vcs_zcode_dht_online_key_load_or_create(
+            datadir, seed2, pub2, err, sizeof(err)));
+
+        ASSERT(unlink(online_path) == 0);
+        ASSERT(unlink(delegation_path) == 0);
+        ASSERT(rmdir(dht_dir) == 0);
+        char zcode_dir[512];
+        snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
+        ASSERT(rmdir(zcode_dir) == 0);
+        ASSERT(rmdir(datadir) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_dht_delegation(void)
 {
     int failures = 0;
@@ -137,6 +191,7 @@ int test_zcode_dht_delegation(void)
     failures += test_delegation_windows_and_binding();
     failures += test_delegation_stable_node_id();
     failures += test_delegation_tamper();
+    failures += test_delegation_identity_files();
     printf("=== zcode_dht_delegation: %d failures ===\n", failures);
     return failures;
 }

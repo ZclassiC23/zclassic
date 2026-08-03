@@ -198,8 +198,7 @@ static bool contact_keys_valid(const struct vcs_zcode_dht_contact *c)
 {
     return c && nonzero(c->node_id, 32) && nonzero(c->master_pubkey, 32) &&
         nonzero(c->online_pubkey, 32) && nonzero(c->noise_static_pubkey, 32) &&
-        nonzero(c->beacon_hash, 32) && c->beacon_height > 0 &&
-        c->last_success_unix >= 0;
+        nonzero(c->beacon_hash, 32) && c->beacon_height > 0;
 }
 
 static struct vcs_zcode_dht_pending *pending_for(
@@ -239,6 +238,8 @@ enum vcs_zcode_dht_add_result vcs_zcode_dht_table_add_contact(
     if (!t || !c || !nonzero(c->node_id, 32))
         return VCS_ZCODE_DHT_ADD_REJECTED_ZERO_ID;
     if (!contact_keys_valid(c)) return VCS_ZCODE_DHT_ADD_REJECTED_ZERO_KEY;
+    if (c->last_success_unix < 0)
+        return VCS_ZCODE_DHT_ADD_REJECTED_TIMESTAMP;
     if (memcmp(c->node_id, t->self_id, 32) == 0)
         return VCS_ZCODE_DHT_ADD_REJECTED_SELF;
     size_t slot = 0;

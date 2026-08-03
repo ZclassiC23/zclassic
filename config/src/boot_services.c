@@ -13,6 +13,7 @@
 #include "config/boot_flyclient.h"
 #include "config/boot_snapshot_offer.h"
 #include "config/boot_msg_callbacks.h"
+#include "config/boot_zcode_dht.h"
 #include "services/binary_ab_fallback.h"
 #include "services/chain_activation_service.h"
 #include "services/block_index_integrity.h"
@@ -175,7 +176,6 @@ struct node_db *boot_node_db(struct boot_svc_ctx *svc)
         return NULL;
     return db_service_node_db(runtime->db_service);
 }
-
 struct db_service *boot_db_service(struct boot_svc_ctx *svc)
 {
     struct app_runtime_context *runtime = boot_runtime(svc);
@@ -183,7 +183,6 @@ struct db_service *boot_db_service(struct boot_svc_ctx *svc)
         return NULL;
     return runtime->db_service;
 }
-
 /* Runtime-profile gate accessors. Non-static (prototypes in boot_internal.h)
  * because several staying app_init call sites read them AND the frontend
  * service starts in boot_frontend_services.c gate on them across the TU
@@ -1234,6 +1233,7 @@ bool app_init_services(struct app_context *ctx,
     /* Diagnostics RPCs — dumpstate, getnodelog, dbquery */
     diagnostics_controller_set_state(svc->state, ctx->datadir);
     register_diagnostics_rpc_commands(svc->rpc_table);
+    boot_zcode_dht_register_rpc(svc->rpc_table);
 
     /* File transfer service — SHA3-verified chunk serving */
     if (boot_profile_has_file_service(ctx)) {

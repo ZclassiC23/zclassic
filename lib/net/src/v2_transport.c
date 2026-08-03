@@ -8,9 +8,9 @@
 
 #include "net/v2_transport.h"
 
-#include <stdatomic.h>
 #include <string.h>
 
+#include "base/serialize_le.h"
 #include "noise/noise_handshake.h"
 #include "noise/session_transport.h"
 #include "support/cleanse.h"
@@ -18,8 +18,6 @@
 #include "json/json.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
-
-static _Atomic uint64_t g_v2_connection_generation;
 
 /* ── growable heap buffer ─────────────────────────────────────────── */
 
@@ -88,8 +86,16 @@ static bool establish_and_flush_locked(struct v2_transport *t,
         t->have_peer_static = true;
     }
     memory_cleanse(rs, sizeof(rs));
-    if (noise_hs_transcript_hash(&t->hs, t->transcript_hash))
+    if (noise_hs_transcript_hash(&t->hs, t->transcript_hash)) {
         t->have_transcript_hash = true;
+        /* Both ends need the same public connection epoch for signed
+         * application frames. The final Noise transcript is unique to this
+         * handshake and shared by both ends, so its first 64 bits are the
+         * canonical generation (zero is remapped to one). */
+        t->connection_generation = zcl_read_u64_le(t->transcript_hash);
+        if (t->connection_generation == 0)
+            t->connection_generation = 1;
+    }
     noise_hs_cleanse(&t->hs);
     t->state = V2_ESTABLISHED;
 
@@ -124,13 +130,6 @@ struct v2_transport *v2_transport_begin(bool is_initiator,
     if (!t)
         LOG_NULL("net", "v2_transport_begin: calloc failed");
     zcl_mutex_init(&t->lock);
-    t->connection_generation =
-        atomic_fetch_add(&g_v2_connection_generation, UINT64_C(1)) + 1;
-    if (t->connection_generation == 0) {
-        zcl_mutex_destroy(&t->lock);
-        free(t);
-        LOG_NULL("net", "v2_transport_begin: connection generation overflow");
-    }
     t->is_initiator = is_initiator;
     memcpy(t->magic, magic, 4);
     t->hs_started_us = GetTimeMicros();

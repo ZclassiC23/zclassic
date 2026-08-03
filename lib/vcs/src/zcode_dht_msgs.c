@@ -194,7 +194,27 @@ enum vcs_zcode_dht_error vcs_zcode_dht_msg_parse(
     if (memcmp(wire, msgs_magic, 8) != 0) return VCS_ZCODE_DHT_ERR_WIRE_MAGIC;
     if (zcl_read_u16_le(wire + 8) != VCS_ZCODE_DHT_MSGS_WIRE_VERSION)
         return VCS_ZCODE_DHT_ERR_VERSION;
-    uint8_t kind = wire[10]; size_t off = VCS_ZCODE_DHT_MSGS_HEADER_BYTES;
+    uint8_t kind = wire[10];
+    if (kind != VCS_ZCODE_DHT_MSG_FIND_NODE && kind != VCS_ZCODE_DHT_MSG_NODES)
+        return VCS_ZCODE_DHT_ERR_WIRE_KIND;
+    const size_t payload_off = VCS_ZCODE_DHT_MSGS_HEADER_BYTES +
+                               VCS_ZCODE_DHT_MSGS_AUTH_BYTES;
+    uint32_t count = 0;
+    if (kind == VCS_ZCODE_DHT_MSG_FIND_NODE) {
+        if (len != VCS_ZCODE_DHT_FIND_NODE_WIRE_BYTES)
+            return VCS_ZCODE_DHT_ERR_WIRE_SIZE;
+    } else {
+        if (payload_off >= len - VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES)
+            return VCS_ZCODE_DHT_ERR_WIRE_SIZE;
+        count = wire[payload_off];
+        if (count > VCS_ZCODE_DHT_K)
+            return VCS_ZCODE_DHT_ERR_LIMIT;
+        size_t expected = payload_off + 1 + (size_t)count * 32 +
+                          VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES;
+        if (len != expected)
+            return VCS_ZCODE_DHT_ERR_WIRE_SIZE;
+    }
+    size_t off = VCS_ZCODE_DHT_MSGS_HEADER_BYTES;
     uint64_t *generation = kind == VCS_ZCODE_DHT_MSG_FIND_NODE
         ? &out->find_node.session_generation : &out->nodes.session_generation;
     uint8_t *sender = kind == VCS_ZCODE_DHT_MSG_FIND_NODE
@@ -204,25 +224,21 @@ enum vcs_zcode_dht_error vcs_zcode_dht_msg_parse(
     struct vcs_zcode_dht_delegation *delegation =
         kind == VCS_ZCODE_DHT_MSG_FIND_NODE ? &out->find_node.delegation
                                             : &out->nodes.delegation;
-    if (kind != VCS_ZCODE_DHT_MSG_FIND_NODE && kind != VCS_ZCODE_DHT_MSG_NODES)
-        return VCS_ZCODE_DHT_ERR_WIRE_KIND;
     enum vcs_zcode_dht_error e = read_auth(
         wire, &off, v, generation, sender, query, delegation);
     if (e != VCS_ZCODE_DHT_OK) return e;
+    size_t unsigned_len = len - VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES;
+    e = verify_signature(wire, unsigned_len, wire + unsigned_len,
+                         v->noise_transcript_hash,
+                         delegation->online_pubkey);
+    if (e != VCS_ZCODE_DHT_OK) return e;
+    if (*generation != v->session_generation) return VCS_ZCODE_DHT_ERR_SESSION;
     if (kind == VCS_ZCODE_DHT_MSG_FIND_NODE) {
-        if (len != VCS_ZCODE_DHT_FIND_NODE_WIRE_BYTES)
-            return VCS_ZCODE_DHT_ERR_WIRE_SIZE;
         memcpy(out->find_node.target_node_id, wire + off, 32); off += 32;
         if (!nonzero(out->find_node.target_node_id, 32))
             return VCS_ZCODE_DHT_ERR_ID_ZERO;
     } else {
-        if (off >= len - VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES)
-            return VCS_ZCODE_DHT_ERR_WIRE_SIZE;
-        uint32_t count = wire[off++];
-        if (count > VCS_ZCODE_DHT_K ||
-            len - off != (size_t)count * 32 + VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES)
-            return count > VCS_ZCODE_DHT_K ? VCS_ZCODE_DHT_ERR_LIMIT
-                                            : VCS_ZCODE_DHT_ERR_WIRE_SIZE;
+        off++;
         for (uint32_t i = 0; i < count; i++) {
             memcpy(out->nodes.node_ids[i], wire + off, 32); off += 32;
             if (!nonzero(out->nodes.node_ids[i], 32))
@@ -233,10 +249,6 @@ enum vcs_zcode_dht_error vcs_zcode_dht_msg_parse(
         }
         out->nodes.contact_count = count;
     }
-    e = verify_signature(wire, off, wire + off, v->noise_transcript_hash,
-                         delegation->online_pubkey);
-    if (e != VCS_ZCODE_DHT_OK) return e;
-    if (*generation != v->session_generation) return VCS_ZCODE_DHT_ERR_SESSION;
     out->kind = (enum vcs_zcode_dht_msg_kind)kind;
     return VCS_ZCODE_DHT_OK;
 }

@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 467 |
+| Registry entries (branches + leaves) | 472 |
 | Top-level roots | 11 |
-| Branches | 108 |
-| Leaves (dispatchable command paths) | 359 |
-| … `ready` (live handler in this build) | 311 |
+| Branches | 109 |
+| Leaves (dispatchable command paths) | 363 |
+| … `ready` (live handler in this build) | 315 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 120 |
+| Leaves with `effect=mutate` | 121 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 82 |
 
@@ -85,7 +85,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 21 | 4 | 17 |
-| `config/commands/zcode.def` | 71 | 16 | 55 |
+| `config/commands/zcode.def` | 76 | 17 | 59 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 17 | 5 | 12 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -928,6 +928,15 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode proof walk` | ready | read / read / public · foreground/low | `doc`, `doc_file`, `proof`, `root`, `tx`, `header`, `headers`, `merkle_branch`, `merkle_index`, `now`, `datadir` | `zcl.zcode_proof_walk.v1` | `zclassic23 zcode proof walk --input='{"doc":"<hex>","proof":"<hex>","root":"<64hex>","tx":"<hex>","header":"<hex>","merkle_index":1,"merkle_branch":"<64hex>"}'` | Walk a record's proof chain down to proof-of-work, rung by rung |
+
+#### `zcode.network` — Noise-bound read-only DHT
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode network delegate` | ready | mutate / app-write / operator · foreground/moderate | **`seed_file`**, `sequence`, `now`, `expiry`, `datadir` | `zcl.zcode_network_delegate.v1` | `zclassic23 zcode network delegate --input='{"seed_file":"/path/master.hex"}'` | Provision this node's DHT delegation |
+| `zcode network status` | ready | read / read / operator · fast/low | none | `zcl.zcode_network_status.v1` | `zclassic23 zcode network status` | Inspect DHT status |
+| `zcode network peers` | ready | read / read / operator · fast/low | `limit`, `offset` | `zcl.zcode_network_peers.v1` | `zclassic23 zcode network peers --input='{"limit":16}'` | List DHT contacts |
+| `zcode network find` | ready | read / read / operator · foreground/moderate | **`node_id`** | `zcl.zcode_network_find.v1` | `zclassic23 zcode network find --input='{"node_id":"<64hex>"}'` | Find closest DHT nodes |
 
 #### `zcode.desc` — Onion descriptors: signed service records
 

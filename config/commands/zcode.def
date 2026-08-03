@@ -1329,6 +1329,82 @@ ZCL_COMMAND_READY_READ(
  * chain, and every reply carries chain_anchored:false plus
  * verified_against:"supplied_key".
  * See docs/spec/sovereign-identity-layer.md and lib/zid/include/zid/zdesc.h. */
+ZCL_COMMAND_BRANCH("zcode.network", "zcode",
+                   "Noise-bound read-only DHT", ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.network.delegate", "zcode.network", "",
+    "Provision this node's DHT delegation",
+    "Reads the active ZID master seed exactly once from a regular 0400/0600 "
+    "file, requires that master to be ACTIVE and its finality-delayed beacon "
+    "to be ten blocks deep, reuses the persistent Noise X25519 identity, and "
+    "atomically creates the separate online Ed25519 key and signed ZIDN "
+    "delegation under <datadir>/zcode/dht. Default validity is three days; "
+    "the existing 30-day ZID window cap is enforced. Renewal advances the "
+    "filed sequence by default and leaves node_id stable. The reply contains "
+    "node ID, sequence, window, and beacon metadata, never key material.",
+    0, "zcode,network,dht,delegate,zid,noise,identity,provision",
+    "zcl.zcode_network_delegate.input.v1",
+    "zcl.zcode_network_delegate.v1",
+    "seed_file,sequence,now,expiry,datadir", "seed_file",
+    "zclassic23 zcode network delegate --input='{\"seed_file\":\"/path/master.hex\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_network_delegate)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.status", "zcode.network", "", "Inspect DHT status",
+    "Reads the live daemon's Noise-bound ZCODE DHT state: enablement or named "
+    "disablement, stable local node ID, fixed resource bounds, authenticated "
+    "and cold contact counts, query/probe/frame counters, persistence state, "
+    "and bounded last error. It returns no keys, delegation document, peer "
+    "address, or operator-diversity claim.",
+    0, "zcode,network,dht,status,noise,diagnostics",
+    "zcl.zcode_network_status.input.v1", "zcl.zcode_network_status.v1",
+    "", "", "zclassic23 zcode network status",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_status)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.peers", "zcode.network", "", "List DHT contacts",
+    "Reads one bounded page of directly authenticated or cold-persisted DHT "
+    "contacts from the live daemon. Rows contain node ID, bucket, local "
+    "connected/cold/probing state, last-seen age, saturating failure count, "
+    "delegation expiry, and beacon height. The hard page maximum is 64; no "
+    "peer addresses, keys, or raw delegations are exposed.",
+    16384, "zcode,network,dht,peers,contacts,noise",
+    "zcl.zcode_network_peers.input.v1", "zcl.zcode_network_peers.v1",
+    "limit,offset", "", "zclassic23 zcode network peers --input='{\"limit\":16}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_peers)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.find", "zcode.network", "", "Find closest DHT nodes",
+    "Runs a synchronous bounded FIND_NODE lookup through the live DHT daemon. "
+    "node_id is canonical 64-hex. The result contains at most 16 authenticated "
+    "node IDs ordered by XOR distance then node ID. Its 30-second deadline "
+    "returns named LOOKUP_TIMEOUT with bounded partial evidence.",
+    4096, "zcode,network,dht,find,lookup,xor,noise",
+    "zcl.zcode_network_find.input.v1", "zcl.zcode_network_find.v1",
+    "node_id", "node_id",
+    "zclassic23 zcode network find --input='{\"node_id\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_find)
+
 ZCL_COMMAND_BRANCH("zcode.desc", "zcode",
                    "Onion descriptors: signed service records",
                    ZCL_COMMAND_LAYER_APP)

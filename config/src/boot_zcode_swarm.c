@@ -4,13 +4,11 @@
  * unit is the ONLY place where lib/net peer facts (node id, host key,
  * peer_state, peer_scoring) meet the swarm engine's contract; both sides
  * stay pure of each other. */
-
 #include "config/boot_zcode_swarm.h"
-
+#include "config/boot_zcode_dht.h"
 #include "config/boot_internal.h"
 #include "config/runtime.h"
 #include "config/boot_zcode_work_authority.h"
-
 #include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "vcs/package_reward.h"
@@ -22,7 +20,6 @@
 #include "vcs/zcode_work_node.h"
 #include "vcs/zcode_work_context.h"
 #include "vcs/vcs_object.h"
-
 #include "crypto/sha3.h"
 #include "event/event.h"
 #include "net/fast_sync.h"
@@ -37,13 +34,11 @@
 #include "services/build_fabric_worker.h"
 #include "services/build_fabric_service.h"
 #include "supervisors/domains.h"
-
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
 /* Session pseudo-key domain (0x02 || SHA3-256(domain || host)). The host
  * identity comes from zcl_peer_host_key (onion hostname or IP), so the
  * key scopes the service book to a transport endpoint, survives a
@@ -600,6 +595,9 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
 {
     if (!mp || !node || !payload)
         LOG_FAIL("net.zcode_swarm", "null mp/node/payload");
+    if (boot_zcode_dht_frame(mp, node, payload, payload_len,
+                             (struct boot_svc_ctx *)ctx))
+        return true;
     boot_zcode_swarm_lock();
     struct vcs_swarm_engine *engine =
         boot_zcode_swarm_ensure((struct boot_svc_ctx *)ctx);
@@ -809,6 +807,7 @@ static void boot_zcode_swarm_timer_tick(struct liveness_contract *self)
     if (!svc || !svc->msg_processor)
         return; /* not wired: nothing legitimate to report */
     struct msg_processor *mp = svc->msg_processor;
+    boot_zcode_dht_periodic(mp, svc);
     int64_t wall = (int64_t)platform_time_wall_time_t();
     boot_zcode_swarm_lock();
     if (svc != s_svc) {
@@ -906,6 +905,7 @@ void boot_zcode_swarm_shutdown(void)
         supervisor_unregister(s_timer_child);
         s_timer_child = SUPERVISOR_INVALID_ID;
     }
+    boot_zcode_dht_shutdown();
     boot_zcode_swarm_lock();
     s_svc = NULL;
     vcs_swarm_engine_set_global(NULL);

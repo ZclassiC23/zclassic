@@ -98,6 +98,17 @@ static int test_refresh_rules(void)
         fake_contact(&c, id, 0x21, 7, 102);
         ASSERT_EQ(vcs_zcode_dht_table_add_contact(t, &c, 102),
                   VCS_ZCODE_DHT_ADD_REJECTED_BINDING);
+        fake_contact(&c, id, 0x20, 7, 102);
+        memset(c.node_id, 0, 32);
+        ASSERT_EQ(vcs_zcode_dht_table_add_contact(t, &c, 102),
+                  VCS_ZCODE_DHT_ADD_REJECTED_ZERO_ID);
+        fake_contact(&c, id, 0x20, 7, 102);
+        memset(c.noise_static_pubkey, 0, 32);
+        ASSERT_EQ(vcs_zcode_dht_table_add_contact(t, &c, 102),
+                  VCS_ZCODE_DHT_ADD_REJECTED_ZERO_KEY);
+        fake_contact(&c, id, 0x20, 7, -1);
+        ASSERT_EQ(vcs_zcode_dht_table_add_contact(t, &c, 102),
+                  VCS_ZCODE_DHT_ADD_REJECTED_TIMESTAMP);
         ASSERT(vcs_zcode_dht_table_find(t, id, &got));
         ASSERT_EQ(got.delegation_sequence, 6);
         free(t); PASS();
@@ -264,6 +275,25 @@ static int test_persistence_v2(void)
                       parsed, 2, &count), VCS_ZCODE_DHT_OK);
         ASSERT_EQ(count, 2); ASSERT_EQ(calls, 2);
         ASSERT(memcmp(parsed[0].node_id, parsed[1].node_id, 32) < 0);
+        uint8_t tampered[sizeof(wire)];
+        memcpy(tampered, wire, len);
+        uint8_t entry[VCS_ZCODE_DHT_CONTACT_ENTRY_WIRE_BYTES];
+        memcpy(entry, tampered + VCS_ZCODE_DHT_CONTACTS_HEADER_BYTES,
+               sizeof(entry));
+        memcpy(tampered + VCS_ZCODE_DHT_CONTACTS_HEADER_BYTES,
+               tampered + VCS_ZCODE_DHT_CONTACTS_HEADER_BYTES + sizeof(entry),
+               sizeof(entry));
+        memcpy(tampered + VCS_ZCODE_DHT_CONTACTS_HEADER_BYTES + sizeof(entry),
+               entry, sizeof(entry));
+        ASSERT_EQ(vcs_zcode_dht_contacts_parse(
+                      tampered, len, genesis, self, 1500, NULL, NULL,
+                      parsed, 2, &count), VCS_ZCODE_DHT_ERR_WIRE_ORDER);
+        memcpy(tampered, wire, len);
+        memcpy(tampered + VCS_ZCODE_DHT_CONTACTS_HEADER_BYTES + sizeof(entry),
+               tampered + VCS_ZCODE_DHT_CONTACTS_HEADER_BYTES, sizeof(entry));
+        ASSERT_EQ(vcs_zcode_dht_contacts_parse(
+                      tampered, len, genesis, self, 1500, NULL, NULL,
+                      parsed, 2, &count), VCS_ZCODE_DHT_ERR_WIRE_ORDER);
         ASSERT_EQ(vcs_zcode_dht_contacts_parse(
                       wire, len, other, self, 1500, NULL, NULL,
                       parsed, 2, &count), VCS_ZCODE_DHT_ERR_NETWORK);

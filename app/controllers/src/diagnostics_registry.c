@@ -119,6 +119,7 @@
 #include "config/boot_endpoint_records.h"
 #include "config/boot_bundle_fetch.h"
 #include "config/boot_flight_recorder.h"
+#include "config/boot_zcode_dht.h"
 #include "config/bundle_exporter.h"
 #include "controllers/sovereignty_controller.h"
 #include "controllers/status_frontdoor.h"
@@ -167,7 +168,6 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
-
 /* ── Controller-level state ─────────────────────────────────────────
  *
  * The boot-populated main_state + datadir (diagnostics_controller_set_state /
