@@ -496,17 +496,15 @@ pre_rpc_boot_diagnostic() {
 
 rpc_dumpstate() {
     component="$1"
-    out=$(rpc_call dumpstate "$component" 2>&1 || true)
-    out=$(json_rpc_result "$out")
-    if json_has_key "$out" "$2"; then
-        printf '%s\n' "$out"
-        return 0
-    fi
-
-    # build/bin/zcl-rpc wraps remaining argv directly into a JSON params array,
-    # so string arguments need quotes. zclassic-cli accepts the unquoted
-    # form above, but this fallback keeps deploy verification portable.
-    out=$(rpc_call dumpstate "\"$component\"" 2>&1 || true)
+    # zcl-rpc wraps remaining argv directly into a JSON params array, so its
+    # string argument needs JSON quotes. zclassic-cli performs its own string
+    # encoding and MUST receive the bare subsystem name. Never retry one
+    # client's syntax through the other: that overwrites an honest timeout or
+    # partial response with a deterministic "unknown subsystem '\"name\"'".
+    case "$(basename "$RPC_TOOL")" in
+        zcl-rpc) out=$(rpc_call dumpstate "\"$component\"" 2>&1 || true) ;;
+        *)       out=$(rpc_call dumpstate "$component" 2>&1 || true) ;;
+    esac
     out=$(json_rpc_result "$out")
     printf '%s\n' "$out"
 }

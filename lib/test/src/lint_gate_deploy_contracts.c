@@ -102,6 +102,12 @@ int t_canonical_deploy_proof_binding_contract(void)
         ASSERT(strstr(verify_buf, "mainpid_owns_rpc_listener") != NULL);
         ASSERT(strstr(verify_buf, "RPC_CONNECT=\"127.0.0.1\"") != NULL);
         ASSERT(strstr(verify_buf,
+                      "zcl-rpc) out=$(rpc_call dumpstate \"\\\"$component\\\"\"")
+               != NULL);
+        ASSERT(strstr(verify_buf,
+                      "*)       out=$(rpc_call dumpstate \"$component\"")
+               != NULL);
+        ASSERT(strstr(verify_buf,
                       "unset ZCL_DATADIR ZCL_RPCPORT ZCL_RPCCONNECT") != NULL);
         ASSERT(strstr(verify_buf, "${ZCL_DATADIR:-") == NULL);
         ASSERT(strstr(verify_buf, "${ZCL_RPCPORT:-") == NULL);
