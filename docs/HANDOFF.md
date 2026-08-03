@@ -114,7 +114,8 @@ remain open:
    not a reproducibility mismatch. Lint, build-only, the whole-program test
    binary, and the strict suite (881 groups run, 0 failed) passed.
 
-Recovery evidence fixes are in `eacadc76`: the SLO probe now derives the live
+Recovery evidence fixes are in the adjacent
+`fix(recovery): preserve exact evidence bindings` commit: the SLO probe now derives the live
 zclassicd port (8023 here), accepts normal spaced JSON, and the installer
 retains the exact prior-generation path in its success banner. No lab wallet,
 key, transaction, or funding was created.
