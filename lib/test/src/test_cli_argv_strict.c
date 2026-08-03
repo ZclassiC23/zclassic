@@ -539,6 +539,48 @@ static int cas_test_daemon_mode_tolerant_and_warns(void)
     return failures;
 }
 
+static int cas_test_v2transport_is_recognized(void)
+{
+    int failures = 0;
+    TEST("daemon argv: -v2transport is a recognized GetBoolArg flag and "
+         "never emits the unknown-flag warning") {
+        uint16_t rpc_port = cas_reserve_port();
+        uint16_t p2p_port = cas_reserve_port();
+        if (rpc_port == 0 || p2p_port == 0) {
+            printf("cli_argv_strict: could not reserve test ports — SKIP "
+                   "v2transport case\n");
+            return 0;
+        }
+        char home[300], datadir[340];
+        snprintf(home, sizeof(home), "/tmp/zcl_cas_v2_home_%d",
+                 (int)getpid());
+        snprintf(datadir, sizeof(datadir), "/tmp/zcl_cas_v2_dd_%d",
+                 (int)getpid());
+        cas_mkdir_p(home);
+
+        char datadir_flag[400], rpcport_flag[32], port_flag[32];
+        snprintf(datadir_flag, sizeof(datadir_flag), "-datadir=%s", datadir);
+        snprintf(rpcport_flag, sizeof(rpcport_flag), "-rpcport=%u", rpc_port);
+        snprintf(port_flag, sizeof(port_flag), "-port=%u", p2p_port);
+        char *argv[] = {
+            (char *)CAS_BIN, datadir_flag, rpcport_flag, port_flag,
+            (char *)"-regtest", (char *)"-nolegacyimport",
+            (char *)"-nobgvalidation", (char *)"-v2transport", NULL,
+        };
+        static const char *const ready_needles[] = {
+            "zclassic23 starting", NULL,
+        };
+        char out[16384] = {0};
+        bool started = cas_run_daemon_wait_for(
+            argv, home, ready_needles, 20000, out, sizeof(out));
+
+        ASSERT(started);
+        ASSERT(!cas_contains(out, "unrecognized flag '-v2transport'"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_cli_argv_strict(void);
 
 int test_cli_argv_strict(void)
@@ -565,6 +607,7 @@ int test_cli_argv_strict(void)
     failures += cas_test_bare_status_still_works();
     failures += cas_test_native_param_conventions_unaffected();
     failures += cas_test_daemon_mode_tolerant_and_warns();
+    failures += cas_test_v2transport_is_recognized();
 
     return failures;
 }
