@@ -10,6 +10,7 @@
 #include "controllers/sovereignty_controller.h"
 #include "controllers/agent_session_controller.h"
 #include "controllers/vault_intent_controller.h"
+#include "controllers/yardsale_wallet_controller.h"
 #include "wallet/wallet_lock.h"
 void rpc_wallet_set_state(struct wallet *w, struct main_state *ms,
                           const char *datadir, struct wallet_sqlite *wdb,
@@ -772,6 +773,11 @@ void register_wallet_rpc_commands(struct rpc_table *t)
     register_wallet_diagnostic_rpc_commands(t);
     register_wallet_rescan_rpc_commands(t);
     register_vault_intent_rpc_commands(t);
+    /* The yardsale wallet glue (yardsale.seller.arm|disarm|status,
+     * yardsale.buy) rides the wallet family for the same reason: the
+     * wallet, the seller profile, and the pending-buy table all live in
+     * this process (app/services/src/yardsale_wallet_service*.c). */
+    register_yardsale_wallet_rpc_commands(t);
     /* Agent spend grants ride the wallet family because that is what they
      * bound. The node is the SINGLE writer of agent_sessions and this method
      * is how the CLI's policy gates reach it — they run in a process with no

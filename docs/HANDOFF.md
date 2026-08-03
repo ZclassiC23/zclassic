@@ -684,6 +684,15 @@ MRS and per-criterion evidence live in [`docs/MVP.md`](MVP.md) and
   non-empty WAL. A non-empty WAL must refuse loudly rather than silently
   drop data.
 - `zclassicd invalidateblock` does not persist across restarts in this fork.
+- Watchdog-pet starvation under build load (observed 2026-08-02/03, four
+  kills in ~2h): every kill had the same signature — SIGABRT exactly 10min
+  after service start, while a `-j32` build ran on the host. The node pets
+  through boot, then loses the pet race under build load and never re-arms;
+  it self-heals on the next quiet window. Dev-lane rule: check
+  `systemctl --user is-active zclassic23` before any full build; if
+  `activating`, wait or drop to `-j16`; never restart or stop the service
+  from a dev lane. The pet starvation itself is open for the node's owning
+  lane — it recurs on every heavy push.
 
 ## Lanes
 

@@ -1,7 +1,8 @@
 /* Canonical root and discovery branch. Consumer defines ZCL_COMMAND_*.
  * Root order is a wire contract: status, core, app, dev, ops, discover, code,
- * vault, zcode, metaverse. The last root is declared in its own .def
- * (config/commands/metaverse.def), not here. */
+ * vault, zcode, metaverse, yardsale. The last two roots are declared in their
+ * own .def files (config/commands/metaverse.def and
+ * config/commands/yardsale.def), not here. */
 
 ZCL_COMMAND_READY_READ(
     "status", "", "", "Compact node status and next action",

@@ -356,7 +356,7 @@ static int test_registry_register_all(void)
     TEST("db_register_all_validators wires all registered tables") {
         db_validator_reset();
         db_register_all_validators();
-        ASSERT(db_validator_count() == 27);
+        ASSERT(db_validator_count() == 28);
         ASSERT(db_validator_has("blocks"));
         ASSERT(db_validator_has("peers"));
         ASSERT(db_validator_has("utxos"));

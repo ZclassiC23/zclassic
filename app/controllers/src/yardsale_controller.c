@@ -156,6 +156,19 @@ bool yardsale_seller_profile_configured(void)
     return configured;
 }
 
+bool yardsale_seller_profile_snapshot(struct zswap_seller_accept *terms_out)
+{
+    if (!terms_out)
+        LOG_FAIL("yardsale", "seller_profile_snapshot: NULL out");
+    memset(terms_out, 0, sizeof(*terms_out));
+    pthread_mutex_lock(&g_yardsale_mutex);
+    bool configured = g_profile_configured;
+    if (configured)
+        *terms_out = g_profile_terms;
+    pthread_mutex_unlock(&g_yardsale_mutex);
+    return configured;
+}
+
 /* ── Gossip hygiene: dedup ring + per-peer clamp ─────────────────── */
 
 /* Every distinct ceremony wire is forwarded at most once per node — the

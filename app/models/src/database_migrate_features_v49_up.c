@@ -131,6 +131,29 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 50) {
+        /* v50: yardsale wallet glue — the durable plan/commit idempotency
+         * ledger (yardsale_plans) behind yardsale.seller.arm and
+         * yardsale.buy: request identity + the exact planned terms
+         * (canonical accept-data serialization + sign root, never key
+         * material) + expiry + state per wallet-touching write. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS yardsale_plans ("
+            "plan_root TEXT PRIMARY KEY CHECK(length(plan_root)=64),"
+            "kind TEXT NOT NULL CHECK(kind IN ('arm','buy')),"
+            "request_hash TEXT NOT NULL UNIQUE CHECK(length(request_hash)=64),"
+            "payload_hex TEXT NOT NULL,"
+            "result TEXT NOT NULL,"
+            "state TEXT NOT NULL CHECK(state IN ('PLANNED','COMMITTED','EXPIRED')),"
+            "expires_unix INTEGER NOT NULL CHECK(expires_unix>0),"
+            "created_at INTEGER NOT NULL)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('050')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 50);
+        current_ver = 50;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

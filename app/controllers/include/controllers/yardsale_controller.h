@@ -103,6 +103,11 @@ void yardsale_seller_profile_configure(
 void yardsale_seller_profile_clear(void);
 bool yardsale_seller_profile_configured(void);
 
+/* Snapshot the configured seller terms (no key material — the terms are
+ * the outpoint, addresses, and deadline only). Returns false when no
+ * profile is configured. Backs yardsale.seller.status. */
+bool yardsale_seller_profile_snapshot(struct zswap_seller_accept *terms_out);
+
 /* Handle one zswap_accept.v1 wire as the seller: strict-decode, look the
  * ad up in the local yardsale cache (an accept for a sign we never saw is
  * YARDSALE_ERR_AD_UNKNOWN), and — with a configured profile — verify the

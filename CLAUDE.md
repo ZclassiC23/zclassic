@@ -10,7 +10,7 @@
 
 1. `make setup` — one-time: fetch and build the vendored dependencies, and arm this clone's local git hooks. It ends by printing `Next: make doctor`; that is an optional environment check, not step 2.
 2. `make -j"$(nproc)"` — build `build/bin/zclassic23`. One whole-program LTO `cc` per binary, so this is minutes even warm.
-3. `build/bin/zclassic23 discover help` — the top of the command tree, not a flat list: it prints the 9 command roots plus the bare `status` leaf. Descend with `discover help <path>`, narrow with `discover search <query>` (query is **positional**), and get exact input keys with `discover schema <leaf>`. The whole catalog is `docs/API_REFERENCE.md`, generated from `config/commands/*.def`.
+3. `build/bin/zclassic23 discover help` — the top of the command tree, not a flat list: it prints the 10 command roots plus the bare `status` leaf. Descend with `discover help <path>`, narrow with `discover search <query>` (query is **positional**), and get exact input keys with `discover schema <leaf>`. The whole catalog is `docs/API_REFERENCE.md`, generated from `config/commands/*.def`.
 4. `build/bin/zclassic23 code map` — the source tree's floor plan, from the navigator built into the binary. First call builds the index (~1.4 s, and it reports `budget_exceeded`); later calls are ~12 ms.
 5. `make -j"$(nproc)" t-fast ONLY=<substring>` — run the test groups whose names contain `<substring>`, e.g. `make -j"$(nproc)" t-fast ONLY=boot_phase`. `ONLY=` is mandatory and is resolved against the registered group list at Makefile parse time, so a missing, typoed, or literally-pasted `<substring>` fails in under a second with the near-miss candidates — before anything compiles. All test groups by name, no build: `make t-list`. `make -j"$(nproc)" test-parallel` runs the whole suite.
 
@@ -192,8 +192,8 @@ Key rules enforced by the compiler and CI:
 ## Agent interface — native commands
 
 The interface is the native command registry: `zclassic23 <command>` under
-9 command roots — `core.*`, `app.*`, `dev.*`, `ops.*`, `discover.*`, `code.*`,
-`vault.*`, `zcode.*`, `metaverse.*` — plus the bare `status` leaf. Never work from a
+10 command roots — `core.*`, `app.*`, `dev.*`, `ops.*`, `discover.*`, `code.*`,
+`vault.*`, `zcode.*`, `metaverse.*`, `yardsale.*` — plus the bare `status` leaf. Never work from a
 remembered root list; `discover help` prints the live one.
 Start with `zclassic23 status`;
 enumerate with `discover help` / `discover search <q>`; three diagnostic

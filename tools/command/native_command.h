@@ -375,6 +375,18 @@ void zcl_native_handle_zcode_science_review_submit(
 void zcl_native_handle_zcode_science_vote_submit(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_yardsale_seller_arm(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_yardsale_seller_disarm(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_yardsale_seller_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_yardsale_buy(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_improve(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

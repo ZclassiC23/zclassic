@@ -59,17 +59,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 451 |
-| Top-level roots | 10 |
-| Branches | 104 |
-| Leaves (dispatchable command paths) | 347 |
-| … `ready` (live handler in this build) | 299 |
+| Registry entries (branches + leaves) | 457 |
+| Top-level roots | 11 |
+| Branches | 106 |
+| Leaves (dispatchable command paths) | 351 |
+| … `ready` (live handler in this build) | 303 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 111 |
+| Leaves with `effect=mutate` | 114 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 79 |
+| Leaves requiring **owner** authority | 82 |
 
 Per source file:
 
@@ -88,6 +88,7 @@ Per source file:
 | `config/commands/zcode.def` | 71 | 16 | 55 |
 | `config/commands/zcode_science.def` | 15 | 5 | 10 |
 | `config/commands/metaverse.def` | 17 | 5 | 12 |
+| `config/commands/yardsale.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
 | `config/commands/telemetry/runtime.def` | 4 | 1 | 3 |
@@ -152,6 +153,7 @@ The root order below is a wire contract, not a presentation choice.
 | `vault` | `vault` | branch | ready | What this node owns, and what may act on it |
 | `zcode` | `zcode` | branch | ready | ZCODE source-package hosting: publish, search, host |
 | `metaverse` | `metaverse` | branch | ready | Sovereign digital property: catalog, rights, receipts |
+| `yardsale` | `yardsale` | branch | ready | For-sale-by-owner signed ads, settled bilaterally |
 
 
 ## The tree, leaf by leaf
@@ -1015,6 +1017,20 @@ represented by its children's sections.
 | `metaverse build worker list` | ready | read / read / operator · fast/low | `datadir` | `zcl.build_worker_list.v1` | `zclassic23 metaverse build worker list` | List build workers and current trust state |
 | `metaverse build worker approve` | ready | mutate / app-write / operator · fast/low | **`worker_id`**, **`signer_pubkey`**, `capabilities`, `expires_at`, `datadir` | `zcl.build_worker.v1` | `zclassic23 metaverse build worker approve <worker_id> --signer_pubkey=<64hex>` | Approve one Ed25519 build-receipt signer |
 | `metaverse build worker revoke` | ready | mutate / app-write / operator · fast/low | **`worker_id`**, `datadir` | `zcl.build_worker.v1` | `zclassic23 metaverse build worker revoke <worker_id>` | Revoke one build-receipt signer without deleting evidence |
+
+### `yardsale` — For-sale-by-owner signed ads, settled bilaterally
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `yardsale buy` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`ad_root`**, `confirm`, `now_unix` | `zcl.yardsale_buy.v1` | `zclassic23 yardsale.buy --input='{"ad_root":"<64hex>","confirm":true}'` | Buy a live sign with wallet funds |
+
+#### `yardsale.seller` — Seller profile: arm, disarm, status
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `yardsale seller arm` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_txid`**, **`token_vout`**, **`ad_root`**, `confirm`, `now_unix` | `zcl.yardsale_seller_arm.v1` | `zclassic23 yardsale.seller.arm --input='{"token_txid":"<64hex>","token_vout":1,"ad_root":"<64hex>","confirm":true}'` | Arm the seller profile from the wallet |
+| `yardsale seller disarm` | ready | mutate / app-write / **owner** · foreground/low | none | `zcl.yardsale_seller_disarm.v1` | `zclassic23 yardsale.seller.disarm` | Disarm the seller profile |
+| `yardsale seller status` | ready | read / read / operator · fast/low | `now_unix` | `zcl.yardsale_seller_status.v1` | `zclassic23 yardsale.seller.status` | Seller profile status |
 
 
 ## Aliases
