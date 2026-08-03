@@ -2079,6 +2079,14 @@ static int test_is_root_ownership(void)
         ASSERT(zcl_native_command_is_root("dev"));
         ASSERT(zcl_native_command_is_root("vault"));
         ASSERT(!zcl_native_command_is_root("getblockcount"));
+        /* Dotted first-token form: `<root>.<rest>` is owned too (the
+         * canonical documented invocation), split into segments by
+         * zcl_native_command_main before resolution. */
+        ASSERT(zcl_native_command_is_root("zcode.science.study.list"));
+        ASSERT(zcl_native_command_is_root("ops.state"));
+        ASSERT(zcl_native_command_is_root("discover.search"));
+        ASSERT(!zcl_native_command_is_root("getblockcount.foo"));
+        ASSERT(!zcl_native_command_is_root("zcodeextra.leaf"));
         PASS();
     } _test_next:;
     return failures;

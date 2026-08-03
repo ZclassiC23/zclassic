@@ -76,7 +76,9 @@ Normative behavior:
 - `help [path]` describes one branch or leaf.
 - `search <text>` returns at most five ranked paths.
 - Stable machine IDs use dots, for example `core.chain.block.get`; CLI paths
-  use spaces.
+  use spaces. A dotted first token (`zclassic23 core.chain.block.get ...`) is
+  accepted as the same invocation — the dispatcher splits it into path
+  segments before resolution.
 - The parser resolves the longest registered command path. Leaf arguments
   cannot be mistaken for command names.
 - Named options are preferred. Positional arguments are reserved for a single

@@ -84,6 +84,14 @@ bool zcl_native_command_is_root(const char *word)
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
         if (strcmp(word, roots[i]) == 0)
             return true;
+        /* CLI UX contract: the canonical dotted form
+         * (`zclassic23 zcode.science.study.list`) names the same leaf as the
+         * spaced form — a first token of `<root>.<rest>` belongs to this
+         * adapter too, and zcl_native_command_main splits it into path
+         * segments before resolution. */
+        size_t n = strlen(roots[i]);
+        if (strncmp(word, roots[i], n) == 0 && word[n] == '.')
+            return true;
     }
     return false;
 }
@@ -3207,10 +3215,32 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
 #endif /* ZCL_DEV_BUILD */
 
     /* Word list = root + args (flags included). Resolution stops at the first
-     * flag or dotted/pathy word. */
+     * flag or dotted/pathy word — so a dotted FIRST token (the canonical
+     * `zcode.science.study.list` form the docs and examples use) is split
+     * into path segments here, making it identical to the spaced form. */
+    char root_split[ZCL_COMMAND_MAX_PATH];
     const char *words[NC_MAX_WORDS];
     size_t count = 0;
-    words[count++] = root_word;
+    if (strchr(root_word, '.')) {
+        size_t rl = strlen(root_word);
+        if (rl >= sizeof(root_split)) {
+            nc_print_error(root_word, "UNKNOWN_COMMAND", "resolve",
+                           "command path too long", root_word,
+                           "", "", "");
+            return ZCL_COMMAND_EXIT_INVALID;
+        }
+        memcpy(root_split, root_word, rl + 1);
+        char *seg = root_split;
+        while (seg && *seg && count < NC_MAX_WORDS) {
+            char *dot = strchr(seg, '.');
+            if (dot)
+                *dot = 0;
+            words[count++] = seg;
+            seg = dot ? dot + 1 : NULL;
+        }
+    } else {
+        words[count++] = root_word;
+    }
     for (int i = 0; i < nargs && count < NC_MAX_WORDS; i++)
         words[count++] = args[i];
 
