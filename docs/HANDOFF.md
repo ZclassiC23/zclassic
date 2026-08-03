@@ -15,6 +15,18 @@ tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 
 ## Current state
 
+**2026-08-03 10:01 UTC — G2 (fresh-node swarm fetch stall) CLOSED on main**
+as `9e375d355`, verified by `make test-science-acceptance` (two fresh nodes;
+B fetched 5 chunks node-to-node and rederived the package root; both nodes
+then cold-booted and rebuilt every science object from CAS hashes). The fix
+is three stacked parts: a NEW_USER 4/hour bootstrap announce quota
+(`VCS_POLICY_FREE_ANNOUNCE_PER_HOUR`), deduped per-sync re-announce to every
+known peer, and a supervisor clock-driven swarm (`net.zcode_swarm` child,
+1 s period, net domain) — the swarm tick previously only fired on inbound
+peer messages, so an idle healthy connection never announced or fetched.
+NOT YET DEPLOYED: the canonical node still runs pinned
+rc-20260728-75afb4361, which predates this and the watchdog fix below.
+
 **2026-08-03 06:15 UTC — watchdog kill loop is ACTIVE again on the pinned
 binary.** Eight `FATAL SIGNAL 6` (SIGABRT) crashes between 03:18 and 06:03
 UTC, ~22 min apart, each followed by a clean re-boot that returns to
