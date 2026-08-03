@@ -15,6 +15,19 @@ tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 
 ## Current state
 
+**2026-08-03 06:15 UTC — watchdog kill loop is ACTIVE again on the pinned
+binary.** Eight `FATAL SIGNAL 6` (SIGABRT) crashes between 03:18 and 06:03
+UTC, ~22 min apart, each followed by a clean re-boot that returns to
+gap_vs_oracle=1 with 12-20 peers and onion up (uptime-ledger
+ts=1785737782: served 3203559, gap_vs_oracle=1, 18 peers, nrestarts=55). Signature matches the 2026-08-02 loop exactly:
+systemd `WatchdogSec=600` kills the process after the sd keepalive starves.
+The fix is already on main — `60b989ffa` (dedicated sd pet thread + strict
+body-gap posture) — but the node still runs the pinned rc-20260728-75afb4361
+binary, which predates it. Remedy is an owner-gated redeploy of a current
+release candidate; no code work is outstanding. Re-check with
+`grep 'FATAL SIGNAL 6' ~/.zclassic-c23/node.log | tail` and the ledger's
+`nrestarts` counter.
+
 The canonical node is holding network tip on the self-verified (cured)
 stack, per the external SLO ledger: `~/.local/state/zclassic23-slo/uptime-ledger.jsonl`
 records canonical served height against `gap_vs_oracle`. Treat any
