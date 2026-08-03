@@ -32,6 +32,12 @@ struct service_query {
   uint64_t peer_id, generation, deadline, lookup_id;
 };
 
+struct expired_query {
+  bool used;
+  uint8_t id[16];
+  uint64_t peer_id, generation, expired_at;
+};
+
 struct service_lookup {
   bool used, completed, timed_out, response_received, not_found;
   uint64_t id, deadline;
@@ -57,6 +63,7 @@ struct vcs_zcode_dht_service {
   struct vcs_zcode_dht_table *table;
   struct service_peer peers[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
   struct service_query queries[VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES];
+  struct expired_query expired[VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER];
   struct service_lookup lookups[VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS];
   struct service_outbound outbound[VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND];
   uint32_t outbound_count;

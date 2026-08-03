@@ -66,6 +66,43 @@ static struct service_query *query_find(struct vcs_zcode_dht_service *s,
   return NULL;
 }
 
+static bool query_was_expired(const struct vcs_zcode_dht_service *s,
+                              uint64_t peer, uint64_t generation,
+                              const uint8_t id[16], uint64_t now) {
+  for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER; i++)
+    if (s->expired[i].used && s->expired[i].peer_id == peer &&
+        s->expired[i].generation == generation &&
+        now - s->expired[i].expired_at <=
+            VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS &&
+        memcmp(s->expired[i].id, id, 16) == 0)
+      return true;
+  return false;
+}
+
+static void query_remember_expired(struct vcs_zcode_dht_service *s,
+                                   const struct service_query *q,
+                                   uint64_t now) {
+  size_t slot = 0;
+  uint64_t oldest = UINT64_MAX;
+  for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER; i++) {
+    if (!s->expired[i].used ||
+        now - s->expired[i].expired_at >
+            VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS) {
+      slot = i;
+      break;
+    }
+    if (s->expired[i].expired_at < oldest) {
+      oldest = s->expired[i].expired_at;
+      slot = i;
+    }
+  }
+  s->expired[slot].used = true;
+  s->expired[slot].peer_id = q->peer_id;
+  s->expired[slot].generation = q->generation;
+  s->expired[slot].expired_at = now;
+  memcpy(s->expired[slot].id, q->id, 16);
+}
+
 static struct service_lookup *lookup_find(struct vcs_zcode_dht_service *s,
                                           uint64_t id) {
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS; i++)
@@ -203,6 +240,7 @@ static void query_expire(struct vcs_zcode_dht_service *s,
     if (l)
       l->timed_out = true;
   }
+  query_remember_expired(s, q, now);
   query_finish(s, q, false, now);
 }
 
@@ -503,7 +541,12 @@ bool vcs_zcode_dht_service_handle_frame(
   if (m.kind == VCS_ZCODE_DHT_MSG_NODES) {
     q = query_find(s, peer_id, qid);
     if (!q) {
-      reject(s, VCS_ZCODE_DHT_REJECT_UNSOLICITED, rejected_out);
+      reject(s,
+             query_was_expired(s, peer_id, m.nodes.session_generation, qid,
+                               now)
+                 ? VCS_ZCODE_DHT_REJECT_EXPIRED
+                 : VCS_ZCODE_DHT_REJECT_UNSOLICITED,
+             rejected_out);
       return false;
     }
     if (q->deadline <= now) {
@@ -586,6 +629,11 @@ void vcs_zcode_dht_service_tick(struct vcs_zcode_dht_service *s, uint64_t now) {
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES; i++)
     if (s->queries[i].used && s->queries[i].deadline <= now)
       query_expire(s, &s->queries[i], now);
+  for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER; i++)
+    if (s->expired[i].used &&
+        now - s->expired[i].expired_at >
+            VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS)
+      memset(&s->expired[i], 0, sizeof(s->expired[i]));
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS; i++)
     if (s->lookups[i].used && !s->lookups[i].completed &&
         s->lookups[i].deadline <= now) {

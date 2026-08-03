@@ -351,6 +351,10 @@ int test_zcode_dht_service(void) {
     ASSERT(!vcs_zcode_dht_service_handle_frame(a, 2, poisoned, response_len,
                                                1003, &rejected));
     ASSERT_EQ(rejected, VCS_ZCODE_DHT_REJECT_POISONED);
+    /* The periodic sweep may retire the active slot before a late frame is
+     * dispatched.  A bounded tombstone must preserve the exact EXPIRED
+     * diagnosis instead of degrading it to UNSOLICITED. */
+    vcs_zcode_dht_service_tick(a, 1034);
     ASSERT(!vcs_zcode_dht_service_handle_frame(a, 2, response, response_len,
                                                1034, &rejected));
     ASSERT_EQ(rejected, VCS_ZCODE_DHT_REJECT_EXPIRED);
