@@ -15,9 +15,10 @@
  * node id (32) so the receiver can add the sender to its routing table.
  * FIND_NODE carries sender_node_id(32) || query_id(16) ||
  * target_node_id(32); NODES carries sender_node_id(32) || query_id(16) ||
- * u32 LE contacts_wire_len || a complete zcode_dht_contacts.v1 blob (the
- * sibling codec in vcs/zcode_dht.h, capped at VCS_ZCODE_DHT_K contacts),
- * with contacts_wire_len == 0 meaning "no closer contacts known". */
+ * count:u8 || count node-ID hints. Hints contain no address, delegation or
+ * local observation and can never be promoted without a direct authenticated
+ * Noise session. This v1 codec is replaced by the signed/bound v2 envelope
+ * at the transport layer; it remains a pure payload parser. */
 #define VCS_ZCODE_DHT_MSGS_WIRE_VERSION 1u
 #define VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES 16u
 #define VCS_ZCODE_DHT_MSGS_HEADER_BYTES 11u
@@ -25,9 +26,8 @@
     (VCS_ZCODE_DHT_MSGS_HEADER_BYTES + VCS_ZCODE_DHT_ID_BYTES + 48u)
 #define VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES \
     (VCS_ZCODE_DHT_MSGS_HEADER_BYTES + VCS_ZCODE_DHT_ID_BYTES + \
-     VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES + 4u + \
-     VCS_ZCODE_DHT_CONTACTS_HEADER_BYTES + \
-     VCS_ZCODE_DHT_K * VCS_ZCODE_DHT_CONTACT_ENTRY_WIRE_BYTES)
+     VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES + 1u + \
+     VCS_ZCODE_DHT_K * VCS_ZCODE_DHT_ID_BYTES)
 
 enum vcs_zcode_dht_msg_kind {
     VCS_ZCODE_DHT_MSG_FIND_NODE = 1,
@@ -44,7 +44,7 @@ struct vcs_zcode_dht_msg_nodes {
     uint8_t sender_node_id[VCS_ZCODE_DHT_ID_BYTES];
     uint8_t query_id[VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES];
     uint32_t contact_count;
-    struct vcs_zcode_dht_contact contacts[VCS_ZCODE_DHT_K];
+    uint8_t node_ids[VCS_ZCODE_DHT_K][VCS_ZCODE_DHT_ID_BYTES];
 };
 
 struct vcs_zcode_dht_msg {
@@ -58,15 +58,13 @@ struct vcs_zcode_dht_msg {
 /* Canonical serialization: equal inputs produce byte-identical wire, so
  * parse(serialize(x)) round-trips exactly and serialize(parse(wire))
  * reproduces the input wire byte-for-byte. sender_node_id, query_id and
- * (for FIND_NODE) target_node_id must be non-zero; NODES contact sets go
- * through the contacts codec, so duplicate or zero contact node ids are
- * rejected. */
+ * (for FIND_NODE) target_node_id must be non-zero; NODES hints must be
+ * strictly ascending, unique and non-zero. */
 enum vcs_zcode_dht_error vcs_zcode_dht_msg_serialize_find_node(
     const struct vcs_zcode_dht_msg_find_node *msg,
     uint8_t *wire, size_t wire_capacity, size_t *wire_len_out);
 
-/* contact_count over VCS_ZCODE_DHT_K is rejected; a zero count emits
- * contacts_wire_len = 0 with no embedded blob. */
+/* contact_count over VCS_ZCODE_DHT_K is rejected. */
 enum vcs_zcode_dht_error vcs_zcode_dht_msg_serialize_nodes(
     const struct vcs_zcode_dht_msg_nodes *msg,
     uint8_t *wire, size_t wire_capacity, size_t *wire_len_out);
@@ -74,9 +72,7 @@ enum vcs_zcode_dht_error vcs_zcode_dht_msg_serialize_nodes(
 /* Rejects wrong magic, wrong version, unknown kind, any length other than
  * header + body exactly (trailing bytes rejected), an all-zero
  * sender_node_id, an all-zero query_id, an all-zero FIND_NODE target, a
- * contacts_wire_len that does not consume the remaining bytes exactly, and
- * any embedded blob the contacts codec rejects (its error is propagated, so
- * over-K contact sets fail as ERR_LIMIT). */
+ * duplicate/out-of-order/zero NODES hints. */
 enum vcs_zcode_dht_error vcs_zcode_dht_msg_parse(
     const uint8_t *wire, size_t wire_len, struct vcs_zcode_dht_msg *out);
 
