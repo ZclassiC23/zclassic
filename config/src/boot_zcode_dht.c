@@ -11,6 +11,7 @@
 #include "net/v2_transport.h"
 #include "platform/time_compat.h"
 #include "rpc/server.h"
+#include "services/chain_state_service.h"
 #include "util/log_macros.h"
 #include "util/sync.h"
 #include "validation/chainstate.h"
@@ -123,12 +124,27 @@ dht_chain_verify(void *ctx, const struct vcs_zcode_dht_delegation *delegation) {
       delegation->beacon_height !=
           (uint32_t)(identity.anchor_height + ZCL_FINALITY_DEPTH))
     return false;
-  int height = active_chain_height(&svc->state->chain_active);
-  if (height < (int)delegation->beacon_height + ZCL_FINALITY_DEPTH)
+  /* The ZID row proves the anchor body was folded.  Finality is a property
+   * of the validated best-header ancestry, not of whether the block-body
+   * cache happened to reconstruct its active window on this boot.  Regtest
+   * exposed the distinction: after a clean restart the durable header tip
+   * and ZID projection were at 122 while the body window was temporarily at
+   * genesis, disabling an otherwise valid delegation forever.  Capture the
+   * CSR-bound header pointer, then walk its immutable ancestry to ensure the
+   * delegated beacon is actually on that chain and ten blocks deep. */
+  struct chain_state_frontier_view view;
+  if (!csr_capture_frontiers(csr_instance(), &svc->state->chain_active,
+                             &svc->state->pindex_best_header,
+                             (int)delegation->beacon_height, &view).ok ||
+      !view.header_tip ||
+      view.header_tip->nHeight <
+          (int)delegation->beacon_height + ZCL_FINALITY_DEPTH)
     return false;
-  const struct block_index *beacon = active_chain_at(
-      &svc->state->chain_active, (int)delegation->beacon_height);
+  const struct block_index *beacon = view.header_tip;
+  while (beacon && beacon->nHeight > (int)delegation->beacon_height)
+    beacon = beacon->pprev;
   return beacon && beacon->phashBlock &&
+         beacon->nHeight == (int)delegation->beacon_height &&
          memcmp(beacon->phashBlock->data, delegation->beacon_hash, 32) == 0;
 }
 
