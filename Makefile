@@ -3479,8 +3479,11 @@ test-two-node-peer-tip: zclassic23 zcl-rpc
 # carrier; fresh-node swarm announce policy stalls the package fetch).
 # DELIBERATELY opt-in (NOT in `make ci`) — it spawns two real nodes and
 # depends on the host Landlock/seccomp sandbox for the confined executor.
-.PHONY: test-science-acceptance
-test-science-acceptance: zclassic23 zcl-rpc
+.PHONY: test-zcode-dht-acceptance test-science-acceptance
+test-zcode-dht-acceptance: zclassic23 zcl-rpc
+	@bash tools/dev/zcode_dht_acceptance.sh
+
+test-science-acceptance: test-zcode-dht-acceptance
 	@bash tools/dev/science_acceptance.sh
 
 # ── STICKINESS fault-injection matrix (sticky-node-plan §4 metric) ──
