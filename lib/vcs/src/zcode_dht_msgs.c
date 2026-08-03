@@ -45,6 +45,8 @@ enum vcs_zcode_dht_error vcs_zcode_dht_msg_serialize_find_node(
     if (!wire_len_out) return VCS_ZCODE_DHT_ERR_NULL;
     *wire_len_out = 0;
     if (!msg || !wire) return VCS_ZCODE_DHT_ERR_NULL;
+    if (!dht_msg_nonzero32(msg->sender_node_id))
+        return VCS_ZCODE_DHT_ERR_ID_ZERO;
     if (!dht_msg_nonzero16(msg->query_id))
         return VCS_ZCODE_DHT_ERR_QUERY_ID;
     if (!dht_msg_nonzero32(msg->target_node_id))
@@ -53,6 +55,8 @@ enum vcs_zcode_dht_error vcs_zcode_dht_msg_serialize_find_node(
         return VCS_ZCODE_DHT_ERR_WIRE_SIZE;
 
     size_t off = dht_msg_write_header(wire, VCS_ZCODE_DHT_MSG_FIND_NODE);
+    memcpy(wire + off, msg->sender_node_id, VCS_ZCODE_DHT_ID_BYTES);
+    off += VCS_ZCODE_DHT_ID_BYTES;
     memcpy(wire + off, msg->query_id, VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES);
     off += VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES;
     memcpy(wire + off, msg->target_node_id, VCS_ZCODE_DHT_ID_BYTES);
@@ -70,6 +74,8 @@ enum vcs_zcode_dht_error vcs_zcode_dht_msg_serialize_nodes(
     if (!wire_len_out) return VCS_ZCODE_DHT_ERR_NULL;
     *wire_len_out = 0;
     if (!msg || !wire) return VCS_ZCODE_DHT_ERR_NULL;
+    if (!dht_msg_nonzero32(msg->sender_node_id))
+        return VCS_ZCODE_DHT_ERR_ID_ZERO;
     if (!dht_msg_nonzero16(msg->query_id))
         return VCS_ZCODE_DHT_ERR_QUERY_ID;
     if (msg->contact_count > VCS_ZCODE_DHT_K)
@@ -78,10 +84,13 @@ enum vcs_zcode_dht_error vcs_zcode_dht_msg_serialize_nodes(
     size_t contacts_len = msg->contact_count == 0
         ? 0 : vcs_zcode_dht_contacts_wire_bytes(msg->contact_count);
     size_t need = VCS_ZCODE_DHT_MSGS_HEADER_BYTES +
+                  VCS_ZCODE_DHT_ID_BYTES +
                   VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES + 4 + contacts_len;
     if (wire_capacity < need) return VCS_ZCODE_DHT_ERR_WIRE_SIZE;
 
     size_t off = dht_msg_write_header(wire, VCS_ZCODE_DHT_MSG_NODES);
+    memcpy(wire + off, msg->sender_node_id, VCS_ZCODE_DHT_ID_BYTES);
+    off += VCS_ZCODE_DHT_ID_BYTES;
     memcpy(wire + off, msg->query_id, VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES);
     off += VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES;
     zcl_write_u32_le(wire + off, (uint32_t)contacts_len);
@@ -119,11 +128,16 @@ enum vcs_zcode_dht_error vcs_zcode_dht_msg_parse(
     if (kind == VCS_ZCODE_DHT_MSG_FIND_NODE) {
         if (wire_len != VCS_ZCODE_DHT_FIND_NODE_WIRE_BYTES)
             return VCS_ZCODE_DHT_ERR_WIRE_SIZE;
+        memcpy(out->find_node.sender_node_id, wire + off,
+               VCS_ZCODE_DHT_ID_BYTES);
+        off += VCS_ZCODE_DHT_ID_BYTES;
         memcpy(out->find_node.query_id, wire + off,
                VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES);
         off += VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES;
         memcpy(out->find_node.target_node_id, wire + off,
                VCS_ZCODE_DHT_ID_BYTES);
+        if (!dht_msg_nonzero32(out->find_node.sender_node_id))
+            return VCS_ZCODE_DHT_ERR_ID_ZERO;
         if (!dht_msg_nonzero16(out->find_node.query_id))
             return VCS_ZCODE_DHT_ERR_QUERY_ID;
         if (!dht_msg_nonzero32(out->find_node.target_node_id))
@@ -134,8 +148,12 @@ enum vcs_zcode_dht_error vcs_zcode_dht_msg_parse(
 
     if (kind == VCS_ZCODE_DHT_MSG_NODES) {
         if (wire_len < VCS_ZCODE_DHT_MSGS_HEADER_BYTES +
+                       VCS_ZCODE_DHT_ID_BYTES +
                        VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES + 4)
             return VCS_ZCODE_DHT_ERR_WIRE_SIZE;
+        memcpy(out->nodes.sender_node_id, wire + off,
+               VCS_ZCODE_DHT_ID_BYTES);
+        off += VCS_ZCODE_DHT_ID_BYTES;
         memcpy(out->nodes.query_id, wire + off,
                VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES);
         off += VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES;
@@ -145,6 +163,8 @@ enum vcs_zcode_dht_error vcs_zcode_dht_msg_parse(
          * contacts_wire_len and trailing bytes both fail here. */
         if (wire_len - off != contacts_wire_len)
             return VCS_ZCODE_DHT_ERR_WIRE_SIZE;
+        if (!dht_msg_nonzero32(out->nodes.sender_node_id))
+            return VCS_ZCODE_DHT_ERR_ID_ZERO;
         if (!dht_msg_nonzero16(out->nodes.query_id))
             return VCS_ZCODE_DHT_ERR_QUERY_ID;
         if (contacts_wire_len == 0) {

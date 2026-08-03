@@ -35,6 +35,7 @@ static int test_zdhtm_find_node_roundtrip(void)
     int failures = 0;
     TEST("zcode dht msgs: find_node round trip is canonical") {
         struct vcs_zcode_dht_msg_find_node msg;
+        zdhtm_id(msg.sender_node_id, 0x77);
         zdhtm_qid(msg.query_id, 0x00);
         zdhtm_id(msg.target_node_id, 0xa5);
         uint8_t wire[VCS_ZCODE_DHT_FIND_NODE_WIRE_BYTES];
@@ -48,6 +49,8 @@ static int test_zdhtm_find_node_roundtrip(void)
         ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, wire_len, &parsed),
                   VCS_ZCODE_DHT_OK);
         ASSERT_EQ(parsed.kind, VCS_ZCODE_DHT_MSG_FIND_NODE);
+        ASSERT(memcmp(parsed.find_node.sender_node_id,
+                      msg.sender_node_id, 32) == 0);
         ASSERT(memcmp(parsed.find_node.query_id, msg.query_id, 16) == 0);
         ASSERT(memcmp(parsed.find_node.target_node_id,
                       msg.target_node_id, 32) == 0);
@@ -82,11 +85,15 @@ static int test_zdhtm_find_node_golden(void)
     TEST("zcode dht msgs: find_node wire golden") {
         /* Pinned against a python3 struct/bytes recompute of the spec. */
         static const char golden_hex[] =
-            "5a434448544d0d0a0100010001020304"
+            "5a434448544d0d0a0100014041424344"
+            "45464748494a4b4c4d4e4f5051525354"
+            "55565758595a5b5c5d5e5f0001020304"
             "05060708090a0b0c0d0e0f2021222324"
             "25262728292a2b2c2d2e2f3031323334"
             "35363738393a3b3c3d3e3f";
         struct vcs_zcode_dht_msg_find_node msg;
+        for (size_t i = 0; i < 32; i++)
+            msg.sender_node_id[i] = (uint8_t)(0x40 + i);
         zdhtm_qid(msg.query_id, 0x00);
         for (size_t i = 0; i < 32; i++)
             msg.target_node_id[i] = (uint8_t)(0x20 + i);
@@ -117,6 +124,7 @@ static int test_zdhtm_nodes_roundtrip(void)
     int failures = 0;
     TEST("zcode dht msgs: nodes round trip with 0, 1, and 16 contacts") {
         struct vcs_zcode_dht_msg_nodes msg;
+        zdhtm_id(msg.sender_node_id, 0x88);
         zdhtm_qid(msg.query_id, 0x40);
 
         /* Zero contacts: contacts_wire_len 0, no embedded blob. */
@@ -126,13 +134,15 @@ static int test_zdhtm_nodes_roundtrip(void)
         ASSERT_EQ(vcs_zcode_dht_msg_serialize_nodes(
                       &msg, wire, sizeof(wire), &wire_len),
                   VCS_ZCODE_DHT_OK);
-        ASSERT_EQ(wire_len, VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 16 + 4);
-        ASSERT_EQ(wire[VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 16], 0);
+        ASSERT_EQ(wire_len, VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32 + 16 + 4);
+        ASSERT_EQ(wire[VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32 + 16], 0);
         struct vcs_zcode_dht_msg parsed;
         ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, wire_len, &parsed),
                   VCS_ZCODE_DHT_OK);
         ASSERT_EQ(parsed.kind, VCS_ZCODE_DHT_MSG_NODES);
         ASSERT_EQ(parsed.nodes.contact_count, 0);
+        ASSERT(memcmp(parsed.nodes.sender_node_id,
+                      msg.sender_node_id, 32) == 0);
         ASSERT(memcmp(parsed.nodes.query_id, msg.query_id, 16) == 0);
         size_t wire2_len = 0;
         ASSERT_EQ(vcs_zcode_dht_msg_serialize_nodes(
@@ -146,7 +156,7 @@ static int test_zdhtm_nodes_roundtrip(void)
         ASSERT_EQ(vcs_zcode_dht_msg_serialize_nodes(
                       &msg, wire, sizeof(wire), &wire_len),
                   VCS_ZCODE_DHT_OK);
-        ASSERT_EQ(wire_len, VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 16 + 4 +
+        ASSERT_EQ(wire_len, VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32 + 16 + 4 +
                   VCS_ZCODE_DHT_CONTACTS_HEADER_BYTES +
                   VCS_ZCODE_DHT_CONTACT_ENTRY_WIRE_BYTES);
         ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, wire_len, &parsed),
@@ -203,7 +213,9 @@ static int test_zdhtm_nodes_golden(void)
         /* Pinned against a python3 struct/bytes recompute of the spec: the
          * contacts are fed unsorted and the golden is the canonical form. */
         static const char golden_hex[] =
-            "5a434448544d0d0a010002f0f1f2f3f4"
+            "5a434448544d0d0a010002aaaaaaaaaa"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "aaaaaaaaaaaaaaaaaaaaaaf0f1f2f3f4"
             "f5f6f7f8f9fafbfcfdfeffa60000005a"
             "43444854430d0a010002000000010101"
             "01010101010101010101010101010101"
@@ -217,11 +229,12 @@ static int test_zdhtm_nodes_golden(void)
             "22222222222222222264f15365000000"
             "0007000000";
         struct vcs_zcode_dht_msg_nodes msg;
+        zdhtm_id(msg.sender_node_id, 0xaa);
         zdhtm_qid(msg.query_id, 0xf0);
         msg.contact_count = 2;
         zdhtm_contact(&msg.contacts[0], 0x02, 0x22, 1700000100, 7);
         zdhtm_contact(&msg.contacts[1], 0x01, 0x11, 1700000000, 0);
-        uint8_t wire[197];
+        uint8_t wire[229];
         size_t wire_len = 0;
         ASSERT_EQ(vcs_zcode_dht_msg_serialize_nodes(
                       &msg, wire, sizeof(wire), &wire_len),
@@ -239,6 +252,8 @@ static int test_zdhtm_nodes_golden(void)
                   VCS_ZCODE_DHT_OK);
         ASSERT_EQ(parsed.kind, VCS_ZCODE_DHT_MSG_NODES);
         ASSERT_EQ(parsed.nodes.contact_count, 2);
+        ASSERT(memcmp(parsed.nodes.sender_node_id,
+                      msg.sender_node_id, 32) == 0);
         ASSERT(memcmp(parsed.nodes.query_id, msg.query_id, 16) == 0);
         /* Parsed order is the canonical ascending order. */
         ASSERT_EQ(parsed.nodes.contacts[0].last_seen_unix, 1700000000);
@@ -254,6 +269,7 @@ static int test_zdhtm_parse_reject(void)
     int failures = 0;
     TEST("zcode dht msgs: parse rejects malformed wire") {
         struct vcs_zcode_dht_msg_find_node fn;
+        zdhtm_id(fn.sender_node_id, 0x77);
         zdhtm_qid(fn.query_id, 0x00);
         zdhtm_id(fn.target_node_id, 0xa5);
         uint8_t wire[VCS_ZCODE_DHT_FIND_NODE_WIRE_BYTES + 1];
@@ -291,11 +307,11 @@ static int test_zdhtm_parse_reject(void)
         ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, wire_len - 1, &parsed),
                   VCS_ZCODE_DHT_ERR_WIRE_SIZE);
         /* All-zero query_id, then all-zero target. */
-        memset(wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES, 0, 16);
+        memset(wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32, 0, 16);
         ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, wire_len, &parsed),
                   VCS_ZCODE_DHT_ERR_QUERY_ID);
-        zdhtm_qid(wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES, 0x00);
-        memset(wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 16, 0, 32);
+        zdhtm_qid(wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32, 0x00);
+        memset(wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32 + 16, 0, 32);
         ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, wire_len, &parsed),
                   VCS_ZCODE_DHT_ERR_ID_ZERO);
         PASS();
@@ -308,6 +324,7 @@ static int test_zdhtm_nodes_parse_reject(void)
     int failures = 0;
     TEST("zcode dht msgs: nodes parse rejects malformed frames") {
         struct vcs_zcode_dht_msg_nodes msg;
+        zdhtm_id(msg.sender_node_id, 0x88);
         zdhtm_qid(msg.query_id, 0xf0);
         msg.contact_count = 1;
         zdhtm_contact(&msg.contacts[0], 0x01, 0x11, 100, 0);
@@ -316,7 +333,7 @@ static int test_zdhtm_nodes_parse_reject(void)
         ASSERT_EQ(vcs_zcode_dht_msg_serialize_nodes(
                       &msg, wire, sizeof(wire), &wire_len),
                   VCS_ZCODE_DHT_OK);
-        const size_t body = VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 16;
+        const size_t body = VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32 + 16;
 
         struct vcs_zcode_dht_msg parsed;
         /* contacts_wire_len larger than the remaining bytes. */
@@ -335,11 +352,11 @@ static int test_zdhtm_nodes_parse_reject(void)
                   VCS_ZCODE_DHT_ERR_WIRE_SIZE);
         /* All-zero query_id. */
         uint8_t saved[16];
-        memcpy(saved, wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES, 16);
-        memset(wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES, 0, 16);
+        memcpy(saved, wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32, 16);
+        memset(wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32, 0, 16);
         ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, wire_len, &parsed),
                   VCS_ZCODE_DHT_ERR_QUERY_ID);
-        memcpy(wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES, saved, 16);
+        memcpy(wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32, saved, 16);
 
         /* Embedded blob with a bad magic propagates the codec error. */
         const size_t blob = body + 4;
@@ -358,10 +375,10 @@ static int test_zdhtm_nodes_parse_reject(void)
                   VCS_ZCODE_DHT_OK);
 
         /* A blob header declaring 17 contacts exceeds the K cap. */
-        uint8_t over[VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 16 + 4 +
+        uint8_t over[VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32 + 16 + 4 +
                      VCS_ZCODE_DHT_CONTACTS_HEADER_BYTES];
-        memcpy(over, wire, VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 16);
-        size_t off = VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 16;
+        memcpy(over, wire, VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32 + 16);
+        size_t off = VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32 + 16;
         memset(over + off, 0, 4);
         over[off] = VCS_ZCODE_DHT_CONTACTS_HEADER_BYTES;
         off += 4;
@@ -381,11 +398,46 @@ static int test_zdhtm_nodes_parse_reject(void)
     return failures;
 }
 
+static int test_zdhtm_zero_sender_reject(void)
+{
+    int failures = 0;
+    TEST("zcode dht msgs: all-zero sender_node_id rejected on both kinds") {
+        struct vcs_zcode_dht_msg parsed;
+        uint8_t wire[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES];
+        size_t wire_len = 0;
+
+        struct vcs_zcode_dht_msg_find_node fn;
+        zdhtm_id(fn.sender_node_id, 0x77);
+        zdhtm_qid(fn.query_id, 0x00);
+        zdhtm_id(fn.target_node_id, 0xa5);
+        ASSERT_EQ(vcs_zcode_dht_msg_serialize_find_node(
+                      &fn, wire, sizeof(wire), &wire_len),
+                  VCS_ZCODE_DHT_OK);
+        memset(wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES, 0, 32);
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, wire_len, &parsed),
+                  VCS_ZCODE_DHT_ERR_ID_ZERO);
+
+        struct vcs_zcode_dht_msg_nodes nodes;
+        zdhtm_id(nodes.sender_node_id, 0x88);
+        zdhtm_qid(nodes.query_id, 0xf0);
+        nodes.contact_count = 0;
+        ASSERT_EQ(vcs_zcode_dht_msg_serialize_nodes(
+                      &nodes, wire, sizeof(wire), &wire_len),
+                  VCS_ZCODE_DHT_OK);
+        memset(wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES, 0, 32);
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, wire_len, &parsed),
+                  VCS_ZCODE_DHT_ERR_ID_ZERO);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_zdhtm_serialize_reject(void)
 {
     int failures = 0;
     TEST("zcode dht msgs: serialize rejects invalid input") {
         struct vcs_zcode_dht_msg_find_node fn;
+        zdhtm_id(fn.sender_node_id, 0x77);
         zdhtm_qid(fn.query_id, 0x00);
         zdhtm_id(fn.target_node_id, 0xa5);
         uint8_t wire[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES];
@@ -400,6 +452,11 @@ static int test_zdhtm_serialize_reject(void)
                       &fn, wire, sizeof(wire), NULL),
                   VCS_ZCODE_DHT_ERR_NULL);
         struct vcs_zcode_dht_msg_find_node bad = fn;
+        memset(bad.sender_node_id, 0, 32);
+        ASSERT_EQ(vcs_zcode_dht_msg_serialize_find_node(
+                      &bad, wire, sizeof(wire), &wire_len),
+                  VCS_ZCODE_DHT_ERR_ID_ZERO);
+        bad = fn;
         memset(bad.query_id, 0, 16);
         ASSERT_EQ(vcs_zcode_dht_msg_serialize_find_node(
                       &bad, wire, sizeof(wire), &wire_len),
@@ -412,6 +469,7 @@ static int test_zdhtm_serialize_reject(void)
         ASSERT_EQ(wire_len, 0);
 
         struct vcs_zcode_dht_msg_nodes nodes;
+        zdhtm_id(nodes.sender_node_id, 0x88);
         zdhtm_qid(nodes.query_id, 0xf0);
         nodes.contact_count = 1;
         zdhtm_contact(&nodes.contacts[0], 0x01, 0x11, 100, 0);
@@ -425,6 +483,11 @@ static int test_zdhtm_serialize_reject(void)
                       &nodes, wire, sizeof(wire), NULL),
                   VCS_ZCODE_DHT_ERR_NULL);
         struct vcs_zcode_dht_msg_nodes bad_nodes = nodes;
+        memset(bad_nodes.sender_node_id, 0, 32);
+        ASSERT_EQ(vcs_zcode_dht_msg_serialize_nodes(
+                      &bad_nodes, wire, sizeof(wire), &wire_len),
+                  VCS_ZCODE_DHT_ERR_ID_ZERO);
+        bad_nodes = nodes;
         memset(bad_nodes.query_id, 0, 16);
         ASSERT_EQ(vcs_zcode_dht_msg_serialize_nodes(
                       &bad_nodes, wire, sizeof(wire), &wire_len),
@@ -461,6 +524,7 @@ int test_zcode_dht_msgs(void)
     failures += test_zdhtm_nodes_golden();
     failures += test_zdhtm_parse_reject();
     failures += test_zdhtm_nodes_parse_reject();
+    failures += test_zdhtm_zero_sender_reject();
     failures += test_zdhtm_serialize_reject();
     printf("=== zcode_dht_msgs: %d failures ===\n", failures);
     return failures;
