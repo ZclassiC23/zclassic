@@ -297,7 +297,15 @@
 # (363-byte wire binding method + hardware-profile roots; v1 frozen).
 # Re-baselined at 1387; count STAYS 14.
 #
-14
+# Paydown 2026-08-03 (G2 swarm closure, ratchet re-tighten): the G2 slice
+# re-baselined wallet_sqlite.c (1668 -> 1694, restored drift from
+# c4399ac6d) and package_swarm_node.c (1801 -> 1840, announce dedup +
+# active-downloads accessor), removing wallet_sqlite.c from the grown
+# list. Live drift measured at 13; the gate fails on slack, so the
+# recorded count tightens 14 -> 13. See the G2 note at the end of this
+# file for the slice itself.
+#
+13
 #
 # 2026-07-27 (os_sandbox dynamic Landlock handled-set): os_sandbox_linux.c
 # grew 1415 -> 1422 — the slice-6 unconditional handled-set addition of
@@ -584,3 +592,16 @@
 # frequency, else the documented 0 "unknown"). Two captures of the same
 # machine now produce the same profile object, which the S4 deterministic
 # benchmark envelope requires. Re-baselined at 1411; count STAYS 14.
+#
+# 2026-08-03 (G2 swarm closure): two files grew, both BASELINED at their
+# new LOC rather than spending a ratchet slot (and the wallet re-baseline
+# removed one grown entry — recorded count tightens 14 -> 13, see the
+# paydown note beside the count line).
+#   lib/vcs/src/package_swarm_node.c 1801 -> 1840 — the G2 fixes: per-peer
+#       announce dedup (announced table + peer_was_announced) and the
+#       vcs_swarm_engine_active_downloads() accessor the supervisor
+#       clock-driven swarm tick uses for its progress/idle verdict.
+#   lib/wallet/src/wallet_sqlite.c 1668 -> 1694 — restored committed
+#       drift, not fresh: c4399ac6d (C5 proof) added the full-txid token
+#       gate + time-budgeted flush BEGIN retry and the lane merged
+#       without re-baselining. Re-baselined at 1694.

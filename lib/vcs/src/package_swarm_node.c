@@ -81,6 +81,11 @@ struct swarm_peer {
     enum vcs_policy_tier tier;
     uint8_t ads[VCS_SWARM_MAX_PEER_ADS][32];
     size_t ad_count;
+    /* Roots WE already announced TO this peer (dedupe: repeat announce_to
+     * calls queue only newly complete roots, so the transport glue can
+     * call it on every membership sync without flooding the peer). */
+    uint8_t announced[VCS_SWARM_MAX_LOCAL_ANNOUNCES][32];
+    size_t announced_count;
     uint32_t inflight;
     uint64_t burst_start;
     uint32_t burst_count;
@@ -168,6 +173,15 @@ static bool peer_advertises(const struct swarm_peer *peer,
 {
     for (size_t i = 0; i < peer->ad_count; i++)
         if (memcmp(peer->ads[i], root, 32) == 0)
+            return true;
+    return false;
+}
+
+static bool peer_was_announced(const struct swarm_peer *peer,
+                               const uint8_t root[32])
+{
+    for (size_t i = 0; i < peer->announced_count; i++)
+        if (memcmp(peer->announced[i], root, 32) == 0)
             return true;
     return false;
 }
@@ -1459,8 +1473,16 @@ size_t vcs_swarm_engine_announce_to(struct vcs_swarm_engine *engine,
     size_t n = vcs_package_store_list_summaries(
         engine->store, true, summaries, VCS_SWARM_MAX_LOCAL_ANNOUNCES);
     pthread_mutex_lock(&engine->lock);
+    int slot = peer_slot(engine, peer);
+    if (slot < 0) {
+        pthread_mutex_unlock(&engine->lock);
+        return 0;
+    }
+    struct swarm_peer *p = &engine->peers[slot];
     size_t queued = 0;
     for (size_t i = 0; i < n; i++) {
+        if (peer_was_announced(p, summaries[i].root))
+            continue;
         struct vcs_package_swarm_message msg;
         memset(&msg, 0, sizeof(msg));
         msg.type = VCS_PACKAGE_SWARM_ANNOUNCE;
@@ -1471,6 +1493,9 @@ size_t vcs_swarm_engine_announce_to(struct vcs_swarm_engine *engine,
         msg.body.announce.total_chunks = summaries[i].total_chunks;
         if (!queue_frame(engine, peer, &msg))
             break;
+        if (p->announced_count < VCS_SWARM_MAX_LOCAL_ANNOUNCES)
+            memcpy(p->announced[p->announced_count++], summaries[i].root,
+                   32);
         queued++;
     }
     pthread_mutex_unlock(&engine->lock);
@@ -1714,6 +1739,20 @@ const char *vcs_swarm_download_state_string(enum vcs_swarm_download_state s)
     case VCS_SWARM_DL_FAILED: return "failed";
     }
     return "unknown";
+}
+
+size_t vcs_swarm_engine_active_downloads(struct vcs_swarm_engine *engine)
+{
+    if (!engine)
+        return 0;
+    pthread_mutex_lock(&engine->lock);
+    size_t n = 0;
+    for (size_t i = 0; i < VCS_SWARM_MAX_DOWNLOADS; i++)
+        if (engine->dls[i].state == VCS_SWARM_DL_WANT_MANIFEST ||
+            engine->dls[i].state == VCS_SWARM_DL_CHUNKS)
+            n++;
+    pthread_mutex_unlock(&engine->lock);
+    return n;
 }
 
 bool vcs_swarm_engine_download_status(struct vcs_swarm_engine *engine,

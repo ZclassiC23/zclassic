@@ -12,6 +12,7 @@
 #include "config/boot_zcode_work_authority.h"
 
 #include "base/hex.h"
+#include "base/safe_alloc.h"
 #include "vcs/package_reward.h"
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
@@ -30,10 +31,12 @@
 #include "net/peer_scoring.h"
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
+#include "util/supervisor.h"
 #include "util/sync.h"
 #include "util/util.h"
 #include "services/build_fabric_worker.h"
 #include "services/build_fabric_service.h"
+#include "supervisors/domains.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -47,9 +50,13 @@
  * reconnect of the same host, and is never a contributor identity. */
 #define ZCODE_SWARM_KEY_DOMAIN "zcl.zcode_swarm_peer.v1"
 
-/* Membership sync / scheduler-tick throttle (seconds). The tick hook
- * fires once per peer message cycle — far too hot for an O(peers x
- * nodes) membership sweep or a scheduler pass; both are second-scale. */
+/* Membership sync / scheduler-tick throttle (seconds). The swarm is
+ * clock-driven: a supervisor child (net.zcode_swarm, 1 s period) runs the
+ * periodic sync/tick/drain even when no peer has inbound traffic — the
+ * per-peer message-cycle hook (boot_zcode_swarm_tick) only fires while a
+ * peer has queued messages, so an idle-but-healthy connection would
+ * otherwise never announce, never WANT, and never drain. Both paths share
+ * the same throttled helpers below. */
 #define ZCODE_SWARM_SYNC_PERIOD_SEC 15
 #define ZCODE_SWARM_TICK_PERIOD_SEC 1
 
@@ -66,6 +73,10 @@ static uint8_t s_work_secret[32];
 static uint8_t s_work_pubkey[32];
 static bool s_work_key_ready;
 static char s_work_workspace[4096];
+static struct boot_svc_ctx *s_svc;          /* borrowed; set by wire() */
+static struct liveness_contract s_timer_contract;
+static supervisor_child_id s_timer_child = SUPERVISOR_INVALID_ID;
+static uint64_t s_frames_sent;              /* supervisor progress marker */
 
 static bool boot_zcode_work_workspace(void)
 {
@@ -424,8 +435,9 @@ static bool boot_zcode_work_refresh(struct boot_svc_ctx *svc, int64_t wall)
 static void boot_zcode_swarm_lock(void)
 {
     if (!s_lock_init) {
-        /* First touch happens on the single message-handler thread
-         * before any command thread can observe the engine global. */
+        /* wire() initializes eagerly before the supervisor child can
+         * fire; this fallback covers a frame arriving on an unwired
+         * msg_processor (single message-handler thread at that point). */
         zcl_mutex_init(&s_lock);
         s_lock_init = true;
     }
@@ -654,7 +666,8 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
 }
 
 /* Membership sync: under cs_nodes, add every eligible node (announcing
- * tracked packages to newly known peers) and drop engine peers whose
+ * tracked packages to every known peer — deduped per peer, so only
+ * newly complete roots are queued each sync) and drop engine peers whose
  * node is gone or no longer eligible. announce_to only queues frames —
  * no network I/O under cs_nodes. Caller holds s_lock. */
 static void boot_zcode_swarm_sync_membership(struct msg_processor *mp,
@@ -671,14 +684,13 @@ static void boot_zcode_swarm_sync_membership(struct msg_processor *mp,
         uint8_t key[33];
         if (!boot_zcode_swarm_peer_key(node, key))
             continue;
-        bool known = vcs_swarm_engine_peer_known(
+        (void)vcs_swarm_engine_peer_add(engine,
+                                        boot_zcode_swarm_peer_id(node),
+                                        key);
+        /* Deduped per peer: only newly complete roots queue, so calling
+         * every sync propagates content published after the peer joined. */
+        (void)vcs_swarm_engine_announce_to(
             engine, boot_zcode_swarm_peer_id(node));
-        if (vcs_swarm_engine_peer_add(engine,
-                                      boot_zcode_swarm_peer_id(node),
-                                      key) &&
-            !known)
-            (void)vcs_swarm_engine_announce_to(
-                engine, boot_zcode_swarm_peer_id(node));
         (void)vcs_zcode_work_node_peer_add(
             s_work, boot_zcode_swarm_peer_id(node));
     }
@@ -703,19 +715,13 @@ static void boot_zcode_swarm_sync_membership(struct msg_processor *mp,
     zcl_mutex_unlock(&nm->cs_nodes);
 }
 
-void boot_zcode_swarm_tick(struct msg_processor *mp, struct p2p_node *node,
-                           void *ctx)
+/* Throttled periodic work shared by the message-cycle tick and the
+ * supervisor timer: membership sync every SYNC_PERIOD, engine scheduler
+ * tick + work-node drains every TICK_PERIOD. Caller holds s_lock. */
+static void boot_zcode_swarm_periodic(struct msg_processor *mp,
+                                      struct vcs_swarm_engine *engine,
+                                      struct boot_svc_ctx *svc, int64_t wall)
 {
-    if (!mp || !node)
-        return;
-    int64_t wall = (int64_t)platform_time_wall_time_t();
-    boot_zcode_swarm_lock();
-    struct vcs_swarm_engine *engine =
-        boot_zcode_swarm_ensure((struct boot_svc_ctx *)ctx);
-    if (!engine) {
-        zcl_mutex_unlock(&s_lock);
-        return;
-    }
     if (wall - s_last_sync >= ZCODE_SWARM_SYNC_PERIOD_SEC) {
         s_last_sync = wall;
         boot_zcode_swarm_sync_membership(mp, engine);
@@ -729,37 +735,133 @@ void boot_zcode_swarm_tick(struct msg_processor *mp, struct p2p_node *node,
         boot_zcode_work_publish_results(wall);
         boot_zcode_work_observe_results(wall);
         if (GetBoolArg("-buildworker", false) && wall % 300 == 0)
-            (void)boot_zcode_work_refresh((struct boot_svc_ctx *)ctx, wall);
+            (void)boot_zcode_work_refresh(svc, wall);
     }
-    /* Drain queued frames for THIS node (bounded by the engine's
-     * outbound queue; WANT/CANCEL/ANNOUNCE frames only — DATA replies
-     * go out synchronously from the frame hook). */
-    if (boot_zcode_swarm_eligible(node)) {
-        uint8_t frame[VCS_SWARM_OUTBOUND_FRAME_MAX];
-        for (;;) {
-            uint64_t peer_out = 0;
-            size_t frame_len = 0;
-            uint64_t peer_id = boot_zcode_swarm_peer_id(node);
-            if (!vcs_swarm_engine_next_outbound(engine, peer_id,
-                                                &peer_out, frame,
-                                                &frame_len))
-                break;
-            if (peer_out != peer_id || frame_len == 0)
-                break; /* defensive: filter contract violated */
-            boot_zcode_swarm_send(mp, node, frame, frame_len);
-        }
-        uint8_t work_frame[VCS_ZCODE_WORK_SWARM_MAX_WIRE_BYTES];
-        for (;;) {
-            uint64_t peer_out = 0; size_t frame_len = 0;
-            uint64_t peer_id = boot_zcode_swarm_peer_id(node);
-            if (!vcs_zcode_work_node_next_outbound(
-                    s_work, peer_id, &peer_out, work_frame, &frame_len))
-                break;
-            if (peer_out != peer_id || frame_len == 0) break;
-            boot_zcode_swarm_send(mp, node, work_frame, frame_len);
-        }
+}
+
+/* Drain queued frames for ONE node (bounded by the engine's outbound
+ * queue; WANT/CANCEL/ANNOUNCE frames only — DATA replies go out
+ * synchronously from the frame hook). Returns frames sent. Caller holds
+ * s_lock; node must be ref-held by the caller. */
+static size_t boot_zcode_swarm_drain_node(struct msg_processor *mp,
+                                          struct vcs_swarm_engine *engine,
+                                          struct p2p_node *node)
+{
+    if (!boot_zcode_swarm_eligible(node))
+        return 0;
+    size_t sent = 0;
+    uint8_t frame[VCS_SWARM_OUTBOUND_FRAME_MAX];
+    for (;;) {
+        uint64_t peer_out = 0;
+        size_t frame_len = 0;
+        uint64_t peer_id = boot_zcode_swarm_peer_id(node);
+        if (!vcs_swarm_engine_next_outbound(engine, peer_id,
+                                            &peer_out, frame,
+                                            &frame_len))
+            break;
+        if (peer_out != peer_id || frame_len == 0)
+            break; /* defensive: filter contract violated */
+        boot_zcode_swarm_send(mp, node, frame, frame_len);
+        sent++;
+    }
+    uint8_t work_frame[VCS_ZCODE_WORK_SWARM_MAX_WIRE_BYTES];
+    for (;;) {
+        uint64_t peer_out = 0; size_t frame_len = 0;
+        uint64_t peer_id = boot_zcode_swarm_peer_id(node);
+        if (!vcs_zcode_work_node_next_outbound(
+                s_work, peer_id, &peer_out, work_frame, &frame_len))
+            break;
+        if (peer_out != peer_id || frame_len == 0) break;
+        boot_zcode_swarm_send(mp, node, work_frame, frame_len);
+        sent++;
+    }
+    return sent;
+}
+
+void boot_zcode_swarm_tick(struct msg_processor *mp, struct p2p_node *node,
+                           void *ctx)
+{
+    if (!mp || !node)
+        return;
+    int64_t wall = (int64_t)platform_time_wall_time_t();
+    boot_zcode_swarm_lock();
+    struct vcs_swarm_engine *engine =
+        boot_zcode_swarm_ensure((struct boot_svc_ctx *)ctx);
+    if (engine) {
+        boot_zcode_swarm_periodic(mp, engine, (struct boot_svc_ctx *)ctx,
+                                  wall);
+        (void)boot_zcode_swarm_drain_node(mp, engine, node);
     }
     zcl_mutex_unlock(&s_lock);
+}
+
+/* Supervisor on_tick: the swarm's real clock. Fires every
+ * ZCODE_SWARM_TICK_PERIOD_SEC regardless of inbound peer traffic — the
+ * message-cycle hook above only runs while a peer has queued messages,
+ * and an idle healthy connection still needs announces, WANTs, and
+ * outbound drains. Progress marker = cumulative frames sent; a quiet
+ * child with no active downloads reports idle, a quiet child WITH active
+ * downloads reports neither (a wedged download should raise NO_PROGRESS). */
+static void boot_zcode_swarm_timer_tick(struct liveness_contract *self)
+{
+    (void)self;
+    struct boot_svc_ctx *svc = s_svc;
+    if (!svc || !svc->msg_processor)
+        return; /* not wired: nothing legitimate to report */
+    struct msg_processor *mp = svc->msg_processor;
+    int64_t wall = (int64_t)platform_time_wall_time_t();
+    boot_zcode_swarm_lock();
+    if (svc != s_svc) {
+        zcl_mutex_unlock(&s_lock);
+        return; /* shutdown raced us */
+    }
+    struct vcs_swarm_engine *engine = boot_zcode_swarm_ensure(svc);
+    if (!engine) {
+        zcl_mutex_unlock(&s_lock);
+        /* Hosting off is a legitimate nothing-to-do; an ensure FAILURE
+         * (store closed, alloc) is already logged and is not idleness. */
+        if (!GetBoolArg("-packagehost", false))
+            supervisor_progress_idle(s_timer_child);
+        return;
+    }
+    boot_zcode_swarm_periodic(mp, engine, svc, wall);
+    /* Drain ALL eligible peers: snapshot under cs_nodes (connman's
+     * message-cycle pattern), send outside it. Lock order here is
+     * s_lock -> cs_nodes, same as sync_membership. */
+    size_t sent = 0;
+    struct net_manager *nm = mp->net_mgr;
+    if (nm) {
+        size_t snap_count = 0;
+        struct p2p_node **snap = NULL;
+        zcl_mutex_lock(&nm->cs_nodes);
+        size_t num = nm->num_nodes;
+        if (num > 0) {
+            snap = zcl_malloc(num * sizeof(*snap), "zcode_swarm_snap");
+            if (snap) {
+                for (size_t i = 0; i < num; i++) {
+                    struct p2p_node *node = nm->nodes[i];
+                    if (!node || atomic_load(&node->disconnect))
+                        continue;
+                    snap[snap_count++] = node;
+                    p2p_node_add_ref(node);
+                }
+            }
+        }
+        zcl_mutex_unlock(&nm->cs_nodes);
+        for (size_t i = 0; i < snap_count; i++) {
+            sent += boot_zcode_swarm_drain_node(mp, engine, snap[i]);
+            p2p_node_release(snap[i]);
+        }
+        free(snap);
+    }
+    size_t active = vcs_swarm_engine_active_downloads(engine);
+    zcl_mutex_unlock(&s_lock);
+    if (sent > 0) {
+        s_frames_sent += sent;
+        supervisor_progress(s_timer_child, (int64_t)s_frames_sent);
+    } else if (active == 0) {
+        supervisor_progress_idle(s_timer_child);
+    }
 }
 
 void boot_zcode_swarm_wire(struct boot_svc_ctx *svc)
@@ -768,14 +870,44 @@ void boot_zcode_swarm_wire(struct boot_svc_ctx *svc)
         LOG_ERROR("net.zcode_swarm", "wire: null svc/msg_processor");
         return;
     }
+    /* Eager mutex init: the supervisor tick-runner races the lazy path
+     * in boot_zcode_swarm_lock otherwise. wire() runs single-threaded
+     * at boot before the child is armed. */
+    if (!s_lock_init) {
+        zcl_mutex_init(&s_lock);
+        s_lock_init = true;
+    }
     msg_processor_set_zcode_swarm(svc->msg_processor,
                                   boot_zcode_swarm_frame,
                                   boot_zcode_swarm_tick, svc);
+    s_svc = svc;
+    liveness_contract_init(&s_timer_contract, "net.zcode_swarm");
+    s_timer_contract.on_tick = boot_zcode_swarm_timer_tick;
+    supervisor_domains_init();
+    s_timer_child = supervisor_register_in_domain(g_net_sup,
+                                                  &s_timer_contract);
+    if (s_timer_child == SUPERVISOR_INVALID_ID) {
+        LOG_ERROR("net.zcode_swarm",
+                  "supervisor register failed; swarm is message-driven only");
+        return;
+    }
+    supervisor_set_period(s_timer_child, ZCODE_SWARM_TICK_PERIOD_SEC);
+    supervisor_set_deadline(s_timer_child, 30);
+    /* ARMED progress policy (gate-recognised form: one line, plain
+     * non-zero literal — 30 min in us). A seeder with no peers is
+     * legitimately quiet (idle-reported); a downloader that sends
+     * nothing for 30 minutes is wedged. */
+    supervisor_set_progress_max_quiet(s_timer_child, 1800000000);
 }
 
 void boot_zcode_swarm_shutdown(void)
 {
+    if (s_timer_child != SUPERVISOR_INVALID_ID) {
+        supervisor_unregister(s_timer_child);
+        s_timer_child = SUPERVISOR_INVALID_ID;
+    }
     boot_zcode_swarm_lock();
+    s_svc = NULL;
     vcs_swarm_engine_set_global(NULL);
     vcs_zcode_work_node_set_global(NULL);
     if (s_work)
@@ -792,6 +924,7 @@ void boot_zcode_swarm_shutdown(void)
     s_ledger = NULL;
     s_last_sync = 0;
     s_last_tick = 0;
+    s_frames_sent = 0;
     memset(s_work_secret, 0, sizeof(s_work_secret));
     memset(s_work_pubkey, 0, sizeof(s_work_pubkey));
     s_work_key_ready = false;

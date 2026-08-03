@@ -59,14 +59,21 @@
 #       carries a science root to a peer. Therefore the plan's "B resolves
 #       the study closure FROM A" and "B reproduces A's benchmark" cannot
 #       run node-to-node today; B runs an independent lifecycle instead.
-#   G2  Even the package swarm's fetch cannot complete between two FRESH
-#       nodes on the production glue: the score callback resolves every
-#       peer to NEW_USER (reward ledger never carries the transport
-#       pseudo-keys by design), and the frozen policy table gives
-#       NEW_USER 0 announces/hour, so the receiver flood-refuses the very
-#       first ANNOUNCE and the download never leaves WANT_MANIFEST. The
-#       engine itself is test-proven (test_zcode_swarm_net) behind a
-#       fixed-score substitution the production glue does not make.
+#   G2  CLOSED. The fresh-node package fetch stalled for three stacked
+#       reasons, each fixed and covered by this proof's package leg:
+#       (a) the frozen policy table gave NEW_USER 0 announces/hour, so the
+#           receiver flood-refused the very first ANNOUNCE — now a 4/hour
+#           bootstrap quota (VCS_POLICY_FREE_ANNOUNCE_PER_HOUR);
+#       (b) announces were only queued when a peer was first added, so
+#           content published after the handshake never propagated — the
+#           per-sync membership sweep now re-announces to every known
+#           peer, deduped per peer in the engine;
+#       (c) the swarm tick only fired from the per-peer message cycle,
+#           so an idle-but-healthy connection got ZERO ticks — no sync, no
+#           announce, no WANT, no drain. The swarm is now clock-driven by
+#           a supervisor child (net.zcode_swarm, 1 s period) registered in
+#           boot_zcode_swarm_wire; the message-cycle hook survives only as
+#           a send-latency fast path.
 #   G3  zcode_science_rebuild had no operator surface (test-only
 #       callers); this proof lands the zcode.science.rebuild leaf as the
 #       sanctioned additive glue.
@@ -567,11 +574,11 @@ else
     dl_state="$(sa_jget "$out" 'd["data"].get("download",{}).get("state")')"
     dl_ads="$(sa_jget "$out" 'd["data"].get("download",{}).get("advertisers")')"
     dl_bytes="$(sa_jget "$out" 'd["data"].get("download",{}).get("present_bytes")')"
-    echo "science-acceptance:     G2 confirmed: fetch stalled (state=$dl_state advertisers=$dl_ads present_bytes=$dl_bytes)"
-    echo "science-acceptance:     A holds the package tracked+complete; B's download never left $dl_state —"
-    echo "science-acceptance:     the production score glue resolves B's view of A to NEW_USER (0 announces/hour),"
-    echo "science-acceptance:     so A's ANNOUNCE is flood-refused by the frozen policy table (package_policy.c)."
-    grep -m2 -i "zcode swarm\|announce" "$SA_DD_B/node.log" 2>/dev/null | sed 's/^/science-acceptance:       B log: /' || true
+    echo "science-acceptance:     G2 REGRESSION: fetch stalled (state=$dl_state advertisers=$dl_ads present_bytes=$dl_bytes)" >&2
+    echo "science-acceptance:     the package leg is gated CLOSED (announce bootstrap quota + deduped" >&2
+    echo "science-acceptance:     per-sync re-announce + supervisor clock-driven swarm) — a stall is a bug." >&2
+    grep -m5 -i "zcode swarm\|announce" "$SA_DD_B/node.log" 2>/dev/null | sed 's/^/science-acceptance:       B log: /' >&2 || true
+    sa_die "package leg stalled: G2 regressed"
 fi
 
 # ── [10] restart both nodes (SIGTERM, cold boot, same datadirs) ───────
@@ -602,11 +609,9 @@ rebuild_proof "$SA_DD_B" "B" "$B_STUDY" "$B_RA" "$B_PA"
 echo "science-acceptance: ─────────────────────────────────────────────"
 echo "science-acceptance: NAMED GAPS (asserted, not worked around):"
 echo "science-acceptance:   G1 science CAS objects have no node-to-node distribution (no publisher, no root carrier)"
-if [ "$PKG_COMPLETE" = "1" ]; then
-    echo "science-acceptance:   G2 CLOSED?! the fresh-node swarm fetch completed — policy glue must have changed; re-verify the analysis"
-else
-    echo "science-acceptance:   G2 fresh-node swarm fetch stalls: NEW_USER 0 announces/hour flood-refuses the first ANNOUNCE"
-fi
+echo "science-acceptance:   G2 CLOSED (gated): fresh-node swarm fetch proven node-to-node —"
+echo "science-acceptance:       NEW_USER bootstrap announce quota (4/h) + deduped per-sync re-announce"
+echo "science-acceptance:       + supervisor clock-driven swarm (net.zcode_swarm, 1 s)"
 echo "science-acceptance:   G3 rebuild had no operator surface — glued: zcode.science.rebuild leaf"
 echo "science-acceptance:   G4 context/findings objects + now_unix pin had no CLI path — glued: fixture tool + validator rules"
 echo "science-acceptance: PASS"

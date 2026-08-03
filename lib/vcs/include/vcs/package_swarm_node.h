@@ -159,7 +159,11 @@ size_t vcs_swarm_engine_peer_ids(struct vcs_swarm_engine *engine,
                                  uint64_t *out, size_t max);
 
 /* Queue ANNOUNCE frames to one peer for every complete tracked package
- * (bounded VCS_SWARM_MAX_LOCAL_ANNOUNCES). Returns the count queued. */
+ * not already announced to this peer (bounded
+ * VCS_SWARM_MAX_LOCAL_ANNOUNCES). Per-peer dedupe makes repeat calls
+ * cheap: the transport glue calls this on every membership sync so
+ * content completed or published AFTER the peer joined still propagates.
+ * Returns the count queued. */
 size_t vcs_swarm_engine_announce_to(struct vcs_swarm_engine *engine,
                                     uint64_t peer);
 
@@ -256,6 +260,11 @@ struct vcs_swarm_download_status {
 bool vcs_swarm_engine_download_status(struct vcs_swarm_engine *engine,
                                       const uint8_t package_root[32],
                                       struct vcs_swarm_download_status *out);
+
+/* Downloads currently in flight (want-manifest or downloading). The
+ * transport glue's timer uses it for the honest idle report: zero active
+ * downloads + an empty outbound queue is "legitimately nothing to do". */
+size_t vcs_swarm_engine_active_downloads(struct vcs_swarm_engine *engine);
 
 struct vcs_swarm_peer_info {
     uint64_t peer;

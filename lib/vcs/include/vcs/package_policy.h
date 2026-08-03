@@ -19,7 +19,9 @@
  *   package downloads, queue priority, package pin allowance, package
  *   announcement rate, request burst allowance, and verifier eligibility
  *   all scale with the tier:
- *     new user           — small queue, 1 publication/week
+ *     new user           — small queue, 1 publication/week, bounded
+ *                          announce bootstrap so the publish is
+ *                          deliverable over the swarm
  *     earned contributor — larger queue, more frequent publication, pin
  *                          allowance (earned score >= the threshold)
  *     active verified seeder — best local bandwidth ratio, highest request
@@ -82,6 +84,12 @@ const char *vcs_policy_tier_string(enum vcs_policy_tier tier);
 #define VCS_POLICY_FREE_WEEKLY_DOWNLOAD_BYTES \
     (UINT64_C(256) * 1024u * 1024u) /* 256 MiB / week */
 #define VCS_POLICY_FREE_PUBLISH_PER_WEEK 1u
+/* The bounded announce bootstrap quota: a new user can announce the one
+ * free weekly publication (and re-announce it to a few peers) so the free
+ * publish is actually deliverable. Announces STILL never earn credit (the
+ * frozen no-credit list) and over-quota announces are the ANNOUNCE_FLOOD
+ * offence exactly as before — this is a bootstrap quota, not a reward. */
+#define VCS_POLICY_FREE_ANNOUNCE_PER_HOUR 4u
 
 /* The per-tier limit table (the policy table, frozen). */
 struct vcs_policy_limits {
@@ -167,7 +175,9 @@ struct vcs_policy_decision vcs_policy_check_concurrent_downloads(
 struct vcs_policy_decision vcs_policy_check_pin(
     enum vcs_policy_tier tier, uint64_t pinned_bytes, uint64_t add_bytes);
 
-/* Package announcement rate (per hour window). */
+/* Package announcement rate (per hour window). New users get the bounded
+ * VCS_POLICY_FREE_ANNOUNCE_PER_HOUR bootstrap quota so a zero-score
+ * publication is deliverable; higher tiers scale with earned standing. */
 struct vcs_policy_decision vcs_policy_check_announce(
     enum vcs_policy_tier tier, uint32_t announces_this_hour);
 

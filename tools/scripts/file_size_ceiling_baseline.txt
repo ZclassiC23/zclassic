@@ -77,6 +77,12 @@ config/src/boot_index.c 853
 config/src/boot_mint_anchor.c 809
 config/src/boot_refold_staged.c 2077
 config/src/boot_services.c 1477
+# 2026-08-03: NEW entry at current LOC (gate's recorded-last-resort). The
+# file sat at exactly the 800 ceiling before the G2 swarm-clock slice; the
+# supervisor timer tick + all-peer drain + domain registration pushed it
+# over. The work-adapter half (boot_zcode_work_*) is the natural future
+# split seam if this file grows again.
+config/src/boot_zcode_swarm.c 933
 config/src/bundle_exporter.c 925
 config/src/consensus_state_install_runtime.c 919
 config/src/consensus_state_producer_receipt.c 805

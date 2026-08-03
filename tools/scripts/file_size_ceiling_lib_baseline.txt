@@ -67,7 +67,7 @@ lib/storage/src/coins_view_sqlite.c 1247
 lib/validation/src/chainstate.c 936
 lib/validation/src/connect_block.c 896
 lib/wallet/src/wallet.c 1582
-lib/wallet/src/wallet_sqlite.c 1668
+lib/wallet/src/wallet_sqlite.c 1694
 lib/sim/src/simnet_chaos_faults.c 2684
 lib/util/src/blocker.c 836
 lib/util/src/supervisor.c 801
@@ -80,7 +80,7 @@ lib/vcs/src/package_reward.c 2094
 lib/codeindex/src/codeindex_merkle.c 1070
 lib/vcs/src/package_badge.c 1299
 lib/vcs/src/package_badge_eligible.c 817
-lib/vcs/src/package_swarm_node.c 1801
+lib/vcs/src/package_swarm_node.c 1840
 lib/vcs/src/package_service.c 1040
 lib/vcs/src/zcode_contributor_binding.c 983
 # ZCODE Scientific Metaverse S5: the rebuildable discovery-graph projection

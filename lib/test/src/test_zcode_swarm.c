@@ -17,8 +17,9 @@
  *      with no credit. Late DATA for a CANCELLED id is the honest race:
  *      no credit, NO offence.
  *   5. Announce-only peers earn nothing (no-credit ANNOUNCEMENT on every
- *      announce); a new-user (zero-score) peer is over the frozen
- *      0/hour announce rate → ANNOUNCE_FLOOD naming announce-rate-limit.
+ *      announce); a new-user (zero-score) peer gets the bounded bootstrap
+ *      quota and the announce over it is ANNOUNCE_FLOOD naming
+ *      announce-rate-limit.
  *   6. Scheduler shape: manifest-first; rarest-first across downloads
  *      (fewest advertisers first); per-peer in-flight bound honored;
  *      multi-peer spread; end-to-end verified completion into the CAS.
@@ -707,24 +708,39 @@ static int t_swarm_announce_policy(void)
     SW_CHECK("peer add", vcs_swarm_engine_peer_add(n.engine, peer, key));
     uint8_t frame[128];
     size_t frame_len = sw_announce_frame(&p, frame);
+    struct vcs_swarm_peer_info infos[4];
+    /* NEW_USER announce rate is the bounded bootstrap quota
+     * (VCS_POLICY_FREE_ANNOUNCE_PER_HOUR/hour): the first announces are
+     * ACCEPTED — a fresh node's free weekly publish must be deliverable —
+     * and the announce over the quota names announce-rate-limit. */
     struct vcs_swarm_frame_result res = vcs_swarm_engine_handle_frame(
         n.engine, peer, frame, frame_len, SW_DAY, 1);
-    /* NEW_USER announce rate is the frozen 0/hour: the very first
-     * announce names announce-rate-limit. */
-    SW_CHECK("new-user announce flood named",
+    SW_CHECK("new-user first announce accepted (bootstrap quota)",
+             res.penalty == VCS_SWARM_PENALTY_NONE);
+    SW_CHECK("new-user announce recorded",
+             vcs_swarm_engine_peers_for(n.engine, p.root, infos, 4) == 1);
+    for (uint32_t i = 1; i < VCS_POLICY_FREE_ANNOUNCE_PER_HOUR; i++) {
+        res = vcs_swarm_engine_handle_frame(n.engine, peer, frame, frame_len,
+                                            SW_DAY, 1);
+        SW_CHECK("new-user announce within quota accepted",
+                 res.penalty == VCS_SWARM_PENALTY_NONE);
+    }
+    res = vcs_swarm_engine_handle_frame(n.engine, peer, frame, frame_len,
+                                        SW_DAY, 1);
+    SW_CHECK("new-user announce over quota flood named",
              res.penalty == VCS_SWARM_PENALTY_ANNOUNCE_FLOOD &&
              res.rule != NULL &&
              strcmp(res.rule, "announce-rate-limit") == 0);
     struct vcs_service_key_totals totals;
-    SW_CHECK("announce: flood offence, no ratio movement",
+    SW_CHECK("announce: one flood offence, no ratio movement",
              vcs_service_key_totals(n.book, key, SW_DAY, &totals) &&
              totals.offences[VCS_POLICY_OFFENCE_ANNOUNCE_FLOOD] == 1 &&
-             totals.no_credit_events[VCS_POLICY_NO_CREDIT_ANNOUNCEMENT] == 1 &&
+             totals.no_credit_events[VCS_POLICY_NO_CREDIT_ANNOUNCEMENT] ==
+                 VCS_POLICY_FREE_ANNOUNCE_PER_HOUR + 1 &&
              totals.verified_bytes_downloaded == 0 &&
              totals.verified_bytes_uploaded == 0);
-    struct vcs_swarm_peer_info infos[4];
-    SW_CHECK("flooding peer not advertising",
-             vcs_swarm_engine_peers_for(n.engine, p.root, infos, 4) == 0);
+    SW_CHECK("bounded peer still advertising only the one root",
+             vcs_swarm_engine_peers_for(n.engine, p.root, infos, 4) == 1);
 
     /* An earned contributor may announce; it STILL earns nothing. */
     struct sw_node n2;
@@ -1104,6 +1120,28 @@ static int t_swarm_serving_and_allowance(void)
     SW_CHECK("announce frame drains",
              vcs_swarm_engine_next_outbound(n.engine, peer, &target, frame,
                                             &frame_len));
+    /* Dedupe: a repeat announce_to (the per-sync re-announce) queues
+     * nothing; a package completed AFTER the peer joined queues exactly
+     * one frame on the next call. */
+    SW_CHECK("repeat announce queues nothing (deduped)",
+             vcs_swarm_engine_announce_to(n.engine, peer) == 0);
+    struct sw_pkg p2;
+    if (!sw_make_package(&p2, 1, 137))
+        return 1;
+    SW_CHECK("late manifest admitted",
+             vcs_package_store_put_manifest(n.store, p2.wire, p2.wire_len,
+                                            NULL) == VCS_PACKAGE_STORE_OK);
+    for (size_t i = 0; i < p2.count; i++)
+        SW_CHECK("late chunk admitted",
+                 vcs_package_store_put_chunk(
+                     n.store, p2.root, p2.manifest.files[i].path, 0,
+                     p2.contents[i], p2.lens[i]) == VCS_PACKAGE_STORE_OK);
+    SW_CHECK("late package announced to the existing peer",
+             vcs_swarm_engine_announce_to(n.engine, peer) == 1);
+    SW_CHECK("late announce frame drains",
+             vcs_swarm_engine_next_outbound(n.engine, peer, &target, frame,
+                                            &frame_len));
+    sw_free_package(&p2);
 
     /* Inbound WANT (manifest): served with upload credit. A replay of
      * the same request id: DUPLICATE_REQUEST offence, no second

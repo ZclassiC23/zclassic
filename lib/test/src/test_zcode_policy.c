@@ -312,9 +312,17 @@ static int t_decisions(void)
                                    UINT64_C(1) << 30).allow);
 
     /* Announce rate / request burst. */
-    ZPY_CHECK("announce: new users cannot announce; the rate is exact",
-              !vcs_policy_check_announce(VCS_POLICY_TIER_NEW_USER, 0).allow &&
-              strcmp(vcs_policy_check_announce(VCS_POLICY_TIER_NEW_USER, 0)
+    ZPY_CHECK("announce: the new-user bootstrap quota is exact",
+              vcs_policy_check_announce(VCS_POLICY_TIER_NEW_USER, 0).allow &&
+              vcs_policy_check_announce(VCS_POLICY_TIER_NEW_USER,
+                                        VCS_POLICY_FREE_ANNOUNCE_PER_HOUR - 1)
+                  .allow &&
+              !vcs_policy_check_announce(VCS_POLICY_TIER_NEW_USER,
+                                         VCS_POLICY_FREE_ANNOUNCE_PER_HOUR)
+                   .allow &&
+              strcmp(vcs_policy_check_announce(
+                         VCS_POLICY_TIER_NEW_USER,
+                         VCS_POLICY_FREE_ANNOUNCE_PER_HOUR)
                          .rule,
                      "announce-rate-limit") == 0 &&
               vcs_policy_check_announce(VCS_POLICY_TIER_EARNED_CONTRIBUTOR,
