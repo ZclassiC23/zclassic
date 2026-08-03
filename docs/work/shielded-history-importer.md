@@ -101,9 +101,11 @@ fail-closed root re-hash check per row), `chainstate_legacy_iter_sapling_nullifi
 
 Service: `app/services/src/shielded_history_import_service.c` —
 `shielded_history_import_from_chainstate(progress_db, chainstate_src_path,
-state, out)`. Algorithm: point-in-time copy the chainstate → open it → build
-a Sapling root→height map from the local `block_index` (`hashFinalSaplingRoot`
-per height) → verify the EXPECTED TIP ANCHOR BY ROOT up front:
+height, block_hash, sapling_root, out)`. Algorithm: point-in-time copy the
+chainstate → require its `'B'` best block to equal the target resume block
+exactly (nullifiers are additive and carry no source heights, so importing a
+newer set makes valid forward spends look spent) → verify the EXPECTED TIP
+ANCHOR BY ROOT up front:
 `chainstate_legacy_get_sapling_anchor(reader, expected_tip_sapling_root,
 &tip_tree)` must return FOUND and an explicit `incremental_tree_root` Pedersen
 re-verify of the returned tree must equal the expected root — a stale `'z'`
@@ -116,19 +118,19 @@ Any anomaly (torn record, root mismatch, count below floor) rolls back and
 writes nothing — the blocker stays in place rather than flipping on an
 incomplete set.
 
-The expected tip (`tip_height`, `expected_tip_sapling_root`) is derived
-TARGET-side, never from the source's `'B'` pointer: the reducer seed floor
+The expected tip (`tip_height`, block hash, Sapling root) is derived
+TARGET-side: the reducer seed floor
 (`REDUCER_SEED_FLOOR_HEIGHT_KEY`) when declared — a cold-import-seeded
 datadir owes shielded history only up to its seed, and the fold's own rows
 cover above it (the shielded preflight guarantees the folded span consumed
 no spends) — else `coins_best`; the root comes from the target's own header
-INDEX flat file at that height (`block_index_flat_sapling_root_at` →
-`hashFinalSaplingRoot`). A fresh
+INDEX flat file at that height (`block_index_flat_header_at`). The source's
+`'B'` pointer must match the target hash exactly before the transaction opens.
+A fresh
 never-booted datadir has neither boundary and is refused with "boot it once
 first" (the importer opens the target's `node.db` itself, so the node must
 also be STOPPED — GRACEFULLY: the shutdown flat save is what freshens
-block_index.bin past the header-sync tip). The source `'B'` tip is printed
-as provenance only.
+block_index.bin past the header-sync tip).
 
 The root source is block_index.bin, NOT node.db `blocks.sapling_root`
 (blocks rows are only written on body fold / lean sync / block import, and
@@ -136,7 +138,7 @@ a seeded boot's fold-resume anchor is a header-only height — canary FAIL#6)
 and NOT the event-log block_index projection (a bulk P2P header sync emits
 no EV_BLOCK_HEADER events, so the projection is empty on a fresh
 cold-import datadir — canary FAIL#7). The point reader
-(`block_index_flat_sapling_root_at`, app/services/src/block_index_loader.c)
+(`block_index_flat_header_at`, app/services/src/block_index_loader.c)
 mmaps the flat, verifies the embedded BIIE SHA3 (legacy sidecar-only files
 are refused — a bind this load-bearing does not read unverified bytes), and
 binary-searches the height-sorted 172-byte rows; its format math is proven

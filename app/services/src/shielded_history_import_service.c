@@ -460,15 +460,16 @@ static bool shi_write_provenance(sqlite3 *db, const struct uint256 *best_block,
 
 bool shielded_history_import_from_chainstate(
     sqlite3 *progress_db, const char *chainstate_src_path,
-    int64_t expected_tip_height, const struct uint256 *expected_tip_sapling_root,
+    int64_t expected_tip_height, const struct uint256 *expected_tip_block_hash,
+    const struct uint256 *expected_tip_sapling_root,
     struct shielded_import_report *out)
 {
     struct shielded_import_report report = {0};
     if (out)
         *out = report;
 
-    if (!progress_db || !chainstate_src_path || !expected_tip_sapling_root ||
-        expected_tip_height < 0)
+    if (!progress_db || !chainstate_src_path || !expected_tip_block_hash ||
+        !expected_tip_sapling_root || expected_tip_height < 0)
         LOG_FAIL(SHI_SUBSYS, "invalid args");
 
     /* Fork-safety, defense-in-depth: an all-zero expected root means the caller
@@ -531,7 +532,26 @@ bool shielded_history_import_from_chainstate(
 
     struct uint256 best_block;
     uint256_set_null(&best_block);
-    (void)chainstate_legacy_get_best_block(h, &best_block); /* log/provenance */
+    if (!chainstate_legacy_get_best_block(h, &best_block)) {
+        chainstate_legacy_close(h);
+        shi_progress_end();
+        LOG_FAIL(SHI_SUBSYS,
+                 "source best-block bind FAILED: chainstate has no readable "
+                 "best-block pointer; refusing before import");
+    }
+    if (!uint256_eq(&best_block, expected_tip_block_hash)) {
+        char source_hex[65], target_hex[65];
+        uint256_get_hex(&best_block, source_hex);
+        uint256_get_hex(expected_tip_block_hash, target_hex);
+        chainstate_legacy_close(h);
+        shi_progress_end();
+        LOG_FAIL(SHI_SUBSYS,
+                 "source best-block bind FAILED: source=%s target=%s at "
+                 "resume_h=%lld — importing an additive nullifier set from "
+                 "above/below the target makes forward spends look already "
+                 "spent; refusing before transaction",
+                 source_hex, target_hex, (long long)expected_tip_height);
+    }
 
     /* The chain-committed tip bind (§3), keyed on OUR expected root — never
      * the source's own 'z' best-anchor pointer. The pointer only reflects

@@ -45,7 +45,7 @@
 #include "services/shielded_history_import_service.h"
 #include "services/utxo_recovery_service.h" /* utxo_recovery_copy_chainstate_stable */
 #include "jobs/reducer_frontier.h"          /* reducer_frontier_derive_coins_best */
-#include "services/block_index_loader.h"    /* block_index_flat_sapling_root_at */
+#include "services/block_index_loader.h"    /* block_index_flat_header_at */
 #include "jobs/proof_validate_null_hash_rearm.h"
 #include "chain/chain.h"                  /* BLOCK_VALID_TRANSACTIONS: connected floor */
 #include "chain/chainparams.h"
@@ -3157,10 +3157,10 @@ int legacy_utxo_commitment_mode(int argc, char **argv)
  * point it at a -datadir=<COPY> (the copy-prove harness flow, §6). The source
  * chainstate is read through the signature-proven point-in-time stable copy
  * (utxo_recovery_copy_chainstate_stable — WAL-inclusive, never the live one);
- * the tip frontier binds at the TARGET's own fold-resume anchor (coins island
- * root) via the target's header chain, not the source's self-reported
- * best-block pointer. The target must have booted once first (the UTXO seed
- * lands the coins authority and initializes the shielded cursors).
+ * the target header supplies the exact fold-resume block + Sapling root, and
+ * the source chainstate best block must equal it. This prevents its unkeyed
+ * additive nullifier set from containing future spends. The target must have
+ * booted once first so its coins authority and shielded cursors exist.
  *
  * Usage: zclassic23 -datadir=<TARGET-COPY>
  *        -import-complete-shielded=<zclassicd-datadir> */
@@ -3294,18 +3294,14 @@ int import_complete_shielded_mode(int argc, char **argv)
     }
     printf("Chainstate snapshot: %s\n", snap_path);
 
-    /* The bind the fold actually needs is at the TARGET's own bind anchor,
-     * derived from the target's progress.kv — never from the source's
-     * self-reported 'B' best-block, which only reflects the source's last
-     * flush and can race past the resume point on a live daemon. The anchor
-     * is the durable seed floor when one is declared (a node that folded
-     * PAST its seed already carries the roots above the floor in its own
-     * anchor table — the import only owes history AT AND BELOW the floor),
-     * else the live coins island root (a node wedged AT its seed — the
-     * copy-prove case). This requires the target to have booted once and
-     * landed its UTXO seed (the same first boot initializes the shielded
-     * cursors shi_read_boundaries requires), so refuse clearly on a fresh
-     * datadir. */
+    /* Select the bind anchor from the TARGET's progress.kv. The anchor is the
+     * durable seed floor when one is declared (a node that folded PAST its
+     * seed already carries roots above the floor in its own anchor table),
+     * else the live coins island root. The exact target header at that height
+     * is read below and MUST match the source's persisted 'B' best block; a
+     * live source that flushed past the resume point is therefore refused.
+     * This requires the target to have booted once and landed its UTXO seed,
+     * which also initializes the shielded cursors shi_read_boundaries needs. */
     if (!progress_store_open(target)) {
         (void)zcl_tree_remove(snap_path);
         fprintf(stderr, "cannot open progress.kv in %s\n", target);
@@ -3362,11 +3358,13 @@ int import_complete_shielded_mode(int argc, char **argv)
      * never a misbind. The flat is freshened by the node's graceful
      * shutdown save, so this read REQUIRES the clean stop the canary /
      * operator flow performs before invoking the verb. */
-    struct uint256 tip_sapling_root;
+    struct uint256 tip_block_hash, tip_sapling_root;
+    uint256_set_null(&tip_block_hash);
     uint256_set_null(&tip_sapling_root);
     {
-        struct zcl_result fr = block_index_flat_sapling_root_at(
-            target, (int32_t)tip_height, tip_sapling_root.data);
+        struct zcl_result fr = block_index_flat_header_at(
+            target, (int32_t)tip_height, tip_block_hash.data,
+            tip_sapling_root.data);
         if (!fr.ok) {
             fprintf(stderr, "tip bind root read: %s\n", fr.message);
         }
@@ -3385,21 +3383,6 @@ int import_complete_shielded_mode(int argc, char **argv)
                 "tip frontier against zeros.\n",
                 (long long)tip_height);
         return 1;
-    }
-    /* Provenance only: the source's own best-block pointer. Informational —
-     * the bind above no longer depends on it. */
-    {
-        struct uint256 src_best;
-        uint256_set_null(&src_best);
-        void *rh = NULL;
-        if (chainstate_legacy_open(snap_path, &rh) && rh) {
-            if (chainstate_legacy_get_best_block(rh, &src_best)) {
-                char bb_hex[65];
-                uint256_get_hex(&src_best, bb_hex);
-                printf("Source best block: %s\n", bb_hex);
-            }
-            chainstate_legacy_close(rh);
-        }
     }
     char root_hex[65];
     uint256_get_hex(&tip_sapling_root, root_hex);
@@ -3441,7 +3424,8 @@ int import_complete_shielded_mode(int argc, char **argv)
 
     struct shielded_import_report rep = {0};
     bool ok = shielded_history_import_from_chainstate(
-        progress_store_db(), snap_path, tip_height, &tip_sapling_root, &rep);
+        progress_store_db(), snap_path, tip_height, &tip_block_hash,
+        &tip_sapling_root, &rep);
 
     /* On success, register the cured coins tip as a cold-import TRUST anchor so
      * the next normal boot's Invariant A gate installs it into the active chain

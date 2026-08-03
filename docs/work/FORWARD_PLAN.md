@@ -356,7 +356,7 @@
       a bulk P2P header sync emits no EV_BLOCK_HEADER events, so the
       projection is EMPTY on a fresh cold-import datadir (the live node's
       46k projection rows come from the tip-emitting path only). Seventh
-      fix (two parts): (a) new `block_index_flat_sapling_root_at()`
+      fix (two parts): (a) new `block_index_flat_header_at()`
       (app/services/src/block_index_loader.c) — the block_index.bin flat
       IS the store that carries `hashFinalSaplingRoot` for every header
       including header-only heights; the point reader mmaps it, verifies

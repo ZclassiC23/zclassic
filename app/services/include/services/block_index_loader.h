@@ -53,7 +53,8 @@ void save_block_index_flat(const char *datadir, struct main_state *ms);
  * distinct negative code; the previous bare-bool true/false maps to .ok. */
 struct zcl_result load_block_index_flat(const char *datadir, struct main_state *ms);
 
-/* Point-read one entry's sapling root straight from block_index.bin WITHOUT
+/* Point-read one entry's block hash + sapling root straight from
+ * block_index.bin WITHOUT
  * the full multi-million-entry arena load: mmap, embedded-integrity verify
  * (a legacy sidecar-only file is REFUSED — a bind this load-bearing does not
  * read unverified bytes), binary search the height-sorted flat rows. This is
@@ -68,9 +69,10 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
  * distinguishable from corruption). Siblings at one height return an
  * arbitrary row — a caller binding a frontier against a foreign root fails
  * CLOSED downstream, never a silent misbind. */
-struct zcl_result block_index_flat_sapling_root_at(const char *datadir,
-                                                   int32_t height,
-                                                   uint8_t out_root[32]);
+struct zcl_result block_index_flat_header_at(const char *datadir,
+                                             int32_t height,
+                                             uint8_t out_hash[32],
+                                             uint8_t out_root[32]);
 
 /* load_block_index_flat ALWAYS re-derives the pointer-graph-derived fields
  * (nChainWork, nChainTx, skip links, cached branch id) through the canonical

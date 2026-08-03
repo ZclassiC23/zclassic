@@ -1,20 +1,17 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * shielded_history_import_bind_guard — the fail-closed bind-height guard for
+ * shielded_history_import_bind_guard — the fail-closed target-height guard for
  * the complete shielded-history import. The contract lives in
  * services/shielded_history_import_service.h; in short:
  *
- * The import keys its single frontier row at the SOURCE chainstate's
- * persisted best block, while the reducer's fold resumes at the TARGET
- * datadir's coins authority (fold_resume = coins_applied_height, so the
- * frontier must BE the tree state at fold_resume - 1 == the coins island
- * root). A zclassicd whose on-disk chainstate lags its live tip (real case:
- * it had stopped flushing its block DB for ~2 weeks) would otherwise
- * manufacture a datadir whose shielded frontier is height-mismatched — the
- * fold then hard-wedges at the first Sapling-commitment block above the
- * island (fold_sapling appends to the stale tree and mismatches the
- * header-committed hashFinalSaplingRoot; utxo_apply.apply_failed, H*
- * pinned), deterministically.
+ * The reducer's fold resumes at the TARGET datadir's coins authority
+ * (fold_resume = coins_applied_height, so the frontier must BE the tree state
+ * at fold_resume - 1 == the coins island root). This guard verifies that the
+ * requested target height is that bind anchor. The import service separately
+ * binds the SOURCE chainstate's persisted best-block hash to the exact target
+ * header before its transaction opens. Both predicates are required: this
+ * one prevents a height-mismatched frontier, while the exact hash bind prevents
+ * future entries in the source's additive, unheighted nullifier set.
  *
  * The guard therefore REFUSES any bind whose tip_height does not match the
  * target's bind anchor, BEFORE the import transaction opens, so a refusal
@@ -35,7 +32,7 @@
  * Both callers share this one predicate: the -import-complete-shielded verb
  * (src/main.c, terminal-visible refusal with both heights + the remedy) and
  * shielded_history_import_from_chainstate itself (defense in depth — a
- * caller bypassing the verb cannot manufacture the mismatch either). Split
+ * caller bypassing the verb cannot select a different target height). Split
  * out of shielded_history_import_service.c to keep that file under its
  * file-size ceiling.
  *

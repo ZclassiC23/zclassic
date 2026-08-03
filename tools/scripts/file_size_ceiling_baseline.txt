@@ -31,7 +31,7 @@ app/jobs/src/tip_finalize_stage.c 809
 app/jobs/src/utxo_apply_stage.c 941
 app/jobs/src/validate_headers_stage.c 1071
 app/models/src/block.c 853
-app/services/src/block_index_loader.c 965 # block_index_flat_sapling_root_at (replay-canary FAIL#7 tip-bind point read)
+app/services/src/block_index_loader.c 965 # block_index_flat_header_at (replay-canary FAIL#7 tip-bind point read)
 app/services/src/block_index_loader_rebuild.c 853 # ADR-0008 (seed-floor declaration)
 # 2026-07-27 (work/db-lock-fixes): node_db_catchup_service.c shed the
 # try-decrypt helper to node_db_catchup_decrypt.c (-111) and gained the

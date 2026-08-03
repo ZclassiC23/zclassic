@@ -734,38 +734,38 @@ struct zcl_result load_block_index_flat(const char *datadir, struct main_state *
     return ZCL_OK;
 }
 
-/* ── block_index_flat_sapling_root_at ──────────────────────── */
-
-struct zcl_result block_index_flat_sapling_root_at(const char *datadir,
-                                                   int32_t height,
-                                                   uint8_t out_root[32])
+/* ── block_index_flat_header_at ────────────────────────────── */
+struct zcl_result block_index_flat_header_at(const char *datadir,
+                                             int32_t height,
+                                             uint8_t out_hash[32],
+                                             uint8_t out_root[32])
 {
-    if (!datadir || height < 0 || !out_root)
-        return ZCL_ERR(-100, "block_index_flat_sapling_root_at: bad args");
+    if (!datadir || height < 0 || !out_hash || !out_root)
+        return ZCL_ERR(-100, "block_index_flat_header_at: bad args");
 
     char path[1024];
     snprintf(path, sizeof(path), "%s/block_index.bin", datadir);
     int fd = open(path, O_RDONLY);
     if (fd < 0)
-        return ZCL_ERR(-101, "block_index_flat_sapling_root_at: cannot open "
+        return ZCL_ERR(-101, "block_index_flat_header_at: cannot open "
                        "%s: %s", path, strerror(errno));
     struct stat st;
     if (fstat(fd, &st) != 0) {
         int saved_errno = errno;
         close(fd);
-        return ZCL_ERR(-102, "block_index_flat_sapling_root_at: fstat: %s",
+        return ZCL_ERR(-102, "block_index_flat_header_at: fstat: %s",
                        strerror(saved_errno));
     }
     size_t file_size = (size_t)st.st_size;
     if (file_size < 8) {
         close(fd);
-        return ZCL_ERR(-103, "block_index_flat_sapling_root_at: file too "
+        return ZCL_ERR(-103, "block_index_flat_header_at: file too "
                        "small (%zu bytes)", file_size);
     }
     uint8_t *data = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
     if (data == MAP_FAILED)
-        return ZCL_ERR(-104, "block_index_flat_sapling_root_at: mmap "
+        return ZCL_ERR(-104, "block_index_flat_header_at: mmap "
                        "(%zu bytes): %s", file_size, strerror(errno));
 
     /* Same integrity posture as load_block_index_flat: a BIIE-magic file
@@ -780,7 +780,7 @@ struct zcl_result block_index_flat_sapling_root_at(const char *datadir,
         memcpy(&embedded_magic, BII_EMBEDDED_MAGIC, 4);
         if (lead != embedded_magic) {
             munmap(data, file_size);
-            return ZCL_ERR(-105, "block_index_flat_sapling_root_at: no "
+            return ZCL_ERR(-105, "block_index_flat_header_at: no "
                            "embedded integrity header (legacy format) — "
                            "refusing unverified bytes");
         }
@@ -788,7 +788,7 @@ struct zcl_result block_index_flat_sapling_root_at(const char *datadir,
         int ev = bii_verify_embedded(datadir, &ehdr, &payload_off);
         if (ev != 0) {
             munmap(data, file_size);
-            return ZCL_ERR(-106, "block_index_flat_sapling_root_at: "
+            return ZCL_ERR(-106, "block_index_flat_header_at: "
                            "embedded integrity check FAILED (verdict=%d)",
                            ev);
         }
@@ -799,19 +799,19 @@ struct zcl_result block_index_flat_sapling_root_at(const char *datadir,
     memcpy(&count, data + payload_off + 4, 4);
     if (magic != 0x5A434C49) {
         munmap(data, file_size);
-        return ZCL_ERR(-107, "block_index_flat_sapling_root_at: bad payload "
+        return ZCL_ERR(-107, "block_index_flat_header_at: bad payload "
                        "magic 0x%08x", magic);
     }
     if (count == 0 || count > 10000000) {
         munmap(data, file_size);
-        return ZCL_ERR(-108, "block_index_flat_sapling_root_at: count %u "
+        return ZCL_ERR(-108, "block_index_flat_header_at: count %u "
                        "out of range", count);
     }
     size_t expected = payload_off + 8 +
                       (size_t)count * sizeof(struct block_index_flat);
     if (file_size < expected) {
         munmap(data, file_size);
-        return ZCL_ERR(-109, "block_index_flat_sapling_root_at: truncated "
+        return ZCL_ERR(-109, "block_index_flat_header_at: truncated "
                        "(%zu < %zu bytes for %u entries)",
                        file_size, expected, count);
     }
@@ -833,10 +833,11 @@ struct zcl_result block_index_flat_sapling_root_at(const char *datadir,
     if (lo >= count || entries[lo].height != height) {
         int32_t max_h = count ? entries[count - 1].height : -1;
         munmap(data, file_size);
-        return ZCL_ERR(-110, "block_index_flat_sapling_root_at: no row at "
+        return ZCL_ERR(-110, "block_index_flat_header_at: no row at "
                        "height %d (flat tip %d) — the last flat save "
                        "predates that header", height, max_h);
     }
+    memcpy(out_hash, entries[lo].hash, 32);
     memcpy(out_root, entries[lo].sapling_root, 32);
     munmap(data, file_size);
     return ZCL_OK;
@@ -962,4 +963,3 @@ struct zcl_result load_block_index(struct main_state *ms,
     free(sorted);
     return ZCL_OK;
 }
-

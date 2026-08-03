@@ -227,6 +227,17 @@ static bool shi_build_chainstate(const char *cs_dir, bool omit_tip_sapling,
     return true;
 }
 
+static bool shi_import_fixture(sqlite3 *db, const char *cs_dir,
+                               int64_t tip_height,
+                               const struct uint256 *tip_root,
+                               struct shielded_import_report *out)
+{
+    struct uint256 best_block;
+    shi_best_block(&best_block);
+    return shielded_history_import_from_chainstate(
+        db, cs_dir, tip_height, &best_block, tip_root, out);
+}
+
 /* Write one connected header row into node.db exactly as --importblockindex
  * does: hash=best_block, a connected status (>=BLOCK_VALID_TRANSACTIONS), and
  * blocks.sapling_root set to `sapling_root` — the FIXED header import copies the
@@ -281,7 +292,7 @@ int test_shielded_history_import(void)
                   blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
 
         struct shielded_import_report rep;
-        bool ok = shielded_history_import_from_chainstate(
+        bool ok = shi_import_fixture(
             db, cs_dir, SHI_TIP_H, &tip_root, &rep);
         SHI_CHECK("import returns success", ok);
         SHI_CHECK("import committed", rep.committed);
@@ -409,7 +420,7 @@ int test_shielded_history_import(void)
         SHI_CHECK("wedge seeded (missing)", db && shi_seed_wedge(db));
 
         struct shielded_import_report rep;
-        bool ok = shielded_history_import_from_chainstate(
+        bool ok = shi_import_fixture(
             db, cs_dir, SHI_TIP_H, &tip_root, &rep);
         SHI_CHECK("import REFUSES (returns false)", !ok);
         SHI_CHECK("import did NOT commit", !rep.committed);
@@ -458,7 +469,7 @@ int test_shielded_history_import(void)
         struct uint256 wrong_root;
         shi_fill(&wrong_root, 0xEE, 424242);   /* != real tip root */
         struct shielded_import_report rep;
-        bool ok = shielded_history_import_from_chainstate(
+        bool ok = shi_import_fixture(
             db, cs_dir, SHI_TIP_H, &wrong_root, &rep);
         SHI_CHECK("import REFUSES on tip-root mismatch", !ok && !rep.committed);
         SHI_CHECK("mismatch left both anchor cursors positive",
@@ -521,7 +532,7 @@ int test_shielded_history_import(void)
         SHI_CHECK("wedge seeded (bind)", db && shi_seed_wedge(db));
 
         struct shielded_import_report rep;
-        bool ok = shielded_history_import_from_chainstate(
+        bool ok = shi_import_fixture(
             db, cs_dir, SHI_TIP_H, &bind_root, &rep);
         SHI_CHECK("import binds + commits using the header-derived root",
                   ok && rep.committed && rep.tip_anchor_bound);
@@ -578,7 +589,7 @@ int test_shielded_history_import(void)
         SHI_CHECK("wedge seeded (zero)", db && shi_seed_wedge(db));
 
         struct shielded_import_report rep;
-        bool ok = shielded_history_import_from_chainstate(
+        bool ok = shi_import_fixture(
             db, cs_dir, SHI_TIP_H, &bind_root, &rep);
         SHI_CHECK("service REFUSES a zero tip root (fork-safety guard)",
                   !ok && !rep.committed);
@@ -639,7 +650,7 @@ int test_shielded_history_import(void)
         SHI_CHECK("wedge seeded (mid-scan)", db && shi_seed_wedge(db));
 
         struct shielded_import_report rep;
-        bool ok = shielded_history_import_from_chainstate(
+        bool ok = shi_import_fixture(
             db, cs_dir, SHI_TIP_H, &tip_root, &rep);
         SHI_CHECK("mid-scan anomaly REFUSES (returns false)", !ok);
         SHI_CHECK("mid-scan anomaly did NOT commit", !rep.committed);
@@ -709,7 +720,7 @@ int test_shielded_history_import(void)
         SHI_CHECK("wedge seeded (stale-pointer)", db && shi_seed_wedge(db));
 
         struct shielded_import_report rep;
-        bool ok = shielded_history_import_from_chainstate(
+        bool ok = shi_import_fixture(
             db, cs_dir, SHI_TIP_H, &tip_root, &rep);
         SHI_CHECK("import succeeds despite the stale pointer",
                   ok && rep.committed && rep.tip_anchor_bound);

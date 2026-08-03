@@ -550,7 +550,7 @@
 # grew, both BASELINED at their new LOC; the recorded count STAYS 14.
 #   src/main_cli_modes.c   4223 -> 4231 — the -import-complete-shielded
 #       verb's expected tip root now comes from the block_index flat
-#       point read (block_index_flat_sapling_root_at) instead of the
+#       point read (block_index_flat_header_at) instead of the
 #       blocks projection (FAIL#6: header-only heights have no blocks
 #       row) or the event-log projection (FAIL#7: empty after a bulk P2P
 #       header sync). Includes the graceful-shutdown requirement note.
