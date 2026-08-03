@@ -167,6 +167,13 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   Raw balance reads are labeled `OBSERVED`, never promoted to identity-bound
   `CURRENT`; endpoints and datadir paths are absent from its output. Its
   hermetic contract check is `make custody-status-selftest`.
+- `make transaction-lab-proof` — run the exact isolated transaction evidence
+  matrix with real signatures, Sapling proofs, consensus verification, HTLC
+  interpretation, and overlay builders. `make transaction-lab-status` prints
+  separate proof and live-mainnet bars plus value/fee totals; it never treats
+  simulated confirmation as a live spend. The append-only, redacted notebook
+  and its recording procedure live in `docs/work/TRANSACTION_LAB.md`; validate
+  it with `make transaction-lab-check`.
 - `make deploy` is owner-gated live deployment. All public dev-lane publication,
   stage, relink, and recovery-apply paths currently hard-refuse — the gated
   swappable-leaf hot-swap loop above (`hotswap-try`/`hotswap-apply`) is the one

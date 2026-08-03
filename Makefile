@@ -1752,6 +1752,24 @@ custody-status:
 custody-status-selftest:
 	@ZCL_CUSTODY_STATUS_SELFTEST=1 tools/dev/custody-status.sh
 
+# Transaction-lab evidence is deliberately split from live mainnet spending.
+# These exact groups exercise production transaction builders, signatures,
+# Sapling proofs, consensus verification, script interpretation, and isolated
+# settlement projections without contacting a live wallet.
+TRANSACTION_LAB_PROOF_TESTS := test_simnet_wallet_import_backup,test_simnet_sapling_shielded_send,test_simnet_shielded_wallet_e2e,test_simnet_zmsg_onchain,test_slp,test_znam,test_zswap_ceremony,test_swap_settlement,test_store_transparent_pay,test_store_e2e_shielded
+.PHONY: transaction-lab-status transaction-lab-check transaction-lab-proof
+transaction-lab-status:
+	@tools/dev/transaction-lab.sh status
+
+transaction-lab-check:
+	@tools/dev/transaction-lab.sh check
+	@tools/dev/transaction-lab.sh selftest
+
+transaction-lab-proof:
+	@ZCL_PARAMS_TESTS=1 ZCL_STRESS_TESTS=1 \
+	 $(MAKE) --no-print-directory t-fast-exact ONLY='$(TRANSACTION_LAB_PROOF_TESTS)'
+	@tools/dev/transaction-lab.sh status
+
 # ── Agent-harness reporting targets ──────────────────────────────────────
 # Three read-only targets the orchestrator was doing by hand. None builds,
 # none writes anything, none touches a datadir.
