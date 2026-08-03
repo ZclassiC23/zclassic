@@ -160,6 +160,13 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   binding exists, the read-only live check is
   `zclassic23 metaverse agent money --dir=<absolute-broker-dir>`; it reports
   `UNKNOWN`, `STALE`, or `CONFLICTED` instead of inventing a zero.
+- `make custody-status` — the read-only rollout doctor: source support, current
+  dev activation, canonical prod targeting, private broker binding, and the
+  complete two-wallet snapshot in one five-step progress line. Add
+  `ARGS='--broker-dir=/absolute/path'` after the owner creates the binding.
+  Raw balance reads are labeled `OBSERVED`, never promoted to identity-bound
+  `CURRENT`; endpoints and datadir paths are absent from its output. Its
+  hermetic contract check is `make custody-status-selftest`.
 - `make deploy` is owner-gated live deployment. All public dev-lane publication,
   stage, relink, and recovery-apply paths currently hard-refuse — the gated
   swappable-leaf hot-swap loop above (`hotswap-try`/`hotswap-apply`) is the one

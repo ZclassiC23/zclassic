@@ -1739,10 +1739,18 @@ t-list:
 # One memorable custody regression command for contributors. Keep the list
 # exact: a substring silently selecting a sibling group is not rollout proof.
 CUSTODY_FOCUSED_TESTS := test_agent_session,test_agent_spend_policy,test_vault_session,test_vault_dispatch,test_transaction_intent,test_metaverse_agent_broker
-.PHONY: custody-check
+.PHONY: custody-check custody-status custody-status-selftest
 custody-check:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY='$(CUSTODY_FOCUSED_TESTS)'
 	@echo "custody-check: PASS — no live wallet or funds were touched"
+
+# Read-only live rollout doctor. ARGS may name an owner-created private broker
+# directory: make custody-status ARGS='--broker-dir=/absolute/path'.
+custody-status:
+	@tools/dev/custody-status.sh $(ARGS)
+
+custody-status-selftest:
+	@ZCL_CUSTODY_STATUS_SELFTEST=1 tools/dev/custody-status.sh
 
 # ── Agent-harness reporting targets ──────────────────────────────────────
 # Three read-only targets the orchestrator was doing by hand. None builds,
