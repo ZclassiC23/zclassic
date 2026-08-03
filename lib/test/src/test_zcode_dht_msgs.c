@@ -1,38 +1,93 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "test/test_core.h"
+
+#include "crypto/ed25519.h"
+#include "support/cleanse.h"
 #include "vcs/zcode_dht_msgs.h"
 
 #include <stdio.h>
 #include <string.h>
 
-static void id32(uint8_t out[32], uint8_t v) { memset(out, v, 32); }
-static void qid(uint8_t out[16], uint8_t v)
+static void fill(uint8_t *out, size_t n, uint8_t v) { memset(out, v, n); }
+
+struct msg_fixture {
+    uint8_t online_seed[32];
+    uint8_t transcript[32];
+    struct vcs_zcode_dht_delegation delegation;
+    struct vcs_zcode_dht_msg_verify_context verify;
+    uint8_t node_id[32];
+};
+
+static bool chain_accept(void *ctx,
+                         const struct vcs_zcode_dht_delegation *d)
 {
-    for (size_t i = 0; i < 16; i++) out[i] = (uint8_t)(v + i);
+    int *calls = ctx; (*calls)++;
+    return d->beacon_height == 120;
 }
 
-static int test_find_node(void)
+static bool fixture_init(struct msg_fixture *f, int *chain_calls)
+{
+    memset(f, 0, sizeof(*f));
+    uint8_t online_pub[32], online_secret[32], genesis[32], noise[32];
+    uint8_t beacon[32], master_seed[32];
+    fill(f->online_seed, 32, 0x22);
+    ed25519_keypair(online_pub, online_secret, f->online_seed);
+    memory_cleanse(online_secret, sizeof(online_secret));
+    fill(genesis, 32, 1); fill(noise, 32, 0x33);
+    fill(beacon, 32, 0x44); fill(master_seed, 32, 0x55);
+    if (vcs_zcode_dht_delegation_sign(
+            &f->delegation, genesis, online_pub, noise, 120, beacon,
+            1000, 2000, 7, master_seed) != VCS_ZCODE_DHT_DELEGATION_OK ||
+        !vcs_zcode_dht_delegation_node_id(f->node_id, &f->delegation))
+        return false;
+    fill(f->transcript, 32, 0x77);
+    f->verify.noise_established = true;
+    memcpy(f->verify.noise_transcript_hash, f->transcript, 32);
+    memcpy(f->verify.remote_noise_static, noise, 32);
+    memcpy(f->verify.network_genesis, genesis, 32);
+    f->verify.session_generation = 9;
+    f->verify.now_unix = 1500;
+    f->verify.chain_verify = chain_accept;
+    f->verify.chain_ctx = chain_calls;
+    return true;
+}
+
+static void fill_query(uint8_t out[16])
+{
+    for (size_t i = 0; i < 16; i++) out[i] = (uint8_t)(i + 1);
+}
+
+static int test_find_node_bound(void)
 {
     int failures = 0;
-    TEST("zcode dht msgs: FIND_NODE is exact and bounded") {
-        struct vcs_zcode_dht_msg_find_node m;
-        id32(m.sender_node_id, 0x11); qid(m.query_id, 1);
-        id32(m.target_node_id, 0x22);
+    TEST("zcode dht msgs v2: FIND_NODE binds delegation and Noise transcript") {
+        struct msg_fixture f; int chain_calls = 0; ASSERT(fixture_init(&f, &chain_calls));
+        struct vcs_zcode_dht_msg_find_node m; memset(&m, 0, sizeof(m));
+        m.session_generation = 9; memcpy(m.sender_node_id, f.node_id, 32);
+        fill_query(m.query_id); m.delegation = f.delegation;
+        fill(m.target_node_id, 32, 0x99);
         uint8_t wire[VCS_ZCODE_DHT_FIND_NODE_WIRE_BYTES + 1]; size_t len = 0;
         ASSERT_EQ(vcs_zcode_dht_msg_serialize_find_node(
-                      &m, wire, sizeof(wire), &len), VCS_ZCODE_DHT_OK);
+                      &m, f.transcript, f.online_seed, wire, sizeof(wire), &len),
+                  VCS_ZCODE_DHT_OK);
         ASSERT_EQ(len, VCS_ZCODE_DHT_FIND_NODE_WIRE_BYTES);
         struct vcs_zcode_dht_msg parsed;
-        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &parsed),
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &f.verify, &parsed),
                   VCS_ZCODE_DHT_OK);
         ASSERT_EQ(parsed.kind, VCS_ZCODE_DHT_MSG_FIND_NODE);
-        ASSERT(memcmp(parsed.find_node.target_node_id, m.target_node_id, 32) == 0);
-        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len + 1, &parsed),
-                  VCS_ZCODE_DHT_ERR_WIRE_SIZE);
-        memset(wire + VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32, 0, 16);
-        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &parsed),
-                  VCS_ZCODE_DHT_ERR_QUERY_ID);
+        ASSERT_EQ(parsed.find_node.session_generation, 9);
+        ASSERT_EQ(chain_calls, 1);
+        struct vcs_zcode_dht_msg_verify_context wrong = f.verify;
+        wrong.noise_transcript_hash[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &wrong, &parsed),
+                  VCS_ZCODE_DHT_ERR_SIGNATURE);
+        wrong = f.verify; wrong.noise_established = false;
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &wrong, &parsed),
+                  VCS_ZCODE_DHT_ERR_SESSION);
+        wrong = f.verify; wrong.session_generation++;
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &wrong, &parsed),
+                  VCS_ZCODE_DHT_ERR_SESSION);
         PASS();
     } _test_next:;
     return failures;
@@ -41,57 +96,66 @@ static int test_find_node(void)
 static int test_nodes_hints(void)
 {
     int failures = 0;
-    TEST("zcode dht msgs: NODES carries ordered identity hints only") {
+    TEST("zcode dht msgs v2: NODES carries only ordered untrusted hints") {
+        struct msg_fixture f; int chain_calls = 0; ASSERT(fixture_init(&f, &chain_calls));
         struct vcs_zcode_dht_msg_nodes m; memset(&m, 0, sizeof(m));
-        id32(m.sender_node_id, 0x11); qid(m.query_id, 1); m.contact_count = 3;
-        id32(m.node_ids[0], 1); id32(m.node_ids[1], 2); id32(m.node_ids[2], 3);
+        m.session_generation = 9; memcpy(m.sender_node_id, f.node_id, 32);
+        fill_query(m.query_id); m.delegation = f.delegation; m.contact_count = 3;
+        fill(m.node_ids[0], 32, 1); fill(m.node_ids[1], 32, 2);
+        fill(m.node_ids[2], 32, 3);
         uint8_t wire[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES + 1]; size_t len = 0;
         ASSERT_EQ(vcs_zcode_dht_msg_serialize_nodes(
-                      &m, wire, sizeof(wire), &len), VCS_ZCODE_DHT_OK);
-        ASSERT_EQ(len, VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32 + 16 + 1 + 96);
+                      &m, f.transcript, f.online_seed, wire, sizeof(wire), &len),
+                  VCS_ZCODE_DHT_OK);
         struct vcs_zcode_dht_msg parsed;
-        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &parsed),
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &f.verify, &parsed),
                   VCS_ZCODE_DHT_OK);
         ASSERT_EQ(parsed.nodes.contact_count, 3);
         ASSERT(memcmp(parsed.nodes.node_ids[2], m.node_ids[2], 32) == 0);
         struct vcs_zcode_dht_msg_nodes bad = m;
         memcpy(bad.node_ids[1], bad.node_ids[0], 32);
         ASSERT_EQ(vcs_zcode_dht_msg_serialize_nodes(
-                      &bad, wire, sizeof(wire), &len),
-                  VCS_ZCODE_DHT_ERR_WIRE_ORDER);
+                      &bad, f.transcript, f.online_seed,
+                      wire, sizeof(wire), &len), VCS_ZCODE_DHT_ERR_WIRE_ORDER);
         bad = m; memset(bad.node_ids[1], 0, 32);
         ASSERT_EQ(vcs_zcode_dht_msg_serialize_nodes(
-                      &bad, wire, sizeof(wire), &len),
-                  VCS_ZCODE_DHT_ERR_ID_ZERO);
-        bad = m; bad.contact_count = VCS_ZCODE_DHT_K + 1;
-        ASSERT_EQ(vcs_zcode_dht_msg_serialize_nodes(
-                      &bad, wire, sizeof(wire), &len),
-                  VCS_ZCODE_DHT_ERR_LIMIT);
+                      &bad, f.transcript, f.online_seed,
+                      wire, sizeof(wire), &len), VCS_ZCODE_DHT_ERR_ID_ZERO);
         PASS();
     } _test_next:;
     return failures;
 }
 
-static int test_nodes_parse_poison(void)
+static int test_rejections(void)
 {
     int failures = 0;
-    TEST("zcode dht msgs: poisoned hint sets and trailing bytes reject") {
-        struct vcs_zcode_dht_msg_nodes m; memset(&m, 0, sizeof(m));
-        id32(m.sender_node_id, 0x11); qid(m.query_id, 1); m.contact_count = 2;
-        id32(m.node_ids[0], 1); id32(m.node_ids[1], 2);
-        uint8_t wire[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES + 1]; size_t len = 0;
-        ASSERT_EQ(vcs_zcode_dht_msg_serialize_nodes(
-                      &m, wire, sizeof(wire), &len), VCS_ZCODE_DHT_OK);
+    TEST("zcode dht msgs v2: tamper, truncation, key mismatch reject") {
+        struct msg_fixture f; int chain_calls = 0; ASSERT(fixture_init(&f, &chain_calls));
+        struct vcs_zcode_dht_msg_find_node m; memset(&m, 0, sizeof(m));
+        m.session_generation = 9; memcpy(m.sender_node_id, f.node_id, 32);
+        fill_query(m.query_id); m.delegation = f.delegation;
+        fill(m.target_node_id, 32, 0x99);
+        uint8_t wire[VCS_ZCODE_DHT_FIND_NODE_WIRE_BYTES + 1]; size_t len = 0;
+        ASSERT_EQ(vcs_zcode_dht_msg_serialize_find_node(
+                      &m, f.transcript, f.online_seed, wire, sizeof(wire), &len),
+                  VCS_ZCODE_DHT_OK);
         struct vcs_zcode_dht_msg parsed;
-        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len + 1, &parsed),
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len - 1, &f.verify, &parsed),
                   VCS_ZCODE_DHT_ERR_WIRE_SIZE);
-        size_t ids = VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 32 + 16 + 1;
-        memcpy(wire + ids + 32, wire + ids, 32);
-        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &parsed),
-                  VCS_ZCODE_DHT_ERR_WIRE_ORDER);
-        memset(wire + ids, 0, 32);
-        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &parsed),
-                  VCS_ZCODE_DHT_ERR_ID_ZERO);
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len + 1, &f.verify, &parsed),
+                  VCS_ZCODE_DHT_ERR_WIRE_SIZE);
+        wire[len - VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES - 1] ^= 1;
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &f.verify, &parsed),
+                  VCS_ZCODE_DHT_ERR_SIGNATURE);
+        wire[len - VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES - 1] ^= 1;
+        struct vcs_zcode_dht_msg_verify_context wrong = f.verify;
+        wrong.remote_noise_static[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &wrong, &parsed),
+                  VCS_ZCODE_DHT_ERR_DELEGATION);
+        uint8_t wrong_seed[32]; fill(wrong_seed, 32, 0x23);
+        ASSERT_EQ(vcs_zcode_dht_msg_serialize_find_node(
+                      &m, f.transcript, wrong_seed, wire, sizeof(wire), &len),
+                  VCS_ZCODE_DHT_ERR_IDENTITY);
         PASS();
     } _test_next:;
     return failures;
@@ -100,9 +164,9 @@ static int test_nodes_parse_poison(void)
 int test_zcode_dht_msgs(void)
 {
     int failures = 0;
-    failures += test_find_node();
+    failures += test_find_node_bound();
     failures += test_nodes_hints();
-    failures += test_nodes_parse_poison();
+    failures += test_rejections();
     printf("=== zcode_dht_msgs: %d failures ===\n", failures);
     return failures;
 }

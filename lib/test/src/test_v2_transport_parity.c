@@ -128,6 +128,16 @@ int test_v2_transport_parity(void)
             /* XX authenticates both statics — each side learned the peer's. */
             ASSERT(i->have_peer_static);
             ASSERT(r->have_peer_static);
+            struct v2_transport_snapshot isnap, rsnap;
+            ASSERT(v2_transport_snapshot(i, &isnap));
+            ASSERT(v2_transport_snapshot(r, &rsnap));
+            ASSERT(isnap.established && rsnap.established);
+            ASSERT(isnap.connection_generation != 0);
+            ASSERT(rsnap.connection_generation != 0);
+            ASSERT(isnap.connection_generation != rsnap.connection_generation);
+            ASSERT(memcmp(isnap.transcript_hash, rsnap.transcript_hash, 32) == 0);
+            ASSERT(memcmp(isnap.remote_static, r->hs.s_pub, 32) == 0);
+            ASSERT(memcmp(rsnap.remote_static, i->hs.s_pub, 32) == 0);
             v2_transport_free(i);
             v2_transport_free(r);
         }

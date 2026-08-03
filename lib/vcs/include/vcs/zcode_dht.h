@@ -44,6 +44,9 @@ enum vcs_zcode_dht_error {
     VCS_ZCODE_DHT_ERR_NETWORK,
     VCS_ZCODE_DHT_ERR_SELF,
     VCS_ZCODE_DHT_ERR_DELEGATION,
+    VCS_ZCODE_DHT_ERR_SESSION,
+    VCS_ZCODE_DHT_ERR_SIGNATURE,
+    VCS_ZCODE_DHT_ERR_IDENTITY,
 };
 
 const char *vcs_zcode_dht_error_string(enum vcs_zcode_dht_error error);

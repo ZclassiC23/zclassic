@@ -9,6 +9,7 @@
 
 #include "platform/time_compat.h"
 #include "net/msg_internal.h"
+#include "net/connman.h"
 #include "net/addrman.h"
 #include "net/version.h"
 #include "net/peer_identity.h"
@@ -393,6 +394,13 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
     (void)is_magicbean;
     if (is_zcl23)
         node->services |= NODE_ZCL23;
+
+    /* An outbound peer first reached over legacy framing may reveal v2 only
+     * in its version message.  Remember that authenticated capability in the
+     * existing dial sources and reconnect exactly once; the next connect sees
+     * the bit before any bytes are sent and net.c starts Noise XX. */
+    if (mp->net_mgr && mp->net_mgr->owner)
+        (void)connman_request_v2_upgrade(mp->net_mgr->owner, node);
 
     /* For outbound connections, we already sent version; now we received
      * their version and sent verack. Mark connected once we also get their

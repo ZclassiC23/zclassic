@@ -38,6 +38,9 @@ const char *vcs_zcode_dht_error_string(enum vcs_zcode_dht_error e)
     case VCS_ZCODE_DHT_ERR_NETWORK: return "wrong-network";
     case VCS_ZCODE_DHT_ERR_SELF: return "wrong-local-node";
     case VCS_ZCODE_DHT_ERR_DELEGATION: return "delegation-invalid";
+    case VCS_ZCODE_DHT_ERR_SESSION: return "noise-session";
+    case VCS_ZCODE_DHT_ERR_SIGNATURE: return "online-signature";
+    case VCS_ZCODE_DHT_ERR_IDENTITY: return "identity-mismatch";
     }
     return "unknown";
 }

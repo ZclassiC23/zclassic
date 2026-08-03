@@ -272,6 +272,12 @@ struct connman {
     _Atomic uint64_t message_wakes;
 };
 
+/* Persist a newly learned NODE_V2TRANSPORT capability in the existing
+ * addrman/addnode dial sources and mark the outbound plaintext connection for
+ * one controlled reconnect.  Returns true only for the first upgrade request
+ * (the dial target did not already carry the capability). */
+bool connman_request_v2_upgrade(struct connman *cm, struct p2p_node *node);
+
 bool connman_init(struct connman *cm, const struct chain_params *params,
                    struct node_signals *signals);
 bool connman_start(struct connman *cm);

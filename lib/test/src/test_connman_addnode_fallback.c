@@ -1450,5 +1450,46 @@ int test_connman_addnode_fallback(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("connman_addnode_fallback: one-shot v2 capability upgrade... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+        cm.manager.v2_enabled = true;
+
+        struct net_address pinned;
+        test_set_ipv4(&pinned, 127, 0, 0, 1, 18444);
+        cm.addnodes[cm.num_addnodes++] = pinned;
+        struct p2p_node *node = add_test_peer(
+            &cm, 127, 0, 0, 1, PEER_VERSION_RECEIVED, false, false);
+        ok = ok && node != NULL;
+        if (node) {
+            node->addr.svc.port = pinned.svc.port;
+            node->services |= NODE_V2TRANSPORT;
+            ok = ok && connman_request_v2_upgrade(&cm, node);
+            ok = ok && node->disconnect;
+            ok = ok &&
+                (node->addr.nServices & NODE_V2TRANSPORT) != 0;
+            ok = ok &&
+                (cm.addnodes[0].nServices & NODE_V2TRANSPORT) != 0;
+
+            /* The learned bit makes this the only reconnect request.  The
+             * next dial snapshot enters Noise in net.c immediately. */
+            node->disconnect = false;
+            ok = ok && !connman_request_v2_upgrade(&cm, node);
+
+            node->inbound = true;
+            node->addr.nServices &= ~NODE_V2TRANSPORT;
+            ok = ok && !connman_request_v2_upgrade(&cm, node);
+        }
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

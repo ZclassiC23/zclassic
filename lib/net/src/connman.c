@@ -2078,9 +2078,9 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
 
     memset(cm, 0, sizeof(*cm));
     net_manager_init(&cm->manager);
+    cm->manager.owner = cm;
     cm->params = params;
     cm->manager.signals = *signals;
-
     /* Config-validation clamp (reactor-overflow prevention). The reactor's
      * poll() fd arrays are bounded by REACTOR_MAX_FDS (listen sockets +
      * connected peers). Clamp the config-derived max_connections up front,

@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: Pure wire codec for the ZCODE DHT FIND_NODE / NODES messages. */
+ * purpose: Signed Noise-bound ZCODE DHT FIND_NODE/NODES frames. */
 
 #ifndef ZCL_VCS_ZCODE_DHT_MSGS_H
 #define ZCL_VCS_ZCODE_DHT_MSGS_H
@@ -9,25 +9,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Message envelope zcode_dht_msgs.v1, all integers little-endian:
- * 8-byte magic {'Z','C','D','H','T','M',0x0D,0x0A}, u16 LE schema version
- * (=1), u8 kind, then the kind's body. Every body opens with the sender's
- * node id (32) so the receiver can add the sender to its routing table.
- * FIND_NODE carries sender_node_id(32) || query_id(16) ||
- * target_node_id(32); NODES carries sender_node_id(32) || query_id(16) ||
- * count:u8 || count node-ID hints. Hints contain no address, delegation or
- * local observation and can never be promoted without a direct authenticated
- * Noise session. This v1 codec is replaced by the signed/bound v2 envelope
- * at the transport layer; it remains a pure payload parser. */
-#define VCS_ZCODE_DHT_MSGS_WIRE_VERSION 1u
+#define VCS_ZCODE_DHT_MSGS_WIRE_VERSION 2u
 #define VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES 16u
+#define VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES 64u
 #define VCS_ZCODE_DHT_MSGS_HEADER_BYTES 11u
+#define VCS_ZCODE_DHT_MSGS_AUTH_BYTES \
+    (8u + 32u + VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES + \
+     VCS_ZCODE_DHT_DELEGATION_WIRE_BYTES)
 #define VCS_ZCODE_DHT_FIND_NODE_WIRE_BYTES \
-    (VCS_ZCODE_DHT_MSGS_HEADER_BYTES + VCS_ZCODE_DHT_ID_BYTES + 48u)
+    (VCS_ZCODE_DHT_MSGS_HEADER_BYTES + VCS_ZCODE_DHT_MSGS_AUTH_BYTES + \
+     32u + VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES)
 #define VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES \
-    (VCS_ZCODE_DHT_MSGS_HEADER_BYTES + VCS_ZCODE_DHT_ID_BYTES + \
-     VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES + 1u + \
-     VCS_ZCODE_DHT_K * VCS_ZCODE_DHT_ID_BYTES)
+    (VCS_ZCODE_DHT_MSGS_HEADER_BYTES + VCS_ZCODE_DHT_MSGS_AUTH_BYTES + \
+     1u + VCS_ZCODE_DHT_K * 32u + VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES)
+#define VCS_ZCODE_DHT_MSG_SIGNATURE_DOMAIN "zcl.zcode.dht.frame.v2"
 
 enum vcs_zcode_dht_msg_kind {
     VCS_ZCODE_DHT_MSG_FIND_NODE = 1,
@@ -35,16 +30,20 @@ enum vcs_zcode_dht_msg_kind {
 };
 
 struct vcs_zcode_dht_msg_find_node {
-    uint8_t sender_node_id[VCS_ZCODE_DHT_ID_BYTES];
-    uint8_t query_id[VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES];
-    uint8_t target_node_id[VCS_ZCODE_DHT_ID_BYTES];
+    uint64_t session_generation;
+    uint8_t sender_node_id[32];
+    uint8_t query_id[16];
+    struct vcs_zcode_dht_delegation delegation;
+    uint8_t target_node_id[32];
 };
 
 struct vcs_zcode_dht_msg_nodes {
-    uint8_t sender_node_id[VCS_ZCODE_DHT_ID_BYTES];
-    uint8_t query_id[VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES];
+    uint64_t session_generation;
+    uint8_t sender_node_id[32];
+    uint8_t query_id[16];
+    struct vcs_zcode_dht_delegation delegation;
     uint32_t contact_count;
-    uint8_t node_ids[VCS_ZCODE_DHT_K][VCS_ZCODE_DHT_ID_BYTES];
+    uint8_t node_ids[VCS_ZCODE_DHT_K][32];
 };
 
 struct vcs_zcode_dht_msg {
@@ -55,25 +54,32 @@ struct vcs_zcode_dht_msg {
     };
 };
 
-/* Canonical serialization: equal inputs produce byte-identical wire, so
- * parse(serialize(x)) round-trips exactly and serialize(parse(wire))
- * reproduces the input wire byte-for-byte. sender_node_id, query_id and
- * (for FIND_NODE) target_node_id must be non-zero; NODES hints must be
- * strictly ascending, unique and non-zero. */
+struct vcs_zcode_dht_msg_verify_context {
+    bool noise_established;
+    uint8_t noise_transcript_hash[32];
+    uint8_t remote_noise_static[32];
+    uint8_t network_genesis[32];
+    uint64_t session_generation;
+    uint64_t now_unix;
+    vcs_zcode_dht_chain_verify_fn chain_verify;
+    void *chain_ctx;
+};
+
 enum vcs_zcode_dht_error vcs_zcode_dht_msg_serialize_find_node(
     const struct vcs_zcode_dht_msg_find_node *msg,
+    const uint8_t noise_transcript_hash[32], const uint8_t online_seed[32],
     uint8_t *wire, size_t wire_capacity, size_t *wire_len_out);
-
-/* contact_count over VCS_ZCODE_DHT_K is rejected. */
 enum vcs_zcode_dht_error vcs_zcode_dht_msg_serialize_nodes(
     const struct vcs_zcode_dht_msg_nodes *msg,
+    const uint8_t noise_transcript_hash[32], const uint8_t online_seed[32],
     uint8_t *wire, size_t wire_capacity, size_t *wire_len_out);
 
-/* Rejects wrong magic, wrong version, unknown kind, any length other than
- * header + body exactly (trailing bytes rejected), an all-zero
- * sender_node_id, an all-zero query_id, an all-zero FIND_NODE target, a
- * duplicate/out-of-order/zero NODES hints. */
+/* Exact bounds first, then established Noise/delegation/chain/static binding,
+ * derived sender ID, online signature and session generation. Query-state,
+ * replay and deadline checks belong to the bounded service above this codec. */
 enum vcs_zcode_dht_error vcs_zcode_dht_msg_parse(
-    const uint8_t *wire, size_t wire_len, struct vcs_zcode_dht_msg *out);
+    const uint8_t *wire, size_t wire_len,
+    const struct vcs_zcode_dht_msg_verify_context *verify,
+    struct vcs_zcode_dht_msg *out);
 
 #endif /* ZCL_VCS_ZCODE_DHT_MSGS_H */

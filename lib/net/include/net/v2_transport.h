@@ -51,6 +51,9 @@ struct v2_transport {
 
     uint8_t peer_static[32];            /* XX-learned remote static (TOFU pin, Phase 2) */
     bool have_peer_static;
+    uint8_t transcript_hash[32];        /* final public Noise channel binding */
+    bool have_transcript_hash;
+    uint64_t connection_generation;     /* non-zero, process-monotonic */
 
     /* Inbound accumulator: a handshake message or one session frame may span
      * recv() boundaries. Bounded by SESSION_FRAME_MAX_WIRE — a claimed frame
@@ -107,6 +110,16 @@ bool v2_transport_feed(struct v2_transport *t,
  * (=> a v1 zclassicd peer). Only meaningful in V2_DETECT. */
 bool v2_transport_is_plaintext_magic(const uint8_t *first, size_t n,
                                      const unsigned char magic[4]);
+
+/* Locked post-handshake public snapshot. Never exposes local/private keys. */
+struct v2_transport_snapshot {
+    bool established;
+    uint8_t remote_static[32];
+    uint8_t transcript_hash[32];
+    uint64_t connection_generation;
+};
+bool v2_transport_snapshot(const struct v2_transport *t,
+                           struct v2_transport_snapshot *out);
 
 /* Cleanse all secret material and free. NULL-safe. */
 void v2_transport_free(struct v2_transport *t);

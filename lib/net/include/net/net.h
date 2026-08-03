@@ -129,6 +129,7 @@ struct send_segment {
 void send_segment_free(struct send_segment *seg);
 
 struct p2p_node;
+struct connman;
 
 /* Process-wide send-queue byte budget — the symmetric mirror of the
  * recv budget above. net_send_total_bytes() is the current sum of every
@@ -376,6 +377,10 @@ struct listen_socket {
 };
 
 struct net_manager {
+    /* Owning connection manager.  This back-pointer exists so the version
+     * handshake can ask the existing dialer for the single controlled
+     * plaintext-to-Noise reconnect after learning NODE_V2TRANSPORT. */
+    struct connman *owner;
     bool discover;
     bool listen;
     uint64_t local_services;
