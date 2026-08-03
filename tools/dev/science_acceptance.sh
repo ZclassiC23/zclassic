@@ -60,7 +60,8 @@
 #       and admits it into the receiver's CAS + projection. This proof
 #       ships A's study to B below. Honest limit, by design: the receiver
 #       learns the blob root OUT OF BAND (this script passes it) —
-#       automatic root discovery is S6/S7 DHT territory.
+#       automatic provider/root discovery is S7 DHT territory; S6 finds
+#       authenticated node IDs only.
 #   G2  CLOSED. The fresh-node package fetch stalled for three stacked
 #       reasons, each fixed and covered by this proof's package leg:
 #       (a) the frozen policy table gave NEW_USER 0 announces/hour, so the
@@ -665,7 +666,7 @@ echo "science-acceptance: NAMED GAPS (asserted, not worked around):"
 echo "science-acceptance:   G1 CLOSED (gated): A's study crossed node-to-node as a swarm blob —"
 echo "science-acceptance:       zcode.science.publish (CAS→blob mirror) + zcode.science.fetch"
 echo "science-acceptance:       (swarm download → root re-derived from bytes → CAS + projection)."
-echo "science-acceptance:       Honest limit: the blob root moves out of band (S6/S7 DHT discovery)."
+echo "science-acceptance:       Honest limit: the blob root moves out of band (S7 provider/root discovery; S6 finds node IDs only)."
 echo "science-acceptance:   G2 CLOSED (gated): fresh-node swarm fetch proven node-to-node —"
 echo "science-acceptance:       NEW_USER bootstrap announce quota (4/h) + deduped per-sync re-announce"
 echo "science-acceptance:       + supervisor clock-driven swarm (net.zcode_swarm, 1 s)"

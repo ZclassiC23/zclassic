@@ -15,6 +15,33 @@ tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 
 ## Current state
 
+**2026-08-03 — S6 read-only DHT COMPLETE; not deployed.** The existing
+`zpkgswm`/Noise transport now carries bounded `FIND_NODE`/`NODES` traffic;
+there is no second socket stack. A node ID is bound to an active,
+chain-anchored ZID master, a delayed active-chain beacon, its delegated online
+Ed25519 key, and the authenticated Noise static key/session. Routing is fixed
+at k=16/alpha=3 with a 1,024-contact cap, 64 authenticated peer slots, three
+active queries, and a 30-second lookup ceiling. Canonical `contacts.v2`
+persistence is strict, network/self bound, and cold-revalidated. Read-only
+operator surfaces are `zcode.network.status|peers|find`; `ops state
+--subsystem=zcode_dht` reports node/contact/bucket/query/probe/frame and
+persistence state without keys, raw delegations, peer addresses, or an
+operator-diversity claim.
+
+The acceptance proof (`make test-zcode-dht-acceptance`) creates two clean
+package-host-disabled regtest nodes with independent masters, anchors and
+finalizes both identities, observes the plaintext capability-learning reconnect
+into Noise, proves mutual discovery and XOR-ordered lookup, exact rejection of
+malformed/oversize, identity-mismatch, replay, unsolicited, expired, and
+poisoned-contact frames inside an authenticated Noise session, then proves
+clean persistence, cold reload, short-disconnect incumbent retention, and
+reauthentication. Focused DHT/Noise/transport/argv tests, yardsale/store tests
+(including the opt-in store stress pair), `make lint`, a cold uncached full
+suite, the two-node science acceptance, and both reproducibility gates are the
+S6 evidence set. S7 remains open: provider records, root discovery,
+STORE/acknowledgements, replication, and automatic science blob-root discovery
+do not exist yet.
+
 **2026-08-03 — G4 (findings had no command-leaf admission) CLOSED.**
 New leaves `zcode.science.findings.plan|commit`: exact expiring plan +
 confirm:true commit, durable idempotency, CAS store addressed by the
@@ -42,8 +69,9 @@ claim. `zcode.science.fetch` schedules the swarm fetch and admits the blob
 `zcode_science_rebuild`). Proven in `make test-science-acceptance`: node A
 publishes its study, node B fetches and admits it post-restart with the
 identical science root/kind and `study.show found=true`. Standing limit:
-the blob root travels out of band until S6/S7 DHT root discovery — not
-faked. Files: `app/services/src/zcode_science_carrier.c` (carrier;
+the blob root travels out of band until S7 provider/root discovery — S6 finds
+authenticated node IDs only, and does not fake provider records. Files:
+`app/services/src/zcode_science_carrier.c` (carrier;
 `zcode_science_service.h` declares publish/admit),
 `tools/command/native_zcode_science_command.c`,
 `config/commands/zcode_science.def`, `lib/test/src/test_zcode_science_store.c`,

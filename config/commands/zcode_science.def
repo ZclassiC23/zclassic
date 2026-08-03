@@ -428,8 +428,8 @@ ZCL_COMMAND_READY_COMMAND(
  * wire into the package store; fetch schedules the swarm download and
  * admits the bytes. Dual addressing: the blob root is the transport
  * address; the science root is re-derived from the bytes at admit time,
- * never trusted from a claim. Root discovery stays out of band until the
- * S6/S7 DHT slices. */
+ * never trusted from a claim. S6 finds authenticated node IDs; provider/root
+ * discovery stays out of band until S7. */
 ZCL_COMMAND_READY_COMMAND(
     "zcode.science.publish", "zcode.science", "",
     "Publish a science object to the swarm as a blob",
