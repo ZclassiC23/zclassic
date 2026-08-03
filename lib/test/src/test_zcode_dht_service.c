@@ -227,6 +227,7 @@ static int test_disabled_diagnostics(void) {
     ASSERT(strstr(rendered, "peer_address") == NULL);
     ASSERT_EQ(json_get_int(json_get(&dump, "max_authenticated_peers")), 64);
     ASSERT_EQ(json_get_int(json_get(&dump, "max_active_queries")), 3);
+    ASSERT_EQ(json_get_int(json_get(&dump, "buckets_used")), 0);
     ASSERT(!boot_zcode_dht_dump_state_json(&dump, "private"));
     json_free(&dump);
     cleanup_fixture(dir);
@@ -280,6 +281,8 @@ int test_zcode_dht_service(void) {
     vcs_zcode_dht_service_status(b, &bst);
     ASSERT_EQ(ast.contacts, 1);
     ASSERT_EQ(bst.contacts, 1);
+    ASSERT_EQ(ast.buckets_used, 1);
+    ASSERT_EQ(bst.buckets_used, 1);
     ASSERT_EQ(ast.connected_authenticated, 1);
     ASSERT_EQ(bst.connected_authenticated, 1);
     ASSERT(ast.find_node_sent > 0 && ast.nodes_received > 0);
@@ -387,6 +390,7 @@ int test_zcode_dht_service(void) {
     ASSERT(ast.persistence_loaded);
     ASSERT_EQ(ast.persistence_load_count, 1);
     ASSERT_EQ(ast.cold_contacts, 1);
+    ASSERT_EQ(ast.buckets_used, 1);
     ASSERT_EQ(ast.connected_authenticated, 0);
 
     /* The eight-slot lookup queue is a hard cap even when every lookup

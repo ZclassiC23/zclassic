@@ -23,6 +23,8 @@ void vcs_zcode_dht_service_status(const struct vcs_zcode_dht_service *s,
   out->enabled = s->enabled;
   memcpy(out->local_node_id, s->self_id, 32);
   out->contacts = vcs_zcode_dht_table_count(s->table);
+  for (size_t i = 0; i < VCS_ZCODE_DHT_BUCKET_COUNT; i++)
+    out->buckets_used += s->table->bucket_sizes[i] != 0;
   out->pending_probes = (uint32_t)vcs_zcode_dht_table_pending_count(s->table);
   out->active_queries = active_query_count(s);
   out->outbound_queued = s->outbound_count;

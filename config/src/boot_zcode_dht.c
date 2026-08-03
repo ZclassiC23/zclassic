@@ -64,6 +64,7 @@ static void dht_status_json_locked(struct json_value *out) {
   json_push_kv_int(out, "max_outbound_frames",
                    VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND);
   json_push_kv_int(out, "contacts", status.contacts);
+  json_push_kv_int(out, "buckets_used", status.buckets_used);
   json_push_kv_int(out, "connected_authenticated",
                    status.connected_authenticated);
   json_push_kv_int(out, "cold_contacts", status.cold_contacts);

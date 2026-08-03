@@ -68,6 +68,7 @@ struct vcs_zcode_dht_service_status {
   bool enabled;
   uint8_t local_node_id[32];
   uint32_t contacts;
+  uint32_t buckets_used;
   uint32_t connected_authenticated;
   uint32_t cold_contacts;
   uint32_t pending_probes;
