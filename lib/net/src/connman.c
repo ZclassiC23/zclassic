@@ -2079,7 +2079,14 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
     cm->manager.v2_enabled = GetBoolArg("-v2transport", false);
     if (cm->manager.v2_enabled) {
         char datadir[1024], identity_error[160];
-        GetDataDir(true, datadir, sizeof(datadir));
+        /* The DHT delegation command and the running service both receive
+         * the operator's base datadir.  Keep the persistent Noise identity
+         * there too: a net-specific suffix made a regtest daemon silently
+         * use <datadir>/regtest/v2_identity.key while the provisioning
+         * command signed <datadir>/v2_identity.key, guaranteeing a delegated
+         * key mismatch on the acceptance topology.  Mainnet was accidentally
+         * unaffected because its suffix is empty. */
+        GetDataDir(false, datadir, sizeof(datadir));
         if (v2_identity_load_or_create(
                 datadir, cm->manager.identity_priv,
                 cm->manager.identity_pub, identity_error,

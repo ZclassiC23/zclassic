@@ -4,9 +4,9 @@
 #include "command/native_command.h"
 
 #include "base/hex.h"
-#include "chain/chainparams.h"
 #include "controllers/rpc_client.h"
 #include "controllers/rpc_params.h"
+#include "core/uint256.h"
 #include "crypto/ed25519.h"
 #include "models/zid_identity.h"
 #include "net/v2_identity.h"
@@ -317,11 +317,24 @@ void zcl_native_handle_zcode_network_delegate(
     return;
   }
 
-  const struct chain_params *params = chain_params_get();
+  /* Native command processes do not run the node boot path that selects
+   * chain_params.  More importantly, the running daemon is the authority
+   * for which chain this datadir/RPC endpoint serves.  Resolve block zero
+   * through that authenticated endpoint instead of asserting on an
+   * unselected global (or silently binding a regtest delegation to mainnet). */
+  struct uint256 network_genesis;
+  if (!zdn_rpc_block_hash(0, &network_genesis)) {
+    memory_cleanse(master_seed, sizeof(master_seed));
+    memory_cleanse(online_seed, sizeof(online_seed));
+    zdn_fail(reply, "GENESIS_UNAVAILABLE", "authorize",
+             "running node could not resolve its network genesis",
+             ZDN_COMMAND);
+    return;
+  }
   struct vcs_zcode_dht_delegation delegation;
   enum vcs_zcode_dht_delegation_error signed_result =
       vcs_zcode_dht_delegation_sign(
-          &delegation, params->consensus.hashGenesisBlock.data, online_pub,
+          &delegation, network_genesis.data, online_pub,
           noise_pub, beacon_height, beacon.data, now, expiry, sequence,
           master_seed);
   memory_cleanse(master_seed, sizeof(master_seed));
