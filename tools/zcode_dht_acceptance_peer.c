@@ -7,6 +7,7 @@
 #include "core/hash.h"
 #include "crypto/ed25519.h"
 #include "net/v2_transport.h"
+#include "platform/time_compat.h"
 #include "support/cleanse.h"
 #include "vcs/zcode_dht_identity.h"
 #include "vcs/zcode_dht_msgs.h"

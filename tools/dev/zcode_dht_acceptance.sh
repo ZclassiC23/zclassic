@@ -221,7 +221,7 @@ dht_build_helper() {
         "$REPO_ROOT/lib/util/src/write_all.c" \
         "$REPO_ROOT/lib/json/src/json.c" \
         "$REPO_ROOT/lib/util/src/hw_profile.c" \
-        "$REPO_ROOT/lib/util/src/cpu_topology.c" 2>/dev/null ||
+        "$REPO_ROOT/lib/util/src/cpu_topology.c" ||
         dht_die "acceptance helper compile failed"
 }
 
