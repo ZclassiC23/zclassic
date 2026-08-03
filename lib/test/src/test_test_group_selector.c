@@ -219,7 +219,9 @@ static int test_runner_exact_selection(void)
 {
     int failures = 0;
     TEST("test group selector: runner exact mode executes exactly one id") {
-        char out[32768];
+        /* Strict-profile make -n output includes the full link source list;
+         * retain its tail where the exact selector is emitted. */
+        char out[131072];
         char exe[PATH_MAX];
         ASSERT(os_proc_exe_path(exe, sizeof(exe)));
         ASSERT(exe[0] != '\0');
