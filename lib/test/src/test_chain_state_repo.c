@@ -1183,7 +1183,8 @@ static int t_snapshot_after_commit(void)
     bool ok = v.tip_height == 1
            && v.header_height == 1
            && v.consistent
-           && v.commits_ok == 2u;
+           && v.commits_ok == 2u
+           && csr_header_tip_snapshot(&csr) == f.header_tip;
     CSR_RUN("csr: snapshot reflects committed state", ok);
     csr_free(&csr);
     csr_fix_free(&f);

@@ -257,6 +257,12 @@ void csr_snapshot(struct chain_state_repository *csr,
  * on a frequent tick that only need the header height. */
 int64_t csr_header_height(struct chain_state_repository *csr);
 
+/* Snapshot the validated best-header pointer under the repository lock.
+ * Block-index objects have process lifetime, so the returned object remains
+ * readable after the lock is released.  NULL means uninitialized/no header. */
+struct block_index *csr_header_tip_snapshot(
+    struct chain_state_repository *csr);
+
 /* Captures the served/indexed/header frontier windows into *out under the
  * repository lock. Returns ZCL_OK only when out is non-NULL, csr is
  * initialized, AND the caller's expected_chain/expected_header_slot still

@@ -82,6 +82,18 @@ int64_t csr_header_height(struct chain_state_repository *csr)
     return height;
 }
 
+struct block_index *csr_header_tip_snapshot(struct chain_state_repository *csr)
+{
+    struct block_index *tip = NULL;
+    if (!csr || !csr->initialized)
+        return NULL;
+    pthread_mutex_lock(&csr->lock);
+    if (csr->pindex_best_hdr)
+        tip = *csr->pindex_best_hdr;
+    pthread_mutex_unlock(&csr->lock);
+    return tip;
+}
+
 struct zcl_result csr_capture_frontiers(
     struct chain_state_repository *csr,
     struct active_chain *expected_chain,

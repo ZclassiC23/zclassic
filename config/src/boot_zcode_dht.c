@@ -132,15 +132,13 @@ dht_chain_verify(void *ctx, const struct vcs_zcode_dht_delegation *delegation) {
    * genesis, disabling an otherwise valid delegation forever.  Capture the
    * CSR-bound header pointer, then walk its immutable ancestry to ensure the
    * delegated beacon is actually on that chain and ten blocks deep. */
-  struct chain_state_frontier_view view;
-  if (!csr_capture_frontiers(csr_instance(), &svc->state->chain_active,
-                             &svc->state->pindex_best_header,
-                             (int)delegation->beacon_height, &view).ok ||
-      !view.header_tip ||
-      view.header_tip->nHeight <
+  const struct block_index *header_tip =
+      csr_header_tip_snapshot(csr_instance());
+  if (!header_tip ||
+      header_tip->nHeight <
           (int)delegation->beacon_height + ZCL_FINALITY_DEPTH)
     return false;
-  const struct block_index *beacon = view.header_tip;
+  const struct block_index *beacon = header_tip;
   while (beacon && beacon->nHeight > (int)delegation->beacon_height)
     beacon = beacon->pprev;
   return beacon && beacon->phashBlock &&
