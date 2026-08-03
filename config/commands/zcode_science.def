@@ -161,6 +161,44 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_science_work_commit)
 
+/* S4 (2026-08-03, additive): the closed benchmark/reproduction executor.
+ * One leaf, plan -> confirm:true commit -> receipt, feeding the landed S3
+ * work.plan/commit admission path — never a parallel one. */
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.science.work.execute", "zcode.science.work", "",
+    "Execute a confined benchmark or reproduction",
+    "Runs the closed executor: loads the study/task/candidate/method wires, "
+    "the environment policy, and the workload payload from the workspace "
+    "CAS (a root not in CAS is a refusal), verifies the captured hardware "
+    "profile against the study's environment policy, and runs ONLY the "
+    "registry fixed action (c23.benchmark.v1, or c23.benchmark.reproduce.v1 "
+    "against original_result_root) in os_sandbox confinement — no network, "
+    "bounded CPU/RAM/process/output, escape-suite self-check first. Emits "
+    "a benchmark_result.v2 observation plus raw-sample manifest, sample "
+    "payload, evidence, and hardware-profile CAS objects. Without confirm "
+    "only the exact expiring plan persists; with confirm:true the S3 "
+    "commit re-runs the hardened cross-validators and stores the evidence "
+    "addressed by root. Null and negative observations commit; execution "
+    "failures store nothing. A benchmark is an observation, never truth.",
+    0,
+    "zcode,science,work,execute,benchmark,reproduction,confined",
+    "zcl.zcode_science_work_execute.input.v1",
+    "zcl.zcode_science_execute.v1",
+    "study_root,task_root,candidate_root,method_root,original_result_root,"
+    "action_kind,action_sequence,result_sequence,reproduction_sequence,"
+    "challenge_block_height,challenge_block_hash,reproducer_pubkey,"
+    "confirm,now_unix,datadir,workspace",
+    "challenge_block_height,challenge_block_hash",
+    "zclassic23 zcode.science.work.execute --input='{\"study_root\":\"<64hex>\",\"task_root\":\"<64hex>\",\"candidate_root\":\"<64hex>\",\"method_root\":\"<64hex>\",\"challenge_block_height\":3200000,\"challenge_block_hash\":\"<64hex>\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_science_work_execute)
+
 ZCL_COMMAND_READY_COMMAND(
     "zcode.science.work.status", "zcode.science.work", "",
     "Show evidence status",

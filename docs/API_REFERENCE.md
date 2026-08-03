@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 457 |
+| Registry entries (branches + leaves) | 458 |
 | Top-level roots | 11 |
 | Branches | 106 |
-| Leaves (dispatchable command paths) | 351 |
-| … `ready` (live handler in this build) | 303 |
+| Leaves (dispatchable command paths) | 352 |
+| … `ready` (live handler in this build) | 304 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 114 |
+| Leaves with `effect=mutate` | 115 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 82 |
 
@@ -86,7 +86,7 @@ Per source file:
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 21 | 4 | 17 |
 | `config/commands/zcode.def` | 71 | 16 | 55 |
-| `config/commands/zcode_science.def` | 15 | 5 | 10 |
+| `config/commands/zcode_science.def` | 16 | 5 | 11 |
 | `config/commands/metaverse.def` | 17 | 5 | 12 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
@@ -969,6 +969,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode science work plan` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, `method_hex`, `profile_hex`, `action_kind`, `action_sequence`, `action_source_cas_sha3`, `action_input_root_sha3`, `action_toolchain_capsule_sha3`, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_plan.v1` | `zclassic23 zcode.science.work.plan --input='{"wire_hex":"<726hex>","method_hex":"<242hex>","profile_hex":"<444hex>"}'` | Plan benchmark evidence |
 | `zcode science work commit` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, **`confirm`**, `action_kind`, `action_sequence`, `action_source_cas_sha3`, `action_input_root_sha3`, `action_toolchain_capsule_sha3`, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_commit.v1` | `zclassic23 zcode.science.work.commit --input='{"wire_hex":"<726hex>","confirm":true}'` | Commit planned benchmark evidence |
+| `zcode science work execute` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | `study_root`, `task_root`, `candidate_root`, `method_root`, `original_result_root`, `action_kind`, `action_sequence`, `result_sequence`, `reproduction_sequence`, **`challenge_block_height`**, **`challenge_block_hash`**, `reproducer_pubkey`, `confirm`, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_execute.v1` | `zclassic23 zcode.science.work.execute --input='{"study_root":"<64hex>","task_root":"<64hex>","candidate_root":"<64hex>","method_root":"<64hex>","challenge_block_height":3200000,"challenge_block_hash":"<64hex>","confirm":true}'` | Execute a confined benchmark or reproduction |
 | `zcode science work status` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_science_work.v1` | `zclassic23 zcode.science.work.status --input='{"root":"<64hex>"}'` | Show evidence status |
 | `zcode science work receipt` | ready | read / read / operator · fast/low | **`root`**, `datadir`, `workspace` | `zcl.zcode_science_work.v1` | `zclassic23 zcode.science.work.receipt --input='{"root":"<64hex>"}'` | Show evidence receipt |
 

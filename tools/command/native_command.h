@@ -369,6 +369,12 @@ void zcl_native_handle_zcode_science_work_status(
 void zcl_native_handle_zcode_science_work_receipt(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* S4: the closed benchmark/reproduction executor (additive leaf in
+ * config/commands/zcode_science.def; handler lives in
+ * native_zcode_science_exec_command.c). */
+void zcl_native_handle_zcode_science_work_execute(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_science_review_submit(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

@@ -42,6 +42,11 @@ app/services/src/rolling_anchor_service.c 801
 
 app/services/src/sticky_escalator.c 1340
 app/services/src/sync_monitor.c 811
+# ZCODE Scientific Metaverse S4: closed benchmark/reproduction executor —
+# the confined runner (fork + Landlock/seccomp/rlimits + sandbox self-check
+# canaries + crash discipline) is one fail-closed ritual that must stay
+# together; baselined at creation per the zcode_science_service.c precedent.
+app/services/src/zcode_benchmark_executor.c 1232
 # ZCODE Scientific Metaverse S3: plan/commit services + review/vote submit +
 # CAS rebuild for the science store — one fail-closed write ritual per kind;
 # baselined at creation (gate option 3), expected to shrink when S5's

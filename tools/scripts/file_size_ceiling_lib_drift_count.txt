@@ -575,3 +575,12 @@
 # flags set, so the native CLI stops silently answering from the LIVE
 # node when the caller pinned an isolated one. Baselined at 4282; count
 # STAYS 14.
+#
+# 2026-08-03 (ZCODE S4 deterministic-envelope fix): zcode_science.c grew
+# 1387 -> 1411 — vcs_zcode_hardware_profile_capture() no longer binds the
+# volatile instantaneous /proc/cpuinfo "cpu MHz" reading (frequency
+# scaling moves it run-to-run) into tsc_freq_hz; the field now comes from
+# the invariant hardware source (CPUID 0x15 crystal math, 0x16 base
+# frequency, else the documented 0 "unknown"). Two captures of the same
+# machine now produce the same profile object, which the S4 deterministic
+# benchmark envelope requires. Re-baselined at 1411; count STAYS 14.

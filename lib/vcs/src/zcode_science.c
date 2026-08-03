@@ -14,6 +14,10 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 
+#if defined(__x86_64__) || defined(__i386__)
+#include <cpuid.h>
+#endif
+
 static const uint8_t study_magic[8] = {'Z','C','S','T','U','D','\r','\n'};
 static const uint8_t result_magic[8] = {'Z','C','B','E','N','C','\r','\n'};
 static const uint8_t reproduction_magic[8] =
@@ -1038,17 +1042,42 @@ static bool cpuinfo_field(const char *line, const char *key, char *out,
     return true;
 }
 
+/* The invariant TSC frequency is a hardware constant; the "cpu MHz"
+ * cpuinfo line is the CURRENT scaled clock of the first processor and
+ * moves with frequency scaling (observed 545 <-> 3555 MHz within 200 ms
+ * of load). Two captures of the SAME machine must produce the same
+ * profile object — an attested environment whose bytes wobble run-to-run
+ * makes every root that binds it wobble too — so the volatile line is
+ * never bound. CPUID 0x15 reports the exact TSC Hz from the crystal
+ * clock when the hardware enumerates it; CPUID 0x16 reports the integer
+ * base frequency (the clock the invariant TSC runs at); neither -> 0,
+ * the documented "unknown". */
+static uint64_t capture_invariant_tsc_hz(void)
+{
+#if defined(__x86_64__) || defined(__i386__)
+    unsigned int eax, ebx, ecx, edx;
+    /* __get_cpuid_count consults the maximum supported leaf first, so an
+     * absent leaf fails instead of aliasing another leaf's registers. */
+    if (__get_cpuid_count(0x15, 0, &eax, &ebx, &ecx, &edx) &&
+        eax != 0 && ebx != 0 && ecx != 0)
+        return (uint64_t)ecx * ebx / eax;
+    if (__get_cpuid_count(0x16, 0, &eax, &ebx, &ecx, &edx) && eax != 0)
+        return (uint64_t)eax * UINT64_C(1000000);
+#endif
+    return 0;
+}
+
 /* Best-effort /proc/cpuinfo scan: cpu_vendor (vendor_id), cpu_brand (model
- * name), tsc_freq_hz (cpu MHz). Missing file or keys leave the fields at
- * their zeroed "unknown" state. */
+ * name). Missing file or keys leave the fields at their zeroed "unknown"
+ * state. The "cpu MHz" line is deliberately NOT read here — see
+ * capture_invariant_tsc_hz for the stable frequency source. */
 static void capture_cpuinfo(struct vcs_zcode_hardware_profile_v1 *out)
 {
     FILE *f = fopen("/proc/cpuinfo", "r");
     if (!f) return;
     char line[256], value[128];
-    bool have_vendor = false, have_brand = false, have_mhz = false;
-    while (fgets(line, sizeof(line), f) &&
-           !(have_vendor && have_brand && have_mhz)) {
+    bool have_vendor = false, have_brand = false;
+    while (fgets(line, sizeof(line), f) && !(have_vendor && have_brand)) {
         if (!have_vendor &&
             cpuinfo_field(line, "vendor_id", value, sizeof(value))) {
             capture_str(out->cpu_vendor, sizeof(out->cpu_vendor), value);
@@ -1057,12 +1086,6 @@ static void capture_cpuinfo(struct vcs_zcode_hardware_profile_v1 *out)
                    cpuinfo_field(line, "model name", value, sizeof(value))) {
             capture_str(out->cpu_brand, sizeof(out->cpu_brand), value);
             have_brand = true;
-        } else if (!have_mhz &&
-                   cpuinfo_field(line, "cpu MHz", value, sizeof(value))) {
-            double mhz = strtod(value, NULL);
-            if (mhz > 0.0)
-                out->tsc_freq_hz = (uint64_t)(mhz * 1000000.0 + 0.5);
-            have_mhz = true;
         }
     }
     fclose(f);
@@ -1132,6 +1155,7 @@ bool vcs_zcode_hardware_profile_capture(
     }
     capture_cpuinfo(out);
     capture_timer_source(out);
+    out->tsc_freq_hz = capture_invariant_tsc_hz();
     /* device_facts_root stays all-zero: the canonical extended-facts bundle
      * (DMI/firmware) is the documented extension point and no producer fills
      * it yet. */

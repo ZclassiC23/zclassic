@@ -835,6 +835,9 @@ AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_discovery_rank.h|lib/vcs/src/zcode_
 /* CAS storage, rebuildable science projections, and the plan/commit
  * services and commands for studies, evidence, reviews, and votes. */
 AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_science_index.h|lib/vcs/src/zcode_science_index.c|app/services/include/services/zcode_science_service.h|app/services/src/zcode_science_service.c|app/models/include/models/zcode_science.h|app/models/src/zcode_science.c|tools/command/native_zcode_science_command.c|config/commands/zcode_science.def|lib/test/src/test_zcode_science_store.c", "zcode_science_store zcode_science make_lint_gates")
+/* Closed benchmark/reproduction executors: receipt codecs, the confined
+ * runner service, and the work.execute command. */
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_benchmark_receipt.h|lib/vcs/src/zcode_benchmark_receipt.c|app/services/include/services/zcode_benchmark_executor.h|app/services/src/zcode_benchmark_executor.c|tools/command/native_zcode_science_exec_command.c|lib/test/src/test_zcode_benchmark_exec.c", "zcode_benchmark_exec zcode_science_store zcode_science make_lint_gates")
 /* Boot wiring for the ZCODE swarm and canonical work authority is exercised
  * by the swarm network suite. */
 AGENT_IMPACT_RULE("config/src/boot_zcode_swarm.c|config/src/boot_zcode_work_authority.c|config/include/config/boot_zcode_work_authority.h", "zcode_swarm_net zcode_dev_objects make_lint_gates")
