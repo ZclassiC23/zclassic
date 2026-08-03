@@ -267,6 +267,24 @@ static const struct rlw_leaf g_rlw_leaves[] = {
     { "metaverse.build.worker.list",
       zcl_native_handle_metaverse_build_worker_list,
       NULL, NULL, NULL, NULL, NULL },
+    /* The S3 science projection reads, covered on the day they landed.
+     * All four answer from the rebuildable SQL projection in node.db (the
+     * CAS is only consulted through the same read-only attachment), so
+     * payload_dir stays NULL like the other sqlite leaves. Exercised with
+     * a well-formed root so the handler reaches the datadir instead of
+     * refusing ahead of it. */
+    { "zcode.science.study.show",
+      zcl_native_handle_zcode_science_study_show,
+      "study_root", RLW_ZID_PUBKEY, NULL, NULL, NULL },
+    { "zcode.science.study.list",
+      zcl_native_handle_zcode_science_study_list,
+      NULL, NULL, NULL, NULL, NULL },
+    { "zcode.science.work.status",
+      zcl_native_handle_zcode_science_work_status,
+      "root", RLW_ZID_PUBKEY, NULL, NULL, NULL },
+    { "zcode.science.work.receipt",
+      zcl_native_handle_zcode_science_work_receipt,
+      "root", RLW_ZID_PUBKEY, NULL, NULL, NULL },
 };
 
 #define RLW_LEAF_COUNT ((int)(sizeof(g_rlw_leaves) / sizeof(g_rlw_leaves[0])))

@@ -42,6 +42,11 @@ app/services/src/rolling_anchor_service.c 801
 
 app/services/src/sticky_escalator.c 1340
 app/services/src/sync_monitor.c 811
+# ZCODE Scientific Metaverse S3: plan/commit services + review/vote submit +
+# CAS rebuild for the science store — one fail-closed write ritual per kind;
+# baselined at creation (gate option 3), expected to shrink when S5's
+# projection adapter lands.
+app/services/src/zcode_science_service.c 963
 app/views/src/explorer_pages_view.c 823
 # ADR-0006 (always-sync spine): the reindex-executability verb check +
 # body-coverage gate + O(delta) wallet-scan cursor + the -ratify-mint-anchor

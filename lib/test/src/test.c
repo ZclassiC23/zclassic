@@ -1558,6 +1558,8 @@ int main(int argc, char **argv)
     { extern int test_zcode_site(void); failures += test_zcode_site(); }
     { extern int test_zcode_add(void); failures += test_zcode_add(); }
     { extern int test_zcode_science(void); failures += test_zcode_science(); }
+    { extern int test_zcode_science_store(void);
+      failures += test_zcode_science_store(); }
     { extern int test_metaverse_catalog(void); failures += test_metaverse_catalog(); }
     { extern int test_vcs_devloop(void); failures += test_vcs_devloop(); }
     { extern int test_testcache(void); failures += test_testcache(); }

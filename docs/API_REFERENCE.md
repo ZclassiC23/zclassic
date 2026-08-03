@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 436 |
+| Registry entries (branches + leaves) | 451 |
 | Top-level roots | 10 |
-| Branches | 99 |
-| Leaves (dispatchable command paths) | 337 |
-| … `ready` (live handler in this build) | 289 |
+| Branches | 104 |
+| Leaves (dispatchable command paths) | 347 |
+| … `ready` (live handler in this build) | 299 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 105 |
+| Leaves with `effect=mutate` | 111 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 79 |
 
@@ -86,6 +86,7 @@ Per source file:
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 21 | 4 | 17 |
 | `config/commands/zcode.def` | 71 | 16 | 55 |
+| `config/commands/zcode_science.def` | 15 | 5 | 10 |
 | `config/commands/metaverse.def` | 17 | 5 | 12 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
@@ -951,6 +952,36 @@ represented by its children's sections.
 | `zcode package add plan` | ready | mutate / app-write / operator · foreground/moderate | **`name_or_root`**, `now_unix`, `datadir` | `zcl.zcode_add_plan.v1` | `zclassic23 zcode package add plan --input='{"name_or_root":"ringbuffer"}'` | Resolve, dependency-lock, and report what installing would do |
 | `zcode package add commit` | ready | mutate / app-write / operator · background/high | **`plan_id`**, `now_unix`, `datadir` | `zcl.zcode_add_commit.v1` | `zclassic23 zcode package add commit --input='{"plan_id":"<64hex>"}'` | Execute a plan: verify, build+test confined, install, activate, pin |
 
+#### `zcode.science.study` — Preregistered study lifecycle
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode science study plan` | ready | mutate / app-write / operator, plan-commit · foreground/low | **`wire_hex`**, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_plan.v1` | `zclassic23 zcode.science.study.plan --input='{"wire_hex":"<844hex>"}'` | Plan a study submission |
+| `zcode science study commit` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, **`confirm`**, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_commit.v1` | `zclassic23 zcode.science.study.commit --input='{"wire_hex":"<844hex>","confirm":true}'` | Commit a planned study |
+| `zcode science study show` | ready | read / read / operator · fast/low | **`study_root`**, `datadir` | `zcl.zcode_science_study.v1` | `zclassic23 zcode.science.study.show --input='{"study_root":"<64hex>"}'` | Show one study |
+| `zcode science study list` | ready | read / read / operator · fast/low | `datadir`, `max` | `zcl.zcode_science_studies.v1` | `zclassic23 zcode.science.study.list --input='{"max":32}'` | List studies |
+
+#### `zcode.science.work` — Benchmark results and reproductions
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode science work plan` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, `method_hex`, `profile_hex`, `action_kind`, `action_sequence`, `action_source_cas_sha3`, `action_input_root_sha3`, `action_toolchain_capsule_sha3`, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_plan.v1` | `zclassic23 zcode.science.work.plan --input='{"wire_hex":"<726hex>","method_hex":"<242hex>","profile_hex":"<444hex>"}'` | Plan benchmark evidence |
+| `zcode science work commit` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, **`confirm`**, `action_kind`, `action_sequence`, `action_source_cas_sha3`, `action_input_root_sha3`, `action_toolchain_capsule_sha3`, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_commit.v1` | `zclassic23 zcode.science.work.commit --input='{"wire_hex":"<726hex>","confirm":true}'` | Commit planned benchmark evidence |
+| `zcode science work status` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_science_work.v1` | `zclassic23 zcode.science.work.status --input='{"root":"<64hex>"}'` | Show evidence status |
+| `zcode science work receipt` | ready | read / read / operator · fast/low | **`root`**, `datadir`, `workspace` | `zcl.zcode_science_work.v1` | `zclassic23 zcode.science.work.receipt --input='{"root":"<64hex>"}'` | Show evidence receipt |
+
+#### `zcode.science.review` — Findings reviews
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode science review submit` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, `confirm`, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_review.v1` | `zclassic23 zcode.science.review.submit --input='{"wire_hex":"<438hex>","confirm":true}'` | Submit a findings review |
+
+#### `zcode.science.vote` — Curation votes
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode science vote submit` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, `confirm`, `network_genesis_root`, `voter_zid_root`, `signer_pubkey`, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_vote.v1` | `zclassic23 zcode.science.vote.submit --input='{"wire_hex":"<438hex>","confirm":true,"network_genesis_root":"<64hex>","voter_zid_root":"<64hex>","signer_pubkey":"<64hex>"}'` | Submit a curation vote |
+
 ### `metaverse` — Sovereign digital property: catalog, rights, receipts
 
 #### `metaverse.agent` — Confined agents acting under a scoped grant
@@ -1058,6 +1089,9 @@ promise the same document shape.
 | `zcl.account.v1` | `app.account.show`, `app.account.whoami`, `app.account.add`, `app.account.role`, `app.account.suspend`, `app.account.unsuspend` |
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
 | `zcl.zcode_leaderboard.v1` | `zcode.leaderboard.daily`, `zcode.leaderboard.weekly`, `zcode.leaderboard.monthly`, `zcode.leaderboard.all` |
+| `zcl.zcode_science_plan.v1` | `zcode.science.study.plan`, `zcode.science.work.plan` |
+| `zcl.zcode_science_commit.v1` | `zcode.science.study.commit`, `zcode.science.work.commit` |
+| `zcl.zcode_science_work.v1` | `zcode.science.work.status`, `zcode.science.work.receipt` |
 | `zcl.build_job.v1` | `metaverse.build.submit`, `metaverse.build.cancel` |
 | `zcl.build_worker.v1` | `metaverse.build.worker.approve`, `metaverse.build.worker.revoke` |
 | `zcl.telemetry.alerts.v1` | `ops.telemetry.alerts.active`, `ops.telemetry.alerts.history` |

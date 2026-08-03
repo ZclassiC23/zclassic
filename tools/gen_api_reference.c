@@ -293,6 +293,9 @@ static const struct row g_rows[] = {
 #define ZCL_DEF_FILE "config/commands/zcode.def"
 #include "../config/commands/zcode.def"
 #undef ZCL_DEF_FILE
+#define ZCL_DEF_FILE "config/commands/zcode_science.def"
+#include "../config/commands/zcode_science.def"
+#undef ZCL_DEF_FILE
 #define ZCL_DEF_FILE "config/commands/metaverse.def"
 #include "../config/commands/metaverse.def"
 #undef ZCL_DEF_FILE

@@ -147,11 +147,11 @@ page changing with it.
 <!--   app_shape_folders    = directories directly under app/                        -->
 <!-- Fix a mismatch with `tools/scripts/check_doc_counts.sh --fix`, never by hand.  -->
 
-test_groups: 888
+test_groups: 889
 port_interfaces: 13
 persistence_adapters: 14
 condition_registrations: 52
-command_bundles: 22
+command_bundles: 23
 command_roots: 9
 dumpstate_subsystems: 155
 app_shape_folders: 7
@@ -247,7 +247,7 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
 
 ### Add a native command
 1. Declare the command in the matching `config/commands/*.def` bundle.
-   There are 22 command bundles; `ls config/commands/*.def
+   There are 23 command bundles; `ls config/commands/*.def
    config/commands/*/*.def` is the list — do not work from a remembered one,
    and do not drop the nested half of that glob. Docs said "eight" for months
    after `vault` and `zcode` landed, and the flat glob alone silently stopped

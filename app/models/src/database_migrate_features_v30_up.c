@@ -737,6 +737,8 @@ int node_db_migrate_features_v30_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    /* v49+ continues in database_migrate_features_v49_up.c (same E1
+     * file-size split as the v30 handoff). */
     *version = current_ver;
-    return applied;
+    return applied + node_db_migrate_features_v49_up(ndb, version);
 }
