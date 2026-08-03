@@ -184,6 +184,7 @@ bool db_zcode_science_plan_find(
 
 static void entry_read(struct db_zcode_science_entry *out, sqlite3_stmt *st)
 {
+    memset(out, 0, sizeof(*out));
     AR_READ_STR(st, 0, out->root, sizeof(out->root));
     AR_READ_STR(st, 1, out->study_root, sizeof(out->study_root));
     AR_READ_STR(st, 2, out->link_root, sizeof(out->link_root));
