@@ -2,6 +2,7 @@
  * Acceptance-only Noise peer for tools/dev/zcode_dht_acceptance.sh. */
 
 #include "base/hex.h"
+#include "base/safe_alloc.h"
 #include "base/serialize_le.h"
 #include "core/hash.h"
 #include "crypto/ed25519.h"
@@ -93,7 +94,7 @@ static bool p2p_message(const char *command, const uint8_t *payload,
         !out || !out_len)
         return false;
     size_t total = P2P_HEADER + payload_len;
-    uint8_t *wire = calloc(total ? total : 1, 1);
+    uint8_t *wire = zcl_calloc(total ? total : 1, 1, "dht-accept-p2p-wire");
     if (!wire)
         return false;
     memcpy(wire, regtest_magic, 4);
@@ -186,7 +187,7 @@ static size_t build_version(uint8_t out[128])
     size_t off = 0;
     zcl_write_u32_le(out + off, PROTOCOL_VERSION); off += 4;
     zcl_write_u64_le(out + off, NODE_NETWORK | NODE_ZCL23 | NODE_V2); off += 8;
-    zcl_write_u64_le(out + off, (uint64_t)time(NULL)); off += 8;
+    zcl_write_u64_le(out + off, (uint64_t)platform_time_wall_time_t()); off += 8;
     for (int address = 0; address < 2; address++) {
         zcl_write_u64_le(out + off, NODE_NETWORK | NODE_ZCL23 | NODE_V2);
         off += 8;
