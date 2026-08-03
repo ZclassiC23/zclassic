@@ -1550,6 +1550,7 @@ int main(int argc, char **argv)
     { extern int test_zcode_rank(void); failures += test_zcode_rank(); }
     { extern int test_zcode_discovery_rank(void);
       failures += test_zcode_discovery_rank(); }
+    { extern int test_zcode_dht(void); failures += test_zcode_dht(); }
     { extern int test_zcode_badge(void); failures += test_zcode_badge(); }
     { extern int test_zcode_policy(void); failures += test_zcode_policy(); }
     { extern int test_zcode_swarm(void); failures += test_zcode_swarm(); }
