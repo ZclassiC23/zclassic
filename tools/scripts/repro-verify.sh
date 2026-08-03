@@ -47,6 +47,9 @@ cleanup() {
     if [ "${ZCL_REPRO_KEEP:-0}" = "1" ]; then
         echo "repro-verify: build trees kept at $BASE" >&2
     else
+        # Some tests deliberately create read-only fixtures.  They should not
+        # make a successful byte comparison fail during trap cleanup.
+        chmod -R u+w "$BASE" 2>/dev/null || true
         rm -rf "$BASE"
     fi
 }
@@ -60,7 +63,8 @@ snapshot() {
     local dst="$1"
     mkdir -p "$dst"
     rsync -a --delete \
-        --exclude='/build' --exclude='/.git' \
+        --exclude='/build' --exclude='/.git' --exclude='/.claude/worktrees' \
+        --exclude='/test-tmp' \
         "$SRC"/./ "$dst"/
     # A throwaway git repo makes the copy a valid worktree so
     # tools/dev/source-identity.sh can enumerate it. The commit is best-effort;
