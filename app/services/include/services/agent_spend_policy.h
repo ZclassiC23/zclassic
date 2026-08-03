@@ -73,6 +73,9 @@ struct zcl_command_spec;
  *                           max_per_window_zat
  *   POLICY_RECIPIENT      — recipient_allowlist is non-empty and the leaf's
  *                           recipient is not in it
+ *   POLICY_WALLET_SCOPE   — spend did not explicitly name dev or prod
+ *   POLICY_WALLET_UNBOUND — legacy session has no captured wallet identity
+ *   POLICY_WALLET_MISMATCH— session scope/id/genesis differs from the node
  *   POLICY_NO_GRANT_MINT  — the leaf mints/revokes grants; only the
  *                           un-sessioned local operator may
  *   POLICY_UNBOUNDABLE    — the leaf is understood, and what it can REACH is

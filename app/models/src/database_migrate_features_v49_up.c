@@ -183,6 +183,93 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 52) {
+        /* v52: stable wallet identity and fail-closed agent-session binding.
+         * Existing sessions receive empty binding columns deliberately: they
+         * remain listable/revocable, but no money authorization can treat an
+         * unbound legacy row as belonging to the current wallet. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS wallet_identity ("
+            "id INTEGER PRIMARY KEY CHECK(id=1),"
+            "wallet_instance_id TEXT NOT NULL UNIQUE "
+            " CHECK(length(wallet_instance_id)=32),"
+            "network_genesis BLOB NOT NULL CHECK(length(network_genesis)=32),"
+            "operator_lane TEXT NOT NULL CHECK(length(operator_lane)>0),"
+            "created_at INTEGER NOT NULL CHECK(created_at>0))");
+        node_db_exec(ndb,
+            "ALTER TABLE agent_sessions ADD COLUMN wallet_scope TEXT NOT NULL "
+            "DEFAULT '' CHECK(wallet_scope IN ('','dev','prod'))");
+        node_db_exec(ndb,
+            "ALTER TABLE agent_sessions ADD COLUMN wallet_instance_id TEXT "
+            "NOT NULL DEFAULT '' CHECK(length(wallet_instance_id) IN (0,32))");
+        node_db_exec(ndb,
+            "ALTER TABLE agent_sessions ADD COLUMN wallet_genesis TEXT NOT NULL "
+            "DEFAULT '' CHECK(length(wallet_genesis) IN (0,64))");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_agent_sessions_wallet "
+            "ON agent_sessions(wallet_scope,wallet_instance_id,revoked)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('052')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 52);
+        current_ver = 52;
+        applied++;
+    }
+
+    if (current_ver < 53) {
+        /* v53: durable, scope-wide agent allocation accounting. Unlike the
+         * rolling rate window this counter never resets; it lets the dev
+         * custody floor enforce a lifetime 0.05-ZCL lab allocation across
+         * concurrent sessions. A failed pre-broadcast handler releases it. */
+        node_db_exec(ndb,
+            "ALTER TABLE agent_sessions ADD COLUMN lifetime_spent_zat INTEGER "
+            "NOT NULL DEFAULT 0 CHECK(lifetime_spent_zat>=0 AND "
+            "lifetime_spent_zat<=2100000000000000)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_agent_sessions_scope_lifetime "
+            "ON agent_sessions(wallet_scope,lifetime_spent_zat)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('053')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 53);
+        current_ver = 53;
+        applied++;
+    }
+
+    if (current_ver < 54) {
+        /* v54: bind durable transaction intents to the exact custody
+         * snapshot and reserve recipient value plus maximum fee. Empty
+         * binding fields mark legacy owner plans; agent money paths never
+         * infer an identity for them. */
+        node_db_exec(ndb,
+            "ALTER TABLE vault_intents ADD COLUMN wallet_scope TEXT NOT NULL "
+            "DEFAULT '' CHECK(wallet_scope IN ('','dev','prod'))");
+        node_db_exec(ndb,
+            "ALTER TABLE vault_intents ADD COLUMN wallet_instance_id TEXT "
+            "NOT NULL DEFAULT '' CHECK(length(wallet_instance_id) IN (0,32))");
+        node_db_exec(ndb,
+            "ALTER TABLE vault_intents ADD COLUMN wallet_genesis TEXT NOT NULL "
+            "DEFAULT '' CHECK(length(wallet_genesis) IN (0,64))");
+        node_db_exec(ndb,
+            "ALTER TABLE vault_intents ADD COLUMN snapshot_root BLOB "
+            "CHECK(snapshot_root IS NULL OR length(snapshot_root)=32)");
+        node_db_exec(ndb,
+            "ALTER TABLE vault_intents ADD COLUMN recipient_value_zat INTEGER "
+            "NOT NULL DEFAULT 0 CHECK(recipient_value_zat>=0)");
+        node_db_exec(ndb,
+            "ALTER TABLE vault_intents ADD COLUMN max_fee_zat INTEGER NOT NULL "
+            "DEFAULT 0 CHECK(max_fee_zat>=0)");
+        node_db_exec(ndb,
+            "ALTER TABLE vault_intents ADD COLUMN reserved_zat INTEGER NOT NULL "
+            "DEFAULT 0 CHECK(reserved_zat>=0)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_vault_intents_wallet_reserve "
+            "ON vault_intents(wallet_scope,wallet_instance_id,state)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('054')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 54);
+        current_ver = 54;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

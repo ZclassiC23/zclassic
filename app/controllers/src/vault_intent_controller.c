@@ -16,12 +16,14 @@
 #include "json/json.h"
 #include "models/database.h"
 #include "models/vault_intent.h"
+#include "models/wallet_identity.h"
 #include "models/wallet_metadata_crypto.h"
 #include "net/connman.h"
 #include "platform/time_compat.h"
 #include "primitives/transaction.h"
 #include "rpc/server.h"
 #include "services/wallet_backup_service.h"
+#include "services/wallet_money_service.h"
 #include "support/cleanse.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -167,19 +169,30 @@ static bool vi_decode(const uint8_t *raw, size_t len, struct vi_payload *p)
     return true;
 }
 
-static void vi_digest(const uint8_t *raw, size_t len, int32_t height,
-                      const uint8_t hash[32], int64_t expiry, uint8_t out[32])
+static void vi_digest(const uint8_t *raw, size_t len,
+                      const struct vault_intent_row *row, uint8_t out[32])
 {
     uint8_t height_le[4], expiry_le[8];
-    zcl_write_i32_le(height_le, height);
-    zcl_write_i64_le(expiry_le, expiry);
+    zcl_write_i32_le(height_le, row->anchor_height);
+    zcl_write_i64_le(expiry_le, row->expires_at);
     struct sha3_256_ctx c;
     sha3_256_init(&c);
     sha3_256_write(&c, (const uint8_t *)"vault-intent-v1", 15);
     sha3_256_write(&c, raw, len);
     sha3_256_write(&c, height_le, sizeof(height_le));
-    sha3_256_write(&c, hash, 32);
+    sha3_256_write(&c, row->anchor_hash, 32);
     sha3_256_write(&c, expiry_le, sizeof(expiry_le));
+    sha3_256_write(&c, (const uint8_t *)row->wallet_scope,
+                   strlen(row->wallet_scope));
+    sha3_256_write(&c, (const uint8_t *)row->wallet_instance_id,
+                   strlen(row->wallet_instance_id));
+    sha3_256_write(&c, (const uint8_t *)row->wallet_genesis,
+                   strlen(row->wallet_genesis));
+    sha3_256_write(&c, row->snapshot_root, 32);
+    uint8_t money[2][8];
+    zcl_write_i64_le(money[0], row->recipient_value_zat);
+    zcl_write_i64_le(money[1], row->max_fee_zat);
+    sha3_256_write(&c, (const uint8_t *)money, sizeof(money));
     sha3_256_finalize(&c, out);
 }
 
@@ -277,6 +290,21 @@ static void vi_render_row(struct wallet_rpc_context *ctx,
     json_push_kv_str(out, "state", vault_intent_state_name(row->state));
     json_push_kv_int(out, "created_at", row->created_at);
     json_push_kv_int(out, "expires_at", row->expires_at);
+    if (row->wallet_scope[0]) {
+        char root[65], recipient[32], fee[32], reserved[32];
+        vi_hex(row->snapshot_root, root);
+        vi_amount_text(row->recipient_value_zat, recipient);
+        vi_amount_text(row->max_fee_zat, fee);
+        vi_amount_text(row->reserved_zat, reserved);
+        json_push_kv_str(out, "wallet_scope", row->wallet_scope);
+        json_push_kv_str(out, "wallet_instance_id",
+                         row->wallet_instance_id);
+        json_push_kv_str(out, "network_genesis", row->wallet_genesis);
+        json_push_kv_str(out, "money_snapshot_root", root);
+        json_push_kv_str(out, "recipient_value", recipient);
+        json_push_kv_str(out, "maximum_fee", fee);
+        json_push_kv_str(out, "reserved", reserved);
+    }
     if (row->has_txid) {
         char txid[65]; vi_hex(row->txid, txid);
         json_push_kv_str(out, "txid", txid);
@@ -329,11 +357,19 @@ static void vi_refresh_state(struct wallet_rpc_context *ctx,
 static bool rpc_vi_plan(const struct json_value *params, bool help,
                         struct json_value *result)
 {
-    RPC_HELP(help, result, "vault_intent_plan {route,effects}\n");
+    RPC_HELP(help, result,
+             "vault_intent_plan {wallet_scope,route,effects}\n");
     const struct json_value *input = json_at(params, 0);
     struct wallet_rpc_context *ctx = wallet_rpc_context_current();
     if (!input || input->type != JSON_OBJ) {
         vi_error(result, "INVALID_INPUT", "one intent object is required");
+        return true;
+    }
+    const char *wallet_scope = json_get_str(json_get(input, "wallet_scope"));
+    if (!wallet_scope || (strcmp(wallet_scope, "dev") != 0 &&
+                          strcmp(wallet_scope, "prod") != 0)) {
+        vi_error(result, "WALLET_SCOPE_REQUIRED",
+                 "wallet_scope must explicitly be dev or prod");
         return true;
     }
     if (!vi_ready(ctx, result)) return true;
@@ -344,6 +380,28 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
     p.fee = wallet_default_fee(ctx->wallet);
     if (p.fee < 0 || target > INT64_MAX - p.fee) {
         vi_error(result, "FEE_INVALID", "wallet fee is invalid"); return true;
+    }
+    struct wallet_money_snapshot money;
+    struct zcl_result money_result = wallet_money_snapshot_build(
+        ctx->node_db, ctx->main_state, wallet_scope, &money);
+    if (!money_result.ok || !money.complete ||
+        strcmp(money.status, "CURRENT") != 0) {
+        vi_error(result, "MONEY_STATE_NOT_CURRENT",
+                 money_result.ok ? money.reason : money_result.message);
+        return true;
+    }
+    int64_t reservation = target + p.fee;
+    int64_t spendable_after_reservations =
+        money.confirmed_zat - money.intent_reserved_zat;
+    if (reservation > spendable_after_reservations ||
+        (strcmp(wallet_scope, "dev") == 0 &&
+         reservation > money.agent_available_zat)) {
+        vi_error(result,
+                 strcmp(wallet_scope, "dev") == 0
+                     ? "DEVELOPMENT_RESERVE_OR_LAB_CAP"
+                     : "INSUFFICIENT_CONFIRMED_FUNDS",
+                 "recipient value plus maximum fee exceeds current custody allocation");
+        return true;
     }
     struct coin_entry *avail = zcl_malloc(4096 * sizeof(*avail),
                                            "intent_available_coins");
@@ -382,13 +440,42 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
     row.updated_at = row.created_at;
     row.anchor_height = anchor->nHeight;
     memcpy(row.anchor_hash, anchor->hashBlock.data, 32);
-    vi_digest(plain, plen, row.anchor_height, row.anchor_hash, row.expires_at,
-              row.digest);
-    bool stored = wallet_metadata_encrypt(ctx->node_db, row.plan_id, 32,
+    snprintf(row.wallet_scope, sizeof(row.wallet_scope), "%s", wallet_scope);
+    snprintf(row.wallet_instance_id, sizeof(row.wallet_instance_id), "%s",
+             money.identity.wallet_instance_id);
+    wallet_identity_genesis_hex(&money.identity, row.wallet_genesis);
+    memcpy(row.snapshot_root, money.snapshot_root, 32);
+    row.has_snapshot_root = true;
+    row.recipient_value_zat = target;
+    row.max_fee_zat = p.fee;
+    row.reserved_zat = reservation;
+    vi_digest(plain, plen, &row, row.digest);
+    bool encrypted = wallet_metadata_encrypt(ctx->node_db, row.plan_id, 32,
         plain, plen, row.encrypted_payload, sizeof(row.encrypted_payload),
-        &row.encrypted_payload_len) && vault_intent_save(ctx->node_db, &row);
+        &row.encrypted_payload_len);
+    bool stored = encrypted && vault_intent_reserve(
+        ctx->node_db, &row, money.confirmed_zat);
+    if (stored) {
+        /* The canonical root includes reservations. Capture the state after
+         * this plan's atomic reservation, then bind the exact plan digest to
+         * that stable root. observed_at is freshness metadata, not root data. */
+        struct wallet_money_snapshot reserved_money;
+        struct zcl_result refreshed = wallet_money_snapshot_build(
+            ctx->node_db, ctx->main_state, wallet_scope, &reserved_money);
+        stored = refreshed.ok && reserved_money.complete &&
+            strcmp(reserved_money.status, "CURRENT") == 0;
+        if (stored) {
+            memcpy(row.snapshot_root, reserved_money.snapshot_root, 32);
+            vi_digest(plain, plen, &row, row.digest);
+            stored = vault_intent_save(ctx->node_db, &row);
+        }
+        if (!stored)
+            (void)vault_intent_set_state(ctx->node_db, row.plan_id,
+                VAULT_INTENT_FAILED, NULL, "SNAPSHOT_BIND_FAILED",
+                (int64_t)platform_time_wall_time_t());
+    }
     memory_cleanse(plain, sizeof(plain));
-    if (!stored) { vi_error(result, "PLAN_PERSIST_FAILED", "encrypted plan could not be persisted"); return true; }
+    if (!stored) { vi_error(result, "PLAN_PERSIST_FAILED", "encrypted plan could not be atomically reserved and snapshot-bound"); return true; }
     json_set_object(result); json_push_kv_bool(result, "ok", true);
     vi_render_row(ctx, result, &row);
     char digest[65], fee[32]; vi_hex(row.digest, digest); vi_amount_text(p.fee, fee);
@@ -413,9 +500,9 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
 static bool vi_anchor_ok(struct wallet_rpc_context *ctx,
                          const struct vault_intent_row *row)
 {
-    struct block_index *bi = active_chain_at(&ctx->main_state->chain_active,
-                                              row->anchor_height);
-    return bi && memcmp(bi->hashBlock.data, row->anchor_hash, 32) == 0;
+    struct block_index *bi = active_chain_tip(&ctx->main_state->chain_active);
+    return bi && bi->nHeight == row->anchor_height &&
+        memcmp(bi->hashBlock.data, row->anchor_hash, 32) == 0;
 }
 
 static bool vi_publish(struct wallet_rpc_context *ctx, const uint8_t id[32],
@@ -459,8 +546,7 @@ static bool vi_build_prepared(struct wallet_rpc_context *ctx,
         return false;
     }
     uint8_t digest[32];
-    vi_digest(plain, plen, row->anchor_height, row->anchor_hash,
-              row->expires_at, digest);
+    vi_digest(plain, plen, row, digest);
     struct vi_payload p;
     bool valid = memcmp(digest, row->digest, 32) == 0 && vi_decode(plain, plen, &p);
     memory_cleanse(plain, sizeof(plain));
@@ -522,12 +608,20 @@ static bool vi_build_prepared(struct wallet_rpc_context *ctx,
 static bool rpc_vi_commit(const struct json_value *params, bool help,
                           struct json_value *result)
 {
-    RPC_HELP(help, result, "vault_intent_commit {plan_id,confirm:true}\n");
+    RPC_HELP(help, result,
+             "vault_intent_commit {wallet_scope,plan_id,confirm:true}\n");
     const struct json_value *in = json_at(params, 0);
     const char *hex = in ? json_get_str(json_get(in, "plan_id")) : NULL;
+    const char *wallet_scope = in
+        ? json_get_str(json_get(in, "wallet_scope")) : NULL;
     uint8_t id[32];
-    if (!in || !json_get_bool_or(in, "confirm", false) || !vi_unhex(hex, id)) {
-        vi_error(result, "CONFIRM_REQUIRED", "plan_id and confirm:true are required"); return true;
+    if (!in || !wallet_scope ||
+        (strcmp(wallet_scope, "dev") != 0 &&
+         strcmp(wallet_scope, "prod") != 0) ||
+        !json_get_bool_or(in, "confirm", false) || !vi_unhex(hex, id)) {
+        vi_error(result, "CONFIRM_REQUIRED",
+                 "wallet_scope, plan_id, and confirm:true are required");
+        return true;
     }
     struct wallet_rpc_context *ctx = wallet_rpc_context_current();
     if (!vi_ready(ctx, result)) return true;
@@ -537,6 +631,12 @@ static bool rpc_vi_commit(const struct json_value *params, bool help,
     if (!vault_intent_find(ctx->node_db, id, &row)) {
         vi_error(result, "PLAN_NOT_FOUND", "no durable plan has that id"); return true;
     }
+    if (!row.wallet_scope[0] || strcmp(row.wallet_scope, wallet_scope) != 0) {
+        vi_error(result, row.wallet_scope[0] ? "WALLET_SCOPE_MISMATCH"
+                                            : "LEGACY_PLAN_UNBOUND",
+                 "the plan is not bound to the explicitly targeted wallet scope");
+        return true;
+    }
     if (row.state >= VAULT_INTENT_MEMPOOL_ACCEPTED &&
         row.state <= VAULT_INTENT_FINALIZED) {
         json_set_object(result); json_push_kv_bool(result, "ok", true);
@@ -544,6 +644,34 @@ static bool rpc_vi_commit(const struct json_value *params, bool help,
     }
     if (row.state == VAULT_INTENT_EXPIRED || row.expires_at <= now) {
         vi_error(result, "PLAN_EXPIRED", "the ten-minute plan lifetime elapsed"); return true;
+    }
+    struct wallet_money_snapshot money;
+    struct zcl_result money_result = wallet_money_snapshot_build(
+        ctx->node_db, ctx->main_state, wallet_scope, &money);
+    char genesis[65];
+    wallet_identity_genesis_hex(&money.identity, genesis);
+    if (!money_result.ok || !money.complete ||
+        strcmp(money.status, "CURRENT") != 0) {
+        vi_error(result, "MONEY_STATE_NOT_CURRENT",
+                 money_result.ok ? money.reason : money_result.message);
+        return true;
+    }
+    if (strcmp(row.wallet_instance_id,
+               money.identity.wallet_instance_id) != 0 ||
+        strcmp(row.wallet_genesis, genesis) != 0) {
+        (void)vault_intent_set_state(ctx->node_db, id,
+            VAULT_INTENT_CONFLICTED, NULL, "WALLET_IDENTITY_CHANGED", now);
+        vi_error(result, "WALLET_IDENTITY_CHANGED",
+                 "wallet instance or network no longer matches the plan");
+        return true;
+    }
+    if (!vi_anchor_ok(ctx, &row) ||
+        memcmp(row.snapshot_root, money.snapshot_root, 32) != 0) {
+        (void)vault_intent_set_state(ctx->node_db, id,
+            VAULT_INTENT_CONFLICTED, NULL, "MONEY_SNAPSHOT_CHANGED", now);
+        vi_error(result, "MONEY_SNAPSHOT_CHANGED",
+                 "tip, mempool, balance, or reservation state changed; create a fresh plan");
+        return true;
     }
     if (row.state == VAULT_INTENT_PROVING &&
         !vault_intent_has_raw(ctx->node_db, id)) {
@@ -568,11 +696,6 @@ static bool rpc_vi_commit(const struct json_value *params, bool help,
     }
     if (row.state != VAULT_INTENT_PLANNED && row.state != VAULT_INTENT_PROVING) {
         vi_error(result, "PLAN_NOT_COMMITTABLE", vault_intent_state_name(row.state)); return true;
-    }
-    if (!vi_anchor_ok(ctx, &row)) {
-        vault_intent_set_state(ctx->node_db, id, VAULT_INTENT_REORGED, NULL,
-                               "ANCHOR_REORGED", now);
-        vi_error(result, "ANCHOR_REORGED", "the plan chain anchor is no longer active"); return true;
     }
     uint8_t *raw = zcl_malloc(VAULT_INTENT_RAW_MAX, "intent_raw_tx");
     if (!raw) { vi_error(result, "OUT_OF_MEMORY", "raw transaction allocation failed"); return true; }

@@ -50,6 +50,7 @@
 #include "platform/time_compat.h"
 #include "rpc/server.h"
 #include "services/agent_spend_policy.h"
+#include "wallet/wallet.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,6 +70,7 @@ struct asp_fixture {
     struct db_service dbsvc;
     struct app_runtime_context runtime;
     struct rpc_table tbl;
+    struct wallet wallet;
     char dir[256];
 };
 
@@ -159,6 +161,27 @@ static int asp_open(struct asp_fixture *f, const char *tag)
         return 0;
     }
     seed_principal(&f->ndb, k_account);
+    struct wallet_identity_row wallet_identity;
+    const uint8_t genesis[32] = { 0x42 };
+    if (!wallet_identity_ensure(&f->ndb, genesis, "canonical", &wallet_identity)) {
+        node_db_close(&f->ndb);
+        test_rm_rf(f->dir);
+        return 0;
+    }
+    /* 0.30000000 ZCL confirmed fixture balance: spending up to the global
+     * 0.05000000 lab cap leaves the mandatory 0.25000000 reserve. */
+    if (sqlite3_exec(f->ndb.db,
+            "INSERT INTO wallet_utxos"
+            "(txid,vout,value,address_hash,script,height,is_coinbase) VALUES("
+            "x'0101010101010101010101010101010101010101010101010101010101010101',"
+            "0,30000000,x'0101010101010101010101010101010101010101',x'51',1,0)",
+            NULL, NULL, NULL) != SQLITE_OK) {
+        node_db_close(&f->ndb);
+        test_rm_rf(f->dir);
+        return 0;
+    }
+    wallet_init(&f->wallet);
+    f->wallet.default_fee = 0;
     db_service_init(&f->dbsvc);
     if (!db_service_attach(&f->dbsvc, &f->ndb) ||
         !db_service_start(&f->dbsvc)) {
@@ -168,6 +191,7 @@ static int asp_open(struct asp_fixture *f, const char *tag)
         return 0;
     }
     f->runtime.db_service = &f->dbsvc;
+    f->runtime.wallet = &f->wallet;
     /* app_runtime is what the NODE side of the RPC uses; the policy side never
      * touches it. Both halves live in this one process, which is exactly what
      * lets the hook stand in for the socket without faking the store. */
@@ -191,6 +215,7 @@ static void asp_close(struct asp_fixture *f)
     node_rpc_client_set_test_hook(NULL);
     g_fixture = NULL;
     app_runtime_set_current(NULL);
+    wallet_free(&f->wallet);
     db_service_stop(&f->dbsvc);
     node_db_close(&f->ndb);
     test_rm_rf(f->dir);
@@ -211,6 +236,13 @@ static void mk_session(struct db_agent_session *s, const char *sid,
     s->created_at = now;
     s->expires_at = 0;
     s->revoked = 0;
+    struct wallet_identity_row identity;
+    if (g_fixture && wallet_identity_find(&g_fixture->ndb, &identity)) {
+        snprintf(s->wallet_scope, sizeof(s->wallet_scope), "prod");
+        snprintf(s->wallet_instance_id, sizeof(s->wallet_instance_id), "%s",
+                 identity.wallet_instance_id);
+        wallet_identity_genesis_hex(&identity, s->wallet_genesis);
+    }
 }
 
 static const struct zcl_command_spec *spec_for(const char *path)
@@ -232,6 +264,7 @@ static void asp_input(struct json_value *in, const char *recipient_key,
         (void)json_push_kv_real(in, "amount", *amount);
     if (confirm)
         (void)json_push_kv_bool(in, "confirm", true);
+    (void)json_push_kv_str(in, "wallet_scope", "prod");
 }
 
 static int64_t spent_now(struct asp_fixture *f, const char *sid)
@@ -600,6 +633,7 @@ static int test_amount_shapes(void)
 
         json_init(&in);
         json_set_object(&in);
+        (void)json_push_kv_str(&in, "wallet_scope", "prod");
         (void)json_push_kv_str(&in, "address", k_recipient);
         (void)json_push_kv_int(&in, "amount", 1);
         agent_spend_policy_evaluate(k_sid_a, send, &in, true, &d);
@@ -609,6 +643,7 @@ static int test_amount_shapes(void)
 
         json_init(&in);
         json_set_object(&in);
+        (void)json_push_kv_str(&in, "wallet_scope", "prod");
         (void)json_push_kv_str(&in, "address", k_recipient);
         (void)json_push_kv_str(&in, "amount", "1.0");
         agent_spend_policy_evaluate(k_sid_a, send, &in, true, &d);
@@ -628,6 +663,7 @@ static int test_amount_shapes(void)
         for (size_t i = 0; i < sizeof(junk) / sizeof(junk[0]); i++) {
             json_init(&in);
             json_set_object(&in);
+            (void)json_push_kv_str(&in, "wallet_scope", "prod");
             (void)json_push_kv_str(&in, "address", k_recipient);
             (void)json_push_kv_str(&in, "amount", junk[i]);
             agent_spend_policy_evaluate(k_sid_a, send, &in, true, &d);
@@ -646,6 +682,7 @@ static int test_amount_shapes(void)
          * through: an unbounded spend is not a bounded one. */
         json_init(&in);
         json_set_object(&in);
+        (void)json_push_kv_str(&in, "wallet_scope", "prod");
         (void)json_push_kv_str(&in, "address", k_recipient);
         agent_spend_policy_evaluate(k_sid_a, send, &in, true, &d);
         json_free(&in);

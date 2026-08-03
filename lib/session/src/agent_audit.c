@@ -49,7 +49,10 @@ static void receipt_digest(const struct agent_receipt *r, uint8_t out[32])
 {
     struct sha3_256_ctx c;
     sha3_256_init(&c);
-    sha3_256_write(&c, (const unsigned char *)"zcl.agent_receipt.v2", 20);
+    const bool v3 = r->receipt_version >= 3;
+    sha3_256_write(&c, (const unsigned char *)(v3
+                       ? "zcl.agent_receipt.v3" : "zcl.agent_receipt.v2"),
+                   20);
     sha3_256_write(&c, r->prev, 32);
 
     uint8_t n[7][8];
@@ -75,6 +78,19 @@ static void receipt_digest(const struct agent_receipt *r, uint8_t out[32])
      * committed statement rather than an absent field. */
     sha3_256_write(&c, r->action_receipt_id, 32);
 
+    if (v3) {
+        uint8_t version[4], status_len[2];
+        zcl_write_u32_le(version, r->receipt_version);
+        size_t len = strnlen(r->money_snapshot_status,
+                             sizeof(r->money_snapshot_status) - 1);
+        zcl_write_u16_le(status_len, (uint16_t)len);
+        sha3_256_write(&c, version, sizeof(version));
+        sha3_256_write(&c, status_len, sizeof(status_len));
+        sha3_256_write(&c,
+                       (const unsigned char *)r->money_snapshot_status, len);
+        sha3_256_write(&c, r->money_snapshot_root, 32);
+    }
+
     const char *strs[3] = { r->principal, r->grant_id, r->detail };
     size_t caps[3] = { AGENT_PRINCIPAL_MAX, AGENT_GRANT_ID_MAX,
                        AGENT_RECEIPT_DETAIL_MAX };
@@ -93,23 +109,28 @@ static void receipt_digest(const struct agent_receipt *r, uint8_t out[32])
 static size_t receipt_render_line(const struct agent_receipt *r, char *out,
                                   size_t cap)
 {
-    char prev[65], id[65], sig[129], prop[65], action[65];
+    char prev[65], id[65], sig[129], prop[65], action[65], money_root[65];
     zcl_hex_encode(r->prev, 32, prev);
     zcl_hex_encode(r->id, 32, id);
     zcl_hex_encode(r->sig, 64, sig);
     zcl_hex_encode(r->property_id, MVAP_PROPERTY_ID_LEN, prop);
     zcl_hex_encode(r->action_receipt_id, 32, action);
+    zcl_hex_encode(r->money_snapshot_root, 32, money_root);
 
     int n = snprintf(out, cap,
-        "{\"seq\":%llu,\"unix_ms\":%lld,\"prev\":\"%s\",\"id\":\"%s\","
+        "{\"receipt_version\":%u,\"seq\":%llu,\"unix_ms\":%lld,"
+        "\"prev\":\"%s\",\"id\":\"%s\","
         "\"sig\":\"%s\",\"verb\":\"%s\",\"request_id\":%u,\"status\":\"%s\","
         "\"status_code\":%d,\"value_zats\":%llu,\"property_id\":\"%s\","
-        "\"action_receipt_id\":\"%s\","
+        "\"action_receipt_id\":\"%s\",\"money_snapshot_status\":\"%s\","
+        "\"money_snapshot_root\":\"%s\","
         "\"principal\":\"%s\",\"grant_id\":\"%s\",\"peer_pid\":%d,"
         "\"peer_uid\":%u,\"peer_gid\":%u,\"detail\":\"%s\"}\n",
-        (unsigned long long)r->seq, (long long)r->unix_ms, prev, id, sig,
+        r->receipt_version, (unsigned long long)r->seq,
+        (long long)r->unix_ms, prev, id, sig,
         mvap_verb_name(r->verb), r->request_id, mvap_status_name(r->status),
         r->status, (unsigned long long)r->value_zats, prop, action,
+        r->money_snapshot_status, money_root,
         r->principal, r->grant_id, (int)r->peer.pid,
         (unsigned)r->peer.uid, (unsigned)r->peer.gid, r->detail);
     if (n < 0 || (size_t)n >= cap)
@@ -131,6 +152,10 @@ static bool receipt_parse_line(const char *line, size_t len,
     struct agent_receipt r = { 0 };
     bool ok = true;
 
+    const struct json_value *version = json_get(&v, "receipt_version");
+    r.receipt_version = version ? (uint32_t)json_get_int(version) : 2;
+    if (r.receipt_version != 2 && r.receipt_version != 3)
+        ok = false;
     r.seq        = (uint64_t)json_get_int(json_get(&v, "seq"));
     r.unix_ms    = json_get_int(json_get(&v, "unix_ms"));
     r.request_id = (uint32_t)json_get_int(json_get(&v, "request_id"));
@@ -162,6 +187,17 @@ static bool receipt_parse_line(const char *line, size_t len,
     if (!(s = json_get_str(json_get(&v, "action_receipt_id"))) ||
         !zcl_hex_decode(s, r.action_receipt_id, 32))
         ok = false;
+    if (r.receipt_version >= 3) {
+        s = json_get_str(json_get(&v, "money_snapshot_status"));
+        if (!s || !s[0] || strlen(s) >= sizeof(r.money_snapshot_status))
+            ok = false;
+        else
+            snprintf(r.money_snapshot_status,
+                     sizeof(r.money_snapshot_status), "%s", s);
+        if (!(s = json_get_str(json_get(&v, "money_snapshot_root"))) ||
+            !zcl_hex_decode(s, r.money_snapshot_root, 32))
+            ok = false;
+    }
 
     if ((s = json_get_str(json_get(&v, "principal"))))
         snprintf(r.principal, sizeof(r.principal), "%s", s);
@@ -286,6 +322,12 @@ bool agent_audit_append(struct agent_audit_log *log, struct agent_receipt *r)
     if (!log->open)
         LOG_FAIL(AUDIT_TAG, "audit log %s is not open", log->log_path);
 
+    if (r->receipt_version == 0) {
+        r->receipt_version = 3;
+        if (!r->money_snapshot_status[0])
+            snprintf(r->money_snapshot_status,
+                     sizeof(r->money_snapshot_status), "UNKNOWN");
+    }
     r->seq     = log->seq + 1;
     r->unix_ms = clock_now_wall_ms();
     memcpy(r->prev, log->head, 32);
@@ -410,7 +452,6 @@ size_t agent_audit_render_json(const char *dir, size_t max, char *out,
     struct json_value doc;
     json_init(&doc);
     json_set_object(&doc);
-    (void)json_push_kv_str(&doc, "dir", dir);
     (void)json_push_kv_bool(&doc, "readable", verified);
     if (verified) {
         char head[65];

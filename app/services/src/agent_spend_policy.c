@@ -297,12 +297,25 @@ void agent_spend_policy_evaluate(const char *session_id,
     if (s->recipient_key)
         recipient = json_get_str(json_get(input, s->recipient_key));
 
+    const char *wallet_scope = json_get_str(json_get(input, "wallet_scope"));
+    if (!wallet_scope || (strcmp(wallet_scope, "dev") != 0 &&
+                          strcmp(wallet_scope, "prod") != 0)) {
+        asp_refuse(out, "POLICY_WALLET_SCOPE",
+                   "every agent spend must explicitly name wallet_scope as "
+                   "dev or prod; no CLI default may select custody",
+                   spec->path);
+        return;
+    }
+
     /* One round trip that both checks and (when committing) debits — the node
      * owns the store and performs those as a single indivisible step, so there
      * is no window between them for a second invocation to slip through. */
     char why[64] = { 0 };
+    int64_t charged_zat = 0;
     if (!agent_session_client_authorize(session_id, amount_zat, recipient,
-                                        committing, &out->window_remaining_zat,
+                                        wallet_scope, committing,
+                                        &out->window_remaining_zat,
+                                        &charged_zat,
                                         why, sizeof(why))) {
         asp_refuse(out, why[0] ? why : "POLICY_STORE",
                    committing ? "the session's spend policy refused this spend"
@@ -310,7 +323,7 @@ void agent_spend_policy_evaluate(const char *session_id,
                    spec->path);
         return;
     }
-    out->debited_zat = committing ? amount_zat : 0;
+    out->debited_zat = committing ? charged_zat : 0;
     asp_allow(out);
 }
 

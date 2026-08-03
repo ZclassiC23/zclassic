@@ -525,4 +525,8 @@ bool boot_node_db_open_failed_gate(const char *datadir);
  * No-op unless enabled; warns and does nothing without -regtest. */
 void boot_apply_regtest_shielded(bool enabled, bool regtest);
 
+bool boot_wallet_identity_ensure(struct node_db *ndb,
+                                 const uint8_t network_genesis[32],
+                                 const char *operator_lane);
+
 #endif

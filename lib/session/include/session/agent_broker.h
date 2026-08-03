@@ -60,6 +60,18 @@
 #define AGENT_PRINCIPAL_MAX     64
 #define AGENT_GRANT_MAX_PROPS   8
 #define AGENT_ALLOWLIST_MAX     192
+#define AGENT_MONEY_BINDINGS_MAX 2
+#define AGENT_MONEY_ENDPOINT_MAX 480
+
+/* Owner-created custody binding. Endpoint/datadir are broker-private and are
+ * never rendered by metaverse status/money/audit. */
+struct agent_money_binding {
+    char wallet_scope[5];
+    char wallet_instance_id[33];
+    char network_genesis[65];
+    char node_datadir[AGENT_MONEY_ENDPOINT_MAX];
+    int rpc_port;
+};
 
 /* One capability grant.
  *
@@ -206,6 +218,7 @@ bool agent_broker_peer_authorized(const struct agent_peer_cred *c,
  * All-zero `action_receipt_id` means the operation minted no canonical
  * receipt — a query, or a refusal that never reached COMMIT. */
 struct agent_receipt {
+    uint32_t receipt_version;     /* 2 legacy; 3 commits custody snapshot   */
     uint64_t seq;                 /* 1-based; monotonic per log             */
     int64_t  unix_ms;
     uint8_t  prev[32];            /* previous receipt id; zeroes for seq 1  */
@@ -218,6 +231,8 @@ struct agent_receipt {
     uint64_t value_zats;
     uint8_t  property_id[MVAP_PROPERTY_ID_LEN];
     uint8_t  action_receipt_id[32];  /* canonical metaverse receipt chain hash */
+    char     money_snapshot_status[16]; /* CURRENT/UNKNOWN/STALE/CONFLICTED */
+    uint8_t  money_snapshot_root[32];   /* zero iff status is not CURRENT    */
 
     char     principal[AGENT_PRINCIPAL_MAX + 1];
     char     grant_id[AGENT_GRANT_ID_MAX + 1];
@@ -453,6 +468,12 @@ struct agent_broker_provider {
      * decision. */
     bool (*status)(void *ctx, const struct agent_authority_ref *ref,
                    struct agent_authority_status *out);
+
+    /* Optional owner-created custody bindings. These are configuration, not
+     * authority: returning them does not permit a spend. The broker persists
+     * them in a mode-0600 private file outside the confined child's grants. */
+    bool (*money_bindings)(void *ctx, struct agent_money_binding *out,
+                           size_t max, size_t *count);
 
     /* The property surface the grant acts on. */
     struct agent_broker_node_ops (*ops)(void *ctx);

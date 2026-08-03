@@ -100,10 +100,12 @@ bool agent_session_client_mint(const char *account, int64_t max_per_tx_zat,
                                int64_t window_seconds,
                                const char *recipient_allowlist,
                                int64_t expires_in_seconds,
+                               const char *wallet_scope,
                                char out_session_id[AGENT_SESSION_ID_MAX + 1],
                                char *why, size_t why_cap)
 {
-    if (!account || !account[0] || !out_session_id) {
+    if (!account || !account[0] || !wallet_scope || !wallet_scope[0] ||
+        !out_session_id) {
         asc_why(why, why_cap, "BAD_ARGS");
         LOG_FAIL(ASC_TAG, "mint: bad args");
     }
@@ -119,6 +121,7 @@ bool agent_session_client_mint(const char *account, int64_t max_per_tx_zat,
     (void)json_push_kv_int(&req, "expires_in_seconds", expires_in_seconds);
     (void)json_push_kv_str(&req, "recipient_allowlist",
                            recipient_allowlist ? recipient_allowlist : "");
+    (void)json_push_kv_str(&req, "wallet_scope", wallet_scope);
     char body[1280];
     size_t bn = json_write(&req, body, sizeof(body));
     json_free(&req);
@@ -184,6 +187,9 @@ int agent_session_client_list(const char *account,
             const char *sid = json_get_str(json_get(o, "session_id"));
             const char *acct = json_get_str(json_get(o, "account"));
             const char *allow = json_get_str(json_get(o, "recipient_allowlist"));
+            const char *scope = json_get_str(json_get(o, "wallet_scope"));
+            const char *wid = json_get_str(json_get(o, "wallet_instance_id"));
+            const char *genesis = json_get_str(json_get(o, "wallet_genesis"));
             (void)snprintf(r->session_id, sizeof(r->session_id), "%s",
                            sid ? sid : "");
             (void)snprintf(r->account, sizeof(r->account), "%s",
@@ -191,6 +197,12 @@ int agent_session_client_list(const char *account,
             (void)snprintf(r->recipient_allowlist,
                            sizeof(r->recipient_allowlist), "%s",
                            allow ? allow : "");
+            (void)snprintf(r->wallet_scope, sizeof(r->wallet_scope), "%s",
+                           scope ? scope : "");
+            (void)snprintf(r->wallet_instance_id,
+                           sizeof(r->wallet_instance_id), "%s", wid ? wid : "");
+            (void)snprintf(r->wallet_genesis, sizeof(r->wallet_genesis), "%s",
+                           genesis ? genesis : "");
             r->max_per_tx_zat = json_get_int(json_get(o, "max_per_tx_zat"));
             r->max_per_window_zat =
                 json_get_int(json_get(o, "max_per_window_zat"));
@@ -202,6 +214,8 @@ int agent_session_client_list(const char *account,
             r->created_at = json_get_int(json_get(o, "created_at"));
             r->expires_at = json_get_int(json_get(o, "expires_at"));
             r->revoked = (int)json_get_int(json_get(o, "revoked"));
+            r->lifetime_spent_zat =
+                json_get_int(json_get(o, "lifetime_spent_zat"));
             used++;
         }
     }
@@ -236,13 +250,18 @@ bool agent_session_client_revoke(const char *session_id, char *why,
 }
 
 bool agent_session_client_authorize(const char *session_id, int64_t amount_zat,
-                                    const char *recipient, bool commit,
+                                    const char *recipient,
+                                    const char *wallet_scope, bool commit,
                                     int64_t *window_remaining_zat,
+                                    int64_t *charged_zat,
                                     char *why, size_t why_cap)
 {
     if (window_remaining_zat)
         *window_remaining_zat = 0;
-    if (!session_id || !session_id[0] || amount_zat < 0) {
+    if (charged_zat)
+        *charged_zat = 0;
+    if (!session_id || !session_id[0] || !wallet_scope ||
+        !wallet_scope[0] || amount_zat < 0) {
         asc_why(why, why_cap, "BAD_ARGS");
         LOG_FAIL(ASC_TAG, "authorize: bad args");
     }
@@ -252,6 +271,7 @@ bool agent_session_client_authorize(const char *session_id, int64_t amount_zat,
     (void)json_push_kv_str(&req, "session_id", session_id);
     (void)json_push_kv_int(&req, "amount_zat", amount_zat);
     (void)json_push_kv_bool(&req, "commit", commit);
+    (void)json_push_kv_str(&req, "wallet_scope", wallet_scope);
     if (recipient && recipient[0])
         (void)json_push_kv_str(&req, "recipient", recipient);
     char body[1280];
@@ -268,6 +288,8 @@ bool agent_session_client_authorize(const char *session_id, int64_t amount_zat,
     if (window_remaining_zat)
         *window_remaining_zat =
             json_get_int(json_get(&ans, "window_remaining_zat"));
+    if (charged_zat)
+        *charged_zat = json_get_int(json_get(&ans, "charged_zat"));
     json_free(&ans);
     return true;
 }

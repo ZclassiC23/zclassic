@@ -34,6 +34,7 @@ struct agent_session_mint_request {
     int64_t window_seconds;                        /* > 0 */
     char recipient_allowlist[AGENT_SESSION_ALLOWLIST_MAX + 1]; /* "" = any */
     int64_t expires_in_seconds;                    /* 0 = never */
+    char wallet_scope[5];                          /* required dev|prod */
 };
 
 /* Refusal tokens written to `why` (handlers map them onto named errors;
@@ -84,7 +85,8 @@ bool agent_session_service_revoke(const char *session_id,
  * prevent. Returns AGENT_SESSION_AUTHZ_STORE when node_db is unavailable. */
 enum agent_session_authz agent_session_service_authorize(
     const char *session_id, int64_t amount_zat, const char *recipient,
-    bool commit, int64_t *window_remaining_zat);
+    const char *wallet_scope, bool commit,
+    int64_t *window_remaining_zat, int64_t *charged_zat);
 
 /* Credit a debit back (the spend it paid for never happened). Node-side, same
  * runtime-node_db constraint as authorize. */

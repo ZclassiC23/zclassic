@@ -33,6 +33,7 @@
 
 #include "base/log_macros.h"
 #include "base/result.h"
+#include "base/hex.h"
 #include "json/json.h"
 #include "metaverse/property_grant.h"
 #include "metaverse/property_id.h"
@@ -65,7 +66,7 @@ static bool show_one(const char *datadir, enum metaverse_kind kind,
     if (!r.ok) {
         if (why && why_cap)
             snprintf(why, why_cap, "%s", r.message);
-        return false;
+        return false; /* raw-return-ok:caller receives the named open error */
     }
     return true;
 }
@@ -201,7 +202,7 @@ static bool spec_slurp(const char *path, char *buf, size_t cap, size_t *out_len,
     FILE *f = fopen(path, "re");
     if (!f) {
         snprintf(why, why_cap, "cannot open the grant specification %s", path);
-        return false;
+        LOG_FAIL(BS_LOG, "%s", why);
     }
     size_t got = fread(buf, 1, cap - 1, f);
     bool overflowed = !feof(f);
@@ -211,7 +212,7 @@ static bool spec_slurp(const char *path, char *buf, size_t cap, size_t *out_len,
                  "the grant specification %s is larger than %u bytes; refusing "
                  "to mint an authority from a truncated document",
                  path, (unsigned)BROKER_SPEC_MAX);
-        return false;
+        LOG_FAIL(BS_LOG, "%s", why);
     }
     buf[got] = '\0';
     *out_len = got;
@@ -273,6 +274,97 @@ static bool spec_scope(const struct json_value *doc, struct metaverse_grant *g,
         }
     }
     g->id_count = n;
+    return true;
+}
+
+static bool spec_hex(const char *s, size_t n)
+{
+    if (!s || strlen(s) != n)
+        return false; /* raw-return-ok:closed input predicate */
+    uint8_t decoded[32];
+    return n <= sizeof(decoded) * 2 && zcl_hex_decode(s, decoded, n / 2);
+}
+
+bool broker_provider_money_from_spec(
+    const char *path, struct agent_money_binding *out, size_t max,
+    size_t *count, char *why, size_t why_cap)
+{
+    if (!path || !out || max == 0 || !count || !why || why_cap == 0)
+        LOG_FAIL(BS_LOG, "money grant spec: null argument");
+    *count = 0;
+    char raw[BROKER_SPEC_MAX];
+    size_t len = 0;
+    if (!spec_slurp(path, raw, sizeof(raw), &len, why, why_cap)) {
+        LOG_WARN(BS_LOG, "custody grant specification read failed: %s", why);
+        return false;
+    }
+    struct json_value doc;
+    json_init(&doc);
+    if (!json_read(&doc, raw, len)) {
+        json_free(&doc);
+        (void)snprintf(why, why_cap, "grant specification is not valid JSON");
+        return false;
+    }
+    const struct json_value *wallets = json_get(&doc, "wallets");
+    size_t n = wallets ? json_size(wallets) : 0;
+    /* Old property-only grants remain valid and explicitly have no custody
+     * binding; every money snapshot then reports UNKNOWN rather than zero. */
+    if (!wallets) {
+        json_free(&doc);
+        return true;
+    }
+    if (wallets->type != JSON_ARR || n == 0 || n > max) {
+        json_free(&doc);
+        (void)snprintf(why, why_cap,
+                       "grant must contain 1..%zu custody wallet bindings", max);
+        return false;
+    }
+    memset(out, 0, max * sizeof(*out));
+    bool ok = true;
+    for (size_t i = 0; i < n && ok; i++) {
+        const struct json_value *w = json_at(wallets, i);
+        const char *scope = w ? json_get_str(json_get(w, "scope")) : NULL;
+        const char *wid = w ? json_get_str(json_get(w, "wallet_instance_id")) : NULL;
+        const char *gen = w ? json_get_str(json_get(w, "network_genesis")) : NULL;
+        const char *datadir = w ? json_get_str(json_get(w, "node_datadir")) : NULL;
+        int64_t port = w ? json_get_int(json_get(w, "rpc_port")) : 0;
+        if (!w || w->type != JSON_OBJ ||
+            (!scope || (strcmp(scope, "dev") != 0 &&
+                        strcmp(scope, "prod") != 0)) ||
+            !spec_hex(wid, 32) || !spec_hex(gen, 64) ||
+            !datadir || datadir[0] != '/' ||
+            strnlen(datadir, AGENT_MONEY_ENDPOINT_MAX) >=
+                AGENT_MONEY_ENDPOINT_MAX || port <= 0 || port > 65535) {
+            (void)snprintf(why, why_cap,
+                           "wallets[%zu] needs scope dev|prod, expected id/"
+                           "genesis, absolute node_datadir, and rpc_port", i);
+            ok = false;
+            break;
+        }
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(out[j].wallet_scope, scope) == 0) {
+                (void)snprintf(why, why_cap,
+                               "wallet scope %s appears more than once", scope);
+                ok = false;
+                break;
+            }
+        }
+        if (!ok)
+            break;
+        (void)snprintf(out[i].wallet_scope, sizeof(out[i].wallet_scope),
+                       "%s", scope);
+        (void)snprintf(out[i].wallet_instance_id,
+                       sizeof(out[i].wallet_instance_id), "%s", wid);
+        (void)snprintf(out[i].network_genesis,
+                       sizeof(out[i].network_genesis), "%s", gen);
+        (void)snprintf(out[i].node_datadir, sizeof(out[i].node_datadir),
+                       "%s", datadir);
+        out[i].rpc_port = (int)port;
+    }
+    json_free(&doc);
+    if (!ok)
+        return false;
+    *count = n;
     return true;
 }
 

@@ -114,6 +114,13 @@ static int vsf_open(struct vsf_fixture *f, const char *tag)
         return 0;
     }
     vsf_seed_principal(&f->ndb, k_account);
+    struct wallet_identity_row identity;
+    const uint8_t genesis[32] = { 0x42 };
+    if (!wallet_identity_ensure(&f->ndb, genesis, "dev", &identity)) {
+        node_db_close(&f->ndb);
+        test_rm_rf(f->dir);
+        return 0;
+    }
     db_service_init(&f->dbsvc);
     if (!db_service_attach(&f->dbsvc, &f->ndb) ||
         !db_service_start(&f->dbsvc)) {
@@ -161,6 +168,7 @@ static struct agent_session_mint_request vsf_mint_req(const char *account)
     snprintf(r.recipient_allowlist, sizeof(r.recipient_allowlist), "%s",
              "t1AllowedA0000000000000000");
     r.expires_in_seconds = 604800;
+    snprintf(r.wallet_scope, sizeof(r.wallet_scope), "dev");
     return r;
 }
 
@@ -339,6 +347,7 @@ static struct json_value vsf_create_input(bool confirm)
     vsf_push_str(&input, "max_per_tx", "1.5");
     vsf_push_str(&input, "max_per_window", "10");
     vsf_push_str(&input, "window_seconds", "3600");
+    vsf_push_str(&input, "wallet_scope", "dev");
     vsf_push_str(&input, "allowlist", "t1AllowedA0000000000000000");
     if (confirm) {
         struct json_value c;

@@ -38,6 +38,8 @@ struct broker_provider_ctx {
     char principal[METAVERSE_PRINCIPAL_MAX + 1];
     char source[32];                 /* "grant-id" | "grant-spec" | ""      */
     char refusal[192];
+    struct agent_money_binding money[AGENT_MONEY_BINDINGS_MAX];
+    size_t money_count;
     bool composed;
     bool bound;
 };
@@ -52,5 +54,9 @@ struct agent_broker_node_ops broker_provider_ops(void *ctx);
 bool broker_provider_mint_from_spec(const char *path, char *out_id,
                                     size_t out_id_cap, char *why,
                                     size_t why_cap);
+
+bool broker_provider_money_from_spec(
+    const char *path, struct agent_money_binding *out, size_t max,
+    size_t *count, char *why, size_t why_cap);
 
 #endif /* ZCL_SERVICES_AGENT_BROKER_PROVIDER_INTERNAL_H */

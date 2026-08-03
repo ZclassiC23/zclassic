@@ -179,6 +179,19 @@ void zcl_native_handle_vault_session_create(
     struct agent_session_mint_request mreq;
     memset(&mreq, 0, sizeof(mreq));
 
+    const char *wallet_scope = vs_str(request, "wallet_scope");
+    if (!wallet_scope || (strcmp(wallet_scope, "dev") != 0 &&
+                          strcmp(wallet_scope, "prod") != 0)) {
+        vs_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "BAD_WALLET_SCOPE", "normalize", false,
+                "wallet_scope is required and must be exactly dev or prod; "
+                "the wallet is never inferred from CLI defaults",
+                "wallet_scope");
+        return;
+    }
+    (void)snprintf(mreq.wallet_scope, sizeof(mreq.wallet_scope), "%s",
+                   wallet_scope);
+
     const char *account = vs_str(request, "account");
     if (!account) {
         vs_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
@@ -256,6 +269,7 @@ void zcl_native_handle_vault_session_create(
         json_init(&ci);
         json_set_object(&ci);
         (void)json_push_kv_str(&ci, "account", account);
+        (void)json_push_kv_str(&ci, "wallet_scope", wallet_scope);
         char amt[32];
         (void)snprintf(amt, sizeof(amt), "%.8f",
                        (double)mreq.max_per_tx_zat / 1.0e8);
@@ -275,6 +289,7 @@ void zcl_native_handle_vault_session_create(
         }
 
         (void)json_push_kv_str(&reply->data, "account", account);
+        (void)json_push_kv_str(&reply->data, "wallet_scope", wallet_scope);
         (void)json_push_kv_int(&reply->data, "max_per_tx_zat",
                                mreq.max_per_tx_zat);
         (void)json_push_kv_int(&reply->data, "max_per_window_zat",
@@ -299,7 +314,8 @@ void zcl_native_handle_vault_session_create(
                                    mreq.max_per_window_zat,
                                    mreq.window_seconds,
                                    mreq.recipient_allowlist,
-                                   mreq.expires_in_seconds, sid, why,
+                                   mreq.expires_in_seconds, wallet_scope,
+                                   sid, why,
                                    sizeof(why))) {
         vs_fail_service(reply, why, "the session grant could not be minted",
                         account);
@@ -310,6 +326,7 @@ void zcl_native_handle_vault_session_create(
     (void)json_push_kv_bool(&reply->data, "committed", true);
     (void)json_push_kv_str(&reply->data, "session_id", sid);
     (void)json_push_kv_str(&reply->data, "account", account);
+    (void)json_push_kv_str(&reply->data, "wallet_scope", wallet_scope);
     (void)json_push_kv_int(&reply->data, "max_per_tx_zat", mreq.max_per_tx_zat);
     (void)json_push_kv_int(&reply->data, "max_per_window_zat",
                            mreq.max_per_window_zat);
@@ -388,6 +405,14 @@ void zcl_native_handle_vault_session_list(
         (void)json_push_kv_int(&o, "created_at", rows[i].created_at);
         (void)json_push_kv_int(&o, "expires_at", rows[i].expires_at);
         (void)json_push_kv_bool(&o, "revoked", rows[i].revoked != 0);
+        (void)json_push_kv_str(&o, "wallet_scope", rows[i].wallet_scope);
+        (void)json_push_kv_str(&o, "wallet_instance_id",
+                               rows[i].wallet_instance_id);
+        (void)json_push_kv_str(&o, "wallet_genesis", rows[i].wallet_genesis);
+        (void)json_push_kv_bool(&o, "wallet_bound",
+                                rows[i].wallet_instance_id[0] != '\0');
+        (void)json_push_kv_int(&o, "lifetime_spent_zat",
+                               rows[i].lifetime_spent_zat);
         (void)json_push_back(&sessions, &o);
         json_free(&o);
     }

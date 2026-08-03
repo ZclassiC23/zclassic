@@ -6,6 +6,7 @@
 #include "controllers/vault_intent_controller.h"
 #include "models/database.h"
 #include "models/vault_intent.h"
+#include "models/wallet_identity.h"
 #include "models/wallet_metadata_crypto.h"
 #include "wallet/wallet_lock.h"
 
@@ -25,6 +26,34 @@ static bool ti_db_contains(struct node_db *ndb, const char *needle)
     }
     if (s) sqlite3_finalize(s);
     return found;
+}
+
+static void ti_bound_row(struct vault_intent_row *row, uint8_t tag,
+                         const struct wallet_identity_row *identity,
+                         int64_t reserved_zat)
+{
+    memset(row, 0, sizeof(*row));
+    memset(row->plan_id, tag, 32);
+    memset(row->digest, tag + 1, 32);
+    memset(row->anchor_hash, tag + 2, 32);
+    memset(row->encrypted_payload, tag + 3, 32);
+    row->encrypted_payload_len = 32;
+    row->state = VAULT_INTENT_PLANNED;
+    row->route = VAULT_INTENT_ROUTE_TRANSPARENT;
+    row->created_at = 100;
+    row->expires_at = 700;
+    row->updated_at = 100;
+    row->anchor_height = 42;
+    row->confirm_height = -1;
+    snprintf(row->wallet_scope, sizeof(row->wallet_scope), "dev");
+    snprintf(row->wallet_instance_id, sizeof(row->wallet_instance_id), "%s",
+             identity->wallet_instance_id);
+    wallet_identity_genesis_hex(identity, row->wallet_genesis);
+    memset(row->snapshot_root, tag + 4, 32);
+    row->has_snapshot_root = true;
+    row->recipient_value_zat = reserved_zat;
+    row->max_fee_zat = 0;
+    row->reserved_zat = reserved_zat;
 }
 
 int test_transaction_intent(void)
@@ -131,6 +160,49 @@ int test_transaction_intent(void)
         ASSERT(strcmp(got.error_code, "PLAN_EXPIRED") == 0);
         struct vault_intent_row rows[4];
         ASSERT_EQ(vault_intent_list(&ndb, rows, 4), 2);
+        PASS();
+    }
+
+    TEST("wallet identity persists, rejects lane/network changes, and dev "
+         "reservations atomically enforce the reserve and lab ceiling") {
+        if (ndb.open) node_db_close(&ndb);
+        char dir[256], path[320];
+        test_make_tmpdir(dir, sizeof(dir), "transaction_intent", "custody");
+        snprintf(path, sizeof(path), "%s/node.db", dir);
+        ASSERT(node_db_open(&ndb, path));
+        const uint8_t genesis[32] = { 0x42 };
+        struct wallet_identity_row identity;
+        ASSERT(wallet_identity_ensure(&ndb, genesis, "dev", &identity));
+        char instance_id[WALLET_INSTANCE_ID_HEX_LEN + 1];
+        snprintf(instance_id, sizeof(instance_id), "%s",
+                 identity.wallet_instance_id);
+        node_db_close(&ndb);
+        ASSERT(node_db_open(&ndb, path));
+        struct wallet_identity_row restarted;
+        ASSERT(wallet_identity_ensure(&ndb, genesis, "dev", &restarted));
+        ASSERT_STR_EQ(restarted.wallet_instance_id, instance_id);
+        uint8_t wrong_genesis[32] = { 0x43 };
+        ASSERT(!wallet_identity_ensure(&ndb, wrong_genesis, "dev",
+                                       &restarted));
+        ASSERT(!wallet_identity_ensure(&ndb, genesis, "canonical",
+                                       &restarted));
+
+        struct vault_intent_row a, b, over;
+        ti_bound_row(&a, 0x11, &identity, 3000000);
+        ti_bound_row(&b, 0x21, &identity, 2000000);
+        ti_bound_row(&over, 0x31, &identity, 1);
+        ASSERT(vault_intent_reserve(&ndb, &a, 30000000));
+        ASSERT(vault_intent_reserve(&ndb, &b, 30000000));
+        ASSERT_EQ(vault_intent_reserved_total(
+                      &ndb, "dev", identity.wallet_instance_id), 5000000);
+        ASSERT(!vault_intent_reserve(&ndb, &over, 30000000));
+        ASSERT(vault_intent_set_state(&ndb, a.plan_id, VAULT_INTENT_FAILED,
+                                      NULL, "LAB_ROLLBACK", 200));
+        ASSERT(vault_intent_reserve(&ndb, &over, 30000000));
+        ASSERT_EQ(vault_intent_reserved_total(
+                      &ndb, "dev", identity.wallet_instance_id), 2000001);
+        node_db_close(&ndb);
+        test_rm_rf(dir);
         PASS();
     }
 
