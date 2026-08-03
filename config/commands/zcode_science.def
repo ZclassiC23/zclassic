@@ -343,3 +343,32 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_DETERMINISTIC,
     zcl_native_handle_zcode_science_rank_snapshot)
+
+/* Acceptance-proof glue (2026-08-03, additive): the operator surface for
+ * zcode_science_rebuild — drop the six SQL projection tables and re-derive
+ * them from the workspace CAS. Previously reachable only from tests; the
+ * two-node acceptance proof (tools/dev/science_acceptance.sh) drives it to
+ * demonstrate the projection is disposable and the CAS is the truth. */
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.science.rebuild", "zcode.science", "",
+    "Rebuild the science projection from the CAS",
+    "Drops the six rebuildable science projection tables (studies, results, "
+    "reproductions, findings, votes, reviews — never the plan ledger) and "
+    "re-derives every row from the addressed wires under the workspace CAS "
+    "(.zvcs/objects). Rebuild-equivalence: the projection after rebuild is "
+    "identical to the projection before the drop; the CAS wires are the "
+    "only truth. The reply reports the re-projected row counts per table.",
+    0,
+    "zcode,science,rebuild,projection,cas",
+    "zcl.zcode_science_rebuild.input.v1",
+    "zcl.zcode_science_rebuild.v1",
+    "now_unix,datadir,workspace", "",
+    "zclassic23 zcode.science.rebuild --input='{\"now_unix\":1500}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_science_rebuild)

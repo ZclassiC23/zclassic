@@ -1025,6 +1025,26 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             /* Civil day number (unix/86400) — the deterministic window
              * pin every zcode reward/badge/seed/fetch surface takes. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "now_unix") == 0) {
+            /* The deterministic submission-window pin every zcode.science
+             * leaf declares (plan/commit/execute/review/vote/discover/
+             * rebuild). Same shape as `day`: without this rule the default
+             * branch demanded a string, which the handlers' json_get_int
+             * then read as 0, refusing every timed invocation with a
+             * window-closed error that named the wrong cause. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "challenge_block_height") == 0 ||
+                   strcmp(key, "action_sequence") == 0 ||
+                   strcmp(key, "result_sequence") == 0 ||
+                   strcmp(key, "reproduction_sequence") == 0 ||
+                   strcmp(key, "max") == 0) {
+            /* zcode.science int pins the same bug class as now_unix: the
+             * handlers read them with json_get_int, so the default string
+             * branch made every science leaf that takes one uninvokable
+             * from the shell. All are positive in every handler (height
+             * and sequences must be nonzero; max is a render cap the
+             * handler clamps to its own bound). */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1;
         } else if (strcmp(key, "min-height") == 0) {
             /* net census height floor: a non-negative advertised height. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;

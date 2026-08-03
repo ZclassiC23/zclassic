@@ -391,6 +391,12 @@ void zcl_native_handle_zcode_science_discover(
 void zcl_native_handle_zcode_science_rank_snapshot(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* Acceptance-proof glue: operator surface for zcode_science_rebuild (the
+ * CAS-authoritative projection rebuild previously reachable only from
+ * tests). Handler lives in native_zcode_science_command.c. */
+void zcl_native_handle_zcode_science_rebuild(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_yardsale_seller_arm(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

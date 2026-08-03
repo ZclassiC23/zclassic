@@ -642,3 +642,37 @@ void zcl_native_handle_zcode_science_vote_submit(
         zsci_push_plan(&reply->data, &plan, "zcode.science.vote.submit");
     }
 }
+
+void zcl_native_handle_zcode_science_rebuild(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    struct node_db ndb = {0};
+    if (!zsci_open_db(zsci_datadir(request->input), &ndb)) {
+        zsci_fail_service(reply, "DATABASE_OPEN_FAILED",
+                          "the science projection could not be opened",
+                          "zcode.science.rebuild");
+        return;
+    }
+    char ws[ZSCI_PATH_MAX];
+    const char *workspace = zsci_workspace(request->input, ws, sizeof(ws));
+    struct zcode_science_rebuild_out rebuilt;
+    struct zcl_result result =
+        workspace ? zcode_science_rebuild(&ndb, workspace,
+                                          zsci_now(request->input), &rebuilt)
+                  : ZCL_ERR(-1, "science-rebuild-workspace-invalid");
+    node_db_close(&ndb);
+    if (!result.ok) {
+        zsci_fail_service(reply, "REBUILD_FAILED", result.message,
+                          "zcode.science.rebuild");
+        return;
+    }
+    (void)json_push_kv_int(&reply->data, "studies", (int64_t)rebuilt.studies);
+    (void)json_push_kv_int(&reply->data, "results", (int64_t)rebuilt.results);
+    (void)json_push_kv_int(&reply->data, "reproductions",
+                           (int64_t)rebuilt.reproductions);
+    (void)json_push_kv_int(&reply->data, "findings", (int64_t)rebuilt.findings);
+    (void)json_push_kv_int(&reply->data, "votes", (int64_t)rebuilt.votes);
+    (void)json_push_kv_int(&reply->data, "reviews", (int64_t)rebuilt.reviews);
+    (void)json_push_kv_str(&reply->data, "authority", "CANONICAL_CAS_WIRE");
+}

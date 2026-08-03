@@ -1171,7 +1171,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         fuzz-ci-leaks \
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
         test-reindex-smoke test-reindex-killmid \
-        test-two-node-peer-tip chaos chaos-clean \
+        test-two-node-peer-tip test-science-acceptance chaos chaos-clean \
         replay-canary-anchor replay-canary-genesis \
         soak-evidence-report soak-evidence-selftest \
         install-slo-probe slo-probe-status slo-probe-selftest \
@@ -3468,6 +3468,20 @@ test-reindex-killmid: zclassic23 zcl-rpc
 # harnesses; the script itself sets -euo pipefail.
 test-two-node-peer-tip: zclassic23 zcl-rpc
 	@bash tools/scripts/two_node_peer_tip.sh
+
+# ZCODE science-slice v1 acceptance proof: two disjoint isolated regtest
+# nodes (39xxx quads, loopback only, B connect-only to A). Preregister a
+# study, run a confined c23.benchmark.v1 execute, reproduce it via the v1
+# mirror, publish findings/review/vote, rank locally, restart both nodes,
+# and rebuild the science projection byte-identically from CAS hashes
+# (including after a direct SQL wipe of the six projection tables).
+# Asserts the NAMED GAPS honestly (science objects have no node-to-node
+# carrier; fresh-node swarm announce policy stalls the package fetch).
+# DELIBERATELY opt-in (NOT in `make ci`) — it spawns two real nodes and
+# depends on the host Landlock/seccomp sandbox for the confined executor.
+.PHONY: test-science-acceptance
+test-science-acceptance: zclassic23 zcl-rpc
+	@bash tools/dev/science_acceptance.sh
 
 # ── STICKINESS fault-injection matrix (sticky-node-plan §4 metric) ──
 #

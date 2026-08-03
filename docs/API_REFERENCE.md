@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 461 |
+| Registry entries (branches + leaves) | 462 |
 | Top-level roots | 11 |
 | Branches | 107 |
-| Leaves (dispatchable command paths) | 354 |
-| … `ready` (live handler in this build) | 306 |
+| Leaves (dispatchable command paths) | 355 |
+| … `ready` (live handler in this build) | 307 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 115 |
+| Leaves with `effect=mutate` | 116 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 82 |
 
@@ -86,7 +86,7 @@ Per source file:
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 21 | 4 | 17 |
 | `config/commands/zcode.def` | 71 | 16 | 55 |
-| `config/commands/zcode_science.def` | 19 | 6 | 13 |
+| `config/commands/zcode_science.def` | 20 | 6 | 14 |
 | `config/commands/metaverse.def` | 17 | 5 | 12 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
@@ -953,6 +953,12 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode package add plan` | ready | mutate / app-write / operator · foreground/moderate | **`name_or_root`**, `now_unix`, `datadir` | `zcl.zcode_add_plan.v1` | `zclassic23 zcode package add plan --input='{"name_or_root":"ringbuffer"}'` | Resolve, dependency-lock, and report what installing would do |
 | `zcode package add commit` | ready | mutate / app-write / operator · background/high | **`plan_id`**, `now_unix`, `datadir` | `zcl.zcode_add_commit.v1` | `zclassic23 zcode package add commit --input='{"plan_id":"<64hex>"}'` | Execute a plan: verify, build+test confined, install, activate, pin |
+
+#### `zcode.science` — Scientific studies, benchmark evidence, curation
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode science rebuild` | ready | mutate / app-write / operator · foreground/moderate | `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_rebuild.v1` | `zclassic23 zcode.science.rebuild --input='{"now_unix":1500}'` | Rebuild the science projection from the CAS |
 
 #### `zcode.science.study` — Preregistered study lifecycle
 
