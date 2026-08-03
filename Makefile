@@ -1450,6 +1450,23 @@ $(VIEW_BOOTSTRAP_MK): $(VIEW_GEN_HEADERS)
 .PHONY: templates
 templates: $(VIEW_GEN_HEADERS)
 
+# Prove a no-op regeneration changes neither tracked bytes nor filesystem
+# metadata. The source mutation token includes inode/mtime/ctime specifically
+# to catch edit/revert ABA, so this fast check guards the exact contract the
+# build-twice reproducibility gate relies on.
+.PHONY: templates-no-touch-selftest
+templates-no-touch-selftest: $(VIEW_GEN_HEADERS)
+	@set -eu; \
+	before="$$(tools/dev/source-identity.sh capture-record)"; \
+	$(TMPL_TOOL) app/views/templates $(TMPL_GEN) app/views/css >/dev/null; \
+	$(TMPL_TOOL) --single-css $(SITE_CSS_SRC) $(SITE_CSS_GEN) site_css SITE_CSS_H >/dev/null; \
+	after="$$(tools/dev/source-identity.sh capture-record)"; \
+	[ "$$before" = "$$after" ] || { \
+	    echo "templates-no-touch-selftest: source metadata changed on no-op regeneration" >&2; \
+	    exit 1; \
+	}; \
+	echo "templates-no-touch-selftest: PASS"
+
 .PHONY: site-css explorer-css
 site-css: $(SITE_CSS_GEN)
 explorer-css: site-css
@@ -1718,6 +1735,14 @@ endif
 .PHONY: t-list
 t-list:
 	@$(T_LIST_TOOL)
+
+# One memorable custody regression command for contributors. Keep the list
+# exact: a substring silently selecting a sibling group is not rollout proof.
+CUSTODY_FOCUSED_TESTS := test_agent_session,test_agent_spend_policy,test_vault_session,test_vault_dispatch,test_transaction_intent,test_metaverse_agent_broker
+.PHONY: custody-check
+custody-check:
+	@$(MAKE) --no-print-directory t-fast-exact ONLY='$(CUSTODY_FOCUSED_TESTS)'
+	@echo "custody-check: PASS — no live wallet or funds were touched"
 
 # ── Agent-harness reporting targets ──────────────────────────────────────
 # Three read-only targets the orchestrator was doing by hand. None builds,

@@ -154,6 +154,12 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   target is the only one that publishes that alias; the run targets execute an
   epoch candidate under `build/bin/test-strict/epochs/<epoch>/`.
 - `make lint` — all gates; must pass before tests. `make ci` — lint + build + tests + checks.
+- `make custody-check` — the exact wallet-identity, session-policy, intent,
+  broker-money, and receipt regression set. It uses isolated fixtures only and
+  never contacts a live wallet or moves funds. After an owner-created broker
+  binding exists, the read-only live check is
+  `zclassic23 metaverse agent money --dir=<absolute-broker-dir>`; it reports
+  `UNKNOWN`, `STALE`, or `CONFLICTED` instead of inventing a zero.
 - `make deploy` is owner-gated live deployment. All public dev-lane publication,
   stage, relink, and recovery-apply paths currently hard-refuse — the gated
   swappable-leaf hot-swap loop above (`hotswap-try`/`hotswap-apply`) is the one
