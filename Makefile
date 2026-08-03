@@ -1430,10 +1430,10 @@ $(BIN_DIR)/inspect_html: tools/inspect_html.c lib/base/src/safe_alloc.c
 # target whose stdout is meant to be a machine-readable list. The echo is
 # suppressed; nothing is lost, because gen_templates itself reports what it
 # did (file counts, byte counts, "unchanged") on stderr either way.
-$(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
+$(TMPL_GEN): $(TMPL_SRC) tools/gen_templates.c | $(TMPL_TOOL)
 	@$(TMPL_TOOL) app/views/templates $@ app/views/css
 
-$(SITE_CSS_GEN): $(SITE_CSS_SRC) $(TMPL_TOOL)
+$(SITE_CSS_GEN): $(SITE_CSS_SRC) tools/gen_templates.c | $(TMPL_TOOL)
 	@$(TMPL_TOOL) --single-css $< $@ site_css SITE_CSS_H
 
 # Included near the top of this file. Updating it after its generated-header
