@@ -832,6 +832,9 @@ AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_contributor_binding.h|lib/vcs/src/z
 /* Personalized PageRank ranks property roots for local discovery only. Its
  * graph/seed/result roots and integer arithmetic are one deterministic API. */
 AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_discovery_rank.h|lib/vcs/src/zcode_discovery_rank.c|lib/test/src/test_zcode_discovery_rank.c", "zcode_discovery_rank make_lint_gates")
+
+/* Noise-bound read-only DHT identity, routing, wire and service slices. */
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_dht*.h|lib/vcs/src/zcode_dht*.c|lib/test/src/test_zcode_dht*.c", "zcode_dht zcode_dht_delegation zcode_dht_msgs make_lint_gates")
 /* The rebuildable discovery-graph projection (lineage collapse, citation
  * edges, verified vote seeds) plus the discover/rank.snapshot commands:
  * the S5 adapter over the science index feeding the pure rank core. */
