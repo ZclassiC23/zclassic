@@ -37,8 +37,10 @@
 #include "models/agent_session.h"
 #include "models/database.h"
 #include "models/principal.h"
+#include "models/wallet_identity.h"
 #include "platform/time_compat.h"
 #include "rpc/server.h"
+#include "wallet/wallet.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -148,6 +150,7 @@ static struct json_value vd_send_input(bool confirm)
     json_set_real(&amt, 1.5);
     json_push_kv(&input, "address", &addr);
     json_push_kv(&input, "amount", &amt);
+    json_push_kv_str(&input, "wallet_scope", "prod");
     if (confirm) {
         struct json_value c;
         json_init(&c);
@@ -293,13 +296,22 @@ int test_vault_dispatch(void)
         struct db_service dbsvc;
         struct app_runtime_context runtime;
         struct db_principal p;
+        struct wallet wallet;
+        struct wallet_identity_row identity;
         test_make_tmpdir(dir, sizeof(dir), "vault_dispatch", "policy");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
         memset(&ndb, 0, sizeof(ndb));
         memset(&dbsvc, 0, sizeof(dbsvc));
         memset(&runtime, 0, sizeof(runtime));
         memset(&p, 0, sizeof(p));
+        memset(&identity, 0, sizeof(identity));
+        wallet_init(&wallet);
+        wallet.default_fee = 0;
         bool db_ok = node_db_open(&ndb, dbpath);
+        const uint8_t genesis[32] = { 0x42 };
+        if (db_ok)
+            db_ok = wallet_identity_ensure(&ndb, genesis, "canonical",
+                                           &identity);
         if (db_ok) {
             snprintf(p.address, sizeof(p.address), "%s",
                      "t1VaultDispatchPolicyAccount00000");
@@ -324,6 +336,10 @@ int test_vault_dispatch(void)
             s.window_seconds = 3600;
             s.window_start_epoch = now;
             s.created_at = now;
+            snprintf(s.wallet_scope, sizeof(s.wallet_scope), "prod");
+            snprintf(s.wallet_instance_id, sizeof(s.wallet_instance_id),
+                     "%s", identity.wallet_instance_id);
+            wallet_identity_genesis_hex(&identity, s.wallet_genesis);
             db_ok = agent_session_save(&ndb, &s);
             /* (b) generous caps: the 1.5-ZCL send clears every gate. */
             memset(&s, 0, sizeof(s));
@@ -335,6 +351,10 @@ int test_vault_dispatch(void)
             s.window_seconds = 3600;
             s.window_start_epoch = now;
             s.created_at = now;
+            snprintf(s.wallet_scope, sizeof(s.wallet_scope), "prod");
+            snprintf(s.wallet_instance_id, sizeof(s.wallet_instance_id),
+                     "%s", identity.wallet_instance_id);
+            wallet_identity_genesis_hex(&identity, s.wallet_genesis);
             db_ok = db_ok && agent_session_save(&ndb, &s);
         }
         if (db_ok) {
@@ -345,6 +365,7 @@ int test_vault_dispatch(void)
         VD_CHECK("policy fixture: tmp node_db + runtime wired", db_ok);
         if (db_ok) {
             runtime.db_service = &dbsvc;
+            runtime.wallet = &wallet;
             app_runtime_set_current(&runtime);
             rpc_table_init(&g_vd_rpc_table);
             register_agent_session_rpc_commands(&g_vd_rpc_table);
@@ -419,6 +440,7 @@ int test_vault_dispatch(void)
         }
         if (ndb.open)
             node_db_close(&ndb);
+        wallet_free(&wallet);
         test_rm_rf(dir);
     }
 

@@ -1,0 +1,214 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Purpose: reconcile authoritative wallet readers into custody snapshots. */
+
+#include "services/wallet_money_service.h"
+
+#include "base/hex.h"
+#include "base/serialize_le.h"
+#include "chain/chain.h"
+#include "crypto/sha3.h"
+#include "json/json.h"
+#include "models/agent_session.h"
+#include "models/database.h"
+#include "models/vault_intent.h"
+#include "platform/time_compat.h"
+#include "services/vault_read.h"
+#include "validation/main_state.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#define DEV_RESERVE_ZAT 25000000LL
+#define DEV_LAB_CAP_ZAT  5000000LL
+
+static void money_root(struct wallet_money_snapshot *s)
+{
+    struct sha3_256_ctx c;
+    sha3_256_init(&c);
+    sha3_256_write(&c, (const uint8_t *)"zcl.wallet_money.v1", 19);
+    sha3_256_write(&c, (const uint8_t *)s->wallet_scope,
+                   strlen(s->wallet_scope));
+    sha3_256_write(&c, (const uint8_t *)s->identity.wallet_instance_id,
+                   WALLET_INSTANCE_ID_HEX_LEN);
+    sha3_256_write(&c, s->identity.network_genesis, 32);
+    sha3_256_write(&c, s->tip_hash, 32);
+    uint8_t nums[7][8];
+    const int64_t values[7] = {
+        s->confirmed_zat, s->pending_zat, s->encumbered_zat,
+        s->intent_reserved_zat, s->lifetime_lab_spent_zat,
+        s->agent_available_zat, s->tip_height,
+    };
+    for (size_t i = 0; i < 7; i++)
+        zcl_write_i64_le(nums[i], values[i]);
+    sha3_256_write(&c, (const uint8_t *)nums, sizeof(nums));
+    uint8_t flags[2] = { s->complete ? 1 : 0,
+                         strcmp(s->status, "CURRENT") == 0 ? 1 : 0 };
+    sha3_256_write(&c, flags, sizeof(flags));
+    sha3_256_finalize(&c, s->snapshot_root);
+}
+
+static bool money_classes_complete(const struct vault_snapshot *v,
+                                   char *reason, size_t reason_cap)
+{
+    for (int i = 0; i < VAULT_CLASS_COUNT; i++) {
+        if (v->rows[i].is_money && !v->rows[i].determined) {
+            (void)snprintf(reason, reason_cap, "%s: %s",
+                           v->rows[i].class_name, v->rows[i].reason);
+            return false;
+        }
+    }
+    return true;
+}
+
+struct zcl_result wallet_money_snapshot_build(
+    struct node_db *ndb, struct main_state *main_state,
+    const char *wallet_scope, struct wallet_money_snapshot *out)
+{
+    if (!ndb || !ndb->open || !main_state || !wallet_scope || !out ||
+        (strcmp(wallet_scope, "dev") != 0 &&
+         strcmp(wallet_scope, "prod") != 0))
+        return ZCL_ERR(-1, "open node_db, main_state, and dev|prod scope are required");
+    memset(out, 0, sizeof(*out));
+    (void)snprintf(out->wallet_scope, sizeof(out->wallet_scope), "%s",
+                   wallet_scope);
+    (void)snprintf(out->status, sizeof(out->status), "UNKNOWN");
+    out->tip_height = -1;
+    out->observed_at = (int64_t)platform_time_wall_time_t();
+
+    if (!wallet_identity_find(ndb, &out->identity)) {
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "wallet identity is not initialized");
+        money_root(out);
+        return ZCL_OK;
+    }
+    const char *expected_lane = strcmp(wallet_scope, "prod") == 0
+        ? "canonical" : "dev";
+    if (strcmp(out->identity.operator_lane, expected_lane) != 0) {
+        (void)snprintf(out->status, sizeof(out->status), "CONFLICTED");
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "wallet scope does not match persisted operator lane");
+        money_root(out);
+        return ZCL_OK;
+    }
+
+    struct block_index *tip = active_chain_tip(&main_state->chain_active);
+    if (!tip) {
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "active chain tip is unavailable");
+        money_root(out);
+        return ZCL_OK;
+    }
+    out->tip_height = tip->nHeight;
+    memcpy(out->tip_hash, tip->hashBlock.data, 32);
+
+    struct vault_snapshot vault;
+    struct zcl_result vr = vault_read_snapshot(ndb, &vault);
+    if (!vr.ok) {
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "vault snapshot failed: %.120s", vr.message);
+        money_root(out);
+        return ZCL_OK;
+    }
+    out->confirmed_zat = vault.zcl_spendable;
+    out->pending_zat = vault.zcl_pending;
+    out->encumbered_zat = vault.zcl_encumbered + vault.zcl_immature;
+    out->intent_reserved_zat = vault_intent_reserved_total(
+        ndb, wallet_scope, out->identity.wallet_instance_id);
+    out->lifetime_lab_spent_zat =
+        agent_session_scope_lifetime_spent(ndb, wallet_scope);
+    if (out->intent_reserved_zat < 0 ||
+        out->lifetime_lab_spent_zat < 0) {
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "reservation or lifetime allocation reader failed");
+        money_root(out);
+        return ZCL_OK;
+    }
+    if (!money_classes_complete(&vault, out->reason, sizeof(out->reason))) {
+        money_root(out);
+        return ZCL_OK;
+    }
+
+    int64_t liquid = out->confirmed_zat - out->intent_reserved_zat;
+    if (liquid < 0)
+        liquid = 0;
+    if (strcmp(wallet_scope, "dev") == 0) {
+        int64_t above_reserve = liquid > DEV_RESERVE_ZAT
+            ? liquid - DEV_RESERVE_ZAT : 0;
+        int64_t allocated = out->lifetime_lab_spent_zat;
+        if (allocated <= INT64_MAX - out->intent_reserved_zat)
+            allocated += out->intent_reserved_zat;
+        else
+            allocated = INT64_MAX;
+        int64_t lab_left = allocated < DEV_LAB_CAP_ZAT
+            ? DEV_LAB_CAP_ZAT - allocated : 0;
+        out->agent_available_zat =
+            above_reserve < lab_left ? above_reserve : lab_left;
+    } else {
+        /* Production is deliberately unfunded/unallocated in this rollout.
+         * A later owner grant may define a non-zero production policy. */
+        out->agent_available_zat = 0;
+    }
+    out->complete = true;
+    (void)snprintf(out->status, sizeof(out->status), "CURRENT");
+    (void)snprintf(out->reason, sizeof(out->reason), "all money authorities read");
+    money_root(out);
+    return ZCL_OK;
+}
+
+static void amount_text(int64_t zat, char out[32])
+{
+    (void)snprintf(out, 32, "%lld.%08lld",
+                   (long long)(zat / 100000000LL),
+                   (long long)(zat >= 0 ? zat % 100000000LL
+                                        : -(zat % 100000000LL)));
+}
+
+struct zcl_result wallet_money_snapshot_to_json(
+    const struct wallet_money_snapshot *s, struct json_value *out)
+{
+    if (!s || !out)
+        return ZCL_ERR(-1, "snapshot and JSON output are required");
+    json_set_object(out);
+    char genesis[65], tip[65], root[65], amount[32];
+    wallet_identity_genesis_hex(&s->identity, genesis);
+    zcl_hex_encode(s->tip_hash, 32, tip);
+    zcl_hex_encode(s->snapshot_root, 32, root);
+    (void)json_push_kv_str(out, "wallet_scope", s->wallet_scope);
+    (void)json_push_kv_str(out, "wallet_instance_id",
+                           s->identity.wallet_instance_id);
+    (void)json_push_kv_str(out, "network_genesis", genesis);
+    (void)json_push_kv_str(out, "operator_lane", s->identity.operator_lane);
+    (void)json_push_kv_str(out, "status", s->status);
+    (void)json_push_kv_bool(out, "complete", s->complete);
+    (void)json_push_kv_str(out, "reason", s->reason);
+    if (s->complete && strcmp(s->status, "CURRENT") == 0) {
+#define PUSH_AMOUNT(key_, member_) do {                                      \
+        amount_text((member_), amount);                                      \
+        (void)json_push_kv_str(out, (key_), amount);                         \
+} while (0)
+        PUSH_AMOUNT("confirmed_zcl", s->confirmed_zat);
+        PUSH_AMOUNT("pending_zcl", s->pending_zat);
+        PUSH_AMOUNT("encumbered_zcl", s->encumbered_zat);
+        PUSH_AMOUNT("intent_reserved_zcl", s->intent_reserved_zat);
+        PUSH_AMOUNT("agent_available_zcl", s->agent_available_zat);
+#undef PUSH_AMOUNT
+        (void)json_push_kv_int(out, "confirmed_zat", s->confirmed_zat);
+        (void)json_push_kv_int(out, "pending_zat", s->pending_zat);
+        (void)json_push_kv_int(out, "encumbered_zat", s->encumbered_zat);
+        (void)json_push_kv_int(out, "intent_reserved_zat",
+                               s->intent_reserved_zat);
+        (void)json_push_kv_int(out, "agent_available_zat",
+                               s->agent_available_zat);
+    } else {
+        (void)json_push_kv_str(out, "confirmed_zcl", "UNKNOWN");
+        (void)json_push_kv_str(out, "pending_zcl", "UNKNOWN");
+        (void)json_push_kv_str(out, "encumbered_zcl", "UNKNOWN");
+        (void)json_push_kv_str(out, "intent_reserved_zcl", "UNKNOWN");
+        (void)json_push_kv_str(out, "agent_available_zcl", "UNKNOWN");
+    }
+    (void)json_push_kv_int(out, "tip_height", s->tip_height);
+    (void)json_push_kv_str(out, "tip_hash", tip);
+    (void)json_push_kv_int(out, "observed_at", s->observed_at);
+    (void)json_push_kv_str(out, "snapshot_root", root);
+    return ZCL_OK;
+}

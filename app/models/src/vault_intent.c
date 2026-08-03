@@ -4,6 +4,7 @@
 #include "models/vault_intent.h"
 
 #include "models/database.h"
+#include "models/agent_session.h"
 #include "models/model_text.h"
 #include "util/log_macros.h"
 
@@ -55,6 +56,22 @@ bool vault_intent_validate(const struct vault_intent_row *r,
                      (r->error_code[0] == '\0' ||
                       model_string_is_printable(r->error_code)), "error_code",
                      "is invalid");
+    const bool legacy = r->wallet_scope[0] == '\0' &&
+        r->wallet_instance_id[0] == '\0' && r->wallet_genesis[0] == '\0' &&
+        !r->has_snapshot_root && r->recipient_value_zat == 0 &&
+        r->max_fee_zat == 0 && r->reserved_zat == 0;
+    const bool bound =
+        (strcmp(r->wallet_scope, "dev") == 0 ||
+         strcmp(r->wallet_scope, "prod") == 0) &&
+        zcl_is_hex_string(r->wallet_instance_id,
+                          WALLET_INSTANCE_ID_HEX_LEN) &&
+        zcl_is_hex_string(r->wallet_genesis, WALLET_GENESIS_HEX_LEN) &&
+        r->has_snapshot_root && r->recipient_value_zat > 0 &&
+        r->max_fee_zat >= 0 &&
+        r->recipient_value_zat <= INT64_MAX - r->max_fee_zat &&
+        r->reserved_zat == r->recipient_value_zat + r->max_fee_zat;
+    validates_custom(errors, legacy || bound, "custody_binding",
+                     "must be wholly legacy-empty or a complete reservation");
     return !ar_errors_any(errors);
 }
 
@@ -67,7 +84,9 @@ bool vault_intent_save(struct node_db *ndb, const struct vault_intent_row *r)
         "INSERT OR REPLACE INTO vault_intents"
         "(plan_id,digest,state,route,created_at,expires_at,anchor_height,"
         "anchor_hash,encrypted_payload,txid,confirm_height,confirm_hash,"
-        "error_code,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "error_code,updated_at,wallet_scope,wallet_instance_id,wallet_genesis,"
+        "snapshot_root,recipient_value_zat,max_fee_zat,reserved_zat) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         db_vault_intent_callbacks(), "vault_intent", r,
         vault_intent_validate,
         AR_BIND_BLOB(s, 1, r->plan_id, 32);
@@ -85,7 +104,46 @@ bool vault_intent_save(struct node_db *ndb, const struct vault_intent_row *r)
         if (r->has_confirm_hash) AR_BIND_BLOB(s, 12, r->confirm_hash, 32);
         else AR_BIND_NULL(s, 12);
         AR_BIND_TEXT(s, 13, r->error_code);
-        AR_BIND_INT(s, 14, r->updated_at));
+        AR_BIND_INT(s, 14, r->updated_at);
+        AR_BIND_TEXT(s, 15, r->wallet_scope);
+        AR_BIND_TEXT(s, 16, r->wallet_instance_id);
+        AR_BIND_TEXT(s, 17, r->wallet_genesis);
+        if (r->has_snapshot_root) AR_BIND_BLOB(s, 18, r->snapshot_root, 32);
+        else AR_BIND_NULL(s, 18);
+        AR_BIND_INT(s, 19, r->recipient_value_zat);
+        AR_BIND_INT(s, 20, r->max_fee_zat);
+        AR_BIND_INT(s, 21, r->reserved_zat));
+}
+
+bool vault_intent_reserve(struct node_db *ndb,
+                          const struct vault_intent_row *r,
+                          int64_t confirmed_zat)
+{
+    if (!ndb || !ndb->open || !r || confirmed_zat < 0 ||
+        r->reserved_zat <= 0)
+        LOG_FAIL("vault_intent", "reserve: invalid argument");
+    if (!node_db_begin_immediate(ndb))
+        return false; /* raw-return-ok:busy is a fail-closed reservation */
+    int64_t reserved = vault_intent_reserved_total(
+        ndb, r->wallet_scope, r->wallet_instance_id);
+    int64_t lifetime = agent_session_scope_lifetime_spent(
+        ndb, r->wallet_scope);
+    bool allowed = reserved >= 0 && lifetime >= 0 &&
+        reserved <= INT64_MAX - r->reserved_zat;
+    if (allowed && strcmp(r->wallet_scope, "dev") == 0) {
+        const int64_t next = reserved + r->reserved_zat;
+        allowed = confirmed_zat >= 25000000LL &&
+            next <= confirmed_zat - 25000000LL &&
+            lifetime <= 5000000LL && next <= 5000000LL - lifetime;
+    } else if (allowed) {
+        allowed = reserved + r->reserved_zat <= confirmed_zat;
+    }
+    bool saved = allowed && vault_intent_save(ndb, r);
+    if (!saved || !node_db_commit(ndb)) {
+        (void)node_db_rollback(ndb);
+        return false; /* raw-return-ok:nothing was reserved */
+    }
+    return true;
 }
 
 static void intent_read(struct vault_intent_row *r, sqlite3_stmt *s)
@@ -115,11 +173,23 @@ static void intent_read(struct vault_intent_row *r, sqlite3_stmt *s)
     }
     AR_READ_STR(s, 12, r->error_code, sizeof(r->error_code));
     r->updated_at = AR_COL_INT(s, 13);
+    AR_READ_STR(s, 14, r->wallet_scope, sizeof(r->wallet_scope));
+    AR_READ_STR(s, 15, r->wallet_instance_id,
+                sizeof(r->wallet_instance_id));
+    AR_READ_STR(s, 16, r->wallet_genesis, sizeof(r->wallet_genesis));
+    if (AR_COL_BYTES(s, 17) == 32) {
+        AR_READ_BLOB(s, 17, r->snapshot_root, 32);
+        r->has_snapshot_root = true;
+    }
+    r->recipient_value_zat = AR_COL_INT(s, 18);
+    r->max_fee_zat = AR_COL_INT(s, 19);
+    r->reserved_zat = AR_COL_INT(s, 20);
 }
 
 #define INTENT_COLUMNS "plan_id,digest,state,route,created_at,expires_at," \
     "anchor_height,anchor_hash,encrypted_payload,txid,confirm_height," \
-    "confirm_hash,error_code,updated_at"
+    "confirm_hash,error_code,updated_at,wallet_scope,wallet_instance_id," \
+    "wallet_genesis,snapshot_root,recipient_value_zat,max_fee_zat,reserved_zat"
 
 bool vault_intent_find(struct node_db *ndb, const uint8_t plan_id[32],
                        struct vault_intent_row *out)
@@ -282,6 +352,27 @@ bool vault_intent_has_raw(struct node_db *ndb, const uint8_t plan_id[32])
     AR_QUERY_ONE_BOOL(ndb, s,
         "SELECT 1 FROM vault_intent_raw WHERE plan_id=?",
         AR_BIND_BLOB(s, 1, plan_id, 32), ;);
+}
+
+int64_t vault_intent_reserved_total(struct node_db *ndb,
+                                    const char *wallet_scope,
+                                    const char *wallet_instance_id)
+{
+    sqlite3_stmt *s = NULL;
+    if (!ndb || !ndb->open || !wallet_scope || !wallet_scope[0] ||
+        !wallet_instance_id || !wallet_instance_id[0])
+        LOG_ERR("vault_intent", "reserved_total: invalid argument");
+    AR_PREPARE_RET(ndb, s,
+        "SELECT COALESCE(SUM(reserved_zat),0) FROM vault_intents "
+        "WHERE wallet_scope=? AND wallet_instance_id=? "
+        "AND state IN (0,1,2,5)", -1);
+    AR_BIND_TEXT(s, 1, wallet_scope);
+    AR_BIND_TEXT(s, 2, wallet_instance_id);
+    int64_t total = -1;
+    if (AR_STEP_ROW(s))
+        total = AR_COL_INT(s, 0);
+    AR_FINALIZE(s);
+    return total;
 }
 
 const char *vault_intent_state_name(enum vault_intent_state state)

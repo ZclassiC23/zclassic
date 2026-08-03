@@ -77,6 +77,29 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_agent_status)
 
 ZCL_COMMAND_READY_READ(
+    "metaverse.agent.money", "metaverse.agent", "",
+    "Identity-bound dev/prod custody, never an implied zero",
+    "Reconciles the owner-created dev and prod wallet bindings in one broker "
+    "directory against each running node's persistent wallet identity and "
+    "authoritative vault/intent readers. Every wallet reports CURRENT, "
+    "UNKNOWN, STALE, or CONFLICTED with completeness, reason, confirmed, "
+    "pending, encumbered, intent-reserved, and agent-available ZCL plus tip "
+    "and observation evidence. Missing or unreachable readers never collapse "
+    "to zero. The portfolio total appears only when both assigned wallets are "
+    "current and complete. Output contains no endpoint, datadir, address, key, "
+    "or grant token.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "metaverse,agent,money,custody,wallet,balance,identity,reserve",
+    "zcl.metaverse_agent_money.input.v1", "zcl.metaverse_agent_money.v1",
+    "dir", "dir",
+    "zclassic23 metaverse agent money --dir=/tmp/mv-broker",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_agent_money)
+
+ZCL_COMMAND_READY_READ(
     "metaverse.agent.audit", "metaverse.agent", "",
     "Every action the confined agent took, and whether the log is intact",
     "The broker's append-only receipt log for one broker directory, verified "

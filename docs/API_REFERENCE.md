@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 467 |
+| Registry entries (branches + leaves) | 468 |
 | Top-level roots | 11 |
 | Branches | 108 |
-| Leaves (dispatchable command paths) | 359 |
-| … `ready` (live handler in this build) | 311 |
+| Leaves (dispatchable command paths) | 360 |
+| … `ready` (live handler in this build) | 312 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
@@ -87,7 +87,7 @@ Per source file:
 | `config/commands/vault.def` | 21 | 4 | 17 |
 | `config/commands/zcode.def` | 71 | 16 | 55 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
-| `config/commands/metaverse.def` | 17 | 5 | 12 |
+| `config/commands/metaverse.def` | 18 | 5 | 13 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
@@ -319,7 +319,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `core wallet transaction list` | ready | read / read / operator · fast/low | none | `zcl.wallet_tx_list.v1` | `zclassic23 core wallet transaction list` | List recent wallet transactions |
 | `core wallet transaction get` | ready | read / read / operator · fast/low | **`txid`** | `zcl.wallet_tx.v1` | `zclassic23 core wallet transaction get --txid=<hex>` | Get one wallet transaction by id |
-| `core wallet transaction send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `address`, `amount`, `idempotency_key`, `confirm` | `zcl.wallet_send.v1` | `zclassic23 core wallet transaction send --input='<obj>'` | Build, sign, and broadcast a payment |
+| `core wallet transaction send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, `address`, `amount`, `idempotency_key`, `confirm` | `zcl.wallet_send.v1` | `zclassic23 core wallet transaction send --input='<obj>'` | Build, sign, and broadcast a payment |
 
 #### `core.wallet.transaction.raw` — Raw transparent transaction composition
 
@@ -336,7 +336,7 @@ represented by its children's sections.
 | `core wallet shielded address` | ready | mutate / wallet / **owner** · fast/low | none | `zcl.shielded_address.v1` | `zclassic23 core wallet shielded address` | Derive a new shielded address |
 | `core wallet shielded balance` | ready | read / read / operator · fast/low | **`address`** | `zcl.shielded_balance.v1` | `zclassic23 core wallet shielded balance --address=<zaddr>` | Shielded balance for one address |
 | `core wallet shielded notes` | ready | read / read / operator · fast/low | none | `zcl.shielded_notes.v1` | `zclassic23 core wallet shielded notes` | List spendable shielded notes |
-| `core wallet shielded send` | ready | mutate / wallet / **owner**, job, plan-commit · background/high | `from`, `to`, `amount`, `memo`, `memo_hex`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 core wallet shielded send --input='<obj>'` | Send a shielded payment |
+| `core wallet shielded send` | ready | mutate / wallet / **owner**, job, plan-commit · background/high | `wallet_scope`, `from`, `to`, `amount`, `memo`, `memo_hex`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 core wallet shielded send --input='<obj>'` | Send a shielded payment |
 
 #### `core.wallet.backup` — Wallet backup
 
@@ -449,7 +449,7 @@ represented by its children's sections.
 | `app market list` | ready | read / read / public · fast/low | none | `zcl.app_market_index.v1` | `zclassic23 app market list` | List files on the ZCL Market |
 | `app market status` | ready | read / read / operator · fast/low | none | `zcl.app_market_status.v1` | `zclassic23 app market status` | ZCL Market status |
 | `app market offer` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | `filepath`, `price_per_mb_zat`, `confirm` | `zcl.app_market_offer_result.v1` | `zclassic23 app market offer --input='{"filepath":"/data/f","price_per_mb_zat":1000}'` | Announce a file for sale — *needs an origin-announce path before it can be exposed natively: rpc_zmarket_offer (file_market_controller.c) stats the file and calls file_market_add_offer + db_file_offer_save, then answers status=announced, but the only MSG_FILE_LIST writer in the tree is the re-gossip branch of handle_zfilelist (msgprocessor.c) — nothing ever announces a LOCALLY created offer, so no peer learns of it. Its root_hash is also SHA3(filepath:size), not a hash of the file contents* |
-| `app market buy` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`root_hash`**, `confirm` | `zcl.app_market_buy_result.v1` | `zclassic23 app market buy --input='{"root_hash":"<64hex>"}'` | Buy and download a market file — *needs the payment leg wired before a spend leaf can be exposed natively: rpc_zmarket_buy (file_market_controller.c) only calls file_market_start_download, which allocates an in-memory session in state FDL_CHALLENGING. No code path sends MSG_FILE_CHAL, and nothing builds or broadcasts the payment transaction whose mempool-verified txid handle_zfilepay (msgprocessor.c) requires to unlock chunks, so the session never advances and no funds move* |
+| `app market buy` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, **`root_hash`**, `confirm` | `zcl.app_market_buy_result.v1` | `zclassic23 app market buy --input='{"root_hash":"<64hex>"}'` | Buy and download a market file — *needs the payment leg wired before a spend leaf can be exposed natively: rpc_zmarket_buy (file_market_controller.c) only calls file_market_start_download, which allocates an in-memory session in state FDL_CHALLENGING. No code path sends MSG_FILE_CHAL, and nothing builds or broadcasts the payment transaction whose mempool-verified txid handle_zfilepay (msgprocessor.c) requires to unlock chunks, so the session never advances and no funds move* |
 
 #### `app.store` — Store
 
@@ -469,8 +469,8 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `app swap chains` | ready | read / read / operator · fast/low | none | `zcl.app_swap_chains.v1` | `zclassic23 app swap chains` | List supported atomic-swap chains |
 | `app swap list` | ready | read / read / operator · fast/low | **`state`** | `zcl.app_swap_index.v1` | `zclassic23 app swap list --input='{"state":"pending"}'` | List atomic-swap contracts |
-| `app swap initiate` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `my_address`, `counter_address`, `amount`, `locktime_blocks`, `chain`, `confirm` | `zcl.app_swap_contract.v1` | `zclassic23 app swap initiate --input='{"my_address":"t1..","counter_address":"t1..","amount":1,"locktime_blocks":20,"confirm":true}'` | Initiate an atomic swap |
-| `app swap participate` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `my_address`, `counter_address`, `amount`, `locktime_blocks`, `secret_hash`, `chain`, `confirm` | `zcl.app_swap_contract.v1` | `zclassic23 app swap participate --input='{"my_address":"t1..","counter_address":"t1..","amount":1,"locktime_blocks":10,"secret_hash":"<64hex>","confirm":true}'` | Participate in an atomic swap |
+| `app swap initiate` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, `my_address`, `counter_address`, `amount`, `locktime_blocks`, `chain`, `confirm` | `zcl.app_swap_contract.v1` | `zclassic23 app swap initiate --input='{"my_address":"t1..","counter_address":"t1..","amount":1,"locktime_blocks":20,"confirm":true}'` | Initiate an atomic swap |
+| `app swap participate` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, `my_address`, `counter_address`, `amount`, `locktime_blocks`, `secret_hash`, `chain`, `confirm` | `zcl.app_swap_contract.v1` | `zclassic23 app swap participate --input='{"my_address":"t1..","counter_address":"t1..","amount":1,"locktime_blocks":10,"secret_hash":"<64hex>","confirm":true}'` | Participate in an atomic swap |
 
 #### `app.qr` — QR
 
@@ -793,8 +793,8 @@ represented by its children's sections.
 | `vault show` | ready | read / read / operator · fast/low | **`class`**, `limit` | `zcl.vault_show.v1` | `zclassic23 vault show transparent` | Itemize the holdings inside one asset class |
 | `vault encumbered` | ready | read / read / operator · fast/low | **`class`**, `limit` | `zcl.vault_encumbered.v1` | `zclassic23 vault encumbered` | What is owned but not free to move, and what would release it |
 | `vault routes` | ready | read / read / public · instant/tiny | **`class`** | `zcl.vault_routes.v1` | `zclassic23 vault routes` | Which existing path owns the spend for each asset class |
-| `vault send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `address`, `amount`, `idempotency_key`, `confirm` | `zcl.wallet_send.v1` | `zclassic23 vault send --input='{"address":"t1..","amount":1.5}'` | Spend transparent ZCL by dispatching to the wallet's own send |
-| `vault send-shielded` | ready | mutate / wallet / **owner**, job, plan-commit · background/high | `from`, `to`, `amount`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 vault send-shielded --input='{"from":"zs1..","to":"zs1..","amount":1}'` | Spend shielded ZCL by dispatching to the wallet's own shielded send |
+| `vault send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, `address`, `amount`, `idempotency_key`, `confirm` | `zcl.wallet_send.v1` | `zclassic23 vault send --input='{"address":"t1..","amount":1.5}'` | Spend transparent ZCL by dispatching to the wallet's own send |
+| `vault send-shielded` | ready | mutate / wallet / **owner**, job, plan-commit · background/high | `wallet_scope`, `from`, `to`, `amount`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 vault send-shielded --input='{"from":"zs1..","to":"zs1..","amount":1}'` | Spend shielded ZCL by dispatching to the wallet's own shielded send |
 | `vault send-token` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_id`**, `to`, `units`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 vault send-token --input='{"token_id":"<64-hex>","to":"t1...","units":25}'` | Send ZSLP units through the token command that owns the transaction |
 
 #### `vault.intent` — Exact, expiring, durably idempotent transaction intents
@@ -802,8 +802,8 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `vault intent issue` | ready | mutate / wallet / **owner** · foreground/moderate | `asset`, **`amount`** | `zcl.vault_intent_issue.v1` | `zclassic23 vault intent issue --input='{"asset":"ZCL","amount":"0.01"}'` | Create a fresh transparent ZCL payment request |
-| `vault intent plan` | ready | mutate / wallet / **owner** · foreground/moderate | `route`, **`effects`** | `zcl.vault_intent_plan.v1` | `printf '%s' '{"route":"transparent","effects":[{"asset":"ZCL","to":"t1...","amount":"0.01"}]}' \| zclassic23 vault intent plan --input=-` | Persist an exact encrypted transaction plan |
-| `vault intent commit` | ready | mutate / wallet / **owner**, idempotency · foreground/high | **`plan_id`**, **`confirm`** | `zcl.vault_intent_commit.v1` | `zclassic23 vault intent commit --input='{"plan_id":"<64hex>","confirm":true}'` | Commit one exact durable plan without double-paying |
+| `vault intent plan` | ready | mutate / wallet / **owner** · foreground/moderate | **`wallet_scope`**, `route`, **`effects`** | `zcl.vault_intent_plan.v1` | `printf '%s' '{"wallet_scope":"dev","route":"transparent","effects":[{"asset":"ZCL","to":"t1...","amount":"0.01"}]}' \| zclassic23 vault intent plan --input=-` | Persist an exact encrypted transaction plan |
+| `vault intent commit` | ready | mutate / wallet / **owner**, idempotency · foreground/high | **`wallet_scope`**, **`plan_id`**, **`confirm`** | `zcl.vault_intent_commit.v1` | `zclassic23 vault intent commit --input='{"wallet_scope":"dev","plan_id":"<64hex>","confirm":true}'` | Commit one exact durable plan without double-paying |
 | `vault intent status` | ready | read / read / operator · fast/low | **`plan_id`** | `zcl.vault_intent_status.v1` | `zclassic23 vault intent status --input='{"plan_id":"<64hex>"}'` | Read one transaction intent's chain-aware state |
 | `vault intent list` | ready | read / read / operator · fast/low | none | `zcl.vault_intent_list.v1` | `zclassic23 vault intent list` | List the newest durable transaction intents |
 
@@ -811,7 +811,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `vault session create` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `account`, `max_per_tx`, `max_per_window`, `window_seconds`, `allowlist`, `expires_in`, `confirm` | `zcl.vault_session_create.v1` | `zclassic23 vault session create --input='{"account":"t1..","max_per_tx":"1.5","max_per_window":"10","window_seconds":"86400"}'` | Mint a scoped agent spend session; returns the token once |
+| `vault session create` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `account`, **`wallet_scope`**, `max_per_tx`, `max_per_window`, `window_seconds`, `allowlist`, `expires_in`, `confirm` | `zcl.vault_session_create.v1` | `zclassic23 vault session create --input='{"account":"t1..","wallet_scope":"dev","max_per_tx":"0.05","max_per_window":"0.05","window_seconds":"86400"}'` | Mint a scoped agent spend session; returns the token once |
 | `vault session list` | ready | read / read / operator · fast/low | `account` | `zcl.vault_session_list.v1` | `zclassic23 vault session list --input='{"account":"t1.."}'` | List agent spend sessions; the token is always redacted |
 | `vault session revoke` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `session_id`, `confirm` | `zcl.vault_session_revoke.v1` | `zclassic23 vault session revoke --input='{"session_id":"<32hex>","confirm":true}'` | Revoke an agent spend session by its full token |
 
@@ -1014,6 +1014,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `metaverse agent status` | ready | read / read / operator · instant/tiny | **`dir`** | `zcl.metaverse_agent_status.v1` | `zclassic23 metaverse agent status --dir=/tmp/mv-broker` | What confinement the agent broker actually achieved |
+| `metaverse agent money` | ready | read / read / operator · fast/moderate | **`dir`** | `zcl.metaverse_agent_money.v1` | `zclassic23 metaverse agent money --dir=/tmp/mv-broker` | Identity-bound dev/prod custody, never an implied zero |
 | `metaverse agent audit` | ready | read / read / operator · fast/low | **`dir`**, `limit` | `zcl.metaverse_agent_audit.v1` | `zclassic23 metaverse agent audit --dir=/tmp/mv-broker` | Every action the confined agent took, and whether the log is intact |
 
 #### `metaverse.property` — What property exists, who controls it, and how we know

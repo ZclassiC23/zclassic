@@ -34,6 +34,59 @@
 
 #define BROKER_TAG "agent.broker"
 
+static void agent_broker_write_private_money_bindings(
+    const char *dir, const struct agent_broker_session *s)
+{
+    const struct agent_authority_ref *a = s ? s->authority : NULL;
+    if (!dir || !a || !a->bound || !a->provider ||
+        !a->provider->money_bindings)
+        return;
+    struct agent_money_binding bindings[AGENT_MONEY_BINDINGS_MAX];
+    size_t count = 0;
+    memset(bindings, 0, sizeof(bindings));
+    if (!a->provider->money_bindings(a->provider_ctx, bindings,
+                                     AGENT_MONEY_BINDINGS_MAX, &count)) {
+        LOG_WARN(BROKER_TAG, "custody binding provider failed");
+        return;
+    }
+    struct json_value doc, wallets;
+    json_init(&doc); json_set_object(&doc);
+    json_init(&wallets); json_set_array(&wallets);
+    (void)json_push_kv_str(&doc, "schema", "zcl.agent_money_bindings.v1");
+    for (size_t i = 0; i < count; i++) {
+        struct json_value w;
+        json_init(&w); json_set_object(&w);
+        (void)json_push_kv_str(&w, "scope", bindings[i].wallet_scope);
+        (void)json_push_kv_str(&w, "wallet_instance_id",
+                               bindings[i].wallet_instance_id);
+        (void)json_push_kv_str(&w, "network_genesis",
+                               bindings[i].network_genesis);
+        (void)json_push_kv_str(&w, "node_datadir",
+                               bindings[i].node_datadir);
+        (void)json_push_kv_int(&w, "rpc_port", bindings[i].rpc_port);
+        (void)json_push_back(&wallets, &w);
+        json_free(&w);
+    }
+    (void)json_push_kv(&doc, "wallets", &wallets);
+    json_free(&wallets);
+    char buf[4096];
+    size_t n = json_write(&doc, buf, sizeof(buf));
+    json_free(&doc);
+    if (n == 0)
+        return;
+    char path[512];
+    (void)snprintf(path, sizeof(path), "%s/money-bindings.json", dir);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        LOG_WARN(BROKER_TAG, "cannot write private custody bindings: %s",
+                 strerror(errno));
+        return;
+    }
+    if (write(fd, buf, n) != (ssize_t)n || fsync(fd) != 0)
+        LOG_WARN(BROKER_TAG, "private custody binding write did not persist");
+    (void)close(fd);
+}
+
 /* ── status document ────────────────────────────────────────────────────── */
 
 void agent_broker_write_status(const char *dir,
@@ -42,6 +95,10 @@ void agent_broker_write_status(const char *dir,
 {
     if (!dir || !s)
         return;
+
+    /* The endpoint-bearing document is separate and private. broker.json,
+     * status, audit, and money output never contain these paths/ports. */
+    agent_broker_write_private_money_bindings(dir, s);
 
     /* THE AUTHORITY SECTION IS PULLED, NOT REMEMBERED. The broker holds no
      * grant to render, so the four fields an operator needs — where the
@@ -75,8 +132,7 @@ void agent_broker_write_status(const char *dir,
     json_set_object(&doc);
     (void)json_push_kv_int(&doc, "broker_pid", (int64_t)getpid());
     (void)json_push_kv_int(&doc, "agent_pid", (int64_t)child_pid);
-    (void)json_push_kv_str(&doc, "socket", socket_path ? socket_path
-                                                       : "(socketpair)");
+    (void)socket_path; /* endpoint remains broker-private */
     (void)json_push_kv_bool(&doc, "granted", bound);
     (void)json_push_kv_str(&doc, "authority_source",
                            bound ? auth.authority_source : "none");
@@ -165,8 +221,6 @@ size_t agent_broker_render_status_json(const char *dir, char *out,
     struct json_value doc;
     json_init(&doc);
     json_set_object(&doc);
-    (void)json_push_kv_str(&doc, "dir", dir);
-
     FILE *f = fopen(path, "re");
     if (!f) {
         (void)json_push_kv_bool(&doc, "broker_state_present", false);

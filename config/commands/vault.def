@@ -115,7 +115,7 @@ ZCL_COMMAND_READY_COMMAND(
     "handler the owning leaf binds.", 0,
     "vault,send,pay,transparent,broadcast,route",
     "zcl.vault_send.input.v1", "zcl.wallet_send.v1",
-    "address,amount,idempotency_key,confirm", "",
+    "wallet_scope,address,amount,idempotency_key,confirm", "",
     "zclassic23 vault send --input='{\"address\":\"t1..\",\"amount\":1.5}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
@@ -139,7 +139,7 @@ ZCL_COMMAND_READY_COMMAND(
     "and its failure is surfaced unmodified.", 0,
     "vault,send,shielded,sapling,z_sendmany,route",
     "zcl.vault_send_shielded.input.v1", "zcl.shielded_send.v1",
-    "from,to,amount,idempotency_key,confirm", "",
+    "wallet_scope,from,to,amount,idempotency_key,confirm", "",
     "zclassic23 vault send-shielded --input='{\"from\":\"zs1..\",\"to\":\"zs1..\",\"amount\":1}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
@@ -205,8 +205,8 @@ ZCL_COMMAND_READY_COMMAND(
     "backup is under 24 hours old.", 0,
     "vault,intent,plan,effects,fee,privacy,idempotent",
     "zcl.vault_intent_plan.input.v1", "zcl.vault_intent_plan.v1",
-    "route,effects", "effects",
-    "printf '%s' '{\"route\":\"transparent\",\"effects\":[{\"asset\":\"ZCL\",\"to\":\"t1...\",\"amount\":\"0.01\"}]}' | zclassic23 vault intent plan --input=-",
+    "wallet_scope,route,effects", "wallet_scope,effects",
+    "printf '%s' '{\"wallet_scope\":\"dev\",\"route\":\"transparent\",\"effects\":[{\"asset\":\"ZCL\",\"to\":\"t1...\",\"amount\":\"0.01\"}]}' | zclassic23 vault intent plan --input=-",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
@@ -224,8 +224,8 @@ ZCL_COMMAND_READY_COMMAND(
     "calls return the original txid; no operation_id is exposed.", 0,
     "vault,intent,commit,idempotent,txid,relay",
     "zcl.vault_intent_commit.input.v1", "zcl.vault_intent_commit.v1",
-    "plan_id,confirm", "plan_id,confirm",
-    "zclassic23 vault intent commit --input='{\"plan_id\":\"<64hex>\",\"confirm\":true}'",
+    "wallet_scope,plan_id,confirm", "wallet_scope,plan_id,confirm",
+    "zclassic23 vault intent commit --input='{\"wallet_scope\":\"dev\",\"plan_id\":\"<64hex>\",\"confirm\":true}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
@@ -279,7 +279,8 @@ ZCL_COMMAND_READY_COMMAND(
     "vault.session.create", "vault.session", "",
     "Mint a scoped agent spend session; returns the token once",
     "Mints one agent spend session for an existing principal: a 128-bit "
-    "random session id carrying its own cap set (per-tx limit, rolling-window "
+    "random session id carrying its own wallet identity binding and cap set "
+    "(per-tx limit, rolling-window "
     "limit, optional recipient allowlist, optional expiry). Without confirm, "
     "a non-mutating plan naming the normalized grant plus the commit "
     "next-action; with confirm:true, the grant is persisted and the full "
@@ -296,8 +297,8 @@ ZCL_COMMAND_READY_COMMAND(
     "(separate uid, or a wrapper that refuses to exec anything else).", 0,
     "vault,session,agent,policy,mint,grant,spend",
     "zcl.vault_session_create.input.v1", "zcl.vault_session_create.v1",
-    "account,max_per_tx,max_per_window,window_seconds,allowlist,expires_in,confirm", "",
-    "zclassic23 vault session create --input='{\"account\":\"t1..\",\"max_per_tx\":\"1.5\",\"max_per_window\":\"10\",\"window_seconds\":\"86400\"}'",
+    "account,wallet_scope,max_per_tx,max_per_window,window_seconds,allowlist,expires_in,confirm", "wallet_scope",
+    "zclassic23 vault session create --input='{\"account\":\"t1..\",\"wallet_scope\":\"dev\",\"max_per_tx\":\"0.05\",\"max_per_window\":\"0.05\",\"window_seconds\":\"86400\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,

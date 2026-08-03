@@ -21,6 +21,10 @@
 #include "crypto/random_secret.h"
 #include "models/database.h"
 #include "models/principal.h"
+#include "models/wallet_identity.h"
+#include "services/vault_read.h"
+#include "services/wallet_money_service.h"
+#include "wallet/wallet.h"
 #include "platform/time_compat.h"
 
 #include <stdio.h>
@@ -67,7 +71,9 @@ bool agent_session_service_mint(const struct agent_session_mint_request *req,
         req->max_per_tx_zat < 0 || req->max_per_tx_zat > AGENT_SESSION_MAX_ZAT ||
         req->max_per_window_zat < 0 ||
         req->max_per_window_zat > AGENT_SESSION_MAX_ZAT ||
-        req->window_seconds <= 0 || req->expires_in_seconds < 0)
+        req->window_seconds <= 0 || req->expires_in_seconds < 0 ||
+        (strcmp(req->wallet_scope, "dev") != 0 &&
+         strcmp(req->wallet_scope, "prod") != 0))
         return ass_refuse("BAD_ARGS", "mint request field missing or out of "
                                       "range", why, why_cap);
 
@@ -80,6 +86,20 @@ bool agent_session_service_mint(const struct agent_session_mint_request *req,
     struct db_principal principal;
     if (!db_principal_find(ndb, req->account, &principal))
         return ass_refuse("UNKNOWN_ACCOUNT", req->account, why, why_cap);
+
+    struct wallet_identity_row identity;
+    if (!wallet_identity_find(ndb, &identity))
+        return ass_refuse("WALLET_IDENTITY_UNKNOWN",
+                          "the node has no persistent wallet identity",
+                          why, why_cap);
+    const char *expected_lane = strcmp(req->wallet_scope, "prod") == 0
+        ? "canonical" : "dev";
+    if (strcmp(identity.operator_lane, expected_lane) != 0)
+        return ass_refuse("WALLET_SCOPE_MISMATCH",
+                          "requested scope does not match this node's "
+                          "operator lane", why, why_cap);
+    char genesis[WALLET_GENESIS_HEX_LEN + 1];
+    wallet_identity_genesis_hex(&identity, genesis);
 
     const int64_t now = (int64_t)platform_time_wall_time_t();
     for (int draw = 0; draw < ASS_MINT_DRAWS; draw++) {
@@ -110,6 +130,11 @@ bool agent_session_service_mint(const struct agent_session_mint_request *req,
         s.expires_at =
             req->expires_in_seconds > 0 ? now + req->expires_in_seconds : 0;
         s.revoked = 0;
+        snprintf(s.wallet_scope, sizeof(s.wallet_scope), "%s",
+                 req->wallet_scope);
+        snprintf(s.wallet_instance_id, sizeof(s.wallet_instance_id), "%s",
+                 identity.wallet_instance_id);
+        snprintf(s.wallet_genesis, sizeof(s.wallet_genesis), "%s", genesis);
 
         if (!agent_session_save(ndb, &s))
             return ass_refuse("PERSIST_FAILED",
@@ -183,15 +208,64 @@ bool agent_session_service_revoke(const char *session_id,
 
 enum agent_session_authz agent_session_service_authorize(
     const char *session_id, int64_t amount_zat, const char *recipient,
-    bool commit, int64_t *window_remaining_zat)
+    const char *wallet_scope, bool commit,
+    int64_t *window_remaining_zat, int64_t *charged_zat)
 {
+    if (charged_zat)
+        *charged_zat = 0;
     struct node_db *ndb = app_runtime_node_db();
     if (!app_runtime_node_db_handle_open(ndb))
         LOG_RETURN(AGENT_SESSION_AUTHZ_STORE, ASS_TAG,
                    "runtime node_db unavailable to authorize a spend");
-    return agent_session_authorize(ndb, session_id, amount_zat, recipient,
+    struct wallet_identity_row identity;
+    if (!wallet_identity_find(ndb, &identity))
+        LOG_RETURN(AGENT_SESSION_AUTHZ_WALLET_MISMATCH, ASS_TAG,
+                   "wallet identity unavailable while authorizing spend");
+    struct wallet *wallet = app_runtime_wallet();
+    if (!wallet)
+        LOG_RETURN(AGENT_SESSION_AUTHZ_STORE, ASS_TAG,
+                   "runtime wallet unavailable while authorizing spend");
+    int64_t max_fee_zat = wallet_default_fee(wallet);
+    if (max_fee_zat < 0 || amount_zat > AGENT_SESSION_MAX_ZAT - max_fee_zat)
+        LOG_RETURN(AGENT_SESSION_AUTHZ_STORE, ASS_TAG,
+                   "wallet fee is invalid or overflows the requested value");
+    int64_t charge_zat = amount_zat + max_fee_zat;
+
+    struct vault_snapshot custody;
+    struct zcl_result snapshot = vault_read_snapshot(ndb, &custody);
+    if (!snapshot.ok)
+        LOG_RETURN(AGENT_SESSION_AUTHZ_STORE, ASS_TAG,
+                   "authoritative custody snapshot failed: %s",
+                   snapshot.message);
+    for (int i = 0; i < VAULT_CLASS_COUNT; i++) {
+        if (custody.rows[i].is_money && !custody.rows[i].determined)
+            LOG_RETURN(AGENT_SESSION_AUTHZ_STORE, ASS_TAG,
+                       "money class %s is undetermined: %s",
+                       custody.rows[i].class_name,
+                       custody.rows[i].reason);
+    }
+    if (strcmp(wallet_scope, "dev") == 0) {
+        struct wallet_money_snapshot money;
+        struct zcl_result mr = wallet_money_snapshot_build(
+            ndb, app_runtime_main_state(), wallet_scope, &money);
+        if (!mr.ok || !money.complete ||
+            strcmp(money.status, "CURRENT") != 0)
+            LOG_RETURN(AGENT_SESSION_AUTHZ_STORE, ASS_TAG,
+                       "development money snapshot is not current: %s",
+                       mr.ok ? money.reason : mr.message);
+        if (charge_zat > money.agent_available_zat)
+            LOG_RETURN(AGENT_SESSION_AUTHZ_WALLET_MISMATCH, ASS_TAG,
+                       "development reserve or 0.05000000-ZCL lab allocation would be exceeded");
+    }
+
+    enum agent_session_authz verdict = agent_session_authorize(
+        ndb, session_id, charge_zat, recipient,
+                                   wallet_scope, &identity,
                                    (int64_t)platform_time_wall_time_t(),
                                    commit, window_remaining_zat);
+    if (verdict == AGENT_SESSION_AUTHZ_OK && charged_zat)
+        *charged_zat = charge_zat;
+    return verdict;
 }
 
 bool agent_session_service_release(const char *session_id, int64_t amount_zat)
@@ -211,6 +285,8 @@ const char *agent_session_authz_token(enum agent_session_authz v)
     case AGENT_SESSION_AUTHZ_TX_LIMIT:      return "POLICY_TX_LIMIT";
     case AGENT_SESSION_AUTHZ_WINDOW_LIMIT:  return "POLICY_WINDOW_LIMIT";
     case AGENT_SESSION_AUTHZ_RECIPIENT:     return "POLICY_RECIPIENT";
+    case AGENT_SESSION_AUTHZ_WALLET_UNBOUND:return "POLICY_WALLET_UNBOUND";
+    case AGENT_SESSION_AUTHZ_WALLET_MISMATCH:return "POLICY_WALLET_MISMATCH";
     case AGENT_SESSION_AUTHZ_STORE:         return "POLICY_STORE";
     }
     return "POLICY_STORE";

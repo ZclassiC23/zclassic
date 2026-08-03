@@ -24,6 +24,14 @@
 
 #include <stddef.h>
 
+/* Controller-owned loopback port. Keeping the transport above services
+ * preserves the shape dependency direction. NULL restores fail-closed. */
+typedef char *(*metaverse_agent_rpc_fn)(const char *node_datadir, int rpc_port,
+                                        const char *method,
+                                        const char *params_json,
+                                        long connect_ms, long total_ms);
+void metaverse_agent_service_set_rpc(metaverse_agent_rpc_fn fn);
+
 /* Refusal codes carried in struct zcl_result::code. */
 enum {
     MVS_ERR_BAD_ARGS = -1,      /* dir NULL/empty, too long, or not absolute */
@@ -42,6 +50,13 @@ struct zcl_result metaverse_agent_service_status(const char *dir, char *out,
  * log even when the rendered tail is shorter. */
 struct zcl_result metaverse_agent_service_audit(const char *dir, size_t limit,
                                                 char *out, size_t out_cap,
+                                                size_t *out_len);
+
+/* Reconcile the broker's owner-created dev/prod bindings against each live
+ * node. Missing/unreachable/conflicting readers stay explicit; no endpoint or
+ * datadir path is rendered. */
+struct zcl_result metaverse_agent_service_money(const char *dir, char *out,
+                                                size_t out_cap,
                                                 size_t *out_len);
 
 #endif /* ZCL_SERVICES_METAVERSE_AGENT_SERVICE_H */

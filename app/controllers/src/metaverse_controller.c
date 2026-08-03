@@ -31,6 +31,7 @@
 #include "command/native_command.h"
 
 #include "base/log_macros.h"
+#include "controllers/rpc_client.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "metaverse/property_id.h"
@@ -51,6 +52,14 @@
  * this buffer is the slack above it so a document that would exceed the budget
  * is reported as too large rather than silently truncated. */
 #define MV_DOC_MAX 16384
+
+static char *mv_money_rpc(const char *datadir, int rpc_port,
+                          const char *method, const char *params,
+                          long connect_ms, long total_ms)
+{
+    node_rpc_client_init(datadir, rpc_port);
+    return node_rpc_call_deadline(method, params, connect_ms, total_ms);
+}
 
 static void mv_fail(struct zcl_command_reply *reply,
                     enum zcl_command_exit exit_code, const char *code,
@@ -135,6 +144,26 @@ void zcl_native_handle_metaverse_agent_status(
     size_t n = 0;
     struct zcl_result r =
         metaverse_agent_service_status(dir, doc, sizeof(doc), &n);
+    if (!r.ok) {
+        mv_fail_result(reply, &r);
+        return;
+    }
+    (void)mv_emit(reply, doc, n);
+}
+
+/* ── metaverse.agent.money ─────────────────────────────────────────────── */
+void zcl_native_handle_metaverse_agent_money(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    const char *dir = mv_dir(request, reply);
+    if (!dir)
+        return;
+    char doc[MV_DOC_MAX];
+    size_t n = 0;
+    metaverse_agent_service_set_rpc(mv_money_rpc);
+    struct zcl_result r =
+        metaverse_agent_service_money(dir, doc, sizeof(doc), &n);
     if (!r.ok) {
         mv_fail_result(reply, &r);
         return;
