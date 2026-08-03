@@ -28,7 +28,7 @@
 #define ZCL_CONFIG_CONSENSUS_STATE_INSTALL_RUNTIME_H
 
 #include "config/consensus_state_snapshot_install.h" /* enum consensus_state_install_status */
-#include "util/result.h"                             /* struct zcl_result, ZCL_RESULT_MSG_MAX */
+#include "util/result.h"                             /* struct zcl_result */
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -57,7 +57,9 @@ struct consensus_state_install_runtime_result {
     bool     retriable_headers_not_ready;
     int32_t  height;          /* installed bundle height (−1 until known) */
     int32_t  hstar;           /* durable H* after install (−1 until known) */
-    char     reason[ZCL_RESULT_MSG_MAX];
+    /* Must retain activate's complete operator-facing success detail,
+     * including its independently usable prior-generation path. */
+    char     reason[CONSENSUS_STATE_ACTIVATE_REASON_MAX];
 };
 
 /* True iff this node's validated header chain genuinely OWNS the compiled SHA3

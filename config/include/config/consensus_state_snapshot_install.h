@@ -303,6 +303,8 @@ struct consensus_state_activate_request {
     uint8_t assisted_sapling_root[32];
 };
 
+#define CONSENSUS_STATE_ACTIVATE_REASON_MAX 512
+
 struct consensus_state_activate_result {
     enum consensus_state_install_status status;
     bool activated;
@@ -313,7 +315,7 @@ struct consensus_state_activate_result {
     uint64_t anchor_count;
     uint64_t nullifier_count;
     char prior_generation_path[256];
-    char reason[192];
+    char reason[CONSENSUS_STATE_ACTIVATE_REASON_MAX];
 };
 
 bool consensus_state_snapshot_install_activate(

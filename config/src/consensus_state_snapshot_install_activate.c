@@ -159,7 +159,7 @@ static bool activate_fail(struct consensus_state_activate_result *result,
                           enum consensus_state_install_status status,
                           const char *fmt, ...)
 {
-    char reason[192];
+    char reason[CONSENSUS_STATE_ACTIVATE_REASON_MAX];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(reason, sizeof(reason), fmt, ap);
