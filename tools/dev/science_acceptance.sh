@@ -224,6 +224,7 @@ sa_spawn() { # $1=datadir $2=p2p $3=rpc $4=fs $5=https $6=connect-target $7=tran
         -datadir="$dd" -regtest \
         -port="$p2p" -rpcport="$rpc" -fsport="$fs" -httpsport="$https" \
         -connect="$conn" -packagehost=1 "${transport_arg[@]}" \
+        -allow-plaintext-wallet -wallet-no-phrase-backup \
         -nobgvalidation -nolegacyimport -nofilesync -showmetrics=0 \
         >"$dd/node.log" 2>&1 &
     echo "$!"   # PID == PGID (setsid leader)
@@ -616,9 +617,11 @@ sa_mine_to 101 "$ADDR"
 sa_wait_height "$SA_DD_B" "$B_RPC" 101 || sa_die "B did not sync funding chain"
 out="$(sa_sci "$SA_DD_A" core.identity.anchor "{\"pubkey\":\"$PUB_A\"}")"
 [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "A identity anchor failed: $out"
+[ "$(sa_jget "$out" 'd["data"].get("status")')" = "broadcast" ] || sa_die "A identity anchor was not broadcast: $out"
 sa_mine_empty 1
 out="$(sa_sci "$SA_DD_A" core.identity.anchor "{\"pubkey\":\"$PUB_B\"}")"
 [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "B identity anchor failed: $out"
+[ "$(sa_jget "$out" 'd["data"].get("status")')" = "broadcast" ] || sa_die "B identity anchor was not broadcast: $out"
 sa_mine_empty 23
 sa_wait_height "$SA_DD_B" "$B_RPC" 125 || sa_die "B did not sync final beacon chain"
 sa_wait_identity_active "$SA_DD_A" "$PUB_A" || sa_die "A master did not project ACTIVE"
