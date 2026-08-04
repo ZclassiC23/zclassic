@@ -125,6 +125,7 @@ NOW_REVIEW=1900
 SA_DD_A=""; SA_DD_B=""; SA_WORK=""
 SA_PGID_A=""; SA_PGID_B=""
 SA_CLEANED=0
+SA_KEEP="${SCIENCE_KEEP:-0}"
 SA_STEP_START=$(date +%s)
 
 sa_die() { echo "science-acceptance: FATAL: $*" >&2; exit 2; }
@@ -175,6 +176,10 @@ sa_cleanup() {
     sa_kill_group "$SA_PGID_B"
     [ -n "$SA_DD_A" ] && pkill -KILL -f -- "-datadir=$SA_DD_A" 2>/dev/null || true
     [ -n "$SA_DD_B" ] && pkill -KILL -f -- "-datadir=$SA_DD_B" 2>/dev/null || true
+    if [ "$SA_KEEP" = "1" ]; then
+        echo "science-acceptance: preserved A=$SA_DD_A B=$SA_DD_B work=$SA_WORK"
+        return 0
+    fi
     sa_rm_dir "$SA_DD_A"
     sa_rm_dir "$SA_DD_B"
     sa_rm_dir "$SA_WORK"
@@ -264,6 +269,7 @@ sa_wait_identity_active() { # $1=datadir $2=master pubkey
         [ "$(sa_jget "$out" 'd.get("data",{}).get("status","")' 2>/dev/null || true)" = "active" ] && return 0
         sleep 0.5
     done
+    echo "science-acceptance: identity ACTIVE wait last reply: $out" >&2
     return 1
 }
 
@@ -622,10 +628,13 @@ out="$(sa_sci "$SA_DD_A" core.identity.anchor "{\"pubkey\":\"$PUB_A\"}")"
 [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "A identity anchor failed: $out"
 [ "$(sa_jget "$out" 'd["data"].get("status")')" = "broadcast" ] || sa_die "A identity anchor was not broadcast: $out"
 sa_mine_empty 1
+sa_wait_height "$SA_DD_B" "$B_RPC" 102 || sa_die "B did not fold A's anchor block"
 out="$(sa_sci "$SA_DD_A" core.identity.anchor "{\"pubkey\":\"$PUB_B\"}")"
 [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "B identity anchor failed: $out"
 [ "$(sa_jget "$out" 'd["data"].get("status")')" = "broadcast" ] || sa_die "B identity anchor was not broadcast: $out"
-sa_mine_empty 23
+sa_mine_empty 1
+sa_wait_height "$SA_DD_B" "$B_RPC" 103 || sa_die "B did not fold its anchor block"
+sa_mine_empty 22
 sa_wait_height "$SA_DD_B" "$B_RPC" 125 || sa_die "B did not sync final beacon chain"
 sa_wait_identity_active "$SA_DD_A" "$PUB_A" || sa_die "A master did not project ACTIVE"
 sa_wait_identity_active "$SA_DD_B" "$PUB_B" || sa_die "B master did not project ACTIVE"
