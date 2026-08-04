@@ -98,12 +98,16 @@ void rpc_table_must_append(struct rpc_table *t, const struct rpc_command *cmd)
      * exact pathology. Boot-time invariant: every registrar registers
      * cleanly OR the operator gets a precise diagnosis. */
     const char *reason;
+    char reason_buffer[64];
     if (t->running)
         reason = "table_already_running";
     else if (rpc_table_find(t, cmd->name))
         reason = "duplicate_name";
-    else if (t->num_commands >= MAX_RPC_COMMANDS)
-        reason = "table_full_cap_256";
+    else if (t->num_commands >= MAX_RPC_COMMANDS) {
+        (void)snprintf(reason_buffer, sizeof(reason_buffer),
+                       "table_full_cap_%u", (unsigned)MAX_RPC_COMMANDS);
+        reason = reason_buffer;
+    }
     else
         reason = "unknown";
 

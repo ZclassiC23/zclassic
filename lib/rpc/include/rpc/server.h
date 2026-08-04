@@ -35,7 +35,7 @@ struct rpc_command {
     bool ok_safe_mode;
 };
 
-#define MAX_RPC_COMMANDS 256
+#define MAX_RPC_COMMANDS 512
 
 struct rpc_table {
     struct rpc_command commands[MAX_RPC_COMMANDS];
