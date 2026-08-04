@@ -3,8 +3,9 @@
 This page is the developer and agent map for paid file offers and purchases.
 The seller-authenticated offer ingress and exact confirmed-payment authority
 are implemented. The encrypted `zfileget.v1` request and authorize-before-read
-gate are implemented. Local paid offer/content registration and buyer wallet
-planning remain deliberately unavailable.
+gate are implemented. Owner-private paid-content registration and verified
+chunk loading are implemented. Local paid-offer signing/announcement and buyer
+wallet planning remain deliberately unavailable.
 
 ## Table of contents
 
@@ -15,11 +16,12 @@ planning remain deliberately unavailable.
 5. [Canonical Sapling memo](#canonical-sapling-memo)
 6. [Payment reconciliation](#payment-reconciliation)
 7. [Buyer-authenticated delivery request](#buyer-authenticated-delivery-request)
-8. [Validation invariants](#validation-invariants)
-9. [API posture](#api-posture)
-10. [Where code belongs](#where-code-belongs)
-11. [AI and developer workflow](#ai-and-developer-workflow)
-12. [Proof checklist](#proof-checklist)
+8. [Owner-private seller content](#owner-private-seller-content)
+9. [Validation invariants](#validation-invariants)
+10. [API posture](#api-posture)
+11. [Where code belongs](#where-code-belongs)
+12. [AI and developer workflow](#ai-and-developer-workflow)
+13. [Proof checklist](#proof-checklist)
 
 ## Current boundary
 
@@ -36,7 +38,7 @@ restart/reorg reconciliation       IMPLEMENTED
 per-chunk authorization service    IMPLEMENTED
 encrypted paid file request        IMPLEMENTED
 authorize-before-content-read      IMPLEMENTED
-owner content registration/reader  PLANNED
+owner content registration/reader  IMPLEMENTED
 ```
 
 `zfileoffer` is an authenticated P2P contract, not a blockchain transaction.
@@ -256,12 +258,52 @@ fixed decode -> session/signature verification
 
 `PENDING`, `UNKNOWN`, `CONFLICTED`, `REJECTED`, and unauthenticated requests
 never invoke the content loader. The production boot adapter already connects
-the authorization step to `market_payment_authorize_chunk`; its loader is
-intentionally NULL until the next resource slice adds an owner-created content
-registration. Consequently the current production result after a confirmed
-payment is `CONTENT_UNAVAILABLE`, not an unsafe path guess or accidental free
-serve. The existing `ROM` path remains a separate price-zero recovery service
-and cannot be used as a paid-content registry.
+the authorization step to `market_payment_authorize_chunk` and the loader to
+the owner-created `market_contents` resource. A confirmed payment still gets
+`CONTENT_UNAVAILABLE` when the exact offer is unregistered, its file vanished,
+or its current chunk digest differs; none of those cases permits a path guess
+or accidental free serve. The existing `ROM` path remains a separate
+price-zero recovery service and cannot be used as a paid-content registry.
+
+## Owner-private seller content
+
+`app market content register` is an owner-only, no-funds mutation. It accepts
+an exact signed `offer_id` and a local content path, then performs this bounded
+workflow:
+
+```text
+authenticated current paid offer
+        |
+        v
+open O_NOFOLLOW + require non-empty regular file
+        |
+        v
+canonicalize and reopen the same device/inode
+        |
+        v
+derive every 50 MiB chunk SHA3 and manifest root
+        |
+        v
+require exact signed size/chunk count/root
+        |
+        v
+atomically upsert one market_contents row
+```
+
+The row keeps the canonical private path and complete bounded chunk manifest
+inside the operator's `node.db`. Native and private REST reads project only
+`offer_id`, `root_hash`, `size_bytes`, `num_chunks`, and `registered_at`.
+Paths and manifests are absent from replies, logs, P2P messages, and public
+market listings. Registration is capped at 4,096 chunks (200 GiB at the fixed
+50 MiB chunk size), so a signed but operationally unreasonable offer cannot
+force an unbounded SQLite blob or hashing allocation.
+
+Every paid read reopens the registered path with `O_NOFOLLOW`, requires the
+same size and regular-file shape, reads exactly one chunk, and compares its
+current SHA3 with the persisted manifest. Restart reconstructs the reader from
+SQLite; replacement, truncation, or byte mutation revokes delivery without
+altering payment evidence. The delivery layer independently hashes the returned
+bytes again before emitting `READY`.
 
 ## Validation invariants
 
@@ -292,8 +334,10 @@ context.
 |---|---|---|
 | `app market list` | ready/read-only | Lists cached offers; paid rows expose `authenticated`, `offer_id`, expiry, and exact total. |
 | `app market status` | ready/read-only | Reports bounded cache/persistence state. |
+| `app market content list` | ready/owner-read | Lists path-free local seller bindings. |
+| `app market content register` | ready/owner-write | Verifies and atomically binds exact private bytes to one signed offer; moves no funds and announces nothing. |
 | `app market offer` | planned/fail-closed | Awaits local manifest construction, owner signing, and origin announcement. |
-| `app market buy` | planned/fail-closed | Seller verification and authenticated delivery gate exist; buyer wallet plan/commit and owner content registration remain. |
+| `app market buy` | planned/fail-closed | Seller registration and authenticated delivery exist; buyer wallet plan/commit remains. |
 | `romseed_register` | ready/operator | Registers verified price-zero recovery artifacts; it is not a paid offer. |
 | `app transaction-types show --type=market_purchase` | ready/read-only | Canonical machine-readable readiness and proof record. |
 
@@ -316,9 +360,10 @@ feature slice:
 | durable payment locator | `app/models/src/market_payment_claim.c` |
 | exact chain/note reconciliation | `app/services/src/file_market_payment_service.c` |
 | signed delivery codec and no-read gate | `lib/net/src/file_market_delivery.c` |
-| boot authorization adapter | `config/src/boot_file_market_delivery.c` |
+| private content rows and path-free projection | `app/models/src/market_content.c` |
+| registration and verified chunk reader | `app/services/src/file_market_content_service.c` |
+| boot authorization + content adapter | `config/src/boot_file_market_delivery.c` |
 | future buyer plan/commit | a dedicated wallet-touching `app/services/` service |
-| future seller content registry | an owner-private ActiveRecord resource/service, never the free ROM registry |
 | thin native/REST adapters | `app/controllers/` plus `config/commands/` |
 | semantic readiness/proof | `transaction_types.def` and transaction lab |
 
@@ -330,24 +375,27 @@ balance or confirmation counter.
 
 Do not build a payment by copying structs or invoking an RPC from memory:
 
-1. Read `app transaction-types show --type=market_purchase` and refuse while
+1. A seller first runs `app market content register` with the exact signed
+   `offer_id`; then checks `app market content list`. Do not copy the private
+   path into notes, receipts, logs, or peer messages.
+2. Read `app transaction-types show --type=market_purchase` and refuse while
    availability is `planned`.
-2. Discover the exact `app market buy` schema from the native registry once
+3. Discover the exact `app market buy` schema from the native registry once
    that operation becomes ready.
-3. Select an exact current `offer_id`; never infer an offer from a filename or
+4. Select an exact current `offer_id`; never infer an offer from a filename or
    default peer.
-4. Read identity-bound custody and create an owner-visible wallet plan that
+5. Read identity-bound custody and create an owner-visible wallet plan that
    commits the offer, range, output, memo, maximum fee, expiry, tip, and
    idempotency key.
-5. Keep the buyer private key and wallet keys behind their signing boundaries.
-6. Treat a txid or `PENDING` claim as locked. Only the seller's synchronous
+6. Keep the buyer private key and wallet keys behind their signing boundaries.
+7. Treat a txid or `PENDING` claim as locked. Only the seller's synchronous
    `CONFIRMED` authorization permits bytes to leave the paid file service.
-7. Sign each `zfileget.v1` request for the current encrypted session. Do not
+8. Sign each `zfileget.v1` request for the current encrypted session. Do not
    reuse a request body across reconnects or expose the ephemeral buyer seed.
-8. Accept bytes only after the typed `READY` reply and verify the announced
+9. Accept bytes only after the typed `READY` reply and verify the announced
    chunk SHA3. `CONTENT_UNAVAILABLE` means the seller has not registered the
    content locally; it is not permission to try a filesystem path.
-9. On `UNKNOWN` or `CONFLICTED`, stop and report the reason; never substitute
+10. On `UNKNOWN` or `CONFLICTED`, stop and report the reason; never substitute
    zero, retry a spend blindly, or bypass reconciliation.
 
 ## Proof checklist
@@ -374,4 +422,6 @@ Only then change its transaction-catalog availability or proof level.
 <!-- claim: symbol-present file_payment_auth_verify_for_offer lib/net/src/file_market_payment.c -->
 <!-- claim: symbol-present market_payment_authorize_chunk app/services/src/file_market_payment_service.c -->
 <!-- claim: symbol-present file_market_delivery_prepare lib/net/src/file_market_delivery.c -->
+<!-- claim: symbol-present file_market_content_register app/services/src/file_market_content_service.c -->
+<!-- claim: symbol-present db_market_content_save app/models/src/market_content.c -->
 <!-- claim: symbol-present market_purchase app/controllers/include/controllers/transaction_types.def -->

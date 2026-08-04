@@ -1076,6 +1076,7 @@ static int test_wallet_mutating_native_e2e(void)
 static int g_app_name_register_calls;
 static int g_app_msg_send_calls;
 static int g_app_token_send_calls;
+static int g_app_market_content_calls;
 static bool g_app_name_degraded;
 
 static char *app_write_stub_rpc(const char *method, const char *params_json)
@@ -1106,6 +1107,17 @@ static char *app_write_stub_rpc(const char *method, const char *params_json)
                       "22222222222222222222222222222222\","
                       "\"to\":\"t1stub\",\"amount\":25,\"fee\":10000}");
     }
+    if (method && strcmp(method, "zmarket_content_register") == 0) {
+        g_app_market_content_calls++;
+        return strdup("{\"schema\":\"zcl.market_content.v1\","
+                      "\"status\":\"registered\","
+                      "\"offer_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+                      "\"root_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\","
+                      "\"size_bytes\":8193,\"num_chunks\":1,"
+                      "\"registered_at\":1700000000}");
+    }
     if (method && strcmp(method, "swap_initiate") == 0)
         return strdup("{\"swap_id\":\"stub\",\"role\":\"initiator\","
                       "\"state\":\"pending\",\"p2sh_address\":\"t3Stub\"}");
@@ -1121,6 +1133,7 @@ static int test_app_write_native_e2e(void)
         g_app_name_register_calls = 0;
         g_app_msg_send_calls = 0;
         g_app_token_send_calls = 0;
+        g_app_market_content_calls = 0;
         g_app_name_degraded = false;
         node_rpc_client_set_test_hook(app_write_stub_rpc);
 
@@ -1259,7 +1272,40 @@ static int test_app_write_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&token_plan);
 
-        /* 6. messaging.send picks the recipient key its channel names: the p2p
+        /* 6. Private seller content is an idempotent no-funds app write. It
+         * executes once without a plan round trip and never echoes the path. */
+        const struct zcl_command_spec *content_spec =
+            find_spec(reg, "app.market.content.register");
+        ASSERT(content_spec != NULL);
+        ASSERT_EQ(content_spec->availability, ZCL_COMMAND_READY);
+        ASSERT_EQ(content_spec->confirmation, ZCL_COMMAND_CONFIRM_NONE);
+        struct json_value content_input;
+        json_init(&content_input);
+        json_set_object(&content_input);
+        (void)json_push_kv_str(
+            &content_input, "offer_id",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        (void)json_push_kv_str(&content_input, "content_path",
+                               "/owner/private/paid-content.bin");
+        struct zcl_command_request content_req = {
+            .spec = content_spec, .input = &content_input, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, content_spec->output_schema);
+        zcl_native_handle_market_content_register(&content_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_market_content_calls, 1);
+        char content_rendered[4096];
+        size_t content_len = json_write(&reply.data, content_rendered,
+                                        sizeof(content_rendered));
+        ASSERT(content_len > 0);
+        ASSERT(strstr(content_rendered, "registered") != NULL);
+        ASSERT(strstr(content_rendered, "/owner/private") == NULL);
+        ASSERT(strstr(content_rendered, "content_path") == NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&content_input);
+
+        /* 7. messaging.send picks the recipient key its channel names: the p2p
          *    channel demands peer_id and refuses before touching the node. */
         const struct zcl_command_spec *send_spec =
             find_spec(reg, "app.messaging.send");

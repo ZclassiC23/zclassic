@@ -7,6 +7,7 @@
 #include "config/boot_internal.h"
 #include "net/file_market_delivery.h"
 #include "platform/time_compat.h"
+#include "services/file_market_content_service.h"
 #include "services/file_market_payment_service.h"
 #include "sync/sync_state.h"
 #include "util/log_macros.h"
@@ -51,6 +52,21 @@ boot_authorize_file_market_chunk(
     return FILE_MARKET_DELIVERY_REJECTED;
 }
 
+static bool boot_load_file_market_chunk(
+    const uint8_t offer_id[32], uint32_t chunk_index,
+    struct file_market_delivery_chunk *out, void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (!svc || !svc->node_db || !svc->node_db->open)
+        return false;
+    struct zcl_result loaded = file_market_content_load_chunk(
+        svc->node_db, offer_id, chunk_index, out);
+    if (!loaded.ok)
+        LOG_WARN("market", "paid content load failed: code=%d %s",
+                 loaded.code, loaded.message);
+    return loaded.ok;
+}
+
 void boot_wire_file_market_delivery(struct boot_svc_ctx *svc)
 {
     if (!svc || !svc->params) {
@@ -60,6 +76,6 @@ void boot_wire_file_market_delivery(struct boot_svc_ctx *svc)
     file_market_delivery_set_handlers(
         svc->params->consensus.hashGenesisBlock.data,
         boot_authorize_file_market_chunk,
-        NULL, /* owner-registered seller content reader lands next */
+        boot_load_file_market_chunk,
         svc);
 }

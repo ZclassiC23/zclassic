@@ -414,6 +414,7 @@ int test_swap_settlement(void);
 int test_file_market(void);
 int file_market_payment_tests(void);
 int file_market_delivery_tests(void);
+int file_market_content_tests(void);
 int test_strong_params(void);
 int test_workpool(void);
 int test_app_context(void);

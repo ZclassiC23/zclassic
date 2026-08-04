@@ -158,12 +158,13 @@ logs, or the notebook. A public mainnet txid may be recorded after broadcast.
   `zcode_release_anchor` in this catalog commits a ZCODE-derived root on-chain.
 - File-market offers, challenges, proofs, and signed payment claims are P2P or
   local workflow objects. `market_purchase` remains `planned` because buyer
-  wallet plan/commit and owner content registration are not wired end to end.
+  wallet plan/commit is not wired end to end.
   Paid offer ingress and exact confirmed Sapling-payment reconciliation are
   network-bound, expiry-checked, durable, and reorg-aware. The session-bound
   `zfileget.v1` delivery request now verifies the buyer and authorizes before
-  invoking any content reader, but its production reader stays deliberately
-  absent until an owner-private registry lands; see
+  invoking the owner-private content reader. `app market content register`
+  binds a signed offer to exact local bytes; restart reconstructs that binding
+  and file mutation revokes delivery. See
   [`FILE_MARKET_PROTOCOL.md`](./FILE_MARKET_PROTOCOL.md) for the exact contract
   and remaining purchase-service boundary.
 - Legacy `zclassicd` wallet funds are operator-owned and outside agent custody.

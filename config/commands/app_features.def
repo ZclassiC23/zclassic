@@ -37,6 +37,8 @@ ZCL_COMMAND_BRANCH("app.names", "app", "Names", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.tokens", "app", "Tokens", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.messaging", "app", "Messaging", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.market", "app", "Market", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.market.content", "app.market", "Seller content",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.store", "app", "Store", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.swap", "app", "Swaps", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.qr", "app", "QR", ZCL_COMMAND_LAYER_APP)
@@ -386,6 +388,41 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_READ(
+    "app.market.content.list", "app.market.content", "",
+    "List owner-registered paid content",
+    "Every local paid-content binding, showing only its signed offer ID, "
+    "manifest root, size, chunk count, and registration time. Private paths "
+    "and chunk manifests never enter the response.", ZCL_COMMAND_LIST_BUDGET,
+    "market,content,seller,files,list", "zcl.command.empty_input.v1",
+    "zcl.market_contents.index.v1", "", "",
+    "zclassic23 app market content list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.market.content.register", "app.market.content", "",
+    "Bind private seller bytes to a signed offer",
+    "Hashes one non-symlink regular file, verifies its exact size and chunk "
+    "manifest root against the authenticated paid offer, and atomically "
+    "records the private canonical binding. The path is accepted only as "
+    "owner input and is absent from results, logs, REST, and peer traffic.", 0,
+    "market,content,seller,register,manifest",
+    "zcl.app_market_content_register.input.v1", "zcl.market_content.v1",
+    "offer_id,content_path", "offer_id",
+    "zclassic23 app market content register --input='{\"offer_id\":\"<64hex>\",\"content_path\":\"/private/file\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_market_content_register)
 
 ZCL_COMMAND_PLANNED_COMMAND(
     "app.market.offer", "app.market", "", "Announce a file for sale",

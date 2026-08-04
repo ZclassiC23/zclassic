@@ -230,6 +230,45 @@ static int t_reopen_is_idempotent(void)
     return failures;
 }
 
+static int t_market_content_registry_schema(void)
+{
+    int failures = 0;
+    char dir[256];
+    db_mig_path(dir, sizeof(dir), "market_content");
+    mkdir_p(dir);
+    char dbpath[512];
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("db_mig: v57 installs private market content resource once") {
+        struct node_db ndb;
+        ASSERT(node_db_open(&ndb, dbpath));
+        ASSERT_EQ(node_db_schema_version(&ndb), NODE_DB_SCHEMA_LATEST);
+        node_db_close(&ndb);
+
+        sqlite3 *raw = NULL;
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM schema_migrations "
+            "WHERE version='057'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master "
+            "WHERE type='table' AND name='market_contents'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND "
+            "name IN ('idx_market_contents_root',"
+            "'idx_market_contents_registered')") == 2);
+        sqlite3_close(raw);
+
+        struct node_db reopened;
+        ASSERT(node_db_open(&reopened, dbpath));
+        ASSERT_EQ(node_db_schema_version(&reopened), NODE_DB_SCHEMA_LATEST);
+        node_db_close(&reopened);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 static int t_memory_open(void)
 {
     int failures = 0;
@@ -374,6 +413,7 @@ int test_db_migration_idempotent(void)
     failures += t_fresh_reaches_latest();
     failures += t_v20_wallet_notes_upgrade_adds_source();
     failures += t_reopen_is_idempotent();
+    failures += t_market_content_registry_schema();
     failures += t_memory_open();
     failures += t_turbo_mode_roundtrip();
     failures += t_newer_schema_refuses_open_before_staging_cleanup();

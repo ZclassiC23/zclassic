@@ -135,6 +135,13 @@ char *zcl_native_zmarket_status_body(const struct json_value *args,
     return app_native_rpc_noargs("zmarket_status", err);
 }
 
+char *zcl_native_zmarket_content_list_body(
+    const struct json_value *args, struct zcl_native_body_err *err)
+{
+    (void)args;
+    return app_native_rpc_noargs("zmarket_content_list", err);
+}
+
 /* ── Atomic swaps (ZSWP) ────────────────────────────────────── */
 
 char *zcl_native_swap_chains_body(const struct json_value *args,
@@ -224,6 +231,14 @@ static void tramp_market_status(const struct zcl_command_request *request,
     zcl_native_bridge_run(request, zcl_native_zmarket_status_body, reply);
 }
 
+static void tramp_market_content_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_zmarket_content_list_body,
+                          reply);
+}
+
 static void tramp_swap_chains(const struct zcl_command_request *request,
                               struct zcl_command_reply *reply)
 {
@@ -243,6 +258,7 @@ static const struct zcl_hotswap_leaf_replacement k_leaves[] = {
     { "app.messaging.inbox", tramp_msg_inbox },
     { "app.market.list",     tramp_market_list },
     { "app.market.status",   tramp_market_status },
+    { "app.market.content.list", tramp_market_content_list },
     { "app.swap.chains",     tramp_swap_chains },
     { "app.swap.list",       tramp_swap_list },
 };

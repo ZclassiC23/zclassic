@@ -382,6 +382,37 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 57) {
+        /* v57: owner-private paid-file content registry. One atomic row binds
+         * an authenticated offer_id to the canonical local regular file and
+         * its complete bounded chunk-digest manifest. The private path and
+         * manifest are never part of the public market projection. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS market_contents ("
+            "offer_id BLOB NOT NULL PRIMARY KEY CHECK(length(offer_id)=32),"
+            "root_hash BLOB NOT NULL CHECK(length(root_hash)=32),"
+            "private_path TEXT NOT NULL "
+            "CHECK(length(private_path)>0 AND length(private_path)<4096),"
+            "size_bytes INTEGER NOT NULL CHECK(size_bytes>0),"
+            "num_chunks INTEGER NOT NULL "
+            "CHECK(num_chunks>0 AND num_chunks<=4096),"
+            "chunk_hashes BLOB NOT NULL "
+            "CHECK(length(chunk_hashes)=num_chunks*32),"
+            "registered_at INTEGER NOT NULL CHECK(registered_at>0))"
+            " WITHOUT ROWID");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_market_contents_root "
+            "ON market_contents(root_hash)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_market_contents_registered "
+            "ON market_contents(registered_at DESC)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('057')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 57);
+        current_ver = 57;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

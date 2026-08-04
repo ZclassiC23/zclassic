@@ -1272,6 +1272,9 @@ void zcl_native_handle_message_send(
 void zcl_native_handle_message_read(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_market_content_register(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_swap_initiate(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

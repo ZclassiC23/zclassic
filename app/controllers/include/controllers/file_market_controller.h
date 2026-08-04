@@ -19,5 +19,6 @@ void register_market_rpc_commands(struct rpc_table *t);
 
 #include "json/json.h"
 bool api_market_list(struct json_value *result);
+bool api_market_content_list(struct json_value *result);
 
 #endif

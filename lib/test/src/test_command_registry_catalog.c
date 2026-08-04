@@ -2511,11 +2511,12 @@ static int test_wallet_shielded_reads_bound(void)
 /* The ZCL application-feature leaves (config/commands/app_features.def).
  *
  * Read surface (names resolve/list, tokens list, messaging inbox, market
- * list/status, swap chains/list): READY and bridge-dispatched.
+ * list/status/content, swap chains/list): READY and bridge-dispatched.
  *
  * Write surface, split on whether the backing RPC finishes its stated job:
  *   READY  — the six ZNAM writes, messaging send/read, swap
- *            initiate/participate. Each binds a dedicated handler in
+ *            initiate/participate, and private content registration. Each
+ *            binds a dedicated handler in
  *            app/controllers/src/app_write_native_handlers.c over a backing
  *            RPC that really signs/broadcasts (ZNAM), writes to the peer
  *            socket (ZMSG p2p), or mints and persists the contract (ZSWP).
@@ -2536,11 +2537,17 @@ static int test_app_features_leaves(void)
             ASSERT_EQ(b->mode, ZCL_COMMAND_MODE_BRANCH);
             ASSERT_STR_EQ(b->parent, "app");
         }
+        const struct zcl_command_spec *content_branch =
+            find_spec(reg, "app.market.content");
+        ASSERT(content_branch != NULL);
+        ASSERT_EQ(content_branch->mode, ZCL_COMMAND_MODE_BRANCH);
+        ASSERT_STR_EQ(content_branch->parent, "app.market");
 
         /* Read surface: READY with exactly one body-function binding. */
         const char *reads[] = {
             "app.names.resolve", "app.names.list", "app.tokens.list",
             "app.messaging.inbox", "app.market.list", "app.market.status",
+            "app.market.content.list",
             "app.swap.chains", "app.swap.list",
         };
         for (size_t i = 0; i < sizeof(reads) / sizeof(reads[0]); i++) {
@@ -2559,6 +2566,7 @@ static int test_app_features_leaves(void)
             "app.names.register", "app.names.update", "app.names.transfer",
             "app.names.renew", "app.names.set-record", "app.names.set-text",
             "app.messaging.send", "app.messaging.read",
+            "app.market.content.register",
             "app.swap.initiate", "app.swap.participate",
         };
         for (size_t i = 0;
@@ -2578,9 +2586,11 @@ static int test_app_features_leaves(void)
             if (s->confirmation == ZCL_COMMAND_CONFIRM_PLAN_COMMIT)
                 ASSERT(strstr(s->input_keys, "confirm") != NULL);
         }
-        /* app.messaging.read is the one write with no funds and no network
-         * effect, so it is the one that does NOT demand a confirm round-trip. */
+        /* These local writes have no funds/network effect and do not demand a
+         * confirm round trip. */
         ASSERT_EQ(find_spec(reg, "app.messaging.read")->confirmation,
+                  ZCL_COMMAND_CONFIRM_NONE);
+        ASSERT_EQ(find_spec(reg, "app.market.content.register")->confirmation,
                   ZCL_COMMAND_CONFIRM_NONE);
 
         /* Still-closed surface: PLANNED, no handler, honest reason, blocks
