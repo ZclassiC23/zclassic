@@ -78,7 +78,7 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 112 | 27 | 85 |
 | `config/commands/apps.def` | 14 | 3 | 11 |
-| `config/commands/app_features.def` | 45 | 10 | 35 |
+| `config/commands/app_features.def` | 49 | 12 | 37 |
 | `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 45 | 11 | 34 |
@@ -508,6 +508,13 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `app blog anchor` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `event_id`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_blog_anchor.v1` | `zclassic23 app blog anchor --input='{"wallet_scope":"dev","name":"alice","event_id":"<64-hex>","idempotency_key":"blog-alice-1"}'` | Anchor a signed Blog event on-chain |
+
+#### `app.payments.zpay` — ZPAY
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app payments zpay compose` | ready | read / read / public · instant/tiny | **`network`**, **`message_type`**, **`created_at`**, **`expires_at`**, **`nonce`**, **`request_id`**, **`invoice_digest`**, **`asset`**, **`amount_commitment`**, `reply_ref` | `zcl.app_zpay_memo.v1` | `zclassic23 app payments zpay compose --input='<obj>'` | Compose an anonymous canonical ZPAY Sapling memo |
+| `app payments zpay inspect` | ready | read / read / public · instant/tiny | **`memo_hex`**, **`network`**, **`now_unix`** | `zcl.app_zpay_envelope.v1` | `zclassic23 app payments zpay inspect --input='<obj>'` | Decode, authenticate, and policy-check one ZPAY Sapling memo |
 
 #### `app.auth` — Public-key challenge/response login
 

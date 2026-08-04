@@ -45,6 +45,50 @@ ZCL_COMMAND_BRANCH("app.store", "app", "Store", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.swap", "app", "Swaps", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.qr", "app", "QR", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.blog", "app", "Blog", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.payments", "app", "Payments", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.payments.zpay", "app.payments", "ZPAY",
+                   ZCL_COMMAND_LAYER_APP)
+
+/* ── ZPAY Sapling-memo payment envelopes ────────────────────────── */
+
+ZCL_COMMAND_READY_READ(
+    "app.payments.zpay.compose", "app.payments.zpay", "",
+    "Compose an anonymous canonical ZPAY Sapling memo",
+    "Deterministically encodes one complete ZPAY v1 invoice, payment, or "
+    "receipt envelope from explicit network, clock, nonce, request, invoice, "
+    "asset, and commitment fields. Returns the exact 512-byte memo_hex for "
+    "core.wallet.shielded.send. It never reads a wallet, signs an identity, "
+    "or broadcasts; optional ZID signing is deliberately unavailable because "
+    "identity seeds must not enter agent command context.",
+    ZCL_COMMAND_RESULT_BUDGET, "payments,zpay,sapling,memo,compose,invoice",
+    "zcl.app_zpay_compose.input.v1", "zcl.app_zpay_memo.v1",
+    "network,message_type,created_at,expires_at,nonce,request_id,invoice_digest,asset,amount_commitment,reply_ref",
+    "network,message_type,created_at,expires_at,nonce,request_id,invoice_digest,asset,amount_commitment",
+    "zclassic23 app payments zpay compose --input='<obj>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zpay_compose)
+
+ZCL_COMMAND_READY_READ(
+    "app.payments.zpay.inspect", "app.payments.zpay", "",
+    "Decode, authenticate, and policy-check one ZPAY Sapling memo",
+    "Strictly decodes an exact 512-byte ZPAY memo, verifies any embedded ZID "
+    "document against the caller-supplied clock, and reports whether its "
+    "network and lifetime are current. A malformed, wrong-network, expired, "
+    "or invalidly signed memo is never upgraded to a payment fact.",
+    ZCL_COMMAND_RESULT_BUDGET, "payments,zpay,sapling,memo,inspect,verify",
+    "zcl.app_zpay_inspect.input.v1", "zcl.app_zpay_envelope.v1",
+    "memo_hex,network,now_unix", "memo_hex,network,now_unix",
+    "zclassic23 app payments zpay inspect --input='<obj>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zpay_inspect)
 
 ZCL_COMMAND_READY_COMMAND(
     "app.qr.show", "app.qr", "", "Show a payload as a native QR window",

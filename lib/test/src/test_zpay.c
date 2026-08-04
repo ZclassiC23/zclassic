@@ -3,6 +3,10 @@
 
 #include "test/test_core.h"
 
+#include "base/hex.h"
+#include "config/command_catalog.h"
+#include "json/json.h"
+#include "kernel/command_registry.h"
 #include "zid/zpay.h"
 
 #include <string.h>
@@ -127,6 +131,88 @@ int test_zpay(void)
         for (size_t i = 0; i < sizeof(memo); i++)
             if (memo[i] != 0xA5) { untouched = false; break; }
         ASSERT(untouched);
+        PASS();
+    }
+
+    TEST("zpay typed compose and inspect commands round-trip an exact receipt") {
+        const struct zcl_command_registry *registry = zcl_command_catalog();
+        const struct zcl_command_spec *compose = zcl_command_registry_find(
+            registry, "app.payments.zpay.compose", NULL);
+        const struct zcl_command_spec *inspect = zcl_command_registry_find(
+            registry, "app.payments.zpay.inspect", NULL);
+        ASSERT(registry && compose && inspect);
+        struct zcl_command_context context = {
+            .registry = registry,
+            .granted_capabilities = ~(uint64_t)0,
+            .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+        };
+        uint8_t field[32];
+        char field_hex[65];
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_str(&input, "network", "regtest");
+        json_push_kv_str(&input, "message_type", "receipt");
+        json_push_kv_int(&input, "created_at", 1700000000);
+        json_push_kv_int(&input, "expires_at", 1700000600);
+        const char *keys[] = { "nonce", "request_id", "invoice_digest",
+                               "amount_commitment" };
+        const size_t field_lens[] = { 16, 16, 32, 32 };
+        for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+            zp_fill(field, field_lens[i], (uint8_t)(31 + i * 32));
+            zcl_hex_encode(field, field_lens[i], field_hex);
+            json_push_kv_str(&input, keys[i], field_hex);
+        }
+        json_push_kv_str(&input, "asset", "ZCL");
+        char output[ZCL_COMMAND_RESULT_BUDGET + 1];
+        enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
+        size_t n = zcl_command_registry_execute_json(
+            registry, compose, &context, &input, false, compose->path,
+            "normal", 0, 0, NULL, output, sizeof(output) - 1, &exit_code);
+        json_free(&input);
+        output[n < sizeof(output) ? n : sizeof(output) - 1] = 0;
+        struct json_value root;
+        json_init(&root);
+        ASSERT(n > 0 && exit_code == ZCL_COMMAND_EXIT_OK &&
+               json_read(&root, output, n) &&
+               json_get_bool(json_get(&root, "ok")));
+        const struct json_value *data = json_get(&root, "data");
+        const char *memo_hex = data ?
+            json_get_str(json_get(data, "memo_hex")) : NULL;
+        ASSERT(data && memo_hex && strlen(memo_hex) == ZPAY_MEMO_LEN * 2);
+        ASSERT(strcmp(json_get_str(json_get(data, "message_type")),
+                      "receipt") == 0);
+        ASSERT(strcmp(json_get_str(json_get(data, "sender_authentication")),
+                      "anonymous") == 0);
+        ASSERT(!json_get_bool(json_get(data, "identity_signing_available")));
+        char memo_copy[ZPAY_MEMO_LEN * 2 + 1];
+        memcpy(memo_copy, memo_hex, sizeof(memo_copy));
+        json_free(&root);
+
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_str(&input, "memo_hex", memo_copy);
+        json_push_kv_str(&input, "network", "regtest");
+        json_push_kv_int(&input, "now_unix", 1700000100);
+        exit_code = ZCL_COMMAND_EXIT_INTERNAL;
+        n = zcl_command_registry_execute_json(
+            registry, inspect, &context, &input, false, inspect->path,
+            "normal", 0, 0, NULL, output, sizeof(output) - 1, &exit_code);
+        json_free(&input);
+        output[n < sizeof(output) ? n : sizeof(output) - 1] = 0;
+        json_init(&root);
+        ASSERT(n > 0 && exit_code == ZCL_COMMAND_EXIT_OK &&
+               json_read(&root, output, n) &&
+               json_get_bool(json_get(&root, "ok")));
+        data = json_get(&root, "data");
+        ASSERT(data && json_get_bool(json_get(data, "current")));
+        ASSERT(json_get_bool(json_get(data, "network_matches")));
+        ASSERT(json_get_bool(json_get(data, "time_current")));
+        ASSERT(strcmp(json_get_str(json_get(data, "message_type")),
+                      "receipt") == 0);
+        ASSERT(strcmp(json_get_str(json_get(data, "sender_authentication")),
+                      "anonymous") == 0);
+        json_free(&root);
         PASS();
     }
 

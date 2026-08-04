@@ -184,6 +184,11 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   explicit open-ended script/memo buckets. REST mirrors the semantic catalog at
   `/api/v1/transaction-types`; the AI-safe workflow and extension checklist are in
   [`TRANSACTION_API.md`](./TRANSACTION_API.md).
+- `zclassic23 app payments zpay compose|inspect` — deterministic, public
+  adapters for canonical 512-byte ZPAY invoice/payment/receipt memos. Compose
+  returns `memo_hex`; the existing owner-only `core.wallet.shielded.send`
+  remains the sole value-moving step. Inspect requires an explicit expected
+  network and clock. Neither leaf accepts an identity seed.
 - `make deploy` is owner-gated live deployment. All public dev-lane publication,
   stage, relink, and recovery-apply paths currently hard-refuse — the gated
   swappable-leaf hot-swap loop above (`hotswap-try`/`hotswap-apply`) is the one
