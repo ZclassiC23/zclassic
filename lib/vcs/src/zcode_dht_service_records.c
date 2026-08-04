@@ -361,6 +361,9 @@ enum vcs_zcode_dht_record_store_result vcs_zcode_dht_service_record_admit(
 {
   if (!service || !service->enabled || !service->record_store)
     return VCS_ZCODE_DHT_RECORD_STORE_INVALID;
+  if (!records_policy_allows(service, VCS_ZCODE_SOVEREIGNTY_STORE, record) ||
+      !records_policy_allows(service, VCS_ZCODE_SOVEREIGNTY_INDEX, record))
+    return VCS_ZCODE_DHT_RECORD_STORE_INVALID;
   enum vcs_zcode_dht_record_store_result result =
       vcs_zcode_dht_record_store_put(service->record_store, record,
                                      now.wall_unix);
@@ -382,9 +385,24 @@ size_t vcs_zcode_dht_service_record_local_query(
 {
   if (!service || !service->record_store || !selector)
     return 0;
-  return vcs_zcode_dht_record_store_query(
+  struct vcs_zcode_dht_record candidates[
+      VCS_ZCODE_DHT_RECORD_STORE_MAX_PER_ROOT];
+  size_t found = vcs_zcode_dht_record_store_query(
       service->record_store, selector->kind, selector->namespace_name,
-      selector->root, now_unix, out, out_capacity);
+      selector->root, now_unix, candidates,
+      VCS_ZCODE_DHT_RECORD_STORE_MAX_PER_ROOT);
+  if (found > VCS_ZCODE_DHT_RECORD_STORE_MAX_PER_ROOT)
+    found = VCS_ZCODE_DHT_RECORD_STORE_MAX_PER_ROOT;
+  size_t allowed = 0;
+  for (size_t i = 0; i < found; i++) {
+    if (!records_policy_allows(service, VCS_ZCODE_SOVEREIGNTY_DISCOVER,
+                               &candidates[i]))
+      continue;
+    if (allowed < out_capacity)
+      out[allowed] = candidates[i];
+    allowed++;
+  }
+  return allowed;
 }
 
 static bool records_publish_build(
@@ -487,6 +505,9 @@ void vcs_zcode_dht_service_publication_schedule(
       memset(publication, 0, sizeof(*publication));
       continue;
     }
+    if (!records_policy_allows(service, VCS_ZCODE_SOVEREIGNTY_FORWARD,
+                               &publication->record))
+      continue;
     for (size_t p = 0; p < VCS_ZCODE_DHT_SERVICE_MAX_PEERS &&
                        publication->attempts < VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS;
          p++) {

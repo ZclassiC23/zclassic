@@ -232,7 +232,8 @@ ZCL_COMMAND_READY_COMMAND(
     "only the exact expiring plan persists; with confirm:true the S3 "
     "commit re-runs the hardened cross-validators and stores the evidence "
     "addressed by root. Null and negative observations commit; execution "
-    "failures store nothing. A benchmark is an observation, never truth.",
+    "failures store nothing. EXECUTE must be allowed by the node's local "
+    "sovereignty policy. A benchmark is an observation, never truth.",
     0,
     "zcode,science,work,execute,benchmark,reproduction,confined",
     "zcl.zcode_science_work_execute.input.v1",
@@ -443,7 +444,8 @@ ZCL_COMMAND_READY_COMMAND(
     "service. Reply includes both roots and the wire kind for diagnostics; "
     "a fetching node needs only the semantic science root. One-shot mode "
     "persists the blob, while discovery publication requires the running "
-    "authenticated DHT identity.",
+    "authenticated DHT identity. STORE, INDEX, SERVE and FORWARD must each "
+    "be allowed by the node's local sovereignty policy.",
     0,
     "zcode,science,publish,blob,swarm,cas",
     "zcl.zcode_science_publish.input.v1",
@@ -470,8 +472,9 @@ ZCL_COMMAND_READY_COMMAND(
     "blob_root remains an explicit transport-address compatibility input. "
     "Idempotent: re-admitting reports new=false. With no live engine the "
     "resumable download record is persisted for the next -packagehost=1 "
-    "boot; re-invoke after delivery to admit. Reply: download result, "
-    "admitted flag, science_root + kind when admitted.",
+    "boot; re-invoke after delivery to admit. FETCH, STORE and INDEX must "
+    "each be allowed by the node's local sovereignty policy. Reply: "
+    "download result, admitted flag, science_root + kind when admitted.",
     0,
     "zcode,science,fetch,blob,swarm,admit",
     "zcl.zcode_science_fetch.input.v1",

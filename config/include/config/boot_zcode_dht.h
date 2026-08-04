@@ -60,6 +60,11 @@ enum vcs_zcode_dht_record_store_result boot_zcode_dht_record_publish_commit(
 void boot_zcode_dht_public_tick(uint64_t monotonic_s);
 void boot_zcode_dht_public_reset(void);
 
+/* Snapshot the network binding owned by the running DHT composition root.
+ * False means this process has no initialized DHT service; one-shot command
+ * clients may then resolve the daemon's genesis through RPC. */
+bool boot_zcode_dht_network_genesis(uint8_t out[32]);
+
 /* O(log n) ancestry proof used by the chain-binding adapter and its deep-tip
  * regression test. `height_span_out` is diagnostic context only. */
 bool boot_zcode_dht_beacon_matches(const struct block_index *header_tip,

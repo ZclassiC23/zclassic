@@ -4,6 +4,7 @@
  *          receipt), feeding the landed S3 admission path. */
 
 #include "command/native_command.h"
+#include "command/native_zcode_policy.h"
 
 #include "base/hex.h"
 #include "json/json.h"
@@ -170,6 +171,25 @@ void zcl_native_handle_zcode_science_work_execute(
                       (int64_t)platform_time_wall_unix());
     req.confirm = zsx_confirm(input);
     req.hooks = NULL;
+    struct vcs_zcode_sovereignty_subject subject;
+    memset(&subject, 0, sizeof(subject));
+    const char *authority_root = is_repro ? original : req.candidate_root_hex;
+    if (!zsx_hex32(authority_root, subject.semantic_root)) {
+        zsx_fail(reply, "BAD_ROOT", "execution authority root is invalid");
+        return;
+    }
+    memcpy(subject.package_root, subject.semantic_root, 32);
+    (void)snprintf(subject.service_type, sizeof(subject.service_type),
+                   "science");
+    char policy_error[192] = {0};
+    if (!zcl_native_zcode_policy_allows(
+            zsx_datadir(input), VCS_ZCODE_SOVEREIGNTY_EXECUTE, &subject,
+            policy_error, sizeof(policy_error))) {
+        zsx_fail_service(reply, "SOVEREIGNTY_DENIED",
+                         policy_error[0] ? policy_error
+                                         : "local policy denied EXECUTE");
+        return;
+    }
     char ws[ZSX_PATH_MAX];
     req.workspace = zsx_workspace(input, ws, sizeof(ws));
     if (!req.workspace) {

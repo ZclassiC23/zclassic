@@ -966,6 +966,7 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             }
         } else if (strcmp(key, "verbose") == 0 ||
                    strcmp(key, "confirm") == 0 ||
+                   strcmp(key, "enabled") == 0 ||
                    strcmp(key, "relink_generation") == 0 ||
                    strcmp(key, "allow_high_fees") == 0) {
             type_ok = value->type == JSON_BOOL;
@@ -1012,6 +1013,12 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
         } else if (strcmp(key, "decimals") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
                       json_get_int(value) <= 8;
+        } else if (strcmp(key, "action_mask") == 0) {
+            /* Seven local-sovereignty actions occupy bits 0..6. Keep this
+             * transport validator aligned with the policy handler so the
+             * leaf's exact 1..127 contract reaches plan/commit unchanged. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 127;
         } else if (strcmp(key, "cursor") == 0) {
             type_ok = (value->type == JSON_INT && json_get_int(value) >= 0) ||
                       (value->type == JSON_STR && json_get_str(value) &&

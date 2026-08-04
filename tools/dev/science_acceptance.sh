@@ -625,6 +625,20 @@ out="$(sa_sci "$SA_DD_A" zcode.network.delegate "{\"seed_file\":\"$SA_WORK/maste
 out="$(sa_sci "$SA_DD_B" zcode.network.delegate "{\"seed_file\":\"$SA_WORK/master-b.hex\"}")"
 [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "B DHT delegation failed: $out"
 
+# Every discovery/content/execution action is locally denied by default.
+# The proof opts each sovereign node into exactly the generic `science`
+# service before the authenticated restart that loads the atomic policy.
+for tuple in "$SA_DD_A:A" "$SA_DD_B:B"; do
+    dd="${tuple%:*}"; label="${tuple##*:}"
+    out="$(sa_sci "$dd" zcode.network.policy.mutate \
+        '{"mode":"plan","operation":"add","source":"local","effect":"allow","scope":"service_type","action_mask":127,"value":"science"}')"
+    [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "$label science policy plan failed: $out"
+    token="$(sa_jget "$out" 'd["data"]["plan_token"]')"
+    out="$(sa_sci "$dd" zcode.network.policy.mutate \
+        "{\"mode\":\"commit\",\"operation\":\"add\",\"source\":\"local\",\"effect\":\"allow\",\"scope\":\"service_type\",\"action_mask\":127,\"value\":\"science\",\"plan_token\":\"$token\"}")"
+    [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "$label science policy commit failed: $out"
+done
+
 # The isolated pre-delegation boot learns and persists v2 capability while the
 # funding/anchor chain is prepared. Restart both nodes with their independent
 # delegations before accepting any discovery frame or publishing any record.

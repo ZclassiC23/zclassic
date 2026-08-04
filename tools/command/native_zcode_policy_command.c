@@ -2,16 +2,21 @@
  * purpose: Exact, stale-plan-safe local sovereignty policy commands. */
 
 #include "command/native_command.h"
+#include "command/native_zcode_policy.h"
 
 #include "base/hex.h"
+#include "config/boot_zcode_dht.h"
 #include "controllers/rpc_client.h"
 #include "controllers/rpc_params.h"
 #include "core/uint256.h"
 #include "crypto/sha3.h"
+#include "platform/time_compat.h"
+#include "vcs/zcode_dht_identity.h"
 #include "vcs/zcode_sovereignty_policy.h"
 #include "json/json.h"
 
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 enum policy_operation { POLICY_ADD = 1, POLICY_REMOVE, POLICY_ADVISORY };
@@ -35,7 +40,7 @@ static void zp_fail(struct zcl_command_reply *reply, const char *code,
                          false, message, "zcode.network.policy");
 }
 
-static bool zp_genesis(uint8_t out[32]) {
+static bool zp_genesis_rpc(uint8_t out[32]) {
   struct rpc_arg_builder params;
   rpc_arg_builder_init(&params);
   rpc_arg_builder_push_int(&params, 0);
@@ -48,10 +53,70 @@ static bool zp_genesis(uint8_t out[32]) {
   struct json_value doc;
   bool ok = json_read(&doc, raw, strlen(raw)) && doc.type == JSON_STR;
   const char *hex = ok ? json_get_str(&doc) : NULL;
-  ok = ok && hex && strlen(hex) == 64 && zcl_hex_decode_lower(hex, out, 32);
+  uint8_t display_bytes[32];
+  ok = ok && hex && strlen(hex) == 64 &&
+       zcl_hex_decode_lower(hex, display_bytes, 32);
+  if (ok) {
+    struct uint256 genesis;
+    uint256_set_hex(&genesis, hex);
+    memcpy(out, genesis.data, 32);
+  }
   json_free(&doc);
   free(raw);
   return ok;
+}
+
+static bool zp_genesis(const char *datadir, uint8_t out[32]) {
+  if (boot_zcode_dht_network_genesis(out))
+    return true;
+  struct vcs_zcode_dht_delegation delegation;
+  char error[192] = {0};
+  if (datadir && vcs_zcode_dht_delegation_load(
+                     datadir, &delegation, error, sizeof(error)) &&
+      vcs_zcode_dht_delegation_verify(
+          &delegation, NULL, NULL, 0, NULL,
+          (uint64_t)platform_time_wall_unix()) ==
+          VCS_ZCODE_DHT_DELEGATION_OK) {
+    memcpy(out, delegation.network_genesis, 32);
+    return true;
+  }
+  return zp_genesis_rpc(out);
+}
+
+bool zcl_native_zcode_policy_allows(
+    const char *datadir, enum vcs_zcode_sovereignty_action action,
+    const struct vcs_zcode_sovereignty_subject *subject,
+    char *error_out, size_t error_capacity) {
+  if (error_out && error_capacity)
+    error_out[0] = '\0';
+  uint8_t genesis[32];
+  bool have_genesis = zp_genesis(datadir, genesis);
+  if (!datadir || !subject || !have_genesis) {
+    if (error_out && error_capacity)
+      (void)snprintf(error_out, error_capacity,
+                     "cannot bind local policy to the running network");
+    return false;
+  }
+  struct vcs_zcode_sovereignty_policy *policy =
+      vcs_zcode_sovereignty_policy_create(genesis);
+  char load_error[192] = {0};
+  if (!policy || vcs_zcode_sovereignty_policy_load(
+                     policy, datadir, load_error, sizeof(load_error)) !=
+                     VCS_ZCODE_SOVEREIGNTY_OK) {
+    vcs_zcode_sovereignty_policy_free(policy);
+    if (error_out && error_capacity)
+      (void)snprintf(error_out, error_capacity, "%s",
+                     load_error[0] ? load_error : "local policy allocation failed");
+    return false;
+  }
+  struct vcs_zcode_sovereignty_decision decision =
+      vcs_zcode_sovereignty_policy_check(policy, action, subject);
+  vcs_zcode_sovereignty_policy_free(policy);
+  if (!decision.allow && error_out && error_capacity)
+    (void)snprintf(error_out, error_capacity,
+                   "local sovereignty policy denied %s",
+                   vcs_zcode_sovereignty_action_string(action));
+  return decision.allow;
 }
 
 static bool zp_enum(const char *text, const char *const *names, size_t count,
@@ -142,7 +207,7 @@ static struct vcs_zcode_sovereignty_policy *zp_load(
   const char *datadir = zp_str(in, "datadir");
   if (!datadir || !datadir[0])
     datadir = zcl_native_command_datadir();
-  if (!datadir || !zp_genesis(genesis)) {
+  if (!datadir || !zp_genesis(datadir, genesis)) {
     zp_fail(reply, "NODE_UNAVAILABLE", "cannot resolve datadir/network genesis");
     return NULL;
   }

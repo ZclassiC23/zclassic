@@ -265,6 +265,31 @@ static int t_no_collateral_loosening(void)
     json_free(&input);
     CIB_CHECK("a raised key is still unknown on a leaf that never declared it",
               !leaked && strstr(why, "unknown input key") != NULL);
+
+    const struct zcl_command_spec *policy = zcl_command_registry_find(
+        zcl_command_catalog(), "zcode.network.policy.mutate", NULL);
+    CIB_CHECK("the sovereignty policy mutation leaf resolves", policy != NULL);
+    if (policy) {
+        json_init(&input);
+        json_set_object(&input);
+        (void)json_push_kv_str(&input, "mode", "plan");
+        (void)json_push_kv_str(&input, "operation", "add");
+        (void)json_push_kv_int(&input, "action_mask", 127);
+        CIB_CHECK("the seven-action policy mask reaches its handler",
+                  zcl_command_registry_input_validate(policy, &input, why,
+                                                      sizeof(why)));
+        json_free(&input);
+
+        json_init(&input);
+        json_set_object(&input);
+        (void)json_push_kv_str(&input, "mode", "plan");
+        (void)json_push_kv_str(&input, "operation", "advisory");
+        (void)json_push_kv_bool(&input, "enabled", true);
+        CIB_CHECK("the advisory opt-in boolean reaches its handler",
+                  zcl_command_registry_input_validate(policy, &input, why,
+                                                      sizeof(why)));
+        json_free(&input);
+    }
     return failures;
 }
 

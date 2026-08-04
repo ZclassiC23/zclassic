@@ -27,9 +27,13 @@ static bool chain_ok(void *ctx, const struct vcs_zcode_dht_delegation *d) {
   return d && d->beacon_height == 120;
 }
 
+static uint64_t policy_calls[VCS_ZCODE_SOVEREIGNTY_ACTION_COUNT];
+
 static bool policy_allow(void *ctx, enum vcs_zcode_sovereignty_action action,
                          const struct vcs_zcode_sovereignty_subject *subject) {
   (void)ctx;
+  if (action < VCS_ZCODE_SOVEREIGNTY_ACTION_COUNT)
+    policy_calls[action]++;
   return action < VCS_ZCODE_SOVEREIGNTY_ACTION_COUNT && subject != NULL;
 }
 
@@ -480,6 +484,7 @@ _test_next:;
 static int test_record_transport_and_restart(void) {
   int failures = 0;
   TEST("zcode dht service: signed records share Noise, bounds and restart") {
+    memset(policy_calls, 0, sizeof(policy_calls));
     char adir[] = "/tmp/zcl_dht_records_a_XXXXXX";
     char bdir[] = "/tmp/zcl_dht_records_b_XXXXXX";
     ASSERT(mkdtemp(adir) != NULL && mkdtemp(bdir) != NULL);
@@ -595,6 +600,11 @@ static int test_record_transport_and_restart(void) {
     ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
                   b, 1004, &selector, local, 1),
               1);
+    ASSERT(policy_calls[VCS_ZCODE_SOVEREIGNTY_DISCOVER] > 0);
+    ASSERT(policy_calls[VCS_ZCODE_SOVEREIGNTY_STORE] > 0);
+    ASSERT(policy_calls[VCS_ZCODE_SOVEREIGNTY_INDEX] > 0);
+    ASSERT(policy_calls[VCS_ZCODE_SOVEREIGNTY_SERVE] > 0);
+    ASSERT(policy_calls[VCS_ZCODE_SOVEREIGNTY_FORWARD] > 0);
     vcs_zcode_dht_service_free(a, test_time(1004));
     vcs_zcode_dht_service_free(b, test_time(1004));
     cleanup_fixture(adir);

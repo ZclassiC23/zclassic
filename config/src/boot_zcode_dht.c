@@ -197,6 +197,17 @@ static void dht_lock(void) {
   zcl_mutex_lock(&g_dht_lock);
 }
 
+bool boot_zcode_dht_network_genesis(uint8_t out[32]) {
+  if (!out)
+    return false;
+  dht_lock();
+  bool available = g_dht != NULL && g_dht_generation != 0;
+  if (available)
+    memcpy(out, g_dht_genesis, 32);
+  zcl_mutex_unlock(&g_dht_lock);
+  return available;
+}
+
 bool boot_zcode_dht_beacon_matches(const struct block_index *header_tip,
                                    uint32_t beacon_height,
                                    const uint8_t beacon_hash[32],

@@ -3,6 +3,7 @@
  *          CAS-authoritative plan/commit services. */
 
 #include "command/native_command.h"
+#include "command/native_zcode_policy.h"
 
 #include "base/hex.h"
 #include "controllers/rpc_client.h"
@@ -69,6 +70,40 @@ static const char *zsci_datadir(const struct json_value *input)
     if (!datadir || !datadir[0])
         datadir = zcl_native_command_datadir();
     return datadir;
+}
+
+static bool zsci_policy_allows(
+    const struct json_value *input, enum vcs_zcode_sovereignty_action action,
+    const char *semantic_hex, const char *transport_hex,
+    struct zcl_command_reply *reply, const char *leaf)
+{
+    struct vcs_zcode_sovereignty_subject subject;
+    memset(&subject, 0, sizeof(subject));
+    if (semantic_hex &&
+        (strlen(semantic_hex) != 64 ||
+         !zcl_hex_decode_lower(semantic_hex, subject.semantic_root, 32))) {
+        zsci_fail(reply, "BAD_ROOT", "semantic root must be 64 lowercase hex",
+                  leaf);
+        return false;
+    }
+    if (transport_hex &&
+        (strlen(transport_hex) != 64 ||
+         !zcl_hex_decode_lower(transport_hex, subject.transport_root, 32))) {
+        zsci_fail(reply, "BAD_BLOB_ROOT",
+                  "transport root must be 64 lowercase hex", leaf);
+        return false;
+    }
+    (void)snprintf(subject.service_type, sizeof(subject.service_type),
+                   "science");
+    char error[192] = {0};
+    if (!zcl_native_zcode_policy_allows(zsci_datadir(input), action, &subject,
+                                        error, sizeof(error))) {
+        zsci_fail_service(reply, "SOVEREIGNTY_DENIED",
+                          error[0] ? error : "local policy denied the action",
+                          leaf);
+        return false;
+    }
+    return true;
 }
 
 static bool zsci_open_db(const char *datadir, struct node_db *ndb)
@@ -895,6 +930,19 @@ void zcl_native_handle_zcode_science_publish(
                   "zcode.science.publish");
         return;
     }
+    if (!zsci_policy_allows(request->input, VCS_ZCODE_SOVEREIGNTY_STORE,
+                            root_hex, NULL, reply,
+                            "zcode.science.publish") ||
+        !zsci_policy_allows(request->input, VCS_ZCODE_SOVEREIGNTY_INDEX,
+                            root_hex, NULL, reply,
+                            "zcode.science.publish") ||
+        !zsci_policy_allows(request->input, VCS_ZCODE_SOVEREIGNTY_SERVE,
+                            root_hex, NULL, reply,
+                            "zcode.science.publish") ||
+        !zsci_policy_allows(request->input, VCS_ZCODE_SOVEREIGNTY_FORWARD,
+                            root_hex, NULL, reply,
+                            "zcode.science.publish"))
+        return;
     bool live = false;
     struct vcs_package_store *store = NULL;
     if (!zsci_store_for(datadir, &live, &store)) {
@@ -972,6 +1020,16 @@ void zcl_native_handle_zcode_science_fetch(
     if (!request || !reply) return;
     const char *requested_root = zsci_str(request->input, "root");
     const char *blob_hex = zsci_str(request->input, "blob_root");
+    if (!zsci_policy_allows(request->input, VCS_ZCODE_SOVEREIGNTY_FETCH,
+                            requested_root, blob_hex, reply,
+                            "zcode.science.fetch") ||
+        !zsci_policy_allows(request->input, VCS_ZCODE_SOVEREIGNTY_STORE,
+                            requested_root, blob_hex, reply,
+                            "zcode.science.fetch") ||
+        !zsci_policy_allows(request->input, VCS_ZCODE_SOVEREIGNTY_INDEX,
+                            requested_root, blob_hex, reply,
+                            "zcode.science.fetch"))
+        return;
     char discovered_blob[65];
     if ((!blob_hex || !blob_hex[0]) && requested_root &&
         strlen(requested_root) == 64 &&
