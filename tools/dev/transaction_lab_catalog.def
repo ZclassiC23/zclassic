@@ -5,7 +5,7 @@ raw_custom_transaction|base_zcl|raw create sign broadcast pipeline|simnet_confir
 sapling_t_to_z|base_zcl|shielding payment|simnet_confirmed|test_simnet_shielded_wallet_e2e
 sapling_z_to_z|base_zcl|fully shielded payment|simnet_confirmed|test_simnet_shielded_wallet_e2e
 sapling_z_to_t|base_zcl|unshielding payment|simnet_confirmed|test_simnet_shielded_wallet_e2e
-sprout_joinsplit|base_zcl|legacy Sprout receive and consensus processing|consensus_verified|test_transaction
+sprout_joinsplit|base_zcl|legacy Sprout receive and consensus processing|consensus_verified|test_sprout_phgr13_kat
 sapling_onchain_memo|messaging|shielded memo payment|simnet_confirmed|test_simnet_zmsg_onchain
 zid_anchor|identity|ZID master-key anchor|simnet_confirmed|test_identity_command
 zid_rotate|identity|ZID master-key rotation|simnet_confirmed|test_identity_command

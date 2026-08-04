@@ -586,3 +586,37 @@ The current result is **34/34 PASS, 0 BLOCKED**, with **33 simulated-chain
 confirmations** across **20 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. The only remaining below-chain case
 is receive-only legacy Sprout processing, for which no supported builder exists.
+
+## 2026-08-04 canonical Sprout receive/validation proof
+
+The final process-only row now points to a complete real transaction rather
+than a generic transaction-structure group. The immutable 2,022-byte fixture is
+mainnet block 241 transaction
+`55c6c3a289d295954936076b697cc1e2a713c99dd268934f7ab6518f825148fd`,
+retrieved from the local chain through the typed, read-only
+`core.chain.transaction.get` command.
+
+The focused test deserializes the canonical wire, recomputes and pins its txid,
+matches the JoinSplit anchor, public values, nullifiers, and commitments to the
+independent proof KAT, and passes context-free structural consensus. It then
+forces proof verification on at height 241 and drives the production contextual
+validator: the Ed25519 JoinSplit signature, derived `hSig`, and real PHGR13
+proof all verify. Flipped proof and nullifier bytes remain hard negative cases.
+
+This remains `consensus_verified`, not `simnet_confirmed`: the transaction's
+historical anchor membership and transparent input script depend on preceding
+mainnet state, and substituting an empty or invented Sprout tree would weaken
+the evidence. The node intentionally exposes receive/validate/project only;
+there is no supported builder for creating new deprecated Sprout spends.
+
+The same work makes large raw reads usable by agents. With `verbose=false`,
+`core.chain.transaction.get` now returns bounded `zcl.raw_transaction.v1`
+pages using `raw_offset` and `raw_bytes` (maximum 1,024 bytes), including total
+size, completion, and next offset. Valid raw hex is no longer truncated into a
+false error.
+
+The current result is **34/34 PASS, 0 BLOCKED**, with **33 simulated-chain
+confirmations** across **20 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. All 34 semantic transaction types
+now have type-specific reproducible evidence; Sprout alone is intentionally a
+historical process-only proof rather than a newly constructed isolated spend.

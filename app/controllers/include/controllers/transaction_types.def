@@ -52,8 +52,8 @@ TX_TYPE("sapling_z_to_t", "base_zcl", "ready", "chain_transaction",
 TX_TYPE("sprout_joinsplit", "base_zcl", "process_only", "chain_transaction",
         "sprout_joinsplit", "shielded", "receive_validate_project", "", "",
         "core.wallet.transaction.get", "", "all_zcl_networks", "sprout_joinsplit",
-        "consensus_verified", "test_transaction",
-        "Legacy Sprout JoinSplit transactions are parsed and consensus-verified; no new agent-facing Sprout builder is exposed.")
+        "consensus_verified", "test_sprout_phgr13_kat",
+        "A canonical mainnet Sprout transaction is parsed and contextually verifies its JoinSplit signature and PHGR13 proof; no new agent-facing Sprout builder is exposed.")
 
 TX_TYPE("zslp_genesis", "zslp", "ready", "overlay_transaction",
         "op_return_zslp_genesis", "public_metadata", "plan_commit",

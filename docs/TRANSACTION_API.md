@@ -133,7 +133,7 @@ human index:
 
 | Family | Semantic type ids | Current posture |
 |---|---|---|
-| Base ZCL | `coinbase_reward`, `transparent_t_to_t`, `raw_custom_transaction`, `sapling_t_to_z`, `sapling_z_to_z`, `sapling_z_to_t`, `sprout_joinsplit` | Transparent and Sapling builders ready; coinbase and Sprout are process-only. |
+| Base ZCL | `coinbase_reward`, `transparent_t_to_t`, `raw_custom_transaction`, `sapling_t_to_z`, `sapling_z_to_z`, `sapling_z_to_t`, `sprout_joinsplit` | Transparent and Sapling builders are ready. Coinbase and Sprout are process-only; Sprout evidence pins a complete canonical mainnet transaction plus its contextual JoinSplit signature and PHGR13 proof verification, without exposing a deprecated constructor. |
 | ZSLP tokens | `zslp_genesis`, `zslp_mint`, `zslp_send`, `zslp_burn` | Typed plan/commit builders. |
 | ZNAM names | `znam_register`, `znam_update`, `znam_transfer`, `znam_renew`, `znam_set_record`, `znam_set_text` | Typed plan/commit builders with owner checks. |
 | Messaging | `sapling_onchain_memo` | On-chain ZMSG uses an encrypted Sapling memo; P2P messaging is off-chain. |

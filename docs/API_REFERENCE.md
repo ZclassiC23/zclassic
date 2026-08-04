@@ -200,7 +200,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `core chain transaction get` | ready | read / read / public · fast/low | **`txid`**, `verbose` | `zcl.transaction.v1` | `zclassic23 core chain transaction get --txid=<hex>` | Get one transaction by id |
+| `core chain transaction get` | ready | read / read / public · fast/low | **`txid`**, `verbose`, `raw_offset`, `raw_bytes` | `zcl.transaction.v1` | `zclassic23 core chain transaction get --txid=<hex>` | Get one transaction by id |
 
 #### `core.chain.mempool` — Mempool state
 

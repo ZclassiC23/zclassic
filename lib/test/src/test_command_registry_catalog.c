@@ -14,6 +14,7 @@
 #include "command/native_command.h"
 #include "json/json.h"
 #include "controllers/diagnostics_internal.h"
+#include "controllers/chain_native_handlers.h"
 #include "controllers/rpc_client.h"
 
 #include <string.h>
@@ -377,6 +378,54 @@ static int test_bridge_rpc_errors_fail_closed(void)
     } _test_next:;
     g_bridge_rpc_error_fixture = NULL;
     g_bridge_rpc_method_fixture = NULL;
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static char *raw_transaction_string_mock(const char *method,
+                                         const char *params_json)
+{
+    if (!method || strcmp(method, "getrawtransaction") != 0 ||
+        !params_json || !strstr(params_json, ",0]"))
+        return NULL;
+    return strdup("\"02a1ff\"");
+}
+
+static int test_raw_transaction_string_is_typed(void)
+{
+    int failures = 0;
+    TEST("raw transaction mode wraps full hex instead of reporting an error") {
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        (void)json_push_kv_str(
+            &args, "txid",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        (void)json_push_kv_bool(&args, "verbose", false);
+        (void)json_push_kv_int(&args, "raw_bytes", 2);
+        struct zcl_native_body_err err = {0};
+        node_rpc_client_set_test_hook(raw_transaction_string_mock);
+        char *body = zcl_native_getrawtransaction_body(&args, &err);
+        node_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+        struct json_value doc;
+        json_init(&doc);
+        ASSERT(json_read(&doc, body, strlen(body)));
+        ASSERT_EQ(doc.type, JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(&doc, "schema")),
+                      "zcl.raw_transaction.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&doc, "encoding")), "hex");
+        ASSERT_EQ(json_get_int(json_get(&doc, "offset_bytes")), 0);
+        ASSERT_EQ(json_get_int(json_get(&doc, "chunk_bytes")), 2);
+        ASSERT_EQ(json_get_int(json_get(&doc, "total_bytes")), 3);
+        ASSERT(!json_get_bool(json_get(&doc, "complete")));
+        ASSERT_EQ(json_get_int(json_get(&doc, "next_offset")), 2);
+        ASSERT_STR_EQ(json_get_str(json_get(&doc, "raw_hex")), "02a1");
+        json_free(&doc);
+        free(body);
+        json_free(&args);
+        PASS();
+    } _test_next:;
     node_rpc_client_set_test_hook(NULL);
     return failures;
 }
@@ -2951,6 +3000,7 @@ int test_command_registry_catalog(void)
     failures += test_bridge_bindings_reverse();
     failures += test_bridge_replacement_rejects_non_bridge_leaf();
     failures += test_bridge_rpc_errors_fail_closed();
+    failures += test_raw_transaction_string_is_typed();
     failures += test_bridge_rpc_success_shapes_fail_closed();
     failures += test_status_brief_flat_lean_envelope();
     failures += test_wallet_utxo_list_envelope();
