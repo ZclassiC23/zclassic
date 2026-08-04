@@ -422,26 +422,28 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_science_rebuild)
 
-/* G1 carrier (2026-08-03, additive): science objects ride the existing
+/* G1/S7 carrier (2026-08-04, additive): science objects ride the existing
  * package swarm as one-chunk content.v2 blob packages (vcs/blob_store.h)
  * — no new wire, no new store. publish mirrors a committed workspace-CAS
- * wire into the package store; fetch schedules the swarm download and
- * admits the bytes. Dual addressing: the blob root is the transport
- * address; the science root is re-derived from the bytes at admit time,
- * never trusted from a claim. S6 finds authenticated node IDs; provider/root
- * discovery stays out of band until S7. */
+ * wire into the package store and files signed generic POINTER/PROVIDER
+ * records; fetch resolves a semantic root, schedules the swarm download and
+ * admits the bytes. Dual addressing remains explicit: the blob root is the
+ * transport address; the science root is re-derived from admitted bytes,
+ * never trusted from a record. */
 ZCL_COMMAND_READY_COMMAND(
     "zcode.science.publish", "zcode.science", "",
     "Publish a science object to the swarm as a blob",
     "Mirrors a committed science wire (study, result, reproduction, "
     "findings, review, vote, hardware profile, benchmark method) from the "
     "workspace CAS into the package store as a one-chunk blob package, so "
-    "the package swarm announces and carries it to peers. The wire is "
-    "re-parsed and its canonical root re-derived before mirroring; a "
-    "corrupt or non-science CAS object is refused by name. Reply: the "
-    "blob transport root (give it to the fetching node) and the wire "
-    "kind. One-shot mode persists to the on-disk store; a hosting node "
-    "announces it from its next store open (boot).",
+    "the package swarm carries it to peers. The wire is re-parsed and its "
+    "canonical root re-derived before mirroring; corrupt or non-science "
+    "content is refused. A hosting node also commits a signed one-day "
+    "science POINTER and two-hour PROVIDER through the generic S7 record "
+    "service. Reply includes both roots and the wire kind for diagnostics; "
+    "a fetching node needs only the semantic science root. One-shot mode "
+    "persists the blob, while discovery publication requires the running "
+    "authenticated DHT identity.",
     0,
     "zcode,science,publish,blob,swarm,cas",
     "zcl.zcode_science_publish.input.v1",
@@ -460,11 +462,12 @@ ZCL_COMMAND_READY_COMMAND(
 ZCL_COMMAND_READY_COMMAND(
     "zcode.science.fetch", "zcode.science", "",
     "Fetch and admit a blob-carried science object",
-    "Schedules (or resumes) a swarm download of the blob transport root "
-    "returned by zcode.science.publish, and — once the blob's bytes are "
-    "local — admits them: re-derives the science root from the bytes "
-    "(never trusted from a claim), stores the wire in the workspace CAS, "
+    "Resolves the supplied semantic science root through an admitted signed "
+    "POINTER, schedules (or resumes) the transport-root swarm download, and "
+    "— once bytes are local — admits them: re-derives the science root "
+    "from bytes (never trusted from a record), stores the wire in the CAS, "
     "and refreshes the projection via the CAS-authoritative rebuild. "
+    "blob_root remains an explicit transport-address compatibility input. "
     "Idempotent: re-admitting reports new=false. With no live engine the "
     "resumable download record is persisted for the next -packagehost=1 "
     "boot; re-invoke after delivery to admit. Reply: download result, "
@@ -474,7 +477,7 @@ ZCL_COMMAND_READY_COMMAND(
     "zcl.zcode_science_fetch.input.v1",
     "zcl.zcode_science_fetch.v1",
     "root,blob_root,datadir,workspace,now_unix", "",
-    "zclassic23 zcode.science.fetch --input='{\"blob_root\":\"<64hex>\"}'",
+    "zclassic23 zcode.science.fetch --input='{\"root\":\"<science-root-64hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,

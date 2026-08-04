@@ -371,7 +371,8 @@ bool vcs_zcode_sovereignty_policy_decide_callback(
 }
 
 static bool policy_paths(const char *datadir, char directory[1400],
-                         char path[1500], char *error, size_t error_capacity)
+                         char path[1500], bool create_directories,
+                         char *error, size_t error_capacity)
 {
   if (!datadir || !datadir[0]) {
     (void)policy_error(error, error_capacity, VCS_ZCODE_SOVEREIGNTY_IO,
@@ -381,14 +382,14 @@ static bool policy_paths(const char *datadir, char directory[1400],
   char zcode[1300];
   int n = snprintf(zcode, sizeof(zcode), "%s/zcode", datadir);
   if (n <= 0 || (size_t)n >= sizeof(zcode) ||
-      (mkdir(zcode, 0700) != 0 && errno != EEXIST)) {
+      (create_directories && mkdir(zcode, 0700) != 0 && errno != EEXIST)) {
     (void)policy_error(error, error_capacity, VCS_ZCODE_SOVEREIGNTY_IO,
                        "cannot create zcode directory");
     return false;
   }
   n = snprintf(directory, 1400, "%s/zcode/policy", datadir);
   if (n <= 0 || n >= 1400 ||
-      (mkdir(directory, 0700) != 0 && errno != EEXIST)) {
+      (create_directories && mkdir(directory, 0700) != 0 && errno != EEXIST)) {
     (void)policy_error(error, error_capacity, VCS_ZCODE_SOVEREIGNTY_IO,
                        "cannot create sovereignty policy directory");
     return false;
@@ -442,7 +443,8 @@ enum vcs_zcode_sovereignty_result vcs_zcode_sovereignty_policy_save(
                         VCS_ZCODE_SOVEREIGNTY_INVALID,
                         "sovereignty policy is missing");
   char directory[1400], path[1500];
-  if (!policy_paths(datadir, directory, path, error_out, error_capacity))
+  if (!policy_paths(datadir, directory, path, true, error_out,
+                    error_capacity))
     return VCS_ZCODE_SOVEREIGNTY_IO;
   size_t bytes = SOVEREIGNTY_POLICY_HEADER_BYTES +
                  policy->count * VCS_ZCODE_SOVEREIGNTY_RULE_WIRE_BYTES;
@@ -525,7 +527,8 @@ enum vcs_zcode_sovereignty_result vcs_zcode_sovereignty_policy_load(
                         VCS_ZCODE_SOVEREIGNTY_INVALID,
                         "sovereignty policy is missing");
   char directory[1400], path[1500];
-  if (!policy_paths(datadir, directory, path, error_out, error_capacity))
+  if (!policy_paths(datadir, directory, path, false, error_out,
+                    error_capacity))
     return VCS_ZCODE_SOVEREIGNTY_IO;
   int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
   if (fd < 0)

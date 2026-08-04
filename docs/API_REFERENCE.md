@@ -984,7 +984,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode science rebuild` | ready | mutate / app-write / operator · foreground/moderate | `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_rebuild.v1` | `zclassic23 zcode.science.rebuild --input='{"now_unix":1500}'` | Rebuild the science projection from the CAS |
 | `zcode science publish` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `datadir`, `workspace` | `zcl.zcode_science_publish.v1` | `zclassic23 zcode.science.publish --input='{"root":"<64hex>"}'` | Publish a science object to the swarm as a blob |
-| `zcode science fetch` | ready | mutate / app-write / operator · foreground/moderate | `root`, `blob_root`, `datadir`, `workspace`, `now_unix` | `zcl.zcode_science_fetch.v1` | `zclassic23 zcode.science.fetch --input='{"blob_root":"<64hex>"}'` | Fetch and admit a blob-carried science object |
+| `zcode science fetch` | ready | mutate / app-write / operator · foreground/moderate | `root`, `blob_root`, `datadir`, `workspace`, `now_unix` | `zcl.zcode_science_fetch.v1` | `zclassic23 zcode.science.fetch --input='{"root":"<science-root-64hex>"}'` | Fetch and admit a blob-carried science object |
 
 #### `zcode.science.study` — Preregistered study lifecycle
 

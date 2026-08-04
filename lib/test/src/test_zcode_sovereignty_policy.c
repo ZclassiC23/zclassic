@@ -4,6 +4,7 @@
 
 #include "vcs/zcode_sovereignty_policy.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
@@ -210,12 +211,39 @@ static int test_policy_restart(void)
   return failures;
 }
 
+static int test_policy_load_is_read_only(void)
+{
+  int failures = 0;
+  TEST("zcode sovereignty: loading absent policy creates no directories") {
+    uint8_t genesis[32];
+    memset(genesis, 0x11, sizeof(genesis));
+    struct vcs_zcode_sovereignty_policy *policy =
+        vcs_zcode_sovereignty_policy_create(genesis);
+    ASSERT(policy != NULL);
+    char datadir[] = "test-tmp/zcode_sovereignty_read_XXXXXX";
+    ASSERT(mkdtemp(datadir) != NULL);
+    char error[160] = {0};
+    ASSERT_EQ(vcs_zcode_sovereignty_policy_load(policy, datadir, error,
+                                                sizeof(error)),
+              VCS_ZCODE_SOVEREIGNTY_OK);
+    char path[512];
+    (void)snprintf(path, sizeof(path), "%s/zcode", datadir);
+    ASSERT(access(path, F_OK) != 0 && errno == ENOENT);
+    vcs_zcode_sovereignty_policy_free(policy);
+    ASSERT(rmdir(datadir) == 0);
+    PASS();
+  }
+  _test_next:;
+  return failures;
+}
+
 int test_zcode_sovereignty_policy(void)
 {
   int failures = 0;
   failures += test_policy_precedence();
   failures += test_policy_advisory();
   failures += test_policy_restart();
+  failures += test_policy_load_is_read_only();
   printf("=== zcode_sovereignty_policy: %d failures ===\n", failures);
   return failures;
 }

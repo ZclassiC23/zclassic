@@ -3542,8 +3542,11 @@ test-two-node-peer-tip: zclassic23 zcl-rpc
 # mirror, publish findings/review/vote, rank locally, restart both nodes,
 # and rebuild the science projection byte-identically from CAS hashes
 # (including after a direct SQL wipe of the six projection tables).
-# Asserts the NAMED GAPS honestly (science objects have no node-to-node
-# carrier; fresh-node swarm announce policy stalls the package fetch).
+# Proves the generic S7 path: the publisher files a signed one-day POINTER
+# plus a two-hour PROVIDER over the existing authenticated DHT, and the fresh
+# node starts with only the semantic science root.  It resolves, fetches via
+# the existing package verifier, re-derives the science root, admits, restarts,
+# and rebuilds the six projection tables byte-identically from CAS hashes.
 # DELIBERATELY opt-in (NOT in `make ci`) — it spawns two real nodes and
 # depends on the host Landlock/seccomp sandbox for the confined executor.
 .PHONY: test-zcode-dht-acceptance test-science-acceptance

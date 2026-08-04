@@ -293,6 +293,12 @@ static const struct rlw_leaf g_rlw_leaves[] = {
     { "zcode.science.discover",
       zcl_native_handle_zcode_science_discover,
       "category", "active",     NULL, NULL, NULL },
+    /* Local sovereignty policy inspection is a READ leaf even though the
+     * sibling mutate leaf persists policy.v1.  Its loader must not create
+     * zcode/policy on an absent datadir or repair an unreadable policy store. */
+    { "zcode.network.policy.list",
+      zcl_native_handle_zcode_network_policy_list,
+      NULL, NULL,               NULL, NULL, "zcode/policy" },
 };
 
 #define RLW_LEAF_COUNT ((int)(sizeof(g_rlw_leaves) / sizeof(g_rlw_leaves[0])))
