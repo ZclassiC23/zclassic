@@ -31,5 +31,5 @@ htlc_redeem|atomic_swap|HTLC claim branch|simnet_confirmed|test_swap_settlement
 htlc_refund|atomic_swap|HTLC timeout branch|simnet_confirmed|test_swap_settlement
 store_transparent_payment|commerce|transparent store settlement|projection_verified|test_store_transparent_pay
 store_shielded_payment|commerce|shielded memo-bound store settlement|projection_verified|test_store_e2e_shielded
-yardsale_atomic_purchase|commerce|atomic ZCL for ZSLP yardsale purchase|builder_verified|test_yardsale_app
+yardsale_atomic_purchase|commerce|atomic ZCL for ZSLP yardsale purchase|simnet_confirmed|test_yardsale_app
 market_purchase|commerce|file-market payment and verified delivery|projection_verified|test_file_market

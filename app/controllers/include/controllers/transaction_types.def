@@ -206,8 +206,8 @@ TX_TYPE("yardsale_atomic_purchase", "commerce", "ready", "composite_chain_transa
         "transparent_zcl_for_zslp_atomic_swap", "transparent_public_token",
         "two_party_plan_commit_ceremony", "yardsale.buy", "yardsale.buy",
         "core.wallet.transaction.get", "yardsale.seller.arm",
-        "all_zcl_networks", "yardsale_atomic_purchase", "builder_verified", "test_yardsale_app",
-        "Complete the two-message yardsale ceremony into one fully signed transaction exchanging ZCL for a sign token.")
+        "all_zcl_networks", "yardsale_atomic_purchase", "simnet_confirmed", "test_yardsale_app",
+        "Mine the exact two-message controller broadcast from three isolated funding outputs, proving the ZCL-for-token settlement and fee accounting.")
 TX_TYPE("market_purchase", "commerce", "ready", "composite_chain_transaction",
         "payment_then_file_unlock", "shielded_payment_private_file",
         "plan_commit_confirm_retrieve_publish",

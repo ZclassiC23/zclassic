@@ -471,3 +471,34 @@ The current result is **34/34 PASS, 0 BLOCKED**, with **29 simulated-chain
 confirmations** across **20 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
 funds moved.
+
+## 2026-08-04 exact Yardsale atomic-purchase chain proof
+
+The Yardsale app now carries its byte-exact controller ceremony across the
+broadcast boundary and into an isolated block. A fresh simnet creates three
+real P2PKH funding outputs: the seller's ZSLP-bearing dust input and two buyer
+ZCL inputs. Those actual transaction IDs, output indexes, scripts, and values
+are placed in the signed Yardsale ad/accept ceremony; no synthetic outpoints are
+installed after assembly.
+
+The normal controller path sends the buyer accept, has the seller validate the
+signed terms and sign only the token input, then has the buyer verify that
+signature and sign both ZCL inputs. The test captures the exact fully signed
+transaction at the production broadcast port and transfers that same object to
+`simnet_mint_txs`, which admits it through `connect_block` with Sapling active.
+
+After mining, all three funding outputs must be consumed. The chain UTXO view
+must contain exactly 546 zat of token dust, 1.25000000 ZCL paid to the seller,
+the seller's exact dust change, and the buyer's exact change after a 0.00010000
+ZCL fee. The existing Stage-3 golden-vector leg remains alongside this dynamic
+chain proof, so future changes must preserve both stable protocol bytes and
+real-outpoint settlement behavior.
+
+This is an isolated deterministic transaction. No live wallet, peer, endpoint,
+or mainnet ZCL is contacted, and its keys, addresses, and raw bytes are not
+written to the public notebook.
+
+The current result is **34/34 PASS, 0 BLOCKED**, with **30 simulated-chain
+confirmations** across **20 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
+funds moved.
