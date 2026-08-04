@@ -789,3 +789,37 @@ The current result is **36/36 PASS**, **35/36 simulated/live confirmations**,
 **0/36 live-mainnet confirmations**, **24 exact proof groups**, and **0 ZCL**
 recipient value or fees. No live wallet, node mutation, address, key, endpoint,
 or mainnet funds participated.
+
+## 2026-08-04 identity-bound multi-recipient payment audit
+
+An independent source-to-catalog audit found that the production wallet and
+deterministic simulator both support one transparent transaction paying
+multiple recipients, but the semantic catalog exposed only a single-recipient
+payment. The production implementation was already safer than a convenience
+`sendmany` wrapper: `vault intent plan` accepts 1..50 exact decimal-string ZCL
+effects, encrypts the recipient payload at rest, atomically reserves value plus
+the maximum fee, and binds selected inputs, wallet instance, network genesis,
+tip hash, current money snapshot root and expiry. `vault intent commit`
+revalidates every binding, persists signed bytes before relay, deduplicates
+commit, and `vault intent status` retains the reservation through mempool,
+confirmation, failure, conflict and reorg reconciliation.
+
+The audit did find one real security defect in the compatibility surface:
+direct `sendmany` RPC calls did not carry the sovereignty guard already present
+on `sendtoaddress` and `z_sendmany`. Commit `d46abb69` closes that bypass and
+`test_sovereignty_guard` proves borrowed `release_assisted` state cannot spend
+through it. The public developer guide deliberately points to the vault-intent
+API instead of creating a second transaction lifecycle.
+
+`test_simnet_txkit` independently builds, signs, admits and mines the exact
+multi-recipient transparent fan-out through `connect_block`; the transaction
+has two recipient outputs plus change with deterministic fee accounting.
+`test_transaction_intent` covers durable encrypted reservations, wallet
+identity persistence, restart reconstruction, reserve-floor/lab-cap
+enforcement and state transitions. Together these are isolated technical
+proof, not a live-wallet experiment.
+
+The current result is **37/37 PASS**, **36/37 simulated/live confirmations**,
+**0/37 live-mainnet confirmations**, **26 exact proof groups**, and **0 ZCL**
+recipient value or fees. No live wallet, address, endpoint, private key or
+mainnet funds participated.

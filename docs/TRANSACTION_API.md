@@ -238,7 +238,7 @@ human index:
 
 | Family | Semantic type ids | Current posture |
 |---|---|---|
-| Base ZCL | `coinbase_reward`, `transparent_t_to_t`, `raw_custom_transaction`, `sapling_t_to_z`, `sapling_z_to_z`, `sapling_z_to_t`, `sprout_joinsplit` | Transparent and Sapling builders are ready. Coinbase and Sprout are process-only; Sprout evidence pins complete canonical mainnet transactions before and after Sapling activation plus contextual JoinSplit signature and PHGR13/Groth16 proof verification, without exposing a deprecated constructor. |
+| Base ZCL | `coinbase_reward`, `transparent_t_to_t`, `transparent_multi_recipient`, `raw_custom_transaction`, `sapling_t_to_z`, `sapling_z_to_z`, `sapling_z_to_t`, `sprout_joinsplit` | Single-recipient, identity-bound multi-recipient, and Sapling builders are ready. Multi-recipient payments use the durable vault-intent lifecycle. Coinbase and Sprout are process-only; Sprout evidence pins complete canonical mainnet transactions before and after Sapling activation plus contextual JoinSplit signature and PHGR13/Groth16 proof verification, without exposing a deprecated constructor. |
 | ZSLP tokens | `zslp_genesis`, `zslp_mint`, `zslp_send`, `zslp_burn` | Typed plan/commit builders. |
 | ZNAM names | `znam_register`, `znam_update`, `znam_transfer`, `znam_renew`, `znam_set_record`, `znam_set_text` | Typed plan/commit builders with owner checks. |
 | Messaging | `sapling_onchain_memo` | On-chain ZMSG uses an encrypted Sapling memo; P2P messaging is off-chain. |
@@ -335,11 +335,29 @@ the procedure and safety cap are in
 mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.
 
-The current complete inventory is **36/36 isolated cases passing**, with **35
+The current complete inventory is **37/37 isolated cases passing**, with **36
 simulated-chain confirmations**, **0 mainnet confirmations**, and **0 ZCL**
 live recipient value or fees. The earlier 33/33 result was complete for the
 catalog as then declared; the later audit found ZBLG, made the gap explicit,
 then added its typed plan/commit and mined proof rather than hiding it.
+
+For one transparent payment with multiple recipients, use the same canonical
+custody engine application workflows use. Amounts are decimal strings and the
+sensitive effects document goes through stdin:
+
+```bash
+printf '%s' '{"wallet_scope":"dev","route":"transparent","effects":[{"asset":"ZCL","to":"t1...","amount":"0.00100000"},{"asset":"ZCL","to":"t1...","amount":"0.00200000"}]}' |
+  zclassic23 vault intent plan --input=-
+
+zclassic23 vault intent commit --input='{"wallet_scope":"dev","plan_id":"<64hex-from-plan>","confirm":true}'
+zclassic23 vault intent status --plan_id=<64hex-from-plan>
+```
+
+The plan reserves recipient value plus the maximum fee and binds the exact
+outputs, selected inputs, wallet instance, genesis, tip, current money snapshot
+and expiry. Commit revalidates those bindings and is idempotent. This is the
+developer-facing multi-recipient API; the legacy `sendmany` RPC is compatibility
+surface, not the custody workflow agents should build against.
 
 The ZPAY sequence deliberately keeps composition separate from custody:
 

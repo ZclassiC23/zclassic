@@ -68,7 +68,7 @@ you operate that host, and misleading otherwise.
 - [`DEVELOPING.md`](./DEVELOPING.md) — **the efficient-AI-C23-developer playbook**: the native dev loop (drop-in-C watcher), hot-swap tiers, typed-commands-over-bash, workflows of tiered subagents, the push traps (impact-rules mapping, pre-push SIGPIPE), and the inviolable rules. Also the body of the `zclassic23-dev` Claude Code skill, whose stub at [`.claude/skills/zclassic23-dev/SKILL.md`](../.claude/skills/zclassic23-dev/SKILL.md) imports it. Start here for any change.
 - [`NATIVE_COMMAND_INTERFACE.md`](./NATIVE_COMMAND_INTERFACE.md) — the native command registry (`core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`), the only agent interface going forward: grammar, tree, and the frozen CLI UX contract.
 - [`TRANSACTION_API.md`](./TRANSACTION_API.md) — the semantic transaction
-  catalog and AI-safe workflow: base ZCL, Sapling, ZSLP, ZNAM, ZMSG,
+  catalog and AI-safe workflow: single- and multi-recipient base ZCL, Sapling, ZSLP, ZNAM, ZMSG,
   ZID/ZDIR, generic/epoch/ZCODE ZANC and ZBLG anchors, HTLC swaps, and commerce, with a
   one-call guide to exact live command contracts, reverse command-to-type
   lookup, fail-closed classification of ambiguous mutations, and an explicit
