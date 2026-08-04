@@ -580,6 +580,20 @@ static int cmd_cas_has(const char *workspace, const char *root_hex)
     return 0;
 }
 
+static int cmd_pubkey(const char *seed_hex)
+{
+    uint8_t seed[32], pubkey[32], secret[32];
+    if (!fix_hex32(seed_hex, seed))
+        fix_die("pubkey: bad seed hex");
+    ed25519_keypair(pubkey, secret, seed);
+    char hex[65];
+    fix_hex(pubkey, hex);
+    printf("PUBKEY=%s\n", hex);
+    memory_cleanse(secret, sizeof(secret));
+    memory_cleanse(seed, sizeof(seed));
+    return 0;
+}
+
 /* ── seed-package / verify-package ──────────────────────────────────── */
 
 #define FIX_PKG_FILES 5u
@@ -728,6 +742,7 @@ static int fix_usage(void)
             " <salt>\n"
             "  zcode_science_fixture v1mirror <workspace> <result_root>\n"
             "  zcode_science_fixture cas-has <workspace> <root>\n"
+            "  zcode_science_fixture pubkey <seed>\n"
             "  zcode_science_fixture seed-package <datadir> <salt>\n"
             "  zcode_science_fixture verify-package <datadir> <root>\n");
     return 2;
@@ -756,6 +771,8 @@ int main(int argc, char **argv)
         return cmd_v1mirror(argv[2], argv[3]);
     if (strcmp(cmd, "cas-has") == 0 && argc == 4)
         return cmd_cas_has(argv[2], argv[3]);
+    if (strcmp(cmd, "pubkey") == 0 && argc == 3)
+        return cmd_pubkey(argv[2]);
     if (strcmp(cmd, "seed-package") == 0 && argc == 4)
         return cmd_seed_package(argv[2], (uint8_t)atoi(argv[3]));
     if (strcmp(cmd, "verify-package") == 0 && argc == 4)

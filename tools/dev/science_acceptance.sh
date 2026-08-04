@@ -184,6 +184,13 @@ sa_rpc() { # $1=datadir $2=rpcport $3.. = method/args
     local dd="$1" rp="$2"; shift 2
     ZCL_DATADIR="$dd" ZCL_RPCPORT="$rp" "$RPC_BIN" "$@" 2>/dev/null || true
 }
+sa_result() {
+    python3 -c 'import json,sys
+d=json.load(sys.stdin)
+if d.get("error") is not None: raise SystemExit(2)
+v=d.get("result")
+print(json.dumps(v,separators=(",",":")) if isinstance(v,(dict,list)) else v)'
+}
 a_rpc() { sa_rpc "$SA_DD_A" "$A_RPC" "$@"; }
 b_rpc() { sa_rpc "$SA_DD_B" "$B_RPC" "$@"; }
 
@@ -202,10 +209,36 @@ sa_spawn() { # $1=datadir $2=p2p $3=rpc $4=fs $5=https $6=connect-target
     setsid "$NODE_BIN" \
         -datadir="$dd" -regtest \
         -port="$p2p" -rpcport="$rpc" -fsport="$fs" -httpsport="$https" \
-        -connect="$conn" -packagehost=1 \
+        -connect="$conn" -packagehost=1 -v2transport \
         -nobgvalidation -nolegacyimport -nofilesync -showmetrics=0 \
         >"$dd/node.log" 2>&1 &
     echo "$!"   # PID == PGID (setsid leader)
+}
+
+sa_mine_to() {
+    local count="$1" address="$2" chunk
+    while [ "$count" -gt 0 ]; do
+        chunk=5; [ "$count" -lt 5 ] && chunk="$count"
+        a_rpc generatetoaddress "$chunk" "\"$address\"" | sa_result >/dev/null
+        count=$((count - chunk)); [ "$count" -eq 0 ] || sleep 1
+    done
+}
+sa_mine_empty() {
+    local count="$1" chunk
+    while [ "$count" -gt 0 ]; do
+        chunk=5; [ "$count" -lt 5 ] && chunk="$count"
+        a_rpc generate "$chunk" | sa_result >/dev/null
+        count=$((count - chunk)); [ "$count" -eq 0 ] || sleep 1
+    done
+}
+sa_wait_height() {
+    local dd="$1" rpc="$2" want="$3" i h
+    for i in $(seq 1 120); do
+        h="$(sa_rpc "$dd" "$rpc" getblockcount | sa_result 2>/dev/null || true)"
+        [ "${h:-0}" -ge "$want" ] && return 0
+        sleep 0.5
+    done
+    return 1
 }
 
 sa_wait_rpc() { # $1=dd $2=rpc $3=pid $4=secs
@@ -511,6 +544,14 @@ done
 mkdir -p "$SA_DD_A/zcode" "$SA_DD_B/zcode"
 sa_build_fixture
 FIX="$SA_WORK/zcode_science_fixture"
+SEED_A=1111111111111111111111111111111111111111111111111111111111111111
+SEED_B=2222222222222222222222222222222222222222222222222222222222222222
+install -m 600 /dev/null "$SA_WORK/master-a.hex"
+install -m 600 /dev/null "$SA_WORK/master-b.hex"
+printf '%s\n' "$SEED_A" >"$SA_WORK/master-a.hex"
+printf '%s\n' "$SEED_B" >"$SA_WORK/master-b.hex"
+eval "$("$FIX" pubkey "$SEED_A")"; PUB_A="$PUBKEY"
+eval "$("$FIX" pubkey "$SEED_B")"; PUB_B="$PUBKEY"
 echo "science-acceptance: A{dd=$SA_DD_A p2p=$A_PORT rpc=$A_RPC} B{dd=$SA_DD_B p2p=$B_PORT rpc=$B_RPC}"
 
 # ── [0] seed stores before any boot ───────────────────────────────────
@@ -540,6 +581,34 @@ pc_b="$(sa_peer_count "$SA_DD_B" "$B_RPC")"
 [ "$pc_a" = "1" ] || sa_die "A peer count is $pc_a, expected exactly 1 (B)"
 [ "$pc_b" = "1" ] || sa_die "B peer count is $pc_b, expected exactly 1 (A)"
 echo "science-acceptance:     topology exactly A<->B (peers: A=$pc_a B=$pc_b; regtest, no DNS seeds, no GitHub, -nofilesync)"
+
+# Provision two independent, finality-delayed DHT delegations on the same
+# isolated regtest chain. S7 publication must never fall back to an unsigned
+# or process-local identity merely to make this harness convenient.
+sa_step 1b "anchor two ZID masters and enable their Noise-bound DHT delegations"
+ADDR="$(a_rpc getnewaddress | sa_result)"
+sa_mine_to 101 "$ADDR"
+sa_wait_height "$SA_DD_B" "$B_RPC" 101 || sa_die "B did not sync funding chain"
+out="$(sa_sci "$SA_DD_A" core.identity.anchor "{\"pubkey\":\"$PUB_A\"}")"
+[ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "A identity anchor failed: $out"
+sa_mine_empty 1
+out="$(sa_sci "$SA_DD_A" core.identity.anchor "{\"pubkey\":\"$PUB_B\"}")"
+[ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "B identity anchor failed: $out"
+sa_mine_empty 21
+sa_wait_height "$SA_DD_B" "$B_RPC" 123 || sa_die "B did not sync final beacon chain"
+out="$(sa_sci "$SA_DD_A" zcode.network.delegate "{\"seed_file\":\"$SA_WORK/master-a.hex\"}")"
+[ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "A DHT delegation failed: $out"
+out="$(sa_sci "$SA_DD_B" zcode.network.delegate "{\"seed_file\":\"$SA_WORK/master-b.hex\"}")"
+[ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "B DHT delegation failed: $out"
+for _ in $(seq 1 60); do
+    da="$(sa_sci "$SA_DD_A" zcode.network.status '{}')"
+    db="$(sa_sci "$SA_DD_B" zcode.network.status '{}')"
+    [ "$(sa_jget "$da" 'd.get("data",{}).get("enabled",False)')" = "True" ] &&
+    [ "$(sa_jget "$db" 'd.get("data",{}).get("enabled",False)')" = "True" ] && break
+    sleep 1
+done
+[ "$(sa_jget "$da" 'd.get("data",{}).get("enabled",False)')" = "True" ] || sa_die "A DHT did not enable"
+[ "$(sa_jget "$db" 'd.get("data",{}).get("enabled",False)')" = "True" ] || sa_die "B DHT did not enable"
 
 # ── [2..6] A's science lifecycle ──────────────────────────────────────
 sa_step "2-6" "A: preregister -> confined execute -> reproduce -> findings/review/vote -> discover"
