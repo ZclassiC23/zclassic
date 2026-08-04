@@ -100,10 +100,10 @@ int api_transaction_type_focused_tests(void)
         ok = ok && count == 34 &&
              json_get_int(json_get(&root, "demonstrated_count")) == 33 &&
              json_get_int(json_get(&root, "blocked_count")) == 1 &&
-             json_get_int(json_get(&root, "chain_confirmed_count")) == 17 &&
+             json_get_int(json_get(&root, "chain_confirmed_count")) == 21 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
-             json_get_int(json_get(&root, "proof_test_group_count")) == 17 &&
+             json_get_int(json_get(&root, "proof_test_group_count")) == 18 &&
              !json_get_bool(json_get(&root, "fully_demonstrated"));
         const struct json_value *transparent =
             api_test_find_str_field(types, "id", "transparent_t_to_t");
@@ -275,6 +275,22 @@ int api_transaction_type_focused_tests(void)
              strcmp(json_get_str(json_get(&root, "proof_level")),
                     "projection_verified") == 0 &&
              !json_get_bool(json_get(&root, "mainnet_live_proven"));
+        json_free(&root);
+
+        n = api_handle_request(
+            "GET", "/api/v1/transaction-types/htlc_redeem",
+            NULL, 0, response, sizeof(response));
+        body = api_test_body(response, n, sizeof(response));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok &&
+             strcmp(json_get_str(json_get(&root, "proof_level")),
+                    "simnet_confirmed") == 0 &&
+             strcmp(json_get_str(json_get(&root, "test_group")),
+                    "test_swap_settlement") == 0 &&
+             api_test_array_has_str(
+                 json_get(&root, "supplemental_test_groups"),
+                 "test_simnet_contract");
         json_free(&root);
 
         n = api_handle_request("GET",

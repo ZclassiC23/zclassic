@@ -73,6 +73,14 @@ is the full `zcl.transaction_type.v2` contract. The collection also reports
 wallet history, not the type catalog. `app.protocols` describes broader
 application protocols, not an exhaustive transaction inventory.
 
+A full member keeps its primary `test_group` and also exposes
+`supplemental_test_groups`. Supplemental groups are required when one claim
+depends on independent evidence—for example, the HTLC rows retain their public
+workflow or direct-interpreter group while adding `test_simnet_contract` for
+the mined chain lifecycle. `make transaction-lab-proof` derives and
+deduplicates both sources, so a future proof cannot silently replace one axis
+with another.
+
 An AI should select by `id`, reject `planned`, respect `network_policy`, then
 inspect the named command's current input schema. It must not synthesize flags
 or infer a wallet scope from examples.
@@ -220,7 +228,7 @@ mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.
 
 The current complete inventory is **33/34 isolated cases passing**, with
-`blog_anchor` explicitly blocked, **17 simulated-chain confirmations**, **0
+`blog_anchor` explicitly blocked, **21 simulated-chain confirmations**, **0
 mainnet confirmations**, and **0 ZCL** live recipient value or fees. The earlier
 33/33 result was complete for the catalog as then declared; the later audit
 found and added the already-implemented ZBLG chain format instead of hiding it.

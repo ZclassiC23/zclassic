@@ -1759,7 +1759,10 @@ custody-status-selftest:
 # Derived from the notebook catalog so adding a case cannot silently omit its
 # proof from `make transaction-lab-proof`. Stable sort also deduplicates groups
 # shared by several semantic transaction types.
-TRANSACTION_LAB_PROOF_TESTS := $(shell awk -F'|' 'substr($$0, 1, 1) != sprintf("%c", 35) && NF { print $$5 }' tools/dev/transaction_lab_catalog.def | sort -u | paste -sd, -)
+TRANSACTION_LAB_PROOF_TESTS := $(shell { \
+	awk -F'|' 'substr($$0, 1, 1) != sprintf("%c", 35) && NF { print $$5 }' tools/dev/transaction_lab_catalog.def; \
+	awk -F'"' '/^TX_TYPE_SUPPLEMENTAL/ { print $$4 }' app/controllers/include/controllers/transaction_type_supplemental_tests.def; \
+	} | sort -u | paste -sd, -)
 .PHONY: transaction-lab-status transaction-lab-check transaction-lab-proof
 transaction-lab-status:
 	@tools/dev/transaction-lab.sh status

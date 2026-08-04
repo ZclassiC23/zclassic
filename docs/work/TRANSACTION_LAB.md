@@ -301,3 +301,31 @@ The current result is **33/34 PASS, 1 BLOCKED**, with **17 simulated-chain
 confirmations** across **17 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
 funds moved.
+
+## 2026-08-04 mined HTLC lifecycle and multi-source evidence
+
+The atomic-swap rows previously separated two useful but incomplete facts:
+the initiate/participate workflow builders were exercised by
+`test_zswap_ceremony`, while redeem/refund script semantics were exercised by
+`test_swap_settlement`. Neither primary group alone proved that the four chain
+shapes entered a block and changed the UTXO set.
+
+`test_simnet_contract` now distinguishes both funding roles. An initiator and
+a separate participant wallet independently create and mine exact P2SH HTLC
+outputs worth 200,000 and 180,000 zatoshi. It then mines the secret-bearing
+redeem, proves ownership moves to the recipient and the contract coin is
+spent, rejects an early refund as non-final, advances to the lock height, and
+mines the refund to its refunder. The direct interpreter still proves a wrong
+preimage fails `OP_EQUALVERIFY`; the notebook does not pretend simnet's
+checkpoint-covered block connection executes scripts.
+
+Because the strongest statement is the intersection of independent evidence,
+the catalog now exposes `supplemental_test_groups`. HTLC rows retain their
+original workflow/interpreter test as the primary group and add
+`test_simnet_contract` as the mined-chain source. The proof target consumes
+both, preventing a future promotion from hiding one axis of evidence.
+
+The current result is **33/34 PASS, 1 BLOCKED**, with **21 simulated-chain
+confirmations** across **18 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
+funds moved.

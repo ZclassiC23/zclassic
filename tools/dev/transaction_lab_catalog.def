@@ -25,10 +25,10 @@ znam_transfer|names|name transfer|simnet_confirmed|test_simnet
 znam_renew|names|name renewal|simnet_confirmed|test_simnet
 znam_set_record|names|name address record|simnet_confirmed|test_simnet
 znam_set_text|names|name text record|simnet_confirmed|test_simnet
-htlc_initiate|atomic_swap|HTLC funding initiator|builder_verified|test_zswap_ceremony
-htlc_participate|atomic_swap|HTLC funding participant|builder_verified|test_zswap_ceremony
-htlc_redeem|atomic_swap|HTLC claim branch|interpreter_verified|test_swap_settlement
-htlc_refund|atomic_swap|HTLC timeout branch|interpreter_verified|test_swap_settlement
+htlc_initiate|atomic_swap|HTLC funding initiator|simnet_confirmed|test_zswap_ceremony
+htlc_participate|atomic_swap|HTLC funding participant|simnet_confirmed|test_zswap_ceremony
+htlc_redeem|atomic_swap|HTLC claim branch|simnet_confirmed|test_swap_settlement
+htlc_refund|atomic_swap|HTLC timeout branch|simnet_confirmed|test_swap_settlement
 store_transparent_payment|commerce|transparent store settlement|projection_verified|test_store_transparent_pay
 store_shielded_payment|commerce|shielded memo-bound store settlement|projection_verified|test_store_e2e_shielded
 yardsale_atomic_purchase|commerce|atomic ZCL for ZSLP yardsale purchase|builder_verified|test_yardsale_app
