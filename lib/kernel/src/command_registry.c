@@ -1039,13 +1039,15 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             /* Civil day number (unix/86400) — the deterministic window
              * pin every zcode reward/badge/seed/fetch surface takes. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
-        } else if (strcmp(key, "now_unix") == 0) {
-            /* The deterministic submission-window pin every zcode.science
-             * leaf declares (plan/commit/execute/review/vote/discover/
-             * rebuild). Same shape as `day`: without this rule the default
-             * branch demanded a string, which the handlers' json_get_int
-             * then read as 0, refusing every timed invocation with a
-             * window-closed error that named the wrong cause. */
+        } else if (strcmp(key, "now_unix") == 0 ||
+                   strcmp(key, "created_at") == 0 ||
+                   strcmp(key, "expires_at") == 0) {
+            /* Explicit Unix timestamps. now_unix is the deterministic
+             * submission-window pin used by zcode.science; created_at and
+             * expires_at are the ZPAY envelope bounds (and existing build
+             * worker fields). Without this rule the default branch demands a
+             * string while every handler reads JSON_INT, making the declared
+             * commands uninvokable through the CLI. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
         } else if (strcmp(key, "challenge_block_height") == 0 ||
                    strcmp(key, "action_sequence") == 0 ||

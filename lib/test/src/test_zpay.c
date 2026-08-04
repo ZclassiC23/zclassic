@@ -164,6 +164,9 @@ int test_zpay(void)
             json_push_kv_str(&input, keys[i], field_hex);
         }
         json_push_kv_str(&input, "asset", "ZCL");
+        char why[160];
+        ASSERT(zcl_command_registry_input_validate(compose, &input, why,
+                                                    sizeof(why)));
         char output[ZCL_COMMAND_RESULT_BUDGET + 1];
         enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
         size_t n = zcl_command_registry_execute_json(
@@ -194,6 +197,8 @@ int test_zpay(void)
         json_push_kv_str(&input, "memo_hex", memo_copy);
         json_push_kv_str(&input, "network", "regtest");
         json_push_kv_int(&input, "now_unix", 1700000100);
+        ASSERT(zcl_command_registry_input_validate(inspect, &input, why,
+                                                    sizeof(why)));
         exit_code = ZCL_COMMAND_EXIT_INTERNAL;
         n = zcl_command_registry_execute_json(
             registry, inspect, &context, &input, false, inspect->path,
