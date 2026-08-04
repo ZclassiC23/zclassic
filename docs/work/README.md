@@ -59,7 +59,7 @@ citation, `git log --follow -- docs/work/<name>.md` recovers older intent.
 | [`wt-rom-fetch-engine.md`](./wt-rom-fetch-engine.md) | DESIGN | ROM-bundle fetch engine (client side of ROM delivery): trust model + open items |
 | [`wt-zcode-s6-iterative.md`](./wt-zcode-s6-iterative.md) | LIVE | completed S6 iterative DHT assignment and acceptance receipt |
 | [`wt-zcode-s6-hardening.md`](./wt-zcode-s6-hardening.md) | LIVE | completed S6 production-hardening assignment and exact gate receipt |
-| [`wt-zcode-s7-discovery.md`](./wt-zcode-s7-discovery.md) | PLAN | active S7 generic provider, local-sovereignty policy, replication, and root-discovery assignment |
+| [`wt-zcode-s7-discovery.md`](./wt-zcode-s7-discovery.md) | LIVE | completed S7 generic provider, local-sovereignty policy, replication, and root-only discovery assignment |
 | [`os-substrate-plan.md`](./os-substrate-plan.md) | DESIGN | OS-substrate three-rung plan (shell-out removal, `os_proc` shim, sandbox facade) |
 | [`os/A1-authority-receipt-idiom.md`](./os/A1-authority-receipt-idiom.md) | DESIGN | the Law-7 privileged-transition authority-receipt idiom, cited by `tools/lint/check_privileged_transition_receipt.sh` |
 | [`os/A4-noise-transport-p1.md`](./os/A4-noise-transport-p1.md) | DESIGN | the Noise v2 P2P transport implementation contract |

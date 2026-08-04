@@ -1,6 +1,7 @@
 # S7 generic provider and sovereignty discovery lane
 
-**STATUS: IN PROGRESS (wf_zcode-s7-discovery)**
+**STATUS: ✅ DONE — ready for orchestrator review and merge
+(lane/zcode-s7-discovery; not deployed)**
 
 **Worker:** `wf_zcode-s7-discovery`
 **Branch:** `lane/zcode-s7-discovery`
@@ -96,9 +97,88 @@ Each implementation unit is committed separately after its owning focused
 tests pass. The worker never pushes; the orchestrator reviews, fast-forwards
 `main`, runs the mandatory pre-push gate, and pushes only `origin/main`.
 
-## Completion evidence
+## Completion (wf_zcode-s7-discovery, 2026-08-04)
 
-Pending. Completion requires exact commits, files, command schemas, caps,
-adversarial verdicts, sanitizer output, S6/science/market/store/yardsale
-regressions, cold uncached suite, LTO, both reproducibility proofs, mandatory
-pre-push CI, explicit S8/non-goals, and a clean `origin/main` handoff.
+All eight slices landed as independently reviewable commits on
+`lane/zcode-s7-discovery`, based on `origin/main` `5ec65c0b5`:
+
+- `7acb45612` freezes the S7 lane and future sovereign-space boundary.
+- `12a9ef670`, `fc253808b` and `d4ccf7cda` add the signed record codec,
+  canonical/conflict-preserving `records.v1` store and authenticated messages.
+- `d9dccfb2f` routes record service traffic through S6; `e3e311635` adds the
+  seven-action local sovereignty engine; `974a3b0cd` adds redacted policy,
+  provider, publication, replication and plan/commit pin surfaces; and
+  `055a30bda` replicates owned records over authenticated sessions.
+- `341df2294` closes duplicate reachability requests and `32913db44` begins
+  the signed, chain-anchored science acceptance identity.
+- `981c40e1e` through `faf172375` harden the science/acceptance proof,
+  provision real chain-anchored identities, isolate exact RPC/P2P ports and
+  preserve reconnect/authentication truth. `756baafed` binds the one-day
+  science pointer inside the default three-day delegation.
+- `32e14befb` closes the final read-path defect found by the cold suite:
+  loading an absent sovereignty policy no longer creates directories, the
+  datadir non-mutation matrix owns `policy.list`, and pin tests exercise the
+  exact plan/commit lifecycle.
+- `3ef2c80b5` closes the independent review finding that record admission,
+  indexing, forwarding and science fetch/execute were not all consulting the
+  same engine. It gates all seven actions, fixes typed policy mutation input,
+  binds short-lived command checks to the signed network delegation, and
+  proves the explicit per-node `science` opt-in in the named acceptance.
+
+The implementation is generic rather than science-specific. One exact
+551-byte record covers PROVIDER, POINTER and STORAGE_ACK; it binds network,
+namespace, roots, provider identity, sequence/window and delegated signer.
+Canonical caps are 4,096 records/node, 64/root, 256/provider, eight conflicts,
+eight records/frame, eight record operations and 256 records/peer. PROVIDER is
+bounded to two hours; POINTER and ACK to seven days. ACK creation remains an
+explicit operator action after verified possession.
+
+The one 1,024-rule local engine decides DISCOVER/FETCH/STORE/INDEX/SERVE/
+FORWARD/EXECUTE using full root, package, publisher ZID, service type or local
+classification. Unknown content defaults to discovery evidence only. Advisory
+rules are opt-in and local blocks never become network-wide bans. Replication
+targets eight and requires five live ACKs across three declared owner groups;
+the UI calls this declared diversity and denies any operator-independence
+claim.
+
+`make test-science-acceptance` passes after its prerequisite seven-node DHT
+proof. B begins with only A's science root, resolves a signed pointer/provider,
+fetches through the existing verifier, re-derives the root from bytes and
+rebuilds identical projections after cold restart and a six-table SQL wipe
+(CAS counts stable at A=20/B=21). Focused hostile tests cover malformed,
+cross-network, unauthorized, replayed and expired records; equivocation;
+multi-hop/broken-nearest lookup; absent/corrupt/lying candidates with honest
+fallback; restart identity; partial/expired replication; and an exact-root ban
+that blocks one node while an alternate succeeds.
+
+Exact final gate receipts:
+
+- `make test-science-acceptance`: PASS, including its prerequisite seven-node
+  DHT acceptance and root-only science transfer/rebuild proof.
+- Exact focused rerun of `test_simnet_perf`, `test_zcode_fetch`,
+  `test_read_leaf_no_datadir_write` and `test_zcode_sovereignty_policy`: PASS;
+  the detector measured clean growth 1,148 permille and injected-regression
+  growth 3,526 permille.
+- `make lint`: PASS, 132/132 gates (27.3 s wall).
+- Full LTO `make -j"$(nproc)"`: PASS.
+- Uncached `make -j"$(nproc)" test-parallel TEST_PARALLEL_ARGS=--no-cache`:
+  PASS—900 registered, 891 run, 0 cached, 9 parameter-heavy groups gated,
+  0 failed, 19 explicit self-skips (86.2 s, 32 workers).
+- `make zcode-dht-asan`: PASS under ASan+UBSan at `-O2`, zero suppressions;
+  all seven DHT groups plus standalone messages/service/lookup/model pass.
+- `make ci-reproducible`: PASS—two 21,875,336-byte binaries, identical
+  SHA3-256 `c8fc3c317053687e6d7b375d8c0c64afe2e0e99b5c599058439e05d51f46de94`.
+- `make repro-verify`: PASS across deliberately different-length builder
+  paths—two 21,875,416-byte binaries, identical SHA3-256
+  `208b3218398353d382d13f9aff548ed0ad6b8bf8bff65393a5d5b024f6f27560`.
+
+This moves the scientific-metaverse root-discovery benchmark from an
+out-of-band transport root to a positive root-only, node-to-node proof. It
+unblocks S8 evidence checkpoints without changing consensus or deployment.
+
+Honest limits and non-goals: records are expiring hints, not possession,
+content truth, scientific acceptance, availability or separate-operator
+proof. No space manifest, doorbell, board, mailbox, agent mission, arbitrary
+service execution, REST protocol silo, consensus/core edit, wallet spend,
+deployment, live datadir/service mutation or second network stack was added.
+Unknown C23 still requires explicit local policy and the confined executor.

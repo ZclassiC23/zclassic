@@ -15,6 +15,79 @@ tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 
 ## Current state
 
+**2026-08-04 — S7 generic discovery and local sovereignty COMPLETE; not
+deployed.** ZCODE now has one generic signed discovery substrate over the
+existing S6 Noise/`zpkgswm` sessions—no science-only carrier and no second
+socket stack. The exact 551-byte v1 record is one of PROVIDER, POINTER or
+STORAGE_ACK and binds network genesis, a canonical namespace, semantic and/or
+transport roots, provider node ID, sequence, validity window, owner group
+where applicable, and the chain-bound delegated online signer. PROVIDER is a
+two-hour hint, never possession proof. POINTER is bounded to seven days
+(science publish uses one day so it remains inside the default delegation).
+STORAGE_ACK is bounded to seven days and is emitted only by an explicit
+operator publication after manifest/chunk verification.
+
+Records use `zcode/dht/records.v1`, a strict canonical projection that cold
+reloads active records and preserved conflicts byte-for-byte and prunes
+ordinary expiry. Caps are 4,096/node, 64/root, 256/provider and 8 conflicts;
+traffic is eight records/frame, eight record operations and 256 accepted
+records/peer. It reuses S6 authentication, independent replay namespaces,
+4/s rate with burst 8, deadlines, routing, unlock/relock generation checks and
+the one global three-query budget. Malformed, oversized, cross-network,
+stale, replayed, expired and unauthorized traffic fails closed. Records are
+application evidence only and never touch consensus.
+
+The one local sovereignty engine is consulted for DISCOVER, FETCH, STORE,
+INDEX, SERVE, FORWARD and EXECUTE. Its 1,024-rule canonical policy supports
+exact full root, package, publisher ZID, service type and local classification.
+Unknown objects default to metadata discovery only; fetch/store/index/serve/
+forward/execute require local allowance. Local blocks affect only this node;
+shared advisory rules are opt-in and cannot create a global ban. The read
+surface exposes only rule count, opt-in state and a digest—private rules and
+keys stay redacted—and loading an absent policy creates no directories.
+
+Typed surfaces are `zcode.network.providers`, `zcode.network.publish`
+(plan/commit), `zcode.network.policy.list|mutate` (redacted plus plan/commit),
+`zcode.network.replication`, and plan/commit `zcode.package.pin|unpin`.
+Replication targets up to eight providers and says `durable` only after five
+live ACKs from distinct provider IDs across three declared owner groups. That
+is declared diversity, explicitly not proof of separate operators, machines
+or failure domains; partial success and expired ACKs remain visible.
+
+The root-only science gap is closed. `zcode.science.publish` creates the
+verified one-chunk transport object, one-day science POINTER and two-hour
+PROVIDER. In `make test-science-acceptance`, B begins with only A's science
+root, resolves signed records through S6, fetches through the unchanged swarm
+manifest/chunk verifier, re-derives the science root from bytes, admits it and
+projects `study.show found=true`. Both nodes then cold restart; after direct
+SQL deletion of all six science projection tables, rebuild is byte-identical
+and CAS counts remain A=20/B=21. The prerequisite seven-identity DHT proof also
+passes sparse multi-hop and broken-nearest recovery, eight simultaneous
+callers with exactly three queries, canonical restart and zero-peer cold
+bootstrap. Focused hostile service tests add lying/absent/corrupt provider
+fallback and prove an exact-root ban stops store/serve/forward on one node
+while an alternate node succeeds.
+
+Final receipts include the exact root-only science gate above; focused DHT,
+Noise, transport, connman, argv, RPC, store, market and yardsale regressions;
+the focused ASan+UBSan DHT/model gate with zero suppressions; all 132 lint
+gates; full-program LTO; and the cold uncached suite (900 registered, 891 run,
+0 cached, 9 parameter-heavy groups gated, 0 failed, 19 explicit self-skips;
+86.2 s on 32 workers). Same-tree reproducibility produced two identical
+21,875,336-byte binaries at SHA3-256
+`c8fc3c317053687e6d7b375d8c0c64afe2e0e99b5c599058439e05d51f46de94`;
+different-length builder paths produced two identical 21,875,416-byte binaries
+at `208b3218398353d382d13f9aff548ed0ad6b8bf8bff65393a5d5b024f6f27560`.
+The mandatory pre-push receipt is recorded in the S7 assignment document.
+
+Honest limits: signed discovery records are expiring hints, not content truth,
+availability proof, scientific acceptance or operator independence. Unknown
+C23 is never auto-executed; execution remains explicit local policy plus the
+confined ZCODE executor. S7 adds no space manifest, doorbell, board, mailbox,
+agent mission, arbitrary service execution, REST protocol silo, consensus
+change, wallet spend, deployment or live-datadir mutation. Future sovereign
+spaces must reuse these generic namespaces, objects and transport.
+
 **2026-08-04 — S6 production hardening COMPLETE; not deployed.** The existing
 `zpkgswm`/Noise transport now carries bounded `FIND_NODE`/`NODES` traffic;
 there is no second socket stack. A node ID is bound to an active,
@@ -68,9 +141,9 @@ gates. Same-tree SHA3-256 is
 `e808a8cef470c3bd32b67f9d430bc6dc908ea3280584937a8316c8aca4aea3be`;
 different-path builder SHA3-256 is
 `e05529ca82b1ad86a949bbc24e8e94e7c57abea2856f612afe33a2721ddb8d0f`.
-Implementation head is `545e6b2b9`. S7 remains open: provider/root and generic
-space/service discovery, STORE acknowledgements, replication, and automatic
-science blob-root discovery do not exist yet.
+Implementation head was `545e6b2b9`. At that S6 head, provider/root discovery,
+STORE acknowledgements, replication and automatic science blob-root discovery
+were still open; the S7 section above supersedes that historical limit.
 
 **2026-08-03 — G4 (findings had no command-leaf admission) CLOSED.**
 New leaves `zcode.science.findings.plan|commit`: exact expiring plan +
@@ -96,11 +169,13 @@ the transport address, the science root stays the semantic address and is
 re-derived from the fetched bytes at admit time — never trusted from a
 claim. `zcode.science.fetch` schedules the swarm fetch and admits the blob
 (`vcs_blob_get_from` → wire identify → idempotent `put_addressed` → full
-`zcode_science_rebuild`). Proven in `make test-science-acceptance`: node A
+`zcode_science_rebuild`). Proven in the original
+`make test-science-acceptance`: node A
 publishes its study, node B fetches and admits it post-restart with the
-identical science root/kind and `study.show found=true`. Standing limit:
-the blob root travels out of band until S7 provider/root discovery — S6 finds
-authenticated node IDs only, and does not fake provider records. Files:
+identical science root/kind and `study.show found=true`. Historical limit at
+that commit: the blob root traveled out of band because S6 found authenticated
+node IDs only. S7 now closes that limit with signed generic POINTER/PROVIDER
+records. Files:
 `app/services/src/zcode_science_carrier.c` (carrier;
 `zcode_science_service.h` declares publish/admit),
 `tools/command/native_zcode_science_command.c`,
