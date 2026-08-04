@@ -3,6 +3,7 @@
 
 #include "test/test_core.h"
 
+#include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "chain/chain.h"
 #include "config/boot_zcode_dht.h"
@@ -10,6 +11,9 @@
 #include "json/json.h"
 #include "net/net.h"
 #include "support/cleanse.h"
+#include "vcs/blob_store.h"
+#include "vcs/package_manifest.h"
+#include "vcs/package_store.h"
 #include "vcs/zcode_dht_identity.h"
 #include "vcs/zcode_dht_service.h"
 
@@ -633,12 +637,62 @@ static int test_record_transport_and_restart(void) {
     ASSERT(policy_calls[VCS_ZCODE_SOVEREIGNTY_INDEX] > 0);
     ASSERT(policy_calls[VCS_ZCODE_SOVEREIGNTY_SERVE] > 0);
     ASSERT(policy_calls[VCS_ZCODE_SOVEREIGNTY_FORWARD] > 0);
+
+    /* ACK authorship crosses the real package-store possession gate. The
+     * intent survives restart without a private key, but losing the pin
+     * makes its next renewal fail closed while the last signed ACK simply
+     * ages toward expiry. */
+    char ack_dir[] = "/tmp/zcl_dht_ack_store_XXXXXX";
+    ASSERT(mkdtemp(ack_dir) != NULL);
+    struct vcs_package_store *ack_store =
+        vcs_package_store_open(ack_dir, UINT64_C(4) * 1024 * 1024);
+    ASSERT(ack_store != NULL);
+    static const uint8_t ack_bytes[] = "possession-backed-storage-ack";
+    uint8_t ack_root[32];
+    ASSERT_EQ(vcs_blob_put_to(ack_store, ack_bytes, sizeof(ack_bytes),
+                              ack_root),
+              VCS_BLOB_OK);
+    ASSERT_EQ(vcs_package_store_pin(ack_store, ack_root, true),
+              VCS_PACKAGE_STORE_OK);
+    struct vcs_zcode_dht_publish_spec ack_spec;
+    memset(&ack_spec, 0, sizeof(ack_spec));
+    ack_spec.kind = VCS_ZCODE_DHT_RECORD_STORAGE_ACK;
+    (void)snprintf(ack_spec.namespace_name,
+                   sizeof(ack_spec.namespace_name), "science");
+    memcpy(ack_spec.transport_root, ack_root, 32);
+    memset(ack_spec.owner_group, 0xa7, 32);
+    ack_spec.sequence = 1;
+    ack_spec.not_before = 1000;
+    ack_spec.expiry = 2000;
+    uint8_t ack_token[32];
+    struct vcs_zcode_dht_record ack_record;
+    ASSERT(!vcs_zcode_dht_service_record_publish_plan(
+        a, &ack_spec, ack_token, &ack_record));
+    ASSERT(vcs_zcode_dht_service_storage_ack_plan(
+        a, ack_store, &ack_spec, ack_token, &ack_record));
+    ASSERT_EQ(vcs_zcode_dht_service_storage_ack_commit(
+                  a, ack_store, &ack_spec, ack_token, test_time(1004),
+                  &ack_record),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    uint8_t ack_chunk_hash[32];
+    char ack_chunk_hex[65], ack_chunk_path[512];
+    ASSERT(vcs_package_chunk_hash(ack_bytes, sizeof(ack_bytes),
+                                  ack_chunk_hash));
+    zcl_hex_encode(ack_chunk_hash, sizeof(ack_chunk_hash), ack_chunk_hex);
+    int ack_path_len = snprintf(
+        ack_chunk_path, sizeof(ack_chunk_path), "%s/zcode/cas/sha3/%02x/%s",
+        ack_dir, ack_chunk_hash[0], ack_chunk_hex);
+    ASSERT(ack_path_len > 0 && (size_t)ack_path_len < sizeof(ack_chunk_path));
+    ASSERT(unlink(ack_chunk_path) == 0);
+    ASSERT(!vcs_package_store_verify_possession(ack_store, ack_root, true));
+    vcs_zcode_dht_service_storage_ack_validation(a, ack_root, false);
+
     vcs_zcode_dht_service_free(a, test_time(1004));
     a = fixture_service(adir, genesis, anoise);
     ASSERT(a != NULL);
     struct vcs_zcode_dht_service_status publication_status;
     vcs_zcode_dht_service_status(a, &publication_status);
-    ASSERT_EQ(publication_status.publication_intents, 1);
+    ASSERT_EQ(publication_status.publication_intents, 2);
     struct vcs_zcode_dht_record_selector published_selector = {
         .kind = VCS_ZCODE_DHT_RECORD_POINTER};
     snprintf(published_selector.namespace_name,
@@ -649,6 +703,17 @@ static int test_record_transport_and_restart(void) {
                   a, 1800, &published_selector, local, 1),
               1);
     ASSERT_EQ(local[0].sequence, 2);
+    struct vcs_zcode_dht_record_selector ack_selector = {
+        .kind = VCS_ZCODE_DHT_RECORD_STORAGE_ACK};
+    (void)snprintf(ack_selector.namespace_name,
+                   sizeof(ack_selector.namespace_name), "science");
+    memcpy(ack_selector.root, ack_root, 32);
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  a, 1800, &ack_selector, local, 1),
+              1);
+    ASSERT_EQ(local[0].sequence, 1);
+    vcs_package_store_close(ack_store);
+    test_rm_rf_recursive(ack_dir);
     vcs_zcode_dht_service_free(a, test_time(1800));
     vcs_zcode_dht_service_free(b, test_time(1004));
     cleanup_fixture(adir);
@@ -766,6 +831,45 @@ static int test_sparse_iterative_network(void) {
     snprintf(selector.namespace_name, sizeof(selector.namespace_name),
              "science.study");
     memcpy(selector.root, pointer.semantic_root, 32);
+
+    /* Recreate the origin as the actual late joiner in the S7.1 proof: its
+     * records cache and peer database do not exist, and its sole bootstrap
+     * session is not the publisher. The signed pointer remains only at the
+     * far target, so discovery below must traverse the sparse DHT. */
+    vcs_zcode_dht_service_free(net.service[origin], net.now);
+    net.service[origin] = NULL;
+    char late_path[512];
+    (void)snprintf(late_path, sizeof(late_path),
+                   "%s/zcode/dht/contacts.v2", net.dir[origin]);
+    (void)unlink(late_path);
+    ASSERT(access(late_path, F_OK) != 0);
+    (void)snprintf(late_path, sizeof(late_path),
+                   "%s/zcode/dht/records.v1", net.dir[origin]);
+    (void)unlink(late_path);
+    ASSERT(access(late_path, F_OK) != 0);
+    for (size_t i = 0; i < MULTI_NODES; i++) {
+      net.connected[origin][i] = false;
+      net.connected[i][origin] = false;
+      net.pending[origin][i] = false;
+      net.pending[i][origin] = false;
+    }
+    net.service[origin] = multi_service(&net, origin, genesis);
+    ASSERT(net.service[origin] != NULL);
+    struct vcs_zcode_dht_service_status late_status;
+    vcs_zcode_dht_service_status(net.service[origin], &late_status);
+    ASSERT_EQ(late_status.cold_contacts, 0);
+    struct vcs_zcode_dht_record late_cache[1];
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  net.service[origin], net.now.wall_unix, &selector,
+                  late_cache, 1),
+              0);
+    ASSERT(order[1] != target_node);
+    ASSERT(multi_connect(&net, origin, order[1]));
+    ASSERT(multi_drive(&net));
+    ASSERT(!net.connected[origin][target_node]);
+    vcs_zcode_dht_service_status(net.service[origin], &late_status);
+    ASSERT_EQ(late_status.connected_authenticated, 1);
+
     uint64_t record_operation = 0;
     ASSERT(vcs_zcode_dht_service_record_discovery_begin(
         net.service[origin], &selector, net.now, &record_operation));
@@ -827,6 +931,90 @@ static int test_sparse_iterative_network(void) {
     ASSERT_EQ(route.authenticated_count, 0);
     ASSERT_EQ(route.policy_denied, 1);
     net.banned[origin] = false;
+
+    /* Publication is a lookup against the deterministic record key, not a
+     * broadcast to the publisher's current sessions. Select a node that is
+     * not directly connected to the publisher, then prove that the closest
+     * set walk reaches it and stores the signed record. */
+    size_t indirect = MULTI_NODES;
+    for (size_t i = 0; i < MULTI_NODES; i++)
+      if (i != target_node && !net.connected[target_node][i]) {
+        indirect = i;
+        break;
+      }
+    ASSERT(indirect < MULTI_NODES);
+    struct vcs_zcode_dht_publish_spec routed_publish;
+    memset(&routed_publish, 0, sizeof(routed_publish));
+    routed_publish.kind = VCS_ZCODE_DHT_RECORD_POINTER;
+    (void)snprintf(routed_publish.namespace_name,
+                   sizeof(routed_publish.namespace_name), "science");
+    memset(routed_publish.semantic_root, 0xb4, 32);
+    memset(routed_publish.transport_root, 0xb5, 32);
+    routed_publish.sequence = 1;
+    routed_publish.not_before = net.now.wall_unix;
+    routed_publish.expiry = net.now.wall_unix + 999;
+    uint8_t routed_token[32];
+    struct vcs_zcode_dht_record routed_record;
+    ASSERT(vcs_zcode_dht_service_record_publish_plan(
+        net.service[target_node], &routed_publish, routed_token,
+        &routed_record));
+    ASSERT_EQ(vcs_zcode_dht_service_record_publish_commit(
+                  net.service[target_node], &routed_publish, routed_token,
+                  net.now, &routed_record),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    uint64_t publish_frames = net.frames;
+    struct vcs_zcode_dht_record_selector routed_selector = {
+        .kind = VCS_ZCODE_DHT_RECORD_POINTER};
+    (void)snprintf(routed_selector.namespace_name,
+                   sizeof(routed_selector.namespace_name), "science");
+    memcpy(routed_selector.root, routed_publish.semantic_root, 32);
+    struct vcs_zcode_dht_record routed_found[1];
+    size_t routed_count = 0;
+    for (size_t turn = 0; turn < 32 && routed_count == 0; turn++) {
+      ASSERT(multi_drive(&net));
+      vcs_zcode_dht_service_tick(net.service[target_node], net.now);
+      routed_count = vcs_zcode_dht_service_record_local_query(
+          net.service[indirect], net.now.wall_unix, &routed_selector,
+          routed_found, 1);
+    }
+    ASSERT_EQ(routed_count, 1);
+    ASSERT_EQ(routed_found[0].sequence, 1);
+    ASSERT(net.connected[target_node][indirect]);
+    struct vcs_zcode_dht_service_status publish_status;
+    for (size_t turn = 0; turn < 32; turn++) {
+      vcs_zcode_dht_service_status(net.service[target_node], &publish_status);
+      if (publish_status.active_publications == 0)
+        break;
+      ASSERT(multi_drive(&net));
+      vcs_zcode_dht_service_tick(net.service[target_node], net.now);
+    }
+    vcs_zcode_dht_service_status(net.service[target_node], &publish_status);
+    ASSERT_EQ(publish_status.active_publications, 0);
+    ASSERT(net.frames - publish_frames <= 256);
+
+    /* A local policy change freezes forwarding and renewal. Once the local
+     * root ban is removed, the same persisted intent renews and advances its
+     * sequence; no global state or shared ban is involved. */
+    memcpy(net.banned_root, routed_publish.semantic_root, 32);
+    net.banned[target_node] = true;
+    net.now.wall_unix = routed_publish.expiry - 300;
+    net.now.monotonic_s = net.now.wall_unix;
+    uint64_t frames_before_policy = net.frames;
+    vcs_zcode_dht_service_tick(net.service[target_node], net.now);
+    ASSERT(multi_drive(&net));
+    ASSERT_EQ(net.frames, frames_before_policy);
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  net.service[target_node], net.now.wall_unix,
+                  &routed_selector, routed_found, 1),
+              1);
+    ASSERT_EQ(routed_found[0].sequence, 1);
+    net.banned[target_node] = false;
+    vcs_zcode_dht_service_tick(net.service[target_node], net.now);
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  net.service[target_node], net.now.wall_unix,
+                  &routed_selector, routed_found, 1),
+              1);
+    ASSERT_EQ(routed_found[0].sequence, 2);
 
     /* A ban is strictly local. Origin stops serving this root while the
      * target still serves the identical signed record to another node. */
