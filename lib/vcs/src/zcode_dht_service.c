@@ -207,7 +207,7 @@ static void query_finish(struct vcs_zcode_dht_service *s,
     if (l && p) {
       int at = vcs_zcode_dht_lookup_candidate_index(l, p->node_id);
       if (at >= 0)
-        l->shortlist[at].state = response
+        l->candidates[at].state = response
                                      ? VCS_ZCODE_DHT_CANDIDATE_RESPONDED
                                      : VCS_ZCODE_DHT_CANDIDATE_FAILED;
     }
@@ -624,9 +624,9 @@ bool vcs_zcode_dht_service_handle_frame(
         for (uint32_t i = 0; i < m.nodes.contact_count; i++) {
           const uint8_t *id = m.nodes.node_ids[i];
           uint8_t previous[32];
-          bool had_previous = l->shortlist_count > 0;
+          bool had_previous = l->candidate_count > 0;
           if (had_previous)
-            memcpy(previous, l->shortlist[0].node_id, 32);
+            memcpy(previous, l->candidates[0].node_id, 32);
           struct service_peer *known =
               vcs_zcode_dht_lookup_peer_for_node(s, id);
           enum vcs_zcode_dht_candidate_state state =
@@ -635,22 +635,22 @@ bool vcs_zcode_dht_service_handle_frame(
                   : VCS_ZCODE_DHT_CANDIDATE_UNVERIFIED;
           (void)vcs_zcode_dht_lookup_insert(
               l, id, state, known ? known->peer_id : 0);
-          if (had_previous && l->shortlist_count > 0 &&
-              memcmp(l->shortlist[0].node_id, id, 32) == 0 &&
+          if (had_previous && l->candidate_count > 0 &&
+              memcmp(l->candidates[0].node_id, id, 32) == 0 &&
               vcs_zcode_dht_lookup_closer_id(id, previous, l->target)) {
             l->xor_progress++;
             s->lookup_xor_progress++;
           }
           int at = vcs_zcode_dht_lookup_candidate_index(l, id);
           if (at >= 0 &&
-              l->shortlist[at].state ==
+              l->candidates[at].state ==
                   VCS_ZCODE_DHT_CANDIDATE_UNVERIFIED) {
             if (!s->request_reachability ||
                 !s->request_reachability(s->reachability_ctx, id,
                                          now.wall_unix)) {
-              l->shortlist[at].state = VCS_ZCODE_DHT_CANDIDATE_UNREACHABLE;
-            } else if (!l->shortlist[at].reachability_deadline_mono) {
-              l->shortlist[at].reachability_deadline_mono =
+              l->candidates[at].state = VCS_ZCODE_DHT_CANDIDATE_UNREACHABLE;
+            } else if (!l->candidates[at].reachability_deadline_mono) {
+              l->candidates[at].reachability_deadline_mono =
                   now.monotonic_s +
                   VCS_ZCODE_DHT_SERVICE_REACHABILITY_TIMEOUT_S;
             }
@@ -718,13 +718,13 @@ void vcs_zcode_dht_service_tick(struct vcs_zcode_dht_service *s,
       memset(&s->expired[i], 0, sizeof(s->expired[i]));
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS; i++)
     if (s->lookups[i].used && !s->lookups[i].completed) {
-      for (uint32_t c = 0; c < s->lookups[i].shortlist_count; c++)
-        if (s->lookups[i].shortlist[c].state ==
+      for (uint32_t c = 0; c < s->lookups[i].candidate_count; c++)
+        if (s->lookups[i].candidates[c].state ==
                 VCS_ZCODE_DHT_CANDIDATE_UNVERIFIED &&
-            s->lookups[i].shortlist[c].reachability_deadline_mono != 0 &&
-            s->lookups[i].shortlist[c].reachability_deadline_mono <=
+            s->lookups[i].candidates[c].reachability_deadline_mono != 0 &&
+            s->lookups[i].candidates[c].reachability_deadline_mono <=
                 now.monotonic_s)
-          s->lookups[i].shortlist[c].state =
+          s->lookups[i].candidates[c].state =
               VCS_ZCODE_DHT_CANDIDATE_UNREACHABLE;
       vcs_zcode_dht_lookup_assess(s, &s->lookups[i]);
       if (!s->lookups[i].completed &&

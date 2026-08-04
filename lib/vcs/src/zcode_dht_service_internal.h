@@ -49,8 +49,13 @@ struct service_lookup {
   bool used, completed;
   uint64_t id, started_mono, deadline_mono, first_query_mono;
   uint8_t target[32];
-  struct lookup_candidate shortlist[VCS_ZCODE_DHT_K];
-  uint32_t shortlist_count, queries_sent, queries_pending, rounds;
+  /* The candidate pool is the durable lookup working set.  It is kept in
+   * deterministic XOR order; only its closest k entries form the active
+   * frontier.  Keeping the wider pool means frontier churn never loses an
+   * in-flight query or a closer ID arriving later in the same NODES burst. */
+  struct lookup_candidate
+      candidates[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
+  uint32_t candidate_count, queries_sent, queries_pending, rounds;
   uint32_t xor_progress;
   enum vcs_zcode_dht_lookup_termination termination;
 };
@@ -105,6 +110,8 @@ int vcs_zcode_dht_lookup_candidate_index(const struct service_lookup *lookup,
                                          const uint8_t node_id[32]);
 bool vcs_zcode_dht_lookup_candidate_authenticated(
     enum vcs_zcode_dht_candidate_state state);
+uint32_t
+vcs_zcode_dht_lookup_frontier_count(const struct service_lookup *lookup);
 struct service_peer *vcs_zcode_dht_lookup_peer_for_node(
     struct vcs_zcode_dht_service *service, const uint8_t node_id[32]);
 bool vcs_zcode_dht_lookup_insert(

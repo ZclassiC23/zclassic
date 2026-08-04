@@ -42,10 +42,18 @@ int vcs_zcode_dht_lookup_candidate_index(const struct service_lookup *l,
                                          const uint8_t id[32]) {
   if (!l || !id)
     return -1;
-  for (uint32_t i = 0; i < l->shortlist_count; i++)
-    if (memcmp(l->shortlist[i].node_id, id, 32) == 0)
+  for (uint32_t i = 0; i < l->candidate_count; i++)
+    if (memcmp(l->candidates[i].node_id, id, 32) == 0)
       return (int)i;
   return -1;
+}
+
+uint32_t
+vcs_zcode_dht_lookup_frontier_count(const struct service_lookup *l) {
+  if (!l)
+    return 0;
+  return l->candidate_count < VCS_ZCODE_DHT_K ? l->candidate_count
+                                               : VCS_ZCODE_DHT_K;
 }
 
 bool vcs_zcode_dht_lookup_candidate_authenticated(
@@ -73,7 +81,7 @@ bool vcs_zcode_dht_lookup_insert(
     return false;
   int existing = vcs_zcode_dht_lookup_candidate_index(l, id);
   if (existing >= 0) {
-    struct lookup_candidate *candidate = &l->shortlist[existing];
+    struct lookup_candidate *candidate = &l->candidates[existing];
     if (state == VCS_ZCODE_DHT_CANDIDATE_AUTHENTICATED &&
         (candidate->state == VCS_ZCODE_DHT_CANDIDATE_UNVERIFIED ||
          candidate->state == VCS_ZCODE_DHT_CANDIDATE_UNREACHABLE ||
@@ -86,29 +94,39 @@ bool vcs_zcode_dht_lookup_insert(
     return false;
   }
   uint32_t at = 0;
-  while (at < l->shortlist_count &&
-         !vcs_zcode_dht_lookup_closer_id(id, l->shortlist[at].node_id,
+  while (at < l->candidate_count &&
+         !vcs_zcode_dht_lookup_closer_id(id, l->candidates[at].node_id,
                                          l->target))
     at++;
-  if (at >= VCS_ZCODE_DHT_K)
-    return false;
-  if (l->shortlist_count == VCS_ZCODE_DHT_K &&
-      l->shortlist[VCS_ZCODE_DHT_K - 1].state ==
-          VCS_ZCODE_DHT_CANDIDATE_IN_FLIGHT)
-    return false;
-  uint32_t move = l->shortlist_count < VCS_ZCODE_DHT_K
-                      ? l->shortlist_count - at
-                      : VCS_ZCODE_DHT_K - at - 1;
-  if (move)
-    memmove(&l->shortlist[at + 1], &l->shortlist[at],
-            move * sizeof(l->shortlist[0]));
-  memset(&l->shortlist[at], 0, sizeof(l->shortlist[at]));
-  l->shortlist[at].used = true;
-  memcpy(l->shortlist[at].node_id, id, 32);
-  l->shortlist[at].state = state;
-  l->shortlist[at].peer_id = peer_id;
-  if (l->shortlist_count < VCS_ZCODE_DHT_K)
-    l->shortlist_count++;
+  uint32_t end = l->candidate_count;
+  if (l->candidate_count == VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES) {
+    if (at >= VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES)
+      return false;
+    /* An in-flight entry remains addressable even after closer discoveries
+     * push it outside the active frontier.  Evict the farthest non-flight
+     * entry at or after the insertion point instead.  At most alpha entries
+     * can be in flight, so a valid service lookup always has such a slot. */
+    bool found = false;
+    for (uint32_t i = VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES; i-- > at;) {
+      if (l->candidates[i].state != VCS_ZCODE_DHT_CANDIDATE_IN_FLIGHT) {
+        end = i;
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+      return false;
+  }
+  if (end > at)
+    memmove(&l->candidates[at + 1], &l->candidates[at],
+            (end - at) * sizeof(l->candidates[0]));
+  memset(&l->candidates[at], 0, sizeof(l->candidates[at]));
+  l->candidates[at].used = true;
+  memcpy(l->candidates[at].node_id, id, 32);
+  l->candidates[at].state = state;
+  l->candidates[at].peer_id = peer_id;
+  if (l->candidate_count < VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES)
+    l->candidate_count++;
   return true;
 }
 
@@ -125,15 +143,16 @@ void vcs_zcode_dht_lookup_terminate(
 
 static bool lookup_has_state(const struct service_lookup *l,
                              enum vcs_zcode_dht_candidate_state state) {
-  for (uint32_t i = 0; i < l->shortlist_count; i++)
-    if (l->shortlist[i].state == state)
+  uint32_t frontier = vcs_zcode_dht_lookup_frontier_count(l);
+  for (uint32_t i = 0; i < frontier; i++)
+    if (l->candidates[i].state == state)
       return true;
   return false;
 }
 
 static bool lookup_has_authenticated_result(const struct service_lookup *l) {
-  for (uint32_t i = 0; i < l->shortlist_count; i++)
-    if (vcs_zcode_dht_lookup_candidate_authenticated(l->shortlist[i].state))
+  for (uint32_t i = 0; i < l->candidate_count; i++)
+    if (vcs_zcode_dht_lookup_candidate_authenticated(l->candidates[i].state))
       return true;
   return false;
 }
@@ -144,7 +163,7 @@ void vcs_zcode_dht_lookup_assess(struct vcs_zcode_dht_service *s,
     return;
   int target = vcs_zcode_dht_lookup_candidate_index(l, l->target);
   if (target >= 0 &&
-      vcs_zcode_dht_lookup_candidate_authenticated(l->shortlist[target].state)) {
+      vcs_zcode_dht_lookup_candidate_authenticated(l->candidates[target].state)) {
     vcs_zcode_dht_lookup_terminate(
         s, l, VCS_ZCODE_DHT_TERMINATION_TARGET_AUTHENTICATED);
     return;
@@ -172,8 +191,9 @@ void vcs_zcode_dht_lookup_schedule(struct vcs_zcode_dht_service *s,
       if (!lookup->used || lookup->completed ||
           lookup->queries_pending >= VCS_ZCODE_DHT_ALPHA)
         continue;
-      for (uint32_t i = 0; i < lookup->shortlist_count; i++) {
-        struct lookup_candidate *candidate = &lookup->shortlist[i];
+      uint32_t frontier = vcs_zcode_dht_lookup_frontier_count(lookup);
+      for (uint32_t i = 0; i < frontier; i++) {
+        struct lookup_candidate *candidate = &lookup->candidates[i];
         if (candidate->state != VCS_ZCODE_DHT_CANDIDATE_AUTHENTICATED)
           continue;
         if (memcmp(candidate->node_id, s->self_id, 32) == 0) {
@@ -283,10 +303,10 @@ bool vcs_zcode_dht_service_lookup_poll(
                                  ? VCS_ZCODE_DHT_LOOKUP_NOT_FOUND
                                  : VCS_ZCODE_DHT_LOOKUP_COMPLETE));
   for (uint32_t i = 0;
-       i < lookup->shortlist_count && out->count < VCS_ZCODE_DHT_K; i++)
+       i < lookup->candidate_count && out->count < VCS_ZCODE_DHT_K; i++)
     if (vcs_zcode_dht_lookup_candidate_authenticated(
-            lookup->shortlist[i].state))
-      memcpy(out->node_ids[out->count++], lookup->shortlist[i].node_id, 32);
+            lookup->candidates[i].state))
+      memcpy(out->node_ids[out->count++], lookup->candidates[i].node_id, 32);
   if (lookup->completed)
     memset(lookup, 0, sizeof(*lookup));
   return true;

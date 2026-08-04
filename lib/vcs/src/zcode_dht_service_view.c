@@ -57,10 +57,10 @@ void vcs_zcode_dht_service_status(const struct vcs_zcode_dht_service *s,
     out->queued_lookups += l->used && !l->completed;
     if (!l->used)
       continue;
-    for (uint32_t c = 0; c < l->shortlist_count; c++)
-      if ((unsigned)l->shortlist[c].state <
+    for (uint32_t c = 0; c < l->candidate_count; c++)
+      if ((unsigned)l->candidates[c].state <
           VCS_ZCODE_DHT_CANDIDATE_STATE_COUNT)
-        out->lookup_shortlist_states[l->shortlist[c].state]++;
+        out->lookup_shortlist_states[l->candidates[c].state]++;
   }
 }
 
