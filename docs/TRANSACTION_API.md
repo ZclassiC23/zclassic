@@ -9,12 +9,13 @@ of truth; this page explains how to use it safely.
 
 1. [Big picture](#big-picture)
 2. [First call for an agent](#first-call-for-an-agent)
-3. [Catalog fields](#catalog-fields)
-4. [Transaction families](#transaction-families)
-5. [Safe plan/commit workflow](#safe-plancommit-workflow)
-6. [What is not a chain transaction](#what-is-not-a-chain-transaction)
-7. [Proof and statistics](#proof-and-statistics)
-8. [Adding a transaction type](#adding-a-transaction-type)
+3. [One-call AI guide](#one-call-ai-guide)
+4. [Catalog fields](#catalog-fields)
+5. [Transaction families](#transaction-families)
+6. [Safe plan/commit workflow](#safe-plancommit-workflow)
+7. [What is not a chain transaction](#what-is-not-a-chain-transaction)
+8. [Proof and statistics](#proof-and-statistics)
+9. [Adding a transaction type](#adding-a-transaction-type)
 
 ## Big picture
 
@@ -50,6 +51,7 @@ Use the native interface when operating the node:
 ```bash
 zclassic23 app transaction-types list
 zclassic23 app transaction-types show --type=znam_register
+zclassic23 app transaction-types guide --type=znam_register
 zclassic23 discover describe app.names.register
 zclassic23 discover schema app.names.register
 ```
@@ -67,13 +69,30 @@ is the full `zcl.transaction_type.v2` contract. The collection also reports
 `demonstrated_count`, `blocked_count`, `chain_confirmed_count`,
 `mainnet_live_proven_count`, `proof_test_group_count`, and
 `fully_demonstrated`, so an agent can assess proof coverage without parsing all
-33 rows. `core.wallet.transaction.list` is different: it is
+34 rows. `core.wallet.transaction.list` is different: it is
 wallet history, not the type catalog. `app.protocols` describes broader
 application protocols, not an exhaustive transaction inventory.
 
 An AI should select by `id`, reject `planned`, respect `network_policy`, then
 inspect the named command's current input schema. It must not synthesize flags
 or infer a wallet scope from examples.
+
+## One-call AI guide
+
+`app transaction-types guide --type=<id>` joins a catalog member to the live
+command registry in one bounded read. It returns role-labeled builder, commit,
+component, and inspection contracts with each command's exact schemas, allowed
+input keys, example, effect, risk, authority, and confirmation mode. It also
+returns a fail-closed `agent_decision`, whether a current custody snapshot and
+owner authorization are required, the focused proof group, and a short safety
+checklist.
+
+The guide grants no authority and executes nothing. A `ready` member may say
+`can_execute:true` when every referenced command is currently ready; a
+`process_only`, `contained`, or `planned` member still returns its useful
+contract but tells the caller to receive only or refuse. For example,
+`blog_anchor` documents the implemented ZBLG codec and projection while
+correctly refusing creation because no public signing or broadcast path exists.
 
 ## Catalog fields
 
@@ -86,7 +105,7 @@ or infer a wallet scope from examples.
 | `builder_command` | First typed command. Empty means no supported builder exists. |
 | `commit_command` | The value-moving/broadcast step. It may be the same command with `confirm:true`. |
 | `component_commands` | Every additional command required by a composite flow. |
-| `network_policy` | Where the path may run. `isolated_non_mainnet_only`, `no_broadcast_path`, and `payment_leg_only_no_download` are hard warnings; the last permits only the explicitly authorized payment subflow, never a claim that file delivery completed. |
+| `network_policy` | Where the path may run. Values such as `isolated_non_mainnet_only`, `no_broadcast_path`, and `no_public_constructor_or_broadcast_path` are hard boundaries, not suggestions. |
 | `proof_level` / `test_group` | Strongest checked-in isolated proof and the exact focused test that reproduces it. |
 | `lab_case_id` | Matching append-only notebook case, when one exists. |
 | `evidence_status` | `demonstrated` when checked-in evidence exists; otherwise explicit `blocked`. |
@@ -110,6 +129,7 @@ human index:
 | Messaging | `sapling_onchain_memo` | On-chain ZMSG uses an encrypted Sapling memo; P2P messaging is off-chain. |
 | Identity/directory | `zid_anchor`, `zid_rotate`, `zid_revoke`, `zdir_register`, `zdir_deregister` | Explicit OP_RETURN compose/broadcast paths. |
 | Anchors/ZCODE | `zanc_epoch_anchor`, `zcode_release_anchor` | SHA3 commitment anchors; ZCODE folds signed release records before ZANC broadcast. |
+| Blog | `blog_anchor` | Strict ZBLG v1 event commitment codec and projection exist; public signing and broadcast are deliberately still planned. |
 | Atomic swaps | `htlc_initiate`, `htlc_participate`, `htlc_redeem`, `htlc_refund` | Contract preparation plus explicit funding; redeem/refund settle the ZCL leg. |
 | Commerce | `store_transparent_payment`, `store_shielded_payment`, `yardsale_atomic_purchase`, `market_purchase` | Transparent store and yardsale paths exist; shielded store pay is isolated-only. File-market plan/commit/retrieve completes authenticated payment, verified assembly, and atomic publication. |
 
@@ -199,6 +219,12 @@ the procedure and safety cap are in
 mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.
 
+The current complete inventory is **33/34 isolated cases passing**, with
+`blog_anchor` explicitly blocked, **5 simulated-chain confirmations**, **0
+mainnet confirmations**, and **0 ZCL** live recipient value or fees. The earlier
+33/33 result was complete for the catalog as then declared; the later audit
+found and added the already-implemented ZBLG chain format instead of hiding it.
+
 ## Adding a transaction type
 
 Future developers make one coherent feature slice:
@@ -209,7 +235,7 @@ Future developers make one coherent feature slice:
    not new semantic types.
 2. Add or update the typed native builder/reader in `config/commands/*.def`.
    Every non-empty command named by the catalog is test-checked against the
-   live command registry.
+   live command registry and exposed through `app transaction-types guide`.
 3. Add the isolated proof to `tools/dev/transaction_lab_catalog.def` and its
    append-only evidence event. Never label builder-only evidence as a chain
    confirmation.
@@ -220,5 +246,6 @@ Future developers make one coherent feature slice:
 
 <!-- claim: symbol-present app.transaction-types.list config/commands/apps.def -->
 <!-- claim: symbol-present app.transaction-types.show config/commands/apps.def -->
+<!-- claim: symbol-present app.transaction-types.guide config/commands/apps.def -->
 <!-- claim: file-present app/controllers/include/controllers/transaction_types.def -->
 <!-- claim: file-present tools/dev/transaction_lab_catalog.def -->

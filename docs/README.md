@@ -69,9 +69,9 @@ you operate that host, and misleading otherwise.
 - [`NATIVE_COMMAND_INTERFACE.md`](./NATIVE_COMMAND_INTERFACE.md) — the native command registry (`core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`), the only agent interface going forward: grammar, tree, and the frozen CLI UX contract.
 - [`TRANSACTION_API.md`](./TRANSACTION_API.md) — the semantic transaction
   catalog and AI-safe workflow: base ZCL, Sapling, ZSLP, ZNAM, ZMSG,
-  ZID/ZDIR/ZANC, ZCODE anchors, HTLC swaps, and commerce, with exact native/REST
-  discovery calls and an explicit line between ready, receive-only, contained,
-  and planned paths.
+  ZID/ZDIR/ZANC, ZCODE and ZBLG anchors, HTLC swaps, and commerce, with a
+  one-call guide to exact live command contracts and an explicit line between
+  ready, receive-only, contained, and planned paths.
 - [`FILE_MARKET_PROTOCOL.md`](./FILE_MARKET_PROTOCOL.md) — the authenticated
   paid-offer wire, exact integer pricing, confirmed-payment authority, complete
   buyer retrieval workflow, and reproducible proof map for `market_purchase`.

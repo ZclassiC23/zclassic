@@ -97,14 +97,14 @@ int api_transaction_type_focused_tests(void)
                                json_get_int(json_get(&root,
                                                      "contained_count")) +
                                json_get_int(json_get(&root, "planned_count"));
-        ok = ok && count == 33 &&
+        ok = ok && count == 34 &&
              json_get_int(json_get(&root, "demonstrated_count")) == 33 &&
-             json_get_int(json_get(&root, "blocked_count")) == 0 &&
+             json_get_int(json_get(&root, "blocked_count")) == 1 &&
              json_get_int(json_get(&root, "chain_confirmed_count")) == 5 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
-             json_get_int(json_get(&root, "proof_test_group_count")) == 18 &&
-             json_get_bool(json_get(&root, "fully_demonstrated"));
+             json_get_int(json_get(&root, "proof_test_group_count")) == 19 &&
+             !json_get_bool(json_get(&root, "fully_demonstrated"));
         const struct json_value *transparent =
             api_test_find_str_field(types, "id", "transparent_t_to_t");
         const struct json_value *coinbase =
@@ -113,6 +113,8 @@ int api_transaction_type_focused_tests(void)
             api_test_find_str_field(types, "id", "store_shielded_payment");
         const struct json_value *market =
             api_test_find_str_field(types, "id", "market_purchase");
+        const struct json_value *blog =
+            api_test_find_str_field(types, "id", "blog_anchor");
         ok = ok && transparent &&
              strcmp(json_get_str(json_get(transparent, "builder_command")),
                     "core.wallet.transaction.send") == 0 &&
@@ -129,6 +131,11 @@ int api_transaction_type_focused_tests(void)
                     "ready") == 0 &&
              strcmp(json_get_str(json_get(market, "proof_level")),
                     "projection_verified") == 0;
+        ok = ok && blog &&
+             strcmp(json_get_str(json_get(blog, "availability")),
+                    "planned") == 0 &&
+             strcmp(json_get_str(json_get(blog, "proof_level")),
+                    "not_demonstrated") == 0;
         ok = ok && strstr(body, "private_key") == NULL &&
              strstr(body, "grant_token") == NULL &&
              strstr(body, "/home/") == NULL;
@@ -166,6 +173,62 @@ int api_transaction_type_focused_tests(void)
                   json_get_bool(json_get(&root, "ok")) &&
                   strcmp(json_get_str(json_get(&root, "data_schema")),
                          ZCL_TRANSACTION_TYPES_INDEX_SCHEMA) == 0;
+        json_free(&root);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: one-call transaction guide joins exact live command contracts... ");
+    {
+        const struct zcl_command_registry *registry = zcl_command_catalog();
+        const struct zcl_command_spec *spec = registry ?
+            zcl_command_registry_find(registry,
+                                      "app.transaction-types.guide", NULL)
+            : NULL;
+        struct zcl_command_context context = {
+            .registry = registry,
+            .granted_capabilities = ~(uint64_t)0,
+            .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+        };
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_str(&input, "type", "znam_register");
+        char output[ZCL_COMMAND_LIST_BUDGET + 1];
+        enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
+        size_t n = spec ? zcl_command_registry_execute_json(
+            registry, spec, &context, &input, false, spec->path, "normal",
+            0, 0, NULL, output, sizeof(output) - 1, &exit_code) : 0;
+        json_free(&input);
+        output[n < sizeof(output) ? n : sizeof(output) - 1] = 0;
+        struct json_value root;
+        json_init(&root);
+        bool ok = n > 0 && n <= ZCL_COMMAND_LIST_BUDGET &&
+            exit_code == ZCL_COMMAND_EXIT_OK && json_read(&root, output, n) &&
+            json_get_bool(json_get(&root, "ok"));
+        const struct json_value *data = json_get(&root, "data");
+        const struct json_value *type = data ?
+            json_get(data, "transaction_type") : NULL;
+        const struct json_value *contracts = data ?
+            json_get(data, "command_contracts") : NULL;
+        const struct json_value *builder = contracts ?
+            api_test_find_str_field(contracts, "role", "builder") : NULL;
+        ok = ok && data && type && contracts && builder &&
+            strcmp(json_get_str(json_get(data, "schema")),
+                   ZCL_TRANSACTION_TYPE_GUIDE_SCHEMA) == 0 &&
+            strcmp(json_get_str(json_get(type, "id")), "znam_register") == 0 &&
+            json_get_bool(json_get(data, "can_execute")) &&
+            json_get_bool(json_get(data, "money_snapshot_required")) &&
+            json_get_bool(json_get(data, "owner_authorization_required")) &&
+            json_size(contracts) == 3 &&
+            strcmp(json_get_str(json_get(builder, "command")),
+                   "app.names.register") == 0 &&
+            json_get(builder, "allowed_keys") &&
+            json_size(json_get(builder, "allowed_keys")) > 0 &&
+            strlen(json_get_str(json_get(builder, "input_schema"))) > 0 &&
+            strlen(json_get_str(json_get(builder, "example"))) > 0 &&
+            strstr(output, "private_key") == NULL &&
+            strstr(output, "grant_token") == NULL;
         json_free(&root);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

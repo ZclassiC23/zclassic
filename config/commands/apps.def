@@ -81,6 +81,26 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_type_show)
 
+ZCL_COMMAND_READY_READ(
+    "app.transaction-types.guide", "app.transaction-types", "",
+    "Get one AI-ready transaction workflow with exact command contracts",
+    "Joins one semantic transaction type to the live native command registry. "
+    "Returns role-labeled builder, commit, component, and inspection contracts "
+    "with exact schemas, allowed keys, examples, risk, authority, confirmation "
+    "mode, and a fail-closed execution decision. Discovery only; it cannot "
+    "create a plan, authorize a wallet, sign, or broadcast.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "transactions,catalog,type,workflow,ai,schema,plan,commit",
+    "zcl.transaction_type_ref.input.v1", "zcl.transaction_type_guide.v1",
+    "type", "type",
+    "zclassic23 app transaction-types guide --type=znam_register",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_type_guide)
+
 ZCL_COMMAND_BRANCH("app.invoke", "app", "Invoke a manifest-owned App route",
                    ZCL_COMMAND_LAYER_APP)
 

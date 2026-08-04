@@ -186,3 +186,23 @@ live-wallet mutation:
 The latest notebook result is **33/33 PASS, 0 BLOCKED**, with **5 simulated
 chain confirmations**, **0 mainnet confirmations**, and **0 ZCL** live
 recipient value or fees. No live wallet or service was mutated.
+
+## 2026-08-04 completeness audit: ZBLG gap made visible
+
+The 33/33 result above was accurate for every semantic type declared at that
+time, but a second inventory audit found one implemented chain format that the
+catalog had omitted: the strict `ZBLG` v1 OP_RETURN commitment used by the Blog
+projection. Hiding an incomplete path by omitting it would make the aggregate
+misleading, so `blog_anchor` is now the 34th catalog and notebook case.
+
+The production codec builds and parses the ZNAM-bound signed-event commitment,
+and the projection observes it. Those facts do not demonstrate an end-to-end
+transaction: there is intentionally no public event-signing constructor and no
+broadcast command. The case is therefore `planned`, `not_demonstrated`, and
+`BLOCKED` until a bounded wallet plan/commit path and isolated confirmation
+proof exist.
+
+The corrected current result is **33/34 PASS, 1 BLOCKED**, with **5 simulated
+chain confirmations** across **19 exact proof groups**, **0 mainnet
+confirmations**, and **0 ZCL** live recipient value or fees. This audit moved
+no funds and contacted no live wallet.
