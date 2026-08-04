@@ -150,8 +150,8 @@ TX_TYPE("zcode_release_anchor", "zcode", "ready", "composite_overlay_transaction
         "fold_store_compose_broadcast", "zcode.release.anchor",
         "zcode.release.anchor", "zcode.domain.status",
         "zcode.release.sign,zcode.release.prove,zcode.release.verify",
-        "all_zcl_networks", "zcode_release_anchor", "builder_verified", "test_zcode_release",
-        "Fold signed ZCODE release documents into a deterministic domain root and anchor that root through ZANC.")
+        "all_zcl_networks", "zcode_release_anchor", "simnet_confirmed", "test_zcode_release",
+        "Fold signed ZCODE release documents into a deterministic domain root and emit its exact ZANC OP_RETURN for wallet broadcast; those production command bytes are mined and projected in isolated-chain proof.")
 
 TX_TYPE("blog_anchor", "blog", "contained", "composite_overlay_transaction",
         "op_return_zblg_event_commitment", "public_commitment",

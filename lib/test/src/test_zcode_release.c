@@ -33,8 +33,9 @@
  *
  * Hermetic: per-pid ./test-tmp datadirs, no network, no wallet, no live
  * node. node_rpc_call is stubbed for the whole group so the anchor
- * handler can NEVER reach a running node — only the offline
- * op_return_hex branch runs and nothing is broadcast.
+ * handler can NEVER reach a running node. The exact offline op_return_hex
+ * is funded and mined only in the RAM-only simnet fixture, then projected
+ * through the production explorer index; nothing is broadcast.
  */
 
 #include "test/test_core.h"
@@ -47,8 +48,11 @@
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "models/database.h"
+#include "models/zanc.h"
 #include "platform/time_compat.h"
+#include "test/transaction_lab_simnet.h"
 #include "zid/zid.h"
+#include "zanc/zanc.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -979,6 +983,102 @@ static int test_zr_prove_verify(void)
     return failures;
 }
 
+/* ── 8. exact command bytes mined and projected ───────────────────── */
+
+static int test_zr_mined_anchor(void)
+{
+    int failures = 0;
+    struct zr_fixture f;
+    printf("zcode_release simnet: signed release fixture... ");
+    if (!zr_fixture_init(&f, "simnet", 0x7D)) {
+        printf("FAIL\n");
+        return 1;
+    }
+    char *doc = zr_sign(&f, "sovereign", "4.2.0", 0xD4,
+                        4102444800LL, NULL);
+    if (doc) printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+
+    char root_hex[65] = {0};
+    char script_hex[257] = {0};
+    printf("zcode_release simnet: command emits one deterministic ZANC "
+           "anchor... ");
+    {
+        struct zr_cmd c;
+        zr_cmd_init(&c);
+        (void)json_push_kv_str(&c.input, "datadir", f.datadir);
+        (void)json_push_kv_int(&c.input, "tip", 4242);
+        zcl_native_handle_zcode_release_anchor(&c.request, &c.reply);
+        const char *root = zr_str(&c.reply, "domain_root");
+        const char *script = zr_str(&c.reply, "op_return_hex");
+        bool ok = doc && zr_ok(&c.reply) && root && strlen(root) == 64 &&
+                  script && strlen(script) > 0 &&
+                  strlen(script) < sizeof(script_hex) &&
+                  zr_int(&c.reply, "releases", -1) == 1 &&
+                  zr_bool(&c.reply, "domain_stored") == 1 &&
+                  zr_bool(&c.reply, "anchor_recorded") == 0;
+        if (ok) {
+            snprintf(root_hex, sizeof(root_hex), "%s", root);
+            snprintf(script_hex, sizeof(script_hex), "%s", script);
+            printf("OK\n");
+        } else {
+            printf("FAIL\n");
+            failures++;
+        }
+        zr_cmd_free(&c);
+    }
+
+    uint8_t root[32];
+    uint8_t script[128];
+    size_t script_len = strlen(script_hex) / 2;
+    struct zanc_message message;
+    bool decoded = strlen(root_hex) == 64 && IsHex(root_hex) &&
+        ParseHex(root_hex, root, sizeof(root)) == sizeof(root) &&
+        script_len > 0 && script_len <= sizeof(script) && IsHex(script_hex) &&
+        ParseHex(script_hex, script, sizeof(script)) == script_len &&
+        zanc_parse(script, script_len, &message);
+    printf("zcode_release simnet: exact command bytes bind root and label... ");
+    if (decoded && message.hash_type == ZANC_HASH_SHA3_256 &&
+        memcmp(message.digest, root, sizeof(root)) == 0 &&
+        strcmp(message.label, "zcode@4242") == 0)
+        printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+
+    struct transaction_lab_simnet_receipt mined;
+    bool mined_ok = decoded && transaction_lab_simnet_mine_op_return(
+        script, script_len, &mined);
+    printf("zcode_release simnet: exact ZANC transaction enters a block "
+           "through connect_block... ");
+    if (mined_ok && mined.mined_height >= 200 &&
+        mined.transaction.num_vout == 2 && mined.change_zat == 800000)
+        printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool db_open = node_db_open(&ndb, ":memory:");
+    bool projected = db_open && mined_ok &&
+        transaction_lab_simnet_project(&ndb, &mined);
+    struct zanc_anchor anchor;
+    memset(&anchor, 0, sizeof(anchor));
+    bool found = projected && db_zanc_find_by_digest(
+        &ndb, ZANC_HASH_SHA3_256, root, &anchor);
+    printf("zcode_release simnet: mined bytes rebuild the ZANC projection... ");
+    if (found && anchor.height == mined.mined_height &&
+        memcmp(anchor.txid, mined.txid.data, sizeof(anchor.txid)) == 0 &&
+        strcmp(anchor.label, "zcode@4242") == 0)
+        printf("OK\n");
+    else { printf("FAIL\n"); failures++; }
+
+    if (db_open)
+        node_db_close(&ndb);
+    if (mined_ok)
+        transaction_lab_simnet_receipt_free(&mined);
+    free(doc);
+    zr_fixture_free(&f);
+    return failures;
+}
+
 /* ── entry point ───────────────────────────────────────────────────── */
 
 int test_zcode_release(void)
@@ -994,6 +1094,7 @@ int test_zcode_release(void)
     failures += test_zr_batch_load();
     failures += test_zr_verify_errors();
     failures += test_zr_prove_verify();
+    failures += test_zr_mined_anchor();
 
     node_rpc_client_set_test_hook(NULL);
 

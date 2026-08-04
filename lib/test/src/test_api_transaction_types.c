@@ -100,7 +100,7 @@ int api_transaction_type_focused_tests(void)
         ok = ok && count == 34 &&
              json_get_int(json_get(&root, "demonstrated_count")) == 34 &&
              json_get_int(json_get(&root, "blocked_count")) == 0 &&
-             json_get_int(json_get(&root, "chain_confirmed_count")) == 22 &&
+             json_get_int(json_get(&root, "chain_confirmed_count")) == 23 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
              json_get_int(json_get(&root, "proof_test_group_count")) == 19 &&
@@ -257,6 +257,8 @@ int api_transaction_type_focused_tests(void)
                           "zcode_release_anchor") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "chain_encoding")),
                           "op_return_zanc_zcode_domain_root") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "proof_level")),
+                          "simnet_confirmed") == 0;
         ok = ok && api_test_array_has_str(json_get(&root,
                                                     "component_commands"),
                                            "zcode.release.prove");

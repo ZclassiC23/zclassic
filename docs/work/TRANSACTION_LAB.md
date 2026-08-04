@@ -366,3 +366,29 @@ The current result is **34/34 PASS, 0 BLOCKED**, with **22 simulated-chain
 confirmations** across **19 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
 funds moved.
+
+## 2026-08-04 exact ZCODE release-anchor chain proof
+
+The ZCODE release case now crosses its public typed builder before entering the
+chain fixture. `zcode release sign` creates a real Ed25519-signed release
+document; `zcode release anchor` loads that stored document, byte-sorts its
+record digest into the domain tree, stores the reproducible leaf set, and emits
+the exact ZANC SHA3 OP_RETURN for the resulting root and `zcode@<tip>` label.
+
+A reusable transaction-lab fixture funds those exact command-produced bytes,
+mines the transaction through `connect_block`, proves its input is consumed
+and transparent change enters the UTXO view, then folds the retained exact
+transaction through the production explorer overlay registry. The ZANC
+projection must recover the same root, label, txid, and mined height. The RPC
+bridge remains stubbed throughout: no live node, wallet, endpoint, or funds are
+contacted.
+
+The helper lives in `test/transaction_lab_simnet.h` so ZID, ZDIR, epoch-ZANC,
+and future OP_RETURN transaction families can reuse the same two-axis
+block-connection-plus-projection receipt instead of inventing weaker per-test
+fixtures.
+
+The current result is **34/34 PASS, 0 BLOCKED**, with **23 simulated-chain
+confirmations** across **19 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
+funds moved.
