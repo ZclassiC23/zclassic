@@ -392,3 +392,24 @@ The current result is **34/34 PASS, 0 BLOCKED**, with **23 simulated-chain
 confirmations** across **19 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
 funds moved.
+
+## 2026-08-04 exact epoch-ZANC chain proof
+
+`core epoch anchor` now has the same two-axis chain evidence as the ZCODE
+release anchor. The existing test first builds a real OP_RETURN catalog cursor
+whose digest is explicitly bound to its declared base and head range. With the
+node RPC forcibly stubbed, the public command emits the exact ZANC SHA3 script
+and `zepoch@<catalog-height>` label that an operator wallet would publish.
+
+The shared transaction-lab simnet fixture funds those exact command bytes,
+admits them through `connect_block`, and proves the funding input is consumed
+and transparent change enters the UTXO view. The retained transaction is then
+folded through the production explorer overlay registry; the resulting ZANC
+row must contain the same catalog digest, label, transaction ID, and mined
+height. Existing epoch tests continue to prove range declaration, paging,
+cross-operator agreement/disagreement, and incomparable partial histories.
+
+The current result is **34/34 PASS, 0 BLOCKED**, with **24 simulated-chain
+confirmations** across **19 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
+funds moved.

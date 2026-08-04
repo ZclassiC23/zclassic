@@ -12,7 +12,7 @@ zid_rotate|identity|ZID master-key rotation|builder_verified|test_zid_identity
 zid_revoke|identity|ZID revocation|builder_verified|test_zid_identity
 zdir_register|directory|ZDIR onion registration|builder_verified|test_zdir_write_path
 zdir_deregister|directory|ZDIR onion deregistration|builder_verified|test_zdir_write_path
-zanc_epoch_anchor|anchor|ZANC epoch digest anchor|builder_verified|test_epoch
+zanc_epoch_anchor|anchor|ZANC epoch digest anchor|simnet_confirmed|test_epoch
 zcode_release_anchor|zcode|ZCODE release-domain ZANC anchor|simnet_confirmed|test_zcode_release
 blog_anchor|blog|ZNAM-bound signed Blog event anchor|simnet_confirmed|test_blog
 zslp_genesis|tokens|token genesis|simnet_confirmed|test_simnet

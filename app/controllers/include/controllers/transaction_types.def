@@ -143,8 +143,8 @@ TX_TYPE("zdir_deregister", "zdir", "ready", "overlay_transaction",
 TX_TYPE("zanc_epoch_anchor", "zanc", "ready", "overlay_transaction",
         "op_return_zanc_sha3", "public_commitment", "compose_broadcast",
         "core.epoch.anchor", "core.epoch.anchor", "core.epoch.verify", "",
-        "all_zcl_networks", "zanc_epoch_anchor", "builder_verified", "test_epoch",
-        "Commit the current epoch catalog digest in a ZANC SHA3 anchor transaction.")
+        "all_zcl_networks", "zanc_epoch_anchor", "simnet_confirmed", "test_epoch",
+        "Commit the current epoch catalog digest in a ZANC SHA3 anchor; the exact command-produced OP_RETURN is mined and recovered from the isolated chain projection.")
 TX_TYPE("zcode_release_anchor", "zcode", "ready", "composite_overlay_transaction",
         "op_return_zanc_zcode_domain_root", "public_commitment",
         "fold_store_compose_broadcast", "zcode.release.anchor",
