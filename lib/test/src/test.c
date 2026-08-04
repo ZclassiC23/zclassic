@@ -1554,6 +1554,8 @@ int main(int argc, char **argv)
     { extern int test_zcode_dht_delegation(void);
       failures += test_zcode_dht_delegation(); }
     { extern int test_zcode_dht_msgs(void); failures += test_zcode_dht_msgs(); }
+    { extern int test_zcode_dht_record(void);
+      failures += test_zcode_dht_record(); }
     { extern int test_zcode_dht_service(void);
       failures += test_zcode_dht_service(); }
     { extern int test_zcode_dht_lookup(void);
