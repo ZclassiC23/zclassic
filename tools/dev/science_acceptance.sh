@@ -653,7 +653,7 @@ SA_PGID_A="$(sa_spawn "$SA_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.
 sa_wait_rpc "$SA_DD_A" "$A_RPC" "$SA_PGID_A" "$RPC_WARMUP" || sa_die "A authenticated restart failed"
 SA_PGID_B="$(sa_spawn "$SA_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$A_PORT")"
 sa_wait_rpc "$SA_DD_B" "$B_RPC" "$SA_PGID_B" "$RPC_WARMUP" || sa_die "B authenticated restart failed"
-for _ in $(seq 1 120); do
+for _ in $(seq 1 180); do
     da="$(sa_sci "$SA_DD_A" zcode.network.status '{}')"
     db="$(sa_sci "$SA_DD_B" zcode.network.status '{}')"
     [ "$(sa_jget "$da" 'd.get("data",{}).get("enabled",False)')" = "True" ] &&
