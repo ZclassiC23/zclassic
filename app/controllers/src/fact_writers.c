@@ -488,6 +488,37 @@ static int fw_row_cmp(const void *a, const void *b)
     return strcmp(x->key, y->key);
 }
 
+struct fw_loaded_file {
+    struct fw_file file;
+    const char *path;
+};
+
+/* Raw-store discovery only recognizes these canonical uppercase SQL verbs.
+ * Retain that small candidate set after the macro pass so pass 2 does not
+ * reopen and re-index every source file in the repository. False positives
+ * cost memory for one call; false negatives would hide a writer, so this gate
+ * deliberately tests only the verb and leaves table/key filtering to the
+ * existing scanner. */
+static bool fw_file_may_have_raw_writer(const struct fw_file *file)
+{
+    if (!file || !file->buf)
+        return false;
+    for (size_t i = 0;
+         i < sizeof(fw_sql_verbs) / sizeof(fw_sql_verbs[0]); i++)
+        if (strstr(file->buf, fw_sql_verbs[i]))
+            return true;
+    return false;
+}
+
+static void fw_loaded_files_free(struct fw_loaded_file *files, size_t count)
+{
+    if (!files)
+        return;
+    for (size_t i = 0; i < count; i++)
+        fw_file_free(&files[i].file);
+    free(files);
+}
+
 struct fact_writers_report *fact_writers_analyze(const char *root,
                                                  struct codeindex *ci)
 {
@@ -499,24 +530,44 @@ struct fact_writers_report *fact_writers_analyze(const char *root,
     struct fw_paths paths = {0};
     if (!fw_collect_paths(ci, &paths)) goto fail;
     rep->files_scanned = (int)paths.n;
+    struct fw_loaded_file *sql_files = zcl_calloc(
+        paths.n, sizeof(*sql_files), "fw_sql_candidates");
+    size_t n_sql_files = 0;
+    if (!sql_files) goto fail;
 
     /* Pass 1: the string-valued macro table must be complete before any key is
-     * resolved, so it is built over the whole tree first. */
+     * resolved, so it is built over the whole tree first. The macro harvest is
+     * a sequential whole-buffer walk and does not need a line index. Build
+     * line offsets only for the much smaller raw-SQL candidate set retained by
+     * pass 2; indexing every one of the 2,700+ files made this command miss its
+     * latency contract under parallel CI load. */
     for (size_t i = 0; i < paths.n; i++) {
         struct fw_file f;
-        if (!fw_file_load(root, paths.v[i], &f)) continue;
+        if (!fw_file_load_unindexed(root, paths.v[i], &f)) continue;
         bool ok = fw_collect_macros(&f, &acc.macros);
-        fw_file_free(&f);
-        if (!ok) goto fail;
+        if (!ok) {
+            fw_file_free(&f);
+            goto fail_loaded;
+        }
+        if (fw_file_may_have_raw_writer(&f)) {
+            if (!fw_file_index_lines(&f)) {
+                fw_file_free(&f);
+                goto fail_loaded;
+            }
+            sql_files[n_sql_files].file = f;
+            sql_files[n_sql_files].path = paths.v[i];
+            n_sql_files++;
+        } else {
+            fw_file_free(&f);
+        }
     }
 
-    /* Pass 2: raw-SQL writers over the same file set. */
-    for (size_t i = 0; i < paths.n; i++) {
-        struct fw_file f;
-        if (!fw_file_load(root, paths.v[i], &f)) continue;
-        fw_scan_raw_sql(&acc, &f, paths.v[i]);
-        fw_file_free(&f);
-    }
+    /* Pass 2: raw-SQL writers over the retained candidate set. */
+    for (size_t i = 0; i < n_sql_files; i++)
+        fw_scan_raw_sql(&acc, &sql_files[i].file, sql_files[i].path);
+    fw_loaded_files_free(sql_files, n_sql_files);
+    sql_files = NULL;
+    n_sql_files = 0;
 
     /* Pass 3: API writers, addressed by codeindex refs. */
     if (!fw_scan_api_writers(&acc, root, ci)) goto fail;
@@ -537,6 +588,8 @@ struct fact_writers_report *fact_writers_analyze(const char *root,
     free(acc.macros.v);
     return rep;
 
+fail_loaded:
+    fw_loaded_files_free(sql_files, n_sql_files);
 fail:
     free(paths.v);
     free(acc.macros.v);
@@ -559,4 +612,3 @@ const struct fact_row *fact_writers_find(const struct fact_writers_report *r,
     }
     return NULL;
 }
-

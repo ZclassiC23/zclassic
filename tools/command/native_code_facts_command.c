@@ -7,18 +7,23 @@
  * the ranked multi-writer slots plus the per-store honesty counters; with a
  * `key` it renders every writer of that one slot as file:line via <fn|SQL verb>.
  *
- * Local, read-only, deterministic. The answer is recomputed from the tree on
- * every call — there is no stored finding set to go stale.
+ * Local, read-only, deterministic. The answer is recomputed for each exact
+ * source generation. A process-local memo is keyed by the code index's sealed
+ * content root, so repeated reads avoid rescanning unchanged source while an
+ * edit forces a new census. There is no independently authored finding set.
  */
 
 #define _GNU_SOURCE
 #include "command/native_command.h"
 
+#include "base/log_macros.h"
 #include "codeindex/codeindex.h"
 #include "controllers/fact_writers.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
 
+#include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +33,50 @@ enum {
     FACTS_STORE_CAP  = 8,
     FACTS_SITE_CAP   = 12,
 };
+
+/* The report is about 1 MiB and immutable after construction. Hold this lock
+ * while rendering so a concurrent source-generation refresh cannot free the
+ * report underneath a reader. Facts commands are diagnostic and rare; one
+ * census/render at a time is the simpler, bounded ownership rule. */
+static pthread_mutex_t g_facts_cache_mu = PTHREAD_MUTEX_INITIALIZER;
+static struct fact_writers_report *g_facts_cache;
+static uint8_t g_facts_cache_source_root[32];
+static char g_facts_cache_checkout[4096];
+
+static struct fact_writers_report *facts_report_lock(
+    const char *root, struct codeindex *ci)
+{
+    uint8_t source_root[32];
+    if (!codeindex_source_root_sha3(ci, source_root)) return NULL;
+    if (pthread_mutex_lock(&g_facts_cache_mu) != 0)
+        LOG_NULL("native.code.facts", "lock generation cache");
+    if (g_facts_cache && strcmp(g_facts_cache_checkout, root) == 0 &&
+        memcmp(g_facts_cache_source_root, source_root, sizeof(source_root)) == 0)
+        return g_facts_cache;
+
+    struct fact_writers_report *fresh = fact_writers_analyze(root, ci);
+    if (!fresh) {
+        (void)pthread_mutex_unlock(&g_facts_cache_mu);
+        return NULL;
+    }
+    fact_writers_report_free(g_facts_cache);
+    g_facts_cache = fresh;
+    memcpy(g_facts_cache_source_root, source_root, sizeof(source_root));
+    int n = snprintf(g_facts_cache_checkout, sizeof(g_facts_cache_checkout),
+                     "%s", root);
+    if (n < 0 || (size_t)n >= sizeof(g_facts_cache_checkout)) {
+        fact_writers_report_free(g_facts_cache);
+        g_facts_cache = NULL;
+        (void)pthread_mutex_unlock(&g_facts_cache_mu);
+        LOG_NULL("native.code.facts", "source root too long for cache key");
+    }
+    return g_facts_cache;
+}
+
+static void facts_report_unlock(void)
+{
+    (void)pthread_mutex_unlock(&g_facts_cache_mu);
+}
 
 static const char *facts_source_root(const struct zcl_command_request *request)
 {
@@ -79,7 +128,7 @@ void zcl_native_handle_code_facts(const struct zcl_command_request *request,
         return;
     }
 
-    struct fact_writers_report *rep = fact_writers_analyze(root, ci);
+    struct fact_writers_report *rep = facts_report_lock(root, ci);
     codeindex_close(ci);
     if (!rep) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
@@ -109,7 +158,7 @@ void zcl_native_handle_code_facts(const struct zcl_command_request *request,
                            "no durable slot named '%s' has a resolvable writer; "
                            "run `code provenance facts` with no argument for the slots the "
                            "census did resolve", want_key);
-            fact_writers_report_free(rep);
+            facts_report_unlock();
             zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                    ZCL_COMMAND_EXIT_INVALID, "FACT_NOT_FOUND",
                                    "input", false, false, detail, want_key);
@@ -151,7 +200,7 @@ void zcl_native_handle_code_facts(const struct zcl_command_request *request,
         (void)json_push_kv_str(&reply->data, "summary", summary);
         json_free(&arr);
         json_free(&lines);
-        fact_writers_report_free(rep);
+        facts_report_unlock();
         return;
     }
 
@@ -215,5 +264,5 @@ void zcl_native_handle_code_facts(const struct zcl_command_request *request,
     json_free(&arr);
     json_free(&lines);
     json_free(&stores);
-    fact_writers_report_free(rep);
+    facts_report_unlock();
 }

@@ -141,6 +141,7 @@ static const struct {
     { "app.messaging.inbox", zcl_native_msg_inbox_body },
     { "app.market.list", zcl_native_zmarket_list_body },
     { "app.market.status", zcl_native_zmarket_status_body },
+    { "app.market.content.list", zcl_native_zmarket_content_list_body },
     { "app.swap.chains", zcl_native_swap_chains_body },
     { "app.swap.list", zcl_native_swap_list_body },
 };

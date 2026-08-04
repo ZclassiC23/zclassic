@@ -9,7 +9,13 @@
  *   zmarket_status  — show active downloads/uploads */
 
 #include "platform/time_compat.h"
+#include "base/hex.h"
+#include "controllers/network_controller.h"
+#include "controllers/wallet_helpers.h"
+#include "controllers/wallet_shielded_controller.h"
+#include "core/serialize.h"
 #include "net/file_market.h"
+#include "net/msgprocessor.h"
 #include "net/rom_seed.h"
 #include "util/util.h"
 #include "encoding/utilstrencodings.h"
@@ -17,14 +23,16 @@
 #include "json/json.h"
 #include "rpc/server.h"
 #include "models/database.h"
+#include "models/market_content.h"
+#include "services/file_market_content_service.h"
+#include "services/file_market_purchase_service.h"
+#include "validation/main_state.h"
+#include "wallet/wallet.h"
 #include "config/runtime.h"
-#include "crypto/sha3.h"
 #include "views/format_helpers.h"
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
-#include <sys/stat.h>
-#include <inttypes.h>
 
 /* ── Context ────────────────────────────────────────────────────── */
 
@@ -74,13 +82,30 @@ static bool rpc_zmarket_list(const struct json_value *params, bool help,
         double price_zcl = offers[i].price_per_mb / 100000000.0;
         json_push_kv_real(&entry, "price_per_mb_zcl", price_zcl);
 
-        /* Total cost estimate */
-        double total_zcl = price_zcl * size_mb;
-        json_push_kv_real(&entry, "total_cost_zcl", total_zcl);
+        int64_t total_zat = 0;
+        if (file_market_offer_total_zat(&offers[i], &total_zat)) {
+            json_push_kv_int(&entry, "total_cost_zat", total_zat);
+            json_push_kv_real(&entry, "total_cost_zcl",
+                              total_zat / 100000000.0);
+        } else if (offers[i].price_per_mb == 0) {
+            json_push_kv_int(&entry, "total_cost_zat", 0);
+            json_push_kv_real(&entry, "total_cost_zcl", 0.0);
+        }
 
         json_push_kv_int(&entry, "peer_port", offers[i].peer_port);
         json_push_kv_int(&entry, "ttl", offers[i].ttl);
         json_push_kv_int(&entry, "last_seen", offers[i].last_seen);
+        json_push_kv_bool(&entry, "authenticated",
+                          offers[i].auth_version ==
+                              FILE_MARKET_OFFER_VERSION);
+        if (offers[i].auth_version == FILE_MARKET_OFFER_VERSION) {
+            char offer_hex[65];
+            HexStr(offers[i].offer_id, 32, false,
+                   offer_hex, sizeof(offer_hex));
+            json_push_kv_str(&entry, "offer_id", offer_hex);
+            json_push_kv_int(&entry, "expires_unix",
+                             offers[i].expires_unix);
+        }
 
         json_push_back(result, &entry);
         json_free(&entry);
@@ -97,12 +122,13 @@ static bool rpc_zmarket_offer(const struct json_value *params, bool help,
     if (help || !params || json_size(params) < 2) {
         json_set_str(result,
             "zmarket_offer \"filepath\" price_per_mb_zat [\"z_addr\"]\n"
-            "\nAnnounce a file for sale on the ZCL Market.\n"
+            "\nContained legacy endpoint: it does not create an offer.\n"
             "\nArguments:\n"
             "1. filepath         (string, required) Path to file to share\n"
             "2. price_per_mb_zat (number, required) Price per MB in zatoshis\n"
             "3. z_addr           (string, optional) Payment z-address\n"
-            "\nResult: the file offer object.\n");
+            "\nUse romseed_register for verified free artifacts. The typed "
+            "signed paid-offer service is not available yet.\n");
         return true;
     }
 
@@ -114,83 +140,18 @@ static bool rpc_zmarket_offer(const struct json_value *params, bool help,
         return false;
     }
 
-    const char *filepath = json_get_str(arg0);
-    int64_t price = json_get_int(arg1);
+    (void)arg0;
+    (void)arg1;
 
-    /* Verify file exists */
-    struct stat st;
-    if (stat(filepath, &st) != 0) {
-        json_set_str(result, "File not found");
-        return false;
-    }
-
-    /* Build file offer */
-    struct file_offer offer;
-    memset(&offer, 0, sizeof(offer));
-
-    /* Extract filename from path */
-    const char *name = strrchr(filepath, '/');
-    name = name ? name + 1 : filepath;
-    snprintf(offer.filename, sizeof(offer.filename), "%s", name);
-
-    if (st.st_size < 0) {
-        json_set_str(result, "File size invalid");
-        return false;
-    }
-    offer.size_bytes = (uint64_t)st.st_size;
-    if (!file_market_num_chunks_for_size(offer.size_bytes,
-                                         &offer.num_chunks)) {
-        /* guard u32 num_chunks overflow (225 PB+ files). */
-        json_set_str(result, "File too large to offer");
-        return false;
-    }
-    offer.price_per_mb = price;
-    offer.ttl = FILE_MARKET_MAX_TTL;
-    offer.last_seen = (int64_t)platform_time_wall_time_t();
-
-    /* Compute root hash: SHA3-256 of the file path + size as a simple
-     * placeholder. Full implementation would hash the file manifest. */
-    uint8_t preimage[512];
-    size_t plen = snprintf((char *)preimage, sizeof(preimage),
-                           "%s:%" PRIu64, filepath, offer.size_bytes);
-    struct sha3_256_ctx sha3;
-    sha3_256_init(&sha3);
-    sha3_256_write(&sha3, preimage, plen);
-    sha3_256_finalize(&sha3, offer.root_hash);
-
-    /* Optional z-address */
-    if (json_size(params) >= 3) {
-        const struct json_value *arg2 = json_at(params, 2);
-        const char *zstr = arg2 ? json_get_str(arg2) : NULL;
-        if (zstr) {
-            size_t zlen = strlen(zstr);
-            if (zlen <= 43)
-                memcpy(offer.z_addr, zstr, zlen);
-        }
-    }
-
-    /* Store offer */
-    file_market_add_offer(&offer);
-    if (g_market_ndb)
-        db_file_offer_save(g_market_ndb, &offer);
-
-    /* Return the offer */
-    json_set_object(result);
-    char hex[65];
-    HexStr(offer.root_hash, 32, false, hex, sizeof(hex));
-    json_push_kv_str(result, "root_hash", hex);
-    json_push_kv_str(result, "filename", offer.filename);
-    json_push_kv_int(result, "size_bytes", (int64_t)offer.size_bytes);
-    json_push_kv_int(result, "num_chunks", offer.num_chunks);
-    json_push_kv_int(result, "price_per_mb_zat", offer.price_per_mb);
-    json_push_kv_str(result, "status", "announced");
-
-    printf("market: offering '%s' (%.1f MB, %" PRId64 " zat/MB)\n",
-           offer.filename,
-           offer.size_bytes / (1024.0 * 1024.0),
-           offer.price_per_mb);
-
-    return true;
+    /* This compatibility RPC never hashed the file manifest and never
+     * announced an authenticated origin. Refuse both free and paid calls:
+     * free recovery artifacts use romseed_register; paid offers will use the
+     * typed market-offer plan/commit service once local signing is wired. */
+    json_set_str(result,
+        "zmarket_offer is contained: use romseed_register for verified free "
+        "recovery artifacts; paid offers require the signed market-offer "
+        "plan/commit service");
+    return false;
 }
 
 /* ── zmarket_buy ────────────────────────────────────────────────── */
@@ -201,64 +162,368 @@ static bool rpc_zmarket_buy(const struct json_value *params, bool help,
     if (help || !params || json_size(params) < 1) {
         json_set_str(result,
             "zmarket_buy \"root_hash\" [\"output_path\"]\n"
-            "\nInitiate purchase and download of a file from the market.\n"
+            "\nContained legacy endpoint: it cannot spend or download.\n"
             "\nArguments:\n"
             "1. root_hash   (string, required) SHA3 hash of file offer\n"
             "2. output_path (string, optional) Where to save the file\n"
-            "\nResult: download session status.\n");
+            "\nThe typed market-purchase plan/commit service is not "
+            "available yet.\n");
         return true;
     }
+    (void)params;
+    json_set_str(result,
+        "zmarket_buy is contained: exact payment verification and paid-file "
+        "unlock are not wired; no download session or wallet action started");
+    return false;
+}
 
-    const struct json_value *arg0 = json_at(params, 0);
-    const char *hash_hex = arg0 ? json_get_str(arg0) : NULL;
-    if (!zcl_is_hex_string(hash_hex, 64)) {
-        json_set_str(result, "Invalid root_hash (expected 64-char hex)");
-        return false;
+/* ── durable typed purchase payment ─────────────────────────────── */
+
+static const char *market_purchase_code(const struct zcl_result *r)
+{
+    if (!r) return "PURCHASE_REFUSED";
+    switch (r->code) {
+    case -3:  return "MONEY_STATE_NOT_CURRENT";
+    case -7:  return "IDEMPOTENCY_CONFLICT";
+    case -10: return "CUSTODY_ALLOCATION_EXCEEDED";
+    case -43: return "COMMIT_UNCERTAIN";
+    case -45: return "MONEY_SNAPSHOT_CHANGED";
+    case -46: return "OFFER_CONTRACT_CHANGED";
+    case -47: return "COMMIT_BUSY";
+    case -48: return "COMMIT_STATE_UNCERTAIN";
+    case -60: return "DESTINATION_INVALID";
+    case -61: return "DOWNLOAD_BINDING_CONFLICT";
+    case -62: return "DESTINATION_CONFLICT";
+    case -67: return "MANIFEST_VERIFICATION_FAILED";
+    case -69: return "DESTINATION_CONFLICT";
+    case -75: return "STAGING_VERIFICATION_FAILED";
+    case -76: return "DELIVERY_NOT_READY";
+    default:  return "PURCHASE_REFUSED";
     }
+}
 
-    /* Parse hex hash (length already validated above) */
-    uint8_t root_hash[32];
-    if (ParseHex(hash_hex, root_hash, 32) != 32) {
-        json_set_str(result, "Invalid root_hash (must be 64 hex chars)");
-        return false;
-    }
-
-    /* Find the offer */
-    struct file_offer offer;
-    if (!file_market_find_offer(root_hash, &offer)) {
-        json_set_str(result, "File offer not found in market");
-        return false;
-    }
-
-    const char *output = NULL;
-    if (json_size(params) >= 2) {
-        const struct json_value *arg1 = json_at(params, 1);
-        if (arg1) output = json_get_str(arg1);
-    }
-
-    int idx = file_market_start_download(root_hash, output);
-    if (idx < 0) {
-        json_set_str(result, "Failed to start download (max concurrent reached?)");
-        return false;
-    }
-
+static bool market_purchase_refuse(struct json_value *result,
+                                   struct zcl_result r)
+{
     json_set_object(result);
-    char out_hex[65];
-    HexStr(root_hash, 32, false, out_hex, sizeof(out_hex));
-    json_push_kv_str(result, "root_hash", out_hex);
-    json_push_kv_str(result, "filename", offer.filename);
-    json_push_kv_int(result, "size_bytes", (int64_t)offer.size_bytes);
-    json_push_kv_str(result, "state", "challenging");
-    json_push_kv_int(result, "session_index", idx);
-
-    double size_mb = offer.size_bytes / (1024.0 * 1024.0);
-    double total_zcl = (offer.price_per_mb / 100000000.0) * size_mb;
-    json_push_kv_real(result, "estimated_cost_zcl", total_zcl);
-
-    printf("market: buying '%s' from market (%.1f MB, ~%.8f ZCL)\n",
-           offer.filename, size_mb, total_zcl);
-
+    json_push_kv_bool(result, "ok", false);
+    json_push_kv_str(result, "code", market_purchase_code(&r));
+    json_push_kv_str(result, "message", r.message);
     return true;
+}
+
+static void market_purchase_amount(int64_t zat, char out[32])
+{
+    (void)snprintf(out, 32, "%lld.%08lld",
+                   (long long)(zat / 100000000LL),
+                   (long long)(zat >= 0 ? zat % 100000000LL
+                                        : -(zat % 100000000LL)));
+}
+
+static bool market_purchase_render(const struct market_purchase_view *view,
+                                   struct json_value *result)
+{
+    if (!view || !result) return false;
+    char plan[65], offer[65], buyer[65], txid[65], claim[65];
+    char amount[32], fee[32], reserved[32];
+    zcl_hex_encode(view->plan_id, 32, plan);
+    zcl_hex_encode(view->offer_id, 32, offer);
+    zcl_hex_encode(view->buyer_pubkey, 32, buyer);
+    market_purchase_amount(view->amount_zat, amount);
+    market_purchase_amount(view->maximum_fee_zat, fee);
+    market_purchase_amount(view->reserved_zat, reserved);
+    json_set_object(result);
+    json_push_kv_bool(result, "ok", true);
+    json_push_kv_str(result, "schema", "zcl.market_purchase.v1");
+    json_push_kv_str(result, "plan_id", plan);
+    json_push_kv_str(result, "offer_id", offer);
+    json_push_kv_str(result, "buyer_pubkey", buyer);
+    json_push_kv_str(result, "wallet_scope", view->wallet_scope);
+    json_push_kv_str(result, "state", view->state);
+    json_push_kv_int(result, "chunk_start", view->chunk_start);
+    json_push_kv_int(result, "chunks_paid", view->chunks_paid);
+    json_push_kv_str(result, "amount_zcl", amount);
+    json_push_kv_int(result, "amount_zat", view->amount_zat);
+    json_push_kv_str(result, "maximum_fee_zcl", fee);
+    json_push_kv_int(result, "maximum_fee_zat", view->maximum_fee_zat);
+    json_push_kv_str(result, "reserved_zcl", reserved);
+    json_push_kv_int(result, "reserved_zat", view->reserved_zat);
+    json_push_kv_int(result, "expires_at", view->expires_at);
+    json_push_kv_bool(result, "idempotent_replay",
+                      view->idempotent_replay);
+    if (view->has_txid) {
+        zcl_hex_encode(view->txid, 32, txid);
+        json_push_kv_str(result, "txid", txid);
+    }
+    if (view->has_claim) {
+        zcl_hex_encode(view->claim_id, 32, claim);
+        json_push_kv_str(result, "claim_id", claim);
+    }
+    json_push_kv_bool(result, "payment_notification_queued",
+                      view->payment_notification_queued);
+    if (view->has_download) {
+        json_push_kv_str(result, "download_state", view->download_state);
+        json_push_kv_int(result, "chunks_received", view->chunks_received);
+        json_push_kv_int(result, "num_chunks", view->num_chunks);
+        json_push_kv_int(result, "bytes_received",
+                         (int64_t)view->bytes_received);
+        json_push_kv_int(result, "size_bytes", (int64_t)view->size_bytes);
+        json_push_kv_bool(result, "destination_published",
+                          view->destination_published);
+    }
+    return true;
+}
+
+static struct zcl_result market_purchase_money(
+    void *opaque, const char *scope, struct wallet_money_snapshot *out)
+{
+    struct wallet_rpc_context *ctx = opaque;
+    return wallet_money_snapshot_build(ctx ? ctx->node_db : NULL,
+                                       ctx ? ctx->main_state : NULL,
+                                       scope, out);
+}
+
+static struct zcl_result market_purchase_source_owned(
+    void *opaque, const char *source)
+{
+    struct wallet_rpc_context *ctx = opaque;
+    if (!ctx || !ctx->wallet || !source || !source[0])
+        return ZCL_ERR(-1, "wallet and source address are required");
+    if (wallet_addr_is_sapling(source)) {
+        uint8_t d[11], pk_d[32];
+        if (!sapling_decode_payment_address(source, d, pk_d) ||
+            !sapling_keystore_find_by_address(
+                &ctx->wallet->sapling_keys, d, pk_d))
+            return ZCL_ERR(-2, "source address is not a wallet spending key");
+        return ZCL_OK;
+    }
+    struct tx_destination dest;
+    if (!wallet_decode_address(source, &dest))
+        return ZCL_ERR(-3, "source address is invalid for the active network");
+    bool owned = (dest.type == DEST_KEY_ID &&
+                  keystore_have_key(&ctx->wallet->keystore, &dest.id.key)) ||
+                 (dest.type == DEST_SCRIPT_ID &&
+                  keystore_have_cscript(&ctx->wallet->keystore,
+                                         &dest.id.script.hash));
+    return owned ? ZCL_OK
+                 : ZCL_ERR(-4, "source address is not a wallet spending key");
+}
+
+static struct zcl_result market_purchase_send(
+    void *opaque, const char *source, const char *seller, int64_t amount_zat,
+    const uint8_t memo[FILE_MARKET_PAYMENT_MEMO_BYTES], uint8_t txid_out[32])
+{
+    (void)opaque;
+    char amount[32], memo_hex[FILE_MARKET_PAYMENT_MEMO_BYTES * 2 + 1];
+    market_purchase_amount(amount_zat, amount);
+    zcl_hex_encode(memo, FILE_MARKET_PAYMENT_MEMO_BYTES, memo_hex);
+    struct json_value params = {0}, recipients = {0}, recipient = {0};
+    json_set_array(&params);
+    struct json_value from = {0};
+    json_set_str(&from, source);
+    json_push_back(&params, &from);
+    json_free(&from);
+    json_set_array(&recipients);
+    json_set_object(&recipient);
+    json_push_kv_str(&recipient, "address", seller);
+    json_push_kv_str(&recipient, "amount", amount);
+    json_push_kv_str(&recipient, "memo_hex", memo_hex);
+    json_push_back(&recipients, &recipient);
+    json_push_back(&params, &recipients);
+    struct json_value sent = {0};
+    bool ok = rpc_z_sendmany(&params, false, &sent);
+    const char *answer = json_get_str(&sent);
+    bool exact = ok && answer && zcl_hex_decode(answer, txid_out, 32);
+    char reason[192];
+    (void)snprintf(reason, sizeof(reason), "%s",
+                   answer && answer[0] ? answer
+                                       : "wallet refused exact market payment");
+    json_free(&sent);
+    json_free(&recipient);
+    json_free(&recipients);
+    json_free(&params);
+    return exact ? ZCL_OK : ZCL_ERR(-1, "%s", reason);
+}
+
+static bool market_purchase_notify(void *opaque,
+                                   const struct file_payment *payment)
+{
+    struct msg_processor *mp = opaque;
+    struct byte_stream wire;
+    stream_init(&wire, FILE_MARKET_PAYMENT_WIRE_BYTES);
+    bool encoded = mp && file_payment_serialize(payment, &wire) &&
+                   wire.size == FILE_MARKET_PAYMENT_WIRE_BYTES;
+    if (encoded)
+        msg_processor_flood_message(mp, MSG_FILE_PAY, wire.data, wire.size);
+    stream_free(&wire);
+    return encoded;
+}
+
+static enum file_market_delivery_status market_purchase_fetch(
+    void *opaque, const uint8_t peer_ip[16], uint16_t peer_port,
+    const uint8_t network_genesis[32], const uint8_t offer_id[32],
+    uint32_t chunk_index, const uint8_t buyer_pubkey[32],
+    const uint8_t buyer_seed[32],
+    struct file_market_delivery_chunk *out_chunk)
+{
+    (void)opaque;
+    return file_market_delivery_fetch_endpoint(
+        peer_ip, peer_port, network_genesis, offer_id, chunk_index,
+        buyer_pubkey, buyer_seed, out_chunk);
+}
+
+static struct zcl_result market_purchase_runtime(
+    struct market_purchase_runtime *runtime, bool money)
+{
+    if (!runtime) return ZCL_ERR(-1, "purchase runtime output is required");
+    memset(runtime, 0, sizeof(*runtime));
+    struct wallet_rpc_context *ctx = wallet_rpc_context_current();
+    runtime->node_db = ctx ? ctx->node_db : NULL;
+    runtime->now_unix = (int64_t)platform_time_wall_time_t();
+    if (!money) return runtime->node_db && runtime->node_db->open
+        ? ZCL_OK : ZCL_ERR(-2, "market database is unavailable");
+    if (!ctx || !ctx->wallet || !ctx->main_state || !ctx->node_db ||
+        !ctx->node_db->open)
+        return ZCL_ERR(-3, "wallet, chain, and market database are required");
+    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
+    if (!tip) return ZCL_ERR(-4, "active chain tip is unavailable");
+    runtime->read_money = market_purchase_money;
+    runtime->money_ctx = ctx;
+    runtime->check_source = market_purchase_source_owned;
+    runtime->source_ctx = ctx;
+    runtime->send = market_purchase_send;
+    runtime->send_ctx = ctx;
+    runtime->notify = market_purchase_notify;
+    runtime->notify_ctx = rpc_net_get_msg_processor();
+    runtime->fetch = market_purchase_fetch;
+    runtime->tip_height = tip->nHeight;
+    memcpy(runtime->tip_hash, tip->hashBlock.data, 32);
+    runtime->maximum_fee_zat = ctx->wallet->default_fee;
+    return ZCL_OK;
+}
+
+static bool rpc_zmarket_purchase_plan(const struct json_value *params,
+                                      bool help,
+                                      struct json_value *result)
+{
+    if (help) {
+        json_set_str(result, "zmarket_purchase_plan {wallet_scope,offer_id,source_address,chunk_start,chunks_paid,idempotency_key}\n");
+        return true;
+    }
+    const struct json_value *in = json_at(params, 0);
+    const char *scope = in ? json_get_str(json_get(in, "wallet_scope")) : NULL;
+    const char *offer = in ? json_get_str(json_get(in, "offer_id")) : NULL;
+    const char *source = in ? json_get_str(json_get(in, "source_address")) : NULL;
+    const char *key = in ? json_get_str(json_get(in, "idempotency_key")) : NULL;
+    const struct json_value *start_value = in
+        ? json_get(in, "chunk_start") : NULL;
+    const struct json_value *count_value = in
+        ? json_get(in, "chunks_paid") : NULL;
+    int64_t start = start_value && start_value->type == JSON_INT
+        ? json_get_int(start_value) : -1;
+    int64_t count = count_value && count_value->type == JSON_INT
+        ? json_get_int(count_value) : 0;
+    struct market_purchase_request request = {0};
+    if (!in || in->type != JSON_OBJ || !scope || !offer || !source || !key ||
+        strlen(scope) >= sizeof(request.wallet_scope) ||
+        strlen(source) > MARKET_PURCHASE_SOURCE_MAX ||
+        strlen(key) >= sizeof(request.idempotency_key) ||
+        !zcl_hex_decode(offer, request.offer_id, 32) || start < 0 ||
+        start > UINT32_MAX || count <= 0 || count > UINT32_MAX)
+        return market_purchase_refuse(result,
+            ZCL_ERR(-1, "complete exact purchase-plan input is required"));
+    (void)snprintf(request.wallet_scope, sizeof(request.wallet_scope), "%s",
+                   scope);
+    (void)snprintf(request.source_address, sizeof(request.source_address),
+                   "%s", source);
+    (void)snprintf(request.idempotency_key, sizeof(request.idempotency_key),
+                   "%s", key);
+    request.chunk_start = (uint32_t)start;
+    request.chunks_paid = (uint32_t)count;
+    struct market_purchase_runtime runtime;
+    struct zcl_result ready = market_purchase_runtime(&runtime, true);
+    if (!ready.ok) return market_purchase_refuse(result, ready);
+    struct market_purchase_view view;
+    struct zcl_result planned = market_purchase_plan(&runtime, &request, &view);
+    return planned.ok ? market_purchase_render(&view, result)
+                      : market_purchase_refuse(result, planned);
+}
+
+static bool rpc_zmarket_purchase_commit(const struct json_value *params,
+                                        bool help,
+                                        struct json_value *result)
+{
+    if (help) {
+        json_set_str(result, "zmarket_purchase_commit {wallet_scope,plan_id}\n");
+        return true;
+    }
+    const struct json_value *in = json_at(params, 0);
+    const char *scope = in ? json_get_str(json_get(in, "wallet_scope")) : NULL;
+    const char *plan = in ? json_get_str(json_get(in, "plan_id")) : NULL;
+    uint8_t plan_id[32];
+    if (!scope || !zcl_hex_decode(plan, plan_id, 32))
+        return market_purchase_refuse(result,
+            ZCL_ERR(-1, "wallet_scope and exact plan_id are required"));
+    struct market_purchase_runtime runtime;
+    struct zcl_result ready = market_purchase_runtime(&runtime, true);
+    if (!ready.ok) return market_purchase_refuse(result, ready);
+    struct market_purchase_view view;
+    struct zcl_result committed = market_purchase_commit(
+        &runtime, scope, plan_id, &view);
+    return committed.ok ? market_purchase_render(&view, result)
+                        : market_purchase_refuse(result, committed);
+}
+
+static bool rpc_zmarket_purchase_status(const struct json_value *params,
+                                        bool help,
+                                        struct json_value *result)
+{
+    if (help) {
+        json_set_str(result, "zmarket_purchase_status {plan_id}\n");
+        return true;
+    }
+    const struct json_value *in = json_at(params, 0);
+    const char *plan = in ? json_get_str(json_get(in, "plan_id")) : NULL;
+    uint8_t plan_id[32];
+    if (!zcl_hex_decode(plan, plan_id, 32))
+        return market_purchase_refuse(result,
+            ZCL_ERR(-1, "exact plan_id is required"));
+    struct market_purchase_runtime runtime;
+    struct zcl_result ready = market_purchase_runtime(&runtime, false);
+    if (!ready.ok) return market_purchase_refuse(result, ready);
+    struct market_purchase_view view;
+    struct zcl_result found = market_purchase_status(
+        &runtime, plan_id, &view);
+    return found.ok ? market_purchase_render(&view, result)
+                    : market_purchase_refuse(result, found);
+}
+
+static bool rpc_zmarket_purchase_retrieve(const struct json_value *params,
+                                          bool help,
+                                          struct json_value *result)
+{
+    if (help) {
+        json_set_str(result,
+            "zmarket_purchase_retrieve {plan_id,destination_path}\n");
+        return true;
+    }
+    const struct json_value *in = json_at(params, 0);
+    const char *plan = in ? json_get_str(json_get(in, "plan_id")) : NULL;
+    const char *destination = in
+        ? json_get_str(json_get(in, "destination_path")) : NULL;
+    uint8_t plan_id[32];
+    if (!zcl_hex_decode(plan, plan_id, 32) || !destination ||
+        !destination[0])
+        return market_purchase_refuse(result,
+            ZCL_ERR(-1, "exact plan_id and private destination are required"));
+    struct market_purchase_runtime runtime;
+    struct zcl_result ready = market_purchase_runtime(&runtime, false);
+    if (!ready.ok) return market_purchase_refuse(result, ready);
+    struct market_purchase_view view;
+    struct zcl_result fetched = market_purchase_retrieve(
+        &runtime, plan_id, destination, &view);
+    return fetched.ok ? market_purchase_render(&view, result)
+                      : market_purchase_refuse(result, fetched);
 }
 
 /* ── zmarket_status ─────────────────────────────────────────────── */
@@ -285,6 +550,107 @@ static bool rpc_zmarket_status(const struct json_value *params, bool help,
         json_push_kv_int(result, "offers_persisted", db_count);
     }
 
+    return true;
+}
+
+/* ── private paid-content registry ───────────────────────────────── */
+
+static bool market_content_index_json(struct json_value *result)
+{
+    json_set_object(result);
+    json_push_kv_str(result, "schema", "zcl.market_contents.index.v1");
+    struct json_value rows = {0};
+    json_set_array(&rows);
+    if (g_market_ndb && g_market_ndb->open) {
+        struct market_content_public_record content[FILE_MARKET_MAX_OFFERS];
+        int count = db_market_content_list(g_market_ndb, content,
+                                           FILE_MARKET_MAX_OFFERS);
+        for (int i = 0; i < count; i++) {
+            struct json_value row = {0};
+            json_set_object(&row);
+            char offer_hex[65], root_hex[65];
+            HexStr(content[i].offer_id, 32, false,
+                   offer_hex, sizeof(offer_hex));
+            HexStr(content[i].root_hash, 32, false,
+                   root_hex, sizeof(root_hex));
+            json_push_kv_str(&row, "offer_id", offer_hex);
+            json_push_kv_str(&row, "root_hash", root_hex);
+            json_push_kv_int(&row, "size_bytes",
+                             (int64_t)content[i].size_bytes);
+            json_push_kv_int(&row, "num_chunks", content[i].num_chunks);
+            json_push_kv_int(&row, "registered_at",
+                             content[i].registered_at);
+            json_push_back(&rows, &row);
+            json_free(&row);
+        }
+    }
+    json_push_kv(result, "contents", &rows);
+    json_free(&rows);
+    return true;
+}
+
+static bool rpc_zmarket_content_list(const struct json_value *params,
+                                     bool help,
+                                     struct json_value *result)
+{
+    if (help) {
+        json_set_str(result,
+            "zmarket_content_list\n\nList owner-registered paid content "
+            "without revealing private filesystem paths.\n");
+        return true;
+    }
+    (void)params;
+    return market_content_index_json(result);
+}
+
+static bool rpc_zmarket_content_register(const struct json_value *params,
+                                         bool help,
+                                         struct json_value *result)
+{
+    if (help || !params || json_size(params) < 2) {
+        json_set_str(result,
+            "zmarket_content_register \"offer_id\" \"content_path\"\n"
+            "\nBind exact local bytes to an authenticated paid offer. "
+            "The private path is never returned.\n");
+        return true;
+    }
+    const char *offer_hex = json_get_str(json_at(params, 0));
+    const char *content_path = json_get_str(json_at(params, 1));
+    uint8_t offer_id[32];
+    if (!offer_hex || strlen(offer_hex) != 64 || !IsHex(offer_hex) ||
+        ParseHex(offer_hex, offer_id, sizeof(offer_id)) != 32 ||
+        !content_path || !content_path[0]) {
+        json_set_str(result,
+                     "offer_id must be 64 hex characters and content_path is required");
+        return false;
+    }
+    if (!g_market_ndb || !g_market_ndb->open) {
+        json_set_str(result, "market database is unavailable");
+        return false;
+    }
+
+    struct market_content_public_record registered;
+    struct zcl_result saved = file_market_content_register(
+        g_market_ndb, offer_id, content_path,
+        (int64_t)platform_time_wall_time_t(), &registered);
+    if (!saved.ok) {
+        json_set_str(result, saved.message);
+        return false;
+    }
+
+    char saved_offer_hex[65], root_hex[65];
+    HexStr(registered.offer_id, 32, false,
+           saved_offer_hex, sizeof(saved_offer_hex));
+    HexStr(registered.root_hash, 32, false,
+           root_hex, sizeof(root_hex));
+    json_set_object(result);
+    json_push_kv_str(result, "schema", "zcl.market_content.v1");
+    json_push_kv_str(result, "status", "registered");
+    json_push_kv_str(result, "offer_id", saved_offer_hex);
+    json_push_kv_str(result, "root_hash", root_hex);
+    json_push_kv_int(result, "size_bytes", (int64_t)registered.size_bytes);
+    json_push_kv_int(result, "num_chunks", registered.num_chunks);
+    json_push_kv_int(result, "registered_at", registered.registered_at);
     return true;
 }
 
@@ -389,6 +755,11 @@ bool api_market_list(struct json_value *result)
     return rpc_zmarket_list(NULL, false, result);
 }
 
+bool api_market_content_list(struct json_value *result)
+{
+    return market_content_index_json(result);
+}
+
 /* ── Registration ───────────────────────────────────────────────── */
 
 void register_market_rpc_commands(struct rpc_table *t)
@@ -398,6 +769,18 @@ void register_market_rpc_commands(struct rpc_table *t)
         { "market", "zmarket_offer",  rpc_zmarket_offer,  true },
         { "market", "zmarket_buy",    rpc_zmarket_buy,    true },
         { "market", "zmarket_status", rpc_zmarket_status, true },
+        { "market", "zmarket_content_list",
+          rpc_zmarket_content_list, true },
+        { "market", "zmarket_content_register",
+          rpc_zmarket_content_register, true },
+        { "market", "zmarket_purchase_plan",
+          rpc_zmarket_purchase_plan, false },
+        { "market", "zmarket_purchase_commit",
+          rpc_zmarket_purchase_commit, false },
+        { "market", "zmarket_purchase_status",
+          rpc_zmarket_purchase_status, true },
+        { "market", "zmarket_purchase_retrieve",
+          rpc_zmarket_purchase_retrieve, false },
         { "market", "romseed_register", rpc_romseed_register, true },
         { "market", "romseed_list",     rpc_romseed_list,     true },
     };

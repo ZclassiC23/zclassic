@@ -45,7 +45,7 @@ bool db_file_offer_validate(const struct file_offer *offer,
     }
 
     static const uint8_t zero32[32] = {0};
-    static const uint8_t zero43[43] = {0};
+    uint32_t expected_chunks = 0;
 
     validates_custom(errors,
         memcmp(offer->root_hash, zero32, 32) != 0,
@@ -55,9 +55,27 @@ bool db_file_offer_validate(const struct file_offer *offer,
     validates_positive(errors, offer, num_chunks);
     validates_non_negative(errors, offer, price_per_mb);
     validates_custom(errors,
-        memcmp(offer->z_addr, zero43, 43) != 0,
-        "z_addr", "can't be all zero");
-    validates_not_zero(errors, offer, peer_port);
+        file_market_num_chunks_for_size(offer->size_bytes,
+                                        &expected_chunks) &&
+        expected_chunks == offer->num_chunks,
+        "num_chunks", "must exactly cover size_bytes");
+    if (offer->price_per_mb > 0) {
+        validates_custom(errors,
+            file_offer_auth_validate_at(
+                offer, (int64_t)platform_time_wall_time_t()) ==
+                FILE_OFFER_AUTH_OK &&
+            file_offer_auth_verify_signature(offer) == FILE_OFFER_AUTH_OK,
+            "seller_signature", "must verify for the canonical paid offer");
+        uint8_t expected_id[32] = {0};
+        validates_custom(errors,
+            file_offer_auth_offer_id(offer, expected_id) ==
+                FILE_OFFER_AUTH_OK &&
+            memcmp(expected_id, offer->offer_id, 32) == 0,
+            "offer_id", "must commit the complete signed offer wire");
+    } else {
+        validates_custom(errors, offer->auth_version == 0,
+            "auth_version", "free legacy offers must be unsigned");
+    }
     validates_non_negative(errors, offer, last_seen);
     validates_range(errors, offer, ttl, 1, FILE_MARKET_MAX_TTL);
 
@@ -75,8 +93,20 @@ bool db_file_offer_save(struct node_db *ndb,
     AR_ADHOC_SAVE(ndb, s,
         "INSERT OR REPLACE INTO file_offers"
         "(root_hash,filename,size_bytes,num_chunks,price_per_mb,"
-        "z_addr,peer_ip,peer_port,last_seen,ttl)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "z_addr,peer_ip,peer_port,last_seen,ttl,auth_version,"
+        "network_genesis,seller_pubkey,nonce,issued_unix,expires_unix,"
+        "seller_signature,offer_id)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        " ON CONFLICT(root_hash) DO UPDATE SET "
+        "filename=excluded.filename,size_bytes=excluded.size_bytes,"
+        "num_chunks=excluded.num_chunks,price_per_mb=excluded.price_per_mb,"
+        "z_addr=excluded.z_addr,peer_ip=excluded.peer_ip,"
+        "peer_port=excluded.peer_port,last_seen=excluded.last_seen,"
+        "ttl=excluded.ttl,auth_version=excluded.auth_version,"
+        "network_genesis=excluded.network_genesis,"
+        "seller_pubkey=excluded.seller_pubkey,nonce=excluded.nonce,"
+        "issued_unix=excluded.issued_unix,expires_unix=excluded.expires_unix,"
+        "seller_signature=excluded.seller_signature,offer_id=excluded.offer_id",
         cbs, "file_offer", offer, db_file_offer_validate,
         AR_BIND_BLOB(s, 1, offer->root_hash, 32);
         AR_BIND_TEXT(s, 2, offer->filename);
@@ -88,7 +118,15 @@ bool db_file_offer_save(struct node_db *ndb,
         AR_BIND_INT(s, 8, offer->peer_port);
         AR_BIND_INT(s, 9, offer->last_seen
             ? offer->last_seen : (int64_t)platform_time_wall_time_t());
-        AR_BIND_INT(s, 10, offer->ttl));
+        AR_BIND_INT(s, 10, offer->ttl);
+        AR_BIND_INT(s, 11, offer->auth_version);
+        AR_BIND_BLOB(s, 12, offer->network_genesis, 32);
+        AR_BIND_BLOB(s, 13, offer->seller_pubkey, 32);
+        AR_BIND_INT(s, 14, (int64_t)offer->nonce);
+        AR_BIND_INT(s, 15, offer->issued_unix);
+        AR_BIND_INT(s, 16, offer->expires_unix);
+        AR_BIND_BLOB(s, 17, offer->seller_signature, 64);
+        AR_BIND_BLOB(s, 18, offer->offer_id, 32));
 }
 
 static bool row_to_file_offer(sqlite3_stmt *s, struct file_offer *out)
@@ -113,6 +151,21 @@ static bool row_to_file_offer(sqlite3_stmt *s, struct file_offer *out)
     out->peer_port = (uint16_t)sqlite3_column_int(s, 7);
     out->last_seen = sqlite3_column_int64(s, 8);
     out->ttl = (uint8_t)sqlite3_column_int(s, 9);
+    out->auth_version = (uint16_t)sqlite3_column_int(s, 10);
+    if (!read_file_offer_blob(s, 11, out->network_genesis, 32,
+                              "network_genesis"))
+        LOG_FAIL("market", "file_offers.network_genesis rejected");
+    if (!read_file_offer_blob(s, 12, out->seller_pubkey, 32,
+                              "seller_pubkey"))
+        LOG_FAIL("market", "file_offers.seller_pubkey rejected");
+    out->nonce = (uint64_t)sqlite3_column_int64(s, 13);
+    out->issued_unix = sqlite3_column_int64(s, 14);
+    out->expires_unix = sqlite3_column_int64(s, 15);
+    if (!read_file_offer_blob(s, 16, out->seller_signature, 64,
+                              "seller_signature"))
+        LOG_FAIL("market", "file_offers.seller_signature rejected");
+    if (!read_file_offer_blob(s, 17, out->offer_id, 32, "offer_id"))
+        LOG_FAIL("market", "file_offers.offer_id rejected");
     return true;
 }
 
@@ -126,11 +179,15 @@ int db_file_offer_list(struct node_db *ndb,
     sqlite3_stmt *s = NULL;
     AR_QUERY_LIST(ndb, s,
         "SELECT root_hash,filename,size_bytes,num_chunks,price_per_mb,"
-        "z_addr,peer_ip,peer_port,last_seen,ttl"
+        "z_addr,peer_ip,peer_port,last_seen,ttl,auth_version,"
+        "network_genesis,seller_pubkey,nonce,issued_unix,expires_unix,"
+        "seller_signature,offer_id"
         " FROM file_offers ORDER BY last_seen DESC LIMIT ?",
         out, max,
         AR_BIND_INT(s, 1, (int)max),
-        if (!row_to_file_offer(s, &out[count])) continue);
+        struct ar_errors errors;
+        if (!row_to_file_offer(s, &out[count]) ||
+            !db_file_offer_validate(&out[count], &errors)) continue);
 }
 
 bool db_file_offer_find(struct node_db *ndb,
@@ -144,10 +201,44 @@ bool db_file_offer_find(struct node_db *ndb,
     sqlite3_stmt *s = NULL;
     AR_QUERY_ONE_BOOL(ndb, s,
         "SELECT root_hash,filename,size_bytes,num_chunks,price_per_mb,"
-        "z_addr,peer_ip,peer_port,last_seen,ttl"
+        "z_addr,peer_ip,peer_port,last_seen,ttl,auth_version,"
+        "network_genesis,seller_pubkey,nonce,issued_unix,expires_unix,"
+        "seller_signature,offer_id"
         " FROM file_offers WHERE root_hash=?",
         AR_BIND_BLOB(s, 1, root_hash, 32),
-        if (!row_to_file_offer(s, out)) { AR_FINALIZE(s); return false; });
+        struct ar_errors errors;
+        if (!row_to_file_offer(s, out) ||
+            !db_file_offer_validate(out, &errors)) {
+            AR_FINALIZE(s);
+            return false;
+        });
+}
+
+bool db_file_offer_find_by_id(struct node_db *ndb,
+                              const uint8_t offer_id[32],
+                              struct file_offer *out)
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("market", "db_file_offer_find_by_id: db not open");
+    if (!offer_id)
+        LOG_FAIL("market", "db_file_offer_find_by_id: offer_id is NULL");
+    if (!out)
+        LOG_FAIL("market", "db_file_offer_find_by_id: out is NULL");
+
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_ONE_BOOL(ndb, s,
+        "SELECT root_hash,filename,size_bytes,num_chunks,price_per_mb,"
+        "z_addr,peer_ip,peer_port,last_seen,ttl,auth_version,"
+        "network_genesis,seller_pubkey,nonce,issued_unix,expires_unix,"
+        "seller_signature,offer_id"
+        " FROM file_offers WHERE offer_id=? AND auth_version=1",
+        AR_BIND_BLOB(s, 1, offer_id, 32),
+        struct ar_errors errors;
+        if (!row_to_file_offer(s, out) ||
+            !db_file_offer_validate(out, &errors)) {
+            AR_FINALIZE(s);
+            return false;
+        });
 }
 
 int db_file_offer_prune(struct node_db *ndb, int64_t max_age)

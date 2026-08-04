@@ -125,7 +125,7 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
         .read_model = "file_market_projection",
         .crud_capabilities_csv = "read_collection,create_offer,create_purchase",
         .construction_status =
-            "offers_and_file_service_active_payment_unlock_glue_in_progress",
+            "signed_offer_payment_authorization_paid_request_and_seller_content_active_buyer_wallet_in_progress",
         .mutation_authority = "operator_or_payment_gated",
         .write_semantics =
             "offer_and_purchase_flows_are_operator_or_payment_gated",

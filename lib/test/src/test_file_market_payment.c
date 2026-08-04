@@ -1,0 +1,342 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Exact zfilepay.v1 contract + authoritative confirmation/reorg tests. */
+
+#include "test/test_core.h"
+
+#include "chain/chainparams.h"
+#include "crypto/ed25519.h"
+#include "models/file_offer.h"
+#include "models/market_payment_claim.h"
+#include "models/wallet_tx.h"
+#include "net/file_market.h"
+#include "platform/time_compat.h"
+#include "sapling/sapling.h"
+#include "services/file_market_payment_service.h"
+#include "validation/main_state.h"
+
+#include <errno.h>
+#include <sqlite3.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+
+#define PAYMENT_CHECK(label, condition) do {                         \
+    printf("file_market payment: %s... ", (label));                 \
+    if (condition) printf("OK\n");                                  \
+    else { printf("FAIL\n"); failures++; }                          \
+} while (0)
+
+static bool payment_test_offer(struct file_offer *offer, int64_t now_unix)
+{
+    const struct chain_params *params = chain_params_get();
+    struct jub_point payment_key;
+    uint8_t seed[32], secret[32];
+    if (!params)
+        return false;
+    memset(offer, 0, sizeof(*offer));
+    memset(seed, 0x51, sizeof(seed));
+    memset(offer->root_hash, 0x71, sizeof(offer->root_hash));
+    memcpy(offer->network_genesis,
+           params->consensus.hashGenesisBlock.data, 32);
+    ed25519_keypair(offer->seller_pubkey, secret, seed);
+    snprintf(offer->filename, sizeof(offer->filename), "payment-fixture.bin");
+    offer->size_bytes = FILE_MARKET_CHUNK_SIZE + 1u;
+    offer->num_chunks = 2;
+    offer->price_per_mb = 1200;
+    for (uint8_t d = 1; ; d++) {
+        memset(offer->z_addr, 0, sizeof(offer->z_addr));
+        offer->z_addr[0] = d;
+        if (sapling_diversifier_to_gd(&payment_key, offer->z_addr))
+            break;
+        if (d == UINT8_MAX)
+            return false;
+    }
+    jub_to_bytes(offer->z_addr + 11, &payment_key);
+    offer->peer_ip[15] = 1;
+    offer->peer_port = 18034;
+    offer->ttl = FILE_MARKET_MAX_TTL;
+    offer->last_seen = now_unix;
+    offer->auth_version = FILE_MARKET_OFFER_VERSION;
+    offer->nonce = 9001;
+    offer->issued_unix = now_unix - 60;
+    offer->expires_unix = now_unix + 600;
+    return file_offer_auth_seal(offer, seed) == FILE_OFFER_AUTH_OK;
+}
+
+static bool payment_test_claim(struct file_payment *payment,
+                               const struct file_offer *offer)
+{
+    uint8_t seed[32], secret[32];
+    memset(payment, 0, sizeof(*payment));
+    memset(seed, 0x29, sizeof(seed));
+    payment->version = FILE_MARKET_PAYMENT_VERSION;
+    memcpy(payment->network_genesis, offer->network_genesis, 32);
+    memcpy(payment->offer_id, offer->offer_id, 32);
+    memset(payment->txid, 0x91, sizeof(payment->txid));
+    payment->chunk_start = 1;
+    payment->chunks_paid = 1;
+    if (!file_market_offer_range_zat(offer, payment->chunk_start,
+                                     payment->chunks_paid,
+                                     &payment->amount_zat))
+        return false;
+    ed25519_keypair(payment->buyer_pubkey, secret, seed);
+    return file_payment_auth_seal(payment, seed) == FILE_PAYMENT_AUTH_OK;
+}
+
+static bool payment_test_insert_block(struct node_db *ndb,
+                                      const uint8_t hash[32], int height,
+                                      int64_t block_time, int status)
+{
+    static const uint8_t zero32[32] = {0};
+    sqlite3_stmt *s = NULL;
+    const char *sql =
+        "INSERT OR REPLACE INTO blocks("
+        "hash,height,prev_hash,version,merkle_root,time,bits,nonce,solution,"
+        "chain_work,status,num_tx) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)";
+    if (sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(s, 1, hash, 32, SQLITE_STATIC);
+    sqlite3_bind_int(s, 2, height);
+    sqlite3_bind_blob(s, 3, zero32, 32, SQLITE_STATIC);
+    sqlite3_bind_int(s, 4, 4);
+    sqlite3_bind_blob(s, 5, zero32, 32, SQLITE_STATIC);
+    sqlite3_bind_int64(s, 6, block_time);
+    sqlite3_bind_int(s, 7, 1);
+    sqlite3_bind_blob(s, 8, zero32, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 9, zero32, 1, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 10, zero32, 32, SQLITE_STATIC);
+    sqlite3_bind_int(s, 11, status);
+    sqlite3_bind_int(s, 12, 1);
+    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    sqlite3_finalize(s);
+    return ok;
+}
+
+static bool payment_test_insert_transaction(
+    struct node_db *ndb, const uint8_t txid[32],
+    const uint8_t block_hash[32], int block_height)
+{
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "INSERT OR REPLACE INTO transactions("
+            "txid,block_hash,block_height,tx_index,file_num,file_pos,is_coinbase)"
+            " VALUES(?,?,?,0,0,0,0)", -1, &s, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 2, block_hash, 32, SQLITE_STATIC);
+    sqlite3_bind_int(s, 3, block_height);
+    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    sqlite3_finalize(s);
+    return ok;
+}
+
+static bool payment_test_insert_note(
+    struct node_db *ndb, const struct file_payment *payment,
+    const struct file_offer *offer, int block_height)
+{
+    struct db_sapling_note note;
+    memset(&note, 0, sizeof(note));
+    memcpy(note.txid, payment->txid, 32);
+    note.output_index = 0;
+    note.value = payment->amount_zat;
+    memset(note.rcm, 0x11, sizeof(note.rcm));
+    if (file_payment_memo_encode(payment, note.memo) !=
+        FILE_PAYMENT_AUTH_OK)
+        return false;
+    note.memo_len = FILE_MARKET_PAYMENT_MEMO_BYTES;
+    memset(note.ivk, 0x22, sizeof(note.ivk));
+    memcpy(note.diversifier, offer->z_addr, 11);
+    memcpy(note.pk_d, offer->z_addr + 11, 32);
+    memset(note.cm, 0x33, sizeof(note.cm));
+    memset(note.nullifier, 0x44, sizeof(note.nullifier));
+    note.block_height = block_height;
+    snprintf(note.source, sizeof(note.source), "%s",
+             DB_SAPLING_NOTE_SOURCE_LOCAL);
+    return db_sapling_note_save(ndb, &note);
+}
+
+static bool payment_test_set_block_status(struct node_db *ndb,
+                                          const uint8_t hash[32], int status)
+{
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "UPDATE blocks SET status=? WHERE hash=?", -1, &s, NULL) !=
+        SQLITE_OK)
+        return false;
+    sqlite3_bind_int(s, 1, status);
+    sqlite3_bind_blob(s, 2, hash, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(s) == SQLITE_DONE && sqlite3_changes(ndb->db) == 1;
+    sqlite3_finalize(s);
+    return ok;
+}
+
+int file_market_payment_tests(void)
+{
+    int failures = 0;
+    int64_t now_unix = (int64_t)platform_time_wall_time_t();
+    struct file_offer offer;
+    struct file_payment payment;
+    bool made = payment_test_offer(&offer, now_unix) &&
+                payment_test_claim(&payment, &offer);
+    PAYMENT_CHECK("signed offer + exact buyer claim fixture", made);
+    if (!made)
+        return failures;
+
+    int64_t first_zat = 0, last_zat = 0, total_zat = 0;
+    bool priced = file_market_offer_range_zat(&offer, 0, 1, &first_zat) &&
+                  file_market_offer_range_zat(&offer, 1, 1, &last_zat) &&
+                  file_market_offer_total_zat(&offer, &total_zat);
+    PAYMENT_CHECK("exact full and final-partial chunk pricing",
+                  priced && first_zat == 60000 && last_zat == 1 &&
+                  total_zat == 60001);
+
+    uint8_t wire[FILE_MARKET_PAYMENT_WIRE_BYTES];
+    uint8_t memo[FILE_MARKET_PAYMENT_MEMO_BYTES];
+    struct file_payment decoded;
+    bool codec = file_payment_auth_encode(&payment, wire) ==
+                     FILE_PAYMENT_AUTH_OK &&
+                 file_payment_auth_decode(wire, sizeof(wire), &decoded) ==
+                     FILE_PAYMENT_AUTH_OK &&
+                 file_payment_auth_verify_for_offer(&decoded, &offer) ==
+                     FILE_PAYMENT_AUTH_OK &&
+                 file_payment_memo_encode(&decoded, memo) ==
+                     FILE_PAYMENT_AUTH_OK &&
+                 file_payment_memo_verify(&decoded, memo, sizeof(memo)) ==
+                     FILE_PAYMENT_AUTH_OK;
+    PAYMENT_CHECK("fixed claim wire + exact 512-byte memo", codec);
+
+    struct file_payment tampered = decoded;
+    tampered.amount_zat++;
+    PAYMENT_CHECK("changed amount fails signed-offer verification",
+        file_payment_auth_verify_for_offer(&tampered, &offer) !=
+            FILE_PAYMENT_AUTH_OK);
+    tampered = decoded;
+    tampered.buyer_signature[0] ^= 1;
+    PAYMENT_CHECK("changed buyer signature fails verification",
+        file_payment_auth_verify_for_offer(&tampered, &offer) ==
+            FILE_PAYMENT_AUTH_ERR_SIGNATURE);
+    memo[FILE_MARKET_PAYMENT_MEMO_BYTES - 1] = 1;
+    PAYMENT_CHECK("noncanonical memo padding fails closed",
+        file_payment_memo_verify(&decoded, memo, sizeof(memo)) ==
+            FILE_PAYMENT_AUTH_ERR_MEMO);
+    struct byte_stream legacy;
+    uint8_t old_wire[72] = {0};
+    stream_init_from_data(&legacy, old_wire, sizeof(old_wire));
+    PAYMENT_CHECK("legacy mempool-only payment wire is rejected",
+                  !file_payment_deserialize(&tampered, &legacy));
+
+    char dir[256], dbpath[512];
+    snprintf(dir, sizeof(dir), "./test-tmp/market_payment_%d", (int)getpid());
+    (void)mkdir("./test-tmp", 0700);
+    if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
+        PAYMENT_CHECK("create payment fixture directory", false);
+        return failures;
+    }
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    struct main_state main_state;
+    struct block_index tip;
+    uint8_t payment_block_hash[32], tip_hash[32];
+    memset(&tip, 0, sizeof(tip));
+    memset(payment_block_hash, 0xa0, sizeof(payment_block_hash));
+    memset(tip_hash, 0xa1, sizeof(tip_hash));
+    tip.nHeight = 101;
+    memcpy(tip.hashBlock.data, tip_hash, 32);
+    tip.phashBlock = &tip.hashBlock;
+    main_state_init(&main_state);
+    bool opened = node_db_open(&ndb, dbpath) &&
+                  active_chain_install_tip_slot(&main_state.chain_active,
+                                                &tip) &&
+                  db_file_offer_save(&ndb, &offer);
+    PAYMENT_CHECK("durable offer/payment database fixture", opened);
+    if (!opened) {
+        if (ndb.open) node_db_close(&ndb);
+        main_state_free(&main_state);
+        test_cleanup_tmpdir(dir);
+        return failures;
+    }
+
+    struct market_payment_claim_record record;
+    struct zcl_result result = market_payment_claim_ingest(
+        &ndb, &main_state, false, -1, &payment, now_unix, &record);
+    PAYMENT_CHECK("stale chain/wallet state records UNKNOWN, never zero",
+                  result.ok && strcmp(record.status, "UNKNOWN") == 0);
+
+    result = market_payment_claim_reconcile(
+        &ndb, &main_state, true, 100, payment.claim_id,
+        now_unix + 1, &record);
+    PAYMENT_CHECK("wallet projection behind tip remains UNKNOWN",
+                  result.ok && strcmp(record.status, "UNKNOWN") == 0);
+
+    bool chain_ready = payment_test_insert_block(
+                           &ndb, payment_block_hash, 100, now_unix, 3) &&
+                       payment_test_insert_block(
+                           &ndb, tip_hash, 101, now_unix + 1, 3) &&
+                       payment_test_insert_transaction(
+                           &ndb, payment.txid, payment_block_hash, 100) &&
+                       payment_test_insert_note(
+                           &ndb, &payment, &offer, 100);
+    PAYMENT_CHECK("canonical transaction + decrypted seller note fixture",
+                  chain_ready);
+
+    result = market_payment_claim_reconcile(
+        &ndb, &main_state, true, 101, payment.claim_id,
+        now_unix + 2, &record);
+    PAYMENT_CHECK("exact canonical Sapling output confirms payment",
+                  result.ok && strcmp(record.status, "CONFIRMED") == 0 &&
+                  record.block_height == 100 && record.confirmations == 2);
+
+    struct market_payment_authorization authorization;
+    result = market_payment_authorize_chunk(
+        &ndb, &main_state, true, 101, offer.offer_id,
+        payment.buyer_pubkey, 1, now_unix + 3, &authorization);
+    PAYMENT_CHECK("confirmed range authorizes its exact chunk",
+                  result.ok && authorization.authorized &&
+                  strcmp(authorization.status, "CONFIRMED") == 0);
+    result = market_payment_authorize_chunk(
+        &ndb, &main_state, true, 101, offer.offer_id,
+        payment.buyer_pubkey, 0, now_unix + 3, &authorization);
+    PAYMENT_CHECK("confirmed range does not authorize another chunk",
+                  result.ok && !authorization.authorized);
+
+    node_db_close(&ndb);
+    bool reopened = node_db_open(&ndb, dbpath);
+    result = reopened ? market_payment_claim_reconcile(
+        &ndb, &main_state, true, 101, payment.claim_id,
+        now_unix + 4, &record) : ZCL_ERR(-1, "reopen failed");
+    PAYMENT_CHECK("restart reconstructs confirmed payment authority",
+                  reopened && result.ok &&
+                  strcmp(record.status, "CONFIRMED") == 0);
+
+    bool detached = payment_test_set_block_status(
+        &ndb, payment_block_hash, 2);
+    result = market_payment_claim_reconcile(
+        &ndb, &main_state, true, 101, payment.claim_id,
+        now_unix + 5, &record);
+    PAYMENT_CHECK("reorg revokes a previously confirmed authorization",
+                  detached && result.ok &&
+                  strcmp(record.status, "CONFLICTED") == 0);
+    result = market_payment_authorize_chunk(
+        &ndb, &main_state, true, 101, offer.offer_id,
+        payment.buyer_pubkey, 1, now_unix + 5, &authorization);
+    PAYMENT_CHECK("reorged payment cannot unlock its chunk",
+                  result.ok && !authorization.authorized &&
+                  strcmp(authorization.status, "CONFLICTED") == 0);
+
+    bool restored = payment_test_set_block_status(
+        &ndb, payment_block_hash, 3);
+    result = market_payment_claim_reconcile(
+        &ndb, &main_state, true, 101, payment.claim_id,
+        now_unix + 6, &record);
+    PAYMENT_CHECK("reconfirmation restores authorization after reorg",
+                  restored && result.ok &&
+                  strcmp(record.status, "CONFIRMED") == 0);
+
+    node_db_close(&ndb);
+    main_state_free(&main_state);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}

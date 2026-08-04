@@ -22,7 +22,6 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
-
 #define API_ROUTE(method_, path_, resource_, action_, handler_, schema_, \
                   query_, freshness_, alias_, private_, command_path_) \
     { method_, path_, resource_, action_, handler_, schema_, query_, \
@@ -149,6 +148,7 @@ static const struct api_json_resource_route k_api_json_resource_routes[] = {
       "zcl.names.index.v1", "", "znam_projection", "", false },
     { "GET", "/api/market", "market", "index", api_market_list,
       "zcl.market.index.v1", "", "market_projection", "", false },
+    { "GET", "/api/market-contents", "market_contents", "index", api_market_content_list, "zcl.market_contents.index.v1", "", "market_content_registry", "", true },
     { "GET", "/api/swaps", "swaps", "index", api_swap_list,
       "zcl.swaps.index.v1", "", "swap_projection", "", true },
     { "GET", "/api/swaps/chains", "swaps", "chains", api_swap_chains,

@@ -877,6 +877,15 @@ static bool handle_zfilelist(struct msg_processor *mp, struct p2p_node *node,
         if (!file_offer_deserialize(&offer, s))
             break;
 
+        /* zfilelist predates seller authentication. It remains a compatibility
+         * carrier for price-zero ROM artifacts only; accepting a paid row here
+         * would let any relay rewrite price/address/endpoint. */
+        if (offer.price_per_mb != 0) {
+            LOG_WARN("market", "unsigned paid zfilelist offer from peer %s "
+                     "dropped", node->addr_name);
+            continue;
+        }
+
         /* Clamp the peer-supplied hop count: an attacker could set ttl=255 to
          * drive a ~255-hop re-gossip amplification across the network. Cap it
          * to the protocol maximum so propagation is bounded regardless of input. */
@@ -1086,31 +1095,32 @@ static bool handle_zfilepay(struct msg_processor *mp, struct p2p_node *node,
     if (!file_payment_deserialize(&pay, s))
         return true;
 
-    /* Verify the payment is in our mempool */
-    struct uint256 txid_hash;
-    memcpy(txid_hash.data, pay.txid, 32);
-    bool in_mempool = tx_mempool_exists(mp->mempool, &txid_hash);
-
-    printf("market: payment from peer %s for %u chunks (txid in mempool: %s)\n",
-           node->addr_name, pay.chunks_paid,
-           in_mempool ? "yes" : "NO");
-
-    if (!in_mempool) {
-        printf("market: rejecting payment — txid not found in mempool\n");
+    enum file_payment_auth_error auth = file_payment_auth_verify(
+        &pay, mp && mp->params
+            ? mp->params->consensus.hashGenesisBlock.data : NULL);
+    if (auth != FILE_PAYMENT_AUTH_OK) {
+        LOG_WARN("market", "zfilepay rejected before ingress: %s",
+                 file_payment_auth_error_string(auth));
+        return true;
+    }
+    if (!mp->file_payment_ingest) {
+        LOG_WARN("market", "zfilepay rejected: payment authority is not wired");
         return true;
     }
 
-    /* Update download state: mark chunks as paid, advance to downloading */
-    struct file_download dl;
-    if (file_market_get_download(pay.root_hash, &dl)) {
-        uint32_t new_paid = pay.chunk_start + pay.chunks_paid;
-        if (new_paid > dl.chunks_paid_through)
-            file_market_update_download(pay.root_hash, FDL_DOWNLOADING,
-                                       dl.chunks_received, new_paid);
-    }
-    printf("market: payment verified, unlocking chunks %u-%u for peer %s\n",
-           pay.chunk_start, pay.chunk_start + pay.chunks_paid - 1,
-           node->addr_name);
+    int result = mp->file_payment_ingest(
+        &pay, (int64_t)node->id,
+        (int64_t)platform_time_wall_time_t(), mp->file_payment_ingest_ctx);
+    if (result == FILE_PAYMENT_INGEST_CONFIRMED)
+        LOG_INFO("market", "zfilepay reconciled as confirmed");
+    else if (result == FILE_PAYMENT_INGEST_PENDING)
+        LOG_INFO("market", "zfilepay recorded pending confirmation");
+    else if (result == FILE_PAYMENT_INGEST_UNKNOWN)
+        LOG_WARN("market", "zfilepay money state is unknown; unlock refused");
+    else if (result == FILE_PAYMENT_INGEST_CONFLICTED)
+        LOG_WARN("market", "zfilepay conflicts with authoritative payment state");
+    else
+        LOG_WARN("market", "zfilepay rejected by payment authority");
     return true;
 }
 
@@ -1142,6 +1152,32 @@ static bool handle_zfileaddr(struct msg_processor *mp, struct p2p_node *node,
 static void mp_flood_wire(struct msg_processor *mp, const char *command,
                           const uint8_t *wire, size_t wire_len,
                           int64_t exclude_peer_id);
+
+static bool handle_zfileoffer(struct msg_processor *mp,
+                              struct p2p_node *node,
+                              struct byte_stream *s)
+{
+    if (s->size - s->read_pos != FILE_MARKET_OFFER_WIRE_BYTES)
+        return true;
+    uint8_t wire[FILE_MARKET_OFFER_WIRE_BYTES];
+    if (!stream_read(s, wire, sizeof(wire)) || !mp->params)
+        return true;
+
+    struct file_offer offer;
+    enum file_market_offer_ingest result = file_market_ingest_offer_wire(
+        wire, sizeof(wire), mp->params->consensus.hashGenesisBlock.data,
+        (int64_t)node->id, (int64_t)platform_time_wall_time_t(), &offer);
+    if (result != FILE_MARKET_INGEST_NEW &&
+        result != FILE_MARKET_INGEST_DEDUP)
+        return true;
+
+    if (mp->file_offer_save)
+        (void)mp->file_offer_save(&offer, mp->file_offer_save_ctx);
+    if (result == FILE_MARKET_INGEST_NEW && mp->net_mgr)
+        mp_flood_wire(mp, MSG_FILE_OFFER, wire, sizeof(wire),
+                      (int64_t)node->id);
+    return true;
+}
 
 static bool handle_zswapquote(struct msg_processor *mp, struct p2p_node *node,
                               struct byte_stream *s)
@@ -1428,6 +1464,7 @@ static const struct msg_dispatch_entry g_msg_dispatch[] = {
     { "zmsgack",      handle_zmsgack,        true,  true,  "msg" },
     /* ── ZCL Market ── */
     { "zfilelist",    handle_zfilelist,      true,  true,  "market" },
+    { "zfileoffer",   handle_zfileoffer,     true,  true,  "market" },
     { "zfilechal",    handle_zfilechal,      true,  true,  "market" },
     { "zfileproof",   handle_zfileproof,     true,  true,  "market" },
     { "zfilepay",     handle_zfilepay,       true,  true,  "market" },
@@ -1493,6 +1530,8 @@ void msg_processor_init(struct msg_processor *mp,
     mp->zmsg_save_ctx = NULL;
     mp->file_offer_save = NULL;
     mp->file_offer_save_ctx = NULL;
+    mp->file_payment_ingest = NULL;
+    mp->file_payment_ingest_ctx = NULL;
     mp->file_service_save = NULL;
     mp->file_service_save_ctx = NULL;
     mp->snapshot_active = NULL;
@@ -1632,6 +1671,15 @@ void msg_processor_set_file_offer_save(struct msg_processor *mp,
         return;
     mp->file_offer_save = save;
     mp->file_offer_save_ctx = ctx;
+}
+
+void msg_processor_set_file_payment_ingest(
+    struct msg_processor *mp, msg_file_payment_ingest_fn ingest, void *ctx)
+{
+    if (!mp)
+        return;
+    mp->file_payment_ingest = ingest;
+    mp->file_payment_ingest_ctx = ctx;
 }
 
 void msg_processor_set_file_service_save(struct msg_processor *mp,

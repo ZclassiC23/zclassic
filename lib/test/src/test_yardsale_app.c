@@ -27,6 +27,7 @@
 #include "keys/pubkey.h"
 #include "platform/time_compat.h"
 #include "script/standard.h"
+#include "sim/simnet.h"
 #include "zswap/zswap_assembly.h"
 #include "zswap/zswap_ceremony.h"
 #include "zswap/zswap_quote.h"
@@ -153,6 +154,19 @@ static void ysa_fill_input(struct zswap_swap_input *in, uint8_t txid_base,
     memcpy(in->script_pub_key, script, script_len);
 }
 
+static void ysa_fill_exact_input(struct zswap_swap_input *in,
+                                 const uint8_t txid[32], uint32_t vout,
+                                 int64_t value, const uint8_t *script,
+                                 uint16_t script_len)
+{
+    memset(in, 0, sizeof(*in));
+    memcpy(in->txid, txid, 32);
+    in->vout = vout;
+    in->value_sats = value;
+    in->script_len = script_len;
+    memcpy(in->script_pub_key, script, script_len);
+}
+
 /* The buyer accept; input B (txid 0x60..) is listed FIRST so the canonical
  * sort is exercised, exactly like the Stage-3 fixture. */
 static bool ysa_buyer_dl(struct zswap_buyer_accept *buyer, int64_t deadline)
@@ -246,6 +260,25 @@ static bool ysa_broadcast_capture_fn(const struct transaction *tx, void *ctx)
     cap->count++;
     return zswap_assembly_tx_serialize(tx, cap->tx_bytes,
                                        sizeof(cap->tx_bytes), &cap->tx_len);
+}
+
+struct ysa_transaction_capture {
+    int count;
+    bool copied;
+    struct transaction tx;
+};
+
+static bool ysa_transaction_capture_fn(const struct transaction *tx,
+                                       void *ctx)
+{
+    struct ysa_transaction_capture *cap = ctx;
+    if (!tx || !cap)
+        return false;
+    if (cap->copied)
+        transaction_free(&cap->tx);
+    cap->count++;
+    cap->copied = transaction_copy(&cap->tx, tx);
+    return cap->copied;
 }
 
 /* Shared fixture setup: reset every piece of yardsale state and pin the
@@ -405,6 +438,155 @@ static int t_ceremony_roundtrip(void)
     YSA_CHECK("ceremony: pending table drained",
               yardsale_pending_count(YSA_NOW) == 0);
 
+    ysa_reset_all();
+    return failures;
+}
+
+/* ── Exact controller-produced transaction through connect_block ─── */
+
+static int t_simnet_atomic_purchase(void)
+{
+    int failures = 0;
+    ysa_reset_all();
+
+    struct simnet sim;
+    bool sim_ok = simnet_init(&sim);
+    YSA_CHECK("simnet: isolated chain initializes", sim_ok);
+    if (!sim_ok)
+        return failures;
+    simnet_activate_sapling_at(&sim, simnet_tip_height(&sim) + 1);
+
+    struct privkey seller_key, buyer_key;
+    ysa_key(&seller_key, 0x31);
+    ysa_key(&buyer_key, 0x42);
+    uint8_t seller_spk_bytes[25], buyer_spk_bytes[25];
+    bool scripts_ok =
+        ysa_p2pkh_script(&seller_key, seller_spk_bytes) == 25 &&
+        ysa_p2pkh_script(&buyer_key, buyer_spk_bytes) == 25;
+    struct script seller_spk, buyer_spk;
+    memset(&seller_spk, 0, sizeof(seller_spk));
+    memset(&buyer_spk, 0, sizeof(buyer_spk));
+    if (scripts_ok) {
+        script_set(&seller_spk, seller_spk_bytes, sizeof(seller_spk_bytes));
+        script_set(&buyer_spk, buyer_spk_bytes, sizeof(buyer_spk_bytes));
+    }
+    YSA_CHECK("simnet: seller and buyer funding scripts derive", scripts_ok);
+
+    struct uint256 seller_fund, buyer_fund_a, buyer_fund_b;
+    bool funded = scripts_ok &&
+        simnet_mint_coinbase_to(&sim, &seller_spk,
+                                YSA_SELLER_INPUT_VALUE, &seller_fund) &&
+        simnet_mint_coinbase_to(&sim, &buyer_spk,
+                                YSA_BUYER_IN_A_VALUE, &buyer_fund_a) &&
+        simnet_mint_coinbase_to(&sim, &buyer_spk,
+                                YSA_BUYER_IN_B_VALUE, &buyer_fund_b) &&
+        simnet_mint_to_height(&sim, 201);
+    YSA_CHECK("simnet: three exact funding outputs mature", funded);
+    if (!funded) {
+        simnet_free(&sim);
+        ysa_reset_all();
+        return failures;
+    }
+
+    struct zswap_quote_v1 ad;
+    uint8_t quote_root[32];
+    bool ad_ok = ysa_ingest_kat_ad(&ad, quote_root);
+    YSA_CHECK("simnet: signed Yardsale ad enters the app cache", ad_ok);
+
+    struct zswap_seller_accept seller;
+    bool seller_ok = ysa_seller(&seller);
+    if (seller_ok)
+        ysa_fill_exact_input(&seller.token_input, seller_fund.data, 0,
+                             YSA_SELLER_INPUT_VALUE, seller_spk_bytes, 25);
+    YSA_CHECK("simnet: seller terms name the isolated token input", seller_ok);
+    if (seller_ok)
+        yardsale_seller_profile_configure(&seller, &seller_key);
+
+    struct zswap_buyer_accept buyer;
+    bool buyer_ok = ysa_buyer(&buyer);
+    if (buyer_ok) {
+        /* Deliberately list B before A; the ceremony must canonical-sort the
+         * real outpoints rather than relying on collection order. */
+        ysa_fill_exact_input(&buyer.inputs[0], buyer_fund_b.data, 0,
+                             YSA_BUYER_IN_B_VALUE, buyer_spk_bytes, 25);
+        ysa_fill_exact_input(&buyer.inputs[1], buyer_fund_a.data, 0,
+                             YSA_BUYER_IN_A_VALUE, buyer_spk_bytes, 25);
+    }
+    YSA_CHECK("simnet: buyer terms name both isolated ZCL inputs", buyer_ok);
+
+    struct privkey buyer_keys[2];
+    buyer_keys[0] = buyer_key;
+    buyer_keys[1] = buyer_key;
+    struct ysa_flood_capture flood = {0};
+    yardsale_ceremony_set_flood(ysa_flood_capture_fn, &flood);
+    uint8_t accept_wire[ZSWAP_ACCEPT_WIRE_MAX_BYTES];
+    size_t accept_len = 0;
+    bool begun = ad_ok && seller_ok && buyer_ok &&
+        yardsale_buyer_begin(&ad, &buyer, buyer_keys, 2, YSA_NOW,
+                             accept_wire, sizeof(accept_wire), &accept_len) ==
+            YARDSALE_OK;
+    YSA_CHECK("simnet: buyer starts the real controller ceremony", begun);
+
+    uint8_t partial_wire[ZSWAP_PARTIAL_WIRE_MAX_BYTES];
+    size_t partial_len = 0;
+    int seller_verdict = begun ? yardsale_ceremony_accept_ingest(
+        accept_wire, accept_len, 17, YSA_NOW, partial_wire,
+        sizeof(partial_wire), &partial_len) : ZSWAP_CEREMONY_WIRE_DROP;
+    YSA_CHECK("simnet: seller validates terms and signs its input",
+              seller_verdict == ZSWAP_CEREMONY_WIRE_RESPOND);
+
+    struct ysa_transaction_capture broadcast = {0};
+    yardsale_ceremony_set_broadcast(ysa_transaction_capture_fn, &broadcast);
+    int buyer_verdict = seller_verdict == ZSWAP_CEREMONY_WIRE_RESPOND
+        ? yardsale_ceremony_partial_ingest(partial_wire, partial_len, 17,
+                                           YSA_NOW)
+        : ZSWAP_CEREMONY_WIRE_RELAY;
+    YSA_CHECK("simnet: buyer verifies seller and signs both ZCL inputs",
+              buyer_verdict == ZSWAP_CEREMONY_WIRE_DROP &&
+              broadcast.count == 1 && broadcast.copied &&
+              zswap_ceremony_all_inputs_signed(&broadcast.tx));
+
+    bool exact_inputs = broadcast.copied && broadcast.tx.num_vin == 3 &&
+        simnet_coin_value(&sim, &seller_fund, 0, NULL) &&
+        simnet_coin_value(&sim, &buyer_fund_a, 0, NULL) &&
+        simnet_coin_value(&sim, &buyer_fund_b, 0, NULL);
+    YSA_CHECK("simnet: captured broadcast spends the three live inputs",
+              exact_inputs);
+
+    struct uint256 final_txid;
+    uint256_set_null(&final_txid);
+    if (broadcast.copied) {
+        transaction_compute_hash(&broadcast.tx);
+        final_txid = broadcast.tx.hash;
+    }
+    bool mined = exact_inputs && simnet_mint_txs(&sim, &broadcast.tx, 1);
+    if (mined)
+        broadcast.copied = false; /* ownership transferred to simnet */
+    YSA_CHECK("simnet: exact controller broadcast passes connect_block",
+              mined && simnet_tip_height(&sim) == 202);
+
+    int64_t token_dust = 0, seller_paid = 0;
+    int64_t seller_change = 0, buyer_change = 0;
+    bool settled = mined &&
+        !simnet_coin_value(&sim, &seller_fund, 0, NULL) &&
+        !simnet_coin_value(&sim, &buyer_fund_a, 0, NULL) &&
+        !simnet_coin_value(&sim, &buyer_fund_b, 0, NULL) &&
+        simnet_coin_value(&sim, &final_txid, 1, &token_dust) &&
+        simnet_coin_value(&sim, &final_txid, 2, &seller_paid) &&
+        simnet_coin_value(&sim, &final_txid, 3, &seller_change) &&
+        simnet_coin_value(&sim, &final_txid, 4, &buyer_change);
+    YSA_CHECK("simnet: settlement values and fee are exact",
+              settled && token_dust == ZSWAP_TOKEN_DUST_ZAT &&
+              seller_paid == (int64_t)YSA_ZCL_AMOUNT &&
+              seller_change ==
+                  YSA_SELLER_INPUT_VALUE - ZSWAP_TOKEN_DUST_ZAT &&
+              buyer_change == YSA_BUYER_IN_A_VALUE + YSA_BUYER_IN_B_VALUE -
+                                  (int64_t)YSA_ZCL_AMOUNT -
+                                  (int64_t)YSA_FEE_SATS);
+
+    if (broadcast.copied)
+        transaction_free(&broadcast.tx);
+    simnet_free(&sim);
     ysa_reset_all();
     return failures;
 }
@@ -697,6 +879,7 @@ int test_yardsale_app(void)
     int failures = 0;
     failures += t_manifest();
     failures += t_ceremony_roundtrip();
+    failures += t_simnet_atomic_purchase();
     failures += t_ingress_negatives();
     failures += t_peer_clamp();
     failures += t_seller_web_endpoint();

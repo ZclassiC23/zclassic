@@ -176,9 +176,12 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   it with `make transaction-lab-check`.
 - `zclassic23 app transaction-types list` — the compile-time semantic catalog
   of every known transaction shape and its exact builder/commit/inspect path.
-  Use `app transaction-types show --type=<id>` for one entry. REST mirrors it
-  at `/api/v1/transaction-types`; the AI-safe workflow and extension checklist
-  are in [`TRANSACTION_API.md`](./TRANSACTION_API.md).
+  Use `app transaction-types show --type=<id>` for one entry, or
+  `app transaction-types guide --type=<id>` to join it to exact live command
+  schemas, allowed keys, authority, confirmation, and the safe next decision in
+  one read. REST mirrors the catalog at `/api/v1/transaction-types`; the
+  AI-safe workflow and extension checklist are in
+  [`TRANSACTION_API.md`](./TRANSACTION_API.md).
 - `make deploy` is owner-gated live deployment. All public dev-lane publication,
   stage, relink, and recovery-apply paths currently hard-refuse — the gated
   swappable-leaf hot-swap loop above (`hotswap-try`/`hotswap-apply`) is the one

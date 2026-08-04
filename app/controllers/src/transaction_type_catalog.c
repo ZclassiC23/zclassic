@@ -23,6 +23,19 @@ static const struct zcl_transaction_type_contract k_transaction_types[] = {
 };
 #undef TX_TYPE
 
+struct transaction_type_supplemental_tests {
+    const char *id;
+    const char *test_groups_csv;
+};
+
+#define TX_TYPE_SUPPLEMENTAL(id_, tests_) \
+    { .id = id_, .test_groups_csv = tests_ },
+static const struct transaction_type_supplemental_tests
+k_supplemental_tests[] = {
+#include "controllers/transaction_type_supplemental_tests.def"
+};
+#undef TX_TYPE_SUPPLEMENTAL
+
 static void csv_json(const char *csv, struct json_value *out)
 {
     json_set_array(out);
@@ -43,6 +56,54 @@ static void csv_json(const char *csv, struct json_value *out)
             json_set_str(&item, item_buf);
             (void)json_push_back(out, &item);
             json_free(&item);
+        }
+        if (*cursor == ',')
+            cursor++;
+    }
+}
+
+static const char *supplemental_tests_for(const char *id)
+{
+    if (!id)
+        return "";
+    for (size_t i = 0;
+         i < sizeof(k_supplemental_tests) / sizeof(k_supplemental_tests[0]);
+         i++) {
+        if (strcmp(k_supplemental_tests[i].id, id) == 0)
+            return k_supplemental_tests[i].test_groups_csv;
+    }
+    return "";
+}
+
+#define PROOF_GROUP_MAX 64
+#define PROOF_GROUP_LEN 64
+
+static void proof_group_add_csv(const char *csv,
+                                char groups[PROOF_GROUP_MAX][PROOF_GROUP_LEN],
+                                size_t *count)
+{
+    if (!csv || !count)
+        return;
+    const char *cursor = csv;
+    while (*cursor && *count < PROOF_GROUP_MAX) {
+        const char *start = cursor;
+        while (*cursor && *cursor != ',')
+            cursor++;
+        size_t len = (size_t)(cursor - start);
+        if (len > 0 && len < PROOF_GROUP_LEN) {
+            bool duplicate = false;
+            for (size_t i = 0; i < *count; i++) {
+                if (strlen(groups[i]) == len &&
+                    memcmp(groups[i], start, len) == 0) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (!duplicate) {
+                memcpy(groups[*count], start, len);
+                groups[*count][len] = '\0';
+                (*count)++;
+            }
         }
         if (*cursor == ',')
             cursor++;
@@ -100,6 +161,11 @@ static void transaction_type_json(
     (void)json_push_kv_str(out, "lab_case_id", type->lab_case_id);
     (void)json_push_kv_str(out, "proof_level", type->proof_level);
     (void)json_push_kv_str(out, "test_group", type->test_group);
+    struct json_value supplemental_tests;
+    json_init(&supplemental_tests);
+    csv_json(supplemental_tests_for(type->id), &supplemental_tests);
+    (void)json_push_kv(out, "supplemental_test_groups", &supplemental_tests);
+    json_free(&supplemental_tests);
     (void)json_push_kv_str(out, "evidence_status",
                           demonstrated ? "demonstrated" : "blocked");
     (void)json_push_kv_bool(out, "mainnet_live_proven",
@@ -144,6 +210,7 @@ bool zcl_transaction_types_index_json(struct json_value *out)
     size_t ready = 0, process_only = 0, contained = 0, planned = 0;
     size_t demonstrated = 0, blocked = 0, chain_confirmed = 0;
     size_t mainnet_live_proven = 0, proof_test_groups = 0;
+    char proof_groups[PROOF_GROUP_MAX][PROOF_GROUP_LEN] = {{0}};
     const struct zcl_transaction_type_contract *catalog =
         zcl_transaction_type_catalog(&count);
     for (size_t i = 0; i < count; i++) {
@@ -168,15 +235,10 @@ bool zcl_transaction_types_index_json(struct json_value *out)
             chain_confirmed++;
         if (strcmp(catalog[i].proof_level, "live_confirmed") == 0)
             mainnet_live_proven++;
-        bool first_test_group = true;
-        for (size_t j = 0; j < i; j++) {
-            if (strcmp(catalog[i].test_group, catalog[j].test_group) == 0) {
-                first_test_group = false;
-                break;
-            }
-        }
-        if (first_test_group)
-            proof_test_groups++;
+        proof_group_add_csv(catalog[i].test_group, proof_groups,
+                            &proof_test_groups);
+        proof_group_add_csv(supplemental_tests_for(catalog[i].id),
+                            proof_groups, &proof_test_groups);
     }
     (void)json_push_kv_int(out, "transaction_type_count", (int64_t)count);
     (void)json_push_kv_int(out, "ready_count", (int64_t)ready);

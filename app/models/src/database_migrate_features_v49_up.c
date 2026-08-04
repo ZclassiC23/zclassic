@@ -270,6 +270,224 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 55) {
+        /* v55: authenticated paid file offers. Mutable gossip bookkeeping
+         * remains outside the signed body; every money-bearing term is
+         * committed by the seller's network-bound Ed25519 contract. Legacy
+         * auth_version=0 rows remain readable only when price_per_mb=0. */
+        /* A few supported recovery/test fixtures carry a valid version but
+         * only a subset of feature tables. Converge those stores before the
+         * ALTER sequence instead of stamping v55 over a missing authority. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS file_offers ("
+            "root_hash BLOB NOT NULL PRIMARY KEY,"
+            "filename TEXT NOT NULL,"
+            "size_bytes INTEGER NOT NULL,"
+            "num_chunks INTEGER NOT NULL,"
+            "price_per_mb INTEGER NOT NULL,"
+            "z_addr BLOB,peer_ip BLOB,peer_port INTEGER,"
+            "last_seen INTEGER,ttl INTEGER DEFAULT 4)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_file_offers_last_seen "
+            "ON file_offers(last_seen DESC)");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN auth_version INTEGER "
+            "NOT NULL DEFAULT 0 CHECK(auth_version IN (0,1))");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN network_genesis BLOB "
+            "NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000' "
+            "CHECK(length(network_genesis)=32)");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN seller_pubkey BLOB "
+            "NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000' "
+            "CHECK(length(seller_pubkey)=32)");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN nonce INTEGER NOT NULL "
+            "DEFAULT 0 CHECK(nonce>=0)");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN issued_unix INTEGER NOT NULL "
+            "DEFAULT 0 CHECK(issued_unix>=0)");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN expires_unix INTEGER NOT NULL "
+            "DEFAULT 0 CHECK(expires_unix>=0)");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN seller_signature BLOB "
+            "NOT NULL DEFAULT X'00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "
+            "CHECK(length(seller_signature)=64)");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN offer_id BLOB "
+            "NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000' "
+            "CHECK(length(offer_id)=32)");
+        node_db_exec(ndb,
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_file_offers_offer_id "
+            "ON file_offers(offer_id) WHERE auth_version=1");
+        node_db_exec(ndb,
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_file_offers_seller_nonce "
+            "ON file_offers(seller_pubkey,nonce) WHERE auth_version=1");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_file_offers_expires "
+            "ON file_offers(expires_unix) WHERE auth_version=1");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('055')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 55);
+        current_ver = 55;
+        applied++;
+    }
+
+    if (current_ver < 56) {
+        /* v56: durable file-market payment claim locators. The exact signed
+         * claim and offer wires are retained so restart does not depend on an
+         * expiring gossip-cache row. status/height/confirmations are a
+         * rebuildable projection only: every paid file request rechecks the
+         * canonical transaction + decrypted wallet note authorities. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS market_payment_claims ("
+            "claim_id BLOB NOT NULL PRIMARY KEY CHECK(length(claim_id)=32),"
+            "offer_id BLOB NOT NULL CHECK(length(offer_id)=32),"
+            "txid BLOB NOT NULL CHECK(length(txid)=32),"
+            "buyer_pubkey BLOB NOT NULL CHECK(length(buyer_pubkey)=32),"
+            "chunk_start INTEGER NOT NULL CHECK(chunk_start>=0),"
+            "chunks_paid INTEGER NOT NULL CHECK(chunks_paid>0),"
+            "amount_zat INTEGER NOT NULL CHECK(amount_zat>0 AND "
+            "amount_zat<=2100000000000000),"
+            "claim_wire BLOB NOT NULL CHECK(length(claim_wire)=218),"
+            "offer_wire BLOB NOT NULL CHECK(length(offer_wire)=535),"
+            "status TEXT NOT NULL CHECK(status IN "
+            "('PENDING','CONFIRMED','UNKNOWN','CONFLICTED','REJECTED')),"
+            "status_reason TEXT NOT NULL,"
+            "output_index INTEGER NOT NULL DEFAULT -1 "
+            "CHECK(output_index>=-1),"
+            "block_height INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(block_height>=0),"
+            "confirmations INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(confirmations>=0),"
+            "observed_at INTEGER NOT NULL CHECK(observed_at>0),"
+            "reconciled_at INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(reconciled_at>=0))");
+        node_db_exec(ndb,
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "idx_market_payment_claim_contract "
+            "ON market_payment_claims(offer_id,txid,chunk_start,chunks_paid,"
+            "buyer_pubkey)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_market_payment_claim_buyer "
+            "ON market_payment_claims(offer_id,buyer_pubkey,status)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_market_payment_claim_txid "
+            "ON market_payment_claims(txid)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('056')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 56);
+        current_ver = 56;
+        applied++;
+    }
+
+    if (current_ver < 57) {
+        /* v57: owner-private paid-file content registry. One atomic row binds
+         * an authenticated offer_id to the canonical local regular file and
+         * its complete bounded chunk-digest manifest. The private path and
+         * manifest are never part of the public market projection. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS market_contents ("
+            "offer_id BLOB NOT NULL PRIMARY KEY CHECK(length(offer_id)=32),"
+            "root_hash BLOB NOT NULL CHECK(length(root_hash)=32),"
+            "private_path TEXT NOT NULL "
+            "CHECK(length(private_path)>0 AND length(private_path)<4096),"
+            "size_bytes INTEGER NOT NULL CHECK(size_bytes>0),"
+            "num_chunks INTEGER NOT NULL "
+            "CHECK(num_chunks>0 AND num_chunks<=4096),"
+            "chunk_hashes BLOB NOT NULL "
+            "CHECK(length(chunk_hashes)=num_chunks*32),"
+            "registered_at INTEGER NOT NULL CHECK(registered_at>0))"
+            " WITHOUT ROWID");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_market_contents_root "
+            "ON market_contents(root_hash)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_market_contents_registered "
+            "ON market_contents(registered_at DESC)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('057')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 57);
+        current_ver = 57;
+        applied++;
+    }
+
+    if (current_ver < 58) {
+        /* v58: application-bound vault intents. Higher-level transactions
+         * (starting with market_purchase) reuse the one wallet reservation
+         * authority while gaining durable request idempotency. The request
+         * digest contains no address, memo, key, or endpoint; exact private
+         * plan material remains inside encrypted_payload. */
+        node_db_exec(ndb,
+            "ALTER TABLE vault_intents ADD COLUMN application_kind TEXT "
+            "NOT NULL DEFAULT '' CHECK(length(application_kind)<=32)");
+        node_db_exec(ndb,
+            "ALTER TABLE vault_intents ADD COLUMN idempotency_key TEXT "
+            "NOT NULL DEFAULT '' CHECK(length(idempotency_key)<=64)");
+        node_db_exec(ndb,
+            "ALTER TABLE vault_intents ADD COLUMN request_digest BLOB "
+            "CHECK(request_digest IS NULL OR length(request_digest)=32)");
+        node_db_exec(ndb,
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "idx_vault_intents_application_idempotency "
+            "ON vault_intents(wallet_scope,application_kind,idempotency_key) "
+            "WHERE application_kind<>'' AND idempotency_key<>''");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('058')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 58);
+        current_ver = 58;
+        applied++;
+    }
+
+    if (current_ver < 59) {
+        /* v59: buyer-side paid-file assembly. The destination and same-dir
+         * staging paths are operator-private. One parent row owns sequential
+         * progress; child rows retain the authenticated digest and exact size
+         * of each fsynced chunk so restart can re-verify bytes before resume.
+         * No endpoint, buyer credential, address, memo, or wallet secret is
+         * duplicated into this resource. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS market_downloads ("
+            "plan_id BLOB NOT NULL PRIMARY KEY CHECK(length(plan_id)=32),"
+            "offer_id BLOB NOT NULL CHECK(length(offer_id)=32),"
+            "root_hash BLOB NOT NULL CHECK(length(root_hash)=32),"
+            "private_destination TEXT NOT NULL CHECK("
+            "length(private_destination)>0 AND length(private_destination)<4096),"
+            "private_staging TEXT NOT NULL CHECK("
+            "length(private_staging)>0 AND length(private_staging)<4096),"
+            "size_bytes INTEGER NOT NULL CHECK(size_bytes>0),"
+            "num_chunks INTEGER NOT NULL CHECK(num_chunks>0 AND num_chunks<=4096),"
+            "chunks_received INTEGER NOT NULL DEFAULT 0 CHECK("
+            "chunks_received>=0 AND chunks_received<=num_chunks),"
+            "bytes_received INTEGER NOT NULL DEFAULT 0 CHECK("
+            "bytes_received>=0 AND bytes_received<=size_bytes),"
+            "state INTEGER NOT NULL DEFAULT 0 CHECK(state BETWEEN 0 AND 2),"
+            "created_at INTEGER NOT NULL CHECK(created_at>0),"
+            "updated_at INTEGER NOT NULL CHECK(updated_at>0)) WITHOUT ROWID");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_market_downloads_state "
+            "ON market_downloads(state,updated_at DESC)");
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS market_download_chunks ("
+            "plan_id BLOB NOT NULL CHECK(length(plan_id)=32),"
+            "chunk_index INTEGER NOT NULL CHECK(chunk_index>=0 AND chunk_index<4096),"
+            "size_bytes INTEGER NOT NULL CHECK(size_bytes>0 AND size_bytes<=52428800),"
+            "chunk_sha3 BLOB NOT NULL CHECK(length(chunk_sha3)=32),"
+            "created_at INTEGER NOT NULL CHECK(created_at>0),"
+            "PRIMARY KEY(plan_id,chunk_index),"
+            "FOREIGN KEY(plan_id) REFERENCES market_downloads(plan_id) "
+            "ON DELETE CASCADE) WITHOUT ROWID");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_market_download_chunks_plan "
+            "ON market_download_chunks(plan_id,chunk_index)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('059')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 59);
+        current_ver = 59;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

@@ -17,7 +17,8 @@ extern "C" {
 char *zcl_native_getblock_body(const struct json_value *args,
                                 struct zcl_native_body_err *err);
 
-/* txid + verbose. */
+/* txid + verbose. Verbose=false returns a bounded raw_offset/raw_bytes page as
+ * zcl.raw_transaction.v1; raw_bytes is capped at 1024. */
 char *zcl_native_getrawtransaction_body(const struct json_value *args,
                                          struct zcl_native_body_err *err);
 

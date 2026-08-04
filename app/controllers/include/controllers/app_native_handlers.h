@@ -46,6 +46,10 @@ char *zcl_native_zmarket_list_body(const struct json_value *args,
 char *zcl_native_zmarket_status_body(const struct json_value *args,
                                      struct zcl_native_body_err *err);
 
+/* No args -> zmarket_content_list; output is path-free and owner-private. */
+char *zcl_native_zmarket_content_list_body(
+    const struct json_value *args, struct zcl_native_body_err *err);
+
 /* No args -> swap_chains. */
 char *zcl_native_swap_chains_body(const struct json_value *args,
                                   struct zcl_native_body_err *err);

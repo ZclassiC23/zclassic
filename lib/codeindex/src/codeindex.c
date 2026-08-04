@@ -53,3 +53,17 @@ void codeindex_close(struct codeindex *ci)
     if (ci->store) ci_store_close(ci->store);
     free(ci);
 }
+
+bool codeindex_source_root_sha3(struct codeindex *ci, uint8_t out[32])
+{
+    if (!ci || !ci->store || !out)
+        LOG_FAIL("codeindex", "null arg to source_root_sha3");
+    size_t len = 0;
+    bool found = false;
+    if (!ci_store_meta_get(ci->store, "source_root_sha3", out, 32, &len,
+                           &found))
+        LOG_FAIL("codeindex", "read source_root_sha3");
+    if (!found || len != 32)
+        LOG_FAIL("codeindex", "invalid source_root_sha3 metadata");
+    return true;
+}

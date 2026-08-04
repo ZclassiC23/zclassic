@@ -1023,6 +1023,13 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             type_ok = (value->type == JSON_INT && json_get_int(value) >= 0) ||
                       (value->type == JSON_STR && json_get_str(value) &&
                        json_get_str(value)[0] && strlen(json_get_str(value)) <= 256);
+        } else if (strcmp(key, "raw_offset") == 0) {
+            /* Byte offset into core.chain.transaction.get raw mode. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "raw_bytes") == 0) {
+            /* Keep the hex-doubled page inside the ordinary result budget. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 1024;
         } else if (strcmp(key, "height") == 0 ||
                    strcmp(key, "start_height") == 0 ||
                    strcmp(key, "after") == 0 ||

@@ -25,6 +25,12 @@ struct blog_post_index_page {
     int count;
 };
 
+struct rpc_table;
+
+/* Operator-only chain-anchor RPC. Public HTTP remains read-only; the handler
+ * consumes the shared wallet RPC context rather than owning a second copy. */
+void register_blog_post_rpc_commands(struct rpc_table *table);
+
 struct zcl_result blog_post_controller_create(
     struct node_db *ndb, struct wallet *wallet,
     const struct zcl_app_event_signing_binding_v1 *binding,
@@ -44,8 +50,9 @@ struct zcl_result blog_post_controller_index(
     struct blog_post_index_page *out);
 
 /* Public read-only site mount used by both HTTPS (zclnet.net/blog) and each
- * node's onion service. Returns a complete HTTP response. Publishing is not
- * exposed here while the Core grant broker and live anchor proof are pending. */
+ * node's onion service. Returns a complete HTTP response. Signed-event
+ * creation remains broker-contained; app.blog.anchor is an operator-only
+ * plan/commit for an event that is already stored and verified. */
 size_t blog_site_handle_request(const char *method, const char *path,
                                 const uint8_t *body, size_t body_len,
                                 uint8_t *response, size_t response_max);

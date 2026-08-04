@@ -31,6 +31,7 @@ enum blog_publication_error {
     BLOG_ERR_SAVE = -7,
     BLOG_ERR_CHAIN = -8,
     BLOG_ERR_VALIDATION = -9,
+    BLOG_ERR_TX = -10,
 };
 
 static bool bytes_nonzero(const uint8_t *bytes, size_t len)
@@ -527,6 +528,7 @@ struct zcl_result blog_anchor_script_parse(
                        "Blog anchor uses a nonminimal encoding");
     return ZCL_OK;
 }
+
 
 struct zcl_result blog_publication_observe_projection(
     struct node_db *ndb, const uint8_t event_id[32],

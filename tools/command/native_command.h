@@ -148,6 +148,9 @@ void zcl_native_handle_transaction_types_list(
 void zcl_native_handle_transaction_type_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_transaction_type_guide(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 /* ── app.service.* — declared services (tools/command/native_service_command.c).
  * `list` and `inspect` read the compile-time zcl.service_binding.v1 catalog
@@ -233,9 +236,10 @@ void zcl_native_handle_code_merkle(
 /* code.provenance.facts — the writer census: every durable named slot (a key in
  * progress_meta / stage_cursor / node_state) with the count of distinct FILES
  * that write it, ranked multi-writer first; with a `key`, each writer as
- * file:line via its write function or SQL verb. Re-derived from the tree on
- * every call. See app/controllers/src/fact_writers.c for the two derivations
- * and controllers/fact_store_writers.def for the manifest that states them. */
+ * file:line via its write function or SQL verb. Re-derived for each exact
+ * source generation and memoized in-process by the code index's sealed content
+ * root. See app/controllers/src/fact_writers.c for the two derivations and
+ * controllers/fact_store_writers.def for the manifest that states them. */
 void zcl_native_handle_code_facts(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
@@ -1262,6 +1266,9 @@ void zcl_native_handle_token_mint(
 void zcl_native_handle_token_burn(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_blog_anchor(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_name_register(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
@@ -1284,6 +1291,21 @@ void zcl_native_handle_message_send(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_message_read(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_market_content_register(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_market_purchase_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_market_purchase_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_market_purchase_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_market_purchase_retrieve(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_swap_initiate(

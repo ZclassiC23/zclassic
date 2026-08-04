@@ -27,14 +27,15 @@
  *   6. cross-operator agreement — two agreeing anchors, two disagreeing
  *      anchors (non-zero exit, report intact), and a local base above the
  *      height reported incomparable rather than disagreeing.
- *   7. the offline path's op_return_hex round-trips through zanc_parse.
+ *   7. the offline path's op_return_hex round-trips through zanc_parse,
+ *      enters a simnet block, and rebuilds the exact ZANC projection.
  *   8. epoch arithmetic (cursor/1000) matches dumpstate zepoch exactly.
  *
  * Hermetic: per-pid ./test-tmp datadirs, no network, no wallet, no live
  * node. node_rpc_call is stubbed for the whole group (see epoch_rpc_stub)
  * so the anchor handler can NEVER reach a running node — the offline
- * op_return_hex branch is the only branch these tests exercise, and
- * nothing is ever broadcast.
+ * op_return_hex branch is the only branch these tests exercise. Its bytes
+ * are mined only in the RAM-only simnet fixture; nothing is broadcast.
  */
 
 #include "test/test_core.h"
@@ -49,6 +50,7 @@
 #include "models/op_return_index.h"
 #include "models/zanc.h"
 #include "services/op_return_backfill_service.h"
+#include "test/transaction_lab_simnet.h"
 #include "zanc/zanc.h"
 
 #include <stdio.h>
@@ -885,7 +887,8 @@ static int test_epoch_offline_anchor(void)
         uint8_t want_digest[32];
         memset(want_digest, 0x5A, 32);
 
-        bool ok = planted && c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+        bool command_ok = planted &&
+                  c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
                   /* the live path WAS attempted, and refused */
                   g_epoch_rpc_calls == calls_before + 1 &&
                   ep_has(&c.reply, "node_rpc_error") &&
@@ -902,7 +905,39 @@ static int test_epoch_offline_anchor(void)
                   ep_str_is(&c.reply, "status", "ready") &&
                   /* nothing was broadcast: no txid anywhere */
                   !ep_has(&c.reply, "txid");
-        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+        if (command_ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        struct transaction_lab_simnet_receipt mined;
+        bool mined_ok = command_ok && transaction_lab_simnet_mine_op_return(
+            script, n, &mined);
+        printf("epoch offline: exact command bytes enter a block through "
+               "connect_block... ");
+        if (mined_ok && mined.transaction.num_vout == 2 &&
+            mined.change_zat == 800000)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+
+        struct node_db projection_db;
+        memset(&projection_db, 0, sizeof(projection_db));
+        bool projection_open = node_db_open(&projection_db, ":memory:");
+        bool projected = projection_open && mined_ok &&
+            transaction_lab_simnet_project(&projection_db, &mined);
+        struct zanc_anchor anchor;
+        memset(&anchor, 0, sizeof(anchor));
+        bool found = projected && db_zanc_find_by_digest(
+            &projection_db, ZANC_HASH_SHA3_256, want_digest, &anchor);
+        printf("epoch offline: mined bytes rebuild the exact epoch ZANC "
+               "projection... ");
+        if (found && anchor.height == mined.mined_height &&
+            memcmp(anchor.txid, mined.txid.data, sizeof(anchor.txid)) == 0 &&
+            strcmp(anchor.label, "zepoch@1234567") == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        if (projection_open)
+            node_db_close(&projection_db);
+        if (mined_ok)
+            transaction_lab_simnet_receipt_free(&mined);
         ep_cmd_free(&c);
     }
 

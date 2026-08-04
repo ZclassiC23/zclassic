@@ -314,8 +314,7 @@ int t_p2p_app_persistence_is_callback_injected(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "boot_save_zmsg") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_zmsg_save") != NULL);
-        ASSERT(strstr(buf, "boot_save_file_offer") != NULL);
-        ASSERT(strstr(buf, "msg_processor_set_file_offer_save") != NULL);
+        ASSERT(strstr(buf, "boot_wire_file_market") != NULL);
         ASSERT(strstr(buf, "boot_save_file_service") != NULL);
         ASSERT(strstr(buf, "msg_processor_set_file_service_save") != NULL);
         free(buf);
@@ -326,6 +325,10 @@ int t_p2p_app_persistence_is_callback_injected(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "db_zmsg_save") != NULL);
         ASSERT(strstr(buf, "db_file_offer_save") != NULL);
+        ASSERT(strstr(buf, "boot_ingest_file_payment") != NULL);
+        ASSERT(strstr(buf, "market_payment_claim_ingest") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_file_offer_save") != NULL);
+        ASSERT(strstr(buf, "msg_processor_set_file_payment_ingest") != NULL);
         ASSERT(strstr(buf, "db_file_service_save") != NULL);
         free(buf);
         buf = NULL;
@@ -333,6 +336,7 @@ int t_p2p_app_persistence_is_callback_injected(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "mp->zmsg_save") != NULL);
         ASSERT(strstr(buf, "mp->file_offer_save") != NULL);
+        ASSERT(strstr(buf, "mp->file_payment_ingest") != NULL);
         ASSERT(strstr(buf, "mp->file_service_save") != NULL);
         ASSERT(strstr(buf, "db_zmsg_save") == NULL);
         ASSERT(strstr(buf, "db_file_offer_save") == NULL);

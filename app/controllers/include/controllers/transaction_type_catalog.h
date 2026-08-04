@@ -14,6 +14,7 @@ extern "C" {
 
 #define ZCL_TRANSACTION_TYPE_SCHEMA "zcl.transaction_type.v2"
 #define ZCL_TRANSACTION_TYPES_INDEX_SCHEMA "zcl.transaction_types.index.v2"
+#define ZCL_TRANSACTION_TYPE_GUIDE_SCHEMA "zcl.transaction_type_guide.v1"
 
 struct json_value;
 

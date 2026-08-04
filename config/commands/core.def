@@ -141,11 +141,13 @@ ZCL_COMMAND_BRANCH("core.chain.transaction", "core.chain",
 ZCL_COMMAND_READY_READ(
     "core.chain.transaction.get", "core.chain.transaction", "",
     "Get one transaction by id",
-    "One transaction's full decoded fields looked up live by txid from "
-    "mempool or the local block index at call time; absent if unknown "
-    "to this node.", 0,
+    "One transaction looked up live by txid from mempool or the local block "
+    "index at call time: full decoded fields by default, or a bounded typed "
+    "raw_hex page with verbose=false and optional raw_offset/raw_bytes; absent "
+    "if unknown to this node.", 0,
     "transaction,tx,get,txid",
-    "zcl.core_tx_get.input.v1", "zcl.transaction.v1", "txid,verbose", "txid",
+    "zcl.core_tx_get.input.v1", "zcl.transaction.v1",
+    "txid,verbose,raw_offset,raw_bytes", "txid",
     "zclassic23 core chain transaction get --txid=<hex>",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,

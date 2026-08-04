@@ -7,6 +7,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CATALOG="${ZCL_TRANSACTION_LAB_CATALOG:-$REPO/tools/dev/transaction_lab_catalog.def}"
 LEDGER="${ZCL_TRANSACTION_LAB_LEDGER:-$REPO/docs/work/transaction-lab-events.jsonl}"
 TYPE_CATALOG="${ZCL_TRANSACTION_TYPE_CATALOG:-$REPO/app/controllers/include/controllers/transaction_types.def}"
+SUPPLEMENTAL_TESTS="${ZCL_TRANSACTION_LAB_SUPPLEMENTAL_TESTS:-$REPO/app/controllers/include/controllers/transaction_type_supplemental_tests.def}"
 
 die() {
     echo "transaction-lab: $*" >&2
@@ -139,6 +140,35 @@ check_notebook() {
                 <(printf '%s\n' "$lab_contracts") >&2 || true
         return 1
     fi
+    awk '
+        function bad(msg) {
+            print "transaction-lab-check: " msg > "/dev/stderr"
+            errors++
+        }
+        NR == FNR {
+            if ($0 !~ /^#/ && NF) {
+                split($0, catalog_fields, "|")
+                cases[catalog_fields[1]]=1
+            }
+            next
+        }
+        /^TX_TYPE_SUPPLEMENTAL/ {
+            split($0, quoted, "\"")
+            id=quoted[2]; group_csv=quoted[4]
+            if (id !~ /^[a-z0-9_]+$/)
+                bad("invalid supplemental case id " id)
+            if (!(id in cases))
+                bad("supplemental test names unknown case " id)
+            if (supplemental_ids[id]++)
+                bad("duplicate supplemental test row for " id)
+            group_count=split(group_csv, groups, ",")
+            for (i=1; i <= group_count; i++) {
+                if (groups[i] !~ /^test_[a-z0-9_]+$/)
+                    bad("invalid supplemental test group " groups[i])
+            }
+        }
+        END { if (errors) exit 1 }
+    ' "$CATALOG" "$SUPPLEMENTAL_TESTS"
     echo "transaction-lab-check: PASS"
 }
 
@@ -217,10 +247,11 @@ record_event() {
 }
 
 selftest() {
-    local fixture fixture_ledger fixture_type_catalog body
+    local fixture fixture_ledger fixture_type_catalog fixture_supplemental body
     fixture="$(mktemp -d)"
     fixture_ledger="$fixture/events.jsonl"
     fixture_type_catalog="$fixture/transaction_types.def"
+    fixture_supplemental="$fixture/transaction_type_supplemental_tests.def"
     cleanup_transaction_lab_selftest() {
         [ ! -d "$fixture" ] || rm -r -- "$fixture"
     }
@@ -254,6 +285,16 @@ selftest() {
        ZCL_TRANSACTION_TYPE_CATALOG="$fixture_type_catalog" \
         "$0" check >/dev/null 2>&1; then
         die "selftest accepted proof drift between the API and lab catalogs"
+    fi
+    cp "$SUPPLEMENTAL_TESTS" "$fixture_supplemental"
+    printf '%s\n' \
+        'TX_TYPE_SUPPLEMENTAL("htlc_redeem", "test_duplicate_fixture")' \
+        >> "$fixture_supplemental"
+    if ZCL_TRANSACTION_LAB_CATALOG="$CATALOG" \
+       ZCL_TRANSACTION_LAB_LEDGER="$fixture_ledger" \
+       ZCL_TRANSACTION_LAB_SUPPLEMENTAL_TESTS="$fixture_supplemental" \
+        "$0" check >/dev/null 2>&1; then
+        die "selftest accepted duplicate supplemental proof rows"
     fi
     echo "transaction-lab selftest: PASS"
 }

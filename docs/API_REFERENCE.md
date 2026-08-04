@@ -59,17 +59,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 484 |
+| Registry entries (branches + leaves) | 495 |
 | Top-level roots | 11 |
-| Branches | 110 |
-| Leaves (dispatchable command paths) | 374 |
-| … `ready` (live handler in this build) | 326 |
+| Branches | 113 |
+| Leaves (dispatchable command paths) | 382 |
+| … `ready` (live handler in this build) | 334 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 123 |
+| Leaves with `effect=mutate` | 128 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 82 |
+| Leaves requiring **owner** authority | 89 |
 
 Per source file:
 
@@ -77,8 +77,8 @@ Per source file:
 |---|---|---|---|
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 112 | 27 | 85 |
-| `config/commands/apps.def` | 12 | 3 | 9 |
-| `config/commands/app_features.def` | 35 | 7 | 28 |
+| `config/commands/apps.def` | 13 | 3 | 10 |
+| `config/commands/app_features.def` | 45 | 10 | 35 |
 | `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 45 | 11 | 34 |
@@ -200,7 +200,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `core chain transaction get` | ready | read / read / public · fast/low | **`txid`**, `verbose` | `zcl.transaction.v1` | `zclassic23 core chain transaction get --txid=<hex>` | Get one transaction by id |
+| `core chain transaction get` | ready | read / read / public · fast/low | **`txid`**, `verbose`, `raw_offset`, `raw_bytes` | `zcl.transaction.v1` | `zclassic23 core chain transaction get --txid=<hex>` | Get one transaction by id |
 
 #### `core.chain.mempool` — Mempool state
 
@@ -407,6 +407,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `app transaction-types list` | ready | read / read / public · instant/tiny | none | `zcl.transaction_types.index.v2` | `zclassic23 app transaction-types list` | List base, overlay, composite, process-only, contained, and planned transaction types |
 | `app transaction-types show` | ready | read / read / public · instant/tiny | **`type`** | `zcl.transaction_type.v2` | `zclassic23 app transaction-types show --type=znam_register` | Inspect one semantic ZCL transaction type and its safe workflow |
+| `app transaction-types guide` | ready | read / read / public · instant/tiny | **`type`** | `zcl.transaction_type_guide.v1` | `zclassic23 app transaction-types guide --type=znam_register` | Get one AI-ready transaction workflow with exact command contracts |
 
 #### `app.service` — Token-gated services declared in the service catalog
 
@@ -455,8 +456,24 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `app market list` | ready | read / read / public · fast/low | none | `zcl.app_market_index.v1` | `zclassic23 app market list` | List files on the ZCL Market |
 | `app market status` | ready | read / read / operator · fast/low | none | `zcl.app_market_status.v1` | `zclassic23 app market status` | ZCL Market status |
-| `app market offer` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | `filepath`, `price_per_mb_zat`, `confirm` | `zcl.app_market_offer_result.v1` | `zclassic23 app market offer --input='{"filepath":"/data/f","price_per_mb_zat":1000}'` | Announce a file for sale — *needs an origin-announce path before it can be exposed natively: rpc_zmarket_offer (file_market_controller.c) stats the file and calls file_market_add_offer + db_file_offer_save, then answers status=announced, but the only MSG_FILE_LIST writer in the tree is the re-gossip branch of handle_zfilelist (msgprocessor.c) — nothing ever announces a LOCALLY created offer, so no peer learns of it. Its root_hash is also SHA3(filepath:size), not a hash of the file contents* |
-| `app market buy` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, **`root_hash`**, `confirm` | `zcl.app_market_buy_result.v1` | `zclassic23 app market buy --input='{"root_hash":"<64hex>"}'` | Buy and download a market file — *needs the payment leg wired before a spend leaf can be exposed natively: rpc_zmarket_buy (file_market_controller.c) only calls file_market_start_download, which allocates an in-memory session in state FDL_CHALLENGING. No code path sends MSG_FILE_CHAL, and nothing builds or broadcasts the payment transaction whose mempool-verified txid handle_zfilepay (msgprocessor.c) requires to unlock chunks, so the session never advances and no funds move* |
+| `app market offer` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | `filepath`, `price_per_mb_zat`, `confirm` | `zcl.app_market_offer_result.v1` | `zclassic23 app market offer --input='{"filepath":"/data/f","price_per_mb_zat":1000}'` | Announce a file for sale — *signed zfileoffer.v1 ingress is implemented, but local creation still needs a canonical content manifest, an owner-controlled seller signer, and origin announcement. The legacy zmarket_offer placeholder now refuses without changing cache, database, filesystem, or network state* |
+| `app market buy` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, **`root_hash`**, `confirm` | `zcl.app_market_buy_result.v1` | `zclassic23 app market buy --input='{"root_hash":"<64hex>"}'` | Buy and download a market file — *the explicit app.market.purchase plan, commit, status, and retrieve commands implement the complete reviewed workflow; the optional one-shot coordinator still needs an owner-review-preserving design. The legacy zmarket_buy placeholder refuses without starting a session* |
+
+#### `app.market.content` — Seller content
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app market content list` | ready | read / read / **owner** · fast/low | none | `zcl.market_contents.index.v1` | `zclassic23 app market content list` | List owner-registered paid content |
+| `app market content register` | ready | mutate / app-write / **owner** · foreground/moderate | **`offer_id`**, `content_path` | `zcl.market_content.v1` | `zclassic23 app market content register --input='{"offer_id":"<64hex>","content_path":"/private/file"}'` | Bind private seller bytes to a signed offer |
+
+#### `app.market.purchase` — Buyer purchase
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app market purchase plan` | ready | mutate / wallet / **owner** · foreground/moderate | **`wallet_scope`**, **`offer_id`**, **`source_address`**, **`chunk_start`**, **`chunks_paid`**, **`idempotency_key`** | `zcl.market_purchase.v1` | `printf '%s' '{"wallet_scope":"dev","offer_id":"<64hex>","source_address":"<owned-address>","chunk_start":0,"chunks_paid":1,"idempotency_key":"lab-001"}' \| zclassic23 app market purchase plan --input=-` | Reserve one exact paid chunk range |
+| `app market purchase commit` | ready | mutate / wallet / **owner**, idempotency · foreground/high | **`wallet_scope`**, **`plan_id`**, **`confirm`** | `zcl.market_purchase.v1` | `zclassic23 app market purchase commit --input='{"wallet_scope":"dev","plan_id":"<64hex>","confirm":true}'` | Commit one exact reserved market payment |
+| `app market purchase status` | ready | read / read / **owner** · fast/low | **`plan_id`** | `zcl.market_purchase.v1` | `zclassic23 app market purchase status --input='{"plan_id":"<64hex>"}'` | Read one durable market purchase state |
+| `app market purchase retrieve` | ready | mutate / app-write / **owner** · foreground/high | **`plan_id`**, **`destination_path`** | `zcl.market_purchase.v1` | `printf '%s' '{"plan_id":"<64hex>","destination_path":"/private/output.bin"}' \| zclassic23 app market purchase retrieve --input=-` | Retrieve and atomically publish a paid file |
 
 #### `app.store` — Store
 
@@ -484,6 +501,12 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `app qr show` | ready | mutate / app-write / operator · fast/low | **`payload`**, `title` | `zcl.app_qr_show.v1` | `zclassic23 app qr show 'zclassic:t1...?amount=0.01'` | Show a payload as a native QR window |
+
+#### `app.blog` — Blog
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app blog anchor` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `event_id`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_blog_anchor.v1` | `zclassic23 app blog anchor --input='{"wallet_scope":"dev","name":"alice","event_id":"<64-hex>","idempotency_key":"blog-alice-1"}'` | Anchor a signed Blog event on-chain |
 
 #### `app.auth` — Public-key challenge/response login
 
@@ -1145,6 +1168,7 @@ promise the same document shape.
 | `zcl.app_name_txresult.v1` | `app.names.register`, `app.names.update`, `app.names.transfer`, `app.names.renew`, `app.names.set-record`, `app.names.set-text` |
 | `zcl.app_token_txresult.v1` | `app.tokens.create`, `app.tokens.send`, `app.tokens.mint`, `app.tokens.burn`, `vault.send-token` |
 | `zcl.app_message_send_result.v1` | `app.messaging.send`, `app.messaging.send-named` |
+| `zcl.market_purchase.v1` | `app.market.purchase.plan`, `app.market.purchase.commit`, `app.market.purchase.status`, `app.market.purchase.retrieve` |
 | `zcl.app_swap_contract.v1` | `app.swap.initiate`, `app.swap.participate` |
 | `zcl.rom_seed_status.v1` | `ops.debug.rom_seed.status`, `ops.debug.rom_seed.enable`, `ops.debug.rom_seed.disable` |
 | `zcl.dev_cycle.v1` | `dev.status`, `dev.change.apply`, `dev.loop.wait` |

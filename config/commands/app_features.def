@@ -37,9 +37,14 @@ ZCL_COMMAND_BRANCH("app.names", "app", "Names", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.tokens", "app", "Tokens", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.messaging", "app", "Messaging", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.market", "app", "Market", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.market.content", "app.market", "Seller content",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.market.purchase", "app.market", "Buyer purchase",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.store", "app", "Store", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.swap", "app", "Swaps", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.qr", "app", "QR", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.blog", "app", "Blog", ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_COMMAND(
     "app.qr.show", "app.qr", "", "Show a payload as a native QR window",
@@ -59,6 +64,31 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_qr_show)
+
+/* ── Blog (ZBLG) ─────────────────────────────────────────────────── */
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.blog.anchor", "app.blog", "", "Anchor a signed Blog event on-chain",
+    "Plan/commit the strict ZBLG v1 OP_RETURN for an already stored, "
+    "wallet-signed Blog event. Plan requires an explicit dev/prod scope, "
+    "prepares exact signed bytes, and atomically reserves the maximum fee in "
+    "the identity-bound vault-intent ledger. Commit accepts only that durable "
+    "plan ID and rechecks wallet instance, genesis, tip, snapshot root, exact "
+    "transaction, event signature, and current ZNAM owner before relay. It does not "
+    "create or sign the off-chain Blog event; that capability remains "
+    "contained behind the runtime App grant broker.", 0,
+    "blog,zblg,anchor,op_return,event,znam,custody,wallet_scope",
+    "zcl.app_blog_anchor.input.v1", "zcl.app_blog_anchor.v1",
+    "wallet_scope,name,event_id,idempotency_key,plan_id,confirm", "wallet_scope",
+    "zclassic23 app blog anchor --input='{\"wallet_scope\":\"dev\",\"name\":\"alice\",\"event_id\":\"<64-hex>\",\"idempotency_key\":\"blog-alice-1\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_ZNAM, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_blog_anchor)
 
 /* ── Names (ZNAM) ──────────────────────────────────────────────────── */
 
@@ -363,8 +393,10 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_READ(
     "app.market.list", "app.market", "", "List files on the ZCL Market",
-    "Every file currently offered on the ZCL Market P2P network, read live at "
-    "call time; bounded to the list budget row cap.", ZCL_COMMAND_LIST_BUDGET,
+    "Every admitted file offer in the bounded live cache. Paid rows have a "
+    "seller-verified, network-bound offer_id, exact integer total, and expiry; "
+    "legacy unsigned rows are price-zero recovery artifacts only.",
+    ZCL_COMMAND_LIST_BUDGET,
     "market,files,list", "zcl.command.empty_input.v1", "zcl.app_market_index.v1",
     "", "", "zclassic23 app market list",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -385,11 +417,134 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 
+ZCL_COMMAND_READY_READ(
+    "app.market.content.list", "app.market.content", "",
+    "List owner-registered paid content",
+    "Every local paid-content binding, showing only its signed offer ID, "
+    "manifest root, size, chunk count, and registration time. Private paths "
+    "and chunk manifests never enter the response.", ZCL_COMMAND_LIST_BUDGET,
+    "market,content,seller,files,list", "zcl.command.empty_input.v1",
+    "zcl.market_contents.index.v1", "", "",
+    "zclassic23 app market content list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.market.content.register", "app.market.content", "",
+    "Bind private seller bytes to a signed offer",
+    "Hashes one non-symlink regular file, verifies its exact size and chunk "
+    "manifest root against the authenticated paid offer, and atomically "
+    "records the private canonical binding. The path is accepted only as "
+    "owner input and is absent from results, logs, REST, and peer traffic.", 0,
+    "market,content,seller,register,manifest",
+    "zcl.app_market_content_register.input.v1", "zcl.market_content.v1",
+    "offer_id,content_path", "offer_id",
+    "zclassic23 app market content register --input='{\"offer_id\":\"<64hex>\",\"content_path\":\"/private/file\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_market_content_register)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.market.purchase.plan", "app.market.purchase", "",
+    "Reserve one exact paid chunk range",
+    "Loads an authenticated network-bound offer, prices one exact chunk range "
+    "with integer arithmetic, mints an encrypted buyer credential and canonical "
+    "Sapling memo, then atomically reserves recipient value plus the wallet's "
+    "maximum fee. Requires a current identity-bound custody snapshot and a "
+    "caller idempotency key. Source and seller addresses, memo, credential, "
+    "paths, and keys are absent from the result and logs. This mutates only the "
+    "durable reservation; it does not broadcast or download bytes.", 0,
+    "market,buy,purchase,payment,plan,reservation,idempotent",
+    "zcl.app_market_purchase_plan.input.v1", "zcl.market_purchase.v1",
+    "wallet_scope,offer_id,source_address,chunk_start,chunks_paid,idempotency_key",
+    "wallet_scope,offer_id,source_address,chunk_start,chunks_paid,idempotency_key",
+    "printf '%s' '{\"wallet_scope\":\"dev\",\"offer_id\":\"<64hex>\",\"source_address\":\"<owned-address>\",\"chunk_start\":0,\"chunks_paid\":1,\"idempotency_key\":\"lab-001\"}' | zclassic23 app market purchase plan --input=-",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_market_purchase_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.market.purchase.commit", "app.market.purchase", "",
+    "Commit one exact reserved market payment",
+    "Requires the explicit wallet scope, durable plan ID, and confirm:true. "
+    "Rechecks wallet identity, genesis, tip, complete money snapshot, signed "
+    "offer, exact range, amount, maximum fee, and source ownership before one "
+    "Sapling-memo send. The txid and buyer-signed claim persist across restart; "
+    "replay never broadcasts twice. A crash at the unresolved send boundary "
+    "returns COMMIT_UNCERTAIN and requires reconciliation.", 0,
+    "market,buy,purchase,payment,commit,txid,idempotent",
+    "zcl.app_market_purchase_commit.input.v1", "zcl.market_purchase.v1",
+    "wallet_scope,plan_id,confirm", "wallet_scope,plan_id,confirm",
+    "zclassic23 app market purchase commit --input='{\"wallet_scope\":\"dev\",\"plan_id\":\"<64hex>\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_IDEMPOTENCY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_market_purchase_commit)
+
+ZCL_COMMAND_READY_READ(
+    "app.market.purchase.status", "app.market.purchase", "",
+    "Read one durable market purchase state",
+    "Reconstructs the public, path-free purchase view from encrypted intent "
+    "state: exact range, value, fee reservation, state, txid and claim ID when "
+    "present, plus path-free durable download progress and publication state. "
+    "Buyer credentials, addresses, memo, paths, endpoints and keys are never "
+    "returned.", 0,
+    "market,buy,purchase,payment,status,txid,claim,download",
+    "zcl.app_market_purchase_status.input.v1", "zcl.market_purchase.v1",
+    "plan_id", "plan_id",
+    "zclassic23 app market purchase status --input='{\"plan_id\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_market_purchase_status)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.market.purchase.retrieve", "app.market.purchase", "",
+    "Retrieve and atomically publish a paid file",
+    "Uses the encrypted buyer credential retained by the committed plan to "
+    "target the exact signed seller endpoint. It accepts only a full-file "
+    "payment, authenticates every session-bound request and reply, fsyncs and "
+    "persists sequential chunk progress, re-verifies staged bytes after "
+    "restart, verifies the complete signed manifest root, and atomically "
+    "publishes into an existing owner-selected directory. The destination, "
+    "staging path, endpoint, credential, addresses, and memo are absent from "
+    "results and logs.", 0,
+    "market,buy,purchase,retrieve,download,manifest,resume,publish",
+    "zcl.app_market_purchase_retrieve.input.v1", "zcl.market_purchase.v1",
+    "plan_id,destination_path", "plan_id,destination_path",
+    "printf '%s' '{\"plan_id\":\"<64hex>\",\"destination_path\":\"/private/output.bin\"}' | zclassic23 app market purchase retrieve --input=-",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_market_purchase_retrieve)
+
 ZCL_COMMAND_PLANNED_COMMAND(
     "app.market.offer", "app.market", "", "Announce a file for sale",
-    "Will announce a file for sale on the ZCL Market once an origin-announce "
-    "path exists; today the handler is unbound and fails closed with exit 3 "
-    "rather than reporting an announcement no peer receives.", 0,
+    "Will announce a file for sale after canonical manifest construction, "
+    "owner-controlled signing, and the local origin-send path are connected. "
+    "Today both native and legacy write surfaces fail closed.", 0,
     "market,offer,sell", "zcl.app_market_offer.input.v1",
     "zcl.app_market_offer_result.v1", "filepath,price_per_mb_zat,confirm", "",
     "zclassic23 app market offer --input='{\"filepath\":\"/data/f\",\"price_per_mb_zat\":1000}'",
@@ -399,20 +554,17 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_NONE,
-    "needs an origin-announce path before it can be exposed natively: "
-    "rpc_zmarket_offer (file_market_controller.c) stats the file and calls "
-    "file_market_add_offer + db_file_offer_save, then answers "
-    "status=announced, but the only MSG_FILE_LIST writer in the tree is the "
-    "re-gossip branch of handle_zfilelist (msgprocessor.c) — nothing ever "
-    "announces a LOCALLY created offer, so no peer learns of it. Its "
-    "root_hash is also SHA3(filepath:size), not a hash of the file contents")
+    "signed zfileoffer.v1 ingress is implemented, but local creation still "
+    "needs a canonical content manifest, an owner-controlled seller signer, "
+    "and origin announcement. The legacy zmarket_offer placeholder now "
+    "refuses without changing cache, database, filesystem, or network state")
 
 ZCL_COMMAND_PLANNED_COMMAND(
     "app.market.buy", "app.market", "", "Buy and download a market file",
-    "Will pay for and download a file by its SHA3 root hash once the purchase "
-    "path is wired end to end; today the handler is unbound and fails closed "
-    "with exit 3, so no funds move and no half-started session is left "
-    "behind.", 0,
+    "Will provide an optional one-shot coordinator over the shipped explicit "
+    "app.market.purchase plan, commit, status, and retrieve workflow. It "
+    "remains unbound so owner review between reservation and broadcast cannot "
+    "be bypassed by the legacy shortcut.", 0,
     "market,buy,download", "zcl.app_market_buy.input.v1",
     "zcl.app_market_buy_result.v1", "wallet_scope,root_hash,confirm", "root_hash",
     "zclassic23 app market buy --input='{\"root_hash\":\"<64hex>\"}'",
@@ -422,13 +574,10 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
-    "needs the payment leg wired before a spend leaf can be exposed "
-    "natively: rpc_zmarket_buy (file_market_controller.c) only calls "
-    "file_market_start_download, which allocates an in-memory session in "
-    "state FDL_CHALLENGING. No code path sends MSG_FILE_CHAL, and nothing "
-    "builds or broadcasts the payment transaction whose mempool-verified "
-    "txid handle_zfilepay (msgprocessor.c) requires to unlock chunks, so the "
-    "session never advances and no funds move")
+    "the explicit app.market.purchase plan, commit, status, and retrieve "
+    "commands implement the complete reviewed workflow; the optional one-shot "
+    "coordinator still needs an owner-review-preserving design. The legacy "
+    "zmarket_buy placeholder refuses without starting a session")
 
 /* ── Store (the /store storefront) ───────────────────────────────────
  *
