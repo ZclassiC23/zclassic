@@ -26,7 +26,7 @@ TX_TYPE("raw_custom_transaction", "base_zcl", "ready", "chain_transaction",
         "build_sign_broadcast", "core.wallet.transaction.raw.create",
         "core.wallet.transaction.raw.broadcast", "core.wallet.transaction.get",
         "core.wallet.transaction.raw.sign", "all_zcl_networks", "raw_custom_transaction",
-        "builder_verified", "test_native_api_contract",
+        "simnet_confirmed", "test_native_api_contract",
         "Low-level escape hatch for standard-script transactions; create, sign, and broadcast are separate explicit steps.")
 TX_TYPE("sapling_t_to_z", "base_zcl", "ready", "chain_transaction",
         "sapling_shielding", "shielded_recipient", "plan_commit_job",

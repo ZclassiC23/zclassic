@@ -259,3 +259,26 @@ The current result is **33/34 PASS, 1 BLOCKED**, with **15 simulated-chain
 confirmations** across **17 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
 funds moved.
+
+## 2026-08-04 public raw-transaction pipeline proof
+
+The raw custom transaction case now crosses the public typed boundary and the
+production RPC implementation before it reaches simulated consensus. The lab
+creates a real P2PKH funding key and matured simnet coin, invokes
+`core.wallet.transaction.raw.create` with its exact outpoint and a valid ZCL
+destination, invokes `core.wallet.transaction.raw.sign` with the resident lab
+key, and checks that signing is complete.
+
+The first `core.wallet.transaction.raw.broadcast` call remains a non-mutating
+plan: it does not call `sendrawtransaction` and the funding coin stays live.
+The identical confirmed call crosses the real `sendrawtransaction` actor; the
+test bridge decodes those exact signed bytes and mines them through
+`connect_block`. The mined UTXO view proves the input is consumed, output zero
+contains exactly 800,000 zatoshi, and the public returned txid is the mined
+transaction hash. Private key bytes and addresses are fixture-local and never
+enter the notebook event.
+
+The current result is **33/34 PASS, 1 BLOCKED**, with **16 simulated-chain
+confirmations** across **17 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
+funds moved.

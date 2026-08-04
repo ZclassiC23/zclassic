@@ -24,14 +24,23 @@
 
 #include "test/test_core.h"
 
+#include "base/hex.h"
+#include "core/core_io.h"
 #include "config/command_catalog.h"
+#include "controllers/transaction_controller.h"
 #include "dev_failure_store.h"
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
 #include "controllers/rpc_client.h"
 #include "controllers/status_native_handlers.h"
 #include "json/json.h"
+#include "keys/key_io.h"
 #include "platform/time_compat.h"
+#include "rpc/server.h"
+#include "sim/simnet.h"
+#include "support/cleanse.h"
+#include "util/safe_alloc.h"
+#include "wallet/keystore.h"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -1065,6 +1074,264 @@ static int test_wallet_mutating_native_e2e(void)
     return failures;
 }
 
+/* The ordinary wallet contract above deliberately uses canned RPC bodies so
+ * it can pin plan/commit behavior without allocating consensus state. This
+ * second bridge is the transaction-lab proof: the public typed handlers call
+ * the REAL raw-transaction RPC actors, and the exact signed bytes returned by
+ * those actors are decoded and mined through simnet/connect_block. */
+struct raw_simnet_bridge {
+    struct rpc_table *table;
+    struct simnet *sim;
+    int broadcast_calls;
+    bool mined;
+    struct uint256 txid;
+};
+
+static struct raw_simnet_bridge *g_raw_simnet_bridge;
+
+static char *raw_simnet_rpc(const char *method, const char *params_json)
+{
+    struct raw_simnet_bridge *bridge = g_raw_simnet_bridge;
+    if (!bridge || !bridge->table || !bridge->sim || !method ||
+        !params_json)
+        return NULL;
+
+    struct json_value params;
+    json_init(&params);
+    if (!json_read(&params, params_json, strlen(params_json))) {
+        json_free(&params);
+        return strdup("{\"code\":-1,\"message\":\"invalid lab RPC params\"}");
+    }
+
+    struct json_value result;
+    json_init(&result);
+    bool ok = rpc_table_execute(bridge->table, method, &params, &result);
+
+    if (ok && strcmp(method, "sendrawtransaction") == 0) {
+        bridge->broadcast_calls++;
+        const char *raw_hex = json_get_str(json_at(&params, 0));
+        struct transaction tx;
+        transaction_init(&tx);
+        if (!raw_hex || !decode_hex_tx(&tx, raw_hex)) {
+            transaction_free(&tx);
+            ok = false;
+        } else {
+            bridge->txid = tx.hash;
+            /* simnet_mint_txs takes ownership after a valid decoded request,
+             * whether admission succeeds or not. */
+            ok = simnet_mint_txs(bridge->sim, &tx, 1);
+            bridge->mined = ok;
+        }
+        if (!ok) {
+            json_free(&result);
+            json_init(&result);
+            json_set_object(&result);
+            (void)json_push_kv_int(&result, "code", -1);
+            (void)json_push_kv_str(&result, "message",
+                                   "simnet rejected signed raw transaction");
+        }
+    }
+
+    size_t need = json_write(&result, NULL, 0);
+    char *out = zcl_malloc(need + 1, "raw simnet RPC result");
+    if (out) {
+        (void)json_write(&result, out, need + 1);
+        out[need] = '\0';
+    }
+    json_free(&result);
+    json_free(&params);
+    return out;
+}
+
+static int test_raw_native_pipeline_mines_exact_signed_bytes(void)
+{
+    int failures = 0;
+    struct simnet sim;
+    memset(&sim, 0, sizeof(sim));
+    bool sim_ready = false;
+    struct basic_keystore *ks = NULL;
+    bool ks_ready = false;
+    struct privkey funding_key = {0};
+    struct privkey recipient_key = {0};
+
+    TEST("raw typed create/sign/broadcast mines exact signed bytes in simnet") {
+        ASSERT(simnet_init(&sim));
+        sim_ready = true;
+
+        ks = zcl_malloc(sizeof(*ks), "raw simnet keystore");
+        ASSERT(ks != NULL);
+        keystore_init(ks);
+        ks_ready = true;
+
+        struct pubkey funding_pub;
+        privkey_make_new(&funding_key, true);
+        ASSERT(privkey_get_pubkey(&funding_key, &funding_pub));
+        struct key_id funding_id = pubkey_get_id(&funding_pub);
+        ASSERT(keystore_add_key(ks, &funding_key));
+
+        struct script funding_script;
+        script_for_p2pkh(&funding_script, &funding_id);
+        struct uint256 funding_txid;
+        int funding_height = simnet_tip_height(&sim) + 1;
+        ASSERT(simnet_mint_coinbase_to(&sim, &funding_script, 1000000,
+                                      &funding_txid));
+        ASSERT(simnet_mint_to_height(
+            &sim, funding_height + COINBASE_MATURITY));
+        ASSERT(simnet_coin_exists(&sim, &funding_txid));
+
+        struct pubkey recipient_pub;
+        privkey_make_new(&recipient_key, true);
+        ASSERT(privkey_get_pubkey(&recipient_key, &recipient_pub));
+        struct tx_destination recipient = {0};
+        recipient.type = DEST_KEY_ID;
+        recipient.id.key = pubkey_get_id(&recipient_pub);
+        const struct chain_params *cp = chain_params_get();
+        size_t pk_len = 0, script_len = 0;
+        const unsigned char *pk_prefix = chain_params_base58_prefix(
+            cp, B58_PUBKEY_ADDRESS, &pk_len);
+        const unsigned char *script_prefix = chain_params_base58_prefix(
+            cp, B58_SCRIPT_ADDRESS, &script_len);
+        char recipient_address[128];
+        ASSERT(encode_destination(&recipient, pk_prefix, pk_len,
+                                  script_prefix, script_len,
+                                  recipient_address,
+                                  sizeof(recipient_address)));
+
+        struct rpc_table raw_table;
+        rpc_table_init(&raw_table);
+        register_rawtransaction_rpc_commands(&raw_table);
+        char warmup_status[64];
+        if (rpc_is_in_warmup(warmup_status, sizeof(warmup_status)))
+            set_rpc_warmup_finished();
+        rpc_rawtx_set_state(NULL, NULL, NULL, NULL);
+        rpc_rawtx_set_keystore(ks);
+
+        struct raw_simnet_bridge bridge = {
+            .table = &raw_table,
+            .sim = &sim,
+        };
+        uint256_set_null(&bridge.txid);
+        g_raw_simnet_bridge = &bridge;
+        node_rpc_client_set_test_hook(raw_simnet_rpc);
+
+        const struct zcl_command_registry *reg = zcl_command_catalog();
+        const struct zcl_command_spec *create_spec = find_spec(
+            reg, "core.wallet.transaction.raw.create");
+        const struct zcl_command_spec *sign_spec = find_spec(
+            reg, "core.wallet.transaction.raw.sign");
+        const struct zcl_command_spec *broadcast_spec = find_spec(
+            reg, "core.wallet.transaction.raw.broadcast");
+        ASSERT(create_spec && sign_spec && broadcast_spec);
+
+        char funding_hex[65];
+        uint256_get_hex(&funding_txid, funding_hex);
+        struct json_value create_in, inputs, input, outputs;
+        json_init(&create_in); json_set_object(&create_in);
+        json_init(&inputs); json_set_array(&inputs);
+        json_init(&input); json_set_object(&input);
+        (void)json_push_kv_str(&input, "txid", funding_hex);
+        (void)json_push_kv_int(&input, "vout", 0);
+        (void)json_push_back(&inputs, &input);
+        json_free(&input);
+        json_init(&outputs); json_set_object(&outputs);
+        (void)json_push_kv_real(&outputs, recipient_address, 0.008);
+        (void)json_push_kv(&create_in, "inputs", &inputs);
+        (void)json_push_kv(&create_in, "outputs", &outputs);
+        json_free(&inputs); json_free(&outputs);
+
+        struct zcl_command_request request = {
+            .spec = create_spec, .input = &create_in, .view = "normal",
+        };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, create_spec->output_schema);
+        zcl_native_handle_wallet_raw_create(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        const char *created = json_get_str(json_get(&reply.data, "raw_hex"));
+        ASSERT(created && strlen(created) < 8192);
+        char created_hex[8192];
+        (void)snprintf(created_hex, sizeof(created_hex), "%s", created);
+        zcl_command_reply_free(&reply);
+        json_free(&create_in);
+
+        ASSERT(funding_script.size <= 64);
+        char funding_script_hex[129];
+        zcl_hex_encode(funding_script.data, funding_script.size,
+                       funding_script_hex);
+        struct json_value sign_in, prevtxs, prevtx;
+        json_init(&sign_in); json_set_object(&sign_in);
+        (void)json_push_kv_str(&sign_in, "raw_hex", created_hex);
+        json_init(&prevtxs); json_set_array(&prevtxs);
+        json_init(&prevtx); json_set_object(&prevtx);
+        (void)json_push_kv_str(&prevtx, "txid", funding_hex);
+        (void)json_push_kv_int(&prevtx, "vout", 0);
+        (void)json_push_kv_str(&prevtx, "scriptPubKey",
+                               funding_script_hex);
+        (void)json_push_kv_real(&prevtx, "amount", 0.01);
+        (void)json_push_back(&prevtxs, &prevtx);
+        json_free(&prevtx);
+        (void)json_push_kv(&sign_in, "prevtxs", &prevtxs);
+        json_free(&prevtxs);
+
+        request.spec = sign_spec;
+        request.input = &sign_in;
+        zcl_command_reply_init(&reply, sign_spec->output_schema);
+        zcl_native_handle_wallet_raw_sign(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&reply.data, "complete")));
+        const char *signed_raw = json_get_str(
+            json_get(&reply.data, "raw_hex"));
+        ASSERT(signed_raw && strlen(signed_raw) < 8192);
+        char signed_hex[8192];
+        (void)snprintf(signed_hex, sizeof(signed_hex), "%s", signed_raw);
+        zcl_command_reply_free(&reply);
+        json_free(&sign_in);
+
+        struct json_value broadcast_in;
+        json_init(&broadcast_in); json_set_object(&broadcast_in);
+        (void)json_push_kv_str(&broadcast_in, "raw_hex", signed_hex);
+        request.spec = broadcast_spec;
+        request.input = &broadcast_in;
+        zcl_command_reply_init(&reply, broadcast_spec->output_schema);
+        zcl_native_handle_wallet_raw_broadcast(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        ASSERT_EQ(bridge.broadcast_calls, 0);
+        ASSERT(simnet_coin_exists(&sim, &funding_txid));
+        zcl_command_reply_free(&reply);
+
+        (void)json_push_kv_bool(&broadcast_in, "confirm", true);
+        zcl_command_reply_init(&reply, broadcast_spec->output_schema);
+        zcl_native_handle_wallet_raw_broadcast(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")),
+                      "committed");
+        ASSERT_EQ(bridge.broadcast_calls, 1);
+        ASSERT(bridge.mined);
+        ASSERT(!simnet_coin_exists(&sim, &funding_txid));
+        int64_t recipient_value = 0;
+        ASSERT(simnet_coin_value(&sim, &bridge.txid, 0, &recipient_value));
+        ASSERT_EQ(recipient_value, 800000);
+        char mined_hex[65];
+        uint256_get_hex(&bridge.txid, mined_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "txid")),
+                      mined_hex);
+        zcl_command_reply_free(&reply);
+        json_free(&broadcast_in);
+        PASS();
+    } _test_next:;
+
+    node_rpc_client_set_test_hook(NULL);
+    g_raw_simnet_bridge = NULL;
+    rpc_rawtx_set_keystore(NULL);
+    rpc_rawtx_set_state(NULL, NULL, NULL, NULL);
+    if (ks_ready) keystore_free(ks);
+    free(ks);
+    memory_cleanse(funding_key.vch, sizeof(funding_key.vch));
+    memory_cleanse(recipient_key.vch, sizeof(recipient_key.vch));
+    if (sim_ready) simnet_free(&sim);
+    return failures;
+}
+
 /* ── mutating app.* feature leaves: E2E over a stubbed app RPC ─────────────
  * The promoted write leaves (config/commands/app_features.def) are
  * dedicated handlers in app/controllers/src/app_write_native_handlers.c. Driven
@@ -1720,6 +1987,7 @@ int test_native_api_contract(void)
     failures += test_dev_failure_native_api();
     failures += test_native_app_catalog_uses_strict_builtin_source();
     failures += test_wallet_mutating_native_e2e();
+    failures += test_raw_native_pipeline_mines_exact_signed_bytes();
     failures += test_app_write_native_e2e();
     failures += test_native_bridge_resident_binding();
     failures += test_status_frontdoor_preserves_rpc_error();

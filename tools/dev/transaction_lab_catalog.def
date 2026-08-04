@@ -1,7 +1,7 @@
 # case_id|family|description|minimum_proof|test_group
 coinbase_reward|base_zcl|mined coinbase reward|simnet_confirmed|test_simnet
 transparent_t_to_t|base_zcl|transparent payment|simnet_confirmed|test_simnet_wallet_import_backup
-raw_custom_transaction|base_zcl|raw create sign broadcast pipeline|builder_verified|test_native_api_contract
+raw_custom_transaction|base_zcl|raw create sign broadcast pipeline|simnet_confirmed|test_native_api_contract
 sapling_t_to_z|base_zcl|shielding payment|simnet_confirmed|test_simnet_shielded_wallet_e2e
 sapling_z_to_z|base_zcl|fully shielded payment|simnet_confirmed|test_simnet_shielded_wallet_e2e
 sapling_z_to_t|base_zcl|unshielding payment|consensus_verified|test_simnet_shielded_wallet_e2e
