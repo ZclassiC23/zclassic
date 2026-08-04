@@ -73,7 +73,8 @@ void fw_file_free(struct fw_file *f)
     f->len = f->nlines = 0;
 }
 
-bool fw_file_load(const char *root, const char *rel, struct fw_file *out)
+bool fw_file_load_unindexed(const char *root, const char *rel,
+                            struct fw_file *out)
 {
     memset(out, 0, sizeof(*out));
     char full[FACT_PATH_MAX + 512];
@@ -90,27 +91,42 @@ bool fw_file_load(const char *root, const char *rel, struct fw_file *out)
     size_t got = fread(buf, 1, (size_t)sz, fp);
     fclose(fp);
     buf[got] = '\0';
+    out->buf = buf;
+    out->len = got;
+    return true;
+}
+
+bool fw_file_index_lines(struct fw_file *out)
+{
+    if (!out || !out->buf) return false;
+    if (out->line_off) return true;
     /* Index line starts. */
     size_t cap = 256, n = 0;
     size_t *off = zcl_malloc(cap * sizeof(*off), "fw_lines");
-    if (!off) { free(buf); LOG_FAIL(FW_DOMAIN, "alloc lines"); }
+    if (!off) LOG_FAIL(FW_DOMAIN, "alloc lines");
     off[n++] = 0;
-    for (size_t i = 0; i < got; i++) {
-        if (buf[i] != '\n') continue;
+    for (size_t i = 0; i < out->len; i++) {
+        if (out->buf[i] != '\n') continue;
         if (n == cap) {
             size_t ncap = cap * 2;
             size_t *nb = zcl_realloc(off, ncap * sizeof(*off), "fw_lines");
-            if (!nb) { free(off); free(buf); LOG_FAIL(FW_DOMAIN, "grow lines"); }
+            if (!nb) { free(off); LOG_FAIL(FW_DOMAIN, "grow lines"); }
             off = nb;
             cap = ncap;
         }
         off[n++] = i + 1;
     }
-    out->buf = buf;
-    out->len = got;
     out->line_off = off;
     out->nlines = n;
     return true;
+}
+
+bool fw_file_load(const char *root, const char *rel, struct fw_file *out)
+{
+    if (!fw_file_load_unindexed(root, rel, out)) return false;
+    if (fw_file_index_lines(out)) return true;
+    fw_file_free(out);
+    return false;
 }
 
 /* Copy line `lineno` (1-based) into dst[cap], sans newline. "" when absent. */
@@ -205,9 +221,18 @@ const char *fw_join_literals(const char *p, const struct fw_macros *m,
  * one indirection is resolved because the table is consulted as it grows. */
 bool fw_collect_macros(const struct fw_file *f, struct fw_macros *m)
 {
+    if (!f || !f->buf) return false;
     char line[1024];
-    for (size_t ln = 1; ln <= f->nlines; ln++) {
-        fw_file_line(f, ln, line, sizeof(line));
+    const char *at = f->buf;
+    const char *end = f->buf + f->len;
+    while (at < end) {
+        const char *nl = memchr(at, '\n', (size_t)(end - at));
+        const char *line_end = nl ? nl : end;
+        size_t line_len = (size_t)(line_end - at);
+        if (line_len >= sizeof(line)) line_len = sizeof(line) - 1;
+        memcpy(line, at, line_len);
+        line[line_len] = '\0';
+        at = nl ? nl + 1 : end;
         const char *p = line;
         while (*p && (unsigned char)*p <= ' ') p++;
         if (*p != '#') continue;
