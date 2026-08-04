@@ -110,8 +110,11 @@ RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
 SA_LIVE_PORTS="8023 8033 8034 8035 8043 8044 8045 8046 8232 8443 \
 18034 18232 18234 18243 18244 18245 18246"
 
-A_PORT=39110; A_RPC=39111; A_FS=39112; A_HTTPS=39113
-B_PORT=39120; B_RPC=39121; B_FS=39122; B_HTTPS=39123
+# Controlled reconnects pass the production reachable-port policy. Use the
+# same explicit test-safe P2P pair as the S6 DHT acceptance; arbitrary 39xxx
+# P2P ports are valid only for the first operator-directed connect.
+A_PORT=20022; A_RPC=39111; A_FS=39112; A_HTTPS=39113
+B_PORT=18033; B_RPC=39121; B_FS=39122; B_HTTPS=39123
 DEAD_SINK=39999
 RPC_WARMUP="${RPC_WARMUP:-90}"     # per-node RPC warmup budget (s)
 PKG_WAIT="${PKG_WAIT:-75}"         # swarm fetch budget (s)
@@ -576,7 +579,6 @@ for p in "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" \
     sa_assert_port_free "$p"
 done
 
-mkdir -p "$SA_DD_A/zcode" "$SA_DD_B/zcode"
 sa_build_fixture
 FIX="$SA_WORK/zcode_science_fixture"
 SEED_A=1111111111111111111111111111111111111111111111111111111111111111
