@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 479 |
+| Registry entries (branches + leaves) | 484 |
 | Top-level roots | 11 |
 | Branches | 110 |
-| Leaves (dispatchable command paths) | 369 |
-| … `ready` (live handler in this build) | 321 |
+| Leaves (dispatchable command paths) | 374 |
+| … `ready` (live handler in this build) | 326 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 121 |
+| Leaves with `effect=mutate` | 123 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 82 |
 
@@ -85,7 +85,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 21 | 4 | 17 |
-| `config/commands/zcode.def` | 79 | 17 | 62 |
+| `config/commands/zcode.def` | 84 | 17 | 67 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 18 | 5 | 13 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -854,8 +854,8 @@ represented by its children's sections.
 | `zcode package resolve` | ready | read / read / operator · fast/low | **`name`**, `datadir` | `zcl.zcode_package_resolve.v1` | `zclassic23 zcode package resolve --input='{"name":"ringbuffer"}'` | Resolve a ZNAM package name to its release |
 | `zcode package fetch` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `day`, `datadir` | `zcl.zcode_package_fetch.v1` | `zclassic23 zcode package fetch --input='{"root":"<64hex>"}'` | Fetch a package from the authenticated swarm |
 | `zcode package peers` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_peers.v1` | `zclassic23 zcode package peers --input='{"root":"<64hex>"}'` | Live swarm peers advertising one package root |
-| `zcode package pin` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `datadir` | `zcl.zcode_package_pin.v1` | `zclassic23 zcode package pin --input='{"root":"<64hex>"}'` | Pin a tracked package (PINS pool, never evicted) |
-| `zcode package unpin` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `datadir` | `zcl.zcode_package_unpin.v1` | `zclassic23 zcode package unpin --input='{"root":"<64hex>"}'` | Release an operator pin |
+| `zcode package pin` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`root`**, **`mode`**, `plan_token`, `datadir` | `zcl.zcode_package_pin.v1` | `zclassic23 zcode package pin --input='{"root":"<64hex>","mode":"plan"}'` | Pin a tracked package (PINS pool, never evicted) |
+| `zcode package unpin` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`root`**, **`mode`**, `plan_token`, `datadir` | `zcl.zcode_package_unpin.v1` | `zclassic23 zcode package unpin --input='{"root":"<64hex>","mode":"plan"}'` | Release an operator pin |
 | `zcode package rollback` | ready | mutate / app-write / operator · fast/low | **`name`**, `now_unix`, `datadir` | `zcl.zcode_package_rollback.v1` | `zclassic23 zcode package rollback --input='{"name":"alice/ringbuffer"}'` | Re-activate the previous installed generation |
 
 #### `zcode.package.publish` — Publish a signed release into the store (plan, then commit)
@@ -880,7 +880,7 @@ represented by its children's sections.
 | `zcode reward score` | ready | read / read / operator · foreground/moderate | **`root`**, `datadir` | `zcl.zcode_reward_score.v1` | `zclassic23 zcode reward score --input='{"root":"<64hex>"}'` | Deterministic contribution score breakdown for one release root |
 | `zcode reward eligible` | ready | read / read / operator · foreground/moderate | **`root`**, `datadir` | `zcl.zcode_reward_eligible.v1` | `zclassic23 zcode reward eligible --input='{"root":"<64hex>"}'` | Reward eligibility gate list for one release root |
 | `zcode reward queue` | ready | read / read / operator · fast/low | `state`, `limit`, `offset`, `datadir` | `zcl.zcode_reward_queue.v1` | `zclassic23 zcode reward queue --input='{"state":"queued"}'` | Inspect the daily reward settlement queue |
-| `zcode reward plan` | ready | mutate / app-write / operator · foreground/moderate | **`day`**, `datadir` | `zcl.zcode_reward_plan.v1` | `zclassic23 zcode reward plan --input='{"day":20500}'` | Assemble one settlement window batch (SIMULATED) |
+| `zcode reward plan` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`day`**, `datadir` | `zcl.zcode_reward_plan.v1` | `zclassic23 zcode reward plan --input='{"day":20500}'` | Assemble one settlement window batch (SIMULATED) |
 | `zcode reward commit` | ready | mutate / app-write / operator · foreground/moderate | **`plan_id`**, `datadir` | `zcl.zcode_reward_commit.v1` | `zclassic23 zcode reward commit --input='{"plan_id":"<64hex>"}'` | Settle a planned batch (SIMULATED, idempotent) |
 | `zcode reward receipt` | ready | read / read / operator · fast/low | **`plan_id`**, `datadir` | `zcl.zcode_reward_receipt.v1` | `zclassic23 zcode reward receipt --input='{"plan_id":"<64hex>"}'` | Durable receipt for a settled batch (SIMULATED) |
 
@@ -947,6 +947,11 @@ represented by its children's sections.
 | `zcode network find poll` | ready | read / read / operator · fast/low | **`lookup_id`**, **`owner_token`** | `zcl.zcode_network_find_poll.v1` | `zclassic23 zcode network find poll --input='{"lookup_id":"<32hex>","owner_token":"<32hex>"}'` | Poll a DHT lookup |
 | `zcode network find cancel` | ready | read / read / operator · fast/low | **`lookup_id`**, **`owner_token`** | `zcl.zcode_network_find_cancel.v1` | `zclassic23 zcode network find cancel --input='{"lookup_id":"<32hex>","owner_token":"<32hex>"}'` | Cancel a DHT lookup |
 | `zcode network find` | ready | read / read / operator · foreground/moderate | **`node_id`** | `zcl.zcode_network_find.v1` | `zclassic23 zcode network find --input='{"node_id":"<64hex>"}'` | Find closest DHT nodes |
+| `zcode network providers` | ready | read / read / operator · fast/low | **`namespace`**, **`transport_root`** | `zcl.zcode_network_providers.v1` | `zclassic23 zcode network providers --input='{"namespace":"science","transport_root":"<64hex>"}'` | List provider hints |
+| `zcode network publish` | ready | mutate / app-write / operator, plan-commit · fast/low | **`mode`**, **`kind`**, **`namespace`**, `semantic_root`, **`transport_root`**, `owner_group`, **`sequence`**, **`not_before`**, **`expiry`**, `plan_token` | `zcl.zcode_network_publish.v1` | `zclassic23 zcode network publish --input='{"mode":"plan","kind":"provider","namespace":"science","transport_root":"<64hex>","sequence":1,"not_before":1,"expiry":2}'` | Publish a signed DHT record |
+| `zcode network policy list` | ready | read / read / operator · fast/low | `datadir` | `zcl.zcode_network_policy_list.v1` | `zclassic23 zcode network policy list` | Inspect local policy summary |
+| `zcode network policy mutate` | ready | mutate / app-write / operator, plan-commit · fast/low | **`mode`**, **`operation`**, `source`, `effect`, `scope`, `action_mask`, `value`, `rule_id`, `enabled`, `plan_token`, `datadir` | `zcl.zcode_network_policy_mutate.v1` | `zclassic23 zcode network policy mutate --input='{"mode":"plan","operation":"advisory","enabled":true}'` | Plan or commit local policy |
+| `zcode network replication` | ready | read / read / operator · fast/low | **`namespace`**, **`transport_root`** | `zcl.zcode_network_replication.v1` | `zclassic23 zcode network replication --input='{"namespace":"science","transport_root":"<64hex>"}'` | Inspect declared replication |
 
 #### `zcode.desc` — Onion descriptors: signed service records
 
@@ -979,7 +984,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode science rebuild` | ready | mutate / app-write / operator · foreground/moderate | `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_rebuild.v1` | `zclassic23 zcode.science.rebuild --input='{"now_unix":1500}'` | Rebuild the science projection from the CAS |
 | `zcode science publish` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `datadir`, `workspace` | `zcl.zcode_science_publish.v1` | `zclassic23 zcode.science.publish --input='{"root":"<64hex>"}'` | Publish a science object to the swarm as a blob |
-| `zcode science fetch` | ready | mutate / app-write / operator · foreground/moderate | **`blob_root`**, `datadir`, `workspace`, `now_unix` | `zcl.zcode_science_fetch.v1` | `zclassic23 zcode.science.fetch --input='{"blob_root":"<64hex>"}'` | Fetch and admit a blob-carried science object |
+| `zcode science fetch` | ready | mutate / app-write / operator · foreground/moderate | `root`, `blob_root`, `datadir`, `workspace`, `now_unix` | `zcl.zcode_science_fetch.v1` | `zclassic23 zcode.science.fetch --input='{"blob_root":"<64hex>"}'` | Fetch and admit a blob-carried science object |
 
 #### `zcode.science.study` — Preregistered study lifecycle
 

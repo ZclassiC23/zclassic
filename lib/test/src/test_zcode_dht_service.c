@@ -245,9 +245,26 @@ struct multi_network {
   bool pending[MULTI_NODES][MULTI_NODES];
   bool deny[MULTI_NODES][MULTI_NODES];
   bool stall[MULTI_NODES][MULTI_NODES];
+  bool banned[MULTI_NODES];
+  uint8_t banned_root[32];
   uint64_t generation, frames, denied_hints;
   struct vcs_zcode_dht_time now;
 };
+
+static bool multi_policy(void *ctx, enum vcs_zcode_sovereignty_action action,
+                         const struct vcs_zcode_sovereignty_subject *subject) {
+  struct multi_reach_ctx *reach = ctx;
+  if (!reach || !reach->network || !subject)
+    return false;
+  if (reach->network->banned[reach->owner] &&
+      (memcmp(subject->semantic_root, reach->network->banned_root, 32) == 0 ||
+       memcmp(subject->transport_root, reach->network->banned_root, 32) == 0) &&
+      (action == VCS_ZCODE_SOVEREIGNTY_STORE ||
+       action == VCS_ZCODE_SOVEREIGNTY_SERVE ||
+       action == VCS_ZCODE_SOVEREIGNTY_FORWARD))
+    return false;
+  return true;
+}
 
 static bool multi_request_reachability(void *ctx, const uint8_t id[32],
                                        uint64_t wall_now) {
@@ -282,6 +299,8 @@ static struct vcs_zcode_dht_service *multi_service(
       .chain_verify = chain_ok,
       .request_reachability = multi_request_reachability,
       .reachability_ctx = &net->reach[index],
+      .policy_decide = multi_policy,
+      .policy_ctx = &net->reach[index],
   };
   memcpy(p.network_genesis, genesis, 32);
   memcpy(p.local_noise_static, net->noise[index], 32);
@@ -489,6 +508,27 @@ static int test_record_transport_and_restart(void) {
     ASSERT(pump(b, a, 1, 2, 1001, NULL, NULL));
     ASSERT(pump(a, b, 2, 1, 1001, NULL, NULL));
 
+    struct vcs_zcode_dht_publish_spec publish;
+    memset(&publish, 0, sizeof(publish));
+    publish.kind = VCS_ZCODE_DHT_RECORD_POINTER;
+    snprintf(publish.namespace_name, sizeof(publish.namespace_name),
+             "science");
+    memset(publish.semantic_root, 0x41, 32);
+    memset(publish.transport_root, 0x42, 32);
+    publish.sequence = 1;
+    publish.not_before = 1001;
+    publish.expiry = 2000;
+    uint8_t plan_token[32];
+    struct vcs_zcode_dht_record published_record;
+    ASSERT(vcs_zcode_dht_service_record_publish_plan(
+        a, &publish, plan_token, &published_record));
+    ASSERT_EQ(vcs_zcode_dht_service_record_publish_commit(
+                  a, &publish, plan_token, test_time(1002), &published_record),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    ASSERT_EQ(vcs_zcode_dht_service_record_publish_commit(
+                  a, &publish, plan_token, test_time(1002), &published_record),
+              VCS_ZCODE_DHT_RECORD_STORE_STALE);
+
     struct vcs_zcode_dht_record first;
     ASSERT(fixture_pointer_record(adir, genesis, 0x61, 0x71, &first));
     ASSERT_EQ(vcs_zcode_dht_service_record_admit(a, &first, test_time(1002)),
@@ -567,7 +607,7 @@ _test_next:;
 
 static int test_sparse_iterative_network(void) {
   int failures = 0;
-  TEST("zcode dht service: seven-node sparse lookup iterates fairly and recovers") {
+  TEST("zcode dht service: sparse multi-hop records, local ban and restart") {
     struct multi_network net;
     memset(&net, 0, sizeof(net));
     net.now = test_time(1001);
@@ -646,6 +686,54 @@ static int test_sparse_iterative_network(void) {
     ASSERT(after.lookup_rounds >= result.rounds);
     ASSERT(after.lookup_xor_progress >= result.xor_progress);
 
+    /* The target is known only after the multi-hop walk. Query its generic
+     * signed pointer over that freshly authenticated S6 session, then admit
+     * the verified record into the origin's rebuildable projection. */
+    struct vcs_zcode_dht_record pointer;
+    ASSERT(fixture_pointer_record(net.dir[target_node], genesis, 0xc1, 0xd1,
+                                  &pointer));
+    ASSERT_EQ(vcs_zcode_dht_service_record_admit(
+                  net.service[target_node], &pointer, net.now),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    struct vcs_zcode_dht_record_selector selector = {
+        .kind = VCS_ZCODE_DHT_RECORD_POINTER};
+    snprintf(selector.namespace_name, sizeof(selector.namespace_name),
+             "science.study");
+    memcpy(selector.root, pointer.semantic_root, 32);
+    uint64_t record_operation = 0;
+    ASSERT(vcs_zcode_dht_service_record_query_begin(
+        net.service[origin], target_node + 1, &selector, net.now,
+        &record_operation));
+    ASSERT(multi_drive(&net));
+    struct vcs_zcode_dht_record_operation_result record_result;
+    ASSERT(vcs_zcode_dht_service_record_operation_poll(
+        net.service[origin], record_operation, net.now, &record_result));
+    ASSERT_EQ(record_result.state, VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE);
+    ASSERT_EQ(record_result.record_count, 1);
+    ASSERT_EQ(vcs_zcode_dht_service_record_admit(
+                  net.service[origin], &record_result.records[0], net.now),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+
+    /* A ban is strictly local. Origin stops serving this root while the
+     * target still serves the identical signed record to another node. */
+    memcpy(net.banned_root, pointer.semantic_root, 32);
+    net.banned[origin] = true;
+    ASSERT(vcs_zcode_dht_service_record_query_begin(
+        net.service[target_node], origin + 1, &selector, net.now,
+        &record_operation));
+    ASSERT(multi_drive(&net));
+    ASSERT(vcs_zcode_dht_service_record_operation_poll(
+        net.service[target_node], record_operation, net.now, &record_result));
+    ASSERT_EQ(record_result.record_count, 0);
+    size_t alternate = order[target_node - 1];
+    ASSERT(vcs_zcode_dht_service_record_query_begin(
+        net.service[alternate], target_node + 1, &selector, net.now,
+        &record_operation));
+    ASSERT(multi_drive(&net));
+    ASSERT(vcs_zcode_dht_service_record_operation_poll(
+        net.service[alternate], record_operation, net.now, &record_result));
+    ASSERT_EQ(record_result.record_count, 1);
+
     /* A reachability request can be accepted while the bounded dial itself
      * fails.  The unverified ID must age out monotonically so a nonexistent
      * target reaches shortlist stability instead of the 30-second ceiling. */
@@ -700,6 +788,13 @@ static int test_sparse_iterative_network(void) {
     vcs_zcode_dht_service_status(net.service[origin], &after);
     ASSERT(after.persistence_loaded);
     ASSERT(after.cold_contacts >= 1);
+    struct vcs_zcode_dht_record cold_record[1];
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  net.service[origin], net.now.wall_unix, &selector,
+                  cold_record, 1),
+              1);
+    ASSERT(memcmp(cold_record[0].transport_root, pointer.transport_root, 32) ==
+           0);
     ASSERT_EQ(after.connected_authenticated, 0);
     memset(net.connected[origin], 0, sizeof(net.connected[origin]));
     for (size_t i = 0; i < MULTI_NODES; i++)

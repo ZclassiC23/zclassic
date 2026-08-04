@@ -278,6 +278,30 @@ size_t vcs_zcode_dht_service_record_local_query(
     const struct vcs_zcode_dht_record_selector *selector,
     struct vcs_zcode_dht_record *out, size_t out_capacity);
 
+/* Operator-authored publication is a stale-plan-safe mutation.  The plan
+ * token binds the exact deterministic signed record and the current canonical
+ * record-store digest.  No seed or delegation wire is returned to callers. */
+struct vcs_zcode_dht_publish_spec {
+  enum vcs_zcode_dht_record_kind kind;
+  char namespace_name[VCS_ZCODE_DHT_RECORD_NAMESPACE_BYTES];
+  uint8_t semantic_root[32];
+  uint8_t transport_root[32];
+  uint8_t owner_group[32];
+  uint64_t sequence;
+  uint64_t not_before;
+  uint64_t expiry;
+};
+bool vcs_zcode_dht_service_record_publish_plan(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
+    struct vcs_zcode_dht_record *record_out);
+enum vcs_zcode_dht_record_store_result
+vcs_zcode_dht_service_record_publish_commit(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_publish_spec *spec,
+    const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record *record_out);
+
 /* Composition-root lock audit helpers. The snapshot is fixed-size and
  * allocation-free; callbacks may be replaced after boot-time persistence was
  * loaded outside the global service mutex. */

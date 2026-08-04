@@ -473,7 +473,7 @@ ZCL_COMMAND_READY_COMMAND(
     "zcode,science,fetch,blob,swarm,admit",
     "zcl.zcode_science_fetch.input.v1",
     "zcl.zcode_science_fetch.v1",
-    "blob_root,datadir,workspace,now_unix", "blob_root",
+    "root,blob_root,datadir,workspace,now_unix", "",
     "zclassic23 zcode.science.fetch --input='{\"blob_root\":\"<64hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,

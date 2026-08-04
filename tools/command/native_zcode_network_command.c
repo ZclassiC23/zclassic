@@ -548,3 +548,33 @@ void zcl_native_handle_zcode_network_find_cancel(
     struct zcl_command_reply *reply) {
   zdn_forward(request, reply, "zcode_dht_find_cancel");
 }
+
+void zcl_native_handle_zcode_network_providers(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply) {
+  if (!request || !reply)
+    return;
+  struct json_value input;
+  json_init(&input);
+  if (request->input)
+    json_copy(&input, request->input);
+  else
+    json_set_object(&input);
+  json_push_kv_str(&input, "kind", "provider");
+  struct zcl_command_request forwarded = *request;
+  forwarded.input = &input;
+  zdn_forward(&forwarded, reply, "zcode_dht_records");
+  json_free(&input);
+}
+
+void zcl_native_handle_zcode_network_publish(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply) {
+  zdn_forward(request, reply, "zcode_dht_publish");
+}
+
+void zcl_native_handle_zcode_network_replication(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply) {
+  zdn_forward(request, reply, "zcode_dht_replication");
+}

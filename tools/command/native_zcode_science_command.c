@@ -5,6 +5,7 @@
 #include "command/native_command.h"
 
 #include "base/hex.h"
+#include "controllers/rpc_client.h"
 #include "json/json.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
@@ -765,6 +766,97 @@ static bool zsci_store_for(const char *datadir, bool *live,
     return *out != NULL;
 }
 
+static bool zsci_discovery_rpc(const char *method, struct json_value *input,
+                               struct json_value *result)
+{
+    struct json_value params;
+    json_init(&params);
+    json_set_array(&params);
+    json_push_back(&params, input);
+    size_t needed = json_write(&params, NULL, 0);
+    char *wire = zcl_malloc(needed + 1, "science.discovery.rpc");
+    if (!wire || json_write(&params, wire, needed + 1) != needed) {
+        free(wire);
+        json_free(&params);
+        return false;
+    }
+    zcl_native_bridge_ensure_rpc();
+    char *raw = node_rpc_call(method, wire);
+    free(wire);
+    json_free(&params);
+    if (!raw)
+        return false;
+    json_init(result);
+    bool ok = json_read(result, raw, strlen(raw)) && result->type == JSON_OBJ &&
+              json_get_bool_or(result, "ok", false);
+    free(raw);
+    return ok;
+}
+
+static bool zsci_discovery_record(const char *kind, const char *science_root,
+                                  const char *blob_root, int64_t now,
+                                  int64_t expiry, char token_out[65])
+{
+    struct json_value input, result;
+    json_init(&input);
+    json_set_object(&input);
+    json_push_kv_str(&input, "mode", "plan");
+    json_push_kv_str(&input, "kind", kind);
+    json_push_kv_str(&input, "namespace", "science");
+    if (strcmp(kind, "pointer") == 0)
+        json_push_kv_str(&input, "semantic_root", science_root);
+    json_push_kv_str(&input, "transport_root", blob_root);
+    json_push_kv_int(&input, "sequence", now > 0 ? now : 1);
+    json_push_kv_int(&input, "not_before", now);
+    json_push_kv_int(&input, "expiry", expiry);
+    if (!zsci_discovery_rpc("zcode_dht_publish", &input, &result)) {
+        json_free(&input);
+        return false;
+    }
+    const char *token = json_get_str(json_get(&result, "plan_token"));
+    bool valid = token && strlen(token) == 64;
+    if (valid)
+        memcpy(token_out, token, 65);
+    json_free(&result);
+    if (!valid) {
+        json_free(&input);
+        return false;
+    }
+    json_push_kv_str(&input, "mode", "commit");
+    json_push_kv_str(&input, "plan_token", token_out);
+    bool committed = zsci_discovery_rpc("zcode_dht_publish", &input, &result);
+    if (committed)
+        json_free(&result);
+    json_free(&input);
+    return committed;
+}
+
+static bool zsci_resolve_pointer(const char *science_root, char blob_root[65])
+{
+    struct json_value input, result;
+    json_init(&input);
+    json_set_object(&input);
+    json_push_kv_str(&input, "kind", "pointer");
+    json_push_kv_str(&input, "namespace", "science");
+    json_push_kv_str(&input, "semantic_root", science_root);
+    if (!zsci_discovery_rpc("zcode_dht_records", &input, &result)) {
+        json_free(&input);
+        return false;
+    }
+    const struct json_value *records = json_get(&result, "records");
+    const struct json_value *first = records ? json_at(records, 0) : NULL;
+    const char *transport = first ?
+        json_get_str(json_get(first, "transport_root")) : NULL;
+    uint8_t decoded[32];
+    bool ok = transport && strlen(transport) == 64 &&
+              zcl_hex_decode_lower(transport, decoded, 32);
+    if (ok)
+        memcpy(blob_root, transport, 65);
+    json_free(&result);
+    json_free(&input);
+    return ok;
+}
+
 void zcl_native_handle_zcode_science_publish(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -804,10 +896,32 @@ void zcl_native_handle_zcode_science_publish(
                           "zcode.science.publish");
         return;
     }
+    int64_t now = platform_time_wall_unix();
+    char pointer_token[65], provider_token[65];
+    bool pointer = now > 0 && now <= INT64_MAX - 604800 &&
+        zsci_discovery_record("pointer", root_hex, blob_hex, now,
+                              now + 604800, pointer_token);
+    bool provider = now > 0 && now <= INT64_MAX - 7200 &&
+        zsci_discovery_record("provider", root_hex, blob_hex, now,
+                              now + 7200, provider_token);
+    if (!pointer || !provider) {
+        json_push_kv_str(&reply->data, "science_root", root_hex);
+        json_push_kv_str(&reply->data, "blob_root", blob_hex);
+        json_push_kv_bool(&reply->data, "transport_object_committed", true);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_TRANSIENT,
+                               "DISCOVERY_PUBLICATION_INCOMPLETE", "commit",
+                               true, true,
+                               "transport object exists but signed pointer/provider publication did not complete",
+                               "zcode.science.publish");
+        return;
+    }
     (void)json_push_kv_str(&reply->data, "science_root", root_hex);
     (void)json_push_kv_str(&reply->data, "blob_root", blob_hex);
     (void)json_push_kv_str(&reply->data, "kind", kind);
     (void)json_push_kv_bool(&reply->data, "live", live);
+    (void)json_push_kv_bool(&reply->data, "pointer_published", true);
+    (void)json_push_kv_bool(&reply->data, "provider_published", true);
     if (!live)
         (void)json_push_kv_str(
             &reply->data, "note",
@@ -821,13 +935,19 @@ void zcl_native_handle_zcode_science_fetch(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
     if (!request || !reply) return;
+    const char *requested_root = zsci_str(request->input, "root");
     const char *blob_hex = zsci_str(request->input, "blob_root");
+    char discovered_blob[65];
+    if ((!blob_hex || !blob_hex[0]) && requested_root &&
+        strlen(requested_root) == 64 &&
+        zsci_resolve_pointer(requested_root, discovered_blob))
+        blob_hex = discovered_blob;
     uint8_t blob_root[32];
     if (!blob_hex || strlen(blob_hex) != 64 ||
         !zcl_hex_decode_lower(blob_hex, blob_root, 32)) {
         zsci_fail(reply, "BAD_BLOB_ROOT",
-                  "blob_root must be the 64-lowercase-hex transport root "
-                  "returned by zcode.science.publish",
+                  "provide a 64-lowercase-hex blob_root, or a science root "
+                  "resolvable through an admitted signed POINTER",
                   "zcode.science.fetch");
         return;
     }
@@ -905,6 +1025,13 @@ void zcl_native_handle_zcode_science_fetch(
     (void)json_push_kv_str(&reply->data, "result",
                            vcs_swarm_fetch_result_string(fr));
     (void)json_push_kv_bool(&reply->data, "admitted", admitted.ok);
+    if (admitted.ok && requested_root &&
+        strcmp(requested_root, science_hex) != 0) {
+        zsci_fail_service(reply, "POINTER_ROOT_MISMATCH",
+                          "verified bytes re-derived a different science root",
+                          "zcode.science.fetch");
+        return;
+    }
     if (admitted.ok) {
         (void)json_push_kv_str(&reply->data, "science_root", science_hex);
         (void)json_push_kv_str(&reply->data, "kind", kind);

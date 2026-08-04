@@ -47,6 +47,16 @@ bool boot_zcode_dht_lookup_cancel(uint64_t lookup_id, uint64_t generation);
 bool boot_zcode_dht_peers(uint64_t wall_now,
                           struct vcs_zcode_dht_peer_view *out, size_t max,
                           size_t offset, size_t *count_out);
+bool boot_zcode_dht_record_query(
+    uint64_t wall_now, const struct vcs_zcode_dht_record_selector *selector,
+    struct vcs_zcode_dht_record *out, size_t max, size_t *count_out);
+bool boot_zcode_dht_record_publish_plan(
+    const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
+    struct vcs_zcode_dht_record *record_out);
+enum vcs_zcode_dht_record_store_result boot_zcode_dht_record_publish_commit(
+    const struct vcs_zcode_dht_publish_spec *spec,
+    const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record *record_out);
 void boot_zcode_dht_public_tick(uint64_t monotonic_s);
 void boot_zcode_dht_public_reset(void);
 

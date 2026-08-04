@@ -204,4 +204,14 @@ struct zcl_result zcode_science_admit(
     char out_science_root[65], char out_kind[ZCODE_SCIENCE_KIND_CAP],
     bool *out_new);
 
+/* Bounded dishonest-provider fallback: tries at most eight already-fetched
+ * transport objects in caller order. Every candidate crosses the same byte
+ * verifier and must re-derive expected_science_root before admission. */
+struct zcl_result zcode_science_admit_candidates(
+    struct vcs_package_store *store, struct node_db *ndb,
+    const char *workspace, const char *expected_science_root,
+    const char *const *blob_roots, size_t blob_count, int64_t now,
+    char out_blob_root[65], char out_kind[ZCODE_SCIENCE_KIND_CAP],
+    bool *out_new, size_t *out_attempts);
+
 #endif /* ZCL_SERVICES_ZCODE_SCIENCE_SERVICE_H */

@@ -624,6 +624,42 @@ bool boot_zcode_dht_peers(uint64_t wall_now,
   return ok;
 }
 
+bool boot_zcode_dht_record_query(
+    uint64_t wall_now, const struct vcs_zcode_dht_record_selector *selector,
+    struct vcs_zcode_dht_record *out, size_t max, size_t *count_out) {
+  if (!selector || !out || !max || !count_out)
+    return false;
+  dht_lock();
+  bool ok = g_dht && vcs_zcode_dht_service_enabled(g_dht);
+  *count_out = ok ? vcs_zcode_dht_service_record_local_query(
+                        g_dht, wall_now, selector, out, max) : 0;
+  zcl_mutex_unlock(&g_dht_lock);
+  return ok;
+}
+
+bool boot_zcode_dht_record_publish_plan(
+    const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
+    struct vcs_zcode_dht_record *record_out) {
+  dht_lock();
+  bool ok = g_dht && vcs_zcode_dht_service_record_publish_plan(
+                         g_dht, spec, plan_token, record_out);
+  zcl_mutex_unlock(&g_dht_lock);
+  return ok;
+}
+
+enum vcs_zcode_dht_record_store_result boot_zcode_dht_record_publish_commit(
+    const struct vcs_zcode_dht_publish_spec *spec,
+    const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record *record_out) {
+  dht_lock();
+  enum vcs_zcode_dht_record_store_result result =
+      g_dht ? vcs_zcode_dht_service_record_publish_commit(
+                  g_dht, spec, plan_token, now, record_out)
+            : VCS_ZCODE_DHT_RECORD_STORE_INVALID;
+  zcl_mutex_unlock(&g_dht_lock);
+  return result;
+}
+
 bool boot_zcode_dht_dump_state_json(struct json_value *out, const char *key) {
   if (!out)
     return false;

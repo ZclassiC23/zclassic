@@ -119,6 +119,8 @@ size_t vcs_zcode_sovereignty_policy_count(
 size_t vcs_zcode_sovereignty_policy_rules(
     const struct vcs_zcode_sovereignty_policy *policy,
     struct vcs_zcode_sovereignty_rule *out, size_t capacity);
+void vcs_zcode_sovereignty_policy_digest(
+    const struct vcs_zcode_sovereignty_policy *policy, uint8_t out[32]);
 
 struct vcs_zcode_sovereignty_decision vcs_zcode_sovereignty_policy_check(
     const struct vcs_zcode_sovereignty_policy *policy,

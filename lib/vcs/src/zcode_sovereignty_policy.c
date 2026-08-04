@@ -422,6 +422,17 @@ static void policy_digest(const struct vcs_zcode_sovereignty_policy *policy,
   sha3_256_finalize(&sha, out);
 }
 
+void vcs_zcode_sovereignty_policy_digest(
+    const struct vcs_zcode_sovereignty_policy *policy, uint8_t out[32])
+{
+  if (!out)
+    return;
+  memset(out, 0, 32);
+  if (policy)
+    policy_digest(policy, policy->advisory_enabled
+                              ? SOVEREIGNTY_POLICY_FLAG_ADVISORY : 0, out);
+}
+
 enum vcs_zcode_sovereignty_result vcs_zcode_sovereignty_policy_save(
     const struct vcs_zcode_sovereignty_policy *policy, const char *datadir,
     char *error_out, size_t error_capacity)

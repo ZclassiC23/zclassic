@@ -1230,6 +1230,17 @@ static int test_zstore_admit(void)
         ASSERT(!zcode_science_admit(store, &ndb_b, dir_b, garbage_hex, 1500,
                                     science_hex, kind, &is_new).ok);
         ASSERT_EQ(zstore_cas_object_count(dir_b), 1);
+        const char *candidates[] = {garbage_hex, absent, blob_hex};
+        char selected[65];
+        size_t attempts = 0;
+        ASSERT(zcode_science_admit_candidates(
+            store, &ndb_b, dir_b, commit.result_root, candidates, 3, 1500,
+            selected, kind, &is_new, &attempts).ok);
+        ASSERT_EQ(attempts, 3);
+        ASSERT_STR_EQ(selected, blob_hex);
+        ASSERT_STR_EQ(kind, ZCODE_SCIENCE_KIND_STUDY);
+        ASSERT(!is_new);
+        ASSERT_EQ(zstore_cas_object_count(dir_b), 1);
         vcs_package_store_close(store);
         zstore_teardown(&ndb_a, dir_a);
         zstore_teardown(&ndb_b, dir_b);

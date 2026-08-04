@@ -387,6 +387,81 @@ size_t vcs_zcode_dht_service_record_local_query(
       selector->root, now_unix, out, out_capacity);
 }
 
+static bool records_publish_build(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_publish_spec *spec,
+    struct vcs_zcode_dht_record *record, uint8_t token[32])
+{
+  if (!service || !service->enabled || !service->record_store || !spec ||
+      !record || !token)
+    return false;
+  memset(record, 0, sizeof(*record));
+  record->kind = spec->kind;
+  memcpy(record->namespace_name, spec->namespace_name,
+         sizeof(record->namespace_name));
+  memcpy(record->network_genesis, service->genesis, 32);
+  memcpy(record->semantic_root, spec->semantic_root, 32);
+  memcpy(record->transport_root, spec->transport_root, 32);
+  memcpy(record->provider_node_id, service->self_id, 32);
+  memcpy(record->owner_group, spec->owner_group, 32);
+  record->sequence = spec->sequence;
+  record->not_before = spec->not_before;
+  record->expiry = spec->expiry;
+  record->delegation = service->delegation;
+  if (vcs_zcode_dht_record_sign(record, service->online_seed) !=
+      VCS_ZCODE_DHT_RECORD_OK)
+    return false;
+  uint8_t wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES], store_digest[32];
+  if (vcs_zcode_dht_record_encode(record, wire) !=
+      VCS_ZCODE_DHT_RECORD_OK)
+    return false;
+  vcs_zcode_dht_record_store_digest(service->record_store, store_digest);
+  struct sha3_256_ctx sha;
+  sha3_256_init(&sha);
+  sha3_256_write(&sha, (const uint8_t *)"zcl.dht.publish.plan.v1", 23);
+  sha3_256_write(&sha, service->genesis, 32);
+  sha3_256_write(&sha, store_digest, 32);
+  sha3_256_write(&sha, wire, sizeof(wire));
+  sha3_256_finalize(&sha, token);
+  return true;
+}
+
+bool vcs_zcode_dht_service_record_publish_plan(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
+    struct vcs_zcode_dht_record *record_out)
+{
+  if (plan_token)
+    memset(plan_token, 0, 32);
+  if (record_out)
+    memset(record_out, 0, sizeof(*record_out));
+  return records_publish_build(service, spec, record_out, plan_token);
+}
+
+enum vcs_zcode_dht_record_store_result
+vcs_zcode_dht_service_record_publish_commit(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_publish_spec *spec,
+    const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record *record_out)
+{
+  uint8_t expected[32], difference = 0;
+  struct vcs_zcode_dht_record record;
+  if (!plan_token || !records_publish_build(service, spec, &record, expected))
+    return VCS_ZCODE_DHT_RECORD_STORE_INVALID;
+  for (size_t i = 0; i < 32; i++)
+    difference |= expected[i] ^ plan_token[i];
+  if (difference)
+    return VCS_ZCODE_DHT_RECORD_STORE_STALE;
+  enum vcs_zcode_dht_record_store_result result =
+      vcs_zcode_dht_service_record_admit(service, &record, now);
+  if (record_out && (result == VCS_ZCODE_DHT_RECORD_STORE_ADDED ||
+                     result == VCS_ZCODE_DHT_RECORD_STORE_DUPLICATE ||
+                     result == VCS_ZCODE_DHT_RECORD_STORE_CONFLICT))
+    *record_out = record;
+  return result;
+}
+
 static bool reply_records(struct vcs_zcode_dht_service *service,
                           struct service_peer *peer,
                           const struct vcs_zcode_dht_msg_find_record *request,

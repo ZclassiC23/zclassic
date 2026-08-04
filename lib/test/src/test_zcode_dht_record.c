@@ -8,6 +8,7 @@
 #include "support/cleanse.h"
 #include "vcs/zcode_dht_record.h"
 #include "vcs/zcode_dht_record_store.h"
+#include "vcs/zcode_replication.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -424,6 +425,51 @@ static int test_record_store_sequence_and_expiry(void)
   return failures;
 }
 
+static int test_declared_replication(void)
+{
+  int failures = 0;
+  TEST("zcode replication: durable means five live ACKs in three declared groups") {
+    struct vcs_zcode_dht_record records[10];
+    memset(records, 0, sizeof(records));
+    uint8_t root[32];
+    memset(root, 0x91, sizeof(root));
+    for (size_t i = 0; i < 6; i++) {
+      records[i].kind = VCS_ZCODE_DHT_RECORD_STORAGE_ACK;
+      snprintf(records[i].namespace_name, sizeof(records[i].namespace_name),
+               "science");
+      memcpy(records[i].transport_root, root, 32);
+      memset(records[i].provider_node_id, (int)(i + 1), 32);
+      memset(records[i].owner_group, (int)(0xa0 + i % 3), 32);
+      records[i].not_before = 1000;
+      records[i].expiry = 1600;
+    }
+    records[6] = records[0]; /* same signer cannot inflate the count */
+    records[7] = records[1];
+    records[7].provider_node_id[0] = 0x80;
+    records[7].expiry = 1400;
+    for (size_t i = 8; i < 10; i++) {
+      records[i] = records[0];
+      records[i].kind = VCS_ZCODE_DHT_RECORD_PROVIDER;
+      memset(records[i].provider_node_id, (int)i, 32);
+    }
+    struct vcs_zcode_replication_status status;
+    vcs_zcode_replication_evaluate(records, 10, "science", root, 1500,
+                                   &status);
+    ASSERT_EQ(status.provider_hints, 2);
+    ASSERT_EQ(status.valid_acks, 6);
+    ASSERT_EQ(status.declared_owner_groups, 3);
+    ASSERT_EQ(status.expired_acks, 1);
+    ASSERT(status.durable);
+    vcs_zcode_replication_evaluate(records, 10, "science", root, 1600,
+                                   &status);
+    ASSERT(!status.durable);
+    ASSERT_EQ(status.valid_acks, 0);
+    PASS();
+  }
+  _test_next:;
+  return failures;
+}
+
 int test_zcode_dht_record(void)
 {
   int failures = 0;
@@ -434,6 +480,7 @@ int test_zcode_dht_record(void)
   failures += test_record_store_restart();
   failures += test_record_store_sequence_and_expiry();
   failures += test_record_store_caps();
+  failures += test_declared_replication();
   printf("=== zcode_dht_record: %d failures ===\n", failures);
   return failures;
 }

@@ -9,6 +9,7 @@
 #include "rpc/server.h"
 #include "util/sync.h"
 #include "json/json.h"
+#include "vcs/zcode_replication.h"
 
 #include <stdatomic.h>
 #include <string.h>
@@ -112,6 +113,70 @@ static int64_t input_int(const struct json_value *in, const char *key,
 static const char *input_str(const struct json_value *in, const char *key) {
   const struct json_value *value = in ? json_get(in, key) : NULL;
   return value && value->type == JSON_STR ? json_get_str(value) : NULL;
+}
+
+static bool input_root(const struct json_value *in, const char *key,
+                       uint8_t out[32], bool optional) {
+  const char *hex = input_str(in, key);
+  memset(out, 0, 32);
+  return (!hex && optional) ||
+         (hex && strlen(hex) == 64 && zcl_hex_decode_lower(hex, out, 32));
+}
+
+static bool input_namespace(const struct json_value *in, char out[32]) {
+  const char *name = input_str(in, "namespace");
+  size_t n = name ? strlen(name) : 0;
+  memset(out, 0, 32);
+  if (!n || n > VCS_ZCODE_DHT_RECORD_NAMESPACE_MAX)
+    return false;
+  for (size_t i = 0; i < n; i++)
+    if (!((name[i] >= 'a' && name[i] <= 'z') ||
+          (name[i] >= '0' && name[i] <= '9') || name[i] == '.' ||
+          name[i] == '-' || name[i] == '_'))
+      return false;
+  memcpy(out, name, n);
+  return true;
+}
+
+static enum vcs_zcode_dht_record_kind input_record_kind(
+    const struct json_value *in) {
+  const char *kind = input_str(in, "kind");
+  if (kind && strcmp(kind, "provider") == 0)
+    return VCS_ZCODE_DHT_RECORD_PROVIDER;
+  if (kind && strcmp(kind, "pointer") == 0)
+    return VCS_ZCODE_DHT_RECORD_POINTER;
+  if (kind && strcmp(kind, "storage_ack") == 0)
+    return VCS_ZCODE_DHT_RECORD_STORAGE_ACK;
+  return 0;
+}
+
+static const char *record_kind_name(enum vcs_zcode_dht_record_kind kind) {
+  if (kind == VCS_ZCODE_DHT_RECORD_PROVIDER)
+    return "provider";
+  if (kind == VCS_ZCODE_DHT_RECORD_POINTER)
+    return "pointer";
+  return kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK ? "storage_ack" : "unknown";
+}
+
+static void record_json(struct json_value *row,
+                        const struct vcs_zcode_dht_record *record) {
+  char semantic[65], transport[65], provider[65], owner[65];
+  zcl_hex_encode(record->semantic_root, 32, semantic);
+  zcl_hex_encode(record->transport_root, 32, transport);
+  zcl_hex_encode(record->provider_node_id, 32, provider);
+  zcl_hex_encode(record->owner_group, 32, owner);
+  json_set_object(row);
+  json_push_kv_str(row, "kind", record_kind_name(record->kind));
+  json_push_kv_str(row, "namespace", record->namespace_name);
+  json_push_kv_str(row, "semantic_root", semantic);
+  json_push_kv_str(row, "transport_root", transport);
+  json_push_kv_str(row, "provider_node_id", provider);
+  json_push_kv_str(row, "owner_group", owner);
+  json_push_kv_int(row, "sequence", (int64_t)record->sequence);
+  json_push_kv_int(row, "not_before", (int64_t)record->not_before);
+  json_push_kv_int(row, "expiry", (int64_t)record->expiry);
+  json_push_kv_bool(row, "possession_proof", false);
+  json_push_kv_bool(row, "declared_diversity_only", true);
 }
 
 static void rpc_error(struct json_value *result, const char *code,
@@ -412,6 +477,184 @@ static bool rpc_find_cancel(const struct json_value *params, bool help,
   return true;
 }
 
+static bool parse_selector(const struct json_value *in,
+                           struct vcs_zcode_dht_record_selector *selector) {
+  memset(selector, 0, sizeof(*selector));
+  selector->kind = input_record_kind(in);
+  if (!selector->kind || !input_namespace(in, selector->namespace_name))
+    return false;
+  const char *key = selector->kind == VCS_ZCODE_DHT_RECORD_POINTER
+                        ? "semantic_root" : "transport_root";
+  return input_root(in, key, selector->root, false);
+}
+
+static bool rpc_records(const struct json_value *params, bool help,
+                        struct json_value *result) {
+  if (help) {
+    json_set_str(result, "zcode_dht_records {kind,namespace,root}");
+    return true;
+  }
+  const struct json_value *in = rpc_input(params);
+  struct vcs_zcode_dht_record_selector selector;
+  if (!parse_selector(in, &selector)) {
+    rpc_error(result, "INVALID_SELECTOR",
+              "kind, canonical namespace and matching 64-hex root required");
+    return true;
+  }
+  struct vcs_zcode_dht_record records[VCS_ZCODE_DHT_RECORDS_PER_FRAME];
+  size_t count = 0;
+  if (!boot_zcode_dht_record_query((uint64_t)platform_time_wall_time_t(),
+                                   &selector, records,
+                                   VCS_ZCODE_DHT_RECORDS_PER_FRAME, &count)) {
+    rpc_error(result, "DHT_DISABLED", "authenticated DHT is disabled");
+    return true;
+  }
+  json_set_object(result);
+  json_push_kv_bool(result, "ok", true);
+  json_push_kv_bool(result, "local_projection", true);
+  json_push_kv_int(result, "count", (int64_t)count);
+  struct json_value rows;
+  json_init(&rows);
+  json_set_array(&rows);
+  for (size_t i = 0; i < count; i++) {
+    struct json_value row;
+    json_init(&row);
+    record_json(&row, &records[i]);
+    json_push_back(&rows, &row);
+    json_free(&row);
+  }
+  json_push_kv(result, "records", &rows);
+  json_free(&rows);
+  return true;
+}
+
+static bool parse_publish_spec(const struct json_value *in,
+                               struct vcs_zcode_dht_publish_spec *spec) {
+  memset(spec, 0, sizeof(*spec));
+  spec->kind = input_record_kind(in);
+  int64_t sequence = input_int(in, "sequence", -1);
+  int64_t not_before = input_int(in, "not_before", -1);
+  int64_t expiry = input_int(in, "expiry", -1);
+  if (!spec->kind || !input_namespace(in, spec->namespace_name) ||
+      sequence < 1 || not_before < 0 || expiry <= not_before ||
+      !input_root(in, "semantic_root", spec->semantic_root, true) ||
+      !input_root(in, "transport_root", spec->transport_root, false) ||
+      !input_root(in, "owner_group", spec->owner_group, true))
+    return false;
+  spec->sequence = (uint64_t)sequence;
+  spec->not_before = (uint64_t)not_before;
+  spec->expiry = (uint64_t)expiry;
+  return true;
+}
+
+static bool rpc_publish(const struct json_value *params, bool help,
+                        struct json_value *result) {
+  if (help) {
+    json_set_str(result, "zcode_dht_publish {mode,kind,namespace,roots,sequence,not_before,expiry,plan_token?}");
+    return true;
+  }
+  const struct json_value *in = rpc_input(params);
+  const char *mode = input_str(in, "mode");
+  struct vcs_zcode_dht_publish_spec spec;
+  if (!mode || (strcmp(mode, "plan") != 0 && strcmp(mode, "commit") != 0) ||
+      !parse_publish_spec(in, &spec)) {
+    rpc_error(result, "INVALID_PUBLISH",
+              "exact mode, kind, namespace, roots, sequence and window required");
+    return true;
+  }
+  uint8_t token[32];
+  struct vcs_zcode_dht_record record;
+  if (strcmp(mode, "plan") == 0) {
+    if (!boot_zcode_dht_record_publish_plan(&spec, token, &record)) {
+      rpc_error(result, "DHT_DISABLED", "authenticated DHT is disabled");
+      return true;
+    }
+  } else {
+    const char *hex = input_str(in, "plan_token");
+    if (!hex || strlen(hex) != 64 || !zcl_hex_decode_lower(hex, token, 32)) {
+      rpc_error(result, "INVALID_PLAN_TOKEN",
+                "commit requires the exact canonical plan_token");
+      return true;
+    }
+    enum vcs_zcode_dht_record_store_result stored =
+        boot_zcode_dht_record_publish_commit(&spec, token, public_now(),
+                                              &record);
+    if (stored != VCS_ZCODE_DHT_RECORD_STORE_ADDED &&
+        stored != VCS_ZCODE_DHT_RECORD_STORE_DUPLICATE &&
+        stored != VCS_ZCODE_DHT_RECORD_STORE_CONFLICT) {
+      rpc_error(result,
+                stored == VCS_ZCODE_DHT_RECORD_STORE_STALE
+                    ? "STALE_PLAN" : "PUBLISH_REFUSED",
+                vcs_zcode_dht_record_store_result_string(stored));
+      return true;
+    }
+  }
+  char token_hex[65];
+  zcl_hex_encode(token, 32, token_hex);
+  json_set_object(result);
+  json_push_kv_bool(result, "ok", true);
+  json_push_kv_str(result, "mode", mode);
+  json_push_kv_bool(result, "committed", strcmp(mode, "commit") == 0);
+  json_push_kv_str(result, "plan_token", token_hex);
+  struct json_value row;
+  json_init(&row);
+  record_json(&row, &record);
+  json_push_kv(result, "record", &row);
+  json_free(&row);
+  return true;
+}
+
+static bool rpc_replication(const struct json_value *params, bool help,
+                            struct json_value *result) {
+  if (help) {
+    json_set_str(result, "zcode_dht_replication {namespace,transport_root}");
+    return true;
+  }
+  const struct json_value *in = rpc_input(params);
+  char namespace_name[32];
+  uint8_t root[32];
+  if (!input_namespace(in, namespace_name) ||
+      !input_root(in, "transport_root", root, false)) {
+    rpc_error(result, "INVALID_SELECTOR",
+              "canonical namespace and transport_root required");
+    return true;
+  }
+  struct vcs_zcode_dht_record records[2 * VCS_ZCODE_DHT_RECORDS_PER_FRAME];
+  size_t total = 0, count = 0;
+  struct vcs_zcode_dht_record_selector selector;
+  memset(&selector, 0, sizeof(selector));
+  memcpy(selector.namespace_name, namespace_name, 32);
+  memcpy(selector.root, root, 32);
+  selector.kind = VCS_ZCODE_DHT_RECORD_PROVIDER;
+  uint64_t now = (uint64_t)platform_time_wall_time_t();
+  if (!boot_zcode_dht_record_query(now, &selector, records,
+                                   VCS_ZCODE_DHT_RECORDS_PER_FRAME, &count)) {
+    rpc_error(result, "DHT_DISABLED", "authenticated DHT is disabled");
+    return true;
+  }
+  total += count;
+  selector.kind = VCS_ZCODE_DHT_RECORD_STORAGE_ACK;
+  if (!boot_zcode_dht_record_query(now, &selector, records + total,
+                                   VCS_ZCODE_DHT_RECORDS_PER_FRAME, &count)) {
+    rpc_error(result, "DHT_DISABLED", "authenticated DHT is disabled");
+    return true;
+  }
+  total += count;
+  struct vcs_zcode_replication_status status;
+  vcs_zcode_replication_evaluate(records, total, namespace_name, root, now,
+                                 &status);
+  json_set_object(result);
+  json_push_kv_bool(result, "ok", true);
+  json_push_kv_int(result, "target_providers", VCS_ZCODE_REPLICATION_TARGET);
+  json_push_kv_int(result, "provider_hints", (int64_t)status.provider_hints);
+  json_push_kv_int(result, "valid_storage_acks", (int64_t)status.valid_acks);
+  json_push_kv_int(result, "declared_owner_groups",
+                   (int64_t)status.declared_owner_groups);
+  json_push_kv_bool(result, "durable", status.durable);
+  json_push_kv_bool(result, "operator_diversity_proven", false);
+  return true;
+}
+
 void boot_zcode_dht_register_rpc(struct rpc_table *table) {
   const struct rpc_command commands[] = {
       {"zcode", "zcode_dht_status", rpc_status, true},
@@ -419,6 +662,9 @@ void boot_zcode_dht_register_rpc(struct rpc_table *table) {
       {"zcode", "zcode_dht_find_begin", rpc_find_begin, true},
       {"zcode", "zcode_dht_find_poll", rpc_find_poll, true},
       {"zcode", "zcode_dht_find_cancel", rpc_find_cancel, true},
+      {"zcode", "zcode_dht_records", rpc_records, true},
+      {"zcode", "zcode_dht_publish", rpc_publish, true},
+      {"zcode", "zcode_dht_replication", rpc_replication, true},
   };
   for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
     rpc_table_must_append(table, &commands[i]);

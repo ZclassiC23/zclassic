@@ -578,7 +578,7 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
-    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_reward_plan)
@@ -1036,13 +1036,13 @@ ZCL_COMMAND_READY_COMMAND(
     0,
     "zcode,package,pin,operator,pins,quota",
     "zcl.zcode_package_pin.input.v1", "zcl.zcode_package_pin.v1",
-    "root,datadir", "root",
-    "zclassic23 zcode package pin --input='{\"root\":\"<64hex>\"}'",
+    "root,mode,plan_token,datadir", "root,mode",
+    "zclassic23 zcode package pin --input='{\"root\":\"<64hex>\",\"mode\":\"plan\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
-    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_package_pin)
@@ -1057,13 +1057,13 @@ ZCL_COMMAND_READY_COMMAND(
     0,
     "zcode,package,unpin,operator,pins,quota",
     "zcl.zcode_package_unpin.input.v1", "zcl.zcode_package_unpin.v1",
-    "root,datadir", "root",
-    "zclassic23 zcode package unpin --input='{\"root\":\"<64hex>\"}'",
+    "root,mode,plan_token,datadir", "root,mode",
+    "zclassic23 zcode package unpin --input='{\"root\":\"<64hex>\",\"mode\":\"plan\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
-    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_package_unpin)
@@ -1453,6 +1453,103 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_find)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.providers", "zcode.network", "", "List provider hints",
+    "Reads the bounded active PROVIDER records in this node's authenticated "
+    "DHT projection for one exact transport root and generic namespace. A "
+    "claim is signed routing evidence, never possession proof; conflicting "
+    "valid sequence slots remain visible. No address, delegation or key is "
+    "returned.",
+    16384, "zcode,network,dht,provider,root,discovery",
+    "zcl.zcode_network_providers.input.v1",
+    "zcl.zcode_network_providers.v1", "namespace,transport_root",
+    "namespace,transport_root",
+    "zclassic23 zcode network providers --input='{\"namespace\":\"science\",\"transport_root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_providers)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.network.publish", "zcode.network", "", "Publish a signed DHT record",
+    "Plans or commits one canonical PROVIDER, POINTER or STORAGE_ACK record. "
+    "mode=plan returns a token binding the exact signed record and current "
+    "record-store digest; mode=commit re-derives both and refuses stale plans. "
+    "STORAGE_ACK is operator-triggered only after verified possession and its "
+    "owner_group is declared diversity, never operator proof. The reply never "
+    "contains signing keys or delegation wire.",
+    16384, "zcode,network,dht,publish,provider,pointer,storage-ack,plan,commit",
+    "zcl.zcode_network_publish.input.v1", "zcl.zcode_network_publish.v1",
+    "mode,kind,namespace,semantic_root,transport_root,owner_group,sequence,not_before,expiry,plan_token",
+    "mode,kind,namespace,transport_root,sequence,not_before,expiry",
+    "zclassic23 zcode network publish --input='{\"mode\":\"plan\",\"kind\":\"provider\",\"namespace\":\"science\",\"transport_root\":\"<64hex>\",\"sequence\":1,\"not_before\":1,\"expiry\":2}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_network_publish)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.policy.list", "zcode.network", "", "Inspect local policy summary",
+    "Returns only this node's rule count, advisory opt-in state and canonical "
+    "policy digest. Exact local rules are deliberately redacted, and no keys "
+    "or shared policy are exposed.",
+    4096, "zcode,network,policy,sovereignty,list,redacted",
+    "zcl.zcode_network_policy_list.input.v1",
+    "zcl.zcode_network_policy_list.v1", "datadir", "",
+    "zclassic23 zcode network policy list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_network_policy_list)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.network.policy.mutate", "zcode.network", "", "Plan or commit local policy",
+    "Adds/removes one exact local or advisory rule, or toggles advisory-list "
+    "opt-in. The plan token binds network genesis, current policy digest and "
+    "the normalized mutation; commit reloads and refuses a stale token. "
+    "Actions are a seven-bit DISCOVER/FETCH/STORE/INDEX/SERVE/FORWARD/EXECUTE "
+    "mask. Replies expose only rule ID and digest-bound token, never rule "
+    "contents or keys. A running DHT reloads the atomic file on restart.",
+    8192, "zcode,network,policy,sovereignty,plan,commit,advisory",
+    "zcl.zcode_network_policy_mutate.input.v1",
+    "zcl.zcode_network_policy_mutate.v1",
+    "mode,operation,source,effect,scope,action_mask,value,rule_id,enabled,plan_token,datadir",
+    "mode,operation",
+    "zclassic23 zcode network policy mutate --input='{\"mode\":\"plan\",\"operation\":\"advisory\",\"enabled\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_network_policy_mutate)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.replication", "zcode.network", "", "Inspect declared replication",
+    "Evaluates active signed PROVIDER hints and STORAGE_ACKs for one transport "
+    "root. The bounded target is eight providers. durable becomes true only "
+    "with five live ACKs from distinct provider IDs across three declared "
+    "owner groups; the reply explicitly does not claim separate operators.",
+    4096, "zcode,network,replication,durable,storage-ack,declared-diversity",
+    "zcl.zcode_network_replication.input.v1",
+    "zcl.zcode_network_replication.v1", "namespace,transport_root",
+    "namespace,transport_root",
+    "zclassic23 zcode network replication --input='{\"namespace\":\"science\",\"transport_root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_network_replication)
 
 ZCL_COMMAND_BRANCH("zcode.desc", "zcode",
                    "Onion descriptors: signed service records",

@@ -30,6 +30,7 @@
 
 #include "json/json.h"
 #include "platform/time_compat.h"
+#include "crypto/sha3.h"
 #include "vcs/package_reward.h"
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
@@ -133,7 +134,6 @@ void zcl_native_handle_zcode_package_fetch(
     uint8_t root[32];
     if (!zw_root(request, reply, "zcode.package.fetch", root))
         return;
-
     /* Live engine first: a running hosting node downloads immediately. */
     struct vcs_swarm_engine *engine = vcs_swarm_engine_global();
     bool live = engine != NULL;
@@ -323,6 +323,14 @@ static void zw_handle_pin(const struct zcl_command_request *request,
     uint8_t root[32];
     if (!zw_root(request, reply, command, root))
         return;
+    const char *mode = zw_input_str(request->input, "mode");
+    if (!mode || (strcmp(mode, "plan") != 0 && strcmp(mode, "commit") != 0)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "INVALID_MODE",
+                               "normalize", false, false,
+                               "mode must be exactly plan or commit", command);
+        return;
+    }
 
     struct vcs_package_store *store = vcs_package_store_open(
         zw_datadir(request), vcs_package_store_quota_bytes());
@@ -333,11 +341,53 @@ static void zw_handle_pin(const struct zcl_command_request *request,
                                "the package store failed to open", zcode_dir);
         return;
     }
-    enum vcs_package_store_result r =
-        vcs_package_store_pin(store, root, pinned);
     struct vcs_package_store_status st;
     memset(&st, 0, sizeof(st));
     bool have_status = vcs_package_store_package_status(store, root, &st);
+    if (!have_status) {
+        vcs_package_store_close(store);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "UNKNOWN_PACKAGE",
+                               "plan", false, true,
+                               "package root is not tracked", command);
+        return;
+    }
+    struct sha3_256_ctx sha;
+    uint8_t token[32], mutation = pinned ? 1 : 0;
+    sha3_256_init(&sha);
+    sha3_256_write(&sha, (const uint8_t *)"zcl.package.pin.plan.v1", 24);
+    sha3_256_write(&sha, root, 32);
+    sha3_256_write(&sha, &mutation, 1);
+    sha3_256_write(&sha, (const uint8_t *)&st, sizeof(st));
+    sha3_256_finalize(&sha, token);
+    enum vcs_package_store_result r = VCS_PACKAGE_STORE_OK;
+    if (strcmp(mode, "commit") == 0) {
+        const char *supplied_hex = zw_input_str(request->input, "plan_token");
+        uint8_t supplied[32], difference = 0;
+        if (!supplied_hex || strlen(supplied_hex) != 64 ||
+            !zcl_hex_decode_lower(supplied_hex, supplied, 32)) {
+            vcs_package_store_close(store);
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_INVALID,
+                                   "INVALID_PLAN_TOKEN", "commit", false,
+                                   false, "commit requires canonical plan_token",
+                                   command);
+            return;
+        }
+        for (size_t i = 0; i < 32; i++)
+            difference |= supplied[i] ^ token[i];
+        if (difference) {
+            vcs_package_store_close(store);
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_INVALID, "STALE_PLAN",
+                                   "commit", false, true,
+                                   "package state changed after plan", command);
+            return;
+        }
+        r = vcs_package_store_pin(store, root, pinned);
+        memset(&st, 0, sizeof(st));
+        have_status = vcs_package_store_package_status(store, root, &st);
+    }
     vcs_package_store_close(store);
 
     if (r != VCS_PACKAGE_STORE_OK) {
@@ -354,9 +404,16 @@ static void zw_handle_pin(const struct zcl_command_request *request,
     }
 
     char hex[65];
+    char token_hex[65];
     zcl_hex_encode(root, 32, hex);
+    zcl_hex_encode(token, 32, token_hex);
     (void)json_push_kv_str(&reply->data, "package_root", hex);
-    (void)json_push_kv_bool(&reply->data, "pinned", pinned);
+    (void)json_push_kv_str(&reply->data, "mode", mode);
+    (void)json_push_kv_str(&reply->data, "plan_token", token_hex);
+    (void)json_push_kv_bool(&reply->data, "committed",
+                            strcmp(mode, "commit") == 0);
+    (void)json_push_kv_bool(&reply->data, "pinned",
+                            strcmp(mode, "commit") == 0 ? pinned : st.pinned);
     (void)json_push_kv_str(&reply->data, "result",
                            vcs_package_store_result_string(r));
     if (have_status) {

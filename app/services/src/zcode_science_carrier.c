@@ -205,3 +205,50 @@ struct zcl_result zcode_science_admit(
     (void)snprintf(out_kind, ZCODE_SCIENCE_KIND_CAP, "%s", kind);
     return ZCL_OK;
 }
+
+struct zcl_result zcode_science_admit_candidates(
+    struct vcs_package_store *store, struct node_db *ndb,
+    const char *workspace, const char *expected_science_root,
+    const char *const *blob_roots, size_t blob_count, int64_t now,
+    char out_blob_root[65], char out_kind[ZCODE_SCIENCE_KIND_CAP],
+    bool *out_new, size_t *out_attempts)
+{
+    if (!store || !ndb || !workspace || !expected_science_root ||
+        !blob_roots || !blob_count || blob_count > 8 || !out_blob_root ||
+        !out_kind || !out_new || !out_attempts)
+        return ZCL_ERR(-1, "science-candidates-input-invalid");
+    *out_attempts = 0;
+    out_blob_root[0] = '\0';
+    for (size_t i = 0; i < blob_count; i++) {
+        uint8_t transport[32], wire[VCS_BLOB_MAX_BYTES], derived_root[32];
+        size_t wire_len = 0;
+        const char *identified_kind = NULL;
+        if (!blob_roots[i] || strlen(blob_roots[i]) != 64 ||
+            !zcl_hex_decode_lower(blob_roots[i], transport, 32)) {
+            (*out_attempts)++;
+            continue;
+        }
+        (*out_attempts)++;
+        if (vcs_blob_get_from(store, transport, wire, sizeof(wire),
+                              &wire_len) != VCS_BLOB_OK ||
+            !science_identify_wire(wire, wire_len, derived_root,
+                                   &identified_kind))
+            continue;
+        char verified_root[65];
+        zcl_hex_encode(derived_root, 32, verified_root);
+        if (strcmp(verified_root, expected_science_root) != 0)
+            continue;
+        char derived[65], kind[ZCODE_SCIENCE_KIND_CAP];
+        bool is_new = false;
+        struct zcl_result admitted = zcode_science_admit(
+            store, ndb, workspace, blob_roots[i], now, derived, kind,
+            &is_new);
+        if (!admitted.ok || strcmp(derived, expected_science_root) != 0)
+            continue;
+        memcpy(out_blob_root, blob_roots[i], 65);
+        snprintf(out_kind, ZCODE_SCIENCE_KIND_CAP, "%s", kind);
+        *out_new = is_new;
+        return ZCL_OK;
+    }
+    return ZCL_ERR(-1, "science-candidates-no-verified-provider");
+}
