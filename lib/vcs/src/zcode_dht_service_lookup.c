@@ -48,12 +48,34 @@ int vcs_zcode_dht_lookup_candidate_index(const struct service_lookup *l,
   return -1;
 }
 
+static bool candidate_is_terminal(enum vcs_zcode_dht_candidate_state state) {
+  return state == VCS_ZCODE_DHT_CANDIDATE_UNREACHABLE ||
+         state == VCS_ZCODE_DHT_CANDIDATE_FAILED;
+}
+
+bool vcs_zcode_dht_lookup_candidate_in_frontier(
+    const struct service_lookup *l, uint32_t candidate_index) {
+  if (!l || candidate_index >= l->candidate_count ||
+      candidate_is_terminal(l->candidates[candidate_index].state))
+    return false;
+  uint32_t active = 0;
+  for (uint32_t i = 0; i <= candidate_index; i++) {
+    if (candidate_is_terminal(l->candidates[i].state))
+      continue;
+    active++;
+  }
+  return active <= VCS_ZCODE_DHT_K;
+}
+
 uint32_t
 vcs_zcode_dht_lookup_frontier_count(const struct service_lookup *l) {
   if (!l)
     return 0;
-  return l->candidate_count < VCS_ZCODE_DHT_K ? l->candidate_count
-                                               : VCS_ZCODE_DHT_K;
+  uint32_t count = 0;
+  for (uint32_t i = 0; i < l->candidate_count && count < VCS_ZCODE_DHT_K; i++)
+    if (!candidate_is_terminal(l->candidates[i].state))
+      count++;
+  return count;
 }
 
 bool vcs_zcode_dht_lookup_candidate_authenticated(
@@ -143,9 +165,9 @@ void vcs_zcode_dht_lookup_terminate(
 
 static bool lookup_has_state(const struct service_lookup *l,
                              enum vcs_zcode_dht_candidate_state state) {
-  uint32_t frontier = vcs_zcode_dht_lookup_frontier_count(l);
-  for (uint32_t i = 0; i < frontier; i++)
-    if (l->candidates[i].state == state)
+  for (uint32_t i = 0; i < l->candidate_count; i++)
+    if (vcs_zcode_dht_lookup_candidate_in_frontier(l, i) &&
+        l->candidates[i].state == state)
       return true;
   return false;
 }
@@ -191,8 +213,9 @@ void vcs_zcode_dht_lookup_schedule(struct vcs_zcode_dht_service *s,
       if (!lookup->used || lookup->completed ||
           lookup->queries_pending >= VCS_ZCODE_DHT_ALPHA)
         continue;
-      uint32_t frontier = vcs_zcode_dht_lookup_frontier_count(lookup);
-      for (uint32_t i = 0; i < frontier; i++) {
+      for (uint32_t i = 0; i < lookup->candidate_count; i++) {
+        if (!vcs_zcode_dht_lookup_candidate_in_frontier(lookup, i))
+          continue;
         struct lookup_candidate *candidate = &lookup->candidates[i];
         if (candidate->state != VCS_ZCODE_DHT_CANDIDATE_AUTHENTICATED)
           continue;
@@ -245,8 +268,9 @@ void vcs_zcode_dht_lookup_schedule(struct vcs_zcode_dht_service *s,
 static void lookup_request_cold_frontier(
     struct vcs_zcode_dht_service *s, struct service_lookup *lookup,
     struct vcs_zcode_dht_time now) {
-  uint32_t frontier = vcs_zcode_dht_lookup_frontier_count(lookup);
-  for (uint32_t i = 0; i < frontier; i++) {
+  for (uint32_t i = 0; i < lookup->candidate_count; i++) {
+    if (!vcs_zcode_dht_lookup_candidate_in_frontier(lookup, i))
+      continue;
     struct lookup_candidate *candidate = &lookup->candidates[i];
     if (candidate->state != VCS_ZCODE_DHT_CANDIDATE_UNVERIFIED)
       continue;

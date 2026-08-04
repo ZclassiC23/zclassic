@@ -5,6 +5,7 @@
 
 #include "base/serialize_le.h"
 #include "crypto/ed25519.h"
+#include "crypto/sha3.h"
 #include "support/cleanse.h"
 
 #include <string.h>
@@ -80,6 +81,32 @@ static bool namespace_valid(
   }
   if (length_out)
     *length_out = length;
+  return true;
+}
+
+bool vcs_zcode_dht_record_key(
+    const uint8_t network_genesis[32],
+    enum vcs_zcode_dht_record_kind kind,
+    const char namespace_name[VCS_ZCODE_DHT_RECORD_NAMESPACE_BYTES],
+    const uint8_t root[32], uint8_t out[32])
+{
+  if (!network_genesis || !namespace_name || !root || !out ||
+      !record_nonzero(network_genesis, 32) || !record_nonzero(root, 32) ||
+      !namespace_valid(namespace_name, NULL) ||
+      kind < VCS_ZCODE_DHT_RECORD_PROVIDER ||
+      kind > VCS_ZCODE_DHT_RECORD_STORAGE_ACK)
+    return false;
+  struct sha3_256_ctx hash;
+  const uint8_t kind_byte = (uint8_t)kind;
+  sha3_256_init(&hash);
+  sha3_256_write(&hash, (const uint8_t *)VCS_ZCODE_DHT_RECORD_KEY_DOMAIN,
+                 sizeof(VCS_ZCODE_DHT_RECORD_KEY_DOMAIN));
+  sha3_256_write(&hash, network_genesis, 32);
+  sha3_256_write(&hash, &kind_byte, sizeof(kind_byte));
+  sha3_256_write(&hash, (const uint8_t *)namespace_name,
+                 VCS_ZCODE_DHT_RECORD_NAMESPACE_BYTES);
+  sha3_256_write(&hash, root, 32);
+  sha3_256_finalize(&hash, out);
   return true;
 }
 

@@ -118,6 +118,57 @@ static int test_record_roundtrip(void)
   return failures;
 }
 
+static int test_record_key(void)
+{
+  int failures = 0;
+  TEST("zcode dht record: routing key is canonical and domain separated") {
+    uint8_t network[32], root[32], key[32], same[32], changed[32];
+    char namespace_name[VCS_ZCODE_DHT_RECORD_NAMESPACE_BYTES] = {0};
+    rf_fill(network, sizeof(network), 0x11);
+    rf_fill(root, sizeof(root), 0x22);
+    (void)snprintf(namespace_name, sizeof(namespace_name), "science.study");
+    ASSERT(vcs_zcode_dht_record_key(
+        network, VCS_ZCODE_DHT_RECORD_PROVIDER, namespace_name, root, key));
+    char key_hex[65];
+    zcl_hex_encode(key, sizeof(key), key_hex);
+    ASSERT(strcmp(key_hex,
+                  "424fffbf7112bf08bb46a275889a09c0252b33e146f2d4f"
+                  "cb00cc62290f48aa1") == 0);
+    ASSERT(vcs_zcode_dht_record_key(
+        network, VCS_ZCODE_DHT_RECORD_PROVIDER, namespace_name, root, same));
+    ASSERT(memcmp(key, same, sizeof(key)) == 0);
+
+    ASSERT(vcs_zcode_dht_record_key(
+        network, VCS_ZCODE_DHT_RECORD_POINTER, namespace_name, root, changed));
+    ASSERT(memcmp(key, changed, sizeof(key)) != 0);
+    namespace_name[0] = 'x';
+    ASSERT(vcs_zcode_dht_record_key(
+        network, VCS_ZCODE_DHT_RECORD_PROVIDER, namespace_name, root, changed));
+    ASSERT(memcmp(key, changed, sizeof(key)) != 0);
+    namespace_name[0] = 's';
+    network[0] ^= 1;
+    ASSERT(vcs_zcode_dht_record_key(
+        network, VCS_ZCODE_DHT_RECORD_PROVIDER, namespace_name, root, changed));
+    ASSERT(memcmp(key, changed, sizeof(key)) != 0);
+    network[0] ^= 1;
+    root[0] ^= 1;
+    ASSERT(vcs_zcode_dht_record_key(
+        network, VCS_ZCODE_DHT_RECORD_PROVIDER, namespace_name, root, changed));
+    ASSERT(memcmp(key, changed, sizeof(key)) != 0);
+
+    memset(root, 0, sizeof(root));
+    ASSERT(!vcs_zcode_dht_record_key(
+        network, VCS_ZCODE_DHT_RECORD_PROVIDER, namespace_name, root, changed));
+    namespace_name[0] = 'S';
+    root[0] = 1;
+    ASSERT(!vcs_zcode_dht_record_key(
+        network, VCS_ZCODE_DHT_RECORD_PROVIDER, namespace_name, root, changed));
+    PASS();
+  }
+  _test_next:;
+  return failures;
+}
+
 static int test_record_shape_and_windows(void)
 {
   int failures = 0;
@@ -473,6 +524,7 @@ static int test_declared_replication(void)
 int test_zcode_dht_record(void)
 {
   int failures = 0;
+  failures += test_record_key();
   failures += test_record_roundtrip();
   failures += test_record_shape_and_windows();
   failures += test_record_adversarial();

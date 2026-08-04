@@ -173,6 +173,8 @@ bool vcs_zcode_dht_lookup_candidate_authenticated(
     enum vcs_zcode_dht_candidate_state state);
 uint32_t
 vcs_zcode_dht_lookup_frontier_count(const struct service_lookup *lookup);
+bool vcs_zcode_dht_lookup_candidate_in_frontier(
+    const struct service_lookup *lookup, uint32_t candidate_index);
 struct service_peer *vcs_zcode_dht_lookup_peer_for_node(
     struct vcs_zcode_dht_service *service, const uint8_t node_id[32]);
 bool vcs_zcode_dht_lookup_insert(

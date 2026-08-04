@@ -22,6 +22,7 @@
 #define VCS_ZCODE_DHT_POINTER_MAX_SECONDS UINT64_C(604800)
 #define VCS_ZCODE_DHT_STORAGE_ACK_MAX_SECONDS UINT64_C(604800)
 #define VCS_ZCODE_DHT_RECORD_SIGNATURE_DOMAIN "zcl.zcode.dht.record.v1"
+#define VCS_ZCODE_DHT_RECORD_KEY_DOMAIN "zcl.zcode.dht.record-key.v1"
 
 enum vcs_zcode_dht_record_kind {
   VCS_ZCODE_DHT_RECORD_PROVIDER = 1,
@@ -79,6 +80,16 @@ struct vcs_zcode_dht_record_verify_context {
   vcs_zcode_dht_chain_verify_fn chain_verify;
   void *chain_ctx;
 };
+
+/* Derive the Kademlia routing target for one logical record stream. `root`
+ * is semantic_root for POINTER and transport_root for PROVIDER/STORAGE_ACK.
+ * The fixed-size canonical namespace prevents alternate encodings from
+ * routing the same stream to different responsible nodes. */
+bool vcs_zcode_dht_record_key(
+    const uint8_t network_genesis[32],
+    enum vcs_zcode_dht_record_kind kind,
+    const char namespace_name[VCS_ZCODE_DHT_RECORD_NAMESPACE_BYTES],
+    const uint8_t root[32], uint8_t out[32]);
 
 /* Sign a fully populated record with the delegated online seed. The seed's
  * public key must equal delegation.online_pubkey. */
