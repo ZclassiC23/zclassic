@@ -95,7 +95,7 @@ struct vcs_zcode_dht_pending {
     bool active;
     uint8_t victim_node_id[32];
     struct vcs_zcode_dht_contact candidate;
-    int64_t deadline_unix;
+    int64_t deadline_mono;
 };
 
 /* The long-lived service heap-owns this object. Fixed storage makes every cap
@@ -124,12 +124,17 @@ bool vcs_zcode_dht_table_init(struct vcs_zcode_dht_table *table,
  * candidate wins until the probe resolves; no immediate eviction occurs. */
 enum vcs_zcode_dht_add_result vcs_zcode_dht_table_add_contact(
     struct vcs_zcode_dht_table *table,
-    const struct vcs_zcode_dht_contact *contact, int64_t now_unix);
+    const struct vcs_zcode_dht_contact *contact, int64_t now_mono);
 bool vcs_zcode_dht_table_probe_result(struct vcs_zcode_dht_table *table,
                                       const uint8_t victim_node_id[32],
                                       bool responsive, int64_t now_unix);
 size_t vcs_zcode_dht_table_expire_probes(struct vcs_zcode_dht_table *table,
-                                         int64_t now_unix);
+                                         int64_t now_mono);
+/* Drop a pending candidate without evicting its incumbent. Used when the
+ * candidate's signed delegation or chain status went stale while the
+ * incumbent probe was in flight. */
+bool vcs_zcode_dht_table_discard_candidate(
+    struct vcs_zcode_dht_table *table, const uint8_t victim_node_id[32]);
 size_t vcs_zcode_dht_table_pending_count(
     const struct vcs_zcode_dht_table *table);
 

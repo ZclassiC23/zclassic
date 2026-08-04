@@ -15,32 +15,39 @@ tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 
 ## Current state
 
-**2026-08-03 — S6 read-only DHT COMPLETE; not deployed.** The existing
+**2026-08-04 — S6 iterative read-only DHT COMPLETE; not deployed.** The existing
 `zpkgswm`/Noise transport now carries bounded `FIND_NODE`/`NODES` traffic;
 there is no second socket stack. A node ID is bound to an active,
 chain-anchored ZID master, a delayed active-chain beacon, its delegated online
 Ed25519 key, and the authenticated Noise static key/session. Routing is fixed
 at k=16/alpha=3 with a 1,024-contact cap, 64 authenticated peer slots, three
-active queries, and a 30-second lookup ceiling. Canonical `contacts.v2`
-persistence is strict, network/self bound, and cold-revalidated. Read-only
-operator surfaces are `zcode.network.status|peers|find`; `ops state
---subsystem=zcode_dht` reports node/contact/bucket/query/probe/frame and
-persistence state without keys, raw delegations, peer addresses, or an
-operator-diversity claim.
+active queries, eight fairly queued lookups, and a 30-second per-lookup
+ceiling. Each lookup owns a deterministic k=16 XOR-ordered shortlist whose
+entries move through unverified, unreachable, authenticated, queried,
+in-flight, responded, or failed states. Address-free NODES results request a
+bounded dial only through an already accepted, signed and chain-bound ZENDP
+endpoint; a fresh Noise session plus delegation is still the sole promotion
+authority. Canonical `contacts.v2` persistence is strict, network/self bound,
+and cold-revalidated. Read-only operator surfaces are
+`zcode.network.status|peers|find`; `ops state --subsystem=zcode_dht` reports
+rounds, XOR progress, shortlist composition, queue wait, termination reasons,
+ancestry work, contacts, probes, frame counters, and persistence without keys,
+raw delegations, peer addresses, or an operator-diversity claim.
 
-The acceptance proof (`make test-zcode-dht-acceptance`) creates two clean
-package-host-disabled regtest nodes with independent masters, anchors and
-finalizes both identities, observes the plaintext capability-learning reconnect
-into Noise, proves mutual discovery and XOR-ordered lookup, exact rejection of
-malformed/oversize, identity-mismatch, replay, unsolicited, expired, and
-poisoned-contact frames inside an authenticated Noise session, then proves
-clean persistence, cold reload, short-disconnect incumbent retention, and
-reauthentication. Focused DHT/Noise/transport/argv tests, yardsale/store tests
-(including the opt-in store stress pair), `make lint`, a cold uncached full
-suite, the two-node science acceptance, and both reproducibility gates are the
-S6 evidence set. S7 remains open: provider records, root discovery,
-STORE/acknowledgements, replication, and automatic science blob-root discovery
-do not exist yet.
+The acceptance proof (`make test-zcode-dht-acceptance`) retains the original
+two-node hostile-frame/persistence checks, then creates seven independent
+identities on a common closed-chain fixture. It builds only a sparse neighbour
+chain plus one alternate edge, files six signed endpoints at the lookup origin
+without inserting contacts, kills the nearest path, and proves target recovery
+in at least three rounds with XOR progress and bounded traffic. It also proves
+eight concurrent callers, replay pressure beyond 16 unique signed frames,
+multi-contact cold persistence, and fresh reauthentication. The final evidence
+set is: focused DHT/Noise/transport/argv/connman/RPC tests; yardsale and store
+tests including both opt-in store stress groups; all 132 lint gates; the cold
+uncached suite (887/887 eligible groups, zero cached); full LTO; science
+acceptance; and both same-tree and different-path byte-identity gates. S7
+remains open: provider records, root discovery, STORE/acknowledgements,
+replication, and automatic science blob-root discovery do not exist yet.
 
 **2026-08-03 — G4 (findings had no command-leaf admission) CLOSED.**
 New leaves `zcode.science.findings.plan|commit`: exact expiring plan +

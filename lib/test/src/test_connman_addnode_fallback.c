@@ -80,6 +80,84 @@ int test_connman_addnode_fallback(void)
 {
     int failures = 0;
 
+    printf("connman_addnode_fallback: signed DHT hints get one priority "
+           "dial without becoming addnodes... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+        struct net_address hint;
+        test_set_ipv4(&hint, 127, 0, 0, 1, 20023);
+        ok = ok && connman_queue_dht_hint(&cm, &hint);
+        ok = ok && connman_queue_dht_hint(&cm, &hint);
+        ok = ok && cm.dht_hint_count == 1 && cm.num_addnodes == 0 &&
+             connman_dht_hint_pending(&cm) &&
+             !connman_connect_only_wait_needed_for_test(true, 1, 1, true) &&
+             connman_connect_only_wait_needed_for_test(true, 1, 1, false);
+        ok = ok && connman_outbound_rate_allowed_for_test(false, false, true) &&
+             connman_outbound_rate_allowed_for_test(true, false, false) &&
+             connman_outbound_rate_allowed_for_test(false, true, false) &&
+             !connman_outbound_rate_allowed_for_test(false, false, false);
+        struct connman_dial_candidate candidate;
+        memset(&candidate, 0, sizeof(candidate));
+        size_t n = ok ? connman_gather_dial_candidates(&cm, &candidate, 1) : 0;
+        ok = ok && n == 1 &&
+             candidate.source == CONNMAN_TARGET_DHT_HINT &&
+             candidate.addr.svc.port == 20023 && cm.dht_hint_count == 0 &&
+             !connman_dht_hint_pending(&cm) && cm.num_addnodes == 0;
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("connman_addnode_fallback: explicit loopback edges remain distinct "
+           "in one sparse-fixture batch... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+        test_set_ipv4(&cm.addnodes[0], 127, 0, 0, 1, 20023);
+        test_set_ipv4(&cm.addnodes[1], 127, 0, 0, 1, 20024);
+        cm.num_addnodes = 2;
+        struct connman_dial_candidate candidates[2];
+        memset(candidates, 0, sizeof(candidates));
+        size_t n = ok ? connman_gather_dial_candidates(&cm, candidates, 2) : 0;
+        ok = ok && n == 2 &&
+             candidates[0].source == CONNMAN_TARGET_ADDNODE &&
+             candidates[1].source == CONNMAN_TARGET_ADDNODE &&
+             candidates[0].addr.svc.port != candidates[1].addr.svc.port;
+        struct p2p_node *first = add_test_peer(
+            &cm, 127, 0, 0, 1, PEER_HANDSHAKE_COMPLETE, false, false);
+        ok = ok && first != NULL;
+        if (first)
+            first->addr.svc.port = 20023;
+        cm.next_addnode_cursor = 0;
+        struct connman_dial_candidate after_connect[2];
+        memset(after_connect, 0, sizeof(after_connect));
+        size_t after_n = ok ? connman_gather_dial_candidates(
+                                  &cm, after_connect, 2) : 0;
+        ok = ok && after_n == 1 &&
+             after_connect[0].addr.svc.port == 20024;
+        cm.next_addnode_cursor = 0;
+        struct addr_info remaining;
+        enum connman_outbound_target_source source = CONNMAN_TARGET_NONE;
+        memset(&remaining, 0, sizeof(remaining));
+        ok = ok && connman_pick_next_outbound_target(
+                       &cm, &cm.next_addnode_cursor, &remaining, &source,
+                       NULL) &&
+             source == CONNMAN_TARGET_ADDNODE &&
+             remaining.addr.svc.port == 20024;
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("connman_addnode_fallback: addnodes drain before addrman... ");
     {
         chain_params_select(CHAIN_MAIN);
@@ -1463,6 +1541,8 @@ int test_connman_addnode_fallback(void)
         struct net_address pinned;
         test_set_ipv4(&pinned, 127, 0, 0, 1, 18444);
         cm.addnodes[cm.num_addnodes++] = pinned;
+        cm.addnode_last_attempt[0] = 99;
+        cm.addnode_backoff_sec[0] = 60;
         struct p2p_node *node = add_test_peer(
             &cm, 127, 0, 0, 1, PEER_VERSION_RECEIVED, false, false);
         ok = ok && node != NULL;
@@ -1475,11 +1555,31 @@ int test_connman_addnode_fallback(void)
                 (node->addr.nServices & NODE_V2TRANSPORT) != 0;
             ok = ok &&
                 (cm.addnodes[0].nServices & NODE_V2TRANSPORT) != 0;
+            ok = ok && cm.addnode_last_attempt[0] == 0 &&
+                 cm.addnode_backoff_sec[0] == 0;
 
             /* The learned bit makes this the only reconnect request.  The
              * next dial snapshot enters Noise in net.c immediately. */
             node->disconnect = false;
             ok = ok && !connman_request_v2_upgrade(&cm, node);
+
+            /* A non-addnode learned hop must retain the exact endpoint for
+             * its one controlled Noise reconnect.  In -connect mode addrman
+             * is not consulted, and without this queue entry the iterative
+             * lookup would leave the candidate permanently unverified. */
+            cm.num_addnodes = 0;
+            node->addr.svc.port = 18445;
+            node->addr.nServices &= ~NODE_V2TRANSPORT;
+            node->disconnect = false;
+            struct net_address learned_reconnect;
+            memset(&learned_reconnect, 0, sizeof(learned_reconnect));
+            ok = ok && connman_request_v2_upgrade(&cm, node);
+            ok = ok && connman_dht_hint_pending(&cm);
+            ok = ok && connman_take_dht_hint(&cm, &learned_reconnect);
+            ok = ok && net_service_eq(&learned_reconnect.svc,
+                                      &node->addr.svc);
+            ok = ok &&
+                (learned_reconnect.nServices & NODE_V2TRANSPORT) != 0;
 
             node->inbound = true;
             node->addr.nServices &= ~NODE_V2TRANSPORT;

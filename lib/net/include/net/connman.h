@@ -104,12 +104,14 @@ int connman_reactor_admit_for_test(size_t listen_sockets, int requested_max,
  * is the right outcome). */
 #define CONNMAN_DEFERRED_FREE_INIT_CAP 256
 #define CONNMAN_DEFERRED_FREE_HARD_CAP 1000
+#define CONNMAN_DHT_HINT_MAX 64
 
 enum connman_outbound_target_source {
     CONNMAN_TARGET_NONE = 0,
     CONNMAN_TARGET_ADDNODE,
     CONNMAN_TARGET_ADDRMAN,
     CONNMAN_TARGET_ANCHOR,   /* persisted anchors.dat, dialed first at boot */
+    CONNMAN_TARGET_DHT_HINT, /* chain-bound ZENDP hint, one priority attempt */
 };
 
 enum connman_addnode_failure_kind {
@@ -250,6 +252,13 @@ struct connman {
      * dialer falls into the normal addnode/addrman flow. */
     struct anchor_peer_set anchors;
     bool                   anchors_tried[ANCHOR_PEERS_MAX];
+    /* Address-free ZCODE NODES hints resolve through signed ZENDP records,
+     * then land here for one priority dial by the existing non-blocking
+     * dialer. They are also added to addrman; this queue is merely urgency,
+     * never a second address authority or socket stack. */
+    zcl_mutex_t             dht_hint_lock;
+    struct net_address      dht_hints[CONNMAN_DHT_HINT_MAX];
+    size_t                  dht_hint_count;
     /* Feeler cadence: wall-clock seconds of the last feeler dial initiated
      * (0 = none yet). One feeler per ZCL_FEELER_INTERVAL_SECS. */
     int64_t                last_feeler_ts;
@@ -296,6 +305,10 @@ void connman_add_seed_node(struct connman *cm, const char *host,
                             uint16_t port);
 void connman_open_connection(struct connman *cm,
                               const struct net_address *addr);
+bool connman_queue_dht_hint(struct connman *cm,
+                            const struct net_address *addr);
+bool connman_dht_hint_pending(struct connman *cm);
+bool connman_take_dht_hint(struct connman *cm, struct net_address *out);
 bool connman_remove_addnode(struct connman *cm,
                             const struct net_address *addr);
 
@@ -419,7 +432,8 @@ struct connman_dial_candidate {
 /* Gather up to `max` (clamped to MAX_OUTBOUND_CONNECTIONS) distinct outbound
  * dial candidates for one non-blocking batch, in PRIORITY order:
  *   1. un-tried persisted anchors (each dialed once, marked tried), then
- *   2. addnode / addrman via connman_pick_next_outbound_target.
+ *   2. a chain-bound DHT endpoint hint, then
+ *   3. addnode / addrman via connman_pick_next_outbound_target.
  * Every candidate passes the same per-candidate gates the serial dialer used
  * (reachable port, not already connected, not is_local, /16+/32+onion
  * diversity), PLUS an in-batch dedupe + diversity tally so a single batch
@@ -428,6 +442,18 @@ struct connman_dial_candidate {
 size_t connman_gather_dial_candidates(struct connman *cm,
                                       struct connman_dial_candidate *out,
                                       size_t max);
+
+#ifdef ZCL_TESTING
+/* Pure form of the -connect idle gate. A pending chain-bound DHT hint must
+ * keep the dialer awake even after every explicit addnode has a connection. */
+bool connman_connect_only_wait_needed_for_test(bool connect_only,
+                                               size_t outbound,
+                                               size_t addnode_count,
+                                               bool dht_hint_pending);
+bool connman_outbound_rate_allowed_for_test(bool below_floor,
+                                            bool interval_elapsed,
+                                            bool dht_hint_pending);
+#endif
 
 /* Snapshot the currently healthy (handshaked, NODE_NETWORK, non-disconnecting,
  * non-feeler) outbound peers into `set` (capped at ANCHOR_PEERS_MAX). This is

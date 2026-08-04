@@ -223,6 +223,7 @@ static int test_peer_lifecycle_skips_inbound_ephemeral_cache(void)
         ASSERT(!zcl_net_port_is_reachable_candidate(53100));
         ASSERT(zcl_net_port_is_reachable_candidate(8033));
         ASSERT(zcl_net_port_is_reachable_candidate(20022));
+        ASSERT(zcl_net_port_is_reachable_candidate(20028));
 
         inbound.addr.svc.port = 8033;
         ASSERT(msg_version_should_save_peer(&inbound));

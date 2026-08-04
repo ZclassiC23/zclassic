@@ -11,7 +11,7 @@ enum query_kind { QUERY_BOOTSTRAP = 0, QUERY_LOOKUP, QUERY_PROBE };
 struct replay_entry {
   bool used;
   uint8_t id[16];
-  uint64_t seen;
+  uint64_t seen_mono;
 };
 
 struct service_peer {
@@ -21,7 +21,7 @@ struct service_peer {
   uint8_t node_id[32];
   struct vcs_zcode_dht_contact contact;
   uint8_t rate_tokens;
-  uint64_t rate_refill;
+  uint64_t rate_refill_mono;
   struct replay_entry replay[VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER];
 };
 
@@ -29,21 +29,30 @@ struct service_query {
   bool used;
   enum query_kind kind;
   uint8_t id[16], target[32], victim[32];
-  uint64_t peer_id, generation, deadline, lookup_id;
+  uint64_t peer_id, generation, deadline_mono, lookup_id;
 };
 
 struct expired_query {
   bool used;
   uint8_t id[16];
-  uint64_t peer_id, generation, expired_at;
+  uint64_t peer_id, generation, expired_at_mono;
+};
+
+struct lookup_candidate {
+  bool used;
+  uint8_t node_id[32];
+  enum vcs_zcode_dht_candidate_state state;
+  uint64_t peer_id, reachability_deadline_mono;
 };
 
 struct service_lookup {
-  bool used, completed, timed_out, response_received, not_found;
-  uint64_t id, deadline;
+  bool used, completed;
+  uint64_t id, started_mono, deadline_mono, first_query_mono;
   uint8_t target[32];
-  uint8_t hints[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES][32];
-  uint32_t hint_count, queries_sent, queries_pending;
+  struct lookup_candidate shortlist[VCS_ZCODE_DHT_K];
+  uint32_t shortlist_count, queries_sent, queries_pending, rounds;
+  uint32_t xor_progress;
+  enum vcs_zcode_dht_lookup_termination termination;
 };
 
 struct service_outbound {
@@ -60,6 +69,8 @@ struct vcs_zcode_dht_service {
   struct vcs_zcode_dht_delegation delegation;
   vcs_zcode_dht_chain_verify_fn chain_verify;
   void *chain_ctx;
+  vcs_zcode_dht_reachability_fn request_reachability;
+  void *reachability_ctx;
   struct vcs_zcode_dht_table *table;
   struct service_peer peers[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
   struct service_query queries[VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES];
@@ -69,9 +80,12 @@ struct vcs_zcode_dht_service {
   uint32_t outbound_count;
   uint64_t serial, next_lookup_id;
   bool persistence_loaded, persistence_dirty;
-  uint64_t dirty_since, persistence_load_count, persistence_save_count;
+  uint64_t dirty_since_mono, persistence_load_count, persistence_save_count;
   uint64_t frames_accepted, rejected[VCS_ZCODE_DHT_REJECT_COUNT];
   uint64_t find_received, nodes_received, find_sent, nodes_sent;
+  uint64_t lookup_rounds, lookup_xor_progress, lookup_queue_wait_s;
+  uint64_t lookup_terminations[VCS_ZCODE_DHT_TERMINATION_COUNT];
+  uint32_t scheduler_cursor;
 };
 
 void vcs_zcode_dht_service_set_error(struct vcs_zcode_dht_service *service,
@@ -80,5 +94,32 @@ bool vcs_zcode_dht_service_persistence_load(
     struct vcs_zcode_dht_service *service, uint64_t now_unix);
 bool vcs_zcode_dht_service_persistence_save(
     struct vcs_zcode_dht_service *service);
+
+/* Cross-unit lookup helpers.  These stay private to lib/vcs even though the
+ * service and iterative scheduler are split to honor the file-size ceiling. */
+struct service_lookup *vcs_zcode_dht_lookup_find(
+    struct vcs_zcode_dht_service *service, uint64_t id);
+bool vcs_zcode_dht_lookup_closer_id(const uint8_t a[32], const uint8_t b[32],
+                                    const uint8_t target[32]);
+int vcs_zcode_dht_lookup_candidate_index(const struct service_lookup *lookup,
+                                         const uint8_t node_id[32]);
+bool vcs_zcode_dht_lookup_candidate_authenticated(
+    enum vcs_zcode_dht_candidate_state state);
+struct service_peer *vcs_zcode_dht_lookup_peer_for_node(
+    struct vcs_zcode_dht_service *service, const uint8_t node_id[32]);
+bool vcs_zcode_dht_lookup_insert(
+    struct service_lookup *lookup, const uint8_t node_id[32],
+    enum vcs_zcode_dht_candidate_state state, uint64_t peer_id);
+void vcs_zcode_dht_lookup_terminate(
+    struct vcs_zcode_dht_service *service, struct service_lookup *lookup,
+    enum vcs_zcode_dht_lookup_termination termination);
+void vcs_zcode_dht_lookup_assess(struct vcs_zcode_dht_service *service,
+                                 struct service_lookup *lookup);
+void vcs_zcode_dht_lookup_schedule(struct vcs_zcode_dht_service *service,
+                                   struct vcs_zcode_dht_time now);
+bool vcs_zcode_dht_service_send_find(
+    struct vcs_zcode_dht_service *service, struct service_peer *peer,
+    enum query_kind kind, uint64_t lookup_id, const uint8_t target[32],
+    const uint8_t victim[32], uint64_t now_mono);
 
 #endif /* ZCL_VCS_ZCODE_DHT_SERVICE_INTERNAL_H */

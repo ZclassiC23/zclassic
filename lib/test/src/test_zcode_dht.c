@@ -87,8 +87,15 @@ static int test_refresh_rules(void)
         ASSERT_EQ(vcs_zcode_dht_table_add_contact(t, &c, 100),
                   VCS_ZCODE_DHT_ADD_ADDED);
         fake_contact(&c, id, 0x20, 6, 101);
+        memset(c.noise_static_pubkey, 0x7e, 32);
+        c.delegation_wire[17] ^= 1;
         ASSERT_EQ(vcs_zcode_dht_table_add_contact(t, &c, 101),
                   VCS_ZCODE_DHT_ADD_REFRESHED);
+        fake_contact(&c, id, 0x20, 6, 102);
+        memset(c.noise_static_pubkey, 0x7f, 32);
+        c.delegation_wire[18] ^= 1;
+        ASSERT_EQ(vcs_zcode_dht_table_add_contact(t, &c, 102),
+                  VCS_ZCODE_DHT_ADD_REJECTED_STALE);
         fake_contact(&c, id, 0x20, 5, 102);
         ASSERT_EQ(vcs_zcode_dht_table_add_contact(t, &c, 102),
                   VCS_ZCODE_DHT_ADD_REJECTED_STALE);

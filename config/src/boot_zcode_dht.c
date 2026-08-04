@@ -6,7 +6,10 @@
 #include "base/hex.h"
 #include "config/boot_internal.h"
 #include "models/zid_identity.h"
+#include "net/addrman.h"
+#include "net/connman.h"
 #include "net/net.h"
+#include "net/netaddr.h"
 #include "net/peer_scoring.h"
 #include "net/v2_transport.h"
 #include "platform/time_compat.h"
@@ -17,6 +20,7 @@
 #include "validation/chainstate.h"
 #include "validation/main_constants.h"
 #include "vcs/zcode_dht_service.h"
+#include "vcs/zendp_swarm.h"
 #include "json/json.h"
 
 #include <stdatomic.h>
@@ -29,7 +33,18 @@
 static zcl_mutex_t g_dht_lock;
 static _Atomic int g_dht_lock_state;
 static struct vcs_zcode_dht_service *g_dht;
-static uint64_t g_last_create_attempt;
+static uint64_t g_last_create_attempt_mono;
+static uint8_t g_dht_genesis[32];
+static _Atomic uint64_t g_ancestry_lookups;
+static _Atomic uint64_t g_ancestry_height_span;
+
+static struct vcs_zcode_dht_time dht_now(void) {
+  struct vcs_zcode_dht_time now = {
+      .wall_unix = (uint64_t)platform_time_wall_time_t(),
+      .monotonic_s = (uint64_t)(platform_time_monotonic_ms() / 1000),
+  };
+  return now;
+}
 
 static void dht_status_json_locked(struct json_value *out) {
   struct vcs_zcode_dht_service_status status;
@@ -86,6 +101,37 @@ static void dht_status_json_locked(struct json_value *out) {
   json_push_kv_int(out, "nodes_received", (int64_t)status.nodes_received);
   json_push_kv_int(out, "find_node_sent", (int64_t)status.find_node_sent);
   json_push_kv_int(out, "nodes_sent", (int64_t)status.nodes_sent);
+  json_push_kv_int(out, "lookup_rounds", (int64_t)status.lookup_rounds);
+  json_push_kv_int(out, "lookup_xor_progress",
+                   (int64_t)status.lookup_xor_progress);
+  json_push_kv_int(out, "lookup_queue_wait_seconds",
+                   (int64_t)status.lookup_queue_wait_s);
+  static const char *const candidate_names[] = {
+      "unverified", "unreachable", "authenticated", "queried",
+      "in_flight", "responded", "failed"};
+  struct json_value shortlist;
+  json_init(&shortlist);
+  json_set_object(&shortlist);
+  for (int i = 0; i < VCS_ZCODE_DHT_CANDIDATE_STATE_COUNT; i++)
+    json_push_kv_int(&shortlist, candidate_names[i],
+                     (int64_t)status.lookup_shortlist_states[i]);
+  json_push_kv(out, "lookup_shortlist", &shortlist);
+  json_free(&shortlist);
+  static const char *const termination_names[] = {
+      "none", "target_authenticated", "shortlist_stable", "timeout",
+      "no_authenticated_result"};
+  struct json_value terminations;
+  json_init(&terminations);
+  json_set_object(&terminations);
+  for (int i = 0; i < VCS_ZCODE_DHT_TERMINATION_COUNT; i++)
+    json_push_kv_int(&terminations, termination_names[i],
+                     (int64_t)status.lookup_terminations[i]);
+  json_push_kv(out, "lookup_terminations", &terminations);
+  json_free(&terminations);
+  json_push_kv_int(out, "ancestry_lookups",
+                   (int64_t)atomic_load(&g_ancestry_lookups));
+  json_push_kv_int(out, "ancestry_max_height_span",
+                   (int64_t)atomic_load(&g_ancestry_height_span));
   json_push_kv_bool(out, "persistence_loaded", status.persistence_loaded);
   json_push_kv_bool(out, "persistence_dirty", status.persistence_dirty);
   json_push_kv_int(out, "persistence_load_count",
@@ -111,8 +157,27 @@ static void dht_lock(void) {
   zcl_mutex_lock(&g_dht_lock);
 }
 
-static bool
-dht_chain_verify(void *ctx, const struct vcs_zcode_dht_delegation *delegation) {
+bool boot_zcode_dht_beacon_matches(const struct block_index *header_tip,
+                                   uint32_t beacon_height,
+                                   const uint8_t beacon_hash[32],
+                                   uint64_t *height_span_out) {
+  if (height_span_out)
+    *height_span_out = 0;
+  if (!header_tip || !beacon_hash || header_tip->nHeight < 0 ||
+      beacon_height > (uint32_t)header_tip->nHeight)
+    return false;
+  uint64_t span = (uint64_t)header_tip->nHeight - beacon_height;
+  if (height_span_out)
+    *height_span_out = span;
+  struct block_index *beacon = block_index_get_ancestor(
+      (struct block_index *)header_tip, (int)beacon_height);
+  return beacon && beacon->phashBlock &&
+         beacon->nHeight == (int)beacon_height &&
+         memcmp(beacon->phashBlock->data, beacon_hash, 32) == 0;
+}
+
+static bool dht_chain_verify(
+    void *ctx, const struct vcs_zcode_dht_delegation *delegation) {
   struct boot_svc_ctx *svc = ctx;
   if (!svc || !svc->state || !svc->node_db || !delegation)
     return false;
@@ -139,21 +204,77 @@ dht_chain_verify(void *ctx, const struct vcs_zcode_dht_delegation *delegation) {
       header_tip->nHeight <
           (int)delegation->beacon_height + ZCL_FINALITY_DEPTH)
     return false;
-  const struct block_index *beacon = header_tip;
-  while (beacon && beacon->nHeight > (int)delegation->beacon_height)
-    beacon = beacon->pprev;
-  return beacon && beacon->phashBlock &&
-         beacon->nHeight == (int)delegation->beacon_height &&
-         memcmp(beacon->phashBlock->data, delegation->beacon_hash, 32) == 0;
+  uint64_t span = 0;
+  bool ok = boot_zcode_dht_beacon_matches(
+      header_tip, delegation->beacon_height, delegation->beacon_hash, &span);
+  atomic_fetch_add(&g_ancestry_lookups, 1);
+  uint64_t old = atomic_load(&g_ancestry_height_span);
+  while (span > old && !atomic_compare_exchange_weak(
+                           &g_ancestry_height_span, &old, span))
+    ;
+  return ok;
+}
+
+/* Address-free NODES remains deliberately address-free. A named ID can only
+ * request a dial when this node already holds a fresh, chain-verified ZENDP
+ * record for its master and can derive the same delayed-beacon node ID. The
+ * address enters addrman as a hint; Noise plus the delegation is still the
+ * sole promotion authority. */
+static bool dht_request_reachability(void *ctx, const uint8_t node_id[32],
+                                     uint64_t wall_now) {
+  struct boot_svc_ctx *svc = ctx;
+  if (!svc || !svc->connman || !node_id)
+    return false;
+  struct zendp_record_view views[ZENDP_DIR_MAX];
+  size_t n = zendp_global_records(wall_now, views, ZENDP_DIR_MAX);
+  const struct block_index *tip = csr_header_tip_snapshot(csr_instance());
+  if (!tip)
+    return false;
+  for (size_t i = 0; i < n; i++) {
+    const struct zendp_record_view *view = &views[i];
+    if (view->anchor_height < 0 ||
+        view->anchor_height > INT32_MAX - ZCL_FINALITY_DEPTH)
+      continue;
+    uint32_t beacon_height =
+        (uint32_t)(view->anchor_height + ZCL_FINALITY_DEPTH);
+    struct block_index *beacon = block_index_get_ancestor(
+        (struct block_index *)tip, (int)beacon_height);
+    uint8_t derived[32];
+    if (!beacon || !beacon->phashBlock ||
+        !vcs_zcode_dht_node_id(derived, g_dht_genesis,
+                               view->master_pubkey,
+                               beacon->phashBlock->data) ||
+        memcmp(derived, node_id, 32) != 0)
+      continue;
+    struct net_address addr;
+    net_address_init(&addr);
+    addr.nServices = view->ep.services;
+    addr.nTime = (uint32_t)wall_now;
+    if (view->ep.flags & ZENDP_HAS_IPV4) {
+      net_addr_set_ipv4(&addr.svc.addr, view->ep.ipv4);
+      addr.svc.port = view->ep.ipv4_port;
+    } else if (view->ep.flags & ZENDP_HAS_IPV6) {
+      memcpy(addr.svc.addr.ip, view->ep.ipv6, 16);
+      addr.svc.port = view->ep.ipv6_port;
+    } else {
+      /* Onion-only records remain owned by the existing Tor/ZENDP discovery
+       * path. This adapter intentionally does not add a second socket stack. */
+      return false;
+    }
+    return connman_queue_dht_hint(svc->connman, &addr);
+  }
+  return false;
 }
 
 static struct vcs_zcode_dht_service *
-dht_ensure(struct msg_processor *mp, struct boot_svc_ctx *svc, uint64_t now) {
+dht_ensure(struct msg_processor *mp, struct boot_svc_ctx *svc,
+           struct vcs_zcode_dht_time now) {
   if (g_dht && vcs_zcode_dht_service_enabled(g_dht))
     return g_dht;
-  if (g_dht && now < g_last_create_attempt + DHT_RETRY_SECONDS)
+  if (g_dht && now.monotonic_s <
+                   g_last_create_attempt_mono + DHT_RETRY_SECONDS)
     return g_dht;
-  g_last_create_attempt = now;
+  g_last_create_attempt_mono = now.monotonic_s;
   if (g_dht)
     vcs_zcode_dht_service_free(g_dht, now);
   g_dht = NULL;
@@ -162,12 +283,15 @@ dht_ensure(struct msg_processor *mp, struct boot_svc_ctx *svc, uint64_t now) {
   struct vcs_zcode_dht_service_params params = {
       .datadir = svc->datadir,
       .transport_enabled = mp->net_mgr->v2_enabled,
-      .now_unix = now,
+      .now = now,
       .chain_verify = dht_chain_verify,
       .chain_ctx = svc,
+      .request_reachability = dht_request_reachability,
+      .reachability_ctx = svc,
   };
   memcpy(params.network_genesis, mp->params->consensus.hashGenesisBlock.data,
          32);
+  memcpy(g_dht_genesis, params.network_genesis, sizeof(g_dht_genesis));
   memcpy(params.local_noise_static, mp->net_mgr->identity_pub, 32);
   g_dht = vcs_zcode_dht_service_create(&params);
   return g_dht;
@@ -222,12 +346,17 @@ static size_t dht_drain(struct msg_processor *mp, struct p2p_node *node) {
   return sent;
 }
 
+bool boot_zcode_dht_peer_ready(const struct p2p_node *node) {
+  return node && !atomic_load(&node->disconnect) && node->transport &&
+         atomic_load(&node->state) >= PEER_HANDSHAKE_COMPLETE;
+}
+
 bool boot_zcode_dht_frame(struct msg_processor *mp, struct p2p_node *node,
                           const uint8_t *payload, size_t payload_len,
                           struct boot_svc_ctx *svc) {
   if (!payload || payload_len < 6 || memcmp(payload, DHT_FRAME_PREFIX, 6) != 0)
     return false;
-  uint64_t now = (uint64_t)platform_time_wall_time_t();
+  struct vcs_zcode_dht_time now = dht_now();
   dht_lock();
   struct vcs_zcode_dht_service *dht = dht_ensure(mp, svc, now);
   struct vcs_zcode_dht_session session;
@@ -254,7 +383,7 @@ void boot_zcode_dht_periodic(struct msg_processor *mp,
                              struct boot_svc_ctx *svc) {
   if (!mp || !mp->net_mgr || !svc)
     return;
-  uint64_t now = (uint64_t)platform_time_wall_time_t();
+  struct vcs_zcode_dht_time now = dht_now();
   struct p2p_node *nodes[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
   size_t count = 0;
   zcl_mutex_lock(&mp->net_mgr->cs_nodes);
@@ -262,7 +391,11 @@ void boot_zcode_dht_periodic(struct msg_processor *mp,
        i < mp->net_mgr->num_nodes && count < VCS_ZCODE_DHT_SERVICE_MAX_PEERS;
        i++) {
     struct p2p_node *node = mp->net_mgr->nodes[i];
-    if (!node || atomic_load(&node->disconnect) || !node->transport)
+    /* Noise establishment alone is below the P2P message-layer boundary.
+     * Opening the DHT session before version+verack lets its one-shot
+     * bootstrap FIND_NODE arrive as "zpkgswm before version" and be dropped
+     * forever. Admit and reconcile only fully handshaked peers. */
+    if (!boot_zcode_dht_peer_ready(node))
       continue;
     nodes[count++] = node;
     p2p_node_add_ref(node);
@@ -295,7 +428,7 @@ void boot_zcode_dht_periodic(struct msg_processor *mp,
 }
 
 bool boot_zcode_dht_revalidate(void) {
-  uint64_t now = (uint64_t)platform_time_wall_time_t();
+  struct vcs_zcode_dht_time now = dht_now();
   dht_lock();
   bool ok = !g_dht || vcs_zcode_dht_service_revalidate(g_dht, now);
   zcl_mutex_unlock(&g_dht_lock);
@@ -423,12 +556,28 @@ dht_lookup_state_name(enum vcs_zcode_dht_lookup_state state) {
   return "pending";
 }
 
+static const char *dht_lookup_termination_name(
+    enum vcs_zcode_dht_lookup_termination termination) {
+  static const char *const names[] = {
+      "none", "target_authenticated", "shortlist_stable", "timeout",
+      "no_authenticated_result"};
+  return (unsigned)termination < VCS_ZCODE_DHT_TERMINATION_COUNT
+             ? names[termination]
+             : "unknown";
+}
+
 static void dht_lookup_json(struct json_value *result,
                             const struct vcs_zcode_dht_lookup_result *lookup) {
   json_set_object(result);
   bool complete = lookup->state == VCS_ZCODE_DHT_LOOKUP_COMPLETE;
   json_push_kv_bool(result, "ok", complete);
   json_push_kv_str(result, "state", dht_lookup_state_name(lookup->state));
+  json_push_kv_str(result, "termination",
+                   dht_lookup_termination_name(lookup->termination));
+  json_push_kv_int(result, "rounds", lookup->rounds);
+  json_push_kv_int(result, "xor_progress", lookup->xor_progress);
+  json_push_kv_int(result, "queue_wait_seconds",
+                   (int64_t)lookup->queue_wait_s);
   if (!complete) {
     bool timeout = lookup->state == VCS_ZCODE_DHT_LOOKUP_TIMEOUT;
     json_push_kv_str(result, "code",
@@ -470,7 +619,8 @@ static bool rpc_zcode_dht_find(const struct json_value *params, bool help,
                   "node_id must be 64 canonical lowercase hex chars");
     return true;
   }
-  uint64_t started = (uint64_t)platform_time_wall_time_t(), lookup_id = 0;
+  struct vcs_zcode_dht_time started = dht_now();
+  uint64_t lookup_id = 0;
   int64_t monotonic_deadline = platform_time_monotonic_ms() +
                                (int64_t)VCS_ZCODE_DHT_LOOKUP_CEILING_S * 1000;
   dht_lock();
@@ -484,9 +634,10 @@ static bool rpc_zcode_dht_find(const struct json_value *params, bool help,
   }
   struct vcs_zcode_dht_lookup_result lookup;
   for (;;) {
-    uint64_t now = (uint64_t)platform_time_wall_time_t();
+    struct vcs_zcode_dht_time now = dht_now();
     if (platform_time_monotonic_ms() >= monotonic_deadline)
-      now = started + VCS_ZCODE_DHT_LOOKUP_CEILING_S;
+      now.monotonic_s =
+          started.monotonic_s + VCS_ZCODE_DHT_LOOKUP_CEILING_S;
     dht_lock();
     bool found = g_dht && vcs_zcode_dht_service_lookup_poll(g_dht, lookup_id,
                                                             now, &lookup);
@@ -517,8 +668,8 @@ void boot_zcode_dht_register_rpc(struct rpc_table *table) {
 void boot_zcode_dht_shutdown(void) {
   dht_lock();
   if (g_dht)
-    vcs_zcode_dht_service_free(g_dht, (uint64_t)platform_time_wall_time_t());
+    vcs_zcode_dht_service_free(g_dht, dht_now());
   g_dht = NULL;
-  g_last_create_attempt = 0;
+  g_last_create_attempt_mono = 0;
   zcl_mutex_unlock(&g_dht_lock);
 }

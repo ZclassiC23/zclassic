@@ -140,15 +140,20 @@ static int test_rejections(void)
                       &m, f.transcript, f.online_seed, wire, sizeof(wire), &len),
                   VCS_ZCODE_DHT_OK);
         struct vcs_zcode_dht_msg parsed;
+        memset(&parsed, 0xa5, sizeof(parsed));
         int before_bounds = chain_calls;
         ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len - 1, &f.verify, &parsed),
                   VCS_ZCODE_DHT_ERR_WIRE_SIZE);
+        struct vcs_zcode_dht_msg zero;
+        memset(&zero, 0, sizeof(zero));
+        ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
         ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len + 1, &f.verify, &parsed),
                   VCS_ZCODE_DHT_ERR_WIRE_SIZE);
         ASSERT_EQ(chain_calls, before_bounds);
         wire[len - VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES - 1] ^= 1;
         ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &f.verify, &parsed),
                   VCS_ZCODE_DHT_ERR_SIGNATURE);
+        ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
         wire[len - VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES - 1] ^= 1;
         struct vcs_zcode_dht_msg_verify_context wrong = f.verify;
         wrong.remote_noise_static[0] ^= 1;

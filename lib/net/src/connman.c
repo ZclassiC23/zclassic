@@ -812,7 +812,8 @@ static bool connman_addnode_is_connected(struct connman *cm, size_t addnode_inde
         struct p2p_node *n = cm->manager.nodes[ni];
         if (!n || n->disconnect)
             continue;
-        if (net_addr_eq(&n->addr.svc.addr, &cm->addnodes[addnode_index].svc.addr)) {
+        if (net_service_eq(&n->addr.svc,
+                           &cm->addnodes[addnode_index].svc)) {
             connected = true;
             break;
         }
@@ -832,6 +833,13 @@ static bool connman_node_conflicts_with_target(
         return false;
     if (node->addr.svc.port == addr->svc.port)
         return true;
+
+    /* A single host may run several operator-controlled acceptance daemons
+     * on distinct loopback ports. Keep those service identities separate all
+     * the way through final dial dedupe; remote same-IP/different-port peers
+     * still collapse below to prevent slot multiplication. */
+    if (net_addr_is_operator_local(&addr->svc.addr))
+        return false;
 
     /* Inbound peers usually arrive from ephemeral source ports. Do not let
      * that socket suppress an outbound dial to the peer's advertised listen
@@ -2029,6 +2037,7 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
 
     memset(cm, 0, sizeof(*cm));
     net_manager_init(&cm->manager);
+    zcl_mutex_init(&cm->dht_hint_lock);
     cm->manager.owner = cm;
     cm->params = params;
     cm->manager.signals = *signals;
@@ -2063,6 +2072,7 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
         "connman.deferred_free");
     if (!cm->deferred_free) {
         cm->deferred_free_cap = 0;
+        zcl_mutex_destroy(&cm->dht_hint_lock);
         return false;
     }
     cm->num_deferred_free = 0;
@@ -2506,6 +2516,7 @@ void connman_free(struct connman *cm)
     }
 
     net_manager_free(&cm->manager);
+    zcl_mutex_destroy(&cm->dht_hint_lock);
 
     /* free any deferred entries still pending. After
      * connman_stop returns, no other thread should hold node refs. */
