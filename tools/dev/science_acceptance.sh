@@ -255,6 +255,17 @@ sa_wait_height() {
     return 1
 }
 
+sa_wait_identity_active() { # $1=datadir $2=master pubkey
+    local dd="$1" pub="$2" out
+    for _ in $(seq 1 120); do
+        out="$(sa_sci "$dd" core.identity.resolve "{\"pubkey\":\"$pub\"}")"
+        [ "$(sa_jget "$out" 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] &&
+        [ "$(sa_jget "$out" 'd.get("data",{}).get("status","")' 2>/dev/null || true)" = "active" ] && return 0
+        sleep 0.5
+    done
+    return 1
+}
+
 sa_wait_rpc() { # $1=dd $2=rpc $3=pid $4=secs
     local dd="$1" rp="$2" pid="$3" secs="$4" deadline t
     deadline=$(( $(date +%s) + secs ))
@@ -608,8 +619,10 @@ out="$(sa_sci "$SA_DD_A" core.identity.anchor "{\"pubkey\":\"$PUB_A\"}")"
 sa_mine_empty 1
 out="$(sa_sci "$SA_DD_A" core.identity.anchor "{\"pubkey\":\"$PUB_B\"}")"
 [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "B identity anchor failed: $out"
-sa_mine_empty 21
-sa_wait_height "$SA_DD_B" "$B_RPC" 123 || sa_die "B did not sync final beacon chain"
+sa_mine_empty 23
+sa_wait_height "$SA_DD_B" "$B_RPC" 125 || sa_die "B did not sync final beacon chain"
+sa_wait_identity_active "$SA_DD_A" "$PUB_A" || sa_die "A master did not project ACTIVE"
+sa_wait_identity_active "$SA_DD_B" "$PUB_B" || sa_die "B master did not project ACTIVE"
 out="$(sa_sci "$SA_DD_A" zcode.network.delegate "{\"seed_file\":\"$SA_WORK/master-a.hex\"}")"
 [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "A DHT delegation failed: $out"
 out="$(sa_sci "$SA_DD_B" zcode.network.delegate "{\"seed_file\":\"$SA_WORK/master-b.hex\"}")"
