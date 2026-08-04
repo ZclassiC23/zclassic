@@ -8,6 +8,7 @@
 
 #include "net/v2_transport.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
 #include "base/serialize_le.h"
@@ -18,6 +19,8 @@
 #include "json/json.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+
+static _Atomic uint64_t g_connection_serial = 1;
 
 /* ── growable heap buffer ─────────────────────────────────────────── */
 
@@ -88,10 +91,8 @@ static bool establish_and_flush_locked(struct v2_transport *t,
     memory_cleanse(rs, sizeof(rs));
     if (noise_hs_transcript_hash(&t->hs, t->transcript_hash)) {
         t->have_transcript_hash = true;
-        /* Both ends need the same public connection epoch for signed
-         * application frames. The final Noise transcript is unique to this
-         * handshake and shared by both ends, so its first 64 bits are the
-         * canonical generation (zero is remapped to one). */
+        /* This is an exact shared transcript token for signed application
+         * frames.  It is deliberately never used as an ordering relation. */
         t->connection_generation = zcl_read_u64_le(t->transcript_hash);
         if (t->connection_generation == 0)
             t->connection_generation = 1;
@@ -131,6 +132,9 @@ struct v2_transport *v2_transport_begin(bool is_initiator,
         LOG_NULL("net", "v2_transport_begin: calloc failed");
     zcl_mutex_init(&t->lock);
     t->is_initiator = is_initiator;
+    t->connection_serial = atomic_fetch_add(&g_connection_serial, 1);
+    if (!t->connection_serial)
+        t->connection_serial = atomic_fetch_add(&g_connection_serial, 1);
     memcpy(t->magic, magic, 4);
     t->hs_started_us = GetTimeMicros();
 
@@ -419,6 +423,7 @@ bool v2_transport_snapshot(const struct v2_transport *t,
         memcpy(out->remote_static, t->peer_static, 32);
         memcpy(out->transcript_hash, t->transcript_hash, 32);
         out->connection_generation = t->connection_generation;
+        out->connection_serial = t->connection_serial;
     }
     zcl_mutex_unlock((zcl_mutex_t *)&t->lock);
     return out->established;

@@ -7,6 +7,11 @@
 #include "vcs/zcode_dht_service.h"
 
 enum query_kind { QUERY_BOOTSTRAP = 0, QUERY_LOOKUP, QUERY_PROBE };
+enum query_outcome {
+  QUERY_OUTCOME_RESPONSE = 0,
+  QUERY_OUTCOME_FAILED,
+  QUERY_OUTCOME_EXPIRED
+};
 
 struct replay_entry {
   bool used;
@@ -22,7 +27,14 @@ struct service_peer {
   struct vcs_zcode_dht_contact contact;
   uint8_t rate_tokens;
   uint64_t rate_refill_mono;
-  struct replay_entry replay[VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER];
+  uint64_t opened_mono;
+  struct replay_entry request_replay[VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER];
+  struct replay_entry response_replay[VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER];
+};
+
+struct retired_session {
+  bool used;
+  uint64_t peer_id, generation, connection_serial, retired_mono;
 };
 
 struct service_query {
@@ -78,6 +90,7 @@ struct vcs_zcode_dht_service {
   void *reachability_ctx;
   struct vcs_zcode_dht_table *table;
   struct service_peer peers[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
+  struct retired_session retired[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
   struct service_query queries[VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES];
   struct expired_query expired[VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER];
   struct service_lookup lookups[VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS];
@@ -88,6 +101,7 @@ struct vcs_zcode_dht_service {
   uint64_t dirty_since_mono, persistence_load_count, persistence_save_count;
   uint64_t frames_accepted, rejected[VCS_ZCODE_DHT_REJECT_COUNT];
   uint64_t find_received, nodes_received, find_sent, nodes_sent;
+  uint64_t unauthenticated_expired, duplicate_sessions_retired;
   uint64_t lookup_rounds, lookup_xor_progress, lookup_queue_wait_s;
   uint64_t lookup_terminations[VCS_ZCODE_DHT_TERMINATION_COUNT];
   uint32_t scheduler_cursor;
@@ -128,5 +142,13 @@ bool vcs_zcode_dht_service_send_find(
     struct vcs_zcode_dht_service *service, struct service_peer *peer,
     enum query_kind kind, uint64_t lookup_id, const uint8_t target[32],
     const uint8_t victim[32], uint64_t now_mono);
+void vcs_zcode_dht_service_query_finish(
+    struct vcs_zcode_dht_service *service, struct service_query *query,
+    enum query_outcome outcome, struct vcs_zcode_dht_time now);
+bool vcs_zcode_dht_service_retain_unique_node_session(
+    struct vcs_zcode_dht_service *service, struct service_peer *current,
+    struct vcs_zcode_dht_time now);
+void vcs_zcode_dht_service_expire_unauthenticated(
+    struct vcs_zcode_dht_service *service, struct vcs_zcode_dht_time now);
 
 #endif /* ZCL_VCS_ZCODE_DHT_SERVICE_INTERNAL_H */

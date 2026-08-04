@@ -267,8 +267,10 @@ static bool multi_connect(struct multi_network *net, size_t a, size_t b) {
                                              : b * MULTI_NODES + a)),
          sizeof(transcript));
   struct vcs_zcode_dht_session as = {.established = true,
-                                     .generation = generation};
+                                     .generation = generation,
+                                     .connection_serial = generation * 2};
   struct vcs_zcode_dht_session bs = as;
+  bs.connection_serial = generation * 2 + 1;
   memcpy(as.remote_static, net->noise[b], 32);
   memcpy(bs.remote_static, net->noise[a], 32);
   memcpy(as.transcript_hash, transcript, 32);
@@ -605,8 +607,11 @@ int test_zcode_dht_service(void) {
                                      {
                                          .established = true,
                                          .generation = 42,
+                                         .connection_serial = 1,
                                      },
-                                 bs = {.established = true, .generation = 42};
+                                 bs = {.established = true,
+                                       .generation = 42,
+                                       .connection_serial = 2};
     memcpy(as.remote_static, bnoise, 32);
     memcpy(bs.remote_static, anoise, 32);
     memcpy(as.transcript_hash, transcript, 32);
@@ -653,6 +658,50 @@ int test_zcode_dht_service(void) {
     vcs_zcode_dht_xor_distance(result.node_ids[0], target, d0);
     vcs_zcode_dht_xor_distance(result.node_ids[1], target, d1);
     ASSERT(memcmp(d0, d1, 32) <= 0);
+
+    /* A hostile request may reuse an outstanding response query ID. Request
+     * and response replay namespaces are independent, so it cannot poison the
+     * legitimate NODES response. */
+    ASSERT(vcs_zcode_dht_service_lookup_begin(a, target, test_time(1002),
+                                              &lookup));
+    uint8_t collision_query[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES];
+    uint64_t collision_peer = 0;
+    size_t collision_query_len = 0;
+    ASSERT(vcs_zcode_dht_service_next_outbound(
+        a, 2, &collision_peer, collision_query, sizeof(collision_query),
+        &collision_query_len));
+    ASSERT_EQ(collision_peer, 2);
+    ASSERT_EQ(collision_query[10], VCS_ZCODE_DHT_MSG_FIND_NODE);
+    const size_t query_id_off = VCS_ZCODE_DHT_MSGS_HEADER_BYTES + 8u + 32u;
+    uint8_t collision_find[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES];
+    size_t collision_find_len = 0;
+    ASSERT(signed_find(bdir, 42, transcript, 0xdd, 0x7a, collision_find,
+                       sizeof(collision_find), &collision_find_len));
+    memcpy(collision_find + query_id_off, collision_query + query_id_off,
+           VCS_ZCODE_DHT_MSG_QUERY_ID_BYTES);
+    ASSERT(resign_wire(bdir, transcript, collision_find, collision_find_len));
+    ASSERT(vcs_zcode_dht_service_handle_frame(
+        a, 2, collision_find, collision_find_len, test_time(1002), &rejected));
+    (void)drain(a);
+    ASSERT(vcs_zcode_dht_service_handle_frame(
+        b, 1, collision_query, collision_query_len, test_time(1002),
+        &rejected));
+    uint8_t collision_response[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES];
+    uint64_t collision_response_peer = 0;
+    size_t collision_response_len = 0;
+    ASSERT(vcs_zcode_dht_service_next_outbound(
+        b, 1, &collision_response_peer, collision_response,
+        sizeof(collision_response), &collision_response_len));
+    ASSERT(vcs_zcode_dht_service_handle_frame(
+        a, 2, collision_response, collision_response_len, test_time(1002),
+        &rejected));
+    ASSERT(vcs_zcode_dht_service_lookup_poll(a, lookup, test_time(1002),
+                                             &result));
+    ASSERT_EQ(result.state, VCS_ZCODE_DHT_LOOKUP_COMPLETE);
+    ASSERT(!vcs_zcode_dht_service_handle_frame(
+        a, 2, collision_response, collision_response_len, test_time(1002),
+        &rejected));
+    ASSERT_EQ(rejected, VCS_ZCODE_DHT_REJECT_REPLAY);
 
     /* A correctly signed peer may name any ID. The frame is valid, but an
      * unknown ID is only an unreachable hint and never appears in results. */
@@ -797,6 +846,47 @@ int test_zcode_dht_service(void) {
         &rejected));
     ASSERT_EQ(rejected, VCS_ZCODE_DHT_REJECT_REPLAY);
 
+    /* A node ID owns one authenticated service session. Newer local serials
+     * replace older sessions; equal serials retain the lower peer ID, and a
+     * retired exact connection cannot be re-admitted while still live. */
+    uint8_t transcript2[32], transcript3[32];
+    memset(transcript2, 0x56, sizeof(transcript2));
+    memset(transcript3, 0x57, sizeof(transcript3));
+    struct vcs_zcode_dht_session newer = {.established = true,
+                                          .generation = 43,
+                                          .connection_serial = 10};
+    memcpy(newer.remote_static, bnoise, 32);
+    memcpy(newer.transcript_hash, transcript2, 32);
+    ASSERT(vcs_zcode_dht_service_session_open(a, 3, &newer,
+                                              test_time(1007)));
+    ASSERT(signed_find(bdir, 43, transcript2, 0xe1, 0x7e, oversized,
+                       sizeof(oversized), &forged_len));
+    ASSERT(vcs_zcode_dht_service_handle_frame(
+        a, 3, oversized, forged_len, test_time(1007), &rejected));
+    vcs_zcode_dht_service_status(a, &ast);
+    ASSERT_EQ(ast.connected_authenticated, 1);
+    ASSERT_EQ(ast.duplicate_sessions_retired, 1);
+    ASSERT(!vcs_zcode_dht_service_session_open(a, 2, &as,
+                                               test_time(1007)));
+
+    struct vcs_zcode_dht_session tied = {.established = true,
+                                         .generation = 44,
+                                         .connection_serial = 10};
+    memcpy(tied.remote_static, bnoise, 32);
+    memcpy(tied.transcript_hash, transcript3, 32);
+    ASSERT(vcs_zcode_dht_service_session_open(a, 4, &tied,
+                                              test_time(1007)));
+    ASSERT(signed_find(bdir, 44, transcript3, 0xe2, 0x7e, oversized,
+                       sizeof(oversized), &forged_len));
+    ASSERT(!vcs_zcode_dht_service_handle_frame(
+        a, 4, oversized, forged_len, test_time(1007), &rejected));
+    ASSERT_EQ(rejected, VCS_ZCODE_DHT_REJECT_SESSION);
+    ASSERT(!vcs_zcode_dht_service_session_open(a, 4, &tied,
+                                               test_time(1007)));
+    vcs_zcode_dht_service_status(a, &ast);
+    ASSERT_EQ(ast.connected_authenticated, 1);
+    ASSERT_EQ(ast.duplicate_sessions_retired, 2);
+
     vcs_zcode_dht_service_tick(a, test_time(1008));
     vcs_zcode_dht_service_free(a, test_time(1008));
     a = NULL;
@@ -823,16 +913,42 @@ int test_zcode_dht_service(void) {
       ASSERT_EQ(result.state, VCS_ZCODE_DHT_LOOKUP_COMPLETE);
     }
 
+    /* Unauthenticated handshakes lose their service slot after a monotonic
+     * deadline and the still-live exact connection cannot immediately claim
+     * it again. Session freshness follows the local serial, never numeric
+     * ordering of the transcript-derived generation token. */
+    ASSERT(vcs_zcode_dht_service_session_open(a, 900, &as,
+                                              test_time(1011)));
+    vcs_zcode_dht_service_tick(a, test_time(1026));
+    vcs_zcode_dht_service_status(a, &ast);
+    ASSERT_EQ(ast.unauthenticated_expired, 1);
+    ASSERT(!vcs_zcode_dht_service_session_open(a, 900, &as,
+                                               test_time(1026)));
+    struct vcs_zcode_dht_session high_token = as;
+    high_token.generation = UINT64_MAX;
+    high_token.connection_serial = 20;
+    ASSERT(vcs_zcode_dht_service_session_open(a, 901, &high_token,
+                                              test_time(1027)));
+    vcs_zcode_dht_service_session_close(a, 901, high_token.generation,
+                                        test_time(1027));
+    struct vcs_zcode_dht_session low_token = as;
+    low_token.generation = 1;
+    low_token.connection_serial = 21;
+    ASSERT(vcs_zcode_dht_service_session_open(a, 901, &low_token,
+                                              test_time(1027)));
+    vcs_zcode_dht_service_session_close(a, 901, low_token.generation,
+                                        test_time(1027));
+
     /* Peer session slots are reusable after disconnect; churn cannot
      * permanently exhaust the 64-session authentication budget. */
     for (uint64_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_PEERS; i++)
       ASSERT(vcs_zcode_dht_service_session_open(a, 100 + i, &as,
-                                                test_time(1011)));
+                                                test_time(1028)));
     ASSERT(!vcs_zcode_dht_service_session_open(a, 1000, &as,
-                                               test_time(1011)));
-    vcs_zcode_dht_service_session_close(a, 100, 42, test_time(1011));
+                                               test_time(1028)));
+    vcs_zcode_dht_service_session_close(a, 100, 42, test_time(1028));
     ASSERT(vcs_zcode_dht_service_session_open(a, 1000, &as,
-                                              test_time(1011)));
+                                              test_time(1028)));
 
     vcs_zcode_dht_service_free(a, test_time(1009));
     vcs_zcode_dht_service_free(b, test_time(1009));

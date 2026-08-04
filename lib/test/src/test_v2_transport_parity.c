@@ -138,6 +138,9 @@ int test_v2_transport_parity(void)
             ASSERT(isnap.connection_generation != 0);
             ASSERT(rsnap.connection_generation != 0);
             ASSERT(isnap.connection_generation == rsnap.connection_generation);
+            ASSERT(isnap.connection_serial != 0);
+            ASSERT(rsnap.connection_serial != 0);
+            ASSERT(isnap.connection_serial != rsnap.connection_serial);
             ASSERT(memcmp(isnap.transcript_hash, rsnap.transcript_hash, 32) == 0);
             ASSERT(memcmp(isnap.remote_static, r->hs.s_pub, 32) == 0);
             ASSERT(memcmp(rsnap.remote_static, i->hs.s_pub, 32) == 0);

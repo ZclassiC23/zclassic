@@ -37,6 +37,8 @@ void vcs_zcode_dht_service_status(const struct vcs_zcode_dht_service *s,
   out->nodes_received = s->nodes_received;
   out->find_node_sent = s->find_sent;
   out->nodes_sent = s->nodes_sent;
+  out->unauthenticated_expired = s->unauthenticated_expired;
+  out->duplicate_sessions_retired = s->duplicate_sessions_retired;
   out->lookup_rounds = s->lookup_rounds;
   out->lookup_xor_progress = s->lookup_xor_progress;
   out->lookup_queue_wait_s = s->lookup_queue_wait_s;

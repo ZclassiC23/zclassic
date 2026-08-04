@@ -53,7 +53,8 @@ struct v2_transport {
     bool have_peer_static;
     uint8_t transcript_hash[32];        /* final public Noise channel binding */
     bool have_transcript_hash;
-    uint64_t connection_generation;     /* non-zero, process-monotonic */
+    uint64_t connection_generation;     /* exact shared transcript token */
+    uint64_t connection_serial;         /* non-zero, local process-monotonic */
 
     /* Inbound accumulator: a handshake message or one session frame may span
      * recv() boundaries. Bounded by SESSION_FRAME_MAX_WIRE — a claimed frame
@@ -117,6 +118,7 @@ struct v2_transport_snapshot {
     uint8_t remote_static[32];
     uint8_t transcript_hash[32];
     uint64_t connection_generation;
+    uint64_t connection_serial;
 };
 bool v2_transport_snapshot(const struct v2_transport *t,
                            struct v2_transport_snapshot *out);

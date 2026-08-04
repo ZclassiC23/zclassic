@@ -111,6 +111,10 @@ static void dht_status_json_locked(struct json_value *out) {
   json_push_kv_int(out, "nodes_received", (int64_t)status.nodes_received);
   json_push_kv_int(out, "find_node_sent", (int64_t)status.find_node_sent);
   json_push_kv_int(out, "nodes_sent", (int64_t)status.nodes_sent);
+  json_push_kv_int(out, "unauthenticated_expired",
+                   (int64_t)status.unauthenticated_expired);
+  json_push_kv_int(out, "duplicate_sessions_retired",
+                   (int64_t)status.duplicate_sessions_retired);
   json_push_kv_int(out, "lookup_rounds", (int64_t)status.lookup_rounds);
   json_push_kv_int(out, "lookup_xor_progress",
                    (int64_t)status.lookup_xor_progress);
@@ -316,6 +320,7 @@ static bool dht_snapshot(struct p2p_node *node,
     return false;
   out->established = snapshot.established;
   out->generation = snapshot.connection_generation;
+  out->connection_serial = snapshot.connection_serial;
   memcpy(out->remote_static, snapshot.remote_static, 32);
   memcpy(out->transcript_hash, snapshot.transcript_hash, 32);
   return out->established;
@@ -423,7 +428,8 @@ void boot_zcode_dht_periodic(struct msg_processor *mp,
     uint64_t peer = (uint64_t)nodes[i]->id + 1;
     if (vcs_zcode_dht_service_session_open(dht, peer, &session, now)) {
       live[live_count].peer_id = peer;
-      live[live_count++].generation = session.generation;
+      live[live_count].generation = session.generation;
+      live[live_count++].connection_serial = session.connection_serial;
     }
   }
   if (dht) {

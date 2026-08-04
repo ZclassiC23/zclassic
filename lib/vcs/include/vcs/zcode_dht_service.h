@@ -29,6 +29,7 @@
 #define VCS_ZCODE_DHT_SERVICE_SAVE_DEBOUNCE_S 5u
 #define VCS_ZCODE_DHT_SERVICE_QUERY_TIMEOUT_S 5u
 #define VCS_ZCODE_DHT_SERVICE_REACHABILITY_TIMEOUT_S 12u
+#define VCS_ZCODE_DHT_SERVICE_UNAUTH_TIMEOUT_S 15u
 
 /* Wall time is authority only: signed delegation windows and durable
  * last-success observations. Every timeout, rate bucket and replay window is
@@ -86,11 +87,13 @@ struct vcs_zcode_dht_session {
   uint8_t remote_static[32];
   uint8_t transcript_hash[32];
   uint64_t generation;
+  uint64_t connection_serial;
 };
 
 struct vcs_zcode_dht_live_session {
   uint64_t peer_id;
   uint64_t generation;
+  uint64_t connection_serial;
 };
 
 struct vcs_zcode_dht_service_params {
@@ -116,6 +119,8 @@ struct vcs_zcode_dht_service_status {
   uint32_t cold_contacts;
   uint32_t pending_probes;
   uint64_t probe_transitions[VCS_ZCODE_DHT_PROBE_STATE_COUNT];
+  uint64_t unauthenticated_expired;
+  uint64_t duplicate_sessions_retired;
   uint32_t active_queries;
   uint32_t queued_lookups;
   uint32_t outbound_queued;
