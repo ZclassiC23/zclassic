@@ -1099,6 +1099,23 @@ static int t_store_pins(void)
              vcs_package_store_package_status(s, pre.root, &st) &&
              st.pinned && st.pool == VCS_PACKAGE_STORE_POOL_PINS);
 
+    /* A durable ACK is a claim about bytes that are still present, not a
+     * sticky bit in package metadata. Removing one pinned CAS chunk must
+     * immediately invalidate the possession proof used by ACK renewal. */
+    uint8_t missing_hash[32];
+    char missing_hex[65];
+    char missing_suffix[160];
+    char missing_path[512];
+    ZS_CHECK("pins: missing-byte fixture hash",
+             vcs_package_chunk_hash(l.contents[0], l.lens[0], missing_hash));
+    zs_hex32(missing_hash, missing_hex);
+    snprintf(missing_suffix, sizeof(missing_suffix), "cas/sha3/%02x/%s",
+             missing_hash[0], missing_hex);
+    zs_store_path(missing_path, sizeof(missing_path), dd, missing_suffix);
+    ZS_CHECK("pins: pinned byte deletion planted", unlink(missing_path) == 0);
+    ZS_CHECK("pins: possession proof fails after missing byte",
+             !vcs_package_store_verify_possession(s, l.root, true));
+
     zs_free_package(&l);
     zs_free_package(&m);
     zs_free_package(&n);

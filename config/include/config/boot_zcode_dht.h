@@ -60,6 +60,10 @@ bool boot_zcode_dht_peers(uint64_t wall_now,
 bool boot_zcode_dht_record_query(
     uint64_t wall_now, const struct vcs_zcode_dht_record_selector *selector,
     struct vcs_zcode_dht_record *out, size_t max, size_t *count_out);
+bool boot_zcode_dht_provider_route(
+    uint64_t wall_now,
+    const struct vcs_zcode_dht_record_selector *selector,
+    struct vcs_zcode_dht_provider_route *out);
 bool boot_zcode_dht_record_publish_plan(
     const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
     struct vcs_zcode_dht_record *record_out);

@@ -233,6 +233,28 @@ static bool fixture_pointer_record(
   return result == VCS_ZCODE_DHT_RECORD_OK;
 }
 
+static bool fixture_provider_record(
+    const char *dir, const uint8_t genesis[32], uint8_t transport_byte,
+    struct vcs_zcode_dht_record *record) {
+  uint8_t seed[32], node_id[32];
+  memset(record, 0, sizeof(*record));
+  if (!fixture_material(dir, &record->delegation, seed, node_id))
+    return false;
+  record->kind = VCS_ZCODE_DHT_RECORD_PROVIDER;
+  (void)snprintf(record->namespace_name, sizeof(record->namespace_name),
+                 "science");
+  memcpy(record->network_genesis, genesis, 32);
+  memset(record->transport_root, transport_byte, 32);
+  memcpy(record->provider_node_id, node_id, 32);
+  record->sequence = 1;
+  record->not_before = 1000;
+  record->expiry = 4000;
+  enum vcs_zcode_dht_record_error result =
+      vcs_zcode_dht_record_sign(record, seed);
+  memory_cleanse(seed, sizeof(seed));
+  return result == VCS_ZCODE_DHT_RECORD_OK;
+}
+
 #define MULTI_NODES 12u
 
 struct multi_network;
@@ -778,6 +800,33 @@ static int test_sparse_iterative_network(void) {
     ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
                   net.service[origin], net.now.wall_unix, &selector, cached, 1),
               MULTI_NODES + 7u);
+
+    /* Provider routing binds a signed claim to the currently authenticated
+     * Noise/delegation session for that exact node ID. Local policy is
+     * re-evaluated for FETCH/STORE/INDEX before the peer handle is exposed. */
+    struct vcs_zcode_dht_record provider;
+    ASSERT(fixture_provider_record(net.dir[target_node], genesis,
+                                   0xf1, &provider));
+    ASSERT_EQ(vcs_zcode_dht_service_record_admit(
+                  net.service[origin], &provider, net.now),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    struct vcs_zcode_dht_record_selector provider_selector = {
+        .kind = VCS_ZCODE_DHT_RECORD_PROVIDER};
+    (void)snprintf(provider_selector.namespace_name,
+                   sizeof(provider_selector.namespace_name), "science");
+    memcpy(provider_selector.root, provider.transport_root, 32);
+    struct vcs_zcode_dht_provider_route route;
+    ASSERT(vcs_zcode_dht_service_provider_route(
+        net.service[origin], net.now.wall_unix, &provider_selector, &route));
+    ASSERT_EQ(route.authenticated_count, 1);
+    ASSERT_EQ(route.peer_ids[0], target_node + 1);
+    memcpy(net.banned_root, provider.transport_root, 32);
+    net.banned[origin] = true;
+    ASSERT(vcs_zcode_dht_service_provider_route(
+        net.service[origin], net.now.wall_unix, &provider_selector, &route));
+    ASSERT_EQ(route.authenticated_count, 0);
+    ASSERT_EQ(route.policy_denied, 1);
+    net.banned[origin] = false;
 
     /* A ban is strictly local. Origin stops serving this root while the
      * target still serves the identical signed record to another node. */

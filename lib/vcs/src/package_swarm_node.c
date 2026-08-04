@@ -32,7 +32,7 @@
 
 static const uint8_t record_magic[8] = {'Z', 'S', 'W', 'D', 'L', 'R',
                                         0x0d, 0x0a};
-#define RECORD_VERSION 1u
+#define RECORD_VERSION 2u
 
 /* ── internal records ───────────────────────────────────────────────── */
 
@@ -72,6 +72,9 @@ struct swarm_download {
     size_t tomb_count;
     uint64_t fetched_bytes;
     int64_t created_day;
+    bool provider_restricted;
+    uint64_t provider_peers[VCS_SWARM_PROVIDER_MAX];
+    size_t provider_count;
 };
 
 struct swarm_peer {
@@ -129,36 +132,24 @@ struct vcs_swarm_engine {
     bool serve_loaded;
 };
 
-static struct vcs_swarm_engine *g_swarm_engine;
-
 static uint64_t nonce_bump(struct vcs_swarm_engine *engine);
+bool vcs_swarm_bitmap_get(const uint8_t *map, uint32_t bit);
+void vcs_swarm_bitmap_set(uint8_t *map, uint32_t bit);
+void vcs_swarm_derive_request_id32(const uint8_t key[33], uint64_t request_id,
+                                   const uint8_t root[32], uint8_t out[32]);
+bool vcs_swarm_provider_allowed(bool restricted, const uint64_t *allowed,
+                                size_t count, uint64_t peer);
+size_t vcs_swarm_provider_set(uint64_t *out, size_t capacity,
+                              const uint64_t *peers, size_t count);
+#define bitmap_get vcs_swarm_bitmap_get
+#define bitmap_set vcs_swarm_bitmap_set
+#define derive_request_id32 vcs_swarm_derive_request_id32
+#define dl_peer_allowed(d, p) vcs_swarm_provider_allowed(                 \
+    (d)->provider_restricted, (d)->provider_peers, (d)->provider_count, (p))
+#define dl_set_providers(d, p, n) ((d)->provider_count =                  \
+    vcs_swarm_provider_set((d)->provider_peers, VCS_SWARM_PROVIDER_MAX, p, n))
 
 /* ── small helpers ──────────────────────────────────────────────────── */
-
-static bool bitmap_get(const uint8_t *map, uint32_t bit)
-{
-    return (map[bit / 8u] >> (bit % 8u)) & 1u;
-}
-
-static void bitmap_set(uint8_t *map, uint32_t bit)
-{
-    map[bit / 8u] |= (uint8_t)(1u << (bit % 8u));
-}
-
-static void derive_request_id32(const uint8_t key[33], uint64_t request_id,
-                                const uint8_t root[32], uint8_t out[32])
-{
-    static const char domain[] = "zcl.zcode_swarm_request.v1";
-    struct sha3_256_ctx ctx;
-    sha3_256_init(&ctx);
-    sha3_256_write(&ctx, (const unsigned char *)domain, sizeof(domain));
-    sha3_256_write(&ctx, key, 33);
-    uint8_t id_le[8];
-    vcs_wr_u64le(id_le, request_id);
-    sha3_256_write(&ctx, id_le, sizeof(id_le));
-    sha3_256_write(&ctx, root, 32);
-    sha3_256_finalize(&ctx, out);
-}
 
 static int peer_slot(const struct vcs_swarm_engine *engine, uint64_t peer)
 {
@@ -187,12 +178,13 @@ static bool peer_was_announced(const struct swarm_peer *peer,
 }
 
 static uint32_t advertisers_of(const struct vcs_swarm_engine *engine,
-                               const uint8_t root[32])
+                               const struct swarm_download *dl)
 {
     uint32_t n = 0;
     for (size_t i = 0; i < VCS_SWARM_MAX_PEERS; i++)
-        if (engine->peers[i].used &&
-            peer_advertises(&engine->peers[i], root))
+        if (engine->peers[i].used && dl_peer_allowed(dl,
+                                                     engine->peers[i].id) &&
+            peer_advertises(&engine->peers[i], dl->root))
             n++;
     return n;
 }
@@ -422,6 +414,7 @@ static bool record_persist(struct vcs_swarm_engine *engine,
     vcs_wr_u16le(wire + 8, RECORD_VERSION);
     memcpy(wire + 10, dl->root, 32);
     vcs_wr_u64le(wire + 42, (uint64_t)dl->created_day);
+    wire[50] = dl->provider_restricted ? 1u : 0u;
     char dir[STORE_PATH_MAX];
     snprintf(dir, sizeof(dir), "%s/downloads", engine->zcode_dir);
     char path[STORE_PATH_MAX];
@@ -640,6 +633,7 @@ static int pick_peer(const struct vcs_swarm_engine *engine,
     for (size_t i = 0; i < VCS_SWARM_MAX_PEERS; i++) {
         const struct swarm_peer *peer = &engine->peers[i];
         if (!peer->used ||
+            !dl_peer_allowed(dl, peer->id) ||
             !peer_advertises(peer, dl->root) ||
             peer->inflight >= VCS_SWARM_PEER_INFLIGHT_MAX ||
             peer->allowance_exhausted)
@@ -670,7 +664,7 @@ static void schedule_locked(struct vcs_swarm_engine *engine, int64_t day,
             (engine->dls[i].state != VCS_SWARM_DL_WANT_MANIFEST &&
              engine->dls[i].state != VCS_SWARM_DL_CHUNKS))
             continue;
-        ad_counts[active] = advertisers_of(engine, engine->dls[i].root);
+        ad_counts[active] = advertisers_of(engine, &engine->dls[i]);
         order[active++] = i;
     }
     /* Insertion sort by advertiser count ascending (stable). */
@@ -705,10 +699,11 @@ static void schedule_locked(struct vcs_swarm_engine *engine, int64_t day,
                  * so no assignment can ever succeed. Zero advertisers is
                  * NOT a failure — a fresh fetch honestly waits for the
                  * first ANNOUNCE. */
-                if (advertisers_of(engine, dl->root) > 0) {
+                if (advertisers_of(engine, dl) > 0) {
                     bool eligible = false;
                     for (size_t i = 0; i < VCS_SWARM_MAX_PEERS; i++)
                         if (engine->peers[i].used &&
+                            dl_peer_allowed(dl, engine->peers[i].id) &&
                             peer_advertises(&engine->peers[i], dl->root) &&
                             !(dl->manifest_failed_mask &
                               (UINT64_C(1) << i)))
@@ -751,6 +746,7 @@ static void schedule_locked(struct vcs_swarm_engine *engine, int64_t day,
             }
             for (size_t i = 0; i < VCS_SWARM_MAX_PEERS; i++)
                 if (engine->peers[i].used &&
+                    dl_peer_allowed(dl, engine->peers[i].id) &&
                     peer_advertises(&engine->peers[i], dl->root) &&
                     !(dl->peer_failed[g] & (UINT64_C(1) << i))) {
                     assignable++;
@@ -762,7 +758,7 @@ static void schedule_locked(struct vcs_swarm_engine *engine, int64_t day,
             continue;
         }
         if (unfinished > 0 && assignable == 0 && dl_inflight(dl) == 0 &&
-            advertisers_of(engine, dl->root) > 0) {
+            advertisers_of(engine, dl) > 0) {
             dl_fail(engine, dl, "no-serving-peer");
             continue;
         }
@@ -1266,6 +1262,7 @@ static void resume_downloads(struct vcs_swarm_engine *engine)
         memcpy(dl->root, wire + 10, 32);
         zcl_hex_encode(dl->root, 32, dl->root_hex);
         dl->created_day = (int64_t)vcs_rd_u64le(wire + 42);
+        dl->provider_restricted = wire[50] == 1u;
         dl->state = VCS_SWARM_DL_WANT_MANIFEST;
         if (engine->store) {
             struct vcs_package_store_status st;
@@ -1357,16 +1354,6 @@ void vcs_swarm_engine_free(struct vcs_swarm_engine *engine)
         vcs_package_manifest_free(&engine->serve_manifest);
     pthread_mutex_destroy(&engine->lock);
     free(engine);
-}
-
-void vcs_swarm_engine_set_global(struct vcs_swarm_engine *engine)
-{
-    g_swarm_engine = engine;
-}
-
-struct vcs_swarm_engine *vcs_swarm_engine_global(void)
-{
-    return g_swarm_engine;
 }
 
 bool vcs_swarm_engine_peer_add(struct vcs_swarm_engine *engine,
@@ -1552,22 +1539,10 @@ struct vcs_swarm_frame_result vcs_swarm_engine_handle_frame(
     return res;
 }
 
-const char *vcs_swarm_fetch_result_string(enum vcs_swarm_fetch_result r)
-{
-    switch (r) {
-    case VCS_SWARM_FETCH_OK: return "ok";
-    case VCS_SWARM_FETCH_ALREADY_COMPLETE: return "already-complete";
-    case VCS_SWARM_FETCH_NO_STORE: return "no-store";
-    case VCS_SWARM_FETCH_FULL: return "download-table-full";
-    case VCS_SWARM_FETCH_RECORD_IO: return "record-io";
-    case VCS_SWARM_FETCH_BAD_INPUT: return "bad-input";
-    }
-    return "unknown";
-}
-
-enum vcs_swarm_fetch_result vcs_swarm_engine_fetch(
+static enum vcs_swarm_fetch_result swarm_fetch(
     struct vcs_swarm_engine *engine, const uint8_t package_root[32],
-    int64_t day, uint64_t now)
+    int64_t day, uint64_t now, const uint64_t *provider_peers,
+    size_t provider_count, bool restricted)
 {
     (void)now; /* the tick owns scheduling; fetch only registers intent */
     if (!engine || !package_root)
@@ -1591,6 +1566,11 @@ enum vcs_swarm_fetch_result vcs_swarm_engine_fetch(
         dl = NULL;
     }
     if (dl) {
+        if (restricted) {
+            dl->provider_restricted = true;
+            dl_set_providers(dl, provider_peers, provider_count);
+            (void)record_persist(engine, dl);
+        }
         pthread_mutex_unlock(&engine->lock);
         return VCS_SWARM_FETCH_OK;
     }
@@ -1630,6 +1610,8 @@ enum vcs_swarm_fetch_result vcs_swarm_engine_fetch(
     zcl_hex_encode(dl->root, 32, dl->root_hex);
     dl->state = VCS_SWARM_DL_WANT_MANIFEST;
     dl->created_day = day;
+    dl->provider_restricted = restricted;
+    dl_set_providers(dl, provider_peers, provider_count);
     /* The resumable record lands FIRST — a crash after this point
      * resumes the fetch. */
     if (engine->persist && !record_persist(engine, dl)) {
@@ -1650,6 +1632,25 @@ enum vcs_swarm_fetch_result vcs_swarm_engine_fetch(
      * rarest-first across downloads). */
     pthread_mutex_unlock(&engine->lock);
     return VCS_SWARM_FETCH_OK;
+}
+
+enum vcs_swarm_fetch_result vcs_swarm_engine_fetch(
+    struct vcs_swarm_engine *engine, const uint8_t package_root[32],
+    int64_t day, uint64_t now)
+{
+    return swarm_fetch(engine, package_root, day, now, NULL, 0, false);
+}
+
+enum vcs_swarm_fetch_result vcs_swarm_engine_fetch_from(
+    struct vcs_swarm_engine *engine, const uint8_t package_root[32],
+    int64_t day, uint64_t now, const uint64_t *provider_peers,
+    size_t provider_count)
+{
+    if ((!provider_peers && provider_count) ||
+        provider_count > VCS_SWARM_PROVIDER_MAX)
+        return VCS_SWARM_FETCH_BAD_INPUT;
+    return swarm_fetch(engine, package_root, day, now, provider_peers,
+                       provider_count, true);
 }
 
 /* Cancel an active download: queues CANCEL per outstanding request,
@@ -1729,18 +1730,6 @@ bool vcs_swarm_engine_next_outbound(struct vcs_swarm_engine *engine,
     return false;
 }
 
-const char *vcs_swarm_download_state_string(enum vcs_swarm_download_state s)
-{
-    switch (s) {
-    case VCS_SWARM_DL_INACTIVE: return "inactive";
-    case VCS_SWARM_DL_WANT_MANIFEST: return "want-manifest";
-    case VCS_SWARM_DL_CHUNKS: return "downloading";
-    case VCS_SWARM_DL_COMPLETE: return "complete";
-    case VCS_SWARM_DL_FAILED: return "failed";
-    }
-    return "unknown";
-}
-
 size_t vcs_swarm_engine_active_downloads(struct vcs_swarm_engine *engine)
 {
     if (!engine)
@@ -1767,7 +1756,7 @@ bool vcs_swarm_engine_download_status(struct vcs_swarm_engine *engine,
     if (dl) {
         out->state = dl->state;
         out->rule = dl->rule;
-        out->advertisers = advertisers_of(engine, dl->root);
+        out->advertisers = advertisers_of(engine, dl);
         out->inflight = dl_inflight(dl);
         out->fetched_bytes = dl->fetched_bytes;
         if (dl->manifest_loaded) {

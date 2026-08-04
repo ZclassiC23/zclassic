@@ -40,6 +40,9 @@
  *      one-file/one-chunk content.v2 package announces, is wanted, and
  *      transfers between two real engines over the frozen 'zpkgswm'
  *      codec, and the received bytes re-derive the same root.
+ *  12. Provider-directed downloads issue no WANT to an unauthenticated
+ *      advertiser; restart preserves the restriction with an empty transient
+ *      allowlist until fresh authenticated peer handles are supplied.
  *
  * Every engine runs over a real store + real service book on ./test-tmp
  * datadirs; peers are driven through vcs_swarm_engine_handle_frame with
@@ -1459,6 +1462,61 @@ static int t_swarm_blob_transfer(void)
     return failures;
 }
 
+static int t_swarm_provider_restricted(void)
+{
+    int failures = 0;
+    struct sw_node n;
+    struct sw_pkg p;
+    uint8_t bad_key[33], honest_key[33];
+    sw_key(91, bad_key);
+    sw_key(92, honest_key);
+    const uint64_t bad = 901, honest = 902;
+    if (!sw_node_open(&n, "provider", sw_score_contributor) ||
+        !sw_make_package(&p, 1, 29))
+        return 1;
+    SW_CHECK("provider: both advertisers register",
+             vcs_swarm_engine_peer_add(n.engine, bad, bad_key) &&
+             vcs_swarm_engine_peer_add(n.engine, honest, honest_key));
+    sw_announce(n.engine, bad, &p);
+    sw_announce(n.engine, honest, &p);
+    SW_CHECK("provider: restricted fetch accepted",
+             vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 1,
+                                         &honest, 1) ==
+                 VCS_SWARM_FETCH_OK);
+    vcs_swarm_engine_tick(n.engine, SW_DAY, 2);
+    struct vcs_package_swarm_object wants[2];
+    SW_CHECK("provider: unlisted advertiser receives no WANT",
+             sw_drain_wants(&n, bad, wants, 2) == 0);
+    SW_CHECK("provider: authenticated provider receives manifest WANT",
+             sw_drain_wants(&n, honest, wants, 2) == 1);
+
+    vcs_swarm_engine_free(n.engine);
+    n.engine = vcs_swarm_engine_create(n.store, n.book, n.zcode_dir,
+                                       sw_score_contributor, NULL);
+    SW_CHECK("provider: restricted intent resumes", n.engine != NULL);
+    SW_CHECK("provider: peers re-register",
+             vcs_swarm_engine_peer_add(n.engine, bad, bad_key) &&
+             vcs_swarm_engine_peer_add(n.engine, honest, honest_key));
+    sw_announce(n.engine, bad, &p);
+    sw_announce(n.engine, honest, &p);
+    vcs_swarm_engine_tick(n.engine, SW_DAY, 3);
+    SW_CHECK("provider: restart does not widen before fresh binding",
+             sw_drain_wants(&n, bad, wants, 2) == 0 &&
+             sw_drain_wants(&n, honest, wants, 2) == 0);
+    SW_CHECK("provider: fresh authenticated binding resumes",
+             vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 4,
+                                         &honest, 1) ==
+                 VCS_SWARM_FETCH_OK);
+    vcs_swarm_engine_tick(n.engine, SW_DAY, 4);
+    SW_CHECK("provider: refreshed allowlist remains exclusive",
+             sw_drain_wants(&n, bad, wants, 2) == 0 &&
+             sw_drain_wants(&n, honest, wants, 2) == 1);
+    sw_free_package(&p);
+    sw_node_close(&n);
+    test_rm_rf_recursive(n.datadir);
+    return failures;
+}
+
 int test_zcode_swarm(void)
 {
     int failures = 0;
@@ -1473,5 +1531,6 @@ int test_zcode_swarm(void)
     failures += t_swarm_serving_and_allowance();
     failures += t_swarm_disconnect_threshold();
     failures += t_swarm_blob_transfer();
+    failures += t_swarm_provider_restricted();
     return failures;
 }

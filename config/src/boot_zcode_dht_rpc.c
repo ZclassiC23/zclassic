@@ -9,6 +9,7 @@
 #include "rpc/server.h"
 #include "util/sync.h"
 #include "json/json.h"
+#include "vcs/package_swarm_node.h"
 #include "vcs/zcode_replication.h"
 
 #include <stdatomic.h>
@@ -162,17 +163,19 @@ static const char *record_kind_name(enum vcs_zcode_dht_record_kind kind) {
 
 static void record_json(struct json_value *row,
                         const struct vcs_zcode_dht_record *record) {
-  char semantic[65], transport[65], provider[65], owner[65];
+  char semantic[65], transport[65], provider[65], owner[65], publisher[65];
   zcl_hex_encode(record->semantic_root, 32, semantic);
   zcl_hex_encode(record->transport_root, 32, transport);
   zcl_hex_encode(record->provider_node_id, 32, provider);
   zcl_hex_encode(record->owner_group, 32, owner);
+  zcl_hex_encode(record->delegation.doc.master_pubkey, 32, publisher);
   json_set_object(row);
   json_push_kv_str(row, "kind", record_kind_name(record->kind));
   json_push_kv_str(row, "namespace", record->namespace_name);
   json_push_kv_str(row, "semantic_root", semantic);
   json_push_kv_str(row, "transport_root", transport);
   json_push_kv_str(row, "provider_node_id", provider);
+  json_push_kv_str(row, "publisher_zid", publisher);
   json_push_kv_str(row, "owner_group", owner);
   json_push_kv_int(row, "sequence", (int64_t)record->sequence);
   json_push_kv_int(row, "not_before", (int64_t)record->not_before);
@@ -267,6 +270,8 @@ static bool rpc_storage_ack(const struct json_value *params, bool help,
                             struct json_value *result);
 static bool rpc_replication(const struct json_value *params, bool help,
                             struct json_value *result);
+static bool rpc_provider_route(const struct json_value *params, bool help,
+                               struct json_value *result);
 
 static bool rpc_status(const struct json_value *params, bool help,
                        struct json_value *result) {
@@ -708,6 +713,48 @@ static bool rpc_replication(const struct json_value *params, bool help,
   return true;
 }
 
+static bool rpc_provider_route(const struct json_value *params, bool help,
+                               struct json_value *result) {
+  if (help) {
+    json_set_str(result,
+                 "zcode_dht_provider_route {namespace,blob_root}");
+    return true;
+  }
+  const struct json_value *in = rpc_input(params);
+  struct vcs_zcode_dht_record_selector selector;
+  memset(&selector, 0, sizeof(selector));
+  selector.kind = VCS_ZCODE_DHT_RECORD_PROVIDER;
+  if (!input_namespace(in, selector.namespace_name) ||
+      !input_root(in, "blob_root", selector.root, false)) {
+    rpc_error(result, "INVALID_SELECTOR",
+              "canonical namespace and blob_root required");
+    return true;
+  }
+  uint64_t now = (uint64_t)platform_time_wall_time_t();
+  struct vcs_zcode_dht_provider_route route;
+  if (!boot_zcode_dht_provider_route(now, &selector, &route)) {
+    rpc_error(result, "DHT_DISABLED", "authenticated DHT is disabled");
+    return true;
+  }
+  struct vcs_swarm_engine *engine = vcs_swarm_engine_global();
+  enum vcs_swarm_fetch_result fetched =
+      engine ? vcs_swarm_engine_fetch_from(
+                   engine, selector.root, (int64_t)(now / 86400u), now,
+                   route.peer_ids, route.authenticated_count)
+             : VCS_SWARM_FETCH_NO_STORE;
+  json_set_object(result);
+  json_push_kv_bool(result, "ok", true);
+  json_push_kv_int(result, "authenticated_providers",
+                   route.authenticated_count);
+  json_push_kv_int(result, "reachability_pending",
+                   route.reachability_pending);
+  json_push_kv_int(result, "policy_denied", route.policy_denied);
+  json_push_kv_str(result, "fetch_result",
+                   vcs_swarm_fetch_result_string(fetched));
+  json_push_kv_bool(result, "restricted", true);
+  return true;
+}
+
 void boot_zcode_dht_register_rpc(struct rpc_table *table) {
   const struct rpc_command commands[] = {
       {"zcode", "zcode_dht_status", rpc_status, true},
@@ -716,6 +763,7 @@ void boot_zcode_dht_register_rpc(struct rpc_table *table) {
       {"zcode", "zcode_dht_find_poll", rpc_find_poll, true},
       {"zcode", "zcode_dht_find_cancel", rpc_find_cancel, true},
       {"zcode", "zcode_dht_storage_ack", rpc_storage_ack, true},
+      {"zcode", "zcode_dht_provider_route", rpc_provider_route, true},
   };
   for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
     rpc_table_must_append(table, &commands[i]);

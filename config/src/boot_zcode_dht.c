@@ -56,33 +56,21 @@ static void dht_status_json_locked(struct json_value *out) {
   json_push_kv_int(out, "k", VCS_ZCODE_DHT_K);
   json_push_kv_int(out, "alpha", VCS_ZCODE_DHT_ALPHA);
   json_push_kv_int(out, "max_contacts", VCS_ZCODE_DHT_MAX_CONTACTS);
-  json_push_kv_int(out, "max_authenticated_peers",
-                   VCS_ZCODE_DHT_SERVICE_MAX_PEERS);
-  json_push_kv_int(out, "max_queued_lookups",
-                   VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS);
-  json_push_kv_int(out, "max_active_queries",
-                   VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES);
-  json_push_kv_int(out, "max_lookup_candidates",
-                   VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES);
-  json_push_kv_int(out, "lookup_ceiling_seconds",
-                   VCS_ZCODE_DHT_LOOKUP_CEILING_S);
-  json_push_kv_int(out, "replay_entries_per_peer",
-                   VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER);
-  json_push_kv_int(out, "replay_retention_seconds",
-                   VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS);
-  json_push_kv_int(out, "inbound_rate_per_second",
-                   VCS_ZCODE_DHT_SERVICE_RATE_PER_SECOND);
+  json_push_kv_int(out, "max_authenticated_peers", VCS_ZCODE_DHT_SERVICE_MAX_PEERS);
+  json_push_kv_int(out, "max_queued_lookups", VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS);
+  json_push_kv_int(out, "max_active_queries", VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES);
+  json_push_kv_int(out, "max_lookup_candidates", VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES);
+  json_push_kv_int(out, "lookup_ceiling_seconds", VCS_ZCODE_DHT_LOOKUP_CEILING_S);
+  json_push_kv_int(out, "replay_entries_per_peer", VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER);
+  json_push_kv_int(out, "replay_retention_seconds", VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS);
+  json_push_kv_int(out, "inbound_rate_per_second", VCS_ZCODE_DHT_SERVICE_RATE_PER_SECOND);
   json_push_kv_int(out, "inbound_rate_burst", VCS_ZCODE_DHT_SERVICE_RATE_BURST);
-  json_push_kv_int(out, "max_outbound_frames",
-                   VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND);
-  json_push_kv_int(out, "max_record_operations",
-                   VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS);
-  json_push_kv_int(out, "max_records_per_peer",
-                   VCS_ZCODE_DHT_SERVICE_MAX_RECORDS_PER_PEER);
+  json_push_kv_int(out, "max_outbound_frames", VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND);
+  json_push_kv_int(out, "max_record_operations", VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS);
+  json_push_kv_int(out, "max_records_per_peer", VCS_ZCODE_DHT_SERVICE_MAX_RECORDS_PER_PEER);
   json_push_kv_int(out, "contacts", status.contacts);
   json_push_kv_int(out, "buckets_used", status.buckets_used);
-  json_push_kv_int(out, "connected_authenticated",
-                   status.connected_authenticated);
+  json_push_kv_int(out, "connected_authenticated", status.connected_authenticated);
   json_push_kv_int(out, "cold_contacts", status.cold_contacts);
   json_push_kv_int(out, "pending_probes", status.pending_probes);
   static const char *const probe_names[] = {
@@ -711,6 +699,18 @@ bool boot_zcode_dht_record_query(
   bool ok = g_dht && vcs_zcode_dht_service_enabled(g_dht);
   *count_out = ok ? vcs_zcode_dht_service_record_local_query(
                         g_dht, wall_now, selector, out, max) : 0;
+  zcl_mutex_unlock(&g_dht_lock);
+  return ok;
+}
+bool boot_zcode_dht_provider_route(
+    uint64_t wall_now,
+    const struct vcs_zcode_dht_record_selector *selector,
+    struct vcs_zcode_dht_provider_route *out) {
+  if (!selector || !out)
+    return false;
+  dht_lock();
+  bool ok = g_dht && vcs_zcode_dht_service_provider_route(
+                         g_dht, wall_now, selector, out);
   zcl_mutex_unlock(&g_dht_lock);
   return ok;
 }

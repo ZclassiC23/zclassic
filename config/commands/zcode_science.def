@@ -464,17 +464,22 @@ ZCL_COMMAND_READY_COMMAND(
 ZCL_COMMAND_READY_COMMAND(
     "zcode.science.fetch", "zcode.science", "",
     "Fetch and admit a blob-carried science object",
-    "Resolves the supplied semantic science root through an admitted signed "
-    "POINTER, schedules (or resumes) the transport-root swarm download, and "
+    "Iteratively resolves the supplied semantic science root through signed "
+    "POINTER records, preserves deterministic conflicts as fallback "
+    "candidates, discovers each candidate's signed PROVIDER records, and "
+    "restricts swarm requests to freshly authenticated provider peers. It "
+    "schedules (or resumes) the transport-root swarm download and "
     "— once bytes are local — admits them: re-derives the science root "
     "from bytes (never trusted from a record), stores the wire in the CAS, "
     "and refreshes the projection via the CAS-authoritative rebuild. "
     "blob_root remains an explicit transport-address compatibility input. "
     "Idempotent: re-admitting reports new=false. With no live engine the "
-    "resumable download record is persisted for the next -packagehost=1 "
-    "boot; re-invoke after delivery to admit. FETCH, STORE and INDEX must "
-    "each be allowed by the node's local sovereignty policy. Reply: "
-    "download result, admitted flag, science_root + kind when admitted.",
+    "resumable download record is persisted fail-closed for the next "
+    "-packagehost=1 boot; a fresh provider route must be established after "
+    "restart, then re-invoke after delivery to admit. FETCH, STORE and INDEX "
+    "are rechecked for semantic root, transport root, publisher ZID and "
+    "science service type. Reply includes discovery/conflict/provider "
+    "diagnostics plus the download and admission result.",
     0,
     "zcode,science,fetch,blob,swarm,admit",
     "zcl.zcode_science_fetch.input.v1",

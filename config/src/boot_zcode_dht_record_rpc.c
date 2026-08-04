@@ -193,17 +193,19 @@ static const char *record_kind_name(enum vcs_zcode_dht_record_kind kind) {
 
 static void record_row_json(struct json_value *row,
                             const struct vcs_zcode_dht_record *record) {
-  char semantic[65], transport[65], provider[65], owner[65];
+  char semantic[65], transport[65], provider[65], owner[65], publisher[65];
   zcl_hex_encode(record->semantic_root, 32, semantic);
   zcl_hex_encode(record->transport_root, 32, transport);
   zcl_hex_encode(record->provider_node_id, 32, provider);
   zcl_hex_encode(record->owner_group, 32, owner);
+  zcl_hex_encode(record->delegation.doc.master_pubkey, 32, publisher);
   json_set_object(row);
   json_push_kv_str(row, "kind", record_kind_name(record->kind));
   json_push_kv_str(row, "namespace", record->namespace_name);
   json_push_kv_str(row, "semantic_root", semantic);
   json_push_kv_str(row, "transport_root", transport);
   json_push_kv_str(row, "provider_node_id", provider);
+  json_push_kv_str(row, "publisher_zid", publisher);
   json_push_kv_str(row, "owner_group", owner);
   json_push_kv_int(row, "sequence", (int64_t)record->sequence);
   json_push_kv_int(row, "not_before", (int64_t)record->not_before);
@@ -258,6 +260,31 @@ static void record_result_json(
   }
   json_push_kv(result, "records", &rows);
   json_free(&rows);
+  struct json_value conflicts;
+  json_init(&conflicts);
+  json_set_array(&conflicts);
+  uint32_t conflict_count = 0;
+  for (uint32_t i = 0; i < discovery->record_count; i++) {
+    bool conflict = false;
+    for (uint32_t j = 0; j < i; j++)
+      if (discovery->records[i].sequence == discovery->records[j].sequence &&
+          memcmp(discovery->records[i].provider_node_id,
+                 discovery->records[j].provider_node_id, 32) == 0) {
+        conflict = true;
+        break;
+      }
+    if (!conflict)
+      continue;
+    struct json_value row;
+    json_init(&row);
+    record_row_json(&row, &discovery->records[i]);
+    json_push_back(&conflicts, &row);
+    json_free(&row);
+    conflict_count++;
+  }
+  json_push_kv_int(result, "conflict_count", conflict_count);
+  json_push_kv(result, "conflicts", &conflicts);
+  json_free(&conflicts);
 }
 
 static bool rpc_record_begin(const struct json_value *params, bool help,

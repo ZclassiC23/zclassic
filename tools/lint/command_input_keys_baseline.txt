@@ -19,7 +19,7 @@ zcode.science.publish mode    # discovery helper reads its private RPC object bu
 zcode.science.publish kind    # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish namespace # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish semantic_root # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
-zcode.science.publish transport_root # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
+zcode.science.publish blob_root # discovery helper reads a private RPC object; request->input never reaches that helper.
 zcode.science.publish sequence # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish not_before # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish expiry  # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
@@ -28,4 +28,4 @@ zcode.science.publish operation # discovery helper injects operation into its pr
 zcode.science.fetch kind      # pointer resolver reads its private RPC selector built by fetch; request->input never reaches that helper.
 zcode.science.fetch namespace # pointer resolver reads its private RPC selector built by fetch; request->input never reaches that helper.
 zcode.science.fetch semantic_root # pointer resolver reads its private RPC selector built by fetch; request->input never reaches that helper.
-zcode.science.fetch operation # pointer resolver injects operation into its private RPC selector; request->input never reaches that helper.
+zcode.science.fetch transport_root # provider discovery reads its private RPC selector built by fetch; request->input never reaches that helper.

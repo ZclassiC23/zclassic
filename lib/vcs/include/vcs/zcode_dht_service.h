@@ -167,6 +167,13 @@ struct vcs_zcode_dht_service_status {
   char last_error[160];
 };
 
+struct vcs_zcode_dht_provider_route {
+  uint64_t peer_ids[VCS_ZCODE_DHT_K];
+  uint32_t authenticated_count;
+  uint32_t reachability_pending;
+  uint32_t policy_denied;
+};
+
 struct vcs_zcode_dht_peer_view {
   uint64_t peer_id;
   uint8_t node_id[32];
@@ -319,6 +326,14 @@ size_t vcs_zcode_dht_service_record_local_query_page(
     const struct vcs_zcode_dht_record_selector *selector,
     uint8_t page_offset, struct vcs_zcode_dht_record *out,
     size_t out_capacity, uint8_t *next_offset_out);
+
+/* Resolve active signed PROVIDER records to current Noise/delegation-
+ * authenticated transport sessions. Missing accepted providers are handed to
+ * the existing ZENDP reachability callback; no address crosses this API. */
+bool vcs_zcode_dht_service_provider_route(
+    struct vcs_zcode_dht_service *service, uint64_t now_unix,
+    const struct vcs_zcode_dht_record_selector *selector,
+    struct vcs_zcode_dht_provider_route *out);
 
 /* Operator-authored publication is a stale-plan-safe mutation.  The plan
  * token binds the exact deterministic signed record and the current canonical
