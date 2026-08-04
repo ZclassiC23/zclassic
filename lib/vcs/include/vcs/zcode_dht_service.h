@@ -32,6 +32,7 @@
 #define VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND 128u
 #define VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS 8u
 #define VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS 8u
+#define VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS 64u
 #define VCS_ZCODE_DHT_SERVICE_MAX_RECORDS_PER_PEER 256u
 #define VCS_ZCODE_DHT_SERVICE_SAVE_DEBOUNCE_S 5u
 #define VCS_ZCODE_DHT_SERVICE_QUERY_TIMEOUT_S 5u
@@ -208,6 +209,16 @@ struct vcs_zcode_dht_record_operation_result {
   struct vcs_zcode_dht_record records[VCS_ZCODE_DHT_RECORDS_PER_FRAME];
 };
 
+struct vcs_zcode_dht_record_discovery_result {
+  enum vcs_zcode_dht_record_operation_state state;
+  uint32_t routing_rounds;
+  uint32_t xor_progress;
+  uint32_t nodes_queried;
+  uint32_t record_count;
+  struct vcs_zcode_dht_record
+      records[VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS];
+};
+
 struct vcs_zcode_dht_service *
 vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *params);
 void vcs_zcode_dht_service_free(struct vcs_zcode_dht_service *service,
@@ -270,6 +281,21 @@ bool vcs_zcode_dht_service_record_operation_poll(
     struct vcs_zcode_dht_time now,
     struct vcs_zcode_dht_record_operation_result *out);
 bool vcs_zcode_dht_service_record_operation_cancel(
+    struct vcs_zcode_dht_service *service, uint64_t operation_id);
+
+/* Iterative discovery derives the routing target from the selector, walks the
+ * S6 closest-node frontier, then queries up to k freshly authenticated nodes
+ * under the same global alpha/query budget. Signed responses are merged
+ * deterministically; records.v1 is an optional local cache, never authority. */
+bool vcs_zcode_dht_service_record_discovery_begin(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_record_selector *selector,
+    struct vcs_zcode_dht_time now, uint64_t *operation_id_out);
+bool vcs_zcode_dht_service_record_discovery_poll(
+    struct vcs_zcode_dht_service *service, uint64_t operation_id,
+    struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record_discovery_result *out);
+bool vcs_zcode_dht_service_record_discovery_cancel(
     struct vcs_zcode_dht_service *service, uint64_t operation_id);
 enum vcs_zcode_dht_record_store_result vcs_zcode_dht_service_record_admit(
     struct vcs_zcode_dht_service *service,

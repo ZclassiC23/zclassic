@@ -112,6 +112,26 @@ struct service_publication {
   struct vcs_zcode_dht_record record;
 };
 
+enum service_record_discovery_phase {
+  SERVICE_RECORD_DISCOVERY_ROUTING = 0,
+  SERVICE_RECORD_DISCOVERY_QUERYING
+};
+
+struct service_record_discovery {
+  bool used;
+  uint64_t id, lookup_id, deadline_mono;
+  enum vcs_zcode_dht_record_operation_state state;
+  enum service_record_discovery_phase phase;
+  struct vcs_zcode_dht_record_selector selector;
+  uint32_t routing_rounds, xor_progress;
+  uint32_t node_count, next_node, active_children, nodes_queried;
+  uint8_t node_ids[VCS_ZCODE_DHT_K][32];
+  uint64_t child_operation_ids[VCS_ZCODE_DHT_K];
+  uint32_t record_count;
+  struct vcs_zcode_dht_record
+      records[VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS];
+};
+
 struct vcs_zcode_dht_service {
   bool enabled;
   char disabled_reason[96], last_error[160], datadir[1024];
@@ -135,9 +155,12 @@ struct vcs_zcode_dht_service {
       record_operations[VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS];
   struct service_publication
       publications[VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS];
+  struct service_record_discovery
+      discoveries[VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS];
   struct vcs_zcode_dht_record_store *record_store;
   uint32_t outbound_count;
   uint64_t serial, next_lookup_id, next_record_operation_id;
+  uint64_t next_record_discovery_id;
   bool records_dirty;
   bool persistence_loaded, persistence_dirty;
   uint64_t dirty_since_mono, persistence_generation;

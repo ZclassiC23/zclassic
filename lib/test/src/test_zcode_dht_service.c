@@ -696,9 +696,10 @@ static int test_sparse_iterative_network(void) {
     ASSERT(after.lookup_rounds >= result.rounds);
     ASSERT(after.lookup_xor_progress >= result.xor_progress);
 
-    /* The target is known only after the multi-hop walk. Query its generic
-     * signed pointer over that freshly authenticated S6 session, then admit
-     * the verified record into the origin's rebuildable projection. */
+    /* Resolve the generic record key rather than naming the publisher peer.
+     * The iterative record operation reuses the S6 walk, queries the closest
+     * authenticated nodes, merges signed results, and treats records.v1 only
+     * as its local rebuildable cache. */
     struct vcs_zcode_dht_record pointer;
     ASSERT(fixture_pointer_record(net.dir[target_node], genesis, 0xc1, 0xd1,
                                   &pointer));
@@ -711,21 +712,35 @@ static int test_sparse_iterative_network(void) {
              "science.study");
     memcpy(selector.root, pointer.semantic_root, 32);
     uint64_t record_operation = 0;
-    ASSERT(vcs_zcode_dht_service_record_query_begin(
-        net.service[origin], target_node + 1, &selector, net.now,
-        &record_operation));
+    ASSERT(vcs_zcode_dht_service_record_discovery_begin(
+        net.service[origin], &selector, net.now, &record_operation));
     ASSERT(multi_drive(&net));
-    struct vcs_zcode_dht_record_operation_result record_result;
-    ASSERT(vcs_zcode_dht_service_record_operation_poll(
-        net.service[origin], record_operation, net.now, &record_result));
-    ASSERT_EQ(record_result.state, VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE);
-    ASSERT_EQ(record_result.record_count, 1);
-    ASSERT_EQ(vcs_zcode_dht_service_record_admit(
-                  net.service[origin], &record_result.records[0], net.now),
-              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    struct vcs_zcode_dht_record_discovery_result discovery_result;
+    ASSERT(vcs_zcode_dht_service_record_discovery_poll(
+        net.service[origin], record_operation, net.now, &discovery_result));
+    ASSERT_EQ(discovery_result.state,
+              VCS_ZCODE_DHT_RECORD_OPERATION_PENDING);
+    for (size_t drive = 0;
+         drive < VCS_ZCODE_DHT_K &&
+         discovery_result.state == VCS_ZCODE_DHT_RECORD_OPERATION_PENDING;
+         drive++) {
+      ASSERT(multi_drive(&net));
+      ASSERT(vcs_zcode_dht_service_record_discovery_poll(
+          net.service[origin], record_operation, net.now, &discovery_result));
+    }
+    ASSERT_EQ(discovery_result.state,
+              VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE);
+    ASSERT_EQ(discovery_result.record_count, 1);
+    ASSERT(memcmp(discovery_result.records[0].transport_root,
+                  pointer.transport_root, 32) == 0);
+    struct vcs_zcode_dht_record cached[1];
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  net.service[origin], net.now.wall_unix, &selector, cached, 1),
+              1);
 
     /* A ban is strictly local. Origin stops serving this root while the
      * target still serves the identical signed record to another node. */
+    struct vcs_zcode_dht_record_operation_result record_result;
     memcpy(net.banned_root, pointer.semantic_root, 32);
     net.banned[origin] = true;
     ASSERT(vcs_zcode_dht_service_record_query_begin(

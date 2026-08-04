@@ -49,6 +49,8 @@ void vcs_zcode_dht_service_status(const struct vcs_zcode_dht_service *s,
       (uint32_t)vcs_zcode_dht_record_store_count(s->record_store);
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS; i++)
     out->active_record_operations += s->record_operations[i].used;
+  for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS; i++)
+    out->active_record_operations += s->discoveries[i].used;
   out->unauthenticated_expired = s->unauthenticated_expired;
   out->duplicate_sessions_retired = s->duplicate_sessions_retired;
   out->lookup_rounds = s->lookup_rounds;
