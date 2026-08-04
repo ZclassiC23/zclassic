@@ -70,8 +70,9 @@ you operate that host, and misleading otherwise.
 - [`TRANSACTION_API.md`](./TRANSACTION_API.md) — the semantic transaction
   catalog and AI-safe workflow: base ZCL, Sapling, ZSLP, ZNAM, ZMSG,
   ZID/ZDIR/ZANC, ZCODE and ZBLG anchors, HTLC swaps, and commerce, with a
-  one-call guide to exact live command contracts and an explicit line between
-  ready, receive-only, contained, and planned paths.
+  one-call guide to exact live command contracts, reverse command-to-type
+  lookup, fail-closed classification of ambiguous mutations, and an explicit
+  line between ready, receive-only, contained, and planned paths.
 - [`FILE_MARKET_PROTOCOL.md`](./FILE_MARKET_PROTOCOL.md) — the authenticated
   paid-offer wire, exact integer pricing, confirmed-payment authority, complete
   buyer retrieval workflow, and reproducible proof map for `market_purchase`.

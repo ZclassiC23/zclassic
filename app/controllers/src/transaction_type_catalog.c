@@ -26,6 +26,24 @@ static const struct zcl_transaction_type_contract k_transaction_types[] = {
 };
 #undef TX_TYPE
 
+#define TX_COMMAND_ALIAS(type_, path_, role_, explanation_)                  \
+    { .type_id = type_, .command_path = path_,                               \
+      .role = role_,                                                         \
+      .explanation = explanation_ },
+static const struct zcl_transaction_command_alias k_transaction_aliases[] = {
+#include "controllers/transaction_type_command_aliases.def"
+};
+#undef TX_COMMAND_ALIAS
+
+#define TX_NONCHAIN_COMMAND(path_, category_, explanation_)                  \
+    { .command_path = path_, .category = category_,                          \
+      .explanation = explanation_ },
+static const struct zcl_transaction_nonchain_command
+k_transaction_nonchain_commands[] = {
+#include "controllers/transaction_type_nonchain_commands.def"
+};
+#undef TX_NONCHAIN_COMMAND
+
 struct transaction_type_supplemental_tests {
     const char *id;
     const char *test_groups_csv;
@@ -135,6 +153,98 @@ zcl_transaction_type_find(const char *id)
     return NULL;
 }
 
+const struct zcl_transaction_command_alias *
+zcl_transaction_command_alias_catalog(size_t *count)
+{
+    if (count)
+        *count = sizeof(k_transaction_aliases) /
+                 sizeof(k_transaction_aliases[0]);
+    return k_transaction_aliases;
+}
+
+const struct zcl_transaction_nonchain_command *
+zcl_transaction_nonchain_command_catalog(size_t *count)
+{
+    if (count)
+        *count = sizeof(k_transaction_nonchain_commands) /
+                 sizeof(k_transaction_nonchain_commands[0]);
+    return k_transaction_nonchain_commands;
+}
+
+const struct zcl_transaction_nonchain_command *
+zcl_transaction_nonchain_command_find(const char *command_path)
+{
+    if (!command_path || !command_path[0])
+        return NULL;
+    size_t count = 0;
+    const struct zcl_transaction_nonchain_command *commands =
+        zcl_transaction_nonchain_command_catalog(&count);
+    for (size_t i = 0; i < count; i++)
+        if (strcmp(commands[i].command_path, command_path) == 0)
+            return &commands[i];
+    return NULL;
+}
+
+static bool csv_has_exact(const char *csv, const char *value)
+{
+    if (!csv || !value || !value[0])
+        return false;
+    const size_t value_len = strlen(value);
+    const char *cursor = csv;
+    while (*cursor) {
+        const char *end = strchr(cursor, ',');
+        const size_t len = end ? (size_t)(end - cursor) : strlen(cursor);
+        if (len == value_len && memcmp(cursor, value, len) == 0)
+            return true;
+        if (!end)
+            break;
+        cursor = end + 1;
+    }
+    return false;
+}
+
+uint32_t zcl_transaction_type_command_roles(
+    const struct zcl_transaction_type_contract *type, const char *command_path)
+{
+    if (!type || !command_path || !command_path[0])
+        return ZCL_TRANSACTION_COMMAND_ROLE_NONE;
+    uint32_t roles = ZCL_TRANSACTION_COMMAND_ROLE_NONE;
+    if (type->builder_command &&
+        strcmp(type->builder_command, command_path) == 0)
+        roles |= ZCL_TRANSACTION_COMMAND_ROLE_BUILDER;
+    if (type->commit_command &&
+        strcmp(type->commit_command, command_path) == 0)
+        roles |= ZCL_TRANSACTION_COMMAND_ROLE_COMMIT;
+    if (type->inspect_command &&
+        strcmp(type->inspect_command, command_path) == 0)
+        roles |= ZCL_TRANSACTION_COMMAND_ROLE_INSPECT;
+    if (csv_has_exact(type->component_commands_csv, command_path))
+        roles |= ZCL_TRANSACTION_COMMAND_ROLE_COMPONENT;
+
+    size_t alias_count = 0;
+    const struct zcl_transaction_command_alias *aliases =
+        zcl_transaction_command_alias_catalog(&alias_count);
+    for (size_t i = 0; i < alias_count; i++)
+        if (strcmp(aliases[i].type_id, type->id) == 0 &&
+            strcmp(aliases[i].command_path, command_path) == 0)
+            roles |= (uint32_t)aliases[i].role;
+    return roles;
+}
+
+const char *zcl_transaction_command_role_name(
+    enum zcl_transaction_command_role role)
+{
+    switch (role) {
+    case ZCL_TRANSACTION_COMMAND_ROLE_BUILDER: return "builder";
+    case ZCL_TRANSACTION_COMMAND_ROLE_COMMIT: return "commit";
+    case ZCL_TRANSACTION_COMMAND_ROLE_INSPECT: return "inspect";
+    case ZCL_TRANSACTION_COMMAND_ROLE_COMPONENT: return "component";
+    case ZCL_TRANSACTION_COMMAND_ROLE_ROUTE: return "route";
+    case ZCL_TRANSACTION_COMMAND_ROLE_PLAN: return "plan";
+    default: return "none";
+    }
+}
+
 static void transaction_type_json(
     const struct zcl_transaction_type_contract *type, struct json_value *out)
 {
@@ -207,6 +317,15 @@ bool zcl_transaction_types_index_json(struct json_value *out)
         "docs/work/transaction-lab-events.jsonl");
     (void)json_push_kv_str(out, "wire_catalog_command",
         "app.transaction-types.wire");
+    (void)json_push_kv_str(out, "reverse_lookup_command",
+        "app.transaction-types.command");
+    (void)json_push_kv_int(out, "alternate_command_route_count",
+        (int64_t)(sizeof(k_transaction_aliases) /
+                  sizeof(k_transaction_aliases[0])));
+    (void)json_push_kv_int(out, "explicit_non_chain_command_count",
+        (int64_t)(sizeof(k_transaction_nonchain_commands) /
+                  sizeof(k_transaction_nonchain_commands[0])));
+    (void)json_push_kv_str(out, "command_coverage_test_group", "test_api");
 
     struct json_value types;
     json_init(&types);

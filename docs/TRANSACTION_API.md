@@ -10,13 +10,14 @@ of truth; this page explains how to use it safely.
 1. [Big picture](#big-picture)
 2. [First call for an agent](#first-call-for-an-agent)
 3. [One-call AI guide](#one-call-ai-guide)
-4. [Catalog fields](#catalog-fields)
-5. [Consensus wire and script catalog](#consensus-wire-and-script-catalog)
-6. [Transaction families](#transaction-families)
-7. [Safe plan/commit workflow](#safe-plancommit-workflow)
-8. [What is not a chain transaction](#what-is-not-a-chain-transaction)
-9. [Proof and statistics](#proof-and-statistics)
-10. [Adding a transaction type](#adding-a-transaction-type)
+4. [Reverse command lookup](#reverse-command-lookup)
+5. [Catalog fields](#catalog-fields)
+6. [Consensus wire and script catalog](#consensus-wire-and-script-catalog)
+7. [Transaction families](#transaction-families)
+8. [Safe plan/commit workflow](#safe-plancommit-workflow)
+9. [What is not a chain transaction](#what-is-not-a-chain-transaction)
+10. [Proof and statistics](#proof-and-statistics)
+11. [Adding a transaction type](#adding-a-transaction-type)
 
 ## Big picture
 
@@ -54,6 +55,7 @@ zclassic23 app transaction-types list
 zclassic23 app transaction-types wire
 zclassic23 app transaction-types show --type=znam_register
 zclassic23 app transaction-types guide --type=znam_register
+zclassic23 app transaction-types command core.wallet.transaction.send
 zclassic23 discover describe app.names.register
 zclassic23 discover schema app.names.register
 ```
@@ -71,7 +73,10 @@ is the full `zcl.transaction_type.v2` contract. The collection also reports
 `demonstrated_count`, `blocked_count`, `chain_confirmed_count`,
 `mainnet_live_proven_count`, `proof_test_group_count`, and
 `fully_demonstrated`, so an agent can assess proof coverage without parsing all
-35 rows. `core.wallet.transaction.list` is different: it is
+35 rows. It also names the reverse lookup command and counts the explicitly
+audited alternate routes and non-chain dispositions. The current catalog has
+9 alternate route bindings and 18 explicit negative classifications.
+`core.wallet.transaction.list` is different: it is
 wallet history, not the type catalog. `app.protocols` describes broader
 application protocols, not an exhaustive transaction inventory.
 
@@ -105,6 +110,43 @@ contract but tells the caller to receive only or refuse. For example,
 anchor for an already stored, signed event, but the separate operation that
 creates that signed event remains behind the unfinished runtime App grant
 broker. An AI must not reinterpret anchor readiness as event-signing authority.
+
+## Reverse command lookup
+
+Sometimes an agent starts with a command instead of an intention. Use the
+reverse lookup before invoking an unfamiliar mutation:
+
+```bash
+zclassic23 app transaction-types command core.wallet.transaction.send
+zclassic23 app transaction-types command vault.send-shielded
+zclassic23 app transaction-types command core.wallet.address.new
+```
+
+The `zcl.transaction_command.v1` response joins the exact live command leaf to
+every semantic transaction type it serves. Each mapping says whether the
+command is a `builder`, `plan`, `commit`, alternate `route`, workflow
+`component`, or `inspect` step, and includes the exact `guide_input` for the
+next `app transaction-types guide` call. A shared primitive can map to several
+types: `core.wallet.transaction.send` is the direct transparent payment command
+and also funds HTLC and storefront workflows.
+
+The result has three deliberately different states:
+
+| `catalog_status` | Meaning | Agent action |
+|---|---|---|
+| `mapped` | One or more transaction workflows name this command. | Select the intended type, call its guide, then follow plan/commit policy. |
+| `explicitly_non_chain` | A reviewed negative row explains why this mutating command cannot create, sign, submit, or confirm a chain transaction. | Treat it according to its own command contract, not as a transaction. |
+| `unclassified` | Neither positive nor negative evidence exists. | Stop. Never infer that an omitted command is off-chain. |
+
+Vault pass-through commands are alternate routes, not independent transaction
+implementations. Their declarations live in
+`app/controllers/include/controllers/transaction_type_command_aliases.def`.
+Reviewed negative assertions live separately in
+`transaction_type_nonchain_commands.def`; absence from that file proves
+nothing. `test_api` scans every ready mutating wallet-risk command and every
+ready mutation whose registry text names a chain signal. A new ambiguous leaf
+fails until it receives a positive semantic mapping or a reviewed negative
+explanation.
 
 ## Catalog fields
 
@@ -370,22 +412,32 @@ Future developers make one coherent feature slice:
 2. Add or update the typed native builder/reader in `config/commands/*.def`.
    Every non-empty command named by the catalog is test-checked against the
    live command registry and exposed through `app transaction-types guide`.
-3. Add the isolated proof to `tools/dev/transaction_lab_catalog.def` and its
+3. Query the new leaf with `app transaction-types command <path>`. A canonical
+   builder/commit/component is mapped automatically from the semantic row. If
+   the leaf is only another typed route to an existing owner, add a narrowly
+   explained row to `transaction_type_command_aliases.def`. If a chain-shaped
+   mutation is genuinely not a transaction, add a reviewed negative row to
+   `transaction_type_nonchain_commands.def`. Never silence the gate by calling
+   an unknown leaf off-chain without evidence.
+4. Add the isolated proof to `tools/dev/transaction_lab_catalog.def` and its
    append-only evidence event. Never label builder-only evidence as a chain
    confirmation.
-4. If the change adds a recognized OP_RETURN or Sapling-memo codec, update the
+5. If the change adds a recognized OP_RETURN or Sapling-memo codec, update the
    recognized-codec rows returned by `app transaction-types wire`. Add a wire
    family or script class only when the authoritative consensus/version or
    script-classification source changes; application aliases never create a
    new wire family.
-5. Update this grouped index only when a family or safety posture changes; do
+6. Update this grouped index only when a family or safety posture changes; do
    not duplicate the detailed machine catalog here.
-6. Run `make t-fast ONLY=test_api`, the referenced transaction test group,
+7. Run `make t-fast ONLY=test_api`, the referenced transaction test group,
    `make transaction-lab-check`, `make lint`, and the normal build/test gates.
 
 <!-- claim: symbol-present app.transaction-types.list config/commands/apps.def -->
 <!-- claim: symbol-present app.transaction-types.show config/commands/apps.def -->
 <!-- claim: symbol-present app.transaction-types.guide config/commands/apps.def -->
+<!-- claim: symbol-present app.transaction-types.command config/commands/apps.def -->
 <!-- claim: symbol-present app.transaction-types.wire config/commands/apps.def -->
 <!-- claim: file-present app/controllers/include/controllers/transaction_types.def -->
+<!-- claim: file-present app/controllers/include/controllers/transaction_type_command_aliases.def -->
+<!-- claim: file-present app/controllers/include/controllers/transaction_type_nonchain_commands.def -->
 <!-- claim: file-present tools/dev/transaction_lab_catalog.def -->

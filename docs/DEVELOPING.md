@@ -178,6 +178,12 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   `test_sprout_phgr13_kat` (mainnet height 241) and
   `test_sprout_groth16_kat` (mainnet height 476970); both embed only public
   transaction/VK bytes and require no wallet or live node.
+- Before using or adding a money-shaped native leaf, reverse-audit it with
+  `zclassic23 app transaction-types command <path>`. `mapped` names every
+  semantic workflow and role; `explicitly_non_chain` carries a reviewed reason;
+  `unclassified` is a hard stop, never permission to assume the command is
+  off-chain. `test_api` makes new ready wallet-risk/chain-worded mutations fail
+  until they have positive catalog coverage or an explicit negative row.
   `test_transaction_wire_evidence` separately pins an exact mainnet v1
   transaction plus canonical P2PK, P2PKH, P2SH, nulldata, and nonstandard
   output examples. It also proves why no mainnet v3 fixture can exist:

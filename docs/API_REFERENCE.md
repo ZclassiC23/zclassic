@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 500 |
+| Registry entries (branches + leaves) | 501 |
 | Top-level roots | 11 |
 | Branches | 115 |
-| Leaves (dispatchable command paths) | 385 |
-| … `ready` (live handler in this build) | 337 |
+| Leaves (dispatchable command paths) | 386 |
+| … `ready` (live handler in this build) | 338 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
@@ -77,7 +77,7 @@ Per source file:
 |---|---|---|---|
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 112 | 27 | 85 |
-| `config/commands/apps.def` | 14 | 3 | 11 |
+| `config/commands/apps.def` | 15 | 3 | 12 |
 | `config/commands/app_features.def` | 49 | 12 | 37 |
 | `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
@@ -408,6 +408,7 @@ represented by its children's sections.
 | `app transaction-types list` | ready | read / read / public · instant/tiny | none | `zcl.transaction_types.index.v2` | `zclassic23 app transaction-types list` | List base, overlay, composite, process-only, contained, and planned transaction types |
 | `app transaction-types show` | ready | read / read / public · instant/tiny | **`type`** | `zcl.transaction_type.v2` | `zclassic23 app transaction-types show --type=znam_register` | Inspect one semantic ZCL transaction type and its safe workflow |
 | `app transaction-types guide` | ready | read / read / public · instant/tiny | **`type`** | `zcl.transaction_type_guide.v1` | `zclassic23 app transaction-types guide --type=znam_register` | Get one AI-ready transaction workflow with exact command contracts |
+| `app transaction-types command` | ready | read / read / public · instant/tiny | **`path`** | `zcl.transaction_command.v1` | `zclassic23 app transaction-types command core.wallet.transaction.send` | Reverse-map one native command to every transaction workflow it can serve |
 | `app transaction-types wire` | ready | read / read / public · instant/tiny | none | `zcl.transaction_wire_catalog.v1` | `zclassic23 app transaction-types wire` | List every consensus transaction wire era and script-processing bucket |
 
 #### `app.service` — Token-gated services declared in the service catalog

@@ -736,3 +736,28 @@ so `make transaction-lab-proof` now runs **23 exact proof groups**. It is not a
 new lab broadcast and adds no event to the monetary ledger: totals remain
 **35/35 PASS**, **34/35 simulated/live confirmations**, **0/35 live-mainnet
 confirmations**, and **0 ZCL** recipient value or fees.
+
+## 2026-08-04 native-command reverse coverage audit
+
+The semantic catalog now answers both directions. `app transaction-types
+guide --type=<id>` still starts from an intention; the new read-only `app
+transaction-types command <path>` starts from a native leaf and returns every
+type and role it serves. Canonical builder/commit/component/inspection roles
+are derived from `transaction_types.def`. Nine alternate vault route bindings
+are declared separately so a pass-through never looks like an independent
+transaction implementation.
+
+The audit also records 18 reviewed negative dispositions for wallet-security,
+key-management, backup/recovery, scan, receive-request, agent-grant, and ZCODE
+P2P-endpoint mutations. An omitted command is not called off-chain: the API
+returns `unclassified` and tells the agent to stop. `test_api` scans every ready
+wallet-risk mutation and every ready mutation whose registry contract contains
+a chain signal, then fails unless the command has a positive semantic mapping
+or an explicit negative reason. It also proves every alias and negative row
+names a live leaf and that no negative row is simultaneously mapped.
+
+This is discovery and completeness evidence, not a transaction experiment. It
+does not change the 35 semantic cases or add a monetary event. Totals remain
+**35/35 PASS**, **34/35 simulated/live confirmations**, **0/35 live-mainnet
+confirmations**, **23 exact proof groups**, and **0 ZCL** recipient value or
+fees.

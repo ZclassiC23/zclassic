@@ -43,6 +43,32 @@ static bool component_commands_exist(
     return true;
 }
 
+static bool transaction_command_is_mapped(
+    const struct zcl_transaction_type_contract *types, size_t type_count,
+    const char *path)
+{
+    for (size_t i = 0; i < type_count; i++)
+        if (zcl_transaction_type_command_roles(&types[i], path) !=
+            ZCL_TRANSACTION_COMMAND_ROLE_NONE)
+            return true;
+    return false;
+}
+
+static bool transaction_command_has_chain_signal(
+    const struct zcl_command_spec *spec)
+{
+    const char *fields[] = { spec->summary, spec->semantics, spec->tags };
+    static const char *const signals[] = {
+        "on-chain", "onchain", "broadcast", "transaction", "txid",
+        "OP_RETURN", "op_return", "Sapling", "sapling", "HTLC", "htlc",
+    };
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++)
+        for (size_t j = 0; j < sizeof(signals) / sizeof(signals[0]); j++)
+            if (fields[i] && strstr(fields[i], signals[j]))
+                return true;
+    return false;
+}
+
 int api_transaction_type_focused_tests(void)
 {
     int failures = 0;
@@ -75,8 +101,93 @@ int api_transaction_type_focused_tests(void)
             registry, "app.transaction-types.show", NULL) != NULL;
         ok = ok && zcl_command_registry_find(
             registry, "app.transaction-types.wire", NULL) != NULL;
+        ok = ok && zcl_command_registry_find(
+            registry, "app.transaction-types.command", NULL) != NULL;
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: reverse transaction aliases reference real types and leaves... ");
+    {
+        const struct zcl_command_registry *registry = zcl_command_catalog();
+        size_t alias_count = 0;
+        const struct zcl_transaction_command_alias *aliases =
+            zcl_transaction_command_alias_catalog(&alias_count);
+        bool ok = registry && aliases && alias_count == 9;
+        for (size_t i = 0; ok && i < alias_count; i++) {
+            ok = zcl_transaction_type_find(aliases[i].type_id) != NULL &&
+                 zcl_command_registry_find(registry,
+                     aliases[i].command_path, NULL) != NULL &&
+                 aliases[i].role != ZCL_TRANSACTION_COMMAND_ROLE_NONE &&
+                 aliases[i].explanation && aliases[i].explanation[0];
+            for (size_t j = 0; ok && j < i; j++)
+                ok = strcmp(aliases[i].type_id, aliases[j].type_id) != 0 ||
+                     strcmp(aliases[i].command_path,
+                            aliases[j].command_path) != 0 ||
+                     aliases[i].role != aliases[j].role;
+        }
+        size_t type_count = 0;
+        const struct zcl_transaction_type_contract *types =
+            zcl_transaction_type_catalog(&type_count);
+        for (size_t i = 0; ok && i < type_count; i++) {
+            if (types[i].builder_command[0])
+                ok = (zcl_transaction_type_command_roles(
+                    &types[i], types[i].builder_command) &
+                    ZCL_TRANSACTION_COMMAND_ROLE_BUILDER) != 0;
+            if (ok && types[i].commit_command[0])
+                ok = (zcl_transaction_type_command_roles(
+                    &types[i], types[i].commit_command) &
+                    ZCL_TRANSACTION_COMMAND_ROLE_COMMIT) != 0;
+            if (ok && types[i].inspect_command[0])
+                ok = (zcl_transaction_type_command_roles(
+                    &types[i], types[i].inspect_command) &
+                    ZCL_TRANSACTION_COMMAND_ROLE_INSPECT) != 0;
+        }
+        size_t nonchain_count = 0;
+        const struct zcl_transaction_nonchain_command *nonchain =
+            zcl_transaction_nonchain_command_catalog(&nonchain_count);
+        ok = ok && nonchain && nonchain_count == 18;
+        for (size_t i = 0; ok && i < nonchain_count; i++) {
+            const struct zcl_command_spec *spec =
+                zcl_command_registry_find(registry,
+                    nonchain[i].command_path, NULL);
+            ok = spec && nonchain[i].category && nonchain[i].category[0] &&
+                 nonchain[i].explanation && nonchain[i].explanation[0] &&
+                 !transaction_command_is_mapped(types, type_count,
+                                                nonchain[i].command_path);
+            for (size_t j = 0; ok && j < i; j++)
+                ok = strcmp(nonchain[i].command_path,
+                            nonchain[j].command_path) != 0;
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: every chain-shaped mutating command has a reverse mapping... ");
+    {
+        const struct zcl_command_registry *registry = zcl_command_catalog();
+        size_t type_count = 0;
+        const struct zcl_transaction_type_contract *types =
+            zcl_transaction_type_catalog(&type_count);
+        bool ok = registry && types;
+        size_t uncovered = 0;
+        for (size_t i = 0; ok && i < registry->count; i++) {
+            const struct zcl_command_spec *spec = &registry->commands[i];
+            const bool candidate = spec->mode != ZCL_COMMAND_MODE_BRANCH &&
+                spec->availability == ZCL_COMMAND_READY &&
+                spec->effect != ZCL_COMMAND_EFFECT_READ &&
+                (spec->risk == ZCL_COMMAND_RISK_WALLET ||
+                 transaction_command_has_chain_signal(spec));
+            if (candidate && !transaction_command_is_mapped(
+                                 types, type_count, spec->path) &&
+                !zcl_transaction_nonchain_command_find(spec->path)) {
+                printf("\n  UNCOVERED %s", spec->path);
+                uncovered++;
+            }
+        }
+        ok = ok && uncovered == 0;
+        if (ok) printf("OK\n");
+        else { printf("\nFAIL (%zu uncovered)\n", uncovered); failures++; }
     }
 
     printf("api: wire catalog covers source-defined eras and open-ended carriers... ");
@@ -221,7 +332,14 @@ int api_transaction_type_focused_tests(void)
              json_get_int(json_get(&root, "proof_test_group_count")) == 23 &&
              json_get_bool(json_get(&root, "fully_demonstrated")) &&
              strcmp(json_get_str(json_get(&root, "wire_catalog_command")),
-                    "app.transaction-types.wire") == 0;
+                    "app.transaction-types.wire") == 0 &&
+             strcmp(json_get_str(json_get(&root,
+                                          "reverse_lookup_command")),
+                    "app.transaction-types.command") == 0 &&
+             json_get_int(json_get(&root,
+                 "alternate_command_route_count")) == 9 &&
+             json_get_int(json_get(&root,
+                 "explicit_non_chain_command_count")) == 18;
         const struct json_value *transparent =
             api_test_find_str_field(types, "id", "transparent_t_to_t");
         const struct json_value *coinbase =
@@ -439,6 +557,131 @@ int api_transaction_type_focused_tests(void)
             strlen(json_get_str(json_get(builder, "example"))) > 0 &&
             strstr(output, "private_key") == NULL &&
             strstr(output, "grant_token") == NULL;
+        json_free(&root);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: reverse command lookup is mapped, routed, or fail-closed unclassified... ");
+    {
+        const struct zcl_command_registry *registry = zcl_command_catalog();
+        const struct zcl_command_spec *spec = registry ?
+            zcl_command_registry_find(registry,
+                                      "app.transaction-types.command", NULL)
+            : NULL;
+        struct zcl_command_context context = {
+            .registry = registry,
+            .granted_capabilities = ~(uint64_t)0,
+            .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+        };
+        char output[ZCL_COMMAND_LIST_BUDGET + 1];
+        enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
+        struct json_value input;
+        struct json_value root;
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_str(&input, "path", "core.wallet.transaction.send");
+        size_t n = spec ? zcl_command_registry_execute_json(
+            registry, spec, &context, &input, false, spec->path, "normal",
+            0, 0, NULL, output, sizeof(output) - 1, &exit_code) : 0;
+        json_free(&input);
+        output[n < sizeof(output) ? n : sizeof(output) - 1] = 0;
+        json_init(&root);
+        bool ok = n > 0 && n <= ZCL_COMMAND_LIST_BUDGET &&
+            exit_code == ZCL_COMMAND_EXIT_OK && json_read(&root, output, n) &&
+            json_get_bool(json_get(&root, "ok"));
+        const struct json_value *data = json_get(&root, "data");
+        const struct json_value *mappings = data ?
+            json_get(data, "transaction_types") : NULL;
+        const struct json_value *transparent = mappings ?
+            api_test_find_str_field(mappings, "type", "transparent_t_to_t")
+            : NULL;
+        ok = ok && data && mappings && transparent &&
+            strcmp(json_get_str(json_get(data, "schema")),
+                   ZCL_TRANSACTION_COMMAND_SCHEMA) == 0 &&
+            strcmp(json_get_str(json_get(data, "catalog_status")),
+                   "mapped") == 0 &&
+            json_get_int(json_get(data, "transaction_type_count")) == 4 &&
+            json_get_bool(json_get(data, "may_prepare_chain_material")) &&
+            json_get_bool(json_get(data, "may_sign_or_submit")) &&
+            api_test_array_has_str(json_get(transparent, "roles"),
+                                   "builder") &&
+            api_test_array_has_str(json_get(transparent, "roles"),
+                                   "commit") &&
+            strcmp(json_get_str(json_get(
+                       json_get(transparent, "guide_input"), "type")),
+                   "transparent_t_to_t") == 0 &&
+            !json_get_bool(json_get(transparent, "alternate_route"));
+        json_free(&root);
+
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_str(&input, "path", "vault.send");
+        exit_code = ZCL_COMMAND_EXIT_INTERNAL;
+        n = spec ? zcl_command_registry_execute_json(
+            registry, spec, &context, &input, false, spec->path, "normal",
+            0, 0, NULL, output, sizeof(output) - 1, &exit_code) : 0;
+        json_free(&input);
+        output[n < sizeof(output) ? n : sizeof(output) - 1] = 0;
+        json_init(&root);
+        ok = ok && n > 0 && exit_code == ZCL_COMMAND_EXIT_OK &&
+             json_read(&root, output, n);
+        data = json_get(&root, "data");
+        mappings = data ? json_get(data, "transaction_types") : NULL;
+        transparent = mappings ?
+            api_test_find_str_field(mappings, "type", "transparent_t_to_t")
+            : NULL;
+        ok = ok && data && transparent &&
+            json_get_int(json_get(data, "transaction_type_count")) == 1 &&
+            api_test_array_has_str(json_get(transparent, "roles"), "route") &&
+            json_get_bool(json_get(transparent, "alternate_route"));
+        json_free(&root);
+
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_str(&input, "path", "core.wallet.address.new");
+        exit_code = ZCL_COMMAND_EXIT_INTERNAL;
+        n = spec ? zcl_command_registry_execute_json(
+            registry, spec, &context, &input, false, spec->path, "normal",
+            0, 0, NULL, output, sizeof(output) - 1, &exit_code) : 0;
+        json_free(&input);
+        output[n < sizeof(output) ? n : sizeof(output) - 1] = 0;
+        json_init(&root);
+        ok = ok && n > 0 && exit_code == ZCL_COMMAND_EXIT_OK &&
+             json_read(&root, output, n);
+        data = json_get(&root, "data");
+        ok = ok && data &&
+            strcmp(json_get_str(json_get(data, "catalog_status")),
+                   "explicitly_non_chain") == 0 &&
+            json_get_bool(json_get(data, "explicitly_non_chain")) &&
+            !json_get_bool(json_get(data,
+                                    "unmapped_is_not_off_chain_proof")) &&
+            strcmp(json_get_str(json_get(data, "non_chain_category")),
+                   "wallet_key_management") == 0 &&
+            json_get_int(json_get(data, "transaction_type_count")) == 0 &&
+            strstr(output, "private_key") == NULL &&
+            strstr(output, "grant_token") == NULL;
+        json_free(&root);
+
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_str(&input, "path", "app.qr.show");
+        exit_code = ZCL_COMMAND_EXIT_INTERNAL;
+        n = spec ? zcl_command_registry_execute_json(
+            registry, spec, &context, &input, false, spec->path, "normal",
+            0, 0, NULL, output, sizeof(output) - 1, &exit_code) : 0;
+        json_free(&input);
+        output[n < sizeof(output) ? n : sizeof(output) - 1] = 0;
+        json_init(&root);
+        ok = ok && n > 0 && exit_code == ZCL_COMMAND_EXIT_OK &&
+             json_read(&root, output, n);
+        data = json_get(&root, "data");
+        ok = ok && data &&
+            strcmp(json_get_str(json_get(data, "catalog_status")),
+                   "unclassified") == 0 &&
+            json_get_bool(json_get(data,
+                                   "unmapped_is_not_off_chain_proof")) &&
+            !json_get_bool(json_get(data, "explicitly_non_chain"));
         json_free(&root);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

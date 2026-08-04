@@ -7,6 +7,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,6 +16,7 @@ extern "C" {
 #define ZCL_TRANSACTION_TYPE_SCHEMA "zcl.transaction_type.v2"
 #define ZCL_TRANSACTION_TYPES_INDEX_SCHEMA "zcl.transaction_types.index.v2"
 #define ZCL_TRANSACTION_TYPE_GUIDE_SCHEMA "zcl.transaction_type_guide.v1"
+#define ZCL_TRANSACTION_COMMAND_SCHEMA "zcl.transaction_command.v1"
 #define ZCL_TRANSACTION_WIRE_CATALOG_SCHEMA \
     "zcl.transaction_wire_catalog.v1"
 
@@ -42,10 +44,43 @@ struct zcl_transaction_type_contract {
     const char *summary;
 };
 
+enum zcl_transaction_command_role {
+    ZCL_TRANSACTION_COMMAND_ROLE_NONE      = 0,
+    ZCL_TRANSACTION_COMMAND_ROLE_BUILDER   = 1U << 0,
+    ZCL_TRANSACTION_COMMAND_ROLE_COMMIT    = 1U << 1,
+    ZCL_TRANSACTION_COMMAND_ROLE_INSPECT   = 1U << 2,
+    ZCL_TRANSACTION_COMMAND_ROLE_COMPONENT = 1U << 3,
+    ZCL_TRANSACTION_COMMAND_ROLE_ROUTE     = 1U << 4,
+    ZCL_TRANSACTION_COMMAND_ROLE_PLAN      = 1U << 5,
+};
+
+struct zcl_transaction_command_alias {
+    const char *type_id;
+    const char *command_path;
+    enum zcl_transaction_command_role role;
+    const char *explanation;
+};
+
+struct zcl_transaction_nonchain_command {
+    const char *command_path;
+    const char *category;
+    const char *explanation;
+};
+
 const struct zcl_transaction_type_contract *
 zcl_transaction_type_catalog(size_t *count);
 const struct zcl_transaction_type_contract *
 zcl_transaction_type_find(const char *id);
+const struct zcl_transaction_command_alias *
+zcl_transaction_command_alias_catalog(size_t *count);
+const struct zcl_transaction_nonchain_command *
+zcl_transaction_nonchain_command_catalog(size_t *count);
+const struct zcl_transaction_nonchain_command *
+zcl_transaction_nonchain_command_find(const char *command_path);
+uint32_t zcl_transaction_type_command_roles(
+    const struct zcl_transaction_type_contract *type, const char *command_path);
+const char *zcl_transaction_command_role_name(
+    enum zcl_transaction_command_role role);
 bool zcl_transaction_types_index_json(struct json_value *out);
 bool zcl_transaction_type_show_json(const char *id, struct json_value *out);
 /* Finite consensus wire eras and standard-policy script buckets. This is the

@@ -102,6 +102,27 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_type_guide)
 
 ZCL_COMMAND_READY_READ(
+    "app.transaction-types.command", "app.transaction-types", "",
+    "Reverse-map one native command to every transaction workflow it can serve",
+    "Joins one exact native command leaf to every semantic transaction type "
+    "that names it as builder, plan, commit, alternate route, component, or "
+    "inspection. An unmapped leaf is explicitly unclassified and is never "
+    "claimed to be off-chain merely because the catalog lacks a row. Returns "
+    "only registry and compile-time catalog facts; it grants no wallet or "
+    "broadcast authority.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "transactions,catalog,command,reverse,workflow,ai,audit",
+    "zcl.transaction_command_ref.input.v1", "zcl.transaction_command.v1",
+    "path", "path",
+    "zclassic23 app transaction-types command core.wallet.transaction.send",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_command)
+
+ZCL_COMMAND_READY_READ(
     "app.transaction-types.wire", "app.transaction-types", "",
     "List every consensus transaction wire era and script-processing bucket",
     "The finite source-derived wire catalog: legacy v1/v2, Overwinter v3, "

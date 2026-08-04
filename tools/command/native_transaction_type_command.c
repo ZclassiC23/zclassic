@@ -133,6 +133,59 @@ static const char *tt_agent_decision(
     return "refuse_not_implemented";
 }
 
+static void tt_command_roles_json(uint32_t roles, struct json_value *out)
+{
+    static const enum zcl_transaction_command_role ordered[] = {
+        ZCL_TRANSACTION_COMMAND_ROLE_BUILDER,
+        ZCL_TRANSACTION_COMMAND_ROLE_PLAN,
+        ZCL_TRANSACTION_COMMAND_ROLE_COMMIT,
+        ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
+        ZCL_TRANSACTION_COMMAND_ROLE_COMPONENT,
+        ZCL_TRANSACTION_COMMAND_ROLE_INSPECT,
+    };
+    json_set_array(out);
+    for (size_t i = 0; i < sizeof(ordered) / sizeof(ordered[0]); i++) {
+        if ((roles & (uint32_t)ordered[i]) == 0)
+            continue;
+        struct json_value item;
+        json_init(&item);
+        json_set_str(&item, zcl_transaction_command_role_name(ordered[i]));
+        (void)json_push_back(out, &item);
+        json_free(&item);
+    }
+}
+
+static const char *tt_alias_explanation(const char *type_id,
+                                         const char *command_path)
+{
+    size_t count = 0;
+    const struct zcl_transaction_command_alias *aliases =
+        zcl_transaction_command_alias_catalog(&count);
+    for (size_t i = 0; i < count; i++)
+        if (strcmp(aliases[i].type_id, type_id) == 0 &&
+            strcmp(aliases[i].command_path, command_path) == 0)
+            return aliases[i].explanation;
+    return "";
+}
+
+static const char *tt_command_participation(uint32_t roles,
+                                             enum zcl_command_effect effect)
+{
+    if (roles == ZCL_TRANSACTION_COMMAND_ROLE_NONE)
+        return "unclassified_never_assume_off_chain";
+    if (roles & (ZCL_TRANSACTION_COMMAND_ROLE_COMMIT |
+                 ZCL_TRANSACTION_COMMAND_ROLE_ROUTE))
+        return "may_sign_or_submit_chain_transaction";
+    if (roles & (ZCL_TRANSACTION_COMMAND_ROLE_BUILDER |
+                 ZCL_TRANSACTION_COMMAND_ROLE_PLAN))
+        return "may_prepare_chain_transaction";
+    if (roles & ZCL_TRANSACTION_COMMAND_ROLE_COMPONENT)
+        return effect == ZCL_COMMAND_EFFECT_READ
+            ? "read_only_workflow_component"
+            : "mutating_workflow_component";
+    return "read_only_chain_inspection";
+}
+
 void zcl_native_handle_transaction_types_list(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply)
@@ -278,4 +331,131 @@ void zcl_native_handle_transaction_type_guide(
     }
     (void)json_push_kv(&reply->data, "safety_checklist", &safety);
     json_free(&safety);
+}
+
+void zcl_native_handle_transaction_command(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    const char *path = json_get_str(json_get(request->input, "path"));
+    if (!path || !path[0]) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_PATH",
+                               "normalize", false, false,
+                               "path is required", "");
+        return;
+    }
+    const struct zcl_command_registry *registry = request->context
+        ? request->context->registry : NULL;
+    if (!registry) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL,
+                               "REGISTRY_UNAVAILABLE", "join", true, false,
+                               "live command registry is unavailable", path);
+        return;
+    }
+    const struct zcl_command_spec *spec =
+        zcl_command_registry_find(registry, path, NULL);
+    if (!spec || spec->mode == ZCL_COMMAND_MODE_BRANCH) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_BLOCKED, "UNKNOWN_COMMAND",
+                               "resolve", false, false,
+                               "path is not a native command leaf", path);
+        (void)zcl_command_reply_add_next(reply, "discover.search",
+            "{\"query\":\"transaction\"}", "find a native command leaf");
+        return;
+    }
+
+    json_set_object(&reply->data);
+    (void)json_push_kv_str(&reply->data, "schema",
+                           ZCL_TRANSACTION_COMMAND_SCHEMA);
+    (void)json_push_kv_str(&reply->data, "command", spec->path);
+    (void)json_push_kv_str(&reply->data, "summary", spec->summary);
+    (void)json_push_kv_str(&reply->data, "availability",
+                           zcl_command_availability_name(spec->availability));
+    (void)json_push_kv_str(&reply->data, "effect",
+                           zcl_command_effect_name(spec->effect));
+    (void)json_push_kv_str(&reply->data, "risk",
+                           zcl_command_risk_name(spec->risk));
+    (void)json_push_kv_str(&reply->data, "authority",
+                           zcl_command_authority_name(spec->authority));
+    (void)json_push_kv_str(&reply->data, "confirmation",
+                           zcl_command_confirmation_name(spec->confirmation));
+
+    size_t type_count = 0;
+    const struct zcl_transaction_type_contract *types =
+        zcl_transaction_type_catalog(&type_count);
+    struct json_value mappings;
+    json_init(&mappings);
+    json_set_array(&mappings);
+    size_t mapping_count = 0;
+    uint32_t aggregate_roles = ZCL_TRANSACTION_COMMAND_ROLE_NONE;
+    for (size_t i = 0; i < type_count; i++) {
+        const uint32_t roles =
+            zcl_transaction_type_command_roles(&types[i], spec->path);
+        if (roles == ZCL_TRANSACTION_COMMAND_ROLE_NONE)
+            continue;
+        aggregate_roles |= roles;
+        struct json_value mapping;
+        json_init(&mapping);
+        json_set_object(&mapping);
+        (void)json_push_kv_str(&mapping, "type", types[i].id);
+        (void)json_push_kv_str(&mapping, "family", types[i].family);
+        (void)json_push_kv_str(&mapping, "availability",
+                               types[i].availability);
+        struct json_value roles_json;
+        json_init(&roles_json);
+        tt_command_roles_json(roles, &roles_json);
+        (void)json_push_kv(&mapping, "roles", &roles_json);
+        json_free(&roles_json);
+        const char *alias = tt_alias_explanation(types[i].id, spec->path);
+        (void)json_push_kv_bool(&mapping, "alternate_route", alias[0] != 0);
+        (void)json_push_kv_str(&mapping, "route_explanation", alias);
+        (void)json_push_kv_str(&mapping, "guide_command",
+                               "app.transaction-types.guide");
+        struct json_value guide_input;
+        json_init(&guide_input);
+        json_set_object(&guide_input);
+        (void)json_push_kv_str(&guide_input, "type", types[i].id);
+        (void)json_push_kv(&mapping, "guide_input", &guide_input);
+        json_free(&guide_input);
+        (void)json_push_back(&mappings, &mapping);
+        json_free(&mapping);
+        mapping_count++;
+    }
+    const struct zcl_transaction_nonchain_command *nonchain =
+        mapping_count ? NULL : zcl_transaction_nonchain_command_find(spec->path);
+    (void)json_push_kv_str(&reply->data, "catalog_status",
+        mapping_count ? "mapped" :
+        (nonchain ? "explicitly_non_chain" : "unclassified"));
+    (void)json_push_kv_str(&reply->data, "chain_participation",
+        nonchain ? "no_chain_transaction" :
+        tt_command_participation(aggregate_roles, spec->effect));
+    (void)json_push_kv_bool(&reply->data, "may_prepare_chain_material",
+        spec->effect != ZCL_COMMAND_EFFECT_READ &&
+        (aggregate_roles & (ZCL_TRANSACTION_COMMAND_ROLE_BUILDER |
+                            ZCL_TRANSACTION_COMMAND_ROLE_PLAN |
+                            ZCL_TRANSACTION_COMMAND_ROLE_COMPONENT)) != 0);
+    (void)json_push_kv_bool(&reply->data, "may_sign_or_submit",
+        spec->effect != ZCL_COMMAND_EFFECT_READ &&
+        (aggregate_roles & (ZCL_TRANSACTION_COMMAND_ROLE_COMMIT |
+                            ZCL_TRANSACTION_COMMAND_ROLE_ROUTE)) != 0);
+    (void)json_push_kv_bool(&reply->data, "unmapped_is_not_off_chain_proof",
+                            mapping_count == 0 && !nonchain);
+    (void)json_push_kv_bool(&reply->data, "explicitly_non_chain",
+                            nonchain != NULL);
+    (void)json_push_kv_str(&reply->data, "non_chain_category",
+                           nonchain ? nonchain->category : "");
+    (void)json_push_kv_str(&reply->data, "non_chain_explanation",
+                           nonchain ? nonchain->explanation : "");
+    (void)json_push_kv_int(&reply->data, "transaction_type_count",
+                           (int64_t)mapping_count);
+    (void)json_push_kv(&reply->data, "transaction_types", &mappings);
+    json_free(&mappings);
+    (void)json_push_kv_str(&reply->data, "agent_decision",
+        mapping_count ? "select_a_type_then_call_its_guide" :
+        (nonchain ? "no_transaction_workflow_for_this_command"
+                  : "stop_unclassified_never_assume_off_chain"));
+    (void)json_push_kv_str(&reply->data, "authority_note",
+        "discovery_only_this_result_never_grants_wallet_signing_or_broadcast_authority");
 }
