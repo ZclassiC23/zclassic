@@ -18,7 +18,7 @@ blog_anchor|blog|ZNAM-bound signed Blog event anchor|not_demonstrated|test_blog
 zslp_genesis|tokens|token genesis|simnet_confirmed|test_simnet
 zslp_mint|tokens|token mint|simnet_confirmed|test_simnet
 zslp_send|tokens|token transfer|simnet_confirmed|test_simnet
-zslp_burn|tokens|token burn|builder_verified|test_slp
+zslp_burn|tokens|token burn|simnet_confirmed|test_simnet
 znam_register|names|name registration|simnet_confirmed|test_simnet
 znam_update|names|name update|simnet_confirmed|test_simnet
 znam_transfer|names|name transfer|simnet_confirmed|test_simnet

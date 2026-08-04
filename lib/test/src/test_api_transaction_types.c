@@ -100,10 +100,10 @@ int api_transaction_type_focused_tests(void)
         ok = ok && count == 34 &&
              json_get_int(json_get(&root, "demonstrated_count")) == 33 &&
              json_get_int(json_get(&root, "blocked_count")) == 1 &&
-             json_get_int(json_get(&root, "chain_confirmed_count")) == 14 &&
+             json_get_int(json_get(&root, "chain_confirmed_count")) == 15 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
-             json_get_int(json_get(&root, "proof_test_group_count")) == 18 &&
+             json_get_int(json_get(&root, "proof_test_group_count")) == 17 &&
              !json_get_bool(json_get(&root, "fully_demonstrated"));
         const struct json_value *transparent =
             api_test_find_str_field(types, "id", "transparent_t_to_t");

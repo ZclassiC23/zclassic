@@ -16,6 +16,8 @@
 
 #include "test/test_core.h"
 #include "models/zslp.h"
+#include "models/zslp_ledger.h"
+#include "models/zslp_validity.h"
 
 #include "models/explorer_index.h"
 #include "models/znam.h"
@@ -207,7 +209,7 @@ static bool sim_test_apply_slp(struct node_db *ndb,
                    tx->vout[0].script_pub_key.size, &msg))
         return false;
     explorer_index_apply_slp(ndb, tx, &msg, height);
-    return true;
+    return zslp_ledger_apply_slp_live(ndb, tx, &msg, height);
 }
 
 static int64_t sim_test_transfer_amount(
@@ -433,17 +435,19 @@ int test_simnet(void)
     uint8_t genesis_script[512];
     size_t genesis_script_len =
         slp_build_genesis(genesis_script, sizeof(genesis_script),
-                          "SIM", "Simnet Token", "", NULL, 0, 0, 1000);
+                          "SIM", "Simnet Token", "", NULL, 0, 2, 1000);
     SN_CHECK("build real SLP GENESIS script", genesis_script_len > 0);
 
     struct transaction slp_genesis;
     struct transaction slp_genesis_projection;
     transaction_init(&slp_genesis_projection);
+    int64_t genesis_values[2] = { 650000, 50000 };
+    unsigned char genesis_seeds[2] = { 0x60, 0x61 };
     bool built_slp_genesis =
         genesis_script_len > 0 &&
-        sim_test_make_opreturn_spend(&slp_genesis, &custom_txid, 1,
-                                     genesis_script, genesis_script_len,
-                                     700000, 0x60);
+        sim_test_make_opreturn_spend_outputs(
+            &slp_genesis, &custom_txid, 1, genesis_script,
+            genesis_script_len, genesis_values, genesis_seeds, 2);
     bool copied_slp_genesis =
         built_slp_genesis &&
         transaction_copy(&slp_genesis_projection, &slp_genesis);
@@ -524,17 +528,19 @@ int test_simnet(void)
     uint8_t mint_script[512];
     size_t mint_script_len =
         slp_build_mint(mint_script, sizeof(mint_script), &slp_wire_token_id,
-                       0, 125);
+                       2, 125);
     SN_CHECK("build real SLP MINT script", mint_script_len > 0);
 
     struct transaction slp_mint;
     struct transaction slp_mint_projection;
     transaction_init(&slp_mint_projection);
+    int64_t mint_values[2] = { 20000, 20000 };
+    unsigned char mint_seeds[2] = { 0xB0, 0xB1 };
     bool built_slp_mint =
         mint_script_len > 0 &&
-        sim_test_make_opreturn_spend(&slp_mint, &slp_send_txid, 2,
-                                     mint_script, mint_script_len,
-                                     250000, 0xB0);
+        sim_test_make_opreturn_spend_outputs(
+            &slp_mint, &slp_token_id, 2, mint_script, mint_script_len,
+            mint_values, mint_seeds, 2);
     bool copied_slp_mint =
         built_slp_mint && transaction_copy(&slp_mint_projection, &slp_mint);
     struct uint256 slp_mint_txid =
@@ -561,6 +567,56 @@ int test_simnet(void)
                                       slp_xfer_count_after_mint,
                                       SLP_TX_MINT, 1) == 125);
 
+    uint64_t burn_change_qty[1] = { 100 };
+    uint8_t burn_script[512];
+    size_t burn_script_len =
+        slp_build_send(burn_script, sizeof(burn_script), &slp_wire_token_id,
+                       burn_change_qty, 1);
+    SN_CHECK("build real SLP implicit-BURN SEND script",
+             burn_script_len > 0);
+
+    struct transaction slp_burn;
+    struct transaction slp_burn_projection;
+    transaction_init(&slp_burn_projection);
+    int64_t burn_values[2] = { 20000, 250000 };
+    unsigned char burn_seeds[2] = { 0xB2, 0xB3 };
+    bool built_slp_burn =
+        burn_script_len > 0 &&
+        sim_test_make_opreturn_spend_outputs(
+            &slp_burn, &slp_send_txid, 1, burn_script, burn_script_len,
+            burn_values, burn_seeds, 2);
+    bool copied_slp_burn =
+        built_slp_burn && transaction_copy(&slp_burn_projection, &slp_burn);
+    struct uint256 slp_burn_txid =
+        built_slp_burn ? slp_burn.hash : (struct uint256){0};
+    SN_CHECK("build SLP implicit-BURN tx", built_slp_burn && copied_slp_burn);
+    bool minted_slp_burn =
+        built_slp_burn && copied_slp_burn &&
+        simnet_mint_txs(&sim, &slp_burn, 1);
+    int slp_burn_height = simnet_tip_height(&sim);
+    SN_CHECK("mint SLP implicit-BURN through simnet", minted_slp_burn);
+    bool applied_slp_burn =
+        zslp_open && minted_slp_burn &&
+        sim_test_apply_slp(&zslp_db, &slp_burn_projection, slp_burn_height);
+    SN_CHECK("fold SLP implicit-BURN into strict ledger", applied_slp_burn);
+
+    char slp_burn_reason[96];
+    struct zslp_token_validity_summary slp_supply;
+    memset(&slp_supply, 0, sizeof(slp_supply));
+    bool summarized_slp_burn =
+        applied_slp_burn &&
+        zslp_validity_get(&zslp_db, slp_burn_txid.data, slp_burn_reason,
+                          sizeof(slp_burn_reason)) == ZSLP_VALIDITY_VALID &&
+        strcmp(slp_burn_reason, "valid_send") == 0 &&
+        zslp_validity_token_summary(&zslp_db, slp_token_id.data,
+                                    &slp_supply);
+    SN_CHECK("strict ZSLP supply records exactly 150 burned units",
+             summarized_slp_burn && slp_supply.total_minted == 1125 &&
+             slp_supply.total_burned == 150 &&
+             slp_supply.circulating_supply == 975 &&
+             slp_supply.baton_active && slp_supply.baton_vout == 2 &&
+             memcmp(slp_supply.baton_txid, slp_mint_txid.data, 32) == 0);
+
     uint64_t malformed_qty[1] = { 9999999 };
     uint8_t malformed_slp_script[512];
     size_t malformed_slp_len =
@@ -578,7 +634,7 @@ int test_simnet(void)
         malformed_slp_len > 2 && minted_slp_mint &&
         sim_test_make_opreturn_spend(&slp_malformed, &slp_mint_txid, 1,
                                      malformed_slp_script, malformed_slp_len,
-                                     200000, 0xB1);
+                                     10000, 0xB1);
     bool copied_slp_malformed =
         built_slp_malformed &&
         transaction_copy(&slp_malformed_projection, &slp_malformed);
@@ -603,11 +659,12 @@ int test_simnet(void)
         zslp_open ? db_zslp_transfer_list_by_token(&zslp_db, slp_token_hex,
                                                    slp_xfers_after_bad, 5) : 0;
     SN_CHECK("malformed SLP does not add token transfers",
-             slp_xfer_count_after_bad == 4);
+             slp_xfer_count_after_bad == 5);
 
     transaction_free(&slp_genesis_projection);
     transaction_free(&slp_send_projection);
     transaction_free(&slp_mint_projection);
+    transaction_free(&slp_burn_projection);
     transaction_free(&slp_malformed_projection);
     if (zslp_open)
         node_db_close(&zslp_db);
@@ -626,7 +683,7 @@ int test_simnet(void)
     int64_t znam_owner_values[2] = { 120000, 120000 };
     unsigned char znam_owner_seeds[2] = { 0xC0, 0xC0 };
     bool built_znam_owner_fund =
-        sim_test_make_p2pkh_spend_outputs(&znam_owner_fund, &slp_send_txid, 1,
+        sim_test_make_p2pkh_spend_outputs(&znam_owner_fund, &slp_burn_txid, 2,
                                           znam_owner_values, znam_owner_seeds,
                                           2);
     bool copied_znam_owner_fund =

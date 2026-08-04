@@ -233,3 +233,29 @@ The current result is **33/34 PASS, 1 BLOCKED**, with **14 simulated-chain
 confirmations** across **18 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
 funds moved.
+
+## 2026-08-04 strict ZSLP burn and baton-lineage proof
+
+The burn follow-up strengthened the whole simulated ZSLP sequence instead of
+adding a superficial output check. `test_simnet` now feeds every mined ZSLP
+transaction through both the explorer projection and the strict per-outpoint
+validity ledger.
+
+That stronger authority exposed an invalid assumption in the earlier fixture:
+its MINT spent an ordinary token output while the explorer-only projection
+still displayed the declared quantity. The corrected sequence creates a real
+GENESIS mint baton at vout 2, preserves it through MINT, and verifies that the
+strict ledger accepts the lineage. This changes no ZClassic consensus rule;
+ZSLP remains a chain-derived application overlay.
+
+The new burn spends a valid 250-unit SEND output, declares only 100 units of
+token change, and is mined through `connect_block`. The strict ledger records
+the 150-unit difference as burned and reports exactly 1,125 minted, 150 burned,
+and 975 circulating units while the replacement mint baton remains active.
+The transaction retains separate ordinary ZCL change so the next fixture does
+not accidentally destroy the remaining token output.
+
+The current result is **33/34 PASS, 1 BLOCKED**, with **15 simulated-chain
+confirmations** across **17 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
+funds moved.

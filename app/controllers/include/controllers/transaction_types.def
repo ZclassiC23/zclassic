@@ -74,7 +74,7 @@ TX_TYPE("zslp_send", "zslp", "ready", "overlay_transaction",
 TX_TYPE("zslp_burn", "zslp", "ready", "overlay_transaction",
         "op_return_zslp_send_implicit_burn", "public_metadata", "plan_commit",
         "app.tokens.burn", "app.tokens.burn", "core.wallet.transaction.get",
-        "", "all_zcl_networks", "zslp_burn", "builder_verified", "test_slp",
+        "", "all_zcl_networks", "zslp_burn", "simnet_confirmed", "test_simnet",
         "Explicitly destroy token units; supply changes only after strict projection validation.")
 
 TX_TYPE("znam_register", "znam", "ready", "overlay_transaction",
