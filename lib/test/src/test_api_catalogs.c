@@ -163,7 +163,7 @@ int api_catalog_focused_tests(void)
                           "crud_capabilities"), "construct_contract");
         ok = ok && strcmp(json_get_str(json_get(&root,
                           "construction_status")),
-                          "htlc_builders_active_settlement_in_progress") == 0;
+                          "htlc_builders_and_zcl_settlement_active") == 0;
         ok = ok && api_test_array_has_str(json_get(&root,
                           "object_types"), "contract_template");
         ok = ok && api_test_array_has_str(json_get(&root,

@@ -160,6 +160,25 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   binding exists, the read-only live check is
   `zclassic23 metaverse agent money --dir=<absolute-broker-dir>`; it reports
   `UNKNOWN`, `STALE`, or `CONFLICTED` instead of inventing a zero.
+- `make custody-status` — the read-only rollout doctor: source support, current
+  dev activation, canonical prod targeting, private broker binding, and the
+  complete two-wallet snapshot in one five-step progress line. Add
+  `ARGS='--broker-dir=/absolute/path'` after the owner creates the binding.
+  Raw balance reads are labeled `OBSERVED`, never promoted to identity-bound
+  `CURRENT`; endpoints and datadir paths are absent from its output. Its
+  hermetic contract check is `make custody-status-selftest`.
+- `make transaction-lab-proof` — run the exact isolated transaction evidence
+  matrix with real signatures, Sapling proofs, consensus verification, HTLC
+  interpretation, and overlay builders. `make transaction-lab-status` prints
+  separate proof and live-mainnet bars plus value/fee totals; it never treats
+  simulated confirmation as a live spend. The append-only, redacted notebook
+  and its recording procedure live in `docs/work/TRANSACTION_LAB.md`; validate
+  it with `make transaction-lab-check`.
+- `zclassic23 app transaction-types list` — the compile-time semantic catalog
+  of every known transaction shape and its exact builder/commit/inspect path.
+  Use `app transaction-types show --type=<id>` for one entry. REST mirrors it
+  at `/api/v1/transaction-types`; the AI-safe workflow and extension checklist
+  are in [`TRANSACTION_API.md`](./TRANSACTION_API.md).
 - `make deploy` is owner-gated live deployment. All public dev-lane publication,
   stage, relink, and recovery-apply paths currently hard-refuse — the gated
   swappable-leaf hot-swap loop above (`hotswap-try`/`hotswap-apply`) is the one

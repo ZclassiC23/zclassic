@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 473 |
+| Registry entries (branches + leaves) | 476 |
 | Top-level roots | 11 |
-| Branches | 109 |
-| Leaves (dispatchable command paths) | 364 |
-| … `ready` (live handler in this build) | 316 |
+| Branches | 110 |
+| Leaves (dispatchable command paths) | 366 |
+| … `ready` (live handler in this build) | 318 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
@@ -77,7 +77,7 @@ Per source file:
 |---|---|---|---|
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 112 | 27 | 85 |
-| `config/commands/apps.def` | 9 | 2 | 7 |
+| `config/commands/apps.def` | 12 | 3 | 9 |
 | `config/commands/app_features.def` | 35 | 7 | 28 |
 | `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
@@ -400,6 +400,13 @@ represented by its children's sections.
 | `app list` | ready | read / read / public · fast/low | none | `zcl.app_index.v1` | `zclassic23 app list` | List installed App manifests |
 | `app inspect` | ready | read / read / public · fast/low | **`app_id`** | `zcl.app_manifest_summary.v1` | `zclassic23 app inspect social` | Inspect one App manifest and bindings |
 | `app protocols` (aliases: `appprotocols`) | compat → `zclassic23 appprotocols` | read / read / public · fast/low | none | `zcl.app_protocols.v1` | `zclassic23 app protocols` | List App protocol contracts — *native adapter is not executable yet; use the compatibility target* |
+
+#### `app.transaction-types` — Discover every semantic ZCL transaction shape and its safe workflow
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app transaction-types list` | ready | read / read / public · instant/tiny | none | `zcl.transaction_types.index.v1` | `zclassic23 app transaction-types list` | List base, overlay, composite, process-only, contained, and planned transaction types |
+| `app transaction-types show` | ready | read / read / public · instant/tiny | **`type`** | `zcl.transaction_type.v1` | `zclassic23 app transaction-types show --type=znam_register` | Inspect one semantic ZCL transaction type and its safe workflow |
 
 #### `app.service` — Token-gated services declared in the service catalog
 

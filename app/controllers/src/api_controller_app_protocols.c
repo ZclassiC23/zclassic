@@ -115,7 +115,7 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
     },
     {
         .name = "market",
-        .status = "active",
+        .status = "in_progress",
         .layer = "zclassic23_application_layer",
         .base_layer = "zclassic_l1",
         .family = "commerce",
@@ -124,7 +124,8 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
         .rest_resource = "/api/v1/market",
         .read_model = "file_market_projection",
         .crud_capabilities_csv = "read_collection,create_offer,create_purchase",
-        .construction_status = "payment_gated_flows_active",
+        .construction_status =
+            "offers_and_file_service_active_payment_unlock_glue_in_progress",
         .mutation_authority = "operator_or_payment_gated",
         .write_semantics =
             "offer_and_purchase_flows_are_operator_or_payment_gated",
@@ -149,40 +150,40 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
     },
     {
         .name = "messaging",
-        .status = "in_progress",
+        .status = "active",
         .layer = "zclassic23_application_layer",
         .base_layer = "zclassic_l1",
         .family = "messaging",
-        .anchor = "P2P messages plus planned shielded memo channel",
+        .anchor = "P2P messages plus active shielded Sapling memo channel",
         .anchor_kind = "p2p_and_sapling_memo",
         .rest_resource = "/api/v1/messages",
         .read_model = "message_projection",
         .crud_capabilities_csv = "read_collection,create_message",
-        .construction_status = "p2p_active_memo_channel_in_progress",
+        .construction_status = "p2p_and_sapling_memo_channels_active",
         .mutation_authority = "operator_private_message_send",
         .write_semantics =
-            "send_p2p_messages_or_construct_memo_transactions_when_wired",
+            "send_p2p_messages_or_construct_shielded_memo_transactions",
         .consensus_boundary =
             "interprets_or_constructs_valid_zcl_transactions_only",
         .object_types_csv =
-            "p2p_message,delivery_receipt,planned_sapling_memo_message",
+            "p2p_message,delivery_receipt,sapling_memo_message",
         .ux_surfaces_csv = "inbox,outbox,contact_thread,delivery_status",
         .projection_model =
-            "message_projection_from_local_delivery_events_and_future_memos",
+            "message_projection_from_local_delivery_events_and_decrypted_memos",
         .reorg_model =
             "offchain_messages_are_local_state_onchain_memos_replay_by_height",
         .crypto_model =
-            "future_messages_must_be_signed_or_shielded_before_trusted_storage",
+            "onchain_messages_are_sapling_encrypted_p2p_transport_security_is_negotiated",
         .transport_model =
-            "p2p_active_tor_fallback_planned_shielded_memo_channel",
+            "p2p_active_shielded_memo_active_tor_reachability_available",
         .privacy_model =
-            "p2p_channel_currently_plaintext_memo_channel_planned_for_private_content",
+            "p2p_plaintext_until_v2_negotiates_onchain_content_sapling_encrypted",
         .diagnostics_surface =
             "zclassic23_appprotocols_dumpstate_message_projection",
     },
     {
         .name = "script_contracts",
-        .status = "in_progress",
+        .status = "active",
         .layer = "zclassic23_application_layer",
         .base_layer = "zclassic_l1",
         .family = "script_contract",
@@ -191,7 +192,7 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
         .rest_resource = "/api/v1/swaps",
         .read_model = "swap_contract_projection",
         .crud_capabilities_csv = "read_collection,read_capabilities,construct_contract",
-        .construction_status = "htlc_builders_active_settlement_in_progress",
+        .construction_status = "htlc_builders_and_zcl_settlement_active",
         .mutation_authority = "operator_wallet_transaction",
         .write_semantics =
             "construct_standard_script_contract_transactions_without_consensus_changes",
@@ -225,7 +226,8 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
         .rest_resource = "/api/v1/swaps",
         .read_model = "swap_contract_projection",
         .crud_capabilities_csv = "read_collection,read_capabilities,construct_htlc",
-        .construction_status = "htlc_builders_active_settlement_in_progress",
+        .construction_status =
+            "zcl_builders_and_settlement_active_external_legs_operator_managed",
         .mutation_authority = "operator_wallet_transaction",
         .write_semantics =
             "construct_script_contract_transactions_without_consensus_changes",

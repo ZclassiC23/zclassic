@@ -41,6 +41,46 @@ ZCL_COMMAND_COMPAT_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE | ZCL_COMMAND_TRANSPORT_RPC,
     "zclassic23 appprotocols")
 
+/* Semantic chain-transaction discovery.  This is deliberately separate from
+ * core.wallet.transaction.list, which lists one wallet's transaction history. */
+ZCL_COMMAND_BRANCH("app.transaction-types", "app",
+                   "Discover every semantic ZCL transaction shape and its safe workflow",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "app.transaction-types.list", "app.transaction-types", "",
+    "List base, overlay, composite, process-only, contained, and planned transaction types",
+    "The compile-time semantic transaction catalog: exact builder/commit/inspect "
+    "commands, chain encoding, privacy, network policy, current proof level, "
+    "and transaction-lab case for every known ZClassic23 transaction shape. "
+    "Discovery only; this leaf grants no wallet or broadcast authority.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "transactions,catalog,zcl,znam,zslp,zcode,sapling,htlc",
+    "zcl.command.empty_input.v1", "zcl.transaction_types.index.v1", "", "",
+    "zclassic23 app transaction-types list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_types_list)
+
+ZCL_COMMAND_READY_READ(
+    "app.transaction-types.show", "app.transaction-types", "",
+    "Inspect one semantic ZCL transaction type and its safe workflow",
+    "One exact catalog entry selected by type: its availability, chain encoding, "
+    "builder/commit/inspect commands, component commands, network containment, "
+    "proof level, and focused test group. Discovery only; it cannot spend.", 0,
+    "transactions,catalog,type,workflow", "zcl.transaction_type_ref.input.v1",
+    "zcl.transaction_type.v1", "type", "type",
+    "zclassic23 app transaction-types show --type=znam_register",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_type_show)
+
 ZCL_COMMAND_BRANCH("app.invoke", "app", "Invoke a manifest-owned App route",
                    ZCL_COMMAND_LAYER_APP)
 

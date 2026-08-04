@@ -1739,10 +1739,36 @@ t-list:
 # One memorable custody regression command for contributors. Keep the list
 # exact: a substring silently selecting a sibling group is not rollout proof.
 CUSTODY_FOCUSED_TESTS := test_agent_session,test_agent_spend_policy,test_vault_session,test_vault_dispatch,test_transaction_intent,test_metaverse_agent_broker
-.PHONY: custody-check
+.PHONY: custody-check custody-status custody-status-selftest
 custody-check:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY='$(CUSTODY_FOCUSED_TESTS)'
 	@echo "custody-check: PASS — no live wallet or funds were touched"
+
+# Read-only live rollout doctor. ARGS may name an owner-created private broker
+# directory: make custody-status ARGS='--broker-dir=/absolute/path'.
+custody-status:
+	@tools/dev/custody-status.sh $(ARGS)
+
+custody-status-selftest:
+	@ZCL_CUSTODY_STATUS_SELFTEST=1 tools/dev/custody-status.sh
+
+# Transaction-lab evidence is deliberately split from live mainnet spending.
+# These exact groups exercise production transaction builders, signatures,
+# Sapling proofs, consensus verification, script interpretation, and isolated
+# settlement projections without contacting a live wallet.
+TRANSACTION_LAB_PROOF_TESTS := test_simnet_wallet_import_backup,test_simnet_sapling_shielded_send,test_simnet_shielded_wallet_e2e,test_simnet_zmsg_onchain,test_slp,test_znam,test_zswap_ceremony,test_swap_settlement,test_store_transparent_pay,test_store_e2e_shielded
+.PHONY: transaction-lab-status transaction-lab-check transaction-lab-proof
+transaction-lab-status:
+	@tools/dev/transaction-lab.sh status
+
+transaction-lab-check:
+	@tools/dev/transaction-lab.sh check
+	@tools/dev/transaction-lab.sh selftest
+
+transaction-lab-proof:
+	@ZCL_PARAMS_TESTS=1 ZCL_STRESS_TESTS=1 \
+	 $(MAKE) --no-print-directory t-fast-exact ONLY='$(TRANSACTION_LAB_PROOF_TESTS)'
+	@tools/dev/transaction-lab.sh status
 
 # ── Agent-harness reporting targets ──────────────────────────────────────
 # Three read-only targets the orchestrator was doing by hand. None builds,

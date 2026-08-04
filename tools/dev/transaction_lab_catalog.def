@@ -1,0 +1,22 @@
+# case_id|family|description|minimum_proof|test_group
+transparent_t_to_t|base_zcl|transparent payment|simnet_confirmed|test_simnet_wallet_import_backup
+sapling_t_to_z|base_zcl|shielding payment|simnet_confirmed|test_simnet_shielded_wallet_e2e
+sapling_z_to_z|base_zcl|fully shielded payment|simnet_confirmed|test_simnet_shielded_wallet_e2e
+sapling_z_to_t|base_zcl|unshielding payment|consensus_verified|test_simnet_shielded_wallet_e2e
+sapling_onchain_memo|messaging|shielded memo payment|simnet_confirmed|test_simnet_zmsg_onchain
+zslp_genesis|tokens|token genesis|builder_verified|test_slp
+zslp_mint|tokens|token mint|builder_verified|test_slp
+zslp_send|tokens|token transfer|builder_verified|test_slp
+zslp_burn|tokens|token burn|builder_verified|test_slp
+znam_register|names|name registration|builder_verified|test_znam
+znam_update|names|name update|builder_verified|test_znam
+znam_transfer|names|name transfer|builder_verified|test_znam
+znam_renew|names|name renewal|builder_verified|test_znam
+znam_set_record|names|name address record|builder_verified|test_znam
+znam_set_text|names|name text record|builder_verified|test_znam
+htlc_initiate|atomic_swap|HTLC funding initiator|builder_verified|test_zswap_ceremony
+htlc_participate|atomic_swap|HTLC funding participant|builder_verified|test_zswap_ceremony
+htlc_redeem|atomic_swap|HTLC claim branch|interpreter_verified|test_swap_settlement
+htlc_refund|atomic_swap|HTLC timeout branch|interpreter_verified|test_swap_settlement
+store_transparent_payment|commerce|transparent store settlement|projection_verified|test_store_transparent_pay
+store_shielded_payment|commerce|shielded memo-bound store settlement|projection_verified|test_store_e2e_shielded
