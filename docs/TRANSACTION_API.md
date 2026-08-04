@@ -220,7 +220,7 @@ mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.
 
 The current complete inventory is **33/34 isolated cases passing**, with
-`blog_anchor` explicitly blocked, **5 simulated-chain confirmations**, **0
+`blog_anchor` explicitly blocked, **14 simulated-chain confirmations**, **0
 mainnet confirmations**, and **0 ZCL** live recipient value or fees. The earlier
 33/33 result was complete for the catalog as then declared; the later audit
 found and added the already-implemented ZBLG chain format instead of hiding it.

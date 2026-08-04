@@ -15,16 +15,16 @@ zdir_deregister|directory|ZDIR onion deregistration|builder_verified|test_zdir_w
 zanc_epoch_anchor|anchor|ZANC epoch digest anchor|builder_verified|test_epoch
 zcode_release_anchor|zcode|ZCODE release-domain ZANC anchor|builder_verified|test_zcode_release
 blog_anchor|blog|ZNAM-bound signed Blog event anchor|not_demonstrated|test_blog
-zslp_genesis|tokens|token genesis|builder_verified|test_slp
-zslp_mint|tokens|token mint|builder_verified|test_slp
-zslp_send|tokens|token transfer|builder_verified|test_slp
+zslp_genesis|tokens|token genesis|simnet_confirmed|test_simnet
+zslp_mint|tokens|token mint|simnet_confirmed|test_simnet
+zslp_send|tokens|token transfer|simnet_confirmed|test_simnet
 zslp_burn|tokens|token burn|builder_verified|test_slp
-znam_register|names|name registration|builder_verified|test_znam
-znam_update|names|name update|builder_verified|test_znam
-znam_transfer|names|name transfer|builder_verified|test_znam
-znam_renew|names|name renewal|builder_verified|test_znam
-znam_set_record|names|name address record|builder_verified|test_znam
-znam_set_text|names|name text record|builder_verified|test_znam
+znam_register|names|name registration|simnet_confirmed|test_simnet
+znam_update|names|name update|simnet_confirmed|test_simnet
+znam_transfer|names|name transfer|simnet_confirmed|test_simnet
+znam_renew|names|name renewal|simnet_confirmed|test_simnet
+znam_set_record|names|name address record|simnet_confirmed|test_simnet
+znam_set_text|names|name text record|simnet_confirmed|test_simnet
 htlc_initiate|atomic_swap|HTLC funding initiator|builder_verified|test_zswap_ceremony
 htlc_participate|atomic_swap|HTLC funding participant|builder_verified|test_zswap_ceremony
 htlc_redeem|atomic_swap|HTLC claim branch|interpreter_verified|test_swap_settlement

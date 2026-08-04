@@ -206,3 +206,30 @@ The corrected current result is **33/34 PASS, 1 BLOCKED**, with **5 simulated
 chain confirmations** across **19 exact proof groups**, **0 mainnet
 confirmations**, and **0 ZCL** live recipient value or fees. This audit moved
 no funds and contacted no live wallet.
+
+## 2026-08-04 mined overlay proof promotion
+
+Source commit `f8052a89` already contained stronger evidence than nine catalog
+rows claimed. The `test_simnet` group uses the production ZSLP and ZNAM codecs,
+spends real simulated UTXOs, admits each transaction through block connection,
+and then folds the mined bytes into the token or name projection. The notebook
+now records that evidence instead of leaving it mislabeled as builder-only.
+
+- ZSLP GENESIS, SEND, and MINT are mined and their token/transfer balances are
+  read back from the chain-derived projection. ZSLP burn remains
+  `builder_verified`; the simulator does not yet demonstrate its implicit-burn
+  accounting.
+- All six ZNAM mutations are mined. REGISTER resolves the name, UPDATE changes
+  the target, SET_RECORD and SET_TEXT populate their child records, RENEW is
+  observed as the current projection no-op, and TRANSFER changes the owner.
+  The same run also mines non-owner and malformed variants and proves they do
+  not mutate authoritative name state.
+- `raw_custom_transaction` remains `builder_verified`: the simulator mines an
+  arbitrary OP_RETURN spend, but it does not invoke the public raw
+  create/sign/broadcast command path end-to-end, so that semantic API proof is
+  not promoted by association.
+
+The current result is **33/34 PASS, 1 BLOCKED**, with **14 simulated-chain
+confirmations** across **18 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
+funds moved.
