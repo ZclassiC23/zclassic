@@ -769,6 +769,7 @@ static bool zsci_store_for(const char *datadir, bool *live,
 static bool zsci_discovery_rpc(const char *method, struct json_value *input,
                                struct json_value *result)
 {
+    json_init(result);
     if (!json_get(input, "operation"))
         json_push_kv_str(input, "operation",
                          strcmp(method, "zcode_dht_publish") == 0
@@ -790,7 +791,6 @@ static bool zsci_discovery_rpc(const char *method, struct json_value *input,
     json_free(&params);
     if (!raw)
         return false;
-    json_init(result);
     bool ok = json_read(result, raw, strlen(raw)) && result->type == JSON_OBJ &&
               json_get_bool_or(result, "ok", false);
     free(raw);
@@ -799,9 +799,12 @@ static bool zsci_discovery_rpc(const char *method, struct json_value *input,
 
 static bool zsci_discovery_record(const char *kind, const char *science_root,
                                   const char *blob_root, int64_t now,
-                                  int64_t expiry, char token_out[65])
+                                  int64_t expiry, char token_out[65],
+                                  char error_out[64])
 {
     struct json_value input, result;
+    if (error_out)
+        error_out[0] = '\0';
     json_init(&input);
     json_set_object(&input);
     json_push_kv_str(&input, "mode", "plan");
@@ -814,6 +817,11 @@ static bool zsci_discovery_record(const char *kind, const char *science_root,
     json_push_kv_int(&input, "not_before", now);
     json_push_kv_int(&input, "expiry", expiry);
     if (!zsci_discovery_rpc("zcode_dht_publish", &input, &result)) {
+        const char *code = json_get_str(json_get(&result, "code"));
+        if (error_out)
+            (void)snprintf(error_out, 64, "%s",
+                           code ? code : "RPC_UNAVAILABLE");
+        json_free(&result);
         json_free(&input);
         return false;
     }
@@ -829,8 +837,12 @@ static bool zsci_discovery_record(const char *kind, const char *science_root,
     json_set_str((struct json_value *)json_get(&input, "mode"), "commit");
     json_push_kv_str(&input, "plan_token", token_out);
     bool committed = zsci_discovery_rpc("zcode_dht_publish", &input, &result);
-    if (committed)
-        json_free(&result);
+    if (!committed && error_out) {
+        const char *code = json_get_str(json_get(&result, "code"));
+        (void)snprintf(error_out, 64, "%s",
+                       code ? code : "RPC_UNAVAILABLE");
+    }
+    json_free(&result);
     json_free(&input);
     return committed;
 }
@@ -902,16 +914,23 @@ void zcl_native_handle_zcode_science_publish(
     }
     int64_t now = platform_time_wall_unix();
     char pointer_token[65], provider_token[65];
+    char pointer_error[64] = {0}, provider_error[64] = {0};
     bool pointer = now > 0 && now <= INT64_MAX - 604800 &&
         zsci_discovery_record("pointer", root_hex, blob_hex, now,
-                              now + 604800, pointer_token);
+                              now + 604800, pointer_token, pointer_error);
     bool provider = now > 0 && now <= INT64_MAX - 7200 &&
         zsci_discovery_record("provider", root_hex, blob_hex, now,
-                              now + 7200, provider_token);
+                              now + 7200, provider_token, provider_error);
     if (!pointer || !provider) {
         json_push_kv_str(&reply->data, "science_root", root_hex);
         json_push_kv_str(&reply->data, "blob_root", blob_hex);
         json_push_kv_bool(&reply->data, "transport_object_committed", true);
+        json_push_kv_bool(&reply->data, "pointer_published", pointer);
+        json_push_kv_bool(&reply->data, "provider_published", provider);
+        if (!pointer && pointer_error[0])
+            json_push_kv_str(&reply->data, "pointer_error", pointer_error);
+        if (!provider && provider_error[0])
+            json_push_kv_str(&reply->data, "provider_error", provider_error);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_TRANSIENT,
                                "DISCOVERY_PUBLICATION_INCOMPLETE", "commit",
