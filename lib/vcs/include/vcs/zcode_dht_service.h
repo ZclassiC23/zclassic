@@ -205,6 +205,8 @@ enum vcs_zcode_dht_record_operation_state {
 struct vcs_zcode_dht_record_operation_result {
   enum vcs_zcode_dht_record_operation_state state;
   enum vcs_zcode_dht_store_status store_status;
+  uint8_t page_offset;
+  uint8_t next_offset;
   uint32_t record_count;
   struct vcs_zcode_dht_record records[VCS_ZCODE_DHT_RECORDS_PER_FRAME];
 };
@@ -272,6 +274,11 @@ bool vcs_zcode_dht_service_record_query_begin(
     struct vcs_zcode_dht_service *service, uint64_t peer_id,
     const struct vcs_zcode_dht_record_selector *selector,
     struct vcs_zcode_dht_time now, uint64_t *operation_id_out);
+bool vcs_zcode_dht_service_record_query_page_begin(
+    struct vcs_zcode_dht_service *service, uint64_t peer_id,
+    const struct vcs_zcode_dht_record_selector *selector,
+    uint8_t page_offset, struct vcs_zcode_dht_time now,
+    uint64_t *operation_id_out);
 bool vcs_zcode_dht_service_record_store_begin(
     struct vcs_zcode_dht_service *service, uint64_t peer_id,
     const struct vcs_zcode_dht_record *record,
@@ -304,6 +311,11 @@ size_t vcs_zcode_dht_service_record_local_query(
     const struct vcs_zcode_dht_service *service, uint64_t now_unix,
     const struct vcs_zcode_dht_record_selector *selector,
     struct vcs_zcode_dht_record *out, size_t out_capacity);
+size_t vcs_zcode_dht_service_record_local_query_page(
+    const struct vcs_zcode_dht_service *service, uint64_t now_unix,
+    const struct vcs_zcode_dht_record_selector *selector,
+    uint8_t page_offset, struct vcs_zcode_dht_record *out,
+    size_t out_capacity, uint8_t *next_offset_out);
 
 /* Operator-authored publication is a stale-plan-safe mutation.  The plan
  * token binds the exact deterministic signed record and the current canonical

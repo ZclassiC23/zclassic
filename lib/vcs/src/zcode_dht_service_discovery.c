@@ -3,6 +3,7 @@
 
 #include "zcode_dht_service_internal.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 static struct service_record_discovery *discovery_find(
@@ -49,6 +50,47 @@ static bool discovery_same_record(const struct vcs_zcode_dht_record *a,
   return vcs_zcode_dht_record_encode(a, aw) == VCS_ZCODE_DHT_RECORD_OK &&
          vcs_zcode_dht_record_encode(b, bw) == VCS_ZCODE_DHT_RECORD_OK &&
          memcmp(aw, bw, sizeof(aw)) == 0;
+}
+
+static int discovery_record_compare(const void *left, const void *right)
+{
+  const struct vcs_zcode_dht_record *a = left;
+  const struct vcs_zcode_dht_record *b = right;
+  uint8_t aw[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+  uint8_t bw[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+  if (vcs_zcode_dht_record_encode(a, aw) != VCS_ZCODE_DHT_RECORD_OK ||
+      vcs_zcode_dht_record_encode(b, bw) != VCS_ZCODE_DHT_RECORD_OK)
+    return 0;
+  return memcmp(aw, bw, sizeof(aw));
+}
+
+static void discovery_normalize_records(
+    struct service_record_discovery *discovery)
+{
+  qsort(discovery->records, discovery->record_count,
+        sizeof(*discovery->records), discovery_record_compare);
+  struct vcs_zcode_dht_record ordered[
+      VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS];
+  bool selected[VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS] = {0};
+  uint32_t count = 0;
+  for (uint32_t i = 0; i < discovery->record_count; i++) {
+    bool provider_seen = false;
+    for (uint32_t j = 0; j < count; j++)
+      if (memcmp(ordered[j].provider_node_id,
+                 discovery->records[i].provider_node_id, 32) == 0) {
+        provider_seen = true;
+        break;
+      }
+    if (!provider_seen) {
+      ordered[count++] = discovery->records[i];
+      selected[i] = true;
+    }
+  }
+  for (uint32_t i = 0; i < discovery->record_count; i++)
+    if (!selected[i])
+      ordered[count++] = discovery->records[i];
+  memcpy(discovery->records, ordered,
+         discovery->record_count * sizeof(*discovery->records));
 }
 
 static void discovery_merge_record(
@@ -104,6 +146,7 @@ static void discovery_drive_children(
     if (!vcs_zcode_dht_service_record_operation_poll(service, child_id, now,
                                                        &result)) {
       discovery->child_operation_ids[i] = 0;
+      discovery->node_complete[i] = true;
       if (discovery->active_children)
         discovery->active_children--;
       continue;
@@ -112,30 +155,54 @@ static void discovery_drive_children(
       continue;
     discovery_merge_result(service, discovery, &result, now);
     discovery->child_operation_ids[i] = 0;
+    if (result.state == VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE &&
+        result.next_offset &&
+        discovery->record_count <
+            VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS)
+      discovery->node_page_offsets[i] = result.next_offset;
+    else
+      discovery->node_complete[i] = true;
     if (discovery->active_children)
       discovery->active_children--;
   }
 
-  while (discovery->active_children < VCS_ZCODE_DHT_ALPHA &&
-         discovery->next_node < discovery->node_count) {
-    uint32_t at = discovery->next_node;
+  if (discovery->record_count >=
+      VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS) {
+    discovery_cancel_children(service, discovery);
+    discovery->state = VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE;
+    return;
+  }
+
+  while (discovery->active_children < VCS_ZCODE_DHT_ALPHA) {
+    uint32_t at = discovery->node_count;
+    for (uint32_t i = 0; i < discovery->node_count; i++)
+      if (!discovery->node_complete[i] &&
+          !discovery->child_operation_ids[i]) {
+        at = i;
+        break;
+      }
+    if (at == discovery->node_count)
+      break;
     struct service_peer *peer = discovery_peer_for_node(
         service, discovery->node_ids[at]);
     if (!peer) {
-      discovery->next_node++;
+      discovery->node_complete[at] = true;
       continue;
     }
     uint64_t child_id = 0;
-    if (!vcs_zcode_dht_service_record_query_begin(
-            service, peer->peer_id, &discovery->selector, now, &child_id))
+    if (!vcs_zcode_dht_service_record_query_page_begin(
+            service, peer->peer_id, &discovery->selector,
+            discovery->node_page_offsets[at], now, &child_id))
       break;
     discovery->child_operation_ids[at] = child_id;
-    discovery->next_node++;
     discovery->active_children++;
-    discovery->nodes_queried++;
+    if (discovery->node_page_offsets[at] == 0)
+      discovery->nodes_queried++;
   }
-  if (discovery->next_node == discovery->node_count &&
-      discovery->active_children == 0)
+  bool all_complete = true;
+  for (uint32_t i = 0; i < discovery->node_count; i++)
+    all_complete &= discovery->node_complete[i];
+  if (all_complete && discovery->active_children == 0)
     discovery->state = VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE;
 }
 
@@ -232,6 +299,8 @@ bool vcs_zcode_dht_service_record_discovery_poll(
   if (!discovery)
     return false;
   discovery_drive(service, discovery, now);
+  if (discovery->state != VCS_ZCODE_DHT_RECORD_OPERATION_PENDING)
+    discovery_normalize_records(discovery);
   memset(out, 0, sizeof(*out));
   out->state = discovery->state;
   out->routing_rounds = discovery->routing_rounds;

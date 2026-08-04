@@ -51,6 +51,7 @@ struct service_query {
   uint64_t peer_id, generation, deadline_mono, lookup_id;
   uint64_t record_operation_id;
   struct vcs_zcode_dht_record_selector record_selector;
+  uint8_t record_page_offset;
   uint8_t record_digest[32];
 };
 
@@ -101,6 +102,7 @@ struct service_record_operation {
   enum vcs_zcode_dht_record_operation_state state;
   enum vcs_zcode_dht_store_status store_status;
   struct vcs_zcode_dht_record_selector selector;
+  uint8_t page_offset, next_offset;
   uint32_t record_count;
   struct vcs_zcode_dht_record records[VCS_ZCODE_DHT_RECORDS_PER_FRAME];
 };
@@ -127,6 +129,8 @@ struct service_record_discovery {
   uint32_t node_count, next_node, active_children, nodes_queried;
   uint8_t node_ids[VCS_ZCODE_DHT_K][32];
   uint64_t child_operation_ids[VCS_ZCODE_DHT_K];
+  uint8_t node_page_offsets[VCS_ZCODE_DHT_K];
+  bool node_complete[VCS_ZCODE_DHT_K];
   uint32_t record_count;
   struct vcs_zcode_dht_record
       records[VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS];
@@ -241,5 +245,11 @@ uint64_t vcs_zcode_dht_message_generation(
     const struct vcs_zcode_dht_msg *message);
 bool vcs_zcode_dht_response_matches_query(
     enum vcs_zcode_dht_msg_kind message_kind, enum query_kind query_kind);
+bool vcs_zcode_dht_records_policy_allows(
+    const struct vcs_zcode_dht_service *service,
+    enum vcs_zcode_sovereignty_action action,
+    const struct vcs_zcode_dht_record *record);
+int vcs_zcode_dht_records_canonical_compare(const void *left,
+                                             const void *right);
 
 #endif /* ZCL_VCS_ZCODE_DHT_SERVICE_INTERNAL_H */

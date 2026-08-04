@@ -231,7 +231,7 @@ static bool fixture_pointer_record(
   return result == VCS_ZCODE_DHT_RECORD_OK;
 }
 
-#define MULTI_NODES 7u
+#define MULTI_NODES 12u
 
 struct multi_network;
 struct multi_reach_ctx {
@@ -691,7 +691,7 @@ static int test_sparse_iterative_network(void) {
     }
     ASSERT(found_target);
     ASSERT(!found_denied);
-    ASSERT(net.frames - frames_before <= 48);
+    ASSERT(net.frames - frames_before <= 96);
     vcs_zcode_dht_service_status(net.service[origin], &after);
     ASSERT(after.lookup_rounds >= result.rounds);
     ASSERT(after.lookup_xor_progress >= result.xor_progress);
@@ -700,12 +700,23 @@ static int test_sparse_iterative_network(void) {
      * The iterative record operation reuses the S6 walk, queries the closest
      * authenticated nodes, merges signed results, and treats records.v1 only
      * as its local rebuildable cache. */
-    struct vcs_zcode_dht_record pointer;
-    ASSERT(fixture_pointer_record(net.dir[target_node], genesis, 0xc1, 0xd1,
-                                  &pointer));
-    ASSERT_EQ(vcs_zcode_dht_service_record_admit(
-                  net.service[target_node], &pointer, net.now),
-              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    struct vcs_zcode_dht_record pointers[MULTI_NODES];
+    for (size_t i = 0; i < MULTI_NODES; i++) {
+      ASSERT(fixture_pointer_record(net.dir[i], genesis, 0xc1,
+                                    (uint8_t)(0xd0 + i), &pointers[i]));
+      ASSERT_EQ(vcs_zcode_dht_service_record_admit(
+                    net.service[target_node], &pointers[i], net.now),
+                VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    }
+    struct vcs_zcode_dht_record pointer = pointers[target_node];
+    for (uint8_t conflict = 1; conflict < 8; conflict++) {
+      struct vcs_zcode_dht_record flooded;
+      ASSERT(fixture_pointer_record(net.dir[target_node], genesis, 0xc1,
+                                    (uint8_t)(0xe0 + conflict), &flooded));
+      ASSERT_EQ(vcs_zcode_dht_service_record_admit(
+                    net.service[target_node], &flooded, net.now),
+                VCS_ZCODE_DHT_RECORD_STORE_CONFLICT);
+    }
     struct vcs_zcode_dht_record_selector selector = {
         .kind = VCS_ZCODE_DHT_RECORD_POINTER};
     snprintf(selector.namespace_name, sizeof(selector.namespace_name),
@@ -730,13 +741,21 @@ static int test_sparse_iterative_network(void) {
     }
     ASSERT_EQ(discovery_result.state,
               VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE);
-    ASSERT_EQ(discovery_result.record_count, 1);
-    ASSERT(memcmp(discovery_result.records[0].transport_root,
-                  pointer.transport_root, 32) == 0);
+    ASSERT_EQ(discovery_result.record_count, MULTI_NODES + 7u);
+    for (size_t i = 0; i < MULTI_NODES; i++)
+      for (size_t j = i + 1; j < MULTI_NODES; j++)
+        ASSERT(memcmp(discovery_result.records[i].provider_node_id,
+                      discovery_result.records[j].provider_node_id, 32) != 0);
+    size_t target_conflicts = 0;
+    for (uint32_t i = 0; i < discovery_result.record_count; i++)
+      target_conflicts +=
+          memcmp(discovery_result.records[i].provider_node_id,
+                 pointer.provider_node_id, 32) == 0;
+    ASSERT_EQ(target_conflicts, 8);
     struct vcs_zcode_dht_record cached[1];
     ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
                   net.service[origin], net.now.wall_unix, &selector, cached, 1),
-              1);
+              MULTI_NODES + 7u);
 
     /* A ban is strictly local. Origin stops serving this root while the
      * target still serves the identical signed record to another node. */
@@ -757,7 +776,7 @@ static int test_sparse_iterative_network(void) {
     ASSERT(multi_drive(&net));
     ASSERT(vcs_zcode_dht_service_record_operation_poll(
         net.service[alternate], record_operation, net.now, &record_result));
-    ASSERT_EQ(record_result.record_count, 1);
+    ASSERT_EQ(record_result.record_count, VCS_ZCODE_DHT_RECORDS_PER_FRAME);
 
     /* A reachability request can be accepted while the bounded dial itself
      * fails.  The unverified ID must age out monotonically so a nonexistent
@@ -817,8 +836,8 @@ static int test_sparse_iterative_network(void) {
     ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
                   net.service[origin], net.now.wall_unix, &selector,
                   cold_record, 1),
-              1);
-    ASSERT(memcmp(cold_record[0].transport_root, pointer.transport_root, 32) ==
+              MULTI_NODES + 7u);
+    ASSERT(memcmp(cold_record[0].semantic_root, pointer.semantic_root, 32) ==
            0);
     ASSERT_EQ(after.connected_authenticated, 0);
     memset(net.connected[origin], 0, sizeof(net.connected[origin]));
