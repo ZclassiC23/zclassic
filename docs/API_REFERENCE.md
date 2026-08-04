@@ -405,8 +405,8 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `app transaction-types list` | ready | read / read / public · instant/tiny | none | `zcl.transaction_types.index.v1` | `zclassic23 app transaction-types list` | List base, overlay, composite, process-only, contained, and planned transaction types |
-| `app transaction-types show` | ready | read / read / public · instant/tiny | **`type`** | `zcl.transaction_type.v1` | `zclassic23 app transaction-types show --type=znam_register` | Inspect one semantic ZCL transaction type and its safe workflow |
+| `app transaction-types list` | ready | read / read / public · instant/tiny | none | `zcl.transaction_types.index.v2` | `zclassic23 app transaction-types list` | List base, overlay, composite, process-only, contained, and planned transaction types |
+| `app transaction-types show` | ready | read / read / public · instant/tiny | **`type`** | `zcl.transaction_type.v2` | `zclassic23 app transaction-types show --type=znam_register` | Inspect one semantic ZCL transaction type and its safe workflow |
 
 #### `app.service` — Token-gated services declared in the service catalog
 
@@ -773,7 +773,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `code group` | ready | read / read / public · foreground/tiny | **`group`** | `zcl.code_group.v1` | `zclassic23 code group app/services` | Top source groups, or one group's subgroups and files |
-| `code map` | ready | read / read / public · fast/tiny | none | `zcl.code_map.v1` | `zclassic23 code map` | Map the tree: root groups and app shapes with file counts |
+| `code map` | ready | read / read / public · foreground/tiny | none | `zcl.code_map.v1` | `zclassic23 code map` | Map the tree: root groups and app shapes with file counts |
 | `code tests` | ready | read / read / public · fast/tiny | **`path`** | `zcl.code_tests.v1` | `zclassic23 code tests lib/net/src/download.c` | Which focused test group a change to one file routes to |
 | `code room` | ready | read / read / public · fast/tiny | **`path`** | `zcl.code_room.v1` | `zclassic23 code room app/jobs/src/utxo_apply_stage.c` | Compose shape, purpose, neighbors and test route for one path |
 | `code file` | ready | read / read / public · fast/tiny | **`path`** | `zcl.code_file.v1` | `zclassic23 code file lib/vcs/src/vcs_index.c` | One file's symbol table and in-tree include dependencies |

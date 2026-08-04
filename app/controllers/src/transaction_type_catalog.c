@@ -74,6 +74,11 @@ zcl_transaction_type_find(const char *id)
 static void transaction_type_json(
     const struct zcl_transaction_type_contract *type, struct json_value *out)
 {
+    const bool demonstrated = strcmp(type->proof_level,
+                                     "not_demonstrated") != 0;
+    const bool mainnet_live_proven = strcmp(type->proof_level,
+                                            "live_confirmed") == 0;
+
     json_set_object(out);
     (void)json_push_kv_str(out, "schema", ZCL_TRANSACTION_TYPE_SCHEMA);
     (void)json_push_kv_str(out, "id", type->id);
@@ -95,7 +100,10 @@ static void transaction_type_json(
     (void)json_push_kv_str(out, "lab_case_id", type->lab_case_id);
     (void)json_push_kv_str(out, "proof_level", type->proof_level);
     (void)json_push_kv_str(out, "test_group", type->test_group);
-    (void)json_push_kv_bool(out, "mainnet_live_proven", false);
+    (void)json_push_kv_str(out, "evidence_status",
+                          demonstrated ? "demonstrated" : "blocked");
+    (void)json_push_kv_bool(out, "mainnet_live_proven",
+                           mainnet_live_proven);
     (void)json_push_kv_str(out, "summary", type->summary);
 }
 
@@ -134,6 +142,8 @@ bool zcl_transaction_types_index_json(struct json_value *out)
     json_set_array(&types);
     size_t count = 0;
     size_t ready = 0, process_only = 0, contained = 0, planned = 0;
+    size_t demonstrated = 0, blocked = 0, chain_confirmed = 0;
+    size_t mainnet_live_proven = 0, proof_test_groups = 0;
     const struct zcl_transaction_type_contract *catalog =
         zcl_transaction_type_catalog(&count);
     for (size_t i = 0; i < count; i++) {
@@ -149,12 +159,40 @@ bool zcl_transaction_types_index_json(struct json_value *out)
             contained++;
         else if (strcmp(catalog[i].availability, "planned") == 0)
             planned++;
+        if (strcmp(catalog[i].proof_level, "not_demonstrated") == 0)
+            blocked++;
+        else
+            demonstrated++;
+        if (strcmp(catalog[i].proof_level, "simnet_confirmed") == 0 ||
+            strcmp(catalog[i].proof_level, "live_confirmed") == 0)
+            chain_confirmed++;
+        if (strcmp(catalog[i].proof_level, "live_confirmed") == 0)
+            mainnet_live_proven++;
+        bool first_test_group = true;
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(catalog[i].test_group, catalog[j].test_group) == 0) {
+                first_test_group = false;
+                break;
+            }
+        }
+        if (first_test_group)
+            proof_test_groups++;
     }
     (void)json_push_kv_int(out, "transaction_type_count", (int64_t)count);
     (void)json_push_kv_int(out, "ready_count", (int64_t)ready);
     (void)json_push_kv_int(out, "process_only_count", (int64_t)process_only);
     (void)json_push_kv_int(out, "contained_count", (int64_t)contained);
     (void)json_push_kv_int(out, "planned_count", (int64_t)planned);
+    (void)json_push_kv_int(out, "demonstrated_count",
+                           (int64_t)demonstrated);
+    (void)json_push_kv_int(out, "blocked_count", (int64_t)blocked);
+    (void)json_push_kv_int(out, "chain_confirmed_count",
+                           (int64_t)chain_confirmed);
+    (void)json_push_kv_int(out, "mainnet_live_proven_count",
+                           (int64_t)mainnet_live_proven);
+    (void)json_push_kv_int(out, "proof_test_group_count",
+                           (int64_t)proof_test_groups);
+    (void)json_push_kv_bool(out, "fully_demonstrated", blocked == 0);
     (void)json_push_kv(out, "transaction_types", &types);
     json_free(&types);
     return true;

@@ -61,9 +61,13 @@ GET /api/v1/transaction-types
 GET /api/v1/transaction-types/znam_register
 ```
 
-The collection schema is `zcl.transaction_types.index.v1` and deliberately
+The collection schema is `zcl.transaction_types.index.v2` and deliberately
 contains compact discovery rows that fit the native response budget; a member
-is the full `zcl.transaction_type.v1` contract. `core.wallet.transaction.list` is different: it is
+is the full `zcl.transaction_type.v2` contract. The collection also reports
+`demonstrated_count`, `blocked_count`, `chain_confirmed_count`,
+`mainnet_live_proven_count`, `proof_test_group_count`, and
+`fully_demonstrated`, so an agent can assess proof coverage without parsing all
+33 rows. `core.wallet.transaction.list` is different: it is
 wallet history, not the type catalog. `app.protocols` describes broader
 application protocols, not an exhaustive transaction inventory.
 
@@ -85,7 +89,8 @@ or infer a wallet scope from examples.
 | `network_policy` | Where the path may run. `isolated_non_mainnet_only` and `no_broadcast_path` are hard warnings. |
 | `proof_level` / `test_group` | Strongest checked-in isolated proof and the exact focused test that reproduces it. |
 | `lab_case_id` | Matching append-only notebook case, when one exists. |
-| `mainnet_live_proven` | Compile-time truth for this catalog revision; currently false for every type. Mainnet statistics come from the notebook ledger. |
+| `evidence_status` | `demonstrated` when checked-in evidence exists; otherwise explicit `blocked`. |
+| `mainnet_live_proven` | Derived from `proof_level == live_confirmed`; currently false for every type. Monetary mainnet statistics come only from the notebook ledger. |
 
 `process_only` is not zero support: the node can parse, validate, connect, index,
 and display the transaction, but agents cannot create a new one. `contained`

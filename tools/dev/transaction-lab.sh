@@ -69,7 +69,7 @@ stats() {
 }
 
 check_notebook() {
-    local declared_ids lab_ids
+    local declared_contracts lab_contracts
     awk -F'|' '
         function bad(msg) { print "transaction-lab-check: " msg > "/dev/stderr"; errors++ }
         NR == FNR {
@@ -120,11 +120,23 @@ check_notebook() {
             if (errors) exit 1
         }
     ' "$CATALOG" "$LEDGER"
-    declared_ids="$(sed -n 's/^TX_TYPE("\([^"]*\)".*/\1/p' "$TYPE_CATALOG" | sort)"
-    lab_ids="$(awk -F'|' '!/^#/ && NF { print $1 }' "$CATALOG" | sort)"
-    if [ "$declared_ids" != "$lab_ids" ]; then
-        echo "transaction-lab-check: catalog ids differ from transaction type ids" >&2
-        diff -u <(printf '%s\n' "$declared_ids") <(printf '%s\n' "$lab_ids") >&2 || true
+    declared_contracts="$(awk '
+        !active && /^TX_TYPE\(/ { record=$0; active=1; next }
+        active { record=record " " $0 }
+        active && /\)$/ {
+            n=split(record, quoted, "\"")
+            if (n >= 31)
+                print quoted[2] "|" quoted[28] "|" quoted[30]
+            record=""; active=0
+        }
+    ' "$TYPE_CATALOG" | sort)"
+    lab_contracts="$(awk -F'|' '!/^#/ && NF {
+        print $1 "|" $4 "|" $5
+    }' "$CATALOG" | sort)"
+    if [ "$declared_contracts" != "$lab_contracts" ]; then
+        echo "transaction-lab-check: ids, proofs, or test groups differ from the transaction type catalog" >&2
+        diff -u <(printf '%s\n' "$declared_contracts") \
+                <(printf '%s\n' "$lab_contracts") >&2 || true
         return 1
     fi
     echo "transaction-lab-check: PASS"
@@ -205,9 +217,10 @@ record_event() {
 }
 
 selftest() {
-    local fixture fixture_ledger body
+    local fixture fixture_ledger fixture_type_catalog body
     fixture="$(mktemp -d)"
     fixture_ledger="$fixture/events.jsonl"
+    fixture_type_catalog="$fixture/transaction_types.def"
     cleanup_transaction_lab_selftest() {
         [ ! -d "$fixture" ] || rm -r -- "$fixture"
     }
@@ -233,6 +246,14 @@ selftest() {
         --proof=not_demonstrated --result=PASS --source=selftest_invalid \
         >/dev/null 2>&1; then
         die "selftest accepted not_demonstrated evidence as PASS"
+    fi
+    sed '0,/"simnet_confirmed"/s//"builder_verified"/' \
+        "$TYPE_CATALOG" > "$fixture_type_catalog"
+    if ZCL_TRANSACTION_LAB_CATALOG="$CATALOG" \
+       ZCL_TRANSACTION_LAB_LEDGER="$fixture_ledger" \
+       ZCL_TRANSACTION_TYPE_CATALOG="$fixture_type_catalog" \
+        "$0" check >/dev/null 2>&1; then
+        die "selftest accepted proof drift between the API and lab catalogs"
     fi
     echo "transaction-lab selftest: PASS"
 }

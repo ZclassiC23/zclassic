@@ -97,6 +97,14 @@ int api_transaction_type_focused_tests(void)
                                json_get_int(json_get(&root,
                                                      "contained_count")) +
                                json_get_int(json_get(&root, "planned_count"));
+        ok = ok && count == 33 &&
+             json_get_int(json_get(&root, "demonstrated_count")) == 32 &&
+             json_get_int(json_get(&root, "blocked_count")) == 1 &&
+             json_get_int(json_get(&root, "chain_confirmed_count")) == 5 &&
+             json_get_int(json_get(&root,
+                                   "mainnet_live_proven_count")) == 0 &&
+             json_get_int(json_get(&root, "proof_test_group_count")) == 18 &&
+             !json_get_bool(json_get(&root, "fully_demonstrated"));
         const struct json_value *transparent =
             api_test_find_str_field(types, "id", "transparent_t_to_t");
         const struct json_value *coinbase =
@@ -180,8 +188,23 @@ int api_transaction_type_focused_tests(void)
         ok = ok && api_test_array_has_str(json_get(&root,
                                                     "component_commands"),
                                            "zcode.release.prove");
+        ok = ok && strcmp(json_get_str(json_get(&root, "evidence_status")),
+                          "demonstrated") == 0;
         ok = ok && !json_get_bool(json_get(&root,
                                            "mainnet_live_proven"));
+        json_free(&root);
+
+        n = api_handle_request(
+            "GET", "/api/v1/transaction-types/market_purchase",
+            NULL, 0, response, sizeof(response));
+        body = api_test_body(response, n, sizeof(response));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "evidence_status")),
+                          "blocked") == 0 &&
+             strcmp(json_get_str(json_get(&root, "proof_level")),
+                    "not_demonstrated") == 0 &&
+             !json_get_bool(json_get(&root, "mainnet_live_proven"));
         json_free(&root);
 
         n = api_handle_request("GET",
