@@ -5,6 +5,8 @@
 #define ZCL_VCS_ZCODE_DHT_SERVICE_H
 
 #include "vcs/zcode_dht_msgs.h"
+#include "vcs/zcode_dht_record_store.h"
+#include "vcs/zcode_sovereignty_policy.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -28,6 +30,8 @@
        VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS +                             \
    VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS + 2u)
 #define VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND 128u
+#define VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS 8u
+#define VCS_ZCODE_DHT_SERVICE_MAX_RECORDS_PER_PEER 256u
 #define VCS_ZCODE_DHT_SERVICE_SAVE_DEBOUNCE_S 5u
 #define VCS_ZCODE_DHT_SERVICE_QUERY_TIMEOUT_S 5u
 #define VCS_ZCODE_DHT_SERVICE_REACHABILITY_TIMEOUT_S 12u
@@ -78,6 +82,7 @@ enum vcs_zcode_dht_reject_reason {
   VCS_ZCODE_DHT_REJECT_POISONED,
   VCS_ZCODE_DHT_REJECT_RATE,
   VCS_ZCODE_DHT_REJECT_CAP,
+  VCS_ZCODE_DHT_REJECT_UNAUTHORIZED,
   VCS_ZCODE_DHT_REJECT_COUNT
 };
 
@@ -108,6 +113,8 @@ struct vcs_zcode_dht_service_params {
   void *chain_ctx;
   vcs_zcode_dht_reachability_fn request_reachability;
   void *reachability_ctx;
+  vcs_zcode_sovereignty_decide_fn policy_decide;
+  void *policy_ctx;
 };
 
 struct vcs_zcode_dht_service;
@@ -132,6 +139,16 @@ struct vcs_zcode_dht_service_status {
   uint64_t nodes_received;
   uint64_t find_node_sent;
   uint64_t nodes_sent;
+  uint64_t find_record_received;
+  uint64_t records_received;
+  uint64_t store_record_received;
+  uint64_t store_result_received;
+  uint64_t find_record_sent;
+  uint64_t records_sent;
+  uint64_t store_record_sent;
+  uint64_t store_result_sent;
+  uint32_t signed_records;
+  uint32_t active_record_operations;
   uint64_t lookup_rounds;
   uint64_t lookup_xor_progress;
   uint64_t lookup_queue_wait_s;
@@ -174,6 +191,20 @@ struct vcs_zcode_dht_lookup_result {
   uint64_t queue_wait_s;
   uint32_t count;
   uint8_t node_ids[VCS_ZCODE_DHT_K][32];
+};
+
+enum vcs_zcode_dht_record_operation_state {
+  VCS_ZCODE_DHT_RECORD_OPERATION_PENDING = 0,
+  VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE,
+  VCS_ZCODE_DHT_RECORD_OPERATION_TIMEOUT,
+  VCS_ZCODE_DHT_RECORD_OPERATION_REJECTED,
+};
+
+struct vcs_zcode_dht_record_operation_result {
+  enum vcs_zcode_dht_record_operation_state state;
+  enum vcs_zcode_dht_store_status store_status;
+  uint32_t record_count;
+  struct vcs_zcode_dht_record records[VCS_ZCODE_DHT_RECORDS_PER_FRAME];
 };
 
 struct vcs_zcode_dht_service *
@@ -221,6 +252,31 @@ bool vcs_zcode_dht_service_lookup_poll(struct vcs_zcode_dht_service *service,
  * correctly rather than becoming an unsolicited-frame false positive. */
 bool vcs_zcode_dht_service_lookup_cancel(
     struct vcs_zcode_dht_service *service, uint64_t lookup_id);
+
+/* Direct record operations share the service's authenticated query slots,
+ * replay ledgers, rate bucket, deadline, outbound queue and Noise session.
+ * Higher-level iterative discovery may issue these against DHT results. */
+bool vcs_zcode_dht_service_record_query_begin(
+    struct vcs_zcode_dht_service *service, uint64_t peer_id,
+    const struct vcs_zcode_dht_record_selector *selector,
+    struct vcs_zcode_dht_time now, uint64_t *operation_id_out);
+bool vcs_zcode_dht_service_record_store_begin(
+    struct vcs_zcode_dht_service *service, uint64_t peer_id,
+    const struct vcs_zcode_dht_record *record,
+    struct vcs_zcode_dht_time now, uint64_t *operation_id_out);
+bool vcs_zcode_dht_service_record_operation_poll(
+    struct vcs_zcode_dht_service *service, uint64_t operation_id,
+    struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record_operation_result *out);
+bool vcs_zcode_dht_service_record_operation_cancel(
+    struct vcs_zcode_dht_service *service, uint64_t operation_id);
+enum vcs_zcode_dht_record_store_result vcs_zcode_dht_service_record_admit(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_record *record, struct vcs_zcode_dht_time now);
+size_t vcs_zcode_dht_service_record_local_query(
+    const struct vcs_zcode_dht_service *service, uint64_t now_unix,
+    const struct vcs_zcode_dht_record_selector *selector,
+    struct vcs_zcode_dht_record *out, size_t out_capacity);
 
 /* Composition-root lock audit helpers. The snapshot is fixed-size and
  * allocation-free; callbacks may be replaced after boot-time persistence was

@@ -278,9 +278,13 @@ static int test_record_store_restart(void)
     struct vcs_zcode_dht_record found[2];
     ASSERT_EQ(vcs_zcode_dht_record_store_query(
                   after, VCS_ZCODE_DHT_RECORD_POINTER, "science.study",
-                  a.semantic_root, found, 2),
+                  a.semantic_root, 1500, found, 2),
               2);
     ASSERT(vcs_zcode_dht_record_conflicts(&found[0], &found[1]));
+    ASSERT_EQ(vcs_zcode_dht_record_store_query(
+                  before, VCS_ZCODE_DHT_RECORD_POINTER, "science.study",
+                  a.semantic_root, 1800, found, 2),
+              0);
 
     char path[512];
     (void)snprintf(path, sizeof(path), "%s/%s", datadir,

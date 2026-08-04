@@ -87,6 +87,21 @@ struct vcs_zcode_dht_record_store *vcs_zcode_dht_record_store_create(
   return store;
 }
 
+struct vcs_zcode_dht_record_store *vcs_zcode_dht_record_store_clone(
+    const struct vcs_zcode_dht_record_store *store)
+{
+  if (!store)
+    return NULL;
+  struct vcs_zcode_dht_record_store *copy =
+      vcs_zcode_dht_record_store_create(store->network_genesis);
+  if (!copy)
+    return NULL;
+  copy->count = store->count;
+  memcpy(copy->entries, store->entries,
+         store->count * sizeof(*store->entries));
+  return copy;
+}
+
 void vcs_zcode_dht_record_store_free(
     struct vcs_zcode_dht_record_store *store)
 {
@@ -233,8 +248,8 @@ size_t vcs_zcode_dht_record_store_count(
 size_t vcs_zcode_dht_record_store_query(
     const struct vcs_zcode_dht_record_store *store,
     enum vcs_zcode_dht_record_kind kind, const char *namespace_name,
-    const uint8_t root[32], struct vcs_zcode_dht_record *out,
-    size_t out_capacity)
+    const uint8_t root[32], uint64_t now_unix,
+    struct vcs_zcode_dht_record *out, size_t out_capacity)
 {
   if (!store || !namespace_name || !root || (!out && out_capacity))
     return 0;
@@ -243,7 +258,8 @@ size_t vcs_zcode_dht_record_store_query(
     const struct vcs_zcode_dht_record *record = &store->entries[i].record;
     if (record->kind != kind ||
         strcmp(record->namespace_name, namespace_name) != 0 ||
-        memcmp(record_root(record), root, 32) != 0)
+        memcmp(record_root(record), root, 32) != 0 ||
+        now_unix < record->not_before || now_unix >= record->expiry)
       continue;
     if (count < out_capacity)
       out[count] = *record;

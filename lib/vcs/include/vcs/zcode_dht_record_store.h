@@ -40,6 +40,8 @@ struct vcs_zcode_dht_record_store;
 
 struct vcs_zcode_dht_record_store *vcs_zcode_dht_record_store_create(
     const uint8_t network_genesis[32]);
+struct vcs_zcode_dht_record_store *vcs_zcode_dht_record_store_clone(
+    const struct vcs_zcode_dht_record_store *store);
 void vcs_zcode_dht_record_store_free(
     struct vcs_zcode_dht_record_store *store);
 
@@ -55,8 +57,8 @@ size_t vcs_zcode_dht_record_store_count(
 size_t vcs_zcode_dht_record_store_query(
     const struct vcs_zcode_dht_record_store *store,
     enum vcs_zcode_dht_record_kind kind, const char *namespace_name,
-    const uint8_t root[32], struct vcs_zcode_dht_record *out,
-    size_t out_capacity);
+    const uint8_t root[32], uint64_t now_unix,
+    struct vcs_zcode_dht_record *out, size_t out_capacity);
 void vcs_zcode_dht_record_store_digest(
     const struct vcs_zcode_dht_record_store *store, uint8_t out[32]);
 

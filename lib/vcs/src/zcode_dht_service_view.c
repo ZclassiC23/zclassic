@@ -37,6 +37,18 @@ void vcs_zcode_dht_service_status(const struct vcs_zcode_dht_service *s,
   out->nodes_received = s->nodes_received;
   out->find_node_sent = s->find_sent;
   out->nodes_sent = s->nodes_sent;
+  out->find_record_received = s->find_record_received;
+  out->records_received = s->records_received;
+  out->store_record_received = s->store_record_received;
+  out->store_result_received = s->store_result_received;
+  out->find_record_sent = s->find_record_sent;
+  out->records_sent = s->records_sent;
+  out->store_record_sent = s->store_record_sent;
+  out->store_result_sent = s->store_result_sent;
+  out->signed_records =
+      (uint32_t)vcs_zcode_dht_record_store_count(s->record_store);
+  for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS; i++)
+    out->active_record_operations += s->record_operations[i].used;
   out->unauthenticated_expired = s->unauthenticated_expired;
   out->duplicate_sessions_retired = s->duplicate_sessions_retired;
   out->lookup_rounds = s->lookup_rounds;

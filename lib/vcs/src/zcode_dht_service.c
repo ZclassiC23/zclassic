@@ -34,7 +34,8 @@ vcs_zcode_dht_reject_reason_string(enum vcs_zcode_dht_reject_reason r) {
   static const char *const names[] = {
       "malformed", "plaintext",         "delegation", "identity",
       "signature", "wrong-session",     "replay",     "unsolicited",
-      "expired",   "poisoned-contacts", "rate-limit", "capacity"};
+      "expired",   "poisoned-contacts", "rate-limit", "capacity",
+      "unauthorized"};
   return (unsigned)r < VCS_ZCODE_DHT_REJECT_COUNT ? names[r] : "unknown";
 }
 
@@ -139,7 +140,7 @@ static bool query_id(struct vcs_zcode_dht_service *s, uint64_t peer,
 
 static bool outbound_push(struct vcs_zcode_dht_service *s, uint64_t peer,
                           const uint8_t *wire, size_t len) {
-  if (!wire || !len || len > VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES ||
+  if (!wire || !len || len > VCS_ZCODE_DHT_MAX_FRAME_BYTES ||
       s->outbound_count >= VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND)
     return false;
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND; i++)
@@ -206,6 +207,7 @@ bool vcs_zcode_dht_service_send_find(struct vcs_zcode_dht_service *s,
 void vcs_zcode_dht_service_query_finish(
     struct vcs_zcode_dht_service *s, struct service_query *q,
     enum query_outcome outcome, struct vcs_zcode_dht_time now) {
+  vcs_zcode_dht_service_record_query_finish(s, q, outcome);
   if (q->kind == QUERY_LOOKUP) {
     struct service_lookup *l = vcs_zcode_dht_lookup_find(s, q->lookup_id);
     struct service_peer *p = peer_find(s, q->peer_id);
@@ -261,6 +263,8 @@ map_parse_error(enum vcs_zcode_dht_error e) {
     return VCS_ZCODE_DHT_REJECT_SIGNATURE;
   if (e == VCS_ZCODE_DHT_ERR_IDENTITY)
     return VCS_ZCODE_DHT_REJECT_IDENTITY;
+  if (e == VCS_ZCODE_DHT_ERR_EXPIRED)
+    return VCS_ZCODE_DHT_REJECT_EXPIRED;
   if (e == VCS_ZCODE_DHT_ERR_DELEGATION || e == VCS_ZCODE_DHT_ERR_NETWORK)
     return VCS_ZCODE_DHT_REJECT_DELEGATION;
   if (e == VCS_ZCODE_DHT_ERR_WIRE_ORDER || e == VCS_ZCODE_DHT_ERR_ID_ZERO)
@@ -377,12 +381,21 @@ vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *p) {
   s->chain_ctx = p->chain_ctx;
   s->request_reachability = p->request_reachability;
   s->reachability_ctx = p->reachability_ctx;
+  s->policy_decide = p->policy_decide;
+  s->policy_ctx = p->policy_ctx;
   s->next_lookup_id = 1;
+  s->next_record_operation_id = 1;
   char err[160];
   uint8_t online_pub[32], secret_copy[32];
   if (!p->transport_enabled) {
     snprintf(s->disabled_reason, sizeof(s->disabled_reason),
              "V2_TRANSPORT_DISABLED");
+    return s;
+  }
+  s->record_store = vcs_zcode_dht_record_store_create(p->network_genesis);
+  if (!s->record_store) {
+    snprintf(s->disabled_reason, sizeof(s->disabled_reason),
+             "RECORD_STORE_ALLOCATION_FAILED");
     return s;
   }
   if (!vcs_zcode_dht_delegation_load(p->datadir, &s->delegation, err,
@@ -430,6 +443,17 @@ vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *p) {
   }
   s->enabled = true;
   (void)vcs_zcode_dht_service_persistence_load(s, p->now.wall_unix);
+  struct vcs_zcode_dht_record_verify_context record_verify = {
+      .now_unix = p->now.wall_unix,
+      .chain_verify = s->chain_verify,
+      .chain_ctx = s->chain_ctx,
+  };
+  memcpy(record_verify.network_genesis, s->genesis, 32);
+  enum vcs_zcode_dht_record_store_result record_load =
+      vcs_zcode_dht_record_store_load(s->record_store, s->datadir,
+                                      &record_verify, err, sizeof(err));
+  if (record_load != VCS_ZCODE_DHT_RECORD_STORE_OK)
+    vcs_zcode_dht_service_set_error(s, err);
   return s;
 }
 
@@ -441,6 +465,7 @@ void vcs_zcode_dht_service_free(struct vcs_zcode_dht_service *s,
   if (s->enabled && s->persistence_dirty)
     (void)vcs_zcode_dht_service_persistence_save(s);
   memory_cleanse(s->online_seed, 32);
+  vcs_zcode_dht_record_store_free(s->record_store);
   free(s->table);
   free(s);
 }
@@ -475,18 +500,21 @@ bool vcs_zcode_dht_service_handle_frame(
     reject(s, map_parse_error(e), rejected_out);
     return false;
   }
-  const uint8_t *qid = m.kind == VCS_ZCODE_DHT_MSG_FIND_NODE
-                           ? m.find_node.query_id
-                           : m.nodes.query_id;
+  const uint8_t *qid = vcs_zcode_dht_message_query_id(&m);
   const struct vcs_zcode_dht_delegation *d =
-      m.kind == VCS_ZCODE_DHT_MSG_FIND_NODE ? &m.find_node.delegation
-                                            : &m.nodes.delegation;
+      vcs_zcode_dht_message_delegation(&m);
+  bool request = vcs_zcode_dht_message_is_request(m.kind);
+  if (!qid || !d) {
+    reject(s, VCS_ZCODE_DHT_REJECT_MALFORMED, rejected_out);
+    return false;
+  }
   struct service_query *q = NULL;
-  if (m.kind == VCS_ZCODE_DHT_MSG_NODES) {
+  if (!request) {
     q = query_find(s, peer_id, qid);
     if (!q) {
       enum vcs_zcode_dht_reject_reason reason = VCS_ZCODE_DHT_REJECT_UNSOLICITED;
-      if (query_was_expired(s, peer_id, m.nodes.session_generation, qid,
+      if (query_was_expired(s, peer_id,
+                            vcs_zcode_dht_message_generation(&m), qid,
                             now.monotonic_s))
         reason = VCS_ZCODE_DHT_REJECT_EXPIRED;
       else if (replay_seen(p->response_replay, qid, now.monotonic_s))
@@ -499,16 +527,18 @@ bool vcs_zcode_dht_service_handle_frame(
       reject(s, VCS_ZCODE_DHT_REJECT_EXPIRED, rejected_out);
       return false;
     }
+    if (!vcs_zcode_dht_response_matches_query(m.kind, q->kind)) {
+      reject(s, VCS_ZCODE_DHT_REJECT_UNSOLICITED, rejected_out);
+      return false;
+    }
   }
-  struct replay_entry *ledger = m.kind == VCS_ZCODE_DHT_MSG_FIND_NODE
-                                    ? p->request_replay
-                                    : p->response_replay;
+  struct replay_entry *ledger = request ? p->request_replay
+                                        : p->response_replay;
   if (!replay_accept(ledger, qid, now.monotonic_s)) {
     reject(s, VCS_ZCODE_DHT_REJECT_REPLAY, rejected_out);
     return false;
   }
-  if (m.kind == VCS_ZCODE_DHT_MSG_FIND_NODE &&
-      !rate_accept(p, now.monotonic_s)) {
+  if (request && !rate_accept(p, now.monotonic_s)) {
     reject(s, VCS_ZCODE_DHT_REJECT_RATE, rejected_out);
     return false;
   }
@@ -546,7 +576,7 @@ bool vcs_zcode_dht_service_handle_frame(
       reject(s, VCS_ZCODE_DHT_REJECT_CAP, rejected_out);
       return false;
     }
-  } else {
+  } else if (m.kind == VCS_ZCODE_DHT_MSG_NODES) {
     s->nodes_received++;
     if (q->kind == QUERY_LOOKUP) {
       struct service_lookup *l =
@@ -590,6 +620,16 @@ bool vcs_zcode_dht_service_handle_frame(
       }
     }
     vcs_zcode_dht_service_query_finish(s, q, QUERY_OUTCOME_RESPONSE, now);
+  } else {
+    enum vcs_zcode_dht_reject_reason record_rejected =
+        VCS_ZCODE_DHT_REJECT_CAP;
+    if (!vcs_zcode_dht_service_records_handle(
+            s, p, q, &m, now, &record_rejected)) {
+      reject(s, record_rejected, rejected_out);
+      return false;
+    }
+    if (!request)
+      vcs_zcode_dht_service_query_finish(s, q, QUERY_OUTCOME_RESPONSE, now);
   }
   s->frames_accepted++;
   return true;

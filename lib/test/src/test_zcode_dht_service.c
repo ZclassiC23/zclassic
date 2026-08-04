@@ -27,6 +27,12 @@ static bool chain_ok(void *ctx, const struct vcs_zcode_dht_delegation *d) {
   return d && d->beacon_height == 120;
 }
 
+static bool policy_allow(void *ctx, enum vcs_zcode_sovereignty_action action,
+                         const struct vcs_zcode_sovereignty_subject *subject) {
+  (void)ctx;
+  return action < VCS_ZCODE_SOVEREIGNTY_ACTION_COUNT && subject != NULL;
+}
+
 static bool fixture_identity(const char *dir, uint8_t byte,
                              const uint8_t genesis[32],
                              const uint8_t noise[32]) {
@@ -55,6 +61,7 @@ static struct vcs_zcode_dht_service *fixture_service(const char *dir,
       .transport_enabled = true,
       .now = {.wall_unix = 1000, .monotonic_s = 1000},
       .chain_verify = chain_ok,
+      .policy_decide = policy_allow,
   };
   memcpy(p.network_genesis, genesis, 32);
   memcpy(p.local_noise_static, noise, 32);
@@ -138,7 +145,7 @@ static bool resign_wire(const char *dir, const uint8_t transcript[32],
 }
 
 static size_t drain(struct vcs_zcode_dht_service *s) {
-  uint8_t wire[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES];
+  uint8_t wire[VCS_ZCODE_DHT_MAX_FRAME_BYTES];
   uint64_t peer;
   size_t len, count = 0;
   while (vcs_zcode_dht_service_next_outbound(s, 0, &peer, wire, sizeof(wire),
@@ -151,7 +158,7 @@ static bool pump(struct vcs_zcode_dht_service *from,
                  struct vcs_zcode_dht_service *to, uint64_t from_peer,
                  uint64_t to_peer, uint64_t now, uint8_t *last,
                  size_t *last_len) {
-  uint8_t wire[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES];
+  uint8_t wire[VCS_ZCODE_DHT_MAX_FRAME_BYTES];
   uint64_t peer = 0;
   size_t len = 0;
   bool moved = false;
@@ -182,6 +189,8 @@ static bool pump(struct vcs_zcode_dht_service *from,
 
 static void cleanup_fixture(const char *dir) {
   char path[512];
+  snprintf(path, sizeof(path), "%s/zcode/dht/records.v1", dir);
+  (void)unlink(path);
   snprintf(path, sizeof(path), "%s/zcode/dht/contacts.v2", dir);
   (void)unlink(path);
   snprintf(path, sizeof(path), "%s/zcode/dht/online_ed25519.key", dir);
@@ -193,6 +202,29 @@ static void cleanup_fixture(const char *dir) {
   snprintf(path, sizeof(path), "%s/zcode", dir);
   (void)rmdir(path);
   (void)rmdir(dir);
+}
+
+static bool fixture_pointer_record(
+    const char *dir, const uint8_t genesis[32], uint8_t semantic_byte,
+    uint8_t transport_byte, struct vcs_zcode_dht_record *record) {
+  uint8_t seed[32], node_id[32];
+  memset(record, 0, sizeof(*record));
+  if (!fixture_material(dir, &record->delegation, seed, node_id))
+    return false;
+  record->kind = VCS_ZCODE_DHT_RECORD_POINTER;
+  (void)snprintf(record->namespace_name, sizeof(record->namespace_name),
+                 "science.study");
+  memcpy(record->network_genesis, genesis, 32);
+  memset(record->semantic_root, semantic_byte, 32);
+  memset(record->transport_root, transport_byte, 32);
+  memcpy(record->provider_node_id, node_id, 32);
+  record->sequence = 1;
+  record->not_before = 1000;
+  record->expiry = 4000;
+  enum vcs_zcode_dht_record_error result =
+      vcs_zcode_dht_record_sign(record, seed);
+  memory_cleanse(seed, sizeof(seed));
+  return result == VCS_ZCODE_DHT_RECORD_OK;
 }
 
 #define MULTI_NODES 7u
@@ -288,7 +320,7 @@ static bool multi_drive(struct multi_network *net) {
   for (size_t turn = 0; turn < 512; turn++) {
     bool moved = false;
     for (size_t from = 0; from < MULTI_NODES; from++) {
-      uint8_t wire[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES];
+      uint8_t wire[VCS_ZCODE_DHT_MAX_FRAME_BYTES];
       uint64_t peer = 0;
       size_t len = 0;
       while (vcs_zcode_dht_service_next_outbound(
@@ -420,6 +452,113 @@ static int test_peer_admission_order(void) {
     ASSERT(boot_zcode_dht_peer_ready(&node));
     atomic_store(&node.disconnect, true);
     ASSERT(!boot_zcode_dht_peer_ready(&node));
+    PASS();
+  }
+_test_next:;
+  return failures;
+}
+
+static int test_record_transport_and_restart(void) {
+  int failures = 0;
+  TEST("zcode dht service: signed records share Noise, bounds and restart") {
+    char adir[] = "/tmp/zcl_dht_records_a_XXXXXX";
+    char bdir[] = "/tmp/zcl_dht_records_b_XXXXXX";
+    ASSERT(mkdtemp(adir) != NULL && mkdtemp(bdir) != NULL);
+    uint8_t genesis[32], anoise[32], bnoise[32], transcript[32];
+    memset(genesis, 0x11, 32);
+    memset(anoise, 0x22, 32);
+    memset(bnoise, 0x33, 32);
+    memset(transcript, 0x55, 32);
+    ASSERT(fixture_identity(adir, 0x61, genesis, anoise));
+    ASSERT(fixture_identity(bdir, 0x62, genesis, bnoise));
+    struct vcs_zcode_dht_service *a = fixture_service(adir, genesis, anoise);
+    struct vcs_zcode_dht_service *b = fixture_service(bdir, genesis, bnoise);
+    ASSERT(a != NULL && b != NULL);
+    struct vcs_zcode_dht_session as = {.established = true,
+                                       .generation = 42,
+                                       .connection_serial = 1};
+    struct vcs_zcode_dht_session bs = as;
+    bs.connection_serial = 2;
+    memcpy(as.remote_static, bnoise, 32);
+    memcpy(bs.remote_static, anoise, 32);
+    memcpy(as.transcript_hash, transcript, 32);
+    memcpy(bs.transcript_hash, transcript, 32);
+    ASSERT(vcs_zcode_dht_service_session_open(a, 2, &as, test_time(1001)));
+    ASSERT(vcs_zcode_dht_service_session_open(b, 1, &bs, test_time(1001)));
+    ASSERT(pump(a, b, 2, 1, 1001, NULL, NULL));
+    ASSERT(pump(b, a, 1, 2, 1001, NULL, NULL));
+    ASSERT(pump(a, b, 2, 1, 1001, NULL, NULL));
+
+    struct vcs_zcode_dht_record first;
+    ASSERT(fixture_pointer_record(adir, genesis, 0x61, 0x71, &first));
+    ASSERT_EQ(vcs_zcode_dht_service_record_admit(a, &first, test_time(1002)),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    struct vcs_zcode_dht_record_selector selector = {
+        .kind = VCS_ZCODE_DHT_RECORD_POINTER};
+    (void)snprintf(selector.namespace_name, sizeof(selector.namespace_name),
+                   "science.study");
+    memcpy(selector.root, first.semantic_root, 32);
+    uint64_t operation = 0;
+    ASSERT(vcs_zcode_dht_service_record_query_begin(
+        b, 1, &selector, test_time(1002), &operation));
+    ASSERT(pump(b, a, 1, 2, 1002, NULL, NULL));
+    ASSERT(pump(a, b, 2, 1, 1002, NULL, NULL));
+    struct vcs_zcode_dht_record_operation_result result;
+    ASSERT(vcs_zcode_dht_service_record_operation_poll(
+        b, operation, test_time(1002), &result));
+    ASSERT_EQ(result.state, VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE);
+    ASSERT_EQ(result.record_count, 1);
+    ASSERT(memcmp(result.records[0].transport_root, first.transport_root, 32) ==
+           0);
+
+    struct vcs_zcode_dht_record second;
+    ASSERT(fixture_pointer_record(adir, genesis, 0x62, 0x72, &second));
+    ASSERT(vcs_zcode_dht_service_record_store_begin(
+        a, 2, &second, test_time(1003), &operation));
+    uint8_t replay[VCS_ZCODE_DHT_MAX_FRAME_BYTES];
+    size_t replay_len = 0;
+    ASSERT(pump(a, b, 2, 1, 1003, replay, &replay_len));
+    ASSERT(pump(b, a, 1, 2, 1003, NULL, NULL));
+    ASSERT(vcs_zcode_dht_service_record_operation_poll(
+        a, operation, test_time(1003), &result));
+    ASSERT_EQ(result.state, VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE);
+    ASSERT_EQ(result.store_status, VCS_ZCODE_DHT_STORE_STORED);
+    enum vcs_zcode_dht_reject_reason rejected;
+    ASSERT(!vcs_zcode_dht_service_handle_frame(
+        b, 1, replay, replay_len, test_time(1003), &rejected));
+    ASSERT_EQ(rejected, VCS_ZCODE_DHT_REJECT_REPLAY);
+    memset(selector.root, 0x62, 32);
+    struct vcs_zcode_dht_record local[1];
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  b, 1003, &selector, local, 1),
+              1);
+
+    /* Record work cannot escape the three shared authenticated query slots,
+     * and all three name their monotonic deadline when no reply arrives. */
+    uint64_t pending[VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES];
+    memset(selector.root, 0x63, 32);
+    for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES; i++)
+      ASSERT(vcs_zcode_dht_service_record_query_begin(
+          b, 1, &selector, test_time(1004), &pending[i]));
+    ASSERT(!vcs_zcode_dht_service_record_query_begin(
+        b, 1, &selector, test_time(1004), &operation));
+    for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES; i++) {
+      ASSERT(vcs_zcode_dht_service_record_operation_poll(
+          b, pending[i], test_time(1010), &result));
+      ASSERT_EQ(result.state, VCS_ZCODE_DHT_RECORD_OPERATION_TIMEOUT);
+    }
+
+    vcs_zcode_dht_service_free(b, test_time(1004));
+    b = fixture_service(bdir, genesis, bnoise);
+    ASSERT(b != NULL);
+    memset(selector.root, 0x62, 32);
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  b, 1004, &selector, local, 1),
+              1);
+    vcs_zcode_dht_service_free(a, test_time(1004));
+    vcs_zcode_dht_service_free(b, test_time(1004));
+    cleanup_fixture(adir);
+    cleanup_fixture(bdir);
     PASS();
   }
 _test_next:;
@@ -595,6 +734,7 @@ int test_zcode_dht_service(void) {
   int failures = test_disabled_diagnostics();
   failures += test_deep_ancestry();
   failures += test_peer_admission_order();
+  failures += test_record_transport_and_restart();
   failures += test_sparse_iterative_network();
   TEST("zcode dht service: Noise-authenticated two-node lookup and restart") {
     char adir[] = "/tmp/zcl_dht_service_a_XXXXXX";

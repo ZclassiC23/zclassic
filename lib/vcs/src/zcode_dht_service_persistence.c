@@ -35,7 +35,10 @@ struct vcs_zcode_dht_persistence_snapshot {
   uint8_t *wire;
   size_t wire_len;
   uint64_t generation, serial;
+  struct vcs_zcode_dht_record_store *records;
+  bool records_dirty;
   char path[1400], directory[1400], error[96];
+  char datadir[1024];
 };
 
 /* More than one detached snapshot may be written while a composition root is
@@ -87,6 +90,18 @@ vcs_zcode_dht_service_persistence_snapshot(
   snapshot->wire = wire;
   snapshot->wire_len = len;
   snapshot->generation = s->persistence_generation;
+  snapshot->records_dirty = s->records_dirty;
+  if (snapshot->records_dirty) {
+    snapshot->records = vcs_zcode_dht_record_store_clone(s->record_store);
+    if (!snapshot->records) {
+      free(wire);
+      free(snapshot);
+      vcs_zcode_dht_service_set_error(s, "record snapshot allocation failed");
+      return NULL;
+    }
+  }
+  (void)snprintf(snapshot->datadir, sizeof(snapshot->datadir), "%s",
+                 s->datadir);
   snapshot->serial = atomic_fetch_add_explicit(
                          &g_snapshot_serial, 1, memory_order_relaxed) +
                      1;
@@ -130,6 +145,11 @@ bool vcs_zcode_dht_persistence_snapshot_write(
     return false;
   }
   (void)close(dfd);
+  if (snapshot->records_dirty &&
+      vcs_zcode_dht_record_store_save(
+          snapshot->records, snapshot->datadir, snapshot->error,
+          sizeof(snapshot->error)) != VCS_ZCODE_DHT_RECORD_STORE_OK)
+    return false;
   return true;
 }
 
@@ -146,6 +166,9 @@ void vcs_zcode_dht_service_persistence_commit(
   s->persistence_save_count++;
   if (s->persistence_generation == snapshot->generation)
     s->persistence_dirty = false;
+  if (s->persistence_generation == snapshot->generation &&
+      snapshot->records_dirty)
+    s->records_dirty = false;
 }
 
 void vcs_zcode_dht_persistence_snapshot_free(
@@ -153,6 +176,7 @@ void vcs_zcode_dht_persistence_snapshot_free(
   if (!snapshot)
     return;
   free(snapshot->wire);
+  vcs_zcode_dht_record_store_free(snapshot->records);
   free(snapshot);
 }
 

@@ -48,6 +48,7 @@ enum vcs_zcode_dht_error {
     VCS_ZCODE_DHT_ERR_SESSION,
     VCS_ZCODE_DHT_ERR_SIGNATURE,
     VCS_ZCODE_DHT_ERR_IDENTITY,
+    VCS_ZCODE_DHT_ERR_EXPIRED,
 };
 
 const char *vcs_zcode_dht_error_string(enum vcs_zcode_dht_error error);

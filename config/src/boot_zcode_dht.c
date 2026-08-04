@@ -76,6 +76,10 @@ static void dht_status_json_locked(struct json_value *out) {
   json_push_kv_int(out, "inbound_rate_burst", VCS_ZCODE_DHT_SERVICE_RATE_BURST);
   json_push_kv_int(out, "max_outbound_frames",
                    VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND);
+  json_push_kv_int(out, "max_record_operations",
+                   VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS);
+  json_push_kv_int(out, "max_records_per_peer",
+                   VCS_ZCODE_DHT_SERVICE_MAX_RECORDS_PER_PEER);
   json_push_kv_int(out, "contacts", status.contacts);
   json_push_kv_int(out, "buckets_used", status.buckets_used);
   json_push_kv_int(out, "connected_authenticated",
@@ -109,6 +113,24 @@ static void dht_status_json_locked(struct json_value *out) {
   json_push_kv_int(out, "nodes_received", (int64_t)status.nodes_received);
   json_push_kv_int(out, "find_node_sent", (int64_t)status.find_node_sent);
   json_push_kv_int(out, "nodes_sent", (int64_t)status.nodes_sent);
+  json_push_kv_int(out, "find_record_received",
+                   (int64_t)status.find_record_received);
+  json_push_kv_int(out, "records_received",
+                   (int64_t)status.records_received);
+  json_push_kv_int(out, "store_record_received",
+                   (int64_t)status.store_record_received);
+  json_push_kv_int(out, "store_result_received",
+                   (int64_t)status.store_result_received);
+  json_push_kv_int(out, "find_record_sent",
+                   (int64_t)status.find_record_sent);
+  json_push_kv_int(out, "records_sent", (int64_t)status.records_sent);
+  json_push_kv_int(out, "store_record_sent",
+                   (int64_t)status.store_record_sent);
+  json_push_kv_int(out, "store_result_sent",
+                   (int64_t)status.store_result_sent);
+  json_push_kv_int(out, "signed_records", status.signed_records);
+  json_push_kv_int(out, "active_record_operations",
+                   status.active_record_operations);
   json_push_kv_int(out, "unauthenticated_expired",
                    (int64_t)status.unauthenticated_expired);
   json_push_kv_int(out, "duplicate_sessions_retired",
@@ -299,7 +321,7 @@ static void dht_send(struct msg_processor *mp, struct p2p_node *node,
 }
 
 static size_t dht_flush_node(struct msg_processor *mp, struct p2p_node *node) {
-  uint8_t wire[VCS_ZCODE_DHT_NODES_MAX_WIRE_BYTES];
+  uint8_t wire[VCS_ZCODE_DHT_MAX_FRAME_BYTES];
   uint64_t peer = 0;
   size_t wire_len = 0, sent = 0;
   for (;;) {
@@ -335,11 +357,37 @@ static void dht_authorize_frame_chain(
   if (vcs_zcode_dht_msg_parse(wire, wire_len, &verify, &message) !=
       VCS_ZCODE_DHT_OK)
     return;
-  const struct vcs_zcode_dht_delegation *delegation =
-      message.kind == VCS_ZCODE_DHT_MSG_FIND_NODE
-          ? &message.find_node.delegation
-          : &message.nodes.delegation;
+  const struct vcs_zcode_dht_delegation *delegation = NULL;
+  switch (message.kind) {
+  case VCS_ZCODE_DHT_MSG_FIND_NODE:
+    delegation = &message.find_node.delegation;
+    break;
+  case VCS_ZCODE_DHT_MSG_NODES:
+    delegation = &message.nodes.delegation;
+    break;
+  case VCS_ZCODE_DHT_MSG_FIND_RECORD:
+    delegation = &message.find_record.delegation;
+    break;
+  case VCS_ZCODE_DHT_MSG_RECORDS:
+    delegation = &message.records.delegation;
+    break;
+  case VCS_ZCODE_DHT_MSG_STORE_RECORD:
+    delegation = &message.store_record.delegation;
+    break;
+  case VCS_ZCODE_DHT_MSG_STORE_RESULT:
+    delegation = &message.store_result.delegation;
+    break;
+  }
+  if (!delegation)
+    return;
   (void)boot_zcode_dht_chain_authorize(svc, delegation);
+  if (message.kind == VCS_ZCODE_DHT_MSG_RECORDS)
+    for (uint32_t i = 0; i < message.records.record_count; i++)
+      (void)boot_zcode_dht_chain_authorize(
+          svc, &message.records.records[i].delegation);
+  else if (message.kind == VCS_ZCODE_DHT_MSG_STORE_RECORD)
+    (void)boot_zcode_dht_chain_authorize(
+        svc, &message.store_record.record.delegation);
 }
 
 static bool dht_chain_prepare(struct boot_svc_ctx *svc) {

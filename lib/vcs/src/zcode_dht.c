@@ -41,6 +41,7 @@ const char *vcs_zcode_dht_error_string(enum vcs_zcode_dht_error e)
     case VCS_ZCODE_DHT_ERR_SESSION: return "noise-session";
     case VCS_ZCODE_DHT_ERR_SIGNATURE: return "online-signature";
     case VCS_ZCODE_DHT_ERR_IDENTITY: return "identity-mismatch";
+    case VCS_ZCODE_DHT_ERR_EXPIRED: return "expired";
     }
     return "unknown";
 }
