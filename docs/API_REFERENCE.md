@@ -772,7 +772,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `code group` | ready | read / read / public · fast/tiny | **`group`** | `zcl.code_group.v1` | `zclassic23 code group app/services` | Top source groups, or one group's subgroups and files |
+| `code group` | ready | read / read / public · foreground/tiny | **`group`** | `zcl.code_group.v1` | `zclassic23 code group app/services` | Top source groups, or one group's subgroups and files |
 | `code map` | ready | read / read / public · fast/tiny | none | `zcl.code_map.v1` | `zclassic23 code map` | Map the tree: root groups and app shapes with file counts |
 | `code tests` | ready | read / read / public · fast/tiny | **`path`** | `zcl.code_tests.v1` | `zclassic23 code tests lib/net/src/download.c` | Which focused test group a change to one file routes to |
 | `code room` | ready | read / read / public · fast/tiny | **`path`** | `zcl.code_room.v1` | `zclassic23 code room app/jobs/src/utxo_apply_stage.c` | Compose shape, purpose, neighbors and test route for one path |
