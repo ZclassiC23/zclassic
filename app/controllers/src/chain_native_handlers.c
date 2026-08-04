@@ -5,6 +5,7 @@
 
 #include "controllers/chain_native_handlers.h"
 
+#include "base/hex.h"
 #include "json/json.h"
 #include "controllers/rpc_client.h"
 #include "controllers/rpc_params.h"
@@ -19,7 +20,10 @@ char *zcl_native_getrawtransaction_body(const struct json_value *args,
                                          struct zcl_native_body_err *err)
 {
     const char *txid = json_get_str(json_get(args, "txid"));
-    int verbosity = (int)json_get_int_or(args, "verbose", 1);
+    const struct json_value *verbose_arg = json_get(args, "verbose");
+    int verbosity = verbose_arg && verbose_arg->type == JSON_BOOL
+        ? (json_get_bool(verbose_arg) ? 1 : 0)
+        : 1;
     int64_t raw_offset = json_get_int_or(args, "raw_offset", 0);
     int64_t raw_bytes = json_get_int_or(args, "raw_bytes", 1024);
     if (verbosity == 0 &&
@@ -60,9 +64,18 @@ char *zcl_native_getrawtransaction_body(const struct json_value *args,
         if (json_read(&raw, out, strlen(out)) && raw.type == JSON_STR) {
             const char *full_hex = json_get_str(&raw);
             size_t hex_len = full_hex ? strlen(full_hex) : 0;
+            bool is_hex = full_hex && hex_len > 0 && (hex_len & 1u) == 0;
+            for (size_t i = 0; is_hex && i < hex_len; i++)
+                is_hex = zcl_hex_nibble(full_hex[i], true) >= 0;
+            if (!is_hex) {
+                /* Preserve the native bridge's legacy RPC-error handling.
+                 * A bare non-hex string is an error message, never raw bytes. */
+                json_free(&raw);
+                return out;
+            }
             size_t total_bytes = hex_len / 2;
             size_t offset = (size_t)raw_offset;
-            if (!full_hex || (hex_len & 1u) != 0 || offset > total_bytes) {
+            if (offset > total_bytes) {
                 json_free(&raw);
                 free(out);
                 err->status = ZCL_NATIVE_BODY_INVALID;

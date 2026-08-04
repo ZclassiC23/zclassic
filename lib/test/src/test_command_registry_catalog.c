@@ -385,10 +385,16 @@ static int test_bridge_rpc_errors_fail_closed(void)
 static char *raw_transaction_string_mock(const char *method,
                                          const char *params_json)
 {
-    if (!method || strcmp(method, "getrawtransaction") != 0 ||
-        !params_json || !strstr(params_json, ",0]"))
+    if (!method || strcmp(method, "getrawtransaction") != 0 || !params_json)
         return NULL;
-    return strdup("\"02a1ff\"");
+    if (strstr(params_json, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"))
+        return strdup("\"Transaction not found\"");
+    if (strstr(params_json, ",0]"))
+        return strdup("\"02a1ff\"");
+    if (strstr(params_json, ",1]"))
+        return strdup("{\"txid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}");
+    return NULL;
 }
 
 static int test_raw_transaction_string_is_typed(void)
@@ -422,6 +428,57 @@ static int test_raw_transaction_string_is_typed(void)
         ASSERT_EQ(json_get_int(json_get(&doc, "next_offset")), 2);
         ASSERT_STR_EQ(json_get_str(json_get(&doc, "raw_hex")), "02a1");
         json_free(&doc);
+        free(body);
+        json_free(&args);
+        PASS();
+    } _test_next:;
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_raw_transaction_verbose_bool(void)
+{
+    int failures = 0;
+    TEST("verbose=true remains decoded mode rather than becoming raw mode") {
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        (void)json_push_kv_str(
+            &args, "txid",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        (void)json_push_kv_bool(&args, "verbose", true);
+        struct zcl_native_body_err err = {0};
+        node_rpc_client_set_test_hook(raw_transaction_string_mock);
+        char *body = zcl_native_getrawtransaction_body(&args, &err);
+        node_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+        ASSERT(strstr(body, "\"txid\"") != NULL);
+        ASSERT(strstr(body, "zcl.raw_transaction.v1") == NULL);
+        free(body);
+        json_free(&args);
+        PASS();
+    } _test_next:;
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_raw_transaction_error_string(void)
+{
+    int failures = 0;
+    TEST("raw mode preserves a bare non-hex RPC error for bridge handling") {
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        (void)json_push_kv_str(
+            &args, "txid",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        (void)json_push_kv_bool(&args, "verbose", false);
+        struct zcl_native_body_err err = {0};
+        node_rpc_client_set_test_hook(raw_transaction_string_mock);
+        char *body = zcl_native_getrawtransaction_body(&args, &err);
+        node_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+        ASSERT_STR_EQ(body, "\"Transaction not found\"");
         free(body);
         json_free(&args);
         PASS();
@@ -3001,6 +3058,8 @@ int test_command_registry_catalog(void)
     failures += test_bridge_replacement_rejects_non_bridge_leaf();
     failures += test_bridge_rpc_errors_fail_closed();
     failures += test_raw_transaction_string_is_typed();
+    failures += test_raw_transaction_verbose_bool();
+    failures += test_raw_transaction_error_string();
     failures += test_bridge_rpc_success_shapes_fail_closed();
     failures += test_status_brief_flat_lean_envelope();
     failures += test_wallet_utxo_list_envelope();

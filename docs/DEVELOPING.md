@@ -179,8 +179,10 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   Use `app transaction-types show --type=<id>` for one entry, or
   `app transaction-types guide --type=<id>` to join it to exact live command
   schemas, allowed keys, authority, confirmation, and the safe next decision in
-  one read. REST mirrors the catalog at `/api/v1/transaction-types`; the
-  AI-safe workflow and extension checklist are in
+  one read. Use `app transaction-types wire` for the separate finite catalog of
+  consensus versions, serialized components, script-policy classes, and the
+  explicit open-ended script/memo buckets. REST mirrors the semantic catalog at
+  `/api/v1/transaction-types`; the AI-safe workflow and extension checklist are in
   [`TRANSACTION_API.md`](./TRANSACTION_API.md).
 - `make deploy` is owner-gated live deployment. All public dev-lane publication,
   stage, relink, and recovery-apply paths currently hard-refuse — the gated

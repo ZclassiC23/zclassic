@@ -146,6 +146,19 @@ void zcl_native_handle_transaction_types_list(
                                "");
 }
 
+void zcl_native_handle_transaction_wire_catalog(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    (void)request;
+    if (!zcl_transaction_wire_catalog_json(&reply->data))
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL,
+                               "WIRE_CATALOG_FAILED", "render", false, false,
+                               "transaction wire catalog could not be rendered",
+                               "");
+}
+
 void zcl_native_handle_transaction_type_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply)
