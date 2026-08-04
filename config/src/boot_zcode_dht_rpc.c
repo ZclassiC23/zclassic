@@ -257,11 +257,30 @@ static bool parse_capability(const struct json_value *in,
          zcl_hex_decode_lower(owner, owner_token, DHT_PUBLIC_TOKEN_BYTES);
 }
 
+static bool rpc_records(const struct json_value *params, bool help,
+                        struct json_value *result);
+static bool rpc_publish(const struct json_value *params, bool help,
+                        struct json_value *result);
+static bool rpc_replication(const struct json_value *params, bool help,
+                            struct json_value *result);
+
 static bool rpc_status(const struct json_value *params, bool help,
                        struct json_value *result) {
   (void)params;
   if (help) {
     json_set_str(result, "zcode_dht_status\nBounded authenticated DHT state");
+    return true;
+  }
+  const struct json_value *in = rpc_input(params);
+  const char *operation = input_str(in, "operation");
+  if (operation && strcmp(operation, "records") == 0)
+    return rpc_records(params, false, result);
+  if (operation && strcmp(operation, "publish") == 0)
+    return rpc_publish(params, false, result);
+  if (operation && strcmp(operation, "replication") == 0)
+    return rpc_replication(params, false, result);
+  if (operation) {
+    rpc_error(result, "INVALID_OPERATION", "unknown bounded DHT operation");
     return true;
   }
   (void)boot_zcode_dht_dump_state_json(result, NULL);
@@ -662,9 +681,6 @@ void boot_zcode_dht_register_rpc(struct rpc_table *table) {
       {"zcode", "zcode_dht_find_begin", rpc_find_begin, true},
       {"zcode", "zcode_dht_find_poll", rpc_find_poll, true},
       {"zcode", "zcode_dht_find_cancel", rpc_find_cancel, true},
-      {"zcode", "zcode_dht_records", rpc_records, true},
-      {"zcode", "zcode_dht_publish", rpc_publish, true},
-      {"zcode", "zcode_dht_replication", rpc_replication, true},
   };
   for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
     rpc_table_must_append(table, &commands[i]);

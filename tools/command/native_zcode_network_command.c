@@ -561,20 +561,45 @@ void zcl_native_handle_zcode_network_providers(
   else
     json_set_object(&input);
   json_push_kv_str(&input, "kind", "provider");
+  json_push_kv_str(&input, "operation", "records");
   struct zcl_command_request forwarded = *request;
   forwarded.input = &input;
-  zdn_forward(&forwarded, reply, "zcode_dht_records");
+  zdn_forward(&forwarded, reply, "zcode_dht_status");
   json_free(&input);
 }
 
 void zcl_native_handle_zcode_network_publish(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply) {
-  zdn_forward(request, reply, "zcode_dht_publish");
+  if (!request || !reply)
+    return;
+  struct json_value input;
+  json_init(&input);
+  if (request->input)
+    json_copy(&input, request->input);
+  else
+    json_set_object(&input);
+  json_push_kv_str(&input, "operation", "publish");
+  struct zcl_command_request forwarded = *request;
+  forwarded.input = &input;
+  zdn_forward(&forwarded, reply, "zcode_dht_status");
+  json_free(&input);
 }
 
 void zcl_native_handle_zcode_network_replication(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply) {
-  zdn_forward(request, reply, "zcode_dht_replication");
+  if (!request || !reply)
+    return;
+  struct json_value input;
+  json_init(&input);
+  if (request->input)
+    json_copy(&input, request->input);
+  else
+    json_set_object(&input);
+  json_push_kv_str(&input, "operation", "replication");
+  struct zcl_command_request forwarded = *request;
+  forwarded.input = &input;
+  zdn_forward(&forwarded, reply, "zcode_dht_status");
+  json_free(&input);
 }

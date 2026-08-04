@@ -617,12 +617,13 @@ bool vcs_zcode_dht_service_handle_frame(
           int at = vcs_zcode_dht_lookup_candidate_index(l, id);
           if (at >= 0 &&
               l->candidates[at].state ==
-                  VCS_ZCODE_DHT_CANDIDATE_UNVERIFIED) {
+                  VCS_ZCODE_DHT_CANDIDATE_UNVERIFIED &&
+              !l->candidates[at].reachability_deadline_mono) {
             if (!s->request_reachability ||
                 !s->request_reachability(s->reachability_ctx, id,
                                          now.wall_unix)) {
               l->candidates[at].state = VCS_ZCODE_DHT_CANDIDATE_UNREACHABLE;
-            } else if (!l->candidates[at].reachability_deadline_mono) {
+            } else {
               l->candidates[at].reachability_deadline_mono =
                   now.monotonic_s +
                   VCS_ZCODE_DHT_SERVICE_REACHABILITY_TIMEOUT_S;

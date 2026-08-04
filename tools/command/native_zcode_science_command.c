@@ -769,6 +769,10 @@ static bool zsci_store_for(const char *datadir, bool *live,
 static bool zsci_discovery_rpc(const char *method, struct json_value *input,
                                struct json_value *result)
 {
+    if (!json_get(input, "operation"))
+        json_push_kv_str(input, "operation",
+                         strcmp(method, "zcode_dht_publish") == 0
+                             ? "publish" : "records");
     struct json_value params;
     json_init(&params);
     json_set_array(&params);
@@ -781,7 +785,7 @@ static bool zsci_discovery_rpc(const char *method, struct json_value *input,
         return false;
     }
     zcl_native_bridge_ensure_rpc();
-    char *raw = node_rpc_call(method, wire);
+    char *raw = node_rpc_call("zcode_dht_status", wire);
     free(wire);
     json_free(&params);
     if (!raw)
