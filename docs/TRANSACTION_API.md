@@ -158,7 +158,10 @@ logs, or the notebook. A public mainnet txid may be recorded after broadcast.
   `zcode_release_anchor` in this catalog commits a ZCODE-derived root on-chain.
 - File-market offers, challenges, proofs, and payment notifications are P2P or
   local workflow objects. `market_purchase` remains `planned` because the
-  payment-to-content-unlock glue is not wired end to end.
+  payment-to-content-unlock glue is not wired end to end. Paid offer ingress
+  is now seller-signed, network-bound, expiry-checked, and durable; see
+  [`FILE_MARKET_PROTOCOL.md`](./FILE_MARKET_PROTOCOL.md) for the exact contract
+  and remaining purchase-service boundary.
 - Legacy `zclassicd` wallet funds are operator-owned and outside agent custody.
 
 ## Proof and statistics

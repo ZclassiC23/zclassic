@@ -363,8 +363,10 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_READ(
     "app.market.list", "app.market", "", "List files on the ZCL Market",
-    "Every file currently offered on the ZCL Market P2P network, read live at "
-    "call time; bounded to the list budget row cap.", ZCL_COMMAND_LIST_BUDGET,
+    "Every admitted file offer in the bounded live cache. Paid rows have a "
+    "seller-verified, network-bound offer_id, exact integer total, and expiry; "
+    "legacy unsigned rows are price-zero recovery artifacts only.",
+    ZCL_COMMAND_LIST_BUDGET,
     "market,files,list", "zcl.command.empty_input.v1", "zcl.app_market_index.v1",
     "", "", "zclassic23 app market list",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -387,9 +389,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_PLANNED_COMMAND(
     "app.market.offer", "app.market", "", "Announce a file for sale",
-    "Will announce a file for sale on the ZCL Market once an origin-announce "
-    "path exists; today the handler is unbound and fails closed with exit 3 "
-    "rather than reporting an announcement no peer receives.", 0,
+    "Will announce a file for sale after canonical manifest construction, "
+    "owner-controlled signing, and the local origin-send path are connected. "
+    "Today both native and legacy write surfaces fail closed.", 0,
     "market,offer,sell", "zcl.app_market_offer.input.v1",
     "zcl.app_market_offer_result.v1", "filepath,price_per_mb_zat,confirm", "",
     "zclassic23 app market offer --input='{\"filepath\":\"/data/f\",\"price_per_mb_zat\":1000}'",
@@ -399,13 +401,10 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_NONE,
-    "needs an origin-announce path before it can be exposed natively: "
-    "rpc_zmarket_offer (file_market_controller.c) stats the file and calls "
-    "file_market_add_offer + db_file_offer_save, then answers "
-    "status=announced, but the only MSG_FILE_LIST writer in the tree is the "
-    "re-gossip branch of handle_zfilelist (msgprocessor.c) — nothing ever "
-    "announces a LOCALLY created offer, so no peer learns of it. Its "
-    "root_hash is also SHA3(filepath:size), not a hash of the file contents")
+    "signed zfileoffer.v1 ingress is implemented, but local creation still "
+    "needs a canonical content manifest, an owner-controlled seller signer, "
+    "and origin announcement. The legacy zmarket_offer placeholder now "
+    "refuses without changing cache, database, filesystem, or network state")
 
 ZCL_COMMAND_PLANNED_COMMAND(
     "app.market.buy", "app.market", "", "Buy and download a market file",
@@ -422,13 +421,11 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
-    "needs the payment leg wired before a spend leaf can be exposed "
-    "natively: rpc_zmarket_buy (file_market_controller.c) only calls "
-    "file_market_start_download, which allocates an in-memory session in "
-    "state FDL_CHALLENGING. No code path sends MSG_FILE_CHAL, and nothing "
-    "builds or broadcasts the payment transaction whose mempool-verified "
-    "txid handle_zfilepay (msgprocessor.c) requires to unlock chunks, so the "
-    "session never advances and no funds move")
+    "needs a purchase service that binds the signed offer_id and exact "
+    "integer total to a wallet/vault plan, builds the seller output, verifies "
+    "that output rather than txid presence, and persists paid-file unlock "
+    "across confirmation, conflict, restart, and reorg. The legacy "
+    "zmarket_buy placeholder now refuses without starting a session")
 
 /* ── Store (the /store storefront) ───────────────────────────────────
  *

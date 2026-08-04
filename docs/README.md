@@ -72,6 +72,9 @@ you operate that host, and misleading otherwise.
   ZID/ZDIR/ZANC, ZCODE anchors, HTLC swaps, and commerce, with exact native/REST
   discovery calls and an explicit line between ready, receive-only, contained,
   and planned paths.
+- [`FILE_MARKET_PROTOCOL.md`](./FILE_MARKET_PROTOCOL.md) — the authenticated
+  paid-offer wire, exact integer pricing, current fail-closed API boundary, and
+  the implementation/proof map for completing `market_purchase`.
 - [`API_REFERENCE.md`](./API_REFERENCE.md) — every leaf the registry currently declares. **Generated** from `config/commands/` by `tools/gen_api_reference.c`; edit `API_REFERENCE.md.in` (prose) or the `.def` catalog, then `make docs-api-reference`.
 - [`SERVICES.md`](./SERVICES.md) — the declared way to add a service (`zcl.service_binding.v1`): its own commands, its own state namespace, and access derived from a ZSLP token balance at a stated snapshot height — plus the isolation boundary a service cannot declare its way out of. Contract in `lib/kernel/include/kernel/service_binding.h`, catalog in `config/services/bindings.def`.
 - [`AGENT_API.md`](./AGENT_API.md) — the practical field-by-field reference for the implemented agent surface (`agentops`, `agentdiagnose`, `healthcheck`, `agentlanes`, service catalog, and more); referenced directly from `app/controllers/src/agent_controller.c` response bodies.

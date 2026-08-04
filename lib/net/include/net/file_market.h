@@ -18,6 +18,7 @@
 
 /* P2P message commands (max 12 chars) */
 #define MSG_FILE_LIST   "zfilelist"    /* gossip: file announcements */
+#define MSG_FILE_OFFER  "zfileoffer"   /* signed paid offer */
 #define MSG_FILE_CHAL   "zfilechal"   /* challenge: prove you have data */
 #define MSG_FILE_PROOF  "zfileproof"  /* response: SHA3 of challenged chunk */
 #define MSG_FILE_PAY    "zfilepay"    /* payment notification */
@@ -27,6 +28,14 @@
 #define FILE_MARKET_MAX_OFFERS     256   /* per-node offer cache */
 #define FILE_MARKET_CHALLENGES     3     /* random chunks to challenge */
 #define FILE_MARKET_BATCH_SIZE     10    /* chunks per payment batch */
+#define FILE_MARKET_OFFER_VERSION  1u
+#define FILE_MARKET_OFFER_MAX_LIFETIME_SECS 3600LL
+#define FILE_MARKET_OFFER_BODY_BYTES 471u
+#define FILE_MARKET_OFFER_WIRE_BYTES 535u
+#define FILE_MARKET_PEER_SLOTS 64
+#define FILE_MARKET_PEER_WINDOW_SECS 10
+#define FILE_MARKET_PEER_WINDOW_MAX_OFFERS 8
+#define FILE_MARKET_PEER_WINDOW_MAX_ATTEMPTS 32
 
 /* Chunk size matches file_service.h: 50MB */
 #define FILE_MARKET_CHUNK_SIZE     (50 * 1024 * 1024)
@@ -44,7 +53,85 @@ struct file_offer {
     uint16_t peer_port;          /* seeder's file service port */
     int64_t  last_seen;          /* unix timestamp */
     uint8_t  ttl;                /* remaining gossip hops */
+    /* Paid offers are self-authenticating v1 contracts. These fields are
+     * absent (auth_version=0) only for the free legacy ROM-artifact path. */
+    uint16_t auth_version;
+    uint8_t  network_genesis[32];
+    uint8_t  seller_pubkey[32];
+    uint64_t nonce;
+    int64_t  issued_unix;
+    int64_t  expires_unix;
+    uint8_t  seller_signature[64];
+    uint8_t  offer_id[32];       /* SHA3 of the complete signed wire */
 };
+
+enum file_offer_auth_error {
+    FILE_OFFER_AUTH_OK = 0,
+    FILE_OFFER_AUTH_ERR_NULL,
+    FILE_OFFER_AUTH_ERR_VERSION,
+    FILE_OFFER_AUTH_ERR_WIRE_SIZE,
+    FILE_OFFER_AUTH_ERR_WIRE_MAGIC,
+    FILE_OFFER_AUTH_ERR_NETWORK,
+    FILE_OFFER_AUTH_ERR_CONTENT_ROOT,
+    FILE_OFFER_AUTH_ERR_SELLER_KEY,
+    FILE_OFFER_AUTH_ERR_NONCE,
+    FILE_OFFER_AUTH_ERR_FILENAME,
+    FILE_OFFER_AUTH_ERR_SIZE,
+    FILE_OFFER_AUTH_ERR_CHUNKS,
+    FILE_OFFER_AUTH_ERR_PRICE,
+    FILE_OFFER_AUTH_ERR_TOTAL_PRICE,
+    FILE_OFFER_AUTH_ERR_PAYMENT_ADDRESS,
+    FILE_OFFER_AUTH_ERR_ENDPOINT,
+    FILE_OFFER_AUTH_ERR_TIME,
+    FILE_OFFER_AUTH_ERR_LIFETIME,
+    FILE_OFFER_AUTH_ERR_SIGNATURE,
+    FILE_OFFER_AUTH_ERR_KEY_MISMATCH,
+    FILE_OFFER_AUTH_ERR_NETWORK_MISMATCH,
+    FILE_OFFER_AUTH_ERR_EXPIRED,
+    FILE_OFFER_AUTH_ERR_NOT_YET_VALID,
+};
+
+const char *file_offer_auth_error_string(enum file_offer_auth_error error);
+/* Exact seller amount: ceil(size_bytes * price_per_mb / 1 MiB), bounded to
+ * ZClassic MAX_MONEY. No floating point is permitted in settlement logic. */
+bool file_market_offer_total_zat(const struct file_offer *offer,
+                                 int64_t *out_total_zat);
+enum file_offer_auth_error file_offer_auth_validate(
+    const struct file_offer *offer);
+enum file_offer_auth_error file_offer_auth_validate_at(
+    const struct file_offer *offer, int64_t now_unix);
+enum file_offer_auth_error file_offer_auth_encode(
+    const struct file_offer *offer,
+    uint8_t out[FILE_MARKET_OFFER_WIRE_BYTES]);
+enum file_offer_auth_error file_offer_auth_decode(
+    const uint8_t *wire, size_t wire_len, struct file_offer *out);
+enum file_offer_auth_error file_offer_auth_body_root(
+    const struct file_offer *offer, uint8_t out[32]);
+enum file_offer_auth_error file_offer_auth_offer_id(
+    const struct file_offer *offer, uint8_t out[32]);
+enum file_offer_auth_error file_offer_auth_seal(
+    struct file_offer *offer, const uint8_t seller_seed[32]);
+enum file_offer_auth_error file_offer_auth_verify_signature(
+    const struct file_offer *offer);
+enum file_offer_auth_error file_offer_auth_verify_at(
+    const struct file_offer *offer,
+    const uint8_t expected_network_genesis[32], int64_t now_unix);
+
+enum file_market_offer_ingest {
+    FILE_MARKET_INGEST_NEW = 0,
+    FILE_MARKET_INGEST_DEDUP,
+    FILE_MARKET_INGEST_INVALID,
+    FILE_MARKET_INGEST_EXPIRED,
+    FILE_MARKET_INGEST_RATE_LIMITED,
+};
+
+/* Verify a paid offer before it enters cache/persistence. The exact signed
+ * wire is network-bound, expiry-checked, deduplicated, and peer-rate-limited.
+ * NEW/DEDUP fill out_offer; only NEW may be forwarded. */
+enum file_market_offer_ingest file_market_ingest_offer_wire(
+    const uint8_t *wire, size_t wire_len,
+    const uint8_t expected_network_genesis[32],
+    int64_t peer_id, int64_t now_unix, struct file_offer *out_offer);
 
 /* ── Chunk Challenge ────────────────────────────────────────────── */
 

@@ -22,6 +22,15 @@ static struct file_offer g_offers[FILE_MARKET_MAX_OFFERS];
 static int g_offer_count = 0;
 static pthread_mutex_t g_market_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+struct file_market_peer_window {
+    bool used;
+    int64_t peer_id;
+    int64_t window_start_unix;
+    unsigned attempts;
+    unsigned new_offers;
+};
+static struct file_market_peer_window g_offer_peers[FILE_MARKET_PEER_SLOTS];
+
 /* ── Size Validation ────────────────────────────────────────────── */
 
 bool file_market_num_chunks_for_size(uint64_t size_bytes,
@@ -168,6 +177,15 @@ bool file_market_add_offer(const struct file_offer *offer)
 {
     if (!offer || offer->ttl == 0 || offer->num_chunks == 0)
         LOG_FAIL("market", "add_offer: null offer or ttl=0 or num_chunks=0");
+    /* Unsigned paid gossip is never admissible. The only auth_version=0
+     * compatibility path is the price-zero ROM artifact catalog. */
+    if (offer->price_per_mb > 0) {
+        int64_t now_unix = (int64_t)platform_time_wall_time_t();
+        if (file_offer_auth_validate_at(offer, now_unix) !=
+                FILE_OFFER_AUTH_OK ||
+            file_offer_auth_verify_signature(offer) != FILE_OFFER_AUTH_OK)
+            LOG_FAIL("market", "add_offer: paid offer is invalid or expired");
+    }
 
     pthread_mutex_lock(&g_market_mutex);
 
@@ -200,6 +218,128 @@ bool file_market_add_offer(const struct file_offer *offer)
     g_offer_count++;
     pthread_mutex_unlock(&g_market_mutex);
     return true;
+}
+
+/* Caller holds g_market_mutex. One bounded window covers cheap admission
+ * attempts and the smaller fresh-offer quota. This prevents forged signatures
+ * from buying unlimited Ed25519/Sapling verification work. */
+static struct file_market_peer_window *offer_peer_slot_locked(
+    int64_t peer_id, int64_t now_unix)
+{
+    struct file_market_peer_window *slot = NULL;
+    struct file_market_peer_window *oldest = &g_offer_peers[0];
+    for (size_t i = 0; i < FILE_MARKET_PEER_SLOTS; i++) {
+        if (!g_offer_peers[i].used) {
+            slot = &g_offer_peers[i];
+            break;
+        }
+        if (g_offer_peers[i].peer_id == peer_id) {
+            slot = &g_offer_peers[i];
+            break;
+        }
+        if (g_offer_peers[i].window_start_unix < oldest->window_start_unix)
+            oldest = &g_offer_peers[i];
+    }
+    if (!slot)
+        slot = oldest;
+    if (!slot->used || slot->peer_id != peer_id ||
+        now_unix < slot->window_start_unix ||
+        now_unix - slot->window_start_unix >=
+            FILE_MARKET_PEER_WINDOW_SECS) {
+        memset(slot, 0, sizeof(*slot));
+        slot->used = true;
+        slot->peer_id = peer_id;
+        slot->window_start_unix = now_unix;
+    }
+    return slot;
+}
+
+static bool offer_peer_attempt_locked(int64_t peer_id, int64_t now_unix)
+{
+    struct file_market_peer_window *slot = offer_peer_slot_locked(
+        peer_id, now_unix);
+    if (slot->attempts >= FILE_MARKET_PEER_WINDOW_MAX_ATTEMPTS)
+        return false;
+    slot->attempts++;
+    return true;
+}
+
+static bool offer_peer_admit_locked(int64_t peer_id, int64_t now_unix)
+{
+    struct file_market_peer_window *slot = offer_peer_slot_locked(
+        peer_id, now_unix);
+    if (slot->new_offers >= FILE_MARKET_PEER_WINDOW_MAX_OFFERS)
+        return false;
+    slot->new_offers++;
+    return true;
+}
+
+enum file_market_offer_ingest file_market_ingest_offer_wire(
+    const uint8_t *wire, size_t wire_len,
+    const uint8_t expected_network_genesis[32],
+    int64_t peer_id, int64_t now_unix, struct file_offer *out_offer)
+{
+    struct file_offer offer;
+    pthread_mutex_lock(&g_market_mutex);
+    bool attempt_allowed = offer_peer_attempt_locked(peer_id, now_unix);
+    pthread_mutex_unlock(&g_market_mutex);
+    if (!attempt_allowed)
+        return FILE_MARKET_INGEST_RATE_LIMITED;
+
+    enum file_offer_auth_error error = file_offer_auth_decode(
+        wire, wire_len, &offer);
+    if (error != FILE_OFFER_AUTH_OK)
+        return FILE_MARKET_INGEST_INVALID;
+    error = file_offer_auth_verify_at(&offer, expected_network_genesis,
+                                      now_unix);
+    if (error == FILE_OFFER_AUTH_ERR_EXPIRED)
+        return FILE_MARKET_INGEST_EXPIRED;
+    if (error != FILE_OFFER_AUTH_OK)
+        return FILE_MARKET_INGEST_INVALID;
+    offer.last_seen = now_unix;
+    offer.ttl = FILE_MARKET_MAX_TTL;
+
+    pthread_mutex_lock(&g_market_mutex);
+    for (int i = 0; i < g_offer_count; i++) {
+        if (g_offers[i].auth_version == FILE_MARKET_OFFER_VERSION &&
+            memcmp(g_offers[i].offer_id, offer.offer_id, 32) == 0) {
+            g_offers[i].last_seen = now_unix;
+            if (out_offer)
+                *out_offer = g_offers[i];
+            pthread_mutex_unlock(&g_market_mutex);
+            return FILE_MARKET_INGEST_DEDUP;
+        }
+    }
+    if (!offer_peer_admit_locked(peer_id, now_unix)) {
+        pthread_mutex_unlock(&g_market_mutex);
+        return FILE_MARKET_INGEST_RATE_LIMITED;
+    }
+
+    /* One current signed contract per content root. A fresh nonce/price is a
+     * new signed wire and replaces the stale terms, then is forwarded once. */
+    for (int i = 0; i < g_offer_count; i++) {
+        if (memcmp(g_offers[i].root_hash, offer.root_hash, 32) == 0) {
+            g_offers[i] = offer;
+            if (out_offer)
+                *out_offer = offer;
+            pthread_mutex_unlock(&g_market_mutex);
+            return FILE_MARKET_INGEST_NEW;
+        }
+    }
+    if (g_offer_count >= FILE_MARKET_MAX_OFFERS) {
+        int oldest = 0;
+        for (int i = 1; i < g_offer_count; i++) {
+            if (g_offers[i].last_seen < g_offers[oldest].last_seen)
+                oldest = i;
+        }
+        g_offers[oldest] = offer;
+    } else {
+        g_offers[g_offer_count++] = offer;
+    }
+    if (out_offer)
+        *out_offer = offer;
+    pthread_mutex_unlock(&g_market_mutex);
+    return FILE_MARKET_INGEST_NEW;
 }
 
 int file_market_get_offers(struct file_offer *out, size_t max)

@@ -270,6 +270,70 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 55) {
+        /* v55: authenticated paid file offers. Mutable gossip bookkeeping
+         * remains outside the signed body; every money-bearing term is
+         * committed by the seller's network-bound Ed25519 contract. Legacy
+         * auth_version=0 rows remain readable only when price_per_mb=0. */
+        /* A few supported recovery/test fixtures carry a valid version but
+         * only a subset of feature tables. Converge those stores before the
+         * ALTER sequence instead of stamping v55 over a missing authority. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS file_offers ("
+            "root_hash BLOB NOT NULL PRIMARY KEY,"
+            "filename TEXT NOT NULL,"
+            "size_bytes INTEGER NOT NULL,"
+            "num_chunks INTEGER NOT NULL,"
+            "price_per_mb INTEGER NOT NULL,"
+            "z_addr BLOB,peer_ip BLOB,peer_port INTEGER,"
+            "last_seen INTEGER,ttl INTEGER DEFAULT 4)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_file_offers_last_seen "
+            "ON file_offers(last_seen DESC)");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN auth_version INTEGER "
+            "NOT NULL DEFAULT 0 CHECK(auth_version IN (0,1))");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN network_genesis BLOB "
+            "NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000' "
+            "CHECK(length(network_genesis)=32)");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN seller_pubkey BLOB "
+            "NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000' "
+            "CHECK(length(seller_pubkey)=32)");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN nonce INTEGER NOT NULL "
+            "DEFAULT 0 CHECK(nonce>=0)");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN issued_unix INTEGER NOT NULL "
+            "DEFAULT 0 CHECK(issued_unix>=0)");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN expires_unix INTEGER NOT NULL "
+            "DEFAULT 0 CHECK(expires_unix>=0)");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN seller_signature BLOB "
+            "NOT NULL DEFAULT X'00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "
+            "CHECK(length(seller_signature)=64)");
+        node_db_exec(ndb,
+            "ALTER TABLE file_offers ADD COLUMN offer_id BLOB "
+            "NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000' "
+            "CHECK(length(offer_id)=32)");
+        node_db_exec(ndb,
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_file_offers_offer_id "
+            "ON file_offers(offer_id) WHERE auth_version=1");
+        node_db_exec(ndb,
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_file_offers_seller_nonce "
+            "ON file_offers(seller_pubkey,nonce) WHERE auth_version=1");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_file_offers_expires "
+            "ON file_offers(expires_unix) WHERE auth_version=1");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('055')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 55);
+        current_ver = 55;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

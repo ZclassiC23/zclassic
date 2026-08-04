@@ -3,10 +3,51 @@
 
 #include "platform/time_compat.h"
 #include "test/test_core.h"
+#include "controllers/file_market_controller.h"
+#include "encoding/utilstrencodings.h"
 #include "net/file_market.h"
 #include "core/serialize.h"
 #include "models/database.h"
+#include "crypto/ed25519.h"
+#include "sapling/sapling.h"
 #include <stdint.h>
+
+static bool market_test_signed_offer(struct file_offer *offer,
+                                     uint8_t root_byte, uint64_t nonce,
+                                     int64_t now_unix)
+{
+    struct jub_point payment_key;
+    uint8_t seed[32], secret[32];
+    memset(offer, 0, sizeof(*offer));
+    memset(seed, (int)(root_byte ^ 0x5a), sizeof(seed));
+    memset(offer->root_hash, root_byte, sizeof(offer->root_hash));
+    memset(offer->network_genesis, 0x42, sizeof(offer->network_genesis));
+    ed25519_keypair(offer->seller_pubkey, secret, seed);
+    snprintf(offer->filename, sizeof(offer->filename), "paid-%02x.dat",
+             root_byte);
+    offer->size_bytes = FILE_MARKET_CHUNK_SIZE + 1u;
+    offer->num_chunks = 2;
+    offer->price_per_mb = 1200;
+    for (uint8_t d = 1; ; d++) {
+        memset(offer->z_addr, 0, sizeof(offer->z_addr));
+        offer->z_addr[0] = d;
+        if (sapling_diversifier_to_gd(&payment_key, offer->z_addr))
+            break;
+        if (d == UINT8_MAX)
+            return false;
+    }
+    jub_to_bytes(offer->z_addr + 11, &payment_key);
+    memset(offer->peer_ip, 0, sizeof(offer->peer_ip));
+    offer->peer_ip[15] = root_byte ? root_byte : 1;
+    offer->peer_port = 18034;
+    offer->ttl = FILE_MARKET_MAX_TTL;
+    offer->last_seen = now_unix;
+    offer->auth_version = FILE_MARKET_OFFER_VERSION;
+    offer->nonce = nonce;
+    offer->issued_unix = now_unix;
+    offer->expires_unix = now_unix + 600;
+    return file_offer_auth_seal(offer, seed) == FILE_OFFER_AUTH_OK;
+}
 
 int test_file_market(void)
 {
@@ -55,6 +96,225 @@ int test_file_market(void)
             failures++;
         }
         stream_free(&ws);
+    }
+
+    /* ── File challenge serialize/deserialize roundtrip ────────── */
+
+    printf("signed paid offer: exact wire roundtrip and verification... ");
+    {
+        struct file_offer offer, got;
+        uint8_t wire[FILE_MARKET_OFFER_WIRE_BYTES];
+        bool made = market_test_signed_offer(&offer, 0x31, 101, 1000);
+        enum file_offer_auth_error enc = file_offer_auth_encode(&offer, wire);
+        enum file_offer_auth_error dec = file_offer_auth_decode(
+            wire, sizeof(wire), &got);
+        enum file_offer_auth_error verified = file_offer_auth_verify_at(
+            &got, offer.network_genesis, 1001);
+        if (made && enc == FILE_OFFER_AUTH_OK &&
+            dec == FILE_OFFER_AUTH_OK && verified == FILE_OFFER_AUTH_OK &&
+            memcmp(got.offer_id, offer.offer_id, 32) == 0 &&
+            strcmp(got.filename, offer.filename) == 0)
+            printf("OK\n");
+        else {
+            printf("FAIL (made=%d enc=%s dec=%s verify=%s)\n", made,
+                   file_offer_auth_error_string(enc),
+                   file_offer_auth_error_string(dec),
+                   file_offer_auth_error_string(verified));
+            failures++;
+        }
+    }
+
+    printf("signed paid offer: exact integer total and money cap... ");
+    {
+        struct file_offer offer;
+        int64_t total = 0;
+        bool made = market_test_signed_offer(&offer, 0x30, 100, 900);
+        bool exact = file_market_offer_total_zat(&offer, &total) &&
+                     total == 60001;
+        offer.price_per_mb = INT64_MAX;
+        bool capped = !file_market_offer_total_zat(&offer, &total);
+        if (made && exact && capped) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("signed paid offer: tamper, wrong network, and expiry rejected... ");
+    {
+        struct file_offer offer, got;
+        uint8_t wire[FILE_MARKET_OFFER_WIRE_BYTES], wrong_net[32];
+        bool made = market_test_signed_offer(&offer, 0x32, 102, 2000);
+        bool encoded = file_offer_auth_encode(&offer, wire) ==
+                       FILE_OFFER_AUTH_OK;
+        /* price_per_mb begins at body offset 130. Keep it positive while
+         * changing the signed statement. */
+        wire[130] ^= 1;
+        bool decoded = file_offer_auth_decode(wire, sizeof(wire), &got) ==
+                       FILE_OFFER_AUTH_OK;
+        bool tamper_rejected = decoded &&
+            file_offer_auth_verify_at(&got, offer.network_genesis, 2001) ==
+                FILE_OFFER_AUTH_ERR_SIGNATURE;
+        memset(wrong_net, 0x43, sizeof(wrong_net));
+        bool wrong_rejected = file_offer_auth_verify_at(
+            &offer, wrong_net, 2001) == FILE_OFFER_AUTH_ERR_NETWORK_MISMATCH;
+        bool expired = file_offer_auth_verify_at(
+            &offer, offer.network_genesis, offer.expires_unix) ==
+                FILE_OFFER_AUTH_ERR_EXPIRED;
+        if (made && encoded && tamper_rejected && wrong_rejected && expired)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("signed paid offer ingress: verify, dedup, and cross-network drop... ");
+    {
+        struct file_offer offer, accepted;
+        uint8_t wire[FILE_MARKET_OFFER_WIRE_BYTES], wrong_net[32];
+        bool made = market_test_signed_offer(&offer, 0x33, 103, 3000);
+        bool encoded = file_offer_auth_encode(&offer, wire) ==
+                       FILE_OFFER_AUTH_OK;
+        enum file_market_offer_ingest first = file_market_ingest_offer_wire(
+            wire, sizeof(wire), offer.network_genesis, 77, 3001, &accepted);
+        enum file_market_offer_ingest duplicate = file_market_ingest_offer_wire(
+            wire, sizeof(wire), offer.network_genesis, 77, 3002, &accepted);
+        memset(wrong_net, 0x44, sizeof(wrong_net));
+        enum file_market_offer_ingest wrong = file_market_ingest_offer_wire(
+            wire, sizeof(wire), wrong_net, 78, 3003, NULL);
+        if (made && encoded && first == FILE_MARKET_INGEST_NEW &&
+            duplicate == FILE_MARKET_INGEST_DEDUP &&
+            wrong == FILE_MARKET_INGEST_INVALID &&
+            memcmp(accepted.offer_id, offer.offer_id, 32) == 0)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("signed paid offer ingress: newer contract replaces same content... ");
+    {
+        struct file_offer first_offer, refreshed, found;
+        uint8_t first_wire[FILE_MARKET_OFFER_WIRE_BYTES];
+        uint8_t refresh_wire[FILE_MARKET_OFFER_WIRE_BYTES];
+        bool made_first = market_test_signed_offer(
+            &first_offer, 0x35, 105, 4000);
+        bool made_refresh = market_test_signed_offer(
+            &refreshed, 0x35, 106, 4001);
+        bool encoded =
+            file_offer_auth_encode(&first_offer, first_wire) ==
+                FILE_OFFER_AUTH_OK &&
+            file_offer_auth_encode(&refreshed, refresh_wire) ==
+                FILE_OFFER_AUTH_OK;
+        enum file_market_offer_ingest first = file_market_ingest_offer_wire(
+            first_wire, sizeof(first_wire), first_offer.network_genesis,
+            88, 4002, NULL);
+        enum file_market_offer_ingest refresh = file_market_ingest_offer_wire(
+            refresh_wire, sizeof(refresh_wire), refreshed.network_genesis,
+            88, 4003, NULL);
+        bool current = file_market_find_offer(refreshed.root_hash, &found) &&
+            memcmp(found.offer_id, refreshed.offer_id, 32) == 0;
+        if (made_first && made_refresh && encoded &&
+            first == FILE_MARKET_INGEST_NEW &&
+            refresh == FILE_MARKET_INGEST_NEW && current)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("signed paid offer ingress: bounded fresh offers per peer... ");
+    {
+        bool ok = true;
+        for (unsigned i = 0; i <= FILE_MARKET_PEER_WINDOW_MAX_OFFERS; i++) {
+            struct file_offer offer;
+            uint8_t wire[FILE_MARKET_OFFER_WIRE_BYTES];
+            ok = ok && market_test_signed_offer(
+                &offer, (uint8_t)(0x40 + i), 200 + i, 5000);
+            ok = ok && file_offer_auth_encode(&offer, wire) ==
+                FILE_OFFER_AUTH_OK;
+            enum file_market_offer_ingest got = file_market_ingest_offer_wire(
+                wire, sizeof(wire), offer.network_genesis, 900, 5001, NULL);
+            enum file_market_offer_ingest expected =
+                i < FILE_MARKET_PEER_WINDOW_MAX_OFFERS
+                    ? FILE_MARKET_INGEST_NEW
+                    : FILE_MARKET_INGEST_RATE_LIMITED;
+            ok = ok && got == expected;
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("signed paid offer ingress: invalid attempts are CPU-bounded... ");
+    {
+        bool ok = true;
+        uint8_t invalid_wire = 0;
+        uint8_t expected_network[32];
+        memset(expected_network, 0x42, sizeof(expected_network));
+        for (unsigned i = 0;
+             i <= FILE_MARKET_PEER_WINDOW_MAX_ATTEMPTS; i++) {
+            enum file_market_offer_ingest got = file_market_ingest_offer_wire(
+                &invalid_wire, sizeof(invalid_wire), expected_network,
+                901, 5100, NULL);
+            enum file_market_offer_ingest expected =
+                i < FILE_MARKET_PEER_WINDOW_MAX_ATTEMPTS
+                    ? FILE_MARKET_INGEST_INVALID
+                    : FILE_MARKET_INGEST_RATE_LIMITED;
+            ok = ok && got == expected;
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("legacy market writes: fail closed without cache or session mutation... ");
+    {
+        struct rpc_table table;
+        struct json_value offer_params = {0}, buy_params = {0};
+        struct json_value value = {0}, result = {0};
+        uint8_t known_root[32];
+        struct file_download download;
+        int offers_before = file_market_count();
+        rpc_table_init(&table);
+        register_market_rpc_commands(&table);
+
+        json_set_array(&offer_params);
+        json_set_str(&value, "/tmp/not-read-by-contained-market-rpc");
+        bool assembled = json_push_back(&offer_params, &value);
+        json_set_int(&value, 1000);
+        assembled = assembled && json_push_back(&offer_params, &value);
+        const struct rpc_command *offer_cmd = rpc_table_find(
+            &table, "zmarket_offer");
+        bool offer_refused = offer_cmd &&
+            !offer_cmd->actor(&offer_params, false, &result) &&
+            strstr(json_get_str(&result), "contained") != NULL &&
+            file_market_count() == offers_before;
+        json_free(&result);
+        json_init(&result);
+
+        memset(known_root, 0x33, sizeof(known_root));
+        char root_hex[65];
+        HexStr(known_root, sizeof(known_root), false,
+               root_hex, sizeof(root_hex));
+        json_set_array(&buy_params);
+        json_set_str(&value, root_hex);
+        assembled = assembled && json_push_back(&buy_params, &value);
+        const struct rpc_command *buy_cmd = rpc_table_find(
+            &table, "zmarket_buy");
+        bool buy_refused = buy_cmd &&
+            !buy_cmd->actor(&buy_params, false, &result) &&
+            strstr(json_get_str(&result), "contained") != NULL &&
+            !file_market_get_download(known_root, &download);
+
+        json_free(&value);
+        json_free(&offer_params);
+        json_free(&buy_params);
+        json_free(&result);
+        if (assembled && offer_refused && buy_refused) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("legacy unsigned paid offer is rejected from the cache... ");
+    {
+        struct file_offer offer = {0};
+        memset(offer.root_hash, 0x34, 32);
+        snprintf(offer.filename, sizeof(offer.filename), "unsigned.dat");
+        offer.size_bytes = 1;
+        offer.num_chunks = 1;
+        offer.price_per_mb = 1;
+        offer.ttl = 1;
+        if (!file_market_add_offer(&offer)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     /* ── File challenge serialize/deserialize roundtrip ────────── */
@@ -396,21 +656,17 @@ int test_file_market(void)
                 "size_bytes INTEGER, num_chunks INTEGER,"
                 "price_per_mb INTEGER, z_addr BLOB,"
                 "peer_ip BLOB, peer_port INTEGER,"
-                "ttl INTEGER, last_seen INTEGER)",
+                "last_seen INTEGER, ttl INTEGER, auth_version INTEGER,"
+                "network_genesis BLOB, seller_pubkey BLOB, nonce INTEGER,"
+                "issued_unix INTEGER, expires_unix INTEGER,"
+                "seller_signature BLOB, offer_id BLOB)",
                 NULL, NULL, NULL);
 
             struct node_db ndb = { .db = db, .open = true };
 
-            struct file_offer offer = {0};
-            memset(offer.root_hash, 0xAA, 32);
-            snprintf(offer.filename, sizeof(offer.filename), "test.dat");
-            offer.size_bytes = 5000;
-            offer.num_chunks = 1;
-            offer.price_per_mb = 1000;
-            memset(offer.z_addr, 0x23, sizeof(offer.z_addr));
-            offer.peer_port = 8233;
-            offer.ttl = 2;
-            offer.last_seen = (int64_t)platform_time_wall_time_t();
+            struct file_offer offer;
+            int64_t now = (int64_t)platform_time_wall_time_t();
+            bool made = market_test_signed_offer(&offer, 0xAA, 404, now);
 
             bool save = db_file_offer_save(&ndb, &offer);
             struct file_offer found = {0};
@@ -418,8 +674,9 @@ int test_file_market(void)
             struct file_offer list[10];
             int count = db_file_offer_list(&ndb, list, 10);
 
-            if (save && find &&
-                strcmp(found.filename, "test.dat") == 0 &&
+            if (made && save && find &&
+                strcmp(found.filename, offer.filename) == 0 &&
+                memcmp(found.offer_id, offer.offer_id, 32) == 0 &&
                 count == 1) {
                 printf("OK\n");
             } else {

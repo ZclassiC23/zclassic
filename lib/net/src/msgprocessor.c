@@ -877,6 +877,15 @@ static bool handle_zfilelist(struct msg_processor *mp, struct p2p_node *node,
         if (!file_offer_deserialize(&offer, s))
             break;
 
+        /* zfilelist predates seller authentication. It remains a compatibility
+         * carrier for price-zero ROM artifacts only; accepting a paid row here
+         * would let any relay rewrite price/address/endpoint. */
+        if (offer.price_per_mb != 0) {
+            LOG_WARN("market", "unsigned paid zfilelist offer from peer %s "
+                     "dropped", node->addr_name);
+            continue;
+        }
+
         /* Clamp the peer-supplied hop count: an attacker could set ttl=255 to
          * drive a ~255-hop re-gossip amplification across the network. Cap it
          * to the protocol maximum so propagation is bounded regardless of input. */
@@ -1142,6 +1151,32 @@ static bool handle_zfileaddr(struct msg_processor *mp, struct p2p_node *node,
 static void mp_flood_wire(struct msg_processor *mp, const char *command,
                           const uint8_t *wire, size_t wire_len,
                           int64_t exclude_peer_id);
+
+static bool handle_zfileoffer(struct msg_processor *mp,
+                              struct p2p_node *node,
+                              struct byte_stream *s)
+{
+    if (s->size - s->read_pos != FILE_MARKET_OFFER_WIRE_BYTES)
+        return true;
+    uint8_t wire[FILE_MARKET_OFFER_WIRE_BYTES];
+    if (!stream_read(s, wire, sizeof(wire)) || !mp->params)
+        return true;
+
+    struct file_offer offer;
+    enum file_market_offer_ingest result = file_market_ingest_offer_wire(
+        wire, sizeof(wire), mp->params->consensus.hashGenesisBlock.data,
+        (int64_t)node->id, (int64_t)platform_time_wall_time_t(), &offer);
+    if (result != FILE_MARKET_INGEST_NEW &&
+        result != FILE_MARKET_INGEST_DEDUP)
+        return true;
+
+    if (mp->file_offer_save)
+        (void)mp->file_offer_save(&offer, mp->file_offer_save_ctx);
+    if (result == FILE_MARKET_INGEST_NEW && mp->net_mgr)
+        mp_flood_wire(mp, MSG_FILE_OFFER, wire, sizeof(wire),
+                      (int64_t)node->id);
+    return true;
+}
 
 static bool handle_zswapquote(struct msg_processor *mp, struct p2p_node *node,
                               struct byte_stream *s)
@@ -1428,6 +1463,7 @@ static const struct msg_dispatch_entry g_msg_dispatch[] = {
     { "zmsgack",      handle_zmsgack,        true,  true,  "msg" },
     /* ── ZCL Market ── */
     { "zfilelist",    handle_zfilelist,      true,  true,  "market" },
+    { "zfileoffer",   handle_zfileoffer,     true,  true,  "market" },
     { "zfilechal",    handle_zfilechal,      true,  true,  "market" },
     { "zfileproof",   handle_zfileproof,     true,  true,  "market" },
     { "zfilepay",     handle_zfilepay,       true,  true,  "market" },

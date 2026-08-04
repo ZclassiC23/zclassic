@@ -114,7 +114,10 @@ Source commit `cb8ab59d` plus the append-only notebook expansion in this change:
   ceremony produced its golden fully signed final transaction and delivered it
   to the broadcast port.
 - `market_purchase` is the one `BLOCKED` case: file-market payment-to-unlock
-  glue has no end-to-end broadcast path. Its proof is `not_demonstrated`; it is
+  glue has no end-to-end broadcast path. The seller-authenticated,
+  network-bound offer ingress contract is implemented and focused-test proven,
+  but it is P2P setup—not a payment proof. Exact payment verification and paid
+  file unlock remain absent, so the proof stays `not_demonstrated` and is
   deliberately not counted as PASS.
 - Current notebook result: **32/33 PASS**, **1 BLOCKED**, **5 simulated chain
   confirmations**, **0 mainnet confirmations**, and **0 ZCL** live recipient
