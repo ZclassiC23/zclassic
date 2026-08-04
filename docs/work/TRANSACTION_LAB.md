@@ -158,3 +158,31 @@ delivery; the buyer still lacks targeted seller notification, encrypted chunk
 retrieval, full-manifest verification, restart-safe assembly, and atomic
 destination publication. Live mainnet confirmations, recipient value, and fees
 remain **zero**; this slice used deterministic callbacks and moved no ZCL.
+
+## 2026-08-04 complete file-market purchase slice
+
+Source commit `c95264fe` completes the previously blocked composite without a
+live-wallet mutation:
+
+- The buyer connects to the exact IP/port authenticated by the signed offer,
+  performs the real encrypted file-service handshake, signs a request bound to
+  that session and paid offer, and accepts bytes only after the typed seller
+  authorization reply.
+- A schema-v59 ActiveRecord resource stores only owner-private destination and
+  staging paths plus immutable plan/offer/manifest terms and sequential chunk
+  progress. Public command output remains path-, endpoint-, address-, memo-,
+  and key-free.
+- Restart reopens the same download, truncates an uncommitted tail, and rehashes
+  every fsynced chunk against its durable child record before fetching more.
+- Every reply hash is checked, the ordered chunk-hash manifest must equal the
+  signed offer root, and publication is an atomic same-directory no-overwrite
+  operation. Replay neither downloads nor publishes twice.
+- The focused group exercises a confirmed-payment projection and complete
+  purchase service, including real encrypted loopback delivery, restart,
+  manifest verification, publication, and replay safety. This supports the
+  catalog's `projection_verified` proof; it is not a simnet or mainnet
+  confirmation claim.
+
+The latest notebook result is **33/33 PASS, 0 BLOCKED**, with **5 simulated
+chain confirmations**, **0 mainnet confirmations**, and **0 ZCL** live
+recipient value or fees. No live wallet or service was mutated.

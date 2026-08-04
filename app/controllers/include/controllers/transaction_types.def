@@ -200,12 +200,12 @@ TX_TYPE("yardsale_atomic_purchase", "commerce", "ready", "composite_chain_transa
         "core.wallet.transaction.get", "yardsale.seller.arm",
         "all_zcl_networks", "yardsale_atomic_purchase", "builder_verified", "test_yardsale_app",
         "Complete the two-message yardsale ceremony into one fully signed transaction exchanging ZCL for a sign token.")
-TX_TYPE("market_purchase", "commerce", "planned", "composite_chain_transaction",
+TX_TYPE("market_purchase", "commerce", "ready", "composite_chain_transaction",
         "payment_then_file_unlock", "shielded_payment_private_file",
-        "payment_plan_commit_delivery_not_wired",
+        "plan_commit_confirm_retrieve_publish",
         "app.market.purchase.plan", "app.market.purchase.commit",
         "app.market.purchase.status",
-        "app.market.purchase.plan,app.market.purchase.commit,app.market.purchase.status,app.market.buy",
-        "payment_leg_only_no_download", "market_purchase", "not_demonstrated",
+        "app.market.purchase.plan,app.market.purchase.commit,app.market.purchase.status,app.market.purchase.retrieve",
+        "all_zcl_networks", "market_purchase", "projection_verified",
         "test_file_market",
-        "The durable exact payment leg is ready, but buyer retrieval, verified assembly, and destination publication are absent; the composite purchase therefore remains planned.")
+        "Pay the exact signed Sapling offer, confirm it through chain and wallet authorities, retrieve authenticated encrypted chunks from the signed endpoint, verify the complete manifest, and atomically publish without overwrite.")

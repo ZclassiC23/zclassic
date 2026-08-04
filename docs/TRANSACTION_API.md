@@ -111,7 +111,7 @@ human index:
 | Identity/directory | `zid_anchor`, `zid_rotate`, `zid_revoke`, `zdir_register`, `zdir_deregister` | Explicit OP_RETURN compose/broadcast paths. |
 | Anchors/ZCODE | `zanc_epoch_anchor`, `zcode_release_anchor` | SHA3 commitment anchors; ZCODE folds signed release records before ZANC broadcast. |
 | Atomic swaps | `htlc_initiate`, `htlc_participate`, `htlc_redeem`, `htlc_refund` | Contract preparation plus explicit funding; redeem/refund settle the ZCL leg. |
-| Commerce | `store_transparent_payment`, `store_shielded_payment`, `yardsale_atomic_purchase`, `market_purchase` | Transparent store and yardsale paths exist; shielded store pay is isolated-only. File-market exact payment plan/commit is ready, while the full pay-and-download composite remains planned. |
+| Commerce | `store_transparent_payment`, `store_shielded_payment`, `yardsale_atomic_purchase`, `market_purchase` | Transparent store and yardsale paths exist; shielded store pay is isolated-only. File-market plan/commit/retrieve completes authenticated payment, verified assembly, and atomic publication. |
 
 ## Safe plan/commit workflow
 
@@ -159,16 +159,17 @@ logs, or the notebook. A public mainnet txid may be recorded after broadcast.
   science, package, DHT, and fetch operations are also off-chain. Only
   `zcode_release_anchor` in this catalog commits a ZCODE-derived root on-chain.
 - File-market offers, challenges, proofs, and signed payment claims are P2P or
-  local workflow objects. The real Sapling payment leg is now exposed as
+  local workflow objects. The real Sapling payment leg is exposed as
   `app market purchase plan|commit|status`: it binds the authenticated offer,
   exact range and amount, wallet identity, network, tip, custody snapshot,
   maximum fee, expiry, and idempotency key. Planning atomically reserves value
   plus fee; commit broadcasts at most once and persists the txid and encrypted
   buyer credential across restart.
-  The composite `market_purchase` remains `planned` because no buyer client yet
-  targets the seller, retrieves encrypted chunks, verifies and assembles the
-  full manifest, or atomically publishes the destination file. A payment must
-  never be presented as a completed download.
+  `app market purchase retrieve` then requires a confirmed full-file payment,
+  targets only the endpoint authenticated by that signed offer, resumes only
+  after rehashing durable staged chunks, verifies the full manifest root, and
+  atomically publishes without overwriting an existing destination. A payment
+  is never presented as a completed download before that final state.
   Paid offer ingress and exact confirmed Sapling-payment reconciliation are
   network-bound, expiry-checked, durable, and reorg-aware. The session-bound
   `zfileget.v1` delivery request verifies the buyer and authorizes before
@@ -176,7 +177,7 @@ logs, or the notebook. A public mainnet txid may be recorded after broadcast.
   binds a signed offer to exact local bytes; restart reconstructs that binding
   and file mutation revokes delivery. See
   [`FILE_MARKET_PROTOCOL.md`](./FILE_MARKET_PROTOCOL.md) for the exact contract
-  and remaining purchase-service boundary.
+  and developer workflow.
 - Legacy `zclassicd` wallet funds are operator-owned and outside agent custody.
 
 ## Proof and statistics
