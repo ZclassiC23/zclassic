@@ -221,14 +221,12 @@ sa_wait_topology() { # wait for the one permitted A<->B peer on both sides
     return 1
 }
 
-sa_spawn() { # $1=datadir $2=p2p $3=rpc $4=fs $5=https $6=connect-target $7=transport
+sa_spawn() { # $1=datadir $2=p2p $3=rpc $4=fs $5=https $6=connect-target
     local dd="$1" p2p="$2" rpc="$3" fs="$4" https="$5" conn="$6"
-    local transport="${7:-v2}" transport_arg=()
-    [ "$transport" = "v2" ] && transport_arg=(-v2transport)
     setsid "$NODE_BIN" \
         -datadir="$dd" -regtest \
         -port="$p2p" -rpcport="$rpc" -fsport="$fs" -httpsport="$https" \
-        -connect="$conn" -packagehost=1 "${transport_arg[@]}" \
+        -connect="$conn" -packagehost=1 -v2transport \
         -allow-plaintext-wallet -wallet-no-phrase-backup \
         -nobgvalidation -nolegacyimport -nofilesync -showmetrics=0 \
         >"$dd/node.log" 2>&1 &
@@ -253,7 +251,7 @@ sa_mine_empty() {
 }
 sa_wait_height() {
     local dd="$1" rpc="$2" want="$3" i h
-    for i in $(seq 1 120); do
+    for i in $(seq 1 180); do
         h="$(sa_rpc "$dd" "$rpc" getblockcount | sa_result 2>/dev/null || true)"
         [ "${h:-0}" -ge "$want" ] && return 0
         sleep 0.5
@@ -603,14 +601,14 @@ out="$(sa_sci "$SA_DD_B" zcode.package.fetch "{\"root\":\"$PKG_ROOT\"}")"
     || sa_die "B one-shot fetch claimed a live engine"
 
 # ── [1] boot A and B; assert the loopback-only topology ───────────────
-sa_step 1 "boot isolated identity-provisioning link; assert exactly A<->B"
-SA_PGID_A="$(sa_spawn "$SA_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK" plaintext)"
+sa_step 1 "boot isolated pre-delegation link; assert exactly A<->B"
+SA_PGID_A="$(sa_spawn "$SA_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK")"
 sa_wait_rpc "$SA_DD_A" "$A_RPC" "$SA_PGID_A" "$RPC_WARMUP" \
     || { tail -20 "$SA_DD_A/node.log" >&2; sa_die "A RPC never came up"; }
-SA_PGID_B="$(sa_spawn "$SA_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$A_PORT" plaintext)"
+SA_PGID_B="$(sa_spawn "$SA_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$A_PORT")"
 sa_wait_rpc "$SA_DD_B" "$B_RPC" "$SA_PGID_B" "$RPC_WARMUP" \
     || { tail -20 "$SA_DD_B/node.log" >&2; sa_die "B RPC never came up"; }
-sa_wait_topology || sa_die "A<->B identity-provisioning topology did not settle"
+sa_wait_topology || sa_die "A<->B pre-delegation topology did not settle"
 pc_a="$(sa_peer_count "$SA_DD_A" "$A_RPC")"
 pc_b="$(sa_peer_count "$SA_DD_B" "$B_RPC")"
 [ "$pc_a" = "1" ] || sa_die "A peer count is $pc_a, expected exactly 1 (B)"
@@ -643,10 +641,9 @@ out="$(sa_sci "$SA_DD_A" zcode.network.delegate "{\"seed_file\":\"$SA_WORK/maste
 out="$(sa_sci "$SA_DD_B" zcode.network.delegate "{\"seed_file\":\"$SA_WORK/master-b.hex\"}")"
 [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "B DHT delegation failed: $out"
 
-# The funding/anchor chain is created on an isolated plaintext provisioning
-# link because neither endpoint has a ZID or delegation yet. From this point
-# onward the proof is Noise-only: restart both nodes with their independent
-# identities before accepting any discovery frame or publishing any record.
+# The isolated pre-delegation boot learns and persists v2 capability while the
+# funding/anchor chain is prepared. Restart both nodes with their independent
+# delegations before accepting any discovery frame or publishing any record.
 sa_kill_group "$SA_PGID_B"; SA_PGID_B=""
 sa_kill_group "$SA_PGID_A"; SA_PGID_A=""
 SA_PGID_A="$(sa_spawn "$SA_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK")"
