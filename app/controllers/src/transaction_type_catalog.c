@@ -284,22 +284,40 @@ struct transaction_wire_family {
     bool has_expiry_height;
     const char *fields_csv;
     const char *sprout_proof;
+    const char *mainnet_status;
+    int mainnet_first_height;
+    int mainnet_last_height;
+    const char *evidence_level;
+    int example_height;
+    const char *example_txid;
+    const char *test_groups_csv;
 };
 
 static const struct transaction_wire_family k_wire_families[] = {
     { "legacy_v1", 1, false, 0, "pre_overwinter", false,
-      "transparent_inputs,transparent_outputs,lock_time", "none" },
+      "transparent_inputs,transparent_outputs,lock_time", "none",
+      "historical_only", 0, 476968, "canonical_mainnet_contextual", 1,
+      "13e63618e0f7dd61ecbb3ee0607489ead19a10317c2311e50a72585643256f56",
+      "test_transaction_wire_evidence" },
     { "legacy_v2", 2, false, 0, "pre_overwinter", false,
       "transparent_inputs,transparent_outputs,lock_time,sprout_joinsplits,joinsplit_signature",
-      "phgr13" },
+      "phgr13", "historical_only", 0, 476968,
+      "canonical_mainnet_contextual", 241,
+      "55c6c3a289d295954936076b697cc1e2a713c99dd268934f7ab6518f825148fd",
+      "test_sprout_phgr13_kat" },
     { "overwinter_v3", OVERWINTER_TX_VERSION, true,
       OVERWINTER_VERSION_GROUP_ID, "overwinter_before_sapling", true,
       "transparent_inputs,transparent_outputs,lock_time,expiry_height,sprout_joinsplits,joinsplit_signature",
-      "phgr13" },
+      "phgr13", "never_active", -1, -1,
+      "mainnet_unreachable_boundary_proven", -1, "",
+      "test_transaction_wire_evidence,test_sapling,test_consensus_parity" },
     { "sapling_v4", SAPLING_TX_VERSION, true, SAPLING_VERSION_GROUP_ID,
       "sapling_and_later", true,
       "transparent_inputs,transparent_outputs,lock_time,expiry_height,value_balance,sapling_spends,sapling_outputs,sprout_joinsplits,joinsplit_signature,binding_signature",
-      "groth16" },
+      "groth16", "current", 476969, -1,
+      "canonical_mainnet_contextual", 476970,
+      "6eb069da34331871a55314ec3b92fcf50d8fabe914d16c46d686be853c8a3047",
+      "test_sprout_groth16_kat,test_simnet_shielded_wallet_e2e" },
 };
 
 struct transaction_script_class {
@@ -307,15 +325,40 @@ struct transaction_script_class {
     bool standard_relay_class;
     const char *spendability;
     const char *destination_shape;
+    const char *mainnet_example_status;
+    int example_height;
+    const char *example_txid;
+    const char *evidence_level;
+    const char *test_groups_csv;
 };
 
 static const struct transaction_script_class k_script_classes[] = {
-    { TX_NONSTANDARD, false, "script_dependent", "script_dependent" },
-    { TX_PUBKEY,      true,  "spendable",        "single" },
-    { TX_PUBKEYHASH,  true,  "spendable",        "single" },
-    { TX_SCRIPTHASH,  true,  "spendable",        "single" },
-    { TX_MULTISIG,    true,  "spendable",        "multiple" },
-    { TX_NULL_DATA,   true,  "provably_unspendable", "none" },
+    { TX_NONSTANDARD, false, "script_dependent", "script_dependent",
+      "canonical_mainnet", 122001,
+      "c6b58ab4533eafd151b998c8b232d3910417ead11e916d04f7a633afc171e1cc",
+      "canonical_mainnet_roundtrip_and_solver",
+      "test_transaction_wire_evidence,test_script" },
+    { TX_PUBKEY, true, "spendable", "single", "canonical_mainnet", 1,
+      "13e63618e0f7dd61ecbb3ee0607489ead19a10317c2311e50a72585643256f56",
+      "canonical_mainnet_roundtrip_and_solver",
+      "test_transaction_wire_evidence,test_script" },
+    { TX_PUBKEYHASH, true, "spendable", "single", "canonical_mainnet",
+      3139216,
+      "1765e9c9b0dbcbd9c9a968ea4f3c9c4b60d447d86c2583aa186e9a107c2e7c91",
+      "canonical_mainnet_roundtrip_and_solver",
+      "test_transaction_wire_evidence,test_script" },
+    { TX_SCRIPTHASH, true, "spendable", "single", "canonical_mainnet",
+      255001,
+      "b18c3f28d2d4867920a126d09f90e619f3e64e41cd31a7c9f9653b9adce60c83",
+      "canonical_mainnet_roundtrip_and_solver",
+      "test_transaction_wire_evidence,test_multisig,test_script" },
+    { TX_MULTISIG, true, "spendable", "multiple", "not_pinned", -1, "",
+      "solver_vectors", "test_multisig,test_domain_consensus_script_standard" },
+    { TX_NULL_DATA, true, "provably_unspendable", "none",
+      "canonical_mainnet", 3139216,
+      "34ed27f1291a95c0f829c089522227bc30e4c215ac62b4e20a434179e36bd754",
+      "canonical_mainnet_roundtrip_and_solver",
+      "test_transaction_wire_evidence,test_script" },
 };
 
 struct transaction_application_codec {
@@ -359,6 +402,45 @@ static void wire_family_json(const struct transaction_wire_family *family,
     (void)json_push_kv(out, "serialized_fields", &fields);
     json_free(&fields);
     (void)json_push_kv_str(out, "sprout_proof", family->sprout_proof);
+    (void)json_push_kv_str(out, "mainnet_status", family->mainnet_status);
+    struct json_value first_height;
+    json_init(&first_height);
+    if (family->mainnet_first_height >= 0)
+        json_set_int(&first_height, family->mainnet_first_height);
+    else
+        json_set_null(&first_height);
+    (void)json_push_kv(out, "mainnet_first_height", &first_height);
+    json_free(&first_height);
+    struct json_value last_height;
+    json_init(&last_height);
+    if (family->mainnet_last_height >= 0)
+        json_set_int(&last_height, family->mainnet_last_height);
+    else
+        json_set_null(&last_height);
+    (void)json_push_kv(out, "mainnet_last_height", &last_height);
+    json_free(&last_height);
+    (void)json_push_kv_str(out, "evidence_level", family->evidence_level);
+    struct json_value example_height;
+    json_init(&example_height);
+    if (family->example_height >= 0)
+        json_set_int(&example_height, family->example_height);
+    else
+        json_set_null(&example_height);
+    (void)json_push_kv(out, "example_height", &example_height);
+    json_free(&example_height);
+    struct json_value example_txid;
+    json_init(&example_txid);
+    if (family->example_txid && family->example_txid[0])
+        json_set_str(&example_txid, family->example_txid);
+    else
+        json_set_null(&example_txid);
+    (void)json_push_kv(out, "example_txid", &example_txid);
+    json_free(&example_txid);
+    struct json_value tests;
+    json_init(&tests);
+    csv_json(family->test_groups_csv, &tests);
+    (void)json_push_kv(out, "test_groups", &tests);
+    json_free(&tests);
 }
 
 bool zcl_transaction_wire_catalog_json(struct json_value *out)
@@ -376,6 +458,9 @@ bool zcl_transaction_wire_catalog_json(struct json_value *out)
                            "core.chain.transaction.get");
     (void)json_push_kv_bool(out, "consensus_wire_families_are_finite", true);
     (void)json_push_kv_bool(out, "application_semantics_are_open_ended", true);
+    (void)json_push_kv_bool(out,
+        "mainnet_overwinter_and_sapling_activate_together", true);
+    (void)json_push_kv_bool(out, "mainnet_v3_epoch_exists", false);
     (void)json_push_kv_str(out, "open_ended_reason",
         "consensus_accepts_arbitrary_scripts_opaque_sapling_memos_and_unknown_future_op_return_tags");
 
@@ -413,6 +498,33 @@ bool zcl_transaction_wire_catalog_json(struct json_value *out)
                                k_script_classes[i].spendability);
         (void)json_push_kv_str(&item, "destination_shape",
                                k_script_classes[i].destination_shape);
+        (void)json_push_kv_str(&item, "mainnet_example_status",
+                               k_script_classes[i].mainnet_example_status);
+        struct json_value example_height;
+        json_init(&example_height);
+        if (k_script_classes[i].example_height >= 0)
+            json_set_int(&example_height,
+                         k_script_classes[i].example_height);
+        else
+            json_set_null(&example_height);
+        (void)json_push_kv(&item, "example_height", &example_height);
+        json_free(&example_height);
+        struct json_value example_txid;
+        json_init(&example_txid);
+        if (k_script_classes[i].example_txid &&
+            k_script_classes[i].example_txid[0])
+            json_set_str(&example_txid, k_script_classes[i].example_txid);
+        else
+            json_set_null(&example_txid);
+        (void)json_push_kv(&item, "example_txid", &example_txid);
+        json_free(&example_txid);
+        (void)json_push_kv_str(&item, "evidence_level",
+                               k_script_classes[i].evidence_level);
+        struct json_value tests;
+        json_init(&tests);
+        csv_json(k_script_classes[i].test_groups_csv, &tests);
+        (void)json_push_kv(&item, "test_groups", &tests);
+        json_free(&tests);
         (void)json_push_back(&scripts, &item);
         json_free(&item);
     }
@@ -420,6 +532,8 @@ bool zcl_transaction_wire_catalog_json(struct json_value *out)
         (int64_t)(sizeof(k_script_classes) / sizeof(k_script_classes[0])));
     (void)json_push_kv(out, "script_classes", &scripts);
     json_free(&scripts);
+    (void)json_push_kv_int(out, "canonical_script_example_count", 5);
+    (void)json_push_kv_int(out, "script_class_solver_coverage_count", 6);
     (void)json_push_kv_str(out, "nonstandard_script_policy",
         "process_if_consensus_valid_but_do_not_infer_relay_or_builder_support");
     (void)json_push_kv_str(out, "unknown_op_return_policy",

@@ -92,7 +92,14 @@ int api_transaction_type_focused_tests(void)
             json_get_bool(json_get(&root,
                                    "consensus_wire_families_are_finite")) &&
             json_get_bool(json_get(&root,
-                                   "application_semantics_are_open_ended"));
+                                   "application_semantics_are_open_ended")) &&
+            json_get_bool(json_get(
+                &root, "mainnet_overwinter_and_sapling_activate_together")) &&
+            !json_get_bool(json_get(&root, "mainnet_v3_epoch_exists")) &&
+            json_get_int(json_get(&root,
+                                  "canonical_script_example_count")) == 5 &&
+            json_get_int(json_get(&root,
+                           "script_class_solver_coverage_count")) == 6;
         const struct json_value *families = json_get(&root, "wire_families");
         const struct json_value *legacy_v1 = families ?
             api_test_find_str_field(families, "id", "legacy_v1") : NULL;
@@ -105,6 +112,17 @@ int api_transaction_type_focused_tests(void)
         ok = ok && legacy_v1 && legacy_v2 && overwinter && sapling &&
             json_get_int(json_get(legacy_v1, "version")) == 1 &&
             !json_get_bool(json_get(legacy_v1, "overwintered")) &&
+            strcmp(json_get_str(json_get(legacy_v1, "mainnet_status")),
+                   "historical_only") == 0 &&
+            json_get_int(json_get(legacy_v1,
+                                  "mainnet_first_height")) == 0 &&
+            json_get_int(json_get(legacy_v1,
+                                  "mainnet_last_height")) == 476968 &&
+            json_get_int(json_get(legacy_v1, "example_height")) == 1 &&
+            strcmp(json_get_str(json_get(legacy_v1, "evidence_level")),
+                   "canonical_mainnet_contextual") == 0 &&
+            api_test_array_has_str(json_get(legacy_v1, "test_groups"),
+                                   "test_transaction_wire_evidence") &&
             json_get_int(json_get(legacy_v2, "version")) == 2 &&
             strcmp(json_get_str(json_get(legacy_v2, "sprout_proof")),
                    "phgr13") == 0 &&
@@ -112,25 +130,52 @@ int api_transaction_type_focused_tests(void)
                 OVERWINTER_TX_VERSION &&
             strcmp(json_get_str(json_get(overwinter, "version_group_id")),
                    "0x03c48270") == 0 &&
+            strcmp(json_get_str(json_get(overwinter, "mainnet_status")),
+                   "never_active") == 0 &&
+            json_is_null(json_get(overwinter, "mainnet_first_height")) &&
+            json_is_null(json_get(overwinter, "mainnet_last_height")) &&
+            json_is_null(json_get(overwinter, "example_height")) &&
+            json_is_null(json_get(overwinter, "example_txid")) &&
+            strcmp(json_get_str(json_get(overwinter, "evidence_level")),
+                   "mainnet_unreachable_boundary_proven") == 0 &&
             json_get_int(json_get(sapling, "version")) ==
                 SAPLING_TX_VERSION &&
             strcmp(json_get_str(json_get(sapling, "version_group_id")),
                    "0x892f2085") == 0 &&
             strcmp(json_get_str(json_get(sapling, "sprout_proof")),
-                   "groth16") == 0;
+                   "groth16") == 0 &&
+            strcmp(json_get_str(json_get(sapling, "mainnet_status")),
+                   "current") == 0 &&
+            json_get_int(json_get(sapling,
+                                  "mainnet_first_height")) == 476969 &&
+            json_is_null(json_get(sapling, "mainnet_last_height"));
         const struct json_value *scripts = json_get(&root, "script_classes");
         const struct json_value *nonstandard = scripts ?
             api_test_find_str_field(scripts, "id", "nonstandard") : NULL;
         const struct json_value *nulldata = scripts ?
             api_test_find_str_field(scripts, "id", "nulldata") : NULL;
+        const struct json_value *multisig = scripts ?
+            api_test_find_str_field(scripts, "id", "multisig") : NULL;
         ok = ok && scripts && json_size(scripts) == (size_t)TX_NULL_DATA + 1 &&
-            nonstandard && nulldata &&
+            nonstandard && nulldata && multisig &&
             !json_get_bool(json_get(nonstandard, "standard_relay_class")) &&
             strcmp(json_get_str(json_get(nonstandard, "spendability")),
                    "script_dependent") == 0 &&
+            strcmp(json_get_str(json_get(nonstandard,
+                                          "mainnet_example_status")),
+                   "canonical_mainnet") == 0 &&
+            api_test_array_has_str(json_get(nonstandard, "test_groups"),
+                                   "test_transaction_wire_evidence") &&
             json_get_bool(json_get(nulldata, "standard_relay_class")) &&
             strcmp(json_get_str(json_get(nulldata, "spendability")),
-                   "provably_unspendable") == 0;
+                   "provably_unspendable") == 0 &&
+            strcmp(json_get_str(json_get(multisig,
+                                          "mainnet_example_status")),
+                   "not_pinned") == 0 &&
+            json_is_null(json_get(multisig, "example_height")) &&
+            json_is_null(json_get(multisig, "example_txid")) &&
+            strcmp(json_get_str(json_get(multisig, "evidence_level")),
+                   "solver_vectors") == 0;
         const struct json_value *codecs =
             json_get(&root, "recognized_application_codecs");
         const struct json_value *zpay = codecs ?
@@ -173,7 +218,7 @@ int api_transaction_type_focused_tests(void)
              json_get_int(json_get(&root, "chain_confirmed_count")) == 34 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
-             json_get_int(json_get(&root, "proof_test_group_count")) == 22 &&
+             json_get_int(json_get(&root, "proof_test_group_count")) == 23 &&
              json_get_bool(json_get(&root, "fully_demonstrated")) &&
              strcmp(json_get_str(json_get(&root, "wire_catalog_command")),
                     "app.transaction-types.wire") == 0;

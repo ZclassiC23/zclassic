@@ -1358,6 +1358,7 @@ int main(int argc, char **argv)
     failures += test_phgr13_fix();
     failures += test_sprout_phgr13_kat();
     failures += test_sprout_groth16_kat();
+    failures += test_transaction_wire_evidence();
     failures += test_rescanwitnesses_diverge_guard();
     failures += test_gap_fill_frontier_window();
     failures += test_snark_kat();

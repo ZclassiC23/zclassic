@@ -178,14 +178,19 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   `test_sprout_phgr13_kat` (mainnet height 241) and
   `test_sprout_groth16_kat` (mainnet height 476970); both embed only public
   transaction/VK bytes and require no wallet or live node.
+  `test_transaction_wire_evidence` separately pins an exact mainnet v1
+  transaction plus canonical P2PK, P2PKH, P2SH, nulldata, and nonstandard
+  output examples. It also proves why no mainnet v3 fixture can exist:
+  Overwinter and Sapling activate together at height 476969, so v3 is
+  premature one height earlier and Sapling-invalid at activation.
 - `zclassic23 app transaction-types list` — the compile-time semantic catalog
   of every known transaction shape and its exact builder/commit/inspect path.
   Use `app transaction-types show --type=<id>` for one entry, or
   `app transaction-types guide --type=<id>` to join it to exact live command
   schemas, allowed keys, authority, confirmation, and the safe next decision in
   one read. Use `app transaction-types wire` for the separate finite catalog of
-  consensus versions, serialized components, script-policy classes, and the
-  explicit open-ended script/memo buckets. REST mirrors the semantic catalog at
+  consensus versions, serialized components, mainnet reachability/evidence,
+  script-policy classes, and the explicit open-ended script/memo buckets. REST mirrors the semantic catalog at
   `/api/v1/transaction-types`; the AI-safe workflow and extension checklist are in
   [`TRANSACTION_API.md`](./TRANSACTION_API.md).
 - `zclassic23 app payments zpay compose|inspect` — deterministic, public

@@ -148,14 +148,18 @@ zclassic23 app transaction-types wire
 ```
 
 The `zcl.transaction_wire_catalog.v1` response derives four wire families from
-the transaction serializer and consensus version constants:
+the transaction serializer and consensus version constants. It also says
+whether each family is current, historical-only, or impossible on mainnet;
+nullable height bounds, a public example txid when one exists, the evidence
+level, and exact reproducing test groups prevent a format row from being
+mistaken for a live-mainnet claim.
 
-| Wire family | Version/group | Additional shielded structure |
-|---|---|---|
-| `legacy_v1` | v1, no group id | Transparent inputs and outputs only. |
-| `legacy_v2` | v2, no group id | Optional Sprout JoinSplits with PHGR13 proofs. |
-| `overwinter_v3` | v3 / `0x03c48270` | Expiry height plus optional PHGR13 Sprout JoinSplits. |
-| `sapling_v4` | v4 / `0x892f2085` | Sapling spends/outputs/value balance/binding signature and optional Groth16 Sprout JoinSplits. |
+| Wire family | Version/group | Mainnet status | Additional shielded structure |
+|---|---|---|---|
+| `legacy_v1` | v1, no group id | Historical-only, heights 0–476968; exact height-1 fixture. | Transparent inputs and outputs only. |
+| `legacy_v2` | v2, no group id | Historical-only, heights 0–476968; exact height-241 fixture. | Optional Sprout JoinSplits with PHGR13 proofs. |
+| `overwinter_v3` | v3 / `0x03c48270` | Never active on mainnet. Overwinter and Sapling both activate at 476969, leaving no v3-only height. | Expiry height plus optional PHGR13 Sprout JoinSplits; serializer/test-network support only. |
+| `sapling_v4` | v4 / `0x892f2085` | Current from height 476969; exact height-476970 Groth16 fixture plus Sapling simnet proofs. | Sapling spends/outputs/value balance/binding signature and optional Groth16 Sprout JoinSplits. |
 
 It also reports all six output-script classifier buckets: `nonstandard`,
 `pubkey`, `pubkeyhash`, `scripthash`, `multisig`, and `nulldata`. Classification
@@ -164,6 +168,16 @@ and its spendability and destination shape are script-dependent; the API says
 that explicitly instead of forcing an unsafe boolean answer. `nulldata` is
 provably unspendable, while the ordinary and P2SH/multisig classes are
 spendable subject to their scripts and signatures.
+
+Five classifier rows carry exact canonical-mainnet examples whose complete
+wire bytes, txid, contextual acceptance, byte-identical reserialization, and
+solver result are pinned by `test_transaction_wire_evidence`: `pubkey`,
+`pubkeyhash`, `scripthash`, `nulldata`, and `nonstandard`. Bare `multisig` is
+honestly marked `mainnet_example_status=not_pinned`; its positive builder,
+solver, signature-count, and P2SH wrapping vectors remain covered by
+`test_multisig` and `test_domain_consensus_script_standard`. “Not pinned” is
+not “impossible” or “unsupported”—it means the checked-in evidence is a
+deterministic solver vector rather than a claimed historical mainnet example.
 
 Application meaning is intentionally open-ended. Consensus permits arbitrary
 scripts, unknown or future OP_RETURN tags, and opaque 512-byte Sapling memos.
