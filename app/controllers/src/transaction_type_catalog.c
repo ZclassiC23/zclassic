@@ -333,7 +333,7 @@ static const struct transaction_application_codec k_application_codecs[] = {
     { "zanc_and_zcode", "op_return", "ZANC", "semantic_catalog" },
     { "zblg", "op_return", "ZBLG", "semantic_catalog" },
     { "zmsg", "sapling_memo", "ZMSG", "semantic_catalog" },
-    { "zpay", "sapling_memo", "ZPAY", "codec_only_no_typed_chain_workflow" },
+    { "zpay", "sapling_memo", "ZPAY", "semantic_catalog" },
     { "commerce", "transparent_or_sapling", "application_bound",
       "semantic_catalog" },
 };

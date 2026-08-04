@@ -137,7 +137,7 @@ int api_transaction_type_focused_tests(void)
             api_test_find_str_field(codecs, "id", "zpay") : NULL;
         ok = ok && zpay &&
             strcmp(json_get_str(json_get(zpay, "coverage")),
-                   "codec_only_no_typed_chain_workflow") == 0 &&
+                   "semantic_catalog") == 0 &&
             strstr(json_get_str(json_get(&root, "unknown_op_return_policy")),
                    "without_inventing_semantics") != NULL;
         json_free(&root);
@@ -167,13 +167,13 @@ int api_transaction_type_focused_tests(void)
                                json_get_int(json_get(&root,
                                                      "contained_count")) +
                                json_get_int(json_get(&root, "planned_count"));
-        ok = ok && count == 34 &&
-             json_get_int(json_get(&root, "demonstrated_count")) == 34 &&
+        ok = ok && count == 35 &&
+             json_get_int(json_get(&root, "demonstrated_count")) == 35 &&
              json_get_int(json_get(&root, "blocked_count")) == 0 &&
-             json_get_int(json_get(&root, "chain_confirmed_count")) == 33 &&
+             json_get_int(json_get(&root, "chain_confirmed_count")) == 34 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
-             json_get_int(json_get(&root, "proof_test_group_count")) == 20 &&
+             json_get_int(json_get(&root, "proof_test_group_count")) == 21 &&
              json_get_bool(json_get(&root, "fully_demonstrated")) &&
              strcmp(json_get_str(json_get(&root, "wire_catalog_command")),
                     "app.transaction-types.wire") == 0;
@@ -206,6 +206,8 @@ int api_transaction_type_focused_tests(void)
             api_test_find_str_field(types, "id", "zid_revoke");
         const struct json_value *blog =
             api_test_find_str_field(types, "id", "blog_anchor");
+        const struct json_value *zpay_type =
+            api_test_find_str_field(types, "id", "zpay_memo_envelope");
         ok = ok && transparent &&
              strcmp(json_get_str(json_get(transparent, "builder_command")),
                     "core.wallet.transaction.send") == 0 &&
@@ -255,6 +257,11 @@ int api_transaction_type_focused_tests(void)
                     "simnet_confirmed") == 0 &&
              strcmp(json_get_str(json_get(blog, "builder_command")),
                     "app.blog.anchor") == 0;
+        ok = ok && zpay_type &&
+             strcmp(json_get_str(json_get(zpay_type, "proof_level")),
+                    "simnet_confirmed") == 0 &&
+             strcmp(json_get_str(json_get(zpay_type, "builder_command")),
+                    "app.payments.zpay.compose") == 0;
         ok = ok && strstr(body, "private_key") == NULL &&
              strstr(body, "grant_token") == NULL &&
              strstr(body, "/home/") == NULL;

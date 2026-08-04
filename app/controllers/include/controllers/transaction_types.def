@@ -114,6 +114,13 @@ TX_TYPE("sapling_onchain_memo", "zmsg", "ready", "overlay_transaction",
         "core.wallet.shielded.send", "all_zcl_networks_with_prover",
         "sapling_onchain_memo", "simnet_confirmed", "test_simnet_zmsg_onchain",
         "Send an encrypted on-chain ZMSG in a Sapling memo; the P2P channel is a separate non-chain operation.")
+TX_TYPE("zpay_memo_envelope", "zpay", "ready", "composite_chain_transaction",
+        "sapling_memo_zpay_v1", "shielded", "compose_plan_commit_inspect",
+        "app.payments.zpay.compose", "core.wallet.shielded.send",
+        "app.payments.zpay.inspect", "core.chain.transaction.get",
+        "all_zcl_networks_with_prover", "zpay_memo_envelope",
+        "simnet_confirmed", "test_simnet_zmsg_onchain",
+        "Compose a canonical ZPAY invoice, payment, or receipt memo, attach its exact bytes to an owner-authorized Sapling send, then strictly decode, authenticate, and network/time-check the received envelope.")
 
 TX_TYPE("zid_anchor", "zid", "ready", "overlay_transaction",
         "op_return_zid_anchor", "public_metadata", "compose_broadcast",

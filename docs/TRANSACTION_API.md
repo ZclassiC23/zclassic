@@ -71,7 +71,7 @@ is the full `zcl.transaction_type.v2` contract. The collection also reports
 `demonstrated_count`, `blocked_count`, `chain_confirmed_count`,
 `mainnet_live_proven_count`, `proof_test_group_count`, and
 `fully_demonstrated`, so an agent can assess proof coverage without parsing all
-34 rows. `core.wallet.transaction.list` is different: it is
+35 rows. `core.wallet.transaction.list` is different: it is
 wallet history, not the type catalog. `app.protocols` describes broader
 application protocols, not an exhaustive transaction inventory.
 
@@ -170,9 +170,10 @@ scripts, unknown or future OP_RETURN tags, and opaque 512-byte Sapling memos.
 The node processes a consensus-valid transaction without inventing application
 semantics. Unknown OP_RETURN data is indexed by tag and payload digest; an
 opaque memo is decoded only when an explicit codec recognizes it. The wire
-catalog lists recognized codecs and marks coverage honestly—for example, ZPAY
-currently has a codec but no typed chain workflow, so it is not silently
-presented as one of the demonstrated semantic transaction types.
+catalog lists recognized codecs and marks coverage honestly. ZPAY now names its
+typed compose and inspect commands plus the existing owner-authorized Sapling
+send step; optional ZID signing remains unavailable through agent input so an
+identity seed never enters command context.
 
 ## Transaction families
 
@@ -185,6 +186,7 @@ human index:
 | ZSLP tokens | `zslp_genesis`, `zslp_mint`, `zslp_send`, `zslp_burn` | Typed plan/commit builders. |
 | ZNAM names | `znam_register`, `znam_update`, `znam_transfer`, `znam_renew`, `znam_set_record`, `znam_set_text` | Typed plan/commit builders with owner checks. |
 | Messaging | `sapling_onchain_memo` | On-chain ZMSG uses an encrypted Sapling memo; P2P messaging is off-chain. |
+| Payments | `zpay_memo_envelope` | `app payments zpay compose` creates an exact anonymous invoice/payment/receipt memo; `core wallet shielded send` owns the value-moving plan/commit, and `app payments zpay inspect` strictly decodes, authenticates, and checks network/time policy. |
 | Identity/directory | `zid_anchor`, `zid_rotate`, `zid_revoke`, `zdir_register`, `zdir_deregister` | Explicit OP_RETURN compose/broadcast paths; all five exact command shapes have isolated owner-funded mined-and-projected proofs. |
 | Anchors/ZCODE | `zanc_epoch_anchor`, `zcode_release_anchor` | SHA3 commitment anchors; epoch-ZANC commits the declared catalog range and ZCODE folds signed releases. Both exact command-produced OP_RETURN shapes have isolated mined-and-projected proofs. |
 | Blog | `blog_anchor` | `app blog anchor` durably plans/commits the strict ZBLG v1 transaction for an existing verified event. The plan requires explicit custody scope and idempotency; new event signing remains broker-contained. |
@@ -277,11 +279,46 @@ the procedure and safety cap are in
 mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.
 
-The current complete inventory is **34/34 isolated cases passing**, with **33
+The current complete inventory is **35/35 isolated cases passing**, with **34
 simulated-chain confirmations**, **0 mainnet confirmations**, and **0 ZCL**
 live recipient value or fees. The earlier 33/33 result was complete for the
 catalog as then declared; the later audit found ZBLG, made the gap explicit,
 then added its typed plan/commit and mined proof rather than hiding it.
+
+The ZPAY sequence deliberately keeps composition separate from custody:
+
+```bash
+# Exact field widths: nonce/request_id are 32 hex characters;
+# invoice_digest/amount_commitment are 64. Times are explicit Unix seconds.
+zclassic23 app payments zpay compose --input='{
+  "network":"regtest",
+  "message_type":"payment",
+  "created_at":1700000000,
+  "expires_at":1700000600,
+  "nonce":"<32-hex>",
+  "request_id":"<32-hex>",
+  "invoice_digest":"<64-hex>",
+  "asset":"ZCL",
+  "amount_commitment":"<64-hex>"
+}'
+
+# Copy the returned memo_hex into the existing owner-only command after
+# discovering its current schema. That command alone plans/commits value.
+zclassic23 discover schema core.wallet.shielded.send
+
+# A recipient checks exact bytes against an explicit network and clock.
+zclassic23 app payments zpay inspect --input='{
+  "memo_hex":"<1024-hex>",
+  "network":"regtest",
+  "now_unix":1700000100
+}'
+```
+
+The 32-byte `amount_commitment` is an application commitment supplied by the
+calling invoice protocol; the composer does not reinterpret it as the Sapling
+output amount. The owner must keep that external commitment and the actual
+`core.wallet.shielded.send` amount consistent. A decoded memo is not itself
+proof that the transaction paid the expected value or confirmed on-chain.
 
 The safe ZBLG sequence is:
 

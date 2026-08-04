@@ -642,3 +642,31 @@ The lab statistics remain **34/34 PASS**, **33 simulated-chain confirmations**,
 **0 mainnet confirmations**, and **0 ZCL** live recipient value or fees. The
 structural catalog changes discovery and audit completeness only; it neither
 constructs nor broadcasts a transaction and creates no new lab evidence event.
+
+## 2026-08-04 ZPAY typed workflow and mined Sapling proof
+
+Source commit `d6ca69d0` closes the codec-only gap named by the structural
+audit. Two public deterministic commands now own the application boundary:
+`app payments zpay compose` encodes an anonymous canonical 512-byte invoice,
+payment, or receipt memo from explicit fields, while
+`app payments zpay inspect` strictly decodes it, verifies any embedded ZID
+document, and checks an explicit expected network and caller-supplied clock.
+Neither command reads a wallet, accepts an identity seed, or moves funds. The
+existing owner-only `core wallet shielded send` remains the sole plan/commit
+step and accepts the composer's exact `memo_hex`.
+
+The params-backed `test_simnet_zmsg_onchain` proof now constructs a second
+transparent-funded Sapling transaction carrying a canonical ZPAY payment. It
+uses the production Sapling output prover and binding signature, decrypts the
+recipient note with authenticated encryption, recovers the exact request and
+asset fields, proves anonymous authentication remains explicit, accepts the
+bound regtest network/time window, refuses mainnet for the same bytes, mines
+the transaction through `connect_block`, and observes the second note in the
+Sapling tree. `test_zpay` independently drives the exact native compose and
+inspect commands and covers signed-envelope authentication and strict negative
+codec cases.
+
+The current result is **35/35 PASS, 0 BLOCKED**, with **34 simulated-chain
+confirmations** across **21 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. No live wallet, address, peer,
+endpoint, private key, identity seed, or mainnet ZCL participated.
