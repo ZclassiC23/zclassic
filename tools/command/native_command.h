@@ -1054,6 +1054,16 @@ void zcl_native_handle_core_epoch_verify(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* core.anchor.compose / inspect — deterministic generic ZANC digest anchors.
+ * Composition returns the exact OP_RETURN script and the raw-create input
+ * fragment; funding/signing/broadcast remain separate owner-only commands. */
+void zcl_native_handle_core_anchor_compose(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_core_anchor_inspect(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ── core.identity.* — sovereign master keys
  * (tools/command/native_identity_command.c). resolve/list read the
  * zid_identities projection straight out of <datadir>/node.db (READONLY,

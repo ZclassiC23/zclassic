@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 501 |
+| Registry entries (branches + leaves) | 504 |
 | Top-level roots | 11 |
-| Branches | 115 |
-| Leaves (dispatchable command paths) | 386 |
-| … `ready` (live handler in this build) | 338 |
+| Branches | 116 |
+| Leaves (dispatchable command paths) | 388 |
+| … `ready` (live handler in this build) | 340 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
@@ -76,7 +76,7 @@ Per source file:
 | `.def` file | Entries | Branches | Leaves |
 |---|---|---|---|
 | `config/commands/root.def` | 10 | 5 | 5 |
-| `config/commands/core.def` | 112 | 27 | 85 |
+| `config/commands/core.def` | 115 | 28 | 87 |
 | `config/commands/apps.def` | 15 | 3 | 12 |
 | `config/commands/app_features.def` | 49 | 12 | 37 |
 | `config/commands/store.def` | 5 | 0 | 5 |
@@ -227,6 +227,13 @@ represented by its children's sections.
 | `core sync diagnose` | ready | read / read / operator · fast/moderate | none | `zcl.syncdiag.v1` | `zclassic23 core sync diagnose` | Diagnose why sync is not advancing |
 | `core sync frontier offline` | ready | read / read / operator · fast/low | `datadir` | `zcl.core_sync_frontier_offline.v1` | `zclassic23 core sync frontier offline --input='{"datadir":"/home/you/.zclassic-c23"}'` | H* (reducer frontier) of a STOPPED/COPIED datadir |
 
+#### `core.anchor` — Generic ZANC digest-anchor composition and inspection
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `core anchor compose` | ready | read / read / public · instant/tiny | **`digest`**, `hash_type`, `label` | `zcl.core_anchor_compose.v1` | `zclassic23 core anchor compose --digest=<64hex> --label=release@1` | Compose one canonical generic ZANC digest anchor |
+| `core anchor inspect` | ready | read / read / public · instant/tiny | **`op_return_hex`** | `zcl.core_anchor_inspect.v1` | `zclassic23 core anchor inspect --op-return-hex=<hex>` | Strictly decode one canonical ZANC OP_RETURN |
+
 #### `core.epoch` — Epoch anchors: commit the overlay catalog digest on-chain
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
@@ -325,7 +332,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `core wallet transaction raw create` | ready | mutate / wallet / **owner** · fast/low | **`inputs`**, **`outputs`** | `zcl.wallet_raw_create.v1` | `zclassic23 core wallet transaction raw create --input='<obj>'` | Create an unsigned raw transaction |
+| `core wallet transaction raw create` | ready | mutate / wallet / **owner** · fast/low | **`inputs`**, **`outputs`**, `op_return_hex` | `zcl.wallet_raw_create.v1` | `zclassic23 core wallet transaction raw create --input='<obj>'` | Create an unsigned raw transaction |
 | `core wallet transaction raw sign` | ready | mutate / wallet / **owner** · foreground/moderate | **`raw_hex`**, `prevtxs` | `zcl.wallet_raw_sign.v1` | `zclassic23 core wallet transaction raw sign --input='<obj>'` | Sign a raw transaction with wallet keys |
 | `core wallet transaction raw broadcast` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`raw_hex`**, `allow_high_fees`, `confirm` | `zcl.wallet_raw_broadcast.v1` | `zclassic23 core wallet transaction raw broadcast --input='<obj>'` | Validate and broadcast a signed raw transaction |
 

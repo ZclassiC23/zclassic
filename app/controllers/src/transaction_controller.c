@@ -323,14 +323,20 @@ static bool rpc_createrawtransaction(const struct json_value *params, bool help,
     struct rawtx_context *ctx = rawtx_ctx();
     RPC_HELP(help, result,
         "createrawtransaction [{\"txid\":\"id\",\"vout\":n},...] "
-        "{\"address\":amount,...}\n"
+        "{\"address\":amount,...} ( \"op_return_hex\" )\n"
         "Create a transaction spending the given inputs.\n"
         "Arguments:\n"
         "1. \"inputs\"  (array, required) JSON array of inputs\n"
-        "2. \"outputs\" (object, required) JSON object of outputs");
+        "2. \"outputs\" (object, required) JSON object of outputs\n"
+        "3. \"op_return_hex\" (string, optional) exact standard-relay "
+        "OP_RETURN script");
 
     if (json_size(params) < 2) {
         json_set_str(result, "Missing required parameters: inputs and outputs");
+        return false;
+    }
+    if (json_size(params) > 3) {
+        json_set_str(result, "Too many parameters (maximum 3)");
         return false;
     }
 
@@ -436,6 +442,40 @@ static bool rpc_createrawtransaction(const struct json_value *params, bool help,
         struct tx_out *new_vout = zcl_realloc(tx.vout,
                                           new_count * sizeof(struct tx_out), "tx_vout");
         if (!new_vout) { transaction_free(&tx); json_set_str(result, "Out of memory"); LOG_FAIL("tx", "createrawtransaction: realloc vout failed at output %zu", i); }
+        tx.vout = new_vout;
+        tx.vout[tx.num_vout] = vout;
+        tx.num_vout = new_count;
+    }
+
+    const struct json_value *op_return_v = json_at(params, 2);
+    if (op_return_v) {
+        const char *op_return_hex = json_get_str(op_return_v);
+        uint8_t script[MAX_OP_RETURN_RELAY];
+        const size_t hex_len = op_return_hex ? strlen(op_return_hex) : 0;
+        const size_t script_len =
+            op_return_hex && IsHex(op_return_hex) && (hex_len & 1U) == 0 &&
+                    hex_len <= sizeof(script) * 2
+                ? ParseHex(op_return_hex, script, sizeof(script))
+                : 0;
+        if (script_len == 0 || script[0] != OP_RETURN) {
+            json_set_str(result,
+                "Invalid op_return_hex (need one exact OP_RETURN script "
+                "within the 223-byte relay cap)");
+            transaction_free(&tx);
+            return false;
+        }
+        struct tx_out vout;
+        tx_out_set_null(&vout);
+        vout.value = 0;
+        script_set(&vout.script_pub_key, script, script_len);
+        const size_t new_count = tx.num_vout + 1;
+        struct tx_out *new_vout = zcl_realloc(
+            tx.vout, new_count * sizeof(struct tx_out), "tx_op_return_vout");
+        if (!new_vout) {
+            transaction_free(&tx);
+            json_set_str(result, "Out of memory");
+            LOG_FAIL("tx", "createrawtransaction: realloc OP_RETURN vout failed");
+        }
         tx.vout = new_vout;
         tx.vout[tx.num_vout] = vout;
         tx.num_vout = new_count;

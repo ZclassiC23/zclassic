@@ -35,13 +35,16 @@ static void raw_native_plan_token(char out[17], const char *raw_hex,
     (void)snprintf(out, 17, "%016llx", (unsigned long long)h);
 }
 
-static char *raw_native_rpc_params_two(const struct json_value *first,
-                                       const struct json_value *second)
+static char *raw_native_create_params(const struct json_value *inputs,
+                                      const struct json_value *outputs,
+                                      const struct json_value *op_return_hex)
 {
     struct rpc_arg_builder args;
     rpc_arg_builder_init(&args);
-    rpc_arg_builder_push_value(&args, first);
-    rpc_arg_builder_push_value(&args, second);
+    rpc_arg_builder_push_value(&args, inputs);
+    rpc_arg_builder_push_value(&args, outputs);
+    if (op_return_hex)
+        rpc_arg_builder_push_value(&args, op_return_hex);
     return rpc_arg_builder_to_json(&args);
 }
 
@@ -50,6 +53,8 @@ void zcl_native_handle_wallet_raw_create(
 {
     const struct json_value *inputs = json_get(request->input, "inputs");
     const struct json_value *outputs = json_get(request->input, "outputs");
+    const struct json_value *op_return_hex =
+        json_get(request->input, "op_return_hex");
     if (!inputs || inputs->type != JSON_ARR ||
         !outputs || outputs->type != JSON_OBJ) {
         wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "INVALID_RAW_TEMPLATE",
@@ -57,7 +62,13 @@ void zcl_native_handle_wallet_raw_create(
                  "core.wallet.transaction.raw.create");
         return;
     }
-    char *params = raw_native_rpc_params_two(inputs, outputs);
+    if (op_return_hex && op_return_hex->type != JSON_STR) {
+        wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "INVALID_OP_RETURN_HEX",
+                 "op_return_hex must be a hexadecimal string",
+                 "op_return_hex");
+        return;
+    }
+    char *params = raw_native_create_params(inputs, outputs, op_return_hex);
     if (!params) {
         wnh_fail(reply, ZCL_COMMAND_EXIT_INTERNAL, "ARG_BUILD_FAILED",
                  "could not encode raw transaction template", "create");
@@ -77,6 +88,8 @@ void zcl_native_handle_wallet_raw_create(
     }
     (void)json_push_kv_str(&reply->data, "raw_hex", raw_hex);
     (void)json_push_kv_bool(&reply->data, "created", true);
+    (void)json_push_kv_bool(&reply->data, "op_return_included",
+                            op_return_hex != NULL);
     json_free(&body);
 }
 

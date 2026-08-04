@@ -41,6 +41,7 @@
 #include "support/cleanse.h"
 #include "util/safe_alloc.h"
 #include "wallet/keystore.h"
+#include "zanc/zanc.h"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -1084,6 +1085,8 @@ struct raw_simnet_bridge {
     struct simnet *sim;
     int broadcast_calls;
     bool mined;
+    bool generic_anchor_seen;
+    uint8_t generic_anchor_digest[ZANC_DIGEST_LEN];
     struct uint256 txid;
 };
 
@@ -1117,6 +1120,17 @@ static char *raw_simnet_rpc(const char *method, const char *params_json)
             ok = false;
         } else {
             bridge->txid = tx.hash;
+            if (tx.num_vout == 2) {
+                struct zanc_message anchor;
+                const struct script *script = &tx.vout[1].script_pub_key;
+                bridge->generic_anchor_seen =
+                    tx.vout[1].value == 0 &&
+                    zanc_parse(script->data, script->size, &anchor) &&
+                    strcmp(anchor.label, "lab-proof@1") == 0;
+                if (bridge->generic_anchor_seen)
+                    memcpy(bridge->generic_anchor_digest, anchor.digest,
+                           ZANC_DIGEST_LEN);
+            }
             /* simnet_mint_txs takes ownership after a valid decoded request,
              * whether admission succeeds or not. */
             ok = simnet_mint_txs(bridge->sim, &tx, 1);
@@ -1221,7 +1235,72 @@ static int test_raw_native_pipeline_mines_exact_signed_bytes(void)
             reg, "core.wallet.transaction.raw.sign");
         const struct zcl_command_spec *broadcast_spec = find_spec(
             reg, "core.wallet.transaction.raw.broadcast");
-        ASSERT(create_spec && sign_spec && broadcast_spec);
+        const struct zcl_command_spec *anchor_spec = find_spec(
+            reg, "core.anchor.compose");
+        const struct zcl_command_spec *anchor_inspect_spec = find_spec(
+            reg, "core.anchor.inspect");
+        ASSERT(create_spec && sign_spec && broadcast_spec && anchor_spec &&
+               anchor_inspect_spec);
+
+        static const char anchor_digest_hex[] =
+            "abababababababababababababababab"
+            "abababababababababababababababab";
+        struct json_value anchor_in;
+        json_init(&anchor_in); json_set_object(&anchor_in);
+        (void)json_push_kv_str(&anchor_in, "digest", anchor_digest_hex);
+        (void)json_push_kv_str(&anchor_in, "hash_type", "sha3");
+        (void)json_push_kv_str(&anchor_in, "label", "lab-proof@1");
+        struct zcl_command_request request = {
+            .spec = anchor_spec, .input = &anchor_in, .view = "normal",
+        };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, anchor_spec->output_schema);
+        zcl_native_handle_core_anchor_compose(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "hash_type")),
+                      "sha3-256");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "digest")),
+                      anchor_digest_hex);
+        const char *anchor_script = json_get_str(
+            json_get(&reply.data, "op_return_hex"));
+        ASSERT(anchor_script && strlen(anchor_script) < 512);
+        char anchor_script_hex[512];
+        (void)snprintf(anchor_script_hex, sizeof(anchor_script_hex), "%s",
+                       anchor_script);
+        zcl_command_reply_free(&reply);
+        json_free(&anchor_in);
+
+        struct json_value inspect_in;
+        json_init(&inspect_in); json_set_object(&inspect_in);
+        (void)json_push_kv_str(&inspect_in, "op_return_hex",
+                               anchor_script_hex);
+        request.spec = anchor_inspect_spec;
+        request.input = &inspect_in;
+        zcl_command_reply_init(&reply, anchor_inspect_spec->output_schema);
+        zcl_native_handle_core_anchor_inspect(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&reply.data, "valid")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "digest")),
+                      anchor_digest_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "label")),
+                      "lab-proof@1");
+        zcl_command_reply_free(&reply);
+        json_free(&inspect_in);
+
+        const size_t canonical_hex_len = strlen(anchor_script_hex);
+        ASSERT(canonical_hex_len + 2 < sizeof(anchor_script_hex));
+        memcpy(anchor_script_hex + canonical_hex_len, "00", 3);
+        json_init(&inspect_in); json_set_object(&inspect_in);
+        (void)json_push_kv_str(&inspect_in, "op_return_hex",
+                               anchor_script_hex);
+        request.input = &inspect_in;
+        zcl_command_reply_init(&reply, anchor_inspect_spec->output_schema);
+        zcl_native_handle_core_anchor_inspect(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "INVALID_ZANC_ANCHOR");
+        zcl_command_reply_free(&reply);
+        json_free(&inspect_in);
+        anchor_script_hex[canonical_hex_len] = '\0';
 
         char funding_hex[65];
         uint256_get_hex(&funding_txid, funding_hex);
@@ -1237,15 +1316,16 @@ static int test_raw_native_pipeline_mines_exact_signed_bytes(void)
         (void)json_push_kv_real(&outputs, recipient_address, 0.008);
         (void)json_push_kv(&create_in, "inputs", &inputs);
         (void)json_push_kv(&create_in, "outputs", &outputs);
+        (void)json_push_kv_str(&create_in, "op_return_hex",
+                               anchor_script_hex);
         json_free(&inputs); json_free(&outputs);
 
-        struct zcl_command_request request = {
-            .spec = create_spec, .input = &create_in, .view = "normal",
-        };
-        struct zcl_command_reply reply;
+        request.spec = create_spec;
+        request.input = &create_in;
         zcl_command_reply_init(&reply, create_spec->output_schema);
         zcl_native_handle_wallet_raw_create(&request, &reply);
         ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&reply.data, "op_return_included")));
         const char *created = json_get_str(json_get(&reply.data, "raw_hex"));
         ASSERT(created && strlen(created) < 8192);
         char created_hex[8192];
@@ -1307,6 +1387,9 @@ static int test_raw_native_pipeline_mines_exact_signed_bytes(void)
                       "committed");
         ASSERT_EQ(bridge.broadcast_calls, 1);
         ASSERT(bridge.mined);
+        ASSERT(bridge.generic_anchor_seen);
+        for (size_t i = 0; i < ZANC_DIGEST_LEN; i++)
+            ASSERT_EQ(bridge.generic_anchor_digest[i], 0xab);
         ASSERT(!simnet_coin_exists(&sim, &funding_txid));
         int64_t recipient_value = 0;
         ASSERT(simnet_coin_value(&sim, &bridge.txid, 0, &recipient_value));

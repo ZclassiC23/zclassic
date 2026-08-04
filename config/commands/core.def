@@ -303,6 +303,46 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_sync_frontier_offline)
 
+/* ── generic ZANC digest anchors ─────────────────────────────────── */
+ZCL_COMMAND_BRANCH("core.anchor", "core",
+                   "Generic ZANC digest-anchor composition and inspection",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.anchor.compose", "core.anchor", "",
+    "Compose one canonical generic ZANC digest anchor",
+    "Validates an explicit SHA2-256 or SHA3-256 digest and optional public "
+    "label, then returns the exact standard-relay ZANC OP_RETURN plus the "
+    "op_return_hex fragment accepted by core.wallet.transaction.raw.create. "
+    "It is deterministic and never reads a file, wallet, key, or node; "
+    "funding, signing, and broadcast remain separate owner-only steps.", 0,
+    "anchor,zanc,digest,op_return,compose,transaction",
+    "zcl.core_anchor_compose.input.v1", "zcl.core_anchor_compose.v1",
+    "digest,hash_type,label", "digest",
+    "zclassic23 core anchor compose --digest=<64hex> --label=release@1",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_anchor_compose)
+ZCL_COMMAND_READY_READ(
+    "core.anchor.inspect", "core.anchor", "",
+    "Strictly decode one canonical ZANC OP_RETURN",
+    "Parses exact OP_RETURN script hex through the production ZANC codec and "
+    "returns its version, hash algorithm, digest, label, and size. Malformed, "
+    "non-canonical, trailing, wrong-tag, or oversize bytes fail closed. It "
+    "never reads a wallet or changes chain state.", 0,
+    "anchor,zanc,digest,op_return,inspect,decode",
+    "zcl.core_anchor_inspect.input.v1", "zcl.core_anchor_inspect.v1",
+    "op_return_hex", "op_return_hex",
+    "zclassic23 core anchor inspect --op-return-hex=<hex>",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_anchor_inspect)
+
 /* ── epoch (Bounded Node keystone) ─────────────────────────────────
  * The OP_RETURN catalog's incremental digest-chain commits every overlay
  * record the chain has ever carried; one ZANC anchor per epoch commits
@@ -898,11 +938,14 @@ ZCL_COMMAND_READY_COMMAND(
     "core.wallet.transaction.raw.create", "core.wallet.transaction.raw", "",
     "Create an unsigned raw transaction",
     "Builds canonical unsigned transaction hex from explicit outpoints and "
-    "address-to-amount outputs through createrawtransaction. It never selects "
-    "coins, signs, broadcasts, or mutates wallet state.", 0,
+    "address-to-amount outputs through createrawtransaction. An optional exact "
+    "op_return_hex appends one zero-value standard-relay OP_RETURN output, so "
+    "typed overlay composers can feed the raw owner workflow without string "
+    "surgery. It never selects coins, signs, broadcasts, or mutates wallet "
+    "state.", 0,
     "wallet,transaction,raw,create,compose",
     "zcl.core_wallet_raw_create.input.v1", "zcl.wallet_raw_create.v1",
-    "inputs,outputs", "inputs,outputs",
+    "inputs,outputs,op_return_hex", "inputs,outputs",
     "zclassic23 core wallet transaction raw create --input='<obj>'",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
