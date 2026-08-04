@@ -922,6 +922,16 @@ void zcl_native_handle_zcode_science_publish(
         zsci_discovery_record("provider", root_hex, blob_hex, now,
                               now + 7200, provider_token, provider_error);
     if (!pointer || !provider) {
+        char detail[256];
+        const char *pointer_status = pointer ? "published" :
+            (pointer_error[0] ? pointer_error : "not_attempted");
+        const char *provider_status = provider ? "published" :
+            (provider_error[0] ? provider_error : "not_attempted");
+        (void)snprintf(
+            detail, sizeof(detail),
+            "transport object exists but signed pointer/provider publication "
+            "did not complete (pointer=%s provider=%s)",
+            pointer_status, provider_status);
         json_push_kv_str(&reply->data, "science_root", root_hex);
         json_push_kv_str(&reply->data, "blob_root", blob_hex);
         json_push_kv_bool(&reply->data, "transport_object_committed", true);
@@ -935,7 +945,7 @@ void zcl_native_handle_zcode_science_publish(
                                ZCL_COMMAND_EXIT_TRANSIENT,
                                "DISCOVERY_PUBLICATION_INCOMPLETE", "commit",
                                true, true,
-                               "transport object exists but signed pointer/provider publication did not complete",
+                               detail,
                                "zcode.science.publish");
         return;
     }
