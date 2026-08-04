@@ -99,8 +99,10 @@ The guide grants no authority and executes nothing. A `ready` member may say
 `can_execute:true` when every referenced command is currently ready; a
 `process_only`, `contained`, or `planned` member still returns its useful
 contract but tells the caller to receive only or refuse. For example,
-`blog_anchor` documents the implemented ZBLG codec and projection while
-correctly refusing creation because no public signing or broadcast path exists.
+`blog_anchor` is `contained`: `app blog anchor` can plan/commit the on-chain
+anchor for an already stored, signed event, but the separate operation that
+creates that signed event remains behind the unfinished runtime App grant
+broker. An AI must not reinterpret anchor readiness as event-signing authority.
 
 ## Catalog fields
 
@@ -137,7 +139,7 @@ human index:
 | Messaging | `sapling_onchain_memo` | On-chain ZMSG uses an encrypted Sapling memo; P2P messaging is off-chain. |
 | Identity/directory | `zid_anchor`, `zid_rotate`, `zid_revoke`, `zdir_register`, `zdir_deregister` | Explicit OP_RETURN compose/broadcast paths. |
 | Anchors/ZCODE | `zanc_epoch_anchor`, `zcode_release_anchor` | SHA3 commitment anchors; ZCODE folds signed release records before ZANC broadcast. |
-| Blog | `blog_anchor` | Strict ZBLG v1 event commitment codec and projection exist; public signing and broadcast are deliberately still planned. |
+| Blog | `blog_anchor` | `app blog anchor` durably plans/commits the strict ZBLG v1 transaction for an existing verified event. The plan requires explicit custody scope and idempotency; new event signing remains broker-contained. |
 | Atomic swaps | `htlc_initiate`, `htlc_participate`, `htlc_redeem`, `htlc_refund` | Contract preparation plus explicit funding; redeem/refund settle the ZCL leg. |
 | Commerce | `store_transparent_payment`, `store_shielded_payment`, `yardsale_atomic_purchase`, `market_purchase` | Transparent store and yardsale paths exist; shielded store pay is isolated-only. File-market plan/commit/retrieve completes authenticated payment, verified assembly, and atomic publication. |
 
@@ -227,11 +229,36 @@ the procedure and safety cap are in
 mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.
 
-The current complete inventory is **33/34 isolated cases passing**, with
-`blog_anchor` explicitly blocked, **21 simulated-chain confirmations**, **0
-mainnet confirmations**, and **0 ZCL** live recipient value or fees. The earlier
-33/33 result was complete for the catalog as then declared; the later audit
-found and added the already-implemented ZBLG chain format instead of hiding it.
+The current complete inventory is **34/34 isolated cases passing**, with **22
+simulated-chain confirmations**, **0 mainnet confirmations**, and **0 ZCL**
+live recipient value or fees. The earlier 33/33 result was complete for the
+catalog as then declared; the later audit found ZBLG, made the gap explicit,
+then added its typed plan/commit and mined proof rather than hiding it.
+
+The safe ZBLG sequence is:
+
+```bash
+# Inspect the exact keys before constructing a request.
+zclassic23 discover schema app.blog.anchor
+
+# Create a durable plan for an event already stored and ZNAM-owner-verified.
+# This prepares exact signed bytes and reserves only the maximum fee; it does
+# not broadcast. Keep the returned plan_id.
+zclassic23 app blog anchor --input='{"wallet_scope":"dev","name":"alice","event_id":"<64-hex>","idempotency_key":"alice-post-1"}'
+
+# Owner-authorized commit uses only the explicit scope and durable plan ID.
+# The event-signing operation is a separate contained capability.
+zclassic23 app blog anchor --input='{"wallet_scope":"dev","plan_id":"<64-hex>","confirm":true}'
+```
+
+The returned `commit_input` is the exact second-call document. Never rebuild it
+from a default wallet flag. The plan is bound to wallet instance ID, network
+genesis, operator lane, tip hash, custody snapshot root, exact prepared
+transaction bytes, actual and maximum fee, expiry, event ID, current ZNAM
+owner, and idempotency key. Planning atomically reserves the maximum fee; a
+changed money snapshot or event owner conflicts the plan instead of silently
+replanning. A restart reloads the same prepared bytes, so retry can only relay
+the same transaction ID.
 
 ## Adding a transaction type
 

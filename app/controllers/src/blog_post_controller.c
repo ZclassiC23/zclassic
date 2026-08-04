@@ -2,16 +2,359 @@
  * purpose: expose the Blog MVC resource and its read-only public HTTP routes. */
 
 #include "controllers/blog_post_controller.h"
+#include "controllers/native_handler_body.h"
+#include "controllers/sync_controller.h"
+#include "controllers/wallet_helpers.h"
 
+#include "chain/chain.h"
 #include "config/runtime.h"
+#include "core/serialize.h"
+#include "core/uint256.h"
+#include "encoding/utilstrencodings.h"
+#include "json/json.h"
+#include "models/database.h"
+#include "models/wallet_tx.h"
+#include "net/connman.h"
+#include "platform/time_compat.h"
+#include "rpc/server.h"
+#include "script/standard.h"
+#include "services/wallet_money_service.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "validation/main_state.h"
+#include "wallet/wallet.h"
 #include "views/blog_post_view.h"
 #include "znam/znam.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define BLOG_ANCHOR_WALLET_COINS_MAX 4096u
+
+static struct zcl_result blog_anchor_read_money(
+    void *opaque, const char *wallet_scope,
+    struct wallet_money_snapshot *out)
+{
+    struct wallet_rpc_context *ctx = opaque;
+    return wallet_money_snapshot_build(ctx ? ctx->node_db : NULL,
+                                       ctx ? ctx->main_state : NULL,
+                                       wallet_scope, out);
+}
+
+static struct zcl_result blog_anchor_prepare_wallet(
+    void *opaque, const uint8_t *anchor_script, size_t anchor_script_len,
+    int64_t maximum_fee_zat, uint8_t *raw_tx, size_t raw_capacity,
+    size_t *raw_tx_len, uint8_t txid_out[32], int64_t *actual_fee_zat)
+{
+    struct wallet_rpc_context *ctx = opaque;
+    if (!ctx || !ctx->wallet || !anchor_script || anchor_script_len == 0 ||
+        anchor_script_len > MAX_SCRIPT_SIZE || maximum_fee_zat <= 0 ||
+        !raw_tx || !raw_tx_len || !txid_out || !actual_fee_zat)
+        return ZCL_ERR(-1, "Blog anchor wallet prepare context is incomplete");
+    int64_t wallet_fee = wallet_default_fee(ctx->wallet);
+    if (wallet_fee <= 0 || wallet_fee > maximum_fee_zat)
+        return ZCL_ERR(-2, "wallet fee exceeds Blog anchor maximum fee");
+    struct coin_entry *available = zcl_malloc(
+        BLOG_ANCHOR_WALLET_COINS_MAX * sizeof(*available),
+        "blog_anchor_available_coins");
+    struct coin_entry *selected = zcl_malloc(
+        BLOG_ANCHOR_WALLET_COINS_MAX * sizeof(*selected),
+        "blog_anchor_selected_coins");
+    if (!available || !selected) {
+        free(available);
+        free(selected);
+        return ZCL_ERR(-3, "Blog anchor coin inventory allocation failed");
+    }
+    size_t available_len = 0, selected_len = 0;
+    int64_t selected_value = 0;
+    wallet_available_coins(ctx->wallet, available, &available_len,
+                           BLOG_ANCHOR_WALLET_COINS_MAX, true, false);
+    bool funded = wallet_select_coins(
+        ctx->wallet, available, available_len, wallet_fee, selected,
+        &selected_len, BLOG_ANCHOR_WALLET_COINS_MAX, &selected_value);
+    free(available);
+    if (!funded || selected_len == 0 || selected_value <= wallet_fee) {
+        free(selected);
+        return ZCL_ERR(-4,
+                       "confirmed transparent funds cannot cover the Blog anchor fee");
+    }
+    struct pubkey change_key;
+    if (!wallet_get_key_from_pool(ctx->wallet, &change_key)) {
+        free(selected);
+        return ZCL_ERR(-5, "Blog anchor change key is unavailable");
+    }
+    struct tx_destination change = {
+        .type = DEST_KEY_ID, .id.key = pubkey_get_id(&change_key),
+    };
+    struct tx_out outputs[2];
+    memset(outputs, 0, sizeof(outputs));
+    outputs[0].value = 0;
+    outputs[0].script_pub_key.size = anchor_script_len;
+    memcpy(outputs[0].script_pub_key.data, anchor_script, anchor_script_len);
+    outputs[1].value = selected_value - wallet_fee;
+    script_for_destination(&outputs[1].script_pub_key, &change);
+    struct wallet_tx wtx;
+    memset(&wtx, 0, sizeof(wtx));
+    const char *why = NULL;
+    int64_t fee = 0;
+    bool built = wallet_create_transaction_selected(
+        ctx->wallet, selected, selected_len, outputs, 2, &wtx, &fee, &why);
+    free(selected);
+    if (!built || fee != wallet_fee) {
+        transaction_free(&wtx.tx);
+        return ZCL_ERR(-6, "Blog anchor exact transaction build failed: %s",
+                       why ? why : "fee changed");
+    }
+    struct zcl_result flushed = wallet_flush_from_context(ctx);
+    if (!flushed.ok) {
+        transaction_free(&wtx.tx);
+        return ZCL_ERR(-7, "Blog anchor change-key persistence failed: %s",
+                       flushed.message);
+    }
+    struct byte_stream stream;
+    stream_init(&stream, 1024);
+    bool serialized = transaction_serialize(&wtx.tx, &stream) &&
+        stream.size <= raw_capacity;
+    if (serialized) {
+        memcpy(raw_tx, stream.data, stream.size);
+        *raw_tx_len = stream.size;
+        memcpy(txid_out, wtx.tx.hash.data, 32);
+        *actual_fee_zat = fee;
+    }
+    stream_free(&stream);
+    transaction_free(&wtx.tx);
+    return serialized
+        ? ZCL_OK
+        : ZCL_ERR(-8, "Blog anchor prepared transaction is too large");
+}
+
+static struct zcl_result blog_anchor_publish_wallet(
+    void *opaque, const uint8_t *raw_tx, size_t raw_tx_len,
+    const uint8_t expected_txid[32])
+{
+    struct wallet_rpc_context *ctx = opaque;
+    if (!ctx || !ctx->wallet || !ctx->mempool || !ctx->main_state ||
+        !ctx->coins_tip || !raw_tx || raw_tx_len == 0 || !expected_txid)
+        return ZCL_ERR(-1, "Blog anchor wallet publish context is incomplete");
+    struct wallet_tx wtx;
+    memset(&wtx, 0, sizeof(wtx));
+    struct byte_stream stream;
+    stream_init_from_data(&stream, raw_tx, raw_tx_len);
+    bool decoded = transaction_deserialize(&wtx.tx, &stream) &&
+        stream_remaining(&stream) == 0;
+    stream_free(&stream);
+    if (!decoded) {
+        transaction_free(&wtx.tx);
+        return ZCL_ERR(-2, "prepared Blog transaction failed to decode");
+    }
+    transaction_compute_hash(&wtx.tx);
+    if (memcmp(wtx.tx.hash.data, expected_txid, 32) != 0) {
+        transaction_free(&wtx.tx);
+        return ZCL_ERR(-3, "prepared Blog transaction identity changed");
+    }
+    wtx.time_received = (int64_t)platform_time_wall_time_t();
+    wtx.from_me = true;
+    wtx.used = true;
+    if (!wallet_get_tx(ctx->wallet, &wtx.tx.hash)) {
+        struct zcl_result committed = wallet_commit_from_context(ctx, &wtx);
+        if (!committed.ok) {
+            transaction_free(&wtx.tx);
+            return committed;
+        }
+        struct zcl_result persisted =
+            wallet_persist_commit_before_relay(ctx, &wtx);
+        if (!persisted.ok) {
+            transaction_free(&wtx.tx);
+            return persisted;
+        }
+        if (wallet_ctx_db_ready(ctx))
+            node_db_sync_wallet_tx(ctx->node_db, &wtx.tx, ctx->wallet, 0);
+    }
+    if (ctx->connman)
+        connman_relay_transaction(ctx->connman, &wtx.tx.hash);
+    transaction_free(&wtx.tx);
+    return ZCL_OK;
+}
+
+static struct zcl_result blog_anchor_runtime(
+    struct blog_anchor_runtime *out)
+{
+    struct wallet_rpc_context *ctx = wallet_rpc_context_current();
+    if (!out || !ctx || !ctx->node_db || !ctx->wallet || !ctx->mempool ||
+        !ctx->main_state || !ctx->coins_tip)
+        return ZCL_ERR(-1, "Blog anchor wallet RPC context is incomplete");
+    struct block_index *tip = ctx->main_state
+        ? active_chain_tip(&ctx->main_state->chain_active) : NULL;
+    if (!tip)
+        return ZCL_ERR(-2, "Blog anchor active chain tip is unavailable");
+    memset(out, 0, sizeof(*out));
+    out->node_db = ctx->node_db;
+    out->read_money = blog_anchor_read_money;
+    out->money_ctx = ctx;
+    out->prepare = blog_anchor_prepare_wallet;
+    out->prepare_ctx = ctx;
+    out->publish = blog_anchor_publish_wallet;
+    out->publish_ctx = ctx;
+    out->tip_height = tip->nHeight;
+    memcpy(out->tip_hash, tip->hashBlock.data, 32);
+    out->maximum_fee_zat = wallet_default_fee(ctx->wallet);
+    out->now_unix = (int64_t)platform_time_wall_time_t();
+    return ZCL_OK;
+}
+
+static const char *blog_anchor_arg(const struct json_value *params,
+                                   size_t positional, const char *key)
+{
+    if (!params)
+        return NULL;
+    const struct json_value *first = json_size(params) ? json_at(params, 0)
+                                                       : NULL;
+    if (first && first->type == JSON_OBJ) {
+        const struct json_value *value = json_get(first, key);
+        return value && value->type == JSON_STR ? json_get_str(value) : NULL;
+    }
+    const struct json_value *value =
+        json_size(params) > positional ? json_at(params, positional) : NULL;
+    return value && value->type == JSON_STR ? json_get_str(value) : NULL;
+}
+
+static bool blog_anchor_bool_arg(const struct json_value *params,
+                                 size_t positional, const char *key)
+{
+    if (!params)
+        return false;
+    const struct json_value *first = json_size(params) ? json_at(params, 0)
+                                                       : NULL;
+    if (first && first->type == JSON_OBJ)
+        return json_get_bool_or(first, key, false);
+    const struct json_value *value =
+        json_size(params) > positional ? json_at(params, positional) : NULL;
+    return value && value->type == JSON_BOOL && json_get_bool(value);
+}
+
+static void blog_anchor_render(
+    const struct blog_anchor_transaction_result *anchored,
+    struct json_value *result)
+{
+    char plan_hex[65], event_hex[65], txid_hex[65];
+    HexStr(anchored->plan_id, sizeof(anchored->plan_id), false,
+           plan_hex, sizeof(plan_hex));
+    HexStr(anchored->event_id, sizeof(anchored->event_id), false,
+           event_hex, sizeof(event_hex));
+    json_set_object(result);
+    json_push_kv_str(result, "schema", "zcl.app_blog_anchor.v1");
+    json_push_kv_str(result, "wallet_scope", anchored->wallet_scope);
+    json_push_kv_str(result, "plan_id", plan_hex);
+    json_push_kv_str(result, "blog_name", anchored->blog_name);
+    json_push_kv_str(result, "event_id", event_hex);
+    json_push_kv_bool(result, "event_verified", anchored->event_verified);
+    char script_hex[BLOG_ANCHOR_SCRIPT_MAX * 2 + 1];
+    HexStr(anchored->anchor_script, anchored->anchor_script_len, false,
+           script_hex, sizeof(script_hex));
+    json_push_kv_str(result, "op_return_hex", script_hex);
+    json_push_kv_int(result, "op_return_size",
+                     (int64_t)anchored->anchor_script_len);
+    json_push_kv_str(result, "state", anchored->state);
+    json_push_kv_str(result, "status",
+                     anchored->broadcast ? "broadcast" : "planned");
+    json_push_kv_int(result, "actual_fee_zat", anchored->actual_fee_zat);
+    json_push_kv_int(result, "maximum_fee_zat", anchored->maximum_fee_zat);
+    json_push_kv_int(result, "reserved_zat", anchored->reserved_zat);
+    json_push_kv_int(result, "expires_at", anchored->expires_at);
+    json_push_kv_bool(result, "idempotent_replay",
+                      anchored->idempotent_replay);
+    if (anchored->has_txid) {
+        struct uint256 txid;
+        memcpy(txid.data, anchored->txid, 32);
+        uint256_get_hex(&txid, txid_hex);
+        json_push_kv_str(result, "txid", txid_hex);
+    }
+}
+
+static bool rpc_blog_anchor(const struct json_value *params, bool help,
+                            struct json_value *result)
+{
+    if (help) {
+        json_set_str(result,
+            "blog_anchor plan {wallet_scope,name,event_id,idempotency_key}\n"
+            "blog_anchor commit {wallet_scope,plan_id,confirm:true}\n"
+            "\nThe plan verifies the signed event and current ZNAM owner, "
+            "prepares exact signed transaction bytes, and atomically reserves "
+            "the maximum fee. Commit rechecks wallet identity, genesis, tip, "
+            "money snapshot, event ownership, and the exact prepared tx.\n");
+        return true;
+    }
+    const char *scope = blog_anchor_arg(params, 0, "wallet_scope");
+    const char *name = blog_anchor_arg(params, 1, "name");
+    const char *event_hex = blog_anchor_arg(params, 2, "event_id");
+    const char *idempotency = blog_anchor_arg(params, 3, "idempotency_key");
+    const char *plan_hex = blog_anchor_arg(params, 4, "plan_id");
+    bool confirm = blog_anchor_bool_arg(params, 5, "confirm");
+    if (!scope || (strcmp(scope, "dev") != 0 && strcmp(scope, "prod") != 0)) {
+        json_set_str(result, "blog_anchor requires wallet_scope=dev|prod");
+        return false;
+    }
+    struct blog_anchor_runtime runtime;
+    struct zcl_result ready = blog_anchor_runtime(&runtime);
+    if (!ready.ok) {
+        json_set_str(result, ready.message);
+        LOG_FAIL("blog.anchor", "runtime refused: %s", ready.message);
+    }
+    struct blog_anchor_transaction_result anchored;
+    struct zcl_result outcome;
+    if (confirm) {
+        uint8_t plan_id[32];
+        if (!plan_hex || strlen(plan_hex) != 64 || !IsHex(plan_hex) ||
+            ParseHex(plan_hex, plan_id, sizeof(plan_id)) != 32) {
+            json_set_str(result,
+                         "blog_anchor commit requires a 64-hex plan_id");
+            return false;
+        }
+        outcome = blog_publication_anchor_commit(
+            &runtime, scope, plan_id, &anchored);
+    } else {
+        uint8_t event_id[32];
+        if (!name || !event_hex || !idempotency ||
+            strlen(event_hex) != 64 || !IsHex(event_hex) ||
+            ParseHex(event_hex, event_id, sizeof(event_id)) != 32) {
+            json_set_str(result,
+                "blog_anchor plan requires name, 64-hex event_id, and idempotency_key");
+            return false;
+        }
+        struct blog_anchor_request request;
+        memset(&request, 0, sizeof(request));
+        if (strlen(scope) >= sizeof(request.wallet_scope) ||
+            strlen(name) >= sizeof(request.blog_name) ||
+            strlen(idempotency) >= sizeof(request.idempotency_key)) {
+            json_set_str(result, "blog_anchor plan input exceeds bounds");
+            return false;
+        }
+        (void)snprintf(request.wallet_scope, sizeof(request.wallet_scope),
+                       "%s", scope);
+        (void)snprintf(request.blog_name, sizeof(request.blog_name), "%s",
+                       name);
+        (void)snprintf(request.idempotency_key,
+                       sizeof(request.idempotency_key), "%s", idempotency);
+        memcpy(request.event_id, event_id, 32);
+        outcome = blog_publication_anchor_plan(
+            &runtime, &request, &anchored);
+    }
+    if (!outcome.ok) {
+        json_set_str(result, outcome.message);
+        LOG_FAIL("blog.anchor", "blog_anchor refused: %s", outcome.message);
+    }
+    blog_anchor_render(&anchored, result);
+    return true;
+}
+
+void register_blog_post_rpc_commands(struct rpc_table *table)
+{
+    struct rpc_command command = {
+        "blog", "blog_anchor", rpc_blog_anchor, true,
+    };
+    rpc_table_must_append(table, &command);
+}
 
 struct zcl_result blog_post_controller_create(
     struct node_db *ndb, struct wallet *wallet,

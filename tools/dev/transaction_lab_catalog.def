@@ -14,7 +14,7 @@ zdir_register|directory|ZDIR onion registration|builder_verified|test_zdir_write
 zdir_deregister|directory|ZDIR onion deregistration|builder_verified|test_zdir_write_path
 zanc_epoch_anchor|anchor|ZANC epoch digest anchor|builder_verified|test_epoch
 zcode_release_anchor|zcode|ZCODE release-domain ZANC anchor|builder_verified|test_zcode_release
-blog_anchor|blog|ZNAM-bound signed Blog event anchor|not_demonstrated|test_blog
+blog_anchor|blog|ZNAM-bound signed Blog event anchor|simnet_confirmed|test_blog
 zslp_genesis|tokens|token genesis|simnet_confirmed|test_simnet
 zslp_mint|tokens|token mint|simnet_confirmed|test_simnet
 zslp_send|tokens|token transfer|simnet_confirmed|test_simnet

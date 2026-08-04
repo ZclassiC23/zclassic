@@ -44,6 +44,7 @@ ZCL_COMMAND_BRANCH("app.market.purchase", "app.market", "Buyer purchase",
 ZCL_COMMAND_BRANCH("app.store", "app", "Store", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.swap", "app", "Swaps", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.qr", "app", "QR", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.blog", "app", "Blog", ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_COMMAND(
     "app.qr.show", "app.qr", "", "Show a payload as a native QR window",
@@ -63,6 +64,31 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_qr_show)
+
+/* ── Blog (ZBLG) ─────────────────────────────────────────────────── */
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.blog.anchor", "app.blog", "", "Anchor a signed Blog event on-chain",
+    "Plan/commit the strict ZBLG v1 OP_RETURN for an already stored, "
+    "wallet-signed Blog event. Plan requires an explicit dev/prod scope, "
+    "prepares exact signed bytes, and atomically reserves the maximum fee in "
+    "the identity-bound vault-intent ledger. Commit accepts only that durable "
+    "plan ID and rechecks wallet instance, genesis, tip, snapshot root, exact "
+    "transaction, event signature, and current ZNAM owner before relay. It does not "
+    "create or sign the off-chain Blog event; that capability remains "
+    "contained behind the runtime App grant broker.", 0,
+    "blog,zblg,anchor,op_return,event,znam,custody,wallet_scope",
+    "zcl.app_blog_anchor.input.v1", "zcl.app_blog_anchor.v1",
+    "wallet_scope,name,event_id,idempotency_key,plan_id,confirm", "wallet_scope",
+    "zclassic23 app blog anchor --input='{\"wallet_scope\":\"dev\",\"name\":\"alice\",\"event_id\":\"<64-hex>\",\"idempotency_key\":\"blog-alice-1\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_ZNAM, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_blog_anchor)
 
 /* ── Names (ZNAM) ──────────────────────────────────────────────────── */
 

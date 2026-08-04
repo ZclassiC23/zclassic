@@ -134,6 +134,7 @@ app.market.purchase.retrieve exempt: publishes only manifest-verified bytes to a
 app.tokens.create          exempt: broadcasts a wallet transaction through the existing sovereignty, admission, durability and relay gates; installs no privileged artifact
 app.tokens.mint            exempt: broadcasts a mint-baton-authorized wallet transaction through existing spend gates; installs no privileged artifact
 app.tokens.send            exempt: broadcasts an explicitly token-funded wallet transaction through existing spend gates; installs no privileged artifact
+app.blog.anchor            exempt: reserves fee state and broadcasts one identity-bound wallet transaction through existing vault-intent, admission, durability and relay gates; installs no privileged artifact
 vault.send-token           exempt: dispatch-only alias of app.tokens.send; builds or installs nothing itself
 core.wallet.transaction.raw.create    exempt: composes unsigned transaction bytes only; mutates no node or wallet state and installs no artifact
 core.wallet.transaction.raw.sign      exempt: produces signatures with resident wallet keys but imports nothing, persists nothing and installs no artifact

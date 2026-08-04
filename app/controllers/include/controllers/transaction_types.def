@@ -153,12 +153,13 @@ TX_TYPE("zcode_release_anchor", "zcode", "ready", "composite_overlay_transaction
         "all_zcl_networks", "zcode_release_anchor", "builder_verified", "test_zcode_release",
         "Fold signed ZCODE release documents into a deterministic domain root and anchor that root through ZANC.")
 
-TX_TYPE("blog_anchor", "blog", "planned", "composite_overlay_transaction",
+TX_TYPE("blog_anchor", "blog", "contained", "composite_overlay_transaction",
         "op_return_zblg_event_commitment", "public_commitment",
-        "sign_event_then_anchor", "", "", "", "",
-        "no_public_constructor_or_broadcast_path", "blog_anchor",
-        "not_demonstrated", "test_blog",
-        "Commit a wallet-signed Blog event ID under its ZNAM identity with the strict ZBLG v1 OP_RETURN format; the codec and projection exist, but no public signing or broadcast command exists yet.")
+        "sign_event_then_plan_commit_anchor", "app.blog.anchor",
+        "app.blog.anchor", "app.transaction-types.show", "",
+        "identity_bound_custody_event_signing_broker_contained", "blog_anchor",
+        "simnet_confirmed", "test_blog",
+        "Atomically reserve the maximum fee, then commit one exact prepared ZBLG transaction for an already stored wallet-signed event under its current ZNAM identity; new event signing remains contained behind the runtime App grant broker.")
 
 TX_TYPE("htlc_initiate", "atomic_swap", "ready", "composite_chain_transaction",
         "p2sh_htlc_funding", "transparent", "contract_then_fund",

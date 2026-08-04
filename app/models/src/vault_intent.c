@@ -66,9 +66,10 @@ bool vault_intent_validate(const struct vault_intent_row *r,
         zcl_is_hex_string(r->wallet_instance_id,
                           WALLET_INSTANCE_ID_HEX_LEN) &&
         zcl_is_hex_string(r->wallet_genesis, WALLET_GENESIS_HEX_LEN) &&
-        r->has_snapshot_root && r->recipient_value_zat > 0 &&
+        r->has_snapshot_root && r->recipient_value_zat >= 0 &&
         r->max_fee_zat >= 0 &&
         r->recipient_value_zat <= INT64_MAX - r->max_fee_zat &&
+        r->recipient_value_zat + r->max_fee_zat > 0 &&
         r->reserved_zat == r->recipient_value_zat + r->max_fee_zat;
     validates_custom(errors, legacy || bound, "custody_binding",
                      "must be wholly legacy-empty or a complete reservation");
@@ -85,6 +86,9 @@ bool vault_intent_validate(const struct vault_intent_row *r,
     validates_custom(errors, application_empty || application_bound,
                      "application_binding",
                      "must be wholly empty or kind, idempotency, and digest");
+    validates_custom(errors, legacy || r->recipient_value_zat > 0 ||
+                     application_bound, "fee_only_intent",
+                     "requires a named idempotent application workflow");
     return !ar_errors_any(errors);
 }
 
@@ -154,8 +158,18 @@ bool vault_intent_reserve(struct node_db *ndb,
                           const struct vault_intent_row *r,
                           int64_t confirmed_zat)
 {
+    return vault_intent_reserve_with_raw(ndb, r, confirmed_zat, NULL, 0);
+}
+
+bool vault_intent_reserve_with_raw(struct node_db *ndb,
+                                   const struct vault_intent_row *r,
+                                   int64_t confirmed_zat,
+                                   const uint8_t *raw_tx,
+                                   size_t raw_tx_len)
+{
     if (!ndb || !ndb->open || !r || confirmed_zat < 0 ||
-        r->reserved_zat <= 0)
+        r->reserved_zat <= 0 || (raw_tx && (raw_tx_len == 0 ||
+        raw_tx_len > VAULT_INTENT_RAW_MAX)) || (!raw_tx && raw_tx_len != 0))
         LOG_FAIL("vault_intent", "reserve: invalid argument");
     if (!node_db_begin_immediate(ndb))
         return false; /* raw-return-ok:busy is a fail-closed reservation */
@@ -173,7 +187,9 @@ bool vault_intent_reserve(struct node_db *ndb,
     } else if (allowed) {
         allowed = reserved + r->reserved_zat <= confirmed_zat;
     }
-    bool saved = allowed && vault_intent_save(ndb, r);
+    bool saved = allowed && vault_intent_save(ndb, r) &&
+        (!raw_tx || vault_intent_store_raw(ndb, r->plan_id,
+                                           raw_tx, raw_tx_len));
     if (!saved || !node_db_commit(ndb)) {
         (void)node_db_rollback(ndb);
         return false; /* raw-return-ok:nothing was reserved */

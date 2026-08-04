@@ -1341,6 +1341,7 @@ static int test_raw_native_pipeline_mines_exact_signed_bytes(void)
  * (a ZNAM write answering status="ready" because the node carries no wallet)
  * is reported BLOCKED with mutated=false rather than PASSED. */
 static int g_app_name_register_calls;
+static int g_app_blog_anchor_calls;
 static int g_app_msg_send_calls;
 static int g_app_token_send_calls;
 static int g_app_market_content_calls;
@@ -1362,6 +1363,30 @@ static char *app_write_stub_rpc(const char *method, const char *params_json)
                       "\"txid\":\"aa11bb22cc33dd44ee55ff66aa77bb88"
                       "cc99dd00ee11ff22aa33bb44cc55dd66\","
                       "\"fee\":1000,\"status\":\"broadcast\"}");
+    }
+    if (method && strcmp(method, "blog_anchor") == 0) {
+        g_app_blog_anchor_calls++;
+        if (g_app_blog_anchor_calls == 1)
+            return strdup("{\"schema\":\"zcl.app_blog_anchor.v1\","
+                          "\"wallet_scope\":\"dev\","
+                          "\"plan_id\":\"33333333333333333333333333333333"
+                          "33333333333333333333333333333333\","
+                          "\"blog_name\":\"alice\","
+                          "\"event_id\":\"11111111111111111111111111111111"
+                          "11111111111111111111111111111111\","
+                          "\"event_verified\":true,\"status\":\"planned\","
+                          "\"state\":\"planned\",\"maximum_fee_zat\":1000,"
+                          "\"reserved_zat\":1000}");
+        return strdup("{\"schema\":\"zcl.app_blog_anchor.v1\","
+                      "\"wallet_scope\":\"dev\","
+                      "\"plan_id\":\"33333333333333333333333333333333"
+                      "33333333333333333333333333333333\","
+                      "\"blog_name\":\"alice\","
+                      "\"event_id\":\"11111111111111111111111111111111"
+                      "11111111111111111111111111111111\","
+                      "\"event_verified\":true,\"status\":\"broadcast\","
+                      "\"txid\":\"22222222222222222222222222222222"
+                      "22222222222222222222222222222222\",\"fee\":1000}");
     }
     if (method && strcmp(method, "msg_send") == 0) {
         g_app_msg_send_calls++;
@@ -1479,6 +1504,7 @@ static int test_app_write_native_e2e(void)
 
     TEST("app.* write leaves execute plan/commit over a stubbed RPC") {
         g_app_name_register_calls = 0;
+        g_app_blog_anchor_calls = 0;
         g_app_msg_send_calls = 0;
         g_app_token_send_calls = 0;
         g_app_market_content_calls = 0;
@@ -1590,7 +1616,53 @@ static int test_app_write_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&bad_in);
 
-        /* 5. token.send has the same two-leg transaction contract: plan is
+        /* 5. Blog anchor exposes the previously missing ZBLG plan/commit
+         * boundary. The event ID is public commitment material, never a key. */
+        const struct zcl_command_spec *blog_spec =
+            find_spec(reg, "app.blog.anchor");
+        ASSERT(blog_spec != NULL);
+        ASSERT(blog_spec->availability == ZCL_COMMAND_READY);
+        ASSERT(blog_spec->confirmation == ZCL_COMMAND_CONFIRM_PLAN_COMMIT);
+        struct json_value blog_input;
+        json_init(&blog_input);
+        json_set_object(&blog_input);
+        (void)json_push_kv_str(&blog_input, "wallet_scope", "dev");
+        (void)json_push_kv_str(&blog_input, "name", "alice");
+        (void)json_push_kv_str(
+            &blog_input, "event_id",
+            "1111111111111111111111111111111111111111111111111111111111111111");
+        (void)json_push_kv_str(&blog_input, "idempotency_key",
+                               "alice-post-1");
+        struct zcl_command_request blog_request = {
+            .spec = blog_spec, .input = &blog_input, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, blog_spec->output_schema);
+        zcl_native_handle_blog_anchor(&blog_request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_blog_anchor_calls, 1);
+        const char *blog_plan_id =
+            json_get_str(json_get(&reply.data, "plan_id"));
+        ASSERT(blog_plan_id != NULL);
+        char blog_plan_id_copy[65];
+        (void)snprintf(blog_plan_id_copy, sizeof(blog_plan_id_copy), "%s",
+                       blog_plan_id);
+        zcl_command_reply_free(&reply);
+        (void)json_push_kv_str(&blog_input, "plan_id", blog_plan_id_copy);
+        (void)json_push_kv_bool(&blog_input, "confirm", true);
+        zcl_command_reply_init(&reply, blog_spec->output_schema);
+        zcl_native_handle_blog_anchor(&blog_request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")),
+                      "committed");
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_blog_anchor_calls, 2);
+        ASSERT(json_get_str(json_get(&reply.data, "txid")) != NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&blog_input);
+
+        /* 6. token.send has the same two-leg transaction contract: plan is
          * non-mutating; commit calls the receipt-bearing RPC exactly once. */
         const struct zcl_command_spec *token_spec =
             find_spec(reg, "app.tokens.send");

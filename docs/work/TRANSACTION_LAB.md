@@ -329,3 +329,40 @@ The current result is **33/34 PASS, 1 BLOCKED**, with **21 simulated-chain
 confirmations** across **18 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
 funds moved.
+
+## 2026-08-04 ZBLG plan/commit and mined anchor proof
+
+The last explicit gap, `blog_anchor`, now has a public typed transaction
+boundary. `app blog anchor` accepts an explicit `dev`/`prod` wallet scope, a
+canonical ZNAM name, the 32-byte ID of an already stored wallet-signed Blog
+event, and an idempotency key. Its first call prepares one exact signed
+transaction and atomically reserves its maximum fee in `vault_intents`; it
+does not broadcast. It returns a durable `plan_id`. The `confirm:true` call
+accepts only that plan ID and scope, then rechecks wallet instance, network
+genesis, operator lane, tip hash, money snapshot root, exact prepared bytes,
+event signature, and current ZNAM owner before relaying. A node without a
+current identity-bound wallet snapshot refuses the plan instead of presenting
+missing custody as zero.
+
+The proof intentionally has three independent sources. `test_blog` proves
+wallet-bound event signatures, ZNAM ownership, strict/minimal codec parsing,
+maximum-fee reservation, application idempotency, wrong-scope refusal,
+commit idempotency, transaction/canonical-block relationships, and reorg
+status. `test_transaction_intent` proves fee-only application reservations and
+prepared raw bytes are inserted atomically. `test_native_api_contract` proves
+the typed plan reaches the node once to create the durable reservation and the
+confirmed plan ID reaches it once to commit. `test_simnet` places the exact
+public codec bytes in a funded transaction, mines them through `connect_block`,
+consumes the input, and retains the ZBLG OP_RETURN at the mined height in the
+explorer projection.
+
+The catalog remains honest about the composite boundary: the custody-bound
+anchor command is implemented, while creation of a new signed Blog event
+remains contained behind the unfinished runtime App grant broker. No raw key,
+event signature, address, endpoint, datadir path, or prepared transaction bytes
+enter the public command result, receipt, or notebook.
+
+The current result is **34/34 PASS, 0 BLOCKED**, with **22 simulated-chain
+confirmations** across **19 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
+funds moved.

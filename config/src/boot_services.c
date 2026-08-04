@@ -115,6 +115,7 @@
 #include "controllers/messaging_controller.h"
 #include "controllers/swap_controller.h"
 #include "controllers/blog_controller.h"
+#include "controllers/blog_post_controller.h"
 #include "rpc/httpserver.h"
 #include "rpc/legacy_chain_oracle.h"
 #include "rpc/server.h"
@@ -1255,12 +1256,11 @@ bool app_init_services(struct app_context *ctx,
     rpc_anchor_set_state(boot_node_db(svc));
     rpc_anchor_set_wallet(svc->wallet, svc->mempool, svc->state, svc->coins_tip);
     register_anchor_rpc_commands(svc->rpc_table);
+    register_blog_post_rpc_commands(svc->rpc_table);
     rpc_identity_set_state(boot_node_db(svc));
     rpc_identity_set_wallet(svc->wallet, svc->mempool, svc->state, svc->coins_tip);
     register_identity_rpc_commands(svc->rpc_table);
-    register_zdir_rpc_commands(svc->rpc_table, boot_node_db(svc), svc->wallet,
-                               svc->mempool, svc->state, svc->coins_tip);
-
+    register_zdir_rpc_commands(svc->rpc_table, boot_node_db(svc), svc->wallet, svc->mempool, svc->state, svc->coins_tip);
     /* OP_RETURN catalog — every OP_RETURN output ever seen, by lokad tag */
     rpc_op_return_index_set_state(boot_node_db(svc));
     register_op_return_index_rpc_commands(svc->rpc_table);

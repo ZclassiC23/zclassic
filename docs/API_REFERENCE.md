@@ -59,17 +59,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 488 |
+| Registry entries (branches + leaves) | 490 |
 | Top-level roots | 11 |
-| Branches | 112 |
-| Leaves (dispatchable command paths) | 376 |
-| … `ready` (live handler in this build) | 328 |
+| Branches | 113 |
+| Leaves (dispatchable command paths) | 377 |
+| … `ready` (live handler in this build) | 329 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 125 |
+| Leaves with `effect=mutate` | 126 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 88 |
+| Leaves requiring **owner** authority | 89 |
 
 Per source file:
 
@@ -78,7 +78,7 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 112 | 27 | 85 |
 | `config/commands/apps.def` | 13 | 3 | 10 |
-| `config/commands/app_features.def` | 43 | 9 | 34 |
+| `config/commands/app_features.def` | 45 | 10 | 35 |
 | `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 45 | 11 | 34 |
@@ -501,6 +501,12 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `app qr show` | ready | mutate / app-write / operator · fast/low | **`payload`**, `title` | `zcl.app_qr_show.v1` | `zclassic23 app qr show 'zclassic:t1...?amount=0.01'` | Show a payload as a native QR window |
+
+#### `app.blog` — Blog
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app blog anchor` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `event_id`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_blog_anchor.v1` | `zclassic23 app blog anchor --input='{"wallet_scope":"dev","name":"alice","event_id":"<64-hex>","idempotency_key":"blog-alice-1"}'` | Anchor a signed Blog event on-chain |
 
 #### `app.auth` — Public-key challenge/response login
 

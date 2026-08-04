@@ -98,13 +98,13 @@ int api_transaction_type_focused_tests(void)
                                                      "contained_count")) +
                                json_get_int(json_get(&root, "planned_count"));
         ok = ok && count == 34 &&
-             json_get_int(json_get(&root, "demonstrated_count")) == 33 &&
-             json_get_int(json_get(&root, "blocked_count")) == 1 &&
-             json_get_int(json_get(&root, "chain_confirmed_count")) == 21 &&
+             json_get_int(json_get(&root, "demonstrated_count")) == 34 &&
+             json_get_int(json_get(&root, "blocked_count")) == 0 &&
+             json_get_int(json_get(&root, "chain_confirmed_count")) == 22 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
-             json_get_int(json_get(&root, "proof_test_group_count")) == 18 &&
-             !json_get_bool(json_get(&root, "fully_demonstrated"));
+             json_get_int(json_get(&root, "proof_test_group_count")) == 19 &&
+             json_get_bool(json_get(&root, "fully_demonstrated"));
         const struct json_value *transparent =
             api_test_find_str_field(types, "id", "transparent_t_to_t");
         const struct json_value *coinbase =
@@ -138,9 +138,11 @@ int api_transaction_type_focused_tests(void)
                     "simnet_confirmed") == 0;
         ok = ok && blog &&
              strcmp(json_get_str(json_get(blog, "availability")),
-                    "planned") == 0 &&
+                    "contained") == 0 &&
              strcmp(json_get_str(json_get(blog, "proof_level")),
-                    "not_demonstrated") == 0;
+                    "simnet_confirmed") == 0 &&
+             strcmp(json_get_str(json_get(blog, "builder_command")),
+                    "app.blog.anchor") == 0;
         ok = ok && strstr(body, "private_key") == NULL &&
              strstr(body, "grant_token") == NULL &&
              strstr(body, "/home/") == NULL;
@@ -262,6 +264,30 @@ int api_transaction_type_focused_tests(void)
                           "demonstrated") == 0;
         ok = ok && !json_get_bool(json_get(&root,
                                            "mainnet_live_proven"));
+        json_free(&root);
+
+        n = api_handle_request(
+            "GET", "/api/v1/transaction-types/blog_anchor",
+            NULL, 0, response, sizeof(response));
+        body = api_test_body(response, n, sizeof(response));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok &&
+             strcmp(json_get_str(json_get(&root, "availability")),
+                    "contained") == 0 &&
+             strcmp(json_get_str(json_get(&root, "proof_level")),
+                    "simnet_confirmed") == 0 &&
+             strcmp(json_get_str(json_get(&root, "builder_command")),
+                    "app.blog.anchor") == 0 &&
+             api_test_array_has_str(
+                 json_get(&root, "supplemental_test_groups"),
+                 "test_native_api_contract") &&
+             api_test_array_has_str(
+                 json_get(&root, "supplemental_test_groups"),
+                 "test_simnet") &&
+             api_test_array_has_str(
+                 json_get(&root, "supplemental_test_groups"),
+                 "test_transaction_intent");
         json_free(&root);
 
         n = api_handle_request(

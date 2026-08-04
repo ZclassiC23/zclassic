@@ -20,11 +20,13 @@
 #include "models/zslp_validity.h"
 
 #include "models/explorer_index.h"
+#include "models/blog_post.h"
 #include "models/znam.h"
 #include "sim/sim_peer.h"
 #include "sim/simnet.h"
 #include "core/uint256.h"
 #include "script/standard.h"
+#include "services/blog_publication_service.h"
 #include "znam/znam.h"
 #include "zslp/slp.h"
 
@@ -1110,6 +1112,8 @@ int test_simnet(void)
     bool copied_znam_malformed =
         built_znam_malformed &&
         transaction_copy(&znam_malformed_projection, &znam_malformed);
+    struct uint256 znam_malformed_txid =
+        built_znam_malformed ? znam_malformed.hash : (struct uint256){0};
     SN_CHECK("build malformed ZNAM tx",
              built_znam_malformed && copied_znam_malformed);
     bool minted_znam_malformed =
@@ -1134,6 +1138,54 @@ int test_simnet(void)
              strcmp(after_malformed.owner_address, "t1simnewowner") == 0 &&
              strcmp(after_malformed.target_value, "t1updated") == 0);
 
+    /* 8. ZBLG composite overlay: the public Blog anchor codec's exact bytes
+     * enter a real block through connect_block, then the generic explorer
+     * projection retains the exact OP_RETURN at its mined height. The
+     * transaction/canonical-block/reorg joins plus signed-event/ZNAM-owner
+     * policy are proved in test_blog; this axis proves real block acceptance
+     * instead of substituting a database row. */
+    uint8_t blog_event_id[32];
+    memset(blog_event_id, 0x5b, sizeof(blog_event_id));
+    uint8_t blog_script[BLOG_ANCHOR_SCRIPT_MAX];
+    size_t blog_script_len = 0;
+    struct zcl_result built_blog_script = blog_anchor_script_build(
+        "alice", blog_event_id, blog_script, sizeof(blog_script),
+        &blog_script_len);
+    SN_CHECK("build strict ZBLG event anchor",
+             built_blog_script.ok && blog_script_len > 0);
+
+    struct transaction blog_anchor_tx;
+    struct transaction blog_anchor_projection;
+    transaction_init(&blog_anchor_projection);
+    bool built_blog_anchor =
+        built_blog_script.ok &&
+        sim_test_make_opreturn_spend(
+            &blog_anchor_tx, &znam_malformed_txid, 1,
+            blog_script, blog_script_len, 30000, 0xC0);
+    bool copied_blog_anchor =
+        built_blog_anchor &&
+        transaction_copy(&blog_anchor_projection, &blog_anchor_tx);
+    SN_CHECK("build ZBLG funding transaction",
+             built_blog_anchor && copied_blog_anchor);
+    bool minted_blog_anchor =
+        built_blog_anchor && copied_blog_anchor &&
+        simnet_mint_txs(&sim, &blog_anchor_tx, 1);
+    int blog_anchor_height = simnet_tip_height(&sim);
+    SN_CHECK("mine ZBLG anchor through simnet", minted_blog_anchor);
+    bool indexed_blog_anchor =
+        znam_open && minted_blog_anchor &&
+        sim_test_index_block(&znam_db, &blog_anchor_projection, 1,
+                             blog_anchor_height, 0xDA);
+    SN_CHECK("fold ZBLG anchor into explorer projection", indexed_blog_anchor);
+    struct db_blog_chain_anchor projected_blog_anchor;
+    memset(&projected_blog_anchor, 0, sizeof(projected_blog_anchor));
+    bool found_blog_anchor =
+        znam_open && db_blog_chain_anchor_find(
+            &znam_db, blog_script, blog_script_len, &projected_blog_anchor);
+    SN_CHECK("ZBLG projection finds exact OP_RETURN",
+             found_blog_anchor &&
+             projected_blog_anchor.op_return_height == blog_anchor_height);
+
     transaction_free(&znam_owner_fund_projection);
     transaction_free(&znam_register_projection);
     transaction_free(&znam_bad_update_projection);
@@ -1143,10 +1195,11 @@ int test_simnet(void)
     transaction_free(&znam_renew_projection);
     transaction_free(&znam_transfer_projection);
     transaction_free(&znam_malformed_projection);
+    transaction_free(&blog_anchor_projection);
     if (znam_open)
         node_db_close(&znam_db);
 
-    /* 8. Minimal multi-node slice: copy an accepted block marker through
+    /* 9. Minimal multi-node slice: copy an accepted block marker through
      *    tools/sim/sim_peer, replay the same accepted tx into a second
      *    RAM-only simnet, and assert both nodes converge to the same tip. */
     struct simnet left;

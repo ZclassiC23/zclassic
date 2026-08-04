@@ -81,6 +81,14 @@ bool vault_intent_save(struct node_db *ndb, const struct vault_intent_row *row);
 bool vault_intent_reserve(struct node_db *ndb,
                           const struct vault_intent_row *row,
                           int64_t confirmed_zat);
+/* Application workflows that prepare an exact signed transaction during the
+ * plan leg use this variant so the reservation and restart-safe raw bytes
+ * become durable in one SQLite transaction. */
+bool vault_intent_reserve_with_raw(struct node_db *ndb,
+                                   const struct vault_intent_row *row,
+                                   int64_t confirmed_zat,
+                                   const uint8_t *raw_tx,
+                                   size_t raw_tx_len);
 bool vault_intent_find(struct node_db *ndb, const uint8_t plan_id[32],
                        struct vault_intent_row *out);
 /* Application workflows use this relationship to make plan creation

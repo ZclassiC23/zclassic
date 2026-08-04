@@ -223,6 +223,31 @@ int test_transaction_intent(void)
         duplicate = first;
         duplicate.idempotency_key[0] = '\0';
         ASSERT(!vault_intent_save(&ndb, &duplicate));
+
+        /* Fee-only overlay anchors are valid only as named idempotent
+         * application plans, and their exact prepared bytes are inserted in
+         * the same transaction as the reservation. */
+        struct vault_intent_row fee_only;
+        ti_bound_row(&fee_only, 0x91, &app_identity, 1000);
+        fee_only.recipient_value_zat = 0;
+        fee_only.max_fee_zat = 1000;
+        snprintf(fee_only.application_kind,
+                 sizeof(fee_only.application_kind), "blog_anchor");
+        snprintf(fee_only.idempotency_key,
+                 sizeof(fee_only.idempotency_key), "blog-anchor-1");
+        memset(fee_only.request_digest, 0x92, 32);
+        fee_only.has_request_digest = true;
+        const uint8_t prepared_raw[] = { 0x5a, 0x42, 0x4c, 0x47, 1 };
+        ASSERT(vault_intent_reserve_with_raw(
+            &ndb, &fee_only, 30000000, prepared_raw,
+            sizeof(prepared_raw)));
+        ASSERT(vault_intent_find(&ndb, fee_only.plan_id, &found));
+        ASSERT(vault_intent_has_raw(&ndb, fee_only.plan_id));
+        uint8_t loaded_raw[8]; size_t loaded_raw_len = 0;
+        ASSERT(vault_intent_load_raw(&ndb, fee_only.plan_id, loaded_raw,
+                                     sizeof(loaded_raw), &loaded_raw_len));
+        ASSERT(loaded_raw_len == sizeof(prepared_raw) &&
+               memcmp(loaded_raw, prepared_raw, sizeof(prepared_raw)) == 0);
         PASS();
     }
 

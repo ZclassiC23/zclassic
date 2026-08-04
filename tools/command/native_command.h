@@ -1251,6 +1251,9 @@ void zcl_native_handle_token_mint(
 void zcl_native_handle_token_burn(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_blog_anchor(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_name_register(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
