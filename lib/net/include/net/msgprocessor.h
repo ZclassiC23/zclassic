@@ -29,6 +29,7 @@ struct block;
 struct transaction;
 struct zmsg_message;
 struct file_offer;
+struct file_payment;
 struct validation_state;
 struct active_chain;
 struct block_index;
@@ -49,6 +50,9 @@ typedef void (*msg_peer_save_fn)(const struct p2p_node *node, void *ctx);
 typedef bool (*msg_zmsg_save_fn)(const struct zmsg_message *msg, void *ctx);
 typedef bool (*msg_file_offer_save_fn)(const struct file_offer *offer,
                                        void *ctx);
+typedef int (*msg_file_payment_ingest_fn)(
+    const struct file_payment *payment, int64_t peer_id,
+    int64_t now_unix, void *ctx);
 typedef bool (*msg_zswap_ad_save_fn)(const struct zswap_yardsale_ad *ad,
                                      void *ctx);
 /* Port seam for the yardsale ingress policy (verify/dedup/clamp/store):
@@ -184,6 +188,8 @@ struct msg_processor {
     void *zmsg_save_ctx;
     msg_file_offer_save_fn file_offer_save;
     void *file_offer_save_ctx;
+    msg_file_payment_ingest_fn file_payment_ingest;
+    void *file_payment_ingest_ctx;
     msg_zswap_ad_save_fn zswap_ad_save;
     void *zswap_ad_save_ctx;
     msg_zswap_ad_ingest_fn zswap_ad_ingest;
@@ -294,6 +300,8 @@ void msg_processor_set_zmsg_save(struct msg_processor *mp,
 void msg_processor_set_file_offer_save(struct msg_processor *mp,
                                        msg_file_offer_save_fn save,
                                        void *ctx);
+void msg_processor_set_file_payment_ingest(
+    struct msg_processor *mp, msg_file_payment_ingest_fn ingest, void *ctx);
 void msg_processor_set_zswap_ad_save(struct msg_processor *mp,
                                      msg_zswap_ad_save_fn save,
                                      void *ctx);

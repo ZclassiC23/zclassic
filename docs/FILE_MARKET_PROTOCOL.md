@@ -1,18 +1,23 @@
 # ZCL file-market protocol
 
 This page is the developer and agent map for paid file offers and purchases.
-The seller-authenticated offer-ingress foundation is implemented; local paid
-offer creation and payment-to-file-unlock remain deliberately unavailable.
+The seller-authenticated offer ingress and exact confirmed-payment authority
+are implemented. Local paid offer creation, buyer wallet planning, and the
+encrypted paid-file request remain deliberately unavailable.
 
 ## Table of contents
 
 1. [Current boundary](#current-boundary)
 2. [Lifecycle](#lifecycle)
 3. [Signed offer wire](#signed-offer-wire)
-4. [Validation invariants](#validation-invariants)
-5. [API posture](#api-posture)
-6. [Where code belongs](#where-code-belongs)
-7. [Proof checklist](#proof-checklist)
+4. [Signed payment claim](#signed-payment-claim)
+5. [Canonical Sapling memo](#canonical-sapling-memo)
+6. [Payment reconciliation](#payment-reconciliation)
+7. [Validation invariants](#validation-invariants)
+8. [API posture](#api-posture)
+9. [Where code belongs](#where-code-belongs)
+10. [AI and developer workflow](#ai-and-developer-workflow)
+11. [Proof checklist](#proof-checklist)
 
 ## Current boundary
 
@@ -23,8 +28,11 @@ seller-signed offer -> peer decode -> network/time/signature validation
 
 local manifest/sign/announce       PLANNED
 buyer plan/reserve/pay             PLANNED
-seller exact-output verification   PLANNED
-paid file unlock                   PLANNED
+signed payment-claim ingress       IMPLEMENTED
+seller exact-output verification   IMPLEMENTED
+restart/reorg reconciliation       IMPLEMENTED
+per-chunk authorization service    IMPLEMENTED
+encrypted paid file request        PLANNED
 ```
 
 `zfileoffer` is an authenticated P2P contract, not a blockchain transaction.
@@ -49,10 +57,12 @@ SELLER                              BUYER
   |                                  | verify + choose exact offer_id
   |                                  | create wallet-bound payment plan
   |                                  | owner-authorized commit
-  |<--------- payment txid -----------+
-  | verify tx output/address/amount    |
-  | retain gate across restart/reorg   |
-  +---------- authorized chunks ------>|
+  |<-- signed claim + payment txid ----+
+  | verify buyer signature             |
+  | verify exact canonical Sapling     |
+  | output/address/amount/memo          |
+  | retain/recheck across restart/reorg |
+  +--- buyer-authenticated chunks ----->|
 ```
 
 An offer does not grant wallet authority. A buyer must select a current signed
@@ -98,6 +108,108 @@ It must be in `[1, MAX_MONEY]`. Settlement code must call
 `file_market_offer_total_zat`; floating-point display math is never payment
 authority.
 
+## Signed payment claim
+
+The legacy 72-byte `root_hash + txid + range` notification is rejected. It
+could not identify the signed offer or network, carried no amount, and let a
+mempool sighting masquerade as payment.
+
+`zfilepay.v1` is exactly 218 bytes. Integers are little-endian.
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 8 | `ZFMPAY\r\n` magic |
+| 8 | 2 | version (`1`) |
+| 10 | 32 | ZClassic network genesis hash |
+| 42 | 32 | exact signed `offer_id` |
+| 74 | 32 | claimed shielded-payment txid |
+| 106 | 4 | first paid chunk index |
+| 110 | 4 | number of contiguous paid chunks |
+| 114 | 8 | exact range price in zatoshis |
+| 122 | 32 | ephemeral buyer Ed25519 public key |
+| 154 | 64 | buyer Ed25519 signature |
+
+The signature covers a domain-separated SHA3-256 root of bytes `0..153`.
+`claim_id` is a separate domain-separated SHA3-256 commitment to all 218
+bytes. The claim is public evidence and a lookup key—not proof of payment.
+
+Range pricing calls `file_market_offer_range_zat`:
+
+```text
+range_bytes = real bytes covered by [chunk_start, chunk_start + count)
+amount_zat  = ceil(range_bytes * price_per_mb_zat / 1,048,576)
+```
+
+The final partial chunk is charged only for its real bytes. Zero-length,
+overflowing, out-of-bounds, altered, or over-`MAX_MONEY` ranges fail closed.
+
+## Canonical Sapling memo
+
+The paying Sapling output carries exactly 512 bytes:
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 8 | `ZFMPAYM1` magic |
+| 8 | 32 | network genesis hash |
+| 40 | 32 | signed `offer_id` |
+| 72 | 4 | first paid chunk |
+| 76 | 4 | chunks paid |
+| 80 | 8 | exact amount in zatoshis |
+| 88 | 32 | buyer public key |
+| 120 | 392 | zero padding |
+
+Every byte must match. Prefix matching is forbidden. Binding the buyer public
+key into the encrypted memo prevents another peer from copying a public txid
+and claiming the paid bytes; the future file request must prove possession of
+the corresponding ephemeral private key. That private key remains in the
+buyer-owned signing boundary and never enters P2P structs, database rows,
+logs, receipts, command output, or agent context.
+
+## Payment reconciliation
+
+`zfilepay` ingress now follows this fail-closed pipeline:
+
+```text
+fixed claim decode + buyer signature
+        |
+        v
+persisted seller-signed offer lookup
+        |
+        v
+active tip == canonical SQLite tip
+wallet projection height == active tip
+        |
+        v
+exact local Sapling note match:
+  txid + seller address + amount + all 512 memo bytes
+        |
+        v
+transaction belongs to a canonical block
+        |
+        v
+minimum confirmations + payment block inside offer window
+        |
+        v
+CONFIRMED per-chunk authorization
+```
+
+The durable `market_payment_claims` row retains the exact signed offer and
+claim wires so restart does not depend on an expiring gossip cache. Its status
+is only a rebuildable projection. `market_payment_authorize_chunk` re-runs the
+wallet/chain checks on every access; a reorg revokes a formerly confirmed
+grant, and later reconfirmation can restore it. Spending the seller's received
+note later does not erase the historical purchase.
+
+State meanings are strict:
+
+| Status | Meaning |
+|---|---|
+| `PENDING` | Exact transaction has not reached the required canonical confirmation. |
+| `CONFIRMED` | Exact output and memo are in the current canonical chain. |
+| `UNKNOWN` | Chain tip, wallet projection, or required reader is not current/complete. |
+| `CONFLICTED` | Canonical evidence contradicts the claim, including reorg removal. |
+| `REJECTED` | Claim contract, signature, offer, network, range, or amount is invalid. |
+
 ## Validation invariants
 
 A paid offer enters cache or persistence only when all of these hold:
@@ -128,7 +240,7 @@ context.
 | `app market list` | ready/read-only | Lists cached offers; paid rows expose `authenticated`, `offer_id`, expiry, and exact total. |
 | `app market status` | ready/read-only | Reports bounded cache/persistence state. |
 | `app market offer` | planned/fail-closed | Awaits local manifest construction, owner signing, and origin announcement. |
-| `app market buy` | planned/fail-closed | Awaits wallet-bound planning, exact payment verification, and unlock. |
+| `app market buy` | planned/fail-closed | Exact seller-side verification exists; buyer wallet plan/commit and authenticated byte transfer remain. |
 | `romseed_register` | ready/operator | Registers verified price-zero recovery artifacts; it is not a paid offer. |
 | `app transaction-types show --type=market_purchase` | ready/read-only | Canonical machine-readable readiness and proof record. |
 
@@ -147,13 +259,35 @@ feature slice:
 | bounded peer ingress/cache | `lib/net/src/file_market.c`, `msgprocessor.c` |
 | durable offer rows and validation | `app/models/src/file_offer.c` |
 | schema migration | `app/models/src/database_migrate_features_v49_up.c` |
-| future plan/commit and reconciliation | a dedicated `app/services/` service |
+| payment claim/memo codec | `lib/net/src/file_market_payment.c` |
+| durable payment locator | `app/models/src/market_payment_claim.c` |
+| exact chain/note reconciliation | `app/services/src/file_market_payment_service.c` |
+| future buyer plan/commit | a dedicated wallet-touching `app/services/` service |
 | thin native/REST adapters | `app/controllers/` plus `config/commands/` |
 | semantic readiness/proof | `transaction_types.def` and transaction lab |
 
 The future purchase service must reuse wallet, UTXO/note, mempool, vault
 intent, and chain-confirmation authorities. It must not maintain an independent
 balance or confirmation counter.
+
+## AI and developer workflow
+
+Do not build a payment by copying structs or invoking an RPC from memory:
+
+1. Read `app transaction-types show --type=market_purchase` and refuse while
+   availability is `planned`.
+2. Discover the exact `app market buy` schema from the native registry once
+   that operation becomes ready.
+3. Select an exact current `offer_id`; never infer an offer from a filename or
+   default peer.
+4. Read identity-bound custody and create an owner-visible wallet plan that
+   commits the offer, range, output, memo, maximum fee, expiry, tip, and
+   idempotency key.
+5. Keep the buyer private key and wallet keys behind their signing boundaries.
+6. Treat a txid or `PENDING` claim as locked. Only the seller's synchronous
+   `CONFIRMED` authorization permits bytes to leave the paid file service.
+7. On `UNKNOWN` or `CONFLICTED`, stop and report the reason; never substitute
+   zero, retry a spend blindly, or bypass reconciliation.
 
 ## Proof checklist
 
@@ -162,6 +296,7 @@ For offer-contract changes, run at least:
 ```bash
 make -j"$(nproc)" build-only
 make -j"$(nproc)" t-fast-exact ONLY=test_file_market
+make -j"$(nproc)" t-fast-exact ONLY=test_db_migration_idempotent
 make -j"$(nproc)" t-fast-exact ONLY=test_blob_read_bounds
 make transaction-lab-check
 make docs-api-reference
@@ -175,4 +310,6 @@ Only then change its transaction-catalog availability or proof level.
 
 <!-- claim: symbol-present MSG_FILE_OFFER lib/net/include/net/file_market.h -->
 <!-- claim: symbol-present file_market_offer_total_zat lib/net/src/file_market_offer.c -->
+<!-- claim: symbol-present file_payment_auth_verify_for_offer lib/net/src/file_market_payment.c -->
+<!-- claim: symbol-present market_payment_authorize_chunk app/services/src/file_market_payment_service.c -->
 <!-- claim: symbol-present market_purchase app/controllers/include/controllers/transaction_types.def -->

@@ -412,6 +412,7 @@ int test_proof_chain(void);
 int test_htlc(void);
 int test_swap_settlement(void);
 int test_file_market(void);
+int file_market_payment_tests(void);
 int test_strong_params(void);
 int test_workpool(void);
 int test_app_context(void);

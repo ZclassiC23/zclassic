@@ -59,6 +59,10 @@ void boot_wallet_tx_accepted(const struct transaction *tx, void *ctx);
 void boot_save_peer_advisory(const struct p2p_node *node, void *ctx);
 bool boot_save_zmsg(const struct zmsg_message *msg, void *ctx);
 bool boot_save_file_offer(const struct file_offer *offer, void *ctx);
+int boot_ingest_file_payment(const struct file_payment *payment,
+                             int64_t peer_id, int64_t now_unix, void *ctx);
+void boot_wire_file_market(struct msg_processor *mp,
+                           struct boot_svc_ctx *svc);
 bool boot_save_zswap_ad(const struct zswap_yardsale_ad *ad, void *ctx);
 /* Port-seam adapter: the msgprocessor yardsale ingest port (lib/net must
  * not name lib/zswap symbols) wired to zswap_yardsale_ingest_wire. */

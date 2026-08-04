@@ -374,13 +374,21 @@ int test_file_market(void)
     printf("file_payment serialize+deserialize roundtrip... ");
     {
         struct file_payment pay = {0};
-        memset(pay.root_hash, 0x11, 32);
+        uint8_t buyer_seed[32], buyer_secret[32];
+        memset(buyer_seed, 0x19, sizeof(buyer_seed));
+        pay.version = FILE_MARKET_PAYMENT_VERSION;
+        memset(pay.network_genesis, 0x11, 32);
+        memset(pay.offer_id, 0x33, 32);
         memset(pay.txid, 0x22, 32);
         pay.chunks_paid = 10;
         pay.chunk_start = 5;
+        pay.amount_zat = 500000;
+        ed25519_keypair(pay.buyer_pubkey, buyer_secret, buyer_seed);
+        bool sealed = file_payment_auth_seal(&pay, buyer_seed) ==
+                      FILE_PAYMENT_AUTH_OK;
 
         struct byte_stream ws;
-        stream_init(&ws, 128);
+        stream_init(&ws, FILE_MARKET_PAYMENT_WIRE_BYTES);
         bool ser = file_payment_serialize(&pay, &ws);
 
         struct byte_stream rs;
@@ -388,11 +396,14 @@ int test_file_market(void)
         struct file_payment got = {0};
         bool des = file_payment_deserialize(&got, &rs);
 
-        if (ser && des &&
-            memcmp(got.root_hash, pay.root_hash, 32) == 0 &&
+        if (sealed && ser && des &&
+            ws.size == FILE_MARKET_PAYMENT_WIRE_BYTES &&
+            memcmp(got.network_genesis, pay.network_genesis, 32) == 0 &&
+            memcmp(got.offer_id, pay.offer_id, 32) == 0 &&
             memcmp(got.txid, pay.txid, 32) == 0 &&
             got.chunks_paid == 10 &&
-            got.chunk_start == 5) {
+            got.chunk_start == 5 && got.amount_zat == pay.amount_zat &&
+            memcmp(got.claim_id, pay.claim_id, 32) == 0) {
             printf("OK\n");
         } else { printf("FAIL\n"); failures++; }
         stream_free(&ws);
@@ -696,6 +707,7 @@ int test_file_market(void)
         }
     }
 
+    failures += file_market_payment_tests();
     printf("\n%d file_market test(s) failed\n", failures);
     return failures;
 }

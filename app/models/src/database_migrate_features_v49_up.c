@@ -334,6 +334,54 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 56) {
+        /* v56: durable file-market payment claim locators. The exact signed
+         * claim and offer wires are retained so restart does not depend on an
+         * expiring gossip-cache row. status/height/confirmations are a
+         * rebuildable projection only: every paid file request rechecks the
+         * canonical transaction + decrypted wallet note authorities. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS market_payment_claims ("
+            "claim_id BLOB NOT NULL PRIMARY KEY CHECK(length(claim_id)=32),"
+            "offer_id BLOB NOT NULL CHECK(length(offer_id)=32),"
+            "txid BLOB NOT NULL CHECK(length(txid)=32),"
+            "buyer_pubkey BLOB NOT NULL CHECK(length(buyer_pubkey)=32),"
+            "chunk_start INTEGER NOT NULL CHECK(chunk_start>=0),"
+            "chunks_paid INTEGER NOT NULL CHECK(chunks_paid>0),"
+            "amount_zat INTEGER NOT NULL CHECK(amount_zat>0 AND "
+            "amount_zat<=2100000000000000),"
+            "claim_wire BLOB NOT NULL CHECK(length(claim_wire)=218),"
+            "offer_wire BLOB NOT NULL CHECK(length(offer_wire)=535),"
+            "status TEXT NOT NULL CHECK(status IN "
+            "('PENDING','CONFIRMED','UNKNOWN','CONFLICTED','REJECTED')),"
+            "status_reason TEXT NOT NULL,"
+            "output_index INTEGER NOT NULL DEFAULT -1 "
+            "CHECK(output_index>=-1),"
+            "block_height INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(block_height>=0),"
+            "confirmations INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(confirmations>=0),"
+            "observed_at INTEGER NOT NULL CHECK(observed_at>0),"
+            "reconciled_at INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(reconciled_at>=0))");
+        node_db_exec(ndb,
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "idx_market_payment_claim_contract "
+            "ON market_payment_claims(offer_id,txid,chunk_start,chunks_paid,"
+            "buyer_pubkey)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_market_payment_claim_buyer "
+            "ON market_payment_claims(offer_id,buyer_pubkey,status)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_market_payment_claim_txid "
+            "ON market_payment_claims(txid)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('056')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 56);
+        current_ver = 56;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

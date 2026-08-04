@@ -116,9 +116,13 @@ Source commit `cb8ab59d` plus the append-only notebook expansion in this change:
 - `market_purchase` is the one `BLOCKED` case: file-market payment-to-unlock
   glue has no end-to-end broadcast path. The seller-authenticated,
   network-bound offer ingress contract is implemented and focused-test proven,
-  but it is P2P setup—not a payment proof. Exact payment verification and paid
-  file unlock remain absent, so the proof stays `not_demonstrated` and is
-  deliberately not counted as PASS.
+  but it is P2P setup—not a payment proof. The follow-up exact-payment slice
+  rejects the old mempool-only notification, binds a signed buyer claim to the
+  offer/network/range/amount and canonical 512-byte Sapling memo, and proves
+  confirmation, restart reconstruction, reorg revocation, and reconfirmation
+  against wallet-note + chain authorities. Buyer wallet plan/commit and the
+  authenticated encrypted file request remain absent, so the proof stays
+  `not_demonstrated` and is deliberately not counted as PASS.
 - Current notebook result: **32/33 PASS**, **1 BLOCKED**, **5 simulated chain
   confirmations**, **0 mainnet confirmations**, and **0 ZCL** live recipient
   value or fees. No live wallet or service was mutated.

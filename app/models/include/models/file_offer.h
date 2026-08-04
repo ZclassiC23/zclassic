@@ -40,6 +40,9 @@ int db_file_offer_list(struct node_db *ndb,
 bool db_file_offer_find(struct node_db *ndb,
                         const uint8_t root_hash[32],
                         struct file_offer *out);
+bool db_file_offer_find_by_id(struct node_db *ndb,
+                              const uint8_t offer_id[32],
+                              struct file_offer *out);
 int db_file_offer_prune(struct node_db *ndb, int64_t max_age);
 
 #endif

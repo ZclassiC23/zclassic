@@ -214,6 +214,33 @@ bool db_file_offer_find(struct node_db *ndb,
         });
 }
 
+bool db_file_offer_find_by_id(struct node_db *ndb,
+                              const uint8_t offer_id[32],
+                              struct file_offer *out)
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("market", "db_file_offer_find_by_id: db not open");
+    if (!offer_id)
+        LOG_FAIL("market", "db_file_offer_find_by_id: offer_id is NULL");
+    if (!out)
+        LOG_FAIL("market", "db_file_offer_find_by_id: out is NULL");
+
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_ONE_BOOL(ndb, s,
+        "SELECT root_hash,filename,size_bytes,num_chunks,price_per_mb,"
+        "z_addr,peer_ip,peer_port,last_seen,ttl,auth_version,"
+        "network_genesis,seller_pubkey,nonce,issued_unix,expires_unix,"
+        "seller_signature,offer_id"
+        " FROM file_offers WHERE offer_id=? AND auth_version=1",
+        AR_BIND_BLOB(s, 1, offer_id, 32),
+        struct ar_errors errors;
+        if (!row_to_file_offer(s, out) ||
+            !db_file_offer_validate(out, &errors)) {
+            AR_FINALIZE(s);
+            return false;
+        });
+}
+
 int db_file_offer_prune(struct node_db *ndb, int64_t max_age)
 {
     if (!ndb || !ndb->open) return 0;

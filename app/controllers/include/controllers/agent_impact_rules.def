@@ -485,6 +485,10 @@ AGENT_IMPACT_RULE("app/conditions/src/sapling_anchor_frontier_unavailable.c|app/
 /* Wave 3: agent test runner (native-triggerable focused tests/scenarios). */
 AGENT_IMPACT_RULE("app/controllers/src/agent_test_controller.c|app/controllers/include/controllers/agent_test_controller.h|lib/test/src/test_agent_test.c", "agent_test make_lint_gates")
 
+/* Paid file-market contract: seller offer, buyer payment claim/memo,
+ * durable locator, chain/note reconciliation, and P2P composition wiring. */
+AGENT_IMPACT_RULE("lib/net/include/net/file_market.h|lib/net/src/file_market.c|lib/net/src/file_market_offer.c|lib/net/src/file_market_payment.c|lib/net/src/msgprocessor.c|lib/net/include/net/msgprocessor.h|app/models/src/file_offer.c|app/models/include/models/file_offer.h|app/models/src/market_payment_claim.c|app/models/include/models/market_payment_claim.h|app/services/src/file_market_payment_service.c|app/services/include/services/file_market_payment_service.h|config/src/boot_msg_callbacks.c|config/include/config/boot_msg_callbacks.h|config/src/boot_services.c|lib/test/src/test_file_market.c|lib/test/src/test_file_market_payment.c", "file_market db_migration_idempotent make_lint_gates")
+
 /* Wave 3: golden UTXO-ladder live tripwire. */
 AGENT_IMPACT_RULE("app/jobs/src/utxo_root_ladder_tripwire.c|app/jobs/src/utxo_root_ladder_tripwire.h|app/jobs/src/tip_finalize_post_step.h|lib/test/src/test_utxo_root_ladder_tripwire.c", "utxo_root_ladder_tripwire sha3_windows make_lint_gates")
 

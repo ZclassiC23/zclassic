@@ -19,6 +19,7 @@
 #include "services/quorum_oracle_service.h"
 #include "services/network_monitor.h"
 #include "services/sync_monitor.h"
+#include "services/file_market_payment_service.h"
 #include "controllers/sync_controller.h"
 #include "controllers/yardsale_controller.h"
 #include "models/peer.h"
@@ -383,6 +384,46 @@ bool boot_save_file_offer(const struct file_offer *offer, void *ctx)
     }
 
     return db_file_offer_save(svc->node_db, offer);
+}
+
+int boot_ingest_file_payment(const struct file_payment *payment,
+                             int64_t peer_id, int64_t now_unix, void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    (void)peer_id;
+    if (!svc || !svc->node_db || !svc->state || !payment)
+        return FILE_PAYMENT_INGEST_REJECTED;
+    int wallet_projection_height = -1;
+    if (svc->wallet) {
+        zcl_mutex_lock(&svc->wallet->cs);
+        wallet_projection_height = svc->wallet->best_block_height;
+        zcl_mutex_unlock(&svc->wallet->cs);
+    }
+    struct market_payment_claim_record record;
+    struct zcl_result result = market_payment_claim_ingest(
+        svc->node_db, svc->state, sync_get_state() == SYNC_AT_TIP,
+        wallet_projection_height, payment, now_unix, &record);
+    if (!result.ok) {
+        LOG_WARN("market", "payment claim ingress failed: code=%d %s",
+                 result.code, result.message);
+        return FILE_PAYMENT_INGEST_REJECTED;
+    }
+    if (strcmp(record.status, "CONFIRMED") == 0)
+        return FILE_PAYMENT_INGEST_CONFIRMED;
+    if (strcmp(record.status, "PENDING") == 0)
+        return FILE_PAYMENT_INGEST_PENDING;
+    if (strcmp(record.status, "UNKNOWN") == 0)
+        return FILE_PAYMENT_INGEST_UNKNOWN;
+    if (strcmp(record.status, "CONFLICTED") == 0)
+        return FILE_PAYMENT_INGEST_CONFLICTED;
+    return FILE_PAYMENT_INGEST_REJECTED;
+}
+
+void boot_wire_file_market(struct msg_processor *mp,
+                           struct boot_svc_ctx *svc)
+{
+    msg_processor_set_file_offer_save(mp, boot_save_file_offer, svc);
+    msg_processor_set_file_payment_ingest(mp, boot_ingest_file_payment, svc);
 }
 
 bool boot_save_zswap_ad(const struct zswap_yardsale_ad *ad, void *ctx)

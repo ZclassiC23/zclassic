@@ -148,29 +148,6 @@ bool file_proof_deserialize(struct file_proof *proof,
     return ok;
 }
 
-bool file_payment_serialize(const struct file_payment *pay,
-                            struct byte_stream *s)
-{
-    bool ok = true;
-    ok &= stream_write(s, pay->root_hash, 32);
-    ok &= stream_write(s, pay->txid, 32);
-    ok &= stream_write_u32_le(s, pay->chunks_paid);
-    ok &= stream_write_u32_le(s, pay->chunk_start);
-    return ok;
-}
-
-bool file_payment_deserialize(struct file_payment *pay,
-                              struct byte_stream *s)
-{
-    memset(pay, 0, sizeof(*pay));
-    bool ok = true;
-    ok &= stream_read(s, pay->root_hash, 32);
-    ok &= stream_read(s, pay->txid, 32);
-    ok &= stream_read_u32_le(s, &pay->chunks_paid);
-    ok &= stream_read_u32_le(s, &pay->chunk_start);
-    return ok;
-}
-
 /* ── Offer Cache ────────────────────────────────────────────────── */
 
 bool file_market_add_offer(const struct file_offer *offer)

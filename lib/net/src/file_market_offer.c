@@ -121,16 +121,15 @@ const char *file_offer_auth_error_string(enum file_offer_auth_error error)
     return "unknown";
 }
 
-bool file_market_offer_total_zat(const struct file_offer *offer,
-                                 int64_t *out_total_zat)
+static bool price_for_bytes(uint64_t size_bytes, int64_t price_per_mb,
+                            int64_t *out_total_zat)
 {
     static const uint64_t bytes_per_mb = 1024u * 1024u;
-    if (!offer || !out_total_zat || offer->size_bytes == 0 ||
-        offer->price_per_mb <= 0)
+    if (!out_total_zat || size_bytes == 0 || price_per_mb <= 0)
         return false;
-    uint64_t price = (uint64_t)offer->price_per_mb;
-    uint64_t whole_mb = offer->size_bytes / bytes_per_mb;
-    uint64_t remaining_bytes = offer->size_bytes % bytes_per_mb;
+    uint64_t price = (uint64_t)price_per_mb;
+    uint64_t whole_mb = size_bytes / bytes_per_mb;
+    uint64_t remaining_bytes = size_bytes % bytes_per_mb;
     if (whole_mb != 0 && price > (uint64_t)MAX_MONEY / whole_mb)
         return false;
     uint64_t total = whole_mb * price;
@@ -150,6 +149,34 @@ bool file_market_offer_total_zat(const struct file_offer *offer,
         return false;
     *out_total_zat = (int64_t)total;
     return true;
+}
+
+bool file_market_offer_total_zat(const struct file_offer *offer,
+                                 int64_t *out_total_zat)
+{
+    return offer && price_for_bytes(offer->size_bytes,
+                                    offer->price_per_mb, out_total_zat);
+}
+
+bool file_market_offer_range_zat(const struct file_offer *offer,
+                                 uint32_t chunk_start,
+                                 uint32_t chunks_paid,
+                                 int64_t *out_total_zat)
+{
+    if (!offer || !out_total_zat || chunks_paid == 0 ||
+        chunk_start >= offer->num_chunks ||
+        chunks_paid > offer->num_chunks - chunk_start)
+        return false;
+
+    uint64_t start = (uint64_t)chunk_start * FILE_MARKET_CHUNK_SIZE;
+    uint64_t end_chunk = (uint64_t)chunk_start + chunks_paid;
+    uint64_t end = end_chunk * FILE_MARKET_CHUNK_SIZE;
+    if (start >= offer->size_bytes)
+        return false;
+    if (end > offer->size_bytes)
+        end = offer->size_bytes;
+    return price_for_bytes(end - start, offer->price_per_mb,
+                           out_total_zat);
 }
 
 static enum file_offer_auth_error offer_fields(const struct file_offer *offer,

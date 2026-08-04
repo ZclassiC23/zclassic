@@ -1095,31 +1095,32 @@ static bool handle_zfilepay(struct msg_processor *mp, struct p2p_node *node,
     if (!file_payment_deserialize(&pay, s))
         return true;
 
-    /* Verify the payment is in our mempool */
-    struct uint256 txid_hash;
-    memcpy(txid_hash.data, pay.txid, 32);
-    bool in_mempool = tx_mempool_exists(mp->mempool, &txid_hash);
-
-    printf("market: payment from peer %s for %u chunks (txid in mempool: %s)\n",
-           node->addr_name, pay.chunks_paid,
-           in_mempool ? "yes" : "NO");
-
-    if (!in_mempool) {
-        printf("market: rejecting payment — txid not found in mempool\n");
+    enum file_payment_auth_error auth = file_payment_auth_verify(
+        &pay, mp && mp->params
+            ? mp->params->consensus.hashGenesisBlock.data : NULL);
+    if (auth != FILE_PAYMENT_AUTH_OK) {
+        LOG_WARN("market", "zfilepay rejected before ingress: %s",
+                 file_payment_auth_error_string(auth));
+        return true;
+    }
+    if (!mp->file_payment_ingest) {
+        LOG_WARN("market", "zfilepay rejected: payment authority is not wired");
         return true;
     }
 
-    /* Update download state: mark chunks as paid, advance to downloading */
-    struct file_download dl;
-    if (file_market_get_download(pay.root_hash, &dl)) {
-        uint32_t new_paid = pay.chunk_start + pay.chunks_paid;
-        if (new_paid > dl.chunks_paid_through)
-            file_market_update_download(pay.root_hash, FDL_DOWNLOADING,
-                                       dl.chunks_received, new_paid);
-    }
-    printf("market: payment verified, unlocking chunks %u-%u for peer %s\n",
-           pay.chunk_start, pay.chunk_start + pay.chunks_paid - 1,
-           node->addr_name);
+    int result = mp->file_payment_ingest(
+        &pay, (int64_t)node->id,
+        (int64_t)platform_time_wall_time_t(), mp->file_payment_ingest_ctx);
+    if (result == FILE_PAYMENT_INGEST_CONFIRMED)
+        LOG_INFO("market", "zfilepay reconciled as confirmed");
+    else if (result == FILE_PAYMENT_INGEST_PENDING)
+        LOG_INFO("market", "zfilepay recorded pending confirmation");
+    else if (result == FILE_PAYMENT_INGEST_UNKNOWN)
+        LOG_WARN("market", "zfilepay money state is unknown; unlock refused");
+    else if (result == FILE_PAYMENT_INGEST_CONFLICTED)
+        LOG_WARN("market", "zfilepay conflicts with authoritative payment state");
+    else
+        LOG_WARN("market", "zfilepay rejected by payment authority");
     return true;
 }
 
@@ -1529,6 +1530,8 @@ void msg_processor_init(struct msg_processor *mp,
     mp->zmsg_save_ctx = NULL;
     mp->file_offer_save = NULL;
     mp->file_offer_save_ctx = NULL;
+    mp->file_payment_ingest = NULL;
+    mp->file_payment_ingest_ctx = NULL;
     mp->file_service_save = NULL;
     mp->file_service_save_ctx = NULL;
     mp->snapshot_active = NULL;
@@ -1668,6 +1671,15 @@ void msg_processor_set_file_offer_save(struct msg_processor *mp,
         return;
     mp->file_offer_save = save;
     mp->file_offer_save_ctx = ctx;
+}
+
+void msg_processor_set_file_payment_ingest(
+    struct msg_processor *mp, msg_file_payment_ingest_fn ingest, void *ctx)
+{
+    if (!mp)
+        return;
+    mp->file_payment_ingest = ingest;
+    mp->file_payment_ingest_ctx = ctx;
 }
 
 void msg_processor_set_file_service_save(struct msg_processor *mp,

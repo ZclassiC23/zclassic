@@ -156,10 +156,11 @@ logs, or the notebook. A public mainnet txid may be recorded after broadcast.
 - ZCODE reward and badge assets are simulated local objects today. ZCODE
   science, package, DHT, and fetch operations are also off-chain. Only
   `zcode_release_anchor` in this catalog commits a ZCODE-derived root on-chain.
-- File-market offers, challenges, proofs, and payment notifications are P2P or
-  local workflow objects. `market_purchase` remains `planned` because the
-  payment-to-content-unlock glue is not wired end to end. Paid offer ingress
-  is now seller-signed, network-bound, expiry-checked, and durable; see
+- File-market offers, challenges, proofs, and signed payment claims are P2P or
+  local workflow objects. `market_purchase` remains `planned` because buyer
+  wallet plan/commit and authenticated byte transfer are not wired end to end.
+  Paid offer ingress and exact confirmed Sapling-payment reconciliation are
+  network-bound, expiry-checked, durable, and reorg-aware; see
   [`FILE_MARKET_PROTOCOL.md`](./FILE_MARKET_PROTOCOL.md) for the exact contract
   and remaining purchase-service boundary.
 - Legacy `zclassicd` wallet funds are operator-owned and outside agent custody.

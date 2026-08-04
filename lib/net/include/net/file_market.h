@@ -32,6 +32,12 @@
 #define FILE_MARKET_OFFER_MAX_LIFETIME_SECS 3600LL
 #define FILE_MARKET_OFFER_BODY_BYTES 471u
 #define FILE_MARKET_OFFER_WIRE_BYTES 535u
+#define FILE_MARKET_PAYMENT_VERSION  1u
+#define FILE_MARKET_PAYMENT_BODY_BYTES 154u
+#define FILE_MARKET_PAYMENT_WIRE_BYTES 218u
+#define FILE_MARKET_PAYMENT_MEMO_BYTES 512u
+#define FILE_MARKET_PAYMENT_MEMO_BODY_BYTES 120u
+#define FILE_MARKET_PAYMENT_MIN_CONFIRMATIONS 1u
 #define FILE_MARKET_PEER_SLOTS 64
 #define FILE_MARKET_PEER_WINDOW_SECS 10
 #define FILE_MARKET_PEER_WINDOW_MAX_OFFERS 8
@@ -96,6 +102,13 @@ const char *file_offer_auth_error_string(enum file_offer_auth_error error);
  * ZClassic MAX_MONEY. No floating point is permitted in settlement logic. */
 bool file_market_offer_total_zat(const struct file_offer *offer,
                                  int64_t *out_total_zat);
+/* Exact price for one contiguous chunk range. The final partial chunk is
+ * charged only for its real bytes; every range uses integer ceil division and
+ * is bounded to MAX_MONEY. */
+bool file_market_offer_range_zat(const struct file_offer *offer,
+                                 uint32_t chunk_start,
+                                 uint32_t chunks_paid,
+                                 int64_t *out_total_zat);
 enum file_offer_auth_error file_offer_auth_validate(
     const struct file_offer *offer);
 enum file_offer_auth_error file_offer_auth_validate_at(
@@ -148,11 +161,77 @@ struct file_proof {
 
 /* ── Payment Notification ───────────────────────────────────────── */
 
+/* zfilepay.v1 is a signed payment CLAIM, not payment authority. The seller
+ * unlocks only after the app service independently finds the exact confirmed
+ * Sapling output and canonical memo in wallet_sapling_notes + chain
+ * projections. buyer_pubkey binds that output to subsequent file requests;
+ * the corresponding private seed never enters this struct or the wire. */
 struct file_payment {
-    uint8_t  root_hash[32];       /* which file */
-    uint8_t  txid[32];           /* shielded payment txid */
-    uint32_t chunks_paid;        /* number of chunks this covers */
-    uint32_t chunk_start;        /* first chunk index covered */
+    uint16_t version;
+    uint8_t  network_genesis[32];
+    uint8_t  offer_id[32];
+    uint8_t  txid[32];
+    uint32_t chunk_start;
+    uint32_t chunks_paid;
+    int64_t  amount_zat;
+    uint8_t  buyer_pubkey[32];
+    uint8_t  buyer_signature[64];
+    uint8_t  claim_id[32];       /* SHA3 of the complete signed wire */
+};
+
+enum file_payment_auth_error {
+    FILE_PAYMENT_AUTH_OK = 0,
+    FILE_PAYMENT_AUTH_ERR_NULL,
+    FILE_PAYMENT_AUTH_ERR_VERSION,
+    FILE_PAYMENT_AUTH_ERR_WIRE_SIZE,
+    FILE_PAYMENT_AUTH_ERR_WIRE_MAGIC,
+    FILE_PAYMENT_AUTH_ERR_NETWORK,
+    FILE_PAYMENT_AUTH_ERR_OFFER_ID,
+    FILE_PAYMENT_AUTH_ERR_TXID,
+    FILE_PAYMENT_AUTH_ERR_RANGE,
+    FILE_PAYMENT_AUTH_ERR_AMOUNT,
+    FILE_PAYMENT_AUTH_ERR_BUYER_KEY,
+    FILE_PAYMENT_AUTH_ERR_SIGNATURE,
+    FILE_PAYMENT_AUTH_ERR_KEY_MISMATCH,
+    FILE_PAYMENT_AUTH_ERR_CLAIM_ID,
+    FILE_PAYMENT_AUTH_ERR_NETWORK_MISMATCH,
+    FILE_PAYMENT_AUTH_ERR_OFFER_MISMATCH,
+    FILE_PAYMENT_AUTH_ERR_MEMO,
+};
+
+const char *file_payment_auth_error_string(
+    enum file_payment_auth_error error);
+enum file_payment_auth_error file_payment_auth_encode(
+    const struct file_payment *payment,
+    uint8_t out[FILE_MARKET_PAYMENT_WIRE_BYTES]);
+enum file_payment_auth_error file_payment_auth_decode(
+    const uint8_t *wire, size_t wire_len, struct file_payment *out);
+enum file_payment_auth_error file_payment_auth_body_root(
+    const struct file_payment *payment, uint8_t out[32]);
+enum file_payment_auth_error file_payment_auth_claim_id(
+    const struct file_payment *payment, uint8_t out[32]);
+enum file_payment_auth_error file_payment_auth_seal(
+    struct file_payment *payment, const uint8_t buyer_seed[32]);
+enum file_payment_auth_error file_payment_auth_verify(
+    const struct file_payment *payment,
+    const uint8_t expected_network_genesis[32]);
+enum file_payment_auth_error file_payment_auth_verify_for_offer(
+    const struct file_payment *payment, const struct file_offer *offer);
+/* The on-chain Sapling memo is exactly 512 bytes. It binds the payment output
+ * to the network, signed offer, chunk range, exact amount, and buyer public
+ * key; all unused bytes must be zero. */
+enum file_payment_auth_error file_payment_memo_encode(
+    const struct file_payment *payment,
+    uint8_t out[FILE_MARKET_PAYMENT_MEMO_BYTES]);
+enum file_payment_auth_error file_payment_memo_verify(
+    const struct file_payment *payment, const uint8_t *memo, size_t memo_len);
+
+enum file_payment_ingest_result {
+    FILE_PAYMENT_INGEST_CONFIRMED = 0,
+    FILE_PAYMENT_INGEST_PENDING,
+    FILE_PAYMENT_INGEST_UNKNOWN,
+    FILE_PAYMENT_INGEST_CONFLICTED,
+    FILE_PAYMENT_INGEST_REJECTED,
 };
 
 /* ── Download Session ───────────────────────────────────────────── */
