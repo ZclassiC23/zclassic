@@ -666,8 +666,10 @@ for _ in $(seq 1 120); do
 done
 [ "$(sa_jget "$da" 'd.get("data",{}).get("enabled",False)')" = "True" ] || sa_die "A DHT did not enable"
 [ "$(sa_jget "$db" 'd.get("data",{}).get("enabled",False)')" = "True" ] || sa_die "B DHT did not enable"
-[ "$(sa_jget "$da" 'd.get("data",{}).get("connected_authenticated",0)')" -ge 1 ] || sa_die "A never authenticated B over DHT"
-[ "$(sa_jget "$db" 'd.get("data",{}).get("connected_authenticated",0)')" -ge 1 ] || sa_die "B never authenticated A over DHT"
+[ "$(sa_jget "$da" 'd.get("data",{}).get("connected_authenticated",0)')" -ge 1 ] \
+    || sa_die "A never authenticated B over DHT: A=$da B=$db"
+[ "$(sa_jget "$db" 'd.get("data",{}).get("connected_authenticated",0)')" -ge 1 ] \
+    || sa_die "B never authenticated A over DHT: A=$da B=$db"
 
 # ── [2..6] A's science lifecycle ──────────────────────────────────────
 sa_step "2-6" "A: preregister -> confined execute -> reproduce -> findings/review/vote -> discover"
