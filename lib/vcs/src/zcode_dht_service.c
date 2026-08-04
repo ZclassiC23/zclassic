@@ -246,6 +246,7 @@ void vcs_zcode_dht_service_query_finish(
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS; i++)
     vcs_zcode_dht_lookup_assess(s, &s->lookups[i]);
   vcs_zcode_dht_lookup_schedule(s, now);
+  vcs_zcode_dht_service_publication_schedule(s, now);
 }
 
 static void query_expire(struct vcs_zcode_dht_service *s,
@@ -767,4 +768,5 @@ void vcs_zcode_dht_service_tick(struct vcs_zcode_dht_service *s,
           break;
         }
     }
+  vcs_zcode_dht_service_publication_schedule(s, now);
 }

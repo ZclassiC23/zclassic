@@ -459,7 +459,56 @@ vcs_zcode_dht_service_record_publish_commit(
                      result == VCS_ZCODE_DHT_RECORD_STORE_DUPLICATE ||
                      result == VCS_ZCODE_DHT_RECORD_STORE_CONFLICT))
     *record_out = record;
+  if (result == VCS_ZCODE_DHT_RECORD_STORE_ADDED ||
+      result == VCS_ZCODE_DHT_RECORD_STORE_CONFLICT) {
+    for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS; i++)
+      if (!service->publications[i].used) {
+        memset(&service->publications[i], 0, sizeof(service->publications[i]));
+        service->publications[i].used = true;
+        service->publications[i].record = record;
+        break;
+      }
+    vcs_zcode_dht_service_publication_schedule(service, now);
+  }
   return result;
+}
+
+void vcs_zcode_dht_service_publication_schedule(
+    struct vcs_zcode_dht_service *service, struct vcs_zcode_dht_time now)
+{
+  if (!service || !service->enabled)
+    return;
+  for (size_t j = 0; j < VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS; j++) {
+    struct service_publication *publication = &service->publications[j];
+    if (!publication->used)
+      continue;
+    if (now.wall_unix >= publication->record.expiry ||
+        publication->attempts >= VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS) {
+      memset(publication, 0, sizeof(*publication));
+      continue;
+    }
+    for (size_t p = 0; p < VCS_ZCODE_DHT_SERVICE_MAX_PEERS &&
+                       publication->attempts < VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS;
+         p++) {
+      uint8_t mask = (uint8_t)(1u << (p & 7u));
+      size_t byte = p >> 3;
+      if ((publication->attempted_peer_slots[byte] & mask) != 0 ||
+          !service->peers[p].used || !service->peers[p].connected ||
+          !service->peers[p].authenticated)
+        continue;
+      uint64_t operation_id = 0;
+      if (!vcs_zcode_dht_service_record_store_begin(
+              service, service->peers[p].peer_id, &publication->record, now,
+              &operation_id))
+        return; /* shared three-query budget is full; next tick resumes */
+      struct service_record_operation *operation =
+          records_operation_find(service, operation_id);
+      if (operation)
+        operation->detached = true;
+      publication->attempted_peer_slots[byte] |= mask;
+      publication->attempts++;
+    }
+  }
 }
 
 static bool reply_records(struct vcs_zcode_dht_service *service,
@@ -547,7 +596,7 @@ bool vcs_zcode_dht_service_records_handle(
     return reply_records(service, peer, &message->find_record, now.wall_unix);
   }
   if (message->kind == VCS_ZCODE_DHT_MSG_STORE_RECORD) {
-    if (!records_policy_allows(service, VCS_ZCODE_SOVEREIGNTY_STORE,
+    if (!records_policy_allows(service, VCS_ZCODE_SOVEREIGNTY_DISCOVER,
                                &message->store_record.record)) {
       if (rejected_out)
         *rejected_out = VCS_ZCODE_DHT_REJECT_UNAUTHORIZED;
@@ -595,6 +644,8 @@ bool vcs_zcode_dht_service_records_handle(
            operation->record_count * sizeof(*operation->records));
     operation->state = VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE;
     service->records_received++;
+    if (operation->detached)
+      memset(operation, 0, sizeof(*operation));
     return true;
   }
   if (message->kind == VCS_ZCODE_DHT_MSG_STORE_RESULT) {
@@ -611,6 +662,8 @@ bool vcs_zcode_dht_service_records_handle(
                            ? VCS_ZCODE_DHT_RECORD_OPERATION_REJECTED
                            : VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE;
     service->store_result_received++;
+    if (operation->detached)
+      memset(operation, 0, sizeof(*operation));
     return true;
   }
   return false;
@@ -627,8 +680,12 @@ void vcs_zcode_dht_service_record_query_finish(
     return;
   struct service_record_operation *operation =
       records_operation_find(service, query->record_operation_id);
-  if (operation)
-    operation->state = outcome == QUERY_OUTCOME_EXPIRED
-                           ? VCS_ZCODE_DHT_RECORD_OPERATION_TIMEOUT
-                           : VCS_ZCODE_DHT_RECORD_OPERATION_REJECTED;
+  if (operation) {
+    if (operation->detached)
+      memset(operation, 0, sizeof(*operation));
+    else
+      operation->state = outcome == QUERY_OUTCOME_EXPIRED
+                             ? VCS_ZCODE_DHT_RECORD_OPERATION_TIMEOUT
+                             : VCS_ZCODE_DHT_RECORD_OPERATION_REJECTED;
+  }
 }

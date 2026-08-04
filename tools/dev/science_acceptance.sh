@@ -604,11 +604,17 @@ BLOB_ROOT="$(sa_jget "$out" 'd["data"]["blob_root"]')"
 [ "$(sa_jget "$out" 'd["data"]["kind"]')" = "study" ] \
     || sa_die "publish reported the wrong kind: $out"
 echo "science-acceptance:     A published study ${A_STUDY:0:16}… as blob ${BLOB_ROOT:0:16}… (one-shot store persist; A announces it from its next store open)"
-# B schedules the download now (one-shot: persists the resumable record);
+# B starts from only the semantic science root. The signed POINTER is carried
+# over the same authenticated DHT session; once admitted locally it resolves
+# the transport root and schedules the download (one-shot persists it).
 # the [10] restart lets A's store rescan announce the blob and B's live
 # engine resume the record and pull it.
-out="$(sa_sci "$SA_DD_B" zcode.science.fetch "{\"blob_root\":\"$BLOB_ROOT\",\"now_unix\":$NOW_STUDY}")"
-[ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "B science fetch schedule failed: $out"
+for _ in $(seq 1 20); do
+    out="$(sa_sci "$SA_DD_B" zcode.science.fetch "{\"root\":\"$A_STUDY\",\"now_unix\":$NOW_STUDY}")"
+    [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] && break
+    sleep 1
+done
+[ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "B root-only science discovery/fetch schedule failed: $out"
 [ "$(sa_jget "$out" 'd["data"]["admitted"]')" = "False" ] \
     || sa_die "B admitted a blob it could not have downloaded yet"
 
@@ -636,7 +642,7 @@ sa_step 10b "G1 carrier: poll B's admit of A's study (budget ${PKG_WAIT}s)"
 ADMITTED=0
 deadline=$(( $(date +%s) + PKG_WAIT ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    out="$(sa_sci "$SA_DD_B" zcode.science.fetch "{\"blob_root\":\"$BLOB_ROOT\",\"now_unix\":$NOW_STUDY}")"
+    out="$(sa_sci "$SA_DD_B" zcode.science.fetch "{\"root\":\"$A_STUDY\",\"now_unix\":$NOW_STUDY}")"
     [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] \
         && [ "$(sa_jget "$out" 'd["data"]["admitted"]')" = "True" ] \
         && { ADMITTED=1; break; }
@@ -663,10 +669,10 @@ rebuild_proof "$SA_DD_B" "B" "$B_STUDY" "$B_RA" "$B_PA"
 # ── verdict ────────────────────────────────────────────────────────────
 echo "science-acceptance: ─────────────────────────────────────────────"
 echo "science-acceptance: NAMED GAPS (asserted, not worked around):"
-echo "science-acceptance:   G1 CLOSED (gated): A's study crossed node-to-node as a swarm blob —"
-echo "science-acceptance:       zcode.science.publish (CAS→blob mirror) + zcode.science.fetch"
+echo "science-acceptance:   G1/S7 CLOSED (gated): B starts with only A's science root —"
+echo "science-acceptance:       signed POINTER + PROVIDER over S6, then zcode.science.fetch"
 echo "science-acceptance:       (swarm download → root re-derived from bytes → CAS + projection)."
-echo "science-acceptance:       Honest limit: the blob root moves out of band (S7 provider/root discovery; S6 finds node IDs only)."
+echo "science-acceptance:       no out-of-band blob root; bytes still re-derive the semantic root before admission."
 echo "science-acceptance:   G2 CLOSED (gated): fresh-node swarm fetch proven node-to-node —"
 echo "science-acceptance:       NEW_USER bootstrap announce quota (4/h) + deduped per-sync re-announce"
 echo "science-acceptance:       + supervisor clock-driven swarm (net.zcode_swarm, 1 s)"

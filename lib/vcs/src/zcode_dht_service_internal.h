@@ -95,7 +95,7 @@ enum service_record_operation_kind {
 };
 
 struct service_record_operation {
-  bool used;
+  bool used, detached;
   enum service_record_operation_kind kind;
   uint64_t id;
   enum vcs_zcode_dht_record_operation_state state;
@@ -103,6 +103,13 @@ struct service_record_operation {
   struct vcs_zcode_dht_record_selector selector;
   uint32_t record_count;
   struct vcs_zcode_dht_record records[VCS_ZCODE_DHT_RECORDS_PER_FRAME];
+};
+
+struct service_publication {
+  bool used;
+  uint8_t attempted_peer_slots[8];
+  uint8_t attempts;
+  struct vcs_zcode_dht_record record;
 };
 
 struct vcs_zcode_dht_service {
@@ -126,6 +133,8 @@ struct vcs_zcode_dht_service {
   struct service_outbound outbound[VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND];
   struct service_record_operation
       record_operations[VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS];
+  struct service_publication
+      publications[VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS];
   struct vcs_zcode_dht_record_store *record_store;
   uint32_t outbound_count;
   uint64_t serial, next_lookup_id, next_record_operation_id;
@@ -196,6 +205,8 @@ bool vcs_zcode_dht_service_records_handle(
 void vcs_zcode_dht_service_record_query_finish(
     struct vcs_zcode_dht_service *service, const struct service_query *query,
     enum query_outcome outcome);
+void vcs_zcode_dht_service_publication_schedule(
+    struct vcs_zcode_dht_service *service, struct vcs_zcode_dht_time now);
 bool vcs_zcode_dht_message_is_request(enum vcs_zcode_dht_msg_kind kind);
 const uint8_t *vcs_zcode_dht_message_query_id(
     const struct vcs_zcode_dht_msg *message);

@@ -516,7 +516,7 @@ static int test_record_transport_and_restart(void) {
     memset(publish.semantic_root, 0x41, 32);
     memset(publish.transport_root, 0x42, 32);
     publish.sequence = 1;
-    publish.not_before = 1001;
+    publish.not_before = 1000;
     publish.expiry = 2000;
     uint8_t plan_token[32];
     struct vcs_zcode_dht_record published_record;
