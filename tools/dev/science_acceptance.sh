@@ -221,14 +221,16 @@ sa_wait_topology() { # wait for the one permitted A<->B peer on both sides
     return 1
 }
 
-sa_spawn() { # $1=datadir $2=p2p $3=rpc $4=fs $5=https $6=connect-target
+sa_spawn() { # $1=datadir $2=p2p $3=rpc $4=fs $5=https $6=connect-target $7=mode
     local dd="$1" p2p="$2" rpc="$3" fs="$4" https="$5" conn="$6"
+    local mode="${7:-hosting}" service_args=(-packagehost=1 -nofilesync)
+    [ "$mode" = "bootstrap" ] && service_args=(-packagehost=0)
     setsid "$NODE_BIN" \
         -datadir="$dd" -regtest \
         -port="$p2p" -rpcport="$rpc" -fsport="$fs" -httpsport="$https" \
-        -connect="$conn" -packagehost=1 -v2transport \
+        -connect="$conn" "${service_args[@]}" -v2transport \
         -allow-plaintext-wallet -wallet-no-phrase-backup \
-        -nobgvalidation -nolegacyimport -nofilesync -showmetrics=0 \
+        -nobgvalidation -nolegacyimport -showmetrics=0 \
         >"$dd/node.log" 2>&1 &
     echo "$!"   # PID == PGID (setsid leader)
 }
@@ -602,10 +604,10 @@ out="$(sa_sci "$SA_DD_B" zcode.package.fetch "{\"root\":\"$PKG_ROOT\"}")"
 
 # ── [1] boot A and B; assert the loopback-only topology ───────────────
 sa_step 1 "boot isolated pre-delegation link; assert exactly A<->B"
-SA_PGID_A="$(sa_spawn "$SA_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK")"
+SA_PGID_A="$(sa_spawn "$SA_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK" bootstrap)"
 sa_wait_rpc "$SA_DD_A" "$A_RPC" "$SA_PGID_A" "$RPC_WARMUP" \
     || { tail -20 "$SA_DD_A/node.log" >&2; sa_die "A RPC never came up"; }
-SA_PGID_B="$(sa_spawn "$SA_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$A_PORT")"
+SA_PGID_B="$(sa_spawn "$SA_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$A_PORT" bootstrap)"
 sa_wait_rpc "$SA_DD_B" "$B_RPC" "$SA_PGID_B" "$RPC_WARMUP" \
     || { tail -20 "$SA_DD_B/node.log" >&2; sa_die "B RPC never came up"; }
 sa_wait_topology || sa_die "A<->B pre-delegation topology did not settle"
