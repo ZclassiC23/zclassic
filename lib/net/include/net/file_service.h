@@ -122,6 +122,10 @@ bool fs_send_frame(struct fs_session *s, uint8_t type,
 bool fs_recv_frame(struct fs_session *s, uint8_t *type_out,
                     const uint8_t **payload_out, uint32_t *payload_len_out);
 
+/* Send one raw authenticated chunk after an encrypted typed reply. */
+bool fs_send_chunk_fast(struct fs_session *s, const uint8_t *data,
+                        uint32_t size, const uint8_t sha3[32]);
+
 /* High-level: serve files on configured port. Runs in its own thread. */
 void fs_server_start(const char *datadir, uint16_t port);
 void fs_server_stop(void);

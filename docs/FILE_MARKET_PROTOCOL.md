@@ -2,8 +2,9 @@
 
 This page is the developer and agent map for paid file offers and purchases.
 The seller-authenticated offer ingress and exact confirmed-payment authority
-are implemented. Local paid offer creation, buyer wallet planning, and the
-encrypted paid-file request remain deliberately unavailable.
+are implemented. The encrypted `zfileget.v1` request and authorize-before-read
+gate are implemented. Local paid offer/content registration and buyer wallet
+planning remain deliberately unavailable.
 
 ## Table of contents
 
@@ -13,11 +14,12 @@ encrypted paid-file request remain deliberately unavailable.
 4. [Signed payment claim](#signed-payment-claim)
 5. [Canonical Sapling memo](#canonical-sapling-memo)
 6. [Payment reconciliation](#payment-reconciliation)
-7. [Validation invariants](#validation-invariants)
-8. [API posture](#api-posture)
-9. [Where code belongs](#where-code-belongs)
-10. [AI and developer workflow](#ai-and-developer-workflow)
-11. [Proof checklist](#proof-checklist)
+7. [Buyer-authenticated delivery request](#buyer-authenticated-delivery-request)
+8. [Validation invariants](#validation-invariants)
+9. [API posture](#api-posture)
+10. [Where code belongs](#where-code-belongs)
+11. [AI and developer workflow](#ai-and-developer-workflow)
+12. [Proof checklist](#proof-checklist)
 
 ## Current boundary
 
@@ -32,7 +34,9 @@ signed payment-claim ingress       IMPLEMENTED
 seller exact-output verification   IMPLEMENTED
 restart/reorg reconciliation       IMPLEMENTED
 per-chunk authorization service    IMPLEMENTED
-encrypted paid file request        PLANNED
+encrypted paid file request        IMPLEMENTED
+authorize-before-content-read      IMPLEMENTED
+owner content registration/reader  PLANNED
 ```
 
 `zfileoffer` is an authenticated P2P contract, not a blockchain transaction.
@@ -210,6 +214,55 @@ State meanings are strict:
 | `CONFLICTED` | Canonical evidence contradicts the claim, including reorg removal. |
 | `REJECTED` | Claim contract, signature, offer, network, range, or amount is invalid. |
 
+## Buyer-authenticated delivery request
+
+`zfileget.v1` rides an encrypted `FS_REQUEST` frame and is exactly 206 bytes.
+Integers are little-endian.
+
+| Offset | Bytes | Field |
+|---:|---:|---|
+| 0 | 8 | `ZFGETV1\n` magic |
+| 8 | 2 | version (`1`) |
+| 10 | 32 | ZClassic network genesis hash |
+| 42 | 32 | exact signed `offer_id` |
+| 74 | 4 | requested chunk index |
+| 78 | 32 | buyer Ed25519 public key from the payment memo |
+| 110 | 32 | session ID |
+| 142 | 64 | buyer Ed25519 signature |
+
+The session ID is domain-separated SHA3-256 over network genesis, the
+initiator handshake nonce, and the responder handshake nonce. The signature
+covers a domain-separated root of bytes `0..141`. A captured request therefore
+cannot be moved onto another file-service session, and changing the offer,
+chunk, buyer, network, or session invalidates the signature.
+
+Every request receives one encrypted 84-byte `zfileget.reply.v1` before any
+raw chunk bytes. Its fixed fields are reply magic, version, typed status,
+offer ID, chunk index, byte size, and SHA3-256. Only `READY` is followed by the
+raw authenticated chunk. Other statuses are `MALFORMED`, `UNAUTHENTICATED`,
+`PENDING`, `UNKNOWN`, `CONFLICTED`, `REJECTED`, `CONTENT_UNAVAILABLE`, and
+`RESOURCE_LIMIT`.
+
+The server call order is load-bearing:
+
+```text
+fixed decode -> session/signature verification
+             -> synchronous current payment authorization
+             -> owner-registered content loader
+             -> content SHA3 verification
+             -> typed READY reply
+             -> paid bytes
+```
+
+`PENDING`, `UNKNOWN`, `CONFLICTED`, `REJECTED`, and unauthenticated requests
+never invoke the content loader. The production boot adapter already connects
+the authorization step to `market_payment_authorize_chunk`; its loader is
+intentionally NULL until the next resource slice adds an owner-created content
+registration. Consequently the current production result after a confirmed
+payment is `CONTENT_UNAVAILABLE`, not an unsafe path guess or accidental free
+serve. The existing `ROM` path remains a separate price-zero recovery service
+and cannot be used as a paid-content registry.
+
 ## Validation invariants
 
 A paid offer enters cache or persistence only when all of these hold:
@@ -240,7 +293,7 @@ context.
 | `app market list` | ready/read-only | Lists cached offers; paid rows expose `authenticated`, `offer_id`, expiry, and exact total. |
 | `app market status` | ready/read-only | Reports bounded cache/persistence state. |
 | `app market offer` | planned/fail-closed | Awaits local manifest construction, owner signing, and origin announcement. |
-| `app market buy` | planned/fail-closed | Exact seller-side verification exists; buyer wallet plan/commit and authenticated byte transfer remain. |
+| `app market buy` | planned/fail-closed | Seller verification and authenticated delivery gate exist; buyer wallet plan/commit and owner content registration remain. |
 | `romseed_register` | ready/operator | Registers verified price-zero recovery artifacts; it is not a paid offer. |
 | `app transaction-types show --type=market_purchase` | ready/read-only | Canonical machine-readable readiness and proof record. |
 
@@ -262,7 +315,10 @@ feature slice:
 | payment claim/memo codec | `lib/net/src/file_market_payment.c` |
 | durable payment locator | `app/models/src/market_payment_claim.c` |
 | exact chain/note reconciliation | `app/services/src/file_market_payment_service.c` |
+| signed delivery codec and no-read gate | `lib/net/src/file_market_delivery.c` |
+| boot authorization adapter | `config/src/boot_file_market_delivery.c` |
 | future buyer plan/commit | a dedicated wallet-touching `app/services/` service |
+| future seller content registry | an owner-private ActiveRecord resource/service, never the free ROM registry |
 | thin native/REST adapters | `app/controllers/` plus `config/commands/` |
 | semantic readiness/proof | `transaction_types.def` and transaction lab |
 
@@ -286,7 +342,12 @@ Do not build a payment by copying structs or invoking an RPC from memory:
 5. Keep the buyer private key and wallet keys behind their signing boundaries.
 6. Treat a txid or `PENDING` claim as locked. Only the seller's synchronous
    `CONFIRMED` authorization permits bytes to leave the paid file service.
-7. On `UNKNOWN` or `CONFLICTED`, stop and report the reason; never substitute
+7. Sign each `zfileget.v1` request for the current encrypted session. Do not
+   reuse a request body across reconnects or expose the ephemeral buyer seed.
+8. Accept bytes only after the typed `READY` reply and verify the announced
+   chunk SHA3. `CONTENT_UNAVAILABLE` means the seller has not registered the
+   content locally; it is not permission to try a filesystem path.
+9. On `UNKNOWN` or `CONFLICTED`, stop and report the reason; never substitute
    zero, retry a spend blindly, or bypass reconciliation.
 
 ## Proof checklist
@@ -312,4 +373,5 @@ Only then change its transaction-catalog availability or proof level.
 <!-- claim: symbol-present file_market_offer_total_zat lib/net/src/file_market_offer.c -->
 <!-- claim: symbol-present file_payment_auth_verify_for_offer lib/net/src/file_market_payment.c -->
 <!-- claim: symbol-present market_payment_authorize_chunk app/services/src/file_market_payment_service.c -->
+<!-- claim: symbol-present file_market_delivery_prepare lib/net/src/file_market_delivery.c -->
 <!-- claim: symbol-present market_purchase app/controllers/include/controllers/transaction_types.def -->

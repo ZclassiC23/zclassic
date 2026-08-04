@@ -9,6 +9,7 @@
  * boot-state static. */
 
 #include "config/boot_msg_callbacks.h"
+#include "config/boot_file_market_delivery.h"
 #include "config/boot_internal.h"
 #include "config/db_service.h"
 #include "services/chain_activation_service.h"
@@ -424,6 +425,7 @@ void boot_wire_file_market(struct msg_processor *mp,
 {
     msg_processor_set_file_offer_save(mp, boot_save_file_offer, svc);
     msg_processor_set_file_payment_ingest(mp, boot_ingest_file_payment, svc);
+    boot_wire_file_market_delivery(svc);
 }
 
 bool boot_save_zswap_ad(const struct zswap_yardsale_ad *ad, void *ctx)

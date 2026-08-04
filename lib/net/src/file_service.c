@@ -9,6 +9,7 @@
 #include "platform/time_compat.h"
 #include "net/net_runtime_port.h"
 #include "net/file_manifest.h"
+#include "net/file_market_delivery.h"
 #include "net/file_service.h"
 #include "net/rom_seed.h"
 #include "util/log_json.h"
@@ -36,7 +37,6 @@
 #include "util/thread_registry.h"
 #include "util/thread_liveness.h"
 #include "json/json.h"
-
 static void fs_join_deadline_from_now(struct timespec *ts, int timeout_sec)
 {
     platform_time_realtime_timespec(ts);
@@ -1210,25 +1210,25 @@ static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
             continue;
         }
 
-        /* Free-tier ROM artifact chunk request — independent of the ALL/RNG
-         * bulk-stream PoW gate; bounded by the rom_seed caps instead. */
         if (type == FS_REQUEST) {
+            if (file_market_delivery_is_request(payload, plen)) {
+                if (!file_market_delivery_serve(&session, client_ip,
+                                                payload, plen))
+                    break;
+                continue;
+            }
+            /* Free ROM requests use independent rom_seed caps. */
             uint8_t rom_root[32];
             uint32_t rom_idx = 0;
             if (fs_parse_rom_request(payload, plen, rom_root, &rom_idx)) {
                 fs_serve_rom_chunk(&session, client_ip, rom_root, rom_idx);
                 continue;
             }
-            /* Per-chunk manifest request (WF2 artifact-protocol) — sibling of
-             * the ROM chunk request; served free under the same rom_seed caps. */
             uint8_t rmf_root[32];
             if (fs_parse_rom_manifest_request(payload, plen, rmf_root)) {
                 fs_serve_rom_manifest(&session, client_ip, rmf_root);
                 continue;
             }
-            /* ROM directory-listing request (RLS) — serve the artifact catalog
-             * so a fresh clearnet node can discover the bundle manifest without
-             * the onion path; same rom_seed caps as chunk/manifest serving. */
             if (fs_parse_rom_list_request(payload, plen)) {
                 fs_serve_rom_list(&session, client_ip);
                 continue;
