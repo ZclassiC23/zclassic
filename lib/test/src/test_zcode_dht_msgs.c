@@ -168,12 +168,121 @@ static int test_rejections(void)
     return failures;
 }
 
+static bool fixture_auth_record(struct msg_fixture *f,
+                                struct vcs_zcode_dht_msg_records *message)
+{
+    memset(message, 0, sizeof(*message));
+    message->session_generation = 9;
+    memcpy(message->sender_node_id, f->node_id, 32);
+    fill_query(message->query_id);
+    message->delegation = f->delegation;
+    message->selector.kind = VCS_ZCODE_DHT_RECORD_POINTER;
+    (void)snprintf(message->selector.namespace_name,
+                   sizeof(message->selector.namespace_name), "science.study");
+    fill(message->selector.root, 32, 0x61);
+    message->record_count = 1;
+    struct vcs_zcode_dht_record *record = &message->records[0];
+    record->kind = VCS_ZCODE_DHT_RECORD_POINTER;
+    (void)snprintf(record->namespace_name, sizeof(record->namespace_name),
+                   "science.study");
+    memcpy(record->network_genesis, f->verify.network_genesis, 32);
+    fill(record->semantic_root, 32, 0x61);
+    fill(record->transport_root, 32, 0x71);
+    memcpy(record->provider_node_id, f->node_id, 32);
+    record->sequence = 1;
+    record->not_before = 1200;
+    record->expiry = 1800;
+    record->delegation = f->delegation;
+    return vcs_zcode_dht_record_sign(record, f->online_seed) ==
+           VCS_ZCODE_DHT_RECORD_OK;
+}
+
+static int test_record_frames(void)
+{
+    int failures = 0;
+    TEST("zcode dht msgs v2: generic record lookup and store stay Noise-bound") {
+        struct msg_fixture f;
+        int chain_calls = 0;
+        ASSERT(fixture_init(&f, &chain_calls));
+        struct vcs_zcode_dht_msg_records records;
+        ASSERT(fixture_auth_record(&f, &records));
+        uint8_t wire[VCS_ZCODE_DHT_MAX_FRAME_BYTES + 1];
+        size_t len = 0;
+        ASSERT_EQ(vcs_zcode_dht_msg_serialize_records(
+                      &records, f.transcript, f.online_seed, wire,
+                      sizeof(wire), &len),
+                  VCS_ZCODE_DHT_OK);
+        struct vcs_zcode_dht_msg parsed;
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &f.verify, &parsed),
+                  VCS_ZCODE_DHT_OK);
+        ASSERT_EQ(parsed.kind, VCS_ZCODE_DHT_MSG_RECORDS);
+        ASSERT_EQ(parsed.records.record_count, 1);
+        ASSERT(memcmp(parsed.records.records[0].transport_root,
+                      records.records[0].transport_root, 32) == 0);
+
+        struct vcs_zcode_dht_msg_find_record find;
+        memset(&find, 0, sizeof(find));
+        find.session_generation = 9;
+        memcpy(find.sender_node_id, f.node_id, 32);
+        fill_query(find.query_id);
+        find.delegation = f.delegation;
+        find.selector = records.selector;
+        ASSERT_EQ(vcs_zcode_dht_msg_serialize_find_record(
+                      &find, f.transcript, f.online_seed, wire,
+                      sizeof(wire), &len),
+                  VCS_ZCODE_DHT_OK);
+        ASSERT_EQ(len, VCS_ZCODE_DHT_FIND_RECORD_WIRE_BYTES);
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &f.verify, &parsed),
+                  VCS_ZCODE_DHT_OK);
+
+        struct vcs_zcode_dht_msg_store_record store;
+        memset(&store, 0, sizeof(store));
+        store.session_generation = 9;
+        memcpy(store.sender_node_id, f.node_id, 32);
+        fill_query(store.query_id);
+        store.delegation = f.delegation;
+        store.record = records.records[0];
+        ASSERT_EQ(vcs_zcode_dht_msg_serialize_store_record(
+                      &store, f.transcript, f.online_seed, wire,
+                      sizeof(wire), &len),
+                  VCS_ZCODE_DHT_OK);
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &f.verify, &parsed),
+                  VCS_ZCODE_DHT_OK);
+        ASSERT_EQ(parsed.kind, VCS_ZCODE_DHT_MSG_STORE_RECORD);
+
+        struct vcs_zcode_dht_msg_store_result result;
+        memset(&result, 0, sizeof(result));
+        result.session_generation = 9;
+        memcpy(result.sender_node_id, f.node_id, 32);
+        fill_query(result.query_id);
+        result.delegation = f.delegation;
+        result.status = VCS_ZCODE_DHT_STORE_STORED;
+        fill(result.record_digest, 32, 0x91);
+        ASSERT_EQ(vcs_zcode_dht_msg_serialize_store_result(
+                      &result, f.transcript, f.online_seed, wire,
+                      sizeof(wire), &len),
+                  VCS_ZCODE_DHT_OK);
+        ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &f.verify, &parsed),
+                  VCS_ZCODE_DHT_OK);
+        ASSERT_EQ(parsed.store_result.status, VCS_ZCODE_DHT_STORE_STORED);
+
+        records.selector.root[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_dht_msg_serialize_records(
+                      &records, f.transcript, f.online_seed, wire,
+                      sizeof(wire), &len),
+                  VCS_ZCODE_DHT_ERR_WIRE_ORDER);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_dht_msgs(void)
 {
     int failures = 0;
     failures += test_find_node_bound();
     failures += test_nodes_hints();
     failures += test_rejections();
+    failures += test_record_frames();
     printf("=== zcode_dht_msgs: %d failures ===\n", failures);
     return failures;
 }
