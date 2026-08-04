@@ -11,6 +11,8 @@
 #include "util/safe_alloc.h"
 
 #include <errno.h>
+#include <pthread.h>
+#include <netinet/in.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -100,6 +102,51 @@ static bool delivery_recv_exact(int fd, uint8_t *out, size_t len)
         got += (size_t)n;
     }
     return true;
+}
+
+struct delivery_server_call {
+    struct fs_session *session;
+    bool served;
+};
+
+static void *delivery_server_call_main(void *opaque)
+{
+    struct delivery_server_call *call = opaque;
+    uint8_t type = 0;
+    const uint8_t *payload = NULL;
+    uint32_t payload_len = 0;
+    uint8_t client_ip[16] = {0};
+    call->served = fs_recv_frame(call->session, &type, &payload,
+                                 &payload_len) &&
+        type == FS_REQUEST && file_market_delivery_serve(
+            call->session, client_ip, payload, payload_len);
+    return NULL;
+}
+
+struct delivery_endpoint_server {
+    int listen_fd;
+    bool served;
+};
+
+static void *delivery_endpoint_server_main(void *opaque)
+{
+    struct delivery_endpoint_server *server = opaque;
+    int fd = accept(server->listen_fd, NULL, NULL);
+    if (fd < 0)
+        return NULL;
+    struct fs_session session;
+    fs_session_init(&session, fd);
+    uint8_t transport_root[32] = {0};
+    uint8_t type = 0;
+    const uint8_t *payload = NULL;
+    uint32_t payload_len = 0;
+    uint8_t client_ip[16] = {0};
+    server->served = fs_handshake(&session, transport_root, false) &&
+        fs_recv_frame(&session, &type, &payload, &payload_len) &&
+        type == FS_REQUEST && file_market_delivery_serve(
+            &session, client_ip, payload, payload_len);
+    close(fd);
+    return NULL;
 }
 
 int file_market_delivery_tests(void)
@@ -242,6 +289,93 @@ int file_market_delivery_tests(void)
         served && served_size == reply_roundtrip.size);
     if (sockets[0] >= 0) close(sockets[0]);
     if (sockets[1] >= 0) close(sockets[1]);
+
+    int buyer_sockets[2] = {-1, -1};
+    bool buyer_ready = socketpair(AF_UNIX, SOCK_STREAM, 0, buyer_sockets) == 0;
+    struct fs_session buyer_server, buyer_client;
+    pthread_t server_thread;
+    bool server_started = false;
+    struct delivery_server_call server_call = {0};
+    if (buyer_ready) {
+        fs_session_init(&buyer_server, buyer_sockets[0]);
+        fs_session_init(&buyer_client, buyer_sockets[1]);
+        memset(buyer_server.key, 0x86, sizeof(buyer_server.key));
+        memcpy(buyer_client.key, buyer_server.key, sizeof(buyer_client.key));
+        buyer_server.key_established = buyer_client.key_established = true;
+        memset(buyer_server.peer_nonce, 0x91,
+               sizeof(buyer_server.peer_nonce));
+        memset(buyer_server.our_nonce, 0x92,
+               sizeof(buyer_server.our_nonce));
+        memcpy(buyer_client.our_nonce, buyer_server.peer_nonce, 32);
+        memcpy(buyer_client.peer_nonce, buyer_server.our_nonce, 32);
+        fixture.authorization = FILE_MARKET_DELIVERY_AUTHORIZED;
+        fixture.load_ok = true;
+        fixture.corrupt_hash = false;
+        server_call.session = &buyer_server;
+        server_started = pthread_create(&server_thread, NULL,
+                                        delivery_server_call_main,
+                                        &server_call) == 0;
+    }
+    uint8_t buyer_public[32], buyer_secret[32];
+    ed25519_keypair(buyer_public, buyer_secret, buyer_seed);
+    struct file_market_delivery_chunk fetched = {0};
+    enum file_market_delivery_status fetched_status =
+        buyer_ready && server_started
+            ? file_market_delivery_fetch_session(
+                &buyer_client, request.network_genesis, request.offer_id, 7,
+                buyer_public, buyer_seed, &fetched)
+            : FILE_MARKET_DELIVERY_PAYMENT_UNKNOWN;
+    if (server_started)
+        pthread_join(server_thread, NULL);
+    DELIVERY_CHECK("buyer client sends session-bound request and verifies chunk",
+        server_call.served && fetched_status == FILE_MARKET_DELIVERY_READY &&
+        fetched.data && fetched.size == sizeof("paid-chunk-proof") &&
+        memcmp(fetched.data, "paid-chunk-proof",
+               sizeof("paid-chunk-proof")) == 0);
+    free(fetched.data);
+    if (buyer_sockets[0] >= 0) close(buyer_sockets[0]);
+    if (buyer_sockets[1] >= 0) close(buyer_sockets[1]);
+
+    int listen_fd = socket(AF_INET6, SOCK_STREAM, 0);
+    struct sockaddr_in6 endpoint_addr;
+    memset(&endpoint_addr, 0, sizeof(endpoint_addr));
+    endpoint_addr.sin6_family = AF_INET6;
+    endpoint_addr.sin6_addr = in6addr_loopback;
+    endpoint_addr.sin6_port = 0;
+    socklen_t endpoint_len = sizeof(endpoint_addr);
+    bool endpoint_ready = listen_fd >= 0 &&
+        bind(listen_fd, (struct sockaddr *)&endpoint_addr,
+             sizeof(endpoint_addr)) == 0 &&
+        listen(listen_fd, 1) == 0 &&
+        getsockname(listen_fd, (struct sockaddr *)&endpoint_addr,
+                    &endpoint_len) == 0;
+    struct delivery_endpoint_server endpoint_server = {
+        .listen_fd = listen_fd,
+    };
+    pthread_t endpoint_thread;
+    bool endpoint_started = endpoint_ready && pthread_create(
+        &endpoint_thread, NULL, delivery_endpoint_server_main,
+        &endpoint_server) == 0;
+    uint8_t loopback_ip[16];
+    memcpy(loopback_ip, &in6addr_loopback, 16);
+    struct file_market_delivery_chunk endpoint_chunk = {0};
+    enum file_market_delivery_status endpoint_status = endpoint_started
+        ? file_market_delivery_fetch_endpoint(
+            loopback_ip, ntohs(endpoint_addr.sin6_port),
+            request.network_genesis, request.offer_id, 7,
+            buyer_public, buyer_seed, &endpoint_chunk)
+        : FILE_MARKET_DELIVERY_PAYMENT_UNKNOWN;
+    if (endpoint_started)
+        pthread_join(endpoint_thread, NULL);
+    DELIVERY_CHECK("signed offer endpoint completes real encrypted loopback fetch",
+        endpoint_server.served &&
+        endpoint_status == FILE_MARKET_DELIVERY_READY &&
+        endpoint_chunk.data &&
+        endpoint_chunk.size == sizeof("paid-chunk-proof") &&
+        memcmp(endpoint_chunk.data, "paid-chunk-proof",
+               sizeof("paid-chunk-proof")) == 0);
+    free(endpoint_chunk.data);
+    if (listen_fd >= 0) close(listen_fd);
 
     file_market_delivery_reset_handlers();
     return failures;

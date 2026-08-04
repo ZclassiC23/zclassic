@@ -440,6 +440,54 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 59) {
+        /* v59: buyer-side paid-file assembly. The destination and same-dir
+         * staging paths are operator-private. One parent row owns sequential
+         * progress; child rows retain the authenticated digest and exact size
+         * of each fsynced chunk so restart can re-verify bytes before resume.
+         * No endpoint, buyer credential, address, memo, or wallet secret is
+         * duplicated into this resource. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS market_downloads ("
+            "plan_id BLOB NOT NULL PRIMARY KEY CHECK(length(plan_id)=32),"
+            "offer_id BLOB NOT NULL CHECK(length(offer_id)=32),"
+            "root_hash BLOB NOT NULL CHECK(length(root_hash)=32),"
+            "private_destination TEXT NOT NULL CHECK("
+            "length(private_destination)>0 AND length(private_destination)<4096),"
+            "private_staging TEXT NOT NULL CHECK("
+            "length(private_staging)>0 AND length(private_staging)<4096),"
+            "size_bytes INTEGER NOT NULL CHECK(size_bytes>0),"
+            "num_chunks INTEGER NOT NULL CHECK(num_chunks>0 AND num_chunks<=4096),"
+            "chunks_received INTEGER NOT NULL DEFAULT 0 CHECK("
+            "chunks_received>=0 AND chunks_received<=num_chunks),"
+            "bytes_received INTEGER NOT NULL DEFAULT 0 CHECK("
+            "bytes_received>=0 AND bytes_received<=size_bytes),"
+            "state INTEGER NOT NULL DEFAULT 0 CHECK(state BETWEEN 0 AND 2),"
+            "created_at INTEGER NOT NULL CHECK(created_at>0),"
+            "updated_at INTEGER NOT NULL CHECK(updated_at>0)) WITHOUT ROWID");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_market_downloads_state "
+            "ON market_downloads(state,updated_at DESC)");
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS market_download_chunks ("
+            "plan_id BLOB NOT NULL CHECK(length(plan_id)=32),"
+            "chunk_index INTEGER NOT NULL CHECK(chunk_index>=0 AND chunk_index<4096),"
+            "size_bytes INTEGER NOT NULL CHECK(size_bytes>0 AND size_bytes<=52428800),"
+            "chunk_sha3 BLOB NOT NULL CHECK(length(chunk_sha3)=32),"
+            "created_at INTEGER NOT NULL CHECK(created_at>0),"
+            "PRIMARY KEY(plan_id,chunk_index),"
+            "FOREIGN KEY(plan_id) REFERENCES market_downloads(plan_id) "
+            "ON DELETE CASCADE) WITHOUT ROWID");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_market_download_chunks_plan "
+            "ON market_download_chunks(plan_id,chunk_index)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('059')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 59);
+        current_ver = 59;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

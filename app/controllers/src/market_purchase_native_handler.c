@@ -4,6 +4,7 @@
 #include "controllers/native_handler_body.h"
 #include "controllers/rpc_client.h"
 #include "controllers/rpc_params.h"
+#include "base/hex.h"
 #include "command/native_command.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
@@ -39,6 +40,18 @@ static const struct mpn_code_map k_codes[] = {
       ZCL_COMMAND_EXIT_TRANSIENT },
     { "COMMIT_STATE_UNCERTAIN", ZCL_COMMAND_STATUS_BLOCKED,
       ZCL_COMMAND_EXIT_BLOCKED },
+    { "DESTINATION_INVALID", ZCL_COMMAND_STATUS_FAILED,
+      ZCL_COMMAND_EXIT_INVALID },
+    { "DOWNLOAD_BINDING_CONFLICT", ZCL_COMMAND_STATUS_BLOCKED,
+      ZCL_COMMAND_EXIT_BLOCKED },
+    { "DESTINATION_CONFLICT", ZCL_COMMAND_STATUS_BLOCKED,
+      ZCL_COMMAND_EXIT_BLOCKED },
+    { "MANIFEST_VERIFICATION_FAILED", ZCL_COMMAND_STATUS_FAILED,
+      ZCL_COMMAND_EXIT_FAILED },
+    { "STAGING_VERIFICATION_FAILED", ZCL_COMMAND_STATUS_FAILED,
+      ZCL_COMMAND_EXIT_FAILED },
+    { "DELIVERY_NOT_READY", ZCL_COMMAND_STATUS_BLOCKED,
+      ZCL_COMMAND_EXIT_TRANSIENT },
 };
 
 static void mpn_fail(struct zcl_command_reply *reply,
@@ -223,5 +236,33 @@ void zcl_native_handle_market_purchase_status(
     mpn_merge(&reply->data, &body);
     (void)json_push_kv_str(&reply->data, "stage", "status");
     reply->error.mutated = false;
+    json_free(&body);
+}
+
+void zcl_native_handle_market_purchase_retrieve(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    const char *plan = request && request->input
+        ? json_get_str(json_get(request->input, "plan_id")) : NULL;
+    const char *destination = request && request->input
+        ? json_get_str(json_get(request->input, "destination_path")) : NULL;
+    uint8_t parsed[32];
+    if (!plan || !destination || !destination[0] ||
+        !zcl_hex_decode(plan, parsed, 32)) {
+        mpn_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                 "MISSING_INPUT", "normalize",
+                 "plan_id and private destination_path are required",
+                 "app.market.purchase.retrieve", false);
+        return;
+    }
+    struct json_value body;
+    json_init(&body);
+    if (!mpn_call(reply, "zmarket_purchase_retrieve", request->input,
+                  &body))
+        return;
+    mpn_merge(&reply->data, &body);
+    (void)json_push_kv_str(&reply->data, "stage", "retrieved");
+    reply->error.mutated = true;
     json_free(&body);
 }

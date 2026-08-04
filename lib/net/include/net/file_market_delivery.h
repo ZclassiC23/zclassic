@@ -148,4 +148,22 @@ bool file_market_delivery_serve(
     struct fs_session *session, const uint8_t client_ip[16],
     const uint8_t *payload, uint32_t plen);
 
+/* Buyer client half. The session variant consumes an already-handshaken
+ * encrypted file-service connection and is directly loopback-testable. The
+ * endpoint variant targets the exact signed offer endpoint, performs a
+ * bounded connection + handshake, and closes it before returning. Neither
+ * function logs or renders the endpoint or buyer credential. `out_chunk` is
+ * zcl_malloc-owned only when READY. */
+enum file_market_delivery_status file_market_delivery_fetch_session(
+    struct fs_session *session, const uint8_t network_genesis[32],
+    const uint8_t offer_id[32], uint32_t chunk_index,
+    const uint8_t buyer_pubkey[32], const uint8_t buyer_seed[32],
+    struct file_market_delivery_chunk *out_chunk);
+enum file_market_delivery_status file_market_delivery_fetch_endpoint(
+    const uint8_t peer_ip[16], uint16_t peer_port,
+    const uint8_t network_genesis[32], const uint8_t offer_id[32],
+    uint32_t chunk_index, const uint8_t buyer_pubkey[32],
+    const uint8_t buyer_seed[32],
+    struct file_market_delivery_chunk *out_chunk);
+
 #endif /* ZCL_NET_FILE_MARKET_DELIVERY_H */

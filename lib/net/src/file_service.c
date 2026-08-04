@@ -421,12 +421,13 @@ bool fs_send_chunk_refusal(struct fs_session *s, uint8_t reason)
     s->send_counter++;
     return true;
 }
-
-static bool fs_recv_chunk_fast(struct fs_session *s, uint8_t **out,
-                                uint32_t *out_size,
-                                const uint8_t expected_sha3[32])
+bool fs_recv_chunk_fast(struct fs_session *s, uint8_t **out,
+                        uint32_t *out_size,
+                        const uint8_t expected_sha3[32])
 {
-    /* Read size */
+    if (!s || !out || !out_size || !expected_sha3)
+        LOG_FAIL("filesvc", "recv_chunk_fast: invalid arguments");
+    *out = NULL; *out_size = 0;
     uint8_t hdr[4];
     if (!recv_all(s->fd, hdr, 4))
         LOG_FAIL("filesvc", "recv_chunk_fast: failed to read size header");
@@ -434,7 +435,6 @@ static bool fs_recv_chunk_fast(struct fs_session *s, uint8_t **out,
                     ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
     if (size == 0 || size > 60 * 1024 * 1024)
         LOG_FAIL("filesvc", "recv_chunk_fast: invalid chunk size=%u", size);
-
     /* Read data */
     uint8_t *buf = zcl_malloc(size, "file_recv_buf");
     if (!buf) LOG_FAIL("filesvc", "recv_chunk_fast: malloc failed for %u bytes", size);

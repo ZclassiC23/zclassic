@@ -2572,7 +2572,7 @@ static int test_app_features_leaves(void)
             "app.names.renew", "app.names.set-record", "app.names.set-text",
             "app.messaging.send", "app.messaging.read",
             "app.market.content.register", "app.market.purchase.plan",
-            "app.market.purchase.commit",
+            "app.market.purchase.commit", "app.market.purchase.retrieve",
             "app.swap.initiate", "app.swap.participate",
         };
         for (size_t i = 0;
@@ -2602,6 +2602,8 @@ static int test_app_features_leaves(void)
                   ZCL_COMMAND_CONFIRM_NONE);
         ASSERT_EQ(find_spec(reg, "app.market.purchase.commit")->confirmation,
                   ZCL_COMMAND_CONFIRM_IDEMPOTENCY);
+        ASSERT_EQ(find_spec(reg, "app.market.purchase.retrieve")->confirmation,
+                  ZCL_COMMAND_CONFIRM_NONE);
         const struct zcl_command_spec *purchase_status =
             find_spec(reg, "app.market.purchase.status");
         ASSERT(purchase_status != NULL);

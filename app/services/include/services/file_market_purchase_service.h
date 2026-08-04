@@ -6,6 +6,7 @@
 
 #include "base/result.h"
 #include "net/file_market.h"
+#include "net/file_market_delivery.h"
 #include "services/wallet_money_service.h"
 
 #include <stdbool.h>
@@ -26,6 +27,12 @@ typedef struct zcl_result (*market_purchase_send_fn)(
     uint8_t txid_out[32]);
 typedef bool (*market_purchase_notify_fn)(
     void *ctx, const struct file_payment *payment);
+typedef enum file_market_delivery_status (*market_purchase_fetch_fn)(
+    void *ctx, const uint8_t peer_ip[16], uint16_t peer_port,
+    const uint8_t network_genesis[32], const uint8_t offer_id[32],
+    uint32_t chunk_index, const uint8_t buyer_pubkey[32],
+    const uint8_t buyer_seed[32],
+    struct file_market_delivery_chunk *out_chunk);
 
 /* Ports keep wallet selection/build/broadcast and peer transport in their
  * existing owning layers. The service owns exact workflow ordering and the
@@ -40,6 +47,8 @@ struct market_purchase_runtime {
     void *send_ctx;
     market_purchase_notify_fn notify;
     void *notify_ctx;
+    market_purchase_fetch_fn fetch;
+    void *fetch_ctx;
     int32_t tip_height;
     uint8_t tip_hash[32];
     int64_t maximum_fee_zat;
@@ -75,6 +84,13 @@ struct market_purchase_view {
     /* True means the signed claim was handed to the node's gossip
      * transport. Confirmation and paid-byte delivery remain separate. */
     bool payment_notification_queued;
+    bool has_download;
+    char download_state[16];
+    uint32_t chunks_received;
+    uint32_t num_chunks;
+    uint64_t bytes_received;
+    uint64_t size_bytes;
+    bool destination_published;
 };
 
 struct zcl_result market_purchase_plan(
@@ -91,6 +107,16 @@ struct zcl_result market_purchase_commit(
 
 struct zcl_result market_purchase_status(
     const struct market_purchase_runtime *runtime, const uint8_t plan_id[32],
+    struct market_purchase_view *out);
+
+/* Retrieve a fully-paid offer from its exact signed endpoint, verify every
+ * authenticated chunk and the complete manifest, resume only from fsynced
+ * durable progress, then atomically publish to a private owner-supplied
+ * destination. Partial-range payment plans deliberately cannot publish a
+ * complete file. The destination never enters the public view or logs. */
+struct zcl_result market_purchase_retrieve(
+    const struct market_purchase_runtime *runtime,
+    const uint8_t plan_id[32], const char *destination_path,
     struct market_purchase_view *out);
 
 #endif

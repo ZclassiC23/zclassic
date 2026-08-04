@@ -191,6 +191,13 @@ static const char *market_purchase_code(const struct zcl_result *r)
     case -46: return "OFFER_CONTRACT_CHANGED";
     case -47: return "COMMIT_BUSY";
     case -48: return "COMMIT_STATE_UNCERTAIN";
+    case -60: return "DESTINATION_INVALID";
+    case -61: return "DOWNLOAD_BINDING_CONFLICT";
+    case -62: return "DESTINATION_CONFLICT";
+    case -67: return "MANIFEST_VERIFICATION_FAILED";
+    case -69: return "DESTINATION_CONFLICT";
+    case -75: return "STAGING_VERIFICATION_FAILED";
+    case -76: return "DELIVERY_NOT_READY";
     default:  return "PURCHASE_REFUSED";
     }
 }
@@ -254,6 +261,16 @@ static bool market_purchase_render(const struct market_purchase_view *view,
     }
     json_push_kv_bool(result, "payment_notification_queued",
                       view->payment_notification_queued);
+    if (view->has_download) {
+        json_push_kv_str(result, "download_state", view->download_state);
+        json_push_kv_int(result, "chunks_received", view->chunks_received);
+        json_push_kv_int(result, "num_chunks", view->num_chunks);
+        json_push_kv_int(result, "bytes_received",
+                         (int64_t)view->bytes_received);
+        json_push_kv_int(result, "size_bytes", (int64_t)view->size_bytes);
+        json_push_kv_bool(result, "destination_published",
+                          view->destination_published);
+    }
     return true;
 }
 
@@ -342,6 +359,19 @@ static bool market_purchase_notify(void *opaque,
     return encoded;
 }
 
+static enum file_market_delivery_status market_purchase_fetch(
+    void *opaque, const uint8_t peer_ip[16], uint16_t peer_port,
+    const uint8_t network_genesis[32], const uint8_t offer_id[32],
+    uint32_t chunk_index, const uint8_t buyer_pubkey[32],
+    const uint8_t buyer_seed[32],
+    struct file_market_delivery_chunk *out_chunk)
+{
+    (void)opaque;
+    return file_market_delivery_fetch_endpoint(
+        peer_ip, peer_port, network_genesis, offer_id, chunk_index,
+        buyer_pubkey, buyer_seed, out_chunk);
+}
+
 static struct zcl_result market_purchase_runtime(
     struct market_purchase_runtime *runtime, bool money)
 {
@@ -365,6 +395,7 @@ static struct zcl_result market_purchase_runtime(
     runtime->send_ctx = ctx;
     runtime->notify = market_purchase_notify;
     runtime->notify_ctx = rpc_net_get_msg_processor();
+    runtime->fetch = market_purchase_fetch;
     runtime->tip_height = tip->nHeight;
     memcpy(runtime->tip_hash, tip->hashBlock.data, 32);
     runtime->maximum_fee_zat = ctx->wallet->default_fee;
@@ -465,6 +496,34 @@ static bool rpc_zmarket_purchase_status(const struct json_value *params,
         &runtime, plan_id, &view);
     return found.ok ? market_purchase_render(&view, result)
                     : market_purchase_refuse(result, found);
+}
+
+static bool rpc_zmarket_purchase_retrieve(const struct json_value *params,
+                                          bool help,
+                                          struct json_value *result)
+{
+    if (help) {
+        json_set_str(result,
+            "zmarket_purchase_retrieve {plan_id,destination_path}\n");
+        return true;
+    }
+    const struct json_value *in = json_at(params, 0);
+    const char *plan = in ? json_get_str(json_get(in, "plan_id")) : NULL;
+    const char *destination = in
+        ? json_get_str(json_get(in, "destination_path")) : NULL;
+    uint8_t plan_id[32];
+    if (!zcl_hex_decode(plan, plan_id, 32) || !destination ||
+        !destination[0])
+        return market_purchase_refuse(result,
+            ZCL_ERR(-1, "exact plan_id and private destination are required"));
+    struct market_purchase_runtime runtime;
+    struct zcl_result ready = market_purchase_runtime(&runtime, false);
+    if (!ready.ok) return market_purchase_refuse(result, ready);
+    struct market_purchase_view view;
+    struct zcl_result fetched = market_purchase_retrieve(
+        &runtime, plan_id, destination, &view);
+    return fetched.ok ? market_purchase_render(&view, result)
+                      : market_purchase_refuse(result, fetched);
 }
 
 /* ── zmarket_status ─────────────────────────────────────────────── */
@@ -720,6 +779,8 @@ void register_market_rpc_commands(struct rpc_table *t)
           rpc_zmarket_purchase_commit, false },
         { "market", "zmarket_purchase_status",
           rpc_zmarket_purchase_status, true },
+        { "market", "zmarket_purchase_retrieve",
+          rpc_zmarket_purchase_retrieve, false },
         { "market", "romseed_register", rpc_romseed_register, true },
         { "market", "romseed_list",     rpc_romseed_list,     true },
     };

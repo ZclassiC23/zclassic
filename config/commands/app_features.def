@@ -39,7 +39,7 @@ ZCL_COMMAND_BRANCH("app.messaging", "app", "Messaging", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.market", "app", "Market", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.market.content", "app.market", "Seller content",
                    ZCL_COMMAND_LAYER_APP)
-ZCL_COMMAND_BRANCH("app.market.purchase", "app.market", "Buyer payment",
+ZCL_COMMAND_BRANCH("app.market.purchase", "app.market", "Buyer purchase",
                    ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.store", "app", "Store", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.swap", "app", "Swaps", ZCL_COMMAND_LAYER_APP)
@@ -474,12 +474,13 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_READ(
     "app.market.purchase.status", "app.market.purchase", "",
-    "Read one durable market payment state",
+    "Read one durable market purchase state",
     "Reconstructs the public, path-free purchase view from encrypted intent "
     "state: exact range, value, fee reservation, state, txid and claim ID when "
-    "present. Buyer credentials, addresses, memo, paths, endpoints and keys are "
-    "never returned.", 0,
-    "market,buy,purchase,payment,status,txid,claim",
+    "present, plus path-free durable download progress and publication state. "
+    "Buyer credentials, addresses, memo, paths, endpoints and keys are never "
+    "returned.", 0,
+    "market,buy,purchase,payment,status,txid,claim,download",
     "zcl.app_market_purchase_status.input.v1", "zcl.market_purchase.v1",
     "plan_id", "plan_id",
     "zclassic23 app market purchase status --input='{\"plan_id\":\"<64hex>\"}'",
@@ -488,6 +489,30 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_market_purchase_status)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.market.purchase.retrieve", "app.market.purchase", "",
+    "Retrieve and atomically publish a paid file",
+    "Uses the encrypted buyer credential retained by the committed plan to "
+    "target the exact signed seller endpoint. It accepts only a full-file "
+    "payment, authenticates every session-bound request and reply, fsyncs and "
+    "persists sequential chunk progress, re-verifies staged bytes after "
+    "restart, verifies the complete signed manifest root, and atomically "
+    "publishes into an existing owner-selected directory. The destination, "
+    "staging path, endpoint, credential, addresses, and memo are absent from "
+    "results and logs.", 0,
+    "market,buy,purchase,retrieve,download,manifest,resume,publish",
+    "zcl.app_market_purchase_retrieve.input.v1", "zcl.market_purchase.v1",
+    "plan_id,destination_path", "plan_id,destination_path",
+    "printf '%s' '{\"plan_id\":\"<64hex>\",\"destination_path\":\"/private/output.bin\"}' | zclassic23 app market purchase retrieve --input=-",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_market_purchase_retrieve)
 
 ZCL_COMMAND_PLANNED_COMMAND(
     "app.market.offer", "app.market", "", "Announce a file for sale",
@@ -510,10 +535,10 @@ ZCL_COMMAND_PLANNED_COMMAND(
 
 ZCL_COMMAND_PLANNED_COMMAND(
     "app.market.buy", "app.market", "", "Buy and download a market file",
-    "Will combine the shipped durable app.market.purchase payment workflow "
-    "with authenticated peer selection, encrypted chunk requests, verified "
-    "local assembly, and atomic destination publication. It remains unbound "
-    "so a payment cannot be mistaken for a completed download.", 0,
+    "Will provide an optional one-shot coordinator over the shipped explicit "
+    "app.market.purchase plan, commit, status, and retrieve workflow. It "
+    "remains unbound so owner review between reservation and broadcast cannot "
+    "be bypassed by the legacy shortcut.", 0,
     "market,buy,download", "zcl.app_market_buy.input.v1",
     "zcl.app_market_buy_result.v1", "wallet_scope,root_hash,confirm", "root_hash",
     "zclassic23 app market buy --input='{\"root_hash\":\"<64hex>\"}'",
@@ -523,10 +548,9 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
-    "durable exact payment plan/commit, seller confirmation authority, and "
-    "paid-byte server delivery are implemented; the buyer still needs targeted "
-    "peer notification, encrypted chunk retrieval, manifest verification, "
-    "restart-safe assembly, and atomic destination publication. The legacy "
+    "the explicit app.market.purchase plan, commit, status, and retrieve "
+    "commands implement the complete reviewed workflow; the optional one-shot "
+    "coordinator still needs an owner-review-preserving design. The legacy "
     "zmarket_buy placeholder refuses without starting a session")
 
 /* ── Store (the /store storefront) ───────────────────────────────────

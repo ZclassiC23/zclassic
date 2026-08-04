@@ -130,6 +130,7 @@ core.wallet.rescan-witnesses    exempt: rebuilds a DERIVED Sapling witness proje
 app.store.order            exempt: AR insert/update of a buyer purchase row; no artifact install
 app.store.pay              exempt: shielded spend already gated by the sovereignty spend guard; no artifact install
 app.store.collect          exempt: writes a content-hash-verified data file to an operator-chosen path; no artifact install
+app.market.purchase.retrieve exempt: publishes only manifest-verified bytes to an operator-chosen path without overwrite; no datadir or binary artifact install
 app.tokens.create          exempt: broadcasts a wallet transaction through the existing sovereignty, admission, durability and relay gates; installs no privileged artifact
 app.tokens.mint            exempt: broadcasts a mint-baton-authorized wallet transaction through existing spend gates; installs no privileged artifact
 app.tokens.send            exempt: broadcasts an explicitly token-funded wallet transaction through existing spend gates; installs no privileged artifact

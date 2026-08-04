@@ -1284,6 +1284,9 @@ void zcl_native_handle_market_purchase_commit(
 void zcl_native_handle_market_purchase_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_market_purchase_retrieve(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_swap_initiate(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

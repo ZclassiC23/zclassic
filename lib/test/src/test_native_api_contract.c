@@ -1080,6 +1080,7 @@ static int g_app_market_content_calls;
 static int g_app_market_purchase_plan_calls;
 static int g_app_market_purchase_commit_calls;
 static int g_app_market_purchase_status_calls;
+static int g_app_market_purchase_retrieve_calls;
 static bool g_app_name_degraded;
 
 static char *app_write_stub_rpc(const char *method, const char *params_json)
@@ -1179,6 +1180,25 @@ static char *app_write_stub_rpc(const char *method, const char *params_json)
                       "55555555555555555555555555555555\","
                       "\"payment_notification_queued\":false}");
     }
+    if (method && strcmp(method, "zmarket_purchase_retrieve") == 0) {
+        g_app_market_purchase_retrieve_calls++;
+        return strdup("{\"ok\":true,\"schema\":\"zcl.market_purchase.v1\","
+                      "\"plan_id\":\"11111111111111111111111111111111"
+                      "11111111111111111111111111111111\","
+                      "\"offer_id\":\"22222222222222222222222222222222"
+                      "22222222222222222222222222222222\","
+                      "\"buyer_pubkey\":\"33333333333333333333333333333333"
+                      "33333333333333333333333333333333\","
+                      "\"wallet_scope\":\"dev\",\"state\":\"confirmed\","
+                      "\"chunk_start\":0,\"chunks_paid\":1,"
+                      "\"amount_zat\":60000,\"maximum_fee_zat\":10000,"
+                      "\"reserved_zat\":70000,\"expires_at\":1700000600,"
+                      "\"idempotent_replay\":false,"
+                      "\"download_state\":\"complete\","
+                      "\"chunks_received\":1,\"num_chunks\":1,"
+                      "\"bytes_received\":8193,\"size_bytes\":8193,"
+                      "\"destination_published\":true}");
+    }
     if (method && strcmp(method, "swap_initiate") == 0)
         return strdup("{\"swap_id\":\"stub\",\"role\":\"initiator\","
                       "\"state\":\"pending\",\"p2sh_address\":\"t3Stub\"}");
@@ -1198,6 +1218,7 @@ static int test_app_write_native_e2e(void)
         g_app_market_purchase_plan_calls = 0;
         g_app_market_purchase_commit_calls = 0;
         g_app_market_purchase_status_calls = 0;
+        g_app_market_purchase_retrieve_calls = 0;
         g_app_name_degraded = false;
         node_rpc_client_set_test_hook(app_write_stub_rpc);
 
@@ -1459,6 +1480,40 @@ static int test_app_write_native_e2e(void)
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "status");
         zcl_command_reply_free(&reply);
         json_free(&purchase_status_input);
+
+        const struct zcl_command_spec *purchase_retrieve_spec =
+            find_spec(reg, "app.market.purchase.retrieve");
+        ASSERT(purchase_retrieve_spec != NULL);
+        struct json_value purchase_retrieve_input;
+        json_init(&purchase_retrieve_input);
+        json_set_object(&purchase_retrieve_input);
+        (void)json_push_kv_str(
+            &purchase_retrieve_input, "plan_id",
+            json_get_str(json_get(&purchase_commit_input_json, "plan_id")));
+        (void)json_push_kv_str(&purchase_retrieve_input, "destination_path",
+                               "/owner/private/purchased.bin");
+        struct zcl_command_request purchase_retrieve_req = {
+            .spec = purchase_retrieve_spec,
+            .input = &purchase_retrieve_input, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, purchase_retrieve_spec->output_schema);
+        zcl_native_handle_market_purchase_retrieve(&purchase_retrieve_req,
+                                                   &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_market_purchase_retrieve_calls, 1);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")),
+                      "retrieved");
+        char retrieved_rendered[4096];
+        size_t retrieved_len = json_write(&reply.data, retrieved_rendered,
+                                           sizeof(retrieved_rendered));
+        ASSERT(retrieved_len > 0);
+        ASSERT(strstr(retrieved_rendered, "destination_path") == NULL);
+        ASSERT(strstr(retrieved_rendered, "/owner/private") == NULL);
+        ASSERT(strstr(retrieved_rendered, "endpoint") == NULL);
+        ASSERT(strstr(retrieved_rendered, "buyer_seed") == NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&purchase_retrieve_input);
         json_free(&purchase_commit_input_json);
 
         /* 8. messaging.send picks the recipient key its channel names: the p2p

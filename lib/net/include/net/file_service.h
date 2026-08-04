@@ -126,6 +126,15 @@ bool fs_recv_frame(struct fs_session *s, uint8_t *type_out,
 bool fs_send_chunk_fast(struct fs_session *s, const uint8_t *data,
                         uint32_t size, const uint8_t sha3[32]);
 
+/* Receive one raw authenticated chunk emitted by fs_send_chunk_fast().
+ * `expected_sha3` comes from an already-authenticated protocol reply or
+ * manifest. On success `*out` is zcl_malloc-owned and must be freed by the
+ * caller. This is public so sibling protocols such as paid-file delivery can
+ * reuse the one framing/MAC implementation instead of copying it. */
+bool fs_recv_chunk_fast(struct fs_session *s, uint8_t **out,
+                        uint32_t *out_size,
+                        const uint8_t expected_sha3[32]);
+
 /* High-level: serve files on configured port. Runs in its own thread. */
 void fs_server_start(const char *datadir, uint16_t port);
 void fs_server_stop(void);

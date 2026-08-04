@@ -5,18 +5,23 @@
 
 #include "chain/chainparams.h"
 #include "crypto/ed25519.h"
+#include "crypto/sha3.h"
 #include "models/database.h"
 #include "models/file_offer.h"
+#include "models/market_download.h"
 #include "models/vault_intent.h"
 #include "models/wallet_identity.h"
 #include "net/file_market.h"
 #include "platform/time_compat.h"
 #include "sapling/sapling.h"
 #include "services/file_market_purchase_service.h"
+#include "util/safe_alloc.h"
 #include "wallet/wallet_lock.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define PURCHASE_CHECK(label, condition) do {                       \
     printf("file_market purchase: %s... ", (label));                \
@@ -34,11 +39,16 @@ struct purchase_fixture {
     int money_reads;
     int sends;
     int notifications;
+    int fetches;
     bool money_current;
     bool source_owned;
+    bool fetch_ready;
     int64_t expected_amount;
     uint8_t expected_memo[FILE_MARKET_PAYMENT_MEMO_BYTES];
 };
+
+static const uint8_t k_purchase_content[] =
+    "verified paid market content\n";
 
 static struct zcl_result purchase_money(
     void *opaque, const char *scope, struct wallet_money_snapshot *out)
@@ -98,6 +108,35 @@ static bool purchase_notify(void *opaque, const struct file_payment *payment)
     return true;
 }
 
+static enum file_market_delivery_status purchase_fetch(
+    void *opaque, const uint8_t peer_ip[16], uint16_t peer_port,
+    const uint8_t network_genesis[32], const uint8_t offer_id[32],
+    uint32_t chunk_index, const uint8_t buyer_pubkey[32],
+    const uint8_t buyer_seed[32],
+    struct file_market_delivery_chunk *out)
+{
+    struct purchase_fixture *f = opaque;
+    uint8_t derived[32], secret[32];
+    if (!f || !peer_ip || peer_ip[15] != 1 || peer_port != 18034 ||
+        !network_genesis || !offer_id || chunk_index != 0 ||
+        !buyer_pubkey || !buyer_seed || !out)
+        return FILE_MARKET_DELIVERY_MALFORMED;
+    ed25519_keypair(derived, secret, buyer_seed);
+    if (memcmp(derived, buyer_pubkey, 32) != 0)
+        return FILE_MARKET_DELIVERY_UNAUTHENTICATED;
+    f->fetches++;
+    if (!f->fetch_ready)
+        return FILE_MARKET_DELIVERY_PAYMENT_PENDING;
+    out->data = zcl_malloc(sizeof(k_purchase_content),
+                           "purchase fetched fixture");
+    if (!out->data)
+        return FILE_MARKET_DELIVERY_RESOURCE_LIMIT;
+    memcpy(out->data, k_purchase_content, sizeof(k_purchase_content));
+    out->size = sizeof(k_purchase_content);
+    sha3_256(out->data, out->size, out->sha3);
+    return FILE_MARKET_DELIVERY_READY;
+}
+
 static bool purchase_offer(struct file_offer *offer, int64_t now)
 {
     const struct chain_params *params = chain_params_get();
@@ -106,13 +145,15 @@ static bool purchase_offer(struct file_offer *offer, int64_t now)
     if (!params) return false;
     memset(offer, 0, sizeof(*offer));
     memset(seed, 0x57, sizeof(seed));
-    memset(offer->root_hash, 0x67, 32);
+    uint8_t chunk_hash[32];
+    sha3_256(k_purchase_content, sizeof(k_purchase_content), chunk_hash);
+    sha3_256(chunk_hash, sizeof(chunk_hash), offer->root_hash);
     memcpy(offer->network_genesis,
            params->consensus.hashGenesisBlock.data, 32);
     ed25519_keypair(offer->seller_pubkey, secret, seed);
     snprintf(offer->filename, sizeof(offer->filename), "purchase.bin");
-    offer->size_bytes = FILE_MARKET_CHUNK_SIZE + 1u;
-    offer->num_chunks = 2;
+    offer->size_bytes = sizeof(k_purchase_content);
+    offer->num_chunks = 1;
     offer->price_per_mb = 1200;
     for (uint8_t d = 1; ; d++) {
         memset(offer->z_addr, 0, sizeof(offer->z_addr));
@@ -171,6 +212,8 @@ int file_market_purchase_tests(void)
     runtime.send_ctx = &fixture;
     runtime.notify = purchase_notify;
     runtime.notify_ctx = &fixture;
+    runtime.fetch = purchase_fetch;
+    runtime.fetch_ctx = &fixture;
     runtime.tip_height = fixture.tip_height;
     memcpy(runtime.tip_hash, fixture.tip_hash, 32);
     runtime.maximum_fee_zat = 10000;
@@ -239,6 +282,53 @@ int file_market_purchase_tests(void)
         market_purchase_status(&runtime, plan.plan_id, &restarted).ok &&
         restarted.has_claim &&
         memcmp(restarted.claim_id, committed.claim_id, 32) == 0);
+
+    char absolute_dir[MARKET_DOWNLOAD_PATH_MAX];
+    char destination[MARKET_DOWNLOAD_PATH_MAX];
+    bool destination_ready = realpath(dir, absolute_dir) != NULL;
+    snprintf(destination, sizeof(destination), "%s/purchased.bin",
+             destination_ready ? absolute_dir : "");
+    struct market_purchase_view downloaded;
+    fixture.fetch_ready = false;
+    struct zcl_result pending_download = market_purchase_retrieve(
+        &runtime, plan.plan_id, destination, &downloaded);
+    if (pending_download.ok == false)
+        printf("file_market purchase: pending retrieve reason=%s\n",
+               pending_download.message);
+    struct market_download_record durable_download;
+    PURCHASE_CHECK("pending seller keeps a path-private restartable download",
+        destination_ready && !pending_download.ok && fixture.fetches == 1 &&
+        db_market_download_find(&ndb, plan.plan_id, &durable_download) &&
+        durable_download.state == MARKET_DOWNLOAD_FETCHING &&
+        durable_download.chunks_received == 0 &&
+        access(destination, F_OK) != 0);
+
+    node_db_close(&ndb);
+    PURCHASE_CHECK("download progress survives database restart",
+                   node_db_open(&ndb, path));
+    fixture.ndb = &ndb;
+    fixture.fetch_ready = true;
+    struct zcl_result retrieved = market_purchase_retrieve(
+        &runtime, plan.plan_id, destination, &downloaded);
+    if (!retrieved.ok)
+        printf("file_market purchase: retrieve reason=%s\n",
+               retrieved.message);
+    uint8_t disk[sizeof(k_purchase_content)];
+    FILE *published = fopen(destination, "rb");
+    size_t disk_len = published
+        ? fread(disk, 1, sizeof(disk), published) : 0;
+    if (published) fclose(published);
+    PURCHASE_CHECK("verified manifest is atomically published after restart",
+        retrieved.ok && downloaded.destination_published &&
+        downloaded.chunks_received == 1 && downloaded.num_chunks == 1 &&
+        disk_len == sizeof(k_purchase_content) &&
+        memcmp(disk, k_purchase_content, sizeof(disk)) == 0);
+    int fetches_after_publish = fixture.fetches;
+    PURCHASE_CHECK("retrieve replay never downloads or republishes twice",
+        market_purchase_retrieve(&runtime, plan.plan_id, destination,
+                                 &downloaded).ok &&
+        downloaded.idempotent_replay &&
+        fixture.fetches == fetches_after_publish);
 
     request.idempotency_key[9] = '2';
     fixture.money_reads = 1;

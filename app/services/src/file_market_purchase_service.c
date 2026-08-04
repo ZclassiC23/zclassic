@@ -2,6 +2,7 @@
  * Purpose: exact, encrypted, idempotent file-market purchase intents. */
 
 #include "services/file_market_purchase_service.h"
+#include "services/file_market_purchase_internal.h"
 
 #include "base/serialize_le.h"
 #include "chain/chainparams.h"
@@ -9,6 +10,7 @@
 #include "crypto/sha3.h"
 #include "models/database.h"
 #include "models/file_offer.h"
+#include "models/market_download.h"
 #include "models/vault_intent.h"
 #include "models/wallet_identity.h"
 #include "models/wallet_metadata_crypto.h"
@@ -21,22 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define MP_PAYLOAD_MAX 1400u
 #define MP_TTL_SECS 600LL
-
-struct mp_payload {
-    char source[MARKET_PURCHASE_SOURCE_MAX + 1];
-    char seller[256];
-    uint8_t offer_id[32];
-    uint8_t network_genesis[32];
-    uint32_t chunk_start;
-    uint32_t chunks_paid;
-    int64_t amount_zat;
-    int64_t maximum_fee_zat;
-    uint8_t buyer_seed[32];
-    uint8_t buyer_pubkey[32];
-    uint8_t memo[FILE_MARKET_PAYMENT_MEMO_BYTES];
-};
 
 static bool mp_nonzero(const uint8_t *p, size_t n)
 {
@@ -65,7 +52,7 @@ static void mp_request_digest(const struct market_purchase_request *r,
     sha3_256_finalize(&sha, out);
 }
 
-static bool mp_payload_encode(const struct mp_payload *p, uint8_t *out,
+static bool mp_payload_encode(const struct market_purchase_private_payload *p, uint8_t *out,
                               size_t cap, size_t *out_len)
 {
     if (!p || !out || !out_len)
@@ -107,9 +94,9 @@ static bool mp_take(const uint8_t *raw, size_t len, size_t *off,
 }
 
 static bool mp_payload_decode(const uint8_t *raw, size_t len,
-                              struct mp_payload *p)
+                              struct market_purchase_private_payload *p)
 {
-    if (!raw || !p || len > MP_PAYLOAD_MAX) return false;
+    if (!raw || !p || len > MARKET_PURCHASE_PAYLOAD_MAX) return false;
     memset(p, 0, sizeof(*p));
     size_t off = 0;
     uint8_t magic[4], u16[2], nums[24];
@@ -167,7 +154,7 @@ static void mp_intent_digest(const uint8_t *plain, size_t plain_len,
     sha3_256_finalize(&sha, out);
 }
 
-static struct zcl_result mp_runtime_ok(
+struct zcl_result market_purchase_runtime_validate(
     const struct market_purchase_runtime *rt, bool needs_money,
     bool committing)
 {
@@ -209,9 +196,10 @@ static struct zcl_result mp_offer_load(
     return ZCL_OK;
 }
 
-static void mp_view_row(const struct vault_intent_row *row,
-                        const struct mp_payload *payload,
-                        struct market_purchase_view *out)
+void market_purchase_view_from_row(
+    const struct vault_intent_row *row,
+    const struct market_purchase_private_payload *payload,
+    struct market_purchase_view *out)
 {
     memset(out, 0, sizeof(*out));
     memcpy(out->plan_id, row->plan_id, 32);
@@ -231,19 +219,37 @@ static void mp_view_row(const struct vault_intent_row *row,
     if (row->has_txid) memcpy(out->txid, row->txid, 32);
 }
 
-static struct zcl_result mp_decrypt(
+void market_purchase_view_add_download(
+    const struct market_download_record *download,
+    struct market_purchase_view *out)
+{
+    if (!download || !out)
+        return;
+    out->has_download = true;
+    snprintf(out->download_state, sizeof(out->download_state), "%s",
+             market_download_state_name(download->state));
+    out->chunks_received = download->chunks_received;
+    out->num_chunks = download->num_chunks;
+    out->bytes_received = download->bytes_received;
+    out->size_bytes = download->size_bytes;
+    out->destination_published =
+        download->state == MARKET_DOWNLOAD_COMPLETE;
+}
+
+struct zcl_result market_purchase_payload_decrypt(
     const struct market_purchase_runtime *rt, const struct vault_intent_row *row,
-    struct mp_payload *payload, uint8_t *plain, size_t *plain_len)
+    struct market_purchase_private_payload *payload, uint8_t *plain,
+    size_t *plain_len)
 {
     if (!wallet_metadata_decrypt(rt->node_db, row->plan_id, 32,
             row->encrypted_payload, row->encrypted_payload_len,
-            plain, MP_PAYLOAD_MAX, plain_len))
+            plain, MARKET_PURCHASE_PAYLOAD_MAX, plain_len))
         return ZCL_ERR(-20, "purchase plan authentication failed");
     uint8_t digest[32];
     mp_intent_digest(plain, *plain_len, row, digest);
     if (memcmp(digest, row->digest, 32) != 0 ||
         !mp_payload_decode(plain, *plain_len, payload)) {
-        memory_cleanse(plain, MP_PAYLOAD_MAX);
+        memory_cleanse(plain, MARKET_PURCHASE_PAYLOAD_MAX);
         return ZCL_ERR(-21, "purchase plan digest or payload is invalid");
     }
     return ZCL_OK;
@@ -254,7 +260,7 @@ struct zcl_result market_purchase_plan(
     const struct market_purchase_request *req,
     struct market_purchase_view *out)
 {
-    ZCL_CHECK(mp_runtime_ok(rt, true, false));
+    ZCL_CHECK(market_purchase_runtime_validate(rt, true, false));
     if (!req || !out ||
         (strcmp(req->wallet_scope, "dev") != 0 &&
          strcmp(req->wallet_scope, "prod") != 0) ||
@@ -279,16 +285,16 @@ struct zcl_result market_purchase_plan(
             existing.state == VAULT_INTENT_EXPIRED ||
             existing.state == VAULT_INTENT_FAILED)
             return ZCL_ERR(-44, "idempotency key names a terminal purchase plan");
-        uint8_t plain[MP_PAYLOAD_MAX]; size_t plain_len = 0;
-        struct mp_payload payload;
-        struct zcl_result decrypted = mp_decrypt(
+        uint8_t plain[MARKET_PURCHASE_PAYLOAD_MAX]; size_t plain_len = 0;
+        struct market_purchase_private_payload payload;
+        struct zcl_result decrypted = market_purchase_payload_decrypt(
             rt, &existing, &payload, plain, &plain_len);
         if (!decrypted.ok) {
             memory_cleanse(plain, sizeof(plain));
             memory_cleanse(&payload, sizeof(payload));
             return decrypted;
         }
-        mp_view_row(&existing, &payload, out);
+        market_purchase_view_from_row(&existing, &payload, out);
         out->idempotent_replay = true;
         memory_cleanse(plain, sizeof(plain));
         memory_cleanse(&payload, sizeof(payload));
@@ -313,7 +319,8 @@ struct zcl_result market_purchase_plan(
     struct vault_intent_row row; memset(&row, 0, sizeof(row));
     if (RAND_bytes(row.plan_id, 32) != 1)
         return ZCL_ERR(-11, "could not mint purchase plan identity");
-    struct mp_payload payload; memset(&payload, 0, sizeof(payload));
+    struct market_purchase_private_payload payload;
+    memset(&payload, 0, sizeof(payload));
     snprintf(payload.source, sizeof(payload.source), "%s", req->source_address);
     const struct chain_params *params = chain_params_get();
     if (!params || !sapling_encode_payment_address(
@@ -375,7 +382,7 @@ struct zcl_result market_purchase_plan(
              req->idempotency_key);
     memcpy(row.request_digest, request_digest, 32);
     row.has_request_digest = true;
-    uint8_t plain[MP_PAYLOAD_MAX]; size_t plain_len = 0;
+    uint8_t plain[MARKET_PURCHASE_PAYLOAD_MAX]; size_t plain_len = 0;
     if (!mp_payload_encode(&payload, plain, sizeof(plain), &plain_len) ||
         !wallet_metadata_encrypt(rt->node_db, row.plan_id, 32,
             plain, plain_len, row.encrypted_payload,
@@ -411,13 +418,14 @@ struct zcl_result market_purchase_plan(
             return market_purchase_status(rt, existing.plan_id, out);
         return ZCL_ERR(-17, "purchase reservation could not be persisted atomically");
     }
-    mp_view_row(&row, &payload, out);
+    market_purchase_view_from_row(&row, &payload, out);
     memory_cleanse(&payload, sizeof(payload));
     return ZCL_OK;
 }
 
 static struct zcl_result mp_claim(
-    const struct vault_intent_row *row, const struct mp_payload *payload,
+    const struct vault_intent_row *row,
+    const struct market_purchase_private_payload *payload,
     struct file_payment *payment)
 {
     if (!row->has_txid) return ZCL_ERR(-30, "purchase has no transaction id");
@@ -441,23 +449,23 @@ struct zcl_result market_purchase_status(
     const struct market_purchase_runtime *rt, const uint8_t plan_id[32],
     struct market_purchase_view *out)
 {
-    ZCL_CHECK(mp_runtime_ok(rt, false, false));
+    ZCL_CHECK(market_purchase_runtime_validate(rt, false, false));
     if (!plan_id || !out) return ZCL_ERR(-32, "plan id and output are required");
     (void)vault_intent_expire_due(rt->node_db, rt->now_unix);
     struct vault_intent_row row;
     if (!vault_intent_find(rt->node_db, plan_id, &row) ||
         strcmp(row.application_kind, MARKET_PURCHASE_APPLICATION) != 0)
         return ZCL_ERR(-33, "market purchase plan not found");
-    uint8_t plain[MP_PAYLOAD_MAX]; size_t plain_len = 0;
-    struct mp_payload payload;
-    struct zcl_result decrypted = mp_decrypt(
+    uint8_t plain[MARKET_PURCHASE_PAYLOAD_MAX]; size_t plain_len = 0;
+    struct market_purchase_private_payload payload;
+    struct zcl_result decrypted = market_purchase_payload_decrypt(
         rt, &row, &payload, plain, &plain_len);
     if (!decrypted.ok) {
         memory_cleanse(plain, sizeof(plain));
         memory_cleanse(&payload, sizeof(payload));
         return decrypted;
     }
-    mp_view_row(&row, &payload, out);
+    market_purchase_view_from_row(&row, &payload, out);
     if (row.has_txid) {
         struct file_payment payment;
         struct zcl_result claimed = mp_claim(&row, &payload, &payment);
@@ -466,6 +474,9 @@ struct zcl_result market_purchase_status(
             memcpy(out->claim_id, payment.claim_id, 32);
         }
     }
+    struct market_download_record download;
+    if (db_market_download_find(rt->node_db, row.plan_id, &download))
+        market_purchase_view_add_download(&download, out);
     memory_cleanse(plain, sizeof(plain));
     memory_cleanse(&payload, sizeof(payload));
     return ZCL_OK;
@@ -475,7 +486,7 @@ struct zcl_result market_purchase_commit(
     const struct market_purchase_runtime *rt, const char *wallet_scope,
     const uint8_t plan_id[32], struct market_purchase_view *out)
 {
-    ZCL_CHECK(mp_runtime_ok(rt, true, true));
+    ZCL_CHECK(market_purchase_runtime_validate(rt, true, true));
     if (!wallet_scope || !plan_id || !out ||
         (strcmp(wallet_scope, "dev") != 0 && strcmp(wallet_scope, "prod") != 0))
         return ZCL_ERR(-40, "explicit wallet scope, plan id, and output are required");
@@ -486,9 +497,9 @@ struct zcl_result market_purchase_commit(
         return ZCL_ERR(-41, "market purchase plan not found");
     if (strcmp(row.wallet_scope, wallet_scope) != 0)
         return ZCL_ERR(-42, "wallet scope does not match purchase plan");
-    uint8_t plain[MP_PAYLOAD_MAX]; size_t plain_len = 0;
-    struct mp_payload payload;
-    struct zcl_result decrypted = mp_decrypt(
+    uint8_t plain[MARKET_PURCHASE_PAYLOAD_MAX]; size_t plain_len = 0;
+    struct market_purchase_private_payload payload;
+    struct zcl_result decrypted = market_purchase_payload_decrypt(
         rt, &row, &payload, plain, &plain_len);
     if (!decrypted.ok) {
         memory_cleanse(plain, sizeof(plain));
@@ -498,7 +509,7 @@ struct zcl_result market_purchase_commit(
 
     if (row.has_txid && row.state >= VAULT_INTENT_MEMPOOL_ACCEPTED &&
         row.state <= VAULT_INTENT_REORGED) {
-        mp_view_row(&row, &payload, out);
+        market_purchase_view_from_row(&row, &payload, out);
         out->idempotent_replay = true;
         struct file_payment payment;
         struct zcl_result claimed = mp_claim(&row, &payload, &payment);
@@ -594,7 +605,7 @@ struct zcl_result market_purchase_commit(
         memory_cleanse(&payload, sizeof(payload));
         return claimed;
     }
-    mp_view_row(&row, &payload, out);
+    market_purchase_view_from_row(&row, &payload, out);
     out->has_claim = true;
     memcpy(out->claim_id, payment.claim_id, 32);
     out->payment_notification_queued = rt->notify

@@ -5,8 +5,10 @@ The seller-authenticated offer ingress, durable buyer payment plan/commit, and
 exact confirmed-payment authority are implemented. The encrypted `zfileget.v1`
 request and authorize-before-read gate are implemented. Owner-private paid-
 content registration and verified chunk loading are implemented. Local paid-
-offer signing/announcement and the buyer retrieval/assembly client remain
-deliberately unavailable.
+offer signing/announcement remains deliberately unavailable. The buyer client
+targets the endpoint authenticated by the signed offer, retrieves encrypted
+chunks, resumes verified assembly after restart, verifies the full manifest,
+and atomically publishes into an owner-selected destination.
 
 ## Table of contents
 
@@ -41,15 +43,17 @@ per-chunk authorization service    IMPLEMENTED
 encrypted paid file request        IMPLEMENTED
 authorize-before-content-read      IMPLEMENTED
 owner content registration/reader  IMPLEMENTED
-buyer chunk retrieval/assembly     PLANNED
+buyer chunk retrieval/assembly     IMPLEMENTED
+full manifest verification         IMPLEMENTED
+atomic no-overwrite publication    IMPLEMENTED
 ```
 
 `zfileoffer` is an authenticated P2P contract, not a blockchain transaction.
 `market_purchase` is a composite workflow whose payment leg is a real ZClassic
 transaction. The payment subflow now has durable typed `plan`, `commit`, and
-`status` commands, but the catalog keeps the whole purchase `planned`: the
-buyer still cannot target the seller, retrieve encrypted chunks, verify and
-assemble the full manifest, or atomically publish the destination file.
+`status` commands. The separate typed `retrieve` command preserves the owner
+review boundary between reservation and broadcast, then completes the purchase
+against the exact endpoint and manifest authenticated by the offer.
 
 The old `zfilelist` format is accepted only for price-zero ROM recovery
 artifacts. An unsigned paid `zfilelist` entry is discarded. The legacy
@@ -73,7 +77,11 @@ SELLER                              BUYER
   | verify exact canonical Sapling     |
   | output/address/amount/memo          |
   | retain/recheck across restart/reorg |
-  +--- buyer-authenticated chunks ----->|
+  |<-- encrypted authenticated chunks ---+
+  |                                  | fsync sequential progress
+  |                                  | reverify staged chunks on restart
+  |                                  | verify complete manifest root
+  |                                  | atomically publish, no overwrite
 ```
 
 An offer does not grant wallet authority. A buyer must select a current signed
@@ -346,8 +354,9 @@ context.
 | `app market purchase plan` | ready/owner-write | Creates the encrypted buyer credential and exact memo, then atomically reserves range value plus maximum fee against current bound custody. No value is broadcast. |
 | `app market purchase commit` | ready/owner-wallet-write | Revalidates identity, genesis, tip, snapshot, offer, range, output, fee and source ownership; broadcasts at most once and returns txid/claim ID. |
 | `app market purchase status` | ready/owner-read | Reconstructs a path/address/key-free durable state across restart. |
+| `app market purchase retrieve` | ready/owner-write | Requires a confirmed full-file payment, retrieves from the exact signed endpoint, durably resumes verified chunks, verifies the manifest, and atomically publishes without exposing private paths. |
 | `app market offer` | planned/fail-closed | Awaits local manifest construction, owner signing, and origin announcement. |
-| `app market buy` | planned/fail-closed | Payment and seller delivery exist separately; buyer peer targeting, retrieval, verified assembly, and destination publication remain absent. |
+| `app market buy` | planned/fail-closed | Optional one-shot coordinator is absent; use the explicit reviewed plan/commit/status/retrieve workflow. |
 | `romseed_register` | ready/operator | Registers verified price-zero recovery artifacts; it is not a paid offer. |
 | `app transaction-types show --type=market_purchase` | ready/read-only | Canonical machine-readable readiness and proof record. |
 
@@ -374,15 +383,16 @@ feature slice:
 | registration and verified chunk reader | `app/services/src/file_market_content_service.c` |
 | boot authorization + content adapter | `config/src/boot_file_market_delivery.c` |
 | buyer plan/commit and encrypted credential | `app/services/src/file_market_purchase_service.c` |
+| restart-safe buyer assembly and publication | `app/services/src/file_market_purchase_service.c`, `app/models/src/market_download.c` |
+| authenticated buyer endpoint client | `lib/net/src/file_market_delivery.c` |
 | node wallet/send/claim adapters | `app/controllers/src/file_market_controller.c` |
 | typed path-free commands | `app/controllers/src/market_purchase_native_handler.c`, `config/commands/app_features.def` |
 | thin native/REST adapters | `app/controllers/` plus `config/commands/` |
 | semantic readiness/proof | `transaction_types.def` and transaction lab |
 
-The purchase service reuses wallet, UTXO/note, mempool, vault-intent, and chain
-authorities. It maintains no independent balance or confirmation counter. A
-future retrieval service must likewise consume the existing delivery and
-content-reader ports rather than creating another payment or file authority.
+The purchase service reuses wallet, UTXO/note, mempool, vault-intent, chain,
+delivery, and content-reader authorities. It maintains no independent balance,
+confirmation counter, or file-integrity arithmetic outside those authorities.
 
 ## AI and developer workflow
 
@@ -391,10 +401,9 @@ Do not build a payment by copying structs or invoking an RPC from memory:
 1. A seller first runs `app market content register` with the exact signed
    `offer_id`; then checks `app market content list`. Do not copy the private
    path into notes, receipts, logs, or peer messages.
-2. Read `app transaction-types show --type=market_purchase`. The composite is
-   `planned`; use its ready payment component only when the owner explicitly
-   authorizes payment without claiming the download is complete.
-3. Discover `app.market.purchase.plan`, `.commit`, and `.status`. Feed the plan
+2. Read `app transaction-types show --type=market_purchase` for its canonical
+   readiness and demonstrated proof level.
+3. Discover `app.market.purchase.plan`, `.commit`, `.status`, and `.retrieve`. Feed the plan
    body through `--input=-` so the source address does not enter shell history
    or a process listing.
 4. Select an exact current `offer_id`; never infer an offer from a filename or
@@ -415,7 +424,11 @@ Do not build a payment by copying structs or invoking an RPC from memory:
 11. Accept bytes only after the typed `READY` reply and verify the announced
    chunk SHA3. `CONTENT_UNAVAILABLE` means the seller has not registered the
    content locally; it is not permission to try a filesystem path.
-12. On `UNKNOWN` or `CONFLICTED`, stop and report the reason; never substitute
+12. After the complete payment is confirmed, invoke `.retrieve` with the
+    returned `plan_id` and a destination beneath an existing directory. A
+    restart resumes only after every durable staged chunk is rehashed. Existing
+    destinations are never overwritten.
+13. On `UNKNOWN` or `CONFLICTED`, stop and report the reason; never substitute
    zero, retry a spend blindly, or bypass reconciliation.
 
 ## Proof checklist
@@ -434,13 +447,11 @@ make docs-api-reference
 make lint
 ```
 
-The payment component already proves exact outputs/memos and fees, idempotent
+The purchase tests prove exact outputs/memos and fees, idempotent
 commit, reservation/custody enforcement, changed tip/offer refusal, restart,
-confirmation authority, conflict, and reorg handling. Before promoting the
-composite `market_purchase`, add buyer-side targeted claim delivery, encrypted
-chunk retrieval, full-manifest verification, restart-safe assembly, and atomic
-destination publication. Only then change its transaction-catalog availability
-or proof level.
+confirmation authority, conflict, reorg handling, real encrypted loopback
+delivery, restart-safe assembly, complete-manifest verification, atomic
+no-overwrite publication, and replay safety.
 
 <!-- claim: symbol-present MSG_FILE_OFFER lib/net/include/net/file_market.h -->
 <!-- claim: symbol-present file_market_offer_total_zat lib/net/src/file_market_offer.c -->
@@ -449,6 +460,8 @@ or proof level.
 <!-- claim: symbol-present file_market_delivery_prepare lib/net/src/file_market_delivery.c -->
 <!-- claim: symbol-present file_market_content_register app/services/src/file_market_content_service.c -->
 <!-- claim: symbol-present market_purchase_plan app/services/src/file_market_purchase_service.c -->
+<!-- claim: symbol-present market_purchase_retrieve app/services/src/file_market_purchase_retrieval_service.c -->
 <!-- claim: symbol-present app.market.purchase.commit config/commands/app_features.def -->
+<!-- claim: symbol-present app.market.purchase.retrieve config/commands/app_features.def -->
 <!-- claim: symbol-present db_market_content_save app/models/src/market_content.c -->
 <!-- claim: symbol-present market_purchase app/controllers/include/controllers/transaction_types.def -->
