@@ -1,6 +1,6 @@
 # S6 iterative ZCODE lookup lane
 
-**STATUS: IN PROGRESS**
+**STATUS: COMPLETE**
 
 **Worker:** `wf_zcode-s6-iterative`  
 **Branch:** `lane/zcode-s6-iterative`  
@@ -41,3 +41,22 @@ lookup diagnostics. S7 provider/STORE work and deployment are out of scope.
 - live datadir/service mutation, deploy, or live funds
 - direct routing-table/SQL shortcuts in acceptance
 
+## Completion evidence
+
+- `make test-zcode-dht-acceptance`: PASS across seven independent sparse
+  daemons, including broken-path recovery, eight concurrent callers,
+  persistence, cold restart, and reauthentication
+- focused DHT, Noise, v2 transport, argv, connman, peer-lifecycle, RPC,
+  yardsale, store, and both opt-in store stress groups: PASS
+- `make lint`: 132/132 gates PASS
+- uncached `test-parallel`: 887/887 eligible groups PASS, zero cached
+- full whole-program LTO build: PASS
+- science acceptance lifecycle: PASS, including package/blob carrier and
+  byte-identical rebuild after direct projection wipe
+- `make ci-reproducible`: byte-identical SHA3-256
+  `3a28a407c6c5c56277833e739580ab6dcc192239e6567b0ba6fa9f3ace5b1e2a`
+- `make repro-verify`: different-path builders byte-identical at SHA3-256
+  `25d7943eca11d89afe8f0e3bd611eadc339c0db55f2aae1d6cd94c6d2f11b180`
+
+S7 provider/root records, STORE acknowledgements, replication, live funds,
+deployment, and live datadir mutation remain out of scope and untouched.
