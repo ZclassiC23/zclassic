@@ -185,11 +185,10 @@ static void remove_at(struct vcs_zcode_dht_table *t, size_t b, size_t s)
     t->bucket_sizes[b]--; t->contact_count--;
 }
 
-static bool binding_same(const struct vcs_zcode_dht_contact *a,
-                         const struct vcs_zcode_dht_contact *b)
+static bool identity_binding_same(const struct vcs_zcode_dht_contact *a,
+                                  const struct vcs_zcode_dht_contact *b)
 {
     return memcmp(a->master_pubkey, b->master_pubkey, 32) == 0 &&
-        memcmp(a->noise_static_pubkey, b->noise_static_pubkey, 32) == 0 &&
         a->beacon_height == b->beacon_height &&
         memcmp(a->beacon_hash, b->beacon_hash, 32) == 0;
 }
@@ -246,7 +245,12 @@ enum vcs_zcode_dht_add_result vcs_zcode_dht_table_add_contact(
     int b = table_slot(t, c->node_id, &slot);
     if (b >= 0) {
         struct vcs_zcode_dht_contact *old = &t->buckets[b][slot];
-        if (!binding_same(old, c)) return VCS_ZCODE_DHT_ADD_REJECTED_BINDING;
+        /* The node ID is stable across an online/Noise-key rotation because
+         * it binds the master and delayed beacon. A changed session key is
+         * accepted only inside a strictly newer master-signed delegation;
+         * same-sequence byte drift and every rollback fail closed. */
+        if (!identity_binding_same(old, c))
+            return VCS_ZCODE_DHT_ADD_REJECTED_BINDING;
         if (c->delegation_sequence < old->delegation_sequence ||
             (c->delegation_sequence == old->delegation_sequence &&
              memcmp(c->delegation_wire, old->delegation_wire,
@@ -278,7 +282,7 @@ enum vcs_zcode_dht_add_result vcs_zcode_dht_table_add_contact(
     if (!p) return VCS_ZCODE_DHT_ADD_REJECTED_PENDING_CAP;
     memset(p, 0, sizeof(*p)); p->active = true;
     memcpy(p->victim_node_id, victim, 32); p->candidate = *c;
-    p->deadline_unix = now + VCS_ZCODE_DHT_PROBE_TIMEOUT_S;
+    p->deadline_mono = now + VCS_ZCODE_DHT_PROBE_TIMEOUT_S;
     t->pending_count++;
     return VCS_ZCODE_DHT_ADD_PENDING_PROBE;
 }
@@ -311,7 +315,7 @@ size_t vcs_zcode_dht_table_expire_probes(struct vcs_zcode_dht_table *t,
     uint8_t victims[VCS_ZCODE_DHT_MAX_PENDING][32];
     size_t n = 0;
     for (size_t i = 0; i < VCS_ZCODE_DHT_MAX_PENDING; i++)
-        if (t->pending[i].active && t->pending[i].deadline_unix <= now)
+        if (t->pending[i].active && t->pending[i].deadline_mono <= now)
             memcpy(victims[n++], t->pending[i].victim_node_id, 32);
     for (size_t i = 0; i < n; i++)
         (void)vcs_zcode_dht_table_probe_result(t, victims[i], false, now);
@@ -320,6 +324,17 @@ size_t vcs_zcode_dht_table_expire_probes(struct vcs_zcode_dht_table *t,
 
 size_t vcs_zcode_dht_table_pending_count(const struct vcs_zcode_dht_table *t)
 { return t ? t->pending_count : 0; }
+
+bool vcs_zcode_dht_table_discard_candidate(struct vcs_zcode_dht_table *t,
+                                            const uint8_t victim[32])
+{
+    if (!t || !victim) return false;
+    struct vcs_zcode_dht_pending *p = pending_for(t, victim);
+    if (!p) return false;
+    memset(p, 0, sizeof(*p));
+    t->pending_count--;
+    return true;
+}
 
 bool vcs_zcode_dht_table_touch(struct vcs_zcode_dht_table *t,
                                const uint8_t id[32], int64_t seen)

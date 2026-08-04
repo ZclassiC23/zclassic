@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 #
-# S6 acceptance: two isolated regtest nodes anchor independent ZID masters,
-# provision chain-bound DHT delegations, upgrade their existing P2P link to
-# Noise XX, exchange FIND_NODE/NODES, persist authenticated contacts, reload
-# them cold, and recover the same incumbent after a short disconnect.
+# S6 acceptance: seven isolated regtest nodes anchor independent ZID masters,
+# provision chain-bound DHT delegations, then prove hostile-frame rejection,
+# sparse iterative FIND_NODE, fair concurrency, persistence, and cold reauth.
 
 set -euo pipefail
 
@@ -23,6 +22,7 @@ B_PORT=18033; B_RPC=39221; B_FS=39222; B_HTTPS=39223
 DEAD_SINK=39999
 DHT_WAIT="${DHT_WAIT:-90}"
 DHT_WORK=""; DHT_DD_A=""; DHT_DD_B=""; DHT_PGID_A=""; DHT_PGID_B=""
+DHT_EXTRA_PGIDS=()
 DHT_CLEANED=0
 DHT_KEEP="${DHT_KEEP:-0}"
 
@@ -61,6 +61,10 @@ dht_cleanup() {
     DHT_CLEANED=1
     dht_kill_group "$DHT_PGID_A"
     dht_kill_group "$DHT_PGID_B"
+    local pgid
+    for pgid in "${DHT_EXTRA_PGIDS[@]:-}"; do
+        dht_kill_group "$pgid"
+    done
     if [ "$DHT_KEEP" = 1 ] && [ -n "$DHT_WORK" ]; then
         dht_note "preserved acceptance artifacts: $DHT_WORK"
     elif [ -n "$DHT_WORK" ] && [ -d "$DHT_WORK" ]; then
@@ -96,10 +100,13 @@ dht_native() {
 dht_status() { dht_native "$1" "$2" zcode network status; }
 
 dht_spawn() {
-    local dd="$1" p2p="$2" rpc="$3" fs="$4" https="$5" connect="$6"
+    local dd="$1" p2p="$2" rpc="$3" fs="$4" https="$5"; shift 5
+    local args=() connect
+    for connect in "$@"; do args+=("-connect=$connect"); done
+    [ "${#args[@]}" -gt 0 ] || args+=("-connect=127.0.0.1:$DEAD_SINK")
     setsid "$NODE_BIN" -datadir="$dd" -regtest -port="$p2p" \
         -rpcport="$rpc" -fsport="$fs" -httpsport="$https" \
-        -connect="$connect" -packagehost=0 -v2transport \
+        "${args[@]}" -packagehost=0 -v2transport \
         -allow-plaintext-wallet -wallet-no-phrase-backup \
         -nobgvalidation -nolegacyimport -showmetrics=0 \
         >>"$dd/node.log" 2>&1 &
@@ -155,26 +162,27 @@ dht_mine_empty() {
     done
 }
 dht_wait_auth() {
-    local dd="$1" rpc="$2" deadline out enabled auth accepted
+    local dd="$1" rpc="$2" want="${3:-1}" deadline out enabled auth accepted
     deadline=$(( $(date +%s) + DHT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         out="$(dht_status "$dd" "$rpc" 2>/dev/null || true)"
         enabled="$(printf '%s' "$out" | dht_jget 'd.get("data",{}).get("enabled",False)' 2>/dev/null || true)"
         auth="$(printf '%s' "$out" | dht_jget 'd.get("data",{}).get("connected_authenticated",0)' 2>/dev/null || true)"
         accepted="$(printf '%s' "$out" | dht_jget 'd.get("data",{}).get("frames_accepted",0)' 2>/dev/null || true)"
-        [ "$enabled" = True ] && [ "${auth:-0}" -ge 1 ] && [ "${accepted:-0}" -ge 1 ] && return 0
+        [ "$enabled" = True ] && [ "${auth:-0}" -ge "$want" ] &&
+            [ "${accepted:-0}" -ge "$want" ] && return 0
         sleep 0.5
     done
     return 1
 }
 dht_wait_cold_load() {
-    local dd="$1" rpc="$2" deadline out loaded cold
+    local dd="$1" rpc="$2" want="${3:-1}" deadline out loaded cold
     deadline=$(( $(date +%s) + DHT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         out="$(dht_status "$dd" "$rpc" 2>/dev/null || true)"
         loaded="$(printf '%s' "$out" | dht_jget 'd.get("data",{}).get("persistence_loaded",False)' 2>/dev/null || true)"
         cold="$(printf '%s' "$out" | dht_jget 'd.get("data",{}).get("cold_contacts",0)' 2>/dev/null || true)"
-        [ "$loaded" = True ] && [ "${cold:-0}" -eq 1 ] && return 0
+        [ "$loaded" = True ] && [ "${cold:-0}" -ge "$want" ] && return 0
         sleep 0.5
     done
     return 1
@@ -289,6 +297,34 @@ printf '%s\n' "$SEED_B" >"$DHT_WORK/master-b.hex"
 PUB_A="$("$DHT_WORK/dht-peer" pubkey "$SEED_A")"
 PUB_B="$("$DHT_WORK/dht-peer" pubkey "$SEED_B")"
 
+declare -a DDS RPCS PORTS FSPORTS HTTPSPORTS SEEDS PUBS NODES PIDS DOCS
+DDS=("$DHT_DD_A" "$DHT_DD_B")
+RPCS=("$A_RPC" "$B_RPC")
+PORTS=("$A_PORT" "$B_PORT" 20023 20024 20025 20026 20027)
+FSPORTS=("$A_FS" "$B_FS" 39232 39242 39252 39262 39272)
+HTTPSPORTS=("$A_HTTPS" "$B_HTTPS" 39233 39243 39253 39263 39273)
+SEEDS=("$SEED_A" "$SEED_B"
+  3333333333333333333333333333333333333333333333333333333333333333
+  4444444444444444444444444444444444444444444444444444444444444444
+  5555555555555555555555555555555555555555555555555555555555555555
+  6666666666666666666666666666666666666666666666666666666666666666
+  7777777777777777777777777777777777777777777777777777777777777777)
+PUBS=("$PUB_A" "$PUB_B")
+for port in 20023 20024 20025 20026 20027 \
+    39231 39232 39233 39241 39242 39243 39251 39252 39253 \
+    39261 39262 39263 39271 39272 39273; do
+    dht_assert_port "$port"
+done
+for i in 2 3 4 5 6; do
+    DDS[$i]="$DHT_WORK/node-$i"
+    RPCS[$i]=$((39211 + i * 10))
+    mkdir -p "${DDS[$i]}"
+    seed_file="$DHT_WORK/master-$i.hex"
+    install -m 600 /dev/null "$seed_file"
+    printf '%s\n' "${SEEDS[$i]}" >"$seed_file"
+    PUBS[$i]="$("$DHT_WORK/dht-peer" pubkey "${SEEDS[$i]}")"
+done
+
 dht_note "booting two clean packagehost-off regtest nodes"
 DHT_PGID_A="$(dht_spawn "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK")"
 dht_wait_rpc "$DHT_DD_A" "$A_RPC" "$DHT_PGID_A" || dht_die "node A RPC warmup failed"
@@ -297,16 +333,25 @@ dht_wait_rpc "$DHT_DD_B" "$B_RPC" "$DHT_PGID_B" || dht_die "node B RPC warmup fa
 ! rg -q "unrecognized flag '-v2transport'" "$DHT_DD_A/node.log" "$DHT_DD_B/node.log" ||
     dht_die "v2transport was not recognized"
 
-dht_note "mining spendable regtest funds and anchoring both masters"
+dht_note "mining spendable regtest funds and anchoring seven masters"
 ADDR="$(a_rpc getnewaddress | dht_result)"
 dht_mine_to_address 101 "$ADDR"
 dht_wait_height "$DHT_DD_B" "$B_RPC" 101 || dht_die "B did not sync funding chain"
 ANCHOR_A="$(dht_native "$DHT_DD_A" "$A_RPC" core identity anchor --input="{\"pubkey\":\"$PUB_A\"}")"
-ANCHOR_B="$(dht_native "$DHT_DD_A" "$A_RPC" core identity anchor --input="{\"pubkey\":\"$PUB_B\"}")"
 [ "$(printf '%s' "$ANCHOR_A" | dht_jget 'd["ok"]')" = True ] || dht_die "A anchor failed: $ANCHOR_A"
+dht_mine_empty 1; sleep 1
+ANCHOR_B="$(dht_native "$DHT_DD_A" "$A_RPC" core identity anchor --input="{\"pubkey\":\"$PUB_B\"}")"
 [ "$(printf '%s' "$ANCHOR_B" | dht_jget 'd["ok"]')" = True ] || dht_die "B anchor failed: $ANCHOR_B"
+dht_mine_empty 1; sleep 1
+for i in 2 3 4 5 6; do
+    anchor="$(dht_native "$DHT_DD_A" "$A_RPC" core identity anchor \
+        --input="{\"pubkey\":\"${PUBS[$i]}\"}")"
+    [ "$(printf '%s' "$anchor" | dht_jget 'd["ok"]')" = True ] ||
+        dht_die "anchor $i failed: $anchor"
+    dht_mine_empty 1; sleep 1
+done
 dht_mine_empty 21
-dht_wait_height "$DHT_DD_B" "$B_RPC" 122 || dht_die "B did not sync final beacon chain"
+dht_wait_height "$DHT_DD_B" "$B_RPC" 129 || dht_die "B did not sync final beacon chain"
 
 dht_note "provisioning independent delegations through the operator leaf"
 DELEGATE_A="$(dht_native "$DHT_DD_A" "$A_RPC" zcode network delegate --input="{\"seed_file\":\"$DHT_WORK/master-a.hex\"}")"
@@ -315,7 +360,39 @@ DELEGATE_B="$(dht_native "$DHT_DD_B" "$B_RPC" zcode network delegate --input="{\
 [ "$(printf '%s' "$DELEGATE_B" | dht_jget 'd["ok"]')" = True ] || dht_die "B delegation failed: $DELEGATE_B"
 NODE_A="$(printf '%s' "$DELEGATE_A" | dht_jget 'd["data"]["node_id"]')"
 NODE_B="$(printf '%s' "$DELEGATE_B" | dht_jget 'd["data"]["node_id"]')"
+NODES=("$NODE_A" "$NODE_B")
 [ "$NODE_A" != "$NODE_B" ] || dht_die "independent masters derived one node ID"
+
+# Close A to obtain a coherent chain fixture while B remains on its original
+# boot with a provable RPC tip.  The delegate leaf can authorize a distinct
+# target datadir explicitly: it reads that clone's chain projection, uses B's
+# authenticated chain RPC for genesis/beacon, and creates new target-local
+# Noise and online keys.  No DHT contacts or endpoint records are copied.
+dht_note "preparing five closed-chain fixtures with independent identities"
+dht_kill_group "$DHT_PGID_A"; DHT_PGID_A=""
+for i in 2 3 4 5 6; do
+    cp -a "$DHT_DD_A/." "${DDS[$i]}/"
+    rm -rf "${DDS[$i]}/zcode"
+    rm -f "${DDS[$i]}/v2_identity.key" "${DDS[$i]}/.cookie" \
+        "${DDS[$i]}/.rpcport" "${DDS[$i]}/zclassic23.pid" \
+        "${DDS[$i]}/node.log" "${DDS[$i]}/peers.dat" \
+        "${DDS[$i]}/peers.dat.sha3" "${DDS[$i]}/anchors.dat" \
+        "${DDS[$i]}/anchors.dat.sha3" "${DDS[$i]}/banlist.dat"
+    delegated="$(dht_native "$DHT_DD_B" "$B_RPC" zcode network delegate \
+        --input="{\"seed_file\":\"$DHT_WORK/master-$i.hex\",\"datadir\":\"${DDS[$i]}\"}")"
+    [ "$(printf '%s' "$delegated" | dht_jget 'd["ok"]')" = True ] ||
+        dht_die "delegation $i failed: $delegated"
+    NODES[$i]="$(printf '%s' "$delegated" | dht_jget 'd["data"]["node_id"]')"
+    [ -s "${DDS[$i]}/v2_identity.key" ] &&
+    [ -s "${DDS[$i]}/zcode/dht/online_ed25519.key" ] &&
+    [ -s "${DDS[$i]}/zcode/dht/delegation.v1" ] ||
+        dht_die "independent identity files missing for node $i"
+done
+python3 - "${NODES[@]}" <<'PY' || dht_die "seven identities were not independent"
+import sys
+ids=sys.argv[1:]
+assert len(ids)==7 and len(set(ids))==7 and all(len(x)==64 for x in ids)
+PY
 
 dht_note "restarting to prove capability learning, Noise, and DHT bootstrap"
 dht_kill_group "$DHT_PGID_B"; DHT_PGID_B=""
@@ -371,4 +448,178 @@ dht_wait_auth "$DHT_DD_B" "$B_RPC" || dht_die "B did not reauthenticate A"
 FINAL_FIND="$(dht_native "$DHT_DD_B" "$B_RPC" zcode network find --input="{\"node_id\":\"$TARGET_A\"}")"
 dht_check_find "$FINAL_FIND" "$TARGET_A" "$NODE_A" "$NODE_B"
 
-dht_note "PASS: chain-bound Noise DHT discovery/find/persistence/recovery"
+dht_note "expanding to seven independent daemons for iterative sparse lookup"
+PIDS[0]="$DHT_PGID_A"
+PIDS[1]="$DHT_PGID_B"
+
+# The five closed-chain fixtures and their distinct identities were prepared
+# above while B still exposed the original boot's provable tip.
+dht_note "closing the two-node phase before seven-node isolated boot"
+dht_kill_group "$DHT_PGID_B"; DHT_PGID_B=""
+dht_kill_group "$DHT_PGID_A"; DHT_PGID_A=""
+# The two-node persistence proof above is complete.  Reset only its learned
+# contact files so the multi-node phase starts from topology edges, not from a
+# historical A<->B shortcut.  Signed delegations and online keys stay intact.
+rm -f "$DHT_DD_A/zcode/dht/contacts.v2" \
+    "$DHT_DD_B/zcode/dht/contacts.v2"
+
+dht_note "booting seven isolated identities on the common chain fixture"
+for i in 0 1 2 3 4 5 6; do
+    PIDS[$i]="$(dht_spawn "${DDS[$i]}" "${PORTS[$i]}" "${RPCS[$i]}" \
+        "${FSPORTS[$i]}" "${HTTPSPORTS[$i]}" \
+        "127.0.0.1:$DEAD_SINK")"
+    dht_wait_rpc "${DDS[$i]}" "${RPCS[$i]}" "${PIDS[$i]}" ||
+        dht_die "isolated node $i warmup failed"
+    dht_wait_height "${DDS[$i]}" "${RPCS[$i]}" 129 ||
+        dht_die "isolated node $i lost the common verified chain"
+done
+DHT_PGID_A="${PIDS[0]}"; DHT_PGID_B="${PIDS[1]}"
+DHT_EXTRA_PGIDS=("${PIDS[@]:2}")
+
+dht_note "publishing seven chain-bound ZENDP records without DHT contacts"
+for i in 0 1 2 3 4 5 6; do
+    seed_file="$DHT_WORK/master-$i.hex"
+    if [ "$i" -eq 0 ]; then
+        seed_file="$DHT_WORK/master-a.hex"
+    elif [ "$i" -eq 1 ]; then
+        seed_file="$DHT_WORK/master-b.hex"
+    fi
+    published="$(dht_native "${DDS[$i]}" "${RPCS[$i]}" zcode endpoint publish \
+        --input="{\"ipv4\":\"127.0.0.1\",\"ipv4_port\":\"${PORTS[$i]}\",\"seed_file\":\"$seed_file\",\"seq\":\"1\",\"height\":129}")"
+    [ "$(printf '%s' "$published" | dht_jget 'd["ok"]')" = True ] ||
+        dht_die "endpoint publish $i failed: $published"
+    DOCS[$i]="$(printf '%s' "$published" | dht_jget 'd["data"]["doc_hex"]')"
+done
+
+# Choose a deterministic XOR-progress path ending at node 6. Only neighbours
+# (plus B-D) are connected initially; learned ZENDP hints create later edges.
+read -r -a ORDER <<<"$(python3 - "${NODES[@]}" <<'PY'
+import sys
+ids=[int(x,16) for x in sys.argv[1:]]
+t=ids[6]
+print(*sorted(range(6),key=lambda i:(ids[i]^t,ids[i]),reverse=True),6)
+PY
+)"
+# Only the lookup origin needs reachability hints: responders return
+# address-free IDs and never initiate a learned dial. Filing each signed doc
+# once at that origin is the genuine minimum and avoids manufacturing an
+# irrelevant all-to-all directory projection on the other six nodes.
+ORIGIN="${ORDER[0]}"
+dht_note "filing signed endpoints at the future lookup origin only"
+for publisher in 0 1 2 3 4 5 6; do
+    [ "$ORIGIN" -eq "$publisher" ] && continue
+    accepted="$(dht_native "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" \
+        zcode endpoint accept --input="{\"doc\":\"${DOCS[$publisher]}\"}")"
+    [ "$(printf '%s' "$accepted" | dht_jget 'd["ok"]')" = True ] ||
+        dht_die "origin refused endpoint $publisher: $accepted"
+done
+for i in 0 1 2 3 4 5 6; do dht_kill_group "${PIDS[$i]}"; PIDS[$i]=""; done
+DHT_PGID_A=""; DHT_PGID_B=""; DHT_EXTRA_PGIDS=()
+
+for pos in 0 1 2 3 4 5 6; do
+    idx="${ORDER[$pos]}"
+    connects=()
+    if [ "$pos" -eq 0 ]; then
+        connects=("127.0.0.1:$DEAD_SINK")
+    else
+        prev="${ORDER[$((pos - 1))]}"
+        connects=("127.0.0.1:${PORTS[$prev]}")
+        if [ "$pos" -eq 3 ]; then
+            alt="${ORDER[1]}"
+            connects+=("127.0.0.1:${PORTS[$alt]}")
+        fi
+    fi
+    PIDS[$idx]="$(dht_spawn "${DDS[$idx]}" "${PORTS[$idx]}" "${RPCS[$idx]}" \
+        "${FSPORTS[$idx]}" "${HTTPSPORTS[$idx]}" "${connects[@]}")"
+    dht_wait_rpc "${DDS[$idx]}" "${RPCS[$idx]}" "${PIDS[$idx]}" ||
+        dht_die "sparse restart failed for node $idx"
+done
+DHT_EXTRA_PGIDS=("${PIDS[@]}")
+# Do not infer topology readiness from one authenticated edge: that races the
+# alternate route's Noise upgrade and turns a real recovery proof into a
+# single dead-candidate wait. Wait for the exact sparse graph degree first.
+EXPECTED_AUTH=(1 3 2 3 2 2 1)
+for pos in 0 1 2 3 4 5 6; do
+    idx="${ORDER[$pos]}"
+    dht_wait_auth "${DDS[$idx]}" "${RPCS[$idx]}" \
+        "${EXPECTED_AUTH[$pos]}" ||
+        dht_die "sparse node $idx did not authenticate all declared edges"
+done
+NEXT="${ORDER[1]}"; BROKEN="${ORDER[2]}"; TARGET=6
+origin_status="$(dht_status "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}")"
+[ "$(printf '%s' "$origin_status" | dht_jget 'd["data"]["connected_authenticated"]')" -eq 1 ] ||
+    dht_die "origin was not sparse before lookup: $origin_status"
+
+dht_note "breaking the nearest path; FIND_NODE must recover through B-D"
+dht_kill_group "${PIDS[$BROKEN]}"; PIDS[$BROKEN]=""
+before_find="$(dht_status "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}")"
+iterative="$(dht_native "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" zcode network find \
+    --input="{\"node_id\":\"${NODES[$TARGET]}\"}" || true)"
+after_find="$(dht_status "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}")"
+printf '%s\n' "$iterative" >"$DHT_WORK/iterative.json"
+if ! python3 - "$iterative" "$before_find" "$after_find" "${NODES[$TARGET]}" <<'PY'
+import json,sys
+r=json.loads(sys.argv[1]); b=json.loads(sys.argv[2])["data"]; a=json.loads(sys.argv[3])["data"]
+target=sys.argv[4]
+assert r["ok"] is True,r
+d=r["data"]
+assert d["termination"]=="target_authenticated",d
+assert d["rounds"]>=3 and d["xor_progress"]>=3,d
+assert target in d["node_ids"],d
+assert a["find_node_sent"]-b["find_node_sent"] <= 24,(b,a)
+assert a["frames_accepted"]-b["frames_accepted"] <= 64,(b,a)
+PY
+then
+    dht_die "iterative sparse proof failed: $iterative"
+fi
+
+dht_note "launching eight concurrent lookups through the three-query budget"
+concurrent_dir="$DHT_WORK/concurrent"; mkdir -p "$concurrent_dir"
+jobs=()
+for i in 1 2 3 4 5 6 7 8; do
+    target="$(printf '%064x' "$i")"
+    (dht_native "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" zcode network find \
+        --input="{\"node_id\":\"$target\"}" >"$concurrent_dir/$i.json") &
+    jobs+=("$!")
+done
+for job in "${jobs[@]}"; do wait "$job" || dht_die "concurrent lookup process failed"; done
+python3 - "$concurrent_dir" <<'PY' || dht_die "concurrent fairness proof failed"
+import json,pathlib,sys
+rows=[json.loads((pathlib.Path(sys.argv[1])/f"{i}.json").read_text()) for i in range(1,9)]
+assert len(rows)==8 and all(r.get("ok") is True for r in rows),rows
+assert all(r["data"]["rounds"]>0 for r in rows),rows
+PY
+
+dht_note "cold-loading the multi-hop table, then reauthenticating one edge"
+dht_kill_group "${PIDS[$ORIGIN]}"; PIDS[$ORIGIN]=""
+dht_kill_group "${PIDS[$NEXT]}"; PIDS[$NEXT]=""
+python3 - "${DDS[$ORIGIN]}/zcode/dht/contacts.v2" <<'PY' || dht_die "multi contact file is not canonical"
+import pathlib,struct,sys
+b=pathlib.Path(sys.argv[1]).read_bytes(); assert b[:8]==b"ZCDHTC\r\n"
+n=struct.unpack_from("<I",b,74)[0]; size=303
+ids=[b[78+i*size:110+i*size] for i in range(n)]
+assert n>=3 and len(b)==78+n*size and ids==sorted(ids) and len(ids)==len(set(ids))
+PY
+PIDS[$ORIGIN]="$(dht_spawn "${DDS[$ORIGIN]}" "${PORTS[$ORIGIN]}" \
+    "${RPCS[$ORIGIN]}" "${FSPORTS[$ORIGIN]}" "${HTTPSPORTS[$ORIGIN]}" \
+    "127.0.0.1:$DEAD_SINK")"
+DHT_EXTRA_PGIDS=("${PIDS[@]}")
+dht_wait_rpc "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" "${PIDS[$ORIGIN]}" ||
+    dht_die "origin cold restart failed"
+dht_wait_cold_load "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" 3 ||
+    dht_die "origin did not finish loading its multi-hop contact history"
+cold="$(dht_status "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}")"
+[ "$(printf '%s' "$cold" | dht_jget 'd["data"]["persistence_loaded"]')" = True ] &&
+[ "$(printf '%s' "$cold" | dht_jget 'd["data"]["cold_contacts"]')" -ge 3 ] &&
+[ "$(printf '%s' "$cold" | dht_jget 'd["data"]["connected_authenticated"]')" -eq 0 ] ||
+    dht_die "origin did not expose cold authenticated history: $cold"
+PIDS[$NEXT]="$(dht_spawn "${DDS[$NEXT]}" "${PORTS[$NEXT]}" "${RPCS[$NEXT]}" \
+    "${FSPORTS[$NEXT]}" "${HTTPSPORTS[$NEXT]}" \
+    "127.0.0.1:${PORTS[$ORIGIN]}")"
+DHT_EXTRA_PGIDS=("${PIDS[@]}")
+dht_wait_rpc "${DDS[$NEXT]}" "${RPCS[$NEXT]}" "${PIDS[$NEXT]}" ||
+    dht_die "neighbour reauth restart failed"
+dht_wait_auth "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" ||
+    dht_die "cold origin did not reauthenticate its neighbour"
+
+dht_note "PASS: seven-node sparse iterative lookup/fairness/recovery/persistence"

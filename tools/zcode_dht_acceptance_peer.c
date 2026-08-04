@@ -11,6 +11,7 @@
 #include "support/cleanse.h"
 #include "vcs/zcode_dht_identity.h"
 #include "vcs/zcode_dht_msgs.h"
+#include "vcs/zcode_dht_service.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -377,6 +378,17 @@ static int attack_peer(const char *host, uint16_t port, const char *datadir)
     memset(wire, 0, sizeof(wire)); memcpy(wire, "ZCDHTM", 6);
     ok = ok && send_p2p(fd, transport, "zpkgswm", wire, sizeof(wire));
 
+    /* Put more than the old 16-entry replay-cache population through the
+     * real Noise session while staying beneath the 4/s admission rate. The
+     * first query must remain live in the full 30-second replay ledger. */
+    struct timespec replay_pace = {.tv_nsec = 350000000};
+    for (uint8_t i = 0; ok && i < 24; i++) {
+        ok = make_find(&delegation, node_id, snapshot.connection_generation,
+                       snapshot.transcript_hash, online_seed,
+                       (uint8_t)(0x40 + i), wire, &wire_len) &&
+             send_p2p(fd, transport, "zpkgswm", wire, wire_len);
+        nanosleep(&replay_pace, NULL);
+    }
     ok = ok && make_find(&delegation, node_id, snapshot.connection_generation,
                          snapshot.transcript_hash, online_seed, 0x11,
                          wire, &wire_len);
@@ -394,7 +406,10 @@ static int attack_peer(const char *host, uint16_t port, const char *datadir)
                           arbitrary_query, true, wire, &wire_len);
     ok = ok && send_p2p(fd, transport, "zpkgswm", wire, wire_len);
 
-    sleep(VCS_ZCODE_DHT_LOOKUP_CEILING_S + 1);
+    /* Cross the per-query deadline but stay inside the 30-second expired-ID
+     * tombstone so this is classified as an expired response, not merely an
+     * unknown unsolicited response. */
+    sleep(VCS_ZCODE_DHT_SERVICE_QUERY_TIMEOUT_S + 1);
     ok = ok && make_nodes(&delegation, node_id, snapshot.connection_generation,
                           snapshot.transcript_hash, online_seed, peer_query,
                           false, wire, &wire_len);

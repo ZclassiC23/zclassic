@@ -13,6 +13,7 @@
 #include "platform/time_compat.h"
 #include "support/cleanse.h"
 #include "validation/main_constants.h"
+#include "vcs/zcode_dht.h"
 #include "vcs/zcode_dht_identity.h"
 #include "json/json.h"
 
@@ -391,7 +392,17 @@ static void zdn_forward(const struct zcl_command_request *request,
     return;
   }
   zcl_native_bridge_ensure_rpc();
-  char *raw = node_rpc_call(rpc_method, params);
+  char *raw;
+  if (strcmp(rpc_method, "zcode_dht_find") == 0) {
+    /* Four RPC workers can place an eight-caller acceptance burst into two
+     * waves. Cover one full lookup ahead of this caller plus this lookup's
+     * own hard 30-second ceiling. The service deadline itself is unchanged;
+     * this is only the method-scoped transport envelope. */
+    long total_ms = (long)VCS_ZCODE_DHT_LOOKUP_CEILING_S * 2000L + 5000L;
+    raw = node_rpc_call_deadline(rpc_method, params, 2000L, total_ms);
+  } else {
+    raw = node_rpc_call(rpc_method, params);
+  }
   free(params);
   if (!raw) {
     zcl_command_reply_fail(

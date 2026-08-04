@@ -34,6 +34,11 @@ void vcs_zcode_dht_service_status(const struct vcs_zcode_dht_service *s,
   out->nodes_received = s->nodes_received;
   out->find_node_sent = s->find_sent;
   out->nodes_sent = s->nodes_sent;
+  out->lookup_rounds = s->lookup_rounds;
+  out->lookup_xor_progress = s->lookup_xor_progress;
+  out->lookup_queue_wait_s = s->lookup_queue_wait_s;
+  memcpy(out->lookup_terminations, s->lookup_terminations,
+         sizeof(out->lookup_terminations));
   out->persistence_loaded = s->persistence_loaded;
   out->persistence_dirty = s->persistence_dirty;
   out->persistence_load_count = s->persistence_load_count;
@@ -47,8 +52,16 @@ void vcs_zcode_dht_service_status(const struct vcs_zcode_dht_service *s,
   out->cold_contacts = out->contacts > out->connected_authenticated
                            ? out->contacts - out->connected_authenticated
                            : 0;
-  for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS; i++)
-    out->queued_lookups += s->lookups[i].used;
+  for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS; i++) {
+    const struct service_lookup *l = &s->lookups[i];
+    out->queued_lookups += l->used && !l->completed;
+    if (!l->used)
+      continue;
+    for (uint32_t c = 0; c < l->shortlist_count; c++)
+      if ((unsigned)l->shortlist[c].state <
+          VCS_ZCODE_DHT_CANDIDATE_STATE_COUNT)
+        out->lookup_shortlist_states[l->shortlist[c].state]++;
+  }
 }
 
 size_t vcs_zcode_dht_service_peers(const struct vcs_zcode_dht_service *s,
@@ -96,12 +109,13 @@ size_t vcs_zcode_dht_service_peers(const struct vcs_zcode_dht_service *s,
 }
 
 bool vcs_zcode_dht_service_revalidate(struct vcs_zcode_dht_service *s,
-                                      uint64_t now) {
+                                      struct vcs_zcode_dht_time now) {
   if (!s || !s->enabled)
     return false;
   if (vcs_zcode_dht_delegation_verify(&s->delegation, s->genesis,
                                       s->local_noise_static, 0, NULL,
-                                      now) != VCS_ZCODE_DHT_DELEGATION_OK ||
+                                      now.wall_unix) !=
+          VCS_ZCODE_DHT_DELEGATION_OK ||
       (s->chain_verify && !s->chain_verify(s->chain_ctx, &s->delegation))) {
     s->enabled = false;
     (void)snprintf(s->disabled_reason, sizeof(s->disabled_reason),
@@ -121,7 +135,8 @@ bool vcs_zcode_dht_service_revalidate(struct vcs_zcode_dht_service *s,
       if (vcs_zcode_dht_delegation_decode(&d, c->delegation_wire,
                                           sizeof(c->delegation_wire)) !=
               VCS_ZCODE_DHT_DELEGATION_OK ||
-          vcs_zcode_dht_delegation_verify(&d, s->genesis, NULL, 0, NULL, now) !=
+          vcs_zcode_dht_delegation_verify(&d, s->genesis, NULL, 0, NULL,
+                                          now.wall_unix) !=
               VCS_ZCODE_DHT_DELEGATION_OK ||
           (s->chain_verify && !s->chain_verify(s->chain_ctx, &d)))
         memcpy(remove[n++], c->node_id, 32);
@@ -135,7 +150,7 @@ bool vcs_zcode_dht_service_revalidate(struct vcs_zcode_dht_service *s,
         s->peers[p].authenticated = false;
   if (n) {
     if (!s->persistence_dirty)
-      s->dirty_since = now;
+      s->dirty_since_mono = now.monotonic_s;
     s->persistence_dirty = true;
   }
   return true;

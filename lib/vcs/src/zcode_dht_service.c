@@ -68,11 +68,11 @@ static struct service_query *query_find(struct vcs_zcode_dht_service *s,
 
 static bool query_was_expired(const struct vcs_zcode_dht_service *s,
                               uint64_t peer, uint64_t generation,
-                              const uint8_t id[16], uint64_t now) {
+                              const uint8_t id[16], uint64_t now_mono) {
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER; i++)
     if (s->expired[i].used && s->expired[i].peer_id == peer &&
         s->expired[i].generation == generation &&
-        now - s->expired[i].expired_at <=
+        now_mono - s->expired[i].expired_at_mono <=
             VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS &&
         memcmp(s->expired[i].id, id, 16) == 0)
       return true;
@@ -81,34 +81,26 @@ static bool query_was_expired(const struct vcs_zcode_dht_service *s,
 
 static void query_remember_expired(struct vcs_zcode_dht_service *s,
                                    const struct service_query *q,
-                                   uint64_t now) {
+                                   uint64_t now_mono) {
   size_t slot = 0;
   uint64_t oldest = UINT64_MAX;
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER; i++) {
     if (!s->expired[i].used ||
-        now - s->expired[i].expired_at >
+        now_mono - s->expired[i].expired_at_mono >
             VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS) {
       slot = i;
       break;
     }
-    if (s->expired[i].expired_at < oldest) {
-      oldest = s->expired[i].expired_at;
+    if (s->expired[i].expired_at_mono < oldest) {
+      oldest = s->expired[i].expired_at_mono;
       slot = i;
     }
   }
   s->expired[slot].used = true;
   s->expired[slot].peer_id = q->peer_id;
   s->expired[slot].generation = q->generation;
-  s->expired[slot].expired_at = now;
+  s->expired[slot].expired_at_mono = now_mono;
   memcpy(s->expired[slot].id, q->id, 16);
-}
-
-static struct service_lookup *lookup_find(struct vcs_zcode_dht_service *s,
-                                          uint64_t id) {
-  for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS; i++)
-    if (s->lookups[i].used && s->lookups[i].id == id)
-      return &s->lookups[i];
-  return NULL;
 }
 
 static uint32_t query_count(const struct vcs_zcode_dht_service *s) {
@@ -118,9 +110,9 @@ static uint32_t query_count(const struct vcs_zcode_dht_service *s) {
   return n;
 }
 
-static void mark_dirty(struct vcs_zcode_dht_service *s, uint64_t now) {
+static void mark_dirty(struct vcs_zcode_dht_service *s, uint64_t now_mono) {
   if (!s->persistence_dirty)
-    s->dirty_since = now;
+    s->dirty_since_mono = now_mono;
   s->persistence_dirty = true;
 }
 
@@ -157,10 +149,12 @@ static bool outbound_push(struct vcs_zcode_dht_service *s, uint64_t peer,
   return false;
 }
 
-static bool send_find(struct vcs_zcode_dht_service *s, struct service_peer *p,
-                      enum query_kind kind, uint64_t lookup_id,
-                      const uint8_t target[32], const uint8_t victim[32],
-                      uint64_t now) {
+bool vcs_zcode_dht_service_send_find(struct vcs_zcode_dht_service *s,
+                                     struct service_peer *p,
+                                     enum query_kind kind, uint64_t lookup_id,
+                                     const uint8_t target[32],
+                                     const uint8_t victim[32],
+                                     uint64_t now_mono) {
   struct service_query *q = NULL;
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES; i++)
     if (!s->queries[i].used) {
@@ -174,8 +168,9 @@ static bool send_find(struct vcs_zcode_dht_service *s, struct service_peer *p,
   q->kind = kind;
   q->peer_id = p->peer_id;
   q->generation = p->session.generation;
-  q->deadline = now + (kind == QUERY_PROBE ? VCS_ZCODE_DHT_PROBE_TIMEOUT_S
-                                           : VCS_ZCODE_DHT_LOOKUP_CEILING_S);
+  q->deadline_mono =
+      now_mono + (kind == QUERY_PROBE ? VCS_ZCODE_DHT_PROBE_TIMEOUT_S
+                                      : VCS_ZCODE_DHT_SERVICE_QUERY_TIMEOUT_S);
   q->lookup_id = lookup_id;
   memcpy(q->target, target, 32);
   if (victim)
@@ -203,44 +198,59 @@ static bool send_find(struct vcs_zcode_dht_service *s, struct service_peer *p,
   return true;
 }
 
-static void lookup_hint(struct service_lookup *l, const uint8_t id[32]) {
-  if (!l || !nonzero(id, 32))
-    return;
-  for (uint32_t i = 0; i < l->hint_count; i++)
-    if (memcmp(l->hints[i], id, 32) == 0)
-      return;
-  if (l->hint_count < VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES)
-    memcpy(l->hints[l->hint_count++], id, 32);
-}
-
 static void query_finish(struct vcs_zcode_dht_service *s,
-                         struct service_query *q, bool response, uint64_t now) {
+                         struct service_query *q, bool response,
+                         struct vcs_zcode_dht_time now) {
   if (q->kind == QUERY_LOOKUP) {
-    struct service_lookup *l = lookup_find(s, q->lookup_id);
-    if (l && response)
-      l->response_received = true;
+    struct service_lookup *l = vcs_zcode_dht_lookup_find(s, q->lookup_id);
+    struct service_peer *p = peer_find(s, q->peer_id);
+    if (l && p) {
+      int at = vcs_zcode_dht_lookup_candidate_index(l, p->node_id);
+      if (at >= 0)
+        l->shortlist[at].state = response
+                                     ? VCS_ZCODE_DHT_CANDIDATE_RESPONDED
+                                     : VCS_ZCODE_DHT_CANDIDATE_FAILED;
+    }
     if (l && l->queries_pending)
       l->queries_pending--;
-    if (l && l->queries_pending == 0) {
-      l->completed = true;
-      l->not_found = !l->response_received;
-    }
   } else if (q->kind == QUERY_PROBE && nonzero(q->victim, 32)) {
-    (void)vcs_zcode_dht_table_probe_result(s->table, q->victim, response,
-                                           (int64_t)now);
-    mark_dirty(s, now);
+    bool candidate_valid = true;
+    if (!response) {
+      for (size_t i = 0; i < VCS_ZCODE_DHT_MAX_PENDING; i++) {
+        struct vcs_zcode_dht_pending *pending = &s->table->pending[i];
+        if (!pending->active ||
+            memcmp(pending->victim_node_id, q->victim, 32) != 0)
+          continue;
+        struct vcs_zcode_dht_delegation d;
+        candidate_valid =
+            vcs_zcode_dht_delegation_decode(
+                &d, pending->candidate.delegation_wire,
+                sizeof(pending->candidate.delegation_wire)) ==
+                VCS_ZCODE_DHT_DELEGATION_OK &&
+            vcs_zcode_dht_delegation_verify(&d, s->genesis, NULL, 0, NULL,
+                                            now.wall_unix) ==
+                VCS_ZCODE_DHT_DELEGATION_OK &&
+            (!s->chain_verify || s->chain_verify(s->chain_ctx, &d));
+        break;
+      }
+    }
+    if (!candidate_valid)
+      (void)vcs_zcode_dht_table_discard_candidate(s->table, q->victim);
+    else
+      (void)vcs_zcode_dht_table_probe_result(s->table, q->victim, response,
+                                             (int64_t)now.wall_unix);
+    mark_dirty(s, now.monotonic_s);
   }
   memset(q, 0, sizeof(*q));
+  for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS; i++)
+    vcs_zcode_dht_lookup_assess(s, &s->lookups[i]);
+  vcs_zcode_dht_lookup_schedule(s, now);
 }
 
 static void query_expire(struct vcs_zcode_dht_service *s,
-                         struct service_query *q, uint64_t now) {
-  if (q->kind == QUERY_LOOKUP) {
-    struct service_lookup *l = lookup_find(s, q->lookup_id);
-    if (l)
-      l->timed_out = true;
-  }
-  query_remember_expired(s, q, now);
+                         struct service_query *q,
+                         struct vcs_zcode_dht_time now) {
+  query_remember_expired(s, q, now.monotonic_s);
   query_finish(s, q, false, now);
 }
 
@@ -260,44 +270,47 @@ map_parse_error(enum vcs_zcode_dht_error e) {
 }
 
 static bool replay_accept(struct service_peer *p, const uint8_t id[16],
-                          uint64_t now) {
+                          uint64_t now_mono) {
   size_t oldest = 0;
   uint64_t oldest_seen = UINT64_MAX;
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER; i++) {
     if (p->replay[i].used &&
-        now - p->replay[i].seen <= VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS &&
+        now_mono - p->replay[i].seen_mono <=
+            VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS &&
         memcmp(p->replay[i].id, id, 16) == 0)
       return false;
     if (!p->replay[i].used ||
-        now - p->replay[i].seen > VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS) {
+        now_mono - p->replay[i].seen_mono >
+            VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS) {
       oldest = i;
       oldest_seen = 0;
       break;
     }
-    if (p->replay[i].seen < oldest_seen) {
+    if (p->replay[i].seen_mono < oldest_seen) {
       oldest = i;
-      oldest_seen = p->replay[i].seen;
+      oldest_seen = p->replay[i].seen_mono;
     }
   }
   p->replay[oldest].used = true;
   memcpy(p->replay[oldest].id, id, 16);
-  p->replay[oldest].seen = now;
+  p->replay[oldest].seen_mono = now_mono;
   return true;
 }
 
-static bool rate_accept(struct service_peer *p, uint64_t now) {
-  if (p->rate_refill == 0) {
-    p->rate_refill = now;
+static bool rate_accept(struct service_peer *p, uint64_t now_mono) {
+  if (p->rate_refill_mono == 0) {
+    p->rate_refill_mono = now_mono;
     p->rate_tokens = VCS_ZCODE_DHT_SERVICE_RATE_BURST;
   }
-  if (now > p->rate_refill) {
+  if (now_mono > p->rate_refill_mono) {
     uint64_t add =
-        (now - p->rate_refill) * VCS_ZCODE_DHT_SERVICE_RATE_PER_SECOND;
+        (now_mono - p->rate_refill_mono) *
+        VCS_ZCODE_DHT_SERVICE_RATE_PER_SECOND;
     uint64_t total = p->rate_tokens + add;
     p->rate_tokens = (uint8_t)(total > VCS_ZCODE_DHT_SERVICE_RATE_BURST
                                    ? VCS_ZCODE_DHT_SERVICE_RATE_BURST
                                    : total);
-    p->rate_refill = now;
+    p->rate_refill_mono = now_mono;
   }
   if (!p->rate_tokens)
     return false;
@@ -352,6 +365,8 @@ vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *p) {
   memcpy(s->local_noise_static, p->local_noise_static, 32);
   s->chain_verify = p->chain_verify;
   s->chain_ctx = p->chain_ctx;
+  s->request_reachability = p->request_reachability;
+  s->reachability_ctx = p->reachability_ctx;
   s->next_lookup_id = 1;
   char err[160];
   uint8_t online_pub[32], secret_copy[32];
@@ -381,7 +396,7 @@ vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *p) {
   enum vcs_zcode_dht_delegation_error delegation_error =
       vcs_zcode_dht_delegation_verify(&s->delegation, s->genesis,
                                       p->local_noise_static, 0, NULL,
-                                      p->now_unix);
+                                      p->now.wall_unix);
   if (delegation_error != VCS_ZCODE_DHT_DELEGATION_OK) {
     snprintf(s->disabled_reason, sizeof(s->disabled_reason),
              "DELEGATION_%s",
@@ -404,11 +419,12 @@ vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *p) {
     return s;
   }
   s->enabled = true;
-  (void)vcs_zcode_dht_service_persistence_load(s, p->now_unix);
+  (void)vcs_zcode_dht_service_persistence_load(s, p->now.wall_unix);
   return s;
 }
 
-void vcs_zcode_dht_service_free(struct vcs_zcode_dht_service *s, uint64_t now) {
+void vcs_zcode_dht_service_free(struct vcs_zcode_dht_service *s,
+                                struct vcs_zcode_dht_time now) {
   (void)now;
   if (!s)
     return;
@@ -425,7 +441,8 @@ bool vcs_zcode_dht_service_enabled(const struct vcs_zcode_dht_service *s) {
 
 bool vcs_zcode_dht_service_session_open(
     struct vcs_zcode_dht_service *s, uint64_t peer_id,
-    const struct vcs_zcode_dht_session *session, uint64_t now) {
+    const struct vcs_zcode_dht_session *session,
+    struct vcs_zcode_dht_time now) {
   if (!s || !s->enabled || !peer_id || !session || !session->established ||
       !session->generation)
     return false;
@@ -434,6 +451,8 @@ bool vcs_zcode_dht_service_session_open(
       memcmp(p->session.transcript_hash, session->transcript_hash, 32) == 0 &&
       memcmp(p->session.remote_static, session->remote_static, 32) == 0)
     return true;
+  if (p && session->generation <= p->session.generation)
+    return false;
   if (!p)
     for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_PEERS; i++)
       if (!s->peers[i].used) {
@@ -457,15 +476,16 @@ bool vcs_zcode_dht_service_session_open(
   p->peer_id = peer_id;
   p->session = *session;
   p->rate_tokens = VCS_ZCODE_DHT_SERVICE_RATE_BURST;
-  p->rate_refill = now;
+  p->rate_refill_mono = now.monotonic_s;
   if (changed && query_count(s) < VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES)
-    (void)send_find(s, p, QUERY_BOOTSTRAP, 0, s->self_id, NULL, now);
+    (void)vcs_zcode_dht_service_send_find(
+        s, p, QUERY_BOOTSTRAP, 0, s->self_id, NULL, now.monotonic_s);
   return true;
 }
 
 void vcs_zcode_dht_service_session_close(struct vcs_zcode_dht_service *s,
                                          uint64_t peer_id, uint64_t generation,
-                                         uint64_t now) {
+                                         struct vcs_zcode_dht_time now) {
   if (!s)
     return;
   struct service_peer *p = peer_find(s, peer_id);
@@ -474,7 +494,7 @@ void vcs_zcode_dht_service_session_close(struct vcs_zcode_dht_service *s,
   p->connected = false;
   if (p->authenticated &&
       vcs_zcode_dht_table_note_failure(s->table, p->node_id))
-    mark_dirty(s, now);
+    mark_dirty(s, now.monotonic_s);
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES; i++)
     if (s->queries[i].used && s->queries[i].peer_id == peer_id) {
       query_finish(s, &s->queries[i], false, now);
@@ -484,7 +504,7 @@ void vcs_zcode_dht_service_session_close(struct vcs_zcode_dht_service *s,
 void vcs_zcode_dht_service_sessions_reconcile(
     struct vcs_zcode_dht_service *s,
     const struct vcs_zcode_dht_live_session *live, size_t live_count,
-    uint64_t now) {
+    struct vcs_zcode_dht_time now) {
   if (!s || (live_count && !live))
     return;
   if (live_count > VCS_ZCODE_DHT_SERVICE_MAX_PEERS)
@@ -508,7 +528,8 @@ void vcs_zcode_dht_service_sessions_reconcile(
 
 bool vcs_zcode_dht_service_handle_frame(
     struct vcs_zcode_dht_service *s, uint64_t peer_id, const uint8_t *wire,
-    size_t len, uint64_t now, enum vcs_zcode_dht_reject_reason *rejected_out) {
+    size_t len, struct vcs_zcode_dht_time now,
+    enum vcs_zcode_dht_reject_reason *rejected_out) {
   if (!s || !s->enabled || !wire)
     return false;
   struct service_peer *p = peer_find(s, peer_id);
@@ -519,7 +540,7 @@ bool vcs_zcode_dht_service_handle_frame(
   struct vcs_zcode_dht_msg_verify_context v = {.noise_established = true,
                                                .session_generation =
                                                    p->session.generation,
-                                               .now_unix = now,
+                                               .now_unix = now.wall_unix,
                                                .chain_verify = s->chain_verify,
                                                .chain_ctx = s->chain_ctx};
   memcpy(v.noise_transcript_hash, p->session.transcript_hash, 32);
@@ -543,33 +564,36 @@ bool vcs_zcode_dht_service_handle_frame(
     if (!q) {
       reject(s,
              query_was_expired(s, peer_id, m.nodes.session_generation, qid,
-                               now)
+                               now.monotonic_s)
                  ? VCS_ZCODE_DHT_REJECT_EXPIRED
                  : VCS_ZCODE_DHT_REJECT_UNSOLICITED,
              rejected_out);
       return false;
     }
-    if (q->deadline <= now) {
+    if (q->deadline_mono <= now.monotonic_s) {
       query_expire(s, q, now);
       reject(s, VCS_ZCODE_DHT_REJECT_EXPIRED, rejected_out);
       return false;
     }
   }
-  if (!replay_accept(p, qid, now)) {
+  if (!replay_accept(p, qid, now.monotonic_s)) {
     reject(s, VCS_ZCODE_DHT_REJECT_REPLAY, rejected_out);
     return false;
   }
-  if (m.kind == VCS_ZCODE_DHT_MSG_FIND_NODE && !rate_accept(p, now)) {
+  if (m.kind == VCS_ZCODE_DHT_MSG_FIND_NODE &&
+      !rate_accept(p, now.monotonic_s)) {
     reject(s, VCS_ZCODE_DHT_REJECT_RATE, rejected_out);
     return false;
   }
   struct vcs_zcode_dht_contact c;
-  if (!vcs_zcode_dht_contact_from_delegation(&c, d, (int64_t)now, 0)) {
+  if (!vcs_zcode_dht_contact_from_delegation(&c, d,
+                                             (int64_t)now.wall_unix, 0)) {
     reject(s, VCS_ZCODE_DHT_REJECT_DELEGATION, rejected_out);
     return false;
   }
   enum vcs_zcode_dht_add_result ar =
-      vcs_zcode_dht_table_add_contact(s->table, &c, (int64_t)now);
+      vcs_zcode_dht_table_add_contact(s->table, &c,
+                                      (int64_t)now.monotonic_s);
   if (ar >= VCS_ZCODE_DHT_ADD_REJECTED_SELF &&
       ar != VCS_ZCODE_DHT_ADD_REJECTED_PENDING) {
     reject(s, VCS_ZCODE_DHT_REJECT_IDENTITY, rejected_out);
@@ -578,20 +602,61 @@ bool vcs_zcode_dht_service_handle_frame(
   p->authenticated = true;
   memcpy(p->node_id, c.node_id, 32);
   p->contact = c;
-  mark_dirty(s, now);
+  mark_dirty(s, now.monotonic_s);
+  for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS; i++) {
+    struct service_lookup *l = &s->lookups[i];
+    if (l->used && !l->completed)
+      (void)vcs_zcode_dht_lookup_insert(
+          l, c.node_id, VCS_ZCODE_DHT_CANDIDATE_AUTHENTICATED, peer_id);
+  }
   if (m.kind == VCS_ZCODE_DHT_MSG_FIND_NODE) {
     s->find_received++;
-    if (!reply_nodes(s, p, qid, m.find_node.target_node_id, now)) {
+    if (!reply_nodes(s, p, qid, m.find_node.target_node_id, now.wall_unix)) {
       reject(s, VCS_ZCODE_DHT_REJECT_CAP, rejected_out);
       return false;
     }
   } else {
     s->nodes_received++;
     if (q->kind == QUERY_LOOKUP) {
-      struct service_lookup *l = lookup_find(s, q->lookup_id);
-      if (l)
-        for (uint32_t i = 0; i < m.nodes.contact_count; i++)
-          lookup_hint(l, m.nodes.node_ids[i]);
+      struct service_lookup *l =
+          vcs_zcode_dht_lookup_find(s, q->lookup_id);
+      if (l) {
+        for (uint32_t i = 0; i < m.nodes.contact_count; i++) {
+          const uint8_t *id = m.nodes.node_ids[i];
+          uint8_t previous[32];
+          bool had_previous = l->shortlist_count > 0;
+          if (had_previous)
+            memcpy(previous, l->shortlist[0].node_id, 32);
+          struct service_peer *known =
+              vcs_zcode_dht_lookup_peer_for_node(s, id);
+          enum vcs_zcode_dht_candidate_state state =
+              (memcmp(id, s->self_id, 32) == 0 || known)
+                  ? VCS_ZCODE_DHT_CANDIDATE_AUTHENTICATED
+                  : VCS_ZCODE_DHT_CANDIDATE_UNVERIFIED;
+          (void)vcs_zcode_dht_lookup_insert(
+              l, id, state, known ? known->peer_id : 0);
+          if (had_previous && l->shortlist_count > 0 &&
+              memcmp(l->shortlist[0].node_id, id, 32) == 0 &&
+              vcs_zcode_dht_lookup_closer_id(id, previous, l->target)) {
+            l->xor_progress++;
+            s->lookup_xor_progress++;
+          }
+          int at = vcs_zcode_dht_lookup_candidate_index(l, id);
+          if (at >= 0 &&
+              l->shortlist[at].state ==
+                  VCS_ZCODE_DHT_CANDIDATE_UNVERIFIED) {
+            if (!s->request_reachability ||
+                !s->request_reachability(s->reachability_ctx, id,
+                                         now.wall_unix)) {
+              l->shortlist[at].state = VCS_ZCODE_DHT_CANDIDATE_UNREACHABLE;
+            } else if (!l->shortlist[at].reachability_deadline_mono) {
+              l->shortlist[at].reachability_deadline_mono =
+                  now.monotonic_s +
+                  VCS_ZCODE_DHT_SERVICE_REACHABILITY_TIMEOUT_S;
+            }
+          }
+        }
+      }
     }
     query_finish(s, q, true, now);
   }
@@ -623,26 +688,67 @@ bool vcs_zcode_dht_service_next_outbound(struct vcs_zcode_dht_service *s,
   return false;
 }
 
-void vcs_zcode_dht_service_tick(struct vcs_zcode_dht_service *s, uint64_t now) {
+static bool pending_candidate_valid(struct vcs_zcode_dht_service *s,
+                                    const struct vcs_zcode_dht_pending *p,
+                                    uint64_t wall_now) {
+  struct vcs_zcode_dht_delegation d;
+  return p && p->active &&
+         vcs_zcode_dht_delegation_decode(
+             &d, p->candidate.delegation_wire,
+             sizeof(p->candidate.delegation_wire)) ==
+             VCS_ZCODE_DHT_DELEGATION_OK &&
+         vcs_zcode_dht_delegation_verify(&d, s->genesis, NULL, 0, NULL,
+                                         wall_now) ==
+             VCS_ZCODE_DHT_DELEGATION_OK &&
+         (!s->chain_verify || s->chain_verify(s->chain_ctx, &d));
+}
+
+void vcs_zcode_dht_service_tick(struct vcs_zcode_dht_service *s,
+                                struct vcs_zcode_dht_time now) {
   if (!s || !s->enabled)
     return;
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES; i++)
-    if (s->queries[i].used && s->queries[i].deadline <= now)
+    if (s->queries[i].used &&
+        s->queries[i].deadline_mono <= now.monotonic_s)
       query_expire(s, &s->queries[i], now);
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER; i++)
     if (s->expired[i].used &&
-        now - s->expired[i].expired_at >
+        now.monotonic_s - s->expired[i].expired_at_mono >
             VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS)
       memset(&s->expired[i], 0, sizeof(s->expired[i]));
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS; i++)
-    if (s->lookups[i].used && !s->lookups[i].completed &&
-        s->lookups[i].deadline <= now) {
-      s->lookups[i].timed_out = true;
-      s->lookups[i].completed = true;
+    if (s->lookups[i].used && !s->lookups[i].completed) {
+      for (uint32_t c = 0; c < s->lookups[i].shortlist_count; c++)
+        if (s->lookups[i].shortlist[c].state ==
+                VCS_ZCODE_DHT_CANDIDATE_UNVERIFIED &&
+            s->lookups[i].shortlist[c].reachability_deadline_mono != 0 &&
+            s->lookups[i].shortlist[c].reachability_deadline_mono <=
+                now.monotonic_s)
+          s->lookups[i].shortlist[c].state =
+              VCS_ZCODE_DHT_CANDIDATE_UNREACHABLE;
+      vcs_zcode_dht_lookup_assess(s, &s->lookups[i]);
+      if (!s->lookups[i].completed &&
+          s->lookups[i].deadline_mono <= now.monotonic_s)
+        vcs_zcode_dht_lookup_terminate(
+            s, &s->lookups[i], VCS_ZCODE_DHT_TERMINATION_TIMEOUT);
     }
-  size_t expired = vcs_zcode_dht_table_expire_probes(s->table, (int64_t)now);
+  size_t expired = 0;
+  for (size_t i = 0; i < VCS_ZCODE_DHT_MAX_PENDING; i++) {
+    struct vcs_zcode_dht_pending *p = &s->table->pending[i];
+    if (!p->active || p->deadline_mono > (int64_t)now.monotonic_s)
+      continue;
+    uint8_t victim[32];
+    memcpy(victim, p->victim_node_id, 32);
+    if (pending_candidate_valid(s, p, now.wall_unix))
+      (void)vcs_zcode_dht_table_probe_result(s->table, victim, false,
+                                             (int64_t)now.wall_unix);
+    else
+      (void)vcs_zcode_dht_table_discard_candidate(s->table, victim);
+    expired++;
+  }
   if (expired)
-    mark_dirty(s, now);
+    mark_dirty(s, now.monotonic_s);
+  vcs_zcode_dht_lookup_schedule(s, now);
   for (size_t i = 0; i < VCS_ZCODE_DHT_MAX_PENDING &&
                      query_count(s) < VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES;
        i++)
@@ -660,93 +766,14 @@ void vcs_zcode_dht_service_tick(struct vcs_zcode_dht_service *s, uint64_t now) {
             s->peers[p].authenticated &&
             memcmp(s->peers[p].node_id, s->table->pending[i].victim_node_id,
                    32) == 0) {
-          (void)send_find(s, &s->peers[p], QUERY_PROBE, 0, s->self_id,
-                          s->table->pending[i].victim_node_id, now);
+          (void)vcs_zcode_dht_service_send_find(
+              s, &s->peers[p], QUERY_PROBE, 0, s->self_id,
+              s->table->pending[i].victim_node_id, now.monotonic_s);
           break;
         }
     }
   if (s->persistence_dirty &&
-      now >= s->dirty_since + VCS_ZCODE_DHT_SERVICE_SAVE_DEBOUNCE_S)
+      now.monotonic_s >=
+          s->dirty_since_mono + VCS_ZCODE_DHT_SERVICE_SAVE_DEBOUNCE_S)
     (void)vcs_zcode_dht_service_persistence_save(s);
-}
-
-bool vcs_zcode_dht_service_lookup_begin(struct vcs_zcode_dht_service *s,
-                                        const uint8_t target[32], uint64_t now,
-                                        uint64_t *id_out) {
-  if (!s || !s->enabled || !target || !nonzero(target, 32) || !id_out)
-    return false;
-  struct service_lookup *l = NULL;
-  for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS; i++)
-    if (!s->lookups[i].used) {
-      l = &s->lookups[i];
-      break;
-    }
-  if (!l)
-    return false;
-  memset(l, 0, sizeof(*l));
-  l->used = true;
-  l->id = s->next_lookup_id++;
-  if (!l->id)
-    l->id = s->next_lookup_id++;
-  l->deadline = now + VCS_ZCODE_DHT_LOOKUP_CEILING_S;
-  memcpy(l->target, target, 32);
-  lookup_hint(l, s->self_id);
-  for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_PEERS &&
-                     l->queries_sent < VCS_ZCODE_DHT_ALPHA &&
-                     query_count(s) < VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES;
-       i++)
-    if (s->peers[i].used && s->peers[i].connected &&
-        s->peers[i].authenticated &&
-        send_find(s, &s->peers[i], QUERY_LOOKUP, l->id, target, NULL, now)) {
-      l->queries_sent++;
-      l->queries_pending++;
-    }
-  if (!l->queries_sent)
-    l->completed = true;
-  *id_out = l->id;
-  return true;
-}
-
-static bool closer_id(const uint8_t a[32], const uint8_t b[32],
-                      const uint8_t target[32]) {
-  uint8_t ad[32], bd[32];
-  vcs_zcode_dht_xor_distance(a, target, ad);
-  vcs_zcode_dht_xor_distance(b, target, bd);
-  int c = memcmp(ad, bd, 32);
-  return c < 0 || (c == 0 && memcmp(a, b, 32) < 0);
-}
-
-bool vcs_zcode_dht_service_lookup_poll(
-    struct vcs_zcode_dht_service *s, uint64_t id, uint64_t now,
-    struct vcs_zcode_dht_lookup_result *out) {
-  if (!s || !out)
-    return false;
-  vcs_zcode_dht_service_tick(s, now);
-  struct service_lookup *l = lookup_find(s, id);
-  if (!l)
-    return false;
-  memset(out, 0, sizeof(*out));
-  out->state =
-      !l->completed
-          ? VCS_ZCODE_DHT_LOOKUP_PENDING
-          : (l->timed_out ? VCS_ZCODE_DHT_LOOKUP_TIMEOUT
-                          : (l->not_found ? VCS_ZCODE_DHT_LOOKUP_NOT_FOUND
-                                          : VCS_ZCODE_DHT_LOOKUP_COMPLETE));
-  struct vcs_zcode_dht_contact contacts[VCS_ZCODE_DHT_K];
-  size_t n = vcs_zcode_dht_table_closest(s->table, l->target, contacts,
-                                         VCS_ZCODE_DHT_K - 1);
-  memcpy(out->node_ids[out->count++], s->self_id, 32);
-  for (size_t i = 0; i < n && out->count < VCS_ZCODE_DHT_K; i++) {
-    size_t at = out->count;
-    while (at &&
-           closer_id(contacts[i].node_id, out->node_ids[at - 1], l->target)) {
-      memcpy(out->node_ids[at], out->node_ids[at - 1], 32);
-      at--;
-    }
-    memcpy(out->node_ids[at], contacts[i].node_id, 32);
-    out->count++;
-  }
-  if (l->completed)
-    memset(l, 0, sizeof(*l));
-  return true;
 }

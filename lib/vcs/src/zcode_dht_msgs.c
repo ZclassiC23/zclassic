@@ -188,6 +188,11 @@ enum vcs_zcode_dht_error vcs_zcode_dht_msg_parse(
 {
     if (!wire || !v || !out) return VCS_ZCODE_DHT_ERR_NULL;
     memset(out, 0, sizeof(*out));
+    /* Parse into a private scratch object. No authenticated-looking prefix is
+     * ever observable after a late signature/session/order rejection. */
+    struct vcs_zcode_dht_msg parsed;
+    memset(&parsed, 0, sizeof(parsed));
+    struct vcs_zcode_dht_msg *dst = &parsed;
     if (len < VCS_ZCODE_DHT_MSGS_HEADER_BYTES + VCS_ZCODE_DHT_MSGS_AUTH_BYTES +
               VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES)
         return VCS_ZCODE_DHT_ERR_WIRE_SIZE;
@@ -216,14 +221,14 @@ enum vcs_zcode_dht_error vcs_zcode_dht_msg_parse(
     }
     size_t off = VCS_ZCODE_DHT_MSGS_HEADER_BYTES;
     uint64_t *generation = kind == VCS_ZCODE_DHT_MSG_FIND_NODE
-        ? &out->find_node.session_generation : &out->nodes.session_generation;
+        ? &dst->find_node.session_generation : &dst->nodes.session_generation;
     uint8_t *sender = kind == VCS_ZCODE_DHT_MSG_FIND_NODE
-        ? out->find_node.sender_node_id : out->nodes.sender_node_id;
+        ? dst->find_node.sender_node_id : dst->nodes.sender_node_id;
     uint8_t *query = kind == VCS_ZCODE_DHT_MSG_FIND_NODE
-        ? out->find_node.query_id : out->nodes.query_id;
+        ? dst->find_node.query_id : dst->nodes.query_id;
     struct vcs_zcode_dht_delegation *delegation =
-        kind == VCS_ZCODE_DHT_MSG_FIND_NODE ? &out->find_node.delegation
-                                            : &out->nodes.delegation;
+        kind == VCS_ZCODE_DHT_MSG_FIND_NODE ? &dst->find_node.delegation
+                                            : &dst->nodes.delegation;
     enum vcs_zcode_dht_error e = read_auth(
         wire, &off, v, generation, sender, query, delegation);
     if (e != VCS_ZCODE_DHT_OK) return e;
@@ -234,21 +239,22 @@ enum vcs_zcode_dht_error vcs_zcode_dht_msg_parse(
     if (e != VCS_ZCODE_DHT_OK) return e;
     if (*generation != v->session_generation) return VCS_ZCODE_DHT_ERR_SESSION;
     if (kind == VCS_ZCODE_DHT_MSG_FIND_NODE) {
-        memcpy(out->find_node.target_node_id, wire + off, 32); off += 32;
-        if (!nonzero(out->find_node.target_node_id, 32))
+        memcpy(dst->find_node.target_node_id, wire + off, 32); off += 32;
+        if (!nonzero(dst->find_node.target_node_id, 32))
             return VCS_ZCODE_DHT_ERR_ID_ZERO;
     } else {
         off++;
         for (uint32_t i = 0; i < count; i++) {
-            memcpy(out->nodes.node_ids[i], wire + off, 32); off += 32;
-            if (!nonzero(out->nodes.node_ids[i], 32))
+            memcpy(dst->nodes.node_ids[i], wire + off, 32); off += 32;
+            if (!nonzero(dst->nodes.node_ids[i], 32))
                 return VCS_ZCODE_DHT_ERR_ID_ZERO;
-            if (i && memcmp(out->nodes.node_ids[i - 1],
-                            out->nodes.node_ids[i], 32) >= 0)
+            if (i && memcmp(dst->nodes.node_ids[i - 1],
+                            dst->nodes.node_ids[i], 32) >= 0)
                 return VCS_ZCODE_DHT_ERR_WIRE_ORDER;
         }
-        out->nodes.contact_count = count;
+        dst->nodes.contact_count = count;
     }
-    out->kind = (enum vcs_zcode_dht_msg_kind)kind;
+    dst->kind = (enum vcs_zcode_dht_msg_kind)kind;
+    *out = parsed;
     return VCS_ZCODE_DHT_OK;
 }

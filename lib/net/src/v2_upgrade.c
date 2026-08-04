@@ -23,11 +23,29 @@ bool connman_request_v2_upgrade(struct connman *cm, struct p2p_node *node)
 
     /* Pinned addnodes bypass addrman selection, so update their durable
      * in-process dial entry as well. */
+    bool matched_addnode = false;
     for (int i = 0; i < cm->num_addnodes; i++) {
         if (net_addr_eq(&cm->addnodes[i].svc.addr, &node->addr.svc.addr) &&
-            cm->addnodes[i].svc.port == node->addr.svc.port)
+            cm->addnodes[i].svc.port == node->addr.svc.port) {
+            matched_addnode = true;
             cm->addnodes[i].nServices |= NODE_V2TRANSPORT;
+            /* This disconnect is the successful capability-upgrade path,
+             * not a failed dial. Make the specifically matched addnode
+             * immediately eligible for its one Noise reconnect instead of
+             * stranding it behind the ordinary 30-second retry cooldown. */
+            cm->addnode_last_attempt[i] = 0;
+            cm->addnode_backoff_sec[i] = 0;
+        }
     }
+
+    /* A learned ZENDP hop is deliberately a one-shot hint, not an addnode.
+     * Its first connection may still be legacy because v2 capability was not
+     * known until VERSION arrived. Preserve exactly that same signed endpoint
+     * for the one controlled Noise reconnect. This is also required in
+     * -connect mode, where addrman is intentionally not a dial source. */
+    if (!matched_addnode && !connman_queue_dht_hint(cm, &node->addr))
+        LOG_FAIL("net", "cannot retain learned peer %s for Noise reconnect",
+                 node->addr_name);
 
     /* addrman_add merges service bits for an existing entry even if it does
      * not add another bucket reference.  Loopback addnodes are covered above. */
