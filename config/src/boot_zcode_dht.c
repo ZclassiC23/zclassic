@@ -621,6 +621,47 @@ bool boot_zcode_dht_lookup_cancel(uint64_t lookup_id, uint64_t generation) {
   return ok;
 }
 
+bool boot_zcode_dht_record_discovery_begin(
+    const struct vcs_zcode_dht_record_selector *selector,
+    struct vcs_zcode_dht_time now, uint64_t *operation_id,
+    uint64_t *generation) {
+  if (!selector || !operation_id || !generation)
+    return false;
+  dht_lock();
+  bool ok = g_dht && vcs_zcode_dht_service_record_discovery_begin(
+                         g_dht, selector, now, operation_id);
+  if (ok)
+    *generation = g_dht_generation;
+  zcl_mutex_unlock(&g_dht_lock);
+  return ok;
+}
+
+bool boot_zcode_dht_record_discovery_poll(
+    uint64_t operation_id, uint64_t generation,
+    struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record_discovery_result *out) {
+  if (!operation_id || !generation || !out)
+    return false;
+  dht_lock();
+  bool ok = g_dht && generation == g_dht_generation &&
+            vcs_zcode_dht_service_record_discovery_poll(
+                g_dht, operation_id, now, out);
+  zcl_mutex_unlock(&g_dht_lock);
+  return ok;
+}
+
+bool boot_zcode_dht_record_discovery_cancel(uint64_t operation_id,
+                                            uint64_t generation) {
+  if (!operation_id || !generation)
+    return false;
+  dht_lock();
+  bool ok = g_dht && generation == g_dht_generation &&
+            vcs_zcode_dht_service_record_discovery_cancel(g_dht,
+                                                           operation_id);
+  zcl_mutex_unlock(&g_dht_lock);
+  return ok;
+}
+
 bool boot_zcode_dht_peers(uint64_t wall_now,
                           struct vcs_zcode_dht_peer_view *out, size_t max,
                           size_t offset, size_t *count_out) {

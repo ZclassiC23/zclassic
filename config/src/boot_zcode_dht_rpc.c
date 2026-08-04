@@ -90,12 +90,14 @@ void boot_zcode_dht_public_tick(uint64_t monotonic_s) {
   public_lock();
   public_cleanup_locked(monotonic_s);
   zcl_mutex_unlock(&g_public_lock);
+  boot_zcode_dht_record_public_tick(monotonic_s);
 }
 
 void boot_zcode_dht_public_reset(void) {
   public_lock();
   memset(g_public, 0, sizeof(g_public));
   zcl_mutex_unlock(&g_public_lock);
+  boot_zcode_dht_record_public_reset();
 }
 
 static const struct json_value *rpc_input(const struct json_value *params) {
@@ -684,4 +686,5 @@ void boot_zcode_dht_register_rpc(struct rpc_table *table) {
   };
   for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
     rpc_table_must_append(table, &commands[i]);
+  boot_zcode_dht_record_register_rpc(table);
 }
