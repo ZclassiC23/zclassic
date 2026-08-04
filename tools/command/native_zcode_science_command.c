@@ -826,7 +826,7 @@ static bool zsci_discovery_record(const char *kind, const char *science_root,
         json_free(&input);
         return false;
     }
-    json_push_kv_str(&input, "mode", "commit");
+    json_set_str((struct json_value *)json_get(&input, "mode"), "commit");
     json_push_kv_str(&input, "plan_token", token_out);
     bool committed = zsci_discovery_rpc("zcode_dht_publish", &input, &result);
     if (committed)
