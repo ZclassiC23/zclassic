@@ -25,6 +25,7 @@
 #define ZSCI_PATH_MAX 4096
 #define ZSCI_WIRE_MAX 422 /* study_spec.v1 is the largest science wire */
 #define ZSCI_LIST_MAX 256
+#define ZSCI_POINTER_SECONDS INT64_C(86400) /* inside the default delegation */
 
 static const char *zsci_str(const struct json_value *input, const char *key)
 {
@@ -915,9 +916,10 @@ void zcl_native_handle_zcode_science_publish(
     int64_t now = platform_time_wall_unix();
     char pointer_token[65], provider_token[65];
     char pointer_error[64] = {0}, provider_error[64] = {0};
-    bool pointer = now > 0 && now <= INT64_MAX - 604800 &&
+    bool pointer = now > 0 && now <= INT64_MAX - ZSCI_POINTER_SECONDS &&
         zsci_discovery_record("pointer", root_hex, blob_hex, now,
-                              now + 604800, pointer_token, pointer_error);
+                              now + ZSCI_POINTER_SECONDS, pointer_token,
+                              pointer_error);
     bool provider = now > 0 && now <= INT64_MAX - 7200 &&
         zsci_discovery_record("provider", root_hex, blob_hex, now,
                               now + 7200, provider_token, provider_error);
