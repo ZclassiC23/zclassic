@@ -288,10 +288,13 @@ sa_wait_rpc() { # $1=dd $2=rpc $3=pid $4=secs
 # sa_sci <datadir> <leaf> <json> → prints the reply's one JSON line.
 sa_sci() {
     local dd="$1" leaf="$2" input="$3"
+    local rpc="$A_RPC"
+    [ "$dd" = "$SA_DD_B" ] && rpc="$B_RPC"
     # The CLI exits non-zero whenever the reply is ok:false — expected for
     # the refusal assertions (stale review, B-against-A's-study). Always
     # return 0; every reply is asserted on its JSON content.
-    "$NODE_BIN" "$leaf" -datadir="$dd" --input="$input" 2>/dev/null | tail -1 || true
+    "$NODE_BIN" -datadir="$dd" -rpcport="$rpc" "$leaf" \
+        --input="$input" 2>/dev/null | tail -1 || true
 }
 # jget '<python expr over d>' — reads one JSON doc on stdin.
 jget() { python3 -c "import json,sys
