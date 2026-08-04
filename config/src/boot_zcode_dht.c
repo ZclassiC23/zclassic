@@ -84,6 +84,16 @@ static void dht_status_json_locked(struct json_value *out) {
                    status.connected_authenticated);
   json_push_kv_int(out, "cold_contacts", status.cold_contacts);
   json_push_kv_int(out, "pending_probes", status.pending_probes);
+  static const char *const probe_names[] = {
+      "waiting", "in_flight", "responded", "failed", "expired"};
+  struct json_value probes;
+  json_init(&probes);
+  json_set_object(&probes);
+  for (int i = 0; i < VCS_ZCODE_DHT_PROBE_STATE_COUNT; i++)
+    json_push_kv_int(&probes, probe_names[i],
+                     (int64_t)status.probe_transitions[i]);
+  json_push_kv(out, "probe_transitions", &probes);
+  json_free(&probes);
   json_push_kv_int(out, "active_queries", status.active_queries);
   json_push_kv_int(out, "queued_lookups", status.queued_lookups);
   json_push_kv_int(out, "outbound_queued", status.outbound_queued);

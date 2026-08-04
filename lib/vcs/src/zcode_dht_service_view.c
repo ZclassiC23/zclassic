@@ -26,6 +26,9 @@ void vcs_zcode_dht_service_status(const struct vcs_zcode_dht_service *s,
   for (size_t i = 0; i < VCS_ZCODE_DHT_BUCKET_COUNT; i++)
     out->buckets_used += s->table->bucket_sizes[i] != 0;
   out->pending_probes = (uint32_t)vcs_zcode_dht_table_pending_count(s->table);
+  for (size_t i = 0; i < VCS_ZCODE_DHT_PROBE_STATE_COUNT; i++)
+    out->probe_transitions[i] = vcs_zcode_dht_table_probe_transition_count(
+        s->table, (enum vcs_zcode_dht_probe_state)i);
   out->active_queries = active_query_count(s);
   out->outbound_queued = s->outbound_count;
   out->frames_accepted = s->frames_accepted;

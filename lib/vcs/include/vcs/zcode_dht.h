@@ -15,6 +15,7 @@
 #define VCS_ZCODE_DHT_MAX_CONTACTS 1024u
 #define VCS_ZCODE_DHT_MAX_PENDING 256u
 #define VCS_ZCODE_DHT_PROBE_TIMEOUT_S 10u
+#define VCS_ZCODE_DHT_PROBE_WAIT_TIMEOUT_S 30u
 #define VCS_ZCODE_DHT_LOOKUP_CEILING_S 30u
 #define VCS_ZCODE_DHT_ID_BYTES 32u
 #define VCS_ZCODE_DHT_BUCKET_COUNT 256u
@@ -91,8 +92,18 @@ bool vcs_zcode_dht_contact_from_delegation(
     const struct vcs_zcode_dht_delegation *delegation,
     int64_t last_success_unix, uint32_t consecutive_failures);
 
+enum vcs_zcode_dht_probe_state {
+    VCS_ZCODE_DHT_PROBE_WAITING = 0,
+    VCS_ZCODE_DHT_PROBE_IN_FLIGHT,
+    VCS_ZCODE_DHT_PROBE_RESPONDED,
+    VCS_ZCODE_DHT_PROBE_FAILED,
+    VCS_ZCODE_DHT_PROBE_EXPIRED,
+    VCS_ZCODE_DHT_PROBE_STATE_COUNT
+};
+
 struct vcs_zcode_dht_pending {
     bool active;
+    enum vcs_zcode_dht_probe_state state;
     uint8_t victim_node_id[32];
     struct vcs_zcode_dht_contact candidate;
     int64_t deadline_mono;
@@ -108,6 +119,7 @@ struct vcs_zcode_dht_table {
                                          [VCS_ZCODE_DHT_K];
     uint32_t pending_count;
     struct vcs_zcode_dht_pending pending[VCS_ZCODE_DHT_MAX_PENDING];
+    uint64_t probe_transitions[VCS_ZCODE_DHT_PROBE_STATE_COUNT];
 };
 
 bool vcs_zcode_dht_node_id(uint8_t out[32],
@@ -125,9 +137,27 @@ bool vcs_zcode_dht_table_init(struct vcs_zcode_dht_table *table,
 enum vcs_zcode_dht_add_result vcs_zcode_dht_table_add_contact(
     struct vcs_zcode_dht_table *table,
     const struct vcs_zcode_dht_contact *contact, int64_t now_mono);
-bool vcs_zcode_dht_table_probe_result(struct vcs_zcode_dht_table *table,
-                                      const uint8_t victim_node_id[32],
-                                      bool responsive, int64_t now_unix);
+/* WAITING has only a queue deadline.  IN_FLIGHT and its liveness deadline are
+ * armed atomically after the FIND_NODE frame has entered the outbound queue. */
+bool vcs_zcode_dht_table_probe_started(struct vcs_zcode_dht_table *table,
+                                       const uint8_t victim_node_id[32],
+                                       int64_t now_mono);
+/* Complete an actually transmitted probe. FAILED/EXPIRED may replace the
+ * incumbent only when the caller has freshly revalidated the candidate. */
+bool vcs_zcode_dht_table_probe_complete(
+    struct vcs_zcode_dht_table *table, const uint8_t victim_node_id[32],
+    enum vcs_zcode_dht_probe_state terminal_state, bool candidate_valid,
+    int64_t now_unix);
+bool vcs_zcode_dht_table_probe_state(
+    const struct vcs_zcode_dht_table *table,
+    const uint8_t victim_node_id[32], enum vcs_zcode_dht_probe_state *out);
+uint64_t vcs_zcode_dht_table_probe_transition_count(
+    const struct vcs_zcode_dht_table *table,
+    enum vcs_zcode_dht_probe_state state);
+/* Record a terminal outcome while discarding only the candidate. */
+bool vcs_zcode_dht_table_probe_discard(
+    struct vcs_zcode_dht_table *table, const uint8_t victim_node_id[32],
+    enum vcs_zcode_dht_probe_state terminal_state);
 size_t vcs_zcode_dht_table_expire_probes(struct vcs_zcode_dht_table *table,
                                          int64_t now_mono);
 /* Drop a pending candidate without evicting its incumbent. Used when the

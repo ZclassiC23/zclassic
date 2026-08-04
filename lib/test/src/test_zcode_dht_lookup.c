@@ -17,7 +17,30 @@ static void hostile_id(uint8_t out[32], uint32_t value) {
   out[31] = (uint8_t)value;
 }
 
-int test_zcode_dht_lookup(void) {
+static void replacement_id(uint8_t out[32], uint8_t value) {
+  memset(out, 0, 32);
+  out[0] = 0x80;
+  out[31] = value;
+}
+
+static void replacement_contact(struct vcs_zcode_dht_contact *contact,
+                                const uint8_t id[32], int64_t seen) {
+  memset(contact, 0, sizeof(*contact));
+  memcpy(contact->node_id, id, 32);
+  memset(contact->master_pubkey, 0x11, 32);
+  memset(contact->online_pubkey, 0x22, 32);
+  memset(contact->noise_static_pubkey, 0x33, 32);
+  memset(contact->beacon_hash, 0x44, 32);
+  memset(contact->delegation_wire, 0x55,
+         sizeof(contact->delegation_wire));
+  contact->beacon_height = 100;
+  contact->delegation_sequence = 1;
+  contact->delegation_not_before = 1;
+  contact->delegation_expiry = 100000;
+  contact->last_success_unix = seen;
+}
+
+static int test_candidate_pool(void) {
   int failures = 0;
   TEST("zcode dht lookup: full pool retains flights and closest frontier") {
     struct vcs_zcode_dht_service *service = calloc(1, sizeof(*service));
@@ -125,5 +148,81 @@ int test_zcode_dht_lookup(void) {
     PASS();
   }
 _test_next:;
+  return failures;
+}
+
+static int test_saturated_probe_wait(void) {
+  int failures = 0;
+  TEST("zcode dht lookup: saturated service never evicts unprobed incumbent") {
+    struct vcs_zcode_dht_service *service = calloc(1, sizeof(*service));
+    struct vcs_zcode_dht_table *table = calloc(1, sizeof(*table));
+    ASSERT(service != NULL);
+    ASSERT(table != NULL);
+    uint8_t self[32] = {1}, ids[VCS_ZCODE_DHT_K + 1][32];
+    ASSERT(vcs_zcode_dht_table_init(table, self));
+    service->enabled = true;
+    service->table = table;
+    for (uint32_t i = 0; i < VCS_ZCODE_DHT_K; i++) {
+      replacement_id(ids[i], (uint8_t)i);
+      struct vcs_zcode_dht_contact contact;
+      replacement_contact(&contact, ids[i], 1);
+      ASSERT_EQ(vcs_zcode_dht_table_add_contact(table, &contact, 1),
+                VCS_ZCODE_DHT_ADD_ADDED);
+    }
+    replacement_id(ids[VCS_ZCODE_DHT_K], VCS_ZCODE_DHT_K);
+    struct vcs_zcode_dht_contact replacement;
+    replacement_contact(&replacement, ids[VCS_ZCODE_DHT_K], 2);
+    ASSERT_EQ(vcs_zcode_dht_table_add_contact(table, &replacement, 1),
+              VCS_ZCODE_DHT_ADD_PENDING_PROBE);
+
+    for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS; i++) {
+      struct service_lookup *lookup = &service->lookups[i];
+      lookup->used = true;
+      lookup->id = i + 1;
+      lookup->deadline_mono = 100;
+      lookup->target[31] = (uint8_t)(i + 1);
+      ASSERT(vcs_zcode_dht_lookup_insert(
+          lookup, ids[i], VCS_ZCODE_DHT_CANDIDATE_UNVERIFIED, 0));
+    }
+    for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES; i++) {
+      service->queries[i].used = true;
+      service->queries[i].kind = QUERY_LOOKUP;
+      service->queries[i].deadline_mono = 100;
+      service->queries[i].lookup_id = i + 1;
+      service->lookups[i].queries_pending = 1;
+    }
+
+    vcs_zcode_dht_service_tick(
+        service, (struct vcs_zcode_dht_time){.wall_unix = 10,
+                                             .monotonic_s = 10});
+    struct vcs_zcode_dht_contact found;
+    ASSERT(vcs_zcode_dht_table_find(table, ids[0], &found));
+    ASSERT(!vcs_zcode_dht_table_find(table, ids[VCS_ZCODE_DHT_K], &found));
+    enum vcs_zcode_dht_probe_state state;
+    ASSERT(vcs_zcode_dht_table_probe_state(table, ids[0], &state));
+    ASSERT_EQ(state, VCS_ZCODE_DHT_PROBE_WAITING);
+
+    vcs_zcode_dht_service_tick(
+        service, (struct vcs_zcode_dht_time){.wall_unix = 31,
+                                             .monotonic_s = 31});
+    ASSERT(vcs_zcode_dht_table_find(table, ids[0], &found));
+    ASSERT(!vcs_zcode_dht_table_find(table, ids[VCS_ZCODE_DHT_K], &found));
+    ASSERT(!vcs_zcode_dht_table_probe_state(table, ids[0], &state));
+    ASSERT_EQ(vcs_zcode_dht_table_probe_transition_count(
+                  table, VCS_ZCODE_DHT_PROBE_IN_FLIGHT), 0);
+    ASSERT_EQ(vcs_zcode_dht_table_probe_transition_count(
+                  table, VCS_ZCODE_DHT_PROBE_EXPIRED), 1);
+
+    free(table);
+    free(service);
+    PASS();
+  }
+_test_next:;
+  return failures;
+}
+
+int test_zcode_dht_lookup(void) {
+  int failures = test_candidate_pool();
+  failures += test_saturated_probe_wait();
   return failures;
 }

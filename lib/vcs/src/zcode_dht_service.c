@@ -25,6 +25,16 @@ static bool nonzero(const uint8_t *p, size_t n) {
   return any != 0;
 }
 
+enum query_outcome {
+  QUERY_OUTCOME_RESPONSE = 0,
+  QUERY_OUTCOME_FAILED,
+  QUERY_OUTCOME_EXPIRED
+};
+
+static bool pending_candidate_valid(struct vcs_zcode_dht_service *s,
+                                    const struct vcs_zcode_dht_pending *p,
+                                    uint64_t wall_now);
+
 const char *
 vcs_zcode_dht_reject_reason_string(enum vcs_zcode_dht_reject_reason r) {
   static const char *const names[] = {
@@ -199,7 +209,7 @@ bool vcs_zcode_dht_service_send_find(struct vcs_zcode_dht_service *s,
 }
 
 static void query_finish(struct vcs_zcode_dht_service *s,
-                         struct service_query *q, bool response,
+                         struct service_query *q, enum query_outcome outcome,
                          struct vcs_zcode_dht_time now) {
   if (q->kind == QUERY_LOOKUP) {
     struct service_lookup *l = vcs_zcode_dht_lookup_find(s, q->lookup_id);
@@ -207,38 +217,32 @@ static void query_finish(struct vcs_zcode_dht_service *s,
     if (l && p) {
       int at = vcs_zcode_dht_lookup_candidate_index(l, p->node_id);
       if (at >= 0)
-        l->candidates[at].state = response
+        l->candidates[at].state = outcome == QUERY_OUTCOME_RESPONSE
                                      ? VCS_ZCODE_DHT_CANDIDATE_RESPONDED
                                      : VCS_ZCODE_DHT_CANDIDATE_FAILED;
     }
     if (l && l->queries_pending)
       l->queries_pending--;
   } else if (q->kind == QUERY_PROBE && nonzero(q->victim, 32)) {
-    bool candidate_valid = true;
-    if (!response) {
-      for (size_t i = 0; i < VCS_ZCODE_DHT_MAX_PENDING; i++) {
-        struct vcs_zcode_dht_pending *pending = &s->table->pending[i];
-        if (!pending->active ||
-            memcmp(pending->victim_node_id, q->victim, 32) != 0)
-          continue;
-        struct vcs_zcode_dht_delegation d;
-        candidate_valid =
-            vcs_zcode_dht_delegation_decode(
-                &d, pending->candidate.delegation_wire,
-                sizeof(pending->candidate.delegation_wire)) ==
-                VCS_ZCODE_DHT_DELEGATION_OK &&
-            vcs_zcode_dht_delegation_verify(&d, s->genesis, NULL, 0, NULL,
-                                            now.wall_unix) ==
-                VCS_ZCODE_DHT_DELEGATION_OK &&
-            (!s->chain_verify || s->chain_verify(s->chain_ctx, &d));
+    enum vcs_zcode_dht_probe_state terminal =
+        outcome == QUERY_OUTCOME_RESPONSE
+            ? VCS_ZCODE_DHT_PROBE_RESPONDED
+            : (outcome == QUERY_OUTCOME_EXPIRED ? VCS_ZCODE_DHT_PROBE_EXPIRED
+                                                : VCS_ZCODE_DHT_PROBE_FAILED);
+    struct vcs_zcode_dht_pending *pending = NULL;
+    for (size_t i = 0; i < VCS_ZCODE_DHT_MAX_PENDING; i++)
+      if (s->table->pending[i].active &&
+          memcmp(s->table->pending[i].victim_node_id, q->victim, 32) == 0) {
+        pending = &s->table->pending[i];
         break;
       }
-    }
+    bool candidate_valid = outcome == QUERY_OUTCOME_RESPONSE ||
+                           pending_candidate_valid(s, pending, now.wall_unix);
     if (!candidate_valid)
-      (void)vcs_zcode_dht_table_discard_candidate(s->table, q->victim);
+      (void)vcs_zcode_dht_table_probe_discard(s->table, q->victim, terminal);
     else
-      (void)vcs_zcode_dht_table_probe_result(s->table, q->victim, response,
-                                             (int64_t)now.wall_unix);
+      (void)vcs_zcode_dht_table_probe_complete(
+          s->table, q->victim, terminal, true, (int64_t)now.wall_unix);
     mark_dirty(s, now.monotonic_s);
   }
   memset(q, 0, sizeof(*q));
@@ -251,7 +255,7 @@ static void query_expire(struct vcs_zcode_dht_service *s,
                          struct service_query *q,
                          struct vcs_zcode_dht_time now) {
   query_remember_expired(s, q, now.monotonic_s);
-  query_finish(s, q, false, now);
+  query_finish(s, q, QUERY_OUTCOME_EXPIRED, now);
 }
 
 static enum vcs_zcode_dht_reject_reason
@@ -497,7 +501,7 @@ void vcs_zcode_dht_service_session_close(struct vcs_zcode_dht_service *s,
     mark_dirty(s, now.monotonic_s);
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES; i++)
     if (s->queries[i].used && s->queries[i].peer_id == peer_id) {
-      query_finish(s, &s->queries[i], false, now);
+      query_finish(s, &s->queries[i], QUERY_OUTCOME_FAILED, now);
     }
 }
 
@@ -658,7 +662,7 @@ bool vcs_zcode_dht_service_handle_frame(
         }
       }
     }
-    query_finish(s, q, true, now);
+    query_finish(s, q, QUERY_OUTCOME_RESPONSE, now);
   }
   s->frames_accepted++;
   return true;
@@ -739,11 +743,19 @@ void vcs_zcode_dht_service_tick(struct vcs_zcode_dht_service *s,
       continue;
     uint8_t victim[32];
     memcpy(victim, p->victim_node_id, 32);
-    if (pending_candidate_valid(s, p, now.wall_unix))
-      (void)vcs_zcode_dht_table_probe_result(s->table, victim, false,
-                                             (int64_t)now.wall_unix);
-    else
-      (void)vcs_zcode_dht_table_discard_candidate(s->table, victim);
+    if (p->state == VCS_ZCODE_DHT_PROBE_WAITING)
+      (void)vcs_zcode_dht_table_probe_discard(
+          s->table, victim, VCS_ZCODE_DHT_PROBE_EXPIRED);
+    else if (p->state == VCS_ZCODE_DHT_PROBE_IN_FLIGHT) {
+      bool valid = pending_candidate_valid(s, p, now.wall_unix);
+      if (valid)
+        (void)vcs_zcode_dht_table_probe_complete(
+            s->table, victim, VCS_ZCODE_DHT_PROBE_EXPIRED, true,
+            (int64_t)now.wall_unix);
+      else
+        (void)vcs_zcode_dht_table_probe_discard(
+            s->table, victim, VCS_ZCODE_DHT_PROBE_EXPIRED);
+    }
     expired++;
   }
   if (expired)
@@ -752,7 +764,8 @@ void vcs_zcode_dht_service_tick(struct vcs_zcode_dht_service *s,
   for (size_t i = 0; i < VCS_ZCODE_DHT_MAX_PENDING &&
                      query_count(s) < VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES;
        i++)
-    if (s->table->pending[i].active) {
+    if (s->table->pending[i].active &&
+        s->table->pending[i].state == VCS_ZCODE_DHT_PROBE_WAITING) {
       bool already = false;
       for (size_t q = 0; q < VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES; q++)
         if (s->queries[q].used &&
@@ -766,9 +779,12 @@ void vcs_zcode_dht_service_tick(struct vcs_zcode_dht_service *s,
             s->peers[p].authenticated &&
             memcmp(s->peers[p].node_id, s->table->pending[i].victim_node_id,
                    32) == 0) {
-          (void)vcs_zcode_dht_service_send_find(
-              s, &s->peers[p], QUERY_PROBE, 0, s->self_id,
-              s->table->pending[i].victim_node_id, now.monotonic_s);
+          if (vcs_zcode_dht_service_send_find(
+                  s, &s->peers[p], QUERY_PROBE, 0, s->self_id,
+                  s->table->pending[i].victim_node_id, now.monotonic_s))
+            (void)vcs_zcode_dht_table_probe_started(
+                s->table, s->table->pending[i].victim_node_id,
+                (int64_t)now.monotonic_s);
           break;
         }
     }

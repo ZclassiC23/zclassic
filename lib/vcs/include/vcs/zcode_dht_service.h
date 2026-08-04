@@ -115,6 +115,7 @@ struct vcs_zcode_dht_service_status {
   uint32_t connected_authenticated;
   uint32_t cold_contacts;
   uint32_t pending_probes;
+  uint64_t probe_transitions[VCS_ZCODE_DHT_PROBE_STATE_COUNT];
   uint32_t active_queries;
   uint32_t queued_lookups;
   uint32_t outbound_queued;

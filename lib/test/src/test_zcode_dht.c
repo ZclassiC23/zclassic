@@ -140,20 +140,46 @@ static int test_probe_policy(void)
         fake_contact(&c, ids[16], 0x20, 1, 101);
         ASSERT_EQ(vcs_zcode_dht_table_add_contact(t, &c, 1000),
                   VCS_ZCODE_DHT_ADD_PENDING_PROBE);
+        enum vcs_zcode_dht_probe_state probe_state;
+        ASSERT(vcs_zcode_dht_table_probe_state(t, ids[0], &probe_state));
+        ASSERT_EQ(probe_state, VCS_ZCODE_DHT_PROBE_WAITING);
         fake_contact(&c, ids[17], 0x20, 1, 102);
         ASSERT_EQ(vcs_zcode_dht_table_add_contact(t, &c, 1001),
                   VCS_ZCODE_DHT_ADD_REJECTED_PENDING);
         ASSERT_EQ(vcs_zcode_dht_table_count(t), VCS_ZCODE_DHT_K);
-        ASSERT(vcs_zcode_dht_table_probe_result(t, ids[0], true, 1002));
+        ASSERT(vcs_zcode_dht_table_probe_started(t, ids[0], 1002));
+        ASSERT(vcs_zcode_dht_table_probe_state(t, ids[0], &probe_state));
+        ASSERT_EQ(probe_state, VCS_ZCODE_DHT_PROBE_IN_FLIGHT);
+        ASSERT(vcs_zcode_dht_table_probe_complete(
+            t, ids[0], VCS_ZCODE_DHT_PROBE_RESPONDED, true, 1002));
         ASSERT(vcs_zcode_dht_table_find(t, ids[0], &got));
         ASSERT(!vcs_zcode_dht_table_find(t, ids[16], &got));
         fake_contact(&c, ids[18], 0x20, 1, 103);
         ASSERT_EQ(vcs_zcode_dht_table_add_contact(t, &c, 2000),
                   VCS_ZCODE_DHT_ADD_PENDING_PROBE);
-        ASSERT_EQ(vcs_zcode_dht_table_expire_probes(t, 2009), 0);
-        ASSERT_EQ(vcs_zcode_dht_table_expire_probes(t, 2010), 1);
+        ASSERT_EQ(vcs_zcode_dht_table_expire_probes(t, 2029), 0);
+        ASSERT_EQ(vcs_zcode_dht_table_expire_probes(t, 2030), 1);
+        ASSERT(vcs_zcode_dht_table_find(t, ids[1], &got));
+        ASSERT(!vcs_zcode_dht_table_find(t, ids[18], &got));
+
+        /* Only a transmitted, failed probe can evict.  Promotion requires
+         * the caller's fresh candidate validation at completion time. */
+        fake_contact(&c, ids[17], 0x20, 1, 104);
+        ASSERT_EQ(vcs_zcode_dht_table_add_contact(t, &c, 3000),
+                  VCS_ZCODE_DHT_ADD_PENDING_PROBE);
+        ASSERT(vcs_zcode_dht_table_probe_started(t, ids[1], 3000));
+        ASSERT(vcs_zcode_dht_table_probe_complete(
+            t, ids[1], VCS_ZCODE_DHT_PROBE_EXPIRED, true, 3010));
         ASSERT(!vcs_zcode_dht_table_find(t, ids[1], &got));
-        ASSERT(vcs_zcode_dht_table_find(t, ids[18], &got));
+        ASSERT(vcs_zcode_dht_table_find(t, ids[17], &got));
+        ASSERT_EQ(vcs_zcode_dht_table_probe_transition_count(
+                      t, VCS_ZCODE_DHT_PROBE_WAITING), 3);
+        ASSERT_EQ(vcs_zcode_dht_table_probe_transition_count(
+                      t, VCS_ZCODE_DHT_PROBE_IN_FLIGHT), 2);
+        ASSERT_EQ(vcs_zcode_dht_table_probe_transition_count(
+                      t, VCS_ZCODE_DHT_PROBE_RESPONDED), 1);
+        ASSERT_EQ(vcs_zcode_dht_table_probe_transition_count(
+                      t, VCS_ZCODE_DHT_PROBE_EXPIRED), 2);
         free(t); PASS();
     } _test_next:;
     return failures;
@@ -195,7 +221,9 @@ static int test_global_cap_and_failures(void)
         fake_contact(&c, id, 0x20, 1, 60);
         ASSERT_EQ(vcs_zcode_dht_table_add_contact(t, &c, 60),
                   VCS_ZCODE_DHT_ADD_PENDING_PROBE);
-        ASSERT(vcs_zcode_dht_table_probe_result(t, first, false, 70));
+        ASSERT(vcs_zcode_dht_table_probe_started(t, first, 60));
+        ASSERT(vcs_zcode_dht_table_probe_complete(
+            t, first, VCS_ZCODE_DHT_PROBE_FAILED, true, 70));
         ASSERT_EQ(vcs_zcode_dht_table_count(t), VCS_ZCODE_DHT_MAX_CONTACTS);
         ASSERT(vcs_zcode_dht_table_find(t, id, &got));
         got.consecutive_failures = UINT32_MAX;

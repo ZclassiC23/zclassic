@@ -218,6 +218,15 @@ static struct vcs_zcode_dht_pending *pending_free(
     return NULL;
 }
 
+static void pending_transition(struct vcs_zcode_dht_table *t,
+                               struct vcs_zcode_dht_pending *p,
+                               enum vcs_zcode_dht_probe_state state)
+{
+    p->state = state;
+    if ((unsigned)state < VCS_ZCODE_DHT_PROBE_STATE_COUNT)
+        t->probe_transitions[state]++;
+}
+
 static void insert_direct(struct vcs_zcode_dht_table *t,
                           const struct vcs_zcode_dht_contact *c)
 {
@@ -282,21 +291,39 @@ enum vcs_zcode_dht_add_result vcs_zcode_dht_table_add_contact(
     if (!p) return VCS_ZCODE_DHT_ADD_REJECTED_PENDING_CAP;
     memset(p, 0, sizeof(*p)); p->active = true;
     memcpy(p->victim_node_id, victim, 32); p->candidate = *c;
-    p->deadline_mono = now + VCS_ZCODE_DHT_PROBE_TIMEOUT_S;
+    pending_transition(t, p, VCS_ZCODE_DHT_PROBE_WAITING);
+    p->deadline_mono = now + VCS_ZCODE_DHT_PROBE_WAIT_TIMEOUT_S;
     t->pending_count++;
     return VCS_ZCODE_DHT_ADD_PENDING_PROBE;
 }
 
-bool vcs_zcode_dht_table_probe_result(struct vcs_zcode_dht_table *t,
-                                      const uint8_t victim[32],
-                                      bool responsive, int64_t now)
+bool vcs_zcode_dht_table_probe_started(struct vcs_zcode_dht_table *t,
+                                       const uint8_t victim[32], int64_t now)
 {
     if (!t || !victim) return false;
     struct vcs_zcode_dht_pending *p = pending_for(t, victim);
-    if (!p) return false;
+    if (!p || p->state != VCS_ZCODE_DHT_PROBE_WAITING) return false;
+    pending_transition(t, p, VCS_ZCODE_DHT_PROBE_IN_FLIGHT);
+    p->deadline_mono = now + VCS_ZCODE_DHT_PROBE_TIMEOUT_S;
+    return true;
+}
+
+bool vcs_zcode_dht_table_probe_complete(
+    struct vcs_zcode_dht_table *t, const uint8_t victim[32],
+    enum vcs_zcode_dht_probe_state terminal, bool candidate_valid, int64_t now)
+{
+    if (!t || !victim || (terminal != VCS_ZCODE_DHT_PROBE_RESPONDED &&
+                          terminal != VCS_ZCODE_DHT_PROBE_FAILED &&
+                          terminal != VCS_ZCODE_DHT_PROBE_EXPIRED))
+        return false;
+    struct vcs_zcode_dht_pending *p = pending_for(t, victim);
+    if (!p || p->state != VCS_ZCODE_DHT_PROBE_IN_FLIGHT) return false;
     struct vcs_zcode_dht_contact candidate = p->candidate;
+    pending_transition(t, p, terminal);
     memset(p, 0, sizeof(*p)); t->pending_count--;
-    if (responsive) return vcs_zcode_dht_table_touch(t, victim, now);
+    if (terminal == VCS_ZCODE_DHT_PROBE_RESPONDED)
+        return vcs_zcode_dht_table_touch(t, victim, now);
+    if (!candidate_valid) return true;
     size_t slot = 0; int b = table_slot(t, victim, &slot);
     if (b >= 0) remove_at(t, (size_t)b, slot);
     uint8_t distance[32];
@@ -308,17 +335,58 @@ bool vcs_zcode_dht_table_probe_result(struct vcs_zcode_dht_table *t,
     return true;
 }
 
+bool vcs_zcode_dht_table_probe_state(
+    const struct vcs_zcode_dht_table *t, const uint8_t victim[32],
+    enum vcs_zcode_dht_probe_state *out)
+{
+    if (!t || !victim || !out) return false;
+    for (size_t i = 0; i < VCS_ZCODE_DHT_MAX_PENDING; i++)
+        if (t->pending[i].active &&
+            memcmp(t->pending[i].victim_node_id, victim, 32) == 0) {
+            *out = t->pending[i].state;
+            return true;
+        }
+    return false;
+}
+
+uint64_t vcs_zcode_dht_table_probe_transition_count(
+    const struct vcs_zcode_dht_table *t, enum vcs_zcode_dht_probe_state state)
+{
+    return t && (unsigned)state < VCS_ZCODE_DHT_PROBE_STATE_COUNT
+               ? t->probe_transitions[state] : 0;
+}
+
+bool vcs_zcode_dht_table_probe_discard(
+    struct vcs_zcode_dht_table *t, const uint8_t victim[32],
+    enum vcs_zcode_dht_probe_state terminal)
+{
+    if (!t || !victim || (terminal != VCS_ZCODE_DHT_PROBE_RESPONDED &&
+                          terminal != VCS_ZCODE_DHT_PROBE_FAILED &&
+                          terminal != VCS_ZCODE_DHT_PROBE_EXPIRED))
+        return false;
+    struct vcs_zcode_dht_pending *p = pending_for(t, victim);
+    if (!p) return false;
+    pending_transition(t, p, terminal);
+    memset(p, 0, sizeof(*p));
+    t->pending_count--;
+    return true;
+}
+
 size_t vcs_zcode_dht_table_expire_probes(struct vcs_zcode_dht_table *t,
                                          int64_t now)
 {
     if (!t) return 0;
-    uint8_t victims[VCS_ZCODE_DHT_MAX_PENDING][32];
     size_t n = 0;
     for (size_t i = 0; i < VCS_ZCODE_DHT_MAX_PENDING; i++)
-        if (t->pending[i].active && t->pending[i].deadline_mono <= now)
-            memcpy(victims[n++], t->pending[i].victim_node_id, 32);
-    for (size_t i = 0; i < n; i++)
-        (void)vcs_zcode_dht_table_probe_result(t, victims[i], false, now);
+        if (t->pending[i].active && t->pending[i].deadline_mono <= now) {
+            /* This routing-only helper cannot establish chain freshness, so
+             * expiry always discards the candidate and preserves incumbent.
+             * The service performs validated IN_FLIGHT promotion itself. */
+            (void)vcs_zcode_dht_table_probe_discard(
+                t, t->pending[i].victim_node_id,
+                VCS_ZCODE_DHT_PROBE_EXPIRED);
+            n++;
+        }
     return n;
 }
 
@@ -363,7 +431,11 @@ bool vcs_zcode_dht_table_remove(struct vcs_zcode_dht_table *t,
 {
     if (!t || !id) return false;
     struct vcs_zcode_dht_pending *p = pending_for(t, id);
-    if (p) return vcs_zcode_dht_table_probe_result(t, id, false, 0);
+    if (p) {
+        pending_transition(t, p, VCS_ZCODE_DHT_PROBE_FAILED);
+        memset(p, 0, sizeof(*p));
+        t->pending_count--;
+    }
     size_t s = 0; int b = table_slot(t, id, &s);
     if (b < 0) return false;
     remove_at(t, (size_t)b, s); return true;
