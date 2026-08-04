@@ -670,3 +670,33 @@ The current result is **35/35 PASS, 0 BLOCKED**, with **34 simulated-chain
 confirmations** across **21 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. No live wallet, address, peer,
 endpoint, private key, identity seed, or mainnet ZCL participated.
+
+## 2026-08-04 post-Sapling Sprout Groth16 mainnet proof
+
+Source commit `83a5b2e8` closes the proof-era gap named by the structural
+audit. The local read-only `zclassicd` oracle identified the first transaction
+after Sapling activation carrying a Sprout JoinSplit: mainnet height 476970,
+block `000000002ef6ebe979c451adfa9508121d216ac861ee12576015b5cae8d3733c`,
+txid `6eb069da34331871a55314ec3b92fcf50d8fabe914d16c46d686be853c8a3047`.
+It is a version-4 / `0x892f2085` transaction with fourteen transparent inputs,
+one Groth16 Sprout JoinSplit, no transparent outputs, and no Sapling spends or
+outputs.
+
+`test_sprout_groth16_kat` embeds the exact 3,890 public transaction bytes and
+only the 1,828-byte public verification-key prefix needed by the Sprout
+Groth16 verifier. It requires no live node, external params file, wallet,
+proving material, or private key. The test pins the txid and complete wire,
+round-trips byte-identically through the production serializer, passes
+structural consensus, verifies the JoinSplit Ed25519 signature and Groth16
+proof through the production contextual validator at height 476970, verifies
+the proof directly, and rejects both a flipped proof byte and a changed public
+input. The primary `test_sprout_phgr13_kat` remains required, so the semantic
+Sprout row now proves both pre-Sapling PHGR13 and post-Sapling Groth16 eras.
+
+The notebook records this as `network=mainnet` with
+`proof=consensus_verified`, not `live_confirmed`: it is a historical public
+chain transaction that predates this lab, not a newly authorized spend. It
+therefore does not increase the live-mainnet bar or invent recipient/fee
+amounts for this project. Current totals remain **35/35 PASS**, **34/35
+simulated/live confirmations**, and **0/35 live-mainnet confirmations**, now
+across **22 exact proof groups**, with **0 ZCL** lab recipient value or fees.
