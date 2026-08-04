@@ -17,6 +17,8 @@ struct node_db;
 #define VAULT_INTENT_PAYLOAD_MAX 16416
 #define VAULT_INTENT_ERROR_MAX 63
 #define VAULT_INTENT_RAW_MAX 200000
+#define VAULT_INTENT_APPLICATION_MAX 32
+#define VAULT_INTENT_IDEMPOTENCY_MAX 64
 
 enum vault_intent_state {
     VAULT_INTENT_PLANNED = 0,
@@ -64,6 +66,10 @@ struct vault_intent_row {
     int64_t recipient_value_zat;
     int64_t max_fee_zat;
     int64_t reserved_zat;
+    char application_kind[VAULT_INTENT_APPLICATION_MAX + 1];
+    char idempotency_key[VAULT_INTENT_IDEMPOTENCY_MAX + 1];
+    bool has_request_digest;
+    uint8_t request_digest[32];
 };
 
 bool vault_intent_validate(const struct vault_intent_row *row,
@@ -77,6 +83,13 @@ bool vault_intent_reserve(struct node_db *ndb,
                           int64_t confirmed_zat);
 bool vault_intent_find(struct node_db *ndb, const uint8_t plan_id[32],
                        struct vault_intent_row *out);
+/* Application workflows use this relationship to make plan creation
+ * idempotent without inventing a second reservation ledger. Empty application
+ * fields remain valid for legacy/generic vault intents. */
+bool vault_intent_find_application_idempotency(
+    struct node_db *ndb, const char *wallet_scope,
+    const char *application_kind, const char *idempotency_key,
+    struct vault_intent_row *out);
 int vault_intent_list(struct node_db *ndb, struct vault_intent_row *out,
                       size_t max);
 bool vault_intent_claim_commit(struct node_db *ndb,

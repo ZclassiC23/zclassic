@@ -9,7 +9,13 @@
  *   zmarket_status  — show active downloads/uploads */
 
 #include "platform/time_compat.h"
+#include "base/hex.h"
+#include "controllers/network_controller.h"
+#include "controllers/wallet_helpers.h"
+#include "controllers/wallet_shielded_controller.h"
+#include "core/serialize.h"
 #include "net/file_market.h"
+#include "net/msgprocessor.h"
 #include "net/rom_seed.h"
 #include "util/util.h"
 #include "encoding/utilstrencodings.h"
@@ -19,6 +25,9 @@
 #include "models/database.h"
 #include "models/market_content.h"
 #include "services/file_market_content_service.h"
+#include "services/file_market_purchase_service.h"
+#include "validation/main_state.h"
+#include "wallet/wallet.h"
 #include "config/runtime.h"
 #include "views/format_helpers.h"
 #include <string.h>
@@ -166,6 +175,296 @@ static bool rpc_zmarket_buy(const struct json_value *params, bool help,
         "zmarket_buy is contained: exact payment verification and paid-file "
         "unlock are not wired; no download session or wallet action started");
     return false;
+}
+
+/* ── durable typed purchase payment ─────────────────────────────── */
+
+static const char *market_purchase_code(const struct zcl_result *r)
+{
+    if (!r) return "PURCHASE_REFUSED";
+    switch (r->code) {
+    case -3:  return "MONEY_STATE_NOT_CURRENT";
+    case -7:  return "IDEMPOTENCY_CONFLICT";
+    case -10: return "CUSTODY_ALLOCATION_EXCEEDED";
+    case -43: return "COMMIT_UNCERTAIN";
+    case -45: return "MONEY_SNAPSHOT_CHANGED";
+    case -46: return "OFFER_CONTRACT_CHANGED";
+    case -47: return "COMMIT_BUSY";
+    case -48: return "COMMIT_STATE_UNCERTAIN";
+    default:  return "PURCHASE_REFUSED";
+    }
+}
+
+static bool market_purchase_refuse(struct json_value *result,
+                                   struct zcl_result r)
+{
+    json_set_object(result);
+    json_push_kv_bool(result, "ok", false);
+    json_push_kv_str(result, "code", market_purchase_code(&r));
+    json_push_kv_str(result, "message", r.message);
+    return true;
+}
+
+static void market_purchase_amount(int64_t zat, char out[32])
+{
+    (void)snprintf(out, 32, "%lld.%08lld",
+                   (long long)(zat / 100000000LL),
+                   (long long)(zat >= 0 ? zat % 100000000LL
+                                        : -(zat % 100000000LL)));
+}
+
+static bool market_purchase_render(const struct market_purchase_view *view,
+                                   struct json_value *result)
+{
+    if (!view || !result) return false;
+    char plan[65], offer[65], buyer[65], txid[65], claim[65];
+    char amount[32], fee[32], reserved[32];
+    zcl_hex_encode(view->plan_id, 32, plan);
+    zcl_hex_encode(view->offer_id, 32, offer);
+    zcl_hex_encode(view->buyer_pubkey, 32, buyer);
+    market_purchase_amount(view->amount_zat, amount);
+    market_purchase_amount(view->maximum_fee_zat, fee);
+    market_purchase_amount(view->reserved_zat, reserved);
+    json_set_object(result);
+    json_push_kv_bool(result, "ok", true);
+    json_push_kv_str(result, "schema", "zcl.market_purchase.v1");
+    json_push_kv_str(result, "plan_id", plan);
+    json_push_kv_str(result, "offer_id", offer);
+    json_push_kv_str(result, "buyer_pubkey", buyer);
+    json_push_kv_str(result, "wallet_scope", view->wallet_scope);
+    json_push_kv_str(result, "state", view->state);
+    json_push_kv_int(result, "chunk_start", view->chunk_start);
+    json_push_kv_int(result, "chunks_paid", view->chunks_paid);
+    json_push_kv_str(result, "amount_zcl", amount);
+    json_push_kv_int(result, "amount_zat", view->amount_zat);
+    json_push_kv_str(result, "maximum_fee_zcl", fee);
+    json_push_kv_int(result, "maximum_fee_zat", view->maximum_fee_zat);
+    json_push_kv_str(result, "reserved_zcl", reserved);
+    json_push_kv_int(result, "reserved_zat", view->reserved_zat);
+    json_push_kv_int(result, "expires_at", view->expires_at);
+    json_push_kv_bool(result, "idempotent_replay",
+                      view->idempotent_replay);
+    if (view->has_txid) {
+        zcl_hex_encode(view->txid, 32, txid);
+        json_push_kv_str(result, "txid", txid);
+    }
+    if (view->has_claim) {
+        zcl_hex_encode(view->claim_id, 32, claim);
+        json_push_kv_str(result, "claim_id", claim);
+    }
+    json_push_kv_bool(result, "payment_notification_queued",
+                      view->payment_notification_queued);
+    return true;
+}
+
+static struct zcl_result market_purchase_money(
+    void *opaque, const char *scope, struct wallet_money_snapshot *out)
+{
+    struct wallet_rpc_context *ctx = opaque;
+    return wallet_money_snapshot_build(ctx ? ctx->node_db : NULL,
+                                       ctx ? ctx->main_state : NULL,
+                                       scope, out);
+}
+
+static struct zcl_result market_purchase_source_owned(
+    void *opaque, const char *source)
+{
+    struct wallet_rpc_context *ctx = opaque;
+    if (!ctx || !ctx->wallet || !source || !source[0])
+        return ZCL_ERR(-1, "wallet and source address are required");
+    if (wallet_addr_is_sapling(source)) {
+        uint8_t d[11], pk_d[32];
+        if (!sapling_decode_payment_address(source, d, pk_d) ||
+            !sapling_keystore_find_by_address(
+                &ctx->wallet->sapling_keys, d, pk_d))
+            return ZCL_ERR(-2, "source address is not a wallet spending key");
+        return ZCL_OK;
+    }
+    struct tx_destination dest;
+    if (!wallet_decode_address(source, &dest))
+        return ZCL_ERR(-3, "source address is invalid for the active network");
+    bool owned = (dest.type == DEST_KEY_ID &&
+                  keystore_have_key(&ctx->wallet->keystore, &dest.id.key)) ||
+                 (dest.type == DEST_SCRIPT_ID &&
+                  keystore_have_cscript(&ctx->wallet->keystore,
+                                         &dest.id.script.hash));
+    return owned ? ZCL_OK
+                 : ZCL_ERR(-4, "source address is not a wallet spending key");
+}
+
+static struct zcl_result market_purchase_send(
+    void *opaque, const char *source, const char *seller, int64_t amount_zat,
+    const uint8_t memo[FILE_MARKET_PAYMENT_MEMO_BYTES], uint8_t txid_out[32])
+{
+    (void)opaque;
+    char amount[32], memo_hex[FILE_MARKET_PAYMENT_MEMO_BYTES * 2 + 1];
+    market_purchase_amount(amount_zat, amount);
+    zcl_hex_encode(memo, FILE_MARKET_PAYMENT_MEMO_BYTES, memo_hex);
+    struct json_value params = {0}, recipients = {0}, recipient = {0};
+    json_set_array(&params);
+    struct json_value from = {0};
+    json_set_str(&from, source);
+    json_push_back(&params, &from);
+    json_free(&from);
+    json_set_array(&recipients);
+    json_set_object(&recipient);
+    json_push_kv_str(&recipient, "address", seller);
+    json_push_kv_str(&recipient, "amount", amount);
+    json_push_kv_str(&recipient, "memo_hex", memo_hex);
+    json_push_back(&recipients, &recipient);
+    json_push_back(&params, &recipients);
+    struct json_value sent = {0};
+    bool ok = rpc_z_sendmany(&params, false, &sent);
+    const char *answer = json_get_str(&sent);
+    bool exact = ok && answer && zcl_hex_decode(answer, txid_out, 32);
+    char reason[192];
+    (void)snprintf(reason, sizeof(reason), "%s",
+                   answer && answer[0] ? answer
+                                       : "wallet refused exact market payment");
+    json_free(&sent);
+    json_free(&recipient);
+    json_free(&recipients);
+    json_free(&params);
+    return exact ? ZCL_OK : ZCL_ERR(-1, "%s", reason);
+}
+
+static bool market_purchase_notify(void *opaque,
+                                   const struct file_payment *payment)
+{
+    struct msg_processor *mp = opaque;
+    struct byte_stream wire;
+    stream_init(&wire, FILE_MARKET_PAYMENT_WIRE_BYTES);
+    bool encoded = mp && file_payment_serialize(payment, &wire) &&
+                   wire.size == FILE_MARKET_PAYMENT_WIRE_BYTES;
+    if (encoded)
+        msg_processor_flood_message(mp, MSG_FILE_PAY, wire.data, wire.size);
+    stream_free(&wire);
+    return encoded;
+}
+
+static struct zcl_result market_purchase_runtime(
+    struct market_purchase_runtime *runtime, bool money)
+{
+    if (!runtime) return ZCL_ERR(-1, "purchase runtime output is required");
+    memset(runtime, 0, sizeof(*runtime));
+    struct wallet_rpc_context *ctx = wallet_rpc_context_current();
+    runtime->node_db = ctx ? ctx->node_db : NULL;
+    runtime->now_unix = (int64_t)platform_time_wall_time_t();
+    if (!money) return runtime->node_db && runtime->node_db->open
+        ? ZCL_OK : ZCL_ERR(-2, "market database is unavailable");
+    if (!ctx || !ctx->wallet || !ctx->main_state || !ctx->node_db ||
+        !ctx->node_db->open)
+        return ZCL_ERR(-3, "wallet, chain, and market database are required");
+    struct block_index *tip = active_chain_tip(&ctx->main_state->chain_active);
+    if (!tip) return ZCL_ERR(-4, "active chain tip is unavailable");
+    runtime->read_money = market_purchase_money;
+    runtime->money_ctx = ctx;
+    runtime->check_source = market_purchase_source_owned;
+    runtime->source_ctx = ctx;
+    runtime->send = market_purchase_send;
+    runtime->send_ctx = ctx;
+    runtime->notify = market_purchase_notify;
+    runtime->notify_ctx = rpc_net_get_msg_processor();
+    runtime->tip_height = tip->nHeight;
+    memcpy(runtime->tip_hash, tip->hashBlock.data, 32);
+    runtime->maximum_fee_zat = ctx->wallet->default_fee;
+    return ZCL_OK;
+}
+
+static bool rpc_zmarket_purchase_plan(const struct json_value *params,
+                                      bool help,
+                                      struct json_value *result)
+{
+    if (help) {
+        json_set_str(result, "zmarket_purchase_plan {wallet_scope,offer_id,source_address,chunk_start,chunks_paid,idempotency_key}\n");
+        return true;
+    }
+    const struct json_value *in = json_at(params, 0);
+    const char *scope = in ? json_get_str(json_get(in, "wallet_scope")) : NULL;
+    const char *offer = in ? json_get_str(json_get(in, "offer_id")) : NULL;
+    const char *source = in ? json_get_str(json_get(in, "source_address")) : NULL;
+    const char *key = in ? json_get_str(json_get(in, "idempotency_key")) : NULL;
+    const struct json_value *start_value = in
+        ? json_get(in, "chunk_start") : NULL;
+    const struct json_value *count_value = in
+        ? json_get(in, "chunks_paid") : NULL;
+    int64_t start = start_value && start_value->type == JSON_INT
+        ? json_get_int(start_value) : -1;
+    int64_t count = count_value && count_value->type == JSON_INT
+        ? json_get_int(count_value) : 0;
+    struct market_purchase_request request = {0};
+    if (!in || in->type != JSON_OBJ || !scope || !offer || !source || !key ||
+        strlen(scope) >= sizeof(request.wallet_scope) ||
+        strlen(source) > MARKET_PURCHASE_SOURCE_MAX ||
+        strlen(key) >= sizeof(request.idempotency_key) ||
+        !zcl_hex_decode(offer, request.offer_id, 32) || start < 0 ||
+        start > UINT32_MAX || count <= 0 || count > UINT32_MAX)
+        return market_purchase_refuse(result,
+            ZCL_ERR(-1, "complete exact purchase-plan input is required"));
+    (void)snprintf(request.wallet_scope, sizeof(request.wallet_scope), "%s",
+                   scope);
+    (void)snprintf(request.source_address, sizeof(request.source_address),
+                   "%s", source);
+    (void)snprintf(request.idempotency_key, sizeof(request.idempotency_key),
+                   "%s", key);
+    request.chunk_start = (uint32_t)start;
+    request.chunks_paid = (uint32_t)count;
+    struct market_purchase_runtime runtime;
+    struct zcl_result ready = market_purchase_runtime(&runtime, true);
+    if (!ready.ok) return market_purchase_refuse(result, ready);
+    struct market_purchase_view view;
+    struct zcl_result planned = market_purchase_plan(&runtime, &request, &view);
+    return planned.ok ? market_purchase_render(&view, result)
+                      : market_purchase_refuse(result, planned);
+}
+
+static bool rpc_zmarket_purchase_commit(const struct json_value *params,
+                                        bool help,
+                                        struct json_value *result)
+{
+    if (help) {
+        json_set_str(result, "zmarket_purchase_commit {wallet_scope,plan_id}\n");
+        return true;
+    }
+    const struct json_value *in = json_at(params, 0);
+    const char *scope = in ? json_get_str(json_get(in, "wallet_scope")) : NULL;
+    const char *plan = in ? json_get_str(json_get(in, "plan_id")) : NULL;
+    uint8_t plan_id[32];
+    if (!scope || !zcl_hex_decode(plan, plan_id, 32))
+        return market_purchase_refuse(result,
+            ZCL_ERR(-1, "wallet_scope and exact plan_id are required"));
+    struct market_purchase_runtime runtime;
+    struct zcl_result ready = market_purchase_runtime(&runtime, true);
+    if (!ready.ok) return market_purchase_refuse(result, ready);
+    struct market_purchase_view view;
+    struct zcl_result committed = market_purchase_commit(
+        &runtime, scope, plan_id, &view);
+    return committed.ok ? market_purchase_render(&view, result)
+                        : market_purchase_refuse(result, committed);
+}
+
+static bool rpc_zmarket_purchase_status(const struct json_value *params,
+                                        bool help,
+                                        struct json_value *result)
+{
+    if (help) {
+        json_set_str(result, "zmarket_purchase_status {plan_id}\n");
+        return true;
+    }
+    const struct json_value *in = json_at(params, 0);
+    const char *plan = in ? json_get_str(json_get(in, "plan_id")) : NULL;
+    uint8_t plan_id[32];
+    if (!zcl_hex_decode(plan, plan_id, 32))
+        return market_purchase_refuse(result,
+            ZCL_ERR(-1, "exact plan_id is required"));
+    struct market_purchase_runtime runtime;
+    struct zcl_result ready = market_purchase_runtime(&runtime, false);
+    if (!ready.ok) return market_purchase_refuse(result, ready);
+    struct market_purchase_view view;
+    struct zcl_result found = market_purchase_status(
+        &runtime, plan_id, &view);
+    return found.ok ? market_purchase_render(&view, result)
+                    : market_purchase_refuse(result, found);
 }
 
 /* ── zmarket_status ─────────────────────────────────────────────── */
@@ -415,6 +714,12 @@ void register_market_rpc_commands(struct rpc_table *t)
           rpc_zmarket_content_list, true },
         { "market", "zmarket_content_register",
           rpc_zmarket_content_register, true },
+        { "market", "zmarket_purchase_plan",
+          rpc_zmarket_purchase_plan, false },
+        { "market", "zmarket_purchase_commit",
+          rpc_zmarket_purchase_commit, false },
+        { "market", "zmarket_purchase_status",
+          rpc_zmarket_purchase_status, true },
         { "market", "romseed_register", rpc_romseed_register, true },
         { "market", "romseed_list",     rpc_romseed_list,     true },
     };

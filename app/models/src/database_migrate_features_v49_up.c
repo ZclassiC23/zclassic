@@ -413,6 +413,33 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 58) {
+        /* v58: application-bound vault intents. Higher-level transactions
+         * (starting with market_purchase) reuse the one wallet reservation
+         * authority while gaining durable request idempotency. The request
+         * digest contains no address, memo, key, or endpoint; exact private
+         * plan material remains inside encrypted_payload. */
+        node_db_exec(ndb,
+            "ALTER TABLE vault_intents ADD COLUMN application_kind TEXT "
+            "NOT NULL DEFAULT '' CHECK(length(application_kind)<=32)");
+        node_db_exec(ndb,
+            "ALTER TABLE vault_intents ADD COLUMN idempotency_key TEXT "
+            "NOT NULL DEFAULT '' CHECK(length(idempotency_key)<=64)");
+        node_db_exec(ndb,
+            "ALTER TABLE vault_intents ADD COLUMN request_digest BLOB "
+            "CHECK(request_digest IS NULL OR length(request_digest)=32)");
+        node_db_exec(ndb,
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "idx_vault_intents_application_idempotency "
+            "ON vault_intents(wallet_scope,application_kind,idempotency_key) "
+            "WHERE application_kind<>'' AND idempotency_key<>''");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('058')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 58);
+        current_ver = 58;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

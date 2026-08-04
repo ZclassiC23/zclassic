@@ -59,17 +59,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 482 |
+| Registry entries (branches + leaves) | 486 |
 | Top-level roots | 11 |
-| Branches | 111 |
-| Leaves (dispatchable command paths) | 371 |
-| … `ready` (live handler in this build) | 323 |
+| Branches | 112 |
+| Leaves (dispatchable command paths) | 374 |
+| … `ready` (live handler in this build) | 326 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 122 |
+| Leaves with `effect=mutate` | 124 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 84 |
+| Leaves requiring **owner** authority | 87 |
 
 Per source file:
 
@@ -78,7 +78,7 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 112 | 27 | 85 |
 | `config/commands/apps.def` | 12 | 3 | 9 |
-| `config/commands/app_features.def` | 38 | 8 | 30 |
+| `config/commands/app_features.def` | 42 | 9 | 33 |
 | `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 45 | 11 | 34 |
@@ -456,7 +456,7 @@ represented by its children's sections.
 | `app market list` | ready | read / read / public · fast/low | none | `zcl.app_market_index.v1` | `zclassic23 app market list` | List files on the ZCL Market |
 | `app market status` | ready | read / read / operator · fast/low | none | `zcl.app_market_status.v1` | `zclassic23 app market status` | ZCL Market status |
 | `app market offer` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | `filepath`, `price_per_mb_zat`, `confirm` | `zcl.app_market_offer_result.v1` | `zclassic23 app market offer --input='{"filepath":"/data/f","price_per_mb_zat":1000}'` | Announce a file for sale — *signed zfileoffer.v1 ingress is implemented, but local creation still needs a canonical content manifest, an owner-controlled seller signer, and origin announcement. The legacy zmarket_offer placeholder now refuses without changing cache, database, filesystem, or network state* |
-| `app market buy` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, **`root_hash`**, `confirm` | `zcl.app_market_buy_result.v1` | `zclassic23 app market buy --input='{"root_hash":"<64hex>"}'` | Buy and download a market file — *needs a purchase service that binds the signed offer_id and exact integer total to a wallet/vault plan, builds the seller output, verifies that output rather than txid presence, and persists paid-file unlock across confirmation, conflict, restart, and reorg. The legacy zmarket_buy placeholder now refuses without starting a session* |
+| `app market buy` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, **`root_hash`**, `confirm` | `zcl.app_market_buy_result.v1` | `zclassic23 app market buy --input='{"root_hash":"<64hex>"}'` | Buy and download a market file — *durable exact payment plan/commit, seller confirmation authority, and paid-byte server delivery are implemented; the buyer still needs targeted peer notification, encrypted chunk retrieval, manifest verification, restart-safe assembly, and atomic destination publication. The legacy zmarket_buy placeholder refuses without starting a session* |
 
 #### `app.market.content` — Seller content
 
@@ -464,6 +464,14 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `app market content list` | ready | read / read / **owner** · fast/low | none | `zcl.market_contents.index.v1` | `zclassic23 app market content list` | List owner-registered paid content |
 | `app market content register` | ready | mutate / app-write / **owner** · foreground/moderate | **`offer_id`**, `content_path` | `zcl.market_content.v1` | `zclassic23 app market content register --input='{"offer_id":"<64hex>","content_path":"/private/file"}'` | Bind private seller bytes to a signed offer |
+
+#### `app.market.purchase` — Buyer payment
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app market purchase plan` | ready | mutate / wallet / **owner** · foreground/moderate | **`wallet_scope`**, **`offer_id`**, **`source_address`**, **`chunk_start`**, **`chunks_paid`**, **`idempotency_key`** | `zcl.market_purchase.v1` | `printf '%s' '{"wallet_scope":"dev","offer_id":"<64hex>","source_address":"<owned-address>","chunk_start":0,"chunks_paid":1,"idempotency_key":"lab-001"}' \| zclassic23 app market purchase plan --input=-` | Reserve one exact paid chunk range |
+| `app market purchase commit` | ready | mutate / wallet / **owner**, idempotency · foreground/high | **`wallet_scope`**, **`plan_id`**, **`confirm`** | `zcl.market_purchase.v1` | `zclassic23 app market purchase commit --input='{"wallet_scope":"dev","plan_id":"<64hex>","confirm":true}'` | Commit one exact reserved market payment |
+| `app market purchase status` | ready | read / read / **owner** · fast/low | **`plan_id`** | `zcl.market_purchase.v1` | `zclassic23 app market purchase status --input='{"plan_id":"<64hex>"}'` | Read one durable market payment state |
 
 #### `app.store` — Store
 
@@ -1147,6 +1155,7 @@ promise the same document shape.
 | `zcl.app_name_txresult.v1` | `app.names.register`, `app.names.update`, `app.names.transfer`, `app.names.renew`, `app.names.set-record`, `app.names.set-text` |
 | `zcl.app_token_txresult.v1` | `app.tokens.create`, `app.tokens.send`, `app.tokens.mint`, `app.tokens.burn`, `vault.send-token` |
 | `zcl.app_message_send_result.v1` | `app.messaging.send`, `app.messaging.send-named` |
+| `zcl.market_purchase.v1` | `app.market.purchase.plan`, `app.market.purchase.commit`, `app.market.purchase.status` |
 | `zcl.app_swap_contract.v1` | `app.swap.initiate`, `app.swap.participate` |
 | `zcl.rom_seed_status.v1` | `ops.debug.rom_seed.status`, `ops.debug.rom_seed.enable`, `ops.debug.rom_seed.disable` |
 | `zcl.dev_cycle.v1` | `dev.status`, `dev.change.apply`, `dev.loop.wait` |

@@ -1275,6 +1275,15 @@ void zcl_native_handle_message_read(
 void zcl_native_handle_market_content_register(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_market_purchase_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_market_purchase_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_market_purchase_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_swap_initiate(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

@@ -39,6 +39,8 @@ ZCL_COMMAND_BRANCH("app.messaging", "app", "Messaging", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.market", "app", "Market", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.market.content", "app.market", "Seller content",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.market.purchase", "app.market", "Buyer payment",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.store", "app", "Store", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.swap", "app", "Swaps", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.qr", "app", "QR", ZCL_COMMAND_LAYER_APP)
@@ -424,6 +426,69 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_market_content_register)
 
+ZCL_COMMAND_READY_COMMAND(
+    "app.market.purchase.plan", "app.market.purchase", "",
+    "Reserve one exact paid chunk range",
+    "Loads an authenticated network-bound offer, prices one exact chunk range "
+    "with integer arithmetic, mints an encrypted buyer credential and canonical "
+    "Sapling memo, then atomically reserves recipient value plus the wallet's "
+    "maximum fee. Requires a current identity-bound custody snapshot and a "
+    "caller idempotency key. Source and seller addresses, memo, credential, "
+    "paths, and keys are absent from the result and logs. This mutates only the "
+    "durable reservation; it does not broadcast or download bytes.", 0,
+    "market,buy,purchase,payment,plan,reservation,idempotent",
+    "zcl.app_market_purchase_plan.input.v1", "zcl.market_purchase.v1",
+    "wallet_scope,offer_id,source_address,chunk_start,chunks_paid,idempotency_key",
+    "wallet_scope,offer_id,source_address,chunk_start,chunks_paid,idempotency_key",
+    "printf '%s' '{\"wallet_scope\":\"dev\",\"offer_id\":\"<64hex>\",\"source_address\":\"<owned-address>\",\"chunk_start\":0,\"chunks_paid\":1,\"idempotency_key\":\"lab-001\"}' | zclassic23 app market purchase plan --input=-",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_market_purchase_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.market.purchase.commit", "app.market.purchase", "",
+    "Commit one exact reserved market payment",
+    "Requires the explicit wallet scope, durable plan ID, and confirm:true. "
+    "Rechecks wallet identity, genesis, tip, complete money snapshot, signed "
+    "offer, exact range, amount, maximum fee, and source ownership before one "
+    "Sapling-memo send. The txid and buyer-signed claim persist across restart; "
+    "replay never broadcasts twice. A crash at the unresolved send boundary "
+    "returns COMMIT_UNCERTAIN and requires reconciliation.", 0,
+    "market,buy,purchase,payment,commit,txid,idempotent",
+    "zcl.app_market_purchase_commit.input.v1", "zcl.market_purchase.v1",
+    "wallet_scope,plan_id,confirm", "wallet_scope,plan_id,confirm",
+    "zclassic23 app market purchase commit --input='{\"wallet_scope\":\"dev\",\"plan_id\":\"<64hex>\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_IDEMPOTENCY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_market_purchase_commit)
+
+ZCL_COMMAND_READY_READ(
+    "app.market.purchase.status", "app.market.purchase", "",
+    "Read one durable market payment state",
+    "Reconstructs the public, path-free purchase view from encrypted intent "
+    "state: exact range, value, fee reservation, state, txid and claim ID when "
+    "present. Buyer credentials, addresses, memo, paths, endpoints and keys are "
+    "never returned.", 0,
+    "market,buy,purchase,payment,status,txid,claim",
+    "zcl.app_market_purchase_status.input.v1", "zcl.market_purchase.v1",
+    "plan_id", "plan_id",
+    "zclassic23 app market purchase status --input='{\"plan_id\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_market_purchase_status)
+
 ZCL_COMMAND_PLANNED_COMMAND(
     "app.market.offer", "app.market", "", "Announce a file for sale",
     "Will announce a file for sale after canonical manifest construction, "
@@ -445,10 +510,10 @@ ZCL_COMMAND_PLANNED_COMMAND(
 
 ZCL_COMMAND_PLANNED_COMMAND(
     "app.market.buy", "app.market", "", "Buy and download a market file",
-    "Will pay for and download a file by its SHA3 root hash once the purchase "
-    "path is wired end to end; today the handler is unbound and fails closed "
-    "with exit 3, so no funds move and no half-started session is left "
-    "behind.", 0,
+    "Will combine the shipped durable app.market.purchase payment workflow "
+    "with authenticated peer selection, encrypted chunk requests, verified "
+    "local assembly, and atomic destination publication. It remains unbound "
+    "so a payment cannot be mistaken for a completed download.", 0,
     "market,buy,download", "zcl.app_market_buy.input.v1",
     "zcl.app_market_buy_result.v1", "wallet_scope,root_hash,confirm", "root_hash",
     "zclassic23 app market buy --input='{\"root_hash\":\"<64hex>\"}'",
@@ -458,11 +523,11 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
-    "needs a purchase service that binds the signed offer_id and exact "
-    "integer total to a wallet/vault plan, builds the seller output, verifies "
-    "that output rather than txid presence, and persists paid-file unlock "
-    "across confirmation, conflict, restart, and reorg. The legacy "
-    "zmarket_buy placeholder now refuses without starting a session")
+    "durable exact payment plan/commit, seller confirmation authority, and "
+    "paid-byte server delivery are implemented; the buyer still needs targeted "
+    "peer notification, encrypted chunk retrieval, manifest verification, "
+    "restart-safe assembly, and atomic destination publication. The legacy "
+    "zmarket_buy placeholder refuses without starting a session")
 
 /* ── Store (the /store storefront) ───────────────────────────────────
  *

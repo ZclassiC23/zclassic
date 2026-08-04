@@ -120,9 +120,41 @@ Source commit `cb8ab59d` plus the append-only notebook expansion in this change:
   rejects the old mempool-only notification, binds a signed buyer claim to the
   offer/network/range/amount and canonical 512-byte Sapling memo, and proves
   confirmation, restart reconstruction, reorg revocation, and reconfirmation
-  against wallet-note + chain authorities. Buyer wallet plan/commit and the
-  authenticated encrypted file request remain absent, so the proof stays
-  `not_demonstrated` and is deliberately not counted as PASS.
+  against wallet-note + chain authorities. At this run, buyer wallet
+  plan/commit and the authenticated encrypted file request were absent, so the
+  proof stayed `not_demonstrated` and was deliberately not counted as PASS.
 - Current notebook result: **32/33 PASS**, **1 BLOCKED**, **5 simulated chain
   confirmations**, **0 mainnet confirmations**, and **0 ZCL** live recipient
   value or fees. No live wallet or service was mutated.
+
+## 2026-08-04 durable buyer-payment slice
+
+The next file-market slice closed the chain-payment subflow without relabeling
+the unfinished composite purchase:
+
+- `app market purchase plan` now loads the exact authenticated offer and range,
+  creates a buyer credential and canonical 512-byte Sapling memo behind wallet
+  metadata encryption, and atomically reserves recipient value plus maximum
+  fee through the existing vault-intent authority.
+- The plan is bound to explicit `dev|prod` scope, random persistent wallet
+  instance, network genesis, current tip hash, complete money snapshot root,
+  exact offer/range/amount/fee, expiry, and caller idempotency key. A stale,
+  incomplete, wrong-wallet, over-cap, or reserve-floor state refuses.
+- `app market purchase commit` revalidates every binding and source ownership,
+  claims the durable intent once, sends the exact seller output and memo, then
+  persists the txid and reconstructible signed claim. Replay can requeue the
+  claim but cannot send a second payment.
+- Restart reconstructs the public claim without exposing the buyer seed. A
+  persisted `PROVING` row without txid reports `COMMIT_UNCERTAIN` and never
+  retries a possibly broadcast spend. Changed tip-bound state conflicts before
+  the wallet send callback.
+- Focused proof covers the service, application-bound intent uniqueness,
+  migration idempotency, typed plan/commit/status surface, and absence of
+  source/seller/memo/path fields in native output.
+
+The ledger result deliberately remains **32/33 PASS, 1 BLOCKED**. The
+`market_purchase` catalog row represents payment *plus* completed file
+delivery; the buyer still lacks targeted seller notification, encrypted chunk
+retrieval, full-manifest verification, restart-safe assembly, and atomic
+destination publication. Live mainnet confirmations, recipient value, and fees
+remain **zero**; this slice used deterministic callbacks and moved no ZCL.

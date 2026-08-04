@@ -163,6 +163,69 @@ int test_transaction_intent(void)
         PASS();
     }
 
+    TEST("application-bound intents deduplicate without replacing exact plans") {
+        struct vault_intent_row first; memset(&first, 0, sizeof(first));
+        memset(first.plan_id, 0x71, 32);
+        memset(first.digest, 0x72, 32);
+        memset(first.anchor_hash, 0x73, 32);
+        memset(first.encrypted_payload, 0x74, 32);
+        first.encrypted_payload_len = 32;
+        first.state = VAULT_INTENT_PLANNED;
+        first.route = VAULT_INTENT_ROUTE_PRIVATE;
+        first.created_at = 200;
+        first.expires_at = 800;
+        first.updated_at = 200;
+        first.anchor_height = 43;
+        first.confirm_height = -1;
+        snprintf(first.application_kind, sizeof(first.application_kind),
+                 "market_purchase");
+        snprintf(first.idempotency_key, sizeof(first.idempotency_key),
+                 "buyer-request-1");
+        memset(first.request_digest, 0x75, 32);
+        first.has_request_digest = true;
+        ASSERT(!vault_intent_save(&ndb, &first));
+
+        struct vault_intent_row found;
+        ASSERT(vault_intent_find_application_idempotency(
+            &ndb, "dev", "market_purchase", "buyer-request-1", &found) ==
+            false);
+        /* Legacy-empty custody fields cannot become an application plan.
+         * Save it only after removing the partial application binding. */
+        first.application_kind[0] = '\0';
+        first.idempotency_key[0] = '\0';
+        first.has_request_digest = false;
+        ASSERT(vault_intent_save(&ndb, &first));
+
+        struct wallet_identity_row app_identity;
+        const uint8_t app_genesis[32] = { 0x61 };
+        ASSERT(wallet_identity_ensure(&ndb, app_genesis, "dev", &app_identity));
+        ti_bound_row(&first, 0x71, &app_identity, 1);
+        snprintf(first.application_kind, sizeof(first.application_kind),
+                 "market_purchase");
+        snprintf(first.idempotency_key, sizeof(first.idempotency_key),
+                 "buyer-request-1");
+        memset(first.request_digest, 0x75, 32);
+        first.has_request_digest = true;
+        ASSERT(vault_intent_save(&ndb, &first));
+        ASSERT(vault_intent_find_application_idempotency(
+            &ndb, "dev", "market_purchase", "buyer-request-1", &found));
+        ASSERT(memcmp(found.plan_id, first.plan_id, 32) == 0);
+        ASSERT(memcmp(found.request_digest, first.request_digest, 32) == 0);
+
+        struct vault_intent_row duplicate = first;
+        memset(duplicate.plan_id, 0x81, 32);
+        memset(duplicate.digest, 0x82, 32);
+        ASSERT(!vault_intent_save(&ndb, &duplicate));
+        ASSERT(vault_intent_find_application_idempotency(
+            &ndb, "dev", "market_purchase", "buyer-request-1", &found));
+        ASSERT(memcmp(found.plan_id, first.plan_id, 32) == 0);
+
+        duplicate = first;
+        duplicate.idempotency_key[0] = '\0';
+        ASSERT(!vault_intent_save(&ndb, &duplicate));
+        PASS();
+    }
+
     TEST("wallet identity persists, rejects lane/network changes, and dev "
          "reservations atomically enforce the reserve and lab ceiling") {
         if (ndb.open) node_db_close(&ndb);

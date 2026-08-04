@@ -1,11 +1,12 @@
 # ZCL file-market protocol
 
 This page is the developer and agent map for paid file offers and purchases.
-The seller-authenticated offer ingress and exact confirmed-payment authority
-are implemented. The encrypted `zfileget.v1` request and authorize-before-read
-gate are implemented. Owner-private paid-content registration and verified
-chunk loading are implemented. Local paid-offer signing/announcement and buyer
-wallet planning remain deliberately unavailable.
+The seller-authenticated offer ingress, durable buyer payment plan/commit, and
+exact confirmed-payment authority are implemented. The encrypted `zfileget.v1`
+request and authorize-before-read gate are implemented. Owner-private paid-
+content registration and verified chunk loading are implemented. Local paid-
+offer signing/announcement and the buyer retrieval/assembly client remain
+deliberately unavailable.
 
 ## Table of contents
 
@@ -31,7 +32,8 @@ seller-signed offer -> peer decode -> network/time/signature validation
                     -> exact-wire forwarding
 
 local manifest/sign/announce       PLANNED
-buyer plan/reserve/pay             PLANNED
+buyer plan/reserve/pay             IMPLEMENTED
+buyer claim gossip                 IMPLEMENTED (broadcast attempt, untargeted)
 signed payment-claim ingress       IMPLEMENTED
 seller exact-output verification   IMPLEMENTED
 restart/reorg reconciliation       IMPLEMENTED
@@ -39,13 +41,15 @@ per-chunk authorization service    IMPLEMENTED
 encrypted paid file request        IMPLEMENTED
 authorize-before-content-read      IMPLEMENTED
 owner content registration/reader  IMPLEMENTED
+buyer chunk retrieval/assembly     PLANNED
 ```
 
 `zfileoffer` is an authenticated P2P contract, not a blockchain transaction.
-The eventual `market_purchase` is a composite workflow whose payment leg is a
-real ZClassic transaction. The transaction catalog therefore keeps
-`market_purchase` as `planned` until payment, unlock, confirmation, conflict,
-expiry, restart, and reorg behavior are connected and proven end to end.
+`market_purchase` is a composite workflow whose payment leg is a real ZClassic
+transaction. The payment subflow now has durable typed `plan`, `commit`, and
+`status` commands, but the catalog keeps the whole purchase `planned`: the
+buyer still cannot target the seller, retrieve encrypted chunks, verify and
+assemble the full manifest, or atomically publish the destination file.
 
 The old `zfilelist` format is accepted only for price-zero ROM recovery
 artifacts. An unsigned paid `zfilelist` entry is discarded. The legacy
@@ -61,8 +65,9 @@ SELLER                              BUYER
   | sign network-bound offer          |
   +---------- zfileoffer ------------>|
   |                                  | verify + choose exact offer_id
-  |                                  | create wallet-bound payment plan
-  |                                  | owner-authorized commit
+  |                                  | create wallet-bound encrypted plan
+  |                                  | reserve value + maximum fee
+  |                                  | owner-authorized idempotent commit
   |<-- signed claim + payment txid ----+
   | verify buyer signature             |
   | verify exact canonical Sapling     |
@@ -72,8 +77,10 @@ SELLER                              BUYER
 ```
 
 An offer does not grant wallet authority. A buyer must select a current signed
-`offer_id`; a future spend plan must bind that id, wallet instance, network,
-tip, custody snapshot, exact output, maximum fee, expiry, and idempotency key.
+`offer_id`; the spend plan binds that id, wallet instance, network, tip,
+custody snapshot, exact output and memo, maximum fee, expiry, range, and
+idempotency key. The source address, seller address, memo, and buyer seed stay
+inside the encrypted intent and never enter the public result or logs.
 
 ## Signed offer wire
 
@@ -336,8 +343,11 @@ context.
 | `app market status` | ready/read-only | Reports bounded cache/persistence state. |
 | `app market content list` | ready/owner-read | Lists path-free local seller bindings. |
 | `app market content register` | ready/owner-write | Verifies and atomically binds exact private bytes to one signed offer; moves no funds and announces nothing. |
+| `app market purchase plan` | ready/owner-write | Creates the encrypted buyer credential and exact memo, then atomically reserves range value plus maximum fee against current bound custody. No value is broadcast. |
+| `app market purchase commit` | ready/owner-wallet-write | Revalidates identity, genesis, tip, snapshot, offer, range, output, fee and source ownership; broadcasts at most once and returns txid/claim ID. |
+| `app market purchase status` | ready/owner-read | Reconstructs a path/address/key-free durable state across restart. |
 | `app market offer` | planned/fail-closed | Awaits local manifest construction, owner signing, and origin announcement. |
-| `app market buy` | planned/fail-closed | Seller registration and authenticated delivery exist; buyer wallet plan/commit remains. |
+| `app market buy` | planned/fail-closed | Payment and seller delivery exist separately; buyer peer targeting, retrieval, verified assembly, and destination publication remain absent. |
 | `romseed_register` | ready/operator | Registers verified price-zero recovery artifacts; it is not a paid offer. |
 | `app transaction-types show --type=market_purchase` | ready/read-only | Canonical machine-readable readiness and proof record. |
 
@@ -363,13 +373,16 @@ feature slice:
 | private content rows and path-free projection | `app/models/src/market_content.c` |
 | registration and verified chunk reader | `app/services/src/file_market_content_service.c` |
 | boot authorization + content adapter | `config/src/boot_file_market_delivery.c` |
-| future buyer plan/commit | a dedicated wallet-touching `app/services/` service |
+| buyer plan/commit and encrypted credential | `app/services/src/file_market_purchase_service.c` |
+| node wallet/send/claim adapters | `app/controllers/src/file_market_controller.c` |
+| typed path-free commands | `app/controllers/src/market_purchase_native_handler.c`, `config/commands/app_features.def` |
 | thin native/REST adapters | `app/controllers/` plus `config/commands/` |
 | semantic readiness/proof | `transaction_types.def` and transaction lab |
 
-The future purchase service must reuse wallet, UTXO/note, mempool, vault
-intent, and chain-confirmation authorities. It must not maintain an independent
-balance or confirmation counter.
+The purchase service reuses wallet, UTXO/note, mempool, vault-intent, and chain
+authorities. It maintains no independent balance or confirmation counter. A
+future retrieval service must likewise consume the existing delivery and
+content-reader ports rather than creating another payment or file authority.
 
 ## AI and developer workflow
 
@@ -378,24 +391,31 @@ Do not build a payment by copying structs or invoking an RPC from memory:
 1. A seller first runs `app market content register` with the exact signed
    `offer_id`; then checks `app market content list`. Do not copy the private
    path into notes, receipts, logs, or peer messages.
-2. Read `app transaction-types show --type=market_purchase` and refuse while
-   availability is `planned`.
-3. Discover the exact `app market buy` schema from the native registry once
-   that operation becomes ready.
+2. Read `app transaction-types show --type=market_purchase`. The composite is
+   `planned`; use its ready payment component only when the owner explicitly
+   authorizes payment without claiming the download is complete.
+3. Discover `app.market.purchase.plan`, `.commit`, and `.status`. Feed the plan
+   body through `--input=-` so the source address does not enter shell history
+   or a process listing.
 4. Select an exact current `offer_id`; never infer an offer from a filename or
    default peer.
-5. Read identity-bound custody and create an owner-visible wallet plan that
-   commits the offer, range, output, memo, maximum fee, expiry, tip, and
-   idempotency key.
-6. Keep the buyer private key and wallet keys behind their signing boundaries.
-7. Treat a txid or `PENDING` claim as locked. Only the seller's synchronous
+5. Create the plan with explicit `wallet_scope`, `offer_id`, owned
+   `source_address`, `chunk_start`, `chunks_paid`, and an operation-unique
+   `idempotency_key`. Inspect the exact amount, maximum fee, reservation, and
+   expiry returned. Planning reserves funds but broadcasts nothing.
+6. Commit only with the returned `plan_id`, the same explicit scope, and
+   `confirm:true`. Never reconstruct or edit the private output or memo.
+7. On `COMMIT_UNCERTAIN`, stop and reconcile status; never create a replacement
+   idempotency key or retry a possibly broadcast payment.
+8. Keep the buyer private key and wallet keys behind their signing boundaries.
+9. Treat a txid or `PENDING` claim as locked. Only the seller's synchronous
    `CONFIRMED` authorization permits bytes to leave the paid file service.
-8. Sign each `zfileget.v1` request for the current encrypted session. Do not
+10. Sign each `zfileget.v1` request for the current encrypted session. Do not
    reuse a request body across reconnects or expose the ephemeral buyer seed.
-9. Accept bytes only after the typed `READY` reply and verify the announced
+11. Accept bytes only after the typed `READY` reply and verify the announced
    chunk SHA3. `CONTENT_UNAVAILABLE` means the seller has not registered the
    content locally; it is not permission to try a filesystem path.
-10. On `UNKNOWN` or `CONFLICTED`, stop and report the reason; never substitute
+12. On `UNKNOWN` or `CONFLICTED`, stop and report the reason; never substitute
    zero, retry a spend blindly, or bypass reconciliation.
 
 ## Proof checklist
@@ -405,17 +425,22 @@ For offer-contract changes, run at least:
 ```bash
 make -j"$(nproc)" build-only
 make -j"$(nproc)" t-fast-exact ONLY=test_file_market
+make -j"$(nproc)" t-fast-exact ONLY=test_transaction_intent
 make -j"$(nproc)" t-fast-exact ONLY=test_db_migration_idempotent
+make -j"$(nproc)" t-fast-exact ONLY=test_native_api_contract
 make -j"$(nproc)" t-fast-exact ONLY=test_blob_read_bounds
 make transaction-lab-check
 make docs-api-reference
 make lint
 ```
 
-Before promoting `market_purchase`, add isolated end-to-end evidence for exact
-outputs and fees, idempotent commit, concurrent reservation, insufficient
-funds, wrong network/offer, confirmation, conflict, expiry, restart, and reorg.
-Only then change its transaction-catalog availability or proof level.
+The payment component already proves exact outputs/memos and fees, idempotent
+commit, reservation/custody enforcement, changed tip/offer refusal, restart,
+confirmation authority, conflict, and reorg handling. Before promoting the
+composite `market_purchase`, add buyer-side targeted claim delivery, encrypted
+chunk retrieval, full-manifest verification, restart-safe assembly, and atomic
+destination publication. Only then change its transaction-catalog availability
+or proof level.
 
 <!-- claim: symbol-present MSG_FILE_OFFER lib/net/include/net/file_market.h -->
 <!-- claim: symbol-present file_market_offer_total_zat lib/net/src/file_market_offer.c -->
@@ -423,5 +448,7 @@ Only then change its transaction-catalog availability or proof level.
 <!-- claim: symbol-present market_payment_authorize_chunk app/services/src/file_market_payment_service.c -->
 <!-- claim: symbol-present file_market_delivery_prepare lib/net/src/file_market_delivery.c -->
 <!-- claim: symbol-present file_market_content_register app/services/src/file_market_content_service.c -->
+<!-- claim: symbol-present market_purchase_plan app/services/src/file_market_purchase_service.c -->
+<!-- claim: symbol-present app.market.purchase.commit config/commands/app_features.def -->
 <!-- claim: symbol-present db_market_content_save app/models/src/market_content.c -->
 <!-- claim: symbol-present market_purchase app/controllers/include/controllers/transaction_types.def -->

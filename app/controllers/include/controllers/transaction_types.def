@@ -201,7 +201,11 @@ TX_TYPE("yardsale_atomic_purchase", "commerce", "ready", "composite_chain_transa
         "all_zcl_networks", "yardsale_atomic_purchase", "builder_verified", "test_yardsale_app",
         "Complete the two-message yardsale ceremony into one fully signed transaction exchanging ZCL for a sign token.")
 TX_TYPE("market_purchase", "commerce", "planned", "composite_chain_transaction",
-        "payment_then_file_unlock", "caller_selected", "not_wired_end_to_end",
-        "", "", "app.market.status", "app.market.buy",
-        "no_broadcast_path", "market_purchase", "not_demonstrated", "test_file_market",
-        "The file-market buy/payment glue is not yet wired end to end; cataloging it as planned prevents a false claim of settlement.")
+        "payment_then_file_unlock", "shielded_payment_private_file",
+        "payment_plan_commit_delivery_not_wired",
+        "app.market.purchase.plan", "app.market.purchase.commit",
+        "app.market.purchase.status",
+        "app.market.purchase.plan,app.market.purchase.commit,app.market.purchase.status,app.market.buy",
+        "payment_leg_only_no_download", "market_purchase", "not_demonstrated",
+        "test_file_market",
+        "The durable exact payment leg is ready, but buyer retrieval, verified assembly, and destination publication are absent; the composite purchase therefore remains planned.")

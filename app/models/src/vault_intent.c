@@ -72,6 +72,19 @@ bool vault_intent_validate(const struct vault_intent_row *r,
         r->reserved_zat == r->recipient_value_zat + r->max_fee_zat;
     validates_custom(errors, legacy || bound, "custody_binding",
                      "must be wholly legacy-empty or a complete reservation");
+    const bool application_empty = r->application_kind[0] == '\0' &&
+        r->idempotency_key[0] == '\0' && !r->has_request_digest;
+    const bool application_bound = bound &&
+        r->application_kind[0] != '\0' &&
+        strlen(r->application_kind) <= VAULT_INTENT_APPLICATION_MAX &&
+        model_string_is_printable(r->application_kind) &&
+        r->idempotency_key[0] != '\0' &&
+        strlen(r->idempotency_key) <= VAULT_INTENT_IDEMPOTENCY_MAX &&
+        model_string_is_printable(r->idempotency_key) &&
+        r->has_request_digest;
+    validates_custom(errors, application_empty || application_bound,
+                     "application_binding",
+                     "must be wholly empty or kind, idempotency, and digest");
     return !ar_errors_any(errors);
 }
 
@@ -81,12 +94,29 @@ bool vault_intent_save(struct node_db *ndb, const struct vault_intent_row *r)
         LOG_FAIL("vault_intent", "save: invalid argument");
     sqlite3_stmt *s = NULL;
     AR_ADHOC_SAVE(ndb, s,
-        "INSERT OR REPLACE INTO vault_intents"
+        "INSERT INTO vault_intents"
         "(plan_id,digest,state,route,created_at,expires_at,anchor_height,"
         "anchor_hash,encrypted_payload,txid,confirm_height,confirm_hash,"
         "error_code,updated_at,wallet_scope,wallet_instance_id,wallet_genesis,"
-        "snapshot_root,recipient_value_zat,max_fee_zat,reserved_zat) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "snapshot_root,recipient_value_zat,max_fee_zat,reserved_zat,"
+        "application_kind,idempotency_key,request_digest) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(plan_id) DO UPDATE SET "
+        "digest=excluded.digest,state=excluded.state,route=excluded.route,"
+        "created_at=excluded.created_at,expires_at=excluded.expires_at,"
+        "anchor_height=excluded.anchor_height,anchor_hash=excluded.anchor_hash,"
+        "encrypted_payload=excluded.encrypted_payload,txid=excluded.txid,"
+        "confirm_height=excluded.confirm_height,"
+        "confirm_hash=excluded.confirm_hash,error_code=excluded.error_code,"
+        "updated_at=excluded.updated_at,wallet_scope=excluded.wallet_scope,"
+        "wallet_instance_id=excluded.wallet_instance_id,"
+        "wallet_genesis=excluded.wallet_genesis,"
+        "snapshot_root=excluded.snapshot_root,"
+        "recipient_value_zat=excluded.recipient_value_zat,"
+        "max_fee_zat=excluded.max_fee_zat,reserved_zat=excluded.reserved_zat,"
+        "application_kind=excluded.application_kind,"
+        "idempotency_key=excluded.idempotency_key,"
+        "request_digest=excluded.request_digest",
         db_vault_intent_callbacks(), "vault_intent", r,
         vault_intent_validate,
         AR_BIND_BLOB(s, 1, r->plan_id, 32);
@@ -112,7 +142,12 @@ bool vault_intent_save(struct node_db *ndb, const struct vault_intent_row *r)
         else AR_BIND_NULL(s, 18);
         AR_BIND_INT(s, 19, r->recipient_value_zat);
         AR_BIND_INT(s, 20, r->max_fee_zat);
-        AR_BIND_INT(s, 21, r->reserved_zat));
+        AR_BIND_INT(s, 21, r->reserved_zat);
+        AR_BIND_TEXT(s, 22, r->application_kind);
+        AR_BIND_TEXT(s, 23, r->idempotency_key);
+        if (r->has_request_digest)
+            AR_BIND_BLOB(s, 24, r->request_digest, 32);
+        else AR_BIND_NULL(s, 24));
 }
 
 bool vault_intent_reserve(struct node_db *ndb,
@@ -184,12 +219,19 @@ static void intent_read(struct vault_intent_row *r, sqlite3_stmt *s)
     r->recipient_value_zat = AR_COL_INT(s, 18);
     r->max_fee_zat = AR_COL_INT(s, 19);
     r->reserved_zat = AR_COL_INT(s, 20);
+    AR_READ_STR(s, 21, r->application_kind, sizeof(r->application_kind));
+    AR_READ_STR(s, 22, r->idempotency_key, sizeof(r->idempotency_key));
+    if (AR_COL_BYTES(s, 23) == 32) {
+        AR_READ_BLOB(s, 23, r->request_digest, 32);
+        r->has_request_digest = true;
+    }
 }
 
 #define INTENT_COLUMNS "plan_id,digest,state,route,created_at,expires_at," \
     "anchor_height,anchor_hash,encrypted_payload,txid,confirm_height," \
     "confirm_hash,error_code,updated_at,wallet_scope,wallet_instance_id," \
-    "wallet_genesis,snapshot_root,recipient_value_zat,max_fee_zat,reserved_zat"
+    "wallet_genesis,snapshot_root,recipient_value_zat,max_fee_zat,reserved_zat," \
+    "application_kind,idempotency_key,request_digest"
 
 bool vault_intent_find(struct node_db *ndb, const uint8_t plan_id[32],
                        struct vault_intent_row *out)
@@ -200,6 +242,24 @@ bool vault_intent_find(struct node_db *ndb, const uint8_t plan_id[32],
     AR_QUERY_ONE_BOOL(ndb, s,
         "SELECT " INTENT_COLUMNS " FROM vault_intents WHERE plan_id=?",
         AR_BIND_BLOB(s, 1, plan_id, 32), intent_read(out, s));
+}
+
+bool vault_intent_find_application_idempotency(
+    struct node_db *ndb, const char *wallet_scope,
+    const char *application_kind, const char *idempotency_key,
+    struct vault_intent_row *out)
+{
+    if (!ndb || !ndb->open || !wallet_scope || !wallet_scope[0] ||
+        !application_kind || !application_kind[0] || !idempotency_key ||
+        !idempotency_key[0] || !out)
+        LOG_FAIL("vault_intent", "find application idempotency: invalid argument");
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_ONE_BOOL(ndb, s,
+        "SELECT " INTENT_COLUMNS " FROM vault_intents "
+        "WHERE wallet_scope=? AND application_kind=? AND idempotency_key=?",
+        AR_BIND_TEXT(s, 1, wallet_scope);
+        AR_BIND_TEXT(s, 2, application_kind);
+        AR_BIND_TEXT(s, 3, idempotency_key), intent_read(out, s));
 }
 
 int vault_intent_list(struct node_db *ndb, struct vault_intent_row *out,

@@ -710,6 +710,7 @@ int test_file_market(void)
     failures += file_market_payment_tests();
     failures += file_market_delivery_tests();
     failures += file_market_content_tests();
+    failures += file_market_purchase_tests();
     printf("\n%d file_market test(s) failed\n", failures);
     return failures;
 }

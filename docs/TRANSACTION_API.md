@@ -86,7 +86,7 @@ or infer a wallet scope from examples.
 | `builder_command` | First typed command. Empty means no supported builder exists. |
 | `commit_command` | The value-moving/broadcast step. It may be the same command with `confirm:true`. |
 | `component_commands` | Every additional command required by a composite flow. |
-| `network_policy` | Where the path may run. `isolated_non_mainnet_only` and `no_broadcast_path` are hard warnings. |
+| `network_policy` | Where the path may run. `isolated_non_mainnet_only`, `no_broadcast_path`, and `payment_leg_only_no_download` are hard warnings; the last permits only the explicitly authorized payment subflow, never a claim that file delivery completed. |
 | `proof_level` / `test_group` | Strongest checked-in isolated proof and the exact focused test that reproduces it. |
 | `lab_case_id` | Matching append-only notebook case, when one exists. |
 | `evidence_status` | `demonstrated` when checked-in evidence exists; otherwise explicit `blocked`. |
@@ -111,7 +111,7 @@ human index:
 | Identity/directory | `zid_anchor`, `zid_rotate`, `zid_revoke`, `zdir_register`, `zdir_deregister` | Explicit OP_RETURN compose/broadcast paths. |
 | Anchors/ZCODE | `zanc_epoch_anchor`, `zcode_release_anchor` | SHA3 commitment anchors; ZCODE folds signed release records before ZANC broadcast. |
 | Atomic swaps | `htlc_initiate`, `htlc_participate`, `htlc_redeem`, `htlc_refund` | Contract preparation plus explicit funding; redeem/refund settle the ZCL leg. |
-| Commerce | `store_transparent_payment`, `store_shielded_payment`, `yardsale_atomic_purchase`, `market_purchase` | Transparent store and yardsale paths exist; shielded store pay is isolated-only; file-market settlement is planned. |
+| Commerce | `store_transparent_payment`, `store_shielded_payment`, `yardsale_atomic_purchase`, `market_purchase` | Transparent store and yardsale paths exist; shielded store pay is isolated-only. File-market exact payment plan/commit is ready, while the full pay-and-download composite remains planned. |
 
 ## Safe plan/commit workflow
 
@@ -131,9 +131,11 @@ catalog -> exact command schema -> current bound custody snapshot
 3. Read `metaverse agent money --dir=<broker-dir>`. A missing, stale,
    conflicted, incomplete, or wrong-wallet snapshot is a refusal, never a zero
    balance. The wallet scope must be explicit.
-4. Run the command without confirmation to create a non-mutating plan. Preserve
-   its wallet identity, outputs, maximum fee, expiry, snapshot root, and
-   idempotency identity exactly.
+4. Create the typed plan and preserve its wallet identity, outputs, maximum
+   fee, expiry, snapshot root, and idempotency identity exactly. Some plans are
+   pure previews; durable vault and market-purchase plans intentionally mutate
+   only reservation state so concurrent commitments cannot oversubscribe the
+   wallet. Planning never broadcasts value.
 5. Commit only after explicit authorization. A changed tip-bound plan, output,
    fee, wallet, network, reservation, or custody snapshot fails closed.
 6. Inspect the returned txid or async operation through the member's
@@ -157,11 +159,19 @@ logs, or the notebook. A public mainnet txid may be recorded after broadcast.
   science, package, DHT, and fetch operations are also off-chain. Only
   `zcode_release_anchor` in this catalog commits a ZCODE-derived root on-chain.
 - File-market offers, challenges, proofs, and signed payment claims are P2P or
-  local workflow objects. `market_purchase` remains `planned` because buyer
-  wallet plan/commit is not wired end to end.
+  local workflow objects. The real Sapling payment leg is now exposed as
+  `app market purchase plan|commit|status`: it binds the authenticated offer,
+  exact range and amount, wallet identity, network, tip, custody snapshot,
+  maximum fee, expiry, and idempotency key. Planning atomically reserves value
+  plus fee; commit broadcasts at most once and persists the txid and encrypted
+  buyer credential across restart.
+  The composite `market_purchase` remains `planned` because no buyer client yet
+  targets the seller, retrieves encrypted chunks, verifies and assembles the
+  full manifest, or atomically publishes the destination file. A payment must
+  never be presented as a completed download.
   Paid offer ingress and exact confirmed Sapling-payment reconciliation are
   network-bound, expiry-checked, durable, and reorg-aware. The session-bound
-  `zfileget.v1` delivery request now verifies the buyer and authorizes before
+  `zfileget.v1` delivery request verifies the buyer and authorizes before
   invoking the owner-private content reader. `app market content register`
   binds a signed offer to exact local bytes; restart reconstructs that binding
   and file mutation revokes delivery. See

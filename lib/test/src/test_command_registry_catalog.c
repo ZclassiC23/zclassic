@@ -2542,6 +2542,11 @@ static int test_app_features_leaves(void)
         ASSERT(content_branch != NULL);
         ASSERT_EQ(content_branch->mode, ZCL_COMMAND_MODE_BRANCH);
         ASSERT_STR_EQ(content_branch->parent, "app.market");
+        const struct zcl_command_spec *purchase_branch =
+            find_spec(reg, "app.market.purchase");
+        ASSERT(purchase_branch != NULL);
+        ASSERT_EQ(purchase_branch->mode, ZCL_COMMAND_MODE_BRANCH);
+        ASSERT_STR_EQ(purchase_branch->parent, "app.market");
 
         /* Read surface: READY with exactly one body-function binding. */
         const char *reads[] = {
@@ -2566,7 +2571,8 @@ static int test_app_features_leaves(void)
             "app.names.register", "app.names.update", "app.names.transfer",
             "app.names.renew", "app.names.set-record", "app.names.set-text",
             "app.messaging.send", "app.messaging.read",
-            "app.market.content.register",
+            "app.market.content.register", "app.market.purchase.plan",
+            "app.market.purchase.commit",
             "app.swap.initiate", "app.swap.participate",
         };
         for (size_t i = 0;
@@ -2592,6 +2598,18 @@ static int test_app_features_leaves(void)
                   ZCL_COMMAND_CONFIRM_NONE);
         ASSERT_EQ(find_spec(reg, "app.market.content.register")->confirmation,
                   ZCL_COMMAND_CONFIRM_NONE);
+        ASSERT_EQ(find_spec(reg, "app.market.purchase.plan")->confirmation,
+                  ZCL_COMMAND_CONFIRM_NONE);
+        ASSERT_EQ(find_spec(reg, "app.market.purchase.commit")->confirmation,
+                  ZCL_COMMAND_CONFIRM_IDEMPOTENCY);
+        const struct zcl_command_spec *purchase_status =
+            find_spec(reg, "app.market.purchase.status");
+        ASSERT(purchase_status != NULL);
+        ASSERT_EQ(purchase_status->availability, ZCL_COMMAND_READY);
+        ASSERT_EQ(purchase_status->effect, ZCL_COMMAND_EFFECT_READ);
+        ASSERT_EQ(purchase_status->authority, ZCL_COMMAND_AUTH_OWNER);
+        ASSERT(purchase_status->handler ==
+               zcl_native_handle_market_purchase_status);
 
         /* Still-closed surface: PLANNED, no handler, honest reason, blocks
          * with exit 3 rather than reporting work the node never performs. */
