@@ -20,6 +20,7 @@ int test_api(void)
     failures += api_znam_routes_focused_tests();
     failures += api_rest_index_focused_tests();
     failures += api_catalog_focused_tests();
+    failures += api_transaction_type_focused_tests();
     failures += api_openapi_focused_tests();
     failures += api_route_table_focused_tests();
     failures += api_status_focused_tests();

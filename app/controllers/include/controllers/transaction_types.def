@@ -1,0 +1,207 @@
+/* Canonical semantic transaction catalog.
+ *
+ * TX_TYPE(id, family, availability, transaction_role, chain_encoding,
+ *         privacy, lifecycle, builder_command, commit_command,
+ *         inspect_command, component_commands_csv, network_policy,
+ *         lab_case_id, proof_level, test_group, summary)
+ *
+ * Keep ids aligned with tools/dev/transaction_lab_catalog.def where a lab
+ * case exists.  Empty commands mean there is deliberately no native builder.
+ */
+
+TX_TYPE("coinbase_reward", "base_zcl", "process_only", "chain_transaction",
+        "coinbase", "transparent", "receive_validate_project", "", "",
+        "core.wallet.transaction.get", "core.mining.status",
+        "all_zcl_networks", "", "consensus_verified", "test_mining",
+        "Block subsidy and fees created by a valid mined block; the node validates and indexes it but exposes no agent mining mutation.")
+TX_TYPE("transparent_t_to_t", "base_zcl", "ready", "chain_transaction",
+        "transparent_standard_script", "transparent", "plan_commit",
+        "core.wallet.transaction.send", "core.wallet.transaction.send",
+        "core.wallet.transaction.get", "", "all_zcl_networks",
+        "transparent_t_to_t", "simnet_confirmed",
+        "test_simnet_wallet_import_backup",
+        "Ordinary transparent ZCL payment built, signed, broadcast, and later inspected by txid.")
+TX_TYPE("raw_custom_transaction", "base_zcl", "ready", "chain_transaction",
+        "caller_selected_standard_scripts", "caller_selected",
+        "build_sign_broadcast", "core.wallet.transaction.raw.create",
+        "core.wallet.transaction.raw.broadcast", "core.wallet.transaction.get",
+        "core.wallet.transaction.raw.sign", "all_zcl_networks", "",
+        "builder_verified", "test_native_api_contract",
+        "Low-level escape hatch for standard-script transactions; create, sign, and broadcast are separate explicit steps.")
+TX_TYPE("sapling_t_to_z", "base_zcl", "ready", "chain_transaction",
+        "sapling_shielding", "shielded_recipient", "plan_commit_job",
+        "core.wallet.shielded.send", "core.wallet.shielded.send",
+        "core.wallet.transaction.get", "", "all_zcl_networks_with_prover",
+        "sapling_t_to_z", "simnet_confirmed",
+        "test_simnet_shielded_wallet_e2e",
+        "Shield transparent value into a Sapling address using the asynchronous shielded prover pipeline.")
+TX_TYPE("sapling_z_to_z", "base_zcl", "ready", "chain_transaction",
+        "sapling_shielded", "shielded", "plan_commit_job",
+        "core.wallet.shielded.send", "core.wallet.shielded.send",
+        "core.wallet.transaction.get", "", "all_zcl_networks_with_prover",
+        "sapling_z_to_z", "simnet_confirmed",
+        "test_simnet_shielded_wallet_e2e",
+        "Fully shielded Sapling payment with spend proofs, output proofs, nullifiers, and optional encrypted memo.")
+TX_TYPE("sapling_z_to_t", "base_zcl", "ready", "chain_transaction",
+        "sapling_unshielding", "transparent_recipient", "plan_commit_job",
+        "core.wallet.shielded.send", "core.wallet.shielded.send",
+        "core.wallet.transaction.get", "", "all_zcl_networks_with_prover",
+        "sapling_z_to_t", "consensus_verified",
+        "test_simnet_shielded_wallet_e2e",
+        "Unshield Sapling value to a transparent ZCL address through the same typed send command.")
+TX_TYPE("sprout_joinsplit", "base_zcl", "process_only", "chain_transaction",
+        "sprout_joinsplit", "shielded", "receive_validate_project", "", "",
+        "core.wallet.transaction.get", "", "all_zcl_networks", "",
+        "consensus_verified", "test_transaction",
+        "Legacy Sprout JoinSplit transactions are parsed and consensus-verified; no new agent-facing Sprout builder is exposed.")
+
+TX_TYPE("zslp_genesis", "zslp", "ready", "overlay_transaction",
+        "op_return_zslp_genesis", "public_metadata", "plan_commit",
+        "app.tokens.create", "app.tokens.create",
+        "core.wallet.transaction.get", "", "all_zcl_networks",
+        "zslp_genesis", "builder_verified", "test_slp",
+        "Create a ZSLP token definition and initial token outputs in a valid ZCL transaction.")
+TX_TYPE("zslp_mint", "zslp", "ready", "overlay_transaction",
+        "op_return_zslp_mint", "public_metadata", "plan_commit",
+        "app.tokens.mint", "app.tokens.mint", "core.wallet.transaction.get",
+        "", "all_zcl_networks", "zslp_mint", "builder_verified", "test_slp",
+        "Mint additional units under the token baton and strict ZSLP validation rules.")
+TX_TYPE("zslp_send", "zslp", "ready", "overlay_transaction",
+        "op_return_zslp_send", "public_metadata", "plan_commit",
+        "app.tokens.send", "app.tokens.send", "core.wallet.transaction.get",
+        "", "all_zcl_networks", "zslp_send", "builder_verified", "test_slp",
+        "Transfer token units while preserving token change and ordinary-ZCL coin selection boundaries.")
+TX_TYPE("zslp_burn", "zslp", "ready", "overlay_transaction",
+        "op_return_zslp_send_implicit_burn", "public_metadata", "plan_commit",
+        "app.tokens.burn", "app.tokens.burn", "core.wallet.transaction.get",
+        "", "all_zcl_networks", "zslp_burn", "builder_verified", "test_slp",
+        "Explicitly destroy token units; supply changes only after strict projection validation.")
+
+TX_TYPE("znam_register", "znam", "ready", "overlay_transaction",
+        "op_return_znam_register", "public_metadata", "plan_commit",
+        "app.names.register", "app.names.register", "app.names.resolve", "",
+        "all_zcl_networks", "znam_register", "builder_verified", "test_znam",
+        "Register a human-readable ZCL name and its initial owner/target record.")
+TX_TYPE("znam_update", "znam", "ready", "overlay_transaction",
+        "op_return_znam_update", "public_metadata", "plan_commit",
+        "app.names.update", "app.names.update", "app.names.resolve", "",
+        "all_zcl_networks", "znam_update", "builder_verified", "test_znam",
+        "Update the primary target of an owner-authorized ZNAM name.")
+TX_TYPE("znam_transfer", "znam", "ready", "overlay_transaction",
+        "op_return_znam_transfer", "public_metadata", "plan_commit",
+        "app.names.transfer", "app.names.transfer", "app.names.resolve", "",
+        "all_zcl_networks", "znam_transfer", "builder_verified", "test_znam",
+        "Transfer ZNAM ownership to a new transparent owner address.")
+TX_TYPE("znam_renew", "znam", "ready", "overlay_transaction",
+        "op_return_znam_renew", "public_metadata", "plan_commit",
+        "app.names.renew", "app.names.renew", "app.names.resolve", "",
+        "all_zcl_networks", "znam_renew", "builder_verified", "test_znam",
+        "Publish a ZNAM renewal operation; consumers apply their documented projection semantics.")
+TX_TYPE("znam_set_record", "znam", "ready", "overlay_transaction",
+        "op_return_znam_set_record", "public_metadata", "plan_commit",
+        "app.names.set-record", "app.names.set-record", "app.names.resolve", "",
+        "all_zcl_networks", "znam_set_record", "builder_verified", "test_znam",
+        "Set a typed multi-coin address or service record on an owned ZNAM name.")
+TX_TYPE("znam_set_text", "znam", "ready", "overlay_transaction",
+        "op_return_znam_set_text", "public_metadata", "plan_commit",
+        "app.names.set-text", "app.names.set-text", "app.names.resolve", "",
+        "all_zcl_networks", "znam_set_text", "builder_verified", "test_znam",
+        "Set public key/value metadata on an owned ZNAM name.")
+
+TX_TYPE("sapling_onchain_memo", "zmsg", "ready", "overlay_transaction",
+        "sapling_memo_zmsg", "shielded", "plan_commit_job",
+        "app.messaging.send", "app.messaging.send", "app.messaging.inbox",
+        "core.wallet.shielded.send", "all_zcl_networks_with_prover",
+        "sapling_onchain_memo", "simnet_confirmed", "test_simnet_zmsg_onchain",
+        "Send an encrypted on-chain ZMSG in a Sapling memo; the P2P channel is a separate non-chain operation.")
+
+TX_TYPE("zid_anchor", "zid", "ready", "overlay_transaction",
+        "op_return_zid_anchor", "public_metadata", "compose_broadcast",
+        "core.identity.anchor", "core.identity.anchor", "core.identity.resolve",
+        "", "all_zcl_networks", "", "builder_verified", "test_zid_identity",
+        "Anchor a ZID master public key to an owner-controlled transaction.")
+TX_TYPE("zid_rotate", "zid", "ready", "overlay_transaction",
+        "op_return_zid_rotate", "public_metadata", "compose_broadcast",
+        "core.identity.rotate", "core.identity.rotate", "core.identity.resolve",
+        "", "all_zcl_networks", "", "builder_verified", "test_zid_identity",
+        "Rotate an existing ZID master key under the identity ownership rules.")
+TX_TYPE("zid_revoke", "zid", "ready", "overlay_transaction",
+        "op_return_zid_revoke", "public_metadata", "compose_broadcast",
+        "core.identity.revoke", "core.identity.revoke", "core.identity.resolve",
+        "", "all_zcl_networks", "", "builder_verified", "test_zid_identity",
+        "Revoke a ZID identity with an explicit on-chain record.")
+TX_TYPE("zdir_register", "zdir", "ready", "overlay_transaction",
+        "op_return_zdir_register", "public_metadata", "compose_broadcast",
+        "core.zdir.register", "core.zdir.register", "core.network.onion.status",
+        "", "all_zcl_networks", "", "builder_verified", "test_zdir_write_path",
+        "Publish or refresh a validated Tor v3 onion directory record, optionally bound to ZID.")
+TX_TYPE("zdir_deregister", "zdir", "ready", "overlay_transaction",
+        "op_return_zdir_deregister", "public_metadata", "compose_broadcast",
+        "core.zdir.deregister", "core.zdir.deregister", "core.network.onion.status",
+        "", "all_zcl_networks", "", "builder_verified", "test_zdir_write_path",
+        "Remove an owner-authorized on-chain onion directory announcement.")
+TX_TYPE("zanc_epoch_anchor", "zanc", "ready", "overlay_transaction",
+        "op_return_zanc_sha3", "public_commitment", "compose_broadcast",
+        "core.epoch.anchor", "core.epoch.anchor", "core.epoch.verify", "",
+        "all_zcl_networks", "", "builder_verified", "test_epoch",
+        "Commit the current epoch catalog digest in a ZANC SHA3 anchor transaction.")
+TX_TYPE("zcode_release_anchor", "zcode", "ready", "composite_overlay_transaction",
+        "op_return_zanc_zcode_domain_root", "public_commitment",
+        "fold_store_compose_broadcast", "zcode.release.anchor",
+        "zcode.release.anchor", "zcode.domain.status",
+        "zcode.release.sign,zcode.release.prove,zcode.release.verify",
+        "all_zcl_networks", "", "builder_verified", "test_zcode_release",
+        "Fold signed ZCODE release documents into a deterministic domain root and anchor that root through ZANC.")
+
+TX_TYPE("htlc_initiate", "atomic_swap", "ready", "composite_chain_transaction",
+        "p2sh_htlc_funding", "transparent", "contract_then_fund",
+        "app.swap.initiate", "core.wallet.transaction.send", "app.swap.list",
+        "app.swap.initiate,core.wallet.transaction.send",
+        "zcl_chain_leg_only", "htlc_initiate", "builder_verified",
+        "test_zswap_ceremony",
+        "Create the initiator HTLC contract locally, then explicitly fund its returned P2SH address with ZCL.")
+TX_TYPE("htlc_participate", "atomic_swap", "ready", "composite_chain_transaction",
+        "p2sh_htlc_counter_funding", "transparent", "contract_then_fund",
+        "app.swap.participate", "core.wallet.transaction.send", "app.swap.list",
+        "app.swap.participate,core.wallet.transaction.send",
+        "zcl_chain_leg_only", "htlc_participate", "builder_verified",
+        "test_zswap_ceremony",
+        "Create the counterparty HTLC against the shared secret hash, then explicitly fund its P2SH address.")
+TX_TYPE("htlc_redeem", "atomic_swap", "ready", "chain_transaction",
+        "p2sh_htlc_claim_branch", "transparent", "plan_commit",
+        "vault.swap.redeem", "vault.swap.redeem", "app.swap.list", "",
+        "zcl_chain_leg_only", "htlc_redeem", "interpreter_verified",
+        "test_swap_settlement",
+        "Spend a funded HTLC through the secret-bearing claim branch and persist the redeemed swap state.")
+TX_TYPE("htlc_refund", "atomic_swap", "ready", "chain_transaction",
+        "p2sh_htlc_timeout_branch", "transparent", "plan_commit",
+        "vault.swap.refund", "vault.swap.refund", "app.swap.list", "",
+        "zcl_chain_leg_only", "htlc_refund", "interpreter_verified",
+        "test_swap_settlement",
+        "Reclaim a funded HTLC through its CLTV timeout branch after the lock height.")
+
+TX_TYPE("store_transparent_payment", "commerce", "ready", "composite_chain_transaction",
+        "transparent_payment_bound_to_order", "transparent", "plan_commit_reconcile",
+        "core.wallet.transaction.send", "core.wallet.transaction.send", "app.store.order",
+        "app.store.order,core.wallet.transaction.send",
+        "all_zcl_networks", "store_transparent_payment", "projection_verified",
+        "test_store_transparent_pay",
+        "Pay a store order transparently and reconcile only the correctly bound confirmed payment.")
+TX_TYPE("store_shielded_payment", "commerce", "contained", "composite_chain_transaction",
+        "sapling_memo_bound_store_payment", "shielded", "plan_commit_job_reconcile",
+        "app.store.pay", "app.store.pay", "app.store.order",
+        "app.store.order,core.wallet.shielded.send",
+        "isolated_non_mainnet_only", "store_shielded_payment",
+        "projection_verified", "test_store_e2e_shielded",
+        "Pay a store order with a Sapling memo binding; the command deliberately refuses mainnet today.")
+TX_TYPE("yardsale_atomic_purchase", "commerce", "ready", "composite_chain_transaction",
+        "transparent_zcl_for_zslp_atomic_swap", "transparent_public_token",
+        "two_party_plan_commit_ceremony", "yardsale.buy", "yardsale.buy",
+        "core.wallet.transaction.get", "yardsale.seller.arm",
+        "all_zcl_networks", "", "builder_verified", "test_zswap_ceremony",
+        "Complete the two-message yardsale ceremony into one fully signed transaction exchanging ZCL for a sign token.")
+TX_TYPE("market_purchase", "commerce", "planned", "composite_chain_transaction",
+        "payment_then_file_unlock", "caller_selected", "not_wired_end_to_end",
+        "", "", "app.market.status", "app.market.buy",
+        "no_broadcast_path", "", "not_demonstrated", "test_file_market",
+        "The file-market buy/payment glue is not yet wired end to end; cataloging it as planned prevents a false claim of settlement.")

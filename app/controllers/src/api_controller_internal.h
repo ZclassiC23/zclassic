@@ -10,6 +10,7 @@
 
 #include "controllers/agent_operator_contracts.h"
 #include "controllers/api_controller.h"
+#include "controllers/transaction_type_catalog.h"
 #include "models/database.h"
 #include "util/blocker.h"
 #include "util/supervisor.h"
@@ -187,6 +188,12 @@ void api_app_protocol_crud_json(const struct api_app_protocol_contract *p,
                                 struct json_value *crud);
 bool api_app_protocols_index_json(struct json_value *out);
 bool api_app_protocol_show_json(const char *name, struct json_value *out);
+size_t api_serve_protocol_member(const char *name, const char *freshness,
+                                 uint8_t *response, size_t response_max);
+size_t api_serve_transaction_type_member(const char *type,
+                                         const char *freshness,
+                                         uint8_t *response,
+                                         size_t response_max);
 bool api_service_catalog_json(struct json_value *out);
 bool api_service_catalog_show_json(const char *name, struct json_value *out);
 bool api_service_catalog_has_service(const char *name);

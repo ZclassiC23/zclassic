@@ -140,6 +140,8 @@ static const struct api_json_resource_route k_api_json_resource_routes[] = {
     { "GET", "/api/protocols", "protocols", "index",
       api_app_protocols_index_json, ZCL_APP_PROTOCOLS_INDEX_SCHEMA, "",
       "static", "", false },
+    { "GET", "/api/transaction-types", "transaction_types", "index",
+      zcl_transaction_types_index_json, ZCL_TRANSACTION_TYPES_INDEX_SCHEMA, "", "static", "", false },
     { "GET", "/api/service-catalog", "service_catalog", "show",
       api_service_catalog_json, ZCL_SERVICE_CATALOG_SCHEMA, "",
       "static", "", false },
@@ -171,7 +173,7 @@ enum api_dynamic_dispatch_kind {
     API_DYN_FILE_SHOW,
     API_DYN_NAME_SERVICES,
     API_DYN_NAME_SHOW,
-    API_DYN_PROTOCOL_SHOW,
+    API_DYN_PROTOCOL_SHOW, API_DYN_TRANSACTION_TYPE_SHOW,
     API_DYN_SERVICE_CATALOG_SHOW,
     API_DYN_SERVICE_OPERATIONS_INDEX,
     API_DYN_SERVICE_OPERATION_SHOW,
@@ -245,6 +247,8 @@ static const struct api_dynamic_resource_route k_api_dynamic_resource_routes[] =
     { "GET", "/api/protocols/{name}", "protocols", "show",
       ZCL_APP_PROTOCOL_CONTRACT_SCHEMA, "", "static", "", false,
       API_DYN_PROTOCOL_SHOW },
+    { "GET", "/api/transaction-types/{type}", "transaction_types", "show",
+      ZCL_TRANSACTION_TYPE_SCHEMA, "", "static", "", false, API_DYN_TRANSACTION_TYPE_SHOW },
     { "GET", "/api/service-catalog/{service}", "service_catalog", "show",
       ZCL_SERVICE_CONTRACT_SCHEMA, "", "static", "", false,
       API_DYN_SERVICE_CATALOG_SHOW },
@@ -538,16 +542,12 @@ static size_t api_dynamic_route_dispatch(
                               "Name not found");
     }
     case API_DYN_PROTOCOL_SHOW: {
-        struct json_value jr = {0};
-        if (api_app_protocol_show_json(param, &jr)) {
-            api_json_add_freshness(&jr, route->freshness, -1);
-            size_t n = api_json_ok(response, response_max, &jr);
-            json_free(&jr);
-            return n;
-        }
-        json_free(&jr);
-        return api_json_error(response, response_max, JSON_404_HEADERS,
-                              "Protocol not found");
+        return api_serve_protocol_member(param, route->freshness,
+                                         response, response_max);
+    }
+    case API_DYN_TRANSACTION_TYPE_SHOW: {
+        return api_serve_transaction_type_member(param, route->freshness,
+                                                  response, response_max);
     }
     case API_DYN_SERVICE_CATALOG_SHOW: {
         struct json_value jr = {0};

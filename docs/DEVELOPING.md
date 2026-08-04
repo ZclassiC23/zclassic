@@ -174,6 +174,11 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   simulated confirmation as a live spend. The append-only, redacted notebook
   and its recording procedure live in `docs/work/TRANSACTION_LAB.md`; validate
   it with `make transaction-lab-check`.
+- `zclassic23 app transaction-types list` — the compile-time semantic catalog
+  of every known transaction shape and its exact builder/commit/inspect path.
+  Use `app transaction-types show --type=<id>` for one entry. REST mirrors it
+  at `/api/v1/transaction-types`; the AI-safe workflow and extension checklist
+  are in [`TRANSACTION_API.md`](./TRANSACTION_API.md).
 - `make deploy` is owner-gated live deployment. All public dev-lane publication,
   stage, relink, and recovery-apply paths currently hard-refuse — the gated
   swappable-leaf hot-swap loop above (`hotswap-try`/`hotswap-apply`) is the one

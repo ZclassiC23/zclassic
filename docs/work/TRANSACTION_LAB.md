@@ -14,6 +14,11 @@ matrix; it uses production transaction builders, ECDSA signing, Sapling proving
 and verification, the consensus script interpreter, and the isolated settlement
 projections named in `tools/dev/transaction_lab_catalog.def`.
 
+For the complete machine-readable inventory—including receive-only, contained,
+planned, ZID/ZDIR/ZANC, and ZCODE shapes—start with
+`zclassic23 app transaction-types list`; field meanings and the AI workflow are
+documented in the [transaction API guide](../TRANSACTION_API.md).
+
 ## Safety boundary
 
 - Mainnet uses only the explicitly bound `dev` wallet scope.
