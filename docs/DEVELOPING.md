@@ -174,6 +174,10 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   simulated confirmation as a live spend. The append-only, redacted notebook
   and its recording procedure live in `docs/work/TRANSACTION_LAB.md`; validate
   it with `make transaction-lab-check`.
+  The two Sprout proof eras are independently pinned by
+  `test_sprout_phgr13_kat` (mainnet height 241) and
+  `test_sprout_groth16_kat` (mainnet height 476970); both embed only public
+  transaction/VK bytes and require no wallet or live node.
 - `zclassic23 app transaction-types list` — the compile-time semantic catalog
   of every known transaction shape and its exact builder/commit/inspect path.
   Use `app transaction-types show --type=<id>` for one entry, or

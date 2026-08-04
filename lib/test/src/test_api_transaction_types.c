@@ -173,7 +173,7 @@ int api_transaction_type_focused_tests(void)
              json_get_int(json_get(&root, "chain_confirmed_count")) == 34 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
-             json_get_int(json_get(&root, "proof_test_group_count")) == 21 &&
+             json_get_int(json_get(&root, "proof_test_group_count")) == 22 &&
              json_get_bool(json_get(&root, "fully_demonstrated")) &&
              strcmp(json_get_str(json_get(&root, "wire_catalog_command")),
                     "app.transaction-types.wire") == 0;
