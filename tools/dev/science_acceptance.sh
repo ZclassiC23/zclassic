@@ -204,6 +204,18 @@ except Exception:
     print(-1)'
 }
 
+sa_wait_topology() { # wait for the one permitted A<->B peer on both sides
+    local deadline pc_a pc_b
+    deadline=$(( $(date +%s) + 60 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        pc_a="$(sa_peer_count "$SA_DD_A" "$A_RPC")"
+        pc_b="$(sa_peer_count "$SA_DD_B" "$B_RPC")"
+        [ "$pc_a" = "1" ] && [ "$pc_b" = "1" ] && return 0
+        sleep 0.5
+    done
+    return 1
+}
+
 sa_spawn() { # $1=datadir $2=p2p $3=rpc $4=fs $5=https $6=connect-target
     local dd="$1" p2p="$2" rpc="$3" fs="$4" https="$5" conn="$6"
     setsid "$NODE_BIN" \
@@ -575,7 +587,7 @@ sa_wait_rpc "$SA_DD_A" "$A_RPC" "$SA_PGID_A" "$RPC_WARMUP" \
 SA_PGID_B="$(sa_spawn "$SA_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$A_PORT")"
 sa_wait_rpc "$SA_DD_B" "$B_RPC" "$SA_PGID_B" "$RPC_WARMUP" \
     || { tail -20 "$SA_DD_B/node.log" >&2; sa_die "B RPC never came up"; }
-sleep 3   # version handshake + connect settle
+sa_wait_topology || sa_die "A<->B topology did not settle after the controlled Noise reconnect"
 pc_a="$(sa_peer_count "$SA_DD_A" "$A_RPC")"
 pc_b="$(sa_peer_count "$SA_DD_B" "$B_RPC")"
 [ "$pc_a" = "1" ] || sa_die "A peer count is $pc_a, expected exactly 1 (B)"
@@ -600,15 +612,21 @@ out="$(sa_sci "$SA_DD_A" zcode.network.delegate "{\"seed_file\":\"$SA_WORK/maste
 [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "A DHT delegation failed: $out"
 out="$(sa_sci "$SA_DD_B" zcode.network.delegate "{\"seed_file\":\"$SA_WORK/master-b.hex\"}")"
 [ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "B DHT delegation failed: $out"
-for _ in $(seq 1 60); do
+for _ in $(seq 1 120); do
     da="$(sa_sci "$SA_DD_A" zcode.network.status '{}')"
     db="$(sa_sci "$SA_DD_B" zcode.network.status '{}')"
     [ "$(sa_jget "$da" 'd.get("data",{}).get("enabled",False)')" = "True" ] &&
-    [ "$(sa_jget "$db" 'd.get("data",{}).get("enabled",False)')" = "True" ] && break
-    sleep 1
+    [ "$(sa_jget "$db" 'd.get("data",{}).get("enabled",False)')" = "True" ] &&
+    [ "$(sa_jget "$da" 'd.get("data",{}).get("connected_authenticated",0)')" -ge 1 ] &&
+    [ "$(sa_jget "$db" 'd.get("data",{}).get("connected_authenticated",0)')" -ge 1 ] &&
+    [ "$(sa_jget "$da" 'd.get("data",{}).get("frames_accepted",0)')" -ge 1 ] &&
+    [ "$(sa_jget "$db" 'd.get("data",{}).get("frames_accepted",0)')" -ge 1 ] && break
+    sleep 0.5
 done
 [ "$(sa_jget "$da" 'd.get("data",{}).get("enabled",False)')" = "True" ] || sa_die "A DHT did not enable"
 [ "$(sa_jget "$db" 'd.get("data",{}).get("enabled",False)')" = "True" ] || sa_die "B DHT did not enable"
+[ "$(sa_jget "$da" 'd.get("data",{}).get("connected_authenticated",0)')" -ge 1 ] || sa_die "A never authenticated B over DHT"
+[ "$(sa_jget "$db" 'd.get("data",{}).get("connected_authenticated",0)')" -ge 1 ] || sa_die "B never authenticated A over DHT"
 
 # ── [2..6] A's science lifecycle ──────────────────────────────────────
 sa_step "2-6" "A: preregister -> confined execute -> reproduce -> findings/review/vote -> discover"
