@@ -1,9 +1,19 @@
 # case_id|family|description|minimum_proof|test_group
+coinbase_reward|base_zcl|mined coinbase reward|simnet_confirmed|test_simnet
 transparent_t_to_t|base_zcl|transparent payment|simnet_confirmed|test_simnet_wallet_import_backup
+raw_custom_transaction|base_zcl|raw create sign broadcast pipeline|builder_verified|test_native_api_contract
 sapling_t_to_z|base_zcl|shielding payment|simnet_confirmed|test_simnet_shielded_wallet_e2e
 sapling_z_to_z|base_zcl|fully shielded payment|simnet_confirmed|test_simnet_shielded_wallet_e2e
 sapling_z_to_t|base_zcl|unshielding payment|consensus_verified|test_simnet_shielded_wallet_e2e
+sprout_joinsplit|base_zcl|legacy Sprout receive and consensus processing|consensus_verified|test_transaction
 sapling_onchain_memo|messaging|shielded memo payment|simnet_confirmed|test_simnet_zmsg_onchain
+zid_anchor|identity|ZID master-key anchor|builder_verified|test_zid_identity
+zid_rotate|identity|ZID master-key rotation|builder_verified|test_zid_identity
+zid_revoke|identity|ZID revocation|builder_verified|test_zid_identity
+zdir_register|directory|ZDIR onion registration|builder_verified|test_zdir_write_path
+zdir_deregister|directory|ZDIR onion deregistration|builder_verified|test_zdir_write_path
+zanc_epoch_anchor|anchor|ZANC epoch digest anchor|builder_verified|test_epoch
+zcode_release_anchor|zcode|ZCODE release-domain ZANC anchor|builder_verified|test_zcode_release
 zslp_genesis|tokens|token genesis|builder_verified|test_slp
 zslp_mint|tokens|token mint|builder_verified|test_slp
 zslp_send|tokens|token transfer|builder_verified|test_slp
@@ -20,3 +30,5 @@ htlc_redeem|atomic_swap|HTLC claim branch|interpreter_verified|test_swap_settlem
 htlc_refund|atomic_swap|HTLC timeout branch|interpreter_verified|test_swap_settlement
 store_transparent_payment|commerce|transparent store settlement|projection_verified|test_store_transparent_pay
 store_shielded_payment|commerce|shielded memo-bound store settlement|projection_verified|test_store_e2e_shielded
+yardsale_atomic_purchase|commerce|atomic ZCL for ZSLP yardsale purchase|builder_verified|test_yardsale_app
+market_purchase|commerce|file-market payment and unlock glue|not_demonstrated|test_file_market

@@ -6,6 +6,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CATALOG="${ZCL_TRANSACTION_LAB_CATALOG:-$REPO/tools/dev/transaction_lab_catalog.def}"
 LEDGER="${ZCL_TRANSACTION_LAB_LEDGER:-$REPO/docs/work/transaction-lab-events.jsonl}"
+TYPE_CATALOG="${ZCL_TRANSACTION_TYPE_CATALOG:-$REPO/app/controllers/include/controllers/transaction_types.def}"
 
 die() {
     echo "transaction-lab: $*" >&2
@@ -15,7 +16,8 @@ die() {
 proof_allowed() {
     case "$1" in
         builder_verified|interpreter_verified|projection_verified|\
-        consensus_verified|simnet_confirmed|live_confirmed) return 0 ;;
+        consensus_verified|simnet_confirmed|live_confirmed|\
+        not_demonstrated) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -67,6 +69,7 @@ stats() {
 }
 
 check_notebook() {
+    local declared_ids lab_ids
     awk -F'|' '
         function bad(msg) { print "transaction-lab-check: " msg > "/dev/stderr"; errors++ }
         NR == FNR {
@@ -74,7 +77,7 @@ check_notebook() {
             if (NF != 5) { bad("catalog line " FNR " must have five fields"); next }
             if ($1 !~ /^[a-z0-9_]+$/) bad("invalid case_id at catalog line " FNR)
             if (known[$1]++) bad("duplicate case_id " $1)
-            if ($4 !~ /^(builder_verified|interpreter_verified|projection_verified|consensus_verified|simnet_confirmed|live_confirmed)$/)
+            if ($4 !~ /^(builder_verified|interpreter_verified|projection_verified|consensus_verified|simnet_confirmed|live_confirmed|not_demonstrated)$/)
                 bad("invalid minimum proof for " $1)
             if ($5 !~ /^test_[a-z0-9_]+$/) bad("invalid test group for " $1)
             catalog[$1]=1
@@ -94,9 +97,11 @@ check_notebook() {
             if (!(id in catalog)) bad("unknown case_id " id)
             seen[id]=1
             if (network !~ /^(isolated|simnet|mainnet)$/) bad("invalid network for " id)
-            if (proof !~ /^(builder_verified|interpreter_verified|projection_verified|consensus_verified|simnet_confirmed|live_confirmed)$/)
+            if (proof !~ /^(builder_verified|interpreter_verified|projection_verified|consensus_verified|simnet_confirmed|live_confirmed|not_demonstrated)$/)
                 bad("invalid proof for " id)
             if (result !~ /^(PASS|FAIL|BLOCKED)$/) bad("invalid result for " id)
+            if (proof == "not_demonstrated" && result != "BLOCKED")
+                bad("not_demonstrated evidence must be BLOCKED for " id)
             if (source !~ /^[A-Za-z0-9_.:-]+$/) bad("invalid source for " id)
             if (commit !~ /^[0-9a-f]{8,64}$/) bad("invalid source commit for " id)
             if (txid != "UNAVAILABLE" && txid !~ /^[0-9a-f]{64}$/)
@@ -115,6 +120,13 @@ check_notebook() {
             if (errors) exit 1
         }
     ' "$CATALOG" "$LEDGER"
+    declared_ids="$(sed -n 's/^TX_TYPE("\([^"]*\)".*/\1/p' "$TYPE_CATALOG" | sort)"
+    lab_ids="$(awk -F'|' '!/^#/ && NF { print $1 }' "$CATALOG" | sort)"
+    if [ "$declared_ids" != "$lab_ids" ]; then
+        echo "transaction-lab-check: catalog ids differ from transaction type ids" >&2
+        diff -u <(printf '%s\n' "$declared_ids") <(printf '%s\n' "$lab_ids") >&2 || true
+        return 1
+    fi
     echo "transaction-lab-check: PASS"
 }
 
@@ -170,6 +182,9 @@ record_event() {
     case "$network" in isolated|simnet|mainnet) ;; *) die "invalid --network" ;; esac
     proof_allowed "$proof" || die "invalid --proof"
     case "$result" in PASS|FAIL|BLOCKED) ;; *) die "invalid --result" ;; esac
+    if [ "$proof" = not_demonstrated ] && [ "$result" != BLOCKED ]; then
+        die "not_demonstrated evidence must be BLOCKED"
+    fi
     [[ "$source" =~ ^[A-Za-z0-9_.:-]+$ ]] || die "invalid --source"
     [[ "$txid" == UNAVAILABLE || "$txid" =~ ^[0-9a-f]{64}$ ]] || die "invalid --txid"
     [[ "$recipient_zat" =~ ^[0-9]+$ ]] || die "invalid --recipient-zat"
@@ -211,6 +226,13 @@ selftest() {
        [[ "$body" != *'"live_fee_zat":100'* ]] ||
        [[ "$body" != *'"live_total_zat":1100'* ]]; then
         die "selftest stats did not include the fixture mainnet receipt"
+    fi
+    if ZCL_TRANSACTION_LAB_CATALOG="$CATALOG" \
+       ZCL_TRANSACTION_LAB_LEDGER="$fixture_ledger" \
+        "$0" record --case=market_purchase --network=isolated \
+        --proof=not_demonstrated --result=PASS --source=selftest_invalid \
+        >/dev/null 2>&1; then
+        die "selftest accepted not_demonstrated evidence as PASS"
     fi
     echo "transaction-lab selftest: PASS"
 }

@@ -1756,7 +1756,10 @@ custody-status-selftest:
 # These exact groups exercise production transaction builders, signatures,
 # Sapling proofs, consensus verification, script interpretation, and isolated
 # settlement projections without contacting a live wallet.
-TRANSACTION_LAB_PROOF_TESTS := test_simnet_wallet_import_backup,test_simnet_sapling_shielded_send,test_simnet_shielded_wallet_e2e,test_simnet_zmsg_onchain,test_slp,test_znam,test_zswap_ceremony,test_swap_settlement,test_store_transparent_pay,test_store_e2e_shielded
+# Derived from the notebook catalog so adding a case cannot silently omit its
+# proof from `make transaction-lab-proof`. Stable sort also deduplicates groups
+# shared by several semantic transaction types.
+TRANSACTION_LAB_PROOF_TESTS := $(shell awk -F'|' 'substr($$0, 1, 1) != sprintf("%c", 35) && NF { print $$5 }' tools/dev/transaction_lab_catalog.def | sort -u | paste -sd, -)
 .PHONY: transaction-lab-status transaction-lab-check transaction-lab-proof
 transaction-lab-status:
 	@tools/dev/transaction-lab.sh status

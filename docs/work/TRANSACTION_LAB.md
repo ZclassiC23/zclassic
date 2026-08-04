@@ -44,6 +44,7 @@ documented in the [transaction API guide](../TRANSACTION_API.md).
 | `consensus_verified` | The production consensus transaction verifier accepted the complete transaction. |
 | `simnet_confirmed` | The transaction was admitted or mined on the deterministic simulated chain. |
 | `live_confirmed` | A public mainnet txid reached the required confirmation state. |
+| `not_demonstrated` | No end-to-end transaction path exists; the case must remain `BLOCKED`, never PASS. |
 
 Only `live_confirmed` increments the live-mainnet bar or cumulative live value
 and fee totals.
@@ -91,3 +92,30 @@ Source commit `07091e0f`:
   correctly bound confirmed payment.
 - Live mainnet transactions: **0**. Live recipient value: **0 ZCL**. Live fees:
   **0 ZCL**. No live wallet or service was mutated.
+
+## 2026-08-04 catalog-complete run
+
+Source commit `cb8ab59d` plus the append-only notebook expansion in this change:
+
+- The lab catalog now has one case for every one of the 33 semantic types in
+  `app transaction-types list`; the Make target derives its exact test groups
+  from that catalog, so a future case cannot be silently omitted from the
+  proof command.
+- Nine additional exact groups passed: coinbase/simnet, raw native transaction
+  adapters, Sprout transaction processing, ZID identity transitions, ZDIR
+  write paths, epoch/ZANC, ZCODE release anchoring, yardsale final transaction,
+  and file-market protocol behavior.
+- The catalog-derived `make transaction-lab-proof` target passed all 18 unique
+  exact groups (0 failed, 0 skipped), including the ten groups retained from
+  the earlier notebook run.
+- ZID ANCHOR/ROTATE/REVOKE and ZDIR REGISTER/DEREGISTER bytes were parsed and
+  folded into their isolated projections. The ZCODE release batch produced a
+  deterministic root and a ZANC OP_RETURN that round-tripped. The yardsale
+  ceremony produced its golden fully signed final transaction and delivered it
+  to the broadcast port.
+- `market_purchase` is the one `BLOCKED` case: file-market payment-to-unlock
+  glue has no end-to-end broadcast path. Its proof is `not_demonstrated`; it is
+  deliberately not counted as PASS.
+- Current notebook result: **32/33 PASS**, **1 BLOCKED**, **5 simulated chain
+  confirmations**, **0 mainnet confirmations**, and **0 ZCL** live recipient
+  value or fees. No live wallet or service was mutated.

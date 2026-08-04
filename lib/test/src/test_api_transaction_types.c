@@ -56,6 +56,8 @@ int api_transaction_type_focused_tests(void)
             ok = types[i].id && types[i].id[0] &&
                  types[i].family && types[i].family[0] &&
                  types[i].availability && types[i].availability[0] &&
+                 types[i].lab_case_id &&
+                 strcmp(types[i].lab_case_id, types[i].id) == 0 &&
                  types[i].proof_level && types[i].proof_level[0] &&
                  command_exists(registry, types[i].builder_command) &&
                  command_exists(registry, types[i].commit_command) &&
