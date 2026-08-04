@@ -7,9 +7,9 @@ sapling_z_to_z|base_zcl|fully shielded payment|simnet_confirmed|test_simnet_shie
 sapling_z_to_t|base_zcl|unshielding payment|simnet_confirmed|test_simnet_shielded_wallet_e2e
 sprout_joinsplit|base_zcl|legacy Sprout receive and consensus processing|consensus_verified|test_transaction
 sapling_onchain_memo|messaging|shielded memo payment|simnet_confirmed|test_simnet_zmsg_onchain
-zid_anchor|identity|ZID master-key anchor|builder_verified|test_zid_identity
-zid_rotate|identity|ZID master-key rotation|builder_verified|test_zid_identity
-zid_revoke|identity|ZID revocation|builder_verified|test_zid_identity
+zid_anchor|identity|ZID master-key anchor|simnet_confirmed|test_identity_command
+zid_rotate|identity|ZID master-key rotation|simnet_confirmed|test_identity_command
+zid_revoke|identity|ZID revocation|simnet_confirmed|test_identity_command
 zdir_register|directory|ZDIR onion registration|simnet_confirmed|test_zdir_write_path
 zdir_deregister|directory|ZDIR onion deregistration|simnet_confirmed|test_zdir_write_path
 zanc_epoch_anchor|anchor|ZANC epoch digest anchor|simnet_confirmed|test_epoch

@@ -118,18 +118,18 @@ TX_TYPE("sapling_onchain_memo", "zmsg", "ready", "overlay_transaction",
 TX_TYPE("zid_anchor", "zid", "ready", "overlay_transaction",
         "op_return_zid_anchor", "public_metadata", "compose_broadcast",
         "core.identity.anchor", "core.identity.anchor", "core.identity.resolve",
-        "", "all_zcl_networks", "zid_anchor", "builder_verified", "test_zid_identity",
-        "Anchor a ZID master public key to an owner-controlled transaction.")
+        "", "all_zcl_networks", "zid_anchor", "simnet_confirmed", "test_identity_command",
+        "Anchor a ZID master public key to an owner-controlled transaction; the exact public-command bytes are mined and projected with the funding owner in isolated proof.")
 TX_TYPE("zid_rotate", "zid", "ready", "overlay_transaction",
         "op_return_zid_rotate", "public_metadata", "compose_broadcast",
         "core.identity.rotate", "core.identity.rotate", "core.identity.resolve",
-        "", "all_zcl_networks", "zid_rotate", "builder_verified", "test_zid_identity",
-        "Rotate an existing ZID master key under the identity ownership rules.")
+        "", "all_zcl_networks", "zid_rotate", "simnet_confirmed", "test_identity_command",
+        "Rotate an existing ZID master key under the identity ownership rules; exact command bytes are mined and the successor lineage is recovered from projection.")
 TX_TYPE("zid_revoke", "zid", "ready", "overlay_transaction",
         "op_return_zid_revoke", "public_metadata", "compose_broadcast",
         "core.identity.revoke", "core.identity.revoke", "core.identity.resolve",
-        "", "all_zcl_networks", "zid_revoke", "builder_verified", "test_zid_identity",
-        "Revoke a ZID identity with an explicit on-chain record.")
+        "", "all_zcl_networks", "zid_revoke", "simnet_confirmed", "test_identity_command",
+        "Revoke a ZID identity with an explicit on-chain record; exact command bytes are mined and retire the same owner-bound successor in projection.")
 TX_TYPE("zdir_register", "zdir", "ready", "overlay_transaction",
         "op_return_zdir_register", "public_metadata", "compose_broadcast",
         "core.zdir.register", "core.zdir.register", "core.network.onion.status",

@@ -100,10 +100,10 @@ int api_transaction_type_focused_tests(void)
         ok = ok && count == 34 &&
              json_get_int(json_get(&root, "demonstrated_count")) == 34 &&
              json_get_int(json_get(&root, "blocked_count")) == 0 &&
-             json_get_int(json_get(&root, "chain_confirmed_count")) == 26 &&
+             json_get_int(json_get(&root, "chain_confirmed_count")) == 29 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
-             json_get_int(json_get(&root, "proof_test_group_count")) == 19 &&
+             json_get_int(json_get(&root, "proof_test_group_count")) == 20 &&
              json_get_bool(json_get(&root, "fully_demonstrated"));
         const struct json_value *transparent =
             api_test_find_str_field(types, "id", "transparent_t_to_t");
@@ -121,6 +121,12 @@ int api_transaction_type_focused_tests(void)
             api_test_find_str_field(types, "id", "zdir_register");
         const struct json_value *zdir_deregister =
             api_test_find_str_field(types, "id", "zdir_deregister");
+        const struct json_value *zid_anchor =
+            api_test_find_str_field(types, "id", "zid_anchor");
+        const struct json_value *zid_rotate =
+            api_test_find_str_field(types, "id", "zid_rotate");
+        const struct json_value *zid_revoke =
+            api_test_find_str_field(types, "id", "zid_revoke");
         const struct json_value *blog =
             api_test_find_str_field(types, "id", "blog_anchor");
         ok = ok && transparent &&
@@ -149,6 +155,13 @@ int api_transaction_type_focused_tests(void)
              strcmp(json_get_str(json_get(zdir_register, "proof_level")),
                     "simnet_confirmed") == 0 &&
              strcmp(json_get_str(json_get(zdir_deregister, "proof_level")),
+                    "simnet_confirmed") == 0;
+        ok = ok && zid_anchor && zid_rotate && zid_revoke &&
+             strcmp(json_get_str(json_get(zid_anchor, "proof_level")),
+                    "simnet_confirmed") == 0 &&
+             strcmp(json_get_str(json_get(zid_rotate, "proof_level")),
+                    "simnet_confirmed") == 0 &&
+             strcmp(json_get_str(json_get(zid_revoke, "proof_level")),
                     "simnet_confirmed") == 0;
         ok = ok && blog &&
              strcmp(json_get_str(json_get(blog, "availability")),

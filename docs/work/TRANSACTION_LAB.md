@@ -440,3 +440,34 @@ The current result is **34/34 PASS, 0 BLOCKED**, with **26 simulated-chain
 confirmations** across **19 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
 funds moved.
+
+## 2026-08-04 exact ZID identity-lifecycle chain proof
+
+The three public identity mutations now form one exact isolated lifecycle.
+`core identity anchor` emits the first key's production OP_RETURN; the shared
+owner-aware fixture funds it from a complete P2PKH output and admits the exact
+bytes through `connect_block` at height 500. The retained transaction is folded
+through the production explorer registry, where it must create an active ZID
+row with the same transaction ID, height, and derived owner.
+
+The resulting file-backed projection is then the real pre-flight authority for
+`core identity rotate`. Its exact old-key/new-key command bytes are mined at
+height 700 from the same owner and projected into a rotated predecessor plus an
+active successor. Finally, `core identity revoke` reads that successor, emits
+its exact owner-bound bytes, and the transaction is mined at height 900; the
+projection must retire the successor without changing its original anchor
+transaction or height.
+
+The catalog keeps both evidence axes explicit: `test_identity_command` owns the
+public command-to-chain lifecycle, while supplemental `test_zid_identity`
+continues to prove malformed records, non-owner refusals, claimed-target
+protection, idempotent replay, ZNAM-derived identities, and model persistence.
+
+These are deterministic isolated chains. No live node, wallet, endpoint, key,
+or ZCL is contacted, and no address or raw transaction is written to the public
+notebook.
+
+The current result is **34/34 PASS, 0 BLOCKED**, with **29 simulated-chain
+confirmations** across **20 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
+funds moved.
