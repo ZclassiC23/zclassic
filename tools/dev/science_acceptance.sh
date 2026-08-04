@@ -602,21 +602,14 @@ out="$(sa_sci "$SA_DD_B" zcode.package.fetch "{\"root\":\"$PKG_ROOT\"}")"
 [ "$(sa_jget "$out" 'd["data"]["live"]')" = "False" ] \
     || sa_die "B one-shot fetch claimed a live engine"
 
-# ── [1] boot A and B; assert the loopback-only topology ───────────────
-sa_step 1 "boot isolated pre-delegation link; assert exactly A<->B"
+# ── [1] boot A and B on the loopback-only provisioning link ─────────
+sa_step 1 "boot isolated pre-delegation A<->B link"
 SA_PGID_A="$(sa_spawn "$SA_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK" bootstrap)"
 sa_wait_rpc "$SA_DD_A" "$A_RPC" "$SA_PGID_A" "$RPC_WARMUP" \
     || { tail -20 "$SA_DD_A/node.log" >&2; sa_die "A RPC never came up"; }
 SA_PGID_B="$(sa_spawn "$SA_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$A_PORT" bootstrap)"
 sa_wait_rpc "$SA_DD_B" "$B_RPC" "$SA_PGID_B" "$RPC_WARMUP" \
     || { tail -20 "$SA_DD_B/node.log" >&2; sa_die "B RPC never came up"; }
-sa_wait_topology || sa_die "A<->B pre-delegation topology did not settle"
-pc_a="$(sa_peer_count "$SA_DD_A" "$A_RPC")"
-pc_b="$(sa_peer_count "$SA_DD_B" "$B_RPC")"
-[ "$pc_a" = "1" ] || sa_die "A peer count is $pc_a, expected exactly 1 (B)"
-[ "$pc_b" = "1" ] || sa_die "B peer count is $pc_b, expected exactly 1 (A)"
-echo "science-acceptance:     topology exactly A<->B (peers: A=$pc_a B=$pc_b; regtest, no DNS seeds, no GitHub, -nofilesync)"
-
 # Provision two independent, finality-delayed DHT delegations on the same
 # isolated regtest chain. S7 publication must never fall back to an unsigned
 # or process-local identity merely to make this harness convenient.
@@ -671,6 +664,13 @@ done
     || sa_die "B never authenticated A over DHT: A=$da B=$db"
 
 # ── [2..6] A's science lifecycle ──────────────────────────────────────
+sa_wait_topology || sa_die "authenticated A<->B topology did not settle"
+pc_a="$(sa_peer_count "$SA_DD_A" "$A_RPC")"
+pc_b="$(sa_peer_count "$SA_DD_B" "$B_RPC")"
+[ "$pc_a" = "1" ] || sa_die "A peer count is $pc_a, expected exactly 1 (B)"
+[ "$pc_b" = "1" ] || sa_die "B peer count is $pc_b, expected exactly 1 (A)"
+echo "science-acceptance:     authenticated topology exactly A<->B (peers: A=$pc_a B=$pc_b; regtest, no DNS seeds, no GitHub, -nofilesync)"
+
 sa_step "2-6" "A: preregister -> confined execute -> reproduce -> findings/review/vote -> discover"
 run_lifecycle "$SA_DD_A" 11 "A"
 A_STUDY="$L_STUDY"; A_RA="$L_RA"; A_PA="$L_PA"; A_V1="$L_V1"
