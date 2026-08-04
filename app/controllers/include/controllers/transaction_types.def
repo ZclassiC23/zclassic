@@ -192,9 +192,9 @@ TX_TYPE("store_transparent_payment", "commerce", "ready", "composite_chain_trans
         "transparent_payment_bound_to_order", "transparent", "plan_commit_reconcile",
         "core.wallet.transaction.send", "core.wallet.transaction.send", "app.store.order",
         "app.store.order,core.wallet.transaction.send",
-        "all_zcl_networks", "store_transparent_payment", "projection_verified",
+        "all_zcl_networks", "store_transparent_payment", "simnet_confirmed",
         "test_store_transparent_pay",
-        "Pay a store order transparently and reconcile only the correctly bound confirmed payment.")
+        "Mine the exact wallet-signed payment to a one-time order address, project it from the confirmed transaction, and reconcile only that bound value.")
 TX_TYPE("store_shielded_payment", "commerce", "contained", "composite_chain_transaction",
         "sapling_memo_bound_store_payment", "shielded", "plan_commit_job_reconcile",
         "app.store.pay", "app.store.pay", "app.store.order",

@@ -100,7 +100,7 @@ int api_transaction_type_focused_tests(void)
         ok = ok && count == 34 &&
              json_get_int(json_get(&root, "demonstrated_count")) == 34 &&
              json_get_int(json_get(&root, "blocked_count")) == 0 &&
-             json_get_int(json_get(&root, "chain_confirmed_count")) == 30 &&
+             json_get_int(json_get(&root, "chain_confirmed_count")) == 31 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
              json_get_int(json_get(&root, "proof_test_group_count")) == 20 &&
@@ -111,6 +111,9 @@ int api_transaction_type_focused_tests(void)
             api_test_find_str_field(types, "id", "coinbase_reward");
         const struct json_value *store =
             api_test_find_str_field(types, "id", "store_shielded_payment");
+        const struct json_value *store_transparent =
+            api_test_find_str_field(types, "id",
+                                    "store_transparent_payment");
         const struct json_value *market =
             api_test_find_str_field(types, "id", "market_purchase");
         const struct json_value *yardsale =
@@ -142,6 +145,9 @@ int api_transaction_type_focused_tests(void)
         ok = ok && store &&
              strcmp(json_get_str(json_get(store, "network_policy")),
                     "isolated_non_mainnet_only") == 0;
+        ok = ok && store_transparent &&
+             strcmp(json_get_str(json_get(store_transparent, "proof_level")),
+                    "simnet_confirmed") == 0;
         ok = ok && market &&
              strcmp(json_get_str(json_get(market, "availability")),
                     "ready") == 0 &&

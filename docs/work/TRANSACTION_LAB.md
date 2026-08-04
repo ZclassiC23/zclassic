@@ -502,3 +502,30 @@ The current result is **34/34 PASS, 0 BLOCKED**, with **30 simulated-chain
 confirmations** across **20 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
 funds moved.
+
+## 2026-08-04 exact transparent-store chain proof
+
+Transparent store settlement now starts before the old projection fixture. A
+fresh isolated chain creates and matures a payer funding outpoint. The real
+transparent wallet sender selects that exact coin, produces its ECDSA
+signature, and admits the transaction through the production mempool gate.
+The test retains those exact bytes and mines them through `connect_block`.
+
+The payment has one input, one output paying the order's one-time P2PKH
+address, and an exact 0.00010000 ZCL fee. After the block consumes the payer
+outpoint, the production wallet projection scans the retained confirmed
+transaction with the merchant key. Only that derived `wallet_utxos` row is
+then visible to `store_confirmed_payment`; after three confirmations,
+`store_process_payments` fulfills the address-bound order. Existing negatives
+still prove that another order's payment, shallow value, coinbase value,
+underpayment, and a second reconciliation cannot unlock or double-credit it.
+
+This is a deterministic isolated payment. Its temporary trust declaration,
+keys, addresses, transaction bytes, and databases remain under `test-tmp` and
+are destroyed after the proof. No live wallet, peer, endpoint, or mainnet ZCL
+is contacted.
+
+The current result is **34/34 PASS, 0 BLOCKED**, with **31 simulated-chain
+confirmations** across **20 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
+funds moved.
