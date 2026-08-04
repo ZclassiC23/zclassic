@@ -171,6 +171,9 @@ Exact final gate receipts:
 - `make repro-verify`: PASS across deliberately different-length builder
   paths—two 21,875,416-byte binaries, identical SHA3-256
   `208b3218398353d382d13f9aff548ed0ad6b8bf8bff65393a5d5b024f6f27560`.
+- `make pre-push-ci`: PASS on the clean committed lane—strict build-only,
+  17-gate fast lint and the source-wide suite (900 registered, 891 run,
+  0 cached, 9 gated, 0 failed, 19 explicit self-skips; 87.3 s).
 
 This moves the scientific-metaverse root-discovery benchmark from an
 out-of-band transport root to a positive root-only, node-to-node proof. It
