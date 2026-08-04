@@ -589,19 +589,6 @@ eval "$("$FIX" pubkey "$SEED_A")"; PUB_A="$PUBKEY"
 eval "$("$FIX" pubkey "$SEED_B")"; PUB_B="$PUBKEY"
 echo "science-acceptance: A{dd=$SA_DD_A p2p=$A_PORT rpc=$A_RPC} B{dd=$SA_DD_B p2p=$B_PORT rpc=$B_RPC}"
 
-# ── [0] seed stores before any boot ───────────────────────────────────
-sa_step 0 "seed A's package store (real store APIs) + B's download record (one-shot fetch, node down)"
-eval "$("$FIX" seed-package "$SA_DD_A" 7)"
-PKG_ROOT="$PACKAGE_ROOT"
-[ "$COMPLETE" = "1" ] || sa_die "seeded package not tracked-complete on A"
-echo "science-acceptance:     A serves package ${PKG_ROOT:0:16}… (tracked+complete)"
-# B's swarm download record, persisted by the node's own one-shot fetch
-# path — the live engine replays it at B's first hosting boot.
-out="$(sa_sci "$SA_DD_B" zcode.package.fetch "{\"root\":\"$PKG_ROOT\"}")"
-[ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "B download-record seed failed: $out"
-[ "$(sa_jget "$out" 'd["data"]["live"]')" = "False" ] \
-    || sa_die "B one-shot fetch claimed a live engine"
-
 # ── [1] boot A and B on the loopback-only provisioning link ─────────
 sa_step 1 "boot isolated pre-delegation A<->B link"
 SA_PGID_A="$(sa_spawn "$SA_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK" bootstrap)"
@@ -641,6 +628,19 @@ out="$(sa_sci "$SA_DD_B" zcode.network.delegate "{\"seed_file\":\"$SA_WORK/maste
 # delegations before accepting any discovery frame or publishing any record.
 sa_kill_group "$SA_PGID_B"; SA_PGID_B=""
 sa_kill_group "$SA_PGID_A"; SA_PGID_A=""
+
+sa_step 1c "seed package stores during the node-down hosting boundary"
+eval "$("$FIX" seed-package "$SA_DD_A" 7)"
+PKG_ROOT="$PACKAGE_ROOT"
+[ "$COMPLETE" = "1" ] || sa_die "seeded package not tracked-complete on A"
+echo "science-acceptance:     A serves package ${PKG_ROOT:0:16}… (tracked+complete)"
+# B's swarm download record is persisted while no node owns the store; the
+# live engine replays it at B's first package-hosting boot below.
+out="$(sa_sci "$SA_DD_B" zcode.package.fetch "{\"root\":\"$PKG_ROOT\"}")"
+[ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "B download-record seed failed: $out"
+[ "$(sa_jget "$out" 'd["data"]["live"]')" = "False" ] \
+    || sa_die "B one-shot fetch claimed a live engine"
+
 SA_PGID_A="$(sa_spawn "$SA_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK")"
 sa_wait_rpc "$SA_DD_A" "$A_RPC" "$SA_PGID_A" "$RPC_WARMUP" || sa_die "A authenticated restart failed"
 SA_PGID_B="$(sa_spawn "$SA_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$A_PORT")"
