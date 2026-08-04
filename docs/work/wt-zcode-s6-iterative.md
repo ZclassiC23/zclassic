@@ -2,8 +2,8 @@
 
 **STATUS: ✅ DONE — ready for merge (branch lane/zcode-s6-iterative, head 0408e5d58)**
 
-**Worker:** `wf_zcode-s6-iterative`  
-**Branch:** `lane/zcode-s6-iterative`  
+**Worker:** `wf_zcode-s6-iterative`
+**Branch:** `lane/zcode-s6-iterative`
 **Base:** `origin/main` at `2094e05e8`
 
 ## Goal
