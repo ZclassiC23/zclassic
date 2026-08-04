@@ -101,6 +101,26 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_type_guide)
 
+ZCL_COMMAND_READY_READ(
+    "app.transaction-types.wire", "app.transaction-types", "",
+    "List every consensus transaction wire era and script-processing bucket",
+    "The finite source-derived wire catalog: legacy v1/v2, Overwinter v3, "
+    "Sapling v4, their shielded proof/component gates, all standard output "
+    "script classes plus the nonstandard consensus bucket, and the generic "
+    "opaque-memo/unknown-OP_RETURN paths. This complements semantic workflows "
+    "without pretending arbitrary scripts or future application tags are a "
+    "finite list. Discovery only; it cannot construct or broadcast.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "transactions,wire,version,overwinter,sapling,sprout,script,op_return",
+    "zcl.command.empty_input.v1", "zcl.transaction_wire_catalog.v1", "", "",
+    "zclassic23 app transaction-types wire",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_wire_catalog)
+
 ZCL_COMMAND_BRANCH("app.invoke", "app", "Invoke a manifest-owned App route",
                    ZCL_COMMAND_LAYER_APP)
 

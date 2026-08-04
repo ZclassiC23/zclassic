@@ -15,6 +15,8 @@ extern "C" {
 #define ZCL_TRANSACTION_TYPE_SCHEMA "zcl.transaction_type.v2"
 #define ZCL_TRANSACTION_TYPES_INDEX_SCHEMA "zcl.transaction_types.index.v2"
 #define ZCL_TRANSACTION_TYPE_GUIDE_SCHEMA "zcl.transaction_type_guide.v1"
+#define ZCL_TRANSACTION_WIRE_CATALOG_SCHEMA \
+    "zcl.transaction_wire_catalog.v1"
 
 struct json_value;
 
@@ -46,6 +48,11 @@ const struct zcl_transaction_type_contract *
 zcl_transaction_type_find(const char *id);
 bool zcl_transaction_types_index_json(struct json_value *out);
 bool zcl_transaction_type_show_json(const char *id, struct json_value *out);
+/* Finite consensus wire eras and standard-policy script buckets. This is the
+ * structural complement to the semantic catalog: arbitrary scripts, opaque
+ * Sapling memos, and unknown/future OP_RETURN tags remain explicit buckets
+ * instead of being falsely presented as an enumerable application list. */
+bool zcl_transaction_wire_catalog_json(struct json_value *out);
 
 #ifdef __cplusplus
 }

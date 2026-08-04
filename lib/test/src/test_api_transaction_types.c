@@ -7,6 +7,8 @@
 #include "config/command_catalog.h"
 #include "controllers/transaction_type_catalog.h"
 #include "kernel/command_registry.h"
+#include "primitives/transaction.h"
+#include "script/standard.h"
 
 #include <string.h>
 
@@ -71,6 +73,74 @@ int api_transaction_type_focused_tests(void)
             registry, "app.transaction-types.list", NULL) != NULL;
         ok = ok && zcl_command_registry_find(
             registry, "app.transaction-types.show", NULL) != NULL;
+        ok = ok && zcl_command_registry_find(
+            registry, "app.transaction-types.wire", NULL) != NULL;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: wire catalog covers source-defined eras and open-ended carriers... ");
+    {
+        struct json_value root;
+        json_init(&root);
+        bool ok = zcl_transaction_wire_catalog_json(&root) &&
+            strcmp(json_get_str(json_get(&root, "schema")),
+                   ZCL_TRANSACTION_WIRE_CATALOG_SCHEMA) == 0 &&
+            json_get_int(json_get(&root, "wire_family_count")) == 4 &&
+            json_get_int(json_get(&root, "script_class_count")) ==
+                (int64_t)TX_NULL_DATA + 1 &&
+            json_get_bool(json_get(&root,
+                                   "consensus_wire_families_are_finite")) &&
+            json_get_bool(json_get(&root,
+                                   "application_semantics_are_open_ended"));
+        const struct json_value *families = json_get(&root, "wire_families");
+        const struct json_value *legacy_v1 = families ?
+            api_test_find_str_field(families, "id", "legacy_v1") : NULL;
+        const struct json_value *legacy_v2 = families ?
+            api_test_find_str_field(families, "id", "legacy_v2") : NULL;
+        const struct json_value *overwinter = families ?
+            api_test_find_str_field(families, "id", "overwinter_v3") : NULL;
+        const struct json_value *sapling = families ?
+            api_test_find_str_field(families, "id", "sapling_v4") : NULL;
+        ok = ok && legacy_v1 && legacy_v2 && overwinter && sapling &&
+            json_get_int(json_get(legacy_v1, "version")) == 1 &&
+            !json_get_bool(json_get(legacy_v1, "overwintered")) &&
+            json_get_int(json_get(legacy_v2, "version")) == 2 &&
+            strcmp(json_get_str(json_get(legacy_v2, "sprout_proof")),
+                   "phgr13") == 0 &&
+            json_get_int(json_get(overwinter, "version")) ==
+                OVERWINTER_TX_VERSION &&
+            strcmp(json_get_str(json_get(overwinter, "version_group_id")),
+                   "0x03c48270") == 0 &&
+            json_get_int(json_get(sapling, "version")) ==
+                SAPLING_TX_VERSION &&
+            strcmp(json_get_str(json_get(sapling, "version_group_id")),
+                   "0x892f2085") == 0 &&
+            strcmp(json_get_str(json_get(sapling, "sprout_proof")),
+                   "groth16") == 0;
+        const struct json_value *scripts = json_get(&root, "script_classes");
+        const struct json_value *nonstandard = scripts ?
+            api_test_find_str_field(scripts, "id", "nonstandard") : NULL;
+        const struct json_value *nulldata = scripts ?
+            api_test_find_str_field(scripts, "id", "nulldata") : NULL;
+        ok = ok && scripts && json_size(scripts) == (size_t)TX_NULL_DATA + 1 &&
+            nonstandard && nulldata &&
+            !json_get_bool(json_get(nonstandard, "standard_relay_class")) &&
+            strcmp(json_get_str(json_get(nonstandard, "spendability")),
+                   "script_dependent") == 0 &&
+            json_get_bool(json_get(nulldata, "standard_relay_class")) &&
+            strcmp(json_get_str(json_get(nulldata, "spendability")),
+                   "provably_unspendable") == 0;
+        const struct json_value *codecs =
+            json_get(&root, "recognized_application_codecs");
+        const struct json_value *zpay = codecs ?
+            api_test_find_str_field(codecs, "id", "zpay") : NULL;
+        ok = ok && zpay &&
+            strcmp(json_get_str(json_get(zpay, "coverage")),
+                   "codec_only_no_typed_chain_workflow") == 0 &&
+            strstr(json_get_str(json_get(&root, "unknown_op_return_policy")),
+                   "without_inventing_semantics") != NULL;
+        json_free(&root);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -104,7 +174,9 @@ int api_transaction_type_focused_tests(void)
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
              json_get_int(json_get(&root, "proof_test_group_count")) == 20 &&
-             json_get_bool(json_get(&root, "fully_demonstrated"));
+             json_get_bool(json_get(&root, "fully_demonstrated")) &&
+             strcmp(json_get_str(json_get(&root, "wire_catalog_command")),
+                    "app.transaction-types.wire") == 0;
         const struct json_value *transparent =
             api_test_find_str_field(types, "id", "transparent_t_to_t");
         const struct json_value *coinbase =
@@ -220,6 +292,45 @@ int api_transaction_type_focused_tests(void)
                   json_get_bool(json_get(&root, "ok")) &&
                   strcmp(json_get_str(json_get(&root, "data_schema")),
                          ZCL_TRANSACTION_TYPES_INDEX_SCHEMA) == 0;
+        json_free(&root);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native wire catalog fits its declared response budget... ");
+    {
+        const struct zcl_command_registry *registry = zcl_command_catalog();
+        const struct zcl_command_spec *spec = registry ?
+            zcl_command_registry_find(registry,
+                                      "app.transaction-types.wire", NULL)
+            : NULL;
+        struct zcl_command_context context = {
+            .registry = registry,
+            .granted_capabilities = ~(uint64_t)0,
+            .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+        };
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        char output[ZCL_COMMAND_LIST_BUDGET + 1];
+        enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
+        size_t n = spec ? zcl_command_registry_execute_json(
+            registry, spec, &context, &input, false, spec->path, "normal",
+            0, 0, NULL, output, sizeof(output) - 1, &exit_code) : 0;
+        json_free(&input);
+        output[n < sizeof(output) ? n : sizeof(output) - 1] = '\0';
+        struct json_value root;
+        json_init(&root);
+        bool ok = n > 0 && n <= ZCL_COMMAND_LIST_BUDGET &&
+            exit_code == ZCL_COMMAND_EXIT_OK && json_read(&root, output, n) &&
+            json_get_bool(json_get(&root, "ok")) &&
+            strcmp(json_get_str(json_get(&root, "data_schema")),
+                   ZCL_TRANSACTION_WIRE_CATALOG_SCHEMA) == 0;
+        const struct json_value *data = json_get(&root, "data");
+        ok = ok && data &&
+            json_get_int(json_get(data, "wire_family_count")) == 4 &&
+            json_get_int(json_get(data, "script_class_count")) ==
+                (int64_t)TX_NULL_DATA + 1;
         json_free(&root);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

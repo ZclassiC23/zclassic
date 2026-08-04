@@ -620,3 +620,25 @@ confirmations** across **20 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. All 34 semantic transaction types
 now have type-specific reproducible evidence; Sprout alone is intentionally a
 historical process-only proof rather than a newly constructed isolated spend.
+
+## 2026-08-04 structural transaction coverage audit
+
+The semantic 34-row inventory is now complemented by a source-derived wire
+catalog rather than being overstated as every byte shape consensus could ever
+carry. `app transaction-types wire` enumerates the four finite transaction wire
+families and six output-script classifier buckets used by this codebase, while
+preserving explicit generic buckets for consensus-valid nonstandard scripts,
+unknown/future OP_RETURN tags, and opaque Sapling memos.
+
+This audit found one application-level gap and records it instead of inflating
+the semantic count: the ZPAY Sapling-memo codec exists, but there is no typed
+chain workflow or type-specific mined proof yet. It therefore appears in the
+wire catalog as `codec_only_no_typed_chain_workflow`, not as a demonstrated
+semantic transaction row. A positive post-Sapling Sprout Groth16 transaction
+fixture would also strengthen proof-era coverage; the existing canonical
+Sprout fixture proves the legacy v2 PHGR13 path.
+
+The lab statistics remain **34/34 PASS**, **33 simulated-chain confirmations**,
+**0 mainnet confirmations**, and **0 ZCL** live recipient value or fees. The
+structural catalog changes discovery and audit completeness only; it neither
+constructs nor broadcasts a transaction and creates no new lab evidence event.

@@ -11,11 +11,12 @@ of truth; this page explains how to use it safely.
 2. [First call for an agent](#first-call-for-an-agent)
 3. [One-call AI guide](#one-call-ai-guide)
 4. [Catalog fields](#catalog-fields)
-5. [Transaction families](#transaction-families)
-6. [Safe plan/commit workflow](#safe-plancommit-workflow)
-7. [What is not a chain transaction](#what-is-not-a-chain-transaction)
-8. [Proof and statistics](#proof-and-statistics)
-9. [Adding a transaction type](#adding-a-transaction-type)
+5. [Consensus wire and script catalog](#consensus-wire-and-script-catalog)
+6. [Transaction families](#transaction-families)
+7. [Safe plan/commit workflow](#safe-plancommit-workflow)
+8. [What is not a chain transaction](#what-is-not-a-chain-transaction)
+9. [Proof and statistics](#proof-and-statistics)
+10. [Adding a transaction type](#adding-a-transaction-type)
 
 ## Big picture
 
@@ -50,6 +51,7 @@ Use the native interface when operating the node:
 
 ```bash
 zclassic23 app transaction-types list
+zclassic23 app transaction-types wire
 zclassic23 app transaction-types show --type=znam_register
 zclassic23 app transaction-types guide --type=znam_register
 zclassic23 discover describe app.names.register
@@ -125,6 +127,52 @@ broker. An AI must not reinterpret anchor readiness as event-signing authority.
 and display the transaction, but agents cannot create a new one. `contained`
 means code exists but policy deliberately refuses the named network. `planned`
 means no end-to-end broadcast path exists and must never be presented as done.
+
+## Consensus wire and script catalog
+
+The transaction inventory has two independent axes:
+
+```text
+semantic intent                         consensus structure
+--------------                         -------------------
+pay, shield, ZNAM, ZCODE, ZSLP, ...    version + serialized fields + scripts
+app transaction-types list/show/guide  app transaction-types wire
+```
+
+The semantic side is a finite list of applications currently recognized by
+this binary. The structural side is what prevents that list from becoming a
+false claim that every future application is enumerable. Run:
+
+```bash
+zclassic23 app transaction-types wire
+```
+
+The `zcl.transaction_wire_catalog.v1` response derives four wire families from
+the transaction serializer and consensus version constants:
+
+| Wire family | Version/group | Additional shielded structure |
+|---|---|---|
+| `legacy_v1` | v1, no group id | Transparent inputs and outputs only. |
+| `legacy_v2` | v2, no group id | Optional Sprout JoinSplits with PHGR13 proofs. |
+| `overwinter_v3` | v3 / `0x03c48270` | Expiry height plus optional PHGR13 Sprout JoinSplits. |
+| `sapling_v4` | v4 / `0x892f2085` | Sapling spends/outputs/value balance/binding signature and optional Groth16 Sprout JoinSplits. |
+
+It also reports all six output-script classifier buckets: `nonstandard`,
+`pubkey`, `pubkeyhash`, `scripthash`, `multisig`, and `nulldata`. Classification
+is not consensus validity. A nonstandard script may still be consensus-valid,
+and its spendability and destination shape are script-dependent; the API says
+that explicitly instead of forcing an unsafe boolean answer. `nulldata` is
+provably unspendable, while the ordinary and P2SH/multisig classes are
+spendable subject to their scripts and signatures.
+
+Application meaning is intentionally open-ended. Consensus permits arbitrary
+scripts, unknown or future OP_RETURN tags, and opaque 512-byte Sapling memos.
+The node processes a consensus-valid transaction without inventing application
+semantics. Unknown OP_RETURN data is indexed by tag and payload digest; an
+opaque memo is decoded only when an explicit codec recognizes it. The wire
+catalog lists recognized codecs and marks coverage honestly—for example, ZPAY
+currently has a codec but no typed chain workflow, so it is not silently
+presented as one of the demonstrated semantic transaction types.
 
 ## Transaction families
 
@@ -274,13 +322,19 @@ Future developers make one coherent feature slice:
 3. Add the isolated proof to `tools/dev/transaction_lab_catalog.def` and its
    append-only evidence event. Never label builder-only evidence as a chain
    confirmation.
-4. Update this grouped index only when a family or safety posture changes; do
+4. If the change adds a recognized OP_RETURN or Sapling-memo codec, update the
+   recognized-codec rows returned by `app transaction-types wire`. Add a wire
+   family or script class only when the authoritative consensus/version or
+   script-classification source changes; application aliases never create a
+   new wire family.
+5. Update this grouped index only when a family or safety posture changes; do
    not duplicate the detailed machine catalog here.
-5. Run `make t-fast ONLY=test_api`, the referenced transaction test group,
+6. Run `make t-fast ONLY=test_api`, the referenced transaction test group,
    `make transaction-lab-check`, `make lint`, and the normal build/test gates.
 
 <!-- claim: symbol-present app.transaction-types.list config/commands/apps.def -->
 <!-- claim: symbol-present app.transaction-types.show config/commands/apps.def -->
 <!-- claim: symbol-present app.transaction-types.guide config/commands/apps.def -->
+<!-- claim: symbol-present app.transaction-types.wire config/commands/apps.def -->
 <!-- claim: file-present app/controllers/include/controllers/transaction_types.def -->
 <!-- claim: file-present tools/dev/transaction_lab_catalog.def -->
