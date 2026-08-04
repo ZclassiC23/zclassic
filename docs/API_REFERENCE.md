@@ -232,7 +232,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `core anchor compose` | ready | read / read / public · instant/tiny | **`digest`**, `hash_type`, `label` | `zcl.core_anchor_compose.v1` | `zclassic23 core anchor compose --digest=<64hex> --label=release@1` | Compose one canonical generic ZANC digest anchor |
-| `core anchor inspect` | ready | read / read / public · instant/tiny | **`op_return_hex`** | `zcl.core_anchor_inspect.v1` | `zclassic23 core anchor inspect --op-return-hex=<hex>` | Strictly decode one canonical ZANC OP_RETURN |
+| `core anchor inspect` | ready | read / read / public · instant/tiny | **`op_return_hex`** | `zcl.core_anchor_inspect.v1` | `zclassic23 core anchor inspect <op_return_hex>` | Strictly decode one canonical ZANC OP_RETURN |
 
 #### `core.epoch` — Epoch anchors: commit the overlay catalog digest on-chain
 

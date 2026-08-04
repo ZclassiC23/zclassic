@@ -323,13 +323,13 @@ int api_transaction_type_focused_tests(void)
                                json_get_int(json_get(&root,
                                                      "contained_count")) +
                                json_get_int(json_get(&root, "planned_count"));
-        ok = ok && count == 35 &&
-             json_get_int(json_get(&root, "demonstrated_count")) == 35 &&
+        ok = ok && count == 36 &&
+             json_get_int(json_get(&root, "demonstrated_count")) == 36 &&
              json_get_int(json_get(&root, "blocked_count")) == 0 &&
-             json_get_int(json_get(&root, "chain_confirmed_count")) == 34 &&
+             json_get_int(json_get(&root, "chain_confirmed_count")) == 35 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
-             json_get_int(json_get(&root, "proof_test_group_count")) == 23 &&
+             json_get_int(json_get(&root, "proof_test_group_count")) == 24 &&
              json_get_bool(json_get(&root, "fully_demonstrated")) &&
              strcmp(json_get_str(json_get(&root, "wire_catalog_command")),
                     "app.transaction-types.wire") == 0 &&
@@ -357,6 +357,8 @@ int api_transaction_type_focused_tests(void)
             api_test_find_str_field(types, "id", "znam_register");
         const struct json_value *zanc =
             api_test_find_str_field(types, "id", "zanc_epoch_anchor");
+        const struct json_value *zanc_digest =
+            api_test_find_str_field(types, "id", "zanc_digest_anchor");
         const struct json_value *zdir_register =
             api_test_find_str_field(types, "id", "zdir_register");
         const struct json_value *zdir_deregister =
@@ -371,11 +373,16 @@ int api_transaction_type_focused_tests(void)
             api_test_find_str_field(types, "id", "blog_anchor");
         const struct json_value *zpay_type =
             api_test_find_str_field(types, "id", "zpay_memo_envelope");
-        ok = ok && transparent &&
+        ok = ok && transparent && zanc_digest &&
              strcmp(json_get_str(json_get(transparent, "builder_command")),
                     "core.wallet.transaction.send") == 0 &&
              strcmp(json_get_str(json_get(transparent, "proof_level")),
                     "simnet_confirmed") == 0;
+        ok = ok &&
+            strcmp(json_get_str(json_get(zanc_digest, "builder_command")),
+                   "core.anchor.compose") == 0 &&
+            strcmp(json_get_str(json_get(zanc_digest, "proof_level")),
+                   "simnet_confirmed") == 0;
         ok = ok && coinbase &&
              strcmp(json_get_str(json_get(coinbase, "availability")),
                     "process_only") == 0;

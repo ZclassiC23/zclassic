@@ -335,7 +335,7 @@ ZCL_COMMAND_READY_READ(
     "anchor,zanc,digest,op_return,inspect,decode",
     "zcl.core_anchor_inspect.input.v1", "zcl.core_anchor_inspect.v1",
     "op_return_hex", "op_return_hex",
-    "zclassic23 core anchor inspect --op-return-hex=<hex>",
+    "zclassic23 core anchor inspect <op_return_hex>",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,

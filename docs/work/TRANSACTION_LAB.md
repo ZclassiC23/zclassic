@@ -761,3 +761,31 @@ does not change the 35 semantic cases or add a monetary event. Totals remain
 **35/35 PASS**, **34/35 simulated/live confirmations**, **0/35 live-mainnet
 confirmations**, **23 exact proof groups**, and **0 ZCL** recipient value or
 fees.
+
+## 2026-08-04 generic ZANC capability completeness audit
+
+The independent source audit found one real semantic omission after the 35-row
+catalog had become internally green: the production `anchor_publish` RPC and
+ZANC codec can anchor an arbitrary file or digest, while the catalog named only
+the specialized epoch and ZCODE-root meanings. A notebook agreeing with its
+own catalog could not detect that omission.
+
+Commit `aeda6af4` adds deterministic `core anchor compose` and strict `core
+anchor inspect` native commands. The composer accepts only a public SHA2-256 or
+SHA3-256 digest and optional label; it returns the exact canonical OP_RETURN and
+the `op_return_hex` fragment consumed by the raw owner workflow. Raw create now
+appends that exact zero-value script without manual byte surgery. Funding,
+signing, the non-mutating broadcast plan, and the explicit confirmed commit
+remain separate owner-only commands.
+
+`test_native_api_contract` drives those production commands end to end: compose,
+strict inspect, reject trailing bytes, create with an explicit matured funding
+outpoint and change output, sign with the resident isolated key, prove the first
+broadcast call does not mutate, commit the identical bytes, and mine them
+through `connect_block`. The decoded mined transaction contains the exact ZANC
+digest and label. Supplemental `test_zanc` retains the codec/RPC hostile cases.
+
+The current result is **36/36 PASS**, **35/36 simulated/live confirmations**,
+**0/36 live-mainnet confirmations**, **24 exact proof groups**, and **0 ZCL**
+recipient value or fees. No live wallet, node mutation, address, key, endpoint,
+or mainnet funds participated.

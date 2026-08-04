@@ -13,6 +13,7 @@ zid_rotate|identity|ZID master-key rotation|simnet_confirmed|test_identity_comma
 zid_revoke|identity|ZID revocation|simnet_confirmed|test_identity_command
 zdir_register|directory|ZDIR onion registration|simnet_confirmed|test_zdir_write_path
 zdir_deregister|directory|ZDIR onion deregistration|simnet_confirmed|test_zdir_write_path
+zanc_digest_anchor|anchor|generic ZANC SHA2/SHA3 digest anchor|simnet_confirmed|test_native_api_contract
 zanc_epoch_anchor|anchor|ZANC epoch digest anchor|simnet_confirmed|test_epoch
 zcode_release_anchor|zcode|ZCODE release-domain ZANC anchor|simnet_confirmed|test_zcode_release
 blog_anchor|blog|ZNAM-bound signed Blog event anchor|simnet_confirmed|test_blog

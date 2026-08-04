@@ -73,7 +73,7 @@ is the full `zcl.transaction_type.v2` contract. The collection also reports
 `demonstrated_count`, `blocked_count`, `chain_confirmed_count`,
 `mainnet_live_proven_count`, `proof_test_group_count`, and
 `fully_demonstrated`, so an agent can assess proof coverage without parsing all
-35 rows. It also names the reverse lookup command and counts the explicitly
+36 rows. It also names the reverse lookup command and counts the explicitly
 audited alternate routes and non-chain dispositions. The current catalog has
 9 alternate route bindings and 18 explicit negative classifications.
 `core.wallet.transaction.list` is different: it is
@@ -244,7 +244,7 @@ human index:
 | Messaging | `sapling_onchain_memo` | On-chain ZMSG uses an encrypted Sapling memo; P2P messaging is off-chain. |
 | Payments | `zpay_memo_envelope` | `app payments zpay compose` creates an exact anonymous invoice/payment/receipt memo; `core wallet shielded send` owns the value-moving plan/commit, and `app payments zpay inspect` strictly decodes, authenticates, and checks network/time policy. |
 | Identity/directory | `zid_anchor`, `zid_rotate`, `zid_revoke`, `zdir_register`, `zdir_deregister` | Explicit OP_RETURN compose/broadcast paths; all five exact command shapes have isolated owner-funded mined-and-projected proofs. |
-| Anchors/ZCODE | `zanc_epoch_anchor`, `zcode_release_anchor` | SHA3 commitment anchors; epoch-ZANC commits the declared catalog range and ZCODE folds signed releases. Both exact command-produced OP_RETURN shapes have isolated mined-and-projected proofs. |
+| Anchors/ZCODE | `zanc_digest_anchor`, `zanc_epoch_anchor`, `zcode_release_anchor` | Generic ZANC commits an explicit SHA2/SHA3 digest through a typed compose → raw owner plan/commit workflow; epoch-ZANC commits the declared catalog range and ZCODE folds signed releases. Every exact command-produced OP_RETURN shape has isolated mined proof. |
 | Blog | `blog_anchor` | `app blog anchor` durably plans/commits the strict ZBLG v1 transaction for an existing verified event. The plan requires explicit custody scope and idempotency; new event signing remains broker-contained. |
 | Atomic swaps | `htlc_initiate`, `htlc_participate`, `htlc_redeem`, `htlc_refund` | Contract preparation plus explicit funding; redeem/refund settle the ZCL leg. |
 | Commerce | `store_transparent_payment`, `store_shielded_payment`, `yardsale_atomic_purchase`, `market_purchase` | Exact transparent and shielded store payments are isolated-mined and reconciled against their bound one-time order identity; the shielded command remains isolated-only. The exact jointly signed Yardsale controller broadcast is isolated-mined with exact settlement and fee accounting. File-market plan/commit/retrieve mines its exact memo payment before proving authenticated delivery, verified assembly, and atomic publication. |
@@ -335,7 +335,7 @@ the procedure and safety cap are in
 mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.
 
-The current complete inventory is **35/35 isolated cases passing**, with **34
+The current complete inventory is **36/36 isolated cases passing**, with **35
 simulated-chain confirmations**, **0 mainnet confirmations**, and **0 ZCL**
 live recipient value or fees. The earlier 33/33 result was complete for the
 catalog as then declared; the later audit found ZBLG, made the gap explicit,
@@ -369,6 +369,35 @@ zclassic23 app payments zpay inspect --input='{
   "now_unix":1700000100
 }'
 ```
+
+Generic ZANC anchors use the same separation. The deterministic command takes
+only public material and returns an exact fragment for the existing raw owner
+workflow:
+
+```bash
+# 1. Compose and inspect exact public chain bytes; neither call reads a wallet.
+zclassic23 core anchor compose --input='{
+  "digest":"<64-hex-sha2-or-sha3>",
+  "hash_type":"sha3",
+  "label":"release@1"
+}'
+zclassic23 core anchor inspect '<returned-op_return_hex>'
+
+# 2. Discover the owner-only funding/signing/plan-commit contracts. The
+# composer output's next_input_fragment supplies op_return_hex verbatim.
+zclassic23 discover schema core.wallet.transaction.raw.create
+zclassic23 discover schema core.wallet.transaction.raw.sign
+zclassic23 discover schema core.wallet.transaction.raw.broadcast
+
+# 3. Create with explicit inputs/change plus op_return_hex, sign, then call
+# raw.broadcast first without confirm. Only the owner-authorized second call
+# with the identical raw_hex and confirm:true may submit it.
+```
+
+This path never hashes a local file implicitly and never selects a funding
+coin. The caller computes or verifies the digest outside wallet context, and
+the raw workflow makes every input, change output, signature, and final byte
+explicit.
 
 The 32-byte `amount_commitment` is an application commitment supplied by the
 calling invoice protocol; the composer does not reinterpret it as the Sapling

@@ -1241,6 +1241,9 @@ static int test_raw_native_pipeline_mines_exact_signed_bytes(void)
             reg, "core.anchor.inspect");
         ASSERT(create_spec && sign_spec && broadcast_spec && anchor_spec &&
                anchor_inspect_spec);
+        ASSERT_STR_EQ(anchor_inspect_spec->positional_keys, "op_return_hex");
+        ASSERT_STR_EQ(anchor_inspect_spec->example,
+                      "zclassic23 core anchor inspect <op_return_hex>");
 
         static const char anchor_digest_hex[] =
             "abababababababababababababababab"
