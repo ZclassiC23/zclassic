@@ -282,3 +282,22 @@ The current result is **33/34 PASS, 1 BLOCKED**, with **16 simulated-chain
 confirmations** across **17 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
 funds moved.
+
+## 2026-08-04 mined Sapling unshielding proof
+
+The production-prover shielded E2E already constructed a real Z-to-T Sapling
+spend, selected the second simulated note by its exact witness position,
+created its Groth16 spend proof and signatures, and passed
+`contextual_check_transaction`. It stopped before block connection, so the
+catalog correctly remained at `consensus_verified`.
+
+The fixture now mines those same verified bytes through `connect_block`. It
+proves the shielded note becomes an exact transparent output worth 99,990,000
+zatoshi and that the Sapling note tree remains at two leaves because
+unshielding creates no new shielded output. This completes mined coverage for
+all three Sapling directions: T-to-Z, Z-to-Z, and Z-to-T.
+
+The current result is **33/34 PASS, 1 BLOCKED**, with **17 simulated-chain
+confirmations** across **17 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
+funds moved.

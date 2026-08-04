@@ -46,7 +46,7 @@ TX_TYPE("sapling_z_to_t", "base_zcl", "ready", "chain_transaction",
         "sapling_unshielding", "transparent_recipient", "plan_commit_job",
         "core.wallet.shielded.send", "core.wallet.shielded.send",
         "core.wallet.transaction.get", "", "all_zcl_networks_with_prover",
-        "sapling_z_to_t", "consensus_verified",
+        "sapling_z_to_t", "simnet_confirmed",
         "test_simnet_shielded_wallet_e2e",
         "Unshield Sapling value to a transparent ZCL address through the same typed send command.")
 TX_TYPE("sprout_joinsplit", "base_zcl", "process_only", "chain_transaction",

@@ -510,8 +510,19 @@ static int part_a_consensus_accept(void)
                      pctx, zt.value_balance, sighash.data, zt.binding_sig));
         transaction_compute_hash(&zt);
 
-        WE_CHECK("z->t: consensus verifier ACCEPTS",
-                 spend_built && we_verify(&zt, cp, zt_height));
+        bool zt_verified = spend_built && we_verify(&zt, cp, zt_height);
+        WE_CHECK("z->t: consensus verifier ACCEPTS", zt_verified);
+
+        struct uint256 zt_txid = zt.hash;
+        bool zt_mined = zt_verified && simnet_mint_txs(&s, &zt, 1);
+        WE_CHECK("z->t: mint (transparent UTXO + connect_block)", zt_mined);
+        int64_t transparent_value = 0;
+        WE_CHECK("z->t: mined transparent output has exact value",
+                 zt_mined &&
+                 simnet_coin_value(&s, &zt_txid, 0, &transparent_value) &&
+                 transparent_value == SHIELDED_VALUE);
+        WE_CHECK("z->t: no shielded output means tree stays at 2 notes",
+                 zt_mined && simnet_sapling_tree_size(&s) == 2);
 
         free(zt.v_shielded_spend); zt.v_shielded_spend = NULL; zt.num_shielded_spend = 0;
         transaction_free(&zt);
