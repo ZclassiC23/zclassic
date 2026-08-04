@@ -558,3 +558,31 @@ The current result is **34/34 PASS, 0 BLOCKED**, with **32 simulated-chain
 confirmations** across **20 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. No live wallet, peer, endpoint, key,
 or funds were contacted.
+
+## 2026-08-04 exact file-market purchase chain proof
+
+The complete file-market purchase proof no longer substitutes a fixed txid at
+the wallet-send port. Its isolated chain matures a funding output worth the
+signed offer range plus the exact 0.00010000 ZCL maximum fee. Commit passes the
+seller address, exact integer amount, and authenticated 512-byte purchase memo
+through the normal service port; the fixture builds the corresponding Sapling
+output, creates its binding signature, and mines the transaction through
+`connect_block`.
+
+The mined block must consume the funding outpoint and append exactly one
+Sapling commitment before the returned transaction ID can be sealed into the
+durable vault intent and signed buyer claim. Replay cannot mine or notify a
+second payment. The existing second half then proves pending delivery, restart,
+session-bound encrypted retrieval, per-chunk and full-manifest verification,
+atomic destination publication, and idempotent replay.
+
+As with the other isolated Sapling transport fixtures, contextual proof
+verification is deferred inside this simnet leg; separate parameter-enabled
+prover/verifier tests own that cryptographic boundary. No live wallet, seller,
+peer, address, key, or ZCL was used, and no private transaction material enters
+the public notebook.
+
+The current result is **34/34 PASS, 0 BLOCKED**, with **33 simulated-chain
+confirmations** across **20 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. The only remaining below-chain case
+is receive-only legacy Sprout processing, for which no supported builder exists.

@@ -4,6 +4,8 @@
 #include "test/test_core.h"
 
 #include "chain/chainparams.h"
+#include "consensus/upgrades.h"
+#include "core/uint256.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 #include "models/database.h"
@@ -13,10 +15,19 @@
 #include "models/wallet_identity.h"
 #include "net/file_market.h"
 #include "platform/time_compat.h"
+#include "primitives/transaction.h"
+#include "sapling/fr.h"
 #include "sapling/sapling.h"
+#include "script/sighashtype.h"
+#include "sim/simnet.h"
+#include "sim/simnet_sapling.h"
 #include "services/file_market_purchase_service.h"
+#include "support/cleanse.h"
 #include "util/safe_alloc.h"
+#include "validation/main_constants.h"
+#include "validation/sighash.h"
 #include "wallet/wallet_lock.h"
+#include "wallet/sapling_keys.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +56,11 @@ struct purchase_fixture {
     bool fetch_ready;
     int64_t expected_amount;
     uint8_t expected_memo[FILE_MARKET_PAYMENT_MEMO_BYTES];
+    struct simnet sim;
+    bool sim_ready;
+    struct uint256 funding_txid;
+    int payment_height;
+    bool chain_confirmed;
 };
 
 static const uint8_t k_purchase_content[] =
@@ -83,6 +99,24 @@ static struct zcl_result purchase_source(void *opaque, const char *source)
         ? ZCL_OK : ZCL_ERR(-1, "source is not owned");
 }
 
+static bool purchase_binding_sig(const uint8_t output_rcv[32],
+                                 const uint8_t sighash[32],
+                                 uint8_t signature[64])
+{
+    struct fs rcv, neg, bsk;
+    fs_zero(&bsk);
+    if (!fs_from_bytes(&rcv, output_rcv))
+        return false;
+    fs_neg(&neg, &rcv);
+    fs_add(&bsk, &bsk, &neg);
+    uint8_t bsk_bytes[32];
+    fs_to_bytes(bsk_bytes, &bsk);
+    bool ok = sapling_create_binding_sig(bsk_bytes, sighash, signature);
+    memory_cleanse(bsk_bytes, sizeof(bsk_bytes));
+    memory_cleanse(&bsk, sizeof(bsk));
+    return ok;
+}
+
 static struct zcl_result purchase_send(
     void *opaque, const char *source, const char *seller, int64_t amount,
     const uint8_t memo[FILE_MARKET_PAYMENT_MEMO_BYTES], uint8_t txid[32])
@@ -92,9 +126,74 @@ static struct zcl_result purchase_send(
         !seller || seller[0] == '\0' || amount != f->expected_amount ||
         memcmp(memo, f->expected_memo, FILE_MARKET_PAYMENT_MEMO_BYTES) != 0)
         return ZCL_ERR(-2, "exact send contract changed");
+    uint8_t d[11], pk_d[32];
+    if (!f->sim_ready || !sapling_decode_payment_address(seller, d, pk_d))
+        return ZCL_ERR(-3, "isolated seller address cannot be decoded");
+
+    struct transaction tx;
+    transaction_init(&tx);
+    tx.overwintered = true;
+    tx.version = SAPLING_TX_VERSION;
+    tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+    if (!transaction_alloc(&tx, 1, 0))
+        return ZCL_ERR(-4, "isolated payment input allocation failed");
+    tx.vin[0].prevout.hash = f->funding_txid;
+    tx.vin[0].prevout.n = 0;
+    tx.vin[0].sequence = UINT32_MAX;
+    {
+        static const uint8_t placeholder_sig[] = {0x00, 0x00};
+        script_set(&tx.vin[0].script_sig, placeholder_sig,
+                   sizeof(placeholder_sig));
+    }
+    tx.value_balance = -amount;
+    tx.v_shielded_output = zcl_calloc(
+        1, sizeof(struct output_description), "market purchase output");
+    if (!tx.v_shielded_output) {
+        transaction_free(&tx);
+        return ZCL_ERR(-5, "isolated payment output allocation failed");
+    }
+    tx.num_shielded_output = 1;
+    struct output_description *od = tx.v_shielded_output;
+    uint8_t ovk[32], output_rcv[32];
+    memset(ovk, 0x6d, sizeof(ovk));
+    bool built = sapling_build_output_description(
+        ovk, d, pk_d, (uint64_t)amount, memo, od->cv.data, od->cm.data,
+        od->ephemeral_key.data, od->enc_ciphertext, od->out_ciphertext,
+        od->zkproof, output_rcv);
+    if (built) {
+        uint32_t branch = consensus_current_epoch_branch_id(
+            simnet_tip_height(&f->sim) + 1, &f->sim.params.consensus);
+        struct precomputed_tx_data txdata;
+        precompute_tx_data(&tx, &txdata);
+        struct script empty;
+        script_init(&empty);
+        struct sighash_type hash_type = {.raw = SIGHASH_ALL};
+        struct uint256 sighash;
+        built = signature_hash(&empty, &tx, NOT_AN_INPUT, hash_type, 0,
+                               branch, &txdata, &sighash) &&
+                purchase_binding_sig(output_rcv, sighash.data,
+                                     tx.binding_sig);
+    }
+    if (!built) {
+        transaction_free(&tx);
+        return ZCL_ERR(-6, "isolated market payment could not be built");
+    }
+    transaction_compute_hash(&tx);
+    struct uint256 payment_txid = tx.hash;
+    struct output_description *shielded_owned = tx.v_shielded_output;
+    bool mined = simnet_mint_txs(&f->sim, &tx, 1);
+    free(shielded_owned);
+    if (!mined)
+        return ZCL_ERR(-7, "isolated market payment was not mined");
+
+    memcpy(txid, payment_txid.data, 32);
     f->sends++;
-    memset(txid, 0x91, 32);
-    return ZCL_OK;
+    f->payment_height = simnet_tip_height(&f->sim);
+    f->chain_confirmed =
+        simnet_sapling_tree_size(&f->sim) == 1 &&
+        !simnet_coin_value(&f->sim, &f->funding_txid, 0, NULL);
+    return f->chain_confirmed
+        ? ZCL_OK : ZCL_ERR(-8, "isolated payment chain state is incomplete");
 }
 
 static bool purchase_notify(void *opaque, const struct file_payment *payment)
@@ -229,6 +328,34 @@ int file_market_purchase_tests(void)
              "purchase-1");
     file_market_offer_range_zat(&offer, 0, 1, &fixture.expected_amount);
 
+    if (ready) {
+        enum { PURCHASE_SAPLING_HEIGHT = 100 };
+        ready = simnet_init(&fixture.sim);
+        fixture.sim_ready = ready;
+        if (ready) {
+            simnet_activate_sapling_at(&fixture.sim,
+                                       PURCHASE_SAPLING_HEIGHT);
+            ready = simnet_enable_sapling_tree(&fixture.sim);
+            simnet_enable_contextual_check(&fixture.sim, false);
+        }
+        if (ready) {
+            struct script funding_script;
+            script_init(&funding_script);
+            static const uint8_t funding_prefix[] = {0x76, 0xa9, 0x14};
+            script_set(&funding_script, funding_prefix,
+                       sizeof(funding_prefix));
+            int funding_height = simnet_tip_height(&fixture.sim) + 1;
+            ready = simnet_mint_coinbase_to(
+                &fixture.sim, &funding_script,
+                fixture.expected_amount + runtime.maximum_fee_zat,
+                &fixture.funding_txid) &&
+                simnet_mint_to_height(
+                    &fixture.sim, funding_height + COINBASE_MATURITY);
+        }
+    }
+    PURCHASE_CHECK("isolated payment funding is mature", ready);
+    if (!ready) goto cleanup;
+
     struct market_purchase_view plan, replay, committed;
     struct zcl_result planned = market_purchase_plan(&runtime, &request, &plan);
     struct file_payment memo_contract; memset(&memo_contract, 0,
@@ -264,6 +391,7 @@ int file_market_purchase_tests(void)
         &runtime, "dev", plan.plan_id, &committed);
     PURCHASE_CHECK("commit sends exact memo and seals a buyer payment claim",
         committed_result.ok && fixture.sends == 1 &&
+        fixture.chain_confirmed && fixture.payment_height > 0 &&
         fixture.notifications == 1 && committed.has_txid &&
         committed.has_claim && committed.payment_notification_queued);
     struct zcl_result committed_replay = market_purchase_commit(
@@ -398,6 +526,7 @@ int file_market_purchase_tests(void)
 
 cleanup:
     if (ndb.open) node_db_close(&ndb);
+    if (fixture.sim_ready) simnet_free(&fixture.sim);
     wallet_lock_reset_for_test();
     test_rm_rf(dir);
     return failures;

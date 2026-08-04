@@ -214,6 +214,6 @@ TX_TYPE("market_purchase", "commerce", "ready", "composite_chain_transaction",
         "app.market.purchase.plan", "app.market.purchase.commit",
         "app.market.purchase.status",
         "app.market.purchase.plan,app.market.purchase.commit,app.market.purchase.status,app.market.purchase.retrieve",
-        "all_zcl_networks", "market_purchase", "projection_verified",
+        "all_zcl_networks", "market_purchase", "simnet_confirmed",
         "test_file_market",
-        "Pay the exact signed Sapling offer, confirm it through chain and wallet authorities, retrieve authenticated encrypted chunks from the signed endpoint, verify the complete manifest, and atomically publish without overwrite.")
+        "Mine the exact signed Sapling offer payment in isolation, seal its claim, retrieve authenticated encrypted chunks from the signed endpoint, verify the complete manifest, and atomically publish without overwrite.")
