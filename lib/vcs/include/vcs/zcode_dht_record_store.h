@@ -1,0 +1,74 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * purpose: Bounded canonical persistence for signed ZCODE DHT records. */
+
+#ifndef ZCL_VCS_ZCODE_DHT_RECORD_STORE_H
+#define ZCL_VCS_ZCODE_DHT_RECORD_STORE_H
+
+#include "vcs/zcode_dht_record.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#define VCS_ZCODE_DHT_RECORD_STORE_MAX_RECORDS 4096u
+#define VCS_ZCODE_DHT_RECORD_STORE_MAX_PER_ROOT 64u
+#define VCS_ZCODE_DHT_RECORD_STORE_MAX_PER_PROVIDER 256u
+#define VCS_ZCODE_DHT_RECORD_STORE_MAX_CONFLICTS 8u
+#define VCS_ZCODE_DHT_RECORD_STORE_FILE "zcode/dht/records.v1"
+#define VCS_ZCODE_DHT_RECORD_STORE_HEADER_BYTES 80u
+
+enum vcs_zcode_dht_record_store_result {
+  VCS_ZCODE_DHT_RECORD_STORE_OK = 0,
+  VCS_ZCODE_DHT_RECORD_STORE_ADDED,
+  VCS_ZCODE_DHT_RECORD_STORE_DUPLICATE,
+  VCS_ZCODE_DHT_RECORD_STORE_CONFLICT,
+  VCS_ZCODE_DHT_RECORD_STORE_STALE,
+  VCS_ZCODE_DHT_RECORD_STORE_EXPIRED,
+  VCS_ZCODE_DHT_RECORD_STORE_INVALID,
+  VCS_ZCODE_DHT_RECORD_STORE_ROOT_CAP,
+  VCS_ZCODE_DHT_RECORD_STORE_PROVIDER_CAP,
+  VCS_ZCODE_DHT_RECORD_STORE_CONFLICT_CAP,
+  VCS_ZCODE_DHT_RECORD_STORE_GLOBAL_CAP,
+  VCS_ZCODE_DHT_RECORD_STORE_IO,
+  VCS_ZCODE_DHT_RECORD_STORE_CORRUPT,
+};
+
+const char *vcs_zcode_dht_record_store_result_string(
+    enum vcs_zcode_dht_record_store_result result);
+
+struct vcs_zcode_dht_record_store;
+
+struct vcs_zcode_dht_record_store *vcs_zcode_dht_record_store_create(
+    const uint8_t network_genesis[32]);
+void vcs_zcode_dht_record_store_free(
+    struct vcs_zcode_dht_record_store *store);
+
+/* Input must already have passed vcs_zcode_dht_record_parse. Newer sequence
+ * replaces older records in the same publisher slot; same-sequence conflicts
+ * are retained as signed evidence up to the explicit conflict cap. */
+enum vcs_zcode_dht_record_store_result vcs_zcode_dht_record_store_put(
+    struct vcs_zcode_dht_record_store *store,
+    const struct vcs_zcode_dht_record *record, uint64_t now_unix);
+
+size_t vcs_zcode_dht_record_store_count(
+    const struct vcs_zcode_dht_record_store *store);
+size_t vcs_zcode_dht_record_store_query(
+    const struct vcs_zcode_dht_record_store *store,
+    enum vcs_zcode_dht_record_kind kind, const char *namespace_name,
+    const uint8_t root[32], struct vcs_zcode_dht_record *out,
+    size_t out_capacity);
+void vcs_zcode_dht_record_store_digest(
+    const struct vcs_zcode_dht_record_store *store, uint8_t out[32]);
+
+/* Save is temp + file fsync + rename + directory fsync, mode 0600. Load
+ * verifies the complete image into a temporary store before replacing the
+ * destination, so malformed/cross-network/torn images leave memory intact. */
+enum vcs_zcode_dht_record_store_result vcs_zcode_dht_record_store_save(
+    const struct vcs_zcode_dht_record_store *store, const char *datadir,
+    char *error_out, size_t error_capacity);
+enum vcs_zcode_dht_record_store_result vcs_zcode_dht_record_store_load(
+    struct vcs_zcode_dht_record_store *store, const char *datadir,
+    const struct vcs_zcode_dht_record_verify_context *verify,
+    char *error_out, size_t error_capacity);
+
+#endif /* ZCL_VCS_ZCODE_DHT_RECORD_STORE_H */

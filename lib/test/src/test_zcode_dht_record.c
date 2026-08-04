@@ -7,9 +7,13 @@
 #include "crypto/sha3.h"
 #include "support/cleanse.h"
 #include "vcs/zcode_dht_record.h"
+#include "vcs/zcode_dht_record_store.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 struct record_fixture {
   uint8_t online_seed[32];
@@ -216,6 +220,206 @@ static int test_record_conflicts(void)
   return failures;
 }
 
+static void rf_cleanup_store(const char *datadir)
+{
+  char path[512];
+  (void)snprintf(path, sizeof(path), "%s/%s", datadir,
+                 VCS_ZCODE_DHT_RECORD_STORE_FILE);
+  (void)unlink(path);
+  (void)snprintf(path, sizeof(path), "%s/zcode/dht", datadir);
+  (void)rmdir(path);
+  (void)snprintf(path, sizeof(path), "%s/zcode", datadir);
+  (void)rmdir(path);
+  (void)rmdir(datadir);
+}
+
+static int test_record_store_restart(void)
+{
+  int failures = 0;
+  TEST("zcode dht records: conflicts persist canonically across cold restart") {
+    struct record_fixture f;
+    int chain_calls = 0;
+    ASSERT(rf_init(&f, &chain_calls));
+    struct vcs_zcode_dht_record a, b;
+    rf_record(&f, &a, VCS_ZCODE_DHT_RECORD_POINTER);
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&a, f.online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
+    b = a;
+    b.transport_root[0] ^= 1;
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&b, f.online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
+    struct vcs_zcode_dht_record_store *before =
+        vcs_zcode_dht_record_store_create(f.verify.network_genesis);
+    struct vcs_zcode_dht_record_store *after =
+        vcs_zcode_dht_record_store_create(f.verify.network_genesis);
+    ASSERT(before != NULL && after != NULL);
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(before, &a, 1500),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(before, &a, 1500),
+              VCS_ZCODE_DHT_RECORD_STORE_DUPLICATE);
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(before, &b, 1500),
+              VCS_ZCODE_DHT_RECORD_STORE_CONFLICT);
+    ASSERT_EQ(vcs_zcode_dht_record_store_count(before), 2);
+
+    char datadir[] = "test-tmp/zcode_dht_records_XXXXXX";
+    ASSERT(mkdtemp(datadir) != NULL);
+    char error[160] = {0};
+    ASSERT_EQ(vcs_zcode_dht_record_store_save(before, datadir, error,
+                                               sizeof(error)),
+              VCS_ZCODE_DHT_RECORD_STORE_OK);
+    ASSERT_EQ(vcs_zcode_dht_record_store_load(after, datadir, &f.verify,
+                                               error, sizeof(error)),
+              VCS_ZCODE_DHT_RECORD_STORE_OK);
+    ASSERT_EQ(vcs_zcode_dht_record_store_count(after), 2);
+    uint8_t before_digest[32], after_digest[32];
+    vcs_zcode_dht_record_store_digest(before, before_digest);
+    vcs_zcode_dht_record_store_digest(after, after_digest);
+    ASSERT(memcmp(before_digest, after_digest, 32) == 0);
+    struct vcs_zcode_dht_record found[2];
+    ASSERT_EQ(vcs_zcode_dht_record_store_query(
+                  after, VCS_ZCODE_DHT_RECORD_POINTER, "science.study",
+                  a.semantic_root, found, 2),
+              2);
+    ASSERT(vcs_zcode_dht_record_conflicts(&found[0], &found[1]));
+
+    char path[512];
+    (void)snprintf(path, sizeof(path), "%s/%s", datadir,
+                   VCS_ZCODE_DHT_RECORD_STORE_FILE);
+    struct stat st;
+    ASSERT(stat(path, &st) == 0 && (st.st_mode & 0777) == 0600);
+    int fd = open(path, O_RDWR | O_CLOEXEC);
+    ASSERT(fd >= 0);
+    uint8_t byte = 0;
+    ASSERT(pread(fd, &byte, 1, VCS_ZCODE_DHT_RECORD_STORE_HEADER_BYTES + 20) ==
+           1);
+    byte ^= 1;
+    ASSERT(pwrite(fd, &byte, 1,
+                  VCS_ZCODE_DHT_RECORD_STORE_HEADER_BYTES + 20) == 1);
+    ASSERT(close(fd) == 0);
+    ASSERT_EQ(vcs_zcode_dht_record_store_load(after, datadir, &f.verify,
+                                               error, sizeof(error)),
+              VCS_ZCODE_DHT_RECORD_STORE_CORRUPT);
+    ASSERT_EQ(vcs_zcode_dht_record_store_count(after), 2);
+    ASSERT_EQ(vcs_zcode_dht_record_store_save(before, datadir, error,
+                                               sizeof(error)),
+              VCS_ZCODE_DHT_RECORD_STORE_OK);
+    struct vcs_zcode_dht_record_verify_context expired_verify = f.verify;
+    expired_verify.now_unix = 1800;
+    ASSERT_EQ(vcs_zcode_dht_record_store_load(after, datadir, &expired_verify,
+                                               error, sizeof(error)),
+              VCS_ZCODE_DHT_RECORD_STORE_OK);
+    ASSERT_EQ(vcs_zcode_dht_record_store_count(after), 0);
+    vcs_zcode_dht_record_store_free(after);
+    vcs_zcode_dht_record_store_free(before);
+    rf_cleanup_store(datadir);
+    PASS();
+  }
+  _test_next:;
+  return failures;
+}
+
+static int test_record_store_caps(void)
+{
+  int failures = 0;
+  TEST("zcode dht records: root, provider and conflict caps are exact") {
+    struct record_fixture f;
+    int chain_calls = 0;
+    ASSERT(rf_init(&f, &chain_calls));
+    struct vcs_zcode_dht_record_store *store =
+        vcs_zcode_dht_record_store_create(f.verify.network_genesis);
+    ASSERT(store != NULL);
+    struct vcs_zcode_dht_record record;
+    for (size_t i = 0; i <= VCS_ZCODE_DHT_RECORD_STORE_MAX_PER_ROOT; i++) {
+      rf_record(&f, &record, VCS_ZCODE_DHT_RECORD_POINTER);
+      (void)snprintf(record.namespace_name, sizeof(record.namespace_name),
+                     "science.root.%zu", i);
+      record.transport_root[0] = (uint8_t)(i + 1);
+      ASSERT_EQ(vcs_zcode_dht_record_sign(&record, f.online_seed),
+                VCS_ZCODE_DHT_RECORD_OK);
+      enum vcs_zcode_dht_record_store_result result =
+          vcs_zcode_dht_record_store_put(store, &record, 1500);
+      ASSERT_EQ(result, i < VCS_ZCODE_DHT_RECORD_STORE_MAX_PER_ROOT
+                            ? VCS_ZCODE_DHT_RECORD_STORE_ADDED
+                            : VCS_ZCODE_DHT_RECORD_STORE_ROOT_CAP);
+    }
+    vcs_zcode_dht_record_store_free(store);
+
+    store = vcs_zcode_dht_record_store_create(f.verify.network_genesis);
+    ASSERT(store != NULL);
+    for (size_t i = 0; i <= VCS_ZCODE_DHT_RECORD_STORE_MAX_PER_PROVIDER; i++) {
+      rf_record(&f, &record, VCS_ZCODE_DHT_RECORD_PROVIDER);
+      record.transport_root[0] = (uint8_t)(i & 0xffu);
+      record.transport_root[1] = (uint8_t)(i >> 8);
+      ASSERT_EQ(vcs_zcode_dht_record_sign(&record, f.online_seed),
+                VCS_ZCODE_DHT_RECORD_OK);
+      enum vcs_zcode_dht_record_store_result result =
+          vcs_zcode_dht_record_store_put(store, &record, 1500);
+      ASSERT_EQ(result, i < VCS_ZCODE_DHT_RECORD_STORE_MAX_PER_PROVIDER
+                            ? VCS_ZCODE_DHT_RECORD_STORE_ADDED
+                            : VCS_ZCODE_DHT_RECORD_STORE_PROVIDER_CAP);
+    }
+    vcs_zcode_dht_record_store_free(store);
+
+    store = vcs_zcode_dht_record_store_create(f.verify.network_genesis);
+    ASSERT(store != NULL);
+    for (size_t i = 0; i <= VCS_ZCODE_DHT_RECORD_STORE_MAX_CONFLICTS; i++) {
+      rf_record(&f, &record, VCS_ZCODE_DHT_RECORD_POINTER);
+      record.transport_root[0] = (uint8_t)(i + 1);
+      ASSERT_EQ(vcs_zcode_dht_record_sign(&record, f.online_seed),
+                VCS_ZCODE_DHT_RECORD_OK);
+      enum vcs_zcode_dht_record_store_result result =
+          vcs_zcode_dht_record_store_put(store, &record, 1500);
+      ASSERT_EQ(result, i == 0
+                            ? VCS_ZCODE_DHT_RECORD_STORE_ADDED
+                            : i < VCS_ZCODE_DHT_RECORD_STORE_MAX_CONFLICTS
+                                  ? VCS_ZCODE_DHT_RECORD_STORE_CONFLICT
+                                  : VCS_ZCODE_DHT_RECORD_STORE_CONFLICT_CAP);
+    }
+    vcs_zcode_dht_record_store_free(store);
+    PASS();
+  }
+  _test_next:;
+  return failures;
+}
+
+static int test_record_store_sequence_and_expiry(void)
+{
+  int failures = 0;
+  TEST("zcode dht records: sequence replay and expiry fail closed") {
+    struct record_fixture f;
+    int chain_calls = 0;
+    ASSERT(rf_init(&f, &chain_calls));
+    struct vcs_zcode_dht_record current, stale, next;
+    rf_record(&f, &current, VCS_ZCODE_DHT_RECORD_PROVIDER);
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&current, f.online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
+    stale = current;
+    stale.sequence--;
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&stale, f.online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
+    next = current;
+    next.sequence++;
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&next, f.online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
+    struct vcs_zcode_dht_record_store *store =
+        vcs_zcode_dht_record_store_create(f.verify.network_genesis);
+    ASSERT(store != NULL);
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(store, &current, 1500),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(store, &stale, 1500),
+              VCS_ZCODE_DHT_RECORD_STORE_STALE);
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(store, &next, 1500),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    ASSERT_EQ(vcs_zcode_dht_record_store_count(store), 1);
+    ASSERT_EQ(vcs_zcode_dht_record_store_put(store, &current, 1800),
+              VCS_ZCODE_DHT_RECORD_STORE_EXPIRED);
+    vcs_zcode_dht_record_store_free(store);
+    PASS();
+  }
+  _test_next:;
+  return failures;
+}
+
 int test_zcode_dht_record(void)
 {
   int failures = 0;
@@ -223,6 +427,9 @@ int test_zcode_dht_record(void)
   failures += test_record_shape_and_windows();
   failures += test_record_adversarial();
   failures += test_record_conflicts();
+  failures += test_record_store_restart();
+  failures += test_record_store_sequence_and_expiry();
+  failures += test_record_store_caps();
   printf("=== zcode_dht_record: %d failures ===\n", failures);
   return failures;
 }

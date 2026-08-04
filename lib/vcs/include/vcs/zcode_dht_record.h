@@ -96,6 +96,14 @@ enum vcs_zcode_dht_record_error vcs_zcode_dht_record_parse(
     const struct vcs_zcode_dht_record_verify_context *verify,
     struct vcs_zcode_dht_record *out);
 
+/* At-rest verification keeps expired signed evidence parseable so a rebuild
+ * can prune it rather than treating ordinary expiry as store corruption.
+ * Future records still reject. `expired_out` and `out` are zero on failure. */
+enum vcs_zcode_dht_record_error vcs_zcode_dht_record_parse_persisted(
+    const uint8_t *wire, size_t wire_len,
+    const struct vcs_zcode_dht_record_verify_context *verify,
+    bool *expired_out, struct vcs_zcode_dht_record *out);
+
 /* True only for two distinct, valid-looking records occupying the same signed
  * sequence slot. Callers retain both as equivocation evidence. */
 bool vcs_zcode_dht_record_conflicts(

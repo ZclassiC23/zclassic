@@ -366,6 +366,51 @@ enum vcs_zcode_dht_record_error vcs_zcode_dht_record_parse(
   return VCS_ZCODE_DHT_RECORD_OK;
 }
 
+enum vcs_zcode_dht_record_error vcs_zcode_dht_record_parse_persisted(
+    const uint8_t *wire, size_t wire_len,
+    const struct vcs_zcode_dht_record_verify_context *verify,
+    bool *expired_out, struct vcs_zcode_dht_record *out)
+{
+  if (expired_out)
+    *expired_out = false;
+  if (!out)
+    return VCS_ZCODE_DHT_RECORD_NULL;
+  memset(out, 0, sizeof(*out));
+  if (!wire || !verify || !expired_out)
+    return VCS_ZCODE_DHT_RECORD_NULL;
+  if (wire_len != VCS_ZCODE_DHT_RECORD_WIRE_BYTES)
+    return VCS_ZCODE_DHT_RECORD_SIZE;
+  struct vcs_zcode_dht_record parsed;
+  memset(&parsed, 0, sizeof(parsed));
+  size_t unsigned_len = 0;
+  enum vcs_zcode_dht_record_error error =
+      record_read_unsigned(wire, &parsed, &unsigned_len);
+  if (error != VCS_ZCODE_DHT_RECORD_OK)
+    return error;
+  if (memcmp(parsed.network_genesis, verify->network_genesis, 32) != 0)
+    return VCS_ZCODE_DHT_RECORD_NETWORK;
+  error = record_delegation_binding(&parsed);
+  if (error != VCS_ZCODE_DHT_RECORD_OK)
+    return error;
+  if (verify->now_unix < parsed.not_before)
+    return VCS_ZCODE_DHT_RECORD_NOT_YET_VALID;
+  uint64_t signature_time = verify->now_unix < parsed.expiry
+                                ? verify->now_unix
+                                : parsed.not_before;
+  if (vcs_zcode_dht_delegation_verify(
+          &parsed.delegation, verify->network_genesis, NULL, 0, NULL,
+          signature_time) != VCS_ZCODE_DHT_DELEGATION_OK)
+    return VCS_ZCODE_DHT_RECORD_DELEGATION;
+  if (!record_signature_valid(&parsed, wire, unsigned_len))
+    return VCS_ZCODE_DHT_RECORD_SIGNATURE;
+  if (verify->chain_verify &&
+      !verify->chain_verify(verify->chain_ctx, &parsed.delegation))
+    return VCS_ZCODE_DHT_RECORD_CHAIN;
+  *expired_out = verify->now_unix >= parsed.expiry;
+  *out = parsed;
+  return VCS_ZCODE_DHT_RECORD_OK;
+}
+
 static bool record_slot_equal(const struct vcs_zcode_dht_record *a,
                               const struct vcs_zcode_dht_record *b)
 {
