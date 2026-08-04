@@ -700,3 +700,39 @@ therefore does not increase the live-mainnet bar or invent recipient/fee
 amounts for this project. Current totals remain **35/35 PASS**, **34/35
 simulated/live confirmations**, and **0/35 live-mainnet confirmations**, now
 across **22 exact proof groups**, with **0 ZCL** lab recipient value or fees.
+
+## 2026-08-04 mainnet wire-era and script-class evidence
+
+Source commit `c1c1f01e` makes the structural catalog distinguish wire support
+from actual mainnet reachability. ZClassic mainnet activates Overwinter and
+Sapling at the same height, 476969. The new
+`test_transaction_wire_evidence` proves that a v3 transaction is premature at
+height 476968 and has the wrong version-group ID at height 476969; there is no
+mainnet v3-only height and therefore no honest canonical v3 transaction to
+pin. The API now reports v1/v2 as `historical_only`, v3 as `never_active`, and
+v4 as `current`, with nullable height bounds and exact evidence groups.
+
+The same test embeds complete public bytes for five canonical mainnet
+transactions and requires exact txid, byte-identical serialization,
+structural/contextual acceptance, and the production script solver's class:
+
+| Height | Txid | Pinned output class |
+|---:|---|---|
+| 1 | `13e63618e0f7dd61ecbb3ee0607489ead19a10317c2311e50a72585643256f56` | `pubkey` |
+| 122001 | `c6b58ab4533eafd151b998c8b232d3910417ead11e916d04f7a633afc171e1cc` | `nonstandard` |
+| 255001 | `b18c3f28d2d4867920a126d09f90e619f3e64e41cd31a7c9f9653b9adce60c83` | `scripthash` |
+| 3139216 | `1765e9c9b0dbcbd9c9a968ea4f3c9c4b60d447d86c2583aa186e9a107c2e7c91` | `pubkeyhash` |
+| 3139216 | `34ed27f1291a95c0f829c089522227bc30e4c215ac62b4e20a434179e36bd754` | `nulldata` |
+
+Bare `multisig` remains supported and positively covered by deterministic
+builder/solver/interpreter vectors, but no canonical example is claimed. A
+read-only sparse audit sampled every 100th mainnet block through height
+3205386 and did not observe one; that sample is evidence for keeping the API
+at `mainnet_example_status=not_pinned`, not proof that none exists anywhere in
+history.
+
+This structural proof is supplemental evidence for `raw_custom_transaction`,
+so `make transaction-lab-proof` now runs **23 exact proof groups**. It is not a
+new lab broadcast and adds no event to the monetary ledger: totals remain
+**35/35 PASS**, **34/35 simulated/live confirmations**, **0/35 live-mainnet
+confirmations**, and **0 ZCL** recipient value or fees.
