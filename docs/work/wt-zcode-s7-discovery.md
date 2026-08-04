@@ -124,6 +124,10 @@ All eight slices landed as independently reviewable commits on
   same engine. It gates all seven actions, fixes typed policy mutation input,
   binds short-lived command checks to the signed network delegation, and
   proves the explicit per-node `science` opt-in in the named acceptance.
+- `4ff46fadd` integrates concurrent transaction/market main through
+  `ec09ed566`; the only content conflict was regenerated API documentation.
+  `9f8789abf` then fixes the integration-proven RPC registrar exhaustion by
+  retaining a bounded 512-entry table and a cap-derived fail-closed error.
 
 The implementation is generic rather than science-specific. One exact
 551-byte record covers PROVIDER, POINTER and STORAGE_ACK; it binds network,
@@ -159,18 +163,22 @@ Exact final gate receipts:
   `test_read_leaf_no_datadir_write` and `test_zcode_sovereignty_policy`: PASS;
   the detector measured clean growth 1,148 permille and injected-regression
   growth 3,526 permille.
-- `make lint`: PASS, 132/132 gates (27.3 s wall).
+- `make lint`: PASS, 132/132 gates (32.1 s wall) after current-main
+  integration.
 - Full LTO `make -j"$(nproc)"`: PASS.
 - Uncached `make -j"$(nproc)" test-parallel TEST_PARALLEL_ARGS=--no-cache`:
   PASS—900 registered, 891 run, 0 cached, 9 parameter-heavy groups gated,
-  0 failed, 19 explicit self-skips (86.2 s, 32 workers).
+  0 failed, 19 explicit self-skips (87.1 s, 32 workers). One prior contended
+  run made `test_simnet_perf` nondiscriminating; its exact isolated repro
+  passed clean=1,096 versus injected=3,489 permille before this aggregate
+  clean rerun.
 - `make zcode-dht-asan`: PASS under ASan+UBSan at `-O2`, zero suppressions;
   all seven DHT groups plus standalone messages/service/lookup/model pass.
-- `make ci-reproducible`: PASS—two 21,875,336-byte binaries, identical
-  SHA3-256 `c8fc3c317053687e6d7b375d8c0c64afe2e0e99b5c599058439e05d51f46de94`.
+- `make ci-reproducible`: PASS—two 22,080,200-byte binaries, identical
+  SHA3-256 `ef1d4383ee7a8d3f34b48314209680da5f8b9263bab3fb364e490b6c3f234910`.
 - `make repro-verify`: PASS across deliberately different-length builder
-  paths—two 21,875,416-byte binaries, identical SHA3-256
-  `208b3218398353d382d13f9aff548ed0ad6b8bf8bff65393a5d5b024f6f27560`.
+  paths—two 22,080,280-byte binaries, identical SHA3-256
+  `95ec4b038c763be1a799f528e134365f8e3dfc9d6373fabde63914275f966dba`.
 - `make pre-push-ci`: PASS on the clean committed lane—strict build-only,
   17-gate fast lint and the source-wide suite (900 registered, 891 run,
   0 cached, 9 gated, 0 failed, 19 explicit self-skips; 87.3 s).

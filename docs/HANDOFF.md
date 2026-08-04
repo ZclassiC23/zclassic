@@ -73,12 +73,19 @@ Noise, transport, connman, argv, RPC, store, market and yardsale regressions;
 the focused ASan+UBSan DHT/model gate with zero suppressions; all 132 lint
 gates; full-program LTO; and the cold uncached suite (900 registered, 891 run,
 0 cached, 9 parameter-heavy groups gated, 0 failed, 19 explicit self-skips;
-86.2 s on 32 workers). Same-tree reproducibility produced two identical
-21,875,336-byte binaries at SHA3-256
-`c8fc3c317053687e6d7b375d8c0c64afe2e0e99b5c599058439e05d51f46de94`;
-different-length builder paths produced two identical 21,875,416-byte binaries
-at `208b3218398353d382d13f9aff548ed0ad6b8bf8bff65393a5d5b024f6f27560`.
+87.1 s on 32 workers). Same-tree reproducibility produced two identical
+22,080,200-byte binaries at SHA3-256
+`ef1d4383ee7a8d3f34b48314209680da5f8b9263bab3fb364e490b6c3f234910`;
+different-length builder paths produced two identical 22,080,280-byte binaries
+at `95ec4b038c763be1a799f528e134365f8e3dfc9d6373fabde63914275f966dba`.
 The mandatory pre-push receipt is recorded in the S7 assignment document.
+
+Integration note: concurrent transaction/market work through `ec09ed566`
+expanded the boot RPC catalog past its former 256-entry static bound. The
+combined acceptance caught the fail-closed abort before RPC warmup; the table
+remains statically bounded but now has 512 entries, and the overflow diagnostic
+derives the exact cap. Seven clean acceptance daemons then booted and the full
+root-only proof passed on the integrated tree.
 
 Honest limits: signed discovery records are expiring hints, not content truth,
 availability proof, scientific acceptance or operator independence. Unknown
