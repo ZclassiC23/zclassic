@@ -33,6 +33,7 @@
 #include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "crypto/ed25519.h"
+#include "support/cleanse.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_store.h"
 #include "vcs/vcs_object.h"
