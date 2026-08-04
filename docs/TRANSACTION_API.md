@@ -141,7 +141,7 @@ human index:
 | Anchors/ZCODE | `zanc_epoch_anchor`, `zcode_release_anchor` | SHA3 commitment anchors; epoch-ZANC commits the declared catalog range and ZCODE folds signed releases. Both exact command-produced OP_RETURN shapes have isolated mined-and-projected proofs. |
 | Blog | `blog_anchor` | `app blog anchor` durably plans/commits the strict ZBLG v1 transaction for an existing verified event. The plan requires explicit custody scope and idempotency; new event signing remains broker-contained. |
 | Atomic swaps | `htlc_initiate`, `htlc_participate`, `htlc_redeem`, `htlc_refund` | Contract preparation plus explicit funding; redeem/refund settle the ZCL leg. |
-| Commerce | `store_transparent_payment`, `store_shielded_payment`, `yardsale_atomic_purchase`, `market_purchase` | Exact wallet-signed transparent store payments are isolated-mined, projected from their confirmed bytes, and reconciled against the bound one-time order address. The exact jointly signed Yardsale controller broadcast is also isolated-mined with exact settlement and fee accounting. Shielded store pay is isolated-only. File-market plan/commit/retrieve completes authenticated payment, verified assembly, and atomic publication. |
+| Commerce | `store_transparent_payment`, `store_shielded_payment`, `yardsale_atomic_purchase`, `market_purchase` | Exact transparent and shielded store payments are isolated-mined and reconciled against their bound one-time order identity; the shielded command remains isolated-only. The exact jointly signed Yardsale controller broadcast is also isolated-mined with exact settlement and fee accounting. File-market plan/commit/retrieve completes authenticated payment, verified assembly, and atomic publication. |
 
 ## Safe plan/commit workflow
 
@@ -229,7 +229,7 @@ the procedure and safety cap are in
 mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.
 
-The current complete inventory is **34/34 isolated cases passing**, with **31
+The current complete inventory is **34/34 isolated cases passing**, with **32
 simulated-chain confirmations**, **0 mainnet confirmations**, and **0 ZCL**
 live recipient value or fees. The earlier 33/33 result was complete for the
 catalog as then declared; the later audit found ZBLG, made the gap explicit,

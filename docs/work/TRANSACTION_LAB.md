@@ -529,3 +529,32 @@ The current result is **34/34 PASS, 0 BLOCKED**, with **31 simulated-chain
 confirmations** across **20 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
 funds moved.
+
+## 2026-08-04 exact shielded-store chain proof
+
+Shielded store settlement now begins with a real isolated funding outpoint.
+The test matures that transparent coin, uses the production Sapling output
+builder to encrypt the exact store-order memo to the merchant's newly derived
+address, and creates the binding signature over the funded transaction. The
+merchant wallet decrypts the exact transaction and recovers its value, memo,
+commitment, nullifier, and recipient material before the same transaction is
+mined through `connect_block`.
+
+The block must consume the funding output and append exactly one Sapling
+commitment to the chain tree. Only the recovered confirmed note is written to
+the wallet projection. At three confirmations, the memo-bound finder credits
+the intended order; a second real encrypted note to the same address but naming
+another order proves that the legacy address-only query over-counts while the
+order-aware query remains exact.
+
+This fixture uses the Sapling simnet harness's documented deferred contextual
+proof-verification boundary. It directly proves encryption, wallet decryption,
+binding-signature construction, block connection, commitment-tree application,
+and application reconciliation; separate parameter-enabled tests own full
+prover/verifier coverage. It is not evidence of a mainnet transaction, and the
+public store command remains deliberately contained to isolated networks.
+
+The current result is **34/34 PASS, 0 BLOCKED**, with **32 simulated-chain
+confirmations** across **20 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. No live wallet, peer, endpoint, key,
+or funds were contacted.

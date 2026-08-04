@@ -100,7 +100,7 @@ int api_transaction_type_focused_tests(void)
         ok = ok && count == 34 &&
              json_get_int(json_get(&root, "demonstrated_count")) == 34 &&
              json_get_int(json_get(&root, "blocked_count")) == 0 &&
-             json_get_int(json_get(&root, "chain_confirmed_count")) == 31 &&
+             json_get_int(json_get(&root, "chain_confirmed_count")) == 32 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
              json_get_int(json_get(&root, "proof_test_group_count")) == 20 &&
@@ -144,7 +144,9 @@ int api_transaction_type_focused_tests(void)
                     "process_only") == 0;
         ok = ok && store &&
              strcmp(json_get_str(json_get(store, "network_policy")),
-                    "isolated_non_mainnet_only") == 0;
+                    "isolated_non_mainnet_only") == 0 &&
+             strcmp(json_get_str(json_get(store, "proof_level")),
+                    "simnet_confirmed") == 0;
         ok = ok && store_transparent &&
              strcmp(json_get_str(json_get(store_transparent, "proof_level")),
                     "simnet_confirmed") == 0;

@@ -200,8 +200,8 @@ TX_TYPE("store_shielded_payment", "commerce", "contained", "composite_chain_tran
         "app.store.pay", "app.store.pay", "app.store.order",
         "app.store.order,core.wallet.shielded.send",
         "isolated_non_mainnet_only", "store_shielded_payment",
-        "projection_verified", "test_store_e2e_shielded",
-        "Pay a store order with a Sapling memo binding; the command deliberately refuses mainnet today.")
+        "simnet_confirmed", "test_store_e2e_shielded",
+        "Mine an isolated transparent-funded Sapling payment, decrypt its order-bound memo, and reconcile the confirmed note; the command deliberately refuses mainnet today.")
 TX_TYPE("yardsale_atomic_purchase", "commerce", "ready", "composite_chain_transaction",
         "transparent_zcl_for_zslp_atomic_swap", "transparent_public_token",
         "two_party_plan_commit_ceremony", "yardsale.buy", "yardsale.buy",
