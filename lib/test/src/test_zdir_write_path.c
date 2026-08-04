@@ -13,16 +13,17 @@
  * NO NODE, NO BROADCAST. node_rpc_call is stubbed to return NULL for the
  * whole file, so every native write command deterministically takes its
  * OFFLINE branch: it emits op_return_hex and stops. The RPC controller is
- * driven with NO wallet, which is its "ready" branch. Nothing here composes
- * a network transaction and nothing here touches the network.
+ * driven with NO wallet, which is its "ready" branch. The isolated fixture
+ * wraps those bytes in RAM-only transactions; nothing broadcasts or touches
+ * the network.
  *
  * The un-fakeable case is (1) THE FULL LOOP: the op_return_hex the native
- * command hands the operator is decoded, put in a real block spent from the
- * owner's coin, and folded by the SAME indexer a node runs on live block
- * data. So the builder, the parser and the projection must agree byte for
- * byte, and a register followed by a deregister must land the exact
- * projection state a real chain would. Nothing about that loop can be
- * satisfied by a stub.
+ * command hands the operator is decoded, spent from the owner's coin, admitted
+ * through connect_block(), and folded by the SAME indexer a node runs on live
+ * block data. So consensus admission, ownership, the builder, the parser and
+ * the projection must agree byte for byte, and a register followed by a
+ * deregister must land the exact projection state a real chain would. Nothing
+ * about that loop can be satisfied by a stub.
  *
  * Case (2) pins the ownership proof itself: the base tx for a mutation
  * spends EXACTLY the recorded owner's coin, never some other coin the same
@@ -41,6 +42,7 @@
  * neither is registered with the supervisor or any tick runner. */
 
 #include "test/test_core.h"
+#include "test/transaction_lab_simnet.h"
 
 #include "chain/chainparams.h"
 #include "command/native_command.h"
@@ -238,8 +240,10 @@ static int t_full_loop(void)
     zwp_p2pkh(owner20, owner_addr, sizeof(owner_addr));
     ZWP_CHECK("loop fixture: owner encodes as a t-address",
               owner_addr[0] != '\0');
-    for (uint8_t i = 0; i < 4; i++)
-        zwp_seed_owner_utxo(&ndb, (uint8_t)(0xA0 + i), owner20, 10);
+    /* The later projection-only re-register still uses a synthetic previous
+     * output; the initial register/deregister receipts seed their own exact
+     * block-connected funding outputs. */
+    zwp_seed_owner_utxo(&ndb, 0xA2, owner20, 10);
 
     char host[64];
     zwp_mk_host(host, sizeof(host), 'k');
@@ -253,6 +257,10 @@ static int t_full_loop(void)
     uint8_t script[ZDIR_SCRIPT_MAX];
     size_t slen = 0;
     struct zdir_message msg;
+    struct transaction_lab_simnet_receipt register_mined;
+    struct transaction_lab_simnet_receipt deregister_mined;
+    bool register_mined_ok = false;
+    bool deregister_mined_ok = false;
 
     /* REGISTER: the operator asks, the command hands back bytes. */
     zwp_input_open(&input, dir);
@@ -279,9 +287,17 @@ static int t_full_loop(void)
     zcl_command_reply_free(&reply);
     json_free(&input);
 
-    /* FOLD those exact bytes, spent from the owner's coin. */
-    ZWP_CHECK("register: the command's own bytes fold as a block",
-              slen > 0 && zwp_fold(&ndb, script, slen, 0xA0, 500));
+    /* Mine and project those exact bytes, spent from the owner's coin. */
+    register_mined_ok = slen > 0 &&
+        transaction_lab_simnet_mine_owned_op_return_at(
+            script, slen, owner20, 500, &register_mined);
+    ZWP_CHECK("register: exact command bytes pass connect_block",
+              register_mined_ok && register_mined.mined_height == 500 &&
+              register_mined.transaction.num_vout == 2 &&
+              register_mined.change_zat == 800000);
+    ZWP_CHECK("register: block-connected bytes fold through the indexer",
+              register_mined_ok &&
+              transaction_lab_simnet_project(&ndb, &register_mined));
 
     struct db_onion_directory row;
     memset(&row, 0, sizeof(row));
@@ -320,8 +336,16 @@ static int t_full_loop(void)
     zcl_command_reply_free(&reply);
     json_free(&input);
 
-    ZWP_CHECK("deregister: the command's own bytes fold as a block",
-              slen > 0 && zwp_fold(&ndb, script, slen, 0xA1, 700));
+    deregister_mined_ok = slen > 0 &&
+        transaction_lab_simnet_mine_owned_op_return_at(
+            script, slen, owner20, 700, &deregister_mined);
+    ZWP_CHECK("deregister: exact command bytes pass connect_block",
+              deregister_mined_ok && deregister_mined.mined_height == 700 &&
+              deregister_mined.transaction.num_vout == 2 &&
+              deregister_mined.change_zat == 800000);
+    ZWP_CHECK("deregister: block-connected bytes fold through the indexer",
+              deregister_mined_ok &&
+              transaction_lab_simnet_project(&ndb, &deregister_mined));
 
     memset(&row, 0, sizeof(row));
     bool retired = db_onion_directory_find(&ndb, host, &row);
@@ -366,6 +390,10 @@ static int t_full_loop(void)
     ZWP_CHECK("re-register: the unbound form clears the key binding",
               revived && !row.has_pubkey);
 
+    if (register_mined_ok)
+        transaction_lab_simnet_receipt_free(&register_mined);
+    if (deregister_mined_ok)
+        transaction_lab_simnet_receipt_free(&deregister_mined);
     node_db_close(&ndb);
     return failures;
 }

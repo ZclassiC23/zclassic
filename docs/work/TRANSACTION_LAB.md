@@ -413,3 +413,30 @@ The current result is **34/34 PASS, 0 BLOCKED**, with **24 simulated-chain
 confirmations** across **19 exact proof groups**, **0 mainnet confirmations**,
 and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
 funds moved.
+
+## 2026-08-04 exact ZDIR register/deregister chain proof
+
+The public `core zdir register` and `core zdir deregister` commands now cross
+the same two-axis chain fixture as the ZANC anchors. With node RPC stubbed, the
+test takes each command's exact `op_return_hex`, funds a complete P2PKH output
+for the declared owner, and admits the spending transaction through
+`connect_block` at deterministic heights 500 and 700.
+
+The retained transactions are then folded through the production explorer
+overlay registry. Before each fold, the reusable receipt seeds the exact
+funding previous output into the rebuildable projection, so ZDIR derives the
+same owner hash that funded the block-connected transaction. The register must
+be active with the expected owner, hostname, optional master key, tx height,
+and dial eligibility; the later deregister must come from that same owner,
+preserve original seniority, set the update height, and remove dial eligibility.
+The existing independent wallet test still proves that the real builder chooses
+the recorded owner's coin instead of a richer decoy in the same wallet.
+
+These are isolated deterministic chains, not mainnet transactions. The live
+node, wallets, endpoints, and keys are never contacted, and the notebook keeps
+no address or raw transaction material.
+
+The current result is **34/34 PASS, 0 BLOCKED**, with **26 simulated-chain
+confirmations** across **19 exact proof groups**, **0 mainnet confirmations**,
+and **0 ZCL** live recipient value or fees. No live wallet was contacted and no
+funds moved.

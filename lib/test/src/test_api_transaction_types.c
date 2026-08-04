@@ -100,7 +100,7 @@ int api_transaction_type_focused_tests(void)
         ok = ok && count == 34 &&
              json_get_int(json_get(&root, "demonstrated_count")) == 34 &&
              json_get_int(json_get(&root, "blocked_count")) == 0 &&
-             json_get_int(json_get(&root, "chain_confirmed_count")) == 24 &&
+             json_get_int(json_get(&root, "chain_confirmed_count")) == 26 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
              json_get_int(json_get(&root, "proof_test_group_count")) == 19 &&
@@ -117,6 +117,10 @@ int api_transaction_type_focused_tests(void)
             api_test_find_str_field(types, "id", "znam_register");
         const struct json_value *zanc =
             api_test_find_str_field(types, "id", "zanc_epoch_anchor");
+        const struct json_value *zdir_register =
+            api_test_find_str_field(types, "id", "zdir_register");
+        const struct json_value *zdir_deregister =
+            api_test_find_str_field(types, "id", "zdir_deregister");
         const struct json_value *blog =
             api_test_find_str_field(types, "id", "blog_anchor");
         ok = ok && transparent &&
@@ -140,6 +144,11 @@ int api_transaction_type_focused_tests(void)
                     "simnet_confirmed") == 0;
         ok = ok && zanc &&
              strcmp(json_get_str(json_get(zanc, "proof_level")),
+                    "simnet_confirmed") == 0;
+        ok = ok && zdir_register && zdir_deregister &&
+             strcmp(json_get_str(json_get(zdir_register, "proof_level")),
+                    "simnet_confirmed") == 0 &&
+             strcmp(json_get_str(json_get(zdir_deregister, "proof_level")),
                     "simnet_confirmed") == 0;
         ok = ok && blog &&
              strcmp(json_get_str(json_get(blog, "availability")),

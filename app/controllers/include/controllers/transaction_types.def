@@ -133,13 +133,13 @@ TX_TYPE("zid_revoke", "zid", "ready", "overlay_transaction",
 TX_TYPE("zdir_register", "zdir", "ready", "overlay_transaction",
         "op_return_zdir_register", "public_metadata", "compose_broadcast",
         "core.zdir.register", "core.zdir.register", "core.network.onion.status",
-        "", "all_zcl_networks", "zdir_register", "builder_verified", "test_zdir_write_path",
-        "Publish or refresh a validated Tor v3 onion directory record, optionally bound to ZID.")
+        "", "all_zcl_networks", "zdir_register", "simnet_confirmed", "test_zdir_write_path",
+        "Publish or refresh a validated Tor v3 onion directory record; the exact command bytes are owner-funded, block-connected, and recovered from the isolated chain projection.")
 TX_TYPE("zdir_deregister", "zdir", "ready", "overlay_transaction",
         "op_return_zdir_deregister", "public_metadata", "compose_broadcast",
         "core.zdir.deregister", "core.zdir.deregister", "core.network.onion.status",
-        "", "all_zcl_networks", "zdir_deregister", "builder_verified", "test_zdir_write_path",
-        "Remove an owner-authorized on-chain onion directory announcement.")
+        "", "all_zcl_networks", "zdir_deregister", "simnet_confirmed", "test_zdir_write_path",
+        "Remove an owner-authorized on-chain onion directory announcement; the exact command bytes are block-connected and projected from the same owner input in isolated proof.")
 TX_TYPE("zanc_epoch_anchor", "zanc", "ready", "overlay_transaction",
         "op_return_zanc_sha3", "public_commitment", "compose_broadcast",
         "core.epoch.anchor", "core.epoch.anchor", "core.epoch.verify", "",
