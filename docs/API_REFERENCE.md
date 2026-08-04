@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 476 |
+| Registry entries (branches + leaves) | 479 |
 | Top-level roots | 11 |
 | Branches | 110 |
-| Leaves (dispatchable command paths) | 366 |
-| … `ready` (live handler in this build) | 318 |
+| Leaves (dispatchable command paths) | 369 |
+| … `ready` (live handler in this build) | 321 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
@@ -85,7 +85,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 21 | 4 | 17 |
-| `config/commands/zcode.def` | 76 | 17 | 59 |
+| `config/commands/zcode.def` | 79 | 17 | 62 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 18 | 5 | 13 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -943,6 +943,9 @@ represented by its children's sections.
 | `zcode network delegate` | ready | mutate / app-write / operator · foreground/moderate | **`seed_file`**, `sequence`, `now`, `expiry`, `datadir` | `zcl.zcode_network_delegate.v1` | `zclassic23 zcode network delegate --input='{"seed_file":"/path/master.hex"}'` | Provision this node's DHT delegation |
 | `zcode network status` | ready | read / read / operator · fast/low | none | `zcl.zcode_network_status.v1` | `zclassic23 zcode network status` | Inspect DHT status |
 | `zcode network peers` | ready | read / read / operator · fast/low | `limit`, `offset` | `zcl.zcode_network_peers.v1` | `zclassic23 zcode network peers --input='{"limit":16}'` | List DHT contacts |
+| `zcode network find begin` | ready | read / read / operator · fast/low | **`node_id`** | `zcl.zcode_network_find_begin.v1` | `zclassic23 zcode network find begin --input='{"node_id":"<64hex>"}'` | Admit a DHT lookup |
+| `zcode network find poll` | ready | read / read / operator · fast/low | **`lookup_id`**, **`owner_token`** | `zcl.zcode_network_find_poll.v1` | `zclassic23 zcode network find poll --input='{"lookup_id":"<32hex>","owner_token":"<32hex>"}'` | Poll a DHT lookup |
+| `zcode network find cancel` | ready | read / read / operator · fast/low | **`lookup_id`**, **`owner_token`** | `zcl.zcode_network_find_cancel.v1` | `zclassic23 zcode network find cancel --input='{"lookup_id":"<32hex>","owner_token":"<32hex>"}'` | Cancel a DHT lookup |
 | `zcode network find` | ready | read / read / operator · foreground/moderate | **`node_id`** | `zcl.zcode_network_find.v1` | `zclassic23 zcode network find --input='{"node_id":"<64hex>"}'` | Find closest DHT nodes |
 
 #### `zcode.desc` — Onion descriptors: signed service records

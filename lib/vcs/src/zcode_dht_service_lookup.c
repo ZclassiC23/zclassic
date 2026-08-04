@@ -242,6 +242,25 @@ void vcs_zcode_dht_lookup_schedule(struct vcs_zcode_dht_service *s,
   }
 }
 
+static void lookup_request_cold_frontier(
+    struct vcs_zcode_dht_service *s, struct service_lookup *lookup,
+    struct vcs_zcode_dht_time now) {
+  uint32_t frontier = vcs_zcode_dht_lookup_frontier_count(lookup);
+  for (uint32_t i = 0; i < frontier; i++) {
+    struct lookup_candidate *candidate = &lookup->candidates[i];
+    if (candidate->state != VCS_ZCODE_DHT_CANDIDATE_UNVERIFIED)
+      continue;
+    if (!s->request_reachability ||
+        !s->request_reachability(s->reachability_ctx, candidate->node_id,
+                                 now.wall_unix)) {
+      candidate->state = VCS_ZCODE_DHT_CANDIDATE_UNREACHABLE;
+      continue;
+    }
+    candidate->reachability_deadline_mono =
+        now.monotonic_s + VCS_ZCODE_DHT_SERVICE_REACHABILITY_TIMEOUT_S;
+  }
+}
+
 bool vcs_zcode_dht_service_lookup_begin(struct vcs_zcode_dht_service *s,
                                         const uint8_t target[32],
                                         struct vcs_zcode_dht_time now,
@@ -266,12 +285,23 @@ bool vcs_zcode_dht_service_lookup_begin(struct vcs_zcode_dht_service *s,
   memcpy(lookup->target, target, 32);
   (void)vcs_zcode_dht_lookup_insert(
       lookup, s->self_id, VCS_ZCODE_DHT_CANDIDATE_RESPONDED, 0);
+  /* contacts.v2 contains authenticated history, never current reachability.
+   * Seed its closest IDs as unverified candidates so a cold node can ask the
+   * composition-root adapter to resolve them through accepted ZENDP.  No
+   * persisted address enters this state, and only a new Noise/delegation
+   * exchange upgrades one to AUTHENTICATED. */
+  for (size_t bucket = 0; bucket < VCS_ZCODE_DHT_BUCKET_COUNT; bucket++)
+    for (size_t at = 0; at < s->table->bucket_sizes[bucket]; at++)
+      (void)vcs_zcode_dht_lookup_insert(
+          lookup, s->table->buckets[bucket][at].node_id,
+          VCS_ZCODE_DHT_CANDIDATE_UNVERIFIED, 0);
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_PEERS; i++)
     if (s->peers[i].used && s->peers[i].connected &&
         s->peers[i].authenticated)
       (void)vcs_zcode_dht_lookup_insert(
           lookup, s->peers[i].node_id, VCS_ZCODE_DHT_CANDIDATE_AUTHENTICATED,
           s->peers[i].peer_id);
+  lookup_request_cold_frontier(s, lookup, now);
   *id_out = lookup->id;
   vcs_zcode_dht_lookup_schedule(s, now);
   vcs_zcode_dht_lookup_assess(s, lookup);
@@ -309,5 +339,14 @@ bool vcs_zcode_dht_service_lookup_poll(
       memcpy(out->node_ids[out->count++], lookup->candidates[i].node_id, 32);
   if (lookup->completed)
     memset(lookup, 0, sizeof(*lookup));
+  return true;
+}
+
+bool vcs_zcode_dht_service_lookup_cancel(struct vcs_zcode_dht_service *s,
+                                         uint64_t id) {
+  struct service_lookup *lookup = vcs_zcode_dht_lookup_find(s, id);
+  if (!lookup)
+    return false;
+  memset(lookup, 0, sizeof(*lookup));
   return true;
 }

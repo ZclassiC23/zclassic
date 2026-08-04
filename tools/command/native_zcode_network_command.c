@@ -370,62 +370,56 @@ void zcl_native_handle_zcode_network_delegate(
   reply->exit_code = ZCL_COMMAND_EXIT_OK;
 }
 
-static void zdn_forward(const struct zcl_command_request *request,
-                        struct zcl_command_reply *reply,
-                        const char *rpc_method) {
-  if (!request || !reply || !rpc_method)
-    return;
+static bool zdn_rpc_body(const struct json_value *input,
+                         struct zcl_command_reply *reply,
+                         const char *rpc_method, struct json_value *body) {
+  if (!reply || !rpc_method || !body)
+    return false;
   struct json_value empty;
   json_init(&empty);
   json_set_object(&empty);
-  const struct json_value *input =
-      request->input && request->input->type == JSON_OBJ ? request->input
-                                                         : &empty;
+  const struct json_value *normalized =
+      input && input->type == JSON_OBJ ? input : &empty;
   struct rpc_arg_builder args;
   rpc_arg_builder_init(&args);
-  rpc_arg_builder_push_value(&args, input);
+  rpc_arg_builder_push_value(&args, normalized);
   char *params = rpc_arg_builder_to_json(&args);
   json_free(&empty);
   if (!params) {
     zdn_fail(reply, "ARG_BUILD_FAILED", "normalize",
              "could not encode the bounded DHT request", rpc_method);
-    return;
+    return false;
   }
   zcl_native_bridge_ensure_rpc();
-  char *raw;
-  if (strcmp(rpc_method, "zcode_dht_find") == 0) {
-    /* Four RPC workers can place an eight-caller acceptance burst into two
-     * waves. Cover one full lookup ahead of this caller plus this lookup's
-     * own hard 30-second ceiling. The service deadline itself is unchanged;
-     * this is only the method-scoped transport envelope. */
-    long total_ms = (long)VCS_ZCODE_DHT_LOOKUP_CEILING_S * 2000L + 5000L;
-    raw = node_rpc_call_deadline(rpc_method, params, 2000L, total_ms);
-  } else {
-    raw = node_rpc_call(rpc_method, params);
-  }
+  char *raw = node_rpc_call(rpc_method, params);
   free(params);
   if (!raw) {
     zcl_command_reply_fail(
         reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_TRANSIENT,
         "NODE_UNAVAILABLE", "dispatch", true, false,
         "the running node returned no DHT response", rpc_method);
-    return;
+    return false;
   }
-  struct json_value body;
-  json_init(&body);
-  if (!json_read(&body, raw, strlen(raw)) || body.type != JSON_OBJ) {
+  json_init(body);
+  if (!json_read(body, raw, strlen(raw)) || body->type != JSON_OBJ) {
     free(raw);
-    json_free(&body);
+    json_free(body);
     zcl_command_reply_fail(
         reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
         "BAD_RPC_BODY", "serialize", false, false,
         "the DHT RPC returned an unreadable body", rpc_method);
-    return;
+    return false;
   }
   free(raw);
-  if (!json_get_bool_or(&body, "ok", false)) {
-    const char *code = json_get_str(json_get(&body, "code"));
-    const char *message = json_get_str(json_get(&body, "message"));
+  return true;
+}
+
+static void zdn_apply_body(struct zcl_command_reply *reply,
+                           struct json_value *body,
+                           const char *rpc_method) {
+  if (!json_get_bool_or(body, "ok", false)) {
+    const char *code = json_get_str(json_get(body, "code"));
+    const char *message = json_get_str(json_get(body, "message"));
     bool timeout = code && strcmp(code, "LOOKUP_TIMEOUT") == 0;
     zcl_command_reply_fail(
         reply, timeout ? ZCL_COMMAND_STATUS_BLOCKED : ZCL_COMMAND_STATUS_FAILED,
@@ -434,14 +428,89 @@ static void zdn_forward(const struct zcl_command_request *request,
         message && message[0] ? message : "the DHT service refused the request",
         rpc_method);
     /* LOOKUP_TIMEOUT deliberately retains bounded partial node-id evidence. */
-    json_copy(&reply->data, &body);
+    json_copy(&reply->data, body);
+    return;
+  }
+  json_copy(&reply->data, body);
+  reply->status = ZCL_COMMAND_STATUS_PASSED;
+  reply->exit_code = ZCL_COMMAND_EXIT_OK;
+}
+
+static void zdn_forward(const struct zcl_command_request *request,
+                        struct zcl_command_reply *reply,
+                        const char *rpc_method) {
+  if (!request || !reply || !rpc_method)
+    return;
+  struct json_value body;
+  if (!zdn_rpc_body(request->input, reply, rpc_method, &body))
+    return;
+  zdn_apply_body(reply, &body, rpc_method);
+  json_free(&body);
+}
+
+static void zdn_find_wrapper(const struct zcl_command_request *request,
+                             struct zcl_command_reply *reply) {
+  const char *begin_method = "zcode_dht_find_begin";
+  struct json_value body;
+  if (!zdn_rpc_body(request->input, reply, begin_method, &body))
+    return;
+  if (!json_get_bool_or(&body, "ok", false)) {
+    zdn_apply_body(reply, &body, begin_method);
     json_free(&body);
     return;
   }
-  json_copy(&reply->data, &body);
+  const char *lookup = json_get_str(json_get(&body, "lookup_id"));
+  const char *owner = json_get_str(json_get(&body, "owner_token"));
+  char lookup_copy[33], owner_copy[33];
+  if (!lookup || !owner || strlen(lookup) != 32 || strlen(owner) != 32) {
+    json_free(&body);
+    zdn_fail(reply, "BAD_RPC_BODY", "serialize",
+             "lookup admission omitted its bounded capability",
+             begin_method);
+    return;
+  }
+  memcpy(lookup_copy, lookup, sizeof(lookup_copy));
+  memcpy(owner_copy, owner, sizeof(owner_copy));
   json_free(&body);
-  reply->status = ZCL_COMMAND_STATUS_PASSED;
-  reply->exit_code = ZCL_COMMAND_EXIT_OK;
+
+  int64_t deadline = platform_time_monotonic_ms() +
+                     (int64_t)(VCS_ZCODE_DHT_LOOKUP_CEILING_S + 5) * 1000;
+  for (;;) {
+    struct json_value poll;
+    json_init(&poll);
+    json_set_object(&poll);
+    json_push_kv_str(&poll, "lookup_id", lookup_copy);
+    json_push_kv_str(&poll, "owner_token", owner_copy);
+    if (!zdn_rpc_body(&poll, reply, "zcode_dht_find_poll", &body)) {
+      json_free(&poll);
+      return;
+    }
+    json_free(&poll);
+    const char *state = json_get_str(json_get(&body, "state"));
+    if (!json_get_bool_or(&body, "ok", false) || !state ||
+        strcmp(state, "pending") != 0) {
+      zdn_apply_body(reply, &body, "zcode_dht_find_poll");
+      json_free(&body);
+      return;
+    }
+    json_free(&body);
+    if (platform_time_monotonic_ms() >= deadline) {
+      struct json_value cancel;
+      json_init(&cancel);
+      json_set_object(&cancel);
+      json_push_kv_str(&cancel, "lookup_id", lookup_copy);
+      json_push_kv_str(&cancel, "owner_token", owner_copy);
+      struct json_value ignored;
+      if (zdn_rpc_body(&cancel, reply, "zcode_dht_find_cancel", &ignored))
+        json_free(&ignored);
+      json_free(&cancel);
+      zdn_fail(reply, "LOOKUP_TIMEOUT", "execute",
+               "lookup capability expired before a terminal poll",
+               "zcode_dht_find_poll");
+      return;
+    }
+    platform_sleep_ms(50);
+  }
 }
 
 void zcl_native_handle_zcode_network_status(
@@ -459,5 +528,23 @@ void zcl_native_handle_zcode_network_peers(
 void zcl_native_handle_zcode_network_find(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply) {
-  zdn_forward(request, reply, "zcode_dht_find");
+  zdn_find_wrapper(request, reply);
+}
+
+void zcl_native_handle_zcode_network_find_begin(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply) {
+  zdn_forward(request, reply, "zcode_dht_find_begin");
+}
+
+void zcl_native_handle_zcode_network_find_poll(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply) {
+  zdn_forward(request, reply, "zcode_dht_find_poll");
+}
+
+void zcl_native_handle_zcode_network_find_cancel(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply) {
+  zdn_forward(request, reply, "zcode_dht_find_cancel");
 }

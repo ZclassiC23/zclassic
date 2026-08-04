@@ -118,6 +118,7 @@ static void mark_dirty(struct vcs_zcode_dht_service *s, uint64_t now_mono) {
   if (!s->persistence_dirty)
     s->dirty_since_mono = now_mono;
   s->persistence_dirty = true;
+  s->persistence_generation++;
 }
 
 static bool query_id(struct vcs_zcode_dht_service *s, uint64_t peer,
@@ -715,8 +716,4 @@ void vcs_zcode_dht_service_tick(struct vcs_zcode_dht_service *s,
           break;
         }
     }
-  if (s->persistence_dirty &&
-      now.monotonic_s >=
-          s->dirty_since_mono + VCS_ZCODE_DHT_SERVICE_SAVE_DEBOUNCE_S)
-    (void)vcs_zcode_dht_service_persistence_save(s);
 }

@@ -565,8 +565,19 @@ static int test_sparse_iterative_network(void) {
     memset(net.connected[origin], 0, sizeof(net.connected[origin]));
     for (size_t i = 0; i < MULTI_NODES; i++)
       net.connected[i][origin] = false;
-    ASSERT(multi_connect(&net, origin, order[1]));
+    /* A new lookup seeds the closest persisted IDs as COLD/UNVERIFIED.  The
+     * reachability callback may arrange a connection, but the result remains
+     * pending until that connection freshly authenticates its Noise-bound
+     * delegation.  No explicit reconnect is injected here. */
+    ASSERT(vcs_zcode_dht_service_lookup_begin(
+        net.service[origin], net.node_id[target_node], net.now, &lookup));
+    ASSERT(net.pending[origin][target_node]);
     ASSERT(multi_drive(&net));
+    ASSERT(vcs_zcode_dht_service_lookup_poll(net.service[origin], lookup,
+                                             net.now, &result));
+    ASSERT_EQ(result.state, VCS_ZCODE_DHT_LOOKUP_COMPLETE);
+    ASSERT_EQ(result.termination,
+              VCS_ZCODE_DHT_TERMINATION_TARGET_AUTHENTICATED);
     vcs_zcode_dht_service_status(net.service[origin], &after);
     ASSERT(after.connected_authenticated >= 1);
 

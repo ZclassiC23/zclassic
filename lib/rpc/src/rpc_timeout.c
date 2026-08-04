@@ -167,10 +167,6 @@ void rpc_timeout_set_method(struct rpc_timeout_mgr *mgr,
         size_t n = strnlen(method, RPC_TIMEOUT_METHOD_LEN - 1);
         memcpy(mgr->slots[slot].method, method, n);
         mgr->slots[slot].method[n] = '\0';
-        if (strcmp(method, "zcode_dht_find") == 0 &&
-            mgr->slots[slot].timeout_ms < RPC_TIMEOUT_ZCODE_DHT_FIND_MS) {
-            mgr->slots[slot].timeout_ms = RPC_TIMEOUT_ZCODE_DHT_FIND_MS;
-        }
     }
     pthread_mutex_unlock(&mgr->lock);
 }

@@ -511,6 +511,15 @@ void zcl_native_handle_zcode_network_peers(
 void zcl_native_handle_zcode_network_find(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_network_find_begin(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_network_find_poll(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_network_find_cancel(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 /* ── zcode.endpoint.* — signed endpoint records
  * (tools/command/native_zendp_command.c). The chain-bound twin of

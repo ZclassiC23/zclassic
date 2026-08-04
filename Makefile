@@ -1947,6 +1947,19 @@ asan-ci: $(TEST_ASAN_CANDIDATE)
 	  done; \
 	  echo "asan-ci: OK ($(ASAN_CI_GROUPS))"'
 
+# S6 DHT memory/UB gate.  Unlike the broad historical sanitizer profile this
+# focused lane has no sanitizer exclusions: codec, routing, service, lookup,
+# scale-model and lock-lifecycle code all run with the complete ASan+UBSan
+# instrumentation set.  -O2 plus an available frame-pointer register are
+# required by the register-constrained ADX assembly TU linked into the
+# monolithic test harness; neither changes sanitizer coverage, and the epoch
+# key records both.
+.PHONY: zcode-dht-asan
+zcode-dht-asan:
+	@$(MAKE) asan-ci \
+	  ASAN_COMMON_SAN_FLAGS='-fsanitize=address,undefined -fomit-frame-pointer -O2' \
+	  ASAN_CI_GROUPS='test_zcode_dht test_zcode_dht_msgs test_zcode_dht_service test_zcode_dht_lookup test_zcode_dht_model'
+
 # TSan variant of `t-asan`: one group per invocation under the
 # thread-instrumented harness (build/bin/test-tsan, own build/test-tsan-obj
 # tree). Triage posture: TSan's default report-and-continue mode collects

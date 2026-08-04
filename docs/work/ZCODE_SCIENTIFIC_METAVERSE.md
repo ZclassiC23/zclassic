@@ -236,6 +236,31 @@ Read resources:
 /api/v1/zcode/evidence-checkpoints
 ```
 
+### Future S7 space and service discovery boundary
+
+The metaverse is a federation of sovereign, user-hosted spaces, not one
+global application. A future signed space manifest may advertise portals,
+boards, mailboxes, doorbells, stores, labs, agent missions, and arbitrary
+typed services. Provider and service discovery must therefore stay generic:
+all of these objects reuse the existing `zpkgswm`, CAS, and DHT discovery
+foundation rather than creating a second network stack or a protocol silo.
+Agents may scout spaces and return signed evidence maps, but those maps are
+evidence for local evaluation, never global authority.
+
+Every node independently decides whether to discover, fetch, store, index,
+serve, execute, forward, or interact with an object. Local policy may block a
+full root, package, publisher ZID, service type, or local classification.
+Shared blocklists are advisory and opt-in; no publisher, list, peer, or node
+can globally ban content.
+
+A doorbell is only an expiring, rate-limited signed request and can never
+authorize remote code execution. BBS posts are signed, content-addressed
+objects subject to local admission and indexing. Unknown C23 packages are
+never executed automatically: execution requires explicit local policy and
+the confined ZCODE executor. These are design constraints for S7 and later;
+S6 implements none of the manifests, service records, doorbells, boards, or
+agent-mission surfaces described here.
+
 Canonical objects remain CAS truth. ActiveRecord rows are rebuildable,
 bounded projections and caches. Every write uses the AR lifecycle.
 

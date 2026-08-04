@@ -98,7 +98,8 @@ struct vcs_zcode_dht_service {
   uint32_t outbound_count;
   uint64_t serial, next_lookup_id;
   bool persistence_loaded, persistence_dirty;
-  uint64_t dirty_since_mono, persistence_load_count, persistence_save_count;
+  uint64_t dirty_since_mono, persistence_generation;
+  uint64_t persistence_load_count, persistence_save_count;
   uint64_t frames_accepted, rejected[VCS_ZCODE_DHT_REJECT_COUNT];
   uint64_t find_received, nodes_received, find_sent, nodes_sent;
   uint64_t unauthenticated_expired, duplicate_sessions_retired;

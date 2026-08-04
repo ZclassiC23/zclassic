@@ -1390,8 +1390,57 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_peers)
 
 ZCL_COMMAND_READY_READ(
+    "zcode.network.find.begin", "zcode.network", "", "Admit a DHT lookup",
+    "Admits one lookup into the bounded eight-slot service without waiting. "
+    "Returns an opaque lookup_id and a separate owner_token; both are required "
+    "to poll or cancel, expire automatically, and reveal no internal service "
+    "identifier.",
+    4096, "zcode,network,dht,find,lookup,begin,async",
+    "zcl.zcode_network_find_begin.input.v1",
+    "zcl.zcode_network_find_begin.v1", "node_id", "node_id",
+    "zclassic23 zcode network find begin --input='{\"node_id\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_find_begin)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.find.poll", "zcode.network", "", "Poll a DHT lookup",
+    "Reads one owner-bound asynchronous lookup without waiting. Pending polls "
+    "are side-effect free; a terminal result is retained for idempotent repeat "
+    "polls until the bounded capability expiry.",
+    4096, "zcode,network,dht,find,lookup,poll,async",
+    "zcl.zcode_network_find_poll.input.v1",
+    "zcl.zcode_network_find_poll.v1", "lookup_id,owner_token",
+    "lookup_id,owner_token",
+    "zclassic23 zcode network find poll --input='{\"lookup_id\":\"<32hex>\",\"owner_token\":\"<32hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_find_poll)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.find.cancel", "zcode.network", "", "Cancel a DHT lookup",
+    "Releases the lookup named by the opaque lookup_id only when its separate "
+    "owner_token matches. It never changes routing contacts or network trust "
+    "state; late authenticated replies retain normal replay classification.",
+    4096, "zcode,network,dht,find,lookup,cancel,async",
+    "zcl.zcode_network_find_cancel.input.v1",
+    "zcl.zcode_network_find_cancel.v1", "lookup_id,owner_token",
+    "lookup_id,owner_token",
+    "zclassic23 zcode network find cancel --input='{\"lookup_id\":\"<32hex>\",\"owner_token\":\"<32hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_find_cancel)
+
+ZCL_COMMAND_READY_READ(
     "zcode.network.find", "zcode.network", "", "Find closest DHT nodes",
-    "Runs a synchronous bounded FIND_NODE lookup through the live DHT daemon. "
+    "Convenience wrapper over find.begin/poll/cancel: only the calling CLI "
+    "waits, while every daemon RPC worker is released after a short poll. "
     "node_id is canonical 64-hex. The result contains at most 16 authenticated "
     "node IDs ordered by XOR distance then node ID. Its 30-second deadline "
     "returns named LOOKUP_TIMEOUT with bounded partial evidence.",

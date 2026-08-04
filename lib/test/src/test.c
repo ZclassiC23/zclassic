@@ -1558,6 +1558,8 @@ int main(int argc, char **argv)
       failures += test_zcode_dht_service(); }
     { extern int test_zcode_dht_lookup(void);
       failures += test_zcode_dht_lookup(); }
+    { extern int test_zcode_dht_model(void);
+      failures += test_zcode_dht_model(); }
     { extern int test_zcode_badge(void); failures += test_zcode_badge(); }
     { extern int test_zcode_policy(void); failures += test_zcode_policy(); }
     { extern int test_zcode_swarm(void); failures += test_zcode_swarm(); }

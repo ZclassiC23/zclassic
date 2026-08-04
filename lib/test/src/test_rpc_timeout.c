@@ -96,36 +96,6 @@ static int test_set_method_truncates(void)
     return failures;
 }
 
-static int test_dht_find_gets_scoped_deadline(void)
-{
-    int failures = 0;
-    TEST("rpc_timeout: DHT find alone gets its bounded lookup deadline") {
-        fresh_mgr();
-        mgr.timeout_ms = 100;
-        int regular = rpc_timeout_register(&mgr, -1, 0);
-        int lookup = rpc_timeout_register(&mgr, -1, 0);
-        ASSERT(regular >= 0 && lookup >= 0);
-        rpc_timeout_set_method(&mgr, regular, "getblockcount");
-        rpc_timeout_set_method(&mgr, lookup, "zcode_dht_find");
-        ASSERT(mgr.slots[regular].timeout_ms == 100);
-        ASSERT(mgr.slots[lookup].timeout_ms ==
-               RPC_TIMEOUT_ZCODE_DHT_FIND_MS);
-
-        int64_t t0 = mgr.slots[regular].start_us;
-        ASSERT(rpc_timeout_sweep(&mgr, t0 + 101 * 1000) == 1);
-        ASSERT(rpc_timeout_was_killed(&mgr, regular));
-        ASSERT(!rpc_timeout_was_killed(&mgr, lookup));
-        ASSERT(rpc_timeout_sweep(
-                   &mgr, t0 + (RPC_TIMEOUT_ZCODE_DHT_FIND_MS + 1) * 1000LL) ==
-               1);
-        ASSERT(rpc_timeout_was_killed(&mgr, lookup));
-        rpc_timeout_unregister(&mgr, regular);
-        rpc_timeout_unregister(&mgr, lookup);
-        PASS();
-    } _test_next:;
-    return failures;
-}
-
 static int test_table_full_returns_minus_one(void)
 {
     int failures = 0;
@@ -489,7 +459,6 @@ int test_rpc_timeout(void)
     failures += test_init_defaults();
     failures += test_register_unregister_roundtrip();
     failures += test_set_method_truncates();
-    failures += test_dht_find_gets_scoped_deadline();
     failures += test_table_full_returns_minus_one();
     failures += test_disabled_module_skips_registration();
     failures += test_sweep_no_expiries();

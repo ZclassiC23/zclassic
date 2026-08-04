@@ -1,0 +1,425 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * purpose: Nonblocking, capability-owned public lookup lifecycle. */
+
+#include "config/boot_zcode_dht.h"
+
+#include "base/hex.h"
+#include "crypto/random_secret.h"
+#include "platform/time_compat.h"
+#include "rpc/server.h"
+#include "util/sync.h"
+#include "json/json.h"
+
+#include <stdatomic.h>
+#include <string.h>
+
+#define DHT_PUBLIC_LOOKUPS_MAX 32u
+#define DHT_PUBLIC_TOKEN_BYTES 16u
+#define DHT_PUBLIC_ACTIVE_GRACE_S 5u
+#define DHT_PUBLIC_RESULT_RETENTION_S 30u
+
+struct public_lookup {
+  bool used, cached;
+  uint8_t lookup_token[DHT_PUBLIC_TOKEN_BYTES];
+  uint8_t owner_token[DHT_PUBLIC_TOKEN_BYTES];
+  uint64_t service_lookup_id, service_generation, expires_mono;
+  struct vcs_zcode_dht_lookup_result result;
+};
+
+static zcl_mutex_t g_public_lock;
+static _Atomic int g_public_lock_state;
+static struct public_lookup g_public[DHT_PUBLIC_LOOKUPS_MAX];
+
+static struct vcs_zcode_dht_time public_now(void) {
+  return (struct vcs_zcode_dht_time){
+      .wall_unix = (uint64_t)platform_time_wall_time_t(),
+      .monotonic_s = (uint64_t)(platform_time_monotonic_ms() / 1000),
+  };
+}
+
+static void public_lock(void) {
+  if (atomic_load_explicit(&g_public_lock_state, memory_order_acquire) != 2) {
+    int expected = 0;
+    if (atomic_compare_exchange_strong_explicit(
+            &g_public_lock_state, &expected, 1, memory_order_acq_rel,
+            memory_order_acquire)) {
+      zcl_mutex_init(&g_public_lock);
+      atomic_store_explicit(&g_public_lock_state, 2, memory_order_release);
+    } else {
+      while (atomic_load_explicit(&g_public_lock_state,
+                                  memory_order_acquire) != 2)
+        ;
+    }
+  }
+  zcl_mutex_lock(&g_public_lock);
+}
+
+static bool token_equal(const uint8_t a[DHT_PUBLIC_TOKEN_BYTES],
+                        const uint8_t b[DHT_PUBLIC_TOKEN_BYTES]) {
+  uint8_t difference = 0;
+  for (size_t i = 0; i < DHT_PUBLIC_TOKEN_BYTES; i++)
+    difference |= a[i] ^ b[i];
+  return difference == 0;
+}
+
+static struct public_lookup *public_find_locked(
+    const uint8_t lookup_token[DHT_PUBLIC_TOKEN_BYTES],
+    const uint8_t owner_token[DHT_PUBLIC_TOKEN_BYTES]) {
+  for (size_t i = 0; i < DHT_PUBLIC_LOOKUPS_MAX; i++)
+    if (g_public[i].used &&
+        token_equal(g_public[i].lookup_token, lookup_token) &&
+        token_equal(g_public[i].owner_token, owner_token))
+      return &g_public[i];
+  return NULL;
+}
+
+static void public_cleanup_locked(uint64_t monotonic_s) {
+  for (size_t i = 0; i < DHT_PUBLIC_LOOKUPS_MAX; i++) {
+    struct public_lookup *entry = &g_public[i];
+    if (!entry->used || monotonic_s < entry->expires_mono)
+      continue;
+    if (!entry->cached)
+      (void)boot_zcode_dht_lookup_cancel(entry->service_lookup_id,
+                                         entry->service_generation);
+    memset(entry, 0, sizeof(*entry));
+  }
+}
+
+void boot_zcode_dht_public_tick(uint64_t monotonic_s) {
+  public_lock();
+  public_cleanup_locked(monotonic_s);
+  zcl_mutex_unlock(&g_public_lock);
+}
+
+void boot_zcode_dht_public_reset(void) {
+  public_lock();
+  memset(g_public, 0, sizeof(g_public));
+  zcl_mutex_unlock(&g_public_lock);
+}
+
+static const struct json_value *rpc_input(const struct json_value *params) {
+  const struct json_value *first =
+      params && json_size(params) ? json_at(params, 0) : NULL;
+  return first && first->type == JSON_OBJ ? first : NULL;
+}
+
+static int64_t input_int(const struct json_value *in, const char *key,
+                         int64_t fallback) {
+  const struct json_value *value = in ? json_get(in, key) : NULL;
+  return value && value->type == JSON_INT ? json_get_int(value) : fallback;
+}
+
+static const char *input_str(const struct json_value *in, const char *key) {
+  const struct json_value *value = in ? json_get(in, key) : NULL;
+  return value && value->type == JSON_STR ? json_get_str(value) : NULL;
+}
+
+static void rpc_error(struct json_value *result, const char *code,
+                      const char *message) {
+  json_set_object(result);
+  json_push_kv_bool(result, "ok", false);
+  json_push_kv_str(result, "code", code);
+  json_push_kv_str(result, "message", message);
+}
+
+static const char *lookup_state_name(enum vcs_zcode_dht_lookup_state state) {
+  if (state == VCS_ZCODE_DHT_LOOKUP_COMPLETE)
+    return "complete";
+  if (state == VCS_ZCODE_DHT_LOOKUP_TIMEOUT)
+    return "timeout";
+  if (state == VCS_ZCODE_DHT_LOOKUP_NOT_FOUND)
+    return "not_found";
+  return "pending";
+}
+
+static const char *lookup_termination_name(
+    enum vcs_zcode_dht_lookup_termination termination) {
+  static const char *const names[] = {
+      "none", "target_authenticated", "shortlist_stable", "timeout",
+      "no_authenticated_result"};
+  return (unsigned)termination < VCS_ZCODE_DHT_TERMINATION_COUNT
+             ? names[termination]
+             : "unknown";
+}
+
+static void lookup_json(struct json_value *result,
+                        const struct vcs_zcode_dht_lookup_result *lookup) {
+  bool successful = lookup->state == VCS_ZCODE_DHT_LOOKUP_PENDING ||
+                    lookup->state == VCS_ZCODE_DHT_LOOKUP_COMPLETE;
+  json_set_object(result);
+  json_push_kv_bool(result, "ok", successful);
+  json_push_kv_str(result, "state", lookup_state_name(lookup->state));
+  json_push_kv_str(result, "termination",
+                   lookup_termination_name(lookup->termination));
+  json_push_kv_int(result, "rounds", lookup->rounds);
+  json_push_kv_int(result, "xor_progress", lookup->xor_progress);
+  json_push_kv_int(result, "queue_wait_seconds",
+                   (int64_t)lookup->queue_wait_s);
+  if (!successful) {
+    bool timeout = lookup->state == VCS_ZCODE_DHT_LOOKUP_TIMEOUT;
+    json_push_kv_str(result, "code",
+                     timeout ? "LOOKUP_TIMEOUT" : "LOOKUP_NOT_FOUND");
+    json_push_kv_str(
+        result, "message",
+        timeout ? "lookup reached its 30-second bounded deadline"
+                : "all authenticated queries failed without a response");
+  }
+  json_push_kv_int(result, "count", lookup->count);
+  struct json_value rows;
+  json_init(&rows);
+  json_set_array(&rows);
+  for (uint32_t i = 0; i < lookup->count; i++) {
+    char node_id[65];
+    zcl_hex_encode(lookup->node_ids[i], 32, node_id);
+    struct json_value row;
+    json_init(&row);
+    json_set_str(&row, node_id);
+    json_push_back(&rows, &row);
+    json_free(&row);
+  }
+  json_push_kv(result, "node_ids", &rows);
+  json_free(&rows);
+}
+
+static bool parse_capability(const struct json_value *in,
+                             uint8_t lookup_token[DHT_PUBLIC_TOKEN_BYTES],
+                             uint8_t owner_token[DHT_PUBLIC_TOKEN_BYTES]) {
+  const char *lookup = input_str(in, "lookup_id");
+  const char *owner = input_str(in, "owner_token");
+  return lookup && owner && strlen(lookup) == DHT_PUBLIC_TOKEN_BYTES * 2 &&
+         strlen(owner) == DHT_PUBLIC_TOKEN_BYTES * 2 &&
+         zcl_hex_decode_lower(lookup, lookup_token, DHT_PUBLIC_TOKEN_BYTES) &&
+         zcl_hex_decode_lower(owner, owner_token, DHT_PUBLIC_TOKEN_BYTES);
+}
+
+static bool rpc_status(const struct json_value *params, bool help,
+                       struct json_value *result) {
+  (void)params;
+  if (help) {
+    json_set_str(result, "zcode_dht_status\nBounded authenticated DHT state");
+    return true;
+  }
+  (void)boot_zcode_dht_dump_state_json(result, NULL);
+  json_push_kv_bool(result, "ok", true);
+  return true;
+}
+
+static bool rpc_peers(const struct json_value *params, bool help,
+                      struct json_value *result) {
+  if (help) {
+    json_set_str(result, "zcode_dht_peers {\"limit\":64,\"offset\":0}");
+    return true;
+  }
+  const struct json_value *in = rpc_input(params);
+  int64_t limit = input_int(in, "limit", 64);
+  int64_t offset = input_int(in, "offset", 0);
+  if (limit < 1 || limit > VCS_ZCODE_DHT_SERVICE_MAX_PEERS || offset < 0 ||
+      offset > VCS_ZCODE_DHT_MAX_CONTACTS) {
+    rpc_error(result, "INVALID_PAGE",
+              "limit must be 1..64 and offset must be 0..1024");
+    return true;
+  }
+  struct vcs_zcode_dht_peer_view peers[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
+  size_t count = 0;
+  if (!boot_zcode_dht_peers((uint64_t)platform_time_wall_time_t(), peers,
+                            (size_t)limit, (size_t)offset, &count)) {
+    rpc_error(result, "DHT_DISABLED",
+              "the authenticated DHT service is disabled");
+    return true;
+  }
+  json_set_object(result);
+  json_push_kv_bool(result, "ok", true);
+  json_push_kv_int(result, "limit", limit);
+  json_push_kv_int(result, "offset", offset);
+  json_push_kv_int(result, "count", (int64_t)count);
+  struct json_value rows;
+  json_init(&rows);
+  json_set_array(&rows);
+  for (size_t i = 0; i < count; i++) {
+    char node_id[65];
+    zcl_hex_encode(peers[i].node_id, 32, node_id);
+    struct json_value row;
+    json_init(&row);
+    json_set_object(&row);
+    json_push_kv_str(&row, "node_id", node_id);
+    json_push_kv_int(&row, "bucket", peers[i].bucket);
+    json_push_kv_bool(&row, "connected", peers[i].connected);
+    json_push_kv_bool(&row, "cold", peers[i].cold);
+    json_push_kv_bool(&row, "probing", peers[i].probing);
+    json_push_kv_int(&row, "last_seen_age_seconds",
+                     (int64_t)peers[i].last_seen_age_s);
+    json_push_kv_int(&row, "failure_count", peers[i].failures);
+    json_push_kv_int(&row, "delegation_expiry",
+                     (int64_t)peers[i].delegation_expiry);
+    json_push_kv_int(&row, "beacon_height", peers[i].beacon_height);
+    json_push_back(&rows, &row);
+    json_free(&row);
+  }
+  json_push_kv(result, "peers", &rows);
+  json_free(&rows);
+  return true;
+}
+
+static bool rpc_find_begin(const struct json_value *params, bool help,
+                           struct json_value *result) {
+  if (help) {
+    json_set_str(result,
+                 "zcode_dht_find_begin {\"node_id\":\"<64 lowercase hex>\"}");
+    return true;
+  }
+  const struct json_value *in = rpc_input(params);
+  const char *hex = input_str(in, "node_id");
+  uint8_t target[32], tokens[DHT_PUBLIC_TOKEN_BYTES * 2];
+  if (!hex || strlen(hex) != 64 || !zcl_hex_decode_lower(hex, target, 32)) {
+    rpc_error(result, "INVALID_NODE_ID",
+              "node_id must be 64 canonical lowercase hex chars");
+    return true;
+  }
+  if (!zcl_random_secret_bytes(tokens, sizeof(tokens),
+                               "zcode_dht_public_lookup")) {
+    rpc_error(result, "LOOKUP_ID_UNAVAILABLE",
+              "secure lookup capability generation failed");
+    return true;
+  }
+  struct vcs_zcode_dht_time now = public_now();
+  public_lock();
+  public_cleanup_locked(now.monotonic_s);
+  struct public_lookup *entry = NULL;
+  bool collision = false;
+  for (size_t i = 0; i < DHT_PUBLIC_LOOKUPS_MAX; i++) {
+    if (!g_public[i].used && !entry)
+      entry = &g_public[i];
+    if (g_public[i].used &&
+        token_equal(g_public[i].lookup_token, tokens))
+      collision = true;
+  }
+  uint64_t internal_id = 0, generation = 0;
+  bool began = entry && !collision && boot_zcode_dht_lookup_begin(
+                                                target, now, &internal_id,
+                                                &generation);
+  if (!began) {
+    zcl_mutex_unlock(&g_public_lock);
+    rpc_error(result, "LOOKUP_UNAVAILABLE",
+              "DHT is disabled or its bounded lookup queue is full");
+    return true;
+  }
+  memset(entry, 0, sizeof(*entry));
+  entry->used = true;
+  memcpy(entry->lookup_token, tokens, DHT_PUBLIC_TOKEN_BYTES);
+  memcpy(entry->owner_token, tokens + DHT_PUBLIC_TOKEN_BYTES,
+         DHT_PUBLIC_TOKEN_BYTES);
+  entry->service_lookup_id = internal_id;
+  entry->service_generation = generation;
+  entry->expires_mono = now.monotonic_s + VCS_ZCODE_DHT_LOOKUP_CEILING_S +
+                        DHT_PUBLIC_ACTIVE_GRACE_S;
+  char lookup_hex[DHT_PUBLIC_TOKEN_BYTES * 2 + 1];
+  char owner_hex[DHT_PUBLIC_TOKEN_BYTES * 2 + 1];
+  zcl_hex_encode(entry->lookup_token, DHT_PUBLIC_TOKEN_BYTES, lookup_hex);
+  zcl_hex_encode(entry->owner_token, DHT_PUBLIC_TOKEN_BYTES, owner_hex);
+  zcl_mutex_unlock(&g_public_lock);
+  json_set_object(result);
+  json_push_kv_bool(result, "ok", true);
+  json_push_kv_str(result, "state", "pending");
+  json_push_kv_str(result, "lookup_id", lookup_hex);
+  json_push_kv_str(result, "owner_token", owner_hex);
+  json_push_kv_int(result, "expires_in_seconds",
+                   VCS_ZCODE_DHT_LOOKUP_CEILING_S +
+                       DHT_PUBLIC_ACTIVE_GRACE_S);
+  return true;
+}
+
+static bool rpc_find_poll(const struct json_value *params, bool help,
+                          struct json_value *result) {
+  if (help) {
+    json_set_str(result,
+                 "zcode_dht_find_poll {\"lookup_id\":\"<32hex>\","
+                 "\"owner_token\":\"<32hex>\"}");
+    return true;
+  }
+  const struct json_value *in = rpc_input(params);
+  uint8_t lookup_token[DHT_PUBLIC_TOKEN_BYTES];
+  uint8_t owner_token[DHT_PUBLIC_TOKEN_BYTES];
+  if (!parse_capability(in, lookup_token, owner_token)) {
+    rpc_error(result, "INVALID_LOOKUP_CAPABILITY",
+              "lookup_id and owner_token must be canonical 32-hex values");
+    return true;
+  }
+  struct vcs_zcode_dht_time now = public_now();
+  public_lock();
+  public_cleanup_locked(now.monotonic_s);
+  struct public_lookup *entry =
+      public_find_locked(lookup_token, owner_token);
+  if (!entry) {
+    zcl_mutex_unlock(&g_public_lock);
+    rpc_error(result, "LOOKUP_UNKNOWN",
+              "lookup capability is unknown, expired, or not owned");
+    return true;
+  }
+  if (!entry->cached && !boot_zcode_dht_lookup_poll(
+                            entry->service_lookup_id,
+                            entry->service_generation, now, &entry->result)) {
+    memset(entry, 0, sizeof(*entry));
+    zcl_mutex_unlock(&g_public_lock);
+    rpc_error(result, "LOOKUP_INTERRUPTED",
+              "DHT service restarted during the lookup");
+    return true;
+  }
+  if (entry->result.state != VCS_ZCODE_DHT_LOOKUP_PENDING && !entry->cached) {
+    entry->cached = true;
+    entry->expires_mono = now.monotonic_s + DHT_PUBLIC_RESULT_RETENTION_S;
+  }
+  struct vcs_zcode_dht_lookup_result snapshot = entry->result;
+  zcl_mutex_unlock(&g_public_lock);
+  lookup_json(result, &snapshot);
+  return true;
+}
+
+static bool rpc_find_cancel(const struct json_value *params, bool help,
+                            struct json_value *result) {
+  if (help) {
+    json_set_str(result,
+                 "zcode_dht_find_cancel {\"lookup_id\":\"<32hex>\","
+                 "\"owner_token\":\"<32hex>\"}");
+    return true;
+  }
+  const struct json_value *in = rpc_input(params);
+  uint8_t lookup_token[DHT_PUBLIC_TOKEN_BYTES];
+  uint8_t owner_token[DHT_PUBLIC_TOKEN_BYTES];
+  if (!parse_capability(in, lookup_token, owner_token)) {
+    rpc_error(result, "INVALID_LOOKUP_CAPABILITY",
+              "lookup_id and owner_token must be canonical 32-hex values");
+    return true;
+  }
+  struct vcs_zcode_dht_time now = public_now();
+  public_lock();
+  public_cleanup_locked(now.monotonic_s);
+  struct public_lookup *entry =
+      public_find_locked(lookup_token, owner_token);
+  if (!entry) {
+    zcl_mutex_unlock(&g_public_lock);
+    rpc_error(result, "LOOKUP_UNKNOWN",
+              "lookup capability is unknown, expired, or not owned");
+    return true;
+  }
+  if (!entry->cached)
+    (void)boot_zcode_dht_lookup_cancel(entry->service_lookup_id,
+                                       entry->service_generation);
+  memset(entry, 0, sizeof(*entry));
+  zcl_mutex_unlock(&g_public_lock);
+  json_set_object(result);
+  json_push_kv_bool(result, "ok", true);
+  json_push_kv_bool(result, "canceled", true);
+  return true;
+}
+
+void boot_zcode_dht_register_rpc(struct rpc_table *table) {
+  const struct rpc_command commands[] = {
+      {"zcode", "zcode_dht_status", rpc_status, true},
+      {"zcode", "zcode_dht_peers", rpc_peers, true},
+      {"zcode", "zcode_dht_find_begin", rpc_find_begin, true},
+      {"zcode", "zcode_dht_find_poll", rpc_find_poll, true},
+      {"zcode", "zcode_dht_find_cancel", rpc_find_cancel, true},
+  };
+  for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
+    rpc_table_must_append(table, &commands[i]);
+}

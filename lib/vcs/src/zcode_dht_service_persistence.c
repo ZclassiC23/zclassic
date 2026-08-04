@@ -9,6 +9,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -30,16 +31,37 @@ static uint32_t flatten(const struct vcs_zcode_dht_table *t,
   return n;
 }
 
-bool vcs_zcode_dht_service_persistence_save(struct vcs_zcode_dht_service *s) {
+struct vcs_zcode_dht_persistence_snapshot {
+  uint8_t *wire;
+  size_t wire_len;
+  uint64_t generation, serial;
+  char path[1400], directory[1400], error[96];
+};
+
+/* More than one detached snapshot may be written while a composition root is
+ * retiring a service.  Keep their temporary names distinct even when both
+ * snapshots describe the same persistence generation. */
+static _Atomic uint64_t g_snapshot_serial;
+
+struct vcs_zcode_dht_persistence_snapshot *
+vcs_zcode_dht_service_persistence_snapshot(
+    struct vcs_zcode_dht_service *s, uint64_t monotonic_s, bool force) {
+  if (!s || !s->persistence_dirty ||
+      (!force && monotonic_s < s->dirty_since_mono +
+                                     VCS_ZCODE_DHT_SERVICE_SAVE_DEBOUNCE_S))
+    return NULL;
+  struct vcs_zcode_dht_persistence_snapshot *snapshot =
+      zcl_calloc(1, sizeof(*snapshot), "dht.save.snapshot");
   struct vcs_zcode_dht_contact *contacts = zcl_malloc(
       VCS_ZCODE_DHT_MAX_CONTACTS * sizeof(*contacts), "dht.save.contacts");
   uint8_t *wire =
       zcl_malloc(VCS_ZCODE_DHT_CONTACTS_MAX_WIRE_BYTES, "dht.save.wire");
-  if (!contacts || !wire) {
+  if (!snapshot || !contacts || !wire) {
+    free(snapshot);
     free(contacts);
     free(wire);
     vcs_zcode_dht_service_set_error(s, "persistence allocation failed");
-    return false;
+    return NULL;
   }
   uint32_t count = flatten(s->table, contacts);
   size_t len = 0;
@@ -49,44 +71,102 @@ bool vcs_zcode_dht_service_persistence_save(struct vcs_zcode_dht_service *s) {
   free(contacts);
   if (e != VCS_ZCODE_DHT_OK) {
     free(wire);
+    free(snapshot);
     vcs_zcode_dht_service_set_error(s, "contacts serialize failed");
-    return false;
+    return NULL;
   }
-  char path[1400], tmp[1460], dir[1400];
-  if (!contacts_path(s, path)) {
+  if (!contacts_path(s, snapshot->path)) {
     free(wire);
+    free(snapshot);
     vcs_zcode_dht_service_set_error(s, "contacts path too long");
-    return false;
+    return NULL;
   }
-  (void)snprintf(dir, sizeof(dir), "%s/%s", s->datadir,
+  (void)snprintf(snapshot->directory, sizeof(snapshot->directory), "%s/%s",
+                 s->datadir,
                  VCS_ZCODE_DHT_IDENTITY_DIR);
-  (void)snprintf(tmp, sizeof(tmp), "%s.tmp.%ld", path, (long)getpid());
+  snapshot->wire = wire;
+  snapshot->wire_len = len;
+  snapshot->generation = s->persistence_generation;
+  snapshot->serial = atomic_fetch_add_explicit(
+                         &g_snapshot_serial, 1, memory_order_relaxed) +
+                     1;
+  return snapshot;
+}
+
+bool vcs_zcode_dht_persistence_snapshot_write(
+    struct vcs_zcode_dht_persistence_snapshot *snapshot) {
+  if (!snapshot || !snapshot->wire)
+    return false;
+  char tmp[1460];
+  (void)snprintf(tmp, sizeof(tmp), "%s.tmp.%ld.%llu.%llu", snapshot->path,
+                 (long)getpid(),
+                 (unsigned long long)snapshot->generation,
+                 (unsigned long long)snapshot->serial);
   int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-  bool ok = fd >= 0 && zcl_write_all(fd, wire, len) && fsync(fd) == 0;
-  free(wire);
+  bool ok = fd >= 0 &&
+            zcl_write_all(fd, snapshot->wire, snapshot->wire_len) &&
+            fsync(fd) == 0;
   if (fd >= 0 && close(fd) != 0)
     ok = false;
   if (!ok) {
     (void)unlink(tmp);
-    vcs_zcode_dht_service_set_error(s, "contacts temp write failed");
+    snprintf(snapshot->error, sizeof(snapshot->error),
+             "contacts temp write failed");
     return false;
   }
-  if (rename(tmp, path) != 0) {
+  if (rename(tmp, snapshot->path) != 0) {
     (void)unlink(tmp);
-    vcs_zcode_dht_service_set_error(s, "contacts rename failed");
+    snprintf(snapshot->error, sizeof(snapshot->error),
+             "contacts rename failed");
     return false;
   }
-  int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  int dfd = open(snapshot->directory,
+                 O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
   if (dfd < 0 || fsync(dfd) != 0) {
     if (dfd >= 0)
       (void)close(dfd);
-    vcs_zcode_dht_service_set_error(s, "contacts directory fsync failed");
+    snprintf(snapshot->error, sizeof(snapshot->error),
+             "contacts directory fsync failed");
     return false;
   }
   (void)close(dfd);
-  s->persistence_dirty = false;
-  s->persistence_save_count++;
   return true;
+}
+
+void vcs_zcode_dht_service_persistence_commit(
+    struct vcs_zcode_dht_service *s,
+    const struct vcs_zcode_dht_persistence_snapshot *snapshot, bool written) {
+  if (!s || !snapshot)
+    return;
+  if (!written) {
+    vcs_zcode_dht_service_set_error(
+        s, snapshot->error[0] ? snapshot->error : "contacts write failed");
+    return;
+  }
+  s->persistence_save_count++;
+  if (s->persistence_generation == snapshot->generation)
+    s->persistence_dirty = false;
+}
+
+void vcs_zcode_dht_persistence_snapshot_free(
+    struct vcs_zcode_dht_persistence_snapshot *snapshot) {
+  if (!snapshot)
+    return;
+  free(snapshot->wire);
+  free(snapshot);
+}
+
+bool vcs_zcode_dht_service_persistence_save(struct vcs_zcode_dht_service *s) {
+  if (!s || !s->persistence_dirty)
+    return true;
+  struct vcs_zcode_dht_persistence_snapshot *snapshot =
+      vcs_zcode_dht_service_persistence_snapshot(s, 0, true);
+  if (!snapshot)
+    return false;
+  bool written = vcs_zcode_dht_persistence_snapshot_write(snapshot);
+  vcs_zcode_dht_service_persistence_commit(s, snapshot, written);
+  vcs_zcode_dht_persistence_snapshot_free(snapshot);
+  return written;
 }
 
 bool vcs_zcode_dht_service_persistence_load(struct vcs_zcode_dht_service *s,

@@ -94,6 +94,11 @@ struct block_index *csr_header_tip_snapshot(struct chain_state_repository *csr)
     return tip;
 }
 
+uint64_t csr_header_generation(const struct chain_state_repository *csr)
+{
+    return csr ? atomic_load(&csr->header_generation) : 0;
+}
+
 struct zcl_result csr_capture_frontiers(
     struct chain_state_repository *csr,
     struct active_chain *expected_chain,

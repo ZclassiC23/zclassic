@@ -113,6 +113,44 @@ size_t vcs_zcode_dht_service_peers(const struct vcs_zcode_dht_service *s,
   return n;
 }
 
+size_t vcs_zcode_dht_service_delegations(
+    const struct vcs_zcode_dht_service *s,
+    struct vcs_zcode_dht_delegation *out, size_t max) {
+  if (!s || !out || !max)
+    return 0;
+  size_t count = 0;
+  if (s->enabled && count < max)
+    out[count++] = s->delegation;
+  for (size_t b = 0; b < VCS_ZCODE_DHT_BUCKET_COUNT && count < max; b++)
+    for (size_t i = 0; i < s->table->bucket_sizes[b] && count < max; i++) {
+      struct vcs_zcode_dht_delegation decoded;
+      if (vcs_zcode_dht_delegation_decode(
+              &decoded, s->table->buckets[b][i].delegation_wire,
+              VCS_ZCODE_DHT_DELEGATION_WIRE_BYTES) ==
+          VCS_ZCODE_DHT_DELEGATION_OK)
+        out[count++] = decoded;
+    }
+  for (size_t i = 0; i < VCS_ZCODE_DHT_MAX_PENDING && count < max; i++) {
+    struct vcs_zcode_dht_delegation decoded;
+    if (s->table->pending[i].active &&
+        vcs_zcode_dht_delegation_decode(
+            &decoded, s->table->pending[i].candidate.delegation_wire,
+            VCS_ZCODE_DHT_DELEGATION_WIRE_BYTES) ==
+            VCS_ZCODE_DHT_DELEGATION_OK)
+      out[count++] = decoded;
+  }
+  return count;
+}
+
+void vcs_zcode_dht_service_set_chain_verify(
+    struct vcs_zcode_dht_service *s,
+    vcs_zcode_dht_chain_verify_fn chain_verify, void *chain_ctx) {
+  if (!s)
+    return;
+  s->chain_verify = chain_verify;
+  s->chain_ctx = chain_ctx;
+}
+
 bool vcs_zcode_dht_service_revalidate(struct vcs_zcode_dht_service *s,
                                       struct vcs_zcode_dht_time now) {
   if (!s || !s->enabled)
@@ -157,6 +195,7 @@ bool vcs_zcode_dht_service_revalidate(struct vcs_zcode_dht_service *s,
     if (!s->persistence_dirty)
       s->dirty_since_mono = now.monotonic_s;
     s->persistence_dirty = true;
+    s->persistence_generation++;
   }
   return true;
 }

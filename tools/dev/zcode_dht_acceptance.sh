@@ -247,7 +247,7 @@ assert rows == sorted(rows,key=lambda x:(int(x,16)^target,x)), rows
 }
 
 dht_check_contacts_file() {
-    local path="$1" self_id="$2"
+    local path="$1" self_id="$2" expected="${3:-1}"
     python3 -c '
 import pathlib,struct,sys
 p=pathlib.Path(sys.argv[1]); b=p.read_bytes(); self_id=bytes.fromhex(sys.argv[2])
@@ -256,10 +256,10 @@ assert struct.unpack_from("<H",b,8)[0] == 2
 assert b[42:74] == self_id
 n=struct.unpack_from("<I",b,74)[0]
 entry_bytes=303 # node id + canonical delegation + local time/failures
-assert n == 1 and len(b) == 78 + n*entry_bytes
+assert n == int(sys.argv[3]) and len(b) == 78 + n*entry_bytes
 ids=[b[78+i*entry_bytes:110+i*entry_bytes] for i in range(n)]
 assert ids == sorted(ids) and len(ids) == len(set(ids))
-' "$path" "$self_id" || dht_die "non-canonical contacts file: $path"
+' "$path" "$self_id" "$expected" || dht_die "non-canonical contacts file: $path"
 }
 
 dht_check_attack_deltas() {
@@ -415,7 +415,10 @@ dht_check_find "$FIND_B" "$TARGET_B" "$NODE_A" "$NODE_B"
 
 dht_note "rejecting hostile frames inside an authenticated Noise session"
 ATTACK_BEFORE="$(dht_status "$DHT_DD_A" "$A_RPC")"
-"$DHT_WORK/dht-peer" attack 127.0.0.1 "$A_PORT" "$DHT_DD_B" |
+# Use the already-anchored but currently offline third identity. Reusing B's
+# live node ID would intentionally trigger the S6 duplicate-session eviction
+# path and mix B's late frames into this hostile-payload counter proof.
+"$DHT_WORK/dht-peer" attack 127.0.0.1 "$A_PORT" "${DDS[2]}" |
     grep -qx 'attack-sequence-sent' || dht_die "hostile Noise peer failed"
 ATTACK_AFTER="$(dht_status "$DHT_DD_A" "$A_RPC")"
 dht_check_attack_deltas "$ATTACK_BEFORE" "$ATTACK_AFTER"
@@ -423,7 +426,7 @@ dht_check_attack_deltas "$ATTACK_BEFORE" "$ATTACK_AFTER"
 dht_note "clean shutdown, canonical-file check, and cold reload"
 dht_kill_group "$DHT_PGID_B"; DHT_PGID_B=""
 dht_kill_group "$DHT_PGID_A"; DHT_PGID_A=""
-dht_check_contacts_file "$DHT_DD_A/zcode/dht/contacts.v2" "$NODE_A"
+dht_check_contacts_file "$DHT_DD_A/zcode/dht/contacts.v2" "$NODE_A" 2
 dht_check_contacts_file "$DHT_DD_B/zcode/dht/contacts.v2" "$NODE_B"
 
 # Start each node without its peer: the loaded contact must be visible as
@@ -573,53 +576,149 @@ then
     dht_die "iterative sparse proof failed: $iterative"
 fi
 
-dht_note "launching eight concurrent lookups through the three-query budget"
+dht_note "admitting eight external callers while exactly three queries stall"
 concurrent_dir="$DHT_WORK/concurrent"; mkdir -p "$concurrent_dir"
+# Freeze every remote daemon after authentication. TCP/Noise sessions remain
+# live, but no NODES reply can race the status sample below. This proves eight
+# separate CLI processes occupy all eight service lookup slots at once while
+# the global network-query cap remains exactly three.
+for i in 0 1 2 3 4 5 6; do
+    [ "$i" -eq "$ORIGIN" ] && continue
+    [ -n "${PIDS[$i]:-}" ] && kill -STOP "-${PIDS[$i]}"
+done
 jobs=()
 for i in 1 2 3 4 5 6 7 8; do
     target="$(printf '%064x' "$i")"
-    (dht_native "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" zcode network find \
-        --input="{\"node_id\":\"$target\"}" >"$concurrent_dir/$i.json") &
+    (dht_native "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" \
+        zcode network find begin --input="{\"node_id\":\"$target\"}" \
+        >"$concurrent_dir/$i.begin.json") &
     jobs+=("$!")
 done
-for job in "${jobs[@]}"; do wait "$job" || dht_die "concurrent lookup process failed"; done
-python3 - "$concurrent_dir" <<'PY' || dht_die "concurrent fairness proof failed"
+for job in "${jobs[@]}"; do wait "$job" || dht_die "lookup admission process failed"; done
+burst="$(dht_status "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}")"
+python3 - "$concurrent_dir" "$burst" <<'PY' || dht_die "true eight-caller admission proof failed"
 import json,pathlib,sys
-rows=[json.loads((pathlib.Path(sys.argv[1])/f"{i}.json").read_text()) for i in range(1,9)]
-assert len(rows)==8 and all(r.get("ok") is True for r in rows),rows
-assert all(r["data"]["rounds"]>0 for r in rows),rows
+p=pathlib.Path(sys.argv[1])
+rows=[json.loads((p/f"{i}.begin.json").read_text()) for i in range(1,9)]
+assert all(r.get("ok") is True and r["data"]["state"]=="pending" for r in rows),rows
+ids=[r["data"]["lookup_id"] for r in rows]
+owners=[r["data"]["owner_token"] for r in rows]
+assert len(set(ids))==8 and len(set(owners))==8,(ids,owners)
+s=json.loads(sys.argv[2])["data"]
+assert s["queued_lookups"]==8,s
+assert s["active_queries"]==3,s
+PY
+for i in 1 2 3 4 5 6 7 8; do
+    read -r lookup owner <<<"$(python3 - "$concurrent_dir/$i.begin.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1]))["data"]
+print(d["lookup_id"],d["owner_token"])
+PY
+)"
+    polled="$(dht_native "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" \
+        zcode network find poll \
+        --input="{\"lookup_id\":\"$lookup\",\"owner_token\":\"$owner\"}")"
+    [ "$(printf '%s' "$polled" | dht_jget 'd["data"]["state"]')" = pending ] ||
+        dht_die "stalled lookup $i was not pending: $polled"
+    canceled="$(dht_native "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" \
+        zcode network find cancel \
+        --input="{\"lookup_id\":\"$lookup\",\"owner_token\":\"$owner\"}")"
+    [ "$(printf '%s' "$canceled" | dht_jget 'd["ok"]')" = True ] ||
+        dht_die "lookup cancel $i failed: $canceled"
+done
+for i in 0 1 2 3 4 5 6; do
+    [ "$i" -eq "$ORIGIN" ] && continue
+    [ -n "${PIDS[$i]:-}" ] && kill -CONT "-${PIDS[$i]}"
+done
+
+dht_note "cold-loading with no peer database, then reconnecting autonomously"
+for i in 0 1 2 3 4 5 6; do
+    dht_kill_group "${PIDS[$i]:-}"
+    PIDS[$i]=""
+done
+python3 - "${DDS[$ORIGIN]}/zcode/dht/contacts.v2" "${NODES[$NEXT]}" <<'PY' || dht_die "multi contact file is not canonical"
+import pathlib,struct,sys
+p=pathlib.Path(sys.argv[1]); b=p.read_bytes(); assert b[:8]==b"ZCDHTC\r\n"
+n=struct.unpack_from("<I",b,74)[0]; size=303
+entries=[b[78+i*size:78+(i+1)*size] for i in range(n)]
+ids=[entry[:32] for entry in entries]
+assert n>=3 and len(b)==78+n*size and ids==sorted(ids) and len(ids)==len(set(ids))
+keep=bytes.fromhex(sys.argv[2])
+selected=[entry for entry in entries if entry[:32]==keep]
+assert len(selected)==1
+# Canonical one-contact fixture built only from an already authenticated
+# contacts.v2 entry. No address is introduced; the untouched header remains
+# bound to the same network genesis and local node ID.
+p.write_bytes(b[:74]+struct.pack("<I",1)+selected[0])
 PY
 
-dht_note "cold-loading the multi-hop table, then reauthenticating one edge"
-dht_kill_group "${PIDS[$ORIGIN]}"; PIDS[$ORIGIN]=""
-dht_kill_group "${PIDS[$NEXT]}"; PIDS[$NEXT]=""
-python3 - "${DDS[$ORIGIN]}/zcode/dht/contacts.v2" <<'PY' || dht_die "multi contact file is not canonical"
-import pathlib,struct,sys
-b=pathlib.Path(sys.argv[1]).read_bytes(); assert b[:8]==b"ZCDHTC\r\n"
-n=struct.unpack_from("<I",b,74)[0]; size=303
-ids=[b[78+i*size:110+i*size] for i in range(n)]
-assert n>=3 and len(b)==78+n*size and ids==sorted(ids) and len(ids)==len(set(ids))
-PY
+# peers.dat is deliberately absent. The only origin-side network facts are
+# one address-free authenticated-history ID plus the independently accepted,
+# chain-bound ZENDP files already created above.
+rm -f "${DDS[$ORIGIN]}/peers.dat" "${DDS[$ORIGIN]}/peers.dat.sha3"
+[ "$(find "${DDS[$ORIGIN]}/zcode/endpoints" -maxdepth 1 -type f -name '*.zid' | wc -l)" -ge 6 ] ||
+    dht_die "origin lost its accepted ZENDP records"
+
+# Rebuild a six-node chain that has no edge to the origin. Start from the far
+# end so every explicit -connect target is already listening. None of these
+# nodes accepted the origin's directory, so no DHT hint can create a shortcut.
+for pos in 6 5 4 3 2 1; do
+    idx="${ORDER[$pos]}"
+    connects=("127.0.0.1:$DEAD_SINK")
+    if [ "$pos" -lt 6 ]; then
+        farther="${ORDER[$((pos + 1))]}"
+        connects=("127.0.0.1:${PORTS[$farther]}")
+    fi
+    PIDS[$idx]="$(dht_spawn "${DDS[$idx]}" "${PORTS[$idx]}" \
+        "${RPCS[$idx]}" "${FSPORTS[$idx]}" "${HTTPSPORTS[$idx]}" \
+        "${connects[@]}")"
+    dht_wait_rpc "${DDS[$idx]}" "${RPCS[$idx]}" "${PIDS[$idx]}" ||
+        dht_die "cold-bootstrap remote node $idx failed"
+done
+for pos in 1 2 3 4 5 6; do
+    idx="${ORDER[$pos]}"
+    dht_wait_auth "${DDS[$idx]}" "${RPCS[$idx]}" 1 ||
+        dht_die "remote sparse chain node $idx did not authenticate"
+done
+
 PIDS[$ORIGIN]="$(dht_spawn "${DDS[$ORIGIN]}" "${PORTS[$ORIGIN]}" \
     "${RPCS[$ORIGIN]}" "${FSPORTS[$ORIGIN]}" "${HTTPSPORTS[$ORIGIN]}" \
     "127.0.0.1:$DEAD_SINK")"
 DHT_EXTRA_PGIDS=("${PIDS[@]}")
 dht_wait_rpc "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" "${PIDS[$ORIGIN]}" ||
-    dht_die "origin cold restart failed"
-dht_wait_cold_load "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" 3 ||
-    dht_die "origin did not finish loading its multi-hop contact history"
+    dht_die "origin zero-peer cold restart failed"
+dht_wait_cold_load "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" 1 ||
+    dht_die "origin did not load its address-free cold contact"
 cold="$(dht_status "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}")"
-[ "$(printf '%s' "$cold" | dht_jget 'd["data"]["persistence_loaded"]')" = True ] &&
-[ "$(printf '%s' "$cold" | dht_jget 'd["data"]["cold_contacts"]')" -ge 3 ] &&
-[ "$(printf '%s' "$cold" | dht_jget 'd["data"]["connected_authenticated"]')" -eq 0 ] ||
-    dht_die "origin did not expose cold authenticated history: $cold"
-PIDS[$NEXT]="$(dht_spawn "${DDS[$NEXT]}" "${PORTS[$NEXT]}" "${RPCS[$NEXT]}" \
-    "${FSPORTS[$NEXT]}" "${HTTPSPORTS[$NEXT]}" \
-    "127.0.0.1:${PORTS[$ORIGIN]}")"
-DHT_EXTRA_PGIDS=("${PIDS[@]}")
-dht_wait_rpc "${DDS[$NEXT]}" "${RPCS[$NEXT]}" "${PIDS[$NEXT]}" ||
-    dht_die "neighbour reauth restart failed"
-dht_wait_auth "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" ||
-    dht_die "cold origin did not reauthenticate its neighbour"
+connections="$(dht_rpc "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" getconnectioncount | dht_result)"
+[ "$connections" -eq 0 ] &&
+[ "$(printf '%s' "$cold" | dht_jget 'd["data"]["connected_authenticated"]')" -eq 0 ] &&
+[ "$(printf '%s' "$cold" | dht_jget 'd["data"]["cold_contacts"]')" -eq 1 ] ||
+    dht_die "origin did not start with exactly zero peers: $cold connections=$connections"
 
-dht_note "PASS: seven-node sparse iterative lookup/fairness/recovery/persistence"
+before_cold_find="$cold"
+cold_find="$(dht_native "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" \
+    zcode network find --input="{\"node_id\":\"${NODES[$TARGET]}\"}" || true)"
+after_cold_find="$(dht_status "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}")"
+python3 - "$cold_find" "$before_cold_find" "$after_cold_find" \
+    "${NODES[$TARGET]}" <<'PY' || dht_die "autonomous cold-bootstrap lookup failed"
+import json,sys
+r=json.loads(sys.argv[1]); b=json.loads(sys.argv[2])["data"]; a=json.loads(sys.argv[3])["data"]
+assert r["ok"] is True,r
+d=r["data"]
+assert d["termination"]=="target_authenticated" and d["rounds"]>=2,d
+assert sys.argv[4] in d["node_ids"],d
+br=b["reachability"]; ar=a["reachability"]
+assert ar["entries"]>=6,ar
+requests=ar["requests_enqueued"]-br["requests_enqueued"]
+dials=ar["dials_queued"]-br["dials_queued"]
+# One persisted cold seed creates the first connection; standard iterative
+# Kademlia then directly authenticates further address-free IDs returned by
+# each hop. Every queued request must produce at most one dial, and the whole
+# proof stays bounded by the independently accepted endpoint index.
+assert 2<=dials<=ar["entries"]-1,(br,ar)
+assert requests==dials,(br,ar)
+assert a["connected_authenticated"]>=1,a
+PY
+
+dht_note "PASS: seven-node sparse lookup, true async admission, persistence, autonomous cold bootstrap"

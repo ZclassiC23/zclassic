@@ -14,6 +14,8 @@
 #define VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS 8u
 #define VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES 3u
 #define VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES 64u
+#define VCS_ZCODE_DHT_SERVICE_MAX_CHAIN_DELEGATIONS \
+  (VCS_ZCODE_DHT_MAX_CONTACTS + VCS_ZCODE_DHT_MAX_PENDING + 1u)
 #define VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS 30u
 #define VCS_ZCODE_DHT_SERVICE_RATE_PER_SECOND 4u
 #define VCS_ZCODE_DHT_SERVICE_RATE_BURST 8u
@@ -214,6 +216,33 @@ bool vcs_zcode_dht_service_lookup_poll(struct vcs_zcode_dht_service *service,
                                        uint64_t lookup_id,
                                        struct vcs_zcode_dht_time now,
                                        struct vcs_zcode_dht_lookup_result *out);
+/* Releases a caller-abandoned lookup slot. In-flight protocol queries retain
+ * their own bounded expiry so a late authenticated reply is classified
+ * correctly rather than becoming an unsolicited-frame false positive. */
+bool vcs_zcode_dht_service_lookup_cancel(
+    struct vcs_zcode_dht_service *service, uint64_t lookup_id);
+
+/* Composition-root lock audit helpers. The snapshot is fixed-size and
+ * allocation-free; callbacks may be replaced after boot-time persistence was
+ * loaded outside the global service mutex. */
+size_t vcs_zcode_dht_service_delegations(
+    const struct vcs_zcode_dht_service *service,
+    struct vcs_zcode_dht_delegation *out, size_t max);
+void vcs_zcode_dht_service_set_chain_verify(
+    struct vcs_zcode_dht_service *service,
+    vcs_zcode_dht_chain_verify_fn chain_verify, void *chain_ctx);
+
+struct vcs_zcode_dht_persistence_snapshot;
+struct vcs_zcode_dht_persistence_snapshot *
+vcs_zcode_dht_service_persistence_snapshot(
+    struct vcs_zcode_dht_service *service, uint64_t monotonic_s, bool force);
+bool vcs_zcode_dht_persistence_snapshot_write(
+    struct vcs_zcode_dht_persistence_snapshot *snapshot);
+void vcs_zcode_dht_service_persistence_commit(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_persistence_snapshot *snapshot, bool written);
+void vcs_zcode_dht_persistence_snapshot_free(
+    struct vcs_zcode_dht_persistence_snapshot *snapshot);
 
 void vcs_zcode_dht_service_status(const struct vcs_zcode_dht_service *service,
                                   struct vcs_zcode_dht_service_status *out);
