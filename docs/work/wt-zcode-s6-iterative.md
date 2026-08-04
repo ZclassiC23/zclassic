@@ -1,6 +1,6 @@
 # S6 iterative ZCODE lookup lane
 
-**STATUS: ✅ DONE — ready for merge (branch lane/zcode-s6-iterative, head 71c2d185d)**
+**STATUS: ✅ DONE — ready for merge (branch lane/zcode-s6-iterative, head 0408e5d58)**
 
 **Worker:** `wf_zcode-s6-iterative`  
 **Branch:** `lane/zcode-s6-iterative`  
@@ -104,6 +104,9 @@ mutation was explicitly forbidden.
 - Final `gate-and-report.sh`: lint 132/132, full whole-program link, and cold
   uncached suite 887/887 eligible groups passed (`groups_failed=0`, 19 declared
   self-skips, 9 gated groups).
+- After upstream `main` advanced to `cb8ab59d2`, merge `0408e5d58` integrated
+  it conflict-free and the final owning gate passed again: cold 887/887,
+  `groups_cached=0`, `groups_failed=0`, toolkey `d67458f5f18a`.
 - Seven-node sparse DHT acceptance passed with at least three lookup rounds,
   XOR progress, bounded traffic, alternate-path recovery after killing the
   nearest path, eight concurrent callers, replay saturation, persistence, cold
