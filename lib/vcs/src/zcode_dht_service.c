@@ -393,9 +393,10 @@ vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *p) {
     return s;
   }
   s->record_store = vcs_zcode_dht_record_store_create(p->network_genesis);
-  if (!s->record_store) {
+  s->owned_policy = vcs_zcode_sovereignty_policy_create(p->network_genesis);
+  if (!s->record_store || !s->owned_policy) {
     snprintf(s->disabled_reason, sizeof(s->disabled_reason),
-             "RECORD_STORE_ALLOCATION_FAILED");
+             "DISCOVERY_STATE_ALLOCATION_FAILED");
     return s;
   }
   if (!vcs_zcode_dht_delegation_load(p->datadir, &s->delegation, err,
@@ -454,6 +455,15 @@ vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *p) {
                                       &record_verify, err, sizeof(err));
   if (record_load != VCS_ZCODE_DHT_RECORD_STORE_OK)
     vcs_zcode_dht_service_set_error(s, err);
+  enum vcs_zcode_sovereignty_result policy_load =
+      vcs_zcode_sovereignty_policy_load(s->owned_policy, s->datadir, err,
+                                        sizeof(err));
+  if (policy_load != VCS_ZCODE_SOVEREIGNTY_OK)
+    vcs_zcode_dht_service_set_error(s, err);
+  if (!s->policy_decide) {
+    s->policy_decide = vcs_zcode_sovereignty_policy_decide_callback;
+    s->policy_ctx = s->owned_policy;
+  }
   return s;
 }
 
@@ -466,6 +476,7 @@ void vcs_zcode_dht_service_free(struct vcs_zcode_dht_service *s,
     (void)vcs_zcode_dht_service_persistence_save(s);
   memory_cleanse(s->online_seed, 32);
   vcs_zcode_dht_record_store_free(s->record_store);
+  vcs_zcode_sovereignty_policy_free(s->owned_policy);
   free(s->table);
   free(s);
 }

@@ -116,6 +116,7 @@ struct vcs_zcode_dht_service {
   void *reachability_ctx;
   vcs_zcode_sovereignty_decide_fn policy_decide;
   void *policy_ctx;
+  struct vcs_zcode_sovereignty_policy *owned_policy;
   struct vcs_zcode_dht_table *table;
   struct service_peer peers[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
   struct retired_session retired[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
