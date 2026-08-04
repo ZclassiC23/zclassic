@@ -195,6 +195,8 @@ static void cleanup_fixture(const char *dir) {
   char path[512];
   snprintf(path, sizeof(path), "%s/zcode/dht/records.v1", dir);
   (void)unlink(path);
+  snprintf(path, sizeof(path), "%s/zcode/dht/publications.v1", dir);
+  (void)unlink(path);
   snprintf(path, sizeof(path), "%s/zcode/dht/contacts.v2", dir);
   (void)unlink(path);
   snprintf(path, sizeof(path), "%s/zcode/dht/online_ed25519.key", dir);
@@ -533,6 +535,10 @@ static int test_record_transport_and_restart(void) {
     ASSERT_EQ(vcs_zcode_dht_service_record_publish_commit(
                   a, &publish, plan_token, test_time(1002), &published_record),
               VCS_ZCODE_DHT_RECORD_STORE_STALE);
+    publish.kind = VCS_ZCODE_DHT_RECORD_STORAGE_ACK;
+    ASSERT(!vcs_zcode_dht_service_record_publish_plan(
+        a, &publish, plan_token, &published_record));
+    publish.kind = VCS_ZCODE_DHT_RECORD_POINTER;
 
     struct vcs_zcode_dht_record first;
     ASSERT(fixture_pointer_record(adir, genesis, 0x61, 0x71, &first));
@@ -606,6 +612,22 @@ static int test_record_transport_and_restart(void) {
     ASSERT(policy_calls[VCS_ZCODE_SOVEREIGNTY_SERVE] > 0);
     ASSERT(policy_calls[VCS_ZCODE_SOVEREIGNTY_FORWARD] > 0);
     vcs_zcode_dht_service_free(a, test_time(1004));
+    a = fixture_service(adir, genesis, anoise);
+    ASSERT(a != NULL);
+    struct vcs_zcode_dht_service_status publication_status;
+    vcs_zcode_dht_service_status(a, &publication_status);
+    ASSERT_EQ(publication_status.publication_intents, 1);
+    struct vcs_zcode_dht_record_selector published_selector = {
+        .kind = VCS_ZCODE_DHT_RECORD_POINTER};
+    snprintf(published_selector.namespace_name,
+             sizeof(published_selector.namespace_name), "science");
+    memset(published_selector.root, 0x41, 32);
+    vcs_zcode_dht_service_tick(a, test_time(1800));
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  a, 1800, &published_selector, local, 1),
+              1);
+    ASSERT_EQ(local[0].sequence, 2);
+    vcs_zcode_dht_service_free(a, test_time(1800));
     vcs_zcode_dht_service_free(b, test_time(1004));
     cleanup_fixture(adir);
     cleanup_fixture(bdir);

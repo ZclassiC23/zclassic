@@ -85,7 +85,7 @@ static struct service_peer *records_peer_find(
   return NULL;
 }
 
-static struct service_record_operation *records_operation_find(
+struct service_record_operation *vcs_zcode_dht_records_operation_find(
     struct vcs_zcode_dht_service *service, uint64_t id)
 {
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS; i++)
@@ -340,7 +340,7 @@ bool vcs_zcode_dht_service_record_operation_poll(
     return false;
   vcs_zcode_dht_service_tick(service, now);
   struct service_record_operation *operation =
-      records_operation_find(service, operation_id);
+      vcs_zcode_dht_records_operation_find(service, operation_id);
   if (!operation)
     return false;
   memset(out, 0, sizeof(*out));
@@ -362,7 +362,7 @@ bool vcs_zcode_dht_service_record_operation_cancel(
   if (!service)
     return false;
   struct service_record_operation *operation =
-      records_operation_find(service, operation_id);
+      vcs_zcode_dht_records_operation_find(service, operation_id);
   if (!operation)
     return false;
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES; i++)
@@ -396,133 +396,6 @@ enum vcs_zcode_dht_record_store_result vcs_zcode_dht_service_record_admit(
     service->persistence_generation++;
   }
   return result;
-}
-
-static bool records_publish_build(
-    struct vcs_zcode_dht_service *service,
-    const struct vcs_zcode_dht_publish_spec *spec,
-    struct vcs_zcode_dht_record *record, uint8_t token[32])
-{
-  if (!service || !service->enabled || !service->record_store || !spec ||
-      !record || !token)
-    return false;
-  memset(record, 0, sizeof(*record));
-  record->kind = spec->kind;
-  memcpy(record->namespace_name, spec->namespace_name,
-         sizeof(record->namespace_name));
-  memcpy(record->network_genesis, service->genesis, 32);
-  memcpy(record->semantic_root, spec->semantic_root, 32);
-  memcpy(record->transport_root, spec->transport_root, 32);
-  memcpy(record->provider_node_id, service->self_id, 32);
-  memcpy(record->owner_group, spec->owner_group, 32);
-  record->sequence = spec->sequence;
-  record->not_before = spec->not_before;
-  record->expiry = spec->expiry;
-  record->delegation = service->delegation;
-  if (vcs_zcode_dht_record_sign(record, service->online_seed) !=
-      VCS_ZCODE_DHT_RECORD_OK)
-    return false;
-  uint8_t wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES], store_digest[32];
-  if (vcs_zcode_dht_record_encode(record, wire) !=
-      VCS_ZCODE_DHT_RECORD_OK)
-    return false;
-  vcs_zcode_dht_record_store_digest(service->record_store, store_digest);
-  struct sha3_256_ctx sha;
-  sha3_256_init(&sha);
-  sha3_256_write(&sha, (const uint8_t *)"zcl.dht.publish.plan.v1", 23);
-  sha3_256_write(&sha, service->genesis, 32);
-  sha3_256_write(&sha, store_digest, 32);
-  sha3_256_write(&sha, wire, sizeof(wire));
-  sha3_256_finalize(&sha, token);
-  return true;
-}
-
-bool vcs_zcode_dht_service_record_publish_plan(
-    struct vcs_zcode_dht_service *service,
-    const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
-    struct vcs_zcode_dht_record *record_out)
-{
-  if (plan_token)
-    memset(plan_token, 0, 32);
-  if (record_out)
-    memset(record_out, 0, sizeof(*record_out));
-  return records_publish_build(service, spec, record_out, plan_token);
-}
-
-enum vcs_zcode_dht_record_store_result
-vcs_zcode_dht_service_record_publish_commit(
-    struct vcs_zcode_dht_service *service,
-    const struct vcs_zcode_dht_publish_spec *spec,
-    const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
-    struct vcs_zcode_dht_record *record_out)
-{
-  uint8_t expected[32], difference = 0;
-  struct vcs_zcode_dht_record record;
-  if (!plan_token || !records_publish_build(service, spec, &record, expected))
-    return VCS_ZCODE_DHT_RECORD_STORE_INVALID;
-  for (size_t i = 0; i < 32; i++)
-    difference |= expected[i] ^ plan_token[i];
-  if (difference)
-    return VCS_ZCODE_DHT_RECORD_STORE_STALE;
-  enum vcs_zcode_dht_record_store_result result =
-      vcs_zcode_dht_service_record_admit(service, &record, now);
-  if (record_out && (result == VCS_ZCODE_DHT_RECORD_STORE_ADDED ||
-                     result == VCS_ZCODE_DHT_RECORD_STORE_DUPLICATE ||
-                     result == VCS_ZCODE_DHT_RECORD_STORE_CONFLICT))
-    *record_out = record;
-  if (result == VCS_ZCODE_DHT_RECORD_STORE_ADDED ||
-      result == VCS_ZCODE_DHT_RECORD_STORE_CONFLICT) {
-    for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS; i++)
-      if (!service->publications[i].used) {
-        memset(&service->publications[i], 0, sizeof(service->publications[i]));
-        service->publications[i].used = true;
-        service->publications[i].record = record;
-        break;
-      }
-    vcs_zcode_dht_service_publication_schedule(service, now);
-  }
-  return result;
-}
-
-void vcs_zcode_dht_service_publication_schedule(
-    struct vcs_zcode_dht_service *service, struct vcs_zcode_dht_time now)
-{
-  if (!service || !service->enabled)
-    return;
-  for (size_t j = 0; j < VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS; j++) {
-    struct service_publication *publication = &service->publications[j];
-    if (!publication->used)
-      continue;
-    if (now.wall_unix >= publication->record.expiry ||
-        publication->attempts >= VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS) {
-      memset(publication, 0, sizeof(*publication));
-      continue;
-    }
-    if (!vcs_zcode_dht_records_policy_allows(
-            service, VCS_ZCODE_SOVEREIGNTY_FORWARD, &publication->record))
-      continue;
-    for (size_t p = 0; p < VCS_ZCODE_DHT_SERVICE_MAX_PEERS &&
-                       publication->attempts < VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS;
-         p++) {
-      uint8_t mask = (uint8_t)(1u << (p & 7u));
-      size_t byte = p >> 3;
-      if ((publication->attempted_peer_slots[byte] & mask) != 0 ||
-          !service->peers[p].used || !service->peers[p].connected ||
-          !service->peers[p].authenticated)
-        continue;
-      uint64_t operation_id = 0;
-      if (!vcs_zcode_dht_service_record_store_begin(
-              service, service->peers[p].peer_id, &publication->record, now,
-              &operation_id))
-        return; /* shared three-query budget is full; next tick resumes */
-      struct service_record_operation *operation =
-          records_operation_find(service, operation_id);
-      if (operation)
-        operation->detached = true;
-      publication->attempted_peer_slots[byte] |= mask;
-      publication->attempts++;
-    }
-  }
 }
 
 static bool reply_records(struct vcs_zcode_dht_service *service,
@@ -662,7 +535,8 @@ bool vcs_zcode_dht_service_records_handle(
   if (!query)
     return false;
   struct service_record_operation *operation =
-      records_operation_find(service, query->record_operation_id);
+      vcs_zcode_dht_records_operation_find(service,
+                                            query->record_operation_id);
   if (!operation)
     return false;
   if (message->kind == VCS_ZCODE_DHT_MSG_RECORDS) {
@@ -716,7 +590,8 @@ void vcs_zcode_dht_service_record_query_finish(
       outcome == QUERY_OUTCOME_RESPONSE)
     return;
   struct service_record_operation *operation =
-      records_operation_find(service, query->record_operation_id);
+      vcs_zcode_dht_records_operation_find(service,
+                                            query->record_operation_id);
   if (operation) {
     if (operation->detached)
       memset(operation, 0, sizeof(*operation));

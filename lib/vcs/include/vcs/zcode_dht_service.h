@@ -120,6 +120,7 @@ struct vcs_zcode_dht_service_params {
 };
 
 struct vcs_zcode_dht_service;
+struct vcs_package_store;
 
 struct vcs_zcode_dht_service_status {
   bool enabled;
@@ -151,6 +152,8 @@ struct vcs_zcode_dht_service_status {
   uint64_t store_result_sent;
   uint32_t signed_records;
   uint32_t active_record_operations;
+  uint32_t publication_intents;
+  uint32_t active_publications;
   uint64_t lookup_rounds;
   uint64_t lookup_xor_progress;
   uint64_t lookup_queue_wait_s;
@@ -340,6 +343,46 @@ vcs_zcode_dht_service_record_publish_commit(
     const struct vcs_zcode_dht_publish_spec *spec,
     const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
     struct vcs_zcode_dht_record *record_out);
+
+/* STORAGE_ACK has a separate authorship path. Both plan and commit require a
+ * complete, pinned package and re-hash its manifest and every chunk. Generic
+ * publication cannot author an ACK. */
+bool vcs_zcode_dht_service_storage_ack_plan(
+    struct vcs_zcode_dht_service *service,
+    struct vcs_package_store *package_store,
+    const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
+    struct vcs_zcode_dht_record *record_out);
+enum vcs_zcode_dht_record_store_result
+vcs_zcode_dht_service_storage_ack_commit(
+    struct vcs_zcode_dht_service *service,
+    struct vcs_package_store *package_store,
+    const struct vcs_zcode_dht_publish_spec *spec,
+    const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record *record_out);
+
+/* Composition-root adapter after an out-of-lock possession proof. These do
+ * not inspect storage themselves; ordinary callers use the checked APIs
+ * above. */
+bool vcs_zcode_dht_storage_ack_plan_verified(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
+    struct vcs_zcode_dht_record *record_out);
+enum vcs_zcode_dht_record_store_result
+vcs_zcode_dht_storage_ack_commit_verified(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_publish_spec *spec,
+    const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record *record_out);
+
+/* Snapshot/apply the proof state around a composition-root lock. The caller
+ * performs the full package-store byte proof with no DHT lock held, then
+ * applies the result before the scheduler is driven. */
+size_t vcs_zcode_dht_service_storage_ack_roots(
+    const struct vcs_zcode_dht_service *service, uint8_t (*out)[32],
+    size_t max);
+void vcs_zcode_dht_service_storage_ack_validation(
+    struct vcs_zcode_dht_service *service, const uint8_t transport_root[32],
+    bool valid);
 
 /* Composition-root lock audit helpers. The snapshot is fixed-size and
  * allocation-free; callbacks may be replaced after boot-time persistence was

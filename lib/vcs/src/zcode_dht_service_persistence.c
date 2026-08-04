@@ -37,6 +37,9 @@ struct vcs_zcode_dht_persistence_snapshot {
   uint64_t generation, serial;
   struct vcs_zcode_dht_record_store *records;
   bool records_dirty;
+  bool publication_intents_dirty;
+  struct service_publication
+      publications[VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS];
   char path[1400], directory[1400], error[96];
   char datadir[1024];
 };
@@ -91,6 +94,10 @@ vcs_zcode_dht_service_persistence_snapshot(
   snapshot->wire_len = len;
   snapshot->generation = s->persistence_generation;
   snapshot->records_dirty = s->records_dirty;
+  snapshot->publication_intents_dirty = s->publication_intents_dirty;
+  if (snapshot->publication_intents_dirty)
+    memcpy(snapshot->publications, s->publications,
+           sizeof(snapshot->publications));
   if (snapshot->records_dirty) {
     snapshot->records = vcs_zcode_dht_record_store_clone(s->record_store);
     if (!snapshot->records) {
@@ -150,6 +157,11 @@ bool vcs_zcode_dht_persistence_snapshot_write(
           snapshot->records, snapshot->datadir, snapshot->error,
           sizeof(snapshot->error)) != VCS_ZCODE_DHT_RECORD_STORE_OK)
     return false;
+  if (snapshot->publication_intents_dirty &&
+      !vcs_zcode_dht_publications_save(
+          snapshot->datadir, snapshot->publications, snapshot->error,
+          sizeof(snapshot->error)))
+    return false;
   return true;
 }
 
@@ -169,6 +181,9 @@ void vcs_zcode_dht_service_persistence_commit(
   if (s->persistence_generation == snapshot->generation &&
       snapshot->records_dirty)
     s->records_dirty = false;
+  if (s->persistence_generation == snapshot->generation &&
+      snapshot->publication_intents_dirty)
+    s->publication_intents_dirty = false;
 }
 
 void vcs_zcode_dht_persistence_snapshot_free(

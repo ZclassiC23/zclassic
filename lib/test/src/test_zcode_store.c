@@ -1018,6 +1018,8 @@ static int t_store_pins(void)
              st.pool == VCS_PACKAGE_STORE_POOL_PINS &&
              vcs_package_store_pool_usage(s, VCS_PACKAGE_STORE_POOL_PINS) ==
                  1000);
+    ZS_CHECK("pins: full-byte possession proof accepts complete pinned L",
+             vcs_package_store_verify_possession(s, l.root, true));
     ZS_CHECK("pins: M completes and pins (pins pool exactly full)",
              vcs_package_store_put_manifest(s, m.wire, m.wire_len, NULL) ==
                  VCS_PACKAGE_STORE_OK &&
@@ -1044,6 +1046,8 @@ static int t_store_pins(void)
                  VCS_PACKAGE_STORE_OK &&
              vcs_package_store_package_status(s, m.root, &st) &&
              !st.pinned && st.pool == VCS_PACKAGE_STORE_POOL_RARE);
+    ZS_CHECK("pins: possession proof fails closed after unpin",
+             !vcs_package_store_verify_possession(s, m.root, true));
 
     /* Rare-pool pressure: O fills rare exactly (3000), P's completion
      * must evict exactly one rare package and must never touch the

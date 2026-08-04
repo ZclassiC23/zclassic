@@ -67,6 +67,13 @@ enum vcs_zcode_dht_record_store_result boot_zcode_dht_record_publish_commit(
     const struct vcs_zcode_dht_publish_spec *spec,
     const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
     struct vcs_zcode_dht_record *record_out);
+bool boot_zcode_dht_storage_ack_plan(
+    const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
+    struct vcs_zcode_dht_record *record_out);
+enum vcs_zcode_dht_record_store_result boot_zcode_dht_storage_ack_commit(
+    const struct vcs_zcode_dht_publish_spec *spec,
+    const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record *record_out);
 void boot_zcode_dht_public_tick(uint64_t monotonic_s);
 void boot_zcode_dht_public_reset(void);
 void boot_zcode_dht_record_public_tick(uint64_t monotonic_s);

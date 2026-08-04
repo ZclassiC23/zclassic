@@ -466,6 +466,7 @@ vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *p) {
     s->policy_decide = vcs_zcode_sovereignty_policy_decide_callback;
     s->policy_ctx = s->owned_policy;
   }
+  (void)vcs_zcode_dht_publications_load(s, p->now.wall_unix);
   return s;
 }
 

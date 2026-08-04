@@ -1544,11 +1544,11 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_COMMAND(
     "zcode.network.publish", "zcode.network", "", "Publish a signed DHT record",
-    "Plans or commits one canonical PROVIDER, POINTER or STORAGE_ACK record. "
+    "Plans or commits one canonical PROVIDER or POINTER record. "
     "mode=plan returns a token binding the exact signed record and current "
     "record-store digest; mode=commit re-derives both and refuses stale plans. "
-    "STORAGE_ACK is operator-triggered only after verified possession and its "
-    "owner_group is declared diversity, never operator proof. The reply never "
+    "STORAGE_ACK is refused here and must use storage_ack, whose package-store "
+    "proof cannot be supplied by the caller. The reply never "
     "contains signing keys or delegation wire.",
     16384, "zcode,network,dht,publish,provider,pointer,storage-ack,plan,commit",
     "zcl.zcode_network_publish.input.v1", "zcl.zcode_network_publish.v1",
@@ -1563,6 +1563,29 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_network_publish)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.network.storage_ack", "zcode.network", "",
+    "Publish a possession-backed storage ACK",
+    "Plans or commits one STORAGE_ACK only after the local package store "
+    "re-hashes the complete manifest and every chunk and confirms an operator "
+    "pin. The plan token binds that exact signed record; commit repeats the "
+    "proof. Unpin, missing bytes or corruption suppresses renewal. owner_group "
+    "is declared diversity and never proof of an independent operator.",
+    16384, "zcode,network,dht,storage-ack,possession,pin,plan,commit",
+    "zcl.zcode_network_storage_ack.input.v1",
+    "zcl.zcode_network_storage_ack.v1",
+    "mode,namespace,semantic_root,transport_root,owner_group,sequence,not_before,expiry,plan_token",
+    "mode,namespace,transport_root,sequence,not_before,expiry",
+    "zclassic23 zcode network storage_ack --input='{\"mode\":\"plan\",\"namespace\":\"science\",\"transport_root\":\"<64hex>\",\"sequence\":1,\"not_before\":1,\"expiry\":2}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_network_storage_ack)
 
 ZCL_COMMAND_READY_READ(
     "zcode.network.policy.list", "zcode.network", "", "Inspect local policy summary",

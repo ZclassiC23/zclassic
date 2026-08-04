@@ -618,6 +618,12 @@ void zcl_native_handle_zcode_network_publish(
   json_free(&input);
 }
 
+void zcl_native_handle_zcode_network_storage_ack(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply) {
+  zdn_forward(request, reply, "zcode_dht_storage_ack");
+}
+
 void zcl_native_handle_zcode_network_replication(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply) {

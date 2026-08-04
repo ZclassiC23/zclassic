@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 504 |
+| Registry entries (branches + leaves) | 505 |
 | Top-level roots | 11 |
 | Branches | 115 |
-| Leaves (dispatchable command paths) | 389 |
-| … `ready` (live handler in this build) | 341 |
+| Leaves (dispatchable command paths) | 390 |
+| … `ready` (live handler in this build) | 342 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 128 |
+| Leaves with `effect=mutate` | 129 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 89 |
 
@@ -85,7 +85,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 21 | 4 | 17 |
-| `config/commands/zcode.def` | 88 | 17 | 71 |
+| `config/commands/zcode.def` | 89 | 17 | 72 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 18 | 5 | 13 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -984,6 +984,7 @@ represented by its children's sections.
 | `zcode network records` | ready | read / read / operator · foreground/moderate | **`kind`**, **`namespace`**, `semantic_root`, `transport_root` | `zcl.zcode_network_records.v1` | `zclassic23 zcode network records --input='{"kind":"pointer","namespace":"science.study","semantic_root":"<64hex>"}'` | Discover signed DHT records |
 | `zcode network providers` | ready | read / read / operator · foreground/moderate | **`namespace`**, **`transport_root`** | `zcl.zcode_network_providers.v1` | `zclassic23 zcode network providers --input='{"namespace":"science","transport_root":"<64hex>"}'` | List provider hints |
 | `zcode network publish` | ready | mutate / app-write / operator, plan-commit · fast/low | **`mode`**, **`kind`**, **`namespace`**, `semantic_root`, **`transport_root`**, `owner_group`, **`sequence`**, **`not_before`**, **`expiry`**, `plan_token` | `zcl.zcode_network_publish.v1` | `zclassic23 zcode network publish --input='{"mode":"plan","kind":"provider","namespace":"science","transport_root":"<64hex>","sequence":1,"not_before":1,"expiry":2}'` | Publish a signed DHT record |
+| `zcode network storage_ack` | ready | mutate / app-write / operator, plan-commit · foreground/high | **`mode`**, **`namespace`**, `semantic_root`, **`transport_root`**, `owner_group`, **`sequence`**, **`not_before`**, **`expiry`**, `plan_token` | `zcl.zcode_network_storage_ack.v1` | `zclassic23 zcode network storage_ack --input='{"mode":"plan","namespace":"science","transport_root":"<64hex>","sequence":1,"not_before":1,"expiry":2}'` | Publish a possession-backed storage ACK |
 | `zcode network policy list` | ready | read / read / operator · fast/low | `datadir` | `zcl.zcode_network_policy_list.v1` | `zclassic23 zcode network policy list` | Inspect local policy summary |
 | `zcode network policy mutate` | ready | mutate / app-write / operator, plan-commit · fast/low | **`mode`**, **`operation`**, `source`, `effect`, `scope`, `action_mask`, `value`, `rule_id`, `enabled`, `plan_token`, `datadir` | `zcl.zcode_network_policy_mutate.v1` | `zclassic23 zcode network policy mutate --input='{"mode":"plan","operation":"advisory","enabled":true}'` | Plan or commit local policy |
 | `zcode network replication` | ready | read / read / operator · fast/low | **`namespace`**, **`transport_root`** | `zcl.zcode_network_replication.v1` | `zclassic23 zcode network replication --input='{"namespace":"science","transport_root":"<64hex>"}'` | Inspect declared replication |
