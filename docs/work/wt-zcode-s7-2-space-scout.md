@@ -232,3 +232,111 @@ missing phase-specific proof.
   in the test object but not the production `c1d4af1c...` build epoch. Final
   local receipts: `test_zcode_dht_record` PASS, `test_zcode_dht_service` PASS,
   `make lint` 132/132 PASS, `make -j16 build-only` PASS.
+
+### Phase 3 — banked
+
+- Born-red witness: the base science resolver copied at most eight POINTER
+  rows, sorted unrelated publishers by their signed but publisher-controlled
+  sequence, and aborted the entire fetch when policy denied any one candidate.
+  The record projection did not tell an operator which rows were conflicted or
+  superseded. Thus eight high-sequence Sybil/conflict rows could hide an honest
+  transport root, and one denied publisher could deny an otherwise permitted
+  root from another stream.
+- Record comparison now defines a stream by kind, namespace, network,
+  delegation master, provider and the kind's semantic/transport subject.
+  Sequence is compared only within that stream. Both members of an equal-slot
+  valid conflict remain explicit and unusable; a row is superseded only by a
+  higher sequence in its own stream. Signed record sequences are constrained
+  to `1..INT64_MAX`, closing the accepted-wire-to-signed-JSON conversion gap;
+  the exact boundary is tested.
+- The record read projects `conflicted`, `superseded` and
+  `provider_authenticated` for every row, plus usable/superseded totals and a
+  separate conflict list. Science resolution consumes the full bounded
+  64-record result, removes conflicted/superseded rows, orders authenticated
+  provider evidence first and otherwise canonically, admits distinct transport
+  roots before duplicate rows, applies FETCH/STORE/INDEX policy per candidate,
+  and caps the post-policy carrier set at DHT `K=16`. If every observation is
+  unusable it returns the named `POINTER_EVIDENCE_UNUSABLE` result rather than
+  silently choosing one.
+- Direct regressions construct 64 observations: eight same-root
+  maximum-sequence Sybil rows, 54 conflict rows and two honest roots. They prove
+  an authenticated honest root ranks first, both honest roots survive, sequence
+  cannot order independent streams, and conflicts are counted but not selected.
+  Projection coverage includes a two-row conflict, a genuinely superseded row
+  in an independent stream and a still-usable older row outside that stream.
+  Policy-adapter coverage proves publisher, transport full-root, semantic
+  full-root and service-type blocks affect only their exact candidate/action.
+  The science carrier test proves all 16 admitted candidates are retained.
+- Focused receipts (cold): `test_zcode_dht_record` 1/1 PASS and
+  `test_zcode_science_store` 1/1 PASS. `make lint` PASS (132/132) and
+  `make -j16 build-only` PASS (`epoch=c1d4af1c...`). Symbol inspection of the
+  production objects confirms the ranking, policy and RPC-render test seams are
+  absent.
+- Honest limit: ranking is deterministic local evidence selection, not a
+  reputation system or truth oracle. Authentication proves the current Noise
+  provider session associated with an observation; it does not prove that
+  independent ZIDs, providers or roots represent independent people.
+- Independent review initially rejected missing genuine supersession, exact
+  policy-adapter fields and the unsigned-sequence JSON boundary. Those witnesses
+  were added and pass. The technical re-review found no remaining correctness
+  issue and returned **BANKABLE** after the ledger audit. Phase 3 is banked with
+  Phase 4 in coherent operational-hardening commit `2273b7b60`.
+
+### Phase 4 — banked
+
+- Born-red witness: completed routing retained only the first responsible set,
+  so loss during record query/publication could turn candidate 17 into permanent
+  evidence loss. Publication completion counted aggregate successes rather than
+  proving the sorted responsible prefix was resolved, and renewal retry used a
+  wall-clock gate. The science provider route could report a refused restricted
+  fetch as successfully scheduled, and the native fetch surface had no exact
+  resumable cancellation operation.
+- Discovery and publication retain the full bounded 64 authenticated lookup
+  candidates. Their completion predicate scans canonical distance order: every
+  earlier candidate must be complete, and only successful rows count toward the
+  `K` target. A pending candidate 17 cannot be silently replaced by a faster
+  candidate 18. Lost sessions fail their child operations, expose the next
+  candidate and preserve incomplete/partial truth instead of manufacturing a
+  responsible-set success.
+- A 20-node in-process Noise fixture advances one transport frame at a time to
+  the exact routing/query boundary. For discovery it fails one responsible peer,
+  holds candidate 17's response, allows candidate 18 to answer first, proves the
+  operation remains pending with zero records, then releases candidate 17 and
+  finds its pointer. For publication it stops when all 19 remote candidates are
+  captured with zero successes, denies and closes the exact closest 16 before
+  queued STORE delivery, then proves candidates 17–19 each store and acknowledge
+  the record. The cycle honestly remains a partial retry rather than reporting a
+  false responsible-prefix success.
+- Publication renewal/backoff now uses monotonic deadlines; wall time remains
+  solely the signed record-validity clock. A direct regression applies large
+  forward and backward wall jumps while monotonic time advances and proves the
+  retry cannot run before its monotonic deadline. Session generations and late
+  frame handling in the fixture prove disconnect/reconnect traffic cannot be
+  mistaken for the old session.
+- Provider routing renders `NO_STORE`, `FULL` and I/O refusal as named
+  fail-closed results and never widens a restricted source set. Native
+  `zcode.science.fetch cancel=true` requires the exact blob root, recursively
+  cancels swarm work and deletes only that root's resumable state. Direct handler
+  coverage asserts `canceled=true` and `restriction_widened=false`; restart
+  coverage proves canceled state does not resume and an explicitly restricted
+  retry still uses only its permitted provider. The already-banked owner-bound
+  record lifecycle regression separately proves parent cancellation recursively
+  cancels both the routing lookup and every active record child.
+- Focused receipts (cold): `test_zcode_dht_service` 1/1 PASS,
+  `test_zcode_swarm` plus `test_zcode_swarm_net` 2/2 PASS, and
+  `test_zcode_science_store` 1/1 PASS. `make lint` PASS (132/132),
+  `make -j16 build-only` PASS (`epoch=c1d4af1c...`) and `git diff --check` PASS.
+  Symbol inspection confirms the publication view, provider-route render and
+  native cancel/ranking seams are absent from production objects.
+- Honest limits: fallback is bounded to the one 64-candidate lookup result; it
+  is not an unbounded retry network. Cancellation prevents local continuation
+  and restart but cannot erase bytes or messages already accepted by a remote
+  peer. Wall-time validity still correctly changes when the operator's signed
+  validity clock changes; only scheduling/backoff is monotonic.
+- Independent review rejected an early churn fixture because it drained all
+  STORE traffic before disconnect, and rejected an arithmetic coverage rule
+  that allowed a fast farther node to replace a pending nearer one. The final
+  fixture stops at the causal boundary and the sorted-prefix rule passes. The
+  technical re-review found no remaining correctness issue and returned
+  **BANKABLE** after the ledger audit. Phase 4 is banked with Phase 3 in coherent
+  operational-hardening commit `2273b7b60`.
