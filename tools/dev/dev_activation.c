@@ -614,10 +614,11 @@ static int dev_guard_pending_auto_reindex(struct dev_activation_txn *txn)
 
     const char *force = getenv("ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY");
     if (force && strcmp(force, "1") == 0) {
+        txn->recovery_boot = true;
         fprintf(stderr,
                 "[dev-activation] WARN: pending crash-only auto-reindex request "
-                "anchor=%d count=%d; next boot will rebuild chainstate\n",
-                (int)anchor, count);
+                "anchor=%d count=%d; next boot may rebuild chainstate and "
+                "uses the recovery readiness budget\n", (int)anchor, count);
         return DEV_ACTIVATION_OK;
     }
 

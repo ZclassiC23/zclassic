@@ -18,6 +18,7 @@
 #include "test/test_core.h"
 
 #include "dev_activation.h"
+#include "dev_activation_internal.h"
 #include "json/json.h"
 
 #include <fcntl.h>
@@ -1149,6 +1150,25 @@ static int test_auto_reindex_override_allows(void)
     return failures;
 }
 
+static int test_auto_reindex_recovery_timeout(void)
+{
+    int failures = 0;
+    TEST("dev_activation: authorized recovery uses a recovery-sized readiness window") {
+        unsetenv("ZCL_DEV_ACTIVATION_VERIFY_TIMEOUT_S");
+        ASSERT_EQ(dev_activation_verify_timeout_seconds(false),
+                  DEV_ACTIVATION_VERIFY_TIMEOUT_S);
+        ASSERT_EQ(dev_activation_verify_timeout_seconds(true),
+                  DEV_ACTIVATION_RECOVERY_VERIFY_TIMEOUT_S);
+
+        setenv("ZCL_DEV_ACTIVATION_VERIFY_TIMEOUT_S", "7", 1);
+        ASSERT_EQ(dev_activation_verify_timeout_seconds(false), 7);
+        ASSERT_EQ(dev_activation_verify_timeout_seconds(true), 7);
+        unsetenv("ZCL_DEV_ACTIVATION_VERIFY_TIMEOUT_S");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_stale_in_progress_refused(void)
 {
     int failures = 0;
@@ -1258,6 +1278,7 @@ int test_dev_activation(void)
     failures += test_resident_generation_cas_refuses();
     failures += test_auto_reindex_pending_blocks();
     failures += test_auto_reindex_override_allows();
+    failures += test_auto_reindex_recovery_timeout();
     failures += test_stale_in_progress_refused();
     failures += test_in_progress_marker_cleared();
     printf("=== dev_activation: %d failures ===\n", failures);

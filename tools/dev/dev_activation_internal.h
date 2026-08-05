@@ -38,9 +38,14 @@
  * post-restart readiness poll once systemctl has completed the transition;
  * the live schema-59 dev datadir measured 67.6 s from start to READY after an
  * unclean restart, so the former 60 s window false-rejected a healthy image.
+ * An explicitly-authorized crash-only recovery boot may rebuild/reconcile
+ * chainstate before RPC exists and gets a separate ten-minute window.  Keeping
+ * that exception on the marker-authorized path avoids making ordinary broken
+ * candidates take ten minutes to reject.
  */
 #define DEV_ACTIVATION_STOP_START_TIMEOUT_S 330
 #define DEV_ACTIVATION_VERIFY_TIMEOUT_S 120
+#define DEV_ACTIVATION_RECOVERY_VERIFY_TIMEOUT_S 600
 #define DEV_ACTIVATION_VERIFY_INTERVAL_MS 250
 
 /*
@@ -79,6 +84,7 @@ struct dev_activation_txn {
     int lock_fd;
     bool lock_held;
     bool activation_in_progress;
+    bool recovery_boot;
 };
 
 /* ── shared low-level helpers (dev_activation.c) ─────────────────────── */
@@ -172,6 +178,10 @@ void dev_activation_clear_in_progress(const struct dev_activation_txn *txn);
  * result->running_generation on success. Returns true on success. */
 bool dev_activation_verify_running(struct dev_activation_txn *txn,
                                    const char *expected);
+
+/* Select the normal or explicitly-authorized recovery readiness window,
+ * honoring the bounded test/operator override when present. */
+long dev_activation_verify_timeout_seconds(bool recovery_boot);
 
 /* Quarantine the candidate: write rejected/<gen>.json with `reason`. */
 void dev_activation_quarantine(const struct dev_activation_txn *txn,

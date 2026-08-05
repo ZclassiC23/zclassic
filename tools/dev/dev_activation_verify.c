@@ -32,6 +32,21 @@ static void dev_sleep_ms(long ms)
     nanosleep(&ts, NULL);
 }
 
+long dev_activation_verify_timeout_seconds(bool recovery_boot)
+{
+    long timeout_s = recovery_boot
+        ? DEV_ACTIVATION_RECOVERY_VERIFY_TIMEOUT_S
+        : DEV_ACTIVATION_VERIFY_TIMEOUT_S;
+    const char *ev = getenv("ZCL_DEV_ACTIVATION_VERIFY_TIMEOUT_S");
+    if (ev && *ev) {
+        char *end = NULL;
+        long v = strtol(ev, &end, 10);
+        if (end && *end == '\0' && v >= 0 && v <= 3600)
+            timeout_s = v;
+    }
+    return timeout_s;
+}
+
 bool dev_activation_verify_running(struct dev_activation_txn *txn,
                                    const char *expected)
 {
@@ -50,16 +65,10 @@ bool dev_activation_verify_running(struct dev_activation_txn *txn,
     if (!source_id[0])
         return false;
 
-    /* The verify window defaults to DEV_ACTIVATION_VERIFY_TIMEOUT_S; a
-     * hermetic-test override (mirroring the shell's ZCL_DEV_ACTIVATION_TIMEOUT)
-     * lets failure-path tests fail fast instead of burning the full window. */
-    long timeout_s = DEV_ACTIVATION_VERIFY_TIMEOUT_S;
-    const char *ev = getenv("ZCL_DEV_ACTIVATION_VERIFY_TIMEOUT_S");
-    if (ev && *ev) {
-        long v = strtol(ev, NULL, 10);
-        if (v >= 0)
-            timeout_s = v;
-    }
+    /* Ordinary generations fail quickly; only an explicit override of a
+     * pending crash-only marker receives the recovery-sized boot window. */
+    long timeout_s = dev_activation_verify_timeout_seconds(
+        txn->recovery_boot);
 
     txn->result->running_generation[0] = 0;
     int64_t deadline = platform_time_monotonic_us() +
