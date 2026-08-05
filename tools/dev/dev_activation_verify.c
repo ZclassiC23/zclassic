@@ -34,9 +34,9 @@ static void dev_sleep_ms(long ms)
 
 long dev_activation_verify_timeout_seconds(bool recovery_boot)
 {
-    long timeout_s = recovery_boot
-        ? DEV_ACTIVATION_RECOVERY_VERIFY_TIMEOUT_S
-        : DEV_ACTIVATION_VERIFY_TIMEOUT_S;
+    long timeout_s = DEV_ACTIVATION_VERIFY_TIMEOUT_S;
+    if (recovery_boot && DEV_ACTIVATION_RECOVERY_VERIFY_TIMEOUT_S > timeout_s)
+        timeout_s = DEV_ACTIVATION_RECOVERY_VERIFY_TIMEOUT_S;
     const char *ev = getenv("ZCL_DEV_ACTIVATION_VERIFY_TIMEOUT_S");
     if (ev && *ev) {
         char *end = NULL;
@@ -65,8 +65,8 @@ bool dev_activation_verify_running(struct dev_activation_txn *txn,
     if (!source_id[0])
         return false;
 
-    /* Ordinary generations fail quickly; only an explicit override of a
-     * pending crash-only marker receives the recovery-sized boot window. */
+    /* Both paths are bounded; recovery_boot remains a distinct policy input
+     * even when measured full-datadir startup currently gives both 600 s. */
     long timeout_s = dev_activation_verify_timeout_seconds(
         txn->recovery_boot);
 

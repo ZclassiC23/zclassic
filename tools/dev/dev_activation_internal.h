@@ -34,17 +34,14 @@
  * Bounded timeouts. The stop/start process window must OUTLIVE the dev unit's
  * TimeoutStopSec=300: killing `systemctl stop` earlier leaves systemd still
  * deactivating the unit and races the following start/probe. Keep 30 seconds
- * of control-plane headroom. The verify window (120 s) bounds the
- * post-restart readiness poll once systemctl has completed the transition;
- * the live schema-59 dev datadir measured 67.6 s from start to READY after an
- * unclean restart, so the former 60 s window false-rejected a healthy image.
- * An explicitly-authorized crash-only recovery boot may rebuild/reconcile
- * chainstate before RPC exists and gets a separate ten-minute window.  Keeping
- * that exception on the marker-authorized path avoids making ordinary broken
- * candidates take ten minutes to reject.
+ * of control-plane headroom. A full schema-59 datadir has now measured more
+ * than three minutes from start to RPC readiness on an ordinary restart (the
+ * 120 s window rejected both a healthy candidate and its healthy rollback).
+ * Give every full-generation boot the existing ten-minute bounded window;
+ * exact process identity and the readiness probe still reject bad images.
  */
 #define DEV_ACTIVATION_STOP_START_TIMEOUT_S 330
-#define DEV_ACTIVATION_VERIFY_TIMEOUT_S 120
+#define DEV_ACTIVATION_VERIFY_TIMEOUT_S 600
 #define DEV_ACTIVATION_RECOVERY_VERIFY_TIMEOUT_S 600
 #define DEV_ACTIVATION_VERIFY_INTERVAL_MS 250
 

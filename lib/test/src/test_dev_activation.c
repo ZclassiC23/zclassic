@@ -1150,11 +1150,13 @@ static int test_auto_reindex_override_allows(void)
     return failures;
 }
 
-static int test_auto_reindex_recovery_timeout(void)
+static int test_full_datadir_readiness_timeout(void)
 {
     int failures = 0;
-    TEST("dev_activation: authorized recovery uses a recovery-sized readiness window") {
+    TEST("dev_activation: ordinary and recovery boots allow measured full-datadir readiness") {
         unsetenv("ZCL_DEV_ACTIVATION_VERIFY_TIMEOUT_S");
+        ASSERT_EQ(DEV_ACTIVATION_VERIFY_TIMEOUT_S, 600);
+        ASSERT_EQ(DEV_ACTIVATION_RECOVERY_VERIFY_TIMEOUT_S, 600);
         ASSERT_EQ(dev_activation_verify_timeout_seconds(false),
                   DEV_ACTIVATION_VERIFY_TIMEOUT_S);
         ASSERT_EQ(dev_activation_verify_timeout_seconds(true),
@@ -1278,7 +1280,7 @@ int test_dev_activation(void)
     failures += test_resident_generation_cas_refuses();
     failures += test_auto_reindex_pending_blocks();
     failures += test_auto_reindex_override_allows();
-    failures += test_auto_reindex_recovery_timeout();
+    failures += test_full_datadir_readiness_timeout();
     failures += test_stale_in_progress_refused();
     failures += test_in_progress_marker_cleared();
     printf("=== dev_activation: %d failures ===\n", failures);
