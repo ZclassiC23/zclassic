@@ -856,7 +856,7 @@ static bool zsci_discovery_record(const char *kind, const char *science_root,
     json_push_kv_str(&input, "namespace", "science");
     if (strcmp(kind, "pointer") == 0)
         json_push_kv_str(&input, "semantic_root", science_root);
-    json_push_kv_str(&input, "blob_root", blob_root);
+    json_push_kv_str(&input, "transport_root", blob_root);
     json_push_kv_int(&input, "sequence", now > 0 ? now : 1);
     json_push_kv_int(&input, "not_before", now);
     json_push_kv_int(&input, "expiry", expiry);

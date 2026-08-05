@@ -717,7 +717,7 @@ static bool rpc_provider_route(const struct json_value *params, bool help,
                                struct json_value *result) {
   if (help) {
     json_set_str(result,
-                 "zcode_dht_provider_route {namespace,blob_root}");
+                 "zcode_dht_provider_route {namespace,transport_root}");
     return true;
   }
   const struct json_value *in = rpc_input(params);
@@ -725,9 +725,9 @@ static bool rpc_provider_route(const struct json_value *params, bool help,
   memset(&selector, 0, sizeof(selector));
   selector.kind = VCS_ZCODE_DHT_RECORD_PROVIDER;
   if (!input_namespace(in, selector.namespace_name) ||
-      !input_root(in, "blob_root", selector.root, false)) {
+      !input_root(in, "transport_root", selector.root, false)) {
     rpc_error(result, "INVALID_SELECTOR",
-              "canonical namespace and blob_root required");
+              "canonical namespace and transport_root required");
     return true;
   }
   uint64_t now = (uint64_t)platform_time_wall_time_t();

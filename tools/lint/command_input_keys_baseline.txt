@@ -19,7 +19,7 @@ zcode.science.publish mode    # discovery helper reads its private RPC object bu
 zcode.science.publish kind    # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish namespace # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish semantic_root # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
-zcode.science.publish blob_root # discovery helper reads a private RPC object; request->input never reaches that helper.
+zcode.science.publish transport_root # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish sequence # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish not_before # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish expiry  # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
