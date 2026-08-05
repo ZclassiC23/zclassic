@@ -15,8 +15,9 @@ tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 
 ## Current state
 
-**2026-08-04 — S7 generic discovery and local sovereignty COMPLETE; not
-deployed.** ZCODE now has one generic signed discovery substrate over the
+**2026-08-05 — S7.1 distributed record discovery and possession-backed
+replication COMPLETE; not deployed.** ZCODE now has one generic signed
+discovery substrate over the
 existing S6 Noise/`zpkgswm` sessions—no science-only carrier and no second
 socket stack. The exact 551-byte v1 record is one of PROVIDER, POINTER or
 STORAGE_ACK and binds network genesis, a canonical namespace, semantic and/or
@@ -24,8 +25,12 @@ transport roots, provider node ID, sequence, validity window, owner group
 where applicable, and the chain-bound delegated online signer. PROVIDER is a
 two-hour hint, never possession proof. POINTER is bounded to seven days
 (science publish uses one day so it remains inside the default delegation).
-STORAGE_ACK is bounded to seven days and is emitted only by an explicit
-operator publication after manifest/chunk verification.
+STORAGE_ACK is bounded to seven days and can be authored only by the package
+store after it parses and root-binds the manifest, reads and hashes every
+chunk, proves the complete transport root and confirms a local pin. A generic
+caller cannot mint an ACK; STORE_RESULT remains a distinct transport-admission
+response. Unpin, missing bytes, corruption or failed revalidation stops
+renewal, so durability falls when the last valid ACKs expire.
 
 Records use `zcode/dht/records.v1`, a strict canonical projection that cold
 reloads active records and preserved conflicts byte-for-byte and prunes
@@ -35,7 +40,15 @@ records/peer. It reuses S6 authentication, independent replay namespaces,
 4/s rate with burst 8, deadlines, routing, unlock/relock generation checks and
 the one global three-query budget. Malformed, oversized, cross-network,
 stale, replayed, expired and unauthorized traffic fails closed. Records are
-application evidence only and never touch consensus.
+application evidence only and never touch consensus. The cache is not network
+discovery: a domain-separated key binds network, record kind, namespace and
+selected root, then the existing `k=16`, `alpha=3`, 64-candidate DHT iterates
+signed record queries until the closest responsible set stabilizes, the
+deadline expires or the verified-result cap is met. Failed members of the
+closest 16 admit candidates 17–64. Public begin/poll/cancel uses opaque lookup
+and owner tokens; synchronous provider/science callers wrap that same state
+machine. Results paginate deterministically to 64, prefer distinct provider
+IDs and preserve same-sequence conflicts separately.
 
 The one local sovereignty engine is consulted for DISCOVER, FETCH, STORE,
 INDEX, SERVE, FORWARD and EXECUTE. Its 1,024-rule canonical policy supports
@@ -46,46 +59,54 @@ shared advisory rules are opt-in and cannot create a global ban. The read
 surface exposes only rule count, opt-in state and a digest—private rules and
 keys stay redacted—and loading an absent policy creates no directories.
 
-Typed surfaces are `zcode.network.providers`, `zcode.network.publish`
+Typed surfaces are `zcode.network.records.begin|poll|cancel`,
+`zcode.network.providers`, `zcode.network.publish`
 (plan/commit), `zcode.network.policy.list|mutate` (redacted plus plan/commit),
 `zcode.network.replication`, and plan/commit `zcode.package.pin|unpin`.
 Replication targets up to eight providers and says `durable` only after five
 live ACKs from distinct provider IDs across three declared owner groups. That
 is declared diversity, explicitly not proof of separate operators, machines
-or failure domains; partial success and expired ACKs remain visible.
+or failure domains; partial success and expired ACKs remain visible. Publish
+targets the closest eligible DHT nodes and persists key-free renewal intents.
+Restart uses a fresh online delegation, applies bounded backoff/expiry and
+halts forwarding immediately when local policy changes.
 
 The root-only science gap is closed. `zcode.science.publish` creates the
 verified one-chunk transport object, one-day science POINTER and two-hour
-PROVIDER. In `make test-science-acceptance`, B begins with only A's science
-root, resolves signed records through S6, fetches through the unchanged swarm
-manifest/chunk verifier, re-derives the science root from bytes, admits it and
-projects `study.show found=true`. Both nodes then cold restart; after direct
-SQL deletion of all six science projection tables, rebuild is byte-identical
-and CAS counts remain A=20/B=21. The prerequisite seven-identity DHT proof also
-passes sparse multi-hop and broken-nearest recovery, eight simultaneous
-callers with exactly three queries, canonical restart and zero-peer cold
-bootstrap. Focused hostile service tests add lying/absent/corrupt provider
-fallback and prove an exact-root ban stops store/serve/forward on one node
-while an alternate node succeeds.
+PROVIDER. Fetch deterministically retains pointer conflicts, rechecks local
+policy for semantic root, transport root, publisher ZID and service type,
+discovers provider records, accepts only chain-bound ZENDP reachability, dials
+through connman, and requires a fresh Noise/delegation-authenticated session.
+The restricted swarm verifier can fetch only the selected transport root and
+falls through absent, timed-out, lying or corrupt providers.
 
-Final receipts include the exact root-only science gate above; focused DHT,
-Noise, transport, connman, argv, RPC, store, market and yardsale regressions;
-the focused ASan+UBSan DHT/model gate with zero suppressions; all 132 lint
-gates; full-program LTO; and the cold uncached suite (900 registered, 891 run,
-0 cached, 9 parameter-heavy groups gated, 0 failed, 19 explicit self-skips;
-87.1 s on 32 workers). Same-tree reproducibility produced two identical
-22,080,200-byte binaries at SHA3-256
-`ef1d4383ee7a8d3f34b48314209680da5f8b9263bab3fb364e490b6c3f234910`;
-different-length builder paths produced two identical 22,080,280-byte binaries
-at `95ec4b038c763be1a799f528e134365f8e3dfc9d6373fabde63914275f966dba`.
-The mandatory pre-push receipt is recorded in the S7 assignment document.
+`make test-science-acceptance` is exact and green. Its prerequisite
+seven-identity daemon proof passes sparse multi-hop and broken-nearest recovery,
+eight simultaneous callers with exactly three live queries, canonical restart
+and zero-peer cold bootstrap. The two-daemon science phase starts B with only
+A's semantic root, resolves the signed POINTER and PROVIDER, fetches through
+the unchanged manifest/chunk verifier, re-derives the science root from bytes,
+admits it and projects `study.show found=true`. Both nodes cold restart; after
+direct SQL deletion of all six science projection tables, rebuild is
+byte-identical and CAS counts remain A=20/B=21. A separate hermetic 12-node
+sparse proof covers cache/peer-DB/direct-publisher absence, multi-hop lookup,
+closest-node publication, candidate-frontier escape, bounded traffic, restart
+renewal, physical CAS-byte loss, ACK non-renewal and a one-node root ban while
+an alternate path remains usable. These are complementary proofs, not a claim
+of one 12-daemon deployed topology.
 
-Integration note: concurrent transaction/market work through `ec09ed566`
-expanded the boot RPC catalog past its former 256-entry static bound. The
-combined acceptance caught the fail-closed abort before RPC warmup; the table
-remains statically bounded but now has 512 entries, and the overflow diagnostic
-derives the exact cap. Seven clean acceptance daemons then booted and the full
-root-only proof passed on the integrated tree.
+Final receipts include the exact DHT and root-only science gates above; all
+eight selected adversarial groups; focused DHT, record, swarm, science, store,
+market and yardsale regressions; the focused ASan+UBSan DHT/model gate with
+zero suppressions; all 132 lint gates; and full-program LTO. The cold uncached
+suite registered 902 groups, ran 893, cached 0, policy-gated 9 parameter-heavy
+groups, failed 0 and reported 19 explicit self-skip markers (85.7 s, 32
+workers). Same-tree reproducibility produced two identical 22,174,440-byte
+binaries at SHA3-256
+`2c5ba2b0fdf6f258031739662f199737e912b6d28ec6442c86b36a1819b5b7e4`;
+different-length builder paths produced two identical 22,174,520-byte binaries
+at `c238324d4c12a1605cc3dbc4ff3c596e58ac9d6640f8c490571d03a504eab0a0`.
+The mandatory pre-push receipt is recorded in the S7.1 assignment document.
 
 Honest limits: signed discovery records are expiring hints, not content truth,
 availability proof, scientific acceptance or operator independence. Unknown

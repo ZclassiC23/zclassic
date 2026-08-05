@@ -5,7 +5,7 @@
 #define ZCL_VCS_ZCODE_DHT_MSGS_H
 
 #include "vcs/zcode_dht.h"
-#include "vcs/zcode_dht_record.h"
+#include "vcs/zcode_dht_record_store.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -28,10 +28,11 @@
     (2u + VCS_ZCODE_DHT_RECORD_NAMESPACE_BYTES + 32u)
 #define VCS_ZCODE_DHT_FIND_RECORD_WIRE_BYTES \
     (VCS_ZCODE_DHT_MSGS_HEADER_BYTES + VCS_ZCODE_DHT_MSGS_AUTH_BYTES + \
-     VCS_ZCODE_DHT_RECORD_SELECTOR_BYTES + VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES)
+     VCS_ZCODE_DHT_RECORD_SELECTOR_BYTES + 1u + \
+     VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES)
 #define VCS_ZCODE_DHT_RECORDS_MAX_WIRE_BYTES \
     (VCS_ZCODE_DHT_MSGS_HEADER_BYTES + VCS_ZCODE_DHT_MSGS_AUTH_BYTES + \
-     VCS_ZCODE_DHT_RECORD_SELECTOR_BYTES + 1u + \
+     VCS_ZCODE_DHT_RECORD_SELECTOR_BYTES + 3u + \
      VCS_ZCODE_DHT_RECORDS_PER_FRAME * VCS_ZCODE_DHT_RECORD_WIRE_BYTES + \
      VCS_ZCODE_DHT_MSG_SIGNATURE_BYTES)
 #define VCS_ZCODE_DHT_STORE_RECORD_WIRE_BYTES \
@@ -91,11 +92,14 @@ struct vcs_zcode_dht_msg_nodes {
 struct vcs_zcode_dht_msg_find_record {
     VCS_ZCODE_DHT_MSG_AUTH_FIELDS;
     struct vcs_zcode_dht_record_selector selector;
+    uint8_t page_offset;
 };
 
 struct vcs_zcode_dht_msg_records {
     VCS_ZCODE_DHT_MSG_AUTH_FIELDS;
     struct vcs_zcode_dht_record_selector selector;
+    uint8_t page_offset;
+    uint8_t next_offset;
     uint32_t record_count;
     struct vcs_zcode_dht_record records[VCS_ZCODE_DHT_RECORDS_PER_FRAME];
 };

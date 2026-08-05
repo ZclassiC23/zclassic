@@ -51,6 +51,7 @@ struct service_query {
   uint64_t peer_id, generation, deadline_mono, lookup_id;
   uint64_t record_operation_id;
   struct vcs_zcode_dht_record_selector record_selector;
+  uint8_t record_page_offset;
   uint8_t record_digest[32];
 };
 
@@ -101,15 +102,49 @@ struct service_record_operation {
   enum vcs_zcode_dht_record_operation_state state;
   enum vcs_zcode_dht_store_status store_status;
   struct vcs_zcode_dht_record_selector selector;
+  uint8_t page_offset, next_offset;
   uint32_t record_count;
   struct vcs_zcode_dht_record records[VCS_ZCODE_DHT_RECORDS_PER_FRAME];
 };
 
+enum service_publication_phase {
+  SERVICE_PUBLICATION_NEEDS_LOOKUP = 0,
+  SERVICE_PUBLICATION_ROUTING,
+  SERVICE_PUBLICATION_STORING,
+  SERVICE_PUBLICATION_WAITING
+};
+
 struct service_publication {
-  bool used;
-  uint8_t attempted_peer_slots[8];
-  uint8_t attempts;
+  bool used, possession_current;
+  enum service_publication_phase phase;
   struct vcs_zcode_dht_record record;
+  uint64_t lifetime_s, lookup_id, next_attempt_wall, backoff_s;
+  uint8_t node_ids[VCS_ZCODE_DHT_K][32];
+  uint64_t child_operation_ids[VCS_ZCODE_DHT_K];
+  bool node_complete[VCS_ZCODE_DHT_K];
+  uint32_t node_count, active_children, attempts, successes;
+};
+
+enum service_record_discovery_phase {
+  SERVICE_RECORD_DISCOVERY_ROUTING = 0,
+  SERVICE_RECORD_DISCOVERY_QUERYING
+};
+
+struct service_record_discovery {
+  bool used;
+  uint64_t id, lookup_id, deadline_mono;
+  enum vcs_zcode_dht_record_operation_state state;
+  enum service_record_discovery_phase phase;
+  struct vcs_zcode_dht_record_selector selector;
+  uint32_t routing_rounds, xor_progress;
+  uint32_t node_count, next_node, active_children, nodes_queried;
+  uint8_t node_ids[VCS_ZCODE_DHT_K][32];
+  uint64_t child_operation_ids[VCS_ZCODE_DHT_K];
+  uint8_t node_page_offsets[VCS_ZCODE_DHT_K];
+  bool node_complete[VCS_ZCODE_DHT_K];
+  uint32_t record_count;
+  struct vcs_zcode_dht_record
+      records[VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS];
 };
 
 struct vcs_zcode_dht_service {
@@ -135,10 +170,14 @@ struct vcs_zcode_dht_service {
       record_operations[VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS];
   struct service_publication
       publications[VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS];
+  struct service_record_discovery
+      discoveries[VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS];
   struct vcs_zcode_dht_record_store *record_store;
   uint32_t outbound_count;
   uint64_t serial, next_lookup_id, next_record_operation_id;
+  uint64_t next_record_discovery_id;
   bool records_dirty;
+  bool publication_intents_dirty;
   bool persistence_loaded, persistence_dirty;
   uint64_t dirty_since_mono, persistence_generation;
   uint64_t persistence_load_count, persistence_save_count;
@@ -173,6 +212,8 @@ bool vcs_zcode_dht_lookup_candidate_authenticated(
     enum vcs_zcode_dht_candidate_state state);
 uint32_t
 vcs_zcode_dht_lookup_frontier_count(const struct service_lookup *lookup);
+bool vcs_zcode_dht_lookup_candidate_in_frontier(
+    const struct service_lookup *lookup, uint32_t candidate_index);
 struct service_peer *vcs_zcode_dht_lookup_peer_for_node(
     struct vcs_zcode_dht_service *service, const uint8_t node_id[32]);
 bool vcs_zcode_dht_lookup_insert(
@@ -207,6 +248,13 @@ void vcs_zcode_dht_service_record_query_finish(
     enum query_outcome outcome);
 void vcs_zcode_dht_service_publication_schedule(
     struct vcs_zcode_dht_service *service, struct vcs_zcode_dht_time now);
+bool vcs_zcode_dht_publications_load(struct vcs_zcode_dht_service *service,
+                                     uint64_t now_unix);
+bool vcs_zcode_dht_publications_save(
+    const char *datadir, const struct service_publication *publications,
+    char *error_out, size_t error_capacity);
+struct service_record_operation *vcs_zcode_dht_records_operation_find(
+    struct vcs_zcode_dht_service *service, uint64_t id);
 bool vcs_zcode_dht_message_is_request(enum vcs_zcode_dht_msg_kind kind);
 const uint8_t *vcs_zcode_dht_message_query_id(
     const struct vcs_zcode_dht_msg *message);
@@ -216,5 +264,11 @@ uint64_t vcs_zcode_dht_message_generation(
     const struct vcs_zcode_dht_msg *message);
 bool vcs_zcode_dht_response_matches_query(
     enum vcs_zcode_dht_msg_kind message_kind, enum query_kind query_kind);
+bool vcs_zcode_dht_records_policy_allows(
+    const struct vcs_zcode_dht_service *service,
+    enum vcs_zcode_sovereignty_action action,
+    const struct vcs_zcode_dht_record *record);
+int vcs_zcode_dht_records_canonical_compare(const void *left,
+                                             const void *right);
 
 #endif /* ZCL_VCS_ZCODE_DHT_SERVICE_INTERNAL_H */

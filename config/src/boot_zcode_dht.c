@@ -17,6 +17,7 @@
 #include "util/sync.h"
 #include "validation/chainstate.h"
 #include "vcs/zcode_dht_service.h"
+#include "vcs/package_store.h"
 #include "json/json.h"
 
 #include <stdatomic.h>
@@ -35,7 +36,6 @@ static uint64_t g_last_create_attempt_mono;
 static bool g_create_in_progress;
 static uint8_t g_dht_genesis[32];
 static size_t g_cold_contact_cursor;
-
 static struct vcs_zcode_dht_time dht_now(void) {
   struct vcs_zcode_dht_time now = {
       .wall_unix = (uint64_t)platform_time_wall_time_t(),
@@ -43,7 +43,6 @@ static struct vcs_zcode_dht_time dht_now(void) {
   };
   return now;
 }
-
 static void dht_status_json_locked(struct json_value *out) {
   struct vcs_zcode_dht_service_status status;
   vcs_zcode_dht_service_status(g_dht, &status);
@@ -57,33 +56,21 @@ static void dht_status_json_locked(struct json_value *out) {
   json_push_kv_int(out, "k", VCS_ZCODE_DHT_K);
   json_push_kv_int(out, "alpha", VCS_ZCODE_DHT_ALPHA);
   json_push_kv_int(out, "max_contacts", VCS_ZCODE_DHT_MAX_CONTACTS);
-  json_push_kv_int(out, "max_authenticated_peers",
-                   VCS_ZCODE_DHT_SERVICE_MAX_PEERS);
-  json_push_kv_int(out, "max_queued_lookups",
-                   VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS);
-  json_push_kv_int(out, "max_active_queries",
-                   VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES);
-  json_push_kv_int(out, "max_lookup_candidates",
-                   VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES);
-  json_push_kv_int(out, "lookup_ceiling_seconds",
-                   VCS_ZCODE_DHT_LOOKUP_CEILING_S);
-  json_push_kv_int(out, "replay_entries_per_peer",
-                   VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER);
-  json_push_kv_int(out, "replay_retention_seconds",
-                   VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS);
-  json_push_kv_int(out, "inbound_rate_per_second",
-                   VCS_ZCODE_DHT_SERVICE_RATE_PER_SECOND);
+  json_push_kv_int(out, "max_authenticated_peers", VCS_ZCODE_DHT_SERVICE_MAX_PEERS);
+  json_push_kv_int(out, "max_queued_lookups", VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS);
+  json_push_kv_int(out, "max_active_queries", VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES);
+  json_push_kv_int(out, "max_lookup_candidates", VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES);
+  json_push_kv_int(out, "lookup_ceiling_seconds", VCS_ZCODE_DHT_LOOKUP_CEILING_S);
+  json_push_kv_int(out, "replay_entries_per_peer", VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER);
+  json_push_kv_int(out, "replay_retention_seconds", VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS);
+  json_push_kv_int(out, "inbound_rate_per_second", VCS_ZCODE_DHT_SERVICE_RATE_PER_SECOND);
   json_push_kv_int(out, "inbound_rate_burst", VCS_ZCODE_DHT_SERVICE_RATE_BURST);
-  json_push_kv_int(out, "max_outbound_frames",
-                   VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND);
-  json_push_kv_int(out, "max_record_operations",
-                   VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS);
-  json_push_kv_int(out, "max_records_per_peer",
-                   VCS_ZCODE_DHT_SERVICE_MAX_RECORDS_PER_PEER);
+  json_push_kv_int(out, "max_outbound_frames", VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND);
+  json_push_kv_int(out, "max_record_operations", VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS);
+  json_push_kv_int(out, "max_records_per_peer", VCS_ZCODE_DHT_SERVICE_MAX_RECORDS_PER_PEER);
   json_push_kv_int(out, "contacts", status.contacts);
   json_push_kv_int(out, "buckets_used", status.buckets_used);
-  json_push_kv_int(out, "connected_authenticated",
-                   status.connected_authenticated);
+  json_push_kv_int(out, "connected_authenticated", status.connected_authenticated);
   json_push_kv_int(out, "cold_contacts", status.cold_contacts);
   json_push_kv_int(out, "pending_probes", status.pending_probes);
   static const char *const probe_names[] = {
@@ -131,6 +118,8 @@ static void dht_status_json_locked(struct json_value *out) {
   json_push_kv_int(out, "signed_records", status.signed_records);
   json_push_kv_int(out, "active_record_operations",
                    status.active_record_operations);
+  json_push_kv_int(out, "publication_intents", status.publication_intents);
+  json_push_kv_int(out, "active_publications", status.active_publications);
   json_push_kv_int(out, "unauthenticated_expired",
                    (int64_t)status.unauthenticated_expired);
   json_push_kv_int(out, "duplicate_sessions_retired",
@@ -511,6 +500,27 @@ void boot_zcode_dht_periodic(struct msg_processor *mp,
   if (dht)
     (void)dht_chain_prepare(svc);
 
+  /* Full-byte possession checks may read every package chunk. Snapshot the
+   * roots under the DHT lock, prove them with no composition-root lock held,
+   * then apply only if the service generation is unchanged. */
+  uint8_t ack_roots[VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS][32];
+  bool ack_valid[VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS] = {0};
+  size_t ack_count = 0;
+  uint64_t ack_generation = 0;
+  struct vcs_zcode_dht_service *ack_service = NULL;
+  dht_lock();
+  if (g_dht) {
+    ack_service = g_dht;
+    ack_generation = g_dht_generation;
+    ack_count = vcs_zcode_dht_service_storage_ack_roots(
+        g_dht, ack_roots, VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS);
+  }
+  zcl_mutex_unlock(&g_dht_lock);
+  struct vcs_package_store *package_store = vcs_package_store_global();
+  for (size_t i = 0; i < ack_count; i++)
+    ack_valid[i] = vcs_package_store_verify_possession(
+        package_store, ack_roots[i], true);
+
   struct vcs_zcode_dht_peer_view cold[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
   size_t cold_count = 0;
   struct vcs_zcode_dht_persistence_snapshot *save_snapshot = NULL;
@@ -522,6 +532,10 @@ void boot_zcode_dht_periodic(struct msg_processor *mp,
     session_ready[i] = dht_snapshot(nodes[i], &sessions[i]);
   dht_lock();
   dht = g_dht;
+  if (dht == ack_service && g_dht_generation == ack_generation)
+    for (size_t i = 0; i < ack_count; i++)
+      vcs_zcode_dht_service_storage_ack_validation(
+          dht, ack_roots[i], ack_valid[i]);
   struct vcs_zcode_dht_live_session live[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
   size_t live_count = 0;
   for (size_t i = 0; dht && i < count; i++) {
@@ -621,6 +635,47 @@ bool boot_zcode_dht_lookup_cancel(uint64_t lookup_id, uint64_t generation) {
   return ok;
 }
 
+bool boot_zcode_dht_record_discovery_begin(
+    const struct vcs_zcode_dht_record_selector *selector,
+    struct vcs_zcode_dht_time now, uint64_t *operation_id,
+    uint64_t *generation) {
+  if (!selector || !operation_id || !generation)
+    return false;
+  dht_lock();
+  bool ok = g_dht && vcs_zcode_dht_service_record_discovery_begin(
+                         g_dht, selector, now, operation_id);
+  if (ok)
+    *generation = g_dht_generation;
+  zcl_mutex_unlock(&g_dht_lock);
+  return ok;
+}
+
+bool boot_zcode_dht_record_discovery_poll(
+    uint64_t operation_id, uint64_t generation,
+    struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record_discovery_result *out) {
+  if (!operation_id || !generation || !out)
+    return false;
+  dht_lock();
+  bool ok = g_dht && generation == g_dht_generation &&
+            vcs_zcode_dht_service_record_discovery_poll(
+                g_dht, operation_id, now, out);
+  zcl_mutex_unlock(&g_dht_lock);
+  return ok;
+}
+
+bool boot_zcode_dht_record_discovery_cancel(uint64_t operation_id,
+                                            uint64_t generation) {
+  if (!operation_id || !generation)
+    return false;
+  dht_lock();
+  bool ok = g_dht && generation == g_dht_generation &&
+            vcs_zcode_dht_service_record_discovery_cancel(g_dht,
+                                                           operation_id);
+  zcl_mutex_unlock(&g_dht_lock);
+  return ok;
+}
+
 bool boot_zcode_dht_peers(uint64_t wall_now,
                           struct vcs_zcode_dht_peer_view *out, size_t max,
                           size_t offset, size_t *count_out) {
@@ -644,6 +699,18 @@ bool boot_zcode_dht_record_query(
   bool ok = g_dht && vcs_zcode_dht_service_enabled(g_dht);
   *count_out = ok ? vcs_zcode_dht_service_record_local_query(
                         g_dht, wall_now, selector, out, max) : 0;
+  zcl_mutex_unlock(&g_dht_lock);
+  return ok;
+}
+bool boot_zcode_dht_provider_route(
+    uint64_t wall_now,
+    const struct vcs_zcode_dht_record_selector *selector,
+    struct vcs_zcode_dht_provider_route *out) {
+  if (!selector || !out)
+    return false;
+  dht_lock();
+  bool ok = g_dht && vcs_zcode_dht_service_provider_route(
+                         g_dht, wall_now, selector, out);
   zcl_mutex_unlock(&g_dht_lock);
   return ok;
 }
@@ -671,6 +738,35 @@ enum vcs_zcode_dht_record_store_result boot_zcode_dht_record_publish_commit(
   return result;
 }
 
+bool boot_zcode_dht_storage_ack_plan(
+    const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
+    struct vcs_zcode_dht_record *record_out) {
+  struct vcs_package_store *store = vcs_package_store_global();
+  if (!spec || !vcs_package_store_verify_possession(
+                   store, spec->transport_root, true))
+    return false;
+  dht_lock();
+  bool ok = g_dht && vcs_zcode_dht_storage_ack_plan_verified(
+                         g_dht, spec, plan_token, record_out);
+  zcl_mutex_unlock(&g_dht_lock);
+  return ok;
+}
+enum vcs_zcode_dht_record_store_result boot_zcode_dht_storage_ack_commit(
+    const struct vcs_zcode_dht_publish_spec *spec,
+    const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record *record_out) {
+  struct vcs_package_store *store = vcs_package_store_global();
+  if (!spec || !vcs_package_store_verify_possession(
+                   store, spec->transport_root, true))
+    return VCS_ZCODE_DHT_RECORD_STORE_INVALID;
+  dht_lock();
+  enum vcs_zcode_dht_record_store_result result =
+      g_dht ? vcs_zcode_dht_storage_ack_commit_verified(
+                  g_dht, spec, plan_token, now, record_out)
+            : VCS_ZCODE_DHT_RECORD_STORE_INVALID;
+  zcl_mutex_unlock(&g_dht_lock);
+  return result;
+}
 bool boot_zcode_dht_dump_state_json(struct json_value *out, const char *key) {
   if (!out)
     return false;

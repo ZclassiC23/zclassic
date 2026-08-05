@@ -15,6 +15,7 @@
 #include "validation/main_constants.h"
 #include "vcs/zcode_dht.h"
 #include "vcs/zcode_dht_identity.h"
+#include "vcs/zcode_dht_service.h"
 #include "json/json.h"
 
 #include <errno.h>
@@ -448,9 +449,12 @@ static void zdn_forward(const struct zcl_command_request *request,
   json_free(&body);
 }
 
-static void zdn_find_wrapper(const struct zcl_command_request *request,
-                             struct zcl_command_reply *reply) {
-  const char *begin_method = "zcode_dht_find_begin";
+static void zdn_async_wrapper(const struct zcl_command_request *request,
+                              struct zcl_command_reply *reply,
+                              const char *begin_method,
+                              const char *poll_method,
+                              const char *cancel_method,
+                              uint64_t deadline_seconds) {
   struct json_value body;
   if (!zdn_rpc_body(request->input, reply, begin_method, &body))
     return;
@@ -474,14 +478,14 @@ static void zdn_find_wrapper(const struct zcl_command_request *request,
   json_free(&body);
 
   int64_t deadline = platform_time_monotonic_ms() +
-                     (int64_t)(VCS_ZCODE_DHT_LOOKUP_CEILING_S + 5) * 1000;
+                     (int64_t)deadline_seconds * 1000;
   for (;;) {
     struct json_value poll;
     json_init(&poll);
     json_set_object(&poll);
     json_push_kv_str(&poll, "lookup_id", lookup_copy);
     json_push_kv_str(&poll, "owner_token", owner_copy);
-    if (!zdn_rpc_body(&poll, reply, "zcode_dht_find_poll", &body)) {
+    if (!zdn_rpc_body(&poll, reply, poll_method, &body)) {
       json_free(&poll);
       return;
     }
@@ -489,7 +493,7 @@ static void zdn_find_wrapper(const struct zcl_command_request *request,
     const char *state = json_get_str(json_get(&body, "state"));
     if (!json_get_bool_or(&body, "ok", false) || !state ||
         strcmp(state, "pending") != 0) {
-      zdn_apply_body(reply, &body, "zcode_dht_find_poll");
+      zdn_apply_body(reply, &body, poll_method);
       json_free(&body);
       return;
     }
@@ -501,12 +505,12 @@ static void zdn_find_wrapper(const struct zcl_command_request *request,
       json_push_kv_str(&cancel, "lookup_id", lookup_copy);
       json_push_kv_str(&cancel, "owner_token", owner_copy);
       struct json_value ignored;
-      if (zdn_rpc_body(&cancel, reply, "zcode_dht_find_cancel", &ignored))
+      if (zdn_rpc_body(&cancel, reply, cancel_method, &ignored))
         json_free(&ignored);
       json_free(&cancel);
       zdn_fail(reply, "LOOKUP_TIMEOUT", "execute",
                "lookup capability expired before a terminal poll",
-               "zcode_dht_find_poll");
+               poll_method);
       return;
     }
     platform_sleep_ms(50);
@@ -528,7 +532,9 @@ void zcl_native_handle_zcode_network_peers(
 void zcl_native_handle_zcode_network_find(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply) {
-  zdn_find_wrapper(request, reply);
+  zdn_async_wrapper(request, reply, "zcode_dht_find_begin",
+                    "zcode_dht_find_poll", "zcode_dht_find_cancel",
+                    VCS_ZCODE_DHT_LOOKUP_CEILING_S + 5u);
 }
 
 void zcl_native_handle_zcode_network_find_begin(
@@ -549,6 +555,33 @@ void zcl_native_handle_zcode_network_find_cancel(
   zdn_forward(request, reply, "zcode_dht_find_cancel");
 }
 
+void zcl_native_handle_zcode_network_records(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply) {
+  zdn_async_wrapper(request, reply, "zcode_dht_record_begin",
+                    "zcode_dht_record_poll", "zcode_dht_record_cancel",
+                    VCS_ZCODE_DHT_LOOKUP_CEILING_S +
+                        VCS_ZCODE_DHT_SERVICE_QUERY_TIMEOUT_S + 5u);
+}
+
+void zcl_native_handle_zcode_network_records_begin(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply) {
+  zdn_forward(request, reply, "zcode_dht_record_begin");
+}
+
+void zcl_native_handle_zcode_network_records_poll(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply) {
+  zdn_forward(request, reply, "zcode_dht_record_poll");
+}
+
+void zcl_native_handle_zcode_network_records_cancel(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply) {
+  zdn_forward(request, reply, "zcode_dht_record_cancel");
+}
+
 void zcl_native_handle_zcode_network_providers(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply) {
@@ -561,10 +594,9 @@ void zcl_native_handle_zcode_network_providers(
   else
     json_set_object(&input);
   json_push_kv_str(&input, "kind", "provider");
-  json_push_kv_str(&input, "operation", "records");
   struct zcl_command_request forwarded = *request;
   forwarded.input = &input;
-  zdn_forward(&forwarded, reply, "zcode_dht_status");
+  zcl_native_handle_zcode_network_records(&forwarded, reply);
   json_free(&input);
 }
 
@@ -584,6 +616,12 @@ void zcl_native_handle_zcode_network_publish(
   forwarded.input = &input;
   zdn_forward(&forwarded, reply, "zcode_dht_status");
   json_free(&input);
+}
+
+void zcl_native_handle_zcode_network_storage_ack(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply) {
+  zdn_forward(request, reply, "zcode_dht_storage_ack");
 }
 
 void zcl_native_handle_zcode_network_replication(

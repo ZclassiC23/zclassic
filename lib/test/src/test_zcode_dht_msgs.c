@@ -206,6 +206,7 @@ static int test_record_frames(void)
         ASSERT(fixture_init(&f, &chain_calls));
         struct vcs_zcode_dht_msg_records records;
         ASSERT(fixture_auth_record(&f, &records));
+        records.page_offset = 8;
         uint8_t wire[VCS_ZCODE_DHT_MAX_FRAME_BYTES + 1];
         size_t len = 0;
         ASSERT_EQ(vcs_zcode_dht_msg_serialize_records(
@@ -217,6 +218,8 @@ static int test_record_frames(void)
                   VCS_ZCODE_DHT_OK);
         ASSERT_EQ(parsed.kind, VCS_ZCODE_DHT_MSG_RECORDS);
         ASSERT_EQ(parsed.records.record_count, 1);
+        ASSERT_EQ(parsed.records.page_offset, 8);
+        ASSERT_EQ(parsed.records.next_offset, 0);
         ASSERT(memcmp(parsed.records.records[0].transport_root,
                       records.records[0].transport_root, 32) == 0);
 
@@ -227,6 +230,7 @@ static int test_record_frames(void)
         fill_query(find.query_id);
         find.delegation = f.delegation;
         find.selector = records.selector;
+        find.page_offset = 8;
         ASSERT_EQ(vcs_zcode_dht_msg_serialize_find_record(
                       &find, f.transcript, f.online_seed, wire,
                       sizeof(wire), &len),
@@ -234,6 +238,20 @@ static int test_record_frames(void)
         ASSERT_EQ(len, VCS_ZCODE_DHT_FIND_RECORD_WIRE_BYTES);
         ASSERT_EQ(vcs_zcode_dht_msg_parse(wire, len, &f.verify, &parsed),
                   VCS_ZCODE_DHT_OK);
+        ASSERT_EQ(parsed.find_record.page_offset, 8);
+
+        find.page_offset = 1;
+        ASSERT_EQ(vcs_zcode_dht_msg_serialize_find_record(
+                      &find, f.transcript, f.online_seed, wire,
+                      sizeof(wire), &len),
+                  VCS_ZCODE_DHT_ERR_WIRE_ORDER);
+        find.page_offset = 8;
+        records.next_offset = 17;
+        ASSERT_EQ(vcs_zcode_dht_msg_serialize_records(
+                      &records, f.transcript, f.online_seed, wire,
+                      sizeof(wire), &len),
+                  VCS_ZCODE_DHT_ERR_WIRE_ORDER);
+        records.next_offset = 0;
 
         struct vcs_zcode_dht_msg_store_record store;
         memset(&store, 0, sizeof(store));

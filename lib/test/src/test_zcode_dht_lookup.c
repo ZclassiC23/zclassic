@@ -151,6 +151,36 @@ _test_next:;
   return failures;
 }
 
+static int test_terminal_frontier_escape(void) {
+  int failures = 0;
+  TEST("zcode dht lookup: terminal closest-16 cannot clog wider frontier") {
+    struct service_lookup lookup;
+    memset(&lookup, 0, sizeof(lookup));
+    memset(lookup.target, 0, sizeof(lookup.target));
+    lookup.target[0] = 0x20;
+    lookup.target[31] = 1;
+    uint8_t id[32];
+    for (uint32_t value = 1; value <= 32; value++) {
+      hostile_id(id, value);
+      ASSERT(vcs_zcode_dht_lookup_insert(
+          &lookup, id, VCS_ZCODE_DHT_CANDIDATE_UNVERIFIED, 0));
+    }
+    for (uint32_t i = 0; i < VCS_ZCODE_DHT_K; i++)
+      lookup.candidates[i].state =
+          i & 1u ? VCS_ZCODE_DHT_CANDIDATE_FAILED
+                 : VCS_ZCODE_DHT_CANDIDATE_UNREACHABLE;
+
+    ASSERT_EQ(vcs_zcode_dht_lookup_frontier_count(&lookup), VCS_ZCODE_DHT_K);
+    for (uint32_t i = 0; i < VCS_ZCODE_DHT_K; i++)
+      ASSERT(!vcs_zcode_dht_lookup_candidate_in_frontier(&lookup, i));
+    for (uint32_t i = VCS_ZCODE_DHT_K; i < 2u * VCS_ZCODE_DHT_K; i++)
+      ASSERT(vcs_zcode_dht_lookup_candidate_in_frontier(&lookup, i));
+    PASS();
+  }
+_test_next:;
+  return failures;
+}
+
 static int test_saturated_probe_wait(void) {
   int failures = 0;
   TEST("zcode dht lookup: saturated service never evicts unprobed incumbent") {
@@ -223,6 +253,7 @@ _test_next:;
 
 int test_zcode_dht_lookup(void) {
   int failures = test_candidate_pool();
+  failures += test_terminal_frontier_escape();
   failures += test_saturated_probe_wait();
   return failures;
 }

@@ -273,6 +273,14 @@ bool vcs_package_store_package_status(
     struct vcs_package_store *store, const uint8_t package_root[32],
     struct vcs_package_store_status *out);
 
+/* Expensive possession proof for STORAGE_ACK authorship. Requires a complete
+ * package (and, when requested, a current local pin), re-parses and root-binds
+ * the manifest, reads every chunk, re-hashes every coordinate, then rechecks
+ * derived status to close unpin/eviction races. */
+bool vcs_package_store_verify_possession(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    bool require_pinned);
+
 /* Read-only CAS presence probe, addressed by DIRECTORY rather than by an
  * open store. vcs_package_store_open() runs the mutating recovery sweep,
  * so a read-only projection over <datadir>/zcode (the property catalog,

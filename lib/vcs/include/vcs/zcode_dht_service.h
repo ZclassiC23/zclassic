@@ -32,6 +32,7 @@
 #define VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND 128u
 #define VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS 8u
 #define VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS 8u
+#define VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS 64u
 #define VCS_ZCODE_DHT_SERVICE_MAX_RECORDS_PER_PEER 256u
 #define VCS_ZCODE_DHT_SERVICE_SAVE_DEBOUNCE_S 5u
 #define VCS_ZCODE_DHT_SERVICE_QUERY_TIMEOUT_S 5u
@@ -119,6 +120,7 @@ struct vcs_zcode_dht_service_params {
 };
 
 struct vcs_zcode_dht_service;
+struct vcs_package_store;
 
 struct vcs_zcode_dht_service_status {
   bool enabled;
@@ -150,6 +152,8 @@ struct vcs_zcode_dht_service_status {
   uint64_t store_result_sent;
   uint32_t signed_records;
   uint32_t active_record_operations;
+  uint32_t publication_intents;
+  uint32_t active_publications;
   uint64_t lookup_rounds;
   uint64_t lookup_xor_progress;
   uint64_t lookup_queue_wait_s;
@@ -161,6 +165,13 @@ struct vcs_zcode_dht_service_status {
   uint64_t persistence_save_count;
   char disabled_reason[96];
   char last_error[160];
+};
+
+struct vcs_zcode_dht_provider_route {
+  uint64_t peer_ids[VCS_ZCODE_DHT_K];
+  uint32_t authenticated_count;
+  uint32_t reachability_pending;
+  uint32_t policy_denied;
 };
 
 struct vcs_zcode_dht_peer_view {
@@ -204,8 +215,20 @@ enum vcs_zcode_dht_record_operation_state {
 struct vcs_zcode_dht_record_operation_result {
   enum vcs_zcode_dht_record_operation_state state;
   enum vcs_zcode_dht_store_status store_status;
+  uint8_t page_offset;
+  uint8_t next_offset;
   uint32_t record_count;
   struct vcs_zcode_dht_record records[VCS_ZCODE_DHT_RECORDS_PER_FRAME];
+};
+
+struct vcs_zcode_dht_record_discovery_result {
+  enum vcs_zcode_dht_record_operation_state state;
+  uint32_t routing_rounds;
+  uint32_t xor_progress;
+  uint32_t nodes_queried;
+  uint32_t record_count;
+  struct vcs_zcode_dht_record
+      records[VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS];
 };
 
 struct vcs_zcode_dht_service *
@@ -261,6 +284,11 @@ bool vcs_zcode_dht_service_record_query_begin(
     struct vcs_zcode_dht_service *service, uint64_t peer_id,
     const struct vcs_zcode_dht_record_selector *selector,
     struct vcs_zcode_dht_time now, uint64_t *operation_id_out);
+bool vcs_zcode_dht_service_record_query_page_begin(
+    struct vcs_zcode_dht_service *service, uint64_t peer_id,
+    const struct vcs_zcode_dht_record_selector *selector,
+    uint8_t page_offset, struct vcs_zcode_dht_time now,
+    uint64_t *operation_id_out);
 bool vcs_zcode_dht_service_record_store_begin(
     struct vcs_zcode_dht_service *service, uint64_t peer_id,
     const struct vcs_zcode_dht_record *record,
@@ -271,6 +299,21 @@ bool vcs_zcode_dht_service_record_operation_poll(
     struct vcs_zcode_dht_record_operation_result *out);
 bool vcs_zcode_dht_service_record_operation_cancel(
     struct vcs_zcode_dht_service *service, uint64_t operation_id);
+
+/* Iterative discovery derives the routing target from the selector, walks the
+ * S6 closest-node frontier, then queries up to k freshly authenticated nodes
+ * under the same global alpha/query budget. Signed responses are merged
+ * deterministically; records.v1 is an optional local cache, never authority. */
+bool vcs_zcode_dht_service_record_discovery_begin(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_record_selector *selector,
+    struct vcs_zcode_dht_time now, uint64_t *operation_id_out);
+bool vcs_zcode_dht_service_record_discovery_poll(
+    struct vcs_zcode_dht_service *service, uint64_t operation_id,
+    struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record_discovery_result *out);
+bool vcs_zcode_dht_service_record_discovery_cancel(
+    struct vcs_zcode_dht_service *service, uint64_t operation_id);
 enum vcs_zcode_dht_record_store_result vcs_zcode_dht_service_record_admit(
     struct vcs_zcode_dht_service *service,
     const struct vcs_zcode_dht_record *record, struct vcs_zcode_dht_time now);
@@ -278,6 +321,19 @@ size_t vcs_zcode_dht_service_record_local_query(
     const struct vcs_zcode_dht_service *service, uint64_t now_unix,
     const struct vcs_zcode_dht_record_selector *selector,
     struct vcs_zcode_dht_record *out, size_t out_capacity);
+size_t vcs_zcode_dht_service_record_local_query_page(
+    const struct vcs_zcode_dht_service *service, uint64_t now_unix,
+    const struct vcs_zcode_dht_record_selector *selector,
+    uint8_t page_offset, struct vcs_zcode_dht_record *out,
+    size_t out_capacity, uint8_t *next_offset_out);
+
+/* Resolve active signed PROVIDER records to current Noise/delegation-
+ * authenticated transport sessions. Missing accepted providers are handed to
+ * the existing ZENDP reachability callback; no address crosses this API. */
+bool vcs_zcode_dht_service_provider_route(
+    struct vcs_zcode_dht_service *service, uint64_t now_unix,
+    const struct vcs_zcode_dht_record_selector *selector,
+    struct vcs_zcode_dht_provider_route *out);
 
 /* Operator-authored publication is a stale-plan-safe mutation.  The plan
  * token binds the exact deterministic signed record and the current canonical
@@ -302,6 +358,46 @@ vcs_zcode_dht_service_record_publish_commit(
     const struct vcs_zcode_dht_publish_spec *spec,
     const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
     struct vcs_zcode_dht_record *record_out);
+
+/* STORAGE_ACK has a separate authorship path. Both plan and commit require a
+ * complete, pinned package and re-hash its manifest and every chunk. Generic
+ * publication cannot author an ACK. */
+bool vcs_zcode_dht_service_storage_ack_plan(
+    struct vcs_zcode_dht_service *service,
+    struct vcs_package_store *package_store,
+    const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
+    struct vcs_zcode_dht_record *record_out);
+enum vcs_zcode_dht_record_store_result
+vcs_zcode_dht_service_storage_ack_commit(
+    struct vcs_zcode_dht_service *service,
+    struct vcs_package_store *package_store,
+    const struct vcs_zcode_dht_publish_spec *spec,
+    const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record *record_out);
+
+/* Composition-root adapter after an out-of-lock possession proof. These do
+ * not inspect storage themselves; ordinary callers use the checked APIs
+ * above. */
+bool vcs_zcode_dht_storage_ack_plan_verified(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
+    struct vcs_zcode_dht_record *record_out);
+enum vcs_zcode_dht_record_store_result
+vcs_zcode_dht_storage_ack_commit_verified(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_publish_spec *spec,
+    const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record *record_out);
+
+/* Snapshot/apply the proof state around a composition-root lock. The caller
+ * performs the full package-store byte proof with no DHT lock held, then
+ * applies the result before the scheduler is driven. */
+size_t vcs_zcode_dht_service_storage_ack_roots(
+    const struct vcs_zcode_dht_service *service, uint8_t (*out)[32],
+    size_t max);
+void vcs_zcode_dht_service_storage_ack_validation(
+    struct vcs_zcode_dht_service *service, const uint8_t transport_root[32],
+    bool valid);
 
 /* Composition-root lock audit helpers. The snapshot is fixed-size and
  * allocation-free; callbacks may be replaced after boot-time persistence was

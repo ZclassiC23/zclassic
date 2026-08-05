@@ -386,6 +386,7 @@ vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *p) {
   s->policy_ctx = p->policy_ctx;
   s->next_lookup_id = 1;
   s->next_record_operation_id = 1;
+  s->next_record_discovery_id = 1;
   char err[160];
   uint8_t online_pub[32], secret_copy[32];
   if (!p->transport_enabled) {
@@ -465,6 +466,7 @@ vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *p) {
     s->policy_decide = vcs_zcode_sovereignty_policy_decide_callback;
     s->policy_ctx = s->owned_policy;
   }
+  (void)vcs_zcode_dht_publications_load(s, p->now.wall_unix);
   return s;
 }
 
