@@ -83,6 +83,14 @@ void boot_zcode_dht_public_reset(void);
 void boot_zcode_dht_record_public_tick(uint64_t monotonic_s);
 void boot_zcode_dht_record_public_reset(void);
 void boot_zcode_dht_record_register_rpc(struct rpc_table *table);
+#ifdef ZCL_TESTING
+void boot_zcode_dht_record_test_render(
+    struct json_value *result,
+    const struct vcs_zcode_dht_record_discovery_result *discovery);
+void boot_zcode_dht_provider_route_test_render(
+    struct json_value *result,
+    const struct vcs_zcode_dht_provider_route *route, uint32_t fetch_result);
+#endif
 
 /* Snapshot the network binding owned by the running DHT composition root.
  * False means this process has no initialized DHT service; one-shot command

@@ -50,6 +50,9 @@
 
 #include "test/test_core.h"
 
+#include "base/hex.h"
+#include "command/native_command.h"
+#include "config/boot_zcode_dht.h"
 #include "vcs/blob_store.h"
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
@@ -1474,6 +1477,22 @@ static int t_swarm_provider_restricted(void)
     if (!sw_node_open(&n, "provider", sw_score_contributor) ||
         !sw_make_package(&p, 1, 29))
         return 1;
+    struct vcs_zcode_dht_provider_route route = {
+        .authenticated_count = 1,
+        .reachability_pending = 2,
+        .policy_denied = 3,
+    };
+    struct json_value route_json;
+    json_init(&route_json);
+    boot_zcode_dht_provider_route_test_render(
+        &route_json, &route, VCS_SWARM_FETCH_NO_STORE);
+    SW_CHECK("provider: refused fetch is fail-closed JSON",
+             !json_get_bool_or(&route_json, "ok", true) &&
+             strcmp(json_get_str(json_get(&route_json, "code")),
+                    "FETCH_REFUSED") == 0 &&
+             strcmp(json_get_str(json_get(&route_json, "fetch_result")),
+                    "no-store") == 0);
+    json_free(&route_json);
     SW_CHECK("provider: both advertisers register",
              vcs_swarm_engine_peer_add(n.engine, bad, bad_key) &&
              vcs_swarm_engine_peer_add(n.engine, honest, honest_key));
@@ -1509,6 +1528,55 @@ static int t_swarm_provider_restricted(void)
                  VCS_SWARM_FETCH_OK);
     vcs_swarm_engine_tick(n.engine, SW_DAY, 4);
     SW_CHECK("provider: refreshed allowlist remains exclusive",
+             sw_drain_wants(&n, bad, wants, 2) == 0 &&
+             sw_drain_wants(&n, honest, wants, 2) == 1);
+    struct json_value cancel_input;
+    json_init(&cancel_input);
+    json_set_object(&cancel_input);
+    char root_hex[65];
+    zcl_hex_encode(p.root, 32, root_hex);
+    json_push_kv_str(&cancel_input, "blob_root", root_hex);
+    json_push_kv_str(&cancel_input, "datadir", n.datadir);
+    json_push_kv_bool(&cancel_input, "cancel", true);
+    json_push_kv_int(&cancel_input, "now_unix", 5);
+    struct zcl_command_request cancel_request;
+    memset(&cancel_request, 0, sizeof(cancel_request));
+    cancel_request.input = &cancel_input;
+    struct zcl_command_reply cancel_reply;
+    zcl_command_reply_init(&cancel_reply, "zcl.zcode_science_fetch.v1");
+    vcs_swarm_engine_set_global(n.engine);
+    zcl_native_handle_zcode_science_fetch(&cancel_request, &cancel_reply);
+    vcs_swarm_engine_set_global(NULL);
+    SW_CHECK("provider: native restricted fetch cancel succeeds",
+             json_get_bool_or(&cancel_reply.data, "canceled", false) &&
+             !json_get_bool_or(&cancel_reply.data, "restriction_widened",
+                               true));
+    zcl_command_reply_free(&cancel_reply);
+    json_free(&cancel_input);
+    vcs_swarm_engine_free(n.engine);
+    n.engine = vcs_swarm_engine_create(n.store, n.book, n.zcode_dir,
+                                       sw_score_contributor, NULL);
+    SW_CHECK("provider: engine restarts after cancellation",
+             n.engine != NULL);
+    SW_CHECK("provider: canceled peers re-register",
+             vcs_swarm_engine_peer_add(n.engine, bad, bad_key) &&
+             vcs_swarm_engine_peer_add(n.engine, honest, honest_key));
+    sw_announce(n.engine, bad, &p);
+    sw_announce(n.engine, honest, &p);
+    vcs_swarm_engine_tick(n.engine, SW_DAY, 6);
+    struct vcs_swarm_download_status canceled_status;
+    SW_CHECK("provider: canceled resumable state stays deleted on restart",
+             vcs_swarm_engine_download_status(n.engine, p.root,
+                                              &canceled_status) &&
+             canceled_status.state == VCS_SWARM_DL_INACTIVE &&
+             sw_drain_wants(&n, bad, wants, 2) == 0 &&
+             sw_drain_wants(&n, honest, wants, 2) == 0);
+    SW_CHECK("provider: explicit rebind after cancel remains restricted",
+             vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 7,
+                                         &honest, 1) ==
+                 VCS_SWARM_FETCH_OK);
+    vcs_swarm_engine_tick(n.engine, SW_DAY, 7);
+    SW_CHECK("provider: cancel never broadens the restarted fetch",
              sw_drain_wants(&n, bad, wants, 2) == 0 &&
              sw_drain_wants(&n, honest, wants, 2) == 1);
     sw_free_package(&p);

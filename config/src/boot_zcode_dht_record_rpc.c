@@ -192,7 +192,9 @@ static const char *record_kind_name(enum vcs_zcode_dht_record_kind kind) {
 }
 
 static void record_row_json(struct json_value *row,
-                            const struct vcs_zcode_dht_record *record) {
+                            const struct vcs_zcode_dht_record *record,
+                            bool conflicted, bool superseded,
+                            bool provider_authenticated) {
   char semantic[65], transport[65], provider[65], owner[65], publisher[65];
   zcl_hex_encode(record->semantic_root, 32, semantic);
   zcl_hex_encode(record->transport_root, 32, transport);
@@ -212,6 +214,20 @@ static void record_row_json(struct json_value *row,
   json_push_kv_int(row, "expiry", (int64_t)record->expiry);
   json_push_kv_bool(row, "possession_proof", false);
   json_push_kv_bool(row, "declared_diversity_only", true);
+  json_push_kv_bool(row, "conflicted", conflicted);
+  json_push_kv_bool(row, "superseded", superseded);
+  json_push_kv_bool(row, "provider_authenticated",
+                    provider_authenticated);
+}
+
+static bool record_provider_authenticated(
+    const struct vcs_zcode_dht_record *record,
+    const struct vcs_zcode_dht_peer_view *peers, size_t peer_count) {
+  for (size_t i = 0; i < peer_count; i++)
+    if (peers[i].connected && peers[i].authenticated &&
+        memcmp(peers[i].node_id, record->provider_node_id, 32) == 0)
+      return true;
+  return false;
 }
 
 static const char *record_state_name(
@@ -250,13 +266,35 @@ static void record_result_json(
                              : "record discovery was interrupted");
   }
   json_push_kv_int(result, "count", discovery->record_count);
+  struct vcs_zcode_dht_peer_view peers[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
+  size_t peer_count = 0;
+  (void)boot_zcode_dht_peers((uint64_t)platform_time_wall_time_t(), peers,
+                             VCS_ZCODE_DHT_SERVICE_MAX_PEERS, 0,
+                             &peer_count);
+  bool conflicted[VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS] = {false};
+  bool superseded[VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS] = {false};
+  uint32_t conflict_count = 0, superseded_count = 0, usable_count = 0;
+  for (uint32_t i = 0; i < discovery->record_count; i++) {
+    conflicted[i] = vcs_zcode_dht_record_conflicted_at(
+        discovery->records, discovery->record_count, i);
+    superseded[i] = !conflicted[i] && vcs_zcode_dht_record_superseded_at(
+        discovery->records, discovery->record_count, i);
+    conflict_count += conflicted[i];
+    superseded_count += superseded[i];
+    usable_count += !conflicted[i] && !superseded[i];
+  }
+  json_push_kv_int(result, "usable_count", usable_count);
+  json_push_kv_int(result, "superseded_count", superseded_count);
   struct json_value rows;
   json_init(&rows);
   json_set_array(&rows);
   for (uint32_t i = 0; i < discovery->record_count; i++) {
     struct json_value row;
     json_init(&row);
-    record_row_json(&row, &discovery->records[i]);
+    record_row_json(
+        &row, &discovery->records[i], conflicted[i], superseded[i],
+        record_provider_authenticated(&discovery->records[i], peers,
+                                      peer_count));
     json_push_back(&rows, &row);
     json_free(&row);
   }
@@ -265,29 +303,30 @@ static void record_result_json(
   struct json_value conflicts;
   json_init(&conflicts);
   json_set_array(&conflicts);
-  uint32_t conflict_count = 0;
   for (uint32_t i = 0; i < discovery->record_count; i++) {
-    bool conflict = false;
-    for (uint32_t j = 0; j < i; j++)
-      if (discovery->records[i].sequence == discovery->records[j].sequence &&
-          memcmp(discovery->records[i].provider_node_id,
-                 discovery->records[j].provider_node_id, 32) == 0) {
-        conflict = true;
-        break;
-      }
-    if (!conflict)
+    if (!conflicted[i])
       continue;
     struct json_value row;
     json_init(&row);
-    record_row_json(&row, &discovery->records[i]);
+    record_row_json(
+        &row, &discovery->records[i], true, false,
+        record_provider_authenticated(&discovery->records[i], peers,
+                                      peer_count));
     json_push_back(&conflicts, &row);
     json_free(&row);
-    conflict_count++;
   }
   json_push_kv_int(result, "conflict_count", conflict_count);
   json_push_kv(result, "conflicts", &conflicts);
   json_free(&conflicts);
 }
+
+#ifdef ZCL_TESTING
+void boot_zcode_dht_record_test_render(
+    struct json_value *result,
+    const struct vcs_zcode_dht_record_discovery_result *discovery) {
+  record_result_json(result, discovery);
+}
+#endif
 
 static bool rpc_record_begin(const struct json_value *params, bool help,
                              struct json_value *result) {

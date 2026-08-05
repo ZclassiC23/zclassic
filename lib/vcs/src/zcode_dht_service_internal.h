@@ -120,10 +120,11 @@ struct service_publication {
   uint64_t possession_proof_epoch;
   enum service_publication_phase phase;
   struct vcs_zcode_dht_record record;
-  uint64_t lifetime_s, lookup_id, next_attempt_wall, backoff_s;
-  uint8_t node_ids[VCS_ZCODE_DHT_K][32];
-  uint64_t child_operation_ids[VCS_ZCODE_DHT_K];
-  bool node_complete[VCS_ZCODE_DHT_K];
+  uint64_t lifetime_s, lookup_id, next_attempt_mono, backoff_s;
+  uint8_t node_ids[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES][32];
+  uint64_t child_operation_ids[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
+  bool node_complete[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
+  bool node_succeeded[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
   uint32_t node_count, active_children, attempts, successes;
 };
 
@@ -140,10 +141,12 @@ struct service_record_discovery {
   struct vcs_zcode_dht_record_selector selector;
   uint32_t routing_rounds, xor_progress;
   uint32_t node_count, next_node, active_children, nodes_queried;
-  uint8_t node_ids[VCS_ZCODE_DHT_K][32];
-  uint64_t child_operation_ids[VCS_ZCODE_DHT_K];
-  uint8_t node_page_offsets[VCS_ZCODE_DHT_K];
-  bool node_complete[VCS_ZCODE_DHT_K];
+  uint32_t target_successes, successful_nodes, failed_nodes;
+  uint8_t node_ids[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES][32];
+  uint64_t child_operation_ids[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
+  uint8_t node_page_offsets[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
+  bool node_complete[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
+  bool node_succeeded[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
   uint32_t record_count;
   struct vcs_zcode_dht_record
       records[VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS];

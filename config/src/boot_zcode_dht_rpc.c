@@ -660,6 +660,37 @@ static bool rpc_storage_ack(const struct json_value *params, bool help,
   return rpc_publish_impl(params, help, result, true);
 }
 
+static void provider_route_json(
+    struct json_value *result, const struct vcs_zcode_dht_provider_route *route,
+    enum vcs_swarm_fetch_result fetched) {
+  bool scheduled = fetched == VCS_SWARM_FETCH_OK ||
+                   fetched == VCS_SWARM_FETCH_ALREADY_COMPLETE;
+  json_set_object(result);
+  json_push_kv_bool(result, "ok", scheduled);
+  if (!scheduled) {
+    json_push_kv_str(result, "code", "FETCH_REFUSED");
+    json_push_kv_str(result, "error",
+                     vcs_swarm_fetch_result_string(fetched));
+  }
+  json_push_kv_int(result, "authenticated_providers",
+                   route->authenticated_count);
+  json_push_kv_int(result, "reachability_pending",
+                   route->reachability_pending);
+  json_push_kv_int(result, "policy_denied", route->policy_denied);
+  json_push_kv_str(result, "fetch_result",
+                   vcs_swarm_fetch_result_string(fetched));
+  json_push_kv_bool(result, "restricted", true);
+}
+
+#ifdef ZCL_TESTING
+void boot_zcode_dht_provider_route_test_render(
+    struct json_value *result,
+    const struct vcs_zcode_dht_provider_route *route, uint32_t fetch_result) {
+  provider_route_json(result, route,
+                      (enum vcs_swarm_fetch_result)fetch_result);
+}
+#endif
+
 static bool rpc_provider_route(const struct json_value *params, bool help,
                                struct json_value *result) {
   if (help) {
@@ -689,16 +720,7 @@ static bool rpc_provider_route(const struct json_value *params, bool help,
                    engine, selector.root, (int64_t)(now / 86400u), now,
                    route.peer_ids, route.authenticated_count)
              : VCS_SWARM_FETCH_NO_STORE;
-  json_set_object(result);
-  json_push_kv_bool(result, "ok", true);
-  json_push_kv_int(result, "authenticated_providers",
-                   route.authenticated_count);
-  json_push_kv_int(result, "reachability_pending",
-                   route.reachability_pending);
-  json_push_kv_int(result, "policy_denied", route.policy_denied);
-  json_push_kv_str(result, "fetch_result",
-                   vcs_swarm_fetch_result_string(fetched));
-  json_push_kv_bool(result, "restricted", true);
+  provider_route_json(result, &route, fetched);
   return true;
 }
 

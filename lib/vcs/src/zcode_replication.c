@@ -4,37 +4,9 @@
 
 #include <string.h>
 
-static bool same_stream(const struct vcs_zcode_dht_record *a,
-                        const struct vcs_zcode_dht_record *b) {
-  return a->kind == b->kind &&
-         strcmp(a->namespace_name, b->namespace_name) == 0 &&
-         memcmp(a->network_genesis, b->network_genesis, 32) == 0 &&
-         memcmp(a->provider_node_id, b->provider_node_id, 32) == 0 &&
-         memcmp(a->delegation.doc.master_pubkey,
-                b->delegation.doc.master_pubkey, 32) == 0;
-}
-
-static bool same_stream_slot(const struct vcs_zcode_dht_record *a,
-                             const struct vcs_zcode_dht_record *b) {
-  return same_stream(a, b) && a->sequence == b->sequence;
-}
-
 bool vcs_zcode_replication_record_conflicted(
     const struct vcs_zcode_dht_record *records, size_t count, size_t index) {
-  if (!records || index >= count)
-    return false;
-  uint8_t wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
-  if (vcs_zcode_dht_record_encode(&records[index], wire) !=
-      VCS_ZCODE_DHT_RECORD_OK)
-    return false;
-  for (size_t i = 0; i < count; i++)
-    if (i != index &&
-        vcs_zcode_dht_record_encode(&records[i], wire) ==
-            VCS_ZCODE_DHT_RECORD_OK &&
-        same_stream_slot(&records[index], &records[i]) &&
-        vcs_zcode_dht_record_conflicts(&records[index], &records[i]))
-      return true;
-  return false;
+  return vcs_zcode_dht_record_conflicted_at(records, count, index);
 }
 
 static bool record_matches(const struct vcs_zcode_dht_record *record,
@@ -91,7 +63,7 @@ void vcs_zcode_replication_evaluate_evidence(
       if (!conflicted[j] &&
           record_matches(&evidence->records[j], namespace_name,
                          transport_root) &&
-          same_stream(record, &evidence->records[j]) &&
+          vcs_zcode_dht_record_same_stream(record, &evidence->records[j]) &&
           evidence->records[j].sequence > record->sequence) {
         superseded = true;
         break;

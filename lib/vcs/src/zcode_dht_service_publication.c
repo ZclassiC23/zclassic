@@ -343,7 +343,8 @@ static void publication_cancel_active(
       publication->lookup_id)
     (void)vcs_zcode_dht_service_lookup_cancel(service,
                                                publication->lookup_id);
-  for (uint32_t i = 0; i < VCS_ZCODE_DHT_K; i++)
+  for (uint32_t i = 0;
+       i < VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES; i++)
     if (publication->child_operation_ids[i])
       (void)vcs_zcode_dht_service_record_operation_cancel(
           service, publication->child_operation_ids[i]);
@@ -360,12 +361,28 @@ static void publication_reset_cycle(struct service_publication *publication)
   memset(publication->child_operation_ids, 0,
          sizeof(publication->child_operation_ids));
   memset(publication->node_complete, 0, sizeof(publication->node_complete));
+  memset(publication->node_succeeded, 0,
+         sizeof(publication->node_succeeded));
   publication->lookup_id = 0;
   publication->node_count = 0;
   publication->active_children = 0;
   publication->attempts = 0;
   publication->successes = 0;
   publication->phase = SERVICE_PUBLICATION_NEEDS_LOOKUP;
+}
+
+static bool publication_responsible_set_covered(
+    const struct service_publication *publication, uint32_t target)
+{
+  uint32_t successes = 0;
+  for (uint32_t i = 0; i < publication->node_count; i++) {
+    if (!publication->node_complete[i])
+      return false;
+    successes += publication->node_succeeded[i];
+    if (successes == target)
+      return true;
+  }
+  return false;
 }
 
 static uint64_t publication_renew_at(
@@ -407,7 +424,7 @@ static bool publication_renew(struct vcs_zcode_dht_service *service,
     return false;
   publication->record = renewed;
   publication->lifetime_s = window;
-  publication->next_attempt_wall = 0;
+  publication->next_attempt_mono = 0;
   publication->backoff_s = PUBLICATION_RETRY_MIN_S;
   publication->renewal_proof_required = false;
   publication->renewal_proof_ready = false;
@@ -420,14 +437,17 @@ static void publication_finish_cycle(
     struct service_publication *publication, struct vcs_zcode_dht_time now)
 {
   publication->phase = SERVICE_PUBLICATION_WAITING;
-  if (publication->successes < publication->node_count) {
-    publication->next_attempt_wall = now.wall_unix + publication->backoff_s;
+  uint32_t target = publication->node_count < VCS_ZCODE_DHT_K
+                        ? publication->node_count : VCS_ZCODE_DHT_K;
+  if (publication->successes < target) {
+    publication->next_attempt_mono =
+        now.monotonic_s + publication->backoff_s;
     if (publication->backoff_s < PUBLICATION_RETRY_MAX_S / 2u)
       publication->backoff_s *= 2u;
     else
       publication->backoff_s = PUBLICATION_RETRY_MAX_S;
   } else {
-    publication->next_attempt_wall = publication_renew_at(publication);
+    publication->next_attempt_mono = 0;
     publication->backoff_s = PUBLICATION_RETRY_MIN_S;
   }
 }
@@ -445,7 +465,8 @@ static void publication_drive_routing(
   if (!lookup->completed)
     return;
   for (uint32_t i = 0;
-       i < lookup->candidate_count && publication->node_count < VCS_ZCODE_DHT_K;
+       i < lookup->candidate_count &&
+       publication->node_count < VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES;
        i++)
     if (vcs_zcode_dht_lookup_candidate_authenticated(
             lookup->candidates[i].state) &&
@@ -473,14 +494,30 @@ static void publication_drive_stores(
         operation->state == VCS_ZCODE_DHT_RECORD_OPERATION_PENDING)
       continue;
     if (operation &&
-        operation->state == VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE)
+        operation->state == VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE) {
+      publication->node_succeeded[i] = true;
       publication->successes++;
+    }
     if (operation)
       memset(operation, 0, sizeof(*operation));
     publication->child_operation_ids[i] = 0;
     publication->node_complete[i] = true;
     if (publication->active_children)
       publication->active_children--;
+  }
+  uint32_t target = publication->node_count < VCS_ZCODE_DHT_K
+                        ? publication->node_count : VCS_ZCODE_DHT_K;
+  if (publication_responsible_set_covered(publication, target)) {
+    for (uint32_t i = 0; i < publication->node_count; i++) {
+      if (publication->child_operation_ids[i])
+        (void)vcs_zcode_dht_service_record_operation_cancel(
+            service, publication->child_operation_ids[i]);
+      publication->child_operation_ids[i] = 0;
+      publication->node_complete[i] = true;
+    }
+    publication->active_children = 0;
+    publication_finish_cycle(publication, now);
+    return;
   }
   while (publication->active_children < VCS_ZCODE_DHT_ALPHA) {
     uint32_t at = publication->node_count;
@@ -536,26 +573,23 @@ static void publication_drive(struct vcs_zcode_dht_service *service,
     publication_cancel_active(service, publication);
     return;
   }
-  if (now.wall_unix >= renew_at &&
-      publication->phase != SERVICE_PUBLICATION_WAITING) {
-    publication_cancel_active(service, publication);
-    if (!publication_renew(service, publication, now))
-      publication->next_attempt_wall =
-          now.wall_unix + PUBLICATION_RETRY_MIN_S;
+  if (now.wall_unix >= renew_at) {
+    if (publication->next_attempt_mono &&
+        now.monotonic_s < publication->next_attempt_mono)
+      return;
+    if (publication->phase != SERVICE_PUBLICATION_WAITING)
+      publication_cancel_active(service, publication);
+    if (!publication_renew(service, publication, now)) {
+      publication->phase = SERVICE_PUBLICATION_WAITING;
+      publication->next_attempt_mono =
+          now.monotonic_s + PUBLICATION_RETRY_MIN_S;
+    }
     return;
   }
   if (publication->phase == SERVICE_PUBLICATION_WAITING) {
-    uint64_t due = publication->next_attempt_wall;
-    if (!due || renew_at < due)
-      due = renew_at;
-    if (now.wall_unix < due)
+    if (!publication->next_attempt_mono ||
+        now.monotonic_s < publication->next_attempt_mono)
       return;
-    if (now.wall_unix >= renew_at) {
-      if (!publication_renew(service, publication, now))
-        publication->next_attempt_wall =
-            now.wall_unix + PUBLICATION_RETRY_MIN_S;
-      return;
-    }
     publication_reset_cycle(publication);
   }
   if (publication->phase == SERVICE_PUBLICATION_NEEDS_LOOKUP) {
@@ -587,3 +621,33 @@ void vcs_zcode_dht_service_publication_schedule(
     if (service->publications[i].used)
       publication_drive(service, &service->publications[i], now);
 }
+
+#ifdef ZCL_TESTING
+bool vcs_zcode_dht_service_test_publication_retry(
+    const struct vcs_zcode_dht_service *service,
+    const uint8_t semantic_root[32],
+    struct vcs_zcode_dht_publication_test_view *out)
+{
+  if (!service || !semantic_root || !out)
+    return false;
+  for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS; i++)
+    if (service->publications[i].used &&
+        memcmp(service->publications[i].record.semantic_root,
+               semantic_root, 32) == 0) {
+      memset(out, 0, sizeof(*out));
+      out->next_attempt_mono = service->publications[i].next_attempt_mono;
+      out->phase = (uint32_t)service->publications[i].phase;
+      out->node_count = service->publications[i].node_count;
+      out->attempts = service->publications[i].attempts;
+      out->successes = service->publications[i].successes;
+      memcpy(out->node_ids, service->publications[i].node_ids,
+             sizeof(out->node_ids));
+      for (uint32_t node = VCS_ZCODE_DHT_K;
+           node < service->publications[i].node_count; node++)
+        out->succeeded_beyond_k +=
+            service->publications[i].node_succeeded[node];
+      return true;
+    }
+  return false;
+}
+#endif

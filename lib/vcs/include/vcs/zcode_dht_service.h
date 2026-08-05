@@ -266,6 +266,21 @@ bool vcs_zcode_dht_service_next_outbound(struct vcs_zcode_dht_service *service,
                                          size_t *wire_len_out);
 void vcs_zcode_dht_service_tick(struct vcs_zcode_dht_service *service,
                                 struct vcs_zcode_dht_time now);
+#ifdef ZCL_TESTING
+struct vcs_zcode_dht_publication_test_view {
+  uint64_t next_attempt_mono;
+  uint32_t phase;
+  uint32_t node_count;
+  uint32_t attempts;
+  uint32_t successes;
+  uint32_t succeeded_beyond_k;
+  uint8_t node_ids[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES][32];
+};
+bool vcs_zcode_dht_service_test_publication_retry(
+    const struct vcs_zcode_dht_service *service,
+    const uint8_t semantic_root[32],
+    struct vcs_zcode_dht_publication_test_view *out);
+#endif
 
 bool vcs_zcode_dht_service_lookup_begin(struct vcs_zcode_dht_service *service,
                                         const uint8_t target[32],

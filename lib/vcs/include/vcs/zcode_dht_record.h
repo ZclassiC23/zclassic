@@ -121,4 +121,15 @@ bool vcs_zcode_dht_record_conflicts(
     const struct vcs_zcode_dht_record *a,
     const struct vcs_zcode_dht_record *b);
 
+/* Sequence is meaningful only inside one kind/namespace/root/master/provider
+ * stream. These bounded-set helpers keep equivocation and supersession out of
+ * consumer-specific global ordering. */
+bool vcs_zcode_dht_record_same_stream(
+    const struct vcs_zcode_dht_record *a,
+    const struct vcs_zcode_dht_record *b);
+bool vcs_zcode_dht_record_conflicted_at(
+    const struct vcs_zcode_dht_record *records, size_t count, size_t index);
+bool vcs_zcode_dht_record_superseded_at(
+    const struct vcs_zcode_dht_record *records, size_t count, size_t index);
+
 #endif /* ZCL_VCS_ZCODE_DHT_RECORD_H */

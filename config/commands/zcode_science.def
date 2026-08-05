@@ -479,12 +479,14 @@ ZCL_COMMAND_READY_COMMAND(
     "restart, then re-invoke after delivery to admit. FETCH, STORE and INDEX "
     "are rechecked for semantic root, transport root, publisher ZID and "
     "science service type. Reply includes discovery/conflict/provider "
-    "diagnostics plus the download and admission result.",
+    "diagnostics plus the download and admission result. cancel=true with "
+    "an exact blob_root cancels outstanding requests and deletes only that "
+    "root's resumable restricted-fetch record.",
     0,
     "zcode,science,fetch,blob,swarm,admit",
     "zcl.zcode_science_fetch.input.v1",
     "zcl.zcode_science_fetch.v1",
-    "root,blob_root,datadir,workspace,now_unix", "",
+    "root,blob_root,datadir,workspace,now_unix,cancel", "",
     "zclassic23 zcode.science.fetch --input='{\"root\":\"<science-root-64hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
