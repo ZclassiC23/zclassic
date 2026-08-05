@@ -14,7 +14,10 @@ app.messaging.read confirm    # awn_run() (app/controllers/src/app_write_native_
 zcode.leaderboard.all day     # zl_leaderboard() (tools/command/native_zcode_leaderboard_command.c) reads day to pin "today" for the period window; the all-time period's window is unbounded, so day cannot move this leaf's answer. daily/weekly/monthly share the function and declare day.
 zcode.network.providers kind  # handler injects fixed kind=provider into a private RPC object; kind is never read from request->input.
 zcode.network.publish operation # handler injects fixed operation=publish into a private RPC object; operation is never read from request->input.
-zcode.network.replication operation # handler injects fixed operation=replication into a private RPC object; operation is never read from request->input.
+zcode.science.fetch kind      # pointer resolver reads its private RPC selector built by fetch; request->input never reaches that helper.
+zcode.science.fetch namespace # pointer resolver reads its private RPC selector built by fetch; request->input never reaches that helper.
+zcode.science.fetch semantic_root # pointer resolver reads its private RPC selector built by fetch; request->input never reaches that helper.
+zcode.science.fetch transport_root # provider discovery reads its private RPC selector built by fetch; request->input never reaches that helper.
 zcode.science.publish mode    # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish kind    # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish namespace # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
@@ -25,7 +28,22 @@ zcode.science.publish not_before # discovery helper reads its private RPC object
 zcode.science.publish expiry  # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish plan_token # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish operation # discovery helper injects operation into its private RPC object; request->input never reaches that helper.
-zcode.science.fetch kind      # pointer resolver reads its private RPC selector built by fetch; request->input never reaches that helper.
-zcode.science.fetch namespace # pointer resolver reads its private RPC selector built by fetch; request->input never reaches that helper.
-zcode.science.fetch semantic_root # pointer resolver reads its private RPC selector built by fetch; request->input never reaches that helper.
-zcode.science.fetch transport_root # provider discovery reads its private RPC selector built by fetch; request->input never reaches that helper.
+metaverse.space.plan delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
+metaverse.space.commit delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
+metaverse.space.show delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
+metaverse.space.publish delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
+metaverse.space.discover delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
+metaverse.space.discover lookup_id # bounded discovery creates this private lookup capability after begin; request->input never reaches it.
+metaverse.space.discover owner_token # bounded discovery creates this private owner capability after begin; request->input never reaches it.
+metaverse.space.scout.run delegation_wire # observer/manifest chain checks serialize private public delegation RPC objects; request->input never reaches them.
+metaverse.space.scout.show delegation_wire # current observer chain status serializes a private public delegation RPC object; request->input never reaches it.
+metaverse.space.publish mode # DHT publication reads its private plan/commit RPC object; request->input never reaches that helper.
+metaverse.space.publish kind # DHT publication reads its private plan/commit RPC object; request->input never reaches that helper.
+metaverse.space.publish namespace # DHT publication reads its private plan/commit RPC object; request->input never reaches that helper.
+metaverse.space.publish semantic_root # DHT publication reads its private plan/commit RPC object; request->input never reaches that helper.
+metaverse.space.publish transport_root # DHT publication reads its private plan/commit RPC object; request->input never reaches that helper.
+metaverse.space.publish sequence # DHT publication reads its private plan/commit RPC object; request->input never reaches that helper.
+metaverse.space.publish not_before # DHT publication reads its private plan/commit RPC object; request->input never reaches that helper.
+metaverse.space.publish expiry # DHT publication reads its private plan/commit RPC object; request->input never reaches that helper.
+metaverse.space.publish plan_token # DHT publication reads its private plan/commit RPC object; request->input never reaches that helper.
+metaverse.space.publish operation # DHT publication injects operation into its private RPC object; request->input never reaches that helper.

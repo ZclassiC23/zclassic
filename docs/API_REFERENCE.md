@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 511 |
+| Registry entries (branches + leaves) | 521 |
 | Top-level roots | 11 |
-| Branches | 117 |
-| Leaves (dispatchable command paths) | 394 |
-| … `ready` (live handler in this build) | 346 |
+| Branches | 119 |
+| Leaves (dispatchable command paths) | 402 |
+| … `ready` (live handler in this build) | 354 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 129 |
+| Leaves with `effect=mutate` | 133 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 89 |
 
@@ -87,7 +87,7 @@ Per source file:
 | `config/commands/vault.def` | 21 | 4 | 17 |
 | `config/commands/zcode.def` | 89 | 17 | 72 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
-| `config/commands/metaverse.def` | 18 | 5 | 13 |
+| `config/commands/metaverse.def` | 28 | 7 | 21 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
@@ -1001,7 +1001,7 @@ represented by its children's sections.
 | `zcode network storage_ack` | ready | mutate / app-write / operator, plan-commit · foreground/high | **`mode`**, **`namespace`**, `semantic_root`, **`transport_root`**, `owner_group`, **`sequence`**, **`not_before`**, **`expiry`**, `plan_token` | `zcl.zcode_network_storage_ack.v1` | `zclassic23 zcode network storage_ack --input='{"mode":"plan","namespace":"science","transport_root":"<64hex>","sequence":1,"not_before":1,"expiry":2}'` | Publish a possession-backed storage ACK |
 | `zcode network policy list` | ready | read / read / operator · fast/low | `datadir` | `zcl.zcode_network_policy_list.v1` | `zclassic23 zcode network policy list` | Inspect local policy summary |
 | `zcode network policy mutate` | ready | mutate / app-write / operator, plan-commit · fast/low | **`mode`**, **`operation`**, `source`, `effect`, `scope`, `action_mask`, `value`, `rule_id`, `enabled`, `plan_token`, `datadir` | `zcl.zcode_network_policy_mutate.v1` | `zclassic23 zcode network policy mutate --input='{"mode":"plan","operation":"advisory","enabled":true}'` | Plan or commit local policy |
-| `zcode network replication` | ready | read / read / operator · fast/low | **`namespace`**, **`transport_root`** | `zcl.zcode_network_replication.v1` | `zclassic23 zcode network replication --input='{"namespace":"science","transport_root":"<64hex>"}'` | Inspect declared replication |
+| `zcode network replication` | ready | read / read / operator · foreground/moderate | **`namespace`**, **`transport_root`** | `zcl.zcode_network_replication.v1` | `zclassic23 zcode network replication --input='{"namespace":"science","transport_root":"<64hex>"}'` | Inspect declared replication |
 
 #### `zcode.desc` — Onion descriptors: signed service records
 
@@ -1034,7 +1034,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode science rebuild` | ready | mutate / app-write / operator · foreground/moderate | `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_rebuild.v1` | `zclassic23 zcode.science.rebuild --input='{"now_unix":1500}'` | Rebuild the science projection from the CAS |
 | `zcode science publish` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `datadir`, `workspace` | `zcl.zcode_science_publish.v1` | `zclassic23 zcode.science.publish --input='{"root":"<64hex>"}'` | Publish a science object to the swarm as a blob |
-| `zcode science fetch` | ready | mutate / app-write / operator · foreground/moderate | `root`, `blob_root`, `datadir`, `workspace`, `now_unix` | `zcl.zcode_science_fetch.v1` | `zclassic23 zcode.science.fetch --input='{"root":"<science-root-64hex>"}'` | Fetch and admit a blob-carried science object |
+| `zcode science fetch` | ready | mutate / app-write / operator · foreground/moderate | `root`, `blob_root`, `datadir`, `workspace`, `now_unix`, `cancel` | `zcl.zcode_science_fetch.v1` | `zclassic23 zcode.science.fetch --input='{"root":"<science-root-64hex>"}'` | Fetch and admit a blob-carried science object |
 
 #### `zcode.science.study` — Preregistered study lifecycle
 
@@ -1097,6 +1097,24 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `metaverse property list` | ready | read / read / operator · fast/moderate | **`kind`**, `limit`, `datadir` | `zcl.metaverse_property_list.v1` | `zclassic23 metaverse property list` | Every property this datadir holds, one row per kind scanned |
 | `metaverse property show` | ready | read / read / operator · fast/low | **`property_id`**, `datadir` | `zcl.metaverse_property_show.v1` | `zclassic23 metaverse property show content:<64hex>` | One property: its roots, controller, status, and evidence grade |
+
+#### `metaverse.space` — Signed sovereign spaces and generic typed services
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `metaverse space plan` | ready | read / read / operator · fast/low | **`kind`**, `protocol_root`, `read_only_verbs`, `object_roots`, `capability_roots`, `sequence`, `not_before`, `expiry`, `name`, `description`, `service_roots`, `portal_roots`, `admission_root`, `datadir` | `zcl.metaverse_space_plan.v1` | `zclassic23 metaverse space plan --input='{"kind":"service_descriptor","protocol_root":"<64hex>","read_only_verbs":["discover"]}'` | Plan one signed space manifest or typed service descriptor |
+| `metaverse space commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`kind`**, `protocol_root`, `read_only_verbs`, `object_roots`, `capability_roots`, `sequence`, `not_before`, `expiry`, `name`, `description`, `service_roots`, `portal_roots`, `admission_root`, **`plan_token`**, **`confirm`**, `datadir`, `workspace` | `zcl.metaverse_space_commit.v1` | `zclassic23 metaverse space commit --input='{"kind":"service_descriptor","protocol_root":"<64hex>","read_only_verbs":["discover"],"plan_token":"<64hex>","confirm":true}'` | Commit one exactly planned space object to local CAS |
+| `metaverse space show` | ready | read / read / operator · fast/low | **`root`**, `workspace`, `datadir` | `zcl.metaverse_space_show.v1` | `zclassic23 metaverse space show <64hex>` | Re-derive one local space object and its evidence grade |
+| `metaverse space publish` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `workspace`, `datadir` | `zcl.metaverse_space_publish.v1` | `zclassic23 metaverse space publish <64hex>` | Publish one local space object through the existing signed DHT |
+| `metaverse space discover` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `kind`, `workspace`, `datadir` | `zcl.metaverse_space_discover.v1` | `zclassic23 metaverse space discover <64hex> --kind=space_manifest` | Discover one exact space root under local admission policy |
+
+#### `metaverse.space.scout` — Bounded read-only space missions and signed local evidence
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `metaverse space scout plan` | ready | read / read / operator · fast/low | `starting_roots`, `observation_unix`, `maximum_depth`, `maximum_spaces`, `maximum_portals`, `maximum_bytes`, `deadline_ms`, `datadir` | `zcl.metaverse_space_scout_plan.v1` | `zclassic23 metaverse space scout plan --input='<mission-json>'` | Plan one bounded read-only traversal of sovereign spaces |
+| `metaverse space scout run` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | `starting_roots`, `observation_unix`, `maximum_depth`, `maximum_spaces`, `maximum_portals`, `maximum_bytes`, `deadline_ms`, `plan_token`, `confirm`, `workspace`, `datadir` | `zcl.metaverse_space_scout_run.v1` | `zclassic23 metaverse space scout run --input='<confirmed-mission-json>'` | Run one exactly planned bounded read-only space scout mission |
+| `metaverse space scout show` | ready | read / read / operator · fast/low | **`root`**, `workspace`, `datadir` | `zcl.metaverse_space_scout_show.v1` | `zclassic23 metaverse space scout show <attestation-root>` | Show one signed local scout attestation and its canonical evidence map |
 
 #### `metaverse.build` — Content-addressed C23 build jobs, actions, and receipts
 

@@ -152,7 +152,7 @@ static enum vcs_zcode_dht_record_error record_shape(
   }
   if (!record_nonzero(record->provider_node_id, 32))
     return VCS_ZCODE_DHT_RECORD_PROVIDER_ID;
-  if (!record->sequence)
+  if (!record->sequence || record->sequence > (uint64_t)INT64_MAX)
     return VCS_ZCODE_DHT_RECORD_SEQUENCE;
   uint64_t limit = max_window(record->kind);
   if (!record->not_before || record->expiry <= record->not_before ||
@@ -482,4 +482,52 @@ bool vcs_zcode_dht_record_conflicts(
   if (!a || !b || a == b || !record_slot_equal(a, b))
     return false;
   return !record_content_equal(a, b);
+}
+
+bool vcs_zcode_dht_record_same_stream(
+    const struct vcs_zcode_dht_record *a,
+    const struct vcs_zcode_dht_record *b)
+{
+  if (!a || !b || a->kind != b->kind ||
+      strcmp(a->namespace_name, b->namespace_name) != 0 ||
+      memcmp(a->network_genesis, b->network_genesis, 32) != 0 ||
+      memcmp(a->provider_node_id, b->provider_node_id, 32) != 0 ||
+      memcmp(a->delegation.doc.master_pubkey,
+             b->delegation.doc.master_pubkey, 32) != 0)
+    return false;
+  const uint8_t *a_root = a->kind == VCS_ZCODE_DHT_RECORD_POINTER
+                              ? a->semantic_root : a->transport_root;
+  const uint8_t *b_root = b->kind == VCS_ZCODE_DHT_RECORD_POINTER
+                              ? b->semantic_root : b->transport_root;
+  return memcmp(a_root, b_root, 32) == 0;
+}
+
+bool vcs_zcode_dht_record_conflicted_at(
+    const struct vcs_zcode_dht_record *records, size_t count, size_t index)
+{
+  uint8_t wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+  if (!records || index >= count ||
+      vcs_zcode_dht_record_encode(&records[index], wire) !=
+          VCS_ZCODE_DHT_RECORD_OK)
+    return false;
+  for (size_t i = 0; i < count; i++)
+    if (i != index && vcs_zcode_dht_record_conflicts(&records[index],
+                                                      &records[i]))
+      return true;
+  return false;
+}
+
+bool vcs_zcode_dht_record_superseded_at(
+    const struct vcs_zcode_dht_record *records, size_t count, size_t index)
+{
+  if (!records || index >= count ||
+      vcs_zcode_dht_record_conflicted_at(records, count, index))
+    return false;
+  for (size_t i = 0; i < count; i++)
+    if (i != index &&
+        !vcs_zcode_dht_record_conflicted_at(records, count, i) &&
+        vcs_zcode_dht_record_same_stream(&records[index], &records[i]) &&
+        records[i].sequence > records[index].sequence)
+      return true;
+  return false;
 }

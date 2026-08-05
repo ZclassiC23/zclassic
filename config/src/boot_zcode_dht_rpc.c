@@ -2,6 +2,7 @@
  * purpose: Nonblocking, capability-owned public lookup lifecycle. */
 
 #include "config/boot_zcode_dht.h"
+#include "config/boot_zcode_dht_replication.h"
 
 #include "base/hex.h"
 #include "crypto/random_secret.h"
@@ -10,7 +11,6 @@
 #include "util/sync.h"
 #include "json/json.h"
 #include "vcs/package_swarm_node.h"
-#include "vcs/zcode_replication.h"
 
 #include <stdatomic.h>
 #include <string.h>
@@ -92,6 +92,7 @@ void boot_zcode_dht_public_tick(uint64_t monotonic_s) {
   public_cleanup_locked(monotonic_s);
   zcl_mutex_unlock(&g_public_lock);
   boot_zcode_dht_record_public_tick(monotonic_s);
+  boot_zcode_dht_replication_public_tick(monotonic_s);
 }
 
 void boot_zcode_dht_public_reset(void) {
@@ -99,6 +100,7 @@ void boot_zcode_dht_public_reset(void) {
   memset(g_public, 0, sizeof(g_public));
   zcl_mutex_unlock(&g_public_lock);
   boot_zcode_dht_record_public_reset();
+  boot_zcode_dht_replication_public_reset();
 }
 
 static const struct json_value *rpc_input(const struct json_value *params) {
@@ -268,8 +270,6 @@ static bool rpc_publish(const struct json_value *params, bool help,
                         struct json_value *result);
 static bool rpc_storage_ack(const struct json_value *params, bool help,
                             struct json_value *result);
-static bool rpc_replication(const struct json_value *params, bool help,
-                            struct json_value *result);
 static bool rpc_provider_route(const struct json_value *params, bool help,
                                struct json_value *result);
 
@@ -288,8 +288,6 @@ static bool rpc_status(const struct json_value *params, bool help,
     return rpc_publish(params, false, result);
   if (operation && strcmp(operation, "storage_ack") == 0)
     return rpc_storage_ack(params, false, result);
-  if (operation && strcmp(operation, "replication") == 0)
-    return rpc_replication(params, false, result);
   if (operation) {
     rpc_error(result, "INVALID_OPERATION", "unknown bounded DHT operation");
     return true;
@@ -662,62 +660,43 @@ static bool rpc_storage_ack(const struct json_value *params, bool help,
   return rpc_publish_impl(params, help, result, true);
 }
 
-static bool rpc_replication(const struct json_value *params, bool help,
-                            struct json_value *result) {
-  if (help) {
-    json_set_str(result, "zcode_dht_replication {namespace,transport_root}");
-    return true;
-  }
-  const struct json_value *in = rpc_input(params);
-  char namespace_name[32];
-  uint8_t root[32];
-  if (!input_namespace(in, namespace_name) ||
-      !input_root(in, "transport_root", root, false)) {
-    rpc_error(result, "INVALID_SELECTOR",
-              "canonical namespace and transport_root required");
-    return true;
-  }
-  struct vcs_zcode_dht_record records[2 * VCS_ZCODE_DHT_RECORDS_PER_FRAME];
-  size_t total = 0, count = 0;
-  struct vcs_zcode_dht_record_selector selector;
-  memset(&selector, 0, sizeof(selector));
-  memcpy(selector.namespace_name, namespace_name, 32);
-  memcpy(selector.root, root, 32);
-  selector.kind = VCS_ZCODE_DHT_RECORD_PROVIDER;
-  uint64_t now = (uint64_t)platform_time_wall_time_t();
-  if (!boot_zcode_dht_record_query(now, &selector, records,
-                                   VCS_ZCODE_DHT_RECORDS_PER_FRAME, &count)) {
-    rpc_error(result, "DHT_DISABLED", "authenticated DHT is disabled");
-    return true;
-  }
-  total += count;
-  selector.kind = VCS_ZCODE_DHT_RECORD_STORAGE_ACK;
-  if (!boot_zcode_dht_record_query(now, &selector, records + total,
-                                   VCS_ZCODE_DHT_RECORDS_PER_FRAME, &count)) {
-    rpc_error(result, "DHT_DISABLED", "authenticated DHT is disabled");
-    return true;
-  }
-  total += count;
-  struct vcs_zcode_replication_status status;
-  vcs_zcode_replication_evaluate(records, total, namespace_name, root, now,
-                                 &status);
+static void provider_route_json(
+    struct json_value *result, const struct vcs_zcode_dht_provider_route *route,
+    enum vcs_swarm_fetch_result fetched) {
+  bool scheduled = fetched == VCS_SWARM_FETCH_OK ||
+                   fetched == VCS_SWARM_FETCH_ALREADY_COMPLETE;
   json_set_object(result);
-  json_push_kv_bool(result, "ok", true);
-  json_push_kv_int(result, "target_providers", VCS_ZCODE_REPLICATION_TARGET);
-  json_push_kv_int(result, "provider_hints", (int64_t)status.provider_hints);
-  json_push_kv_int(result, "valid_storage_acks", (int64_t)status.valid_acks);
-  json_push_kv_int(result, "declared_owner_groups",
-                   (int64_t)status.declared_owner_groups);
-  json_push_kv_bool(result, "durable", status.durable);
-  json_push_kv_bool(result, "operator_diversity_proven", false);
-  return true;
+  json_push_kv_bool(result, "ok", scheduled);
+  if (!scheduled) {
+    json_push_kv_str(result, "code", "FETCH_REFUSED");
+    json_push_kv_str(result, "error",
+                     vcs_swarm_fetch_result_string(fetched));
+  }
+  json_push_kv_int(result, "authenticated_providers",
+                   route->authenticated_count);
+  json_push_kv_int(result, "reachability_pending",
+                   route->reachability_pending);
+  json_push_kv_int(result, "policy_denied", route->policy_denied);
+  json_push_kv_str(result, "fetch_result",
+                   vcs_swarm_fetch_result_string(fetched));
+  json_push_kv_bool(result, "restricted", true);
 }
+
+#ifdef ZCL_TESTING
+void boot_zcode_dht_provider_route_test_render(
+    struct json_value *result,
+    const struct vcs_zcode_dht_provider_route *route, uint32_t fetch_result) {
+  provider_route_json(result, route,
+                      (enum vcs_swarm_fetch_result)fetch_result);
+}
+#endif
 
 static bool rpc_provider_route(const struct json_value *params, bool help,
                                struct json_value *result) {
   if (help) {
     json_set_str(result,
-                 "zcode_dht_provider_route {namespace,transport_root}");
+                 "zcode_dht_provider_route {namespace,transport_root,"
+                 "maximum_bytes?}");
     return true;
   }
   const struct json_value *in = rpc_input(params);
@@ -730,6 +709,15 @@ static bool rpc_provider_route(const struct json_value *params, bool help,
               "canonical namespace and transport_root required");
     return true;
   }
+  const struct json_value *maximum_value = json_get(in, "maximum_bytes");
+  int64_t maximum_bytes = maximum_value && maximum_value->type == JSON_INT
+                              ? json_get_int(maximum_value) : 0;
+  if ((maximum_value && maximum_value->type != JSON_INT) ||
+      maximum_bytes < 0) {
+    rpc_error(result, "INVALID_SELECTOR",
+              "maximum_bytes must be a nonnegative integer");
+    return true;
+  }
   uint64_t now = (uint64_t)platform_time_wall_time_t();
   struct vcs_zcode_dht_provider_route route;
   if (!boot_zcode_dht_provider_route(now, &selector, &route)) {
@@ -737,21 +725,17 @@ static bool rpc_provider_route(const struct json_value *params, bool help,
     return true;
   }
   struct vcs_swarm_engine *engine = vcs_swarm_engine_global();
-  enum vcs_swarm_fetch_result fetched =
-      engine ? vcs_swarm_engine_fetch_from(
-                   engine, selector.root, (int64_t)(now / 86400u), now,
-                   route.peer_ids, route.authenticated_count)
-             : VCS_SWARM_FETCH_NO_STORE;
-  json_set_object(result);
-  json_push_kv_bool(result, "ok", true);
-  json_push_kv_int(result, "authenticated_providers",
-                   route.authenticated_count);
-  json_push_kv_int(result, "reachability_pending",
-                   route.reachability_pending);
-  json_push_kv_int(result, "policy_denied", route.policy_denied);
-  json_push_kv_str(result, "fetch_result",
-                   vcs_swarm_fetch_result_string(fetched));
-  json_push_kv_bool(result, "restricted", true);
+  enum vcs_swarm_fetch_result fetched = VCS_SWARM_FETCH_NO_STORE;
+  if (engine)
+    fetched = maximum_bytes > 0
+        ? vcs_swarm_engine_fetch_from_bounded(
+              engine, selector.root, (int64_t)(now / 86400u), now,
+              route.peer_ids, route.authenticated_count,
+              (uint64_t)maximum_bytes)
+        : vcs_swarm_engine_fetch_from(
+              engine, selector.root, (int64_t)(now / 86400u), now,
+              route.peer_ids, route.authenticated_count);
+  provider_route_json(result, &route, fetched);
   return true;
 }
 
@@ -768,4 +752,5 @@ void boot_zcode_dht_register_rpc(struct rpc_table *table) {
   for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
     rpc_table_must_append(table, &commands[i]);
   boot_zcode_dht_record_register_rpc(table);
+  boot_zcode_dht_replication_register_rpc(table);
 }

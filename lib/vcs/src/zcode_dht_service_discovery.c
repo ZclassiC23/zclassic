@@ -127,10 +127,25 @@ static void discovery_cancel_children(
   if (discovery->phase == SERVICE_RECORD_DISCOVERY_ROUTING &&
       discovery->lookup_id)
     (void)vcs_zcode_dht_service_lookup_cancel(service, discovery->lookup_id);
-  for (uint32_t i = 0; i < VCS_ZCODE_DHT_K; i++)
+  for (uint32_t i = 0;
+       i < VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES; i++)
     if (discovery->child_operation_ids[i])
       (void)vcs_zcode_dht_service_record_operation_cancel(
           service, discovery->child_operation_ids[i]);
+}
+
+static bool discovery_responsible_set_covered(
+    const struct service_record_discovery *discovery)
+{
+  uint32_t successes = 0;
+  for (uint32_t i = 0; i < discovery->node_count; i++) {
+    if (!discovery->node_complete[i])
+      return false;
+    successes += discovery->node_succeeded[i];
+    if (successes == discovery->target_successes)
+      return true;
+  }
+  return false;
 }
 
 static void discovery_drive_children(
@@ -147,6 +162,7 @@ static void discovery_drive_children(
                                                        &result)) {
       discovery->child_operation_ids[i] = 0;
       discovery->node_complete[i] = true;
+      discovery->failed_nodes++;
       if (discovery->active_children)
         discovery->active_children--;
       continue;
@@ -160,8 +176,14 @@ static void discovery_drive_children(
         discovery->record_count <
             VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS)
       discovery->node_page_offsets[i] = result.next_offset;
-    else
+    else {
       discovery->node_complete[i] = true;
+      if (result.state == VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE) {
+        discovery->node_succeeded[i] = true;
+        discovery->successful_nodes++;
+      } else
+        discovery->failed_nodes++;
+    }
     if (discovery->active_children)
       discovery->active_children--;
   }
@@ -169,11 +191,19 @@ static void discovery_drive_children(
   if (discovery->record_count >=
       VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS) {
     discovery_cancel_children(service, discovery);
+    discovery->truncated = true;
     discovery->state = VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE;
     return;
   }
 
-  while (discovery->active_children < VCS_ZCODE_DHT_ALPHA) {
+  if (discovery_responsible_set_covered(discovery)) {
+    discovery_cancel_children(service, discovery);
+    discovery->state = VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE;
+    return;
+  }
+
+  while (discovery->active_children < VCS_ZCODE_DHT_ALPHA &&
+         discovery->successful_nodes < discovery->target_successes) {
     uint32_t at = discovery->node_count;
     for (uint32_t i = 0; i < discovery->node_count; i++)
       if (!discovery->node_complete[i] &&
@@ -183,10 +213,19 @@ static void discovery_drive_children(
       }
     if (at == discovery->node_count)
       break;
+    /* The local responsible node was snapshotted through local_query() at
+     * admission. It deliberately has no remote peer/session to query. */
+    if (memcmp(discovery->node_ids[at], service->self_id, 32) == 0) {
+      discovery->node_complete[at] = true;
+      discovery->node_succeeded[at] = true;
+      discovery->successful_nodes++;
+      continue;
+    }
     struct service_peer *peer = discovery_peer_for_node(
         service, discovery->node_ids[at]);
     if (!peer) {
       discovery->node_complete[at] = true;
+      discovery->failed_nodes++;
       continue;
     }
     uint64_t child_id = 0;
@@ -202,8 +241,11 @@ static void discovery_drive_children(
   bool all_complete = true;
   for (uint32_t i = 0; i < discovery->node_count; i++)
     all_complete &= discovery->node_complete[i];
-  if (all_complete && discovery->active_children == 0)
+  if (all_complete && discovery->active_children == 0) {
+    discovery->incomplete |=
+        discovery->successful_nodes < discovery->target_successes;
     discovery->state = VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE;
+  }
 }
 
 static void discovery_drive(struct vcs_zcode_dht_service *service,
@@ -218,21 +260,35 @@ static void discovery_drive(struct vcs_zcode_dht_service *service,
     return;
   }
   if (discovery->phase == SERVICE_RECORD_DISCOVERY_ROUTING) {
-    struct vcs_zcode_dht_lookup_result lookup;
-    if (!vcs_zcode_dht_service_lookup_poll(service, discovery->lookup_id, now,
-                                            &lookup)) {
+    vcs_zcode_dht_service_tick(service, now);
+    struct service_lookup *lookup = vcs_zcode_dht_lookup_find(
+        service, discovery->lookup_id);
+    if (!lookup) {
       discovery->state = VCS_ZCODE_DHT_RECORD_OPERATION_REJECTED;
       return;
     }
-    discovery->routing_rounds = lookup.rounds;
-    discovery->xor_progress = lookup.xor_progress;
-    if (lookup.state == VCS_ZCODE_DHT_LOOKUP_PENDING)
+    discovery->routing_rounds = lookup->rounds;
+    discovery->xor_progress = lookup->xor_progress;
+    if (!lookup->completed)
       return;
+    if (lookup->termination == VCS_ZCODE_DHT_TERMINATION_TIMEOUT ||
+        lookup->termination ==
+            VCS_ZCODE_DHT_TERMINATION_NO_AUTHENTICATED_RESULT)
+      discovery->incomplete = true;
     discovery->lookup_id = 0;
     discovery->phase = SERVICE_RECORD_DISCOVERY_QUERYING;
-    discovery->node_count = lookup.count;
-    memcpy(discovery->node_ids, lookup.node_ids,
-           lookup.count * sizeof(discovery->node_ids[0]));
+    for (uint32_t i = 0;
+         i < lookup->candidate_count &&
+         discovery->node_count < VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES;
+         i++)
+      if (vcs_zcode_dht_lookup_candidate_authenticated(
+              lookup->candidates[i].state))
+        memcpy(discovery->node_ids[discovery->node_count++],
+               lookup->candidates[i].node_id, 32);
+    discovery->target_successes =
+        discovery->node_count < VCS_ZCODE_DHT_K
+            ? discovery->node_count : VCS_ZCODE_DHT_K;
+    memset(lookup, 0, sizeof(*lookup));
   }
   discovery_drive_children(service, discovery, now);
 }
@@ -303,6 +359,8 @@ bool vcs_zcode_dht_service_record_discovery_poll(
     discovery_normalize_records(discovery);
   memset(out, 0, sizeof(*out));
   out->state = discovery->state;
+  out->truncated = discovery->truncated;
+  out->incomplete = discovery->incomplete;
   out->routing_rounds = discovery->routing_rounds;
   out->xor_progress = discovery->xor_progress;
   out->nodes_queried = discovery->nodes_queried;

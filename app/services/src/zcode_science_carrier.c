@@ -12,6 +12,7 @@
 #include "vcs/blob_store.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
+#include "vcs/zcode_dht.h"
 #include "vcs/zcode_science.h"
 
 #include <stdio.h>
@@ -214,7 +215,8 @@ struct zcl_result zcode_science_admit_candidates(
     bool *out_new, size_t *out_attempts)
 {
     if (!store || !ndb || !workspace || !expected_science_root ||
-        !blob_roots || !blob_count || blob_count > 8 || !out_blob_root ||
+        !blob_roots || !blob_count || blob_count > VCS_ZCODE_DHT_K ||
+        !out_blob_root ||
         !out_kind || !out_new || !out_attempts)
         return ZCL_ERR(-1, "science-candidates-input-invalid");
     *out_attempts = 0;

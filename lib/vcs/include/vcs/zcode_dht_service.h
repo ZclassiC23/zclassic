@@ -223,6 +223,10 @@ struct vcs_zcode_dht_record_operation_result {
 
 struct vcs_zcode_dht_record_discovery_result {
   enum vcs_zcode_dht_record_operation_state state;
+  bool truncated;
+  /* At least one routed responsible-node/page query could not complete.
+   * Records remain useful partial evidence, never complete coverage. */
+  bool incomplete;
   uint32_t routing_rounds;
   uint32_t xor_progress;
   uint32_t nodes_queried;
@@ -262,6 +266,21 @@ bool vcs_zcode_dht_service_next_outbound(struct vcs_zcode_dht_service *service,
                                          size_t *wire_len_out);
 void vcs_zcode_dht_service_tick(struct vcs_zcode_dht_service *service,
                                 struct vcs_zcode_dht_time now);
+#ifdef ZCL_TESTING
+struct vcs_zcode_dht_publication_test_view {
+  uint64_t next_attempt_mono;
+  uint32_t phase;
+  uint32_t node_count;
+  uint32_t attempts;
+  uint32_t successes;
+  uint32_t succeeded_beyond_k;
+  uint8_t node_ids[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES][32];
+};
+bool vcs_zcode_dht_service_test_publication_retry(
+    const struct vcs_zcode_dht_service *service,
+    const uint8_t semantic_root[32],
+    struct vcs_zcode_dht_publication_test_view *out);
+#endif
 
 bool vcs_zcode_dht_service_lookup_begin(struct vcs_zcode_dht_service *service,
                                         const uint8_t target[32],
@@ -392,12 +411,17 @@ vcs_zcode_dht_storage_ack_commit_verified(
 /* Snapshot/apply the proof state around a composition-root lock. The caller
  * performs the full package-store byte proof with no DHT lock held, then
  * applies the result before the scheduler is driven. */
-size_t vcs_zcode_dht_service_storage_ack_roots(
-    const struct vcs_zcode_dht_service *service, uint8_t (*out)[32],
-    size_t max);
+struct vcs_zcode_dht_storage_ack_proof_request {
+  uint8_t transport_root[32];
+  bool fresh_required;
+  uint64_t proof_epoch;
+};
+size_t vcs_zcode_dht_service_storage_ack_proof_requests(
+    struct vcs_zcode_dht_service *service, struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_storage_ack_proof_request *out, size_t max);
 void vcs_zcode_dht_service_storage_ack_validation(
     struct vcs_zcode_dht_service *service, const uint8_t transport_root[32],
-    bool valid);
+    uint64_t proof_epoch, bool valid, struct vcs_zcode_dht_time now);
 
 /* Composition-root lock audit helpers. The snapshot is fixed-size and
  * allocation-free; callbacks may be replaced after boot-time persistence was

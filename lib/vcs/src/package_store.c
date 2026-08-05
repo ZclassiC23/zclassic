@@ -71,7 +71,6 @@ uint64_t vcs_package_store_quota_bytes(void)
 }
 
 /* ── derived accounting ───────────────────────────────────────────── */
-
 static uint64_t store_pool_budget(const struct vcs_package_store *store,
                                   enum vcs_package_store_pool pool)
 {
@@ -137,7 +136,6 @@ uint64_t vcs_package_store_pool_usage(struct vcs_package_store *store,
 }
 
 /* ── eviction ─────────────────────────────────────────────────────── */
-
 /* Does any tracked package other than skip reference this chunk hash? */
 static bool store_chunk_shared(const struct vcs_package_store *store,
                                const uint8_t hash[32], size_t skip)
@@ -158,6 +156,9 @@ static bool store_chunk_shared(const struct vcs_package_store *store,
 static void store_drop_package(struct vcs_package_store *store, size_t index)
 {
     struct store_package *pkg = &store->pkgs[index];
+    store->next_mutation_generation++;
+    if (!store->next_mutation_generation)
+        store->next_mutation_generation++;
     char path[STORE_PATH_MAX];
     if (pkg->committed) {
         snprintf(path, sizeof(path), "%s/manifests/%s", store->root,
@@ -257,7 +258,6 @@ static bool store_ensure_room(struct vcs_package_store *store,
 }
 
 /* ── open / close ─────────────────────────────────────────────────── */
-
 struct vcs_package_store *vcs_package_store_open(const char *datadir,
                                                  uint64_t quota_bytes)
 {
@@ -355,7 +355,6 @@ void vcs_package_store_close_global(void)
 }
 
 /* ── admission: manifests ─────────────────────────────────────────── */
-
 /* Commit this package if it is staged and CAS-complete. */
 static bool store_commit_if_complete(struct vcs_package_store *store,
                                      const uint8_t root[32])
@@ -467,7 +466,6 @@ enum vcs_package_store_result vcs_package_store_put_manifest(
 }
 
 /* ── admission: chunks ────────────────────────────────────────────── */
-
 /* Resolve (path, chunk_index) to a manifest file; NULL = bad coords. */
 static const struct vcs_package_file *store_resolve_file(
     const struct store_package *pkg, const char *path)
@@ -565,6 +563,7 @@ enum vcs_package_store_result vcs_package_store_put_chunk(
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_IO;
     }
+    store_packages_touch_hash(store, hash);
     if (will_complete && !store_commit_if_complete(store, package_root)) {
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_IO;
@@ -843,7 +842,6 @@ size_t vcs_package_store_list_summaries(
 }
 
 /* ── operator: pins and class ─────────────────────────────────────── */
-
 enum vcs_package_store_result vcs_package_store_pin(
     struct vcs_package_store *store, const uint8_t package_root[32],
     bool pinned)
@@ -885,6 +883,7 @@ enum vcs_package_store_result vcs_package_store_pin(
                        "pinned package vanished mid-pin");
         }
         pkg->pinned = true;
+        store_package_touch(store, pkg);
     } else {
         if (unlink(pin) != 0 && errno != ENOENT) {
             pthread_mutex_unlock(&store->lock);
@@ -892,6 +891,7 @@ enum vcs_package_store_result vcs_package_store_pin(
                        "unlink pin %s: %s", pin, strerror(errno));
         }
         pkg->pinned = false;
+        store_package_touch(store, pkg);
     }
     pthread_mutex_unlock(&store->lock);
     return VCS_PACKAGE_STORE_OK;
@@ -946,7 +946,6 @@ enum vcs_package_store_result vcs_package_store_set_class(
 }
 
 /* ── status + introspection ───────────────────────────────────────── */
-
 /* Lock-held status fill shared by the public snapshot and the dump. */
 static bool store_status_locked(struct vcs_package_store *store,
                                 const uint8_t package_root[32],
@@ -970,6 +969,7 @@ static bool store_status_locked(struct vcs_package_store *store,
     out->present_bytes = bytes;
     out->total_chunks = (uint32_t)pkg->chunk_count;
     out->total_bytes = pkg->total_bytes;
+    out->mutation_generation = pkg->mutation_generation;
     return true;
 }
 

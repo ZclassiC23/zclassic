@@ -15,6 +15,85 @@ tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 
 ## Current state
 
+**2026-08-05 — S7.2 operational integrity plus Sovereign Space/Scout COMPLETE
+in isolated lane; not deployed.** Implementation head `1312261ee` first closes
+the operational gaps left after S7.1. Possession validation is generation-bound,
+race-closed and scheduled under strict package/chunk/byte budgets; mandatory ACK
+plan, commit, restart and renewal proofs remain synchronous and full-byte.
+Replication status now composes bounded distributed PROVIDER and STORAGE_ACK
+discovery, preserves conflicts and incomplete evidence, distinguishes remote
+signed claims from locally revalidated possession, and makes `durable` fail
+closed. Pointer sequence is comparable only inside one signed publisher stream;
+equal-slot conflicts remain unusable evidence, denied candidates are skipped
+individually, and unrelated hostile high sequences cannot crowd out an honest
+root. Lookup and publication use monotonic scheduling, bounded frontier restart
+under churn and recursive cancellation without widening restricted fetches.
+
+The first sovereign-space objects are canonical bounded
+`service_descriptor.v1` and delegated, expiring, signed `space_manifest.v1`
+wires in the existing CAS. A descriptor names a full protocol root, read-only
+verbs, object roots and capability roots; it grants no authority and is never
+executable. Typed `metaverse.space.plan|commit|show|publish|discover` commands
+reuse the existing generic POINTER/PROVIDER, authenticated Noise route,
+restricted swarm and local sovereignty engine. FETCH, STORE, INDEX, SERVE and
+FORWARD stay independent local decisions. The two READ planners now use
+strictly non-creating delegation/key loads; the read-leaf integrity test
+recursively snapshots typed datadir paths, so nested payload-directory writes
+cannot hide behind an unchanged top-level file set.
+
+`metaverse.space.scout.plan|run|show` defines one bounded read-only mission:
+sorted starting roots, explicit depth/space/portal/byte caps and a monotonic
+deadline. It follows only locally permitted portal manifests and writes a
+canonical deterministic evidence map plus a separately signed local
+attestation. Results enumerate visited roots, owners, advertised services,
+portal outcomes, typed failures, policy denials and truncation. The map is
+local evidence, never authority or global truth. Scout never invokes service
+verbs, packages, wallets, messaging or an execution callback.
+
+The new hermetic acceptance proof uses sixteen real DHT services and
+Noise-bound sessions on a sparse chain. A root-only late joiner crosses
+multiple record pages and hops through iterative POINTER and PROVIDER
+discovery, an authenticated provider route and the unchanged
+ANNOUNCE/WANT/DATA swarm before semantic CAS admission. Its 24 alpha-pointer
+rows include eight real equal-slot conflict pairs, seven independent hostile
+high-sequence streams and one low-sequence honest stream. The proof also covers
+cycles, a dead root, provider disconnect/zero/rebind, two genuinely distinct
+local policy maps (one blocks delta while the other admits it), default-denied
+unknown EXECUTE with zero execution requests, deterministic repeat maps and
+byte-identical records, permitted CAS objects, evidence and attestation after
+DHT/store/swarm restart. The earlier 12-node replication proof remains a
+separate complementary test.
+
+Final receipts at implementation head `1312261ee`: focused
+`test_zcode_dht_service`, both space groups, all seven DHT groups, both science
+groups, both swarm groups, store/market/yardsale regressions and the direct
+read-leaf/delegation integrity groups pass. The focused ASan+UBSan DHT/model
+gate passes with zero suppressions. All 132 lint gates pass; full-program LTO
+passes. The strict cold suite registered 904 groups, ran 895, cached 0,
+policy-gated 9 parameter-heavy groups, failed 0 and reported 22 explicit
+self-skip markers (85.0 s, 32 workers). `ci-reproducible` produced two
+identical 22,375,112-byte binaries at SHA3-256
+`e1cdb6541e0312a7fd47796584070ab85b1654c2b350c94501d38799cb3b19b2`;
+different-length snapshot paths produced two identical 22,375,192-byte
+binaries at `9c040efa9dc5f6df827f6c11007811d640fbfc3fb753dba5626c08ea3b5fb0af`.
+Mandatory pre-push CI passed strict object compilation, fast lint and 895/895
+runnable source-wide groups. Independent review first rejected a hidden
+`zcode/dht` mkdir from READ planners; after the load-path and recursive-test
+fix, `strace` confirmed zero former mkdir hits and the final integration
+verdict was **BANKABLE**. Exact phase receipts and honest bounds are in
+`docs/work/wt-zcode-s7-2-space-scout.md`.
+
+Honest limits: no doorbell, board, mailbox, store interaction, agent action,
+remote service invocation, arbitrary package execution, REST silo, consensus
+change, wallet spend, deployment or live-datadir operation was added. Unknown
+C23 remains default-denied and can execute only under explicit local policy in
+the confined ZCODE executor. Scout records advertised service roots but does
+not fetch or invoke descriptors, and scheduled asynchronous discovery may
+require a later mission rerun after admission. Future signed space manifests,
+doorbells, BBS objects and user-defined services must remain local-policy
+subjects and reuse this CAS + generic POINTER/PROVIDER + authenticated swarm
+foundation; shared blocklists remain advisory and opt-in, never global bans.
+
 **2026-08-05 — S7.1 distributed record discovery and possession-backed
 replication COMPLETE; not deployed.** ZCODE now has one generic signed
 discovery substrate over the
@@ -111,13 +190,15 @@ at `f8b599b5aa190e35dd80159fee9e728d0c9e27998eb780dd12a077665ab730fc`.
 The lane and integration receipts are recorded in the S7.1 assignment
 document.
 
-Honest limits: signed discovery records are expiring hints, not content truth,
+Honest limits at the S7.1 integration head (superseded by the S7.2 section
+above): signed discovery records are expiring hints, not content truth,
 availability proof, scientific acceptance or operator independence. Unknown
 C23 is never auto-executed; execution remains explicit local policy plus the
-confined ZCODE executor. S7 adds no space manifest, doorbell, board, mailbox,
-agent mission, arbitrary service execution, REST protocol silo, consensus
-change, wallet spend, deployment or live-datadir mutation. Future sovereign
-spaces must reuse these generic namespaces, objects and transport.
+confined ZCODE executor. That S7.1 head added no space manifest, doorbell,
+board, mailbox, agent mission, arbitrary service execution, REST protocol
+silo, consensus change, wallet spend, deployment or live-datadir mutation.
+Future sovereign spaces must reuse these generic namespaces, objects and
+transport.
 
 **2026-08-04 — S6 production hardening COMPLETE; not deployed.** The existing
 `zpkgswm`/Noise transport now carries bounded `FIND_NODE`/`NODES` traffic;

@@ -3,6 +3,7 @@
  *          CAS-authoritative plan/commit services. */
 
 #include "command/native_command.h"
+#include "command/native_zcode_discovery.h"
 #include "command/native_zcode_policy.h"
 
 #include "base/hex.h"
@@ -17,6 +18,7 @@
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
 #include "vcs/package_swarm_node.h"
+#include "vcs/zcode_dht_service.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -810,101 +812,20 @@ static bool zsci_store_for(const char *datadir, bool *live,
     return *out != NULL;
 }
 
-static bool zsci_discovery_rpc(const char *method, struct json_value *input,
-                               struct json_value *result)
-{
-    json_init(result);
-    if (!json_get(input, "operation"))
-        json_push_kv_str(input, "operation",
-                         strcmp(method, "zcode_dht_publish") == 0
-                             ? "publish" : "records");
-    struct json_value params;
-    json_init(&params);
-    json_set_array(&params);
-    json_push_back(&params, input);
-    size_t needed = json_write(&params, NULL, 0);
-    char *wire = zcl_malloc(needed + 1, "science.discovery.rpc");
-    if (!wire || json_write(&params, wire, needed + 1) != needed) {
-        free(wire);
-        json_free(&params);
-        return false;
-    }
-    zcl_native_bridge_ensure_rpc();
-    char *raw = node_rpc_call("zcode_dht_status", wire);
-    free(wire);
-    json_free(&params);
-    if (!raw)
-        return false;
-    bool ok = json_read(result, raw, strlen(raw)) && result->type == JSON_OBJ &&
-              json_get_bool_or(result, "ok", false);
-    free(raw);
-    return ok;
-}
-
 static bool zsci_discovery_record(const char *kind, const char *science_root,
                                   const char *blob_root, int64_t now,
                                   int64_t expiry, char token_out[65],
                                   char error_out[64])
 {
-    struct json_value input, result;
-    if (error_out)
-        error_out[0] = '\0';
-    json_init(&input);
-    json_set_object(&input);
-    json_push_kv_str(&input, "mode", "plan");
-    json_push_kv_str(&input, "kind", kind);
-    json_push_kv_str(&input, "namespace", "science");
-    if (strcmp(kind, "pointer") == 0)
-        json_push_kv_str(&input, "semantic_root", science_root);
-    json_push_kv_str(&input, "transport_root", blob_root);
-    json_push_kv_int(&input, "sequence", now > 0 ? now : 1);
-    json_push_kv_int(&input, "not_before", now);
-    json_push_kv_int(&input, "expiry", expiry);
-    if (!zsci_discovery_rpc("zcode_dht_publish", &input, &result)) {
-        const char *code = json_get_str(json_get(&result, "code"));
-        if (error_out)
-            (void)snprintf(error_out, 64, "%s",
-                           code ? code : "RPC_UNAVAILABLE");
-        json_free(&result);
-        json_free(&input);
-        return false;
-    }
-    const char *token = json_get_str(json_get(&result, "plan_token"));
-    bool valid = token && strlen(token) == 64;
-    if (valid)
-        memcpy(token_out, token, 65);
-    json_free(&result);
-    if (!valid) {
-        json_free(&input);
-        return false;
-    }
-    json_set_str((struct json_value *)json_get(&input, "mode"), "commit");
-    json_push_kv_str(&input, "plan_token", token_out);
-    bool committed = zsci_discovery_rpc("zcode_dht_publish", &input, &result);
-    if (!committed && error_out) {
-        const char *code = json_get_str(json_get(&result, "code"));
-        (void)snprintf(error_out, 64, "%s",
-                       code ? code : "RPC_UNAVAILABLE");
-    }
-    json_free(&result);
-    json_free(&input);
-    return committed;
+    return zcl_native_zcode_publish_record(
+        kind, "science", strcmp(kind, "pointer") == 0 ? science_root : NULL,
+        blob_root, now > 0 ? now : 1, now, expiry, token_out, error_out, 64);
 }
 
 static bool zsci_records_discover(struct json_value *input,
                                   struct json_value *result)
 {
-    struct zcl_command_request subrequest;
-    memset(&subrequest, 0, sizeof(subrequest));
-    subrequest.input = input;
-    struct zcl_command_reply subreply;
-    zcl_command_reply_init(&subreply, "zcl.zcode_network_records.v1");
-    zcl_native_handle_zcode_network_records(&subrequest, &subreply);
-    bool ok = subreply.status == ZCL_COMMAND_STATUS_PASSED;
-    json_init(result);
-    json_copy(result, &subreply.data);
-    zcl_command_reply_free(&subreply);
-    return ok;
+    return zcl_native_zcode_records_discover(input, result);
 }
 
 struct zsci_pointer_candidate {
@@ -912,30 +833,171 @@ struct zsci_pointer_candidate {
     char publisher_zid[65];
     char provider_node_id[65];
     uint64_t sequence;
+    bool provider_authenticated;
+    uint32_t source_index;
 };
 
 struct zsci_pointer_choice {
-    struct zsci_pointer_candidate candidate[8];
+    struct zsci_pointer_candidate
+        candidate[VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS];
     uint32_t candidate_count;
     uint32_t records_seen;
     uint32_t conflicts;
+    uint32_t superseded;
+    uint32_t policy_denied;
+    uint32_t candidate_truncated;
 };
+
+static bool zsci_candidate_policy_allows(
+    const struct json_value *input, const char *semantic_hex,
+    const struct zsci_pointer_candidate *candidate)
+{
+    struct vcs_zcode_sovereignty_subject subject;
+    memset(&subject, 0, sizeof(subject));
+    if (!semantic_hex || !candidate ||
+        !zcl_hex_decode_lower(semantic_hex, subject.semantic_root, 32) ||
+        !zcl_hex_decode_lower(candidate->blob_root,
+                              subject.transport_root, 32) ||
+        !zcl_hex_decode_lower(candidate->publisher_zid,
+                              subject.publisher_zid, 32))
+        return false;
+    (void)snprintf(subject.service_type, sizeof(subject.service_type),
+                   "science");
+    static const enum vcs_zcode_sovereignty_action actions[] = {
+        VCS_ZCODE_SOVEREIGNTY_FETCH,
+        VCS_ZCODE_SOVEREIGNTY_STORE,
+        VCS_ZCODE_SOVEREIGNTY_INDEX,
+    };
+    for (size_t i = 0; i < sizeof(actions) / sizeof(actions[0]); i++)
+        if (!zcl_native_zcode_policy_allows(
+                zsci_datadir(input), actions[i], &subject, NULL, 0))
+            return false;
+    return true;
+}
 
 static bool zsci_pointer_better(
     const struct zsci_pointer_candidate *candidate,
     const struct zsci_pointer_candidate *other)
 {
-    if (candidate->sequence != other->sequence)
-        return candidate->sequence > other->sequence;
-    int compared = strcmp(candidate->provider_node_id,
-                          other->provider_node_id);
+    if (candidate->provider_authenticated !=
+        other->provider_authenticated)
+        return candidate->provider_authenticated;
+    int compared = strcmp(candidate->blob_root, other->blob_root);
     if (compared != 0)
         return compared < 0;
-    compared = strcmp(candidate->blob_root, other->blob_root);
+    compared = strcmp(candidate->publisher_zid, other->publisher_zid);
     return compared != 0 ? compared < 0
-                         : strcmp(candidate->publisher_zid,
-                                  other->publisher_zid) < 0;
+                         : strcmp(candidate->provider_node_id,
+                                  other->provider_node_id) < 0;
 }
+
+static void zsci_pointer_insert(
+    struct zsci_pointer_choice *choice,
+    const struct zsci_pointer_candidate *candidate)
+{
+    if (choice->candidate_count ==
+        VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS)
+        return;
+    uint32_t at = choice->candidate_count;
+    while (at > 0 && zsci_pointer_better(
+                         candidate, &choice->candidate[at - 1])) {
+        choice->candidate[at] = choice->candidate[at - 1];
+        at--;
+    }
+    choice->candidate[at] = *candidate;
+    choice->candidate_count++;
+}
+
+static void zsci_pointer_diversify(struct zsci_pointer_choice *choice)
+{
+    struct zsci_pointer_candidate diverse[
+        VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS];
+    bool selected[VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS] = {false};
+    uint32_t diverse_count = 0;
+    for (uint32_t i = 0; i < choice->candidate_count; i++) {
+        bool root_seen = false;
+        for (uint32_t j = 0; j < diverse_count; j++)
+            root_seen |= strcmp(diverse[j].blob_root,
+                                choice->candidate[i].blob_root) == 0;
+        if (!root_seen) {
+            diverse[diverse_count++] = choice->candidate[i];
+            selected[i] = true;
+        }
+    }
+    for (uint32_t i = 0; i < choice->candidate_count; i++)
+        if (!selected[i])
+            diverse[diverse_count++] = choice->candidate[i];
+    memcpy(choice->candidate, diverse,
+           diverse_count * sizeof(*diverse));
+}
+
+#ifdef ZCL_TESTING
+size_t zcl_native_zcode_science_test_rank_pointers(
+    const struct zcl_science_pointer_test_observation *observations,
+    size_t count, uint32_t *source_indices, size_t max,
+    uint32_t *conflicts_out, uint32_t *superseded_out)
+{
+    struct zsci_pointer_choice choice;
+    memset(&choice, 0, sizeof(choice));
+    if (!observations || (!source_indices && max))
+        return 0;
+    if (count > VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS)
+        count = VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS;
+    for (size_t i = 0; i < count; i++) {
+        choice.records_seen++;
+        if (observations[i].conflicted || observations[i].superseded) {
+            choice.conflicts += observations[i].conflicted;
+            choice.superseded += observations[i].superseded;
+            continue;
+        }
+        struct zsci_pointer_candidate candidate;
+        memset(&candidate, 0, sizeof(candidate));
+        zcl_hex_encode(observations[i].transport_root, 32,
+                       candidate.blob_root);
+        zcl_hex_encode(observations[i].publisher_zid, 32,
+                       candidate.publisher_zid);
+        zcl_hex_encode(observations[i].provider_node_id, 32,
+                       candidate.provider_node_id);
+        candidate.sequence = observations[i].sequence;
+        candidate.provider_authenticated =
+            observations[i].provider_authenticated;
+        candidate.source_index = (uint32_t)i;
+        zsci_pointer_insert(&choice, &candidate);
+    }
+    zsci_pointer_diversify(&choice);
+    size_t copied = choice.candidate_count < max
+                        ? choice.candidate_count : max;
+    for (size_t i = 0; i < copied; i++)
+        source_indices[i] = choice.candidate[i].source_index;
+    if (conflicts_out)
+        *conflicts_out = choice.conflicts;
+    if (superseded_out)
+        *superseded_out = choice.superseded;
+    return choice.candidate_count;
+}
+
+bool zcl_native_zcode_science_test_candidate_allowed(
+    const char *datadir, const uint8_t semantic_root[32],
+    const uint8_t transport_root[32], const uint8_t publisher_zid[32])
+{
+    if (!datadir || !semantic_root || !transport_root || !publisher_zid)
+        return false;
+    char semantic[65];
+    struct zsci_pointer_candidate candidate;
+    memset(&candidate, 0, sizeof(candidate));
+    zcl_hex_encode(semantic_root, 32, semantic);
+    zcl_hex_encode(transport_root, 32, candidate.blob_root);
+    zcl_hex_encode(publisher_zid, 32, candidate.publisher_zid);
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    json_push_kv_str(&input, "datadir", datadir);
+    bool allowed = zsci_candidate_policy_allows(
+        &input, semantic, &candidate);
+    json_free(&input);
+    return allowed;
+}
+#endif
 
 static bool zsci_resolve_pointer(const char *science_root,
                                  struct zsci_pointer_choice *choice)
@@ -960,6 +1022,8 @@ static bool zsci_resolve_pointer(const char *science_root,
         const char *publisher = json_get_str(json_get(row, "publisher_zid"));
         const char *provider = json_get_str(json_get(row, "provider_node_id"));
         int64_t sequence = json_get_int(json_get(row, "sequence"));
+        bool conflicted = json_get_bool_or(row, "conflicted", false);
+        bool superseded = json_get_bool_or(row, "superseded", false);
         uint8_t decoded[32];
         if (!transport || !publisher || !provider || sequence < 1 ||
             strlen(transport) != 64 || strlen(publisher) != 64 ||
@@ -969,34 +1033,25 @@ static bool zsci_resolve_pointer(const char *science_root,
             !zcl_hex_decode_lower(provider, decoded, 32))
             continue;
         choice->records_seen++;
-        bool transport_seen = false;
-        for (uint32_t j = 0; j < choice->candidate_count; j++)
-            transport_seen |= strcmp(choice->candidate[j].blob_root,
-                                     transport) == 0;
-        if (transport_seen)
+        if (conflicted || superseded) {
+            choice->conflicts += conflicted;
+            choice->superseded += superseded;
             continue;
+        }
         struct zsci_pointer_candidate candidate;
         memset(&candidate, 0, sizeof(candidate));
         memcpy(candidate.blob_root, transport, 65);
         memcpy(candidate.publisher_zid, publisher, 65);
         memcpy(candidate.provider_node_id, provider, 65);
         candidate.sequence = (uint64_t)sequence;
-        if (choice->candidate_count == 8 &&
-            !zsci_pointer_better(&candidate, &choice->candidate[7]))
-            continue;
-        uint32_t at = choice->candidate_count < 8
-            ? choice->candidate_count : 7;
-        while (at > 0 && zsci_pointer_better(
-                             &candidate, &choice->candidate[at - 1])) {
-            choice->candidate[at] = choice->candidate[at - 1];
-            at--;
-        }
-        choice->candidate[at] = candidate;
-        if (choice->candidate_count < 8)
-            choice->candidate_count++;
+        candidate.provider_authenticated =
+            json_get_bool_or(row, "provider_authenticated", false);
+        candidate.source_index = (uint32_t)i;
+        zsci_pointer_insert(choice, &candidate);
     }
-    int64_t conflicts = json_get_int(json_get(&result, "conflict_count"));
-    choice->conflicts = conflicts > 0 ? (uint32_t)conflicts : 0;
+    /* Give distinct transport roots the whole first pass. Duplicate roots
+     * remain as independent publisher-policy alternatives in pass two. */
+    zsci_pointer_diversify(choice);
     json_free(&result);
     json_free(&input);
     return choice->candidate_count > 0;
@@ -1007,40 +1062,16 @@ static bool zsci_route_providers(const char *blob_root,
                                  uint32_t *authenticated_out,
                                  uint32_t *pending_out)
 {
-    struct json_value input, records, route;
+    struct json_value input, route;
     json_init(&input);
     json_init(&route);
     json_set_object(&input);
     json_push_kv_str(&input, "kind", "provider");
     json_push_kv_str(&input, "namespace", "science");
     json_push_kv_str(&input, "transport_root", blob_root);
-    if (!zsci_records_discover(&input, &records)) {
-        json_free(&records);
-        json_free(&input);
-        return false;
-    }
-    int64_t record_count = json_get_int(json_get(&records, "count"));
-    json_free(&records);
-    if (record_count <= 0) {
-        json_free(&input);
-        return false;
-    }
-    struct json_value params;
-    json_init(&params);
-    json_set_array(&params);
-    json_push_back(&params, &input);
-    size_t needed = json_write(&params, NULL, 0);
-    char *wire = zcl_malloc(needed + 1, "science.provider.route.rpc");
-    bool encoded = wire && json_write(&params, wire, needed + 1) == needed;
-    zcl_native_bridge_ensure_rpc();
-    char *raw = encoded ? node_rpc_call("zcode_dht_provider_route", wire)
-                        : NULL;
-    free(wire);
-    json_free(&params);
-    bool routed = raw && json_read(&route, raw, strlen(raw)) &&
-                  route.type == JSON_OBJ &&
-                  json_get_bool_or(&route, "ok", false);
-    free(raw);
+    uint32_t record_count = 0;
+    bool routed = zcl_native_zcode_provider_discover_and_route(
+        &input, &route, &record_count);
     if (!routed) {
         json_free(&route);
         json_free(&input);
@@ -1049,7 +1080,7 @@ static bool zsci_route_providers(const char *blob_root,
     int64_t authenticated =
         json_get_int(json_get(&route, "authenticated_providers"));
     int64_t pending = json_get_int(json_get(&route, "reachability_pending"));
-    *records_out = (uint32_t)record_count;
+    *records_out = record_count;
     *authenticated_out = authenticated > 0 ? (uint32_t)authenticated : 0;
     *pending_out = pending > 0 ? (uint32_t)pending : 0;
     json_free(&route);
@@ -1168,15 +1199,35 @@ void zcl_native_handle_zcode_science_fetch(
     if (!request || !reply) return;
     const char *requested_root = zsci_str(request->input, "root");
     const char *explicit_blob = zsci_str(request->input, "blob_root");
+    bool cancel = json_get_bool_or(request->input, "cancel", false);
     bool root_only = !explicit_blob || !explicit_blob[0];
     struct zsci_pointer_choice choice;
     memset(&choice, 0, sizeof(choice));
-    if (root_only && (!requested_root || strlen(requested_root) != 64 ||
-                      !zsci_resolve_pointer(requested_root, &choice))) {
+    if (root_only && (!requested_root || strlen(requested_root) != 64)) {
         zsci_fail(reply, "BAD_BLOB_ROOT",
                   "provide a 64-lowercase-hex blob_root, or a science root "
                   "resolvable through iterative signed POINTER discovery",
                   "zcode.science.fetch");
+        return;
+    }
+    if (root_only && !zsci_resolve_pointer(requested_root, &choice)) {
+        if (choice.conflicts || choice.superseded) {
+            (void)json_push_kv_int(&reply->data, "pointer_records",
+                                   choice.records_seen);
+            (void)json_push_kv_int(&reply->data, "pointer_conflicts",
+                                   choice.conflicts);
+            (void)json_push_kv_int(&reply->data, "pointer_superseded",
+                                   choice.superseded);
+            zsci_fail_service(
+                reply, "POINTER_EVIDENCE_UNUSABLE",
+                "signed pointer evidence exists, but every stream is "
+                "conflicted or superseded",
+                "zcode.science.fetch");
+        } else {
+            zsci_fail(reply, "BAD_BLOB_ROOT",
+                      "science root has no usable signed POINTER evidence",
+                      "zcode.science.fetch");
+        }
         return;
     }
     if (!root_only) {
@@ -1192,30 +1243,55 @@ void zcl_native_handle_zcode_science_fetch(
         choice.records_seen = 1;
         memcpy(choice.candidate[0].blob_root, explicit_blob, 65);
     }
-    for (uint32_t i = 0; i < choice.candidate_count; i++) {
-        const char *publisher = root_only
-            ? choice.candidate[i].publisher_zid : NULL;
-        if (!zsci_policy_allows(request->input,
-                                VCS_ZCODE_SOVEREIGNTY_FETCH,
-                                requested_root,
-                                choice.candidate[i].blob_root, publisher,
-                                reply, "zcode.science.fetch") ||
-            !zsci_policy_allows(request->input,
-                                VCS_ZCODE_SOVEREIGNTY_STORE,
-                                requested_root,
-                                choice.candidate[i].blob_root, publisher,
-                                reply, "zcode.science.fetch") ||
-            !zsci_policy_allows(request->input,
-                                VCS_ZCODE_SOVEREIGNTY_INDEX,
-                                requested_root,
-                                choice.candidate[i].blob_root, publisher,
-                                reply, "zcode.science.fetch"))
+    if (cancel && root_only) {
+        zsci_fail(reply, "BAD_BLOB_ROOT",
+                  "cancel requires the exact 64-lowercase-hex blob_root",
+                  "zcode.science.fetch");
+        return;
+    }
+    if (root_only) {
+        uint32_t allowed = 0;
+        for (uint32_t i = 0; i < choice.candidate_count; i++) {
+            if (!zsci_candidate_policy_allows(
+                    request->input, requested_root, &choice.candidate[i])) {
+                choice.policy_denied++;
+                continue;
+            }
+            choice.candidate[allowed++] = choice.candidate[i];
+        }
+        choice.candidate_count = allowed;
+        if (!allowed) {
+            zsci_fail_service(
+                reply, "SOVEREIGNTY_DENIED",
+                "local sovereignty policy denied every signed pointer candidate",
+                "zcode.science.fetch");
             return;
+        }
+        if (choice.candidate_count > VCS_ZCODE_DHT_K) {
+            choice.candidate_truncated =
+                choice.candidate_count - VCS_ZCODE_DHT_K;
+            choice.candidate_count = VCS_ZCODE_DHT_K;
+        }
+    } else if (!cancel && (!zsci_policy_allows(
+                   request->input, VCS_ZCODE_SOVEREIGNTY_FETCH,
+                   requested_root, choice.candidate[0].blob_root, NULL,
+                   reply, "zcode.science.fetch") ||
+               !zsci_policy_allows(
+                   request->input, VCS_ZCODE_SOVEREIGNTY_STORE,
+                   requested_root, choice.candidate[0].blob_root, NULL,
+                   reply, "zcode.science.fetch") ||
+               !zsci_policy_allows(
+                   request->input, VCS_ZCODE_SOVEREIGNTY_INDEX,
+                   requested_root, choice.candidate[0].blob_root, NULL,
+                   reply, "zcode.science.fetch"))) {
+        return;
     }
     const char *datadir = zsci_datadir(request->input);
     char ws[ZSCI_PATH_MAX];
-    const char *workspace = zsci_workspace(request->input, ws, sizeof(ws));
-    if (!datadir || !workspace) {
+    const char *workspace = cancel ? NULL
+                                   : zsci_workspace(request->input, ws,
+                                                    sizeof(ws));
+    if (!datadir || (!cancel && !workspace)) {
         zsci_fail(reply, "BAD_WORKSPACE",
                   "datadir/workspace could not be resolved",
                   "zcode.science.fetch");
@@ -1234,6 +1310,34 @@ void zcl_native_handle_zcode_science_fetch(
         zsci_fail_service(reply, "NO_STORE",
                           "the package store failed to open",
                           "zcode.science.fetch");
+        return;
+    }
+    if (cancel) {
+        struct vcs_swarm_engine *cancel_engine = vcs_swarm_engine_global();
+        struct vcs_service_book *cancel_book = NULL;
+        bool temporary_engine = cancel_engine == NULL;
+        if (temporary_engine) {
+            cancel_book = vcs_service_book_load(zcode_dir);
+            cancel_engine = vcs_swarm_engine_create(
+                store, cancel_book, zcode_dir, NULL, NULL);
+        }
+        uint8_t transport[32];
+        (void)zcl_hex_decode_lower(choice.candidate[0].blob_root,
+                                   transport, 32);
+        bool canceled = cancel_engine && vcs_swarm_engine_cancel(
+                                             cancel_engine, transport,
+                                             (uint64_t)zsci_now(request->input));
+        if (temporary_engine && cancel_engine)
+            vcs_swarm_engine_free(cancel_engine);
+        vcs_service_book_free(cancel_book);
+        if (!live_store)
+            vcs_package_store_close(store);
+        (void)json_push_kv_str(&reply->data, "blob_root",
+                               choice.candidate[0].blob_root);
+        (void)json_push_kv_bool(&reply->data, "canceled", canceled);
+        (void)json_push_kv_bool(&reply->data, "restriction_widened", false);
+        (void)json_push_kv_str(&reply->data, "result",
+                               canceled ? "canceled" : "not_active");
         return;
     }
     uint32_t provider_records = 0, authenticated_providers = 0;
@@ -1303,7 +1407,7 @@ void zcl_native_handle_zcode_science_fetch(
     struct zcl_result admitted = ZCL_ERR(-1, "science-admit-db-unavailable");
     if (db_open) {
         if (root_only) {
-            const char *blob_roots[8];
+            const char *blob_roots[VCS_ZCODE_DHT_K];
             for (uint32_t i = 0; i < choice.candidate_count; i++)
                 blob_roots[i] = choice.candidate[i].blob_root;
             admitted = zcode_science_admit_candidates(
@@ -1337,6 +1441,12 @@ void zcl_native_handle_zcode_science_fetch(
                            choice.candidate_count);
     (void)json_push_kv_int(&reply->data, "pointer_conflicts",
                            choice.conflicts);
+    (void)json_push_kv_int(&reply->data, "pointer_superseded",
+                           choice.superseded);
+    (void)json_push_kv_int(&reply->data, "pointer_policy_denied",
+                           choice.policy_denied);
+    (void)json_push_kv_int(&reply->data, "pointer_candidate_truncated",
+                           choice.candidate_truncated);
     (void)json_push_kv_int(&reply->data, "provider_records",
                            provider_records);
     (void)json_push_kv_int(&reply->data, "authenticated_providers",

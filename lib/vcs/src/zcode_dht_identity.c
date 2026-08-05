@@ -26,19 +26,22 @@ static bool io_error(char *out, size_t cap, const char *message)
 }
 
 static bool identity_paths(const char *datadir, char dir[1200],
-                           const char *leaf, char path[1400],
+                           const char *leaf, bool create_dirs,
+                           char path[1400],
                            char *err, size_t err_cap)
 {
     if (!datadir || !datadir[0] || !leaf)
         return io_error(err, err_cap, "identity datadir is missing");
     char zcode[1150];
     int n = snprintf(zcode, sizeof(zcode), "%s/zcode", datadir);
-    if (n <= 0 || (size_t)n >= sizeof(zcode) ||
-        (mkdir(zcode, 0700) != 0 && errno != EEXIST))
-        return io_error(err, err_cap, "cannot create zcode directory");
+    if (n <= 0 || (size_t)n >= sizeof(zcode))
+        return io_error(err, err_cap, "DHT identity path too long");
     n = snprintf(dir, 1200, "%s/%s", datadir, VCS_ZCODE_DHT_IDENTITY_DIR);
-    if (n <= 0 || n >= 1200 ||
-        (mkdir(dir, 0700) != 0 && errno != EEXIST))
+    if (n <= 0 || n >= 1200)
+        return io_error(err, err_cap, "DHT identity path too long");
+    if (create_dirs &&
+        ((mkdir(zcode, 0700) != 0 && errno != EEXIST) ||
+         (mkdir(dir, 0700) != 0 && errno != EEXIST)))
         return io_error(err, err_cap, "cannot create DHT identity directory");
     n = snprintf(path, 1400, "%s/%s", dir, leaf);
     if (n <= 0 || n >= 1400)
@@ -115,7 +118,7 @@ bool vcs_zcode_dht_online_key_load_or_create(
         return io_error(err, err_cap, "online key output is missing");
     memset(seed_out, 0, 32); memset(pubkey_out, 0, 32);
     char dir[1200], path[1400];
-    if (!identity_paths(datadir, dir, VCS_ZCODE_DHT_ONLINE_KEY_FILE,
+    if (!identity_paths(datadir, dir, VCS_ZCODE_DHT_ONLINE_KEY_FILE, true,
                         path, err, err_cap))
         return false;
     if (access(path, F_OK) == 0) {
@@ -145,7 +148,7 @@ bool vcs_zcode_dht_online_key_load(
     memset(seed_out, 0, 32);
     memset(pubkey_out, 0, 32);
     char dir[1200], path[1400];
-    if (!identity_paths(datadir, dir, VCS_ZCODE_DHT_ONLINE_KEY_FILE,
+    if (!identity_paths(datadir, dir, VCS_ZCODE_DHT_ONLINE_KEY_FILE, false,
                         path, err, err_cap) ||
         !exact_read_0600(path, seed_out, 32, err, err_cap))
         return false;
@@ -166,7 +169,7 @@ bool vcs_zcode_dht_delegation_save(
         VCS_ZCODE_DHT_DELEGATION_OK)
         return io_error(err, err_cap, "delegation does not encode");
     char dir[1200], path[1400];
-    if (!identity_paths(datadir, dir, VCS_ZCODE_DHT_DELEGATION_FILE,
+    if (!identity_paths(datadir, dir, VCS_ZCODE_DHT_DELEGATION_FILE, true,
                         path, err, err_cap))
         return false;
     return atomic_write_0600(dir, path, wire, sizeof(wire), err, err_cap);
@@ -179,7 +182,7 @@ bool vcs_zcode_dht_delegation_load(
     if (!out) return io_error(err, err_cap, "delegation output is missing");
     uint8_t wire[VCS_ZCODE_DHT_DELEGATION_WIRE_BYTES];
     char dir[1200], path[1400];
-    if (!identity_paths(datadir, dir, VCS_ZCODE_DHT_DELEGATION_FILE,
+    if (!identity_paths(datadir, dir, VCS_ZCODE_DHT_DELEGATION_FILE, false,
                         path, err, err_cap) ||
         !exact_read_0600(path, wire, sizeof(wire), err, err_cap))
         return false;

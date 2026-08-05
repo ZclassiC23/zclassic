@@ -37,6 +37,7 @@
 #include "vcs/package_store.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
+#include "vcs/zcode_dht.h"
 #include "vcs/zcode_science.h"
 #include "vcs/zcode_science_index.h"
 
@@ -1241,6 +1242,19 @@ static int test_zstore_admit(void)
         ASSERT_STR_EQ(kind, ZCODE_SCIENCE_KIND_STUDY);
         ASSERT(!is_new);
         ASSERT_EQ(zstore_cas_object_count(dir_b), 1);
+        /* The native fetch path may retain the full bounded DHT shortlist.
+         * Exercise more than the former eight-entry ceiling so its caller
+         * and this admission API stay bound to the same K-sized contract. */
+        const char *wide_candidates[VCS_ZCODE_DHT_K];
+        for (size_t i = 0; i + 1 < VCS_ZCODE_DHT_K; i++)
+            wide_candidates[i] = absent;
+        wide_candidates[VCS_ZCODE_DHT_K - 1] = blob_hex;
+        attempts = 0;
+        ASSERT(zcode_science_admit_candidates(
+            store, &ndb_b, dir_b, commit.result_root, wide_candidates,
+            VCS_ZCODE_DHT_K, 1500, selected, kind, &is_new, &attempts).ok);
+        ASSERT_EQ(attempts, VCS_ZCODE_DHT_K);
+        ASSERT_STR_EQ(selected, blob_hex);
         vcs_package_store_close(store);
         zstore_teardown(&ndb_a, dir_a);
         zstore_teardown(&ndb_b, dir_b);

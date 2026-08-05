@@ -437,6 +437,24 @@ void zcl_native_handle_zcode_science_publish(
 void zcl_native_handle_zcode_science_fetch(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+#ifdef ZCL_TESTING
+struct zcl_science_pointer_test_observation {
+    uint8_t transport_root[32];
+    uint8_t publisher_zid[32];
+    uint8_t provider_node_id[32];
+    uint64_t sequence;
+    bool provider_authenticated;
+    bool conflicted;
+    bool superseded;
+};
+size_t zcl_native_zcode_science_test_rank_pointers(
+    const struct zcl_science_pointer_test_observation *observations,
+    size_t count, uint32_t *source_indices, size_t max,
+    uint32_t *conflicts_out, uint32_t *superseded_out);
+bool zcl_native_zcode_science_test_candidate_allowed(
+    const char *datadir, const uint8_t semantic_root[32],
+    const uint8_t transport_root[32], const uint8_t publisher_zid[32]);
+#endif
 void zcl_native_handle_yardsale_seller_arm(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
@@ -1406,6 +1424,36 @@ void zcl_native_handle_metaverse_property_list(
 void zcl_native_handle_metaverse_property_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+
+/* metaverse.space.* — signed read-only sovereign-space objects carried only
+ * by the existing CAS/blob/DHT provider substrate. */
+void zcl_native_handle_metaverse_space_plan(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_space_commit(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_space_show(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_space_publish(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_space_discover(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+/* Internal composition entry point: identical discovery semantics, but the
+ * caller owns an absolute monotonic deadline and lookup cancellation. */
+void zcl_native_metaverse_space_discover_until(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply,
+    int64_t deadline_mono_ms, size_t maximum_wire_bytes);
+void zcl_native_handle_metaverse_space_scout_plan(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_space_scout_run(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_space_scout_show(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+#ifdef ZCL_TESTING
+bool zcl_native_metaverse_space_test_admit_allowed(
+    const char *datadir, const uint8_t semantic_root[32],
+    const uint8_t transport_root[32], const uint8_t pointer_publisher[32],
+    const uint8_t manifest_owner[32], bool manifest);
+#endif
 
 /* ROM-seed policy/ledger surface (app/controllers/src/rom_seed_controller.c)
  * — see config/commands/ops.def `ops.rom_seed.*` and docs/ROM_DELIVERY.md. */

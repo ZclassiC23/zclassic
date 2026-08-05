@@ -142,6 +142,15 @@ static int test_delegation_identity_files(void)
         ASSERT(mkdtemp(datadir) != NULL);
         uint8_t seed1[32], pub1[32], seed2[32], pub2[32];
         char err[192];
+        struct vcs_zcode_dht_delegation loaded;
+        char zcode_dir[512];
+        snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
+        ASSERT(!vcs_zcode_dht_delegation_load(
+            datadir, &loaded, err, sizeof(err)));
+        ASSERT(access(zcode_dir, F_OK) != 0);
+        ASSERT(!vcs_zcode_dht_online_key_load(
+            datadir, seed2, pub2, err, sizeof(err)));
+        ASSERT(access(zcode_dir, F_OK) != 0);
         ASSERT(vcs_zcode_dht_online_key_load_or_create(
             datadir, seed1, pub1, err, sizeof(err)));
         ASSERT(vcs_zcode_dht_online_key_load_or_create(
@@ -149,7 +158,7 @@ static int test_delegation_identity_files(void)
         ASSERT(memcmp(seed1, seed2, 32) == 0);
         ASSERT(memcmp(pub1, pub2, 32) == 0);
 
-        struct vcs_zcode_dht_delegation original, loaded;
+        struct vcs_zcode_dht_delegation original;
         ASSERT(make_delegation(&original, 9, 1000, 2000, 0x22));
         ASSERT(vcs_zcode_dht_delegation_save(
             datadir, &original, err, sizeof(err)));
@@ -175,8 +184,6 @@ static int test_delegation_identity_files(void)
         ASSERT(unlink(online_path) == 0);
         ASSERT(unlink(delegation_path) == 0);
         ASSERT(rmdir(dht_dir) == 0);
-        char zcode_dir[512];
-        snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
         ASSERT(rmdir(zcode_dir) == 0);
         ASSERT(rmdir(datadir) == 0);
         PASS();

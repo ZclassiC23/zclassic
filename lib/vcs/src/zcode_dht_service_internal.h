@@ -116,12 +116,15 @@ enum service_publication_phase {
 
 struct service_publication {
   bool used, possession_current;
+  bool renewal_proof_required, renewal_proof_ready;
+  uint64_t possession_proof_epoch;
   enum service_publication_phase phase;
   struct vcs_zcode_dht_record record;
-  uint64_t lifetime_s, lookup_id, next_attempt_wall, backoff_s;
-  uint8_t node_ids[VCS_ZCODE_DHT_K][32];
-  uint64_t child_operation_ids[VCS_ZCODE_DHT_K];
-  bool node_complete[VCS_ZCODE_DHT_K];
+  uint64_t lifetime_s, lookup_id, next_attempt_mono, backoff_s;
+  uint8_t node_ids[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES][32];
+  uint64_t child_operation_ids[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
+  bool node_complete[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
+  bool node_succeeded[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
   uint32_t node_count, active_children, attempts, successes;
 };
 
@@ -131,17 +134,19 @@ enum service_record_discovery_phase {
 };
 
 struct service_record_discovery {
-  bool used;
+  bool used, truncated, incomplete;
   uint64_t id, lookup_id, deadline_mono;
   enum vcs_zcode_dht_record_operation_state state;
   enum service_record_discovery_phase phase;
   struct vcs_zcode_dht_record_selector selector;
   uint32_t routing_rounds, xor_progress;
   uint32_t node_count, next_node, active_children, nodes_queried;
-  uint8_t node_ids[VCS_ZCODE_DHT_K][32];
-  uint64_t child_operation_ids[VCS_ZCODE_DHT_K];
-  uint8_t node_page_offsets[VCS_ZCODE_DHT_K];
-  bool node_complete[VCS_ZCODE_DHT_K];
+  uint32_t target_successes, successful_nodes, failed_nodes;
+  uint8_t node_ids[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES][32];
+  uint64_t child_operation_ids[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
+  uint8_t node_page_offsets[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
+  bool node_complete[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
+  bool node_succeeded[VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES];
   uint32_t record_count;
   struct vcs_zcode_dht_record
       records[VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS];
@@ -175,6 +180,7 @@ struct vcs_zcode_dht_service {
   struct vcs_zcode_dht_record_store *record_store;
   uint32_t outbound_count;
   uint64_t serial, next_lookup_id, next_record_operation_id;
+  uint64_t next_possession_proof_epoch;
   uint64_t next_record_discovery_id;
   bool records_dirty;
   bool publication_intents_dirty;

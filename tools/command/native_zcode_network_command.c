@@ -627,17 +627,9 @@ void zcl_native_handle_zcode_network_storage_ack(
 void zcl_native_handle_zcode_network_replication(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply) {
-  if (!request || !reply)
-    return;
-  struct json_value input;
-  json_init(&input);
-  if (request->input)
-    json_copy(&input, request->input);
-  else
-    json_set_object(&input);
-  json_push_kv_str(&input, "operation", "replication");
-  struct zcl_command_request forwarded = *request;
-  forwarded.input = &input;
-  zdn_forward(&forwarded, reply, "zcode_dht_status");
-  json_free(&input);
+  zdn_async_wrapper(request, reply, "zcode_dht_replication_begin",
+                    "zcode_dht_replication_poll",
+                    "zcode_dht_replication_cancel",
+                    VCS_ZCODE_DHT_LOOKUP_CEILING_S +
+                        VCS_ZCODE_DHT_SERVICE_QUERY_TIMEOUT_S + 5u);
 }

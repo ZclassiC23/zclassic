@@ -204,7 +204,7 @@ struct zcl_result zcode_science_admit(
     char out_science_root[65], char out_kind[ZCODE_SCIENCE_KIND_CAP],
     bool *out_new);
 
-/* Bounded dishonest-provider fallback: tries at most eight already-fetched
+/* Bounded dishonest-provider fallback: tries at most the DHT K shortlist of
  * transport objects in caller order. Every candidate crosses the same byte
  * verifier and must re-derive expected_science_root before admission. */
 struct zcl_result zcode_science_admit_candidates(

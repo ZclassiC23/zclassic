@@ -86,6 +86,8 @@ const char *vcs_swarm_fetch_result_string(enum vcs_swarm_fetch_result result)
     case VCS_SWARM_FETCH_NO_STORE: return "no-store";
     case VCS_SWARM_FETCH_FULL: return "download-table-full";
     case VCS_SWARM_FETCH_RECORD_IO: return "record-io";
+    case VCS_SWARM_FETCH_BYTE_LIMIT: return "byte-limit";
+    case VCS_SWARM_FETCH_BOUND_NOT_OWNED: return "bound-not-owned";
     case VCS_SWARM_FETCH_BAD_INPUT: return "bad-input";
     }
     return "unknown";
