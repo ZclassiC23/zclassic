@@ -491,3 +491,44 @@ missing phase-specific proof.
   mailbox, agent mission, remote action or automatic C23 execution exists.
   The mission byte ceiling covers accepted manifest/carrier content; bounded
   control envelopes are governed by the separate monotonic deadline.
+
+### Phase 7 — acceptance proof implemented, release matrix pending
+
+- The existing 12-node sparse iterative proof remains unchanged. A distinct
+  16-node acceptance case now creates sixteen real DHT services and Noise-bound
+  sessions on a sparse distance-ordered chain, then recreates a late joiner
+  with one authenticated bootstrap connection and a mission containing only
+  the alpha space root.
+- Four canonical signed manifests are built bottom-up in the provider's CAS and
+  mirrored into four real one-chunk blob carriers. Both late joiners begin with
+  empty package/object stores; each Scout observation composes iterative POINTER
+  discovery, iterative PROVIDER discovery, an authenticated provider route, the
+  existing provider-restricted ANNOUNCE/WANT/DATA swarm engine, semantic-root
+  admission and signed-manifest verification before it can visit a space.
+  Alpha advertises bravo, charlie and a dead root; bravo converges on charlie
+  after alpha already queued it (the deterministic seen/cycle result); charlie
+  advertises delta. Separate sovereignty-policy objects block delta on node A
+  and allow it on node B; the maps assert `policy_denied` versus `verified` and
+  each CAS projection matches its node-local policy (A lacks delta while B
+  admits it). Both policies deny EXECUTE for an unknown
+  advertised package, and the Scout path makes zero EXECUTE policy requests.
+- Alpha has 24 signed pointer rows: eight equal-slot equivocation pairs (all 16
+  members asserted conflicted), seven independent hostile high-sequence streams
+  with distinct unusable transport roots, and one low-sequence legitimate
+  stream. Iterative discovery crosses more than one eight-record response page
+  without truncation, reaches the far provider through multiple hops, retains
+  the hostile evidence, excludes every conflict from use and ultimately fetches
+  the legitimate carrier. Provider disconnect/reachability/rebind proves churn
+  recovery on the existing authenticated route.
+- The bounded scout starts from alpha alone, visits permitted multi-hop spaces,
+  names the dead and policy-denied roots, emits byte-identical maps on repeat,
+  and stores the deterministic map plus signed attestation. After closing and
+  reopening the late joiner's DHT service, package store and swarm engine, the
+  canonical byte-sorted 24-record set is identical, every locally admitted
+  permitted space has identical CAS bytes, the evidence map reloads identically
+  and a rerun returns the same evidence/attestation roots as already recorded.
+  Every assertion failure reaches one unconditional teardown for engines,
+  stores, policies, maps, sixteen services and all temporary directories.
+- Focused `test_zcode_dht_service` passes the original 12-node proof and the new
+  16-node proof together. The remaining sanitizer, acceptance, full-suite,
+  LTO, reproducibility and pre-push receipts are intentionally not claimed yet.
