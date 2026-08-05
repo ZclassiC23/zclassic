@@ -52,7 +52,7 @@ bool dev_activation_verify_running(struct dev_activation_txn *txn,
 
     /* The verify window defaults to DEV_ACTIVATION_VERIFY_TIMEOUT_S; a
      * hermetic-test override (mirroring the shell's ZCL_DEV_ACTIVATION_TIMEOUT)
-     * lets failure-path tests fail fast instead of burning the full 60 s. */
+     * lets failure-path tests fail fast instead of burning the full window. */
     long timeout_s = DEV_ACTIVATION_VERIFY_TIMEOUT_S;
     const char *ev = getenv("ZCL_DEV_ACTIVATION_VERIFY_TIMEOUT_S");
     if (ev && *ev) {

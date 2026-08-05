@@ -34,11 +34,13 @@
  * Bounded timeouts. The stop/start process window must OUTLIVE the dev unit's
  * TimeoutStopSec=300: killing `systemctl stop` earlier leaves systemd still
  * deactivating the unit and races the following start/probe. Keep 30 seconds
- * of control-plane headroom. The verify window (60 s) bounds the
- * post-restart readiness poll once systemctl has completed the transition.
+ * of control-plane headroom. The verify window (120 s) bounds the
+ * post-restart readiness poll once systemctl has completed the transition;
+ * the live schema-59 dev datadir measured 67.6 s from start to READY after an
+ * unclean restart, so the former 60 s window false-rejected a healthy image.
  */
 #define DEV_ACTIVATION_STOP_START_TIMEOUT_S 330
-#define DEV_ACTIVATION_VERIFY_TIMEOUT_S 60
+#define DEV_ACTIVATION_VERIFY_TIMEOUT_S 120
 #define DEV_ACTIVATION_VERIFY_INTERVAL_MS 250
 
 /*

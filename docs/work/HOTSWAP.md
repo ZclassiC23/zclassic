@@ -447,6 +447,8 @@ generation before invoking the rollback-capable activation engine. It is
 confined to `zcl23-dev.service`, `~/.zclassic-c23-dev`, and RPC 18252.
 Its fixed-argv service-control timeout is longer than that unit's
 `TimeoutStopSec=300`, so the activator cannot race a still-running systemd stop.
+Its 120-second readiness window also exceeds the measured 67.6-second
+schema-59 recovery boot; the prior 60-second window rejected that healthy boot.
 
 Only `make hotswap` and `tools/dev/hotswap-running-dev.sh` remain typed
 containment refusals; the manifest/staging publication path likewise stops
