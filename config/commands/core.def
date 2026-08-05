@@ -931,6 +931,32 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_wallet_transaction_send)
+ZCL_COMMAND_BRANCH("core.wallet.transaction.multisig", "core.wallet.transaction",
+                   "Transparent P2SH multisig composition",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.wallet.transaction.multisig.compose",
+    "core.wallet.transaction.multisig", "",
+    "Compose a P2SH multisig address and redeem script",
+    "Deterministically derives one standard P2SH address and its exact "
+    "CHECKMULTISIG redeem script from 1..16 public keys and an explicit "
+    "signature threshold. It accepts no private keys, stores nothing, moves "
+    "no funds, and returns the typed fund/create/sign/broadcast command path "
+    "for the two-transaction workflow.", 0,
+    "wallet,transaction,multisig,p2sh,compose,public-key",
+    "zcl.core_wallet_multisig_compose.input.v1",
+    "zcl.wallet_multisig_composition.v1",
+    "required_signatures,public_keys", "",
+    "zclassic23 core wallet transaction multisig compose "
+    "--input='<obj>'",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_wallet_multisig_compose)
 ZCL_COMMAND_BRANCH("core.wallet.transaction.raw", "core.wallet.transaction",
                    "Raw transparent transaction composition",
                    ZCL_COMMAND_LAYER_CORE)

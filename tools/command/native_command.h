@@ -1199,6 +1199,9 @@ void zcl_native_handle_wallet_address_export_key(
 void zcl_native_handle_wallet_transaction_send(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_wallet_multisig_compose(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_wallet_raw_create(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

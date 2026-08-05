@@ -826,6 +826,7 @@ static int test_status_brief_body_front_door_deadline(void)
 static int g_wallet_send_calls;
 static int g_wallet_z_sendmany_calls;
 static int g_wallet_raw_broadcast_calls;
+static int g_wallet_multisig_compose_calls;
 static char g_wallet_z_sendmany_params[4096];
 
 static char *wallet_stub_rpc(const char *method, const char *params_json)
@@ -858,6 +859,13 @@ static char *wallet_stub_rpc(const char *method, const char *params_json)
             "\"bb11bb22cc33dd44ee55ff66aa77bb88"
             "cc99dd00ee11ff22aa33bb44cc55dd77\"");
     }
+    if (method && strcmp(method, "createmultisig") == 0) {
+        g_wallet_multisig_compose_calls++;
+        return strdup(
+            "{\"address\":\"t3TypedMultisigAddress000000000000000\","
+            "\"redeemScript\":\"512102aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa51ae\"}");
+    }
     return strdup("null");
 }
 
@@ -870,6 +878,7 @@ static int test_wallet_mutating_native_e2e(void)
         g_wallet_send_calls = 0;
         g_wallet_z_sendmany_calls = 0;
         g_wallet_raw_broadcast_calls = 0;
+        g_wallet_multisig_compose_calls = 0;
         g_wallet_z_sendmany_params[0] = '\0';
         node_rpc_client_set_test_hook(wallet_stub_rpc);
 
@@ -1169,7 +1178,71 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&raw_in);
 
-        /* 6. export-key without confirm must NOT reveal a key. */
+        /* 6. multisig composition accepts public material only and returns
+         *    the exact typed two-transaction workflow without storing or
+         *    spending anything. */
+        const struct zcl_command_spec *multisig_compose = find_spec(
+            reg, "core.wallet.transaction.multisig.compose");
+        ASSERT(multisig_compose != NULL);
+        ASSERT_EQ(multisig_compose->effect, ZCL_COMMAND_EFFECT_READ);
+        struct json_value multisig_in, public_keys, public_key;
+        json_init(&multisig_in); json_set_object(&multisig_in);
+        (void)json_push_kv_int(&multisig_in, "required_signatures", 1);
+        json_init(&public_keys); json_set_array(&public_keys);
+        json_init(&public_key);
+        json_set_str(&public_key,
+            "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        (void)json_push_back(&public_keys, &public_key);
+        json_free(&public_key);
+        (void)json_push_kv(&multisig_in, "public_keys", &public_keys);
+        json_free(&public_keys);
+        struct zcl_command_request multisig_request = {
+            .spec = multisig_compose, .input = &multisig_in,
+            .view = "normal",
+        };
+        zcl_command_reply_init(&reply, multisig_compose->output_schema);
+        zcl_native_handle_wallet_multisig_compose(&multisig_request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "address")),
+                      "t3TypedMultisigAddress000000000000000");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
+                                            "redeem_script_hex")),
+                      "512102aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      "aaaaaaaaaaaaaaaa51ae");
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "required_signatures")),
+                  1);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "public_key_count")), 1);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
+                                            "spend_sign_command")),
+                      "core.wallet.transaction.raw.sign");
+        ASSERT_EQ(g_wallet_multisig_compose_calls, 1);
+        ASSERT(!reply.error.mutated);
+        zcl_command_reply_free(&reply);
+
+        /* Invalid threshold fails locally before reaching the wallet RPC. */
+        struct json_value invalid_multisig, invalid_keys;
+        json_init(&invalid_multisig); json_set_object(&invalid_multisig);
+        (void)json_push_kv_int(&invalid_multisig,
+                               "required_signatures", 2);
+        json_init(&invalid_keys); json_set_array(&invalid_keys);
+        json_init(&public_key);
+        json_set_str(&public_key,
+            "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        (void)json_push_back(&invalid_keys, &public_key);
+        json_free(&public_key);
+        (void)json_push_kv(&invalid_multisig, "public_keys", &invalid_keys);
+        json_free(&invalid_keys);
+        multisig_request.input = &invalid_multisig;
+        zcl_command_reply_init(&reply, multisig_compose->output_schema);
+        zcl_native_handle_wallet_multisig_compose(&multisig_request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "INVALID_MULTISIG_POLICY");
+        ASSERT_EQ(g_wallet_multisig_compose_calls, 1);
+        zcl_command_reply_free(&reply);
+        json_free(&invalid_multisig);
+        json_free(&multisig_in);
+
+        /* 7. export-key without confirm must NOT reveal a key. */
         const struct zcl_command_spec *xk_spec =
             find_spec(reg, "core.wallet.address.export-key");
         ASSERT(xk_spec != NULL);

@@ -48,6 +48,87 @@ static char *raw_native_create_params(const struct json_value *inputs,
     return rpc_arg_builder_to_json(&args);
 }
 
+void zcl_native_handle_wallet_multisig_compose(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    const struct json_value *required_value =
+        json_get(request->input, "required_signatures");
+    const struct json_value *public_keys =
+        json_get(request->input, "public_keys");
+    if (!required_value || required_value->type != JSON_INT ||
+        !public_keys || public_keys->type != JSON_ARR) {
+        wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "INVALID_MULTISIG_POLICY",
+                 "required_signatures must be an integer and public_keys "
+                 "must be an array", "core.wallet.transaction.multisig.compose");
+        return;
+    }
+    int64_t required = json_get_int(required_value);
+    size_t key_count = json_size(public_keys);
+    if (required < 1 || key_count == 0 || key_count > 16 ||
+        required > (int64_t)key_count) {
+        wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "INVALID_MULTISIG_POLICY",
+                 "required_signatures must be between 1 and the number of "
+                 "public_keys; at most 16 keys are supported",
+                 "required_signatures,public_keys");
+        return;
+    }
+    for (size_t i = 0; i < key_count; i++) {
+        const struct json_value *key = json_at(public_keys, i);
+        const char *hex = key && key->type == JSON_STR ?
+            json_get_str(key) : NULL;
+        size_t len = hex ? strlen(hex) : 0;
+        if (len != 66 && len != 130) {
+            wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID,
+                     "INVALID_MULTISIG_PUBLIC_KEY",
+                     "each public key must be a 33-byte compressed or "
+                     "65-byte uncompressed hexadecimal public key",
+                     "public_keys");
+            return;
+        }
+    }
+
+    struct rpc_arg_builder args;
+    rpc_arg_builder_init(&args);
+    rpc_arg_builder_push_int(&args, required);
+    rpc_arg_builder_push_value(&args, public_keys);
+    char *params = rpc_arg_builder_to_json(&args);
+    if (!params) {
+        wnh_fail(reply, ZCL_COMMAND_EXIT_INTERNAL, "ARG_BUILD_FAILED",
+                 "could not encode multisig composition request",
+                 "compose");
+        return;
+    }
+    struct json_value body;
+    bool ok = wnh_call_rpc(reply, "createmultisig", params, &body);
+    free(params);
+    if (!ok) return;
+    const char *address = body.type == JSON_OBJ ?
+        json_get_str(json_get(&body, "address")) : NULL;
+    const char *redeem_script = body.type == JSON_OBJ ?
+        json_get_str(json_get(&body, "redeemScript")) : NULL;
+    if (!address || !address[0] || !redeem_script || !redeem_script[0]) {
+        json_free(&body);
+        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "BAD_MULTISIG_RESULT",
+                 "createmultisig omitted the P2SH address or redeem script",
+                 "createmultisig");
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "address", address);
+    (void)json_push_kv_str(&reply->data, "redeem_script_hex", redeem_script);
+    (void)json_push_kv_int(&reply->data, "required_signatures", required);
+    (void)json_push_kv_int(&reply->data, "public_key_count",
+                           (int64_t)key_count);
+    (void)json_push_kv_str(&reply->data, "fund_command",
+                           "core.wallet.transaction.send");
+    (void)json_push_kv_str(&reply->data, "spend_create_command",
+                           "core.wallet.transaction.raw.create");
+    (void)json_push_kv_str(&reply->data, "spend_sign_command",
+                           "core.wallet.transaction.raw.sign");
+    (void)json_push_kv_str(&reply->data, "spend_broadcast_command",
+                           "core.wallet.transaction.raw.broadcast");
+    json_free(&body);
+}
+
 void zcl_native_handle_wallet_raw_create(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {

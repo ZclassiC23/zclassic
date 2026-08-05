@@ -5,7 +5,11 @@
 
 #include "test/test_core.h"
 #include "chain/chainparams.h"
+#include "script/interpreter.h"
+#include "script/script_error.h"
+#include "script/script_flags.h"
 #include "validation/sighash.h"
+#include "validation/tx_verifier.h"
 #include "wallet/keystore.h"
 #include "keys/key_io.h"
 #include "util/safe_alloc.h"
@@ -273,6 +277,30 @@ int test_multisig(void)
         ok = ok && (memcmp(&ss->data[ss->size - redeem.size],
                            redeem.data, redeem.size) == 0);
         ok = ok && (ss->size > 100);
+
+        /* Prove the completed input against the production consensus script
+         * interpreter, not just by inspecting its byte layout. */
+        struct script p2sh;
+        script_for_p2sh(&p2sh, &sid);
+        struct tx_sig_checker checker_ctx;
+        tx_sig_checker_init(&checker_ctx, &tx, 0, 100000000,
+                            0x76b809bb, &txdata);
+        struct sig_checker checker = tx_make_sig_checker(&checker_ctx);
+        ScriptError script_error = SCRIPT_ERR_OK;
+        ok = ok && verify_script(ss, &p2sh,
+                                 SCRIPT_VERIFY_P2SH |
+                                 SCRIPT_VERIFY_STRICTENC,
+                                 &checker, 0x76b809bb, &script_error);
+
+        /* A signature-byte mutation must be rejected by the same checker. */
+        struct script tampered = *ss;
+        if (tampered.size > 10)
+            tampered.data[10] ^= 0x01;
+        script_error = SCRIPT_ERR_OK;
+        ok = ok && !verify_script(&tampered, &p2sh,
+                                  SCRIPT_VERIFY_P2SH |
+                                  SCRIPT_VERIFY_STRICTENC,
+                                  &checker, 0x76b809bb, &script_error);
 
         keystore_free(ks);
         free(ks);
