@@ -18,6 +18,9 @@ For the complete machine-readable inventory—including receive-only, contained,
 planned, ZID/ZDIR/ZANC, and ZCODE shapes—start with
 `zclassic23 app transaction-types list`; field meanings and the AI workflow are
 documented in the [transaction API guide](../TRANSACTION_API.md).
+The checked mainnet classification, prerequisites, and owner-reviewed
+shield/private/unshield sequence are in the
+[live transaction demonstration runbook](./LIVE_TRANSACTION_DEMONSTRATIONS.md).
 
 ## Safety boundary
 

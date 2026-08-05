@@ -8,6 +8,7 @@ CATALOG="${ZCL_TRANSACTION_LAB_CATALOG:-$REPO/tools/dev/transaction_lab_catalog.
 LEDGER="${ZCL_TRANSACTION_LAB_LEDGER:-$REPO/docs/work/transaction-lab-events.jsonl}"
 TYPE_CATALOG="${ZCL_TRANSACTION_TYPE_CATALOG:-$REPO/app/controllers/include/controllers/transaction_types.def}"
 SUPPLEMENTAL_TESTS="${ZCL_TRANSACTION_LAB_SUPPLEMENTAL_TESTS:-$REPO/app/controllers/include/controllers/transaction_type_supplemental_tests.def}"
+LIVE_CATALOG="${ZCL_TRANSACTION_LIVE_CATALOG:-$REPO/tools/dev/transaction_live_catalog.def}"
 
 die() {
     echo "transaction-lab: $*" >&2
@@ -69,8 +70,21 @@ stats() {
     ' "$LEDGER"
 }
 
+live_catalog_stats() {
+    awk -F'|' '
+        !/^#/ && NF {
+            total++
+            if ($2 == "mainnet_ready") ready++
+            else if ($2 == "process_reference") process++
+            else if ($2 == "contained") contained++
+            else if ($2 == "isolated_only") isolated++
+        }
+        END { printf "%d %d %d %d %d\n", total, ready, process, contained, isolated }
+    ' "$LIVE_CATALOG"
+}
+
 check_notebook() {
-    local declared_contracts lab_contracts
+    local declared_contracts lab_contracts declared_live live_contracts
     awk -F'|' '
         function bad(msg) { print "transaction-lab-check: " msg > "/dev/stderr"; errors++ }
         NR == FNR {
@@ -140,6 +154,44 @@ check_notebook() {
                 <(printf '%s\n' "$lab_contracts") >&2 || true
         return 1
     fi
+    declared_live="$(awk '
+        !active && /^TX_TYPE\(/ { record=$0; active=1; next }
+        active { record=record " " $0 }
+        active && /\)$/ {
+            n=split(record, quoted, "\"")
+            id=quoted[2]; availability=quoted[6]; network=quoted[24]
+            if (availability == "ready") posture="mainnet_ready"
+            else if (availability == "process_only") posture="process_reference"
+            else if (availability == "contained" && network == "isolated_non_mainnet_only") posture="isolated_only"
+            else if (availability == "contained") posture="contained"
+            else posture="INVALID"
+            print id "|" posture
+            record=""; active=0
+        }
+    ' "$TYPE_CATALOG" | sort)"
+    live_contracts="$(awk -F'|' '
+        function bad(msg) {
+            print "transaction-lab-check: " msg > "/dev/stderr"
+            errors++
+        }
+        !/^#/ && NF {
+            if (NF != 4) { bad("live catalog line " FNR " must have four fields"); next }
+            if ($1 !~ /^[a-z0-9_]+$/) bad("invalid live case_id at line " FNR)
+            if ($2 !~ /^(mainnet_ready|process_reference|contained|isolated_only)$/)
+                bad("invalid live posture for " $1)
+            if ($3 !~ /^[a-z0-9_]+$/) bad("invalid live prerequisite for " $1)
+            if ($4 !~ /^[a-z0-9_]+$/) bad("invalid live campaign for " $1)
+            if (seen[$1]++) bad("duplicate live case_id " $1)
+            print $1 "|" $2
+        }
+        END { if (errors) exit 1 }
+    ' "$LIVE_CATALOG" | sort)" || return 1
+    if [ "$declared_live" != "$live_contracts" ]; then
+        echo "transaction-lab-check: live postures differ from the transaction type catalog" >&2
+        diff -u <(printf '%s\n' "$declared_live") \
+                <(printf '%s\n' "$live_contracts") >&2 || true
+        return 1
+    fi
     awk '
         function bad(msg) {
             print "transaction-lab-check: " msg > "/dev/stderr"
@@ -174,6 +226,7 @@ check_notebook() {
 
 print_status() {
     local total seen passed failed blocked chain live live_recipient live_fee
+    local live_total live_ready live_process live_contained live_isolated
     total="$(catalog_count)"
     read -r seen passed failed blocked chain live live_recipient live_fee < <(stats)
     printf 'transaction-lab proof:   [%s] %d/%d cases latest=PASS\n' \
@@ -182,6 +235,12 @@ print_status() {
         "$(bar "$chain" "$total")" "$chain" "$total"
     printf 'transaction-lab mainnet: [%s] %d/%d live confirmations\n' \
         "$(bar "$live" "$total")" "$live" "$total"
+    read -r live_total live_ready live_process live_contained live_isolated \
+        < <(live_catalog_stats)
+    printf 'transaction-lab eligible: [%s] %d/%d mainnet-broadcast-capable\n' \
+        "$(bar "$live_ready" "$live_total")" "$live_ready" "$live_total"
+    printf '  process_reference=%d contained=%d isolated_only=%d\n' \
+        "$live_process" "$live_contained" "$live_isolated"
     printf '  latest_events=%d failures=%d blocked=%d\n' "$seen" "$failed" "$blocked"
     printf '  live_recipient_zat=%s live_fee_zat=%s live_total_zat=%s\n' \
         "$live_recipient" "$live_fee" "$((live_recipient + live_fee))"
@@ -190,12 +249,17 @@ print_status() {
 
 print_json() {
     local total seen passed failed blocked chain live live_recipient live_fee
+    local live_total live_ready live_process live_contained live_isolated
     total="$(catalog_count)"
     read -r seen passed failed blocked chain live live_recipient live_fee < <(stats)
     printf '{"schema":"zcl.transaction_lab_stats.v1","cases_total":%d,' "$total"
     printf '"latest_events":%d,"passed":%d,"failed":%d,"blocked":%d,' \
         "$seen" "$passed" "$failed" "$blocked"
     printf '"chain_confirmed":%d,"mainnet_confirmed":%d,' "$chain" "$live"
+    read -r live_total live_ready live_process live_contained live_isolated \
+        < <(live_catalog_stats)
+    printf '"mainnet_eligibility":{"total":%d,"broadcast_ready":%d,"process_reference":%d,"contained":%d,"isolated_only":%d},' \
+        "$live_total" "$live_ready" "$live_process" "$live_contained" "$live_isolated"
     printf '"live_recipient_zat":%s,"live_fee_zat":%s,"live_total_zat":%s,' \
         "$live_recipient" "$live_fee" "$((live_recipient + live_fee))"
     printf '"mainnet_gate":"BLOCKED"}\n'
@@ -247,11 +311,13 @@ record_event() {
 }
 
 selftest() {
-    local fixture fixture_ledger fixture_type_catalog fixture_supplemental body
+    local fixture fixture_ledger fixture_type_catalog fixture_supplemental
+    local fixture_live_catalog body
     fixture="$(mktemp -d)"
     fixture_ledger="$fixture/events.jsonl"
     fixture_type_catalog="$fixture/transaction_types.def"
     fixture_supplemental="$fixture/transaction_type_supplemental_tests.def"
+    fixture_live_catalog="$fixture/transaction_live_catalog.def"
     cleanup_transaction_lab_selftest() {
         [ ! -d "$fixture" ] || rm -r -- "$fixture"
     }
@@ -295,6 +361,14 @@ selftest() {
        ZCL_TRANSACTION_LAB_SUPPLEMENTAL_TESTS="$fixture_supplemental" \
         "$0" check >/dev/null 2>&1; then
         die "selftest accepted duplicate supplemental proof rows"
+    fi
+    sed '0,/|mainnet_ready|/s//|contained|/' \
+        "$LIVE_CATALOG" > "$fixture_live_catalog"
+    if ZCL_TRANSACTION_LAB_CATALOG="$CATALOG" \
+       ZCL_TRANSACTION_LAB_LEDGER="$fixture_ledger" \
+       ZCL_TRANSACTION_LIVE_CATALOG="$fixture_live_catalog" \
+        "$0" check >/dev/null 2>&1; then
+        die "selftest accepted live posture drift from the API catalog"
     fi
     echo "transaction-lab selftest: PASS"
 }
