@@ -824,11 +824,12 @@ static int test_status_brief_body_front_door_deadline(void)
  * through their plan/commit contract with NO live node: address.new persists
  * an address, and transaction.send only broadcasts on the confirmed call. */
 static int g_wallet_send_calls;
+static int g_wallet_z_sendmany_calls;
 static int g_wallet_raw_broadcast_calls;
+static char g_wallet_z_sendmany_params[4096];
 
 static char *wallet_stub_rpc(const char *method, const char *params_json)
 {
-    (void)params_json;
     if (method && strcmp(method, "getnewaddress") == 0)
         return strdup("\"t1StubTransparentAddress00000000000\"");
     if (method && strcmp(method, "sendtoaddress") == 0) {
@@ -836,6 +837,15 @@ static char *wallet_stub_rpc(const char *method, const char *params_json)
         return strdup(
             "\"aa11bb22cc33dd44ee55ff66aa77bb88"
             "cc99dd00ee11ff22aa33bb44cc55dd66\"");
+    }
+    if (method && strcmp(method, "z_sendmany") == 0) {
+        g_wallet_z_sendmany_calls++;
+        (void)snprintf(g_wallet_z_sendmany_params,
+                       sizeof(g_wallet_z_sendmany_params), "%s",
+                       params_json ? params_json : "");
+        return strdup(
+            "\"cc11bb22cc33dd44ee55ff66aa77bb88"
+            "cc99dd00ee11ff22aa33bb44cc55dd88\"");
     }
     if (method && strcmp(method, "createrawtransaction") == 0)
         return strdup("\"0400008085202f89000000000000000000000000\"");
@@ -858,7 +868,9 @@ static int test_wallet_mutating_native_e2e(void)
 
     TEST("core.wallet mutating leaves execute plan/commit over a stubbed RPC") {
         g_wallet_send_calls = 0;
+        g_wallet_z_sendmany_calls = 0;
         g_wallet_raw_broadcast_calls = 0;
+        g_wallet_z_sendmany_params[0] = '\0';
         node_rpc_client_set_test_hook(wallet_stub_rpc);
 
         /* 1. address.new persists and returns a fresh transparent address. */
@@ -973,7 +985,135 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&commit_in);
 
-        /* 4. raw create/sign do not broadcast; raw broadcast itself obeys
+        /* 4. shielded.send plans the exact scope/amount/memo without an RPC,
+         *    then synchronously returns the z_sendmany transaction id. */
+        const struct zcl_command_spec *shield_spec =
+            find_spec(reg, "core.wallet.shielded.send");
+        ASSERT(shield_spec != NULL);
+        ASSERT(shield_spec->availability == ZCL_COMMAND_READY);
+        ASSERT(shield_spec->confirmation == ZCL_COMMAND_CONFIRM_PLAN_COMMIT);
+        ASSERT(shield_spec->mode == ZCL_COMMAND_MODE_SYNC);
+
+        struct json_value shield_plan;
+        json_init(&shield_plan);
+        json_set_object(&shield_plan);
+        (void)json_push_kv_str(&shield_plan, "wallet_scope", "dev");
+        (void)json_push_kv_str(&shield_plan, "from", "zs1StubSource");
+        (void)json_push_kv_str(&shield_plan, "to", "zs1StubRecipient");
+        (void)json_push_kv_str(&shield_plan, "amount", "0.1");
+        (void)json_push_kv_str(&shield_plan, "memo_hex", "aabb");
+        (void)json_push_kv_str(&shield_plan, "idempotency_key", "lab-1");
+        struct zcl_command_request shield_req = {
+            .spec = shield_spec, .input = &shield_plan, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, shield_spec->output_schema);
+        zcl_native_handle_wallet_shielded_send(&shield_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "wallet_scope")),
+                      "dev");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "amount")),
+                      "0.10000000");
+        ASSERT_EQ(g_wallet_z_sendmany_calls, 0);
+        const char *shield_commit_text =
+            json_get_str(json_get(&reply.data, "commit_input"));
+        ASSERT(shield_commit_text && shield_commit_text[0]);
+        struct json_value shield_commit;
+        json_init(&shield_commit);
+        ASSERT(json_read(&shield_commit, shield_commit_text,
+                         strlen(shield_commit_text)));
+        char shield_why[160] = {0};
+        ASSERT(zcl_command_registry_input_validate(
+            shield_spec, &shield_commit, shield_why, sizeof(shield_why)));
+        ASSERT_STR_EQ(json_get_str(json_get(&shield_commit, "wallet_scope")),
+                      "dev");
+        ASSERT_STR_EQ(json_get_str(json_get(&shield_commit, "amount")),
+                      "0.10000000");
+        ASSERT_STR_EQ(json_get_str(json_get(&shield_commit, "memo_hex")),
+                      "aabb");
+        ASSERT(json_get_bool(json_get(&shield_commit, "confirm")));
+        zcl_command_reply_free(&reply);
+        json_free(&shield_plan);
+
+        shield_req.input = &shield_commit;
+        zcl_command_reply_init(&reply, shield_spec->output_schema);
+        zcl_native_handle_wallet_shielded_send(&shield_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")),
+                      "committed");
+        ASSERT(json_get_bool(json_get(&reply.data, "committed")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "txid")),
+                      "cc11bb22cc33dd44ee55ff66aa77bb88"
+                      "cc99dd00ee11ff22aa33bb44cc55dd88");
+        ASSERT(json_get(&reply.data, "operation_id") == NULL);
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_wallet_z_sendmany_calls, 1);
+        struct json_value sent_params;
+        json_init(&sent_params);
+        ASSERT(json_read(&sent_params, g_wallet_z_sendmany_params,
+                         strlen(g_wallet_z_sendmany_params)));
+        ASSERT(sent_params.type == JSON_ARR);
+        ASSERT_EQ(json_size(&sent_params), 2);
+        ASSERT_STR_EQ(json_get_str(json_at(&sent_params, 0)),
+                      "zs1StubSource");
+        const struct json_value *sent_recipients = json_at(&sent_params, 1);
+        ASSERT(sent_recipients && sent_recipients->type == JSON_ARR);
+        ASSERT_EQ(json_size(sent_recipients), 1);
+        const struct json_value *sent_recipient =
+            json_at(sent_recipients, 0);
+        ASSERT_STR_EQ(json_get_str(json_get(sent_recipient, "address")),
+                      "zs1StubRecipient");
+        ASSERT_STR_EQ(json_get_str(json_get(sent_recipient, "amount")),
+                      "0.10000000");
+        ASSERT_STR_EQ(json_get_str(json_get(sent_recipient, "memo_hex")),
+                      "aabb");
+        json_free(&sent_params);
+        zcl_command_reply_free(&reply);
+        json_free(&shield_commit);
+
+        /* The full 512-byte binary memo must survive in commit_input. This
+         * catches the old 512-byte buffer's confirm-only fallback. */
+        char max_memo_hex[1025];
+        memset(max_memo_hex, 'a', sizeof(max_memo_hex) - 1);
+        max_memo_hex[sizeof(max_memo_hex) - 1] = '\0';
+        json_init(&shield_plan);
+        json_set_object(&shield_plan);
+        (void)json_push_kv_str(&shield_plan, "wallet_scope", "dev");
+        (void)json_push_kv_str(&shield_plan, "from", "zs1StubSource");
+        (void)json_push_kv_str(&shield_plan, "to", "zs1StubRecipient");
+        (void)json_push_kv_str(&shield_plan, "amount", "0.00000001");
+        (void)json_push_kv_str(&shield_plan, "memo_hex", max_memo_hex);
+        shield_req.input = &shield_plan;
+        zcl_command_reply_init(&reply, shield_spec->output_schema);
+        zcl_native_handle_wallet_shielded_send(&shield_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        shield_commit_text =
+            json_get_str(json_get(&reply.data, "commit_input"));
+        ASSERT(shield_commit_text && strlen(shield_commit_text) > 1024);
+        json_init(&shield_commit);
+        ASSERT(json_read(&shield_commit, shield_commit_text,
+                         strlen(shield_commit_text)));
+        ASSERT_EQ(strlen(json_get_str(json_get(&shield_commit, "memo_hex"))),
+                  1024);
+        json_free(&shield_commit);
+        zcl_command_reply_free(&reply);
+        json_free(&shield_plan);
+
+        json_init(&shield_plan);
+        json_set_object(&shield_plan);
+        (void)json_push_kv_str(&shield_plan, "from", "zs1StubSource");
+        (void)json_push_kv_str(&shield_plan, "to", "zs1StubRecipient");
+        (void)json_push_kv_str(&shield_plan, "amount", "0.1");
+        shield_req.input = &shield_plan;
+        zcl_command_reply_init(&reply, shield_spec->output_schema);
+        zcl_native_handle_wallet_shielded_send(&shield_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "INVALID_WALLET_SCOPE");
+        ASSERT_EQ(g_wallet_z_sendmany_calls, 1);
+        zcl_command_reply_free(&reply);
+        json_free(&shield_plan);
+
+        /* 5. raw create/sign do not broadcast; raw broadcast itself obeys
          *    the plan/commit boundary. */
         const struct zcl_command_spec *raw_create =
             find_spec(reg, "core.wallet.transaction.raw.create");
@@ -1029,7 +1169,7 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&raw_in);
 
-        /* 5. export-key without confirm must NOT reveal a key. */
+        /* 6. export-key without confirm must NOT reveal a key. */
         const struct zcl_command_spec *xk_spec =
             find_spec(reg, "core.wallet.address.export-key");
         ASSERT(xk_spec != NULL);
@@ -1050,7 +1190,7 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&xk_in);
 
-        /* 6. a missing required key fails closed with a typed error body. */
+        /* 7. a missing required key fails closed with a typed error body. */
         struct json_value bad_in;
         json_init(&bad_in);
         json_set_object(&bad_in);

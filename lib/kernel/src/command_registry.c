@@ -893,7 +893,8 @@ static size_t input_member_budget(const char *key, size_t key_len)
     if (key_len == 5 && memcmp(key, "files", 5) == 0)
         value_max = 2u + ZCL_COMMAND_INPUT_FILES_MAX_ITEMS *
                              (ZCL_COMMAND_INPUT_FILES_PATH_MAX + 3u);
-    else if ((key_len == 6 && memcmp(key, "inputs", 6) == 0) ||
+    else if ((key_len == 7 && memcmp(key, "effects", 7) == 0) ||
+             (key_len == 6 && memcmp(key, "inputs", 6) == 0) ||
              (key_len == 7 && memcmp(key, "outputs", 7) == 0) ||
              (key_len == 7 && memcmp(key, "prevtxs", 7) == 0))
         value_max = ZCL_COMMAND_MAX_INPUT;
@@ -970,6 +971,14 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                    strcmp(key, "relink_generation") == 0 ||
                    strcmp(key, "allow_high_fees") == 0) {
             type_ok = value->type == JSON_BOOL;
+        } else if (strcmp(key, "effects") == 0) {
+            /* vault.intent.plan owns the strict nested effect contract. The
+             * transport must nevertheless admit the declared array shape;
+             * treating an unruled key as a string made the command's own
+             * documented multi-recipient example impossible to invoke. */
+            type_ok = value->type == JSON_ARR &&
+                      value->num_children >= 1u &&
+                      value->num_children <= 50u;
         } else if (strcmp(key, "inputs") == 0 ||
                    strcmp(key, "prevtxs") == 0) {
             type_ok = value->type == JSON_ARR &&

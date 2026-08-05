@@ -1046,8 +1046,8 @@ ZCL_COMMAND_READY_COMMAND(
     "core.wallet.shielded.send", "core.wallet.shielded", "",
     "Send a shielded payment",
     "Plan/commit shielded spend: without confirm, a non-mutating plan "
-    "(from, to, amount) plus the commit next-action; with "
-    "confirm:true, the async z_sendmany operation id "
+    "bound to wallet_scope, from, to, exact amount, memo, and idempotency "
+    "key; with confirm:true, the synchronous z_sendmany transaction id "
     "(stage=committed). memo attaches a UTF-8 Sapling memo to a "
     "shielded recipient (memo_hex for raw bytes; memo_hex wins if both "
     "are given) and is echoed back as memo_attached — this is how a "
@@ -1057,10 +1057,10 @@ ZCL_COMMAND_READY_COMMAND(
     "shielded,send,z_sendmany,memo",
     "zcl.core_shielded_send.input.v1", "zcl.shielded_send.v1",
     "wallet_scope,from,to,amount,memo,memo_hex,idempotency_key,confirm", "",
-    "zclassic23 core wallet shielded send --input='<obj>'",
+    "zclassic23 core wallet shielded send --input='{\"wallet_scope\":\"dev\",\"from\":\"zs1..\",\"to\":\"zs1..\",\"amount\":\"0.01000000\"}'",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
-    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,
-    ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,

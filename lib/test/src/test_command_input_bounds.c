@@ -293,6 +293,75 @@ static int t_no_collateral_loosening(void)
     return failures;
 }
 
+/* ── 4. Structured vault effects reach their owning handler ──────────── */
+
+static int t_vault_effects_array(void)
+{
+    int failures = 0;
+    const struct zcl_command_spec *plan = zcl_command_registry_find(
+        zcl_command_catalog(), "vault.intent.plan", NULL);
+    CIB_CHECK("vault.intent.plan resolves", plan != NULL);
+    if (!plan)
+        return failures;
+
+    struct json_value input, effects, effect;
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, "wallet_scope", "dev");
+    (void)json_push_kv_str(&input, "route", "transparent");
+    json_init(&effects);
+    json_set_array(&effects);
+    json_init(&effect);
+    json_set_object(&effect);
+    (void)json_push_kv_str(&effect, "asset", "ZCL");
+    (void)json_push_kv_str(&effect, "to",
+                           "t1Recipient000000000000000000000000");
+    (void)json_push_kv_str(&effect, "amount", "0.01000000");
+    (void)json_push_back(&effects, &effect);
+    (void)json_push_kv(&input, "effects", &effects);
+    json_free(&effect);
+    json_free(&effects);
+
+    char why[192] = {0};
+    CIB_CHECK("a documented structured effect passes transport validation",
+              zcl_command_registry_input_validate(plan, &input, why,
+                                                  sizeof(why)));
+    json_free(&input);
+
+    json_init(&input);
+    json_set_object(&input);
+    json_init(&effects);
+    json_set_array(&effects);
+    (void)json_push_kv(&input, "effects", &effects);
+    json_free(&effects);
+    CIB_CHECK("an empty effects array fails closed",
+              !zcl_command_registry_input_validate(plan, &input, why,
+                                                   sizeof(why)));
+    json_free(&input);
+
+    json_init(&input);
+    json_set_object(&input);
+    json_init(&effects);
+    json_set_array(&effects);
+    for (size_t i = 0; i < 51; i++) {
+        json_init(&effect);
+        json_set_object(&effect);
+        (void)json_push_back(&effects, &effect);
+        json_free(&effect);
+    }
+    (void)json_push_kv(&input, "effects", &effects);
+    json_free(&effects);
+    CIB_CHECK("more than 50 effects fails closed",
+              !zcl_command_registry_input_validate(plan, &input, why,
+                                                   sizeof(why)));
+    json_free(&input);
+
+    CIB_CHECK("the vault plan frame budgets a structured effects document",
+              zcl_command_registry_input_budget_bytes(plan) >
+                  ZCL_COMMAND_MAX_INPUT);
+    return failures;
+}
+
 int test_command_input_bounds(void)
 {
     printf("\n=== command_input_bounds: per-key input length rules ===\n");
@@ -300,6 +369,7 @@ int test_command_input_bounds(void)
     failures += t_key_edges();
     failures += t_frame_budget();
     failures += t_no_collateral_loosening();
+    failures += t_vault_effects_array();
     printf("=== command_input_bounds complete: %d failure(s) ===\n", failures);
     return failures;
 }

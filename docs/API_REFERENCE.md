@@ -343,7 +343,7 @@ represented by its children's sections.
 | `core wallet shielded address` | ready | mutate / wallet / **owner** · fast/low | none | `zcl.shielded_address.v1` | `zclassic23 core wallet shielded address` | Derive a new shielded address |
 | `core wallet shielded balance` | ready | read / read / operator · fast/low | **`address`** | `zcl.shielded_balance.v1` | `zclassic23 core wallet shielded balance --address=<zaddr>` | Shielded balance for one address |
 | `core wallet shielded notes` | ready | read / read / operator · fast/low | none | `zcl.shielded_notes.v1` | `zclassic23 core wallet shielded notes` | List spendable shielded notes |
-| `core wallet shielded send` | ready | mutate / wallet / **owner**, job, plan-commit · background/high | `wallet_scope`, `from`, `to`, `amount`, `memo`, `memo_hex`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 core wallet shielded send --input='<obj>'` | Send a shielded payment |
+| `core wallet shielded send` | ready | mutate / wallet / **owner**, plan-commit · foreground/high | `wallet_scope`, `from`, `to`, `amount`, `memo`, `memo_hex`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 core wallet shielded send --input='{"wallet_scope":"dev","from":"zs1..","to":"zs1..","amount":"0.01000000"}'` | Send a shielded payment |
 
 #### `core.wallet.backup` — Wallet backup
 
@@ -840,7 +840,7 @@ represented by its children's sections.
 | `vault encumbered` | ready | read / read / operator · fast/low | **`class`**, `limit` | `zcl.vault_encumbered.v1` | `zclassic23 vault encumbered` | What is owned but not free to move, and what would release it |
 | `vault routes` | ready | read / read / public · instant/tiny | **`class`** | `zcl.vault_routes.v1` | `zclassic23 vault routes` | Which existing path owns the spend for each asset class |
 | `vault send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, `address`, `amount`, `idempotency_key`, `confirm` | `zcl.wallet_send.v1` | `zclassic23 vault send --input='{"address":"t1..","amount":1.5}'` | Spend transparent ZCL by dispatching to the wallet's own send |
-| `vault send-shielded` | ready | mutate / wallet / **owner**, job, plan-commit · background/high | `wallet_scope`, `from`, `to`, `amount`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 vault send-shielded --input='{"from":"zs1..","to":"zs1..","amount":1}'` | Spend shielded ZCL by dispatching to the wallet's own shielded send |
+| `vault send-shielded` | ready | mutate / wallet / **owner**, plan-commit · foreground/high | `wallet_scope`, `from`, `to`, `amount`, `memo`, `memo_hex`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 vault send-shielded --input='{"wallet_scope":"dev","from":"zs1..","to":"zs1..","amount":"1.00000000"}'` | Spend shielded ZCL by dispatching to the wallet's own shielded send |
 | `vault send-token` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_id`**, `to`, `units`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 vault send-token --input='{"token_id":"<64-hex>","to":"t1...","units":25}'` | Send ZSLP units through the token command that owns the transaction |
 
 #### `vault.intent` — Exact, expiring, durably idempotent transaction intents

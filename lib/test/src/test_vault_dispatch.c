@@ -175,6 +175,8 @@ static struct json_value vd_shielded_input(void)
     json_push_kv(&input, "from", &from);
     json_push_kv(&input, "to", &to);
     json_push_kv(&input, "amount", &amt);
+    json_push_kv_str(&input, "wallet_scope", "dev");
+    json_push_kv_str(&input, "memo_hex", "aabb");
     return input;
 }
 
@@ -454,6 +456,21 @@ int test_vault_dispatch(void)
         VD_CHECK("shielded plan: preflight class == shielded",
                  cls && json_get_str(cls) &&
                  strcmp(json_get_str(cls), "shielded") == 0);
+        const char *commit_input =
+            json_get_str(json_get(&reply.data, "commit_input"));
+        struct json_value commit;
+        json_init(&commit);
+        bool commit_ok = commit_input &&
+            json_read(&commit, commit_input, strlen(commit_input));
+        const char *commit_scope = commit_ok
+            ? json_get_str(json_get(&commit, "wallet_scope")) : NULL;
+        const char *commit_memo = commit_ok
+            ? json_get_str(json_get(&commit, "memo_hex")) : NULL;
+        VD_CHECK("shielded plan: route preserves wallet_scope in commit",
+                 commit_scope && strcmp(commit_scope, "dev") == 0);
+        VD_CHECK("shielded plan: route preserves Sapling memo in commit",
+                 commit_memo && strcmp(commit_memo, "aabb") == 0);
+        json_free(&commit);
         zcl_command_reply_free(&reply);
         json_free(&input);
     }

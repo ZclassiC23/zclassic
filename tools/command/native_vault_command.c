@@ -958,8 +958,8 @@ void zcl_native_handle_vault_send_shielded(
     if (!request || !reply)
         return;
     static const char *const keys[] = { "from", "to", "amount",
-                                        "wallet_scope", "idempotency_key",
-                                        "confirm" };
+                                        "memo", "memo_hex", "wallet_scope",
+                                        "idempotency_key", "confirm" };
     struct json_value forwarded;
     json_init(&forwarded);
     vault_forward_keys(request->input, &forwarded,
