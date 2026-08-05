@@ -501,6 +501,35 @@ static int cas_test_extended_transaction_catalog_fits(void)
     return failures;
 }
 
+static int cas_test_extended_transaction_guide_fits(void)
+{
+    int failures = 0;
+    TEST("native CLI: the largest transaction guide crosses the 8 KiB "
+         "boundary and still fits its declared 16 KiB budget") {
+        char home[300];
+        snprintf(home, sizeof(home), "/tmp/zcl_cas_tx_guide_%d",
+                 (int)getpid());
+        cas_mkdir_p(home);
+
+        char *argv[] = {
+            (char *)CAS_BIN, (char *)"app", (char *)"transaction-types",
+            (char *)"guide", (char *)"--type=zcode_release_anchor", NULL,
+        };
+        char out[ZCL_COMMAND_EXTENDED_LIST_BUDGET + 1] = {0};
+        int rc = cas_run(argv, home, out, sizeof(out));
+
+        ASSERT_EQ(rc, ZCL_COMMAND_EXIT_OK);
+        ASSERT(strlen(out) > ZCL_COMMAND_LIST_BUDGET);
+        ASSERT(strlen(out) <= ZCL_COMMAND_EXTENDED_LIST_BUDGET);
+        ASSERT(cas_contains(out,
+                            "\"data_schema\":\"zcl.transaction_type_guide.v1\""));
+        ASSERT(cas_contains(out, "\"id\":\"zcode_release_anchor\""));
+        ASSERT(!cas_contains(out, "RESPONSE_BUDGET_EXCEEDED"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int cas_test_daemon_mode_tolerant_and_warns(void)
 {
     int failures = 0;
@@ -639,6 +668,7 @@ int test_cli_argv_strict(void)
     failures += cas_test_bare_status_still_works();
     failures += cas_test_native_param_conventions_unaffected();
     failures += cas_test_extended_transaction_catalog_fits();
+    failures += cas_test_extended_transaction_guide_fits();
     failures += cas_test_daemon_mode_tolerant_and_warns();
     failures += cas_test_v2transport_is_recognized();
 

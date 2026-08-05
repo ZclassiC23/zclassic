@@ -54,10 +54,12 @@ and fee totals.
 
 ## Append-only event ledger
 
-The canonical ledger is `docs/work/transaction-lab-events.jsonl`, schema
-`zcl.transaction_lab_event.v1`. Existing lines are evidence and must not be
-edited or reordered; corrections are later events for the same `case_id`.
-Statistics use the latest event per case.
+The canonical ledger is `docs/work/transaction-lab-events.jsonl`. Existing
+`zcl.transaction_lab_event.v1` lines remain valid. New public-chain receipts
+use `zcl.transaction_lab_event.v2`, which adds confirmation height and block
+hash. Existing lines are evidence and must not be edited or reordered;
+corrections are later events for the same `case_id`. Statistics use the latest
+event per case.
 
 Validate before and after recording:
 
@@ -66,7 +68,8 @@ make transaction-lab-check
 tools/dev/transaction-lab.sh record \
   --case=transparent_t_to_t --network=mainnet --proof=live_confirmed \
   --result=PASS --source=owner_visible_receipt --txid=<64-lowercase-hex> \
-  --recipient-zat=<integer> --fee-zat=<integer>
+  --recipient-zat=<integer> --fee-zat=<integer> \
+  --block-height=<confirmed-height> --block-hash=<64-lowercase-hex>
 make transaction-lab-status
 ```
 

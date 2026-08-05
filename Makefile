@@ -404,6 +404,11 @@ DEVLOOP_SRCS = $(filter-out $(DEV_ONLY_SRCS),$(DEVLOOP_ALL_SRCS))
 # rather than the dev-only lane. Header path -Itools is provided by TOOLS_INCLUDES.
 COMMAND_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tools/command/*.c))
+# Declarative command rows are C include inputs, but the whole-program release
+# rules below do not emit depfiles.  Keep them as explicit prerequisites so a
+# command-contract-only edit cannot leave build/bin/zclassic23 stale.
+COMMAND_CATALOG_DEFS = $(wildcard config/commands/*.def) \
+	$(wildcard config/commands/*/*.def)
 
 NODE_ENTRY_SRCS = src/main.c src/main_cli_modes.c
 ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(CORE_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(DEVLOOP_SRCS) $(COMMAND_SRCS)
@@ -1486,12 +1491,13 @@ tools/inspect_html: $(BIN_DIR)/inspect_html
 define BUILD_NODE_TOOL
 .PHONY: $(1)
 $(1): $$(BIN_DIR)/$(1)
-$$(BIN_DIR)/$(1): $$(VIEW_GEN_HEADERS) $$(BUILD_IDENTITY_STAMP) $(2) $$(ALL_SRCS) | $$(VENDOR_LIBS)
+$$(BIN_DIR)/$(1): $$(VIEW_GEN_HEADERS) $$(BUILD_IDENTITY_STAMP) \
+		$(2) $$(ALL_SRCS) $$(COMMAND_CATALOG_DEFS) | $$(VENDOR_LIBS)
 	@mkdir -p $$(dir $$@)
 	@set -eu; \
 	tmp="$$$$(mktemp "$$@.link.XXXXXX")"; \
 	trap 'rm -f "$$$$tmp"' EXIT HUP INT TERM; \
-	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o "$$$$tmp" $$(filter-out $$(VIEW_GEN_HEADERS) $$(BUILD_IDENTITY_STAMP),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3); \
+	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o "$$$$tmp" $$(filter-out $$(VIEW_GEN_HEADERS) $$(BUILD_IDENTITY_STAMP) $$(COMMAND_CATALOG_DEFS),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3); \
 	tools/dev/source-identity.sh verify-record "$$(BUILD_SOURCE_ID)" "$$(BUILD_CLEAN)" "$$(BUILD_MUTATION)" >/dev/null; \
 	mv -f -- "$$$$tmp" "$$@"; \
 	trap - EXIT HUP INT TERM
@@ -2786,12 +2792,13 @@ bootstrap-publish:
 	@echo "  Local bundle production remains available via 'make bootstrap'." >&2
 	@exit 2
 
-$(BIN_DIR)/session: $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) tools/session.c $(ALL_SRCS)
+$(BIN_DIR)/session: $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) tools/session.c \
+		$(ALL_SRCS) $(COMMAND_CATALOG_DEFS)
 	@mkdir -p $(dir $@)
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
 	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(TMPL_GEN) $(BUILD_IDENTITY_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm; \
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) $(COMMAND_CATALOG_DEFS),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
@@ -2799,12 +2806,13 @@ $(BIN_DIR)/session: $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) tools/session.c $(ALL_SR
 session: $(BIN_DIR)/session
 	$(BIN_DIR)/session
 
-$(BIN_DIR)/bot: $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) tools/bot.c $(ALL_SRCS)
+$(BIN_DIR)/bot: $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) tools/bot.c \
+		$(ALL_SRCS) $(COMMAND_CATALOG_DEFS)
 	@mkdir -p $(dir $@)
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
 	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(TMPL_GEN) $(BUILD_IDENTITY_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm; \
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) $(COMMAND_CATALOG_DEFS),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
@@ -2846,14 +2854,15 @@ zclassic23: $(ZCLASSIC23_BIN)
 # without growing the deployed artifact. The sidecar is staged in a temp
 # dir under its final basename because --add-gnu-debuglink reads the file
 # (stored name + CRC32) at link time.
-$(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(NODE_ENTRY_SRCS) $(ALL_SRCS) | $(VENDOR_LIBS)
+$(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) \
+		$(NODE_ENTRY_SRCS) $(ALL_SRCS) $(COMMAND_CATALOG_DEFS) | $(VENDOR_LIBS)
 	@mkdir -p $(dir $@)
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
 	dbg="$@.debug"; \
 	dbgdir="$$(mktemp -d "$@.dbgdir.XXXXXX")"; \
 	trap 'rm -rf "$$tmp" "$$dbgdir"' EXIT HUP INT TERM; \
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(COMMAND_CATALOG_DEFS),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
 	objcopy --only-keep-debug "$$tmp" "$$dbgdir/$$(basename "$$dbg")"; \
 	strip -s "$$tmp"; \
 	objcopy --add-gnu-debuglink="$$dbgdir/$$(basename "$$dbg")" "$$tmp"; \

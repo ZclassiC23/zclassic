@@ -550,7 +550,7 @@ int api_transaction_type_focused_tests(void)
         json_init(&input);
         json_set_object(&input);
         json_push_kv_str(&input, "type", "znam_register");
-        char output[ZCL_COMMAND_LIST_BUDGET + 1];
+        char output[ZCL_COMMAND_EXTENDED_LIST_BUDGET + 1];
         enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
         size_t n = spec ? zcl_command_registry_execute_json(
             registry, spec, &context, &input, false, spec->path, "normal",
@@ -559,7 +559,8 @@ int api_transaction_type_focused_tests(void)
         output[n < sizeof(output) ? n : sizeof(output) - 1] = 0;
         struct json_value root;
         json_init(&root);
-        bool ok = n > 0 && n <= ZCL_COMMAND_LIST_BUDGET &&
+        bool ok = n > 0 && n <= ZCL_COMMAND_EXTENDED_LIST_BUDGET &&
+            n <= (size_t)spec->budget_bytes &&
             exit_code == ZCL_COMMAND_EXIT_OK && json_read(&root, output, n) &&
             json_get_bool(json_get(&root, "ok"));
         const struct json_value *data = json_get(&root, "data");
@@ -586,6 +587,52 @@ int api_transaction_type_focused_tests(void)
             strstr(output, "private_key") == NULL &&
             strstr(output, "grant_token") == NULL;
         json_free(&root);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: every transaction guide fits its declared response budget... ");
+    {
+        const struct zcl_command_registry *registry = zcl_command_catalog();
+        const struct zcl_command_spec *spec = registry ?
+            zcl_command_registry_find(registry,
+                                      "app.transaction-types.guide", NULL)
+            : NULL;
+        struct zcl_command_context context = {
+            .registry = registry,
+            .granted_capabilities = ~(uint64_t)0,
+            .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+        };
+        size_t type_count = 0;
+        const struct zcl_transaction_type_contract *types =
+            zcl_transaction_type_catalog(&type_count);
+        bool ok = spec && types && type_count == 39 &&
+                  spec->budget_bytes == ZCL_COMMAND_EXTENDED_LIST_BUDGET;
+        for (size_t i = 0; ok && i < type_count; i++) {
+            struct json_value input;
+            struct json_value root;
+            char output[ZCL_COMMAND_EXTENDED_LIST_BUDGET + 1];
+            enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
+            json_init(&input);
+            json_set_object(&input);
+            json_push_kv_str(&input, "type", types[i].id);
+            size_t n = zcl_command_registry_execute_json(
+                registry, spec, &context, &input, false, spec->path, "normal",
+                0, 0, NULL, output, sizeof(output) - 1, &exit_code);
+            json_free(&input);
+            output[n < sizeof(output) ? n : sizeof(output) - 1] = 0;
+            json_init(&root);
+            ok = n > 0 && n <= (size_t)spec->budget_bytes &&
+                 exit_code == ZCL_COMMAND_EXIT_OK &&
+                 json_read(&root, output, n) &&
+                 json_get_bool(json_get(&root, "ok"));
+            const struct json_value *data = json_get(&root, "data");
+            const struct json_value *type = data ?
+                json_get(data, "transaction_type") : NULL;
+            ok = ok && type &&
+                 strcmp(json_get_str(json_get(type, "id")), types[i].id) == 0;
+            json_free(&root);
+        }
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

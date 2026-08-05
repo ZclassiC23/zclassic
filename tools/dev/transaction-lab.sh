@@ -39,7 +39,7 @@ catalog_count() {
 
 stats() {
     awk -F'"' '
-        /"schema":"zcl.transaction_lab_event.v1"/ {
+        /"schema":"zcl.transaction_lab_event.v(1|2)"/ {
             id=$12; network[id]=$16; proof[id]=$20; result[id]=$24
             line=$0
             sub(/^.*"recipient_zat":/, "", line); sub(/,.*/, "", line)
@@ -103,7 +103,8 @@ check_notebook() {
             if (line ~ /"(address|endpoint|datadir|grant_token|private_key|recovery_words|memo|secret)"/)
                 bad("sensitive field name at ledger line " FNR)
             n=split(line, a, "\"")
-            if (n < 37 || a[4] != "zcl.transaction_lab_event.v1") {
+            schema=a[4]
+            if (n < 37 || schema !~ /^zcl.transaction_lab_event.v(1|2)$/) {
                 bad("invalid event schema or field order at ledger line " FNR)
                 next
             }
@@ -123,12 +124,29 @@ check_notebook() {
                 bad("invalid txid for " id)
             if (network == "mainnet" && proof == "live_confirmed" &&
                 txid == "UNAVAILABLE") bad("live confirmation lacks txid for " id)
+            if (network == "mainnet" && proof == "live_confirmed" &&
+                schema != "zcl.transaction_lab_event.v2")
+                bad("live confirmation requires v2 block identity for " id)
             amount=line
             sub(/^.*"recipient_zat":/, "", amount); sub(/,.*/, "", amount)
             cost=line
-            sub(/^.*"fee_zat":/, "", cost); sub(/}.*/, "", cost)
+            sub(/^.*"fee_zat":/, "", cost); sub(/,.*/, "", cost); sub(/}.*/, "", cost)
             if (amount !~ /^[0-9]+$/ || cost !~ /^[0-9]+$/)
                 bad("non-integer money field for " id)
+            if (schema == "zcl.transaction_lab_event.v2") {
+                height=line
+                sub(/^.*"block_height":/, "", height); sub(/,.*/, "", height)
+                block_hash=line
+                sub(/^.*"block_hash":"/, "", block_hash); sub(/".*/, "", block_hash)
+                if (height !~ /^[0-9]+$/)
+                    bad("invalid block height for " id)
+                if (block_hash != "UNAVAILABLE" &&
+                    block_hash !~ /^[0-9a-f]{64}$/)
+                    bad("invalid block hash for " id)
+                if (network == "mainnet" && proof == "live_confirmed" &&
+                    block_hash == "UNAVAILABLE")
+                    bad("live confirmation lacks block hash for " id)
+            }
         }
         END {
             for (id in catalog) if (!(id in seen)) bad("missing evidence for " id)
@@ -267,7 +285,8 @@ print_json() {
 
 record_event() {
     local case_id='' network='' proof='' result='' source=''
-    local txid='UNAVAILABLE' recipient_zat=0 fee_zat=0 arg observed commit
+    local txid='UNAVAILABLE' recipient_zat=0 fee_zat=0
+    local block_height='' block_hash='' arg observed commit
     shift
     for arg in "$@"; do
         case "$arg" in
@@ -279,6 +298,8 @@ record_event() {
             --txid=*) txid="${arg#*=}" ;;
             --recipient-zat=*) recipient_zat="${arg#*=}" ;;
             --fee-zat=*) fee_zat="${arg#*=}" ;;
+            --block-height=*) block_height="${arg#*=}" ;;
+            --block-hash=*) block_hash="${arg#*=}" ;;
             *) die "unknown record argument: $arg" ;;
         esac
     done
@@ -295,17 +316,32 @@ record_event() {
     [[ "$txid" == UNAVAILABLE || "$txid" =~ ^[0-9a-f]{64}$ ]] || die "invalid --txid"
     [[ "$recipient_zat" =~ ^[0-9]+$ ]] || die "invalid --recipient-zat"
     [[ "$fee_zat" =~ ^[0-9]+$ ]] || die "invalid --fee-zat"
+    if [ -n "$block_height" ] || [ -n "$block_hash" ]; then
+        [[ "$block_height" =~ ^[0-9]+$ ]] || die "invalid --block-height"
+        [[ "$block_hash" =~ ^[0-9a-f]{64}$ ]] || die "invalid --block-hash"
+    fi
     if [ "$network" = mainnet ] && [ "$proof" = live_confirmed ] &&
        [ "$txid" = UNAVAILABLE ]; then
         die "live_confirmed mainnet evidence requires a public txid"
+    fi
+    if [ "$network" = mainnet ] && [ "$proof" = live_confirmed ] &&
+       { [ -z "$block_height" ] || [ -z "$block_hash" ]; }; then
+        die "live_confirmed mainnet evidence requires block height and hash"
     fi
     observed="$(date -u +%FT%TZ)"
     commit="$(git -C "$REPO" rev-parse --short=8 HEAD)"
     exec 9>>"$LEDGER"
     flock 9
-    printf '{"schema":"zcl.transaction_lab_event.v1","observed_at":"%s","case_id":"%s","network":"%s","proof":"%s","result":"%s","source":"%s","source_commit":"%s","txid":"%s","recipient_zat":%s,"fee_zat":%s}\n' \
-        "$observed" "$case_id" "$network" "$proof" "$result" "$source" \
-        "$commit" "$txid" "$recipient_zat" "$fee_zat" >&9
+    if [ -n "$block_height" ]; then
+        printf '{"schema":"zcl.transaction_lab_event.v2","observed_at":"%s","case_id":"%s","network":"%s","proof":"%s","result":"%s","source":"%s","source_commit":"%s","txid":"%s","recipient_zat":%s,"fee_zat":%s,"block_height":%s,"block_hash":"%s"}\n' \
+            "$observed" "$case_id" "$network" "$proof" "$result" "$source" \
+            "$commit" "$txid" "$recipient_zat" "$fee_zat" \
+            "$block_height" "$block_hash" >&9
+    else
+        printf '{"schema":"zcl.transaction_lab_event.v1","observed_at":"%s","case_id":"%s","network":"%s","proof":"%s","result":"%s","source":"%s","source_commit":"%s","txid":"%s","recipient_zat":%s,"fee_zat":%s}\n' \
+            "$observed" "$case_id" "$network" "$proof" "$result" "$source" \
+            "$commit" "$txid" "$recipient_zat" "$fee_zat" >&9
+    fi
     flock -u 9
     check_notebook
 }
@@ -328,7 +364,9 @@ selftest() {
         "$0" record --case=transparent_t_to_t --network=mainnet \
         --proof=live_confirmed --result=PASS --source=selftest_receipt \
         --txid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-        --recipient-zat=1000 --fee-zat=100 >/dev/null
+        --recipient-zat=1000 --fee-zat=100 --block-height=123456 \
+        --block-hash=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+        >/dev/null
     body="$(ZCL_TRANSACTION_LAB_CATALOG="$CATALOG" \
         ZCL_TRANSACTION_LAB_LEDGER="$fixture_ledger" "$0" json)"
     if [[ "$body" != *'"mainnet_confirmed":1'* ]] ||
@@ -336,6 +374,14 @@ selftest() {
        [[ "$body" != *'"live_fee_zat":100'* ]] ||
        [[ "$body" != *'"live_total_zat":1100'* ]]; then
         die "selftest stats did not include the fixture mainnet receipt"
+    fi
+    if ZCL_TRANSACTION_LAB_CATALOG="$CATALOG" \
+       ZCL_TRANSACTION_LAB_LEDGER="$fixture_ledger" \
+        "$0" record --case=transparent_t_to_t --network=mainnet \
+        --proof=live_confirmed --result=PASS --source=selftest_invalid \
+        --txid=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+        --recipient-zat=1 --fee-zat=1 >/dev/null 2>&1; then
+        die "selftest accepted a live receipt without block identity"
     fi
     if ZCL_TRANSACTION_LAB_CATALOG="$CATALOG" \
        ZCL_TRANSACTION_LAB_LEDGER="$fixture_ledger" \

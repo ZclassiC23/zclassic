@@ -13,12 +13,48 @@ contained                  [#-------------------]  1/39
 isolated-network-only      [#-------------------]  1/39
 ```
 
+The honest completion target is therefore **35 newly broadcast mainnet
+transactions plus four non-broadcast demonstrations**, not 39 new mainnet
+transactions. Coinbase is created only by mining and Sprout construction is
+retired; both use pinned public-chain transactions. Shielded store payment is
+deliberately simnet-only, and Blog anchoring remains contained until its
+event-signing broker is available. Relabeling any of those four as a wallet
+broadcast would be false evidence.
+
 `mainnet broadcast-capable` does not mean “safe to send now.” It means the
 source exposes a mainnet path after the global gates below and the row-specific
 prerequisite both pass. The machine-readable authority for this classification
 is `tools/dev/transaction_live_catalog.def`; `make transaction-lab-check`
 requires it to contain exactly the same IDs and availability posture as the
 semantic catalog.
+
+## AI operator experience
+
+The owner is not expected to translate a request into CLI flags or JSON. A
+normal interaction is:
+
+```text
+Owner:  Demonstrate a real Z-to-Z transaction using the dev lab allowance.
+Agent:  Current custody is CURRENT. Here is the redacted exact plan:
+        wallet=dev, recipient_value=..., maximum_fee=..., reserve_after=...,
+        snapshot=..., expiry=.... Approve this exact plan?
+Owner:  Approve.
+Agent:  Committed once. Confirmation: txid=..., height=..., block=....
+```
+
+The agent maps natural language to the semantic catalog (`Z-to-Z` to
+`sapling_z_to_z`, `multisig` to `transparent_p2sh_multisig_spend`), calls
+`app transaction-types guide` to discover the current typed workflow, and uses
+the identity-bound money and vault intent commands itself. The commands shown
+below are the auditable transport and developer recovery path; they are not a
+human-operating requirement.
+
+Every money request remains a two-message ceremony: the first turn may inspect
+and create a non-broadcasting reservation, while a later explicit approval may
+commit that exact plan once. “Do every transaction” is permission to prepare a
+campaign, not blanket approval for 35 future commits. The agent reports
+`UNKNOWN`, `STALE`, or `CONFLICTED` instead of inventing a balance and never
+puts keys, addresses, grants, endpoints, paths, memos, or secrets in chat.
 
 ## Non-negotiable go/no-go gate
 
@@ -127,13 +163,16 @@ After each confirmation, record only its public txid and exact accounting:
 tools/dev/transaction-lab.sh record \
   --case=sapling_t_to_z --network=mainnet --proof=live_confirmed \
   --result=PASS --source=owner_visible_receipt \
-  --txid=<64-lowercase-hex> --recipient-zat=1000000 --fee-zat=<integer>
+  --txid=<64-lowercase-hex> --recipient-zat=1000000 --fee-zat=<integer> \
+  --block-height=<confirmed-height> --block-hash=<64-lowercase-hex>
 make transaction-lab-check
 make transaction-lab-status
 ```
 
-The txid is the stable public-chain historical reference. Do not add an
-address, memo, endpoint, path, grant, secret, or key to the event ledger.
+The txid, confirmation height, and block hash form the stable public-chain
+historical reference. A reorg requires a later correcting event; never edit an
+old receipt. Do not add an address, memo, endpoint, path, grant, secret, or key
+to the event ledger.
 
 ## Complete 39-type mainnet posture
 
@@ -207,6 +246,7 @@ make transaction-lab-proof
 
 The isolated proof bar and the mainnet confirmation bar answer different
 questions and must remain separate. A public historical transaction can be
-recorded as `live_confirmed` only after its txid is confirmed and its actual fee
-is known. Failed, conflicted, expired, or reorged plans remain reservations
-until the existing intent reconciler reaches a terminal state.
+recorded as `live_confirmed` only after its txid, confirmation height, block
+hash, and actual fee are known. Failed, conflicted, expired, or reorged plans
+remain reservations until the existing intent reconciler reaches a terminal
+state.

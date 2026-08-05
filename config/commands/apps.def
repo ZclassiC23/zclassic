@@ -89,7 +89,7 @@ ZCL_COMMAND_READY_READ(
     "with exact schemas, allowed keys, examples, risk, authority, confirmation "
     "mode, and a fail-closed execution decision. Discovery only; it cannot "
     "create a plan, authorize a wallet, sign, or broadcast.",
-    ZCL_COMMAND_LIST_BUDGET,
+    ZCL_COMMAND_EXTENDED_LIST_BUDGET,
     "transactions,catalog,type,workflow,ai,schema,plan,commit",
     "zcl.transaction_type_ref.input.v1", "zcl.transaction_type_guide.v1",
     "type", "type",
