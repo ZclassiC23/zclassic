@@ -740,13 +740,13 @@ bool utxo_apply_stage_init(struct main_state *ms)
         pthread_mutex_unlock(&g_lock);
         return false;
     }
-    if (!utxo_apply_reconcile_unapplied_suffix(db) ||
+    GetDataDir(true, g_datadir, sizeof(g_datadir));
+    if (!utxo_apply_reconcile_unapplied_suffix(
+            db, ms, g_datadir, g_reader, g_reader_user) ||
         !coins_ram_init(db, 0, coins_kv_set_applied_height_in_tx)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }
-
-    GetDataDir(true, g_datadir, sizeof(g_datadir));
 
     stage_t *s = stage_create(STAGE_NAME, step_apply, NULL);
     if (!s) {

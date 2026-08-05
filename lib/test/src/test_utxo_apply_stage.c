@@ -195,6 +195,23 @@ static bool make_body(struct synth_chain_uv *sc, int h)
     return true;
 }
 
+/* Turn one not-yet-applied synthetic block into the production incident's
+ * exact safe-repair shape: coinbase plus no transparent-input transaction.
+ * The caller uses a two-block chain, so changing the final block hash cannot
+ * invalidate a successor link. */
+static bool uv_make_block_coinbase_only(struct synth_chain_uv *sc, int h)
+{
+    if (!sc || h < 0 || h >= sc->n || sc->bodies[h].num_vtx != 2)
+        return false;
+    struct block *blk = &sc->bodies[h];
+    transaction_free(&blk->vtx[1]);
+    blk->num_vtx = 1;
+    blk->header.hashMerkleRoot = blk->vtx[0].hash;
+    block_header_get_hash(&blk->header, &sc->hashes[h]);
+    sc->blocks[h].hashMerkleRoot = blk->header.hashMerkleRoot;
+    return true;
+}
+
 static bool synth_chain_uv_build(struct synth_chain_uv *sc, int n)
 {
     sc->blocks = zcl_calloc((size_t)n, sizeof(struct block_index),
@@ -1515,6 +1532,157 @@ int test_utxo_apply_stage(void)
                  uv_table_rows_at(db, "sapling_anchors", 0) == 1 &&
                      stage_cursor_persisted(db, "utxo_apply",
                                             "suffix_reconcile_test") == 1);
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    /* A cursor-only repair can also leave the actual transparent coin rows
+     * from an unapplied suffix.  Remove them only after canonical body bytes
+     * prove that every spendable output matches one future-height coin
+     * exactly. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("coin suffix reconcile: setup",
+                 uv_setup("coin_suffix_reconcile", 2, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        UV_CHECK("coin suffix reconcile: establish cursor one",
+                 utxo_apply_stage_drain(1) == 1 &&
+                     utxo_apply_stage_cursor() == 1);
+        sqlite3 *db = progress_store_db();
+        utxo_apply_stage_shutdown();
+        UV_CHECK("coin suffix reconcile: make zero-spend suffix",
+                 uv_make_block_coinbase_only(&sc, 1));
+        const struct transaction *cb = &sc.bodies[1].vtx[0];
+        UV_CHECK("coin suffix reconcile: seed exact future coin",
+                 coins_kv_add(db, cb->hash.data, 0, cb->vout[0].value, 1,
+                              true, cb->vout[0].script_pub_key.data,
+                              cb->vout[0].script_pub_key.size) &&
+                     uv_coin_rows_at(db, 1) == 1);
+        utxo_apply_stage_set_reader(fake_reader, &sc);
+        UV_CHECK("coin suffix reconcile: restart proves and repairs",
+                 utxo_apply_stage_init(&ms));
+        UV_CHECK("coin suffix reconcile: future coin removed",
+                 uv_coin_rows_at(db, 1) == 0 &&
+                     stage_cursor_persisted(db, "utxo_apply",
+                                            "coin_suffix_test") == 1);
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    /* A proved suffix may contain transparent spends.  Reconstruct each
+     * missing pre-suffix coin from created_outputs plus its canonical creator
+     * block, in the same transaction that removes the future outputs. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("coin suffix spend restore: setup",
+                 uv_setup("coin_suffix_spend_restore", 2, UV_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        UV_CHECK("coin suffix spend restore: establish cursor one",
+                 utxo_apply_stage_drain(1) == 1 &&
+                     utxo_apply_stage_cursor() == 1);
+        sqlite3 *db = progress_store_db();
+        utxo_apply_stage_shutdown();
+        struct transaction *spend = &sc.bodies[1].vtx[1];
+        const struct transaction *creator = &sc.bodies[0].vtx[0];
+        spend->vin[0].prevout.hash = creator->hash;
+        spend->vin[0].prevout.n = 0;
+        UV_CHECK("coin suffix spend restore: creator indexed",
+                 created_outputs_index_put_block(db, &sc.bodies[0], 0));
+        UV_CHECK("coin suffix spend restore: simulate applied spend",
+                 coins_kv_spend(db, creator->hash.data, 0) &&
+                     uv_coin_rows_at(db, 0) == 1);
+        bool seeded = true;
+        for (size_t ti = 0; ti < sc.bodies[1].num_vtx && seeded; ti++) {
+            const struct transaction *tx = &sc.bodies[1].vtx[ti];
+            seeded = coins_kv_add(
+                db, tx->hash.data, 0, tx->vout[0].value, 1,
+                transaction_is_coinbase(tx),
+                tx->vout[0].script_pub_key.data,
+                tx->vout[0].script_pub_key.size);
+        }
+        UV_CHECK("coin suffix spend restore: future outputs seeded",
+                 seeded && uv_coin_rows_at(db, 1) == 2);
+        utxo_apply_stage_set_reader(fake_reader, &sc);
+        UV_CHECK("coin suffix spend restore: restart proves and repairs",
+                 utxo_apply_stage_init(&ms));
+        UV_CHECK("coin suffix spend restore: pre-suffix set reconstructed",
+                 uv_coin_rows_at(db, 1) == 0 &&
+                     uv_coin_rows_at(db, 0) == 2 &&
+                     coins_kv_exists(db, creator->hash.data, 0));
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    /* The authoritative frontier may precede the first contradictory coin
+     * row.  Prove that gapped creator from its canonical body, but do not
+     * restore it before the reducer has applied the intervening block. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("gapped coin suffix: setup",
+                 uv_setup("gapped_coin_suffix", 3, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        UV_CHECK("gapped coin suffix: establish cursor one",
+                 utxo_apply_stage_drain(1) == 1 &&
+                     utxo_apply_stage_cursor() == 1);
+        sqlite3 *db = progress_store_db();
+        utxo_apply_stage_shutdown();
+        struct transaction *spend = &sc.bodies[2].vtx[1];
+        const struct transaction *gap_creator = &sc.bodies[1].vtx[0];
+        spend->vin[0].prevout.hash = gap_creator->hash;
+        spend->vin[0].prevout.n = 0;
+        UV_CHECK("gapped coin suffix: creator indexed",
+                 created_outputs_index_put_block(db, &sc.bodies[1], 1));
+        bool seeded = true;
+        for (size_t ti = 0; ti < sc.bodies[2].num_vtx && seeded; ti++) {
+            const struct transaction *tx = &sc.bodies[2].vtx[ti];
+            seeded = coins_kv_add(
+                db, tx->hash.data, 0, tx->vout[0].value, 2,
+                transaction_is_coinbase(tx),
+                tx->vout[0].script_pub_key.data,
+                tx->vout[0].script_pub_key.size);
+        }
+        UV_CHECK("gapped coin suffix: future outputs seeded",
+                 seeded && uv_coin_rows_at(db, 1) == 0 &&
+                     uv_coin_rows_at(db, 2) == 2);
+        utxo_apply_stage_set_reader(fake_reader, &sc);
+        UV_CHECK("gapped coin suffix: restart proves and repairs",
+                 utxo_apply_stage_init(&ms));
+        UV_CHECK("gapped coin suffix: creator remains unapplied",
+                 uv_coin_rows_at(db, 1) == 0 &&
+                     uv_coin_rows_at(db, 2) == 0 &&
+                     !coins_kv_exists(db, gap_creator->hash.data, 0));
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    /* The same repair must fail closed when the canonical suffix contains a
+     * transparent input whose creator proof is unavailable.  The failed
+     * restart leaves both rows intact. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("coin suffix spend refusal: setup",
+                 uv_setup("coin_suffix_spend_refusal", 2, UV_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        UV_CHECK("coin suffix spend refusal: establish cursor one",
+                 utxo_apply_stage_drain(1) == 1 &&
+                     utxo_apply_stage_cursor() == 1);
+        sqlite3 *db = progress_store_db();
+        utxo_apply_stage_shutdown();
+        const struct block *blk = &sc.bodies[1];
+        bool seeded = true;
+        for (size_t ti = 0; ti < blk->num_vtx && seeded; ti++) {
+            const struct transaction *tx = &blk->vtx[ti];
+            seeded = coins_kv_add(
+                db, tx->hash.data, 0, tx->vout[0].value, 1,
+                transaction_is_coinbase(tx),
+                tx->vout[0].script_pub_key.data,
+                tx->vout[0].script_pub_key.size);
+        }
+        UV_CHECK("coin suffix spend refusal: seed future outputs",
+                 seeded && uv_coin_rows_at(db, 1) == 2);
+        utxo_apply_stage_set_reader(fake_reader, &sc);
+        UV_CHECK("coin suffix spend refusal: restart fails closed",
+                 !utxo_apply_stage_init(&ms));
+        UV_CHECK("coin suffix spend refusal: rows preserved",
+                 uv_coin_rows_at(db, 1) == 2 &&
+                     stage_cursor_persisted(db, "utxo_apply",
+                                            "coin_suffix_refusal_test") == 1);
         uv_teardown(dir, &ms, &sc);
     }
 

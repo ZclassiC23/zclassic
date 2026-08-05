@@ -1,32 +1,31 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- *
- * utxo_apply_delta_repair — one-shot stale verdict repairs.
- *
- * These repairs reuse the inverse-delta machinery from
- * utxo_apply_delta_reorg.c, but they are not fork reorg handling. Each repair
- * is consensus-critical and gated by current-binary dry-runs plus a
- * (height,block_hash) one-shot marker. */
+ * utxo_apply_delta_repair — one-shot stale verdict repairs. These reuse the
+ * inverse-delta machinery but are not fork reorg handling. Each is gated by
+ * current-binary dry-runs plus a (height,block_hash) one-shot marker. */
 
 #include "jobs/utxo_apply_delta.h"
 #include "utxo_apply_delta_internal.h"
-
 #include "jobs/stage_helpers.h"
+#include "jobs/stage_body_index.h"
+#include "jobs/created_outputs_index.h"
 #include "jobs/utxo_apply_stage.h"
 #include "coins/coins.h"
 #include "primitives/block.h"
+#include "script/script.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "storage/repair_marker.h"
 #include "util/log_macros.h"
-
 #include <limits.h>
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define VALUE_OVERFLOW_REPAIR_ACK_ENV \
-    "ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK"
+#define VALUE_OVERFLOW_REPAIR_ACK_ENV "ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK"
+
+/* Keep startup repair O(delta); larger contradictions use copy-only tools. */
+#define UNAPPLIED_COIN_SUFFIX_REPAIR_MAX_BLOCKS 4096
 
 static bool unapplied_suffix_exists(sqlite3 *db, int32_t first, bool *exists)
 {
@@ -37,6 +36,7 @@ static bool unapplied_suffix_exists(sqlite3 *db, int32_t first, bool *exists)
         " UNION ALL SELECT height FROM nullifiers WHERE height>=?1"
         " UNION ALL SELECT height FROM sprout_anchors WHERE height>=?1"
         " UNION ALL SELECT height FROM sapling_anchors WHERE height>=?1"
+        " UNION ALL SELECT height FROM coins WHERE height>=?1"
         ")";
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
@@ -62,7 +62,288 @@ static bool unapplied_suffix_exists(sqlite3 *db, int32_t first, bool *exists)
     return true;
 }
 
-bool utxo_apply_reconcile_unapplied_suffix(sqlite3 *db)
+static bool future_coin_bounds(sqlite3 *db, int applied_first,
+                               int64_t *count, int *future_first, int *last)
+{
+    sqlite3_stmt *st = NULL;
+    *count = 0;
+    *future_first = applied_first;
+    *last = applied_first - 1;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COUNT(*),COALESCE(MIN(height),?1),"
+            "COALESCE(MAX(height),?1-1) "
+            "FROM coins WHERE height>=?1", -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("utxo_apply", "[utxo_apply] future coin probe prepare: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int(st, 1, applied_first);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *count = sqlite3_column_int64(st, 0);
+        *future_first = sqlite3_column_int(st, 1);
+        *last = sqlite3_column_int(st, 2);
+    }
+    sqlite3_finalize(st);
+    if (rc != SQLITE_ROW) {
+        LOG_WARN("utxo_apply", "[utxo_apply] future coin probe step rc=%d: %s",
+                 rc, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}
+
+static bool future_coin_matches_output(sqlite3 *db,
+                                       const struct transaction *tx,
+                                       uint32_t vout, int height)
+{
+    uint8_t script[UTXO_APPLY_SCRIPT_MAX];
+    int64_t value = 0;
+    int32_t coin_height = -1;
+    bool is_coinbase = false;
+    size_t script_len = 0;
+    if (!coins_kv_get_prevout(db, tx->hash.data, vout, &value, script,
+                              sizeof(script), &script_len, &coin_height,
+                              &is_coinbase))
+        return false;
+    const struct tx_out *out = &tx->vout[vout];
+    return value == out->value && coin_height == height &&
+           is_coinbase == transaction_is_coinbase(tx) &&
+           script_len == out->script_pub_key.size &&
+           (script_len == 0 ||
+            memcmp(script, out->script_pub_key.data, script_len) == 0);
+}
+
+/* Prove that rows with creator heights at/above `first` are exactly every
+ * spendable output of a canonical, body-readable block suffix.  Inputs are
+ * restored separately from their hash-verified pre-suffix creators below. */
+static bool prove_exact_future_coin_suffix(
+    sqlite3 *db, struct main_state *ms, const char *datadir,
+    utxo_apply_reader_fn reader, void *reader_user,
+    int first, int last, int64_t actual_rows)
+{
+    if (!ms || !datadir || last < first ||
+        last - first + 1 > UNAPPLIED_COIN_SUFFIX_REPAIR_MAX_BLOCKS) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] future coin repair refused range=[%d,%d] "
+                 "cap=%d main_state=%p datadir=%p",
+                 first, last, UNAPPLIED_COIN_SUFFIX_REPAIR_MAX_BLOCKS,
+                 (void *)ms, (const void *)datadir);
+        return false;
+    }
+
+    int64_t expected_rows = 0;
+    for (int h = first; h <= last; h++) {
+        struct block_index *bi = stage_body_index_at(ms, h);
+        struct block blk;
+        block_init(&blk);
+        if (!bi || bi->nHeight != h || !bi->phashBlock ||
+            !stage_read_block(&blk, bi, h, datadir, reader, reader_user)) {
+            block_free(&blk);
+            LOG_WARN("utxo_apply",
+                     "[utxo_apply] future coin repair refused: canonical "
+                     "body unavailable h=%d", h);
+            return false;
+        }
+
+        bool block_ok = true;
+        for (size_t ti = 0; ti < blk.num_vtx && block_ok; ti++) {
+            const struct transaction *tx = &blk.vtx[ti];
+            for (size_t vo = 0; vo < tx->num_vout; vo++) {
+                const struct tx_out *out = &tx->vout[vo];
+                if (tx_out_is_null(out) ||
+                    script_is_unspendable(&out->script_pub_key))
+                    continue;
+                if (vo > UINT32_MAX ||
+                    !future_coin_matches_output(db, tx, (uint32_t)vo, h)) {
+                    LOG_WARN("utxo_apply",
+                             "[utxo_apply] future coin repair refused: "
+                             "created-output mismatch h=%d tx=%zu vout=%zu",
+                             h, ti, vo);
+                    block_ok = false;
+                    break;
+                }
+                expected_rows++;
+            }
+        }
+        block_free(&blk);
+        if (!block_ok)
+            return false;
+    }
+    if (expected_rows != actual_rows) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] future coin repair refused: row-set mismatch "
+                 "range=[%d,%d] expected=%lld actual=%lld",
+                 first, last, (long long)expected_rows,
+                 (long long)actual_rows);
+        return false;
+    }
+    return true;
+}
+
+static bool creator_coin_from_canonical_body(
+    sqlite3 *db, struct main_state *ms, const char *datadir,
+    utxo_apply_reader_fn reader, void *reader_user,
+    const struct outpoint *op, int creator_limit,
+    int64_t *value, uint8_t script[UTXO_APPLY_SCRIPT_MAX],
+    size_t *script_len, int *creator_height, bool *is_coinbase)
+{
+    if (!created_outputs_index_get_bounded(
+            db, op->hash.data, op->n, 0, creator_limit - 1, value, script,
+            UTXO_APPLY_SCRIPT_MAX, script_len, creator_height)) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] future coin repair refused: pre-suffix "
+                 "creator output unavailable");
+        return false;
+    }
+    struct block_index *bi = stage_body_index_at(ms, *creator_height);
+    struct block creator;
+    block_init(&creator);
+    if (!bi || bi->nHeight != *creator_height || !bi->phashBlock ||
+        !stage_read_block(&creator, bi, *creator_height, datadir,
+                          reader, reader_user)) {
+        block_free(&creator);
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] future coin repair refused: creator body "
+                 "unavailable h=%d", *creator_height);
+        return false;
+    }
+
+    bool matched = false;
+    for (size_t ti = 0; ti < creator.num_vtx; ti++) {
+        const struct transaction *tx = &creator.vtx[ti];
+        if (!uint256_eq(&tx->hash, &op->hash))
+            continue;
+        if (op->n >= tx->num_vout) {
+            break;
+        }
+        const struct tx_out *out = &tx->vout[op->n];
+        matched = out->value == *value &&
+                  out->script_pub_key.size == *script_len &&
+                  (*script_len == 0 ||
+                   memcmp(out->script_pub_key.data, script,
+                          *script_len) == 0);
+        if (matched)
+            *is_coinbase = transaction_is_coinbase(tx);
+        break;
+    }
+    block_free(&creator);
+    if (!matched) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] future coin repair refused: creator proof "
+                 "mismatch h=%d vout=%u", *creator_height, op->n);
+        return false;
+    }
+    return true;
+}
+
+/* Replay the inverse of every transparent spend in the suffix.  This repair
+ * restores only inputs whose creators precede `applied_first`.  A creator in
+ * the gap between the applied frontier and the persisted future suffix is
+ * proved but remains absent: the normal reducer will create it before it
+ * reaches the suffix.  The caller's transaction rolls back all restored coins
+ * if any creator proof, duplicate input, or write fails. */
+static bool restore_pre_suffix_spends(
+    sqlite3 *db, struct main_state *ms, const char *datadir,
+    utxo_apply_reader_fn reader, void *reader_user, int applied_first,
+    int scan_first, int last,
+    int64_t *restored_out)
+{
+    *restored_out = 0;
+    for (int h = scan_first; h <= last; h++) {
+        struct block_index *bi = stage_body_index_at(ms, h);
+        struct block blk;
+        block_init(&blk);
+        if (!bi || bi->nHeight != h || !bi->phashBlock ||
+            !stage_read_block(&blk, bi, h, datadir, reader, reader_user)) {
+            block_free(&blk);
+            LOG_WARN("utxo_apply",
+                     "[utxo_apply] future coin repair refused while "
+                     "restoring spends: body unavailable h=%d", h);
+            return false;
+        }
+        bool block_ok = true;
+        for (size_t ti = 0; ti < blk.num_vtx && block_ok; ti++) {
+            const struct transaction *tx = &blk.vtx[ti];
+            if (transaction_is_coinbase(tx))
+                continue;
+            for (size_t vi = 0; vi < tx->num_vin; vi++) {
+                const struct outpoint *op = &tx->vin[vi].prevout;
+                if (coins_kv_exists(db, op->hash.data, op->n)) {
+                    LOG_WARN("utxo_apply",
+                             "[utxo_apply] future coin repair refused: "
+                             "spent input still live h=%d tx=%zu vin=%zu",
+                             h, ti, vi);
+                    block_ok = false;
+                    break;
+                }
+                uint8_t script[UTXO_APPLY_SCRIPT_MAX];
+                int64_t value = 0;
+                size_t script_len = 0;
+                int creator_height = -1;
+                bool is_coinbase = false;
+                if (!creator_coin_from_canonical_body(
+                        db, ms, datadir, reader, reader_user, op, scan_first,
+                        &value, script, &script_len, &creator_height,
+                        &is_coinbase)) {
+                    LOG_WARN("utxo_apply",
+                             "[utxo_apply] future coin repair refused: "
+                             "could not prove h=%d tx=%zu vin=%zu "
+                             "creator_h=%d", h, ti, vi, creator_height);
+                    block_ok = false;
+                    break;
+                }
+                if (creator_height < applied_first) {
+                    if (!coins_kv_add(db, op->hash.data, op->n, value,
+                                      creator_height, is_coinbase, script,
+                                      script_len)) {
+                        LOG_WARN("utxo_apply",
+                                 "[utxo_apply] future coin repair refused: "
+                                 "could not restore h=%d tx=%zu vin=%zu "
+                                 "creator_h=%d", h, ti, vi, creator_height);
+                        block_ok = false;
+                        break;
+                    }
+                    (*restored_out)++;
+                }
+            }
+        }
+        block_free(&blk);
+        if (!block_ok)
+            return false;
+    }
+    return true;
+}
+
+static bool delete_future_coins(sqlite3 *db, int first, int last,
+                                int64_t expected_rows)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "DELETE FROM coins WHERE height>=?1 AND height<=?2",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("utxo_apply", "[utxo_apply] future coin delete prepare: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int(st, 1, first);
+    sqlite3_bind_int(st, 2, last);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    int changed = rc == SQLITE_DONE ? sqlite3_changes(db) : -1;
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE || changed != expected_rows) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] future coin delete mismatch rc=%d "
+                 "changed=%d expected=%lld", rc, changed,
+                 (long long)expected_rows);
+        return false;
+    }
+    return true;
+}
+
+bool utxo_apply_reconcile_unapplied_suffix(
+    sqlite3 *db, struct main_state *ms, const char *datadir,
+    utxo_apply_reader_fn reader, void *reader_user)
 {
     if (!db)
         LOG_FAIL("utxo_apply", "suffix reconcile: NULL db");
@@ -107,6 +388,28 @@ bool utxo_apply_reconcile_unapplied_suffix(sqlite3 *db)
         if (err) sqlite3_free(err);
         goto done;
     }
+    int64_t future_coins = 0;
+    int future_first = coins_applied;
+    int future_last = coins_applied - 1;
+    if (!future_coin_bounds(db, coins_applied, &future_coins, &future_first,
+                            &future_last)) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        goto done;
+    }
+    int64_t restored_spends = 0;
+    if (future_coins > 0) {
+        if (!prove_exact_future_coin_suffix(
+                db, ms, datadir, reader, reader_user, future_first,
+                future_last, future_coins) ||
+            !delete_future_coins(db, future_first, future_last,
+                                 future_coins) ||
+            !restore_pre_suffix_spends(
+                db, ms, datadir, reader, reader_user, coins_applied,
+                future_first, future_last, &restored_spends)) {
+            sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+            goto done;
+        }
+    }
     if (!utxo_apply_delete_rows_above(db, coins_applied, INT_MAX)) {
         sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
         goto done;
@@ -120,8 +423,13 @@ bool utxo_apply_reconcile_unapplied_suffix(sqlite3 *db)
     }
     LOG_WARN("utxo_apply",
              "[utxo_apply] removed abandoned kernel suffix at/above "
-             "next-unapplied height=%d (cursor and coin frontier agree)",
-             coins_applied);
+             "next-unapplied height=%d (cursor and coin frontier agree; "
+             "future_range=[%d,%d] future_coins_removed=%lld "
+             "restored_spends=%lld "
+             "through_height=%d)",
+             coins_applied, future_first, future_last,
+             (long long)future_coins, (long long)restored_spends,
+             future_last);
     ok = true;
 
 done:
