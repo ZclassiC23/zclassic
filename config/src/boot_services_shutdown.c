@@ -145,6 +145,12 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
     /* Stop the supervisor AFTER runtime services so any stall-detection
      * callbacks they emit at teardown are still delivered. */
     supervisor_stop();
+    /* The supervisor is now joined, so no stage callback can be in flight.
+     * Quiesce the staged-sync pipeline while progress storage, node.db, and
+     * main_state are still valid. In particular validate_headers owns the
+     * vh.worker pool: deferring this call until after thread_registry_join_all
+     * makes shutdown wait on workers that have not yet been told to stop. */
+    staged_sync_supervisor_shutdown_stages();
     printf("[shutdown] joining runtime workers\n");
     boot_join_address_backfill_service(svc);
     boot_join_hodl_history_service(svc);
@@ -191,20 +197,8 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     zcl_service_kernel_reset(&svc->runtime_kernel);
     zcl_service_kernel_reset(&svc->network_kernel);
     zcl_service_kernel_reset(&svc->service_kernel);
-    /* Staged-sync stage teardown — the bottom-up (tip_finalize → utxo_apply →
-     * … → header_admit) reverse-dependency shutdown the at-tip kill-9 ordering
-     * invariant requires, BEFORE the frees below: a straggler drain ticked
-     * after the join sweep must see cleared bindings, not freed chainstate
-     * (each stage's shutdown reads the log the next-lower stage still owns, so
-     * they must quiesce top-of-pipeline first). This lifecycle belongs to the
-     * staged-sync supervisor unit that also registers the eight stages and
-     * lists them in the supervisor tree; delegate to it instead of re-listing
-     * every per-stage shutdown here. Behaviour is identical: each
-     * *_stage_shutdown() is null-safe, so the unit's per-stage init_ok guard
-     * only ever skips a no-op, in the same bottom-up order. */
-    staged_sync_supervisor_shutdown_stages();
-
-    /* Stages quiesced; the state they read can go. proof_validate uses the Sapling params. */
+    /* Stages were quiesced before persistence and the final registry join;
+     * the state they read can now go. proof_validate uses the Sapling params. */
     wallet_free(svc->wallet);
     tx_mempool_free(svc->mempool);
     main_state_free(svc->state);
