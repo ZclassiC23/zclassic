@@ -15,7 +15,7 @@
  * Lifecycle:
  *   sd_notify_init()          — once at boot, after env is loaded
  *   sd_notify_ready()         — once when the node is fully initialized
- *   sd_notify_watchdog_*()    — periodic heartbeat, gated on health
+ *   sd_notify_watchdog_*()    — periodic heartbeat, gated on root liveness
  *   sd_notify_status(msg)     — free-form status visible in systemctl
  *   sd_notify_stopping()      — once at shutdown
  *
@@ -23,9 +23,9 @@
  * systemd exports WATCHDOG_USEC. sd_notify_watchdog_usec() returns
  * that value (in microseconds) so the heartbeat thread can pick a
  * cadence (typically WATCHDOG_USEC/2). Calling sd_notify_watchdog_ping()
- * sends "WATCHDOG=1" so systemd's timer resets. Stop pinging when the
- * node is unhealthy and systemd will Restart=always the unit after the
- * configured WatchdogSec interval.
+ * sends "WATCHDOG=1" so systemd's timer resets. The production gate is root
+ * supervisor freshness: semantic node-health failures remain visible through
+ * their own condition/remedy/operator surfaces and do not imply a process hang.
  */
 #ifndef ZCL_UTIL_SD_NOTIFY_H
 #define ZCL_UTIL_SD_NOTIFY_H
@@ -56,9 +56,9 @@ uint64_t sd_notify_watchdog_usec(void);
 bool sd_notify_ready(void);
 
 /* Send "WATCHDOG=1". Heartbeat the systemd watchdog timer. Call from
- * the heartbeat thread when the node is healthy. Suppressed (returns
- * false, sends nothing) when a registered health-check callback (see
- * sd_notify_set_health_check) reports unhealthy. */
+ * the heartbeat thread while the process-liveness gate is satisfied.
+ * Suppressed (returns false, sends nothing) when a registered check callback
+ * (see sd_notify_set_health_check) reports the supervised root is stale. */
 bool sd_notify_watchdog_ping(void);
 
 /* Optional root-health gate, checked by sd_notify_watchdog_ping() before

@@ -533,7 +533,8 @@ accrue until the owner promotes a binary with the sd-pet fix.
 
 Gate: C1,C4 PASS; C2 FAIL (probe); C3/C5/C6/C7/C8 BLOCKED to named proofs (by design).
 
-1. WATCHDOG KILL LOOP — root-caused and fixed in-tree (`12970570b`):
+1. WATCHDOG KILL LOOP — root-caused; first fix was incomplete, corrected
+   in-tree (2026-08-05, not yet owner-promoted):
    SEVEN systemd watchdog SIGABRTs in 3 h on the canonical node (08:21, 09:41,
    09:54, 10:17, 10:35, 10:48, 11:02; NRestarts 2->6) while the node held tip
    (gap=1, peers 11-22) and backfilled bodies. Two compounding causes:
@@ -547,15 +548,20 @@ Gate: C1,C4 PASS; C2 FAIL (probe); C3/C5/C6/C7/C8 BLOCKED to named proofs (by de
        body_history_is_proven() is false (the intentional not_serving posture,
        ~3.13M/3.2M bodies missing, ~5-day backfill), so the pet depended
        entirely on boot_progress, which drains minutes after each boot. <!-- stale-ok: dated 2026-08-02 incident narrative, not a present-tense tip claim -->
-   Fix (in-tree, NOT yet deployed to canonical — owner promotion gate):
+   First fix (in-tree, NOT yet deployed to canonical — owner promotion gate):
    - config/src/boot_sd_watchdog.c: dedicated pet thread (zcl_sd_watchdog_pet)
      pinging every WATCHDOG_USEC/4 from cheap atomics only — never a collect,
      never a node lock. Pure decision fn + ZCL_TESTING seam.
-   - app/services/src/node_health_service.c: verdict publication atomics
-     (node_health_last_verdict) + a STRICT body-gap posture flag (unhealthy
-     with NO named degradation, archive unproven, at tip with peers) — the one
-     state a systemd restart cannot improve. healthy/serving/api semantics
-     unchanged (not_serving stays honest).
+   - app/services/src/node_health_service.c: verdict publication atomics plus
+     a body-gap exception. Copy-proving on 2026-08-05 exposed the remaining
+     policy bug: a fresh named `review_required_bootstrap_trust` verdict still
+     stopped the pet while the process, supervisor, RPC, and parity remained
+     live. The isolated unit then failed exactly as `Result=watchdog`, status
+     134, ten minutes after its final ping.
+   Corrected contract: systemd is a process-hang detector. The pet consumes
+   verdict FRESHNESS only; verdict CONTENT continues to gate serving and drive
+   conditions/remedies/operator paging. Frozen supervisor or stale health
+   publication still stops the ping. No special degradation allowlist remains.
    - deploy/zclassic23.service comment updated; test_sd_notify.c decision table.
    Until the owner promotes a binary with this fix, the C6 clean-soak window
    cannot accrue on the canonical node — every boot is killed ~10 min after

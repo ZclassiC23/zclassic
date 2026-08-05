@@ -616,9 +616,10 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                         snapshot->log_head_gap <= 1;
 
     /* mem_pressure's cgroup-aware level, distinct from the raw RSS
-     * threshold above. CRITICAL flips healthy=false so sd_notify stops
-     * pinging WATCHDOG=1 and systemd restarts the unit; HIGH is a warning
-     * only, giving memory_pressure_high's remedy sinks a chance to work. */
+     * threshold above. CRITICAL flips healthy=false for serving, conditions,
+     * and remedies; systemd's watchdog remains a process-hang detector.
+     * HIGH is a warning, giving memory_pressure_high's remedy sinks a chance
+     * to work. */
     {
         enum mem_pressure_level mp_level = mem_pressure_current();
         if (mp_level >= MEM_HIGH)
@@ -673,10 +674,9 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                  "%s", wd.last_recovery_trigger);
     }
 
-    /* Mirror lag SLO breach → loud health degradation. When mirror
-     * reports "fatal" severity, flip healthy=false so the sd_notify
-     * heartbeat thread stops pinging WatchdogSec and systemd restarts
-     * the unit. This is the hard half of fail-loud-and-fast. */
+    /* Mirror lag SLO breach → loud health degradation. Fatal severity flips
+     * healthy=false for serving, conditions, remedies, and operator paging.
+     * It does not claim that the process is hung or ask systemd to restart. */
     {
         struct chain_evidence_controller cec;
         struct chain_evidence_controller_view view;

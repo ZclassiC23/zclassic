@@ -330,39 +330,33 @@ int test_sd_notify(void)
 
     /* ── pet decision table (boot_sd_watchdog_pet_decide via seam) ──
      * The dedicated pet thread's pure gate: supervisor liveness, verdict
-     * health/freshness, the body-gap posture forgiveness, startup grace,
-     * and the boot_progress escape hatch. */
+     * verdict freshness (not verdict content), startup grace, and the
+     * boot_progress escape hatch. */
     {
         const int64_t BOUND = 600LL * 1000000;
-        SDN_CHECK("pet: frozen supervisor stops the ping even when healthy",
-            !boot_sd_watchdog_test_pet_decide(false, true, true, false,
+        SDN_CHECK("pet: frozen supervisor always stops the ping",
+            !boot_sd_watchdog_test_pet_decide(false, true,
                                               0, true, BOUND, BOUND));
-        SDN_CHECK("pet: fresh healthy verdict pings",
-            boot_sd_watchdog_test_pet_decide(true, true, true, false,
+        SDN_CHECK("pet: fresh verdict pings regardless of health content",
+            boot_sd_watchdog_test_pet_decide(true, true,
                                              1000, false, 0, BOUND));
-        SDN_CHECK("pet: stale healthy verdict without progress does not ping",
-            !boot_sd_watchdog_test_pet_decide(true, true, true, false,
+        SDN_CHECK("pet: stale verdict without progress does not ping",
+            !boot_sd_watchdog_test_pet_decide(true, true,
                                               BOUND + 1, false, 0, BOUND));
-        SDN_CHECK("pet: unhealthy verdict without progress does not ping",
-            !boot_sd_watchdog_test_pet_decide(true, true, false, false,
-                                              1000, false, 0, BOUND));
-        SDN_CHECK("pet: body-gap posture verdict pings (restart cannot fix it)",
-            boot_sd_watchdog_test_pet_decide(true, true, false, true,
-                                             1000, false, 0, BOUND));
-        SDN_CHECK("pet: body-gap posture still bounded by freshness",
-            !boot_sd_watchdog_test_pet_decide(true, true, false, true,
-                                              BOUND + 1, false, 0, BOUND));
-        SDN_CHECK("pet: unhealthy verdict + recent boot progress pings",
-            boot_sd_watchdog_test_pet_decide(true, true, false, false,
-                                             1000, true, 0, BOUND));
+        SDN_CHECK("pet: negative-age verdict is rejected",
+            !boot_sd_watchdog_test_pet_decide(true, true,
+                                              -1, false, 0, BOUND));
+        SDN_CHECK("pet: stale verdict + recent boot progress pings",
+            boot_sd_watchdog_test_pet_decide(true, true,
+                                             BOUND + 1, true, 0, BOUND));
         SDN_CHECK("pet: no verdict inside startup grace pings",
-            boot_sd_watchdog_test_pet_decide(true, false, false, false,
+            boot_sd_watchdog_test_pet_decide(true, false,
                                              0, false, BOUND, BOUND));
         SDN_CHECK("pet: no verdict past grace without progress does not ping",
-            !boot_sd_watchdog_test_pet_decide(true, false, false, false,
+            !boot_sd_watchdog_test_pet_decide(true, false,
                                               0, false, 0, BOUND));
         SDN_CHECK("pet: no verdict past grace + progress pings",
-            boot_sd_watchdog_test_pet_decide(true, false, false, false,
+            boot_sd_watchdog_test_pet_decide(true, false,
                                              0, true, 0, BOUND));
     }
 

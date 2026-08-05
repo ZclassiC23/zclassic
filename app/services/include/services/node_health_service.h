@@ -124,11 +124,10 @@ struct node_health_snapshot {
      * sync_state!=SYNC_AT_TIP. */
     int64_t  tip_advance_age_seconds;
 
-    /* Mirror lag SLO breach severity (none|warn|critical|fatal). When
-     * "fatal" the snapshot.healthy gate flips false, which causes the
-     * sd_notify heartbeat thread to skip pinging systemd's WatchdogSec
-     * timer and triggers a service restart. Surfaced via `zclassic23 status`,
-     * `zclassic23 dumpstate health`, and Prometheus
+    /* Mirror lag SLO breach severity (none|warn|critical|fatal). "fatal"
+     * flips snapshot.healthy false for serving, conditions, and remedies;
+     * it remains separate from the systemd process-hang watchdog. Surfaced
+     * via `zclassic23 status`, `zclassic23 dumpstate health`, and Prometheus
      * zcl_mirror_lag_breach_seconds. */
     int64_t  mirror_lag_blocks;
     int64_t  mirror_lag_breach_seconds;
@@ -174,15 +173,13 @@ void node_health_collect(struct node_health_snapshot *snapshot,
  * locks during bulk ingest, and that blocking was the pet-starvation source
  * behind the 2026-08-02 systemd watchdog kill loop.
  * Returns false when no collect has completed yet this process.
- * `body_gap_posture_out` (optional) receives the strict "unhealthy SOLELY
- * because the body-history archive is still unproven" flag — the one state
- * a systemd restart cannot improve (see node_health_service.c). */
-bool node_health_last_verdict(bool *healthy_out, bool *body_gap_posture_out,
-                              int64_t *publish_us_out);
+ * Only publication freshness is exposed to the systemd pet thread. Verdict
+ * content belongs to the health/condition/operator planes: a fresh negative
+ * verdict proves the collector is alive and must not create a restart loop. */
+bool node_health_last_verdict(int64_t *publish_us_out);
 
 /* Publish side of the same contract (node_health_verdict.c): called once at
- * the end of every node_health_collect. Computes the strict body-gap
- * posture from the finished snapshot. */
+ * the end of every node_health_collect. */
 void node_health_verdict_publish(const struct node_health_snapshot *snapshot);
 /* Does the block-source policy consider us to be at the chain tip?
  *

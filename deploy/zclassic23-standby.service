@@ -28,7 +28,8 @@ StartLimitIntervalSec=0
 [Service]
 # Type=notify + WatchdogSec closes the hung-but-alive gap exactly like the
 # canonical unit: boot_sd_watchdog_start pings WATCHDOG=1 only while the
-# supervisor tree + boot progress look live, and Type=notify holds the
+# supervisor tree + health pipeline/boot progress look live (health verdict
+# content remains visible but is not a restart trigger), and Type=notify holds the
 # watchdog clock until READY=1 so a slow (cold-recovery) standby boot is not
 # SIGABRT'd mid-boot.
 Type=notify
