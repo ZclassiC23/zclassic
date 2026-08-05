@@ -646,6 +646,21 @@ static void rlw_mkfixture(char *dir, size_t n, const char *tag)
     mkdir(zdir, 0700);
 }
 
+/* The shared fixture above deliberately supplies zcode/ so two old package
+ * reads reach node.db.  Sovereign-space reads have the stronger contract:
+ * discovery/planning against a never-used datadir must not materialize even
+ * that top-level directory.  Remove the compatibility fixture for exactly
+ * those leaves so their absent case starts, and must finish, literally empty. */
+static bool rlw_require_truly_empty_space_fixture(const struct rlw_leaf *lf,
+                                                  const char *dir)
+{
+    if (strncmp(lf->path, "metaverse.space.", 16) != 0)
+        return true;
+    char zdir[1200];
+    snprintf(zdir, sizeof(zdir), "%s/zcode", dir);
+    return rmdir(zdir) == 0;
+}
+
 /* The byte pattern used for every "this is not a database" fixture. Chosen
  * to be something an operator could plausibly have left in the datadir, so
  * the failure reads as data loss rather than as a fuzz artefact. */
@@ -823,9 +838,16 @@ static int t_absent_node_db_is_not_created(void)
         snprintf(tag, sizeof(tag), "absent%d", i);
         rlw_mkfixture(dir, sizeof(dir), tag);
 
+        char name[160];
+        bool literal_empty = strncmp(lf->path, "metaverse.space.", 16) == 0;
+        snprintf(name, sizeof(name),
+                 "%s: sovereign-space fixture starts literally empty",
+                 lf->path);
+        if (literal_empty)
+            RLW_CHECK(name, rlw_require_truly_empty_space_fixture(lf, dir));
+
         char db_path[1200];
         snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
-        char name[160];
 
         snprintf(name, sizeof(name),
                  "%s: fixture starts with no node.db", lf->path);
@@ -836,6 +858,12 @@ static int t_absent_node_db_is_not_created(void)
         snprintf(name, sizeof(name),
                  "%s: empty fixture tree observed before the read", lf->path);
         RLW_CHECK(name, got_before);
+        if (literal_empty) {
+            snprintf(name, sizeof(name),
+                     "%s: absent datadir contains zero entries before read",
+                     lf->path);
+            RLW_CHECK(name, got_before && before[0] == '\0');
+        }
 
         rlw_invoke(lf, dir);
 
