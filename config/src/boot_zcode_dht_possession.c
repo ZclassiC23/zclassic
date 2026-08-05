@@ -120,6 +120,19 @@ size_t boot_zcode_dht_possession_cycle(
     return ready ? request_count : 0;
 }
 
+bool boot_zcode_dht_possession_current(
+    struct vcs_package_store *store, const uint8_t root[32])
+{
+    if (!store || !root)
+        return false;
+    possession_lock();
+    bool current = g_scheduler &&
+        vcs_package_possession_scheduler_current(
+            g_scheduler, store, root, NULL);
+    zcl_mutex_unlock(&g_possession_lock);
+    return current;
+}
+
 void boot_zcode_dht_possession_dump_json(struct json_value *out,
                                          uint64_t now_mono)
 {

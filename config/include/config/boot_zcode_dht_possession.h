@@ -16,6 +16,8 @@ size_t boot_zcode_dht_possession_cycle(
     const struct vcs_zcode_dht_storage_ack_proof_request *requests,
     size_t request_count, uint64_t now_mono,
     boot_zcode_dht_possession_apply_fn apply, void *apply_context);
+bool boot_zcode_dht_possession_current(
+    struct vcs_package_store *store, const uint8_t root[32]);
 void boot_zcode_dht_possession_dump_json(struct json_value *out,
                                          uint64_t now_mono);
 void boot_zcode_dht_possession_append_json(struct json_value *out,

@@ -223,6 +223,10 @@ struct vcs_zcode_dht_record_operation_result {
 
 struct vcs_zcode_dht_record_discovery_result {
   enum vcs_zcode_dht_record_operation_state state;
+  bool truncated;
+  /* At least one routed responsible-node/page query could not complete.
+   * Records remain useful partial evidence, never complete coverage. */
+  bool incomplete;
   uint32_t routing_rounds;
   uint32_t xor_progress;
   uint32_t nodes_queried;

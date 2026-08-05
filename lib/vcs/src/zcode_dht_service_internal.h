@@ -133,7 +133,7 @@ enum service_record_discovery_phase {
 };
 
 struct service_record_discovery {
-  bool used;
+  bool used, truncated, incomplete;
   uint64_t id, lookup_id, deadline_mono;
   enum vcs_zcode_dht_record_operation_state state;
   enum service_record_discovery_phase phase;

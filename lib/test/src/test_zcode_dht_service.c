@@ -594,6 +594,39 @@ static int test_record_transport_and_restart(void) {
     ASSERT(memcmp(result.records[0].transport_root, first.transport_root, 32) ==
            0);
 
+    /* A responsible peer replaced after routing but before its record page
+     * replies makes the discovery explicitly incomplete. Cached records may
+     * be retained as evidence, but cannot be promoted to complete evidence. */
+    uint64_t discovery = 0;
+    ASSERT(vcs_zcode_dht_service_record_discovery_begin(
+        b, &selector, test_time(1002), &discovery));
+    ASSERT(pump(b, a, 1, 2, 1002, NULL, NULL));
+    ASSERT(pump(a, b, 2, 1, 1002, NULL, NULL));
+    struct vcs_zcode_dht_record_discovery_result discovery_result;
+    ASSERT(vcs_zcode_dht_service_record_discovery_poll(
+        b, discovery, test_time(1002), &discovery_result));
+    ASSERT_EQ(discovery_result.state,
+              VCS_ZCODE_DHT_RECORD_OPERATION_PENDING);
+    as.generation = bs.generation = 43;
+    as.connection_serial = 3;
+    bs.connection_serial = 4;
+    memset(transcript, 0x56, sizeof(transcript));
+    memcpy(as.transcript_hash, transcript, 32);
+    memcpy(bs.transcript_hash, transcript, 32);
+    ASSERT(vcs_zcode_dht_service_session_open(b, 1, &bs,
+                                               test_time(1002)));
+    ASSERT(vcs_zcode_dht_service_session_open(a, 2, &as,
+                                               test_time(1002)));
+    ASSERT(vcs_zcode_dht_service_record_discovery_poll(
+        b, discovery, test_time(1002), &discovery_result));
+    ASSERT_EQ(discovery_result.state,
+              VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE);
+    ASSERT(discovery_result.incomplete);
+    ASSERT(!discovery_result.truncated);
+    ASSERT(pump(a, b, 2, 1, 1002, NULL, NULL));
+    ASSERT(pump(b, a, 1, 2, 1002, NULL, NULL));
+    ASSERT(pump(a, b, 2, 1, 1002, NULL, NULL));
+
     struct vcs_zcode_dht_record second;
     ASSERT(fixture_pointer_record(adir, genesis, 0x62, 0x72, &second));
     ASSERT(vcs_zcode_dht_service_record_store_begin(
@@ -931,6 +964,8 @@ static int test_sparse_iterative_network(void) {
     ASSERT_EQ(discovery_result.state,
               VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE);
     ASSERT_EQ(discovery_result.record_count, MULTI_NODES + 7u);
+    ASSERT(!discovery_result.truncated);
+    ASSERT(!discovery_result.incomplete);
     for (size_t i = 0; i < MULTI_NODES; i++)
       for (size_t j = i + 1; j < MULTI_NODES; j++)
         ASSERT(memcmp(discovery_result.records[i].provider_node_id,
@@ -1158,6 +1193,47 @@ static int test_sparse_iterative_network(void) {
               VCS_ZCODE_DHT_TERMINATION_TARGET_AUTHENTICATED);
     vcs_zcode_dht_service_status(net.service[origin], &after);
     ASSERT(after.connected_authenticated >= 1);
+
+    /* Fill the same signed selector to its exact 64-record discovery ceiling.
+     * The operation preserves the bounded records and says truncated instead
+     * of claiming complete evidence beyond the cap. */
+    size_t ceiling_added = 0;
+    for (size_t i = 0; i < MULTI_NODES && ceiling_added < 45; i++) {
+      if (i == target_node)
+        continue;
+      for (size_t conflict = 0; conflict < 7 && ceiling_added < 45;
+           conflict++) {
+        struct vcs_zcode_dht_record flooded;
+        ASSERT(fixture_pointer_record(net.dir[i], genesis, 0xc1,
+                                      (uint8_t)(0x20 + ceiling_added),
+                                      &flooded));
+        ASSERT_EQ(vcs_zcode_dht_service_record_admit(
+                      net.service[target_node], &flooded, net.now),
+                  VCS_ZCODE_DHT_RECORD_STORE_CONFLICT);
+        ceiling_added++;
+      }
+    }
+    ASSERT_EQ(ceiling_added, 45);
+    uint64_t ceiling_operation = 0;
+    ASSERT(vcs_zcode_dht_service_record_discovery_begin(
+        net.service[origin], &selector, net.now, &ceiling_operation));
+    ASSERT(multi_drive(&net));
+    ASSERT(vcs_zcode_dht_service_record_discovery_poll(
+        net.service[origin], ceiling_operation, net.now, &discovery_result));
+    for (size_t drive = 0;
+         drive < 2 * VCS_ZCODE_DHT_K &&
+         discovery_result.state == VCS_ZCODE_DHT_RECORD_OPERATION_PENDING;
+         drive++) {
+      ASSERT(multi_drive(&net));
+      ASSERT(vcs_zcode_dht_service_record_discovery_poll(
+          net.service[origin], ceiling_operation, net.now,
+          &discovery_result));
+    }
+    ASSERT_EQ(discovery_result.state,
+              VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE);
+    ASSERT_EQ(discovery_result.record_count,
+              VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS);
+    ASSERT(discovery_result.truncated);
 
     for (size_t i = 0; i < MULTI_NODES; i++) {
       vcs_zcode_dht_service_free(net.service[i], net.now);

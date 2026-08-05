@@ -235,6 +235,8 @@ static void record_result_json(
   json_push_kv_bool(result, "ok", successful);
   json_push_kv_str(result, "state", record_state_name(discovery->state));
   json_push_kv_bool(result, "local_projection", false);
+  json_push_kv_bool(result, "truncated", discovery->truncated);
+  json_push_kv_bool(result, "incomplete", discovery->incomplete);
   json_push_kv_int(result, "routing_rounds", discovery->routing_rounds);
   json_push_kv_int(result, "xor_progress", discovery->xor_progress);
   json_push_kv_int(result, "nodes_queried", discovery->nodes_queried);

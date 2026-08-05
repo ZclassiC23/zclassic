@@ -147,6 +147,7 @@ static void discovery_drive_children(
                                                        &result)) {
       discovery->child_operation_ids[i] = 0;
       discovery->node_complete[i] = true;
+      discovery->incomplete = true;
       if (discovery->active_children)
         discovery->active_children--;
       continue;
@@ -154,6 +155,8 @@ static void discovery_drive_children(
     if (result.state == VCS_ZCODE_DHT_RECORD_OPERATION_PENDING)
       continue;
     discovery_merge_result(service, discovery, &result, now);
+    if (result.state != VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE)
+      discovery->incomplete = true;
     discovery->child_operation_ids[i] = 0;
     if (result.state == VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE &&
         result.next_offset &&
@@ -169,6 +172,7 @@ static void discovery_drive_children(
   if (discovery->record_count >=
       VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS) {
     discovery_cancel_children(service, discovery);
+    discovery->truncated = true;
     discovery->state = VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE;
     return;
   }
@@ -183,10 +187,17 @@ static void discovery_drive_children(
       }
     if (at == discovery->node_count)
       break;
+    /* The local responsible node was snapshotted through local_query() at
+     * admission. It deliberately has no remote peer/session to query. */
+    if (memcmp(discovery->node_ids[at], service->self_id, 32) == 0) {
+      discovery->node_complete[at] = true;
+      continue;
+    }
     struct service_peer *peer = discovery_peer_for_node(
         service, discovery->node_ids[at]);
     if (!peer) {
       discovery->node_complete[at] = true;
+      discovery->incomplete = true;
       continue;
     }
     uint64_t child_id = 0;
@@ -228,6 +239,8 @@ static void discovery_drive(struct vcs_zcode_dht_service *service,
     discovery->xor_progress = lookup.xor_progress;
     if (lookup.state == VCS_ZCODE_DHT_LOOKUP_PENDING)
       return;
+    if (lookup.state != VCS_ZCODE_DHT_LOOKUP_COMPLETE)
+      discovery->incomplete = true;
     discovery->lookup_id = 0;
     discovery->phase = SERVICE_RECORD_DISCOVERY_QUERYING;
     discovery->node_count = lookup.count;
@@ -303,6 +316,8 @@ bool vcs_zcode_dht_service_record_discovery_poll(
     discovery_normalize_records(discovery);
   memset(out, 0, sizeof(*out));
   out->state = discovery->state;
+  out->truncated = discovery->truncated;
+  out->incomplete = discovery->incomplete;
   out->routing_rounds = discovery->routing_rounds;
   out->xor_progress = discovery->xor_progress;
   out->nodes_queried = discovery->nodes_queried;

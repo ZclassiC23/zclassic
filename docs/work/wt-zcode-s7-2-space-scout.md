@@ -171,3 +171,64 @@ missing phase-specific proof.
   datadir after final observation remain outside the supported store-mediated
   mutation boundary; an operator with that authority can invalidate any signed
   claim immediately after signing.
+
+### Phase 2 — banked
+
+- Born-red witness: the base `zcode.network.replication` handler performed two
+  local `VCS_ZCODE_DHT_RECORDS_PER_FRAME` queries, so it could observe at most
+  eight PROVIDER and eight STORAGE_ACK records, never drove responsible-node
+  discovery, and emitted neither an evidence-completeness nor local-cache-only
+  qualification.
+- The native read now composes two owner-capability-bound asynchronous child
+  discoveries (PROVIDER and STORAGE_ACK), retains a completed child while its
+  sibling progresses, cancels both recursively, rejects service-generation
+  changes, and retains the terminal result for a bounded 30 monotonic seconds.
+  Each child uses the existing iterative 64-result responsible-node discovery;
+  reaching that ceiling is surfaced as truncation and makes evidence partial.
+- The deterministic evaluator deduplicates provider IDs, ACK provider IDs and
+  declared owner groups; excludes both sides of a valid same-stream/same-slot
+  conflict; selects the newest nonconflicted record inside each signed
+  master/provider stream before deduplication; expires ACKs by signed wall-time
+  windows; distinguishes signed
+  provider hints, currently Noise-authenticated providers, live signed remote
+  ACK claims and locally revalidated local ACKs. `durable` is fail-closed for
+  partial, local-cache-only, truncated or conflicted evidence and still means
+  only five live ACKs across three declared groups. Output explicitly states
+  that remote ACKs were not locally reverified and groups do not prove separate
+  operators.
+- Focused receipts (cold): `test_zcode_dht_record` 1/1 PASS,
+  `test_zcode_dht_service` 1/1 PASS (including 19 records across the sparse
+  12-node multi-hop fixture, above one eight-record page),
+  `test_command_registry_catalog` 1/1 PASS, `test_syncdiag_rpc` 1/1 PASS and
+  all 13 `make_lint_gates` groups PASS. `make lint` PASS (132 gates) and
+  `make -j16 build-only` PASS. A post-review focused rerun will be recorded
+  with the banked Phase 2 commit.
+- First non-author review verdict: **REJECT**. It proved that a lost
+  responsible node or failed child query could still lead to a COMPLETE result
+  that replication mistook for complete evidence, and that stale lower
+  sequences could influence group/expiry counts. Discovery now carries an
+  explicit `incomplete` bit for non-complete routing, peer loss and failed
+  child queries; replication requires it to be clear. New regressions replace
+  a session after routing and prove COMPLETE remains partial, and prove an
+  expired newer ACK supersedes an older live ACK instead of manufacturing
+  durability. Both focused groups passed after those fixes.
+- Second re-review caught and rejected a healthy-path regression: routing
+  returns the local responsible node, whose records were already snapshotted
+  locally and which correctly has no remote peer session. It is now completed
+  locally without setting `incomplete`; the healthy 19-record sparse proof
+  asserts `!incomplete`, while the replaced-session proof asserts
+  `incomplete`.
+- Final proof review initially rejected the absence of parent lifecycle and
+  exact-ceiling tests. A `ZCL_TESTING`-only backend now substitutes just clock
+  and child begin/poll/cancel adapters while exercising the unchanged parent
+  capability, locking, evaluation and cleanup logic. The regression proves
+  wrong-owner denial, two-child cancellation, slot reuse, second-child begin
+  failure, generation mismatch/restart interruption, terminal retention and
+  expiry, active deadline cleanup and truncation forcing partial/non-durable.
+  The real sparse service fixture now reaches exactly 64 records and asserts
+  `truncated=true`.
+- Final independent verdict by `phase1_review`: **BANKABLE**. It reran both
+  focused groups and used symbol inspection to confirm the test backend exists
+  in the test object but not the production `c1d4af1c...` build epoch. Final
+  local receipts: `test_zcode_dht_record` PASS, `test_zcode_dht_service` PASS,
+  `make lint` 132/132 PASS, `make -j16 build-only` PASS.

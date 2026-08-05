@@ -3,8 +3,11 @@
 #include "test/test_core.h"
 
 #include "base/hex.h"
+#include "config/boot_zcode_dht_replication.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
+#include "json/json.h"
+#include "rpc/server.h"
 #include "support/cleanse.h"
 #include "vcs/zcode_dht_record.h"
 #include "vcs/zcode_dht_record_store.h"
@@ -22,6 +25,115 @@ struct record_fixture {
   struct vcs_zcode_dht_delegation delegation;
   uint8_t node_id[32];
 };
+
+#ifdef ZCL_TESTING
+struct replication_backend_fixture {
+  struct vcs_zcode_dht_time now;
+  uint64_t generation;
+  size_t begin_calls, poll_calls, cancel_calls;
+  size_t fail_begin_call, interrupt_poll_call;
+  bool mismatch_second_generation;
+  bool terminal;
+  bool truncate_provider;
+};
+
+static struct vcs_zcode_dht_time replication_fake_now(void *ctx)
+{
+  return ((struct replication_backend_fixture *)ctx)->now;
+}
+
+static bool replication_fake_begin(
+    void *ctx, const struct vcs_zcode_dht_record_selector *selector,
+    struct vcs_zcode_dht_time now, uint64_t *operation_id,
+    uint64_t *generation)
+{
+  struct replication_backend_fixture *fixture = ctx;
+  (void)selector;
+  (void)now;
+  fixture->begin_calls++;
+  if (fixture->fail_begin_call == fixture->begin_calls)
+    return false;
+  *operation_id = fixture->begin_calls;
+  *generation = fixture->generation +
+      (fixture->mismatch_second_generation && fixture->begin_calls == 2);
+  return true;
+}
+
+static bool replication_fake_poll(
+    void *ctx, uint64_t operation_id, uint64_t generation,
+    struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record_discovery_result *out)
+{
+  struct replication_backend_fixture *fixture = ctx;
+  (void)generation;
+  (void)now;
+  fixture->poll_calls++;
+  if (fixture->interrupt_poll_call == fixture->poll_calls)
+    return false;
+  memset(out, 0, sizeof(*out));
+  out->state = fixture->terminal
+                   ? VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE
+                   : VCS_ZCODE_DHT_RECORD_OPERATION_PENDING;
+  out->nodes_queried = 1;
+  out->truncated = fixture->truncate_provider && operation_id % 2 == 1;
+  return true;
+}
+
+static bool replication_fake_cancel(void *ctx, uint64_t operation_id,
+                                    uint64_t generation)
+{
+  struct replication_backend_fixture *fixture = ctx;
+  (void)operation_id;
+  (void)generation;
+  fixture->cancel_calls++;
+  return true;
+}
+
+static void replication_backend_install(
+    struct replication_backend_fixture *fixture)
+{
+  struct boot_zcode_dht_replication_test_backend backend = {
+      .ctx = fixture,
+      .now = replication_fake_now,
+      .begin = replication_fake_begin,
+      .poll = replication_fake_poll,
+      .cancel = replication_fake_cancel,
+  };
+  boot_zcode_dht_replication_test_set_backend(&backend);
+}
+
+static bool replication_rpc(const struct rpc_table *table, const char *method,
+                            const struct json_value *input,
+                            struct json_value *result)
+{
+  const struct rpc_command *command = rpc_table_find(table, method);
+  if (!command || !command->actor)
+    return false;
+  struct json_value params;
+  json_init(&params);
+  json_set_array(&params);
+  json_push_back(&params, input);
+  json_init(result);
+  bool ok = command->actor(&params, false, result);
+  json_free(&params);
+  return ok;
+}
+
+static void replication_capability_input(
+    struct json_value *input, const char *lookup, const char *owner)
+{
+  json_set_object(input);
+  json_push_kv_str(input, "lookup_id", lookup);
+  json_push_kv_str(input, "owner_token", owner);
+}
+
+static bool replication_json_bool(const struct json_value *doc,
+                                  const char *key, bool fallback)
+{
+  const struct json_value *value = json_get(doc, key);
+  return value && value->type == JSON_BOOL ? json_get_bool(value) : fallback;
+}
+#endif
 
 static void rf_fill(uint8_t *out, size_t n, uint8_t value)
 {
@@ -510,16 +622,282 @@ static int test_declared_replication(void)
     ASSERT_EQ(status.valid_acks, 6);
     ASSERT_EQ(status.declared_owner_groups, 3);
     ASSERT_EQ(status.expired_acks, 1);
+    ASSERT(status.partial);
+    ASSERT(status.local_cache_only);
+    ASSERT(!status.durable);
+    uint8_t authenticated[2][32];
+    memcpy(authenticated[0], records[8].provider_node_id, 32);
+    memcpy(authenticated[1], records[9].provider_node_id, 32);
+    struct vcs_zcode_replication_evidence evidence = {
+        .records = records,
+        .count = 10,
+        .authenticated_node_ids = authenticated,
+        .authenticated_count = 2,
+        .local_possession_current = true,
+        .provider_evidence_complete = true,
+        .ack_evidence_complete = true,
+    };
+    memcpy(evidence.local_node_id, records[0].provider_node_id, 32);
+    vcs_zcode_replication_evaluate_evidence(
+        &evidence, "science", root, 1500, &status);
+    ASSERT_EQ(status.authenticated_providers, 2);
+    ASSERT_EQ(status.locally_revalidated_acks, 1);
+    ASSERT(!status.partial);
+    ASSERT(!status.local_cache_only);
     ASSERT(status.durable);
     vcs_zcode_replication_evaluate(records, 10, "science", root, 1600,
                                    &status);
     ASSERT(!status.durable);
     ASSERT_EQ(status.valid_acks, 0);
+
+    struct record_fixture fixture;
+    int chain_calls = 0;
+    struct vcs_zcode_dht_record conflict[2];
+    ASSERT(rf_init(&fixture, &chain_calls));
+    rf_record(&fixture, &conflict[0], VCS_ZCODE_DHT_RECORD_STORAGE_ACK);
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&conflict[0], fixture.online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
+    conflict[1] = conflict[0];
+    conflict[1].owner_group[0] ^= 1;
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&conflict[1], fixture.online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
+    evidence.records = conflict;
+    evidence.count = 2;
+    evidence.authenticated_node_ids = NULL;
+    evidence.authenticated_count = 0;
+    memcpy(evidence.local_node_id, fixture.node_id, 32);
+    vcs_zcode_replication_evaluate_evidence(
+        &evidence, "science.study", conflict[0].transport_root, 1500,
+        &status);
+    ASSERT_EQ(status.conflicted_records, 2);
+    ASSERT_EQ(status.valid_acks, 0);
+    ASSERT(!status.durable);
+
+    /* Sequence is monotonic only inside one signed stream. An expired newer
+     * claim supersedes that stream's older live ACK; it must not resurrect an
+     * obsolete owner group and manufacture a durable verdict. */
+    struct vcs_zcode_dht_record supersession[6];
+    memset(supersession, 0, sizeof(supersession));
+    for (size_t i = 0; i < 5; i++) {
+      supersession[i].kind = VCS_ZCODE_DHT_RECORD_STORAGE_ACK;
+      (void)snprintf(supersession[i].namespace_name,
+                     sizeof(supersession[i].namespace_name), "science");
+      memcpy(supersession[i].transport_root, root, 32);
+      memset(supersession[i].provider_node_id, (int)(0x31 + i), 32);
+      memset(supersession[i].owner_group,
+             i == 0 ? 0xa1 : (i < 3 ? 0xb2 : 0xc3), 32);
+      supersession[i].sequence = 1;
+      supersession[i].not_before = 1000;
+      supersession[i].expiry = 1600;
+    }
+    supersession[5] = supersession[0];
+    supersession[5].sequence = 2;
+    supersession[5].expiry = 1400;
+    memset(supersession[5].owner_group, 0xb2, 32);
+    evidence.records = supersession;
+    evidence.count = 6;
+    evidence.local_possession_current = false;
+    memset(evidence.local_node_id, 0, sizeof(evidence.local_node_id));
+    vcs_zcode_replication_evaluate_evidence(
+        &evidence, "science", root, 1500, &status);
+    ASSERT_EQ(status.valid_acks, 4);
+    ASSERT_EQ(status.expired_acks, 1);
+    ASSERT_EQ(status.declared_owner_groups, 2);
+    ASSERT(!status.durable);
     PASS();
   }
   _test_next:;
   return failures;
 }
+
+#ifdef ZCL_TESTING
+static int test_replication_public_lifecycle(void)
+{
+  int failures = 0;
+  TEST("zcode replication: owner lifecycle cleans children and fails partial") {
+    struct rpc_table table;
+    rpc_table_init(&table);
+    boot_zcode_dht_replication_register_rpc(&table);
+    struct json_value begin_input;
+    json_init(&begin_input);
+    json_set_object(&begin_input);
+    json_push_kv_str(&begin_input, "namespace", "science");
+    uint8_t root[32];
+    char root_hex[65];
+    memset(root, 0x91, sizeof(root));
+    zcl_hex_encode(root, sizeof(root), root_hex);
+    json_push_kv_str(&begin_input, "transport_root", root_hex);
+
+    struct replication_backend_fixture fixture = {
+        .now = {.wall_unix = 1500, .monotonic_s = 1000},
+        .generation = 7,
+    };
+    replication_backend_install(&fixture);
+    struct json_value result;
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_begin",
+                           &begin_input, &result));
+    ASSERT(replication_json_bool(&result, "ok", false));
+    char lookup[33], owner[33], wrong_owner[33];
+    (void)snprintf(lookup, sizeof(lookup), "%s",
+                   json_get_str(json_get(&result, "lookup_id")));
+    (void)snprintf(owner, sizeof(owner), "%s",
+                   json_get_str(json_get(&result, "owner_token")));
+    json_free(&result);
+    memcpy(wrong_owner, owner, sizeof(wrong_owner));
+    wrong_owner[0] = wrong_owner[0] == '0' ? '1' : '0';
+    struct json_value capability;
+    json_init(&capability);
+    replication_capability_input(&capability, lookup, wrong_owner);
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_cancel",
+                           &capability, &result));
+    ASSERT(!replication_json_bool(&result, "ok", true));
+    ASSERT_STR_EQ(json_get_str(json_get(&result, "code")), "LOOKUP_UNKNOWN");
+    ASSERT_EQ(fixture.cancel_calls, 0);
+    json_free(&result);
+    json_free(&capability);
+    json_init(&capability);
+    replication_capability_input(&capability, lookup, owner);
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_cancel",
+                           &capability, &result));
+    ASSERT(replication_json_bool(&result, "canceled", false));
+    ASSERT_EQ(fixture.cancel_calls, 2);
+    json_free(&result);
+    json_free(&capability);
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_begin",
+                           &begin_input, &result));
+    ASSERT(replication_json_bool(&result, "ok", false));
+    (void)snprintf(lookup, sizeof(lookup), "%s",
+                   json_get_str(json_get(&result, "lookup_id")));
+    (void)snprintf(owner, sizeof(owner), "%s",
+                   json_get_str(json_get(&result, "owner_token")));
+    json_free(&result);
+    json_init(&capability);
+    replication_capability_input(&capability, lookup, owner);
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_cancel",
+                           &capability, &result));
+    ASSERT_EQ(fixture.cancel_calls, 4);
+    json_free(&result);
+    json_free(&capability);
+
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.now = (struct vcs_zcode_dht_time){.wall_unix = 1500,
+                                              .monotonic_s = 2000};
+    fixture.generation = 8;
+    fixture.fail_begin_call = 2;
+    replication_backend_install(&fixture);
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_begin",
+                           &begin_input, &result));
+    ASSERT(!replication_json_bool(&result, "ok", true));
+    ASSERT_EQ(fixture.cancel_calls, 1);
+    json_free(&result);
+
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.now = (struct vcs_zcode_dht_time){.wall_unix = 1500,
+                                              .monotonic_s = 3000};
+    fixture.generation = 9;
+    fixture.mismatch_second_generation = true;
+    replication_backend_install(&fixture);
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_begin",
+                           &begin_input, &result));
+    ASSERT(!replication_json_bool(&result, "ok", true));
+    ASSERT_EQ(fixture.cancel_calls, 2);
+    json_free(&result);
+
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.now = (struct vcs_zcode_dht_time){.wall_unix = 1500,
+                                              .monotonic_s = 4000};
+    fixture.generation = 10;
+    fixture.interrupt_poll_call = 1;
+    replication_backend_install(&fixture);
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_begin",
+                           &begin_input, &result));
+    (void)snprintf(lookup, sizeof(lookup), "%s",
+                   json_get_str(json_get(&result, "lookup_id")));
+    (void)snprintf(owner, sizeof(owner), "%s",
+                   json_get_str(json_get(&result, "owner_token")));
+    json_free(&result);
+    json_init(&capability);
+    replication_capability_input(&capability, lookup, owner);
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_poll",
+                           &capability, &result));
+    ASSERT(!replication_json_bool(&result, "ok", true));
+    ASSERT_STR_EQ(json_get_str(json_get(&result, "code")),
+                  "LOOKUP_INTERRUPTED");
+    ASSERT_EQ(fixture.cancel_calls, 2);
+    json_free(&result);
+    json_free(&capability);
+
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.now = (struct vcs_zcode_dht_time){.wall_unix = 1500,
+                                              .monotonic_s = 5000};
+    fixture.generation = 11;
+    fixture.terminal = true;
+    fixture.truncate_provider = true;
+    replication_backend_install(&fixture);
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_begin",
+                           &begin_input, &result));
+    (void)snprintf(lookup, sizeof(lookup), "%s",
+                   json_get_str(json_get(&result, "lookup_id")));
+    (void)snprintf(owner, sizeof(owner), "%s",
+                   json_get_str(json_get(&result, "owner_token")));
+    json_free(&result);
+    json_init(&capability);
+    replication_capability_input(&capability, lookup, owner);
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_poll",
+                           &capability, &result));
+    ASSERT_STR_EQ(json_get_str(json_get(&result, "state")), "complete");
+    ASSERT(replication_json_bool(&result, "partial", false));
+    ASSERT(replication_json_bool(&result, "provider_discovery_truncated",
+                                 false));
+    ASSERT(!replication_json_bool(&result, "provider_evidence_complete",
+                                  true));
+    ASSERT(!replication_json_bool(&result, "durable", true));
+    json_free(&result);
+    fixture.now.monotonic_s += 29;
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_poll",
+                           &capability, &result));
+    ASSERT_STR_EQ(json_get_str(json_get(&result, "state")), "complete");
+    json_free(&result);
+    fixture.now.monotonic_s += 2;
+    boot_zcode_dht_replication_public_tick(fixture.now.monotonic_s);
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_poll",
+                           &capability, &result));
+    ASSERT(!replication_json_bool(&result, "ok", true));
+    ASSERT_STR_EQ(json_get_str(json_get(&result, "code")), "LOOKUP_UNKNOWN");
+    json_free(&result);
+    json_free(&capability);
+
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.now = (struct vcs_zcode_dht_time){.wall_unix = 1500,
+                                              .monotonic_s = 6000};
+    fixture.generation = 12;
+    replication_backend_install(&fixture);
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_begin",
+                           &begin_input, &result));
+    (void)snprintf(lookup, sizeof(lookup), "%s",
+                   json_get_str(json_get(&result, "lookup_id")));
+    (void)snprintf(owner, sizeof(owner), "%s",
+                   json_get_str(json_get(&result, "owner_token")));
+    json_free(&result);
+    fixture.now.monotonic_s += 1000;
+    boot_zcode_dht_replication_public_tick(fixture.now.monotonic_s);
+    ASSERT_EQ(fixture.cancel_calls, 2);
+    json_init(&capability);
+    replication_capability_input(&capability, lookup, owner);
+    ASSERT(replication_rpc(&table, "zcode_dht_replication_poll",
+                           &capability, &result));
+    ASSERT_STR_EQ(json_get_str(json_get(&result, "code")), "LOOKUP_UNKNOWN");
+    json_free(&result);
+    json_free(&capability);
+    json_free(&begin_input);
+    boot_zcode_dht_replication_test_set_backend(NULL);
+    PASS();
+  }
+  _test_next:;
+  boot_zcode_dht_replication_test_set_backend(NULL);
+  return failures;
+}
+#endif
 
 int test_zcode_dht_record(void)
 {
@@ -533,6 +911,9 @@ int test_zcode_dht_record(void)
   failures += test_record_store_sequence_and_expiry();
   failures += test_record_store_caps();
   failures += test_declared_replication();
+#ifdef ZCL_TESTING
+  failures += test_replication_public_lifecycle();
+#endif
   printf("=== zcode_dht_record: %d failures ===\n", failures);
   return failures;
 }

@@ -1628,17 +1628,17 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_READ(
     "zcode.network.replication", "zcode.network", "", "Inspect declared replication",
-    "Evaluates active signed PROVIDER hints and STORAGE_ACKs for one transport "
-    "root. The bounded target is eight providers. durable becomes true only "
-    "with five live ACKs from distinct provider IDs across three declared "
-    "owner groups; the reply explicitly does not claim separate operators.",
-    4096, "zcode,network,replication,durable,storage-ack,declared-diversity",
+    "Composes owner-bound iterative PROVIDER and STORAGE_ACK discovery across "
+    "all bounded pages. Reports signed hints, currently authenticated providers, "
+    "live remote claims, locally revalidated local ACKs, conflicts and partial "
+    "or local-cache-only evidence. Owner groups never prove separate operators.",
+    65536, "zcode,network,replication,durable,storage-ack,declared-diversity,async",
     "zcl.zcode_network_replication.input.v1",
     "zcl.zcode_network_replication.v1", "namespace,transport_root",
     "namespace,transport_root",
     "zclassic23 zcode network replication --input='{\"namespace\":\"science\",\"transport_root\":\"<64hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
-    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE,
