@@ -116,6 +116,8 @@ enum service_publication_phase {
 
 struct service_publication {
   bool used, possession_current;
+  bool renewal_proof_required, renewal_proof_ready;
+  uint64_t possession_proof_epoch;
   enum service_publication_phase phase;
   struct vcs_zcode_dht_record record;
   uint64_t lifetime_s, lookup_id, next_attempt_wall, backoff_s;
@@ -175,6 +177,7 @@ struct vcs_zcode_dht_service {
   struct vcs_zcode_dht_record_store *record_store;
   uint32_t outbound_count;
   uint64_t serial, next_lookup_id, next_record_operation_id;
+  uint64_t next_possession_proof_epoch;
   uint64_t next_record_discovery_id;
   bool records_dirty;
   bool publication_intents_dirty;

@@ -218,6 +218,13 @@ bool vcs_zcode_dht_publications_load(struct vcs_zcode_dht_service *service,
       return false;
     }
     loaded[i].used = true;
+    if (loaded[i].record.kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK) {
+      service->next_possession_proof_epoch++;
+      if (!service->next_possession_proof_epoch)
+        service->next_possession_proof_epoch++;
+      loaded[i].possession_proof_epoch =
+          service->next_possession_proof_epoch;
+    }
     loaded[i].lifetime_s = lifetime;
     loaded[i].backoff_s = 30;
     loaded[i].phase = SERVICE_PUBLICATION_NEEDS_LOOKUP;

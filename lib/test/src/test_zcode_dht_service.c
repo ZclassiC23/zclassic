@@ -61,19 +61,25 @@ static bool fixture_identity(const char *dir, uint8_t byte,
   return ok;
 }
 
-static struct vcs_zcode_dht_service *fixture_service(const char *dir,
-                                                     const uint8_t genesis[32],
-                                                     const uint8_t noise[32]) {
+static struct vcs_zcode_dht_service *fixture_service_at(
+    const char *dir, const uint8_t genesis[32], const uint8_t noise[32],
+    uint64_t now_unix) {
   struct vcs_zcode_dht_service_params p = {
       .datadir = dir,
       .transport_enabled = true,
-      .now = {.wall_unix = 1000, .monotonic_s = 1000},
+      .now = {.wall_unix = now_unix, .monotonic_s = now_unix},
       .chain_verify = chain_ok,
       .policy_decide = policy_allow,
   };
   memcpy(p.network_genesis, genesis, 32);
   memcpy(p.local_noise_static, noise, 32);
   return vcs_zcode_dht_service_create(&p);
+}
+
+static struct vcs_zcode_dht_service *fixture_service(const char *dir,
+                                                     const uint8_t genesis[32],
+                                                     const uint8_t noise[32]) {
+  return fixture_service_at(dir, genesis, noise, 1000);
 }
 
 static bool fixture_material(const char *dir,
@@ -674,6 +680,40 @@ static int test_record_transport_and_restart(void) {
                   a, ack_store, &ack_spec, ack_token, test_time(1004),
                   &ack_record),
               VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    struct vcs_zcode_dht_storage_ack_proof_request proof_request;
+    ASSERT_EQ(vcs_zcode_dht_service_storage_ack_proof_requests(
+                  a, test_time(1500), &proof_request, 1),
+              1);
+    ASSERT(!proof_request.fresh_required);
+    uint64_t pre_renew_proof_epoch = proof_request.proof_epoch;
+    ASSERT_EQ(vcs_zcode_dht_service_storage_ack_proof_requests(
+                  a, test_time(1800), &proof_request, 1),
+              1);
+    ASSERT(proof_request.fresh_required);
+    vcs_zcode_dht_service_tick(a, test_time(1800));
+    struct vcs_zcode_dht_record_selector renewal_selector = {
+        .kind = VCS_ZCODE_DHT_RECORD_STORAGE_ACK};
+    (void)snprintf(renewal_selector.namespace_name,
+                   sizeof(renewal_selector.namespace_name), "science");
+    memcpy(renewal_selector.root, ack_root, 32);
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  a, 1800, &renewal_selector, local, 1),
+              1);
+    ASSERT_EQ(local[0].sequence, 1);
+    vcs_zcode_dht_service_storage_ack_validation(
+        a, ack_root, pre_renew_proof_epoch, true, test_time(1800));
+    vcs_zcode_dht_service_tick(a, test_time(1800));
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  a, 1800, &renewal_selector, local, 1),
+              1);
+    ASSERT_EQ(local[0].sequence, 1);
+    vcs_zcode_dht_service_storage_ack_validation(
+        a, ack_root, proof_request.proof_epoch, true, test_time(1800));
+    vcs_zcode_dht_service_tick(a, test_time(1800));
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  a, 1800, &renewal_selector, local, 1),
+              1);
+    ASSERT_EQ(local[0].sequence, 2);
     uint8_t ack_chunk_hash[32];
     char ack_chunk_hex[65], ack_chunk_path[512];
     ASSERT(vcs_package_chunk_hash(ack_bytes, sizeof(ack_bytes),
@@ -685,10 +725,11 @@ static int test_record_transport_and_restart(void) {
     ASSERT(ack_path_len > 0 && (size_t)ack_path_len < sizeof(ack_chunk_path));
     ASSERT(unlink(ack_chunk_path) == 0);
     ASSERT(!vcs_package_store_verify_possession(ack_store, ack_root, true));
-    vcs_zcode_dht_service_storage_ack_validation(a, ack_root, false);
+    vcs_zcode_dht_service_storage_ack_validation(
+        a, ack_root, proof_request.proof_epoch, false, test_time(1800));
 
-    vcs_zcode_dht_service_free(a, test_time(1004));
-    a = fixture_service(adir, genesis, anoise);
+    vcs_zcode_dht_service_free(a, test_time(1800));
+    a = fixture_service_at(adir, genesis, anoise, 1800);
     ASSERT(a != NULL);
     struct vcs_zcode_dht_service_status publication_status;
     vcs_zcode_dht_service_status(a, &publication_status);
@@ -711,7 +752,7 @@ static int test_record_transport_and_restart(void) {
     ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
                   a, 1800, &ack_selector, local, 1),
               1);
-    ASSERT_EQ(local[0].sequence, 1);
+    ASSERT_EQ(local[0].sequence, 2);
     vcs_package_store_close(ack_store);
     test_rm_rf_recursive(ack_dir);
     vcs_zcode_dht_service_free(a, test_time(1800));

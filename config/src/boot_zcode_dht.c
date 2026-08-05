@@ -5,7 +5,9 @@
 
 #include "base/hex.h"
 #include "config/boot_internal.h"
+#include "config/boot_zcode_dht_access.h"
 #include "config/boot_zcode_dht_chain.h"
+#include "config/boot_zcode_dht_possession.h"
 #include "config/boot_zcode_dht_reachability.h"
 #include "base/safe_alloc.h"
 #include "net/connman.h"
@@ -169,7 +171,6 @@ static void dht_status_json_locked(struct json_value *out) {
                    (int64_t)status.persistence_save_count);
   json_push_kv_str(out, "last_error", status.last_error);
 }
-
 static void dht_lock(void) {
   if (atomic_load_explicit(&g_dht_lock_state, memory_order_acquire) != 2) {
     int expected = 0;
@@ -185,7 +186,32 @@ static void dht_lock(void) {
   }
   zcl_mutex_lock(&g_dht_lock);
 }
-
+bool boot_zcode_dht_service_apply(boot_zcode_dht_service_apply_fn apply,
+                                  void *context) {
+  if (!apply)
+    return false;
+  dht_lock();
+  bool available = g_dht != NULL;
+  if (available)
+    apply(g_dht, context);
+  zcl_mutex_unlock(&g_dht_lock);
+  return available;
+}
+struct dht_ack_apply_context {
+  struct vcs_zcode_dht_service *service;
+  uint64_t generation;
+  struct vcs_zcode_dht_time now;
+};
+static void dht_ack_apply(void *opaque, const uint8_t root[32],
+                          uint64_t proof_epoch, bool valid) {
+  struct dht_ack_apply_context *context = opaque;
+  dht_lock();
+  if (g_dht == context->service &&
+      g_dht_generation == context->generation)
+    vcs_zcode_dht_service_storage_ack_validation(
+        g_dht, root, proof_epoch, valid, context->now);
+  zcl_mutex_unlock(&g_dht_lock);
+}
 bool boot_zcode_dht_network_genesis(uint8_t out[32]) {
   if (!out)
     return false;
@@ -196,7 +222,6 @@ bool boot_zcode_dht_network_genesis(uint8_t out[32]) {
   zcl_mutex_unlock(&g_dht_lock);
   return available;
 }
-
 bool boot_zcode_dht_beacon_matches(const struct block_index *header_tip,
                                    uint32_t beacon_height,
                                    const uint8_t beacon_hash[32],
@@ -215,12 +240,10 @@ bool boot_zcode_dht_beacon_matches(const struct block_index *header_tip,
          beacon->nHeight == (int)beacon_height &&
          memcmp(beacon->phashBlock->data, beacon_hash, 32) == 0;
 }
-
 static bool dht_chain_verify_external(
     void *ctx, const struct vcs_zcode_dht_delegation *delegation) {
   return boot_zcode_dht_chain_authorize(ctx, delegation);
 }
-
 static struct vcs_zcode_dht_service *dht_create(
     struct msg_processor *mp, struct boot_svc_ctx *svc,
     struct vcs_zcode_dht_time now) {
@@ -245,7 +268,6 @@ static struct vcs_zcode_dht_service *dht_create(
         created, boot_zcode_dht_chain_cached, NULL);
   return created;
 }
-
 static void dht_ensure_periodic(struct msg_processor *mp,
                                 struct boot_svc_ctx *svc,
                                 struct vcs_zcode_dht_time now) {
@@ -283,7 +305,6 @@ static void dht_ensure_periodic(struct msg_processor *mp,
   if (created)
     vcs_zcode_dht_service_free(created, now);
 }
-
 static bool dht_snapshot(struct p2p_node *node,
                          struct vcs_zcode_dht_session *out) {
   memset(out, 0, sizeof(*out));
@@ -298,7 +319,6 @@ static bool dht_snapshot(struct p2p_node *node,
   memcpy(out->transcript_hash, snapshot.transcript_hash, 32);
   return out->established;
 }
-
 static enum peer_offence dht_offence(enum vcs_zcode_dht_reject_reason reason) {
   if (reason == VCS_ZCODE_DHT_REJECT_RATE || reason == VCS_ZCODE_DHT_REJECT_CAP)
     return PEER_OFFENCE_FLOOD;
@@ -306,7 +326,6 @@ static enum peer_offence dht_offence(enum vcs_zcode_dht_reject_reason reason) {
     return PEER_OFFENCE_UNREQUESTED;
   return PEER_OFFENCE_INVALID_PAYLOAD;
 }
-
 static void dht_send(struct msg_processor *mp, struct p2p_node *node,
                      const uint8_t *wire, size_t wire_len) {
   if (!p2p_node_begin_message(node, "zpkgswm", mp->params->pchMessageStart)) {
@@ -319,7 +338,6 @@ static void dht_send(struct msg_processor *mp, struct p2p_node *node,
     LOG_ERROR("net.zcode_dht", "end_message failed for peer %lld",
               (long long)node->id);
 }
-
 static size_t dht_flush_node(struct msg_processor *mp, struct p2p_node *node) {
   uint8_t wire[VCS_ZCODE_DHT_MAX_FRAME_BYTES];
   uint64_t peer = 0;
@@ -338,7 +356,6 @@ static size_t dht_flush_node(struct msg_processor *mp, struct p2p_node *node) {
   }
   return sent;
 }
-
 static void dht_authorize_frame_chain(
     struct boot_svc_ctx *svc, const uint8_t genesis[32],
     const struct vcs_zcode_dht_session *session, const uint8_t *wire,
@@ -389,7 +406,6 @@ static void dht_authorize_frame_chain(
     (void)boot_zcode_dht_chain_authorize(
         svc, &message.store_record.record.delegation);
 }
-
 static bool dht_chain_prepare(struct boot_svc_ctx *svc) {
   if (boot_zcode_dht_chain_epoch_current())
     return true;
@@ -500,11 +516,8 @@ void boot_zcode_dht_periodic(struct msg_processor *mp,
   if (dht)
     (void)dht_chain_prepare(svc);
 
-  /* Full-byte possession checks may read every package chunk. Snapshot the
-   * roots under the DHT lock, prove them with no composition-root lock held,
-   * then apply only if the service generation is unchanged. */
-  uint8_t ack_roots[VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS][32];
-  bool ack_valid[VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS] = {0};
+  struct vcs_zcode_dht_storage_ack_proof_request ack_requests[
+      VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS];
   size_t ack_count = 0;
   uint64_t ack_generation = 0;
   struct vcs_zcode_dht_service *ack_service = NULL;
@@ -512,15 +525,16 @@ void boot_zcode_dht_periodic(struct msg_processor *mp,
   if (g_dht) {
     ack_service = g_dht;
     ack_generation = g_dht_generation;
-    ack_count = vcs_zcode_dht_service_storage_ack_roots(
-        g_dht, ack_roots, VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS);
+    ack_count = vcs_zcode_dht_service_storage_ack_proof_requests(
+        g_dht, now, ack_requests, VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS);
   }
   zcl_mutex_unlock(&g_dht_lock);
   struct vcs_package_store *package_store = vcs_package_store_global();
-  for (size_t i = 0; i < ack_count; i++)
-    ack_valid[i] = vcs_package_store_verify_possession(
-        package_store, ack_roots[i], true);
-
+  struct dht_ack_apply_context ack_context = {
+      ack_service, ack_generation, now};
+  (void)boot_zcode_dht_possession_cycle(
+      package_store, ack_requests, ack_count, now.monotonic_s,
+      dht_ack_apply, &ack_context);
   struct vcs_zcode_dht_peer_view cold[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
   size_t cold_count = 0;
   struct vcs_zcode_dht_persistence_snapshot *save_snapshot = NULL;
@@ -532,10 +546,6 @@ void boot_zcode_dht_periodic(struct msg_processor *mp,
     session_ready[i] = dht_snapshot(nodes[i], &sessions[i]);
   dht_lock();
   dht = g_dht;
-  if (dht == ack_service && g_dht_generation == ack_generation)
-    for (size_t i = 0; i < ack_count; i++)
-      vcs_zcode_dht_service_storage_ack_validation(
-          dht, ack_roots[i], ack_valid[i]);
   struct vcs_zcode_dht_live_session live[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
   size_t live_count = 0;
   for (size_t i = 0; dht && i < count; i++) {
@@ -738,35 +748,6 @@ enum vcs_zcode_dht_record_store_result boot_zcode_dht_record_publish_commit(
   return result;
 }
 
-bool boot_zcode_dht_storage_ack_plan(
-    const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
-    struct vcs_zcode_dht_record *record_out) {
-  struct vcs_package_store *store = vcs_package_store_global();
-  if (!spec || !vcs_package_store_verify_possession(
-                   store, spec->transport_root, true))
-    return false;
-  dht_lock();
-  bool ok = g_dht && vcs_zcode_dht_storage_ack_plan_verified(
-                         g_dht, spec, plan_token, record_out);
-  zcl_mutex_unlock(&g_dht_lock);
-  return ok;
-}
-enum vcs_zcode_dht_record_store_result boot_zcode_dht_storage_ack_commit(
-    const struct vcs_zcode_dht_publish_spec *spec,
-    const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
-    struct vcs_zcode_dht_record *record_out) {
-  struct vcs_package_store *store = vcs_package_store_global();
-  if (!spec || !vcs_package_store_verify_possession(
-                   store, spec->transport_root, true))
-    return VCS_ZCODE_DHT_RECORD_STORE_INVALID;
-  dht_lock();
-  enum vcs_zcode_dht_record_store_result result =
-      g_dht ? vcs_zcode_dht_storage_ack_commit_verified(
-                  g_dht, spec, plan_token, now, record_out)
-            : VCS_ZCODE_DHT_RECORD_STORE_INVALID;
-  zcl_mutex_unlock(&g_dht_lock);
-  return result;
-}
 bool boot_zcode_dht_dump_state_json(struct json_value *out, const char *key) {
   if (!out)
     return false;
@@ -778,6 +759,8 @@ bool boot_zcode_dht_dump_state_json(struct json_value *out, const char *key) {
   dht_lock();
   dht_status_json_locked(out);
   zcl_mutex_unlock(&g_dht_lock);
+  boot_zcode_dht_possession_append_json(
+      out, (uint64_t)(platform_time_monotonic_ms() / 1000));
   return true;
 }
 
@@ -797,4 +780,5 @@ void boot_zcode_dht_shutdown(void) {
     vcs_zcode_dht_service_free(retired, dht_now());
   boot_zcode_dht_reachability_reset();
   boot_zcode_dht_chain_reset();
+  boot_zcode_dht_possession_reset();
 }

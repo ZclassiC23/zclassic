@@ -392,12 +392,17 @@ vcs_zcode_dht_storage_ack_commit_verified(
 /* Snapshot/apply the proof state around a composition-root lock. The caller
  * performs the full package-store byte proof with no DHT lock held, then
  * applies the result before the scheduler is driven. */
-size_t vcs_zcode_dht_service_storage_ack_roots(
-    const struct vcs_zcode_dht_service *service, uint8_t (*out)[32],
-    size_t max);
+struct vcs_zcode_dht_storage_ack_proof_request {
+  uint8_t transport_root[32];
+  bool fresh_required;
+  uint64_t proof_epoch;
+};
+size_t vcs_zcode_dht_service_storage_ack_proof_requests(
+    struct vcs_zcode_dht_service *service, struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_storage_ack_proof_request *out, size_t max);
 void vcs_zcode_dht_service_storage_ack_validation(
     struct vcs_zcode_dht_service *service, const uint8_t transport_root[32],
-    bool valid);
+    uint64_t proof_epoch, bool valid, struct vcs_zcode_dht_time now);
 
 /* Composition-root lock audit helpers. The snapshot is fixed-size and
  * allocation-free; callbacks may be replaced after boot-time persistence was

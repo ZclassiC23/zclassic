@@ -12,6 +12,21 @@
 #define PUBLICATION_RETRY_MAX_S 3600u
 #define PUBLICATION_RENEW_FLOOR_S 60u
 
+static uint64_t publication_renew_at(
+    const struct service_publication *publication);
+static void publication_drive(struct vcs_zcode_dht_service *service,
+                              struct service_publication *publication,
+                              struct vcs_zcode_dht_time now);
+
+static uint64_t publication_next_proof_epoch(
+    struct vcs_zcode_dht_service *service)
+{
+  service->next_possession_proof_epoch++;
+  if (!service->next_possession_proof_epoch)
+    service->next_possession_proof_epoch++;
+  return service->next_possession_proof_epoch;
+}
+
 static uint64_t publication_max_window(enum vcs_zcode_dht_record_kind kind)
 {
   if (kind == VCS_ZCODE_DHT_RECORD_PROVIDER)
@@ -142,22 +157,43 @@ bool vcs_zcode_dht_storage_ack_plan_verified(
   return publication_build(service, spec, record_out, plan_token, true);
 }
 
+struct storage_ack_plan_apply {
+  struct vcs_zcode_dht_service *service;
+  const struct vcs_zcode_dht_publish_spec *spec;
+  uint8_t *plan_token;
+  struct vcs_zcode_dht_record *record_out;
+  bool ok;
+};
+
+static void storage_ack_plan_apply(void *opaque, bool current)
+{
+  struct storage_ack_plan_apply *apply = opaque;
+  if (current)
+    apply->ok = vcs_zcode_dht_storage_ack_plan_verified(
+        apply->service, apply->spec, apply->plan_token, apply->record_out);
+}
+
 bool vcs_zcode_dht_service_storage_ack_plan(
     struct vcs_zcode_dht_service *service,
     struct vcs_package_store *package_store,
     const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
     struct vcs_zcode_dht_record *record_out)
 {
+  struct vcs_package_possession_receipt receipt;
   if (!spec || spec->kind != VCS_ZCODE_DHT_RECORD_STORAGE_ACK ||
-      !vcs_package_store_verify_possession(
-          package_store, spec->transport_root, true))
+      !vcs_package_store_verify_possession_receipt(
+          package_store, spec->transport_root, true, &receipt))
     return false;
   if (plan_token)
     memset(plan_token, 0, 32);
   if (record_out)
     memset(record_out, 0, sizeof(*record_out));
-  return vcs_zcode_dht_storage_ack_plan_verified(
-      service, spec, plan_token, record_out);
+  struct storage_ack_plan_apply apply = {
+      service, spec, plan_token, record_out, false};
+  vcs_package_store_possession_apply_if_current(
+      package_store, spec->transport_root, receipt.mutation_generation,
+      true, storage_ack_plan_apply, &apply);
+  return apply.ok;
 }
 
 enum vcs_zcode_dht_record_store_result
@@ -191,6 +227,9 @@ vcs_zcode_dht_storage_ack_commit_verified(
     memset(publication, 0, sizeof(*publication));
     publication->used = true;
     publication->possession_current = true;
+    publication->renewal_proof_ready = false;
+    publication->possession_proof_epoch =
+        publication_next_proof_epoch(service);
     publication->record = record;
     publication->lifetime_s = record.expiry - record.not_before;
     publication->backoff_s = PUBLICATION_RETRY_MIN_S;
@@ -198,6 +237,24 @@ vcs_zcode_dht_storage_ack_commit_verified(
     vcs_zcode_dht_service_publication_schedule(service, now);
   }
   return result;
+}
+
+struct storage_ack_commit_apply {
+  struct vcs_zcode_dht_service *service;
+  const struct vcs_zcode_dht_publish_spec *spec;
+  const uint8_t *plan_token;
+  struct vcs_zcode_dht_time now;
+  struct vcs_zcode_dht_record *record_out;
+  enum vcs_zcode_dht_record_store_result result;
+};
+
+static void storage_ack_commit_apply(void *opaque, bool current)
+{
+  struct storage_ack_commit_apply *apply = opaque;
+  if (current)
+    apply->result = vcs_zcode_dht_storage_ack_commit_verified(
+        apply->service, apply->spec, apply->plan_token, apply->now,
+        apply->record_out);
 }
 
 enum vcs_zcode_dht_record_store_result
@@ -208,16 +265,22 @@ vcs_zcode_dht_service_storage_ack_commit(
     const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
     struct vcs_zcode_dht_record *record_out)
 {
-  if (!spec || !vcs_package_store_verify_possession(
-                   package_store, spec->transport_root, true))
+  struct vcs_package_possession_receipt receipt;
+  if (!spec || !vcs_package_store_verify_possession_receipt(
+                   package_store, spec->transport_root, true, &receipt))
     return VCS_ZCODE_DHT_RECORD_STORE_INVALID;
-  return vcs_zcode_dht_storage_ack_commit_verified(
-      service, spec, plan_token, now, record_out);
+  struct storage_ack_commit_apply apply = {
+      service, spec, plan_token, now, record_out,
+      VCS_ZCODE_DHT_RECORD_STORE_INVALID};
+  vcs_package_store_possession_apply_if_current(
+      package_store, spec->transport_root, receipt.mutation_generation,
+      true, storage_ack_commit_apply, &apply);
+  return apply.result;
 }
 
-size_t vcs_zcode_dht_service_storage_ack_roots(
-    const struct vcs_zcode_dht_service *service, uint8_t (*out)[32],
-    size_t max)
+size_t vcs_zcode_dht_service_storage_ack_proof_requests(
+    struct vcs_zcode_dht_service *service, struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_storage_ack_proof_request *out, size_t max)
 {
   if (!service || !out || !max)
     return 0;
@@ -226,15 +289,33 @@ size_t vcs_zcode_dht_service_storage_ack_roots(
        i < VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS && count < max; i++)
     if (service->publications[i].used &&
         service->publications[i].record.kind ==
-            VCS_ZCODE_DHT_RECORD_STORAGE_ACK)
-      memcpy(out[count++], service->publications[i].record.transport_root,
-             32);
+            VCS_ZCODE_DHT_RECORD_STORAGE_ACK) {
+      struct service_publication *publication = &service->publications[i];
+      if (!publication->possession_proof_epoch)
+        publication->possession_proof_epoch =
+            publication_next_proof_epoch(service);
+      if (now.wall_unix >= publication_renew_at(publication) &&
+          !publication->renewal_proof_ready) {
+        if (!publication->renewal_proof_required)
+          publication->possession_proof_epoch =
+              publication_next_proof_epoch(service);
+        publication->renewal_proof_required = true;
+        publication->possession_current = false;
+      }
+      memcpy(out[count].transport_root,
+             publication->record.transport_root, 32);
+      out[count].fresh_required =
+          publication->renewal_proof_required ||
+          !publication->possession_current;
+      out[count].proof_epoch = publication->possession_proof_epoch;
+      count++;
+    }
   return count;
 }
 
 void vcs_zcode_dht_service_storage_ack_validation(
     struct vcs_zcode_dht_service *service, const uint8_t transport_root[32],
-    bool valid)
+    uint64_t proof_epoch, bool valid, struct vcs_zcode_dht_time now)
 {
   if (!service || !transport_root)
     return;
@@ -242,8 +323,15 @@ void vcs_zcode_dht_service_storage_ack_validation(
     struct service_publication *publication = &service->publications[i];
     if (publication->used &&
         publication->record.kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK &&
-        memcmp(publication->record.transport_root, transport_root, 32) == 0)
+        memcmp(publication->record.transport_root, transport_root, 32) == 0 &&
+        publication->possession_proof_epoch == proof_epoch) {
       publication->possession_current = valid;
+      if (!valid)
+        publication->renewal_proof_ready = false;
+      if (valid && publication->renewal_proof_required)
+        publication->renewal_proof_ready = true;
+      publication_drive(service, publication, now);
+    }
   }
 }
 
@@ -321,6 +409,8 @@ static bool publication_renew(struct vcs_zcode_dht_service *service,
   publication->lifetime_s = window;
   publication->next_attempt_wall = 0;
   publication->backoff_s = PUBLICATION_RETRY_MIN_S;
+  publication->renewal_proof_required = false;
+  publication->renewal_proof_ready = false;
   publication_reset_cycle(publication);
   publication_mark_dirty(service, now.monotonic_s);
   return true;
@@ -427,6 +517,15 @@ static void publication_drive(struct vcs_zcode_dht_service *service,
                               struct service_publication *publication,
                               struct vcs_zcode_dht_time now)
 {
+  uint64_t renew_at = publication_renew_at(publication);
+  if (publication->record.kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK &&
+      now.wall_unix >= renew_at && !publication->renewal_proof_ready) {
+    if (!publication->renewal_proof_required)
+      publication->possession_proof_epoch =
+          publication_next_proof_epoch(service);
+    publication->renewal_proof_required = true;
+    publication->possession_current = false;
+  }
   if (publication->record.kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK &&
       !publication->possession_current) {
     publication_cancel_active(service, publication);
@@ -437,7 +536,6 @@ static void publication_drive(struct vcs_zcode_dht_service *service,
     publication_cancel_active(service, publication);
     return;
   }
-  uint64_t renew_at = publication_renew_at(publication);
   if (now.wall_unix >= renew_at &&
       publication->phase != SERVICE_PUBLICATION_WAITING) {
     publication_cancel_active(service, publication);

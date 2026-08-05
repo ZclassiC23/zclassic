@@ -131,3 +131,43 @@ Each phase appends its born-red witness, commit, focused verdicts and any
 remaining limitation here. Completion requires every bullet above to have
 direct test or artifact evidence; a broad green suite cannot substitute for a
 missing phase-specific proof.
+
+### Phase 1 — banked
+
+- Baseline witness: `config/src/boot_zcode_dht.c` at base
+  `f5b63718e` called `vcs_package_store_verify_possession()` for every
+  published ACK on every ordinary periodic pass. The first executable focused
+  run was initially blocked before the test body by missing host presentation
+  headers (`Xrandr.h`, then its development-header dependencies); no product
+  failure is being claimed from that infrastructure stop.
+- The package store now publishes a monotonic per-package mutation generation.
+  A proof snapshots generation/manifest/pin/completeness under the store lock,
+  hashes bounded chunks outside it, rejects symlinks and re-stats every
+  verified CAS object, and records success only under a final
+  same-generation/state check. Store-mediated plan, commit and renewal signing
+  remain inside that final store-to-DHT critical section.
+- The fair scheduler admits at most 64 watched roots and spends exactly one
+  package, one chunk and 1 MiB per composition cycle. Reconcile performs no
+  package scan; selected-root and cached-proof checks use O(1) committed,
+  generation and pin snapshots. Unchanged proofs remain cached until the
+  six-hour monotonic scrub deadline; generation/pin/state drift queues only the
+  changed root. ACK plan and commit still call the full synchronous proof.
+  Restart and renewal make the publication fail closed until a fresh scheduled
+  proof completes. A service-global proof token binds each request to exactly
+  one publication state, including same-root concurrent publications.
+- Diagnostics expose root hashes, proof age, queued/tracked counts, byte and
+  failure totals, failure class and next monotonic due time. They expose no
+  path or local policy contents.
+- Focused receipts (cold): `test_zcode_store` 1/1 PASS and
+  `test_zcode_dht_service` 1/1 PASS. `make lint` PASS. `make -j16 build-only`
+  PASS (`epoch=c1d4af1c...`). Builds used a read-only `/tmp` extraction of the
+  missing XRandR/XRender/XInput/XFixes development headers via `CPATH`; neither
+  the repository nor system package database was modified.
+- Independent non-author review by `phase1_review` initially rejected five
+  concrete race/boundedness gaps. After fixes and repeated re-review its final
+  verdict was **BANKABLE**: store-mediated mutation serialization, lock order,
+  global proof-token freshness, failure retry, ordinary-pass boundedness and
+  diagnostics contention were all cleared. Direct operator writes to the
+  datadir after final observation remain outside the supported store-mediated
+  mutation boundary; an operator with that authority can invalidate any signed
+  claim immediately after signing.
