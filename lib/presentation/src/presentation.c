@@ -27,7 +27,17 @@
 #if defined(__linux__)
 #define RGFW_USE_XDL
 #define RGFW_NO_X11_CURSOR
+/* The presentation surface displays a software bitmap and never changes a
+ * monitor mode, reads XRandR DPI metadata, or captures raw-input deltas.
+ * Keep those optional X11 extensions out of the compile closure: ordinary
+ * node/test builds must not depend on host Xrandr/XInput2 development
+ * headers merely because a read-only popup exists. Core Xlib is loaded at
+ * runtime by the vendored XDL layer. */
+#define RGFW_NO_DPI
+#define RGFW_NO_XINPUT2
+#define RGFW_NO_X11_XI_PRELOAD
 #define XDL_NO_GLX
+#define XDL_NO_XRANDR
 #endif
 #include "../../../vendor/rgfw/RGFW.h"
 #if defined(__APPLE__) && defined(__clang__)

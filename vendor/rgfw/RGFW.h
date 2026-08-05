@@ -5106,7 +5106,9 @@ void RGFW_setXInstName(const char* name) { _RGFW->instName = name; }
 #include <X11/cursorfont.h> /* for hiding */
 #include <X11/extensions/shapeconst.h>
 #include <X11/extensions/shape.h>
+#ifndef RGFW_NO_XINPUT2
 #include <X11/extensions/XInput2.h>
+#endif
 
 #ifdef RGFW_OPENGL
 	#ifndef __gl_h_
@@ -5154,7 +5156,7 @@ void RGFW_setXInstName(const char* name) { _RGFW->instName = name; }
 		typedef Cursor(*PFN_XcursorImageLoadCursor)(Display*, const XcursorImage*);
 #endif
 
-#if !defined(RGFW_NO_X11_XI_PRELOAD)
+#if !defined(RGFW_NO_XINPUT2) && !defined(RGFW_NO_X11_XI_PRELOAD)
 		typedef int (* PFN_XISelectEvents)(Display*,Window,XIEventMask*,int);
 		PFN_XISelectEvents XISelectEventsSRC = NULL;
 		#define XISelectEvents XISelectEventsSRC
@@ -5299,6 +5301,7 @@ void RGFW_FUNC(RGFW_releaseCursor) (RGFW_window* win) {
 	RGFW_UNUSED(win);
 	XUngrabPointer(_RGFW->display, CurrentTime);
 
+	#ifndef RGFW_NO_XINPUT2
 	/* disable raw input */
 	unsigned char mask[] = { 0 };
 	XIEventMask em;
@@ -5307,9 +5310,11 @@ void RGFW_FUNC(RGFW_releaseCursor) (RGFW_window* win) {
 	em.mask = mask;
 
 	XISelectEvents(_RGFW->display, XDefaultRootWindow(_RGFW->display), &em, 1);
+	#endif
 }
 
 void RGFW_FUNC(RGFW_captureCursor) (RGFW_window* win) {
+	#ifndef RGFW_NO_XINPUT2
 	/* enable raw input */
 	unsigned char mask[XIMaskLen(XI_RawMotion)] = { 0 };
 	XISetMask(mask, XI_RawMotion);
@@ -5320,6 +5325,7 @@ void RGFW_FUNC(RGFW_captureCursor) (RGFW_window* win) {
 	em.mask = mask;
 
 	XISelectEvents(_RGFW->display, XDefaultRootWindow(_RGFW->display), &em, 1);
+	#endif
 
 	unsigned int event_mask = ButtonPressMask | ButtonReleaseMask | PointerMotionMask;
 	XGrabPointer(_RGFW->display, win->src.window, False, event_mask, GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
@@ -5594,6 +5600,7 @@ void RGFW_XHandleEvent(void) {
 		case SelectionRequest:
 			RGFW_XHandleClipboardSelection(&E);
 			return;
+		#ifndef RGFW_NO_XINPUT2
 		case GenericEvent: {
 			RGFW_window* win = _RGFW->mouseOwner;
 			if (win == NULL) return;
@@ -5641,6 +5648,7 @@ void RGFW_XHandleEvent(void) {
 				RGFW_eventQueuePush(&event);
 			return;
 		}
+		#endif
 	}
 
 	RGFW_window* win = NULL;
@@ -6717,7 +6725,7 @@ static float XGetSystemContentDPI(Display* display, i32 screen) {
 			XrmDestroyDatabase(db);
 		}
 	#else
-		dpi = RGFW_ROUND(DisplayWidth(display, screen) / (DisplayWidthMM(display, screen) / 25.4));
+		dpi = RGFW_ROUND(DisplayWidth(display, screen) / (DisplayWidthMM(display, screen) / 25.4f));
 	#endif
 
 	return dpi;
@@ -6834,6 +6842,11 @@ RGFW_monitor RGFW_FUNC(RGFW_getPrimaryMonitor)(void) {
 }
 
 RGFW_bool RGFW_FUNC(RGFW_monitor_requestMode)(RGFW_monitor mon, RGFW_monitorMode mode, RGFW_modeRequest request) {
+	#ifdef RGFW_NO_DPI
+	RGFW_UNUSED(mon);
+	RGFW_UNUSED(mode);
+	RGFW_UNUSED(request);
+	#endif
 	#ifndef RGFW_NO_DPI
     RGFW_init();
     XRRScreenConfiguration *conf = XRRGetScreenInfo(_RGFW->display, DefaultRootWindow(_RGFW->display));
@@ -7174,7 +7187,7 @@ i32 RGFW_initPlatform_X11(void) {
 		RGFW_PROC_DEF(X11Cursorhandle, XcursorImageLoadCursor);
 	#endif
 
-	#if !defined(RGFW_NO_X11_XI_PRELOAD)
+	#if !defined(RGFW_NO_XINPUT2) && !defined(RGFW_NO_X11_XI_PRELOAD)
 	#if defined(__CYGWIN__)
 			RGFW_LOAD_LIBRARY(X11Xihandle, "libXi-6.so");
 	#elif defined(__OpenBSD__) || defined(__NetBSD__)
@@ -7272,7 +7285,7 @@ void RGFW_deinitPlatform_X11(void) {
     #if !defined(RGFW_NO_X11_CURSOR_PRELOAD) && !defined(RGFW_NO_X11_CURSOR)
         RGFW_FREE_LIBRARY(X11Cursorhandle);
     #endif
-    #if !defined(RGFW_NO_X11_XI_PRELOAD)
+    #if !defined(RGFW_NO_XINPUT2) && !defined(RGFW_NO_X11_XI_PRELOAD)
         RGFW_FREE_LIBRARY(X11Xihandle);
     #endif
 

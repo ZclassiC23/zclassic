@@ -582,12 +582,14 @@ void XDL_init(void) {
     }
 #endif
 
+    #ifndef XDL_NO_XRANDR
     #if defined(__CYGWIN__)
         XDL_module[2] = dlopen("libXrandr-2.so", RTLD_LAZY | RTLD_LOCAL);
     #elif defined(__OpenBSD__) || defined(__NetBSD__)
         XDL_module[2] = dlopen("libXrandr.so", RTLD_LAZY | RTLD_LOCAL);
     #else
         XDL_module[2] = dlopen("libXrandr.so.2", RTLD_LAZY | RTLD_LOCAL);
+    #endif
     #endif
 
     /* loading the functions into the source vars */
