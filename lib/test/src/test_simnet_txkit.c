@@ -6,12 +6,18 @@
 #include "test/test_core.h"
 
 #include "crypto/sha256.h"
+#include "keys/key.h"
+#include "script/interpreter.h"
 #include "script/htlc.h"
+#include "script/script_error.h"
+#include "script/script_flags.h"
 #include "script/standard.h"
 #include "sim/seed_tape.h"
 #include "sim/simnet.h"
 #include "sim/simnet_mempool.h"
 #include "sim/simnet_wallet.h"
+#include "validation/sighash.h"
+#include "validation/tx_verifier.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -21,6 +27,8 @@
     if ((expr)) printf("OK\n");           \
     else { printf("FAIL\n"); failures++; } \
 } while (0)
+
+#define TXK_SAPLING_BRANCH_ID 0x76b809bbU
 
 struct txk_cost_row {
     const char *kind;
@@ -207,6 +215,94 @@ static bool txk_build_htlc_spend(struct transaction *tx,
     return txk_finalize_manual_fee(tx, input_value, out);
 }
 
+static bool txk_build_multisig_spend(
+    struct transaction *tx, const struct uint256 *fund_txid,
+    int64_t input_value, const struct script *to_script,
+    const struct script *redeem, const struct privkey keys[2],
+    struct simnet_tx_result *out, bool *tamper_rejected)
+{
+    if (!tx || !fund_txid || input_value <= 5000 || !to_script || !redeem ||
+        !keys || !out || !tamper_rejected)
+        return false;
+    transaction_init(tx);
+    if (!transaction_alloc(tx, 1, 1))
+        return false;
+    tx->overwintered = true;
+    tx->version = SAPLING_TX_VERSION;
+    tx->version_group_id = SAPLING_VERSION_GROUP_ID;
+    tx->vin[0].prevout.hash = *fund_txid;
+    tx->vin[0].prevout.n = 0;
+    tx->vin[0].sequence = UINT32_MAX;
+    tx->vout[0].value = input_value - 5000;
+    tx->vout[0].script_pub_key = *to_script;
+
+    struct precomputed_tx_data txdata;
+    precompute_tx_data(tx, &txdata);
+    struct sighash_type hash_type = { .raw = SIGHASH_ALL };
+    struct uint256 sighash;
+    if (!signature_hash(redeem, tx, 0, hash_type, input_value,
+                        TXK_SAPLING_BRANCH_ID, &txdata, &sighash)) {
+        transaction_free(tx);
+        return false;
+    }
+
+    struct script *script_sig = &tx->vin[0].script_sig;
+    script_init(script_sig);
+    script_sig->data[script_sig->size++] = OP_0;
+    for (size_t i = 0; i < 2; i++) {
+        unsigned char signature[SIGNATURE_SIZE + 1];
+        size_t signature_len = 0;
+        if (!privkey_sign(&keys[i], &sighash, signature, &signature_len)) {
+            transaction_free(tx);
+            return false;
+        }
+        signature[signature_len++] = SIGHASH_ALL;
+        if (!script_push_data(script_sig, signature, signature_len)) {
+            transaction_free(tx);
+            return false;
+        }
+    }
+    if (!script_push_data(script_sig, redeem->data, redeem->size)) {
+        transaction_free(tx);
+        return false;
+    }
+    transaction_compute_hash(tx);
+
+    struct script p2sh;
+    struct script_id sid;
+    script_id_from_script(&sid, redeem);
+    script_for_p2sh(&p2sh, &sid);
+    struct tx_sig_checker checker_ctx;
+    tx_sig_checker_init(&checker_ctx, tx, 0, input_value,
+                        TXK_SAPLING_BRANCH_ID, &txdata);
+    struct sig_checker checker = tx_make_sig_checker(&checker_ctx);
+    ScriptError script_error = SCRIPT_ERR_OK;
+    bool valid = verify_script(script_sig, &p2sh,
+                               SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC,
+                               &checker, TXK_SAPLING_BRANCH_ID,
+                               &script_error);
+    struct script tampered = *script_sig;
+    if (tampered.size > 10)
+        tampered.data[10] ^= 0x01;
+    script_error = SCRIPT_ERR_OK;
+    *tamper_rejected = !verify_script(
+        &tampered, &p2sh, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC,
+        &checker, TXK_SAPLING_BRANCH_ID, &script_error);
+    if (!valid || !*tamper_rejected) {
+        transaction_free(tx);
+        return false;
+    }
+
+    out->txid = tx->hash;
+    out->fee = 5000;
+    out->tx_size = transaction_serialize_size(tx);
+    out->input_value = input_value;
+    out->output_value = input_value - 5000;
+    out->change_value = 0;
+    out->change_vout = UINT32_MAX;
+    return out->tx_size > 0;
+}
+
 int test_simnet_txkit(void)
 {
     printf("\n=== simnet transaction toolkit ===\n");
@@ -279,6 +375,44 @@ int test_simnet_txkit(void)
     TXK_CHECK("multi-output fan-out mints",
               simnet_mempool_mint(&sim) &&
               simnet_wallet_balance(dave) == 40000);
+
+    struct privkey multisig_keys[2];
+    struct pubkey multisig_pubkeys[2];
+    privkey_make_new(&multisig_keys[0], true);
+    privkey_make_new(&multisig_keys[1], true);
+    bool multisig_keys_ready =
+        privkey_get_pubkey(&multisig_keys[0], &multisig_pubkeys[0]) &&
+        privkey_get_pubkey(&multisig_keys[1], &multisig_pubkeys[1]);
+    struct script multisig_redeem, multisig_p2sh;
+    struct script_id multisig_sid;
+    script_for_multisig(&multisig_redeem, 2, multisig_pubkeys, 2);
+    script_id_from_script(&multisig_sid, &multisig_redeem);
+    script_for_p2sh(&multisig_p2sh, &multisig_sid);
+
+    struct simnet_tx_result multisig_fund;
+    TXK_CHECK("fund 2-of-2 P2SH multisig and mint",
+              multisig_keys_ready &&
+              simnet_wallet_fund(alice, 250000, NULL) &&
+              simnet_wallet_send(alice, &multisig_p2sh, 150000,
+                                 &multisig_fund) &&
+              simnet_mempool_mint(&sim) &&
+              simnet_coin_value(&sim, &multisig_fund.txid, 0, NULL));
+    struct transaction multisig_spend;
+    struct simnet_tx_result multisig_spend_result;
+    bool multisig_tamper_rejected = false;
+    TXK_CHECK("2-of-2 spend passes consensus interpreter",
+              txk_build_multisig_spend(
+                  &multisig_spend, &multisig_fund.txid, 150000,
+                  simnet_wallet_script(bob), &multisig_redeem,
+                  multisig_keys, &multisig_spend_result,
+                  &multisig_tamper_rejected) &&
+              multisig_tamper_rejected);
+    TXK_CHECK("2-of-2 signed spend enqueues and mints",
+              simnet_mempool_add(&sim, &multisig_spend, NULL) &&
+              simnet_mempool_mint(&sim) &&
+              simnet_coin_value(&sim, &multisig_spend_result.txid, 0,
+                                NULL));
+    transaction_free(&multisig_spend);
 
     struct simnet_tx_result fund_d1;
     TXK_CHECK("fund alice for OP_RETURN",
