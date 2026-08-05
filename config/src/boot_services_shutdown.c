@@ -17,6 +17,7 @@
 #include "util/supervisor.h"
 #include "util/thread_registry.h"
 #include "util/log_macros.h"
+#include "health/heartbeat.h"
 #include "supervisors/self_heal.h"
 #include "supervisors/staged_sync_supervisor.h"
 #include "services/block_index_loader.h"
@@ -127,6 +128,13 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
 static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
 {
     printf("[shutdown] stopping runtime services\n");
+    /* The heartbeat sweeper owns periodic callbacks into runtime services,
+     * including node-health collection. It does not poll the registry's
+     * global shutdown flag because health_stop() is its explicit lifecycle
+     * boundary. Stop and join it while the supervisor and node DB are still
+     * live; otherwise a periodic health callback can race the DB close below
+     * and dereference closed runtime state. */
+    health_stop();
     /* Stop + join the self-heal condition runner FIRST, while main_state and
      * the progress store are still live: the runner dereferences both inside a
      * condition tick, so it must never outlive them (they are freed in

@@ -155,13 +155,19 @@ int t_boot_shutdown_persistence_order_contract(void)
                          "config/src/boot_services_shutdown.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         char *network_stop = strstr(buf, "zcl_service_kernel_stop_all(&svc->network_kernel);");
+        char *health_stop = strstr(buf, "health_stop();");
         char *wal_checkpoint = strstr(buf, "node_db_wal_checkpoint(svc->node_db)");
         char *marker = strstr(buf, "boot_shutdown_marker_write_clean(svc->datadir);");
         char *fast = strstr(buf, "shutdown_persist_fast_restart_state(svc);");
         ASSERT(network_stop != NULL);
+        ASSERT(health_stop != NULL);
         ASSERT(wal_checkpoint != NULL);
         ASSERT(marker != NULL);
         ASSERT(fast != NULL);
+        /* Periodic health callbacks can read node.db. Their sweeper must be
+         * joined before the DB checkpoint/close begins. */
+        ASSERT(health_stop < wal_checkpoint);
+        ASSERT(count_occurrences(buf, "health_stop();") == 1);
         /* checkpoint precedes the marker (marker binds a checkpointed DB) */
         ASSERT(wal_checkpoint < marker);
         /* marker precedes the slow flat save (durability before optimization) */
