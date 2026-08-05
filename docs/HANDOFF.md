@@ -16,11 +16,14 @@ tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 ## Current state
 
 **2026-08-05 — S7.2 operational integrity plus Sovereign Space/Scout COMPLETE
-on integrated `main`; not deployed.** Integration merge `21428f0a9` preserves
-latest fetched `origin/main` `9f678f70f`, final lane head `d77d61eef` and
-implementation head `1312261ee` as ancestors; integrated product/test head
-`3ccb853f8` adds the literal-empty-datadir proof described below. The lane first
-closes the operational gaps left after S7.1. Possession validation is generation-bound,
+on integrated `main`; not deployed.** Initial integration merge `21428f0a9`
+preserves fetched `origin/main` `9f678f70f`, final lane head `d77d61eef` and
+implementation head `1312261ee` as ancestors; product/test head `3ccb853f8`
+adds the literal-empty-datadir proof described below. A final fetch found
+`origin/main` advanced to `8ef119603`; conflict-free refresh merge `de6933a22`
+preserves its transaction-demonstration catalog and all earlier integration
+history. The lane first closes the operational gaps left after S7.1.
+Possession validation is generation-bound,
 race-closed and scheduled under strict package/chunk/byte budgets; mandatory ACK
 plan, commit, restart and renewal proofs remain synchronous and full-byte.
 Replication status now composes bounded distributed PROVIDER and STORAGE_ACK
@@ -70,24 +73,28 @@ byte-identical records, permitted CAS objects, evidence and attestation after
 DHT/store/swarm restart. The earlier 12-node replication proof remains a
 separate complementary test.
 
-Fresh integrated receipts at product/test head `3ccb853f8`: both canonical
+Fresh refreshed-integration receipts at head `de6933a22`: both canonical
 seven-daemon DHT runs pass (the science target deliberately reruns that
 prerequisite), and the two-daemon science acceptance passes its package and
 generic blob carriers, cold restart, semantic-root rederivation and SQL-wipe
 reconstruction. Focused space/scout, DHT, possession/store, swarm, science,
 market, yardsale, transaction, multisig, 32 GiB ROM, 2,048-entry block-cache,
 native/API catalog and read-integrity regressions pass; the transaction lab is
-39/39 with 38/39 simulated/live confirmations and only the explicitly blocked
-mainnet custody tier absent. The focused ASan+UBSan DHT/model gate, including
+39/39 with 38/39 simulated/live confirmations, 35/39 classified as
+mainnet-broadcast-capable and only the explicitly blocked mainnet custody tier
+absent. The focused ASan+UBSan DHT/model gate, including
 the 12-node replication and 16-node Space/Scout proofs, passes with no
 sanitizer finding or suppression. All 132 lint gates and full-program LTO
 pass. The strict cold suite registered 904 groups, ran 895, cached 0,
 policy-gated 9 parameter-heavy groups, failed 0 and reported 19 explicit
-self-skip markers (87.4 s, 32 workers). `ci-reproducible` produced two
+self-skip markers (86.9 s, 32 workers). The first refreshed cold run had one
+performance-detector anti-vacuity miss under concurrent load; its exact
+isolated reproduction passed (clean growth 968 permille, injected growth 3412
+permille), then the full uncached suite reran cleanly. `ci-reproducible` produced two
 identical 25,782,344-byte binaries at SHA3-256
-`806af6b13170d5aede79a5f639a86d318a8a1cc5556cb47b6aec0bb9e24ffc45`;
+`6b7f2c5e54987668a071bf3a22342bae46e895ded06a2732373f7890eb07d1f0`;
 different-length snapshot paths produced two identical 25,782,424-byte
-binaries at `d46173ceef566084320094368781d32c16f12dda41ee43e6782e70f53ac6a795`.
+binaries at `3b26e100872a69ea586f728ba5c752486124120578f67cd5220729aefcb6e952`.
 Mandatory pre-push CI passes strict build-only, fast lint and all 895 runnable
 source-wide groups (9 parameter gates, 19 declared self-skips); its live
 topology probe remains intentionally disabled by `ZCL_FAST_LIVE=0`.
@@ -99,8 +106,11 @@ delta, verified the newer transaction/proof/capacity files byte-identical to
 the main parent, reran the focused matrix plus all 132 lint gates and returned
 **BANKABLE**. Its final audit also replayed the literal-empty-datadir group,
 verified every integrated count/hash and audited the receipt-only delta; final
-verdict remains **BANKABLE**. Exact phase and integrated receipts and honest
-bounds are in `docs/work/wt-zcode-s7-2-space-scout.md`.
+verdict remains **BANKABLE**. Post-drift re-review proved refresh merge
+`de6933a22` has no resolution delta, its six upstream files are byte-identical
+to `8ef119603`, replayed the literal-empty and transaction-lab proofs and again
+returned **BANKABLE**. Exact phase and integrated receipts and honest bounds
+are in `docs/work/wt-zcode-s7-2-space-scout.md`.
 
 Honest limits: no doorbell, board, mailbox, store interaction, agent action,
 remote service invocation, arbitrary package execution, REST silo, consensus

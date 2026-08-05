@@ -574,7 +574,11 @@ missing phase-specific proof.
   preview and `--remerge-diff` are conflict-free with no resolution delta;
   `docs/API_REFERENCE.md` was regenerated from all 24 combined command
   definition files and exactly matches the 521-entry registry (402 leaves,
-  354 READY). Command-input-key validation passes all 370 leaf handlers.
+  354 READY). Command-input-key validation passes all 370 leaf handlers. A
+  final fetch found `origin/main` at
+  `8ef119603322d288136ec55ef216663bf30b1f53`; conflict-free two-parent refresh
+  merge `de6933a22419a641db044e41d56c37a6c88b25ca` preserves that transaction
+  demonstration catalog plus the complete earlier integration history.
 - Newer main transaction, multisig, mixed-Sapling, process-only proof-catalog,
   32 GiB ROM and 2,048-entry block parse-cache work is preserved. Relative to
   the lane head the eight newer-main files are byte-identical to the main
@@ -595,8 +599,9 @@ missing phase-specific proof.
   yardsale groups; all four transaction groups; both multisig groups; ROM
   manifest; block parse cache; native API contract; and REST/API catalog.
   `transaction-lab-proof` passes 30 exact groups and reports 39/39 cases,
-  38/39 simulated/live confirmations, zero failures/blocked cases inside the
-  proof, and the intentionally unavailable mainnet custody tier.
+  38/39 simulated/live confirmations, 35/39 mainnet-broadcast-capable cases,
+  zero failures/blocked cases inside the proof, and the intentionally
+  unavailable mainnet custody tier.
 - The existing seven-daemon DHT acceptance passes twice: once directly and
   once as the canonical prerequisite of `test-science-acceptance`. The latter
   then passes its two-daemon package and generic-blob carriers, cold restart,
@@ -607,14 +612,17 @@ missing phase-specific proof.
   transition model gates, including the 16-node proof, with no sanitizer
   finding or suppression. All 132 lint gates pass. The cold uncached suite
   registers 904 groups, runs 895, caches 0, policy-gates 9 parameter-heavy
-  groups, fails 0 and reports 19 declared self-skip markers in 87.4 seconds on
-  32 workers. Full-program LTO passes.
+  groups, fails 0 and reports 19 declared self-skip markers in 86.9 seconds on
+  32 workers. The first refreshed run had one performance-detector anti-vacuity
+  miss under concurrent load; the prescribed isolated reproduction passed
+  with clean/injected growth of 968/3412 permille, then the full cold suite
+  reran cleanly. Full-program LTO passes.
 - Fresh same-tree reproducibility produces two byte-identical 25,782,344-byte
   binaries at SHA3-256
-  `806af6b13170d5aede79a5f639a86d318a8a1cc5556cb47b6aec0bb9e24ffc45`.
+  `6b7f2c5e54987668a071bf3a22342bae46e895ded06a2732373f7890eb07d1f0`.
   Different-length snapshot paths produce two byte-identical 25,782,424-byte
   binaries at
-  `d46173ceef566084320094368781d32c16f12dda41ee43e6782e70f53ac6a795`.
+  `3b26e100872a69ea586f728ba5c752486124120578f67cd5220729aefcb6e952`.
   Mandatory pre-push CI passes strict build-only, fast lint and all 895
   runnable source-wide groups (9 parameter gates, 19 declared self-skips); its
   live topology probe remains intentionally disabled by `ZCL_FAST_LIVE=0`.
@@ -623,7 +631,10 @@ missing phase-specific proof.
   registry is combined, and there is no second transport, automatic execution,
   wallet, consensus, deployment or live-datadir expansion. Its final non-author
   audit replayed the literal-empty-datadir group, verified every integrated
-  count/hash and checked the receipt-only delta; verdict remains **BANKABLE**.
+  count/hash and checked the receipt-only delta. Post-drift re-review proved
+  refresh merge `de6933a22` has no resolution delta, its six upstream files are
+  byte-identical to `8ef119603`, replayed the literal-empty and transaction-lab
+  proofs and again returned **BANKABLE**.
 - Space v1 proves canonical bounded descriptor/manifest bytes, delegated
   expiring signatures, exact-root CAS admission, generic pointer/provider
   discovery and independent local DISCOVER/FETCH/STORE/INDEX/SERVE/FORWARD
