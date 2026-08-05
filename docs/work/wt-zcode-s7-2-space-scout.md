@@ -1,6 +1,6 @@
 # S7.2 operational integrity and Sovereign Space/Scout lane
 
-**STATUS: IN PROGRESS (`wf_zcode-s7-2-space`)**
+**STATUS: COMPLETE (`wf_zcode-s7-2-space`, implementation head `1312261ee`)**
 
 **Worker:** `wf_zcode-s7-2-space`
 **Branch:** `lane/zcode-s7-2-space`
@@ -492,7 +492,7 @@ missing phase-specific proof.
   The mission byte ceiling covers accepted manifest/carrier content; bounded
   control envelopes are governed by the separate monotonic deadline.
 
-### Phase 7 — acceptance proof implemented, release matrix pending
+### Phase 7 — banked
 
 - The existing 12-node sparse iterative proof remains unchanged. A distinct
   16-node acceptance case now creates sixteen real DHT services and Noise-bound
@@ -530,5 +530,36 @@ missing phase-specific proof.
   Every assertion failure reaches one unconditional teardown for engines,
   stores, policies, maps, sixteen services and all temporary directories.
 - Focused `test_zcode_dht_service` passes the original 12-node proof and the new
-  16-node proof together. The remaining sanitizer, acceptance, full-suite,
-  LTO, reproducibility and pre-push receipts are intentionally not claimed yet.
+  16-node proof together. Both space groups, all seven DHT groups, both science
+  groups, both swarm groups, store (20 cases, two declared self-skips), market
+  and yardsale regressions pass. The focused ASan+UBSan DHT/model gate passes
+  all seven initial and repeat groups, including the 16-node proof, with zero
+  suppressions.
+- The first strict cold suite correctly caught four new READ leaves absent from
+  the registry-derived no-datadir-write matrix. Adding them exposed a deeper
+  defect under independent review: delegation/key "load" created nested
+  `zcode/dht`, while the old test observed only the top-level file set. Commit
+  `1312261ee` makes load-only identity paths non-creating, preserves directory
+  creation for create/save operations, directly tests both API modes and
+  recursively snapshots typed datadir paths without following symlinks.
+  Focused `test_read_leaf_no_datadir_write` and
+  `test_zcode_dht_delegation` pass. Independent `strace` found zero former
+  mkdir hits for both planners and the WAL fixture; final review verdict:
+  **BANKABLE**.
+- All 132 lint gates and full-program LTO pass. The final strict cold suite
+  registered 904 groups, ran 895, cached 0, policy-gated 9 parameter-heavy
+  groups, failed 0 and reported 22 explicit self-skips (85.0 s, 32 workers).
+  `ci-reproducible` produced two byte-identical 22,375,112-byte binaries at
+  SHA3-256 `e1cdb6541e0312a7fd47796584070ab85b1654c2b350c94501d38799cb3b19b2`.
+  `repro-verify` produced two byte-identical 22,375,192-byte binaries from
+  different-length snapshot paths at
+  `9c040efa9dc5f6df827f6c11007811d640fbfc3fb753dba5626c08ea3b5fb0af`.
+  Mandatory pre-push CI passed strict build-only, fast lint and 895/895
+  runnable source-wide groups (9 parameter gates, 19 declared fast-lane
+  self-skips); the live topology probe was intentionally disabled by the
+  gate's default `ZCL_FAST_LIVE=0`.
+- No deployment, live-datadir mutation, wallet operation, consensus edit,
+  automatic C23 execution or second network stack occurred. Doorbells, boards,
+  mailboxes, store interaction, agent actions and arbitrary service invocation
+  remain future work; they must reuse the generic object/discovery transport
+  and remain subject to independent local policy.
