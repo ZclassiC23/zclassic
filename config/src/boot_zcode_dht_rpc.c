@@ -695,7 +695,8 @@ static bool rpc_provider_route(const struct json_value *params, bool help,
                                struct json_value *result) {
   if (help) {
     json_set_str(result,
-                 "zcode_dht_provider_route {namespace,transport_root}");
+                 "zcode_dht_provider_route {namespace,transport_root,"
+                 "maximum_bytes?}");
     return true;
   }
   const struct json_value *in = rpc_input(params);
@@ -708,6 +709,15 @@ static bool rpc_provider_route(const struct json_value *params, bool help,
               "canonical namespace and transport_root required");
     return true;
   }
+  const struct json_value *maximum_value = json_get(in, "maximum_bytes");
+  int64_t maximum_bytes = maximum_value && maximum_value->type == JSON_INT
+                              ? json_get_int(maximum_value) : 0;
+  if ((maximum_value && maximum_value->type != JSON_INT) ||
+      maximum_bytes < 0) {
+    rpc_error(result, "INVALID_SELECTOR",
+              "maximum_bytes must be a nonnegative integer");
+    return true;
+  }
   uint64_t now = (uint64_t)platform_time_wall_time_t();
   struct vcs_zcode_dht_provider_route route;
   if (!boot_zcode_dht_provider_route(now, &selector, &route)) {
@@ -715,11 +725,16 @@ static bool rpc_provider_route(const struct json_value *params, bool help,
     return true;
   }
   struct vcs_swarm_engine *engine = vcs_swarm_engine_global();
-  enum vcs_swarm_fetch_result fetched =
-      engine ? vcs_swarm_engine_fetch_from(
-                   engine, selector.root, (int64_t)(now / 86400u), now,
-                   route.peer_ids, route.authenticated_count)
-             : VCS_SWARM_FETCH_NO_STORE;
+  enum vcs_swarm_fetch_result fetched = VCS_SWARM_FETCH_NO_STORE;
+  if (engine)
+    fetched = maximum_bytes > 0
+        ? vcs_swarm_engine_fetch_from_bounded(
+              engine, selector.root, (int64_t)(now / 86400u), now,
+              route.peer_ids, route.authenticated_count,
+              (uint64_t)maximum_bytes)
+        : vcs_swarm_engine_fetch_from(
+              engine, selector.root, (int64_t)(now / 86400u), now,
+              route.peer_ids, route.authenticated_count);
   provider_route_json(result, &route, fetched);
   return true;
 }

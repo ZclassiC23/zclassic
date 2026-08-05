@@ -1437,6 +1437,17 @@ void zcl_native_handle_metaverse_space_publish(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_metaverse_space_discover(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
+/* Internal composition entry point: identical discovery semantics, but the
+ * caller owns an absolute monotonic deadline and lookup cancellation. */
+void zcl_native_metaverse_space_discover_until(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply,
+    int64_t deadline_mono_ms, size_t maximum_wire_bytes);
+void zcl_native_handle_metaverse_space_scout_plan(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_space_scout_run(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_space_scout_show(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
 #ifdef ZCL_TESTING
 bool zcl_native_metaverse_space_test_admit_allowed(
     const char *datadir, const uint8_t semantic_root[32],

@@ -51,6 +51,7 @@
 #include "test/test_core.h"
 
 #include "base/hex.h"
+#include "base/serialize_le.h"
 #include "command/native_command.h"
 #include "config/boot_zcode_dht.h"
 #include "vcs/blob_store.h"
@@ -61,6 +62,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define SW_CHECK(name, expr) do {                                       \
     if (expr) { printf("  zcode_swarm: %s... OK\n", (name)); }          \
@@ -1585,6 +1587,135 @@ static int t_swarm_provider_restricted(void)
     return failures;
 }
 
+static int t_swarm_bounded_provider(void)
+{
+    int failures = 0;
+    struct sw_node n;
+    struct sw_pkg p;
+    uint8_t key[33];
+    sw_key(93, key);
+    const uint64_t peer = 903;
+    const uint64_t bound = 1;
+    if (!sw_node_open(&n, "provider_bound", sw_score_contributor) ||
+        !sw_make_package(&p, 1, 30))
+        return 1;
+    SW_CHECK("provider bound: advertiser registers",
+             vcs_swarm_engine_peer_add(n.engine, peer, key));
+    sw_announce(n.engine, peer, &p);
+    SW_CHECK("provider bound: ordinary shared work starts",
+             vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 1,
+                                         &peer, 1) == VCS_SWARM_FETCH_OK);
+    SW_CHECK("provider bound: late scout cannot tighten shared work",
+             vcs_swarm_engine_fetch_from_bounded(
+                 n.engine, p.root, SW_DAY, 1, &peer, 1, bound) ==
+                 VCS_SWARM_FETCH_BOUND_NOT_OWNED);
+    struct vcs_swarm_download_status status;
+    SW_CHECK("provider bound: shared work remains unbounded and active",
+             vcs_swarm_engine_download_status(n.engine, p.root, &status) &&
+             status.state == VCS_SWARM_DL_WANT_MANIFEST &&
+             status.maximum_package_bytes == 0);
+    SW_CHECK("provider bound: ordinary work cancels cleanly",
+             vcs_swarm_engine_cancel(n.engine, p.root, 1));
+    SW_CHECK("provider bound: bounded intent starts",
+             vcs_swarm_engine_fetch_from_bounded(
+                 n.engine, p.root, SW_DAY, 2, &peer, 1, bound) ==
+                 VCS_SWARM_FETCH_OK);
+    SW_CHECK("provider bound: ceiling is visible before restart",
+             vcs_swarm_engine_download_status(n.engine, p.root, &status) &&
+             status.maximum_package_bytes == bound);
+    vcs_swarm_engine_free(n.engine);
+    n.engine = vcs_swarm_engine_create(n.store, n.book, n.zcode_dir,
+                                       sw_score_contributor, NULL);
+    SW_CHECK("provider bound: engine restarts", n.engine != NULL);
+    SW_CHECK("provider bound: ceiling survives restart",
+             vcs_swarm_engine_download_status(n.engine, p.root, &status) &&
+             status.maximum_package_bytes == bound);
+    SW_CHECK("provider bound: peer rebinds",
+             vcs_swarm_engine_peer_add(n.engine, peer, key));
+    sw_announce(n.engine, peer, &p);
+    SW_CHECK("provider bound: compatible bounded rebind accepted",
+             vcs_swarm_engine_fetch_from_bounded(
+                 n.engine, p.root, SW_DAY, 3, &peer, 1, bound) ==
+                 VCS_SWARM_FETCH_OK);
+    vcs_swarm_engine_tick(n.engine, SW_DAY, 3);
+    struct sw_pump_stats pump = {0};
+    sw_pump(&n, peer, &p, SW_SERVE_HONEST, false, 3, &pump);
+    SW_CHECK("provider bound: oversized manifest fails before chunks",
+             vcs_swarm_engine_download_status(n.engine, p.root, &status) &&
+             status.state == VCS_SWARM_DL_FAILED && status.rule &&
+             strcmp(status.rule, "maximum-package-bytes-exceeded") == 0 &&
+             status.present_chunks == 0 && status.fetched_bytes == 0);
+    struct vcs_package_store_status stored;
+    SW_CHECK("provider bound: oversized manifest never enters package store",
+             !vcs_package_store_package_status(n.store, p.root, &stored));
+
+    SW_CHECK("provider bound: failed scout intent retries as ordinary work",
+             vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 4,
+                                         &peer, 1) == VCS_SWARM_FETCH_OK &&
+             vcs_swarm_engine_download_status(n.engine, p.root, &status) &&
+             status.maximum_package_bytes == 0);
+    sw_free_package(&p);
+    sw_node_close(&n);
+    test_rm_rf_recursive(n.datadir);
+    return failures;
+}
+
+static int t_swarm_legacy_record(void)
+{
+    int failures = 0;
+    struct sw_node n;
+    struct sw_pkg p;
+    uint8_t key[33];
+    sw_key(94, key);
+    const uint64_t peer = 904;
+    if (!sw_node_open(&n, "provider_v2", sw_score_contributor) ||
+        !sw_make_package(&p, 1, 31))
+        return 1;
+    vcs_swarm_engine_free(n.engine);
+    n.engine = NULL;
+    char dir[4096], path[4096], root_hex[65];
+    zcl_hex_encode(p.root, 32, root_hex);
+    int dir_len = snprintf(dir, sizeof(dir), "%s/downloads", n.zcode_dir);
+    int path_len = snprintf(path, sizeof(path), "%s/%s", dir, root_hex);
+    SW_CHECK("provider v2: download directory path fits",
+             dir_len > 0 && (size_t)dir_len < sizeof(dir) &&
+             path_len > 0 && (size_t)path_len < sizeof(path));
+    SW_CHECK("provider v2: download directory created",
+             mkdir(dir, 0700) == 0);
+    uint8_t wire[51] = {'Z', 'S', 'W', 'D', 'L', 'R', 0x0d, 0x0a};
+    zcl_write_u16_le(wire + 8, 2);
+    memcpy(wire + 10, p.root, 32);
+    zcl_write_u64_le(wire + 42, (uint64_t)SW_DAY);
+    wire[50] = 0;
+    FILE *record = fopen(path, "wb");
+    bool wrote = false;
+    if (record) {
+        wrote = fwrite(wire, 1, sizeof(wire), record) == sizeof(wire);
+        if (fclose(record) != 0)
+            wrote = false;
+    }
+    SW_CHECK("provider v2: legacy record fixture written", wrote);
+    n.engine = vcs_swarm_engine_create(n.store, n.book, n.zcode_dir,
+                                       sw_score_contributor, NULL);
+    struct vcs_swarm_download_status status;
+    SW_CHECK("provider v2: legacy intent resumes unbounded",
+             n.engine && vcs_swarm_engine_download_status(
+                             n.engine, p.root, &status) &&
+             status.state == VCS_SWARM_DL_WANT_MANIFEST &&
+             status.maximum_package_bytes == 0);
+    SW_CHECK("provider v2: peer registers after migration",
+             vcs_swarm_engine_peer_add(n.engine, peer, key));
+    sw_announce(n.engine, peer, &p);
+    vcs_swarm_engine_tick(n.engine, SW_DAY, 1);
+    struct vcs_package_swarm_object wants[1];
+    SW_CHECK("provider v2: legacy unbounded intent remains schedulable",
+             sw_drain_wants(&n, peer, wants, 1) == 1);
+    sw_free_package(&p);
+    sw_node_close(&n);
+    test_rm_rf_recursive(n.datadir);
+    return failures;
+}
+
 int test_zcode_swarm(void)
 {
     int failures = 0;
@@ -1600,5 +1731,7 @@ int test_zcode_swarm(void)
     failures += t_swarm_disconnect_threshold();
     failures += t_swarm_blob_transfer();
     failures += t_swarm_provider_restricted();
+    failures += t_swarm_bounded_provider();
+    failures += t_swarm_legacy_record();
     return failures;
 }

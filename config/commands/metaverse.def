@@ -308,6 +308,77 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_metaverse_space_discover)
 
+ZCL_COMMAND_BRANCH("metaverse.space.scout", "metaverse.space",
+                   "Bounded read-only space missions and signed local evidence",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.space.scout.plan", "metaverse.space.scout", "",
+    "Plan one bounded read-only traversal of sovereign spaces",
+    "Canonicalizes sorted starting roots plus explicit depth, space, portal, "
+    "byte and monotonic-duration caps under the local observer's network. "
+    "Returns an exact stateless plan token and writes nothing. Planning grants "
+    "no interaction or execution authority.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "metaverse,space,scout,plan,bounds,read-only,evidence",
+    "zcl.metaverse_space_scout_plan.input.v1",
+    "zcl.metaverse_space_scout_plan.v1",
+    "starting_roots,observation_unix,maximum_depth,maximum_spaces,maximum_portals,maximum_bytes,deadline_ms,datadir",
+    "", "zclassic23 metaverse space scout plan --input='<mission-json>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_metaverse_space_scout_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "metaverse.space.scout.run", "metaverse.space.scout", "",
+    "Run one exactly planned bounded read-only space scout mission",
+    "Requires confirm:true and the exact stateless plan token. The scout may "
+    "read or discover signed manifests and follow permitted portal roots until "
+    "the first hard cap. Every network lookup uses the mission's monotonic "
+    "deadline and existing generic POINTER/PROVIDER transport. It records a "
+    "deterministic unsigned evidence map plus a separate local signature; it "
+    "never invokes service verbs, packages, wallets, doorbells or messages.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "metaverse,space,scout,run,portal,policy,deadline,evidence",
+    "zcl.metaverse_space_scout_run.input.v1",
+    "zcl.metaverse_space_scout_run.v1",
+    "starting_roots,observation_unix,maximum_depth,maximum_spaces,maximum_portals,maximum_bytes,deadline_ms,plan_token,confirm,workspace,datadir",
+    "", "zclassic23 metaverse space scout run --input='<confirmed-mission-json>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_metaverse_space_scout_run)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.space.scout.show", "metaverse.space.scout", "",
+    "Show one signed local scout attestation and its canonical evidence map",
+    "Loads the attestation root, verifies its observer delegation/signature, "
+    "loads and re-derives the linked deterministic map root, and renders every "
+    "visited root, owner, advertised service, portal outcome, typed failure, "
+    "policy denial count and truncation reason. The result explicitly remains "
+    "local evidence, never authority or global truth.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "metaverse,space,scout,show,map,attestation,local-evidence",
+    "zcl.metaverse_space_scout_show.input.v1",
+    "zcl.metaverse_space_scout_show.v1",
+    "root,workspace,datadir", "root",
+    "zclassic23 metaverse space scout show <attestation-root>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_metaverse_space_scout_show)
+
 ZCL_COMMAND_BRANCH("metaverse.build", "metaverse",
                    "Content-addressed C23 build jobs, actions, and receipts",
                    ZCL_COMMAND_LAYER_APP)

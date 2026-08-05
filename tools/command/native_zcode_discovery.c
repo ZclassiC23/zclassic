@@ -6,9 +6,11 @@
 #include "command/native_command.h"
 #include "base/hex.h"
 #include "controllers/rpc_client.h"
+#include "platform/time_compat.h"
 #include "util/safe_alloc.h"
 
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -195,8 +197,131 @@ bool zcl_native_zcode_records_discover(
   return ok;
 }
 
-bool zcl_native_zcode_provider_route(
-    struct json_value *selector, struct json_value *result)
+#define RECORD_CANCEL_RESERVE_MS INT64_C(50)
+
+static bool record_rpc_until(const char *method, struct json_value *input,
+                             struct json_value *result,
+                             int64_t deadline_mono_ms)
+{
+  json_init(result);
+  if (!method || !input || input->type != JSON_OBJ)
+    return false;
+  int64_t remaining = deadline_mono_ms - platform_time_monotonic_ms();
+  if (remaining <= 0)
+    return false;
+  struct json_value params;
+  json_init(&params);
+  json_set_array(&params);
+  json_push_back(&params, input);
+  size_t needed = json_write(&params, NULL, 0);
+  char *wire = zcl_malloc(needed + 1u, "zcode.records.deadline.rpc");
+  bool encoded = wire && json_write(&params, wire, needed + 1u) == needed;
+  zcl_native_bridge_ensure_rpc();
+  char *raw = encoded
+      ? node_rpc_call_deadline(
+            method, wire, remaining > LONG_MAX ? LONG_MAX : (long)remaining,
+            remaining > LONG_MAX ? LONG_MAX : (long)remaining)
+      : NULL;
+  free(wire);
+  json_free(&params);
+  bool parsed = raw && json_read(result, raw, strlen(raw)) &&
+                result->type == JSON_OBJ;
+  free(raw);
+  return parsed;
+}
+
+static void records_cancel_until(const char *lookup, const char *owner,
+                                 int64_t deadline_mono_ms)
+{
+  struct json_value input, result;
+  json_init(&input);
+  json_set_object(&input);
+  json_push_kv_str(&input, "lookup_id", lookup);
+  json_push_kv_str(&input, "owner_token", owner);
+  (void)record_rpc_until("zcode_dht_record_cancel", &input, &result,
+                         deadline_mono_ms);
+  json_free(&result);
+  json_free(&input);
+}
+
+bool zcl_native_zcode_records_discover_until(
+    struct json_value *selector, struct json_value *result,
+    int64_t deadline_mono_ms, bool *deadline_reached_out)
+{
+  if (deadline_reached_out)
+    *deadline_reached_out = false;
+  if (!selector || !result || !deadline_reached_out ||
+      deadline_mono_ms <= 0)
+    return false;
+  json_init(result);
+  int64_t cancel_at = deadline_mono_ms - RECORD_CANCEL_RESERVE_MS;
+  if (cancel_at <= platform_time_monotonic_ms()) {
+    *deadline_reached_out = true;
+    return false;
+  }
+  struct json_value body;
+  if (!record_rpc_until("zcode_dht_record_begin", selector, &body,
+                        cancel_at) ||
+      !json_get_bool_or(&body, "ok", false)) {
+    json_free(&body);
+    if (platform_time_monotonic_ms() >= cancel_at)
+      *deadline_reached_out = true;
+    return false;
+  }
+  const char *lookup_value = json_get_str(json_get(&body, "lookup_id"));
+  const char *owner_value = json_get_str(json_get(&body, "owner_token"));
+  char lookup[33], owner[33];
+  bool admitted = lookup_value && owner_value &&
+                  strlen(lookup_value) == 32u && strlen(owner_value) == 32u;
+  if (admitted) {
+    memcpy(lookup, lookup_value, sizeof(lookup));
+    memcpy(owner, owner_value, sizeof(owner));
+  }
+  json_free(&body);
+  if (!admitted)
+    return false;
+
+  for (;;) {
+    int64_t now = platform_time_monotonic_ms();
+    if (now >= cancel_at) {
+      records_cancel_until(lookup, owner, deadline_mono_ms);
+      *deadline_reached_out = true;
+      return false;
+    }
+    struct json_value poll;
+    json_init(&poll);
+    json_set_object(&poll);
+    json_push_kv_str(&poll, "lookup_id", lookup);
+    json_push_kv_str(&poll, "owner_token", owner);
+    bool called = record_rpc_until("zcode_dht_record_poll", &poll, &body,
+                                   cancel_at);
+    const char *state = called ? json_get_str(json_get(&body, "state")) : NULL;
+    bool passed = called && json_get_bool_or(&body, "ok", false);
+    bool pending = passed && state && strcmp(state, "pending") == 0;
+    if (!pending) {
+      if (passed)
+        json_copy(result, &body);
+      json_free(&body);
+      json_free(&poll);
+      if (!passed)
+        records_cancel_until(lookup, owner, deadline_mono_ms);
+      if (!passed && platform_time_monotonic_ms() >= cancel_at)
+        *deadline_reached_out = true;
+      return passed;
+    }
+    json_free(&body);
+    json_free(&poll);
+    now = platform_time_monotonic_ms();
+    if (now >= cancel_at)
+      continue;
+    int64_t remaining = cancel_at - now;
+    platform_sleep_ms((unsigned)(remaining < 50 ? remaining : 50));
+  }
+}
+
+static bool provider_route_budget(struct json_value *selector,
+                                  struct json_value *result,
+                                  long total_ms)
 {
   if (!selector || !result)
     return false;
@@ -209,8 +334,12 @@ bool zcl_native_zcode_provider_route(
   char *wire = zcl_malloc(needed + 1u, "zcode.provider.route.rpc");
   bool encoded = wire && json_write(&params, wire, needed + 1u) == needed;
   zcl_native_bridge_ensure_rpc();
-  char *raw = encoded ? node_rpc_call("zcode_dht_provider_route", wire)
-                      : NULL;
+  char *raw = encoded
+      ? (total_ms > 0
+             ? node_rpc_call_deadline("zcode_dht_provider_route", wire,
+                                      total_ms, total_ms)
+             : node_rpc_call("zcode_dht_provider_route", wire))
+      : NULL;
   free(wire);
   json_free(&params);
   bool routed = raw && json_read(result, raw, strlen(raw)) &&
@@ -218,6 +347,12 @@ bool zcl_native_zcode_provider_route(
                 json_get_bool_or(result, "ok", false);
   free(raw);
   return routed;
+}
+
+bool zcl_native_zcode_provider_route(
+    struct json_value *selector, struct json_value *result)
+{
+  return provider_route_budget(selector, result, 0);
 }
 
 #ifdef ZCL_TESTING
@@ -264,9 +399,49 @@ bool zcl_native_zcode_provider_discover_and_route(
 #endif
 }
 
-bool zcl_native_zcode_delegation_authorized(
+bool zcl_native_zcode_provider_discover_and_route_until(
+    struct json_value *selector, struct json_value *route_result,
+    uint32_t *record_count_out, int64_t deadline_mono_ms,
+    bool *deadline_reached_out)
+{
+  if (record_count_out)
+    *record_count_out = 0;
+  if (deadline_reached_out)
+    *deadline_reached_out = false;
+  if (!selector || !route_result || !record_count_out ||
+      !deadline_reached_out)
+    return false;
+  struct json_value discovered;
+  json_init(&discovered);
+  bool found = zcl_native_zcode_records_discover_until(
+      selector, &discovered, deadline_mono_ms, deadline_reached_out);
+  int64_t count = found ? json_get_int(json_get(&discovered, "count")) : 0;
+  json_free(&discovered);
+  if (count <= 0 || count > UINT32_MAX || *deadline_reached_out)
+    return false;
+  *record_count_out = (uint32_t)count;
+  if (platform_time_monotonic_ms() >= deadline_mono_ms) {
+    *deadline_reached_out = true;
+    return false;
+  }
+  int64_t remaining = deadline_mono_ms - platform_time_monotonic_ms();
+  if (remaining <= 0) {
+    *deadline_reached_out = true;
+    return false;
+  }
+  bool routed = provider_route_budget(
+      selector, route_result,
+      remaining > LONG_MAX ? LONG_MAX : (long)remaining);
+  if (platform_time_monotonic_ms() >= deadline_mono_ms) {
+    *deadline_reached_out = true;
+    return false;
+  }
+  return routed;
+}
+
+static bool delegation_authorized_budget(
     const struct vcs_zcode_dht_delegation *delegation,
-    char *error_out, size_t error_capacity)
+    long total_ms, char *error_out, size_t error_capacity)
 {
   if (error_out && error_capacity)
     error_out[0] = '\0';
@@ -289,8 +464,12 @@ bool zcl_native_zcode_delegation_authorized(
   char *wire = zcl_malloc(needed + 1u, "zcode.delegation.check.rpc");
   bool encoded = wire && json_write(&params, wire, needed + 1u) == needed;
   zcl_native_bridge_ensure_rpc();
-  char *raw = encoded ? node_rpc_call("zcode_dht_delegation_check", wire)
-                      : NULL;
+  char *raw = encoded
+      ? (total_ms > 0
+             ? node_rpc_call_deadline("zcode_dht_delegation_check", wire,
+                                      total_ms, total_ms)
+             : node_rpc_call("zcode_dht_delegation_check", wire))
+      : NULL;
   free(wire);
   json_free(&params);
   json_free(&input);
@@ -305,5 +484,37 @@ bool zcl_native_zcode_delegation_authorized(
   }
   json_free(&result);
   free(raw);
+  return authorized;
+}
+
+bool zcl_native_zcode_delegation_authorized(
+    const struct vcs_zcode_dht_delegation *delegation,
+    char *error_out, size_t error_capacity)
+{
+  return delegation_authorized_budget(delegation, 0, error_out,
+                                      error_capacity);
+}
+
+bool zcl_native_zcode_delegation_authorized_until(
+    const struct vcs_zcode_dht_delegation *delegation,
+    int64_t deadline_mono_ms, char *error_out, size_t error_capacity,
+    bool *deadline_reached_out)
+{
+  if (deadline_reached_out)
+    *deadline_reached_out = false;
+  if (!deadline_reached_out)
+    return false;
+  int64_t remaining = deadline_mono_ms - platform_time_monotonic_ms();
+  if (remaining <= 0) {
+    *deadline_reached_out = true;
+    return false;
+  }
+  bool authorized = delegation_authorized_budget(
+      delegation, remaining > LONG_MAX ? LONG_MAX : (long)remaining,
+      error_out, error_capacity);
+  if (platform_time_monotonic_ms() >= deadline_mono_ms) {
+    *deadline_reached_out = true;
+    return false;
+  }
   return authorized;
 }

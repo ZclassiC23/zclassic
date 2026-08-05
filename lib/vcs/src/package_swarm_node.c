@@ -13,6 +13,7 @@
 #include "vcs/package_store.h"
 
 #include "package_store_priv.h" /* store_atomic_write/mkdir/rm_rf */
+#include "package_swarm_record.h"
 #include "vcs_priv.h"
 
 #include "base/hex.h"
@@ -29,10 +30,6 @@
 #define SWARM_LOG "vcs.swarm"
 #define SWARM_DL_INFLIGHT_MAX 32u
 #define SWARM_MANIFEST_CHUNK UINT32_MAX
-
-static const uint8_t record_magic[8] = {'Z', 'S', 'W', 'D', 'L', 'R',
-                                        0x0d, 0x0a};
-#define RECORD_VERSION 2u
 
 /* ── internal records ───────────────────────────────────────────────── */
 
@@ -71,6 +68,7 @@ struct swarm_download {
     size_t tomb_pos;
     size_t tomb_count;
     uint64_t fetched_bytes;
+    uint64_t maximum_package_bytes; /* zero means unbounded */
     int64_t created_day;
     bool provider_restricted;
     uint64_t provider_peers[VCS_SWARM_PROVIDER_MAX];
@@ -398,31 +396,17 @@ static bool dl_build_maps(struct swarm_download *dl)
     return true;
 }
 
-static void record_path(const struct vcs_swarm_engine *engine,
-                        const char root_hex[65], char *out, size_t out_size)
-{
-    snprintf(out, out_size, "%s/downloads/%s", engine->zcode_dir, root_hex);
-}
-
 static bool record_persist(struct vcs_swarm_engine *engine,
                            const struct swarm_download *dl)
 {
     if (!engine->persist)
         return true;
-    uint8_t wire[VCS_SWARM_RECORD_WIRE_BYTES];
-    memcpy(wire, record_magic, sizeof(record_magic));
-    vcs_wr_u16le(wire + 8, RECORD_VERSION);
-    memcpy(wire + 10, dl->root, 32);
-    vcs_wr_u64le(wire + 42, (uint64_t)dl->created_day);
-    wire[50] = dl->provider_restricted ? 1u : 0u;
-    char dir[STORE_PATH_MAX];
-    snprintf(dir, sizeof(dir), "%s/downloads", engine->zcode_dir);
-    char path[STORE_PATH_MAX];
-    record_path(engine, dl->root_hex, path, sizeof(path));
-    if (!store_mkdir_p(dir) || !store_atomic_write(path, wire, sizeof(wire)))
-        LOG_FAIL(SWARM_LOG, "download record persist failed for %.16s",
-                 dl->root_hex);
-    return true;
+    struct vcs_swarm_record record;
+    memcpy(record.root, dl->root, 32);
+    record.created_day = dl->created_day;
+    record.provider_restricted = dl->provider_restricted;
+    record.maximum_package_bytes = dl->maximum_package_bytes;
+    return vcs_swarm_record_persist(engine->zcode_dir, dl->root_hex, &record);
 }
 
 static void record_delete(struct vcs_swarm_engine *engine,
@@ -430,11 +414,7 @@ static void record_delete(struct vcs_swarm_engine *engine,
 {
     if (!engine->persist)
         return;
-    char path[STORE_PATH_MAX];
-    record_path(engine, dl->root_hex, path, sizeof(path));
-    if (unlink(path) != 0)
-        LOG_WARN(SWARM_LOG, "download record delete failed for %.16s",
-                 dl->root_hex);
+    vcs_swarm_record_delete(engine->zcode_dir, dl->root_hex);
 }
 
 static void req_finish(struct vcs_swarm_engine *engine,
@@ -487,6 +467,11 @@ static bool dl_load_manifest_from_store(struct vcs_swarm_engine *engine,
         LOG_FAIL(SWARM_LOG, "stored manifest re-parse failed for %.16s",
                  dl->root_hex);
     dl->manifest_loaded = true;
+    if (!vcs_swarm_manifest_within_bound(
+            &dl->manifest, dl->maximum_package_bytes)) {
+        dl_free_maps(dl);
+        return false;
+    }
     if (!dl_build_maps(dl)) {
         dl_free_maps(dl);
         return false;
@@ -1078,7 +1063,24 @@ static void handle_data_manifest(struct vcs_swarm_engine *engine,
         res->rule = "invalid-chunk";
         return;
     }
-    /* Verified against the announced root BEFORE the store sees it. */
+    /* Verified against the announced root and parsed against the persistent
+     * caller byte ceiling BEFORE the store sees it or any chunk is wanted. */
+    struct vcs_package_manifest parsed;
+    if (!vcs_package_manifest_parse(data->bytes, data->bytes_len, &parsed)) {
+        req_finish(engine, dl, req, true, false);
+        dl_fail(engine, dl, "manifest-reparse-failed");
+        res->rule = dl->rule;
+        return;
+    }
+    dl->manifest = parsed;
+    dl->manifest_loaded = true;
+    if (!vcs_swarm_manifest_within_bound(
+            &dl->manifest, dl->maximum_package_bytes)) {
+        req_finish(engine, dl, req, true, false);
+        dl_fail(engine, dl, "maximum-package-bytes-exceeded");
+        res->rule = dl->rule;
+        return;
+    }
     enum vcs_package_store_result sr = vcs_package_store_put_manifest(
         engine->store, data->bytes, data->bytes_len, NULL);
     if (sr != VCS_PACKAGE_STORE_OK) {
@@ -1087,14 +1089,6 @@ static void handle_data_manifest(struct vcs_swarm_engine *engine,
         res->rule = dl->rule;
         return;
     }
-    if (!vcs_package_manifest_parse(data->bytes, data->bytes_len,
-                                    &dl->manifest)) {
-        req_finish(engine, dl, req, true, false);
-        dl_fail(engine, dl, "manifest-reparse-failed");
-        res->rule = dl->rule;
-        return;
-    }
-    dl->manifest_loaded = true;
     if (!dl_build_maps(dl)) {
         req_finish(engine, dl, req, true, false);
         dl_fail(engine, dl, "allocation-failed");
@@ -1232,15 +1226,8 @@ static void resume_downloads(struct vcs_swarm_engine *engine)
             continue;
         char path[STORE_PATH_MAX];
         snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
-        uint8_t wire[VCS_SWARM_RECORD_WIRE_BYTES];
-        FILE *f = fopen(path, "rb");
-        bool read_ok = f &&
-                       fread(wire, 1, sizeof(wire), f) == sizeof(wire);
-        if (f)
-            fclose(f);
-        if (!read_ok || memcmp(wire, record_magic,
-                               sizeof(record_magic)) != 0 ||
-            vcs_rd_u16le(wire + 8) != RECORD_VERSION) {
+        struct vcs_swarm_record record;
+        if (!vcs_swarm_record_load(path, &record)) {
             LOG_WARN(SWARM_LOG, "discarding corrupt download record %s",
                      ent->d_name);
             unlink(path);
@@ -1259,10 +1246,11 @@ static void resume_downloads(struct vcs_swarm_engine *engine)
         }
         dl_reset(dl);
         dl->used = true;
-        memcpy(dl->root, wire + 10, 32);
+        memcpy(dl->root, record.root, 32);
         zcl_hex_encode(dl->root, 32, dl->root_hex);
-        dl->created_day = (int64_t)vcs_rd_u64le(wire + 42);
-        dl->provider_restricted = wire[50] == 1u;
+        dl->created_day = record.created_day;
+        dl->provider_restricted = record.provider_restricted;
+        dl->maximum_package_bytes = record.maximum_package_bytes;
         dl->state = VCS_SWARM_DL_WANT_MANIFEST;
         if (engine->store) {
             struct vcs_package_store_status st;
@@ -1542,7 +1530,7 @@ struct vcs_swarm_frame_result vcs_swarm_engine_handle_frame(
 static enum vcs_swarm_fetch_result swarm_fetch(
     struct vcs_swarm_engine *engine, const uint8_t package_root[32],
     int64_t day, uint64_t now, const uint64_t *provider_peers,
-    size_t provider_count, bool restricted)
+    size_t provider_count, bool restricted, uint64_t maximum_package_bytes)
 {
     (void)now; /* the tick owns scheduling; fetch only registers intent */
     if (!engine || !package_root)
@@ -1566,6 +1554,17 @@ static enum vcs_swarm_fetch_result swarm_fetch(
         dl = NULL;
     }
     if (dl) {
+        /* Never tighten shared work; ordinary demand lifts a scout bound. */
+        if (maximum_package_bytes > 0 &&
+            (dl->maximum_package_bytes == 0 ||
+             maximum_package_bytes < dl->maximum_package_bytes)) {
+            pthread_mutex_unlock(&engine->lock);
+            return VCS_SWARM_FETCH_BOUND_NOT_OWNED;
+        }
+        if (maximum_package_bytes == 0 && dl->maximum_package_bytes > 0) {
+            dl->maximum_package_bytes = 0;
+            (void)record_persist(engine, dl);
+        }
         if (restricted) {
             dl->provider_restricted = true;
             dl_set_providers(dl, provider_peers, provider_count);
@@ -1583,8 +1582,7 @@ static enum vcs_swarm_fetch_result swarm_fetch(
         pthread_mutex_unlock(&engine->lock);
         return VCS_SWARM_FETCH_ALREADY_COMPLETE;
     }
-    /* Slot: free first, then a COMPLETE slot (its work is durable), else
-     * a FAILED slot. */
+    /* Prefer a free, then durable-complete, then failed slot. */
     int slot = -1, complete_slot = -1, failed_slot = -1;
     for (size_t i = 0; i < VCS_SWARM_MAX_DOWNLOADS; i++) {
         if (!engine->dls[i].used) {
@@ -1611,6 +1609,7 @@ static enum vcs_swarm_fetch_result swarm_fetch(
     dl->state = VCS_SWARM_DL_WANT_MANIFEST;
     dl->created_day = day;
     dl->provider_restricted = restricted;
+    dl->maximum_package_bytes = maximum_package_bytes;
     dl_set_providers(dl, provider_peers, provider_count);
     /* The resumable record lands FIRST — a crash after this point
      * resumes the fetch. */
@@ -1638,7 +1637,7 @@ enum vcs_swarm_fetch_result vcs_swarm_engine_fetch(
     struct vcs_swarm_engine *engine, const uint8_t package_root[32],
     int64_t day, uint64_t now)
 {
-    return swarm_fetch(engine, package_root, day, now, NULL, 0, false);
+  return swarm_fetch(engine, package_root, day, now, NULL, 0, false, 0);
 }
 
 enum vcs_swarm_fetch_result vcs_swarm_engine_fetch_from(
@@ -1650,7 +1649,18 @@ enum vcs_swarm_fetch_result vcs_swarm_engine_fetch_from(
         provider_count > VCS_SWARM_PROVIDER_MAX)
         return VCS_SWARM_FETCH_BAD_INPUT;
     return swarm_fetch(engine, package_root, day, now, provider_peers,
-                       provider_count, true);
+                       provider_count, true, 0);
+}
+enum vcs_swarm_fetch_result vcs_swarm_engine_fetch_from_bounded(
+    struct vcs_swarm_engine *engine, const uint8_t package_root[32],
+    int64_t day, uint64_t now, const uint64_t *provider_peers,
+    size_t provider_count, uint64_t maximum_package_bytes)
+{
+    if ((!provider_peers && provider_count) ||
+        provider_count > VCS_SWARM_PROVIDER_MAX || maximum_package_bytes == 0)
+        return VCS_SWARM_FETCH_BAD_INPUT;
+    return swarm_fetch(engine, package_root, day, now, provider_peers,
+                       provider_count, true, maximum_package_bytes);
 }
 
 /* Cancel an active download: queues CANCEL per outstanding request,
@@ -1759,6 +1769,7 @@ bool vcs_swarm_engine_download_status(struct vcs_swarm_engine *engine,
         out->advertisers = advertisers_of(engine, dl);
         out->inflight = dl_inflight(dl);
         out->fetched_bytes = dl->fetched_bytes;
+        out->maximum_package_bytes = dl->maximum_package_bytes;
         if (dl->manifest_loaded) {
             out->total_chunks = dl->total_chunks;
             out->present_chunks = dl->have_count;

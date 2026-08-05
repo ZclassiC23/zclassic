@@ -113,7 +113,7 @@
 #define VCS_SWARM_PROVIDER_MAX 16u
 #define VCS_SWARM_BURST_WINDOW_TICKS 600u   /* request burst: 10 min @1s */
 #define VCS_SWARM_ANNOUNCE_WINDOW_TICKS 3600u /* announce rate: 1 h @1s */
-#define VCS_SWARM_RECORD_WIRE_BYTES 51u
+#define VCS_SWARM_RECORD_WIRE_BYTES 59u
 
 struct vcs_package_store;
 struct vcs_service_book;
@@ -205,6 +205,8 @@ enum vcs_swarm_fetch_result {
     VCS_SWARM_FETCH_NO_STORE,      /* engine has no store */
     VCS_SWARM_FETCH_FULL,          /* VCS_SWARM_MAX_DOWNLOADS reached */
     VCS_SWARM_FETCH_RECORD_IO,     /* download record would not persist */
+    VCS_SWARM_FETCH_BYTE_LIMIT,    /* package exceeds caller-owned bound */
+    VCS_SWARM_FETCH_BOUND_NOT_OWNED, /* existing work has a looser bound */
     VCS_SWARM_FETCH_BAD_INPUT,
 };
 const char *vcs_swarm_fetch_result_string(enum vcs_swarm_fetch_result r);
@@ -224,6 +226,14 @@ enum vcs_swarm_fetch_result vcs_swarm_engine_fetch_from(
     struct vcs_swarm_engine *engine, const uint8_t package_root[32],
     int64_t day, uint64_t now, const uint64_t *provider_peers,
     size_t provider_count);
+
+/* Generic provider-directed fetch with a persistent content-byte ceiling.
+ * The manifest is verified and parsed first; an oversized package is failed
+ * before any content chunk is requested or stored. */
+enum vcs_swarm_fetch_result vcs_swarm_engine_fetch_from_bounded(
+    struct vcs_swarm_engine *engine, const uint8_t package_root[32],
+    int64_t day, uint64_t now, const uint64_t *provider_peers,
+    size_t provider_count, uint64_t maximum_package_bytes);
 
 /* Cancel an active download: queues CANCEL per outstanding request,
  * tombstones the ids, deletes the record. False when not active. */
@@ -265,6 +275,7 @@ struct vcs_swarm_download_status {
     uint64_t present_bytes;
     uint64_t total_bytes;     /* manifest total; 0 until verified */
     uint64_t fetched_bytes;   /* verified bytes pulled by this download */
+    uint64_t maximum_package_bytes; /* 0 unbounded; persisted fetch ceiling */
 };
 
 bool vcs_swarm_engine_download_status(struct vcs_swarm_engine *engine,

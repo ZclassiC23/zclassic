@@ -409,4 +409,85 @@ missing phase-specific proof.
   result. The shared discover-then-route adapter, dual-identity admission gate
   and direct regressions close all three. The reviewer reran the focused matrix,
   lint and build-only, confirmed test seams are absent from production objects,
-  and returned **BANKABLE** with no remaining sovereignty finding.
+  and returned **BANKABLE** with no remaining sovereignty finding. Phase 5 is
+  banked in commit `e3e018823`.
+
+### Phase 6 — banked
+
+- Born-red witness: the Phase 5 head had no scout mission codec, traversal
+  engine, evidence map, attestation, CAS service or `metaverse.space.scout.*`
+  command; the phase began from that disk-backed symbol/catalog absence rather
+  than a fabricated runtime failure.
+- `space_scout` now defines one domain-separated canonical mission containing
+  sorted starting roots, a frozen observation time and explicit depth, space,
+  portal, byte and monotonic-duration caps. The pure sequential BFS attempts
+  each unique root once, follows only sorted `space_manifest.v1` portal roots,
+  and emits fixed typed outcomes. Its map contains visited roots/depths,
+  verified owners, advertised service roots, portal outcomes, failures, the
+  policy-denial count, accepted manifest bytes and a named truncation reason.
+  Mission-aware validation rejects impossible evidence graphs: cap overclaims,
+  unvisited cycle targets, followed targets without a depth+1 visit and limit
+  outcomes inconsistent with their source depth. A portal queued but not
+  visited before a byte/portal/deadline stop is named `truncated`, never
+  misreported as followed.
+  It has no service dispatch, package loader, wallet, message or executor
+  callback.
+- The deterministic evidence map excludes observer identity, so identical
+  mission plus observations encode identically. A distinct signed attestation
+  binds the mission root and evidence-map root to this node's existing DHT
+  delegation and online key. The signature is explicitly local evidence; it
+  grants neither ownership nor authority over a visited space. Mission, map and
+  attestation use separate semantic domains and are each stored in local CAS,
+  then reloaded, decoded, re-rooted and byte-compared even when pre-existing.
+- Three typed leaves are READY under the existing branch:
+  `metaverse.space.scout.plan|run|show`. Plan is stateless and side-effect free.
+  Run requires the exact plan token plus `confirm:true`, current observer chain
+  authorization and a matching online key. Show rechecks all three linked CAS
+  objects and renders every bounded observation while stating
+  `local_evidence:true`, `global_truth:false`, `grants_authority:false` and
+  `executable:false`.
+- Production observation consults DISCOVER and FETCH policy first by semantic
+  and package root plus `space.manifest` service type, then repeats it with the
+  verified owner ZID. A denial becomes only the public typed
+  `policy_denied` result; rule IDs, reasons, classifications and paths never
+  enter evidence bytes. Missing local objects compose the Phase 5 exact-root
+  POINTER/PROVIDER discovery/admission path. The deadline-aware adapter drives
+  the existing owner-bound record begin/poll/cancel lifecycle, bounds provider
+  routing and delegation RPCs by the remaining monotonic budget, and cancels
+  its lookup capability at expiry. It adds no RPC, DHT record or transport.
+- `maximum_bytes` is enforced before local CAS/blob reads and threaded into the
+  existing provider route. The generic swarm intent persists a package-content
+  ceiling, verifies/parses the manifest and rejects an oversized package before
+  storing its manifest or requesting a content chunk. The v3 intent reader
+  remains compatible with unbounded v2 records. A bounded scout never tightens
+  or aborts an unrelated shared transfer, while later explicit ordinary demand
+  can lift a scout-owned bound; the scout still refuses any local read beyond
+  its own cap.
+- Before any mission/map/attestation CAS write, both STORE and INDEX policy are
+  checked independently for all three exact evidence roots. Native mutation
+  truth includes manifest admission, scheduled resumable work, CAS directory
+  initialization and each new evidence object on both success and failure.
+- Direct tests currently pass for canonical mission/map round trips, stable
+  rerun bytes/root, cycles, dead and policy-denied portals, depth/space/portal/
+  byte/deadline caps, no execution callback, exact plan confirmation, stale
+  token refusal, restart-stable CAS, signed attestation linkage/tamper,
+  impossible-graph rejection, lookup cancellation on deadline, shared-transfer
+  coexistence, bounded-swarm restart and legacy v2 record migration.
+  `test_space_scout`, `build-only`,
+  `test_command_registry_catalog`, `check-command-input-keys` and
+  `check-doc-counts` pass. The full impacted matrix also passes both space
+  groups, all seven `zcode_dht*` groups, both `zcode_science*` groups and both
+  `zcode_swarm*` groups. Full `make lint` passes all 132 gates.
+- Final independent non-author verdict by `phase1_review`: **BANKABLE**. Its
+  released-tree receipts reran both space groups, both swarm groups, all seven
+  DHT groups, both science groups and the command catalog, with
+  `git diff --check` clean. Static audit found no executor, wallet, message,
+  service-dispatch, doorbell or mailbox path and no second protocol surface.
+- Honest limits before Phase 7: a scheduled asynchronous fetch is terminal for
+  one scout run and a later rerun may observe the admitted manifest. The scout
+  records advertised service roots but deliberately does not fetch or invoke
+  descriptors. Evidence sharing beyond local CAS is not added; any future
+  carrier must reuse the existing package/swarm substrate. No doorbell, board,
+  mailbox, agent mission, remote action or automatic C23 execution exists.
+  The mission byte ceiling covers accepted manifest/carrier content; bounded
+  control envelopes are governed by the separate monotonic deadline.

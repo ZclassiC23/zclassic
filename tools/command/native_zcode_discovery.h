@@ -24,6 +24,12 @@ bool zcl_native_zcode_publish_record(
 bool zcl_native_zcode_records_discover(
     struct json_value *selector, struct json_value *result);
 
+/* Drive the existing begin/poll/cancel capability under a caller-owned
+ * absolute monotonic deadline. Adds no RPC or wire surface. */
+bool zcl_native_zcode_records_discover_until(
+    struct json_value *selector, struct json_value *result,
+    int64_t deadline_mono_ms, bool *deadline_reached_out);
+
 bool zcl_native_zcode_provider_route(
     struct json_value *selector, struct json_value *result);
 
@@ -32,6 +38,10 @@ bool zcl_native_zcode_provider_route(
 bool zcl_native_zcode_provider_discover_and_route(
     struct json_value *selector, struct json_value *route_result,
     uint32_t *record_count_out);
+bool zcl_native_zcode_provider_discover_and_route_until(
+    struct json_value *selector, struct json_value *route_result,
+    uint32_t *record_count_out, int64_t deadline_mono_ms,
+    bool *deadline_reached_out);
 
 #ifdef ZCL_TESTING
 typedef bool (*zcl_native_zcode_discovery_test_fn)(
@@ -71,5 +81,9 @@ bool zcl_native_zcode_pointer_candidates_build(
 bool zcl_native_zcode_delegation_authorized(
     const struct vcs_zcode_dht_delegation *delegation,
     char *error_out, size_t error_capacity);
+bool zcl_native_zcode_delegation_authorized_until(
+    const struct vcs_zcode_dht_delegation *delegation,
+    int64_t deadline_mono_ms, char *error_out, size_t error_capacity,
+    bool *deadline_reached_out);
 
 #endif /* ZCL_TOOLS_NATIVE_ZCODE_DISCOVERY_H */

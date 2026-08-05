@@ -712,8 +712,9 @@ void zcl_native_handle_metaverse_space_publish(
   }
 }
 
-void zcl_native_handle_metaverse_space_discover(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+void zcl_native_metaverse_space_discover_until(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply,
+    int64_t discovery_deadline, size_t maximum_wire_bytes)
 {
   if (!request || !reply)
     return;
@@ -745,11 +746,20 @@ void zcl_native_handle_metaverse_space_discover(
   json_push_kv_str(&selector, "kind", "pointer");
   json_push_kv_str(&selector, "namespace", mvspace_namespace(kind));
   json_push_kv_str(&selector, "semantic_root", root);
-  if (!zcl_native_zcode_records_discover(&selector, &result)) {
+  bool deadline_reached = false;
+  bool discovered = discovery_deadline > 0
+      ? zcl_native_zcode_records_discover_until(
+            &selector, &result, discovery_deadline, &deadline_reached)
+      : zcl_native_zcode_records_discover(&selector, &result);
+  if (!discovered) {
     json_free(&result);
     json_free(&selector);
-    mvspace_blocked(reply, "DISCOVERY_UNAVAILABLE",
-                    "iterative signed pointer discovery did not complete",
+    mvspace_blocked(reply,
+                    deadline_reached ? "DISCOVERY_DEADLINE"
+                                     : "DISCOVERY_UNAVAILABLE",
+                    deadline_reached
+                        ? "the caller-owned discovery deadline expired"
+                        : "iterative signed pointer discovery did not complete",
                     "metaverse.space.discover");
     return;
   }
@@ -777,6 +787,7 @@ void zcl_native_handle_metaverse_space_discover(
   size_t policy_denied = 0, tried = 0;
   size_t provider_records_seen = 0;
   bool scheduled = false, admitted = false, is_new = false;
+  bool byte_limit_reached = false;
   char selected_blob[65] = {0}, selected_pointer_publisher[65] = {0};
   struct metaverse_space_object object;
   memset(&object, 0, sizeof(object));
@@ -792,8 +803,15 @@ void zcl_native_handle_metaverse_space_discover(
       continue;
     }
     tried++;
-    struct zcl_result inspected = metaverse_space_blob_inspect(
-        store, candidates.rows[i].transport_root, &object);
+    size_t inspected_wire_bytes = 0;
+    struct zcl_result inspected = metaverse_space_blob_inspect_bounded(
+        store, candidates.rows[i].transport_root, maximum_wire_bytes,
+        &object, &inspected_wire_bytes);
+    if (!inspected.ok &&
+        strcmp(inspected.message, "space-blob-inspect-byte-limit") == 0) {
+      byte_limit_reached = true;
+      break;
+    }
     if (!inspected.ok) {
       struct json_value route_input, route_result;
       json_init(&route_input);
@@ -803,12 +821,30 @@ void zcl_native_handle_metaverse_space_discover(
       json_push_kv_str(&route_input, "namespace", mvspace_namespace(kind));
       json_push_kv_str(&route_input, "transport_root",
                        candidates.rows[i].transport_root);
+      if (maximum_wire_bytes <= (size_t)INT64_MAX)
+        json_push_kv_int(&route_input, "maximum_bytes",
+                         (int64_t)maximum_wire_bytes);
       uint32_t provider_count = 0;
-      bool routed = zcl_native_zcode_provider_discover_and_route(
-          &route_input, &route_result, &provider_count);
+      bool routed = discovery_deadline > 0
+          ? zcl_native_zcode_provider_discover_and_route_until(
+                &route_input, &route_result, &provider_count,
+                discovery_deadline, &deadline_reached)
+          : zcl_native_zcode_provider_discover_and_route(
+                &route_input, &route_result, &provider_count);
+      const char *fetch_result =
+          json_get_str(json_get(&route_result, "fetch_result"));
+      bool route_byte_limit = fetch_result &&
+          (strcmp(fetch_result, "byte-limit") == 0 ||
+           strcmp(fetch_result, "bound-not-owned") == 0);
       provider_records_seen += provider_count;
       json_free(&route_result);
       json_free(&route_input);
+      if (deadline_reached)
+        break;
+      if (route_byte_limit) {
+        byte_limit_reached = true;
+        break;
+      }
       if (!routed)
         continue;
       scheduled = true;
@@ -829,12 +865,22 @@ void zcl_native_handle_metaverse_space_discover(
                      owner);
       owner_ptr = owner;
       uint64_t now = (uint64_t)platform_time_wall_unix();
+      bool authorization_deadline = false;
+      bool authorized = discovery_deadline > 0
+          ? zcl_native_zcode_delegation_authorized_until(
+                &object.as.manifest.delegation, discovery_deadline,
+                NULL, 0, &authorization_deadline)
+          : zcl_native_zcode_delegation_authorized(
+                &object.as.manifest.delegation, NULL, 0);
+      if (authorization_deadline) {
+        deadline_reached = true;
+        break;
+      }
       if (vcs_space_manifest_validate_at(
               &object.as.manifest,
               object.as.manifest.delegation.network_genesis, now) !=
               VCS_SPACE_OK ||
-          !zcl_native_zcode_delegation_authorized(
-              &object.as.manifest.delegation, NULL, 0))
+          !authorized)
         continue;
     }
     if (!mvspace_admit_policy(
@@ -845,9 +891,14 @@ void zcl_native_handle_metaverse_space_discover(
       continue;
     }
     enum metaverse_space_object_kind admitted_kind;
-    struct zcl_result stored = resolved ? metaverse_space_admit(
+    struct zcl_result stored = resolved ? metaverse_space_admit_bounded(
         store, resolved, root, candidates.rows[i].transport_root,
-        &admitted_kind, &is_new) : ZCL_ERR(-1, "workspace-invalid");
+        maximum_wire_bytes, &admitted_kind, &is_new)
+        : ZCL_ERR(-1, "workspace-invalid");
+    if (!stored.ok && strcmp(stored.message, "space-admit-byte-limit") == 0) {
+      byte_limit_reached = true;
+      break;
+    }
     if (!stored.ok || admitted_kind != kind)
       continue;
     admitted = true;
@@ -873,6 +924,8 @@ void zcl_native_handle_metaverse_space_discover(
                    (int64_t)provider_records_seen);
   json_push_kv_bool(&reply->data, "fetch_scheduled", scheduled);
   json_push_kv_bool(&reply->data, "admitted", admitted);
+  json_push_kv_bool(&reply->data, "deadline_reached", deadline_reached);
+  json_push_kv_bool(&reply->data, "byte_limit_reached", byte_limit_reached);
   if (selected_blob[0]) {
     json_push_kv_str(&reply->data, "blob_root", selected_blob);
     json_push_kv_str(&reply->data, "pointer_publisher_zid",
@@ -894,10 +947,24 @@ void zcl_native_handle_metaverse_space_discover(
     return;
   }
   if (!scheduled)
-    mvspace_blocked(reply, "NO_USABLE_SPACE_CANDIDATE",
+    mvspace_blocked(reply,
+                    deadline_reached ? "DISCOVERY_DEADLINE" :
+                    byte_limit_reached ? "DISCOVERY_BYTE_LIMIT"
+                                     : "NO_USABLE_SPACE_CANDIDATE",
+                    deadline_reached
+                    ? "the caller-owned discovery deadline expired"
+                    : byte_limit_reached
+                    ? "the exact object exceeds the caller-owned byte limit"
+                    :
                     candidate_count ?
                     "all pointer candidates were denied, invalid, or lacked "
                     "an authenticated restricted provider" :
                     "no usable signed pointer evidence was discovered",
                     "metaverse.space.discover");
+}
+
+void zcl_native_handle_metaverse_space_discover(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+  zcl_native_metaverse_space_discover_until(request, reply, 0, SIZE_MAX);
 }

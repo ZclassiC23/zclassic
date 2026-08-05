@@ -64,6 +64,9 @@ struct zcl_result metaverse_space_manifest_commit(
 struct zcl_result metaverse_space_show(
     const char *workspace, const char *object_root,
     struct metaverse_space_object *out);
+struct zcl_result metaverse_space_show_bounded(
+    const char *workspace, const char *object_root, size_t maximum_wire_bytes,
+    struct metaverse_space_object *out, size_t *wire_bytes_out);
 
 /* Mirror any committed service/manifest wire into the existing one-chunk blob
  * carrier. Admit performs the inverse and stores only after semantic-root
@@ -78,9 +81,18 @@ struct zcl_result metaverse_space_transport_root(
 struct zcl_result metaverse_space_blob_inspect(
     struct vcs_package_store *store, const char *blob_root,
     struct metaverse_space_object *out);
+struct zcl_result metaverse_space_blob_inspect_bounded(
+    struct vcs_package_store *store, const char *blob_root,
+    size_t maximum_wire_bytes, struct metaverse_space_object *out,
+    size_t *wire_bytes_out);
 struct zcl_result metaverse_space_admit(
     struct vcs_package_store *store, const char *workspace,
     const char *expected_object_root, const char *blob_root,
     enum metaverse_space_object_kind *kind_out, bool *new_out);
+struct zcl_result metaverse_space_admit_bounded(
+    struct vcs_package_store *store, const char *workspace,
+    const char *expected_object_root, const char *blob_root,
+    size_t maximum_wire_bytes, enum metaverse_space_object_kind *kind_out,
+    bool *new_out);
 
 #endif /* ZCL_SERVICES_METAVERSE_SPACE_SERVICE_H */

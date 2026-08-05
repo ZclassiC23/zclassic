@@ -214,15 +214,21 @@ struct zcl_result metaverse_space_manifest_commit(
                      wire, wire_len, root, plan_token, confirm, out);
 }
 
-struct zcl_result metaverse_space_show(
-    const char *workspace, const char *object_root,
-    struct metaverse_space_object *out)
+struct zcl_result metaverse_space_show_bounded(
+    const char *workspace, const char *object_root, size_t maximum_wire_bytes,
+    struct metaverse_space_object *out, size_t *wire_bytes_out)
 {
   uint8_t root[32], *wire = NULL;
   size_t wire_len = 0;
-  if (!workspace || !hex_root(object_root, root) || !out)
+  if (wire_bytes_out)
+    *wire_bytes_out = 0;
+  if (!workspace || !hex_root(object_root, root) || !out || !wire_bytes_out)
     return ZCL_ERR(-1, "space-show-input-invalid");
-  if (vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0)
+  int loaded = vcs_object_load_raw_bounded(
+      workspace, root, maximum_wire_bytes, &wire, &wire_len);
+  if (loaded == -2)
+    return ZCL_ERR(-1, "space-show-byte-limit");
+  if (loaded != 0)
     return ZCL_ERR(-1, "space-show-not-found");
   struct zcl_result result = identify(wire, wire_len, out);
   free(wire);
@@ -230,7 +236,17 @@ struct zcl_result metaverse_space_show(
     memset(out, 0, sizeof(*out));
     return ZCL_ERR(-1, "space-show-cas-corrupt");
   }
+  *wire_bytes_out = wire_len;
   return ZCL_OK;
+}
+
+struct zcl_result metaverse_space_show(
+    const char *workspace, const char *object_root,
+    struct metaverse_space_object *out)
+{
+  size_t ignored = 0;
+  return metaverse_space_show_bounded(
+      workspace, object_root, SIZE_MAX, out, &ignored);
 }
 
 struct zcl_result metaverse_space_publish(
@@ -292,30 +308,54 @@ struct zcl_result metaverse_space_blob_inspect(
     struct vcs_package_store *store, const char *blob_root,
     struct metaverse_space_object *out)
 {
+  size_t ignored = 0;
+  return metaverse_space_blob_inspect_bounded(
+      store, blob_root, VCS_BLOB_MAX_BYTES, out, &ignored);
+}
+
+struct zcl_result metaverse_space_blob_inspect_bounded(
+    struct vcs_package_store *store, const char *blob_root,
+    size_t maximum_wire_bytes, struct metaverse_space_object *out,
+    size_t *wire_bytes_out)
+{
   uint8_t transport[32], wire[VCS_BLOB_MAX_BYTES];
   size_t wire_len = 0;
-  if (!store || !hex_root(blob_root, transport) || !out)
+  if (wire_bytes_out)
+    *wire_bytes_out = 0;
+  if (!store || !hex_root(blob_root, transport) || !out || !wire_bytes_out)
     return ZCL_ERR(-1, "space-blob-inspect-input-invalid");
+  size_t capacity = maximum_wire_bytes < sizeof(wire)
+                        ? maximum_wire_bytes : sizeof(wire);
   enum vcs_blob_result loaded = vcs_blob_get_from(
-      store, transport, wire, sizeof(wire), &wire_len);
+      store, transport, wire, capacity, &wire_len);
+  if (loaded == VCS_BLOB_ERR_CAPACITY)
+    return ZCL_ERR(-1, "space-blob-inspect-byte-limit");
   if (loaded != VCS_BLOB_OK)
     return ZCL_ERR(-1, "space-blob-inspect-read: %s",
                    vcs_blob_result_string(loaded));
-  return identify(wire, wire_len, out);
+  struct zcl_result identified = identify(wire, wire_len, out);
+  if (identified.ok)
+    *wire_bytes_out = wire_len;
+  return identified;
 }
 
-struct zcl_result metaverse_space_admit(
+struct zcl_result metaverse_space_admit_bounded(
     struct vcs_package_store *store, const char *workspace,
     const char *expected_object_root, const char *blob_root,
-    enum metaverse_space_object_kind *kind_out, bool *new_out)
+    size_t maximum_wire_bytes, enum metaverse_space_object_kind *kind_out,
+    bool *new_out)
 {
   uint8_t expected[32], transport[32], wire[VCS_BLOB_MAX_BYTES];
   size_t wire_len = 0;
   if (!store || !workspace || !hex_root(expected_object_root, expected) ||
       !hex_root(blob_root, transport) || !kind_out || !new_out)
     return ZCL_ERR(-1, "space-admit-input-invalid");
+  size_t capacity = maximum_wire_bytes < sizeof(wire)
+                        ? maximum_wire_bytes : sizeof(wire);
   enum vcs_blob_result loaded = vcs_blob_get_from(
-      store, transport, wire, sizeof(wire), &wire_len);
+      store, transport, wire, capacity, &wire_len);
+  if (loaded == VCS_BLOB_ERR_CAPACITY)
+    return ZCL_ERR(-1, "space-admit-byte-limit");
   if (loaded != VCS_BLOB_OK)
     return ZCL_ERR(-1, "space-admit-blob-read: %s",
                    vcs_blob_result_string(loaded));
@@ -332,4 +372,14 @@ struct zcl_result metaverse_space_admit(
   ZCL_CHECK(cas_verify(workspace, expected, wire, wire_len));
   *kind_out = object.kind;
   return ZCL_OK;
+}
+
+struct zcl_result metaverse_space_admit(
+    struct vcs_package_store *store, const char *workspace,
+    const char *expected_object_root, const char *blob_root,
+    enum metaverse_space_object_kind *kind_out, bool *new_out)
+{
+  return metaverse_space_admit_bounded(
+      store, workspace, expected_object_root, blob_root, SIZE_MAX,
+      kind_out, new_out);
 }

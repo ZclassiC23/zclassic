@@ -74,6 +74,21 @@ bool vcs_object_store_init(const char *repo_root)
     return true;
 }
 
+bool vcs_object_store_initialized(const char *repo_root)
+{
+    if (!repo_root || !repo_root[0])
+        return false;
+    static const char *const suffixes[] = {"", "objects", "objects/tmp"};
+    for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); i++) {
+        char path[VCS_OBJECT_PATH_MAX];
+        struct stat st;
+        if (!zvcs_path(repo_root, suffixes[i], path, sizeof(path)) ||
+            stat(path, &st) != 0 || !S_ISDIR(st.st_mode))
+            return false;
+    }
+    return true;
+}
+
 /* objects/<hh>/<62hex> for a 32-byte address. */
 static bool object_path(const char *repo_root, const uint8_t addr[32],
                         char *out, size_t cap)
@@ -186,6 +201,7 @@ bool vcs_object_put_addressed(const char *repo_root, const uint8_t address[32],
 /* Read the whole object file at addr into *out (caller frees). No hash
  * verification here — the caller owns it. */
 static int object_read(const char *repo_root, const uint8_t addr[32],
+                       size_t maximum_bytes,
                        uint8_t **out, size_t *out_len)
 {
     *out = NULL;
@@ -204,6 +220,10 @@ static int object_read(const char *repo_root, const uint8_t addr[32],
     if (st.st_size < 0 || (size_t)st.st_size > VCS_OBJECT_MAX_BYTES) {
         close(fd);
         LOG_ERR("vcs", "object too large: %lld", (long long)st.st_size);
+    }
+    if ((size_t)st.st_size > maximum_bytes) {
+        close(fd);
+        return -2; /* caller-owned pre-read byte bound */
     }
     size_t len = (size_t)st.st_size;
     uint8_t *buf = NULL;
@@ -241,7 +261,7 @@ int vcs_object_get(const char *repo_root, const uint8_t hash[32], uint8_t tag,
         LOG_ERR("vcs", "null arg to object_get");
     uint8_t *buf = NULL;
     size_t len = 0;
-    if (object_read(repo_root, hash, &buf, &len) != 0)
+    if (object_read(repo_root, hash, VCS_OBJECT_MAX_BYTES, &buf, &len) != 0)
         return -1;
     uint8_t recomputed[32];
     vcs_sha3_tag(tag, buf, len, recomputed);
@@ -261,5 +281,19 @@ int vcs_object_load_raw(const char *repo_root, const uint8_t address[32],
     if (out_len) *out_len = 0;
     if (!repo_root || !address || !out_content || !out_len)
         LOG_ERR("vcs", "null arg to object_load_raw");
-    return object_read(repo_root, address, out_content, out_len);
+    return object_read(repo_root, address, VCS_OBJECT_MAX_BYTES,
+                       out_content, out_len);
+}
+
+int vcs_object_load_raw_bounded(const char *repo_root,
+                                const uint8_t address[32],
+                                size_t maximum_bytes,
+                                uint8_t **out_content, size_t *out_len)
+{
+    if (out_content) *out_content = NULL;
+    if (out_len) *out_len = 0;
+    if (!repo_root || !address || !out_content || !out_len)
+        LOG_ERR("vcs", "null arg to object_load_raw_bounded");
+    return object_read(repo_root, address, maximum_bytes,
+                       out_content, out_len);
 }

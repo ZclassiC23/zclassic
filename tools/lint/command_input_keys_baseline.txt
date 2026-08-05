@@ -33,6 +33,10 @@ metaverse.space.commit delegation_wire # delegation authorization serializes a p
 metaverse.space.show delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
 metaverse.space.publish delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
 metaverse.space.discover delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
+metaverse.space.discover lookup_id # bounded discovery creates this private lookup capability after begin; request->input never reaches it.
+metaverse.space.discover owner_token # bounded discovery creates this private owner capability after begin; request->input never reaches it.
+metaverse.space.scout.run delegation_wire # observer/manifest chain checks serialize private public delegation RPC objects; request->input never reaches them.
+metaverse.space.scout.show delegation_wire # current observer chain status serializes a private public delegation RPC object; request->input never reaches it.
 metaverse.space.publish mode # DHT publication reads its private plan/commit RPC object; request->input never reaches that helper.
 metaverse.space.publish kind # DHT publication reads its private plan/commit RPC object; request->input never reaches that helper.
 metaverse.space.publish namespace # DHT publication reads its private plan/commit RPC object; request->input never reaches that helper.

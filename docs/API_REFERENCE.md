@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 517 |
+| Registry entries (branches + leaves) | 521 |
 | Top-level roots | 11 |
-| Branches | 118 |
-| Leaves (dispatchable command paths) | 399 |
-| … `ready` (live handler in this build) | 351 |
+| Branches | 119 |
+| Leaves (dispatchable command paths) | 402 |
+| … `ready` (live handler in this build) | 354 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 132 |
+| Leaves with `effect=mutate` | 133 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 89 |
 
@@ -87,7 +87,7 @@ Per source file:
 | `config/commands/vault.def` | 21 | 4 | 17 |
 | `config/commands/zcode.def` | 89 | 17 | 72 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
-| `config/commands/metaverse.def` | 24 | 6 | 18 |
+| `config/commands/metaverse.def` | 28 | 7 | 21 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
@@ -1107,6 +1107,14 @@ represented by its children's sections.
 | `metaverse space show` | ready | read / read / operator · fast/low | **`root`**, `workspace`, `datadir` | `zcl.metaverse_space_show.v1` | `zclassic23 metaverse space show <64hex>` | Re-derive one local space object and its evidence grade |
 | `metaverse space publish` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `workspace`, `datadir` | `zcl.metaverse_space_publish.v1` | `zclassic23 metaverse space publish <64hex>` | Publish one local space object through the existing signed DHT |
 | `metaverse space discover` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `kind`, `workspace`, `datadir` | `zcl.metaverse_space_discover.v1` | `zclassic23 metaverse space discover <64hex> --kind=space_manifest` | Discover one exact space root under local admission policy |
+
+#### `metaverse.space.scout` — Bounded read-only space missions and signed local evidence
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `metaverse space scout plan` | ready | read / read / operator · fast/low | `starting_roots`, `observation_unix`, `maximum_depth`, `maximum_spaces`, `maximum_portals`, `maximum_bytes`, `deadline_ms`, `datadir` | `zcl.metaverse_space_scout_plan.v1` | `zclassic23 metaverse space scout plan --input='<mission-json>'` | Plan one bounded read-only traversal of sovereign spaces |
+| `metaverse space scout run` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | `starting_roots`, `observation_unix`, `maximum_depth`, `maximum_spaces`, `maximum_portals`, `maximum_bytes`, `deadline_ms`, `plan_token`, `confirm`, `workspace`, `datadir` | `zcl.metaverse_space_scout_run.v1` | `zclassic23 metaverse space scout run --input='<confirmed-mission-json>'` | Run one exactly planned bounded read-only space scout mission |
+| `metaverse space scout show` | ready | read / read / operator · fast/low | **`root`**, `workspace`, `datadir` | `zcl.metaverse_space_scout_show.v1` | `zclassic23 metaverse space scout show <attestation-root>` | Show one signed local scout attestation and its canonical evidence map |
 
 #### `metaverse.build` — Content-addressed C23 build jobs, actions, and receipts
 
