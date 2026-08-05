@@ -45,6 +45,9 @@ extern "C" {
 #define ZCL_COMMAND_ERROR_BUDGET 2048U
 #define ZCL_COMMAND_RESULT_BUDGET 4096U
 #define ZCL_COMMAND_LIST_BUDGET 8192U
+/* Complete, unpaged catalogs whose bounded row count legitimately exceeds the
+ * ordinary list ceiling. Prefer ZCL_COMMAND_LIST_BUDGET for paged lists. */
+#define ZCL_COMMAND_EXTENDED_LIST_BUDGET 16384U
 #define ZCL_COMMAND_SEARCH_LIMIT 5U
 #define ZCL_COMMAND_MAX_NEXT 3U
 #define ZCL_COMMAND_MAX_PATH 128U

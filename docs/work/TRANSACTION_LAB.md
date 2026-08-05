@@ -848,3 +848,31 @@ This is `consensus_verified`, not a simulated block or mainnet spend. The
 current result is **38/38 PASS**, **36/38 simulated/live confirmations**,
 **0/38 live-mainnet confirmations**, and **0 ZCL** live recipient value or
 fees. No live wallet, address, endpoint, key, or mainnet funds participated.
+
+## 2026-08-05 typed P2SH multisig workflow and interpreter proof
+
+Implementation commit `2196407a` promotes transparent P2SH multisig from a
+generic raw-transaction possibility to a discoverable typed workflow.
+`core wallet transaction multisig compose` accepts an explicit signature
+threshold and 1..16 public keys, then returns the standard P2SH address, exact
+CHECKMULTISIG redeem script, and the canonical fund/create/sign/broadcast
+command paths. It stores nothing, moves no funds, and accepts no private keys.
+
+The workflow funds that address through the ordinary transparent payment
+path, then uses the raw owner path to create and sign its spend. Signing is
+available only when the resident owner wallet already holds the threshold
+keys; the command neither exports keys nor claims to merge partial signatures
+from separate wallets. The catalog makes that boundary part of the network
+policy instead of hiding it in prose.
+
+`test_multisig` constructs a real 2-of-2 P2SH spend with production ECDSA
+signatures, passes it through the production consensus P2SH/CHECKMULTISIG
+interpreter, and proves a signature-byte mutation is rejected. Independent
+native-contract coverage pins public-key-only composition, typed result fields,
+and local threshold rejection before RPC. Consensus branch tests retain the
+signature/key-count and NULLDUMMY/NULLFAIL negative matrix.
+
+This is `consensus_verified`, not a simulated block or mainnet spend. The
+current result is **39/39 PASS**, **36/39 simulated/live confirmations**,
+**0/39 live-mainnet confirmations**, and **0 ZCL** live recipient value or
+fees. No live wallet, address, endpoint, key, or mainnet funds participated.

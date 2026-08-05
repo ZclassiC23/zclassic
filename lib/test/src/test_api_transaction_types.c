@@ -323,13 +323,13 @@ int api_transaction_type_focused_tests(void)
                                json_get_int(json_get(&root,
                                                      "contained_count")) +
                                json_get_int(json_get(&root, "planned_count"));
-        ok = ok && count == 38 &&
-             json_get_int(json_get(&root, "demonstrated_count")) == 38 &&
+        ok = ok && count == 39 &&
+             json_get_int(json_get(&root, "demonstrated_count")) == 39 &&
              json_get_int(json_get(&root, "blocked_count")) == 0 &&
              json_get_int(json_get(&root, "chain_confirmed_count")) == 36 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
-             json_get_int(json_get(&root, "proof_test_group_count")) == 28 &&
+             json_get_int(json_get(&root, "proof_test_group_count")) == 30 &&
              json_get_bool(json_get(&root, "fully_demonstrated")) &&
              strcmp(json_get_str(json_get(&root, "wire_catalog_command")),
                     "app.transaction-types.wire") == 0 &&
@@ -461,7 +461,7 @@ int api_transaction_type_focused_tests(void)
         struct json_value input;
         json_init(&input);
         json_set_object(&input);
-        char output[ZCL_COMMAND_LIST_BUDGET + 1];
+        char output[ZCL_COMMAND_EXTENDED_LIST_BUDGET + 1];
         enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
         size_t n = spec ? zcl_command_registry_execute_json(
             registry, spec, &context, &input, false, spec->path, "normal",
@@ -470,7 +470,8 @@ int api_transaction_type_focused_tests(void)
         output[n < sizeof(output) ? n : sizeof(output) - 1] = '\0';
         struct json_value root;
         json_init(&root);
-        bool ok = n > 0 && n <= ZCL_COMMAND_LIST_BUDGET &&
+        bool ok = n > 0 && n <= ZCL_COMMAND_EXTENDED_LIST_BUDGET &&
+                  n <= (size_t)spec->budget_bytes &&
                   exit_code == ZCL_COMMAND_EXIT_OK &&
                   json_read(&root, output, n) &&
                   json_get_bool(json_get(&root, "ok")) &&
@@ -615,7 +616,7 @@ int api_transaction_type_focused_tests(void)
                    ZCL_TRANSACTION_COMMAND_SCHEMA) == 0 &&
             strcmp(json_get_str(json_get(data, "catalog_status")),
                    "mapped") == 0 &&
-            json_get_int(json_get(data, "transaction_type_count")) == 4 &&
+            json_get_int(json_get(data, "transaction_type_count")) == 5 &&
             json_get_bool(json_get(data, "may_prepare_chain_material")) &&
             json_get_bool(json_get(data, "may_sign_or_submit")) &&
             api_test_array_has_str(json_get(transparent, "roles"),

@@ -54,7 +54,7 @@ ZCL_COMMAND_READY_READ(
     "commands, chain encoding, privacy, network policy, current proof level, "
     "and transaction-lab case for every known ZClassic23 transaction shape. "
     "Discovery only; this leaf grants no wallet or broadcast authority.",
-    ZCL_COMMAND_LIST_BUDGET,
+    ZCL_COMMAND_EXTENDED_LIST_BUDGET,
     "transactions,catalog,zcl,znam,zslp,zcode,sapling,htlc",
     "zcl.command.empty_input.v1", "zcl.transaction_types.index.v2", "", "",
     "zclassic23 app transaction-types list",

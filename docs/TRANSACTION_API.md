@@ -238,7 +238,7 @@ human index:
 
 | Family | Semantic type ids | Current posture |
 |---|---|---|
-| Base ZCL | `coinbase_reward`, `transparent_t_to_t`, `transparent_multi_recipient`, `sapling_mixed_recipient`, `raw_custom_transaction`, `sapling_t_to_z`, `sapling_z_to_z`, `sapling_z_to_t`, `sprout_joinsplit` | Single-recipient, identity-bound transparent and mixed-pool multi-recipient, and Sapling builders are ready. Multi-recipient payments use the durable vault-intent lifecycle. Coinbase and Sprout are process-only; Sprout evidence pins complete canonical mainnet transactions before and after Sapling activation plus contextual JoinSplit signature and PHGR13/Groth16 proof verification, without exposing a deprecated constructor. |
+| Base ZCL | `coinbase_reward`, `transparent_t_to_t`, `transparent_multi_recipient`, `sapling_mixed_recipient`, `raw_custom_transaction`, `transparent_p2sh_multisig_spend`, `sapling_t_to_z`, `sapling_z_to_z`, `sapling_z_to_t`, `sprout_joinsplit` | Single-recipient, identity-bound transparent and mixed-pool multi-recipient, P2SH multisig, and Sapling workflows are ready. Multi-recipient payments use the durable vault-intent lifecycle. Multisig composition accepts public keys only and its signer uses resident owner-wallet keys. Coinbase and Sprout are process-only; Sprout evidence pins complete canonical mainnet transactions before and after Sapling activation plus contextual JoinSplit signature and PHGR13/Groth16 proof verification, without exposing a deprecated constructor. |
 | ZSLP tokens | `zslp_genesis`, `zslp_mint`, `zslp_send`, `zslp_burn` | Typed plan/commit builders. |
 | ZNAM names | `znam_register`, `znam_update`, `znam_transfer`, `znam_renew`, `znam_set_record`, `znam_set_text` | Typed plan/commit builders with owner checks. |
 | Messaging | `sapling_onchain_memo` | On-chain ZMSG uses an encrypted Sapling memo; P2P messaging is off-chain. |
@@ -277,6 +277,39 @@ catalog -> exact command schema -> current bound custody snapshot
 6. Inspect the returned txid or async operation through the member's
    `inspect_command`, wait for the required confirmation state, then record only
    redacted evidence in the transaction notebook.
+
+### P2SH multisig without private-key arguments
+
+A multisig policy is a two-transaction workflow: first fund the composed P2SH
+address, then spend that output with the threshold signatures. Start with the
+AI-ready contract rather than memorizing these steps:
+
+```bash
+zclassic23 app transaction-types guide --type=transparent_p2sh_multisig_spend
+```
+
+Compose a 2-of-3 policy from public keys only:
+
+```bash
+zclassic23 core wallet transaction multisig compose --input='{
+  "required_signatures":2,
+  "public_keys":["02...","03...","02..."]
+}'
+```
+
+The result returns `address`, `redeem_script_hex`, and the exact fund,
+create-spend, sign, and broadcast command paths. Fund `address` using the
+ordinary identity-bound transparent payment workflow. To spend the resulting
+outpoint, use `core wallet transaction raw create`, then pass its exact
+`scriptPubKey`, amount, and returned `redeem_script_hex` as `redeemScript` in
+the `prevtxs` array for `core wallet transaction raw sign`. Preview and commit
+the exact signed bytes with `core wallet transaction raw broadcast`.
+
+The resident owner wallet must already contain at least the threshold number
+of private keys. The typed API deliberately accepts no private keys and does
+not merge partial signatures produced by separate wallets. If the threshold
+is unavailable, signing returns incomplete/fails closed; an agent must not
+export keys or substitute a weaker policy.
 
 Private keys, recovery words, addresses, endpoints, datadir paths, grant tokens,
 swap secrets, and private memos never belong in catalog output, agent receipts,
@@ -335,7 +368,7 @@ the procedure and safety cap are in
 mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.
 
-The current complete inventory is **38/38 isolated cases passing**, with **36
+The current complete inventory is **39/39 isolated cases passing**, with **36
 simulated-chain confirmations**, **0 mainnet confirmations**, and **0 ZCL**
 live recipient value or fees. The earlier 33/33 result was complete for the
 catalog as then declared; the later audit found ZBLG, made the gap explicit,

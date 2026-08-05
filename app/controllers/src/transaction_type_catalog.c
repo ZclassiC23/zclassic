@@ -286,7 +286,7 @@ static void transaction_type_json(
     (void)json_push_kv_str(out, "summary", type->summary);
 }
 
-/* Collection rows stay below the native 8 KiB list budget.  Full workflow,
+/* Collection rows stay below the native 16 KiB transaction-list budget. Full workflow,
  * encoding, component, privacy, and safety detail belongs to the member
  * resource; this is progressive disclosure, not a second contract. */
 static void transaction_type_summary_json(
