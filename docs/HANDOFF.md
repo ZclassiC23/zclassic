@@ -88,15 +88,19 @@ identical 25,782,344-byte binaries at SHA3-256
 `806af6b13170d5aede79a5f639a86d318a8a1cc5556cb47b6aec0bb9e24ffc45`;
 different-length snapshot paths produced two identical 25,782,424-byte
 binaries at `d46173ceef566084320094368781d32c16f12dda41ee43e6782e70f53ac6a795`.
-Mandatory pre-push CI is rerun after committing this integrated receipt.
+Mandatory pre-push CI passes strict build-only, fast lint and all 895 runnable
+source-wide groups (9 parameter gates, 19 declared self-skips); its live
+topology probe remains intentionally disabled by `ZCL_FAST_LIVE=0`.
 
 Independent implementation review first rejected a hidden `zcode/dht` mkdir
 from READ planners; the lane fixed the load path and recursive test. A separate
 integration reviewer audited merge `21428f0a9`, proved it has no resolution
 delta, verified the newer transaction/proof/capacity files byte-identical to
 the main parent, reran the focused matrix plus all 132 lint gates and returned
-**BANKABLE**. Exact phase and integrated receipts and honest bounds are in
-`docs/work/wt-zcode-s7-2-space-scout.md`.
+**BANKABLE**. Its final audit also replayed the literal-empty-datadir group,
+verified every integrated count/hash and audited the receipt-only delta; final
+verdict remains **BANKABLE**. Exact phase and integrated receipts and honest
+bounds are in `docs/work/wt-zcode-s7-2-space-scout.md`.
 
 Honest limits: no doorbell, board, mailbox, store interaction, agent action,
 remote service invocation, arbitrary package execution, REST silo, consensus

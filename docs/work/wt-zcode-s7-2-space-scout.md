@@ -615,12 +615,15 @@ missing phase-specific proof.
   Different-length snapshot paths produce two byte-identical 25,782,424-byte
   binaries at
   `d46173ceef566084320094368781d32c16f12dda41ee43e6782e70f53ac6a795`.
-  Mandatory pre-push CI is rerun after this receipt is committed.
+  Mandatory pre-push CI passes strict build-only, fast lint and all 895
+  runnable source-wide groups (9 parameter gates, 19 declared self-skips); its
+  live topology probe remains intentionally disabled by `ZCL_FAST_LIVE=0`.
 - Independent integration review at merge `21428f0a9` returned **BANKABLE**:
   both histories and all named main/S7.2 behavior are present, the generated
   registry is combined, and there is no second transport, automatic execution,
-  wallet, consensus, deployment or live-datadir expansion. The final
-  receipt/test-only delta receives a separate non-author audit before push.
+  wallet, consensus, deployment or live-datadir expansion. Its final non-author
+  audit replayed the literal-empty-datadir group, verified every integrated
+  count/hash and checked the receipt-only delta; verdict remains **BANKABLE**.
 - Space v1 proves canonical bounded descriptor/manifest bytes, delegated
   expiring signatures, exact-root CAS admission, generic pointer/provider
   discovery and independent local DISCOVER/FETCH/STORE/INDEX/SERVE/FORWARD
