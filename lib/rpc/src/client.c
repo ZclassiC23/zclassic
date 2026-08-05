@@ -116,7 +116,12 @@ static const struct convert_param convert_table[] = {
     { "z_importkey", 2 },
     { "z_importviewingkey", 2 },
     { "z_getpaymentdisclosure", 1 },
-    { "z_getpaymentdisclosure", 2 }
+    { "z_getpaymentdisclosure", 2 },
+    /* Agent-session actions take a structured policy/custody object as their
+     * second argument.  Without this row zclassic-cli quoted the JSON and the
+     * node correctly refused it as "second param must be an object", forcing
+     * agents to bypass the supported client for custody discovery. */
+    { "agentsession", 1 }
 };
 
 #define NUM_CONVERT_PARAMS \
