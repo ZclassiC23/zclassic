@@ -2,6 +2,8 @@
  * Purpose: durable exact-input planning and idempotent transparent commits. */
 
 #include "controllers/vault_intent_controller.h"
+#include "controllers/vault_intent_private.h"
+#include "controllers/vault_intent_publish.h"
 #include "controllers/native_handler_body.h"
 #include "controllers/sovereignty_controller.h"
 #include "controllers/strong_params.h"
@@ -169,8 +171,9 @@ static bool vi_decode(const uint8_t *raw, size_t len, struct vi_payload *p)
     return true;
 }
 
-static void vi_digest(const uint8_t *raw, size_t len,
-                      const struct vault_intent_row *row, uint8_t out[32])
+void vault_intent_digest_payload(const uint8_t *raw, size_t len,
+                                 const struct vault_intent_row *row,
+                                 uint8_t out[32])
 {
     uint8_t height_le[4], expiry_le[8];
     zcl_write_i32_le(height_le, row->anchor_height);
@@ -196,7 +199,8 @@ static void vi_digest(const uint8_t *raw, size_t len,
     sha3_256_finalize(&c, out);
 }
 
-static bool vi_ready(struct wallet_rpc_context *ctx, struct json_value *out)
+bool vault_intent_context_ready(struct wallet_rpc_context *ctx,
+                                struct json_value *out)
 {
     if (!ctx || !ctx->wallet || !ctx->wallet_db || !ctx->node_db ||
         !ctx->mempool || !ctx->coins_tip || !ctx->main_state) {
@@ -281,9 +285,9 @@ static bool vi_effects(const struct json_value *input, struct vi_payload *p,
     return true;
 }
 
-static void vi_render_row(struct wallet_rpc_context *ctx,
-                          struct json_value *out,
-                          const struct vault_intent_row *row)
+void vault_intent_render_row(struct wallet_rpc_context *ctx,
+                             struct json_value *out,
+                             const struct vault_intent_row *row)
 {
     char id[65]; vi_hex(row->plan_id, id);
     json_push_kv_str(out, "plan_id", id);
@@ -306,7 +310,10 @@ static void vi_render_row(struct wallet_rpc_context *ctx,
         json_push_kv_str(out, "reserved", reserved);
     }
     if (row->has_txid) {
-        char txid[65]; vi_hex(row->txid, txid);
+        struct uint256 txid_value;
+        char txid[65];
+        memcpy(txid_value.data, row->txid, sizeof(txid_value.data));
+        uint256_get_hex(&txid_value, txid);
         json_push_kv_str(out, "txid", txid);
     } else {
         struct json_value none; json_init(&none); json_set_null(&none);
@@ -323,7 +330,10 @@ static void vi_render_row(struct wallet_rpc_context *ctx,
     if (row->confirm_height >= 0) {
         json_push_kv_int(out, "confirmed_height", row->confirm_height);
         if (row->has_confirm_hash) {
-            char block_hash[65]; vi_hex(row->confirm_hash, block_hash);
+            struct uint256 confirmed;
+            char block_hash[65];
+            memcpy(confirmed.data, row->confirm_hash, sizeof(confirmed.data));
+            uint256_get_hex(&confirmed, block_hash);
             json_push_kv_str(out, "confirmed_block_hash", block_hash);
         }
     }
@@ -372,7 +382,10 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
                  "wallet_scope must explicitly be dev or prod");
         return true;
     }
-    if (!vi_ready(ctx, result)) return true;
+    const char *route = json_get_str(json_get(input, "route"));
+    if (!route || strcmp(route, "transparent") != 0)
+        return vault_intent_private_plan(input, result);
+    if (!vault_intent_context_ready(ctx, result)) return true;
     struct vi_payload p; memset(&p, 0, sizeof(p));
     if (!vi_effects(input, &p, result)) return true;
     int64_t target = 0;
@@ -449,7 +462,7 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
     row.recipient_value_zat = target;
     row.max_fee_zat = p.fee;
     row.reserved_zat = reservation;
-    vi_digest(plain, plen, &row, row.digest);
+    vault_intent_digest_payload(plain, plen, &row, row.digest);
     bool encrypted = wallet_metadata_encrypt(ctx->node_db, row.plan_id, 32,
         plain, plen, row.encrypted_payload, sizeof(row.encrypted_payload),
         &row.encrypted_payload_len);
@@ -466,7 +479,7 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
             strcmp(reserved_money.status, "CURRENT") == 0;
         if (stored) {
             memcpy(row.snapshot_root, reserved_money.snapshot_root, 32);
-            vi_digest(plain, plen, &row, row.digest);
+            vault_intent_digest_payload(plain, plen, &row, row.digest);
             stored = vault_intent_save(ctx->node_db, &row);
         }
         if (!stored)
@@ -477,7 +490,7 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
     memory_cleanse(plain, sizeof(plain));
     if (!stored) { vi_error(result, "PLAN_PERSIST_FAILED", "encrypted plan could not be atomically reserved and snapshot-bound"); return true; }
     json_set_object(result); json_push_kv_bool(result, "ok", true);
-    vi_render_row(ctx, result, &row);
+    vault_intent_render_row(ctx, result, &row);
     char digest[65], fee[32]; vi_hex(row.digest, digest); vi_amount_text(p.fee, fee);
     json_push_kv_str(result, "digest", digest);
     json_push_kv_str(result, "fee", fee);
@@ -505,35 +518,6 @@ static bool vi_anchor_ok(struct wallet_rpc_context *ctx,
         memcmp(bi->hashBlock.data, row->anchor_hash, 32) == 0;
 }
 
-static bool vi_publish(struct wallet_rpc_context *ctx, const uint8_t id[32],
-                       struct wallet_tx *wtx, int64_t now,
-                       struct json_value *result)
-{
-    if (!wallet_get_tx(ctx->wallet, &wtx->tx.hash)) {
-        struct zcl_result r = wallet_commit_from_context(ctx, wtx);
-        if (!r.ok) {
-            vault_intent_set_state(ctx->node_db, id, VAULT_INTENT_FAILED, NULL,
-                                   "MEMPOOL_REJECTED", now);
-            vi_error(result, "MEMPOOL_REJECTED", r.message); return false;
-        }
-        r = wallet_persist_commit_before_relay(ctx, wtx);
-        if (!r.ok) {
-            vault_intent_set_state(ctx->node_db, id, VAULT_INTENT_FAILED, NULL,
-                                   "PERSISTENCE_FAILED", now);
-            vi_error(result, "PERSISTENCE_FAILED", r.message); return false;
-        }
-        if (wallet_ctx_db_ready(ctx))
-            node_db_sync_wallet_tx(ctx->node_db, &wtx->tx, ctx->wallet, 0);
-    }
-    if (ctx->connman) connman_relay_transaction(ctx->connman, &wtx->tx.hash);
-    if (!vault_intent_set_state(ctx->node_db, id,
-            VAULT_INTENT_MEMPOOL_ACCEPTED, wtx->tx.hash.data, "", now)) {
-        vi_error(result, "INTENT_STATE_FAILED", "transaction is durable but intent state update failed");
-        return false;
-    }
-    return true;
-}
-
 static bool vi_build_prepared(struct wallet_rpc_context *ctx,
                               const struct vault_intent_row *row,
                               struct wallet_tx *wtx, struct json_value *result)
@@ -546,7 +530,7 @@ static bool vi_build_prepared(struct wallet_rpc_context *ctx,
         return false;
     }
     uint8_t digest[32];
-    vi_digest(plain, plen, row, digest);
+    vault_intent_digest_payload(plain, plen, row, digest);
     struct vi_payload p;
     bool valid = memcmp(digest, row->digest, 32) == 0 && vi_decode(plain, plen, &p);
     memory_cleanse(plain, sizeof(plain));
@@ -624,7 +608,7 @@ static bool rpc_vi_commit(const struct json_value *params, bool help,
         return true;
     }
     struct wallet_rpc_context *ctx = wallet_rpc_context_current();
-    if (!vi_ready(ctx, result)) return true;
+    if (!vault_intent_context_ready(ctx, result)) return true;
     int64_t now = (int64_t)platform_time_wall_time_t();
     vault_intent_expire_due(ctx->node_db, now);
     struct vault_intent_row row;
@@ -640,7 +624,7 @@ static bool rpc_vi_commit(const struct json_value *params, bool help,
     if (row.state >= VAULT_INTENT_MEMPOOL_ACCEPTED &&
         row.state <= VAULT_INTENT_FINALIZED) {
         json_set_object(result); json_push_kv_bool(result, "ok", true);
-        vi_render_row(ctx, result, &row); json_push_kv_bool(result, "idempotent_replay", true); return true;
+        vault_intent_render_row(ctx, result, &row); json_push_kv_bool(result, "idempotent_replay", true); return true;
     }
     if (row.state == VAULT_INTENT_EXPIRED || row.expires_at <= now) {
         vi_error(result, "PLAN_EXPIRED", "the ten-minute plan lifetime elapsed"); return true;
@@ -707,7 +691,10 @@ static bool rpc_vi_commit(const struct json_value *params, bool help,
         stream_free(&s);
         if (!ok) { free(raw); transaction_free(&wtx.tx); vi_error(result, "RAW_TX_CORRUPT", "prepared transaction failed to decode"); return true; }
         wtx.time_received = now; wtx.from_me = true; wtx.used = true;
-    } else if (!vi_build_prepared(ctx, &row, &wtx, result)) {
+    } else if (row.route == VAULT_INTENT_ROUTE_TRANSPARENT
+                   ? !vi_build_prepared(ctx, &row, &wtx, result)
+                   : !vault_intent_private_build_prepared(
+                         ctx, &row, &wtx, result)) {
         free(raw);
         const char *code = json_get_str(json_get(result, "code"));
         if (code && strcmp(code, "INPUT_CONFLICT") == 0)
@@ -716,11 +703,11 @@ static bool rpc_vi_commit(const struct json_value *params, bool help,
         return true;
     }
     free(raw);
-    if (!vi_publish(ctx, id, &wtx, now, result)) { transaction_free(&wtx.tx); return true; }
+    if (!vault_intent_publish_prepared(ctx, id, &wtx, now, result)) { transaction_free(&wtx.tx); return true; }
     transaction_free(&wtx.tx);
     vault_intent_find(ctx->node_db, id, &row);
     json_set_object(result); json_push_kv_bool(result, "ok", true);
-    vi_render_row(ctx, result, &row); json_push_kv_bool(result, "idempotent_replay", false);
+    vault_intent_render_row(ctx, result, &row); json_push_kv_bool(result, "idempotent_replay", false);
     return true;
 }
 
@@ -739,7 +726,7 @@ static bool rpc_vi_status(const struct json_value *params, bool help,
     vi_refresh_state(wallet_rpc_context_current(), &row,
                      (int64_t)platform_time_wall_time_t());
     json_set_object(result); json_push_kv_bool(result, "ok", true);
-    vi_render_row(wallet_rpc_context_current(), result, &row);
+    vault_intent_render_row(wallet_rpc_context_current(), result, &row);
     return true;
 }
 
@@ -758,7 +745,8 @@ static bool rpc_vi_list(const struct json_value *params, bool help,
     struct json_value items; json_init(&items); json_set_array(&items);
     for (int i = 0; i < n; i++) {
         struct json_value item; json_init(&item); json_set_object(&item);
-        vi_render_row(wallet_rpc_context_current(), &item, &rows[i]);
+        vault_intent_render_row(wallet_rpc_context_current(), &item,
+                                &rows[i]);
         json_push_back(&items, &item); json_free(&item);
     }
     json_push_kv(result, "intents", &items); json_free(&items);

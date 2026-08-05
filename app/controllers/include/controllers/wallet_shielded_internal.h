@@ -102,7 +102,7 @@ bool z_sendmany_shielded(
     const uint8_t (*z_diversifiers)[11], const uint8_t (*z_pk_ds)[32],
     const int64_t *z_amounts, const uint8_t (*z_memos)[512],
     const bool *z_has_memo, size_t num_z_out,
-    struct json_value *result);
+    struct wallet_tx *prepared, struct json_value *result);
 
 /* wallet_shielded_keys.c — key/viewing-key import/export + memo */
 bool rpc_z_exportkey(const struct json_value *params, bool help,
