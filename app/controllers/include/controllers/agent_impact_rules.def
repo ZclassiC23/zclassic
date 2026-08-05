@@ -912,3 +912,8 @@ AGENT_IMPACT_RULE("tools/command/native_zendp_command.c|lib/vcs/src/zendp_swarm.
  * any of them can silently widen what a confined agent can reach, so they all
  * re-run the adversarial group together with the catalog. */
 AGENT_IMPACT_RULE("lib/session/src/agent_broker*.c|lib/session/src/agent_audit.c|lib/session/src/agent_confined.c|lib/session/include/session/agent_broker*.h|app/services/src/metaverse_agent_service.c|app/services/include/services/metaverse_agent_service.h|app/controllers/src/metaverse_controller.c|config/commands/metaverse.def|lib/test/src/test_metaverse_agent_broker.c", "metaverse_agent_broker confine command_registry_catalog make_lint_gates")
+
+/* Sovereign space objects reuse the signed DHT's generic pointer/provider
+ * transport.  The wire codecs, local CAS admission, chain-delegation adapter,
+ * policy checkpoints, command surface and catalog are one fail-closed slice. */
+AGENT_IMPACT_RULE("lib/vcs/src/space.c|lib/vcs/include/vcs/space.h|app/services/src/metaverse_space_service.c|app/services/include/services/metaverse_space_service.h|tools/command/native_metaverse_space_command.c|tools/command/native_zcode_discovery.c|tools/command/native_zcode_discovery.h|config/src/boot_zcode_dht.c|config/include/config/boot_zcode_dht.h|config/src/boot_zcode_dht_record_rpc.c|config/commands/metaverse.def|lib/test/src/test_space.c", "space zcode_dht_record zcode_dht_service zcode_swarm_net command_registry_catalog make_lint_gates")

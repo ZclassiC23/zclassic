@@ -486,11 +486,48 @@ static bool rpc_record_cancel(const struct json_value *params, bool help,
   return true;
 }
 
+static bool rpc_delegation_check(const struct json_value *params, bool help,
+                                 struct json_value *result) {
+  if (help) {
+    json_set_str(result, "zcode_dht_delegation_check {delegation_wire}");
+    return true;
+  }
+  const struct json_value *in = record_rpc_input(params);
+  const char *hex = record_input_str(in, "delegation_wire");
+  uint8_t wire[VCS_ZCODE_DHT_DELEGATION_WIRE_BYTES];
+  struct vcs_zcode_dht_delegation delegation;
+  if (!hex || strlen(hex) != sizeof(wire) * 2u ||
+      !zcl_hex_decode_lower(hex, wire, sizeof(wire)) ||
+      vcs_zcode_dht_delegation_decode(&delegation, wire, sizeof(wire)) !=
+          VCS_ZCODE_DHT_DELEGATION_OK) {
+    record_rpc_error(result, "INVALID_DELEGATION",
+                     "delegation_wire must be one canonical signed v1 wire");
+    return true;
+  }
+  uint64_t now = (uint64_t)platform_time_wall_time_t();
+  uint8_t genesis[32];
+  if (!boot_zcode_dht_network_genesis(genesis) ||
+      vcs_zcode_dht_delegation_verify(
+          &delegation, genesis, NULL, 0, NULL, now) !=
+          VCS_ZCODE_DHT_DELEGATION_OK ||
+      !boot_zcode_dht_chain_authorize_public(&delegation)) {
+    record_rpc_error(result, "DELEGATION_NOT_ACTIVE",
+                     "delegation is invalid, expired, wrong-network, or its "
+                     "ZID/beacon is not active on this node's chain");
+    return true;
+  }
+  json_set_object(result);
+  json_push_kv_bool(result, "ok", true);
+  json_push_kv_bool(result, "chain_authorized", true);
+  return true;
+}
+
 void boot_zcode_dht_record_register_rpc(struct rpc_table *table) {
   const struct rpc_command commands[] = {
       {"zcode", "zcode_dht_record_begin", rpc_record_begin, true},
       {"zcode", "zcode_dht_record_poll", rpc_record_poll, true},
       {"zcode", "zcode_dht_record_cancel", rpc_record_cancel, true},
+      {"zcode", "zcode_dht_delegation_check", rpc_delegation_check, true},
   };
   for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
     rpc_table_must_append(table, &commands[i]);

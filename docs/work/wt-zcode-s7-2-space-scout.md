@@ -340,3 +340,73 @@ missing phase-specific proof.
   technical re-review found no remaining correctness issue and returned
   **BANKABLE** after the ledger audit. Phase 4 is banked with Phase 3 in coherent
   operational-hardening commit `2273b7b60`.
+
+### Phase 5 — banked
+
+- Born-red witness: no `space_manifest.v1` or `service_descriptor.v1` codec,
+  CAS service, generic space publication namespace, or `metaverse.space.*`
+  leaf existed. `test_space` was first registered before its codec symbols and
+  failed to link on those missing APIs.
+- `lib/vcs/space` now owns strict canonical variable-length wires and
+  domain-separated semantic roots. A service descriptor requires a full
+  protocol root, accepts only the bounded read verbs discover/fetch/list/query,
+  and carries sorted unique object and capability roots. It has no endpoint,
+  wallet, grant, execution or policy field. A space manifest binds bounded
+  name/description, sequence, validity, service/object/portal roots and an
+  optional admission-statement root to the existing canonical DHT delegation
+  and online-key signature. Live verification requires the expected genesis,
+  current signed window and an exact ACTIVE-ZID/beacon chain callback; expired
+  signed evidence remains decodable for historical `show`.
+- The metaverse space service produces an exact stateless plan token, stores
+  canonical bytes only after confirm/token revalidation, reloads and re-hashes
+  even pre-existing addressed objects, and uses the existing bounded blob
+  carrier for network transport. Admission derives both the transport blob
+  root and semantic object root before CAS write. No object parser invokes an
+  executor.
+- Five typed leaves are READY: `metaverse.space.plan|commit|show|publish|discover`.
+  Plan is side-effect free. Commit checks local STORE and INDEX policy. Publish
+  checks STORE, INDEX, SERVE and FORWARD before creating the blob carrier, then
+  composes the existing signed generic POINTER/PROVIDER lifecycle under
+  `space.manifest` or `space.service`. Discover checks DISCOVER before lookup,
+  DISCOVER+FETCH per pointer candidate, and STORE+INDEX again after verified
+  bytes reveal the manifest owner. That final gate retains the signed pointer
+  publisher and, for a manifest, additionally requires its distinct owner to
+  pass the same actions. The policy subject binds semantic root,
+  transport/package root, publisher ZID and service type; local classification
+  is deliberately never supplied by remote data.
+- Discovery consumes the existing 64-row iterative record projection after its
+  per-signed-stream conflict/supersession selection. The shared native adapter
+  ranks independent candidates only by current provider authentication and
+  canonical roots, then gives distinct transport roots the first pass before
+  duplicates. Policy denial skips only that candidate. Every cache miss first
+  completes iterative PROVIDER-record discovery for the exact transport root,
+  then invokes the existing authenticated restricted swarm route; zero provider
+  rows never schedule a fetch. Pointer publisher and signed manifest owner are
+  rendered as separate evidence.
+- Direct tests prove codec round trips, bounds, canonical ordering, wrong
+  network, expiry, signature tamper, chain-callback refusal, INT64 sequence
+  boundary, stateless planning, stale-token refusal, corrupt pre-existing CAS
+  refusal, idempotent commit/admission, blob-root rederivation, typed command
+  plan/commit/show behavior, absent execution/authority, and 20 duplicate
+  publisher rows failing to crowd one distinct root. They also prove that a
+  pointer-publisher STORE block and a distinct manifest-owner INDEX block each
+  deny admission, and that provider routing is unreachable until iterative
+  provider discovery returns at least one row. Focused cold receipts:
+  `test_space` PASS; all seven `test_zcode_dht*` groups PASS; both
+  `test_zcode_science*` groups PASS; both `test_zcode_swarm*` groups PASS; and
+  `test_command_registry_catalog` PASS. `make -j16 build-only` passes at
+  `epoch=c1d4af1c...`; `make lint` passes all 132 gates.
+- Honest limits before Phase 6/7: service descriptors are content-addressed
+  declarations authenticated only when referenced by a signed manifest; they
+  are not separately signed principals. Fetch scheduling is asynchronous, so
+  one discover call can report `fetch_scheduled` and a later call performs
+  verified admission. Space discovery is exact-root lookup, not search or a
+  global catalog. No doorbell, mailbox, board, remote action, wallet authority,
+  automatic package execution or second transport exists.
+- Independent review first rejected direct provider routing without iterative
+  PROVIDER discovery and the loss of pointer-publisher identity at post-byte
+  STORE/INDEX policy. Re-review also caught an uninitialized zero-provider JSON
+  result. The shared discover-then-route adapter, dual-identity admission gate
+  and direct regressions close all three. The reviewer reran the focused matrix,
+  lint and build-only, confirmed test seams are absent from production objects,
+  and returned **BANKABLE** with no remaining sovereignty finding.

@@ -1425,6 +1425,25 @@ void zcl_native_handle_metaverse_property_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* metaverse.space.* — signed read-only sovereign-space objects carried only
+ * by the existing CAS/blob/DHT provider substrate. */
+void zcl_native_handle_metaverse_space_plan(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_space_commit(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_space_show(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_space_publish(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_space_discover(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+#ifdef ZCL_TESTING
+bool zcl_native_metaverse_space_test_admit_allowed(
+    const char *datadir, const uint8_t semantic_root[32],
+    const uint8_t transport_root[32], const uint8_t pointer_publisher[32],
+    const uint8_t manifest_owner[32], bool manifest);
+#endif
+
 /* ROM-seed policy/ledger surface (app/controllers/src/rom_seed_controller.c)
  * — see config/commands/ops.def `ops.rom_seed.*` and docs/ROM_DELIVERY.md. */
 void zcl_native_handle_rom_seed_status(

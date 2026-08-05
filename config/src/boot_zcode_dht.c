@@ -222,6 +222,22 @@ bool boot_zcode_dht_network_genesis(uint8_t out[32]) {
   zcl_mutex_unlock(&g_dht_lock);
   return available;
 }
+bool boot_zcode_dht_chain_authorize_public(
+    const struct vcs_zcode_dht_delegation *delegation) {
+  if (!delegation)
+    return false;
+  dht_lock();
+  struct boot_svc_ctx *svc = g_dht_svc;
+  uint64_t generation = g_dht_generation;
+  bool available = g_dht && svc && generation;
+  zcl_mutex_unlock(&g_dht_lock);
+  if (!available || !boot_zcode_dht_chain_authorize(svc, delegation))
+    return false;
+  dht_lock();
+  bool current = g_dht && g_dht_svc == svc && g_dht_generation == generation;
+  zcl_mutex_unlock(&g_dht_lock);
+  return current;
+}
 bool boot_zcode_dht_beacon_matches(const struct block_index *header_tip,
                                    uint32_t beacon_height,
                                    const uint8_t beacon_hash[32],

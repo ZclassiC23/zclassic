@@ -195,6 +195,119 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE,
     zcl_native_handle_metaverse_property_show)
 
+ZCL_COMMAND_BRANCH("metaverse.space", "metaverse",
+                   "Signed sovereign spaces and generic typed services",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.space.plan", "metaverse.space", "",
+    "Plan one signed space manifest or typed service descriptor",
+    "Canonicalizes and validates either a read-only service_descriptor.v1 or "
+    "a delegated, expiring space_manifest.v1, then returns its semantic root "
+    "and an exact stateless plan token. Planning writes no CAS bytes, DHT "
+    "records, policy rows, or indexes. A manifest signature proves its ZID "
+    "delegation only when the running node independently confirms that "
+    "delegation against current chain state. Service descriptors carry roots "
+    "and read verbs only: they grant no authority and are never executable.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "metaverse,space,manifest,service,plan,signature,sovereignty",
+    "zcl.metaverse_space_plan.input.v1", "zcl.metaverse_space_plan.v1",
+    "kind,protocol_root,read_only_verbs,object_roots,capability_roots,sequence,not_before,expiry,name,description,service_roots,portal_roots,admission_root,datadir",
+    "kind",
+    "zclassic23 metaverse space plan --input='{\"kind\":\"service_descriptor\",\"protocol_root\":\"<64hex>\",\"read_only_verbs\":[\"discover\"]}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_space_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "metaverse.space.commit", "metaverse.space", "",
+    "Commit one exactly planned space object to local CAS",
+    "Requires confirm:true and the exact stateless plan token, revalidates the "
+    "whole object and current local STORE and INDEX policy, then writes the "
+    "canonical bytes to the named workspace CAS. Existing bytes are re-read "
+    "and re-hashed before an idempotent success; a corrupt or colliding object "
+    "fails closed. This does not publish, fetch, execute, or grant authority.",
+    0, "metaverse,space,manifest,service,commit,cas,policy",
+    "zcl.metaverse_space_commit.input.v1", "zcl.metaverse_space_commit.v1",
+    "kind,protocol_root,read_only_verbs,object_roots,capability_roots,sequence,not_before,expiry,name,description,service_roots,portal_roots,admission_root,plan_token,confirm,datadir,workspace",
+    "kind,plan_token,confirm",
+    "zclassic23 metaverse space commit --input='{\"kind\":\"service_descriptor\",\"protocol_root\":\"<64hex>\",\"read_only_verbs\":[\"discover\"],\"plan_token\":\"<64hex>\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_metaverse_space_commit)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.space.show", "metaverse.space", "",
+    "Re-derive one local space object and its evidence grade",
+    "Reads canonical CAS bytes by semantic root and re-derives the root and "
+    "typed contents. A manifest reports its preserved signature evidence, "
+    "current validity window and current chain-authorization separately; an "
+    "expired manifest remains inspectable but is not called chain-bound. A "
+    "service descriptor is content-hash evidence only and never executable.",
+    ZCL_COMMAND_RESULT_BUDGET, "metaverse,space,show,evidence,cas,signature",
+    "zcl.metaverse_space_show.input.v1", "zcl.metaverse_space_show.v1",
+    "root,workspace,datadir", "root",
+    "zclassic23 metaverse space show <64hex>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_space_show)
+
+ZCL_COMMAND_READY_COMMAND(
+    "metaverse.space.publish", "metaverse.space", "",
+    "Publish one local space object through the existing signed DHT",
+    "Revalidates the local CAS object, derives a bounded generic blob carrier, "
+    "and checks this node's STORE, INDEX, SERVE and FORWARD policy before any "
+    "write. It then publishes existing generic POINTER and PROVIDER records "
+    "under the space.manifest or space.service namespace; it introduces no "
+    "second discovery protocol. Manifest publication also requires current "
+    "chain authorization. Publication never executes object contents.",
+    0, "metaverse,space,publish,dht,provider,pointer,policy",
+    "zcl.metaverse_space_publish.input.v1", "zcl.metaverse_space_publish.v1",
+    "root,workspace,datadir", "root",
+    "zclassic23 metaverse space publish <64hex>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_metaverse_space_publish)
+
+ZCL_COMMAND_READY_COMMAND(
+    "metaverse.space.discover", "metaverse.space", "",
+    "Discover one exact space root under local admission policy",
+    "Looks up generic signed POINTER records for one exact semantic root, "
+    "deterministically filters conflicts and superseded records, then routes "
+    "only through authenticated restricted PROVIDER records. DISCOVER and "
+    "FETCH policy are checked before routing; STORE and INDEX policy are "
+    "rechecked after bytes are verified and before local CAS admission. The "
+    "reply distinguishes pointer publisher evidence from the manifest owner. "
+    "No candidate can trigger execution or confer authority.",
+    0, "metaverse,space,discover,dht,provider,policy,admission",
+    "zcl.metaverse_space_discover.input.v1", "zcl.metaverse_space_discover.v1",
+    "root,kind,workspace,datadir", "root",
+    "zclassic23 metaverse space discover <64hex> --kind=space_manifest",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_metaverse_space_discover)
+
 ZCL_COMMAND_BRANCH("metaverse.build", "metaverse",
                    "Content-addressed C23 build jobs, actions, and receipts",
                    ZCL_COMMAND_LAYER_APP)

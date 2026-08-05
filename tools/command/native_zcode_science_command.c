@@ -3,6 +3,7 @@
  *          CAS-authoritative plan/commit services. */
 
 #include "command/native_command.h"
+#include "command/native_zcode_discovery.h"
 #include "command/native_zcode_policy.h"
 
 #include "base/hex.h"
@@ -811,101 +812,20 @@ static bool zsci_store_for(const char *datadir, bool *live,
     return *out != NULL;
 }
 
-static bool zsci_discovery_rpc(const char *method, struct json_value *input,
-                               struct json_value *result)
-{
-    json_init(result);
-    if (!json_get(input, "operation"))
-        json_push_kv_str(input, "operation",
-                         strcmp(method, "zcode_dht_publish") == 0
-                             ? "publish" : "records");
-    struct json_value params;
-    json_init(&params);
-    json_set_array(&params);
-    json_push_back(&params, input);
-    size_t needed = json_write(&params, NULL, 0);
-    char *wire = zcl_malloc(needed + 1, "science.discovery.rpc");
-    if (!wire || json_write(&params, wire, needed + 1) != needed) {
-        free(wire);
-        json_free(&params);
-        return false;
-    }
-    zcl_native_bridge_ensure_rpc();
-    char *raw = node_rpc_call("zcode_dht_status", wire);
-    free(wire);
-    json_free(&params);
-    if (!raw)
-        return false;
-    bool ok = json_read(result, raw, strlen(raw)) && result->type == JSON_OBJ &&
-              json_get_bool_or(result, "ok", false);
-    free(raw);
-    return ok;
-}
-
 static bool zsci_discovery_record(const char *kind, const char *science_root,
                                   const char *blob_root, int64_t now,
                                   int64_t expiry, char token_out[65],
                                   char error_out[64])
 {
-    struct json_value input, result;
-    if (error_out)
-        error_out[0] = '\0';
-    json_init(&input);
-    json_set_object(&input);
-    json_push_kv_str(&input, "mode", "plan");
-    json_push_kv_str(&input, "kind", kind);
-    json_push_kv_str(&input, "namespace", "science");
-    if (strcmp(kind, "pointer") == 0)
-        json_push_kv_str(&input, "semantic_root", science_root);
-    json_push_kv_str(&input, "transport_root", blob_root);
-    json_push_kv_int(&input, "sequence", now > 0 ? now : 1);
-    json_push_kv_int(&input, "not_before", now);
-    json_push_kv_int(&input, "expiry", expiry);
-    if (!zsci_discovery_rpc("zcode_dht_publish", &input, &result)) {
-        const char *code = json_get_str(json_get(&result, "code"));
-        if (error_out)
-            (void)snprintf(error_out, 64, "%s",
-                           code ? code : "RPC_UNAVAILABLE");
-        json_free(&result);
-        json_free(&input);
-        return false;
-    }
-    const char *token = json_get_str(json_get(&result, "plan_token"));
-    bool valid = token && strlen(token) == 64;
-    if (valid)
-        memcpy(token_out, token, 65);
-    json_free(&result);
-    if (!valid) {
-        json_free(&input);
-        return false;
-    }
-    json_set_str((struct json_value *)json_get(&input, "mode"), "commit");
-    json_push_kv_str(&input, "plan_token", token_out);
-    bool committed = zsci_discovery_rpc("zcode_dht_publish", &input, &result);
-    if (!committed && error_out) {
-        const char *code = json_get_str(json_get(&result, "code"));
-        (void)snprintf(error_out, 64, "%s",
-                       code ? code : "RPC_UNAVAILABLE");
-    }
-    json_free(&result);
-    json_free(&input);
-    return committed;
+    return zcl_native_zcode_publish_record(
+        kind, "science", strcmp(kind, "pointer") == 0 ? science_root : NULL,
+        blob_root, now > 0 ? now : 1, now, expiry, token_out, error_out, 64);
 }
 
 static bool zsci_records_discover(struct json_value *input,
                                   struct json_value *result)
 {
-    struct zcl_command_request subrequest;
-    memset(&subrequest, 0, sizeof(subrequest));
-    subrequest.input = input;
-    struct zcl_command_reply subreply;
-    zcl_command_reply_init(&subreply, "zcl.zcode_network_records.v1");
-    zcl_native_handle_zcode_network_records(&subrequest, &subreply);
-    bool ok = subreply.status == ZCL_COMMAND_STATUS_PASSED;
-    json_init(result);
-    json_copy(result, &subreply.data);
-    zcl_command_reply_free(&subreply);
-    return ok;
+    return zcl_native_zcode_records_discover(input, result);
 }
 
 struct zsci_pointer_candidate {
@@ -1142,40 +1062,16 @@ static bool zsci_route_providers(const char *blob_root,
                                  uint32_t *authenticated_out,
                                  uint32_t *pending_out)
 {
-    struct json_value input, records, route;
+    struct json_value input, route;
     json_init(&input);
     json_init(&route);
     json_set_object(&input);
     json_push_kv_str(&input, "kind", "provider");
     json_push_kv_str(&input, "namespace", "science");
     json_push_kv_str(&input, "transport_root", blob_root);
-    if (!zsci_records_discover(&input, &records)) {
-        json_free(&records);
-        json_free(&input);
-        return false;
-    }
-    int64_t record_count = json_get_int(json_get(&records, "count"));
-    json_free(&records);
-    if (record_count <= 0) {
-        json_free(&input);
-        return false;
-    }
-    struct json_value params;
-    json_init(&params);
-    json_set_array(&params);
-    json_push_back(&params, &input);
-    size_t needed = json_write(&params, NULL, 0);
-    char *wire = zcl_malloc(needed + 1, "science.provider.route.rpc");
-    bool encoded = wire && json_write(&params, wire, needed + 1) == needed;
-    zcl_native_bridge_ensure_rpc();
-    char *raw = encoded ? node_rpc_call("zcode_dht_provider_route", wire)
-                        : NULL;
-    free(wire);
-    json_free(&params);
-    bool routed = raw && json_read(&route, raw, strlen(raw)) &&
-                  route.type == JSON_OBJ &&
-                  json_get_bool_or(&route, "ok", false);
-    free(raw);
+    uint32_t record_count = 0;
+    bool routed = zcl_native_zcode_provider_discover_and_route(
+        &input, &route, &record_count);
     if (!routed) {
         json_free(&route);
         json_free(&input);
@@ -1184,7 +1080,7 @@ static bool zsci_route_providers(const char *blob_root,
     int64_t authenticated =
         json_get_int(json_get(&route, "authenticated_providers"));
     int64_t pending = json_get_int(json_get(&route, "reachability_pending"));
-    *records_out = (uint32_t)record_count;
+    *records_out = record_count;
     *authenticated_out = authenticated > 0 ? (uint32_t)authenticated : 0;
     *pending_out = pending > 0 ? (uint32_t)pending : 0;
     json_free(&route);

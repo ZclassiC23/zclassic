@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 511 |
+| Registry entries (branches + leaves) | 517 |
 | Top-level roots | 11 |
-| Branches | 117 |
-| Leaves (dispatchable command paths) | 394 |
-| … `ready` (live handler in this build) | 346 |
+| Branches | 118 |
+| Leaves (dispatchable command paths) | 399 |
+| … `ready` (live handler in this build) | 351 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 129 |
+| Leaves with `effect=mutate` | 132 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 89 |
 
@@ -87,7 +87,7 @@ Per source file:
 | `config/commands/vault.def` | 21 | 4 | 17 |
 | `config/commands/zcode.def` | 89 | 17 | 72 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
-| `config/commands/metaverse.def` | 18 | 5 | 13 |
+| `config/commands/metaverse.def` | 24 | 6 | 18 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
@@ -1097,6 +1097,16 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `metaverse property list` | ready | read / read / operator · fast/moderate | **`kind`**, `limit`, `datadir` | `zcl.metaverse_property_list.v1` | `zclassic23 metaverse property list` | Every property this datadir holds, one row per kind scanned |
 | `metaverse property show` | ready | read / read / operator · fast/low | **`property_id`**, `datadir` | `zcl.metaverse_property_show.v1` | `zclassic23 metaverse property show content:<64hex>` | One property: its roots, controller, status, and evidence grade |
+
+#### `metaverse.space` — Signed sovereign spaces and generic typed services
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `metaverse space plan` | ready | read / read / operator · fast/low | **`kind`**, `protocol_root`, `read_only_verbs`, `object_roots`, `capability_roots`, `sequence`, `not_before`, `expiry`, `name`, `description`, `service_roots`, `portal_roots`, `admission_root`, `datadir` | `zcl.metaverse_space_plan.v1` | `zclassic23 metaverse space plan --input='{"kind":"service_descriptor","protocol_root":"<64hex>","read_only_verbs":["discover"]}'` | Plan one signed space manifest or typed service descriptor |
+| `metaverse space commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`kind`**, `protocol_root`, `read_only_verbs`, `object_roots`, `capability_roots`, `sequence`, `not_before`, `expiry`, `name`, `description`, `service_roots`, `portal_roots`, `admission_root`, **`plan_token`**, **`confirm`**, `datadir`, `workspace` | `zcl.metaverse_space_commit.v1` | `zclassic23 metaverse space commit --input='{"kind":"service_descriptor","protocol_root":"<64hex>","read_only_verbs":["discover"],"plan_token":"<64hex>","confirm":true}'` | Commit one exactly planned space object to local CAS |
+| `metaverse space show` | ready | read / read / operator · fast/low | **`root`**, `workspace`, `datadir` | `zcl.metaverse_space_show.v1` | `zclassic23 metaverse space show <64hex>` | Re-derive one local space object and its evidence grade |
+| `metaverse space publish` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `workspace`, `datadir` | `zcl.metaverse_space_publish.v1` | `zclassic23 metaverse space publish <64hex>` | Publish one local space object through the existing signed DHT |
+| `metaverse space discover` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `kind`, `workspace`, `datadir` | `zcl.metaverse_space_discover.v1` | `zclassic23 metaverse space discover <64hex> --kind=space_manifest` | Discover one exact space root under local admission policy |
 
 #### `metaverse.build` — Content-addressed C23 build jobs, actions, and receipts
 

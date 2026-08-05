@@ -96,6 +96,11 @@ void boot_zcode_dht_provider_route_test_render(
  * False means this process has no initialized DHT service; one-shot command
  * clients may then resolve the daemon's genesis through RPC. */
 bool boot_zcode_dht_network_genesis(uint8_t out[32]);
+/* Slow, generation-revalidated ACTIVE-ZID + beacon proof for a public
+ * delegation. Runs outside the DHT lock and is exposed to one-shot native
+ * clients only through the internal delegation-check RPC. */
+bool boot_zcode_dht_chain_authorize_public(
+    const struct vcs_zcode_dht_delegation *delegation);
 
 /* O(log n) ancestry proof used by the chain-binding adapter and its deep-tip
  * regression test. `height_span_out` is diagnostic context only. */
