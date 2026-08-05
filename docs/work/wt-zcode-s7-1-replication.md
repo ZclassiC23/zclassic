@@ -149,6 +149,19 @@ Exact evidence on `59cb40eae` plus this documentation-only receipt:
   `c238324d4c12a1605cc3dbc4ff3c596e58ac9d6640f8c490571d03a504eab0a0`.
 - `make pre-push-ci`: PASS on the final committed lane before integration.
 
+Integration receipt: while the lane gates ran, `origin/main` advanced by six
+wallet/transaction commits. They merged without source conflict; the generated
+API reference was regenerated from the combined 509-entry catalog. Integration
+head `09770961f` then passed strict `build-only`, all 132 lint gates, and the
+exact `make test-science-acceptance` target (including its seven-daemon DHT
+prerequisite). Fresh integrated reproducibility receipts are:
+
+- `make ci-reproducible`: two 25,602,728-byte binaries, byte-identical at
+  SHA3-256 `2f0f08773db50719178eb16d68da81a3583fba4d919a18207c47cdbe3b425a70`.
+- `make repro-verify`: two different-length builder paths, each 25,602,808
+  bytes, byte-identical at SHA3-256
+  `f8b599b5aa190e35dd80159fee9e728d0c9e27998eb780dd12a077665ab730fc`.
+
 The nine parameter-heavy groups were unavailable in the cold default because
 they require the opt-in parameter fixture. The 19 reported self-skips are the
 suite's explicit stress/live-fixture boundaries, not hidden failures.

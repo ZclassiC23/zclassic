@@ -101,12 +101,15 @@ market and yardsale regressions; the focused ASan+UBSan DHT/model gate with
 zero suppressions; all 132 lint gates; and full-program LTO. The cold uncached
 suite registered 902 groups, ran 893, cached 0, policy-gated 9 parameter-heavy
 groups, failed 0 and reported 19 explicit self-skip markers (85.7 s, 32
-workers). Same-tree reproducibility produced two identical 22,174,440-byte
-binaries at SHA3-256
-`2c5ba2b0fdf6f258031739662f199737e912b6d28ec6442c86b36a1819b5b7e4`;
-different-length builder paths produced two identical 22,174,520-byte binaries
-at `c238324d4c12a1605cc3dbc4ff3c596e58ac9d6640f8c490571d03a504eab0a0`.
-The mandatory pre-push receipt is recorded in the S7.1 assignment document.
+workers). After merging concurrent wallet/transaction work, integration head
+`09770961f` reran all 132 lint gates, strict build-only, the exact combined DHT
+plus science acceptance, and both reproducibility proofs. Same-tree produced
+two identical 25,602,728-byte binaries at SHA3-256
+`2f0f08773db50719178eb16d68da81a3583fba4d919a18207c47cdbe3b425a70`;
+different-length builder paths produced two identical 25,602,808-byte binaries
+at `f8b599b5aa190e35dd80159fee9e728d0c9e27998eb780dd12a077665ab730fc`.
+The lane and integration receipts are recorded in the S7.1 assignment
+document.
 
 Honest limits: signed discovery records are expiring hints, not content truth,
 availability proof, scientific acceptance or operator independence. Unknown
