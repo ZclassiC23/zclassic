@@ -563,3 +563,73 @@ missing phase-specific proof.
   mailboxes, store interaction, agent actions and arbitrary service invocation
   remain future work; they must reuse the generic object/discovery transport
   and remain subject to independent local policy.
+
+## Integrated-main receipt — 2026-08-05
+
+- Orchestrator fetched `origin/main` at
+  `9f678f70f47744ff09a64bc60a5b3f4273056a20`, then created true two-parent
+  merge `21428f0a91cb62c45f43e413ddac832df3bcc4b8` from that head and final lane
+  head `d77d61eefe4ec9a83dcf784f5868aab93ed1fdec`. Implementation
+  `1312261ee62a5b7bcfbef849208bc39e5f2f7d07` remains an ancestor. The merge
+  preview and `--remerge-diff` are conflict-free with no resolution delta;
+  `docs/API_REFERENCE.md` was regenerated from all 24 combined command
+  definition files and exactly matches the 521-entry registry (402 leaves,
+  354 READY). Command-input-key validation passes all 370 leaf handlers.
+- Newer main transaction, multisig, mixed-Sapling, process-only proof-catalog,
+  32 GiB ROM and 2,048-entry block parse-cache work is preserved. Relative to
+  the lane head the eight newer-main files are byte-identical to the main
+  parent. S7.2 possession scheduling, distributed replication, pointer policy,
+  monotonic time/churn hardening, Space v1 and Scout v1 remain intact.
+- Product/test head `3ccb853f872795b11b1e05e7da32293c8dbcd5da`
+  strengthens the independent-review fix: the four
+  `metaverse.space.plan|show|scout.plan|scout.show` READ leaves each start from
+  a literally zero-entry datadir, then the recursive tree comparison proves
+  that no top-level `zcode/`, nested `zcode/dht/`, policy, publication, space,
+  scout or database artifact was created. The focused group passes with 59
+  registry-derived datadir READ leaves accounted for (31 directly exercised,
+  28 named pre-existing gaps).
+- Focused integrated tests pass: `test_zcode_store`; both `test_space*`; all
+  seven `test_zcode_dht*`; both `test_zcode_science*`; both
+  `test_zcode_swarm*`; command registry/generated API contracts; the 20-group
+  store sweep (two declared stress-only self-skips); file market; all three
+  yardsale groups; all four transaction groups; both multisig groups; ROM
+  manifest; block parse cache; native API contract; and REST/API catalog.
+  `transaction-lab-proof` passes 30 exact groups and reports 39/39 cases,
+  38/39 simulated/live confirmations, zero failures/blocked cases inside the
+  proof, and the intentionally unavailable mainnet custody tier.
+- The existing seven-daemon DHT acceptance passes twice: once directly and
+  once as the canonical prerequisite of `test-science-acceptance`. The latter
+  then passes its two-daemon package and generic-blob carriers, cold restart,
+  semantic-root rederivation, and byte-identical SQL-wipe reconstruction. The
+  hermetic 12-node replication proof and 16-node Space/Scout sparse proof both
+  pass inside `test_zcode_dht_service`.
+- Focused ASan+UBSan passes the DHT, message, service, lookup and 32-node/12,000
+  transition model gates, including the 16-node proof, with no sanitizer
+  finding or suppression. All 132 lint gates pass. The cold uncached suite
+  registers 904 groups, runs 895, caches 0, policy-gates 9 parameter-heavy
+  groups, fails 0 and reports 19 declared self-skip markers in 87.4 seconds on
+  32 workers. Full-program LTO passes.
+- Fresh same-tree reproducibility produces two byte-identical 25,782,344-byte
+  binaries at SHA3-256
+  `806af6b13170d5aede79a5f639a86d318a8a1cc5556cb47b6aec0bb9e24ffc45`.
+  Different-length snapshot paths produce two byte-identical 25,782,424-byte
+  binaries at
+  `d46173ceef566084320094368781d32c16f12dda41ee43e6782e70f53ac6a795`.
+  Mandatory pre-push CI is rerun after this receipt is committed.
+- Independent integration review at merge `21428f0a9` returned **BANKABLE**:
+  both histories and all named main/S7.2 behavior are present, the generated
+  registry is combined, and there is no second transport, automatic execution,
+  wallet, consensus, deployment or live-datadir expansion. The final
+  receipt/test-only delta receives a separate non-author audit before push.
+- Space v1 proves canonical bounded descriptor/manifest bytes, delegated
+  expiring signatures, exact-root CAS admission, generic pointer/provider
+  discovery and independent local DISCOVER/FETCH/STORE/INDEX/SERVE/FORWARD
+  decisions. Scout v1 remains a bounded READ plan plus explicit confirmed run:
+  it follows only signed permitted manifest portals and returns a deterministic
+  map with a separately signed local attestation. It is local evidence, not
+  global truth, authority or execution permission. Doorbells, boards,
+  mailboxes, posts/writes, store interaction, arbitrary service/package
+  execution, deployment, live datadirs, wallet operations and consensus
+  changes remain absent. Unknown C23 stays default-denied and confined to the
+  explicit local-policy ZCODE executor; future services reuse this transport
+  and object-discovery foundation rather than forming a protocol silo.

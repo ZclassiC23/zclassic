@@ -16,8 +16,11 @@ tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 ## Current state
 
 **2026-08-05 — S7.2 operational integrity plus Sovereign Space/Scout COMPLETE
-in isolated lane; not deployed.** Implementation head `1312261ee` first closes
-the operational gaps left after S7.1. Possession validation is generation-bound,
+on integrated `main`; not deployed.** Integration merge `21428f0a9` preserves
+latest fetched `origin/main` `9f678f70f`, final lane head `d77d61eef` and
+implementation head `1312261ee` as ancestors; integrated product/test head
+`3ccb853f8` adds the literal-empty-datadir proof described below. The lane first
+closes the operational gaps left after S7.1. Possession validation is generation-bound,
 race-closed and scheduled under strict package/chunk/byte budgets; mandatory ACK
 plan, commit, restart and renewal proofs remain synchronous and full-byte.
 Replication status now composes bounded distributed PROVIDER and STORAGE_ACK
@@ -37,9 +40,12 @@ executable. Typed `metaverse.space.plan|commit|show|publish|discover` commands
 reuse the existing generic POINTER/PROVIDER, authenticated Noise route,
 restricted swarm and local sovereignty engine. FETCH, STORE, INDEX, SERVE and
 FORWARD stay independent local decisions. The two READ planners now use
-strictly non-creating delegation/key loads; the read-leaf integrity test
+strictly non-creating delegation/key loads. The read-leaf integrity test
 recursively snapshots typed datadir paths, so nested payload-directory writes
-cannot hide behind an unchanged top-level file set.
+cannot hide behind an unchanged top-level file set; on integrated main, all
+four Space/Scout READ leaves additionally begin with a literally zero-entry
+datadir and prove that no `zcode/`, nested payload,
+policy/publication/space/scout path or database appears.
 
 `metaverse.space.scout.plan|run|show` defines one bounded read-only mission:
 sorted starting roots, explicit depth/space/portal/byte caps and a monotonic
@@ -64,23 +70,32 @@ byte-identical records, permitted CAS objects, evidence and attestation after
 DHT/store/swarm restart. The earlier 12-node replication proof remains a
 separate complementary test.
 
-Final receipts at implementation head `1312261ee`: focused
-`test_zcode_dht_service`, both space groups, all seven DHT groups, both science
-groups, both swarm groups, store/market/yardsale regressions and the direct
-read-leaf/delegation integrity groups pass. The focused ASan+UBSan DHT/model
-gate passes with zero suppressions. All 132 lint gates pass; full-program LTO
-passes. The strict cold suite registered 904 groups, ran 895, cached 0,
-policy-gated 9 parameter-heavy groups, failed 0 and reported 22 explicit
-self-skip markers (85.0 s, 32 workers). `ci-reproducible` produced two
-identical 22,375,112-byte binaries at SHA3-256
-`e1cdb6541e0312a7fd47796584070ab85b1654c2b350c94501d38799cb3b19b2`;
-different-length snapshot paths produced two identical 22,375,192-byte
-binaries at `9c040efa9dc5f6df827f6c11007811d640fbfc3fb753dba5626c08ea3b5fb0af`.
-Mandatory pre-push CI passed strict object compilation, fast lint and 895/895
-runnable source-wide groups. Independent review first rejected a hidden
-`zcode/dht` mkdir from READ planners; after the load-path and recursive-test
-fix, `strace` confirmed zero former mkdir hits and the final integration
-verdict was **BANKABLE**. Exact phase receipts and honest bounds are in
+Fresh integrated receipts at product/test head `3ccb853f8`: both canonical
+seven-daemon DHT runs pass (the science target deliberately reruns that
+prerequisite), and the two-daemon science acceptance passes its package and
+generic blob carriers, cold restart, semantic-root rederivation and SQL-wipe
+reconstruction. Focused space/scout, DHT, possession/store, swarm, science,
+market, yardsale, transaction, multisig, 32 GiB ROM, 2,048-entry block-cache,
+native/API catalog and read-integrity regressions pass; the transaction lab is
+39/39 with 38/39 simulated/live confirmations and only the explicitly blocked
+mainnet custody tier absent. The focused ASan+UBSan DHT/model gate, including
+the 12-node replication and 16-node Space/Scout proofs, passes with no
+sanitizer finding or suppression. All 132 lint gates and full-program LTO
+pass. The strict cold suite registered 904 groups, ran 895, cached 0,
+policy-gated 9 parameter-heavy groups, failed 0 and reported 19 explicit
+self-skip markers (87.4 s, 32 workers). `ci-reproducible` produced two
+identical 25,782,344-byte binaries at SHA3-256
+`806af6b13170d5aede79a5f639a86d318a8a1cc5556cb47b6aec0bb9e24ffc45`;
+different-length snapshot paths produced two identical 25,782,424-byte
+binaries at `d46173ceef566084320094368781d32c16f12dda41ee43e6782e70f53ac6a795`.
+Mandatory pre-push CI is rerun after committing this integrated receipt.
+
+Independent implementation review first rejected a hidden `zcode/dht` mkdir
+from READ planners; the lane fixed the load path and recursive test. A separate
+integration reviewer audited merge `21428f0a9`, proved it has no resolution
+delta, verified the newer transaction/proof/capacity files byte-identical to
+the main parent, reran the focused matrix plus all 132 lint gates and returned
+**BANKABLE**. Exact phase and integrated receipts and honest bounds are in
 `docs/work/wt-zcode-s7-2-space-scout.md`.
 
 Honest limits: no doorbell, board, mailbox, store interaction, agent action,
