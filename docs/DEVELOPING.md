@@ -185,6 +185,10 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   latency. Both are evidence-only and cannot plan, sign, authorize, broadcast,
   or touch a datadir. The owner runbook is
   [`TRANSACTION_MICRO_LAB.md`](work/TRANSACTION_MICRO_LAB.md).
+  The agent-fast path is the node-free native command
+  `zclassic23 app transaction-types micro-lab [--slot=N]`; it joins a numbered
+  slot to the semantic transaction catalog and current typed guide input
+  without reading wallet state or granting spend authority.
 - Before using or adding a money-shaped native leaf, reverse-audit it with
   `zclassic23 app transaction-types command <path>`. `mapped` names every
   semantic workflow and role; `explicitly_non_chain` carries a reviewed reason;

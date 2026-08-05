@@ -151,6 +151,9 @@ void zcl_native_handle_transaction_type_show(
 void zcl_native_handle_transaction_type_guide(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_transaction_micro_lab(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_transaction_command(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

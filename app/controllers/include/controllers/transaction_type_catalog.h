@@ -19,6 +19,17 @@ extern "C" {
 #define ZCL_TRANSACTION_COMMAND_SCHEMA "zcl.transaction_command.v1"
 #define ZCL_TRANSACTION_WIRE_CATALOG_SCHEMA \
     "zcl.transaction_wire_catalog.v1"
+#define ZCL_TRANSACTION_MICRO_LAB_SCHEMA \
+    "zcl.transaction_micro_lab.v1"
+
+#define ZCL_TRANSACTION_MICRO_LAB_TARGET 100
+#define ZCL_TRANSACTION_MICRO_LAB_RECIPIENT_ZAT 1000
+#define ZCL_TRANSACTION_MICRO_LAB_FEE_ZAT 10000
+#define ZCL_TRANSACTION_MICRO_LAB_RELAY_FLOOR_ZAT 100
+#define ZCL_TRANSACTION_MICRO_LAB_SETUP_ENVELOPE_ZAT 900000
+#define ZCL_TRANSACTION_MICRO_LAB_ENVELOPE_ZAT 2000000
+#define ZCL_TRANSACTION_LAB_LIFETIME_CAP_ZAT 5000000
+#define ZCL_TRANSACTION_LAB_RESERVE_FLOOR_ZAT 25000000
 
 struct json_value;
 
@@ -67,6 +78,17 @@ struct zcl_transaction_nonchain_command {
     const char *explanation;
 };
 
+struct zcl_transaction_micro_lab_profile {
+    int first_slot;
+    int last_slot;
+    const char *type_id;
+    const char *variant;
+    const char *source_pool;
+    const char *prerequisite;
+    int64_t recipient_zat;
+    int64_t fee_zat;
+};
+
 const struct zcl_transaction_type_contract *
 zcl_transaction_type_catalog(size_t *count);
 const struct zcl_transaction_type_contract *
@@ -83,6 +105,11 @@ const char *zcl_transaction_command_role_name(
     enum zcl_transaction_command_role role);
 bool zcl_transaction_types_index_json(struct json_value *out);
 bool zcl_transaction_type_show_json(const char *id, struct json_value *out);
+const struct zcl_transaction_micro_lab_profile *
+zcl_transaction_micro_lab_catalog(size_t *count);
+const struct zcl_transaction_micro_lab_profile *
+zcl_transaction_micro_lab_find_slot(int slot);
+bool zcl_transaction_micro_lab_json(int slot, struct json_value *out);
 /* Finite consensus wire eras and standard-policy script buckets. This is the
  * structural complement to the semantic catalog: arbitrary scripts, opaque
  * Sapling memos, and unknown/future OP_RETURN tags remain explicit buckets

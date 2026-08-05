@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 521 |
+| Registry entries (branches + leaves) | 522 |
 | Top-level roots | 11 |
 | Branches | 119 |
-| Leaves (dispatchable command paths) | 402 |
-| … `ready` (live handler in this build) | 354 |
+| Leaves (dispatchable command paths) | 403 |
+| … `ready` (live handler in this build) | 355 |
 | … `compat` (metadata only, names a fallback) | 17 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
@@ -77,7 +77,7 @@ Per source file:
 |---|---|---|---|
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 117 | 29 | 88 |
-| `config/commands/apps.def` | 15 | 3 | 12 |
+| `config/commands/apps.def` | 16 | 3 | 13 |
 | `config/commands/app_features.def` | 49 | 12 | 37 |
 | `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
@@ -423,6 +423,7 @@ represented by its children's sections.
 | `app transaction-types guide` | ready | read / read / public · instant/tiny | **`type`** | `zcl.transaction_type_guide.v1` | `zclassic23 app transaction-types guide --type=znam_register` | Get one AI-ready transaction workflow with exact command contracts |
 | `app transaction-types command` | ready | read / read / public · instant/tiny | **`path`** | `zcl.transaction_command.v1` | `zclassic23 app transaction-types command core.wallet.transaction.send` | Reverse-map one native command to every transaction workflow it can serve |
 | `app transaction-types wire` | ready | read / read / public · instant/tiny | none | `zcl.transaction_wire_catalog.v1` | `zclassic23 app transaction-types wire` | List every consensus transaction wire era and script-processing bucket |
+| `app transaction-types micro-lab` | ready | read / read / public · instant/tiny | **`slot`** | `zcl.transaction_micro_lab.v1` | `zclassic23 app transaction-types micro-lab --slot=1` | Inspect the checked 100-transaction micro-lab campaign or one numbered slot |
 
 #### `app.service` — Token-gated services declared in the service catalog
 

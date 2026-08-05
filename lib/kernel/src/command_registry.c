@@ -1039,6 +1039,13 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             /* Keep the hex-doubled page inside the ordinary result budget. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
                       json_get_int(value) <= 1024;
+        } else if (strcmp(key, "slot") == 0) {
+            /* app.transaction-types.micro-lab has exactly 100 stable,
+             * one-based campaign slots.  The CLI types --slot=91 as an
+             * integer; without this rule the default string branch makes the
+             * documented native fast path uncallable before its handler. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 100;
         } else if (strcmp(key, "height") == 0 ||
                    strcmp(key, "start_height") == 0 ||
                    strcmp(key, "after") == 0 ||

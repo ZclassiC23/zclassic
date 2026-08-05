@@ -10,6 +10,20 @@ commands, checks custody, presents each exact redacted plan for approval,
 waits for confirmation, and records the public result. The owner is not
 expected to translate this runbook into CLI input.
 
+The fast native planning surface is compiled into the binary:
+
+```bash
+zclassic23 app transaction-types micro-lab
+zclassic23 app transaction-types micro-lab --slot=91
+```
+
+The first call returns the bounded 100-slot/14-type campaign, money envelopes,
+fee policy, and custody gate. The slot call returns one exact profile, its full
+semantic transaction contract, and the typed `guide` input for the next step.
+It is node-free and deterministic, so an AI can navigate the campaign without
+opening this Markdown file or parsing the shell notebook. It still cannot
+create a wallet plan, reserve, sign, rebalance, or broadcast.
+
 ```text
 100 confirmed transactions  [--------------------]   0/100
 14 exact-value shapes        [--------------------]   0/14
@@ -73,7 +87,9 @@ when this campaign is selected; do not fund both.
 ## The 100 numbered slots
 
 The stable machine-readable allocation is
-`tools/dev/transaction_micro_lab_catalog.def`. It covers 14 transaction shapes:
+[`transaction_micro_lab_profiles.def`](../../app/controllers/include/controllers/transaction_micro_lab_profiles.def).
+The shell notebook's developer catalog is mechanically checked against that
+compiled C23 authority. It covers 14 transaction shapes:
 
 | Slots | Count | Shape | What varies |
 |---:|---:|---|---|

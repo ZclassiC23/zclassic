@@ -199,6 +199,27 @@ void zcl_native_handle_transaction_types_list(
                                "");
 }
 
+void zcl_native_handle_transaction_micro_lab(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    int64_t slot = json_get_int_or(request->input, "slot", 0);
+    if (slot < 0 || slot > ZCL_TRANSACTION_MICRO_LAB_TARGET) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "BAD_SLOT",
+                               "normalize", false, false,
+                               "slot must be an integer from 1 through 100, or omitted for the campaign summary",
+                               "slot");
+        return;
+    }
+    if (!zcl_transaction_micro_lab_json((int)slot, &reply->data))
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL,
+                               "MICRO_LAB_RENDER_FAILED", "render", false,
+                               false, "micro-lab campaign could not be rendered",
+                               "");
+}
+
 void zcl_native_handle_transaction_wire_catalog(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply)

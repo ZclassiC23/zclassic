@@ -142,6 +142,26 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_wire_catalog)
 
+ZCL_COMMAND_READY_READ(
+    "app.transaction-types.micro-lab", "app.transaction-types", "",
+    "Inspect the checked 100-transaction micro-lab campaign or one numbered slot",
+    "The compile-time mainnet-micro-100-v1 plan: 100 exact 1,000-zatoshi "
+    "recipient transactions across 14 amount-bearing semantic types, current "
+    "typed-wallet fee, setup and lifetime envelopes, prerequisites, and the "
+    "next typed guide input. This is discovery only: it reads no wallet or "
+    "notebook and cannot plan, reserve, sign, rebalance, or broadcast.",
+    ZCL_COMMAND_EXTENDED_LIST_BUDGET,
+    "transactions,micro-lab,campaign,ai,fee,budget,slot",
+    "zcl.transaction_micro_lab.input.v1", "zcl.transaction_micro_lab.v1",
+    "slot", "slot",
+    "zclassic23 app transaction-types micro-lab --slot=1",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_micro_lab)
+
 ZCL_COMMAND_BRANCH("app.invoke", "app", "Invoke a manifest-owned App route",
                    ZCL_COMMAND_LAYER_APP)
 

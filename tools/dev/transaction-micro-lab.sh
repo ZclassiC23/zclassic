@@ -7,6 +7,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CATALOG="${ZCL_TRANSACTION_MICRO_CATALOG:-$REPO/tools/dev/transaction_micro_lab_catalog.def}"
 LEDGER="${ZCL_TRANSACTION_MICRO_LEDGER:-$REPO/docs/work/transaction-micro-lab-events.jsonl}"
 LIVE_CATALOG="${ZCL_TRANSACTION_LIVE_CATALOG:-$REPO/tools/dev/transaction_live_catalog.def}"
+NATIVE_CATALOG="${ZCL_TRANSACTION_MICRO_NATIVE_CATALOG:-$REPO/app/controllers/include/controllers/transaction_micro_lab_profiles.def}"
 CAMPAIGN_ID=mainnet-micro-100-v1
 TARGET_COUNT=100
 RECIPIENT_ZAT=1000
@@ -78,6 +79,26 @@ check_catalog() {
             END { exit !found }' "$LIVE_CATALOG" ||
             die "catalog case $case_id is not mainnet_ready"
     done <<< "$cases"
+
+    local shell_rows native_rows
+    shell_rows="$(awk -F'|' '!/^#/ && NF { print }' "$CATALOG")"
+    native_rows="$(awk '
+        /^TX_MICRO_PROFILE[(]/ {
+            line=$0
+            sub(/^TX_MICRO_PROFILE[(]/, "", line)
+            sub(/[)]$/, "", line)
+            n=split(line, f, ",")
+            if (n != 8) next
+            for (i=1; i<=n; i++) {
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", f[i])
+                gsub(/^"|"$/, "", f[i])
+            }
+            printf "%03d|%03d|%s|%s|%s|%s|%d|%d\n",
+                   f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8]
+        }
+    ' "$NATIVE_CATALOG")"
+    [ "$shell_rows" = "$native_rows" ] ||
+        die "shell and native C23 micro-lab catalogs differ"
 }
 
 check_header() {

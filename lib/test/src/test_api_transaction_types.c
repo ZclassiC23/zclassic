@@ -103,6 +103,113 @@ int api_transaction_type_focused_tests(void)
             registry, "app.transaction-types.wire", NULL) != NULL;
         ok = ok && zcl_command_registry_find(
             registry, "app.transaction-types.command", NULL) != NULL;
+        ok = ok && zcl_command_registry_find(
+            registry, "app.transaction-types.micro-lab", NULL) != NULL;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native micro-lab covers 100 exact slots and fails closed... ");
+    {
+        const struct zcl_command_registry *registry = zcl_command_catalog();
+        const struct zcl_command_spec *spec = registry ?
+            zcl_command_registry_find(registry,
+                "app.transaction-types.micro-lab", NULL) : NULL;
+        size_t profile_count = 0;
+        const struct zcl_transaction_micro_lab_profile *profiles =
+            zcl_transaction_micro_lab_catalog(&profile_count);
+        bool ok = spec && profiles && profile_count == 14 &&
+            spec->budget_bytes == ZCL_COMMAND_EXTENDED_LIST_BUDGET;
+        int expected_slot = 1;
+        for (size_t i = 0; ok && i < profile_count; i++) {
+            const struct zcl_transaction_type_contract *type =
+                zcl_transaction_type_find(profiles[i].type_id);
+            ok = profiles[i].first_slot == expected_slot &&
+                profiles[i].last_slot >= profiles[i].first_slot &&
+                profiles[i].recipient_zat ==
+                    ZCL_TRANSACTION_MICRO_LAB_RECIPIENT_ZAT &&
+                profiles[i].fee_zat == ZCL_TRANSACTION_MICRO_LAB_FEE_ZAT &&
+                type && strcmp(type->availability, "ready") == 0;
+            expected_slot = profiles[i].last_slot + 1;
+        }
+        ok = ok && expected_slot == ZCL_TRANSACTION_MICRO_LAB_TARGET + 1 &&
+            zcl_transaction_micro_lab_find_slot(1) == &profiles[0] &&
+            zcl_transaction_micro_lab_find_slot(100) ==
+                &profiles[profile_count - 1] &&
+            zcl_transaction_micro_lab_find_slot(0) == NULL &&
+            zcl_transaction_micro_lab_find_slot(101) == NULL;
+
+        struct zcl_command_context context = {
+            .registry = registry,
+            .granted_capabilities = ~(uint64_t)0,
+            .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+        };
+        struct json_value input;
+        struct json_value root;
+        char output[ZCL_COMMAND_EXTENDED_LIST_BUDGET + 1];
+        enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_int(&input, "slot", 91);
+        char why[160];
+        ok = ok && spec && zcl_command_registry_input_validate(
+            spec, &input, why, sizeof(why));
+        size_t n = spec ? zcl_command_registry_execute_json(
+            registry, spec, &context, &input, false, spec->path, "normal",
+            0, 0, NULL, output, sizeof(output) - 1, &exit_code) : 0;
+        json_free(&input);
+        output[n < sizeof(output) ? n : sizeof(output) - 1] = 0;
+        json_init(&root);
+        ok = ok && n > 0 && n <= (size_t)spec->budget_bytes &&
+            exit_code == ZCL_COMMAND_EXIT_OK && json_read(&root, output, n) &&
+            json_get_bool(json_get(&root, "ok"));
+        const struct json_value *data = json_get(&root, "data");
+        const struct json_value *profile = data ?
+            json_get(data, "profile") : NULL;
+        const struct json_value *type = data ?
+            json_get(data, "transaction_type") : NULL;
+        const struct json_value *guide_input = data ?
+            json_get(data, "guide_input") : NULL;
+        ok = ok && data && profile && type && guide_input &&
+            strcmp(json_get_str(json_get(data, "schema")),
+                   ZCL_TRANSACTION_MICRO_LAB_SCHEMA) == 0 &&
+            json_get_int(json_get(data, "target_transaction_count")) == 100 &&
+            json_get_int(json_get(data, "campaign_transaction_type_count")) == 14 &&
+            json_get_int(json_get(data, "recipient_zat_each")) == 1000 &&
+            json_get_int(json_get(data, "fee_zat_each")) == 10000 &&
+            json_get_int(json_get(data, "campaign_envelope_zat")) == 2000000 &&
+            json_get_int(json_get(data, "selected_slot")) == 91 &&
+            json_get_int(json_get(profile, "slot")) == 91 &&
+            strcmp(json_get_str(json_get(profile, "transaction_type")),
+                   "htlc_redeem") == 0 &&
+            strcmp(json_get_str(json_get(type, "id")), "htlc_redeem") == 0 &&
+            strcmp(json_get_str(json_get(guide_input, "type")),
+                   "htlc_redeem") == 0 &&
+            !json_get_bool(json_get(data, "automatically_broadcasts")) &&
+            strstr(output, "private_key") == NULL &&
+            strstr(output, "grant_token") == NULL &&
+            strstr(output, "datadir") == NULL;
+        json_free(&root);
+
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_int(&input, "slot", 101);
+        ok = ok && spec && !zcl_command_registry_input_validate(
+            spec, &input, why, sizeof(why));
+        exit_code = ZCL_COMMAND_EXIT_OK;
+        n = spec ? zcl_command_registry_execute_json(
+            registry, spec, &context, &input, false, spec->path, "normal",
+            0, 0, NULL, output, sizeof(output) - 1, &exit_code) : 0;
+        json_free(&input);
+        output[n < sizeof(output) ? n : sizeof(output) - 1] = 0;
+        json_init(&root);
+        ok = ok && n > 0 && exit_code == ZCL_COMMAND_EXIT_INVALID &&
+            json_read(&root, output, n) &&
+            !json_get_bool(json_get(&root, "ok"));
+        const struct json_value *error = json_get(&root, "error");
+        ok = ok && error &&
+            strcmp(json_get_str(json_get(error, "code")), "BAD_SLOT") == 0;
+        json_free(&root);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
