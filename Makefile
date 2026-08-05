@@ -1757,7 +1757,9 @@ custody-status-selftest:
 # Sapling proofs, consensus verification, script interpretation, and isolated
 # settlement projections without contacting a live wallet.
 # Derived from the notebook catalog so adding a case cannot silently omit its
-# proof from `make transaction-lab-proof`. Stable sort also deduplicates groups
+# proof from `make transaction-lab-proof`. The check also requires an exact
+# posture row in tools/dev/transaction_live_catalog.def, preventing a new type
+# from silently escaping the live runbook. Stable sort deduplicates groups
 # shared by several semantic transaction types.
 TRANSACTION_LAB_PROOF_TESTS := $(shell { \
 	awk -F'|' 'substr($$0, 1, 1) != sprintf("%c", 35) && NF { print $$5 }' tools/dev/transaction_lab_catalog.def; \

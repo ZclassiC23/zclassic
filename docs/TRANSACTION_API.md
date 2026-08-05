@@ -369,6 +369,8 @@ the procedure and safety cap are in
 [`work/TRANSACTION_LAB.md`](./work/TRANSACTION_LAB.md). Only a `live_confirmed`
 mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.
+The exact 39-row mainnet posture and the owner-reviewed Sapling campaign are in
+[`work/LIVE_TRANSACTION_DEMONSTRATIONS.md`](./work/LIVE_TRANSACTION_DEMONSTRATIONS.md).
 
 The current complete inventory is **39/39 isolated cases passing**, with **38
 simulated-chain confirmations** plus **1 process-only consensus-verified**

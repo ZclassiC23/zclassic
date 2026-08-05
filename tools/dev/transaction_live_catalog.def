@@ -1,0 +1,48 @@
+# case_id|mainnet_posture|prerequisite|campaign
+#
+# mainnet_posture is one of:
+#   mainnet_ready      A new mainnet transaction is supported after all global
+#                      custody/health gates and the named prerequisite pass.
+#   process_reference  Demonstrate against a public mined transaction; there is
+#                      deliberately no agent-facing constructor.
+#   contained          The mainnet mutation is not currently available.
+#   isolated_only      Policy deliberately forbids this shape on mainnet.
+coinbase_reward|process_reference|mined_block_reference|base
+transparent_t_to_t|mainnet_ready|fresh_transparent_recipient|base
+transparent_multi_recipient|mainnet_ready|two_fresh_isolated_recipients|base
+sapling_mixed_recipient|mainnet_ready|prover_and_two_recipient_pools|shielded
+raw_custom_transaction|mainnet_ready|standard_script_and_owner_review|base
+transparent_p2sh_multisig_spend|mainnet_ready|threshold_keys_and_funding_output|base
+sapling_t_to_z|mainnet_ready|prover_and_fresh_sapling_recipient|shielded
+sapling_z_to_z|mainnet_ready|confirmed_sapling_note_and_prover|shielded
+sapling_z_to_t|mainnet_ready|confirmed_sapling_note_and_transparent_recipient|shielded
+sprout_joinsplit|process_reference|canonical_mainnet_fixture|base
+zslp_genesis|mainnet_ready|fresh_token_definition|tokens
+zslp_mint|mainnet_ready|owned_mint_baton|tokens
+zslp_send|mainnet_ready|owned_token_output|tokens
+zslp_burn|mainnet_ready|owned_token_output|tokens
+znam_register|mainnet_ready|unclaimed_name_and_owner|names
+znam_update|mainnet_ready|owned_name|names
+znam_transfer|mainnet_ready|owned_name_and_new_owner|names
+znam_renew|mainnet_ready|owned_name|names
+znam_set_record|mainnet_ready|owned_name_and_public_record|names
+znam_set_text|mainnet_ready|owned_name_and_public_text|names
+sapling_onchain_memo|mainnet_ready|prover_and_message_recipient|messaging
+zpay_memo_envelope|mainnet_ready|zpay_envelope_prover_and_recipient|messaging
+zid_anchor|mainnet_ready|fresh_identity_key|identity
+zid_rotate|mainnet_ready|owned_active_identity|identity
+zid_revoke|mainnet_ready|owned_active_identity|identity
+zdir_register|mainnet_ready|owned_onion_identity|directory
+zdir_deregister|mainnet_ready|active_owned_directory_record|directory
+zanc_digest_anchor|mainnet_ready|public_digest_and_funding|anchors
+zanc_epoch_anchor|mainnet_ready|current_epoch_catalog|anchors
+zcode_release_anchor|mainnet_ready|signed_release_documents|anchors
+blog_anchor|contained|event_signing_broker|blog
+htlc_initiate|mainnet_ready|two_party_swap_ceremony|swaps
+htlc_participate|mainnet_ready|two_party_swap_ceremony|swaps
+htlc_redeem|mainnet_ready|funded_htlc_and_secret|swaps
+htlc_refund|mainnet_ready|funded_htlc_and_mature_lockheight|swaps
+store_transparent_payment|mainnet_ready|fresh_store_order|commerce
+store_shielded_payment|isolated_only|fresh_store_order_and_prover|commerce
+yardsale_atomic_purchase|mainnet_ready|two_party_order_and_token_inventory|commerce
+market_purchase|mainnet_ready|authenticated_offer_and_delivery_peer|commerce
