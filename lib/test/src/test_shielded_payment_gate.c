@@ -25,6 +25,7 @@
 #include "validation/main_state.h"
 #include "sapling/params_init.h"
 #include "models/wallet_tx.h"
+#include "models/block.h"
 #include "models/wallet_identity.h"
 #include "controllers/wallet_controller.h"
 #include "controllers/wallet_shielded_controller.h"
@@ -43,6 +44,8 @@
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "jobs/reducer_frontier.h"
+#include "sim/simnet.h"
+#include "sim/simnet_sapling.h"
 
 #include <errno.h>
 #include <sqlite3.h>
@@ -84,6 +87,27 @@ static bool p11_4_make_tmpdir(char *tmpdir, size_t tmpdir_size)
     return true;
 }
 
+static bool p11_4_save_tip(struct node_db *ndb,
+                           const struct block_index *tip)
+{
+    if (!ndb || !tip)
+        return false;
+    struct db_block block;
+    memset(&block, 0, sizeof(block));
+    memcpy(block.hash, tip->hashBlock.data, sizeof(block.hash));
+    memset(block.prev_hash, 0x4f, sizeof(block.prev_hash));
+    memset(block.merkle_root, 0x4d, sizeof(block.merkle_root));
+    memset(block.chain_work, 0x4c, sizeof(block.chain_work));
+    block.height = tip->nHeight;
+    block.time = tip->nTime;
+    block.bits = 0x1d00ffffU;
+    block.status = 3;
+    static uint8_t solution[] = {0x01, 0x02};
+    block.solution = solution;
+    block.solution_len = sizeof(solution);
+    return db_block_save(ndb, &block);
+}
+
 /* The production wallet commit path is sovereignty-gated. Populate the same
  * minimal self-derived progress projection a running node has; otherwise this
  * wallet test exits before reaching Sapling transaction construction. */
@@ -114,20 +138,23 @@ static bool p11_4_open_trust_fixture(const char *dir)
 
 static bool p11_4_build_funding_utxo(struct node_db *ndb,
                                      struct coins_view_cache *coins_tip,
+                                     const struct uint256 *txid,
                                      const struct key_id *kid,
                                      const struct script *script,
-                                     int tip_height)
+                                     int utxo_height)
 {
     struct db_wallet_utxo utxo;
     memset(&utxo, 0, sizeof(utxo));
-    memset(utxo.txid, 0x41, 32);
+    if (!txid)
+        return false;
+    memcpy(utxo.txid, txid->data, sizeof(utxo.txid));
     utxo.vout = 0;
     utxo.value = 3 * COIN_VALUE;
     memcpy(utxo.address_hash, kid->id.data, 20);
     utxo.script = (uint8_t *)script->data;
     utxo.script_len = script->size;
-    utxo.height = tip_height - 1;
-    utxo.is_coinbase = false;
+    utxo.height = utxo_height;
+    utxo.is_coinbase = true;
     if (!db_wallet_utxo_save(ndb, &utxo))
         return false;
 
@@ -135,10 +162,8 @@ static bool p11_4_build_funding_utxo(struct node_db *ndb,
      * shared mempool-admission gate reads the consensus UTXO view. A real
      * node keeps those projections in sync; this fixture must populate both
      * so the RPC exercises the complete production acceptance context. */
-    struct uint256 txid;
-    memcpy(txid.data, utxo.txid, sizeof(txid.data));
     struct coins_cache_entry *entry =
-        coins_view_cache_modify_new(coins_tip, &txid);
+        coins_view_cache_modify_new(coins_tip, txid);
     if (!entry)
         return false;
     coins_alloc(&entry->coins, 1);
@@ -148,7 +173,7 @@ static bool p11_4_build_funding_utxo(struct node_db *ndb,
     entry->coins.vout[0].script_pub_key = *script;
     entry->coins.height = utxo.height;
     entry->coins.version = 1;
-    entry->coins.is_coinbase = false;
+    entry->coins.is_coinbase = true;
     return true;
 }
 
@@ -192,7 +217,7 @@ static bool p11_4_vault_mixed(struct rpc_table *tbl,
     json_push_kv_str(&input, "idempotency_key", "shielded-payment-mixed-1");
     json_push_kv_str(&effect, "asset", "ZCL");
     json_push_kv_str(&effect, "to", zaddr);
-    json_push_kv_str(&effect, "amount", "0.03000000");
+    json_push_kv_str(&effect, "amount", "0.02000000");
     json_push_back(&effects, &effect);
 
     /* One transaction crossing both recipient pools is the production
@@ -305,6 +330,11 @@ int test_shielded_payment_gate(void)
     struct key_id funding_kid;
     struct tx_destination funding_dest;
     struct script funding_script;
+    struct simnet chain_sim;
+    struct uint256 chain_funding_txid;
+    int chain_funding_height = 0;
+    bool chain_sim_open = false;
+    bool chain_confirmed = false;
     char funding_addr[128];
     char zaddr[128];
     char txid_hex[65];
@@ -326,6 +356,8 @@ int test_shielded_payment_gate(void)
     memset(&funding_kid, 0, sizeof(funding_kid));
     memset(&funding_dest, 0, sizeof(funding_dest));
     memset(&funding_script, 0, sizeof(funding_script));
+    memset(&chain_sim, 0, sizeof(chain_sim));
+    memset(&chain_funding_txid, 0, sizeof(chain_funding_txid));
     memset(funding_addr, 0, sizeof(funding_addr));
     memset(zaddr, 0, sizeof(zaddr));
     memset(txid_hex, 0, sizeof(txid_hex));
@@ -371,6 +403,11 @@ int test_shielded_payment_gate(void)
     ok = node_db_open(&ndb, dbpath);
     if (!ok)
         printf("(node_db_open failed for %s)\n", dbpath);
+
+    if (ok) {
+        fail_step = "persisted_chain_tip";
+        ok = p11_4_save_tip(&ndb, &tip);
+    }
 
     if (ok) {
         /* z_getnewaddress fail-closes (wallet_shielded_controller.c) unless
@@ -429,9 +466,28 @@ int test_shielded_payment_gate(void)
                                 funding_addr, sizeof(funding_addr));
     }
 
+    if (ok) {
+        fail_step = "simnet_funding";
+        ok = simnet_init(&chain_sim);
+        if (ok) {
+            chain_sim_open = true;
+            int sapling_height = simnet_tip_height(&chain_sim) + 1;
+            simnet_activate_sapling_at(&chain_sim, sapling_height);
+            ok = simnet_enable_sapling_tree(&chain_sim);
+            simnet_enable_contextual_check(&chain_sim, true);
+            chain_funding_height = sapling_height;
+        }
+        ok = ok && simnet_mint_coinbase_to(
+            &chain_sim, &funding_script, 3 * COIN_VALUE,
+            &chain_funding_txid);
+        ok = ok && simnet_mint_to_height(
+            &chain_sim, chain_funding_height + COINBASE_MATURITY);
+    }
+
     if (ok)
-        ok = p11_4_build_funding_utxo(&ndb, &coins_tip, &funding_kid,
-                                      &funding_script, tip.nHeight);
+        ok = p11_4_build_funding_utxo(
+            &ndb, &coins_tip, &chain_funding_txid, &funding_kid,
+            &funding_script, chain_funding_height);
 
     if (ok) {
         /* register_wallet_rpc_commands() already registers the shielded
@@ -510,7 +566,7 @@ int test_shielded_payment_gate(void)
         uint256_set_hex(&txid, txid_hex);
         bool lookup_ok = tx_mempool_lookup(&mempool, &txid, &sent_tx);
         bool shape_ok = lookup_ok && sent_tx.num_shielded_output == 1 &&
-            sent_tx.num_vout >= 2 && sent_tx.value_balance == -3000000LL;
+            sent_tx.num_vout >= 2 && sent_tx.value_balance == -2000000LL;
 
         /* A second, independent admission into an empty pool exercises the
          * complete consensus/mempool boundary: structure, Sapling output
@@ -546,7 +602,7 @@ int test_shielded_payment_gate(void)
         int decrypted = wallet_try_sapling_decrypt(wallet, &sent_tx, &txid);
         int64_t shielded_balance = wallet_get_sapling_balance(wallet);
         bool decrypt_ok = decrypted == 1 && wallet->num_sapling_notes == 1 &&
-            shielded_balance == 3000000LL;
+            shielded_balance == 2000000LL;
         ok = lookup_ok && shape_ok && admit_ok && tamper_ok && decrypt_ok;
         if (!ok)
             printf("(lookup=%d zouts=%zu vouts=%zu value_balance=%lld "
@@ -557,6 +613,26 @@ int test_shielded_payment_gate(void)
                    (int)accepted, admit_ok, copied, (int)rejected, tamper_ok,
                    decrypted, wallet->num_sapling_notes,
                    (long long)shielded_balance);
+    }
+
+    if (ok) {
+        fail_step = "simnet_confirm";
+        struct transaction chain_tx;
+        transaction_init(&chain_tx);
+        bool copied = transaction_copy(&chain_tx, &sent_tx);
+        struct output_description *chain_outputs = copied
+            ? chain_tx.v_shielded_output : NULL;
+        int before_height = simnet_tip_height(&chain_sim);
+        bool mined = copied && simnet_mint_txs(&chain_sim, &chain_tx, 1);
+        free(chain_outputs);
+        chain_confirmed = mined &&
+            simnet_tip_height(&chain_sim) == before_height + 1 &&
+            !simnet_coin_value(&chain_sim, &chain_funding_txid, 0, NULL) &&
+            simnet_coin_exists(&chain_sim, &sent_tx.hash) &&
+            simnet_sapling_tree_size(&chain_sim) == 1;
+        ok = chain_confirmed;
+        if (!copied)
+            transaction_free(&chain_tx);
     }
 
     atomic_store_explicit(&g_deferred_proof_validation_below_height,
@@ -579,11 +655,14 @@ int test_shielded_payment_gate(void)
     main_state_free(&ms);
     wallet_free(wallet);
     free(wallet);
+    if (chain_sim_open)
+        simnet_free(&chain_sim);
     test_cleanup_tmpdir(tmpdir);
 
     if (ok) {
         printf("OK (durable t->(z,t) plan/commit, proof verified, fully "
-               "admitted, tamper rejected, decrypted to 0.03000000 ZCL)\n");
+               "admitted, tamper rejected, decrypted to 0.02000000 ZCL, "
+               "simnet block confirmed=%d)\n", chain_confirmed);
     } else {
         printf("FAIL (%s)\n", fail_step);
         failures++;
