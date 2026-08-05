@@ -838,16 +838,18 @@ txid.
 
 The params-backed `test_shielded_payment_gate` now drives the public durable
 API rather than calling the compatibility send RPC. In an isolated wallet with
-a real encrypted backup it plans a `0.04000000 ZCL` mixed transaction, proves
-that planning leaves mempool empty, then commits `0.03000000 ZCL` to Sapling
+a real encrypted backup it plans a `0.03000000 ZCL` mixed transaction, proves
+that planning leaves mempool empty, then commits `0.02000000 ZCL` to Sapling
 and `0.01000000 ZCL` transparently. The production native Groth16 prover signs
 the transaction; the full mempool boundary independently accepts it; a flipped
-proof byte is rejected; and the wallet decrypts exactly `0.03000000 ZCL`.
+proof byte is rejected; and the wallet decrypts exactly `0.02000000 ZCL`.
+The exact committed bytes then spend a matching matured coinbase through the
+RAM-only simnet `connect_block` path: the input is consumed, transparent
+outputs become available, the tip advances, and one Sapling note commitment
+is appended.
 
-This is `consensus_verified`, not a simulated block or mainnet spend. The
-current result is **38/38 PASS**, **36/38 simulated/live confirmations**,
-**0/38 live-mainnet confirmations**, and **0 ZCL** live recipient value or
-fees. No live wallet, address, endpoint, key, or mainnet funds participated.
+This is `simnet_confirmed`, not a mainnet spend. No live wallet, address,
+endpoint, key, or mainnet funds participated.
 
 ## 2026-08-05 typed P2SH multisig workflow and interpreter proof
 
@@ -879,6 +881,6 @@ the consensus branch suite retain the direct signature/key-count and
 NULLDUMMY/NULLFAIL matrices.
 
 This is `simnet_confirmed`, not a mainnet spend. The current result is
-**39/39 PASS**, **37/39 simulated/live confirmations**,
+**39/39 PASS**, **38/39 simulated/live confirmations**,
 **0/39 live-mainnet confirmations**, and **0 ZCL** live recipient value or
 fees. No live wallet, address, endpoint, key, or mainnet funds participated.

@@ -36,7 +36,7 @@ TX_TYPE("sapling_mixed_recipient", "base_zcl", "ready",
         "vault.intent.plan", "vault.intent.commit", "vault.intent.status",
         "core.wallet.transaction.get",
         "all_zcl_networks_identity_bound_vault_intent_with_prover",
-        "sapling_mixed_recipient", "consensus_verified",
+        "sapling_mixed_recipient", "simnet_confirmed",
         "test_shielded_payment_gate",
         "Pay 1..50 transparent and Sapling recipients in one exact transaction. The encrypted durable plan binds source, outputs, effective Sapling memos, maximum fee, custody identity, tip, snapshot, expiry, and idempotency before commit.")
 TX_TYPE("raw_custom_transaction", "base_zcl", "ready", "chain_transaction",

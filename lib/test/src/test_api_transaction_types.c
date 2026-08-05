@@ -326,7 +326,7 @@ int api_transaction_type_focused_tests(void)
         ok = ok && count == 39 &&
              json_get_int(json_get(&root, "demonstrated_count")) == 39 &&
              json_get_int(json_get(&root, "blocked_count")) == 0 &&
-             json_get_int(json_get(&root, "chain_confirmed_count")) == 37 &&
+             json_get_int(json_get(&root, "chain_confirmed_count")) == 38 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
              json_get_int(json_get(&root, "proof_test_group_count")) == 30 &&
@@ -386,7 +386,7 @@ int api_transaction_type_focused_tests(void)
              strcmp(json_get_str(json_get(mixed, "builder_command")),
                     "vault.intent.plan") == 0 &&
              strcmp(json_get_str(json_get(mixed, "proof_level")),
-                    "consensus_verified") == 0;
+                    "simnet_confirmed") == 0;
         ok = ok && multisig &&
              strcmp(json_get_str(json_get(multisig, "builder_command")),
                     "core.wallet.transaction.multisig.compose") == 0 &&

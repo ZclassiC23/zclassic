@@ -368,7 +368,7 @@ the procedure and safety cap are in
 mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.
 
-The current complete inventory is **39/39 isolated cases passing**, with **37
+The current complete inventory is **39/39 isolated cases passing**, with **38
 simulated-chain confirmations**, **0 mainnet confirmations**, and **0 ZCL**
 live recipient value or fees. The earlier 33/33 result was complete for the
 catalog as then declared; the later audit found ZBLG, made the gap explicit,

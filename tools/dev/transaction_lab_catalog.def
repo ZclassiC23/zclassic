@@ -2,7 +2,7 @@
 coinbase_reward|base_zcl|mined coinbase reward|simnet_confirmed|test_simnet
 transparent_t_to_t|base_zcl|transparent payment|simnet_confirmed|test_simnet_wallet_import_backup
 transparent_multi_recipient|base_zcl|identity-bound transparent multi-recipient payment|simnet_confirmed|test_simnet_txkit
-sapling_mixed_recipient|base_zcl|identity-bound mixed transparent and Sapling multi-recipient payment|consensus_verified|test_shielded_payment_gate
+sapling_mixed_recipient|base_zcl|identity-bound mixed transparent and Sapling multi-recipient payment|simnet_confirmed|test_shielded_payment_gate
 raw_custom_transaction|base_zcl|raw create sign broadcast pipeline|simnet_confirmed|test_native_api_contract
 transparent_p2sh_multisig_spend|base_zcl|P2SH CHECKMULTISIG funding and threshold-signed spend|simnet_confirmed|test_simnet_txkit
 sapling_t_to_z|base_zcl|shielding payment|simnet_confirmed|test_simnet_shielded_wallet_e2e
