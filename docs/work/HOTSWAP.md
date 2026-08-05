@@ -445,6 +445,8 @@ returns `commit_input`. Re-running the same leaf with that input verifies the
 source identity, ABA mutation token, source CAS root, expiry, and resident
 generation before invoking the rollback-capable activation engine. It is
 confined to `zcl23-dev.service`, `~/.zclassic-c23-dev`, and RPC 18252.
+Its fixed-argv service-control timeout is longer than that unit's
+`TimeoutStopSec=300`, so the activator cannot race a still-running systemd stop.
 
 Only `make hotswap` and `tools/dev/hotswap-running-dev.sh` remain typed
 containment refusals; the manifest/staging publication path likewise stops

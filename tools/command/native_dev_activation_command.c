@@ -461,6 +461,9 @@ static void dac_commit(const struct zcl_command_request *request,
                  "ACTIVATION_COMMIT_FAILED", "commit",
                  "dev activation failed closed and rollback was attempted",
                  result.failure_capsule);
+        /* The engine may have stopped, flipped, restarted, and restored the
+         * lane before reporting failure. Never describe that as untouched. */
+        reply->error.mutated = true;
         return;
     }
     (void)json_push_kv_str(&reply->data, "schema", DAC_SCHEMA);

@@ -31,12 +31,13 @@
 #define DEV_GEN_ID_MAX 80
 
 /*
- * Bounded timeouts. The stop/start window (120 s) must OUTLIVE the node's own
- * 90 s SIGALRM shutdown backstop: if we killed the stop before the node's
- * self-timeout fired we would racily leave a half-stopped unit and a stale
- * pidfile. The verify window (60 s) bounds the post-restart readiness poll.
+ * Bounded timeouts. The stop/start process window must OUTLIVE the dev unit's
+ * TimeoutStopSec=300: killing `systemctl stop` earlier leaves systemd still
+ * deactivating the unit and races the following start/probe. Keep 30 seconds
+ * of control-plane headroom. The verify window (60 s) bounds the
+ * post-restart readiness poll once systemctl has completed the transition.
  */
-#define DEV_ACTIVATION_STOP_START_TIMEOUT_S 120
+#define DEV_ACTIVATION_STOP_START_TIMEOUT_S 330
 #define DEV_ACTIVATION_VERIFY_TIMEOUT_S 60
 #define DEV_ACTIVATION_VERIFY_INTERVAL_MS 250
 
