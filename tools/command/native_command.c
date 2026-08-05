@@ -3665,7 +3665,10 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
 #endif
     };
 
-    char out[ZCL_COMMAND_LIST_BUDGET + 1];
+    /* One registry leaf currently declares the 16 KiB extended-list budget.
+     * The dispatcher must offer the largest declared bounded envelope; the
+     * registry still enforces each leaf's own (usually smaller) budget. */
+    char out[ZCL_COMMAND_EXTENDED_LIST_BUDGET + 1];
     enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
     size_t n = zcl_command_registry_execute_json(
         reg, spec, &ctx, &input, was_alias, invoked, view, budget, max_items,
@@ -3690,7 +3693,7 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
         bool handled = false;
         if (json_read(&env, out, n) && env.type == JSON_OBJ) {
             const struct json_value *data = json_get(&env, "data");
-            char sel[ZCL_COMMAND_LIST_BUDGET + 1];
+            char sel[ZCL_COMMAND_EXTENDED_LIST_BUDGET + 1];
             char selerr[320];
             if (data && zcl_native_render_field_selection(
                             data, field_csv, sel, sizeof(sel), selerr,

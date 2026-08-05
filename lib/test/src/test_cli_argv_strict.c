@@ -87,6 +87,10 @@ static const char *const cas_stale_witnesses[] = {
     "src/main_cli_modes.c",
     "config/src/args.c",
     "config/include/config/args.h",
+    "config/commands/apps.def",
+    "tools/command/native_command.c",
+    "app/controllers/src/transaction_type_catalog.c",
+    "app/controllers/include/controllers/transaction_types.def",
     NULL,
 };
 
@@ -469,6 +473,34 @@ static int cas_test_native_param_conventions_unaffected(void)
     return failures;
 }
 
+static int cas_test_extended_transaction_catalog_fits(void)
+{
+    int failures = 0;
+    TEST("native CLI: the complete 39-type transaction catalog crosses the "
+         "8 KiB boundary and still fits its declared 16 KiB budget") {
+        char home[300];
+        snprintf(home, sizeof(home), "/tmp/zcl_cas_tx_catalog_%d",
+                 (int)getpid());
+        cas_mkdir_p(home);
+
+        char *argv[] = {
+            (char *)CAS_BIN, (char *)"app", (char *)"transaction-types",
+            (char *)"list", NULL,
+        };
+        char out[ZCL_COMMAND_EXTENDED_LIST_BUDGET + 1] = {0};
+        int rc = cas_run(argv, home, out, sizeof(out));
+
+        ASSERT_EQ(rc, ZCL_COMMAND_EXIT_OK);
+        ASSERT(strlen(out) > ZCL_COMMAND_LIST_BUDGET);
+        ASSERT(strlen(out) <= ZCL_COMMAND_EXTENDED_LIST_BUDGET);
+        ASSERT(cas_contains(out, "\"data_schema\":\"zcl.transaction_types.index.v2\""));
+        ASSERT(cas_contains(out, "\"transaction_type_count\":39"));
+        ASSERT(!cas_contains(out, "RESPONSE_BUDGET_EXCEEDED"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int cas_test_daemon_mode_tolerant_and_warns(void)
 {
     int failures = 0;
@@ -606,6 +638,7 @@ int test_cli_argv_strict(void)
     failures += cas_test_typo_after_command_word_refuses();
     failures += cas_test_bare_status_still_works();
     failures += cas_test_native_param_conventions_unaffected();
+    failures += cas_test_extended_transaction_catalog_fits();
     failures += cas_test_daemon_mode_tolerant_and_warns();
     failures += cas_test_v2transport_is_recognized();
 
