@@ -328,9 +328,15 @@ int api_transaction_type_focused_tests(void)
              json_get_int(json_get(&root, "blocked_count")) == 0 &&
              json_get_int(json_get(&root, "chain_confirmed_count")) == 38 &&
              json_get_int(json_get(&root,
+                 "process_only_consensus_verified_count")) == 1 &&
+             json_get_int(json_get(&root,
+                 "chain_or_process_verified_count")) == 39 &&
+             json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
              json_get_int(json_get(&root, "proof_test_group_count")) == 30 &&
              json_get_bool(json_get(&root, "fully_demonstrated")) &&
+             json_get_bool(json_get(&root,
+                 "fully_chain_or_process_verified")) &&
              strcmp(json_get_str(json_get(&root, "wire_catalog_command")),
                     "app.transaction-types.wire") == 0 &&
              strcmp(json_get_str(json_get(&root,

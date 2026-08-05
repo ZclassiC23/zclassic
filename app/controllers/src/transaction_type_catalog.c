@@ -333,6 +333,7 @@ bool zcl_transaction_types_index_json(struct json_value *out)
     size_t count = 0;
     size_t ready = 0, process_only = 0, contained = 0, planned = 0;
     size_t demonstrated = 0, blocked = 0, chain_confirmed = 0;
+    size_t process_only_consensus_verified = 0;
     size_t mainnet_live_proven = 0, proof_test_groups = 0;
     char proof_groups[PROOF_GROUP_MAX][PROOF_GROUP_LEN] = {{0}};
     const struct zcl_transaction_type_contract *catalog =
@@ -357,6 +358,9 @@ bool zcl_transaction_types_index_json(struct json_value *out)
         if (strcmp(catalog[i].proof_level, "simnet_confirmed") == 0 ||
             strcmp(catalog[i].proof_level, "live_confirmed") == 0)
             chain_confirmed++;
+        if (strcmp(catalog[i].availability, "process_only") == 0 &&
+            strcmp(catalog[i].proof_level, "consensus_verified") == 0)
+            process_only_consensus_verified++;
         if (strcmp(catalog[i].proof_level, "live_confirmed") == 0)
             mainnet_live_proven++;
         proof_group_add_csv(catalog[i].test_group, proof_groups,
@@ -374,11 +378,18 @@ bool zcl_transaction_types_index_json(struct json_value *out)
     (void)json_push_kv_int(out, "blocked_count", (int64_t)blocked);
     (void)json_push_kv_int(out, "chain_confirmed_count",
                            (int64_t)chain_confirmed);
+    (void)json_push_kv_int(out, "process_only_consensus_verified_count",
+                           (int64_t)process_only_consensus_verified);
+    (void)json_push_kv_int(out, "chain_or_process_verified_count",
+                           (int64_t)(chain_confirmed +
+                                     process_only_consensus_verified));
     (void)json_push_kv_int(out, "mainnet_live_proven_count",
                            (int64_t)mainnet_live_proven);
     (void)json_push_kv_int(out, "proof_test_group_count",
                            (int64_t)proof_test_groups);
     (void)json_push_kv_bool(out, "fully_demonstrated", blocked == 0);
+    (void)json_push_kv_bool(out, "fully_chain_or_process_verified",
+        chain_confirmed + process_only_consensus_verified == count);
     (void)json_push_kv(out, "transaction_types", &types);
     json_free(&types);
     return true;

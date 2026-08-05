@@ -71,11 +71,13 @@ The collection schema is `zcl.transaction_types.index.v2` and deliberately
 contains compact discovery rows that fit the native response budget; a member
 is the full `zcl.transaction_type.v2` contract. The collection also reports
 `demonstrated_count`, `blocked_count`, `chain_confirmed_count`,
-`mainnet_live_proven_count`, `proof_test_group_count`, and
-`fully_demonstrated`, so an agent can assess proof coverage without parsing all
-catalog rows. It also names the reverse lookup command and counts the explicitly
-audited alternate routes and non-chain dispositions. The current catalog has
-9 alternate route bindings and 18 explicit negative classifications.
+`process_only_consensus_verified_count`, `chain_or_process_verified_count`,
+`mainnet_live_proven_count`, `proof_test_group_count`,
+`fully_demonstrated`, and `fully_chain_or_process_verified`, so an agent can
+assess proof coverage without parsing all catalog rows. It also names the
+reverse lookup command and counts the explicitly audited alternate routes and
+non-chain dispositions. The current catalog has 9 alternate route bindings and
+18 explicit negative classifications.
 `core.wallet.transaction.list` is different: it is
 wallet history, not the type catalog. `app.protocols` describes broader
 application protocols, not an exhaustive transaction inventory.
@@ -369,10 +371,14 @@ mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.
 
 The current complete inventory is **39/39 isolated cases passing**, with **38
-simulated-chain confirmations**, **0 mainnet confirmations**, and **0 ZCL**
-live recipient value or fees. The earlier 33/33 result was complete for the
-catalog as then declared; the later audit found ZBLG, made the gap explicit,
-then added its typed plan/commit and mined proof rather than hiding it.
+simulated-chain confirmations** plus **1 process-only consensus-verified**
+legacy Sprout case, **0 live-mainnet confirmations**, and **0 ZCL** live
+recipient value or fees. Sprout's canonical mainnet fixtures pin full
+transactions and proof verification, but no deprecated constructor is exposed;
+therefore the 38/39 simulated-chain bar is a policy boundary, not missing send
+support. The earlier 33/33 result was complete for the catalog as then declared;
+the later audit found ZBLG, made the gap explicit, then added its typed
+plan/commit and mined proof rather than hiding it.
 
 For one transparent payment with multiple recipients, use the same canonical
 custody engine application workflows use. Amounts are decimal strings and the

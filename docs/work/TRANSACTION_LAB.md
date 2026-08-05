@@ -883,4 +883,8 @@ NULLDUMMY/NULLFAIL matrices.
 This is `simnet_confirmed`, not a mainnet spend. The current result is
 **39/39 PASS**, **38/39 simulated/live confirmations**,
 **0/39 live-mainnet confirmations**, and **0 ZCL** live recipient value or
-fees. No live wallet, address, endpoint, key, or mainnet funds participated.
+fees. The sole non-simnet row is the intentionally process-only Sprout path:
+two canonical mainnet transactions pin full pre/post-Sapling wire, identity,
+JoinSplit signatures, and PHGR13/Groth16 proofs without exposing a deprecated
+constructor. Thus all **39/39** are chain-confirmed or process-only consensus
+verified. No live wallet, address, endpoint, key, or mainnet funds participated.
