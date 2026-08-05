@@ -116,6 +116,11 @@ bool utxo_apply_ensure_delta_schema(sqlite3 *db);
 bool utxo_apply_delete_rows_above(sqlite3 *db, int first_height,
                                   int last_height);
 
+/* Remove abandoned reducer-kernel rows at/above the next unapplied height.
+ * This startup repair mutates only when the durable stage cursor and coin
+ * frontier agree exactly; it never changes either authority. */
+bool utxo_apply_reconcile_unapplied_suffix(sqlite3 *db);
+
 /* Persist the per-block inverse-delta for `height`, stamped with the
  * OLD branch hash. MUST run inside the stage txn so it lands atomically
  * with the log row + cursor. Called only on a successful apply. */

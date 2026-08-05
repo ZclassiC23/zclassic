@@ -6,26 +6,24 @@
 
 #include "stage_repair_reducer_frontier_internal.h"
 #include "stage_repair_reducer_frontier_evidence.h"
-
 #include "jobs/stage_log_rows.h"
 #include "jobs/stage_repair.h"
 #include "jobs/stage_repair_internal.h"
+#include "jobs/utxo_apply_delta.h"
 #include "tip_finalize_log_store.h"
-
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
+#include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
-
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 /* ── Non-canonical row purge ──────────────────────────────────────
  * Delete hash-bearing stage-log rows whose stored hash does not match
  * the canonical active-chain block at their height, plus the hashless
@@ -172,6 +170,20 @@ bool stage_reducer_frontier_purge_noncanonical(
     int lowest_stale_utxo_unapplied = -1;
     int lowest_stale_replay_domain = -1;
     progress_store_tx_lock();
+
+    /* Re-read the coin frontier under this writer lock: a raced, lower
+     * snapshot once stranded a future kernel suffix. Dry-run only observes. */
+    int32_t live_coins_applied = -1;
+    bool live_coins_found = false;
+    if (!coins_kv_get_applied_height(db, &live_coins_applied,
+                                     &live_coins_found)) {
+        LOG_WARN("stage_repair",
+                 "purge_noncanonical: live coins frontier read failed");
+        ok = false;
+        goto done_locked;
+    }
+    out->coins_applied_height = live_coins_applied;
+    out->coins_applied_found = live_coins_found;
 
     int tip_h = active_chain_height(&ms->chain_active);
     int lo = out->hstar + 1;
@@ -449,18 +461,28 @@ bool stage_reducer_frontier_purge_noncanonical(
         int after = -1;
         bool clamped = false;
         int target = out->coins_applied_height;
+        if (!stage_repair_cursor_at_unlocked(db, "utxo_apply", &before)) {
+            ok = false;
+            goto done_locked;
+        }
+        /* Remove the whole abandoned kernel suffix. The coin frontier proves
+         * it unapplied, so no inverse is needed. */
+        int suffix_last = before > 0 ? before - 1 : target;
+        if (hi > suffix_last)
+            suffix_last = hi;
         if (!rf_purge_tx_begin(db, &tx_open) ||
+            !utxo_apply_delete_rows_above(db, target, suffix_last) ||
             !rf_purge_clamp_cursor(db, true, "utxo_apply", target,
                                    &before, &after, &clamped)) {
             ok = false;
             goto done_locked;
         }
-        if (clamped)
-            LOG_WARN("stage_repair",
-                     "[stage_repair] purge_noncanonical aligned utxo_apply "
-                     "cursor=%d->%d to durable coins frontier after mixed-fork "
-                     "delta at h=%d", before, after,
-                     lowest_stale_utxo_unapplied);
+        LOG_WARN("stage_repair",
+                 "[stage_repair] purge_noncanonical reconciled utxo_apply "
+                 "kernel suffix=[%d,%d] cursor=%d->%d to live durable coins "
+                 "frontier after mixed-fork delta at h=%d",
+                 target, suffix_last, before, after,
+                 lowest_stale_utxo_unapplied);
     }
     if (lowest_stale_replay_domain >= 0)
         LOG_WARN("stage_repair",

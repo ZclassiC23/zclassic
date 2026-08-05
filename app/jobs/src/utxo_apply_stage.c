@@ -4,7 +4,6 @@
  *
  * Consumes proof_validate_log and computes a transparent UTXO delta.
  * It writes only utxo_apply_log plus its stage cursor in progress.kv. */
-
 #include "platform/time_compat.h"
 #include "jobs/created_outputs_index.h"
 #include "jobs/utxo_apply_history_hold.h"
@@ -741,7 +740,8 @@ bool utxo_apply_stage_init(struct main_state *ms)
         pthread_mutex_unlock(&g_lock);
         return false;
     }
-    if (!coins_ram_init(db, 0, coins_kv_set_applied_height_in_tx)) {
+    if (!utxo_apply_reconcile_unapplied_suffix(db) ||
+        !coins_ram_init(db, 0, coins_kv_set_applied_height_in_tx)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }

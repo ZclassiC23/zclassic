@@ -616,6 +616,22 @@ static int64_t uv_nf_rows_at(sqlite3 *db, int height)
     return n;
 }
 
+static int64_t uv_table_rows_at(sqlite3 *db, const char *table, int height)
+{
+    char sql[128];
+    snprintf(sql, sizeof(sql),
+             "SELECT COUNT(*) FROM %s WHERE height = ?", table);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int(st, 1, height);
+    int64_t n = -1;
+    if (sqlite3_step(st) == SQLITE_ROW)
+        n = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return n;
+}
+
 /* COUNT(*) of canonical coin rows created at `height`. -1 on error. */
 static int64_t uv_coin_rows_at(sqlite3 *db, int height)
 {
@@ -1466,6 +1482,39 @@ int test_utxo_apply_stage(void)
                  uv_nf_rows_at(db, 1) == 1 && uv_nf_rows_at(db, 2) == 1);
         UV_CHECK("nf rewind: no blocker recorded",
                  !blocker_exists("utxo_apply.apply_failed"));
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    /* A past cursor-only repair could leave shielded kernel rows at future
+     * heights. Restart must remove that suffix before the next block fold,
+     * while preserving rows below the exact cursor/coin frontier. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("suffix reconcile: setup",
+                 uv_setup("suffix_reconcile", 2, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        UV_CHECK("suffix reconcile: establish cursor one",
+                 utxo_apply_stage_drain(1) == 1 &&
+                     utxo_apply_stage_cursor() == 1);
+        sqlite3 *db = progress_store_db();
+        utxo_apply_stage_shutdown();
+        UV_CHECK("suffix reconcile: seed kept and future shielded rows",
+                 exec_sql(db,
+                     "INSERT OR REPLACE INTO sapling_anchors"
+                     "(anchor,height,tree) VALUES(zeroblob(32),0,x'');"
+                     "INSERT OR REPLACE INTO sapling_anchors"
+                     "(anchor,height,tree) VALUES(x'01',1,x'');"
+                     "INSERT OR REPLACE INTO nullifiers"
+                     "(nf,pool,height) VALUES(zeroblob(32),1,1)"));
+        UV_CHECK("suffix reconcile: restart succeeds",
+                 utxo_apply_stage_init(&ms));
+        UV_CHECK("suffix reconcile: future kernel rows removed",
+                 uv_table_rows_at(db, "sapling_anchors", 1) == 0 &&
+                     uv_nf_rows_at(db, 1) == 0);
+        UV_CHECK("suffix reconcile: below-frontier row preserved",
+                 uv_table_rows_at(db, "sapling_anchors", 0) == 1 &&
+                     stage_cursor_persisted(db, "utxo_apply",
+                                            "suffix_reconcile_test") == 1);
         uv_teardown(dir, &ms, &sc);
     }
 

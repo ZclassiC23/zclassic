@@ -19,6 +19,7 @@
 #include "storage/repair_marker.h"
 #include "util/log_macros.h"
 
+#include <limits.h>
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -26,6 +27,107 @@
 
 #define VALUE_OVERFLOW_REPAIR_ACK_ENV \
     "ZCL_REDUCER_VALUE_OVERFLOW_REPAIR_ACK"
+
+static bool unapplied_suffix_exists(sqlite3 *db, int32_t first, bool *exists)
+{
+    static const char *const sql =
+        "SELECT EXISTS("
+        " SELECT height FROM utxo_apply_log WHERE height>=?1"
+        " UNION ALL SELECT height FROM utxo_apply_delta WHERE height>=?1"
+        " UNION ALL SELECT height FROM nullifiers WHERE height>=?1"
+        " UNION ALL SELECT height FROM sprout_anchors WHERE height>=?1"
+        " UNION ALL SELECT height FROM sapling_anchors WHERE height>=?1"
+        ")";
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("utxo_apply", "[utxo_apply] suffix probe prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    if (sqlite3_bind_int(st, 1, first) != SQLITE_OK) {
+        LOG_WARN("utxo_apply", "[utxo_apply] suffix probe bind failed: %s",
+                 sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return false;
+    }
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW)
+        *exists = sqlite3_column_int(st, 0) != 0;
+    sqlite3_finalize(st);
+    if (rc != SQLITE_ROW) {
+        LOG_WARN("utxo_apply", "[utxo_apply] suffix probe step rc=%d: %s",
+                 rc, sqlite3_errmsg(db));
+        return false;
+    }
+    return true;
+}
+
+bool utxo_apply_reconcile_unapplied_suffix(sqlite3 *db)
+{
+    if (!db)
+        LOG_FAIL("utxo_apply", "suffix reconcile: NULL db");
+
+    bool ok = false;
+    progress_store_tx_lock();
+    uint64_t cursor = 0;
+    int32_t coins_applied = -1;
+    bool coins_found = false;
+    if (!stage_cursor_read_or_zero(db, "utxo_apply", "utxo_apply", &cursor) ||
+        !coins_kv_get_applied_height(db, &coins_applied, &coins_found))
+        goto done;
+    if (!coins_found) {
+        ok = true;
+        goto done;
+    }
+    if (cursor > INT_MAX || coins_applied != (int32_t)cursor) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] suffix reconcile deferred: cursor=%llu "
+                 "coins_applied=%d found=%d (exact agreement required)",
+                 (unsigned long long)cursor, coins_applied, (int)coins_found);
+        ok = true;
+        goto done;
+    }
+
+    bool present = false;
+    if (!unapplied_suffix_exists(db, coins_applied, &present))
+        goto done;
+    if (!present) {
+        ok = true;
+        goto done;
+    }
+    if (sqlite3_get_autocommit(db) == 0) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] suffix reconcile refused nested transaction");
+        goto done;
+    }
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("utxo_apply", "[utxo_apply] suffix BEGIN failed: %s",
+                 err ? err : sqlite3_errmsg(db));
+        if (err) sqlite3_free(err);
+        goto done;
+    }
+    if (!utxo_apply_delete_rows_above(db, coins_applied, INT_MAX)) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        goto done;
+    }
+    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("utxo_apply", "[utxo_apply] suffix COMMIT failed: %s",
+                 err ? err : sqlite3_errmsg(db));
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        goto done;
+    }
+    LOG_WARN("utxo_apply",
+             "[utxo_apply] removed abandoned kernel suffix at/above "
+             "next-unapplied height=%d (cursor and coin frontier agree)",
+             coins_applied);
+    ok = true;
+
+done:
+    progress_store_tx_unlock();
+    return ok;
+}
 
 static bool owner_ack_value_overflow_repair(void)
 {
