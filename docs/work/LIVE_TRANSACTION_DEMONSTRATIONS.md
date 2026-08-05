@@ -234,6 +234,17 @@ allocation, stop with a documented budget blocker; do not make values dust,
 weaken fee bounds, reuse existing user recipients, or exceed the cap merely to
 fill the progress bar.
 
+## 100-transaction exact-value campaign
+
+For the separately requested series of 100 newly mined transactions at exactly
+`0.00001000 ZCL` primary recipient value each, use
+[`TRANSACTION_MICRO_LAB.md`](./TRANSACTION_MICRO_LAB.md). Its checked manifest
+allocates 100 stable slots across 14 amount-bearing shapes, bounds recipient
+value plus current supported wallet fees at `0.01100000 ZCL`, and gives all
+setup transactions a separate envelope so prerequisites cannot disappear from
+the lifetime lab accounting. It does not pretend that metadata-only or
+process-only transactions have a 1,000-zatoshi payment amount.
+
 ## Reproducible evidence commands
 
 These commands never contact or mutate a live wallet:

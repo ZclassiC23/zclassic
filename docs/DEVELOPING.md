@@ -178,6 +178,13 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   `test_sprout_phgr13_kat` (mainnet height 241) and
   `test_sprout_groth16_kat` (mainnet height 476970); both embed only public
   transaction/VK bytes and require no wallet or live node.
+- `make transaction-micro-lab-check` validates the stable 100-slot,
+  1,000-zatoshi live-campaign allocation and its redacted append-only receipt
+  state machine. `make transaction-micro-lab-status` reports confirmed slot and
+  type coverage, exact value/fee totals, fee distribution, and confirmation
+  latency. Both are evidence-only and cannot plan, sign, authorize, broadcast,
+  or touch a datadir. The owner runbook is
+  [`TRANSACTION_MICRO_LAB.md`](work/TRANSACTION_MICRO_LAB.md).
 - Before using or adding a money-shaped native leaf, reverse-audit it with
   `zclassic23 app transaction-types command <path>`. `mapped` names every
   semantic workflow and role; `explicitly_non_chain` carries a reviewed reason;

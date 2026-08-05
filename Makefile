@@ -1771,11 +1771,12 @@ TRANSACTION_LAB_PROOF_TESTS := $(shell { \
 	awk -F'|' 'substr($$0, 1, 1) != sprintf("%c", 35) && NF { print $$5 }' tools/dev/transaction_lab_catalog.def; \
 	awk -F'"' '/^TX_TYPE_SUPPLEMENTAL/ { print $$4 }' app/controllers/include/controllers/transaction_type_supplemental_tests.def; \
 	} | sort -u | paste -sd, -)
-.PHONY: transaction-lab-status transaction-lab-check transaction-lab-proof
+.PHONY: transaction-lab-status transaction-lab-check transaction-lab-proof \
+	transaction-micro-lab-status transaction-micro-lab-check
 transaction-lab-status:
 	@tools/dev/transaction-lab.sh status
 
-transaction-lab-check:
+transaction-lab-check: transaction-micro-lab-check
 	@tools/dev/transaction-lab.sh check
 	@tools/dev/transaction-lab.sh selftest
 
@@ -1783,6 +1784,15 @@ transaction-lab-proof:
 	@ZCL_PARAMS_TESTS=1 ZCL_STRESS_TESTS=1 \
 	 $(MAKE) --no-print-directory t-fast-exact ONLY='$(TRANSACTION_LAB_PROOF_TESTS)'
 	@tools/dev/transaction-lab.sh status
+
+# Redacted evidence notebook for the bounded 100 x 1,000-zatoshi campaign.
+# These targets never plan, sign, authorize, broadcast, or touch a datadir.
+transaction-micro-lab-status:
+	@tools/dev/transaction-micro-lab.sh status
+
+transaction-micro-lab-check:
+	@tools/dev/transaction-micro-lab.sh check
+	@tools/dev/transaction-micro-lab.sh selftest
 
 # ── Agent-harness reporting targets ──────────────────────────────────────
 # Three read-only targets the orchestrator was doing by hand. None builds,
