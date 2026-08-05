@@ -50,6 +50,7 @@
 #include "platform/time_compat.h"
 #include "rpc/server.h"
 #include "services/agent_spend_policy.h"
+#include "services/wallet_money_service.h"
 #include "wallet/wallet.h"
 
 #include <stdio.h>
@@ -305,6 +306,33 @@ static int test_operator_exemption(void)
         ASSERT(d.allowed);
         json_free(&in);
         asp_close(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_money_freshness_fails_closed(void)
+{
+    int failures = 0;
+    TEST("money freshness is current only at a published peer-observed tip") {
+        ASSERT_EQ(wallet_money_freshness_classify(
+                      true, 100, 100, 1, SYNC_AT_TIP),
+                  WALLET_MONEY_FRESHNESS_CURRENT);
+        ASSERT_EQ(wallet_money_freshness_classify(
+                      true, 99, 100, 1, SYNC_BLOCKS_DOWNLOAD),
+                  WALLET_MONEY_FRESHNESS_STALE);
+        ASSERT_EQ(wallet_money_freshness_classify(
+                      true, 100, 100, 1, SYNC_HEADERS_DOWNLOAD),
+                  WALLET_MONEY_FRESHNESS_STALE);
+        ASSERT_EQ(wallet_money_freshness_classify(
+                      false, 100, 100, 1, SYNC_AT_TIP),
+                  WALLET_MONEY_FRESHNESS_UNKNOWN);
+        ASSERT_EQ(wallet_money_freshness_classify(
+                      true, 100, -1, 1, SYNC_AT_TIP),
+                  WALLET_MONEY_FRESHNESS_UNKNOWN);
+        ASSERT_EQ(wallet_money_freshness_classify(
+                      true, 100, 100, 0, SYNC_AT_TIP),
+                  WALLET_MONEY_FRESHNESS_UNKNOWN);
         PASS();
     } _test_next:;
     return failures;
@@ -871,6 +899,7 @@ int test_agent_spend_policy(void)
 {
     printf("\n=== agent spend policy tests ===\n");
     int failures = 0;
+    failures += test_money_freshness_fails_closed();
     failures += test_operator_exemption();
     failures += test_default_deny_surface();
     failures += test_arbitrary_sql_refused();

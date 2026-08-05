@@ -6,8 +6,10 @@
 
 #include "base/result.h"
 #include "models/wallet_identity.h"
+#include "sync/sync_state.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 struct json_value;
@@ -15,6 +17,12 @@ struct main_state;
 struct node_db;
 
 #define WALLET_MONEY_REASON_MAX 160
+
+enum wallet_money_freshness {
+    WALLET_MONEY_FRESHNESS_UNKNOWN = 0,
+    WALLET_MONEY_FRESHNESS_STALE,
+    WALLET_MONEY_FRESHNESS_CURRENT,
+};
 
 struct wallet_money_snapshot {
     struct wallet_identity_row identity;
@@ -31,10 +39,18 @@ struct wallet_money_snapshot {
     int64_t agent_available_zat;
 
     int32_t tip_height;
+    int32_t network_tip_height;
     uint8_t tip_hash[32];
     int64_t observed_at;
     uint8_t snapshot_root[32];
 };
+
+/* Pure fail-closed classification shared by snapshot construction and tests.
+ * CURRENT requires a published H*, at least one live peer, a known peer tip,
+ * no provable-tip lag, and the sync FSM's own AT_TIP verdict. */
+enum wallet_money_freshness wallet_money_freshness_classify(
+    bool hstar_published, int32_t hstar, int32_t network_tip,
+    size_t peer_count, enum sync_state state);
 
 /* Compose identity + vault readers + intent reservations + chain tip. No
  * independent balance arithmetic is stored; every call re-reads authorities. */

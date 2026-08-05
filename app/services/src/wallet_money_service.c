@@ -7,12 +7,15 @@
 #include "base/serialize_le.h"
 #include "chain/chain.h"
 #include "crypto/sha3.h"
+#include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "models/agent_session.h"
 #include "models/database.h"
 #include "models/vault_intent.h"
 #include "platform/time_compat.h"
+#include "services/sync_monitor.h"
 #include "services/vault_read.h"
+#include "sync/sync_state.h"
 #include "validation/main_state.h"
 
 #include <stdio.h>
@@ -28,15 +31,16 @@ static void money_root(struct wallet_money_snapshot *s)
     sha3_256_write(&c, (const uint8_t *)"zcl.wallet_money.v1", 19);
     sha3_256_write(&c, (const uint8_t *)s->wallet_scope,
                    strlen(s->wallet_scope));
+    sha3_256_write(&c, (const uint8_t *)s->status, strlen(s->status));
     sha3_256_write(&c, (const uint8_t *)s->identity.wallet_instance_id,
                    WALLET_INSTANCE_ID_HEX_LEN);
     sha3_256_write(&c, s->identity.network_genesis, 32);
     sha3_256_write(&c, s->tip_hash, 32);
-    uint8_t nums[7][8];
-    const int64_t values[7] = {
+    uint8_t nums[8][8];
+    const int64_t values[8] = {
         s->confirmed_zat, s->pending_zat, s->encumbered_zat,
         s->intent_reserved_zat, s->lifetime_lab_spent_zat,
-        s->agent_available_zat, s->tip_height,
+        s->agent_available_zat, s->tip_height, s->network_tip_height,
     };
     for (size_t i = 0; i < 7; i++)
         zcl_write_i64_le(nums[i], values[i]);
@@ -45,6 +49,17 @@ static void money_root(struct wallet_money_snapshot *s)
                          strcmp(s->status, "CURRENT") == 0 ? 1 : 0 };
     sha3_256_write(&c, flags, sizeof(flags));
     sha3_256_finalize(&c, s->snapshot_root);
+}
+
+enum wallet_money_freshness wallet_money_freshness_classify(
+    bool hstar_published, int32_t hstar, int32_t network_tip,
+    size_t peer_count, enum sync_state state)
+{
+    if (!hstar_published || hstar < 0 || network_tip < 0 || peer_count == 0)
+        return WALLET_MONEY_FRESHNESS_UNKNOWN;
+    if (hstar < network_tip || state != SYNC_AT_TIP)
+        return WALLET_MONEY_FRESHNESS_STALE;
+    return WALLET_MONEY_FRESHNESS_CURRENT;
 }
 
 static bool money_classes_complete(const struct vault_snapshot *v,
@@ -73,6 +88,7 @@ struct zcl_result wallet_money_snapshot_build(
                    wallet_scope);
     (void)snprintf(out->status, sizeof(out->status), "UNKNOWN");
     out->tip_height = -1;
+    out->network_tip_height = -1;
     out->observed_at = (int64_t)platform_time_wall_time_t();
 
     if (!wallet_identity_find(ndb, &out->identity)) {
@@ -91,15 +107,49 @@ struct zcl_result wallet_money_snapshot_build(
         return ZCL_OK;
     }
 
-    struct block_index *tip = active_chain_tip(&main_state->chain_active);
-    if (!tip) {
+    bool hstar_published = reducer_frontier_provable_tip_is_published();
+    int32_t hstar = reducer_frontier_provable_tip_cached();
+    bool tip_found = false;
+    zcl_mutex_lock(&main_state->cs_main);
+    struct block_index *tip = active_chain_at(&main_state->chain_active, hstar);
+    if (tip && tip->nHeight == hstar) {
+        memcpy(out->tip_hash, tip->hashBlock.data, 32);
+        tip_found = true;
+    }
+    zcl_mutex_unlock(&main_state->cs_main);
+    if (!tip_found) {
         (void)snprintf(out->reason, sizeof(out->reason),
-                       "active chain tip is unavailable");
+                       "provable wallet tip is unavailable");
         money_root(out);
         return ZCL_OK;
     }
-    out->tip_height = tip->nHeight;
-    memcpy(out->tip_hash, tip->hashBlock.data, 32);
+    out->tip_height = hstar;
+
+    struct connman *cm = sync_monitor_connman();
+    size_t peer_count = cm ? connman_get_node_count(cm) : 0;
+    out->network_tip_height = sync_monitor_peer_height_cached();
+    enum sync_state sync_state = sync_get_state();
+    enum wallet_money_freshness freshness = wallet_money_freshness_classify(
+        hstar_published, hstar, out->network_tip_height, peer_count,
+        sync_state);
+    if (freshness != WALLET_MONEY_FRESHNESS_CURRENT) {
+        (void)snprintf(out->status, sizeof(out->status), "%s",
+                       freshness == WALLET_MONEY_FRESHNESS_STALE
+                           ? "STALE" : "UNKNOWN");
+        if (freshness == WALLET_MONEY_FRESHNESS_STALE &&
+            out->network_tip_height > hstar)
+            (void)snprintf(out->reason, sizeof(out->reason),
+                           "provable wallet tip is %d blocks behind network tip",
+                           out->network_tip_height - hstar);
+        else if (freshness == WALLET_MONEY_FRESHNESS_STALE)
+            (void)snprintf(out->reason, sizeof(out->reason),
+                           "node sync state is %s", sync_state_name(sync_state));
+        else
+            (void)snprintf(out->reason, sizeof(out->reason),
+                           "network tip freshness is unavailable");
+        money_root(out);
+        return ZCL_OK;
+    }
 
     struct vault_snapshot vault;
     struct zcl_result vr = vault_read_snapshot(ndb, &vault);
@@ -179,6 +229,7 @@ struct zcl_result wallet_money_snapshot_to_json(
     (void)json_push_kv_str(out, "network_genesis", genesis);
     (void)json_push_kv_str(out, "operator_lane", s->identity.operator_lane);
     (void)json_push_kv_str(out, "status", s->status);
+    (void)json_push_kv_str(out, "freshness", s->status);
     (void)json_push_kv_bool(out, "complete", s->complete);
     (void)json_push_kv_str(out, "reason", s->reason);
     if (s->complete && strcmp(s->status, "CURRENT") == 0) {
@@ -207,6 +258,8 @@ struct zcl_result wallet_money_snapshot_to_json(
         (void)json_push_kv_str(out, "agent_available_zcl", "UNKNOWN");
     }
     (void)json_push_kv_int(out, "tip_height", s->tip_height);
+    (void)json_push_kv_int(out, "network_tip_height",
+                           s->network_tip_height);
     (void)json_push_kv_str(out, "tip_hash", tip);
     (void)json_push_kv_int(out, "observed_at", s->observed_at);
     (void)json_push_kv_str(out, "snapshot_root", root);
