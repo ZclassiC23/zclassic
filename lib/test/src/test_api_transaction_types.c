@@ -326,7 +326,7 @@ int api_transaction_type_focused_tests(void)
         ok = ok && count == 39 &&
              json_get_int(json_get(&root, "demonstrated_count")) == 39 &&
              json_get_int(json_get(&root, "blocked_count")) == 0 &&
-             json_get_int(json_get(&root, "chain_confirmed_count")) == 36 &&
+             json_get_int(json_get(&root, "chain_confirmed_count")) == 37 &&
              json_get_int(json_get(&root,
                                    "mainnet_live_proven_count")) == 0 &&
              json_get_int(json_get(&root, "proof_test_group_count")) == 30 &&
@@ -344,6 +344,8 @@ int api_transaction_type_focused_tests(void)
             api_test_find_str_field(types, "id", "transparent_t_to_t");
         const struct json_value *mixed =
             api_test_find_str_field(types, "id", "sapling_mixed_recipient");
+        const struct json_value *multisig = api_test_find_str_field(
+            types, "id", "transparent_p2sh_multisig_spend");
         const struct json_value *coinbase =
             api_test_find_str_field(types, "id", "coinbase_reward");
         const struct json_value *store =
@@ -385,6 +387,11 @@ int api_transaction_type_focused_tests(void)
                     "vault.intent.plan") == 0 &&
              strcmp(json_get_str(json_get(mixed, "proof_level")),
                     "consensus_verified") == 0;
+        ok = ok && multisig &&
+             strcmp(json_get_str(json_get(multisig, "builder_command")),
+                    "core.wallet.transaction.multisig.compose") == 0 &&
+             strcmp(json_get_str(json_get(multisig, "proof_level")),
+                    "simnet_confirmed") == 0;
         ok = ok &&
             strcmp(json_get_str(json_get(zanc_digest, "builder_command")),
                    "core.anchor.compose") == 0 &&

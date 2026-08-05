@@ -865,14 +865,20 @@ keys; the command neither exports keys nor claims to merge partial signatures
 from separate wallets. The catalog makes that boundary part of the network
 policy instead of hiding it in prose.
 
-`test_multisig` constructs a real 2-of-2 P2SH spend with production ECDSA
-signatures, passes it through the production consensus P2SH/CHECKMULTISIG
-interpreter, and proves a signature-byte mutation is rejected. Independent
-native-contract coverage pins public-key-only composition, typed result fields,
-and local threshold rejection before RPC. Consensus branch tests retain the
-signature/key-count and NULLDUMMY/NULLFAIL negative matrix.
+`test_simnet_txkit` funds a real 2-of-2 P2SH output, builds its spend with
+production ECDSA signatures, passes it through the production consensus
+P2SH/CHECKMULTISIG interpreter, and proves a signature-byte mutation is
+rejected. The exact signed transaction then enters the isolated mempool and
+is mined; its funding output is consumed and its recipient output is present.
+The deterministic cost table pins that spend at **322 serialized bytes**, an
+explicit **0.00005000 ZCL simulated fee**, and one simulated confirmation
+block (2.5 virtual minutes).
+Independent native-contract coverage pins public-key-only composition, typed
+result fields, and local threshold rejection before RPC. `test_multisig` and
+the consensus branch suite retain the direct signature/key-count and
+NULLDUMMY/NULLFAIL matrices.
 
-This is `consensus_verified`, not a simulated block or mainnet spend. The
-current result is **39/39 PASS**, **36/39 simulated/live confirmations**,
+This is `simnet_confirmed`, not a mainnet spend. The current result is
+**39/39 PASS**, **37/39 simulated/live confirmations**,
 **0/39 live-mainnet confirmations**, and **0 ZCL** live recipient value or
 fees. No live wallet, address, endpoint, key, or mainnet funds participated.

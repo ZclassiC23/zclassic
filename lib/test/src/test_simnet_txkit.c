@@ -38,6 +38,13 @@ struct txk_cost_row {
     int seconds;
 };
 
+static void txk_test_key(struct privkey *key, uint8_t tag)
+{
+    memset(key->vch, tag, sizeof(key->vch));
+    key->fValid = true;
+    key->fCompressed = true;
+}
+
 static void txk_add_cost(struct txk_cost_row *rows, size_t *nrows,
                          const char *kind,
                          const struct simnet_tx_result *r,
@@ -72,6 +79,7 @@ static bool txk_cost_table_matches(const struct txk_cost_row *rows,
         { "P2PKH single-in/single-out", 121, 1210, 1, 150 },
         { "multi-input consolidation", 164, 1640, 1, 150 },
         { "multi-output fan-out", 189, 1890, 1, 150 },
+        { "2-of-2 P2SH multisig spend", 322, 5000, 1, 150 },
         { "OP_RETURN data carrier", 103, 1030, 1, 150 },
         { "OP_RETURN plus value output", 137, 1370, 1, 150 },
         { "P2SH HTLC fund", 162, 1620, 1, 150 },
@@ -378,8 +386,8 @@ int test_simnet_txkit(void)
 
     struct privkey multisig_keys[2];
     struct pubkey multisig_pubkeys[2];
-    privkey_make_new(&multisig_keys[0], true);
-    privkey_make_new(&multisig_keys[1], true);
+    txk_test_key(&multisig_keys[0], 0x21);
+    txk_test_key(&multisig_keys[1], 0x42);
     bool multisig_keys_ready =
         privkey_get_pubkey(&multisig_keys[0], &multisig_pubkeys[0]) &&
         privkey_get_pubkey(&multisig_keys[1], &multisig_pubkeys[1]);
@@ -400,19 +408,25 @@ int test_simnet_txkit(void)
     struct transaction multisig_spend;
     struct simnet_tx_result multisig_spend_result;
     bool multisig_tamper_rejected = false;
+    bool multisig_spend_ready = txk_build_multisig_spend(
+        &multisig_spend, &multisig_fund.txid, 150000,
+        simnet_wallet_script(bob), &multisig_redeem,
+        multisig_keys, &multisig_spend_result,
+        &multisig_tamper_rejected);
     TXK_CHECK("2-of-2 spend passes consensus interpreter",
-              txk_build_multisig_spend(
-                  &multisig_spend, &multisig_fund.txid, 150000,
-                  simnet_wallet_script(bob), &multisig_redeem,
-                  multisig_keys, &multisig_spend_result,
-                  &multisig_tamper_rejected) &&
+              multisig_spend_ready &&
               multisig_tamper_rejected);
+    if (multisig_spend_ready)
+        txk_add_cost(rows, &nrows, "2-of-2 P2SH multisig spend",
+                     &multisig_spend_result, 1);
     TXK_CHECK("2-of-2 signed spend enqueues and mints",
+              multisig_spend_ready &&
               simnet_mempool_add(&sim, &multisig_spend, NULL) &&
               simnet_mempool_mint(&sim) &&
               simnet_coin_value(&sim, &multisig_spend_result.txid, 0,
                                 NULL));
-    transaction_free(&multisig_spend);
+    if (multisig_spend_ready)
+        transaction_free(&multisig_spend);
 
     struct simnet_tx_result fund_d1;
     TXK_CHECK("fund alice for OP_RETURN",
@@ -584,7 +598,7 @@ int test_simnet_txkit(void)
               overflow_reject.reason == SIMNET_MEMPOOL_REJECT_VALUE_OVERFLOW);
     transaction_free(&overflow_tx);
 
-    TXK_CHECK("cost table row count", nrows == 9);
+    TXK_CHECK("cost table row count", nrows == 10);
     TXK_CHECK("cost table values are deterministic",
               txk_cost_table_matches(rows, nrows));
     txk_print_cost_table(rows, nrows);
