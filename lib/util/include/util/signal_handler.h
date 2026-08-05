@@ -42,6 +42,14 @@ typedef void (*signal_handler_crash_hook_fn)(int sig,
  * failure. */
 int signal_handler_install(void);
 
+/* Install the node owner's persistent SIGINT/SIGTERM callback. Embedded
+ * runtimes (notably Tor) may install process-wide termination handlers while
+ * they initialize, so the composition root calls this once before boot and
+ * once after all embedded runtimes have started to reclaim signal ownership.
+ * `handler` must be non-NULL. Returns 0 on success, -1 on invalid input or
+ * sigaction failure. */
+int signal_handler_install_termination(void (*handler)(int));
+
 /* Open a durable, append-only crash log at `path` (best-effort, idempotent).
  * Both this module's handler and the event-log crash handler mirror their
  * backtrace there in addition to stderr, then fsync — so a crash leaves a
