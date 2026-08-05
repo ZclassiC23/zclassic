@@ -41,16 +41,21 @@ historical fixture passes, then deploy/restart intentionally.
   `tools/scripts/public_explorer_smoke.sh`; it checks both `/api/v1/hodl` and
   `/explorer/hodl` without `jq` and fails on "refresh", "not processed",
   "retry", or "waiting" user-visible states.
-- **There is currently no runtime-generation publication authority.**
-  `dev.change.apply`, publication watcher modes,
+- **Runtime-generation publication has one owner-gated native authority.**
+  `zclassic23-dev dev generation activate --idempotency-key=<key>` stages and
+  preflights an immutable dev generation, then returns the exact
+  `commit_input` required to activate it. The commit binds the candidate,
+  source identity + ABA mutation + CAS root, resident generation, and expiry;
+  the engine verifies the exact running executable and rolls back on failure.
+  All other broad paths remain contained: `dev.change.apply`, watcher modes,
   `make hotswap`, `deploy-dev*`, `agent-deploy-fast`, `agent-stage-dev`, and
   the direct deploy/hot-swap scripts all hard-refuse. Remote update/install/
   restart variables and `lane_recover --apply` also refuse before SSH, file,
   datadir, or service mutation. A source ID, environment switch, or direct
   script call does not bypass containment. Use build, simulation, read-only
-  plans and verify/check watch; the one live runtime surface is the gated
-  swappable-leaf hot-swap (`make hotswap-try` / `make hotswap-apply`) on the
-  armed `zcl23-dev` lane.
+  plans and verify/check watch. The two live dev runtime surfaces are that
+  explicit owner plan/commit and the gated swappable-leaf hot-swap
+  (`make hotswap-try` / `make hotswap-apply`) on the armed `zcl23-dev` lane.
 - **Dev recovery is plan-only during containment.** `make agent-dev-recover`
   is read-only. `ARGS=--apply`, direct `recover-dev-lane.sh --apply`, and test
   environment variables cannot relink an existing generation or restart the

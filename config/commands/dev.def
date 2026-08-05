@@ -525,6 +525,29 @@ ZCL_COMMAND_DEV_READ(
     zcl_native_handle_dev_generation_history,
     "generation history is available through the dev binary",
     "zclassic23-dev dev generation history")
+ZCL_COMMAND_DEV_COMMAND(
+    "dev.generation.activate", "dev.generation", "",
+    "Stage, preflight, and activate one exact dev generation",
+    "The first call stages the checkout's prebuilt dev binary into an immutable "
+    "generation and returns exact commit_input. The confirmed call requires "
+    "the same candidate, source identity, ABA mutation token, source CAS root, "
+    "resident generation, expiry, idempotency key, and effect digest. It then "
+    "uses the native activation engine's exact-process verification and "
+    "rollback-on-failure transaction. It is confined to zcl23-dev.service.", 0,
+    "generation,activate,plan,commit,rollback,dev",
+    "zcl.dev_generation_activate_input.v1",
+    "zcl.dev_generation_activate.v1",
+    "idempotency_key,expires_in_seconds,intent_id,effect_digest,candidate_sha256,source_id_sha256,source_mutation_sha256,source_cas_sha3,expected_current_generation,expires_unix,confirm",
+    "", "zclassic23-dev dev generation activate --idempotency-key=upgrade-001",
+    ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
+    ZCL_COMMAND_SCOPE_DEV_LANE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_JOB, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_HIGH, ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_DEV, ZCL_COMMAND_CAP_DEV_ACTIVATE,
+    ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_REVERSIBLE,
+    zcl_native_handle_dev_generation_activate,
+    "generation activation requires the dev-only process executor",
+    "make dev-bin, then zclassic23-dev dev generation activate")
 ZCL_COMMAND_PLANNED_COMMAND(
     "dev.generation.rollback", "dev.generation", "", "Restore verified last-good in the dev lane",
     "Will report the restored last-good generation after an "

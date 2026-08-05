@@ -24,14 +24,14 @@ For development, the target steady-state interaction is simpler still:
 2. The persistent native dev loop notices and coalesces the save.
 3. ZClassic23 classifies the change as Core or App.
 4. It runs the smallest mandatory deterministic proof.
-5. Once the transactional publication protocol is complete, it atomically
-   publishes an App generation or transactionally reloads Core.
+5. On explicit owner request, `dev.generation.activate` stages, preflights,
+   and transactionally publishes one complete isolated-dev generation.
 6. The agent reads one compact verdict only when the cycle is not green.
 
-Today (Phase-0 containment), steps 1--4 and proof-only inspection are available,
-but every runtime-generation publication path fails closed. No watcher script,
-deploy script, broad test command, or service command belongs in
-the ordinary agent loop.
+Automatic whole-generation publication remains contained. The only full-image
+dev authority is the explicit native plan/commit leaf; watcher scripts, deploy
+scripts, broad test commands, and service commands do not gain publication
+authority from an environment switch.
 
 ## 2. Architectural law
 
@@ -779,16 +779,16 @@ directly): partially landed.**
   `zcl_command_registry_menu_json`/`_search_json`;
   `tools/lint/check_release_no_dev_symbols.sh` proves via `nm` that the
   release binary links no dev-mutation executors.
-- **Live on the dev lane (swappable leaves); generation publication contained:**
+- **Live on the dev lane (swappable leaves + owner-gated generation activation):**
   Tier-1 in-process hot-swap has a native `native.leaves` provider, and the
   single-leaf module path is live on the armed `zcl23-dev` lane:
   `dev.hotswap.probe` verifies a module `.so` in a throwaway CLI process, and
   `dev.hotswap.apply` re-points one allowlisted read-only leaf
   (`config/hotswap_swappable.def`) in the running dev node — gated on
   `-hotswap-activate` + `ZCL_HOTSWAP_ACTIVATE=1` + the exact dev datadir,
-  canonical refused. Whole-generation publication stays contained until the
-  full immutable epoch/proof/CAS/rollback transaction exists. See
-  `docs/work/HOTSWAP.md`.
+  canonical refused. `dev.generation.activate` is the separate full-image
+  transaction: immutable staging, exact source/resident CAS, bounded expiry,
+  exact-process probe, and rollback. See `docs/work/HOTSWAP.md`.
 
 Exit: an LLM can find and run every read-only operation through native
 discovery. **Met for the registry surface** — every declared root
@@ -886,11 +886,12 @@ job/stream infrastructure (`dev.loop.events`, `core.chain.wait.*`,
 `ops.jobs.list`), the confirmation/plan-commit handshake for owner-gated
 mutations (`core.wallet.transaction.send`, `core.consensus.block.invalidate`,
 and siblings), and wiring App generation loading to the public App ABI
-(`dev.app.publish`, `dev.app.inspect`). Runtime generation publication stays
-Phase-0 contained: `dev.change.apply`, publication watcher modes, and
-generation-relinking revert refuse before mutation; the live runtime path is
-the gated single-leaf hot-swap (`dev.hotswap.apply` / `make hotswap-apply`)
-on the armed dev lane.
+(`dev.app.publish`, `dev.app.inspect`). Automatic runtime generation
+publication stays contained: `dev.change.apply`, publication watcher modes,
+and generation-relinking revert refuse before mutation. The live runtime paths
+on the armed dev lane are the gated single-leaf hot-swap
+(`dev.hotswap.apply` / `make hotswap-apply`) and the explicit owner-gated
+`dev.generation.activate` plan/commit transaction.
 
 ## 22. Migration inventory baseline
 

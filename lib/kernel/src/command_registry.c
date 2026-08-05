@@ -1057,7 +1057,8 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
         } else if (strcmp(key, "now_unix") == 0 ||
                    strcmp(key, "created_at") == 0 ||
-                   strcmp(key, "expires_at") == 0) {
+                   strcmp(key, "expires_at") == 0 ||
+                   strcmp(key, "expires_unix") == 0) {
             /* Explicit Unix timestamps. now_unix is the deterministic
              * submission-window pin used by zcode.science; created_at and
              * expires_at are the ZPAY envelope bounds (and existing build
@@ -1065,6 +1066,12 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
              * string while every handler reads JSON_INT, making the declared
              * commands uninvokable through the CLI. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "expires_in_seconds") == 0) {
+            /* Owner-gated dev activation plan lifetime. The handler repeats
+             * this exact bound; recognizing the integer here lets the typed
+             * CLI reach that policy instead of misclassifying it as text. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 60 &&
+                      json_get_int(value) <= 3600;
         } else if (strcmp(key, "challenge_block_height") == 0 ||
                    strcmp(key, "action_sequence") == 0 ||
                    strcmp(key, "result_sequence") == 0 ||

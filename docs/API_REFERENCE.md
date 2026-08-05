@@ -59,17 +59,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 522 |
+| Registry entries (branches + leaves) | 523 |
 | Top-level roots | 11 |
 | Branches | 119 |
-| Leaves (dispatchable command paths) | 403 |
+| Leaves (dispatchable command paths) | 404 |
 | … `ready` (live handler in this build) | 355 |
-| … `compat` (metadata only, names a fallback) | 17 |
+| … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
-| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 133 |
+| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
+| Leaves with `effect=mutate` | 134 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 89 |
+| Leaves requiring **owner** authority | 90 |
 
 Per source file:
 
@@ -81,7 +81,7 @@ Per source file:
 | `config/commands/app_features.def` | 49 | 12 | 37 |
 | `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
-| `config/commands/dev.def` | 45 | 11 | 34 |
+| `config/commands/dev.def` | 46 | 11 | 35 |
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 21 | 4 | 17 |
@@ -609,6 +609,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `dev generation current` | compat 🔧 → `zclassic23-dev dev generation current` | read / read / operator · instant/low | none | `zcl.dev_generation_status.v1` | `zclassic23 dev generation current` | Show current and last-good generations — *generation state is available through the dev binary* |
 | `dev generation history` | compat 🔧 → `zclassic23-dev dev generation history` | read / read / operator · fast/low | `cursor`, `max_items` | `zcl.dev_generation_history.v1` | `zclassic23 dev generation history` | Page accepted and rejected generations — *generation history is available through the dev binary* |
+| `dev generation activate` | compat 🔧 → `make dev-bin, then zclassic23-dev dev generation activate` | mutate / dev-mutation / **owner**, job, plan-commit · foreground/high | `idempotency_key`, `expires_in_seconds`, `intent_id`, `effect_digest`, `candidate_sha256`, `source_id_sha256`, `source_mutation_sha256`, `source_cas_sha3`, `expected_current_generation`, `expires_unix`, `confirm` | `zcl.dev_generation_activate.v1` | `zclassic23-dev dev generation activate --idempotency-key=upgrade-001` | Stage, preflight, and activate one exact dev generation — *generation activation requires the dev-only process executor* |
 | `dev generation rollback` | planned | destructive / dev-mutation / **owner**, job, plan-commit · foreground/high | `intent_id`, `effect_digest` | `zcl.dev_generation_rollback.v1` | `zclassic23 dev generation rollback --input='<intent>'` | Restore verified last-good in the dev lane — *native activation engine is not implemented* |
 | `dev generation compact` | planned | destructive / dev-mutation / **owner**, job, plan-commit · foreground/moderate | `intent_id`, `effect_digest` | `zcl.dev_generation_compact.v1` | `zclassic23 dev generation compact --input='<intent>'` | Compact unleased old generations — *native lease-aware compaction is not implemented* |
 

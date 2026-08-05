@@ -46,6 +46,7 @@ dev.loop.ensure            exempt: verify-only dev loop, no live generation swap
 dev.loop.stop              exempt: verify-only dev loop, no live generation swap
 dev.generation.rollback    exempt: dev generation store, contained
 dev.generation.compact     exempt: dev generation store, contained
+dev.generation.activate    receipt:tools/command/native_dev_activation_command.c
 ops.recovery.rebuild       exempt: refold reset, gated by copy-prove doctrine
 
 # ZCL app-feature writes (config/commands/app_features.def). None of them

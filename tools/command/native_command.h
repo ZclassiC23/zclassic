@@ -1520,6 +1520,9 @@ void zcl_native_handle_dev_generation_current(
 void zcl_native_handle_dev_generation_history(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_dev_generation_activate(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 /* Both hot-swap commands are hard-contained compatibility entrypoints; probe
  * must not dlopen candidates in the resident node before ELF admission. */
 void zcl_native_handle_dev_hotswap_apply(

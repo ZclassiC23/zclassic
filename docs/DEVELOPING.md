@@ -73,9 +73,9 @@ and elapsed microseconds. It is deliberately marked `source_cas_authority:
 shadow`; the exact shell-derived SHA-256 source/mutation record remains build
 and publication authority during differential rollout.
 5. **Push flow + its two traps:** `make lint && make -j"$(nproc)" build-only`, run the mapped focused tests with parallel Make, then `git push` (hook runs `make pre-push-ci`). **Trap A (impact-rules):** every changed `.c` must map to a focused group in `app/controllers/include/controllers/agent_impact_rules.def` or the push is BLOCKED ("no focused test mapping") — add the mapping. **Trap B (pre-push SIGPIPE):** git may not drain the hook's stdout, so a GREEN `make pre-push-ci` can die with `make[2]: write error: stdout` and spuriously block — confirm green out-of-band (`make pre-push-ci >log 2>&1; echo $?` → 0) then `git push --no-verify` (verified, not skipped).
-6. **ZVCS:** each green cycle may anchor candidate source/artifact evidence. Source revert is available only with generation relinking disabled; relinking remains contained. Sealed-core changes require the owner unseal ritual (`check-core-seal`).
+6. **ZVCS:** each green cycle may anchor candidate source/artifact evidence. Source revert is available only with generation relinking disabled. Explicit full-generation publication uses `zclassic23-dev dev generation activate --idempotency-key=<key>` and its returned `commit_input`; automatic relinking remains contained. Sealed-core changes require the owner unseal ritual (`check-core-seal`).
 
-**Full-generation reopening gate (future, not current authority):** the narrow auto watcher can publish only an allowlisted read-only island into the isolated dev node. Service restart, executable relinking, canonical-node publication, and release publication remain contained. Those broader paths may return only as one durable transaction that resolves an immutable source epoch, derives the complete dependency/proof plan, records proof receipts, compare-and-swaps the expected resident epoch, quiesces and atomically publishes, probes through the public registry, and durably accepts or restores the exact prior generation.
+**Full-generation activation:** the narrow auto watcher still publishes only an allowlisted read-only island. An owner may explicitly stage and activate a full isolated-dev generation with the native plan/commit command above. It resolves an immutable source epoch, stages and preflights the exact candidate, compare-and-swaps the expected resident epoch under the activation lock, quiesces and atomically publishes, probes the exact process through the public registry, and accepts or restores the prior generation. Canonical-node and release publication remain separate and contained.
 
 ## The model in four lines
 
@@ -215,11 +215,14 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   returns `memo_hex`; the existing owner-only `core.wallet.shielded.send`
   remains the sole value-moving step. Inspect requires an explicit expected
   network and clock. Neither leaf accepts an identity seed.
-- `make deploy` is owner-gated live deployment. All public dev-lane publication,
-  stage, relink, and recovery-apply paths currently hard-refuse — the gated
-  swappable-leaf hot-swap loop above (`hotswap-try`/`hotswap-apply`) is the one
-  live exception; source identities and environment variables grant no
-  activation authority.
+- `make deploy` is owner-gated live deployment. For the isolated dev lane,
+  `zclassic23-dev dev generation activate --idempotency-key=<key>` is the sole
+  full-generation authority: its plan returns exact `commit_input`, and its
+  commit is source/resident-CAS-bound with exact-process verification and
+  rollback. Other dev publication, relink, and recovery-apply entry points
+  still hard-refuse; source identities and environment variables alone grant
+  no activation authority. Gated leaf hot-swap remains available through
+  `hotswap-try`/`hotswap-apply`.
   `make deploy` rm's the stale binary first
   (a stale binary was a real multi-day outage) and verifies `build_commit`.
 - **Gate every change with `tools/scripts/gate-and-report.sh <lintlog> <testlog>`**

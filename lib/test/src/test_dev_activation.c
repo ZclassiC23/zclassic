@@ -1023,6 +1023,46 @@ static int test_activate_generation_by_sha(void)
     return failures;
 }
 
+static int test_resident_generation_cas_refuses(void)
+{
+    int failures = 0;
+    TEST("dev_activation: resident generation CAS refuses before service stop") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "resident_cas");
+        char artA[PATH_MAX], genA[96];
+        ASSERT_EQ(seed_generation(&sb, 'A', artA, sizeof(artA), genA,
+                                  sizeof(genA)), DEV_ACTIVATION_OK);
+
+        uint8_t shaA[32];
+        ASSERT(hex_to_bytes32(genA + 4, shaA));
+        struct fake_ctx c = {0};
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        struct dev_activation_ops ops;
+        fake_ops_init(&ops, &c);
+        struct dev_activation_request req;
+        base_request(&req, &sb, artA);
+        req.expected_current_generation =
+            "gen-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        struct dev_activation_result r;
+
+        int rc = dev_activation_activate_generation(shaA, &req, &ops, &r);
+        ASSERT_EQ(rc, DEV_ACTIVATION_E_PREFLIGHT);
+        ASSERT_STR_EQ(r.verify_status, "resident_epoch_superseded");
+        ASSERT_EQ(c.preflight_calls, 0);
+        ASSERT_EQ(c.stop_calls, 0);
+        ASSERT_EQ(c.start_calls, 0);
+
+        char current[PATH_MAX], link[PATH_MAX];
+        snprintf(link, sizeof(link), "%s/current", sb.gen_root);
+        ASSERT(read_link_str(link, current, sizeof(current)));
+        ASSERT_STR_EQ(current, genA);
+
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_auto_reindex_pending_blocks(void)
 {
     int failures = 0;
@@ -1215,6 +1255,7 @@ int test_dev_activation(void)
     failures += test_verify_fail_quarantines();
     failures += test_mid_transaction_abort();
     failures += test_activate_generation_by_sha();
+    failures += test_resident_generation_cas_refuses();
     failures += test_auto_reindex_pending_blocks();
     failures += test_auto_reindex_override_allows();
     failures += test_stale_in_progress_refused();

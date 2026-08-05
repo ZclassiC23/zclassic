@@ -884,6 +884,23 @@ static int dev_run_locked(struct dev_activation_txn *txn, bool already_staged)
     if (stale != DEV_ACTIVATION_OK)
         return stale;
 
+    /* The plan half binds the exact resident epoch it observed.  Check it
+     * only after acquiring the same lock that protects the flip, otherwise a
+     * concurrent activation could pass a pre-lock comparison and be lost. */
+    if (txn->req->expected_current_generation) {
+        dev_activation_refresh_gen_state(txn);
+        if (strcmp(txn->current_generation,
+                   txn->req->expected_current_generation) != 0) {
+            dev_set_status(r, "superseded", "resident_epoch_superseded",
+                           "resident generation changed after planning; "
+                           "running generation untouched");
+            snprintf(r->failure_capsule, sizeof(r->failure_capsule),
+                     "resident generation compare-and-swap refused publication");
+            (void)dev_activation_write_deploy_state(txn);
+            return DEV_ACTIVATION_E_PREFLIGHT;
+        }
+    }
+
     if (!already_staged) {
         int st = dev_activation_stage_candidate(txn);
         if (st != DEV_ACTIVATION_OK) {
