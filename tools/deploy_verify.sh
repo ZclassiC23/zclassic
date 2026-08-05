@@ -136,6 +136,12 @@ deploy_verify_selftest() {
     fixture_argv=$(exec_argv_values_from_text "$fixture_exec")
     [ "$(printf '%s\n' "$fixture_argv" | sed -n '1p')" = "/canonical/deploy/zclassic23-launch.sh" ] || return 1
     [ "$(printf '%s\n' "$fixture_argv" | sed -n '2p')" = "/canonical/bin/zclassic23" ] || return 1
+    fixture_direct='{ path=/canonical/bin/zclassic23 ; argv[]=/canonical/bin/zclassic23 -datadir=/canonical/data -rpcport=18232 ; }'
+    fixture_direct_paths=$(exec_path_values_from_text "$fixture_direct")
+    [ "$(single_value_or_empty "$fixture_direct_paths")" = "/canonical/bin/zclassic23" ] || return 1
+    fixture_direct_argv=$(exec_argv_values_from_text "$fixture_direct")
+    [ "$(printf '%s\n' "$fixture_direct_argv" | sed -n '1p')" = "/canonical/bin/zclassic23" ] || return 1
+    [ "$(printf '%s\n' "$fixture_direct_argv" | sed -n '2p')" = "-datadir=/canonical/data" ] || return 1
     echo "deploy_verify selftest: PASS"
 }
 
@@ -209,23 +215,38 @@ SERVICE_LAUNCHER_EXE=$(readlink -f "$SERVICE_EXEC_PATH" 2>/dev/null || true)
 SERVICE_ARGV_VALUES=$(exec_argv_values_from_text "$SERVICE_EXEC_TEXT")
 SERVICE_ARGV0=$(printf '%s\n' "$SERVICE_ARGV_VALUES" | sed -n '1p')
 SERVICE_NODE_ARG=$(printf '%s\n' "$SERVICE_ARGV_VALUES" | sed -n '2p')
-[ -n "$SERVICE_ARGV0" ] && [ -n "$SERVICE_NODE_ARG" ] ||
-    fatal_binding "canonical service ExecStart must name launcher and node binary"
+[ -n "$SERVICE_ARGV0" ] ||
+    fatal_binding "canonical service ExecStart must name an executable argv"
 case "$SERVICE_ARGV0" in
     /*) ;;
-    *) fatal_binding "canonical service launcher argv is not absolute" ;;
-esac
-case "$SERVICE_NODE_ARG" in
-    /*) ;;
-    *) fatal_binding "canonical service node binary argv is not absolute" ;;
+    *) fatal_binding "canonical service executable argv is not absolute" ;;
 esac
 SERVICE_ARGV0_EXE=$(readlink -f "$SERVICE_ARGV0" 2>/dev/null || true)
 [ -n "$SERVICE_ARGV0_EXE" ] &&
 [ "$SERVICE_ARGV0_EXE" = "$SERVICE_LAUNCHER_EXE" ] ||
-    fatal_binding "canonical service path and launcher argv disagree"
-SERVICE_NODE_EXE=$(readlink -f "$SERVICE_NODE_ARG" 2>/dev/null || true)
-[ -n "$SERVICE_NODE_EXE" ] && [ "$SERVICE_NODE_EXE" = "$SERVICE_EXE" ] ||
-    fatal_binding "canonical MainPID executable does not match launcher node binary"
+    fatal_binding "canonical service path and executable argv disagree"
+
+# Accept both canonical unit forms while preserving an exact executable bind:
+#
+#   direct:   ExecStart=/absolute/zclassic23 <flags>
+#   launcher: ExecStart=/absolute/launcher /absolute/zclassic23 <flags>
+#
+# In direct mode argv[1] is normally the first flag, not another executable.
+# A launcher is only accepted when its explicit node argument resolves to the
+# executable owned by the stable MainPID captured above.
+if [ "$SERVICE_LAUNCHER_EXE" = "$SERVICE_EXE" ]; then
+    SERVICE_NODE_EXE="$SERVICE_LAUNCHER_EXE"
+else
+    [ -n "$SERVICE_NODE_ARG" ] ||
+        fatal_binding "canonical launcher must name the node binary"
+    case "$SERVICE_NODE_ARG" in
+        /*) ;;
+        *) fatal_binding "canonical launcher node binary argv is not absolute" ;;
+    esac
+    SERVICE_NODE_EXE=$(readlink -f "$SERVICE_NODE_ARG" 2>/dev/null || true)
+    [ -n "$SERVICE_NODE_EXE" ] && [ "$SERVICE_NODE_EXE" = "$SERVICE_EXE" ] ||
+        fatal_binding "canonical MainPID executable does not match launcher node binary"
+fi
 
 EXEC_DATADIR_VALUES=$(exec_arg_values_from_text datadir "$SERVICE_EXEC_TEXT")
 EXEC_RPCPORT_VALUES=$(exec_arg_values_from_text rpcport "$SERVICE_EXEC_TEXT")
