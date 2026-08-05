@@ -1,6 +1,6 @@
 # S7.1 distributed record discovery and possession replication lane
 
-**STATUS: IN PROGRESS**
+**STATUS: COMPLETE — gate-proven 2026-08-05; not deployed**
 
 **Worker:** `wf_zcode-s7-1-replication`  
 **Branch:** `lane/zcode-s7-1-replication`  
@@ -105,3 +105,60 @@ make pre-push-ci
 Every implementation slice is committed only after its focused tests pass.
 The completion section records exact heads, commands, verdicts, binary sizes
 and hashes, honest limits, and any unavailable parameter-heavy coverage.
+
+## Completion receipt
+
+Implementation commits, in reviewable order:
+
+```text
+c26665d63 zcode: derive record keys and advance lookup frontier
+50380d52d zcode: add iterative signed record discovery
+fa0719661 zcode: expose asynchronous record discovery lifecycle
+a52d36344 zcode: paginate records with provider anti-crowding
+45b3f9fc3 zcode: publish records and prove storage possession
+fbe0cd5d7 zcode: route science fetches through authenticated providers
+7bf78e82a test: prove sparse replication and renewal boundaries
+59cb40eae zcode: bind science publication and provider routing roots
+```
+
+Exact evidence on `59cb40eae` plus this documentation-only receipt:
+
+- `make test-zcode-dht-acceptance`: PASS — seven-daemon sparse iterative
+  lookup, broken-nearest recovery, bounded asynchronous admission, persistence
+  and autonomous cache/peer-DB-empty cold bootstrap.
+- `make test-science-acceptance`: PASS — the DHT acceptance above followed by
+  a two-daemon semantic-root-only POINTER/PROVIDER lookup, authenticated fetch,
+  byte rederivation, cold restart and byte-identical rebuild after SQL wipe;
+  stable CAS counts A=20/B=21.
+- focused 12-node hermetic proof: PASS — no direct publisher or peer database,
+  closest-key publication reaches an initially disconnected responsible node,
+  traffic stays at or below 256, policy freezes and later resumes renewal,
+  physical pinned-CAS-byte loss defeats possession and prevents ACK renewal,
+  and local root blocking remains local.
+- `make zcode-dht-asan`: PASS with ASan+UBSan and zero sanitizer failures or
+  suppressions.
+- `t-fast ONLY=adversarial`: 8/8 groups PASS; `zcode_store`: 1/1 PASS;
+  `file_market`: 1/1 PASS; `yardsale`: 3/3 PASS.
+- `make lint`: all 132 gates PASS. Full-program `make -j"$(nproc)"`: PASS.
+- cold uncached suite: 902 registered, 893 run, 0 cached, 9 parameter-heavy
+  groups gated, 0 failed, 19 explicit self-skip markers, 85.7 s on 32 workers.
+- `make ci-reproducible`: two 22,174,440-byte binaries, byte-identical at
+  SHA3-256 `2c5ba2b0fdf6f258031739662f199737e912b6d28ec6442c86b36a1819b5b7e4`.
+- `make repro-verify`: two different-length builder paths, each 22,174,520
+  bytes, byte-identical at SHA3-256
+  `c238324d4c12a1605cc3dbc4ff3c596e58ac9d6640f8c490571d03a504eab0a0`.
+- `make pre-push-ci`: PASS on the final committed lane before integration.
+
+The nine parameter-heavy groups were unavailable in the cold default because
+they require the opt-in parameter fixture. The 19 reported self-skips are the
+suite's explicit stress/live-fixture boundaries, not hidden failures.
+
+Honest boundary: the topology evidence is a 12-node hermetic sparse proof, a
+seven-daemon DHT acceptance and a two-daemon science acceptance. It is not a
+claim that one 12-daemon deployment was run. Records remain expiring evidence,
+not content truth or operator-independence proof. No private key is persisted;
+unknown C23 is never auto-executed. No space manifest, board, mailbox,
+doorbell, agent mission, arbitrary service execution, second network stack,
+consensus change, wallet spend, deployment, service restart or live-datadir
+mutation occurred. Future sovereign spaces reuse this generic typed-record,
+object and authenticated transport foundation.
