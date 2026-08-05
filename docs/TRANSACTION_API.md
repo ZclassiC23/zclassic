@@ -73,7 +73,7 @@ is the full `zcl.transaction_type.v2` contract. The collection also reports
 `demonstrated_count`, `blocked_count`, `chain_confirmed_count`,
 `mainnet_live_proven_count`, `proof_test_group_count`, and
 `fully_demonstrated`, so an agent can assess proof coverage without parsing all
-36 rows. It also names the reverse lookup command and counts the explicitly
+catalog rows. It also names the reverse lookup command and counts the explicitly
 audited alternate routes and non-chain dispositions. The current catalog has
 9 alternate route bindings and 18 explicit negative classifications.
 `core.wallet.transaction.list` is different: it is
@@ -238,7 +238,7 @@ human index:
 
 | Family | Semantic type ids | Current posture |
 |---|---|---|
-| Base ZCL | `coinbase_reward`, `transparent_t_to_t`, `transparent_multi_recipient`, `raw_custom_transaction`, `sapling_t_to_z`, `sapling_z_to_z`, `sapling_z_to_t`, `sprout_joinsplit` | Single-recipient, identity-bound multi-recipient, and Sapling builders are ready. Multi-recipient payments use the durable vault-intent lifecycle. Coinbase and Sprout are process-only; Sprout evidence pins complete canonical mainnet transactions before and after Sapling activation plus contextual JoinSplit signature and PHGR13/Groth16 proof verification, without exposing a deprecated constructor. |
+| Base ZCL | `coinbase_reward`, `transparent_t_to_t`, `transparent_multi_recipient`, `sapling_mixed_recipient`, `raw_custom_transaction`, `sapling_t_to_z`, `sapling_z_to_z`, `sapling_z_to_t`, `sprout_joinsplit` | Single-recipient, identity-bound transparent and mixed-pool multi-recipient, and Sapling builders are ready. Multi-recipient payments use the durable vault-intent lifecycle. Coinbase and Sprout are process-only; Sprout evidence pins complete canonical mainnet transactions before and after Sapling activation plus contextual JoinSplit signature and PHGR13/Groth16 proof verification, without exposing a deprecated constructor. |
 | ZSLP tokens | `zslp_genesis`, `zslp_mint`, `zslp_send`, `zslp_burn` | Typed plan/commit builders. |
 | ZNAM names | `znam_register`, `znam_update`, `znam_transfer`, `znam_renew`, `znam_set_record`, `znam_set_text` | Typed plan/commit builders with owner checks. |
 | Messaging | `sapling_onchain_memo` | On-chain ZMSG uses an encrypted Sapling memo; P2P messaging is off-chain. |
@@ -335,7 +335,7 @@ the procedure and safety cap are in
 mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.
 
-The current complete inventory is **37/37 isolated cases passing**, with **36
+The current complete inventory is **38/38 isolated cases passing**, with **36
 simulated-chain confirmations**, **0 mainnet confirmations**, and **0 ZCL**
 live recipient value or fees. The earlier 33/33 result was complete for the
 catalog as then declared; the later audit found ZBLG, made the gap explicit,
@@ -358,6 +358,25 @@ outputs, selected inputs, wallet instance, genesis, tip, current money snapshot
 and expiry. Commit revalidates those bindings and is idempotent. This is the
 developer-facing multi-recipient API; the legacy `sendmany` RPC is compatibility
 surface, not the custody workflow agents should build against.
+
+The same API handles every pool shape without guessing from defaults. Supply
+an explicit source address and a route matching the effects: `shield` for
+transparent-to-Sapling, `private` for Sapling-to-Sapling, `unshield` for
+Sapling-to-transparent, or `mixed` when one transaction has recipients in both
+pools. Sapling effects may include `memo` or `memo_hex`; `memo_hex` wins when
+both are present. For example:
+
+```bash
+printf '%s' '{"wallet_scope":"dev","route":"mixed","from":"t1...","idempotency_key":"lab-payment-1","effects":[{"asset":"ZCL","to":"zs1...","amount":"0.00030000","memo":"private note"},{"asset":"ZCL","to":"t1...","amount":"0.00010000"}]}' |
+  zclassic23 vault intent plan --input=-
+```
+
+Planning performs a non-broadcast prover/source preflight and persists the
+encrypted normalized request plus its reservation. Commit reconstructs and
+stores the exact signed bytes before relay. A retry publishes those same bytes;
+a different transaction cannot steal a Sapling-note reservation. The current
+bounded-agent policy still default-denies this multi-effect owner workflow;
+developers must not bypass that denial with a weaker single-amount grant.
 
 The ZPAY sequence deliberately keeps composition separate from custody:
 

@@ -823,3 +823,28 @@ The current result is **37/37 PASS**, **36/37 simulated/live confirmations**,
 **0/37 live-mainnet confirmations**, **26 exact proof groups**, and **0 ZCL**
 recipient value or fees. No live wallet, address, endpoint, private key or
 mainnet funds participated.
+
+## 2026-08-05 durable mixed-pool transaction proof
+
+Implementation commit `27b927b3` extends the canonical vault-intent lifecycle
+across all Sapling pool directions and mixed recipient fan-out. A plan requires
+an explicit `dev|prod` scope, source address, route, 1..50 exact effects, and
+idempotency key. It encrypts the normalized recipients and effective memos,
+reserves recipient value plus maximum fee, and binds wallet instance, genesis,
+tip hash, current custody snapshot, expiry, and request digest. Commit rebuilds
+the exact effects, persists signed bytes before relay, and uses a guarded note
+reservation that accepts the same txid on restart but rejects a conflicting
+txid.
+
+The params-backed `test_shielded_payment_gate` now drives the public durable
+API rather than calling the compatibility send RPC. In an isolated wallet with
+a real encrypted backup it plans a `0.04000000 ZCL` mixed transaction, proves
+that planning leaves mempool empty, then commits `0.03000000 ZCL` to Sapling
+and `0.01000000 ZCL` transparently. The production native Groth16 prover signs
+the transaction; the full mempool boundary independently accepts it; a flipped
+proof byte is rejected; and the wallet decrypts exactly `0.03000000 ZCL`.
+
+This is `consensus_verified`, not a simulated block or mainnet spend. The
+current result is **38/38 PASS**, **36/38 simulated/live confirmations**,
+**0/38 live-mainnet confirmations**, and **0 ZCL** live recipient value or
+fees. No live wallet, address, endpoint, key, or mainnet funds participated.

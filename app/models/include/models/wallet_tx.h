@@ -231,6 +231,14 @@ enum db_mark_spent_result db_sapling_note_mark_spent(
                                 const uint8_t nullifier[32],
                                 const uint8_t spent_by[32]);
 
+/* Wallet-author reservation variant: claim only an unspent note, or accept
+ * an exact retry by the same transaction.  A different spending txid is a
+ * conflict and returns NOT_FOUND without replacing the first reservation. */
+enum db_mark_spent_result db_sapling_note_reserve_spend(
+                                struct node_db *ndb,
+                                const uint8_t nullifier[32],
+                                const uint8_t spent_by[32]);
+
 /* Legacy bool wrapper: true only when an indexed note was updated.
  * Treats both NOT_FOUND and ERROR as false — do NOT use this in catchup. */
 bool db_sapling_note_mark_spent_bool_compat(struct node_db *ndb,

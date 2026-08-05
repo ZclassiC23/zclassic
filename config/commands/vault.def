@@ -194,24 +194,27 @@ ZCL_COMMAND_READY_COMMAND(
 ZCL_COMMAND_READY_COMMAND(
     "vault.intent.plan", "vault.intent", "",
     "Persist an exact encrypted transaction plan",
-    "Accepts 1..50 effects with strict decimal-string ZCL amounts. Route "
-    "defaults to private and fails closed because this integration currently "
-    "commits only explicit transparent plans; it never silently crosses pools. "
-    "Returns a ten-minute plan_id, digest, exact effects and fee, selected-input "
-    "anchor, confirmation policy, and an explicit public-linkage warning. "
+    "Accepts 1..50 effects with strict decimal-string ZCL amounts. Transparent "
+    "fan-out uses route=transparent. Sapling routes require from plus a durable "
+    "idempotency_key: private (z-to-z), shield (t-to-z), unshield (z-to-t), or "
+    "mixed (both recipient pools); a mismatched route fails closed. Returns a "
+    "ten-minute plan_id, digest, exact effects and maximum fee, tip/money "
+    "anchor, confirmation policy, and an explicit privacy warning. "
     "Recipient details are encrypted under the wallet metadata DEK at rest; "
     "the sensitive effects body is accepted only with --input=-. Planning "
     "fails closed unless custody is encrypted/unlocked, persistence and "
     "sovereign-chain checks pass, and a fully verified encrypted wallet "
-    "backup is under 24 hours old.", 0,
-    "vault,intent,plan,effects,fee,privacy,idempotent",
+    "backup is under 24 hours old. Private/mixed planning also proves the "
+    "source, witnesses, keys, recipients and Sapling prover can build without "
+    "admitting or relaying the candidate.", 0,
+    "vault,intent,plan,effects,fee,privacy,idempotent,mixed,sapling",
     "zcl.vault_intent_plan.input.v1", "zcl.vault_intent_plan.v1",
-    "wallet_scope,route,effects", "wallet_scope,effects",
+    "wallet_scope,route,from,effects,idempotency_key", "wallet_scope,effects",
     "printf '%s' '{\"wallet_scope\":\"dev\",\"route\":\"transparent\",\"effects\":[{\"asset\":\"ZCL\",\"to\":\"t1...\",\"amount\":\"0.01\"}]}' | zclassic23 vault intent plan --input=-",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
-    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
-    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_BACKGROUND,
+    ZCL_COMMAND_COST_HIGH, ZCL_COMMAND_CONFIRM_NONE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_vault_intent_plan)
@@ -220,9 +223,10 @@ ZCL_COMMAND_READY_COMMAND(
     "vault.intent.commit", "vault.intent", "",
     "Commit one exact durable plan without double-paying",
     "Requires plan_id and confirm:true. Atomically claims the plan, revalidates "
-    "its active-chain anchor, exact confirmed inputs, recipients and fee, "
-    "persists the signed transaction before relay, and stores its txid. Repeated "
-    "calls return the original txid; no operation_id is exposed.", 0,
+    "its wallet identity, active-chain anchor, current money root, recipients "
+    "and maximum fee, then builds/proves and persists the exact signed bytes "
+    "before relay. A crash resumes those same bytes; repeated calls return the "
+    "original txid and never double-pay. No operation_id is exposed.", 0,
     "vault,intent,commit,idempotent,txid,relay",
     "zcl.vault_intent_commit.input.v1", "zcl.vault_intent_commit.v1",
     "wallet_scope,plan_id,confirm", "wallet_scope,plan_id,confirm",
