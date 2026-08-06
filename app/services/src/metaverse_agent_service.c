@@ -27,6 +27,15 @@
 
 #define MVS_DIR_MAX 384
 
+/* A custody snapshot can contend with the reducer's authoritative wallet and
+ * vault readers while the dev lane is catching up.  Use the RPC client's
+ * normal bounded read deadline: a shorter front-door latency budget turned a
+ * valid six-second snapshot into the false claim that its endpoint was
+ * unreachable.  Freshness is still decided from the returned snapshot, never
+ * from how quickly it arrived. */
+#define MVS_MONEY_RPC_CONNECT_MS 500L
+#define MVS_MONEY_RPC_TOTAL_MS 10000L
+
 static metaverse_agent_rpc_fn g_money_rpc;
 
 void metaverse_agent_service_set_rpc(metaverse_agent_rpc_fn fn)
@@ -182,7 +191,9 @@ static bool money_query(struct money_binding_read *row)
                    "[\"custody\",{\"wallet_scope\":\"%s\"}]",
                    row->binding.wallet_scope);
     char *raw = g_money_rpc(row->binding.node_datadir, row->binding.rpc_port,
-                            "agentsession", params, 500, 2500);
+                            "agentsession", params,
+                            MVS_MONEY_RPC_CONNECT_MS,
+                            MVS_MONEY_RPC_TOTAL_MS);
     if (!raw)
         return false;
     struct json_value reply;
