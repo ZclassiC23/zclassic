@@ -313,7 +313,8 @@ static void *build_tx_index_thread(void *arg)
     db_path = job->args.db_path;
 
     struct node_db ndb;
-    if (!node_db_open(&ndb, db_path)) {
+    if (!node_db_open_runtime(&ndb, db_path,
+                              "snapshot.tx_index_build")) {
         LOG_NULL("snapshot", "tx_index: failed to open SQLite");
     }
 
