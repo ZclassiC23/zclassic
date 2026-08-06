@@ -1,6 +1,6 @@
 {
   "schema": "zcl.zcode_selfhost_validation_ledger.v1",
-  "generated_utc": "2026-08-06T17:26:33Z",
+  "generated_utc": "2026-08-06T17:33:29Z",
   "lane": "lane/zcode-selfhost-foundation",
   "frozen_root_checkout": "13d0d255b09548a21ccd05936186f8efc849394a",
   "safety_ref": "safety/zcode-pre-selfhost-20260806",
@@ -92,6 +92,10 @@
     {
       "kind": "publication_gate_fix_head_before_ledger_refresh",
       "sha": "28c5fed7bc0e99e29f35707eda94fde9de9655d6"
+    },
+    {
+      "kind": "out_of_band_pre_push_ci_head",
+      "sha": "ed9244e3ae9098a7f45c4f921d560e3d4833f205"
     }
   ],
   "preservation_reconciliation": {
@@ -386,13 +390,13 @@
     "uncached_full_suite": "PASS_900_OF_900_RUNNABLE_ZERO_CACHED",
     "asan_ubsan_matrix": "PASS_PRESCRIBED_ADX_PROFILE_NO_SUPPRESSIONS",
     "two_path_reproducibility": "PASS_015a6735a00a58585a88ca2b1441a7f19eb6bf8a23f1b33346c3cdf60d7e7edc",
-    "out_of_band_pre_push_ci": "WITHHELD",
+    "out_of_band_pre_push_ci": "PASS_STRICT_COMPILE_FAST_LINT_909_REGISTERED_900_RUN_0_CACHED_9_GATED_0_FAILED_19_SELF_SKIPS",
     "scratch_package_cas_publication": "PASS_HERMETIC_BASE_SHA3_CODEC_RELEASES_AND_WORKSPACE_RECEIPT_CHAINS",
     "push": "NOT_ATTEMPTED"
   },
   "next_steps": [
     "When the fold freeze is lifted, independently replay the three hermetic signed-release and task/candidate/work/proof/PROVEN receipt-chain proofs outside the local scratch cleanup boundary.",
-    "Run the final out-of-band pre-push gate on the ledger commit, then fast-forward origin/main and verify the remote SHA.",
+    "Fresh-fetch origin/main, fast-forward it to the fully-gated lane head, and verify the remote and local main SHAs.",
     "Register and verify an owner-approved off-host signer before awarding independent_reproduction."
   ]
 }
