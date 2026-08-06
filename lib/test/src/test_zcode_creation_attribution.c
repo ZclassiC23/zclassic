@@ -10,6 +10,7 @@
 #include "vcs/zcode_commons_projection.h"
 #include "vcs/zcode_epoch_creation.h"
 #include "vcs/zcode_patronage.h"
+#include "vcs/zcode_patronage_settlement.h"
 #include "vcs/vcs_object.h"
 
 #include <string.h>
@@ -516,11 +517,87 @@ static int patronage_intent_test(void)
     return failures;
 }
 
+static int patronage_settlement_codec_test(void)
+{
+    int failures = 0;
+    TEST("ZC23 patronage settlement: simulation wire cannot imply live funds") {
+        uint8_t seed[32], secret[32], pubkey[32];
+        memset(seed, 51, sizeof(seed));
+        zcl_ed25519_keypair(pubkey, secret, seed);
+        struct vcs_zcode_patronage_settlement_v1 settlement;
+        memset(&settlement, 0, sizeof(settlement));
+        settlement.schema_version = VCS_ZCODE_PATRONAGE_SETTLEMENT_VERSION;
+        settlement.action = VCS_ZCODE_PATRONAGE_SIMULATED_SETTLED;
+        settlement.flags = VCS_ZCODE_PATRONAGE_SETTLEMENT_SIMULATION_ONLY |
+            VCS_ZCODE_PATRONAGE_SETTLEMENT_NO_LIVE_FUNDS |
+            VCS_ZCODE_PATRONAGE_SETTLEMENT_NO_TRANSACTION_BYTES;
+        uint8_t *roots[] = {
+            settlement.network_genesis_root,
+            settlement.patronage_intent_root,
+            settlement.patronage_funding_root,
+            settlement.creation_attribution_root, settlement.task_root,
+            settlement.candidate_root, settlement.proof_policy_root,
+            settlement.proof_set_root, settlement.proven_lane_root,
+            settlement.score_receipt_root,
+            settlement.recipient_contributor_binding_root,
+        };
+        for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++)
+            creation_fill_root(roots[i], (uint8_t)(60 + i));
+        memcpy(settlement.settler_zid_pubkey, pubkey, 32);
+        settlement.amount_atoms = 200000000;
+        settlement.created_unix = 2000;
+        settlement.observed_height = 9000;
+        settlement.observed_mtp = 3000;
+        settlement.sequence = 1;
+        ASSERT(vcs_zcode_patronage_settlement_seal(
+                   &settlement, secret, pubkey) ==
+               VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        ASSERT(vcs_zcode_patronage_settlement_verify(&settlement) ==
+               VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        uint8_t wire[VCS_ZCODE_PATRONAGE_SETTLEMENT_WIRE_BYTES];
+        struct vcs_zcode_patronage_settlement_v1 parsed, zero;
+        memset(&zero, 0, sizeof(zero));
+        ASSERT(vcs_zcode_patronage_settlement_serialize(
+                   &settlement, wire) ==
+               VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        const uint8_t prefix[] = {
+            'Z','C','P','S','E','T','\r','\n', 1,0,1,7, 0,0,0,0,
+            60,60,60,60,60,60,60,60,
+        };
+        ASSERT(memcmp(wire, prefix, sizeof(prefix)) == 0);
+        ASSERT(vcs_zcode_patronage_settlement_parse(
+                   wire, sizeof(wire), &parsed) ==
+               VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        ASSERT(vcs_zcode_patronage_settlement_parse(
+                   wire, sizeof(wire) - 1, &parsed) ==
+               VCS_ZCODE_PATRONAGE_SETTLEMENT_WIRE_SIZE);
+        ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        settlement.flags &= (uint8_t)
+            ~VCS_ZCODE_PATRONAGE_SETTLEMENT_NO_LIVE_FUNDS;
+        ASSERT(vcs_zcode_patronage_settlement_validate(&settlement) ==
+               VCS_ZCODE_PATRONAGE_SETTLEMENT_SHAPE);
+        settlement.flags |= VCS_ZCODE_PATRONAGE_SETTLEMENT_NO_LIVE_FUNDS;
+        settlement.signature[63] ^= 1;
+        ASSERT(vcs_zcode_patronage_settlement_verify(&settlement) ==
+               VCS_ZCODE_PATRONAGE_SETTLEMENT_SIGNATURE);
+        settlement.signature[63] ^= 1;
+        settlement.action = VCS_ZCODE_PATRONAGE_SIMULATED_REFUNDED;
+        ASSERT(vcs_zcode_patronage_settlement_validate(&settlement) ==
+               VCS_ZCODE_PATRONAGE_SETTLEMENT_SHAPE);
+        memset(settlement.creation_attribution_root, 0, 32);
+        ASSERT(vcs_zcode_patronage_settlement_validate(&settlement) ==
+               VCS_ZCODE_PATRONAGE_SETTLEMENT_SHAPE);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_creation_attribution(void)
 {
     return creation_codec_test() + creation_rejection_test() +
            creation_arithmetic_test() + epoch_creation_codec_test() +
            epoch_creation_accounting_test() + commons_projection_test() +
            commons_projection_rebuild_test() +
-           commons_command_noncreating_test() + patronage_intent_test();
+           commons_command_noncreating_test() + patronage_intent_test() +
+           patronage_settlement_codec_test();
 }
