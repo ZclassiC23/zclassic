@@ -3,9 +3,12 @@
 #include "test/test_core.h"
 
 #include "vcs/zcode_creation_attribution.h"
+#include "vcs/zcode_commons_projection.h"
 #include "vcs/zcode_epoch_creation.h"
+#include "vcs/vcs_object.h"
 
 #include <string.h>
+#include <sys/stat.h>
 
 static void creation_fill_root(uint8_t out[32], uint8_t value)
 {
@@ -255,9 +258,114 @@ static int epoch_creation_accounting_test(void)
     return failures;
 }
 
+static int commons_projection_test(void)
+{
+    int failures = 0;
+    TEST("ZC23 commons projection: absent workspace is non-creating and deterministic") {
+        char workspace[256];
+        test_fmt_tmpdir(workspace, sizeof(workspace),
+                        "zcode_commons", "absent");
+        test_rm_rf(workspace);
+        ASSERT(access(workspace, F_OK) != 0);
+        struct vcs_zcode_commons_projection *first =
+            vcs_zcode_commons_projection_build(workspace);
+        struct vcs_zcode_commons_projection *second =
+            vcs_zcode_commons_projection_build(workspace);
+        ASSERT(first && second);
+        ASSERT(access(workspace, F_OK) != 0);
+        ASSERT(vcs_zcode_commons_projection_status(first) ==
+               VCS_ZCODE_COMMONS_UNKNOWN);
+        ASSERT(vcs_zcode_commons_projection_creation_count(first) == 0);
+        ASSERT(vcs_zcode_commons_projection_epoch_count(first) == 0);
+        uint8_t first_root[32], second_root[32];
+        ASSERT(vcs_zcode_commons_projection_root(first, first_root));
+        ASSERT(vcs_zcode_commons_projection_root(second, second_root));
+        ASSERT(memcmp(first_root, second_root, 32) == 0);
+        vcs_zcode_commons_projection_free(second);
+        vcs_zcode_commons_projection_free(first);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int commons_projection_rebuild_test(void)
+{
+    int failures = 0;
+    TEST("ZC23 commons projection: canonical CAS rebuild preserves exact totals") {
+        char workspace[256];
+        test_fmt_tmpdir(workspace, sizeof(workspace),
+                        "zcode_commons", "populated");
+        test_rm_rf(workspace);
+        ASSERT(mkdir(workspace, 0700) == 0);
+        ASSERT(vcs_object_store_init(workspace));
+
+        struct vcs_zcode_creation_attribution_v1 attribution;
+        uint8_t creation_wire[VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES];
+        uint8_t creation_root[32];
+        creation_fixture(&attribution);
+        ASSERT(vcs_zcode_creation_attribution_serialize(
+                   &attribution, creation_wire) == VCS_ZCODE_CREATION_OK);
+        ASSERT(vcs_zcode_creation_attribution_root(
+                   &attribution, creation_root) == VCS_ZCODE_CREATION_OK);
+        ASSERT(vcs_object_put_addressed(
+                   workspace, creation_root, creation_wire,
+                   sizeof(creation_wire)));
+
+        struct vcs_zcode_epoch_creation_set_v1 epoch;
+        uint8_t attribution_roots[1][32];
+        epoch_creation_fixture(&epoch, attribution_roots);
+        memcpy(attribution_roots[0], creation_root, 32);
+        uint8_t *epoch_wire = NULL;
+        size_t epoch_wire_len = 0;
+        uint8_t epoch_root[32];
+        ASSERT(vcs_zcode_epoch_creation_serialize(
+                   &epoch, &epoch_wire, &epoch_wire_len) ==
+               VCS_ZCODE_EPOCH_CREATION_OK);
+        ASSERT(vcs_zcode_epoch_creation_root(&epoch, epoch_root) ==
+               VCS_ZCODE_EPOCH_CREATION_OK);
+        ASSERT(vcs_object_put_addressed(
+                   workspace, epoch_root, epoch_wire, epoch_wire_len));
+
+        struct vcs_zcode_commons_projection *first =
+            vcs_zcode_commons_projection_build(workspace);
+        struct vcs_zcode_commons_projection *second =
+            vcs_zcode_commons_projection_build(workspace);
+        ASSERT(first && second);
+        ASSERT(vcs_zcode_commons_projection_status(first) ==
+               VCS_ZCODE_COMMONS_PARTIAL);
+        ASSERT(vcs_zcode_commons_projection_creation_count(first) == 1);
+        ASSERT(vcs_zcode_commons_projection_epoch_count(first) == 1);
+        ASSERT(vcs_zcode_commons_projection_attributed_atoms(first) ==
+               attribution.award_atoms);
+        ASSERT(vcs_zcode_commons_projection_minted_atoms(first) ==
+               epoch.actual_mint_atoms);
+        ASSERT(vcs_zcode_commons_projection_unissued_atoms(first) ==
+               epoch.unissued_atoms);
+        const struct vcs_zcode_commons_creation_entry *creation =
+            vcs_zcode_commons_projection_creation_at(first, 0);
+        const struct vcs_zcode_commons_epoch_entry *epoch_entry =
+            vcs_zcode_commons_projection_epoch_at(first, 0);
+        ASSERT(creation && epoch_entry);
+        ASSERT(memcmp(creation->root, creation_root, 32) == 0);
+        ASSERT(memcmp(epoch_entry->root, epoch_root, 32) == 0);
+        uint8_t first_root[32], second_root[32];
+        ASSERT(vcs_zcode_commons_projection_root(first, first_root));
+        ASSERT(vcs_zcode_commons_projection_root(second, second_root));
+        ASSERT(memcmp(first_root, second_root, 32) == 0);
+
+        vcs_zcode_commons_projection_free(second);
+        vcs_zcode_commons_projection_free(first);
+        free(epoch_wire);
+        test_rm_rf(workspace);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_creation_attribution(void)
 {
     return creation_codec_test() + creation_rejection_test() +
            creation_arithmetic_test() + epoch_creation_codec_test() +
-           epoch_creation_accounting_test();
+           epoch_creation_accounting_test() + commons_projection_test() +
+           commons_projection_rebuild_test();
 }
