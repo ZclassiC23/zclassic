@@ -21,18 +21,22 @@
  *     utxo_apply.anchor_backfill_gap / nullifier_backfill_gap condition as
  *     a strongly positive lag rather than a small one. Only when the
  *     activation cursor is 0 (a true from-genesis store) do these rows
- *     report their real forward frontier height via anchor_kv_latest_tree.
+ *     report the atomically co-committed coins/utxo_apply frontier. Anchor and
+ *     nullifier rows are sparse state-change journals: a Sprout tree whose
+ *     last mutation was years ago can still have processed every later block.
+ *     Treating its latest mutation height as its processing cursor creates a
+ *     permanent false lag. coins_applied_height advances in the same reducer
+ *     transaction that applies these stores, so it is the coverage witness.
  */
 
 #include "storage/catalog_completeness.h"
 
 #include "storage/anchor_kv.h"
+#include "storage/coins_kv.h"
 #include "storage/node_db_runtime.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "storage/projection_store.h"
-#include "sapling/incremental_merkle_tree.h"
-#include "core/uint256.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
@@ -190,12 +194,16 @@ static int64_t cc_anchor_cursor(int pool)
     if (!found) return CATALOG_CURSOR_UNAVAILABLE;    /* never adopted */
     if (activation > 0) return 0;                     /* known genesis gap */
 
-    struct incremental_merkle_tree tree;
-    struct uint256 root;
-    int64_t height = -1;
-    enum anchor_kv_lookup_result r =
-        anchor_kv_latest_tree(db, pool, &tree, &root, &height);
-    return (r == ANCHOR_KV_FOUND) ? height : 0;
+    int32_t applied = -1;
+    bool applied_found = false;
+    if (!coins_kv_get_applied_height(db, &applied, &applied_found)) {
+        LOG_WARN("catalog_completeness",
+                 "coins applied cursor read failed for anchor pool=%d", pool);
+        return CATALOG_CURSOR_UNAVAILABLE;
+    }
+    if (!applied_found)
+        return CATALOG_CURSOR_UNAVAILABLE;
+    return applied > 0 ? (int64_t)applied - 1 : 0;
 }
 
 static int64_t cc_get_sprout_anchor_cursor(void)
@@ -222,19 +230,16 @@ static int64_t cc_get_nullifier_cursor(void)
     if (!found) return CATALOG_CURSOR_UNAVAILABLE;
     if (activation > 0) return 0;
 
-    /* nullifier_kv exposes no forward "latest height" of its own (only a
-     * row COUNT) — but it commits in the SAME utxo_apply_stage transaction
-     * as the Sapling anchor frontier (see nullifier_kv.h / anchor_kv.h:
-     * "nullifiers commit or roll back atomically with coins + cursor + log
-     * row, exactly like coins_kv"), so the Sapling anchor's latest frontier
-     * height is a faithful proxy for how far forward the nullifier set has
-     * actually been folded. */
-    struct incremental_merkle_tree tree;
-    struct uint256 root;
-    int64_t height = -1;
-    enum anchor_kv_lookup_result r =
-        anchor_kv_latest_tree(db, ANCHOR_POOL_SAPLING, &tree, &root, &height);
-    return (r == ANCHOR_KV_FOUND) ? height : 0;
+    int32_t applied = -1;
+    bool applied_found = false;
+    if (!coins_kv_get_applied_height(db, &applied, &applied_found)) {
+        LOG_WARN("catalog_completeness",
+                 "coins applied cursor read failed for nullifier history");
+        return CATALOG_CURSOR_UNAVAILABLE;
+    }
+    if (!applied_found)
+        return CATALOG_CURSOR_UNAVAILABLE;
+    return applied > 0 ? (int64_t)applied - 1 : 0;
 }
 
 /* ── the static registry table — adding an index is one row + one

@@ -93,7 +93,9 @@ On a new operator host, create the binding once with `make custody-bind` before
 those reads. The command discovers both wallet identities from their typed
 local readers and keeps identifiers, endpoints and paths in the owner-private
 broker directory; it never moves funds. This replaces hand-authored grant JSON
-and is safe to rerun when the assigned wallet endpoint changes.
+and is safe to rerun when the assigned wallet endpoint changes: unchanged
+bindings are idempotent, while a changed binding is minted in a fresh private
+generation and atomically promoted without forking an older receipt chain.
 
 Never substitute a remembered `0.30000000 ZCL` development observation for a
 current identity-bound snapshot. Never infer the wallet scope from default CLI

@@ -16,7 +16,9 @@
  * already-shipped accessors.
  *
  * Design: a small static table of {name, get_cursor(void), always_on}
- * rows (catalog_completeness.c). Adding a new index to the catalog is one
+ * rows (catalog_completeness.c). Sparse anchor/nullifier state journals use
+ * their atomically co-committed reducer processing frontier, not the height of
+ * their last state mutation. Adding a new index to the catalog is one
  * row + one wrapper function — no dynamic registration API, no dependency
  * on boot order (every wrapper degrades to "unavailable" instead of
  * assuming its subsystem is already linked).

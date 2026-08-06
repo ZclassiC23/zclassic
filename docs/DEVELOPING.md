@@ -178,7 +178,14 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   address or path is printed, and it never reserves, signs, broadcasts or
   moves funds. Override the private location with
   `ARGS='--broker-dir=/absolute/private/path'`; validate the workflow with
-  `make custody-bind-selftest`.
+  `make custody-bind-selftest`. Rerunning an unchanged binding is idempotent;
+  an endpoint or identity change is provisioned in a fresh private generation
+  and promoted atomically, preserving every older signed audit chain.
+
+The isolated `zcl23-dev.service` uses the same `Type=notify` + external
+watchdog handshake as production, under a stricter 3G/4G memory envelope. A
+fresh build therefore copy-proves READY and watchdog petting on the dev lane
+before any owner restores canonical service armor.
 - `make transaction-lab-proof` — run the exact isolated transaction evidence
   matrix with real signatures, Sapling proofs, consensus verification, HTLC
   interpretation, and overlay builders. `make transaction-lab-status` prints

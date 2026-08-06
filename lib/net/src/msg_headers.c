@@ -1347,8 +1347,13 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             }
         }
 
-        if (pindex_last && pindex_last->phashBlock &&
-            peer_supports_fast_sync(node->services)) {
+        /* An accepted header is chain-identity evidence regardless of whether
+         * its sender advertises our optional fast-sync service bit. Standard
+         * ZClassic peers speak headers too; excluding them made the off-host
+         * agreement ledger see heights from the whole network but hashes from
+         * only zclassic23 peers. The two-distinct-host judge remains the
+         * authority that decides whether those per-peer votes corroborate. */
+        if (pindex_last && pindex_last->phashBlock) {
             char peer_hash_hex[65];
             uint256_get_hex(pindex_last->phashBlock, peer_hash_hex);
             msg_processor_record_peer_header_vote(mp, (uint32_t)node->id,
