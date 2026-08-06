@@ -339,6 +339,16 @@ Commit accepts only `wallet_scope`, the returned `plan_id`, and `confirm:true`,
 so changed outputs or units cannot be substituted during approval. Exact
 outpoints are unique across active intents, preventing two concurrent token
 plans from racing the same token output, mint baton, or fee coin.
+
+Overlay transaction builders that start from a transparent wallet base must
+separate preparation from publication. Use
+`zslp_command_prepare_with_op_return()` during the plan leg to insert the
+canonical OP_RETURN, sign all inputs, and compute the exact txid without
+touching the mempool. Persist those bytes and atomically claim their exact
+inputs before returning the plan. The older
+`zslp_command_commit_with_op_return()` remains a compatibility wrapper for
+operator RPCs that still broadcast immediately; new typed agent mutations must
+not use it as their plan leg.
 For more than 50 simultaneous effects, use reviewed batches of at most 50 so
 the normal intent limits, fee caps, reserve floor, and idempotency checks remain
 in force.

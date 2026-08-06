@@ -75,11 +75,9 @@ static void zslp_command_set_opreturn(struct tx_out *out,
     memcpy(out->script_pub_key.data, script, script_len);
 }
 
-struct zcl_result zslp_command_commit_with_op_return(struct wallet *wallet,
-                                        struct wallet_tx *wtx,
-                                        const struct wallet_tx_admission *admission,
-                                        const uint8_t *op_script,
-                                        size_t script_len)
+struct zcl_result zslp_command_prepare_with_op_return(
+    struct wallet *wallet, struct wallet_tx *wtx,
+    const uint8_t *op_script, size_t script_len)
 {
     const struct chain_params *cp;
     size_t old_nout;
@@ -87,16 +85,16 @@ struct zcl_result zslp_command_commit_with_op_return(struct wallet *wallet,
     int height;
     uint32_t branch_id;
 
-    if (!wallet || !wtx || !admission || !op_script || script_len == 0 ||
+    if (!wallet || !wtx || !op_script || script_len == 0 ||
         script_len > MAX_SCRIPT_SIZE)
-        return ZCL_ERR(-1, "commit_with_op_return: NULL argument or empty script");
+        return ZCL_ERR(-1, "prepare_with_op_return: NULL argument or empty script");
 
     old_nout = wtx->tx.num_vout;
     if (old_nout == SIZE_MAX)
-        return ZCL_ERR(-2, "commit_with_op_return: output count overflow");
+        return ZCL_ERR(-2, "prepare_with_op_return: output count overflow");
     new_vout = tx_out_array_alloc(old_nout + 1, "zslp op_return vouts");
     if (!new_vout)
-        return ZCL_ERR(-3, "commit_with_op_return: allocation failed for %zu vouts",
+        return ZCL_ERR(-3, "prepare_with_op_return: allocation failed for %zu vouts",
                  old_nout + 1);
 
     new_vout[0].value = 0;
@@ -170,10 +168,25 @@ struct zcl_result zslp_command_commit_with_op_return(struct wallet *wallet,
     zcl_mutex_unlock(&wallet->cs);
 
     transaction_compute_hash(&wtx->tx);
+    return ZCL_OK;
+}
+
+struct zcl_result zslp_command_commit_with_op_return(struct wallet *wallet,
+                                        struct wallet_tx *wtx,
+                                        const struct wallet_tx_admission *admission,
+                                        const uint8_t *op_script,
+                                        size_t script_len)
+{
+    if (!admission)
+        return ZCL_ERR(-1, "commit_with_op_return: admission is required");
+    struct zcl_result prepared = zslp_command_prepare_with_op_return(
+        wallet, wtx, op_script, script_len);
+    if (!prepared.ok)
+        return ZCL_ERR(-2, "commit_with_op_return: %s", prepared.message);
     struct zcl_result commit =
         wallet_commit_transaction(wallet, wtx, admission);
     if (!commit.ok)
-        return ZCL_ERR(-4, "commit_with_op_return: %s", commit.message);
+        return ZCL_ERR(-3, "commit_with_op_return: %s", commit.message);
     return ZCL_OK;
 }
 

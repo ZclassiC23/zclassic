@@ -1188,7 +1188,7 @@ int test_znam(void)
         }
     }
 
-    printf("build_owner_base_tx: succeeds, selects the owner's coin, pays change back... ");
+    printf("build_owner_base_tx: prepares exact signed OP_RETURN bytes without broadcast... ");
     {
         static struct wallet w;
         init_hd_wallet(&w, 0x44);
@@ -1202,14 +1202,32 @@ int test_znam(void)
         struct zcl_result r = { .ok = false };
         if (funded)
             r = zslp_command_build_owner_base_tx(&w, addr, &wtx, &fee, &err);
-        bool pass = funded && r.ok && wtx.tx.num_vin == 1 && wtx.tx.num_vout == 2 &&
+        bool base_ok = funded && r.ok && wtx.tx.num_vin == 1 &&
+            wtx.tx.num_vout == 2 &&
             wtx.tx.vout[0].value == 546 &&
             wtx.tx.vout[1].value == (20000 - 546 - fee) &&
             fee == w.default_fee;
+        uint8_t script[512];
+        size_t script_len = base_ok
+            ? znam_build_renew(script, sizeof(script), "alice") : 0;
+        struct zcl_result prepared = { .ok = false };
+        if (script_len > 0)
+            prepared = zslp_command_prepare_with_op_return(
+                &w, &wtx, script, script_len);
+        bool pass = base_ok && prepared.ok && wtx.tx.num_vout == 3 &&
+            wtx.tx.vout[0].value == 0 &&
+            wtx.tx.vout[0].script_pub_key.size == script_len &&
+            memcmp(wtx.tx.vout[0].script_pub_key.data, script, script_len) == 0 &&
+            wtx.tx.vout[1].value == 546 &&
+            wtx.tx.vout[2].value == (20000 - 546 - fee) &&
+            wtx.tx.vin[0].script_sig.size > 0 &&
+            !uint256_is_null(&wtx.tx.hash) &&
+            wallet_get_tx(&w, &wtx.tx.hash) == NULL;
         if (pass) printf("OK\n");
         else {
-            printf("FAIL (got_addr=%d funded=%d ok=%d vin=%zu vout=%zu fee=%" PRId64 ")\n",
-                   got_addr, funded, r.ok, wtx.tx.num_vin, wtx.tx.num_vout, fee);
+            printf("FAIL (got_addr=%d funded=%d base=%d prepared=%d vin=%zu vout=%zu fee=%" PRId64 ")\n",
+                   got_addr, funded, base_ok, prepared.ok,
+                   wtx.tx.num_vin, wtx.tx.num_vout, fee);
             failures++;
         }
         if (r.ok) transaction_free(&wtx.tx);

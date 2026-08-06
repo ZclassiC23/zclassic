@@ -15,6 +15,17 @@ struct wallet;
 struct wallet_tx;
 struct wallet_tx_admission;
 
+/* Add one canonical OP_RETURN as vout[0], then sign every transparent input
+ * and compute the exact transaction id without admitting or relaying it.
+ * Durable plan/commit workflows persist these exact bytes during plan and
+ * publish the same bytes later.  No private key leaves the resident wallet. */
+struct zcl_result zslp_command_prepare_with_op_return(
+    struct wallet *wallet, struct wallet_tx *wtx,
+    const uint8_t *op_script, size_t script_len);
+
+/* Compatibility wrapper for direct-broadcast controllers.  New typed agent
+ * mutations should call prepare during plan and publish the persisted bytes
+ * during commit. */
 struct zcl_result zslp_command_commit_with_op_return(struct wallet *wallet,
                                         struct wallet_tx *wtx,
                                         const struct wallet_tx_admission *admission,
