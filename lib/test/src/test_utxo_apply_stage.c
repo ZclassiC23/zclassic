@@ -1610,6 +1610,46 @@ int test_utxo_apply_stage(void)
         uv_teardown(dir, &ms, &sc);
     }
 
+    /* A crash may persist suffix outputs before spending every input.  An
+     * already-live pre-suffix input is the desired rolled-back state, but its
+     * complete coin record must still match the canonical creator exactly. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("partial coin suffix: setup",
+                 uv_setup("partial_coin_suffix", 2, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        UV_CHECK("partial coin suffix: establish cursor one",
+                 utxo_apply_stage_drain(1) == 1 &&
+                     utxo_apply_stage_cursor() == 1);
+        sqlite3 *db = progress_store_db();
+        utxo_apply_stage_shutdown();
+        struct transaction *spend = &sc.bodies[1].vtx[1];
+        const struct transaction *creator = &sc.bodies[0].vtx[0];
+        spend->vin[0].prevout.hash = creator->hash;
+        spend->vin[0].prevout.n = 0;
+        UV_CHECK("partial coin suffix: creator indexed and still live",
+                 created_outputs_index_put_block(db, &sc.bodies[0], 0) &&
+                     coins_kv_exists(db, creator->hash.data, 0));
+        bool seeded = true;
+        for (size_t ti = 0; ti < sc.bodies[1].num_vtx && seeded; ti++) {
+            const struct transaction *tx = &sc.bodies[1].vtx[ti];
+            seeded = coins_kv_add(
+                db, tx->hash.data, 0, tx->vout[0].value, 1,
+                transaction_is_coinbase(tx),
+                tx->vout[0].script_pub_key.data,
+                tx->vout[0].script_pub_key.size);
+        }
+        UV_CHECK("partial coin suffix: future outputs seeded",
+                 seeded && uv_coin_rows_at(db, 1) == 2);
+        utxo_apply_stage_set_reader(fake_reader, &sc);
+        UV_CHECK("partial coin suffix: restart proves and repairs",
+                 utxo_apply_stage_init(&ms));
+        UV_CHECK("partial coin suffix: live input retained exactly once",
+                 uv_coin_rows_at(db, 1) == 0 &&
+                     coins_kv_exists(db, creator->hash.data, 0));
+        uv_teardown(dir, &ms, &sc);
+    }
+
     /* The authoritative frontier may precede the first contradictory coin
      * row.  Prove that gapped creator from its canonical body, but do not
      * restore it before the reducer has applied the intervening block. */
