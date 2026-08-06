@@ -554,6 +554,9 @@ static int patronage_settlement_codec_test(void)
                VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
         ASSERT(vcs_zcode_patronage_settlement_verify(&settlement) ==
                VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        ASSERT(vcs_zcode_patronage_settlement_verify_cas(
+                   &settlement, NULL) ==
+               VCS_ZCODE_PATRONAGE_SETTLEMENT_CONTEXT);
         uint8_t wire[VCS_ZCODE_PATRONAGE_SETTLEMENT_WIRE_BYTES];
         struct vcs_zcode_patronage_settlement_v1 parsed, zero;
         memset(&zero, 0, sizeof(zero));

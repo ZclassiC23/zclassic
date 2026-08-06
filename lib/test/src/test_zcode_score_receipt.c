@@ -19,6 +19,7 @@
 #include "vcs/zcode_epoch_creation.h"
 #include "vcs/zcode_patronage.h"
 #include "vcs/zcode_patronage_funding.h"
+#include "vcs/zcode_patronage_settlement.h"
 #include "vcs/zcode_score_receipt.h"
 
 #include <stdlib.h>
@@ -937,6 +938,111 @@ static int test_patronage_intent_cross_validation(void)
                   VCS_ZCODE_PATRONAGE_FUNDING_AMOUNT);
         funding.amount_atoms--;
 
+        struct vcs_zcode_patronage_intent_v1 gift = intent;
+        gift.mode = VCS_ZCODE_PATRONAGE_DIRECT_GIFT;
+        gift.target_kind = VCS_ZCODE_PATRONAGE_TARGET_CONTRIBUTOR;
+        memcpy(gift.target_root, binding_root, 32);
+        memset(gift.task_root, 0, 32);
+        memset(gift.proof_policy_root, 0, 32);
+        gift.refund_height = 0;
+        gift.refund_unix = 0;
+        gift.sequence = 2;
+        gift.amount_atoms = UINT64_C(50000000);
+        ASSERT_EQ(vcs_zcode_patronage_intent_seal(
+                      &gift, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_OK);
+        uint8_t gift_root[32];
+        ASSERT_EQ(vcs_zcode_patronage_intent_root(&gift, gift_root),
+                  VCS_ZCODE_PATRONAGE_OK);
+        ASSERT_EQ(vcs_zcode_patronage_intent_serialize(&gift, intent_wire),
+                  VCS_ZCODE_PATRONAGE_OK);
+        ASSERT(vcs_object_put_addressed(workspace, gift_root, intent_wire,
+                                        sizeof(intent_wire)));
+
+        struct vcs_zcode_patronage_funding_v1 gift_funding;
+        memset(&gift_funding, 0, sizeof(gift_funding));
+        gift_funding.schema_version = VCS_ZCODE_PATRONAGE_FUNDING_VERSION;
+        gift_funding.funding_kind =
+            VCS_ZCODE_PATRONAGE_FUNDING_FULLY_SIMULATED;
+        gift_funding.flags = VCS_ZCODE_PATRONAGE_FUNDING_NO_LIVE_FUNDS |
+                             VCS_ZCODE_PATRONAGE_FUNDING_NO_TRANSACTION_BYTES;
+        memcpy(gift_funding.network_genesis_root, network, 32);
+        memcpy(gift_funding.patronage_intent_root, gift_root, 32);
+        memcpy(gift_funding.funder_contributor_binding_root,
+               binding_root, 32);
+        memcpy(gift_funding.funder_zid_pubkey, zid_pubkey, 32);
+        gift_funding.amount_atoms = gift.amount_atoms;
+        gift_funding.created_unix = 1600;
+        gift_funding.sequence = 2;
+        ASSERT_EQ(vcs_zcode_patronage_simulation_plan_root(
+                      gift_root, gift.amount_atoms,
+                      gift_funding.simulation_plan_root),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        ASSERT_EQ(vcs_zcode_patronage_funding_seal(
+                      &gift_funding, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        uint8_t gift_funding_root[32];
+        ASSERT_EQ(vcs_zcode_patronage_funding_root(
+                      &gift_funding, gift_funding_root),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        ASSERT_EQ(vcs_zcode_patronage_funding_serialize(
+                      &gift_funding, funding_wire),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        ASSERT(vcs_object_put_addressed(workspace, gift_funding_root,
+                                        funding_wire,
+                                        sizeof(funding_wire)));
+
+        struct vcs_zcode_patronage_settlement_v1 gift_settlement;
+        memset(&gift_settlement, 0, sizeof(gift_settlement));
+        gift_settlement.schema_version =
+            VCS_ZCODE_PATRONAGE_SETTLEMENT_VERSION;
+        gift_settlement.action = VCS_ZCODE_PATRONAGE_SIMULATED_SETTLED;
+        gift_settlement.flags =
+            VCS_ZCODE_PATRONAGE_SETTLEMENT_SIMULATION_ONLY |
+            VCS_ZCODE_PATRONAGE_SETTLEMENT_NO_LIVE_FUNDS |
+            VCS_ZCODE_PATRONAGE_SETTLEMENT_NO_TRANSACTION_BYTES;
+        memcpy(gift_settlement.network_genesis_root, network, 32);
+        memcpy(gift_settlement.patronage_intent_root, gift_root, 32);
+        memcpy(gift_settlement.patronage_funding_root,
+               gift_funding_root, 32);
+        memcpy(gift_settlement.recipient_contributor_binding_root,
+               binding_root, 32);
+        memcpy(gift_settlement.settler_zid_pubkey, zid_pubkey, 32);
+        gift_settlement.amount_atoms = gift.amount_atoms;
+        gift_settlement.created_unix = 1700;
+        gift_settlement.observed_height = 1;
+        gift_settlement.observed_mtp = 1500;
+        gift_settlement.sequence = 1;
+        ASSERT_EQ(vcs_zcode_patronage_settlement_seal(
+                      &gift_settlement, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        struct vcs_zcode_patronage_settlement_validation_context
+            gift_context = {
+                .patronage = &context,
+                .active_height = 1,
+                .active_mtp = 1700,
+                .now_unix = 1700,
+            };
+        ASSERT_EQ(vcs_zcode_patronage_settlement_verify_cas(
+                      &gift_settlement, &gift_context),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        memcpy(gift_settlement.patronage_funding_root, task_root, 32);
+        ASSERT_EQ(vcs_zcode_patronage_settlement_seal(
+                      &gift_settlement, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        ASSERT_EQ(vcs_zcode_patronage_settlement_verify_cas(
+                      &gift_settlement, &gift_context),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_FUNDING);
+        memcpy(gift_settlement.patronage_funding_root,
+               gift_funding_root, 32);
+        gift_settlement.action = VCS_ZCODE_PATRONAGE_SIMULATED_REFUNDED;
+        ASSERT_EQ(vcs_zcode_patronage_settlement_seal(
+                      &gift_settlement, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        ASSERT_EQ(vcs_zcode_patronage_settlement_verify_cas(
+                      &gift_settlement, &gift_context),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_INTENT);
+
         uint8_t other_network[32]; score_fill(other_network, 0xc2);
         context.expected_network_genesis_root = other_network;
         ASSERT_EQ(vcs_zcode_patronage_intent_verify_cas(&intent, &context),
@@ -1163,6 +1269,183 @@ static int test_creation_attribution_cross_validation(void)
         ASSERT_EQ(vcs_zcode_epoch_creation_verify_cas(
                       &epoch_set, &epoch_context),
                   VCS_ZCODE_EPOCH_CREATION_OK);
+
+        struct vcs_zcode_patronage_intent_v1 intent;
+        memset(&intent, 0, sizeof(intent));
+        intent.schema_version = VCS_ZCODE_PATRONAGE_INTENT_VERSION;
+        intent.mode = VCS_ZCODE_PATRONAGE_EXACT_TASK_COMMISSION;
+        intent.target_kind = VCS_ZCODE_PATRONAGE_TARGET_TASK;
+        intent.settlement_trust_mode =
+            VCS_ZCODE_PATRONAGE_SIMULATED_FUNDING;
+        intent.flags = VCS_ZCODE_PATRONAGE_NO_AUTHORITY |
+                       VCS_ZCODE_PATRONAGE_SIMULATION_ONLY;
+        memcpy(intent.network_genesis_root, network, 32);
+        score_fill(intent.zc23_token_or_simulation_root, 0xd1);
+        memcpy(intent.patron_contributor_binding_root, binding_root, 32);
+        memcpy(intent.patron_zid_pubkey, zid_pubkey, 32);
+        memcpy(intent.target_root, task_root, 32);
+        memcpy(intent.task_root, task_root, 32);
+        memcpy(intent.proof_policy_root, proof_policy_root, 32);
+        memcpy(intent.intended_recipient_binding_root, binding_root, 32);
+        intent.amount_atoms = UINT64_C(100000000);
+        intent.created_unix = 1000;
+        intent.expires_unix = 800000;
+        intent.refund_height = 10000;
+        intent.refund_unix = 800100;
+        intent.sequence = 1;
+        intent.maximum_zcl_fee_zat = 10000;
+        ASSERT_EQ(vcs_zcode_patronage_intent_seal(
+                      &intent, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_OK);
+        uint8_t intent_root[32];
+        uint8_t intent_wire[VCS_ZCODE_PATRONAGE_INTENT_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_patronage_intent_root(&intent, intent_root),
+                  VCS_ZCODE_PATRONAGE_OK);
+        ASSERT_EQ(vcs_zcode_patronage_intent_serialize(
+                      &intent, intent_wire), VCS_ZCODE_PATRONAGE_OK);
+        ASSERT(vcs_object_put_addressed(workspace, intent_root, intent_wire,
+                                        sizeof(intent_wire)));
+
+        struct vcs_zcode_patronage_funding_v1 funding;
+        memset(&funding, 0, sizeof(funding));
+        funding.schema_version = VCS_ZCODE_PATRONAGE_FUNDING_VERSION;
+        funding.funding_kind =
+            VCS_ZCODE_PATRONAGE_FUNDING_FULLY_SIMULATED;
+        funding.flags = VCS_ZCODE_PATRONAGE_FUNDING_NO_LIVE_FUNDS |
+                        VCS_ZCODE_PATRONAGE_FUNDING_NO_TRANSACTION_BYTES;
+        memcpy(funding.network_genesis_root, network, 32);
+        memcpy(funding.patronage_intent_root, intent_root, 32);
+        memcpy(funding.funder_contributor_binding_root, binding_root, 32);
+        memcpy(funding.funder_zid_pubkey, zid_pubkey, 32);
+        funding.amount_atoms = intent.amount_atoms;
+        funding.created_unix = 1100;
+        funding.sequence = 1;
+        ASSERT_EQ(vcs_zcode_patronage_simulation_plan_root(
+                      intent_root, funding.amount_atoms,
+                      funding.simulation_plan_root),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        ASSERT_EQ(vcs_zcode_patronage_funding_seal(
+                      &funding, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        uint8_t funding_root[32];
+        uint8_t funding_wire[VCS_ZCODE_PATRONAGE_FUNDING_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_patronage_funding_root(&funding, funding_root),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        ASSERT_EQ(vcs_zcode_patronage_funding_serialize(
+                      &funding, funding_wire),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        ASSERT(vcs_object_put_addressed(workspace, funding_root, funding_wire,
+                                        sizeof(funding_wire)));
+
+        struct vcs_zcode_patronage_settlement_v1 settlement;
+        memset(&settlement, 0, sizeof(settlement));
+        settlement.schema_version =
+            VCS_ZCODE_PATRONAGE_SETTLEMENT_VERSION;
+        settlement.action = VCS_ZCODE_PATRONAGE_SIMULATED_SETTLED;
+        settlement.flags = VCS_ZCODE_PATRONAGE_SETTLEMENT_SIMULATION_ONLY |
+            VCS_ZCODE_PATRONAGE_SETTLEMENT_NO_LIVE_FUNDS |
+            VCS_ZCODE_PATRONAGE_SETTLEMENT_NO_TRANSACTION_BYTES;
+        memcpy(settlement.network_genesis_root, network, 32);
+        memcpy(settlement.patronage_intent_root, intent_root, 32);
+        memcpy(settlement.patronage_funding_root, funding_root, 32);
+        memcpy(settlement.creation_attribution_root, attribution_root, 32);
+        memcpy(settlement.task_root, task_root, 32);
+        memcpy(settlement.candidate_root, candidate_root, 32);
+        memcpy(settlement.proof_policy_root, proof_policy_root, 32);
+        memcpy(settlement.proof_set_root, proof_set_root, 32);
+        memcpy(settlement.proven_lane_root, lane_root, 32);
+        memcpy(settlement.score_receipt_root, score_root, 32);
+        memcpy(settlement.recipient_contributor_binding_root,
+               binding_root, 32);
+        memcpy(settlement.settler_zid_pubkey, zid_pubkey, 32);
+        settlement.amount_atoms = intent.amount_atoms;
+        settlement.created_unix = 700000;
+        settlement.observed_height = 9000;
+        settlement.observed_mtp = 700000;
+        settlement.sequence = 1;
+        ASSERT_EQ(vcs_zcode_patronage_settlement_seal(
+                      &settlement, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        struct vcs_zcode_patronage_validation_context patronage_context = {
+            .workspace = workspace,
+            .expected_network_genesis_root = network,
+            .now_unix = 700000,
+        };
+        struct vcs_zcode_patronage_settlement_validation_context
+            settlement_context = {
+                .patronage = &patronage_context,
+                .creation = &context,
+                .active_height = 9000,
+                .active_mtp = 700000,
+                .now_unix = 700000,
+            };
+        ASSERT_EQ(vcs_zcode_patronage_settlement_verify_cas(
+                      &settlement, &settlement_context),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+
+        memcpy(settlement.task_root, candidate_root, 32);
+        ASSERT_EQ(vcs_zcode_patronage_settlement_seal(
+                      &settlement, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        ASSERT_EQ(vcs_zcode_patronage_settlement_verify_cas(
+                      &settlement, &settlement_context),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_EVIDENCE);
+        memcpy(settlement.task_root, task_root, 32);
+        callbacks.anchor_active = false;
+        ASSERT_EQ(vcs_zcode_patronage_settlement_seal(
+                      &settlement, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        ASSERT_EQ(vcs_zcode_patronage_settlement_verify_cas(
+                      &settlement, &settlement_context),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_EVIDENCE);
+        callbacks.anchor_active = true;
+        settlement.observed_height =
+            attribution.challenge_maturity_height - 1;
+        ASSERT_EQ(vcs_zcode_patronage_settlement_seal(
+                      &settlement, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        ASSERT_EQ(vcs_zcode_patronage_settlement_verify_cas(
+                      &settlement, &settlement_context),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_EVIDENCE);
+
+        settlement.action = VCS_ZCODE_PATRONAGE_SIMULATED_REFUNDED;
+        memset(settlement.creation_attribution_root, 0, 32);
+        memset(settlement.task_root, 0, 32);
+        memset(settlement.candidate_root, 0, 32);
+        memset(settlement.proof_policy_root, 0, 32);
+        memset(settlement.proof_set_root, 0, 32);
+        memset(settlement.proven_lane_root, 0, 32);
+        memset(settlement.score_receipt_root, 0, 32);
+        settlement.created_unix = intent.expires_unix - 1;
+        settlement.observed_height = intent.refund_height - 1;
+        settlement.observed_mtp = intent.expires_unix - 1;
+        ASSERT_EQ(vcs_zcode_patronage_settlement_seal(
+                      &settlement, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        ASSERT_EQ(vcs_zcode_patronage_settlement_verify_cas(
+                      &settlement, &settlement_context),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_TIME);
+        settlement.created_unix = intent.refund_unix;
+        settlement.observed_height = intent.refund_height;
+        settlement.observed_mtp = intent.refund_unix;
+        settlement_context.active_height = intent.refund_height;
+        settlement_context.active_mtp = intent.refund_unix;
+        settlement_context.now_unix = intent.refund_unix;
+        ASSERT_EQ(vcs_zcode_patronage_settlement_seal(
+                      &settlement, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        ASSERT_EQ(vcs_zcode_patronage_settlement_verify_cas(
+                      &settlement, &settlement_context),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        memcpy(settlement.recipient_contributor_binding_root,
+               task_root, 32);
+        ASSERT_EQ(vcs_zcode_patronage_settlement_seal(
+                      &settlement, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        ASSERT_EQ(vcs_zcode_patronage_settlement_verify_cas(
+                      &settlement, &settlement_context),
+                  VCS_ZCODE_PATRONAGE_SETTLEMENT_INTENT);
+
         epoch_set.actual_mint_atoms--;
         epoch_set.unissued_atoms++;
         ASSERT_EQ(vcs_zcode_epoch_creation_verify_cas(

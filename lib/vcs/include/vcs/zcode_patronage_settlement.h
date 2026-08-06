@@ -4,6 +4,7 @@
 #define ZCL_VCS_ZCODE_PATRONAGE_SETTLEMENT_H
 
 #include "vcs/zcode_patronage_funding.h"
+#include "vcs/zcode_creation_attribution.h"
 
 #define VCS_ZCODE_PATRONAGE_SETTLEMENT_DOMAIN \
     "zcl.zcode.patronage_settlement.v1"
@@ -62,6 +63,14 @@ struct vcs_zcode_patronage_settlement_v1 {
     uint8_t signature[64];
 };
 
+struct vcs_zcode_patronage_settlement_validation_context {
+    const struct vcs_zcode_patronage_validation_context *patronage;
+    const struct vcs_zcode_creation_validation_context *creation;
+    uint64_t active_height;
+    int64_t active_mtp;
+    int64_t now_unix;
+};
+
 const char *vcs_zcode_patronage_settlement_error_string(
     enum vcs_zcode_patronage_settlement_error error);
 enum vcs_zcode_patronage_settlement_error
@@ -86,5 +95,9 @@ vcs_zcode_patronage_settlement_seal(
 enum vcs_zcode_patronage_settlement_error
 vcs_zcode_patronage_settlement_verify(
     const struct vcs_zcode_patronage_settlement_v1 *settlement);
+enum vcs_zcode_patronage_settlement_error
+vcs_zcode_patronage_settlement_verify_cas(
+    const struct vcs_zcode_patronage_settlement_v1 *settlement,
+    const struct vcs_zcode_patronage_settlement_validation_context *context);
 
 #endif
