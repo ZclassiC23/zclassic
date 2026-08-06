@@ -1868,6 +1868,7 @@ $(BIN_DIR)/agent_sha3: $(AGENT_SHA3_SRCS)
 ZCODE_PACKAGE_BASE_TEST_BIN := $(BIN_DIR)/zcode-package-base-test
 ZCODE_PACKAGE_SHA3_TEST_BIN := $(BIN_DIR)/zcode-package-sha3-test
 ZCODE_PACKAGE_CODEC_TEST_BIN := $(BIN_DIR)/zcode-package-codec-test
+ZCODE_PACKAGE_REGISTRY_CHECK_BIN := $(BIN_DIR)/zcode-package-registry-check
 .PHONY: zcode-package-base-test zcode-package-sha3-test zcode-package-codec-test zcode-package-foundation-test tools/zcode_dev_signer
 zcode-package-base-test: $(ZCODE_PACKAGE_BASE_TEST_BIN)
 	@$(ZCODE_PACKAGE_BASE_TEST_BIN)
@@ -1894,6 +1895,23 @@ $(ZCODE_PACKAGE_CODEC_TEST_BIN): lib/codec/tests/test_codec.c \
 	    -Ilib/codec/include -Ilib/base/include -o $@ $^
 
 zcode-package-foundation-test: zcode-package-base-test zcode-package-sha3-test zcode-package-codec-test
+
+.PHONY: check-zcode-package-registry
+check-zcode-package-registry: $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN)
+	@$(ZCODE_PACKAGE_REGISTRY_CHECK_BIN)
+$(ZCODE_PACKAGE_REGISTRY_CHECK_BIN): tools/zcode_package_registry_check.c \
+		lib/vcs/src/package_prepare.c lib/vcs/src/package_manifest.c \
+		lib/vcs/src/package_recipe.c lib/vcs/src/package_deps.c \
+		lib/vcs/src/package_capsule.c lib/vcs/src/package_release.c \
+		lib/json/src/json.c lib/sha3/src/sha3.c \
+		lib/base/src/safe_alloc.c lib/base/src/log_level.c \
+		lib/platform/src/clock.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -D_GNU_SOURCE -O0 -Wall -Wextra -Werror -pedantic \
+	    -Ilib/vcs/include -Ilib/json/include -Ilib/sha3/include \
+	    -Ilib/crypto/include -Ilib/base/include -Ilib/util/include \
+	    -Ilib/platform/include -Ivendor/include -o $@ $^ \
+	    -Lvendor/lib -l:libsecp256k1.a -lpthread -lm
 
 tools/zcode_dev_signer: $(BIN_DIR)/zcode_dev_signer
 $(BIN_DIR)/zcode_dev_signer: tools/zcode_dev_signer.c lib/base/src/cleanse.c
@@ -7448,6 +7466,7 @@ LINT_GATES := \
     check-git-hooks-installed \
     check-malloc \
     check-byte-order-codec-single \
+    check-zcode-package-registry \
     check-hotswap-dev-only \
     check-hotswap-eligible-scope \
     check-hotswap-static-state \
@@ -7573,13 +7592,14 @@ LINT_GATES := \
     check-standalone-tools-link
 
 # The driver execs gate scripts directly, so the two gates backed by a built
-# tool (check-core-seal, check-observability-pairing) need their binaries
+# tool (check-core-seal, check-observability-pairing, and the package root
+# projection checker) need their binaries
 # present before it starts; in serial mode those deps ride the check-* rules.
 ifeq ($(ZCL_LINT_SERIAL),1)
 lint: $(LINT_GATES)
 	@echo "══ LINT: all checks passed (serial) ══"
 else
-lint: tools/core_seal tools/check_observability_pairing
+lint: tools/core_seal tools/check_observability_pairing $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN)
 	@tools/lint/run_lint.sh --jobs "$(ZCL_LINT_JOBS)" --bin-dir "$(BIN_DIR)" $(LINT_GATES)
 	@echo "══ LINT: all checks passed ══"
 endif

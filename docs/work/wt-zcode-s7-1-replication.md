@@ -152,7 +152,7 @@ Exact evidence on `59cb40eae` plus this documentation-only receipt:
 Integration receipt: while the lane gates ran, `origin/main` advanced by six
 wallet/transaction commits. They merged without source conflict; the generated
 API reference was regenerated from the combined 509-entry catalog. Integration
-head `09770961f` then passed strict `build-only`, all 132 lint gates, and the
+head `09770961f` then passed strict `build-only`, all lint gates, and the
 exact `make test-science-acceptance` target (including its seven-daemon DHT
 prerequisite). Fresh integrated reproducibility receipts are:
 

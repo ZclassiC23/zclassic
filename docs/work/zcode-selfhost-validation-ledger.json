@@ -1,0 +1,108 @@
+{
+  "schema": "zcl.zcode_selfhost_validation_ledger.v1",
+  "generated_utc": "2026-08-06T07:31:00Z",
+  "lane": "lane/zcode-selfhost-foundation",
+  "frozen_root_checkout": "13d0d255b09548a21ccd05936186f8efc849394a",
+  "safety_ref": "safety/zcode-pre-selfhost-20260806",
+  "integrations": [
+    {
+      "kind": "observed_origin_baseline",
+      "sha": "60ed79ddc3727c31d198c41e3a4e113ce2ae3393"
+    },
+    {
+      "kind": "fetched_origin_before_preservation_merge",
+      "sha": "e995d37d8a646de53e98b8652d1f0e71d5b80467"
+    },
+    {
+      "kind": "preservation_merge",
+      "sha": "6e61feeb3b4c806991686d47c0b8688036b9f812",
+      "parents": [
+        "e995d37d8a646de53e98b8652d1f0e71d5b80467",
+        "13d0d255b09548a21ccd05936186f8efc849394a"
+      ]
+    },
+    {
+      "kind": "fetched_origin_before_package_commands",
+      "sha": "4bd8bb993e5255e6c5459b0814ae9f4e34c698aa"
+    },
+    {
+      "kind": "origin_refresh_merge",
+      "sha": "185a1ef8b6830c1a803d642282d61bcb9f647c7c",
+      "origin_parent": "4bd8bb993e5255e6c5459b0814ae9f4e34c698aa"
+    },
+    {
+      "kind": "latest_fetch_before_score_registry_slice",
+      "sha": "4bd8bb993e5255e6c5459b0814ae9f4e34c698aa"
+    },
+    {
+      "kind": "fetched_origin_after_score_registry_slice",
+      "sha": "86056e9630d4dab5ae8f98c03dfd78a3b11fb59e"
+    }
+  ],
+  "package_dag": {
+    "projection": "config/zcode_package_registry.def",
+    "monolith_exact_roots": [
+      "7f15ba590a82de200152b1c02b5b1dc11b4932a9b690fbe332e7c2fa60d764fe",
+      "6e03d74b8edab650e790424f4dc8274e8ca262cccfc4f94d5b068ad66f60f48e",
+      "37d96e186c69affb4ecaff838a939b70915ba9498c13279680c3c67a314d5dbc"
+    ],
+    "edges": [
+      "zclassic23/sha3@0.1.0-dev.1 -> zclassic23/base@0.1.0-dev.1",
+      "zclassic23/codec@0.1.0-dev.1 -> zclassic23/base@0.1.0-dev.1"
+    ],
+    "publisher_pubkey": "03448effe2ae40eb4053acfceb9839163c881b22affff9572283caddeee9207ce4",
+    "publisher_sequences": {"base": 1, "sha3": 2, "codec": 3},
+    "chain_id": "zclassic-main",
+    "reward_address": "",
+    "release_class": "development_signed_not_owner_stable",
+    "release_signatures": "verified_by_check-zcode-package-registry"
+  },
+  "focused_gates": [
+    {"gate": "zcode-package-foundation-test", "result": "PASS"},
+    {"gate": "test_codec_cursor", "result": "PASS"},
+    {"gate": "test_zcode_score_receipt", "result": "PASS"},
+    {"gate": "test_zcode_package_registry", "result": "PASS"},
+    {"gate": "check-zcode-package-registry", "result": "PASS"},
+    {"gate": "test_command_registry_catalog", "result": "PASS"},
+    {"gate": "test_native_api_contract", "result": "PASS"},
+    {"gate": "base_foundation", "result": "PASS"},
+    {"gate": "sha3_stream_and_shake_kats", "result": "PASS"},
+    {"gate": "sha3_x4_differential", "result": "PASS"},
+    {"gate": "mmb_mmr_utxo_consensus_vectors", "result": "PASS_BYTE_IDENTICAL_PRE_POST"},
+    {
+      "gate": "test_zcode_dev_objects",
+      "result": "WIRE_SUBCASES_PASS_GROUP_FAIL_UNRELATED",
+      "detail": "task/policy/candidate/review/lane/work/context/swarm roots and round trips pass; the later improve subcase requires the intentionally unbuilt build/bin/zclassic23-package-verify helper during the fold freeze"
+    }
+  ],
+  "born_red_receipts": [
+    "docs/work/zcode-selfhost-evidence/born-red-package-dev.json",
+    "docs/work/zcode-selfhost-evidence/born-red-codec-cursor.json",
+    "docs/work/zcode-selfhost-evidence/born-red-score-receipt.json",
+    "docs/work/zcode-selfhost-evidence/born-red-package-registry.json"
+  ],
+  "zc23_score": {
+    "wire_schema": "zcl.zcode.score_receipt.v1",
+    "storage": "existing_workspace_cas_only",
+    "fixed_units": 5,
+    "honest_current_maximum": 4,
+    "withheld_unit": "independent_reproduction",
+    "withheld_reason": "no owner-approved off-host signer is registered; same-host repetition is local_reproduction",
+    "legacy_reward_score_label": "legacy_non_credit"
+  },
+  "freeze_status": {
+    "full_lto": "WITHHELD",
+    "uncached_full_suite": "WITHHELD",
+    "asan_ubsan_matrix": "WITHHELD",
+    "two_path_reproducibility": "WITHHELD",
+    "out_of_band_pre_push_ci": "WITHHELD",
+    "scratch_package_cas_publication": "NOT_EXECUTED",
+    "push": "NOT_ATTEMPTED"
+  },
+  "next_steps": [
+    "When the fold freeze is lifted, publish the already verified development release wires into a scratch existing ZCODE CAS and materialize the SHA3 task/candidate/work/proof/PROVEN receipt chain.",
+    "Run the withheld full link, uncached suite, sanitizer, reproducibility, API-doc, package-verification and out-of-band pre-push gates.",
+    "Complete base evidence against its frozen root, then codec evidence, without changing either content root.",
+    "Register and verify an owner-approved off-host signer before awarding independent_reproduction."
+  ]
+}

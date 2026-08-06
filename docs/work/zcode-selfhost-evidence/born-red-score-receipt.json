@@ -1,0 +1,12 @@
+{
+  "schema": "zcl.zcode_born_red_receipt.v1",
+  "baseline": "3e603d330ded11d8ba13956a8886a8a13a91bd6b",
+  "test_source_sha3": "09fb3891ed40e5aa77d9ce27996296e57e068836223590f59b74971c47f8fe5d",
+  "outcome": "FAIL",
+  "exit_code": 1,
+  "log_sha3": "4d936bee20798ae139b3ae4667e1b8b5eec60ebead689909320e2abf2a0fd9b8",
+  "receipt_sha3": "be521e973385656e42bb17d1a5cfbef07802750c9cd8089cad044bb1a5b8acc1",
+  "signer_pubkey": "03448effe2ae40eb4053acfceb9839163c881b22affff9572283caddeee9207ce4",
+  "signature_compact_low_s": "2eb1d903363e4864803f92d36253620807a97a9b0b62c72999b55a05cf14dfc3227061e37c80b713ad3affda5911576e728cb2b86cb114320d1b9fdb629e8d2a",
+  "signature_preimage": "schema=<schema>\\nbaseline=<baseline>\\ntest_source_sha3=<test_source_sha3>\\noutcome=<outcome>\\nexit_code=<exit_code>\\nlog_sha3=<log_sha3>\\n"
+}

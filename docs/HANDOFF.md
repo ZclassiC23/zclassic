@@ -84,8 +84,8 @@ native/API catalog and read-integrity regressions pass; the transaction lab is
 mainnet-broadcast-capable and only the explicitly blocked mainnet custody tier
 absent. The focused ASan+UBSan DHT/model gate, including
 the 12-node replication and 16-node Space/Scout proofs, passes with no
-sanitizer finding or suppression. All 132 lint gates and full-program LTO
-pass. The strict cold suite registered 904 groups, ran 895, cached 0,
+sanitizer finding or suppression. All lint gates and full-program LTO
+pass. The strict cold suite registered all then-current groups, ran 895, cached 0,
 policy-gated 9 parameter-heavy groups, failed 0 and reported 19 explicit
 self-skip markers (86.9 s, 32 workers). The first refreshed cold run had one
 performance-detector anti-vacuity miss under concurrent load; its exact
@@ -103,7 +103,7 @@ Independent implementation review first rejected a hidden `zcode/dht` mkdir
 from READ planners; the lane fixed the load path and recursive test. A separate
 integration reviewer audited merge `21428f0a9`, proved it has no resolution
 delta, verified the newer transaction/proof/capacity files byte-identical to
-the main parent, reran the focused matrix plus all 132 lint gates and returned
+the main parent, reran the focused matrix plus all lint gates and returned
 **BANKABLE**. Its final audit also replayed the literal-empty-datadir group,
 verified every integrated count/hash and audited the receipt-only delta; final
 verdict remains **BANKABLE**. Post-drift re-review proved refresh merge
@@ -206,11 +206,11 @@ of one 12-daemon deployed topology.
 Final receipts include the exact DHT and root-only science gates above; all
 eight selected adversarial groups; focused DHT, record, swarm, science, store,
 market and yardsale regressions; the focused ASan+UBSan DHT/model gate with
-zero suppressions; all 132 lint gates; and full-program LTO. The cold uncached
+zero suppressions; all lint gates; and full-program LTO. The cold uncached
 suite registered 902 groups, ran 893, cached 0, policy-gated 9 parameter-heavy
 groups, failed 0 and reported 19 explicit self-skip markers (85.7 s, 32
 workers). After merging concurrent wallet/transaction work, integration head
-`09770961f` reran all 132 lint gates, strict build-only, the exact combined DHT
+`09770961f` reran all lint gates, strict build-only, the exact combined DHT
 plus science acceptance, and both reproducibility proofs. Same-tree produced
 two identical 25,602,728-byte binaries at SHA3-256
 `2f0f08773db50719178eb16d68da81a3583fba4d919a18207c47cdbe3b425a70`;
@@ -275,7 +275,7 @@ authentication, replay, churn, persistence, and incumbent invariants; the
 focused ASan+UBSan gate runs codecs, routing, service, lookup, and that model
 without suppressions. The final evidence set is: focused
 DHT/Noise/transport/argv/connman/RPC tests; yardsale and store tests including
-both opt-in store stress groups; all 132 lint gates; the cold uncached suite
+both opt-in store stress groups; all lint gates; the cold uncached suite
 (898 registered, 889 run, zero cached, 9 parameter-gated, zero failed, 19
 explicit self-skips); full LTO; science acceptance; and both reproducibility
 gates. Same-tree SHA3-256 is

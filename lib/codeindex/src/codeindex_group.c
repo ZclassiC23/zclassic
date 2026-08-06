@@ -144,6 +144,7 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/base") == 0) return "dependency sink: LOG_*/GUARD* macros, log-level filter, checked allocators, zcl_result (references nothing in-tree)";
     if (strcmp(group, "lib/bloom") == 0) return "bloom filters + merkle proofs for lightweight block/tx filtering";
     if (strcmp(group, "lib/chain") == 0) return "chain index primitives: MMB/MMR fast-sync proofs, UTXO-root ladder, snapshot loader";
+    if (strcmp(group, "lib/codec") == 0) return "allocation-free bounded reader/writer cursors over caller-owned buffers";
     if (strcmp(group, "lib/coins") == 0) return "the UTXO set: coins view, undo data, compression, SHA3 UTXO commitment";
     if (strcmp(group, "lib/core") == 0) return "small consensus-adjacent primitives: amount, random, time-since-epoch helpers";
     if (strcmp(group, "lib/sha3") == 0) return "scalar FIPS-202 SHA3/SHAKE primitives";
@@ -170,7 +171,7 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/session") == 0) return "confined-agent broker: MVAP wire protocol, grant translation onto the metaverse evaluator, signed audit chain";
     if (strcmp(group, "lib/sim") == 0) return "deterministic simnet: byzantine/cluster harnesses, seed-tape replay, HTLC contract overlay";
     if (strcmp(group, "lib/storage") == 0) return "persistence layer: event log, coins/anchor/nullifier KV stores, block index, projections";
-    if (strcmp(group, "lib/support") == 0) return "low-level memory-safety helpers: secure cleanse, page-locked (mlock) allocations";
+    if (strcmp(group, "lib/support") == 0) return "page-locked allocations and the compatibility include for base-owned secure cleanse";
     if (strcmp(group, "lib/sync") == 0) return "sync + snapshot-sync state machines (single owner of sync_state/sync_planner)";
     if (strcmp(group, "lib/util") == 0) return "shared low-level utilities: logging, boot phase/progress, blockers, supervisor, safe_alloc";
     if (strcmp(group, "lib/validation") == 0) return "consensus block/tx validation: connect_block, mempool accept, checkpoint, tx_verifier";

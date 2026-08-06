@@ -65,6 +65,67 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE,
     zcl_native_handle_zcode_package_dev_seal)
 
+ZCL_COMMAND_BRANCH("zcode.package.dev.score", "zcode.package.dev",
+                   "Evidence-derived signed ZC23 Score receipts",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.dev.score.plan", "zcode.package.dev.score", "",
+    "Derive an unsigned ZC23 Score receipt",
+    "Loads every proof-set work receipt from the existing workspace CAS, "
+    "verifies its signature and PROVEN-lane bindings, derives the fixed "
+    "five-unit award mask, and returns the exact body and lane-signing "
+    "digest without persisting. Independent reproduction remains withheld "
+    "until an approved off-host signer is registered.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,package,dev,score,plan,evidence,proven",
+    "zcl.zcode_score_plan.input.v1", "zcl.zcode_score_plan.v1",
+    "workspace,task_hex,candidate_hex,proof_policy_hex,proof_set_hex,proven_lane_hex,package_root,release_root,recipe_root,dependency_lock_root,api_capsule_root",
+    "workspace,task_hex,candidate_hex,proof_policy_hex,proof_set_hex,proven_lane_hex,package_root,release_root,recipe_root,dependency_lock_root,api_capsule_root",
+    "zclassic23 zcode package dev score plan --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_package_dev_score_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.package.dev.score.commit", "zcode.package.dev.score", "",
+    "Verify and store one signed ZC23 Score receipt",
+    "Re-verifies the canonical lane-signed receipt and stores only that "
+    "receipt in the existing workspace CAS. It creates no token, balance, "
+    "reward queue, wallet state, database, or identity.", 0,
+    "zcode,package,dev,score,commit,cas",
+    "zcl.zcode_score_commit.input.v1", "zcl.zcode_score_commit.v1",
+    "workspace,receipt_hex", "workspace,receipt_hex",
+    "zclassic23 zcode package dev score commit --input='{\"workspace\":\".\",\"receipt_hex\":\"<hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_package_dev_score_commit)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.dev.score.show", "zcode.package.dev.score", "",
+    "Show and reverify one ZC23 Score receipt",
+    "Reads the named receipt only from the existing workspace CAS, checks "
+    "its address and lane signature, and renders the fixed unit breakdown.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,package,dev,score,show,cas",
+    "zcl.zcode_score_show.input.v1", "zcl.zcode_score_show.v1",
+    "workspace,root", "workspace,root",
+    "zclassic23 zcode package dev score show --input='{\"workspace\":\".\",\"root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_package_dev_score_show)
+
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.dev.create", "zcode.package.dev", "zcode.create",
     "Create package",
@@ -511,6 +572,8 @@ ZCL_COMMAND_READY_READ(
     "zcode.reward.score", "zcode.reward", "",
     "Deterministic contribution score breakdown for one release root",
     "Computes the bounded deterministic ZCODE Score for the release "
+    "and labels it legacy_non_credit; it is retained for compatibility "
+    "and never awards a ZC23 Score unit. "
     "naming one 64-hex package `root`, purely from the persisted manifest "
     "and CAS chunk bytes: the auto-derived category (new-package 500 / "
     "package-update / test-contribution / none), per-line tallies "

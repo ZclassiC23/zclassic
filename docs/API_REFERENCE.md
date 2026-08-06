@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 524 |
+| Registry entries (branches + leaves) | 530 |
 | Top-level roots | 11 |
-| Branches | 119 |
-| Leaves (dispatchable command paths) | 405 |
-| … `ready` (live handler in this build) | 356 |
+| Branches | 120 |
+| Leaves (dispatchable command paths) | 410 |
+| … `ready` (live handler in this build) | 361 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 134 |
+| Leaves with `effect=mutate` | 135 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 90 |
 
@@ -85,7 +85,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 21 | 4 | 17 |
-| `config/commands/zcode.def` | 89 | 17 | 72 |
+| `config/commands/zcode.def` | 95 | 18 | 77 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 29 | 7 | 22 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -882,6 +882,8 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
+| `zcode package dev prepare` | ready | read / read / operator · foreground/moderate | **`dir`**, **`publisher_pubkey`**, **`publisher_sequence`**, `reward_address`, `chain_id` | `zcl.zcode_package_dev_prepare.v1` | `zclassic23 zcode package dev prepare --input='{"dir":"lib/base","publisher_pubkey":"<66hex>","publisher_sequence":1}'` | Derive canonical release inputs from a local package tree |
+| `zcode package dev seal` | ready | read / read / operator · fast/low | **`release_body_hex`**, **`signature_hex`** | `zcl.zcode_package_dev_seal.v1` | `zclassic23 zcode package dev seal --input='{"release_body_hex":"<hex>","signature_hex":"<128hex>"}'` | Verify and attach an offline development signature |
 | `zcode package dev create` (aliases: `zcode.create`) | ready | mutate / app-write / operator · foreground/moderate | **`mode`**, `release_hex`, `manifest_hex`, `recipe_hex`, `dir`, `day`, `datadir` | `zcl.zcode_create.v1` | `zclassic23 zcode create --input='{"mode":"plan","release_hex":"..","manifest_hex":"..","recipe_hex":"..","dir":"/tmp/pkg"}'` | Create package |
 | `zcode package dev use` (aliases: `zcode.use`) | ready | mutate / app-write / operator · foreground/moderate | `name_or_root`, `plan_id`, `now_unix`, `datadir` | `zcl.zcode_use.v1` | `zclassic23 zcode use --input='{"name_or_root":"<64hex>"}'` | Use dependency |
 | `zcode package dev improve` (aliases: `zcode.improve`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, `candidate_workspace`, `datadir`, `mode`, `planned_task_root`, `planned_context_root`, `candidate_source_sha256`, `source_root`, `dependency_lock_root`, **`dependency_lock_hex`**, `write_scope_root`, **`write_scope_csv`**, `acceptance_tests_root`, **`acceptance_recipe_hex`**, **`model_policy_root`**, **`goal`**, **`proof_policy_hex`**, `action_kind`, `fixed_input_path`, `fixed_input_relpath`, `preprocessed_path`, `patch_root`, `candidate_source_root`, `adapter_policy_root`, `author_pubkey`, `candidate_sequence`, `candidate_created_unix`, `profile`, **`expires_unix`**, `max_changed_files`, `max_patch_bytes`, `max_context_bytes`, `max_cpu_seconds`, `max_memory_bytes`, `max_output_bytes`, `context_symbol`, `remote_peer` | `zcl.zcode_improve.v1` | `zclassic23 zcode improve --input='{"mode":"plan","workspace":"/src/project","dependency_lock_hex":"<canonical wire hex>","write_scope_csv":"src,include","acceptance_recipe_hex":"<canonical wire hex>","model_policy_root":"<64hex>","goal":"fix seeded bug","proof_policy_hex":"<wire hex>","context_symbol":"buggy_function","expires_unix":123}'` | Improve code candidate |
@@ -889,6 +891,14 @@ represented by its children's sections.
 | `zcode package dev accept` (aliases: `zcode.accept`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`action_id`**, **`lane`**, `datadir` | `zcl.zcode_accept.v1` | `zclassic23 zcode accept --input='{"workspace":"/src/project","action_id":"<64hex>","lane":"CANDIDATE"}'` | Accept candidate lane |
 | `zcode package dev lane` (aliases: `zcode.lane`) | ready | read / read / operator · foreground/low | **`workspace`**, **`source_root`**, `datadir` | `zcl.zcode_lane.v1` | `zclassic23 zcode lane --input='{"workspace":"/src/project","source_root":"<64hex>"}'` | Inspect source lane |
 | `zcode package dev tasks` (aliases: `zcode.tasks`) | ready | read / read / operator · foreground/low | **`workspace`**, `task_root`, `source_root`, `author`, `state`, `limit` | `zcl.zcode_tasks.v1` | `zclassic23 zcode tasks --input='{"workspace":"/src/project"}'` | List local dev tasks |
+
+#### `zcode.package.dev.score` — Evidence-derived signed ZC23 Score receipts
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode package dev score plan` | ready | read / read / operator · fast/low | **`workspace`**, **`task_hex`**, **`candidate_hex`**, **`proof_policy_hex`**, **`proof_set_hex`**, **`proven_lane_hex`**, **`package_root`**, **`release_root`**, **`recipe_root`**, **`dependency_lock_root`**, **`api_capsule_root`** | `zcl.zcode_score_plan.v1` | `zclassic23 zcode package dev score plan --input='{...}'` | Derive an unsigned ZC23 Score receipt |
+| `zcode package dev score commit` | ready | mutate / app-write / operator · fast/low | **`workspace`**, **`receipt_hex`** | `zcl.zcode_score_commit.v1` | `zclassic23 zcode package dev score commit --input='{"workspace":".","receipt_hex":"<hex>"}'` | Verify and store one signed ZC23 Score receipt |
+| `zcode package dev score show` | ready | read / read / operator · fast/low | **`workspace`**, **`root`** | `zcl.zcode_score_show.v1` | `zclassic23 zcode package dev score show --input='{"workspace":".","root":"<64hex>"}'` | Show and reverify one ZC23 Score receipt |
 
 #### `zcode.package` — Published packages
 

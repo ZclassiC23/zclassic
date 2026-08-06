@@ -437,6 +437,8 @@ void zcl_native_handle_zcode_reward_score(
 
     char pub_hex[67];
     zcl_hex_encode(t.release.publisher_pubkey, 33, pub_hex);
+    (void)json_push_kv_str(&reply->data, "credit_class",
+                           "legacy_non_credit");
     (void)json_push_kv_str(&reply->data, "name", t.release.name);
     (void)json_push_kv_str(&reply->data, "semver", t.release.semver);
     (void)json_push_kv_str(&reply->data, "release_id", t.release_id_hex);
