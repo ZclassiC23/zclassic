@@ -43,3 +43,5 @@ TX_NONCHAIN_COMMAND("zcode.endpoint.publish", "p2p_endpoint_record",
     "Publishes a signed endpoint record to the ZCODE P2P swarm; no on-chain write exists in this flow.")
 TX_NONCHAIN_COMMAND("zcode.endpoint.accept", "p2p_endpoint_record",
     "Accepts a signed endpoint record into local ZCODE state; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("zcode.patronage.fund.commit", "patronage_simulation",
+    "Stores a verified simulation-only funding receipt in the existing ZCODE CAS; it creates, signs, submits, and confirms no chain transaction.")
