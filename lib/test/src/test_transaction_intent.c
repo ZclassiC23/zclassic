@@ -8,6 +8,7 @@
 #include "models/vault_intent.h"
 #include "models/wallet_identity.h"
 #include "models/wallet_metadata_crypto.h"
+#include "services/znam_transaction_intent_service.h"
 #include "services/zslp_transaction_intent_service.h"
 #include "wallet/wallet_lock.h"
 
@@ -120,6 +121,49 @@ static struct zcl_result ti_zslp_publish(
         raw_tx[3] != f->input_tag ||
         expected_txid[0] != (uint8_t)(f->input_tag + 1))
         return ZCL_ERR(-1, "fixture publish identity mismatch");
+    f->publishes++;
+    return ZCL_OK;
+}
+
+static struct zcl_result ti_znam_money(
+    void *opaque, const char *scope, struct wallet_money_snapshot *out)
+{
+    return ti_zslp_money(opaque, scope, out);
+}
+
+static struct zcl_result ti_znam_prepare(
+    void *opaque, const struct znam_intent_request *request,
+    int64_t maximum_fee_zat, uint8_t *raw_tx, size_t raw_capacity,
+    size_t *raw_tx_len, uint8_t txid_out[32], int64_t *actual_fee_zat,
+    struct vault_intent_input *inputs, size_t input_capacity,
+    size_t *input_count)
+{
+    struct ti_zslp_fixture *f = opaque;
+    if (!f || !request || request->operation != ZNAM_INTENT_REGISTER ||
+        maximum_fee_zat != 1000 || raw_capacity < 4 || input_capacity < 1)
+        return ZCL_ERR(-1, "ZNAM fixture prepare contract mismatch");
+    const uint8_t prepared[4] = { 'Z', 'N', 'A', f->input_tag };
+    memcpy(raw_tx, prepared, sizeof(prepared));
+    *raw_tx_len = sizeof(prepared);
+    memset(txid_out, (uint8_t)(f->input_tag + 1), 32);
+    *actual_fee_zat = 500;
+    memset(inputs[0].txid, f->input_tag, 32);
+    inputs[0].vout = 7;
+    *input_count = 1;
+    memcpy(f->money_root, f->post_prepare_root, 32);
+    f->prepares++;
+    return ZCL_OK;
+}
+
+static struct zcl_result ti_znam_publish(
+    void *opaque, const uint8_t *raw_tx, size_t raw_tx_len,
+    const uint8_t expected_txid[32])
+{
+    struct ti_zslp_fixture *f = opaque;
+    if (!f || !raw_tx || raw_tx_len != 4 || raw_tx[0] != 'Z' ||
+        raw_tx[1] != 'N' || raw_tx[3] != f->input_tag ||
+        expected_txid[0] != (uint8_t)(f->input_tag + 1))
+        return ZCL_ERR(-1, "ZNAM fixture publish identity mismatch");
     f->publishes++;
     return ZCL_OK;
 }
@@ -445,6 +489,89 @@ int test_transaction_intent(void)
             &runtime, &request, &drifted).ok);
         memset(fixture.money_root, 0xc5, sizeof(fixture.money_root));
         ASSERT(!zslp_transaction_intent_commit(
+            &runtime, "dev", drifted.plan_id, &replay).ok);
+        struct vault_intent_row conflicted;
+        ASSERT(vault_intent_find(&zdb, drifted.plan_id, &conflicted));
+        ASSERT_EQ(conflicted.state, VAULT_INTENT_CONFLICTED);
+        ASSERT_EQ(fixture.publishes, 1);
+        node_db_close(&zdb);
+        wallet_lock_reset_for_test();
+        PASS();
+    }
+
+    TEST("ZNAM intents reserve exact bytes, hide semantics, and publish once") {
+        struct node_db zdb; memset(&zdb, 0, sizeof(zdb));
+        ASSERT(node_db_open(&zdb, ":memory:"));
+        wallet_lock_reset_for_test();
+        wallet_lock_note_encrypted_at_rest();
+        ASSERT(wallet_lock_unlock(NULL, NULL, "znam-intent-test-pass").ok);
+        struct ti_zslp_fixture fixture; memset(&fixture, 0, sizeof(fixture));
+        const uint8_t genesis[32] = { 0xa5 };
+        ASSERT(wallet_identity_ensure(&zdb, genesis, "dev", &fixture.identity));
+        memset(fixture.tip_hash, 0xb2, sizeof(fixture.tip_hash));
+        memset(fixture.money_root, 0xc6, sizeof(fixture.money_root));
+        memset(fixture.post_prepare_root, 0xc7,
+               sizeof(fixture.post_prepare_root));
+        fixture.input_tag = 0xd3;
+        struct znam_intent_runtime runtime = {
+            .node_db = &zdb,
+            .read_money = ti_znam_money, .money_ctx = &fixture,
+            .prepare = ti_znam_prepare, .prepare_ctx = &fixture,
+            .publish = ti_znam_publish, .publish_ctx = &fixture,
+            .tip_height = 100, .maximum_fee_zat = 1000, .now_unix = 1200,
+        };
+        memcpy(runtime.tip_hash, fixture.tip_hash, 32);
+        struct znam_intent_request request; memset(&request, 0, sizeof(request));
+        snprintf(request.wallet_scope, sizeof(request.wallet_scope), "dev");
+        request.operation = ZNAM_INTENT_REGISTER;
+        snprintf(request.name, sizeof(request.name), "private-name");
+        request.target_type = 1;
+        snprintf(request.value, sizeof(request.value), "private-value");
+        snprintf(request.idempotency_key, sizeof(request.idempotency_key),
+                 "znam-register-1");
+        struct znam_intent_result planned;
+        ASSERT(znam_transaction_intent_plan(&runtime, &request, &planned).ok);
+        ASSERT_EQ(fixture.prepares, 1);
+        ASSERT(!planned.broadcast);
+        ASSERT_EQ(planned.actual_fee_zat, 500);
+        ASSERT_EQ(planned.reserved_zat, 1000);
+        ASSERT(vault_intent_has_raw(&zdb, planned.plan_id));
+        ASSERT(!ti_db_contains(&zdb, "private-name"));
+        ASSERT(!ti_db_contains(&zdb, "private-value"));
+
+        struct znam_intent_result replay;
+        ASSERT(znam_transaction_intent_plan(&runtime, &request, &replay).ok);
+        ASSERT(replay.idempotent_replay);
+        ASSERT(memcmp(replay.plan_id, planned.plan_id, 32) == 0);
+        ASSERT_EQ(fixture.prepares, 1);
+        struct znam_intent_request changed = request;
+        snprintf(changed.value, sizeof(changed.value), "different-private");
+        ASSERT(!znam_transaction_intent_plan(&runtime, &changed, &replay).ok);
+
+        struct znam_intent_result committed;
+        ASSERT(znam_transaction_intent_commit(
+            &runtime, "dev", planned.plan_id, &committed).ok);
+        ASSERT(committed.broadcast);
+        ASSERT_EQ(fixture.publishes, 1);
+        ASSERT(znam_transaction_intent_commit(
+            &runtime, "dev", planned.plan_id, &replay).ok);
+        ASSERT(replay.idempotent_replay);
+        ASSERT_EQ(fixture.publishes, 1);
+        ASSERT(!znam_transaction_intent_commit(
+            &runtime, "prod", planned.plan_id, &replay).ok);
+
+        fixture.input_tag = 0xd4;
+        memset(fixture.money_root, 0xc8, sizeof(fixture.money_root));
+        memset(fixture.post_prepare_root, 0xc9,
+               sizeof(fixture.post_prepare_root));
+        snprintf(request.idempotency_key, sizeof(request.idempotency_key),
+                 "znam-register-2");
+        runtime.now_unix = 1300;
+        struct znam_intent_result drifted;
+        ASSERT(znam_transaction_intent_plan(
+            &runtime, &request, &drifted).ok);
+        memset(fixture.money_root, 0xca, sizeof(fixture.money_root));
+        ASSERT(!znam_transaction_intent_commit(
             &runtime, "dev", drifted.plan_id, &replay).ok);
         struct vault_intent_row conflicted;
         ASSERT(vault_intent_find(&zdb, drifted.plan_id, &conflicted));

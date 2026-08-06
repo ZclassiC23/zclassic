@@ -1648,20 +1648,29 @@ static int g_app_market_purchase_plan_calls;
 static int g_app_market_purchase_commit_calls;
 static int g_app_market_purchase_status_calls;
 static int g_app_market_purchase_retrieve_calls;
-static bool g_app_name_degraded;
 
 static char *app_write_stub_rpc(const char *method, const char *params_json)
 {
-    (void)params_json;
-    if (method && strcmp(method, "name_register") == 0) {
+    if (method && strcmp(method, "znam_intent") == 0) {
         g_app_name_register_calls++;
-        if (g_app_name_degraded)
-            return strdup("{\"name\":\"alice\",\"status\":\"ready\","
-                          "\"op_return_hex\":\"6a\"}");
-        return strdup("{\"name\":\"alice\",\"type\":\"z-address\","
+        bool commit = params_json &&
+            strstr(params_json, "\"confirm\":true") != NULL;
+        if (!commit)
+            return strdup("{\"schema\":\"zcl.app_name_txresult.v1\","
+                          "\"wallet_scope\":\"dev\",\"operation\":\"register\","
+                          "\"plan_id\":\"33333333333333333333333333333333"
+                          "33333333333333333333333333333333\","
+                          "\"snapshot_status\":\"CURRENT\","
+                          "\"state\":\"planned\",\"status\":\"planned\","
+                          "\"actual_fee_zat\":500,\"maximum_fee_zat\":1000,"
+                          "\"reserved_zat\":1000}");
+        return strdup("{\"schema\":\"zcl.app_name_txresult.v1\","
+                      "\"wallet_scope\":\"dev\",\"operation\":\"register\","
+                      "\"status\":\"broadcast\","
+                      "\"state\":\"mempool_accepted\","
                       "\"txid\":\"aa11bb22cc33dd44ee55ff66aa77bb88"
                       "cc99dd00ee11ff22aa33bb44cc55dd66\","
-                      "\"fee\":1000,\"status\":\"broadcast\"}");
+                      "\"actual_fee_zat\":500}");
     }
     if (method && strcmp(method, "blog_anchor") == 0) {
         g_app_blog_anchor_calls++;
@@ -1822,7 +1831,6 @@ static int test_app_write_native_e2e(void)
         g_app_market_purchase_commit_calls = 0;
         g_app_market_purchase_status_calls = 0;
         g_app_market_purchase_retrieve_calls = 0;
-        g_app_name_degraded = false;
         node_rpc_client_set_test_hook(app_write_stub_rpc);
 
         const struct zcl_command_spec *reg_spec =
@@ -1833,14 +1841,16 @@ static int test_app_write_native_e2e(void)
 
         struct zcl_command_reply reply;
 
-        /* 1. plan leg: no RPC fires, nothing claims to have mutated, and the
-         *    emitted commit_input validates against this same leaf. */
+        /* 1. Planning calls the durable intent RPC, atomically reserves the
+         * exact inputs/fee, and emits a minimal commit input. */
         struct json_value plan_in;
         json_init(&plan_in);
         json_set_object(&plan_in);
+        (void)json_push_kv_str(&plan_in, "wallet_scope", "dev");
         (void)json_push_kv_str(&plan_in, "name", "alice");
         (void)json_push_kv_str(&plan_in, "type", "zaddr");
         (void)json_push_kv_str(&plan_in, "value", "zs1stub");
+        (void)json_push_kv_str(&plan_in, "idempotency_key", "name-register-1");
         struct zcl_command_request req_plan = {
             .spec = reg_spec, .input = &plan_in, .view = "normal",
         };
@@ -1848,8 +1858,10 @@ static int test_app_write_native_e2e(void)
         zcl_native_handle_name_register(&req_plan, &reply);
         ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
-        ASSERT(!reply.error.mutated);
-        ASSERT_EQ(g_app_name_register_calls, 0);
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_name_register_calls, 1);
+        ASSERT(json_get(&reply.data, "name") == NULL);
+        ASSERT(json_get(&reply.data, "value") == NULL);
         const char *commit_input =
             json_get_str(json_get(&reply.data, "commit_input"));
         ASSERT(commit_input && commit_input[0]);
@@ -1860,7 +1872,7 @@ static int test_app_write_native_e2e(void)
         ASSERT(zcl_command_registry_input_validate(reg_spec, &commit_next, why,
                                                    sizeof(why)));
         ASSERT(json_get_bool(json_get(&commit_next, "confirm")));
-        /* The plan must actually serialize through the real envelope. */
+        /* The sanitized plan must serialize through the real envelope. */
         {
             char rendered[8192];
             enum zcl_command_exit rc = ZCL_COMMAND_EXIT_OK;
@@ -1875,7 +1887,10 @@ static int test_app_write_native_e2e(void)
             ASSERT(n > 0);
             ASSERT_EQ(rc, ZCL_COMMAND_EXIT_OK);
             ASSERT(strstr(rendered, "\"stage\":\"plan\"") != NULL);
+            ASSERT(strstr(rendered, "alice") == NULL);
+            ASSERT(strstr(rendered, "zs1stub") == NULL);
         }
+        ASSERT_EQ(g_app_name_register_calls, 2);
         zcl_command_reply_free(&reply);
         json_free(&plan_in);
 
@@ -1890,25 +1905,11 @@ static int test_app_write_native_e2e(void)
                       "committed");
         ASSERT(reply.error.mutated);
         ASSERT(json_get_str(json_get(&reply.data, "txid")) != NULL);
-        ASSERT_EQ(g_app_name_register_calls, 1);
+        ASSERT_EQ(g_app_name_register_calls, 3);
         zcl_command_reply_free(&reply);
-
-        /* 3. the DEGRADED success: name_register answered without a wallet, so
-         *    the OP_RETURN was built but never broadcast. A PASSED reply here
-         *    would be the exact lie this leaf population was cleaned of. */
-        g_app_name_degraded = true;
-        zcl_command_reply_init(&reply, reg_spec->output_schema);
-        zcl_native_handle_name_register(&req_commit, &reply);
-        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_BLOCKED);
-        ASSERT_STR_EQ(reply.error.code, "NAME_WRITE_NOT_BROADCAST");
-        ASSERT(!reply.error.mutated);
-        ASSERT(strstr(reply.error.message, "ready") != NULL);
-        ASSERT_EQ(g_app_name_register_calls, 2);
-        zcl_command_reply_free(&reply);
-        g_app_name_degraded = false;
         json_free(&commit_next);
 
-        /* 4. a missing required key fails closed before any RPC. */
+        /* 3. a missing explicit wallet scope fails before any RPC. */
         struct json_value bad_in;
         json_init(&bad_in);
         json_set_object(&bad_in);
@@ -1920,9 +1921,9 @@ static int test_app_write_native_e2e(void)
         zcl_command_reply_init(&reply, reg_spec->output_schema);
         zcl_native_handle_name_register(&req_bad, &reply);
         ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
-        ASSERT_STR_EQ(reply.error.code, "MISSING_INPUT");
+        ASSERT_STR_EQ(reply.error.code, "WALLET_SCOPE_REQUIRED");
         ASSERT(!reply.error.mutated);
-        ASSERT_EQ(g_app_name_register_calls, 2);
+        ASSERT_EQ(g_app_name_register_calls, 3);
         zcl_command_reply_free(&reply);
         json_free(&bad_in);
 

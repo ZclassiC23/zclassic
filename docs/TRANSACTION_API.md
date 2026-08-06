@@ -243,7 +243,7 @@ human index:
 |---|---|---|
 | Base ZCL | `coinbase_reward`, `transparent_t_to_t`, `transparent_multi_recipient`, `sapling_mixed_recipient`, `raw_custom_transaction`, `transparent_p2sh_multisig_spend`, `sapling_t_to_z`, `sapling_z_to_z`, `sapling_z_to_t`, `sprout_joinsplit` | Identity-bound transparent, Sapling, and mixed-pool payments use one durable vault-intent lifecycle, whether they have one recipient or fifty. P2SH multisig is ready; composition accepts public keys only and its signer uses resident owner-wallet keys. Coinbase and Sprout are process-only; Sprout evidence pins complete canonical mainnet transactions before and after Sapling activation plus contextual JoinSplit signature and PHGR13/Groth16 proof verification, without exposing a deprecated constructor. |
 | ZSLP tokens | `zslp_genesis`, `zslp_mint`, `zslp_send`, `zslp_burn` | Identity-bound durable plan/commit. Planning prepares exact signed bytes and atomically claims the token/baton and fee inputs; commit names only custody scope plus plan ID. |
-| ZNAM names | `znam_register`, `znam_update`, `znam_transfer`, `znam_renew`, `znam_set_record`, `znam_set_text` | Typed plan/commit builders with owner checks. |
+| ZNAM names | `znam_register`, `znam_update`, `znam_transfer`, `znam_renew`, `znam_set_record`, `znam_set_text` | Identity-bound durable plan/commit. Planning prepares exact signed OP_RETURN bytes, atomically claims every funding input plus the maximum fee, and preserves owner checks; commit names only custody scope plus plan ID. |
 | Messaging | `sapling_onchain_memo` | On-chain ZMSG uses an encrypted Sapling memo; P2P messaging is off-chain. |
 | Payments | `zpay_memo_envelope` | `app payments zpay compose` creates an exact anonymous invoice/payment/receipt memo; `core wallet shielded send` owns the value-moving plan/commit, and `app payments zpay inspect` strictly decodes, authenticates, and checks network/time policy. |
 | Identity/directory | `zid_anchor`, `zid_rotate`, `zid_revoke`, `zdir_register`, `zdir_deregister` | Explicit OP_RETURN compose/broadcast paths; all five exact command shapes have isolated owner-funded mined-and-projected proofs. |
@@ -280,6 +280,15 @@ catalog -> exact command schema -> current bound custody snapshot
 6. Inspect the returned txid or async operation through the member's
    `inspect_command`, wait for the required confirmation state, then record only
    redacted evidence in the transaction notebook.
+
+ZSLP and ZNAM use the same developer-facing shape: the first typed call requires
+`wallet_scope` plus `idempotency_key`, returns a durable `plan_id` and complete
+`commit_input`, and reserves exact inputs without broadcasting. The second call
+uses only that commit input. Their public plan/commit receipts intentionally
+omit token/name values, destination or owner addresses, raw transaction bytes,
+wallet paths, node endpoints, and keys; those semantics remain encrypted in the
+durable intent and the public chain reveals only what its protocol requires
+after an authorized broadcast.
 
 ## Parallel transaction readiness
 

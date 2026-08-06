@@ -446,6 +446,7 @@ AGENT_IMPACT_RULE("lib/sync/src/sync_state.c|lib/sync/include/sync/sync_state.h|
 /* ZSLP command service + controller. */
 AGENT_IMPACT_RULE("app/services/src/zslp_command_service.c|app/services/include/services/zslp_command_service.h|app/controllers/src/zslp_controller.c|app/controllers/src/zslp_controller_internal.h|app/controllers/src/zslp_transaction_support.c", "slp store znam make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/zslp_transaction_intent_service.c|app/services/include/services/zslp_transaction_intent_service.h|app/controllers/src/zslp_intent_controller.c|app/controllers/src/zslp_intent_native_handler.c|app/controllers/src/zslp_transaction_rpc.c", "slp transaction_intent native_api_contract command_registry_catalog make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/znam_transaction_intent_service.c|app/services/include/services/znam_transaction_intent_service.h|app/controllers/src/znam_intent_controller.c|app/controllers/src/znam_intent_native_handler.c|app/controllers/src/name_controller.c", "znam transaction_intent native_api_contract command_registry_catalog make_lint_gates")
 
 /* Durable shielded anchors (anchor_kv + utxo_apply_anchors). */
 AGENT_IMPACT_RULE("app/jobs/src/utxo_apply_anchors.c|app/jobs/include/jobs/utxo_apply_anchors.h|app/jobs/include/jobs/utxo_apply_delta.h|lib/test/src/test_shielded_sync_strength.c", "utxo_apply_stage shielded_bind_guard parity_lockin_anchor_membership coins_anchor_reconcile_all sapling_anchor_frontier_condition shielded_sync_strength make_lint_gates")
