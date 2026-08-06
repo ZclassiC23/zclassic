@@ -159,30 +159,30 @@ TX_TYPE("zpay_memo_envelope", "zpay", "ready", "composite_chain_transaction",
         "Compose a canonical ZPAY invoice, payment, or receipt memo, attach its exact bytes to an owner-authorized Sapling send, then strictly decode, authenticate, and network/time-check the received envelope.")
 
 TX_TYPE("zid_anchor", "zid", "ready", "overlay_transaction",
-        "op_return_zid_anchor", "public_metadata", "compose_broadcast",
+        "op_return_zid_anchor", "public_metadata", "plan_commit",
         "core.identity.anchor", "core.identity.anchor", "core.identity.resolve",
-        "", "all_zcl_networks", "zid_anchor", "simnet_confirmed", "test_identity_command",
-        "Anchor a ZID master public key to an owner-controlled transaction; the exact public-command bytes are mined and projected with the funding owner in isolated proof.")
+        "", "all_zcl_networks_identity_bound_vault_intent", "zid_anchor", "simnet_confirmed", "test_identity_command",
+        "Anchor a ZID master public key through a custody-bound durable intent; the production codec bytes are mined and projected with the funding owner in isolated proof.")
 TX_TYPE("zid_rotate", "zid", "ready", "overlay_transaction",
-        "op_return_zid_rotate", "public_metadata", "compose_broadcast",
+        "op_return_zid_rotate", "public_metadata", "plan_commit",
         "core.identity.rotate", "core.identity.rotate", "core.identity.resolve",
-        "", "all_zcl_networks", "zid_rotate", "simnet_confirmed", "test_identity_command",
-        "Rotate an existing ZID master key under the identity ownership rules; exact command bytes are mined and the successor lineage is recovered from projection.")
+        "", "all_zcl_networks_identity_bound_vault_intent", "zid_rotate", "simnet_confirmed", "test_identity_command",
+        "Rotate an existing ZID master key under identity ownership and durable-intent rules; production codec bytes are mined and successor lineage is recovered from projection.")
 TX_TYPE("zid_revoke", "zid", "ready", "overlay_transaction",
-        "op_return_zid_revoke", "public_metadata", "compose_broadcast",
+        "op_return_zid_revoke", "public_metadata", "plan_commit",
         "core.identity.revoke", "core.identity.revoke", "core.identity.resolve",
-        "", "all_zcl_networks", "zid_revoke", "simnet_confirmed", "test_identity_command",
-        "Revoke a ZID identity with an explicit on-chain record; exact command bytes are mined and retire the same owner-bound successor in projection.")
+        "", "all_zcl_networks_identity_bound_vault_intent", "zid_revoke", "simnet_confirmed", "test_identity_command",
+        "Revoke a ZID identity through a custody-bound durable intent; production codec bytes are mined and retire the same owner-bound successor in projection.")
 TX_TYPE("zdir_register", "zdir", "ready", "overlay_transaction",
-        "op_return_zdir_register", "public_metadata", "compose_broadcast",
+        "op_return_zdir_register", "public_metadata", "plan_commit",
         "core.zdir.register", "core.zdir.register", "core.network.onion.status",
-        "", "all_zcl_networks", "zdir_register", "simnet_confirmed", "test_zdir_write_path",
-        "Publish or refresh a validated Tor v3 onion directory record; the exact command bytes are owner-funded, block-connected, and recovered from the isolated chain projection.")
+        "", "all_zcl_networks_identity_bound_vault_intent", "zdir_register", "simnet_confirmed", "test_zdir_write_path",
+        "Publish or refresh a validated Tor v3 onion record through a custody-bound durable intent; production codec bytes are block-connected and recovered from isolated projection.")
 TX_TYPE("zdir_deregister", "zdir", "ready", "overlay_transaction",
-        "op_return_zdir_deregister", "public_metadata", "compose_broadcast",
+        "op_return_zdir_deregister", "public_metadata", "plan_commit",
         "core.zdir.deregister", "core.zdir.deregister", "core.network.onion.status",
-        "", "all_zcl_networks", "zdir_deregister", "simnet_confirmed", "test_zdir_write_path",
-        "Remove an owner-authorized on-chain onion directory announcement; the exact command bytes are block-connected and projected from the same owner input in isolated proof.")
+        "", "all_zcl_networks_identity_bound_vault_intent", "zdir_deregister", "simnet_confirmed", "test_zdir_write_path",
+        "Remove an owner-authorized onion announcement through a custody-bound durable intent; production codec bytes are block-connected and projected in isolated proof.")
 TX_TYPE("zanc_digest_anchor", "zanc", "ready", "composite_overlay_transaction",
         "op_return_zanc_digest", "public_commitment",
         "compose_build_sign_plan_commit", "core.anchor.compose",

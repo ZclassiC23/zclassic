@@ -11,29 +11,22 @@
  * (app/models/src/explorer_index_zid.c). So a stopped or copied datadir
  * answers exactly like a running one, with no RPC.
  *
- * Writes (anchor/rotate/revoke) take TWO paths, like core.epoch.anchor:
- *   1. LIVE NODE — dispatch identity_anchor / identity_rotate /
- *      identity_revoke over JSON-RPC. params is a JSON-RPC ARRAY whose
- *      [0] is the --input-style object; a bare object is NOT a valid
- *      params and the dispatcher would never see the fields.
- *   2. OFFLINE — build the same `ZID\0` OP_RETURN locally and return
- *      op_return_hex plus the exact next step, so an operator with a
- *      cold wallet can include it themselves.
- * Nothing here broadcasts on its own: path 1 hands the decision to the
- * node's wallet, path 2 hands the bytes to the operator.
+ * Writes (anchor/rotate/revoke) require an explicit dev/prod custody scope.
+ * They dispatch the dedicated zid_intent RPC in two phases: plan atomically
+ * reserves the exact inputs plus maximum fee, and commit publishes only the
+ * exact signed bytes stored in that durable plan. Public replies are a strict
+ * receipt whitelist and never include keys, owners, addresses, or raw bytes.
  *
- * Pre-flight reads run against the projection BEFORE either path, so a
+ * Pre-flight reads run against the projection BEFORE planning, so a
  * refusal is named and free rather than a spent fee: rotate/revoke need
  * an existing, non-revoked row; rotate needs old != new. */
 
 #include "command/native_command.h"
 
-#include "controllers/rpc_client.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "models/database.h"
 #include "models/zid_identity.h"
-#include "zid/zid_anchor.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -134,94 +127,6 @@ static void zidc_row_json(const struct zid_identity *r,
     }
     json_push_kv_str(obj, "source", r->source);
     json_push_kv_str(obj, "owner_address", r->owner_address);
-}
-
-/* A node_rpc_call body that is an error, not a result — the transport's
- * own {"error":{...}} envelope, an extracted {code,message}, or a bare
- * string (the RPC handler's own message). Verbatim shape of
- * ep_rpc_body_error in native_epoch_command.c. */
-static bool zidc_rpc_body_error(const struct json_value *v, char *msg,
-                                size_t msg_size)
-{
-    const char *m = NULL;
-    if (v->type == JSON_STR) {
-        m = json_get_str(v);
-    } else if (v->type == JSON_OBJ) {
-        const struct json_value *err = json_get(v, "error");
-        if (err && err->type != JSON_NULL) {
-            const struct json_value *em =
-                err->type == JSON_OBJ ? json_get(err, "message") : NULL;
-            m = (em && em->type == JSON_STR) ? json_get_str(em)
-                                             : "node RPC error";
-        } else {
-            const struct json_value *code = json_get(v, "code");
-            const struct json_value *msg_v = json_get(v, "message");
-            if (code && code->type == JSON_INT && msg_v &&
-                msg_v->type == JSON_STR)
-                m = json_get_str(msg_v);
-        }
-    }
-    if (m && msg)
-        snprintf(msg, msg_size, "%s", m);
-    return m != NULL;
-}
-
-/* Try the live node. Returns true and fills reply on success; otherwise
- * returns false with rpc_err carrying why (empty when no node answered). */
-static bool zidc_try_rpc(const char *method, const char *params,
-                         struct zcl_command_reply *reply, char *rpc_err,
-                         size_t rpc_err_size)
-{
-    rpc_err[0] = '\0';
-    zcl_native_bridge_ensure_rpc();
-    char *rpc_result = node_rpc_call(method, params);
-    if (!rpc_result)
-        return false;
-
-    struct json_value body;
-    bool parsed = json_read(&body, rpc_result, strlen(rpc_result));
-    bool error_body = parsed &&
-                      zidc_rpc_body_error(&body, rpc_err, rpc_err_size);
-    if (parsed && body.type == JSON_OBJ && !error_body) {
-        char via[96];
-        snprintf(via, sizeof(via), "node_rpc %s", method);
-        json_push_kv_str(&body, "via", via);
-        json_copy(&reply->data, &body);
-        json_free(&body);
-        free(rpc_result);
-        reply->status = ZCL_COMMAND_STATUS_PASSED;
-        reply->exit_code = ZCL_COMMAND_EXIT_OK;
-        return true;
-    }
-    if (!error_body)
-        snprintf(rpc_err, rpc_err_size, "%s",
-                 parsed ? "node RPC returned an unexpected body"
-                        : "node RPC returned an unparseable body");
-    json_free(&body);
-    free(rpc_result);
-    return false;
-}
-
-/* The shared offline tail: emit the script the operator must include. */
-static void zidc_offline_reply(struct zcl_command_reply *reply,
-                               const char *command, const uint8_t *script,
-                               size_t script_len, const char *rpc_err)
-{
-    char hex[ZID_ANCHOR_SCRIPT_MAX * 2 + 2];
-    HexStr(script, script_len, false, hex, sizeof(hex));
-    json_push_kv_str(&reply->data, "command", command);
-    if (rpc_err && rpc_err[0])
-        json_push_kv_str(&reply->data, "node_rpc_error", rpc_err);
-    json_push_kv_str(&reply->data, "op_return_hex", hex);
-    json_push_kv_int(&reply->data, "op_return_size", (int64_t)script_len);
-    json_push_kv_str(&reply->data, "status", "ready");
-    json_push_kv_str(&reply->data, "note",
-                     "no live node answered — start the node and re-run to "
-                     "compose+broadcast with the node wallet, or include "
-                     "this OP_RETURN as vout[0] of any transaction you sign "
-                     "yourself");
-    reply->status = ZCL_COMMAND_STATUS_PASSED;
-    reply->exit_code = ZCL_COMMAND_EXIT_OK;
 }
 
 /* Resolve the datadir or fail the reply. */
@@ -430,6 +335,11 @@ void zcl_native_handle_core_identity_anchor(
     if (!request || !reply)
         return;
     const char *path = "core.identity.anchor";
+    if (json_get_bool_or(request->input, "confirm", false)) {
+        zcl_native_overlay_intent_run(
+            request, reply, "zid_intent", "anchor", false);
+        return;
+    }
 
     uint8_t key[32];
     if (!zidc_require_pubkey(request->input, "pubkey", reply, path, key))
@@ -484,25 +394,8 @@ void zcl_native_handle_core_identity_anchor(
         }
     }
 
-    char params[192];
-    snprintf(params, sizeof(params), "[{\"pubkey\":\"%s\"}]", pubkey_hex);
-    char rpc_err[256] = {0};
-    if (zidc_try_rpc("identity_anchor", params, reply, rpc_err,
-                     sizeof(rpc_err)))
-        return;
-
-    uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
-    size_t script_len = zid_anchor_build_anchor(script, sizeof(script), key);
-    if (script_len == 0) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INTERNAL,
-                               "OP_RETURN_BUILD_FAILED", "execute", false,
-                               false, "zid_anchor_build_anchor rejected the "
-                               "key", pubkey_hex);
-        return;
-    }
-    json_push_kv_str(&reply->data, "pubkey", pubkey_hex);
-    zidc_offline_reply(reply, "anchor", script, script_len, rpc_err);
+    zcl_native_overlay_intent_run(
+        request, reply, "zid_intent", "anchor", true);
 }
 
 /* ── core.identity.rotate ─────────────────────────────────────────── */
@@ -514,6 +407,11 @@ void zcl_native_handle_core_identity_rotate(
     if (!request || !reply)
         return;
     const char *path = "core.identity.rotate";
+    if (json_get_bool_or(request->input, "confirm", false)) {
+        zcl_native_overlay_intent_run(
+            request, reply, "zid_intent", "rotate", false);
+        return;
+    }
 
     uint8_t old_key[32], new_key[32];
     if (!zidc_require_pubkey(request->input, "pubkey", reply, path, old_key))
@@ -522,7 +420,6 @@ void zcl_native_handle_core_identity_rotate(
                              new_key))
         return;
     const char *old_hex = zidc_input_str(request->input, "pubkey");
-    const char *new_hex = zidc_input_str(request->input, "new_pubkey");
 
     if (memcmp(old_key, new_key, 32) == 0) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
@@ -576,29 +473,8 @@ void zcl_native_handle_core_identity_rotate(
         return;
     }
 
-    char params[320];
-    snprintf(params, sizeof(params),
-             "[{\"pubkey\":\"%s\",\"new_pubkey\":\"%s\"}]", old_hex, new_hex);
-    char rpc_err[256] = {0};
-    if (zidc_try_rpc("identity_rotate", params, reply, rpc_err,
-                     sizeof(rpc_err)))
-        return;
-
-    uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
-    size_t script_len = zid_anchor_build_rotate(script, sizeof(script),
-                                                old_key, new_key);
-    if (script_len == 0) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INTERNAL,
-                               "OP_RETURN_BUILD_FAILED", "execute", false,
-                               false, "zid_anchor_build_rotate rejected the "
-                               "key pair", old_hex);
-        return;
-    }
-    json_push_kv_str(&reply->data, "pubkey", new_hex);
-    json_push_kv_str(&reply->data, "old_pubkey", old_hex);
-    json_push_kv_str(&reply->data, "owner_address", prev.owner_address);
-    zidc_offline_reply(reply, "rotate", script, script_len, rpc_err);
+    zcl_native_overlay_intent_run(
+        request, reply, "zid_intent", "rotate", true);
 }
 
 /* ── core.identity.revoke ─────────────────────────────────────────── */
@@ -610,6 +486,11 @@ void zcl_native_handle_core_identity_revoke(
     if (!request || !reply)
         return;
     const char *path = "core.identity.revoke";
+    if (json_get_bool_or(request->input, "confirm", false)) {
+        zcl_native_overlay_intent_run(
+            request, reply, "zid_intent", "revoke", false);
+        return;
+    }
 
     uint8_t key[32];
     if (!zidc_require_pubkey(request->input, "pubkey", reply, path, key))
@@ -657,24 +538,6 @@ void zcl_native_handle_core_identity_revoke(
         return;
     }
 
-    char params[192];
-    snprintf(params, sizeof(params), "[{\"pubkey\":\"%s\"}]", pubkey_hex);
-    char rpc_err[256] = {0};
-    if (zidc_try_rpc("identity_revoke", params, reply, rpc_err,
-                     sizeof(rpc_err)))
-        return;
-
-    uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
-    size_t script_len = zid_anchor_build_revoke(script, sizeof(script), key);
-    if (script_len == 0) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_INTERNAL,
-                               "OP_RETURN_BUILD_FAILED", "execute", false,
-                               false, "zid_anchor_build_revoke rejected the "
-                               "key", pubkey_hex);
-        return;
-    }
-    json_push_kv_str(&reply->data, "pubkey", pubkey_hex);
-    json_push_kv_str(&reply->data, "owner_address", prev.owner_address);
-    zidc_offline_reply(reply, "revoke", script, script_len, rpc_err);
+    zcl_native_overlay_intent_run(
+        request, reply, "zid_intent", "revoke", true);
 }

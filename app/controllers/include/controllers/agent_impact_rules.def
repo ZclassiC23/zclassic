@@ -453,6 +453,12 @@ AGENT_IMPACT_RULE("lib/sync/src/sync_state.c|lib/sync/include/sync/sync_state.h|
 AGENT_IMPACT_RULE("app/services/src/zslp_command_service.c|app/services/include/services/zslp_command_service.h|app/controllers/src/zslp_controller.c|app/controllers/src/zslp_controller_internal.h|app/controllers/src/zslp_transaction_support.c", "slp store znam make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/zslp_transaction_intent_service.c|app/services/include/services/zslp_transaction_intent_service.h|app/controllers/src/zslp_intent_controller.c|app/controllers/src/zslp_intent_native_handler.c|app/controllers/src/zslp_transaction_rpc.c", "slp transaction_intent native_api_contract command_registry_catalog make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/znam_transaction_intent_service.c|app/services/include/services/znam_transaction_intent_service.h|app/controllers/src/znam_intent_controller.c|app/controllers/src/znam_intent_native_handler.c|app/controllers/src/name_controller.c", "znam transaction_intent native_api_contract command_registry_catalog make_lint_gates")
+/* Reusable exact-byte overlay custody plus its ZID/ZDIR adapters. The generic
+ * service owns encryption, identity/tip/snapshot binding, exact-input
+ * reservation and claim-once publication; every adapter must run its codec +
+ * projection proof as well as the shared intent lifecycle. */
+AGENT_IMPACT_RULE("app/services/src/overlay_transaction_intent_service.c|app/services/include/services/overlay_transaction_intent_service.h|tools/command/native_overlay_intent_command.c|lib/test/src/test_transaction_intent.c", "transaction_intent native_api_contract command_registry_catalog make_lint_gates")
+AGENT_IMPACT_RULE("app/controllers/src/zid_intent_controller.c|app/controllers/src/identity_controller.c|app/controllers/include/controllers/identity_controller.h|tools/command/native_identity_command.c|lib/test/src/test_identity_command.c", "identity_command transaction_intent native_api_contract command_registry_catalog make_lint_gates")
 
 /* Durable shielded anchors (anchor_kv + utxo_apply_anchors). */
 AGENT_IMPACT_RULE("app/jobs/src/utxo_apply_anchors.c|app/jobs/include/jobs/utxo_apply_anchors.h|app/jobs/include/jobs/utxo_apply_delta.h|lib/test/src/test_shielded_sync_strength.c", "utxo_apply_stage shielded_bind_guard parity_lockin_anchor_membership coins_anchor_reconcile_all sapling_anchor_frontier_condition shielded_sync_strength make_lint_gates")
@@ -903,7 +909,7 @@ AGENT_IMPACT_RULE("lib/test/src/test_header_probe.c|app/services/src/header_prob
  * node's onion hostname on-chain. The builder, the RPC controller, the
  * native leaves, the command spec and the projection fold all have to agree
  * byte for byte, so an edit to any of them re-runs the whole loop. */
-AGENT_IMPACT_RULE("app/controllers/src/zdir_controller.c|app/controllers/include/controllers/zdir_controller.h|tools/command/native_zdir_command.c|lib/zdir/src/zdir.c|lib/zdir/include/zdir/zdir.h|app/models/src/explorer_index_zdir.c|lib/test/src/test_zdir_write_path.c", "zdir_write_path zdir onion_directory explorer_index command_registry_catalog make_lint_gates")
+AGENT_IMPACT_RULE("app/controllers/src/zdir_controller.c|app/controllers/src/zdir_intent_controller.c|app/controllers/include/controllers/zdir_controller.h|tools/command/native_zdir_command.c|lib/zdir/src/zdir.c|lib/zdir/include/zdir/zdir.h|app/models/src/explorer_index_zdir.c|lib/test/src/test_zdir_write_path.c", "zdir_write_path zdir onion_directory explorer_index transaction_intent native_api_contract command_registry_catalog make_lint_gates")
 
 /* Seniority address binding: the composition-root slice that resolves a peer
  * address to the identity that signed for it, weighs it, and rotates the

@@ -46,6 +46,10 @@ bool zcl_native_input_was_stdin(void);
  * (e.g. the dev hot-swap handlers) must call this first — the bridge would
  * otherwise leave the client global empty in a fresh CLI process. */
 void zcl_native_bridge_ensure_rpc(void);
+void zcl_native_overlay_intent_run(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply, const char *rpc_method,
+    const char *operation, bool operation_inputs_present);
 
 /* Generic transport binding for READ-ONLY Core/Ops leaves. Resolves the
  * leaf's canonical path to exactly one dispatch: either a transport-neutral

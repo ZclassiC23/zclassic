@@ -377,4 +377,5 @@ void register_identity_rpc_commands(struct rpc_table *t)
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);
+    register_zid_intent_rpc_command(t);
 }

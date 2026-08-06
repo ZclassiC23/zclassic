@@ -8,6 +8,7 @@
 #include "models/vault_intent.h"
 #include "models/wallet_identity.h"
 #include "models/wallet_metadata_crypto.h"
+#include "services/overlay_transaction_intent_service.h"
 #include "services/znam_transaction_intent_service.h"
 #include "services/zslp_transaction_intent_service.h"
 #include "wallet/wallet_lock.h"
@@ -164,6 +165,44 @@ static struct zcl_result ti_znam_publish(
         raw_tx[1] != 'N' || raw_tx[3] != f->input_tag ||
         expected_txid[0] != (uint8_t)(f->input_tag + 1))
         return ZCL_ERR(-1, "ZNAM fixture publish identity mismatch");
+    f->publishes++;
+    return ZCL_OK;
+}
+
+static struct zcl_result ti_overlay_prepare(
+    void *opaque, const struct overlay_intent_request *request,
+    int64_t maximum_fee_zat, uint8_t *raw_tx, size_t raw_capacity,
+    size_t *raw_tx_len, uint8_t txid_out[32], int64_t *actual_fee_zat,
+    struct vault_intent_input *inputs, size_t input_capacity,
+    size_t *input_count)
+{
+    struct ti_zslp_fixture *f = opaque;
+    if (!f || !request || strcmp(request->application_kind, "zid_intent") != 0 ||
+        strcmp(request->operation, "anchor") != 0 ||
+        maximum_fee_zat != 1000 || raw_capacity < 4 || input_capacity < 1)
+        return ZCL_ERR(-1, "overlay fixture prepare contract mismatch");
+    const uint8_t prepared[4] = { 'O', 'T', 'I', f->input_tag };
+    memcpy(raw_tx, prepared, sizeof(prepared));
+    *raw_tx_len = sizeof(prepared);
+    memset(txid_out, (uint8_t)(f->input_tag + 1), 32);
+    *actual_fee_zat = 500;
+    memset(inputs[0].txid, f->input_tag, 32);
+    inputs[0].vout = 9;
+    *input_count = 1;
+    memcpy(f->money_root, f->post_prepare_root, 32);
+    f->prepares++;
+    return ZCL_OK;
+}
+
+static struct zcl_result ti_overlay_publish(
+    void *opaque, const uint8_t *raw_tx, size_t raw_tx_len,
+    const uint8_t expected_txid[32])
+{
+    struct ti_zslp_fixture *f = opaque;
+    if (!f || !raw_tx || raw_tx_len != 4 || raw_tx[0] != 'O' ||
+        raw_tx[2] != 'I' || raw_tx[3] != f->input_tag ||
+        expected_txid[0] != (uint8_t)(f->input_tag + 1))
+        return ZCL_ERR(-1, "overlay fixture publish identity mismatch");
     f->publishes++;
     return ZCL_OK;
 }
@@ -495,6 +534,97 @@ int test_transaction_intent(void)
         ASSERT_EQ(conflicted.state, VAULT_INTENT_CONFLICTED);
         ASSERT_EQ(fixture.publishes, 1);
         node_db_close(&zdb);
+        wallet_lock_reset_for_test();
+        PASS();
+    }
+
+    TEST("opaque overlay intents encrypt semantics and publish exact bytes once") {
+        struct node_db odb; memset(&odb, 0, sizeof(odb));
+        ASSERT(node_db_open(&odb, ":memory:"));
+        wallet_lock_reset_for_test();
+        wallet_lock_note_encrypted_at_rest();
+        ASSERT(wallet_lock_unlock(NULL, NULL, "overlay-intent-test-pass").ok);
+        struct ti_zslp_fixture fixture; memset(&fixture, 0, sizeof(fixture));
+        const uint8_t genesis[32] = { 0xa6 };
+        ASSERT(wallet_identity_ensure(&odb, genesis, "dev", &fixture.identity));
+        memset(fixture.tip_hash, 0xb3, sizeof(fixture.tip_hash));
+        memset(fixture.money_root, 0xcb, sizeof(fixture.money_root));
+        memset(fixture.post_prepare_root, 0xcc,
+               sizeof(fixture.post_prepare_root));
+        fixture.input_tag = 0xd5;
+        struct overlay_intent_runtime runtime = {
+            .node_db = &odb,
+            .read_money = ti_zslp_money, .money_ctx = &fixture,
+            .prepare = ti_overlay_prepare, .prepare_ctx = &fixture,
+            .publish = ti_overlay_publish, .publish_ctx = &fixture,
+            .tip_height = 100, .maximum_fee_zat = 1000, .now_unix = 1400,
+        };
+        memcpy(runtime.tip_hash, fixture.tip_hash, 32);
+        struct overlay_intent_request request; memset(&request, 0, sizeof(request));
+        snprintf(request.wallet_scope, sizeof(request.wallet_scope), "dev");
+        snprintf(request.application_kind, sizeof(request.application_kind),
+                 "zid_intent");
+        snprintf(request.operation, sizeof(request.operation), "anchor");
+        const char private_semantics[] = "private-overlay-pubkey";
+        memcpy(request.semantics, private_semantics,
+               sizeof(private_semantics) - 1);
+        request.semantics_len = sizeof(private_semantics) - 1;
+        snprintf(request.idempotency_key, sizeof(request.idempotency_key),
+                 "zid-anchor-1");
+        struct overlay_intent_result planned;
+        ASSERT(overlay_transaction_intent_plan(
+            &runtime, &request, &planned).ok);
+        ASSERT_EQ(fixture.prepares, 1);
+        ASSERT(!planned.broadcast);
+        ASSERT_EQ(planned.actual_fee_zat, 500);
+        ASSERT_EQ(planned.reserved_zat, 1000);
+        ASSERT_STR_EQ(planned.application_kind, "zid_intent");
+        ASSERT_STR_EQ(planned.operation, "anchor");
+        ASSERT(vault_intent_has_raw(&odb, planned.plan_id));
+        ASSERT(!ti_db_contains(&odb, private_semantics));
+
+        struct overlay_intent_result replay;
+        ASSERT(overlay_transaction_intent_plan(&runtime, &request, &replay).ok);
+        ASSERT(replay.idempotent_replay);
+        ASSERT(memcmp(replay.plan_id, planned.plan_id, 32) == 0);
+        ASSERT_EQ(fixture.prepares, 1);
+        struct overlay_intent_request changed = request;
+        changed.semantics[0] ^= 1;
+        ASSERT(!overlay_transaction_intent_plan(
+            &runtime, &changed, &replay).ok);
+        ASSERT(!overlay_transaction_intent_commit(
+            &runtime, "zdir_intent", "dev", planned.plan_id, &replay).ok);
+        ASSERT(!overlay_transaction_intent_commit(
+            &runtime, "zid_intent", "prod", planned.plan_id, &replay).ok);
+
+        struct overlay_intent_result committed;
+        ASSERT(overlay_transaction_intent_commit(
+            &runtime, "zid_intent", "dev", planned.plan_id, &committed).ok);
+        ASSERT(committed.broadcast);
+        ASSERT_EQ(fixture.publishes, 1);
+        ASSERT(overlay_transaction_intent_commit(
+            &runtime, "zid_intent", "dev", planned.plan_id, &replay).ok);
+        ASSERT(replay.idempotent_replay);
+        ASSERT_EQ(fixture.publishes, 1);
+
+        fixture.input_tag = 0xd6;
+        memset(fixture.money_root, 0xcd, sizeof(fixture.money_root));
+        memset(fixture.post_prepare_root, 0xce,
+               sizeof(fixture.post_prepare_root));
+        snprintf(request.idempotency_key, sizeof(request.idempotency_key),
+                 "zid-anchor-2");
+        runtime.now_unix = 1500;
+        struct overlay_intent_result drifted;
+        ASSERT(overlay_transaction_intent_plan(
+            &runtime, &request, &drifted).ok);
+        memset(fixture.money_root, 0xcf, sizeof(fixture.money_root));
+        ASSERT(!overlay_transaction_intent_commit(
+            &runtime, "zid_intent", "dev", drifted.plan_id, &replay).ok);
+        struct vault_intent_row conflicted;
+        ASSERT(vault_intent_find(&odb, drifted.plan_id, &conflicted));
+        ASSERT_EQ(conflicted.state, VAULT_INTENT_CONFLICTED);
+        ASSERT_EQ(fixture.publishes, 1);
+        node_db_close(&odb);
         wallet_lock_reset_for_test();
         PASS();
     }
