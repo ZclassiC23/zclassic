@@ -4,10 +4,12 @@
 
 #include "base/hex.h"
 #include "command/native_command.h"
+#include "crypto/ed25519.h"
 #include "json/json.h"
 #include "vcs/zcode_creation_attribution.h"
 #include "vcs/zcode_commons_projection.h"
 #include "vcs/zcode_epoch_creation.h"
+#include "vcs/zcode_patronage.h"
 #include "vcs/vcs_object.h"
 
 #include <string.h>
@@ -454,11 +456,71 @@ static int commons_command_noncreating_test(void)
     return failures;
 }
 
+static int patronage_intent_test(void)
+{
+    int failures = 0;
+    TEST("ZC23 patronage: signed offers are simulation-only and non-authoritative") {
+        uint8_t seed[32], secret[32], pubkey[32];
+        memset(seed, 42, sizeof(seed));
+        zcl_ed25519_keypair(pubkey, secret, seed);
+        struct vcs_zcode_patronage_intent_v1 intent;
+        memset(&intent, 0, sizeof(intent));
+        intent.schema_version = VCS_ZCODE_PATRONAGE_INTENT_VERSION;
+        intent.mode = VCS_ZCODE_PATRONAGE_EXACT_TASK_COMMISSION;
+        intent.target_kind = VCS_ZCODE_PATRONAGE_TARGET_TASK;
+        intent.settlement_trust_mode = VCS_ZCODE_PATRONAGE_UNFUNDED_OFFER;
+        intent.flags = VCS_ZCODE_PATRONAGE_NO_AUTHORITY |
+                       VCS_ZCODE_PATRONAGE_SIMULATION_ONLY;
+        creation_fill_root(intent.network_genesis_root, 31);
+        creation_fill_root(intent.zc23_token_or_simulation_root, 32);
+        creation_fill_root(intent.patron_contributor_binding_root, 33);
+        memcpy(intent.patron_zid_pubkey, pubkey, 32);
+        creation_fill_root(intent.target_root, 34);
+        memcpy(intent.task_root, intent.target_root, 32);
+        creation_fill_root(intent.proof_policy_root, 35);
+        creation_fill_root(intent.intended_recipient_binding_root, 36);
+        intent.amount_atoms = 100000000;
+        intent.created_unix = 1000;
+        intent.expires_unix = 2000;
+        intent.refund_height = 3000;
+        intent.refund_unix = 2100;
+        intent.sequence = 1;
+        intent.maximum_zcl_fee_zat = 10000;
+        ASSERT(vcs_zcode_patronage_intent_seal(&intent, secret, pubkey) ==
+               VCS_ZCODE_PATRONAGE_OK);
+        ASSERT(vcs_zcode_patronage_intent_verify(&intent, 1500) ==
+               VCS_ZCODE_PATRONAGE_OK);
+        uint8_t wire[VCS_ZCODE_PATRONAGE_INTENT_WIRE_BYTES];
+        struct vcs_zcode_patronage_intent_v1 parsed, zero;
+        memset(&zero, 0, sizeof(zero));
+        ASSERT(vcs_zcode_patronage_intent_serialize(&intent, wire) ==
+               VCS_ZCODE_PATRONAGE_OK);
+        ASSERT(vcs_zcode_patronage_intent_parse(wire, sizeof(wire), &parsed) ==
+               VCS_ZCODE_PATRONAGE_OK);
+        ASSERT(vcs_zcode_patronage_intent_verify(&parsed, 1500) ==
+               VCS_ZCODE_PATRONAGE_OK);
+        wire[sizeof(wire) - 1] ^= 1;
+        ASSERT(vcs_zcode_patronage_intent_parse(wire, sizeof(wire), &parsed) ==
+               VCS_ZCODE_PATRONAGE_OK);
+        ASSERT(vcs_zcode_patronage_intent_verify(&parsed, 1500) ==
+               VCS_ZCODE_PATRONAGE_SIGNATURE);
+        ASSERT(vcs_zcode_patronage_intent_parse(wire, sizeof(wire) - 1,
+                                                &parsed) ==
+               VCS_ZCODE_PATRONAGE_WIRE_SIZE);
+        ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        intent.flags &= (uint8_t)~VCS_ZCODE_PATRONAGE_NO_AUTHORITY;
+        ASSERT(vcs_zcode_patronage_intent_validate(&intent) ==
+               VCS_ZCODE_PATRONAGE_FLAGS);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_creation_attribution(void)
 {
     return creation_codec_test() + creation_rejection_test() +
            creation_arithmetic_test() + epoch_creation_codec_test() +
            epoch_creation_accounting_test() + commons_projection_test() +
            commons_projection_rebuild_test() +
-           commons_command_noncreating_test();
+           commons_command_noncreating_test() + patronage_intent_test();
 }
