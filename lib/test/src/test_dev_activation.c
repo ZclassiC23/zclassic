@@ -1155,8 +1155,8 @@ static int test_full_datadir_readiness_timeout(void)
     int failures = 0;
     TEST("dev_activation: ordinary and recovery boots allow measured full-datadir readiness") {
         unsetenv("ZCL_DEV_ACTIVATION_VERIFY_TIMEOUT_S");
-        ASSERT_EQ(DEV_ACTIVATION_VERIFY_TIMEOUT_S, 600);
-        ASSERT_EQ(DEV_ACTIVATION_RECOVERY_VERIFY_TIMEOUT_S, 600);
+        ASSERT_EQ(DEV_ACTIVATION_VERIFY_TIMEOUT_S, 1200);
+        ASSERT_EQ(DEV_ACTIVATION_RECOVERY_VERIFY_TIMEOUT_S, 1200);
         ASSERT_EQ(dev_activation_verify_timeout_seconds(false),
                   DEV_ACTIVATION_VERIFY_TIMEOUT_S);
         ASSERT_EQ(dev_activation_verify_timeout_seconds(true),
