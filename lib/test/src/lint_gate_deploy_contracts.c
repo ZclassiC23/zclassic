@@ -84,6 +84,20 @@ int t_canonical_deploy_proof_binding_contract(void)
         ASSERT(restart != NULL && restart < seed_target);
         ASSERT(proof != NULL && proof < seed_target);
         ASSERT(strstr(deploy_recipe, "rollback_armed=1") != NULL);
+        const char *prior_capture = strstr(
+            deploy_recipe,
+            "install -m 755 \"/proc/$$mainpid/exe\" \"$$prior_tmp\"");
+        const char *forced_relink = strstr(deploy_recipe,
+                                           "rm -f $(ZCLASSIC23_BIN)");
+        ASSERT(prior_capture != NULL);
+        ASSERT(forced_relink != NULL);
+        ASSERT(prior_capture < forced_relink);
+        ASSERT(strstr(deploy_recipe,
+                      "[ \"$$running_sha256\" = \"$$prior_sha256\" ]")
+               != NULL);
+        ASSERT(strstr(deploy_recipe,
+                      "install -m 755 \"$$prior_snapshot\" \"$$rollback_bin\"")
+               != NULL);
         ASSERT(strstr(deploy_recipe, "ZCL_DEPLOY_STAGE=rollback") != NULL);
         ASSERT(strstr(deploy_recipe, "deploy: ROLLED_BACK") != NULL);
         ASSERT(strstr(deploy_recipe,
