@@ -45,6 +45,7 @@
 #define VI_ADDR_MAX 127
 #define VI_TTL 600
 #define VI_PROVING_LEASE 300
+#define VI_APP_KIND "vault_transparent"
 
 struct vi_effect { char to[VI_ADDR_MAX + 1]; int64_t amount; };
 struct vi_input { uint8_t txid[32]; uint32_t vout; };
@@ -71,39 +72,6 @@ static void vi_hex(const uint8_t in[32], char out[65])
 static bool vi_unhex(const char *s, uint8_t out[32])
 {
     return s && strlen(s) == 64 && IsHex(s) && ParseHex(s, out, 32) == 32;
-}
-
-/* Amounts are text only. This is deliberately not the permissive legacy RPC
- * amount parser: floats can never cross this boundary. */
-bool vault_intent_parse_zcl_amount(const char *s, int64_t *out)
-{
-    if (!s || !out || !s[0] || s[0] == '-' || s[0] == '+')
-        return false; // raw-return-ok:predicate
-    int64_t whole = 0, frac = 0;
-    unsigned decimals = 0;
-    bool dot = false;
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        if (*p == '.' && !dot) { dot = true; continue; }
-        if (*p < '0' || *p > '9') return false; // raw-return-ok:predicate
-        int digit = *p - '0';
-        if (!dot) {
-            if (whole > (INT64_MAX - digit) / 10)
-                return false; // raw-return-ok:predicate
-            whole = whole * 10 + digit;
-        } else {
-            if (++decimals > 8) return false; // raw-return-ok:predicate
-            frac = frac * 10 + digit;
-        }
-    }
-    if (dot && decimals == 0) return false; // raw-return-ok:predicate
-    while (decimals++ < 8) frac *= 10;
-    if (whole > (INT64_MAX - frac) / COIN)
-        return false; // raw-return-ok:predicate
-    int64_t amount = whole * COIN + frac;
-    if (amount <= 0 || !MoneyRange(amount))
-        return false; // raw-return-ok:predicate
-    *out = amount;
-    return true;
 }
 
 static void vi_amount_text(int64_t amount, char out[32])
@@ -141,6 +109,52 @@ static bool vi_encode(const struct vi_payload *p, uint8_t *out, size_t cap,
     return true;
 }
 
+/* Bind retry identity to the caller's normalized request, before input
+ * selection.  Exact selected inputs belong to the durable plan digest below;
+ * putting them in this digest would make an otherwise identical retry depend
+ * on transient coin-selection order. */
+static void vi_request_digest(const struct vi_payload *p, const char *scope,
+                              uint8_t out[32])
+{
+    uint8_t count = (uint8_t)p->effects_len;
+    uint8_t fee_le[8];
+    zcl_write_i64_le(fee_le, p->fee);
+    struct sha3_256_ctx c;
+    sha3_256_init(&c);
+    static const uint8_t domain[] = "vault-transparent-request-v1";
+    sha3_256_write(&c, domain, sizeof(domain) - 1);
+    sha3_256_write(&c, (const uint8_t *)scope, strlen(scope));
+    sha3_256_write(&c, &count, sizeof(count));
+    sha3_256_write(&c, fee_le, sizeof(fee_le));
+    for (size_t i = 0; i < p->effects_len; i++) {
+        uint8_t address_len = (uint8_t)strlen(p->effects[i].to);
+        uint8_t amount_le[8];
+        zcl_write_i64_le(amount_le, p->effects[i].amount);
+        sha3_256_write(&c, &address_len, sizeof(address_len));
+        sha3_256_write(&c, (const uint8_t *)p->effects[i].to, address_len);
+        sha3_256_write(&c, amount_le, sizeof(amount_le));
+    }
+    sha3_256_finalize(&c, out);
+}
+
+static bool vi_render_idempotent(struct wallet_rpc_context *ctx,
+                                 struct json_value *result,
+                                 const struct vault_intent_row *row,
+                                 const uint8_t request_digest[32])
+{
+    if (!row->has_request_digest ||
+        memcmp(row->request_digest, request_digest, 32) != 0) {
+        vi_error(result, "IDEMPOTENCY_CONFLICT",
+                 "that idempotency key already names a different request");
+        return true;
+    }
+    json_set_object(result);
+    json_push_kv_bool(result, "ok", true);
+    vault_intent_render_row(ctx, result, row);
+    json_push_kv_bool(result, "idempotent_plan", true);
+    return true;
+}
+
 static bool vi_decode(const uint8_t *raw, size_t len, struct vi_payload *p)
 {
     if (!raw || !p) LOG_FAIL("vault_intent", "decode: NULL argument");
@@ -169,34 +183,6 @@ static bool vi_decode(const uint8_t *raw, size_t len, struct vi_payload *p)
     stream_free(&s);
     if (!ok) LOG_FAIL("vault_intent", "canonical payload decode failed");
     return true;
-}
-
-void vault_intent_digest_payload(const uint8_t *raw, size_t len,
-                                 const struct vault_intent_row *row,
-                                 uint8_t out[32])
-{
-    uint8_t height_le[4], expiry_le[8];
-    zcl_write_i32_le(height_le, row->anchor_height);
-    zcl_write_i64_le(expiry_le, row->expires_at);
-    struct sha3_256_ctx c;
-    sha3_256_init(&c);
-    sha3_256_write(&c, (const uint8_t *)"vault-intent-v1", 15);
-    sha3_256_write(&c, raw, len);
-    sha3_256_write(&c, height_le, sizeof(height_le));
-    sha3_256_write(&c, row->anchor_hash, 32);
-    sha3_256_write(&c, expiry_le, sizeof(expiry_le));
-    sha3_256_write(&c, (const uint8_t *)row->wallet_scope,
-                   strlen(row->wallet_scope));
-    sha3_256_write(&c, (const uint8_t *)row->wallet_instance_id,
-                   strlen(row->wallet_instance_id));
-    sha3_256_write(&c, (const uint8_t *)row->wallet_genesis,
-                   strlen(row->wallet_genesis));
-    sha3_256_write(&c, row->snapshot_root, 32);
-    uint8_t money[2][8];
-    zcl_write_i64_le(money[0], row->recipient_value_zat);
-    zcl_write_i64_le(money[1], row->max_fee_zat);
-    sha3_256_write(&c, (const uint8_t *)money, sizeof(money));
-    sha3_256_finalize(&c, out);
 }
 
 bool vault_intent_context_ready(struct wallet_rpc_context *ctx,
@@ -368,7 +354,7 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
                         struct json_value *result)
 {
     RPC_HELP(help, result,
-             "vault_intent_plan {wallet_scope,route,effects}\n");
+             "vault_intent_plan {wallet_scope,route,effects,idempotency_key}\n");
     const struct json_value *input = json_at(params, 0);
     struct wallet_rpc_context *ctx = wallet_rpc_context_current();
     if (!input || input->type != JSON_OBJ) {
@@ -385,6 +371,12 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
     const char *route = json_get_str(json_get(input, "route"));
     if (!route || strcmp(route, "transparent") != 0)
         return vault_intent_private_plan(input, result);
+    const char *idem = json_get_str(json_get(input, "idempotency_key"));
+    if (!vault_intent_idempotency_key_valid(idem)) {
+        vi_error(result, "IDEMPOTENCY_KEY_REQUIRED",
+                 "idempotency_key must be 1..64 printable characters");
+        return true;
+    }
     if (!vault_intent_context_ready(ctx, result)) return true;
     struct vi_payload p; memset(&p, 0, sizeof(p));
     if (!vi_effects(input, &p, result)) return true;
@@ -394,6 +386,12 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
     if (p.fee < 0 || target > INT64_MAX - p.fee) {
         vi_error(result, "FEE_INVALID", "wallet fee is invalid"); return true;
     }
+    uint8_t request_digest[32];
+    vi_request_digest(&p, wallet_scope, request_digest);
+    struct vault_intent_row existing;
+    if (vault_intent_find_application_idempotency(
+            ctx->node_db, wallet_scope, VI_APP_KIND, idem, &existing))
+        return vi_render_idempotent(ctx, result, &existing, request_digest);
     struct wallet_money_snapshot money;
     struct zcl_result money_result = wallet_money_snapshot_build(
         ctx->node_db, ctx->main_state, wallet_scope, &money);
@@ -462,6 +460,11 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
     row.recipient_value_zat = target;
     row.max_fee_zat = p.fee;
     row.reserved_zat = reservation;
+    snprintf(row.application_kind, sizeof(row.application_kind), "%s",
+             VI_APP_KIND);
+    snprintf(row.idempotency_key, sizeof(row.idempotency_key), "%s", idem);
+    memcpy(row.request_digest, request_digest, 32);
+    row.has_request_digest = true;
     vault_intent_digest_payload(plain, plen, &row, row.digest);
     bool encrypted = wallet_metadata_encrypt(ctx->node_db, row.plan_id, 32,
         plain, plen, row.encrypted_payload, sizeof(row.encrypted_payload),
@@ -488,7 +491,18 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
                 (int64_t)platform_time_wall_time_t());
     }
     memory_cleanse(plain, sizeof(plain));
-    if (!stored) { vi_error(result, "PLAN_PERSIST_FAILED", "encrypted plan could not be atomically reserved and snapshot-bound"); return true; }
+    if (!stored) {
+        /* A concurrent request with the same key can win the unique insert
+         * after our first lookup.  Resolve that race as the same idempotent
+         * plan, never as permission to create another reservation. */
+        if (vault_intent_find_application_idempotency(
+                ctx->node_db, wallet_scope, VI_APP_KIND, idem, &existing))
+            return vi_render_idempotent(ctx, result, &existing,
+                                        request_digest);
+        vi_error(result, "PLAN_PERSIST_FAILED",
+                 "encrypted plan could not be atomically reserved and snapshot-bound");
+        return true;
+    }
     json_set_object(result); json_push_kv_bool(result, "ok", true);
     vault_intent_render_row(ctx, result, &row);
     char digest[65], fee[32]; vi_hex(row.digest, digest); vi_amount_text(p.fee, fee);
@@ -496,6 +510,7 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
     json_push_kv_str(result, "fee", fee);
     json_push_kv_int(result, "confirmation_policy", 6);
     json_push_kv_str(result, "route", "transparent");
+    json_push_kv_bool(result, "idempotent_plan", false);
     json_push_kv_str(result, "privacy", "PUBLIC: recipients, values, inputs, change, and transaction graph are visible");
     struct json_value effects; json_init(&effects); json_set_array(&effects);
     for (size_t i = 0; i < p.effects_len; i++) {

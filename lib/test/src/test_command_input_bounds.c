@@ -309,6 +309,7 @@ static int t_vault_effects_array(void)
     json_set_object(&input);
     (void)json_push_kv_str(&input, "wallet_scope", "dev");
     (void)json_push_kv_str(&input, "route", "transparent");
+    (void)json_push_kv_str(&input, "idempotency_key", "payment-001");
     json_init(&effects);
     json_set_array(&effects);
     json_init(&effect);

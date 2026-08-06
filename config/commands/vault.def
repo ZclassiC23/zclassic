@@ -194,9 +194,10 @@ ZCL_COMMAND_READY_COMMAND(
 ZCL_COMMAND_READY_COMMAND(
     "vault.intent.plan", "vault.intent", "",
     "Persist an exact encrypted transaction plan",
-    "Accepts 1..50 effects with strict decimal-string ZCL amounts. Transparent "
-    "fan-out uses route=transparent. Sapling routes require from plus a durable "
-    "idempotency_key: private (z-to-z), shield (t-to-z), unshield (z-to-t), or "
+    "Accepts 1..50 effects with strict decimal-string ZCL amounts and requires "
+    "a durable idempotency_key for every route. Transparent fan-out uses "
+    "route=transparent. Sapling routes additionally require from: private "
+    "(z-to-z), shield (t-to-z), unshield (z-to-t), or "
     "mixed (both recipient pools); a mismatched route fails closed. Returns a "
     "ten-minute plan_id, digest, exact effects and maximum fee, tip/money "
     "anchor, confirmation policy, and an explicit privacy warning. "
@@ -209,8 +210,8 @@ ZCL_COMMAND_READY_COMMAND(
     "admitting or relaying the candidate.", 0,
     "vault,intent,plan,effects,fee,privacy,idempotent,mixed,sapling",
     "zcl.vault_intent_plan.input.v1", "zcl.vault_intent_plan.v1",
-    "wallet_scope,route,from,effects,idempotency_key", "wallet_scope,effects",
-    "printf '%s' '{\"wallet_scope\":\"dev\",\"route\":\"transparent\",\"effects\":[{\"asset\":\"ZCL\",\"to\":\"t1...\",\"amount\":\"0.01\"}]}' | zclassic23 vault intent plan --input=-",
+    "wallet_scope,route,from,effects,idempotency_key", "wallet_scope,effects,idempotency_key",
+    "printf '%s' '{\"wallet_scope\":\"dev\",\"route\":\"transparent\",\"idempotency_key\":\"payment-001\",\"effects\":[{\"asset\":\"ZCL\",\"to\":\"t1...\",\"amount\":\"0.01\"}]}' | zclassic23 vault intent plan --input=-",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_BACKGROUND,

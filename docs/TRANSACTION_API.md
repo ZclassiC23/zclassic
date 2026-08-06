@@ -435,14 +435,15 @@ custody engine application workflows use. Amounts are decimal strings and the
 sensitive effects document goes through stdin:
 
 ```bash
-printf '%s' '{"wallet_scope":"dev","route":"transparent","effects":[{"asset":"ZCL","to":"t1...","amount":"0.00100000"},{"asset":"ZCL","to":"t1...","amount":"0.00200000"}]}' |
+printf '%s' '{"wallet_scope":"dev","route":"transparent","idempotency_key":"payment-001","effects":[{"asset":"ZCL","to":"t1...","amount":"0.00100000"},{"asset":"ZCL","to":"t1...","amount":"0.00200000"}]}' |
   zclassic23 vault intent plan --input=-
 
 zclassic23 vault intent commit --input='{"wallet_scope":"dev","plan_id":"<64hex-from-plan>","confirm":true}'
 zclassic23 vault intent status --plan_id=<64hex-from-plan>
 ```
 
-The plan reserves recipient value plus the maximum fee and binds the exact
+The required idempotency key makes a retry return the same plan; reusing that
+key for different effects fails closed. The plan reserves recipient value plus the maximum fee and binds the exact
 outputs, selected inputs, wallet instance, genesis, tip, current money snapshot
 and expiry. Commit revalidates those bindings and is idempotent. This is the
 developer-facing multi-recipient API; the legacy `sendmany` RPC is compatibility

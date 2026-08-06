@@ -75,6 +75,20 @@ int test_transaction_intent(void)
         PASS();
     }
 
+    TEST("transaction intent idempotency keys are printable and bounded") {
+        char key[VAULT_INTENT_IDEMPOTENCY_MAX + 2];
+        memset(key, 'k', sizeof(key));
+        key[VAULT_INTENT_IDEMPOTENCY_MAX] = '\0';
+        ASSERT(vault_intent_idempotency_key_valid("payment-001"));
+        ASSERT(vault_intent_idempotency_key_valid(key));
+        key[VAULT_INTENT_IDEMPOTENCY_MAX] = 'k';
+        key[VAULT_INTENT_IDEMPOTENCY_MAX + 1] = '\0';
+        ASSERT(!vault_intent_idempotency_key_valid(key));
+        ASSERT(!vault_intent_idempotency_key_valid(""));
+        ASSERT(!vault_intent_idempotency_key_valid("line\nbreak"));
+        PASS();
+    }
+
     TEST("transaction intent is encrypted, claim-once, recoverable, idempotent") {
         ASSERT(node_db_open(&ndb, ":memory:"));
         wallet_lock_reset_for_test();
