@@ -18,6 +18,7 @@
 #include "vcs/zcode_creation_attribution.h"
 #include "vcs/zcode_epoch_creation.h"
 #include "vcs/zcode_patronage.h"
+#include "vcs/zcode_patronage_funding.h"
 #include "vcs/zcode_score_receipt.h"
 
 #include <stdlib.h>
@@ -862,6 +863,80 @@ static int test_patronage_intent_cross_validation(void)
         };
         ASSERT_EQ(vcs_zcode_patronage_intent_verify_cas(&intent, &context),
                   VCS_ZCODE_PATRONAGE_OK);
+
+        intent.settlement_trust_mode =
+            VCS_ZCODE_PATRONAGE_SIMULATED_FUNDING;
+        ASSERT_EQ(vcs_zcode_patronage_intent_seal(
+                      &intent, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_OK);
+        uint8_t intent_root[32];
+        uint8_t intent_wire[VCS_ZCODE_PATRONAGE_INTENT_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_patronage_intent_root(&intent, intent_root),
+                  VCS_ZCODE_PATRONAGE_OK);
+        ASSERT_EQ(vcs_zcode_patronage_intent_serialize(&intent, intent_wire),
+                  VCS_ZCODE_PATRONAGE_OK);
+        ASSERT(vcs_object_put_addressed(workspace, intent_root, intent_wire,
+                                        sizeof(intent_wire)));
+        struct vcs_zcode_patronage_funding_v1 funding;
+        memset(&funding, 0, sizeof(funding));
+        funding.schema_version = VCS_ZCODE_PATRONAGE_FUNDING_VERSION;
+        funding.funding_kind =
+            VCS_ZCODE_PATRONAGE_FUNDING_FULLY_SIMULATED;
+        funding.flags = VCS_ZCODE_PATRONAGE_FUNDING_NO_LIVE_FUNDS |
+                        VCS_ZCODE_PATRONAGE_FUNDING_NO_TRANSACTION_BYTES;
+        memcpy(funding.network_genesis_root, network, 32);
+        memcpy(funding.patronage_intent_root, intent_root, 32);
+        memcpy(funding.funder_contributor_binding_root, binding_root, 32);
+        memcpy(funding.funder_zid_pubkey, zid_pubkey, 32);
+        funding.amount_atoms = intent.amount_atoms;
+        funding.created_unix = 1600;
+        funding.sequence = 1;
+        ASSERT_EQ(vcs_zcode_patronage_simulation_plan_root(
+                      intent_root, funding.amount_atoms,
+                      funding.simulation_plan_root),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        ASSERT_EQ(vcs_zcode_patronage_funding_seal(
+                      &funding, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        uint8_t funding_wire[VCS_ZCODE_PATRONAGE_FUNDING_WIRE_BYTES];
+        struct vcs_zcode_patronage_funding_v1 parsed_funding, zero_funding;
+        memset(&zero_funding, 0, sizeof(zero_funding));
+        ASSERT_EQ(vcs_zcode_patronage_funding_serialize(
+                      &funding, funding_wire),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        ASSERT_EQ(vcs_zcode_patronage_funding_parse(
+                      funding_wire, sizeof(funding_wire), &parsed_funding),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        ASSERT_EQ(vcs_zcode_patronage_funding_verify(&parsed_funding),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        ASSERT_EQ(vcs_zcode_patronage_funding_parse(
+                      funding_wire, sizeof(funding_wire) - 1,
+                      &parsed_funding),
+                  VCS_ZCODE_PATRONAGE_FUNDING_WIRE_SIZE);
+        ASSERT(memcmp(&parsed_funding, &zero_funding,
+                      sizeof(parsed_funding)) == 0);
+        context.now_unix = 1700;
+        ASSERT_EQ(vcs_zcode_patronage_funding_verify_cas(
+                      &funding, &context),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        funding.flags &= (uint8_t)
+            ~VCS_ZCODE_PATRONAGE_FUNDING_NO_LIVE_FUNDS;
+        ASSERT_EQ(vcs_zcode_patronage_funding_validate(&funding),
+                  VCS_ZCODE_PATRONAGE_FUNDING_SHAPE);
+        funding.flags |= VCS_ZCODE_PATRONAGE_FUNDING_NO_LIVE_FUNDS;
+        funding.amount_atoms++;
+        ASSERT_EQ(vcs_zcode_patronage_simulation_plan_root(
+                      intent_root, funding.amount_atoms,
+                      funding.simulation_plan_root),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        ASSERT_EQ(vcs_zcode_patronage_funding_seal(
+                      &funding, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        ASSERT_EQ(vcs_zcode_patronage_funding_verify_cas(
+                      &funding, &context),
+                  VCS_ZCODE_PATRONAGE_FUNDING_AMOUNT);
+        funding.amount_atoms--;
+
         uint8_t other_network[32]; score_fill(other_network, 0xc2);
         context.expected_network_genesis_root = other_network;
         ASSERT_EQ(vcs_zcode_patronage_intent_verify_cas(&intent, &context),
