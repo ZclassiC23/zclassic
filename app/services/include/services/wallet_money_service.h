@@ -47,13 +47,15 @@ struct wallet_money_snapshot {
 
 /* Pure fail-closed classification shared by snapshot construction and tests.
  * `network_tip` is the maximum of active-chain, best-header, and observed-peer
- * height. CURRENT requires a published H*, at least one live peer, no lag to
- * that target, and a live block-catch-up state. It deliberately does not
- * require SYNC_AT_TIP: that global verdict also proves complete historical
- * block-body custody, which a valid bundle-seeded wallet may not possess. */
+ * height. CURRENT requires a published H*, an exact authoritative coins tip
+ * at that target, H* at the coins tip or its one-height normal finalize edge,
+ * at least one live peer, and a live block-catch-up state. It deliberately
+ * does not require SYNC_AT_TIP: that global verdict also proves complete
+ * historical block-body custody, which a valid bundle-seeded wallet may not
+ * possess. */
 enum wallet_money_freshness wallet_money_freshness_classify(
-    bool hstar_published, int32_t hstar, int32_t network_tip,
-    size_t peer_count, enum sync_state state);
+    bool hstar_published, int32_t hstar, int32_t money_tip,
+    int32_t network_tip, size_t peer_count, enum sync_state state);
 
 /* Compose identity + vault readers + intent reservations + chain tip. No
  * independent balance arithmetic is stored; every call re-reads authorities. */

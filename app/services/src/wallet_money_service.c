@@ -42,7 +42,7 @@ static void money_root(struct wallet_money_snapshot *s)
         s->intent_reserved_zat, s->lifetime_lab_spent_zat,
         s->agent_available_zat, s->tip_height, s->network_tip_height,
     };
-    for (size_t i = 0; i < 7; i++)
+    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++)
         zcl_write_i64_le(nums[i], values[i]);
     sha3_256_write(&c, (const uint8_t *)nums, sizeof(nums));
     uint8_t flags[2] = { s->complete ? 1 : 0,
@@ -52,18 +52,59 @@ static void money_root(struct wallet_money_snapshot *s)
 }
 
 enum wallet_money_freshness wallet_money_freshness_classify(
-    bool hstar_published, int32_t hstar, int32_t network_tip,
-    size_t peer_count, enum sync_state state)
+    bool hstar_published, int32_t hstar, int32_t money_tip,
+    int32_t network_tip, size_t peer_count, enum sync_state state)
 {
-    if (!hstar_published || hstar < 0 || network_tip < 0 || peer_count == 0)
+    if (!hstar_published || hstar < 0 || money_tip < 0 || network_tip < 0 ||
+        peer_count == 0)
         return WALLET_MONEY_FRESHNESS_UNKNOWN;
     const bool live_catchup_state =
         state == SYNC_BLOCKS_DOWNLOAD ||
         state == SYNC_CONNECTING_BLOCKS ||
         state == SYNC_AT_TIP;
-    if (hstar < network_tip || !live_catchup_state)
+    const int64_t fold_edge = (int64_t)money_tip - (int64_t)hstar;
+    if (money_tip < network_tip || fold_edge < 0 || fold_edge > 1 ||
+        !live_catchup_state)
         return WALLET_MONEY_FRESHNESS_STALE;
     return WALLET_MONEY_FRESHNESS_CURRENT;
+}
+
+struct money_chain_view {
+    int32_t target_height;
+    size_t peer_count;
+    enum sync_state sync_state;
+    bool money_tip_matches_active;
+};
+
+static struct money_chain_view money_chain_view_capture(
+    struct main_state *main_state, int32_t money_tip,
+    const uint8_t money_tip_hash[32])
+{
+    struct money_chain_view view = {
+        .target_height = -1,
+        .sync_state = sync_get_state(),
+    };
+    int32_t active_height = -1;
+    int32_t header_height = -1;
+    zcl_mutex_lock(&main_state->cs_main);
+    struct block_index *tip = active_chain_at(&main_state->chain_active,
+                                              money_tip);
+    active_height = active_chain_height(&main_state->chain_active);
+    header_height = main_state->pindex_best_header
+        ? main_state->pindex_best_header->nHeight : active_height;
+    view.money_tip_matches_active = tip && tip->nHeight == money_tip &&
+        memcmp(tip->hashBlock.data, money_tip_hash, 32) == 0;
+    zcl_mutex_unlock(&main_state->cs_main);
+
+    struct connman *cm = sync_monitor_connman();
+    view.peer_count = cm ? connman_get_node_count(cm) : 0;
+    int32_t peer_height = cm ? connman_max_peer_height(cm) : -1;
+    view.target_height = active_height;
+    if (header_height > view.target_height)
+        view.target_height = header_height;
+    if (peer_height > view.target_height)
+        view.target_height = peer_height;
+    return view;
 }
 
 static bool money_classes_complete(const struct vault_snapshot *v,
@@ -113,50 +154,48 @@ struct zcl_result wallet_money_snapshot_build(
 
     bool hstar_published = reducer_frontier_provable_tip_is_published();
     int32_t hstar = reducer_frontier_provable_tip_cached();
-    bool tip_found = false;
-    int32_t active_height = -1;
-    int32_t header_height = -1;
-    zcl_mutex_lock(&main_state->cs_main);
-    struct block_index *tip = active_chain_at(&main_state->chain_active, hstar);
-    active_height = active_chain_height(&main_state->chain_active);
-    header_height = main_state->pindex_best_header
-        ? main_state->pindex_best_header->nHeight : active_height;
-    if (tip && tip->nHeight == hstar) {
-        memcpy(out->tip_hash, tip->hashBlock.data, 32);
-        tip_found = true;
-    }
-    zcl_mutex_unlock(&main_state->cs_main);
-    if (!tip_found) {
+    int32_t money_tip = -1;
+    uint8_t money_tip_hash[32] = { 0 };
+    bool money_tip_hash_found = false;
+    if (!reducer_frontier_derive_coins_best_now(
+            &money_tip, money_tip_hash, &money_tip_hash_found) ||
+        !money_tip_hash_found) {
         (void)snprintf(out->reason, sizeof(out->reason),
-                       "provable wallet tip is unavailable");
+                       "authoritative wallet coins tip is unavailable");
         money_root(out);
         return ZCL_OK;
     }
-    out->tip_height = hstar;
-
-    struct connman *cm = sync_monitor_connman();
-    size_t peer_count = cm ? connman_get_node_count(cm) : 0;
-    out->network_tip_height = sync_monitor_peer_height_cached();
-    if (active_height > out->network_tip_height)
-        out->network_tip_height = active_height;
-    if (header_height > out->network_tip_height)
-        out->network_tip_height = header_height;
-    enum sync_state sync_state = sync_get_state();
+    struct money_chain_view before = money_chain_view_capture(
+        main_state, money_tip, money_tip_hash);
+    if (!before.money_tip_matches_active) {
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "wallet coins tip differs from the active chain");
+        money_root(out);
+        return ZCL_OK;
+    }
+    out->tip_height = money_tip;
+    memcpy(out->tip_hash, money_tip_hash, sizeof(out->tip_hash));
+    out->network_tip_height = before.target_height;
     enum wallet_money_freshness freshness = wallet_money_freshness_classify(
-        hstar_published, hstar, out->network_tip_height, peer_count,
-        sync_state);
+        hstar_published, hstar, money_tip, out->network_tip_height,
+        before.peer_count, before.sync_state);
     if (freshness != WALLET_MONEY_FRESHNESS_CURRENT) {
         (void)snprintf(out->status, sizeof(out->status), "%s",
                        freshness == WALLET_MONEY_FRESHNESS_STALE
                            ? "STALE" : "UNKNOWN");
         if (freshness == WALLET_MONEY_FRESHNESS_STALE &&
-            out->network_tip_height > hstar)
+            out->network_tip_height > money_tip)
             (void)snprintf(out->reason, sizeof(out->reason),
-                           "provable wallet tip is %d blocks behind network tip",
-                           out->network_tip_height - hstar);
+                           "wallet coins tip is %d blocks behind network tip",
+                           out->network_tip_height - money_tip);
+        else if (freshness == WALLET_MONEY_FRESHNESS_STALE &&
+                 (money_tip < hstar || (int64_t)money_tip - hstar > 1))
+            (void)snprintf(out->reason, sizeof(out->reason),
+                           "wallet coins tip is outside the proven fold edge");
         else if (freshness == WALLET_MONEY_FRESHNESS_STALE)
             (void)snprintf(out->reason, sizeof(out->reason),
-                           "node sync state is %s", sync_state_name(sync_state));
+                           "node sync state is %s",
+                           sync_state_name(before.sync_state));
         else
             (void)snprintf(out->reason, sizeof(out->reason),
                            "network tip freshness is unavailable");
@@ -210,6 +249,44 @@ struct zcl_result wallet_money_snapshot_build(
         /* Production is deliberately unfunded/unallocated in this rollout.
          * A later owner grant may define a non-zero production policy. */
         out->agent_available_zat = 0;
+    }
+
+    /* The authoritative readers live in separate stores. Re-read both chain
+     * witnesses after the vault/intent reads and publish numbers only when the
+     * exact money tip, active/header/peer target, and freshness classification
+     * stayed unchanged for the whole observation. */
+    int32_t money_tip_after = -1;
+    uint8_t money_tip_hash_after[32] = { 0 };
+    bool money_tip_hash_after_found = false;
+    bool money_after_ok = reducer_frontier_derive_coins_best_now(
+        &money_tip_after, money_tip_hash_after,
+        &money_tip_hash_after_found);
+    struct money_chain_view after = {
+        .target_height = -1,
+        .sync_state = sync_get_state(),
+    };
+    if (money_after_ok && money_tip_hash_after_found)
+        after = money_chain_view_capture(
+            main_state, money_tip_after, money_tip_hash_after);
+    bool hstar_after_published =
+        reducer_frontier_provable_tip_is_published();
+    int32_t hstar_after = reducer_frontier_provable_tip_cached();
+    enum wallet_money_freshness freshness_after =
+        wallet_money_freshness_classify(
+            hstar_after_published, hstar_after, money_tip_after,
+            after.target_height, after.peer_count, after.sync_state);
+    if (!money_after_ok || !money_tip_hash_after_found ||
+        !after.money_tip_matches_active || money_tip_after != money_tip ||
+        memcmp(money_tip_hash_after, money_tip_hash,
+               sizeof(money_tip_hash)) != 0 ||
+        after.target_height != before.target_height ||
+        freshness_after != WALLET_MONEY_FRESHNESS_CURRENT) {
+        out->network_tip_height = after.target_height;
+        (void)snprintf(out->status, sizeof(out->status), "STALE");
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "money authorities changed during observation");
+        money_root(out);
+        return ZCL_OK;
     }
     out->complete = true;
     (void)snprintf(out->status, sizeof(out->status), "CURRENT");

@@ -316,32 +316,35 @@ static int test_money_freshness_fails_closed(void)
     int failures = 0;
     TEST("money freshness is current only at a published fully reduced tip") {
         ASSERT_EQ(wallet_money_freshness_classify(
-                      true, 100, 100, 1, SYNC_AT_TIP),
+                      true, 100, 100, 100, 1, SYNC_AT_TIP),
                   WALLET_MONEY_FRESHNESS_CURRENT);
         /* A seeded node may permanently remain in blocks_download because the
          * global AT_TIP verdict also requires historical body completeness.
          * Current wallet custody instead depends on H* matching the maximum
          * active/header/peer target supplied by the snapshot builder. */
         ASSERT_EQ(wallet_money_freshness_classify(
-                      true, 100, 100, 1, SYNC_BLOCKS_DOWNLOAD),
+                      true, 99, 100, 100, 1, SYNC_BLOCKS_DOWNLOAD),
                   WALLET_MONEY_FRESHNESS_CURRENT);
         ASSERT_EQ(wallet_money_freshness_classify(
-                      true, 100, 100, 1, SYNC_CONNECTING_BLOCKS),
+                      true, 99, 100, 100, 1, SYNC_CONNECTING_BLOCKS),
                   WALLET_MONEY_FRESHNESS_CURRENT);
         ASSERT_EQ(wallet_money_freshness_classify(
-                      true, 99, 100, 1, SYNC_BLOCKS_DOWNLOAD),
+                      true, 98, 100, 100, 1, SYNC_BLOCKS_DOWNLOAD),
                   WALLET_MONEY_FRESHNESS_STALE);
         ASSERT_EQ(wallet_money_freshness_classify(
-                      true, 100, 100, 1, SYNC_HEADERS_DOWNLOAD),
+                      true, 99, 99, 100, 1, SYNC_BLOCKS_DOWNLOAD),
                   WALLET_MONEY_FRESHNESS_STALE);
         ASSERT_EQ(wallet_money_freshness_classify(
-                      false, 100, 100, 1, SYNC_AT_TIP),
+                      true, 100, 100, 100, 1, SYNC_HEADERS_DOWNLOAD),
+                  WALLET_MONEY_FRESHNESS_STALE);
+        ASSERT_EQ(wallet_money_freshness_classify(
+                      false, 100, 100, 100, 1, SYNC_AT_TIP),
                   WALLET_MONEY_FRESHNESS_UNKNOWN);
         ASSERT_EQ(wallet_money_freshness_classify(
-                      true, 100, -1, 1, SYNC_AT_TIP),
+                      true, 100, 100, -1, 1, SYNC_AT_TIP),
                   WALLET_MONEY_FRESHNESS_UNKNOWN);
         ASSERT_EQ(wallet_money_freshness_classify(
-                      true, 100, 100, 0, SYNC_AT_TIP),
+                      true, 100, 100, 100, 0, SYNC_AT_TIP),
                   WALLET_MONEY_FRESHNESS_UNKNOWN);
         PASS();
     } _test_next:;
