@@ -2084,9 +2084,10 @@ int main(int argc, char **argv)
     struct pv_dep_archives dep_archives;
     memset(&dep_archives, 0, sizeof(dep_archives));
     if (!pv_collect_dep_archives(emit_deps, emit_dep_count, &dep_archives)) {
-        fprintf(stderr, "package-verify: dependency archive set is invalid\n");
-        pv_rm_tree(build_root);
-        free(manifest_wire);
+        fprintf(stderr, "%s: dependency archive set is invalid\n", PV_LOG);
+        pv_rm_rf(work);
+        vcs_package_recipe_free(&recipe);
+        vcs_package_manifest_free(&manifest);
         return 5;
     }
 

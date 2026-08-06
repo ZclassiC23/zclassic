@@ -601,7 +601,7 @@ struct zcl_result build_fabric_worker_execute(
     (void)snprintf(output_limit_arg, sizeof(output_limit_arg),
                    "--zbuild-fuzz-output-bytes=%llu",
                    (unsigned long long)fuzz_output_bytes);
-    const char *argv[8];
+    const char *argv[9];
     size_t argv_count = 0;
     if (!package_action) {
         argv[argv_count++] = paths.worker;
