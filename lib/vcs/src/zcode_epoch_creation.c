@@ -58,6 +58,13 @@ const char *vcs_zcode_epoch_creation_error_string(
     case VCS_ZCODE_EPOCH_CREATION_SUM: return "epoch-sum";
     case VCS_ZCODE_EPOCH_CREATION_TIME: return "anchor-time";
     case VCS_ZCODE_EPOCH_CREATION_OVERFLOW: return "checked-overflow";
+    case VCS_ZCODE_EPOCH_CREATION_CONTEXT: return "validation-context";
+    case VCS_ZCODE_EPOCH_CREATION_CAS: return "cas-object";
+    case VCS_ZCODE_EPOCH_CREATION_ATTRIBUTION: return "creation-attribution";
+    case VCS_ZCODE_EPOCH_CREATION_DUPLICATE: return "duplicate-contribution";
+    case VCS_ZCODE_EPOCH_CREATION_MINT: return "observed-mint-mismatch";
+    case VCS_ZCODE_EPOCH_CREATION_IMMATURE: return "epoch-immature";
+    case VCS_ZCODE_EPOCH_CREATION_REORG: return "epoch-anchor-reorged";
     }
     return "unknown-epoch-creation-error";
 }
