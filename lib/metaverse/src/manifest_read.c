@@ -22,49 +22,126 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define MV_LOG "metaverse.read"
 #define MV_PATH_MAX 4400
+
+struct mv_chunk_fingerprint {
+    dev_t device;
+    ino_t inode;
+    off_t size;
+    struct timespec mtime;
+    struct timespec ctime;
+    uint8_t hash[32];
+};
+
+static bool mv_timespec_equal(struct timespec left, struct timespec right)
+{
+    return left.tv_sec == right.tv_sec && left.tv_nsec == right.tv_nsec;
+}
+
+static bool mv_read_exact(int descriptor, uint8_t *out, size_t length)
+{
+    size_t offset = 0;
+
+    while (offset < length) {
+        ssize_t got = read(descriptor, out + offset, length - offset);
+        if (got < 0 && errno == EINTR)
+            continue;
+        if (got <= 0)
+            return false;
+        offset += (size_t)got;
+    }
+    return true;
+}
+
+static size_t mv_expected_chunk(const struct vcs_package_file *file,
+                                uint32_t chunk_index)
+{
+    uint64_t offset = (uint64_t)chunk_index * VCS_PACKAGE_CHUNK_BYTES;
+    uint64_t remaining = file->size - offset;
+
+    return remaining > VCS_PACKAGE_CHUNK_BYTES
+               ? VCS_PACKAGE_CHUNK_BYTES
+               : (size_t)remaining;
+}
+
+static bool mv_cas_path(const char *zcode_dir, const uint8_t hash[32],
+                        char out[MV_PATH_MAX])
+{
+    char hex[65];
+    int n;
+
+    if (!zcode_dir || !hash || !out)
+        return false;
+    zcl_hex_encode(hash, 32, hex);
+    n = snprintf(out, MV_PATH_MAX, "%s/cas/sha3/%.2s/%s", zcode_dir,
+                 hex, hex);
+    return n >= 0 && (size_t)n < MV_PATH_MAX;
+}
+
+static void mv_verification_gap(struct mv_manifest_read *manifest,
+                                const char *gap)
+{
+    if (manifest->verification_gap[0] == '\0')
+        (void)snprintf(manifest->verification_gap,
+                       sizeof(manifest->verification_gap), "%s", gap);
+}
 
 /* Read at most `cap` bytes of a file; a file larger than cap is a
  * rejection, not a truncated read. */
 static enum mv_manifest_read_status mv_read_file(
     const char *path, size_t cap, uint8_t **out, size_t *out_len)
 {
-    FILE *f;
+    int descriptor;
     uint8_t *buf;
-    size_t len;
+    struct stat before, after;
+    size_t len = 0;
     int open_errno;
 
     *out = NULL;
     *out_len = 0;
-    f = fopen(path, "rb");
-    if (!f) {
+    descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) {
         open_errno = errno;
-        return open_errno == ENOENT ? MV_MANIFEST_READ_ABSENT
-                                    : MV_MANIFEST_READ_IO_ERROR;
+        if (open_errno == ENOENT)
+            return MV_MANIFEST_READ_ABSENT;
+        return open_errno == ELOOP ? MV_MANIFEST_READ_INVALID
+                                   : MV_MANIFEST_READ_IO_ERROR;
     }
-    if (cap == SIZE_MAX) {
-        fclose(f);
+    if (cap == SIZE_MAX || fstat(descriptor, &before) != 0) {
+        (void)close(descriptor);
+        return MV_MANIFEST_READ_IO_ERROR;
+    }
+    if (!S_ISREG(before.st_mode) || before.st_size <= 0 ||
+        (uint64_t)before.st_size > (uint64_t)cap) {
+        (void)close(descriptor);
         return MV_MANIFEST_READ_INVALID;
     }
-    buf = zcl_malloc(cap + 1u, "mv_read_file");
+    len = (size_t)before.st_size;
+    buf = zcl_malloc(len, "mv_read_file");
     if (!buf) {
-        fclose(f);
+        (void)close(descriptor);
         LOG_RETURN(MV_MANIFEST_READ_IO_ERROR, MV_LOG,
-                   "read buffer of %zu bytes for %s", cap + 1u, path);
+                   "read buffer of %zu bytes for %s", len, path);
     }
-    len = fread(buf, 1, cap + 1u, f);
-    if (ferror(f)) {
-        fclose(f);
+    if (!mv_read_exact(descriptor, buf, len) ||
+        fstat(descriptor, &after) != 0) {
+        (void)close(descriptor);
         free(buf);
         return MV_MANIFEST_READ_IO_ERROR;
     }
-    fclose(f);
-    if (len == 0 || len > cap) {
+    (void)close(descriptor);
+    if (before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
+        before.st_size != after.st_size ||
+        !mv_timespec_equal(before.st_mtim, after.st_mtim) ||
+        !mv_timespec_equal(before.st_ctim, after.st_ctim)) {
         free(buf);
         return MV_MANIFEST_READ_INVALID;
     }
@@ -143,6 +220,9 @@ enum mv_manifest_read_status mv_manifest_read(
         return MV_MANIFEST_READ_INVALID;
     }
     out->root_matches_name = memcmp(out->root, name_root, 32) == 0;
+    out->manifest_root_verified = out->root_matches_name;
+    if (!out->root_matches_name)
+        mv_verification_gap(out, "manifest_root_mismatch");
 
     out->file_count = (uint32_t)out->manifest.count;
     for (size_t i = 0; i < out->manifest.count; i++) {
@@ -150,14 +230,218 @@ enum mv_manifest_read_status mv_manifest_read(
 
         out->total_bytes += f->size;
         out->chunk_total += f->chunk_count;
-        for (uint32_t c = 0; c < f->chunk_count; c++) {
-            if (vcs_package_cas_present_in(zcode_dir,
-                                           f->chunk_hashes + (size_t)c * 32u))
-                out->chunks_present++;
-        }
     }
     return MV_MANIFEST_READ_OK;
 }
+
+static void mv_manifest_verify_possession_impl(
+    const char *zcode_dir, struct mv_manifest_read *manifest,
+    uint64_t byte_budget, uint32_t operation_budget,
+#ifdef ZCL_TESTING
+    mv_manifest_verify_test_hook hook, void *hook_context,
+#endif
+    uint64_t *bytes_used, uint32_t *operations_used)
+{
+    struct mv_chunk_fingerprint *fingerprints = NULL;
+    uint32_t coordinate = 0;
+    uint64_t used_bytes = 0;
+    uint32_t used_operations = 0;
+
+    if (bytes_used)
+        *bytes_used = 0;
+    if (operations_used)
+        *operations_used = 0;
+    if (!manifest)
+        return;
+    manifest->chunks_present = 0;
+    manifest->chunks_verified = 0;
+    manifest->bytes_verified = 0;
+    manifest->verification_complete = false;
+    if (!manifest->manifest_root_verified) {
+        mv_verification_gap(manifest, "manifest_root_mismatch");
+        return;
+    }
+    manifest->verification_gap[0] = '\0';
+    if (!zcode_dir) {
+        mv_verification_gap(manifest, "store_unavailable");
+        return;
+    }
+    if (manifest->chunk_total == 0) {
+        manifest->verification_complete = true;
+        return;
+    }
+    fingerprints = zcl_calloc(manifest->chunk_total,
+                              sizeof(*fingerprints),
+                              "mv_chunk_fingerprints");
+    if (!fingerprints) {
+        mv_verification_gap(manifest, "allocation_failed");
+        return;
+    }
+
+    for (size_t i = 0; i < manifest->manifest.count; i++) {
+        const struct vcs_package_file *file = &manifest->manifest.files[i];
+
+        for (uint32_t c = 0; c < file->chunk_count; c++, coordinate++) {
+            const uint8_t *hash = file->chunk_hashes + (size_t)c * 32u;
+            size_t expected = mv_expected_chunk(file, c);
+            char path[MV_PATH_MAX];
+            struct stat before, after;
+            uint8_t *bytes = NULL;
+            int descriptor;
+            int open_error;
+
+            if (used_operations >= operation_budget) {
+                mv_verification_gap(manifest, "operation_budget_exhausted");
+                goto done;
+            }
+            if ((uint64_t)expected > byte_budget - used_bytes) {
+                mv_verification_gap(manifest, "byte_budget_exhausted");
+                goto done;
+            }
+            used_operations++;
+            if (!mv_cas_path(zcode_dir, hash, path)) {
+                mv_verification_gap(manifest, "cas_path_invalid");
+                goto done;
+            }
+            descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+            if (descriptor < 0) {
+                open_error = errno;
+                if (open_error == ELOOP)
+                    mv_verification_gap(manifest, "chunk_symlink");
+                else if (open_error == ENOENT)
+                    mv_verification_gap(manifest, "chunk_missing");
+                else
+                    mv_verification_gap(manifest, "chunk_unreadable");
+                goto done;
+            }
+            if (fstat(descriptor, &before) != 0) {
+                (void)close(descriptor);
+                mv_verification_gap(manifest, "chunk_stat_failed");
+                goto done;
+            }
+            if (!S_ISREG(before.st_mode)) {
+                (void)close(descriptor);
+                mv_verification_gap(manifest, "chunk_not_regular");
+                goto done;
+            }
+            if (before.st_size < 0 ||
+                (uint64_t)before.st_size != (uint64_t)expected) {
+                (void)close(descriptor);
+                mv_verification_gap(manifest, "chunk_length_mismatch");
+                goto done;
+            }
+            manifest->chunks_present++;
+            bytes = zcl_malloc(expected, "mv_verify_chunk");
+            if (!bytes) {
+                (void)close(descriptor);
+                mv_verification_gap(manifest, "allocation_failed");
+                goto done;
+            }
+            if (!mv_read_exact(descriptor, bytes, expected)) {
+                free(bytes);
+                (void)close(descriptor);
+                used_bytes += expected;
+                mv_verification_gap(manifest, "chunk_read_failed");
+                goto done;
+            }
+            used_bytes += expected;
+            if (fstat(descriptor, &after) != 0 ||
+                before.st_dev != after.st_dev ||
+                before.st_ino != after.st_ino ||
+                before.st_size != after.st_size ||
+                !mv_timespec_equal(before.st_mtim, after.st_mtim) ||
+                !mv_timespec_equal(before.st_ctim, after.st_ctim)) {
+                free(bytes);
+                (void)close(descriptor);
+                mv_verification_gap(manifest,
+                                    "chunk_mutated_during_verification");
+                goto done;
+            }
+            (void)close(descriptor);
+            if (!vcs_package_verify_chunk(file, c, bytes, expected)) {
+                free(bytes);
+                mv_verification_gap(manifest, "chunk_hash_mismatch");
+                goto done;
+            }
+            free(bytes);
+            fingerprints[coordinate].device = after.st_dev;
+            fingerprints[coordinate].inode = after.st_ino;
+            fingerprints[coordinate].size = after.st_size;
+            fingerprints[coordinate].mtime = after.st_mtim;
+            fingerprints[coordinate].ctime = after.st_ctim;
+            memcpy(fingerprints[coordinate].hash, hash, 32);
+            manifest->chunks_verified++;
+            manifest->bytes_verified += expected;
+#ifdef ZCL_TESTING
+            if (hook)
+                hook(hook_context, manifest->chunks_verified);
+#endif
+        }
+    }
+
+    /* Re-check every coordinate after the final hash. This closes the useful
+     * race window: replacing an early chunk while later chunks are being
+     * hashed cannot yield a completed possession claim. */
+    for (coordinate = 0; coordinate < manifest->chunk_total; coordinate++) {
+        char path[MV_PATH_MAX];
+        struct stat status;
+        const struct mv_chunk_fingerprint *fingerprint =
+            &fingerprints[coordinate];
+
+        if (used_operations >= operation_budget) {
+            mv_verification_gap(manifest, "operation_budget_exhausted");
+            goto done;
+        }
+        used_operations++;
+        if (!mv_cas_path(zcode_dir, fingerprint->hash, path) ||
+            lstat(path, &status) != 0 || !S_ISREG(status.st_mode) ||
+            status.st_dev != fingerprint->device ||
+            status.st_ino != fingerprint->inode ||
+            status.st_size != fingerprint->size ||
+            !mv_timespec_equal(status.st_mtim, fingerprint->mtime) ||
+            !mv_timespec_equal(status.st_ctim, fingerprint->ctime)) {
+            mv_verification_gap(manifest,
+                                "chunk_mutated_during_verification");
+            goto done;
+        }
+    }
+    manifest->verification_complete = true;
+
+done:
+    free(fingerprints);
+    if (bytes_used)
+        *bytes_used = used_bytes;
+    if (operations_used)
+        *operations_used = used_operations;
+}
+
+void mv_manifest_verify_possession(const char *zcode_dir,
+                                   struct mv_manifest_read *manifest,
+                                   uint64_t byte_budget,
+                                   uint32_t operation_budget,
+                                   uint64_t *bytes_used,
+                                   uint32_t *operations_used)
+{
+    mv_manifest_verify_possession_impl(
+        zcode_dir, manifest, byte_budget, operation_budget,
+#ifdef ZCL_TESTING
+        NULL, NULL,
+#endif
+        bytes_used, operations_used);
+}
+
+#ifdef ZCL_TESTING
+void mv_manifest_verify_possession_test(
+    const char *zcode_dir, struct mv_manifest_read *manifest,
+    uint64_t byte_budget, uint32_t operation_budget,
+    mv_manifest_verify_test_hook hook, void *hook_context,
+    uint64_t *bytes_used, uint32_t *operations_used)
+{
+    mv_manifest_verify_possession_impl(
+        zcode_dir, manifest, byte_budget, operation_budget, hook,
+        hook_context, bytes_used, operations_used);
+}
+#endif
 
 bool mv_store_enumerable(const char *zcode_dir, char *reason, size_t cap)
 {

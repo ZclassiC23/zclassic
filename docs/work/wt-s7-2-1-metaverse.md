@@ -7,7 +7,7 @@
 **Branch:** `lane/s7-2-1-metaverse`
 
 **Base:** current `origin/main` at
-`71f46e141309b7b28ffb08f8b6f1987fdea58621`; the lane was rebased
+`cee968209`; the lane was rebased
 conflict-free from the frozen candidate source base and again after `main`
 advanced during its first green push gate.
 
@@ -130,3 +130,33 @@ latest owner direction separately authorizes synchronization and push to main.
   `test_zcode_dev_objects`, `test_build_fabric`, and the changed
   `test_metaverse_catalog` group all pass with zero failures and zero cache
   hits.
+
+### Slice 2 — cryptographically true property possession
+
+- Born-red audit: property actions and `PRESENT` were derived from
+  `vcs_package_cas_present_in()`, a stat-only pathname/size probe. A regular
+  file containing wrong bytes could therefore authorize HOST, SELL and
+  DELIVER without one byte being hashed in the read that made the claim.
+- The property read now re-derives the manifest root, opens the manifest and
+  every CAS coordinate with `O_NOFOLLOW`, requires a regular file at the exact
+  committed length, SHA3-verifies every coordinate, and performs a final
+  device/inode/size/mtime/ctime pass to catch mutation during the proof.
+  SHOW is capped at one store-admissible package. LIST shares a 64 MiB byte
+  budget and a 4096-operation budget across its page; budget exhaustion is an
+  explicit incomplete verification gap, never a possession claim.
+- Every property view exposes `manifest_root_verified`, `chunks_present`,
+  `chunks_verified`, `bytes_verified`, `verification_complete`, and the exact
+  `verification_gap`. `PRESENT` and availability actions require complete
+  verification. Absence earns only `local_store_read`; a verified manifest
+  with incomplete bytes earns `local_manifest_hash`; only full-byte possession
+  earns `local_content_hash`.
+- Focused adversarial coverage now asserts wrong hashes, zero/wrong length,
+  symlinks, non-regular coordinates, missing chunks, strict budget exhaustion,
+  and deterministic mutation between the hash and final fingerprint pass.
+- Fold-safe receipts: all changed production and test translation units pass
+  warning-as-error syntax checks; the complete read-only Metaverse island
+  compiled and linked as an unpublishable candidate at
+  `f77aad628ed579255162a2c71bee469eda7db893f7c79e320fd2ce60dd4e0708`;
+  `make lint-fast` passes all 17 selected gates; `git diff --check` passes.
+  The focused test executable and heavier gates remain guard-deferred because
+  the header change would force a whole-program rebuild during the live fold.

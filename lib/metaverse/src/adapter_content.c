@@ -9,8 +9,10 @@
  * signature, no chain anchor. blob_store.h calls this the authentication
  * split and preserves it deliberately. This adapter preserves it too:
  *
- *   evidence grade  local_content_hash — this node re-derived the root
- *                   from the manifest wire it holds. Byte identity only.
+ *   evidence grade  local_content_hash — this node re-derived the manifest
+ *                   root and byte-verified every committed chunk in this
+ *                   call. Byte identity only. A missing/corrupt/budgeted
+ *                   chunk earns only local_manifest_hash.
  *   owner principal "" with owner_principal_kind = "none", because the
  *                   authority records none. That is a FACT about content,
  *                   not a failed lookup, and it is why TRANSFER and
@@ -37,7 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* One CAS-present blob supports these. Availability, not authority.
+/* One fully byte-verified blob supports these. Availability, not authority.
  * Inspection is absent because it is no longer an action: reading is a
  * QUERY (metaverse/property_action.h), always available to a principal the
  * grant lets look, and never gated on the object's state. */
@@ -60,7 +62,7 @@ static const char k_content_provenance[] =
 static void content_fill(struct metaverse_property_view *out,
                          const struct mv_manifest_read *m)
 {
-    bool complete = m->chunks_present == m->chunk_total;
+    bool complete = m->verification_complete;
 
     out->has_content_root = true;
     memcpy(out->content_root, m->manifest.files[0].chunk_hashes, 32);
@@ -73,19 +75,31 @@ static void content_fill(struct metaverse_property_view *out,
     out->file_count           = m->file_count;
     out->chunk_total          = m->chunk_total;
     out->chunks_present       = m->chunks_present;
+    out->manifest_root_verified = m->manifest_root_verified;
+    out->chunks_verified      = m->chunks_verified;
+    out->bytes_verified       = m->bytes_verified;
+    out->verification_complete = m->verification_complete;
+    snprintf(out->verification_gap, sizeof(out->verification_gap), "%s",
+             m->verification_gap);
     out->status = complete ? METAVERSE_STATUS_PRESENT
                            : METAVERSE_STATUS_INCOMPLETE;
     out->actions = complete ? MV_CONTENT_ACTIONS_PRESENT
                             : MV_CONTENT_ACTIONS_INCOMPLETE;
     snprintf(out->provenance, sizeof(out->provenance), "%s",
              k_content_provenance);
-    (void)metaverse_view_determined(out,
-                                    METAVERSE_EVIDENCE_LOCAL_CONTENT_HASH,
-                                    "vcs_package_manifest_root");
+    (void)metaverse_view_determined(
+        out, complete ? METAVERSE_EVIDENCE_LOCAL_CONTENT_HASH
+                      : METAVERSE_EVIDENCE_LOCAL_MANIFEST_HASH,
+        complete ? "mv_manifest_verify_possession"
+                 : "vcs_package_manifest_root");
     if (!complete)
         snprintf(out->reason, sizeof(out->reason),
-                 "%u of %u chunk(s) present in the CAS", m->chunks_present,
-                 m->chunk_total);
+                 "possession not proven: %s (%u/%u chunks and %llu/%llu "
+                 "bytes verified)",
+                 m->verification_gap[0] ? m->verification_gap : "incomplete",
+                 m->chunks_verified, m->chunk_total,
+                 (unsigned long long)m->bytes_verified,
+                 (unsigned long long)m->total_bytes);
 }
 
 static bool content_show(const struct metaverse_adapter_ctx *ctx,
@@ -114,7 +128,7 @@ static bool content_show(const struct metaverse_adapter_ctx *ctx,
         snprintf(out->reason, sizeof(out->reason),
                  "no manifest at this root in the local content store");
         (void)metaverse_view_determined(
-            out, METAVERSE_EVIDENCE_LOCAL_CONTENT_HASH, "mv_manifest_read");
+            out, METAVERSE_EVIDENCE_LOCAL_STORE_READ, "mv_manifest_read");
         return true;
     }
     if (read_status != MV_MANIFEST_READ_OK) {
@@ -141,6 +155,9 @@ static bool content_show(const struct metaverse_adapter_ctx *ctx,
         mv_manifest_free(&m);
         return true;
     }
+    mv_manifest_verify_possession(ctx->zcode_dir, &m,
+                                  MV_PROPERTY_VERIFY_BYTES,
+                                  MV_PROPERTY_SHOW_VERIFY_OPS, NULL, NULL);
     content_fill(out, &m);
     mv_manifest_free(&m);
     return true;
@@ -157,6 +174,8 @@ static size_t content_list(const struct metaverse_adapter_ctx *ctx,
     size_t written = 0;
     size_t matched = 0;
     bool scan_truncated = false;
+    uint64_t verify_bytes_left = MV_PROPERTY_VERIFY_BYTES;
+    uint32_t verify_operations_left = MV_PROPERTY_LIST_VERIFY_OPS;
 
     if (report)
         memset(report, 0, sizeof(*report));
@@ -219,6 +238,14 @@ static size_t content_list(const struct metaverse_adapter_ctx *ctx,
         }
         if (metaverse_property_id_make(METAVERSE_KIND_CONTENT, m.root, &id) &&
             metaverse_view_begin(&out[written], &id)) {
+            uint64_t bytes_used = 0;
+            uint32_t operations_used = 0;
+
+            mv_manifest_verify_possession(
+                ctx->zcode_dir, &m, verify_bytes_left,
+                verify_operations_left, &bytes_used, &operations_used);
+            verify_bytes_left -= bytes_used;
+            verify_operations_left -= operations_used;
             content_fill(&out[written], &m);
             written++;
         } else {

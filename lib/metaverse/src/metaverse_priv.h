@@ -12,6 +12,7 @@
 #define ZCL_METAVERSE_PRIV_H
 
 #include "vcs/package_manifest.h"
+#include "vcs/package_store.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -23,6 +24,14 @@
  * caller cannot see. Truncation is always reported, never silent. */
 #define MV_MANIFEST_SCAN_MAX 512u
 
+/* A single SHOW may verify one store-admissible package.  LIST shares the
+ * same byte budget across its whole page and also caps filesystem operations,
+ * so a directory containing thousands of tiny chunks cannot turn a read
+ * command into an unbounded scrub. */
+#define MV_PROPERTY_VERIFY_BYTES VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES
+#define MV_PROPERTY_SHOW_VERIFY_OPS (2u * VCS_PACKAGE_MAX_TOTAL_CHUNKS)
+#define MV_PROPERTY_LIST_VERIFY_OPS 4096u
+
 /* One manifest read back from the store, with the facts a view needs. */
 struct mv_manifest_read {
     uint8_t root[32];          /* root RE-DERIVED from the parsed wire */
@@ -30,6 +39,11 @@ struct mv_manifest_read {
     struct vcs_package_manifest manifest; /* owned; mv_manifest_free() it */
     uint32_t chunk_total;      /* chunks committed by the manifest */
     uint32_t chunks_present;   /* of those, present in the CAS */
+    bool manifest_root_verified;
+    uint32_t chunks_verified;
+    uint64_t bytes_verified;
+    bool verification_complete;
+    char verification_gap[96];
     uint64_t total_bytes;
     uint32_t file_count;
 };
@@ -49,12 +63,34 @@ enum mv_manifest_read_status {
  * as absence. On OK the caller MUST call mv_manifest_free(out); on every
  * other result *out is zeroed and needs no free.
  *
- * CAS presence is counted per unique chunk hash of the manifest via
- * vcs_package_cas_present_in() — presence only, no re-hash. */
+ * This only reads the manifest. Call mv_manifest_verify_possession() before
+ * projecting possession or availability. */
 enum mv_manifest_read_status mv_manifest_read(
     const char *zcode_dir, const char *root_hex, struct mv_manifest_read *out);
 const char *mv_manifest_read_status_name(enum mv_manifest_read_status status);
 void mv_manifest_free(struct mv_manifest_read *m);
+
+/* Read-only, bounded proof over the manifest's committed CAS coordinates.
+ * Every chunk is opened O_NOFOLLOW, required to be a regular file of the
+ * exact coordinate length, SHA3-verified, then fingerprinted and re-statted
+ * after the last hash to detect replacement/mutation during the proof.
+ * Budgets are consumed across calls by the caller; this function never
+ * creates or repairs store state. */
+void mv_manifest_verify_possession(const char *zcode_dir,
+                                   struct mv_manifest_read *manifest,
+                                   uint64_t byte_budget,
+                                   uint32_t operation_budget,
+                                   uint64_t *bytes_used,
+                                   uint32_t *operations_used);
+#ifdef ZCL_TESTING
+typedef void (*mv_manifest_verify_test_hook)(void *context,
+                                             uint32_t chunks_verified);
+void mv_manifest_verify_possession_test(
+    const char *zcode_dir, struct mv_manifest_read *manifest,
+    uint64_t byte_budget, uint32_t operation_budget,
+    mv_manifest_verify_test_hook hook, void *hook_context,
+    uint64_t *bytes_used, uint32_t *operations_used);
+#endif
 
 /* True when the manifest has the frozen blob shape: exactly one file at
  * VCS_BLOB_PATH, one chunk, regular-file mode, size within the blob cap. */
