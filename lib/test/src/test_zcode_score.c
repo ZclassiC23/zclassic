@@ -269,12 +269,13 @@ static int t_paths(void)
     /* A marker past the 5-line head window does NOT exclude (the named,
      * documented bound; under-excluding is the unsafe direction so the
      * window is deliberately small). */
+    static const uint8_t marker_after_head[] =
+        "// a\n// b\n// c\n// d\n// e\n"
+        "// generated noise\nint x;\n";
     ZS_CHECK("path: marker past the head window does not exclude",
              vcs_score_scan_file(
-                 "src/real.c",
-                 (const uint8_t *)"// a\n// b\n// c\n// d\n// e\n"
-                                  "// generated noise\nint x;\n",
-                 55, &scan) &&
+                 "src/real.c", marker_after_head,
+                 sizeof(marker_after_head) - 1u, &scan) &&
              scan.kind == VCS_SCORE_FILE_SOURCE);
     vcs_score_file_scan_free(&scan);
     return failures;
