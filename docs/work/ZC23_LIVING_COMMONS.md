@@ -320,6 +320,8 @@ authorization.
 | DONE | LC1 independent CAS cross-object verifier | `f0d1af5a1` | `f9a5c61cb` | focused attribution/Score verticals, full lint 134/134, pre-push source-wide suite |
 | DONE | LC2 ordered epoch creation-set wire and cap/no-tail arithmetic | `4cfaf6ebf` | `c41a51de1` | born-red unresolved-symbol gate, root KAT, full lint 134/134, pre-push source-wide suite |
 | DONE | LC2 CAS attribution summation and observed-MINT equality gate | `4381781b8` | `36f6f3ae5` | one-atom under/over rejection, focused attribution/Score verticals, full lint 134/134 before integration, combined-tree lint-fast, pre-push source-wide suite |
+| DONE | LC3 read-only canonical-CAS projection | `a3424aba6` | `a3424aba6` | absent-workspace non-creation, populated byte-identical rebuild, exact parsed totals, full lint 134/134, pre-push source-wide suite |
+| DONE | LC3 `zcode commons` read views | `84a54696a` | `84a54696a` | born-red unresolved handlers; status/epoch/creation/lineage/verify/rebuild green; command-key and generated-reference gates; full lint 134/134; pre-push source-wide suite |
 
 The `36f6f3ae5` push integrated concurrent `main` commit `00a0c54c8` through
 lane merge `4c8e7abe2`; no concurrent file was overwritten. Two complete
@@ -331,7 +333,9 @@ passed gates.
 
 LC1 parser fuzzing and the sanitizer/reproducibility matrix remain TODO. LC2's
 canonical set and equality verifier are present; deterministic simulated ZSLP
-MINT-plan binding remains TODO. LC3 projection/commands, LC4 patronage
-simulation, and LC5 continuity views remain TODO. No live token, GENESIS,
-MINT, SEND, wallet, canonical datadir, production port, deployment, service,
-or consensus path was touched by these slices.
+MINT-plan binding remains TODO. LC3 intentionally reports `partial` or
+`unknown` rather than policy-valid supply until immutable-policy and
+active-chain anchor context is wired. LC4 patronage simulation and LC5 unique
+continuity-event validation remain TODO. No live token, GENESIS, MINT, SEND,
+wallet, canonical datadir, production port, deployment, service, or consensus
+path was touched by these slices.
