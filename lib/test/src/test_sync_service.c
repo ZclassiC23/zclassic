@@ -104,6 +104,30 @@ static int test_sync_service_begins_when_peer_one_block_ahead(void)
     return failures;
 }
 
+static int test_sync_service_probes_equal_peer_after_restart(void)
+{
+    int failures = 0;
+
+    TEST("sync_service probes an equal-height outbound peer after restart") {
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+        node.id = 14;
+        node.state = PEER_ACTIVE;
+        node.inbound = false;
+        node.starting_height = 1000;
+
+        sync_set_state(SYNC_IDLE, "equal-peer restart reset");
+        ASSERT(sync_set_state(SYNC_FINDING_PEERS,
+                              "equal-peer restart P2P started"));
+        ASSERT(syncsvc_begin_peer_sync(&node, 1000, 1000));
+        ASSERT(node.state == PEER_SYNCING_HEADERS);
+        ASSERT(sync_get_state() == SYNC_HEADERS_DOWNLOAD);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_sync_service_marks_caught_up_syncing_peers_active(void)
 {
     int failures = 0;
@@ -790,6 +814,21 @@ static int test_sync_service_plans_header_processing(void)
         ASSERT(!plan.should_activate_chain);
         ASSERT(plan.download.needed_blocks.count == 1);
         ASSERT(uint256_eq(&hashes[0], &h2));
+
+        /* A parsed empty answer to the warm-start equal-height probe closes
+         * the header phase without inventing either a block or an at-tip
+         * verdict.  The live node may remain BLOCKS_DOWNLOAD while its body
+         * history is intentionally incomplete. */
+        syncsvc_plan_header_processing(&plan, 0, 0, NULL,
+                                       SYNC_HEADERS_DOWNLOAD,
+                                       NULL, &tip, 1,
+                                       hashes, heights, 2);
+        ASSERT(!plan.batch.should_emit_received);
+        ASSERT(!plan.download.has_candidate);
+        ASSERT(plan.should_set_sync_state);
+        ASSERT(plan.next_sync_state == SYNC_BLOCKS_DOWNLOAD);
+        ASSERT(!plan.should_queue_needed_blocks);
+        ASSERT(plan.queue_count == 0);
         PASS();
     } _test_next:;
 
@@ -2031,6 +2070,7 @@ int test_sync_service(void)
     failures += test_sync_service_rejects_inbound_sync();
     failures += test_sync_service_keeps_caught_up_peers_active();
     failures += test_sync_service_begins_when_peer_one_block_ahead();
+    failures += test_sync_service_probes_equal_peer_after_restart();
     failures += test_sync_service_marks_caught_up_syncing_peers_active();
     failures += test_sync_service_request_policy();
     failures += test_sync_service_band_hole_forces_ibd_interval();

@@ -1432,10 +1432,17 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 msg_processor_repair_post_activation_anchor(mp);
             }
         }
+        /* Header processing owns the HEADERS_DOWNLOAD -> BLOCKS_DOWNLOAD
+         * phase edge even when there is no body to enqueue.  The empty-batch
+         * case is the positive reply to an equal-height warm-start probe; the
+         * all-data case activates from disk.  Keeping this inside the queue
+         * branch stranded both cases in HEADERS_DOWNLOAD forever. */
+        if (header_plan.should_set_sync_state)
+            sync_set_state(header_plan.next_sync_state,
+                           header_plan.should_queue_needed_blocks
+                               ? "headers ahead, requesting blocks"
+                               : "header probe complete");
         if (header_plan.should_queue_needed_blocks) {
-            if (header_plan.should_set_sync_state)
-                sync_set_state(header_plan.next_sync_state,
-                               "headers ahead, requesting blocks");
             if (!header_plan.download.needed_blocks.chains_from_tip)
                 printf("headers: skip block queue — chain doesn't reach "
                        "tip h=%d\n", our_height);

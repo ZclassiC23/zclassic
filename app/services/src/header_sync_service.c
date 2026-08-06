@@ -21,12 +21,8 @@
 static int g_getheaders_log_count = 0;
 static bool g_block_file_scan_triggered = false;
 
-/* Aggregated stale-peer reporting for syncsvc_getheaders_interval. The
- * interval is recomputed per peer per planning tick, so the old per-peer
- * "interval=... for peer N" line re-printed for every backed-off peer and
- * dominated node.log volume. Instead we fold every backoff interval above
- * 60s into a window and emit ONE summary line per ~60s. State is atomic so
- * the hot path stays lock-free across the (possibly concurrent) callers. */
+/* Fold stale-peer backoffs into one 60s summary; atomic state keeps the
+ * concurrent hot path lock-free. */
 static _Atomic int64_t g_stale_window_start_unix = 0;
 static _Atomic int     g_stale_window_count = 0;
 static _Atomic int64_t g_stale_window_min = 0;
@@ -46,7 +42,10 @@ bool syncsvc_should_begin_peer_sync(const struct p2p_node *node,
     if (node->inbound || node->state != PEER_ACTIVE)
         return false;
 
-    if (node->starting_height > our_height)
+    /* An equal-height warm restart still needs one outbound getheaders probe
+     * to leave FINDING_PEERS; the reply grants no at-tip claim. */
+    if (node->starting_height > our_height ||
+        sync_state == SYNC_FINDING_PEERS)
         return true;
     if (best_header_height > our_height + 1)
         return true;
@@ -223,7 +222,8 @@ void syncsvc_plan_header_processing(struct sync_header_processing_plan *plan,
     syncsvc_plan_header_download(&plan->download, sync_state, candidate, tip,
                                  our_height, hashes, heights, max_collect);
     plan->should_set_sync_state =
-        plan->download.should_begin_blocks_download;
+        plan->download.should_begin_blocks_download ||
+        (sync_state == SYNC_HEADERS_DOWNLOAD && total_count == 0);
     if (plan->should_set_sync_state)
         plan->next_sync_state = SYNC_BLOCKS_DOWNLOAD;
     plan->should_queue_needed_blocks =

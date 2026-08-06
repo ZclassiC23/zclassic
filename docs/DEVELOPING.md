@@ -170,6 +170,15 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   Raw balance reads are labeled `OBSERVED`, never promoted to identity-bound
   `CURRENT`; endpoints and datadir paths are absent from its output. Its
   hermetic contract check is `make custody-status-selftest`.
+- `make custody-bind` — owner-only, value-free setup for the private dev/prod
+  custody binding. It discovers both persistent wallet identities through the
+  typed local custody reader, rejects copied-wallet duplicates and network
+  mismatches, writes endpoint-bearing state outside Git at mode 0600, then
+  proves both identity-bound snapshots are `CURRENT`. No identifier, endpoint,
+  address or path is printed, and it never reserves, signs, broadcasts or
+  moves funds. Override the private location with
+  `ARGS='--broker-dir=/absolute/private/path'`; validate the workflow with
+  `make custody-bind-selftest`.
 - `make transaction-lab-proof` — run the exact isolated transaction evidence
   matrix with real signatures, Sapling proofs, consensus verification, HTLC
   interpretation, and overlay builders. `make transaction-lab-status` prints
