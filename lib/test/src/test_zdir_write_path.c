@@ -10,20 +10,15 @@
  *   app/controllers/src/zdir_controller.c — the zdir_* RPCs
  *   app/services/.../zslp_command_build_owner_base_tx — the ownership proof
  *
- * NO NODE, NO BROADCAST. node_rpc_call is stubbed to return NULL for the
- * whole file, so every native write command deterministically takes its
- * OFFLINE branch: it emits op_return_hex and stops. The RPC controller is
- * driven with NO wallet, which is its "ready" branch. The isolated fixture
- * wraps those bytes in RAM-only transactions; nothing broadcasts or touches
- * the network.
+ * NO NODE, NO BROADCAST. node_rpc_call returns sanitized durable-intent
+ * receipts. The legacy RPC controller is separately driven with no wallet,
+ * and the isolated fixture wraps production codec bytes in RAM-only
+ * transactions; nothing broadcasts or touches the network.
  *
- * The un-fakeable case is (1) THE FULL LOOP: the op_return_hex the native
- * command hands the operator is decoded, spent from the owner's coin, admitted
- * through connect_block(), and folded by the SAME indexer a node runs on live
- * block data. So consensus admission, ownership, the builder, the parser and
- * the projection must agree byte for byte, and a register followed by a
- * deregister must land the exact projection state a real chain would. Nothing
- * about that loop can be satisfied by a stub.
+ * The un-fakeable case is (1) THE FULL LOOP: native writes prove scoped
+ * plan/commit handling, then production codec bytes are spent from the
+ * owner's coin, admitted through connect_block(), and folded by the SAME
+ * indexer a node runs on live block data.
  *
  * Case (2) pins the ownership proof itself: the base tx for a mutation
  * spends EXACTLY the recorded owner's coin, never some other coin the same
@@ -76,13 +71,30 @@
 
 /* ── fixture ──────────────────────────────────────────────────────── */
 
-/* No live node for the whole file: node_rpc_call answers NULL, so every
- * write command falls through to its offline op_return_hex branch. */
+static int g_zwp_plan_calls;
+
+/* No live node for the whole file: this seam returns a public-safe plan and
+ * never exposes hostnames, keys, owner addresses, or raw transaction bytes. */
 static char *zwp_rpc_hook(const char *method, const char *params_json)
 {
-    (void)method;
     (void)params_json;
-    return NULL;
+    if (!method || strcmp(method, "zdir_intent") != 0)
+        return NULL;
+    g_zwp_plan_calls++;
+    return strdup(
+        "{\"schema\":\"zcl.core_zdir_register.v2\","
+        "\"wallet_scope\":\"dev\",\"operation\":\"register\","
+        "\"plan_id\":\"11111111111111111111111111111111"
+        "11111111111111111111111111111111\","
+        "\"plan_digest\":\"22222222222222222222222222222222"
+        "22222222222222222222222222222222\","
+        "\"snapshot_root\":\"33333333333333333333333333333333"
+        "33333333333333333333333333333333\","
+        "\"snapshot_status\":\"CURRENT\",\"status\":\"planned\","
+        "\"state\":\"planned\",\"actual_fee_zat\":500,"
+        "\"maximum_fee_zat\":1000,\"reserved_zat\":1000,"
+        "\"hostname\":\"fixture-host\",\"pubkey\":\"fixture-key\","
+        "\"owner_address\":\"fixture-owner\",\"raw_tx\":\"fixture-raw\"}");
 }
 
 /* A v3 onion hostname: 56 base32 characters + ".onion". */
@@ -188,7 +200,16 @@ static void zwp_call(void (*fn)(const struct zcl_command_request *,
                      struct json_value *input,
                      struct zcl_command_reply *reply, const char *schema)
 {
-    struct zcl_command_request request = { .input = input };
+    static const struct zcl_command_spec register_spec = {
+        .path = "core.zdir.register"
+    };
+    static const struct zcl_command_spec deregister_spec = {
+        .path = "core.zdir.deregister"
+    };
+    const struct zcl_command_spec *spec =
+        fn == zcl_native_handle_core_zdir_register ? &register_spec :
+        fn == zcl_native_handle_core_zdir_deregister ? &deregister_spec : NULL;
+    struct zcl_command_request request = { .spec = spec, .input = input };
     zcl_command_reply_init(reply, schema);
     fn(&request, reply);
 }
@@ -208,20 +229,10 @@ static const char *zwp_str(const struct zcl_command_reply *reply,
     return s ? s : "";
 }
 
-/* Decode reply.data.op_return_hex into `script`. Returns its length, or 0.
- * This is the byte bridge between the write path and the fold: whatever the
- * operator is handed is exactly what gets projected. */
-static size_t zwp_script_from_reply(const struct zcl_command_reply *reply,
-                                    uint8_t script[ZDIR_SCRIPT_MAX])
+static void zwp_add_plan_fields(struct json_value *input, const char *idem)
 {
-    const char *hex = json_get_str(json_get(&reply->data, "op_return_hex"));
-    if (!hex || !hex[0])
-        return 0;
-    size_t len = strlen(hex);
-    if ((len & 1u) != 0 || len > ZDIR_SCRIPT_MAX * 2 || !IsHex(hex))
-        return 0;
-    int n = ParseHex(hex, script, ZDIR_SCRIPT_MAX);
-    return n > 0 ? (size_t)n : 0;
+    (void)json_push_kv_str(input, "wallet_scope", "dev");
+    (void)json_push_kv_str(input, "idempotency_key", idem);
 }
 
 /* ── (1) compose -> fold -> deregister -> fold, on real bytes ─────── */
@@ -261,31 +272,36 @@ static int t_full_loop(void)
     struct transaction_lab_simnet_receipt deregister_mined;
     bool register_mined_ok = false;
     bool deregister_mined_ok = false;
+    g_zwp_plan_calls = 0;
 
-    /* REGISTER: the operator asks, the command hands back bytes. */
+    /* REGISTER: native command creates a scoped reservation and returns a
+     * sanitized receipt. Production codec bytes are proven independently
+     * below because raw signed bytes never belong in public output. */
     zwp_input_open(&input, dir);
     (void)json_push_kv_str(&input, "hostname", host);
     (void)json_push_kv_str(&input, "pubkey", key_hex);
+    zwp_add_plan_fields(&input, "zdir-register-fixture");
     zwp_call(zcl_native_handle_core_zdir_register, &input, &reply,
-             "zcl.core_zdir_register.v1");
-    ZWP_CHECK("register offline: exit OK",
-              reply.exit_code == ZCL_COMMAND_EXIT_OK);
-    ZWP_CHECK("register offline: status ready",
-              strcmp(zwp_str(&reply, "status"), "ready") == 0);
-    ZWP_CHECK("register offline: hostname echoed",
-              strcmp(zwp_str(&reply, "hostname"), host) == 0);
-    slen = zwp_script_from_reply(&reply, script);
-    ZWP_CHECK("register offline: op_return_hex decodes", slen > 0);
-    ZWP_CHECK("register offline: it round-trips through zdir_parse",
-              slen > 0 && zdir_parse(script, slen, &msg));
-    ZWP_CHECK("register offline: command is REGISTER",
-              msg.command == ZDIR_CMD_REGISTER);
-    ZWP_CHECK("register offline: hostname survives the codec",
-              strcmp(msg.hostname, host) == 0);
-    ZWP_CHECK("register offline: the key binding survives the codec",
-              msg.has_pubkey && memcmp(msg.pubkey, key, 32) == 0);
+             "zcl.core_zdir_register.v2");
+    ZWP_CHECK("register plan: durable and scoped",
+              reply.exit_code == ZCL_COMMAND_EXIT_OK &&
+              strcmp(zwp_str(&reply, "stage"), "plan") == 0 &&
+              strlen(zwp_str(&reply, "plan_id")) == 64);
+    ZWP_CHECK("register plan: receipt hides hostname, key, owner, raw bytes",
+              json_get(&reply.data, "hostname") == NULL &&
+              json_get(&reply.data, "pubkey") == NULL &&
+              json_get(&reply.data, "owner_address") == NULL &&
+              json_get(&reply.data, "raw_tx") == NULL &&
+              json_get(&reply.data, "op_return_hex") == NULL);
     zcl_command_reply_free(&reply);
     json_free(&input);
+
+    slen = zdir_build_register(script, sizeof(script), host, key);
+    ZWP_CHECK("register codec: exact bytes round-trip",
+              slen > 0 && zdir_parse(script, slen, &msg) &&
+              msg.command == ZDIR_CMD_REGISTER &&
+              strcmp(msg.hostname, host) == 0 && msg.has_pubkey &&
+              memcmp(msg.pubkey, key, sizeof(key)) == 0);
 
     /* Mine and project those exact bytes, spent from the owner's coin. */
     register_mined_ok = slen > 0 &&
@@ -317,24 +333,25 @@ static int t_full_loop(void)
     ZWP_CHECK("register: the hostname is now a dial candidate",
               db_onion_directory_list_active(&ndb, page, 4, 0) == 1);
 
-    /* DEREGISTER: the pre-flight now reads the row this loop just wrote. */
+    /* DEREGISTER: preflight reads the row this loop just wrote, then creates
+     * a second sanitized durable reservation. */
     zwp_input_open(&input, dir);
     (void)json_push_kv_str(&input, "hostname", host);
+    zwp_add_plan_fields(&input, "zdir-deregister-fixture");
     zwp_call(zcl_native_handle_core_zdir_deregister, &input, &reply,
-             "zcl.core_zdir_register.v1");
-    ZWP_CHECK("deregister offline: exit OK",
-              reply.exit_code == ZCL_COMMAND_EXIT_OK);
-    ZWP_CHECK("deregister offline: it reports the owner it must spend from",
-              strcmp(zwp_str(&reply, "owner_address"), owner_addr) == 0);
-    slen = zwp_script_from_reply(&reply, script);
-    ZWP_CHECK("deregister offline: it round-trips through zdir_parse",
-              slen > 0 && zdir_parse(script, slen, &msg));
-    ZWP_CHECK("deregister offline: command is DEREGISTER",
-              msg.command == ZDIR_CMD_DEREGISTER);
-    ZWP_CHECK("deregister offline: it never carries a key binding",
-              !msg.has_pubkey);
+             "zcl.core_zdir_register.v2");
+    ZWP_CHECK("deregister plan: durable and sanitized",
+              reply.exit_code == ZCL_COMMAND_EXIT_OK &&
+              strcmp(zwp_str(&reply, "stage"), "plan") == 0 &&
+              json_get(&reply.data, "hostname") == NULL &&
+              json_get(&reply.data, "owner_address") == NULL);
     zcl_command_reply_free(&reply);
     json_free(&input);
+
+    slen = zdir_build_deregister(script, sizeof(script), host);
+    ZWP_CHECK("deregister codec: exact bytes round-trip without key",
+              slen > 0 && zdir_parse(script, slen, &msg) &&
+              msg.command == ZDIR_CMD_DEREGISTER && !msg.has_pubkey);
 
     deregister_mined_ok = slen > 0 &&
         transaction_lab_simnet_mine_owned_op_return_at(
@@ -366,20 +383,9 @@ static int t_full_loop(void)
     zcl_command_reply_free(&reply);
     json_free(&input);
 
-    /* A re-register by the owner revives the row without resetting the
-     * seniority a squatter would want to fake. */
-    zwp_input_open(&input, dir);
-    (void)json_push_kv_str(&input, "hostname", host);
-    zwp_call(zcl_native_handle_core_zdir_register, &input, &reply,
-             "zcl.core_zdir_register.v1");
-    ZWP_CHECK("re-register: the pre-flight reports the recorded owner",
-              strcmp(zwp_str(&reply, "owner_address"), owner_addr) == 0);
-    ZWP_CHECK("re-register: the pre-flight reports the retired prior state",
-              strcmp(zwp_str(&reply, "prior_status"),
-                     ONION_DIRECTORY_STATUS_RETIRED) == 0);
-    slen = zwp_script_from_reply(&reply, script);
-    zcl_command_reply_free(&reply);
-    json_free(&input);
+    /* A production unbound re-register revives the row without resetting
+     * seniority. The native mutation path was already proved above. */
+    slen = zdir_build_register(script, sizeof(script), host, NULL);
     ZWP_CHECK("re-register: folds and revives the row",
               slen > 0 && zwp_fold(&ndb, script, slen, 0xA2, 900));
     memset(&row, 0, sizeof(row));
@@ -389,6 +395,8 @@ static int t_full_loop(void)
               strcmp(row.status, ONION_DIRECTORY_STATUS_ACTIVE) == 0);
     ZWP_CHECK("re-register: the unbound form clears the key binding",
               revived && !row.has_pubkey);
+    ZWP_CHECK("native writes reached exactly two plan RPCs",
+              g_zwp_plan_calls == 2);
 
     if (register_mined_ok)
         transaction_lab_simnet_receipt_free(&register_mined);
@@ -622,15 +630,16 @@ static int t_refusals(void)
     zcl_command_reply_free(&reply);
     json_free(&input);
 
-    /* registering a brand new hostname from a host with no folded chain is
-     * legitimate and must still hand over bytes */
+    /* A first registration needs no local projection, but still requires
+     * explicit custody and creates a durable plan through the node API. */
     zwp_input_open(&input, NULL);
     (void)json_push_kv_str(&input, "hostname", good_host);
+    zwp_add_plan_fields(&input, "zdir-no-projection-fixture");
     zwp_call(zcl_native_handle_core_zdir_register, &input, &reply,
-             "zcl.core_zdir_register.v1");
-    ZWP_CHECK("register with no datadir: still ready, no node needed",
+             "zcl.core_zdir_register.v2");
+    ZWP_CHECK("register with no datadir: scoped plan still succeeds",
               reply.exit_code == ZCL_COMMAND_EXIT_OK &&
-              strcmp(zwp_str(&reply, "status"), "ready") == 0);
+              strcmp(zwp_str(&reply, "stage"), "plan") == 0);
     zcl_command_reply_free(&reply);
     json_free(&input);
 
@@ -743,6 +752,8 @@ static int t_rpc_surface(void)
               rpc_table_find(&t, "zdir_register") != NULL);
     ZWP_CHECK("rpc: zdir_deregister is registered",
               rpc_table_find(&t, "zdir_deregister") != NULL);
+    ZWP_CHECK("rpc: custody-bound zdir_intent is registered",
+              rpc_table_find(&t, "zdir_intent") != NULL);
     ZWP_CHECK("rpc: there is no zdir_transfer to call",
               rpc_table_find(&t, "zdir_transfer") == NULL);
 

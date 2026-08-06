@@ -59,5 +59,6 @@ void register_zdir_rpc_commands(struct rpc_table *t, struct node_db *ndb,
                                 struct wallet *w, struct tx_mempool *mp,
                                 struct main_state *main_state,
                                 struct coins_view_cache *coins_tip);
+void register_zdir_intent_rpc_command(struct rpc_table *table);
 
 #endif /* ZCL_CONTROLLERS_ZDIR_H */

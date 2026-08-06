@@ -69,7 +69,7 @@ zclassic23 discover schema <path> --side=input|output
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
 | Leaves with `effect=mutate` | 135 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 91 |
+| Leaves requiring **owner** authority | 96 |
 
 Per source file:
 
@@ -394,17 +394,17 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `core identity resolve` | ready | read / read / public · fast/low | **`pubkey`**, `name`, `datadir` | `zcl.core_identity_resolve.v1` | `zclassic23 core identity resolve --pubkey=<64hex>` | Resolve one master key by pubkey or ZNAM name |
-| `core identity anchor` | ready | mutate / wallet / operator · foreground/moderate | **`pubkey`**, `datadir` | `zcl.core_identity_anchor.v1` | `zclassic23 core identity anchor --pubkey=<64hex>` | Anchor a master key on-chain (spends a fee) |
-| `core identity rotate` | ready | mutate / wallet / operator · foreground/moderate | `pubkey`, `new_pubkey`, `datadir` | `zcl.core_identity_anchor.v1` | `zclassic23 core identity rotate --input='{"pubkey":"<64hex>","new_pubkey":"<64hex>"}'` | Rotate an anchored master key to a successor (spends a fee) |
-| `core identity revoke` | ready | mutate / wallet / operator · foreground/moderate | **`pubkey`**, `datadir` | `zcl.core_identity_anchor.v1` | `zclassic23 core identity revoke --pubkey=<64hex>` | Retire an anchored master key with no successor (spends a fee) |
+| `core identity anchor` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `pubkey`, `idempotency_key`, `plan_id`, `confirm`, `datadir` | `zcl.core_identity_anchor.v2` | `zclassic23 core identity anchor --input='{"wallet_scope":"dev","pubkey":"<64hex>","idempotency_key":"zid-anchor-1"}'` | Anchor a master key on-chain (spends a fee) |
+| `core identity rotate` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `pubkey`, `new_pubkey`, `idempotency_key`, `plan_id`, `confirm`, `datadir` | `zcl.core_identity_anchor.v2` | `zclassic23 core identity rotate --input='{"wallet_scope":"dev","pubkey":"<64hex>","new_pubkey":"<64hex>","idempotency_key":"zid-rotate-1"}'` | Rotate an anchored master key to a successor (spends a fee) |
+| `core identity revoke` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `pubkey`, `idempotency_key`, `plan_id`, `confirm`, `datadir` | `zcl.core_identity_anchor.v2` | `zclassic23 core identity revoke --input='{"wallet_scope":"dev","pubkey":"<64hex>","idempotency_key":"zid-revoke-1"}'` | Retire an anchored master key with no successor (spends a fee) |
 | `core identity list` | ready | read / read / public · fast/low | `limit`, `offset`, `datadir` | `zcl.core_identity_index.v1` | `zclassic23 core identity list --limit=25` | Page the anchored identities, newest anchor first |
 
 #### `core.zdir` — On-chain node directory: announce and retire onion hostnames
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `core zdir register` | ready | mutate / wallet / operator · foreground/moderate | **`hostname`**, `pubkey`, `datadir` | `zcl.core_zdir_register.v1` | `zclassic23 core zdir register --hostname=<56 base32>.onion` | Announce a v3 onion hostname on-chain as a node (spends a fee) |
-| `core zdir deregister` | ready | mutate / wallet / operator · foreground/moderate | **`hostname`**, `datadir` | `zcl.core_zdir_register.v1` | `zclassic23 core zdir deregister --hostname=<56 base32>.onion` | Retire an onion hostname from the on-chain directory (spends a fee) |
+| `core zdir register` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `hostname`, `pubkey`, `idempotency_key`, `plan_id`, `confirm`, `datadir` | `zcl.core_zdir_register.v2` | `zclassic23 core zdir register --input='{"wallet_scope":"dev","hostname":"<56base32>.onion","idempotency_key":"zdir-register-1"}'` | Announce a v3 onion hostname on-chain as a node (spends a fee) |
+| `core zdir deregister` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `hostname`, `idempotency_key`, `plan_id`, `confirm`, `datadir` | `zcl.core_zdir_register.v2` | `zclassic23 core zdir deregister --input='{"wallet_scope":"dev","hostname":"<56base32>.onion","idempotency_key":"zdir-deregister-1"}'` | Retire an onion hostname from the on-chain directory (spends a fee) |
 
 ### `app` — Capability-scoped sovereign applications
 
@@ -1213,8 +1213,8 @@ promise the same document shape.
 | `zcl.shielded_send.v1` | `core.wallet.shielded.send`, `vault.send-shielded` |
 | `zcl.storage_query.v1` | `core.storage.query`, `core.storage.query.offline` |
 | `zcl.core_bootstatus.v1` | `core.node.bootstatus`, `core.node.bootwait` |
-| `zcl.core_identity_anchor.v1` | `core.identity.anchor`, `core.identity.rotate`, `core.identity.revoke` |
-| `zcl.core_zdir_register.v1` | `core.zdir.register`, `core.zdir.deregister` |
+| `zcl.core_identity_anchor.v2` | `core.identity.anchor`, `core.identity.rotate`, `core.identity.revoke` |
+| `zcl.core_zdir_register.v2` | `core.zdir.register`, `core.zdir.deregister` |
 | `zcl.app_name_txresult.v1` | `app.names.register`, `app.names.update`, `app.names.transfer`, `app.names.renew`, `app.names.set-record`, `app.names.set-text` |
 | `zcl.app_token_txresult.v1` | `app.tokens.create`, `app.tokens.send`, `app.tokens.mint`, `app.tokens.burn`, `vault.send-token` |
 | `zcl.app_message_send_result.v1` | `app.messaging.send`, `app.messaging.send-named` |

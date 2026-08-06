@@ -1499,69 +1499,57 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_COMMAND(
     "core.identity.anchor", "core.identity", "",
     "Anchor a master key on-chain (spends a fee)",
-    "Builds the ZID\\0 ANCHOR OP_RETURN binding --pubkey=<64hex> to the "
-    "chain. With a live node: dispatches the wallet compose+broadcast "
-    "through the identity_anchor RPC and returns the txid (the node "
-    "itself returns op_return_hex when no wallet is loaded). With no "
-    "live node: returns op_return_hex plus the exact next step. Refuses "
-    "an all-zero key and a key already anchored to another owner. Never "
-    "runs on a timer — every anchor is an explicit operator decision.", 0,
+    "Prepares the exact signed ZID\\0 ANCHOR transaction under explicit "
+    "identity-bound custody, atomically reserving every input plus maximum "
+    "fee. Commit accepts only the returned scope/plan_id and publishes the "
+    "same bytes once; stale wallet, tip, or snapshot state fails closed.", 0,
     "identity,zid,anchor,publish,master,key,broadcast,fee",
-    "zcl.core_identity_anchor.input.v1", "zcl.core_identity_anchor.v1",
-    "pubkey,datadir", "pubkey",
-    "zclassic23 core identity anchor --pubkey=<64hex>",
+    "zcl.core_identity_anchor.input.v2", "zcl.core_identity_anchor.v2",
+    "wallet_scope,pubkey,idempotency_key,plan_id,confirm,datadir", "wallet_scope",
+    "zclassic23 core identity anchor --input='{\"wallet_scope\":\"dev\",\"pubkey\":\"<64hex>\",\"idempotency_key\":\"zid-anchor-1\"}'",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
-    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
-    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_core_identity_anchor)
 ZCL_COMMAND_READY_COMMAND(
     "core.identity.rotate", "core.identity", "",
     "Rotate an anchored master key to a successor (spends a fee)",
-    "Builds the ZID\\0 ROTATE OP_RETURN superseding --pubkey=<64hex> with "
-    "--new_pubkey=<64hex>. Pre-flight against the projection names the "
-    "refusal before any fee is spent: KEY_NOT_ANCHORED when the old key "
-    "has no row, ALREADY_REVOKED when its row is dead, SELF_ROTATE when "
-    "old and new are the same key. The chain-side ownership proof is the "
-    "tx's sole input — the live path composes it through "
-    "zslp_command_build_owner_base_tx so the signer is provably the "
-    "recorded owner, and a non-owner is refused NOT_OWNER.", 0,
+    "Prepares an exact owner-funded ZID\\0 ROTATE transaction, preserving "
+    "the existing projection preflight while atomically reserving its input "
+    "and maximum fee. Commit publishes the durable plan exactly once.", 0,
     "identity,zid,rotate,successor,master,key,broadcast,fee",
-    "zcl.core_identity_rotate.input.v1", "zcl.core_identity_anchor.v1",
-    "pubkey,new_pubkey,datadir", "",
-    "zclassic23 core identity rotate --input='{\"pubkey\":\"<64hex>\",\"new_pubkey\":\"<64hex>\"}'",
+    "zcl.core_identity_rotate.input.v2", "zcl.core_identity_anchor.v2",
+    "wallet_scope,pubkey,new_pubkey,idempotency_key,plan_id,confirm,datadir", "wallet_scope",
+    "zclassic23 core identity rotate --input='{\"wallet_scope\":\"dev\",\"pubkey\":\"<64hex>\",\"new_pubkey\":\"<64hex>\",\"idempotency_key\":\"zid-rotate-1\"}'",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
-    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
-    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_core_identity_rotate)
 ZCL_COMMAND_READY_COMMAND(
     "core.identity.revoke", "core.identity", "",
     "Retire an anchored master key with no successor (spends a fee)",
-    "Builds the ZID\\0 REVOKE OP_RETURN retiring --pubkey=<64hex>. A "
-    "revoked key is dead, not superseded: nothing it ever signed verifies "
-    "as current afterwards and no later ANCHOR resurrects it, so this is "
-    "the one-way door. Pre-flight names KEY_NOT_ANCHORED (no row) and "
-    "ALREADY_REVOKED (idempotent no-op) before any fee is spent; the "
-    "live path proves ownership through the tx's sole input exactly like "
-    "rotate.", 0,
+    "Prepares an exact owner-funded ZID\\0 REVOKE transaction, preserving "
+    "the one-way projection preflight while atomically reserving its input "
+    "and maximum fee. Commit publishes the durable plan exactly once.", 0,
     "identity,zid,revoke,retire,master,key,broadcast,fee",
-    "zcl.core_identity_revoke.input.v1", "zcl.core_identity_anchor.v1",
-    "pubkey,datadir", "pubkey",
-    "zclassic23 core identity revoke --pubkey=<64hex>",
+    "zcl.core_identity_revoke.input.v2", "zcl.core_identity_anchor.v2",
+    "wallet_scope,pubkey,idempotency_key,plan_id,confirm,datadir", "wallet_scope",
+    "zclassic23 core identity revoke --input='{\"wallet_scope\":\"dev\",\"pubkey\":\"<64hex>\",\"idempotency_key\":\"zid-revoke-1\"}'",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
-    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
-    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_core_identity_revoke)
 ZCL_COMMAND_READY_READ(
     "core.identity.list", "core.identity", "",
@@ -1604,57 +1592,39 @@ ZCL_COMMAND_BRANCH("core.zdir", "core",
 ZCL_COMMAND_READY_COMMAND(
     "core.zdir.register", "core.zdir", "",
     "Announce a v3 onion hostname on-chain as a node (spends a fee)",
-    "Builds the ZDIR REGISTER OP_RETURN publishing --hostname=<56 base32 "
-    "chars>.onion as a node, optionally binding it to a ZID master key "
-    "with --pubkey=<64hex> (a binding is a claim, not a proof). With a "
-    "live node: dispatches the wallet compose+broadcast through the "
-    "zdir_register RPC and returns the txid (the node itself returns "
-    "op_return_hex when no wallet is loaded). With no live node: returns "
-    "op_return_hex plus the exact next step. The hostname is held to the "
-    "one Tor v3 rule the node has, so a v2 onion or a bare hostname is a "
-    "hard BAD_HOSTNAME. Re-registering your own hostname refreshes the "
-    "record and its key binding but never resets its registration height "
-    "— seniority is not free to fake. A row that records no owner is "
-    "permanently immutable and refused NOT_OWNER before any fee is spent. "
-    "Never runs on a timer — every registration is an explicit operator "
-    "decision.", 0,
+    "Prepares the exact signed ZDIR REGISTER transaction under explicit "
+    "custody, optionally binding --pubkey=<64hex>. The plan atomically "
+    "reserves its input and maximum fee; commit publishes the durable bytes "
+    "once. Tor-v3 validation and ownership preflight run before reservation. "
+    "A row with no owner remains immutable and no timer invokes this leaf.", 0,
     "zdir,directory,onion,register,announce,publish,peer,discovery,broadcast,fee",
-    "zcl.core_zdir_register.input.v1", "zcl.core_zdir_register.v1",
-    "hostname,pubkey,datadir", "hostname",
-    "zclassic23 core zdir register --hostname=<56 base32>.onion",
+    "zcl.core_zdir_register.input.v2", "zcl.core_zdir_register.v2",
+    "wallet_scope,hostname,pubkey,idempotency_key,plan_id,confirm,datadir", "wallet_scope",
+    "zclassic23 core zdir register --input='{\"wallet_scope\":\"dev\",\"hostname\":\"<56base32>.onion\",\"idempotency_key\":\"zdir-register-1\"}'",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
-    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
-    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_core_zdir_register)
 ZCL_COMMAND_READY_COMMAND(
     "core.zdir.deregister", "core.zdir", "",
     "Retire an onion hostname from the on-chain directory (spends a fee)",
-    "Builds the ZDIR DEREGISTER OP_RETURN retiring --hostname=<56 base32 "
-    "chars>.onion. The row stays on-chain — its registration height is "
-    "its seniority and its history — it just stops being dialed. "
-    "Pre-flight against the projection names the refusal before any fee "
-    "is spent: NOT_REGISTERED when no row exists, ALREADY_RETIRED when it "
-    "is already retired, NOT_OWNER when the row records no owner. The "
-    "chain-side ownership proof is the tx's sole input — the live path "
-    "composes it through zslp_command_build_owner_base_tx so the signer "
-    "is provably the recorded owner. To hand a hostname to another "
-    "operator, deregister it and let them register it; there is no "
-    "transfer command and there is not going to be a silent stub of one. "
-    "Never runs on a timer — every retirement is an explicit operator "
-    "decision.", 0,
+    "Prepares the exact owner-funded ZDIR DEREGISTER transaction after "
+    "checking the confirmed directory row. Its input and maximum fee are "
+    "reserved atomically; commit publishes the durable bytes once. The row "
+    "history remains on-chain and there is deliberately no transfer stub.", 0,
     "zdir,directory,onion,deregister,retire,withdraw,peer,discovery,broadcast,fee",
-    "zcl.core_zdir_deregister.input.v1", "zcl.core_zdir_register.v1",
-    "hostname,datadir", "hostname",
-    "zclassic23 core zdir deregister --hostname=<56 base32>.onion",
+    "zcl.core_zdir_deregister.input.v2", "zcl.core_zdir_register.v2",
+    "wallet_scope,hostname,idempotency_key,plan_id,confirm,datadir", "wallet_scope",
+    "zclassic23 core zdir deregister --input='{\"wallet_scope\":\"dev\",\"hostname\":\"<56base32>.onion\",\"idempotency_key\":\"zdir-deregister-1\"}'",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
-    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
-    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_core_zdir_deregister)
