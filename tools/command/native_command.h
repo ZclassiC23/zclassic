@@ -400,6 +400,21 @@ void zcl_native_handle_zcode_commons_verify(
 void zcl_native_handle_zcode_commons_rebuild(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_patronage_offer_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_patronage_offer_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_patronage_fund_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_patronage_fund_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_patronage_show(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_package_search(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

@@ -864,6 +864,33 @@ static int test_patronage_intent_cross_validation(void)
         };
         ASSERT_EQ(vcs_zcode_patronage_intent_verify_cas(&intent, &context),
                   VCS_ZCODE_PATRONAGE_OK);
+        uint8_t offer_plan_wire[VCS_ZCODE_PATRONAGE_INTENT_WIRE_BYTES];
+        char offer_plan_hex[sizeof(offer_plan_wire) * 2u + 1u];
+        char network_hex[65];
+        ASSERT_EQ(vcs_zcode_patronage_intent_serialize(
+                      &intent, offer_plan_wire), VCS_ZCODE_PATRONAGE_OK);
+        zcl_hex_encode(offer_plan_wire, sizeof(offer_plan_wire),
+                       offer_plan_hex);
+        zcl_hex_encode(network, sizeof(network), network_hex);
+        struct json_value offer_input;
+        json_init(&offer_input); json_set_object(&offer_input);
+        ASSERT(json_push_kv_str(&offer_input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&offer_input, "intent_hex",
+                                offer_plan_hex));
+        ASSERT(json_push_kv_str(&offer_input,
+                                "expected_network_genesis_root",
+                                network_hex));
+        ASSERT(json_push_kv_int(&offer_input, "now_unix", 1500));
+        struct zcl_command_request offer_request = {.input = &offer_input};
+        struct zcl_command_reply offer_reply;
+        zcl_command_reply_init(&offer_reply, "zcl.test.patronage.v1");
+        zcl_native_handle_zcode_patronage_offer_plan(
+            &offer_request, &offer_reply);
+        ASSERT_EQ(offer_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(!json_get_bool(json_get(&offer_reply.data, "persisted")));
+        ASSERT(!json_get_bool(json_get(&offer_reply.data, "funded")));
+        zcl_command_reply_free(&offer_reply);
+        json_free(&offer_input);
 
         intent.settlement_trust_mode =
             VCS_ZCODE_PATRONAGE_SIMULATED_FUNDING;
@@ -878,6 +905,49 @@ static int test_patronage_intent_cross_validation(void)
                   VCS_ZCODE_PATRONAGE_OK);
         ASSERT(vcs_object_put_addressed(workspace, intent_root, intent_wire,
                                         sizeof(intent_wire)));
+        char committed_intent_hex[sizeof(intent_wire) * 2u + 1u];
+        char committed_intent_root_hex[65];
+        zcl_hex_encode(intent_wire, sizeof(intent_wire), committed_intent_hex);
+        zcl_hex_encode(intent_root, 32, committed_intent_root_hex);
+        struct json_value commit_input;
+        json_init(&commit_input); json_set_object(&commit_input);
+        ASSERT(json_push_kv_str(&commit_input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&commit_input, "intent_hex",
+                                committed_intent_hex));
+        ASSERT(json_push_kv_str(&commit_input,
+                                "expected_network_genesis_root",
+                                network_hex));
+        ASSERT(json_push_kv_int(&commit_input, "now_unix", 1500));
+        struct zcl_command_request commit_request = {.input = &commit_input};
+        struct zcl_command_reply commit_reply;
+        zcl_command_reply_init(&commit_reply, "zcl.test.patronage.v1");
+        zcl_native_handle_zcode_patronage_offer_commit(
+            &commit_request, &commit_reply);
+        ASSERT_EQ(commit_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&commit_reply.data, "persisted")));
+        ASSERT(!json_get_bool(json_get(&commit_reply.data, "funded")));
+        zcl_command_reply_free(&commit_reply);
+        json_free(&commit_input);
+
+        struct json_value show_input;
+        json_init(&show_input); json_set_object(&show_input);
+        ASSERT(json_push_kv_str(&show_input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&show_input, "root",
+                                committed_intent_root_hex));
+        ASSERT(json_push_kv_str(&show_input,
+                                "expected_network_genesis_root",
+                                network_hex));
+        ASSERT(json_push_kv_int(&show_input, "now_unix", 1500));
+        struct zcl_command_request show_request = {.input = &show_input};
+        struct zcl_command_reply show_reply;
+        zcl_command_reply_init(&show_reply, "zcl.test.patronage.v1");
+        zcl_native_handle_zcode_patronage_show(&show_request, &show_reply);
+        ASSERT_EQ(show_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&show_reply.data, "object")),
+                      "patronage_intent");
+        ASSERT(!json_get_bool(json_get(&show_reply.data, "implies_ownership")));
+        zcl_command_reply_free(&show_reply);
+        json_free(&show_input);
         struct vcs_zcode_patronage_funding_v1 funding;
         memset(&funding, 0, sizeof(funding));
         funding.schema_version = VCS_ZCODE_PATRONAGE_FUNDING_VERSION;
@@ -920,6 +990,63 @@ static int test_patronage_intent_cross_validation(void)
         ASSERT_EQ(vcs_zcode_patronage_funding_verify_cas(
                       &funding, &context),
                   VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        uint8_t committed_funding_root[32];
+        char committed_funding_hex[sizeof(funding_wire) * 2u + 1u];
+        char committed_funding_root_hex[65];
+        ASSERT_EQ(vcs_zcode_patronage_funding_root(
+                      &funding, committed_funding_root),
+                  VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        zcl_hex_encode(funding_wire, sizeof(funding_wire),
+                       committed_funding_hex);
+        zcl_hex_encode(committed_funding_root, 32,
+                       committed_funding_root_hex);
+        struct json_value fund_input;
+        json_init(&fund_input); json_set_object(&fund_input);
+        ASSERT(json_push_kv_str(&fund_input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&fund_input, "funding_hex",
+                                committed_funding_hex));
+        ASSERT(json_push_kv_str(&fund_input,
+                                "expected_network_genesis_root",
+                                network_hex));
+        ASSERT(json_push_kv_int(&fund_input, "now_unix", 1700));
+        struct zcl_command_request fund_request = {.input = &fund_input};
+        struct zcl_command_reply fund_plan_reply, fund_commit_reply;
+        zcl_command_reply_init(&fund_plan_reply, "zcl.test.patronage.v1");
+        zcl_native_handle_zcode_patronage_fund_plan(
+            &fund_request, &fund_plan_reply);
+        ASSERT_EQ(fund_plan_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(!json_get_bool(json_get(&fund_plan_reply.data, "persisted")));
+        ASSERT(!json_get_bool(json_get(&fund_plan_reply.data, "funded")));
+        ASSERT(json_get_bool(json_get(&fund_plan_reply.data,
+                                      "simulation_funded")));
+        zcl_command_reply_free(&fund_plan_reply);
+        zcl_command_reply_init(&fund_commit_reply, "zcl.test.patronage.v1");
+        zcl_native_handle_zcode_patronage_fund_commit(
+            &fund_request, &fund_commit_reply);
+        ASSERT_EQ(fund_commit_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&fund_commit_reply.data, "persisted")));
+        ASSERT(!json_get_bool(json_get(&fund_commit_reply.data,
+                                       "moves_live_funds")));
+        zcl_command_reply_free(&fund_commit_reply);
+        json_free(&fund_input);
+
+        json_init(&show_input); json_set_object(&show_input);
+        ASSERT(json_push_kv_str(&show_input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&show_input, "root",
+                                committed_funding_root_hex));
+        ASSERT(json_push_kv_str(&show_input,
+                                "expected_network_genesis_root",
+                                network_hex));
+        ASSERT(json_push_kv_int(&show_input, "now_unix", 1700));
+        show_request.input = &show_input;
+        zcl_command_reply_init(&show_reply, "zcl.test.patronage.v1");
+        zcl_native_handle_zcode_patronage_show(&show_request, &show_reply);
+        ASSERT_EQ(show_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&show_reply.data, "object")),
+                      "patronage_funding");
+        ASSERT(!json_get_bool(json_get(&show_reply.data, "funded")));
+        zcl_command_reply_free(&show_reply);
+        json_free(&show_input);
         funding.flags &= (uint8_t)
             ~VCS_ZCODE_PATRONAGE_FUNDING_NO_LIVE_FUNDS;
         ASSERT_EQ(vcs_zcode_patronage_funding_validate(&funding),

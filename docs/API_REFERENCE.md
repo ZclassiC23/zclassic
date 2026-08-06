@@ -68,15 +68,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 543 |
+| Registry entries (branches + leaves) | 558 |
 | Top-level roots | 11 |
-| Branches | 123 |
-| Leaves (dispatchable command paths) | 420 |
-| … `ready` (live handler in this build) | 371 |
+| Branches | 128 |
+| Leaves (dispatchable command paths) | 430 |
+| … `ready` (live handler in this build) | 376 |
 | … `compat` (metadata only, names a fallback) | 18 |
-| … `planned` (fail-closed BLOCKED, exit 3) | 31 |
+| … `planned` (fail-closed BLOCKED, exit 3) | 36 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 137 |
+| Leaves with `effect=mutate` | 143 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 96 |
 
@@ -94,7 +94,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 22 | 4 | 18 |
-| `config/commands/zcode.def` | 106 | 21 | 85 |
+| `config/commands/zcode.def` | 121 | 26 | 95 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -904,6 +904,41 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode commons creation show` | ready | read / read / operator · fast/low | **`workspace`**, **`root`** | `zcl.zcode_commons_creation_show.v1` | `zclassic23 zcode commons creation show --input='{"workspace":".","root":"<64hex>"}'` | Show one creation attribution |
 
+#### `zcode.patronage` — Simulation-only commissions, continuity and gifts
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode patronage show` | ready | read / read / operator · fast/low | **`workspace`**, **`root`**, **`expected_network_genesis_root`**, **`now_unix`** | `zcl.zcode_patronage_show.v1` | `zclassic23 zcode patronage show --input='{"workspace":".","root":"<64hex>","expected_network_genesis_root":"<64hex>","now_unix":1}'` | Show and reverify one patronage offer or simulated funding receipt |
+| `zcode patronage list` | planned | read / read / operator · fast/low | **`workspace`** | `zcl.zcode_patronage_list.v1` | `zclassic23 zcode patronage list --input='{"workspace":"."}'` | List patronage objects — *requires the rebuildable patronage projection; exact objects remain available through zcode patronage show* |
+
+#### `zcode.patronage.offer` — Signed patronage offers
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode patronage offer plan` | ready | read / read / operator · fast/low | **`workspace`**, **`intent_hex`**, **`expected_network_genesis_root`**, **`now_unix`** | `zcl.zcode_patronage_offer.v1` | `zclassic23 zcode patronage offer plan --input='{"workspace":".","intent_hex":"<hex>","expected_network_genesis_root":"<64hex>","now_unix":1}'` | Validate a signed simulation-only patronage offer |
+| `zcode patronage offer commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`intent_hex`**, **`expected_network_genesis_root`**, **`now_unix`** | `zcl.zcode_patronage_offer.v1` | `zclassic23 zcode patronage offer commit --input='{...}'` | Verify and store a signed simulation-only patronage offer |
+
+#### `zcode.patronage.fund` — Fully simulated funding receipts
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode patronage fund plan` | ready | read / read / operator · fast/low | **`workspace`**, **`funding_hex`**, **`expected_network_genesis_root`**, **`now_unix`** | `zcl.zcode_patronage_funding.v1` | `zclassic23 zcode patronage fund plan --input='{"workspace":".","funding_hex":"<hex>","expected_network_genesis_root":"<64hex>","now_unix":1}'` | Validate a fully simulated funding receipt |
+| `zcode patronage fund commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`funding_hex`**, **`expected_network_genesis_root`**, **`now_unix`** | `zcl.zcode_patronage_funding.v1` | `zclassic23 zcode patronage fund commit --input='{...}'` | Verify and store a fully simulated funding receipt |
+
+#### `zcode.patronage.settle` — Proof-conditioned simulated settlement
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode patronage settle plan` | planned | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`settlement_hex`** | `zcl.zcode_patronage_settle.v1` | `zclassic23 zcode patronage settle plan --input='{...}'` | Plan proof-conditioned simulated settlement — *active-chain maturity/reorg and immutable ZC23 policy contexts are not yet bound to this isolated simulation command* |
+| `zcode patronage settle commit` | planned | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`settlement_hex`** | `zcl.zcode_patronage_settle.v1` | `zclassic23 zcode patronage settle commit --input='{...}'` | Commit proof-conditioned simulated settlement — *settlement commit is blocked until its plan has authentic active-chain and immutable-policy validation context* |
+
+#### `zcode.patronage.refund` — Expiry-conditioned simulated refunds
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode patronage refund plan` | planned | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`settlement_hex`** | `zcl.zcode_patronage_refund.v1` | `zclassic23 zcode patronage refund plan --input='{...}'` | Plan an expiry-conditioned simulated refund — *active-chain height and MTP authority are not yet available to the isolated patronage adapter* |
+| `zcode patronage refund commit` | planned | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`settlement_hex`** | `zcl.zcode_patronage_refund.v1` | `zclassic23 zcode patronage refund commit --input='{...}'` | Commit an expiry-conditioned simulated refund — *refund commit is blocked until its plan has authentic active-chain height and MTP validation context* |
+
 #### `zcode.package.dev` — Agentic development
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
@@ -1270,6 +1305,10 @@ promise the same document shape.
 | `zcl.dev_loop_status.v1` | `dev.loop.ensure`, `dev.loop.status`, `dev.loop.stop` |
 | `zcl.account.v1` | `app.account.show`, `app.account.whoami`, `app.account.add`, `app.account.role`, `app.account.suspend`, `app.account.unsuspend` |
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
+| `zcl.zcode_patronage_offer.v1` | `zcode.patronage.offer.plan`, `zcode.patronage.offer.commit` |
+| `zcl.zcode_patronage_funding.v1` | `zcode.patronage.fund.plan`, `zcode.patronage.fund.commit` |
+| `zcl.zcode_patronage_settle.v1` | `zcode.patronage.settle.plan`, `zcode.patronage.settle.commit` |
+| `zcl.zcode_patronage_refund.v1` | `zcode.patronage.refund.plan`, `zcode.patronage.refund.commit` |
 | `zcl.zcode_publish_plan.v1` | `zcode.package.dev.publish.plan`, `zcode.package.publish.plan` |
 | `zcl.zcode_publish_commit.v1` | `zcode.package.dev.publish.commit`, `zcode.package.publish.commit` |
 | `zcl.zcode_leaderboard.v1` | `zcode.leaderboard.daily`, `zcode.leaderboard.weekly`, `zcode.leaderboard.monthly`, `zcode.leaderboard.all` |
