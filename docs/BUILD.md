@@ -418,10 +418,12 @@ without the doctor learning about it. Prose here can only describe it.
 - The first `make vendor` needs **network access** for the pinned tarballs (and
   for the prover's crates when `ZCL_WITH_RUST=1`). Every later build is
   offline.
-- For the embedded Tor onion service (optional): the `vendor/tor` submodule
-  (`git submodule update --init`). When that submodule is built, the Makefile
-  links the real Tor; otherwise it links the in-tree `libtor_stub.a` that
-  `make vendor` builds from `vendor/tor_stub.c`.
+- For the embedded Tor onion service (optional): run `make tor-full`. It
+  initializes the pinned `vendor/tor` submodule, configures a self-contained
+  embedding profile without optional host-library integrations, and
+  incrementally produces the four archives the node links. Otherwise the node
+  links the in-tree `libtor_stub.a` that `make vendor` builds from
+  `vendor/tor_stub.c`.
 
 ## Vendored archives
 

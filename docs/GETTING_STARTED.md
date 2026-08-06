@@ -52,12 +52,14 @@ vendoring model are in [`docs/BUILD.md`](BUILD.md).
 real embedded Tor:
 
 ```bash
-git submodule update --init vendor/tor
+make tor-full
 ```
 
-then build it per [`docs/BUILD.md`](BUILD.md#prerequisites). When
-`vendor/tor/libtor.a` exists, the Makefile links it automatically and `-tor`
-publishes a real onion address.
+This initializes the pinned submodule and produces its four required static
+archives with an embedding profile that avoids undeclared optional host
+libraries. Later invocations are incremental. When `vendor/tor/libtor.a`
+exists, the Makefile links it automatically and `-tor` publishes a real onion
+address.
 
 **Fast compile-check inner loop** (no link, good for verifying a change
 compiles before a full build):
