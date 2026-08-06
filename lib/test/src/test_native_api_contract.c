@@ -1693,14 +1693,25 @@ static char *app_write_stub_rpc(const char *method, const char *params_json)
                       "00112233445566778899aabbccddeeff\","
                       "\"peer_id\":7,\"status\":\"sent\"}");
     }
-    if (method && strcmp(method, "zslp_send_tx") == 0) {
+    if (method && strcmp(method, "zslp_intent") == 0) {
         g_app_token_send_calls++;
+        if (g_app_token_send_calls == 1)
+            return strdup("{\"schema\":\"zcl.app_token_txresult.v1\","
+                          "\"status\":\"planned\",\"state\":\"planned\","
+                          "\"wallet_scope\":\"dev\","
+                          "\"operation\":\"send\","
+                          "\"plan_id\":\"33333333333333333333333333333333"
+                          "33333333333333333333333333333333\","
+                          "\"token_id\":\"22222222222222222222222222222222"
+                          "22222222222222222222222222222222\","
+                          "\"units\":\"25\",\"actual_fee_zat\":10000,"
+                          "\"maximum_fee_zat\":10000,\"reserved_zat\":10546}");
         return strdup("{\"status\":\"broadcast\","
                       "\"txid\":\"11111111111111111111111111111111"
                       "11111111111111111111111111111111\","
                       "\"token_id\":\"22222222222222222222222222222222"
                       "22222222222222222222222222222222\","
-                      "\"to\":\"t1stub\",\"amount\":25,\"fee\":10000}");
+                      "\"units\":\"25\",\"actual_fee_zat\":10000}");
     }
     if (method && strcmp(method, "zmarket_content_register") == 0) {
         g_app_market_content_calls++;
@@ -1961,8 +1972,8 @@ static int test_app_write_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&blog_input);
 
-        /* 6. token.send has the same two-leg transaction contract: plan is
-         * non-mutating; commit calls the receipt-bearing RPC exactly once. */
+        /* 6. token.send plans one exact transaction and reserves its inputs;
+         * commit names only the durable plan and explicit custody scope. */
         const struct zcl_command_spec *token_spec =
             find_spec(reg, "app.tokens.send");
         ASSERT(token_spec != NULL);
@@ -1970,11 +1981,14 @@ static int test_app_write_native_e2e(void)
         struct json_value token_plan;
         json_init(&token_plan);
         json_set_object(&token_plan);
+        (void)json_push_kv_str(&token_plan, "wallet_scope", "dev");
         (void)json_push_kv_str(
             &token_plan, "token_id",
             "2222222222222222222222222222222222222222222222222222222222222222");
         (void)json_push_kv_str(&token_plan, "to", "t1stub");
         (void)json_push_kv_str(&token_plan, "units", "25");
+        (void)json_push_kv_str(&token_plan, "idempotency_key",
+                               "native-token-send-1");
         struct zcl_command_request token_plan_req = {
             .spec = token_spec, .input = &token_plan, .view = "normal",
         };
@@ -1982,16 +1996,30 @@ static int test_app_write_native_e2e(void)
         zcl_native_handle_token_send(&token_plan_req, &reply);
         ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
-        ASSERT(!reply.error.mutated);
-        ASSERT_EQ(g_app_token_send_calls, 0);
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_token_send_calls, 1);
+        const char *token_plan_id =
+            json_get_str(json_get(&reply.data, "plan_id"));
+        ASSERT(token_plan_id != NULL);
+        char token_plan_id_copy[65];
+        (void)snprintf(token_plan_id_copy, sizeof(token_plan_id_copy), "%s",
+                       token_plan_id);
         zcl_command_reply_free(&reply);
+        (void)json_push_kv_str(&token_plan, "plan_id", token_plan_id_copy);
         (void)json_push_kv_bool(&token_plan, "confirm", true);
         zcl_command_reply_init(&reply, token_spec->output_schema);
         zcl_native_handle_token_send(&token_plan_req, &reply);
         ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
         ASSERT(reply.error.mutated);
-        ASSERT_EQ(g_app_token_send_calls, 1);
+        ASSERT_EQ(g_app_token_send_calls, 2);
         ASSERT(json_get_str(json_get(&reply.data, "txid")) != NULL);
+        char token_receipt[4096];
+        size_t token_receipt_len = json_write(
+            &reply.data, token_receipt, sizeof(token_receipt));
+        ASSERT(token_receipt_len > 0 &&
+               token_receipt_len < sizeof(token_receipt));
+        ASSERT(strstr(token_receipt, "t1stub") == NULL);
+        ASSERT(strstr(token_receipt, "\"to\"") == NULL);
         zcl_command_reply_free(&reply);
         json_free(&token_plan);
 

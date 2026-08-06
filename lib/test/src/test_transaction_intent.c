@@ -8,6 +8,7 @@
 #include "models/vault_intent.h"
 #include "models/wallet_identity.h"
 #include "models/wallet_metadata_crypto.h"
+#include "services/zslp_transaction_intent_service.h"
 #include "wallet/wallet_lock.h"
 
 #include <sqlite3.h>
@@ -54,6 +55,73 @@ static void ti_bound_row(struct vault_intent_row *row, uint8_t tag,
     row->recipient_value_zat = reserved_zat;
     row->max_fee_zat = 0;
     row->reserved_zat = reserved_zat;
+}
+
+struct ti_zslp_fixture {
+    struct wallet_identity_row identity;
+    uint8_t tip_hash[32];
+    uint8_t money_root[32];
+    uint8_t post_prepare_root[32];
+    uint8_t input_tag;
+    int prepares;
+    int publishes;
+};
+
+static struct zcl_result ti_zslp_money(
+    void *opaque, const char *scope, struct wallet_money_snapshot *out)
+{
+    struct ti_zslp_fixture *f = opaque;
+    if (!f || !out || strcmp(scope, "dev") != 0)
+        return ZCL_ERR(-1, "fixture scope mismatch");
+    memset(out, 0, sizeof(*out));
+    out->identity = f->identity;
+    snprintf(out->wallet_scope, sizeof(out->wallet_scope), "dev");
+    snprintf(out->status, sizeof(out->status), "CURRENT");
+    snprintf(out->reason, sizeof(out->reason), "fixture current");
+    out->complete = true;
+    out->tip_height = 100;
+    memcpy(out->tip_hash, f->tip_hash, 32);
+    memcpy(out->snapshot_root, f->money_root, 32);
+    out->confirmed_zat = 30000000;
+    out->agent_available_zat = 5000000;
+    return ZCL_OK;
+}
+
+static struct zcl_result ti_zslp_prepare(
+    void *opaque, const struct zslp_intent_request *request,
+    int64_t maximum_fee_zat, uint8_t *raw_tx, size_t raw_capacity,
+    size_t *raw_tx_len, uint8_t txid_out[32], int64_t *actual_fee_zat,
+    struct vault_intent_input *inputs, size_t input_capacity,
+    size_t *input_count)
+{
+    struct ti_zslp_fixture *f = opaque;
+    if (!f || !request || request->operation != ZSLP_INTENT_GENESIS ||
+        maximum_fee_zat != 1000 || raw_capacity < 4 || input_capacity < 1)
+        return ZCL_ERR(-1, "fixture prepare contract mismatch");
+    const uint8_t prepared[4] = { 'Z', 'S', 'L', f->input_tag };
+    memcpy(raw_tx, prepared, sizeof(prepared));
+    *raw_tx_len = sizeof(prepared);
+    memset(txid_out, (uint8_t)(f->input_tag + 1), 32);
+    *actual_fee_zat = 500;
+    memset(inputs[0].txid, f->input_tag, 32);
+    inputs[0].vout = 3;
+    *input_count = 1;
+    memcpy(f->money_root, f->post_prepare_root, 32);
+    f->prepares++;
+    return ZCL_OK;
+}
+
+static struct zcl_result ti_zslp_publish(
+    void *opaque, const uint8_t *raw_tx, size_t raw_tx_len,
+    const uint8_t expected_txid[32])
+{
+    struct ti_zslp_fixture *f = opaque;
+    if (!f || !raw_tx || raw_tx_len != 4 || raw_tx[0] != 'Z' ||
+        raw_tx[3] != f->input_tag ||
+        expected_txid[0] != (uint8_t)(f->input_tag + 1))
+        return ZCL_ERR(-1, "fixture publish identity mismatch");
+    f->publishes++;
+    return ZCL_OK;
 }
 
 int test_transaction_intent(void)
@@ -297,6 +365,93 @@ int test_transaction_intent(void)
                                      sizeof(loaded_raw), &loaded_raw_len));
         ASSERT(loaded_raw_len == sizeof(prepared_raw) &&
                memcmp(loaded_raw, prepared_raw, sizeof(prepared_raw)) == 0);
+        PASS();
+    }
+
+    TEST("ZSLP intents prepare exact bytes, replay idempotently, and fail "
+         "closed on snapshot drift") {
+        struct node_db zdb; memset(&zdb, 0, sizeof(zdb));
+        ASSERT(node_db_open(&zdb, ":memory:"));
+        wallet_lock_reset_for_test();
+        wallet_lock_note_encrypted_at_rest();
+        ASSERT(wallet_lock_unlock(NULL, NULL, "zslp-intent-test-pass").ok);
+        struct ti_zslp_fixture fixture; memset(&fixture, 0, sizeof(fixture));
+        const uint8_t genesis[32] = { 0xa4 };
+        ASSERT(wallet_identity_ensure(&zdb, genesis, "dev", &fixture.identity));
+        memset(fixture.tip_hash, 0xb1, sizeof(fixture.tip_hash));
+        memset(fixture.money_root, 0xc1, sizeof(fixture.money_root));
+        memset(fixture.post_prepare_root, 0xc2,
+               sizeof(fixture.post_prepare_root));
+        fixture.input_tag = 0xd1;
+        struct zslp_intent_runtime runtime = {
+            .node_db = &zdb,
+            .read_money = ti_zslp_money, .money_ctx = &fixture,
+            .prepare = ti_zslp_prepare, .prepare_ctx = &fixture,
+            .publish = ti_zslp_publish, .publish_ctx = &fixture,
+            .tip_height = 100, .maximum_fee_zat = 1000, .now_unix = 1000,
+        };
+        memcpy(runtime.tip_hash, fixture.tip_hash, 32);
+        struct zslp_intent_request request; memset(&request, 0, sizeof(request));
+        snprintf(request.wallet_scope, sizeof(request.wallet_scope), "dev");
+        request.operation = ZSLP_INTENT_GENESIS;
+        snprintf(request.ticker, sizeof(request.ticker), "PRIVATE");
+        snprintf(request.name, sizeof(request.name), "Private Fixture");
+        request.decimals = 0;
+        request.supply = 1000;
+        snprintf(request.idempotency_key, sizeof(request.idempotency_key),
+                 "zslp-genesis-1");
+        struct zslp_intent_result planned;
+        ASSERT(zslp_transaction_intent_plan(
+            &runtime, &request, &planned).ok);
+        ASSERT_EQ(fixture.prepares, 1);
+        ASSERT(!planned.broadcast);
+        ASSERT_EQ(planned.actual_fee_zat, 500);
+        ASSERT_EQ(planned.maximum_fee_zat, 1000);
+        ASSERT_EQ(planned.reserved_zat, 1000);
+        ASSERT(!ti_db_contains(&zdb, "Private Fixture"));
+        ASSERT(vault_intent_has_raw(&zdb, planned.plan_id));
+
+        struct zslp_intent_result replay;
+        ASSERT(zslp_transaction_intent_plan(&runtime, &request, &replay).ok);
+        ASSERT(replay.idempotent_replay);
+        ASSERT(memcmp(replay.plan_id, planned.plan_id, 32) == 0);
+        ASSERT_EQ(fixture.prepares, 1);
+        struct zslp_intent_request changed = request;
+        changed.supply++;
+        ASSERT(!zslp_transaction_intent_plan(
+            &runtime, &changed, &replay).ok);
+
+        struct zslp_intent_result committed;
+        ASSERT(zslp_transaction_intent_commit(
+            &runtime, "dev", planned.plan_id, &committed).ok);
+        ASSERT(committed.broadcast);
+        ASSERT_EQ(fixture.publishes, 1);
+        ASSERT(zslp_transaction_intent_commit(
+            &runtime, "dev", planned.plan_id, &replay).ok);
+        ASSERT(replay.idempotent_replay);
+        ASSERT_EQ(fixture.publishes, 1);
+        ASSERT(!zslp_transaction_intent_commit(
+            &runtime, "prod", planned.plan_id, &replay).ok);
+
+        fixture.input_tag = 0xd2;
+        memset(fixture.money_root, 0xc3, sizeof(fixture.money_root));
+        memset(fixture.post_prepare_root, 0xc4,
+               sizeof(fixture.post_prepare_root));
+        snprintf(request.idempotency_key, sizeof(request.idempotency_key),
+                 "zslp-genesis-2");
+        runtime.now_unix = 1100;
+        struct zslp_intent_result drifted;
+        ASSERT(zslp_transaction_intent_plan(
+            &runtime, &request, &drifted).ok);
+        memset(fixture.money_root, 0xc5, sizeof(fixture.money_root));
+        ASSERT(!zslp_transaction_intent_commit(
+            &runtime, "dev", drifted.plan_id, &replay).ok);
+        struct vault_intent_row conflicted;
+        ASSERT(vault_intent_find(&zdb, drifted.plan_id, &conflicted));
+        ASSERT_EQ(conflicted.state, VAULT_INTENT_CONFLICTED);
+        ASSERT_EQ(fixture.publishes, 1);
+        node_db_close(&zdb);
+        wallet_lock_reset_for_test();
         PASS();
     }
 

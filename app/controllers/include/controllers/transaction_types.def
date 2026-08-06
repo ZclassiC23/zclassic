@@ -94,23 +94,23 @@ TX_TYPE("sprout_joinsplit", "base_zcl", "process_only", "chain_transaction",
 TX_TYPE("zslp_genesis", "zslp", "ready", "overlay_transaction",
         "op_return_zslp_genesis", "public_metadata", "plan_commit",
         "app.tokens.create", "app.tokens.create",
-        "core.wallet.transaction.get", "", "all_zcl_networks",
+        "core.wallet.transaction.get", "", "all_zcl_networks_identity_bound_vault_intent",
         "zslp_genesis", "simnet_confirmed", "test_simnet",
         "Create a ZSLP token definition and initial token outputs in a valid ZCL transaction.")
 TX_TYPE("zslp_mint", "zslp", "ready", "overlay_transaction",
         "op_return_zslp_mint", "public_metadata", "plan_commit",
         "app.tokens.mint", "app.tokens.mint", "core.wallet.transaction.get",
-        "", "all_zcl_networks", "zslp_mint", "simnet_confirmed", "test_simnet",
+        "", "all_zcl_networks_identity_bound_vault_intent", "zslp_mint", "simnet_confirmed", "test_simnet",
         "Mint additional units under the token baton and strict ZSLP validation rules.")
 TX_TYPE("zslp_send", "zslp", "ready", "overlay_transaction",
         "op_return_zslp_send", "public_metadata", "plan_commit",
         "app.tokens.send", "app.tokens.send", "core.wallet.transaction.get",
-        "", "all_zcl_networks", "zslp_send", "simnet_confirmed", "test_simnet",
+        "", "all_zcl_networks_identity_bound_vault_intent", "zslp_send", "simnet_confirmed", "test_simnet",
         "Transfer token units while preserving token change and ordinary-ZCL coin selection boundaries.")
 TX_TYPE("zslp_burn", "zslp", "ready", "overlay_transaction",
         "op_return_zslp_send_implicit_burn", "public_metadata", "plan_commit",
         "app.tokens.burn", "app.tokens.burn", "core.wallet.transaction.get",
-        "", "all_zcl_networks", "zslp_burn", "simnet_confirmed", "test_simnet",
+        "", "all_zcl_networks_identity_bound_vault_intent", "zslp_burn", "simnet_confirmed", "test_simnet",
         "Explicitly destroy token units; supply changes only after strict projection validation.")
 
 TX_TYPE("znam_register", "znam", "ready", "overlay_transaction",
