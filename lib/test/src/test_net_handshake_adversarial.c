@@ -497,6 +497,63 @@ static int test_addr_over_cap_rejected(void)
     return failures;
 }
 
+static int test_legacy_zcl23_addr_batch_bounded_compatible(void)
+{
+    int failures = 0;
+    TEST("addr: historical ZCL23 2500 batch is parsed but admission stays bounded") {
+        enum { LEGACY_COUNT = ADDRMAN_GETADDR_MAX };
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, true));
+        f.node.version = PROTOCOL_VERSION;
+        f.node.services = NODE_ZCL23;
+
+        struct net_address *addrs = zcl_malloc(
+            LEGACY_COUNT * sizeof(*addrs), "hs_legacy_zcl23_addrs");
+        ASSERT(addrs != NULL);
+        uint32_t recent = (uint32_t)platform_time_wall_time_t() - 60;
+        for (int i = 0; i < LEGACY_COUNT; i++)
+            addrs[i] = hs_make_pub_addr(
+                60, (uint8_t)(i >> 16), (uint8_t)(i >> 8),
+                (uint8_t)i, 8033, recent);
+
+        struct byte_stream payload;
+        hs_build_addr_payload(&payload, addrs, LEGACY_COUNT);
+        free(addrs);
+        ASSERT(hs_drive_message(&f.mp, &f.node, "addr", &payload));
+        ASSERT(!f.node.disconnect);
+        ASSERT_EQ(f.node.addr_rate_window_count, LEGACY_COUNT);
+        ASSERT(f.nm.addrman.random_size > 0);
+        ASSERT(f.nm.addrman.random_size <= MAX_ADDR_TO_SEND);
+        stream_free(&payload);
+
+        /* A historical eager batch can be followed by the ordinary getaddr
+         * response during the same handshake without tripping the rate cap. */
+        addrs = zcl_malloc(MAX_ADDR_TO_SEND * sizeof(*addrs),
+                           "hs_legacy_zcl23_getaddr_addrs");
+        ASSERT(addrs != NULL);
+        for (int i = 0; i < MAX_ADDR_TO_SEND; i++)
+            addrs[i] = hs_make_pub_addr(
+                61, 0, (uint8_t)(i >> 8), (uint8_t)i, 8033, recent);
+        hs_build_addr_payload(&payload, addrs, MAX_ADDR_TO_SEND);
+        free(addrs);
+        ASSERT(hs_drive_message(&f.mp, &f.node, "addr", &payload));
+        ASSERT(!f.node.disconnect);
+        ASSERT_EQ(f.node.addr_rate_window_count,
+                  LEGACY_COUNT + MAX_ADDR_TO_SEND);
+        stream_free(&payload);
+
+        /* The compatibility envelope is exact, not an unbounded exemption. */
+        hs_build_addr_count_only_payload(&payload, LEGACY_COUNT + 1);
+        ASSERT(hs_drive_message(&f.mp, &f.node, "addr", &payload));
+        ASSERT(f.node.disconnect);
+
+        stream_free(&payload);
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 6. getaddr response is bounded by the wire cap (MAX_ADDR_TO_SEND)
  * and answers at most once per peer. Rides on
  * msgprocessor_inv.c::process_getaddr() (the `addrs[MAX_ADDR_TO_SEND]`
@@ -987,6 +1044,7 @@ int test_net_handshake_adversarial(void)
     failures += test_duplicate_version_rejected();
     failures += test_self_connection_detected();
     failures += test_addr_over_cap_rejected();
+    failures += test_legacy_zcl23_addr_batch_bounded_compatible();
     failures += test_getaddr_bounded_and_answered_once();
     failures += test_eager_zcl23_addr_exchange_bounded();
     failures += test_addr_message_records_topology_edge();

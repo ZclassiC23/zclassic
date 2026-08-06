@@ -86,8 +86,8 @@ bool mp_handle_notfound(struct msg_processor *mp, struct p2p_node *node,
     return process_notfound(mp, node, s);
 }
 
-/* A single addr message is already bounded at MAX_ADDR_TO_SEND (1000)
- * entries by the check above, but nothing previously stopped a peer from
+/* A single addr message admits at most MAX_ADDR_TO_SEND (1000) entries, but
+ * nothing previously stopped a peer from
  * repeating max-legal-size batches back-to-back forever for free — cheap
  * CPU/addrman-churn amplification with zero score cost. Fixed 60s window,
  * cap generous enough for legitimate bursts (an unsolicited self-announce
@@ -95,6 +95,8 @@ bool mp_handle_notfound(struct msg_processor *mp, struct p2p_node *node,
  * catching sustained repetition. */
 #define ADDR_RATE_WINDOW_SECS 60
 #define ADDR_RATE_MAX_PER_WINDOW (MAX_ADDR_TO_SEND * 3)
+#define ADDR_RATE_LEGACY_ZCL23_MAX_PER_WINDOW \
+    (ADDRMAN_GETADDR_MAX + MAX_ADDR_TO_SEND * 2)
 
 static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
                           struct byte_stream *s)
@@ -104,18 +106,36 @@ static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
         LOG_FAIL("net", "failed to read addr count from %s",
                  node->addr_name);
 
-    if (msg_count_exceeds("net", "addr", count, MAX_ADDR_TO_SEND,
+    /* Builds predating the eager-exchange cap fix advertised as many as
+     * ADDRMAN_GETADDR_MAX addresses to another ZCL23 peer.  A staggered
+     * rollout must not disconnect the still-stable node merely because it
+     * runs those known old bytes.  Keep the compatibility envelope bounded,
+     * count every wire entry against the rate limit, deserialize the whole
+     * message, and admit only the ordinary MAX_ADDR_TO_SEND prefix.  Peers
+     * without the authenticated handshake capability retain the strict cap. */
+    uint64_t wire_cap = peer_supports_fast_sync(node->services)
+                            ? ADDRMAN_GETADDR_MAX
+                            : MAX_ADDR_TO_SEND;
+    if (msg_count_exceeds("net", "addr", count, wire_cap,
                           node->addr_name)) {
         /* Score like every other oversized-count flood (inv/getdata/
          * notfound/headers) — see msg_tx.c::process_inv for why
          * disconnect alone lets a hostile peer repeat this forever
          * across reconnects. */
         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
-                            "addr count exceeds MAX_ADDR_TO_SEND");
+                            "addr count exceeds negotiated wire cap");
         printf("Peer %s: addr message too large (%llu)\n",
                node->addr_name, (unsigned long long)count);
         node->disconnect = true;
         return false;
+    }
+
+    uint64_t admit_count = count;
+    if (admit_count > MAX_ADDR_TO_SEND) {
+        admit_count = MAX_ADDR_TO_SEND;
+        printf("Peer %s: legacy ZCL23 addr batch %llu; admitting bounded prefix %u\n",
+               node->addr_name, (unsigned long long)count,
+               (unsigned int)MAX_ADDR_TO_SEND);
     }
 
     /* Per-peer addr rate limit: a fixed window over TOTAL addresses
@@ -123,13 +143,16 @@ static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
      * batches are both bounded the same way. */
     {
         int64_t now = GetTime();
+        uint32_t rate_cap = peer_supports_fast_sync(node->services)
+                                ? ADDR_RATE_LEGACY_ZCL23_MAX_PER_WINDOW
+                                : ADDR_RATE_MAX_PER_WINDOW;
         if (node->addr_rate_window_start == 0 ||
             now - node->addr_rate_window_start >= ADDR_RATE_WINDOW_SECS) {
             node->addr_rate_window_start = now;
             node->addr_rate_window_count = 0;
         }
         node->addr_rate_window_count += (uint32_t)count;
-        if (node->addr_rate_window_count > ADDR_RATE_MAX_PER_WINDOW) {
+        if (node->addr_rate_window_count > rate_cap) {
             peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
                                 "addr rate limit exceeded");
             printf("Peer %s: addr rate limit exceeded (%u in %ds)\n",
@@ -160,11 +183,13 @@ static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
             LOG_FAIL("net", "failed to deserialize addr[%llu] from %s",
                      (unsigned long long)i, node->addr_name);
 
-        if (mp->net_mgr)
+        if (i < admit_count && mp->net_mgr)
             addrman_add(&mp->net_mgr->addrman, &addr, &source, 0);
-        (void)topology_store_record_edge(&node->addr.svc.addr,
-                                         node->addr.svc.port, &addr.svc.addr,
-                                         addr.svc.port, topo_now, NULL);
+        if (i < admit_count)
+            (void)topology_store_record_edge(&node->addr.svc.addr,
+                                             node->addr.svc.port,
+                                             &addr.svc.addr, addr.svc.port,
+                                             topo_now, NULL);
     }
     return true;
 }
