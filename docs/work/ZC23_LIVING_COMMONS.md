@@ -307,3 +307,31 @@ and verification slices, challenge-mature founding contributions, green shadow
 epochs, exact active-chain/reorg proofs, independent review, custody gates,
 owner authorization, and a separately reviewed immutable genesis policy root.
 Nothing in this document grants that authorization.
+
+## Implementation ledger
+
+Updated 2026-08-06. This is an implementation record, not token or deployment
+authorization.
+
+| State | Slice | Source commit | Integrated `main` | Evidence |
+|---|---|---|---|---|
+| DONE | LC0 covenant and terminology freeze | `03f13639d` | `1ff4db5a0` | full lint 134/134; pre-push source-wide suite |
+| DONE | LC1 fixed creation-attribution wire, identity KAT, checked eight-decimal arithmetic | `0ff09fb68` | `9a8cc8672` | born-red unresolved-symbol gate, focused green, pre-push source-wide suite |
+| DONE | LC1 independent CAS cross-object verifier | `f0d1af5a1` | `f9a5c61cb` | focused attribution/Score verticals, full lint 134/134, pre-push source-wide suite |
+| DONE | LC2 ordered epoch creation-set wire and cap/no-tail arithmetic | `4cfaf6ebf` | `c41a51de1` | born-red unresolved-symbol gate, root KAT, full lint 134/134, pre-push source-wide suite |
+| DONE | LC2 CAS attribution summation and observed-MINT equality gate | `4381781b8` | `36f6f3ae5` | one-atom under/over rejection, focused attribution/Score verticals, full lint 134/134 before integration, combined-tree lint-fast, pre-push source-wide suite |
+
+The `36f6f3ae5` push integrated concurrent `main` commit `00a0c54c8` through
+lane merge `4c8e7abe2`; no concurrent file was overwritten. Two complete
+pre-push attempts were blocked only by host-variable `test_simnet_perf`
+detector measurements. The exact group then passed on the same combined SHA
+(clean growth 1065 permille, injected growth 3437 permille), and the final
+normal, hook-enabled push passed. The failed attempts are not counted as
+passed gates.
+
+LC1 parser fuzzing and the sanitizer/reproducibility matrix remain TODO. LC2's
+canonical set and equality verifier are present; deterministic simulated ZSLP
+MINT-plan binding remains TODO. LC3 projection/commands, LC4 patronage
+simulation, and LC5 continuity views remain TODO. No live token, GENESIS,
+MINT, SEND, wallet, canonical datadir, production port, deployment, service,
+or consensus path was touched by these slices.
