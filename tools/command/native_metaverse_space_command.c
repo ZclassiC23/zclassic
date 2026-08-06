@@ -16,10 +16,12 @@
 #include "vcs/zcode_dht_identity.h"
 #include "vcs/zcode_sovereignty_policy.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define MVSPACE_PATH_MAX 4096u
 #define MVSPACE_RECORD_SECONDS INT64_C(3600)
@@ -119,6 +121,24 @@ static const char *mvspace_workspace(const struct json_value *input,
   const char *datadir = mvspace_datadir(input);
   int n = datadir ? snprintf(out, MVSPACE_PATH_MAX, "%s/zcode", datadir) : -1;
   return n > 0 && n < (int)MVSPACE_PATH_MAX ? out : NULL;
+}
+
+/* An absent object store is a valid empty/not-found state. A path that is
+ * present but cannot be a directory is different: treating ENOTDIR as an
+ * empty inventory would let a READ command hide local corruption. Keep this
+ * preflight read-only; it exists only to preserve that distinction before the
+ * lower CAS loader collapses both cases into its generic not-found result. */
+static bool mvspace_workspace_store_shape_valid(const char *workspace)
+{
+  char path[MVSPACE_PATH_MAX];
+  struct stat st;
+  int n = workspace
+      ? snprintf(path, sizeof(path), "%s/.zvcs", workspace) : -1;
+  if (n <= 0 || n >= (int)sizeof(path))
+    return false;
+  if (lstat(path, &st) == 0)
+    return S_ISDIR(st.st_mode);
+  return errno == ENOENT;
 }
 
 static bool mvspace_root(const char *hex, uint8_t out[32])
@@ -862,6 +882,12 @@ void zcl_native_handle_metaverse_space_status(
   const char *datadir = mvspace_datadir(request->input);
   char workspace[MVSPACE_PATH_MAX];
   const char *resolved = mvspace_workspace(request->input, workspace);
+  if (!resolved || !mvspace_workspace_store_shape_valid(resolved)) {
+    mvspace_fail(reply, "WORKSPACE_UNREADABLE",
+                 "the local workspace object store is present but unreadable",
+                 "metaverse.space.status");
+    return;
+  }
   struct mvspace_status_identity identity =
       mvspace_status_identity_read(datadir);
   struct mvspace_status_network network = mvspace_status_network_read();
