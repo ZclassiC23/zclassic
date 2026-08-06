@@ -5297,6 +5297,20 @@ install: vendor-ready zclassic23 zcl-rpc
 
 deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	@./tools/deploy_guard.sh canonical-deploy
+	@# Snapshot the executable inode owned by the stable MainPID before the
+	@# forced relink below unlinks build/bin/zclassic23.  The running process
+	@# remains valid after unlink, but the pathname then names the challenger;
+	@# a post-build copy of that pathname is therefore not a rollback image.
+	@set -eu; \
+	mainpid="$$(systemctl --user show zclassic23 -p MainPID --value 2>/dev/null || true)"; \
+	case "$$mainpid" in ''|*[!0-9]*|0) \
+	    echo "deploy: canonical service must be running before prior-binary capture" >&2; exit 1;; esac; \
+	prior="$(BIN_DIR)/.zclassic23.deploy-prior"; \
+	prior_tmp="$$(mktemp "$$prior.tmp.XXXXXX")"; \
+	trap 'rm -f "$$prior_tmp"' EXIT HUP INT TERM; \
+	install -m 755 "/proc/$$mainpid/exe" "$$prior_tmp"; \
+	mv -f -- "$$prior_tmp" "$$prior"; \
+	trap - EXIT HUP INT TERM
 	@# Option 2 (DEPLOY-WRITE) bridge: stage a verified anchor snapshot into the
 	@# datadir so this install carries a reachable snapshot from boot one
 	@# (covers the cold-start case the in-fold self-mint cannot). Best-effort:
@@ -5319,6 +5333,7 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	command -v timeout >/dev/null 2>&1 || { \
 	    echo "deploy: timeout is required for candidate preflight" >&2; exit 1; }; \
 	candidate="$$(mktemp "$(dir $(ZCLASSIC23_BIN)).zclassic23.deploy.XXXXXX")"; \
+	prior_snapshot="$(BIN_DIR)/.zclassic23.deploy-prior"; \
 	dropin_tmp=""; service_tmp=""; rollback_bin=""; rollback_dropin=""; \
 	rollback_dropin_present=0; rollback_armed=0; rollback_complete=0; \
 	rollback_source_id=""; rollback_artifact_sha256=""; SERVICE_BIN=""; dropin=""; \
@@ -5354,7 +5369,7 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	            echo "deploy: CRITICAL — rollback verification failed; automation stopped" >&2; \
 	        fi; \
 	    fi; \
-	    rm -f "$$candidate" "$$dropin_tmp" "$$service_tmp" \
+	    rm -f "$$candidate" "$$prior_snapshot" "$$dropin_tmp" "$$service_tmp" \
 	          "$$rollback_bin" "$$rollback_dropin"; \
 	    exit "$$deploy_rc"; \
 	}; \
@@ -5418,16 +5433,24 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	mainpid="$$(systemctl --user show zclassic23 -p MainPID --value 2>/dev/null || true)"; \
 	case "$$mainpid" in ''|*[!0-9]*|0) \
 	    echo "deploy: canonical service must be running before a rollback-safe mutation" >&2; exit 1;; esac; \
-	running_exe="$$(readlink -f "/proc/$$mainpid/exe" 2>/dev/null || true)"; \
+	running_exe_raw="$$(readlink "/proc/$$mainpid/exe" 2>/dev/null || true)"; \
+	running_exe_path="$${running_exe_raw% (deleted)}"; \
+	running_exe="$$(readlink -f "$$running_exe_path" 2>/dev/null || true)"; \
 	target_exe="$$(readlink -f "$$SERVICE_BIN" 2>/dev/null || true)"; \
 	[ -n "$$running_exe" ] && [ "$$running_exe" = "$$target_exe" ] || { \
 	    echo "deploy: canonical MainPID executable does not match service target" >&2; exit 1; }; \
+	[ -f "$$prior_snapshot" ] || { \
+	    echo "deploy: captured prior executable is missing" >&2; exit 1; }; \
+	running_sha256="$$(sha256sum < "/proc/$$mainpid/exe" | awk '{print $$1}')"; \
+	prior_sha256="$$(sha256sum < "$$prior_snapshot" | awk '{print $$1}')"; \
+	[ "$$running_sha256" = "$$prior_sha256" ] || { \
+	    echo "deploy: MainPID changed after prior-binary capture" >&2; exit 1; }; \
 	tools/dev/source-identity.sh verify-record \
 	    "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	install -d "$(HOME)/.config/systemd/user/zclassic23.service.d"; \
 	dropin="$(HOME)/.config/systemd/user/zclassic23.service.d/90-build-identity.conf"; \
 	rollback_bin="$$(mktemp "$$(dirname "$$SERVICE_BIN")/.zclassic23.rollback.XXXXXX")"; \
-	install -m 755 "$$SERVICE_BIN" "$$rollback_bin"; \
+	install -m 755 "$$prior_snapshot" "$$rollback_bin"; \
 	rollback_artifact_sha256="$$(sha256sum < "$$rollback_bin" | awk '{print $$1}')"; \
 	rollback_agentbuild="$$(timeout 30 "$$rollback_bin" agentbuild 2>&1)" || { \
 	    echo "deploy: prior executable agentbuild preflight failed" >&2; exit 1; }; \
