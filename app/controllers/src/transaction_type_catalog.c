@@ -313,8 +313,14 @@ bool zcl_transaction_types_index_json(struct json_value *out)
         "discovery_only_catalog_grants_no_wallet_or_broadcast_authority");
     (void)json_push_kv_str(out, "agent_workflow",
         "select_type_then_discover_schema_then_plan_then_owner_authorized_commit_then_inspect_txid");
-    (void)json_push_kv_str(out, "live_proof_source",
+    /* Reproducible isolated fixtures are public; owner-funded history is not
+     * a repository artifact, even when its txid is publicly visible on-chain. */
+    (void)json_push_kv_str(out, "checked_in_proof_source",
         "docs/work/transaction-lab-events.jsonl");
+    (void)json_push_kv_str(out, "live_proof_source",
+        "private_local_notebook");
+    (void)json_push_kv_str(out, "funded_experiment_history_policy",
+        "private_local_only_never_git");
     (void)json_push_kv_str(out, "wire_catalog_command",
         "app.transaction-types.wire");
     (void)json_push_kv_str(out, "reverse_lookup_command",

@@ -76,7 +76,7 @@ is the full `zcl.transaction_type.v2` contract. The collection also reports
 `fully_demonstrated`, and `fully_chain_or_process_verified`, so an agent can
 assess proof coverage without parsing all catalog rows. It also names the
 reverse lookup command and counts the explicitly audited alternate routes and
-non-chain dispositions. The current catalog has 9 alternate route bindings and
+non-chain dispositions. The current catalog has 6 alternate route bindings and
 18 explicit negative classifications.
 `core.wallet.transaction.list` is different: it is
 wallet history, not the type catalog. `app.protocols` describes broader
@@ -240,7 +240,7 @@ human index:
 
 | Family | Semantic type ids | Current posture |
 |---|---|---|
-| Base ZCL | `coinbase_reward`, `transparent_t_to_t`, `transparent_multi_recipient`, `sapling_mixed_recipient`, `raw_custom_transaction`, `transparent_p2sh_multisig_spend`, `sapling_t_to_z`, `sapling_z_to_z`, `sapling_z_to_t`, `sprout_joinsplit` | Single-recipient, identity-bound transparent and mixed-pool multi-recipient, P2SH multisig, and Sapling workflows are ready. Multi-recipient payments use the durable vault-intent lifecycle. Multisig composition accepts public keys only and its signer uses resident owner-wallet keys. Coinbase and Sprout are process-only; Sprout evidence pins complete canonical mainnet transactions before and after Sapling activation plus contextual JoinSplit signature and PHGR13/Groth16 proof verification, without exposing a deprecated constructor. |
+| Base ZCL | `coinbase_reward`, `transparent_t_to_t`, `transparent_multi_recipient`, `sapling_mixed_recipient`, `raw_custom_transaction`, `transparent_p2sh_multisig_spend`, `sapling_t_to_z`, `sapling_z_to_z`, `sapling_z_to_t`, `sprout_joinsplit` | Identity-bound transparent, Sapling, and mixed-pool payments use one durable vault-intent lifecycle, whether they have one recipient or fifty. P2SH multisig is ready; composition accepts public keys only and its signer uses resident owner-wallet keys. Coinbase and Sprout are process-only; Sprout evidence pins complete canonical mainnet transactions before and after Sapling activation plus contextual JoinSplit signature and PHGR13/Groth16 proof verification, without exposing a deprecated constructor. |
 | ZSLP tokens | `zslp_genesis`, `zslp_mint`, `zslp_send`, `zslp_burn` | Typed plan/commit builders. |
 | ZNAM names | `znam_register`, `znam_update`, `znam_transfer`, `znam_renew`, `znam_set_record`, `znam_set_text` | Typed plan/commit builders with owner checks. |
 | Messaging | `sapling_onchain_memo` | On-chain ZMSG uses an encrypted Sapling memo; P2P messaging is off-chain. |
@@ -363,6 +363,10 @@ make transaction-lab-status
 make transaction-lab-check
 ```
 
+The collection names this split in machine-readable fields:
+`checked_in_proof_source` points to the reproducible isolated baseline,
+`live_proof_source` is `private_local_notebook`, and
+`funded_experiment_history_policy` is `private_local_only_never_git`.
 The reproducible isolated-event baseline is
 [`work/transaction-lab-events.jsonl`](./work/transaction-lab-events.jsonl); live
 receipts default to private local state and are never committed. The

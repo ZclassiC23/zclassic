@@ -220,7 +220,7 @@ int api_transaction_type_focused_tests(void)
         size_t alias_count = 0;
         const struct zcl_transaction_command_alias *aliases =
             zcl_transaction_command_alias_catalog(&alias_count);
-        bool ok = registry && aliases && alias_count == 9;
+        bool ok = registry && aliases && alias_count == 6;
         for (size_t i = 0; ok && i < alias_count; i++) {
             ok = zcl_transaction_type_find(aliases[i].type_id) != NULL &&
                  zcl_command_registry_find(registry,
@@ -450,9 +450,17 @@ int api_transaction_type_focused_tests(void)
                                           "reverse_lookup_command")),
                     "app.transaction-types.command") == 0 &&
              json_get_int(json_get(&root,
-                 "alternate_command_route_count")) == 9 &&
+                 "alternate_command_route_count")) == 6 &&
              json_get_int(json_get(&root,
-                 "explicit_non_chain_command_count")) == 18;
+                 "explicit_non_chain_command_count")) == 18 &&
+             strcmp(json_get_str(json_get(&root,
+                         "checked_in_proof_source")),
+                    "docs/work/transaction-lab-events.jsonl") == 0 &&
+             strcmp(json_get_str(json_get(&root, "live_proof_source")),
+                    "private_local_notebook") == 0 &&
+             strcmp(json_get_str(json_get(&root,
+                         "funded_experiment_history_policy")),
+                    "private_local_only_never_git") == 0;
         const struct json_value *transparent =
             api_test_find_str_field(types, "id", "transparent_t_to_t");
         const struct json_value *mixed =
@@ -492,7 +500,7 @@ int api_transaction_type_focused_tests(void)
             api_test_find_str_field(types, "id", "zpay_memo_envelope");
         ok = ok && transparent && zanc_digest &&
              strcmp(json_get_str(json_get(transparent, "builder_command")),
-                    "core.wallet.transaction.send") == 0 &&
+                    "vault.intent.plan") == 0 &&
              strcmp(json_get_str(json_get(transparent, "proof_level")),
                     "simnet_confirmed") == 0;
         ok = ok && mixed &&
@@ -787,9 +795,11 @@ int api_transaction_type_focused_tests(void)
             json_get_bool(json_get(data, "may_prepare_chain_material")) &&
             json_get_bool(json_get(data, "may_sign_or_submit")) &&
             api_test_array_has_str(json_get(transparent, "roles"),
-                                   "builder") &&
-            api_test_array_has_str(json_get(transparent, "roles"),
-                                   "commit") &&
+                                   "component") &&
+            !api_test_array_has_str(json_get(transparent, "roles"),
+                                    "builder") &&
+            !api_test_array_has_str(json_get(transparent, "roles"),
+                                    "commit") &&
             strcmp(json_get_str(json_get(
                        json_get(transparent, "guide_input"), "type")),
                    "transparent_t_to_t") == 0 &&
