@@ -25,7 +25,6 @@
 #include "core/uint256.h"
 #include "json/json.h"
 #include "rpc/server.h"
-#include "controllers/explorer_internal.h"
 #include "controllers/strong_params.h"
 #include "services/chain_restore_boot_snapshot.h"
 #include "services/block_source_policy.h"
@@ -218,37 +217,6 @@ static void push_hash_json(struct json_value *out, const char *key,
     json_push_kv_str(out, key, present ? hex : "");
 }
 
-static void push_explorer_index_state_json(struct json_value *out,
-                                           struct node_db *ndb)
-{
-    struct json_value obj = {0};
-
-    json_set_object(&obj);
-    if (!ndb || !ndb->open || !ndb->db) {
-        json_push_kv_str(&obj, "state", "unknown");
-        json_push_kv_str(&obj, "reason", "database unavailable");
-        json_push_kv(out, "explorer_index_state", &obj);
-        json_free(&obj);
-        return;
-    }
-
-    struct explorer_history_validation v;
-    int64_t height = sql_query_i64(ndb->db,
-        "SELECT COALESCE(MAX(height),0) FROM blocks");
-    explorer_validate_block_history(ndb->db, height, &v);
-    json_push_kv_str(&obj, "state", v.usable ? "complete" : "degraded");
-    json_push_kv_str(&obj, "reason", v.reason);
-    json_push_kv_int(&obj, "height", v.max_height);
-    json_push_kv_int(&obj, "blocks", v.block_rows);
-    json_push_kv_int(&obj, "missing_heights", v.missing_heights);
-    json_push_kv_int(&obj, "first_missing_height", v.first_missing_height);
-    json_push_kv_int(&obj, "transactions", v.tx_rows);
-    json_push_kv_int(&obj, "tx_outputs", v.tx_output_rows);
-    json_push_kv_int(&obj, "integrity_receipts", v.integrity_rows);
-    json_push_kv(out, "explorer_index_state", &obj);
-    json_free(&obj);
-}
-
 bool diag_chain_evidence_dump_state_json(struct json_value *out,
                                          const char *key)
 {
@@ -318,7 +286,7 @@ bool diag_chain_evidence_dump_state_json(struct json_value *out,
                      (int64_t)view.background_validation_height);
     json_push_kv_str(out, "contradiction_reason",
                      view.contradiction_reason);
-    push_explorer_index_state_json(out, app_runtime_node_db());
+    diag_push_explorer_index_state_json(out, app_runtime_node_db());
     return true;
 }
 
