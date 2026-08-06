@@ -4,6 +4,9 @@ Status: owner-directed implementation plan, 2026-08-02. This plan extends the
 live ZCODE package and agentic-development foundations. It does not displace
 the sovereign-node MVP order in [`FORWARD_PLAN.md`](./FORWARD_PLAN.md), change
 ZClassic consensus, authorize a deploy, or authorize movement of live funds.
+The planned transferable asset is ZC23. Its immutable creation-backed issuance
+covenant, denomination, patronage boundary, and LC0-LC5 order are authoritative
+in [`ZC23_LIVING_COMMONS.md`](./ZC23_LIVING_COMMONS.md).
 
 ## Mission and truth boundary
 
@@ -12,7 +15,7 @@ ZCODE is an application overlay with this evidence flow:
 ```text
 question -> preregistered study -> confined experiment -> signed evidence
          -> independent reproduction -> review -> local conclusion
-         -> optional contribution reward
+         -> optional creation attribution under the ZC23 policy
 ```
 
 ZClassic PoW supplies active-chain ordering, timestamps, reorg handling,
@@ -32,7 +35,7 @@ The implementation must reuse the existing owners:
 - The `zpkgswm` multiplexer owns package and ZCODE network traffic.
 - The existing metaverse property `zcode_package:<root>` remains the only
   ZCODE package property kind.
-- Generic ZSLP owns base token validity. ZCODE policy is an additional local
+- Generic ZSLP owns base token validity. ZC23 policy is an additional local
   application verdict, never a consensus predicate.
 
 No second CAS, scheduler, identity system, transaction builder, socket stack,
@@ -323,7 +326,7 @@ generated code receives no credit. One credential is allowed per ZID.
 The credential contributes selection weight 1, claims neither usefulness nor
 safety, and earns no token by itself. Challenge-matured code, tests, fixes,
 benchmarks, reproductions, negative findings, and structured reviews add
-evidence points. Storage, signing, votes, PageRank, and transferred ZCODE add
+evidence points. Storage, signing, votes, PageRank, and transferred ZC23 add
 no committee weight. One contribution root credits one identity.
 
 ### Committee election
@@ -362,31 +365,39 @@ the exact deterministic transaction. Script threshold remains the theft
 boundary and the API must say that a compromised Script majority can bypass
 the software certificate rule.
 
-### Issuance and policy validity
+### ZC23 issuance and policy validity
 
-Ticker `ZCODE`, decimals 0, initial supply 1. Epoch emission is
-`floor(50000 / 2^era)`, with 208 epochs per era. Maximum policy-compliant
-supply is 20,798,753 including genesis.
+Ticker `ZC23`, decimals 8, initial supply `1.00000000 ZC23`. Atomic epoch
+capacity is `floor(50000 / 2^era) * 100000000`, with 208 epochs per era and no
+fractional-era tail. Maximum policy-compliant supply remains exactly
+`20,798,753.00000000 ZC23` = `2,079,875,300,000,000` atoms including genesis.
+Checked `uint64_t` arithmetic is mandatory.
 
-Per-epoch caps are 70% code/tests/mechanically proven security, 15% benchmark
-and reproduction, 10% rigorous reviews/negative findings, and 5% verified
-storage/DKG/signing. Integer remainder goes to code/tests. Mint only matured
-awards; unused capacity is not minted or carried.
+Every genesis or epoch atom must be assigned by exactly one challenge-matured
+`creation_attribution.v1`. The ordered attribution sum equals actual MINT
+exactly; actual MINT does not exceed the epoch cap; unissued atoms equal cap
+minus MINT and expire permanently. There is no treasury remainder or
+carry-forward. Upload, ordinary storage, DKG/signing, balance, patronage,
+trading, votes, PageRank, popularity, and participation alone mint nothing.
+Preservation qualifies only as a unique, mechanically demonstrated continuity
+event under the Living Commons policy.
 
-The outgoing committee's MINT pays the epoch output and transfers the baton to
-the incoming committee. Confirm it before sharding treasury UTXOs; do not
-build unconfirmed token chains. Burn the baton at zero emission.
+The outgoing committee's MINT pays the exact ordered creation set and
+transfers the baton to the incoming committee. Confirm it before sharding
+treasury UTXOs; do not build unconfirmed token chains. Burn the baton at zero
+emission.
 
-ZCODE-aware clients expose a second verdict beside strict generic ZSLP:
+ZC23-aware clients expose a second verdict beside strict generic ZSLP:
 
 ```text
-ZSLP_VALID + ZCODE_POLICY_VALID
-ZSLP_VALID + ZCODE_POLICY_INVALID
+ZSLP_VALID + ZC23_POLICY_VALID
+ZSLP_VALID + ZC23_POLICY_INVALID
 UNKNOWN
 HALTED_POLICY_VIOLATION
 ```
 
-An off-schedule but ZSLP-valid mint or stolen baton halts the ZCODE lineage;
+An off-schedule or unattributed but ZSLP-valid mint, or a stolen baton, halts
+the ZC23 lineage;
 clients never invent a replacement. Awards mature after both 8,064 additional
 active-chain blocks and 604,800 seconds median-time-past. Reorg of the opening
 anchor restarts maturity. Subjective review never changes payouts.
@@ -440,7 +451,7 @@ projection rebuild checks where applicable, and no deployment.
 | S9 | Seed credential, semantic novelty, maturity and challenge engine | S3, S4, S7, S8 | unclaimed |
 | S10 | Shadow evidence scoring, deterministic elections, rotation and concentration reporting | S9 | unclaimed |
 | S11 | Progressive P2SH transaction planning/signing in simulation only | S10 | owner-gated implementation |
-| S12 | Owner-authorized native ZCODE genesis and one-epoch exposure | four green shadow epochs + custody gates | owner-gated launch |
+| S12 | Owner-authorized native ZC23 genesis and one-epoch exposure | four green shadow epochs + Living Commons attribution/custody gates | owner-gated launch |
 | S13 | Clean-room CGGMP research primitives/protocol and public artifacts | independent research gates | disabled research |
 | S14 | 51-of-100 transition | all activation gates | owner-gated, blocked by design |
 
@@ -548,9 +559,10 @@ manifest/chunk verifier.
 - Committee: deterministic sampling, contribution splitting, rotations,
   readiness loss, concentration, conflicting 51-quorums, 67-certificate
   behavior, and boundary reorgs.
-- Token: forged/off-schedule mints, baton theft/halt, duplicate payouts,
-  concurrent commits, crash-before-relay, sharding, partial batches, and
-  payout reorgs.
+- ZC23: forged/off-schedule or unattributed mints, attribution sum mismatch,
+  capacity carry-forward, balance/patronage attempting to buy evidence or
+  committee authority, baton theft/halt, duplicate payouts, concurrent
+  commits, crash-before-relay, sharding, partial batches, and payout reorgs.
 - CGGMP: malformed moduli/range proofs, malicious parties, identifiable abort,
   nonce reuse/rollback, complaints, 49 unavailable members, 51-collusion
   assumptions, coordinator failure, and cross-platform constant-time checks.
@@ -567,7 +579,7 @@ manifest/chunk verifier.
   optional and does not unlink signed identity.
 - Keys, addresses, signatures, and owner-group labels do not prove distinct
   humans, machines, or operators.
-- ZCODE and committee activity are public transparent-ledger metadata; ZSLP
+- ZC23 and committee activity are public transparent-ledger metadata; ZSLP
   has no private mode.
 - Application anchoring and committee selection never modify ZClassic block
   or transaction validity.

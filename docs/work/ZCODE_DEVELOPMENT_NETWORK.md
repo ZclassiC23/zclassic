@@ -10,6 +10,9 @@ committee, and custody extension is specified separately in
 [`ZCODE_SCIENTIFIC_METAVERSE.md`](./ZCODE_SCIENTIFIC_METAVERSE.md). It composes
 with the byte-stable objects in this document and may not duplicate their CAS,
 worker, identity, transport, or authority owners.
+The planned transferable asset, creation-backed issuance covenant, and
+patronage boundary are separately authoritative in
+[`ZC23_LIVING_COMMONS.md`](./ZC23_LIVING_COMMONS.md).
 
 ## Mission
 
@@ -25,8 +28,10 @@ local open models, and future harnesses are adapters selected by the user; an
 adapter name never participates in source or proof authority.
 
 Basic discovery, fetch, local development, and a bounded peer bootstrap quota
-remain free. Optional reciprocity, reputation, or ZCODE rewards may expand a
-peer's local quota later. Tokens are never an access key.
+remain free. Optional reciprocity may expand a peer's local quota later only
+through nontransferable ZCODE Credit or locally interpreted ZCODE Score.
+Planned ZC23 is never an access key, and transferred balance never creates
+score, proof weight, or quota authority on another node.
 
 ## One object graph, existing owners
 
@@ -549,10 +554,15 @@ service:
 
 The self-hosting milestone repeats the path for a real Zclassic23 change.
 
-## Reward ordering
+## Creation-backed issuance ordering
 
-Real token payouts and decentralized custody remain later work. First make
-useful development produce trustworthy, reproducible receipts. Then rewards
-may batch owner-reviewed facts for accepted patches, defect-catching tests,
-independent reproduction, and verified seeding. Self-reported CPU time earns
-nothing.
+Real ZC23 genesis, payouts, and decentralized custody remain owner-gated later
+work. First make useful development produce trustworthy, reproducible receipts
+and challenge-mature PROVEN lanes. Then `creation_attribution.v1` may assign
+policy capacity to accepted public source, born-red defect tests, security
+repairs, independent reproduction, structured negative findings,
+compatibility maintenance, or demonstrated preservation. Exact epoch
+attribution must equal actual MINT; unused capacity expires. Self-reported CPU
+time, uploads, bandwidth, patronage, balance, votes, popularity, and storage
+volume earn nothing by themselves. Full policy:
+[`ZC23_LIVING_COMMONS.md`](./ZC23_LIVING_COMMONS.md).

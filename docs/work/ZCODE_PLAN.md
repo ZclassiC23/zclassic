@@ -7,7 +7,10 @@
 > canonical tasks/candidates/policies/reviews/work receipts, a real local
 > ZBuild worker, requester-coordinated P2P work, typed `zcode create|use|improve`,
 > and FRONTIER/CANDIDATE/PROVEN durability. Trustworthy useful-work receipts
-> precede token payout and decentralized custody.
+> precede token payout and decentralized custody. The planned transferable
+> asset is now named ZC23; its creation-backed issuance covenant and safe
+> pre-genesis order are authoritative in
+> [`ZC23_LIVING_COMMONS.md`](./ZC23_LIVING_COMMONS.md).
 
 Foundation record for the ZCODE program. The authority on existing foundations is
 [`../P2P_SOURCE_HOSTING.md`](../P2P_SOURCE_HOSTING.md); this file carries the
@@ -16,14 +19,21 @@ That order is retained as history, not as the current queue. Consensus
 parity is untouched: ZCODE is an application protocol over ZClassic23.
 
 Core description: publish, test, maintain and share permissive C23 code
-through ZClassic23. Earn ZCODE, climb the rankings and collect permanent
-contributor badges.
+through ZClassic23. Earn nontransferable ZCODE Score, appear in evidence-based
+ZCODE Rankings, and collect identity-bound ZCODE Badges. Any future ZC23
+issuance is separately creation-attributed; transferable balance is never
+score or proof.
 
 ## Naming (use consistently)
 
-- Service: ZCODE; package network: ZCODE Library; contributor token: ZCODE
-- Contribution score: ZCODE Score; leaderboards: ZCODE Rankings
-- Achievement NFTs: ZCODE Badges; P2P service credit: ZCODE Credit
+- Protocol, network, package library, and development system: ZCODE
+- Planned transferable ZSLP token ticker: ZC23
+- Nontransferable contribution score: ZCODE Score; leaderboards: ZCODE Rankings
+- Identity-bound achievements: ZCODE Badges
+- Local nontransferable reciprocity/quota credit: ZCODE Credit
+
+Existing `zcl.zcode.*` domains and internal identifiers remain byte-stable.
+This terminology is public-facing and does not authorize token genesis.
 
 ## Identity chain
 
@@ -70,21 +80,21 @@ JSON (JSON is display-only).
        verifier keys sign matching attestations before any reward)
 7. [x] Contribution scoring (bounded deterministic; semantic-line component ≤500/release,
        tests > source; caps per release/contributor-week/releases-day)
-8. [x] Simulated ZCODE rewards (placeholder token ID only — never the real token in dev;
+8. [x] Simulated legacy rewards (placeholder token ID only — never ZC23 in dev;
        settlement accrues into a daily queue — see ZCL fuel economics below)
 9. [x] Daily/weekly/monthly/all-time rankings (rank earned score, never token balance;
        store earned_score / token_rewards_received / current_token_balance separately)
 10. [x] Simulated ZCODE badges (ZSLP-based, permanent, no double-issue per period,
         owner-reviewed plan/commit issuance in v1)
 11. [x] Local P2P ratio + anti-spam policy (free allowance for new users; verified-bytes
-        ratio is local credit; no global ZCODE mint for bandwidth; every rejection names
+        ratio is local credit; no global ZC23 mint for bandwidth; every rejection names
         the exact failed rule)
 12. [x] Authenticated package swarm (wire package_swarm codec to authenticated transport
         only after signatures + storage are complete; rarest-first, bounded windows,
         timeouts/retries/cancel/disconnect-requeue/resume, per-peer offence accounting)
 13. [x] Onion website (`/zcode*` routes, same models/projections as typed commands —
         no second package truth)
-14. [ ] Owner-reviewed real ZCODE transfers (plan/commit; no automatic payout in v1;
+14. [ ] Owner-reviewed real ZC23 transfers (plan/commit; no automatic payout in v1;
         daily batched settlement — one ZSLP SEND per settlement window, not one per reward)
 15. [ ] Owner-reviewed badge issuance
 
@@ -121,62 +131,25 @@ idempotent re-settle rejection; reorg of the settlement tx returns the window
 to the queue; estimator output is deterministic for fixed inputs and matches
 the per-action formulas.
 
-## Governance: IN SCOPE again — owner reversal, 2026-07-28
+## Preference signaling, custody, and authority
 
-**The 2026-07-27 "Governance: none" cut is reversed.** Token-weighted voting
-and threshold signing are back in scope. The superseded paragraph is preserved
-at the end of this section as the record of what was cut; read it as history,
-never as current direction.
+Earlier drafts ambiguously put token-weighted governance back in scope. That
+language is superseded by the ZC23 Living Commons covenant.
 
-**The one invariant that did not change, and will not:** ZClassic stays pure
-PoW. Governance is an **application-layer signal over ZCODE policy** — the
-verifier-key set, scoring constants, quota defaults, pin lists. It never
-touches block or transaction validity, never gates mining, and never becomes
-an activation mechanism. A node that ignores every ZCODE vote still validates
-the same chain, byte for byte. Consensus parity is not negotiable here; see
-`docs/CONSENSUS_PARITY_DOCTRINE.md`.
+A ZC23 balance may be used only for non-authoritative preference signaling or
+to determine how a holder directs that holder's own patronage. Balance,
+transfer volume, patronage, PageRank, popularity, and marketplace activity do
+not control evidence acceptance, ZCODE Score, rankings, badges, contributor
+identity, committee selection or weight, the immutable genesis policy, local
+node policy, ZClassic consensus, or another person's funds.
 
-**Voting** returns as that application-layer signal. A vote records
-preference over ZCODE policy and is tallied by ZCODE, not by the consensus
-rules. Nothing about the earlier sketch (a `ZGOV` OP_RETURN service, a ZNAM
-governance token, weighting) is re-approved by this reversal — only the
-*subject* is back on the table. Confirm the shape with the owner before
-building.
-
-**Threshold signing is staged, in dependency order.** Do not start at GG20:
-
-1. **Collective custody first**, on the multisig **already in the consensus
-   script** — `OP_CHECKMULTISIG` is live in `core/consensus/src/script_interp.c`
-   today. Shared control of a ZCODE-owned key needs no new cryptography and no
-   consensus change; it is a wallet-and-policy slice over a primitive the chain
-   already validates.
-2. **GG20's primitives built behind that**, in dependency order, only once
-   collective custody is real and the need for off-chain threshold signing is
-   concrete. GG20 buys a signature indistinguishable from a single-signer one;
-   that is an optimization over step 1, not a prerequisite to it.
-
-Building GG20 before collective custody would be the classic inversion: the
-hard MPC protocol delivered before anyone can demonstrate the custody need it
-serves.
-<!-- claim: symbol-present OP_CHECKMULTISIG core/consensus/src/script_interp.c # stage 1 rides a primitive already in consensus -->
-
-Scheduling is owner-gated and this section carries no schedule. The
-in-scope/out-of-scope call is a *decision*, not a code fact, so it takes no
-`check-doc-claims` binding — only the owner can refresh it. The staging above
-is bound, because "GG20 first" is a mistake the tree can catch.
-
-> **Superseded — 2026-07-27, kept as the record of what was cut:**
->
-> ZClassic is pure PoW consensus — **there is no voting, and ZCODE does not
-> add one.** An earlier draft of this section sketched token-weighted votes
-> (pin lists, quota changes), a `ZGOV` OP_RETURN vote service, a ZNAM
-> governance token, and GG20 threshold-signature ratification. All of that is
-> cut: no voting machinery, no governance tokens, no threshold-MPC slice.
-> ZCODE policy decisions (verifier-key set, scoring constants, quota defaults,
-> pin lists) are made by the owner through the same reviewed plan/commit flow
-> as rewards and badges. GG20-in-C23 remains a note here only as a possible
-> future building block if a concrete multisig need ever appears; nothing is
-> scheduled.
+Collective custody remains a separately owner-gated transaction-policy
+problem. If pursued, it starts with the existing consensus-valid
+`OP_CHECKMULTISIG` primitive and exact plan/commit simulation. Experimental
+threshold ECDSA remains disabled research behind independent audit and custody
+gates. Neither custody mechanism grants policy authority, and no balance
+selects its signers.
+<!-- claim: symbol-present OP_CHECKMULTISIG core/consensus/src/script_interp.c # future custody simulation reuses an existing consensus primitive -->
 
 ## Typed commands (one branch)
 
@@ -190,11 +163,11 @@ All replies bounded typed JSON; publishing/rewards/badges use plan/commit.
 
 ## Boundaries (absolute)
 
-- No consensus change; no real ZCODE token during development; no automatic
+- No consensus change; no real ZC23 token during development; no automatic
   mint/badges/execution of downloaded code; no downloaded build scripts
   (Make/CMake/shell/Python/configure never run); no ranking by transferable
   balance; ZNAM never trusted over hashes; anonymous peer count is never a
-  verifier quorum; no global ZCODE for bandwidth; never test against the live
+  verifier quorum; no global ZC23 for bandwidth; never test against the live
   wallet or canonical datadir; extend canonical models instead of adding a
   second package database.
 - License allowlist v1: 0BSD, MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause,
@@ -269,10 +242,10 @@ machines).
 Former numbered tail (both owner-gated and now explicitly deferred — they
 move real value but do not make decentralized development useful):
 
-- **Slice 14** — owner-reviewed real ZCODE transfers: wire auto-enqueue of
+- **Slice 14** — owner-reviewed real ZC23 transfers: wire auto-enqueue of
   eligible releases into the reward queue, admit owner-approved claims,
   settle the daily queue as ONE batched ZSLP SEND against the real
-  (post-simulation) ZCODE token; add the fee-preview arithmetic
+  (post-simulation) ZC23 token; add the fee-preview arithmetic
   (`estimated_fee_zcl`) the settlement plan deliberately omits today.
 - **Slice 15** — owner-reviewed real badge issuance: the simulated
   `zcode.badge.issue` already signs and persists; slice 15 turns reviewed
