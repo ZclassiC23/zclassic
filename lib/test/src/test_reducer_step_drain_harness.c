@@ -212,6 +212,51 @@ int test_reducer_step_drain_harness(void)
     chain_params_select(CHAIN_REGTEST);
     const struct chain_params *cp = chain_params_get();
 
+    /* The mainnet steady-tip authority close is a deliberately tiny shape:
+     * H* trails the fully-applied active/best tip by exactly one and the only
+     * finalize hold is the missing successor. Exercise each load-bearing
+     * refusal independently so this can never become a generic jump helper. */
+    {
+        struct reducer_at_tip_authority_observation at = {
+            .hstar = 99,
+            .active_height = 100,
+            .best_header_height = 100,
+            .coins_applied_height = 101,
+            .tip_finalize_cursor = 100,
+            .active_hash_matches_best = true,
+            .coins_applied_found = true,
+            .utxo_apply_succeeded = true,
+            .normal_lookahead_missing = true,
+            .block_failed = false,
+        };
+        SD_CHECK("at-tip authority: exact normal-lookahead shape is ready",
+                 reducer_at_tip_authority_ready(&at));
+        at.hstar = 98;
+        SD_CHECK("at-tip authority: multi-height H* jump refused",
+                 !reducer_at_tip_authority_ready(&at));
+        at.hstar = 99; at.best_header_height = 101;
+        SD_CHECK("at-tip authority: header tip ahead refused",
+                 !reducer_at_tip_authority_ready(&at));
+        at.best_header_height = 100; at.active_hash_matches_best = false;
+        SD_CHECK("at-tip authority: foreign best-header hash refused",
+                 !reducer_at_tip_authority_ready(&at));
+        at.active_hash_matches_best = true; at.coins_applied_height = 102;
+        SD_CHECK("at-tip authority: coins frontier mismatch refused",
+                 !reducer_at_tip_authority_ready(&at));
+        at.coins_applied_height = 101; at.tip_finalize_cursor = 99;
+        SD_CHECK("at-tip authority: finalize cursor mismatch refused",
+                 !reducer_at_tip_authority_ready(&at));
+        at.tip_finalize_cursor = 100; at.normal_lookahead_missing = false;
+        SD_CHECK("at-tip authority: non-lookahead hold refused",
+                 !reducer_at_tip_authority_ready(&at));
+        at.normal_lookahead_missing = true; at.block_failed = true;
+        SD_CHECK("at-tip authority: failed block refused",
+                 !reducer_at_tip_authority_ready(&at));
+        at.block_failed = false; at.utxo_apply_succeeded = false;
+        SD_CHECK("at-tip authority: unapplied tip refused",
+                 !reducer_at_tip_authority_ready(&at));
+    }
+
     /* ── wf/foldpath-loud-errors: window-extend failure is now LOUD ────────
      * reducer_extend_window_to_candidate() used to (void)-discard the
      * active_chain_extend_window{,_have_data} result; a failed extend (alloc

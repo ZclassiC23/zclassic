@@ -17,6 +17,8 @@
  * message — stays as tiny named functions/strings the table points at. */
 
 #include "supervisors/staged_sync_supervisor.h"
+#include "services/chain_activation_service.h"
+#include "services/reducer_drain.h"
 #include "services/reducer_ingest_service.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
@@ -479,6 +481,14 @@ static void staged_stage_tick(struct liveness_contract *c)
     (void)d->drain(stage_effective_batch(d->batch, d->per_step_fanout));
     if (batch_catchup_sync)
         reducer_exit_batched_body_sync();
+
+    /* The asynchronous pipeline can reach the exact fully-applied at-tip
+     * lookahead shape without another synchronous reducer_kick. Re-evaluate
+     * after tip_finalize's own tick so a continuously-running node gets the
+     * same one-head authority close as the synchronous and clean-restart
+     * paths. The helper is a no-op for every other stage/shape. */
+    if (d->drain == tip_finalize_stage_drain)
+        reducer_publish_fully_applied_at_tip(boot_activation_controller());
 
     /* Effective per-child tick period for the NEXT sweep: refold_cadence
      * wins over catchup_cadence when both could apply (same precedence as

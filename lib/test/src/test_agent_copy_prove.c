@@ -297,6 +297,11 @@ static int test_acp_script_no_run_json(void)
                  strncmp(copy_path, home, strlen(home)) == 0);
         ACP_CHECK("exit_code == 0", json_get_int(json_get(&parsed,
                                                           "exit_code")) == 0);
+        ACP_CHECK("static spend gate not requested",
+                  !json_get_bool(json_get(&parsed,
+                                          "expect_static_spend_ready")));
+        ACP_CHECK("static spend readiness not claimed on no-run",
+                  !json_get_bool(json_get(&parsed, "static_spend_ready")));
     }
     json_free(&parsed);
     test_rm_rf_recursive(work);
