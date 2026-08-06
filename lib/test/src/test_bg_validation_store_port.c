@@ -14,7 +14,8 @@
  *      caller's job; the store just round-trips the last value written).
  *   4. save_progress(-1) clears the cursor back to the genesis-restart
  *      sentinel (the stop/reset path), and it round-trips.
- *   5. Guard rails: bind rejects a NULL out_port; a port bound over a
+ *   5. Coverage semantics are absent on legacy data and round-trip when set.
+ *   6. Guard rails: bind rejects a NULL out_port; a port bound over a
  *      NULL / closed DB degrades to "no cursor" / "save no-ops" without
  *      crashing.
  */
@@ -53,6 +54,10 @@ int test_bg_validation_store_port(void)
         BGV_CHECK("fresh load returns false",
                   !store.load_progress(store.self, &h));
         BGV_CHECK("fresh load leaves out untouched", h == 12345);
+        int64_t version = 77;
+        BGV_CHECK("fresh coverage version is absent",
+                  !store.load_coverage_version(store.self, &version) &&
+                  version == 77);
 
         /* 2. save then load. */
         BGV_CHECK("save 1000 succeeds",
@@ -75,6 +80,10 @@ int test_bg_validation_store_port(void)
         got = 0;
         BGV_CHECK("load reads cleared -1",
                   store.load_progress(store.self, &got) && got == -1);
+        BGV_CHECK("coverage version round-trips",
+                  store.save_coverage_version(store.self, 1) &&
+                  store.load_coverage_version(store.self, &version) &&
+                  version == 1);
 
         node_db_close(&ndb);
     }
@@ -95,6 +104,10 @@ int test_bg_validation_store_port(void)
         BGV_CHECK("load over NULL db leaves out untouched", h == 7);
         BGV_CHECK("save over NULL db returns false",
                   !store.save_progress(store.self, 99));
+        int64_t version = 7;
+        BGV_CHECK("coverage version over NULL db is unavailable",
+                  !store.load_coverage_version(store.self, &version) &&
+                  !store.save_coverage_version(store.self, 1));
     }
 
     return failures;

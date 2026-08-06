@@ -4,10 +4,11 @@
  *
  * Part of the boot composition root (extracted from boot_services.c). This
  * unit owns the systemd WATCHDOG=1 heartbeat: it pings the systemd notify
- * socket every WATCHDOG_USEC/2 microseconds when node health is OK (or a
- * long-running synchronous worker has bumped boot_progress recently). When
- * health degrades the heartbeat stops and systemd's WatchdogSec timer trips,
- * restarting the unit. No-op when NOTIFY_SOCKET is absent (e.g. CLI use).
+ * socket every WATCHDOG_USEC/4 microseconds while the process liveness
+ * signals remain fresh. A negative node-health verdict stays fail-loud in
+ * status/conditions, but is not a process-hang signal: restarting cannot fix
+ * an owner gate, trust review, peer outage, or other named degradation.
+ * No-op when NOTIFY_SOCKET is absent (e.g. CLI use).
  *
  * Pillar 7 — "supervise the supervisor": the ping is gated on the root
  * supervisor's sweep heartbeat (util/supervisor.h) being fresh, TWICE:
@@ -59,28 +60,23 @@
  *      the verdict/status go stale.
  *
  *   2. PET thread (dedicated, this file): pings WATCHDOG=1 every
- *      WATCHDOG_USEC/4 from CHEAP ATOMICS ONLY (verdict publication,
+ *      WATCHDOG_USEC/4 from CHEAP ATOMICS ONLY (verdict freshness,
  *      boot_progress, supervisor sweep heartbeat). It never runs a collect
  *      and never takes a node lock, so ring contention cannot starve the
  *      heartbeat. Before this split the ping rode the same ring as the
  *      collect: a >WatchdogSec collect block stopped the ping on a fully
- *      healthy, progressing node. The loop had a second half: the verdict
- *      also sits at healthy=false for an intentional posture a restart
- *      cannot fix — the sync FSM refuses SYNC_AT_TIP while the
- *      snapshot-seeded datadir's body history is unproven (38fe0885b) —
- *      leaving the pet entirely dependent on boot_progress, which goes
- *      stale minutes after each boot. Together those were the 2026-08-02
- *      kill loop: seven SIGABRTs in 3 h on the canonical node while it
- *      held tip and backfilled bodies. The body-gap posture flag in the
- *      published verdict is the precise, bounded forgiveness for the
- *      second half (see node_health_service.c).
+ *      healthy, progressing node. The loop had a second half: it treated
+ *      the CONTENT of a fresh health verdict as a hang signal. Intentional
+ *      long-lived postures (first body-history proof, owner trust review)
+ *      therefore stopped the pet even while the process, supervisor, RPC,
+ *      and health collector remained live. Restarting cannot satisfy those
+ *      gates and only prevents the work that can. Together those were the
+ *      2026-08-02 and 2026-08-05 kill loops.
  *
- * When health genuinely degrades, the published verdict flips unhealthy
- * and the ping stops; when the verdict pipeline itself dies (no collect
- * completes for a whole WatchdogSec window) the ping also stops — a wedged
- * health pipeline is a named stall, not a pet-forever blind spot. When the
- * supervisor sweep freezes, Pillar 7 stops the ping. In every stopped-ping
- * case systemd's WatchdogSec timer kills + restarts the unit, as designed.
+ * Health verdict CONTENT is handled by the condition/remedy/operator planes;
+ * it never decides process liveness. If the verdict pipeline itself dies (no
+ * collect completes for a whole WatchdogSec window), or the supervisor sweep
+ * freezes, the ping stops and systemd kills + restarts the hung unit.
  *
  * No-op when NOTIFY_SOCKET is absent (e.g. CLI invocation). */
 static health_subsystem_id g_sd_watchdog_id = HEALTH_INVALID_ID;
@@ -131,17 +127,15 @@ static bool boot_sd_watchdog_recent_progress(void)
 /* Pure pet decision — ONE code path for the pet thread and the ZCL_TESTING
  * seam (mirrors supervisor_backstop's backstop_decide factoring):
  *   - a frozen root supervisor sweep always stops the ping (Pillar 7);
- *   - otherwise ping when the last collected verdict is healthy AND fresh
- *     (younger than verdict_bound_us = one WatchdogSec window), OR when the
- *     verdict is the strict body-gap posture (unhealthy SOLELY because the
- *     body-history archive is unproven — see node_health_service.c), OR
- *     when no verdict exists yet but startup grace remains (the ring's
- *     first collect lands one period after registration), OR when a
- *     long-running synchronous worker bumped boot_progress recently. */
+ *   - otherwise ping when any collected verdict is fresh (younger than
+ *     verdict_bound_us = one WatchdogSec window). Verdict content belongs to
+ *     health/conditions and must not turn a named, restart-proof degradation
+ *     into a systemd crash loop;
+ *   - before the first verdict, ping only while startup grace remains;
+ *   - recent boot_progress is the bounded escape hatch for a synchronous
+ *     worker which legitimately delays the next collect. */
 static bool boot_sd_watchdog_pet_decide(bool supervisor_alive,
                                         bool have_verdict,
-                                        bool verdict_healthy,
-                                        bool body_gap_posture,
                                         int64_t verdict_age_us,
                                         bool recent_progress,
                                         int64_t grace_left_us,
@@ -149,26 +143,21 @@ static bool boot_sd_watchdog_pet_decide(bool supervisor_alive,
 {
     if (!supervisor_alive)
         return false;
-    bool verdict_ok;
-    if (have_verdict)
-        verdict_ok = (verdict_healthy || body_gap_posture) &&
-                     verdict_age_us < verdict_bound_us;
-    else
-        verdict_ok = grace_left_us > 0;
-    return verdict_ok || recent_progress;
+    if (recent_progress)
+        return true;
+    if (!have_verdict)
+        return grace_left_us > 0;
+    return verdict_age_us >= 0 && verdict_age_us < verdict_bound_us;
 }
 
 #ifdef ZCL_TESTING
 bool boot_sd_watchdog_test_pet_decide(bool supervisor_alive, bool have_verdict,
-                                      bool verdict_healthy,
-                                      bool body_gap_posture,
                                       int64_t verdict_age_us,
                                       bool recent_progress,
                                       int64_t grace_left_us,
                                       int64_t verdict_bound_us)
 {
     return boot_sd_watchdog_pet_decide(supervisor_alive, have_verdict,
-                                       verdict_healthy, body_gap_posture,
                                        verdict_age_us, recent_progress,
                                        grace_left_us, verdict_bound_us);
 }
@@ -189,13 +178,11 @@ static void *boot_sd_watchdog_pet_main(void *arg)
     while (!atomic_load(&g_pet_stop) &&
            !thread_registry_shutdown_requested()) {
         int64_t now_us = platform_time_monotonic_us();
-        bool healthy = false, posture = false;
         int64_t pub_us = 0;
-        bool have = node_health_last_verdict(&healthy, &posture, &pub_us);
+        bool have = node_health_last_verdict(&pub_us);
         int64_t verdict_age_us = have ? now_us - pub_us : 0;
         if (boot_sd_watchdog_pet_decide(boot_sd_watchdog_supervisor_alive(),
-                                        have, healthy, posture,
-                                        verdict_age_us,
+                                        have, verdict_age_us,
                                         boot_sd_watchdog_recent_progress(),
                                         bound_us - (now_us - start_us),
                                         bound_us)) {

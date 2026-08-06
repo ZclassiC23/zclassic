@@ -124,6 +124,8 @@ set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=tools/scripts/source_identity_lib.sh
+. "$SCRIPT_DIR/scripts/source_identity_lib.sh"
 NODE_BIN="${ZCL_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
 
@@ -411,16 +413,16 @@ if [ "$LIKE_LIVE" = "1" ]; then
     else
         _identity="$("$NODE_BIN" agentbuild 2>/dev/null || true)"
     fi
-    LIKE_LIVE_SOURCE_ID="$(printf '%s\n' "$_identity" |
-        sed -n 's/.*"source_id_sha256"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{64\}\)".*/\1/p' |
-        head -1)"
+    # Bind only the top-level zcl.agent_build.v2 identity. The response also
+    # contains nested background-lane source_id_sha256/build_commit fields;
+    # a greedy `.*field` parser selects the LAST nested occurrence and can
+    # bind a copy proof to an unrelated stale artifact.
+    LIKE_LIVE_SOURCE_ID="$(zcl_agentbuild_v2_top_source_id "$_identity")"
     is_sha256_hex "$LIKE_LIVE_SOURCE_ID" || {
         echo "repro_on_copy: --like-live: candidate agentbuild omitted a valid source_id_sha256" >&2
         exit 1
     }
-    LIKE_LIVE_BUILD_COMMIT="$(printf '%s\n' "$_identity" |
-        sed -n 's/.*"build_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
-        head -1)"
+    LIKE_LIVE_BUILD_COMMIT="$(zcl_agentbuild_v2_top_build_commit "$_identity")"
     case "$LIKE_LIVE_BUILD_COMMIT" in
         ''|*[!A-Za-z0-9._-]*) LIKE_LIVE_BUILD_COMMIT="unknown" ;;
     esac

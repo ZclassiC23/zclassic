@@ -35,6 +35,15 @@ TIMEOUT="${2:-${ZCL_DEPLOY_VERIFY_TIMEOUT:-600}}"
 RPC_CALL_TIMEOUT="${ZCL_DEPLOY_RPC_TIMEOUT:-20}"
 INTERVAL=2
 RPC_CONNECT="127.0.0.1"
+DEPLOY_STAGE="${ZCL_DEPLOY_STAGE:-stable}"
+
+case "$DEPLOY_STAGE" in
+    stable|challenger|rollback) ;;
+    *)
+        echo "deploy_verify: FATAL — ZCL_DEPLOY_STAGE must be stable, challenger, or rollback" >&2
+        exit 2
+        ;;
+esac
 
 # Parse only the explicit -key=value argv form accepted by the service. Values
 # containing whitespace are deliberately unsupported: guessing across a quoted
@@ -136,6 +145,12 @@ deploy_verify_selftest() {
     fixture_argv=$(exec_argv_values_from_text "$fixture_exec")
     [ "$(printf '%s\n' "$fixture_argv" | sed -n '1p')" = "/canonical/deploy/zclassic23-launch.sh" ] || return 1
     [ "$(printf '%s\n' "$fixture_argv" | sed -n '2p')" = "/canonical/bin/zclassic23" ] || return 1
+    fixture_direct='{ path=/canonical/bin/zclassic23 ; argv[]=/canonical/bin/zclassic23 -datadir=/canonical/data -rpcport=18232 ; }'
+    fixture_direct_paths=$(exec_path_values_from_text "$fixture_direct")
+    [ "$(single_value_or_empty "$fixture_direct_paths")" = "/canonical/bin/zclassic23" ] || return 1
+    fixture_direct_argv=$(exec_argv_values_from_text "$fixture_direct")
+    [ "$(printf '%s\n' "$fixture_direct_argv" | sed -n '1p')" = "/canonical/bin/zclassic23" ] || return 1
+    [ "$(printf '%s\n' "$fixture_direct_argv" | sed -n '2p')" = "-datadir=/canonical/data" ] || return 1
     echo "deploy_verify selftest: PASS"
 }
 
@@ -209,23 +224,38 @@ SERVICE_LAUNCHER_EXE=$(readlink -f "$SERVICE_EXEC_PATH" 2>/dev/null || true)
 SERVICE_ARGV_VALUES=$(exec_argv_values_from_text "$SERVICE_EXEC_TEXT")
 SERVICE_ARGV0=$(printf '%s\n' "$SERVICE_ARGV_VALUES" | sed -n '1p')
 SERVICE_NODE_ARG=$(printf '%s\n' "$SERVICE_ARGV_VALUES" | sed -n '2p')
-[ -n "$SERVICE_ARGV0" ] && [ -n "$SERVICE_NODE_ARG" ] ||
-    fatal_binding "canonical service ExecStart must name launcher and node binary"
+[ -n "$SERVICE_ARGV0" ] ||
+    fatal_binding "canonical service ExecStart must name an executable argv"
 case "$SERVICE_ARGV0" in
     /*) ;;
-    *) fatal_binding "canonical service launcher argv is not absolute" ;;
-esac
-case "$SERVICE_NODE_ARG" in
-    /*) ;;
-    *) fatal_binding "canonical service node binary argv is not absolute" ;;
+    *) fatal_binding "canonical service executable argv is not absolute" ;;
 esac
 SERVICE_ARGV0_EXE=$(readlink -f "$SERVICE_ARGV0" 2>/dev/null || true)
 [ -n "$SERVICE_ARGV0_EXE" ] &&
 [ "$SERVICE_ARGV0_EXE" = "$SERVICE_LAUNCHER_EXE" ] ||
-    fatal_binding "canonical service path and launcher argv disagree"
-SERVICE_NODE_EXE=$(readlink -f "$SERVICE_NODE_ARG" 2>/dev/null || true)
-[ -n "$SERVICE_NODE_EXE" ] && [ "$SERVICE_NODE_EXE" = "$SERVICE_EXE" ] ||
-    fatal_binding "canonical MainPID executable does not match launcher node binary"
+    fatal_binding "canonical service path and executable argv disagree"
+
+# Accept both canonical unit forms while preserving an exact executable bind:
+#
+#   direct:   ExecStart=/absolute/zclassic23 <flags>
+#   launcher: ExecStart=/absolute/launcher /absolute/zclassic23 <flags>
+#
+# In direct mode argv[1] is normally the first flag, not another executable.
+# A launcher is only accepted when its explicit node argument resolves to the
+# executable owned by the stable MainPID captured above.
+if [ "$SERVICE_LAUNCHER_EXE" = "$SERVICE_EXE" ]; then
+    SERVICE_NODE_EXE="$SERVICE_LAUNCHER_EXE"
+else
+    [ -n "$SERVICE_NODE_ARG" ] ||
+        fatal_binding "canonical launcher must name the node binary"
+    case "$SERVICE_NODE_ARG" in
+        /*) ;;
+        *) fatal_binding "canonical launcher node binary argv is not absolute" ;;
+    esac
+    SERVICE_NODE_EXE=$(readlink -f "$SERVICE_NODE_ARG" 2>/dev/null || true)
+    [ -n "$SERVICE_NODE_EXE" ] && [ "$SERVICE_NODE_EXE" = "$SERVICE_EXE" ] ||
+        fatal_binding "canonical MainPID executable does not match launcher node binary"
+fi
 
 EXEC_DATADIR_VALUES=$(exec_arg_values_from_text datadir "$SERVICE_EXEC_TEXT")
 EXEC_RPCPORT_VALUES=$(exec_arg_values_from_text rpcport "$SERVICE_EXEC_TEXT")
@@ -293,6 +323,11 @@ rpc_call() {
 deadline=$(( $(date +%s) + TIMEOUT ))
 attempt=0
 last_err=""
+chain_advance_verified=0
+chain_evidence_verified=0
+network_verified=0
+peer_lifecycle_verified=0
+legacy_mirror_verified=0
 
 json_has_key() {
     printf '%s\n' "$1" | grep -q "\"$2\"[[:space:]]*:"
@@ -340,6 +375,21 @@ json_top_key_is_string() {
     fi
     printf '%s\n' "$1" |
         python3 -c 'import json, sys; d=json.load(sys.stdin); sys.exit(0 if d.get(sys.argv[1]) == sys.argv[2] else 1)' "$2" "$3" 2>/dev/null
+}
+
+json_health_gap_at_most_one() {
+    if ! json_python_enabled; then
+        printf '%s\n' "$1" |
+            grep -q '"gap"[[:space:]]*:[[:space:]]*[01]\([^0-9]\|$\)'
+        return $?
+    fi
+    printf '%s\n' "$1" | python3 -c '
+import json
+import sys
+d = json.load(sys.stdin)
+gap = (d.get("checks") or {}).get("gap")
+sys.exit(0 if isinstance(gap, int) and not isinstance(gap, bool) and 0 <= gap <= 1 else 1)
+' 2>/dev/null
 }
 
 json_rpc_result() {
@@ -496,14 +546,27 @@ pre_rpc_boot_diagnostic() {
 
 rpc_dumpstate() {
     component="$1"
+    key="${2:-}"
     # zcl-rpc wraps remaining argv directly into a JSON params array, so its
     # string argument needs JSON quotes. zclassic-cli performs its own string
     # encoding and MUST receive the bare subsystem name. Never retry one
     # client's syntax through the other: that overwrites an honest timeout or
     # partial response with a deterministic "unknown subsystem '\"name\"'".
     case "$(basename "$RPC_TOOL")" in
-        zcl-rpc) out=$(rpc_call dumpstate "\"$component\"" 2>&1 || true) ;;
-        *)       out=$(rpc_call dumpstate "$component" 2>&1 || true) ;;
+        zcl-rpc)
+            if [ -n "$key" ]; then
+                out=$(rpc_call dumpstate "\"$component\"" "\"$key\"" 2>&1 || true)
+            else
+                out=$(rpc_call dumpstate "\"$component\"" 2>&1 || true)
+            fi
+            ;;
+        *)
+            if [ -n "$key" ]; then
+                out=$(rpc_call dumpstate "$component" "$key" 2>&1 || true)
+            else
+                out=$(rpc_call dumpstate "$component" 2>&1 || true)
+            fi
+            ;;
     esac
     out=$(json_rpc_result "$out")
     printf '%s\n' "$out"
@@ -517,90 +580,110 @@ verify_contract() {
     mainpid_owns_rpc_listener ||
         { last_err="canonical MainPID does not own RPC listener port $RPCPORT"; return 1; }
 
-    ca=$(rpc_dumpstate chain_advance_coordinator initialized)
-    json_key_is_true "$ca" initialized ||
-        { last_err="chain_advance_coordinator not initialized: $ca"; return 1; }
-    json_key_is_true "$ca" has_connman ||
-        { last_err="chain_advance_coordinator missing connman: $ca"; return 1; }
-    json_key_is_true "$ca" has_main_state ||
-        { last_err="chain_advance_coordinator missing main_state: $ca"; return 1; }
-    json_key_is_true "$ca" has_node_db ||
-        { last_err="chain_advance_coordinator missing node_db: $ca"; return 1; }
-    json_key_is_string "$ca" authority local_consensus_validation ||
-        { last_err="chain_advance authority contract missing: $ca"; return 1; }
-    json_has_key "$ca" selected_source ||
-        { last_err="chain_advance selected_source missing: $ca"; return 1; }
-    json_has_key "$ca" candidate_source ||
-        { last_err="chain_advance candidate_source missing: $ca"; return 1; }
-    json_has_key "$ca" sources ||
-        { last_err="chain_advance sources missing: $ca"; return 1; }
-
-    evidence=$(rpc_dumpstate chain_evidence health_reason)
-    json_has_key "$evidence" health_reason ||
-        { last_err="chain_evidence diagnostics missing health_reason: $evidence"; return 1; }
-    printf '%s\n' "$evidence" | grep -q '"health_reason"[[:space:]]*:[[:space:]]*"chain_evidence_gap"' &&
-        { last_err="chain_evidence reports generic gap: $evidence"; return 1; }
-    printf '%s\n' "$evidence" | grep -q '"health_reason"[[:space:]]*:[[:space:]]*"[^"]' &&
-        { last_err="chain_evidence is frozen/degraded: $evidence"; return 1; }
-
-    net=$(rpc_call getnetworkinfo 2>&1 || true)
-    net=$(json_rpc_result "$net")
-    for key in advertised_subver advertised_services inbound_connections outbound_connections handshaked_connections \
-               inbound_handshake_seen remote_handshake_seen legacy_compatible_peers legacy_magicbean_peers magicbean_peers \
-               zclassic23_peers zclassic_c23_peers peer_lifecycle; do
-        json_has_key "$net" "$key" ||
-            { last_err="getnetworkinfo missing $key: $net"; return 1; }
-    done
-    printf '%s\n' "$net" | grep -q '"advertised_subver"[[:space:]]*:[[:space:]]*"/ZClassic23:0\.1\.0/"' ||
-        { last_err="node is not advertising native ZClassic23 subver: $net"; return 1; }
-
-    peer=$(rpc_dumpstate peer_lifecycle summary)
-    json_has_key "$peer" summary ||
-        { last_err="peer_lifecycle summary missing: $peer"; return 1; }
-    json_has_key "$peer" sources ||
-        { last_err="peer_lifecycle sources missing: $peer"; return 1; }
-    json_has_key "$peer" legacy_magicbean_handshakes ||
-        { last_err="peer_lifecycle missing legacy handshake canary: $peer"; return 1; }
-    json_has_key "$peer" legacy_compatible_handshakes ||
-        { last_err="peer_lifecycle missing legacy handshake alias: $peer"; return 1; }
-    json_has_key "$peer" zclassic23_handshakes ||
-        { last_err="peer_lifecycle missing zclassic23 handshake canary: $peer"; return 1; }
-    json_has_key "$peer" zclassic_c23_handshakes ||
-        { last_err="peer_lifecycle missing zclassic_c23 compatibility canary: $peer"; return 1; }
-    json_has_key "$peer" pre_handshake_disconnects ||
-        { last_err="peer_lifecycle missing pre-handshake disconnect counter: $peer"; return 1; }
-    if ! printf '%s\n' "$peer" | grep -q '"legacy_magicbean_handshakes"[[:space:]]*:[[:space:]]*[1-9]'; then
-        printf '%s\n' "$peer" | grep -q '"attempted"[[:space:]]*:[[:space:]]*0' ||
-            { last_err="no legacy MagicBean handshake observed and peers were reachable: $peer"; return 1; }
+    # Each expensive readiness class is sticky for this exact MainPID.  A
+    # booting node can legitimately make a later projection probe miss its
+    # deadline; restarting the whole sequence in that case used to enqueue the
+    # already-proven database-heavy probes again and again.  The stable PID +
+    # start-ticks checks above and below keep these receipts process-bound.
+    if [ "$chain_advance_verified" -eq 0 ]; then
+        ca=$(rpc_dumpstate chain_advance_coordinator initialized)
+        json_key_is_true "$ca" initialized ||
+            { last_err="chain_advance_coordinator not initialized: $ca"; return 1; }
+        json_key_is_true "$ca" has_connman ||
+            { last_err="chain_advance_coordinator missing connman: $ca"; return 1; }
+        json_key_is_true "$ca" has_main_state ||
+            { last_err="chain_advance_coordinator missing main_state: $ca"; return 1; }
+        json_key_is_true "$ca" has_node_db ||
+            { last_err="chain_advance_coordinator missing node_db: $ca"; return 1; }
+        json_key_is_string "$ca" authority local_consensus_validation ||
+            { last_err="chain_advance authority contract missing: $ca"; return 1; }
+        json_has_key "$ca" selected_source ||
+            { last_err="chain_advance selected_source missing: $ca"; return 1; }
+        json_has_key "$ca" candidate_source ||
+            { last_err="chain_advance candidate_source missing: $ca"; return 1; }
+        json_has_key "$ca" sources ||
+            { last_err="chain_advance sources missing: $ca"; return 1; }
+        chain_advance_verified=1
     fi
 
-    mirror=$(rpc_dumpstate legacy_mirror consensus_authority)
-    json_has_key "$mirror" consensus_authority ||
-        { last_err="legacy_mirror authority missing: $mirror"; return 1; }
-    json_key_is_string "$mirror" consensus_authority local_consensus_validation ||
-        { last_err="legacy_mirror must not claim zclassicd authority: $mirror"; return 1; }
-    json_not_has_key "$mirror" mirror_authorization_enabled ||
-        { last_err="legacy_mirror exposes deleted mirror_authorization_enabled: $mirror"; return 1; }
-    json_not_has_key "$mirror" mirror_consensus_authority ||
-        { last_err="legacy_mirror exposes deleted mirror_consensus_authority: $mirror"; return 1; }
-    json_has_key "$mirror" candidate_source ||
-        { last_err="legacy_mirror candidate_source missing: $mirror"; return 1; }
-    json_key_is_string "$mirror" candidate_source legacy_advisory ||
-        { last_err="legacy_mirror must expose advisory candidate source: $mirror"; return 1; }
-    json_has_key "$mirror" legacy_advisory_gated_by_native_retries ||
-        { last_err="legacy_mirror advisory/native retry gate missing: $mirror"; return 1; }
-    json_has_key "$mirror" blockers_total ||
-        { last_err="legacy_mirror blockers_total missing: $mirror"; return 1; }
-    json_has_key "$mirror" stalls_total ||
-        { last_err="legacy_mirror stalls_total missing: $mirror"; return 1; }
-    json_has_key "$mirror" unsafe_overrides_total ||
-        { last_err="legacy_mirror unsafe_overrides_total missing: $mirror"; return 1; }
-    json_key_is_int "$mirror" unsafe_overrides_total 0 ||
-        { last_err="legacy_mirror unsafe overrides are unhealthy: $mirror"; return 1; }
-    json_has_key "$mirror" last_override_safe ||
-        { last_err="legacy_mirror last_override_safe missing: $mirror"; return 1; }
-    json_has_key "$mirror" last_override_scope ||
-        { last_err="legacy_mirror last_override_scope missing: $mirror"; return 1; }
+    if [ "$chain_evidence_verified" -eq 0 ]; then
+        evidence=$(rpc_dumpstate chain_evidence health_reason)
+        json_has_key "$evidence" health_reason ||
+            { last_err="chain_evidence diagnostics missing health_reason: $evidence"; return 1; }
+        printf '%s\n' "$evidence" | grep -q '"health_reason"[[:space:]]*:[[:space:]]*"chain_evidence_gap"' &&
+            { last_err="chain_evidence reports generic gap: $evidence"; return 1; }
+        printf '%s\n' "$evidence" | grep -q '"health_reason"[[:space:]]*:[[:space:]]*"[^"]' &&
+            { last_err="chain_evidence is frozen/degraded: $evidence"; return 1; }
+        chain_evidence_verified=1
+    fi
+
+    if [ "$network_verified" -eq 0 ]; then
+        net=$(rpc_call getnetworkinfo 2>&1 || true)
+        net=$(json_rpc_result "$net")
+        for key in advertised_subver advertised_services inbound_connections outbound_connections handshaked_connections \
+                   inbound_handshake_seen remote_handshake_seen legacy_compatible_peers legacy_magicbean_peers magicbean_peers \
+                   zclassic23_peers zclassic_c23_peers peer_lifecycle; do
+            json_has_key "$net" "$key" ||
+                { last_err="getnetworkinfo missing $key: $net"; return 1; }
+        done
+        printf '%s\n' "$net" | grep -q '"advertised_subver"[[:space:]]*:[[:space:]]*"/ZClassic23:0\.1\.0/"' ||
+            { last_err="node is not advertising native ZClassic23 subver: $net"; return 1; }
+        network_verified=1
+    fi
+
+    if [ "$peer_lifecycle_verified" -eq 0 ]; then
+        peer=$(rpc_dumpstate peer_lifecycle summary)
+        json_has_key "$peer" summary ||
+            { last_err="peer_lifecycle summary missing: $peer"; return 1; }
+        json_has_key "$peer" sources ||
+            { last_err="peer_lifecycle sources missing: $peer"; return 1; }
+        json_has_key "$peer" legacy_magicbean_handshakes ||
+            { last_err="peer_lifecycle missing legacy handshake canary: $peer"; return 1; }
+        json_has_key "$peer" legacy_compatible_handshakes ||
+            { last_err="peer_lifecycle missing legacy handshake alias: $peer"; return 1; }
+        json_has_key "$peer" zclassic23_handshakes ||
+            { last_err="peer_lifecycle missing zclassic23 handshake canary: $peer"; return 1; }
+        json_has_key "$peer" zclassic_c23_handshakes ||
+            { last_err="peer_lifecycle missing zclassic_c23 compatibility canary: $peer"; return 1; }
+        json_has_key "$peer" pre_handshake_disconnects ||
+            { last_err="peer_lifecycle missing pre-handshake disconnect counter: $peer"; return 1; }
+        if ! printf '%s\n' "$peer" | grep -q '"legacy_magicbean_handshakes"[[:space:]]*:[[:space:]]*[1-9]'; then
+            printf '%s\n' "$peer" | grep -q '"attempted"[[:space:]]*:[[:space:]]*0' ||
+                { last_err="no legacy MagicBean handshake observed and peers were reachable: $peer"; return 1; }
+        fi
+        peer_lifecycle_verified=1
+    fi
+
+    if [ "$legacy_mirror_verified" -eq 0 ]; then
+        mirror=$(rpc_dumpstate legacy_mirror consensus_authority)
+        json_has_key "$mirror" consensus_authority ||
+            { last_err="legacy_mirror authority missing: $mirror"; return 1; }
+        json_key_is_string "$mirror" consensus_authority local_consensus_validation ||
+            { last_err="legacy_mirror must not claim zclassicd authority: $mirror"; return 1; }
+        json_not_has_key "$mirror" mirror_authorization_enabled ||
+            { last_err="legacy_mirror exposes deleted mirror_authorization_enabled: $mirror"; return 1; }
+        json_not_has_key "$mirror" mirror_consensus_authority ||
+            { last_err="legacy_mirror exposes deleted mirror_consensus_authority: $mirror"; return 1; }
+        json_has_key "$mirror" candidate_source ||
+            { last_err="legacy_mirror candidate_source missing: $mirror"; return 1; }
+        json_key_is_string "$mirror" candidate_source legacy_advisory ||
+            { last_err="legacy_mirror must expose advisory candidate source: $mirror"; return 1; }
+        json_has_key "$mirror" legacy_advisory_gated_by_native_retries ||
+            { last_err="legacy_mirror advisory/native retry gate missing: $mirror"; return 1; }
+        json_has_key "$mirror" blockers_total ||
+            { last_err="legacy_mirror blockers_total missing: $mirror"; return 1; }
+        json_has_key "$mirror" stalls_total ||
+            { last_err="legacy_mirror stalls_total missing: $mirror"; return 1; }
+        json_has_key "$mirror" unsafe_overrides_total ||
+            { last_err="legacy_mirror unsafe_overrides_total missing: $mirror"; return 1; }
+        json_key_is_int "$mirror" unsafe_overrides_total 0 ||
+            { last_err="legacy_mirror unsafe overrides are unhealthy: $mirror"; return 1; }
+        json_has_key "$mirror" last_override_safe ||
+            { last_err="legacy_mirror last_override_safe missing: $mirror"; return 1; }
+        json_has_key "$mirror" last_override_scope ||
+            { last_err="legacy_mirror last_override_scope missing: $mirror"; return 1; }
+        legacy_mirror_verified=1
+    fi
 
     health=$(rpc_call healthcheck 2>&1 || true)
     health=$(json_rpc_result "$health")
@@ -614,8 +697,20 @@ verify_contract() {
         { last_err="healthcheck candidate_source missing: $health"; return 1; }
     json_top_has_key "$health" candidate_trust ||
         { last_err="healthcheck candidate_trust missing: $health"; return 1; }
-    json_top_key_is_true "$health" healthy ||
-        { last_err="healthcheck is not healthy: $health"; return 1; }
+    if [ "$DEPLOY_STAGE" = "stable" ]; then
+        json_top_key_is_true "$health" healthy ||
+            { last_err="healthcheck is not healthy: $health"; return 1; }
+    else
+        # Challenger staging and rollback recovery are deliberately weaker
+        # than stable promotion: they prove exact bytes, process identity,
+        # RPC/P2P readiness, evidence consistency, and a <=1 tip gap while
+        # preserving baseline blockers.  Neither claims PROVEN merely because
+        # the process came back.
+        json_top_has_key "$health" healthy ||
+            { last_err="challenger healthcheck omitted healthy verdict: $health"; return 1; }
+        json_health_gap_at_most_one "$health" ||
+            { last_err="challenger tip gap is not <=1: $health"; return 1; }
+    fi
     printf '%s\n' "$health" | grep -q '"degraded_reason"[[:space:]]*:[[:space:]]*"chain_evidence_gap"' &&
         { last_err="healthcheck reports generic evidence gap: $health"; return 1; }
     health_height=$(extract_health_height "$health" || true)
@@ -658,7 +753,13 @@ verify_contract() {
         return 1
     fi
 
-    echo "Deployed + RPC live at block $height (source_id $running_source_id, artifact_sha256 $running_artifact_sha256, build_commit ${running_commit:-unknown} display-only); canonical diagnostics ready."
+    if [ "$DEPLOY_STAGE" = "challenger" ]; then
+        echo "CHALLENGER_STAGED (unqualified): RPC live at block $height (source_id $running_source_id, artifact_sha256 $running_artifact_sha256, build_commit ${running_commit:-unknown} display-only); canonical diagnostics ready; stable channel unchanged."
+    elif [ "$DEPLOY_STAGE" = "rollback" ]; then
+        echo "ROLLBACK_VERIFIED: prior RPC live at block $height (source_id $running_source_id, artifact_sha256 $running_artifact_sha256, build_commit ${running_commit:-unknown} display-only); canonical diagnostics ready."
+    else
+        echo "Deployed + RPC live at block $height (source_id $running_source_id, artifact_sha256 $running_artifact_sha256, build_commit ${running_commit:-unknown} display-only); canonical diagnostics ready."
+    fi
     return 0
 }
 

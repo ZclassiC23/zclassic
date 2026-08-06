@@ -30,6 +30,7 @@
 #include "config/boot_self_respawn.h"   /* #8/Pillar 7: off-systemd self-respawn */
 #include "util/thread_registry.h"
 #include "util/boot_phase.h"            /* boot_stage_current/boot_stage_name */
+#include "util/signal_handler.h"        /* process-wide signal ownership */
 #include "util/util.h"                  /* ParseParameters */
 #include "util/sd_notify.h"             /* -sandbox=steady NOTIFY_SOCKET check */
 #include "session/agent_broker.h"       /* confined metaverse agent + broker modes */
@@ -448,14 +449,9 @@ int main(int argc, char **argv)
      * before the WAL checkpoint + clean-shutdown marker. sigaction without
      * SA_RESETHAND keeps the handler installed so repeated SIGTERMs are
      * absorbed idempotently (the handler's own g_shutdown_requested guard). */
-    {
-        struct sigaction sa;
-        memset(&sa, 0, sizeof(sa));
-        sa.sa_handler = signal_handler;
-        sigemptyset(&sa.sa_mask);
-        sa.sa_flags = SA_RESTART; /* persistent; restart interrupted syscalls */
-        sigaction(SIGINT, &sa, NULL);
-        sigaction(SIGTERM, &sa, NULL);
+    if (signal_handler_install_termination(signal_handler) != 0) {
+        fprintf(stderr, "FATAL: could not install node termination handlers\n");
+        return 1;
     }
 
     /* -connect mode: only connect to specified peers, no seeds */
@@ -517,6 +513,20 @@ int main(int argc, char **argv)
 
     if (!app_init(&ctx)) {
         report_app_init_failed(&ctx);
+        return 1;
+    }
+
+    /* Embedded Tor initializes inside app_init() and installs process-wide
+     * SIGINT/SIGTERM dispositions for its own event loop. Without reclaiming
+     * them here, systemd's SIGTERM stops Tor but leaves the node running until
+     * TimeoutStopSec expires and SIGKILLs it. The node owns process lifetime;
+     * orderly teardown calls tor_integration_stop() explicitly. Re-install
+     * after every embedded runtime has initialized, before READY/main loop. */
+    if (signal_handler_install_termination(signal_handler) != 0) {
+        fprintf(stderr,
+                "FATAL: embedded runtime displaced termination handlers and "
+                "node ownership could not be restored\n");
+        app_shutdown();
         return 1;
     }
 

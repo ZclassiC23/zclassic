@@ -512,13 +512,13 @@ bool process_verack(struct msg_processor *mp, struct p2p_node *node)
                            (int64_t)platform_time_wall_time_t());
     }
 
-    /* Aggressive peer exchange with ZCL23 nodes — don't wait for getaddr.
-     * Push all known addresses immediately so both nodes build their
-     * address books fast. This is the key to low-friction peer discovery:
-     * every ZCL23 handshake floods addresses in both directions. */
+    /* Eager peer exchange with ZCL23 nodes — don't wait for getaddr.
+     * The receiver rejects any single addr message above MAX_ADDR_TO_SEND,
+     * so this unsolicited path must use that same wire bound. */
     if (peer_supports_fast_sync(node->services) && mp->net_mgr) {
-        struct net_address addrs[2500];
-        size_t num = addrman_get_addr(&mp->net_mgr->addrman, addrs, 2500);
+        struct net_address addrs[MAX_ADDR_TO_SEND];
+        size_t num = addrman_get_addr(&mp->net_mgr->addrman, addrs,
+                                      MAX_ADDR_TO_SEND);
         if (num > 0) {
             struct byte_stream addr_msg;
             stream_init(&addr_msg, num * 30 + 8);

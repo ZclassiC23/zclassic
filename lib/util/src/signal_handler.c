@@ -154,3 +154,20 @@ int signal_handler_install(void)
     }
     return 0;
 }
+
+int signal_handler_install_termination(void (*handler)(int))
+{
+    if (!handler)
+        return -1;
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handler;
+    sa.sa_flags = SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGINT, &sa, NULL) != 0)
+        return -1;
+    if (sigaction(SIGTERM, &sa, NULL) != 0)
+        return -1;
+    return 0;
+}

@@ -372,8 +372,11 @@ int t_mvp_reporters_resolve_live_service_rpc_contract(void)
         ASSERT(strstr(scoreboard, "TIP_GAP_OK") != NULL);
         ASSERT(strstr(scoreboard, "LIVE_GAP=$(( LIVE_HEADERS - LIVE_HEIGHT ))")
                != NULL);
-        ASSERT(strstr(scoreboard, "gap=${LIVE_GAP:-?}<=$TIP_GAP_OK")
-               != NULL);
+        ASSERT(strstr(scoreboard, "ZCL_C3_STOPWATCH_HISTORY") != NULL);
+        ASSERT(strstr(scoreboard, "stopwatch_evidence_judge.sh") != NULL);
+        ASSERT(strstr(scoreboard, "[ \"$c3_judge_rc\" -eq 0 ]") != NULL);
+        ASSERT(strstr(scoreboard,
+                      "VERDICT[3]=\"PASS\"; FULL_PASS[3]=1") != NULL);
         ASSERT(strstr(scoreboard,
                       "NOT_MET) VERDICT[6]=\"BLOCKED\"")
                != NULL);

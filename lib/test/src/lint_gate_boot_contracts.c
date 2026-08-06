@@ -155,13 +155,34 @@ int t_boot_shutdown_persistence_order_contract(void)
                          "config/src/boot_services_shutdown.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         char *network_stop = strstr(buf, "zcl_service_kernel_stop_all(&svc->network_kernel);");
+        char *health_stop = strstr(buf, "health_stop();");
+        char *supervisor_stop = strstr(buf, "supervisor_stop();");
+        char *stages_stop = strstr(buf,
+            "staged_sync_supervisor_shutdown_stages();");
         char *wal_checkpoint = strstr(buf, "node_db_wal_checkpoint(svc->node_db)");
+        char *thread_join = strstr(buf, "thread_registry_join_all(2)");
         char *marker = strstr(buf, "boot_shutdown_marker_write_clean(svc->datadir);");
         char *fast = strstr(buf, "shutdown_persist_fast_restart_state(svc);");
         ASSERT(network_stop != NULL);
+        ASSERT(health_stop != NULL);
+        ASSERT(supervisor_stop != NULL);
+        ASSERT(stages_stop != NULL);
         ASSERT(wal_checkpoint != NULL);
+        ASSERT(thread_join != NULL);
         ASSERT(marker != NULL);
         ASSERT(fast != NULL);
+        /* Periodic health callbacks can read node.db. Their sweeper must be
+         * joined before the DB checkpoint/close begins. */
+        ASSERT(health_stop < wal_checkpoint);
+        ASSERT(count_occurrences(buf, "health_stop();") == 1);
+        /* Stage-owned pools must receive their stop signal before the generic
+         * registry join, after their supervisor callback users are joined,
+         * and while persistence dependencies are still live. */
+        ASSERT(supervisor_stop < stages_stop);
+        ASSERT(stages_stop < wal_checkpoint);
+        ASSERT(stages_stop < thread_join);
+        ASSERT(count_occurrences(buf,
+                   "staged_sync_supervisor_shutdown_stages();") == 1);
         /* checkpoint precedes the marker (marker binds a checkpointed DB) */
         ASSERT(wal_checkpoint < marker);
         /* marker precedes the slow flat save (durability before optimization) */

@@ -238,14 +238,16 @@ struct p2p_node {
     bool mempool_requested;
 
     /* Per-peer addr-message rate limit (msgprocessor_inv.c::process_addr).
-     * A single "addr" message is already capped at MAX_ADDR_TO_SEND
-     * entries (oversized -> PEER_OFFENCE_FLOOD + disconnect), but nothing
-     * stopped a peer from repeating max-legal-size batches back-to-back
-     * for free. Fixed window: addr_rate_window_count accumulates entries
-     * received since addr_rate_window_start; once the window rolls over
-     * (ADDR_RATE_WINDOW_SECS) it resets. Zero-initialised (memset in
-     * p2p_node_create) so window_start==0 correctly reads as "no window
-     * yet" on the very first addr message. */
+     * Admission is always capped at MAX_ADDR_TO_SEND. During staggered
+     * rollout, a ZCL23 peer may use the bounded historical 2500-entry wire
+     * envelope; its rate window also accommodates that one eager batch plus
+     * the ordinary getaddr response and announcement batches. Every wire
+     * entry still counts here and excess entries are parsed but not admitted.
+     * Fixed window: addr_rate_window_count
+     * accumulates entries received since addr_rate_window_start; once the
+     * window rolls over (ADDR_RATE_WINDOW_SECS) it resets. Zero-initialised
+     * (memset in p2p_node_create) so window_start==0 correctly reads as "no
+     * window yet" on the very first addr message. */
     int64_t addr_rate_window_start;
     uint32_t addr_rate_window_count;
 

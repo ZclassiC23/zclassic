@@ -10,6 +10,7 @@
  * branch the loop depends on without needing an on-disk historical chain. */
 
 #include "test/test_core.h"
+#include "services/bg_validation_authority.h"
 #include "services/bg_validation_service.h"
 #include "util/blocker.h"
 
@@ -85,10 +86,33 @@ static int test_bg_validation_reverify_failure_raises_blocker(void)
     return failures;
 }
 
+static int test_bg_validation_authority_requires_complete_coverage(void)
+{
+    int failures = 0;
+
+    TEST("bg_validation: authority claim is exact and fail-closed") {
+        ASSERT(bg_validation_authority_claim_is_complete(
+            3000, 3000, 3000, 0, true));
+        ASSERT(!bg_validation_authority_claim_is_complete(
+            2999, 3000, 3000, 0, true));
+        ASSERT(!bg_validation_authority_claim_is_complete(
+            3000, 3000, 2999, 0, true));
+        ASSERT(!bg_validation_authority_claim_is_complete(
+            3000, 3000, 3000, 1, true));
+        ASSERT(!bg_validation_authority_claim_is_complete(
+            3000, 3000, 3000, 0, false));
+        ASSERT(!bg_validation_authority_claim_is_complete(
+            0, 0, 0, 0, true));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_bg_validation_reverify(void)
 {
     int failures = 0;
     failures += test_bg_validation_reverify_healthy_advances();
     failures += test_bg_validation_reverify_failure_raises_blocker();
+    failures += test_bg_validation_authority_requires_complete_coverage();
     return failures;
 }

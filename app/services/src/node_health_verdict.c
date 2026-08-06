@@ -15,17 +15,11 @@
  *     locks during bulk ingest, and that blocking was the pet-starvation
  *     source behind the 2026-08-02 systemd watchdog kill loop.
  *
- * The body-gap posture flag is the precise, bounded forgiveness for the
- * second half of that kill loop: "unhealthy SOLELY because the
- * body-history archive is still unproven". The sync FSM refuses
- * SYNC_AT_TIP while body_history_is_proven() is false (38fe0885b) — an
- * intentional, days-long posture on a snapshot-seeded datadir. healthy
- * MUST stay false there (serving must not open, /api/health stays 503),
- * but systemd-restarting cannot shorten the posture — it only interrupts
- * the backfill that ends it — so the sd pet forgives exactly this one
- * state and nothing else. Any named degradation (contradiction, operator
- * latch, mirror fatal, tip deadman, tip_lag growth, peer loss) clears the
- * posture and the pet stops. */
+ * The pet consumes only the publication timestamp. The verdict itself stays
+ * authoritative for serving, conditions, remedies, and operator action, but
+ * a fresh negative verdict is evidence of a live collector—not a hung process.
+ * This separation prevents restart-proof named degradations from becoming
+ * systemd crash loops. */
 
 // one-result-type-ok:verdict-atomics-no-fallible-surface — E2 (one way
 // out): this unit owns no fallible service surface. node_health_last_verdict's
@@ -38,24 +32,15 @@
 
 #include "platform/time_compat.h"
 #include "services/node_health_service.h"
-#include "storage/body_history.h"
-
 #include <stdatomic.h>
 
-static _Atomic bool    g_last_verdict_healthy = false;
-static _Atomic bool    g_last_verdict_body_gap_posture = false;
 static _Atomic int64_t g_last_verdict_us      = 0; /* 0 = never published */
 
-bool node_health_last_verdict(bool *healthy_out, bool *body_gap_posture_out,
-                              int64_t *publish_us_out)
+bool node_health_last_verdict(int64_t *publish_us_out)
 {
     int64_t pub = atomic_load(&g_last_verdict_us);
     if (pub == 0)
         return false;
-    if (healthy_out)
-        *healthy_out = atomic_load(&g_last_verdict_healthy);
-    if (body_gap_posture_out)
-        *body_gap_posture_out = atomic_load(&g_last_verdict_body_gap_posture);
     if (publish_us_out)
         *publish_us_out = pub;
     return true;
@@ -65,15 +50,5 @@ void node_health_verdict_publish(const struct node_health_snapshot *snapshot)
 {
     if (!snapshot)
         return;
-    atomic_store(&g_last_verdict_healthy, snapshot->healthy);
-    /* Deliberately strict: unhealthy with NO named degradation, archive
-     * still unproven, at the network tip with peers. */
-    atomic_store(&g_last_verdict_body_gap_posture,
-                 !snapshot->healthy &&
-                 snapshot->degraded_reason[0] == '\0' &&
-                 !body_history_is_proven() &&
-                 snapshot->has_peers &&
-                 snapshot->tip_lag >= 0 &&
-                 snapshot->tip_lag <= ZCL_NODE_HEALTH_LAG_WARN_BLOCKS);
     atomic_store(&g_last_verdict_us, platform_time_monotonic_us());
 }

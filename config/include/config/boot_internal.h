@@ -405,8 +405,6 @@ void boot_sd_watchdog_stop(void *ctx);
 #ifdef ZCL_TESTING
 /* Test seam for the pure pet decision (lib/test/src/test_sd_notify.c). */
 bool boot_sd_watchdog_test_pet_decide(bool supervisor_alive, bool have_verdict,
-                                      bool verdict_healthy,
-                                      bool body_gap_posture,
                                       int64_t verdict_age_us,
                                       bool recent_progress,
                                       int64_t grace_left_us,

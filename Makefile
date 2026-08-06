@@ -5192,8 +5192,47 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	command -v timeout >/dev/null 2>&1 || { \
 	    echo "deploy: timeout is required for candidate preflight" >&2; exit 1; }; \
 	candidate="$$(mktemp "$(dir $(ZCLASSIC23_BIN)).zclassic23.deploy.XXXXXX")"; \
-	dropin_tmp=""; service_tmp=""; \
-	trap 'rm -f "$$candidate" "$$dropin_tmp" "$$service_tmp"' EXIT HUP INT TERM; \
+	dropin_tmp=""; service_tmp=""; rollback_bin=""; rollback_dropin=""; \
+	rollback_dropin_present=0; rollback_armed=0; rollback_complete=0; \
+	rollback_source_id=""; rollback_artifact_sha256=""; SERVICE_BIN=""; dropin=""; \
+	cleanup_deploy() { \
+	    deploy_rc=$$?; \
+	    trap - EXIT HUP INT TERM; \
+	    set +e; \
+	    if [ "$$rollback_armed" -eq 1 ] && [ "$$rollback_complete" -eq 0 ]; then \
+	        rollback_complete=1; \
+	        echo "deploy: candidate verification failed; restoring pinned prior binary/config" >&2; \
+	        install -m 755 "$$rollback_bin" "$$SERVICE_BIN"; rollback_install_rc=$$?; \
+	        if [ "$$rollback_dropin_present" -eq 1 ]; then \
+	            install -m 644 "$$rollback_dropin" "$$dropin"; rollback_dropin_rc=$$?; \
+	        else \
+	            rm -f "$$dropin"; rollback_dropin_rc=$$?; \
+	        fi; \
+	        systemctl --user daemon-reload; rollback_reload_rc=$$?; \
+	        systemctl --user restart zclassic23; rollback_restart_rc=$$?; \
+	        rollback_verify_rc=1; \
+	        if [ "$$rollback_install_rc" -eq 0 ] && \
+	           [ "$$rollback_dropin_rc" -eq 0 ] && \
+	           [ "$$rollback_reload_rc" -eq 0 ] && \
+	           [ "$$rollback_restart_rc" -eq 0 ]; then \
+	            ZCL_DEPLOY_STAGE=rollback \
+	            ZCL_DEPLOY_EXPECT_SOURCE_ID="$$rollback_source_id" \
+	            ZCL_DEPLOY_EXPECT_ARTIFACT_SHA256="$$rollback_artifact_sha256" \
+	                ./tools/deploy_verify.sh; \
+	            rollback_verify_rc=$$?; \
+	        fi; \
+	        if [ "$$rollback_verify_rc" -eq 0 ]; then \
+	            echo "deploy: ROLLED_BACK — prior executable/config restored and verified" >&2; \
+	        else \
+	            echo "deploy: CRITICAL — rollback verification failed; automation stopped" >&2; \
+	        fi; \
+	    fi; \
+	    rm -f "$$candidate" "$$dropin_tmp" "$$service_tmp" \
+	          "$$rollback_bin" "$$rollback_dropin"; \
+	    exit "$$deploy_rc"; \
+	}; \
+	trap cleanup_deploy EXIT; \
+	trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
 	install -m 755 "$(ZCLASSIC23_BIN)" "$$candidate"; \
 	artifact_sha256="$$(sha256sum < "$$candidate" | awk '{print $$1}')"; \
 	[ "$${#artifact_sha256}" -eq 64 ] || { \
@@ -5231,8 +5270,53 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	else \
 	    echo "deploy: preserving existing canonical service unit"; \
 	fi; \
+	systemctl --user daemon-reload; \
+	service_exec="$$(systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null)"; \
+	service_path="$$(printf '%s\n' "$$service_exec" | \
+	    sed -n 's/^.*path=\([^ ;]*\).*$$/\1/p')"; \
+	service_argv="$$(printf '%s\n' "$$service_exec" | \
+	    sed -n 's/^.*argv\[\]=\([^;]*\);.*$$/\1/p')"; \
+	service_argv0="$$(printf '%s\n' "$$service_argv" | tr ' ' '\n' | awk 'NF { print; exit }')"; \
+	[ -n "$$service_path" ] && [ "$$service_path" = "$$service_argv0" ] || { \
+	    echo "deploy: canonical service path and executable argv disagree" >&2; exit 1; }; \
+	if [ "$$service_path" = "$(CURDIR)/deploy/zclassic23-launch.sh" ]; then \
+	    SERVICE_BIN="$$(printf '%s\n' "$$service_argv" | tr ' ' '\n' | \
+	        awk 'NF { n++; if (n == 2) { print; exit } }')"; \
+	    [ "$$SERVICE_BIN" = "$(CURDIR)/build/bin/zclassic23" ] || { \
+	        echo "deploy: canonical launcher node binary does not resolve to this checkout" >&2; exit 1; }; \
+	else \
+	    case "$$service_path" in /*) SERVICE_BIN="$$service_path" ;; *) \
+	        echo "deploy: direct canonical service binary is not absolute" >&2; exit 1;; esac; \
+	fi; \
+	mainpid="$$(systemctl --user show zclassic23 -p MainPID --value 2>/dev/null || true)"; \
+	case "$$mainpid" in ''|*[!0-9]*|0) \
+	    echo "deploy: canonical service must be running before a rollback-safe mutation" >&2; exit 1;; esac; \
+	running_exe="$$(readlink -f "/proc/$$mainpid/exe" 2>/dev/null || true)"; \
+	target_exe="$$(readlink -f "$$SERVICE_BIN" 2>/dev/null || true)"; \
+	[ -n "$$running_exe" ] && [ "$$running_exe" = "$$target_exe" ] || { \
+	    echo "deploy: canonical MainPID executable does not match service target" >&2; exit 1; }; \
+	tools/dev/source-identity.sh verify-record \
+	    "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	install -d "$(HOME)/.config/systemd/user/zclassic23.service.d"; \
 	dropin="$(HOME)/.config/systemd/user/zclassic23.service.d/90-build-identity.conf"; \
+	rollback_bin="$$(mktemp "$$(dirname "$$SERVICE_BIN")/.zclassic23.rollback.XXXXXX")"; \
+	install -m 755 "$$SERVICE_BIN" "$$rollback_bin"; \
+	rollback_artifact_sha256="$$(sha256sum < "$$rollback_bin" | awk '{print $$1}')"; \
+	rollback_agentbuild="$$(timeout 30 "$$rollback_bin" agentbuild 2>&1)" || { \
+	    echo "deploy: prior executable agentbuild preflight failed" >&2; exit 1; }; \
+	rollback_source_id="$$(printf '%s\n' "$$rollback_agentbuild" | \
+	    grep -oE '"source_id_sha256"[[:space:]]*:[[:space:]]*"[^"]*"' | \
+	    head -1 | sed -E 's/.*"source_id_sha256"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"; \
+	[ "$${#rollback_source_id}" -eq 64 ] || { \
+	    echo "deploy: prior executable omitted exact source_id_sha256" >&2; exit 1; }; \
+	case "$$rollback_source_id$$rollback_artifact_sha256" in *[!0-9a-f]*) \
+	    echo "deploy: prior rollback identity is malformed" >&2; exit 1;; esac; \
+	if [ -f "$$dropin" ]; then \
+	    rollback_dropin="$$(mktemp "$$dropin.rollback.XXXXXX")"; \
+	    install -m 644 "$$dropin" "$$rollback_dropin"; \
+	    rollback_dropin_present=1; \
+	fi; \
+	rollback_armed=1; \
 	dropin_tmp="$$(mktemp "$$dropin.tmp.XXXXXX")"; \
 	{ \
 	    printf '[Service]\n'; \
@@ -5243,17 +5327,6 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	install -m 644 "$$dropin_tmp" "$$dropin"; \
 	rm -f "$$dropin_tmp"; dropin_tmp=""; \
 	systemctl --user daemon-reload; \
-	service_exec="$$(systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null)"; \
-	case "$$service_exec" in *"path=$(CURDIR)/deploy/zclassic23-launch.sh"*) ;; *) \
-	    echo "deploy: canonical service launcher does not resolve to this checkout" >&2; exit 1;; esac; \
-	service_argv="$$(printf '%s\n' "$$service_exec" | \
-	    sed -n 's/^.*argv\[\]=\([^;]*\);.*$$/\1/p')"; \
-	SERVICE_BIN="$$(printf '%s\n' "$$service_argv" | tr ' ' '\n' | \
-	    awk 'NF { n++; if (n == 2) { print; exit } }')"; \
-	[ "$$SERVICE_BIN" = "$(CURDIR)/build/bin/zclassic23" ] || { \
-	    echo "deploy: canonical launcher node binary does not resolve to this checkout" >&2; exit 1; }; \
-	tools/dev/source-identity.sh verify-record \
-	    "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	install -m 755 "$$candidate" "$$SERVICE_BIN"; \
 	installed_sha256="$$(sha256sum < "$$SERVICE_BIN" | awk '{print $$1}')"; \
 	[ "$$installed_sha256" = "$$artifact_sha256" ] || { \
@@ -5274,7 +5347,9 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	ZCL_DEPLOY_EXPECT_SOURCE_ID="$(BUILD_SOURCE_ID)" \
 	ZCL_DEPLOY_EXPECT_ARTIFACT_SHA256="$$artifact_sha256" \
 	    ./tools/deploy_verify.sh; \
+	rollback_armed=0; \
 	rm -f "$$candidate"; candidate=""; \
+	rm -f "$$rollback_bin" "$$rollback_dropin"; rollback_bin=""; rollback_dropin=""; \
 	trap - EXIT HUP INT TERM
 
 # Option 2 (DEPLOY-WRITE) snapshot reachability bridge: stage a verified anchor

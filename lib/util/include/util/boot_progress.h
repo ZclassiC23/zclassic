@@ -53,7 +53,8 @@ void boot_progress_tick(const char *label);
 
 /* Return the monotonic CLOCK_MONOTONIC timestamp (in microseconds) of
  * the most recent tick, or 0 if no tick has fired yet. Used by the
- * sd_watchdog tick to decide whether to ping. */
+ * sd_watchdog pet thread as a bounded startup/long-operation liveness
+ * signal. */
 int64_t boot_progress_last_us(void);
 
 /* Most recent label, or NULL if no tick has fired yet. Pointer is

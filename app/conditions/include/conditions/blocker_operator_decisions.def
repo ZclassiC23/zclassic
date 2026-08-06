@@ -102,6 +102,24 @@ ZCL_BLOCKER_DECISION(*.partial_coverage,
     "Consensus is unaffected either way - these are rebuildable projections, "
     "never consensus state, and this blocker never holds the reducer frontier.")
 
+/* ── Full-history authority publication
+ * (app/services/src/bg_validation_authority.c). The live blocker reason names
+ * the exact missing proof or moving frontier; no trust override exists. ─── */
+ZCL_BLOCKER_DECISION(bg_validation.full_history_unproven,
+    "A person must choose; the node will not convert an incomplete historical "
+    "walk into durable trust. Read the live reason first. "
+    "OPTION A - preserve the datadir, restore or fetch every missing block body "
+    "and undo record (or restore the required root-bound snapshot evidence), "
+    "then rerun the validation campaign against a synchronized frontier. Cost: "
+    "history download, disk, and proof/script verification time. The blocker "
+    "clears only after exact tip and coins commitments agree with zero coverage "
+    "or script skips. "
+    "OPTION B - keep this datadir in assisted/bootstrap-trust posture. It may "
+    "continue serving under local policy, but it cannot provide FULLY_VALIDATED "
+    "evidence or qualify a release. "
+    "There is deliberately no accept-anyway option: doing so would turn a "
+    "missing consensus proof into an owner assertion.")
+
 /* ── Recovery-ladder escape hatches (app/services/src/sticky_escalator.c).
  * Both fired on a genuinely fresh node 2026-07-27: the two self-heal routes
  * ran and failed because the artifact they wanted did not exist. ─────── */
