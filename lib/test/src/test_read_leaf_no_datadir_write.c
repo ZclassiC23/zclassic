@@ -308,6 +308,8 @@ static const struct rlw_leaf g_rlw_leaves[] = {
       "kind", "space_manifest", "name", "read-leaf-probe", "zcode/dht" },
     { "metaverse.space.show", zcl_native_handle_metaverse_space_show,
       "root", RLW_ZID_PUBKEY, NULL, NULL, "zcode/.zvcs" },
+    { "metaverse.space.status", zcl_native_handle_metaverse_space_status,
+      "root", RLW_ZID_PUBKEY, NULL, NULL, "zcode/.zvcs" },
     { "metaverse.space.scout.plan",
       zcl_native_handle_metaverse_space_scout_plan,
       NULL, NULL, NULL, NULL, "zcode/dht" },

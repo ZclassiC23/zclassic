@@ -14,6 +14,7 @@
 #include "vcs/space.h"
 #include "vcs/zcode_dht_service.h"
 #include "vcs/zcode_dht_identity.h"
+#include "vcs/zcode_sovereignty_policy.h"
 
 #include <stdio.h>
 #include <stdint.h>
@@ -22,6 +23,7 @@
 
 #define MVSPACE_PATH_MAX 4096u
 #define MVSPACE_RECORD_SECONDS INT64_C(3600)
+#define MVSPACE_DISCOVERY_FOREGROUND_MS INT64_C(10000)
 
 struct mvspace_chain_proof {
   uint8_t wire[VCS_ZCODE_DHT_DELEGATION_WIRE_BYTES];
@@ -70,6 +72,34 @@ static void mvspace_blocked_after_mutation(
   zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                          ZCL_COMMAND_EXIT_FAILED, code, "publish", true,
                          true, detail, leaf);
+}
+
+static void mvspace_discovery_state(
+    struct zcl_command_reply *reply, const char *state, bool retryable,
+    const char *phase, uint32_t completed, const char *root,
+    enum metaverse_space_object_kind kind)
+{
+  if (!reply)
+    return;
+  json_push_kv_str(&reply->data, "state", state ? state : "invalid");
+  json_push_kv_bool(&reply->data, "retryable", retryable);
+  json_push_kv_str(&reply->data, "phase", phase ? phase : "validate");
+  json_push_kv_int(&reply->data, "progress_steps_completed", completed);
+  json_push_kv_int(&reply->data, "progress_steps_total", 4);
+  char next[256];
+  const char *kind_name = kind == METAVERSE_SPACE_OBJECT_SERVICE_DESCRIPTOR
+                              ? "service_descriptor" : "space_manifest";
+  if (state && strcmp(state, "present") == 0 && root)
+    (void)snprintf(next, sizeof(next),
+                   "zclassic23 metaverse space show %s", root);
+  else if (retryable && root)
+    (void)snprintf(next, sizeof(next),
+                   "zclassic23 metaverse space discover %s --kind=%s",
+                   root, kind_name);
+  else
+    (void)snprintf(next, sizeof(next),
+                   "zclassic23 metaverse space status");
+  json_push_kv_str(&reply->data, "next_action", next);
 }
 
 static const char *mvspace_datadir(const struct json_value *input)
@@ -609,6 +639,412 @@ void zcl_native_handle_metaverse_space_show(
   }
 }
 
+struct mvspace_status_identity {
+  bool online_key;
+  bool delegation_present;
+  bool delegation_valid;
+  bool chain_authorized;
+};
+
+struct mvspace_status_network {
+  bool reachable;
+  bool enabled;
+  uint32_t authenticated_peers;
+};
+
+struct mvspace_status_visibility {
+  bool requested;
+  bool visible;
+  bool kind_matches;
+  enum metaverse_space_object_kind kind;
+  char transport_root[65];
+  uint32_t descriptors_total;
+  uint32_t descriptors_visible;
+};
+
+static struct mvspace_status_identity mvspace_status_identity_read(
+    const char *datadir)
+{
+  struct mvspace_status_identity status;
+  struct vcs_zcode_dht_delegation delegation;
+  uint8_t seed[32], public_key[32];
+  char ignored[192] = {0};
+
+  memset(&status, 0, sizeof(status));
+  memset(seed, 0, sizeof(seed));
+  memset(public_key, 0, sizeof(public_key));
+  status.online_key = datadir && vcs_zcode_dht_online_key_load(
+      datadir, seed, public_key, ignored, sizeof(ignored));
+  memory_cleanse(seed, sizeof(seed));
+  status.delegation_present = datadir && vcs_zcode_dht_delegation_load(
+      datadir, &delegation, ignored, sizeof(ignored));
+  int64_t wall = platform_time_wall_unix();
+  status.delegation_valid =
+      status.online_key && status.delegation_present && wall > 0 &&
+      memcmp(public_key, delegation.online_pubkey, sizeof(public_key)) == 0 &&
+      vcs_zcode_dht_delegation_verify(
+          &delegation, NULL, NULL, 0, NULL, (uint64_t)wall) ==
+          VCS_ZCODE_DHT_DELEGATION_OK;
+  status.chain_authorized =
+      status.delegation_valid &&
+      zcl_native_zcode_delegation_authorized(&delegation, NULL, 0);
+  memory_cleanse(public_key, sizeof(public_key));
+  return status;
+}
+
+static struct mvspace_status_network mvspace_status_network_read(void)
+{
+  struct mvspace_status_network status;
+  struct json_value dht;
+
+  memset(&status, 0, sizeof(status));
+  if (!zcl_native_zcode_dht_status_read(&dht)) {
+    json_free(&dht);
+    return status;
+  }
+  status.reachable = true;
+  status.enabled = json_get_bool_or(&dht, "enabled", false);
+  int64_t peers = json_get_int(json_get(&dht, "connected_authenticated"));
+  status.authenticated_peers = peers > 0 && peers <= UINT32_MAX
+                                   ? (uint32_t)peers : 0;
+  json_free(&dht);
+  return status;
+}
+
+static bool mvspace_status_live_datadir(const struct json_value *input,
+                                        const char *datadir)
+{
+  const char *requested = mvspace_str(input, "datadir");
+  const char *running = zcl_native_command_datadir();
+  return (!requested || !requested[0]) ||
+         (running && datadir && strcmp(running, datadir) == 0);
+}
+
+static struct mvspace_status_visibility mvspace_status_visibility_read(
+    const char *workspace, const char *root,
+    enum metaverse_space_object_kind expected)
+{
+  struct mvspace_status_visibility status;
+  struct metaverse_space_object object;
+
+  memset(&status, 0, sizeof(status));
+  status.requested = root != NULL;
+  if (!root || !workspace)
+    return status;
+  struct zcl_result shown = metaverse_space_show(workspace, root, &object);
+  if (!shown.ok)
+    return status;
+  status.visible = true;
+  status.kind = object.kind;
+  status.kind_matches = object.kind == expected;
+  enum metaverse_space_object_kind transport_kind;
+  if (!metaverse_space_transport_root(
+           workspace, root, status.transport_root, &transport_kind).ok ||
+      transport_kind != object.kind)
+    status.transport_root[0] = '\0';
+  if (object.kind == METAVERSE_SPACE_OBJECT_SERVICE_DESCRIPTOR) {
+    status.descriptors_total = 1;
+    status.descriptors_visible = 1;
+    return status;
+  }
+  status.descriptors_total = object.as.manifest.service_count;
+  for (uint8_t i = 0; i < object.as.manifest.service_count; i++) {
+    char descriptor_root[65];
+    struct metaverse_space_object descriptor;
+    zcl_hex_encode(object.as.manifest.service_roots[i], 32, descriptor_root);
+    if (metaverse_space_show(workspace, descriptor_root, &descriptor).ok &&
+        descriptor.kind == METAVERSE_SPACE_OBJECT_SERVICE_DESCRIPTOR)
+      status.descriptors_visible++;
+  }
+  return status;
+}
+
+static uint32_t mvspace_status_local_records(
+    const char *kind, const char *namespace_name, const char *root_key,
+    const char *root)
+{
+  if (!kind || !namespace_name || !root_key || !root || !root[0])
+    return 0;
+  struct json_value selector, result;
+  json_init(&selector);
+  json_set_object(&selector);
+  json_push_kv_str(&selector, "kind", kind);
+  json_push_kv_str(&selector, "namespace", namespace_name);
+  json_push_kv_str(&selector, root_key, root);
+  bool read = zcl_native_zcode_records_local(&selector, &result);
+  int64_t count = read ? json_get_int(json_get(&result, "count")) : 0;
+  json_free(&result);
+  json_free(&selector);
+  return count > 0 && count <= UINT32_MAX ? (uint32_t)count : 0;
+}
+
+static void mvspace_status_policy_read(
+    const char *datadir, const char *semantic, const char *transport,
+    const char *service_type, bool allowed[6], bool *all_out)
+{
+  static const enum vcs_zcode_sovereignty_action actions[6] = {
+      VCS_ZCODE_SOVEREIGNTY_DISCOVER, VCS_ZCODE_SOVEREIGNTY_FETCH,
+      VCS_ZCODE_SOVEREIGNTY_STORE, VCS_ZCODE_SOVEREIGNTY_INDEX,
+      VCS_ZCODE_SOVEREIGNTY_SERVE, VCS_ZCODE_SOVEREIGNTY_FORWARD};
+  *all_out = true;
+  for (size_t i = 0; i < 6; i++) {
+    allowed[i] = mvspace_policy(datadir, actions[i], semantic, transport,
+                                NULL, service_type, NULL, 0);
+    *all_out = *all_out && allowed[i];
+  }
+}
+
+static void mvspace_status_blocker(struct json_value *array,
+                                   const char *code)
+{
+  struct json_value value;
+  json_init(&value);
+  json_set_str(&value, code);
+  (void)json_push_back(array, &value);
+  json_free(&value);
+}
+
+static void mvspace_status_push_identity(
+    struct json_value *data, const struct mvspace_status_identity *identity)
+{
+  struct json_value row;
+  json_init(&row);
+  json_set_object(&row);
+  json_push_kv_bool(&row, "online_key_ready", identity->online_key);
+  json_push_kv_bool(&row, "delegation_present",
+                    identity->delegation_present);
+  json_push_kv_bool(&row, "delegation_valid", identity->delegation_valid);
+  json_push_kv_bool(&row, "chain_authorized",
+                    identity->chain_authorized);
+  json_push_kv_bool(&row, "ready", identity->chain_authorized);
+  json_push_kv(data, "identity", &row);
+  json_free(&row);
+}
+
+static void mvspace_status_push_policy(struct json_value *data,
+                                       const bool allowed[6], bool all)
+{
+  static const char *const names[6] = {
+      "discover", "fetch", "store", "index", "serve", "forward"};
+  struct json_value row;
+  json_init(&row);
+  json_set_object(&row);
+  for (size_t i = 0; i < 6; i++)
+    json_push_kv_bool(&row, names[i], allowed[i]);
+  json_push_kv_bool(&row, "ready", all);
+  json_push_kv_bool(&row, "candidate_specific_recheck_required", true);
+  json_push_kv(data, "policy", &row);
+  json_free(&row);
+}
+
+void zcl_native_handle_metaverse_space_status(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+  if (!request || !reply)
+    return;
+  const char *root = mvspace_str(request->input, "root");
+  const char *kind_text = mvspace_str(request->input, "kind");
+  enum metaverse_space_object_kind expected =
+      !kind_text || strcmp(kind_text, "space_manifest") == 0
+          ? METAVERSE_SPACE_OBJECT_MANIFEST
+          : strcmp(kind_text, "service_descriptor") == 0
+                ? METAVERSE_SPACE_OBJECT_SERVICE_DESCRIPTOR
+                : METAVERSE_SPACE_OBJECT_NONE;
+  uint8_t decoded[32];
+  if (expected == METAVERSE_SPACE_OBJECT_NONE ||
+      (root && !mvspace_root(root, decoded))) {
+    mvspace_fail(reply, "BAD_STATUS_SUBJECT",
+                 "kind must be space_manifest or service_descriptor and "
+                 "root, when supplied, must be 64 lowercase hex",
+                 "metaverse.space.status");
+    return;
+  }
+  const char *datadir = mvspace_datadir(request->input);
+  char workspace[MVSPACE_PATH_MAX];
+  const char *resolved = mvspace_workspace(request->input, workspace);
+  struct mvspace_status_identity identity =
+      mvspace_status_identity_read(datadir);
+  struct mvspace_status_network network = mvspace_status_network_read();
+  struct mvspace_status_visibility visibility =
+      mvspace_status_visibility_read(resolved, root, expected);
+  const char *service_type = mvspace_service_type(expected);
+  const char *transport = visibility.transport_root[0]
+                              ? visibility.transport_root : NULL;
+  bool policy[6], policy_all = false;
+  mvspace_status_policy_read(datadir, root, transport, service_type,
+                             policy, &policy_all);
+
+  struct vcs_package_store_totals totals;
+  enum vcs_package_store_totals_result totals_result =
+      mvspace_status_live_datadir(request->input, datadir)
+          ? vcs_package_store_try_totals(&totals)
+          : VCS_PACKAGE_STORE_TOTALS_CLOSED;
+  bool store_open = totals_result == VCS_PACKAGE_STORE_TOTALS_OK;
+  bool store_busy = totals_result == VCS_PACKAGE_STORE_TOTALS_BUSY;
+  bool hosting_enabled = vcs_package_store_hosting_enabled();
+  bool authenticated_peer = network.authenticated_peers > 0;
+  bool descriptor_visibility =
+      visibility.visible && visibility.kind_matches &&
+      visibility.descriptors_visible == visibility.descriptors_total;
+  bool ready_to_publish = root && visibility.visible &&
+      visibility.kind_matches && transport && identity.chain_authorized &&
+      network.enabled && authenticated_peer && store_open &&
+      hosting_enabled && policy[2] && policy[3] && policy[4] && policy[5] &&
+      descriptor_visibility;
+  bool ready_to_discover = root && network.enabled && authenticated_peer &&
+      store_open && policy[0] && policy[1] && policy[2] && policy[3];
+  bool ready_to_scout = ready_to_discover && identity.chain_authorized;
+
+  uint32_t pointer_records = network.enabled && root
+      ? mvspace_status_local_records("pointer", service_type,
+                                     "semantic_root", root) : 0;
+  uint32_t provider_records = network.enabled && transport
+      ? mvspace_status_local_records("provider", service_type,
+                                     "transport_root", transport) : 0;
+
+  json_push_kv_str(&reply->data, "semantic_root", root ? root : "");
+  json_push_kv_str(&reply->data, "transport_root",
+                   transport ? transport : "");
+  json_push_kv_str(&reply->data, "kind",
+                   expected == METAVERSE_SPACE_OBJECT_MANIFEST
+                       ? "space_manifest" : "service_descriptor");
+  mvspace_status_push_identity(&reply->data, &identity);
+  {
+    struct json_value row;
+    json_init(&row);
+    json_set_object(&row);
+    json_push_kv_bool(&row, "status_reachable", network.reachable);
+    json_push_kv_bool(&row, "dht_ready", network.enabled);
+    json_push_kv_bool(&row, "authenticated_peer_ready",
+                      authenticated_peer);
+    json_push_kv_int(&row, "authenticated_peer_count",
+                     network.authenticated_peers);
+    json_push_kv(&reply->data, "network", &row);
+    json_free(&row);
+  }
+  {
+    struct json_value row;
+    json_init(&row);
+    json_set_object(&row);
+    json_push_kv_bool(&row, "open", store_open);
+    json_push_kv_bool(&row, "busy", store_busy);
+    json_push_kv_bool(&row, "hosting_enabled", hosting_enabled);
+    json_push_kv_bool(&row, "ready", store_open && hosting_enabled);
+    json_push_kv(&reply->data, "package_store", &row);
+    json_free(&row);
+  }
+  mvspace_status_push_policy(&reply->data, policy, policy_all);
+  {
+    struct json_value row;
+    json_init(&row);
+    json_set_object(&row);
+    json_push_kv_bool(&row, "root_requested", visibility.requested);
+    json_push_kv_str(&row, "state",
+                     !visibility.requested ? "not_requested" :
+                     !visibility.visible ? "not_found" :
+                     !visibility.kind_matches ? "invalid" : "present");
+    json_push_kv_bool(&row, "manifest_visible",
+                      visibility.visible && visibility.kind ==
+                          METAVERSE_SPACE_OBJECT_MANIFEST);
+    json_push_kv_int(&row, "descriptors_total",
+                     visibility.descriptors_total);
+    json_push_kv_int(&row, "descriptors_visible",
+                     visibility.descriptors_visible);
+    json_push_kv_bool(&row, "all_descriptors_visible",
+                      descriptor_visibility);
+    json_push_kv(&reply->data, "visibility", &row);
+    json_free(&row);
+  }
+  {
+    struct json_value row;
+    json_init(&row);
+    json_set_object(&row);
+    json_push_kv_str(&row, "state",
+                     pointer_records && provider_records ? "published" :
+                     pointer_records ? "partial" : "not_published");
+    json_push_kv_int(&row, "pointer_records", pointer_records);
+    json_push_kv_int(&row, "provider_records", provider_records);
+    json_push_kv_str(&row, "replication_state",
+                     provider_records ? "declared" : "none");
+    json_push_kv_bool(&row, "replication_is_possession_proof", false);
+    json_push_kv(&reply->data, "publication", &row);
+    json_free(&row);
+  }
+
+  struct json_value blockers;
+  json_init(&blockers);
+  json_set_array(&blockers);
+  if (!identity.online_key)
+    mvspace_status_blocker(&blockers, "identity_online_key_unavailable");
+  if (!identity.delegation_present)
+    mvspace_status_blocker(&blockers, "delegation_absent");
+  else if (!identity.delegation_valid)
+    mvspace_status_blocker(&blockers, "delegation_invalid_or_expired");
+  else if (!identity.chain_authorized)
+    mvspace_status_blocker(&blockers, "delegation_not_chain_authorized");
+  if (!network.reachable)
+    mvspace_status_blocker(&blockers, "dht_status_unreachable");
+  else if (!network.enabled)
+    mvspace_status_blocker(&blockers, "dht_disabled");
+  if (network.enabled && !authenticated_peer)
+    mvspace_status_blocker(&blockers, "authenticated_peer_absent");
+  if (store_busy)
+    mvspace_status_blocker(&blockers, "package_store_busy");
+  else if (!store_open)
+    mvspace_status_blocker(&blockers, "package_store_closed");
+  if (!hosting_enabled)
+    mvspace_status_blocker(&blockers, "package_hosting_disabled");
+  if (!policy_all)
+    mvspace_status_blocker(&blockers, "local_policy_not_ready");
+  if (!root)
+    mvspace_status_blocker(&blockers, "semantic_root_not_supplied");
+  else if (!visibility.visible)
+    mvspace_status_blocker(&blockers, "local_object_not_found");
+  else if (!visibility.kind_matches)
+    mvspace_status_blocker(&blockers, "local_object_kind_mismatch");
+  else if (!descriptor_visibility)
+    mvspace_status_blocker(&blockers, "advertised_descriptor_not_visible");
+  json_push_kv(&reply->data, "blockers", &blockers);
+  json_push_kv_int(&reply->data, "blocker_count",
+                   (int64_t)json_size(&blockers));
+  json_free(&blockers);
+
+  json_push_kv_bool(&reply->data, "ready_to_publish", ready_to_publish);
+  json_push_kv_bool(&reply->data, "ready_to_discover", ready_to_discover);
+  json_push_kv_bool(&reply->data, "ready_to_scout", ready_to_scout);
+  json_push_kv_str(&reply->data, "state",
+                   ready_to_publish && ready_to_discover && ready_to_scout
+                       ? "ready" : "blocked");
+  json_push_kv_bool(&reply->data, "retryable", true);
+  char next[256];
+  if (!root)
+    (void)snprintf(next, sizeof(next),
+                   "zclassic23 metaverse space status --input="
+                   "'{\"root\":\"<64hex>\"}'");
+  else if (!identity.chain_authorized || !network.enabled)
+    (void)snprintf(next, sizeof(next),
+                   "zclassic23 zcode network status");
+  else if (!store_open)
+    (void)snprintf(next, sizeof(next),
+                   "zclassic23 ops state --subsystem=zcode_store");
+  else if (!policy_all)
+    (void)snprintf(next, sizeof(next),
+                   "zclassic23 zcode network policy list");
+  else if (!visibility.visible && ready_to_discover)
+    (void)snprintf(next, sizeof(next),
+                   "zclassic23 metaverse space discover %s --kind=%s",
+                   root, expected == METAVERSE_SPACE_OBJECT_MANIFEST
+                             ? "space_manifest" : "service_descriptor");
+  else if (ready_to_publish && (!pointer_records || !provider_records))
+    (void)snprintf(next, sizeof(next),
+                   "zclassic23 metaverse space publish %s", root);
+  else
+    (void)snprintf(next, sizeof(next),
+                   "zclassic23 metaverse space show %s", root);
+  json_push_kv_str(&reply->data, "next_safe_command", next);
+  json_push_kv_bool(&reply->data, "side_effect_free", true);
+}
+
 static bool mvspace_store(const char *datadir, bool *live,
                           struct vcs_package_store **out)
 {
@@ -728,6 +1164,8 @@ void zcl_native_metaverse_space_discover_until(
                 : METAVERSE_SPACE_OBJECT_NONE;
   uint8_t decoded[32];
   if (!mvspace_root(root, decoded) || kind == METAVERSE_SPACE_OBJECT_NONE) {
+    mvspace_discovery_state(reply, "invalid", false, "validate", 0,
+                            root, kind);
     mvspace_fail(reply, "BAD_DISCOVERY_ROOT",
                  "discover requires one exact root and an optional known kind",
                  "metaverse.space.discover");
@@ -738,8 +1176,11 @@ void zcl_native_metaverse_space_discover_until(
       VCS_ZCODE_SOVEREIGNTY_DISCOVER};
   if (!mvspace_policy_actions(
           datadir, discover_action, 1, root, NULL, NULL,
-          mvspace_service_type(kind), reply, "metaverse.space.discover"))
+          mvspace_service_type(kind), reply, "metaverse.space.discover")) {
+    mvspace_discovery_state(reply, "blocked", true, "policy_discover", 0,
+                            root, kind);
     return;
+  }
   struct json_value selector, result;
   json_init(&selector);
   json_set_object(&selector);
@@ -754,13 +1195,11 @@ void zcl_native_metaverse_space_discover_until(
   if (!discovered) {
     json_free(&result);
     json_free(&selector);
-    mvspace_blocked(reply,
-                    deadline_reached ? "DISCOVERY_DEADLINE"
-                                     : "DISCOVERY_UNAVAILABLE",
-                    deadline_reached
-                        ? "the caller-owned discovery deadline expired"
-                        : "iterative signed pointer discovery did not complete",
-                    "metaverse.space.discover");
+    json_push_kv_str(&reply->data, "failure_code",
+                     deadline_reached ? "DISCOVERY_DEADLINE"
+                                      : "DISCOVERY_UNAVAILABLE");
+    mvspace_discovery_state(reply, "pending", true, "pointer_lookup", 1,
+                            root, kind);
     return;
   }
   struct zcl_native_zcode_pointer_candidates candidates;
@@ -770,14 +1209,17 @@ void zcl_native_metaverse_space_discover_until(
   json_free(&result);
   json_free(&selector);
   if (!candidate_count) {
-    mvspace_blocked(reply, "NO_USABLE_SPACE_CANDIDATE",
-                    "no usable signed pointer evidence was discovered",
-                    "metaverse.space.discover");
+    json_push_kv_str(&reply->data, "failure_code",
+                     "NO_USABLE_SPACE_CANDIDATE");
+    mvspace_discovery_state(reply, "not_found", true,
+                            "pointer_selection", 1, root, kind);
     return;
   }
   bool live = false;
   struct vcs_package_store *store = NULL;
   if (!mvspace_store(datadir, &live, &store)) {
+    mvspace_discovery_state(reply, "blocked", true, "package_store", 1,
+                            root, kind);
     mvspace_blocked(reply, "NO_STORE", "package store failed to open",
                     "metaverse.space.discover");
     return;
@@ -853,7 +1295,30 @@ void zcl_native_metaverse_space_discover_until(
       (void)snprintf(selected_pointer_publisher,
                      sizeof(selected_pointer_publisher), "%s",
                      candidates.rows[i].publisher_zid);
-      break;
+      /* A healthy local swarm usually commits the fetched blob quickly.
+       * Spend only the caller-owned foreground budget trying to finish the
+       * exact same candidate; otherwise preserve PENDING rather than calling
+       * the scheduled fetch a vague success or failure. */
+      do {
+        inspected = metaverse_space_blob_inspect_bounded(
+            store, candidates.rows[i].transport_root, maximum_wire_bytes,
+            &object, &inspected_wire_bytes);
+        if (inspected.ok)
+          break;
+        if (strcmp(inspected.message,
+                   "space-blob-inspect-byte-limit") == 0) {
+          byte_limit_reached = true;
+          break;
+        }
+        if (discovery_deadline <= 0 ||
+            platform_time_monotonic_ms() >= discovery_deadline) {
+          deadline_reached = discovery_deadline > 0;
+          break;
+        }
+        platform_sleep_ms(50);
+      } while (true);
+      if (!inspected.ok)
+        break;
     }
     char derived[65], owner[65];
     zcl_hex_encode(object.root, 32, derived);
@@ -944,8 +1409,26 @@ void zcl_native_metaverse_space_discover_until(
     } else {
       push_service(&reply->data, &object.as.service);
     }
+    mvspace_discovery_state(reply, "present", false, "complete", 4,
+                            root, kind);
     return;
   }
+  if (scheduled && !byte_limit_reached) {
+    json_push_kv_str(&reply->data, "failure_code",
+                     deadline_reached ? "FETCH_DEADLINE" : "FETCH_PENDING");
+    mvspace_discovery_state(reply, "pending", true, "package_fetch", 2,
+                            root, kind);
+    return;
+  }
+  json_push_kv_str(&reply->data, "failure_code",
+                   byte_limit_reached ? "FETCH_BYTE_LIMIT"
+                                      : deadline_reached
+                                            ? "PROVIDER_ROUTE_DEADLINE"
+                                            : "PROVIDER_ROUTE_UNAVAILABLE");
+  mvspace_discovery_state(reply, "blocked", !byte_limit_reached,
+                          byte_limit_reached ? "fetch_verify"
+                                             : "provider_route",
+                          byte_limit_reached ? 2 : 1, root, kind);
   if (!scheduled)
     mvspace_blocked(reply,
                     deadline_reached ? "DISCOVERY_DEADLINE" :
@@ -966,5 +1449,10 @@ void zcl_native_metaverse_space_discover_until(
 void zcl_native_handle_metaverse_space_discover(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
-  zcl_native_metaverse_space_discover_until(request, reply, 0, SIZE_MAX);
+  int64_t now = platform_time_monotonic_ms();
+  int64_t deadline = now > 0 && now <= INT64_MAX -
+                                      MVSPACE_DISCOVERY_FOREGROUND_MS
+                         ? now + MVSPACE_DISCOVERY_FOREGROUND_MS : 0;
+  zcl_native_metaverse_space_discover_until(request, reply, deadline,
+                                             SIZE_MAX);
 }

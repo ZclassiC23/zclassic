@@ -7,7 +7,7 @@
 **Branch:** `lane/s7-2-1-metaverse`
 
 **Base:** current `origin/main` at
-`cee968209`; the lane was rebased
+`3d22cf9a5b9b`; the lane was rebased
 conflict-free from the frozen candidate source base and again after `main`
 advanced during its first green push gate.
 
@@ -160,3 +160,33 @@ latest owner direction separately authorizes synchronization and push to main.
   `make lint-fast` passes all 17 selected gates; `git diff --check` passes.
   The focused test executable and heavier gates remain guard-deferred because
   the header change would force a whole-program rebuild during the live fold.
+
+### Slice 3 — composed readiness and closed discovery states
+
+- Added the sole new public read leaf, `metaverse.space.status`. It composes
+  load-only identity/delegation checks, authenticated-DHT status, existing
+  package-store totals, all six sovereignty-policy stages, canonical local
+  Space visibility, and local signed pointer/provider projections. It creates
+  no readiness state and discloses no key, identity, peer address, endpoint,
+  private policy rule, workspace, datadir or filesystem path.
+- Status reports separate publish/discover/scout readiness, exact blocker
+  codes, semantic and known transport roots, descriptor visibility,
+  publication/declared-replication evidence, retryability, and one safe next
+  command. The absent-datadir read-leaf fixture now includes this command and
+  requires the fixture directory to remain literally empty.
+- Space discovery now closes every operational result as `present`,
+  `pending`, `blocked`, `not_found` or `invalid`, with an exact phase,
+  retryability, four-step bounded progress, typed failure code and safe next
+  action. A normal command owns a ten-second foreground budget and polls an
+  already-scheduled exact-root package fetch within that budget; expiration is
+  honestly `pending`, not a vague success or permanent failure.
+- Focused tests cover invalid input, an exhausted healthy lookup, no usable
+  signed pointer, and a scheduled package fetch that remains pending. The
+  deterministic discovery backend now covers pointer discovery and the
+  bounded provider-discover/route composition used by the public path.
+- Fold-safe receipts: generated API reference matches all 524 catalog entries;
+  command input-key, command-contract, read-leaf boot-ceremony and controller
+  long-function gates pass; `make lint-fast` passes all 17 selected gates; all
+  touched translation units passed the warning-as-error syntax gate before the
+  final documentation-only update. The focused executable remains deferred
+  because rebuilding it is a whole-program compile during the production fold.

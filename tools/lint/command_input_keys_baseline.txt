@@ -31,6 +31,8 @@ zcode.science.publish operation # discovery helper injects operation into its pr
 metaverse.space.plan delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
 metaverse.space.commit delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
 metaverse.space.show delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
+metaverse.space.status delegation_wire # identity readiness serializes the loaded public delegation into a private chain-authorization RPC object; request->input never reaches that helper.
+metaverse.space.status operation # status injects operation=records into private local-projection RPC selectors; request->input never reaches that helper.
 metaverse.space.publish delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
 metaverse.space.discover delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
 metaverse.space.discover lookup_id # bounded discovery creates this private lookup capability after begin; request->input never reaches it.

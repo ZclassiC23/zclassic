@@ -263,6 +263,29 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_space_show)
 
+ZCL_COMMAND_READY_READ(
+    "metaverse.space.status", "metaverse.space", "",
+    "Explain whether this node can publish, discover, or scout a Space",
+    "Composes the existing identity/delegation, authenticated DHT, package "
+    "store, sovereignty-policy, Space CAS and local signed-record owners into "
+    "one non-creating readiness view. An optional exact semantic root adds "
+    "local manifest/descriptor visibility plus publication and declared "
+    "replication state. Replies expose readiness booleans, counts, blocker "
+    "codes and one safe next command—never keys, identities, peer addresses, "
+    "private policy rules, endpoints, or filesystem paths.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "metaverse,space,status,readiness,blockers,publication,replication",
+    "zcl.metaverse_space_status.input.v1",
+    "zcl.metaverse_space_status.v1",
+    "root,kind,workspace,datadir", "",
+    "zclassic23 metaverse space status --input='{\"root\":\"<64hex>\",\"kind\":\"space_manifest\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_space_status)
+
 ZCL_COMMAND_READY_COMMAND(
     "metaverse.space.publish", "metaverse.space", "",
     "Publish one local space object through the existing signed DHT",
@@ -294,7 +317,11 @@ ZCL_COMMAND_READY_COMMAND(
     "FETCH policy are checked before routing; STORE and INDEX policy are "
     "rechecked after bytes are verified and before local CAS admission. The "
     "reply distinguishes pointer publisher evidence from the manifest owner. "
-    "No candidate can trigger execution or confer authority.",
+    "Operational outcomes are closed as present, pending, blocked, not_found "
+    "or invalid, with retryability, the exact phase, bounded progress and one "
+    "safe next action. A foreground call spends at most ten seconds trying to "
+    "finish a scheduled healthy fetch. No candidate can trigger execution or "
+    "confer authority.",
     0, "metaverse,space,discover,dht,provider,policy,admission",
     "zcl.metaverse_space_discover.input.v1", "zcl.metaverse_space_discover.v1",
     "root,kind,workspace,datadir", "root",

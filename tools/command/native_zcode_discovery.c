@@ -14,13 +14,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef ZCL_TESTING
+static zcl_native_zcode_discovery_test_fn g_test_discover;
+static zcl_native_zcode_discovery_test_fn g_test_route;
+#endif
+
 static bool dht_status_rpc(const char *operation, struct json_value *input,
                            struct json_value *result)
 {
   json_init(result);
-  if (!operation || !input || input->type != JSON_OBJ)
+  if (!input || input->type != JSON_OBJ)
     return false;
-  if (!json_get(input, "operation"))
+  if (operation && !json_get(input, "operation"))
     json_push_kv_str(input, "operation", operation);
   struct json_value params;
   json_init(&params);
@@ -44,6 +49,24 @@ static bool dht_status_rpc(const char *operation, struct json_value *input,
             json_get_bool_or(result, "ok", false);
   free(raw);
   return ok;
+}
+
+bool zcl_native_zcode_dht_status_read(struct json_value *result)
+{
+  if (!result)
+    return false;
+  struct json_value input;
+  json_init(&input);
+  json_set_object(&input);
+  bool ok = dht_status_rpc(NULL, &input, result);
+  json_free(&input);
+  return ok;
+}
+
+bool zcl_native_zcode_records_local(
+    struct json_value *selector, struct json_value *result)
+{
+  return selector && result && dht_status_rpc("records", selector, result);
 }
 
 static bool discovery_root(const char *hex)
@@ -184,6 +207,10 @@ bool zcl_native_zcode_records_discover(
 {
   if (!selector || !result)
     return false;
+#ifdef ZCL_TESTING
+  if (g_test_discover)
+    return g_test_discover(selector, result);
+#endif
   struct zcl_command_request request;
   memset(&request, 0, sizeof(request));
   request.input = selector;
@@ -253,6 +280,10 @@ bool zcl_native_zcode_records_discover_until(
   if (!selector || !result || !deadline_reached_out ||
       deadline_mono_ms <= 0)
     return false;
+#ifdef ZCL_TESTING
+  if (g_test_discover)
+    return g_test_discover(selector, result);
+#endif
   json_init(result);
   int64_t cancel_at = deadline_mono_ms - RECORD_CANCEL_RESERVE_MS;
   if (cancel_at <= platform_time_monotonic_ms()) {
@@ -356,9 +387,6 @@ bool zcl_native_zcode_provider_route(
 }
 
 #ifdef ZCL_TESTING
-static zcl_native_zcode_discovery_test_fn g_test_discover;
-static zcl_native_zcode_discovery_test_fn g_test_route;
-
 void zcl_native_zcode_discovery_test_backend(
     zcl_native_zcode_discovery_test_fn discover,
     zcl_native_zcode_discovery_test_fn route)
@@ -411,6 +439,20 @@ bool zcl_native_zcode_provider_discover_and_route_until(
   if (!selector || !route_result || !record_count_out ||
       !deadline_reached_out)
     return false;
+#ifdef ZCL_TESTING
+  if (g_test_discover) {
+    struct json_value discovered;
+    json_init(&discovered);
+    bool found = g_test_discover(selector, &discovered);
+    int64_t count = found
+                        ? json_get_int(json_get(&discovered, "count")) : 0;
+    json_free(&discovered);
+    if (count <= 0 || count > UINT32_MAX)
+      return false;
+    *record_count_out = (uint32_t)count;
+    return g_test_route && g_test_route(selector, route_result);
+  }
+#endif
   struct json_value discovered;
   json_init(&discovered);
   bool found = zcl_native_zcode_records_discover_until(

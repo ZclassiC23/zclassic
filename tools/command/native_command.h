@@ -1436,6 +1436,8 @@ void zcl_native_handle_metaverse_space_commit(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_metaverse_space_show(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_space_status(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_metaverse_space_publish(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_metaverse_space_discover(

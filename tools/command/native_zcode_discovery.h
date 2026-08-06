@@ -24,6 +24,14 @@ bool zcl_native_zcode_publish_record(
 bool zcl_native_zcode_records_discover(
     struct json_value *selector, struct json_value *result);
 
+/* Read-only local projections used by composed readiness/status leaves. The
+ * status document is intentionally internal: callers must select only fields
+ * appropriate for their public surface. Neither helper starts a lookup or
+ * creates identity/store state. */
+bool zcl_native_zcode_dht_status_read(struct json_value *result);
+bool zcl_native_zcode_records_local(
+    struct json_value *selector, struct json_value *result);
+
 /* Drive the existing begin/poll/cancel capability under a caller-owned
  * absolute monotonic deadline. Adds no RPC or wire surface. */
 bool zcl_native_zcode_records_discover_until(

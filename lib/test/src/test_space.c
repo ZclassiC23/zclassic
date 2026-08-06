@@ -452,6 +452,40 @@ static int test_space_native_plan_commit_show(void)
     zcl_command_reply_free(&reply);
     json_free(&input);
 
+    json_init(&input);
+    json_set_object(&input);
+    json_push_kv_str(&input, "root", root_copy);
+    json_push_kv_str(&input, "kind", "service_descriptor");
+    json_push_kv_str(&input, "workspace", workspace);
+    json_push_kv_str(&input, "datadir", datadir);
+    request.input = &input;
+    zcl_command_reply_init(&reply, "zcl.metaverse_space_status.v1");
+    zcl_native_handle_metaverse_space_status(&request, &reply);
+    ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_PASSED);
+    const struct json_value *visibility = json_get(&reply.data, "visibility");
+    ASSERT(visibility != NULL);
+    ASSERT(strcmp(json_get_str(json_get(visibility, "state")), "present") == 0);
+    ASSERT_EQ(json_get_int(json_get(visibility, "descriptors_total")), 1);
+    ASSERT_EQ(json_get_int(json_get(visibility, "descriptors_visible")), 1);
+    ASSERT(json_get_bool_or(&reply.data, "side_effect_free", false));
+    ASSERT(json_get(&reply.data, "ready_to_publish") != NULL);
+    ASSERT(json_get(&reply.data, "ready_to_discover") != NULL);
+    ASSERT(json_get(&reply.data, "ready_to_scout") != NULL);
+    ASSERT(json_size(json_get(&reply.data, "blockers")) > 0);
+    const char *next = json_get_str(json_get(&reply.data,
+                                             "next_safe_command"));
+    ASSERT(next && strncmp(next, "zclassic23 ", 11) == 0);
+    char status_wire[16384];
+    size_t status_bytes = json_write(&reply.data, status_wire,
+                                     sizeof(status_wire));
+    ASSERT(status_bytes > 0 && status_bytes < sizeof(status_wire));
+    ASSERT(strstr(status_wire, "online_pubkey") == NULL);
+    ASSERT(strstr(status_wire, "local_node_id") == NULL);
+    ASSERT(strstr(status_wire, datadir) == NULL);
+    ASSERT(strstr(status_wire, workspace) == NULL);
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+
     char cleanup[1200];
     ASSERT(snprintf(cleanup, sizeof(cleanup), "rm -rf '%s' '%s'",
                     datadir, workspace) > 0);
@@ -533,8 +567,12 @@ static bool space_policy_allow_service(
              &rule, VCS_ZCODE_SOVEREIGNTY_LOCAL,
              VCS_ZCODE_SOVEREIGNTY_ALLOW,
              VCS_ZCODE_SOVEREIGNTY_SERVICE_TYPE,
-             (uint8_t)((1u << VCS_ZCODE_SOVEREIGNTY_STORE) |
-                       (1u << VCS_ZCODE_SOVEREIGNTY_INDEX)), value) ==
+             (uint8_t)((1u << VCS_ZCODE_SOVEREIGNTY_DISCOVER) |
+                       (1u << VCS_ZCODE_SOVEREIGNTY_FETCH) |
+                       (1u << VCS_ZCODE_SOVEREIGNTY_STORE) |
+                       (1u << VCS_ZCODE_SOVEREIGNTY_INDEX) |
+                       (1u << VCS_ZCODE_SOVEREIGNTY_SERVE) |
+                       (1u << VCS_ZCODE_SOVEREIGNTY_FORWARD)), value) ==
              VCS_ZCODE_SOVEREIGNTY_OK &&
          vcs_zcode_sovereignty_policy_add(policy, &rule) ==
              VCS_ZCODE_SOVEREIGNTY_OK;
@@ -612,6 +650,8 @@ _test_next:;
 static uint32_t space_provider_fake_count;
 static uint32_t space_provider_discover_calls;
 static uint32_t space_provider_route_calls;
+static uint32_t space_pointer_fake_count;
+static char space_pointer_fake_transport[65];
 
 static bool space_provider_fake_discover(
     struct json_value *selector, struct json_value *result)
@@ -619,8 +659,41 @@ static bool space_provider_fake_discover(
   space_provider_discover_calls++;
   json_init(result);
   json_set_object(result);
+  const char *kind = selector
+      ? json_get_str(json_get(selector, "kind")) : NULL;
+  bool pointer = kind && strcmp(kind, "pointer") == 0;
+  uint32_t count = pointer ? space_pointer_fake_count
+                           : space_provider_fake_count;
   json_push_kv_bool(result, "ok", true);
-  json_push_kv_int(result, "count", space_provider_fake_count);
+  json_push_kv_int(result, "count", count);
+  if (pointer) {
+    struct json_value records;
+    json_init(&records);
+    json_set_array(&records);
+    if (count) {
+      uint8_t root[32];
+      char publisher[65], provider[65];
+      space_root(root, 0xa1);
+      zcl_hex_encode(root, 32, publisher);
+      space_root(root, 0xa2);
+      zcl_hex_encode(root, 32, provider);
+      struct json_value row;
+      json_init(&row);
+      json_set_object(&row);
+      json_push_kv_str(&row, "transport_root",
+                       space_pointer_fake_transport);
+      json_push_kv_str(&row, "publisher_zid", publisher);
+      json_push_kv_str(&row, "provider_node_id", provider);
+      json_push_kv_int(&row, "sequence", 1);
+      json_push_kv_bool(&row, "provider_authenticated", true);
+      json_push_kv_bool(&row, "conflicted", false);
+      json_push_kv_bool(&row, "superseded", false);
+      json_push_back(&records, &row);
+      json_free(&row);
+    }
+    json_push_kv(result, "records", &records);
+    json_free(&records);
+  }
   return selector != NULL;
 }
 
@@ -674,6 +747,102 @@ _test_next:;
   return failures;
 }
 
+static int test_space_discovery_closed_states(void)
+{
+  int failures = 0;
+  TEST("space discovery: invalid, not-found and pending are closed states") {
+    struct json_value input;
+    struct zcl_command_request request;
+    struct zcl_command_reply reply;
+
+    json_init(&input);
+    json_set_object(&input);
+    json_push_kv_str(&input, "root", "not-a-root");
+    request.input = &input;
+    zcl_command_reply_init(&reply, "zcl.metaverse_space_discover.v1");
+    zcl_native_metaverse_space_discover_until(
+        &request, &reply, platform_time_monotonic_ms() + 100, SIZE_MAX);
+    ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                  "invalid") == 0);
+    ASSERT(!json_get_bool_or(&reply.data, "retryable", true));
+    ASSERT(strcmp(json_get_str(json_get(&reply.data, "phase")),
+                  "validate") == 0);
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+
+    char datadir[] = "/tmp/zcl_space_discovery_state_XXXXXX";
+    ASSERT(mkdtemp(datadir) != NULL);
+    struct vcs_zcode_dht_delegation delegation;
+    char error[192] = {0};
+    ASSERT(space_current_delegation(&delegation));
+    ASSERT(vcs_zcode_dht_delegation_save(
+        datadir, &delegation, error, sizeof(error)));
+    struct vcs_zcode_sovereignty_policy *policy =
+        vcs_zcode_sovereignty_policy_create(delegation.network_genesis);
+    ASSERT(policy != NULL);
+    ASSERT(space_policy_allow_service(policy, "space.service"));
+    ASSERT_EQ(vcs_zcode_sovereignty_policy_save(
+                  policy, datadir, error, sizeof(error)),
+              VCS_ZCODE_SOVEREIGNTY_OK);
+    vcs_zcode_sovereignty_policy_free(policy);
+
+    uint8_t root_bytes[32], transport_bytes[32];
+    char root[65];
+    space_root(root_bytes, 0xb1);
+    space_root(transport_bytes, 0xb2);
+    zcl_hex_encode(root_bytes, 32, root);
+    zcl_hex_encode(transport_bytes, 32, space_pointer_fake_transport);
+    zcl_native_zcode_discovery_test_backend(
+        space_provider_fake_discover, space_provider_fake_route);
+
+    json_init(&input);
+    json_set_object(&input);
+    json_push_kv_str(&input, "root", root);
+    json_push_kv_str(&input, "kind", "service_descriptor");
+    json_push_kv_str(&input, "datadir", datadir);
+    request.input = &input;
+    space_pointer_fake_count = 0;
+    zcl_command_reply_init(&reply, "zcl.metaverse_space_discover.v1");
+    zcl_native_metaverse_space_discover_until(
+        &request, &reply, platform_time_monotonic_ms() + 100, SIZE_MAX);
+    ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_PASSED);
+    ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                  "not_found") == 0);
+    ASSERT(json_get_bool_or(&reply.data, "retryable", false));
+    ASSERT(strcmp(json_get_str(json_get(&reply.data, "phase")),
+                  "pointer_selection") == 0);
+    zcl_command_reply_free(&reply);
+
+    space_pointer_fake_count = 1;
+    space_provider_fake_count = 1;
+    space_provider_discover_calls = 0;
+    space_provider_route_calls = 0;
+    zcl_command_reply_init(&reply, "zcl.metaverse_space_discover.v1");
+    zcl_native_metaverse_space_discover_until(
+        &request, &reply, platform_time_monotonic_ms() + 5, SIZE_MAX);
+    ASSERT_EQ(reply.status, ZCL_COMMAND_STATUS_PASSED);
+    ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                  "pending") == 0);
+    ASSERT(json_get_bool_or(&reply.data, "retryable", false));
+    ASSERT(strcmp(json_get_str(json_get(&reply.data, "phase")),
+                  "package_fetch") == 0);
+    ASSERT(json_get_bool_or(&reply.data, "fetch_scheduled", false));
+    ASSERT(space_provider_discover_calls >= 2);
+    ASSERT_EQ(space_provider_route_calls, 1);
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+
+    zcl_native_zcode_discovery_test_backend(NULL, NULL);
+    char cleanup[600];
+    ASSERT(snprintf(cleanup, sizeof(cleanup), "rm -rf '%s'", datadir) > 0);
+    ASSERT(system(cleanup) == 0);
+    PASS();
+  }
+_test_next:;
+  zcl_native_zcode_discovery_test_backend(NULL, NULL);
+  return failures;
+}
+
 int test_space(void)
 {
   int failures = 0;
@@ -684,6 +853,7 @@ int test_space(void)
   failures += test_space_pointer_diversity();
   failures += test_space_admit_policy_identities();
   failures += test_space_provider_discovery_order();
+  failures += test_space_discovery_closed_states();
   printf("=== space: %d failures ===\n", failures);
   return failures;
 }
