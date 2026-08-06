@@ -209,6 +209,32 @@ enum db_mark_spent_result db_sapling_note_mark_spent(
     }
 }
 
+enum db_mark_spent_result db_sapling_note_reserve_spend(
+                                struct node_db *ndb,
+                                const uint8_t nullifier[32],
+                                const uint8_t spent_by[32])
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!ndb || !ndb->open || !nullifier || !spent_by)
+        return DB_MARK_SPENT_ERROR;
+    AR_PREPARE_BOOL(ndb, s,
+        "UPDATE wallet_sapling_notes SET spent_txid=?"
+        " WHERE nullifier=? AND (spent_txid IS NULL OR spent_txid=?)");
+    AR_BIND_BLOB(s, 1, spent_by, 32);
+    AR_BIND_BLOB(s, 2, nullifier, 32);
+    AR_BIND_BLOB(s, 3, spent_by, 32);
+    {
+        bool ok = false;
+        AR_FINALIZE_STEP_DONE(s, ok);
+        if (!ok)
+            return DB_MARK_SPENT_ERROR;
+        return sqlite3_changes(ndb->db) > 0
+            ? DB_MARK_SPENT_OK
+            : DB_MARK_SPENT_NOT_FOUND;
+    }
+}
+
 bool db_sapling_note_mark_spent_bool_compat(struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spent_by[32])

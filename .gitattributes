@@ -35,6 +35,14 @@ deploy/**    linguist-vendored
 vendor/**    linguist-vendored
 .claude/**   linguist-vendored
 
+# Preserve pinned third-party source byte-for-byte. Several upstream files use
+# CRLF or intentional trailing tabs/spaces; disabling Git's patch whitespace
+# warning for only these exact vendor packages avoids rewriting authenticated
+# upstream bytes merely to satisfy this repository's house formatting.
+vendor/rgfw/**      -whitespace
+vendor/qrcodegen/** -whitespace
+vendor/typography/stb_truetype.h -whitespace
+
 # Non-C assets (view templates, styles, config, fixtures, data).
 *.chtml      linguist-generated
 *.ccss       linguist-generated

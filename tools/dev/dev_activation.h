@@ -126,6 +126,14 @@ struct dev_activation_request {
     const char *build_commit;   /* optional display-only Git trace */
     const char *build_type;     /* "fast" | "strict" | ... (state file field) */
     const char *source_identity;/* authoritative 64-hex SHA-256 source id */
+    /* Optional ABA mutation token captured with source_identity.  Real ops
+     * verify both fields atomically immediately before publication.  Legacy
+     * internal callers may leave this NULL and retain source-content CAS. */
+    const char *source_mutation;
+    /* Optional resident-generation compare-and-swap.  When non-NULL, the
+     * activation lock requires `current` to still equal this exact generation
+     * (the empty string means no current generation). */
+    const char *expected_current_generation;
     const char *gen_root;       /* content-addressed generation store root */
     const char *datadir;        /* must resolve to ~/.zclassic-c23-dev */
     const char *unit;           /* must be "zcl23-dev.service" */

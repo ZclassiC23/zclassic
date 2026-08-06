@@ -118,7 +118,11 @@ void store_ensure_schema(sqlite3 *db, const char *datadir)
                 if (!end) break;
 
                 /* Extract fields with simple string search */
-                char name[256] = "", desc[1024] = "", token[64] = "";
+                /* token[65]: the canonical token key is a 64-hex-char txid;
+                 * extract_str_field refuses values that do not fit +NUL, so
+                 * token[64] silently DROPPED a full-txid token_id here and
+                 * the product loaded unbound. */
+                char name[256] = "", desc[1024] = "", token[65] = "";
                 char content_path[1024] = "", content_type[128] = "";
                 char content_filename[256] = "";
                 double price_zcl = 0.0;

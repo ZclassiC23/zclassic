@@ -24,8 +24,12 @@ extern "C" {
  * it) took the eight roots to 1237 bytes — legitimate growth with an already
  * minimal summary, not bloat. 1536 clears that with ~300 bytes (two more roots)
  * of headroom, so adding a root is a deliberate act rather than a surprise
- * budget failure in an unrelated test. */
-#define ZCL_COMMAND_ROOT_BUDGET 1536U
+ * budget failure in an unrelated test.
+ * Raised 1536 -> 1792: the `zcode` and `metaverse` roots consumed that
+ * headroom, and the `yardsale` root (for-sale-by-owner signed ads) pushed
+ * the eleven-root menu past 1536 — same fixed 5-field summary, legitimate
+ * growth. 1792 leaves roughly one more root of headroom. */
+#define ZCL_COMMAND_ROOT_BUDGET 1792U
 /* Raised 1600 -> 2048: each branch menu lists its immediate children as a
  * fixed 5-field summary (path, summary, risk, latency, availability), so a
  * branch's size grows one summary per leaf. The `code` navigator branch reached
@@ -41,6 +45,9 @@ extern "C" {
 #define ZCL_COMMAND_ERROR_BUDGET 2048U
 #define ZCL_COMMAND_RESULT_BUDGET 4096U
 #define ZCL_COMMAND_LIST_BUDGET 8192U
+/* Complete, unpaged catalogs whose bounded row count legitimately exceeds the
+ * ordinary list ceiling. Prefer ZCL_COMMAND_LIST_BUDGET for paged lists. */
+#define ZCL_COMMAND_EXTENDED_LIST_BUDGET 16384U
 #define ZCL_COMMAND_SEARCH_LIMIT 5U
 #define ZCL_COMMAND_MAX_NEXT 3U
 #define ZCL_COMMAND_MAX_PATH 128U
@@ -122,7 +129,7 @@ enum zcl_command_latency {
 /* >= the compiled catalog's leaf count; sized with headroom for the per-leaf
  * latency-sample ring (OS-B2 §2). config/src/command_catalog.c asserts against
  * this at compile time (size guard). */
-#define ZCL_COMMAND_LATENCY_TABLE_MAX 512U
+#define ZCL_COMMAND_LATENCY_TABLE_MAX 640U
 
 /* Maps a leaf's declared `latency` enum to its dispatch budget in ms. Pure,
  * total: an out-of-range value falls back to the PERSISTENT/900ms ceiling,

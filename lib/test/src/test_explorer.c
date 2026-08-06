@@ -1491,7 +1491,9 @@ int test_explorer(void)
         struct explorer_history_validation v;
         explorer_validate_block_history(db, 50, &v);
         bool ok = (!v.usable && v.missing_heights == 17 &&
-                   v.first_missing_height == 1 &&
+                   /* A gap already beyond policy fails before the expensive
+                    * exact-hole anti-join; diagnostics stay bounded. */
+                   v.first_missing_height == -1 &&
                    strstr(v.reason, "missing heights") != NULL);
         sqlite3_close(db);
         if (ok) printf("OK\n");

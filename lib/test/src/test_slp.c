@@ -573,6 +573,27 @@ int test_slp(void)
              next_baton.role == SLP_OUTPUT_MINT_BATON;
         if (mint_built.ok)
             transaction_free(&mint_tx.tx);
+
+        struct wallet_tx burn_tx;
+        tx_error = NULL;
+        struct zcl_result burn_built = zslp_command_build_token_burn_tx(
+            &w, token_id.data, 400, &burn_tx, &fee_paid, &tx_error);
+        bool burn_spent_token = false, burn_spent_baton = false;
+        for (size_t i = 0; burn_built.ok && i < burn_tx.tx.num_vin; i++) {
+            if (uint256_eq(&burn_tx.tx.vin[i].prevout.hash, &token_id) &&
+                burn_tx.tx.vin[i].prevout.n == 1)
+                burn_spent_token = true;
+            if (uint256_eq(&burn_tx.tx.vin[i].prevout.hash, &token_id) &&
+                burn_tx.tx.vin[i].prevout.n == 2)
+                burn_spent_baton = true;
+        }
+        struct slp_output_metadata burn_change;
+        ok = ok && burn_built.ok && burn_spent_token && !burn_spent_baton;
+        ok = ok && slp_classify_tx_output(&burn_tx.tx, 1, &burn_change) &&
+             burn_change.amount == 600 &&
+             memcmp(burn_change.token_id, token_id.data, 32) == 0;
+        if (burn_built.ok)
+            transaction_free(&burn_tx.tx);
         wallet_free(&w);
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }

@@ -241,3 +241,24 @@ are different threat models (see `docs/SECURITY_AND_INTEGRITY.md` for the
 runtime-facing controls). A runtime check does nothing to stop an
 autonomous agent from committing and hot-swapping a changed validity
 predicate; only a build/publish-time gate does.
+
+---
+
+## Addendum 2026-08-01 — seal boundary widened to the ordering layer
+
+External review observed that the seal covered predicates and parameter
+tables only, while `lib/validation/src/connect_block.c` (block connection /
+UTXO application order) and `lib/validation/src/chainstate.c` (chain-state
+ordering) sat outside it — and an ordering bug forks the node exactly as
+hard as a bug in a sealed `check_block` predicate. The sealed set is now
+`core/` **plus** those two files and their public headers, enumerated in
+the Makefile's `CORE_SEAL_PATHS` (mirrored in `tools/lint/run_lint.sh`).
+Same ritual: editing any of them requires `make core-unseal REASON=…` and
+re-freezing with `make core-seal`.
+
+Deliberately NOT sealed: the ~3,400 other consensus-adjacent files. Sealing
+everything freezes development; the boundary is drawn at (a) validity
+predicates and parameter tables (`core/`) and (b) the connection/ordering
+layer that applies them. The next tier down — ISA-dispatched arithmetic the
+sealed code calls — stays byte-editable and is pinned by property instead
+(differential oracles, `make check-accel-oracle-pinned`).

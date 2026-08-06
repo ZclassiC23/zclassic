@@ -71,10 +71,13 @@ P2SH HTLC fund: 162 bytes / 1620 zats; HTLC redeem: 325 bytes / 3250 zats
 
 ## Production counterpart
 
-- Multi-input/multi-output send: `wallet_create_transaction()` in
-  `lib/wallet/include/wallet/wallet.h`, reached via the `zclassic23 rpc z_sendmany` /
-  `sendtoaddress` RPC path (`app/controllers/src/wallet_controller.c`,
-  `app/controllers/src/transaction_controller.c`).
+- Multi-input/multi-output send: `wallet_create_transaction_selected()` in
+  `lib/wallet/include/wallet/wallet.h`, reached through the typed
+  `vault intent plan` → `vault intent commit` lifecycle in
+  `app/controllers/src/vault_intent_controller.c`. That path binds exact
+  outputs, inputs, fee, wallet identity, genesis, tip, custody snapshot and
+  expiry before broadcast. The legacy `sendmany` RPC remains a guarded
+  compatibility surface, not the recommended developer API.
 - P2SH HTLC fund + redeem: `lib/script/include/script/htlc.h`'s builders are already
   production code (this example calls the same functions the node calls).
   Swap state lives in `app/controllers/src/swap_controller.c`

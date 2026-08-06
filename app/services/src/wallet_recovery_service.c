@@ -20,6 +20,7 @@
 #include "wallet/sapling_keys.h"
 #include "wallet/wallet.h"
 #include "wallet/wallet_keystore.h"            /* the at-rest creation policy */
+#include "wallet/wallet_lock.h"
 #include "wallet/wallet_sqlite.h"
 
 #include <errno.h>
@@ -581,6 +582,7 @@ struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
     wallet_init(w);
 
     struct zcl_result rc = ZCL_OK;
+    bool recovery_pass_loaded = false;
     if (!wallet_init_from_recovery_phrase(w, req->phrase)) {
         rc = ZCL_ERR(-64, "could not root the wallet on the recovery phrase");
         goto done;
@@ -603,6 +605,20 @@ struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
         goto done;
     }
 
+    /* Creation policy may accept a one-shot environment passphrase, but that
+     * variable must never auto-unlock the live wallet. Load it only across
+     * this offline flush, then scrub and force-lock before returning. */
+    if (wallet_at_rest_creation_policy() == WALLET_AT_REST_ENCRYPTED) {
+        const char *pass = getenv("ZCL_WALLET_PASSPHRASE");
+        struct zcl_result ur = wallet_lock_unlock(NULL, NULL, pass);
+        if (!ur.ok) {
+            rc = ZCL_ERR(-65, "could not load the recovery encryption key: %s",
+                         ur.message);
+            goto done;
+        }
+        recovery_pass_loaded = true;
+    }
+
     /* One writer: the encryption-aware wallet_sqlite layer, in one
      * transaction, exactly as boot flushes a freshly minted keypool. */
     struct zcl_result fr = wallet_sqlite_flush_r(&ws, w);
@@ -619,6 +635,8 @@ struct zcl_result wallet_recovery_run(const struct wallet_recovery_request *req,
     wrc_tighten_modes(out->target_db);
 
 done:
+    if (recovery_pass_loaded)
+        wallet_lock_lock(w);
     wallet_free(w);
     free(w);
     if (have_ws) wallet_sqlite_close(&ws);

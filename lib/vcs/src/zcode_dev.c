@@ -3,7 +3,7 @@
 
 #include "vcs/zcode_dev.h"
 
-#include "base/serialize_le.h"
+#include "codec/cursor.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 
@@ -217,48 +217,6 @@ enum vcs_zcode_dev_error vcs_zcode_work_receipt_validate(
     return receipt_fields(receipt, true);
 }
 
-static void put_bytes(uint8_t *wire, size_t *off, const void *src, size_t len)
-{
-    memcpy(wire + *off, src, len);
-    *off += len;
-}
-
-static void put_u16(uint8_t *wire, size_t *off, uint16_t v)
-{
-    zcl_write_u16_le(wire + *off, v); *off += 2;
-}
-
-static void put_u32(uint8_t *wire, size_t *off, uint32_t v)
-{
-    zcl_write_u32_le(wire + *off, v); *off += 4;
-}
-
-static void put_u64(uint8_t *wire, size_t *off, uint64_t v)
-{
-    zcl_write_u64_le(wire + *off, v); *off += 8;
-}
-
-static void get_bytes(const uint8_t *wire, size_t *off, void *dst, size_t len)
-{
-    memcpy(dst, wire + *off, len);
-    *off += len;
-}
-
-static uint16_t get_u16(const uint8_t *wire, size_t *off)
-{
-    uint16_t v = zcl_read_u16_le(wire + *off); *off += 2; return v;
-}
-
-static uint32_t get_u32(const uint8_t *wire, size_t *off)
-{
-    uint32_t v = zcl_read_u32_le(wire + *off); *off += 4; return v;
-}
-
-static uint64_t get_u64(const uint8_t *wire, size_t *off)
-{
-    uint64_t v = zcl_read_u64_le(wire + *off); *off += 8; return v;
-}
-
 static void object_root(const char *domain, size_t domain_len,
                         const uint8_t *wire, size_t wire_len, uint8_t out[32])
 {
@@ -276,27 +234,30 @@ enum vcs_zcode_dev_error vcs_zcode_task_serialize(
     enum vcs_zcode_dev_error err = vcs_zcode_task_validate(task);
     if (err != VCS_ZCODE_DEV_OK || !out)
         return out ? err : VCS_ZCODE_DEV_ERR_NULL;
-    size_t o = 0;
-    put_bytes(out, &o, task_magic, sizeof(task_magic));
-    put_u16(out, &o, task->schema_version);
-    put_bytes(out, &o, task->source_root, 32);
-    put_bytes(out, &o, task->dependency_lock_root, 32);
-    put_bytes(out, &o, task->toolchain_capsule_root, 32);
-    put_bytes(out, &o, task->write_scope_root, 32);
-    put_bytes(out, &o, task->acceptance_tests_root, 32);
-    put_bytes(out, &o, task->proof_policy_root, 32);
-    put_bytes(out, &o, task->model_policy_root, 32);
-    put_bytes(out, &o, task->goal_root, 32);
-    put_u32(out, &o, task->capabilities);
-    put_u32(out, &o, task->max_changed_files);
-    put_u64(out, &o, task->max_patch_bytes);
-    put_u64(out, &o, task->max_context_bytes);
-    put_u32(out, &o, task->max_cpu_seconds);
-    put_u64(out, &o, task->max_memory_bytes);
-    put_u64(out, &o, task->max_output_bytes);
-    put_u64(out, &o, (uint64_t)task->expires_unix);
-    return o == VCS_ZCODE_TASK_WIRE_BYTES ? VCS_ZCODE_DEV_OK
-                                          : VCS_ZCODE_DEV_ERR_WIRE_SIZE;
+    struct zcl_codec_writer w;
+    zcl_codec_writer_init(&w, out, VCS_ZCODE_TASK_WIRE_BYTES);
+    bool ok = zcl_codec_write_bytes(&w, task_magic, sizeof(task_magic)) &&
+        zcl_codec_write_u16le(&w, task->schema_version) &&
+        zcl_codec_write_bytes(&w, task->source_root, 32) &&
+        zcl_codec_write_bytes(&w, task->dependency_lock_root, 32) &&
+        zcl_codec_write_bytes(&w, task->toolchain_capsule_root, 32) &&
+        zcl_codec_write_bytes(&w, task->write_scope_root, 32) &&
+        zcl_codec_write_bytes(&w, task->acceptance_tests_root, 32) &&
+        zcl_codec_write_bytes(&w, task->proof_policy_root, 32) &&
+        zcl_codec_write_bytes(&w, task->model_policy_root, 32) &&
+        zcl_codec_write_bytes(&w, task->goal_root, 32) &&
+        zcl_codec_write_u32le(&w, task->capabilities) &&
+        zcl_codec_write_u32le(&w, task->max_changed_files) &&
+        zcl_codec_write_u64le(&w, task->max_patch_bytes) &&
+        zcl_codec_write_u64le(&w, task->max_context_bytes) &&
+        zcl_codec_write_u32le(&w, task->max_cpu_seconds) &&
+        zcl_codec_write_u64le(&w, task->max_memory_bytes) &&
+        zcl_codec_write_u64le(&w, task->max_output_bytes) &&
+        zcl_codec_write_i64le(&w, task->expires_unix);
+    size_t written = 0;
+    return ok && zcl_codec_writer_finish(&w, &written) &&
+           written == VCS_ZCODE_TASK_WIRE_BYTES
+        ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_WIRE_SIZE;
 }
 
 enum vcs_zcode_dev_error vcs_zcode_task_parse(
@@ -307,24 +268,28 @@ enum vcs_zcode_dev_error vcs_zcode_task_parse(
     if (len != VCS_ZCODE_TASK_WIRE_BYTES) return VCS_ZCODE_DEV_ERR_WIRE_SIZE;
     if (memcmp(wire, task_magic, sizeof(task_magic)) != 0)
         return VCS_ZCODE_DEV_ERR_WIRE_MAGIC;
-    size_t o = sizeof(task_magic);
-    out->schema_version = get_u16(wire, &o);
-    get_bytes(wire, &o, out->source_root, 32);
-    get_bytes(wire, &o, out->dependency_lock_root, 32);
-    get_bytes(wire, &o, out->toolchain_capsule_root, 32);
-    get_bytes(wire, &o, out->write_scope_root, 32);
-    get_bytes(wire, &o, out->acceptance_tests_root, 32);
-    get_bytes(wire, &o, out->proof_policy_root, 32);
-    get_bytes(wire, &o, out->model_policy_root, 32);
-    get_bytes(wire, &o, out->goal_root, 32);
-    out->capabilities = get_u32(wire, &o);
-    out->max_changed_files = get_u32(wire, &o);
-    out->max_patch_bytes = get_u64(wire, &o);
-    out->max_context_bytes = get_u64(wire, &o);
-    out->max_cpu_seconds = get_u32(wire, &o);
-    out->max_memory_bytes = get_u64(wire, &o);
-    out->max_output_bytes = get_u64(wire, &o);
-    out->expires_unix = (int64_t)get_u64(wire, &o);
+    struct zcl_codec_reader r;
+    zcl_codec_reader_init(&r, wire + sizeof(task_magic),
+                          len - sizeof(task_magic));
+    bool ok = zcl_codec_read_u16le(&r, &out->schema_version) &&
+        zcl_codec_read_bytes(&r, out->source_root, 32) &&
+        zcl_codec_read_bytes(&r, out->dependency_lock_root, 32) &&
+        zcl_codec_read_bytes(&r, out->toolchain_capsule_root, 32) &&
+        zcl_codec_read_bytes(&r, out->write_scope_root, 32) &&
+        zcl_codec_read_bytes(&r, out->acceptance_tests_root, 32) &&
+        zcl_codec_read_bytes(&r, out->proof_policy_root, 32) &&
+        zcl_codec_read_bytes(&r, out->model_policy_root, 32) &&
+        zcl_codec_read_bytes(&r, out->goal_root, 32) &&
+        zcl_codec_read_u32le(&r, &out->capabilities) &&
+        zcl_codec_read_u32le(&r, &out->max_changed_files) &&
+        zcl_codec_read_u64le(&r, &out->max_patch_bytes) &&
+        zcl_codec_read_u64le(&r, &out->max_context_bytes) &&
+        zcl_codec_read_u32le(&r, &out->max_cpu_seconds) &&
+        zcl_codec_read_u64le(&r, &out->max_memory_bytes) &&
+        zcl_codec_read_u64le(&r, &out->max_output_bytes) &&
+        zcl_codec_read_i64le(&r, &out->expires_unix) &&
+        zcl_codec_reader_finish(&r);
+    if (!ok) { memset(out, 0, sizeof(*out)); return VCS_ZCODE_DEV_ERR_WIRE_SIZE; }
     enum vcs_zcode_dev_error err = vcs_zcode_task_validate(out);
     if (err != VCS_ZCODE_DEV_OK) memset(out, 0, sizeof(*out));
     return err;
@@ -349,21 +314,24 @@ enum vcs_zcode_dev_error vcs_zcode_proof_policy_serialize(
     enum vcs_zcode_dev_error err = vcs_zcode_proof_policy_validate(p);
     if (err != VCS_ZCODE_DEV_OK || !out)
         return out ? err : VCS_ZCODE_DEV_ERR_NULL;
-    size_t o = 0;
-    put_bytes(out, &o, policy_magic, sizeof(policy_magic));
-    put_u16(out, &o, p->schema_version);
-    put_u32(out, &o, p->required_proofs);
-    put_u16(out, &o, p->minimum_compile_receipts);
-    put_u16(out, &o, p->minimum_test_receipts);
-    put_u16(out, &o, p->minimum_fuzz_receipts);
-    put_u16(out, &o, p->minimum_reviews);
-    put_u16(out, &o, p->minimum_matching_receipts);
-    put_u16(out, &o, p->flags);
-    put_u32(out, &o, p->deterministic_fuzz_seeds);
-    put_u16(out, &o, p->audit_basis_points);
-    put_u32(out, &o, p->maximum_proof_age_seconds);
-    return o == VCS_ZCODE_PROOF_POLICY_WIRE_BYTES ? VCS_ZCODE_DEV_OK
-                                                  : VCS_ZCODE_DEV_ERR_WIRE_SIZE;
+    struct zcl_codec_writer w;
+    zcl_codec_writer_init(&w, out, VCS_ZCODE_PROOF_POLICY_WIRE_BYTES);
+    bool ok = zcl_codec_write_bytes(&w, policy_magic, sizeof(policy_magic)) &&
+        zcl_codec_write_u16le(&w, p->schema_version) &&
+        zcl_codec_write_u32le(&w, p->required_proofs) &&
+        zcl_codec_write_u16le(&w, p->minimum_compile_receipts) &&
+        zcl_codec_write_u16le(&w, p->minimum_test_receipts) &&
+        zcl_codec_write_u16le(&w, p->minimum_fuzz_receipts) &&
+        zcl_codec_write_u16le(&w, p->minimum_reviews) &&
+        zcl_codec_write_u16le(&w, p->minimum_matching_receipts) &&
+        zcl_codec_write_u16le(&w, p->flags) &&
+        zcl_codec_write_u32le(&w, p->deterministic_fuzz_seeds) &&
+        zcl_codec_write_u16le(&w, p->audit_basis_points) &&
+        zcl_codec_write_u32le(&w, p->maximum_proof_age_seconds);
+    size_t written = 0;
+    return ok && zcl_codec_writer_finish(&w, &written) &&
+           written == VCS_ZCODE_PROOF_POLICY_WIRE_BYTES
+        ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_WIRE_SIZE;
 }
 
 enum vcs_zcode_dev_error vcs_zcode_proof_policy_parse(
@@ -375,18 +343,22 @@ enum vcs_zcode_dev_error vcs_zcode_proof_policy_parse(
         return VCS_ZCODE_DEV_ERR_WIRE_SIZE;
     if (memcmp(wire, policy_magic, sizeof(policy_magic)) != 0)
         return VCS_ZCODE_DEV_ERR_WIRE_MAGIC;
-    size_t o = sizeof(policy_magic);
-    out->schema_version = get_u16(wire, &o);
-    out->required_proofs = get_u32(wire, &o);
-    out->minimum_compile_receipts = get_u16(wire, &o);
-    out->minimum_test_receipts = get_u16(wire, &o);
-    out->minimum_fuzz_receipts = get_u16(wire, &o);
-    out->minimum_reviews = get_u16(wire, &o);
-    out->minimum_matching_receipts = get_u16(wire, &o);
-    out->flags = get_u16(wire, &o);
-    out->deterministic_fuzz_seeds = get_u32(wire, &o);
-    out->audit_basis_points = get_u16(wire, &o);
-    out->maximum_proof_age_seconds = get_u32(wire, &o);
+    struct zcl_codec_reader r;
+    zcl_codec_reader_init(&r, wire + sizeof(policy_magic),
+                          len - sizeof(policy_magic));
+    bool ok = zcl_codec_read_u16le(&r, &out->schema_version) &&
+        zcl_codec_read_u32le(&r, &out->required_proofs) &&
+        zcl_codec_read_u16le(&r, &out->minimum_compile_receipts) &&
+        zcl_codec_read_u16le(&r, &out->minimum_test_receipts) &&
+        zcl_codec_read_u16le(&r, &out->minimum_fuzz_receipts) &&
+        zcl_codec_read_u16le(&r, &out->minimum_reviews) &&
+        zcl_codec_read_u16le(&r, &out->minimum_matching_receipts) &&
+        zcl_codec_read_u16le(&r, &out->flags) &&
+        zcl_codec_read_u32le(&r, &out->deterministic_fuzz_seeds) &&
+        zcl_codec_read_u16le(&r, &out->audit_basis_points) &&
+        zcl_codec_read_u32le(&r, &out->maximum_proof_age_seconds) &&
+        zcl_codec_reader_finish(&r);
+    if (!ok) { memset(out, 0, sizeof(*out)); return VCS_ZCODE_DEV_ERR_WIRE_SIZE; }
     enum vcs_zcode_dev_error err = vcs_zcode_proof_policy_validate(out);
     if (err != VCS_ZCODE_DEV_OK) memset(out, 0, sizeof(*out));
     return err;
@@ -411,19 +383,23 @@ enum vcs_zcode_dev_error vcs_zcode_candidate_serialize(
     enum vcs_zcode_dev_error err = vcs_zcode_candidate_validate(c);
     if (err != VCS_ZCODE_DEV_OK || !out)
         return out ? err : VCS_ZCODE_DEV_ERR_NULL;
-    size_t o = 0;
-    put_bytes(out, &o, candidate_magic, sizeof(candidate_magic));
-    put_u16(out, &o, c->schema_version);
-    put_bytes(out, &o, c->task_root, 32);
-    put_bytes(out, &o, c->base_source_root, 32);
-    put_bytes(out, &o, c->patch_root, 32);
-    put_bytes(out, &o, c->candidate_source_root, 32);
-    put_bytes(out, &o, c->adapter_policy_root, 32);
-    put_bytes(out, &o, c->author_pubkey, 32);
-    put_u64(out, &o, c->sequence);
-    put_u64(out, &o, (uint64_t)c->created_unix);
-    return o == VCS_ZCODE_CANDIDATE_WIRE_BYTES ? VCS_ZCODE_DEV_OK
-                                               : VCS_ZCODE_DEV_ERR_WIRE_SIZE;
+    struct zcl_codec_writer w;
+    zcl_codec_writer_init(&w, out, VCS_ZCODE_CANDIDATE_WIRE_BYTES);
+    bool ok = zcl_codec_write_bytes(&w, candidate_magic,
+                                    sizeof(candidate_magic)) &&
+        zcl_codec_write_u16le(&w, c->schema_version) &&
+        zcl_codec_write_bytes(&w, c->task_root, 32) &&
+        zcl_codec_write_bytes(&w, c->base_source_root, 32) &&
+        zcl_codec_write_bytes(&w, c->patch_root, 32) &&
+        zcl_codec_write_bytes(&w, c->candidate_source_root, 32) &&
+        zcl_codec_write_bytes(&w, c->adapter_policy_root, 32) &&
+        zcl_codec_write_bytes(&w, c->author_pubkey, 32) &&
+        zcl_codec_write_u64le(&w, c->sequence) &&
+        zcl_codec_write_i64le(&w, c->created_unix);
+    size_t written = 0;
+    return ok && zcl_codec_writer_finish(&w, &written) &&
+           written == VCS_ZCODE_CANDIDATE_WIRE_BYTES
+        ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_WIRE_SIZE;
 }
 
 enum vcs_zcode_dev_error vcs_zcode_candidate_parse(
@@ -435,16 +411,20 @@ enum vcs_zcode_dev_error vcs_zcode_candidate_parse(
         return VCS_ZCODE_DEV_ERR_WIRE_SIZE;
     if (memcmp(wire, candidate_magic, sizeof(candidate_magic)) != 0)
         return VCS_ZCODE_DEV_ERR_WIRE_MAGIC;
-    size_t o = sizeof(candidate_magic);
-    out->schema_version = get_u16(wire, &o);
-    get_bytes(wire, &o, out->task_root, 32);
-    get_bytes(wire, &o, out->base_source_root, 32);
-    get_bytes(wire, &o, out->patch_root, 32);
-    get_bytes(wire, &o, out->candidate_source_root, 32);
-    get_bytes(wire, &o, out->adapter_policy_root, 32);
-    get_bytes(wire, &o, out->author_pubkey, 32);
-    out->sequence = get_u64(wire, &o);
-    out->created_unix = (int64_t)get_u64(wire, &o);
+    struct zcl_codec_reader r;
+    zcl_codec_reader_init(&r, wire + sizeof(candidate_magic),
+                          len - sizeof(candidate_magic));
+    bool ok = zcl_codec_read_u16le(&r, &out->schema_version) &&
+        zcl_codec_read_bytes(&r, out->task_root, 32) &&
+        zcl_codec_read_bytes(&r, out->base_source_root, 32) &&
+        zcl_codec_read_bytes(&r, out->patch_root, 32) &&
+        zcl_codec_read_bytes(&r, out->candidate_source_root, 32) &&
+        zcl_codec_read_bytes(&r, out->adapter_policy_root, 32) &&
+        zcl_codec_read_bytes(&r, out->author_pubkey, 32) &&
+        zcl_codec_read_u64le(&r, &out->sequence) &&
+        zcl_codec_read_i64le(&r, &out->created_unix) &&
+        zcl_codec_reader_finish(&r);
+    if (!ok) { memset(out, 0, sizeof(*out)); return VCS_ZCODE_DEV_ERR_WIRE_SIZE; }
     enum vcs_zcode_dev_error err = vcs_zcode_candidate_validate(out);
     if (err != VCS_ZCODE_DEV_OK) memset(out, 0, sizeof(*out));
     return err;
@@ -469,20 +449,23 @@ enum vcs_zcode_dev_error vcs_zcode_review_serialize(
     enum vcs_zcode_dev_error err = vcs_zcode_review_validate(r);
     if (err != VCS_ZCODE_DEV_OK || !out)
         return out ? err : VCS_ZCODE_DEV_ERR_NULL;
-    size_t o = 0;
-    put_bytes(out, &o, review_magic, sizeof(review_magic));
-    put_u16(out, &o, r->schema_version);
-    put_bytes(out, &o, r->task_root, 32);
-    put_bytes(out, &o, r->candidate_root, 32);
-    put_bytes(out, &o, r->proof_policy_root, 32);
-    put_bytes(out, &o, r->proof_set_root, 32);
-    put_bytes(out, &o, r->findings_root, 32);
-    put_bytes(out, &o, r->reviewer_pubkey, 32);
-    out[o++] = r->verdict;
-    put_u64(out, &o, r->sequence);
-    put_u64(out, &o, (uint64_t)r->created_unix);
-    return o == VCS_ZCODE_REVIEW_WIRE_BYTES ? VCS_ZCODE_DEV_OK
-                                            : VCS_ZCODE_DEV_ERR_WIRE_SIZE;
+    struct zcl_codec_writer w;
+    zcl_codec_writer_init(&w, out, VCS_ZCODE_REVIEW_WIRE_BYTES);
+    bool ok = zcl_codec_write_bytes(&w, review_magic, sizeof(review_magic)) &&
+        zcl_codec_write_u16le(&w, r->schema_version) &&
+        zcl_codec_write_bytes(&w, r->task_root, 32) &&
+        zcl_codec_write_bytes(&w, r->candidate_root, 32) &&
+        zcl_codec_write_bytes(&w, r->proof_policy_root, 32) &&
+        zcl_codec_write_bytes(&w, r->proof_set_root, 32) &&
+        zcl_codec_write_bytes(&w, r->findings_root, 32) &&
+        zcl_codec_write_bytes(&w, r->reviewer_pubkey, 32) &&
+        zcl_codec_write_u8(&w, r->verdict) &&
+        zcl_codec_write_u64le(&w, r->sequence) &&
+        zcl_codec_write_i64le(&w, r->created_unix);
+    size_t written = 0;
+    return ok && zcl_codec_writer_finish(&w, &written) &&
+           written == VCS_ZCODE_REVIEW_WIRE_BYTES
+        ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_WIRE_SIZE;
 }
 
 enum vcs_zcode_dev_error vcs_zcode_review_parse(
@@ -494,17 +477,21 @@ enum vcs_zcode_dev_error vcs_zcode_review_parse(
         return VCS_ZCODE_DEV_ERR_WIRE_SIZE;
     if (memcmp(wire, review_magic, sizeof(review_magic)) != 0)
         return VCS_ZCODE_DEV_ERR_WIRE_MAGIC;
-    size_t o = sizeof(review_magic);
-    out->schema_version = get_u16(wire, &o);
-    get_bytes(wire, &o, out->task_root, 32);
-    get_bytes(wire, &o, out->candidate_root, 32);
-    get_bytes(wire, &o, out->proof_policy_root, 32);
-    get_bytes(wire, &o, out->proof_set_root, 32);
-    get_bytes(wire, &o, out->findings_root, 32);
-    get_bytes(wire, &o, out->reviewer_pubkey, 32);
-    out->verdict = wire[o++];
-    out->sequence = get_u64(wire, &o);
-    out->created_unix = (int64_t)get_u64(wire, &o);
+    struct zcl_codec_reader reader;
+    zcl_codec_reader_init(&reader, wire + sizeof(review_magic),
+                          len - sizeof(review_magic));
+    bool ok = zcl_codec_read_u16le(&reader, &out->schema_version) &&
+        zcl_codec_read_bytes(&reader, out->task_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->candidate_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->proof_policy_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->proof_set_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->findings_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->reviewer_pubkey, 32) &&
+        zcl_codec_read_u8(&reader, &out->verdict) &&
+        zcl_codec_read_u64le(&reader, &out->sequence) &&
+        zcl_codec_read_i64le(&reader, &out->created_unix) &&
+        zcl_codec_reader_finish(&reader);
+    if (!ok) { memset(out, 0, sizeof(*out)); return VCS_ZCODE_DEV_ERR_WIRE_SIZE; }
     enum vcs_zcode_dev_error err = vcs_zcode_review_validate(out);
     if (err != VCS_ZCODE_DEV_OK) memset(out, 0, sizeof(*out));
     return err;
@@ -529,27 +516,31 @@ static enum vcs_zcode_dev_error receipt_body(
     enum vcs_zcode_dev_error err = receipt_fields(r, false);
     if (err != VCS_ZCODE_DEV_OK || !out)
         return out ? err : VCS_ZCODE_DEV_ERR_NULL;
-    size_t o = 0;
-    put_bytes(out, &o, receipt_magic, sizeof(receipt_magic));
-    put_u16(out, &o, r->schema_version);
-    put_bytes(out, &o, r->task_root, 32);
-    put_bytes(out, &o, r->candidate_root, 32);
-    put_bytes(out, &o, r->action_root, 32);
-    put_bytes(out, &o, r->input_root, 32);
-    put_bytes(out, &o, r->output_root, 32);
-    put_bytes(out, &o, r->proof_policy_root, 32);
-    put_bytes(out, &o, r->toolchain_capsule_root, 32);
-    put_bytes(out, &o, r->lease_id, 32);
-    put_bytes(out, &o, r->evidence_root, 32);
-    put_bytes(out, &o, r->confinement_root, 32);
-    out[o++] = r->work_kind;
-    out[o++] = r->status;
-    put_u32(out, &o, (uint32_t)r->exit_status);
-    put_u64(out, &o, (uint64_t)r->started_unix);
-    put_u64(out, &o, (uint64_t)r->finished_unix);
-    put_bytes(out, &o, r->signer_pubkey, 32);
-    return o == VCS_ZCODE_WORK_RECEIPT_BODY_BYTES ? VCS_ZCODE_DEV_OK
-                                                  : VCS_ZCODE_DEV_ERR_WIRE_SIZE;
+    struct zcl_codec_writer w;
+    zcl_codec_writer_init(&w, out, VCS_ZCODE_WORK_RECEIPT_BODY_BYTES);
+    bool ok = zcl_codec_write_bytes(&w, receipt_magic,
+                                    sizeof(receipt_magic)) &&
+        zcl_codec_write_u16le(&w, r->schema_version) &&
+        zcl_codec_write_bytes(&w, r->task_root, 32) &&
+        zcl_codec_write_bytes(&w, r->candidate_root, 32) &&
+        zcl_codec_write_bytes(&w, r->action_root, 32) &&
+        zcl_codec_write_bytes(&w, r->input_root, 32) &&
+        zcl_codec_write_bytes(&w, r->output_root, 32) &&
+        zcl_codec_write_bytes(&w, r->proof_policy_root, 32) &&
+        zcl_codec_write_bytes(&w, r->toolchain_capsule_root, 32) &&
+        zcl_codec_write_bytes(&w, r->lease_id, 32) &&
+        zcl_codec_write_bytes(&w, r->evidence_root, 32) &&
+        zcl_codec_write_bytes(&w, r->confinement_root, 32) &&
+        zcl_codec_write_u8(&w, r->work_kind) &&
+        zcl_codec_write_u8(&w, r->status) &&
+        zcl_codec_write_i32le(&w, r->exit_status) &&
+        zcl_codec_write_i64le(&w, r->started_unix) &&
+        zcl_codec_write_i64le(&w, r->finished_unix) &&
+        zcl_codec_write_bytes(&w, r->signer_pubkey, 32);
+    size_t written = 0;
+    return ok && zcl_codec_writer_finish(&w, &written) &&
+           written == VCS_ZCODE_WORK_RECEIPT_BODY_BYTES
+        ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_WIRE_SIZE;
 }
 
 enum vcs_zcode_dev_error vcs_zcode_work_receipt_serialize(
@@ -575,25 +566,29 @@ enum vcs_zcode_dev_error vcs_zcode_work_receipt_parse(
         return VCS_ZCODE_DEV_ERR_WIRE_SIZE;
     if (memcmp(wire, receipt_magic, sizeof(receipt_magic)) != 0)
         return VCS_ZCODE_DEV_ERR_WIRE_MAGIC;
-    size_t o = sizeof(receipt_magic);
-    out->schema_version = get_u16(wire, &o);
-    get_bytes(wire, &o, out->task_root, 32);
-    get_bytes(wire, &o, out->candidate_root, 32);
-    get_bytes(wire, &o, out->action_root, 32);
-    get_bytes(wire, &o, out->input_root, 32);
-    get_bytes(wire, &o, out->output_root, 32);
-    get_bytes(wire, &o, out->proof_policy_root, 32);
-    get_bytes(wire, &o, out->toolchain_capsule_root, 32);
-    get_bytes(wire, &o, out->lease_id, 32);
-    get_bytes(wire, &o, out->evidence_root, 32);
-    get_bytes(wire, &o, out->confinement_root, 32);
-    out->work_kind = wire[o++];
-    out->status = wire[o++];
-    out->exit_status = (int32_t)get_u32(wire, &o);
-    out->started_unix = (int64_t)get_u64(wire, &o);
-    out->finished_unix = (int64_t)get_u64(wire, &o);
-    get_bytes(wire, &o, out->signer_pubkey, 32);
-    get_bytes(wire, &o, out->signature, 64);
+    struct zcl_codec_reader reader;
+    zcl_codec_reader_init(&reader, wire + sizeof(receipt_magic),
+                          len - sizeof(receipt_magic));
+    bool ok = zcl_codec_read_u16le(&reader, &out->schema_version) &&
+        zcl_codec_read_bytes(&reader, out->task_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->candidate_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->action_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->input_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->output_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->proof_policy_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->toolchain_capsule_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->lease_id, 32) &&
+        zcl_codec_read_bytes(&reader, out->evidence_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->confinement_root, 32) &&
+        zcl_codec_read_u8(&reader, &out->work_kind) &&
+        zcl_codec_read_u8(&reader, &out->status) &&
+        zcl_codec_read_i32le(&reader, &out->exit_status) &&
+        zcl_codec_read_i64le(&reader, &out->started_unix) &&
+        zcl_codec_read_i64le(&reader, &out->finished_unix) &&
+        zcl_codec_read_bytes(&reader, out->signer_pubkey, 32) &&
+        zcl_codec_read_bytes(&reader, out->signature, 64) &&
+        zcl_codec_reader_finish(&reader);
+    if (!ok) { memset(out, 0, sizeof(*out)); return VCS_ZCODE_DEV_ERR_WIRE_SIZE; }
     enum vcs_zcode_dev_error err = vcs_zcode_work_receipt_validate(out);
     if (err != VCS_ZCODE_DEV_OK) memset(out, 0, sizeof(*out));
     return err;

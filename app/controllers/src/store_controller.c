@@ -219,13 +219,13 @@ static bool route_is_order_create(const char *method, const char *path)
  *
  * Implementation: zcl_validate_zcl_address in app/models/src/shared_validators.c. */
 
-static bool store_validate_access_addr(const char *addr)
+bool store_validate_access_addr(const char *addr)
 {
     return addr && addr[0] &&
            zslp_service_validate_recipient_addr(addr, false).ok;
 }
 
-static bool store_validate_access_token(const char *token)
+bool store_validate_access_token(const char *token)
 {
     return token && token[0] &&
            zslp_service_validate_token_key(token).ok;
@@ -600,8 +600,14 @@ size_t store_handle_request(const char *method, const char *path,
         }
 
     } else if (strncmp(path, "/store/access", 13) == 0) {
-        /* Token-gated content: /store/access?addr=t1...&token=ZCL23ACCESS */
-        char addr[128] = "", token[64] = "";
+        /* Token-gated content: /store/access?addr=t1...&token=ZCL23ACCESS
+         * The token buffer must hold the canonical 64-hex-char txid form
+         * PLUS the NUL — store_parse_query_field caps a field at
+         * out_max-1 chars, so token[64] silently truncates a full txid to
+         * 63 chars, the validator then rejects it as a truncated-txid look-
+         * alike, and the gate 400s every real token holder (the C5 collect
+         * wedge's second half). */
+        char addr[128] = "", token[65] = "";
         if (!store_parse_access_query(path, addr, sizeof(addr),
                                       token, sizeof(token))) {
             const char *err_body = "<h1>Invalid access request</h1>"
@@ -692,24 +698,32 @@ void store_process_payments(const char *datadir)
 
         if (received >= expected) {
             /* Payment confirmed — mint tokens FIRST, then update status.
-             * This ensures we never show "Tokens Sent" if mint failed. */
+             * This ensures we never show "Tokens Sent" if mint failed.
+             * A mint failure is NOT terminal: the common cause is
+             * projection lag (the ZSLP ledger backfill has not folded the
+             * token's block yet, so the baton is not VALID — self-heals
+             * once the tip settles and the catchup projection advances),
+             * and a CONFIRMED payment must never strand an order as FAILED
+             * for a transient cause. Leave the order in the pending scan so
+             * the next cycle retries; the 1 h pending-scan window bounds
+             * retries for genuinely unmintable orders. */
             bool mint_ok = zslp_mint(datadir, token_id, cust_addr,
                                       (uint64_t)tokens);
-            int new_status = mint_ok ? STORE_ORDER_SENT : STORE_ORDER_FAILED;
-            if (!store_mark_order_paid(datadir, order_id, new_status)) {
+            if (!mint_ok) {
+                printf("Store: order #%lld paid but mint not yet possible "
+                       "(projection lag?) — retrying next scan for %s\n",
+                       (long long)order_id, cust_addr);
+                fflush(stdout);
+                continue;
+            }
+            if (!store_mark_order_paid(datadir, order_id, STORE_ORDER_SENT)) {
                 printf("Store: order #%lld payment processed but status "
                        "persist failed\n", (long long)order_id);
                 fflush(stdout);
             }
-
-            if (mint_ok) {
-                printf("Store: order #%lld paid, minted %lld %s -> %s\n",
-                       (long long)order_id, (long long)tokens,
-                       token_id, cust_addr);
-            } else {
-                printf("Store: order #%lld paid but MINT FAILED for %s\n",
-                       (long long)order_id, cust_addr);
-            }
+            printf("Store: order #%lld paid, minted %lld %s -> %s\n",
+                   (long long)order_id, (long long)tokens,
+                   token_id, cust_addr);
             fflush(stdout);
         }
     }
@@ -731,21 +745,3 @@ void store_process_payments(const char *datadir)
     node_db_close(&ndb);
 }
 
-/* Check if a customer has enough tokens to access a service.
- * Used as a before_action hook on protected routes. */
-bool store_check_token_access(const char *datadir,
-                               const char *customer_addr,
-                               const char *token_id,
-                               uint64_t required)
-{
-    if (!datadir ||
-        !store_validate_access_addr(customer_addr) ||
-        !store_validate_access_token(token_id))
-        LOG_FAIL("store", "check_token_access: invalid args datadir=%p addr=%s token=%s",
-                 (void *)datadir,
-                 customer_addr ? customer_addr : "(null)",
-                 token_id ? token_id : "(null)");
-
-    uint64_t balance = zslp_balance(datadir, token_id, customer_addr);
-    return balance >= required;
-}

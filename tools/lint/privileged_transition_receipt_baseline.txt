@@ -46,6 +46,7 @@ dev.loop.ensure            exempt: verify-only dev loop, no live generation swap
 dev.loop.stop              exempt: verify-only dev loop, no live generation swap
 dev.generation.rollback    exempt: dev generation store, contained
 dev.generation.compact     exempt: dev generation store, contained
+dev.generation.activate    receipt:tools/command/native_dev_activation_command.c
 ops.recovery.rebuild       exempt: refold reset, gated by copy-prove doctrine
 
 # ZCL app-feature writes (config/commands/app_features.def). None of them
@@ -63,8 +64,12 @@ app.names.set-text         exempt: signs+broadcasts an OP_RETURN tx, no privileg
 app.messaging.send         exempt: peer-socket write (p2p) or shielded send (onchain), no artifact install
 app.messaging.send-named   exempt: PLANNED fail-closed, no artifact install (no outbound delivery path exists)
 app.messaging.read         exempt: flips one message's read bit, rebuildable projection
+app.tokens.burn            exempt: signs+broadcasts a ZSLP burn transaction, no privileged datadir install
 app.market.offer           exempt: PLANNED fail-closed, no artifact install (no origin announce path exists)
-app.market.buy             exempt: PLANNED fail-closed, no artifact install (no payment leg exists)
+app.market.buy             exempt: PLANNED fail-closed, no artifact install (buyer retrieval and publication are absent)
+app.market.content.register exempt: app-local AR content binding, no executable or consensus artifact install
+app.market.purchase.plan   exempt: encrypted wallet-local reservation row, no privileged artifact install
+app.market.purchase.commit exempt: signs+broadcasts an exact Sapling-memo payment, no privileged artifact install
 app.store.list-product     exempt: app-local AR write (one products row + one content-addressed store_blobs row) into node.db; the payload is merchant-supplied storefront content the store re-hashes on every read, never an artifact the node executes or trusts
 app.swap.initiate          exempt: mints a local HTLC contract row, broadcasts nothing
 app.swap.participate       exempt: mints a local HTLC contract row, broadcasts nothing
@@ -80,6 +85,10 @@ ops.debug.rom_seed.publish exempt: idempotent re-scan registering already-on-dis
 # this line must become a receipt:.
 vault.send                 exempt: pure route to core.wallet.transaction.send, which owns the disposition
 vault.send-shielded        exempt: pure route to core.wallet.shielded.send, which owns the disposition
+vault.intent.issue         exempt: persists a wallet receive key, no artifact install
+vault.intent.plan          exempt: encrypted wallet-local plan row, no artifact install
+vault.intent.fanout-plan   exempt: persists receive keys plus one encrypted wallet-local plan, no artifact install
+vault.intent.commit        exempt: signs+broadcasts the exact planned transaction, no artifact install
 vault.swap.redeem          exempt: pure route to the swap_redeem RPC, which owns build/sign/broadcast
 vault.swap.refund          exempt: pure route to the swap_refund RPC, which owns build/sign/broadcast
 
@@ -91,6 +100,12 @@ vault.swap.refund          exempt: pure route to the swap_refund RPC, which owns
 # from the principal's role).
 vault.session.create       exempt: AR insert of an agent_sessions grant row; no artifact install
 vault.session.revoke       exempt: AR update marking an agent_sessions row revoked; no artifact install
+
+# Wallet runtime custody transitions change key residency or wrap wallet-local
+# secret rows; they install no executable or consensus artifact.
+core.wallet.security.encrypt exempt: wallet-local WKS1 wrapping plus runtime lock, no artifact install
+core.wallet.security.unlock  exempt: bounded in-memory key residency, no artifact install
+core.wallet.security.lock    exempt: scrubs in-memory keys, no artifact install
 
 # Wallet key-disclosure and wallet-recovery leaves (config/commands/core.def).
 # None installs a privileged artifact over the datadir or the running binary.
@@ -117,11 +132,21 @@ core.wallet.rescan-witnesses    exempt: rebuilds a DERIVED Sapling witness proje
 app.store.order            exempt: AR insert/update of a buyer purchase row; no artifact install
 app.store.pay              exempt: shielded spend already gated by the sovereignty spend guard; no artifact install
 app.store.collect          exempt: writes a content-hash-verified data file to an operator-chosen path; no artifact install
+app.market.purchase.retrieve exempt: publishes only manifest-verified bytes to an operator-chosen path without overwrite; no datadir or binary artifact install
 app.tokens.create          exempt: broadcasts a wallet transaction through the existing sovereignty, admission, durability and relay gates; installs no privileged artifact
 app.tokens.mint            exempt: broadcasts a mint-baton-authorized wallet transaction through existing spend gates; installs no privileged artifact
 app.tokens.send            exempt: broadcasts an explicitly token-funded wallet transaction through existing spend gates; installs no privileged artifact
+app.blog.anchor            exempt: reserves fee state and broadcasts one identity-bound wallet transaction through existing vault-intent, admission, durability and relay gates; installs no privileged artifact
 vault.send-token           exempt: dispatch-only alias of app.tokens.send; builds or installs nothing itself
 core.wallet.transaction.raw.create    exempt: composes unsigned transaction bytes only; mutates no node or wallet state and installs no artifact
 core.wallet.transaction.raw.sign      exempt: produces signatures with resident wallet keys but imports nothing, persists nothing and installs no artifact
 core.wallet.transaction.raw.broadcast exempt: submits bytes through the shared mempool acceptance and relay gates; installs no privileged artifact
 core.wallet.recovery.restore    exempt: derives a wallet's own keys from an operator-supplied phrase and writes them into an EMPTY datadir through the node's own schema path; refuses while a node holds the datadir and refuses outright if a wallet is already there; installs no artifact and changes no running binary
+core.identity.anchor       exempt: reserves and broadcasts an identity-bound wallet transaction through durable vault-intent gates; installs no privileged artifact
+core.identity.rotate       exempt: reserves and broadcasts an identity-bound wallet transaction through durable vault-intent gates; installs no privileged artifact
+core.identity.revoke       exempt: reserves and broadcasts an identity-bound wallet transaction through durable vault-intent gates; installs no privileged artifact
+core.zdir.register         exempt: reserves and broadcasts an owner-bound directory transaction through durable vault-intent gates; installs no privileged artifact
+core.zdir.deregister       exempt: reserves and broadcasts an owner-bound directory transaction through durable vault-intent gates; installs no privileged artifact
+yardsale.seller.arm      exempt: configures a process-memory seller profile from the operator's own wallet keys behind an exact expiring plan/commit; persists only a plan row and installs no privileged artifact
+yardsale.seller.disarm   exempt: clears the process-memory seller profile (cleansing the retained key); persists nothing and installs no privileged artifact
+yardsale.buy             exempt: floods a signed accept through the existing ceremony + relay gates behind an exact expiring plan/commit; persists only a plan row and installs no privileged artifact

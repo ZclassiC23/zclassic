@@ -603,11 +603,10 @@ bool boot_mint_anchor_run(const char *datadir)
         (void)progress_store_checkpoint();
     }
 
-    /* -full-fold: reached the local header TIP with COMPLETE self-derived
-     * shielded state — SKIP the cp->height-bound snapshot/assert/export ceremony
-     * and return the H* verdict (boot_full_fold.c). */
+    /* -full-fold: SKIP the cp->height ceremony; verdict + tip bundle export. */
     if (full_fold)
-        return boot_full_fold_finish(pdb, through, count, anchor, kStallLimit);
+        return boot_full_fold_conclude(pdb, datadir, through, count, anchor,
+                                       kStallLimit);
 
     fprintf(stderr,
             "[mint-anchor] fold reached the anchor: applied-through=%d, "

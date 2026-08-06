@@ -12,7 +12,11 @@
  * (app/jobs/src/utxo_apply_anchors.c), and utxo_apply holds its cursor forever
  * behind the blocker utxo_apply.anchor_backfill_gap with no escape action.
  *
- * Fail-closed is consensus-correct.  This condition is the missing remedy:
+ * Fail-closed is consensus-correct.  This condition is the missing remedy.
+ * ROUTING: the EMPTY_TABLE birth defect is attempted first (tier1/1b below)
+ * even when the named-remedy predicate also holds — the cold-import seed
+ * heal leaves the nullifier blocker set alongside the anchor reset, and the
+ * ladder cannot supply an initial frontier row (2026-08-01 live wedge).
  *   tier 1 — seed a HEADER-VERIFIED initial frontier from the flat-file sapling
  *            checkpoint the node already maintains (boot.c load path).  The
  *            frontier's own root MUST equal the block's hashFinalSaplingRoot at
@@ -87,6 +91,7 @@
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/utxo_apply_anchors.h"
+#include "jobs/utxo_apply_history_hold.h"
 #include "jobs/utxo_apply_nullifiers.h"
 #include "json/json.h"
 #include "sapling/incremental_merkle_tree.h"
@@ -147,6 +152,7 @@ static _Atomic int g_tier1b_attempts;
 
 #ifdef ZCL_TESTING
 static _Atomic int g_test_remedy_calls;
+static _Atomic int g_test_tier1_attempts;
 #endif
 
 enum sapling_anchor_gap_class sapling_anchor_frontier_classify(sqlite3 *db)
@@ -489,11 +495,51 @@ static enum condition_remedy_result remedy_sapling_anchor_frontier(void)
 
     enum sapling_anchor_gap_class cls = sapling_anchor_frontier_classify(db);
 
-    /* NAMED REMEDY class takes priority: neither tier1 (checkpoint seed) nor
+    /* EMPTY_TABLE birth defect FIRST, even when the named-remedy predicate
+     * below also holds: the cold-import seed heal marks nullifier history
+     * empty-below alongside the anchor reset, so the NF blocker is present in
+     * almost every seed-boot episode — routing to the ladder on that disjunct
+     * alone stranded a tier1-curable anchor wedge (the ladder's Rung A anchor
+     * path only arms a refold respawn that the escalator's permanent-blocker
+     * hold parks; it can never supply the initial frontier row).  Observed
+     * live 2026-08-01 (anchor replay-canary): seed-boot at tip, both blockers
+     * set, the flat-file checkpoint became root-verified minutes AFTER the
+     * remedy attempts had latched at max_attempts.  Detect already records
+     * this dual case as a birth-defect episode precisely because the anchor
+     * half is the auto-curable one; the nullifier half re-detects as a fresh
+     * named-remedy episode once the anchor half clears. */
+    if (cls == SAPLING_ANCHOR_GAP_EMPTY_TABLE) {
+        int32_t hstar_early = reducer_frontier_provable_tip_cached();
+        if (hstar_early >= 0) {
+            int64_t stall_early = (int64_t)hstar_early + 1;
+#ifdef ZCL_TESTING
+            atomic_fetch_add(&g_test_tier1_attempts, 1);
+#endif
+            if (tier1_seed_verified_frontier(db, ms, stall_early) ||
+                tier1b_borrow_verified_frontier(db, ms, stall_early)) {
+                /* The seed is only half the cure in-process: a GATE_HOLD on
+                 * the stall block recorded an in-memory history-hold memo
+                 * (utxo_apply_history_hold_record) that parks every later
+                 * utxo_apply step while the anchor gap BLOCKER exists — and
+                 * the blocker legitimately outlives the seed (the activation
+                 * cursor stays >0 by design), so without this clear the fold
+                 * never re-attempts the gate and H* never climbs; only a
+                 * process restart used to drop the memo (2026-08-02 anchor
+                 * replay-canary wedge at h=3202122, frontier seeded by
+                 * tier1b 25 min prior).  Clearing is fail-closed-safe: the
+                 * next step re-runs the shielded gate, which re-holds if the
+                 * frontier were genuinely absent. */
+                utxo_apply_history_hold_clear();
+                return COND_REMEDY_OK;  /* witness (H* climb) confirms resume */
+            }
+        }
+    }
+
+    /* NAMED REMEDY class next: neither tier1 (checkpoint seed) nor
      * tier1b (borrowed frontier seed) nor tier2 (bounded refold) can supply a
-     * full historical anchor+nullifier set — attempting them here would be
-     * exactly the kind of downstream repair rung TENACITY I3 forbids for a
-     * gap only the write-time import can correctly fill. */
+     * full historical anchor+nullifier set — attempting them for a HISTORICAL
+     * gap would be exactly the kind of downstream repair rung TENACITY I3
+     * forbids for a gap only the write-time import can correctly fill. */
     if ((cls == SAPLING_ANCHOR_GAP_HISTORICAL &&
          blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID)) ||
         blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID))
@@ -508,15 +554,10 @@ static enum condition_remedy_result remedy_sapling_anchor_frontier(void)
         return COND_REMEDY_SKIP;
     int64_t stall_height = (int64_t)hstar + 1;
 
-    /* TIER 1 — seed a header-verified frontier (the real, in-place cure). */
-    if (tier1_seed_verified_frontier(db, ms, stall_height))
-        return COND_REMEDY_OK;   /* witness (H* climb) confirms the fold resumed */
-
-    /* TIER 1b — borrow the exact post-H* frontier from the co-located LIVE
-     * zclassicd chainstate and header-verify it (same trust model as the legacy
-     * bootstrap).  Attempt-bounded; on any failure it falls through unchanged. */
-    if (tier1b_borrow_verified_frontier(db, ms, stall_height))
-        return COND_REMEDY_OK;   /* witness (H* climb) confirms the fold resumed */
+    /* Tier1/tier1b were already attempted above for this class (once per
+     * remedy run — tier1b burns one of its per-process attempt cap slots on
+     * each call, so a second pass here would halve the budget for no
+     * information).  Fall through to the heavier tiers. */
 
     /* TIER 2 — arm the bounded refold + supervised respawn, but only if a
      * verified anchor artifact is reachable (else the boot reset FATAL-refuses).
@@ -642,6 +683,19 @@ static struct condition c_sapling_anchor_frontier_unavailable = {
      * operator (tier 3 is the honest terminal for a genuinely-absent frontier).
      * Tier 2 respawns the process, so it does not accrue attempts here. */
     .max_attempts = 5,
+    /* Continue-with-cooldown (sticky-node plan #7): the remedy's inputs are
+     * produced by slower background machinery — the deferred sapling-tree
+     * rebuild that makes the flat-file checkpoint root-verified (~10 min on a
+     * 3.1M-header import boot), and P2P bodies still landing at tip.  Five
+     * remedy attempts at poll/backoff cadence exhaust in ~3 min, far sooner
+     * than those prerequisites, and the legacy latch then stranded a curable
+     * wedge forever (observed live 2026-08-01: checkpoint became valid 2 min
+     * after operator_needed).  Re-arm every 5 min instead: remedy runs are
+     * idempotent (tier1 fail-closed, tier1b capped per-process, Rung C a
+     * no-op log), the operator page still fires once per episode, and a
+     * genuinely-absent frontier keeps paging on the age ladder. */
+    .cooldown_secs = 300,
+    .cooldown_max_rearms = 0,
     .detect = detect_sapling_anchor_frontier,
     .remedy = remedy_sapling_anchor_frontier,
     .witness = witness_sapling_anchor_frontier,
@@ -669,11 +723,17 @@ void sapling_anchor_frontier_test_reset(void)
     atomic_store(&g_tier1b_attempts, 0);
     shielded_selfheal_reset_episode();
     atomic_store(&g_test_remedy_calls, 0);
+    atomic_store(&g_test_tier1_attempts, 0);
 }
 
 int sapling_anchor_frontier_test_remedy_calls(void)
 {
     return atomic_load(&g_test_remedy_calls);
+}
+
+int sapling_anchor_frontier_test_tier1_attempts(void)
+{
+    return atomic_load(&g_test_tier1_attempts);
 }
 
 void sapling_anchor_frontier_test_force_named_episode(void)

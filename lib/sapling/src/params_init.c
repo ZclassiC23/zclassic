@@ -35,10 +35,10 @@
     "20bc1f6bd89d0321b90a3f1b7e2050a7dafb427e86e7ef33b0b7a5c06077f5bf"       \
     "5695846952eac2b6231222df633e258682e9b6e2545f732c30fd76ae230ac65d"
 
-/* Canonical BLAKE2b-512 digests consumed by the pinned Zcash proving
- * backend. These are intentionally separate from the SHA-512 integrity gate
- * above: the C23 loader verifies SHA-512 before invoking Rust, then the
- * canonical prover independently checks the ceremony files with BLAKE2b. */
+/* Canonical BLAKE2b-512 ceremony-file digests retained for the optional
+ * reference oracle ABI. They are intentionally separate from the mandatory
+ * SHA-512 integrity gate above. The production native C23 prover consumes the
+ * already-verified parameter bytes directly. */
 #define SAPLING_SPEND_PARAMS_BLAKE2B                                        \
     "8270785a1a0d0bc77196f000ee6d221c9c9894f55307bd9357c3f0105d31ca639"       \
     "91ab91324160d8f53e2bbd3c2633a6eb8bdf5205d822e7f3f73edac51b2b70c"

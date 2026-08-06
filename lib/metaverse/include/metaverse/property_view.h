@@ -57,6 +57,13 @@
  * local record is still the only thing in the world that says so. Both
  * fields are emitted, always, so that combination reads as what it is.
  *
+ * Inventory and manifest-only reads have deliberately weaker grades than
+ * LOCAL_CONTENT_HASH. LOCAL_STORE_READ says only that the authority was
+ * readable and had no match. LOCAL_MANIFEST_HASH says the manifest root was
+ * re-derived but full chunk possession was not proven. LOCAL_CONTENT_HASH is
+ * earned only after every committed coordinate was length- and SHA3-verified
+ * during this read.
+ *
  * `work` quantifies the second class and ONLY the second class. For every
  * other kind it reports not-applicable with a stated reason, never a zero
  * depth and never a zero chainwork — see metaverse/property_work.h.
@@ -78,6 +85,13 @@ struct json_value;
 /* See the header comment: each grade names work THIS node did. */
 enum metaverse_evidence {
     METAVERSE_EVIDENCE_UNKNOWN = 0,
+    /* The local store was read successfully and contained no matching
+     * object.  This is inventory evidence only: no content bytes existed
+     * from which a content hash could have been earned. */
+    METAVERSE_EVIDENCE_LOCAL_STORE_READ,
+    /* A canonical manifest was parsed and its semantic root was re-derived,
+     * but not every committed chunk was byte-verified in this call. */
+    METAVERSE_EVIDENCE_LOCAL_MANIFEST_HASH,
     METAVERSE_EVIDENCE_LOCAL_CONTENT_HASH,
     METAVERSE_EVIDENCE_LOCAL_SIGNATURE,
     METAVERSE_EVIDENCE_CHAIN_VALIDATED_LOCAL,
@@ -173,6 +187,11 @@ struct metaverse_property_view {
     uint32_t file_count;
     uint32_t chunk_total;
     uint32_t chunks_present;
+    bool manifest_root_verified;
+    uint32_t chunks_verified;
+    uint64_t bytes_verified;
+    bool verification_complete;
+    char verification_gap[METAVERSE_VIEW_REASON_MAX];
 
     bool populated;               /* an adapter wrote this view */
 };

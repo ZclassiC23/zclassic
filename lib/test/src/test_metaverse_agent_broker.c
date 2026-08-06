@@ -41,14 +41,18 @@
 
 #include "test/test_core.h"
 
+#include "controllers/rpc_client.h"
 #include "platform/os_proc.h"
 #include "platform/os_sandbox.h"
+#include "platform/time_compat.h"
+#include "services/metaverse_agent_service.h"
 #include "session/agent_broker.h"
 #include "session/agent_broker_proto.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,6 +69,11 @@
 } while (0)
 
 static char g_dir[256];
+static bool g_money_unavailable;
+static bool g_money_duplicate;
+static long g_money_connect_ms;
+static long g_money_total_ms;
+static bool g_liquidity_params_ok;
 
 /* The grant id the demo grant carries. The child must never see this string —
  * (g) greps for exactly it. */
@@ -80,6 +89,166 @@ static void mb_subdir(char *out, size_t cap, const char *leaf)
 {
     snprintf(out, cap, "%s/%s", g_dir, leaf);
     (void)mkdir(out, 0700);
+}
+
+static char *mb_money_rpc(const char *method, const char *params)
+{
+    if (g_money_unavailable || strcmp(method, "agentsession") != 0)
+        return NULL;
+    const bool dev = params && strstr(params, "\"dev\"") != NULL;
+    const char *id = dev || g_money_duplicate
+        ? "11111111111111111111111111111111"
+        : "22222222222222222222222222222222";
+    const int64_t confirmed = dev ? 30000000 : 0;
+    const int64_t available = dev ? 5000000 : 0;
+    char *out = malloc(4096);
+    if (!out)
+        return NULL;
+    if (params && strstr(params, "\"liquidity\"") != NULL) {
+        g_liquidity_params_ok =
+            strstr(params, "\"recipient_value_zat\":1000") &&
+            strstr(params, "\"maximum_fee_zat\":10000") &&
+            strstr(params, "\"concurrency\":10");
+        (void)snprintf(out, 4096,
+            "{\"ok\":true,\"schema\":\"zcl.wallet_liquidity.v1\","
+            "\"wallet_scope\":\"%s\",\"wallet_instance_id\":\"%s\","
+            "\"network_genesis\":\"%064x\",\"money_status\":\"CURRENT\","
+            "\"money_reason\":\"fixture\",\"money_snapshot_root\":\"%064x\","
+            "\"observed_at\":%lld,\"status\":\"NEEDS_FANOUT\","
+            "\"reason\":\"fixture fanout\",\"amounts_known\":true,"
+            "\"requested_concurrency\":10,\"current_independent_slots\":1,"
+            "\"current_inputs_used\":1,\"recipient_value_zat\":1000,"
+            "\"maximum_fee_zat\":10000,\"required_per_slot_zat\":11000,"
+            "\"future_total_required_zat\":110000,"
+            "\"transparent_available_zat\":5000000,"
+            "\"agent_available_zat\":5000000,\"ready_now\":false,"
+            "\"fanout_recommended\":true,\"fanout_possible\":true,"
+            "\"advisory\":true,\"next_command\":\"vault.intent.fanout-plan\","
+            "\"fanout\":{\"automatic\":false,\"output_count\":10,"
+            "\"output_value_zat\":11000,\"outputs_total_zat\":110000,"
+            "\"maximum_fee_zat\":10000,\"maximum_slots_under_policy\":50,"
+            "\"prepare_command\":\"vault.intent.fanout-plan\","
+            "\"plan_command\":\"vault.intent.fanout-plan\","
+            "\"commit_command\":\"vault.intent.commit\","
+            "\"route\":\"transparent\",\"owner_commit_required\":true},"
+            "\"node_datadir\":\"/secret/leak\",\"address\":\"t1-secret\"}",
+            dev ? "dev" : "prod", id, 0x42, 0x77,
+            (long long)platform_time_wall_time_t());
+        return out;
+    }
+    (void)snprintf(out, 4096,
+        "{\"snapshot\":{\"wallet_scope\":\"%s\","
+        "\"wallet_instance_id\":\"%s\","
+        "\"network_genesis\":\"%064x\",\"status\":\"CURRENT\","
+        "\"complete\":true,\"reason\":\"fixture\","
+        "\"confirmed_zcl\":\"%s\",\"pending_zcl\":\"0.00000000\","
+        "\"encumbered_zcl\":\"0.00000000\","
+        "\"intent_reserved_zcl\":\"0.00000000\","
+        "\"agent_available_zcl\":\"%s\",\"confirmed_zat\":%lld,"
+        "\"pending_zat\":0,\"encumbered_zat\":0,"
+        "\"intent_reserved_zat\":0,\"agent_available_zat\":%lld,"
+        "\"tip_height\":3200000,\"tip_hash\":\"%064x\","
+        "\"observed_at\":%lld,\"snapshot_root\":\"%064x\"}}",
+        dev ? "dev" : "prod", id, 0x42,
+        dev ? "0.30000000" : "0.00000000",
+        dev ? "0.05000000" : "0.00000000",
+        (long long)confirmed, (long long)available, 0x55,
+        (long long)platform_time_wall_time_t(), dev ? 0x61 : 0x62);
+    return out;
+}
+
+static char *mb_money_transport(const char *datadir, int rpc_port,
+                                const char *method, const char *params,
+                                long connect_ms, long total_ms)
+{
+    (void)datadir;
+    (void)rpc_port;
+    g_money_connect_ms = connect_ms;
+    g_money_total_ms = total_ms;
+    return node_rpc_call_deadline(method, params, connect_ms, total_ms);
+}
+
+static int mb_money_portfolio(void)
+{
+    int failures = 0;
+    char dir[320], path[400], absolute[PATH_MAX];
+    mb_subdir(dir, sizeof(dir), "money");
+    MB_CHECK("custody broker directory resolves absolutely",
+             realpath(dir, absolute) != NULL);
+    snprintf(path, sizeof(path), "%s/money-bindings.json", dir);
+    FILE *f = fopen(path, "we");
+    MB_CHECK("private custody binding fixture opens", f != NULL);
+    if (!f)
+        return failures;
+    (void)fprintf(f,
+        "{\"schema\":\"zcl.agent_money_bindings.v1\",\"wallets\":["
+        "{\"scope\":\"dev\",\"wallet_instance_id\":"
+        "\"11111111111111111111111111111111\",\"network_genesis\":"
+        "\"%064x\",\"node_datadir\":\"/secret/dev-wallet\",\"rpc_port\":1},"
+        "{\"scope\":\"prod\",\"wallet_instance_id\":"
+        "\"22222222222222222222222222222222\",\"network_genesis\":"
+        "\"%064x\",\"node_datadir\":\"/secret/prod-wallet\",\"rpc_port\":2}]}",
+        0x42, 0x42);
+    (void)fclose(f);
+    node_rpc_client_set_test_hook(mb_money_rpc);
+    metaverse_agent_service_set_rpc(mb_money_transport);
+    char doc[16384]; size_t n = 0;
+    struct zcl_result r = metaverse_agent_service_money(
+        absolute, doc, sizeof(doc), &n);
+    MB_CHECK("dev 0.3 and prod zero remain identified, not conflated",
+             r.ok && n > 0 &&
+             strstr(doc, "\"portfolio_confirmed_zcl\":\"0.30000000\"") &&
+             strstr(doc, "\"wallet_scope\":\"dev\"") &&
+             strstr(doc, "\"confirmed_zcl\":\"0.30000000\"") &&
+             strstr(doc, "\"wallet_scope\":\"prod\"") &&
+             strstr(doc, "\"confirmed_zcl\":\"0.00000000\"") &&
+             !strstr(doc, "/secret/") && !strstr(doc, "rpc_port"));
+    MB_CHECK("custody reader keeps a bounded contention-tolerant deadline",
+             g_money_connect_ms == 500 && g_money_total_ms == 10000);
+
+    r = metaverse_agent_service_liquidity(
+        absolute, "dev", 1000, 10000, 10, doc, sizeof(doc), &n);
+    MB_CHECK("liquidity planner binds exact request and returns aggregate fanout",
+             r.ok && g_liquidity_params_ok &&
+             strstr(doc, "\"schema\":\"zcl.metaverse_agent_liquidity.v1\"") &&
+             strstr(doc, "\"status\":\"NEEDS_FANOUT\"") &&
+             strstr(doc, "\"current_independent_slots\":1") &&
+             strstr(doc, "\"output_count\":10") &&
+             strstr(doc, "\"automatic_rebalance\":false"));
+    MB_CHECK("liquidity output strips endpoint, datadir, address, and outpoint fields",
+             !strstr(doc, "/secret/") && !strstr(doc, "t1-secret") &&
+             !strstr(doc, "node_datadir") && !strstr(doc, "rpc_port") &&
+             !strstr(doc, "outpoint"));
+
+    g_money_duplicate = true;
+    r = metaverse_agent_service_money(absolute, doc, sizeof(doc), &n);
+    MB_CHECK("a copied wallet id across endpoints is CONFLICTED, never zero",
+             r.ok && strstr(doc, "CONFLICTED") &&
+             strstr(doc, "duplicate wallet_instance_id") &&
+             strstr(doc, "\"portfolio_total_known\":false"));
+    r = metaverse_agent_service_liquidity(
+        absolute, "dev", 1000, 10000, 10, doc, sizeof(doc), &n);
+    MB_CHECK("liquidity also refuses duplicate active wallet identities",
+             r.ok && strstr(doc, "CONFLICTED") &&
+             strstr(doc, "duplicate wallet_instance_id") &&
+             strstr(doc, "\"amounts_known\":false"));
+    g_money_duplicate = false;
+    g_money_unavailable = true;
+    r = metaverse_agent_service_money(absolute, doc, sizeof(doc), &n);
+    MB_CHECK("unreachable wallet readers report UNKNOWN, never numeric zero",
+             r.ok && strstr(doc, "UNKNOWN") &&
+             strstr(doc, "bound wallet endpoint is unreachable") &&
+             !strstr(doc, "\"confirmed_zat\":0"));
+    r = metaverse_agent_service_liquidity(
+        absolute, "dev", 1000, 10000, 10, doc, sizeof(doc), &n);
+    MB_CHECK("unreachable liquidity reader is UNKNOWN and never a zero plan",
+             r.ok && strstr(doc, "UNKNOWN") &&
+             strstr(doc, "\"amounts_known\":false") &&
+             !strstr(doc, "\"future_total_required_zat\":0"));
+    g_money_unavailable = false;
+    node_rpc_client_set_test_hook(NULL);
+    metaverse_agent_service_set_rpc(NULL);
+    return failures;
 }
 
 /* ── (a) the wire codec ─────────────────────────────────────────────────── */
@@ -350,6 +519,10 @@ static int mb_audit(void)
     for (uint32_t i = 0; i < 4; i++) {
         struct agent_receipt r;
         memset(&r, 0, sizeof(r));
+        /* One synthetic legacy row proves the v2 digest remains readable;
+         * the append default used by every broker-created row is v3. */
+        if (i == 0)
+            r.receipt_version = 2;
         r.verb = MVAP_VERB_INSPECT;
         r.request_id = i + 1;
         r.status = MVAP_OK;
@@ -366,6 +539,15 @@ static int mb_audit(void)
     MB_CHECK("intact log verifies", agent_audit_verify_dir(dir, &v) && v.ok &&
              v.rows == 4 && v.chain_breaks == 0 && v.bad_signatures == 0 &&
              v.malformed == 0);
+    char rendered[8192];
+    size_t rendered_len = agent_audit_render_json(
+        dir, 8, rendered, sizeof(rendered));
+    MB_CHECK("every new receipt commits an explicit money status and root",
+             rendered_len > 0 &&
+             strstr(rendered, "\"receipt_version\":3") != NULL &&
+             strstr(rendered, "\"money_snapshot_status\":\"UNKNOWN\"") != NULL &&
+             strstr(rendered, "\"money_snapshot_root\":\"0000000000000000") != NULL &&
+             strstr(rendered, dir) == NULL);
 
     /* A second broker must not fork the chain under a key it cannot sign for. */
     struct agent_audit_log again;
@@ -995,6 +1177,7 @@ int test_metaverse_agent_broker(void)
     failures += mb_codec();
     failures += mb_grant();
     failures += mb_audit();
+    failures += mb_money_portfolio();
     failures += mb_peercred();
     failures += mb_sender_cred();
     failures += mb_socket_identity();

@@ -56,7 +56,7 @@ bool db_store_product_validate(const struct db_store_product *p,
         "description", "exceeds max length 1023");
     validates_custom(errors,
         strlen(p->token_id) <= STORE_PRODUCT_TOKEN_MAX,
-        "token_id", "exceeds max length 63");
+        "token_id", "exceeds max length 64");
     validates_custom(errors,
         model_string_is_printable(p->name),
         "name", "contains non-printable characters");

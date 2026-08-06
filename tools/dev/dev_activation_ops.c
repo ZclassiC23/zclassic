@@ -158,7 +158,16 @@ static int dev_op_source_epoch_cas(void *ctx)
                      req->repo_root);
     if (n <= 0 || (size_t)n >= sizeof(tool))
         return -1;
-    const char *argv[] = { tool, "verify", req->source_identity, NULL };
+    const char *verify_source[] = {
+        tool, "verify", req->source_identity, NULL
+    };
+    const char *verify_record[] = {
+        tool, "verify-record", req->source_identity, "1",
+        req->source_mutation, NULL
+    };
+    const char *const *argv =
+        req->source_mutation && req->source_mutation[0]
+            ? verify_record : verify_source;
     struct zcl_devloop_process_result res = {0};
     return dev_run_argv(req->repo_root, argv, 30000, &res);
 }

@@ -23,6 +23,7 @@ enum app_catalog_error {
 static const char *const g_builtin_app_ids[] = {
     "blog",
     "social",
+    "yardsale",
 };
 
 size_t zcl_app_definition_builtin_count_v1(void)

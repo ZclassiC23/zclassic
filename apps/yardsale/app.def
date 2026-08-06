@@ -1,0 +1,31 @@
+/* ZClassic23 Yardsale — for-sale-by-owner ZSLP/ZCL swap ads.
+ *
+ * Sellers pin up signed, expiring yard-sale signs (zswap_quote.v1), peers
+ * gossip them byte-identically, and a buyer settles directly with the seller
+ * through the two-message ceremony (zswap_accept.v1 / zswap_partial.v1).
+ * Never a matching engine: the app remembers signs and carries ceremony
+ * wires, settlement is always bilateral. */
+
+ZCL_APP("yardsale", "ZClassic Yardsale", "0.1.0")
+
+ZCL_APP_CAPABILITY(CHAIN_READ)
+ZCL_APP_CAPABILITY(SIGNED_EVENTS)
+ZCL_APP_CAPABILITY(RESIDENT_STATE)
+ZCL_APP_CAPABILITY(WEB_ROUTES)
+ZCL_APP_CAPABILITY(ONION_BINDING)
+ZCL_APP_CAPABILITY(ZNAM_BINDING)
+ZCL_APP_CAPABILITY(P2P_TOPICS)
+ZCL_APP_CAPABILITY(WALLET_REQUESTS)
+
+ZCL_APP_RESOURCE("ads")
+
+ZCL_APP_TOPIC("yardsale.ads.v1", 1, 4096)
+ZCL_APP_WEB_MOUNT("/yardsale")
+ZCL_APP_ONION(true)
+ZCL_APP_ZNAM("yardsale")
+ZCL_APP_STATE_SCHEMA(1)
+
+/* No ZCL_APP_SIM declaration, same posture as blog: the generic AppSim host
+ * cannot construct the ceremony's key/wallet bindings in production. The
+ * `yardsale_app` test group proves the manifest, the ceremony round-trip
+ * through the controller, and the P2P-port ingress paths with fixture keys. */

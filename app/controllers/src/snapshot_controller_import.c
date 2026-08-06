@@ -108,6 +108,35 @@ static void import_row_quarantine(int height, const uint8_t block_hash[32],
                  height, hash_hex, reason, (unsigned long long)reps);
 }
 
+static bool import_block_index_reset(struct node_db *ndb)
+{
+    static const uint8_t zero_hash[32] = {0};
+    if (!snapshot_tx_begin_checked(ndb, "T1 begin projection reset"))
+        return false; // raw-return-ok:callee-logged
+    if (!node_db_state_delete(ndb, "pprev_repaired_height") ||
+        !node_db_state_delete(ndb, "shielded_backfill_height") ||
+        !snapshot_sql_exec_checked(ndb, "DELETE FROM blocks",
+                                   "T1 clear blocks") ||
+        !node_db_sync_set_tip(ndb, zero_hash, -1)) {
+        snapshot_tx_rollback_best_effort(ndb, "T1 rollback projection reset");
+        LOG_FAIL("snapshot", "T1 atomic projection reset failed");
+    }
+    return snapshot_tx_commit_checked(ndb, "T1 commit projection reset");
+}
+
+static bool import_block_index_stamp_cursors(struct node_db *ndb,
+                                             int max_height)
+{
+    if (!snapshot_tx_begin_checked(ndb, "T1 begin cursor stamp"))
+        return false; // raw-return-ok:callee-logged
+    if (!node_db_state_set_int(ndb, "pprev_repaired_height", max_height) ||
+        !node_db_state_set_int(ndb, "shielded_backfill_height", max_height)) {
+        snapshot_tx_rollback_best_effort(ndb, "T1 rollback cursor stamp");
+        LOG_FAIL("snapshot", "T1 atomic fast-boot cursor stamp failed");
+    }
+    return snapshot_tx_commit_checked(ndb, "T1 commit cursor stamp");
+}
+
 static void *import_block_index_thread(void *arg)
 {
     struct block_index_import_args *a = arg;
@@ -170,22 +199,17 @@ static void *import_block_index_thread(void *arg)
             "T1 drop idx_blocks_height") ||
         !snapshot_sql_exec_checked(&ndb,
             "DROP INDEX IF EXISTS idx_blocks_chainwork",
-            "T1 drop idx_blocks_chainwork") ||
-        !snapshot_sql_exec_checked(&ndb, "DELETE FROM blocks",
-            "T1 clear blocks")) {
+            "T1 drop idx_blocks_chainwork")) {
         db_wrapper_close(&dbw);
         snapshot_selected_chain_free(&selected_chain);
         node_db_close(&ndb);
         return NULL;
     }
-    {
-        static const uint8_t zero_hash[32] = {0};
-        if (!node_db_sync_set_tip(&ndb, zero_hash, -1)) {
-            LOG_WARN("snapshot", "T1: failed to reset tip state");
-            db_wrapper_close(&dbw);
-            node_db_close(&ndb);
-            return NULL;
-        }
+    if (!import_block_index_reset(&ndb)) {
+        db_wrapper_close(&dbw);
+        snapshot_selected_chain_free(&selected_chain);
+        node_db_close(&ndb);
+        return NULL;
     }
 
     /* Iterate all 'b'-prefixed entries */
@@ -389,8 +413,12 @@ static void *import_block_index_thread(void *arg)
      * passes and RPC binds in seconds. A datadir NOT produced by this path
      * leaves the cursors absent (-1) and does the full work once. */
     if (max_height >= 0) {
-        node_db_state_set_int(&ndb, "pprev_repaired_height", max_height);
-        node_db_state_set_int(&ndb, "shielded_backfill_height", max_height);
+        if (!import_block_index_stamp_cursors(&ndb, max_height)) {
+            db_wrapper_close(&dbw);
+            snapshot_selected_chain_free(&selected_chain);
+            node_db_close(&ndb);
+            return NULL;
+        }
         printf("T1: fast-boot cursors set (pprev_repaired_height=%d, "
                "shielded_backfill_height=%d)\n", max_height, max_height);
         fflush(stdout);

@@ -104,6 +104,14 @@ static bool block_header_equihash_input(const struct block_header *header,
     return (size_t)(p - out) == BLOCK_HEADER_SIZE;
 }
 
+/* PoW entry point for block validation. Routes through the crypto
+ * registry (scheme-status checks, uniformity with Groth16), but the
+ * registry shim is NOT a second predicate: scheme_equihash_200_9.c only
+ * re-packs these bytes back into a block_header and delegates to the ONE
+ * sealed consensus predicate, domain_consensus_verify_equihash_solution
+ * (core/consensus/src/equihash.c). block_header_equihash_input's field
+ * order above is the consensus challenge serialization and must match
+ * the shim's re-pack order exactly. */
 static bool check_equihash_solution_via_registry(
     const struct block_header *header)
 {

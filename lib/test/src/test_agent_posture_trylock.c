@@ -232,11 +232,58 @@ static int case_background_validation_height_populates(void)
     return failures;
 }
 
+/* Status collection holds sqlite3_db_mutex to stay non-blocking. A stale
+ * freeze is intentionally useful here because the mutating CEC loader would
+ * auto-clear it and persist three repairs. On the live node those writes are
+ * routed through db_service, whose worker waits for the mutex held by this
+ * caller: a permanent self-deadlock. Prove the observation path leaves the
+ * persisted state byte-for-byte alone; boot init remains the repair owner. */
+static int case_collect_never_repairs_cec_state(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    char state[64] = {0};
+    char reason[128] = {0};
+    size_t state_len = 0, reason_len = 0;
+
+    bool opened = node_db_open(&ndb, ":memory:");
+    AP_CHECK("readonly: node.db (:memory:) opens", opened);
+    if (!opened)
+        return failures;
+    AP_CHECK("readonly: seed frozen state",
+             node_db_state_set(&ndb, "cec.sync_state",
+                               "contradiction_frozen",
+                               strlen("contradiction_frozen") + 1));
+    AP_CHECK("readonly: seed formerly-demoted reason",
+             node_db_state_set(&ndb, "cec.contradiction_reason",
+                               "active_tip_hash_mismatch",
+                               strlen("active_tip_hash_mismatch") + 1));
+
+    struct agent_security_posture observed;
+    agent_security_posture_collect(&observed, &ndb);
+    AP_CHECK("readonly: collect completed with node.db available",
+             observed.node_db_available);
+    AP_CHECK("readonly: persisted state remains readable",
+             node_db_state_get(&ndb, "cec.sync_state", state,
+                               sizeof(state), &state_len));
+    AP_CHECK("readonly: status did not auto-clear frozen state",
+             strcmp(state, "contradiction_frozen") == 0);
+    AP_CHECK("readonly: persisted reason remains readable",
+             node_db_state_get(&ndb, "cec.contradiction_reason", reason,
+                               sizeof(reason), &reason_len));
+    AP_CHECK("readonly: status did not rewrite the reason",
+             strcmp(reason, "active_tip_hash_mismatch") == 0);
+
+    node_db_close(&ndb);
+    return failures;
+}
+
 int test_agent_posture_trylock(void)
 {
     int failures = 0;
     failures += case_collect_nonblocking_scenario();
     failures += case_background_validation_height_populates();
+    failures += case_collect_never_repairs_cec_state();
     if (failures == 0)
         printf("test_agent_posture_trylock: ALL PASSED\n");
     else

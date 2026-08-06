@@ -106,6 +106,12 @@ struct utxo_mirror_sync_service {
     _Atomic int64_t last_frontier;      /* coins_kv applied frontier last observed */
     _Atomic int64_t last_pass_unix;     /* wall time of last pass */
     _Atomic int64_t last_error_unix;    /* wall time of last failed pass (0 = none) */
+
+    /* Seqlock-style audit guard. A node.db mirror update changes the
+     * generation at BEGIN and END and holds updates_active > 0 for the
+     * complete write lane. */
+    _Atomic uint64_t update_generation;
+    _Atomic uint32_t updates_active;
 };
 
 /* Global pointer for RPC/native/diagnostics access. Set by boot, NULL before. */
@@ -130,6 +136,11 @@ void utxo_mirror_sync_stop(struct utxo_mirror_sync_service *svc);
  * pass (0 when already in sync), or -1 on a (logged, non-fatal) error.
  * Exposed for tests and for an explicit one-shot from the diagnostics path. */
 int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc);
+
+/* Capture an idle mirror-update generation for cross-store auditors. Returns
+ * false while a mirror update is active. A NULL global service is idle at
+ * generation zero (tests/early boot: there is no concurrent mirror writer). */
+bool utxo_mirror_sync_audit_snapshot(uint64_t *generation_out);
 
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
 struct json_value;

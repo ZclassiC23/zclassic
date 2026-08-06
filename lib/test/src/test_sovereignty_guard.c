@@ -264,6 +264,13 @@ int test_sovereignty_guard(void)
                  strstr(json_get_str(&result), "release_assisted") != NULL);
         json_free(&result);
         json_init(&result);
+        SG_CHECK("borrowed: sendmany RPC refused",
+                 !rpc_table_execute(&tbl, "sendmany", &params, &result));
+        SG_CHECK("borrowed: sendmany body names release_assisted",
+                 result.type == JSON_STR &&
+                 strstr(json_get_str(&result), "release_assisted") != NULL);
+        json_free(&result);
+        json_init(&result);
         /* zslp_send's usage/arity gate runs before the sovereignty guard
          * (help must always work), so pass a well-formed (dummy) triple —
          * the guard fires before request parsing, values never read. */

@@ -7,8 +7,8 @@
  * helpers. Render functions take already-validated arguments and already-open
  * DB handles; routing, auth, request parsing, and state mutation stay in the
  * controller. The balance check in serve_gated_content delegates to
- * zslp_balance / store_check_token_access, which remain owned by the
- * controller / service layer. */
+ * store_access_token_balance / store_check_token_access, which remain
+ * owned by the controller / service layer. */
 
 #include "views/store_internal.h"
 #include "views/format_helpers.h"
@@ -640,7 +640,8 @@ size_t serve_gated_content(sqlite3 *db, const char *customer_addr,
                                    const char *datadir,
                                    uint8_t *resp, size_t max)
 {
-    uint64_t balance = zslp_balance(datadir, token_id, customer_addr);
+    uint64_t balance = store_access_token_balance(datadir, customer_addr,
+                                                  token_id);
 
     char safe_token[128], safe_addr[256];
     html_escape(safe_token, sizeof(safe_token), token_id ? token_id : "");

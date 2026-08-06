@@ -151,7 +151,7 @@ void wv_sync_wallet_from_zclassicd(void) {
 
     snprintf(dbpath, sizeof(dbpath), "%s/node.db", g_wv_datadir);
     memset(&ndb, 0, sizeof(ndb));
-    if (!node_db_open(&ndb, dbpath))
+    if (!node_db_open_runtime(&ndb, dbpath, "wallet_view.legacy_sync"))
         return;
 
     /* Fetch transparent UTXOs from zclassicd */

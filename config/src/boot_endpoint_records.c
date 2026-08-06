@@ -16,6 +16,7 @@
  * verified, and unused — stated, not hidden. */
 
 #include "config/boot_endpoint_records.h"
+#include "config/boot_zcode_dht.h"
 
 #include "config/runtime.h"
 
@@ -345,6 +346,7 @@ enum boot_endpoint_reval_outcome boot_endpoint_records_revalidate_once(void)
 
     atomic_store(&g_reval_applied_gen, gen);
     atomic_fetch_add(&g_reval_sweeps, 1);
+    (void)boot_zcode_dht_revalidate();
     return BOOT_ENDPOINT_REVAL_APPLIED;
 }
 

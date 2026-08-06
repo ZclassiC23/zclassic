@@ -325,11 +325,15 @@ static void fr_pow_u64(struct fr *r, const struct fr *base, uint64_t exp)
     *r = result;
 }
 
-/* Pre-computed 2^32-th root of unity in Fr.
- * omega_32 = GENERATOR^((r-1) / 2^32) mod r */
+/* Canonical (non-Montgomery) encoding of pairing::bls12_381::Fr's published
+ * 2^32-th ROOT_OF_UNITY. The upstream limb literal is already in Montgomery
+ * form; feeding those limbs to fr_from_bytes applies R a second time and
+ * selects a different domain. That error preserves FFT round-trips but changes
+ * the QAP evaluation points, so every generated Groth16 proof is rejected by
+ * the production verifying key. */
 static const uint64_t ROOT_OF_UNITY_RAW[4] = {
-    0xb9b58d8c5f0e466aULL, 0x6f3f89b0bc6c695aULL,
-    0x10ccec17f20e7ddaULL, 0x12d33473b555c8e0ULL
+    0x3829971f439f0d2bULL, 0xb63683508c2280b9ULL,
+    0xd09b681922c813b4ULL, 0x16a2a19edfe81f20ULL
 };
 
 static void fr_get_root_of_unity(struct fr *omega, unsigned int log_n)

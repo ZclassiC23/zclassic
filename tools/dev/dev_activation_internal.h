@@ -31,13 +31,18 @@
 #define DEV_GEN_ID_MAX 80
 
 /*
- * Bounded timeouts. The stop/start window (120 s) must OUTLIVE the node's own
- * 90 s SIGALRM shutdown backstop: if we killed the stop before the node's
- * self-timeout fired we would racily leave a half-stopped unit and a stale
- * pidfile. The verify window (60 s) bounds the post-restart readiness poll.
+ * Bounded timeouts. The stop/start process window must OUTLIVE the dev unit's
+ * TimeoutStopSec=300: killing `systemctl stop` earlier leaves systemd still
+ * deactivating the unit and races the following start/probe. Keep 30 seconds
+ * of control-plane headroom. A full schema-59 datadir has now measured more
+ * than three minutes from start to RPC readiness on an ordinary restart (the
+ * 120 s window rejected both a healthy candidate and its healthy rollback).
+ * Give every full-generation boot the existing ten-minute bounded window;
+ * exact process identity and the readiness probe still reject bad images.
  */
-#define DEV_ACTIVATION_STOP_START_TIMEOUT_S 120
-#define DEV_ACTIVATION_VERIFY_TIMEOUT_S 60
+#define DEV_ACTIVATION_STOP_START_TIMEOUT_S 330
+#define DEV_ACTIVATION_VERIFY_TIMEOUT_S 600
+#define DEV_ACTIVATION_RECOVERY_VERIFY_TIMEOUT_S 600
 #define DEV_ACTIVATION_VERIFY_INTERVAL_MS 250
 
 /*
@@ -76,6 +81,7 @@ struct dev_activation_txn {
     int lock_fd;
     bool lock_held;
     bool activation_in_progress;
+    bool recovery_boot;
 };
 
 /* ── shared low-level helpers (dev_activation.c) ─────────────────────── */
@@ -169,6 +175,10 @@ void dev_activation_clear_in_progress(const struct dev_activation_txn *txn);
  * result->running_generation on success. Returns true on success. */
 bool dev_activation_verify_running(struct dev_activation_txn *txn,
                                    const char *expected);
+
+/* Select the normal or explicitly-authorized recovery readiness window,
+ * honoring the bounded test/operator override when present. */
+long dev_activation_verify_timeout_seconds(bool recovery_boot);
 
 /* Quarantine the candidate: write rejected/<gen>.json with `reason`. */
 void dev_activation_quarantine(const struct dev_activation_txn *txn,

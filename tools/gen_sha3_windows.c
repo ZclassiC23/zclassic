@@ -19,7 +19,7 @@
  * without writing output files.
  *
  * Links only standalone libs:
- *   lib/crypto/src/sha3.c          (zcl_sha3_256 + streaming ctx)
+ *   lib/sha3/src/sha3.c          (zcl_sha3_256 + streaming ctx)
  *   lib/encoding/src/utilstrencodings.c (ParseHex)
  *   lib/json/src/json.c            (json_read, json_get, ...)
  *

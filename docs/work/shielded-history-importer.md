@@ -84,26 +84,68 @@ Reused foundation: `lib/storage/src/chainstate_legacy_reader.c` (clean-room
 C23 reader over the `zclassicd` chainstate LevelDB), the wire-compatible tree
 codec `incremental_tree_serialize/deserialize`
 (`lib/sapling/include/sapling/incremental_merkle_tree.h`), and the
-point-in-time LevelDB copy guard `utxo_recovery_ldb_copy.c`.
+WAL-inclusive stable copy `utxo_recovery_copy_chainstate_stable`
+(`app/services/src/utxo_recovery_service.c`) — a full `cp -a` of the
+chainstate (SSTs + the `.log` WAL) proven point-in-time by a dir signature.
+The SST-only `ldb_snapshot_make` is NOT usable here: it drops the `.log`
+WAL, so the `'B'`/`'z'` pointers read the last compacted state while coin
+records sit tens of thousands of blocks fresher (measured 2026-08-02:
+SST `'B'`=3183455 vs coins at 3202110 vs live tip ~3202160). <!-- stale-ok: dated 2026-08-02 measurement motivating the WAL-inclusive copy, not a live tip claim -->
 
 Reader entry points (`chainstate_legacy_reader.c/.h`):
 `chainstate_legacy_iter_sapling_anchors` / `_sprout_anchors` (seek `'Z'`/`'A'`,
 fail-closed root re-hash check per row), `chainstate_legacy_iter_sapling_nullifiers`
-/ `_sprout_nullifiers` (seek `'S'`/`'s'`), `chainstate_legacy_get_best_sapling_anchor`
-/ `_best_sprout_anchor` (`'z'`/`'a'` pointers).
+/ `_sprout_nullifiers` (seek `'S'`/`'s'`), `chainstate_legacy_get_sapling_anchor`
+(by-root lookup, `FOUND`/not-found), `chainstate_legacy_get_best_sapling_anchor`
+/ `_best_sprout_anchor` (`'z'`/`'a'` pointers — provenance only, never the bind).
 
 Service: `app/services/src/shielded_history_import_service.c` —
 `shielded_history_import_from_chainstate(progress_db, chainstate_src_path,
-state, out)`. Algorithm: point-in-time copy the chainstate → open it → build
-a Sapling root→height map from the local `block_index` (`hashFinalSaplingRoot`
-per height) → `BEGIN IMMEDIATE` → bulk-insert every Sapling anchor (asserting
-the best Sapling anchor's root equals `block_index[tip].hashFinalSaplingRoot`)
-→ bulk-insert every Sprout anchor → bulk-insert every nullifier for both pools
-→ sanity-floor checks → flip both activation cursors to 0 via the cursor-flip
-primitives → stamp a `shielded_import.provenance` row → `COMMIT`. Any anomaly
-(torn record, root mismatch, count below floor) rolls back and writes
-nothing — the blocker stays in place rather than flipping on an incomplete
-set.
+height, block_hash, sapling_root, out)`. Algorithm: point-in-time copy the
+chainstate → require its `'B'` best block to equal the target resume block
+exactly (nullifiers are additive and carry no source heights, so importing a
+newer set makes valid forward spends look spent) → verify the EXPECTED TIP
+ANCHOR BY ROOT up front:
+`chainstate_legacy_get_sapling_anchor(reader, expected_tip_sapling_root,
+&tip_tree)` must return FOUND and an explicit `incremental_tree_root` Pedersen
+re-verify of the returned tree must equal the expected root — a stale `'z'`
+pointer (WAL/compaction lag) therefore cannot refuse a good import, while a
+forged tree still fails closed → `BEGIN IMMEDIATE` → bulk-insert every Sapling
+anchor → bulk-insert every Sprout anchor → bulk-insert every nullifier for
+both pools → sanity-floor checks → flip both activation cursors to 0 via the
+cursor-flip primitives → stamp a `shielded_import.provenance` row → `COMMIT`.
+Any anomaly (torn record, root mismatch, count below floor) rolls back and
+writes nothing — the blocker stays in place rather than flipping on an
+incomplete set.
+
+The expected tip (`tip_height`, block hash, Sapling root) is derived
+TARGET-side: the reducer seed floor
+(`REDUCER_SEED_FLOOR_HEIGHT_KEY`) when declared — a cold-import-seeded
+datadir owes shielded history only up to its seed, and the fold's own rows
+cover above it (the shielded preflight guarantees the folded span consumed
+no spends) — else `coins_best`; the root comes from the target's own header
+INDEX flat file at that height (`block_index_flat_header_at`). The source's
+`'B'` pointer must match the target hash exactly before the transaction opens.
+A fresh
+never-booted datadir has neither boundary and is refused with "boot it once
+first" (the importer opens the target's `node.db` itself, so the node must
+also be STOPPED — GRACEFULLY: the shutdown flat save is what freshens
+block_index.bin past the header-sync tip).
+
+The root source is block_index.bin, NOT node.db `blocks.sapling_root`
+(blocks rows are only written on body fold / lean sync / block import, and
+a seeded boot's fold-resume anchor is a header-only height — canary FAIL#6)
+and NOT the event-log block_index projection (a bulk P2P header sync emits
+no EV_BLOCK_HEADER events, so the projection is empty on a fresh
+cold-import datadir — canary FAIL#7). The point reader
+(`block_index_flat_header_at`, app/services/src/block_index_loader.c)
+mmaps the flat, verifies the embedded BIIE SHA3 (legacy sidecar-only files
+are refused — a bind this load-bearing does not read unverified bytes), and
+binary-searches the height-sorted 172-byte rows; its format math is proven
+byte-exact against the zd oracle (hash AND `finalsaplingroot` at
+h=3202041). A stale-branch sibling at the same height fails CLOSED at the
+service's by-root source lookup (a sibling never connected has no anchor
+record), never a misbind.
 
 Entry point: boot flag `-import-complete-shielded=ZCLASSICD-DATADIR`
 (`src/main.c`, `import_complete_shielded_mode`) — not a native command.

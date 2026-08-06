@@ -9,6 +9,23 @@ int syncdiag_cases_operator(void)
 {
     int failures = 0;
 
+    printf("dumpstate chain_evidence health_reason is bounded... ");
+    {
+        struct json_value result = {0};
+        bool ok = diag_chain_evidence_dump_state_json(
+            &result, "health_reason");
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && json_get(&result, "health_reason") != NULL;
+        ok = ok && json_get(&result, "contradiction_reason") != NULL;
+        ok = ok && json_get(&result, "active_tip_hash_mismatch") != NULL;
+        ok = ok && json_get(&result, "explorer_index_state") == NULL;
+        ok = ok && json_get(&result, "block_index_evidence_state") == NULL;
+        printf("%s\n", ok ? "OK" : "FAIL");
+        if (!ok)
+            failures++;
+        json_free(&result);
+    }
+
     printf("api: native RPC returns milestone ASCII bars... ");
     {
         struct rpc_table tbl;

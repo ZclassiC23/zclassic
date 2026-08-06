@@ -1,0 +1,17 @@
+component=stb_truetype
+upstream=https://github.com/nothings/stb
+revision=2c980bb59875b0d32144a71867fbdebb2f77cd20
+license=MIT-or-Public-Domain
+file=stb_truetype.h
+integration=private antialiased font rasterizer behind lib/presentation
+
+component=Noto-Sans-Basic-Latin-subset
+upstream=https://github.com/notofonts/noto-fonts
+revision=ffebf8c1ee449e544955a7e813c54f9b73848eac
+license=SIL-OFL-1.1
+source_file=hinted/ttf/NotoSans/NotoSans-Regular.ttf
+source_sha256=b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5
+subset_recipe=fonttools-pyftsubset U+0020-007E layout-features-all names-all glyph-names
+subset_ttf_sha256=f277a2850fa592663daaea05bca705d8ca7b6a561caf1f851d01203688b9789f
+embedded_file=noto_sans_ascii.inc
+integration=private Basic Latin font bytes behind lib/presentation

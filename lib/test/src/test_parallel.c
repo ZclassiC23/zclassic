@@ -257,6 +257,17 @@ static bool group_requires_exclusive_repo(const char *name)
     return lint_gates_group_is_exclusive(name);
 }
 
+/* Host-latency contracts must run before the worker pool starts.  Their
+ * budget is meant to catch a slow command implementation, not scheduler
+ * starvation caused by unrelated CPU-heavy groups. */
+static bool group_requires_exclusive_run(const char *name)
+{
+    if (group_requires_exclusive_repo(name)) return true;
+    if (!name) return false;
+    if (strncmp(name, "test_", 5) == 0) name += 5;
+    return strcmp(name, "command_registry_catalog") == 0;
+}
+
 /* Params-heavy opt-in gate. These groups load the multi-MB Sapling Groth16
  * proving keys from ~/.zcash-params and run REAL proving (seconds of CPU,
  * ~50 MB RAM each) — too slow/heavy for the fast default pool. They are
@@ -267,10 +278,14 @@ static bool group_is_params_heavy(const char *name)
 {
     if (!name) return false;
     if (strncmp(name, "test_", 5) == 0) name += 5;
-    return strcmp(name, "simnet_sapling_shielded_send") == 0 ||
+    return strcmp(name, "sapling") == 0 ||
+           strcmp(name, "simnet_sapling_shielded_send") == 0 ||
+           strcmp(name, "simnet_shielded_wallet_e2e") == 0 ||
            strcmp(name, "simnet_zmsg_onchain") == 0 ||
            strcmp(name, "snark_kat") == 0 ||
            strcmp(name, "native_spend_proof") == 0 ||
+           strcmp(name, "groth16_selfverify") == 0 ||
+           strcmp(name, "wallet_destruction_drill") == 0 ||
            strcmp(name, "sapling_prover_rng_determinism") == 0;
 }
 
@@ -798,7 +813,7 @@ int main(int argc, char **argv)
     for (size_t i = 0; i < g_num_groups; i++) {
         if (results[i].skipped || results[i].cached)
             continue;
-        if (!group_requires_exclusive_repo(g_groups[i].name))
+        if (!group_requires_exclusive_run(g_groups[i].name))
             continue;
         if (verbose)
             printf("[exclusive] [%zu/%zu] %s\n",

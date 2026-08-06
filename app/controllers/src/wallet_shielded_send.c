@@ -37,8 +37,9 @@ bool wallet_addr_is_sapling(const char *addr)
 }
 
 
-bool rpc_z_sendmany(const struct json_value *params, bool help,
-                             struct json_value *result)
+static bool z_sendmany_run(const struct json_value *params, bool help,
+                           struct wallet_tx *prepared,
+                           struct json_value *result)
 {
     struct wallet_rpc_context *ctx = wallet_ctx();
     RPC_HELP(help, result,
@@ -220,7 +221,8 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
         return z_sendmany_shielded(ctx, cp, from_z_key, total_amount,
                                    t_dests, t_amounts, num_t_out,
                                    z_diversifiers, z_pk_ds, z_amounts,
-                                   z_memos, z_has_memo, num_z_out, result);
+                                   z_memos, z_has_memo, num_z_out, prepared,
+                                   result);
     }
 
 
@@ -629,6 +631,11 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
         }
     }
 
+    if (prepared) {
+        *prepared = wtx;
+        return true;
+    }
+
     struct zcl_result commit = wallet_commit_from_context(ctx, &wtx);
     if (!commit.ok) {
         json_set_str(result, commit.message);
@@ -659,4 +666,20 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
     json_set_str(result, txid);
     transaction_free(&wtx.tx);
     return true;
+}
+
+bool rpc_z_sendmany(const struct json_value *params, bool help,
+                    struct json_value *result)
+{
+    return z_sendmany_run(params, help, NULL, result);
+}
+
+bool z_sendmany_prepare(const struct json_value *params,
+                        struct wallet_tx *prepared,
+                        struct json_value *result)
+{
+    if (!prepared || !result)
+        LOG_FAIL("wallet_shielded", "z_sendmany_prepare: NULL output");
+    memset(prepared, 0, sizeof(*prepared));
+    return z_sendmany_run(params, false, prepared, result);
 }

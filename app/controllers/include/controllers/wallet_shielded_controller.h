@@ -7,6 +7,7 @@
 
 struct rpc_table;
 struct json_value;
+struct wallet_tx;
 
 void register_wallet_shielded_rpc_commands(struct rpc_table *t);
 
@@ -20,6 +21,13 @@ void register_wallet_shielded_rpc_commands(struct rpc_table *t);
  * with the reason written into `result`. */
 bool rpc_z_sendmany(const struct json_value *params, bool help,
                     struct json_value *result);
+
+/* Build/sign without admitting, spending, persisting, or relaying. Ownership
+ * of the initialized transaction moves to `prepared` on success. The vault
+ * stores those exact bytes with its reservation before idempotent commit. */
+bool z_sendmany_prepare(const struct json_value *params,
+                        struct wallet_tx *prepared,
+                        struct json_value *result);
 
 /* True when `addr` is a Sapling payment address on the ACTIVE chain.
  * The human-readable part is read from chain_params_get() — mainnet

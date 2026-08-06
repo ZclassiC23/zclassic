@@ -265,6 +265,153 @@ static int t_no_collateral_loosening(void)
     json_free(&input);
     CIB_CHECK("a raised key is still unknown on a leaf that never declared it",
               !leaked && strstr(why, "unknown input key") != NULL);
+
+    const struct zcl_command_spec *policy = zcl_command_registry_find(
+        zcl_command_catalog(), "zcode.network.policy.mutate", NULL);
+    CIB_CHECK("the sovereignty policy mutation leaf resolves", policy != NULL);
+    if (policy) {
+        json_init(&input);
+        json_set_object(&input);
+        (void)json_push_kv_str(&input, "mode", "plan");
+        (void)json_push_kv_str(&input, "operation", "add");
+        (void)json_push_kv_int(&input, "action_mask", 127);
+        CIB_CHECK("the seven-action policy mask reaches its handler",
+                  zcl_command_registry_input_validate(policy, &input, why,
+                                                      sizeof(why)));
+        json_free(&input);
+
+        json_init(&input);
+        json_set_object(&input);
+        (void)json_push_kv_str(&input, "mode", "plan");
+        (void)json_push_kv_str(&input, "operation", "advisory");
+        (void)json_push_kv_bool(&input, "enabled", true);
+        CIB_CHECK("the advisory opt-in boolean reaches its handler",
+                  zcl_command_registry_input_validate(policy, &input, why,
+                                                      sizeof(why)));
+        json_free(&input);
+    }
+    return failures;
+}
+
+/* ── 4. Structured vault effects reach their owning handler ──────────── */
+
+static int t_vault_effects_array(void)
+{
+    int failures = 0;
+    const struct zcl_command_spec *plan = zcl_command_registry_find(
+        zcl_command_catalog(), "vault.intent.plan", NULL);
+    CIB_CHECK("vault.intent.plan resolves", plan != NULL);
+    if (!plan)
+        return failures;
+
+    struct json_value input, effects, effect;
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, "wallet_scope", "dev");
+    (void)json_push_kv_str(&input, "route", "transparent");
+    (void)json_push_kv_str(&input, "idempotency_key", "payment-001");
+    json_init(&effects);
+    json_set_array(&effects);
+    json_init(&effect);
+    json_set_object(&effect);
+    (void)json_push_kv_str(&effect, "asset", "ZCL");
+    (void)json_push_kv_str(&effect, "to",
+                           "t1Recipient000000000000000000000000");
+    (void)json_push_kv_str(&effect, "amount", "0.01000000");
+    (void)json_push_back(&effects, &effect);
+    (void)json_push_kv(&input, "effects", &effects);
+    json_free(&effect);
+    json_free(&effects);
+
+    char why[192] = {0};
+    CIB_CHECK("a documented structured effect passes transport validation",
+              zcl_command_registry_input_validate(plan, &input, why,
+                                                  sizeof(why)));
+    json_free(&input);
+
+    json_init(&input);
+    json_set_object(&input);
+    json_init(&effects);
+    json_set_array(&effects);
+    (void)json_push_kv(&input, "effects", &effects);
+    json_free(&effects);
+    CIB_CHECK("an empty effects array fails closed",
+              !zcl_command_registry_input_validate(plan, &input, why,
+                                                   sizeof(why)));
+    json_free(&input);
+
+    json_init(&input);
+    json_set_object(&input);
+    json_init(&effects);
+    json_set_array(&effects);
+    for (size_t i = 0; i < 51; i++) {
+        json_init(&effect);
+        json_set_object(&effect);
+        (void)json_push_back(&effects, &effect);
+        json_free(&effect);
+    }
+    (void)json_push_kv(&input, "effects", &effects);
+    json_free(&effects);
+    CIB_CHECK("more than 50 effects fails closed",
+              !zcl_command_registry_input_validate(plan, &input, why,
+                                                   sizeof(why)));
+    json_free(&input);
+
+    CIB_CHECK("the vault plan frame budgets a structured effects document",
+              zcl_command_registry_input_budget_bytes(plan) >
+                  ZCL_COMMAND_MAX_INPUT);
+    return failures;
+}
+
+/* ── 5. Liquidity planner's numeric contract reaches its handler ─────── */
+
+static int t_liquidity_numeric_input(void)
+{
+    int failures = 0;
+    const struct zcl_command_spec *spec = zcl_command_registry_find(
+        zcl_command_catalog(), "metaverse.agent.liquidity", NULL);
+    CIB_CHECK("metaverse.agent.liquidity resolves", spec != NULL);
+    if (!spec)
+        return failures;
+
+    struct json_value input;
+    char why[192] = {0};
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, "dir", "/private/broker");
+    (void)json_push_kv_str(&input, "wallet_scope", "dev");
+    (void)json_push_kv_int(&input, "recipient_value_zat", 1000);
+    (void)json_push_kv_int(&input, "maximum_fee_zat", 10000);
+    (void)json_push_kv_int(&input, "concurrency", 10);
+    CIB_CHECK("documented liquidity request passes transport validation",
+              zcl_command_registry_input_validate(spec, &input, why,
+                                                  sizeof(why)));
+    json_free(&input);
+
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_int(&input, "concurrency", 51);
+    CIB_CHECK("liquidity concurrency above 50 fails closed",
+              !zcl_command_registry_input_validate(spec, &input, why,
+                                                   sizeof(why)));
+    json_free(&input);
+
+    spec = zcl_command_registry_find(
+        zcl_command_catalog(), "vault.intent.fanout-plan", NULL);
+    CIB_CHECK("vault.intent.fanout-plan resolves", spec != NULL);
+    if (!spec)
+        return failures;
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, "wallet_scope", "dev");
+    (void)json_push_kv_int(&input, "recipient_value_zat", 1000);
+    (void)json_push_kv_int(&input, "maximum_fee_zat", 10000);
+    (void)json_push_kv_int(&input, "concurrency", 10);
+    (void)json_push_kv_str(&input, "idempotency_key", "parallel-lab-001");
+    CIB_CHECK("documented fanout request passes transport validation",
+              zcl_command_registry_input_validate(spec, &input, why,
+                                                  sizeof(why)));
+    json_free(&input);
     return failures;
 }
 
@@ -275,6 +422,8 @@ int test_command_input_bounds(void)
     failures += t_key_edges();
     failures += t_frame_budget();
     failures += t_no_collateral_loosening();
+    failures += t_vault_effects_array();
+    failures += t_liquidity_numeric_input();
     printf("=== command_input_bounds complete: %d failure(s) ===\n", failures);
     return failures;
 }

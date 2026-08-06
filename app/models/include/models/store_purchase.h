@@ -32,7 +32,9 @@
 
 enum {
     STORE_PURCHASE_NAME_MAX = 255,
-    STORE_PURCHASE_TOKEN_MAX = 63,
+    /* 64 admits a ZSLP genesis token id (32 bytes, 64 hex chars) verbatim —
+     * mirror of STORE_PRODUCT_TOKEN_MAX; the access gate settles in ZSLP. */
+    STORE_PURCHASE_TOKEN_MAX = 64,
     STORE_PURCHASE_ADDR_MAX = 127,
     STORE_PURCHASE_MEMO_MAX = 63,
     STORE_PURCHASE_PATH_MAX = 511,

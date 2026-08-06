@@ -9,12 +9,11 @@
 #include "vcs/package_deps.h"
 
 #include "base/hex.h"
+#include "codec/cursor.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
-
-#include "vcs_priv.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -433,34 +432,30 @@ enum vcs_package_deps_error vcs_package_lock_serialize(
     uint8_t *buf = zcl_malloc(need, "deps.lock.wire");
     if (!buf)
         return VCS_PACKAGE_DEPS_ERR_ALLOC;
-    size_t o = 0;
-    memcpy(buf + o, lock_wire_magic, sizeof(lock_wire_magic));
-    o += sizeof(lock_wire_magic);
-    vcs_wr_u16le(buf + o, (uint16_t)VCS_PACKAGE_LOCK_VERSION);
-    o += 2;
-    vcs_wr_u16le(buf + o, (uint16_t)lock->count);
-    o += 2;
+    struct zcl_codec_writer writer;
+    zcl_codec_writer_init(&writer, buf, need);
+    bool ok = zcl_codec_write_bytes(&writer, lock_wire_magic,
+                                    sizeof(lock_wire_magic)) &&
+        zcl_codec_write_u16le(&writer, (uint16_t)VCS_PACKAGE_LOCK_VERSION) &&
+        zcl_codec_write_u16le(&writer, (uint16_t)lock->count);
     for (size_t i = 0; i < lock->count; i++) {
         const struct vcs_package_lock_node *n = &lock->nodes[i];
-        memcpy(buf + o, n->root, 32);
-        o += 32;
         size_t nl = strlen(n->name);
-        vcs_wr_u16le(buf + o, (uint16_t)nl);
-        o += 2;
-        memcpy(buf + o, n->name, nl);
-        o += nl;
         size_t sl = strlen(n->semver);
-        vcs_wr_u16le(buf + o, (uint16_t)sl);
-        o += 2;
-        memcpy(buf + o, n->semver, sl);
-        o += sl;
-        vcs_wr_u16le(buf + o, n->depth);
-        o += 2;
-        vcs_wr_u16le(buf + o, n->direct_deps);
-        o += 2;
+        ok = ok && zcl_codec_write_bytes(&writer, n->root, 32) &&
+            zcl_codec_write_u16_string(&writer, n->name, nl) &&
+            zcl_codec_write_u16_string(&writer, n->semver, sl) &&
+            zcl_codec_write_u16le(&writer, n->depth) &&
+            zcl_codec_write_u16le(&writer, n->direct_deps);
+    }
+    size_t written = 0;
+    ok = ok && zcl_codec_writer_finish(&writer, &written) && written == need;
+    if (!ok) {
+        free(buf);
+        return VCS_PACKAGE_DEPS_ERR_WIRE_OVERSIZE;
     }
     *out = buf;
-    *out_len = o;
+    *out_len = written;
     return VCS_PACKAGE_DEPS_OK;
 }
 
@@ -473,43 +468,35 @@ enum vcs_package_deps_error vcs_package_lock_parse(
     vcs_package_lock_init(out);
     if (wire_len > VCS_PACKAGE_LOCK_MAX_WIRE_BYTES)
         return VCS_PACKAGE_DEPS_ERR_WIRE_OVERSIZE;
-    size_t o = 0;
     if (wire_len < VCS_PACKAGE_LOCK_WIRE_MAGIC_BYTES + 4u)
         return VCS_PACKAGE_DEPS_ERR_WIRE_TRUNCATED;
-    if (memcmp(wire, lock_wire_magic, sizeof(lock_wire_magic)) != 0)
+    struct zcl_codec_reader reader;
+    zcl_codec_reader_init(&reader, wire, wire_len);
+    uint8_t magic[VCS_PACKAGE_LOCK_WIRE_MAGIC_BYTES];
+    uint16_t version = 0, count = 0;
+    if (!zcl_codec_read_bytes(&reader, magic, sizeof(magic)) ||
+        memcmp(magic, lock_wire_magic, sizeof(magic)) != 0)
         return VCS_PACKAGE_DEPS_ERR_WIRE_MAGIC;
-    o += sizeof(lock_wire_magic);
-    uint16_t version = vcs_rd_u16le(wire + o);
-    o += 2;
+    if (!zcl_codec_read_u16le(&reader, &version))
+        return VCS_PACKAGE_DEPS_ERR_WIRE_TRUNCATED;
     if (version != VCS_PACKAGE_LOCK_VERSION)
         return VCS_PACKAGE_DEPS_ERR_WIRE_VERSION;
-    uint16_t count = vcs_rd_u16le(wire + o);
-    o += 2;
+    if (!zcl_codec_read_u16le(&reader, &count))
+        return VCS_PACKAGE_DEPS_ERR_WIRE_TRUNCATED;
     if (count > VCS_PACKAGE_LOCK_MAX_NODES)
         return VCS_PACKAGE_DEPS_ERR_NODE_COUNT;
     for (uint16_t i = 0; i < count; i++) {
         struct vcs_package_lock_node n;
         memset(&n, 0, sizeof(n));
-        if (wire_len - o < 32u + 2u)
+        uint16_t nl = 0, sl = 0;
+        if (!zcl_codec_read_bytes(&reader, n.root, 32) ||
+            !zcl_codec_read_u16_string(&reader, n.name, sizeof(n.name),
+                                       &nl) ||
+            !zcl_codec_read_u16_string(&reader, n.semver, sizeof(n.semver),
+                                       &sl) ||
+            !zcl_codec_read_u16le(&reader, &n.depth) ||
+            !zcl_codec_read_u16le(&reader, &n.direct_deps))
             return VCS_PACKAGE_DEPS_ERR_WIRE_TRUNCATED;
-        memcpy(n.root, wire + o, 32);
-        o += 32;
-        uint16_t nl = vcs_rd_u16le(wire + o);
-        o += 2;
-        if (nl >= sizeof(n.name) || wire_len - o < (size_t)nl + 2u)
-            return VCS_PACKAGE_DEPS_ERR_WIRE_TRUNCATED;
-        memcpy(n.name, wire + o, nl);
-        o += nl;
-        uint16_t sl = vcs_rd_u16le(wire + o);
-        o += 2;
-        if (sl >= sizeof(n.semver) || wire_len - o < (size_t)sl + 4u)
-            return VCS_PACKAGE_DEPS_ERR_WIRE_TRUNCATED;
-        memcpy(n.semver, wire + o, sl);
-        o += sl;
-        n.depth = vcs_rd_u16le(wire + o);
-        o += 2;
-        n.direct_deps = vcs_rd_u16le(wire + o);
-        o += 2;
         if (deps_root_is_zero(n.root) || !deps_label_ok(n.name, sizeof(n.name)) ||
             !deps_label_ok(n.semver, sizeof(n.semver)) ||
             n.depth > VCS_PACKAGE_LOCK_MAX_DEPTH ||
@@ -519,7 +506,7 @@ enum vcs_package_deps_error vcs_package_lock_parse(
         }
         out->nodes[out->count++] = n;
     }
-    if (o != wire_len) {
+    if (!zcl_codec_reader_finish(&reader)) {
         vcs_package_lock_init(out);
         return VCS_PACKAGE_DEPS_ERR_WIRE_TRAILING;
     }

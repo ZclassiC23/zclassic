@@ -261,7 +261,8 @@ static int blog_discover_onion_peers_wallet(const char *datadir,
         max = sizeof(rows) / sizeof(rows[0]);
 
     memset(&ndb, 0, sizeof(ndb));
-    if (!node_db_open(&ndb, db_path))
+    if (!node_db_open_runtime(&ndb, db_path,
+                              "blog.onion_discovery_wallet"))
         return 0;
 
     int found = 0;
@@ -367,7 +368,8 @@ int blog_discover_onion_peers_chain(const char *datadir,
 
     struct node_db ndb;
     memset(&ndb, 0, sizeof(ndb));
-    if (!node_db_open(&ndb, db_path))
+    if (!node_db_open_runtime(&ndb, db_path,
+                              "blog.onion_discovery_chain"))
         LOG_RETURN(0, "blog", "discover_onion_peers_chain: cannot open %s",
                    db_path);
 
@@ -465,7 +467,7 @@ bool blog_auto_announce_onion(const char *datadir, const char *onion_address)
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
 
     memset(&ndb, 0, sizeof(ndb));
-    if (!node_db_open(&ndb, db_path))
+    if (!node_db_open_runtime(&ndb, db_path, "blog.auto_announce"))
         LOG_FAIL("blog", "auto_announce_onion: failed to open db at %s", db_path);
 
     if (db_onion_announcement_exists(&ndb, onion_address)) {

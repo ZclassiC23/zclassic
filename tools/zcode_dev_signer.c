@@ -1,0 +1,253 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Purpose: offline non-wallet development signer for ZCODE release digests. */
+
+#define _POSIX_C_SOURCE 200809L
+
+#include "base/cleanse.h"
+#include "base/hex.h"
+
+#include <secp256k1.h>
+
+#include <errno.h>
+#include <fcntl.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static bool signer_read_n(int fd, uint8_t *buf, size_t len)
+{
+    size_t off = 0;
+    while (off < len) {
+        ssize_t got = read(fd, buf + off, len - off);
+        if (got < 0 && errno == EINTR)
+            continue;
+        if (got <= 0)
+            return false;
+        off += (size_t)got;
+    }
+    return true;
+}
+
+static bool signer_read_exact(int fd, uint8_t *buf, size_t len)
+{
+    if (!signer_read_n(fd, buf, len))
+        return false;
+    uint8_t trailing;
+    ssize_t got;
+    do {
+        got = read(fd, &trailing, 1);
+    } while (got < 0 && errno == EINTR);
+    return got == 0;
+}
+
+static bool signer_write_exact(int fd, const uint8_t *buf, size_t len)
+{
+    size_t off = 0;
+    while (off < len) {
+        ssize_t put = write(fd, buf + off, len - off);
+        if (put < 0 && errno == EINTR)
+            continue;
+        if (put <= 0)
+            return false;
+        off += (size_t)put;
+    }
+    return true;
+}
+
+static bool signer_fd_number(const char *text, int *out)
+{
+    if (!text || !text[0])
+        return false;
+    char *end = NULL;
+    errno = 0;
+    long value = strtol(text, &end, 10);
+    if (errno || !end || *end || value < 0 || value > 1024)
+        return false;
+    *out = (int)value;
+    return true;
+}
+
+static bool signer_key_fd(int fd, uint8_t secret[32])
+{
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        fprintf(stderr, "zcode_dev_signer: key fd must name a regular file\n");
+        return false;
+    }
+    unsigned mode = (unsigned)(st.st_mode & 0777u);
+    if (mode != 0600u && mode != 0400u) {
+        fprintf(stderr,
+                "zcode_dev_signer: key fd permissions are %03o; require 0600 or 0400\n",
+                mode);
+        return false;
+    }
+    if (lseek(fd, 0, SEEK_SET) < 0 || !signer_read_exact(fd, secret, 32)) {
+        fprintf(stderr, "zcode_dev_signer: key fd must contain exactly 32 bytes\n");
+        return false;
+    }
+    return true;
+}
+
+static bool signer_public(secp256k1_context *ctx, const uint8_t secret[32],
+                          uint8_t out[33])
+{
+    secp256k1_pubkey pubkey;
+    size_t len = 33;
+    return secp256k1_ec_seckey_verify(ctx, secret) == 1 &&
+           secp256k1_ec_pubkey_create(ctx, &pubkey, secret) == 1 &&
+           secp256k1_ec_pubkey_serialize(ctx, out, &len, &pubkey,
+                                        SECP256K1_EC_COMPRESSED) == 1 &&
+           len == 33;
+}
+
+static int signer_generate(const char *path, secp256k1_context *ctx)
+{
+    int random_fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (random_fd < 0) {
+        fprintf(stderr, "zcode_dev_signer: cannot open system RNG: %s\n",
+                strerror(errno));
+        return 1;
+    }
+    uint8_t secret[32];
+    do {
+        if (!signer_read_n(random_fd, secret, sizeof(secret))) {
+            fprintf(stderr, "zcode_dev_signer: system RNG read failed\n");
+            close(random_fd);
+            memory_cleanse(secret, sizeof(secret));
+            return 1;
+        }
+    } while (secp256k1_ec_seckey_verify(ctx, secret) != 1);
+    close(random_fd);
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        fprintf(stderr, "zcode_dev_signer: refusing to replace %s: %s\n",
+                path, strerror(errno));
+        memory_cleanse(secret, sizeof(secret));
+        return 1;
+    }
+    bool wrote = signer_write_exact(fd, secret, sizeof(secret)) &&
+                 fsync(fd) == 0;
+    if (close(fd) != 0)
+        wrote = false;
+    if (!wrote) {
+        fprintf(stderr, "zcode_dev_signer: key write failed: %s\n",
+                strerror(errno));
+        memory_cleanse(secret, sizeof(secret));
+        return 1;
+    }
+    uint8_t pubkey[33];
+    bool ok = signer_public(ctx, secret, pubkey);
+    memory_cleanse(secret, sizeof(secret));
+    if (!ok)
+        return 1;
+    char hex[67];
+    zcl_hex_encode(pubkey, sizeof(pubkey), hex);
+    printf("%s\n", hex);
+    return 0;
+}
+
+static int signer_show_public(int key_fd, secp256k1_context *ctx)
+{
+    uint8_t secret[32], pubkey[33];
+    if (!signer_key_fd(key_fd, secret))
+        return 1;
+    bool ok = signer_public(ctx, secret, pubkey);
+    memory_cleanse(secret, sizeof(secret));
+    if (!ok) {
+        fprintf(stderr, "zcode_dev_signer: invalid secp256k1 secret\n");
+        return 1;
+    }
+    char hex[67];
+    zcl_hex_encode(pubkey, sizeof(pubkey), hex);
+    printf("%s\n", hex);
+    return 0;
+}
+
+static int signer_sign(int key_fd, int digest_fd, int signature_fd,
+                       secp256k1_context *ctx)
+{
+    uint8_t secret[32], digest[32], compact[64];
+    if (!signer_key_fd(key_fd, secret))
+        return 1;
+    if (!signer_read_exact(digest_fd, digest, sizeof(digest))) {
+        fprintf(stderr, "zcode_dev_signer: digest fd must contain exactly 32 bytes\n");
+        memory_cleanse(secret, sizeof(secret));
+        return 1;
+    }
+    secp256k1_ecdsa_signature signature, normalized;
+    bool ok = secp256k1_ecdsa_sign(ctx, &signature, digest, secret, NULL,
+                                  NULL) == 1;
+    memory_cleanse(secret, sizeof(secret));
+    if (ok) {
+        (void)secp256k1_ecdsa_signature_normalize(ctx, &normalized,
+                                                  &signature);
+        ok = secp256k1_ecdsa_signature_serialize_compact(ctx, compact,
+                                                         &normalized) == 1;
+    }
+    memory_cleanse(&signature, sizeof(signature));
+    memory_cleanse(&normalized, sizeof(normalized));
+    if (!ok || !signer_write_exact(signature_fd, compact, sizeof(compact))) {
+        fprintf(stderr, "zcode_dev_signer: signing or signature-fd write failed\n");
+        memory_cleanse(compact, sizeof(compact));
+        return 1;
+    }
+    memory_cleanse(compact, sizeof(compact));
+    return 0;
+}
+
+static void signer_usage(void)
+{
+    fprintf(stderr,
+            "usage:\n"
+            "  zcode_dev_signer --generate PATH\n"
+            "  zcode_dev_signer --public --key-fd N\n"
+            "  zcode_dev_signer --sign --key-fd N --digest-fd N --signature-fd N\n");
+}
+
+int main(int argc, char **argv)
+{
+    const char *generate = NULL;
+    bool show_public = false, sign = false;
+    int key_fd = -1, digest_fd = -1, signature_fd = -1;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--generate") == 0 && i + 1 < argc)
+            generate = argv[++i];
+        else if (strcmp(argv[i], "--public") == 0)
+            show_public = true;
+        else if (strcmp(argv[i], "--sign") == 0)
+            sign = true;
+        else if (strcmp(argv[i], "--key-fd") == 0 && i + 1 < argc &&
+                 signer_fd_number(argv[++i], &key_fd))
+            ;
+        else if (strcmp(argv[i], "--digest-fd") == 0 && i + 1 < argc &&
+                 signer_fd_number(argv[++i], &digest_fd))
+            ;
+        else if (strcmp(argv[i], "--signature-fd") == 0 && i + 1 < argc &&
+                 signer_fd_number(argv[++i], &signature_fd))
+            ;
+        else {
+            signer_usage();
+            return 2;
+        }
+    }
+    unsigned modes = (generate ? 1u : 0u) + (show_public ? 1u : 0u) +
+                     (sign ? 1u : 0u);
+    if (modes != 1u || ((show_public || sign) && key_fd < 0) ||
+        (sign && (digest_fd < 0 || signature_fd < 0))) {
+        signer_usage();
+        return 2;
+    }
+    secp256k1_context *ctx = secp256k1_context_create(
+        SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+    if (!ctx)
+        return 1;
+    int rc = generate ? signer_generate(generate, ctx) :
+             show_public ? signer_show_public(key_fd, ctx) :
+             signer_sign(key_fd, digest_fd, signature_fd, ctx);
+    secp256k1_context_destroy(ctx);
+    return rc;
+}

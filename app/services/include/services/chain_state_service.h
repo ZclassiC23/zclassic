@@ -39,6 +39,7 @@
 #include "services/recovery_policy.h"
 #include "util/result.h"
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -94,6 +95,9 @@ struct chain_state_repository {
     /* Counters for observability (read-only via csr_snapshot) */
     uint64_t commits_ok;
     uint64_t commits_rejected[CSR_NUM_RESULTS];
+    /* Monotonic equality token for lock-free consumers that validate an
+     * expensive header-ancestry snapshot before committing cached results. */
+    _Atomic uint64_t header_generation;
     int      last_persist_sqlite_rc;
     char     last_persist_error[160];
 };
@@ -256,6 +260,13 @@ void csr_snapshot(struct chain_state_repository *csr,
  * or no header tip is set yet. Prefer this over csr_snapshot() for callers
  * on a frequent tick that only need the header height. */
 int64_t csr_header_height(struct chain_state_repository *csr);
+
+/* Snapshot the validated best-header pointer under the repository lock.
+ * Block-index objects have process lifetime, so the returned object remains
+ * readable after the lock is released.  NULL means uninitialized/no header. */
+struct block_index *csr_header_tip_snapshot(
+    struct chain_state_repository *csr);
+uint64_t csr_header_generation(const struct chain_state_repository *csr);
 
 /* Captures the served/indexed/header frontier windows into *out under the
  * repository lock. Returns ZCL_OK only when out is non-NULL, csr is

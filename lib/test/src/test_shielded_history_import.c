@@ -227,6 +227,17 @@ static bool shi_build_chainstate(const char *cs_dir, bool omit_tip_sapling,
     return true;
 }
 
+static bool shi_import_fixture(sqlite3 *db, const char *cs_dir,
+                               int64_t tip_height,
+                               const struct uint256 *tip_root,
+                               struct shielded_import_report *out)
+{
+    struct uint256 best_block;
+    shi_best_block(&best_block);
+    return shielded_history_import_from_chainstate(
+        db, cs_dir, tip_height, &best_block, tip_root, out);
+}
+
 /* Write one connected header row into node.db exactly as --importblockindex
  * does: hash=best_block, a connected status (>=BLOCK_VALID_TRANSACTIONS), and
  * blocks.sapling_root set to `sapling_root` — the FIXED header import copies the
@@ -281,7 +292,7 @@ int test_shielded_history_import(void)
                   blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
 
         struct shielded_import_report rep;
-        bool ok = shielded_history_import_from_chainstate(
+        bool ok = shi_import_fixture(
             db, cs_dir, SHI_TIP_H, &tip_root, &rep);
         SHI_CHECK("import returns success", ok);
         SHI_CHECK("import committed", rep.committed);
@@ -409,7 +420,7 @@ int test_shielded_history_import(void)
         SHI_CHECK("wedge seeded (missing)", db && shi_seed_wedge(db));
 
         struct shielded_import_report rep;
-        bool ok = shielded_history_import_from_chainstate(
+        bool ok = shi_import_fixture(
             db, cs_dir, SHI_TIP_H, &tip_root, &rep);
         SHI_CHECK("import REFUSES (returns false)", !ok);
         SHI_CHECK("import did NOT commit", !rep.committed);
@@ -458,7 +469,7 @@ int test_shielded_history_import(void)
         struct uint256 wrong_root;
         shi_fill(&wrong_root, 0xEE, 424242);   /* != real tip root */
         struct shielded_import_report rep;
-        bool ok = shielded_history_import_from_chainstate(
+        bool ok = shi_import_fixture(
             db, cs_dir, SHI_TIP_H, &wrong_root, &rep);
         SHI_CHECK("import REFUSES on tip-root mismatch", !ok && !rep.committed);
         SHI_CHECK("mismatch left both anchor cursors positive",
@@ -521,7 +532,7 @@ int test_shielded_history_import(void)
         SHI_CHECK("wedge seeded (bind)", db && shi_seed_wedge(db));
 
         struct shielded_import_report rep;
-        bool ok = shielded_history_import_from_chainstate(
+        bool ok = shi_import_fixture(
             db, cs_dir, SHI_TIP_H, &bind_root, &rep);
         SHI_CHECK("import binds + commits using the header-derived root",
                   ok && rep.committed && rep.tip_anchor_bound);
@@ -578,7 +589,7 @@ int test_shielded_history_import(void)
         SHI_CHECK("wedge seeded (zero)", db && shi_seed_wedge(db));
 
         struct shielded_import_report rep;
-        bool ok = shielded_history_import_from_chainstate(
+        bool ok = shi_import_fixture(
             db, cs_dir, SHI_TIP_H, &bind_root, &rep);
         SHI_CHECK("service REFUSES a zero tip root (fork-safety guard)",
                   !ok && !rep.committed);
@@ -622,9 +633,11 @@ int test_shielded_history_import(void)
 
         /* Overwrite the tip frontier: store, under the best-anchor key
          * ('Z' + tip_root, named by the 'z' pointer), a validly-serialized tree
-         * that hashes to a DIFFERENT root. The tip-bind (pointer-root vs
-         * header-root) still passes, but shi_anchor_cb recomputes the tip tree
-         * and its root != tip_root, aborting the scan. */
+         * that hashes to a DIFFERENT root. The up-front by-root bind in the
+         * service (chainstate_legacy_get_sapling_anchor re-hashes the tree
+         * fail-closed, reinforced by an explicit Pedersen re-verify) refuses
+         * before the transaction; the bulk pass's own tip re-verify is the
+         * second line of defence. */
         struct incremental_merkle_tree corrupt_tip;
         struct uint256 corrupt_root;
         shi_sapling_tree(4, &corrupt_tip, &corrupt_root);
@@ -637,7 +650,7 @@ int test_shielded_history_import(void)
         SHI_CHECK("wedge seeded (mid-scan)", db && shi_seed_wedge(db));
 
         struct shielded_import_report rep;
-        bool ok = shielded_history_import_from_chainstate(
+        bool ok = shi_import_fixture(
             db, cs_dir, SHI_TIP_H, &tip_root, &rep);
         SHI_CHECK("mid-scan anomaly REFUSES (returns false)", !ok);
         SHI_CHECK("mid-scan anomaly did NOT commit", !rep.committed);
@@ -671,6 +684,61 @@ int test_shielded_history_import(void)
             SHI_CHECK("mid-scan: progress not active after rollback",
                       !p.active);
         }
+
+        progress_store_close();
+        test_rm_rf_recursive(cs_dir);
+        test_rm_rf_recursive(pg_dir);
+    }
+
+    /* ── Scenario G: a STALE 'z' best-anchor pointer does not break the bind.
+     * The source's own pointer only reflects its last flush and races the WAL
+     * frontier on a live daemon (2026-08-02: a live zclassicd whose compacted
+     * state was weeks behind its recent records made every pointer-derived
+     * bind refuse). The service binds by OUR expected root instead: the
+     * anchor RECORD for that root is present and Pedersen-verifies, so the
+     * import must succeed even when the 'z' pointer names an older root. */
+    {
+        char cs_dir[256], pg_dir[256];
+        test_make_tmpdir(cs_dir, sizeof(cs_dir), "shi_staleptr", "cs");
+        test_make_tmpdir(pg_dir, sizeof(pg_dir), "shi_staleptr", "pg");
+
+        struct uint256 tip_root;
+        SHI_CHECK("build complete fixture (stale-pointer scenario)",
+                  shi_build_chainstate(cs_dir, false, &tip_root));
+
+        /* Point 'z' at a DIFFERENT (older) root — the record the pointer
+         * names is still in the set, but it is not the bind target. */
+        struct incremental_merkle_tree stale_tree;
+        struct uint256 stale_root;
+        shi_sapling_tree(3, &stale_tree, &stale_root);
+        SHI_CHECK("stale-pointer fixture: 'z' re-pointed at an older root",
+                  !uint256_eq(&stale_root, &tip_root) &&
+                  shi_put_pointer(cs_dir, 'z', &stale_root));
+
+        SHI_CHECK("progress.kv opens (stale-pointer)", progress_store_open(pg_dir));
+        sqlite3 *db = progress_store_db();
+        SHI_CHECK("wedge seeded (stale-pointer)", db && shi_seed_wedge(db));
+
+        struct shielded_import_report rep;
+        bool ok = shi_import_fixture(
+            db, cs_dir, SHI_TIP_H, &tip_root, &rep);
+        SHI_CHECK("import succeeds despite the stale pointer",
+                  ok && rep.committed && rep.tip_anchor_bound);
+        SHI_CHECK("stale-pointer: imported exactly 3 Sapling anchors",
+                  rep.sapling_anchors == 3);
+        {
+            struct incremental_merkle_tree latest;
+            struct uint256 latest_root;
+            SHI_CHECK("stale-pointer: latest frontier == the bound tip root",
+                      anchor_kv_latest_tree(db, ANCHOR_POOL_SAPLING, &latest,
+                                            &latest_root, NULL) ==
+                          ANCHOR_KV_FOUND &&
+                      uint256_eq(&latest_root, &tip_root));
+        }
+        SHI_CHECK("stale-pointer: Sapling anchor cursor == 0",
+                  shi_cursor_is(db, ANCHOR_POOL_SAPLING, 0));
+        SHI_CHECK("stale-pointer: nullifier cursor == 0",
+                  shi_nf_cursor_is(db, 0));
 
         progress_store_close();
         test_rm_rf_recursive(cs_dir);

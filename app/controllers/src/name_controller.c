@@ -996,7 +996,6 @@ bool api_name_service_directory(const char *name, struct json_value *result)
     json_free(&show);
     return true;
 }
-
 /* ── Registration ───────────────────────────────────────────────── */
 
 void register_name_rpc_commands(struct rpc_table *t)
@@ -1014,4 +1013,5 @@ void register_name_rpc_commands(struct rpc_table *t)
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);
+    register_znam_intent_rpc_command(t);
 }

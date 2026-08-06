@@ -218,6 +218,69 @@ static int test_install_ignores_sigpipe(void)
     return failures;
 }
 
+static volatile sig_atomic_t g_termination_hits;
+
+static void test_termination_handler(int sig)
+{
+    if (sig == SIGINT || sig == SIGTERM)
+        g_termination_hits++;
+}
+
+static void test_displacing_handler(int sig)
+{
+    (void)sig;
+    _exit(91);
+}
+
+/* Embedded runtimes share the process signal table. Prove the node can reclaim
+ * SIGINT/SIGTERM after a later initializer displaces them, and that the
+ * reclaimed sigaction is persistent rather than System-V one-shot. */
+static int test_termination_handler_reclaim(void)
+{
+    int failures = 0;
+
+    TEST("signal_handler: node reclaims persistent termination ownership") {
+        fflush(stdout);
+        fflush(stderr);
+        pid_t pid = fork();
+        ASSERT(pid >= 0);
+        if (pid == 0) {
+            g_termination_hits = 0;
+            if (signal_handler_install_termination(
+                    test_termination_handler) != 0)
+                _exit(43);
+
+            struct sigaction displaced;
+            memset(&displaced, 0, sizeof(displaced));
+            displaced.sa_handler = test_displacing_handler;
+            sigemptyset(&displaced.sa_mask);
+            if (sigaction(SIGINT, &displaced, NULL) != 0 ||
+                sigaction(SIGTERM, &displaced, NULL) != 0)
+                _exit(44);
+
+            /* Composition-root reclaim after embedded runtime init. */
+            if (signal_handler_install_termination(
+                    test_termination_handler) != 0)
+                _exit(45);
+            if (raise(SIGTERM) != 0 || raise(SIGTERM) != 0 ||
+                raise(SIGINT) != 0)
+                _exit(46);
+            if (g_termination_hits != 3)
+                _exit(47);
+            _exit(0);
+        }
+
+        int status = 0;
+        pid_t done = waitpid(pid, &status, 0);
+        ASSERT(done == pid);
+        ASSERT(WIFEXITED(status));
+        ASSERT_EQ(WEXITSTATUS(status), 0);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_util_signal_handler(void)
 {
     printf("\n=== util/signal_handler tests ===\n");
@@ -232,6 +295,7 @@ int test_util_signal_handler(void)
     failures += test_reraise_and_durable_mirror();
     failures += test_install_alt_stack();
     failures += test_install_ignores_sigpipe();
+    failures += test_termination_handler_reclaim();
 
     if (failures == 0)
         printf("=== util/signal_handler tests: ALL PASS ===\n\n");

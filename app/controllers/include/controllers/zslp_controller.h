@@ -50,6 +50,9 @@ bool zslp_mint_with_receipt(const char *datadir, const char *token_id_hex,
 bool zslp_send_with_receipt(const char *datadir, const char *token_id_hex,
                             const char *to_addr, uint64_t amount,
                             struct zslp_tx_receipt *receipt);
+bool zslp_burn_with_receipt(const char *datadir, const char *token_id_hex,
+                            uint64_t amount,
+                            struct zslp_tx_receipt *receipt);
 
 /* Get token balance for an address (scans OP_RETURN outputs). */
 uint64_t zslp_balance(const char *datadir,

@@ -38,6 +38,7 @@
 #include "storage/progress_store.h"
 #include "storage/seal_kv.h"
 #include "util/blocker.h"
+#include "util/thread_registry.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -577,6 +578,26 @@ int test_sticky_escalator(void)
     /* Pin the network-derived compiled-anchor floor to the mainnet anchor A:
      * the fixtures seed rows at A+1.. (see the refill test's rationale). */
     reducer_frontier_test_set_compiled_anchor(A);
+
+    /* T0 — a callback already queued when shutdown begins must be inert. The
+     * live incident armed auto_reindex_request from such a stale recovery tick
+     * while node.db/event teardown was in progress, immediately before SIGSEGV. */
+    {
+        thread_registry_reset_for_test();
+        sticky_escalator_test_reset();
+        sticky_escalator_note_stall("test_shutdown_barrier");
+        int64_t t0 = (int64_t)platform_time_wall_time_t();
+        thread_registry_request_shutdown();
+        SE_CHECK("T0: shutdown blocks an already-armed recovery dispatch",
+                 sticky_escalator_test_drive(0, t0 + 31) ==
+                     STICKY_RUNG_RETRY);
+        sticky_escalator_test_reset();
+        sticky_escalator_note_stall("test_shutdown_late_note");
+        SE_CHECK("T0: shutdown ignores a late stall notification",
+                 !sticky_escalator_test_armed());
+        thread_registry_reset_for_test();
+        sticky_escalator_test_reset();
+    }
 
     /* T1 — actionable rowless script+proof hole at coins_applied: driving the
      * real ladder into the targeted_rederive rung applies the reconcile clamp

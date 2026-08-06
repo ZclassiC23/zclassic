@@ -568,6 +568,8 @@ bool dev_activation_request_from_cycle(const char *repo_root,
     out->req.artifact_path = out->artifact_path;
     out->req.build_commit = build_commit;
     out->req.build_type = "fast";
+    out->req.source_mutation = NULL;
+    out->req.expected_current_generation = NULL;
     out->req.gen_root = out->gen_root;
     out->req.datadir = out->datadir;
     out->req.unit = "zcl23-dev.service";

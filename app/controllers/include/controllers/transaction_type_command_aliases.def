@@ -1,0 +1,25 @@
+/* Alternate typed routes into transactions owned by the canonical commands
+ * in transaction_types.def.
+ *
+ * TX_COMMAND_ALIAS(type_id, command_path, role, explanation)
+ *
+ * Keep this deliberately small.  A row belongs here only when a native leaf
+ * reaches an already-cataloged transaction without owning a second builder.
+ * Generic reads and unrelated wallet mutations are not aliases. */
+
+TX_COMMAND_ALIAS("transparent_t_to_t", "vault.send", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
+    "Vault pass-through to core.wallet.transaction.send; it builds no second transaction.")
+TX_COMMAND_ALIAS("transparent_t_to_t", "vault.intent.list", ZCL_TRANSACTION_COMMAND_ROLE_INSPECT,
+    "Lists redacted durable transparent transaction-intent state without decrypting effects.")
+TX_COMMAND_ALIAS("transparent_multi_recipient", "vault.intent.fanout-plan", ZCL_TRANSACTION_COMMAND_ROLE_PLAN,
+    "Prepares private wallet-owned destinations and one exact multi-output transparent plan; a separate vault.intent.commit owns broadcast.")
+
+TX_COMMAND_ALIAS("sapling_t_to_z", "vault.send-shielded", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
+    "Vault pass-through to core.wallet.shielded.send; the runtime from/to pools select this shape.")
+TX_COMMAND_ALIAS("sapling_z_to_z", "vault.send-shielded", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
+    "Vault pass-through to core.wallet.shielded.send; the runtime from/to pools select this shape.")
+TX_COMMAND_ALIAS("sapling_z_to_t", "vault.send-shielded", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
+    "Vault pass-through to core.wallet.shielded.send; the runtime from/to pools select this shape.")
+
+TX_COMMAND_ALIAS("zslp_send", "vault.send-token", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
+    "Vault pass-through to app.tokens.send; token selection, signing, persistence, and relay stay canonical.")

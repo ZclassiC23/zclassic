@@ -43,6 +43,13 @@ void store_ensure_schema(sqlite3 *db, const char *datadir);
 void store_csrf_token(const char *context, char out[33]);
 void store_csrf_context(char *out, size_t outmax, int64_t product_id);
 
+/* ── Access-request validators (defined in store_controller.c) ──
+ * Shared with the access gate (store_access_gate.c): a syntactically
+ * plausible t-address / token key, nothing more — the gate's balance
+ * source decision lives with the gate. */
+bool store_validate_access_addr(const char *addr);
+bool store_validate_access_token(const char *token);
+
 /* ── PoW order gate (defined in store_controller_pow.c) ──
  *
  * struct store_pow_challenge + store_pow_challenge() are declared in

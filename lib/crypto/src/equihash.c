@@ -4,7 +4,18 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * Equihash proof-of-work verification — pure C23 implementation. */
+ * Equihash proof-of-work verification — pure C23 implementation.
+ *
+ * AUTHORITY: this file is the verification PRIMITIVE
+ * (equihash_is_valid_solution) plus a reference solver. The consensus
+ * PREDICATE that block validation actually runs is
+ * domain_consensus_verify_equihash_solution()
+ * (core/consensus/src/equihash.c, byte-sealed via core/MANIFEST.sha3),
+ * which wraps this primitive. Never call this primitive from validation
+ * code directly — route through the sealed predicate (or the
+ * crypto_registry "equihash-200-9" scheme, which itself delegates).
+ * See the AUTHORITY NOTE in
+ * lib/crypto_registry/src/scheme_equihash_200_9.c. */
 
 #include "crypto/equihash.h"
 #include <assert.h>

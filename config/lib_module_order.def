@@ -59,10 +59,18 @@
 /* Leaf utilities and low-level building blocks. lib/base is the sink — the
  * logging / allocation / result vocabulary every other module speaks. */
 LIB_MODULE("base")
+/* Scalar FIPS-202 primitives depend only on base.  Crypto owns optional
+ * batched acceleration and reaches down through sha3/sha3.h. */
+LIB_MODULE("sha3")
+/* Bounded wire cursors depend only on base fixed-width byte helpers. */
+LIB_MODULE("codec")
 LIB_MODULE("primitives")
 LIB_MODULE("support")
 LIB_MODULE("json")
 LIB_MODULE("encoding")
+/* Bounded native bitmap windows. The public API is platform-neutral; the
+ * vendored RGFW implementation is private to lib/presentation. */
+LIB_MODULE("presentation")
 LIB_MODULE("overlay")
 LIB_MODULE("platform")
 LIB_MODULE("core")
@@ -100,6 +108,7 @@ LIB_MODULE("framework")
 
 /* On-chain overlays and the top of the stack. */
 LIB_MODULE("zslp")
+LIB_MODULE("zswap")
 LIB_MODULE("znam")
 LIB_MODULE("zanc")
 LIB_MODULE("zdir")

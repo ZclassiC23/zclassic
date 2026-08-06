@@ -24,7 +24,7 @@ bool z_sendmany_shielded(
     const uint8_t (*z_diversifiers)[11], const uint8_t (*z_pk_ds)[32],
     const int64_t *z_amounts, const uint8_t (*z_memos)[512],
     const bool *z_has_memo, size_t num_z_out,
-    struct json_value *result)
+    struct wallet_tx *prepared, struct json_value *result)
 {
         if (!wallet_ctx_db_ready(ctx)) {
             json_set_str(result,
@@ -365,6 +365,11 @@ shielded_cleanup:
         wtx.time_received = GetTime();
         wtx.from_me = true;
         wtx.used = true;
+
+        if (prepared) {
+            *prepared = wtx;
+            return true;
+        }
 
         /* The old shielded-spend branch bypassed every mempool check with
          * tx_mempool_add_unchecked(), ignored its return, and marked notes

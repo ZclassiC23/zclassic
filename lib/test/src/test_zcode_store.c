@@ -37,6 +37,7 @@
 
 #include "vcs/blob_store.h"
 #include "vcs/package_manifest.h"
+#include "vcs/package_possession_scheduler.h"
 
 #include "chain/chainparams.h"
 #include "core/uint256.h"
@@ -1018,6 +1019,8 @@ static int t_store_pins(void)
              st.pool == VCS_PACKAGE_STORE_POOL_PINS &&
              vcs_package_store_pool_usage(s, VCS_PACKAGE_STORE_POOL_PINS) ==
                  1000);
+    ZS_CHECK("pins: full-byte possession proof accepts complete pinned L",
+             vcs_package_store_verify_possession(s, l.root, true));
     ZS_CHECK("pins: M completes and pins (pins pool exactly full)",
              vcs_package_store_put_manifest(s, m.wire, m.wire_len, NULL) ==
                  VCS_PACKAGE_STORE_OK &&
@@ -1044,6 +1047,8 @@ static int t_store_pins(void)
                  VCS_PACKAGE_STORE_OK &&
              vcs_package_store_package_status(s, m.root, &st) &&
              !st.pinned && st.pool == VCS_PACKAGE_STORE_POOL_RARE);
+    ZS_CHECK("pins: possession proof fails closed after unpin",
+             !vcs_package_store_verify_possession(s, m.root, true));
 
     /* Rare-pool pressure: O fills rare exactly (3000), P's completion
      * must evict exactly one rare package and must never touch the
@@ -1095,6 +1100,23 @@ static int t_store_pins(void)
              vcs_package_store_package_status(s, pre.root, &st) &&
              st.pinned && st.pool == VCS_PACKAGE_STORE_POOL_PINS);
 
+    /* A durable ACK is a claim about bytes that are still present, not a
+     * sticky bit in package metadata. Removing one pinned CAS chunk must
+     * immediately invalidate the possession proof used by ACK renewal. */
+    uint8_t missing_hash[32];
+    char missing_hex[65];
+    char missing_suffix[160];
+    char missing_path[512];
+    ZS_CHECK("pins: missing-byte fixture hash",
+             vcs_package_chunk_hash(l.contents[0], l.lens[0], missing_hash));
+    zs_hex32(missing_hash, missing_hex);
+    snprintf(missing_suffix, sizeof(missing_suffix), "cas/sha3/%02x/%s",
+             missing_hash[0], missing_hex);
+    zs_store_path(missing_path, sizeof(missing_path), dd, missing_suffix);
+    ZS_CHECK("pins: pinned byte deletion planted", unlink(missing_path) == 0);
+    ZS_CHECK("pins: possession proof fails after missing byte",
+             !vcs_package_store_verify_possession(s, l.root, true));
+
     zs_free_package(&l);
     zs_free_package(&m);
     zs_free_package(&n);
@@ -1106,7 +1128,180 @@ static int t_store_pins(void)
     return failures;
 }
 
-/* ── 10: release envelopes ────────────────────────────────────────── */
+/* ── 10: bounded possession scheduler ────────────────────────────── */
+static int t_store_possession_scheduler(void)
+{
+    int failures = 0;
+    char dd[256];
+    struct vcs_package_store *store =
+        zs_open(dd, sizeof(dd), "possession_scheduler", 10000000u);
+    ZS_CHECK("possession scheduler: store opens", store != NULL);
+    if (!store)
+        return failures;
+
+    const char *large_paths[] = {
+        "a.bin", "b.bin", "c.bin", "d.bin"};
+    const size_t large_lens[] = {500, 500, 500, 500};
+    const char *small_paths[] = {"only.bin"};
+    const size_t small_lens[] = {500};
+    struct zs_pkg packages[3];
+    bool fixtures = true;
+    fixtures &= zs_make_package(&packages[0], 4, large_paths, large_lens,
+                                0x21);
+    for (size_t i = 1; i < 3; i++)
+        fixtures &= zs_make_package(&packages[i], 1, small_paths, small_lens,
+                                    (uint8_t)(0x21 + i * 0x20));
+    ZS_CHECK("possession scheduler: fixtures build", fixtures);
+    bool stored = fixtures;
+    for (size_t i = 0; i < 3 && stored; i++)
+        stored = vcs_package_store_put_manifest(
+                     store, packages[i].wire, packages[i].wire_len, NULL) ==
+                     VCS_PACKAGE_STORE_OK &&
+                 zs_put_all(store, &packages[i]) == VCS_PACKAGE_STORE_OK &&
+                 vcs_package_store_pin(store, packages[i].root, true) ==
+                     VCS_PACKAGE_STORE_OK;
+    ZS_CHECK("possession scheduler: packages complete and pin", stored);
+
+    struct vcs_package_store_status before;
+    ZS_CHECK("possession scheduler: mutation generation is published",
+             vcs_package_store_package_status(store, packages[0].root,
+                                              &before) &&
+                 before.mutation_generation != 0 && before.complete &&
+                 before.pinned);
+
+    struct vcs_package_possession_receipt receipt;
+    struct vcs_package_possession_proof *proof =
+        vcs_package_store_possession_begin(store, packages[0].root, true,
+                                           &receipt);
+    ZS_CHECK("possession scheduler: incremental proof begins", proof != NULL);
+    uint64_t used = UINT64_MAX;
+    enum vcs_package_possession_step step =
+        vcs_package_store_possession_step(proof, 499, 1, &receipt, &used);
+    ZS_CHECK("possession scheduler: strict byte budget reads nothing",
+             step == VCS_PACKAGE_POSSESSION_BUDGET && used == 0 &&
+                 receipt.bytes_verified == 0);
+    step = vcs_package_store_possession_step(proof, 500, 1, &receipt,
+                                             &used);
+    ZS_CHECK("possession scheduler: one-chunk budget advances once",
+             step == VCS_PACKAGE_POSSESSION_PROGRESS && used == 500 &&
+                 receipt.bytes_verified == 500);
+    ZS_CHECK("possession scheduler: unpin and repin mutate generation",
+             vcs_package_store_pin(store, packages[0].root, false) ==
+                     VCS_PACKAGE_STORE_OK &&
+                 vcs_package_store_pin(store, packages[0].root, true) ==
+                     VCS_PACKAGE_STORE_OK);
+    do {
+        step = vcs_package_store_possession_step(
+            proof, VCS_PACKAGE_CHUNK_BYTES, 8, &receipt, &used);
+    } while (step == VCS_PACKAGE_POSSESSION_PROGRESS);
+    ZS_CHECK("possession scheduler: proof refuses post-snapshot mutation",
+             step == VCS_PACKAGE_POSSESSION_FAILED &&
+                 receipt.failure == VCS_PACKAGE_POSSESSION_MUTATED);
+    vcs_package_store_possession_free(proof);
+
+    struct vcs_package_possession_scheduler_config config = {
+        .packages_per_cycle = 1,
+        .chunks_per_package_cycle = 1,
+        .bytes_per_cycle = VCS_PACKAGE_CHUNK_BYTES,
+        .scrub_interval_s = 100,
+        .failure_retry_s = 5,
+    };
+    struct vcs_package_possession_scheduler *scheduler =
+        vcs_package_possession_scheduler_new(&config);
+    uint8_t roots[3][32];
+    for (size_t i = 0; i < 3; i++)
+        memcpy(roots[i], packages[i].root, 32);
+    ZS_CHECK("possession scheduler: bounded scheduler opens and watches",
+             scheduler != NULL &&
+                 vcs_package_possession_scheduler_reconcile(
+                     scheduler, store, roots, 3, 1000));
+    for (uint64_t now = 1000; now < 1040; now++)
+        vcs_package_possession_scheduler_run(scheduler, store, now);
+    bool all_current = true;
+    for (size_t i = 0; i < 3; i++)
+        all_current &= vcs_package_possession_scheduler_current(
+            scheduler, store, roots[i], NULL);
+    struct vcs_package_possession_scheduler_status status;
+    vcs_package_possession_scheduler_status(scheduler, 1040, &status);
+    ZS_CHECK("possession scheduler: large root cannot starve small roots",
+             all_current && status.successful_proofs == 3 &&
+                 status.tracked_roots == 3);
+    ZS_CHECK("possession scheduler: per-cycle budgets stayed strict",
+             status.last_cycle_packages <= 1 &&
+                 status.last_cycle_bytes <= VCS_PACKAGE_CHUNK_BYTES);
+    uint64_t bytes_before_idle = status.bytes_verified_total;
+    vcs_package_possession_scheduler_run(scheduler, store, 1041);
+    vcs_package_possession_scheduler_status(scheduler, 1041, &status);
+    ZS_CHECK("possession scheduler: ordinary pass does not rehash",
+             status.last_cycle_packages == 0 &&
+                 status.last_cycle_bytes == 0 &&
+                 status.bytes_verified_total == bytes_before_idle);
+
+    ZS_CHECK("possession scheduler: unpin invalidates cached proof",
+             vcs_package_store_pin(store, packages[1].root, false) ==
+                     VCS_PACKAGE_STORE_OK &&
+                 !vcs_package_possession_scheduler_current(
+                     scheduler, store, packages[1].root, NULL));
+    ZS_CHECK("possession scheduler: mutation queues only changed root",
+             vcs_package_possession_scheduler_reconcile(
+                 scheduler, store, roots, 3, 1042) &&
+                 vcs_package_possession_scheduler_require(
+                     scheduler, roots[1], 1042));
+    vcs_package_possession_scheduler_status(scheduler, 1042, &status);
+    ZS_CHECK("possession scheduler: diagnostics expose queue/failure counts",
+             status.queued_roots == 1 && status.next_due_mono == 1042 &&
+                 status.bytes_verified_total == bytes_before_idle);
+    vcs_package_possession_scheduler_run(scheduler, store, 1042);
+    vcs_package_possession_scheduler_require(
+        scheduler, roots[1], 1043);
+    vcs_package_possession_scheduler_status(scheduler, 1043, &status);
+    ZS_CHECK("possession scheduler: failed proof respects retry deadline",
+             status.next_due_mono == 1047 && status.failed_proofs >= 1);
+
+    proof = vcs_package_store_possession_begin(
+        store, packages[2].root, true, &receipt);
+    step = vcs_package_store_possession_step(proof, 500, 1, &receipt,
+                                             &used);
+    uint8_t raced_hash[32];
+    char raced_hex[65], raced_suffix[160], raced_path[512];
+    bool raced_path_ready =
+        proof && step == VCS_PACKAGE_POSSESSION_PROGRESS &&
+        vcs_package_chunk_hash(packages[2].contents[0],
+                               packages[2].lens[0], raced_hash);
+    if (raced_path_ready) {
+        zs_hex32(raced_hash, raced_hex);
+        snprintf(raced_suffix, sizeof(raced_suffix),
+                 "cas/sha3/%02x/%s", raced_hash[0], raced_hex);
+        zs_store_path(raced_path, sizeof(raced_path), dd, raced_suffix);
+        raced_path_ready = unlink(raced_path) == 0;
+    }
+    do {
+        step = vcs_package_store_possession_step(
+            proof, VCS_PACKAGE_CHUNK_BYTES, 8, &receipt, &used);
+    } while (step == VCS_PACKAGE_POSSESSION_PROGRESS);
+    ZS_CHECK("possession scheduler: post-read byte deletion is not accepted",
+             raced_path_ready &&
+                 step == VCS_PACKAGE_POSSESSION_FAILED &&
+                 receipt.failure == VCS_PACKAGE_POSSESSION_MUTATED);
+    vcs_package_store_possession_free(proof);
+
+    for (size_t i = 0; i < 3; i++)
+        vcs_package_possession_scheduler_run(scheduler, store, 1200);
+    ZS_CHECK("possession scheduler: fresh request invalidates cached success",
+             vcs_package_possession_scheduler_require(
+                 scheduler, roots[0], 1200) &&
+                 !vcs_package_possession_scheduler_current(
+                     scheduler, store, roots[0], NULL));
+
+    vcs_package_possession_scheduler_free(scheduler);
+    for (size_t i = 0; i < 3; i++)
+        zs_free_package(&packages[i]);
+    vcs_package_store_close(store);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+/* ── 11: release envelopes ────────────────────────────────────────── */
 static int t_store_releases(void)
 {
     int failures = 0;
@@ -1462,6 +1657,7 @@ int test_zcode_store(void)
     failures += t_store_hot_eviction();
     failures += t_store_rare_eviction();
     failures += t_store_pins();
+    failures += t_store_possession_scheduler();
     failures += t_store_releases();
     failures += t_store_blob();
     failures += t_store_dump_state();

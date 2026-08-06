@@ -35,9 +35,12 @@
 #include "models/utxo.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
+#include "models/yardsale_plan.h"
+#include "models/zcode_science.h"
 #include "models/zmsg.h"
 #include "models/znam.h"
 #include "models/zslp.h"
+#include "models/zswap_ad.h"
 #include "event/event.h"
 
 #include <string.h>
@@ -185,6 +188,9 @@ DEFINE_VAL_WRAPPER(val_znam_entry,         db_znam_entry_validate,         struc
 DEFINE_VAL_WRAPPER(val_znam_text,          db_znam_text_validate,          struct znam_text_record)
 DEFINE_VAL_WRAPPER(val_znam_addr,          db_znam_addr_validate,          struct znam_addr_record)
 DEFINE_VAL_WRAPPER(val_zslp_balance,       db_zslp_balance_validate,       struct db_zslp_balance)
+DEFINE_VAL_WRAPPER(val_zswap_ad,           db_zswap_ad_validate,           struct zswap_yardsale_ad)
+DEFINE_VAL_WRAPPER(val_zcode_science_plan, db_zcode_science_plan_validate, struct db_zcode_science_plan)
+DEFINE_VAL_WRAPPER(val_yardsale_plan, db_yardsale_plan_validate, struct db_yardsale_plan)
 
 #undef DEFINE_VAL_WRAPPER
 
@@ -247,5 +253,8 @@ void db_register_all_validators(void)
     db_register_validator("znam_addr_records",  val_znam_addr);
     db_register_validator("zslp_balances",      val_zslp_balance);
     db_register_validator("zslp_tokens",        val_zslp_token);
+    db_register_validator("zswap_ads",          val_zswap_ad);
+    db_register_validator("zcode_science_plans", val_zcode_science_plan);
+    db_register_validator("yardsale_plans",   val_yardsale_plan);
     db_register_validator("database",           val_database);
 }

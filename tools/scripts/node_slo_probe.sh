@@ -29,8 +29,10 @@
 # so it is not probed. Installing that unit means adding its row back to
 # INSTANCES below — one line, and the example unit says so.
 #
-# Also reads the legacy zclassicd ORACLE (rpcport 8232, datadir ~/.zclassic)
-# as an external freshness reference — same oracle soak_evidence.sh uses.
+# Also reads the legacy zclassicd ORACLE as an external freshness reference —
+# same oracle soak_evidence.sh uses. Its datadir/rpcport are resolved from the
+# effective zclassicd.service command and zclassic.conf, with 8232 retained only
+# as the compatibility fallback when neither source declares a port.
 #
 # Query mechanism: zcl-rpc getblockchaininfo (the same lightweight raw-RPC
 # CLI soak_evidence.sh uses — NOT the native `zclassic23 status` command,
@@ -140,6 +142,13 @@
 #                           reported BLIND rather than merely unreachable
 #                           (default 10 polls = 10 minutes at the standing
 #                           60 s cadence)
+#   ZCL_SLO_CANON_DATADIR / ZCL_SLO_CANON_RPCPORT
+#                           explicit canonical binding; when absent, resolve
+#                           the effective zclassic23.service ExecStart
+#   ZCL_SLO_ORACLE_DATADIR / ZCL_SLO_ORACLE_RPCPORT
+#                           explicit zclassicd binding; when absent, resolve
+#                           the effective zclassicd.service ExecStart and its
+#                           zclassic.conf
 #   ZCL_SLO_CANON_CMD / ZCL_SLO_DEV_CMD / ZCL_SLO_ORACLE_CMD
 #                           override the exact command run per instance
 #                           (selftest injection seam — same pattern as
@@ -202,6 +211,58 @@ STATE_TIMEOUT_SEC="${ZCL_SLO_STATE_TIMEOUT_SEC:-5}"
 # wedged host cannot turn a 60 s collector into an overlapping one.
 export ZCL_EVIDENCE_TIMEOUT_SEC="${ZCL_SLO_HOST_TIMEOUT_SEC:-5}"
 
+# The canonical lane's datadir is an operator binding, not a repository
+# default.  Read it from the effective unit so an A/B launcher or an
+# isolated recovery lane is measured where it actually runs.  Selftests
+# inject both values and therefore never inspect the host's live unit.
+CANON_DATADIR="${ZCL_SLO_CANON_DATADIR:-}"
+CANON_RPCPORT="${ZCL_SLO_CANON_RPCPORT:-}"
+if [ "${1:-collect}" = "collect" ] &&
+   { [ -z "$CANON_DATADIR" ] || [ -z "$CANON_RPCPORT" ]; }; then
+    canonical_exec="$(evidence_systemd_show zclassic23.service ExecStart)"
+    [ -n "$CANON_DATADIR" ] ||
+        CANON_DATADIR="$(evidence_unit_exec_arg "$canonical_exec" datadir)"
+    [ -n "$CANON_RPCPORT" ] ||
+        CANON_RPCPORT="$(evidence_unit_exec_arg "$canonical_exec" rpcport)"
+fi
+[ -n "$CANON_DATADIR" ] || CANON_DATADIR="${HOME:-/root}/.zclassic-c23"
+[ -n "$CANON_RPCPORT" ] || CANON_RPCPORT=18232
+
+# zclassicd commonly carries rpcport in zclassic.conf rather than ExecStart.
+# Read only an exact, uncommented numeric assignment; the last assignment wins,
+# matching the daemon's normal config-file convention. This is display/routing
+# input to a read-only probe, never authority over chain state.
+oracle_rpcport_from_conf() {
+    local conf="$1"
+    [ -r "$conf" ] || return 0
+    sed -n 's/^[[:space:]]*rpcport[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' \
+        "$conf" | tail -n1
+}
+
+ORACLE_DATADIR="${ZCL_SLO_ORACLE_DATADIR:-}"
+ORACLE_RPCPORT="${ZCL_SLO_ORACLE_RPCPORT:-}"
+if [ "${1:-collect}" = "collect" ] &&
+   { [ -z "$ORACLE_DATADIR" ] || [ -z "$ORACLE_RPCPORT" ]; }; then
+    oracle_exec="$(evidence_systemd_show zclassicd.service ExecStart)"
+    [ -n "$ORACLE_DATADIR" ] ||
+        ORACLE_DATADIR="$(evidence_unit_exec_arg "$oracle_exec" datadir)"
+    [ -n "$ORACLE_DATADIR" ] || ORACLE_DATADIR="${HOME:-/root}/.zclassic"
+    if [ -z "$ORACLE_RPCPORT" ]; then
+        ORACLE_RPCPORT="$(evidence_unit_exec_arg "$oracle_exec" rpcport)"
+        if [ -z "$ORACLE_RPCPORT" ]; then
+            oracle_conf="$(evidence_unit_exec_arg "$oracle_exec" conf)"
+            [ -n "$oracle_conf" ] || oracle_conf="$ORACLE_DATADIR/zclassic.conf"
+            case "$oracle_conf" in
+                /*) ;;
+                *) oracle_conf="$ORACLE_DATADIR/$oracle_conf" ;;
+            esac
+            ORACLE_RPCPORT="$(oracle_rpcport_from_conf "$oracle_conf")"
+        fi
+    fi
+fi
+[ -n "$ORACLE_DATADIR" ] || ORACLE_DATADIR="${HOME:-/root}/.zclassic"
+case "$ORACLE_RPCPORT" in '' | *[!0-9]*) ORACLE_RPCPORT=8232 ;; esac
+
 # ── instance table ────────────────────────────────────────────────────
 # ONE list, probed in order. Row format:
 #     name|rpcport|datadir|command-override-env-var|systemd-unit
@@ -216,12 +277,9 @@ export ZCL_EVIDENCE_TIMEOUT_SEC="${ZCL_SLO_HOST_TIMEOUT_SEC:-5}"
 # one. Everything downstream — the ledger schema, the summary reader, the
 # pager — is driven off whatever rows are here.
 INSTANCES=(
-    "canonical|18232|${HOME:-/root}/.zclassic-c23|ZCL_SLO_CANON_CMD|zclassic23.service"
+    "canonical|$CANON_RPCPORT|$CANON_DATADIR|ZCL_SLO_CANON_CMD|zclassic23.service"
     "dev|18252|${HOME:-/root}/.zclassic-c23-dev|ZCL_SLO_DEV_CMD|zcl23-dev.service"
 )
-ORACLE_DATADIR="${HOME:-/root}/.zclassic"
-ORACLE_RPCPORT=8232
-
 # systemd user services run with a minimal PATH that does not include
 # ~/bin, so a bare `zcl-rpc` in the default probe commands would silently
 # fail every probe under the installed timer even though it works fine
@@ -289,8 +347,8 @@ rpc_probe() {
     out="$(bash -c "$cmd" 2>&1 || true)"
     t1="$(date +%s%N)"
     latency_ms=$(( (t1 - t0) / 1000000 ))
-    served="$(printf '%s' "$out" | sed -n 's/.*"blocks":\([0-9][0-9]*\).*/\1/p' | head -n1)"
-    header="$(printf '%s' "$out" | sed -n 's/.*"headers":\([0-9][0-9]*\).*/\1/p' | head -n1)"
+    served="$(printf '%s' "$out" | sed -n 's/.*"blocks":[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1)"
+    header="$(printf '%s' "$out" | sed -n 's/.*"headers":[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1)"
     local raw_tail=""
     if [ -z "$served" ]; then
         raw_tail="$(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
@@ -605,13 +663,33 @@ cmd_selftest() {
     export ZCL_SLO_RSS_CMD='true'
     export ZCL_SLO_DU_CMD='true'
     export ZCL_SLO_NODE_BIN=''
+    export ZCL_SLO_CANON_DATADIR='/fixture/canonical'
+    export ZCL_SLO_CANON_RPCPORT=18232
+    export ZCL_SLO_ORACLE_DATADIR='/fixture/oracle'
+    export ZCL_SLO_ORACLE_RPCPORT=8232
+
+    local bind_fixture bind_duplicate
+    bind_fixture='ExecStart={ path=/fixture/launch ; argv[]=/fixture/launch /fixture/node -datadir=/fixture/live -rpcport=19001 ; ignore_errors=no ; }'
+    [ "$(evidence_unit_exec_arg "$bind_fixture" datadir)" = "/fixture/live" ] ||
+        st_fail "case=service-binding datadir was not parsed from argv[]"
+    [ "$(evidence_unit_exec_arg "$bind_fixture" rpcport)" = "19001" ] ||
+        st_fail "case=service-binding rpcport was not parsed from argv[]"
+    bind_duplicate='ExecStart={ path=/fixture/node ; argv[]=/fixture/node -rpcport=1 -rpcport=2 ; }'
+    [ -z "$(evidence_unit_exec_arg "$bind_duplicate" rpcport)" ] ||
+        st_fail "case=service-binding duplicate rpcport must fail closed"
+    printf '# fixture\nrpcport=8232\nrpcport = 8023\n' > "$ST_TMP/zclassic.conf"
+    [ "$(oracle_rpcport_from_conf "$ST_TMP/zclassic.conf")" = "8023" ] ||
+        st_fail "case=service-binding oracle rpcport was not read from config"
+    echo "selftest: ok case=service-binding"
 
     # A) every instance + the oracle reachable, dev lagging.
     (
         export ZCL_SLO_LEDGER_DIR="$ST_TMP/a"
         export ZCL_SLO_CANON_CMD="echo '{\"result\":{\"blocks\":100,\"headers\":100}}'"
         export ZCL_SLO_DEV_CMD="echo '{\"result\":{\"blocks\":90,\"headers\":101}}'"
-        export ZCL_SLO_ORACLE_CMD="echo '{\"result\":{\"blocks\":101,\"headers\":101}}'"
+        # zclassic-cli emits spaces after JSON colons; the probe must accept
+        # that normal pretty-printed shape without an operator-side `tr` shim.
+        export ZCL_SLO_ORACLE_CMD="echo '{\"result\": {\"blocks\": 101, \"headers\": 101}}'"
         bash "$SELF" collect >/dev/null
     )
     local f="$ST_TMP/a/uptime-ledger.jsonl"

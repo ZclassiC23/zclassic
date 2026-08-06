@@ -211,6 +211,24 @@ evidence_unit_exec_bin() {
         head -n1
 }
 
+# evidence_unit_exec_arg <show-output> <key>: the value of exactly one
+# `-key=value` token in the argv[] segment of an ExecStart property.  The
+# service contract deliberately forbids whitespace in these values; an
+# absent or duplicated key prints "" so a collector can fall back without
+# guessing which configured endpoint is authoritative.
+evidence_unit_exec_arg() {
+    local show="${1:-}" key="${2:-}" values="" count=""
+    case "$key" in '' | *[!0-9A-Za-z_-]*) printf ''; return 0 ;; esac
+    values="$(printf '%s\n' "$show" |
+        sed -n 's/^ExecStart=.*argv\[\]=\([^;]*\);.*$/\1/p' |
+        tr ' ' '\n' |
+        sed -n "s/^-${key}=//p")"
+    count="$(printf '%s\n' "$values" |
+        awk 'NF { n++ } END { print n + 0 }')"
+    [ "$count" = "1" ] || { printf ''; return 0; }
+    printf '%s\n' "$values" | awk 'NF { print; exit }'
+}
+
 # ── hashing ────────────────────────────────────────────────────────────
 
 # evidence_sha256_file <path>: lowercase hex digest, "" when unreadable.

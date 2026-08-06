@@ -37,6 +37,9 @@
 #include <sqlite3.h>
 
 #include "models/database.h"             /* struct node_db, node_db_prepare_readonly_query */
+#include "models/block.h"                /* struct db_block, db_block_find_by_height */
+#include "jobs/mint_skip_crypto.h"       /* mint_skip_crypto_get */
+#include "config/consensus_state_producer_receipt.h"
 #include "storage/progress_store.h"      /* progress_store_db */
 #include "storage/coins_kv.h"            /* coins_kv_get_applied_height */
 #include "jobs/mint_fold_ceiling.h"      /* mint_fold_ceiling_set */
@@ -54,6 +57,11 @@
  * driver runs; read on the same thread. */
 static bool    g_full_fold_armed  = false;
 static int32_t g_full_fold_target = -1;
+/* The boot-time node.db handle, stashed by boot_full_fold_reset so the
+ * terminal export can resolve the header hash at the fold target (the same
+ * blocks projection the checkpoint-pinned exporter reads). Same process,
+ * same open handle — boot keeps it open through main.c's mint call. */
+static struct node_db *g_ff_ndb   = NULL;
 
 void boot_full_fold_arm(int32_t tip_target)
 {
@@ -90,6 +98,93 @@ bool boot_full_fold_finish(sqlite3 *pdb, int32_t through, int64_t count,
     return reached;
 }
 
+/* One-shot tip-height consensus-state bundle export, called by
+ * boot_mint_anchor_run when a -full-fold run REACHED the local header tip
+ * under FULL validation. The checkpoint mint's terminal ceremony is bound to
+ * cp->height/cp->block_hash; this is the same producer-END sequence — receipt
+ * finalize, earned sovereign markers, bundle export — bound to the header TIP
+ * the fold actually reached, so a -full-fold producer doubles as a cold-start
+ * weld artifact factory. The receipt's running-binary binding makes this
+ * callable ONLY by the binary that ran the fold, and the export proof
+ * (consensus_export_prove_source) re-verifies the frozen source at the target
+ * (coins applied height, genesis-complete cursors, contiguous stamped stage
+ * rows, FULL profile, H* == target) and refuses anything short — fail closed:
+ * a refusal leaves no file and names a PERMANENT blocker. Returns false on any
+ * refusal so main.c's minted ? 0 : 1 surfaces the failure. */
+bool boot_full_fold_export_bundle(sqlite3 *pdb, const char *datadir,
+                                  int32_t target)
+{
+    if (!pdb || target <= 0)
+        LOG_FAIL("full_fold",
+                 "[full-fold] bundle export: bad args pdb=%p target=%d",
+                 (void *)pdb, target);
+
+    /* The PoW anchor the receipt + bundle bind to: the header THIS node holds
+     * at the fold target, from the same blocks projection the checkpoint-
+     * pinned exporter reads (db_block_find_by_height; internal byte order —
+     * the export request copies it verbatim). */
+    struct db_block blk;
+    if (!g_ff_ndb || !db_block_find_by_height(g_ff_ndb, target, &blk)) {
+        fprintf(stderr,
+                "[full-fold] bundle export REFUSED: no header row at the fold "
+                "target h=%d (import the header chain first)\n", target);
+        LOG_FAIL("full_fold",
+                 "[full-fold] bundle export: header row missing at target "
+                 "h=%d", target);
+    }
+
+    /* Producer-END ownership: finalize the durable source receipt at
+     * (target, tip hash). Same call the checkpoint mint makes; fails closed if
+     * the running executable is not the receipt-session opener. */
+    char rc_err[256] = {0};
+    if (!consensus_state_producer_receipt_finalize(pdb, target, blk.hash,
+                                                   rc_err, sizeof rc_err)) {
+        fprintf(stderr,
+                "[full-fold] source receipt finalize FAILED at h=%d: %s — "
+                "bundle export cannot proceed on an unreceipted fold\n",
+                target, rc_err);
+        LOG_FAIL("full_fold",
+                 "[full-fold] source receipt finalize failed at h=%d: %s",
+                 target, rc_err);
+    }
+    fprintf(stderr,
+            "[full-fold] durable source receipt finalized at h=%d "
+            "(fold_cursor=%d) — exporting the tip-height consensus-state "
+            "bundle\n", target, target + 1);
+
+    /* The markers are EARNED here by construction: this process self-folded
+     * the complete genesis..target history under FULL validation, and the
+     * export proof re-checks the stamped stage-row prefix before admitting
+     * the bundle. The exporter requires BOTH markers on the source; without
+     * them a fresh full-validation producer's export always refuses. */
+    if (!boot_mint_anchor_stamp_sovereign_markers(pdb)) {
+        fprintf(stderr,
+                "[full-fold] sovereign marker stamp FAILED at h=%d — refusing "
+                "to export against an unmarked source\n", target);
+        LOG_FAIL("full_fold",
+                 "[full-fold] sovereign marker stamp failed at h=%d", target);
+    }
+
+    return boot_mint_anchor_export_bundle(pdb, datadir, target, blk.hash);
+}
+
+/* The -full-fold terminal path, called by boot_mint_anchor_run in place of the
+ * checkpoint ceremony: the H* verdict, then — on REACHED under FULL validation
+ * — the tip-height bundle export. A checkpoint_fold-profile (-mint-anchor-fast)
+ * fold is non-serving by construction; skip the export exactly like the
+ * checkpoint mint. An export refusal fails the run (main.c: minted ? 0 : 1). */
+bool boot_full_fold_conclude(sqlite3 *pdb, const char *datadir,
+                             int32_t through, int64_t count, int32_t target,
+                             int stall_limit)
+{
+    const bool reached =
+        boot_full_fold_finish(pdb, through, count, target, stall_limit);
+    if (reached && !mint_skip_crypto_get() &&
+        !boot_full_fold_export_bundle(pdb, datadir, target))
+        return false;   /* the refusal is already event+blocker loud */
+    return reached;
+}
+
 /* Highest block height present in node.db's `blocks` table (the imported header
  * tip). Returns -1 if unavailable. This is the -full-fold ceiling: header_admit
  * admits up to it and the pipeline converges there; if a body is missing below
@@ -112,6 +207,7 @@ static int32_t full_fold_header_tip_height(struct node_db *ndb)
 void boot_full_fold_reset(struct node_db *ndb, struct main_state *state)
 {
     (void)state;
+    g_ff_ndb = ndb;
     sqlite3 *rpdb = progress_store_db();
     if (!rpdb) {
         fprintf(stderr, "FATAL: -full-fold: progress store not open\n");

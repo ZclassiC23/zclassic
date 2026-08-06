@@ -1,0 +1,22 @@
+# slot_start|slot_end|case_id|variant|source_pool|prerequisite|recipient_zat|fee_ceiling_zat
+#
+# Stable, auditable allocation for mainnet-micro-100-v1.  Every numbered slot
+# is exactly one newly broadcast transaction whose primary recipient value is
+# 1,000 zatoshi (0.00001000 ZCL).  Change, protocol metadata, and an auxiliary
+# dust output are not recipient value.  Setup transactions are deliberately
+# outside these 100 slots and share the campaign's separately bounded setup
+# envelope.
+001|016|transparent_t_to_t|standard_payment|transparent|fresh_transparent_recipient|1000|10000
+017|026|raw_custom_transaction|standard_p2pkh_escape_hatch|transparent|standard_script_and_owner_review|1000|10000
+027|028|transparent_p2sh_multisig_spend|threshold_spend|transparent|confirmed_multisig_funding_output|1000|10000
+029|043|sapling_t_to_z|shield_micro_payment|transparent|prover_and_fresh_sapling_recipient|1000|10000
+044|058|sapling_z_to_z|private_micro_payment|sapling|confirmed_sapling_note_and_prover|1000|10000
+059|073|sapling_z_to_t|unshield_micro_payment|sapling|confirmed_sapling_note_and_transparent_recipient|1000|10000
+074|078|sapling_mixed_recipient|mixed_micro_fanout|sapling|prover_and_two_recipient_pools|1000|10000
+079|086|sapling_onchain_memo|encrypted_memo_micro_payment|sapling|prover_and_message_recipient|1000|10000
+087|090|zpay_memo_envelope|zpay_micro_payment|sapling|zpay_envelope_prover_and_recipient|1000|10000
+091|092|htlc_redeem|claim_micro_settlement|contract|confirmed_htlc_and_secret|1000|10000
+093|094|htlc_refund|timeout_micro_settlement|contract|confirmed_htlc_and_mature_lockheight|1000|10000
+095|096|store_transparent_payment|store_micro_settlement|transparent|fresh_store_order|1000|10000
+097|098|yardsale_atomic_purchase|atomic_micro_purchase|transparent|two_party_order_and_token_inventory|1000|10000
+099|100|market_purchase|market_micro_payment|transparent|authenticated_offer_and_delivery_peer|1000|10000

@@ -156,15 +156,9 @@ bool sapling_spend_synthesize_traced(struct constraint_system *cs,
                                       struct spend_wire_probe *probe);
 
 /* ── Native spend-prover sovereignty status (honest, typed, named) ──────────
- *
- * bellman's Spend::synthesize is 28 sections / 98777 constraints. The native
- * C23 port synthesizes a faithful PREFIX; a partial prefix produces NO valid
- * Groth16 proof (pairing is all-or-nothing), so the native spend prover cannot
- * yet round-trip through the unmodified consensus verifier. This surface makes
- * that gap a first-class, typed, NAMED blocker instead of a silent gap: the
- * production self-test and any operator command can read it, and it flips to
- * `roundtrip_ready = true` only once every section is ported AND a native proof
- * is accepted by the verifier. It never reports a pass it cannot back. */
+ * bellman's Spend::synthesize is 28 sections / 98777 constraints. Counts come
+ * from a canonical synthesis; `roundtrip_ready` comes only from the positive
+ * native proof -> independent consensus-verifier self-test. */
 #define SPEND_CIRCUIT_TOTAL_SECTIONS    28u
 #define SPEND_CIRCUIT_TOTAL_CONSTRAINTS 98777u
 

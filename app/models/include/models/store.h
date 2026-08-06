@@ -11,7 +11,9 @@
 enum {
     STORE_PRODUCT_NAME_MAX = 255,
     STORE_PRODUCT_DESC_MAX = 1023,
-    STORE_PRODUCT_TOKEN_MAX = 63,
+    /* 64 admits a ZSLP genesis token id (32 bytes, 64 hex chars) verbatim —
+     * the access-gate settles in ZSLP and zslp_mint takes only the hex id. */
+    STORE_PRODUCT_TOKEN_MAX = 64,
     STORE_ORDER_ADDR_MAX = 127,
     STORE_ORDER_TXID_MAX = 127
 };

@@ -30,6 +30,9 @@ static bool agent_session_before_validate(void *record, void *ctx)
     model_trim_ascii(s->session_id);
     model_trim_ascii(s->account);
     model_trim_ascii(s->recipient_allowlist);
+    model_trim_ascii(s->wallet_scope);
+    model_trim_ascii(s->wallet_instance_id);
+    model_trim_ascii(s->wallet_genesis);
     if (s->created_at == 0)
         s->created_at = (int64_t)platform_time_wall_time_t();
     return true;
@@ -60,12 +63,24 @@ bool agent_session_validate(const struct db_agent_session *s,
         "window_seconds", "exceeds the one-year window bound");
     validates_non_negative(errors, s, window_start_epoch);
     validates_money_range(errors, s, spent_in_window_zat, AGENT_SESSION_MAX_ZAT);
+    validates_money_range(errors, s, lifetime_spent_zat,
+                          AGENT_SESSION_MAX_ZAT);
     validates_custom(errors,
         strlen(s->recipient_allowlist) <= AGENT_SESSION_ALLOWLIST_MAX,
         "recipient_allowlist", "exceeds max length");
     validates_non_negative(errors, s, expires_at);
     validates_custom(errors, s->revoked == 0 || s->revoked == 1,
         "revoked", "is not 0 or 1");
+    const bool unbound = s->wallet_scope[0] == '\0' &&
+        s->wallet_instance_id[0] == '\0' && s->wallet_genesis[0] == '\0';
+    const bool bound =
+        (strcmp(s->wallet_scope, "dev") == 0 ||
+         strcmp(s->wallet_scope, "prod") == 0) &&
+        zcl_is_hex_string(s->wallet_instance_id,
+                          WALLET_INSTANCE_ID_HEX_LEN) &&
+        zcl_is_hex_string(s->wallet_genesis, WALLET_GENESIS_HEX_LEN);
+    validates_custom(errors, unbound || bound, "wallet_binding",
+                     "must be wholly empty or a complete dev/prod binding");
     return !ar_errors_any(errors);
 }
 
@@ -101,8 +116,9 @@ bool agent_session_save(struct node_db *ndb, const struct db_agent_session *s)
         "INSERT OR REPLACE INTO agent_sessions "
         "(session_id,account,max_per_tx_zat,max_per_window_zat,"
         "window_seconds,window_start_epoch,spent_in_window_zat,"
-        "recipient_allowlist,created_at,expires_at,revoked) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "recipient_allowlist,created_at,expires_at,revoked,wallet_scope,"
+        "wallet_instance_id,wallet_genesis,lifetime_spent_zat) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         cbs, "agent_session", s, agent_session_validate,
         AR_BIND_TEXT(st, 1, s->session_id);
         AR_BIND_TEXT(st, 2, s->account);
@@ -114,7 +130,11 @@ bool agent_session_save(struct node_db *ndb, const struct db_agent_session *s)
         AR_BIND_TEXT(st, 8, s->recipient_allowlist);
         AR_BIND_INT(st, 9, s->created_at);
         AR_BIND_INT(st, 10, s->expires_at);
-        AR_BIND_INT(st, 11, s->revoked));
+        AR_BIND_INT(st, 11, s->revoked);
+        AR_BIND_TEXT(st, 12, s->wallet_scope);
+        AR_BIND_TEXT(st, 13, s->wallet_instance_id);
+        AR_BIND_TEXT(st, 14, s->wallet_genesis);
+        AR_BIND_INT(st, 15, s->lifetime_spent_zat));
 }
 
 static void agent_session_read_row(struct db_agent_session *out,
@@ -132,12 +152,18 @@ static void agent_session_read_row(struct db_agent_session *out,
     out->created_at = AR_COL_INT(st, 8);
     out->expires_at = AR_COL_INT(st, 9);
     out->revoked = (int)AR_COL_INT(st, 10);
+    AR_READ_STR(st, 11, out->wallet_scope, sizeof(out->wallet_scope));
+    AR_READ_STR(st, 12, out->wallet_instance_id,
+                sizeof(out->wallet_instance_id));
+    AR_READ_STR(st, 13, out->wallet_genesis, sizeof(out->wallet_genesis));
+    out->lifetime_spent_zat = AR_COL_INT(st, 14);
 }
 
 #define AGENT_SESSION_COLS \
     "session_id,account,max_per_tx_zat,max_per_window_zat,window_seconds," \
     "window_start_epoch,spent_in_window_zat,recipient_allowlist," \
-    "created_at,expires_at,revoked"
+    "created_at,expires_at,revoked,wallet_scope,wallet_instance_id," \
+    "wallet_genesis,lifetime_spent_zat"
 
 bool agent_session_find(struct node_db *ndb, const char *session_id,
                         struct db_agent_session *out)
@@ -195,15 +221,35 @@ bool agent_session_revoke(struct node_db *ndb, const char *session_id)
  * business restating authority it merely read. Zero rows changed (revoked in
  * the meantime, or the row is gone) is a refusal, not a silent success. */
 static bool as_write_window(struct node_db *ndb, const char *session_id,
-                            int64_t window_start, int64_t spent)
+                            int64_t window_start, int64_t spent,
+                            int64_t lifetime_spent)
 {
     sqlite3_stmt *st = NULL;
     AR_EXEC_CHANGED_BOOL(ndb, st,
         "UPDATE agent_sessions SET window_start_epoch=?,"
-        "spent_in_window_zat=? WHERE session_id=? AND revoked=0",
+        "spent_in_window_zat=?,lifetime_spent_zat=? "
+        "WHERE session_id=? AND revoked=0",
         AR_BIND_INT(st, 1, window_start);
         AR_BIND_INT(st, 2, spent);
-        AR_BIND_TEXT(st, 3, session_id));
+        AR_BIND_INT(st, 3, lifetime_spent);
+        AR_BIND_TEXT(st, 4, session_id));
+}
+
+int64_t agent_session_scope_lifetime_spent(struct node_db *ndb,
+                                           const char *wallet_scope)
+{
+    sqlite3_stmt *st = NULL;
+    if (!ndb || !ndb->open || !wallet_scope || !wallet_scope[0])
+        LOG_ERR("model", "agent_session_scope_lifetime_spent: bad args");
+    AR_PREPARE_RET(ndb, st,
+        "SELECT COALESCE(SUM(lifetime_spent_zat),0) FROM agent_sessions "
+        "WHERE wallet_scope=?", -1);
+    AR_BIND_TEXT(st, 1, wallet_scope);
+    int64_t total = -1;
+    if (AR_STEP_ROW(st))
+        total = AR_COL_INT(st, 0);
+    AR_FINALIZE(st);
+    return total;
 }
 
 /* The single-writer boundary for the rolling window. Held across the read and
@@ -213,7 +259,9 @@ static pthread_mutex_t g_agent_session_window_lock = PTHREAD_MUTEX_INITIALIZER;
 
 enum agent_session_authz agent_session_authorize(
     struct node_db *ndb, const char *session_id, int64_t amount_zat,
-    const char *recipient, int64_t now_epoch, bool commit,
+    const char *recipient, const char *wallet_scope,
+    const struct wallet_identity_row *current_wallet,
+    int64_t now_epoch, bool commit,
     int64_t *window_remaining_zat)
 {
     if (window_remaining_zat)
@@ -231,6 +279,24 @@ enum agent_session_authz agent_session_authorize(
         if (!agent_session_find(ndb, session_id, &s) || s.revoked ||
             (s.expires_at != 0 && now_epoch >= s.expires_at)) {
             verdict = AGENT_SESSION_AUTHZ_INVALID;
+            break;
+        }
+        if (!s.wallet_scope[0] || !s.wallet_instance_id[0] ||
+            !s.wallet_genesis[0]) {
+            verdict = AGENT_SESSION_AUTHZ_WALLET_UNBOUND;
+            break;
+        }
+        if (!wallet_scope || !wallet_scope[0] || !current_wallet) {
+            verdict = AGENT_SESSION_AUTHZ_WALLET_MISMATCH;
+            break;
+        }
+        char current_genesis[WALLET_GENESIS_HEX_LEN + 1];
+        wallet_identity_genesis_hex(current_wallet, current_genesis);
+        if (strcmp(s.wallet_scope, wallet_scope) != 0 ||
+            strcmp(s.wallet_instance_id,
+                   current_wallet->wallet_instance_id) != 0 ||
+            strcmp(s.wallet_genesis, current_genesis) != 0) {
+            verdict = AGENT_SESSION_AUTHZ_WALLET_MISMATCH;
             break;
         }
         if (amount_zat > s.max_per_tx_zat) {
@@ -255,9 +321,24 @@ enum agent_session_authz agent_session_authorize(
             verdict = AGENT_SESSION_AUTHZ_RECIPIENT;
             break;
         }
+        int64_t scope_lifetime =
+            agent_session_scope_lifetime_spent(ndb, s.wallet_scope);
+        if (scope_lifetime < 0 || scope_lifetime > AGENT_SESSION_MAX_ZAT - amount_zat) {
+            verdict = AGENT_SESSION_AUTHZ_STORE;
+            break;
+        }
+        /* The development-lab allocation is global across sessions and never
+         * resets with a rate window. Fees are included in amount_zat by the
+         * node-side service before this model is called. */
+        if (strcmp(s.wallet_scope, "dev") == 0 &&
+            scope_lifetime + amount_zat > 5000000) {
+            verdict = AGENT_SESSION_AUTHZ_WINDOW_LIMIT;
+            break;
+        }
         if (commit &&
             !as_write_window(ndb, session_id, window_start,
-                             spent + amount_zat)) {
+                             spent + amount_zat,
+                             s.lifetime_spent_zat + amount_zat)) {
             verdict = AGENT_SESSION_AUTHZ_STORE;
             break;
         }
@@ -295,7 +376,11 @@ bool agent_session_release(struct node_db *ndb, const char *session_id,
         int64_t spent = s.spent_in_window_zat - amount_zat;
         if (spent < 0)
             spent = 0;
-        ok = as_write_window(ndb, session_id, s.window_start_epoch, spent);
+        int64_t lifetime = s.lifetime_spent_zat - amount_zat;
+        if (lifetime < 0)
+            lifetime = 0;
+        ok = as_write_window(ndb, session_id, s.window_start_epoch, spent,
+                             lifetime);
     } while (0);
     pthread_mutex_unlock(&g_agent_session_window_lock);
     if (!ok)
@@ -342,6 +427,13 @@ bool agent_session_dump_state_json(struct json_value *out, const char *key)
                                  s.spent_in_window_zat);
                 json_push_kv_int(out, "expires_at", s.expires_at);
                 json_push_kv_bool(out, "revoked", s.revoked != 0);
+                json_push_kv_str(out, "wallet_scope", s.wallet_scope);
+                json_push_kv_str(out, "wallet_instance_id",
+                                 s.wallet_instance_id);
+                json_push_kv_bool(out, "wallet_bound",
+                                  s.wallet_instance_id[0] != '\0');
+                json_push_kv_int(out, "lifetime_spent_zat",
+                                 s.lifetime_spent_zat);
             }
             return true;
         }

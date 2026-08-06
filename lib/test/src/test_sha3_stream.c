@@ -150,7 +150,48 @@ int test_sha3_stream(void)
         else { printf("FAIL (%d)\n", inc_fail); failures++; }
     }
 
-    /* ── 4. Honest throughput report (informational, never gated) ────── */
+    /* ── 4. SHAKE KATs, multi-block squeeze and checked pointers ────── */
+    printf("sha3_stream: FIPS-202 SHAKE128/256 KATs... ");
+    {
+        static const char *shake128_empty =
+            "7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26";
+        static const char *shake256_empty =
+            "46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f"
+            "d75dc4ddd8c0f200cb05019d67b592f6fc821c49479ab48640292eacb3b7c4be";
+        uint8_t want128[32], want256[64];
+        uint8_t got128[32], got256[64];
+        hex2bin(shake128_empty, want128, sizeof(want128));
+        hex2bin(shake256_empty, want256, sizeof(want256));
+        bool ok = zcl_shake128(NULL, 0, got128, sizeof(got128)) &&
+                  zcl_shake256(NULL, 0, got256, sizeof(got256)) &&
+                  memcmp(got128, want128, sizeof(got128)) == 0 &&
+                  memcmp(got256, want256, sizeof(got256)) == 0;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("sha3_stream: SHAKE multi-block prefix/canary/NULL contract... ");
+    {
+        uint8_t msg[169], long_out[402], prefix[169], untouched[8];
+        memset(msg, 0x3c, sizeof(msg));
+        memset(long_out, 0xa5, sizeof(long_out));
+        memset(prefix, 0, sizeof(prefix));
+        memset(untouched, 0x6d, sizeof(untouched));
+        bool ok = zcl_shake128(msg, sizeof(msg), long_out + 1, 400) &&
+                  zcl_shake128(msg, sizeof(msg), prefix, sizeof(prefix)) &&
+                  long_out[0] == 0xa5 && long_out[401] == 0xa5 &&
+                  memcmp(long_out + 1, prefix, sizeof(prefix)) == 0 &&
+                  zcl_shake128(NULL, 0, NULL, 0) &&
+                  zcl_shake256(msg, sizeof(msg), NULL, 0) &&
+                  !zcl_shake128(NULL, 1, untouched, sizeof(untouched)) &&
+                  !zcl_shake256(msg, sizeof(msg), NULL, 1);
+        for (size_t i = 0; i < sizeof(untouched); i++)
+            ok = ok && untouched[i] == 0x6d;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── 5. Honest throughput report (informational, never gated) ────── */
     {
         static const size_t sizes[] = { 136, 4096, 1u << 20 };
         static const char  *names[] = { "short(136B)", "medium(4KB)", "long(1MB)" };

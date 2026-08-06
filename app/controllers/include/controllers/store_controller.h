@@ -48,6 +48,15 @@ bool store_check_token_access(const char *datadir,
                                const char *token_id,
                                uint64_t required);
 
+/* The balance answer behind the access gate: max() of the chain-derived
+ * zslp_ledger holding (the only production source — zslp_balances is
+ * deliberately left empty by the chain-scan path) and the credit-only
+ * legacy table (fixture path). Exposed so the view's denial page reports
+ * the same number the gate used. */
+uint64_t store_access_token_balance(const char *datadir,
+                                    const char *customer_addr,
+                                    const char *token_id);
+
 /* Confirmed value credited to order `order_id` at its one-time payment
  * address, under the order binding that the address type implies:
  *

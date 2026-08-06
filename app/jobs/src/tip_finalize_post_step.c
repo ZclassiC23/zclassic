@@ -350,18 +350,30 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
              * decision, not a side effect of a regtest fix. */
             if (ndb) {
                 if (regtest_on_demand) {
-                    if (!node_db_sync_connect_block(ndb, blk, pindex_new))
+                    /* ASYNC is load-bearing here, not an optimization. This
+                     * feed runs on the reducer drive inside stage_run_once,
+                     * which holds the GLOBAL progress_store_tx_lock across the
+                     * whole stage step. The synchronous variants
+                     * (node_db_sync_connect_block / node_db_sync_wallet_tx)
+                     * wait on db-service job completion; a db-service job
+                     * that reads progress.kv (e.g. the catchup lane's
+                     * sapling_tree_flat_checkpoint_note fold-cursor guard)
+                     * waits on that same mutex — a hard AB-BA deadlock with
+                     * no timeout on either side (reproduced 2026-08-02:
+                     * mining + catchup at h=21/59 wedged every RPC worker
+                     * behind sovereignty_guard_allow and froze the
+                     * tick-runner in chain_tip_watchdog; /tmp/wedge-bt.txt).
+                     * The enqueued job folds the block write + per-tx wallet
+                     * projection into one db-service write so ordering
+                     * (blocks row before the wallet_tx time lookup) is kept.
+                     * The projection is derived and repairable, so async
+                     * ordering vs the tip is safe. */
+                    if (!node_db_sync_connect_block_async_with_wallet(
+                            ndb, blk, pindex_new, wallet))
                         LOG_WARN("tip_finalize",
-                                 "regtest projection: connect_block sync "
-                                 "failed at height %d", pindex_new->nHeight);
-                    for (size_t i = 0; i < blk->num_vtx; i++) {
-                        if (!node_db_sync_wallet_tx(ndb, &blk->vtx[i], wallet,
-                                                    pindex_new->nHeight))
-                            LOG_WARN("tip_finalize",
-                                     "regtest projection: wallet_tx sync "
-                                     "failed at height %d tx %zu",
-                                     pindex_new->nHeight, i);
-                    }
+                                 "regtest projection: async connect_block "
+                                 "enqueue failed at height %d",
+                                 pindex_new->nHeight);
                 }
             }
         }

@@ -24,14 +24,24 @@
 
 #include "test/test_core.h"
 
+#include "base/hex.h"
+#include "core/core_io.h"
 #include "config/command_catalog.h"
+#include "controllers/transaction_controller.h"
 #include "dev_failure_store.h"
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
 #include "controllers/rpc_client.h"
 #include "controllers/status_native_handlers.h"
 #include "json/json.h"
+#include "keys/key_io.h"
 #include "platform/time_compat.h"
+#include "rpc/server.h"
+#include "sim/simnet.h"
+#include "support/cleanse.h"
+#include "util/safe_alloc.h"
+#include "wallet/keystore.h"
+#include "zanc/zanc.h"
 
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -538,10 +548,11 @@ static int test_native_app_catalog_uses_strict_builtin_source(void)
         zcl_command_reply_init(&reply, "zcl.app_index.v1");
         zcl_native_handle_app_list(&request, &reply);
         const struct json_value *apps = json_get(&reply.data, "apps");
-        ASSERT(apps && apps->type == JSON_ARR && apps->num_children == 2);
+        ASSERT(apps && apps->type == JSON_ARR && apps->num_children == 3);
         ASSERT_STR_EQ(json_get_str(&apps->children[0]), "blog");
         ASSERT_STR_EQ(json_get_str(&apps->children[1]), "social");
-        ASSERT_EQ(json_get_int(json_get(&reply.data, "count")), 2);
+        ASSERT_STR_EQ(json_get_str(&apps->children[2]), "yardsale");
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "count")), 3);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "catalog")),
                       "built-in-strict-v1");
         zcl_command_reply_free(&reply);
@@ -813,11 +824,13 @@ static int test_status_brief_body_front_door_deadline(void)
  * through their plan/commit contract with NO live node: address.new persists
  * an address, and transaction.send only broadcasts on the confirmed call. */
 static int g_wallet_send_calls;
+static int g_wallet_z_sendmany_calls;
 static int g_wallet_raw_broadcast_calls;
+static int g_wallet_multisig_compose_calls;
+static char g_wallet_z_sendmany_params[4096];
 
 static char *wallet_stub_rpc(const char *method, const char *params_json)
 {
-    (void)params_json;
     if (method && strcmp(method, "getnewaddress") == 0)
         return strdup("\"t1StubTransparentAddress00000000000\"");
     if (method && strcmp(method, "sendtoaddress") == 0) {
@@ -825,6 +838,15 @@ static char *wallet_stub_rpc(const char *method, const char *params_json)
         return strdup(
             "\"aa11bb22cc33dd44ee55ff66aa77bb88"
             "cc99dd00ee11ff22aa33bb44cc55dd66\"");
+    }
+    if (method && strcmp(method, "z_sendmany") == 0) {
+        g_wallet_z_sendmany_calls++;
+        (void)snprintf(g_wallet_z_sendmany_params,
+                       sizeof(g_wallet_z_sendmany_params), "%s",
+                       params_json ? params_json : "");
+        return strdup(
+            "\"cc11bb22cc33dd44ee55ff66aa77bb88"
+            "cc99dd00ee11ff22aa33bb44cc55dd88\"");
     }
     if (method && strcmp(method, "createrawtransaction") == 0)
         return strdup("\"0400008085202f89000000000000000000000000\"");
@@ -837,6 +859,13 @@ static char *wallet_stub_rpc(const char *method, const char *params_json)
             "\"bb11bb22cc33dd44ee55ff66aa77bb88"
             "cc99dd00ee11ff22aa33bb44cc55dd77\"");
     }
+    if (method && strcmp(method, "createmultisig") == 0) {
+        g_wallet_multisig_compose_calls++;
+        return strdup(
+            "{\"address\":\"t3TypedMultisigAddress000000000000000\","
+            "\"redeemScript\":\"512102aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa51ae\"}");
+    }
     return strdup("null");
 }
 
@@ -847,7 +876,10 @@ static int test_wallet_mutating_native_e2e(void)
 
     TEST("core.wallet mutating leaves execute plan/commit over a stubbed RPC") {
         g_wallet_send_calls = 0;
+        g_wallet_z_sendmany_calls = 0;
         g_wallet_raw_broadcast_calls = 0;
+        g_wallet_multisig_compose_calls = 0;
+        g_wallet_z_sendmany_params[0] = '\0';
         node_rpc_client_set_test_hook(wallet_stub_rpc);
 
         /* 1. address.new persists and returns a fresh transparent address. */
@@ -962,7 +994,135 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&commit_in);
 
-        /* 4. raw create/sign do not broadcast; raw broadcast itself obeys
+        /* 4. shielded.send plans the exact scope/amount/memo without an RPC,
+         *    then synchronously returns the z_sendmany transaction id. */
+        const struct zcl_command_spec *shield_spec =
+            find_spec(reg, "core.wallet.shielded.send");
+        ASSERT(shield_spec != NULL);
+        ASSERT(shield_spec->availability == ZCL_COMMAND_READY);
+        ASSERT(shield_spec->confirmation == ZCL_COMMAND_CONFIRM_PLAN_COMMIT);
+        ASSERT(shield_spec->mode == ZCL_COMMAND_MODE_SYNC);
+
+        struct json_value shield_plan;
+        json_init(&shield_plan);
+        json_set_object(&shield_plan);
+        (void)json_push_kv_str(&shield_plan, "wallet_scope", "dev");
+        (void)json_push_kv_str(&shield_plan, "from", "zs1StubSource");
+        (void)json_push_kv_str(&shield_plan, "to", "zs1StubRecipient");
+        (void)json_push_kv_str(&shield_plan, "amount", "0.1");
+        (void)json_push_kv_str(&shield_plan, "memo_hex", "aabb");
+        (void)json_push_kv_str(&shield_plan, "idempotency_key", "lab-1");
+        struct zcl_command_request shield_req = {
+            .spec = shield_spec, .input = &shield_plan, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, shield_spec->output_schema);
+        zcl_native_handle_wallet_shielded_send(&shield_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "wallet_scope")),
+                      "dev");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "amount")),
+                      "0.10000000");
+        ASSERT_EQ(g_wallet_z_sendmany_calls, 0);
+        const char *shield_commit_text =
+            json_get_str(json_get(&reply.data, "commit_input"));
+        ASSERT(shield_commit_text && shield_commit_text[0]);
+        struct json_value shield_commit;
+        json_init(&shield_commit);
+        ASSERT(json_read(&shield_commit, shield_commit_text,
+                         strlen(shield_commit_text)));
+        char shield_why[160] = {0};
+        ASSERT(zcl_command_registry_input_validate(
+            shield_spec, &shield_commit, shield_why, sizeof(shield_why)));
+        ASSERT_STR_EQ(json_get_str(json_get(&shield_commit, "wallet_scope")),
+                      "dev");
+        ASSERT_STR_EQ(json_get_str(json_get(&shield_commit, "amount")),
+                      "0.10000000");
+        ASSERT_STR_EQ(json_get_str(json_get(&shield_commit, "memo_hex")),
+                      "aabb");
+        ASSERT(json_get_bool(json_get(&shield_commit, "confirm")));
+        zcl_command_reply_free(&reply);
+        json_free(&shield_plan);
+
+        shield_req.input = &shield_commit;
+        zcl_command_reply_init(&reply, shield_spec->output_schema);
+        zcl_native_handle_wallet_shielded_send(&shield_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")),
+                      "committed");
+        ASSERT(json_get_bool(json_get(&reply.data, "committed")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "txid")),
+                      "cc11bb22cc33dd44ee55ff66aa77bb88"
+                      "cc99dd00ee11ff22aa33bb44cc55dd88");
+        ASSERT(json_get(&reply.data, "operation_id") == NULL);
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_wallet_z_sendmany_calls, 1);
+        struct json_value sent_params;
+        json_init(&sent_params);
+        ASSERT(json_read(&sent_params, g_wallet_z_sendmany_params,
+                         strlen(g_wallet_z_sendmany_params)));
+        ASSERT(sent_params.type == JSON_ARR);
+        ASSERT_EQ(json_size(&sent_params), 2);
+        ASSERT_STR_EQ(json_get_str(json_at(&sent_params, 0)),
+                      "zs1StubSource");
+        const struct json_value *sent_recipients = json_at(&sent_params, 1);
+        ASSERT(sent_recipients && sent_recipients->type == JSON_ARR);
+        ASSERT_EQ(json_size(sent_recipients), 1);
+        const struct json_value *sent_recipient =
+            json_at(sent_recipients, 0);
+        ASSERT_STR_EQ(json_get_str(json_get(sent_recipient, "address")),
+                      "zs1StubRecipient");
+        ASSERT_STR_EQ(json_get_str(json_get(sent_recipient, "amount")),
+                      "0.10000000");
+        ASSERT_STR_EQ(json_get_str(json_get(sent_recipient, "memo_hex")),
+                      "aabb");
+        json_free(&sent_params);
+        zcl_command_reply_free(&reply);
+        json_free(&shield_commit);
+
+        /* The full 512-byte binary memo must survive in commit_input. This
+         * catches the old 512-byte buffer's confirm-only fallback. */
+        char max_memo_hex[1025];
+        memset(max_memo_hex, 'a', sizeof(max_memo_hex) - 1);
+        max_memo_hex[sizeof(max_memo_hex) - 1] = '\0';
+        json_init(&shield_plan);
+        json_set_object(&shield_plan);
+        (void)json_push_kv_str(&shield_plan, "wallet_scope", "dev");
+        (void)json_push_kv_str(&shield_plan, "from", "zs1StubSource");
+        (void)json_push_kv_str(&shield_plan, "to", "zs1StubRecipient");
+        (void)json_push_kv_str(&shield_plan, "amount", "0.00000001");
+        (void)json_push_kv_str(&shield_plan, "memo_hex", max_memo_hex);
+        shield_req.input = &shield_plan;
+        zcl_command_reply_init(&reply, shield_spec->output_schema);
+        zcl_native_handle_wallet_shielded_send(&shield_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        shield_commit_text =
+            json_get_str(json_get(&reply.data, "commit_input"));
+        ASSERT(shield_commit_text && strlen(shield_commit_text) > 1024);
+        json_init(&shield_commit);
+        ASSERT(json_read(&shield_commit, shield_commit_text,
+                         strlen(shield_commit_text)));
+        ASSERT_EQ(strlen(json_get_str(json_get(&shield_commit, "memo_hex"))),
+                  1024);
+        json_free(&shield_commit);
+        zcl_command_reply_free(&reply);
+        json_free(&shield_plan);
+
+        json_init(&shield_plan);
+        json_set_object(&shield_plan);
+        (void)json_push_kv_str(&shield_plan, "from", "zs1StubSource");
+        (void)json_push_kv_str(&shield_plan, "to", "zs1StubRecipient");
+        (void)json_push_kv_str(&shield_plan, "amount", "0.1");
+        shield_req.input = &shield_plan;
+        zcl_command_reply_init(&reply, shield_spec->output_schema);
+        zcl_native_handle_wallet_shielded_send(&shield_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "INVALID_WALLET_SCOPE");
+        ASSERT_EQ(g_wallet_z_sendmany_calls, 1);
+        zcl_command_reply_free(&reply);
+        json_free(&shield_plan);
+
+        /* 5. raw create/sign do not broadcast; raw broadcast itself obeys
          *    the plan/commit boundary. */
         const struct zcl_command_spec *raw_create =
             find_spec(reg, "core.wallet.transaction.raw.create");
@@ -1018,7 +1178,71 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&raw_in);
 
-        /* 5. export-key without confirm must NOT reveal a key. */
+        /* 6. multisig composition accepts public material only and returns
+         *    the exact typed two-transaction workflow without storing or
+         *    spending anything. */
+        const struct zcl_command_spec *multisig_compose = find_spec(
+            reg, "core.wallet.transaction.multisig.compose");
+        ASSERT(multisig_compose != NULL);
+        ASSERT_EQ(multisig_compose->effect, ZCL_COMMAND_EFFECT_READ);
+        struct json_value multisig_in, public_keys, public_key;
+        json_init(&multisig_in); json_set_object(&multisig_in);
+        (void)json_push_kv_int(&multisig_in, "required_signatures", 1);
+        json_init(&public_keys); json_set_array(&public_keys);
+        json_init(&public_key);
+        json_set_str(&public_key,
+            "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        (void)json_push_back(&public_keys, &public_key);
+        json_free(&public_key);
+        (void)json_push_kv(&multisig_in, "public_keys", &public_keys);
+        json_free(&public_keys);
+        struct zcl_command_request multisig_request = {
+            .spec = multisig_compose, .input = &multisig_in,
+            .view = "normal",
+        };
+        zcl_command_reply_init(&reply, multisig_compose->output_schema);
+        zcl_native_handle_wallet_multisig_compose(&multisig_request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "address")),
+                      "t3TypedMultisigAddress000000000000000");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
+                                            "redeem_script_hex")),
+                      "512102aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      "aaaaaaaaaaaaaaaa51ae");
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "required_signatures")),
+                  1);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "public_key_count")), 1);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
+                                            "spend_sign_command")),
+                      "core.wallet.transaction.raw.sign");
+        ASSERT_EQ(g_wallet_multisig_compose_calls, 1);
+        ASSERT(!reply.error.mutated);
+        zcl_command_reply_free(&reply);
+
+        /* Invalid threshold fails locally before reaching the wallet RPC. */
+        struct json_value invalid_multisig, invalid_keys;
+        json_init(&invalid_multisig); json_set_object(&invalid_multisig);
+        (void)json_push_kv_int(&invalid_multisig,
+                               "required_signatures", 2);
+        json_init(&invalid_keys); json_set_array(&invalid_keys);
+        json_init(&public_key);
+        json_set_str(&public_key,
+            "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        (void)json_push_back(&invalid_keys, &public_key);
+        json_free(&public_key);
+        (void)json_push_kv(&invalid_multisig, "public_keys", &invalid_keys);
+        json_free(&invalid_keys);
+        multisig_request.input = &invalid_multisig;
+        zcl_command_reply_init(&reply, multisig_compose->output_schema);
+        zcl_native_handle_wallet_multisig_compose(&multisig_request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "INVALID_MULTISIG_POLICY");
+        ASSERT_EQ(g_wallet_multisig_compose_calls, 1);
+        zcl_command_reply_free(&reply);
+        json_free(&invalid_multisig);
+        json_free(&multisig_in);
+
+        /* 7. export-key without confirm must NOT reveal a key. */
         const struct zcl_command_spec *xk_spec =
             find_spec(reg, "core.wallet.address.export-key");
         ASSERT(xk_spec != NULL);
@@ -1039,7 +1263,7 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&xk_in);
 
-        /* 6. a missing required key fails closed with a typed error body. */
+        /* 7. a missing required key fails closed with a typed error body. */
         struct json_value bad_in;
         json_init(&bad_in);
         json_set_object(&bad_in);
@@ -1064,6 +1288,349 @@ static int test_wallet_mutating_native_e2e(void)
     return failures;
 }
 
+/* The ordinary wallet contract above deliberately uses canned RPC bodies so
+ * it can pin plan/commit behavior without allocating consensus state. This
+ * second bridge is the transaction-lab proof: the public typed handlers call
+ * the REAL raw-transaction RPC actors, and the exact signed bytes returned by
+ * those actors are decoded and mined through simnet/connect_block. */
+struct raw_simnet_bridge {
+    struct rpc_table *table;
+    struct simnet *sim;
+    int broadcast_calls;
+    bool mined;
+    bool generic_anchor_seen;
+    uint8_t generic_anchor_digest[ZANC_DIGEST_LEN];
+    struct uint256 txid;
+};
+
+static struct raw_simnet_bridge *g_raw_simnet_bridge;
+
+static char *raw_simnet_rpc(const char *method, const char *params_json)
+{
+    struct raw_simnet_bridge *bridge = g_raw_simnet_bridge;
+    if (!bridge || !bridge->table || !bridge->sim || !method ||
+        !params_json)
+        return NULL;
+
+    struct json_value params;
+    json_init(&params);
+    if (!json_read(&params, params_json, strlen(params_json))) {
+        json_free(&params);
+        return strdup("{\"code\":-1,\"message\":\"invalid lab RPC params\"}");
+    }
+
+    struct json_value result;
+    json_init(&result);
+    bool ok = rpc_table_execute(bridge->table, method, &params, &result);
+
+    if (ok && strcmp(method, "sendrawtransaction") == 0) {
+        bridge->broadcast_calls++;
+        const char *raw_hex = json_get_str(json_at(&params, 0));
+        struct transaction tx;
+        transaction_init(&tx);
+        if (!raw_hex || !decode_hex_tx(&tx, raw_hex)) {
+            transaction_free(&tx);
+            ok = false;
+        } else {
+            bridge->txid = tx.hash;
+            if (tx.num_vout == 2) {
+                struct zanc_message anchor;
+                const struct script *script = &tx.vout[1].script_pub_key;
+                bridge->generic_anchor_seen =
+                    tx.vout[1].value == 0 &&
+                    zanc_parse(script->data, script->size, &anchor) &&
+                    strcmp(anchor.label, "lab-proof@1") == 0;
+                if (bridge->generic_anchor_seen)
+                    memcpy(bridge->generic_anchor_digest, anchor.digest,
+                           ZANC_DIGEST_LEN);
+            }
+            /* simnet_mint_txs takes ownership after a valid decoded request,
+             * whether admission succeeds or not. */
+            ok = simnet_mint_txs(bridge->sim, &tx, 1);
+            bridge->mined = ok;
+        }
+        if (!ok) {
+            json_free(&result);
+            json_init(&result);
+            json_set_object(&result);
+            (void)json_push_kv_int(&result, "code", -1);
+            (void)json_push_kv_str(&result, "message",
+                                   "simnet rejected signed raw transaction");
+        }
+    }
+
+    size_t need = json_write(&result, NULL, 0);
+    char *out = zcl_malloc(need + 1, "raw simnet RPC result");
+    if (out) {
+        (void)json_write(&result, out, need + 1);
+        out[need] = '\0';
+    }
+    json_free(&result);
+    json_free(&params);
+    return out;
+}
+
+static int test_raw_native_pipeline_mines_exact_signed_bytes(void)
+{
+    int failures = 0;
+    struct simnet sim;
+    memset(&sim, 0, sizeof(sim));
+    bool sim_ready = false;
+    struct basic_keystore *ks = NULL;
+    bool ks_ready = false;
+    struct privkey funding_key = {0};
+    struct privkey recipient_key = {0};
+
+    TEST("raw typed create/sign/broadcast mines exact signed bytes in simnet") {
+        ASSERT(simnet_init(&sim));
+        sim_ready = true;
+
+        ks = zcl_malloc(sizeof(*ks), "raw simnet keystore");
+        ASSERT(ks != NULL);
+        keystore_init(ks);
+        ks_ready = true;
+
+        struct pubkey funding_pub;
+        privkey_make_new(&funding_key, true);
+        ASSERT(privkey_get_pubkey(&funding_key, &funding_pub));
+        struct key_id funding_id = pubkey_get_id(&funding_pub);
+        ASSERT(keystore_add_key(ks, &funding_key));
+
+        struct script funding_script;
+        script_for_p2pkh(&funding_script, &funding_id);
+        struct uint256 funding_txid;
+        int funding_height = simnet_tip_height(&sim) + 1;
+        ASSERT(simnet_mint_coinbase_to(&sim, &funding_script, 1000000,
+                                      &funding_txid));
+        ASSERT(simnet_mint_to_height(
+            &sim, funding_height + COINBASE_MATURITY));
+        ASSERT(simnet_coin_exists(&sim, &funding_txid));
+
+        struct pubkey recipient_pub;
+        privkey_make_new(&recipient_key, true);
+        ASSERT(privkey_get_pubkey(&recipient_key, &recipient_pub));
+        struct tx_destination recipient = {0};
+        recipient.type = DEST_KEY_ID;
+        recipient.id.key = pubkey_get_id(&recipient_pub);
+        const struct chain_params *cp = chain_params_get();
+        size_t pk_len = 0, script_len = 0;
+        const unsigned char *pk_prefix = chain_params_base58_prefix(
+            cp, B58_PUBKEY_ADDRESS, &pk_len);
+        const unsigned char *script_prefix = chain_params_base58_prefix(
+            cp, B58_SCRIPT_ADDRESS, &script_len);
+        char recipient_address[128];
+        ASSERT(encode_destination(&recipient, pk_prefix, pk_len,
+                                  script_prefix, script_len,
+                                  recipient_address,
+                                  sizeof(recipient_address)));
+
+        struct rpc_table raw_table;
+        rpc_table_init(&raw_table);
+        register_rawtransaction_rpc_commands(&raw_table);
+        char warmup_status[64];
+        if (rpc_is_in_warmup(warmup_status, sizeof(warmup_status)))
+            set_rpc_warmup_finished();
+        rpc_rawtx_set_state(NULL, NULL, NULL, NULL);
+        rpc_rawtx_set_keystore(ks);
+
+        struct raw_simnet_bridge bridge = {
+            .table = &raw_table,
+            .sim = &sim,
+        };
+        uint256_set_null(&bridge.txid);
+        g_raw_simnet_bridge = &bridge;
+        node_rpc_client_set_test_hook(raw_simnet_rpc);
+
+        const struct zcl_command_registry *reg = zcl_command_catalog();
+        const struct zcl_command_spec *create_spec = find_spec(
+            reg, "core.wallet.transaction.raw.create");
+        const struct zcl_command_spec *sign_spec = find_spec(
+            reg, "core.wallet.transaction.raw.sign");
+        const struct zcl_command_spec *broadcast_spec = find_spec(
+            reg, "core.wallet.transaction.raw.broadcast");
+        const struct zcl_command_spec *anchor_spec = find_spec(
+            reg, "core.anchor.compose");
+        const struct zcl_command_spec *anchor_inspect_spec = find_spec(
+            reg, "core.anchor.inspect");
+        ASSERT(create_spec && sign_spec && broadcast_spec && anchor_spec &&
+               anchor_inspect_spec);
+        ASSERT_STR_EQ(anchor_inspect_spec->positional_keys, "op_return_hex");
+        ASSERT_STR_EQ(anchor_inspect_spec->example,
+                      "zclassic23 core anchor inspect <op_return_hex>");
+
+        static const char anchor_digest_hex[] =
+            "abababababababababababababababab"
+            "abababababababababababababababab";
+        struct json_value anchor_in;
+        json_init(&anchor_in); json_set_object(&anchor_in);
+        (void)json_push_kv_str(&anchor_in, "digest", anchor_digest_hex);
+        (void)json_push_kv_str(&anchor_in, "hash_type", "sha3");
+        (void)json_push_kv_str(&anchor_in, "label", "lab-proof@1");
+        struct zcl_command_request request = {
+            .spec = anchor_spec, .input = &anchor_in, .view = "normal",
+        };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, anchor_spec->output_schema);
+        zcl_native_handle_core_anchor_compose(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "hash_type")),
+                      "sha3-256");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "digest")),
+                      anchor_digest_hex);
+        const char *anchor_script = json_get_str(
+            json_get(&reply.data, "op_return_hex"));
+        ASSERT(anchor_script && strlen(anchor_script) < 512);
+        char anchor_script_hex[512];
+        (void)snprintf(anchor_script_hex, sizeof(anchor_script_hex), "%s",
+                       anchor_script);
+        zcl_command_reply_free(&reply);
+        json_free(&anchor_in);
+
+        struct json_value inspect_in;
+        json_init(&inspect_in); json_set_object(&inspect_in);
+        (void)json_push_kv_str(&inspect_in, "op_return_hex",
+                               anchor_script_hex);
+        request.spec = anchor_inspect_spec;
+        request.input = &inspect_in;
+        zcl_command_reply_init(&reply, anchor_inspect_spec->output_schema);
+        zcl_native_handle_core_anchor_inspect(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&reply.data, "valid")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "digest")),
+                      anchor_digest_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "label")),
+                      "lab-proof@1");
+        zcl_command_reply_free(&reply);
+        json_free(&inspect_in);
+
+        const size_t canonical_hex_len = strlen(anchor_script_hex);
+        ASSERT(canonical_hex_len + 2 < sizeof(anchor_script_hex));
+        memcpy(anchor_script_hex + canonical_hex_len, "00", 3);
+        json_init(&inspect_in); json_set_object(&inspect_in);
+        (void)json_push_kv_str(&inspect_in, "op_return_hex",
+                               anchor_script_hex);
+        request.input = &inspect_in;
+        zcl_command_reply_init(&reply, anchor_inspect_spec->output_schema);
+        zcl_native_handle_core_anchor_inspect(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "INVALID_ZANC_ANCHOR");
+        zcl_command_reply_free(&reply);
+        json_free(&inspect_in);
+        anchor_script_hex[canonical_hex_len] = '\0';
+
+        char funding_hex[65];
+        uint256_get_hex(&funding_txid, funding_hex);
+        struct json_value create_in, inputs, input, outputs;
+        json_init(&create_in); json_set_object(&create_in);
+        json_init(&inputs); json_set_array(&inputs);
+        json_init(&input); json_set_object(&input);
+        (void)json_push_kv_str(&input, "txid", funding_hex);
+        (void)json_push_kv_int(&input, "vout", 0);
+        (void)json_push_back(&inputs, &input);
+        json_free(&input);
+        json_init(&outputs); json_set_object(&outputs);
+        (void)json_push_kv_real(&outputs, recipient_address, 0.008);
+        (void)json_push_kv(&create_in, "inputs", &inputs);
+        (void)json_push_kv(&create_in, "outputs", &outputs);
+        (void)json_push_kv_str(&create_in, "op_return_hex",
+                               anchor_script_hex);
+        json_free(&inputs); json_free(&outputs);
+
+        request.spec = create_spec;
+        request.input = &create_in;
+        zcl_command_reply_init(&reply, create_spec->output_schema);
+        zcl_native_handle_wallet_raw_create(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&reply.data, "op_return_included")));
+        const char *created = json_get_str(json_get(&reply.data, "raw_hex"));
+        ASSERT(created && strlen(created) < 8192);
+        char created_hex[8192];
+        (void)snprintf(created_hex, sizeof(created_hex), "%s", created);
+        zcl_command_reply_free(&reply);
+        json_free(&create_in);
+
+        ASSERT(funding_script.size <= 64);
+        char funding_script_hex[129];
+        zcl_hex_encode(funding_script.data, funding_script.size,
+                       funding_script_hex);
+        struct json_value sign_in, prevtxs, prevtx;
+        json_init(&sign_in); json_set_object(&sign_in);
+        (void)json_push_kv_str(&sign_in, "raw_hex", created_hex);
+        json_init(&prevtxs); json_set_array(&prevtxs);
+        json_init(&prevtx); json_set_object(&prevtx);
+        (void)json_push_kv_str(&prevtx, "txid", funding_hex);
+        (void)json_push_kv_int(&prevtx, "vout", 0);
+        (void)json_push_kv_str(&prevtx, "scriptPubKey",
+                               funding_script_hex);
+        (void)json_push_kv_real(&prevtx, "amount", 0.01);
+        (void)json_push_back(&prevtxs, &prevtx);
+        json_free(&prevtx);
+        (void)json_push_kv(&sign_in, "prevtxs", &prevtxs);
+        json_free(&prevtxs);
+
+        request.spec = sign_spec;
+        request.input = &sign_in;
+        zcl_command_reply_init(&reply, sign_spec->output_schema);
+        zcl_native_handle_wallet_raw_sign(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&reply.data, "complete")));
+        const char *signed_raw = json_get_str(
+            json_get(&reply.data, "raw_hex"));
+        ASSERT(signed_raw && strlen(signed_raw) < 8192);
+        char signed_hex[8192];
+        (void)snprintf(signed_hex, sizeof(signed_hex), "%s", signed_raw);
+        zcl_command_reply_free(&reply);
+        json_free(&sign_in);
+
+        struct json_value broadcast_in;
+        json_init(&broadcast_in); json_set_object(&broadcast_in);
+        (void)json_push_kv_str(&broadcast_in, "raw_hex", signed_hex);
+        request.spec = broadcast_spec;
+        request.input = &broadcast_in;
+        zcl_command_reply_init(&reply, broadcast_spec->output_schema);
+        zcl_native_handle_wallet_raw_broadcast(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        ASSERT_EQ(bridge.broadcast_calls, 0);
+        ASSERT(simnet_coin_exists(&sim, &funding_txid));
+        zcl_command_reply_free(&reply);
+
+        (void)json_push_kv_bool(&broadcast_in, "confirm", true);
+        zcl_command_reply_init(&reply, broadcast_spec->output_schema);
+        zcl_native_handle_wallet_raw_broadcast(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")),
+                      "committed");
+        ASSERT_EQ(bridge.broadcast_calls, 1);
+        ASSERT(bridge.mined);
+        ASSERT(bridge.generic_anchor_seen);
+        for (size_t i = 0; i < ZANC_DIGEST_LEN; i++)
+            ASSERT_EQ(bridge.generic_anchor_digest[i], 0xab);
+        ASSERT(!simnet_coin_exists(&sim, &funding_txid));
+        int64_t recipient_value = 0;
+        ASSERT(simnet_coin_value(&sim, &bridge.txid, 0, &recipient_value));
+        ASSERT_EQ(recipient_value, 800000);
+        char mined_hex[65];
+        uint256_get_hex(&bridge.txid, mined_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "txid")),
+                      mined_hex);
+        zcl_command_reply_free(&reply);
+        json_free(&broadcast_in);
+        PASS();
+    } _test_next:;
+
+    node_rpc_client_set_test_hook(NULL);
+    g_raw_simnet_bridge = NULL;
+    rpc_rawtx_set_keystore(NULL);
+    rpc_rawtx_set_state(NULL, NULL, NULL, NULL);
+    if (ks_ready) keystore_free(ks);
+    free(ks);
+    memory_cleanse(funding_key.vch, sizeof(funding_key.vch));
+    memory_cleanse(recipient_key.vch, sizeof(recipient_key.vch));
+    if (sim_ready) simnet_free(&sim);
+    return failures;
+}
+
 /* ── mutating app.* feature leaves: E2E over a stubbed app RPC ─────────────
  * The promoted write leaves (config/commands/app_features.def) are
  * dedicated handlers in app/controllers/src/app_write_native_handlers.c. Driven
@@ -1073,22 +1640,61 @@ static int test_wallet_mutating_native_e2e(void)
  * (a ZNAM write answering status="ready" because the node carries no wallet)
  * is reported BLOCKED with mutated=false rather than PASSED. */
 static int g_app_name_register_calls;
+static int g_app_blog_anchor_calls;
 static int g_app_msg_send_calls;
 static int g_app_token_send_calls;
-static bool g_app_name_degraded;
+static int g_app_market_content_calls;
+static int g_app_market_purchase_plan_calls;
+static int g_app_market_purchase_commit_calls;
+static int g_app_market_purchase_status_calls;
+static int g_app_market_purchase_retrieve_calls;
 
 static char *app_write_stub_rpc(const char *method, const char *params_json)
 {
-    (void)params_json;
-    if (method && strcmp(method, "name_register") == 0) {
+    if (method && strcmp(method, "znam_intent") == 0) {
         g_app_name_register_calls++;
-        if (g_app_name_degraded)
-            return strdup("{\"name\":\"alice\",\"status\":\"ready\","
-                          "\"op_return_hex\":\"6a\"}");
-        return strdup("{\"name\":\"alice\",\"type\":\"z-address\","
+        bool commit = params_json &&
+            strstr(params_json, "\"confirm\":true") != NULL;
+        if (!commit)
+            return strdup("{\"schema\":\"zcl.app_name_txresult.v1\","
+                          "\"wallet_scope\":\"dev\",\"operation\":\"register\","
+                          "\"plan_id\":\"33333333333333333333333333333333"
+                          "33333333333333333333333333333333\","
+                          "\"snapshot_status\":\"CURRENT\","
+                          "\"state\":\"planned\",\"status\":\"planned\","
+                          "\"actual_fee_zat\":500,\"maximum_fee_zat\":1000,"
+                          "\"reserved_zat\":1000}");
+        return strdup("{\"schema\":\"zcl.app_name_txresult.v1\","
+                      "\"wallet_scope\":\"dev\",\"operation\":\"register\","
+                      "\"status\":\"broadcast\","
+                      "\"state\":\"mempool_accepted\","
                       "\"txid\":\"aa11bb22cc33dd44ee55ff66aa77bb88"
                       "cc99dd00ee11ff22aa33bb44cc55dd66\","
-                      "\"fee\":1000,\"status\":\"broadcast\"}");
+                      "\"actual_fee_zat\":500}");
+    }
+    if (method && strcmp(method, "blog_anchor") == 0) {
+        g_app_blog_anchor_calls++;
+        if (g_app_blog_anchor_calls == 1)
+            return strdup("{\"schema\":\"zcl.app_blog_anchor.v1\","
+                          "\"wallet_scope\":\"dev\","
+                          "\"plan_id\":\"33333333333333333333333333333333"
+                          "33333333333333333333333333333333\","
+                          "\"blog_name\":\"alice\","
+                          "\"event_id\":\"11111111111111111111111111111111"
+                          "11111111111111111111111111111111\","
+                          "\"event_verified\":true,\"status\":\"planned\","
+                          "\"state\":\"planned\",\"maximum_fee_zat\":1000,"
+                          "\"reserved_zat\":1000}");
+        return strdup("{\"schema\":\"zcl.app_blog_anchor.v1\","
+                      "\"wallet_scope\":\"dev\","
+                      "\"plan_id\":\"33333333333333333333333333333333"
+                      "33333333333333333333333333333333\","
+                      "\"blog_name\":\"alice\","
+                      "\"event_id\":\"11111111111111111111111111111111"
+                      "11111111111111111111111111111111\","
+                      "\"event_verified\":true,\"status\":\"broadcast\","
+                      "\"txid\":\"22222222222222222222222222222222"
+                      "22222222222222222222222222222222\",\"fee\":1000}");
     }
     if (method && strcmp(method, "msg_send") == 0) {
         g_app_msg_send_calls++;
@@ -1096,14 +1702,113 @@ static char *app_write_stub_rpc(const char *method, const char *params_json)
                       "00112233445566778899aabbccddeeff\","
                       "\"peer_id\":7,\"status\":\"sent\"}");
     }
-    if (method && strcmp(method, "zslp_send_tx") == 0) {
+    if (method && strcmp(method, "zslp_intent") == 0) {
         g_app_token_send_calls++;
+        if (g_app_token_send_calls == 1)
+            return strdup("{\"schema\":\"zcl.app_token_txresult.v1\","
+                          "\"status\":\"planned\",\"state\":\"planned\","
+                          "\"wallet_scope\":\"dev\","
+                          "\"operation\":\"send\","
+                          "\"plan_id\":\"33333333333333333333333333333333"
+                          "33333333333333333333333333333333\","
+                          "\"token_id\":\"22222222222222222222222222222222"
+                          "22222222222222222222222222222222\","
+                          "\"units\":\"25\",\"actual_fee_zat\":10000,"
+                          "\"maximum_fee_zat\":10000,\"reserved_zat\":10546}");
         return strdup("{\"status\":\"broadcast\","
                       "\"txid\":\"11111111111111111111111111111111"
                       "11111111111111111111111111111111\","
                       "\"token_id\":\"22222222222222222222222222222222"
                       "22222222222222222222222222222222\","
-                      "\"to\":\"t1stub\",\"amount\":25,\"fee\":10000}");
+                      "\"units\":\"25\",\"actual_fee_zat\":10000}");
+    }
+    if (method && strcmp(method, "zmarket_content_register") == 0) {
+        g_app_market_content_calls++;
+        return strdup("{\"schema\":\"zcl.market_content.v1\","
+                      "\"status\":\"registered\","
+                      "\"offer_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+                      "\"root_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\","
+                      "\"size_bytes\":8193,\"num_chunks\":1,"
+                      "\"registered_at\":1700000000}");
+    }
+    if (method && strcmp(method, "zmarket_purchase_plan") == 0) {
+        g_app_market_purchase_plan_calls++;
+        return strdup("{\"ok\":true,\"schema\":\"zcl.market_purchase.v1\","
+                      "\"plan_id\":\"11111111111111111111111111111111"
+                      "11111111111111111111111111111111\","
+                      "\"offer_id\":\"22222222222222222222222222222222"
+                      "22222222222222222222222222222222\","
+                      "\"buyer_pubkey\":\"33333333333333333333333333333333"
+                      "33333333333333333333333333333333\","
+                      "\"wallet_scope\":\"dev\",\"state\":\"planned\","
+                      "\"chunk_start\":0,\"chunks_paid\":1,"
+                      "\"amount_zat\":60000,\"maximum_fee_zat\":10000,"
+                      "\"reserved_zat\":70000,\"expires_at\":1700000600,"
+                      "\"idempotent_replay\":false,"
+                      "\"payment_notification_queued\":false}");
+    }
+    if (method && strcmp(method, "zmarket_purchase_commit") == 0) {
+        g_app_market_purchase_commit_calls++;
+        return strdup("{\"ok\":true,\"schema\":\"zcl.market_purchase.v1\","
+                      "\"plan_id\":\"11111111111111111111111111111111"
+                      "11111111111111111111111111111111\","
+                      "\"offer_id\":\"22222222222222222222222222222222"
+                      "22222222222222222222222222222222\","
+                      "\"buyer_pubkey\":\"33333333333333333333333333333333"
+                      "33333333333333333333333333333333\","
+                      "\"wallet_scope\":\"dev\","
+                      "\"state\":\"mempool_accepted\","
+                      "\"chunk_start\":0,\"chunks_paid\":1,"
+                      "\"amount_zat\":60000,\"maximum_fee_zat\":10000,"
+                      "\"reserved_zat\":70000,\"expires_at\":1700000600,"
+                      "\"idempotent_replay\":false,"
+                      "\"txid\":\"44444444444444444444444444444444"
+                      "44444444444444444444444444444444\","
+                      "\"claim_id\":\"55555555555555555555555555555555"
+                      "55555555555555555555555555555555\","
+                      "\"payment_notification_queued\":true}");
+    }
+    if (method && strcmp(method, "zmarket_purchase_status") == 0) {
+        g_app_market_purchase_status_calls++;
+        return strdup("{\"ok\":true,\"schema\":\"zcl.market_purchase.v1\","
+                      "\"plan_id\":\"11111111111111111111111111111111"
+                      "11111111111111111111111111111111\","
+                      "\"offer_id\":\"22222222222222222222222222222222"
+                      "22222222222222222222222222222222\","
+                      "\"buyer_pubkey\":\"33333333333333333333333333333333"
+                      "33333333333333333333333333333333\","
+                      "\"wallet_scope\":\"dev\","
+                      "\"state\":\"mempool_accepted\","
+                      "\"chunk_start\":0,\"chunks_paid\":1,"
+                      "\"amount_zat\":60000,\"maximum_fee_zat\":10000,"
+                      "\"reserved_zat\":70000,\"expires_at\":1700000600,"
+                      "\"idempotent_replay\":true,"
+                      "\"txid\":\"44444444444444444444444444444444"
+                      "44444444444444444444444444444444\","
+                      "\"claim_id\":\"55555555555555555555555555555555"
+                      "55555555555555555555555555555555\","
+                      "\"payment_notification_queued\":false}");
+    }
+    if (method && strcmp(method, "zmarket_purchase_retrieve") == 0) {
+        g_app_market_purchase_retrieve_calls++;
+        return strdup("{\"ok\":true,\"schema\":\"zcl.market_purchase.v1\","
+                      "\"plan_id\":\"11111111111111111111111111111111"
+                      "11111111111111111111111111111111\","
+                      "\"offer_id\":\"22222222222222222222222222222222"
+                      "22222222222222222222222222222222\","
+                      "\"buyer_pubkey\":\"33333333333333333333333333333333"
+                      "33333333333333333333333333333333\","
+                      "\"wallet_scope\":\"dev\",\"state\":\"confirmed\","
+                      "\"chunk_start\":0,\"chunks_paid\":1,"
+                      "\"amount_zat\":60000,\"maximum_fee_zat\":10000,"
+                      "\"reserved_zat\":70000,\"expires_at\":1700000600,"
+                      "\"idempotent_replay\":false,"
+                      "\"download_state\":\"complete\","
+                      "\"chunks_received\":1,\"num_chunks\":1,"
+                      "\"bytes_received\":8193,\"size_bytes\":8193,"
+                      "\"destination_published\":true}");
     }
     if (method && strcmp(method, "swap_initiate") == 0)
         return strdup("{\"swap_id\":\"stub\",\"role\":\"initiator\","
@@ -1118,9 +1823,14 @@ static int test_app_write_native_e2e(void)
 
     TEST("app.* write leaves execute plan/commit over a stubbed RPC") {
         g_app_name_register_calls = 0;
+        g_app_blog_anchor_calls = 0;
         g_app_msg_send_calls = 0;
         g_app_token_send_calls = 0;
-        g_app_name_degraded = false;
+        g_app_market_content_calls = 0;
+        g_app_market_purchase_plan_calls = 0;
+        g_app_market_purchase_commit_calls = 0;
+        g_app_market_purchase_status_calls = 0;
+        g_app_market_purchase_retrieve_calls = 0;
         node_rpc_client_set_test_hook(app_write_stub_rpc);
 
         const struct zcl_command_spec *reg_spec =
@@ -1131,14 +1841,16 @@ static int test_app_write_native_e2e(void)
 
         struct zcl_command_reply reply;
 
-        /* 1. plan leg: no RPC fires, nothing claims to have mutated, and the
-         *    emitted commit_input validates against this same leaf. */
+        /* 1. Planning calls the durable intent RPC, atomically reserves the
+         * exact inputs/fee, and emits a minimal commit input. */
         struct json_value plan_in;
         json_init(&plan_in);
         json_set_object(&plan_in);
+        (void)json_push_kv_str(&plan_in, "wallet_scope", "dev");
         (void)json_push_kv_str(&plan_in, "name", "alice");
         (void)json_push_kv_str(&plan_in, "type", "zaddr");
         (void)json_push_kv_str(&plan_in, "value", "zs1stub");
+        (void)json_push_kv_str(&plan_in, "idempotency_key", "name-register-1");
         struct zcl_command_request req_plan = {
             .spec = reg_spec, .input = &plan_in, .view = "normal",
         };
@@ -1146,8 +1858,10 @@ static int test_app_write_native_e2e(void)
         zcl_native_handle_name_register(&req_plan, &reply);
         ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
-        ASSERT(!reply.error.mutated);
-        ASSERT_EQ(g_app_name_register_calls, 0);
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_name_register_calls, 1);
+        ASSERT(json_get(&reply.data, "name") == NULL);
+        ASSERT(json_get(&reply.data, "value") == NULL);
         const char *commit_input =
             json_get_str(json_get(&reply.data, "commit_input"));
         ASSERT(commit_input && commit_input[0]);
@@ -1158,7 +1872,7 @@ static int test_app_write_native_e2e(void)
         ASSERT(zcl_command_registry_input_validate(reg_spec, &commit_next, why,
                                                    sizeof(why)));
         ASSERT(json_get_bool(json_get(&commit_next, "confirm")));
-        /* The plan must actually serialize through the real envelope. */
+        /* The sanitized plan must serialize through the real envelope. */
         {
             char rendered[8192];
             enum zcl_command_exit rc = ZCL_COMMAND_EXIT_OK;
@@ -1173,7 +1887,10 @@ static int test_app_write_native_e2e(void)
             ASSERT(n > 0);
             ASSERT_EQ(rc, ZCL_COMMAND_EXIT_OK);
             ASSERT(strstr(rendered, "\"stage\":\"plan\"") != NULL);
+            ASSERT(strstr(rendered, "alice") == NULL);
+            ASSERT(strstr(rendered, "zs1stub") == NULL);
         }
+        ASSERT_EQ(g_app_name_register_calls, 2);
         zcl_command_reply_free(&reply);
         json_free(&plan_in);
 
@@ -1188,25 +1905,11 @@ static int test_app_write_native_e2e(void)
                       "committed");
         ASSERT(reply.error.mutated);
         ASSERT(json_get_str(json_get(&reply.data, "txid")) != NULL);
-        ASSERT_EQ(g_app_name_register_calls, 1);
+        ASSERT_EQ(g_app_name_register_calls, 3);
         zcl_command_reply_free(&reply);
-
-        /* 3. the DEGRADED success: name_register answered without a wallet, so
-         *    the OP_RETURN was built but never broadcast. A PASSED reply here
-         *    would be the exact lie this leaf population was cleaned of. */
-        g_app_name_degraded = true;
-        zcl_command_reply_init(&reply, reg_spec->output_schema);
-        zcl_native_handle_name_register(&req_commit, &reply);
-        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_BLOCKED);
-        ASSERT_STR_EQ(reply.error.code, "NAME_WRITE_NOT_BROADCAST");
-        ASSERT(!reply.error.mutated);
-        ASSERT(strstr(reply.error.message, "ready") != NULL);
-        ASSERT_EQ(g_app_name_register_calls, 2);
-        zcl_command_reply_free(&reply);
-        g_app_name_degraded = false;
         json_free(&commit_next);
 
-        /* 4. a missing required key fails closed before any RPC. */
+        /* 3. a missing explicit wallet scope fails before any RPC. */
         struct json_value bad_in;
         json_init(&bad_in);
         json_set_object(&bad_in);
@@ -1218,14 +1921,60 @@ static int test_app_write_native_e2e(void)
         zcl_command_reply_init(&reply, reg_spec->output_schema);
         zcl_native_handle_name_register(&req_bad, &reply);
         ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
-        ASSERT_STR_EQ(reply.error.code, "MISSING_INPUT");
+        ASSERT_STR_EQ(reply.error.code, "WALLET_SCOPE_REQUIRED");
         ASSERT(!reply.error.mutated);
-        ASSERT_EQ(g_app_name_register_calls, 2);
+        ASSERT_EQ(g_app_name_register_calls, 3);
         zcl_command_reply_free(&reply);
         json_free(&bad_in);
 
-        /* 5. token.send has the same two-leg transaction contract: plan is
-         * non-mutating; commit calls the receipt-bearing RPC exactly once. */
+        /* 5. Blog anchor exposes the previously missing ZBLG plan/commit
+         * boundary. The event ID is public commitment material, never a key. */
+        const struct zcl_command_spec *blog_spec =
+            find_spec(reg, "app.blog.anchor");
+        ASSERT(blog_spec != NULL);
+        ASSERT(blog_spec->availability == ZCL_COMMAND_READY);
+        ASSERT(blog_spec->confirmation == ZCL_COMMAND_CONFIRM_PLAN_COMMIT);
+        struct json_value blog_input;
+        json_init(&blog_input);
+        json_set_object(&blog_input);
+        (void)json_push_kv_str(&blog_input, "wallet_scope", "dev");
+        (void)json_push_kv_str(&blog_input, "name", "alice");
+        (void)json_push_kv_str(
+            &blog_input, "event_id",
+            "1111111111111111111111111111111111111111111111111111111111111111");
+        (void)json_push_kv_str(&blog_input, "idempotency_key",
+                               "alice-post-1");
+        struct zcl_command_request blog_request = {
+            .spec = blog_spec, .input = &blog_input, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, blog_spec->output_schema);
+        zcl_native_handle_blog_anchor(&blog_request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_blog_anchor_calls, 1);
+        const char *blog_plan_id =
+            json_get_str(json_get(&reply.data, "plan_id"));
+        ASSERT(blog_plan_id != NULL);
+        char blog_plan_id_copy[65];
+        (void)snprintf(blog_plan_id_copy, sizeof(blog_plan_id_copy), "%s",
+                       blog_plan_id);
+        zcl_command_reply_free(&reply);
+        (void)json_push_kv_str(&blog_input, "plan_id", blog_plan_id_copy);
+        (void)json_push_kv_bool(&blog_input, "confirm", true);
+        zcl_command_reply_init(&reply, blog_spec->output_schema);
+        zcl_native_handle_blog_anchor(&blog_request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")),
+                      "committed");
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_blog_anchor_calls, 2);
+        ASSERT(json_get_str(json_get(&reply.data, "txid")) != NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&blog_input);
+
+        /* 6. token.send plans one exact transaction and reserves its inputs;
+         * commit names only the durable plan and explicit custody scope. */
         const struct zcl_command_spec *token_spec =
             find_spec(reg, "app.tokens.send");
         ASSERT(token_spec != NULL);
@@ -1233,11 +1982,14 @@ static int test_app_write_native_e2e(void)
         struct json_value token_plan;
         json_init(&token_plan);
         json_set_object(&token_plan);
+        (void)json_push_kv_str(&token_plan, "wallet_scope", "dev");
         (void)json_push_kv_str(
             &token_plan, "token_id",
             "2222222222222222222222222222222222222222222222222222222222222222");
         (void)json_push_kv_str(&token_plan, "to", "t1stub");
-        (void)json_push_kv_int(&token_plan, "units", 25);
+        (void)json_push_kv_str(&token_plan, "units", "25");
+        (void)json_push_kv_str(&token_plan, "idempotency_key",
+                               "native-token-send-1");
         struct zcl_command_request token_plan_req = {
             .spec = token_spec, .input = &token_plan, .view = "normal",
         };
@@ -1245,20 +1997,193 @@ static int test_app_write_native_e2e(void)
         zcl_native_handle_token_send(&token_plan_req, &reply);
         ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
-        ASSERT(!reply.error.mutated);
-        ASSERT_EQ(g_app_token_send_calls, 0);
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_token_send_calls, 1);
+        const char *token_plan_id =
+            json_get_str(json_get(&reply.data, "plan_id"));
+        ASSERT(token_plan_id != NULL);
+        char token_plan_id_copy[65];
+        (void)snprintf(token_plan_id_copy, sizeof(token_plan_id_copy), "%s",
+                       token_plan_id);
         zcl_command_reply_free(&reply);
+        (void)json_push_kv_str(&token_plan, "plan_id", token_plan_id_copy);
         (void)json_push_kv_bool(&token_plan, "confirm", true);
         zcl_command_reply_init(&reply, token_spec->output_schema);
         zcl_native_handle_token_send(&token_plan_req, &reply);
         ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
         ASSERT(reply.error.mutated);
-        ASSERT_EQ(g_app_token_send_calls, 1);
+        ASSERT_EQ(g_app_token_send_calls, 2);
         ASSERT(json_get_str(json_get(&reply.data, "txid")) != NULL);
+        char token_receipt[4096];
+        size_t token_receipt_len = json_write(
+            &reply.data, token_receipt, sizeof(token_receipt));
+        ASSERT(token_receipt_len > 0 &&
+               token_receipt_len < sizeof(token_receipt));
+        ASSERT(strstr(token_receipt, "t1stub") == NULL);
+        ASSERT(strstr(token_receipt, "\"to\"") == NULL);
         zcl_command_reply_free(&reply);
         json_free(&token_plan);
 
-        /* 6. messaging.send picks the recipient key its channel names: the p2p
+        /* 6. Private seller content is an idempotent no-funds app write. It
+         * executes once without a plan round trip and never echoes the path. */
+        const struct zcl_command_spec *content_spec =
+            find_spec(reg, "app.market.content.register");
+        ASSERT(content_spec != NULL);
+        ASSERT_EQ(content_spec->availability, ZCL_COMMAND_READY);
+        ASSERT_EQ(content_spec->confirmation, ZCL_COMMAND_CONFIRM_NONE);
+        struct json_value content_input;
+        json_init(&content_input);
+        json_set_object(&content_input);
+        (void)json_push_kv_str(
+            &content_input, "offer_id",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        (void)json_push_kv_str(&content_input, "content_path",
+                               "/owner/private/paid-content.bin");
+        struct zcl_command_request content_req = {
+            .spec = content_spec, .input = &content_input, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, content_spec->output_schema);
+        zcl_native_handle_market_content_register(&content_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_market_content_calls, 1);
+        char content_rendered[4096];
+        size_t content_len = json_write(&reply.data, content_rendered,
+                                        sizeof(content_rendered));
+        ASSERT(content_len > 0);
+        ASSERT(strstr(content_rendered, "registered") != NULL);
+        ASSERT(strstr(content_rendered, "/owner/private") == NULL);
+        ASSERT(strstr(content_rendered, "content_path") == NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&content_input);
+
+        /* 7. Buyer payment is three explicit typed operations. Plan reserves
+         * value+fee and emits a path/address-free commit input; commit calls
+         * the value-moving RPC once; status is read-only. */
+        const struct zcl_command_spec *purchase_plan_spec =
+            find_spec(reg, "app.market.purchase.plan");
+        const struct zcl_command_spec *purchase_commit_spec =
+            find_spec(reg, "app.market.purchase.commit");
+        const struct zcl_command_spec *purchase_status_spec =
+            find_spec(reg, "app.market.purchase.status");
+        ASSERT(purchase_plan_spec && purchase_commit_spec &&
+               purchase_status_spec);
+        struct json_value purchase_input;
+        json_init(&purchase_input);
+        json_set_object(&purchase_input);
+        (void)json_push_kv_str(&purchase_input, "wallet_scope", "dev");
+        (void)json_push_kv_str(
+            &purchase_input, "offer_id",
+            "2222222222222222222222222222222222222222222222222222222222222222");
+        (void)json_push_kv_str(&purchase_input, "source_address",
+                               "zs1owner-private-source");
+        (void)json_push_kv_int(&purchase_input, "chunk_start", 0);
+        (void)json_push_kv_int(&purchase_input, "chunks_paid", 1);
+        (void)json_push_kv_str(&purchase_input, "idempotency_key",
+                               "native-contract-1");
+        struct zcl_command_request purchase_plan_req = {
+            .spec = purchase_plan_spec, .input = &purchase_input,
+            .view = "normal",
+        };
+        zcl_command_reply_init(&reply, purchase_plan_spec->output_schema);
+        zcl_native_handle_market_purchase_plan(&purchase_plan_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_market_purchase_plan_calls, 1);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        const char *purchase_commit_input =
+            json_get_str(json_get(&reply.data, "commit_input"));
+        ASSERT(purchase_commit_input && purchase_commit_input[0]);
+        ASSERT(strstr(purchase_commit_input, "source_address") == NULL);
+        ASSERT(strstr(purchase_commit_input, "private-source") == NULL);
+        char purchase_rendered[4096];
+        size_t purchase_len = json_write(&reply.data, purchase_rendered,
+                                         sizeof(purchase_rendered));
+        ASSERT(purchase_len > 0);
+        ASSERT(strstr(purchase_rendered, "source_address") == NULL);
+        ASSERT(strstr(purchase_rendered, "seller") == NULL);
+        ASSERT(strstr(purchase_rendered, "memo") == NULL);
+        struct json_value purchase_commit_input_json;
+        json_init(&purchase_commit_input_json);
+        ASSERT(json_read(&purchase_commit_input_json, purchase_commit_input,
+                         strlen(purchase_commit_input)));
+        char purchase_why[160] = {0};
+        ASSERT(zcl_command_registry_input_validate(
+            purchase_commit_spec, &purchase_commit_input_json, purchase_why,
+            sizeof(purchase_why)));
+        zcl_command_reply_free(&reply);
+        json_free(&purchase_input);
+
+        struct zcl_command_request purchase_commit_req = {
+            .spec = purchase_commit_spec,
+            .input = &purchase_commit_input_json, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, purchase_commit_spec->output_schema);
+        zcl_native_handle_market_purchase_commit(&purchase_commit_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_market_purchase_commit_calls, 1);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")),
+                      "committed");
+        ASSERT(json_get_str(json_get(&reply.data, "txid")) != NULL);
+        ASSERT(json_get_str(json_get(&reply.data, "claim_id")) != NULL);
+        zcl_command_reply_free(&reply);
+
+        struct json_value purchase_status_input;
+        json_init(&purchase_status_input);
+        json_set_object(&purchase_status_input);
+        (void)json_push_kv_str(
+            &purchase_status_input, "plan_id",
+            json_get_str(json_get(&purchase_commit_input_json, "plan_id")));
+        struct zcl_command_request purchase_status_req = {
+            .spec = purchase_status_spec, .input = &purchase_status_input,
+            .view = "normal",
+        };
+        zcl_command_reply_init(&reply, purchase_status_spec->output_schema);
+        zcl_native_handle_market_purchase_status(&purchase_status_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(!reply.error.mutated);
+        ASSERT_EQ(g_app_market_purchase_status_calls, 1);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "status");
+        zcl_command_reply_free(&reply);
+        json_free(&purchase_status_input);
+
+        const struct zcl_command_spec *purchase_retrieve_spec =
+            find_spec(reg, "app.market.purchase.retrieve");
+        ASSERT(purchase_retrieve_spec != NULL);
+        struct json_value purchase_retrieve_input;
+        json_init(&purchase_retrieve_input);
+        json_set_object(&purchase_retrieve_input);
+        (void)json_push_kv_str(
+            &purchase_retrieve_input, "plan_id",
+            json_get_str(json_get(&purchase_commit_input_json, "plan_id")));
+        (void)json_push_kv_str(&purchase_retrieve_input, "destination_path",
+                               "/owner/private/purchased.bin");
+        struct zcl_command_request purchase_retrieve_req = {
+            .spec = purchase_retrieve_spec,
+            .input = &purchase_retrieve_input, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, purchase_retrieve_spec->output_schema);
+        zcl_native_handle_market_purchase_retrieve(&purchase_retrieve_req,
+                                                   &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(reply.error.mutated);
+        ASSERT_EQ(g_app_market_purchase_retrieve_calls, 1);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")),
+                      "retrieved");
+        char retrieved_rendered[4096];
+        size_t retrieved_len = json_write(&reply.data, retrieved_rendered,
+                                           sizeof(retrieved_rendered));
+        ASSERT(retrieved_len > 0);
+        ASSERT(strstr(retrieved_rendered, "destination_path") == NULL);
+        ASSERT(strstr(retrieved_rendered, "/owner/private") == NULL);
+        ASSERT(strstr(retrieved_rendered, "endpoint") == NULL);
+        ASSERT(strstr(retrieved_rendered, "buyer_seed") == NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&purchase_retrieve_input);
+        json_free(&purchase_commit_input_json);
+
+        /* 8. messaging.send picks the recipient key its channel names: the p2p
          *    channel demands peer_id and refuses before touching the node. */
         const struct zcl_command_spec *send_spec =
             find_spec(reg, "app.messaging.send");
@@ -1462,6 +2387,7 @@ int test_native_api_contract(void)
     failures += test_dev_failure_native_api();
     failures += test_native_app_catalog_uses_strict_builtin_source();
     failures += test_wallet_mutating_native_e2e();
+    failures += test_raw_native_pipeline_mines_exact_signed_bytes();
     failures += test_app_write_native_e2e();
     failures += test_native_bridge_resident_binding();
     failures += test_status_frontdoor_preserves_rpc_error();

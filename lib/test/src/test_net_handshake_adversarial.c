@@ -497,6 +497,63 @@ static int test_addr_over_cap_rejected(void)
     return failures;
 }
 
+static int test_legacy_zcl23_addr_batch_bounded_compatible(void)
+{
+    int failures = 0;
+    TEST("addr: historical ZCL23 2500 batch is parsed but admission stays bounded") {
+        enum { LEGACY_COUNT = ADDRMAN_GETADDR_MAX };
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, true));
+        f.node.version = PROTOCOL_VERSION;
+        f.node.services = NODE_ZCL23;
+
+        struct net_address *addrs = zcl_malloc(
+            LEGACY_COUNT * sizeof(*addrs), "hs_legacy_zcl23_addrs");
+        ASSERT(addrs != NULL);
+        uint32_t recent = (uint32_t)platform_time_wall_time_t() - 60;
+        for (int i = 0; i < LEGACY_COUNT; i++)
+            addrs[i] = hs_make_pub_addr(
+                60, (uint8_t)(i >> 16), (uint8_t)(i >> 8),
+                (uint8_t)i, 8033, recent);
+
+        struct byte_stream payload;
+        hs_build_addr_payload(&payload, addrs, LEGACY_COUNT);
+        free(addrs);
+        ASSERT(hs_drive_message(&f.mp, &f.node, "addr", &payload));
+        ASSERT(!f.node.disconnect);
+        ASSERT_EQ(f.node.addr_rate_window_count, LEGACY_COUNT);
+        ASSERT(f.nm.addrman.random_size > 0);
+        ASSERT(f.nm.addrman.random_size <= MAX_ADDR_TO_SEND);
+        stream_free(&payload);
+
+        /* A historical eager batch can be followed by the ordinary getaddr
+         * response during the same handshake without tripping the rate cap. */
+        addrs = zcl_malloc(MAX_ADDR_TO_SEND * sizeof(*addrs),
+                           "hs_legacy_zcl23_getaddr_addrs");
+        ASSERT(addrs != NULL);
+        for (int i = 0; i < MAX_ADDR_TO_SEND; i++)
+            addrs[i] = hs_make_pub_addr(
+                61, 0, (uint8_t)(i >> 8), (uint8_t)i, 8033, recent);
+        hs_build_addr_payload(&payload, addrs, MAX_ADDR_TO_SEND);
+        free(addrs);
+        ASSERT(hs_drive_message(&f.mp, &f.node, "addr", &payload));
+        ASSERT(!f.node.disconnect);
+        ASSERT_EQ(f.node.addr_rate_window_count,
+                  LEGACY_COUNT + MAX_ADDR_TO_SEND);
+        stream_free(&payload);
+
+        /* The compatibility envelope is exact, not an unbounded exemption. */
+        hs_build_addr_count_only_payload(&payload, LEGACY_COUNT + 1);
+        ASSERT(hs_drive_message(&f.mp, &f.node, "addr", &payload));
+        ASSERT(f.node.disconnect);
+
+        stream_free(&payload);
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 6. getaddr response is bounded by the wire cap (MAX_ADDR_TO_SEND)
  * and answers at most once per peer. Rides on
  * msgprocessor_inv.c::process_getaddr() (the `addrs[MAX_ADDR_TO_SEND]`
@@ -558,6 +615,70 @@ static int test_getaddr_bounded_and_answered_once(void)
         ASSERT_EQ(cap2.len, 0);
 
         stream_free(&empty);
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── 6a. The eager addr exchange performed on a ZCL23 verack uses the same
+ * wire cap as the receiver.  Populate the public addrman storage seam with
+ * enough fresh entries that addrman's ordinary 23% selection would exceed
+ * MAX_ADDR_TO_SEND if process_verack supplied its historical 2500 limit. */
+
+static int test_eager_zcl23_addr_exchange_bounded(void)
+{
+    int failures = 0;
+    TEST("verack: eager ZCL23 addr exchange respects receiver wire cap") {
+        enum { ENTRY_COUNT = 5000 };
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, true));
+        f.node.version = PROTOCOL_VERSION;
+        f.node.services = NODE_ZCL23;
+        f.node.state = PEER_HANDSHAKE_COMPLETE;
+
+        struct addr_man *am = &f.nm.addrman;
+        struct addr_info *grown = zcl_realloc(
+            am->entries, ENTRY_COUNT * sizeof(*am->entries),
+            "hs_eager_addr_entries");
+        ASSERT(grown != NULL);
+        am->entries = grown;
+        am->entries_cap = ENTRY_COUNT;
+        memset(am->entries, 0, ENTRY_COUNT * sizeof(*am->entries));
+        am->random_order = zcl_malloc(
+            ENTRY_COUNT * sizeof(*am->random_order),
+            "hs_eager_addr_order");
+        ASSERT(am->random_order != NULL);
+        am->random_cap = ENTRY_COUNT;
+        am->random_size = ENTRY_COUNT;
+        am->id_count = ENTRY_COUNT;
+
+        uint32_t recent = (uint32_t)platform_time_wall_time_t() - 60;
+        for (int i = 0; i < ENTRY_COUNT; i++) {
+            am->entries[i].addr = hs_make_pub_addr(
+                11, (uint8_t)(i >> 16), (uint8_t)(i >> 8),
+                (uint8_t)(i + 1), 8033, recent);
+            am->entries[i].used = true;
+            am->entries[i].random_pos = i;
+            am->random_order[i] = i;
+        }
+
+        ASSERT(process_verack(&f.mp, &f.node));
+        ASSERT(!f.node.disconnect);
+
+        struct hs_capture cap;
+        hs_capture_sent(f.peer_fd, &cap);
+        ssize_t addr_hdr = hs_find_command_header(&cap, "addr");
+        ASSERT(addr_hdr >= 0);
+        size_t payload_off = (size_t)addr_hdr + (size_t)MSG_HEADER_SIZE;
+        ASSERT(payload_off <= cap.len);
+        struct byte_stream reply_payload;
+        stream_init_from_data(&reply_payload, cap.buf + payload_off,
+                              cap.len - payload_off);
+        uint64_t sent_count = 0;
+        ASSERT(stream_read_compact_size(&reply_payload, &sent_count));
+        ASSERT_EQ(sent_count, MAX_ADDR_TO_SEND);
+
         hs_fixture_teardown(&f);
         PASS();
     } _test_next:;
@@ -701,8 +822,35 @@ static int test_honest_handshake_completes(void)
         struct hs_capture cap;
         hs_capture_sent(f.peer_fd, &cap);
         ASSERT(hs_captured_has_command(&cap, "verack"));
+        ssize_t version_at = hs_find_command_header(&cap, "version");
+        ssize_t verack_at = hs_find_command_header(&cap, "verack");
+        ASSERT(version_at >= 0);
+        ASSERT(verack_at > version_at);
 
         stream_free(&version_payload);
+        hs_fixture_teardown(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Noise XX sends msg1 before the ordinary message loop runs.  That raw
+ * handshake traffic must not suppress the version message. */
+static int test_outbound_version_after_transport_bytes(void)
+{
+    int failures = 0;
+    TEST("handshake: outbound version follows pre-version transport bytes") {
+        struct hs_fixture f;
+        ASSERT(hs_fixture_setup(&f, false));
+        f.node.send_bytes = 32; /* Noise XX msg1 was already written. */
+
+        ASSERT(msg_send_messages(&f.mp, &f.node, false));
+        ASSERT(f.node.state == PEER_VERSION_SENT);
+
+        struct hs_capture cap;
+        hs_capture_sent(f.peer_fd, &cap);
+        ASSERT(hs_captured_has_command(&cap, "version"));
+
         hs_fixture_teardown(&f);
         PASS();
     } _test_next:;
@@ -896,11 +1044,14 @@ int test_net_handshake_adversarial(void)
     failures += test_duplicate_version_rejected();
     failures += test_self_connection_detected();
     failures += test_addr_over_cap_rejected();
+    failures += test_legacy_zcl23_addr_batch_bounded_compatible();
     failures += test_getaddr_bounded_and_answered_once();
+    failures += test_eager_zcl23_addr_exchange_bounded();
     failures += test_addr_message_records_topology_edge();
     failures += test_addr_timestamp_sanitization_rule();
     failures += test_oversized_user_agent_rejected();
     failures += test_honest_handshake_completes();
+    failures += test_outbound_version_after_transport_bytes();
     failures += test_mempool_requested_once_for_relay_peer();
     failures += test_mempool_not_requested_for_non_relay_peer();
     failures += test_mempool_not_requested_during_ibd();

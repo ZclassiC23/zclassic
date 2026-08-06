@@ -18,3 +18,13 @@
                "9f91360a486a1291533cad369861c371d4b5bc0682748ee768755c730f574eba",
                NULL,
                "lib/test/src/test_zcode_store.c", false),
+
+    DIAG_ENTRY("zcode_dht", boot_zcode_dht_dump_state_json,
+               "Noise-bound read-only ZCODE DHT: enablement reason, stable "
+               "local node ID, fixed bounds, authenticated/cold contact "
+               "counts, query and probe counts, frame accept/reject counters, "
+               "persistence state, and bounded last error; never exposes key "
+               "material, delegation documents, or peer addresses",
+               "runtime", "runtime", "config/src/boot_zcode_dht.c",
+               "in_process_snapshot", "cheap", "empty or status", NULL,
+               NULL, "lib/test/src/test_zcode_dht_service.c", false),

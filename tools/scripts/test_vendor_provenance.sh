@@ -142,4 +142,23 @@ if vp_verify_locked_manifest "$lib/libsecp256k1.a" "$manifest" \
     die "tampered committed archive passed its manifest"
 fi
 
+# The default presentation translation unit must not depend on optional X11
+# extension development packages, nor retain their runtime loader sonames.
+# RGFW supports these features, but zclassic23 deliberately compiles them out.
+repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+presentation_src="$repo_root/lib/presentation/src/presentation.c"
+presentation_include="$repo_root/lib/presentation/include"
+presentation_deps="$tmp/presentation.d"
+presentation_pp="$tmp/presentation.i"
+cc -std=c23 -I"$presentation_include" -MM "$presentation_src" \
+    >"$presentation_deps" || die "could not derive presentation dependencies"
+if grep -Eq 'X11/extensions/(Xrandr|XInput2)\.h' "$presentation_deps"; then
+    die "optional X11 extension header entered the presentation compile closure"
+fi
+cc -std=c23 -I"$presentation_include" -E "$presentation_src" \
+    >"$presentation_pp" || die "could not preprocess presentation source"
+if grep -Eq 'libXrandr|libXi\.so' "$presentation_pp"; then
+    die "optional X11 extension loader entered the presentation object source"
+fi
+
 printf 'test_vendor_provenance: OK\n'

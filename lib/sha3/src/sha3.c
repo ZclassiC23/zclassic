@@ -6,9 +6,8 @@
  * Based on https://github.com/mjosaarinen/tiny_sha3/blob/master/sha3.c
  * by Markku-Juhani O. Saarinen <mjos@iki.fi> */
 
-#include "crypto/sha3.h"
-#include "crypto/common.h"
-#include "support/cleanse.h"
+#include "sha3/sha3.h"
+#include "base/serialize_le.h"
 #include <string.h>
 
 static inline uint64_t rotl64(uint64_t x, int n) { return (x << n) | (x >> (64 - n)); }
@@ -127,7 +126,7 @@ void sha3_256_write(struct sha3_256_ctx *ctx, const unsigned char *data, size_t 
         memcpy(ctx->buffer + ctx->bufsize, data, sizeof(ctx->buffer) - ctx->bufsize);
         data += sizeof(ctx->buffer) - ctx->bufsize;
         len -= sizeof(ctx->buffer) - ctx->bufsize;
-        ctx->state[ctx->pos++] ^= ReadLE64(ctx->buffer);
+        ctx->state[ctx->pos++] ^= zcl_read_u64_le(ctx->buffer);
         ctx->bufsize = 0;
         if (ctx->pos == SHA3_256_RATE_BUFFERS) {
             sha3_keccakf_scalar(ctx->state);
@@ -135,7 +134,7 @@ void sha3_256_write(struct sha3_256_ctx *ctx, const unsigned char *data, size_t 
         }
     }
     while (len >= sizeof(ctx->buffer)) {
-        ctx->state[ctx->pos++] ^= ReadLE64(data);
+        ctx->state[ctx->pos++] ^= zcl_read_u64_le(data);
         data += 8;
         len -= 8;
         if (ctx->pos == SHA3_256_RATE_BUFFERS) {
@@ -149,15 +148,15 @@ void sha3_256_write(struct sha3_256_ctx *ctx, const unsigned char *data, size_t 
     }
 }
 
-void sha3_256_finalize(struct sha3_256_ctx *ctx, unsigned char *output)
+void sha3_256_finalize(struct sha3_256_ctx *ctx, unsigned char output[32])
 {
     memset(ctx->buffer + ctx->bufsize, 0, sizeof(ctx->buffer) - ctx->bufsize);
     ctx->buffer[ctx->bufsize] ^= 0x06;
-    ctx->state[ctx->pos] ^= ReadLE64(ctx->buffer);
+    ctx->state[ctx->pos] ^= zcl_read_u64_le(ctx->buffer);
     ctx->state[SHA3_256_RATE_BUFFERS - 1] ^= 0x8000000000000000ull;
     sha3_keccakf_scalar(ctx->state);
     for (unsigned i = 0; i < 4; ++i) {
-        WriteLE64(output + 8 * i, ctx->state[i]);
+        zcl_write_u64_le(output + 8 * i, ctx->state[i]);
     }
 }
 
@@ -176,7 +175,7 @@ void sha3_512_write(struct sha3_512_ctx *ctx, const unsigned char *data, size_t 
         memcpy(ctx->buffer + ctx->bufsize, data, sizeof(ctx->buffer) - ctx->bufsize);
         data += sizeof(ctx->buffer) - ctx->bufsize;
         len -= sizeof(ctx->buffer) - ctx->bufsize;
-        ctx->state[ctx->pos++] ^= ReadLE64(ctx->buffer);
+        ctx->state[ctx->pos++] ^= zcl_read_u64_le(ctx->buffer);
         ctx->bufsize = 0;
         if (ctx->pos == SHA3_512_RATE_BUFFERS) {
             sha3_keccakf_scalar(ctx->state);
@@ -184,7 +183,7 @@ void sha3_512_write(struct sha3_512_ctx *ctx, const unsigned char *data, size_t 
         }
     }
     while (len >= sizeof(ctx->buffer)) {
-        ctx->state[ctx->pos++] ^= ReadLE64(data);
+        ctx->state[ctx->pos++] ^= zcl_read_u64_le(data);
         data += 8;
         len -= 8;
         if (ctx->pos == SHA3_512_RATE_BUFFERS) {
@@ -202,11 +201,11 @@ void sha3_512_finalize(struct sha3_512_ctx *ctx, unsigned char output[64])
 {
     memset(ctx->buffer + ctx->bufsize, 0, sizeof(ctx->buffer) - ctx->bufsize);
     ctx->buffer[ctx->bufsize] ^= 0x06;
-    ctx->state[ctx->pos] ^= ReadLE64(ctx->buffer);
+    ctx->state[ctx->pos] ^= zcl_read_u64_le(ctx->buffer);
     ctx->state[SHA3_512_RATE_BUFFERS - 1] ^= 0x8000000000000000ull;
     sha3_keccakf_scalar(ctx->state);
     for (unsigned i = 0; i < 8; ++i)
-        WriteLE64(output + 8 * i, ctx->state[i]);
+        zcl_write_u64_le(output + 8 * i, ctx->state[i]);
 }
 
 void zcl_sha3_256(const unsigned char *data, size_t len, unsigned char output[32])
@@ -223,4 +222,68 @@ void zcl_sha3_512(const unsigned char *data, size_t len, unsigned char output[64
     sha3_512_init(&ctx);
     sha3_512_write(&ctx, data, len);
     sha3_512_finalize(&ctx, output);
+}
+
+static bool shake(const unsigned char *data, size_t len,
+                  unsigned char *output, size_t output_len,
+                  unsigned rate_words)
+{
+    uint64_t state[25] = {0};
+    unsigned char partial[8] = {0};
+    unsigned partial_len = 0;
+    unsigned pos = 0;
+
+    if ((!data && len != 0) || (!output && output_len != 0))
+        return false;
+
+    while (len != 0) {
+        size_t take = sizeof(partial) - partial_len;
+        if (take > len)
+            take = len;
+        memcpy(partial + partial_len, data, take);
+        partial_len += (unsigned)take;
+        data += take;
+        len -= take;
+        if (partial_len == sizeof(partial)) {
+            state[pos++] ^= zcl_read_u64_le(partial);
+            partial_len = 0;
+            memset(partial, 0, sizeof(partial));
+            if (pos == rate_words) {
+                sha3_keccakf_scalar(state);
+                pos = 0;
+            }
+        }
+    }
+
+    partial[partial_len] ^= 0x1f;
+    state[pos] ^= zcl_read_u64_le(partial);
+    state[rate_words - 1] ^= UINT64_C(0x8000000000000000);
+    sha3_keccakf_scalar(state);
+
+    while (output_len != 0) {
+        for (unsigned i = 0; i < rate_words && output_len != 0; i++) {
+            unsigned char word[8];
+            zcl_write_u64_le(word, state[i]);
+            size_t take = output_len < sizeof(word) ? output_len
+                                                    : sizeof(word);
+            memcpy(output, word, take);
+            output += take;
+            output_len -= take;
+        }
+        if (output_len != 0)
+            sha3_keccakf_scalar(state);
+    }
+    return true;
+}
+
+bool zcl_shake128(const unsigned char *data, size_t len,
+                  unsigned char *output, size_t output_len)
+{
+    return shake(data, len, output, output_len, 21);
+}
+
+bool zcl_shake256(const unsigned char *data, size_t len,
+                  unsigned char *output, size_t output_len)
+{
+    return shake(data, len, output, output_len, 17);
 }

@@ -8,9 +8,8 @@
  *   - lag ≥ breach_blocks for ≥ breach_secs  → EV_LAG_SLO_BREACH (warn|critical)
  *   - lag ≥ critical_blocks for ≥ critical_secs → EV_LAG_SLO_BREACH (fatal)
  *
- * Fatal severity drives node_health.healthy=false, which causes the
- * sd_notify heartbeat to stop pinging WatchdogSec and triggers a
- * systemd restart. */
+ * Fatal severity drives node_health.healthy=false for serving, conditions,
+ * remedies, and operator paging. It is not a process-hang signal. */
 
 #include "test/test_core.h"
 

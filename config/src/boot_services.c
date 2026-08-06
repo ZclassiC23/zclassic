@@ -13,6 +13,7 @@
 #include "config/boot_flyclient.h"
 #include "config/boot_snapshot_offer.h"
 #include "config/boot_msg_callbacks.h"
+#include "config/boot_zcode_dht.h"
 #include "services/binary_ab_fallback.h"
 #include "services/chain_activation_service.h"
 #include "services/block_index_integrity.h"
@@ -114,6 +115,7 @@
 #include "controllers/messaging_controller.h"
 #include "controllers/swap_controller.h"
 #include "controllers/blog_controller.h"
+#include "controllers/blog_post_controller.h"
 #include "rpc/httpserver.h"
 #include "rpc/legacy_chain_oracle.h"
 #include "rpc/server.h"
@@ -175,7 +177,6 @@ struct node_db *boot_node_db(struct boot_svc_ctx *svc)
         return NULL;
     return db_service_node_db(runtime->db_service);
 }
-
 struct db_service *boot_db_service(struct boot_svc_ctx *svc)
 {
     struct app_runtime_context *runtime = boot_runtime(svc);
@@ -183,7 +184,6 @@ struct db_service *boot_db_service(struct boot_svc_ctx *svc)
         return NULL;
     return runtime->db_service;
 }
-
 /* Runtime-profile gate accessors. Non-static (prototypes in boot_internal.h)
  * because several staying app_init call sites read them AND the frontend
  * service starts in boot_frontend_services.c gate on them across the TU
@@ -726,8 +726,8 @@ bool app_init_services(struct app_context *ctx,
     msg_processor_set_peer_save(svc->msg_processor, boot_save_peer_advisory,
                                 svc);
     msg_processor_set_zmsg_save(svc->msg_processor, boot_save_zmsg, svc);
-    msg_processor_set_file_offer_save(svc->msg_processor,
-                                      boot_save_file_offer, svc);
+    boot_wire_file_market(svc->msg_processor, svc);
+    boot_wire_zswap_yardsale(svc->msg_processor, svc);
     msg_processor_set_file_service_save(svc->msg_processor,
                                         boot_save_file_service, svc);
     msg_processor_set_snapshot_active(svc->msg_processor,
@@ -1234,6 +1234,7 @@ bool app_init_services(struct app_context *ctx,
     /* Diagnostics RPCs — dumpstate, getnodelog, dbquery */
     diagnostics_controller_set_state(svc->state, ctx->datadir);
     register_diagnostics_rpc_commands(svc->rpc_table);
+    boot_zcode_dht_register_rpc(svc->rpc_table);
 
     /* File transfer service — SHA3-verified chunk serving */
     if (boot_profile_has_file_service(ctx)) {
@@ -1255,12 +1256,11 @@ bool app_init_services(struct app_context *ctx,
     rpc_anchor_set_state(boot_node_db(svc));
     rpc_anchor_set_wallet(svc->wallet, svc->mempool, svc->state, svc->coins_tip);
     register_anchor_rpc_commands(svc->rpc_table);
+    register_blog_post_rpc_commands(svc->rpc_table);
     rpc_identity_set_state(boot_node_db(svc));
     rpc_identity_set_wallet(svc->wallet, svc->mempool, svc->state, svc->coins_tip);
     register_identity_rpc_commands(svc->rpc_table);
-    register_zdir_rpc_commands(svc->rpc_table, boot_node_db(svc), svc->wallet,
-                               svc->mempool, svc->state, svc->coins_tip);
-
+    register_zdir_rpc_commands(svc->rpc_table, boot_node_db(svc), svc->wallet, svc->mempool, svc->state, svc->coins_tip);
     /* OP_RETURN catalog — every OP_RETURN output ever seen, by lokad tag */
     rpc_op_return_index_set_state(boot_node_db(svc));
     register_op_return_index_rpc_commands(svc->rpc_table);

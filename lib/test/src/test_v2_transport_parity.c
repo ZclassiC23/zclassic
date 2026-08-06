@@ -23,10 +23,13 @@
  * function (see test_connect_node_locked.c for the same convention). */
 
 #include "test/test_core.h"
+#include "net/v2_identity.h"
 #include "net/v2_transport.h"
 
+#include <sys/stat.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 /* A representative 4-byte network magic (value is arbitrary for the test; both
  * sides use the same). Chosen not to collide with a random ephemeral prefix. */
@@ -128,6 +131,19 @@ int test_v2_transport_parity(void)
             /* XX authenticates both statics — each side learned the peer's. */
             ASSERT(i->have_peer_static);
             ASSERT(r->have_peer_static);
+            struct v2_transport_snapshot isnap, rsnap;
+            ASSERT(v2_transport_snapshot(i, &isnap));
+            ASSERT(v2_transport_snapshot(r, &rsnap));
+            ASSERT(isnap.established && rsnap.established);
+            ASSERT(isnap.connection_generation != 0);
+            ASSERT(rsnap.connection_generation != 0);
+            ASSERT(isnap.connection_generation == rsnap.connection_generation);
+            ASSERT(isnap.connection_serial != 0);
+            ASSERT(rsnap.connection_serial != 0);
+            ASSERT(isnap.connection_serial != rsnap.connection_serial);
+            ASSERT(memcmp(isnap.transcript_hash, rsnap.transcript_hash, 32) == 0);
+            ASSERT(memcmp(isnap.remote_static, r->hs.s_pub, 32) == 0);
+            ASSERT(memcmp(rsnap.remote_static, i->hs.s_pub, 32) == 0);
             v2_transport_free(i);
             v2_transport_free(r);
         }
@@ -342,6 +358,31 @@ int test_v2_transport_parity(void)
             uint8_t other[4] = { 0, 1, 2, 3 };
             ASSERT(!v2_transport_is_plaintext_magic(other, 4, TEST_MAGIC));
             ASSERT(!v2_transport_is_plaintext_magic(TEST_MAGIC, 3, TEST_MAGIC));
+        }
+
+        /* (7) the shared persistent key loader creates atomically, reloads
+         * exactly, and refuses an over-permissive existing key. */
+        {
+            char dir[] = "/tmp/zcl_v2_identity_XXXXXX";
+            ASSERT(mkdtemp(dir) != NULL);
+            uint8_t priv1[32], pub1[32], priv2[32], pub2[32];
+            char err[160];
+            ASSERT(v2_identity_load_or_create(dir, priv1, pub1, err,
+                                               sizeof(err)));
+            ASSERT(v2_identity_load_or_create(dir, priv2, pub2, err,
+                                               sizeof(err)));
+            ASSERT(memcmp(priv1, priv2, 32) == 0);
+            ASSERT(memcmp(pub1, pub2, 32) == 0);
+            char path[256];
+            snprintf(path, sizeof(path), "%s/v2_identity.key", dir);
+            struct stat st;
+            ASSERT(stat(path, &st) == 0);
+            ASSERT((st.st_mode & 0777) == 0600);
+            ASSERT(chmod(path, 0644) == 0);
+            ASSERT(!v2_identity_load_or_create(dir, priv2, pub2, err,
+                                                sizeof(err)));
+            ASSERT(unlink(path) == 0);
+            ASSERT(rmdir(dir) == 0);
         }
 
     } TEST_END

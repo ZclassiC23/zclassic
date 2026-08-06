@@ -147,6 +147,21 @@ bool block_index_set_have_data_verified(struct block_index *pindex,
                                         const struct disk_block_pos *pos,
                                         const char *datadir);
 
+/* Hash-targeted self-heal for a stale/torn (nFile,nDataPos): scan the
+ * entry's current blk file for a record whose block hash equals
+ * *pindex->phashBlock and, on a hit, re-store the fresh position through
+ * block_index_set_have_data_verified() (read-back + hash check included).
+ * With scan_all_files, a same-file miss continues across the remaining blk
+ * files (gap policy: stop after 3 consecutive misses); that full sweep is
+ * throttled to one per 60 s per process so a mass-missing-bodies episode
+ * (e.g. a blocks-less bundle) cannot turn every read failure into a full
+ * blk-set walk. Returns false when no copy is found — the caller's
+ * clear-and-refetch fallback then applies. Best-effort; stateless
+ * (open/mmap/munmap, no FILE* cache), safe from background threads. */
+bool block_index_repair_pos_from_disk(struct block_index *pindex,
+                                      const char *datadir,
+                                      bool scan_all_files);
+
 /* Lock/unlock the block I/O mutex. Callers that read block or undo
  * files directly (not through read_block_from_disk) MUST wrap their
  * fopen/fread/fseek/fclose in lock/unlock to prevent SIGSEGV from

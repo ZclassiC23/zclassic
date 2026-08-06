@@ -146,7 +146,38 @@ struct vcs_package_store_status {
     uint64_t total_bytes;     /* manifest total */
     uint32_t present_chunks;  /* unique-in-package chunks present */
     uint32_t total_chunks;    /* unique-in-package chunks committed */
+    uint64_t mutation_generation; /* changes on byte/completion/pin mutation */
 };
+
+enum vcs_package_possession_failure {
+    VCS_PACKAGE_POSSESSION_NONE = 0,
+    VCS_PACKAGE_POSSESSION_UNTRACKED,
+    VCS_PACKAGE_POSSESSION_INCOMPLETE,
+    VCS_PACKAGE_POSSESSION_UNPINNED,
+    VCS_PACKAGE_POSSESSION_MANIFEST,
+    VCS_PACKAGE_POSSESSION_CHUNK_MISSING,
+    VCS_PACKAGE_POSSESSION_CHUNK_HASH,
+    VCS_PACKAGE_POSSESSION_MUTATED,
+    VCS_PACKAGE_POSSESSION_ALLOC,
+};
+
+enum vcs_package_possession_step {
+    VCS_PACKAGE_POSSESSION_PROGRESS = 0,
+    VCS_PACKAGE_POSSESSION_BUDGET,
+    VCS_PACKAGE_POSSESSION_SUCCESS,
+    VCS_PACKAGE_POSSESSION_FAILED,
+};
+
+struct vcs_package_possession_receipt {
+    uint64_t mutation_generation;
+    uint64_t bytes_verified;
+    uint32_t chunks_verified;
+    bool complete;
+    bool pinned;
+    enum vcs_package_possession_failure failure;
+};
+
+struct vcs_package_possession_proof; /* opaque, one in-progress proof */
 
 const char *vcs_package_store_result_string(
     enum vcs_package_store_result result);
@@ -272,6 +303,53 @@ enum vcs_package_store_result vcs_package_store_set_class(
 bool vcs_package_store_package_status(
     struct vcs_package_store *store, const uint8_t package_root[32],
     struct vcs_package_store_status *out);
+
+/* O(1), lock-bounded possession metadata. Unlike package_status this never
+ * walks the package's chunk set or touches the filesystem: committed means
+ * that the store completed its crash-safe commit, and generation changes on
+ * every store-mediated byte/completion/pin mutation. */
+bool vcs_package_store_possession_snapshot(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    struct vcs_package_possession_receipt *out);
+
+/* Expensive possession proof for STORAGE_ACK authorship. Requires a complete
+ * package (and, when requested, a current local pin), re-parses and root-binds
+ * the manifest, reads every chunk, re-hashes every coordinate, then rechecks
+ * derived status to close unpin/eviction races. */
+bool vcs_package_store_verify_possession(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    bool require_pinned);
+bool vcs_package_store_verify_possession_receipt(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    bool require_pinned, struct vcs_package_possession_receipt *receipt);
+
+/* Incremental form used by the bounded STORAGE_ACK proof scheduler. Begin
+ * snapshots the package generation and manifest under the store lock. Step
+ * verifies at most `chunk_budget` chunks and never starts a chunk larger than
+ * `byte_budget`; callers must provide at least VCS_PACKAGE_CHUNK_BYTES when
+ * they want a full-size chunk to advance. Final success is recorded only
+ * while the store lock confirms generation, complete state and pin state are
+ * unchanged from the snapshot. */
+struct vcs_package_possession_proof *vcs_package_store_possession_begin(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    bool require_pinned, struct vcs_package_possession_receipt *receipt);
+enum vcs_package_possession_step vcs_package_store_possession_step(
+    struct vcs_package_possession_proof *proof, uint64_t byte_budget,
+    uint32_t chunk_budget, struct vcs_package_possession_receipt *receipt,
+    uint64_t *bytes_used);
+void vcs_package_store_possession_free(
+    struct vcs_package_possession_proof *proof);
+const char *vcs_package_possession_failure_string(
+    enum vcs_package_possession_failure failure);
+
+typedef void (*vcs_package_possession_apply_fn)(void *context, bool current);
+/* Atomically recheck a successful receipt and invoke `apply` before any
+ * store-mediated mutation can advance the package generation. The callback
+ * must not re-enter this package store. */
+void vcs_package_store_possession_apply_if_current(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    uint64_t successful_generation, bool require_pinned,
+    vcs_package_possession_apply_fn apply, void *context);
 
 /* Read-only CAS presence probe, addressed by DIRECTORY rather than by an
  * open store. vcs_package_store_open() runs the mutating recovery sweep,

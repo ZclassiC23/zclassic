@@ -15,6 +15,7 @@
 #include "controllers/rpc_client.h"
 #include "controllers/rpc_params.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 #include <stdbool.h>
 #include <stdlib.h>
@@ -41,7 +42,38 @@ char *zcl_native_zslp_listtokens_body(const struct json_value *args,
                                       struct zcl_native_body_err *err)
 {
     (void)args;
-    return app_native_rpc_noargs("zslp_listtokens", err);
+    char *raw = app_native_rpc_noargs("zslp_listtokens", err);
+    if (!raw)
+        return NULL;
+    /* The RPC answers a bare array, but the native body contract requires
+     * an object — wrap it as {"tokens":[...]} (the storebuy_catalog
+     * "products" convention). The RPC/REST shape is unchanged. A non-array
+     * body (the legacy string error convention) passes through untouched so
+     * the bridge surfaces the handler's own message. */
+    struct json_value doc;
+    if (!json_read(&doc, raw, strlen(raw)) || doc.type != JSON_ARR) {
+        json_free(&doc);
+        return raw;
+    }
+    free(raw);
+    struct json_value wrapped;
+    json_init(&wrapped);
+    json_set_object(&wrapped);
+    (void)json_push_kv(&wrapped, "tokens", &doc);
+    json_free(&doc);
+    size_t need = json_write(&wrapped, NULL, 0);
+    char *out = zcl_malloc(need + 1, "native.tokens_list");
+    if (out)
+        (void)json_write(&wrapped, out, need + 1);
+    json_free(&wrapped);
+    if (!out) {
+        err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
+        snprintf(err->message, sizeof(err->message),
+                 "could not serialize the wrapped token index");
+        LOG_NULL("native.app", "tokens.list wrap alloc failed (%zu bytes)",
+                 need + 1);
+    }
+    return out;
 }
 
 /* ── Names (ZNAM) ───────────────────────────────────────────── */
@@ -101,6 +133,13 @@ char *zcl_native_zmarket_status_body(const struct json_value *args,
 {
     (void)args;
     return app_native_rpc_noargs("zmarket_status", err);
+}
+
+char *zcl_native_zmarket_content_list_body(
+    const struct json_value *args, struct zcl_native_body_err *err)
+{
+    (void)args;
+    return app_native_rpc_noargs("zmarket_content_list", err);
 }
 
 /* ── Atomic swaps (ZSWP) ────────────────────────────────────── */
@@ -192,6 +231,14 @@ static void tramp_market_status(const struct zcl_command_request *request,
     zcl_native_bridge_run(request, zcl_native_zmarket_status_body, reply);
 }
 
+static void tramp_market_content_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_zmarket_content_list_body,
+                          reply);
+}
+
 static void tramp_swap_chains(const struct zcl_command_request *request,
                               struct zcl_command_reply *reply)
 {
@@ -211,6 +258,7 @@ static const struct zcl_hotswap_leaf_replacement k_leaves[] = {
     { "app.messaging.inbox", tramp_msg_inbox },
     { "app.market.list",     tramp_market_list },
     { "app.market.status",   tramp_market_status },
+    { "app.market.content.list", tramp_market_content_list },
     { "app.swap.chains",     tramp_swap_chains },
     { "app.swap.list",       tramp_swap_list },
 };

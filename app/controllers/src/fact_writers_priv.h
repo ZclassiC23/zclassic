@@ -76,7 +76,12 @@ struct fw_file {
     size_t nlines;
 };
 
-/* Load <root>/<rel>. false when absent/oversized — not an error for a census. */
+/* Load <root>/<rel>. false when absent/oversized — not an error for a census.
+ * The unindexed form is for whole-buffer predicates/harvests; callers that
+ * need random line access must index it (or use the combined loader). */
+bool fw_file_load_unindexed(const char *root, const char *rel,
+                            struct fw_file *out);
+bool fw_file_index_lines(struct fw_file *file);
 bool fw_file_load(const char *root, const char *rel, struct fw_file *out);
 void fw_file_free(struct fw_file *f);
 /* Copy line `lineno` (1-based) into dst[cap], sans newline. "" when absent. */

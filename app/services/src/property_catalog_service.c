@@ -278,6 +278,7 @@ struct zcl_result property_catalog_list_with_sources(
         return ZCL_ERR(-1, "property_catalog_list: NULL out");
     memset(out, 0, sizeof(*out));
     out->store_read = true;
+    out->integrity_ok = true;
     if (!datadir || !*datadir)
         return ZCL_ERR(-2, "property_catalog_list: datadir is %s",
                        datadir ? "empty" : "NULL");
@@ -300,8 +301,7 @@ struct zcl_result property_catalog_list_with_sources(
         const struct metaverse_adapter *adapter = metaverse_adapter_at(i);
         struct property_catalog_kind_row *row;
         size_t room;
-        size_t total = 0;
-        bool truncated = false;
+        struct metaverse_adapter_list_report report;
 
         if (!adapter)
             return ZCL_ERR(-5, "property_catalog_list: adapter row %zu is "
@@ -351,26 +351,49 @@ struct zcl_result property_catalog_list_with_sources(
         }
 
         room = limit > out->count ? limit - out->count : 0;
+        memset(&report, 0, sizeof(report));
         if (room == 0) {
             /* The page is full but the inventory question is still owed an
              * honest answer, so ask for the total with a zero-width page. */
-            (void)adapter->list(&ctx, NULL, 0, &total, &truncated);
-            row->total     = total;
+            (void)adapter->list(&ctx, NULL, 0, &report);
+            row->total     = report.total;
             row->written   = 0;
-            row->truncated = total > 0;
-            out->total_across_kinds += total;
+            row->truncated = report.total > 0 || report.truncated;
+            row->integrity_checked = true;
+            row->integrity_ok = report.integrity_ok;
+            row->integrity_gap_count = report.integrity_gap_count;
+            snprintf(row->integrity_reason,
+                     sizeof(row->integrity_reason), "%s",
+                     report.integrity_reason);
+            out->total_across_kinds += report.total;
             if (row->truncated)
                 out->truncated = true;
-            continue;
+        } else {
+            row->written = adapter->list(
+                &ctx, &out->items[out->count], room, &report);
+            row->total = report.total;
+            row->truncated = report.truncated;
+            row->integrity_checked = true;
+            row->integrity_ok = report.integrity_ok;
+            row->integrity_gap_count = report.integrity_gap_count;
+            snprintf(row->integrity_reason,
+                     sizeof(row->integrity_reason), "%s",
+                     report.integrity_reason);
+            out->count += row->written;
+            out->total_across_kinds += report.total;
+            if (report.truncated)
+                out->truncated = true;
         }
-        row->written = adapter->list(&ctx, &out->items[out->count], room,
-                                     &total, &truncated);
-        row->total     = total;
-        row->truncated = truncated;
-        out->count += row->written;
-        out->total_across_kinds += total;
-        if (truncated)
-            out->truncated = true;
+        if (!row->integrity_ok) {
+            out->integrity_ok = false;
+            out->integrity_gap_count += row->integrity_gap_count;
+            if (out->integrity_reason[0] == '\0')
+                snprintf(out->integrity_reason,
+                         sizeof(out->integrity_reason), "%s: %s",
+                         row->kind_name, row->integrity_reason[0]
+                                             ? row->integrity_reason
+                                             : "source integrity failed");
+        }
     }
 
     for (size_t i = 0; i < out->kind_count; i++) {
@@ -501,6 +524,13 @@ struct zcl_result property_catalog_page_to_json(
         (void)json_push_kv_int(&row, "total", (int64_t)k->total);
         (void)json_push_kv_int(&row, "rendered", (int64_t)k->written);
         (void)json_push_kv_bool(&row, "items_truncated", k->truncated);
+        (void)json_push_kv_bool(&row, "integrity_checked",
+                                k->integrity_checked);
+        (void)json_push_kv_bool(&row, "integrity_ok", k->integrity_ok);
+        (void)json_push_kv_int(&row, "integrity_gap_count",
+                               (int64_t)k->integrity_gap_count);
+        (void)json_push_kv_str(&row, "integrity_reason",
+                               k->integrity_reason);
         (void)json_push_back(&arr, &row);
         json_free(&row);
     }
@@ -513,6 +543,11 @@ struct zcl_result property_catalog_page_to_json(
     (void)json_push_kv_int(out, "kinds_scanned", (int64_t)page->kind_count);
     (void)json_push_kv_int(out, "kinds_unavailable",
                            (int64_t)page->unavailable_kinds);
+    (void)json_push_kv_bool(out, "integrity_ok", page->integrity_ok);
+    (void)json_push_kv_int(out, "integrity_gap_count",
+                           (int64_t)page->integrity_gap_count);
+    (void)json_push_kv_str(out, "integrity_reason",
+                           page->integrity_reason);
 
     /* The disclosure section. "read": false says the emptiness above is a
      * failure to look, not an inventory — a distinction an operator

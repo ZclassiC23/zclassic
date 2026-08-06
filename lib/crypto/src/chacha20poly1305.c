@@ -5,7 +5,9 @@
 
 #include "crypto/chacha20poly1305.h"
 #include "support/cleanse.h"
+#include "util/safe_alloc.h"
 #include "util/log_macros.h"
+#include <stdlib.h>
 #include <string.h>
 
 static uint32_t rotl32(uint32_t v, int n)
@@ -266,12 +268,13 @@ bool chacha20poly1305_encrypt(const uint8_t *plaintext, size_t plen,
     mac_len += (16 - (plen % 16)) % 16;
     mac_len += 16;
 
-    /* Use stack for small messages, which covers all Zcash use cases */
-    uint8_t mac_data[2048];
-    if (mac_len > sizeof(mac_data))
-        LOG_FAIL("chacha20poly1305",
-                 "encrypt: MAC scratch too small: need=%zu have=%zu (plen=%zu aad_len=%zu)",
-                 mac_len, sizeof(mac_data), plen, aad_len);
+    uint8_t mac_stack[2048];
+    uint8_t *mac_data = mac_stack;
+    if (mac_len > sizeof(mac_stack)) {
+        mac_data = zcl_malloc(mac_len, "chacha20poly1305_mac");
+        if (!mac_data)
+            LOG_FAIL("chacha20poly1305", "encrypt: MAC allocation failed");
+    }
 
     size_t pos = 0;
     if (aad_len > 0) {
@@ -286,6 +289,10 @@ bool chacha20poly1305_encrypt(const uint8_t *plaintext, size_t plen,
     store64_le(mac_data + pos, plen); pos += 8;
 
     poly1305_mac(mac_data, pos, poly_key, ciphertext + plen);
+    if (mac_data != mac_stack) {
+        memory_cleanse(mac_data, mac_len);
+        free(mac_data);
+    }
     /* Wipe the Poly1305 one-time key: last read was the MAC call above; tag
      * already written to ciphertext+plen. */
     memory_cleanse(poly_key, sizeof(poly_key));
@@ -317,11 +324,13 @@ bool chacha20poly1305_decrypt(const uint8_t *ciphertext, size_t clen,
     mac_len += (16 - (plen % 16)) % 16;
     mac_len += 16;
 
-    uint8_t mac_data[2048];
-    if (mac_len > sizeof(mac_data))
-        LOG_FAIL("chacha20poly1305",
-                 "decrypt: MAC scratch too small: need=%zu have=%zu (plen=%zu aad_len=%zu)",
-                 mac_len, sizeof(mac_data), plen, aad_len);
+    uint8_t mac_stack[2048];
+    uint8_t *mac_data = mac_stack;
+    if (mac_len > sizeof(mac_stack)) {
+        mac_data = zcl_malloc(mac_len, "chacha20poly1305_mac");
+        if (!mac_data)
+            LOG_FAIL("chacha20poly1305", "decrypt: MAC allocation failed");
+    }
 
     size_t pos = 0;
     if (aad_len > 0) {
@@ -337,6 +346,10 @@ bool chacha20poly1305_decrypt(const uint8_t *ciphertext, size_t clen,
 
     uint8_t computed_tag[16];
     poly1305_mac(mac_data, pos, poly_key, computed_tag);
+    if (mac_data != mac_stack) {
+        memory_cleanse(mac_data, mac_len);
+        free(mac_data);
+    }
 
     /* Constant-time comparison. Tag mismatch is the expected path when an
      * attacker tampers with ciphertext — do not log the tag itself. */

@@ -40,6 +40,41 @@
  * All fan-out stays inside this single thread (no new threads). */
 
 #define ZCL_DIAL_BATCH_MAX 8   /* <= MAX_OUTBOUND_CONNECTIONS */
+
+static bool connect_only_wait_needed(bool connect_only, size_t outbound,
+                                     size_t addnode_count,
+                                     bool dht_hint_pending)
+{
+    return connect_only && outbound >= addnode_count && !dht_hint_pending;
+}
+
+static bool outbound_rate_allowed(bool below_floor, bool interval_elapsed,
+                                  bool dht_hint_pending)
+{
+    /* A chain-bound lookup hint is already a bounded, explicit dial request.
+     * Do not strand it behind the 10-second background addrman cadence once
+     * the healthy floor is met. All slot, dedupe and diversity gates remain. */
+    return dht_hint_pending || below_floor || interval_elapsed;
+}
+
+#ifdef ZCL_TESTING
+bool connman_connect_only_wait_needed_for_test(bool connect_only,
+                                               size_t outbound,
+                                               size_t addnode_count,
+                                               bool dht_hint_pending)
+{
+    return connect_only_wait_needed(connect_only, outbound, addnode_count,
+                                    dht_hint_pending);
+}
+
+bool connman_outbound_rate_allowed_for_test(bool below_floor,
+                                            bool interval_elapsed,
+                                            bool dht_hint_pending)
+{
+    return outbound_rate_allowed(below_floor, interval_elapsed,
+                                 dht_hint_pending);
+}
+#endif
 #define ZCL_FEELER_INTERVAL_DEFAULT_SECS 120
 #define ZCL_FEELER_HANDSHAKE_BUDGET_SECS 40
 
@@ -90,6 +125,21 @@ static bool connman_candidate_addr_dialable(struct connman *cm,
     if (connman_addr_is_connected(cm, addr))
         return false;
     return true;
+}
+
+static bool connman_dht_hint_dialable(struct connman *cm,
+                                      const struct net_address *addr)
+{
+    if (!cm || !addr ||
+        !zcl_net_port_is_reachable_candidate(addr->svc.port) ||
+        connman_addr_is_connected(cm, addr))
+        return false;
+    /* Same-host acceptance nodes legitimately publish 127/8 endpoints. The
+     * signed identity still cannot promote until the remote Noise static and
+     * delegation match; a dishonest loopback hint costs one bounded attempt.
+     * Never widen this exception beyond the existing operator-local rule. */
+    return !is_local(&cm->manager, &addr->svc) ||
+           net_addr_is_operator_local(&addr->svc.addr);
 }
 
 /* Next un-tried anchor as a net_address, marking it tried. Returns false once
@@ -201,7 +251,28 @@ size_t connman_gather_dial_candidates(struct connman *cm,
         }
     }
 
-    /* (2) addnode / addrman via the existing selector. Bound the draws so a
+    /* (2) A chain-bound ZENDP resolution requested by iterative DHT lookup.
+     * This queue is honored even in -connect-only mode: the operator's fixed
+     * edges remain the initial topology, while a specific authenticated
+     * FIND_NODE result may open one bounded, identity-checked next hop. */
+    while (n < max) {
+        struct net_address a;
+        if (!connman_take_dht_hint(cm, &a))
+            break;
+        if (!connman_dht_hint_dialable(cm, &a) ||
+            tally_has_service(&tally, &a.svc) ||
+            (!net_addr_is_operator_local(&a.svc.addr) &&
+             !batch_diversity_ok(cm, &tally, &a.svc.addr)))
+            continue;
+        out[n].addr = a;
+        out[n].source = CONNMAN_TARGET_DHT_HINT;
+        out[n].addnode_index = SIZE_MAX;
+        out[n].is_feeler = false;
+        tally.svcs[tally.n++] = a.svc;
+        n++;
+    }
+
+    /* (3) addnode / addrman via the existing selector. Bound the draws so a
      * pool that keeps returning saturated/duplicate picks can't spin, but
      * budget enough draws that a batch still fills with DISTINCT live
      * candidates when a large fraction of addrman is in failure-aware backoff
@@ -229,7 +300,15 @@ size_t connman_gather_dial_candidates(struct connman *cm,
         }
         if (tally_has_service(&tally, &info.addr.svc))
             continue;
-        if (!batch_diversity_ok(cm, &tally, &info.addr.svc.addr))
+        /* Multiple explicit loopback -connect targets are distinct local
+         * daemons, not a remote /16 concentration. Permit that operator-only
+         * fixture shape; public addnodes and all addrman candidates retain
+         * the normal diversity cap. */
+        bool explicit_operator_local =
+            src == CONNMAN_TARGET_ADDNODE &&
+            net_addr_is_operator_local(&info.addr.svc.addr);
+        if (!explicit_operator_local &&
+            !batch_diversity_ok(cm, &tally, &info.addr.svc.addr))
             continue;
         out[n].addr = info.addr;
         out[n].source = src;
@@ -323,7 +402,8 @@ static void connman_record_dial_failure(struct connman *cm,
     net_addr_to_string(&c->addr.svc.addr, ipbuf, sizeof(ipbuf));
     if (c->source == CONNMAN_TARGET_ADDNODE) {
         connman_record_addnode_attempt(cm, c->addnode_index, false);
-    } else if (c->source == CONNMAN_TARGET_ADDRMAN) {
+    } else if (c->source == CONNMAN_TARGET_ADDRMAN ||
+               c->source == CONNMAN_TARGET_DHT_HINT) {
         /* A NON-feeler addrman candidate was already charged exactly one
          * attempt at pick time (connman_pick_next_outbound_target ->
          * addrman_attempt). Charging a second one here double-counted every
@@ -335,7 +415,7 @@ static void connman_record_dial_failure(struct connman *cm,
          * no durable per-address failure ledger at all. One dial now == one
          * attempt for every source, so the failure-aware backoff ramp escalates
          * on a true consecutive-failure count. */
-        if (c->is_feeler)
+        if (c->is_feeler || c->source == CONNMAN_TARGET_DHT_HINT)
             addrman_attempt(&cm->manager.addrman, &c->addr.svc,
                             (int64_t)platform_time_wall_time_t());
     }
@@ -528,7 +608,9 @@ void *thread_open_connections(void *arg)
          * per-service dedupe, not by capping the global outbound count.
          * Bound: MAX_OUTBOUND_CONNECTIONS (checked above) still caps the
          * total, and num_addnodes <= MAX_ADDNODES. */
-        if (g_connect_only && outbound >= (size_t)cm->num_addnodes) {
+        if (connect_only_wait_needed(
+                g_connect_only, outbound, (size_t)cm->num_addnodes,
+                connman_dht_hint_pending(cm))) {
             sleep(1);
             continue;
         }
@@ -590,8 +672,9 @@ void *thread_open_connections(void *arg)
         int64_t now_oc = (int64_t)platform_time_wall_time_t();
         const size_t OUTBOUND_HEALTHY_FLOOR = ZCL_PEER_FLOOR_HEALTHY;
         bool below_floor = (outbound_healthy < OUTBOUND_HEALTHY_FLOOR);
-        bool rate_ok = below_floor ||
-                       (now_oc - s_last_addrman_attempt >= 10);
+        bool rate_ok = outbound_rate_allowed(
+            below_floor, now_oc - s_last_addrman_attempt >= 10,
+            connman_dht_hint_pending(cm));
 
         /* HARVEST: below the healthy floor AND addrman itself is running
          * dry — pull proven-reachable candidates from the durable network

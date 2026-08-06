@@ -41,16 +41,21 @@ historical fixture passes, then deploy/restart intentionally.
   `tools/scripts/public_explorer_smoke.sh`; it checks both `/api/v1/hodl` and
   `/explorer/hodl` without `jq` and fails on "refresh", "not processed",
   "retry", or "waiting" user-visible states.
-- **There is currently no runtime-generation publication authority.**
-  `dev.change.apply`, publication watcher modes,
+- **Runtime-generation publication has one owner-gated native authority.**
+  `zclassic23-dev dev generation activate --idempotency-key=<key>` stages and
+  preflights an immutable dev generation, then returns the exact
+  `commit_input` required to activate it. The commit binds the candidate,
+  source identity + ABA mutation + CAS root, resident generation, and expiry;
+  the engine verifies the exact running executable and rolls back on failure.
+  All other broad paths remain contained: `dev.change.apply`, watcher modes,
   `make hotswap`, `deploy-dev*`, `agent-deploy-fast`, `agent-stage-dev`, and
   the direct deploy/hot-swap scripts all hard-refuse. Remote update/install/
   restart variables and `lane_recover --apply` also refuse before SSH, file,
   datadir, or service mutation. A source ID, environment switch, or direct
   script call does not bypass containment. Use build, simulation, read-only
-  plans and verify/check watch; the one live runtime surface is the gated
-  swappable-leaf hot-swap (`make hotswap-try` / `make hotswap-apply`) on the
-  armed `zcl23-dev` lane.
+  plans and verify/check watch. The two live dev runtime surfaces are that
+  explicit owner plan/commit and the gated swappable-leaf hot-swap
+  (`make hotswap-try` / `make hotswap-apply`) on the armed `zcl23-dev` lane.
 - **Dev recovery is plan-only during containment.** `make agent-dev-recover`
   is read-only. `ARGS=--apply`, direct `recover-dev-lane.sh --apply`, and test
   environment variables cannot relink an existing generation or restart the
@@ -87,6 +92,15 @@ historical fixture passes, then deploy/restart intentionally.
   (`make hotswap-try` / `make hotswap-apply` do this for you). A bare
   `build/bin/zclassic23-dev <cmd>` falls back to the canonical default
   datadir/ports and talks to the live node, not the dev lane.
+- **`--importblockindex` ignores even an explicit `-datadir=` — it writes the
+  DEFAULT datadir's `node.db` unless given the target as a positional.** The
+  safe form for a side datadir is
+  `build/bin/zclassic23 --importblockindex <zclassicd-datadir> <side-datadir>/node.db`
+  (exactly what the `-full-fold` FATAL prints). Proven 2026-08-02: a
+  `-datadir=<producer> --importblockindex $HOME/.zclassic` invocation bulk-wrote
+  3,192,879 headers into the CANONICAL `~/.zclassic-c23/node.db` while the live
+  node was running (survived — the rows were additive duplicates the live node
+  already had — but that is the live lane and the write was unintentional).
 - **Do not hand-maintain `compile_commands.json`.** Run `make agent-index`.
   It derives commands from the real `DEV_OBJS` recipes, including generated
   headers and the target-specific `-Og`/hot-bucket `-O2` split, then records

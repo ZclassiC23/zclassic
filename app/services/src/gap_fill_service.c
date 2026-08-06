@@ -420,6 +420,23 @@ static int gap_fill_pass(void)
     int tip_h = active_chain_height(&ms->chain_active);
     struct block_index *best = ms->pindex_best_header;
     int best_h = best ? best->nHeight : 0;
+    /* Seed-floor raise: on a bundle/snapshot-seeded node the install
+     * advances the stage cursors (body_fetch = seed+1) but never moves
+     * chainactive, so active_tip_h sits far BELOW the reducer's fold
+     * frontier. A window floored at active_tip_h fills dl_queue with
+     * below-floor heights the fold will not consume next, and the
+     * height-sorted keep-lowest eviction then actively REFUSES the
+     * fold-needed successors above the seed (FORWARD_PLAN backlog #10,
+     * 2026-08-01). Raise the window's bottom to the fold's next-needed
+     * height. No-op on an unseeded node, where body_fetch prefetches at
+     * or ahead of the active tip. The S2.4 floor below still applies
+     * unchanged — it only ever LOWERS the window as a defensive
+     * backstop, never behind the fold. */
+    {
+        uint64_t bf_cur = body_fetch_stage_cursor();
+        if (bf_cur > 0 && bf_cur - 1 > (uint64_t)tip_h)
+            tip_h = (int)(bf_cur - 1);
+    }
     struct gap_fill_window gf_window;
     /* S2.4: floor the download window on the validate_headers cursor, not
      * body_fetch. body_fetch only advances once a body is already on disk

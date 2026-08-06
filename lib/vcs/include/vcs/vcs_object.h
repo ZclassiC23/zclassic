@@ -35,6 +35,8 @@ enum vcs_object_tag {
  * (objects/ and objects/tmp/). Idempotent. Returns false only on a real
  * mkdir error (not EEXIST). */
 bool vcs_object_store_init(const char *repo_root);
+/* Read-only exact probe for the directory tree created by store_init. */
+bool vcs_object_store_initialized(const char *repo_root);
 
 /* Store content[0..len) under tag. Writes out_hash[32] = SHA3(tag||content)
  * on success (even when the object already existed). Atomic + idempotent:
@@ -68,5 +70,13 @@ bool vcs_object_put_addressed(const char *repo_root, const uint8_t address[32],
  * *out_content (caller frees). Returns 0 on success, -1 on error. */
 int vcs_object_load_raw(const char *repo_root, const uint8_t address[32],
                         uint8_t **out_content, size_t *out_len);
+
+/* Same raw addressed read, but rejects from fstat before allocating or reading
+ * when the object exceeds maximum_bytes. Returns -2 for that exact bound and
+ * -1 for ordinary read/corruption errors. */
+int vcs_object_load_raw_bounded(const char *repo_root,
+                                const uint8_t address[32],
+                                size_t maximum_bytes,
+                                uint8_t **out_content, size_t *out_len);
 
 #endif /* ZCL_VCS_OBJECT_H */

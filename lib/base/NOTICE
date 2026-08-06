@@ -1,0 +1,9 @@
+This package retains MIT-licensed portions derived from Bitcoin Core:
+
+- `include/base/cleanse.h` and `src/cleanse.c`
+
+Copyright (c) 2009-2010 Satoshi Nakamoto
+Copyright (c) 2009-2015 The Bitcoin Core developers
+
+Those files retain their original MIT notice. The package as a collective
+work is offered under Apache-2.0; see `LICENSE`.

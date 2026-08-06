@@ -267,9 +267,99 @@ static const struct rlw_leaf g_rlw_leaves[] = {
     { "metaverse.build.worker.list",
       zcl_native_handle_metaverse_build_worker_list,
       NULL, NULL, NULL, NULL, NULL },
+    /* The S3 science projection reads, covered on the day they landed.
+     * All four answer from the rebuildable SQL projection in node.db (the
+     * CAS is only consulted through the same read-only attachment), so
+     * payload_dir stays NULL like the other sqlite leaves. Exercised with
+     * a well-formed root so the handler reaches the datadir instead of
+     * refusing ahead of it. */
+    { "zcode.science.study.show",
+      zcl_native_handle_zcode_science_study_show,
+      "study_root", RLW_ZID_PUBKEY, NULL, NULL, NULL },
+    { "zcode.science.study.list",
+      zcl_native_handle_zcode_science_study_list,
+      NULL, NULL, NULL, NULL, NULL },
+    { "zcode.science.work.status",
+      zcl_native_handle_zcode_science_work_status,
+      "root", RLW_ZID_PUBKEY, NULL, NULL, NULL },
+    { "zcode.science.work.receipt",
+      zcl_native_handle_zcode_science_work_receipt,
+      "root", RLW_ZID_PUBKEY, NULL, NULL, NULL },
+    /* The S5 discovery read, covered on the day it landed. Its payload is
+     * the same read-only node.db projection (filter-first in SQL, then the
+     * workspace CAS, which defaults to <datadir>/zcode and simply yields an
+     * empty corpus when absent), so payload_dir stays NULL. Exercised with
+     * a real category so the handler reaches the datadir. */
+    { "zcode.science.discover",
+      zcl_native_handle_zcode_science_discover,
+      "category", "active",     NULL, NULL, NULL },
+    /* Local sovereignty policy inspection is a READ leaf even though the
+     * sibling mutate leaf persists policy.v1.  Its loader must not create
+     * zcode/policy on an absent datadir or repair an unreadable policy store. */
+    { "zcode.network.policy.list",
+      zcl_native_handle_zcode_network_policy_list,
+      NULL, NULL,               NULL, NULL, "zcode/policy" },
+    /* Sovereign-space reads use either the public delegation/key material or
+     * the immutable workspace CAS.  The two plan leaves receive their array
+     * and integer inputs in rlw_add_complex_input below; naming only a kind
+     * here would let the manifest plan reject before touching its datadir and
+     * would turn this into vacuous coverage. */
+    { "metaverse.space.plan", zcl_native_handle_metaverse_space_plan,
+      "kind", "space_manifest", "name", "read-leaf-probe", "zcode/dht" },
+    { "metaverse.space.show", zcl_native_handle_metaverse_space_show,
+      "root", RLW_ZID_PUBKEY, NULL, NULL, "zcode/.zvcs" },
+    { "metaverse.space.status", zcl_native_handle_metaverse_space_status,
+      "root", RLW_ZID_PUBKEY, NULL, NULL, "zcode/.zvcs" },
+    { "metaverse.space.scout.plan",
+      zcl_native_handle_metaverse_space_scout_plan,
+      NULL, NULL, NULL, NULL, "zcode/dht" },
+    { "metaverse.space.scout.show",
+      zcl_native_handle_metaverse_space_scout_show,
+      "root", RLW_ZID_PUBKEY, NULL, NULL, "zcode/.zvcs" },
 };
 
 #define RLW_LEAF_COUNT ((int)(sizeof(g_rlw_leaves) / sizeof(g_rlw_leaves[0])))
+
+static void rlw_push_single_root_array(struct json_value *input,
+                                       const char *key)
+{
+    struct json_value roots;
+    struct json_value root;
+    json_init(&roots);
+    json_set_array(&roots);
+    json_init(&root);
+    json_set_str(&root, RLW_ZID_PUBKEY);
+    (void)json_push_back(&roots, &root);
+    (void)json_push_kv(input, key, &roots);
+    json_free(&root);
+    json_free(&roots);
+}
+
+/* Supply the non-string shapes needed to drive the two plan handlers through
+ * validation and into their caller-selected datadir.  Keep this keyed by the
+ * registered path so the leaf table remains the one coverage population and
+ * does not grow an optional callback field that every simple row must fill. */
+static void rlw_add_complex_input(const struct rlw_leaf *lf,
+                                  struct json_value *input)
+{
+    if (strcmp(lf->path, "metaverse.space.plan") == 0) {
+        (void)json_push_kv_int(input, "sequence", 1);
+        (void)json_push_kv_int(input, "not_before", 1);
+        (void)json_push_kv_int(input, "expiry", 2);
+        (void)json_push_kv_str(input, "description",
+                               "read-only datadir integrity probe");
+        return;
+    }
+    if (strcmp(lf->path, "metaverse.space.scout.plan") == 0) {
+        rlw_push_single_root_array(input, "starting_roots");
+        (void)json_push_kv_int(input, "observation_unix", 1);
+        (void)json_push_kv_int(input, "maximum_depth", 1);
+        (void)json_push_kv_int(input, "maximum_spaces", 2);
+        (void)json_push_kv_int(input, "maximum_portals", 2);
+        (void)json_push_kv_int(input, "maximum_bytes", 4096);
+        (void)json_push_kv_int(input, "deadline_ms", 1000);
+    }
+}
 
 /* ── the read leaves this file does NOT exercise, and why ──────────────
  *
@@ -386,53 +476,95 @@ static int rlw_count_entries(const char *dir, const char *prefix)
     return n;
 }
 
-/* The directory's FILE SET, as a sorted newline-joined list of names. The
- * per-file hashes above cannot see a file APPEARING, and appearing is the
- * whole of the WAL-sidecar defect: a read-only connection to a WAL database
- * materializes <db>-shm and <db>-wal to read consistently and then cannot
- * unlink them on close, because unlinking needs the write lock it does not
- * hold. Every byte the reader was asked about is still there and correct, and
- * the directory is not the one the operator hashed. False on overflow or an
- * unreadable directory, which callers treat as a failed observation. */
-#define RLW_SET_MAX_ENTRIES 64
-#define RLW_SET_NAME_MAX 256
+/* The datadir's recursive FILE SET, as a sorted newline-joined list of typed
+ * relative paths. The per-file hashes above cannot see a file or directory
+ * APPEARING, and appearing is the whole of both classes of defect caught
+ * here: SQLite WAL sidecars at the root and supposedly read-only loaders
+ * materializing nested payload directories. Every byte the reader was asked
+ * about can remain correct while the operator's tree changes. False on
+ * overflow or an unreadable directory, which callers treat as a failed
+ * observation. lstat() deliberately records symlinks without following them. */
+#define RLW_SET_MAX_ENTRIES 128
+#define RLW_SET_NAME_MAX 512
+
+static char g_rlw_set_names[RLW_SET_MAX_ENTRIES][RLW_SET_NAME_MAX];
+
+static bool rlw_set_add(const char *name, int *count)
+{
+    if (!name || !count || *count >= RLW_SET_MAX_ENTRIES ||
+        strlen(name) >= RLW_SET_NAME_MAX)
+        return false;
+    int i = (*count)++;
+    while (i > 0 && strcmp(g_rlw_set_names[i - 1], name) > 0) {
+        memcpy(g_rlw_set_names[i], g_rlw_set_names[i - 1],
+               RLW_SET_NAME_MAX);
+        i--;
+    }
+    snprintf(g_rlw_set_names[i], RLW_SET_NAME_MAX, "%s", name);
+    return true;
+}
+
+static bool rlw_dir_set_walk(const char *base, const char *relative,
+                             int *count)
+{
+    char directory[1200];
+    int n = relative && relative[0]
+                ? snprintf(directory, sizeof(directory), "%s/%s", base,
+                           relative)
+                : snprintf(directory, sizeof(directory), "%s", base);
+    if (n <= 0 || (size_t)n >= sizeof(directory))
+        return false;
+    DIR *d = opendir(directory);
+    if (!d)
+        return false;
+    bool ok = true;
+    struct dirent *e;
+    while (ok && (e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+            continue;
+        char child[RLW_SET_NAME_MAX - 3];
+        n = relative && relative[0]
+                ? snprintf(child, sizeof(child), "%s/%s", relative,
+                           e->d_name)
+                : snprintf(child, sizeof(child), "%s", e->d_name);
+        char path[1200];
+        if (n <= 0 || (size_t)n >= sizeof(child) ||
+            snprintf(path, sizeof(path), "%s/%s", base, child) >=
+                (int)sizeof(path)) {
+            ok = false;
+            break;
+        }
+        struct stat st;
+        if (lstat(path, &st) != 0) {
+            ok = false;
+            break;
+        }
+        char typed[RLW_SET_NAME_MAX];
+        char kind = S_ISDIR(st.st_mode) ? 'd'
+                  : S_ISREG(st.st_mode) ? 'f'
+                  : S_ISLNK(st.st_mode) ? 'l' : 'o';
+        n = snprintf(typed, sizeof(typed), "%c %s", kind, child);
+        if (n <= 0 || (size_t)n >= sizeof(typed) ||
+            !rlw_set_add(typed, count) ||
+            (S_ISDIR(st.st_mode) && !rlw_dir_set_walk(base, child, count)))
+            ok = false;
+    }
+    closedir(d);
+    return ok;
+}
 
 static bool rlw_dir_set(const char *dir, char *out, size_t out_size)
 {
     if (!out || !out_size)
         return false;
     out[0] = '\0';
-    DIR *d = opendir(dir);
-    if (!d)
-        return false;
-    static char names[RLW_SET_MAX_ENTRIES][RLW_SET_NAME_MAX];
     int n = 0;
-    bool overflow = false;
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
-            continue;
-        if (n >= RLW_SET_MAX_ENTRIES ||
-            strlen(e->d_name) >= RLW_SET_NAME_MAX) {
-            overflow = true;
-            break;
-        }
-        /* Insertion sort, so the list is order-independent: readdir order is
-         * not stable and an unordered join would compare unequal for reasons
-         * that have nothing to do with the contract. */
-        int i = n++;
-        while (i > 0 && strcmp(names[i - 1], e->d_name) > 0) {
-            memcpy(names[i], names[i - 1], RLW_SET_NAME_MAX);
-            i--;
-        }
-        snprintf(names[i], RLW_SET_NAME_MAX, "%s", e->d_name);
-    }
-    closedir(d);
-    if (overflow)
+    if (!rlw_dir_set_walk(dir, "", &n))
         return false;
     for (int i = 0; i < n; i++) {
         size_t used = strlen(out);
-        int wrote = snprintf(out + used, out_size - used, "%s\n", names[i]);
+        int wrote = snprintf(out + used, out_size - used, "%s\n",
+                             g_rlw_set_names[i]);
         if (wrote <= 0 || (size_t)wrote >= out_size - used)
             return false;
     }
@@ -514,6 +646,21 @@ static void rlw_mkfixture(char *dir, size_t n, const char *tag)
     char zdir[1200];
     snprintf(zdir, sizeof(zdir), "%s/zcode", dir);
     mkdir(zdir, 0700);
+}
+
+/* The shared fixture above deliberately supplies zcode/ so two old package
+ * reads reach node.db.  Sovereign-space reads have the stronger contract:
+ * discovery/planning against a never-used datadir must not materialize even
+ * that top-level directory.  Remove the compatibility fixture for exactly
+ * those leaves so their absent case starts, and must finish, literally empty. */
+static bool rlw_require_truly_empty_space_fixture(const struct rlw_leaf *lf,
+                                                  const char *dir)
+{
+    if (strncmp(lf->path, "metaverse.space.", 16) != 0)
+        return true;
+    char zdir[1200];
+    snprintf(zdir, sizeof(zdir), "%s/zcode", dir);
+    return rmdir(zdir) == 0;
 }
 
 /* The byte pattern used for every "this is not a database" fixture. Chosen
@@ -623,6 +770,7 @@ static bool rlw_invoke_refused(const struct rlw_leaf *lf, const char *datadir,
         (void)json_push_kv_str(&input, lf->k1, lf->v1);
     if (lf->k2)
         (void)json_push_kv_str(&input, lf->k2, lf->v2);
+    rlw_add_complex_input(lf, &input);
 
     struct zcl_command_request request = { .input = &input };
     struct zcl_command_reply reply;
@@ -667,6 +815,7 @@ static void rlw_invoke(const struct rlw_leaf *lf, const char *datadir)
         (void)json_push_kv_str(&input, lf->k1, lf->v1);
     if (lf->k2)
         (void)json_push_kv_str(&input, lf->k2, lf->v2);
+    rlw_add_complex_input(lf, &input);
 
     struct zcl_command_request request = { .input = &input };
     struct zcl_command_reply reply;
@@ -691,15 +840,50 @@ static int t_absent_node_db_is_not_created(void)
         snprintf(tag, sizeof(tag), "absent%d", i);
         rlw_mkfixture(dir, sizeof(dir), tag);
 
+        char name[160];
+        bool literal_empty = strncmp(lf->path, "metaverse.space.", 16) == 0;
+        snprintf(name, sizeof(name),
+                 "%s: sovereign-space fixture starts literally empty",
+                 lf->path);
+        if (literal_empty)
+            RLW_CHECK(name, rlw_require_truly_empty_space_fixture(lf, dir));
+
         char db_path[1200];
         snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
-        char name[160];
 
         snprintf(name, sizeof(name),
                  "%s: fixture starts with no node.db", lf->path);
         RLW_CHECK(name, access(db_path, F_OK) != 0);
 
+        char before[4096];
+        bool got_before = rlw_dir_set(dir, before, sizeof(before));
+        snprintf(name, sizeof(name),
+                 "%s: empty fixture tree observed before the read", lf->path);
+        RLW_CHECK(name, got_before);
+        if (literal_empty) {
+            snprintf(name, sizeof(name),
+                     "%s: absent datadir contains zero entries before read",
+                     lf->path);
+            RLW_CHECK(name, got_before && before[0] == '\0');
+        }
+
         rlw_invoke(lf, dir);
+
+        char after[4096];
+        bool got_after = rlw_dir_set(dir, after, sizeof(after));
+        snprintf(name, sizeof(name),
+                 "%s: empty fixture tree observed after the read", lf->path);
+        RLW_CHECK(name, got_after);
+        bool same_tree = got_before && got_after &&
+                         strcmp(before, after) == 0;
+        if (!same_tree) {
+            printf("    recursive tree BEFORE:\n%s", before);
+            printf("    recursive tree AFTER:\n%s", after);
+        }
+        snprintf(name, sizeof(name),
+                 "%s: read leaf created nothing in an empty datadir",
+                 lf->path);
+        RLW_CHECK(name, same_tree);
 
         int left = rlw_count_entries(dir, "node.db");
         /* Same question for the kernel store, under both the current name

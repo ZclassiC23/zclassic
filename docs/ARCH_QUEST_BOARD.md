@@ -36,13 +36,13 @@ the theory, then live here.
 
 | pts | quest | status | boss? |
 |----:|-------|--------|-------|
-| 20 | Q1 instant-on-e2e | ✗ | 🏆 BOSS |
-| 20 | Q2 single-writer-per-frontier | ◐ 1/2 | |
-| 15 | Q3 readers-read-the-fold | ✗ (= Q1) | |
-| 15 | Q4 stay-synced | ✗ | |
+| 20 | Q1 instant-on-e2e | ✓ DONE | 🏆 BOSS |
+| 20 | Q2 single-writer-per-frontier | ✓ 3/3 | |
+| 15 | Q3 readers-read-the-fold | ✓ DONE | |
+| 15 | Q4 stay-synced | ✓ DONE | |
 | 10 | Q5 observability | ✓ DONE | |
-| 10 | Q6 no-silent-stall | ✗ | |
-| 10 | Q7 no-O(chain)-boot | ✗ | |
+| 10 | Q6 no-silent-stall | ✓ DONE | |
+| 10 | Q7 no-O(chain)-boot | ✓ DONE | |
 |  0 | Q8 enforcement gate | ✓ DONE | ceiling |
 
 Dependency order (do these first, they unlock the boss): **Q7 → Q6 → Q2 → Q3
@@ -50,9 +50,9 @@ Dependency order (do these first, they unlock the boss): **Q7 → Q6 → Q2 → 
 
 ---
 
-## Q1 — instant-on-e2e · 20 pts · 🏆 BOSS
-- **📍 now:** a wiped node autodetects the bundle, tries to install, then
-  DEFERS FOREVER and folds from genesis (D8).
+## Q1 — instant-on-e2e · 20 pts · 🏆 BOSS · ✓ DONE
+- **📍 won (2026-08-01):** wipe→install→tip PASS, wall_clock 552s (budget 600),
+  final_hstar=3202033 vs final_network_tip=3202029; c3 judge VERDICT=PASS.
 - **🏁 win-proof:** `make mvp-coldstart-to-tip-stopwatch` emits a `pass` with a
   real `WALL_CLOCK_SECONDS`, recorded in the c3 ledger, AND
   `make c3-stopwatch-report` then says `VERDICT=PASS` — the scorer asks that
@@ -65,10 +65,9 @@ Dependency order (do these first, they unlock the boss): **Q7 → Q6 → Q2 → 
   `final_hstar`/`final_network_tip` (audit A9). A near-instant PASS against a
   below-checkpoint peer does not count.
 
-## Q2 — single-writer-per-frontier · 20 pts (10 banked)
-- **📍 now:** 1/2 frontiers clean. `header_frontier` has a second writer:
-  `--importblockindex` writes `pindex_best_header->nHeight` directly instead of
-  appending to the validated-header ledger.
+## Q2 — single-writer-per-frontier · 20 pts · ✓ DONE
+- **📍 won:** 3/3 frontiers in `arch_frontier_owners.tsv` have 0 writers
+  outside their owner (the KPI prints `3/3 clean`), lint-locked by Q8.
 - **🏁 win-proof:** `arch_frontier_owners.tsv` — every listed frontier shows 0
   writers outside its owner (the KPI prints `N/N clean`).
 - **🔧 move:** demote every non-owner writer to a read-only VIEW. For
@@ -78,10 +77,13 @@ Dependency order (do these first, they unlock the boss): **Q7 → Q6 → Q2 → 
   clean each. **This is the same fix as Q3/D8** — do them together.
 - **🚫 no-cheat:** don't shrink the manifest to win; grow it as you enforce.
 
-## Q3 — readers-read-the-fold · 15 pts · (proven by Q1)
-- **📍 now:** the install gate reads a side header cursor, sees 0, defers (D8).
-  File: `config/src/consensus_state_install_runtime.c:447` ("checkpoint bundle
-  deferred: validated header chain has not yet reached checkpoint height").
+## Q3 — readers-read-the-fold · 15 pts · ✓ DONE
+- **📍 won (D8 closed):** the install gate binds on the PoW-verified header
+  frontier — `consensus_state_checkpoint_header_ready` +
+  `consensus_state_install_restore_checkpoint_header_frontier`
+  (`config/src/consensus_state_install_header_frontier.c`) promote the
+  validated-header tip before the defer gate; proven end-to-end by Q1's
+  wipe→install→tip PASS.
 - **🏁 win-proof:** tied to Q1's PASS — you cannot claim readers read the right
   authority until a wiped node actually installs and reaches tip.
 - **🔧 move (D8, the key unlock):** make the install-ready predicate
@@ -97,8 +99,11 @@ Dependency order (do these first, they unlock the boss): **Q7 → Q6 → Q2 → 
 - **🚫 no-cheat:** the checkpoint header MUST still pass the frozen validator.
   Never accept an unvalidated header frontier.
 
-## Q4 — stay-synced · 15 pts · (needs Q1)
-- **📍 now:** no soak PASS, no disruption-recovery PASS.
+## Q4 — stay-synced · 15 pts · ✓ DONE
+- **📍 won (2026-08-01):** c3 judge VERDICT=PASS AND netdisrupt ledger `pass`
+  — two-node drill (`make netdisrupt-stopwatch`): follower survived a 30s
+  SIGSTOP partition of its miner and re-caught tip 18 in 3s (resume latency
+  0s) with no restart; judge VERDICT=PASS.
 - **🏁 win-proof:** `make c3-stopwatch-report` → `VERDICT=PASS` AND a `pass` in
   the netdisrupt ledger.
 - **🔧 move:** after Q1, stand a dedicated upstream fixture and run
@@ -110,11 +115,10 @@ Dependency order (do these first, they unlock the boss): **Q7 → Q6 → Q2 → 
   not regress — any new dumper that touches the progress store must trylock.
   <!-- claim: symbol-present progress_store_tx_trylock app/controllers/src # the non-blocking dumper discipline stays -->
 
-## Q6 — no-silent-stall · 10 pts
-- **📍 now:** the Sapling-tree rebuild LIVELOCKS on the legacy path
-  (`app/controllers/src/sync_controller_sapling_tree_persist.c:165`), logging
-  "deferring height=… foreign open transaction" forever with NO named blocker
-  (D7). Violates "a stall is always a named blocker with a height".
+## Q6 — no-silent-stall · 10 pts · ✓ DONE
+- **📍 won (D7 closed):** the Sapling-persist retry loop raises a typed blocker
+  (name + height) after bounded deferrals — the KPI greps it green
+  ("Sapling-persist livelock raises a named blocker").
 - **🏁 win-proof:** that retry loop raises a typed blocker (name + height) after
   a bounded number of deferrals (the KPI greps for it).
 - **🔧 move:** two parts — (a) after N deferrals raise a TRANSIENT blocker
@@ -124,10 +128,10 @@ Dependency order (do these first, they unlock the boss): **Q7 → Q6 → Q2 → 
   `project_wallet_nodedb_busy_lock`.
   <!-- claim: file-present app/controllers/src/sync_controller_sapling_tree_persist.c # the livelock site this quest names -->
 
-## Q7 — no-O(chain)-boot · 10 pts
-- **📍 now:** the bundle install path can still trigger the boot-time Sapling
-  rebuild (the D7 O(chain) replay). A bundle SHIPS the shielded tree — nothing
-  should rebuild.
+## Q7 — no-O(chain)-boot · 10 pts · ✓ DONE
+- **📍 won:** the bundle install path lands the bundle's shielded tree, so
+  boot detects it present and does NOT arm the O(chain) Sapling rebuild —
+  the KPI reads "bundle-installed shielded tree skips the boot rebuild".
 - **🏁 win-proof:** the KPI finds the install path skips the Sapling rebuild
   when the bundle provided the tree.
 - **🔧 move:** ensure `consensus_state_install_from_bundle` installs the

@@ -16,12 +16,11 @@
 #     is ABSENT (a synced running node, Tor egress, ~/.zcash-params, a live
 #     zclassicd oracle) is reported BLOCKED(reason) — NEVER silently
 #     skipped-as-pass and NEVER green.
-#   * The three SYNCED-NODE-dependent criteria — C3 (cold-start sync to tip),
-#     C6 (accumulated 7-day soak), C8 (consensus parity over the soak window)
-#     — CANNOT pass while the live node is stopped / wedged below tip. They
-#     are reported BLOCKED(needs synced node) here. This is by construction:
-#     no hermetic slice can stand in for "a fresh node reached the real
-#     3M-block tip in <10min" or "168h clean wall-clock".
+#   * C3 is decided by the durable stopwatch evidence judge, not by the
+#     currently-running canonical node. A fresh, fixture-integrity-checked
+#     receipt proves that a genuinely wiped node reached the real chain tip
+#     inside ten minutes. C6/C8 remain live-window claims and cannot pass
+#     while the canonical node is stopped, ineligible, or below tip.
 #
 # A hermetic slice that run-passes is reported with its scope spelled out
 # (e.g. "PASS (FSM slice; full sync-to-tip BLOCKED)") so the line never
@@ -174,7 +173,8 @@ echo "  — never silently skipped-as-pass, never green. Reporter exits 0."
 echo "═══════════════════════════════════════════════════════════════════════"
 echo ""
 
-# Probe the live node once up front — C3/C6/C8 verdicts are data-driven off it.
+# Probe the live node once up front — C6/C8 are data-driven off it; C3 uses
+# its independent wiped-node stopwatch receipt below.
 probe_live_node || true
 LIVE_HEIGHT=""
 LIVE_SYNCED=""
@@ -263,21 +263,42 @@ echo ""
 
 # ═══════════════════════════════════════════════════════════════════
 # C3 — Cold-start sync to tip <10min. HERMETIC slice = the sync FSM
-# driven to at_tip (selector cold_start, ~7s). The FULL claim (a fresh
-# node reaches the REAL 3M-block tip in <10min over a serving peer)
-# REQUIRES a synced/serving environment. BLOCKED by construction — the
-# live node is stopped/wedged below tip, so cold-start-to-tip cannot pass.
+# driven to at_tip (selector cold_start, ~7s). The FULL claim is decided by
+# the same durable evidence judge used by `make c3-stopwatch-report`: it
+# freshness-checks the last run and rejects thin or oracle-lagging fixtures.
+# The current canonical node is deliberately irrelevant to this historical
+# experiment; the receipt records the wiped client and serving peer used.
 # ═══════════════════════════════════════════════════════════════════
 {
     run_slice cold_start "=== Cold-start subset complete:"
     case $? in
-        0) VERDICT[3]="BLOCKED"
-           if [ "$LIVE_REACHABLE" = "1" ] && [ "${LIVE_SYNCED:-no}" = "yes" ]; then
-               DETAIL[3]="sync-FSM slice PASS ($SLICE_OUT); live node is at tip within gap budget (h=${LIVE_HEIGHT:-?}, gap=${LIVE_GAP:-?}<=$TIP_GAP_OK), but real <10min sync-to-tip still needs a fresh node reaching the 3M-block tip"
+        0) c3_history="${ZCL_C3_STOPWATCH_HISTORY:-$HOME/.local/state/zclassic23-c3-stopwatch/history.jsonl}"
+           c3_judge_args=()
+           if [ -n "${ZCL_STOPWATCH_JUDGE_ARGS:-}" ]; then
+               read -r -a c3_judge_args <<< "$ZCL_STOPWATCH_JUDGE_ARGS"
+           fi
+           c3_judge_out="$(bash "$SELF_DIR/stopwatch_evidence_judge.sh" \
+               "$c3_history" "${c3_judge_args[@]}" 2>&1)"
+           c3_judge_rc=$?
+           c3_judge_verdict="$(printf '%s\n' "$c3_judge_out" | \
+               grep 'stopwatch-judge: VERDICT=' | tail -1)"
+           if [ -z "$c3_judge_verdict" ]; then
+               VERDICT[3]="FAIL"
+               DETAIL[3]="cold-start evidence plumbing FAILED: judge printed no VERDICT line (rc=$c3_judge_rc)"
+           elif [ "$c3_judge_rc" -eq 0 ] && \
+                   printf '%s\n' "$c3_judge_verdict" | \
+                   grep -q 'stopwatch-judge: VERDICT=PASS '; then
+               VERDICT[3]="PASS"; FULL_PASS[3]=1
+               DETAIL[3]="sync-FSM slice PASS; wiped-node stopwatch judge PASS (${c3_judge_verdict#stopwatch-judge: })"
+           elif printf '%s\n' "$c3_judge_verdict" | \
+                   grep -q 'stopwatch-judge: VERDICT=PASS '; then
+               VERDICT[3]="FAIL"
+               DETAIL[3]="cold-start evidence plumbing FAILED: judge printed PASS but exited $c3_judge_rc"
            else
-               DETAIL[3]="needs synced node — sync-FSM slice PASS ($SLICE_OUT) but real <10min sync-to-tip needs a serving peer + a fresh node reaching the 3M-block tip; live node is not serving/at-tip (h=${LIVE_HEIGHT:-stopped}, gap=${LIVE_GAP:-?})"
+               VERDICT[3]="BLOCKED"
+               DETAIL[3]="sync-FSM slice PASS, but full wiped-node proof is not current: ${c3_judge_verdict#stopwatch-judge: } (judge rc=$c3_judge_rc)"
            fi ;;
-        2) VERDICT[3]="BLOCKED"; DETAIL[3]="needs synced node + test_zcl built" ;;
+        2) VERDICT[3]="BLOCKED"; DETAIL[3]="needs test_zcl built; a stopwatch receipt cannot replace the hermetic sync-FSM gate" ;;
         *) VERDICT[3]="FAIL"; DETAIL[3]="cold_start FSM slice FAILED: $SLICE_OUT" ;;
     esac
 }

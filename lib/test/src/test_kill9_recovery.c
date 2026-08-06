@@ -123,7 +123,9 @@
 
 /* ── MID-MINT-FOLD phase deps ── */
 #include "chain/checkpoints.h"
+#include "chain/chainparams.h"
 #include "config/mint_anchor_progress.h"
+#include "core/arith_uint256.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 
@@ -767,6 +769,39 @@ static int p11_7mf_run_phase(void)
 
 #define IB9_N_BLOCKS 2000
 
+static uint32_t ib9_pow_limit_bits(void)
+{
+    const struct chain_params *cp = chain_params_get();
+    struct arith_uint256 pow_limit;
+    uint256_to_arith(&pow_limit, &cp->consensus.powLimit);
+    return arith_uint256_get_compact(&pow_limit, false);
+}
+
+/* Import admission now hash-binds every LevelDB key to its serialized header
+ * and checks the resulting hash against the network powLimit.  Manufacture a
+ * valid test header by varying nTime; Equihash is deliberately outside this
+ * crash-atomicity fixture because all rows are below the import stride. */
+static bool ib9_mine_pow(struct disk_block_index *dbi, uint32_t bits,
+                         struct uint256 *out_hash)
+{
+    bool neg = false, overflow = false;
+    struct arith_uint256 target;
+    arith_uint256_set_compact(&target, bits, &neg, &overflow);
+    if (neg || overflow || arith_uint256_is_zero(&target))
+        return false;
+
+    dbi->nBits = bits;
+    for (uint32_t tries = 0; tries < 2000000u; tries++) {
+        dbi->nTime = 1231006505u + tries;
+        disk_block_index_get_hash(dbi, out_hash);
+        struct arith_uint256 hash_arith;
+        uint256_to_arith(&hash_arith, out_hash);
+        if (arith_uint256_compare(&hash_arith, &target) <= 0)
+            return true;
+    }
+    return false;
+}
+
 static bool ib9_build_fixture(const char *src_dir, int n)
 {
     char idx_dir[512];
@@ -778,16 +813,10 @@ static bool ib9_build_fixture(const char *src_dir, int n)
 
     uint8_t prev[32];
     memset(prev, 0, sizeof(prev));
+    uint32_t pow_bits = ib9_pow_limit_bits();
     bool ok = true;
 
     for (int h = 0; h < n && ok; h++) {
-        uint8_t hash[32];
-        memset(hash, 0, sizeof(hash));
-        hash[0] = 0xAA;
-        hash[1] = (uint8_t)(h & 0xff);
-        hash[2] = (uint8_t)((h >> 8) & 0xff);
-        hash[31] = 0x01;
-
         struct disk_block_index dbi;
         disk_block_index_init(&dbi);
         dbi.nHeight = h;
@@ -800,11 +829,17 @@ static bool ib9_build_fixture(const char *src_dir, int n)
         dbi.nUndoPos = dbi.nDataPos + 500u;
         dbi.nVersion = 4;
         dbi.hashMerkleRoot.data[0] = 0xBB;
-        dbi.nTime = 1231006505u + (uint32_t)h;
-        dbi.nBits = 0x1d00ffffu;
+        dbi.hashMerkleRoot.data[1] = (uint8_t)(h & 0xff);
+        dbi.hashMerkleRoot.data[2] = (uint8_t)((h >> 8) & 0xff);
         dbi.nSolutionSize = 0;
         dbi.has_sprout_value = false;
         dbi.nSaplingValue = 0;
+
+        struct uint256 mined_hash;
+        if (!ib9_mine_pow(&dbi, pow_bits, &mined_hash)) {
+            ok = false;
+            break;
+        }
 
         struct byte_stream s;
         stream_init(&s, 256);
@@ -813,13 +848,13 @@ static bool ib9_build_fixture(const char *src_dir, int n)
         } else {
             char key[33];
             key[0] = 'b';
-            memcpy(key + 1, hash, 32);
+            memcpy(key + 1, mined_hash.data, 32);
             if (!db_write(&dbw, key, sizeof(key), (const char *)s.data,
                           s.size, false))
                 ok = false;
         }
         stream_free(&s);
-        memcpy(prev, hash, 32);
+        memcpy(prev, mined_hash.data, 32);
     }
 
     db_wrapper_close(&dbw);
@@ -939,10 +974,15 @@ static int p11_7ib_run_phase(void)
         bool pprev_found = node_db_state_get_int(&ndb, "pprev_repaired_height", &pprev_h);
         bool shielded_found = node_db_state_get_int(&ndb, "shielded_backfill_height",
                                                      &shielded_h);
-        bool cursors_consistent = (count == 0)
-            ? (!pprev_found && !shielded_found)
-            : (pprev_found && shielded_found &&
-               pprev_h == IB9_N_BLOCKS - 1 && shielded_h == IB9_N_BLOCKS - 1);
+        bool cursors_absent = !pprev_found && !shielded_found;
+        bool cursors_at_tip = pprev_found && shielded_found &&
+            pprev_h == IB9_N_BLOCKS - 1 &&
+            shielded_h == IB9_N_BLOCKS - 1;
+        /* Full rows with absent cursors is the safe crash window after the
+         * row commit but before the atomic cursor stamp: boot recomputes them.
+         * Empty rows may never retain cursors, and a mixed pair is never safe. */
+        bool cursors_consistent = count == 0 ? cursors_absent :
+                                                (cursors_absent || cursors_at_tip);
         if (!cursors_consistent) {
             printf("FAIL (importblockindex cycle %d: fast-boot cursors "
                    "inconsistent with row count=%d — pprev_found=%d(%lld) "

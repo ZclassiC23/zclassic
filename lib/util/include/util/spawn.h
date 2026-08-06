@@ -11,6 +11,10 @@
  * for the sites that today do `system("nohup ... &")` /
  * `fork()+execlp()+return-without-waiting`.
  *
+ * `zcl_spawn_detached_input()` — the same detached launch, with one bounded
+ * byte string delivered to the child's stdin. Sensitive presentation payloads
+ * belong here rather than argv, where process listings can expose them.
+ *
  * `zcl_spawn_capture()` — synchronous launch that captures stdout, for the
  * sites that today do `popen(cmd, "r")`.
  *
@@ -71,6 +75,20 @@
  * the caller; that waitpid() tolerates ECHILD (see file header). */
 struct zcl_result zcl_spawn_detached(const char *const argv[],
                                       const char *log_path);
+
+/* Upper bound for zcl_spawn_detached_input()'s one-shot stdin payload. */
+#define ZCL_SPAWN_INPUT_MAX (64u * 1024u)
+
+/* Launch exactly like zcl_spawn_detached(), but connect the grandchild's stdin
+ * to a private local stream and deliver input[0..input_len) before returning.
+ * The bytes are never placed in argv, an environment variable, or the log.
+ * A socketpair plus MSG_NOSIGNAL is used so a child that exits before reading
+ * cannot terminate the parent with SIGPIPE. input_len is bounded by
+ * ZCL_SPAWN_INPUT_MAX; input may be NULL only when input_len is zero. */
+struct zcl_result zcl_spawn_detached_input(const char *const argv[],
+                                            const void *input,
+                                            size_t input_len,
+                                            const char *log_path);
 
 /* Launch argv[0], capture its stdout into buf, and wait for it to exit or
  * for timeout_ms to elapse. No shell is invoked — same argv[0]/execvp()

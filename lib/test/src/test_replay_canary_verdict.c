@@ -180,6 +180,12 @@ static void seed_fixtures(const char *fx, const char *mode)
         "{\"height\":3145329,\"bestblock\":\"abc123\","
         "\"transactions\":100,\"txouts\":1354769,"
         "\"total_amount\":10364137.94674881}\n");
+    /* byte-exact tier: the legacy chainstate SHA3 equals the node's served
+     * commitment at the SAME tip hash => exact tier MATCH. */
+    write_file(fx, "legacy_utxo_commitment.json",
+        "{\"legacy_utxo_sha3\":\"deadbeef00000000000000000000000000000000"
+        "00000000000000000000beef\",\"records\":100,\"vouts\":1354769,"
+        "\"best_block\":\"abc123\"}\n");
 
     if (strcmp(mode, "fail-rejects") == 0) {
         /* a single header-admit reject => "consensus_rejects". */
@@ -225,6 +231,24 @@ static void seed_fixtures(const char *fx, const char *mode)
          * replay — the NAMED I5 defect. Drive the elapsed band ABOVE the
          * anchor ceiling (5400 s) => "elapsed_too_slow". */
         write_file(fx, "elapsed.json", "99999\n");
+    } else if (strcmp(mode, "fail-exact-sha3") == 0) {
+        /* the legacy chainstate hashes DIFFERENTLY at the same tip hash =>
+         * "crossnode_utxo_sha3" — the byte-exact drift alarm (coarse stats
+         * all agree, the SET does not). */
+        write_file(fx, "legacy_utxo_commitment.json",
+            "{\"legacy_utxo_sha3\":\"cafe00000000000000000000000000000000"
+            "00000000000000000000000000000bad\",\"best_block\":\"abc123\"}\n");
+    } else if (strcmp(mode, "pass-exact-skew") == 0) {
+        /* the oracle advanced mid-run: a different best_block means the
+         * exact tier SKIPS (never proof, never drift) and the otherwise
+         * clean run still PASSes with exact_tier=skew. */
+        write_file(fx, "legacy_utxo_commitment.json",
+            "{\"legacy_utxo_sha3\":\"deadbeef00000000000000000000000000000000"
+            "00000000000000000000beef\",\"best_block\":\"def456\"}\n");
+    } else if (strcmp(mode, "fail-exact-unreadable") == 0) {
+        /* blob present but no sha3 field => "exact_reference_unreadable". */
+        write_file(fx, "legacy_utxo_commitment.json",
+            "{\"best_block\":\"abc123\"}\n");
     }
     /* mode == "pass": no mutation. */
 }
@@ -369,6 +393,57 @@ static int test_malformed_sha3_fires(void)
         ASSERT(ec != 0);
         ASSERT_STR_EQ(verdict, "FAIL");
         ASSERT_STR_EQ(reason, "sha3_malformed");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_fail_exact_sha3_fires(void)
+{
+    int failures = 0;
+    TEST("replay-canary: legacy chainstate SHA3 differs at same tip => FAIL reason=crossnode_utxo_sha3") {
+        char verdict[16], reason[64];
+        int ec = run_canary_selftest("fail-exact-sha3", "anchor",
+                                     verdict, sizeof(verdict),
+                                     reason, sizeof(reason));
+        if (ec == -999) { printf("SKIP (repo root not found)\n"); break; }
+        ASSERT(ec != 0);
+        ASSERT_STR_EQ(verdict, "FAIL");
+        ASSERT_STR_EQ(reason, "crossnode_utxo_sha3");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_pass_exact_skew_skips_tier(void)
+{
+    int failures = 0;
+    TEST("replay-canary: oracle advanced mid-run => exact tier SKIPS, run still PASSes") {
+        char verdict[16], reason[64];
+        int ec = run_canary_selftest("pass-exact-skew", "anchor",
+                                     verdict, sizeof(verdict),
+                                     reason, sizeof(reason));
+        if (ec == -999) { printf("SKIP (repo root not found)\n"); break; }
+        ASSERT_EQ(ec, 0);
+        ASSERT_STR_EQ(verdict, "PASS");
+        ASSERT_STR_EQ(reason, "");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_fail_exact_unreadable_fires(void)
+{
+    int failures = 0;
+    TEST("replay-canary: legacy blob without sha3 => FAIL reason=exact_reference_unreadable") {
+        char verdict[16], reason[64];
+        int ec = run_canary_selftest("fail-exact-unreadable", "anchor",
+                                     verdict, sizeof(verdict),
+                                     reason, sizeof(reason));
+        if (ec == -999) { printf("SKIP (repo root not found)\n"); break; }
+        ASSERT(ec != 0);
+        ASSERT_STR_EQ(verdict, "FAIL");
+        ASSERT_STR_EQ(reason, "exact_reference_unreadable");
         PASS();
     } _test_next:;
     return failures;
@@ -1011,6 +1086,9 @@ int test_replay_canary_verdict(void)
     failures += test_missing_sha3_fires();
     failures += test_malformed_sha3_fires();
     failures += test_fail_crossnode_fires();
+    failures += test_fail_exact_sha3_fires();
+    failures += test_pass_exact_skew_skips_tier();
+    failures += test_fail_exact_unreadable_fires();
     failures += test_fail_timeout_fires();
     failures += test_fail_elapsed_too_fast_fires();
     failures += test_fail_elapsed_too_slow_fires();

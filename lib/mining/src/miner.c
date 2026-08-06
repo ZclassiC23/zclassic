@@ -176,6 +176,19 @@ struct block_template *create_new_block(const struct script *coinbase_script,
         return NULL;
     }
 
+    /* The pure builder sets version/group_id per epoch but leaves the
+     * overwintered flag at transaction_init's false; setting the flag from
+     * the wire-shape fields the builder just chose is an adapter concern
+     * (every other tx builder in the tree does it explicitly: wallet.c,
+     * transaction_controller.c, ...). Without it a locally-mined coinbase
+     * at a post-Overwinter height fails the contextual Sapling-structural
+     * rule tx-overwintered-flag-not-set
+     * (core/consensus/src/sapling_structural.c), so a chain with
+     * Overwinter/Sapling active (e.g. -regtestshielded) wedges on its own
+     * mined blocks. */
+    if (coinbase->version_group_id != 0)
+        coinbase->overwintered = true;
+
     bt->tx_fees[0] = -total_fees;
 
     /* Fill in header */

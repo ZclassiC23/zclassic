@@ -9,6 +9,7 @@
  * boot-state static. */
 
 #include "config/boot_msg_callbacks.h"
+#include "config/boot_file_market_delivery.h"
 #include "config/boot_internal.h"
 #include "config/db_service.h"
 #include "services/chain_activation_service.h"
@@ -19,11 +20,14 @@
 #include "services/quorum_oracle_service.h"
 #include "services/network_monitor.h"
 #include "services/sync_monitor.h"
+#include "services/file_market_payment_service.h"
 #include "controllers/sync_controller.h"
+#include "controllers/yardsale_controller.h"
 #include "models/peer.h"
 #include "models/zmsg.h"
 #include "models/file_offer.h"
 #include "models/file_service.h"
+#include "models/zswap_ad.h"
 #include "net/msgprocessor.h"
 #include "net/snapshot_sync_contract.h"
 #include "net/peer_lifecycle.h"
@@ -381,6 +385,126 @@ bool boot_save_file_offer(const struct file_offer *offer, void *ctx)
     }
 
     return db_file_offer_save(svc->node_db, offer);
+}
+
+int boot_ingest_file_payment(const struct file_payment *payment,
+                             int64_t peer_id, int64_t now_unix, void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+    (void)peer_id;
+    if (!svc || !svc->node_db || !svc->state || !payment)
+        return FILE_PAYMENT_INGEST_REJECTED;
+    int wallet_projection_height = -1;
+    if (svc->wallet) {
+        zcl_mutex_lock(&svc->wallet->cs);
+        wallet_projection_height = svc->wallet->best_block_height;
+        zcl_mutex_unlock(&svc->wallet->cs);
+    }
+    struct market_payment_claim_record record;
+    struct zcl_result result = market_payment_claim_ingest(
+        svc->node_db, svc->state, sync_get_state() == SYNC_AT_TIP,
+        wallet_projection_height, payment, now_unix, &record);
+    if (!result.ok) {
+        LOG_WARN("market", "payment claim ingress failed: code=%d %s",
+                 result.code, result.message);
+        return FILE_PAYMENT_INGEST_REJECTED;
+    }
+    if (strcmp(record.status, "CONFIRMED") == 0)
+        return FILE_PAYMENT_INGEST_CONFIRMED;
+    if (strcmp(record.status, "PENDING") == 0)
+        return FILE_PAYMENT_INGEST_PENDING;
+    if (strcmp(record.status, "UNKNOWN") == 0)
+        return FILE_PAYMENT_INGEST_UNKNOWN;
+    if (strcmp(record.status, "CONFLICTED") == 0)
+        return FILE_PAYMENT_INGEST_CONFLICTED;
+    return FILE_PAYMENT_INGEST_REJECTED;
+}
+
+void boot_wire_file_market(struct msg_processor *mp,
+                           struct boot_svc_ctx *svc)
+{
+    msg_processor_set_file_offer_save(mp, boot_save_file_offer, svc);
+    msg_processor_set_file_payment_ingest(mp, boot_ingest_file_payment, svc);
+    boot_wire_file_market_delivery(svc);
+}
+
+bool boot_save_zswap_ad(const struct zswap_yardsale_ad *ad, void *ctx)
+{
+    struct boot_svc_ctx *svc = ctx;
+
+    if (!svc || !svc->node_db || !svc->node_db->open || !ad) {
+        LOG_WARN("boot", "zswap ad save missing svc=%p ndb=%p ad=%p",
+                 (void *)svc, svc ? (void *)svc->node_db : NULL,
+                 (const void *)ad);
+        return false;
+    }
+
+    return db_zswap_ad_save(svc->node_db, ad);
+}
+
+int boot_zswap_ad_ingest(const uint8_t *wire, size_t wire_len,
+                         const uint8_t expected_network_genesis[32],
+                         int64_t peer_id, int64_t now_unix,
+                         struct zswap_yardsale_ad *out_ad, void *ctx)
+{
+    (void)ctx;
+    return (int)zswap_yardsale_ingest_wire(wire, wire_len,
+                                           expected_network_genesis,
+                                           peer_id, now_unix, out_ad);
+}
+
+void boot_wire_zswap_yardsale(struct msg_processor *mp,
+                              struct boot_svc_ctx *svc)
+{
+    msg_processor_set_zswap_ad_ingest(mp, boot_zswap_ad_ingest, svc);
+    msg_processor_set_zswap_ad_save(mp, boot_save_zswap_ad, svc);
+    /* The ceremony ports ride the same one-call wiring so boot_services.c
+     * stays flat against its file-size baseline. */
+    boot_wire_zswap_ceremony(mp, svc);
+}
+
+/* The msgprocessor ceremony ports take a trailing void *ctx the yardsale
+ * controller does not need (its state is its own statics); these two
+ * adapters drop it, exactly like boot_zswap_ad_ingest above. */
+static int boot_zswap_accept_ingest(const uint8_t *wire, size_t wire_len,
+                                    int64_t peer_id, int64_t now_unix,
+                                    uint8_t *respond, size_t respond_cap,
+                                    size_t *respond_len, void *ctx)
+{
+    (void)ctx;
+    return yardsale_ceremony_accept_ingest(wire, wire_len, peer_id,
+                                           now_unix, respond, respond_cap,
+                                           respond_len);
+}
+
+static int boot_zswap_partial_ingest(const uint8_t *wire, size_t wire_len,
+                                     int64_t peer_id, int64_t now_unix,
+                                     void *ctx)
+{
+    (void)ctx;
+    return yardsale_ceremony_partial_ingest(wire, wire_len, peer_id,
+                                            now_unix);
+}
+
+/* The buyer's outbound gossip port, adapted onto the msg_processor's
+ * flood (ctx is the msg_processor itself). */
+static void boot_zswap_ceremony_flood(const char *command,
+                                      const uint8_t *wire, size_t wire_len,
+                                      void *ctx)
+{
+    msg_processor_flood_message((struct msg_processor *)ctx, command,
+                                wire, wire_len);
+}
+
+void boot_wire_zswap_ceremony(struct msg_processor *mp,
+                              struct boot_svc_ctx *svc)
+{
+    (void)svc;
+    msg_processor_set_zswap_accept_ingest(mp, boot_zswap_accept_ingest,
+                                          NULL);
+    msg_processor_set_zswap_partial_ingest(mp, boot_zswap_partial_ingest,
+                                           NULL);
+    yardsale_ceremony_set_flood(boot_zswap_ceremony_flood, mp);
 }
 
 bool boot_save_file_service(const uint8_t ip[16],

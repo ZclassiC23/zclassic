@@ -22,6 +22,110 @@ ZCL_COMMAND_BRANCH("zcode.package.dev", "zcode.package",
                    "Agentic development",
                    ZCL_COMMAND_LAYER_APP)
 
+ZCL_COMMAND_READY_READ(
+    "zcode.package.dev.prepare", "zcode.package.dev", "",
+    "Derive canonical release inputs from a local package tree",
+    "Safely traverses dir without following symlinks, rejects every special "
+    "file and any file that changes while read, and returns the content "
+    "manifest, declarative recipe, target-inclusive exact-root dependency "
+    "lock, bounded public-API capsule, unsigned existing release body, and "
+    "signing digest. It creates no datadir and persists nothing.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,package,dev,prepare,manifest,recipe,lock,capsule,offline",
+    "zcl.zcode_package_dev_prepare.input.v1",
+    "zcl.zcode_package_dev_prepare.v1",
+    "dir,publisher_pubkey,publisher_sequence,reward_address,chain_id",
+    "dir,publisher_pubkey,publisher_sequence",
+    "zclassic23 zcode package dev prepare --input='{\"dir\":\"lib/base\",\"publisher_pubkey\":\"<66hex>\",\"publisher_sequence\":1}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_package_dev_prepare)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.dev.seal", "zcode.package.dev", "",
+    "Verify and attach an offline development signature",
+    "Combines the exact canonical release_body_hex returned by prepare with "
+    "one detached compact low-S secp256k1 signature, verifies the embedded "
+    "publisher key and signing digest, and returns the canonical "
+    "zcl.zcode_release.v1 wire. It creates no datadir and persists nothing.",
+    0, "zcode,package,dev,seal,signature,offline,release",
+    "zcl.zcode_package_dev_seal.input.v1",
+    "zcl.zcode_package_dev_seal.v1",
+    "release_body_hex,signature_hex", "release_body_hex,signature_hex",
+    "zclassic23 zcode package dev seal --input='{\"release_body_hex\":\"<hex>\",\"signature_hex\":\"<128hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_package_dev_seal)
+
+ZCL_COMMAND_BRANCH("zcode.package.dev.score", "zcode.package.dev",
+                   "Evidence-derived signed ZC23 Score receipts",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.dev.score.plan", "zcode.package.dev.score", "",
+    "Derive an unsigned ZC23 Score receipt",
+    "Loads every proof-set work receipt from the existing workspace CAS, "
+    "verifies its signature and PROVEN-lane bindings, derives the fixed "
+    "five-unit award mask, and returns the exact body and lane-signing "
+    "digest without persisting. Independent reproduction remains withheld "
+    "until an approved off-host signer is registered.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,package,dev,score,plan,evidence,proven",
+    "zcl.zcode_score_plan.input.v1", "zcl.zcode_score_plan.v1",
+    "workspace,task_hex,candidate_hex,proof_policy_hex,proof_set_hex,proven_lane_hex,package_root,release_root,recipe_root,dependency_lock_root,api_capsule_root",
+    "workspace,task_hex,candidate_hex,proof_policy_hex,proof_set_hex,proven_lane_hex,package_root,release_root,recipe_root,dependency_lock_root,api_capsule_root",
+    "zclassic23 zcode package dev score plan --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_package_dev_score_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.package.dev.score.commit", "zcode.package.dev.score", "",
+    "Verify and store one signed ZC23 Score receipt",
+    "Re-verifies the canonical lane-signed receipt and stores only that "
+    "receipt in the existing workspace CAS. It creates no token, balance, "
+    "reward queue, wallet state, database, or identity.", 0,
+    "zcode,package,dev,score,commit,cas",
+    "zcl.zcode_score_commit.input.v1", "zcl.zcode_score_commit.v1",
+    "workspace,receipt_hex", "workspace,receipt_hex",
+    "zclassic23 zcode package dev score commit --input='{\"workspace\":\".\",\"receipt_hex\":\"<hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_package_dev_score_commit)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.dev.score.show", "zcode.package.dev.score", "",
+    "Show and reverify one ZC23 Score receipt",
+    "Reads the named receipt only from the existing workspace CAS, checks "
+    "its address and lane signature, and renders the fixed unit breakdown.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,package,dev,score,show,cas",
+    "zcl.zcode_score_show.input.v1", "zcl.zcode_score_show.v1",
+    "workspace,root", "workspace,root",
+    "zclassic23 zcode package dev score show --input='{\"workspace\":\".\",\"root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_package_dev_score_show)
+
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.dev.create", "zcode.package.dev", "zcode.create",
     "Create package",
@@ -376,9 +480,17 @@ ZCL_COMMAND_READY_READ(
     "signer-not-approved, self-verification, duplicate-signer). "
     "NO_APPROVED_VERIFIERS names a missing/invalid allowlist file "
     "(<datadir>/zcode/approved_verifiers); UNKNOWN_PACKAGE names a root "
-    "no persisted release claims.",
+    "no persisted release claims. The headline signal is the "
+    "`reproduction` object: BIT-IDENTICAL THIRD-PARTY REPRODUCTION — two "
+    "or more DISTINCT build receipts filed under <datadir>/zcode/receipts "
+    "committing byte-identical output sets for this package+recipe "
+    "(reproduced=true), with a per-receipt rows[] naming the first "
+    "diverging rule on any mismatch. The signer quorum is the latency "
+    "fast path over reproduction, never a substitute for it; any third "
+    "party can run the check with zclassic23-package-verify --emit=<dir> "
+    "--lock-root=<hex> --reproduce-against=<build-report>.",
     ZCL_COMMAND_LIST_BUDGET,
-    "zcode,package,verify,attestation,quorum,verifier,approved",
+    "zcode,package,verify,attestation,quorum,verifier,approved,reproduction",
     "zcl.zcode_package_verify.input.v1", "zcl.zcode_package_verify.v1",
     "root,datadir", "root",
     "zclassic23 zcode package verify --input='{\"root\":\"<64hex>\"}'",
@@ -488,6 +600,8 @@ ZCL_COMMAND_READY_READ(
     "zcode.reward.score", "zcode.reward", "",
     "Deterministic contribution score breakdown for one release root",
     "Computes the bounded deterministic ZCODE Score for the release "
+    "and labels it legacy_non_credit; it is retained for compatibility "
+    "and never awards a ZC23 Score unit. "
     "naming one 64-hex package `root`, purely from the persisted manifest "
     "and CAS chunk bytes: the auto-derived category (new-package 500 / "
     "package-update / test-contribution / none), per-line tallies "
@@ -598,7 +712,7 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
-    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_reward_plan)
@@ -1056,13 +1170,13 @@ ZCL_COMMAND_READY_COMMAND(
     0,
     "zcode,package,pin,operator,pins,quota",
     "zcl.zcode_package_pin.input.v1", "zcl.zcode_package_pin.v1",
-    "root,datadir", "root",
-    "zclassic23 zcode package pin --input='{\"root\":\"<64hex>\"}'",
+    "root,mode,plan_token,datadir", "root,mode",
+    "zclassic23 zcode package pin --input='{\"root\":\"<64hex>\",\"mode\":\"plan\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
-    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_package_pin)
@@ -1077,13 +1191,13 @@ ZCL_COMMAND_READY_COMMAND(
     0,
     "zcode,package,unpin,operator,pins,quota",
     "zcl.zcode_package_unpin.input.v1", "zcl.zcode_package_unpin.v1",
-    "root,datadir", "root",
-    "zclassic23 zcode package unpin --input='{\"root\":\"<64hex>\"}'",
+    "root,mode,plan_token,datadir", "root,mode",
+    "zclassic23 zcode package unpin --input='{\"root\":\"<64hex>\",\"mode\":\"plan\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
-    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_package_unpin)
@@ -1349,6 +1463,321 @@ ZCL_COMMAND_READY_READ(
  * chain, and every reply carries chain_anchored:false plus
  * verified_against:"supplied_key".
  * See docs/spec/sovereign-identity-layer.md and lib/zid/include/zid/zdesc.h. */
+ZCL_COMMAND_BRANCH("zcode.network", "zcode",
+                   "Noise-bound read-only DHT", ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.network.delegate", "zcode.network", "",
+    "Provision this node's DHT delegation",
+    "Reads the active ZID master seed exactly once from a regular 0400/0600 "
+    "file, requires that master to be ACTIVE and its finality-delayed beacon "
+    "to be ten blocks deep, reuses the persistent Noise X25519 identity, and "
+    "atomically creates the separate online Ed25519 key and signed ZIDN "
+    "delegation under <datadir>/zcode/dht. Default validity is three days; "
+    "the existing 30-day ZID window cap is enforced. Renewal advances the "
+    "filed sequence by default and leaves node_id stable. The reply contains "
+    "node ID, sequence, window, and beacon metadata, never key material.",
+    0, "zcode,network,dht,delegate,zid,noise,identity,provision",
+    "zcl.zcode_network_delegate.input.v1",
+    "zcl.zcode_network_delegate.v1",
+    "seed_file,sequence,now,expiry,datadir", "seed_file",
+    "zclassic23 zcode network delegate --input='{\"seed_file\":\"/path/master.hex\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_network_delegate)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.status", "zcode.network", "", "Inspect DHT status",
+    "Reads the live daemon's Noise-bound ZCODE DHT state: enablement or named "
+    "disablement, stable local node ID, fixed resource bounds, authenticated "
+    "and cold contact counts, query/probe/frame counters, persistence state, "
+    "and bounded last error. It returns no keys, delegation document, peer "
+    "address, or operator-diversity claim.",
+    0, "zcode,network,dht,status,noise,diagnostics",
+    "zcl.zcode_network_status.input.v1", "zcl.zcode_network_status.v1",
+    "", "", "zclassic23 zcode network status",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_status)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.peers", "zcode.network", "", "List DHT contacts",
+    "Reads one bounded page of directly authenticated or cold-persisted DHT "
+    "contacts from the live daemon. Rows contain node ID, bucket, local "
+    "connected/cold/probing state, last-seen age, saturating failure count, "
+    "delegation expiry, and beacon height. The hard page maximum is 64; no "
+    "peer addresses, keys, or raw delegations are exposed.",
+    16384, "zcode,network,dht,peers,contacts,noise",
+    "zcl.zcode_network_peers.input.v1", "zcl.zcode_network_peers.v1",
+    "limit,offset", "", "zclassic23 zcode network peers --input='{\"limit\":16}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_peers)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.find.begin", "zcode.network", "", "Admit a DHT lookup",
+    "Admits one lookup into the bounded eight-slot service without waiting. "
+    "Returns an opaque lookup_id and a separate owner_token; both are required "
+    "to poll or cancel, expire automatically, and reveal no internal service "
+    "identifier.",
+    4096, "zcode,network,dht,find,lookup,begin,async",
+    "zcl.zcode_network_find_begin.input.v1",
+    "zcl.zcode_network_find_begin.v1", "node_id", "node_id",
+    "zclassic23 zcode network find begin --input='{\"node_id\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_find_begin)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.find.poll", "zcode.network", "", "Poll a DHT lookup",
+    "Reads one owner-bound asynchronous lookup without waiting. Pending polls "
+    "are side-effect free; a terminal result is retained for idempotent repeat "
+    "polls until the bounded capability expiry.",
+    4096, "zcode,network,dht,find,lookup,poll,async",
+    "zcl.zcode_network_find_poll.input.v1",
+    "zcl.zcode_network_find_poll.v1", "lookup_id,owner_token",
+    "lookup_id,owner_token",
+    "zclassic23 zcode network find poll --input='{\"lookup_id\":\"<32hex>\",\"owner_token\":\"<32hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_find_poll)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.find.cancel", "zcode.network", "", "Cancel a DHT lookup",
+    "Releases the lookup named by the opaque lookup_id only when its separate "
+    "owner_token matches. It never changes routing contacts or network trust "
+    "state; late authenticated replies retain normal replay classification.",
+    4096, "zcode,network,dht,find,lookup,cancel,async",
+    "zcl.zcode_network_find_cancel.input.v1",
+    "zcl.zcode_network_find_cancel.v1", "lookup_id,owner_token",
+    "lookup_id,owner_token",
+    "zclassic23 zcode network find cancel --input='{\"lookup_id\":\"<32hex>\",\"owner_token\":\"<32hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_find_cancel)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.find", "zcode.network", "", "Find closest DHT nodes",
+    "Convenience wrapper over find.begin/poll/cancel: only the calling CLI "
+    "waits, while every daemon RPC worker is released after a short poll. "
+    "node_id is canonical 64-hex. The result contains at most 16 authenticated "
+    "node IDs ordered by XOR distance then node ID. Its 30-second deadline "
+    "returns named LOOKUP_TIMEOUT with bounded partial evidence.",
+    4096, "zcode,network,dht,find,lookup,xor,noise",
+    "zcl.zcode_network_find.input.v1", "zcl.zcode_network_find.v1",
+    "node_id", "node_id",
+    "zclassic23 zcode network find --input='{\"node_id\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_find)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.records.begin", "zcode.network", "",
+    "Admit iterative record discovery",
+    "Derives the deterministic DHT key from kind, namespace and matching "
+    "root, then admits a bounded asynchronous S6 lookup. Returns opaque "
+    "lookup_id and owner_token capabilities; no peer ID is accepted.",
+    4096, "zcode,network,dht,records,lookup,begin,async",
+    "zcl.zcode_network_records_begin.input.v1",
+    "zcl.zcode_network_records_begin.v1",
+    "kind,namespace,semantic_root,transport_root", "kind,namespace",
+    "zclassic23 zcode network records begin --input='{\"kind\":\"provider\",\"namespace\":\"science\",\"transport_root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_network_records_begin)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.records.poll", "zcode.network", "",
+    "Poll iterative record discovery",
+    "Polls an owner-bound discovery without waiting. Terminal results merge "
+    "up to 64 verified signed records from the closest authenticated nodes "
+    "and are retained briefly for idempotent repeat polls.",
+    65536, "zcode,network,dht,records,lookup,poll,async",
+    "zcl.zcode_network_records_poll.input.v1",
+    "zcl.zcode_network_records_poll.v1", "lookup_id,owner_token",
+    "lookup_id,owner_token",
+    "zclassic23 zcode network records poll --input='{\"lookup_id\":\"<32hex>\",\"owner_token\":\"<32hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_network_records_poll)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.records.cancel", "zcode.network", "",
+    "Cancel iterative record discovery",
+    "Releases an owner-bound record lookup and its child S6/query slots. "
+    "Late authenticated replies retain the existing replay classification.",
+    4096, "zcode,network,dht,records,lookup,cancel,async",
+    "zcl.zcode_network_records_cancel.input.v1",
+    "zcl.zcode_network_records_cancel.v1", "lookup_id,owner_token",
+    "lookup_id,owner_token",
+    "zclassic23 zcode network records cancel --input='{\"lookup_id\":\"<32hex>\",\"owner_token\":\"<32hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_network_records_cancel)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.records", "zcode.network", "",
+    "Discover signed DHT records",
+    "Convenience wrapper over records.begin/poll/cancel. The daemon remains "
+    "nonblocking while the calling CLI waits for stable closest-set, bounded "
+    "deadline, or the 64-record verified-result cap.",
+    65536, "zcode,network,dht,records,lookup,root,async",
+    "zcl.zcode_network_records.input.v1",
+    "zcl.zcode_network_records.v1",
+    "kind,namespace,semantic_root,transport_root", "kind,namespace",
+    "zclassic23 zcode network records --input='{\"kind\":\"pointer\",\"namespace\":\"science.study\",\"semantic_root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_records)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.providers", "zcode.network", "", "List provider hints",
+    "Runs the same iterative records lifecycle for active PROVIDER records "
+    "under one exact transport root and generic namespace. A "
+    "claim is signed routing evidence, never possession proof; conflicting "
+    "valid sequence slots remain visible. No address, delegation or key is "
+    "returned.",
+    16384, "zcode,network,dht,provider,root,discovery",
+    "zcl.zcode_network_providers.input.v1",
+    "zcl.zcode_network_providers.v1", "namespace,transport_root",
+    "namespace,transport_root",
+    "zclassic23 zcode network providers --input='{\"namespace\":\"science\",\"transport_root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_network_providers)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.network.publish", "zcode.network", "", "Publish a signed DHT record",
+    "Plans or commits one canonical PROVIDER or POINTER record. "
+    "mode=plan returns a token binding the exact signed record and current "
+    "record-store digest; mode=commit re-derives both and refuses stale plans. "
+    "STORAGE_ACK is refused here and must use storage_ack, whose package-store "
+    "proof cannot be supplied by the caller. The reply never "
+    "contains signing keys or delegation wire.",
+    16384, "zcode,network,dht,publish,provider,pointer,storage-ack,plan,commit",
+    "zcl.zcode_network_publish.input.v1", "zcl.zcode_network_publish.v1",
+    "mode,kind,namespace,semantic_root,transport_root,owner_group,sequence,not_before,expiry,plan_token",
+    "mode,kind,namespace,transport_root,sequence,not_before,expiry",
+    "zclassic23 zcode network publish --input='{\"mode\":\"plan\",\"kind\":\"provider\",\"namespace\":\"science\",\"transport_root\":\"<64hex>\",\"sequence\":1,\"not_before\":1,\"expiry\":2}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_network_publish)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.network.storage_ack", "zcode.network", "",
+    "Publish a possession-backed storage ACK",
+    "Plans or commits one STORAGE_ACK only after the local package store "
+    "re-hashes the complete manifest and every chunk and confirms an operator "
+    "pin. The plan token binds that exact signed record; commit repeats the "
+    "proof. Unpin, missing bytes or corruption suppresses renewal. owner_group "
+    "is declared diversity and never proof of an independent operator.",
+    16384, "zcode,network,dht,storage-ack,possession,pin,plan,commit",
+    "zcl.zcode_network_storage_ack.input.v1",
+    "zcl.zcode_network_storage_ack.v1",
+    "mode,namespace,semantic_root,transport_root,owner_group,sequence,not_before,expiry,plan_token",
+    "mode,namespace,transport_root,sequence,not_before,expiry",
+    "zclassic23 zcode network storage_ack --input='{\"mode\":\"plan\",\"namespace\":\"science\",\"transport_root\":\"<64hex>\",\"sequence\":1,\"not_before\":1,\"expiry\":2}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_network_storage_ack)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.policy.list", "zcode.network", "", "Inspect local policy summary",
+    "Returns only this node's rule count, advisory opt-in state and canonical "
+    "policy digest. Exact local rules are deliberately redacted, and no keys "
+    "or shared policy are exposed.",
+    4096, "zcode,network,policy,sovereignty,list,redacted",
+    "zcl.zcode_network_policy_list.input.v1",
+    "zcl.zcode_network_policy_list.v1", "datadir", "",
+    "zclassic23 zcode network policy list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_network_policy_list)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.network.policy.mutate", "zcode.network", "", "Plan or commit local policy",
+    "Adds/removes one exact local or advisory rule, or toggles advisory-list "
+    "opt-in. The plan token binds network genesis, current policy digest and "
+    "the normalized mutation; commit reloads and refuses a stale token. "
+    "Actions are a seven-bit DISCOVER/FETCH/STORE/INDEX/SERVE/FORWARD/EXECUTE "
+    "mask. Replies expose only rule ID and digest-bound token, never rule "
+    "contents or keys. A running DHT reloads the atomic file on restart.",
+    8192, "zcode,network,policy,sovereignty,plan,commit,advisory",
+    "zcl.zcode_network_policy_mutate.input.v1",
+    "zcl.zcode_network_policy_mutate.v1",
+    "mode,operation,source,effect,scope,action_mask,value,rule_id,enabled,plan_token,datadir",
+    "mode,operation",
+    "zclassic23 zcode network policy mutate --input='{\"mode\":\"plan\",\"operation\":\"advisory\",\"enabled\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_network_policy_mutate)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.network.replication", "zcode.network", "", "Inspect declared replication",
+    "Composes owner-bound iterative PROVIDER and STORAGE_ACK discovery across "
+    "all bounded pages. Reports signed hints, currently authenticated providers, "
+    "live remote claims, locally revalidated local ACKs, conflicts and partial "
+    "or local-cache-only evidence. Owner groups never prove separate operators.",
+    65536, "zcode,network,replication,durable,storage-ack,declared-diversity,async",
+    "zcl.zcode_network_replication.input.v1",
+    "zcl.zcode_network_replication.v1", "namespace,transport_root",
+    "namespace,transport_root",
+    "zclassic23 zcode network replication --input='{\"namespace\":\"science\",\"transport_root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_network_replication)
+
 ZCL_COMMAND_BRANCH("zcode.desc", "zcode",
                    "Onion descriptors: signed service records",
                    ZCL_COMMAND_LAYER_APP)

@@ -54,11 +54,11 @@
  *
  * HONEST SCOPE NOTE
  * -----------------
- * The PHGR13 (BN254) verifier has no prover in this codebase and the
- * repo carries no real on-chain Sprout JoinSplit proof fixture, so a
- * real PHGR13 positive round-trip cannot be sourced here without
- * fabricating bytes. The BN254 subgroup/generator regression class
- * stays pinned by test_phgr13_fix.c
+ * The PHGR13 (BN254) verifier has no prover in this codebase, so a fresh
+ * prover->verifier round-trip cannot be created here. A separate immutable
+ * canonical mainnet fixture in test_sprout_phgr13_kat.c now pins the complete
+ * positive Sprout transaction/signature/proof verification direction. The
+ * BN254 subgroup/generator regression class also stays pinned by test_phgr13_fix.c
  * (g2_one on-curve + the on-curve guard rejecting a corrupted
  * generator); this file adds the missing POSITIVE pairing pin on the
  * sibling BLS12-381 engine that powers Sapling consensus verification.

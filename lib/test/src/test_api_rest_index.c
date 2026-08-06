@@ -172,7 +172,7 @@ int api_rest_index_focused_tests(void)
                     "OP_RETURN name registry transactions") == 0;
         ok = ok && script_protocol &&
              strcmp(json_get_str(json_get(script_protocol, "status")),
-                    "in_progress") == 0;
+                    "active") == 0;
         ok = ok && script_protocol &&
              strcmp(json_get_str(json_get(script_protocol, "anchor_kind")),
                     "standard_script") == 0;

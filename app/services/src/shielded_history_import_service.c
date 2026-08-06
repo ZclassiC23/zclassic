@@ -460,15 +460,16 @@ static bool shi_write_provenance(sqlite3 *db, const struct uint256 *best_block,
 
 bool shielded_history_import_from_chainstate(
     sqlite3 *progress_db, const char *chainstate_src_path,
-    int64_t expected_tip_height, const struct uint256 *expected_tip_sapling_root,
+    int64_t expected_tip_height, const struct uint256 *expected_tip_block_hash,
+    const struct uint256 *expected_tip_sapling_root,
     struct shielded_import_report *out)
 {
     struct shielded_import_report report = {0};
     if (out)
         *out = report;
 
-    if (!progress_db || !chainstate_src_path || !expected_tip_sapling_root ||
-        expected_tip_height < 0)
+    if (!progress_db || !chainstate_src_path || !expected_tip_block_hash ||
+        !expected_tip_sapling_root || expected_tip_height < 0)
         LOG_FAIL(SHI_SUBSYS, "invalid args");
 
     /* Fork-safety, defense-in-depth: an all-zero expected root means the caller
@@ -531,25 +532,66 @@ bool shielded_history_import_from_chainstate(
 
     struct uint256 best_block;
     uint256_set_null(&best_block);
-    (void)chainstate_legacy_get_best_block(h, &best_block); /* log/provenance */
-
-    /* The chain-committed tip bind (§3): the chainstate best Sapling anchor
-     * MUST equal the block header hashFinalSaplingRoot at the tip height. */
-    struct uint256 best_sapling;
-    if (!chainstate_legacy_get_best_sapling_anchor(h, &best_sapling)) {
+    if (!chainstate_legacy_get_best_block(h, &best_block)) {
         chainstate_legacy_close(h);
         shi_progress_end();
         LOG_FAIL(SHI_SUBSYS,
-                 "chainstate has no best Sapling anchor — cannot bind tip");
+                 "source best-block bind FAILED: chainstate has no readable "
+                 "best-block pointer; refusing before import");
     }
-    if (!uint256_eq(&best_sapling, expected_tip_sapling_root)) {
+    if (!uint256_eq(&best_block, expected_tip_block_hash)) {
+        char source_hex[65], target_hex[65];
+        uint256_get_hex(&best_block, source_hex);
+        uint256_get_hex(expected_tip_block_hash, target_hex);
         chainstate_legacy_close(h);
         shi_progress_end();
         LOG_FAIL(SHI_SUBSYS,
-                 "tip bind FAILED: best Sapling anchor != expected header "
-                 "hashFinalSaplingRoot at h=%lld — refusing",
+                 "source best-block bind FAILED: source=%s target=%s at "
+                 "resume_h=%lld — importing an additive nullifier set from "
+                 "above/below the target makes forward spends look already "
+                 "spent; refusing before transaction",
+                 source_hex, target_hex, (long long)expected_tip_height);
+    }
+
+    /* The chain-committed tip bind (§3), keyed on OUR expected root — never
+     * the source's own 'z' best-anchor pointer. The pointer only reflects
+     * what the source last flushed and races the WAL frontier on a live
+     * daemon (a fresh flush between the target's UTXO seed and this import
+     * moves it past the fold-resume anchor), so a pointer-derived bind can
+     * key the frontier at a height the fold cannot use. The bind that is
+     * actually load-bearing is: the anchor RECORD for the expected root
+     * (the PoW-committed hashFinalSaplingRoot at the target's fold-resume
+     * anchor, supplied by the caller) exists, and its tree Pedersen-hashes
+     * to that root. A torn/forged frontier fails closed here, before the
+     * import transaction opens. */
+    struct incremental_merkle_tree tip_tree;
+    enum chainstate_anchor_result tip_ar = chainstate_legacy_get_sapling_anchor(
+        h, expected_tip_sapling_root, &tip_tree);
+    if (tip_ar != CHAINSTATE_ANCHOR_FOUND) {
+        chainstate_legacy_close(h);
+        shi_progress_end();
+        LOG_FAIL(SHI_SUBSYS,
+                 "tip bind FAILED: chainstate has no Sapling anchor record "
+                 "for the fold-resume root at h=%lld (result=%d) — the "
+                 "source does not cover the target's resume point (stale "
+                 "snapshot or reorg); refusing",
+                 (long long)expected_tip_height, (int)tip_ar);
+    }
+    struct uint256 tip_recomputed;
+    incremental_tree_root(&tip_tree, &tip_recomputed);
+    if (!uint256_eq(&tip_recomputed, expected_tip_sapling_root)) {
+        chainstate_legacy_close(h);
+        shi_progress_end();
+        LOG_FAIL(SHI_SUBSYS,
+                 "tip bind FAILED: anchor tree for the fold-resume root at "
+                 "h=%lld does not hash to the header-committed "
+                 "hashFinalSaplingRoot — torn/forged frontier, refusing",
                  (long long)expected_tip_height);
     }
+    /* The bulk pass keys the row matching best_root at tip_height and
+     * Pedersen-verifies it a second time; feeding it the expected root keeps
+     * the saw_best completeness assert on exactly the frontier we bound. */
+    const struct uint256 best_sapling = *expected_tip_sapling_root;
     report.tip_anchor_bound = true;
 
     struct uint256 best_sprout;

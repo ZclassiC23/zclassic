@@ -15,58 +15,413 @@ tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 
 ## Current state
 
-The canonical node is holding network tip on the self-verified (cured)
-stack, per the external SLO ledger: `~/.local/state/zclassic23-slo/uptime-ledger.jsonl`
-records canonical served height against `gap_vs_oracle`. Treat any
-"at tip" / "holding tip" claim as unverified until that ledger's most recent
-line confirms it.
+**2026-08-05 — S7.2 operational integrity plus Sovereign Space/Scout COMPLETE
+on integrated `main`; not deployed.** Initial integration merge `21428f0a9`
+preserves fetched `origin/main` `9f678f70f`, final lane head `d77d61eef` and
+implementation head `1312261ee` as ancestors; product/test head `3ccb853f8`
+adds the literal-empty-datadir proof described below. A final fetch found
+`origin/main` advanced to `8ef119603`; conflict-free refresh merge `de6933a22`
+preserves its transaction-demonstration catalog and all earlier integration
+history. The lane first closes the operational gaps left after S7.1.
+Possession validation is generation-bound,
+race-closed and scheduled under strict package/chunk/byte budgets; mandatory ACK
+plan, commit, restart and renewal proofs remain synchronous and full-byte.
+Replication status now composes bounded distributed PROVIDER and STORAGE_ACK
+discovery, preserves conflicts and incomplete evidence, distinguishes remote
+signed claims from locally revalidated possession, and makes `durable` fail
+closed. Pointer sequence is comparable only inside one signed publisher stream;
+equal-slot conflicts remain unusable evidence, denied candidates are skipped
+individually, and unrelated hostile high sequences cannot crowd out an honest
+root. Lookup and publication use monotonic scheduling, bounded frontier restart
+under churn and recursive cancellation without widening restricted fetches.
 
-**Running since 2026-07-28 11:11:07 UTC** — source_id
-`b3641f84dcc9ebda…`, artifact sha256 `d6139f80e7c3e74b…`, commit `75afb4361`,
-pinned as `rc-20260728-75afb4361` in `deploy/release-candidates.jsonl`.
-`NRestarts=0`.
+The first sovereign-space objects are canonical bounded
+`service_descriptor.v1` and delegated, expiring, signed `space_manifest.v1`
+wires in the existing CAS. A descriptor names a full protocol root, read-only
+verbs, object roots and capability roots; it grants no authority and is never
+executable. Typed `metaverse.space.plan|commit|show|publish|discover` commands
+reuse the existing generic POINTER/PROVIDER, authenticated Noise route,
+restricted swarm and local sovereignty engine. FETCH, STORE, INDEX, SERVE and
+FORWARD stay independent local decisions. The two READ planners now use
+strictly non-creating delegation/key loads. The read-leaf integrity test
+recursively snapshots typed datadir paths, so nested payload-directory writes
+cannot hide behind an unchanged top-level file set; on integrated main, all
+four Space/Scout READ leaves additionally begin with a literally zero-entry
+datadir and prove that no `zcode/`, nested payload,
+policy/publication/space/scout path or database appears.
 
-This corrects an earlier entry here that named source_id `981a8d01e9a1fd35…`
-as deployed at 02:58 UTC. That build is not running and the string resolves to
-nothing in this repository — not a commit, and not the identity of the live
-binary. How the correct value was determined, so it can be re-checked rather
-than believed:
+`metaverse.space.scout.plan|run|show` defines one bounded read-only mission:
+sorted starting roots, explicit depth/space/portal/byte caps and a monotonic
+deadline. It follows only locally permitted portal manifests and writes a
+canonical deterministic evidence map plus a separately signed local
+attestation. Results enumerate visited roots, owners, advertised services,
+portal outcomes, typed failures, policy denials and truncation. The map is
+local evidence, never authority or global truth. Scout never invokes service
+verbs, packages, wallets, messaging or an execution callback.
 
-```bash
-# the identity of the inode the process is ACTUALLY executing
-sudo=; pid=$(systemctl --user show zclassic23 -p MainPID --value)
-/proc/$pid/exe agentbuild | grep -oE '"source_id_sha256":"[0-9a-f]{64}"' | head -1
-sha256sum /proc/$pid/exe
-```
+The new hermetic acceptance proof uses sixteen real DHT services and
+Noise-bound sessions on a sparse chain. A root-only late joiner crosses
+multiple record pages and hops through iterative POINTER and PROVIDER
+discovery, an authenticated provider route and the unchanged
+ANNOUNCE/WANT/DATA swarm before semantic CAS admission. Its 24 alpha-pointer
+rows include eight real equal-slot conflict pairs, seven independent hostile
+high-sequence streams and one low-sequence honest stream. The proof also covers
+cycles, a dead root, provider disconnect/zero/rebind, two genuinely distinct
+local policy maps (one blocks delta while the other admits it), default-denied
+unknown EXECUTE with zero execution requests, deterministic repeat maps and
+byte-identical records, permitted CAS objects, evidence and attestation after
+DHT/store/swarm restart. The earlier 12-node replication proof remains a
+separate complementary test.
 
-`/proc/<pid>/exe`, not `~/.local/bin/zclassic23-live`: the path can be
-overwritten under a live process, and then the file and the running node
-disagree until the next restart. The binary at that path happens to match today
-(both `d6139f80e7c3e74b…`), which is itself a checked fact rather than an
-assumption.
+Fresh refreshed-integration receipts at head `de6933a22`: both canonical
+seven-daemon DHT runs pass (the science target deliberately reruns that
+prerequisite), and the two-daemon science acceptance passes its package and
+generic blob carriers, cold restart, semantic-root rederivation and SQL-wipe
+reconstruction. Focused space/scout, DHT, possession/store, swarm, science,
+market, yardsale, transaction, multisig, 32 GiB ROM, 2,048-entry block-cache,
+native/API catalog and read-integrity regressions pass; the transaction lab is
+39/39 with 38/39 simulated/live confirmations, 35/39 classified as
+mainnet-broadcast-capable and only the explicitly blocked mainnet custody tier
+absent. The focused ASan+UBSan DHT/model gate, including
+the 12-node replication and 16-node Space/Scout proofs, passes with no
+sanitizer finding or suppression. The complete `make lint` gate set and full-program LTO
+pass. The strict cold suite registered 904 groups, ran 895, cached 0,
+policy-gated 9 parameter-heavy groups, failed 0 and reported 19 explicit
+self-skip markers (86.9 s, 32 workers). The first refreshed cold run had one
+performance-detector anti-vacuity miss under concurrent load; its exact
+isolated reproduction passed (clean growth 968 permille, injected growth 3412
+permille), then the full uncached suite reran cleanly. `ci-reproducible` produced two
+identical 25,782,344-byte binaries at SHA3-256
+`6b7f2c5e54987668a071bf3a22342bae46e895ded06a2732373f7890eb07d1f0`;
+different-length snapshot paths produced two identical 25,782,424-byte
+binaries at `3b26e100872a69ea586f728ba5c752486124120578f67cd5220729aefcb6e952`.
+Mandatory pre-push CI passes strict build-only, fast lint and all 895 runnable
+source-wide groups (9 parameter gates, 19 declared self-skips); its live
+topology probe remains intentionally disabled by `ZCL_FAST_LIVE=0`.
 
-`tools/scripts/build_drift_probe.sh report` now answers this on demand and
-`deploy/zclassic23-build-drift.timer` (prepared, **not installed**) answers it
-every 5 minutes into `~/.local/state/zclassic23-drift/build-drift-ledger.jsonl`.
-The running build is **82 commits behind** `main` as of 2026-07-29 — expected
-for a pinned proof-lane candidate, and recorded rather than inferred. See
-[`docs/RELEASE_CANDIDATE_PIN.md`](./RELEASE_CANDIDATE_PIN.md).
+Independent implementation review first rejected a hidden `zcode/dht` mkdir
+from READ planners; the lane fixed the load path and recursive test. A separate
+integration reviewer audited merge `21428f0a9`, proved it has no resolution
+delta, verified the newer transaction/proof/capacity files byte-identical to
+the main parent, reran the focused matrix plus the complete `make lint` gate set and returned
+**BANKABLE**. Its final audit also replayed the literal-empty-datadir group,
+verified every integrated count/hash and audited the receipt-only delta; final
+verdict remains **BANKABLE**. Post-drift re-review proved refresh merge
+`de6933a22` has no resolution delta, its six upstream files are byte-identical
+to `8ef119603`, replayed the literal-empty and transaction-lab proofs and again
+returned **BANKABLE**. Exact phase and integrated receipts and honest bounds
+are in `docs/work/wt-zcode-s7-2-space-scout.md`.
 
-Post-deploy health, from the external SLO ledger rather than from the node's
-own opinion of itself — `~/.local/state/zclassic23-slo/uptime-ledger.jsonl`,
-`ts=1785213131`:
+Honest limits: no doorbell, board, mailbox, store interaction, agent action,
+remote service invocation, arbitrary package execution, REST silo, consensus
+change, wallet spend, deployment or live-datadir operation was added. Unknown
+C23 remains default-denied and can execute only under explicit local policy in
+the confined ZCODE executor. Scout records advertised service roots but does
+not fetch or invoke descriptors, and scheduled asynchronous discovery may
+require a later mission rerun after admission. Future signed space manifests,
+doorbells, BBS objects and user-defined services must remain local-policy
+subjects and reuse this CAS + generic POINTER/PROVIDER + authenticated swarm
+foundation; shared blocklists remain advisory and opt-in, never global bans.
 
-```json
-{"instance":"canonical","reachable":true,"unreachable_streak":0,
- "served_height":3196636,"oracle_height":3196637,"gap_vs_oracle":1,
- "latency_ms":8}
-```
+**2026-08-05 — S7.1 distributed record discovery and possession-backed
+replication COMPLETE; not deployed.** ZCODE now has one generic signed
+discovery substrate over the
+existing S6 Noise/`zpkgswm` sessions—no science-only carrier and no second
+socket stack. The exact 551-byte v1 record is one of PROVIDER, POINTER or
+STORAGE_ACK and binds network genesis, a canonical namespace, semantic and/or
+transport roots, provider node ID, sequence, validity window, owner group
+where applicable, and the chain-bound delegated online signer. PROVIDER is a
+two-hour hint, never possession proof. POINTER is bounded to seven days
+(science publish uses one day so it remains inside the default delegation).
+STORAGE_ACK is bounded to seven days and can be authored only by the package
+store after it parses and root-binds the manifest, reads and hashes every
+chunk, proves the complete transport root and confirms a local pin. A generic
+caller cannot mint an ACK; STORE_RESULT remains a distinct transport-admission
+response. Unpin, missing bytes, corruption or failed revalidation stops
+renewal, so durability falls when the last valid ACKs expire.
 
-`gap_vs_oracle=1` against an independent oracle is the claim; the node's own
-`sync=at_tip` is not. Peers recovered to 21 and RSS settled back down from a
-2.7 GB warm-up spike. (The `dev` instance in that same ledger reads
-`reachable:false` with a long unreachable streak — that lane is simply not
-running, and is not evidence of anything about the canonical node.)
+Records use `zcode/dht/records.v1`, a strict canonical projection that cold
+reloads active records and preserved conflicts byte-for-byte and prunes
+ordinary expiry. Caps are 4,096/node, 64/root, 256/provider and 8 conflicts;
+traffic is eight records/frame, eight record operations and 256 accepted
+records/peer. It reuses S6 authentication, independent replay namespaces,
+4/s rate with burst 8, deadlines, routing, unlock/relock generation checks and
+the one global three-query budget. Malformed, oversized, cross-network,
+stale, replayed, expired and unauthorized traffic fails closed. Records are
+application evidence only and never touch consensus. The cache is not network
+discovery: a domain-separated key binds network, record kind, namespace and
+selected root, then the existing `k=16`, `alpha=3`, 64-candidate DHT iterates
+signed record queries until the closest responsible set stabilizes, the
+deadline expires or the verified-result cap is met. Failed members of the
+closest 16 admit candidates 17–64. Public begin/poll/cancel uses opaque lookup
+and owner tokens; synchronous provider/science callers wrap that same state
+machine. Results paginate deterministically to 64, prefer distinct provider
+IDs and preserve same-sequence conflicts separately.
+
+The one local sovereignty engine is consulted for DISCOVER, FETCH, STORE,
+INDEX, SERVE, FORWARD and EXECUTE. Its 1,024-rule canonical policy supports
+exact full root, package, publisher ZID, service type and local classification.
+Unknown objects default to metadata discovery only; fetch/store/index/serve/
+forward/execute require local allowance. Local blocks affect only this node;
+shared advisory rules are opt-in and cannot create a global ban. The read
+surface exposes only rule count, opt-in state and a digest—private rules and
+keys stay redacted—and loading an absent policy creates no directories.
+
+Typed surfaces are `zcode.network.records.begin|poll|cancel`,
+`zcode.network.providers`, `zcode.network.publish`
+(plan/commit), `zcode.network.policy.list|mutate` (redacted plus plan/commit),
+`zcode.network.replication`, and plan/commit `zcode.package.pin|unpin`.
+Replication targets up to eight providers and says `durable` only after five
+live ACKs from distinct provider IDs across three declared owner groups. That
+is declared diversity, explicitly not proof of separate operators, machines
+or failure domains; partial success and expired ACKs remain visible. Publish
+targets the closest eligible DHT nodes and persists key-free renewal intents.
+Restart uses a fresh online delegation, applies bounded backoff/expiry and
+halts forwarding immediately when local policy changes.
+
+The root-only science gap is closed. `zcode.science.publish` creates the
+verified one-chunk transport object, one-day science POINTER and two-hour
+PROVIDER. Fetch deterministically retains pointer conflicts, rechecks local
+policy for semantic root, transport root, publisher ZID and service type,
+discovers provider records, accepts only chain-bound ZENDP reachability, dials
+through connman, and requires a fresh Noise/delegation-authenticated session.
+The restricted swarm verifier can fetch only the selected transport root and
+falls through absent, timed-out, lying or corrupt providers.
+
+`make test-science-acceptance` is exact and green. Its prerequisite
+seven-identity daemon proof passes sparse multi-hop and broken-nearest recovery,
+eight simultaneous callers with exactly three live queries, canonical restart
+and zero-peer cold bootstrap. The two-daemon science phase starts B with only
+A's semantic root, resolves the signed POINTER and PROVIDER, fetches through
+the unchanged manifest/chunk verifier, re-derives the science root from bytes,
+admits it and projects `study.show found=true`. Both nodes cold restart; after
+direct SQL deletion of all six science projection tables, rebuild is
+byte-identical and CAS counts remain A=20/B=21. A separate hermetic 12-node
+sparse proof covers cache/peer-DB/direct-publisher absence, multi-hop lookup,
+closest-node publication, candidate-frontier escape, bounded traffic, restart
+renewal, physical CAS-byte loss, ACK non-renewal and a one-node root ban while
+an alternate path remains usable. These are complementary proofs, not a claim
+of one 12-daemon deployed topology.
+
+Final receipts include the exact DHT and root-only science gates above; all
+eight selected adversarial groups; focused DHT, record, swarm, science, store,
+market and yardsale regressions; the focused ASan+UBSan DHT/model gate with
+zero suppressions; the complete `make lint` gate set; and full-program LTO. The cold uncached
+suite registered 902 groups, ran 893, cached 0, policy-gated 9 parameter-heavy
+groups, failed 0 and reported 19 explicit self-skip markers (85.7 s, 32
+workers). After merging concurrent wallet/transaction work, integration head
+`09770961f` reran the complete `make lint` gate set, strict build-only, the exact combined DHT
+plus science acceptance, and both reproducibility proofs. Same-tree produced
+two identical 25,602,728-byte binaries at SHA3-256
+`2f0f08773db50719178eb16d68da81a3583fba4d919a18207c47cdbe3b425a70`;
+different-length builder paths produced two identical 25,602,808-byte binaries
+at `f8b599b5aa190e35dd80159fee9e728d0c9e27998eb780dd12a077665ab730fc`.
+The lane and integration receipts are recorded in the S7.1 assignment
+document.
+
+Honest limits at the S7.1 integration head (superseded by the S7.2 section
+above): signed discovery records are expiring hints, not content truth,
+availability proof, scientific acceptance or operator independence. Unknown
+C23 is never auto-executed; execution remains explicit local policy plus the
+confined ZCODE executor. That S7.1 head added no space manifest, doorbell,
+board, mailbox, agent mission, arbitrary service execution, REST protocol
+silo, consensus change, wallet spend, deployment or live-datadir mutation.
+Future sovereign spaces must reuse these generic namespaces, objects and
+transport.
+
+**2026-08-04 — S6 production hardening COMPLETE; not deployed.** The existing
+`zpkgswm`/Noise transport now carries bounded `FIND_NODE`/`NODES` traffic;
+there is no second socket stack. A node ID is bound to an active,
+chain-anchored ZID master, a delayed active-chain beacon, its delegated online
+Ed25519 key, and the authenticated Noise static key/session. Routing is fixed
+at k=16/alpha=3 with a 1,024-contact cap, a deterministic 64-entry candidate
+pool, closest-16 active frontier, 64 authenticated peer slots, three active
+queries, eight fairly queued lookups, and a 30-second per-lookup ceiling.
+Candidates retain explicit unverified, unreachable, authenticated, queried,
+in-flight, responded, or failed state; replacement probes separately retain
+WAITING, IN_FLIGHT, RESPONDED, FAILED, or EXPIRED state. Address-free NODES
+results request a deduped, backoff-bound dial only through an accepted, signed,
+chain-bound ZENDP endpoint; a matching fresh Noise session plus delegation is
+still the sole promotion authority. The fixed-size reachability index is
+invalidated on endpoint, ZID, and header generations. Replay namespaces split
+FIND_NODE requests from NODES responses, each node ID retains one service
+session, and locally generated connection serials never alias peer claims.
+Canonical `contacts.v2` persistence is strict, network/self bound, uniquely
+serialized, and cold-revalidated.
+
+Public lookup admission is genuinely asynchronous:
+`zcode.network.find.begin|poll|cancel` uses opaque 128-bit lookup IDs and a
+separate owner token, with expiry and idempotent terminal polling; the existing
+`zcode.network.find` is only a client-side wrapper. External chain, database,
+disk, endpoint, ancestry, and network work occurs outside the global DHT lock,
+then relocks against captured generations. Read-only status surfaces remain
+`zcode.network.status|peers`; `ops state --subsystem=zcode_dht` reports rounds,
+XOR progress, candidate/frontier composition, queue wait, termination reasons,
+reachability/cache operations, ancestry work, contacts, probes, frame counters,
+and persistence without keys, raw delegations, peer addresses, or an
+operator-diversity claim.
+
+The acceptance proof (`make test-zcode-dht-acceptance`) retains the original
+two-node hostile-frame/persistence checks, then creates seven independent
+identities on a common closed-chain fixture. It builds only a sparse neighbour
+chain plus one alternate edge, files six signed endpoints at the lookup origin
+without inserting contacts, kills the nearest path, and proves target recovery
+in at least three rounds with XOR progress and bounded traffic. It also proves
+eight simultaneous external callers while exactly three network queries are
+stalled, replay pressure beyond 16 unique signed frames, zero-peer autonomous
+cold bootstrap, multi-contact persistence, and fresh reauthentication. A
+deterministic 32-node model runs 12,000 transitions with continuous cap,
+authentication, replay, churn, persistence, and incumbent invariants; the
+focused ASan+UBSan gate runs codecs, routing, service, lookup, and that model
+without suppressions. The final evidence set is: focused
+DHT/Noise/transport/argv/connman/RPC tests; yardsale and store tests including
+both opt-in store stress groups; the complete `make lint` gate set; the cold uncached suite
+(898 registered, 889 run, zero cached, 9 parameter-gated, zero failed, 19
+explicit self-skips); full LTO; science acceptance; and both reproducibility
+gates. Same-tree SHA3-256 is
+`e808a8cef470c3bd32b67f9d430bc6dc908ea3280584937a8316c8aca4aea3be`;
+different-path builder SHA3-256 is
+`e05529ca82b1ad86a949bbc24e8e94e7c57abea2856f612afe33a2721ddb8d0f`.
+Implementation head was `545e6b2b9`. At that S6 head, provider/root discovery,
+STORE acknowledgements, replication and automatic science blob-root discovery
+were still open; the S7 section above supersedes that historical limit.
+
+**2026-08-03 — G4 (findings had no command-leaf admission) CLOSED.**
+New leaves `zcode.science.findings.plan|commit`: exact expiring plan +
+confirm:true commit, durable idempotency, CAS store addressed by the
+canonical root, findings projection in the rebuild-identical mapping.
+Service lives in `app/services/src/zcode_science_findings.c` (E1 split);
+the plan/commit plumbing is exported via `zcode_science_service.h`.
+Schema v51 rebuilds `zcode_science_plans` with the kind CHECK extended
+to 'findings' (SQLite cannot ALTER a CHECK; rows carry over) and the
+model kind allowlist matches. The fixture's new `mkfindings-emit`
+composes the deterministic wire without touching the CAS, so the
+acceptance script now admits findings through the leaves and the fresh
+review binds the CLI-admitted findings (H1). Execution-context documents
+stay fixture-seeded — content roots, not ledger objects. Proven:
+`make test-science-acceptance` PASS with G4 gated CLOSED;
+`t-fast ONLY=zcode_science_store` (new test_zstore_findings_plan_commit)
+plus schema_migration/sqlite/blog groups green.
+
+**2026-08-03 — G1 (science objects have no node-to-node carrier) CLOSED.**
+`zcode.science.publish` mirrors a committed science wire into the package
+store as a one-chunk content.v2 blob (`vcs_blob_put_to`); the blob root is
+the transport address, the science root stays the semantic address and is
+re-derived from the fetched bytes at admit time — never trusted from a
+claim. `zcode.science.fetch` schedules the swarm fetch and admits the blob
+(`vcs_blob_get_from` → wire identify → idempotent `put_addressed` → full
+`zcode_science_rebuild`). Proven in the original
+`make test-science-acceptance`: node A
+publishes its study, node B fetches and admits it post-restart with the
+identical science root/kind and `study.show found=true`. Historical limit at
+that commit: the blob root traveled out of band because S6 found authenticated
+node IDs only. S7 now closes that limit with signed generic POINTER/PROVIDER
+records. Files:
+`app/services/src/zcode_science_carrier.c` (carrier;
+`zcode_science_service.h` declares publish/admit),
+`tools/command/native_zcode_science_command.c`,
+`config/commands/zcode_science.def`, `lib/test/src/test_zcode_science_store.c`,
+`tools/dev/science_acceptance.sh` (G1 leg flipped to positive proof).
+
+**2026-08-03 10:01 UTC — G2 (fresh-node swarm fetch stall) CLOSED on main**
+as `9e375d355`, verified by `make test-science-acceptance` (two fresh nodes;
+B fetched 5 chunks node-to-node and rederived the package root; both nodes
+then cold-booted and rebuilt every science object from CAS hashes). The fix
+is three stacked parts: a NEW_USER 4/hour bootstrap announce quota
+(`VCS_POLICY_FREE_ANNOUNCE_PER_HOUR`), deduped per-sync re-announce to every
+known peer, and a supervisor clock-driven swarm (`net.zcode_swarm` child,
+1 s period, net domain) — the swarm tick previously only fired on inbound
+peer messages, so an idle healthy connection never announced or fetched.
+NOT YET DEPLOYED: the canonical source ID below predates G2 and the later
+science commits above.
+
+**Recovered 2026-08-03; transaction laboratory remains gated.** The canonical
+service had been offline in a watchdog restart loop with its configured checkout
+binary absent. Recovery used the owner-declared intervention path and the
+complete-state bundle at h=3,056,758; no datadir surgery and no canonical wallet
+keys were used. The bundle SHA-256 is
+`6bc3bf5152e5cd38deadc344d563478696d3800f4417e564119319196447ae83`.
+Its copy proof climbed H* from 3,056,758 through 3,203,198, survived restart,
+and matched zclassicd at the checked heights before canonical install. This
+supersedes the earlier same-day pinned-binary watchdog-loop note: the dedicated
+pet-thread fix is present in the recovered binary, but the normal 6G/watchdog
+posture still fails for the separately measured reason recorded below.
+
+The running inode (re-check `/proc/$(systemctl --user show zclassic23
+-p MainPID --value)/exe`, never a pathname that may have been overwritten) is:
+
+- source ID `6e379d5744d64c6695965e5e61c011a76b6993845d10193fedf8e135379b628c`
+- artifact SHA-256 `2733b1e250a459cb8a7c8e15046c54a9b54454ce4ab67403749e526ad0c6b975`
+- active since 2026-08-03 05:56:55 UTC; `NRestarts=0` at the last check
+
+The first uninterrupted post-recovery SLO window is durable in
+`~/.local/state/zclassic23-slo/uptime-ledger.jsonl`: 61 canonical samples from
+`ts=1785731596` through `1785735219` (3,623 seconds), 100% reachable,
+`node_state_ok=true` throughout, one unchanged active-enter epoch, zero
+restarts, H* 3,203,471 -> 3,203,519, 6-8 peers, and maximum local-oracle gap
+3. Exact same-height zclassicd hash checks passed during and after the window;
+the latest recorded check in this recovery session was h=3,203,568,
+`00000c3408d6e53231696c2005db5243e82268f7965e847f1096d8aa0798dfec`.
+The typed frontier had zero H* blockers and only the normal one-height working
+edge when it was not returning the explicit retryable `progress_store_busy`.
+
+Do **not** start the mainnet transaction laboratory yet. Four acceptance facts
+remain open:
+
+1. Off-host hash parity is `NO_EVIDENCE`: the agreement ledger's latest judge
+   saw 12/12 `could-not-ask` samples. Connected peers advertise heights but not
+   hashes from two distinct hosts. The prober deliberately has no public-API
+   bypass; more independent peers must surface learnable hashes. Never lower the
+   two-host floor.
+2. Normal service armor is not yet safe. A watched warm restart at
+   `MemoryHigh=6G` raised `boot.stage_regression` plus critical memory pressure;
+   the health-gated pet sent no post-READY heartbeat, so the 10-minute systemd
+   watchdog would have recreated the abort loop. The operator stopped that run
+   before the deadline and restored `MemoryHigh=24G` plus the explicit
+   `WatchdogSec=0` incident drop-in. `TimeoutStartSec=30min` is restored.
+3. The standing non-consensus blocker is
+   `catalog.sprout_anchor.lag_exceeded` (cursor frozen at 2,124,937). It does not
+   block H* progress, but it remains named and visible.
+4. `make ci-reproducible` aborted build A twice because the source mutation
+   token changed during the LTO build while the byte identity stayed identical
+   and Git stayed clean. No byte comparison occurred; this is a gate blocker,
+   not a reproducibility mismatch. Lint, build-only, the whole-program test
+   binary, and the strict suite (881 groups run, 0 failed) passed.
+
+Recovery evidence fixes are in the adjacent
+`fix(recovery): preserve exact evidence bindings` commit: the SLO probe now derives the live
+zclassicd port (8023 here), accepts normal spaced JSON, and the installer
+retains the exact prior-generation path in its success banner. No lab wallet,
+key, transaction, or funding was created.
+
+C8 byte-exact UTXO parity (2026-08-02): the producer full-fold lane
+(`~/.zclassic-c23-producer-fold`, from-genesis fold at h=3192878, then live
+sync) holds a UTXO set byte-identical to the live zd chainstate at
+height 3203194 — sha3 `9a8a4ba72ccb030ccba2daaf426fa3faeb496c3decee0372f12729c09cea4919`,
+txouts 1345675, supply 10412541.81045529, both sides equal:
+`VERDICT=PASS exact_tier=match from=genesis-producer-full-fold height=3203194`.
+The instrument is committed as `tools/scripts/byte_exact_utxo_check.sh`
+(compare `getutxocommitment` on the c23 producer vs
+`--legacy-utxo-commitment` over the read-only zd chainstate at one agreed
+height; zd replies are JSON-RPC envelopes, c23 replies are flat — the
+script parses each correctly). This is the byte-level C8 evidence the
+height-only live parity service cannot provide; rerun on the linger
+cadence and keep the transcript.
+
+Operational lesson (2026-08-02): do NOT run producer-lane heavy jobs
+(full-fold sync, `--legacy-utxo-commitment` SHA3 passes, byte-exact checks)
+alongside the canonical node. The 10-min systemd watchdog is ENABLED
+(journal: `Watchdog timeout (limit 10min)!` → SIGABRT, status=134); the
+contention starved the canonical node's watchdog pings twice in 25 min
+(NRestarts 33→35, soak window broken). The node self-recovered in 126 s
+once the producer lane was stopped — but C6 soak accrual restarted from
+zero. Restart #36 the same evening came from an unrelated tenant's
+parallel LLVM build pushing load-average past 10 during boot — same
+sensitivity, different source: the watchdog pets are hostage to ANY
+heavy host load in the boot window, not just our own lanes. Run
+producer lanes when the canonical node is operator-paused, nice/ionice
+them below watchdog sensitivity, and expect external build storms to
+cost a restart each.
 
 **Check this before diagnosing anything live:**
 
@@ -655,6 +1010,15 @@ MRS and per-criterion evidence live in [`docs/MVP.md`](MVP.md) and
   non-empty WAL. A non-empty WAL must refuse loudly rather than silently
   drop data.
 - `zclassicd invalidateblock` does not persist across restarts in this fork.
+- Watchdog-pet starvation under build load (observed 2026-08-02/03, four
+  kills in ~2h): every kill had the same signature — SIGABRT exactly 10min
+  after service start, while a `-j32` build ran on the host. The node pets
+  through boot, then loses the pet race under build load and never re-arms;
+  it self-heals on the next quiet window. Dev-lane rule: check
+  `systemctl --user is-active zclassic23` before any full build; if
+  `activating`, wait or drop to `-j16`; never restart or stop the service
+  from a dev lane. The pet starvation itself is open for the node's owning
+  lane — it recurs on every heavy push.
 
 ## Lanes
 

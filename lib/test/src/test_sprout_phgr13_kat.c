@@ -9,9 +9,18 @@
  */
 
 #include "test/test_core.h"
+#include "chain/chainparams.h"
+#include "core/serialize.h"
+#include "primitives/transaction.h"
 #include "sapling/bn254.h"
+#include "validation/check_transaction.h"
+#include "validation/contextual_check_tx.h"
 
+#include <stdatomic.h>
 #include <string.h>
+
+extern const unsigned char g_fixture_tx_sprout_241[];
+extern const size_t g_fixture_tx_sprout_241_len;
 
 static const char k_vk_hex[] =
     "30075339600b17fb80cf0ccec8ef6c3b2fed8a11aa4902c53d8856170ffadd521b85c345f6a506f0d6e3b27f125faa49"
@@ -161,8 +170,57 @@ int test_sprout_phgr13_kat(void)
                                     bad_nf1, nf2, cm1, cm2,
                                     k_vpub_old, k_vpub_new));
 
+    /* Full canonical transaction: parser, structural rules, JoinSplit
+     * Ed25519 signature, hSig derivation, and PHGR13 proof all run through the
+     * production consensus entrypoints. Anchor membership and the transparent
+     * input script require the preceding mainnet chain state and are therefore
+     * deliberately outside this context-only fixture. */
+    struct byte_stream stream;
+    stream_init_from_data(&stream, g_fixture_tx_sprout_241,
+                          g_fixture_tx_sprout_241_len);
+    struct transaction tx;
+    transaction_init(&tx);
+    bool parsed = transaction_deserialize(&tx, &stream);
+    KAT_CHECK("canonical height-241 transaction deserializes", parsed);
+    if (parsed) {
+        char txid[65];
+        uint256_get_hex(&tx.hash, txid);
+        KAT_CHECK("canonical transaction identity and complete wire are pinned",
+                  g_fixture_tx_sprout_241_len == 2022 &&
+                  stream_remaining(&stream) == 0 &&
+                  strcmp(txid,
+                         "55c6c3a289d295954936076b697cc1e2a713c99d"
+                         "d268934f7ab6518f825148fd") == 0 &&
+                  tx.num_joinsplit == 1 && tx.v_joinsplit != NULL);
+        KAT_CHECK("canonical JoinSplit public inputs match the proof KAT",
+                  tx.v_joinsplit &&
+                  tx.v_joinsplit[0].vpub_old == k_vpub_old &&
+                  tx.v_joinsplit[0].vpub_new == k_vpub_new &&
+                  memcmp(tx.v_joinsplit[0].anchor.data, anchor, 32) == 0 &&
+                  memcmp(tx.v_joinsplit[0].nullifiers[0].data, nf1, 32) == 0 &&
+                  memcmp(tx.v_joinsplit[0].nullifiers[1].data, nf2, 32) == 0 &&
+                  memcmp(tx.v_joinsplit[0].commitments[0].data, cm1, 32) == 0 &&
+                  memcmp(tx.v_joinsplit[0].commitments[1].data, cm2, 32) == 0);
+        struct validation_state structural;
+        validation_state_init(&structural);
+        KAT_CHECK("canonical Sprout transaction passes structural consensus",
+                  check_transaction(&tx, &structural));
+
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        int saved_defer = atomic_exchange(
+            &g_deferred_proof_validation_below_height, -1);
+        struct validation_state contextual;
+        validation_state_init(&contextual);
+        bool consensus_ok = params && contextual_check_transaction(
+            &tx, &contextual, &params->consensus, 241, 100);
+        atomic_store(&g_deferred_proof_validation_below_height, saved_defer);
+        KAT_CHECK("canonical JoinSplit signature and proof pass contextual consensus",
+                  consensus_ok);
+        transaction_free(&tx);
+    }
+
     printf("Sprout PHGR13 real-proof KAT: %s (%d failures)\n",
            failures == 0 ? "OK" : "FAIL", failures);
     return failures;
 }
-

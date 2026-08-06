@@ -105,11 +105,11 @@ struct sapling_spend_sync_ctx {
 };
 
 
-static bool node_db_sync_wallet_tx_local(struct node_db *ndb,
-                                         const struct transaction *tx,
-                                         const struct wallet *w,
-                                         int block_height,
-                                         bool *is_ours_out)
+bool node_db_sync_wallet_tx_local(struct node_db *ndb,
+                                  const struct transaction *tx,
+                                  const struct wallet *w,
+                                  int block_height,
+                                  bool *is_ours_out)
 {
     if (!ndb || !ndb->open || !tx || !w)
         LOG_FAIL("sync", "wallet_tx_local: invalid args (ndb=%p, tx=%p, w=%p)",
@@ -483,7 +483,7 @@ static bool node_db_sync_wallet_sapling_spends_write(
     for (size_t i = 0; i < batch->tx->num_shielded_spend; i++) {
         const uint8_t *nf =
             batch->tx->v_shielded_spend[i].nullifier.data;
-        enum db_mark_spent_result r = db_sapling_note_mark_spent(
+        enum db_mark_spent_result r = db_sapling_note_reserve_spend(
             ndb, nf, batch->tx->hash.data);
         /* Every spend in a wallet-authored shielded transaction came from the
          * unspent-note query immediately before construction. NOT_FOUND here

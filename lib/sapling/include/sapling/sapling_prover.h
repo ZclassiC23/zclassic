@@ -1,9 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Stable C23 API for Sapling proving and verification.
- * Consensus verification is native C23. Proving is delegated to the pinned,
- * statically-linked Zcash prover and remains disabled until a positive
- * prover-to-consensus-verifier self-test passes. */
+ * Consensus verification is native C23. Proving remains disabled until the
+ * in-tree C23 prover passes a positive prover-to-consensus-verifier self-test. */
 
 #ifndef ZCL_SAPLING_PROVER_H
 #define ZCL_SAPLING_PROVER_H
@@ -13,7 +12,8 @@
 #include <stddef.h>
 
 /* Parameter loading. The caller supplies the canonical BLAKE2b hashes used
- * by librustzcash; sapling_init_params independently checks SHA-512 first. */
+ * by the parameter publisher; sapling_init_params independently checks
+ * SHA-512 first. */
 void zclassic_init_zksnark_params(
     const uint8_t *spend_path, size_t spend_path_len,
     const char *spend_hash,
@@ -23,7 +23,7 @@ void zclassic_init_zksnark_params(
     const char *sprout_hash);
 
 /* Runtime proving capability. `run_self_test` must be called after the C23
- * verifying keys and Rust proving parameters have initialized. No proving
+ * verifying keys and native proving parameters have initialized. No proving
  * context can be created until it returns true. */
 bool zclassic_sapling_prover_run_self_test(void);
 bool zclassic_sapling_prover_is_ready(void);

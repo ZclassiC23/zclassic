@@ -1692,16 +1692,15 @@ bool chaos_fault_kill_resume_boundary(uint64_t seed, bool after_bitmap_commit,
              "rename not yet performed", done_before_kill);
     close(fd);
     rom_journal_close(j); /* "process dies" here — no clean shutdown */
-
+    /* The response completes before the server records it; await setup. */
+    for (int i = 0; i < 40 && sfm_seed_chunks_served() < 2; i++)
+        platform_sleep_ms(50);
     int64_t served_before = sfm_seed_chunks_served();
-
     /* "Restart": resume through the real driver. */
     bool resumed = rom_fetch_download_verified(
         "127.0.0.1", port, &m, art.chunk_sha3, m.num_chunks, cdir, NULL, NULL);
-
     int64_t served_after = sfm_seed_chunks_served();
     int64_t refetched = served_after - served_before;
-
     char final_path[1300];
     snprintf(final_path, sizeof(final_path), "%s/%s", cdir, m.filename);
     bool verifies = resumed && rom_fetch_verify_file(final_path, &m);
@@ -1720,8 +1719,9 @@ bool chaos_fault_kill_resume_boundary(uint64_t seed, bool after_bitmap_commit,
              (unsigned long long)seed, after_bitmap_commit ? "true" : "false");
 
     out->base.ok = true;
-    out->base.recovered = resumed && refetched == want_refetch &&
-                          refetched <= 1 && verifies && journal_cleaned;
+    out->base.recovered = served_before >= 2 && resumed &&
+                          refetched == want_refetch && refetched <= 1 &&
+                          verifies && journal_cleaned;
     out->base.operator_paged = false;
     sfm_note(out, "kill at resume boundary (%s): refetched=%lld verifies=%d "
              "journal_cleaned=%d",

@@ -110,9 +110,10 @@
 #define VCS_SWARM_OUTBOUND_MAX 128u      /* queued small frames */
 #define VCS_SWARM_OUTBOUND_FRAME_MAX 92u /* largest non-DATA frame */
 #define VCS_SWARM_MAX_LOCAL_ANNOUNCES 64u
+#define VCS_SWARM_PROVIDER_MAX 16u
 #define VCS_SWARM_BURST_WINDOW_TICKS 600u   /* request burst: 10 min @1s */
 #define VCS_SWARM_ANNOUNCE_WINDOW_TICKS 3600u /* announce rate: 1 h @1s */
-#define VCS_SWARM_RECORD_WIRE_BYTES 50u
+#define VCS_SWARM_RECORD_WIRE_BYTES 59u
 
 struct vcs_package_store;
 struct vcs_service_book;
@@ -159,7 +160,11 @@ size_t vcs_swarm_engine_peer_ids(struct vcs_swarm_engine *engine,
                                  uint64_t *out, size_t max);
 
 /* Queue ANNOUNCE frames to one peer for every complete tracked package
- * (bounded VCS_SWARM_MAX_LOCAL_ANNOUNCES). Returns the count queued. */
+ * not already announced to this peer (bounded
+ * VCS_SWARM_MAX_LOCAL_ANNOUNCES). Per-peer dedupe makes repeat calls
+ * cheap: the transport glue calls this on every membership sync so
+ * content completed or published AFTER the peer joined still propagates.
+ * Returns the count queued. */
 size_t vcs_swarm_engine_announce_to(struct vcs_swarm_engine *engine,
                                     uint64_t peer);
 
@@ -200,6 +205,8 @@ enum vcs_swarm_fetch_result {
     VCS_SWARM_FETCH_NO_STORE,      /* engine has no store */
     VCS_SWARM_FETCH_FULL,          /* VCS_SWARM_MAX_DOWNLOADS reached */
     VCS_SWARM_FETCH_RECORD_IO,     /* download record would not persist */
+    VCS_SWARM_FETCH_BYTE_LIMIT,    /* package exceeds caller-owned bound */
+    VCS_SWARM_FETCH_BOUND_NOT_OWNED, /* existing work has a looser bound */
     VCS_SWARM_FETCH_BAD_INPUT,
 };
 const char *vcs_swarm_fetch_result_string(enum vcs_swarm_fetch_result r);
@@ -210,6 +217,23 @@ const char *vcs_swarm_fetch_result_string(enum vcs_swarm_fetch_result r);
 enum vcs_swarm_fetch_result vcs_swarm_engine_fetch(
     struct vcs_swarm_engine *engine, const uint8_t package_root[32],
     int64_t day, uint64_t now);
+
+/* Provider-directed form used by semantic discovery. The root is permanently
+ * marked restricted in its resumable record; only these current authenticated
+ * transport peer handles may receive manifest/chunk WANTs. Re-invocation
+ * replaces the transient handles after reconnect/restart. */
+enum vcs_swarm_fetch_result vcs_swarm_engine_fetch_from(
+    struct vcs_swarm_engine *engine, const uint8_t package_root[32],
+    int64_t day, uint64_t now, const uint64_t *provider_peers,
+    size_t provider_count);
+
+/* Generic provider-directed fetch with a persistent content-byte ceiling.
+ * The manifest is verified and parsed first; an oversized package is failed
+ * before any content chunk is requested or stored. */
+enum vcs_swarm_fetch_result vcs_swarm_engine_fetch_from_bounded(
+    struct vcs_swarm_engine *engine, const uint8_t package_root[32],
+    int64_t day, uint64_t now, const uint64_t *provider_peers,
+    size_t provider_count, uint64_t maximum_package_bytes);
 
 /* Cancel an active download: queues CANCEL per outstanding request,
  * tombstones the ids, deletes the record. False when not active. */
@@ -251,11 +275,17 @@ struct vcs_swarm_download_status {
     uint64_t present_bytes;
     uint64_t total_bytes;     /* manifest total; 0 until verified */
     uint64_t fetched_bytes;   /* verified bytes pulled by this download */
+    uint64_t maximum_package_bytes; /* 0 unbounded; persisted fetch ceiling */
 };
 
 bool vcs_swarm_engine_download_status(struct vcs_swarm_engine *engine,
                                       const uint8_t package_root[32],
                                       struct vcs_swarm_download_status *out);
+
+/* Downloads currently in flight (want-manifest or downloading). The
+ * transport glue's timer uses it for the honest idle report: zero active
+ * downloads + an empty outbound queue is "legitimately nothing to do". */
+size_t vcs_swarm_engine_active_downloads(struct vcs_swarm_engine *engine);
 
 struct vcs_swarm_peer_info {
     uint64_t peer;

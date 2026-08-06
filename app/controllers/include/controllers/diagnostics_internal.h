@@ -21,6 +21,7 @@
 
 struct json_value;
 struct main_state;
+struct node_db;
 
 typedef bool (*diagnostics_dump_fn)(struct json_value *out, const char *key);
 
@@ -139,6 +140,11 @@ bool diag_block_index_dump_state_json(struct json_value *out,
                                       const char *key);
 bool diag_header_band_dump_state_json(struct json_value *out,
                                       const char *key);
+/* Explorer projection summary used by chain-evidence diagnostics. It opens a
+ * private read-only handle so an automatic dump can never serialize wallet
+ * reads behind an explorer scan on the shared node_db connection. */
+void diag_push_explorer_index_state_json(struct json_value *out,
+                                         struct node_db *ndb);
 bool sapling_checkpoint_dump_state_json(struct json_value *out,
                                         const char *key);
 

@@ -145,6 +145,7 @@ int rpc_timeout_register(struct rpc_timeout_mgr *mgr,
             mgr->slots[i].client_fd = client_fd;
             mgr->slots[i].ip_be     = ip_be;
             mgr->slots[i].start_us  = now_us();
+            mgr->slots[i].timeout_ms = mgr->timeout_ms;
             mgr->slots[i].method[0] = '\0';
             mgr->stat_registered++;
             slot = i;
@@ -214,14 +215,13 @@ int rpc_timeout_sweep(struct rpc_timeout_mgr *mgr, int64_t current_us)
     struct kill_info kills[RPC_TIMEOUT_MAX_SLOTS];
     int nkills = 0;
 
-    int64_t deadline_us = (int64_t)mgr->timeout_ms * 1000;
-
     pthread_mutex_lock(&mgr->lock);
     mgr->stat_sweeps++;
     for (int i = 0; i < RPC_TIMEOUT_MAX_SLOTS; i++) {
         if (!mgr->slots[i].in_use) continue;
         if (mgr->slots[i].killed)  continue;
         int64_t elapsed = current_us - mgr->slots[i].start_us;
+        int64_t deadline_us = (int64_t)mgr->slots[i].timeout_ms * 1000;
         if (elapsed < deadline_us) continue;
 
         mgr->slots[i].killed = true;

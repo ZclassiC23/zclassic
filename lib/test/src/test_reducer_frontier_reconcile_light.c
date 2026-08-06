@@ -20,6 +20,7 @@
 #include "primitives/transaction.h"
 #include "script/script.h"
 #include "services/sync_monitor.h"
+#include "storage/anchor_kv.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "util/safe_alloc.h"
@@ -339,6 +340,23 @@ static bool put_utxo_delta(sqlite3 *db, int height,
         return false;
     sqlite3_bind_int(st, 1, height);
     sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool put_sapling_anchor_residue(sqlite3 *db, int height,
+                                        const struct uint256 *root)
+{
+    if (!anchor_kv_ensure_schema(db))
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO sapling_anchors(anchor,height,tree) "
+            "VALUES(?,?,x'')", -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(st, 1, root->data, 32, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, height);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
@@ -1098,6 +1116,9 @@ int test_reducer_frontier_reconcile_light(void)
         RFRL_CHECK("unknown-coin: seed noncanonical script row",
                    put_script_status(db, A + 2, 0, "contextual_invalid",
                                      &fx.hashes[3]));
+        RFRL_CHECK("unknown-coin: remove durable frontier authority",
+                   exec_sql(db, "DELETE FROM progress_meta "
+                                "WHERE key='coins_applied_height'"));
         struct stage_reducer_frontier_reconcile_result purge;
         memset(&purge, 0, sizeof(purge));
         purge.hstar = A + 1;
@@ -1114,10 +1135,6 @@ int test_reducer_frontier_reconcile_light(void)
                    count_range(db, "script_validate_log", A + 2, A + 3) == 1 &&
                    count_range(db, "body_persist_log", A + 2, A + 3) == 1 &&
                    count_range(db, "proof_validate_log", A + 2, A + 3) == 1);
-        RFRL_CHECK("delete coins_applied frontier",
-                   exec_sql(db, "DELETE FROM progress_meta "
-                                "WHERE key='coins_applied_height'"));
-
         struct stage_reducer_frontier_reconcile_result rr;
         RFRL_CHECK("unknown-coin call succeeds",
                    stage_reducer_frontier_reconcile_light(
@@ -1800,6 +1817,48 @@ int test_reducer_frontier_reconcile_light(void)
                    count_range(db, "script_validate_log", A + 2, A + 3) == 1 &&
                    count_range(db, "body_persist_log", A + 2, A + 3) == 1 &&
                    count_range(db, "proof_validate_log", A + 2, A + 3) == 1);
+
+        teardown_fixture(&fx);
+    }
+
+    /* A mixed-fork UTXO suffix must be removed as one kernel unit.  The
+     * pre-lock result deliberately carries a stale coin frontier to reproduce
+     * the live race: purge must re-read the durable frontier under its lock,
+     * clamp there, and remove future log/delta/anchor state. */
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("noncanon-utxo-suffix: setup fixture",
+                   setup_fixture(&fx, "noncanon_utxo_suffix"));
+        sqlite3 *db = progress_store_db();
+        RFRL_CHECK("noncanon-utxo-suffix: active chain installs",
+                   active_chain_move_window_tip(&fx.ms.chain_active,
+                                                fx.idx[3]));
+        struct uint256 fork = fx.hashes[3];
+        fork.data[31] ^= 0x6du;
+        RFRL_CHECK("noncanon-utxo-suffix: seed mixed fork and anchors",
+                   put_utxo_delta(db, A + 3, &fork) &&
+                   put_sapling_anchor_residue(db, A + 1, &fx.hashes[1]) &&
+                   put_sapling_anchor_residue(db, A + 3, &fork));
+
+        struct stage_reducer_frontier_reconcile_result rr;
+        memset(&rr, 0, sizeof(rr));
+        rr.hstar = A + 1;
+        rr.sweep_top = A + 3;
+        rr.coins_applied_found = true;
+        rr.coins_applied_height = A + 1; /* stale pre-lock snapshot */
+        rr.lowest_noncanonical = -1;
+        RFRL_CHECK("noncanon-utxo-suffix: direct purge succeeds",
+                   stage_reducer_frontier_purge_noncanonical(db, &fx.ms, true,
+                                                             &rr));
+        RFRL_CHECK("noncanon-utxo-suffix: live frontier wins stale snapshot",
+                   rr.coins_applied_found &&
+                   rr.coins_applied_height == A + 2 &&
+                   cursor_value(db, "utxo_apply") == A + 2);
+        RFRL_CHECK("noncanon-utxo-suffix: abandoned kernel suffix removed",
+                   count_range(db, "utxo_apply_log", A + 2, A + 4) == 0 &&
+                   count_range(db, "utxo_apply_delta", A + 2, A + 4) == 0 &&
+                   count_range(db, "sapling_anchors", A + 2, A + 4) == 0 &&
+                   count_range(db, "sapling_anchors", A + 1, A + 2) == 1);
 
         teardown_fixture(&fx);
     }

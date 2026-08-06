@@ -58,6 +58,8 @@ void print_usage(const char *prog)
     printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
     printf("  -packagehost=0|1    Host ZCODE package content from <datadir>/zcode\n");
     printf("                      (default 0, hosting off; local store only)\n");
+    printf("  -v2transport        Enable authenticated Noise XX peer transport\n");
+    printf("                      (required for the ZCODE DHT; default off)\n");
     printf("  -packagequota=<n>   Package store quota in bytes (default 10737418240;\n");
     printf("                      20%% pins / 40%% hot / 30%% rare / 10%% staging)\n");
     printf("  -confine            After boot reaches activation-ready, apply strict\n");
@@ -164,6 +166,7 @@ static const char *const k_extra_getarg_flags[] = {
     "-debug", "-nodebug",
     "-txindex", "-notxindex", /* also GetBoolArg'd in txindex_projection.c */
     "-packagehost", "-nopackagehost", "-packagequota",
+    "-v2transport", "-nov2transport",
 };
 
 static bool main_flag_is_known_extra(const char *arg)
@@ -252,6 +255,7 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
         else if (strncmp(argv[i], "-paramsdir=", 11) == 0) ctx->params_dir = argv[i] + 11;
         else if (strcmp(argv[i], "-testnet") == 0) ctx->testnet = true;
         else if (strcmp(argv[i], "-regtest") == 0) ctx->regtest = true;
+        else if (strcmp(argv[i], "-regtestshielded") == 0) ctx->regtest_shielded = true;
         else if (strcmp(argv[i], "-txindex") == 0) ctx->tx_index = true;
         else if (strcmp(argv[i], "-gen") == 0) ctx->gen = true;
         else if (strncmp(argv[i], "-port=", 6) == 0) { ctx->p2p_port = atoi(argv[i]+6); ctx->listen = true; }

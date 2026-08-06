@@ -20,8 +20,17 @@
  *   - map engine penalties onto typed peer offences (peer_scoring_record);
  *   - sync engine peer membership from the live node set (handshake
  *     complete + NODE_ZCL23 + not disconnecting), announce tracked
- *     packages to newly known peers, drive the scheduler tick, and drain
- *     the engine's bounded outbound queue onto the node's send queue.
+ *     packages to every known peer (deduped per peer), drive the
+ *     scheduler tick, and drain the engine's bounded outbound queue onto
+ *     the node's send queue.
+ *
+ * The swarm is CLOCK-DRIVEN: wire() registers a supervisor child
+ * (net.zcode_swarm, 1 s period) whose on_tick runs the throttled
+ * periodic sync/tick and drains every eligible peer. The per-peer
+ * message-cycle hook below only fires while a peer has queued inbound
+ * messages — it survives as a send-latency optimization, not as the
+ * swarm's clock (an idle healthy connection would otherwise never
+ * announce or fetch).
  *
  * The engine itself (lib/vcs/src/package_swarm_node.c) carries the whole
  * contract; this file is transport + offence-mapping only. */
@@ -43,13 +52,16 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
                             void *ctx);
 
 /* msg_zcode_swarm_tick_fn: called once per peer message cycle (node is
- * the peer being serviced). Membership sync + engine tick are throttled
- * internally; the outbound drain is per-call for THIS node. */
+ * the peer being serviced). Send-latency fast path only — the swarm's
+ * real clock is the net.zcode_swarm supervisor child armed by wire();
+ * this hook exists because a peer with inbound traffic might as well
+ * drain immediately rather than wait for the next 1 s timer. */
 void boot_zcode_swarm_tick(struct msg_processor *mp, struct p2p_node *node,
                            void *ctx);
 
-/* Wire the hooks onto svc->msg_processor. Cheap; safe before the store
- * opens (the engine is created lazily on first use). */
+/* Wire the hooks onto svc->msg_processor and arm the supervisor child
+ * that clock-drives the swarm. Cheap; safe before the store opens (the
+ * engine is created lazily on first use). */
 void boot_zcode_swarm_wire(struct boot_svc_ctx *svc);
 
 /* Free the engine + book + ledger and clear the node-global engine.

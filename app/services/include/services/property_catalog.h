@@ -63,6 +63,12 @@ struct property_catalog_kind_row {
     size_t total;
     size_t written;
     bool truncated;
+    /* Separate from pagination: false means records were unreadable,
+     * malformed, root-mismatched, or otherwise could not be projected. */
+    bool integrity_checked;
+    bool integrity_ok;
+    size_t integrity_gap_count;
+    char integrity_reason[METAVERSE_LIST_INTEGRITY_REASON_MAX];
 };
 
 struct property_catalog_page {
@@ -76,6 +82,9 @@ struct property_catalog_page {
     size_t total_across_kinds;   /* sum of every row's `total` */
     bool truncated;              /* any row truncated, or the page filled */
     size_t unavailable_kinds;    /* rows with available == false */
+    bool integrity_ok;           /* all scanned available kinds were whole */
+    size_t integrity_gap_count;  /* explicit omissions across those kinds */
+    char integrity_reason[METAVERSE_LIST_INTEGRITY_REASON_MAX];
 
     /* False when a store under the datadir is PRESENT and unreadable, as
      * opposed to absent. An empty page then means "we could not look",

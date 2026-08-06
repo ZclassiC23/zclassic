@@ -429,7 +429,7 @@ above), not staging publication commands:
   `~/.zclassic-c23-dev` datadir (the canonical datadir is refused). The
   single authority check is `hotswap_activation_authorized()`.
 
-The GENERATION (manifest/staging) path stays contained:
+The automatic GENERATION (manifest/staging) path stays contained:
 
 - `make hotswap` refuses before any load or publication; `make hotswap-so`
   builds a read-only, unpublishable candidate only.
@@ -437,6 +437,18 @@ The GENERATION (manifest/staging) path stays contained:
   caller; staging publication stops before commit.
 - `deploy-dev-lane.sh` public activation, the watcher `auto`/`apply` modes,
   and `dev.change.apply` all refuse before generation relinking.
+
+The deliberate exception is the owner-gated native transaction:
+`zclassic23-dev dev generation activate --idempotency-key=<key>`. Its first
+call stages and preflights the exact binary without stopping the service and
+returns `commit_input`. Re-running the same leaf with that input verifies the
+source identity, ABA mutation token, source CAS root, expiry, and resident
+generation before invoking the rollback-capable activation engine. It is
+confined to `zcl23-dev.service`, `~/.zclassic-c23-dev`, and RPC 18252.
+Its fixed-argv service-control timeout is longer than that unit's
+`TimeoutStopSec=300`, so the activator cannot race a still-running systemd stop.
+Its 120-second readiness window also exceeds the measured 67.6-second
+schema-59 recovery boot; the prior 60-second window rejected that healthy boot.
 
 Only `make hotswap` and `tools/dev/hotswap-running-dev.sh` remain typed
 containment refusals; the manifest/staging publication path likewise stops
@@ -547,10 +559,11 @@ The retained selection seam exists for hermetic tests, not as publication
 authority. The activation engine is covered by `test_dev_activation`; shared
 request construction and result mapping are covered by `test_dev_platform`.
 
-Before any full-reload activation entry point is enabled, require immutable source epochs,
-proof receipts, signed authority, resident expected-epoch compare-and-swap,
-durable prepared/accepted records, exact post-publication probes, deterministic
-rollback, and an isolated copy proof.
+The native full-reload entry point requires immutable source epochs, an owner
+plan/commit handshake, resident expected-epoch compare-and-swap under the
+activation lock, exact post-publication probes, deterministic rollback, and an
+isolated copy proof. Automatic watcher publication and canonical publication
+remain outside that authority.
 
 ## Sealed-consensus refusal
 
