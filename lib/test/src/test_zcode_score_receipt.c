@@ -188,10 +188,10 @@ static bool score_fixture(
 {
     uint8_t source[32], lock[32], capsule[32];
     return zcl_hex_decode_lower(
-               "6e03d74b8edab650e790424f4dc8274e8ca262cccfc4f94d5b068ad66f60f48e",
+               "ea54d7038792764c059a697792d46ee92fe75e29aa302d3c8db3a208a580876e",
                source, sizeof(source)) &&
         zcl_hex_decode_lower(
-               "149b3e4e10eaad9fb93626419bae842b1dfceddf64f8a8b1f065c69bb30dc21a",
+               "a32339729bd0a4e0cf723238faa4c1ad378d93f7de4bad84591781fc782d92a3",
                lock, sizeof(lock)) &&
         zcl_hex_decode_lower(
                "c0c3ec6514fd2a7ea242e087aff75b33fdc208a219c61855788509efef37b15d",
@@ -221,10 +221,10 @@ static int test_score_happy_path(void)
         }
         uint8_t package[32], release[32], recipe[32];
         ASSERT(zcl_hex_decode_lower(
-            "6e03d74b8edab650e790424f4dc8274e8ca262cccfc4f94d5b068ad66f60f48e",
+            "ea54d7038792764c059a697792d46ee92fe75e29aa302d3c8db3a208a580876e",
             package, 32));
         ASSERT(zcl_hex_decode_lower(
-            "e13fe883c1166c9a9587a864716804b8d30e0246e8802ae477385952c268ed37",
+            "17f33b8f5be818a1a396d7c9bf04de1c11926af9e6d1118b313a9ac0a6335af8",
             release, 32));
         ASSERT(zcl_hex_decode_lower(
             "71280e02ba1ec0c8006b28a8c325657cc2d2f5547b70a19442d91411199f7b49",

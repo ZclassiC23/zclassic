@@ -1,3 +1,4 @@
+#include "base/hex.h"
 #include "sha3/sha3.h"
 
 #include <stdint.h>
@@ -8,23 +9,6 @@
     fprintf(stderr, "sha3 test failed: %s:%d: %s\n", __FILE__, __LINE__, #expr); \
     return 1; \
 } } while (0)
-
-static int nibble(char c)
-{
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    return -1;
-}
-
-static int decode(const char *hex, uint8_t *out, size_t len)
-{
-    for (size_t i = 0; i < len; i++) {
-        int hi = nibble(hex[2 * i]), lo = nibble(hex[2 * i + 1]);
-        if (hi < 0 || lo < 0) return 0;
-        out[i] = (uint8_t)((hi << 4) | lo);
-    }
-    return hex[2 * len] == '\0';
-}
 
 int main(void)
 {
@@ -38,9 +22,9 @@ int main(void)
     uint8_t want256[32], want128[32], wantx256[64];
     uint8_t got[402], prefix[169], message[169];
 
-    CHECK(decode(h256, want256, sizeof(want256)));
-    CHECK(decode(x128, want128, sizeof(want128)));
-    CHECK(decode(x256, wantx256, sizeof(wantx256)));
+    CHECK(zcl_hex_decode_lower(h256, want256, sizeof(want256)));
+    CHECK(zcl_hex_decode_lower(x128, want128, sizeof(want128)));
+    CHECK(zcl_hex_decode_lower(x256, wantx256, sizeof(wantx256)));
     sha3_256(NULL, 0, got);
     CHECK(memcmp(got, want256, sizeof(want256)) == 0);
     CHECK(zcl_shake128(NULL, 0, got, sizeof(want128)) &&
