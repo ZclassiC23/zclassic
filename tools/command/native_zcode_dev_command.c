@@ -5,18 +5,25 @@
 
 #include "base/hex.h"
 #include "base/serialize_le.h"
+#include "chain/chainparams.h"
+#include "core/uint256.h"
 #include "crypto/sha256.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
+#include "keys/key.h"
+#include "keys/pubkey.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
 #include "services/zcode_agent_context_service.h"
 #include "services/zcode_lane_service.h"
+#include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
+#include "vcs/package_accept.h"
+#include "vcs/package_index.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
@@ -35,6 +42,7 @@
 #include "vcs/zcode_task_authority_bundle.h"
 #include "vcs/zcode_task_index.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1372,4 +1380,621 @@ void zcl_native_handle_zcode_improve(
     (void)json_push_kv_str(
         &reply->data, "next",
         "an enabled local or P2P worker may produce the candidate-bound fixed-action receipt; evidence evaluation, explicit acceptance, and publication remain required");
+}
+
+
+/* ── zcode publish — publish an explicitly accepted lane as a signed release ──
+ *
+ * The signed lane receipt in the workspace CAS is the acceptance authority:
+ * it is reloaded and re-verified (Ed25519 signature, cross-object
+ * task/candidate/policy roots, the evaluated proof set) before anything is
+ * built — caller claims are never trusted. The package content is re-derived
+ * from the accepted source tree's verified CAS blobs and carries the exact
+ * lane receipt wire as a canonical authority file, so the signed release
+ * envelope binds the accepted source root and, through the receipt, the
+ * proof-set and task roots. Commit runs through the existing
+ * zcode.package.publish commit handler: one lifecycle, one store, one
+ * rebuildable index. No second package format or task table is created. */
+
+#define ZPUB_PATH_MAX 4400
+#define ZPUB_LANE_RECEIPT_PATH "zcode-lane-receipt.v1"
+
+static void zpub_fail(struct zcl_command_reply *reply, const char *code,
+                      const char *detail)
+{
+    zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                           ZCL_COMMAND_EXIT_INVALID, code, "validate", false,
+                           false, detail, "zcode.publish");
+}
+
+static bool zpub_load_wire(const char *workspace, const char *hex,
+                           uint8_t **wire, size_t *wire_len, uint8_t root[32])
+{
+    return zcl_hex_decode_lower(hex, root, 32) &&
+           vcs_object_load_raw(workspace, root, wire, wire_len) == 0;
+}
+
+static bool zpub_load_task(const char *workspace, const char *hex,
+                           struct vcs_zcode_task_v1 *out)
+{
+    uint8_t *wire = NULL, root[32], checked[32];
+    size_t len = 0;
+    bool ok = zpub_load_wire(workspace, hex, &wire, &len, root) &&
+        vcs_zcode_task_parse(wire, len, out) == VCS_ZCODE_DEV_OK &&
+        vcs_zcode_task_root(out, checked) == VCS_ZCODE_DEV_OK &&
+        memcmp(root, checked, 32) == 0;
+    free(wire);
+    return ok;
+}
+
+static bool zpub_load_candidate(const char *workspace, const char *hex,
+                                struct vcs_zcode_candidate_v1 *out)
+{
+    uint8_t *wire = NULL, root[32], checked[32];
+    size_t len = 0;
+    bool ok = zpub_load_wire(workspace, hex, &wire, &len, root) &&
+        vcs_zcode_candidate_parse(wire, len, out) == VCS_ZCODE_DEV_OK &&
+        vcs_zcode_candidate_root(out, checked) == VCS_ZCODE_DEV_OK &&
+        memcmp(root, checked, 32) == 0;
+    free(wire);
+    return ok;
+}
+
+static bool zpub_load_policy(const char *workspace, const char *hex,
+                             struct vcs_zcode_proof_policy_v1 *out)
+{
+    uint8_t *wire = NULL, root[32], checked[32];
+    size_t len = 0;
+    bool ok = zpub_load_wire(workspace, hex, &wire, &len, root) &&
+        vcs_zcode_proof_policy_parse(wire, len, out) == VCS_ZCODE_DEV_OK &&
+        vcs_zcode_proof_policy_root(out, checked) == VCS_ZCODE_DEV_OK &&
+        memcmp(root, checked, 32) == 0;
+    free(wire);
+    return ok;
+}
+
+/* Load the signed lane receipt, re-derive its id, and verify its Ed25519
+ * signature against the embedded signer. Keeps the exact CAS wire: it is
+ * published as the canonical authority file. */
+static bool zpub_load_lane_receipt(
+    const char *workspace, const char *hex,
+    struct vcs_zcode_lane_receipt_v1 *out,
+    uint8_t wire_out[VCS_ZCODE_LANE_WIRE_BYTES])
+{
+    uint8_t *wire = NULL, root[32], checked[32];
+    size_t len = 0;
+    bool ok = zpub_load_wire(workspace, hex, &wire, &len, root) &&
+        len == VCS_ZCODE_LANE_WIRE_BYTES &&
+        vcs_zcode_lane_receipt_parse(wire, len, out) == VCS_ZCODE_DEV_OK &&
+        vcs_zcode_lane_receipt_id(out, checked) == VCS_ZCODE_DEV_OK &&
+        memcmp(root, checked, 32) == 0 &&
+        vcs_zcode_lane_receipt_verify(out, out->signer_pubkey) ==
+            VCS_ZCODE_DEV_OK;
+    if (ok)
+        memcpy(wire_out, wire, len);
+    free(wire);
+    return ok;
+}
+
+/* The accepted proof set must re-derive its bound root from CAS bytes. */
+static bool zpub_proof_set_valid(const char *workspace, const char *hex)
+{
+    uint8_t *wire = NULL, root[32], checked[32];
+    size_t len = 0, count = 0;
+    uint8_t (*roots)[32] =
+        zcl_malloc(sizeof(*roots) * VCS_ZCODE_PROOF_SET_MAX_RECEIPTS,
+                   "zcode.publish.proof_set");
+    bool ok = roots != NULL;
+    if (ok)
+        ok = zpub_load_wire(workspace, hex, &wire, &len, root) &&
+            vcs_zcode_proof_set_parse(
+                wire, len, roots, VCS_ZCODE_PROOF_SET_MAX_RECEIPTS,
+                &count) == VCS_ZCODE_DEV_OK &&
+            vcs_zcode_proof_set_root(
+                (const uint8_t (*)[32])roots, count,
+                checked) == VCS_ZCODE_DEV_OK &&
+            memcmp(root, checked, 32) == 0;
+    free(roots);
+    free(wire);
+    return ok;
+}
+
+/* Add raw bytes as one regular content.v2 file (chunked + hashed). */
+static bool zpub_package_add_bytes(struct vcs_package_manifest *package,
+                                   const char *path, const uint8_t *bytes,
+                                   size_t len)
+{
+    uint32_t chunks = (uint32_t)((len + VCS_PACKAGE_CHUNK_BYTES - 1u) /
+                                 VCS_PACKAGE_CHUNK_BYTES);
+    uint8_t *hashes = chunks > 0
+        ? zcl_malloc((size_t)chunks * 32u, "zcode.publish.hashes") : NULL;
+    if (chunks > 0 && !hashes)
+        return false;
+    bool ok = true;
+    for (uint32_t i = 0; ok && i < chunks; i++) {
+        size_t off = (size_t)i * VCS_PACKAGE_CHUNK_BYTES;
+        size_t take = len - off;
+        if (take > VCS_PACKAGE_CHUNK_BYTES)
+            take = VCS_PACKAGE_CHUNK_BYTES;
+        ok = vcs_package_chunk_hash(bytes + off, take, hashes + i * 32u);
+    }
+    ok = ok && vcs_package_manifest_add(package, path, VCS_PACKAGE_MODE_FILE,
+                                        (uint64_t)len, hashes, chunks);
+    free(hashes);
+    return ok;
+}
+
+/* Write one staged file beneath dir, creating intermediate directories. The
+ * relative path is already grammar-validated (canonical, no traversal). */
+static bool zpub_stage_file(const char *dir, const char *relpath,
+                            const uint8_t *bytes, size_t len)
+{
+    char path[ZPUB_PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/%s", dir, relpath);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        return false;
+    for (char *p = path + strlen(dir) + 1u; *p; p++) {
+        if (*p != '/')
+            continue;
+        *p = '\0';
+        bool made = mkdir(path, 0700) == 0 || errno == EEXIST;
+        *p = '/';
+        if (!made)
+            return false;
+    }
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return false;
+    bool ok = len == 0 || fwrite(bytes, 1, len, f) == len;
+    return fclose(f) == 0 && ok;
+}
+
+/* Load one accepted source entry from the verified CAS, add it to the
+ * content.v2 package at its natural path, and (when dir is given) stage its
+ * bytes for the existing commit lifecycle's chunk verification. */
+static bool zpub_source_entry(const char *workspace, const char *dir,
+                              const struct vcs_entry *entry,
+                              struct vcs_package_manifest *package)
+{
+    if (!S_ISREG(entry->mode) || entry->size > SIZE_MAX ||
+        !vcs_package_path_valid(entry->path))
+        return false;
+    uint8_t *bytes = NULL;
+    size_t len = 0;
+    bool ok = vcs_object_get(workspace, entry->blob, VCS_TAG_BLOB,
+                             &bytes, &len) == 0 &&
+              len == (size_t)entry->size;
+    uint32_t chunks = ok
+        ? (uint32_t)((len + VCS_PACKAGE_CHUNK_BYTES - 1u) /
+                     VCS_PACKAGE_CHUNK_BYTES) : 0;
+    uint8_t *hashes = chunks > 0
+        ? zcl_malloc((size_t)chunks * 32u, "zcode.publish.hashes") : NULL;
+    if (ok && chunks > 0 && !hashes)
+        ok = false;
+    for (uint32_t i = 0; ok && i < chunks; i++) {
+        size_t off = (size_t)i * VCS_PACKAGE_CHUNK_BYTES;
+        size_t take = len - off;
+        if (take > VCS_PACKAGE_CHUNK_BYTES)
+            take = VCS_PACKAGE_CHUNK_BYTES;
+        ok = vcs_package_chunk_hash(bytes + off, take, hashes + i * 32u);
+    }
+    if (ok)
+        ok = vcs_package_manifest_add(
+            package, entry->path,
+            (entry->mode & 0111u) != 0 ? VCS_PACKAGE_MODE_EXECUTABLE
+                                       : VCS_PACKAGE_MODE_FILE,
+            entry->size, hashes, chunks);
+    if (ok && dir)
+        ok = zpub_stage_file(dir, entry->path, bytes, len);
+    free(hashes);
+    free(bytes);
+    return ok;
+}
+
+/* Best-effort staging cleanup: unlink every staged file, then remove the
+ * directories deepest-first. Only paths from the verified source manifest
+ * plus the canonical authority file are touched. */
+static void zpub_stage_cleanup(const char *dir,
+                               const struct vcs_manifest *tree)
+{
+    char path[ZPUB_PATH_MAX];
+    size_t base = strlen(dir);
+    for (size_t i = 0; i < tree->count; i++) {
+        int n = snprintf(path, sizeof(path), "%s/%s", dir,
+                         tree->entries[i].path);
+        if (n <= 0 || (size_t)n >= sizeof(path))
+            continue;
+        (void)unlink(path);
+    }
+    int n = snprintf(path, sizeof(path), "%s/%s", dir,
+                     ZPUB_LANE_RECEIPT_PATH);
+    if (n > 0 && (size_t)n < sizeof(path))
+        (void)unlink(path);
+    for (size_t i = 0; i < tree->count; i++) {
+        n = snprintf(path, sizeof(path), "%s/%s", dir, tree->entries[i].path);
+        if (n <= 0 || (size_t)n >= sizeof(path))
+            continue;
+        for (char *p = strrchr(path, '/'); p && (size_t)(p - path) > base;
+             p = strrchr(path, '/')) {
+            *p = '\0';
+            (void)rmdir(path);
+        }
+    }
+    (void)rmdir(dir);
+}
+
+/* Publisher lineage from the persisted releases (rebuildable projection):
+ * parent = this key's latest release id, sequence = its sequence + 1. A key
+ * with no persisted release is a root release (no parent, sequence 1). */
+static bool zpub_lineage(const char *zcode_dir, const char *publisher_hex,
+                         bool *has_parent, uint8_t parent_root[32],
+                         uint64_t *sequence)
+{
+    struct vcs_package_index *index = vcs_package_index_build(zcode_dir);
+    if (!index)
+        LOG_FAIL("zcode.publish", "package index build failed for %s",
+                 zcode_dir);
+    uint64_t max_seq = 0;
+    char latest_id[65] = "";
+    for (size_t i = 0; i < vcs_package_index_count(index); i++) {
+        const struct vcs_package_index_entry *e =
+            vcs_package_index_at(index, i);
+        if (strcmp(e->publisher_hex, publisher_hex) == 0 &&
+            e->publisher_sequence >= max_seq) {
+            max_seq = e->publisher_sequence;
+            (void)snprintf(latest_id, sizeof(latest_id), "%s",
+                           e->release_id_hex);
+        }
+    }
+    vcs_package_index_free(index);
+    *has_parent = max_seq > 0;
+    *sequence = max_seq + 1u;
+    return !*has_parent || zcl_hex_decode_lower(latest_id, parent_root, 32);
+}
+
+// long-function-ok:accept-publish-ritual — acceptance re-verification,
+// content re-derivation, lineage, signing, staging, and the single delegated
+// commit form one fail-closed publication transaction.
+void zcl_native_handle_zcode_publish(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    const char *workspace_arg = zdev_str(request->input, "workspace");
+    const char *source_root_arg = zdev_str(request->input, "source_root");
+    const char *secret_hex = zdev_str(request->input, "publisher_secret");
+    const char *name = zdev_str(request->input, "name");
+    const char *semver = zdev_str(request->input, "semver");
+    const char *license = zdev_str(request->input, "license");
+    const char *datadir = zdev_str(request->input, "datadir");
+    if (!datadir || !datadir[0]) datadir = zcl_native_command_datadir();
+    char workspace[ZDEV_PATH_MAX];
+    uint8_t source_root[32];
+    if (!workspace_arg || !realpath(workspace_arg, workspace) || !datadir ||
+        !source_root_arg ||
+        !zcl_hex_decode_lower(source_root_arg, source_root, 32) ||
+        !secret_hex || !name || !name[0] || !semver || !semver[0] ||
+        !license || !license[0]) {
+        zpub_fail(reply, "BAD_PUBLISH_INPUT",
+                  "workspace, source_root, publisher_secret, name, semver, "
+                  "and license are required; workspace must resolve");
+        return;
+    }
+    /* Acceptance authority: the latest signed lane receipt for this exact
+     * source root, found through the verified projection and re-checked
+     * against CAS below. */
+    struct node_db ndb = {0};
+    if (!zdev_open_db(datadir, &ndb)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "DATABASE_OPEN_FAILED",
+                               "accept", true, false,
+                               "the ZBuild ledger could not be opened",
+                               "zcode.publish");
+        return;
+    }
+    struct zcode_lane_status lane;
+    struct zcl_result found = zcode_lane_find(&ndb, workspace,
+                                              source_root_arg, &lane);
+    node_db_close(&ndb);
+    if (!found.ok) {
+        zpub_fail(reply, "LANE_NOT_ACCEPTED", found.message);
+        return;
+    }
+    if (lane.lane != VCS_ZCODE_LANE_CANDIDATE &&
+        lane.lane != VCS_ZCODE_LANE_PROVEN) {
+        zpub_fail(reply, "LANE_NOT_ACCEPTED",
+                  "publication requires an explicit CANDIDATE or PROVEN lane "
+                  "receipt; FRONTIER admission is not acceptance");
+        return;
+    }
+    struct vcs_zcode_task_v1 task;
+    struct vcs_zcode_candidate_v1 candidate;
+    struct vcs_zcode_proof_policy_v1 policy;
+    struct vcs_zcode_lane_receipt_v1 receipt;
+    uint8_t receipt_wire[VCS_ZCODE_LANE_WIRE_BYTES];
+    if (!zpub_load_task(workspace, lane.task_root_sha3, &task) ||
+        !zpub_load_candidate(workspace, lane.candidate_root_sha3,
+                             &candidate) ||
+        !zpub_load_policy(workspace, lane.proof_policy_root_sha3, &policy) ||
+        !zpub_load_lane_receipt(workspace, lane.receipt_root_sha3, &receipt,
+                                receipt_wire) ||
+        vcs_zcode_lane_receipt_validate_for_candidate(
+            &receipt, &task, &candidate, &policy) != VCS_ZCODE_DEV_OK ||
+        memcmp(candidate.candidate_source_root, source_root, 32) != 0 ||
+        memcmp(receipt.source_root, source_root, 32) != 0) {
+        zpub_fail(reply, "LANE_ACCEPTANCE_INVALID",
+                  "the lane receipt, its signature, or its task, candidate, "
+                  "or policy bindings do not verify from the workspace CAS");
+        return;
+    }
+    if (!zpub_proof_set_valid(workspace, lane.proof_set_root_sha3)) {
+        zpub_fail(reply, "PROOF_SET_INVALID",
+                  "the accepted proof set does not re-derive its bound root "
+                  "from the workspace CAS");
+        return;
+    }
+    const char *claimed_task = zdev_str(request->input, "task_root");
+    const char *claimed_receipt = zdev_str(request->input,
+                                           "lane_receipt_root");
+    if ((claimed_task && claimed_task[0] &&
+         strcmp(claimed_task, lane.task_root_sha3) != 0) ||
+        (claimed_receipt && claimed_receipt[0] &&
+         strcmp(claimed_receipt, lane.receipt_root_sha3) != 0)) {
+        zpub_fail(reply, "CLAIMED_BINDING_MISMATCH",
+                  "claimed task_root or lane_receipt_root does not match the "
+                  "verified acceptance");
+        return;
+    }
+    /* Package content: the exact accepted source tree from CAS blobs plus
+     * the canonical lane-receipt authority file, staged for the existing
+     * chunk-verified commit lifecycle. */
+    struct vcs_manifest tree;
+    if (!vcs_tree_load(workspace, source_root, &tree)) {
+        zpub_fail(reply, "SOURCE_TREE_CAS_INVALID",
+                  "the accepted source manifest is absent or corrupt in the "
+                  "workspace CAS");
+        return;
+    }
+    char staging[ZPUB_PATH_MAX];
+    int sn = snprintf(staging, sizeof(staging), "%s/.accept-publish-%ld",
+                      datadir, (long)getpid());
+    struct vcs_package_manifest package;
+    vcs_package_manifest_init(&package);
+    bool built = sn > 0 && (size_t)sn < sizeof(staging) &&
+        tree.count > 0 && tree.count < VCS_PACKAGE_MAX_FILES &&
+        (mkdir(staging, 0700) == 0 || errno == EEXIST);
+    for (size_t i = 0; built && i < tree.count; i++)
+        built = zpub_source_entry(workspace, staging, &tree.entries[i],
+                                  &package);
+    if (built)
+        built = zpub_package_add_bytes(&package, ZPUB_LANE_RECEIPT_PATH,
+                                       receipt_wire, sizeof(receipt_wire)) &&
+            zpub_stage_file(staging, ZPUB_LANE_RECEIPT_PATH, receipt_wire,
+                            sizeof(receipt_wire));
+    uint8_t package_root[32];
+    uint8_t *manifest_wire = NULL;
+    size_t manifest_wire_len = 0;
+    built = built && vcs_package_manifest_root(&package, package_root) &&
+        vcs_package_manifest_serialize(&package, &manifest_wire,
+                                       &manifest_wire_len);
+    vcs_package_manifest_free(&package);
+    if (!built) {
+        zpub_stage_cleanup(staging, &tree);
+        free(manifest_wire);
+        vcs_manifest_free(&tree);
+        zpub_fail(reply, "SOURCE_PACKAGE_FAILED",
+                  "the accepted source tree could not be re-derived and "
+                  "staged as a content.v2 package from CAS blobs");
+        return;
+    }
+    /* The task's canonical acceptance recipe is the published build recipe. */
+    uint8_t *recipe_wire = NULL;
+    size_t recipe_wire_len = 0;
+    uint8_t recipe_checked[32];
+    struct vcs_package_recipe recipe;
+    vcs_package_recipe_init(&recipe);
+    bool recipe_ok =
+        vcs_object_load_raw(workspace, task.acceptance_tests_root,
+                            &recipe_wire, &recipe_wire_len) == 0 &&
+        recipe_wire_len <= VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES &&
+        vcs_package_recipe_parse(recipe_wire, recipe_wire_len, &recipe) ==
+            VCS_PACKAGE_RECIPE_OK &&
+        vcs_package_recipe_root(&recipe, recipe_checked) ==
+            VCS_PACKAGE_RECIPE_OK &&
+        memcmp(recipe_checked, task.acceptance_tests_root, 32) == 0;
+    vcs_package_recipe_free(&recipe);
+    if (!recipe_ok) {
+        zpub_stage_cleanup(staging, &tree);
+        free(recipe_wire);
+        free(manifest_wire);
+        vcs_manifest_free(&tree);
+        zpub_fail(reply, "RECIPE_CAS_INVALID",
+                  "the task's acceptance recipe is absent or corrupt in the "
+                  "workspace CAS");
+        return;
+    }
+    /* Publisher key, chain binding, and lineage. */
+    chain_params_select(CHAIN_MAIN);
+    struct privkey secret;
+    memset(&secret, 0, sizeof(secret));
+    bool secret_ok = zcl_hex_decode(secret_hex, secret.vch, 32);
+    secret.fValid = secret_ok;
+    secret.fCompressed = true;
+    struct pubkey pk;
+    pubkey_init(&pk);
+    if (!secret_ok || !privkey_range_check(&secret) ||
+        !privkey_get_pubkey(&secret, &pk) ||
+        pk.size != VCS_PACKAGE_RELEASE_PUBKEY_BYTES) {
+        memset(&secret, 0, sizeof(secret));
+        zpub_stage_cleanup(staging, &tree);
+        free(recipe_wire); free(manifest_wire);
+        vcs_manifest_free(&tree);
+        zpub_fail(reply, "BAD_PUBLISHER_SECRET",
+                  "publisher_secret must be a valid 64-hex secp256k1 secret");
+        return;
+    }
+    char publisher_hex[2 * VCS_PACKAGE_RELEASE_PUBKEY_BYTES + 1];
+    zcl_hex_encode(pk.vch, VCS_PACKAGE_RELEASE_PUBKEY_BYTES, publisher_hex);
+    struct vcs_package_release release;
+    memset(&release, 0, sizeof(release));
+    release.schema_version = VCS_PACKAGE_RELEASE_VERSION;
+    (void)snprintf(release.name, sizeof(release.name), "%s", name);
+    (void)snprintf(release.semver, sizeof(release.semver), "%s", semver);
+    (void)snprintf(release.license, sizeof(release.license), "%s", license);
+    memcpy(release.package_root, package_root, 32);
+    memcpy(release.recipe_root, task.acceptance_tests_root, 32);
+    memcpy(release.publisher_pubkey, pk.vch,
+           VCS_PACKAGE_RELEASE_PUBKEY_BYTES);
+    const char *reward = zdev_str(request->input, "reward_address");
+    if (reward && reward[0])
+        (void)snprintf(release.reward_address,
+                       sizeof(release.reward_address), "%s", reward);
+    const char *znam = zdev_str(request->input, "znam");
+    if (znam && znam[0]) {
+        release.has_znam = true;
+        (void)snprintf(release.znam, sizeof(release.znam), "%s", znam);
+    }
+    char zcode_dir[ZPUB_PATH_MAX];
+    int zn = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
+    bool envelope_ok = zn > 0 && (size_t)zn < sizeof(zcode_dir) &&
+        vcs_package_accept_chain_id(release.chain_id,
+                                    sizeof(release.chain_id)) &&
+        zpub_lineage(zcode_dir, publisher_hex, &release.has_parent,
+                     release.parent_root, &release.publisher_sequence);
+    if (!envelope_ok) {
+        memset(&secret, 0, sizeof(secret));
+        zpub_stage_cleanup(staging, &tree);
+        free(recipe_wire); free(manifest_wire);
+        vcs_manifest_free(&tree);
+        zpub_fail(reply, "RELEASE_ENVELOPE_FAILED",
+                  "chain id or publisher lineage could not be derived");
+        return;
+    }
+    int64_t seq_claim = zdev_int(request->input, "publisher_sequence", 0);
+    const char *parent_claim = zdev_str(request->input,
+                                        "parent_release_root");
+    uint8_t parent_check[32];
+    if ((seq_claim > 0 &&
+         (uint64_t)seq_claim != release.publisher_sequence) ||
+        (parent_claim && parent_claim[0] &&
+         (!release.has_parent ||
+          !zcl_hex_decode_lower(parent_claim, parent_check, 32) ||
+          memcmp(parent_check, release.parent_root, 32) != 0))) {
+        memset(&secret, 0, sizeof(secret));
+        zpub_stage_cleanup(staging, &tree);
+        free(recipe_wire); free(manifest_wire);
+        vcs_manifest_free(&tree);
+        zpub_fail(reply, "LINEAGE_CLAIM_MISMATCH",
+                  "claimed publisher_sequence or parent_release_root does "
+                  "not match the persisted release history");
+        return;
+    }
+    enum vcs_package_release_error rerr =
+        vcs_package_release_validate(&release);
+    if (rerr != VCS_PACKAGE_RELEASE_OK) {
+        memset(&secret, 0, sizeof(secret));
+        zpub_stage_cleanup(staging, &tree);
+        free(recipe_wire); free(manifest_wire);
+        vcs_manifest_free(&tree);
+        zpub_fail(reply, "BAD_RELEASE",
+                  vcs_package_release_error_string(rerr));
+        return;
+    }
+    uint8_t release_id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    struct uint256 hash;
+    unsigned char compact[COMPACT_SIGNATURE_SIZE];
+    bool signed_ok = vcs_package_release_id(&release, release_id) ==
+        VCS_PACKAGE_RELEASE_OK;
+    if (signed_ok) {
+        memcpy(hash.data, release_id, 32);
+        signed_ok = privkey_sign_compact(&secret, &hash, compact);
+    }
+    memset(&secret, 0, sizeof(secret));
+    if (signed_ok)
+        memcpy(release.signature, compact + 1,
+               VCS_PACKAGE_RELEASE_SIGNATURE_BYTES);
+    uint8_t *release_wire = NULL;
+    size_t release_wire_len = 0;
+    if (!signed_ok ||
+        vcs_package_release_verify(&release) != VCS_PACKAGE_RELEASE_OK ||
+        vcs_package_release_serialize(&release, &release_wire,
+                                      &release_wire_len) !=
+            VCS_PACKAGE_RELEASE_OK) {
+        zpub_stage_cleanup(staging, &tree);
+        free(release_wire); free(recipe_wire); free(manifest_wire);
+        vcs_manifest_free(&tree);
+        zpub_fail(reply, "RELEASE_SIGN_FAILED",
+                  "the release envelope could not be signed or self-verified");
+        return;
+    }
+    char *release_hex =
+        zcl_malloc(release_wire_len * 2u + 1u, "zcode.publish.release_hex");
+    char *manifest_hex =
+        zcl_malloc(manifest_wire_len * 2u + 1u, "zcode.publish.manifest_hex");
+    char *recipe_hex =
+        zcl_malloc(recipe_wire_len * 2u + 1u, "zcode.publish.recipe_hex");
+    if (!release_hex || !manifest_hex || !recipe_hex) {
+        zpub_stage_cleanup(staging, &tree);
+        free(release_hex); free(manifest_hex); free(recipe_hex);
+        free(release_wire); free(recipe_wire); free(manifest_wire);
+        vcs_manifest_free(&tree);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ALLOC", "publish",
+                               false, false, "hex wire buffers",
+                               "zcode.publish");
+        return;
+    }
+    zcl_hex_encode(release_wire, release_wire_len, release_hex);
+    zcl_hex_encode(manifest_wire, manifest_wire_len, manifest_hex);
+    zcl_hex_encode(recipe_wire, recipe_wire_len, recipe_hex);
+    free(release_wire); free(recipe_wire); free(manifest_wire);
+    /* One lifecycle: the existing signed package publication commit. */
+    struct json_value commit_input;
+    json_init(&commit_input);
+    json_set_object(&commit_input);
+    (void)json_push_kv_str(&commit_input, "release_hex", release_hex);
+    (void)json_push_kv_str(&commit_input, "manifest_hex", manifest_hex);
+    (void)json_push_kv_str(&commit_input, "recipe_hex", recipe_hex);
+    (void)json_push_kv_str(&commit_input, "dir", staging);
+    (void)json_push_kv_str(&commit_input, "datadir", datadir);
+    const struct json_value *day = json_get(request->input, "day");
+    if (day)
+        (void)json_push_kv_int(&commit_input, "day", json_get_int(day));
+    struct zcl_command_request commit_request = { .input = &commit_input };
+    struct zcl_command_reply commit_reply;
+    zcl_command_reply_init(&commit_reply, "zcl.zcode_publish_commit.v1");
+    zcl_native_handle_zcode_package_publish_commit(&commit_request,
+                                                   &commit_reply);
+    zpub_stage_cleanup(staging, &tree);
+    json_free(&commit_input);
+    free(release_hex); free(manifest_hex); free(recipe_hex);
+    vcs_manifest_free(&tree);
+    if (commit_reply.exit_code != ZCL_COMMAND_EXIT_OK) {
+        char code[72], message[192], evidence[256];
+        (void)snprintf(code, sizeof(code), "%s",
+                       commit_reply.error.code[0]
+                           ? commit_reply.error.code
+                           : "PUBLISH_COMMIT_FAILED");
+        (void)snprintf(message, sizeof(message), "%s",
+                       commit_reply.error.message);
+        (void)snprintf(evidence, sizeof(evidence), "%s",
+                       commit_reply.error.evidence);
+        zcl_command_reply_free(&commit_reply);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, code, "validate",
+                               false, false, message, evidence);
+        return;
+    }
+    json_copy(&reply->data, &commit_reply.data);
+    zcl_command_reply_free(&commit_reply);
+    zdev_push_root(&reply->data, "source_root", source_root);
+    (void)json_push_kv_str(&reply->data, "lane", lane.lane_name);
+    (void)json_push_kv_str(&reply->data, "lane_receipt_root",
+                           lane.receipt_root_sha3);
+    (void)json_push_kv_str(&reply->data, "proof_set_root",
+                           lane.proof_set_root_sha3);
+    (void)json_push_kv_str(&reply->data, "task_root", lane.task_root_sha3);
+    (void)json_push_kv_str(&reply->data, "candidate_root",
+                           lane.candidate_root_sha3);
+    (void)json_push_kv_str(&reply->data, "authority",
+                           "SIGNED_LANE_RECEIPT_AND_RELEASE_ENVELOPE");
 }

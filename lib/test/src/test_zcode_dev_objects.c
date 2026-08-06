@@ -18,6 +18,7 @@
 #include "services/zcode_lane_service.h"
 #include "util/safe_alloc.h"
 #include "vcs/package_manifest.h"
+#include "vcs/package_index.h"
 #include "vcs/package_deps.h"
 #include "vcs/package_recipe.h"
 #include "vcs/package_store.h"

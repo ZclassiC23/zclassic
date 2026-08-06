@@ -342,6 +342,9 @@ void zcl_native_handle_zcode_lane(
 void zcl_native_handle_zcode_tasks(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_publish(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 /* ── zcode.release.* — Sovereign Registry v1: sign/verify zid release
  * records (tools/command/native_zcode_release_command.c). Signing is
