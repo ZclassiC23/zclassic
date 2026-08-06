@@ -7,8 +7,9 @@
 **Branch:** `lane/s7-2-1-metaverse`
 
 **Base:** current `origin/main` at
-`fec2376bff365f32b7111c6f31cfb9f39cacd887`; the two lane commits were
-rebased conflict-free from the frozen candidate source base before push.
+`71f46e141309b7b28ffb08f8b6f1987fdea58621`; the lane was rebased
+conflict-free from the frozen candidate source base and again after `main`
+advanced during its first green push gate.
 
 **Authority:** owner directive dated 2026-08-06. Work is isolated from the
 exact-candidate fold, challenger, stable node, canonical datadirs and wallets.
@@ -115,7 +116,7 @@ latest owner direction separately authorizes synchronization and push to main.
   until they can run without competing with the exact-candidate fold.
 - First synchronized push attempt was blocked by the remote branch's optional
   `Xrandr.h` compile dependency. Existing self-contained presentation fix
-  `6e379786c` was transplanted as `00359de6e`; its vendor-provenance proof
+  `6e379786c` was transplanted as `261a38448`; its vendor-provenance proof
   passes. The next mandatory pre-push gate caught a return-macro mismatch in
   the new typed manifest reader before publication; it is corrected to return
   the exact typed I/O state, and `check_log_macro_return_type` plus the focused
