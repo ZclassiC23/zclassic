@@ -728,7 +728,7 @@ static bool action_root_is_canonical_fixed(
 {
     static const char *const fixed_kinds[] = {
         VCS_BUILD_ACTION_KIND_V1,
-        VCS_BUILD_ACTION_KIND_TEST_V1,
+        VCS_BUILD_ACTION_KIND_PACKAGE_V1, VCS_BUILD_ACTION_KIND_TEST_V1,
         VCS_BUILD_ACTION_KIND_FUZZ_V1,
         VCS_BUILD_ACTION_KIND_BENCHMARK_V1,
         VCS_BUILD_ACTION_KIND_BENCHMARK_REPRODUCE_V1,

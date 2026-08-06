@@ -187,6 +187,13 @@ static void pv_usage(FILE *out)
         "           --emit=<dir> --lock-root=<64hex> [--dep=<64hex>,<dir>]...\n"
         "           [--reproduce-against=<build-report>]\n"
         "           [--work=<dir>] [--require-full-isolation]\n"
+        "   or: zclassic23-package-verify <candidate-source-root-hex>\n"
+        "           --zbuild-package-source=<abs-dir>\n"
+        "           --zbuild-package-recipe=<abs-file>\n"
+        "           --zbuild-package-name=<publisher/package>\n"
+        "           --emit=<abs-dir> --lock-root=<64hex>\n"
+        "           [--dep=<64hex>,<installed-dir>]...\n"
+        "           --require-full-isolation\n"
         "   or: zclassic23-package-verify --zbuild-input=<abs>/unit.i\n"
         "           --zbuild-output=<abs>/unit.o --require-full-isolation\n"
         "   or: zclassic23-package-verify --zbuild-test-input=<abs>/test.bin\n"
@@ -212,6 +219,11 @@ static void pv_usage(FILE *out)
         "receipt commits; each --dep names a locked dependency root and its\n"
         "install dir, whose include/ is granted read-only to the compile\n"
         "children and whose lib/*.a archives join the link line.\n"
+        "The --zbuild-package-* form is the candidate proof action. Its\n"
+        "source tree and canonical recipe are materialized by the parent\n"
+        "from immutable ZVCS CAS; it accepts no prebuilt executable and\n"
+        "emits the same canonical build-report without requiring a signed\n"
+        "release for the not-yet-published candidate.\n"
         "--reproduce-against is the THIRD-PARTY BIT-IDENTICAL REPRODUCTION\n"
         "check (the headline ZCODE acceptance signal): after the emit build\n"
         "writes its own build-report, the reference build-report named here\n"
@@ -233,6 +245,45 @@ static void pv_usage(FILE *out)
         "without Landlock the run is DEGRADED (no filesystem scoping; the\n"
         "attestation says isolation=degraded) unless\n"
         "--require-full-isolation is given, which fails closed.\n");
+}
+
+static bool pv_source_path_is(const char *root, const char *path,
+                              bool want_dir)
+{
+    char full[4200], resolved[4200];
+    int n = snprintf(full, sizeof(full), "%s/%s", root, path);
+    struct stat st;
+    size_t rl = strlen(root);
+    if (n <= 0 || (size_t)n >= sizeof(full) || lstat(full, &st) != 0 ||
+        (want_dir ? !S_ISDIR(st.st_mode) : !S_ISREG(st.st_mode)) ||
+        !realpath(full, resolved) || strncmp(resolved, root, rl) != 0 ||
+        resolved[rl] != '/')
+        return false;
+    return true;
+}
+
+static bool pv_recipe_files_in_source(
+    const struct vcs_package_recipe *recipe, const char *root,
+    char *detail, size_t detail_cap)
+{
+    const struct vcs_package_recipe_strings *files[] = {
+        &recipe->public_headers, &recipe->sources, &recipe->test_sources,
+    };
+    const char *labels[] = { "public_header", "source", "test_source" };
+    for (size_t k = 0; k < sizeof(files) / sizeof(files[0]); k++)
+        for (size_t i = 0; i < files[k]->count; i++)
+            if (!pv_source_path_is(root, files[k]->items[i], false)) {
+                (void)snprintf(detail, detail_cap, "%s:%s", labels[k],
+                               files[k]->items[i]);
+                return false;
+            }
+    for (size_t i = 0; i < recipe->include_dirs.count; i++)
+        if (!pv_source_path_is(root, recipe->include_dirs.items[i], true)) {
+            (void)snprintf(detail, detail_cap, "include_dir:%s",
+                           recipe->include_dirs.items[i]);
+            return false;
+        }
+    return true;
 }
 
 /* ── small utilities ────────────────────────────────────────────────── */
@@ -898,28 +949,36 @@ struct pv_dep_archives {
     size_t count;
 };
 
-static void pv_collect_dep_archives(const struct pv_emit_dep *deps,
+static int pv_dep_archive_cmp(const void *a, const void *b)
+{
+    return strcmp((const char *)a, (const char *)b);
+}
+
+static bool pv_collect_dep_archives(const struct pv_emit_dep *deps,
                                     size_t dep_count,
                                     struct pv_dep_archives *out)
 {
     out->count = 0;
     for (size_t k = dep_count; k > 0; k--) {
         const struct pv_emit_dep *d = &deps[k - 1];
+        const size_t first = out->count;
         char lib_dir[2100];
         int n = snprintf(lib_dir, sizeof(lib_dir), "%s/lib", d->install_dir);
         if (n <= 0 || (size_t)n >= sizeof(lib_dir))
-            continue;
+            return false;
         DIR *dir = opendir(lib_dir);
         if (!dir)
-            continue;
+            return false;
         struct dirent *ent;
         while ((ent = readdir(dir)) != NULL) {
             size_t nl = strlen(ent->d_name);
             if (nl < 4u || strncmp(ent->d_name, "lib", 3) != 0 ||
                 strcmp(ent->d_name + nl - 2u, ".a") != 0)
                 continue;
-            if (out->count >= sizeof(out->path) / sizeof(out->path[0]))
-                break;
+            if (out->count >= sizeof(out->path) / sizeof(out->path[0])) {
+                closedir(dir);
+                return false;
+            }
             int pn = snprintf(out->path[out->count],
                               sizeof(out->path[out->count]), "%s/%s", lib_dir,
                               ent->d_name);
@@ -927,7 +986,10 @@ static void pv_collect_dep_archives(const struct pv_emit_dep *deps,
                 out->count++;
         }
         closedir(dir);
+        qsort(&out->path[first], out->count - first,
+              sizeof(out->path[0]), pv_dep_archive_cmp);
     }
+    return true;
 }
 
 /* SHA3-256 + byte count of one file, streamed in bounded chunks. */
@@ -1479,6 +1541,9 @@ int main(int argc, char **argv)
     const char *emit_dir = NULL;
     const char *lock_root_hex = NULL;
     const char *reproduce_path = NULL;
+    const char *candidate_source_arg = NULL;
+    const char *candidate_recipe_arg = NULL;
+    const char *candidate_name = NULL;
     bool require_full_isolation = false;
     struct pv_emit_dep emit_deps[PV_EMIT_MAX_DEPS];
     size_t emit_dep_count = 0;
@@ -1496,6 +1561,12 @@ int main(int argc, char **argv)
             lock_root_hex = argv[i] + 12;
         else if (strncmp(argv[i], "--reproduce-against=", 20) == 0)
             reproduce_path = argv[i] + 20;
+        else if (strncmp(argv[i], "--zbuild-package-source=", 24) == 0)
+            candidate_source_arg = argv[i] + 24;
+        else if (strncmp(argv[i], "--zbuild-package-recipe=", 24) == 0)
+            candidate_recipe_arg = argv[i] + 24;
+        else if (strncmp(argv[i], "--zbuild-package-name=", 22) == 0)
+            candidate_name = argv[i] + 22;
         else if (strncmp(argv[i], "--dep=", 6) == 0) {
             /* <64 hex>,<install dir> — the hex is fixed-width, so the comma
              * position is unambiguous even if the path contains commas. */
@@ -1559,14 +1630,23 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    /* The two modes are mutually exclusive: an emit run signs nothing, so a
+    bool candidate_mode = candidate_source_arg != NULL ||
+                          candidate_recipe_arg != NULL ||
+                          candidate_name != NULL;
+    /* The modes are mutually exclusive: an emit run signs nothing, so a
      * key would only invite the belief that its output was attested.
      * --reproduce-against belongs to emit mode: it is the byte-identity
      * check of THIS build's receipt against a reference build-report. */
-    if (!root_hex || !store_dir || (!key_path && !emit_dir) ||
-        (key_path && emit_dir) || (emit_dir && !lock_root_hex) ||
-        (!emit_dir && (lock_root_hex || emit_dep_count > 0 ||
-                       reproduce_path))) {
+    bool normal_shape = !candidate_mode && root_hex && store_dir &&
+        (key_path || emit_dir) && !(key_path && emit_dir) &&
+        (!emit_dir || lock_root_hex) &&
+        (emit_dir || (!lock_root_hex && emit_dep_count == 0 &&
+                      !reproduce_path));
+    bool candidate_shape = candidate_mode && root_hex && !store_dir &&
+        !key_path && emit_dir && lock_root_hex && candidate_source_arg &&
+        candidate_recipe_arg && candidate_name && candidate_name[0] &&
+        !reproduce_path && require_full_isolation;
+    if (!normal_shape && !candidate_shape) {
         pv_usage(stderr);
         return 2;
     }
@@ -1579,6 +1659,23 @@ int main(int argc, char **argv)
     if (!zcl_hex_decode(root_hex, package_root, 32)) {
         fprintf(stderr, "%s: bad package root (want 64 hex)\n", PV_LOG);
         return 2;
+    }
+    char candidate_source[4096] = {0};
+    char candidate_recipe[4096] = {0};
+    struct stat st;
+    if (candidate_mode &&
+        (!realpath(candidate_source_arg, candidate_source) ||
+         !realpath(candidate_recipe_arg, candidate_recipe))) {
+        fprintf(stderr, "%s: candidate source or recipe cannot resolve\n",
+                PV_LOG);
+        return 3;
+    }
+    if (candidate_mode &&
+        (stat(candidate_source, &st) != 0 || !S_ISDIR(st.st_mode) ||
+         stat(candidate_recipe, &st) != 0 || !S_ISREG(st.st_mode))) {
+        fprintf(stderr, "%s: candidate source/recipe shape refused\n",
+                PV_LOG);
+        return 3;
     }
 
     /* Isolation probe FIRST: it decides full vs degraded before any work. */
@@ -1598,13 +1695,14 @@ int main(int argc, char **argv)
                 "carry isolation=degraded.\n", PV_LOG);
     }
 
-    /* Store layout sanity. */
+    /* Store layout sanity. Candidate mode has no release store: the parent
+     * already proved the task/candidate/recipe/lock CAS bindings. */
     char probe[4096];
-    struct stat st;
     static const char *const k_need[] = {
         "/manifests", "/releases", "/recipes", "/cas/sha3",
     };
-    for (size_t i = 0; i < sizeof(k_need) / sizeof(k_need[0]); i++) {
+    for (size_t i = 0; !candidate_mode &&
+                         i < sizeof(k_need) / sizeof(k_need[0]); i++) {
         int n = snprintf(probe, sizeof(probe), "%s%s", store_dir, k_need[i]);
         if (n < 0 || (size_t)n >= sizeof(probe) ||
             stat(probe, &st) != 0 || !S_ISDIR(st.st_mode)) {
@@ -1613,7 +1711,7 @@ int main(int argc, char **argv)
             return 3;
         }
     }
-    if (!emit_dir) {
+    if (!candidate_mode && !emit_dir) {
         int n = snprintf(probe, sizeof(probe), "%s/attestations", store_dir);
         if (n < 0 || (size_t)n >= sizeof(probe) || !pv_mkdir_p(probe, 0700)) {
             fprintf(stderr, "%s: cannot create %s/attestations\n", PV_LOG,
@@ -1684,8 +1782,50 @@ int main(int argc, char **argv)
     }
 
     /* Release + manifest + recipe. */
-    struct vcs_package_release release;
+    struct vcs_package_release release = {0};
+    struct vcs_package_manifest manifest;
+    vcs_package_manifest_init(&manifest);
+    struct vcs_package_recipe recipe;
+    vcs_package_recipe_init(&recipe);
+    uint8_t recipe_root[32] = {0};
     uint8_t release_id[32] = { 0 };
+    if (candidate_mode) {
+        size_t recipe_wire_len = 0;
+        uint8_t *recipe_wire = pv_read_file(
+            candidate_recipe, VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES,
+            &recipe_wire_len);
+        enum vcs_package_recipe_error rerr = recipe_wire
+            ? vcs_package_recipe_parse(recipe_wire, recipe_wire_len, &recipe)
+            : VCS_PACKAGE_RECIPE_ERR_WIRE_TRUNCATED;
+        free(recipe_wire);
+        char membership[160];
+        if (rerr != VCS_PACKAGE_RECIPE_OK ||
+            vcs_package_recipe_root(&recipe, recipe_root) !=
+                VCS_PACKAGE_RECIPE_OK ||
+            !pv_recipe_files_in_source(&recipe, candidate_source,
+                                       membership, sizeof(membership))) {
+            fprintf(stderr, "%s: candidate recipe/source refused: %s\n",
+                    PV_LOG, rerr != VCS_PACKAGE_RECIPE_OK
+                        ? vcs_package_recipe_error_string(rerr) : membership);
+            vcs_package_recipe_free(&recipe);
+            return 3;
+        }
+        int nn = snprintf(release.name, sizeof(release.name), "%s",
+                          candidate_name);
+        const char *slash = strchr(release.name, '/');
+        char archive_path[VCS_PACKAGE_BUILD_PATH_MAX + 1u];
+        int an = slash && slash[1]
+            ? snprintf(archive_path, sizeof(archive_path), "lib/lib%s.a",
+                       slash + 1) : -1;
+        if (nn <= 0 || (size_t)nn >= sizeof(release.name) || !slash ||
+            strchr(slash + 1, '/') || an <= 0 ||
+            (size_t)an >= sizeof(archive_path) ||
+            !vcs_package_path_valid(archive_path)) {
+            fprintf(stderr, "%s: candidate package name refused\n", PV_LOG);
+            vcs_package_recipe_free(&recipe);
+            return 3;
+        }
+    } else {
     if (!pv_load_release(store_dir, package_root, &release, release_id)) {
         fprintf(stderr,
                 "%s: no verified release envelope in %s/releases names "
@@ -1707,8 +1847,6 @@ int main(int argc, char **argv)
                 root_hex64);
         return 3;
     }
-    struct vcs_package_manifest manifest;
-    vcs_package_manifest_init(&manifest);
     if (!vcs_package_manifest_parse(manifest_wire, manifest_wire_len,
                                     &manifest)) {
         fprintf(stderr, "%s: manifest %s does not parse\n", PV_LOG,
@@ -1741,8 +1879,6 @@ int main(int argc, char **argv)
         vcs_package_manifest_free(&manifest);
         return 3;
     }
-    struct vcs_package_recipe recipe;
-    vcs_package_recipe_init(&recipe);
     enum vcs_package_recipe_error rerr =
         vcs_package_recipe_parse(recipe_wire, recipe_wire_len, &recipe);
     free(recipe_wire);
@@ -1752,7 +1888,6 @@ int main(int argc, char **argv)
         vcs_package_manifest_free(&manifest);
         return 3;
     }
-    uint8_t recipe_root[32] = { 0 };
     if (vcs_package_recipe_root(&recipe, recipe_root) !=
             VCS_PACKAGE_RECIPE_OK ||
         memcmp(recipe_root, release.recipe_root, 32) != 0) {
@@ -1792,6 +1927,7 @@ int main(int argc, char **argv)
             }
         }
     }
+    }
 
     /* Temp work tree: <work>/zclverify.XXXXXX/{src,build}. */
     if (!work_parent) {
@@ -1827,9 +1963,13 @@ int main(int argc, char **argv)
     }
     char src_root[4200];
     char build_root[4200];
-    snprintf(src_root, sizeof(src_root), "%s/src", work);
+    snprintf(src_root, sizeof(src_root), "%s",
+             candidate_mode ? candidate_source : "");
+    if (!candidate_mode)
+        snprintf(src_root, sizeof(src_root), "%s/src", work);
     snprintf(build_root, sizeof(build_root), "%s/build", work);
-    if (!pv_mkdir_p(src_root, 0755) || !pv_mkdir_p(build_root, 0755)) {
+    if ((!candidate_mode && !pv_mkdir_p(src_root, 0755)) ||
+        !pv_mkdir_p(build_root, 0755)) {
         fprintf(stderr, "%s: cannot create %s/{src,build}\n", PV_LOG, work);
         pv_rm_rf(work);
         vcs_package_recipe_free(&recipe);
@@ -1839,7 +1979,8 @@ int main(int argc, char **argv)
 
     /* Materialize the package read-only from the CAS. */
     bool materialized = true;
-    for (size_t i = 0; i < manifest.count && materialized; i++) {
+    for (size_t i = 0; !candidate_mode && i < manifest.count && materialized;
+         i++) {
         const struct vcs_package_file *f = &manifest.files[i];
         char dest[4200];
         int dn = snprintf(dest, sizeof(dest), "%s/%s", src_root, f->path);
@@ -1942,7 +2083,12 @@ int main(int argc, char **argv)
 
     struct pv_dep_archives dep_archives;
     memset(&dep_archives, 0, sizeof(dep_archives));
-    pv_collect_dep_archives(emit_deps, emit_dep_count, &dep_archives);
+    if (!pv_collect_dep_archives(emit_deps, emit_dep_count, &dep_archives)) {
+        fprintf(stderr, "package-verify: dependency archive set is invalid\n");
+        pv_rm_tree(build_root);
+        free(manifest_wire);
+        return 5;
+    }
 
     /* The build+test matrix. */
     struct vcs_package_attest att;
@@ -2535,8 +2681,11 @@ int main(int argc, char **argv)
                vcs_package_build_result_string(
                    (enum vcs_package_build_result)rec.result_class),
                rec.output_count,
-               vcs_package_build_isolation_string(
+                   vcs_package_build_isolation_string(
                    (enum vcs_package_build_isolation)rec.isolation));
+        if (candidate_mode)
+            printf("zbuild-package-ok=1 source=cas recipe=canonical "
+                   "network=0\n");
         vcs_package_recipe_free(&recipe);
         vcs_package_manifest_free(&manifest);
         return 0;

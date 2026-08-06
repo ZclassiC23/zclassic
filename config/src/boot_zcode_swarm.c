@@ -17,6 +17,7 @@
 #include "vcs/package_swarm_node.h"
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
+#include "vcs/zcode_action_input.h"
 #include "vcs/zcode_work_node.h"
 #include "vcs/zcode_work_context.h"
 #include "vcs/vcs_object.h"
@@ -89,10 +90,13 @@ static bool boot_zcode_work_active_state(const char *state)
                      strcmp(state, "CACHE_HIT") == 0);
 }
 
-static const char *boot_zcode_work_action_kind(uint8_t work_kind)
+static const char *boot_zcode_work_action_kind(uint8_t work_kind, const uint8_t *input, size_t input_len)
 {
-    if (work_kind == VCS_ZCODE_WORK_BUILD)
-        return VCS_BUILD_ACTION_KIND_V1;
+    struct vcs_zcode_package_action_input_v1 package_input;
+    if (work_kind == VCS_ZCODE_WORK_BUILD &&
+        vcs_zcode_package_action_input_parse(input, input_len, &package_input) == VCS_ZCODE_ACTION_INPUT_OK)
+        return VCS_BUILD_ACTION_KIND_PACKAGE_V1;
+    if (work_kind == VCS_ZCODE_WORK_BUILD) return VCS_BUILD_ACTION_KIND_V1;
     if (work_kind == VCS_ZCODE_WORK_TEST)
         return VCS_BUILD_ACTION_KIND_TEST_V1;
     if (work_kind == VCS_ZCODE_WORK_FUZZ)
@@ -116,7 +120,7 @@ static struct zcl_result boot_zcode_work_admit(
     if (loaded != VCS_ZCODE_WORK_CONTEXT_OK)
         return ZCL_ERR(-1, "context: %s",
                        vcs_zcode_work_context_result_string(loaded));
-    const char *action_kind = boot_zcode_work_action_kind(request->work_kind);
+    const char *action_kind = boot_zcode_work_action_kind(request->work_kind, context.fixed_input, context.fixed_input_len);
     uint8_t action_root[32], input_root[32], task_root[32];
     uint8_t candidate_root[32], policy_root[32];
     loaded = action_kind
@@ -910,17 +914,13 @@ void boot_zcode_swarm_shutdown(void)
     s_svc = NULL;
     vcs_swarm_engine_set_global(NULL);
     vcs_zcode_work_node_set_global(NULL);
-    if (s_work)
-        vcs_zcode_work_node_free(s_work);
+    if (s_work) vcs_zcode_work_node_free(s_work);
     s_work = NULL;
-    if (s_engine)
-        vcs_swarm_engine_free(s_engine);
+    if (s_engine) vcs_swarm_engine_free(s_engine);
     s_engine = NULL;
-    if (s_book)
-        vcs_service_book_free(s_book);
+    if (s_book) vcs_service_book_free(s_book);
     s_book = NULL;
-    if (s_ledger)
-        vcs_reward_ledger_free(s_ledger);
+    if (s_ledger) vcs_reward_ledger_free(s_ledger);
     s_ledger = NULL;
     s_last_sync = 0;
     s_last_tick = 0;

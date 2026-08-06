@@ -136,7 +136,30 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_action_root_for_kind(
     struct vcs_zcode_action_input_v1 bound_input;
     enum vcs_zcode_action_input_result parsed = vcs_zcode_action_input_parse(
         context->fixed_input, context->fixed_input_len, &bound_input);
-    if (parsed == VCS_ZCODE_ACTION_INPUT_OK) {
+    if (strcmp(kind, VCS_BUILD_ACTION_KIND_PACKAGE_V1) == 0) {
+        struct vcs_zcode_package_action_input_v1 package_input;
+        parsed = vcs_zcode_package_action_input_parse(
+            context->fixed_input, context->fixed_input_len, &package_input);
+        uint8_t task_root[32], candidate_root[32];
+        bool binding = parsed == VCS_ZCODE_ACTION_INPUT_OK &&
+            vcs_zcode_task_root(&context->task, task_root) ==
+                VCS_ZCODE_DEV_OK &&
+            vcs_zcode_candidate_root(&context->candidate, candidate_root) ==
+                VCS_ZCODE_DEV_OK &&
+            memcmp(package_input.task_root, task_root, 32) == 0 &&
+            memcmp(package_input.candidate_root, candidate_root, 32) == 0 &&
+            memcmp(package_input.candidate_source_root,
+                   context->candidate.candidate_source_root, 32) == 0 &&
+            memcmp(package_input.base_source_root,
+                   context->task.source_root, 32) == 0 &&
+            memcmp(package_input.dependency_lock_root,
+                   context->task.dependency_lock_root, 32) == 0 &&
+            memcmp(package_input.acceptance_recipe_root,
+                   context->task.acceptance_tests_root, 32) == 0 &&
+            vcs_zcode_package_action_input_root(
+                &package_input, input_root) == VCS_ZCODE_ACTION_INPUT_OK;
+        if (!binding) return VCS_ZCODE_WORK_CONTEXT_ACTION;
+    } else if (parsed == VCS_ZCODE_ACTION_INPUT_OK) {
         uint8_t task_root[32], candidate_root[32];
         uint8_t expected_kind = vcs_build_action_v1_work_kind(kind);
         bool binding = expected_kind != 0 &&

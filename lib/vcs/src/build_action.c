@@ -183,6 +183,8 @@ uint8_t vcs_build_action_v1_work_kind(const char *kind)
     if (!kind) return 0;
     if (strcmp(kind, VCS_BUILD_ACTION_KIND_V1) == 0)
         return VCS_ZCODE_WORK_BUILD;
+    if (strcmp(kind, VCS_BUILD_ACTION_KIND_PACKAGE_V1) == 0)
+        return VCS_ZCODE_WORK_BUILD;
     if (strcmp(kind, VCS_BUILD_ACTION_KIND_TEST_V1) == 0)
         return VCS_ZCODE_WORK_TEST;
     if (strcmp(kind, VCS_BUILD_ACTION_KIND_FUZZ_V1) == 0)
@@ -205,6 +207,10 @@ bool vcs_build_action_v1_descriptors(
         *workdir = VCS_BUILD_VIRTUAL_ROOT_V1;
         *output = VCS_BUILD_OUTPUT_V1;
         *resource = VCS_BUILD_RESOURCE_POLICY_V1;
+    } else if (strcmp(kind, VCS_BUILD_ACTION_KIND_PACKAGE_V1) == 0) {
+        *workdir = VCS_BUILD_PACKAGE_VIRTUAL_ROOT_V1;
+        *output = VCS_BUILD_PACKAGE_OUTPUT_V1;
+        *resource = VCS_BUILD_PACKAGE_RESOURCE_POLICY_V1;
     } else if (strcmp(kind, VCS_BUILD_ACTION_KIND_TEST_V1) == 0) {
         *workdir = VCS_BUILD_PACKAGE_VIRTUAL_ROOT_V1;
         *output = VCS_BUILD_TEST_OUTPUT_V1;
