@@ -929,7 +929,7 @@ endif
 # committed to git; `make vendor` builds the rest from source (pinned URL +
 # SHA256), so `git clone && make zclassic23` links in one shot.  See
 # docs/BUILD.md and tools/scripts/build_vendor.sh.
-.PHONY: vendor vendor-force vendor-provenance vendor-ready check-vendor-provenance
+.PHONY: vendor vendor-force vendor-provenance vendor-ready tor-full check-vendor-provenance
 # Build every missing OR provenance-stale vendor/lib/*.a from its pinned,
 # SHA256-verified source. `make vendor-force` rebuilds all of them.
 # ZCL_WITH_RUST rides into every vendor entry point so the optional
@@ -947,6 +947,13 @@ vendor-provenance:
 vendor-ready:
 	@ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/scripts/build_vendor.sh
 	@ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/dep_audit.sh
+
+# Explicit opt-in for the real embedded onion service. This initializes the
+# pinned submodule, disables optional host-library integrations that the
+# self-contained outer link does not consume, and produces every static archive
+# TOR_FULL needs. The default vendor path remains the offline-friendly stub.
+tor-full:
+	@tools/scripts/build_tor_full.sh
 
 # Included only on the first parse when inputs are missing or a requested
 # front door can repair them. Remaking an included makefile forces GNU Make to
