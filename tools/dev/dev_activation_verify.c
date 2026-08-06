@@ -66,7 +66,7 @@ bool dev_activation_verify_running(struct dev_activation_txn *txn,
         return false;
 
     /* Both paths are bounded; recovery_boot remains a distinct policy input
-     * even when measured full-datadir startup currently gives both 600 s. */
+     * even when measured full-datadir startup currently gives both 1200 s. */
     long timeout_s = dev_activation_verify_timeout_seconds(
         txn->recovery_boot);
 
