@@ -3,6 +3,7 @@
 #include "test/test_core.h"
 
 #include "vcs/zcode_creation_attribution.h"
+#include "vcs/zcode_epoch_creation.h"
 
 #include <string.h>
 
@@ -146,8 +147,117 @@ static int creation_arithmetic_test(void)
     return failures;
 }
 
+static void epoch_creation_fixture(
+    struct vcs_zcode_epoch_creation_set_v1 *set,
+    uint8_t roots[1][32])
+{
+    vcs_zcode_epoch_creation_init(set);
+    set->schema_version = VCS_ZCODE_EPOCH_CREATION_VERSION;
+    set->epoch = 1;
+    set->emission_cap_atoms = UINT64_C(5000000000000);
+    set->actual_mint_atoms = UINT64_C(125000000);
+    set->unissued_atoms = set->emission_cap_atoms - set->actual_mint_atoms;
+    creation_fill_root(set->network_genesis_root, 21);
+    creation_fill_root(set->zc23_policy_root, 22);
+    creation_fill_root(set->previous_epoch_creation_root, 23);
+    creation_fill_root(set->committee_evidence_snapshot_root, 24);
+    set->opening_height = 100;
+    creation_fill_root(set->opening_hash, 25);
+    set->opening_mtp = 1000;
+    set->maturity_height = 8164;
+    creation_fill_root(set->maturity_hash, 26);
+    set->maturity_mtp = 605800;
+    creation_fill_root(roots[0], 27);
+    set->attribution_roots = roots;
+    set->attribution_count = 1;
+}
+
+static int epoch_creation_codec_test(void)
+{
+    int failures = 0;
+    TEST("ZC23 epoch creation: ordered exact accounting wire") {
+        struct vcs_zcode_epoch_creation_set_v1 set, parsed;
+        uint8_t roots[1][32];
+        epoch_creation_fixture(&set, roots);
+        uint8_t *wire = NULL, *second = NULL;
+        size_t wire_len = 0, second_len = 0;
+        ASSERT(vcs_zcode_epoch_creation_serialize(
+                   &set, &wire, &wire_len) == VCS_ZCODE_EPOCH_CREATION_OK);
+        ASSERT(wire_len == VCS_ZCODE_EPOCH_CREATION_HEADER_BYTES + 32u);
+        ASSERT(vcs_zcode_epoch_creation_parse(wire, wire_len, &parsed) ==
+               VCS_ZCODE_EPOCH_CREATION_OK);
+        ASSERT(vcs_zcode_epoch_creation_serialize(
+                   &parsed, &second, &second_len) ==
+               VCS_ZCODE_EPOCH_CREATION_OK);
+        ASSERT(wire_len == second_len &&
+               memcmp(wire, second, wire_len) == 0);
+        uint8_t first_root[32], second_root[32];
+        ASSERT(vcs_zcode_epoch_creation_root(&set, first_root) ==
+               VCS_ZCODE_EPOCH_CREATION_OK);
+        ASSERT(vcs_zcode_epoch_creation_root(&parsed, second_root) ==
+               VCS_ZCODE_EPOCH_CREATION_OK);
+        ASSERT(memcmp(first_root, second_root, 32) == 0);
+        static const uint8_t root_kat[32] = {
+            0x6d, 0x44, 0x46, 0x74, 0x2c, 0x94, 0xf6, 0x01,
+            0xe1, 0x32, 0xc2, 0x1f, 0x35, 0x58, 0xf7, 0xab,
+            0x77, 0x4d, 0x8d, 0x1d, 0xda, 0x35, 0xe1, 0xde,
+            0xb3, 0x60, 0x3b, 0x16, 0xaf, 0xb4, 0x9f, 0x9a,
+        };
+        ASSERT(memcmp(first_root, root_kat, sizeof(root_kat)) == 0);
+        free(second); free(wire);
+        vcs_zcode_epoch_creation_free(&parsed);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int epoch_creation_accounting_test(void)
+{
+    int failures = 0;
+    TEST("ZC23 epoch creation: no carry-forward and exact whole-token tail") {
+        uint64_t atoms = UINT64_MAX;
+        ASSERT(vcs_zc23_policy_epoch_cap_atoms(0, &atoms) ==
+               VCS_ZCODE_EPOCH_CREATION_OK);
+        ASSERT(atoms == VCS_ZC23_INITIAL_SUPPLY_ATOMS);
+        ASSERT(vcs_zc23_policy_epoch_cap_atoms(1, &atoms) ==
+               VCS_ZCODE_EPOCH_CREATION_OK &&
+               atoms == UINT64_C(5000000000000));
+        ASSERT(vcs_zc23_policy_epoch_cap_atoms(208, &atoms) ==
+               VCS_ZCODE_EPOCH_CREATION_OK &&
+               atoms == UINT64_C(5000000000000));
+        ASSERT(vcs_zc23_policy_epoch_cap_atoms(209, &atoms) ==
+               VCS_ZCODE_EPOCH_CREATION_OK &&
+               atoms == UINT64_C(2500000000000));
+        ASSERT(vcs_zc23_policy_epoch_cap_atoms(3328, &atoms) ==
+               VCS_ZCODE_EPOCH_CREATION_OK &&
+               atoms == VCS_ZC23_ATOMS_PER_TOKEN);
+        ASSERT(vcs_zc23_policy_epoch_cap_atoms(3329, &atoms) ==
+               VCS_ZCODE_EPOCH_CREATION_OK && atoms == 0);
+
+        struct vcs_zcode_epoch_creation_set_v1 set;
+        uint8_t roots[2][32];
+        epoch_creation_fixture(&set, roots);
+        memcpy(roots[1], roots[0], 32);
+        set.attribution_count = 2;
+        ASSERT(vcs_zcode_epoch_creation_validate(&set) ==
+               VCS_ZCODE_EPOCH_CREATION_ORDER);
+        set.attribution_count = 1;
+        set.actual_mint_atoms++;
+        ASSERT(vcs_zcode_epoch_creation_validate(&set) ==
+               VCS_ZCODE_EPOCH_CREATION_SUM);
+        set.actual_mint_atoms--;
+        set.unissued_atoms++;
+        ASSERT(vcs_zcode_epoch_creation_validate(&set) ==
+               VCS_ZCODE_EPOCH_CREATION_SUM);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_creation_attribution(void)
 {
     return creation_codec_test() + creation_rejection_test() +
-           creation_arithmetic_test();
+           creation_arithmetic_test() + epoch_creation_codec_test() +
+           epoch_creation_accounting_test();
 }
