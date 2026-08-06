@@ -362,6 +362,41 @@ static int t_vault_effects_array(void)
     return failures;
 }
 
+/* ── 5. Liquidity planner's numeric contract reaches its handler ─────── */
+
+static int t_liquidity_numeric_input(void)
+{
+    int failures = 0;
+    const struct zcl_command_spec *spec = zcl_command_registry_find(
+        zcl_command_catalog(), "metaverse.agent.liquidity", NULL);
+    CIB_CHECK("metaverse.agent.liquidity resolves", spec != NULL);
+    if (!spec)
+        return failures;
+
+    struct json_value input;
+    char why[192] = {0};
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, "dir", "/private/broker");
+    (void)json_push_kv_str(&input, "wallet_scope", "dev");
+    (void)json_push_kv_int(&input, "recipient_value_zat", 1000);
+    (void)json_push_kv_int(&input, "maximum_fee_zat", 10000);
+    (void)json_push_kv_int(&input, "concurrency", 10);
+    CIB_CHECK("documented liquidity request passes transport validation",
+              zcl_command_registry_input_validate(spec, &input, why,
+                                                  sizeof(why)));
+    json_free(&input);
+
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_int(&input, "concurrency", 51);
+    CIB_CHECK("liquidity concurrency above 50 fails closed",
+              !zcl_command_registry_input_validate(spec, &input, why,
+                                                   sizeof(why)));
+    json_free(&input);
+    return failures;
+}
+
 int test_command_input_bounds(void)
 {
     printf("\n=== command_input_bounds: per-key input length rules ===\n");
@@ -370,6 +405,7 @@ int test_command_input_bounds(void)
     failures += t_frame_budget();
     failures += t_no_collateral_loosening();
     failures += t_vault_effects_array();
+    failures += t_liquidity_numeric_input();
     printf("=== command_input_bounds complete: %d failure(s) ===\n", failures);
     return failures;
 }
