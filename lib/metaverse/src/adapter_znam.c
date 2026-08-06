@@ -142,7 +142,7 @@ static bool znam_show(const struct metaverse_adapter_ctx *ctx,
 
 static size_t znam_list(const struct metaverse_adapter_ctx *ctx,
                         struct metaverse_property_view *out, size_t out_cap,
-                        size_t *total_out, bool *truncated_out)
+                        struct metaverse_adapter_list_report *report)
 {
     struct metaverse_znam_record records[32];
     size_t written = 0;
@@ -150,19 +150,19 @@ static size_t znam_list(const struct metaverse_adapter_ctx *ctx,
     size_t rendered = 0;
     bool truncated = false;
 
-    if (total_out)
-        *total_out = 0;
-    if (truncated_out)
-        *truncated_out = false;
+    if (report)
+        memset(report, 0, sizeof(*report));
     if (!ctx || !ctx->znam || !ctx->znam->list ||
-        (!out && out_cap > 0) || out_cap > 32)
+        !report || (!out && out_cap > 0) || out_cap > 32)
         return 0;
     if (!ctx->znam->list(ctx->znam->opaque, records, out_cap, &written,
                          &total, &truncated)) {
-        if (total_out)
-            *total_out = total;
-        if (truncated_out)
-            *truncated_out = true;
+        report->total = total;
+        report->truncated = true;
+        report->integrity_gap_count = 1;
+        snprintf(report->integrity_reason,
+                 sizeof(report->integrity_reason),
+                 "canonical ZNAM source failed during enumeration");
         return 0;
     }
     for (size_t i = 0; i < written; i++) {
@@ -170,15 +170,20 @@ static size_t znam_list(const struct metaverse_adapter_ctx *ctx,
 
         if (!metaverse_property_id_make(METAVERSE_KIND_ZNAM_NAME,
                                         records[i].registration_root, &id) ||
-            !metaverse_view_begin(&out[rendered], &id))
+            !metaverse_view_begin(&out[rendered], &id)) {
+            report->integrity_gap_count++;
+            if (report->integrity_reason[0] == '\0')
+                snprintf(report->integrity_reason,
+                         sizeof(report->integrity_reason),
+                         "ZNAM row %zu could not be rendered", i);
             continue;
+        }
         znam_fill(ctx, &records[i], &out[rendered]);
         rendered++;
     }
-    if (total_out)
-        *total_out = total;
-    if (truncated_out)
-        *truncated_out = truncated || rendered < total;
+    report->total = total;
+    report->truncated = truncated || rendered < total;
+    report->integrity_ok = report->integrity_gap_count == 0;
     return rendered;
 }
 

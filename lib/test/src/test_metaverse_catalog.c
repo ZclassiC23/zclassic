@@ -14,9 +14,9 @@
  *      or explicitly unavailable — no kind may drop out of the catalog.
  *   4. CONTENT adapter against a real blob: show/list report present with
  *      the local_content_hash grade and chain_bound false; then the CAS
- *      chunk is deleted and the SAME query reports incomplete; then the
- *      manifest is deleted and it reports absent. No stale caching — the
- *      projection has nothing to go stale.
+ *      chunk is deleted and the SAME query reports incomplete; a malformed
+ *      manifest reports an integrity gap rather than absent or disappearing;
+ *      then deletion alone reports absent. No stale caching.
  *   5. ZCODE_PACKAGE adapter against a really published release: owner is
  *      the publisher key, revision is the publisher sequence, and the grade
  *      is local_signature because the envelope's signature is verified IN
@@ -1016,6 +1016,10 @@ static int t_content_adapter(void)
              c.reply.status == ZCL_COMMAND_STATUS_PASSED);
     MV_CHECK("content: the blob appears in the unfiltered catalog",
              mv_find_item(&c.reply.data, id_text) != NULL);
+    MV_CHECK("content: a complete store reports no hidden integrity gap",
+             json_get_bool(json_get(&c.reply.data, "integrity_ok")) &&
+             json_get_int(json_get(&c.reply.data,
+                                   "integrity_gap_count")) == 0);
     MV_CHECK("content: every property kind produces a coverage row",
              json_get_int(json_get(&c.reply.data, "kinds_scanned")) ==
                  (int64_t)METAVERSE_KIND_COUNT - 1);
@@ -1059,9 +1063,46 @@ static int t_content_adapter(void)
              strstr(mv_str(&c.reply.data, "reason"), "CAS") != NULL);
     mv_cmd_free(&c);
 
-    /* Step 2: delete the manifest — the object is gone entirely. */
+    /* Step 2: corruption is not absence, and must not vanish from list
+     * accounting without an explicit integrity gap. */
     snprintf(manifest_path, sizeof(manifest_path), "%s/manifests/%s",
              zcode_dir, root_hex);
+    {
+        FILE *f = fopen(manifest_path, "wb");
+        bool wrote = f && fwrite("x", 1, 1, f) == 1;
+
+        if (f)
+            fclose(f);
+        MV_CHECK("content: the manifest is replaced by malformed bytes",
+                 wrote);
+    }
+    mv_show(&c, dd, id_text);
+    MV_CHECK("content: malformed is unknown, not absent or determined",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             strcmp(mv_str(&c.reply.data, "status"), "unknown") == 0 &&
+             !json_get_bool(json_get(&c.reply.data, "determined")) &&
+             strcmp(mv_str(&c.reply.data, "evidence_grade"), "unknown") == 0 &&
+             strcmp(mv_str(&c.reply.data, "actions_csv"), "") == 0 &&
+             strstr(mv_str(&c.reply.data, "reason"), "invalid") != NULL);
+    mv_cmd_free(&c);
+
+    mv_list(&c, dd, "content");
+    {
+        const struct json_value *row =
+            mv_find_kind(&c.reply.data, "content");
+        MV_CHECK("content: malformed cannot disappear as an empty inventory",
+                 c.reply.status == ZCL_COMMAND_STATUS_PASSED && row &&
+                 !json_get_bool(json_get(&c.reply.data, "integrity_ok")) &&
+                 json_get_int(json_get(&c.reply.data,
+                                       "integrity_gap_count")) == 1 &&
+                 json_get_bool(json_get(row, "integrity_checked")) &&
+                 !json_get_bool(json_get(row, "integrity_ok")) &&
+                 json_get_int(json_get(row, "integrity_gap_count")) == 1 &&
+                 strstr(mv_str(row, "integrity_reason"), "invalid") != NULL);
+    }
+    mv_cmd_free(&c);
+
+    /* Step 3: deletion alone means the object is gone entirely. */
     MV_CHECK("content: the manifest is deleted", unlink(manifest_path) == 0);
     mv_show(&c, dd, id_text);
     MV_CHECK("content: a removed object reads as absent, determined",
@@ -1074,7 +1115,8 @@ static int t_content_adapter(void)
     MV_CHECK("content: the removed blob is gone from the catalog too",
              c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
              mv_find_item(&c.reply.data, id_text) == NULL &&
-             json_get_int(json_get(&c.reply.data, "rendered")) == 0);
+             json_get_int(json_get(&c.reply.data, "rendered")) == 0 &&
+             json_get_bool(json_get(&c.reply.data, "integrity_ok")));
     mv_cmd_free(&c);
 
     (void)vcs_package_cas_present_in(zcode_dir, chunk_hash);
@@ -1337,6 +1379,7 @@ static int t_zcode_adapter(void)
     char pub_hex[67] = {0};
     char release_id_hex[65] = {0};
     char release_path[768];
+    char manifest_path[768];
     struct mv_pkg p;
     struct mv_cmd c;
     bool published;
@@ -1415,6 +1458,50 @@ static int t_zcode_adapter(void)
                  "not-scanned", found);
     }
     mv_cmd_free(&c);
+
+    /* A signed release still proves authorship when its manifest is corrupt,
+     * but it cannot prove possession or a locally re-derived content root.
+     * The item stays visible and the catalog separately reports integrity. */
+    snprintf(manifest_path, sizeof(manifest_path), "%s/manifests/%s",
+             zcode_dir, p.root_hex);
+    {
+        FILE *f = fopen(manifest_path, "wb");
+        bool wrote = f && fwrite("x", 1, 1, f) == 1;
+
+        if (f)
+            fclose(f);
+        MV_CHECK("zcode: fixture manifest is made malformed", wrote);
+    }
+    mv_show(&c, dd, id_text);
+    MV_CHECK("zcode: malformed manifest keeps only verified authorship",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_bool(json_get(&c.reply.data, "determined")) &&
+             strcmp(mv_str(&c.reply.data, "evidence_grade"),
+                    "local_signature") == 0 &&
+             strcmp(mv_str(&c.reply.data, "status"), "incomplete") == 0 &&
+             strstr(mv_str(&c.reply.data, "reason"), "invalid") != NULL &&
+             strcmp(mv_str(&c.reply.data, "actions_csv"), "") == 0);
+    mv_cmd_free(&c);
+
+    mv_list(&c, dd, "zcode_package");
+    {
+        const struct json_value *row =
+            mv_find_kind(&c.reply.data, "zcode_package");
+        MV_CHECK("zcode: malformed manifest is rendered and disclosed",
+                 c.reply.status == ZCL_COMMAND_STATUS_PASSED && row &&
+                 mv_find_item(&c.reply.data, id_text) != NULL &&
+                 !json_get_bool(json_get(row, "integrity_ok")) &&
+                 json_get_int(json_get(row, "integrity_gap_count")) == 1);
+    }
+    mv_cmd_free(&c);
+    {
+        FILE *f = fopen(manifest_path, "wb");
+        bool restored = f && fwrite(p.wire, 1, p.wire_len, f) == p.wire_len;
+
+        if (f)
+            fclose(f);
+        MV_CHECK("zcode: canonical manifest bytes are restored", restored);
+    }
 
     /* THE UNEARNED-CLAIM PROOF: remove the signed envelope. The bytes are
      * untouched, so the package stays present — but the signature can no

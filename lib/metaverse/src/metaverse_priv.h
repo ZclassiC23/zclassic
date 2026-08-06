@@ -34,15 +34,26 @@ struct mv_manifest_read {
     uint32_t file_count;
 };
 
+/* A missing object is an inventory fact. An unreadable or malformed object
+ * is an integrity failure. Keep those states distinct all the way to the
+ * operator surface. */
+enum mv_manifest_read_status {
+    MV_MANIFEST_READ_OK = 0,
+    MV_MANIFEST_READ_ABSENT,
+    MV_MANIFEST_READ_IO_ERROR,
+    MV_MANIFEST_READ_INVALID,
+};
+
 /* Read + parse <zcode_dir>/manifests/<root_hex> and re-derive its root.
- * False when the file is missing, unreadable, oversize, or not canonical
- * content.v2 wire; *out is then zeroed and needs no free. On true the
- * caller MUST call mv_manifest_free(out).
+ * ABSENT is reserved for ENOENT. IO_ERROR and INVALID must never be projected
+ * as absence. On OK the caller MUST call mv_manifest_free(out); on every
+ * other result *out is zeroed and needs no free.
  *
  * CAS presence is counted per unique chunk hash of the manifest via
  * vcs_package_cas_present_in() — presence only, no re-hash. */
-bool mv_manifest_read(const char *zcode_dir, const char *root_hex,
-                      struct mv_manifest_read *out);
+enum mv_manifest_read_status mv_manifest_read(
+    const char *zcode_dir, const char *root_hex, struct mv_manifest_read *out);
+const char *mv_manifest_read_status_name(enum mv_manifest_read_status status);
 void mv_manifest_free(struct mv_manifest_read *m);
 
 /* True when the manifest has the frozen blob shape: exactly one file at
@@ -55,9 +66,9 @@ bool mv_manifest_is_blob(const struct vcs_package_manifest *m);
  * *total_out receives the number of hex64 entries SEEN (capped at
  * MV_MANIFEST_SCAN_MAX) and *truncated_out is set when the scan itself hit
  * that cap or when more entries were seen than written. */
-size_t mv_manifest_names(const char *zcode_dir, char (*out)[65],
-                         size_t out_cap, size_t *total_out,
-                         bool *truncated_out);
+bool mv_manifest_names(const char *zcode_dir, char (*out)[65],
+                       size_t out_cap, size_t *written_out,
+                       size_t *total_out, bool *truncated_out);
 
 /* Can <zcode_dir>/manifests be ENUMERATED right now?
  *

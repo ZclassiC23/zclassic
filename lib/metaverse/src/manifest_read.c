@@ -31,34 +31,46 @@
 
 /* Read at most `cap` bytes of a file; a file larger than cap is a
  * rejection, not a truncated read. */
-static bool mv_read_file(const char *path, size_t cap, uint8_t **out,
-                         size_t *out_len)
+static enum mv_manifest_read_status mv_read_file(
+    const char *path, size_t cap, uint8_t **out, size_t *out_len)
 {
     FILE *f;
     uint8_t *buf;
     size_t len;
-    bool trailing;
+    int open_errno;
 
     *out = NULL;
     *out_len = 0;
     f = fopen(path, "rb");
-    if (!f)
-        return false;
-    buf = zcl_malloc(cap, "mv_read_file");
+    if (!f) {
+        open_errno = errno;
+        return open_errno == ENOENT ? MV_MANIFEST_READ_ABSENT
+                                    : MV_MANIFEST_READ_IO_ERROR;
+    }
+    if (cap == SIZE_MAX) {
+        fclose(f);
+        return MV_MANIFEST_READ_INVALID;
+    }
+    buf = zcl_malloc(cap + 1u, "mv_read_file");
     if (!buf) {
         fclose(f);
-        LOG_FAIL(MV_LOG, "read buffer of %zu bytes for %s", cap, path);
+        LOG_ERR(MV_LOG, "read buffer of %zu bytes for %s", cap + 1u, path);
+        return MV_MANIFEST_READ_IO_ERROR;
     }
-    len = fread(buf, 1, cap, f);
-    trailing = !feof(f);
-    fclose(f);
-    if (trailing || len == 0) {
+    len = fread(buf, 1, cap + 1u, f);
+    if (ferror(f)) {
+        fclose(f);
         free(buf);
-        return false;
+        return MV_MANIFEST_READ_IO_ERROR;
+    }
+    fclose(f);
+    if (len == 0 || len > cap) {
+        free(buf);
+        return MV_MANIFEST_READ_INVALID;
     }
     *out = buf;
     *out_len = len;
-    return true;
+    return MV_MANIFEST_READ_OK;
 }
 
 bool mv_manifest_is_blob(const struct vcs_package_manifest *m)
@@ -81,31 +93,44 @@ void mv_manifest_free(struct mv_manifest_read *m)
     memset(m, 0, sizeof(*m));
 }
 
-bool mv_manifest_read(const char *zcode_dir, const char *root_hex,
-                      struct mv_manifest_read *out)
+const char *mv_manifest_read_status_name(enum mv_manifest_read_status status)
+{
+    switch (status) {
+    case MV_MANIFEST_READ_OK:       return "ok";
+    case MV_MANIFEST_READ_ABSENT:   return "absent";
+    case MV_MANIFEST_READ_IO_ERROR: return "io_error";
+    case MV_MANIFEST_READ_INVALID:  return "invalid";
+    }
+    return "invalid";
+}
+
+enum mv_manifest_read_status mv_manifest_read(
+    const char *zcode_dir, const char *root_hex, struct mv_manifest_read *out)
 {
     char path[MV_PATH_MAX];
     uint8_t name_root[32];
     uint8_t *wire = NULL;
     size_t wire_len = 0;
+    enum mv_manifest_read_status read_status;
     int n;
 
     if (!out)
-        return false;
+        return MV_MANIFEST_READ_INVALID;
     memset(out, 0, sizeof(*out));
     if (!zcode_dir || !root_hex || !zcl_hex_decode_lower(root_hex, name_root, 32))
-        return false;
+        return MV_MANIFEST_READ_INVALID;
 
     n = snprintf(path, sizeof(path), "%s/manifests/%s", zcode_dir, root_hex);
     if (n < 0 || (size_t)n >= sizeof(path))
-        return false;
-    if (!mv_read_file(path, VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES, &wire,
-                      &wire_len))
-        return false;
+        return MV_MANIFEST_READ_INVALID;
+    read_status = mv_read_file(path, VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES,
+                               &wire, &wire_len);
+    if (read_status != MV_MANIFEST_READ_OK)
+        return read_status;
     if (!vcs_package_manifest_parse(wire, wire_len, &out->manifest)) {
         free(wire);
         memset(out, 0, sizeof(*out));
-        return false;
+        return MV_MANIFEST_READ_INVALID;
     }
     free(wire);
 
@@ -115,7 +140,7 @@ bool mv_manifest_read(const char *zcode_dir, const char *root_hex,
     if (!vcs_package_manifest_root(&out->manifest, out->root)) {
         vcs_package_manifest_free(&out->manifest);
         memset(out, 0, sizeof(*out));
-        return false;
+        return MV_MANIFEST_READ_INVALID;
     }
     out->root_matches_name = memcmp(out->root, name_root, 32) == 0;
 
@@ -131,7 +156,7 @@ bool mv_manifest_read(const char *zcode_dir, const char *root_hex,
                 out->chunks_present++;
         }
     }
-    return true;
+    return MV_MANIFEST_READ_OK;
 }
 
 bool mv_store_enumerable(const char *zcode_dir, char *reason, size_t cap)
@@ -187,9 +212,9 @@ static int mv_name_cmp(const void *a, const void *b)
     return strcmp((const char *)a, (const char *)b);
 }
 
-size_t mv_manifest_names(const char *zcode_dir, char (*out)[65],
-                         size_t out_cap, size_t *total_out,
-                         bool *truncated_out)
+bool mv_manifest_names(const char *zcode_dir, char (*out)[65],
+                       size_t out_cap, size_t *written_out,
+                       size_t *total_out, bool *truncated_out)
 {
     char path[MV_PATH_MAX];
     char (*names)[65];
@@ -200,25 +225,30 @@ size_t mv_manifest_names(const char *zcode_dir, char (*out)[65],
     struct dirent *ent;
     int n;
 
+    if (written_out)
+        *written_out = 0;
     if (total_out)
         *total_out = 0;
     if (truncated_out)
         *truncated_out = false;
-    if (!zcode_dir || !out || out_cap == 0)
-        return 0;
+    if (!zcode_dir || !written_out || !total_out || !truncated_out ||
+        (!out && out_cap > 0))
+        return false;
 
     n = snprintf(path, sizeof(path), "%s/manifests", zcode_dir);
     if (n < 0 || (size_t)n >= sizeof(path))
-        return 0;
+        return false;
     dir = opendir(path);
     if (!dir)
-        return 0; /* no store yet: an empty catalog, not a failure */
+        return errno == ENOENT; /* no store yet: honestly empty */
 
     names = zcl_malloc(MV_MANIFEST_SCAN_MAX * sizeof(*names), "mv_names");
     if (!names) {
         closedir(dir);
-        LOG_RETURN(0, MV_LOG, "manifest name buffer for %s", path);
+        LOG_ERR(MV_LOG, "manifest name buffer for %s", path);
+        return false;
     }
+    errno = 0;
     while ((ent = readdir(dir)) != NULL) {
         uint8_t scratch[32];
 
@@ -232,6 +262,11 @@ size_t mv_manifest_names(const char *zcode_dir, char (*out)[65],
         names[seen][64] = '\0';
         seen++;
     }
+    if (errno != 0) {
+        closedir(dir);
+        free(names);
+        return false;
+    }
     closedir(dir);
 
     /* Ascending name order: readdir order is filesystem-dependent, and a
@@ -243,11 +278,10 @@ size_t mv_manifest_names(const char *zcode_dir, char (*out)[65],
         memcpy(out[i], names[i], 65);
     free(names);
 
-    if (total_out)
-        *total_out = seen;
-    if (truncated_out)
-        *truncated_out = truncated || written < seen;
-    return written;
+    *written_out = written;
+    *total_out = seen;
+    *truncated_out = truncated || written < seen;
+    return true;
 }
 
 bool mv_release_read_verified(const char *zcode_dir,
@@ -268,8 +302,8 @@ bool mv_release_read_verified(const char *zcode_dir,
                  release_id_hex);
     if (n < 0 || (size_t)n >= sizeof(path))
         return false;
-    if (!mv_read_file(path, VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES, &wire,
-                      &wire_len))
+    if (mv_read_file(path, VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES, &wire,
+                     &wire_len) != MV_MANIFEST_READ_OK)
         return false;
     if (vcs_package_release_parse(wire, wire_len, out) !=
         VCS_PACKAGE_RELEASE_OK) {

@@ -10,8 +10,10 @@
 
 **Authority:** owner directive dated 2026-08-06. Work is isolated from the
 exact-candidate fold, challenger, stable node, canonical datadirs and wallets.
-No deploy, restart, promotion, merge, push, live-port use or heavyweight build
-is authorized while the production proof is active.
+No deploy, restart, promotion, live-port use or heavyweight build is authorized
+while the production proof is active. A later owner directive authorizes green
+source slices to stay synchronized with and push to `main`; it does not widen
+the production-runtime boundary.
 
 ## Goal
 
@@ -67,13 +69,40 @@ The audited workflow is:
 
 ## Verification while the fold is active
 
-Only focused low-impact groups may run. Full lint, sanitizer, uncached suite,
+Only focused low-impact checks may run. Full lint, sanitizer, uncached suite,
 LTO and reproducibility gates are explicitly deferred until the production
-proof is banked. Nothing from this lane may merge or push before those gates
-can run on the integrated tree.
+proof is banked. Source slices may integrate after their focused checks; no
+artifact from them may deploy or promote before the full gates pass.
 
 ## Completion
 
 Append coherent slice commits, focused receipts, deferred gates and honest
-remaining blockers here. Handoff is the lane branch plus exact commit IDs; it
-is never a push.
+remaining blockers here. Handoff records the lane and exact commit IDs; the
+latest owner direction separately authorizes synchronization and push to main.
+
+## Evidence ledger
+
+### Slice 1 — property/CAS integrity
+
+- Born-red audit: `mv_manifest_read()` returned one boolean for ENOENT,
+  unreadable, oversized and malformed bytes. The CONTENT show path therefore
+  reported corruption as determined absence, while CONTENT list silently
+  skipped it. ZCODE could similarly claim `local_content_hash` without a valid
+  matching manifest when its release envelope was unavailable.
+- The read path now carries typed `ok|absent|io_error|invalid` results.
+  Pagination and source integrity are independent adapter-list facts; catalog
+  JSON exposes checked/ok/gap-count/first-reason per kind and in aggregate.
+  Missing remains honestly absent, corruption is undetermined, and malformed
+  rows cannot disappear behind a plausible empty total.
+- The reloadable property island now includes `manifest_read.c` and the ZSLP
+  adapter, preventing old/new function-pointer ABI mixing when this slice is
+  compiled as one hot-swap unit.
+- Focused low-impact receipts while the production fold remains frozen:
+  changed production/test translation units pass `-Wall -Wextra -Werror`
+  syntax checks; allocation, silent-bool and result-discard ratchets pass;
+  `git diff --check` passes; the identity-bound metaverse property island
+  compiles and links at source id `b37477fbbb9abcac578d032ddf187238d51916a71f1aad16fd0bf537bddb26e5`.
+  The first island attempt compiled but was correctly refused after isolated
+  vendor bootstrap changed its source identity; the stable rerun passed.
+- `metaverse_catalog` execution and the heavyweight full gates remain deferred
+  until they can run without competing with the exact-candidate fold.
