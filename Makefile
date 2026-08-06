@@ -1905,12 +1905,12 @@ $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN): tools/zcode_package_registry_check.c \
 		lib/vcs/src/package_prepare.c lib/vcs/src/package_manifest.c \
 		lib/vcs/src/package_recipe.c lib/vcs/src/package_deps.c \
 		lib/vcs/src/package_capsule.c lib/vcs/src/package_release.c \
-		lib/json/src/json.c lib/sha3/src/sha3.c \
+		lib/json/src/json.c lib/codec/src/cursor.c lib/sha3/src/sha3.c \
 		lib/base/src/safe_alloc.c lib/base/src/log_level.c \
 		lib/platform/src/clock.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -D_GNU_SOURCE -O0 -Wall -Wextra -Werror -pedantic \
-	    -Ilib/vcs/include -Ilib/json/include -Ilib/sha3/include \
+	    -Ilib/vcs/include -Ilib/json/include -Ilib/codec/include -Ilib/sha3/include \
 	    -Ilib/crypto/include -Ilib/base/include -Ilib/util/include \
 	    -Ilib/platform/include -Ivendor/include -o $@ $^ \
 	    -Lvendor/lib -l:libsecp256k1.a -lpthread -lm

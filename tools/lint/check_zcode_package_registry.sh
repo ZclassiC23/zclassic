@@ -36,4 +36,22 @@ for source in "${package_sources[@]}"; do
     fi
 done
 
+codec_consumers=(
+    lib/vcs/src/package_release.c
+    lib/vcs/src/package_recipe.c
+    lib/vcs/src/package_deps.c
+)
+for source in "${codec_consumers[@]}"; do
+    if ! git grep -q '#include "codec/cursor.h"' -- "$source"; then
+        echo "check-zcode-package-registry: FAIL — $source does not use the bounded codec cursor" >&2
+        exit 1
+    fi
+done
+if git grep -n -E 'vcs_(wr|rd)_u(16|32|64)le|#include "vcs_priv.h"' -- \
+        "${codec_consumers[@]}"; then
+    echo "check-zcode-package-registry: FAIL — package release/recipe/lock restored a private codec" >&2
+    exit 1
+fi
+
 echo "zcode package registry: ${#package_sources[@]} authoritative package sources occur exactly once in monolith LIB_SRCS"
+echo "zcode package registry: release, recipe and lock wires use codec/cursor.h exclusively"

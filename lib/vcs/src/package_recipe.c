@@ -7,11 +7,10 @@
 
 #include "vcs/package_recipe.h"
 
+#include "codec/cursor.h"
 #include "crypto/sha3.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
-
-#include "vcs_priv.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -424,18 +423,16 @@ static size_t recipe_wire_bytes(const struct vcs_package_recipe *r)
            2u + r->library_count + 1u + 4u + 8u;
 }
 
-static void recipe_strings_write(uint8_t **p,
-                                 const struct vcs_package_recipe_strings *l)
+static bool recipe_strings_write(
+    struct zcl_codec_writer *writer,
+    const struct vcs_package_recipe_strings *list)
 {
-    vcs_wr_u16le(*p, (uint16_t)l->count);
-    *p += 2;
-    for (size_t i = 0; i < l->count; i++) {
-        size_t len = strlen(l->items[i]);
-        vcs_wr_u16le(*p, (uint16_t)len);
-        *p += 2;
-        memcpy(*p, l->items[i], len);
-        *p += len;
-    }
+    if (!zcl_codec_write_u16le(writer, (uint16_t)list->count)) return false;
+    for (size_t i = 0; i < list->count; i++)
+        if (!zcl_codec_write_u16_string(writer, list->items[i],
+                                        strlen(list->items[i])))
+            return false;
+    return true;
 }
 
 enum vcs_package_recipe_error vcs_package_recipe_serialize(
@@ -456,76 +453,69 @@ enum vcs_package_recipe_error vcs_package_recipe_serialize(
     if (!wire)
         LOG_RETURN(VCS_PACKAGE_RECIPE_ERR_ALLOC, RECIPE_LOG,
                    "alloc %zu recipe wire bytes", len);
-    uint8_t *p = wire;
-    memcpy(p, recipe_wire_magic, VCS_PACKAGE_RECIPE_WIRE_MAGIC_BYTES);
-    p += VCS_PACKAGE_RECIPE_WIRE_MAGIC_BYTES;
-    vcs_wr_u16le(p, recipe->schema_version);
-    p += 2;
-    recipe_strings_write(&p, &recipe->public_headers);
-    recipe_strings_write(&p, &recipe->sources);
-    recipe_strings_write(&p, &recipe->test_sources);
-    recipe_strings_write(&p, &recipe->include_dirs);
-    recipe_strings_write(&p, &recipe->defines);
-    vcs_wr_u16le(p, (uint16_t)recipe->library_count);
-    p += 2;
-    memcpy(p, recipe->libraries, recipe->library_count);
-    p += recipe->library_count;
-    *p++ = recipe->expected_test_exit_code;
-    vcs_wr_u32le(p, recipe->maximum_test_seconds);
-    p += 4;
-    vcs_wr_u64le(p, recipe->maximum_memory_bytes);
+    struct zcl_codec_writer writer;
+    zcl_codec_writer_init(&writer, wire, len);
+    bool ok = zcl_codec_write_bytes(
+                  &writer, recipe_wire_magic,
+                  VCS_PACKAGE_RECIPE_WIRE_MAGIC_BYTES) &&
+        zcl_codec_write_u16le(&writer, recipe->schema_version) &&
+        recipe_strings_write(&writer, &recipe->public_headers) &&
+        recipe_strings_write(&writer, &recipe->sources) &&
+        recipe_strings_write(&writer, &recipe->test_sources) &&
+        recipe_strings_write(&writer, &recipe->include_dirs) &&
+        recipe_strings_write(&writer, &recipe->defines) &&
+        zcl_codec_write_u16le(&writer, (uint16_t)recipe->library_count) &&
+        zcl_codec_write_bytes(&writer, recipe->libraries,
+                              recipe->library_count) &&
+        zcl_codec_write_u8(&writer, recipe->expected_test_exit_code) &&
+        zcl_codec_write_u32le(&writer, recipe->maximum_test_seconds) &&
+        zcl_codec_write_u64le(&writer, recipe->maximum_memory_bytes);
+    size_t written = 0;
+    ok = ok && zcl_codec_writer_finish(&writer, &written) && written == len;
+    if (!ok) {
+        free(wire);
+        return VCS_PACKAGE_RECIPE_ERR_WIRE_OVERSIZE;
+    }
     *out = wire;
-    *out_len = len;
+    *out_len = written;
     return VCS_PACKAGE_RECIPE_OK;
 }
 
 /* ── parse ──────────────────────────────────────────────────────────── */
-
-struct recipe_reader {
-    const uint8_t *p;
-    size_t left;
-};
-
-static bool recipe_rd(struct recipe_reader *rd, void *out, size_t n)
-{
-    if (rd->left < n)
-        return false;
-    memcpy(out, rd->p, n);
-    rd->p += n;
-    rd->left -= n;
-    return true;
-}
 
 /* Read one string list (count-prefixed) through the canonical insertion
  * path; unsorted input lands out of insertion order, so the wire's own
  * order is checked against the previous entry first. grammar_err selects
  * the path/define rejection; suffix may be NULL. */
 static enum vcs_package_recipe_error recipe_parse_strings(
-    struct recipe_reader *rd, struct vcs_package_recipe_strings *list,
+    struct zcl_codec_reader *reader,
+    struct vcs_package_recipe_strings *list,
     size_t bound, const char *suffix, bool is_define)
 {
     uint16_t count = 0;
-    if (!recipe_rd(rd, &count, 2))
+    if (!zcl_codec_read_u16le(reader, &count))
         return VCS_PACKAGE_RECIPE_ERR_WIRE_TRUNCATED;
     char prev[VCS_PACKAGE_PATH_MAX + 1];
     prev[0] = '\0';
     for (uint16_t i = 0; i < count; i++) {
         uint16_t len = 0;
-        if (!recipe_rd(rd, &len, 2))
+        if (!zcl_codec_read_u16le(reader, &len))
             return VCS_PACKAGE_RECIPE_ERR_WIRE_TRUNCATED;
-        if (len == 0 || rd->left < len)
+        if (len == 0 || zcl_codec_reader_remaining(reader) < len)
             return VCS_PACKAGE_RECIPE_ERR_WIRE_TRUNCATED;
         char *entry = zcl_malloc((size_t)len + 1, "vcs_recipe_parse_entry");
         if (!entry)
             LOG_RETURN(VCS_PACKAGE_RECIPE_ERR_ALLOC, RECIPE_LOG,
                        "alloc %u entry bytes", (unsigned)len + 1);
-        memcpy(entry, rd->p, len);
+        if (!zcl_codec_read_bytes(reader, entry, len)) {
+            free(entry);
+            return VCS_PACKAGE_RECIPE_ERR_WIRE_TRUNCATED;
+        }
         entry[len] = '\0';
-        rd->p += len;
-        rd->left -= len;
-        bool grammar = is_define ? recipe_define_valid(entry)
+        bool grammar = memchr(entry, '\0', len) == NULL &&
+            (is_define ? recipe_define_valid(entry)
             : (vcs_package_path_valid(entry) &&
-               (!suffix || recipe_suffix(entry, suffix)));
+               (!suffix || recipe_suffix(entry, suffix))));
         if (!grammar) {
             free(entry);
             return is_define ? VCS_PACKAGE_RECIPE_ERR_DEFINE
@@ -558,43 +548,44 @@ enum vcs_package_recipe_error vcs_package_recipe_parse(
      * the library count + the 13 scalar bytes. */
     if (wire_len < VCS_PACKAGE_RECIPE_WIRE_MAGIC_BYTES + 2u + 10u + 2u + 13u)
         return VCS_PACKAGE_RECIPE_ERR_WIRE_TRUNCATED;
-    struct recipe_reader rd = { wire, wire_len };
+    struct zcl_codec_reader reader;
+    zcl_codec_reader_init(&reader, wire, wire_len);
     uint8_t magic[VCS_PACKAGE_RECIPE_WIRE_MAGIC_BYTES];
-    if (!recipe_rd(&rd, magic, sizeof(magic)) ||
+    if (!zcl_codec_read_bytes(&reader, magic, sizeof(magic)) ||
         memcmp(magic, recipe_wire_magic, sizeof(magic)) != 0)
         return VCS_PACKAGE_RECIPE_ERR_WIRE_MAGIC;
     uint16_t version = 0;
-    if (!recipe_rd(&rd, &version, 2))
+    if (!zcl_codec_read_u16le(&reader, &version))
         return VCS_PACKAGE_RECIPE_ERR_WIRE_TRUNCATED;
     if (version != VCS_PACKAGE_RECIPE_VERSION)
         return VCS_PACKAGE_RECIPE_ERR_SCHEMA_VERSION;
     out->schema_version = version;
 
     enum vcs_package_recipe_error err;
-    err = recipe_parse_strings(&rd, &out->public_headers,
+    err = recipe_parse_strings(&reader, &out->public_headers,
                                VCS_PACKAGE_RECIPE_MAX_PATHS_PER_LIST, ".h",
                                false);
     if (err == VCS_PACKAGE_RECIPE_OK)
-        err = recipe_parse_strings(&rd, &out->sources,
+        err = recipe_parse_strings(&reader, &out->sources,
                                    VCS_PACKAGE_RECIPE_MAX_PATHS_PER_LIST,
                                    ".c", false);
     if (err == VCS_PACKAGE_RECIPE_OK)
-        err = recipe_parse_strings(&rd, &out->test_sources,
+        err = recipe_parse_strings(&reader, &out->test_sources,
                                    VCS_PACKAGE_RECIPE_MAX_PATHS_PER_LIST,
                                    ".c", false);
     if (err == VCS_PACKAGE_RECIPE_OK)
-        err = recipe_parse_strings(&rd, &out->include_dirs,
+        err = recipe_parse_strings(&reader, &out->include_dirs,
                                    VCS_PACKAGE_RECIPE_MAX_PATHS_PER_LIST,
                                    NULL, false);
     if (err == VCS_PACKAGE_RECIPE_OK)
-        err = recipe_parse_strings(&rd, &out->defines,
+        err = recipe_parse_strings(&reader, &out->defines,
                                    VCS_PACKAGE_RECIPE_MAX_DEFINES, NULL,
                                    true);
     if (err != VCS_PACKAGE_RECIPE_OK)
         goto reject;
 
     uint16_t lib_count = 0;
-    if (!recipe_rd(&rd, &lib_count, 2)) {
+    if (!zcl_codec_read_u16le(&reader, &lib_count)) {
         err = VCS_PACKAGE_RECIPE_ERR_WIRE_TRUNCATED;
         goto reject;
     }
@@ -604,7 +595,7 @@ enum vcs_package_recipe_error vcs_package_recipe_parse(
     }
     for (uint16_t i = 0; i < lib_count; i++) {
         uint8_t id = 0;
-        if (!recipe_rd(&rd, &id, 1)) {
+        if (!zcl_codec_read_u8(&reader, &id)) {
             err = VCS_PACKAGE_RECIPE_ERR_WIRE_TRUNCATED;
             goto reject;
         }
@@ -620,23 +611,21 @@ enum vcs_package_recipe_error vcs_package_recipe_parse(
     }
     out->library_count = lib_count;
 
-    if (!recipe_rd(&rd, &out->expected_test_exit_code, 1)) {
+    if (!zcl_codec_read_u8(&reader, &out->expected_test_exit_code)) {
         err = VCS_PACKAGE_RECIPE_ERR_WIRE_TRUNCATED;
         goto reject;
     }
     uint32_t seconds = 0;
     uint64_t memory = 0;
-    uint8_t scalars[12];
-    if (!recipe_rd(&rd, scalars, sizeof(scalars))) {
+    if (!zcl_codec_read_u32le(&reader, &seconds) ||
+        !zcl_codec_read_u64le(&reader, &memory)) {
         err = VCS_PACKAGE_RECIPE_ERR_WIRE_TRUNCATED;
         goto reject;
     }
-    seconds = vcs_rd_u32le(scalars);
-    memory = vcs_rd_u64le(scalars + 4);
     out->maximum_test_seconds = seconds;
     out->maximum_memory_bytes = memory;
 
-    if (rd.left != 0) {
+    if (!zcl_codec_reader_finish(&reader)) {
         err = VCS_PACKAGE_RECIPE_ERR_WIRE_TRAILING;
         goto reject;
     }

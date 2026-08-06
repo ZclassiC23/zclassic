@@ -4,11 +4,10 @@
 
 #include "vcs/package_release.h"
 
+#include "codec/cursor.h"
 #include "crypto/sha3.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
-
-#include "vcs_priv.h"
 
 #include <secp256k1.h>
 #include <string.h>
@@ -379,70 +378,42 @@ static size_t release_body_bytes(const struct vcs_package_release *release)
 static size_t release_body_encode(const struct vcs_package_release *release,
                                   uint8_t *out)
 {
-    size_t off = 0;
-    memcpy(out + off, release_magic, sizeof(release_magic));
-    off += sizeof(release_magic);
-    vcs_wr_u16le(out + off, release->schema_version);
-    off += 2;
-
+    size_t capacity = release_body_bytes(release);
+    struct zcl_codec_writer writer;
+    zcl_codec_writer_init(&writer, out, capacity);
     size_t name_len = strlen(release->name);
-    vcs_wr_u16le(out + off, (uint16_t)name_len);
-    off += 2;
-    memcpy(out + off, release->name, name_len);
-    off += name_len;
-
     size_t semver_len = strlen(release->semver);
-    vcs_wr_u16le(out + off, (uint16_t)semver_len);
-    off += 2;
-    memcpy(out + off, release->semver, semver_len);
-    off += semver_len;
-
-    memcpy(out + off, release->package_root, 32);
-    off += 32;
-
-    out[off++] = release->has_parent ? 1u : 0u;
-    if (release->has_parent) {
-        memcpy(out + off, release->parent_root, 32);
-        off += 32;
-    }
-
-    memcpy(out + off, release->publisher_pubkey,
-           VCS_PACKAGE_RELEASE_PUBKEY_BYTES);
-    off += VCS_PACKAGE_RELEASE_PUBKEY_BYTES;
-    vcs_wr_u64le(out + off, release->publisher_sequence);
-    off += 8;
-
     size_t reward_len = strlen(release->reward_address);
-    vcs_wr_u16le(out + off, (uint16_t)reward_len);
-    off += 2;
-    memcpy(out + off, release->reward_address, reward_len);
-    off += reward_len;
-
     size_t license_len = strlen(release->license);
-    vcs_wr_u16le(out + off, (uint16_t)license_len);
-    off += 2;
-    memcpy(out + off, release->license, license_len);
-    off += license_len;
-
-    memcpy(out + off, release->recipe_root, 32);
-    off += 32;
-
-    out[off++] = release->has_znam ? 1u : 0u;
+    bool ok = zcl_codec_write_bytes(&writer, release_magic,
+                                    sizeof(release_magic)) &&
+        zcl_codec_write_u16le(&writer, release->schema_version) &&
+        zcl_codec_write_u16_string(&writer, release->name, name_len) &&
+        zcl_codec_write_u16_string(&writer, release->semver, semver_len) &&
+        zcl_codec_write_bytes(&writer, release->package_root, 32) &&
+        zcl_codec_write_u8(&writer, release->has_parent ? 1u : 0u);
+    if (release->has_parent)
+        ok = ok && zcl_codec_write_bytes(&writer, release->parent_root, 32);
+    ok = ok && zcl_codec_write_bytes(
+                   &writer, release->publisher_pubkey,
+                   VCS_PACKAGE_RELEASE_PUBKEY_BYTES) &&
+        zcl_codec_write_u64le(&writer, release->publisher_sequence) &&
+        zcl_codec_write_u16_string(&writer, release->reward_address,
+                                   reward_len) &&
+        zcl_codec_write_u16_string(&writer, release->license, license_len) &&
+        zcl_codec_write_bytes(&writer, release->recipe_root, 32) &&
+        zcl_codec_write_u8(&writer, release->has_znam ? 1u : 0u);
     if (release->has_znam) {
         size_t znam_len = strlen(release->znam);
-        vcs_wr_u16le(out + off, (uint16_t)znam_len);
-        off += 2;
-        memcpy(out + off, release->znam, znam_len);
-        off += znam_len;
+        ok = ok && zcl_codec_write_u16_string(&writer, release->znam,
+                                              znam_len);
     }
-
     size_t chain_len = strlen(release->chain_id);
-    vcs_wr_u16le(out + off, (uint16_t)chain_len);
-    off += 2;
-    memcpy(out + off, release->chain_id, chain_len);
-    off += chain_len;
-
-    return off;
+    ok = ok && zcl_codec_write_u16_string(&writer, release->chain_id,
+                                          chain_len);
+    size_t written = 0;
+    return ok && zcl_codec_writer_finish(&writer, &written) &&
+           written == capacity ? written : 0;
 }
 
 enum vcs_package_release_error vcs_package_release_id(
@@ -498,36 +469,30 @@ enum vcs_package_release_error vcs_package_release_serialize(
 
 /* ── parsing ──────────────────────────────────────────────────────── */
 
-static bool release_wire_has(size_t wire_len, size_t off, size_t need)
-{
-    return off <= wire_len && need <= wire_len - off;
-}
-
 /* Read one [2 len][bytes] string field into a fixed buffer, validating the
  * bound and NUL-terminating. An embedded NUL would let a non-canonical
  * encoding pass the grammar checks (they see only the strlen prefix), so it
  * is rejected with the field's own grammar error. */
 static enum vcs_package_release_error release_read_string(
-    const uint8_t *wire, size_t wire_len, size_t *off, size_t max_len,
+    struct zcl_codec_reader *reader, size_t max_len,
     char *out, size_t out_capacity, const char *what,
     enum vcs_package_release_error nul_error)
 {
-    if (!release_wire_has(wire_len, *off, 2u))
+    uint16_t len = 0;
+    if (!zcl_codec_read_u16le(reader, &len))
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_WIRE_TRUNCATED, "vcs.release",
                    "release wire truncated at %s length", what);
-    uint16_t len = vcs_rd_u16le(wire + *off);
-    *off += 2;
     if (len > max_len || (size_t)len + 1u > out_capacity ||
-        !release_wire_has(wire_len, *off, len))
+        zcl_codec_reader_remaining(reader) < len)
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_WIRE_TRUNCATED, "vcs.release",
                    "release wire truncated/oversize %s", what);
-    if (len > 0)
-        memcpy(out, wire + *off, len);
+    if (!zcl_codec_read_bytes(reader, out, len))
+        LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_WIRE_TRUNCATED, "vcs.release",
+                   "release wire truncated at %s", what);
     out[len] = '\0';
     if (strnlen(out, len) != len)
         LOG_RETURN(nul_error, "vcs.release",
                    "release wire embedded NUL in %s", what);
-    *off += len;
     return VCS_PACKAGE_RELEASE_OK;
 }
 
@@ -546,25 +511,23 @@ enum vcs_package_release_error vcs_package_release_parse(
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_WIRE_OVERSIZE, "vcs.release",
                    "release wire oversize: %zu", wire_len);
 
-    size_t off = 0;
-    if (!release_wire_has(wire_len, off, sizeof(release_magic)) ||
-        memcmp(wire, release_magic, sizeof(release_magic)) != 0)
+    struct zcl_codec_reader reader;
+    zcl_codec_reader_init(&reader, wire, wire_len);
+    uint8_t magic[VCS_PACKAGE_RELEASE_WIRE_MAGIC_BYTES];
+    if (!zcl_codec_read_bytes(&reader, magic, sizeof(magic)) ||
+        memcmp(magic, release_magic, sizeof(magic)) != 0)
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_WIRE_MAGIC, "vcs.release",
                    "release wire bad magic");
-    off += sizeof(release_magic);
-
-    if (!release_wire_has(wire_len, off, 2u))
+    if (!zcl_codec_read_u16le(&reader, &out->schema_version))
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_WIRE_TRUNCATED, "vcs.release",
                    "release wire truncated at schema version");
-    out->schema_version = vcs_rd_u16le(wire + off);
-    off += 2;
     if (out->schema_version != VCS_PACKAGE_RELEASE_VERSION)
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_SCHEMA_VERSION, "vcs.release",
                    "release wire schema version %u",
                    (unsigned)out->schema_version);
 
     enum vcs_package_release_error error = release_read_string(
-        wire, wire_len, &off, VCS_PACKAGE_RELEASE_NAME_MAX, out->name,
+        &reader, VCS_PACKAGE_RELEASE_NAME_MAX, out->name,
         sizeof(out->name), "name", VCS_PACKAGE_RELEASE_ERR_NAME);
     if (error != VCS_PACKAGE_RELEASE_OK)
         return error;
@@ -573,7 +536,7 @@ enum vcs_package_release_error vcs_package_release_parse(
                    "release wire bad package name");
 
     error = release_read_string(
-        wire, wire_len, &off, VCS_PACKAGE_RELEASE_SEMVER_MAX, out->semver,
+        &reader, VCS_PACKAGE_RELEASE_SEMVER_MAX, out->semver,
         sizeof(out->semver), "semver", VCS_PACKAGE_RELEASE_ERR_SEMVER);
     if (error != VCS_PACKAGE_RELEASE_OK)
         return error;
@@ -581,49 +544,42 @@ enum vcs_package_release_error vcs_package_release_parse(
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_SEMVER, "vcs.release",
                    "release wire bad semantic version");
 
-    if (!release_wire_has(wire_len, off, 32u + 1u))
+    uint8_t parent_flag = 0;
+    if (!zcl_codec_read_bytes(&reader, out->package_root, 32) ||
+        !zcl_codec_read_u8(&reader, &parent_flag))
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_WIRE_TRUNCATED, "vcs.release",
                    "release wire truncated at package root/parent flag");
-    memcpy(out->package_root, wire + off, 32);
-    off += 32;
     if (release_root_zero(out->package_root))
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_PACKAGE_ROOT, "vcs.release",
                    "release wire all-zero package root");
-    uint8_t parent_flag = wire[off++];
     if (parent_flag > 1u)
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_PARENT_FLAG, "vcs.release",
                    "release wire parent flag %u", (unsigned)parent_flag);
     out->has_parent = parent_flag == 1u;
     if (out->has_parent) {
-        if (!release_wire_has(wire_len, off, 32u))
+        if (!zcl_codec_read_bytes(&reader, out->parent_root, 32))
             LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_WIRE_TRUNCATED,
                        "vcs.release",
                        "release wire truncated at parent root");
-        memcpy(out->parent_root, wire + off, 32);
-        off += 32;
         if (release_root_zero(out->parent_root))
             LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_PARENT_ROOT, "vcs.release",
                        "release wire parent flagged but all-zero root");
     }
 
-    if (!release_wire_has(wire_len, off,
-                          VCS_PACKAGE_RELEASE_PUBKEY_BYTES + 8u))
+    if (!zcl_codec_read_bytes(&reader, out->publisher_pubkey,
+                              VCS_PACKAGE_RELEASE_PUBKEY_BYTES) ||
+        !zcl_codec_read_u64le(&reader, &out->publisher_sequence))
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_WIRE_TRUNCATED, "vcs.release",
                    "release wire truncated at pubkey/sequence");
-    memcpy(out->publisher_pubkey, wire + off,
-           VCS_PACKAGE_RELEASE_PUBKEY_BYTES);
-    off += VCS_PACKAGE_RELEASE_PUBKEY_BYTES;
     if (!release_pubkey_valid(out->publisher_pubkey))
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_PUBKEY, "vcs.release",
                    "release wire pubkey is not a compressed curve point");
-    out->publisher_sequence = vcs_rd_u64le(wire + off);
-    off += 8;
     if (out->publisher_sequence == 0)
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_SEQUENCE, "vcs.release",
                    "release wire publisher sequence 0");
 
     error = release_read_string(
-        wire, wire_len, &off, VCS_PACKAGE_RELEASE_REWARD_MAX,
+        &reader, VCS_PACKAGE_RELEASE_REWARD_MAX,
         out->reward_address, sizeof(out->reward_address), "reward address",
         VCS_PACKAGE_RELEASE_ERR_REWARD);
     if (error != VCS_PACKAGE_RELEASE_OK)
@@ -634,7 +590,7 @@ enum vcs_package_release_error vcs_package_release_parse(
                    "release wire bad reward address");
 
     error = release_read_string(
-        wire, wire_len, &off, VCS_PACKAGE_RELEASE_LICENSE_MAX, out->license,
+        &reader, VCS_PACKAGE_RELEASE_LICENSE_MAX, out->license,
         sizeof(out->license), "license", VCS_PACKAGE_RELEASE_ERR_LICENSE);
     if (error != VCS_PACKAGE_RELEASE_OK)
         return error;
@@ -642,22 +598,21 @@ enum vcs_package_release_error vcs_package_release_parse(
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_LICENSE, "vcs.release",
                    "release wire license not on the v1 SPDX allowlist");
 
-    if (!release_wire_has(wire_len, off, 32u + 1u))
+    uint8_t znam_flag = 0;
+    if (!zcl_codec_read_bytes(&reader, out->recipe_root, 32) ||
+        !zcl_codec_read_u8(&reader, &znam_flag))
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_WIRE_TRUNCATED, "vcs.release",
                    "release wire truncated at recipe root/znam flag");
-    memcpy(out->recipe_root, wire + off, 32);
-    off += 32;
     if (release_root_zero(out->recipe_root))
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_RECIPE_ROOT, "vcs.release",
                    "release wire all-zero recipe root");
-    uint8_t znam_flag = wire[off++];
     if (znam_flag > 1u)
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_ZNAM_FLAG, "vcs.release",
                    "release wire znam flag %u", (unsigned)znam_flag);
     out->has_znam = znam_flag == 1u;
     if (out->has_znam) {
         error = release_read_string(
-            wire, wire_len, &off, VCS_PACKAGE_RELEASE_ZNAM_MAX, out->znam,
+            &reader, VCS_PACKAGE_RELEASE_ZNAM_MAX, out->znam,
             sizeof(out->znam), "znam", VCS_PACKAGE_RELEASE_ERR_ZNAM);
         if (error != VCS_PACKAGE_RELEASE_OK)
             return error;
@@ -667,7 +622,7 @@ enum vcs_package_release_error vcs_package_release_parse(
     }
 
     error = release_read_string(
-        wire, wire_len, &off, VCS_PACKAGE_RELEASE_CHAIN_ID_MAX,
+        &reader, VCS_PACKAGE_RELEASE_CHAIN_ID_MAX,
         out->chain_id, sizeof(out->chain_id), "chain id",
         VCS_PACKAGE_RELEASE_ERR_CHAIN_ID);
     if (error != VCS_PACKAGE_RELEASE_OK)
@@ -676,17 +631,14 @@ enum vcs_package_release_error vcs_package_release_parse(
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_CHAIN_ID, "vcs.release",
                    "release wire bad chain identifier");
 
-    if (!release_wire_has(wire_len, off,
-                          VCS_PACKAGE_RELEASE_SIGNATURE_BYTES))
+    if (!zcl_codec_read_bytes(&reader, out->signature,
+                              VCS_PACKAGE_RELEASE_SIGNATURE_BYTES))
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_WIRE_TRUNCATED, "vcs.release",
                    "release wire truncated at signature");
-    memcpy(out->signature, wire + off, VCS_PACKAGE_RELEASE_SIGNATURE_BYTES);
-    off += VCS_PACKAGE_RELEASE_SIGNATURE_BYTES;
-
-    if (off != wire_len)
+    if (!zcl_codec_reader_finish(&reader))
         LOG_RETURN(VCS_PACKAGE_RELEASE_ERR_WIRE_TRAILING, "vcs.release",
                    "release wire trailing bytes: %zu at %zu",
-                   wire_len - off, off);
+                   zcl_codec_reader_remaining(&reader), reader.position);
     return VCS_PACKAGE_RELEASE_OK;
 }
 

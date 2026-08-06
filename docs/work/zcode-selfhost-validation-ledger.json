@@ -1,6 +1,6 @@
 {
   "schema": "zcl.zcode_selfhost_validation_ledger.v1",
-  "generated_utc": "2026-08-06T07:51:13Z",
+  "generated_utc": "2026-08-06T07:59:07Z",
   "lane": "lane/zcode-selfhost-foundation",
   "frozen_root_checkout": "13d0d255b09548a21ccd05936186f8efc849394a",
   "safety_ref": "safety/zcode-pre-selfhost-20260806",
@@ -46,6 +46,15 @@
     {
       "kind": "latest_fetch_before_vertical_completion_audit",
       "sha": "86056e9630d4dab5ae8f98c03dfd78a3b11fb59e"
+    },
+    {
+      "kind": "fetched_origin_before_deferred_codec_completion",
+      "sha": "9ab19b4fe996bbe4b6baa26d44ba306ecd00e108"
+    },
+    {
+      "kind": "origin_refresh_merge_before_deferred_codec_completion",
+      "sha": "3814f49a595b53d768b43182c201c1a3c0a20ba2",
+      "origin_parent": "9ab19b4fe996bbe4b6baa26d44ba306ecd00e108"
     }
   ],
   "package_dag": {
@@ -118,6 +127,11 @@
     {"gate": "check-doc-counts", "result": "PASS_909_TEST_GROUPS"},
     {"gate": "check-no-stray-untracked-source", "result": "PASS"},
     {"gate": "check-no-stray-root-files", "result": "PASS"},
+    {"gate": "test_agent_posture_trylock", "result": "PASS_AFTER_ORIGIN_REFRESH"},
+    {"gate": "test_zcode_recipe", "result": "PASS_CODEC_MIGRATION_WITH_IDENTICAL_ROOT_KAT"},
+    {"gate": "test_vcs_release_after_codec_migration", "result": "PASS_IDENTICAL_RELEASE_ID_KAT"},
+    {"gate": "test_zcode_package_registry_after_codec_migration", "result": "PASS_ALL_PACKAGE_ROOTS_AND_SIGNATURES_UNCHANGED"},
+    {"gate": "test_zcode_score_receipt_after_codec_migration", "result": "PASS_ALL_VERTICAL_ROOTS_UNCHANGED"},
     {
       "gate": "test_zcode_add",
       "result": "DEPENDENCY_AND_CYCLE_SUBCASES_PASS_GROUP_FAIL_WITHHELD_HELPER",
@@ -155,6 +169,19 @@
     "assembler_observed": "GNU assembler (GNU Binutils for Ubuntu) 2.42",
     "archiver_observed": "GNU ar (GNU Binutils for Ubuntu) 2.42",
     "limitation": "Focused compatibility only; pinned deterministic archive and two-path byte reproduction remain withheld by the fold freeze."
+  },
+  "codec_completion": {
+    "first_proven_slice": "task/candidate/review/work/proof/lane wires",
+    "deferred_wires_now_migrated": [
+      "zcl.zcode_release.v1",
+      "package recipe wire",
+      "target-inclusive dependency lock wire"
+    ],
+    "authority": "lib/codec/include/codec/cursor.h",
+    "private_codec_references_remaining_in_migrated_files": 0,
+    "root_effect": "NONE_ALL_RELEASE_RECIPE_LOCK_PACKAGE_AND_SCORE_KATS_IDENTICAL",
+    "permanent_gate": "check-zcode-package-registry",
+    "born_red": "NOT_APPLICABLE_BEHAVIOR_PRESERVING_CODEC_REFACTOR_PROVEN_BY_PRE_POST_CANONICAL_KATS"
   },
   "zc23_score": {
     "wire_schema": "zcl.zcode.score_receipt.v1",
