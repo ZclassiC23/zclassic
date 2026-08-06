@@ -8,13 +8,38 @@
 #include "keys/key_io.h"
 #include "script/standard.h"
 #include "support/cleanse.h"
+#include "util/safe_alloc.h"
 #include "wallet/keystore.h"
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 static wallet_coin_reservation_probe g_reservation_probe;
 static void *g_reservation_ctx;
+
+struct selection_candidate {
+    struct coin_entry coin;
+    int64_t value;
+    size_t original_index;
+};
+
+static int compare_candidates_desc(const void *lhs_raw, const void *rhs_raw)
+{
+    const struct selection_candidate *lhs = lhs_raw;
+    const struct selection_candidate *rhs = rhs_raw;
+    if (lhs->value != rhs->value)
+        return lhs->value > rhs->value ? -1 : 1;
+    int hash_order = uint256_cmp(&lhs->coin.wtx->tx.hash,
+                                 &rhs->coin.wtx->tx.hash);
+    if (hash_order != 0)
+        return hash_order;
+    if (lhs->coin.i != rhs->coin.i)
+        return lhs->coin.i < rhs->coin.i ? -1 : 1;
+    if (lhs->original_index == rhs->original_index)
+        return 0;
+    return lhs->original_index < rhs->original_index ? -1 : 1;
+}
 
 void wallet_set_coin_reservation_probe(wallet_coin_reservation_probe probe,
                                        void *ctx)
@@ -99,17 +124,86 @@ bool wallet_select_coins(const struct wallet *w,
                          size_t max_selected, int64_t *value_out)
 {
     (void)w;
+    if (!num_selected || !value_out)
+        return false;
     *num_selected = 0;
     *value_out = 0;
-    for (size_t i = 0; i < num_available && *num_selected < max_selected; i++) {
-        if (!available[i].spendable)
+    if (target_value < 0 || (!available && num_available != 0) ||
+        (!selected && max_selected != 0))
+        return false;
+    if (target_value == 0)
+        return true;
+    if (max_selected == 0)
+        return false;
+
+    /* A single input is always the lowest-input solution. Pick the smallest
+     * sufficient coin so the resulting change is bounded and wallet insertion
+     * order cannot change the transaction shape. */
+    size_t best_single = SIZE_MAX;
+    int64_t best_single_value = INT64_MAX;
+    for (size_t i = 0; i < num_available; i++) {
+        if (!available[i].spendable || !available[i].wtx ||
+            available[i].i >= available[i].wtx->tx.num_vout)
             continue;
         int64_t value = available[i].wtx->tx.vout[available[i].i].value;
-        selected[(*num_selected)++] = available[i];
-        *value_out += value;
-        if (*value_out >= target_value)
-            return true;
+        if (value < target_value || value > best_single_value)
+            continue;
+        if (value < best_single_value || best_single == SIZE_MAX ||
+            uint256_cmp(&available[i].wtx->tx.hash,
+                        &available[best_single].wtx->tx.hash) < 0 ||
+            (uint256_eq(&available[i].wtx->tx.hash,
+                        &available[best_single].wtx->tx.hash) &&
+             available[i].i < available[best_single].i)) {
+            best_single = i;
+            best_single_value = value;
+        }
     }
+    if (best_single != SIZE_MAX) {
+        selected[0] = available[best_single];
+        *num_selected = 1;
+        *value_out = best_single_value;
+        return true;
+    }
+
+    /* No single coin covers the target. Largest-first minimizes the number of
+     * inputs for the common fragmented-wallet case, which lowers signature
+     * work and leaves more independent UTXOs available to concurrent reserved
+     * intents. The stable outpoint tie-break makes selection reproducible. */
+    if (num_available > SIZE_MAX / sizeof(struct selection_candidate))
+        return false;
+    struct selection_candidate *candidates = zcl_malloc(
+        num_available * sizeof(*candidates), "wallet_coin_candidates");
+    if (!candidates)
+        return false;
+    size_t candidate_count = 0;
+    for (size_t i = 0; i < num_available; i++) {
+        if (!available[i].spendable || !available[i].wtx ||
+            available[i].i >= available[i].wtx->tx.num_vout)
+            continue;
+        int64_t value = available[i].wtx->tx.vout[available[i].i].value;
+        if (value <= 0)
+            continue;
+        candidates[candidate_count++] = (struct selection_candidate) {
+            .coin = available[i], .value = value, .original_index = i,
+        };
+    }
+    qsort(candidates, candidate_count, sizeof(*candidates),
+          compare_candidates_desc);
+    for (size_t i = 0;
+         i < candidate_count && *num_selected < max_selected;
+         i++) {
+        if (*value_out > INT64_MAX - candidates[i].value) {
+            free(candidates);
+            *num_selected = 0;
+            *value_out = 0;
+            return false;
+        }
+        selected[(*num_selected)++] = candidates[i].coin;
+        *value_out += candidates[i].value;
+        if (*value_out >= target_value)
+            break;
+    }
+    free(candidates);
     return *value_out >= target_value;
 }
 
