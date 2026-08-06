@@ -866,6 +866,7 @@ add/remove a gate.
 - `check-simd-os-support`
 - `check-no-authoritative-ram-state`
 - `check-no-dev-history-in-contracts`
+- `check-no-live-lab-history`
 - `check-no-new-borrowed-seed`
 - `check-no-new-coin-backfill-caller`
 - `check-no-new-repair-rung`
@@ -983,6 +984,15 @@ an agent or operator reading the header trusts it over the `.c` file and
 wrongly concludes the feature is still a stub. `docs/`, `vendor/`, and any
 path with a `test`/`tests` component or a `*_test.*` filename are allowed to
 narrate dev history on purpose and are excluded from the scan.
+
+`check-no-live-lab-history` (`tools/scripts/check_no_live_lab_history.sh`)
+keeps funded experiment evidence out of Git. It requires the tracked micro-lab
+ledger to remain its one-line empty campaign template, rejects tracked
+`live_confirmed` receipts and micro-lab event rows, rejects recipient-wallet
+manifests, and rejects duplicate tracked notebook paths. Reproducible simnet
+evidence and public consensus fixtures remain allowed in the canonical broad
+lab baseline. Both recorders independently refuse any ledger path inside the
+repository, even when a developer supplies an environment override.
 
 ---
 

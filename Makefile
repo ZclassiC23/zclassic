@@ -2515,6 +2515,7 @@ syntax-check: $(VIEW_GEN_HEADERS)
 LINT_FAST_GATES := \
     check-no-stray-untracked-source \
     check-no-stray-root-files \
+    check-no-live-lab-history \
     check-raw-sqlite \
     check-malloc \
     check-raw-malloc \
@@ -6834,6 +6835,13 @@ check-file-size-ceiling:
 check-no-dev-history-in-contracts:
 	@./tools/scripts/check_no_dev_history_in_contracts.sh
 
+# Funded transaction receipts and isolated recipient-wallet manifests are
+# private local state. Tracked baselines may contain reproducible simnet and
+# public consensus fixtures, but never owner experiment history.
+check-no-live-lab-history:
+	@./tools/scripts/check_no_live_lab_history.sh --selftest
+	@./tools/scripts/check_no_live_lab_history.sh
+
 # Gate E9 — EV_OPERATOR_NEEDED emit must reach a registered sink (HARD).
 # The silent-halt fix: the loud "human needed" signal can never be emitted
 # without a subscriber in lib/event/src/alerts.c.
@@ -7426,6 +7434,7 @@ LINT_GATES := \
     check-no-utxos-mirror-read \
     check-no-authoritative-ram-state \
     check-no-dev-history-in-contracts \
+    check-no-live-lab-history \
     check-stage-advances-or-blocks \
     check-no-silent-ready \
     check-honest-witness \

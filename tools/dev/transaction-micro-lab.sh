@@ -46,6 +46,22 @@ die() {
     exit 2
 }
 
+assert_record_ledger_private() {
+    local resolved mode owner
+    resolved="$(realpath -m -- "$LEDGER")" ||
+        die "cannot resolve the private ledger path"
+    case "$resolved" in
+        "$REPO"|"$REPO"/*)
+            die "record ledger must stay outside the repository"
+            ;;
+    esac
+    [ -f "$resolved" ] || die "record ledger must already be a regular file"
+    mode="$(stat -c '%a' "$resolved" 2>/dev/null || true)"
+    owner="$(stat -c '%u' "$resolved" 2>/dev/null || true)"
+    [ "$mode" = 600 ] || die "record ledger must have mode 0600"
+    [ "$owner" = "$(id -u)" ] || die "record ledger must be operator-owned"
+}
+
 bar() {
     local done="$1" total="$2" width=20 filled=0 empty=0
     [ "$total" -le 0 ] || filled=$((done * width / total))
@@ -301,6 +317,7 @@ record_event() {
     local confirmed_unix=0 block_height=0 block_hash=UNAVAILABLE arg case_id observed commit
     local candidate event
     shift
+    assert_record_ledger_private
     for arg in "$@"; do
         case "$arg" in
             --slot=*) slot="${arg#*=}" ;;
@@ -362,7 +379,18 @@ selftest() {
         [ ! -d "$fixture" ] || rm -r -- "$fixture"
     }
     trap cleanup_transaction_micro_lab_selftest RETURN
+    if (LEDGER="$REPO/docs/work/forbidden-micro-lab-selftest.jsonl";
+        assert_record_ledger_private) >/dev/null 2>&1; then
+        die "selftest accepted a record ledger inside the repository"
+    fi
     sed -n '1p' "$LEDGER" > "$fixture_ledger"
+    chmod 600 "$fixture_ledger"
+    chmod 644 "$fixture_ledger"
+    if (LEDGER="$fixture_ledger"; assert_record_ledger_private) \
+            >/dev/null 2>&1; then
+        die "selftest accepted a non-private record ledger"
+    fi
+    chmod 600 "$fixture_ledger"
     ZCL_TRANSACTION_MICRO_LEDGER="$fixture_ledger" "$0" record \
         --slot=1 --state=broadcast \
         --txid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
