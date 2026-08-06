@@ -3,9 +3,8 @@
  * Coin selection audit tests: adversarial UTXO distributions.
  *
  * Exercises wallet_select_coins with dust, many small, few large,
- * exact match, and edge-case UTXO sets.  Documents current naive
- * first-fit behavior and establishes acceptance criteria for any
- * future BnB or knapsack upgrade. */
+ * exact match, and edge-case UTXO sets.  Pins deterministic minimal-input
+ * selection so wallet insertion order cannot inflate fees or signing work. */
 
 #include "test/test_core.h"
 #include "wallet/wallet.h"
@@ -91,7 +90,7 @@ static int test_exact_single_coin(void)
                                         sel, &nsel, MAX_SEL, &total);
         ASSERT(ok);
         ASSERT(total >= 1 * ZCL_COIN);
-        /* First-fit: selects 1 ZCL coin (index 0) */
+        /* Smallest sufficient single coin is the exact match. */
         ASSERT_EQ(nsel, (size_t)1);
         ASSERT_EQ(total, 1 * ZCL_COIN);
 
@@ -129,7 +128,7 @@ static int test_many_dust_utxos(void)
 static int test_many_dust_plus_one_large(void)
 {
     int failures = 0;
-    TEST("coin-sel: dust+large — first-fit selects all dust then large") {
+    TEST("coin-sel: dust+large — selects the one sufficient coin") {
         int64_t vals[51];
         for (int i = 0; i < 50; i++) vals[i] = ZCL_DUST;  /* 50 dust coins */
         vals[50] = 10 * ZCL_COIN;                           /* one large coin */
@@ -142,10 +141,8 @@ static int test_many_dust_plus_one_large(void)
         bool ok = wallet_select_coins(NULL, coins, n, 1 * ZCL_COIN,
                                         sel, &nsel, MAX_SEL, &total);
         ASSERT(ok);
-        /* Current naive algorithm: tries dust first, then reaches large.
-         * Selected: all 50 dust + the large = 51 coins. */
-        ASSERT(nsel == 51);
-        ASSERT(total >= 1 * ZCL_COIN);
+        ASSERT_EQ(nsel, (size_t)1);
+        ASSERT_EQ(total, 10 * ZCL_COIN);
 
         free_utxo_set(coins, wtxs, n);
         PASS();
@@ -156,7 +153,7 @@ static int test_many_dust_plus_one_large(void)
 static int test_large_then_dust(void)
 {
     int failures = 0;
-    TEST("coin-sel: large before dust — first-fit selects single large") {
+    TEST("coin-sel: large before dust — selects single large") {
         int64_t vals[51];
         vals[0] = 10 * ZCL_COIN;                            /* large coin first */
         for (int i = 1; i <= 50; i++) vals[i] = ZCL_DUST;   /* then dust */
@@ -169,7 +166,6 @@ static int test_large_then_dust(void)
         bool ok = wallet_select_coins(NULL, coins, n, 1 * ZCL_COIN,
                                         sel, &nsel, MAX_SEL, &total);
         ASSERT(ok);
-        /* Large coin is first — selected immediately. */
         ASSERT_EQ(nsel, (size_t)1);
         ASSERT_EQ(total, 10 * ZCL_COIN);
 
@@ -193,9 +189,9 @@ static int test_few_large_coins(void)
         bool ok = wallet_select_coins(NULL, coins, n, 150 * ZCL_COIN,
                                         sel, &nsel, MAX_SEL, &total);
         ASSERT(ok);
-        /* First-fit: picks 100 + 200 = 300, stops (>= 150). */
-        ASSERT_EQ(nsel, (size_t)2);
-        ASSERT_EQ(total, 300 * ZCL_COIN);
+        /* The smallest sufficient single coin wins. */
+        ASSERT_EQ(nsel, (size_t)1);
+        ASSERT_EQ(total, 200 * ZCL_COIN);
 
         free_utxo_set(coins, wtxs, n);
         PASS();
@@ -249,7 +245,7 @@ static int test_all_unspendable(void)
 static int test_target_zero(void)
 {
     int failures = 0;
-    TEST("coin-sel: target=0 — naive first-fit still selects one coin") {
+    TEST("coin-sel: target=0 succeeds without consuming a coin") {
         int64_t vals[] = { 1 * ZCL_COIN };
         struct coin_entry *coins; struct wallet_tx **wtxs;
         size_t n = make_utxo_set(vals, 1, &coins, &wtxs);
@@ -259,11 +255,9 @@ static int test_target_zero(void)
 
         bool ok = wallet_select_coins(NULL, coins, n, 0,
                                         sel, &nsel, MAX_SEL, &total);
-        /* Current behavior: enters loop, selects first coin, then
-         * checks value_out >= 0 → true.  Does NOT short-circuit
-         * before the loop.  This is a known suboptimality. */
         ASSERT(ok);
-        ASSERT_EQ(nsel, (size_t)1);
+        ASSERT_EQ(nsel, (size_t)0);
+        ASSERT_EQ(total, (int64_t)0);
 
         free_utxo_set(coins, wtxs, n);
         PASS();
@@ -271,10 +265,10 @@ static int test_target_zero(void)
     return failures;
 }
 
-static int test_exact_sum_of_two(void)
+static int test_prefers_single_over_exact_pair(void)
 {
     int failures = 0;
-    TEST("coin-sel: exact sum of first two coins") {
+    TEST("coin-sel: one sufficient input beats an exact two-input pair") {
         int64_t vals[] = { 3 * ZCL_COIN, 7 * ZCL_COIN, 20 * ZCL_COIN };
         struct coin_entry *coins; struct wallet_tx **wtxs;
         size_t n = make_utxo_set(vals, 3, &coins, &wtxs);
@@ -285,9 +279,9 @@ static int test_exact_sum_of_two(void)
         bool ok = wallet_select_coins(NULL, coins, n, 10 * ZCL_COIN,
                                         sel, &nsel, MAX_SEL, &total);
         ASSERT(ok);
-        /* 3 + 7 = 10 exactly */
-        ASSERT_EQ(nsel, (size_t)2);
-        ASSERT_EQ(total, 10 * ZCL_COIN);
+        /* One 20 ZCL input costs less to process than two smaller inputs. */
+        ASSERT_EQ(nsel, (size_t)1);
+        ASSERT_EQ(total, 20 * ZCL_COIN);
 
         free_utxo_set(coins, wtxs, n);
         PASS();
@@ -421,11 +415,10 @@ static int test_change_overshoot(void)
     return failures;
 }
 
-static int test_order_dependence(void)
+static int test_order_independence(void)
 {
     int failures = 0;
-    TEST("coin-sel: documents order-dependent behavior") {
-        /* [1, 2, 3] targeting 3: first-fit picks 1+2 (2 inputs) */
+    TEST("coin-sel: wallet insertion order does not change selection") {
         int64_t vals_a[] = { 1 * ZCL_COIN, 2 * ZCL_COIN, 3 * ZCL_COIN };
         struct coin_entry *ca; struct wallet_tx **wa;
         make_utxo_set(vals_a, 3, &ca, &wa);
@@ -437,7 +430,8 @@ static int test_order_dependence(void)
                              sel, &nsel, MAX_SEL, &total);
         size_t nsel_a = nsel;
 
-        /* [3, 2, 1] targeting 3: first-fit picks 3 (1 input) */
+        int64_t total_a = total;
+
         int64_t vals_b[] = { 3 * ZCL_COIN, 2 * ZCL_COIN, 1 * ZCL_COIN };
         struct coin_entry *cb; struct wallet_tx **wb;
         make_utxo_set(vals_b, 3, &cb, &wb);
@@ -447,13 +441,93 @@ static int test_order_dependence(void)
                              sel, &nsel, MAX_SEL, &total);
         size_t nsel_b = nsel;
 
-        /* Order matters: [1,2,3]→2 inputs, [3,2,1]→1 input */
-        ASSERT(nsel_a == 2);
-        ASSERT(nsel_b == 1);
-        ASSERT(nsel_a != nsel_b);
+        ASSERT_EQ(nsel_a, (size_t)1);
+        ASSERT_EQ(nsel_b, (size_t)1);
+        ASSERT_EQ(total_a, 3 * ZCL_COIN);
+        ASSERT_EQ(total, 3 * ZCL_COIN);
 
         free_utxo_set(ca, wa, 3);
         free_utxo_set(cb, wb, 3);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_candidate_allocation_failure(void)
+{
+    int failures = 0;
+    TEST("coin-sel: candidate allocation failure is fail-closed") {
+        int64_t vals[] = { 1 * ZCL_COIN, 2 * ZCL_COIN };
+        struct coin_entry *coins; struct wallet_tx **wtxs;
+        size_t n = make_utxo_set(vals, 2, &coins, &wtxs);
+        struct coin_entry sel[MAX_SEL];
+        size_t nsel = 9;
+        int64_t total = 99;
+
+        zcl_alloc_fault_fail_next("wallet_coin_candidates");
+        bool ok = wallet_select_coins(NULL, coins, n, 4 * ZCL_COIN,
+                                      sel, &nsel, MAX_SEL, &total);
+        zcl_alloc_fault_clear();
+        ASSERT(!ok);
+        ASSERT_EQ(nsel, (size_t)0);
+        ASSERT_EQ(total, (int64_t)0);
+
+        free_utxo_set(coins, wtxs, n);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_liquidity_planner(void)
+{
+    int failures = 0;
+    TEST("coin-sel: liquidity planner separates ready, fanout, and funding states") {
+        struct wallet_liquidity_plan plan;
+        struct coin_entry *coins; struct wallet_tx **wtxs;
+
+        int64_t ready_vals[] = { 2000, 2000, 2000, 2000 };
+        size_t n = make_utxo_set(ready_vals, 4, &coins, &wtxs);
+        ASSERT(wallet_liquidity_plan_compute(
+            coins, n, 5000, 1000, 100, 100, 3, &plan));
+        ASSERT(strcmp(plan.status, "READY_NOW") == 0);
+        ASSERT(plan.ready_now);
+        ASSERT_EQ(plan.current_independent_slots, 3);
+        ASSERT_EQ(plan.current_inputs_used, 3);
+        ASSERT(!plan.fanout_recommended);
+        free_utxo_set(coins, wtxs, n);
+
+        int64_t one_coin[] = { 5000 };
+        n = make_utxo_set(one_coin, 1, &coins, &wtxs);
+        ASSERT(wallet_liquidity_plan_compute(
+            coins, n, 5000, 1000, 100, 100, 3, &plan));
+        ASSERT(strcmp(plan.status, "NEEDS_FANOUT") == 0);
+        ASSERT(!plan.ready_now);
+        ASSERT(plan.fanout_possible);
+        ASSERT(plan.fanout_recommended);
+        ASSERT_EQ(plan.current_independent_slots, 1);
+        ASSERT_EQ(plan.recommended_fanout_outputs, 3);
+        ASSERT_EQ(plan.fanout_output_value_zat, (int64_t)1100);
+        ASSERT_EQ(plan.fanout_outputs_total_zat, (int64_t)3300);
+
+        ASSERT(wallet_liquidity_plan_compute(
+            coins, n, 3000, 1000, 100, 100, 3, &plan));
+        ASSERT(strcmp(plan.status, "INSUFFICIENT_POLICY_BUDGET") == 0);
+        ASSERT(!plan.fanout_possible);
+
+        ASSERT(wallet_liquidity_plan_compute(
+            coins, n, 3300, 1000, 100, 100, 3, &plan));
+        ASSERT(strcmp(plan.status, "FANOUT_FEE_EXCEEDS_BUDGET") == 0);
+        ASSERT_EQ(plan.maximum_fanout_slots, 2);
+        free_utxo_set(coins, wtxs, n);
+
+        int64_t transparent_short[] = { 2000 };
+        n = make_utxo_set(transparent_short, 1, &coins, &wtxs);
+        ASSERT(wallet_liquidity_plan_compute(
+            coins, n, 5000, 1000, 100, 100, 3, &plan));
+        ASSERT(strcmp(plan.status, "NEEDS_TRANSPARENT_LIQUIDITY") == 0);
+        ASSERT(!plan.fanout_possible);
+        free_utxo_set(coins, wtxs, n);
+
         PASS();
     } _test_next:;
     return failures;
@@ -476,15 +550,17 @@ int test_coin_selection(void)
     failures += test_empty_utxo_set();
     failures += test_all_unspendable();
     failures += test_target_zero();
-    failures += test_exact_sum_of_two();
+    failures += test_prefers_single_over_exact_pair();
     failures += test_many_small_coins();
     failures += test_max_selected_limit();
     failures += test_mixed_spendable_unspendable();
     failures += test_single_satoshi();
     failures += test_change_overshoot();
-    failures += test_order_dependence();
+    failures += test_order_independence();
+    failures += test_candidate_allocation_failure();
+    failures += test_liquidity_planner();
 
     printf("%d passed, %d failed\n",
-           15 - failures, failures);
+           17 - failures, failures);
     return failures;
 }

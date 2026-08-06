@@ -1,0 +1,1 @@
+{"schema":"zcl.transaction_micro_lab_campaign.v1","campaign_id":"mainnet-micro-100-v1","created_at":"2026-08-05T00:00:00Z","target_count":100,"recipient_zat_each":1000,"fee_ceiling_zat_each":10000,"setup_envelope_zat":900000,"campaign_envelope_zat":2000000,"lifetime_lab_cap_zat":5000000,"reserve_floor_zat":25000000}

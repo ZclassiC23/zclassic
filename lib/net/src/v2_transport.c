@@ -8,8 +8,10 @@
 
 #include "net/v2_transport.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
+#include "base/serialize_le.h"
 #include "noise/noise_handshake.h"
 #include "noise/session_transport.h"
 #include "support/cleanse.h"
@@ -17,6 +19,8 @@
 #include "json/json.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+
+static _Atomic uint64_t g_connection_serial = 1;
 
 /* ── growable heap buffer ─────────────────────────────────────────── */
 
@@ -85,6 +89,14 @@ static bool establish_and_flush_locked(struct v2_transport *t,
         t->have_peer_static = true;
     }
     memory_cleanse(rs, sizeof(rs));
+    if (noise_hs_transcript_hash(&t->hs, t->transcript_hash)) {
+        t->have_transcript_hash = true;
+        /* This is an exact shared transcript token for signed application
+         * frames.  It is deliberately never used as an ordering relation. */
+        t->connection_generation = zcl_read_u64_le(t->transcript_hash);
+        if (t->connection_generation == 0)
+            t->connection_generation = 1;
+    }
     noise_hs_cleanse(&t->hs);
     t->state = V2_ESTABLISHED;
 
@@ -120,6 +132,9 @@ struct v2_transport *v2_transport_begin(bool is_initiator,
         LOG_NULL("net", "v2_transport_begin: calloc failed");
     zcl_mutex_init(&t->lock);
     t->is_initiator = is_initiator;
+    t->connection_serial = atomic_fetch_add(&g_connection_serial, 1);
+    if (!t->connection_serial)
+        t->connection_serial = atomic_fetch_add(&g_connection_serial, 1);
     memcpy(t->magic, magic, 4);
     t->hs_started_us = GetTimeMicros();
 
@@ -395,6 +410,25 @@ bool v2_transport_is_plaintext_magic(const uint8_t *first, size_t n,
     return memcmp(first, magic, 4) == 0;
 }
 
+bool v2_transport_snapshot(const struct v2_transport *t,
+                           struct v2_transport_snapshot *out)
+{
+    if (!t || !out)
+        LOG_FAIL("net", "v2_transport_snapshot: NULL argument");
+    memset(out, 0, sizeof(*out));
+    zcl_mutex_lock((zcl_mutex_t *)&t->lock);
+    out->established = t->state == V2_ESTABLISHED && t->have_peer_static &&
+                       t->have_transcript_hash;
+    if (out->established) {
+        memcpy(out->remote_static, t->peer_static, 32);
+        memcpy(out->transcript_hash, t->transcript_hash, 32);
+        out->connection_generation = t->connection_generation;
+        out->connection_serial = t->connection_serial;
+    }
+    zcl_mutex_unlock((zcl_mutex_t *)&t->lock);
+    return out->established;
+}
+
 void v2_transport_free(struct v2_transport *t)
 {
     if (!t)
@@ -402,6 +436,7 @@ void v2_transport_free(struct v2_transport *t)
     session_transport_cleanse(&t->rec);
     noise_hs_cleanse(&t->hs);
     memory_cleanse(t->peer_static, sizeof(t->peer_static));
+    memory_cleanse(t->transcript_hash, sizeof(t->transcript_hash));
     memory_cleanse(t->acc, sizeof(t->acc));
     if (t->pending) {
         memory_cleanse(t->pending, t->pending_cap);

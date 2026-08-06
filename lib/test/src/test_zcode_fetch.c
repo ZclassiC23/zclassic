@@ -269,6 +269,7 @@ static int zf_t_pin_roundtrip(void)
         struct zf_cmd c;
         zf_cmd_init(&c, dd);
         (void)json_push_kv_str(&c.input, "root", pkg.root_hex);
+        (void)json_push_kv_str(&c.input, "mode", "plan");
         zcl_native_handle_zcode_package_pin(&c.request, &c.reply);
         ASSERT(c.reply.status == ZCL_COMMAND_STATUS_FAILED);
         ASSERT(strcmp(c.reply.error.code, "UNKNOWN_PACKAGE") == 0);
@@ -282,11 +283,28 @@ static int zf_t_pin_roundtrip(void)
             vcs_package_store_close(store);
         }
 
-        /* Pin (operator path): pinned:true, pool pins. */
+        /* Pin plan is read-only; commit applies exactly that state token. */
+        char token[65];
         zf_cmd_init(&c, dd);
         (void)json_push_kv_str(&c.input, "root", pkg.root_hex);
+        (void)json_push_kv_str(&c.input, "mode", "plan");
         zcl_native_handle_zcode_package_pin(&c.request, &c.reply);
         ASSERT(c.reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(!json_get_bool(json_get(&c.reply.data, "committed")));
+        ASSERT(!json_get_bool(json_get(&c.reply.data, "pinned")));
+        const char *planned = json_get_str(json_get(&c.reply.data,
+                                                     "plan_token"));
+        ASSERT(planned != NULL && strlen(planned) == 64);
+        memcpy(token, planned, sizeof(token));
+        zf_cmd_free(&c);
+
+        zf_cmd_init(&c, dd);
+        (void)json_push_kv_str(&c.input, "root", pkg.root_hex);
+        (void)json_push_kv_str(&c.input, "mode", "commit");
+        (void)json_push_kv_str(&c.input, "plan_token", token);
+        zcl_native_handle_zcode_package_pin(&c.request, &c.reply);
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(json_get_bool(json_get(&c.reply.data, "committed")));
         ASSERT(json_get(&c.reply.data, "pinned") &&
                json_get_bool(json_get(&c.reply.data, "pinned")));
         {
@@ -298,19 +316,25 @@ static int zf_t_pin_roundtrip(void)
         }
         zf_cmd_free(&c);
 
-        /* Unpin: pinned:false, idempotent. */
+        /* Unpin uses the same plan/commit lifecycle. */
         zf_cmd_init(&c, dd);
         (void)json_push_kv_str(&c.input, "root", pkg.root_hex);
+        (void)json_push_kv_str(&c.input, "mode", "plan");
         zcl_native_handle_zcode_package_unpin(&c.request, &c.reply);
         ASSERT(c.reply.status == ZCL_COMMAND_STATUS_PASSED);
-        ASSERT(json_get(&c.reply.data, "pinned") &&
-               !json_get_bool(json_get(&c.reply.data, "pinned")));
+        planned = json_get_str(json_get(&c.reply.data, "plan_token"));
+        ASSERT(planned != NULL && strlen(planned) == 64);
+        memcpy(token, planned, sizeof(token));
         zf_cmd_free(&c);
 
         zf_cmd_init(&c, dd);
         (void)json_push_kv_str(&c.input, "root", pkg.root_hex);
+        (void)json_push_kv_str(&c.input, "mode", "commit");
+        (void)json_push_kv_str(&c.input, "plan_token", token);
         zcl_native_handle_zcode_package_unpin(&c.request, &c.reply);
         ASSERT(c.reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(json_get(&c.reply.data, "pinned") &&
+               !json_get_bool(json_get(&c.reply.data, "pinned")));
         zf_cmd_free(&c);
         zf_free_package(&pkg);
         PASS();

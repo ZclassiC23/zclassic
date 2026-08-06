@@ -30,8 +30,14 @@ AGENT_IMPACT_RULE("lib/base/include/base/hex.h|lib/test/src/test_hex_codec.c|too
 /* The one byte-order codec. crypto/common.h forwards to it, so its own
  * seven callers ride the same group; the behaviour is all in the header. */
 AGENT_IMPACT_RULE("lib/base/include/base/serialize_le.h|lib/crypto/include/crypto/common.h|lib/test/src/test_byte_order_codec.c|tools/lint/check_byte_order_codec_single.sh|tools/lint/byte_order_codec_baseline.txt", "byte_order_codec make_lint_gates")
+/* Self-hosted foundation packages.  Scalar SHA3 is consensus-facing even
+ * though its source authority now sits below lib/crypto. */
+AGENT_IMPACT_RULE("lib/base/include/base/checked.h|lib/base/include/base/cleanse.h|lib/base/src/cleanse.c|lib/support/include/support/cleanse.h|lib/base/tests/*|lib/base/examples/*|lib/base/zcode-package.json|lib/base/LICENSE|lib/base/NOTICE", "base_foundation key_scrub byte_order_codec hex_codec make_lint_gates")
+AGENT_IMPACT_RULE("lib/sha3/include/sha3/sha3.h|lib/sha3/src/sha3.c|lib/sha3/tests/*|lib/sha3/examples/*|lib/sha3/zcode-package.json|lib/sha3/LICENSE|lib/crypto/include/crypto/sha3.h", "sha3_stream sha3_256_x4 sha3_512_x4 mmb mmr utxo_commitment consensus_parity make_lint_gates")
+AGENT_IMPACT_RULE("lib/codec/include/codec/cursor.h|lib/codec/src/cursor.c|lib/codec/tests/*|lib/codec/examples/*|lib/codec/zcode-package.json|lib/codec/LICENSE|lib/codec/README.md", "codec_cursor byte_order_codec make_lint_gates")
 AGENT_IMPACT_RULE("app/views/src/format_helpers.c|app/views/include/views/format_helpers.h|lib/test/src/test_format_helpers_codec.c", "format_helpers_codec explorer make_lint_gates")
 AGENT_IMPACT_RULE("lib/util/src/png_writer.c|lib/util/include/util/png_writer.h|lib/test/src/test_test_png_writer.c", "test_png_writer make_lint_gates")
+AGENT_IMPACT_RULE("lib/encoding/src/qr.c|lib/encoding/src/qrcodegen_backend.c|lib/encoding/include/encoding/qr.h|lib/presentation/src/*|lib/presentation/include/presentation/*|lib/presentation/examples/*|vendor/typography/*|app/views/src/qr_popup.c|app/views/include/views/qr_popup.h|app/views/src/ui_present.c|app/views/include/views/ui_present.h|tools/command/native_qr_command.c|lib/test/src/test_qr.c|config/commands/app_features.def", "qr spawn cli_argv_strict command_registry_catalog native_api_contract make_lint_gates")
 AGENT_IMPACT_RULE("lib/util/src/clientversion.c|lib/util/include/util/clientversion.h|lib/test/src/test_clientversion_format.c", "clientversion_format encoding make_lint_gates")
 AGENT_IMPACT_RULE("tools/dev/source-identity.sh|tools/dev/source-identity-selftest.sh|tools/scripts/check_vcs_no_sha1.sh", "clientversion_format consensus_state_producer_receipt vcs_core make_lint_gates")
 AGENT_IMPACT_RULE("lib/util/src/self_backtrace.c|lib/util/include/util/self_backtrace.h|lib/util/src/async_safe_write.c|lib/util/include/util/async_safe_write.h|lib/util/src/signal_handler.c|lib/util/include/util/signal_handler.h|lib/util/src/thread_registry.c|lib/util/include/util/thread_registry.h|lib/test/src/test_self_backtrace.c", "self_backtrace thread_registry command_registry_catalog rpc make_lint_gates")
@@ -62,7 +68,12 @@ AGENT_IMPACT_RULE("lib/crypto/src/hkdf_sha256.c|lib/crypto/include/crypto/hkdf_s
  * either transform, the dispatch, or the hw_profile reporting of the live
  * transform must re-run the differential oracle + the bench teeth. */
 AGENT_IMPACT_RULE("lib/crypto/src/sha256.c|lib/crypto/include/crypto/sha256.h|lib/test/src/test_sha256_isa_parity.c|lib/util/src/hw_profile.c", "sha256_isa_parity crypto crypto_perf_selftest hw_profile make_lint_gates")
+AGENT_IMPACT_RULE("lib/test/src/test_sprout_groth16_kat.c", "sprout_groth16_kat sprout_phgr13_kat sapling consensus_parity make_lint_gates")
+AGENT_IMPACT_RULE("lib/test/src/test_transaction_wire_evidence.c", "transaction_wire_evidence test_api sapling script multisig consensus_parity make_lint_gates")
 AGENT_IMPACT_RULE("lib/crypto/src/x25519_safe.c|lib/crypto/include/crypto/x25519_safe.h|lib/noise/src/noise_handshake.c|lib/noise/include/noise/noise_handshake.h|lib/noise/src/session_transport.c|lib/noise/include/noise/session_transport.h|lib/test/src/test_noise_transport.c", "x25519_safe noise_nk_handshake noise_xx_handshake session_transport crypto make_lint_gates")
+AGENT_IMPACT_RULE("lib/vcs/src/zcode_dht_identity.c|lib/vcs/include/vcs/zcode_dht_identity.h|tools/command/native_zcode_network_command.c|config/commands/zcode.def|lib/test/src/test_zcode_dht_delegation.c", "zcode_dht_delegation command_registry_catalog make_lint_gates")
+AGENT_IMPACT_RULE("config/src/boot_zcode_dht*.c|config/include/config/boot_zcode_dht*.h|config/src/boot_zcode_swarm.c|config/src/boot_endpoint_records.c|app/controllers/include/controllers/diagnostics_dumpers_zcode.def", "zcode_dht_service command_registry_catalog syncdiag_rpc make_lint_gates")
+AGENT_IMPACT_RULE("lib/net/src/v2_transport.c|lib/net/include/net/v2_transport.h|lib/net/src/v2_identity.c|lib/net/include/net/v2_identity.h|lib/net/src/v2_upgrade.c|lib/net/src/msg_version.c|lib/net/include/net/connman.h|lib/net/include/net/net.h|lib/test/src/test_v2_transport_parity.c|lib/test/src/test_connman_addnode_fallback.c", "v2_transport_parity connman_addnode_fallback noise_xx_handshake session_transport net make_lint_gates")
 
 AGENT_IMPACT_RULE("lib/net/src/peer_lifecycle.c|lib/net/src/peer_identity.c|lib/net/include/net/peer_identity.h|lib/net/src/msg_version.c|lib/net/src/protocol.c|app/controllers/src/network_controller.c|lib/test/src/test_peer_lifecycle.c|lib/test/src/test_peer_identity_hostkey.c", "peer_lifecycle peer_identity_hostkey syncdiag_rpc node_health_service explorer")
 AGENT_IMPACT_RULE("lib/net/src/msg_version.c|lib/net/src/msgprocessor_inv.c|lib/net/src/msgprocessor_handshake.c|lib/net/src/addrman.c|lib/net/include/net/addrman.h|lib/net/include/net/msg_internal.h|lib/net/include/net/msg_bounds_guard.h|lib/test/src/test_net_handshake_adversarial.c", "net_handshake_adversarial net msg_handlers make_lint_gates")
@@ -213,6 +224,7 @@ AGENT_IMPACT_RULE("app/jobs/src/validate_headers_stage.c|app/jobs/src/validate_h
 AGENT_IMPACT_RULE("app/jobs/include/jobs/rom_compile_status.h|app/jobs/src/rom_compile_status.c|tools/command/rom_compile_render.c|tools/command/rom_compile_render.h|tools/command/rom_watch_loop.c|tools/command/rom_watch_loop.h|tools/command/rom_compile_offline.c|tools/command/rom_compile_offline.h|lib/test/src/test_rom_compile_status.c|lib/test/src/test_rom_watch_loop.c", "rom_compile_status rom_watch_loop command_registry_catalog syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("lib/framework/include/framework/condition.h|lib/framework/src/condition.c|lib/test/src/test_condition_engine.c", "condition_engine syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("app/conditions/src/condition_registry.c|app/conditions/include/conditions/condition_registry.h|app/conditions/include/conditions/condition_registry.def", "condition_engine syncdiag_rpc make_lint_gates")
+AGENT_IMPACT_RULE("app/controllers/src/diagnostics_chain_evidence.c|app/controllers/include/controllers/diagnostics_dumpers_sync.def|lib/test/src/test_syncdiag_operator.c", "syncdiag_rpc chain_evidence_controller chain_evidence_live_advance make_lint_gates")
 AGENT_IMPACT_RULE("lib/util/src/supervisor.c|lib/util/include/util/supervisor.h|lib/test/src/test_supervisor.c", "supervisor supervisor_domains supervisor_production_tree make_lint_gates")
 AGENT_IMPACT_RULE("lib/util/src/supervisor_backstop.c|lib/util/include/util/supervisor_backstop.h|lib/test/src/test_supervisor_backstop.c|config/src/boot_supervisor_backstop.c|config/src/boot_sd_watchdog.c|config/src/boot_services.c|config/include/config/boot_internal.h|src/main.c|app/controllers/src/diagnostics_registry.c|app/controllers/include/controllers/diagnostics_dumpers.def|lib/util/src/sd_notify.c|lib/util/include/util/sd_notify.h|lib/test/src/test_sd_notify.c", "supervisor_backstop supervisor sd_notify syncdiag_rpc chain_tip_watchdog_bounded_restart make_lint_gates")
 AGENT_IMPACT_RULE("lib/util/src/reducer_drive_guard.c|lib/util/include/util/reducer_drive_guard.h|lib/test/src/test_reducer_drive_guard.c", "reducer_drive_guard make_lint_gates")
@@ -228,6 +240,7 @@ AGENT_IMPACT_RULE("app/conditions/src/have_data_unreadable.c|app/conditions/incl
 AGENT_IMPACT_RULE("app/conditions/src/mirror_divergence_located.c|app/conditions/src/tip_label_divergence.c|app/conditions/src/state_window_inconsistent.c|lib/test/src/test_validation_pack_conditions.c", "validation_pack_conditions condition_engine make_lint_gates")
 AGENT_IMPACT_RULE("app/conditions/src/catalog_lag_exceeded.c|app/conditions/include/conditions/catalog_lag_exceeded.h|lib/test/src/test_catalog_lag_exceeded.c", "catalog_lag_exceeded catalog_completeness condition_engine make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/sync_monitor.c|app/services/include/services/sync_monitor.h|lib/test/src/test_sync_watchdog_conditions.c", "sync_watchdog_conditions body_fetch_missing_have_data_condition make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/wallet_money_service.c|app/services/include/services/wallet_money_service.h|lib/test/src/test_agent_spend_policy.c", "agent_spend_policy metaverse_agent_broker make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/node_db_catchup_service.c|app/services/src/node_db_catchup_sparse.c|app/services/src/node_db_catchup_internal.h|app/services/include/services/node_db_catchup_service.h|app/services/src/node_db_catchup_lock_guard.c|app/services/include/services/node_db_catchup_lock_guard.h|app/services/src/node_db_catchup_decrypt.c|app/services/src/catchup_lifecycle_service.c|app/services/include/services/catchup_lifecycle_service.h|lib/test/src/test_catchup_lifecycle_service.c|app/controllers/src/sync_controller_catchup_jobs.c|lib/test/src/test_node_db_catchup_service.c|config/src/boot_background_workers.c|config/src/boot_services.c|config/include/config/boot_internal.h|config/src/boot_utxo_replay.c", "node_db_catchup_service catchup_lifecycle_service syncdiag_rpc supervisor make_lint_gates")
 AGENT_IMPACT_RULE("lib/storage/src/progress_store.c|lib/storage/include/storage/progress_store.h|lib/test/src/test_progress_store.c", "progress_store node_db_catchup_service reducer_forward_progress_gate make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_kill9_recovery.c", "kill9_recovery make_lint_gates")
@@ -301,6 +314,11 @@ AGENT_IMPACT_RULE("app/controllers/src/name_controller.c|app/controllers/src/nam
 AGENT_IMPACT_RULE("lib/overlay/*|lib/test/src/test_overlay.c", "overlay zanc make_lint_gates")
 AGENT_IMPACT_RULE("lib/zanc/*|app/models/src/zanc.c|app/models/include/models/zanc.h|app/controllers/src/anchor_controller.c|app/controllers/include/controllers/anchor_controller.h|app/models/src/explorer_index.c|app/models/include/models/explorer_index.h|lib/test/src/test_zanc.c", "zanc explorer models make_lint_gates")
 AGENT_IMPACT_RULE("lib/zslp/*|lib/test/src/test_slp.c|lib/test/src/test_protocols.c|lib/script/include/script/op_return_push.h", "slp protocols make_lint_gates")
+AGENT_IMPACT_RULE("lib/zswap/*|lib/test/src/test_zswap_quote.c|lib/test/src/test_zswap_yardsale.c|lib/test/src/test_zswap_ceremony.c|app/models/src/zswap_ad.c|app/models/include/models/zswap_ad.h", "zswap_quote zswap_yardsale zswap_ceremony make_lint_gates")
+AGENT_IMPACT_RULE("apps/yardsale/*|app/controllers/src/yardsale_controller.c|app/controllers/include/controllers/yardsale_controller.h|app/controllers/src/yardsale_site_controller.c|app/controllers/include/controllers/yardsale_site_controller.h|lib/test/src/test_yardsale_app.c", "yardsale_app dev_platform zswap_ceremony make_lint_gates")
+/* Yardsale wallet glue: typed yardsale.* native leaves -> node RPC ->
+ * yardsale_wallet_service plan/commit against the yardsale_plans table. */
+AGENT_IMPACT_RULE("app/services/src/yardsale_wallet_service.c|app/services/src/yardsale_wallet_service_buy.c|app/services/include/services/yardsale_wallet_service.h|app/services/include/services/yardsale_wallet_internal.h|app/models/src/yardsale_plan.c|app/models/include/models/yardsale_plan.h|app/controllers/src/yardsale_wallet_controller.c|app/controllers/include/controllers/yardsale_wallet_controller.h|tools/command/native_yardsale_command.c|config/commands/yardsale.def|lib/test/src/test_yardsale_wallet.c", "yardsale_wallet yardsale_app db_validators command_registry_catalog make_lint_gates")
 /* The OP_RETURN decoders themselves, as opposed to the surfaces around them.
  * ZNAM and ZSLP records are already in mainnet blocks, so a change to any file
  * below can change which of them the node honours; test_overlay_parse_parity
@@ -309,6 +327,9 @@ AGENT_IMPACT_RULE("lib/zslp/*|lib/test/src/test_slp.c|lib/test/src/test_protocol
 AGENT_IMPACT_RULE("lib/znam/src/znam.c|lib/zslp/src/slp.c|lib/overlay/src/overlay_codec.c|lib/overlay/include/overlay/overlay_codec.h|lib/script/include/script/op_return_push.h|app/controllers/src/blog_controller.c|lib/test/src/test_overlay_parse_parity.c", "overlay_parse_parity make_lint_gates")
 AGENT_IMPACT_RULE("lib/net/src/zmsg.c|lib/net/include/net/zmsg.h|app/models/src/zmsg.c|app/models/include/models/zmsg.h|app/controllers/src/messaging_controller.c|app/jobs/src/tip_finalize_post_step.c|lib/test/src/test_simnet_zmsg_onchain.c", "protocols simnet_zmsg_onchain test_zmsg_memo_codec models make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_test_zmsg_memo_codec.c", "test_zmsg_memo_codec make_lint_gates")
+AGENT_IMPACT_RULE("lib/zid/src/zpay.c|lib/zid/include/zid/zpay.h|tools/command/native_zpay_command.c|lib/test/src/test_zpay.c", "zpay command_registry_catalog make_lint_gates")
+AGENT_IMPACT_RULE("app/models/src/wallet_metadata_crypto.c|app/models/include/models/wallet_metadata_crypto.h|lib/crypto/src/chacha20poly1305.c|lib/test/src/test_wallet_metadata_encryption.c", "wallet_metadata_encryption db_migration_idempotent make_lint_gates")
+AGENT_IMPACT_RULE("app/controllers/src/vault_intent_controller.c|app/controllers/include/controllers/vault_intent_controller.h|app/models/src/vault_intent.c|app/models/include/models/vault_intent.h|tools/command/native_vault_intent_command.c|config/commands/vault.def|lib/test/src/test_transaction_intent.c", "transaction_intent command_registry_catalog db_migration_idempotent make_lint_gates")
 AGENT_IMPACT_RULE("lib/json/include/json/*.h|lib/json/src/*.c", "json rpc api syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_json.c", "json make_lint_gates")
 AGENT_IMPACT_RULE("lib/rpc/include/rpc/client.h|lib/rpc/src/client.c|src/cli.c|src/main.c", "rpc syncdiag_rpc make_lint_gates")
@@ -318,7 +339,7 @@ AGENT_IMPACT_RULE("lib/test/src/test_sqlite.c", "sqlite make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test.c|lib/test/src/test_helpers.c|lib/test/include/test/test_helpers.h|lib/test/include/test/test_core.h|lib/test/include/test/block_fixtures.h|lib/test/include/test/wallet_view_fixture.h|lib/test/include/test/test_group_selector.h|lib/test/src/test_test_group_selector.c|lib/test/src/test_parallel.c|tools/dev/test-group-list.sh|tools/dev/test_group_catalog.c|tools/dev/test_group_catalog.h|tools/dev/test_group_catalog.def|tools/dev/test_proof_families.def|tools/dev/test_semantic_leaves.def|tools/scripts/check_test_registration.sh|tools/lint/check_accel_oracle_pinned.sh|tools/agent_fast_ci.sh", "test_group_selector make_lint_gates")
 /* Native changed-file planning and exact execution: implementation, public
  * shape, registry handler, and the adversarial proof of dimension honesty. */
-AGENT_IMPACT_RULE("tools/dev/devloop_plan.c|tools/dev/devloop.h|tools/dev/devloop_cli.c|tools/dev/devloop_process.c|tools/dev/dev_source_identity.c|tools/dev/native-dev-failure-selftest.sh|tools/command/native_dev_command.c|config/commands/dev.def|lib/test/src/test_impact_composition.c", "impact_composition dev_platform native_api_contract command_registry_catalog test_group_selector make_lint_gates")
+AGENT_IMPACT_RULE("tools/dev/devloop_plan.c|tools/dev/devloop.h|tools/dev/devloop_cli.c|tools/dev/devloop_process.c|tools/dev/dev_source_identity.c|tools/dev/native-dev-failure-selftest.sh|tools/command/native_dev_command.c|tools/command/native_dev_activation_command.c|config/commands/dev.def|lib/test/src/test_impact_composition.c", "impact_composition dev_platform native_api_contract command_registry_catalog test_group_selector make_lint_gates")
 AGENT_IMPACT_RULE("app/models/include/models/build_fabric.h|app/models/src/build_fabric.c|app/models/src/database_migrate_features_v30_up.c|lib/test/src/test_build_fabric.c", "build_fabric db_migration_idempotent make_lint_gates")
 AGENT_IMPACT_RULE("app/services/include/services/build_fabric_service.h|app/services/src/build_fabric_service.c", "build_fabric make_lint_gates")
 AGENT_IMPACT_RULE("lib/event/src/event.c|lib/event/include/event/event.h|lib/test/src/test_event.c", "event make_lint_gates")
@@ -370,7 +391,7 @@ AGENT_IMPACT_RULE("app/services/src/bg_validation_proofs.c|app/services/include/
  * the authority(coins)-vs-projection(utxos) SHA3 audit + bg_validation's
  * always-on sampled re-verify. Observational only; no consensus predicate. */
 AGENT_IMPACT_RULE("app/services/src/authority_projection_audit.c|app/services/include/services/authority_projection_audit.h", "integrity make_lint_gates")
-AGENT_IMPACT_RULE("app/services/src/bg_validation_service.c|app/services/src/bg_validation_dump.c|app/services/include/services/bg_validation_service.h|lib/test/src/test_bg_validation_reverify.c", "bg_validation_reverify integrity make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/bg_validation_service.c|app/services/src/bg_validation_dump.c|app/services/src/bg_validation_authority.c|app/services/include/services/bg_validation_service.h|app/services/include/services/bg_validation_authority.h|adapters/outbound/persistence/src/bg_validation_store_sqlite.c|adapters/outbound/persistence/include/adapters/outbound/persistence/bg_validation_store_sqlite.h|ports/include/ports/bg_validation_store_port.h|lib/test/src/test_bg_validation_reverify.c|lib/test/src/test_bg_validation_store_port.c", "bg_validation_reverify bg_validation_store_port integrity make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_verify_bench_selftest.c|lib/test/include/test/verify_bench_fixture.h", "verify_bench_selftest make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_crypto_perf_selftest.c|tools/crypto_perf_baseline.csv|tools/scripts/check_crypto_perf.sh", "crypto_perf_selftest make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_simnet_doublespend.c", "simnet_doublespend make_lint_gates")
@@ -403,13 +424,14 @@ AGENT_IMPACT_RULE("lib/sim/src/simnet_sapling.c|lib/sim/include/sim/simnet_sapli
  * z_sendmany is also the wallet-spend sovereignty guard entry (§5.3 of
  * docs/work/fast-sync-to-tip-plan-2026-07-16.md) — include sovereignty_guard. */
 AGENT_IMPACT_RULE("app/controllers/src/wallet_shielded_controller.c|app/controllers/src/wallet_shielded_send.c|app/controllers/src/wallet_shielded_send_shielded.c", "wallet shielded_payment_gate sovereignty_guard make_lint_gates")
+AGENT_IMPACT_RULE("app/controllers/src/vault_intent_controller.c|app/controllers/src/vault_intent_private.c|app/controllers/src/vault_intent_publish.c|app/controllers/include/controllers/vault_intent_controller.h|app/controllers/include/controllers/vault_intent_private.h|app/controllers/include/controllers/vault_intent_publish.h", "transaction_intent wallet_funds_safety shielded_payment_gate command_registry_catalog command_input_bounds make_lint_gates")
 /* The operational-vs-sovereign trust split (coins_kv_is_proven_authority vs
  * coins_kv_contains_refold_marker): the shared guard + dumper, and its two
  * enforcement call sites (mint/mining, wallet spend). */
 AGENT_IMPACT_RULE("app/controllers/src/sovereignty_controller.c|app/controllers/include/controllers/sovereignty_controller.h|lib/test/src/test_sovereignty_guard.c|app/controllers/src/mining_controller.c|app/controllers/include/controllers/wallet_shielded_internal.h|lib/storage/src/coins_kv.c|lib/storage/include/storage/coins_kv.h|lib/test/src/test_coins_kv_sovereign_gate.c", "sovereignty_guard wallet shielded_payment_gate mining coins_kv_sovereign_gate syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/wallet_helpers.c|app/controllers/include/controllers/wallet_helpers.h", "wallet wallet_persistence_cycle make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/transaction_controller.c", "transaction rpc make_lint_gates")
-AGENT_IMPACT_RULE("lib/wallet/src/wallet.c|lib/wallet/include/wallet/wallet.h|lib/test/src/test_wallet.c|lib/test/src/test_wallet_funds_safety.c", "wallet wallet_funds_safety coin_selection make_lint_gates")
+AGENT_IMPACT_RULE("lib/wallet/src/wallet.c|lib/wallet/src/wallet_coin_selection.c|lib/wallet/include/wallet/wallet.h|lib/test/src/test_wallet.c|lib/test/src/test_wallet_funds_safety.c|lib/test/src/test_coin_selection.c", "wallet wallet_funds_safety coin_selection make_lint_gates")
 AGENT_IMPACT_RULE("lib/wallet/src/sapling_keys.c|lib/wallet/include/wallet/sapling_keys.h", "wallet_keystore sapling make_lint_gates")
 AGENT_IMPACT_RULE("lib/wallet/src/wallet_keystore.c|lib/wallet/include/wallet/wallet_keystore.h|lib/test/src/test_wallet_keystore.c", "wallet_keystore wallet_sqlite_enc make_lint_gates")
 /* Wallet at-rest lock/unlock surface: the runtime passphrase register + spend
@@ -428,7 +450,15 @@ AGENT_IMPACT_RULE("app/services/src/service_state_driver.c", "service_state sync
 AGENT_IMPACT_RULE("lib/sync/src/sync_state.c|lib/sync/include/sync/sync_state.h|lib/sync/include/sync/sync_planner.h|lib/test/src/test_sync_state_fsm.c", "sync_state_fsm sync_service make_lint_gates")
 
 /* ZSLP command service + controller. */
-AGENT_IMPACT_RULE("app/services/src/zslp_command_service.c|app/services/include/services/zslp_command_service.h|app/controllers/src/zslp_controller.c", "slp store make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/zslp_command_service.c|app/services/include/services/zslp_command_service.h|app/controllers/src/zslp_controller.c|app/controllers/src/zslp_controller_internal.h|app/controllers/src/zslp_transaction_support.c", "slp store znam make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/zslp_transaction_intent_service.c|app/services/include/services/zslp_transaction_intent_service.h|app/controllers/src/zslp_intent_controller.c|app/controllers/src/zslp_intent_native_handler.c|app/controllers/src/zslp_transaction_rpc.c", "slp transaction_intent native_api_contract command_registry_catalog make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/znam_transaction_intent_service.c|app/services/include/services/znam_transaction_intent_service.h|app/controllers/src/znam_intent_controller.c|app/controllers/src/znam_intent_native_handler.c|app/controllers/src/name_controller.c", "znam transaction_intent native_api_contract command_registry_catalog make_lint_gates")
+/* Reusable exact-byte overlay custody plus its ZID/ZDIR adapters. The generic
+ * service owns encryption, identity/tip/snapshot binding, exact-input
+ * reservation and claim-once publication; every adapter must run its codec +
+ * projection proof as well as the shared intent lifecycle. */
+AGENT_IMPACT_RULE("app/services/src/overlay_transaction_intent_service.c|app/services/include/services/overlay_transaction_intent_service.h|tools/command/native_overlay_intent_command.c|lib/test/src/test_transaction_intent.c", "transaction_intent native_api_contract command_registry_catalog make_lint_gates")
+AGENT_IMPACT_RULE("app/controllers/src/zid_intent_controller.c|app/controllers/src/identity_controller.c|app/controllers/include/controllers/identity_controller.h|tools/command/native_identity_command.c|lib/test/src/test_identity_command.c", "identity_command transaction_intent native_api_contract command_registry_catalog make_lint_gates")
 
 /* Durable shielded anchors (anchor_kv + utxo_apply_anchors). */
 AGENT_IMPACT_RULE("app/jobs/src/utxo_apply_anchors.c|app/jobs/include/jobs/utxo_apply_anchors.h|app/jobs/include/jobs/utxo_apply_delta.h|lib/test/src/test_shielded_sync_strength.c", "utxo_apply_stage shielded_bind_guard parity_lockin_anchor_membership coins_anchor_reconcile_all sapling_anchor_frontier_condition shielded_sync_strength make_lint_gates")
@@ -472,6 +502,13 @@ AGENT_IMPACT_RULE("app/conditions/src/sapling_anchor_frontier_unavailable.c|app/
 
 /* Wave 3: agent test runner (native-triggerable focused tests/scenarios). */
 AGENT_IMPACT_RULE("app/controllers/src/agent_test_controller.c|app/controllers/include/controllers/agent_test_controller.h|lib/test/src/test_agent_test.c", "agent_test make_lint_gates")
+
+/* Paid file-market contract: seller offer, buyer payment claim/memo,
+ * durable locator, chain/note reconciliation, and P2P composition wiring. */
+AGENT_IMPACT_RULE("lib/net/include/net/file_market.h|lib/net/include/net/file_market_delivery.h|lib/net/src/file_market.c|lib/net/src/file_market_offer.c|lib/net/src/file_market_payment.c|lib/net/src/file_market_delivery.c|lib/net/src/file_service.c|lib/net/src/msgprocessor.c|lib/net/include/net/msgprocessor.h|app/models/src/file_offer.c|app/models/include/models/file_offer.h|app/models/src/market_payment_claim.c|app/models/include/models/market_payment_claim.h|app/services/src/file_market_payment_service.c|app/services/include/services/file_market_payment_service.h|config/src/boot_msg_callbacks.c|config/include/config/boot_msg_callbacks.h|config/src/boot_file_market_delivery.c|config/include/config/boot_file_market_delivery.h|config/src/boot_services.c|lib/test/src/test_file_market.c|lib/test/src/test_file_market_payment.c|lib/test/src/test_file_market_delivery.c", "file_market db_migration_idempotent make_lint_gates")
+/* Paid seller-content resource: private persistence, verified reader, owner
+ * native/RPC mutation, private REST index, and delivery composition. */
+AGENT_IMPACT_RULE("app/models/src/market_content.c|app/models/include/models/market_content.h|app/services/src/file_market_content_service.c|app/services/include/services/file_market_content_service.h|app/controllers/src/file_market_controller.c|app/controllers/include/controllers/file_market_controller.h|app/controllers/src/api_controller_routes.c|app/controllers/src/app_native_handlers.c|app/controllers/include/controllers/app_native_handlers.h|app/controllers/src/market_content_native_handler.c|config/src/boot_file_market_delivery.c|config/commands/app_features.def|tools/command/native_command.c|tools/command/native_command.h|lib/test/src/test_file_market_content.c", "file_market db_migration_idempotent native_api_contract command_registry_catalog api make_lint_gates")
 
 /* Wave 3: golden UTXO-ladder live tripwire. */
 AGENT_IMPACT_RULE("app/jobs/src/utxo_root_ladder_tripwire.c|app/jobs/src/utxo_root_ladder_tripwire.h|app/jobs/src/tip_finalize_post_step.h|lib/test/src/test_utxo_root_ladder_tripwire.c", "utxo_root_ladder_tripwire sha3_windows make_lint_gates")
@@ -612,7 +649,7 @@ AGENT_IMPACT_RULE("app/controllers/src/wallet_scan.c|app/controllers/include/con
 /* Fast-boot cursor stamping (import side) + shielded backfill service: the
  * skip-when-covered behavior is proven by test_block_index_integrity's
  * t_pprev_repair_cursor_skip. */
-AGENT_IMPACT_RULE("app/controllers/src/snapshot_controller_import.c|app/services/src/utxo_recovery_backfill.c|app/services/include/services/utxo_recovery_service.h", "block_index_integrity importblockindex_roundtrip make_lint_gates")
+AGENT_IMPACT_RULE("app/controllers/src/snapshot_controller_import.c|app/services/src/utxo_recovery_backfill.c|app/services/include/services/utxo_recovery_service.h|lib/test/src/test_kill9_recovery.c", "block_index_integrity importblockindex_roundtrip kill9_recovery make_lint_gates")
 /* --importblockindex round-trip: both call shapes of
  * snapshot_import_block_index (CLI header-only + bundle-loader full-position). */
 AGENT_IMPACT_RULE("lib/test/src/test_importblockindex_roundtrip.c", "importblockindex_roundtrip block_index_integrity make_lint_gates")
@@ -635,6 +672,7 @@ AGENT_IMPACT_RULE("app/services/src/wallet_backup_service.c|app/services/include
  * trip, so a change to either side re-runs both. */
 AGENT_IMPACT_RULE("app/services/src/wallet_restore_service.c|app/services/include/services/wallet_restore_service.h|adapters/outbound/persistence/src/wallet_restore_store_sqlite.c|adapters/outbound/persistence/include/adapters/outbound/persistence/wallet_restore_store_sqlite.h|ports/include/ports/wallet_restore_store_port.h|app/controllers/src/wallet_restore_native_handlers.c|lib/test/src/test_wallet_restore.c", "wallet_restore wallet_backup wallet_backup_port command_registry_catalog make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/wallet_native_handlers.c|app/controllers/src/wallet_native_read_bodies.c|app/controllers/include/controllers/wallet_native_handlers.h", "command_registry_catalog agent_spend_policy wallet_restore make_lint_gates")
+AGENT_IMPACT_RULE("app/controllers/src/wallet_security_native_handlers.c|lib/wallet/src/wallet_lock.c|lib/wallet/include/wallet/wallet_lock.h", "command_registry_catalog wallet_keystore wallet_sqlite_enc make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/chain_restore_*.c|app/services/include/services/chain_restore_*.h|lib/test/src/test_boot_shutdown_marker.c", "boot_shutdown_marker load_verify_boot chain_state_repo make_lint_gates")
 
 /* Lane 2 (2026-07-10): empty-escape blocker stall meta-detector. Extended
@@ -809,10 +847,39 @@ AGENT_IMPACT_RULE("lib/test/src/test_code_capsule.c", "code_capsule make_lint_ga
  * allowlist honest (shape + READY-read-only; static-state over the UNION of both
  * manifests), their seeded-violation fixtures, and the module build paths. */
 AGENT_IMPACT_RULE("lib/test/src/test_hotswap_module_v2.c|lib/hotswap/include/hotswap/hotswap_module.h|lib/hotswap/src/hotswap_activate.c|config/hotswap_swappable.def|config/hotswap_islands.def|tools/lint/check_hotswap_swappable_shape.sh|tools/lint/check_hotswap_static_state.sh|tools/dev/hotswap-module-fast.sh|tools/dev/devloop_hotswap_build.c|tools/dev/hotswap-resident-bench.sh|lib/test/fixtures/hotswap_swappable_not_ready_read.def|lib/test/fixtures/hotswap_swappable_dup_leaf.def|lib/test/fixtures/hotswap_swappable_bad_static.def|lib/test/fixtures/hotswap_islands_*.def", "hotswap_module_v2 hotswap_module hotswap_loader hotswap_simnet command_handler_snapshot dev_platform make_lint_gates")
-AGENT_IMPACT_RULE("app/controllers/src/metaverse_controller.c|app/services/src/property_catalog_service.c|lib/metaverse/src/property_id.c|lib/metaverse/src/property_view.c|lib/metaverse/src/property_work.c|lib/metaverse/src/property_action.c|lib/metaverse/src/adapter_registry.c|lib/metaverse/src/adapter_content.c|lib/metaverse/src/adapter_zcode.c|lib/metaverse/src/adapter_znam.c|lib/metaverse/src/adapter_zslp.c|app/models/src/znam.c|app/models/include/models/znam.h|app/models/src/zslp.c|app/models/include/models/zslp.h", "hotswap_module_v2 hotswap_module metaverse_catalog metaverse_broker_authority telemetry_metaverse znam zslp_store_port zslp_ledger make_lint_gates")
+AGENT_IMPACT_RULE("app/controllers/src/metaverse_controller.c|app/services/src/property_catalog_service.c|lib/metaverse/src/property_id.c|lib/metaverse/src/property_view.c|lib/metaverse/src/property_work.c|lib/metaverse/src/property_action.c|lib/metaverse/src/adapter_registry.c|lib/metaverse/src/manifest_read.c|lib/metaverse/src/adapter_content.c|lib/metaverse/src/adapter_zcode.c|lib/metaverse/src/adapter_znam.c|lib/metaverse/src/adapter_zslp.c|app/models/src/znam.c|app/models/include/models/znam.h|app/models/src/zslp.c|app/models/include/models/zslp.h", "hotswap_module_v2 hotswap_module metaverse_catalog metaverse_broker_authority telemetry_metaverse znam zslp_store_port zslp_ledger make_lint_gates")
 /* Model-neutral ZCODE development wires compose package/source/lock/toolchain
  * roots and signed work evidence; their exact bytes are their public API. */
-AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_dev.h|lib/vcs/src/zcode_dev.c|lib/vcs/include/vcs/zcode_work_swarm.h|lib/vcs/src/zcode_work_swarm.c|lib/vcs/include/vcs/zcode_work_node.h|lib/vcs/src/zcode_work_node.c|lib/test/src/test_zcode_dev_objects.c", "zcode_dev_objects build_fabric make_lint_gates")
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_dev.h|lib/vcs/src/zcode_dev.c|lib/vcs/include/vcs/zcode_work_swarm.h|lib/vcs/src/zcode_work_swarm.c|lib/vcs/include/vcs/zcode_work_node.h|lib/vcs/src/zcode_work_node.c|lib/vcs/include/vcs/zcode_work_context.h|lib/vcs/src/zcode_work_context.c|lib/vcs/include/vcs/zcode_candidate_tree.h|lib/vcs/src/zcode_candidate_tree.c|lib/vcs/include/vcs/zcode_task_index.h|lib/vcs/src/zcode_task_index.c|tools/command/native_zcode_dev_command.c|tools/command/native_command.h|lib/test/src/test_zcode_dev_objects.c", "zcode_dev_objects build_fabric make_lint_gates")
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_score_receipt.h|lib/vcs/src/zcode_score_receipt.c|tools/command/native_zcode_score_command.c|lib/test/src/test_zcode_score_receipt.c|config/commands/zcode.def", "zcode_score_receipt command_registry_catalog native_api_contract make_lint_gates")
+AGENT_IMPACT_RULE("config/zcode_package_registry.def|tools/zcode_package_registry_check.c|lib/test/src/test_zcode_package_registry.c|lib/base/zcode-package.json|lib/sha3/zcode-package.json|lib/codec/zcode-package.json", "zcode_package_registry zcode_package_dev make_lint_gates")
+/* Scientific study/evidence wires and closed benchmark action identities
+ * compose with, but do not mutate, the byte-stable development objects. */
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_science.h|lib/vcs/src/zcode_science.c|lib/test/src/test_zcode_science.c|lib/vcs/include/vcs/build_action.h|lib/vcs/src/build_action.c", "zcode_science zcode_dev_objects build_fabric make_lint_gates")
+/* Dual-signed ZID/ZCL contributor bindings extend the existing contributor
+ * identity suite; rotation and revocation are part of the same test owner. */
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_contributor_binding.h|lib/vcs/src/zcode_contributor_binding.c|lib/test/src/test_zcode_contributor.c", "zcode_contributor make_lint_gates")
+/* Personalized PageRank ranks property roots for local discovery only. Its
+ * graph/seed/result roots and integer arithmetic are one deterministic API. */
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_discovery_rank.h|lib/vcs/src/zcode_discovery_rank.c|lib/test/src/test_zcode_discovery_rank.c", "zcode_discovery_rank make_lint_gates")
+
+/* Noise-bound read-only DHT identity, routing, wire and service slices. */
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_dht*.h|lib/vcs/src/zcode_dht*.c|lib/test/src/test_zcode_dht*.c", "zcode_dht zcode_dht_delegation zcode_dht_msgs zcode_dht_record zcode_dht_service zcode_dht_lookup make_lint_gates")
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_replication.h|lib/vcs/src/zcode_replication.c|config/src/boot_zcode_dht_replication_rpc.c|config/include/config/boot_zcode_dht_replication.h", "zcode_dht_record zcode_dht_service command_registry_catalog syncdiag_rpc make_lint_gates")
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/package_store.h|lib/vcs/include/vcs/package_possession_scheduler.h|lib/vcs/src/package_store*.c|lib/vcs/src/package_possession_scheduler.c|lib/test/src/test_zcode_store.c", "zcode_store zcode_dht_service syncdiag_rpc make_lint_gates")
+/* The rebuildable discovery-graph projection (lineage collapse, citation
+ * edges, verified vote seeds) plus the discover/rank.snapshot commands:
+ * the S5 adapter over the science index feeding the pure rank core. */
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_discovery_projection.h|lib/vcs/src/zcode_discovery_projection.c|tools/command/native_zcode_science_discover_command.c|lib/test/src/test_zcode_discovery_projection.c", "zcode_discovery_projection zcode_discovery_rank zcode_science_store zcode_science make_lint_gates")
+/* CAS storage, rebuildable science projections, and the plan/commit
+ * services and commands for studies, evidence, reviews, and votes. */
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_science_index.h|lib/vcs/src/zcode_science_index.c|app/services/include/services/zcode_science_service.h|app/services/src/zcode_science_service.c|app/models/include/models/zcode_science.h|app/models/src/zcode_science.c|tools/command/native_zcode_science_command.c|config/commands/zcode_science.def|lib/test/src/test_zcode_science_store.c", "zcode_science_store zcode_science make_lint_gates")
+/* Closed benchmark/reproduction executors: receipt codecs, the confined
+ * runner service, and the work.execute command. */
+AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_benchmark_receipt.h|lib/vcs/src/zcode_benchmark_receipt.c|app/services/include/services/zcode_benchmark_executor.h|app/services/src/zcode_benchmark_executor.c|tools/command/native_zcode_science_exec_command.c|lib/test/src/test_zcode_benchmark_exec.c", "zcode_benchmark_exec zcode_science_store zcode_science make_lint_gates")
+/* Boot wiring for the ZCODE swarm and canonical work authority is exercised
+ * by the swarm network suite. */
+AGENT_IMPACT_RULE("config/src/boot_zcode_swarm.c|config/src/boot_zcode_work_authority.c|config/include/config/boot_zcode_work_authority.h", "zcode_swarm_net zcode_dev_objects make_lint_gates")
 /* Confinement visibility + the confinement/hot-swap filesystem collision:
  * the `confinement` witness (os_sandbox_witness.c + its dumpers.def row), the
  * grant-recording / path-grant predicate / typed-refusal primitives in
@@ -842,7 +909,7 @@ AGENT_IMPACT_RULE("lib/test/src/test_header_probe.c|app/services/src/header_prob
  * node's onion hostname on-chain. The builder, the RPC controller, the
  * native leaves, the command spec and the projection fold all have to agree
  * byte for byte, so an edit to any of them re-runs the whole loop. */
-AGENT_IMPACT_RULE("app/controllers/src/zdir_controller.c|app/controllers/include/controllers/zdir_controller.h|tools/command/native_zdir_command.c|lib/zdir/src/zdir.c|lib/zdir/include/zdir/zdir.h|app/models/src/explorer_index_zdir.c|lib/test/src/test_zdir_write_path.c", "zdir_write_path zdir onion_directory explorer_index command_registry_catalog make_lint_gates")
+AGENT_IMPACT_RULE("app/controllers/src/zdir_controller.c|app/controllers/src/zdir_intent_controller.c|app/controllers/include/controllers/zdir_controller.h|tools/command/native_zdir_command.c|lib/zdir/src/zdir.c|lib/zdir/include/zdir/zdir.h|app/models/src/explorer_index_zdir.c|lib/test/src/test_zdir_write_path.c", "zdir_write_path zdir onion_directory explorer_index transaction_intent native_api_contract command_registry_catalog make_lint_gates")
 
 /* Seniority address binding: the composition-root slice that resolves a peer
  * address to the identity that signed for it, weighs it, and rotates the
@@ -861,4 +928,9 @@ AGENT_IMPACT_RULE("tools/command/native_zendp_command.c|lib/vcs/src/zendp_swarm.
  * hostile child, and the two observation leaves are ONE boundary. An edit to
  * any of them can silently widen what a confined agent can reach, so they all
  * re-run the adversarial group together with the catalog. */
-AGENT_IMPACT_RULE("lib/session/src/agent_broker*.c|lib/session/src/agent_audit.c|lib/session/src/agent_confined.c|lib/session/include/session/agent_broker*.h|app/services/src/metaverse_agent_service.c|app/services/include/services/metaverse_agent_service.h|app/controllers/src/metaverse_controller.c|config/commands/metaverse.def|lib/test/src/test_metaverse_agent_broker.c", "metaverse_agent_broker confine command_registry_catalog make_lint_gates")
+AGENT_IMPACT_RULE("lib/session/src/agent_broker*.c|lib/session/src/agent_audit.c|lib/session/src/agent_confined.c|lib/session/include/session/agent_broker*.h|app/services/src/metaverse_agent_service.c|app/services/include/services/metaverse_agent_service.h|app/controllers/src/metaverse_controller.c|app/controllers/src/agent_session_controller.c|config/commands/metaverse.def|lib/test/src/test_metaverse_agent_broker.c", "metaverse_agent_broker confine command_registry_catalog coin_selection make_lint_gates")
+
+/* Sovereign space objects reuse the signed DHT's generic pointer/provider
+ * transport.  The wire codecs, local CAS admission, chain-delegation adapter,
+ * policy checkpoints, command surface and catalog are one fail-closed slice. */
+AGENT_IMPACT_RULE("lib/vcs/src/space.c|lib/vcs/include/vcs/space.h|lib/vcs/src/space_scout.c|lib/vcs/include/vcs/space_scout.h|app/services/src/metaverse_space_service.c|app/services/include/services/metaverse_space_service.h|app/services/src/metaverse_space_scout_service.c|app/services/include/services/metaverse_space_scout_service.h|tools/command/native_metaverse_space_command.c|tools/command/native_metaverse_space_scout_command.c|tools/command/native_zcode_discovery.c|tools/command/native_zcode_discovery.h|config/src/boot_zcode_dht.c|config/include/config/boot_zcode_dht.h|config/src/boot_zcode_dht_record_rpc.c|config/commands/metaverse.def|lib/test/src/test_space.c|lib/test/src/test_space_scout.c", "space space_scout zcode_dht_record zcode_dht_service zcode_swarm_net command_registry_catalog make_lint_gates")

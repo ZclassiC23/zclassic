@@ -63,6 +63,7 @@
 #include "support/cleanse.h"
 #include "wallet/mnemonic.h"
 #include "wallet/wallet.h"
+#include "wallet/wallet_lock.h"
 #include "wallet/wallet_sqlite.h"
 
 #include <dirent.h>
@@ -373,7 +374,11 @@ static int t_two_concurrent_restores_leave_one_wallet(void)
     bool opened = node_db_open(&ndb, db_path) && ndb.open;
     WRS_CHECK("the resulting node.db opens", opened);
     if (opened) {
-        setenv("ZCL_WALLET_PASSPHRASE", "case2-passphrase", 1);
+        wallet_lock_reset_for_test();
+        struct zcl_result ur = wallet_lock_unlock(
+            NULL, NULL, "case2-passphrase");
+        WRS_CHECK("the restored wallet explicitly unlocks for inspection",
+                  ur.ok);
         struct wallet_sqlite ws;
         struct zcl_result wr = wallet_sqlite_open_r(&ws, ndb.db);
         WRS_CHECK("its wallet tables open", wr.ok);
@@ -416,6 +421,7 @@ static int t_two_concurrent_restores_leave_one_wallet(void)
             wallet_sqlite_close(&ws);
         }
         node_db_close(&ndb);
+        wallet_lock_reset_for_test();
     }
 
     memory_cleanse(seed_a, sizeof(seed_a));
@@ -490,6 +496,11 @@ static int t_at_rest_policy_is_obeyed(void)
         bool opened = node_db_open(&ndb, db_path) && ndb.open;
         WRS_CHECK("the recovered node.db opens", opened);
         if (opened) {
+            wallet_lock_reset_for_test();
+            struct zcl_result ur = wallet_lock_unlock(
+                NULL, NULL, "case3-passphrase");
+            WRS_CHECK("the recovered wallet explicitly unlocks for inspection",
+                      ur.ok);
             struct wallet_sqlite ws;
             struct zcl_result wr = wallet_sqlite_open_r(&ws, ndb.db);
             if (wr.ok) {
@@ -506,6 +517,7 @@ static int t_at_rest_policy_is_obeyed(void)
                 WRS_CHECK("the recovered wallet tables open", false);
             }
             node_db_close(&ndb);
+            wallet_lock_reset_for_test();
         }
         test_rm_rf(dir);
     }
@@ -547,11 +559,17 @@ int test_wallet_recovery_safety(void)
     /* Address encoding reads chain_params_get(), which aborts if nothing
      * ever selected a network. */
     chain_params_select(CHAIN_MAIN);
+    /* Keep the full 240-key encryption path real but within the group budget.
+     * 10k is the production-accepted minimum, not a disabled KDF. */
+    setenv("ZCL_WALLET_KDF_ITERS", "10000", 1);
+    wallet_lock_reset_for_test();
 
     failures += t_damaged_db_is_refused_not_reset();
     failures += t_restore_leaf_requires_an_explicit_datadir();
     failures += t_two_concurrent_restores_leave_one_wallet();
     failures += t_at_rest_policy_is_obeyed();
 
+    wallet_lock_reset_for_test();
+    unsetenv("ZCL_WALLET_KDF_ITERS");
     return failures;
 }

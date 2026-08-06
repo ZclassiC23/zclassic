@@ -36,6 +36,7 @@ bool agent_session_client_mint(const char *account, int64_t max_per_tx_zat,
                                int64_t window_seconds,
                                const char *recipient_allowlist,
                                int64_t expires_in_seconds,
+                               const char *wallet_scope,
                                char out_session_id[AGENT_SESSION_ID_MAX + 1],
                                char *why, size_t why_cap);
 
@@ -55,8 +56,10 @@ bool agent_session_client_revoke(const char *session_id, char *why,
  * indivisible step (see agent_session_authorize). `window_remaining_zat` is
  * optional. */
 bool agent_session_client_authorize(const char *session_id, int64_t amount_zat,
-                                    const char *recipient, bool commit,
+                                    const char *recipient,
+                                    const char *wallet_scope, bool commit,
                                     int64_t *window_remaining_zat,
+                                    int64_t *charged_zat,
                                     char *why, size_t why_cap);
 
 /* Credit a debit back after the spend it paid for did not happen. */

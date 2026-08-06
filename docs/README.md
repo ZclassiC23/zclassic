@@ -67,6 +67,15 @@ you operate that host, and misleading otherwise.
 
 - [`DEVELOPING.md`](./DEVELOPING.md) — **the efficient-AI-C23-developer playbook**: the native dev loop (drop-in-C watcher), hot-swap tiers, typed-commands-over-bash, workflows of tiered subagents, the push traps (impact-rules mapping, pre-push SIGPIPE), and the inviolable rules. Also the body of the `zclassic23-dev` Claude Code skill, whose stub at [`.claude/skills/zclassic23-dev/SKILL.md`](../.claude/skills/zclassic23-dev/SKILL.md) imports it. Start here for any change.
 - [`NATIVE_COMMAND_INTERFACE.md`](./NATIVE_COMMAND_INTERFACE.md) — the native command registry (`core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`), the only agent interface going forward: grammar, tree, and the frozen CLI UX contract.
+- [`TRANSACTION_API.md`](./TRANSACTION_API.md) — the semantic transaction
+  catalog and AI-safe workflow: single- and multi-recipient base ZCL, Sapling, ZSLP, ZNAM, ZMSG,
+  ZID/ZDIR, generic/epoch/ZCODE ZANC and ZBLG anchors, HTLC swaps, and commerce, with a
+  one-call guide to exact live command contracts, reverse command-to-type
+  lookup, fail-closed classification of ambiguous mutations, and an explicit
+  line between ready, receive-only, contained, and planned paths.
+- [`FILE_MARKET_PROTOCOL.md`](./FILE_MARKET_PROTOCOL.md) — the authenticated
+  paid-offer wire, exact integer pricing, confirmed-payment authority, complete
+  buyer retrieval workflow, and reproducible proof map for `market_purchase`.
 - [`API_REFERENCE.md`](./API_REFERENCE.md) — every leaf the registry currently declares. **Generated** from `config/commands/` by `tools/gen_api_reference.c`; edit `API_REFERENCE.md.in` (prose) or the `.def` catalog, then `make docs-api-reference`.
 - [`SERVICES.md`](./SERVICES.md) — the declared way to add a service (`zcl.service_binding.v1`): its own commands, its own state namespace, and access derived from a ZSLP token balance at a stated snapshot height — plus the isolation boundary a service cannot declare its way out of. Contract in `lib/kernel/include/kernel/service_binding.h`, catalog in `config/services/bindings.def`.
 - [`AGENT_API.md`](./AGENT_API.md) — the practical field-by-field reference for the implemented agent surface (`agentops`, `agentdiagnose`, `healthcheck`, `agentlanes`, service catalog, and more); referenced directly from `app/controllers/src/agent_controller.c` response bodies.

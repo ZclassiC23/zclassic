@@ -142,7 +142,8 @@ static void *bf_worker_loop(void *arg)
     (void)arg;
     struct node_db worker_db;
     memset(&worker_db, 0, sizeof(worker_db));
-    if (!node_db_open(&worker_db, g_worker_db_path)) {
+    if (!node_db_open_runtime(&worker_db, g_worker_db_path,
+                              "build_fabric.worker")) {
         atomic_fetch_add(&g_worker_failures, 1);
         return NULL;
     }

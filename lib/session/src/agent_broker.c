@@ -390,6 +390,9 @@ static void broker_receipt(struct agent_broker_session *s,
     if (!s->audit || !s->audit->open)
         return;
     struct agent_receipt r = { 0 };
+    r.receipt_version = 3;
+    snprintf(r.money_snapshot_status, sizeof(r.money_snapshot_status),
+             "UNKNOWN");
     r.verb       = req->verb;
     r.request_id = req->request_id;
     r.status     = resp->status;
@@ -431,6 +434,9 @@ static void broker_replay_receipt(struct agent_broker_session *s,
     if (!s->audit || !s->audit->open || !slot)
         return;
     struct agent_receipt r = { 0 };
+    r.receipt_version = 3;
+    snprintf(r.money_snapshot_status, sizeof(r.money_snapshot_status),
+             "UNKNOWN");
     r.verb       = req->verb;
     r.request_id = req->request_id;
     r.status     = resp->status;
@@ -787,4 +793,3 @@ int agent_broker_accept_once(struct agent_broker_session *s, int listen_fd,
     (void)close(cfd);
     return served < 0 ? -1 : 1;
 }
-

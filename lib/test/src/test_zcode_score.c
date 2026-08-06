@@ -269,12 +269,13 @@ static int t_paths(void)
     /* A marker past the 5-line head window does NOT exclude (the named,
      * documented bound; under-excluding is the unsafe direction so the
      * window is deliberately small). */
+    static const uint8_t marker_after_head[] =
+        "// a\n// b\n// c\n// d\n// e\n"
+        "// generated noise\nint x;\n";
     ZS_CHECK("path: marker past the head window does not exclude",
              vcs_score_scan_file(
-                 "src/real.c",
-                 (const uint8_t *)"// a\n// b\n// c\n// d\n// e\n"
-                                  "// generated noise\nint x;\n",
-                 55, &scan) &&
+                 "src/real.c", marker_after_head,
+                 sizeof(marker_after_head) - 1u, &scan) &&
              scan.kind == VCS_SCORE_FILE_SOURCE);
     vcs_score_file_scan_free(&scan);
     return failures;
@@ -784,6 +785,24 @@ static int t_eligibility_lib(void)
     vcs_reward_eligibility_evaluate(&bad, &e);
     ZS_CHECK("elig: simultaneous failures all named",
              !e.eligible && e.failed_count == 5);
+
+    /* The headline signal: a recorded bit-identical reproduction passes
+     * gates 5-8 with NO quorum facts at all — the signer quorum is the
+     * latency fast path over reproduction, never the other way round. */
+    bad = in;
+    bad.quorum_verified = false;
+    bad.gcc_pass = bad.clang_pass = bad.tests_pass = false;
+    bad.reproduction_verified = true;
+    vcs_reward_eligibility_evaluate(&bad, &e);
+    ZS_CHECK("elig: reproduction outranks the signer quorum",
+             e.eligible && e.failed_count == 0 &&
+             e.reproduction_verified &&
+             e.gates[VCS_REWARD_GATE_GCC_BUILD].passed &&
+             e.gates[VCS_REWARD_GATE_CLANG_BUILD].passed &&
+             e.gates[VCS_REWARD_GATE_TESTS_PASS].passed &&
+             e.gates[VCS_REWARD_GATE_VERIFIER_QUORUM].passed &&
+             strstr(e.gates[VCS_REWARD_GATE_VERIFIER_QUORUM].detail,
+                    "reproduction") != NULL);
     return failures;
 }
 

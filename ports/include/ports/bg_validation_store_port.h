@@ -8,9 +8,9 @@
  * walks every block from genesis re-verifying Equihash PoW, ECDSA script
  * signatures, Ed25519 JoinSplit signatures, and Groth16/PHGR13 proofs. It
  * never modifies the UTXO set, the block index, or the active chain. The
- * only thing it persists is one crash-resume cursor (the highest height
- * fully verified so far), saved every 1000 blocks. Those two cursor
- * operations are exactly what this port captures:
+ * persisted state is a crash-resume cursor, cumulative script-skip count,
+ * and a coverage-semantics version. The version prevents a legacy cursor
+ * minted by skip-on-missing-body code from authorizing a resumed walk.
  *
  *   load_progress(out)   read the "bg_validation_height" state key; sets
  *                        *out and returns true if present, false (out
@@ -63,6 +63,11 @@ struct bg_validation_store_port {
     /* Persist the cumulative skip tally. Returns true on success, false on a
      * NULL self / unavailable store. */
     bool (*save_skips)(void *self, int64_t skips);
+
+    /* Missing/zero means the cursor predates fail-closed body coverage and
+     * cannot authorize a resumed full-history claim. */
+    bool (*load_coverage_version)(void *self, int64_t *out);
+    bool (*save_coverage_version)(void *self, int64_t version);
 };
 
 #endif /* ZCL_PORTS_BG_VALIDATION_STORE_PORT_H */

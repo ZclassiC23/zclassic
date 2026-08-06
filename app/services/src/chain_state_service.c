@@ -523,6 +523,13 @@ struct chain_state_repository *csr_instance(void)
     return &g_csr_singleton;
 }
 
+static void csr_header_generation_bump(struct chain_state_repository *csr)
+{
+    uint64_t next = atomic_fetch_add(&csr->header_generation, 1) + 1;
+    if (!next)
+        atomic_fetch_add(&csr->header_generation, 1);
+}
+
 void csr_init(struct chain_state_repository *csr,
               struct block_map        *block_map,
               struct active_chain     *chain_active,
@@ -554,6 +561,7 @@ void csr_init(struct chain_state_repository *csr,
     csr->max_utxo_orphan_rows  = CSR_DEFAULT_MAX_ORPHAN_ROWS;
     csr->stale_index_height_gap = CSR_DEFAULT_STALE_INDEX_GAP;
     csr->commits_ok = 0;
+    atomic_store(&csr->header_generation, 1);
     memset(csr->commits_rejected, 0, sizeof(csr->commits_rejected));
     csr_set_last_persist_locked(csr, SQLITE_OK, "");
     csr->initialized = true;
@@ -570,6 +578,7 @@ void csr_free(struct chain_state_repository *csr)
         pthread_mutex_destroy(&csr->lock);
     }
     csr->initialized = false;
+    csr_header_generation_bump(csr);
     csr->block_map = NULL;
     csr->chain_active = NULL;
     csr->pindex_best_hdr = NULL;
@@ -624,8 +633,10 @@ enum csr_result csr_commit_header_tip(
         return rc;
     }
 
-    if (csr->pindex_best_hdr)
+    if (csr->pindex_best_hdr) {
         *csr->pindex_best_hdr = commit->new_header_tip;
+        csr_header_generation_bump(csr);
+    }
     pthread_mutex_unlock(&csr->lock);
 
     printf("csr: header tip committed to=%d reason=%s\n",
@@ -678,8 +689,10 @@ bool csr_restore_in_memory_view(struct chain_state_repository *csr,
     bool ok = true;
     if (csr->chain_active)
         ok = active_chain_move_window_tip(csr->chain_active, old_tip);
-    if (ok && csr->pindex_best_hdr)
+    if (ok && csr->pindex_best_hdr) {
         *csr->pindex_best_hdr = old_header;
+        csr_header_generation_bump(csr);
+    }
     if (ok && csr->coins_tip && old_coins_best)
         coins_view_cache_set_best_block(csr->coins_tip, old_coins_best);
     pthread_mutex_unlock(&csr->lock);
@@ -750,6 +763,7 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
             csr_internal_header_candidate_strictly_better(commit->new_tip,
                                                            cur_hdr)) {
             *csr->pindex_best_hdr = commit->new_tip;
+            csr_header_generation_bump(csr);
         }
     }
     if (csr->wallet_scan_h && commit->wallet_scan_height >= 0) {

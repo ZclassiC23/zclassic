@@ -208,13 +208,39 @@ All replies bounded typed JSON; publishing/rewards/badges use plan/commit.
 Slices 1–13 are merged to `main` and pushed. Everything below is live in
 the tree today:
 
+**Trust model (the headline).** The acceptance signal for a published
+package is **bit-identical reproduction by any third party**: an
+independent rebuild of the same package root + recipe root + dependency
+lock that emits byte-for-byte the committed artifacts
+(`lib/vcs/package_reproduce.*` compares two `package_build` receipts and
+names the first divergence). It is runnable today —
+`zclassic23-package-verify <root> --store=<dir> --emit=<dir>
+--lock-root=<hex> --reproduce-against=<build-report>` exits 0 on
+`reproduction=MATCH` and 6 with a loud stderr `REPRODUCTION MISMATCH`
+naming the diverging rule otherwise. `zcode package verify` reports the
+`reproduction` object over the receipts filed under
+`<datadir>/zcode/receipts/` (reproduced = ≥2 distinct build receipts
+committing byte-identical output sets), and the reward-eligibility gates
+5–8 (`lib/vcs/package_eligible.*`) pass on a recorded reproduction with
+no quorum at all. The ≥2 approved-signer attestation quorum is now
+explicitly the **latency optimization** over reproduction — fast-path
+trust before a local reproduction exists, never a substitute for one.
+What remains for the full flip: publishing the reference build-report on
+the wire (the release envelope does not yet commit an artifact manifest,
+and receipts carry no signer identity, so "independent" is currently
+"distinct build events recorded locally", not proof of distinct
+machines).
+
 - **Library:** `lib/vcs/` — release envelope + node-bound acceptance,
   `package_store` (10 GiB CAS, `-packagehost`/`-packagequota`, quota pools
   20/40/30/10 pins/hot/rare/staging, 64 MiB package cap), `package_publish`
   (license + manifest grammar), `package_index`, `package_contributor` +
   `zcode_pointer` (ZNAM binding via P2PKH owner auth), `package_recipe`
   (declarative C23 builds), `package_attest` + `package_verify_policy`
-  (≥2 approved-key quorum), `package_score` + `package_eligible`
+  (≥2 approved-key quorum — the latency fast path), `package_reproduce`
+  (the headline signal: the bit-identical reproduction verdict over two
+  build receipts + the receipts-directory scan),
+  `package_score` + `package_eligible`
   (deterministic semantic-unit scoring, 8-gate eligibility),
   `package_reward` (durable ledger + daily simulated settlement,
   placeholder token id `zcode-placeholder-token-v1-sim!!`),
@@ -226,6 +252,8 @@ the tree today:
 - **Verifier binary:** `build/bin/zclassic23-package-verify` — the only
   program that compiles package code (gcc+clang × plain+ASan/UBSan,
   Landlock+seccomp+rlimits, recipe-only input, binaries deleted after).
+  `--reproduce-against=<build-report>` on `--emit` is the third-party
+  bit-identical reproduction check (exit 0 MATCH / exit 6 MISMATCH).
   Approved verifier keys: `<datadir>/zcode/approved_verifiers` (one
   compressed pubkey per line, local config only).
 - **Commands:** `zcode.package.{publish.plan,publish.commit,search,show,

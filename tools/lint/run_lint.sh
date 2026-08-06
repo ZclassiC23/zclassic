@@ -97,6 +97,7 @@ gate_command() {
         check-json-value-init)             echo 'bash tools/scripts/check_json_value_init.sh --self-test && bash tools/scripts/check_json_value_init.sh' ;;
         check-blob-read-bounds)            echo 'bash tools/lint/check_blob_read_bounds.sh' ;;
         check-byte-order-codec-single)     echo './tools/lint/check_byte_order_codec_single.sh --selftest && ./tools/lint/check_byte_order_codec_single.sh' ;;
+        check-zcode-package-registry)      echo './tools/lint/check_zcode_package_registry.sh' ;;
         check-coins-lookup-nullcheck)      echo 'tools/scripts/check_coins_lookup_nullcheck.sh' ;;
         check-observability-pairing)       echo '"$ZCL_LINT_BIN_DIR/check_observability_pairing"' ;;
         check-silent-errors-services)      echo './tools/lint/check_silent_error_returns.sh app/services/src services service "use LOG_ERR/LOG_FAIL/LOG_RETURN, prev-line error log, or mark // raw-return-ok:<reason>"' ;;
@@ -181,6 +182,7 @@ gate_command() {
         check-no-utxos-mirror-read)        echo './tools/scripts/check_no_utxos_mirror_read.sh' ;;
         check-no-authoritative-ram-state)  echo './tools/scripts/check_no_authoritative_ram_state.sh' ;;
         check-no-dev-history-in-contracts) echo './tools/scripts/check_no_dev_history_in_contracts.sh' ;;
+        check-no-live-lab-history)        echo './tools/scripts/check_no_live_lab_history.sh --selftest && ./tools/scripts/check_no_live_lab_history.sh' ;;
         check-stage-advances-or-blocks)    echo './tools/scripts/check_stage_advances_or_blocks.sh' ;;
         check-no-silent-ready)             echo './tools/scripts/check_no_silent_ready.sh' ;;
         check-honest-witness)              echo 'ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh' ;;
@@ -226,12 +228,19 @@ run_gate_body() {
     if [ "$cmd" = '__core_seal__' ]; then
         # Mirror the check-core-seal recipe: an unseal token lifts the HARD
         # seal failure for exactly that commit (owner unseal ritual).
+        # CORE_SEAL_PATHS mirror — MUST match the Makefile variable of the
+        # same name (core/ + the sealed block-connection ordering layer).
+        local seal_paths="core/
+lib/validation/src/connect_block.c
+lib/validation/src/chainstate.c
+lib/validation/include/validation/connect_block.h
+lib/validation/include/validation/chainstate.h"
         if [ -f .core-unseal-token ]; then
             echo "check-core-seal: unseal token present — seal check lifted for this commit"
             echo "  (owner unseal ritual active; re-run 'make core-seal' to refreeze before commit.)"
-            git ls-files -z core/ | "$ZCL_LINT_BIN_DIR/core_seal" check core/MANIFEST.sha3 || true
+            git ls-files -z $seal_paths | "$ZCL_LINT_BIN_DIR/core_seal" check core/MANIFEST.sha3 || true
         else
-            git ls-files -z core/ | "$ZCL_LINT_BIN_DIR/core_seal" check core/MANIFEST.sha3
+            git ls-files -z $seal_paths | "$ZCL_LINT_BIN_DIR/core_seal" check core/MANIFEST.sha3
         fi
         return
     fi

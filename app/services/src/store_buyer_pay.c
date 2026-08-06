@@ -125,14 +125,14 @@ struct zcl_result store_buyer_prepare_payment(const char *datadir,
     if (sb_purchase_addr_is_sapling(purchase.payment_addr) &&
         !zclassic_sapling_prover_is_ready()) {
         LOG_WARN(SB_TAG, "pay: refusing purchase %lld — no Sapling proving "
-                 "backend (backend=%s status=%s); build with ZCL_WITH_RUST=1 "
-                 "and install the Sapling parameters",
+                 "backend (backend=%s status=%s); native C23 proving remains "
+                 "disabled until its full self-test passes",
                  (long long)purchase_id, zclassic_sapling_prover_backend(),
                  zclassic_sapling_prover_status());
         return SB_FAILF(STORE_BUYER_ERR_PROVER_UNAVAILABLE,
                         "no Sapling proving backend (backend=%s status=%s); "
-                        "build with ZCL_WITH_RUST=1 and install the Sapling "
-                        "parameters",
+                        "native C23 Spend, Output, and binding proofs must "
+                        "pass the full self-test",
                         zclassic_sapling_prover_backend(),
                         zclassic_sapling_prover_status());
     }

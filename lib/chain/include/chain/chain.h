@@ -252,7 +252,16 @@ static inline bool block_index_disk_pos_snapshot(const struct block_index *bi,
         return false;
     out->nFile = block_index_file_load(bi);
     out->nPos = block_index_data_pos_load(bi);
-    return out->nFile >= 0;
+    /* A recorded payload offset is never 0: the 8-byte frame header occupies
+     * offsets 0-7 of every blk file, so the first payload sits at 8 (the
+     * write path records ftell AFTER the frame header). nPos==0 is the
+     * zero-init signature of an index entry whose body was never written —
+     * from-scratch genesis is inserted with BLOCK_HAVE_DATA but no body.
+     * Report "no data" instead of aliasing whatever block actually sits at
+     * offset 0 (previously read as h=0, producing pread hash mismatches).
+     * Verified 2026-08-02: the live canonical block_index.bin has zero
+     * HAVE_DATA rows with n_data_pos==0, so no healthy entry relies on it. */
+    return out->nFile >= 0 && out->nPos != 0;
 }
 
 static inline bool block_index_undo_pos_snapshot(const struct block_index *bi,

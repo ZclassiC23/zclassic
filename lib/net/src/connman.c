@@ -11,6 +11,7 @@
 #include "connman_internal.h"
 #include "net/connman.h"
 #include "net/v2_transport.h"
+#include "net/v2_identity.h"
 #include "net/addrman.h"
 #include "event/event.h"
 #include "net/peer_bandwidth.h"
@@ -43,8 +44,6 @@
 #include "util/safe_alloc.h"
 #include "util/util.h"
 #include "util/log_macros.h"
-#include "crypto/random_secret.h"
-#include "crypto/curve25519.h"
 #include "support/cleanse.h"
 #include "util/thread_registry.h"
 #include "util/thread_liveness.h"
@@ -813,7 +812,8 @@ static bool connman_addnode_is_connected(struct connman *cm, size_t addnode_inde
         struct p2p_node *n = cm->manager.nodes[ni];
         if (!n || n->disconnect)
             continue;
-        if (net_addr_eq(&n->addr.svc.addr, &cm->addnodes[addnode_index].svc.addr)) {
+        if (net_service_eq(&n->addr.svc,
+                           &cm->addnodes[addnode_index].svc)) {
             connected = true;
             break;
         }
@@ -833,6 +833,13 @@ static bool connman_node_conflicts_with_target(
         return false;
     if (node->addr.svc.port == addr->svc.port)
         return true;
+
+    /* A single host may run several operator-controlled acceptance daemons
+     * on distinct loopback ports. Keep those service identities separate all
+     * the way through final dial dedupe; remote same-IP/different-port peers
+     * still collapse below to prevent slot multiplication. */
+    if (net_addr_is_operator_local(&addr->svc.addr))
+        return false;
 
     /* Inbound peers usually arrive from ephemeral source ports. Do not let
      * that socket suppress an outbound dial to the peer's advertised listen
@@ -2016,54 +2023,6 @@ static void *thread_message_handler(void *arg)
     return NULL;
 }
 
-/* Load the persistent v2 static identity from {datadir}/v2_identity.key, or
- * generate + persist it (0600) on first boot. Only called when -v2transport is
- * set, so the default-off node never touches disk here. On any failure the
- * transport is disabled rather than run with a zero key. */
-static void v2_identity_load_or_generate(struct net_manager *nm)
-{
-    char datadir[1024];
-    GetDataDir(true, datadir, sizeof(datadir));
-    char path[1152];
-    snprintf(path, sizeof(path), "%s/v2_identity.key", datadir);
-
-    FILE *f = fopen(path, "rb");
-    if (f) {
-        uint8_t priv[32];
-        size_t rd = fread(priv, 1, sizeof(priv), f);
-        fclose(f);
-        if (rd == sizeof(priv) &&
-            curve25519_scalarmult_base(nm->identity_pub, priv)) {
-            memcpy(nm->identity_priv, priv, sizeof(priv));
-            memory_cleanse(priv, sizeof(priv));
-            return;
-        }
-        memory_cleanse(priv, sizeof(priv));
-        LOG_WARN("net", "v2_identity: unreadable key at %s, regenerating", path);
-    }
-
-    uint8_t priv[32];
-    if (!zcl_random_secret_bytes(priv, sizeof(priv), "v2_identity") ||
-        !curve25519_scalarmult_base(nm->identity_pub, priv)) {
-        memory_cleanse(priv, sizeof(priv));
-        nm->v2_enabled = false;
-        LOG_WARN("net", "v2_identity: key generation failed; v2 transport disabled");
-        return;
-    }
-    memcpy(nm->identity_priv, priv, sizeof(priv));
-
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd >= 0) {
-        ssize_t wr = write(fd, priv, sizeof(priv));
-        if (wr != (ssize_t)sizeof(priv))
-            LOG_WARN("net", "v2_identity: short write persisting key at %s", path);
-        close(fd);
-    } else {
-        LOG_WARN("net", "v2_identity: could not persist key at %s", path);
-    }
-    memory_cleanse(priv, sizeof(priv));
-}
-
 bool connman_init(struct connman *cm, const struct chain_params *params,
                    struct node_signals *signals)
 {
@@ -2078,9 +2037,10 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
 
     memset(cm, 0, sizeof(*cm));
     net_manager_init(&cm->manager);
+    zcl_mutex_init(&cm->dht_hint_lock);
+    cm->manager.owner = cm;
     cm->params = params;
     cm->manager.signals = *signals;
-
     /* Config-validation clamp (reactor-overflow prevention). The reactor's
      * poll() fd arrays are bounded by REACTOR_MAX_FDS (listen sockets +
      * connected peers). Clamp the config-derived max_connections up front,
@@ -2112,6 +2072,7 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
         "connman.deferred_free");
     if (!cm->deferred_free) {
         cm->deferred_free_cap = 0;
+        zcl_mutex_destroy(&cm->dht_hint_lock);
         return false;
     }
     cm->num_deferred_free = 0;
@@ -2127,9 +2088,25 @@ bool connman_init(struct connman *cm, const struct chain_params *params,
      * NODE_V2TRANSPORT and load/generate the persistent static identity. */
     cm->manager.v2_enabled = GetBoolArg("-v2transport", false);
     if (cm->manager.v2_enabled) {
-        v2_identity_load_or_generate(&cm->manager);
-        if (cm->manager.v2_enabled)
+        char datadir[1024], identity_error[160];
+        /* The DHT delegation command and the running service both receive
+         * the operator's base datadir.  Keep the persistent Noise identity
+         * there too: a net-specific suffix made a regtest daemon silently
+         * use <datadir>/regtest/v2_identity.key while the provisioning
+         * command signed <datadir>/v2_identity.key, guaranteeing a delegated
+         * key mismatch on the acceptance topology.  Mainnet was accidentally
+         * unaffected because its suffix is empty. */
+        GetDataDir(false, datadir, sizeof(datadir));
+        if (v2_identity_load_or_create(
+                datadir, cm->manager.identity_priv,
+                cm->manager.identity_pub, identity_error,
+                sizeof(identity_error)))
             cm->manager.local_services |= NODE_V2TRANSPORT;
+        else {
+            cm->manager.v2_enabled = false;
+            LOG_WARN("net", "v2 identity unavailable: %s; transport disabled",
+                     identity_error);
+        }
     }
     cm->manager.local_host_nonce = GetRand(UINT64_MAX);
     snprintf(cm->manager.sub_version, MAX_SUBVERSION_LENGTH, "%s",
@@ -2539,6 +2516,7 @@ void connman_free(struct connman *cm)
     }
 
     net_manager_free(&cm->manager);
+    zcl_mutex_destroy(&cm->dht_hint_lock);
 
     /* free any deferred entries still pending. After
      * connman_stop returns, no other thread should hold node refs. */

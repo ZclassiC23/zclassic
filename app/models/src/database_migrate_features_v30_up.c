@@ -630,6 +630,115 @@ int node_db_migrate_features_v30_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 46) {
+        /* v46: strict recursive ZSLP validity. The outpoint ledger records
+         * token outputs and mint batons, but only after the tri-state
+         * validator admits their ancestry and quantities. */
+        node_db_exec(ndb,
+            "ALTER TABLE zslp_ledger ADD COLUMN role INTEGER NOT NULL "
+            "DEFAULT 1 CHECK(role IN (1,2))");
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zslp_validity ("
+            "txid BLOB PRIMARY KEY CHECK(length(txid)=32),"
+            "token_id BLOB CHECK(token_id IS NULL OR length(token_id)=32),"
+            "tx_type INTEGER NOT NULL,"
+            "status INTEGER NOT NULL CHECK(status IN (0,1,2)),"
+            "reason TEXT NOT NULL,"
+            "block_height INTEGER NOT NULL,"
+            "input_units INTEGER NOT NULL DEFAULT 0 CHECK(input_units>=0),"
+            "output_units INTEGER NOT NULL DEFAULT 0 CHECK(output_units>=0),"
+            "burned_units INTEGER NOT NULL DEFAULT 0 CHECK(burned_units>=0),"
+            "minted_units INTEGER NOT NULL DEFAULT 0 CHECK(minted_units>=0),"
+            "baton_vout INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zslp_validity_token_height "
+            "ON zslp_validity(token_id,block_height,status)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zslp_ledger_valid_role "
+            "ON zslp_ledger(token_id,role,spent_by_txid)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('046')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 46);
+        current_ver = 46;
+        applied++;
+    }
+
+    if (current_ver < 47) {
+        /* v47: a passphrase-wrapped metadata DEK plus encrypted intent rows.
+         * Sensitive bodies are application data, never consensus state. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS wallet_metadata_key ("
+            "id INTEGER PRIMARY KEY CHECK(id=1),"
+            "wrapped_dek BLOB NOT NULL)");
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS vault_intents ("
+            "plan_id BLOB PRIMARY KEY CHECK(length(plan_id)=32),"
+            "digest BLOB NOT NULL CHECK(length(digest)=32),"
+            "state INTEGER NOT NULL DEFAULT 0,"
+            "route INTEGER NOT NULL,"
+            "created_at INTEGER NOT NULL,"
+            "expires_at INTEGER NOT NULL,"
+            "anchor_height INTEGER NOT NULL,"
+            "anchor_hash BLOB NOT NULL CHECK(length(anchor_hash)=32),"
+            "encrypted_payload BLOB NOT NULL,"
+            "txid BLOB CHECK(txid IS NULL OR length(txid)=32),"
+            "confirm_height INTEGER NOT NULL DEFAULT -1,"
+            "confirm_hash BLOB CHECK(confirm_hash IS NULL OR length(confirm_hash)=32),"
+            "error_code TEXT NOT NULL DEFAULT '',"
+            "updated_at INTEGER NOT NULL) WITHOUT ROWID");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_vault_intents_state_time "
+            "ON vault_intents(state,created_at DESC)");
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS vault_intent_raw ("
+            "plan_id BLOB PRIMARY KEY CHECK(length(plan_id)=32),"
+            "raw_tx BLOB NOT NULL) WITHOUT ROWID");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('047')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 47);
+        current_ver = 47;
+        applied++;
+    }
+
+    if (current_ver < 48) {
+        /* v48: zswap YARDSALE ads (zswap_ads) — the rebuildable projection
+         * of verified signed "for sale by owner" ZSLP-token/ZCL gossip ads
+         * (zswap_quote.v1, lib/zswap). One row per quote_root (the dedup
+         * id): wire keeps the exact 210 signed bytes that verified at
+         * ingress, the amount/time columns project the signed body, and
+         * first/last_seen + seen_count are local gossip bookkeeping. A
+         * yardsale cache — remembered signs, never a market or a matching
+         * engine; never consulted by consensus; safe to drop. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zswap_ads ("
+            "quote_root BLOB NOT NULL PRIMARY KEY "
+            "  CHECK(length(quote_root)=32),"
+            "wire BLOB NOT NULL CHECK(length(wire)=210),"
+            "seller_pubkey BLOB NOT NULL CHECK(length(seller_pubkey)=32),"
+            "token_id BLOB NOT NULL CHECK(length(token_id)=32),"
+            "token_amount INTEGER NOT NULL CHECK(token_amount>0),"
+            "zcl_amount INTEGER NOT NULL CHECK(zcl_amount>0),"
+            "issued_unix INTEGER NOT NULL,"
+            "expires_unix INTEGER NOT NULL,"
+            "first_seen_unix INTEGER NOT NULL,"
+            "last_seen_unix INTEGER NOT NULL,"
+            "seen_count INTEGER NOT NULL DEFAULT 1 CHECK(seen_count>=1))"
+            " WITHOUT ROWID");
+
+        /* The browse query filters one token's still-valid ads. */
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zswap_ads_token_expiry "
+            "ON zswap_ads(token_id, expires_unix)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('048')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 48);
+        current_ver = 48;
+        applied++;
+    }
+
+    /* v49+ continues in database_migrate_features_v49_up.c (same E1
+     * file-size split as the v30 handoff). */
     *version = current_ver;
-    return applied;
+    return applied + node_db_migrate_features_v49_up(ndb, version);
 }

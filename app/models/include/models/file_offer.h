@@ -23,8 +23,9 @@
  *   - size_bytes:   non-zero (no zero-size files in the market)
  *   - num_chunks:   positive (must cover at least one chunk)
  *   - price_per_mb: non-negative
- *   - z_addr:       non-zero (Sapling payment address must be set)
- *   - peer_port:    non-zero
+ *   - paid offers:  canonical v1 seller signature, network, payment address,
+ *                   endpoint, nonce, validity window, and offer id required
+ *   - free offers:  legacy ROM-artifact compatibility only (auth_version=0)
  *   - last_seen:    non-negative
  *   - ttl:          1..FILE_MARKET_MAX_TTL inclusive
  */
@@ -39,6 +40,9 @@ int db_file_offer_list(struct node_db *ndb,
 bool db_file_offer_find(struct node_db *ndb,
                         const uint8_t root_hash[32],
                         struct file_offer *out);
+bool db_file_offer_find_by_id(struct node_db *ndb,
+                              const uint8_t offer_id[32],
+                              struct file_offer *out);
 int db_file_offer_prune(struct node_db *ndb, int64_t max_age);
 
 #endif

@@ -73,9 +73,9 @@ and elapsed microseconds. It is deliberately marked `source_cas_authority:
 shadow`; the exact shell-derived SHA-256 source/mutation record remains build
 and publication authority during differential rollout.
 5. **Push flow + its two traps:** `make lint && make -j"$(nproc)" build-only`, run the mapped focused tests with parallel Make, then `git push` (hook runs `make pre-push-ci`). **Trap A (impact-rules):** every changed `.c` must map to a focused group in `app/controllers/include/controllers/agent_impact_rules.def` or the push is BLOCKED ("no focused test mapping") — add the mapping. **Trap B (pre-push SIGPIPE):** git may not drain the hook's stdout, so a GREEN `make pre-push-ci` can die with `make[2]: write error: stdout` and spuriously block — confirm green out-of-band (`make pre-push-ci >log 2>&1; echo $?` → 0) then `git push --no-verify` (verified, not skipped).
-6. **ZVCS:** each green cycle may anchor candidate source/artifact evidence. Source revert is available only with generation relinking disabled; relinking remains contained. Sealed-core changes require the owner unseal ritual (`check-core-seal`).
+6. **ZVCS:** each green cycle may anchor candidate source/artifact evidence. Source revert is available only with generation relinking disabled. Explicit full-generation publication uses `zclassic23-dev dev generation activate --idempotency-key=<key>` and its returned `commit_input`; automatic relinking remains contained. Sealed-core changes require the owner unseal ritual (`check-core-seal`).
 
-**Full-generation reopening gate (future, not current authority):** the narrow auto watcher can publish only an allowlisted read-only island into the isolated dev node. Service restart, executable relinking, canonical-node publication, and release publication remain contained. Those broader paths may return only as one durable transaction that resolves an immutable source epoch, derives the complete dependency/proof plan, records proof receipts, compare-and-swaps the expected resident epoch, quiesces and atomically publishes, probes through the public registry, and durably accepts or restores the exact prior generation.
+**Full-generation activation:** the narrow auto watcher still publishes only an allowlisted read-only island. An owner may explicitly stage and activate a full isolated-dev generation with the native plan/commit command above. It resolves an immutable source epoch, stages and preflights the exact candidate, compare-and-swaps the expected resident epoch under the activation lock, quiesces and atomically publishes, probes the exact process through the public registry, and accepts or restores the prior generation. Canonical-node and release publication remain separate and contained.
 
 ## The model in four lines
 
@@ -154,11 +154,85 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   target is the only one that publishes that alias; the run targets execute an
   epoch candidate under `build/bin/test-strict/epochs/<epoch>/`.
 - `make lint` — all gates; must pass before tests. `make ci` — lint + build + tests + checks.
-- `make deploy` is owner-gated live deployment. All public dev-lane publication,
-  stage, relink, and recovery-apply paths currently hard-refuse — the gated
-  swappable-leaf hot-swap loop above (`hotswap-try`/`hotswap-apply`) is the one
-  live exception; source identities and environment variables grant no
-  activation authority.
+- `make custody-check` — the exact wallet-identity, session-policy, intent,
+  broker-money, and receipt regression set. It uses isolated fixtures only and
+  never contacts a live wallet or moves funds. After an owner-created broker
+  binding exists, the read-only live check is
+  `zclassic23 metaverse agent money --dir=<absolute-broker-dir>`; it reports
+  `UNKNOWN`, `STALE`, or `CONFLICTED` instead of inventing a zero.
+- `make custody-status` — the read-only rollout doctor: source support, current
+  dev activation, canonical prod targeting, private broker binding, and the
+  complete two-wallet snapshot in one five-step progress line. Add
+  `ARGS='--broker-dir=/absolute/path'` after the owner creates the binding.
+  For a scoped money operation, add `--wallet-scope=dev|prod`; that reports
+  readiness for the explicitly targeted wallet while continuing to show an
+  incomplete portfolio as partial. It never promotes the other wallet to zero.
+  Raw balance reads are labeled `OBSERVED`, never promoted to identity-bound
+  `CURRENT`; endpoints and datadir paths are absent from its output. Its
+  hermetic contract check is `make custody-status-selftest`.
+- `make transaction-lab-proof` — run the exact isolated transaction evidence
+  matrix with real signatures, Sapling proofs, consensus verification, HTLC
+  interpretation, and overlay builders. `make transaction-lab-status` prints
+  separate proof and live-mainnet bars plus value/fee totals; it never treats
+  simulated confirmation as a live spend. The append-only, redacted live
+  notebook defaults to private mode-0600 local state and is never committed;
+  its recording procedure lives in `docs/work/TRANSACTION_LAB.md`.
+  `make transaction-lab-check` validates only the reproducible repository
+  baseline, while `make transaction-lab-status` validates the private working
+  ledger when one exists.
+  The two Sprout proof eras are independently pinned by
+  `test_sprout_phgr13_kat` (mainnet height 241) and
+  `test_sprout_groth16_kat` (mainnet height 476970); both embed only public
+  transaction/VK bytes and require no wallet or live node.
+- `make transaction-micro-lab-check` validates the stable 100-slot,
+  1,000-zatoshi live-campaign allocation and its redacted append-only receipt
+  state-machine template. `make transaction-micro-lab-status` validates the
+  private, never-committed working ledger when present and reports confirmed slot and
+  type coverage, exact value/fee totals, fee distribution, and confirmation
+  latency. Both are evidence-only and cannot plan, sign, authorize, broadcast,
+  or touch a datadir. The owner runbook is
+  [`TRANSACTION_MICRO_LAB.md`](work/TRANSACTION_MICRO_LAB.md).
+  The agent-fast path is the node-free native command
+  `zclassic23 app transaction-types micro-lab [--slot=N]`; it joins a numbered
+  slot to the semantic transaction catalog and current typed guide input
+  without reading wallet state or granting spend authority.
+  `make transaction-micro-lab-wallets-setup` creates the two persistent,
+  isolated recipient wallets without funding them or printing their addresses;
+  `make transaction-micro-lab-wallets-status` is the redacted resumable check.
+- Before using or adding a money-shaped native leaf, reverse-audit it with
+  `zclassic23 app transaction-types command <path>`. `mapped` names every
+  semantic workflow and role; `explicitly_non_chain` carries a reviewed reason;
+  `unclassified` is a hard stop, never permission to assume the command is
+  off-chain. `test_api` makes new ready wallet-risk/chain-worded mutations fail
+  until they have positive catalog coverage or an explicit negative row.
+  `test_transaction_wire_evidence` separately pins an exact mainnet v1
+  transaction plus canonical P2PK, P2PKH, P2SH, nulldata, and nonstandard
+  output examples. It also proves why no mainnet v3 fixture can exist:
+  Overwinter and Sapling activate together at height 476969, so v3 is
+  premature one height earlier and Sapling-invalid at activation.
+- `zclassic23 app transaction-types list` — the compile-time semantic catalog
+  of every known transaction shape and its exact builder/commit/inspect path.
+  Use `app transaction-types show --type=<id>` for one entry, or
+  `app transaction-types guide --type=<id>` to join it to exact live command
+  schemas, allowed keys, authority, confirmation, and the safe next decision in
+  one read. Use `app transaction-types wire` for the separate finite catalog of
+  consensus versions, serialized components, mainnet reachability/evidence,
+  script-policy classes, and the explicit open-ended script/memo buckets. REST mirrors the semantic catalog at
+  `/api/v1/transaction-types`; the AI-safe workflow and extension checklist are in
+  [`TRANSACTION_API.md`](./TRANSACTION_API.md).
+- `zclassic23 app payments zpay compose|inspect` — deterministic, public
+  adapters for canonical 512-byte ZPAY invoice/payment/receipt memos. Compose
+  returns `memo_hex`; the existing owner-only `core.wallet.shielded.send`
+  remains the sole value-moving step. Inspect requires an explicit expected
+  network and clock. Neither leaf accepts an identity seed.
+- `make deploy` is owner-gated live deployment. For the isolated dev lane,
+  `zclassic23-dev dev generation activate --idempotency-key=<key>` is the sole
+  full-generation authority: its plan returns exact `commit_input`, and its
+  commit is source/resident-CAS-bound with exact-process verification and
+  rollback. Other dev publication, relink, and recovery-apply entry points
+  still hard-refuse; source identities and environment variables alone grant
+  no activation authority. Gated leaf hot-swap remains available through
+  `hotswap-try`/`hotswap-apply`.
   `make deploy` rm's the stale binary first
   (a stale binary was a real multi-day outage) and verifies `build_commit`.
 - **Gate every change with `tools/scripts/gate-and-report.sh <lintlog> <testlog>`**
@@ -182,7 +256,7 @@ The interface is the native registry: `zclassic23 <path>` under seven roots —
 `discover search <q>` (query is **positional** — the `--input='{"query":…}'`
 form its schema advertises returns `MISSING_QUERY`).
 
-**Enumerating the 154 dumpstate subsystems is `zclassic23 statecatalog`**, not
+**Enumerating the 156 dumpstate subsystems is `zclassic23 statecatalog`**, not
 `ops state` with no `--subsystem` — that errors `MISSING_SUBSYSTEM`.
 `statecatalog` returns each subsystem's owner `.c` file, accepted key forms,
 cost, and owning test path. Add one by appending a `DIAG_*` descriptor row to

@@ -141,19 +141,32 @@ typedef bool (*metaverse_adapter_show_fn)(
     const struct metaverse_property_id *id,
     struct metaverse_property_view *out);
 
+/* Enumeration has two independent completeness axes: page truncation and
+ * source integrity. A corrupt record that was skipped is not pagination and
+ * must not disappear behind a plausible total. */
+#define METAVERSE_LIST_INTEGRITY_REASON_MAX 192u
+struct metaverse_adapter_list_report {
+    size_t total;
+    bool truncated;
+    bool integrity_ok;
+    size_t integrity_gap_count;
+    char integrity_reason[METAVERSE_LIST_INTEGRITY_REASON_MAX];
+};
+
 /* Enumerate this kind's properties into out[0..out_cap). Returns the rows
- * written. *total_out (when non-NULL) receives the TOTAL this kind holds,
- * which may exceed the rows written; *truncated_out (when non-NULL) is set
- * when it does — a short page must never read as a short inventory.
+ * written. report->total receives the TOTAL this kind holds, which may
+ * exceed the rows written; report->truncated says the page is partial.
+ * report->integrity_ok is false when records could not be read or rendered,
+ * with a bounded count and first precise reason — never a silent omission.
  *
  * out_cap == 0 is a legal COUNT-ONLY call: no view is written, and
- * *total_out is still the real total. The catalog uses it once its page is
+ * report->total is still the real total. The catalog uses it once its page is
  * full, because "the page filled up" must not silently become "the node
  * owns exactly this many". */
 typedef size_t (*metaverse_adapter_list_fn)(
     const struct metaverse_adapter_ctx *ctx,
     struct metaverse_property_view *out, size_t out_cap,
-    size_t *total_out, bool *truncated_out);
+    struct metaverse_adapter_list_report *report);
 
 /* Is this kind's authority READABLE from `ctx` right now, as opposed to
  * merely holding nothing? Optional; NULL means the question cannot arise

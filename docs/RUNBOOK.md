@@ -464,9 +464,9 @@ island root *exactly*. `zclassicd` flushes its LevelDB chainstate only
 periodically, so its persisted best-block usually lags its live RPC tip by tens
 of thousands of blocks. If the wedged node's island root sits *below* the
 `zclassicd` live tip but the persisted chainstate has already moved *past* it
-(or never lands on it), the guard refuses (`bind guard REFUSAL: tip bind
-h=<persisted> != fold-resume anchor h=<island>`) — correctly, since binding the
-shielded frontier at the wrong height would re-wedge. When this happens the
+(or never lands on it), the guard refuses (`source best-block bind FAILED:
+source=<hash> target=<hash>`) — correctly, since importing future nullifiers
+would reject valid forward spends. When this happens the
 cure is **not applicable to that datadir**; do not force it. The reliable path
 is then a **fresh full-history rebuild** (two-step `--importblockindex` +
 genesis body-fold, which builds complete anchor+nullifier state with no gap)

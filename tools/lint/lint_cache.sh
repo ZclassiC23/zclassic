@@ -112,6 +112,7 @@ check-shape-includes-header check-projections-pure check-one-write-path
 check-frontier-single-writer check-dumper-never-blocks check-no-block-index-flat
 check-no-utxo-projection check-no-utxos-mirror-read
 check-no-authoritative-ram-state check-no-dev-history-in-contracts
+check-no-live-lab-history
 check-stage-advances-or-blocks check-no-silent-ready check-honest-witness
 check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed
 check-no-new-coin-backfill-caller check-route-command-parity

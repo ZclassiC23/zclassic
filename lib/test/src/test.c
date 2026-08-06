@@ -983,6 +983,13 @@ int main(int argc, char **argv)
                failures);
         return failures ? 1 : 0;
     }
+    { extern int test_base_foundation(void);
+      failures += test_base_foundation(); }
+    { extern int test_codec_cursor(void); failures += test_codec_cursor(); }
+    { extern int test_zcode_score_receipt(void);
+      failures += test_zcode_score_receipt(); }
+    { extern int test_zcode_package_registry(void);
+      failures += test_zcode_package_registry(); }
     failures += test_game();
     failures += test_crypto();
     failures += test_crypto_registry();
@@ -1000,6 +1007,7 @@ int main(int argc, char **argv)
       failures += test_test_key_io_codec(); }
     { extern int test_test_png_writer(void);
       failures += test_test_png_writer(); }
+    { extern int test_qr(void); failures += test_qr(); }
     { extern int test_shared_validators_zcl_address(void);
       failures += test_shared_validators_zcl_address(); }
     failures += test_script();
@@ -1133,6 +1141,12 @@ int main(int argc, char **argv)
       failures += test_flyclient_chainwork_floor(); }
     { extern int test_test_zmsg_memo_codec(void);
       failures += test_test_zmsg_memo_codec(); }
+    { extern int test_zpay(void);
+      failures += test_zpay(); }
+    { extern int test_wallet_metadata_encryption(void);
+      failures += test_wallet_metadata_encryption(); }
+    { extern int test_transaction_intent(void);
+      failures += test_transaction_intent(); }
     failures += test_scan_util();
     failures += test_tor();
     { extern int test_onion_bootstrap(void);
@@ -1350,6 +1364,8 @@ int main(int argc, char **argv)
     failures += test_trace();
     failures += test_phgr13_fix();
     failures += test_sprout_phgr13_kat();
+    failures += test_sprout_groth16_kat();
+    failures += test_transaction_wire_evidence();
     failures += test_rescanwitnesses_diverge_guard();
     failures += test_gap_fill_frontier_window();
     failures += test_snark_kat();
@@ -1535,12 +1551,29 @@ int main(int argc, char **argv)
     { extern int test_vcs_accept(void); failures += test_vcs_accept(); }
     { extern int test_zcode_store(void); failures += test_zcode_store(); }
     { extern int test_zcode_publish(void); failures += test_zcode_publish(); }
+    { extern int test_zcode_package_dev(void); failures += test_zcode_package_dev(); }
     { extern int test_zcode_recipe(void); failures += test_zcode_recipe(); }
     { extern int test_zcode_contributor(void); failures += test_zcode_contributor(); }
     { extern int test_zcode_verify(void); failures += test_zcode_verify(); }
     { extern int test_zcode_score(void); failures += test_zcode_score(); }
     { extern int test_zcode_reward(void); failures += test_zcode_reward(); }
     { extern int test_zcode_rank(void); failures += test_zcode_rank(); }
+    { extern int test_zcode_discovery_rank(void);
+      failures += test_zcode_discovery_rank(); }
+    { extern int test_zcode_dht(void); failures += test_zcode_dht(); }
+    { extern int test_zcode_dht_delegation(void);
+      failures += test_zcode_dht_delegation(); }
+    { extern int test_zcode_dht_msgs(void); failures += test_zcode_dht_msgs(); }
+    { extern int test_zcode_dht_record(void);
+      failures += test_zcode_dht_record(); }
+    { extern int test_zcode_sovereignty_policy(void);
+      failures += test_zcode_sovereignty_policy(); }
+    { extern int test_zcode_dht_service(void);
+      failures += test_zcode_dht_service(); }
+    { extern int test_zcode_dht_lookup(void);
+      failures += test_zcode_dht_lookup(); }
+    { extern int test_zcode_dht_model(void);
+      failures += test_zcode_dht_model(); }
     { extern int test_zcode_badge(void); failures += test_zcode_badge(); }
     { extern int test_zcode_policy(void); failures += test_zcode_policy(); }
     { extern int test_zcode_swarm(void); failures += test_zcode_swarm(); }
@@ -1548,7 +1581,16 @@ int main(int argc, char **argv)
     { extern int test_zcode_fetch(void); failures += test_zcode_fetch(); }
     { extern int test_zcode_site(void); failures += test_zcode_site(); }
     { extern int test_zcode_add(void); failures += test_zcode_add(); }
+    { extern int test_zcode_science(void); failures += test_zcode_science(); }
+    { extern int test_zcode_science_store(void);
+      failures += test_zcode_science_store(); }
+    { extern int test_zcode_benchmark_exec(void);
+      failures += test_zcode_benchmark_exec(); }
+    { extern int test_zcode_discovery_projection(void);
+      failures += test_zcode_discovery_projection(); }
     { extern int test_metaverse_catalog(void); failures += test_metaverse_catalog(); }
+    { extern int test_space(void); failures += test_space(); }
+    { extern int test_space_scout(void); failures += test_space_scout(); }
     { extern int test_vcs_devloop(void); failures += test_vcs_devloop(); }
     { extern int test_testcache(void); failures += test_testcache(); }
     failures += test_nullifier_kv();
@@ -1679,6 +1721,11 @@ int main(int argc, char **argv)
     failures += test_bg_hash_verify_store_port();
     failures += test_bg_validation_store_port();
     failures += test_zslp_store_port();
+    { extern int test_zswap_quote(void); failures += test_zswap_quote(); }
+    { extern int test_zswap_yardsale(void); failures += test_zswap_yardsale(); }
+    { extern int test_zswap_ceremony(void); failures += test_zswap_ceremony(); }
+    { extern int test_yardsale_app(void); failures += test_yardsale_app(); }
+    { extern int test_yardsale_wallet(void); failures += test_yardsale_wallet(); }
     failures += test_make_lint_gates_family();
     failures += test_multisig();
     failures += test_rpc_auth_hardening();

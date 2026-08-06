@@ -14,13 +14,12 @@
  *
  *   1. force-locked        -> NULL           (explicit `lock`, wins over env)
  *   2. runtime passphrase  -> that value     (explicit `unlock`)
- *   3. ZCL_WALLET_PASSPHRASE non-empty -> env value  (boot auto-unlock)
- *   4. otherwise           -> NULL           (plaintext / no passphrase)
+ *   3. otherwise           -> NULL           (locked / no passphrase)
  *
- * Backward compatibility: a node started with ZCL_WALLET_PASSPHRASE set is
- * auto-unlocked (case 3) — existing deployments keep working with zero
- * changes.  A plaintext wallet (no at-rest encryption in use) is always
- * considered unlocked; there is nothing to unlock.
+ * Environment auto-unlock is deliberately unsupported: live encrypted
+ * wallets start locked, and secret input enters through the bounded native
+ * stdin unlock surface. A plaintext wallet (no at-rest encryption in use) is
+ * considered unlocked because there is nothing to decrypt.
  *
  * Consensus-neutral: this is wallet-local key handling.  It changes no tx
  * bytes, no proof, and no consensus check — a tx signed by an unlocked
@@ -32,6 +31,8 @@
 #include "util/result.h"
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,6 +51,8 @@ enum wallet_lock_err {
     WLK_PASS_TOO_LONG   = -202,
     WLK_WRONG_PASS      = -203,   /* passphrase did not decrypt on-disk keys */
     WLK_LOCKED          = -204,   /* spend attempted on a locked wallet */
+    WLK_TIMEOUT_RANGE   = -205,
+    WLK_TIMER_FAIL      = -206,
 };
 
 /* The passphrase the persistence layer must decrypt/encrypt with, per the
@@ -57,6 +60,11 @@ enum wallet_lock_err {
  * module and stays valid until the next lock/unlock call; copy it if you must
  * hold it across one.  Returns NULL when locked or when no passphrase is set. */
 const char *wallet_lock_effective_passphrase(void);
+
+/* Copy the active passphrase while holding the lock. Prefer this for an
+ * operation that must remain safe if the auto-lock timer fires concurrently.
+ * The caller must cleanse `out` after use. */
+bool wallet_lock_copy_passphrase(char *out, size_t out_size);
 
 /* Record that the wallet uses at-rest encryption — the persistence layer
  * calls this the first time it encrypts or detects a WKS1 envelope, so the
@@ -84,6 +92,12 @@ struct zcl_result wallet_lock_spend_guard(void);
  * wired, or in unit tests).  Rejects NULL/empty/over-long passphrases. */
 struct zcl_result wallet_lock_unlock(struct wallet *w, struct wallet_sqlite *ws,
                                      const char *passphrase);
+
+/* Arm automatic lock after a successful unlock. `timeout_seconds` is bounded
+ * to 1..3600; expiry scrubs the cached passphrase and resident private keys.
+ * Re-arming supersedes the older timer. */
+struct zcl_result wallet_lock_arm_timeout(struct wallet *w,
+                                          uint32_t timeout_seconds);
 
 /* Runtime lock.  Secure-erase the cached passphrase, set the force-lock, and
  * wipe decrypted private keys from `w`'s in-RAM keystore (`w` may be NULL).

@@ -4,6 +4,8 @@
 #include "coins/undo.h"
 #include "controllers/blog_controller.h"
 #include "controllers/blog_post_controller.h"
+#include "encoding/utilstrencodings.h"
+#include "json/json.h"
 #include "views/blog_post_view.h"
 #include "services/blog_publication_service.h"
 #include "models/app_event.h"
@@ -12,6 +14,8 @@
 #include "models/explorer_index.h"
 #include "models/onion_announcement.h"
 #include "models/tx_index.h"
+#include "models/vault_intent.h"
+#include "models/wallet_identity.h"
 #include "models/znam.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -20,7 +24,9 @@
 #include "keys/key_io.h"
 #include "keys/key.h"
 #include "script/standard.h"
+#include "rpc/server.h"
 #include "wallet/wallet.h"
+#include "wallet/wallet_lock.h"
 #include <unistd.h>
 
 /* db_service owns two background pthreads (zcl_db_worker, zcl_db_ckpt) that
@@ -97,6 +103,76 @@ static bool blog_test_save_name_marker(struct node_db *ndb, const char *owner,
 static bool blog_test_save_name(struct node_db *ndb, const char *owner)
 {
     return blog_test_save_name_marker(ndb, owner, 0x31);
+}
+
+struct blog_anchor_fixture {
+    struct node_db *ndb;
+    struct wallet_identity_row identity;
+    uint8_t initial_root[32];
+    uint8_t reserved_root[32];
+    uint8_t tip_hash[32];
+    int32_t tip_height;
+    int money_reads;
+    int prepares;
+    int publishes;
+};
+
+static struct zcl_result blog_anchor_fixture_money(
+    void *opaque, const char *scope, struct wallet_money_snapshot *out)
+{
+    struct blog_anchor_fixture *fixture = opaque;
+    if (!fixture || !out || strcmp(scope, "dev") != 0)
+        return ZCL_ERR(-1, "Blog anchor fixture scope mismatch");
+    memset(out, 0, sizeof(*out));
+    out->identity = fixture->identity;
+    snprintf(out->wallet_scope, sizeof(out->wallet_scope), "dev");
+    snprintf(out->status, sizeof(out->status), "CURRENT");
+    snprintf(out->reason, sizeof(out->reason), "fixture current");
+    out->complete = true;
+    out->confirmed_zat = 30000000;
+    out->agent_available_zat = 5000000;
+    out->intent_reserved_zat = vault_intent_reserved_total(
+        fixture->ndb, "dev", fixture->identity.wallet_instance_id);
+    out->tip_height = fixture->tip_height;
+    memcpy(out->tip_hash, fixture->tip_hash, 32);
+    memcpy(out->snapshot_root,
+           fixture->money_reads++ == 0 ? fixture->initial_root
+                                       : fixture->reserved_root, 32);
+    return ZCL_OK;
+}
+
+static struct zcl_result blog_anchor_fixture_prepare(
+    void *opaque, const uint8_t *script, size_t script_len,
+    int64_t maximum_fee_zat, uint8_t *raw, size_t raw_capacity,
+    size_t *raw_len, uint8_t txid[32], int64_t *actual_fee_zat)
+{
+    struct blog_anchor_fixture *fixture = opaque;
+    if (!fixture || !script || script_len == 0 || raw_capacity < 8 ||
+        maximum_fee_zat != 10000 || !raw || !raw_len || !txid ||
+        !actual_fee_zat)
+        return ZCL_ERR(-1, "Blog anchor fixture prepare mismatch");
+    fixture->prepares++;
+    memcpy(raw, "ZBLGTX1", 7);
+    raw[7] = (uint8_t)script_len;
+    *raw_len = 8;
+    memset(txid, 0x61, 32);
+    *actual_fee_zat = 1000;
+    return ZCL_OK;
+}
+
+static struct zcl_result blog_anchor_fixture_publish(
+    void *opaque, const uint8_t *raw, size_t raw_len,
+    const uint8_t expected_txid[32])
+{
+    struct blog_anchor_fixture *fixture = opaque;
+    uint8_t expected[32];
+    memset(expected, 0x61, sizeof(expected));
+    if (!fixture || !raw || raw_len != 8 ||
+        memcmp(raw, "ZBLGTX1", 7) != 0 ||
+        memcmp(expected_txid, expected, 32) != 0)
+        return ZCL_ERR(-1, "Blog anchor fixture publish mismatch");
+    fixture->publishes++;
+    return ZCL_OK;
 }
 
 static struct db_block blog_test_block(uint8_t marker, int height,
@@ -264,6 +340,84 @@ static int test_blog_publication_slice(void)
                                         anchor_name, anchor_event_id).ok);
         ASSERT(strcmp(anchor_name, "alice") == 0);
         ASSERT(memcmp(anchor_event_id, published.post.event_id, 32) == 0);
+
+        /* A real plan is identity-bound and reserves the maximum fee before
+         * returning. The service sees only signed transaction bytes through
+         * ports; the wallet key never crosses this boundary. */
+        struct blog_anchor_fixture anchor_fixture;
+        memset(&anchor_fixture, 0, sizeof(anchor_fixture));
+        anchor_fixture.ndb = &publisher;
+        anchor_fixture.tip_height = 420;
+        memset(anchor_fixture.tip_hash, 0x44,
+               sizeof(anchor_fixture.tip_hash));
+        memset(anchor_fixture.initial_root, 0x31,
+               sizeof(anchor_fixture.initial_root));
+        memset(anchor_fixture.reserved_root, 0x32,
+               sizeof(anchor_fixture.reserved_root));
+        const struct chain_params *params = chain_params_get();
+        ASSERT(params != NULL);
+        ASSERT(wallet_identity_ensure(
+            &publisher, params->consensus.hashGenesisBlock.data, "dev",
+            &anchor_fixture.identity));
+        wallet_lock_reset_for_test();
+        wallet_lock_note_encrypted_at_rest();
+        ASSERT(wallet_lock_unlock(NULL, NULL, "blog-anchor-test").ok);
+        struct blog_anchor_runtime anchor_runtime;
+        memset(&anchor_runtime, 0, sizeof(anchor_runtime));
+        anchor_runtime.node_db = &publisher;
+        anchor_runtime.read_money = blog_anchor_fixture_money;
+        anchor_runtime.money_ctx = &anchor_fixture;
+        anchor_runtime.prepare = blog_anchor_fixture_prepare;
+        anchor_runtime.prepare_ctx = &anchor_fixture;
+        anchor_runtime.publish = blog_anchor_fixture_publish;
+        anchor_runtime.publish_ctx = &anchor_fixture;
+        anchor_runtime.tip_height = anchor_fixture.tip_height;
+        memcpy(anchor_runtime.tip_hash, anchor_fixture.tip_hash, 32);
+        anchor_runtime.maximum_fee_zat = 10000;
+        anchor_runtime.now_unix = 1700002000;
+        struct blog_anchor_request anchor_request;
+        memset(&anchor_request, 0, sizeof(anchor_request));
+        snprintf(anchor_request.wallet_scope,
+                 sizeof(anchor_request.wallet_scope), "dev");
+        snprintf(anchor_request.blog_name, sizeof(anchor_request.blog_name),
+                 "alice");
+        memcpy(anchor_request.event_id, published.post.event_id, 32);
+        snprintf(anchor_request.idempotency_key,
+                 sizeof(anchor_request.idempotency_key), "alice-post-1");
+        struct blog_anchor_transaction_result anchor_plan;
+        result = blog_publication_anchor_plan(
+            &anchor_runtime, &anchor_request, &anchor_plan);
+        ASSERT(result.ok && anchor_plan.event_verified &&
+               !anchor_plan.broadcast &&
+               strcmp(anchor_plan.wallet_scope, "dev") == 0);
+        ASSERT(anchor_plan.maximum_fee_zat == 10000 &&
+               anchor_plan.reserved_zat == 10000 &&
+               anchor_plan.actual_fee_zat == 1000);
+        ASSERT(anchor_plan.anchor_script_len == published.anchor_script_len);
+        ASSERT(memcmp(anchor_plan.anchor_script, published.anchor_script,
+                      published.anchor_script_len) == 0);
+        ASSERT(anchor_fixture.prepares == 1 &&
+               vault_intent_reserved_total(
+                   &publisher, "dev",
+                   anchor_fixture.identity.wallet_instance_id) == 10000);
+        struct blog_anchor_transaction_result anchor_replay;
+        ASSERT(blog_publication_anchor_plan(
+            &anchor_runtime, &anchor_request, &anchor_replay).ok);
+        ASSERT(anchor_replay.idempotent_replay &&
+               memcmp(anchor_replay.plan_id, anchor_plan.plan_id, 32) == 0 &&
+               anchor_fixture.prepares == 1);
+        result = blog_publication_anchor_commit(
+            &anchor_runtime, "prod", anchor_plan.plan_id, &anchor_replay);
+        ASSERT(!result.ok && anchor_fixture.publishes == 0);
+        result = blog_publication_anchor_commit(
+            &anchor_runtime, "dev", anchor_plan.plan_id, &anchor_replay);
+        ASSERT(result.ok && anchor_replay.broadcast &&
+               anchor_fixture.publishes == 1);
+        ASSERT(blog_publication_anchor_commit(
+            &anchor_runtime, "dev", anchor_plan.plan_id, &anchor_replay).ok);
+        ASSERT(anchor_replay.idempotent_replay &&
+               anchor_fixture.publishes == 1);
+
         uint8_t trailing[BLOG_ANCHOR_SCRIPT_MAX + 1];
         memcpy(trailing, published.anchor_script, published.anchor_script_len);
         trailing[published.anchor_script_len] = 0;

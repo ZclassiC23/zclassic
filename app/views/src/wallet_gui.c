@@ -377,7 +377,7 @@ static void init_controllers(const char *datadir) {
     static struct node_db ndb;
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
-    if (!node_db_open(&ndb, db_path)) {
+    if (!node_db_open_runtime(&ndb, db_path, "wallet_gui.init")) {
         if (sqlite3_open_v2(db_path, &ndb.db,
                 SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK) {
             ndb.open = true;

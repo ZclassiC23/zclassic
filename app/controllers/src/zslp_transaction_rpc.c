@@ -11,6 +11,26 @@
 #include "zslp/slp.h"
 
 #include <stdint.h>
+#include <stdio.h>
+
+/* Implemented by the custody-bound intent controller. */
+void register_zslp_intent_rpc_command(struct rpc_table *table);
+
+static bool zslp_tx_rpc_units(const struct json_value *v, uint64_t *out)
+{
+    const char *s = json_get_str(v);
+    if (!s || !s[0]) return false;
+    uint64_t n = 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p < '0' || *p > '9') return false;
+        unsigned digit = (unsigned)(*p - '0');
+        if (n > (UINT64_MAX - digit) / 10) return false;
+        n = n * 10 + digit;
+    }
+    if (n == 0) return false;
+    *out = n;
+    return true;
+}
 
 static bool zslp_tx_rpc_coin_reserved(const struct transaction *tx,
                                       uint32_t vout, void *ctx)
@@ -45,8 +65,11 @@ static bool zslp_tx_rpc_transfer_request(const struct json_value *params,
 {
     r->token_id = json_get_str(json_at(params, 0));
     r->recipient_addr = json_get_str(json_at(params, 1));
-    int64_t amount = json_get_int(json_at(params, 2));
-    r->amount = amount > 0 ? (uint64_t)amount : 0;
+    r->amount = 0;
+    if (!zslp_tx_rpc_units(json_at(params, 2), &r->amount)) {
+        json_set_str(result, "units must be an unsigned decimal string");
+        LOG_FAIL("zslp.txrpc", "invalid transfer units");
+    }
     r->strict_chain_addr = true;
     const char *why = zslp_service_validate_transfer_request(r);
     if (!why)
@@ -63,11 +86,16 @@ static bool rpc_zslp_createtoken_tx(const struct json_value *params,
             "zslp_createtoken_tx \"ticker\" \"name\" decimals supply");
         return !help;
     }
+    uint64_t supply = 0;
+    if (!zslp_tx_rpc_units(json_at(params, 3), &supply)) {
+        json_set_str(result, "supply must be an unsigned decimal string");
+        LOG_FAIL("zslp.txrpc", "invalid genesis supply");
+    }
     struct zslp_token_create_request req = {
         .ticker = json_get_str(json_at(params, 0)),
         .name = json_get_str(json_at(params, 1)),
         .decimals = (uint8_t)json_get_int(json_at(params, 2)),
-        .initial_supply = (uint64_t)json_get_int(json_at(params, 3)),
+        .initial_supply = supply,
     };
     const char *why = zslp_service_validate_create_request(&req);
     if (!zslp_tx_rpc_guard(result, "zslp_createtoken_tx"))
@@ -116,7 +144,10 @@ static bool zslp_tx_rpc_move(const struct json_value *params, bool help,
     zslp_tx_rpc_receipt(result, &receipt);
     json_push_kv_str(result, "token_id", req.token_id);
     json_push_kv_str(result, "to", req.recipient_addr);
-    json_push_kv_int(result, "amount", (int64_t)req.amount);
+    char units[32];
+    snprintf(units, sizeof(units), "%llu",
+             (unsigned long long)req.amount);
+    json_push_kv_str(result, "units", units);
     return true;
 }
 
@@ -132,6 +163,35 @@ static bool rpc_zslp_mint_tx(const struct json_value *params, bool help,
     return zslp_tx_rpc_move(params, help, result, true);
 }
 
+static bool rpc_zslp_burn_tx(const struct json_value *params, bool help,
+                             struct json_value *result)
+{
+    if (help || !params || json_size(params) < 2) {
+        json_set_str(result, "zslp_burn_tx \"token_id\" \"units\"");
+        return !help;
+    }
+    const char *token_id = json_get_str(json_at(params, 0));
+    uint64_t units = 0;
+    if (!token_id || !zslp_tx_rpc_units(json_at(params, 1), &units)) {
+        json_set_str(result, "token_id and unsigned decimal units required");
+        LOG_FAIL("zslp.txrpc", "invalid burn request");
+    }
+    if (!zslp_tx_rpc_guard(result, "zslp_burn_tx"))
+        return false; // raw-return-ok:RPC error body already set
+    struct zslp_tx_receipt receipt;
+    if (!zslp_burn_with_receipt(NULL, token_id, units, &receipt) ||
+        !receipt.broadcast) {
+        json_set_str(result, "token burn was not broadcast");
+        LOG_FAIL("zslp.txrpc", "burn returned no broadcast receipt");
+    }
+    zslp_tx_rpc_receipt(result, &receipt);
+    json_push_kv_str(result, "token_id", token_id);
+    char amount[32];
+    snprintf(amount, sizeof(amount), "%llu", (unsigned long long)units);
+    json_push_kv_str(result, "burned_units", amount);
+    return true;
+}
+
 void register_zslp_transaction_rpc_commands(struct rpc_table *t)
 {
     wallet_set_coin_reservation_probe(zslp_tx_rpc_coin_reserved, NULL);
@@ -139,7 +199,9 @@ void register_zslp_transaction_rpc_commands(struct rpc_table *t)
         { "zslp", "zslp_createtoken_tx", rpc_zslp_createtoken_tx, false },
         { "zslp", "zslp_send_tx", rpc_zslp_send_tx, false },
         { "zslp", "zslp_mint_tx", rpc_zslp_mint_tx, false },
+        { "zslp", "zslp_burn_tx", rpc_zslp_burn_tx, false },
     };
     for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
         rpc_table_must_append(t, &commands[i]);
+    register_zslp_intent_rpc_command(t);
 }

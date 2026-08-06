@@ -26,7 +26,6 @@ app/jobs/src/utxo_apply_stage.c
 app/jobs/src/utxo_apply_stage_dump.c
 app/models/src/explorer_index.c
 app/models/src/utxo.c
-app/models/src/zslp_ledger.c
 app/services/src/auth_login_service.c
 app/services/src/blog_publication.c
 app/services/src/consensus_snapshot_export_service.c

@@ -381,34 +381,24 @@ without the doctor learning about it. Prose here can only describe it.
   make**, **git**.
 - **`make vendor`:** `ar`, `nm`, `sha256sum`, `tar`, `unzip`, `patch`, `perl`
   (OpenSSL's `Configure` is a perl program), and `curl` **or** `wget`.
-- **Rust — `cargo` + `rustc` — OPTIONAL, and off by default.** A host with no
-  Rust toolchain runs `make vendor` and `make` to completion and gets a full
-  node: it validates the chain, relays and verifies other people's shielded
-  transactions, serves the explorer and REST API, mines, and RECEIVES shielded
-  funds. All of that is native C23 (`lib/sapling/` is ~14k lines of C23
-  covering BLS12-381, Groth16 verification, Jubjub, Pedersen hash and note
-  encryption).
+- **Rust — `cargo` + `rustc` — NOT REQUIRED.** A normal `make vendor` and
+  `make` build the complete Sapling send and receive path in native C23,
+  including Spend and Output proof creation, binding signatures, consensus
+  verification, note encryption, and outgoing recovery.
 
-  The one capability that needs Rust is CREATING Sapling proofs — i.e. SENDING
-  shielded value, in every direction (t→z as much as z→z and z→t, because an
-  output description carries its own Groth16 proof). Without the backend,
-  `z_sendmany` and on-chain ZMSG refuse with a typed error naming the flag, and
-  `ops state --subsystem=messaging` reports `onchain_channel_ready: false`.
-  Nothing crashes and nothing silently succeeds.
-
-  Turn it on with the compile-time flag, which needs `cargo` + `rustc` once to
-  build `vendor/lib/librustzcash.a` (the canonical Zcash Sapling prover, at a
-  pinned upstream revision):
+  `ZCL_WITH_RUST=1` exists only for maintainers who deliberately build the
+  pinned historical prover as a differential test oracle. It never replaces
+  the wallet's native C23 production prover:
 
   ```bash
-  make ZCL_WITH_RUST=1                  # vendor + build with the prover linked
-  make ZCL_WITH_RUST=1 test-parallel    # and its test coverage
+  make ZCL_WITH_RUST=1                  # optional reference-oracle build
+  make ZCL_WITH_RUST=1 test-parallel    # differential test coverage
   ```
 
   The flag rides into both the compile flags and the link inputs, which the
-  build-epoch key hashes, so the two configurations get separate object roots
-  and can never mix stale objects. `make doctor` files `cargo`/`rustc` under
-  *optional* and says exactly what their absence costs.
+  build-epoch key hashes, so the configurations get separate object roots and
+  cannot mix stale objects. `make doctor` files `cargo`/`rustc` as optional;
+  their absence costs no node or wallet capability.
 - **A C++ compiler — `c++`/`g++`.** LevelDB is C++11. `cmake` is the preferred
   build route and is genuinely optional (a direct C++11 compile is the
   fallback), but the C++ compiler is required either way. `vendor_prereqs.tsv`
@@ -443,7 +433,7 @@ against its minimum-safe version.
 | `libleveldb.a` | LevelDB | 1.23 | fetched + built | https://github.com/google/leveldb |
 | `libsqlite3.a` | SQLite (amalgamation) | 3.49.0 | fetched + built | https://www.sqlite.org/ |
 | `libz.a` | zlib | 1.3.1 | fetched + built | https://github.com/madler/zlib |
-| `librustzcash.a` *(optional)* | Zcash Sapling prover | `06da3b9ac8f2` | fetched + built, only under `ZCL_WITH_RUST=1` | https://github.com/zcash/librustzcash |
+| `librustzcash.a` *(optional test oracle)* | Historical Zcash Sapling prover | `06da3b9ac8f2` | fetched + built, only under `ZCL_WITH_RUST=1` | https://github.com/zcash/librustzcash |
 
 That is 10 archives in a default `make vendor` (9 builds + the committed
 `libsecp256k1.a`), and 11 under `ZCL_WITH_RUST=1`, which adds
@@ -471,15 +461,12 @@ Notes:
 - **SQLite 3.49.0** amalgamation; `make vendor` also refreshes
   `vendor/include/sqlite3.h` and `vendor/sqlite3.c` so the rest of the build
   (e.g. `tools/sqlq.c`) stays in sync.
-- **librustzcash is proving-only, and optional.** It is the exact,
-  SHA256-pinned revision used by the canonical ZClassic daemon, linked
-  statically behind the repository's C ABI, and only when `ZCL_WITH_RUST=1`
-  asks for it. Sapling block/transaction verification stays in the independent
-  C23 verifier in every build. Exactly one of two sibling translation units is
-  compiled: `lib/sapling/src/sapling_prover_librustzcash.c` with the flag, and
-  `lib/sapling/src/sapling_prover_unavailable.c` (typed refusals, no Rust)
-  without it. `Cargo.lock` pins registry checksums and the git
-  dependency revision; build paths are remapped before the archive is linked.
+- **librustzcash is an optional differential test oracle.** It is the exact,
+  SHA256-pinned revision used by the canonical ZClassic daemon and is fetched
+  only when `ZCL_WITH_RUST=1` asks for it. Wallet proving and consensus
+  verification stay in independent C23 code in every build. `Cargo.lock` pins
+  registry checksums and the git dependency revision; build paths are remapped
+  before the optional archive is linked.
 - Downloads are cached under `vendor/.cache/` (gitignored); build trees live in
   `vendor/.build/` (removed on a clean full run). To bump a version, edit the
   pinned version + SHA256 in `tools/scripts/build_vendor.sh`.

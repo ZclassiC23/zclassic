@@ -14,6 +14,7 @@
 #include "sapling/circuit_gadgets.h"
 #include "sapling/pedersen_hash.h"
 #include "sapling/sapling.h"
+#include "base/serialize_le.h"
 #include "support/cleanse.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,21 +29,56 @@ static void bytes_to_fr(struct fr *out, const uint8_t bytes[32])
     fr_from_bytes(out, bytes);
 }
 
+/* Bellman's field_into_boolean_vec_le allocates Fs::NUM_BITS booleans and
+ * deliberately does not pack them back into a field wire. These scalars are
+ * consumed only as bits, so adding a packing wire changes the trusted-setup
+ * QAP even though the honest witness still satisfies it. */
+static void output_boolean_vec_le(struct constraint_system *cs,
+                                  size_t *bits_out, size_t n_bits,
+                                  const struct fr *value)
+{
+    uint8_t bytes[32];
+    fr_to_bytes(bytes, value);
+    for (size_t i = 0; i < n_bits; i++) {
+        bool bit = ((bytes[i / 8] >> (i % 8)) & 1u) != 0;
+        bits_out[i] = gadget_alloc_boolean(cs, bit);
+    }
+    memory_cleanse(bytes, sizeof(bytes));
+}
+
+/* AllocatedNum::inputize orientation: input * ONE = computed. Mirroring the
+ * equality is arithmetically equivalent but produces a different QAP. */
+static void output_enforce_equal(struct constraint_system *cs,
+                                 size_t computed, size_t input_slot)
+{
+    struct linear_combination la, lb, lc;
+    struct fr one_val;
+    fr_one(&one_val);
+    lc_init(&la); lc_add_term(&la, input_slot, &one_val);
+    lc_init(&lb); lc_add_term(&lb, 0, &one_val);
+    lc_init(&lc); lc_add_term(&lc, computed, &one_val);
+    cs_enforce(cs, &la, &lb, &lc);
+    lc_free(&la); lc_free(&lb); lc_free(&lc);
+}
+
+static bool output_point_to_xy(struct fr *x, struct fr *y,
+                               const uint8_t compressed[32])
+{
+    struct jub_point point;
+    if (!jub_from_bytes(&point, compressed))
+        LOG_FAIL("sapling_circuit",
+                 "output_point_to_xy: invalid compressed Jubjub point");
+    jub_get_x(x, &point);
+    jub_get_y(y, &point);
+    return true;
+}
+
 /* ── Output Circuit Synthesis ───────────────────────────────────── */
 
-/* NOT at parity with Zcash sapling-crypto Output::synthesize — measured, not
- * assumed. This synthesis produces 7571 constraints / 7567 aux / 5 inputs; the
- * trusted-setup output proving key says num_aux == pk.l_len == 7821, so the
- * native circuit is ~254 aux and ~256 constraints SHORT of the reference, and
- * one input slot off. It therefore does not round-trip against the real key
- * either. Confirm with the H1 baseline line in the `groth16_selfverify` test
- * group ("OUTPUT match: num_aux==pk.l_len? NO").
- *
- * This matters beyond the output circuit: the shared gadgets it leans on
- * (gadget_pedersen_hash, bit decomposition, gadget_variable_base_mul) are the
- * same ones spend sections 13/15/16/17/19/21 will reuse, so they must not be
- * assumed reference-exact. Reaching output parity is its own port task; the
- * step list below is the intended shape, not a parity claim.
+/* C23 port of sapling-crypto Output::synthesize at the pinned parameter commit.
+ * Allocation order and A/B/C orientation are trusted-setup inputs, not merely
+ * implementation details. The production shape is 5 public inputs, 7821 aux
+ * variables, and 7827 constraints.
  *
  * Steps:
  *   1. expose_value_commitment: value_bits→fixed_base_mul(G_v) +
@@ -57,7 +93,22 @@ bool sapling_output_synthesize(struct constraint_system *cs,
                                 const struct sapling_output_witness *wit,
                                 const struct sapling_output_inputs *pub)
 {
-    (void)pub; /* Public inputs are computed in-circuit, not passed in */
+    if (!cs || !wit || !pub)
+        LOG_FAIL("sapling_circuit", "output_synthesize: NULL argument");
+
+    /* Bellman has a separate input namespace. Allocate all five inputs first
+     * so our unified variable vector has ONE, inputs, then auxiliaries. */
+    struct fr cv_pub_x, cv_pub_y, epk_pub_x, epk_pub_y, cm_fr;
+    if (!output_point_to_xy(&cv_pub_x, &cv_pub_y, pub->cv) ||
+        !output_point_to_xy(&epk_pub_x, &epk_pub_y, pub->epk) ||
+        !fr_from_bytes(&cm_fr, pub->cm))
+        LOG_FAIL("sapling_circuit",
+                 "output_synthesize: malformed public input encoding");
+    size_t in_cv_x = cs_alloc_input(cs, &cv_pub_x);
+    size_t in_cv_y = cs_alloc_input(cs, &cv_pub_y);
+    size_t in_epk_x = cs_alloc_input(cs, &epk_pub_x);
+    size_t in_epk_y = cs_alloc_input(cs, &epk_pub_y);
+    size_t in_cm = cs_alloc_input(cs, &cm_fr);
 
     /* note_contents accumulates boolean variable indices:
      * value(64) + g_d_repr(256) + pk_d_repr(256) = 576 bits */
@@ -80,7 +131,7 @@ bool sapling_output_synthesize(struct constraint_system *cs,
         bytes_to_fr(&value_fr, vbytes);
     }
     size_t value_bits[64];
-    gadget_unpack_bits(cs, value_bits, 64, &value_fr);
+    output_boolean_vec_le(cs, value_bits, 64, &value_fr);
 
     /* Store value bits into note_contents */
     for (size_t i = 0; i < 64; i++)
@@ -89,12 +140,7 @@ bool sapling_output_synthesize(struct constraint_system *cs,
     /* 1b. fixed_base_mul(G_v, value_bits) → value_point */
     struct fr gv_x, gv_y;
     {
-        struct jub_point gv;
-        const uint8_t pers[8] = {'Z','c','a','s','h','_','c','v'};
-        const uint8_t tag[1] = {'v'};
-        group_hash(&gv, tag, 1, pers);
-        jub_get_x(&gv_x, &gv);
-        jub_get_y(&gv_y, &gv);
+        sapling_value_commit_value_generator(&gv_x, &gv_y);
     }
     size_t val_pt_x, val_pt_y;
     gadget_fixed_base_mul(cs, value_bits, 64, &gv_x, &gv_y,
@@ -104,17 +150,12 @@ bool sapling_output_synthesize(struct constraint_system *cs,
     struct fr rcv_fr;
     bytes_to_fr(&rcv_fr, wit->rcv);
     size_t rcv_bits[252];
-    gadget_unpack_bits(cs, rcv_bits, 252, &rcv_fr);
+    output_boolean_vec_le(cs, rcv_bits, 252, &rcv_fr);
 
     /* 1d. fixed_base_mul(G_rcv, rcv_bits) → rcv_point */
     struct fr grcv_x, grcv_y;
     {
-        struct jub_point grcv;
-        const uint8_t pers[8] = {'Z','c','a','s','h','_','c','v'};
-        const uint8_t tag[1] = {'r'};
-        group_hash(&grcv, tag, 1, pers);
-        jub_get_x(&grcv_x, &grcv);
-        jub_get_y(&grcv_y, &grcv);
+        sapling_value_commit_randomness_generator(&grcv_x, &grcv_y);
     }
     size_t rcv_pt_x, rcv_pt_y;
     gadget_fixed_base_mul(cs, rcv_bits, 252, &grcv_x, &grcv_y,
@@ -126,7 +167,8 @@ bool sapling_output_synthesize(struct constraint_system *cs,
                         &cv_x, &cv_y);
 
     /* 1f. Inputize cv (public inputs 1,2: cv.x, cv.y) */
-    gadget_point_inputize(cs, cv_x, cv_y);
+    output_enforce_equal(cs, cv_x, in_cv_x);
+    output_enforce_equal(cs, cv_y, in_cv_y);
 
     /* ════════════════════════════════════════════════════════
      * Step 2: Witness g_d, verify not small order, compute repr
@@ -134,7 +176,12 @@ bool sapling_output_synthesize(struct constraint_system *cs,
 
     /* Compute g_d from diversifier outside circuit */
     struct jub_point gd_point;
-    sapling_diversifier_to_gd(&gd_point, wit->diversifier);
+    if (!sapling_diversifier_to_gd(&gd_point, wit->diversifier)) {
+        memory_cleanse(note_contents, 576 * sizeof(size_t));
+        free(note_contents);
+        LOG_FAIL("sapling_circuit",
+                 "output_synthesize: diversifier has no g_d point");
+    }
     struct fr gd_x_val, gd_y_val;
     jub_get_x(&gd_x_val, &gd_point);
     jub_get_y(&gd_y_val, &gd_point);
@@ -147,21 +194,11 @@ bool sapling_output_synthesize(struct constraint_system *cs,
     /* Assert g_d is not small order */
     gadget_assert_not_small_order(cs, gd_x, gd_y);
 
-    /* Compute repr of g_d: y_bits(255) + x_sign_bit(1) = 256 bits */
-    {
-        /* Unpack x into bits to get the sign bit (LSB of x) */
-        size_t gd_x_bits[256];
-        gadget_unpack_bits(cs, gd_x_bits, 256, &gd_x_val);
-
-        /* Unpack y into bits */
-        size_t gd_y_bits[256];
-        gadget_unpack_bits(cs, gd_y_bits, 256, &gd_y_val);
-
-        /* repr = y_bits(first 255) + x_bit0 */
-        for (size_t i = 0; i < 255; i++)
-            note_contents[nc_idx++] = gd_y_bits[i];
-        note_contents[nc_idx++] = gd_x_bits[0]; /* x sign bit */
-    }
+    /* repr() uses strict field decompositions for both coordinates. */
+    size_t gd_repr[256];
+    gadget_point_repr(cs, gd_x, gd_y, gd_repr);
+    memcpy(&note_contents[nc_idx], gd_repr, sizeof(gd_repr));
+    nc_idx += 256;
 
     /* ════════════════════════════════════════════════════════
      * Step 3: epk = esk * g_d → inputize
@@ -171,7 +208,7 @@ bool sapling_output_synthesize(struct constraint_system *cs,
     struct fr esk_fr;
     bytes_to_fr(&esk_fr, wit->esk);
     size_t esk_bits[252];
-    gadget_unpack_bits(cs, esk_bits, 252, &esk_fr);
+    output_boolean_vec_le(cs, esk_bits, 252, &esk_fr);
 
     /* Variable-base scalar mul: epk = g_d * esk */
     size_t epk_x, epk_y;
@@ -179,7 +216,8 @@ bool sapling_output_synthesize(struct constraint_system *cs,
                               &epk_x, &epk_y);
 
     /* Inputize epk (public inputs 3,4: epk.x, epk.y) */
-    gadget_point_inputize(cs, epk_x, epk_y);
+    output_enforce_equal(cs, epk_x, in_epk_x);
+    output_enforce_equal(cs, epk_y, in_epk_y);
 
     /* ════════════════════════════════════════════════════════
      * Step 4: pk_d witness — 256 bits for note contents
@@ -194,9 +232,10 @@ bool sapling_output_synthesize(struct constraint_system *cs,
         jub_get_x(&pkd_x_val, &pkd_point);
         jub_get_y(&pkd_y_val, &pkd_point);
 
-        /* Unpack y into boolean vars */
-        size_t pkd_y_bits[256];
-        gadget_unpack_bits(cs, pkd_y_bits, 256, &pkd_y_val);
+        /* field_into_boolean_vec_le emits Fr::NUM_BITS == 255 bits and no
+         * packing constraint. pk_d is intentionally not checked on-curve. */
+        size_t pkd_y_bits[255];
+        output_boolean_vec_le(cs, pkd_y_bits, 255, &pkd_y_val);
 
         /* Get x sign bit */
         uint8_t pkd_x_bytes[32];
@@ -216,8 +255,16 @@ bool sapling_output_synthesize(struct constraint_system *cs,
 
     /* note_contents should now have 64+256+256 = 576 bits */
     size_t cm_hash_x, cm_hash_y;
-    gadget_pedersen_hash(cs, note_contents, 576,
-                          "Zcash_PH", &cm_hash_x, &cm_hash_y);
+    bool note_pers[PEDERSEN_PERSONALIZATION_BITS];
+    gadget_pedersen_personalization_note_commitment(note_pers);
+    gadget_pedersen_hash_pers(cs, note_pers, note_contents, 576,
+                              &cm_hash_x, &cm_hash_y);
+    if (cm_hash_x >= cs->num_vars || cm_hash_y >= cs->num_vars) {
+        memory_cleanse(note_contents, 576 * sizeof(size_t));
+        free(note_contents);
+        LOG_FAIL("sapling_circuit",
+                 "output_synthesize: note Pedersen hash failed");
+    }
 
     /* ════════════════════════════════════════════════════════
      * Step 6: Randomize note commitment: cm = hash + rcm*G_rcm
@@ -227,17 +274,12 @@ bool sapling_output_synthesize(struct constraint_system *cs,
     struct fr rcm_fr;
     bytes_to_fr(&rcm_fr, wit->rcm);
     size_t rcm_bits[252];
-    gadget_unpack_bits(cs, rcm_bits, 252, &rcm_fr);
+    output_boolean_vec_le(cs, rcm_bits, 252, &rcm_fr);
 
     /* fixed_base_mul(G_rcm, rcm_bits) */
     struct fr grcm_x, grcm_y;
     {
-        struct jub_point grcm;
-        const uint8_t pers[8] = {'Z','c','a','s','h','_','P','H'};
-        const uint8_t tag[1] = {'r'};
-        group_hash(&grcm, tag, 1, pers);
-        jub_get_x(&grcm_x, &grcm);
-        jub_get_y(&grcm_y, &grcm);
+        sapling_note_commit_randomness_generator(&grcm_x, &grcm_y);
     }
     size_t rcm_pt_x, rcm_pt_y;
     gadget_fixed_base_mul(cs, rcm_bits, 252, &grcm_x, &grcm_y,
@@ -249,7 +291,7 @@ bool sapling_output_synthesize(struct constraint_system *cs,
                         &cm_x, &cm_y);
 
     /* Inputize cm.x only (public input 5) */
-    gadget_scalar_inputize(cs, cm_x);
+    output_enforce_equal(cs, cm_x, in_cm);
 
     /* note_contents holds the boolean-variable layout of the secret note
      * (value/g_d/pk_d bit witnesses) — wipe before free; it is fully
@@ -257,10 +299,18 @@ bool sapling_output_synthesize(struct constraint_system *cs,
     memory_cleanse(note_contents, 576 * sizeof(size_t));
     free(note_contents);
 
-    printf("Output circuit synthesized: %zu vars, %zu constraints, "
-           "%zu inputs\n", cs->num_vars, cs->num_constraints,
-           cs->num_inputs);
+    if (cs->num_inputs != 5 || cs->num_constraints != 7827 ||
+        cs->num_vars - cs->num_inputs - 1 != 7821)
+        LOG_FAIL("sapling_circuit",
+                 "output_synthesize: production shape mismatch "
+                 "(inputs=%zu aux=%zu constraints=%zu)",
+                 cs->num_inputs, cs->num_vars - cs->num_inputs - 1,
+                 cs->num_constraints);
 
+    size_t bad = SIZE_MAX;
+    if (!cs_is_satisfied(cs, &bad))
+        LOG_FAIL("sapling_circuit",
+                 "output_synthesize: honest witness is unsatisfied at %zu", bad);
     return true;
 }
 

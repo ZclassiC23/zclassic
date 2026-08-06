@@ -35,16 +35,10 @@
  *      note left open ("the 192-byte zk-proof stays non-deterministic under
  *      THIS hook alone").
  *
- * KNOWN BLOCKER (pre-existing, NOT Lane C — see prover_verifier_roundtrip_ok):
- * the in-binary C23 Groth16 PROVER currently emits output/spend proofs that
- * the consensus VERIFIER rejects (positive round-trip == false; identical to
- * test_snark_kat KAT B's diagnostic, which gates only its negative cases for
- * this reason). So the verifier cannot yet ACCEPT an honestly-built proof.
- * This test therefore asserts that the verdict reached THROUGH the simulator
- * equals a direct prover->verifier round-trip probe — an honest invariant that
- * is green today (both reject) and auto-tightens to "accept" the day the
- * prover is fixed. Everything else (tree/anchor/witness/root, memo decrypt,
- * nullifier durable-set, txid determinism) is fully real and asserted green.
+ * The direct prover->verifier probe is a positive capability gate: the native
+ * C23 proof must be accepted before the simulator transaction checks can pass.
+ * Tree/anchor/witness/root, memo decrypt, nullifier durable-set, and txid
+ * determinism are all exercised with that same production circuit/prover.
  *
  * The verifier is exercised UNCHANGED: no skip_proofs, no weakened
  * check_spend/check_output/final_check, no bypass of utxo_apply_nullifiers.
@@ -101,20 +95,14 @@
 /* ── Direct C23 circuit prover (test-local) ──────────────────────────────
  * This test pins the in-tree pure-C23 Sapling/Groth16 prover and its
  * ZCL_TESTING RNG hooks, NOT the wallet-facing proving facade
- * (zclassic_sapling_*  in lib/sapling/src/sapling_prover_c23.c). As of
- * commit f70b368dd that facade delegates wallet-side proving to the
- * vendored librustzcash: correct and consensus-verified, but it draws its
- * own internal randomness and ignores sapling_set_test_rng_hook /
- * groth16_set_test_rng_hook / redjubjub_set_test_rng_hook entirely, which
- * breaks every determinism assertion this test makes, and it is
- * fail-closed on a self-test the sim doesn't run. Routing through
+ * (zclassic_sapling_* in lib/sapling/src/sapling_prover_native.c). Routing through
  * sapling_build_output_description() (existing production helper) and the
  * direct_build_spend_description() helper below — both built on
  * sapling_create_output_proof/sapling_create_spend_proof from
  * sapling_circuit.h — keeps this test on the exact pure-C23 path the test
  * banner documents, independent of which backend the wallet facade uses.
- * The librustzcash facade has its own coverage (snark_kat,
- * groth16_selfverify, shielded_payment_gate). */
+ * The wallet facade has separate coverage in groth16_selfverify and
+ * shielded_payment_gate. */
 
 /* Build one Sapling SpendDescription with the pure C23 spend circuit
  * prover — the direct-circuit analog of sapling_build_output_description(),

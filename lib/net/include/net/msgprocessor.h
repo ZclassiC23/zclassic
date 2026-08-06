@@ -29,12 +29,14 @@ struct block;
 struct transaction;
 struct zmsg_message;
 struct file_offer;
+struct file_payment;
 struct validation_state;
 struct active_chain;
 struct block_index;
 struct fc_challenge;
 struct fc_response;
 struct msg_block_intake;
+struct zswap_yardsale_ad;
 
 typedef bool (*msg_compact_block_submit_fn)(struct block *block,
                                             struct validation_state *out,
@@ -48,6 +50,38 @@ typedef void (*msg_peer_save_fn)(const struct p2p_node *node, void *ctx);
 typedef bool (*msg_zmsg_save_fn)(const struct zmsg_message *msg, void *ctx);
 typedef bool (*msg_file_offer_save_fn)(const struct file_offer *offer,
                                        void *ctx);
+typedef int (*msg_file_payment_ingest_fn)(
+    const struct file_payment *payment, int64_t peer_id,
+    int64_t now_unix, void *ctx);
+typedef bool (*msg_zswap_ad_save_fn)(const struct zswap_yardsale_ad *ad,
+                                     void *ctx);
+/* Port seam for the yardsale ingress policy (verify/dedup/clamp/store):
+ * lib/net must not name lib/zswap symbols (module-order ratchet), so the
+ * handler calls the yardsale through this injected port; the composition
+ * root (config/) wires it to zswap_yardsale_ingest_wire. The int result
+ * carries enum zswap_yardsale_ingest values (zswap/zswap_yardsale.h). */
+typedef int (*msg_zswap_ad_ingest_fn)(const uint8_t *wire, size_t wire_len,
+                                      const uint8_t expected_network_genesis[32],
+                                      int64_t peer_id, int64_t now_unix,
+                                      struct zswap_yardsale_ad *out_ad,
+                                      void *ctx);
+/* Port seams for the yardsale swap ceremony wires (zswapaccept /
+ * zswappartial), same module-order rationale as the ad ingest port: the
+ * handlers call the yardsale controller through these injected ports; the
+ * composition root (config/) wires them. The int results carry enum
+ * zswap_ceremony_wire_result values (zswap/zswap_ceremony.h). The accept
+ * port additionally fills respond_wire when it returns
+ * ZSWAP_CEREMONY_WIRE_RESPOND (the seller's zswap_partial.v1 answer). */
+typedef int (*msg_zswap_accept_ingest_fn)(const uint8_t *wire,
+                                          size_t wire_len,
+                                          int64_t peer_id, int64_t now_unix,
+                                          uint8_t *respond_wire,
+                                          size_t respond_cap,
+                                          size_t *respond_len, void *ctx);
+typedef int (*msg_zswap_partial_ingest_fn)(const uint8_t *wire,
+                                           size_t wire_len,
+                                           int64_t peer_id, int64_t now_unix,
+                                           void *ctx);
 typedef bool (*msg_file_service_save_fn)(const uint8_t ip[16],
                                          uint16_t port,
                                          uint16_t p2p_port,
@@ -154,6 +188,16 @@ struct msg_processor {
     void *zmsg_save_ctx;
     msg_file_offer_save_fn file_offer_save;
     void *file_offer_save_ctx;
+    msg_file_payment_ingest_fn file_payment_ingest;
+    void *file_payment_ingest_ctx;
+    msg_zswap_ad_save_fn zswap_ad_save;
+    void *zswap_ad_save_ctx;
+    msg_zswap_ad_ingest_fn zswap_ad_ingest;
+    void *zswap_ad_ingest_ctx;
+    msg_zswap_accept_ingest_fn zswap_accept_ingest;
+    void *zswap_accept_ingest_ctx;
+    msg_zswap_partial_ingest_fn zswap_partial_ingest;
+    void *zswap_partial_ingest_ctx;
     msg_file_service_save_fn file_service_save;
     void *file_service_save_ctx;
     msg_snapshot_active_fn snapshot_active;
@@ -256,6 +300,29 @@ void msg_processor_set_zmsg_save(struct msg_processor *mp,
 void msg_processor_set_file_offer_save(struct msg_processor *mp,
                                        msg_file_offer_save_fn save,
                                        void *ctx);
+void msg_processor_set_file_payment_ingest(
+    struct msg_processor *mp, msg_file_payment_ingest_fn ingest, void *ctx);
+void msg_processor_set_zswap_ad_save(struct msg_processor *mp,
+                                     msg_zswap_ad_save_fn save,
+                                     void *ctx);
+void msg_processor_set_zswap_ad_ingest(struct msg_processor *mp,
+                                       msg_zswap_ad_ingest_fn ingest,
+                                       void *ctx);
+void msg_processor_set_zswap_accept_ingest(
+    struct msg_processor *mp,
+    msg_zswap_accept_ingest_fn ingest,
+    void *ctx);
+void msg_processor_set_zswap_partial_ingest(
+    struct msg_processor *mp,
+    msg_zswap_partial_ingest_fn ingest,
+    void *ctx);
+
+/* Originate one gossip wire to every fast-sync peer (the outbound half of
+ * the zswapquote relay idiom — used by the yardsale buyer to publish his
+ * zswapaccept). No-op when net_mgr or params are absent. */
+void msg_processor_flood_message(struct msg_processor *mp,
+                                 const char *command,
+                                 const uint8_t *wire, size_t wire_len);
 void msg_processor_set_file_service_save(struct msg_processor *mp,
                                          msg_file_service_save_fn save,
                                          void *ctx);

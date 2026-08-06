@@ -222,11 +222,9 @@ int groth16_spend_reference_oracle(void)
                  ref.valid);
 #else
     spend_oracle_load_baked_reference(&ref);
-    printf("  SKIP (reference re-derivation) — built without ZCL_WITH_RUST=1, "
-           "so vendor/lib/librustzcash.a is not linked; using the baked KAT in "
-           "groth16_spend_oracle_kat.h as ground truth. Rebuild with "
-           "`make ZCL_WITH_RUST=1` to re-prove the baked vector against the "
-           "reference archive.\n");
+    printf("  reference re-derivation archive not linked; using the checked-in "
+           "pinned KAT in groth16_spend_oracle_kat.h as ground truth. Native "
+           "C23 proving and verification coverage continues below.\n");
     ORACLE_CHECK("baked KAT vector is present as ground truth", ref.valid);
 #endif
     if (!ref.valid) {

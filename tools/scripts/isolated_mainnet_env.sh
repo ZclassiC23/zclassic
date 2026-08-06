@@ -277,6 +277,17 @@ iso_spawn_mainnet_node() {
     # protect here. Without this flag that gate FATALs at boot ("refusing to
     # create a new PLAINTEXT wallet") and the node never reaches RPC-ready —
     # every from-fresh canary would FAIL with reason=rpc_never_ready.
+    #
+    # -wallet-no-phrase-backup: the SECOND wallet gate (config/src/
+    # boot_wallet_phrase.c) refuses a headless first boot even after the
+    # plaintext opt-in, because the twelve words could only land in node.log.
+    # Its SKIP list is ZCL_WALLET_PASSPHRASE / mint-anchor / a declared
+    # dev|soak|test|copy|standby lane / this flag — and -allow-plaintext-wallet
+    # is deliberately NOT on it ("keep keys in the clear" ≠ "no written
+    # backup"). A replay datadir is deleted on exit, so no backup can ever
+    # exist; this flag says so in as many words. Without it the canary FAILs
+    # reason=rpc_never_ready with the wallet_phrase_no_terminal blocker —
+    # confirmed live 2026-08-01 on the anchor track.
     # shellcheck disable=SC2086
     setsid "$ISO_NODE_BIN" \
         -datadir="$ISO_DD" \
@@ -284,6 +295,7 @@ iso_spawn_mainnet_node() {
         -fsport="$ISO_FSPORT" -httpsport="$ISO_HTTPSPORT" \
         -showmetrics=0 \
         -allow-plaintext-wallet \
+        -wallet-no-phrase-backup \
         $extra \
         >"$ISO_DD/node.log" 2>&1 &
     ISO_NODE_PID=$!

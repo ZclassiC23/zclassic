@@ -219,6 +219,30 @@ void store_cas_remove(struct vcs_package_store *store,
     store->cas_count--;
 }
 
+void store_package_touch(struct vcs_package_store *store,
+                         struct store_package *pkg)
+{
+    if (!store || !pkg)
+        return;
+    store->next_mutation_generation++;
+    if (!store->next_mutation_generation)
+        store->next_mutation_generation++;
+    pkg->mutation_generation = store->next_mutation_generation;
+}
+
+void store_packages_touch_hash(struct vcs_package_store *store,
+                               const uint8_t hash[32])
+{
+    if (!store || !hash)
+        return;
+    for (size_t i = 0; i < store->pkg_count; i++)
+        for (size_t c = 0; c < store->pkgs[i].chunk_count; c++)
+            if (memcmp(store->pkgs[i].chunks[c].hash, hash, 32) == 0) {
+                store_package_touch(store, &store->pkgs[i]);
+                break;
+            }
+}
+
 /* ── derived per-package state ────────────────────────────────────── */
 
 void store_package_present(const struct vcs_package_store *store,
@@ -268,6 +292,7 @@ bool store_package_commit(struct vcs_package_store *store,
     if (!store_rm_rf(staging_dir))
         LOG_FAIL(STORE_LOG, "commit cleanup %s", staging_dir);
     pkg->committed = true;
+    store_package_touch(store, pkg);
     return true;
 }
 
@@ -446,6 +471,7 @@ struct store_package *store_record_add(struct vcs_package_store *store,
     /* New packages start RARE: no observed demand or replication yet
      * (the enum's zero value is HOT, so this must be explicit). */
     pkg.class_ = VCS_PACKAGE_STORE_CLASS_RARE;
+    store_package_touch(store, &pkg);
     {
         char pin[STORE_PATH_MAX];
         snprintf(pin, sizeof(pin), "%s/pins/%s", store->root,

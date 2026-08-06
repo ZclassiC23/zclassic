@@ -7,6 +7,7 @@
  * createmultisig, sendmany, and addmultisigaddress. */
 
 #include "controllers/wallet_controller_internal.h"
+#include "controllers/sovereignty_controller.h"
 
 bool rpc_createmultisig(const struct json_value *params, bool help,
                                 struct json_value *result)
@@ -91,6 +92,22 @@ bool rpc_sendmany(const struct json_value *params, bool help,
         "Send to multiple addresses in one transaction.\n"
         "First argument must be \"\" (empty string).\n"
         "Second argument is a JSON object of address:amount pairs.");
+
+    /* This is a distinct wallet broadcast entry point from sendtoaddress and
+     * z_sendmany, so it must carry the same sovereign-state gate itself. A
+     * typed wrapper cannot repair an unguarded RPC because a cookie holder
+     * can invoke the RPC directly. Fire before wallet and parameter checks,
+     * exactly like the other two spend surfaces. */
+    {
+        char sov_reason[96] = {0};
+        if (!sovereignty_guard_allow("wallet_spend", sov_reason,
+                                     sizeof(sov_reason))) {
+            json_set_str(result, "Error: spend refused — tip is "
+                                 "release_assisted (borrowed shielded "
+                                 "history, not self-folded)");
+            LOG_FAIL("wallet", "sendmany: refused — %s", sov_reason);
+        }
+    }
 
     if (json_size(params) < 2) {
         json_set_str(result, "Expected at least 2 parameter(s)");

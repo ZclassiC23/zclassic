@@ -12,6 +12,9 @@
 #define VCS_BUILD_ACTION_KIND_V1 "c23.compile.preprocessed.v1"
 #define VCS_BUILD_ACTION_KIND_TEST_V1 "c23.package.test.v1"
 #define VCS_BUILD_ACTION_KIND_FUZZ_V1 "c23.package.fuzz.v1"
+#define VCS_BUILD_ACTION_KIND_BENCHMARK_V1 "c23.benchmark.v1"
+#define VCS_BUILD_ACTION_KIND_BENCHMARK_REPRODUCE_V1 \
+    "c23.benchmark.reproduce.v1"
 #define VCS_BUILD_ACTION_KIND_REVIEW_V1 "c23.review.v1"
 #define VCS_BUILD_VIRTUAL_ROOT_V1 "/zbuild/src"
 #define VCS_BUILD_OUTPUT_V1 "unit.o"
@@ -20,12 +23,18 @@
 #define VCS_BUILD_PACKAGE_VIRTUAL_ROOT_V1 "/zbuild/package"
 #define VCS_BUILD_TEST_OUTPUT_V1 "test.evidence.v1"
 #define VCS_BUILD_FUZZ_OUTPUT_V1 "fuzz.evidence.v1"
+#define VCS_BUILD_BENCHMARK_OUTPUT_V1 "benchmark_result.v1"
+#define VCS_BUILD_BENCHMARK_REPRODUCE_OUTPUT_V1 "reproduction.v1"
 #define VCS_BUILD_REVIEW_VIRTUAL_ROOT_V1 "/zbuild/review"
 #define VCS_BUILD_REVIEW_OUTPUT_V1 "review.v1"
 #define VCS_BUILD_TEST_RESOURCE_POLICY_V1 \
     "cpu=1,memory_mb=2048,timeout_s=120,network=0"
 #define VCS_BUILD_FUZZ_RESOURCE_POLICY_V1 \
     "cpu=1,memory_mb=2048,timeout_s=600,network=0"
+#define VCS_BUILD_BENCHMARK_RESOURCE_POLICY_V1 \
+    "cpu=1,memory_mb=4096,timeout_s=600,network=0"
+#define VCS_BUILD_BENCHMARK_REPRODUCE_RESOURCE_POLICY_V1 \
+    "cpu=1,memory_mb=4096,timeout_s=600,network=0"
 #define VCS_BUILD_REVIEW_RESOURCE_POLICY_V1 \
     "cpu=1,memory_mb=1024,timeout_s=300,network=0"
 

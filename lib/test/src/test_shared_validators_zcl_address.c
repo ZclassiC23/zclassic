@@ -8,10 +8,11 @@
  * coverage anywhere in lib/test/src before this file: its own novel
  * logic — a charset gate (alnum + underscore only, meant to block XSS
  * via address echo), then a length-gated prefix dispatch to either the
- * t1/t3 Base58Check decoder or the zs1 bech32 decoder — was completely
- * unpinned, independent of whether the underlying decode_destination /
- * sapling_decode_payment_address codecs are exercised elsewhere (they
- * are, via test_test_key_io_codec.c and the sapling test group).
+ * transparent Base58Check decoder or the Sapling bech32 decoder — was
+ * completely unpinned, independent of whether the underlying
+ * decode_destination / sapling_decode_payment_address codecs are
+ * exercised elsewhere (they are, via test_test_key_io_codec.c and the
+ * sapling test group).
  *
  * Read from app/models/src/shared_validators.c (current source):
  *
@@ -23,11 +24,10 @@
  *           ok = alnum || '_';
  *           if (!ok) return false;
  *       }
- *       if (addr[0]=='t' && (addr[1]=='1'||addr[1]=='3')
- *               && len>=26 && len<=36) {       // t1/t3 arm
- *           ... return decode_destination(...);
+ *       if (addr[0]=='t' && len>=26 && len<=36) {  // transparent arm
+ *           ... return decode_destination(...);    // active-chain prefixes
  *       }
- *       if (len>=70 && addr[0]=='z' && addr[1]=='s' && addr[2]=='1') {
+ *       if (strncmp(addr, active_hrp, hrp_len)==0 && addr[hrp_len]=='1') {
  *           ... return sapling_decode_payment_address(...);
  *       }
  *       return false;
@@ -35,20 +35,20 @@
  *
  * Two control-flow details this file pins directly:
  *
- *   1. In the t1/t3 arm, `addr[1]` is read and compared BEFORE the
- *      length check (`addr[0]=='t' && (addr[1]=='1'||addr[1]=='3') &&
- *      len>=26 ...`, left-to-right `&&` evaluation). For a 1-char
- *      string like "t", addr[1] is the string's own NUL terminator —
- *      a safe, in-bounds read (the byte just past the last real
- *      character is always allocated, since C strings are
- *      NUL-terminated) — that then correctly fails the '1'/'3'
- *      comparison. No out-of-bounds read, no crash.
+ *   1. In the transparent arm, only `addr[0]` is read before the length
+ *      check, so a 1-char string like "t" never touches addr[1] at all
+ *      (the pre-2026-08 arm compared addr[1] against '1'/'3' first,
+ *      which was still a safe in-bounds read of the NUL terminator).
+ *      Every ZCL-family transparent address begins with 't', so the
+ *      pre-filter loses nothing; decode_destination then enforces the
+ *      ACTIVE chain's version bytes — t1/t3 under CHAIN_MAIN, exactly
+ *      as before, so every outcome pinned below is unchanged.
  *
- *   2. In the zs1 arm, the length check `len>=70` is evaluated FIRST
- *      (leftmost `&&` operand), so `addr[1]`/`addr[2]` are only ever
- *      read once len>=70 already holds — i.e. once the string is long
- *      enough that those indices are known in-bounds. A short string
- *      beginning with 'z' never reaches those reads at all.
+ *   2. In the Sapling arm, the prefix compared is the ACTIVE chain's
+ *      bech32 HRP ("zs" under CHAIN_MAIN) plus the '1' separator, and
+ *      `len > hrp_len` guards the addr[hrp_len] read, so a short string
+ *      beginning with 'z' never reaches an out-of-bounds index. Under
+ *      CHAIN_MAIN this is the same "zs1" gate as before.
  *
  * Pure and deterministic: no clock, no RNG, no network, no live DB.
  * Uses only the mainnet Base58Check version-prefix bytes (via
@@ -242,7 +242,7 @@ int test_shared_validators_zcl_address(void)
         PASS();
     }
 
-    /* ── "t2..." falls through both arms, never attempts a decode ──── */
+    /* ── "t2...": reaches the decoder, fails mainnet version bytes ──── */
 
     TEST("zcl_validate_zcl_address: rejects a t2-prefixed string (neither t1 nor t3)") {
         char buf[40];

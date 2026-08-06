@@ -17,8 +17,9 @@
  *      with no credit. Late DATA for a CANCELLED id is the honest race:
  *      no credit, NO offence.
  *   5. Announce-only peers earn nothing (no-credit ANNOUNCEMENT on every
- *      announce); a new-user (zero-score) peer is over the frozen
- *      0/hour announce rate → ANNOUNCE_FLOOD naming announce-rate-limit.
+ *      announce); a new-user (zero-score) peer gets the bounded bootstrap
+ *      quota and the announce over it is ANNOUNCE_FLOOD naming
+ *      announce-rate-limit.
  *   6. Scheduler shape: manifest-first; rarest-first across downloads
  *      (fewest advertisers first); per-peer in-flight bound honored;
  *      multi-peer spread; end-to-end verified completion into the CAS.
@@ -39,6 +40,9 @@
  *      one-file/one-chunk content.v2 package announces, is wanted, and
  *      transfers between two real engines over the frozen 'zpkgswm'
  *      codec, and the received bytes re-derive the same root.
+ *  12. Provider-directed downloads issue no WANT to an unauthenticated
+ *      advertiser; restart preserves the restriction with an empty transient
+ *      allowlist until fresh authenticated peer handles are supplied.
  *
  * Every engine runs over a real store + real service book on ./test-tmp
  * datadirs; peers are driven through vcs_swarm_engine_handle_frame with
@@ -46,6 +50,10 @@
 
 #include "test/test_core.h"
 
+#include "base/hex.h"
+#include "base/serialize_le.h"
+#include "command/native_command.h"
+#include "config/boot_zcode_dht.h"
 #include "vcs/blob_store.h"
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
@@ -54,6 +62,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define SW_CHECK(name, expr) do {                                       \
     if (expr) { printf("  zcode_swarm: %s... OK\n", (name)); }          \
@@ -707,24 +716,39 @@ static int t_swarm_announce_policy(void)
     SW_CHECK("peer add", vcs_swarm_engine_peer_add(n.engine, peer, key));
     uint8_t frame[128];
     size_t frame_len = sw_announce_frame(&p, frame);
+    struct vcs_swarm_peer_info infos[4];
+    /* NEW_USER announce rate is the bounded bootstrap quota
+     * (VCS_POLICY_FREE_ANNOUNCE_PER_HOUR/hour): the first announces are
+     * ACCEPTED — a fresh node's free weekly publish must be deliverable —
+     * and the announce over the quota names announce-rate-limit. */
     struct vcs_swarm_frame_result res = vcs_swarm_engine_handle_frame(
         n.engine, peer, frame, frame_len, SW_DAY, 1);
-    /* NEW_USER announce rate is the frozen 0/hour: the very first
-     * announce names announce-rate-limit. */
-    SW_CHECK("new-user announce flood named",
+    SW_CHECK("new-user first announce accepted (bootstrap quota)",
+             res.penalty == VCS_SWARM_PENALTY_NONE);
+    SW_CHECK("new-user announce recorded",
+             vcs_swarm_engine_peers_for(n.engine, p.root, infos, 4) == 1);
+    for (uint32_t i = 1; i < VCS_POLICY_FREE_ANNOUNCE_PER_HOUR; i++) {
+        res = vcs_swarm_engine_handle_frame(n.engine, peer, frame, frame_len,
+                                            SW_DAY, 1);
+        SW_CHECK("new-user announce within quota accepted",
+                 res.penalty == VCS_SWARM_PENALTY_NONE);
+    }
+    res = vcs_swarm_engine_handle_frame(n.engine, peer, frame, frame_len,
+                                        SW_DAY, 1);
+    SW_CHECK("new-user announce over quota flood named",
              res.penalty == VCS_SWARM_PENALTY_ANNOUNCE_FLOOD &&
              res.rule != NULL &&
              strcmp(res.rule, "announce-rate-limit") == 0);
     struct vcs_service_key_totals totals;
-    SW_CHECK("announce: flood offence, no ratio movement",
+    SW_CHECK("announce: one flood offence, no ratio movement",
              vcs_service_key_totals(n.book, key, SW_DAY, &totals) &&
              totals.offences[VCS_POLICY_OFFENCE_ANNOUNCE_FLOOD] == 1 &&
-             totals.no_credit_events[VCS_POLICY_NO_CREDIT_ANNOUNCEMENT] == 1 &&
+             totals.no_credit_events[VCS_POLICY_NO_CREDIT_ANNOUNCEMENT] ==
+                 VCS_POLICY_FREE_ANNOUNCE_PER_HOUR + 1 &&
              totals.verified_bytes_downloaded == 0 &&
              totals.verified_bytes_uploaded == 0);
-    struct vcs_swarm_peer_info infos[4];
-    SW_CHECK("flooding peer not advertising",
-             vcs_swarm_engine_peers_for(n.engine, p.root, infos, 4) == 0);
+    SW_CHECK("bounded peer still advertising only the one root",
+             vcs_swarm_engine_peers_for(n.engine, p.root, infos, 4) == 1);
 
     /* An earned contributor may announce; it STILL earns nothing. */
     struct sw_node n2;
@@ -1104,6 +1128,28 @@ static int t_swarm_serving_and_allowance(void)
     SW_CHECK("announce frame drains",
              vcs_swarm_engine_next_outbound(n.engine, peer, &target, frame,
                                             &frame_len));
+    /* Dedupe: a repeat announce_to (the per-sync re-announce) queues
+     * nothing; a package completed AFTER the peer joined queues exactly
+     * one frame on the next call. */
+    SW_CHECK("repeat announce queues nothing (deduped)",
+             vcs_swarm_engine_announce_to(n.engine, peer) == 0);
+    struct sw_pkg p2;
+    if (!sw_make_package(&p2, 1, 137))
+        return 1;
+    SW_CHECK("late manifest admitted",
+             vcs_package_store_put_manifest(n.store, p2.wire, p2.wire_len,
+                                            NULL) == VCS_PACKAGE_STORE_OK);
+    for (size_t i = 0; i < p2.count; i++)
+        SW_CHECK("late chunk admitted",
+                 vcs_package_store_put_chunk(
+                     n.store, p2.root, p2.manifest.files[i].path, 0,
+                     p2.contents[i], p2.lens[i]) == VCS_PACKAGE_STORE_OK);
+    SW_CHECK("late package announced to the existing peer",
+             vcs_swarm_engine_announce_to(n.engine, peer) == 1);
+    SW_CHECK("late announce frame drains",
+             vcs_swarm_engine_next_outbound(n.engine, peer, &target, frame,
+                                            &frame_len));
+    sw_free_package(&p2);
 
     /* Inbound WANT (manifest): served with upload credit. A replay of
      * the same request id: DUPLICATE_REQUEST offence, no second
@@ -1421,6 +1467,255 @@ static int t_swarm_blob_transfer(void)
     return failures;
 }
 
+static int t_swarm_provider_restricted(void)
+{
+    int failures = 0;
+    struct sw_node n;
+    struct sw_pkg p;
+    uint8_t bad_key[33], honest_key[33];
+    sw_key(91, bad_key);
+    sw_key(92, honest_key);
+    const uint64_t bad = 901, honest = 902;
+    if (!sw_node_open(&n, "provider", sw_score_contributor) ||
+        !sw_make_package(&p, 1, 29))
+        return 1;
+    struct vcs_zcode_dht_provider_route route = {
+        .authenticated_count = 1,
+        .reachability_pending = 2,
+        .policy_denied = 3,
+    };
+    struct json_value route_json;
+    json_init(&route_json);
+    boot_zcode_dht_provider_route_test_render(
+        &route_json, &route, VCS_SWARM_FETCH_NO_STORE);
+    SW_CHECK("provider: refused fetch is fail-closed JSON",
+             !json_get_bool_or(&route_json, "ok", true) &&
+             strcmp(json_get_str(json_get(&route_json, "code")),
+                    "FETCH_REFUSED") == 0 &&
+             strcmp(json_get_str(json_get(&route_json, "fetch_result")),
+                    "no-store") == 0);
+    json_free(&route_json);
+    SW_CHECK("provider: both advertisers register",
+             vcs_swarm_engine_peer_add(n.engine, bad, bad_key) &&
+             vcs_swarm_engine_peer_add(n.engine, honest, honest_key));
+    sw_announce(n.engine, bad, &p);
+    sw_announce(n.engine, honest, &p);
+    SW_CHECK("provider: restricted fetch accepted",
+             vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 1,
+                                         &honest, 1) ==
+                 VCS_SWARM_FETCH_OK);
+    vcs_swarm_engine_tick(n.engine, SW_DAY, 2);
+    struct vcs_package_swarm_object wants[2];
+    SW_CHECK("provider: unlisted advertiser receives no WANT",
+             sw_drain_wants(&n, bad, wants, 2) == 0);
+    SW_CHECK("provider: authenticated provider receives manifest WANT",
+             sw_drain_wants(&n, honest, wants, 2) == 1);
+
+    vcs_swarm_engine_free(n.engine);
+    n.engine = vcs_swarm_engine_create(n.store, n.book, n.zcode_dir,
+                                       sw_score_contributor, NULL);
+    SW_CHECK("provider: restricted intent resumes", n.engine != NULL);
+    SW_CHECK("provider: peers re-register",
+             vcs_swarm_engine_peer_add(n.engine, bad, bad_key) &&
+             vcs_swarm_engine_peer_add(n.engine, honest, honest_key));
+    sw_announce(n.engine, bad, &p);
+    sw_announce(n.engine, honest, &p);
+    vcs_swarm_engine_tick(n.engine, SW_DAY, 3);
+    SW_CHECK("provider: restart does not widen before fresh binding",
+             sw_drain_wants(&n, bad, wants, 2) == 0 &&
+             sw_drain_wants(&n, honest, wants, 2) == 0);
+    SW_CHECK("provider: fresh authenticated binding resumes",
+             vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 4,
+                                         &honest, 1) ==
+                 VCS_SWARM_FETCH_OK);
+    vcs_swarm_engine_tick(n.engine, SW_DAY, 4);
+    SW_CHECK("provider: refreshed allowlist remains exclusive",
+             sw_drain_wants(&n, bad, wants, 2) == 0 &&
+             sw_drain_wants(&n, honest, wants, 2) == 1);
+    struct json_value cancel_input;
+    json_init(&cancel_input);
+    json_set_object(&cancel_input);
+    char root_hex[65];
+    zcl_hex_encode(p.root, 32, root_hex);
+    json_push_kv_str(&cancel_input, "blob_root", root_hex);
+    json_push_kv_str(&cancel_input, "datadir", n.datadir);
+    json_push_kv_bool(&cancel_input, "cancel", true);
+    json_push_kv_int(&cancel_input, "now_unix", 5);
+    struct zcl_command_request cancel_request;
+    memset(&cancel_request, 0, sizeof(cancel_request));
+    cancel_request.input = &cancel_input;
+    struct zcl_command_reply cancel_reply;
+    zcl_command_reply_init(&cancel_reply, "zcl.zcode_science_fetch.v1");
+    vcs_swarm_engine_set_global(n.engine);
+    zcl_native_handle_zcode_science_fetch(&cancel_request, &cancel_reply);
+    vcs_swarm_engine_set_global(NULL);
+    SW_CHECK("provider: native restricted fetch cancel succeeds",
+             json_get_bool_or(&cancel_reply.data, "canceled", false) &&
+             !json_get_bool_or(&cancel_reply.data, "restriction_widened",
+                               true));
+    zcl_command_reply_free(&cancel_reply);
+    json_free(&cancel_input);
+    vcs_swarm_engine_free(n.engine);
+    n.engine = vcs_swarm_engine_create(n.store, n.book, n.zcode_dir,
+                                       sw_score_contributor, NULL);
+    SW_CHECK("provider: engine restarts after cancellation",
+             n.engine != NULL);
+    SW_CHECK("provider: canceled peers re-register",
+             vcs_swarm_engine_peer_add(n.engine, bad, bad_key) &&
+             vcs_swarm_engine_peer_add(n.engine, honest, honest_key));
+    sw_announce(n.engine, bad, &p);
+    sw_announce(n.engine, honest, &p);
+    vcs_swarm_engine_tick(n.engine, SW_DAY, 6);
+    struct vcs_swarm_download_status canceled_status;
+    SW_CHECK("provider: canceled resumable state stays deleted on restart",
+             vcs_swarm_engine_download_status(n.engine, p.root,
+                                              &canceled_status) &&
+             canceled_status.state == VCS_SWARM_DL_INACTIVE &&
+             sw_drain_wants(&n, bad, wants, 2) == 0 &&
+             sw_drain_wants(&n, honest, wants, 2) == 0);
+    SW_CHECK("provider: explicit rebind after cancel remains restricted",
+             vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 7,
+                                         &honest, 1) ==
+                 VCS_SWARM_FETCH_OK);
+    vcs_swarm_engine_tick(n.engine, SW_DAY, 7);
+    SW_CHECK("provider: cancel never broadens the restarted fetch",
+             sw_drain_wants(&n, bad, wants, 2) == 0 &&
+             sw_drain_wants(&n, honest, wants, 2) == 1);
+    sw_free_package(&p);
+    sw_node_close(&n);
+    test_rm_rf_recursive(n.datadir);
+    return failures;
+}
+
+static int t_swarm_bounded_provider(void)
+{
+    int failures = 0;
+    struct sw_node n;
+    struct sw_pkg p;
+    uint8_t key[33];
+    sw_key(93, key);
+    const uint64_t peer = 903;
+    const uint64_t bound = 1;
+    if (!sw_node_open(&n, "provider_bound", sw_score_contributor) ||
+        !sw_make_package(&p, 1, 30))
+        return 1;
+    SW_CHECK("provider bound: advertiser registers",
+             vcs_swarm_engine_peer_add(n.engine, peer, key));
+    sw_announce(n.engine, peer, &p);
+    SW_CHECK("provider bound: ordinary shared work starts",
+             vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 1,
+                                         &peer, 1) == VCS_SWARM_FETCH_OK);
+    SW_CHECK("provider bound: late scout cannot tighten shared work",
+             vcs_swarm_engine_fetch_from_bounded(
+                 n.engine, p.root, SW_DAY, 1, &peer, 1, bound) ==
+                 VCS_SWARM_FETCH_BOUND_NOT_OWNED);
+    struct vcs_swarm_download_status status;
+    SW_CHECK("provider bound: shared work remains unbounded and active",
+             vcs_swarm_engine_download_status(n.engine, p.root, &status) &&
+             status.state == VCS_SWARM_DL_WANT_MANIFEST &&
+             status.maximum_package_bytes == 0);
+    SW_CHECK("provider bound: ordinary work cancels cleanly",
+             vcs_swarm_engine_cancel(n.engine, p.root, 1));
+    SW_CHECK("provider bound: bounded intent starts",
+             vcs_swarm_engine_fetch_from_bounded(
+                 n.engine, p.root, SW_DAY, 2, &peer, 1, bound) ==
+                 VCS_SWARM_FETCH_OK);
+    SW_CHECK("provider bound: ceiling is visible before restart",
+             vcs_swarm_engine_download_status(n.engine, p.root, &status) &&
+             status.maximum_package_bytes == bound);
+    vcs_swarm_engine_free(n.engine);
+    n.engine = vcs_swarm_engine_create(n.store, n.book, n.zcode_dir,
+                                       sw_score_contributor, NULL);
+    SW_CHECK("provider bound: engine restarts", n.engine != NULL);
+    SW_CHECK("provider bound: ceiling survives restart",
+             vcs_swarm_engine_download_status(n.engine, p.root, &status) &&
+             status.maximum_package_bytes == bound);
+    SW_CHECK("provider bound: peer rebinds",
+             vcs_swarm_engine_peer_add(n.engine, peer, key));
+    sw_announce(n.engine, peer, &p);
+    SW_CHECK("provider bound: compatible bounded rebind accepted",
+             vcs_swarm_engine_fetch_from_bounded(
+                 n.engine, p.root, SW_DAY, 3, &peer, 1, bound) ==
+                 VCS_SWARM_FETCH_OK);
+    vcs_swarm_engine_tick(n.engine, SW_DAY, 3);
+    struct sw_pump_stats pump = {0};
+    sw_pump(&n, peer, &p, SW_SERVE_HONEST, false, 3, &pump);
+    SW_CHECK("provider bound: oversized manifest fails before chunks",
+             vcs_swarm_engine_download_status(n.engine, p.root, &status) &&
+             status.state == VCS_SWARM_DL_FAILED && status.rule &&
+             strcmp(status.rule, "maximum-package-bytes-exceeded") == 0 &&
+             status.present_chunks == 0 && status.fetched_bytes == 0);
+    struct vcs_package_store_status stored;
+    SW_CHECK("provider bound: oversized manifest never enters package store",
+             !vcs_package_store_package_status(n.store, p.root, &stored));
+
+    SW_CHECK("provider bound: failed scout intent retries as ordinary work",
+             vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 4,
+                                         &peer, 1) == VCS_SWARM_FETCH_OK &&
+             vcs_swarm_engine_download_status(n.engine, p.root, &status) &&
+             status.maximum_package_bytes == 0);
+    sw_free_package(&p);
+    sw_node_close(&n);
+    test_rm_rf_recursive(n.datadir);
+    return failures;
+}
+
+static int t_swarm_legacy_record(void)
+{
+    int failures = 0;
+    struct sw_node n;
+    struct sw_pkg p;
+    uint8_t key[33];
+    sw_key(94, key);
+    const uint64_t peer = 904;
+    if (!sw_node_open(&n, "provider_v2", sw_score_contributor) ||
+        !sw_make_package(&p, 1, 31))
+        return 1;
+    vcs_swarm_engine_free(n.engine);
+    n.engine = NULL;
+    char dir[4096], path[4096], root_hex[65];
+    zcl_hex_encode(p.root, 32, root_hex);
+    int dir_len = snprintf(dir, sizeof(dir), "%s/downloads", n.zcode_dir);
+    int path_len = snprintf(path, sizeof(path), "%s/%s", dir, root_hex);
+    SW_CHECK("provider v2: download directory path fits",
+             dir_len > 0 && (size_t)dir_len < sizeof(dir) &&
+             path_len > 0 && (size_t)path_len < sizeof(path));
+    SW_CHECK("provider v2: download directory created",
+             mkdir(dir, 0700) == 0);
+    uint8_t wire[51] = {'Z', 'S', 'W', 'D', 'L', 'R', 0x0d, 0x0a};
+    zcl_write_u16_le(wire + 8, 2);
+    memcpy(wire + 10, p.root, 32);
+    zcl_write_u64_le(wire + 42, (uint64_t)SW_DAY);
+    wire[50] = 0;
+    FILE *record = fopen(path, "wb");
+    bool wrote = false;
+    if (record) {
+        wrote = fwrite(wire, 1, sizeof(wire), record) == sizeof(wire);
+        if (fclose(record) != 0)
+            wrote = false;
+    }
+    SW_CHECK("provider v2: legacy record fixture written", wrote);
+    n.engine = vcs_swarm_engine_create(n.store, n.book, n.zcode_dir,
+                                       sw_score_contributor, NULL);
+    struct vcs_swarm_download_status status;
+    SW_CHECK("provider v2: legacy intent resumes unbounded",
+             n.engine && vcs_swarm_engine_download_status(
+                             n.engine, p.root, &status) &&
+             status.state == VCS_SWARM_DL_WANT_MANIFEST &&
+             status.maximum_package_bytes == 0);
+    SW_CHECK("provider v2: peer registers after migration",
+             vcs_swarm_engine_peer_add(n.engine, peer, key));
+    sw_announce(n.engine, peer, &p);
+    vcs_swarm_engine_tick(n.engine, SW_DAY, 1);
+    struct vcs_package_swarm_object wants[1];
+    SW_CHECK("provider v2: legacy unbounded intent remains schedulable",
+             sw_drain_wants(&n, peer, wants, 1) == 1);
+    sw_free_package(&p);
+    sw_node_close(&n);
+    test_rm_rf_recursive(n.datadir);
+    return failures;
+}
+
 int test_zcode_swarm(void)
 {
     int failures = 0;
@@ -1435,5 +1730,8 @@ int test_zcode_swarm(void)
     failures += t_swarm_serving_and_allowance();
     failures += t_swarm_disconnect_threshold();
     failures += t_swarm_blob_transfer();
+    failures += t_swarm_provider_restricted();
+    failures += t_swarm_bounded_provider();
+    failures += t_swarm_legacy_record();
     return failures;
 }

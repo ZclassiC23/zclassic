@@ -166,6 +166,13 @@ struct zcl_result wallet_sqlite_delete_key_r(struct wallet_sqlite *ws,
  * BEGIN/COMMIT failure. */
 struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
                                         struct wallet *w);
+
+/* Test-only override for the flush BEGIN IMMEDIATE time budget (see
+ * WALLET_FLUSH_BEGIN_BUDGET_MS in wallet_sqlite.c). Production never calls
+ * this; the persistence tests shrink the budget so a contended flush fails
+ * in milliseconds instead of waiting out the full production window.
+ * Passing ms <= 0 restores the production default. */
+void wallet_sqlite_flush_set_begin_budget_ms(int64_t ms);
 /* One-time migration scrub for datadirs that hold PLAINTEXT secret rows
  * (written before at-rest encryption was configured, or by the deleted
  * plaintext mirror writer).  When a passphrase is configured, wraps every

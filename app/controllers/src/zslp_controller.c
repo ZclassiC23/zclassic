@@ -3,6 +3,7 @@
  * ZSLP token controller — token operations + shielded payments. */
 
 #include "controllers/zslp_controller.h"
+#include "zslp_controller_internal.h"
 #include "controllers/wallet_helpers.h"
 #include "controllers/sync_controller.h"
 #include "core/uint256.h"
@@ -11,6 +12,8 @@
 #include "config/runtime.h"
 #include "models/zslp.h"
 #include "models/database.h"
+#include "models/zslp_validity.h"
+#include "jobs/reducer_frontier.h"
 #include "services/zslp_command_service.h"
 #include "services/zslp_service.h"
 #include "rpc/server.h"
@@ -54,17 +57,17 @@ static struct zslp_context *zslp_ctx(void)
     return &g_zslp_ctx;
 }
 
-static struct wallet *zslp_wallet(void)
+struct wallet *zslp_controller_wallet(void)
 {
     return app_runtime_wallet();
 }
 
-static struct tx_mempool *zslp_mempool(void)
+struct tx_mempool *zslp_controller_mempool(void)
 {
     return app_runtime_mempool();
 }
 
-static const char *zslp_effective_datadir(const char *datadir)
+const char *zslp_controller_datadir(const char *datadir)
 {
     return datadir ? datadir : zslp_ctx()->datadir;
 }
@@ -73,37 +76,18 @@ static bool zslp_open_runtime_db(const char *datadir, sqlite3 **db_out,
                                  bool *owns_db)
 {
     struct zcl_result r =
-        zslp_service_open_db(zslp_effective_datadir(datadir), db_out, owns_db);
+        zslp_service_open_db(zslp_controller_datadir(datadir), db_out, owns_db);
     if (!r.ok)
         LOG_FAIL("zslp", "open_runtime_db: %s", r.message);
     return true;
-}
-
-static bool zslp_require_token_key(const char *token_key, struct json_value *result)
-{
-    if (token_key && zslp_service_validate_token_key(token_key).ok)
-        return true;
-    if (result)
-        json_set_str(result, "token_id must be alphanumeric or 64-char hex");
-    return false;
-}
-
-static bool zslp_require_address(const char *addr, bool strict_chain_addr,
-                                 struct json_value *result)
-{
-    if (addr && zslp_service_validate_recipient_addr(addr, strict_chain_addr).ok)
-        return true;
-    if (result)
-        json_set_str(result, "address is invalid");
-    return false;
 }
 
 /* Same durability/relay contract as sendtoaddress: persist any freshly
  * generated keys before admission, durably persist the admitted wallet row,
  * mirror it into node.db, then announce it to peers. The old ZSLP path stopped
  * after local mempool admission while printing "broadcast". */
-static bool zslp_publish_wallet_tx(struct wallet_tx *wtx, char txid_out[65],
-                                   char *error_out, size_t error_size)
+bool zslp_controller_publish(struct wallet_tx *wtx, char txid_out[65],
+                             char *error_out, size_t error_size)
 {
     struct wallet_rpc_context *ctx = wallet_rpc_context_current();
     if (!ctx || !ctx->wallet || !ctx->mempool || !ctx->coins_tip ||
@@ -151,7 +135,7 @@ const char *zslp_create_token_with_receipt(
 {
     if (receipt)
         memset(receipt, 0, sizeof(*receipt));
-    const char *effective_datadir = zslp_effective_datadir(datadir);
+    const char *effective_datadir = zslp_controller_datadir(datadir);
     struct zslp_token_create_request req = {
         .ticker = ticker,
         .name = name,
@@ -173,8 +157,8 @@ const char *zslp_create_token_with_receipt(
      *   vout[2]: dust output to our address (mint baton)
      * Sign and broadcast via wallet. */
     char *broadcast_txid = NULL; /* set if we successfully broadcast */
-    struct wallet *wallet = zslp_wallet();
-    struct tx_mempool *mempool = zslp_mempool();
+    struct wallet *wallet = zslp_controller_wallet();
+    struct tx_mempool *mempool = zslp_controller_mempool();
 
     if (!wallet || !mempool) {
         /* No wallet available (test mode) — skip on-chain broadcast,
@@ -194,8 +178,8 @@ const char *zslp_create_token_with_receipt(
 
     static char bc_txid[65];
     char publish_error[256] = {0};
-    if (!zslp_publish_wallet_tx(&wtx, bc_txid, publish_error,
-                                sizeof(publish_error))) {
+    if (!zslp_controller_publish(&wtx, bc_txid, publish_error,
+                                 sizeof(publish_error))) {
         transaction_free(&wtx.tx);
         return NULL;
     }
@@ -233,7 +217,7 @@ uint64_t zslp_balance(const char *datadir,
 {
     sqlite3 *db = NULL;
     bool owns_db = false;
-    if (!zslp_effective_datadir(datadir) ||
+    if (!zslp_controller_datadir(datadir) ||
         !zslp_service_validate_token_key(token_id_hex).ok ||
         !zslp_service_validate_recipient_addr(addr, false).ok) return 0;
 
@@ -251,10 +235,10 @@ uint64_t zslp_balance(const char *datadir,
 bool zslp_generate_payment_address(const char *datadir,
                                     char *z_addr_out, size_t max)
 {
-    if (!zslp_effective_datadir(datadir))
+    if (!zslp_controller_datadir(datadir))
         LOG_FAIL("zslp", "generate_payment_address: datadir not initialized");
     struct zcl_result r =
-        zslp_payment_generate_address(zslp_wallet(), z_addr_out, max);
+        zslp_payment_generate_address(zslp_controller_wallet(), z_addr_out, max);
     if (!r.ok)
         LOG_FAIL("zslp", "generate_payment_address: %s", r.message);
     return true;
@@ -266,9 +250,9 @@ int64_t zslp_check_payment(const char *datadir,
                             const char *z_addr,
                             int64_t min_amount)
 {
-    if (!zslp_effective_datadir(datadir))
+    if (!zslp_controller_datadir(datadir))
         return 0;
-    return zslp_payment_check_received(zslp_effective_datadir(datadir),
+    return zslp_payment_check_received(zslp_controller_datadir(datadir),
                                        z_addr, min_amount);
 }
 
@@ -280,7 +264,8 @@ bool zslp_mint_with_receipt(const char *datadir, const char *token_id_hex,
 {
     if (receipt)
         memset(receipt, 0, sizeof(*receipt));
-    bool strict_chain_addr = (zslp_wallet() != NULL && zslp_mempool() != NULL);
+    bool strict_chain_addr = (zslp_controller_wallet() != NULL &&
+                              zslp_controller_mempool() != NULL);
     struct zslp_token_transfer_request req = {
         .token_id = token_id_hex,
         .recipient_addr = recipient_addr,
@@ -288,11 +273,11 @@ bool zslp_mint_with_receipt(const char *datadir, const char *token_id_hex,
         .strict_chain_addr = strict_chain_addr
     };
     const char *validation_error = NULL;
-    if (!zslp_effective_datadir(datadir) ||
+    if (!zslp_controller_datadir(datadir) ||
         !zslp_service_validate_token_key(token_id_hex).ok ||
         !recipient_addr)
         LOG_FAIL("zslp", "mint: invalid params (datadir=%p token=%p recipient=%p)",
-                 (const void *)zslp_effective_datadir(datadir),
+                 (const void *)zslp_controller_datadir(datadir),
                  (const void *)token_id_hex, (const void *)recipient_addr);
 
     validation_error = zslp_service_validate_transfer_request(&req);
@@ -300,17 +285,19 @@ bool zslp_mint_with_receipt(const char *datadir, const char *token_id_hex,
         LOG_FAIL("zslp", "mint: %s", validation_error);
 
     /* Build and broadcast ZSLP MINT transaction on-chain */
-    struct wallet *wallet = zslp_wallet();
-    struct tx_mempool *mempool = zslp_mempool();
+    struct wallet *wallet = zslp_controller_wallet();
+    struct tx_mempool *mempool = zslp_controller_mempool();
     if (!wallet || !mempool) {
         /* Credit-only merchant-store fixture mode. Production balances are
          * chain-derived and never change before a transaction confirms. */
-        if (!zslp_command_credit_transfer(zslp_effective_datadir(datadir),
+        if (!zslp_command_credit_transfer(zslp_controller_datadir(datadir),
                                           &req).ok)
             LOG_FAIL("zslp", "mint: fixture balance update failed token=%s",
                      token_id_hex ? token_id_hex : "?");
         return true;
     }
+    if (!zslp_controller_validity_ready(NULL, "zslp_mint"))
+        return false; // raw-return-ok:readiness helper logged the refusal
 
     struct uint256 token_id;
     uint256_set_hex(&token_id, token_id_hex);
@@ -327,11 +314,21 @@ bool zslp_mint_with_receipt(const char *datadir, const char *token_id_hex,
     if (!built.ok)
         LOG_FAIL("zslp", "mint: tx build failed: %s",
                  tx_error ? tx_error : built.message);
+    char validity_reason[96];
+    if (!zslp_validity_inputs_match(app_runtime_node_db(), &wtx.tx,
+                                    token_id.data,
+                                    ZSLP_LEDGER_MINT_BATON,
+                                    validity_reason,
+                                    sizeof(validity_reason))) {
+        transaction_free(&wtx.tx);
+        LOG_FAIL("zslp", "mint: selected baton is not VALID: %s",
+                 validity_reason);
+    }
 
     char txid[65];
     char publish_error[256] = {0};
-    if (!zslp_publish_wallet_tx(&wtx, txid, publish_error,
-                                sizeof(publish_error))) {
+    if (!zslp_controller_publish(&wtx, txid, publish_error,
+                                 sizeof(publish_error))) {
         transaction_free(&wtx.tx);
         return false;
     }
@@ -361,8 +358,8 @@ bool zslp_send_with_receipt(const char *datadir, const char *token_id_hex,
 {
     if (receipt)
         memset(receipt, 0, sizeof(*receipt));
-    struct wallet *wallet = zslp_wallet();
-    struct tx_mempool *mempool = zslp_mempool();
+    struct wallet *wallet = zslp_controller_wallet();
+    struct tx_mempool *mempool = zslp_controller_mempool();
     struct zslp_token_transfer_request req = {
         .token_id = token_id_hex,
         .recipient_addr = to_addr,
@@ -370,11 +367,11 @@ bool zslp_send_with_receipt(const char *datadir, const char *token_id_hex,
         .strict_chain_addr = (wallet != NULL && mempool != NULL)
     };
     const char *validation_error = NULL;
-    if (!zslp_effective_datadir(datadir) ||
+    if (!zslp_controller_datadir(datadir) ||
         !zslp_service_validate_token_key(token_id_hex).ok ||
         !to_addr)
         LOG_FAIL("zslp", "send: invalid params (datadir=%p token=%p to=%p)",
-                 (const void *)zslp_effective_datadir(datadir),
+                 (const void *)zslp_controller_datadir(datadir),
                  (const void *)token_id_hex, (const void *)to_addr);
     validation_error = zslp_service_validate_transfer_request(&req);
     if (validation_error)
@@ -383,11 +380,13 @@ bool zslp_send_with_receipt(const char *datadir, const char *token_id_hex,
     if (!wallet || !mempool) {
         /* No wallet (test mode) — just update SQLite balances */
         struct zcl_result r =
-            zslp_command_credit_transfer(zslp_effective_datadir(datadir), &req);
+            zslp_command_credit_transfer(zslp_controller_datadir(datadir), &req);
         if (!r.ok)
             LOG_FAIL("zslp", "send: balance update failed: %s", r.message);
         return true;
     }
+    if (!zslp_controller_validity_ready(NULL, "zslp_send"))
+        return false; // raw-return-ok:readiness helper logged the refusal
 
     struct uint256 token_id;
     uint256_set_hex(&token_id, token_id_hex);
@@ -403,11 +402,20 @@ bool zslp_send_with_receipt(const char *datadir, const char *token_id_hex,
     if (!built.ok)
         LOG_FAIL("zslp", "send: tx build failed: %s",
                  tx_error ? tx_error : built.message);
+    char validity_reason[96];
+    if (!zslp_validity_inputs_match(app_runtime_node_db(), &wtx.tx,
+                                    token_id.data, ZSLP_LEDGER_TOKEN,
+                                    validity_reason,
+                                    sizeof(validity_reason))) {
+        transaction_free(&wtx.tx);
+        LOG_FAIL("zslp", "send: selected inputs are not VALID: %s",
+                 validity_reason);
+    }
 
     char txid[65];
     char publish_error[256] = {0};
-    if (!zslp_publish_wallet_tx(&wtx, txid, publish_error,
-                                sizeof(publish_error))) {
+    if (!zslp_controller_publish(&wtx, txid, publish_error,
+                                 sizeof(publish_error))) {
         transaction_free(&wtx.tx);
         return false;
     }
@@ -436,19 +444,6 @@ void zslp_rpc_set_datadir(const char *datadir)
     zslp_ctx()->datadir = datadir;
 }
 
-static bool zslp_parse_amount(const struct json_value *value, uint64_t *amount_out)
-{
-    int64_t raw;
-    if (!value || !amount_out)
-        LOG_FAIL("zslp", "parse_amount: null value=%p or amount_out=%p",
-                 (const void *)value, (const void *)amount_out);
-    raw = json_get_int(value);
-    if (raw <= 0)
-        LOG_FAIL("zslp", "parse_amount: non-positive amount %lld", (long long)raw);
-    *amount_out = (uint64_t)raw;
-    return true;
-}
-
 static bool zslp_parse_token_param(const struct json_value *params, size_t index,
                                    const char **token_id,
                                    struct json_value *result);
@@ -466,20 +461,7 @@ static void zslp_render_token_json(struct json_value *out,
     json_push_kv_int(out, "decimals", token->decimals);
     json_push_kv_int(out, "genesis_height", token->genesis_height);
     json_push_kv_int(out, "total_minted", token->total_minted);
-}
-
-static void zslp_render_transfer_json(struct json_value *out,
-                                      const struct db_zslp_transfer_info *xfer)
-{
-    json_set_object(out);
-    json_push_kv_str(out, "txid", xfer->txid);
-    json_push_kv_str(out, "token_id", xfer->token_id);
-    json_push_kv_int(out, "block_height", xfer->block_height);
-    json_push_kv_int(out, "tx_type", xfer->tx_type);
-    json_push_kv_int(out, "amount", xfer->amount);
-    json_push_kv_int(out, "vout", xfer->vout);
-    if (xfer->to_addr_hex[0])
-        json_push_kv_str(out, "to_addr_hex", xfer->to_addr_hex);
+    zslp_controller_render_validity(out, token);
 }
 
 static bool zslp_parse_create_request(const struct json_value *params,
@@ -502,7 +484,7 @@ static bool zslp_parse_create_request(const struct json_value *params,
         json_set_str(result, validation_error);
         return false;
     }
-    if (!zslp_parse_amount(json_at(params, 3), &req->initial_supply)) {
+    if (!zslp_controller_parse_amount(json_at(params, 3), &req->initial_supply)) {
         json_set_str(result, "supply must be a positive integer");
         return false;
     }
@@ -526,7 +508,7 @@ static bool zslp_parse_transfer_request(const struct json_value *params,
     if (!zslp_parse_addr_param(params, 1, strict_chain_addr,
                                &req->recipient_addr, result))
         return false;
-    if (!zslp_parse_amount(json_at(params, 2), &req->amount)) {
+    if (!zslp_controller_parse_amount(json_at(params, 2), &req->amount)) {
         json_set_str(result, "amount must be a positive integer");
         return false;
     }
@@ -544,7 +526,7 @@ static bool zslp_parse_token_param(const struct json_value *params, size_t index
                                    struct json_value *result)
 {
     *token_id = json_get_str(json_at(params, index));
-    return zslp_require_token_key(*token_id, result);
+    return zslp_controller_require_token(*token_id, result);
 }
 
 static bool zslp_parse_addr_param(const struct json_value *params, size_t index,
@@ -552,12 +534,12 @@ static bool zslp_parse_addr_param(const struct json_value *params, size_t index,
                                   struct json_value *result)
 {
     *addr = json_get_str(json_at(params, index));
-    return zslp_require_address(*addr, strict_chain_addr, result);
+    return zslp_controller_require_address(*addr, strict_chain_addr, result);
 }
 
 static bool zslp_rpc_require_context(struct json_value *result)
 {
-    if (!zslp_effective_datadir(NULL)) {
+    if (!zslp_controller_datadir(NULL)) {
         json_set_str(result, "zslp runtime/datadir not initialized");
         return false;
     }
@@ -576,6 +558,9 @@ static bool rpc_zslp_createtoken(const struct json_value *params,
     }
     if (!zslp_sovereignty_spend_guard(result, "zslp_createtoken"))
         return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
+    if (zslp_controller_wallet() && zslp_controller_mempool() &&
+        !zslp_controller_validity_ready(result, "zslp_createtoken"))
+        return false; // raw-return-ok:RPC error body already set
     if (!zslp_rpc_require_context(result))
         return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     if (!zslp_parse_create_request(params, &req, result))
@@ -605,9 +590,13 @@ static bool rpc_zslp_send(const struct json_value *params,
     }
     if (!zslp_sovereignty_spend_guard(result, "zslp_send"))
         return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
+    if (zslp_controller_wallet() && zslp_controller_mempool() &&
+        !zslp_controller_validity_ready(result, "zslp_send"))
+        return false; // raw-return-ok:RPC error body already set
     if (!zslp_rpc_require_context(result))
         return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
-    strict_chain_addr = (zslp_wallet() != NULL && zslp_mempool() != NULL);
+    strict_chain_addr = (zslp_controller_wallet() != NULL &&
+                         zslp_controller_mempool() != NULL);
     if (!zslp_parse_transfer_request(params, strict_chain_addr, &req, result))
         return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
 
@@ -653,9 +642,13 @@ static bool rpc_zslp_mint(const struct json_value *params,
     }
     if (!zslp_sovereignty_spend_guard(result, "zslp_mint"))
         return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
+    if (zslp_controller_wallet() && zslp_controller_mempool() &&
+        !zslp_controller_validity_ready(result, "zslp_mint"))
+        return false; // raw-return-ok:RPC error body already set
     if (!zslp_rpc_require_context(result))
         return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
-    strict_chain_addr = (zslp_wallet() != NULL && zslp_mempool() != NULL);
+    strict_chain_addr = (zslp_controller_wallet() != NULL &&
+                         zslp_controller_mempool() != NULL);
     if (!zslp_parse_transfer_request(params, strict_chain_addr, &req, result))
         return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
 
@@ -770,7 +763,7 @@ static bool rpc_zslp_listtransfers(const struct json_value *params,
     for (int i = 0; i < count; i++) {
         struct json_value entry = {0};
         json_init(&entry);
-        zslp_render_transfer_json(&entry, &transfers[i]);
+        zslp_controller_render_transfer(&entry, &transfers[i]);
         json_push_back(result, &entry);
     }
     return true;

@@ -162,6 +162,15 @@
                  "per-IP admission table (active_ips/concurrent_serves/cap)",
                  "lib/net/src/file_service.c",
                  "lib/test/src/test_file_service_pow_gate.c"),
+    DIAG_SERVICE("zswap_yardsale", zswap_dump_state_json,
+                 "atomic ZSLP/ZCL swap yardsale (signed for-sale-by-owner "
+                 "zswapquote gossip ads; a cache of remembered signs, never "
+                 "a market or book): cache_size/cap, wires_seen, ads "
+                 "stored/deduped/pruned/evicted, dropped invalid/expired/"
+                 "rate-limited ingress counters, oldest/newest live expiry, "
+                 "per-peer clamp window",
+                 "lib/zswap/src/zswap_yardsale.c",
+                 "lib/test/src/test_zswap_yardsale.c"),
     DIAG_SERVICE("messaging", messaging_dump_state_json,
                  "ZMSG channels: controller_wired/db_open/network_available, "
                  "p2p_channel_available (always; plaintext on the wire), "

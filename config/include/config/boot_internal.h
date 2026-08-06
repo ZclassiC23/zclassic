@@ -101,6 +101,22 @@ bool boot_full_fold_is_armed(int32_t *out_target);
 bool boot_full_fold_finish(struct sqlite3 *pdb, int32_t through, int64_t count,
                            int32_t target, int stall_limit);
 
+/* One-shot tip-height consensus-state bundle export at the end of a REACHED
+ * -full-fold run (boot_full_fold.c): the checkpoint mint's producer-END
+ * sequence — source receipt finalize, earned sovereign markers, bundle export —
+ * bound to the header TIP the fold reached instead of cp->height. Callable only
+ * by the binary that ran the fold (the receipt's running-binary binding);
+ * refuses (false, fail-loud) on any gate so main.c surfaces a non-zero exit. */
+bool boot_full_fold_export_bundle(struct sqlite3 *pdb, const char *datadir,
+                                  int32_t target);
+
+/* The whole -full-fold terminal path (verdict + conditional tip bundle
+ * export), called by boot_mint_anchor_run in place of the checkpoint
+ * ceremony. Returns the REACHED verdict; an export refusal turns it false. */
+bool boot_full_fold_conclude(struct sqlite3 *pdb, const char *datadir,
+                             int32_t through, int64_t count, int32_t target,
+                             int stall_limit);
+
 /* Seed a verified Sapling frontier after snapshot/refold reset. */
 void boot_seed_sapling_anchor_frontier_after_reset(struct main_state *state);
 
@@ -380,11 +396,20 @@ bool boot_bg_hash_verify_start(void *ctx);   /* historical block hash verify */
 void boot_bg_hash_verify_stop(void *ctx);
 
 /* ── boot_sd_watchdog.c ─────────────────────────────────────────
- * systemd watchdog heartbeat start/stop adapters (the periodic tick stays
- * private to that TU). Registered by boot_register_runtime_services()
- * (boot_services.c spec table). */
+ * systemd watchdog heartbeat start/stop adapters (the periodic collect
+ * tick + the dedicated pet thread stay private to that TU). Registered by
+ * boot_register_runtime_services() (boot_services.c spec table). */
 bool boot_sd_watchdog_start(void *ctx);   /* arm WATCHDOG=1 heartbeat ring */
 void boot_sd_watchdog_stop(void *ctx);
+
+#ifdef ZCL_TESTING
+/* Test seam for the pure pet decision (lib/test/src/test_sd_notify.c). */
+bool boot_sd_watchdog_test_pet_decide(bool supervisor_alive, bool have_verdict,
+                                      int64_t verdict_age_us,
+                                      bool recent_progress,
+                                      int64_t grace_left_us,
+                                      int64_t verdict_bound_us);
+#endif
 
 /* ── boot_supervisor_backstop.c ──────────────────────────────────
  * Registers the independent supervisor-sweep-heartbeat watcher (Pillar 7
@@ -491,5 +516,15 @@ bool boot_park_until_shutdown(const char *gate_name);
  * progress_kv_open). Always returns false (never advances past the gate);
  * app_init does `return boot_node_db_open_failed_gate(ctx->datadir);`. */
 bool boot_node_db_open_failed_gate(const char *datadir);
+
+/* ── config/src/boot_regtest_shielded.c ─────────────────────────────────
+ * -regtestshielded: activate Overwinter+Sapling from genesis on a REGTEST
+ * node's runtime chain params only (the zcashd -nuparams equivalent).
+ * No-op unless enabled; warns and does nothing without -regtest. */
+void boot_apply_regtest_shielded(bool enabled, bool regtest);
+
+bool boot_wallet_identity_ensure(struct node_db *ndb,
+                                 const uint8_t network_genesis[32],
+                                 const char *operator_lane);
 
 #endif

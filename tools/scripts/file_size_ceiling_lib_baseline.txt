@@ -34,7 +34,7 @@ lib/net/src/connman.c 2951
 lib/net/src/download.c 1385
 lib/net/src/fast_sync.c 1909
 lib/net/src/file_service.c 2255
-lib/net/src/https_server.c 982
+lib/net/src/https_server.c 1016
 lib/net/src/msg_blocks.c 902
 lib/net/src/msg_headers.c 1148
 lib/net/src/msgprocessor.c 2472
@@ -42,7 +42,7 @@ lib/net/src/msgprocessor_snapshot.c 2005
 lib/net/src/msgprocessor_snapshot_serve.c 1114
 lib/net/src/net.c 1666
 lib/net/src/onion_directory.c 865
-lib/net/src/onion_service.c 1185
+lib/net/src/onion_service.c 1209
 lib/net/src/peer_lifecycle.c 1779
 lib/net/src/rom_fetch.c 1709
 lib/net/src/rom_seed.c 1043
@@ -59,25 +59,35 @@ lib/sim/src/simnet_wire.c 1491
 lib/storage/src/census_read.c 868
 lib/storage/src/coins_kv.c 1028
 lib/storage/src/consensus_db.c 883
+lib/storage/src/disk_block_io.c 979
 lib/storage/src/peers_projection.c 1304
 lib/storage/src/progress_store.c 881
 lib/storage/src/coins_ram.c 1406
 lib/storage/src/coins_view_sqlite.c 1247
 lib/validation/src/chainstate.c 936
 lib/validation/src/connect_block.c 896
-lib/wallet/src/wallet.c 1659
-lib/wallet/src/wallet_sqlite.c 1657
+lib/wallet/src/wallet.c 1582
+lib/wallet/src/wallet_sqlite.c 1694
 lib/sim/src/simnet_chaos_faults.c 2684
 lib/util/src/blocker.c 836
 lib/util/src/supervisor.c 801
 lib/sync/src/stage.c 819
-src/main_cli_modes.c 4128
+src/main_cli_modes.c 4266
 lib/hotswap/src/hotswap_activate.c 948
-lib/vcs/src/package_store.c 1070
+lib/vcs/src/package_store.c 1132
 lib/vcs/src/package_score.c 845
 lib/vcs/src/package_reward.c 2094
 lib/codeindex/src/codeindex_merkle.c 1070
 lib/vcs/src/package_badge.c 1299
 lib/vcs/src/package_badge_eligible.c 817
-lib/vcs/src/package_swarm_node.c 1801
+lib/vcs/src/package_swarm_node.c 1840
 lib/vcs/src/package_service.c 1040
+lib/vcs/src/zcode_contributor_binding.c 983
+# ZCODE Scientific Metaverse S5: the rebuildable discovery-graph projection
+# (lineage union-find collapse, citation-set decode, verified vote seeds,
+# bounded assembly, convergence residual) is one deterministic scan ->
+# assemble -> compute pipeline over the CAS that must stay together;
+# baselined at creation per the zcode_science.c precedent.
+lib/vcs/src/zcode_discovery_projection.c 1112
+lib/vcs/src/zcode_science.c 1411
+lib/zswap/src/zswap_ceremony.c 853

@@ -35,6 +35,7 @@
 #include "supervisors/domains.h"
 #include "util/log_macros.h"
 #include "util/supervisor.h"
+#include "util/util.h"  /* GetDataDir */
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -151,7 +152,12 @@ static const char *auditor_datadir(void)
 #ifdef ZCL_TESTING
     if (g_state_auditor_test_datadir) return g_state_auditor_test_datadir;
 #endif
-    return g_sa_datadir;
+    /* Bodies are written under the NET-SPECIFIC datadir (GetDataDir(true);
+     * see reducer_ingest_service.c) — resolve the same directory for reads.
+     * Byte-identical to g_sa_datadir on mainnet (base==net-specific). */
+    static char net_dir[2048];
+    GetDataDir(true, net_dir, sizeof(net_dir));
+    return net_dir[0] ? net_dir : g_sa_datadir;
 }
 
 void state_auditor_set_datadir(const char *datadir)
@@ -405,6 +411,10 @@ coins_check_window(sqlite3 *pdb, struct node_db *ndb,
     *out_h_max = -1;
     if (!pdb || !ndb || !ndb->open) return AUDIT_TICK_SKIPPED;
 
+    uint64_t mirror_generation0 = 0;
+    if (!utxo_mirror_sync_audit_snapshot(&mirror_generation0))
+        return AUDIT_TICK_SKIPPED;
+
     /* Bulk-fold mode: the durable `coins` table legitimately lags the live
      * RAM overlay — a raw SQL read of it is stale by design, not evidence
      * of corruption. */
@@ -447,6 +457,11 @@ coins_check_window(sqlite3 *pdb, struct node_db *ndb,
                                          &proj_h1);
     if (!afound1 || !pfound1 || auth_h1 != auth_h0 || proj_h1 != proj_h0)
         return AUDIT_TICK_SKIPPED; /* the set moved mid-window — torn scan */
+
+    uint64_t mirror_generation1 = 0;
+    if (!utxo_mirror_sync_audit_snapshot(&mirror_generation1) ||
+        mirror_generation1 != mirror_generation0)
+        return AUDIT_TICK_SKIPPED; /* mirror transaction overlapped the scan */
 
     if (auth_rows > 0) { *out_h_min = auth_min; *out_h_max = auth_max; }
     if (proj_rows > 0) {

@@ -66,7 +66,6 @@
 #include "config/runtime.h"
 #include "jobs/refold_progress.h"
 #include "services/invariant_sentinel.h"
-#include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -315,12 +314,9 @@ int node_db_catchup_service_run(struct node_db *ndb,
     bool proven_authority = false;
     int32_t proven_applied = -1;
     sqlite3 *progress_db = progress_store_db();
-    if (progress_db) {
-        progress_store_tx_lock();
+    if (progress_db)
         proven_authority =
-            coins_kv_is_proven_authority(progress_db, &proven_applied);
-        progress_store_tx_unlock();
-    }
+            node_db_catchup_read_proven_authority(progress_db, &proven_applied);
 
     int wallet_keys = 0;
     if (w) {

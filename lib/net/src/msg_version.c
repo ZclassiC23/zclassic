@@ -9,6 +9,7 @@
 
 #include "platform/time_compat.h"
 #include "net/msg_internal.h"
+#include "net/connman.h"
 #include "net/addrman.h"
 #include "net/version.h"
 #include "net/peer_identity.h"
@@ -378,10 +379,15 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
                     (int)strlen(node->addr_name), node->time_offset);
     }
 
-    push_verack(mp, node);
-
+    /* An inbound peer must send its version before its verack.  Sending the
+     * verack first lets an outbound peer mark the handshake complete before
+     * it has processed our advertised service bits; its following version is
+     * then treated as a duplicate and the one-shot v2 capability upgrade can
+     * never run.  Both messages use the same ordered send queue. */
     if (node->inbound)
         push_version(mp, node);
+
+    push_verack(mp, node);
 
     /* Publish immutable handshake metadata before the release transition to
      * HANDSHAKE_COMPLETE.  Diagnostic readers use an acquire state load as
@@ -393,6 +399,13 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
     (void)is_magicbean;
     if (is_zcl23)
         node->services |= NODE_ZCL23;
+
+    /* An outbound peer first reached over legacy framing may reveal v2 only
+     * in its version message.  Remember that authenticated capability in the
+     * existing dial sources and reconnect exactly once; the next connect sees
+     * the bit before any bytes are sent and net.c starts Noise XX. */
+    if (mp->net_mgr && mp->net_mgr->owner)
+        (void)connman_request_v2_upgrade(mp->net_mgr->owner, node);
 
     /* For outbound connections, we already sent version; now we received
      * their version and sent verack. Mark connected once we also get their
@@ -499,13 +512,13 @@ bool process_verack(struct msg_processor *mp, struct p2p_node *node)
                            (int64_t)platform_time_wall_time_t());
     }
 
-    /* Aggressive peer exchange with ZCL23 nodes — don't wait for getaddr.
-     * Push all known addresses immediately so both nodes build their
-     * address books fast. This is the key to low-friction peer discovery:
-     * every ZCL23 handshake floods addresses in both directions. */
+    /* Eager peer exchange with ZCL23 nodes — don't wait for getaddr.
+     * The receiver rejects any single addr message above MAX_ADDR_TO_SEND,
+     * so this unsolicited path must use that same wire bound. */
     if (peer_supports_fast_sync(node->services) && mp->net_mgr) {
-        struct net_address addrs[2500];
-        size_t num = addrman_get_addr(&mp->net_mgr->addrman, addrs, 2500);
+        struct net_address addrs[MAX_ADDR_TO_SEND];
+        size_t num = addrman_get_addr(&mp->net_mgr->addrman, addrs,
+                                      MAX_ADDR_TO_SEND);
         if (num > 0) {
             struct byte_stream addr_msg;
             stream_init(&addr_msg, num * 30 + 8);

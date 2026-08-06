@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "name": "zclassic23/codec",
+  "semver": "0.1.0-dev.1",
+  "language": "c23",
+  "license": "Apache-2.0",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [
+    {
+      "root": "7f15ba590a82de200152b1c02b5b1dc11b4932a9b690fbe332e7c2fa60d764fe",
+      "name": "zclassic23/base",
+      "semver": "0.1.0-dev.1"
+    }
+  ]
+}

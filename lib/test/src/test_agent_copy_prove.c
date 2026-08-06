@@ -114,7 +114,124 @@ static void acp_build_params(struct json_value *params, const char *slug,
     acp_push_bool(params, no_run);
 }
 
+static bool acp_parse_agentbuild_fixture(const char *fixture,
+                                         char *out, size_t out_len)
+{
+    char cmd[1600];
+    snprintf(cmd, sizeof(cmd),
+        ". tools/scripts/source_identity_lib.sh; body=\"$(cat %s)\"; "
+        "source_id=\"$(zcl_agentbuild_v2_top_source_id \"$body\")\"; "
+        "build_commit=\"$(zcl_agentbuild_v2_top_build_commit \"$body\")\"; "
+        "printf '%%s\\n%%s\\n' \"$source_id\" \"$build_commit\"",
+        fixture);
+    FILE *p = popen(cmd, "r");
+    if (!p)
+        return false;
+    size_t used = fread(out, 1, out_len - 1, p);
+    out[used] = '\0';
+    return pclose(p) == 0;
+}
+
 /* ── A: real script, --no-run --json, synthetic src, isolated HOME ── */
+
+static int test_acp_agentbuild_identity_parser(void)
+{
+    int failures = 0;
+    printf("[test_agent_copy_prove] top-level agentbuild identity parser\n");
+
+    char work[512], fixture[600], out[256];
+    test_make_tmpdir(work, sizeof(work), "acp_script", "identity");
+    snprintf(fixture, sizeof(fixture), "%s/agentbuild.json", work);
+    const char *top_source =
+        "1111111111111111111111111111111111111111111111111111111111111111";
+    const char *nested_source =
+        "2222222222222222222222222222222222222222222222222222222222222222";
+    char body[1400];
+    snprintf(body, sizeof(body),
+        "{\"schema\":\"zcl.agent_build.v2\",\"api_version\":\"v1\","
+        "\"status\":\"ok\",\"source_id_sha256\":\"%s\","
+        "\"build_commit\":\"top-commit\",\"background\":{"
+        "\"source_id_sha256\":\"%s\",\"build_commit\":\"nested-stale\"}}\n",
+        top_source, nested_source);
+    ACP_CHECK("wrote nested-field identity fixture",
+              acp_write_file(fixture, body));
+
+    ACP_CHECK("identity parser exited 0",
+              acp_parse_agentbuild_fixture(fixture, out, sizeof(out)));
+
+    char expected[192];
+    snprintf(expected, sizeof(expected), "%s\ntop-commit\n", top_source);
+    ACP_CHECK("parser binds top-level source and commit, not nested fields",
+              strcmp(out, expected) == 0);
+
+    const char *refusals[] = {
+        /* Missing top-level source, despite a valid nested source. */
+        "{\"schema\":\"zcl.agent_build.v2\",\"api_version\":\"v1\","
+        "\"status\":\"ok\",\"background\":{\"source_id_sha256\":"
+        "\"2222222222222222222222222222222222222222222222222222222222222222\"}}\n",
+        /* Invalid top-level source, despite a valid nested source. */
+        "{\"schema\":\"zcl.agent_build.v2\",\"api_version\":\"v1\","
+        "\"status\":\"ok\",\"source_id_sha256\":\"bad\","
+        "\"background\":{\"source_id_sha256\":"
+        "\"2222222222222222222222222222222222222222222222222222222222222222\"}}\n",
+        "{\"schema\":\"wrong.schema\",\"api_version\":\"v1\","
+        "\"status\":\"ok\",\"source_id_sha256\":"
+        "\"1111111111111111111111111111111111111111111111111111111111111111\"}\n",
+        "{\"schema\":\"zcl.agent_build.v2\",\"api_version\":\"v2\","
+        "\"status\":\"ok\",\"source_id_sha256\":"
+        "\"1111111111111111111111111111111111111111111111111111111111111111\"}\n",
+        "{\"schema\":\"zcl.agent_build.v2\",\"api_version\":\"v1\","
+        "\"status\":\"blocked\",\"source_id_sha256\":"
+        "\"1111111111111111111111111111111111111111111111111111111111111111\"}\n",
+        /* Truncated immediately after otherwise-valid source bytes. */
+        "{\"schema\":\"zcl.agent_build.v2\",\"api_version\":\"v1\","
+        "\"status\":\"ok\",\"source_id_sha256\":\""
+        "1111111111111111111111111111111111111111111111111111111111111111",
+        /* Closing quote followed by noncanonical garbage. */
+        "{\"schema\":\"zcl.agent_build.v2\",\"api_version\":\"v1\","
+        "\"status\":\"ok\",\"source_id_sha256\":\""
+        "1111111111111111111111111111111111111111111111111111111111111111"
+        "\"garbage}",
+        /* A different next field cannot establish the canonical prefix. */
+        "{\"schema\":\"zcl.agent_build.v2\",\"api_version\":\"v1\","
+        "\"status\":\"ok\",\"source_id_sha256\":\""
+        "1111111111111111111111111111111111111111111111111111111111111111"
+        "\",\"wrong_next\":\"x\"}\n",
+    };
+    const char *labels[] = {
+        "nested-only source is refused",
+        "invalid top-level source cannot fall through to nested source",
+        "wrong agentbuild schema is refused",
+        "wrong agentbuild API version is refused",
+        "non-ok agentbuild status is refused",
+        "source truncated before closing quote is refused",
+        "garbage after source is refused",
+        "wrong field after source is refused",
+    };
+    for (size_t i = 0; i < sizeof(refusals) / sizeof(refusals[0]); i++) {
+        ACP_CHECK("rewrote refusal identity fixture",
+                  acp_write_file(fixture, refusals[i]));
+        bool parsed = acp_parse_agentbuild_fixture(fixture, out, sizeof(out));
+        ACP_CHECK(labels[i], parsed && strcmp(out, "\n\n") == 0);
+    }
+
+    /* A canonical source followed by a truncated build_commit still admits
+     * the source identity, but must not publish partial trace metadata. */
+    const char *truncated_commit =
+        "{\"schema\":\"zcl.agent_build.v2\",\"api_version\":\"v1\","
+        "\"status\":\"ok\",\"source_id_sha256\":\""
+        "1111111111111111111111111111111111111111111111111111111111111111"
+        "\",\"build_commit\":\"truncated";
+    ACP_CHECK("rewrote truncated-commit fixture",
+              acp_write_file(fixture, truncated_commit));
+    bool parsed = acp_parse_agentbuild_fixture(fixture, out, sizeof(out));
+    snprintf(expected, sizeof(expected), "%s\n\n", top_source);
+    ACP_CHECK("truncated build commit is not returned as trace metadata",
+              parsed && strcmp(out, expected) == 0);
+
+    test_rm_rf_recursive(work);
+    return failures;
+}
 
 static int test_acp_script_no_run_json(void)
 {
@@ -456,6 +573,7 @@ int test_agent_copy_prove(void)
 {
     int failures = 0;
     printf("[test_agent_copy_prove] starting\n");
+    failures += test_acp_agentbuild_identity_parser();
     failures += test_acp_script_no_run_json();
     failures += test_acp_rpc_refusals();
     failures += test_acp_rpc_launch_and_poll();

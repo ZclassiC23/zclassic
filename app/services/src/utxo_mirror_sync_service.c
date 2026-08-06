@@ -1,3 +1,8 @@
+// one-result-type-ok:audit-predicate-and-diagnostic-dumper
+// utxo_mirror_sync_audit_snapshot is a snapshot predicate; the existing
+// utxo_mirror_sync_dump_state_json implements the diagnostics_dump_fn.
+// Neither owns a fallible service operation; run_once/start carry those results.
+//
 // utxo_mirror_sync_dump_state_json, implements the diagnostics_dump_fn
 // typedef (CLAUDE.md "Adding state introspection": `bool
 // <name>_dump_state_json(...)`) mandated by the g_dumpers[] dispatch table
@@ -58,6 +63,26 @@ struct utxo_mirror_sync_service *g_utxo_mirror_sync = NULL;
 static struct liveness_contract g_mirror_contract;
 static _Atomic supervisor_child_id g_mirror_supervisor_id =
     SUPERVISOR_INVALID_ID;
+
+bool utxo_mirror_sync_audit_snapshot(uint64_t *generation_out)
+{
+    if (!generation_out)
+        LOG_RETURN(false, "utxo_mirror",
+                   "audit_snapshot: null generation_out");
+    struct utxo_mirror_sync_service *svc = g_utxo_mirror_sync;
+    if (!svc) {
+        *generation_out = 0;
+        return true;
+    }
+
+    uint32_t active_before = atomic_load(&svc->updates_active);
+    uint64_t generation = atomic_load(&svc->update_generation);
+    uint32_t active_after = atomic_load(&svc->updates_active);
+    if (active_before != 0 || active_after != 0)
+        return false;
+    *generation_out = generation;
+    return true;
+}
 
 /* ── Supervisor wiring (mode B: own thread + heartbeat) ────── */
 
@@ -554,8 +579,17 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
         .cursor_persisted = false,
         .used_delta = false,
     };
-    if (!mirror_run_db_lane(svc->ndb, mirror_rebuild_and_advance_lane,
-                            &rebuild) || rebuild.written < 0) {
+    /* Bracket the complete node.db write lane. The generation changes at both
+     * edges so an auditor spanning even a fast rebuild detects the overlap;
+     * updates_active covers a sample taken while the transaction is open. */
+    atomic_fetch_add(&svc->updates_active, 1u);
+    atomic_fetch_add(&svc->update_generation, 1u);
+    bool lane_ok = mirror_run_db_lane(svc->ndb,
+                                      mirror_rebuild_and_advance_lane,
+                                      &rebuild);
+    atomic_fetch_add(&svc->update_generation, 1u);
+    atomic_fetch_sub(&svc->updates_active, 1u);
+    if (!lane_ok || rebuild.written < 0) {
         atomic_store(&svc->last_error_unix, platform_time_wall_unix());
         return -1;  // raw-return-ok:logged-in-mirror_rebuild_from_coins_kv
     }

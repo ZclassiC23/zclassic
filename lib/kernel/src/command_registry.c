@@ -893,7 +893,8 @@ static size_t input_member_budget(const char *key, size_t key_len)
     if (key_len == 5 && memcmp(key, "files", 5) == 0)
         value_max = 2u + ZCL_COMMAND_INPUT_FILES_MAX_ITEMS *
                              (ZCL_COMMAND_INPUT_FILES_PATH_MAX + 3u);
-    else if ((key_len == 6 && memcmp(key, "inputs", 6) == 0) ||
+    else if ((key_len == 7 && memcmp(key, "effects", 7) == 0) ||
+             (key_len == 6 && memcmp(key, "inputs", 6) == 0) ||
              (key_len == 7 && memcmp(key, "outputs", 7) == 0) ||
              (key_len == 7 && memcmp(key, "prevtxs", 7) == 0))
         value_max = ZCL_COMMAND_MAX_INPUT;
@@ -966,9 +967,18 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             }
         } else if (strcmp(key, "verbose") == 0 ||
                    strcmp(key, "confirm") == 0 ||
+                   strcmp(key, "enabled") == 0 ||
                    strcmp(key, "relink_generation") == 0 ||
                    strcmp(key, "allow_high_fees") == 0) {
             type_ok = value->type == JSON_BOOL;
+        } else if (strcmp(key, "effects") == 0) {
+            /* vault.intent.plan owns the strict nested effect contract. The
+             * transport must nevertheless admit the declared array shape;
+             * treating an unruled key as a string made the command's own
+             * documented multi-recipient example impossible to invoke. */
+            type_ok = value->type == JSON_ARR &&
+                      value->num_children >= 1u &&
+                      value->num_children <= 50u;
         } else if (strcmp(key, "inputs") == 0 ||
                    strcmp(key, "prevtxs") == 0) {
             type_ok = value->type == JSON_ARR &&
@@ -986,17 +996,56 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                        json_get_str(value)[0] && strlen(json_get_str(value)) <= 64);
         } else if (strcmp(key, "units") == 0 ||
                    strcmp(key, "supply") == 0) {
-            /* ZSLP amounts are indivisible base units at the wire boundary;
-             * accepting a JSON real here would lose integer precision before
-             * the SLP uint64 encoder sees it. RPC JSON is signed-int bounded. */
+            /* ZSLP amounts are indivisible base units. The backing RPC
+             * parser (zslp_tx_rpc_units, zslp_transaction_rpc.c) takes only
+             * an unsigned decimal string, and the write-handler leaf
+             * (AWN_U64_STR, app_write_native_handlers.c) forwards strings
+             * verbatim and renders a positive JSON_INT to its decimal
+             * string — so both forms are valid here: the string form of the
+             * app_features.def examples ("supply":"1000") and the int form
+             * of the vault.def send-token example ("units":25). The string
+             * rule mirrors the RPC parser: nonempty digits, nonzero, with a
+             * coarse 20-char u64 bound (the RPC owns exact overflow). */
+            const char *s = json_get_str(value);
             type_ok = value->type == JSON_INT && json_get_int(value) > 0;
+            if (!type_ok && value->type == JSON_STR && s && s[0] &&
+                strlen(s) <= 20) {
+                bool nonzero = false;
+                type_ok = true;
+                for (const unsigned char *p = (const unsigned char *)s; *p;
+                     p++) {
+                    if (*p < '0' || *p > '9') { type_ok = false; break; }
+                    if (*p != '0') nonzero = true;
+                }
+                type_ok = type_ok && nonzero;
+            }
         } else if (strcmp(key, "decimals") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
                       json_get_int(value) <= 8;
+        } else if (strcmp(key, "action_mask") == 0) {
+            /* Seven local-sovereignty actions occupy bits 0..6. Keep this
+             * transport validator aligned with the policy handler so the
+             * leaf's exact 1..127 contract reaches plan/commit unchanged. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 127;
         } else if (strcmp(key, "cursor") == 0) {
             type_ok = (value->type == JSON_INT && json_get_int(value) >= 0) ||
                       (value->type == JSON_STR && json_get_str(value) &&
                        json_get_str(value)[0] && strlen(json_get_str(value)) <= 256);
+        } else if (strcmp(key, "raw_offset") == 0) {
+            /* Byte offset into core.chain.transaction.get raw mode. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "raw_bytes") == 0) {
+            /* Keep the hex-doubled page inside the ordinary result budget. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 1024;
+        } else if (strcmp(key, "slot") == 0) {
+            /* app.transaction-types.micro-lab has exactly 100 stable,
+             * one-based campaign slots.  The CLI types --slot=91 as an
+             * integer; without this rule the default string branch makes the
+             * documented native fast path uncallable before its handler. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 100;
         } else if (strcmp(key, "height") == 0 ||
                    strcmp(key, "start_height") == 0 ||
                    strcmp(key, "after") == 0 ||
@@ -1006,6 +1055,35 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             /* Civil day number (unix/86400) — the deterministic window
              * pin every zcode reward/badge/seed/fetch surface takes. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "now_unix") == 0 ||
+                   strcmp(key, "created_at") == 0 ||
+                   strcmp(key, "expires_at") == 0 ||
+                   strcmp(key, "expires_unix") == 0) {
+            /* Explicit Unix timestamps. now_unix is the deterministic
+             * submission-window pin used by zcode.science; created_at and
+             * expires_at are the ZPAY envelope bounds (and existing build
+             * worker fields). Without this rule the default branch demands a
+             * string while every handler reads JSON_INT, making the declared
+             * commands uninvokable through the CLI. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "expires_in_seconds") == 0) {
+            /* Owner-gated dev activation plan lifetime. The handler repeats
+             * this exact bound; recognizing the integer here lets the typed
+             * CLI reach that policy instead of misclassifying it as text. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 60 &&
+                      json_get_int(value) <= 3600;
+        } else if (strcmp(key, "challenge_block_height") == 0 ||
+                   strcmp(key, "action_sequence") == 0 ||
+                   strcmp(key, "result_sequence") == 0 ||
+                   strcmp(key, "reproduction_sequence") == 0 ||
+                   strcmp(key, "max") == 0) {
+            /* zcode.science int pins the same bug class as now_unix: the
+             * handlers read them with json_get_int, so the default string
+             * branch made every science leaf that takes one uninvokable
+             * from the shell. All are positive in every handler (height
+             * and sequences must be nonzero; max is a render cap the
+             * handler clamps to its own bound). */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1;
         } else if (strcmp(key, "min-height") == 0) {
             /* net census height floor: a non-negative advertised height. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
@@ -1023,6 +1101,17 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
              * default branch would demand a string and reject `--peer_id=3`,
              * which the CLI types as an integer. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "product_id") == 0 ||
+                   strcmp(key, "purchase_id") == 0) {
+            /* app.store.{order,pay,purchases,collect} row ids. The CLI types
+             * a bare integer as JSON_INT and every one of those leaves'
+             * declared examples uses one ("product_id":1). Without this rule
+             * the default branch demands a string, and a numeric string then
+             * fails the handler's json_get_int_or > 0 check — the leaf is
+             * uninvokable from the shell either way. The handler owns the
+             * real unknown-row refusal (UNKNOWN_PRODUCT / UNKNOWN_PURCHASE),
+             * so the only rule here is positive-int. */
+            type_ok = value->type == JSON_INT && json_get_int(value) > 0;
         } else if (strcmp(key, "locktime_blocks") == 0) {
             /* app.swap.{initiate,participate} lock DURATION in blocks from the
              * current tip. Range mirrors swap_locktime_to_absolute()
@@ -1040,6 +1129,21 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
              * 21M-ZCL supply so a nonsense price is refused up front. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
                       json_get_int(value) <= 2100000000000000LL;
+        } else if (strcmp(key, "recipient_value_zat") == 0) {
+            /* Aggregate metaverse liquidity planning uses exact zatoshi.
+             * Keep the transport range aligned with the handler: positive,
+             * and never above the complete ZCL money supply. */
+            type_ok = value->type == JSON_INT && json_get_int(value) > 0 &&
+                      json_get_int(value) <= 2100000000000000LL;
+        } else if (strcmp(key, "maximum_fee_zat") == 0) {
+            /* Zero is a meaningful caller-selected ceiling. The live intent
+             * planner owns any stricter fee-policy decision. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
+                      json_get_int(value) <= 2100000000000000LL;
+        } else if (strcmp(key, "concurrency") == 0) {
+            /* Matches the vault intent's maximum structured effects count. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 50;
         } else if (strcmp(key, "price_zcl") == 0 ||
                    strcmp(key, "price_zatoshi") == 0) {
             /* app.store.list-product asking price, in whichever unit the key

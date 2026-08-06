@@ -587,7 +587,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(&dev, "default_opt", "ZCL_DEV_OPT=-Og");
     json_push_kv_str(&dev, "hot_opt", "ZCL_DEV_HOT_OPT=-O2");
     json_push_kv_str(&dev, "hot_path_buckets",
-                     "lib/chain, core/params, lib/crypto, lib/primitives, lib/sapling, lib/script, lib/validation");
+                     "lib/chain, core/params, lib/crypto, lib/sha3, lib/primitives, lib/sapling, lib/script, lib/validation");
     json_push_kv_str(&dev, "linker_knob", "ZCL_DEV_LINKER");
     json_push_kv_str(&dev, "purpose",
                      "Run current native agent, diagnostics, parser, and API code without paying the release LTO link.");

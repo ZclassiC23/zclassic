@@ -70,6 +70,9 @@ void api_rest_index_resources_json(struct json_value *resources)
     api_rest_index_push_resource(resources, "protocols",
                                  "/api/v1/protocols",
                                  "/api/v1/protocols/{name}", false);
+    api_rest_index_push_resource(resources, "transaction_types",
+                                 "/api/v1/transaction-types",
+                                 "/api/v1/transaction-types/{type}", false);
     api_rest_index_push_resource(resources, "service_catalog",
                                  "/api/v1/service-catalog",
                                  "/api/v1/service-catalog/{service}", false);

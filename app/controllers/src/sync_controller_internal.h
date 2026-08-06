@@ -81,6 +81,16 @@ struct wallet_tx_sync_ctx {
  * (in node_db_sync_wallet_tx_checked). */
 bool node_db_sync_wallet_tx_write(struct node_db *ndb, void *ctx);
 
+/* Defined in sync_controller_writers.c — used by sync_controller_blocks.c
+ * (the async connect_block projection, which folds the per-tx wallet
+ * projection into the same db-service job after the block write, so the
+ * block row exists for its time_received lookup). */
+bool node_db_sync_wallet_tx_local(struct node_db *ndb,
+                                  const struct transaction *tx,
+                                  const struct wallet *w,
+                                  int block_height,
+                                  bool *is_ours_out);
+
 /* Defined in sync_controller.c — used by sync_controller_catchup.c. */
 bool node_db_sync_wallet_tx_checked(struct node_db *ndb,
                                     const struct transaction *tx,

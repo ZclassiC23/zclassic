@@ -1,0 +1,45 @@
+/* Mutating native leaves which the transaction completeness gate examines but
+ * which cannot create, sign, submit, or confirm a chain transaction.
+ *
+ * TX_NONCHAIN_COMMAND(command_path, category, explanation)
+ *
+ * This is an explicit negative assertion, not a default.  An unlisted command
+ * remains UNCLASSIFIED; absence from the transaction catalog never proves a
+ * command is off-chain. */
+
+TX_NONCHAIN_COMMAND("core.wallet.security.encrypt", "wallet_security",
+    "Encrypts local wallet key material; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("core.wallet.security.unlock", "wallet_security",
+    "Unlocks local wallet key material for a bounded time; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("core.wallet.security.lock", "wallet_security",
+    "Locks local wallet key material; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("core.wallet.address.new", "wallet_key_management",
+    "Derives and persists a local transparent receive key; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("core.wallet.address.import", "wallet_key_management",
+    "Imports a watch-only address into local wallet state; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("core.wallet.address.export-key", "wallet_key_management",
+    "Discloses an existing private key to its owner; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("core.wallet.shielded.address", "wallet_key_management",
+    "Derives and persists a local Sapling receive key; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("core.wallet.backup.now", "wallet_backup",
+    "Writes an encrypted local wallet backup; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("core.wallet.backup.decrypt", "wallet_backup",
+    "Decrypts an owner-selected wallet backup locally; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("core.wallet.restore", "wallet_recovery",
+    "Restores local wallet state from a backup; it does not broadcast during restore.")
+TX_NONCHAIN_COMMAND("core.wallet.recovery.restore", "wallet_recovery",
+    "Runs the typed local wallet recovery path; it does not broadcast during restore.")
+TX_NONCHAIN_COMMAND("core.wallet.rescan-witnesses", "wallet_scan",
+    "Rebuilds local shielded witnesses from chain data; it creates no transaction.")
+TX_NONCHAIN_COMMAND("core.wallet.rescan", "wallet_scan",
+    "Replays existing chain history into the local wallet; it creates no transaction.")
+TX_NONCHAIN_COMMAND("vault.intent.issue", "receive_request",
+    "Creates a receive key and payment URI only; a later payer creates any transaction.")
+TX_NONCHAIN_COMMAND("vault.session.create", "agent_authority",
+    "Creates a bounded local agent grant; the grant can authorize later commands but is not a transaction.")
+TX_NONCHAIN_COMMAND("vault.session.revoke", "agent_authority",
+    "Revokes a bounded local agent grant; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("zcode.endpoint.publish", "p2p_endpoint_record",
+    "Publishes a signed endpoint record to the ZCODE P2P swarm; no on-chain write exists in this flow.")
+TX_NONCHAIN_COMMAND("zcode.endpoint.accept", "p2p_endpoint_record",
+    "Accepts a signed endpoint record into local ZCODE state; it creates no chain transaction.")

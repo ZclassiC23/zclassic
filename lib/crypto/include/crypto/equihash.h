@@ -6,7 +6,13 @@
  *
  * Equihash proof-of-work — pure C23 implementation.
  * Based on: Biryukov & Khovratovich, "Equihash: Asymmetric Proof-of-Work
- * Based on the Generalized Birthday Problem", NDSS 2016. */
+ * Based on the Generalized Birthday Problem", NDSS 2016.
+ *
+ * AUTHORITY: this is the verification PRIMITIVE's interface. The consensus
+ * PREDICATE block validation runs is domain_consensus_verify_equihash_
+ * solution() (core/consensus/src/equihash.c, byte-sealed), which wraps the
+ * primitive implemented in lib/crypto/src/equihash.c — see the AUTHORITY
+ * note there and in lib/crypto_registry/src/scheme_equihash_200_9.c. */
 
 #ifndef ZCL_CRYPTO_EQUIHASH_H
 #define ZCL_CRYPTO_EQUIHASH_H

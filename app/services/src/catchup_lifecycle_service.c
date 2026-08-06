@@ -32,6 +32,7 @@
 #include "services/catchup_lifecycle_service.h"
 #include "controllers/sync_controller.h" /* struct node_db_sync_catchup_job */
 #include "util/log_macros.h"
+#include "util/util.h"  /* GetDataDir */
 
 #include <errno.h>
 #include <pthread.h>
@@ -83,7 +84,15 @@ bool catchup_lifecycle_start(struct node_db_sync_catchup_job *job,
     if (!job || node_db_sync_catchup_job_is_started(job))
         return false;
 
-    return node_db_sync_catchup_job_start(job, ndb, chain, w, datadir);
+    /* `datadir` is the BASE datadir, but block bodies are persisted under the
+     * NET-SPECIFIC datadir (GetDataDir(true); the writer idiom in
+     * reducer_ingest_service.c) — the catchup blk reader must look there or
+     * it reads an empty/legacy blk dir on regtest/testnet and indexes
+     * nothing. Byte-identical on mainnet. */
+    char net_dir[2048];
+    GetDataDir(true, net_dir, sizeof(net_dir));
+    return node_db_sync_catchup_job_start(job, ndb, chain, w,
+                                          net_dir[0] ? net_dir : datadir);
 }
 
 void catchup_lifecycle_join(struct node_db_sync_catchup_job *job,

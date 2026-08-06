@@ -6,9 +6,11 @@
  */
 
 #include "controllers/diagnostics_internal.h"
+#include "controllers/explorer_internal.h"
 
 #include "chain/chain.h"
 #include "jobs/stage_repair.h"
+#include "models/database.h"
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
 #include "json/json.h"
@@ -26,6 +28,56 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+void diag_push_explorer_index_state_json(struct json_value *out,
+                                         struct node_db *ndb)
+{
+    struct json_value obj = {0};
+    sqlite3 *read_db = NULL;
+
+    json_set_object(&obj);
+    if (!ndb || !ndb->open || !ndb->db) {
+        json_push_kv_str(&obj, "state", "unknown");
+        json_push_kv_str(&obj, "reason", "database unavailable");
+        json_push_kv(out, "explorer_index_state", &obj);
+        json_free(&obj);
+        return;
+    }
+
+    /* A supervisor stall can trigger this diagnostic automatically. Never
+     * run history scans on g_node_db: its serialized connection mutex would
+     * queue wallet/custody RPCs behind the diagnostic itself. The private
+     * read-only handle sees the same authoritative file without monopolizing
+     * the agent interface. Bound writer contention too; UNKNOWN is more
+     * truthful than waiting 30 seconds for a debug bundle. */
+    const char *datadir = diag_datadir();
+    if (!datadir || !datadir[0] ||
+        !explorer_open_readonly_db(datadir, &read_db)) {
+        json_push_kv_str(&obj, "state", "unknown");
+        json_push_kv_str(&obj, "reason", "read-only database unavailable");
+        json_push_kv(out, "explorer_index_state", &obj);
+        json_free(&obj);
+        return;
+    }
+    sqlite3_busy_timeout(read_db, 250);
+
+    struct explorer_history_validation v;
+    int64_t height = sql_query_i64(read_db,
+        "SELECT COALESCE(MAX(height),0) FROM blocks");
+    explorer_validate_block_history(read_db, height, &v);
+    sqlite3_close(read_db);
+    json_push_kv_str(&obj, "state", v.usable ? "complete" : "degraded");
+    json_push_kv_str(&obj, "reason", v.reason);
+    json_push_kv_int(&obj, "height", v.max_height);
+    json_push_kv_int(&obj, "blocks", v.block_rows);
+    json_push_kv_int(&obj, "missing_heights", v.missing_heights);
+    json_push_kv_int(&obj, "first_missing_height", v.first_missing_height);
+    json_push_kv_int(&obj, "transactions", v.tx_rows);
+    json_push_kv_int(&obj, "tx_outputs", v.tx_output_rows);
+    json_push_kv_int(&obj, "integrity_receipts", v.integrity_rows);
+    json_push_kv(out, "explorer_index_state", &obj);
+    json_free(&obj);
+}
 
 static void push_block_status_flags(struct json_value *arr, unsigned nStatus)
 {

@@ -3,7 +3,7 @@
 
 #include "vcs/zcode_lane.h"
 
-#include "base/serialize_le.h"
+#include "codec/cursor.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 
@@ -99,20 +99,24 @@ static enum vcs_zcode_dev_error lane_body(
 {
     enum vcs_zcode_dev_error err = lane_fields(receipt, false);
     if (err != VCS_ZCODE_DEV_OK) return err;
-    memset(out, 0, VCS_ZCODE_LANE_BODY_BYTES);
-    memcpy(out, lane_magic, 8);
-    zcl_write_u16_le(out + 8, receipt->schema_version);
-    out[10] = receipt->lane;
-    size_t off = 16;
-    memcpy(out + off, receipt->source_root, 32); off += 32;
-    memcpy(out + off, receipt->task_root, 32); off += 32;
-    memcpy(out + off, receipt->candidate_root, 32); off += 32;
-    memcpy(out + off, receipt->proof_policy_root, 32); off += 32;
-    memcpy(out + off, receipt->proof_set_root, 32); off += 32;
-    memcpy(out + off, receipt->prior_receipt_root, 32); off += 32;
-    zcl_write_i64_le(out + off, receipt->created_unix); off += 8;
-    memcpy(out + off, receipt->signer_pubkey, 32); off += 32;
-    return off == VCS_ZCODE_LANE_BODY_BYTES
+    static const uint8_t reserved[5] = {0};
+    struct zcl_codec_writer writer;
+    zcl_codec_writer_init(&writer, out, VCS_ZCODE_LANE_BODY_BYTES);
+    bool ok = zcl_codec_write_bytes(&writer, lane_magic, sizeof(lane_magic)) &&
+        zcl_codec_write_u16le(&writer, receipt->schema_version) &&
+        zcl_codec_write_u8(&writer, receipt->lane) &&
+        zcl_codec_write_bytes(&writer, reserved, sizeof(reserved)) &&
+        zcl_codec_write_bytes(&writer, receipt->source_root, 32) &&
+        zcl_codec_write_bytes(&writer, receipt->task_root, 32) &&
+        zcl_codec_write_bytes(&writer, receipt->candidate_root, 32) &&
+        zcl_codec_write_bytes(&writer, receipt->proof_policy_root, 32) &&
+        zcl_codec_write_bytes(&writer, receipt->proof_set_root, 32) &&
+        zcl_codec_write_bytes(&writer, receipt->prior_receipt_root, 32) &&
+        zcl_codec_write_i64le(&writer, receipt->created_unix) &&
+        zcl_codec_write_bytes(&writer, receipt->signer_pubkey, 32);
+    size_t written = 0;
+    return ok && zcl_codec_writer_finish(&writer, &written) &&
+           written == VCS_ZCODE_LANE_BODY_BYTES
         ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_WIRE_SIZE;
 }
 
@@ -138,21 +142,26 @@ enum vcs_zcode_dev_error vcs_zcode_lane_receipt_parse(
         return VCS_ZCODE_DEV_ERR_WIRE_SIZE;
     if (memcmp(wire, lane_magic, 8) != 0)
         return VCS_ZCODE_DEV_ERR_WIRE_MAGIC;
-    for (size_t i = 11; i < 16; i++)
-        if (wire[i] != 0) return VCS_ZCODE_DEV_ERR_WIRE_MAGIC;
     memset(out, 0, sizeof(*out));
-    out->schema_version = zcl_read_u16_le(wire + 8);
-    out->lane = wire[10];
-    size_t off = 16;
-    memcpy(out->source_root, wire + off, 32); off += 32;
-    memcpy(out->task_root, wire + off, 32); off += 32;
-    memcpy(out->candidate_root, wire + off, 32); off += 32;
-    memcpy(out->proof_policy_root, wire + off, 32); off += 32;
-    memcpy(out->proof_set_root, wire + off, 32); off += 32;
-    memcpy(out->prior_receipt_root, wire + off, 32); off += 32;
-    out->created_unix = zcl_read_i64_le(wire + off); off += 8;
-    memcpy(out->signer_pubkey, wire + off, 32); off += 32;
-    memcpy(out->signature, wire + off, 64);
+    uint8_t reserved[5];
+    struct zcl_codec_reader reader;
+    zcl_codec_reader_init(&reader, wire + sizeof(lane_magic),
+                          wire_len - sizeof(lane_magic));
+    bool ok = zcl_codec_read_u16le(&reader, &out->schema_version) &&
+        zcl_codec_read_u8(&reader, &out->lane) &&
+        zcl_codec_read_bytes(&reader, reserved, sizeof(reserved)) &&
+        zcl_codec_read_bytes(&reader, out->source_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->task_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->candidate_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->proof_policy_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->proof_set_root, 32) &&
+        zcl_codec_read_bytes(&reader, out->prior_receipt_root, 32) &&
+        zcl_codec_read_i64le(&reader, &out->created_unix) &&
+        zcl_codec_read_bytes(&reader, out->signer_pubkey, 32) &&
+        zcl_codec_read_bytes(&reader, out->signature, 64) &&
+        zcl_codec_reader_finish(&reader);
+    for (size_t i = 0; ok && i < sizeof(reserved); i++) ok = reserved[i] == 0;
+    if (!ok) { memset(out, 0, sizeof(*out)); return VCS_ZCODE_DEV_ERR_WIRE_MAGIC; }
     return vcs_zcode_lane_receipt_validate(out);
 }
 

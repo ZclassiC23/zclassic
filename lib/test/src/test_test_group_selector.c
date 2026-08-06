@@ -219,7 +219,9 @@ static int test_runner_exact_selection(void)
 {
     int failures = 0;
     TEST("test group selector: runner exact mode executes exactly one id") {
-        char out[32768];
+        /* Strict-profile make -n output includes the full link source list;
+         * retain its tail where the exact selector is emitted. */
+        char out[131072];
         char exe[PATH_MAX];
         ASSERT(os_proc_exe_path(exe, sizeof(exe)));
         ASSERT(exe[0] != '\0');
@@ -300,6 +302,7 @@ static int test_runner_exact_selection(void)
          * therefore without recursively acquiring the checkout lock). */
         n = snprintf(command, sizeof(command),
                      "make -n t-fast-exact ONLY=api "
+                     "TEST_PARALLEL_ARGS= "
                      "TEST_PARALLEL_FAST_CANDIDATE=/bin/true "
                      "TEST_PARALLEL_FAST_ACTIVE=/bin/true "
                      "BUILD_SOURCE_RECORD='%s 1 %s' 2>&1",
@@ -313,6 +316,7 @@ static int test_runner_exact_selection(void)
 
         n = snprintf(command, sizeof(command),
                      "make -n t-fast-exact ONLY=api_missing "
+                     "TEST_PARALLEL_ARGS= "
                      "TEST_PARALLEL_FAST_CANDIDATE=/bin/true "
                      "TEST_PARALLEL_FAST_ACTIVE=/bin/true "
                      "BUILD_SOURCE_RECORD='%s 1 %s' 2>&1",

@@ -614,10 +614,11 @@ static int dev_guard_pending_auto_reindex(struct dev_activation_txn *txn)
 
     const char *force = getenv("ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY");
     if (force && strcmp(force, "1") == 0) {
+        txn->recovery_boot = true;
         fprintf(stderr,
                 "[dev-activation] WARN: pending crash-only auto-reindex request "
-                "anchor=%d count=%d; next boot will rebuild chainstate\n",
-                (int)anchor, count);
+                "anchor=%d count=%d; next boot may rebuild chainstate and "
+                "uses the recovery readiness budget\n", (int)anchor, count);
         return DEV_ACTIVATION_OK;
     }
 
@@ -883,6 +884,23 @@ static int dev_run_locked(struct dev_activation_txn *txn, bool already_staged)
     int stale = dev_check_stale_in_progress(txn);
     if (stale != DEV_ACTIVATION_OK)
         return stale;
+
+    /* The plan half binds the exact resident epoch it observed.  Check it
+     * only after acquiring the same lock that protects the flip, otherwise a
+     * concurrent activation could pass a pre-lock comparison and be lost. */
+    if (txn->req->expected_current_generation) {
+        dev_activation_refresh_gen_state(txn);
+        if (strcmp(txn->current_generation,
+                   txn->req->expected_current_generation) != 0) {
+            dev_set_status(r, "superseded", "resident_epoch_superseded",
+                           "resident generation changed after planning; "
+                           "running generation untouched");
+            snprintf(r->failure_capsule, sizeof(r->failure_capsule),
+                     "resident generation compare-and-swap refused publication");
+            (void)dev_activation_write_deploy_state(txn);
+            return DEV_ACTIVATION_E_PREFLIGHT;
+        }
+    }
 
     if (!already_staged) {
         int st = dev_activation_stage_candidate(txn);

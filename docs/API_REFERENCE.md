@@ -59,34 +59,36 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 422 |
-| Top-level roots | 10 |
-| Branches | 96 |
-| Leaves (dispatchable command paths) | 326 |
-| … `ready` (live handler in this build) | 278 |
-| … `compat` (metadata only, names a fallback) | 17 |
+| Registry entries (branches + leaves) | 532 |
+| Top-level roots | 11 |
+| Branches | 120 |
+| Leaves (dispatchable command paths) | 412 |
+| … `ready` (live handler in this build) | 363 |
+| … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
-| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 16 |
-| Leaves with `effect=mutate` | 97 |
+| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
+| Leaves with `effect=mutate` | 136 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 72 |
+| Leaves requiring **owner** authority | 96 |
 
 Per source file:
 
 | `.def` file | Entries | Branches | Leaves |
 |---|---|---|---|
 | `config/commands/root.def` | 10 | 5 | 5 |
-| `config/commands/core.def` | 107 | 26 | 81 |
-| `config/commands/apps.def` | 9 | 2 | 7 |
-| `config/commands/app_features.def` | 32 | 6 | 26 |
+| `config/commands/core.def` | 117 | 29 | 88 |
+| `config/commands/apps.def` | 16 | 3 | 13 |
+| `config/commands/app_features.def` | 49 | 12 | 37 |
 | `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
-| `config/commands/dev.def` | 45 | 11 | 34 |
+| `config/commands/dev.def` | 46 | 11 | 35 |
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
-| `config/commands/vault.def` | 15 | 3 | 12 |
-| `config/commands/zcode.def` | 71 | 16 | 55 |
-| `config/commands/metaverse.def` | 17 | 5 | 12 |
+| `config/commands/vault.def` | 22 | 4 | 18 |
+| `config/commands/zcode.def` | 95 | 18 | 77 |
+| `config/commands/zcode_science.def` | 25 | 7 | 18 |
+| `config/commands/metaverse.def` | 30 | 7 | 23 |
+| `config/commands/yardsale.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
 | `config/commands/telemetry/runtime.def` | 4 | 1 | 3 |
@@ -151,6 +153,7 @@ The root order below is a wire contract, not a presentation choice.
 | `vault` | `vault` | branch | ready | What this node owns, and what may act on it |
 | `zcode` | `zcode` | branch | ready | ZCODE source-package hosting: publish, search, host |
 | `metaverse` | `metaverse` | branch | ready | Sovereign digital property: catalog, rights, receipts |
+| `yardsale` | `yardsale` | branch | ready | For-sale-by-owner signed ads, settled bilaterally |
 
 
 ## The tree, leaf by leaf
@@ -172,6 +175,15 @@ represented by its children's sections.
 | `core status` | ready | read / read / public · fast/low | none | `zcl.core_status.v2` | `zclassic23 core status` | Consensus node status: height, sync, health |
 | `core status brief` | ready | read / read / public · fast/low | none | `zcl.core_status_brief.v1` | `zclassic23 core status brief` | Flat lean status: hstar, gap, blocker, conditions, peers, rss (full field list: docs/NATIVE_COMMAND_INTERFACE.md CLI UX contract) |
 
+#### `core.wallet.security` — Encryption-at-rest and runtime key custody
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `core wallet security status` | ready | read / read / operator · fast/low | none | `zcl.wallet_security.v1` | `zclassic23 core wallet security status` | Report wallet encryption and lock state |
+| `core wallet security encrypt` | ready | mutate / wallet / **owner** · foreground/moderate | `passphrase` | `zcl.wallet_security.v1` | `zclassic23 core wallet security encrypt --input=-` | Encrypt every wallet secret at rest, then lock |
+| `core wallet security unlock` | ready | mutate / wallet / **owner** · foreground/moderate | `passphrase`, `timeout_seconds` | `zcl.wallet_security.v1` | `zclassic23 core wallet security unlock --input=-` | Unlock wallet keys for a bounded interval |
+| `core wallet security lock` | ready | mutate / wallet / **owner** · fast/low | none | `zcl.wallet_security.v1` | `zclassic23 core wallet security lock` | Lock the wallet and scrub resident keys |
+
 #### `core.chain` — Blocks, transactions, and mempool
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
@@ -188,7 +200,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `core chain transaction get` | ready | read / read / public · fast/low | **`txid`**, `verbose` | `zcl.transaction.v1` | `zclassic23 core chain transaction get --txid=<hex>` | Get one transaction by id |
+| `core chain transaction get` | ready | read / read / public · fast/low | **`txid`**, `verbose`, `raw_offset`, `raw_bytes` | `zcl.transaction.v1` | `zclassic23 core chain transaction get --txid=<hex>` | Get one transaction by id |
 
 #### `core.chain.mempool` — Mempool state
 
@@ -214,6 +226,13 @@ represented by its children's sections.
 | `core sync blockers` | ready | read / read / public · fast/low | none | `zcl.blockers.v1` | `zclassic23 core sync blockers` | Active named sync blockers |
 | `core sync diagnose` | ready | read / read / operator · fast/moderate | none | `zcl.syncdiag.v1` | `zclassic23 core sync diagnose` | Diagnose why sync is not advancing |
 | `core sync frontier offline` | ready | read / read / operator · fast/low | `datadir` | `zcl.core_sync_frontier_offline.v1` | `zclassic23 core sync frontier offline --input='{"datadir":"/home/you/.zclassic-c23"}'` | H* (reducer frontier) of a STOPPED/COPIED datadir |
+
+#### `core.anchor` — Generic ZANC digest-anchor composition and inspection
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `core anchor compose` | ready | read / read / public · instant/tiny | **`digest`**, `hash_type`, `label` | `zcl.core_anchor_compose.v1` | `zclassic23 core anchor compose --digest=<64hex> --label=release@1` | Compose one canonical generic ZANC digest anchor |
+| `core anchor inspect` | ready | read / read / public · instant/tiny | **`op_return_hex`** | `zcl.core_anchor_inspect.v1` | `zclassic23 core anchor inspect <op_return_hex>` | Strictly decode one canonical ZANC OP_RETURN |
 
 #### `core.epoch` — Epoch anchors: commit the overlay catalog digest on-chain
 
@@ -307,13 +326,19 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `core wallet transaction list` | ready | read / read / operator · fast/low | none | `zcl.wallet_tx_list.v1` | `zclassic23 core wallet transaction list` | List recent wallet transactions |
 | `core wallet transaction get` | ready | read / read / operator · fast/low | **`txid`** | `zcl.wallet_tx.v1` | `zclassic23 core wallet transaction get --txid=<hex>` | Get one wallet transaction by id |
-| `core wallet transaction send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `address`, `amount`, `idempotency_key`, `confirm` | `zcl.wallet_send.v1` | `zclassic23 core wallet transaction send --input='<obj>'` | Build, sign, and broadcast a payment |
+| `core wallet transaction send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, `address`, `amount`, `idempotency_key`, `confirm` | `zcl.wallet_send.v1` | `zclassic23 core wallet transaction send --input='<obj>'` | Build, sign, and broadcast a payment |
+
+#### `core.wallet.transaction.multisig` — Transparent P2SH multisig composition
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `core wallet transaction multisig compose` | ready | read / read / operator · fast/low | `required_signatures`, `public_keys` | `zcl.wallet_multisig_composition.v1` | `zclassic23 core wallet transaction multisig compose --input='<obj>'` | Compose a P2SH multisig address and redeem script |
 
 #### `core.wallet.transaction.raw` — Raw transparent transaction composition
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `core wallet transaction raw create` | ready | mutate / wallet / **owner** · fast/low | **`inputs`**, **`outputs`** | `zcl.wallet_raw_create.v1` | `zclassic23 core wallet transaction raw create --input='<obj>'` | Create an unsigned raw transaction |
+| `core wallet transaction raw create` | ready | mutate / wallet / **owner** · fast/low | **`inputs`**, **`outputs`**, `op_return_hex` | `zcl.wallet_raw_create.v1` | `zclassic23 core wallet transaction raw create --input='<obj>'` | Create an unsigned raw transaction |
 | `core wallet transaction raw sign` | ready | mutate / wallet / **owner** · foreground/moderate | **`raw_hex`**, `prevtxs` | `zcl.wallet_raw_sign.v1` | `zclassic23 core wallet transaction raw sign --input='<obj>'` | Sign a raw transaction with wallet keys |
 | `core wallet transaction raw broadcast` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`raw_hex`**, `allow_high_fees`, `confirm` | `zcl.wallet_raw_broadcast.v1` | `zclassic23 core wallet transaction raw broadcast --input='<obj>'` | Validate and broadcast a signed raw transaction |
 
@@ -324,7 +349,7 @@ represented by its children's sections.
 | `core wallet shielded address` | ready | mutate / wallet / **owner** · fast/low | none | `zcl.shielded_address.v1` | `zclassic23 core wallet shielded address` | Derive a new shielded address |
 | `core wallet shielded balance` | ready | read / read / operator · fast/low | **`address`** | `zcl.shielded_balance.v1` | `zclassic23 core wallet shielded balance --address=<zaddr>` | Shielded balance for one address |
 | `core wallet shielded notes` | ready | read / read / operator · fast/low | none | `zcl.shielded_notes.v1` | `zclassic23 core wallet shielded notes` | List spendable shielded notes |
-| `core wallet shielded send` | ready | mutate / wallet / **owner**, job, plan-commit · background/high | `from`, `to`, `amount`, `memo`, `memo_hex`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 core wallet shielded send --input='<obj>'` | Send a shielded payment |
+| `core wallet shielded send` | ready | mutate / wallet / **owner**, plan-commit · foreground/high | `wallet_scope`, `from`, `to`, `amount`, `memo`, `memo_hex`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 core wallet shielded send --input='{"wallet_scope":"dev","from":"zs1..","to":"zs1..","amount":"0.01000000"}'` | Send a shielded payment |
 
 #### `core.wallet.backup` — Wallet backup
 
@@ -369,17 +394,17 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `core identity resolve` | ready | read / read / public · fast/low | **`pubkey`**, `name`, `datadir` | `zcl.core_identity_resolve.v1` | `zclassic23 core identity resolve --pubkey=<64hex>` | Resolve one master key by pubkey or ZNAM name |
-| `core identity anchor` | ready | mutate / wallet / operator · foreground/moderate | **`pubkey`**, `datadir` | `zcl.core_identity_anchor.v1` | `zclassic23 core identity anchor --pubkey=<64hex>` | Anchor a master key on-chain (spends a fee) |
-| `core identity rotate` | ready | mutate / wallet / operator · foreground/moderate | `pubkey`, `new_pubkey`, `datadir` | `zcl.core_identity_anchor.v1` | `zclassic23 core identity rotate --input='{"pubkey":"<64hex>","new_pubkey":"<64hex>"}'` | Rotate an anchored master key to a successor (spends a fee) |
-| `core identity revoke` | ready | mutate / wallet / operator · foreground/moderate | **`pubkey`**, `datadir` | `zcl.core_identity_anchor.v1` | `zclassic23 core identity revoke --pubkey=<64hex>` | Retire an anchored master key with no successor (spends a fee) |
+| `core identity anchor` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `pubkey`, `idempotency_key`, `plan_id`, `confirm`, `datadir` | `zcl.core_identity_anchor.v2` | `zclassic23 core identity anchor --input='{"wallet_scope":"dev","pubkey":"<64hex>","idempotency_key":"zid-anchor-1"}'` | Anchor a master key on-chain (spends a fee) |
+| `core identity rotate` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `pubkey`, `new_pubkey`, `idempotency_key`, `plan_id`, `confirm`, `datadir` | `zcl.core_identity_anchor.v2` | `zclassic23 core identity rotate --input='{"wallet_scope":"dev","pubkey":"<64hex>","new_pubkey":"<64hex>","idempotency_key":"zid-rotate-1"}'` | Rotate an anchored master key to a successor (spends a fee) |
+| `core identity revoke` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `pubkey`, `idempotency_key`, `plan_id`, `confirm`, `datadir` | `zcl.core_identity_anchor.v2` | `zclassic23 core identity revoke --input='{"wallet_scope":"dev","pubkey":"<64hex>","idempotency_key":"zid-revoke-1"}'` | Retire an anchored master key with no successor (spends a fee) |
 | `core identity list` | ready | read / read / public · fast/low | `limit`, `offset`, `datadir` | `zcl.core_identity_index.v1` | `zclassic23 core identity list --limit=25` | Page the anchored identities, newest anchor first |
 
 #### `core.zdir` — On-chain node directory: announce and retire onion hostnames
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `core zdir register` | ready | mutate / wallet / operator · foreground/moderate | **`hostname`**, `pubkey`, `datadir` | `zcl.core_zdir_register.v1` | `zclassic23 core zdir register --hostname=<56 base32>.onion` | Announce a v3 onion hostname on-chain as a node (spends a fee) |
-| `core zdir deregister` | ready | mutate / wallet / operator · foreground/moderate | **`hostname`**, `datadir` | `zcl.core_zdir_register.v1` | `zclassic23 core zdir deregister --hostname=<56 base32>.onion` | Retire an onion hostname from the on-chain directory (spends a fee) |
+| `core zdir register` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `hostname`, `pubkey`, `idempotency_key`, `plan_id`, `confirm`, `datadir` | `zcl.core_zdir_register.v2` | `zclassic23 core zdir register --input='{"wallet_scope":"dev","hostname":"<56base32>.onion","idempotency_key":"zdir-register-1"}'` | Announce a v3 onion hostname on-chain as a node (spends a fee) |
+| `core zdir deregister` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `hostname`, `idempotency_key`, `plan_id`, `confirm`, `datadir` | `zcl.core_zdir_register.v2` | `zclassic23 core zdir deregister --input='{"wallet_scope":"dev","hostname":"<56base32>.onion","idempotency_key":"zdir-deregister-1"}'` | Retire an onion hostname from the on-chain directory (spends a fee) |
 
 ### `app` — Capability-scoped sovereign applications
 
@@ -388,6 +413,17 @@ represented by its children's sections.
 | `app list` | ready | read / read / public · fast/low | none | `zcl.app_index.v1` | `zclassic23 app list` | List installed App manifests |
 | `app inspect` | ready | read / read / public · fast/low | **`app_id`** | `zcl.app_manifest_summary.v1` | `zclassic23 app inspect social` | Inspect one App manifest and bindings |
 | `app protocols` (aliases: `appprotocols`) | compat → `zclassic23 appprotocols` | read / read / public · fast/low | none | `zcl.app_protocols.v1` | `zclassic23 app protocols` | List App protocol contracts — *native adapter is not executable yet; use the compatibility target* |
+
+#### `app.transaction-types` — Discover every semantic ZCL transaction shape and its safe workflow
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app transaction-types list` | ready | read / read / public · instant/tiny | none | `zcl.transaction_types.index.v2` | `zclassic23 app transaction-types list` | List base, overlay, composite, process-only, contained, and planned transaction types |
+| `app transaction-types show` | ready | read / read / public · instant/tiny | **`type`** | `zcl.transaction_type.v2` | `zclassic23 app transaction-types show --type=znam_register` | Inspect one semantic ZCL transaction type and its safe workflow |
+| `app transaction-types guide` | ready | read / read / public · instant/tiny | **`type`** | `zcl.transaction_type_guide.v1` | `zclassic23 app transaction-types guide --type=znam_register` | Get one AI-ready transaction workflow with exact command contracts |
+| `app transaction-types command` | ready | read / read / public · instant/tiny | **`path`** | `zcl.transaction_command.v1` | `zclassic23 app transaction-types command core.wallet.transaction.send` | Reverse-map one native command to every transaction workflow it can serve |
+| `app transaction-types wire` | ready | read / read / public · instant/tiny | none | `zcl.transaction_wire_catalog.v1` | `zclassic23 app transaction-types wire` | List every consensus transaction wire era and script-processing bucket |
+| `app transaction-types micro-lab` | ready | read / read / public · instant/tiny | **`slot`** | `zcl.transaction_micro_lab.v1` | `zclassic23 app transaction-types micro-lab --slot=1` | Inspect the checked 100-transaction micro-lab campaign or one numbered slot |
 
 #### `app.service` — Token-gated services declared in the service catalog
 
@@ -404,21 +440,22 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `app names resolve` | ready | read / read / public · fast/low | **`name`** | `zcl.app_name_record.v1` | `zclassic23 app names resolve alice` | Resolve a ZCL Name to its target |
 | `app names list` | ready | read / read / public · fast/low | none | `zcl.app_name_index.v1` | `zclassic23 app names list` | List registered ZCL Names |
-| `app names register` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `type`, `value`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names register --input='{"name":"alice","type":"zaddr","value":"zs1..","confirm":true}'` | Register a ZCL Name on-chain |
-| `app names update` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `type`, `value`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names update --input='{"name":"alice","type":"zaddr","value":"zs1..","confirm":true}'` | Replace a ZCL Name's primary target |
-| `app names transfer` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `new_owner`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names transfer --input='{"name":"alice","new_owner":"t1..","confirm":true}'` | Transfer ZCL Name ownership |
-| `app names renew` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names renew --input='{"name":"alice","confirm":true}'` | Renew a ZCL Name registration term |
-| `app names set-record` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `type`, `value`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names set-record --input='{"name":"alice","type":"btc","value":"bc1..","confirm":true}'` | Set a multi-coin address record |
-| `app names set-text` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `key`, `value`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names set-text --input='{"name":"alice","key":"url","value":"https://..","confirm":true}'` | Set a text record on a ZCL Name |
+| `app names register` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `type`, `value`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names register --input='{"wallet_scope":"dev","name":"alice","type":"zaddr","value":"zs1..","idempotency_key":"name-register-1"}'` | Register a ZCL Name on-chain |
+| `app names update` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `type`, `value`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names update --input='{"wallet_scope":"dev","name":"alice","type":"zaddr","value":"zs1..","idempotency_key":"name-update-1"}'` | Replace a ZCL Name's primary target |
+| `app names transfer` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `new_owner`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names transfer --input='{"wallet_scope":"dev","name":"alice","new_owner":"t1..","idempotency_key":"name-transfer-1"}'` | Transfer ZCL Name ownership |
+| `app names renew` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names renew --input='{"wallet_scope":"dev","name":"alice","idempotency_key":"name-renew-1"}'` | Renew a ZCL Name registration term |
+| `app names set-record` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `type`, `value`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names set-record --input='{"wallet_scope":"dev","name":"alice","type":"btc","value":"bc1..","idempotency_key":"name-record-1"}'` | Set a multi-coin address record |
+| `app names set-text` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `key`, `value`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names set-text --input='{"wallet_scope":"dev","name":"alice","key":"url","value":"https://..","idempotency_key":"name-text-1"}'` | Set a text record on a ZCL Name |
 
 #### `app.tokens` — Tokens
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `app tokens list` | ready | read / read / public · fast/low | none | `zcl.app_token_index.v1` | `zclassic23 app tokens list` | List ZSLP tokens on the network |
-| `app tokens create` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`ticker`**, `name`, `decimals`, `supply`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens create --input='{"ticker":"DEMO","name":"Demo Token","decimals":0,"supply":1000}'` | Create a ZSLP token |
-| `app tokens send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_id`**, `to`, `units`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens send --input='{"token_id":"<64-hex>","to":"t1...","units":25}'` | Send ZSLP token units |
-| `app tokens mint` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_id`**, `to`, `units`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens mint --input='{"token_id":"<64-hex>","to":"t1...","units":100}'` | Mint ZSLP token units |
+| `app tokens create` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `ticker`, `name`, `decimals`, `supply`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens create --input='{"wallet_scope":"dev","ticker":"DEMO","name":"Demo Token","decimals":0,"supply":"1000","idempotency_key":"demo-genesis-1"}'` | Create a ZSLP token |
+| `app tokens send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `token_id`, `to`, `units`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens send --input='{"wallet_scope":"dev","token_id":"<64-hex>","to":"t1...","units":"25","idempotency_key":"token-send-1"}'` | Send ZSLP token units |
+| `app tokens mint` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `token_id`, `to`, `units`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens mint --input='{"wallet_scope":"dev","token_id":"<64-hex>","to":"t1...","units":"100","idempotency_key":"token-mint-1"}'` | Mint ZSLP token units |
+| `app tokens burn` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `token_id`, `units`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens burn --input='{"wallet_scope":"dev","token_id":"<64-hex>","units":"10","idempotency_key":"token-burn-1"}'` | Burn ZSLP token units |
 
 #### `app.messaging` — Messaging
 
@@ -435,8 +472,24 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `app market list` | ready | read / read / public · fast/low | none | `zcl.app_market_index.v1` | `zclassic23 app market list` | List files on the ZCL Market |
 | `app market status` | ready | read / read / operator · fast/low | none | `zcl.app_market_status.v1` | `zclassic23 app market status` | ZCL Market status |
-| `app market offer` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | `filepath`, `price_per_mb_zat`, `confirm` | `zcl.app_market_offer_result.v1` | `zclassic23 app market offer --input='{"filepath":"/data/f","price_per_mb_zat":1000}'` | Announce a file for sale — *needs an origin-announce path before it can be exposed natively: rpc_zmarket_offer (file_market_controller.c) stats the file and calls file_market_add_offer + db_file_offer_save, then answers status=announced, but the only MSG_FILE_LIST writer in the tree is the re-gossip branch of handle_zfilelist (msgprocessor.c) — nothing ever announces a LOCALLY created offer, so no peer learns of it. Its root_hash is also SHA3(filepath:size), not a hash of the file contents* |
-| `app market buy` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`root_hash`**, `confirm` | `zcl.app_market_buy_result.v1` | `zclassic23 app market buy --input='{"root_hash":"<64hex>"}'` | Buy and download a market file — *needs the payment leg wired before a spend leaf can be exposed natively: rpc_zmarket_buy (file_market_controller.c) only calls file_market_start_download, which allocates an in-memory session in state FDL_CHALLENGING. No code path sends MSG_FILE_CHAL, and nothing builds or broadcasts the payment transaction whose mempool-verified txid handle_zfilepay (msgprocessor.c) requires to unlock chunks, so the session never advances and no funds move* |
+| `app market offer` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | `filepath`, `price_per_mb_zat`, `confirm` | `zcl.app_market_offer_result.v1` | `zclassic23 app market offer --input='{"filepath":"/data/f","price_per_mb_zat":1000}'` | Announce a file for sale — *signed zfileoffer.v1 ingress is implemented, but local creation still needs a canonical content manifest, an owner-controlled seller signer, and origin announcement. The legacy zmarket_offer placeholder now refuses without changing cache, database, filesystem, or network state* |
+| `app market buy` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, **`root_hash`**, `confirm` | `zcl.app_market_buy_result.v1` | `zclassic23 app market buy --input='{"root_hash":"<64hex>"}'` | Buy and download a market file — *the explicit app.market.purchase plan, commit, status, and retrieve commands implement the complete reviewed workflow; the optional one-shot coordinator still needs an owner-review-preserving design. The legacy zmarket_buy placeholder refuses without starting a session* |
+
+#### `app.market.content` — Seller content
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app market content list` | ready | read / read / **owner** · fast/low | none | `zcl.market_contents.index.v1` | `zclassic23 app market content list` | List owner-registered paid content |
+| `app market content register` | ready | mutate / app-write / **owner** · foreground/moderate | **`offer_id`**, `content_path` | `zcl.market_content.v1` | `zclassic23 app market content register --input='{"offer_id":"<64hex>","content_path":"/private/file"}'` | Bind private seller bytes to a signed offer |
+
+#### `app.market.purchase` — Buyer purchase
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app market purchase plan` | ready | mutate / wallet / **owner** · foreground/moderate | **`wallet_scope`**, **`offer_id`**, **`source_address`**, **`chunk_start`**, **`chunks_paid`**, **`idempotency_key`** | `zcl.market_purchase.v1` | `printf '%s' '{"wallet_scope":"dev","offer_id":"<64hex>","source_address":"<owned-address>","chunk_start":0,"chunks_paid":1,"idempotency_key":"lab-001"}' \| zclassic23 app market purchase plan --input=-` | Reserve one exact paid chunk range |
+| `app market purchase commit` | ready | mutate / wallet / **owner**, idempotency · foreground/high | **`wallet_scope`**, **`plan_id`**, **`confirm`** | `zcl.market_purchase.v1` | `zclassic23 app market purchase commit --input='{"wallet_scope":"dev","plan_id":"<64hex>","confirm":true}'` | Commit one exact reserved market payment |
+| `app market purchase status` | ready | read / read / **owner** · fast/low | **`plan_id`** | `zcl.market_purchase.v1` | `zclassic23 app market purchase status --input='{"plan_id":"<64hex>"}'` | Read one durable market purchase state |
+| `app market purchase retrieve` | ready | mutate / app-write / **owner** · foreground/high | **`plan_id`**, **`destination_path`** | `zcl.market_purchase.v1` | `printf '%s' '{"plan_id":"<64hex>","destination_path":"/private/output.bin"}' \| zclassic23 app market purchase retrieve --input=-` | Retrieve and atomically publish a paid file |
 
 #### `app.store` — Store
 
@@ -456,8 +509,27 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `app swap chains` | ready | read / read / operator · fast/low | none | `zcl.app_swap_chains.v1` | `zclassic23 app swap chains` | List supported atomic-swap chains |
 | `app swap list` | ready | read / read / operator · fast/low | **`state`** | `zcl.app_swap_index.v1` | `zclassic23 app swap list --input='{"state":"pending"}'` | List atomic-swap contracts |
-| `app swap initiate` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `my_address`, `counter_address`, `amount`, `locktime_blocks`, `chain`, `confirm` | `zcl.app_swap_contract.v1` | `zclassic23 app swap initiate --input='{"my_address":"t1..","counter_address":"t1..","amount":1,"locktime_blocks":20,"confirm":true}'` | Initiate an atomic swap |
-| `app swap participate` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `my_address`, `counter_address`, `amount`, `locktime_blocks`, `secret_hash`, `chain`, `confirm` | `zcl.app_swap_contract.v1` | `zclassic23 app swap participate --input='{"my_address":"t1..","counter_address":"t1..","amount":1,"locktime_blocks":10,"secret_hash":"<64hex>","confirm":true}'` | Participate in an atomic swap |
+| `app swap initiate` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, `my_address`, `counter_address`, `amount`, `locktime_blocks`, `chain`, `confirm` | `zcl.app_swap_contract.v1` | `zclassic23 app swap initiate --input='{"my_address":"t1..","counter_address":"t1..","amount":1,"locktime_blocks":20,"confirm":true}'` | Initiate an atomic swap |
+| `app swap participate` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, `my_address`, `counter_address`, `amount`, `locktime_blocks`, `secret_hash`, `chain`, `confirm` | `zcl.app_swap_contract.v1` | `zclassic23 app swap participate --input='{"my_address":"t1..","counter_address":"t1..","amount":1,"locktime_blocks":10,"secret_hash":"<64hex>","confirm":true}'` | Participate in an atomic swap |
+
+#### `app.qr` — QR
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app qr show` | ready | mutate / app-write / operator · fast/low | **`payload`**, `title` | `zcl.app_qr_show.v1` | `zclassic23 app qr show 'zclassic:t1...?amount=0.01'` | Show a payload as a native QR window |
+
+#### `app.blog` — Blog
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app blog anchor` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `event_id`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_blog_anchor.v1` | `zclassic23 app blog anchor --input='{"wallet_scope":"dev","name":"alice","event_id":"<64-hex>","idempotency_key":"blog-alice-1"}'` | Anchor a signed Blog event on-chain |
+
+#### `app.payments.zpay` — ZPAY
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app payments zpay compose` | ready | read / read / public · instant/tiny | **`network`**, **`message_type`**, **`created_at`**, **`expires_at`**, **`nonce`**, **`request_id`**, **`invoice_digest`**, **`asset`**, **`amount_commitment`**, `reply_ref` | `zcl.app_zpay_memo.v1` | `zclassic23 app payments zpay compose --input='<obj>'` | Compose an anonymous canonical ZPAY Sapling memo |
+| `app payments zpay inspect` | ready | read / read / public · instant/tiny | **`memo_hex`**, **`network`**, **`now_unix`** | `zcl.app_zpay_envelope.v1` | `zclassic23 app payments zpay inspect --input='<obj>'` | Decode, authenticate, and policy-check one ZPAY Sapling memo |
 
 #### `app.auth` — Public-key challenge/response login
 
@@ -537,6 +609,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `dev generation current` | compat 🔧 → `zclassic23-dev dev generation current` | read / read / operator · instant/low | none | `zcl.dev_generation_status.v1` | `zclassic23 dev generation current` | Show current and last-good generations — *generation state is available through the dev binary* |
 | `dev generation history` | compat 🔧 → `zclassic23-dev dev generation history` | read / read / operator · fast/low | `cursor`, `max_items` | `zcl.dev_generation_history.v1` | `zclassic23 dev generation history` | Page accepted and rejected generations — *generation history is available through the dev binary* |
+| `dev generation activate` | compat 🔧 → `make dev-bin, then zclassic23-dev dev generation activate` | mutate / dev-mutation / **owner**, job, plan-commit · foreground/high | `idempotency_key`, `expires_in_seconds`, `intent_id`, `effect_digest`, `candidate_sha256`, `source_id_sha256`, `source_mutation_sha256`, `source_cas_sha3`, `expected_current_generation`, `expires_unix`, `confirm` | `zcl.dev_generation_activate.v1` | `zclassic23-dev dev generation activate --idempotency-key=upgrade-001` | Stage, preflight, and activate one exact dev generation — *generation activation requires the dev-only process executor* |
 | `dev generation rollback` | planned | destructive / dev-mutation / **owner**, job, plan-commit · foreground/high | `intent_id`, `effect_digest` | `zcl.dev_generation_rollback.v1` | `zclassic23 dev generation rollback --input='<intent>'` | Restore verified last-good in the dev lane — *native activation engine is not implemented* |
 | `dev generation compact` | planned | destructive / dev-mutation / **owner**, job, plan-commit · foreground/moderate | `intent_id`, `effect_digest` | `zcl.dev_generation_compact.v1` | `zclassic23 dev generation compact --input='<intent>'` | Compact unleased old generations — *native lease-aware compaction is not implemented* |
 
@@ -746,8 +819,8 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `code group` | ready | read / read / public · fast/tiny | **`group`** | `zcl.code_group.v1` | `zclassic23 code group app/services` | Top source groups, or one group's subgroups and files |
-| `code map` | ready | read / read / public · fast/tiny | none | `zcl.code_map.v1` | `zclassic23 code map` | Map the tree: root groups and app shapes with file counts |
+| `code group` | ready | read / read / public · foreground/tiny | **`group`** | `zcl.code_group.v1` | `zclassic23 code group app/services` | Top source groups, or one group's subgroups and files |
+| `code map` | ready | read / read / public · foreground/tiny | none | `zcl.code_map.v1` | `zclassic23 code map` | Map the tree: root groups and app shapes with file counts |
 | `code tests` | ready | read / read / public · fast/tiny | **`path`** | `zcl.code_tests.v1` | `zclassic23 code tests lib/net/src/download.c` | Which focused test group a change to one file routes to |
 | `code room` | ready | read / read / public · fast/tiny | **`path`** | `zcl.code_room.v1` | `zclassic23 code room app/jobs/src/utxo_apply_stage.c` | Compose shape, purpose, neighbors and test route for one path |
 | `code file` | ready | read / read / public · fast/tiny | **`path`** | `zcl.code_file.v1` | `zclassic23 code file lib/vcs/src/vcs_index.c` | One file's symbol table and in-tree include dependencies |
@@ -774,15 +847,26 @@ represented by its children's sections.
 | `vault show` | ready | read / read / operator · fast/low | **`class`**, `limit` | `zcl.vault_show.v1` | `zclassic23 vault show transparent` | Itemize the holdings inside one asset class |
 | `vault encumbered` | ready | read / read / operator · fast/low | **`class`**, `limit` | `zcl.vault_encumbered.v1` | `zclassic23 vault encumbered` | What is owned but not free to move, and what would release it |
 | `vault routes` | ready | read / read / public · instant/tiny | **`class`** | `zcl.vault_routes.v1` | `zclassic23 vault routes` | Which existing path owns the spend for each asset class |
-| `vault send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `address`, `amount`, `idempotency_key`, `confirm` | `zcl.wallet_send.v1` | `zclassic23 vault send --input='{"address":"t1..","amount":1.5}'` | Spend transparent ZCL by dispatching to the wallet's own send |
-| `vault send-shielded` | ready | mutate / wallet / **owner**, job, plan-commit · background/high | `from`, `to`, `amount`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 vault send-shielded --input='{"from":"zs1..","to":"zs1..","amount":1}'` | Spend shielded ZCL by dispatching to the wallet's own shielded send |
+| `vault send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, `address`, `amount`, `idempotency_key`, `confirm` | `zcl.wallet_send.v1` | `zclassic23 vault send --input='{"address":"t1..","amount":1.5}'` | Spend transparent ZCL by dispatching to the wallet's own send |
+| `vault send-shielded` | ready | mutate / wallet / **owner**, plan-commit · foreground/high | `wallet_scope`, `from`, `to`, `amount`, `memo`, `memo_hex`, `idempotency_key`, `confirm` | `zcl.shielded_send.v1` | `zclassic23 vault send-shielded --input='{"wallet_scope":"dev","from":"zs1..","to":"zs1..","amount":"1.00000000"}'` | Spend shielded ZCL by dispatching to the wallet's own shielded send |
 | `vault send-token` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_id`**, `to`, `units`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 vault send-token --input='{"token_id":"<64-hex>","to":"t1...","units":25}'` | Send ZSLP units through the token command that owns the transaction |
+
+#### `vault.intent` — Exact, expiring, durably idempotent transaction intents
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `vault intent issue` | ready | mutate / wallet / **owner** · foreground/moderate | `asset`, **`amount`** | `zcl.vault_intent_issue.v1` | `zclassic23 vault intent issue --input='{"asset":"ZCL","amount":"0.01"}'` | Create a fresh transparent ZCL payment request |
+| `vault intent plan` | ready | mutate / wallet / **owner** · background/high | **`wallet_scope`**, `route`, `from`, **`effects`**, **`idempotency_key`** | `zcl.vault_intent_plan.v1` | `printf '%s' '{"wallet_scope":"dev","route":"transparent","idempotency_key":"payment-001","effects":[{"asset":"ZCL","to":"t1...","amount":"0.01"}]}' \| zclassic23 vault intent plan --input=-` | Persist an exact encrypted transaction plan |
+| `vault intent fanout-plan` | ready | mutate / wallet / **owner** · background/high | **`wallet_scope`**, **`recipient_value_zat`**, **`maximum_fee_zat`**, **`concurrency`**, **`idempotency_key`** | `zcl.vault_intent_fanout_plan.v1` | `zclassic23 vault intent fanout-plan --input='{"wallet_scope":"dev","recipient_value_zat":1000,"maximum_fee_zat":10000,"concurrency":10,"idempotency_key":"parallel-lab-001"}'` | Prepare private self-custody outputs for parallel transactions |
+| `vault intent commit` | ready | mutate / wallet / **owner**, idempotency · foreground/high | **`wallet_scope`**, **`plan_id`**, **`confirm`** | `zcl.vault_intent_commit.v1` | `zclassic23 vault intent commit --input='{"wallet_scope":"dev","plan_id":"<64hex>","confirm":true}'` | Commit one exact durable plan without double-paying |
+| `vault intent status` | ready | read / read / operator · fast/low | **`plan_id`** | `zcl.vault_intent_status.v1` | `zclassic23 vault intent status --input='{"plan_id":"<64hex>"}'` | Read one transaction intent's chain-aware state |
+| `vault intent list` | ready | read / read / operator · fast/low | none | `zcl.vault_intent_list.v1` | `zclassic23 vault intent list` | List the newest durable transaction intents |
 
 #### `vault.session` — Scoped, revocable spend-authority grants for agents
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `vault session create` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `account`, `max_per_tx`, `max_per_window`, `window_seconds`, `allowlist`, `expires_in`, `confirm` | `zcl.vault_session_create.v1` | `zclassic23 vault session create --input='{"account":"t1..","max_per_tx":"1.5","max_per_window":"10","window_seconds":"86400"}'` | Mint a scoped agent spend session; returns the token once |
+| `vault session create` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `account`, **`wallet_scope`**, `max_per_tx`, `max_per_window`, `window_seconds`, `allowlist`, `expires_in`, `confirm` | `zcl.vault_session_create.v1` | `zclassic23 vault session create --input='{"account":"t1..","wallet_scope":"dev","max_per_tx":"0.05","max_per_window":"0.05","window_seconds":"86400"}'` | Mint a scoped agent spend session; returns the token once |
 | `vault session list` | ready | read / read / operator · fast/low | `account` | `zcl.vault_session_list.v1` | `zclassic23 vault session list --input='{"account":"t1.."}'` | List agent spend sessions; the token is always redacted |
 | `vault session revoke` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `session_id`, `confirm` | `zcl.vault_session_revoke.v1` | `zclassic23 vault session revoke --input='{"session_id":"<32hex>","confirm":true}'` | Revoke an agent spend session by its full token |
 
@@ -799,6 +883,8 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
+| `zcode package dev prepare` | ready | read / read / operator · foreground/moderate | **`dir`**, **`publisher_pubkey`**, **`publisher_sequence`**, `reward_address`, `chain_id` | `zcl.zcode_package_dev_prepare.v1` | `zclassic23 zcode package dev prepare --input='{"dir":"lib/base","publisher_pubkey":"<66hex>","publisher_sequence":1}'` | Derive canonical release inputs from a local package tree |
+| `zcode package dev seal` | ready | read / read / operator · fast/low | **`release_body_hex`**, **`signature_hex`** | `zcl.zcode_package_dev_seal.v1` | `zclassic23 zcode package dev seal --input='{"release_body_hex":"<hex>","signature_hex":"<128hex>"}'` | Verify and attach an offline development signature |
 | `zcode package dev create` (aliases: `zcode.create`) | ready | mutate / app-write / operator · foreground/moderate | **`mode`**, `release_hex`, `manifest_hex`, `recipe_hex`, `dir`, `day`, `datadir` | `zcl.zcode_create.v1` | `zclassic23 zcode create --input='{"mode":"plan","release_hex":"..","manifest_hex":"..","recipe_hex":"..","dir":"/tmp/pkg"}'` | Create package |
 | `zcode package dev use` (aliases: `zcode.use`) | ready | mutate / app-write / operator · foreground/moderate | `name_or_root`, `plan_id`, `now_unix`, `datadir` | `zcl.zcode_use.v1` | `zclassic23 zcode use --input='{"name_or_root":"<64hex>"}'` | Use dependency |
 | `zcode package dev improve` (aliases: `zcode.improve`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, `candidate_workspace`, `datadir`, `mode`, `planned_task_root`, `planned_context_root`, `candidate_source_sha256`, `source_root`, `dependency_lock_root`, **`dependency_lock_hex`**, `write_scope_root`, **`write_scope_csv`**, `acceptance_tests_root`, **`acceptance_recipe_hex`**, **`model_policy_root`**, **`goal`**, **`proof_policy_hex`**, `action_kind`, `fixed_input_path`, `fixed_input_relpath`, `preprocessed_path`, `patch_root`, `candidate_source_root`, `adapter_policy_root`, `author_pubkey`, `candidate_sequence`, `candidate_created_unix`, `profile`, **`expires_unix`**, `max_changed_files`, `max_patch_bytes`, `max_context_bytes`, `max_cpu_seconds`, `max_memory_bytes`, `max_output_bytes`, `context_symbol`, `remote_peer` | `zcl.zcode_improve.v1` | `zclassic23 zcode improve --input='{"mode":"plan","workspace":"/src/project","dependency_lock_hex":"<canonical wire hex>","write_scope_csv":"src,include","acceptance_recipe_hex":"<canonical wire hex>","model_policy_root":"<64hex>","goal":"fix seeded bug","proof_policy_hex":"<wire hex>","context_symbol":"buggy_function","expires_unix":123}'` | Improve code candidate |
@@ -806,6 +892,14 @@ represented by its children's sections.
 | `zcode package dev accept` (aliases: `zcode.accept`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`action_id`**, **`lane`**, `datadir` | `zcl.zcode_accept.v1` | `zclassic23 zcode accept --input='{"workspace":"/src/project","action_id":"<64hex>","lane":"CANDIDATE"}'` | Accept candidate lane |
 | `zcode package dev lane` (aliases: `zcode.lane`) | ready | read / read / operator · foreground/low | **`workspace`**, **`source_root`**, `datadir` | `zcl.zcode_lane.v1` | `zclassic23 zcode lane --input='{"workspace":"/src/project","source_root":"<64hex>"}'` | Inspect source lane |
 | `zcode package dev tasks` (aliases: `zcode.tasks`) | ready | read / read / operator · foreground/low | **`workspace`**, `task_root`, `source_root`, `author`, `state`, `limit` | `zcl.zcode_tasks.v1` | `zclassic23 zcode tasks --input='{"workspace":"/src/project"}'` | List local dev tasks |
+
+#### `zcode.package.dev.score` — Evidence-derived signed ZC23 Score receipts
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode package dev score plan` | ready | read / read / operator · fast/low | **`workspace`**, **`task_hex`**, **`candidate_hex`**, **`proof_policy_hex`**, **`proof_set_hex`**, **`proven_lane_hex`**, **`package_root`**, **`release_root`**, **`recipe_root`**, **`dependency_lock_root`**, **`api_capsule_root`** | `zcl.zcode_score_plan.v1` | `zclassic23 zcode package dev score plan --input='{...}'` | Derive an unsigned ZC23 Score receipt |
+| `zcode package dev score commit` | ready | mutate / app-write / operator · fast/low | **`workspace`**, **`receipt_hex`** | `zcl.zcode_score_commit.v1` | `zclassic23 zcode package dev score commit --input='{"workspace":".","receipt_hex":"<hex>"}'` | Verify and store one signed ZC23 Score receipt |
+| `zcode package dev score show` | ready | read / read / operator · fast/low | **`workspace`**, **`root`** | `zcl.zcode_score_show.v1` | `zclassic23 zcode package dev score show --input='{"workspace":".","root":"<64hex>"}'` | Show and reverify one ZC23 Score receipt |
 
 #### `zcode.package` — Published packages
 
@@ -818,8 +912,8 @@ represented by its children's sections.
 | `zcode package resolve` | ready | read / read / operator · fast/low | **`name`**, `datadir` | `zcl.zcode_package_resolve.v1` | `zclassic23 zcode package resolve --input='{"name":"ringbuffer"}'` | Resolve a ZNAM package name to its release |
 | `zcode package fetch` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `day`, `datadir` | `zcl.zcode_package_fetch.v1` | `zclassic23 zcode package fetch --input='{"root":"<64hex>"}'` | Fetch a package from the authenticated swarm |
 | `zcode package peers` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_peers.v1` | `zclassic23 zcode package peers --input='{"root":"<64hex>"}'` | Live swarm peers advertising one package root |
-| `zcode package pin` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `datadir` | `zcl.zcode_package_pin.v1` | `zclassic23 zcode package pin --input='{"root":"<64hex>"}'` | Pin a tracked package (PINS pool, never evicted) |
-| `zcode package unpin` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `datadir` | `zcl.zcode_package_unpin.v1` | `zclassic23 zcode package unpin --input='{"root":"<64hex>"}'` | Release an operator pin |
+| `zcode package pin` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`root`**, **`mode`**, `plan_token`, `datadir` | `zcl.zcode_package_pin.v1` | `zclassic23 zcode package pin --input='{"root":"<64hex>","mode":"plan"}'` | Pin a tracked package (PINS pool, never evicted) |
+| `zcode package unpin` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`root`**, **`mode`**, `plan_token`, `datadir` | `zcl.zcode_package_unpin.v1` | `zclassic23 zcode package unpin --input='{"root":"<64hex>","mode":"plan"}'` | Release an operator pin |
 | `zcode package rollback` | ready | mutate / app-write / operator · fast/low | **`name`**, `now_unix`, `datadir` | `zcl.zcode_package_rollback.v1` | `zclassic23 zcode package rollback --input='{"name":"alice/ringbuffer"}'` | Re-activate the previous installed generation |
 
 #### `zcode.package.publish` — Publish a signed release into the store (plan, then commit)
@@ -844,7 +938,7 @@ represented by its children's sections.
 | `zcode reward score` | ready | read / read / operator · foreground/moderate | **`root`**, `datadir` | `zcl.zcode_reward_score.v1` | `zclassic23 zcode reward score --input='{"root":"<64hex>"}'` | Deterministic contribution score breakdown for one release root |
 | `zcode reward eligible` | ready | read / read / operator · foreground/moderate | **`root`**, `datadir` | `zcl.zcode_reward_eligible.v1` | `zclassic23 zcode reward eligible --input='{"root":"<64hex>"}'` | Reward eligibility gate list for one release root |
 | `zcode reward queue` | ready | read / read / operator · fast/low | `state`, `limit`, `offset`, `datadir` | `zcl.zcode_reward_queue.v1` | `zclassic23 zcode reward queue --input='{"state":"queued"}'` | Inspect the daily reward settlement queue |
-| `zcode reward plan` | ready | mutate / app-write / operator · foreground/moderate | **`day`**, `datadir` | `zcl.zcode_reward_plan.v1` | `zclassic23 zcode reward plan --input='{"day":20500}'` | Assemble one settlement window batch (SIMULATED) |
+| `zcode reward plan` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`day`**, `datadir` | `zcl.zcode_reward_plan.v1` | `zclassic23 zcode reward plan --input='{"day":20500}'` | Assemble one settlement window batch (SIMULATED) |
 | `zcode reward commit` | ready | mutate / app-write / operator · foreground/moderate | **`plan_id`**, `datadir` | `zcl.zcode_reward_commit.v1` | `zclassic23 zcode reward commit --input='{"plan_id":"<64hex>"}'` | Settle a planned batch (SIMULATED, idempotent) |
 | `zcode reward receipt` | ready | read / read / operator · fast/low | **`plan_id`**, `datadir` | `zcl.zcode_reward_receipt.v1` | `zclassic23 zcode reward receipt --input='{"plan_id":"<64hex>"}'` | Durable receipt for a settled batch (SIMULATED) |
 
@@ -900,6 +994,28 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode proof walk` | ready | read / read / public · foreground/low | `doc`, `doc_file`, `proof`, `root`, `tx`, `header`, `headers`, `merkle_branch`, `merkle_index`, `now`, `datadir` | `zcl.zcode_proof_walk.v1` | `zclassic23 zcode proof walk --input='{"doc":"<hex>","proof":"<hex>","root":"<64hex>","tx":"<hex>","header":"<hex>","merkle_index":1,"merkle_branch":"<64hex>"}'` | Walk a record's proof chain down to proof-of-work, rung by rung |
 
+#### `zcode.network` — Noise-bound read-only DHT
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode network delegate` | ready | mutate / app-write / operator · foreground/moderate | **`seed_file`**, `sequence`, `now`, `expiry`, `datadir` | `zcl.zcode_network_delegate.v1` | `zclassic23 zcode network delegate --input='{"seed_file":"/path/master.hex"}'` | Provision this node's DHT delegation |
+| `zcode network status` | ready | read / read / operator · fast/low | none | `zcl.zcode_network_status.v1` | `zclassic23 zcode network status` | Inspect DHT status |
+| `zcode network peers` | ready | read / read / operator · fast/low | `limit`, `offset` | `zcl.zcode_network_peers.v1` | `zclassic23 zcode network peers --input='{"limit":16}'` | List DHT contacts |
+| `zcode network find begin` | ready | read / read / operator · fast/low | **`node_id`** | `zcl.zcode_network_find_begin.v1` | `zclassic23 zcode network find begin --input='{"node_id":"<64hex>"}'` | Admit a DHT lookup |
+| `zcode network find poll` | ready | read / read / operator · fast/low | **`lookup_id`**, **`owner_token`** | `zcl.zcode_network_find_poll.v1` | `zclassic23 zcode network find poll --input='{"lookup_id":"<32hex>","owner_token":"<32hex>"}'` | Poll a DHT lookup |
+| `zcode network find cancel` | ready | read / read / operator · fast/low | **`lookup_id`**, **`owner_token`** | `zcl.zcode_network_find_cancel.v1` | `zclassic23 zcode network find cancel --input='{"lookup_id":"<32hex>","owner_token":"<32hex>"}'` | Cancel a DHT lookup |
+| `zcode network find` | ready | read / read / operator · foreground/moderate | **`node_id`** | `zcl.zcode_network_find.v1` | `zclassic23 zcode network find --input='{"node_id":"<64hex>"}'` | Find closest DHT nodes |
+| `zcode network records begin` | ready | read / read / operator · fast/low | **`kind`**, **`namespace`**, `semantic_root`, `transport_root` | `zcl.zcode_network_records_begin.v1` | `zclassic23 zcode network records begin --input='{"kind":"provider","namespace":"science","transport_root":"<64hex>"}'` | Admit iterative record discovery |
+| `zcode network records poll` | ready | read / read / operator · fast/low | **`lookup_id`**, **`owner_token`** | `zcl.zcode_network_records_poll.v1` | `zclassic23 zcode network records poll --input='{"lookup_id":"<32hex>","owner_token":"<32hex>"}'` | Poll iterative record discovery |
+| `zcode network records cancel` | ready | read / read / operator · fast/low | **`lookup_id`**, **`owner_token`** | `zcl.zcode_network_records_cancel.v1` | `zclassic23 zcode network records cancel --input='{"lookup_id":"<32hex>","owner_token":"<32hex>"}'` | Cancel iterative record discovery |
+| `zcode network records` | ready | read / read / operator · foreground/moderate | **`kind`**, **`namespace`**, `semantic_root`, `transport_root` | `zcl.zcode_network_records.v1` | `zclassic23 zcode network records --input='{"kind":"pointer","namespace":"science.study","semantic_root":"<64hex>"}'` | Discover signed DHT records |
+| `zcode network providers` | ready | read / read / operator · foreground/moderate | **`namespace`**, **`transport_root`** | `zcl.zcode_network_providers.v1` | `zclassic23 zcode network providers --input='{"namespace":"science","transport_root":"<64hex>"}'` | List provider hints |
+| `zcode network publish` | ready | mutate / app-write / operator, plan-commit · fast/low | **`mode`**, **`kind`**, **`namespace`**, `semantic_root`, **`transport_root`**, `owner_group`, **`sequence`**, **`not_before`**, **`expiry`**, `plan_token` | `zcl.zcode_network_publish.v1` | `zclassic23 zcode network publish --input='{"mode":"plan","kind":"provider","namespace":"science","transport_root":"<64hex>","sequence":1,"not_before":1,"expiry":2}'` | Publish a signed DHT record |
+| `zcode network storage_ack` | ready | mutate / app-write / operator, plan-commit · foreground/high | **`mode`**, **`namespace`**, `semantic_root`, **`transport_root`**, `owner_group`, **`sequence`**, **`not_before`**, **`expiry`**, `plan_token` | `zcl.zcode_network_storage_ack.v1` | `zclassic23 zcode network storage_ack --input='{"mode":"plan","namespace":"science","transport_root":"<64hex>","sequence":1,"not_before":1,"expiry":2}'` | Publish a possession-backed storage ACK |
+| `zcode network policy list` | ready | read / read / operator · fast/low | `datadir` | `zcl.zcode_network_policy_list.v1` | `zclassic23 zcode network policy list` | Inspect local policy summary |
+| `zcode network policy mutate` | ready | mutate / app-write / operator, plan-commit · fast/low | **`mode`**, **`operation`**, `source`, `effect`, `scope`, `action_mask`, `value`, `rule_id`, `enabled`, `plan_token`, `datadir` | `zcl.zcode_network_policy_mutate.v1` | `zclassic23 zcode network policy mutate --input='{"mode":"plan","operation":"advisory","enabled":true}'` | Plan or commit local policy |
+| `zcode network replication` | ready | read / read / operator · foreground/moderate | **`namespace`**, **`transport_root`** | `zcl.zcode_network_replication.v1` | `zclassic23 zcode network replication --input='{"namespace":"science","transport_root":"<64hex>"}'` | Inspect declared replication |
+
 #### `zcode.desc` — Onion descriptors: signed service records
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
@@ -925,6 +1041,59 @@ represented by its children's sections.
 | `zcode package add plan` | ready | mutate / app-write / operator · foreground/moderate | **`name_or_root`**, `now_unix`, `datadir` | `zcl.zcode_add_plan.v1` | `zclassic23 zcode package add plan --input='{"name_or_root":"ringbuffer"}'` | Resolve, dependency-lock, and report what installing would do |
 | `zcode package add commit` | ready | mutate / app-write / operator · background/high | **`plan_id`**, `now_unix`, `datadir` | `zcl.zcode_add_commit.v1` | `zclassic23 zcode package add commit --input='{"plan_id":"<64hex>"}'` | Execute a plan: verify, build+test confined, install, activate, pin |
 
+#### `zcode.science` — Scientific studies, benchmark evidence, curation
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode science rebuild` | ready | mutate / app-write / operator · foreground/moderate | `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_rebuild.v1` | `zclassic23 zcode.science.rebuild --input='{"now_unix":1500}'` | Rebuild the science projection from the CAS |
+| `zcode science publish` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `datadir`, `workspace` | `zcl.zcode_science_publish.v1` | `zclassic23 zcode.science.publish --input='{"root":"<64hex>"}'` | Publish a science object to the swarm as a blob |
+| `zcode science fetch` | ready | mutate / app-write / operator · foreground/moderate | `root`, `blob_root`, `datadir`, `workspace`, `now_unix`, `cancel` | `zcl.zcode_science_fetch.v1` | `zclassic23 zcode.science.fetch --input='{"root":"<science-root-64hex>"}'` | Fetch and admit a blob-carried science object |
+
+#### `zcode.science.study` — Preregistered study lifecycle
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode science study plan` | ready | mutate / app-write / operator, plan-commit · foreground/low | **`wire_hex`**, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_plan.v1` | `zclassic23 zcode.science.study.plan --input='{"wire_hex":"<844hex>"}'` | Plan a study submission |
+| `zcode science study commit` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, **`confirm`**, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_commit.v1` | `zclassic23 zcode.science.study.commit --input='{"wire_hex":"<844hex>","confirm":true}'` | Commit a planned study |
+| `zcode science study show` | ready | read / read / operator · fast/low | **`study_root`**, `datadir` | `zcl.zcode_science_study.v1` | `zclassic23 zcode.science.study.show --input='{"study_root":"<64hex>"}'` | Show one study |
+| `zcode science study list` | ready | read / read / operator · fast/low | `datadir`, `max` | `zcl.zcode_science_studies.v1` | `zclassic23 zcode.science.study.list --input='{"max":32}'` | List studies |
+
+#### `zcode.science.work` — Benchmark results and reproductions
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode science work plan` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, `method_hex`, `profile_hex`, `action_kind`, `action_sequence`, `action_source_cas_sha3`, `action_input_root_sha3`, `action_toolchain_capsule_sha3`, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_plan.v1` | `zclassic23 zcode.science.work.plan --input='{"wire_hex":"<726hex>","method_hex":"<242hex>","profile_hex":"<444hex>"}'` | Plan benchmark evidence |
+| `zcode science work commit` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, **`confirm`**, `action_kind`, `action_sequence`, `action_source_cas_sha3`, `action_input_root_sha3`, `action_toolchain_capsule_sha3`, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_commit.v1` | `zclassic23 zcode.science.work.commit --input='{"wire_hex":"<726hex>","confirm":true}'` | Commit planned benchmark evidence |
+| `zcode science work execute` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | `study_root`, `task_root`, `candidate_root`, `method_root`, `original_result_root`, `action_kind`, `action_sequence`, `result_sequence`, `reproduction_sequence`, **`challenge_block_height`**, **`challenge_block_hash`**, `reproducer_pubkey`, `confirm`, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_execute.v1` | `zclassic23 zcode.science.work.execute --input='{"study_root":"<64hex>","task_root":"<64hex>","candidate_root":"<64hex>","method_root":"<64hex>","challenge_block_height":3200000,"challenge_block_hash":"<64hex>","confirm":true}'` | Execute a confined benchmark or reproduction |
+| `zcode science work status` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_science_work.v1` | `zclassic23 zcode.science.work.status --input='{"root":"<64hex>"}'` | Show evidence status |
+| `zcode science work receipt` | ready | read / read / operator · fast/low | **`root`**, `datadir`, `workspace` | `zcl.zcode_science_work.v1` | `zclassic23 zcode.science.work.receipt --input='{"root":"<64hex>"}'` | Show evidence receipt |
+
+#### `zcode.science.review` — Findings reviews
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode science review submit` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, `confirm`, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_review.v1` | `zclassic23 zcode.science.review.submit --input='{"wire_hex":"<438hex>","confirm":true}'` | Submit a findings review |
+
+#### `zcode.science.vote` — Curation votes
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode science vote submit` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, `confirm`, `network_genesis_root`, `voter_zid_root`, `signer_pubkey`, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_vote.v1` | `zclassic23 zcode.science.vote.submit --input='{"wire_hex":"<438hex>","confirm":true,"network_genesis_root":"<64hex>","voter_zid_root":"<64hex>","signer_pubkey":"<64hex>"}'` | Submit a curation vote |
+
+#### `zcode.science.findings` — Findings lifecycle
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode science findings plan` | ready | mutate / app-write / operator, plan-commit · foreground/low | **`wire_hex`**, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_plan.v1` | `zclassic23 zcode.science.findings.plan --input='{"wire_hex":"<634hex>"}'` | Plan a findings submission |
+| `zcode science findings commit` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`wire_hex`**, **`confirm`**, `now_unix`, `datadir`, `workspace` | `zcl.zcode_science_commit.v1` | `zclassic23 zcode.science.findings.commit --input='{"wire_hex":"<634hex>","confirm":true}'` | Commit planned findings |
+
+#### `zcode.science.rank` — Local discovery ranking
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode science discover` | ready | read / read / operator · foreground/moderate | `search`, `category`, `hardware`, `network_genesis_root`, `now_unix`, `max`, `datadir`, `workspace` | `zcl.zcode_science_discover.v1` | `zclassic23 zcode.science.discover --input='{"category":"active","max":16}'` | Search and rank study properties |
+| `zcode science rank snapshot` | ready | read / read / operator · fast/low | **`workspace`**, `network_genesis_root`, `now_unix` | `zcl.zcode_science_rank_snapshot.v1` | `zclassic23 zcode.science.rank.snapshot --input='{"workspace":"/path/to/workspace"}'` | Discovery graph snapshot |
+
 ### `metaverse` — Sovereign digital property: catalog, rights, receipts
 
 #### `metaverse.agent` — Confined agents acting under a scoped grant
@@ -932,6 +1101,8 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `metaverse agent status` | ready | read / read / operator · instant/tiny | **`dir`** | `zcl.metaverse_agent_status.v1` | `zclassic23 metaverse agent status --dir=/tmp/mv-broker` | What confinement the agent broker actually achieved |
+| `metaverse agent money` | ready | read / read / operator · fast/moderate | **`dir`** | `zcl.metaverse_agent_money.v1` | `zclassic23 metaverse agent money --dir=/tmp/mv-broker` | Identity-bound dev/prod custody, never an implied zero |
+| `metaverse agent liquidity` | ready | read / read / operator · fast/moderate | **`dir`**, **`wallet_scope`**, **`recipient_value_zat`**, **`maximum_fee_zat`**, **`concurrency`** | `zcl.metaverse_agent_liquidity.v1` | `zclassic23 metaverse agent liquidity --input='{"dir":"/private/broker","wallet_scope":"dev","recipient_value_zat":1000,"maximum_fee_zat":10000,"concurrency":10}'` | Plan parallel transaction liquidity without moving funds |
 | `metaverse agent audit` | ready | read / read / operator · fast/low | **`dir`**, `limit` | `zcl.metaverse_agent_audit.v1` | `zclassic23 metaverse agent audit --dir=/tmp/mv-broker` | Every action the confined agent took, and whether the log is intact |
 
 #### `metaverse.property` — What property exists, who controls it, and how we know
@@ -940,6 +1111,25 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `metaverse property list` | ready | read / read / operator · fast/moderate | **`kind`**, `limit`, `datadir` | `zcl.metaverse_property_list.v1` | `zclassic23 metaverse property list` | Every property this datadir holds, one row per kind scanned |
 | `metaverse property show` | ready | read / read / operator · fast/low | **`property_id`**, `datadir` | `zcl.metaverse_property_show.v1` | `zclassic23 metaverse property show content:<64hex>` | One property: its roots, controller, status, and evidence grade |
+
+#### `metaverse.space` — Signed sovereign spaces and generic typed services
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `metaverse space plan` | ready | read / read / operator · fast/low | **`kind`**, `protocol_root`, `read_only_verbs`, `object_roots`, `capability_roots`, `sequence`, `not_before`, `expiry`, `name`, `description`, `service_roots`, `portal_roots`, `admission_root`, `datadir` | `zcl.metaverse_space_plan.v1` | `zclassic23 metaverse space plan --input='{"kind":"service_descriptor","protocol_root":"<64hex>","read_only_verbs":["discover"]}'` | Plan one signed space manifest or typed service descriptor |
+| `metaverse space commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`kind`**, `protocol_root`, `read_only_verbs`, `object_roots`, `capability_roots`, `sequence`, `not_before`, `expiry`, `name`, `description`, `service_roots`, `portal_roots`, `admission_root`, **`plan_token`**, **`confirm`**, `datadir`, `workspace` | `zcl.metaverse_space_commit.v1` | `zclassic23 metaverse space commit --input='{"kind":"service_descriptor","protocol_root":"<64hex>","read_only_verbs":["discover"],"plan_token":"<64hex>","confirm":true}'` | Commit one exactly planned space object to local CAS |
+| `metaverse space show` | ready | read / read / operator · fast/low | **`root`**, `workspace`, `datadir` | `zcl.metaverse_space_show.v1` | `zclassic23 metaverse space show <64hex>` | Re-derive one local space object and its evidence grade |
+| `metaverse space status` | ready | read / read / operator · fast/low | `root`, `kind`, `workspace`, `datadir` | `zcl.metaverse_space_status.v1` | `zclassic23 metaverse space status --input='{"root":"<64hex>","kind":"space_manifest"}'` | Explain whether this node can publish, discover, or scout a Space |
+| `metaverse space publish` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `workspace`, `datadir` | `zcl.metaverse_space_publish.v1` | `zclassic23 metaverse space publish <64hex>` | Publish one local space object through the existing signed DHT |
+| `metaverse space discover` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `kind`, `workspace`, `datadir` | `zcl.metaverse_space_discover.v1` | `zclassic23 metaverse space discover <64hex> --kind=space_manifest` | Discover one exact space root under local admission policy |
+
+#### `metaverse.space.scout` — Bounded read-only space missions and signed local evidence
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `metaverse space scout plan` | ready | read / read / operator · fast/low | `starting_roots`, `observation_unix`, `maximum_depth`, `maximum_spaces`, `maximum_portals`, `maximum_bytes`, `deadline_ms`, `datadir` | `zcl.metaverse_space_scout_plan.v1` | `zclassic23 metaverse space scout plan --input='<mission-json>'` | Plan one bounded read-only traversal of sovereign spaces |
+| `metaverse space scout run` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | `starting_roots`, `observation_unix`, `maximum_depth`, `maximum_spaces`, `maximum_portals`, `maximum_bytes`, `deadline_ms`, `plan_token`, `confirm`, `workspace`, `datadir` | `zcl.metaverse_space_scout_run.v1` | `zclassic23 metaverse space scout run --input='<confirmed-mission-json>'` | Run one exactly planned bounded read-only space scout mission |
+| `metaverse space scout show` | ready | read / read / operator · fast/low | **`root`**, `workspace`, `datadir` | `zcl.metaverse_space_scout_show.v1` | `zclassic23 metaverse space scout show <attestation-root>` | Show one signed local scout attestation and its canonical evidence map |
 
 #### `metaverse.build` — Content-addressed C23 build jobs, actions, and receipts
 
@@ -958,6 +1148,20 @@ represented by its children's sections.
 | `metaverse build worker list` | ready | read / read / operator · fast/low | `datadir` | `zcl.build_worker_list.v1` | `zclassic23 metaverse build worker list` | List build workers and current trust state |
 | `metaverse build worker approve` | ready | mutate / app-write / operator · fast/low | **`worker_id`**, **`signer_pubkey`**, `capabilities`, `expires_at`, `datadir` | `zcl.build_worker.v1` | `zclassic23 metaverse build worker approve <worker_id> --signer_pubkey=<64hex>` | Approve one Ed25519 build-receipt signer |
 | `metaverse build worker revoke` | ready | mutate / app-write / operator · fast/low | **`worker_id`**, `datadir` | `zcl.build_worker.v1` | `zclassic23 metaverse build worker revoke <worker_id>` | Revoke one build-receipt signer without deleting evidence |
+
+### `yardsale` — For-sale-by-owner signed ads, settled bilaterally
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `yardsale buy` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`ad_root`**, `confirm`, `now_unix` | `zcl.yardsale_buy.v1` | `zclassic23 yardsale.buy --input='{"ad_root":"<64hex>","confirm":true}'` | Buy a live sign with wallet funds |
+
+#### `yardsale.seller` — Seller profile: arm, disarm, status
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `yardsale seller arm` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_txid`**, **`token_vout`**, **`ad_root`**, `confirm`, `now_unix` | `zcl.yardsale_seller_arm.v1` | `zclassic23 yardsale.seller.arm --input='{"token_txid":"<64hex>","token_vout":1,"ad_root":"<64hex>","confirm":true}'` | Arm the seller profile from the wallet |
+| `yardsale seller disarm` | ready | mutate / app-write / **owner** · foreground/low | none | `zcl.yardsale_seller_disarm.v1` | `zclassic23 yardsale.seller.disarm` | Disarm the seller profile |
+| `yardsale seller status` | ready | read / read / operator · fast/low | `now_unix` | `zcl.yardsale_seller_status.v1` | `zclassic23 yardsale.seller.status` | Seller profile status |
 
 
 ## Aliases
@@ -1011,6 +1215,7 @@ promise the same document shape.
 | Output schema | Leaves |
 |---|---|
 | `zcl.core_status_brief.v1` | `status`, `core.status.brief` |
+| `zcl.wallet_security.v1` | `core.wallet.security.status`, `core.wallet.security.encrypt`, `core.wallet.security.unlock`, `core.wallet.security.lock` |
 | `zcl.wait_result.v1` | `core.chain.wait.height`, `core.chain.wait.blocker`, `core.chain.wait.halt` |
 | `zcl.block_mutation.v1` | `core.consensus.block.invalidate`, `core.consensus.block.reconsider` |
 | `zcl.wallet_address.v1` | `core.wallet.address.new`, `core.wallet.address.import` |
@@ -1018,11 +1223,12 @@ promise the same document shape.
 | `zcl.shielded_send.v1` | `core.wallet.shielded.send`, `vault.send-shielded` |
 | `zcl.storage_query.v1` | `core.storage.query`, `core.storage.query.offline` |
 | `zcl.core_bootstatus.v1` | `core.node.bootstatus`, `core.node.bootwait` |
-| `zcl.core_identity_anchor.v1` | `core.identity.anchor`, `core.identity.rotate`, `core.identity.revoke` |
-| `zcl.core_zdir_register.v1` | `core.zdir.register`, `core.zdir.deregister` |
+| `zcl.core_identity_anchor.v2` | `core.identity.anchor`, `core.identity.rotate`, `core.identity.revoke` |
+| `zcl.core_zdir_register.v2` | `core.zdir.register`, `core.zdir.deregister` |
 | `zcl.app_name_txresult.v1` | `app.names.register`, `app.names.update`, `app.names.transfer`, `app.names.renew`, `app.names.set-record`, `app.names.set-text` |
-| `zcl.app_token_txresult.v1` | `app.tokens.create`, `app.tokens.send`, `app.tokens.mint`, `vault.send-token` |
+| `zcl.app_token_txresult.v1` | `app.tokens.create`, `app.tokens.send`, `app.tokens.mint`, `app.tokens.burn`, `vault.send-token` |
 | `zcl.app_message_send_result.v1` | `app.messaging.send`, `app.messaging.send-named` |
+| `zcl.market_purchase.v1` | `app.market.purchase.plan`, `app.market.purchase.commit`, `app.market.purchase.status`, `app.market.purchase.retrieve` |
 | `zcl.app_swap_contract.v1` | `app.swap.initiate`, `app.swap.participate` |
 | `zcl.rom_seed_status.v1` | `ops.debug.rom_seed.status`, `ops.debug.rom_seed.enable`, `ops.debug.rom_seed.disable` |
 | `zcl.dev_cycle.v1` | `dev.status`, `dev.change.apply`, `dev.loop.wait` |
@@ -1031,6 +1237,9 @@ promise the same document shape.
 | `zcl.account.v1` | `app.account.show`, `app.account.whoami`, `app.account.add`, `app.account.role`, `app.account.suspend`, `app.account.unsuspend` |
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
 | `zcl.zcode_leaderboard.v1` | `zcode.leaderboard.daily`, `zcode.leaderboard.weekly`, `zcode.leaderboard.monthly`, `zcode.leaderboard.all` |
+| `zcl.zcode_science_plan.v1` | `zcode.science.study.plan`, `zcode.science.findings.plan`, `zcode.science.work.plan` |
+| `zcl.zcode_science_commit.v1` | `zcode.science.study.commit`, `zcode.science.findings.commit`, `zcode.science.work.commit` |
+| `zcl.zcode_science_work.v1` | `zcode.science.work.status`, `zcode.science.work.receipt` |
 | `zcl.build_job.v1` | `metaverse.build.submit`, `metaverse.build.cancel` |
 | `zcl.build_worker.v1` | `metaverse.build.worker.approve`, `metaverse.build.worker.revoke` |
 | `zcl.telemetry.alerts.v1` | `ops.telemetry.alerts.active`, `ops.telemetry.alerts.history` |

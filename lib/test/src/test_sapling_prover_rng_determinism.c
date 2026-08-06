@@ -27,21 +27,16 @@
  *      NOT silently taken over. This is the crypto-hygiene guard: it
  *      would fail loudly if the default ever stopped being
  *      GetRandBytes.
- *   4. (params-gated, SKIP if ~/.zcash-params absent) the SAME seed
- *      drives the C-authored note randomness to identical cm/epk bytes
- *      end-to-end, while the pinned Rust prover independently draws rcv
- *      and therefore produces a different cv/proof. This pins both sides
- *      of the FFI entropy boundary.
+ *   4. (params-gated) the SAME seed drives the native C23 note randomness to
+ *      identical cv/cm/epk bytes end-to-end, while independent Groth16
+ *      blinding keeps proof bytes distinct unless its own test hook is set.
  *
  * HONEST SCOPE NOTE
  * -----------------
- * The statically-linked canonical prover owns value-commitment randomness
- * and Groth16 proof blinding. Those draws deliberately do NOT cross the
- * test-only C RNG hook. Thus the 192-byte proof and cv stay
- * non-deterministic; cm/epk remain pinned because their rcm/esk are authored
- * by the C wrapper. Full shielded-tx byte reproducibility would require an
- * explicit test-only RNG ABI in the canonical backend — a follow-up, not a
- * reason to weaken production entropy.
+ * Native C23 value-commitment randomness uses the Sapling test hook. Groth16
+ * proof blinding has a separate, default-off test hook, so this test leaves
+ * proof bytes non-deterministic while pinning the note description fields.
+ * Production builds contain neither hook path and always use the CSPRNG.
  */
 
 #include "test/test_core.h"
@@ -172,11 +167,11 @@ int test_sapling_prover_rng_determinism(void)
                   memcmp(r1, r2, 32) != 0);
     }
 
-    /* ── 5. (params-gated) end-to-end FFI entropy boundary ──
-     * Prove the hook reaches the C-authored note fields: same seed =>
-     * identical cm/epk out of sapling_build_output_with_ctx. The canonical
-     * Rust backend owns rcv and proof blinding, so cv/proof must retain real
-     * entropy rather than being captured by a test-only C hook.
+    /* ── 5. (params-gated) native prover entropy boundary ──
+     * Prove the Sapling hook reaches rcm, esk, and rcv: the same seed yields
+     * identical cv/cm/epk out of sapling_build_output_with_ctx. The separate
+     * Groth16 blinding hook is intentionally unset, so proofs retain real
+     * entropy.
      * SKIPS cleanly when ~/.zcash-params is absent (test_snark_kat
      * pattern). We do NOT assert proof-byte equality (Groth16
      * blinding is an independent RNG source — see scope note). */
@@ -246,15 +241,15 @@ int test_sapling_prover_rng_determinism(void)
                 }
             }
 
-            RNG_CHECK("canonical prover produced two output descriptions",
+            RNG_CHECK("native C23 prover produced two output descriptions",
                       b1 && b2);
-            RNG_CHECK("same C seed -> distinct cv (backend rcv entropy)",
-                      b1 && b2 && memcmp(cv1, cv2, 32) != 0);
-            RNG_CHECK("same seed -> identical cm (real prover)",
+            RNG_CHECK("same C seed -> identical cv",
+                      b1 && b2 && memcmp(cv1, cv2, 32) == 0);
+            RNG_CHECK("same seed -> identical cm (native prover)",
                       b1 && b2 && memcmp(cm1, cm2, 32) == 0);
-            RNG_CHECK("same seed -> identical epk (real prover)",
+            RNG_CHECK("same seed -> identical epk (native prover)",
                       b1 && b2 && memcmp(epk1, epk2, 32) == 0);
-            RNG_CHECK("same C seed -> distinct proof (backend entropy)",
+            RNG_CHECK("same C seed -> distinct proof (Groth16 entropy)",
                       b1 && b2 && memcmp(proof1, proof2, 192) != 0);
         }
     }

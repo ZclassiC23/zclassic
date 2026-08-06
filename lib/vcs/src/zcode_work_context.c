@@ -5,6 +5,7 @@
 
 #include "vcs_priv.h"
 
+#include "codec/cursor.h"
 #include "crypto/sha3.h"
 #include "util/safe_alloc.h"
 #include "vcs/build_action.h"
@@ -210,27 +211,35 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_serialize(
                    context->fixed_input_len;
     uint8_t *wire = zcl_malloc(total, "zcode.work_context");
     if (!wire) return VCS_ZCODE_WORK_CONTEXT_ALLOC;
-    size_t off = 0;
-    memcpy(wire + off, context_magic, sizeof(context_magic)); off += 8;
-    vcs_wr_u16le(wire + off, VCS_ZCODE_WORK_CONTEXT_VERSION); off += 2;
-    vcs_wr_u16le(wire + off, (uint16_t)profile_len); off += 2;
-    vcs_wr_u32le(wire + off, 0); off += 4;
-    vcs_wr_u64le(wire + off, (uint64_t)context->fixed_input_len); off += 8;
-    memcpy(wire + off, context->source_sha256, 32); off += 32;
-    if (vcs_zcode_task_serialize(&context->task, wire + off) !=
-            VCS_ZCODE_DEV_OK) goto reject;
-    off += VCS_ZCODE_TASK_WIRE_BYTES;
-    if (vcs_zcode_candidate_serialize(&context->candidate, wire + off) !=
-            VCS_ZCODE_DEV_OK) goto reject;
-    off += VCS_ZCODE_CANDIDATE_WIRE_BYTES;
-    if (vcs_zcode_proof_policy_serialize(
-            &context->proof_policy, wire + off) != VCS_ZCODE_DEV_OK)
+    uint8_t task_wire[VCS_ZCODE_TASK_WIRE_BYTES];
+    uint8_t candidate_wire[VCS_ZCODE_CANDIDATE_WIRE_BYTES];
+    uint8_t policy_wire[VCS_ZCODE_PROOF_POLICY_WIRE_BYTES];
+    if (vcs_zcode_task_serialize(&context->task, task_wire) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_candidate_serialize(&context->candidate, candidate_wire) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_proof_policy_serialize(&context->proof_policy,
+                                         policy_wire) != VCS_ZCODE_DEV_OK)
         goto reject;
-    off += VCS_ZCODE_PROOF_POLICY_WIRE_BYTES;
-    memcpy(wire + off, context->profile, profile_len); off += profile_len;
-    memcpy(wire + off, context->fixed_input,
-           context->fixed_input_len); off += context->fixed_input_len;
-    if (off != total) goto reject;
+    struct zcl_codec_writer writer;
+    zcl_codec_writer_init(&writer, wire, total);
+    bool ok = zcl_codec_write_bytes(&writer, context_magic,
+                                    sizeof(context_magic)) &&
+        zcl_codec_write_u16le(&writer, VCS_ZCODE_WORK_CONTEXT_VERSION) &&
+        zcl_codec_write_u16le(&writer, (uint16_t)profile_len) &&
+        zcl_codec_write_u32le(&writer, 0) &&
+        zcl_codec_write_u64le(&writer, context->fixed_input_len) &&
+        zcl_codec_write_bytes(&writer, context->source_sha256, 32) &&
+        zcl_codec_write_bytes(&writer, task_wire, sizeof(task_wire)) &&
+        zcl_codec_write_bytes(&writer, candidate_wire,
+                              sizeof(candidate_wire)) &&
+        zcl_codec_write_bytes(&writer, policy_wire, sizeof(policy_wire)) &&
+        zcl_codec_write_bytes(&writer, context->profile, profile_len) &&
+        zcl_codec_write_bytes(&writer, context->fixed_input,
+                              context->fixed_input_len);
+    size_t written = 0;
+    if (!ok || !zcl_codec_writer_finish(&writer, &written) || written != total)
+        goto reject;
     *out = wire; *out_len = total;
     return VCS_ZCODE_WORK_CONTEXT_OK;
 reject:
@@ -246,33 +255,46 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_parse(
     vcs_zcode_work_context_init(out);
     if (wire_len < VCS_ZCODE_WORK_CONTEXT_FIXED_BYTES ||
         wire_len > VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES ||
-        memcmp(wire, context_magic, sizeof(context_magic)) != 0 ||
-        vcs_rd_u16le(wire + 8) != VCS_ZCODE_WORK_CONTEXT_VERSION ||
-        vcs_rd_u32le(wire + 12) != 0)
+        memcmp(wire, context_magic, sizeof(context_magic)) != 0)
         return VCS_ZCODE_WORK_CONTEXT_SHAPE;
-    uint16_t profile_len = vcs_rd_u16le(wire + 10);
-    uint64_t input_len64 = vcs_rd_u64le(wire + 16);
+    struct zcl_codec_reader reader;
+    zcl_codec_reader_init(&reader, wire + sizeof(context_magic),
+                          wire_len - sizeof(context_magic));
+    uint16_t version, profile_len;
+    uint32_t reserved;
+    uint64_t input_len64;
+    if (!zcl_codec_read_u16le(&reader, &version) ||
+        !zcl_codec_read_u16le(&reader, &profile_len) ||
+        !zcl_codec_read_u32le(&reader, &reserved) ||
+        !zcl_codec_read_u64le(&reader, &input_len64) ||
+        version != VCS_ZCODE_WORK_CONTEXT_VERSION || reserved != 0)
+        return VCS_ZCODE_WORK_CONTEXT_SHAPE;
     if (profile_len == 0 || profile_len > VCS_ZCODE_WORK_CONTEXT_PROFILE_MAX ||
         input_len64 == 0 || input_len64 > SIZE_MAX ||
         (uint64_t)VCS_ZCODE_WORK_CONTEXT_FIXED_BYTES + profile_len +
                 input_len64 != wire_len)
         return VCS_ZCODE_WORK_CONTEXT_SHAPE;
-    size_t off = 24;
-    memcpy(out->source_sha256, wire + off, 32); off += 32;
-    if (vcs_zcode_task_parse(wire + off, VCS_ZCODE_TASK_WIRE_BYTES,
+    uint8_t task_wire[VCS_ZCODE_TASK_WIRE_BYTES];
+    uint8_t candidate_wire[VCS_ZCODE_CANDIDATE_WIRE_BYTES];
+    uint8_t policy_wire[VCS_ZCODE_PROOF_POLICY_WIRE_BYTES];
+    if (!zcl_codec_read_bytes(&reader, out->source_sha256, 32) ||
+        !zcl_codec_read_bytes(&reader, task_wire, sizeof(task_wire)) ||
+        !zcl_codec_read_bytes(&reader, candidate_wire,
+                              sizeof(candidate_wire)) ||
+        !zcl_codec_read_bytes(&reader, policy_wire, sizeof(policy_wire)) ||
+        vcs_zcode_task_parse(task_wire, sizeof(task_wire),
                              &out->task) != VCS_ZCODE_DEV_OK)
         goto reject;
-    off += VCS_ZCODE_TASK_WIRE_BYTES;
-    if (vcs_zcode_candidate_parse(wire + off,
-            VCS_ZCODE_CANDIDATE_WIRE_BYTES, &out->candidate) !=
+    if (vcs_zcode_candidate_parse(candidate_wire,
+            sizeof(candidate_wire), &out->candidate) !=
             VCS_ZCODE_DEV_OK) goto reject;
-    off += VCS_ZCODE_CANDIDATE_WIRE_BYTES;
-    if (vcs_zcode_proof_policy_parse(wire + off,
-            VCS_ZCODE_PROOF_POLICY_WIRE_BYTES, &out->proof_policy) !=
+    if (vcs_zcode_proof_policy_parse(policy_wire,
+            sizeof(policy_wire), &out->proof_policy) !=
             VCS_ZCODE_DEV_OK) goto reject;
-    off += VCS_ZCODE_PROOF_POLICY_WIRE_BYTES;
-    memcpy(out->profile, wire + off, profile_len); off += profile_len;
-    out->profile[profile_len] = '\0';
+    uint16_t decoded_profile_len;
+    if (!zcl_codec_read_bytes(&reader, out->profile, profile_len)) goto reject;
+    decoded_profile_len = profile_len;
+    out->profile[decoded_profile_len] = '\0';
     out->fixed_input_len = (size_t)input_len64;
     out->fixed_input = zcl_malloc(out->fixed_input_len,
                                    "zcode.work_context.input");
@@ -280,7 +302,10 @@ enum vcs_zcode_work_context_result vcs_zcode_work_context_parse(
         vcs_zcode_work_context_free(out);
         return VCS_ZCODE_WORK_CONTEXT_ALLOC;
     }
-    memcpy(out->fixed_input, wire + off, out->fixed_input_len);
+    if (!zcl_codec_read_bytes(&reader, out->fixed_input,
+                              out->fixed_input_len) ||
+        !zcl_codec_reader_finish(&reader))
+        goto reject;
     enum vcs_zcode_work_context_result valid =
         context_validate(out, now_unix);
     if (valid != VCS_ZCODE_WORK_CONTEXT_OK) {

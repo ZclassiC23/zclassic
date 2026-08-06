@@ -356,7 +356,7 @@ static int test_registry_register_all(void)
     TEST("db_register_all_validators wires all registered tables") {
         db_validator_reset();
         db_register_all_validators();
-        ASSERT(db_validator_count() == 25);
+        ASSERT(db_validator_count() == 28);
         ASSERT(db_validator_has("blocks"));
         ASSERT(db_validator_has("peers"));
         ASSERT(db_validator_has("utxos"));
@@ -364,6 +364,7 @@ static int test_registry_register_all(void)
         ASSERT(db_validator_has("wallet_sapling_notes"));
         ASSERT(db_validator_has("zslp_balances"));
         ASSERT(db_validator_has("zslp_tokens"));
+        ASSERT(db_validator_has("zswap_ads"));
         ASSERT(db_validator_has("database"));
         PASS();
     } _test_next:;

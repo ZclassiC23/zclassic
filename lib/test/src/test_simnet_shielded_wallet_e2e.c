@@ -3,12 +3,11 @@
  * W1-d — full shielded wallet E2E through the PRODUCTION prover.
  *
  * Sibling of test_simnet_sapling_shielded_send.c (Lane C). Lane C pins the
- * pure-C23 native Groth16 prover, whose proofs the consensus verifier still
- * REJECTS, so it can only assert verifier-verdict == direct-probe agreement.
- * This file closes that gap: with ~/.zcash-params present AND the librustzcash
- * prover self-test passing (zclassic_sapling_prover_is_ready), it builds real
+ * pure-C23 native Groth16 prover and its deterministic transaction plumbing.
+ * This file exercises the wallet facade: with ~/.zcash-params present AND the
+ * native prover self-test passing (zclassic_sapling_prover_is_ready), it builds real
  * Sapling bundles with the PRODUCTION backend (sapling_build_output_with_ctx /
- * sapling_build_spend_with_ctx over a librustzcash proving ctx) and asserts the
+ * sapling_build_spend_with_ctx over a native C23 proving ctx) and asserts the
  * REAL C23 verifier (contextual_check_transaction) *ACCEPTS* them.
  *
  *   PART A — consensus ACCEPT E2E over the deterministic simnet:
@@ -239,7 +238,7 @@ static int part_a_consensus_accept(void)
         memcpy(memo, msg, strlen(msg));
 
         void *pctx = zclassic_sapling_proving_ctx_init();
-        WE_CHECK("t->z: acquire librustzcash proving ctx", pctx != NULL);
+        WE_CHECK("t->z: acquire native C23 proving ctx", pctx != NULL);
 
         struct transaction tz;
         transaction_init(&tz);
@@ -511,8 +510,19 @@ static int part_a_consensus_accept(void)
                      pctx, zt.value_balance, sighash.data, zt.binding_sig));
         transaction_compute_hash(&zt);
 
-        WE_CHECK("z->t: consensus verifier ACCEPTS",
-                 spend_built && we_verify(&zt, cp, zt_height));
+        bool zt_verified = spend_built && we_verify(&zt, cp, zt_height);
+        WE_CHECK("z->t: consensus verifier ACCEPTS", zt_verified);
+
+        struct uint256 zt_txid = zt.hash;
+        bool zt_mined = zt_verified && simnet_mint_txs(&s, &zt, 1);
+        WE_CHECK("z->t: mint (transparent UTXO + connect_block)", zt_mined);
+        int64_t transparent_value = 0;
+        WE_CHECK("z->t: mined transparent output has exact value",
+                 zt_mined &&
+                 simnet_coin_value(&s, &zt_txid, 0, &transparent_value) &&
+                 transparent_value == SHIELDED_VALUE);
+        WE_CHECK("z->t: no shielded output means tree stays at 2 notes",
+                 zt_mined && simnet_sapling_tree_size(&s) == 2);
 
         free(zt.v_shielded_spend); zt.v_shielded_spend = NULL; zt.num_shielded_spend = 0;
         transaction_free(&zt);

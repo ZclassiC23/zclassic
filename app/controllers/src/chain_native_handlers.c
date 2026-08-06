@@ -5,10 +5,12 @@
 
 #include "controllers/chain_native_handlers.h"
 
+#include "base/hex.h"
 #include "json/json.h"
 #include "controllers/rpc_client.h"
 #include "controllers/rpc_params.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -18,10 +20,27 @@ char *zcl_native_getrawtransaction_body(const struct json_value *args,
                                          struct zcl_native_body_err *err)
 {
     const char *txid = json_get_str(json_get(args, "txid"));
+    const struct json_value *verbose_arg = json_get(args, "verbose");
+    int verbosity = verbose_arg && verbose_arg->type == JSON_BOOL
+        ? (json_get_bool(verbose_arg) ? 1 : 0)
+        : 1;
+    int64_t raw_offset = json_get_int_or(args, "raw_offset", 0);
+    int64_t raw_bytes = json_get_int_or(args, "raw_bytes", 1024);
+    if (verbosity == 0 &&
+        (raw_offset < 0 || raw_bytes < 1 || raw_bytes > 1024)) {
+        err->status = ZCL_NATIVE_BODY_INVALID;
+        snprintf(err->message, sizeof(err->message),
+                 "raw_offset must be nonnegative and raw_bytes must be 1..1024");
+        LOG_NULL("native.chain",
+                 "invalid raw transaction page offset=%lld bytes=%lld",
+                 (long long)raw_offset, (long long)raw_bytes);
+    }
+    if (err->status != ZCL_NATIVE_BODY_OK)
+        return NULL;
     struct rpc_arg_builder p;
     rpc_arg_builder_init(&p);
     rpc_arg_builder_push_str(&p, txid);
-    rpc_arg_builder_push_int(&p, json_get_int_or(args, "verbose", 1));
+    rpc_arg_builder_push_int(&p, verbosity);
     char *params = rpc_arg_builder_to_json(&p);
     char *out = params ? node_rpc_call("getrawtransaction", params) : NULL;
     free(params);
@@ -32,6 +51,85 @@ char *zcl_native_getrawtransaction_body(const struct json_value *args,
         snprintf(err->message, sizeof(err->message),
                  "RPC %s failed: %s", "getrawtransaction", ctx);
         LOG_NULL("native.chain", "%s failed: %s", "getrawtransaction", ctx);
+        return NULL;
+    }
+
+    /* getrawtransaction(..., 0) legitimately returns a bare JSON string.
+     * Native handler bodies must be objects, so preserve the full raw bytes
+     * in an explicit typed shape instead of letting the bridge mistake the
+     * string for a legacy RPC error (and truncate it into an error message). */
+    if (verbosity == 0) {
+        struct json_value raw;
+        json_init(&raw);
+        if (json_read(&raw, out, strlen(out)) && raw.type == JSON_STR) {
+            const char *full_hex = json_get_str(&raw);
+            size_t hex_len = full_hex ? strlen(full_hex) : 0;
+            bool is_hex = full_hex && hex_len > 0 && (hex_len & 1u) == 0;
+            for (size_t i = 0; is_hex && i < hex_len; i++)
+                is_hex = zcl_hex_nibble(full_hex[i], true) >= 0;
+            if (!is_hex) {
+                /* Preserve the native bridge's legacy RPC-error handling.
+                 * A bare non-hex string is an error message, never raw bytes. */
+                json_free(&raw);
+                return out;
+            }
+            size_t total_bytes = hex_len / 2;
+            size_t offset = (size_t)raw_offset;
+            if (offset > total_bytes) {
+                json_free(&raw);
+                free(out);
+                err->status = ZCL_NATIVE_BODY_INVALID;
+                snprintf(err->message, sizeof(err->message),
+                         "raw transaction page is outside the %zu-byte transaction",
+                         total_bytes);
+                LOG_NULL("native.chain",
+                         "raw transaction page invalid offset=%zu total=%zu",
+                         offset, total_bytes);
+                return NULL;
+            }
+            size_t chunk_bytes = (size_t)raw_bytes;
+            if (chunk_bytes > total_bytes - offset)
+                chunk_bytes = total_bytes - offset;
+            size_t chunk_hex_len = chunk_bytes * 2;
+            char chunk_hex[2049];
+            memcpy(chunk_hex, full_hex + offset * 2, chunk_hex_len);
+            chunk_hex[chunk_hex_len] = '\0';
+            struct json_value wrapped;
+            json_init(&wrapped);
+            json_set_object(&wrapped);
+            (void)json_push_kv_str(&wrapped, "schema",
+                                   "zcl.raw_transaction.v1");
+            (void)json_push_kv_str(&wrapped, "txid", txid ? txid : "");
+            (void)json_push_kv_str(&wrapped, "encoding", "hex");
+            (void)json_push_kv_int(&wrapped, "offset_bytes", (int64_t)offset);
+            (void)json_push_kv_int(&wrapped, "chunk_bytes",
+                                   (int64_t)chunk_bytes);
+            (void)json_push_kv_int(&wrapped, "total_bytes",
+                                   (int64_t)total_bytes);
+            bool complete = offset + chunk_bytes == total_bytes;
+            (void)json_push_kv_bool(&wrapped, "complete", complete);
+            if (!complete)
+                (void)json_push_kv_int(&wrapped, "next_offset",
+                                       (int64_t)(offset + chunk_bytes));
+            (void)json_push_kv_str(&wrapped, "raw_hex", chunk_hex);
+            size_t need = json_write(&wrapped, NULL, 0);
+            char *typed = zcl_malloc(need + 1, "native raw transaction");
+            if (typed)
+                (void)json_write(&wrapped, typed, need + 1);
+            json_free(&wrapped);
+            json_free(&raw);
+            free(out);
+            if (!typed) {
+                err->status = ZCL_NATIVE_BODY_INTERNAL;
+                snprintf(err->message, sizeof(err->message),
+                         "could not serialize raw transaction result");
+                LOG_NULL("native.chain",
+                         "raw transaction wrap alloc failed (%zu bytes)",
+                         need + 1);
+            }
+            return typed;
+        }
+        json_free(&raw);
     }
     return out;
 }

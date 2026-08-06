@@ -2,21 +2,9 @@
  *
  * Registry handlers for the MUTATING app.* feature leaves.
  *
- * Each leaf here proxies one already-complete node RPC over the loopback
- * client — ZSLP create/send/mint, the ZNAM name writes,
- * msg_send/msg_read (ZMSG), and swap_initiate/swap_participate (ZSWP). The
- * backing handlers build, sign, admit and relay their own transactions
- * (app/controllers/src/{name,messaging,swap}_controller.c); nothing is
- * re-implemented here. This file owns exactly three things the RPC layer does
- * not: the declared CONFIRM_PLAN_COMMIT handshake, the typed reply envelope,
- * and the honest refusal when the RPC reports a DEGRADED success.
- *
- * The degraded case is real and specific: every ZNAM write answers
- * status="ready" (an OP_RETURN hex for manual inclusion) instead of
- * status="broadcast" when the node has no wallet/mempool wired. That is a
- * true RPC success that did NOT do the job the leaf's summary promises, so
- * awn_run turns it into a BLOCKED reply with mutated=false rather than a
- * PASSED reply that claims a broadcast never happened.
+ * Each leaf proxies one existing node RPC. The backing controllers remain the
+ * only transaction builders; this file owns the CONFIRM_PLAN_COMMIT handshake,
+ * typed reply, and fail-closed handling of RPCs that report degraded success.
  *
  * Bound in config/commands/app_features.def. */
 
@@ -38,10 +26,9 @@
 
 enum { AWN_MAX_ARGS = 6 };
 
-/* How one leaf input key is carried into the backing RPC's positional
- * params. The registry input validator has already enforced the JSON type
- * (lib/kernel/src/command_registry.c), so this only picks the encoding. */
-enum awn_kind { AWN_STR, AWN_INT, AWN_REAL };
+/* How one leaf input key reaches the backing RPC's positional params.
+ * The registry validator enforced the JSON type; this picks the encoding. */
+enum awn_kind { AWN_STR, AWN_INT, AWN_REAL, AWN_U64_STR };
 
 struct awn_arg {
     const char *key;
@@ -53,8 +40,7 @@ struct awn_leaf {
     const char *action;        /* plan-stage action label */
     const char *method;        /* backing JSON-RPC method */
     bool plan_commit;          /* leaf declares CONFIRM_PLAN_COMMIT */
-    /* When non-NULL, the RPC's `status` field must equal this for the call to
-     * count as having done its job; anything else is reported BLOCKED. */
+    /* When non-NULL, the RPC's `status` must equal this; else BLOCKED. */
     const char *require_status;
     const char *degraded_code;
     const char *degraded_message;
@@ -103,9 +89,26 @@ static bool awn_real(const struct json_value *v, double *out)
     return false;
 }
 
-/* Deterministic, non-secret plan token binding a plan preview to its exact
- * parameters (FNV-1a over the leaf path and every supplied value, 16 hex).
- * The operator can compare it across the plan and the committed reply. */
+static bool awn_u64_string(const struct json_value *v, const char **out)
+{
+    if (!v || v->type != JSON_STR)
+        return false;
+    const char *s = json_get_str(v);
+    if (!s || !s[0]) return false;
+    uint64_t n = 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p < '0' || *p > '9') return false;
+        unsigned digit = (unsigned)(*p - '0');
+        if (n > (UINT64_MAX - digit) / 10) return false;
+        n = n * 10 + digit;
+    }
+    if (n == 0) return false;
+    *out = s;
+    return true;
+}
+
+/* Deterministic, non-secret plan token: FNV-1a over the leaf path and every
+ * supplied value (16 hex), comparable across the plan and committed reply. */
 static void awn_plan_token(char out[17], const char *path,
                            const struct json_value *input)
 {
@@ -141,9 +144,8 @@ static void awn_plan_token(char out[17], const char *path,
 }
 
 /* Re-serialize the caller's own input with confirm:true — the exact document
- * that commits this plan. A next-action naming the same leaf cannot be
- * serialized (the kernel refuses a self-pointing next), so the commit input
- * travels as data, matching the wallet plan/commit precedent. */
+ * that commits this plan. The kernel refuses a self-pointing next-action, so
+ * the commit input travels as data (wallet plan/commit precedent). */
 static void awn_commit_input(const struct json_value *input, char *out,
                              size_t cap)
 {
@@ -181,10 +183,9 @@ static void awn_merge_object(struct json_value *dst,
     }
 }
 
-/* Detect an RPC failure body. node_rpc_call returns the JSON-RPC `error`
- * member verbatim when the call failed, and this node's RPC layer puts a
- * handler's plain-text refusal there as a bare JSON string
- * (lib/rpc/src/httpserver.c), so both shapes are errors. */
+/* Detect an RPC failure body: node_rpc_call returns the JSON-RPC `error`
+ * member verbatim, and a handler's plain-text refusal arrives as a bare
+ * JSON string (lib/rpc/src/httpserver.c) — both shapes are errors. */
 static bool awn_body_is_error(const struct json_value *body,
                               const char **msg_out)
 {
@@ -295,6 +296,29 @@ static void awn_run(const struct zcl_command_request *request,
             rpc_arg_builder_push_real(&p, d);
             break;
         }
+        case AWN_U64_STR: {
+            const char *s = NULL;
+            char ibuf[21]; /* u64 max is 20 digits */
+            if (v && v->type == JSON_INT && json_get_int(v) > 0) {
+                /* Bare-int CLI args (vault.def "units":25) render to the
+                 * RPC's decimal-string form; push_str deep-copies ibuf. */
+                (void)snprintf(ibuf, sizeof(ibuf), "%lld",
+                               (long long)json_get_int(v));
+                s = ibuf;
+            } else if (!awn_u64_string(v, &s)) {
+                rpc_arg_builder_free(&p);
+                char msg[160];
+                (void)snprintf(msg, sizeof(msg),
+                    "%s must be an unsigned decimal string",
+                    leaf->args[i].key);
+                awn_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                         ZCL_COMMAND_EXIT_INVALID, "INVALID_INPUT",
+                         "normalize", msg, path);
+                return;
+            }
+            rpc_arg_builder_push_str(&p, s);
+            break;
+        }
         case AWN_STR:
         default: {
             const char *s = v ? json_get_str(v) : NULL;
@@ -382,180 +406,14 @@ static void awn_run(const struct zcl_command_request *request,
     reply->error.mutated = true;
 }
 
-/* ── ZSLP tokens ─────────────────────────────────────────────────────── */
-
-void zcl_native_handle_token_create(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    static const struct awn_leaf leaf = {
-        .action = "token-create", .method = "zslp_createtoken_tx",
-        .plan_commit = true, .require_status = "broadcast",
-        .degraded_code = "TOKEN_NOT_BROADCAST",
-        .degraded_message = "the ZSLP genesis transaction was not broadcast",
-        .args = {
-            { "ticker", AWN_STR, true }, { "name", AWN_STR, true },
-            { "decimals", AWN_INT, true }, { "supply", AWN_INT, true },
-            { NULL, AWN_STR, false },
-        },
-    };
-    awn_run(request, reply, &leaf);
-}
-
-void zcl_native_handle_token_send(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    static const struct awn_leaf leaf = {
-        .action = "token-send", .method = "zslp_send_tx",
-        .plan_commit = true, .require_status = "broadcast",
-        .degraded_code = "TOKEN_NOT_BROADCAST",
-        .degraded_message = "the ZSLP send transaction was not broadcast",
-        .args = {
-            { "token_id", AWN_STR, true }, { "to", AWN_STR, true },
-            { "units", AWN_INT, true }, { NULL, AWN_STR, false },
-        },
-    };
-    awn_run(request, reply, &leaf);
-}
-
-void zcl_native_handle_token_mint(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    static const struct awn_leaf leaf = {
-        .action = "token-mint", .method = "zslp_mint_tx",
-        .plan_commit = true, .require_status = "broadcast",
-        .degraded_code = "TOKEN_NOT_BROADCAST",
-        .degraded_message = "the ZSLP mint transaction was not broadcast",
-        .args = {
-            { "token_id", AWN_STR, true }, { "to", AWN_STR, true },
-            { "units", AWN_INT, true }, { NULL, AWN_STR, false },
-        },
-    };
-    awn_run(request, reply, &leaf);
-}
-
 /* ── ZCL Names (ZNAM) ───────────────────────────────────────────────── */
-
-/* Shared by every ZNAM write: the RPC answers status="broadcast" once the tx
- * is signed and admitted, and status="ready" (OP_RETURN hex only) when the
- * node carries no wallet/mempool. */
-#define AWN_ZNAM_DEGRADED_CODE "NAME_WRITE_NOT_BROADCAST"
-#define AWN_ZNAM_DEGRADED_MSG                                                 \
-    "the node built the ZNAM OP_RETURN but did not broadcast it — its "       \
-    "wallet/mempool context is not wired, so nothing was registered on-chain"
-
-void zcl_native_handle_name_register(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    static const struct awn_leaf leaf = {
-        .action = "name-register", .method = "name_register",
-        .plan_commit = true, .require_status = "broadcast",
-        .degraded_code = AWN_ZNAM_DEGRADED_CODE,
-        .degraded_message = AWN_ZNAM_DEGRADED_MSG,
-        .args = {
-            { "name", AWN_STR, true },
-            { "type", AWN_STR, true },
-            { "value", AWN_STR, true },
-            { NULL, AWN_STR, false },
-        },
-    };
-    awn_run(request, reply, &leaf);
-}
-
-void zcl_native_handle_name_update(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    static const struct awn_leaf leaf = {
-        .action = "name-update", .method = "name_update",
-        .plan_commit = true, .require_status = "broadcast",
-        .degraded_code = AWN_ZNAM_DEGRADED_CODE,
-        .degraded_message = AWN_ZNAM_DEGRADED_MSG,
-        .args = {
-            { "name", AWN_STR, true },
-            { "type", AWN_STR, true },
-            { "value", AWN_STR, true },
-            { NULL, AWN_STR, false },
-        },
-    };
-    awn_run(request, reply, &leaf);
-}
-
-void zcl_native_handle_name_transfer(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    static const struct awn_leaf leaf = {
-        .action = "name-transfer", .method = "name_transfer",
-        .plan_commit = true, .require_status = "broadcast",
-        .degraded_code = AWN_ZNAM_DEGRADED_CODE,
-        .degraded_message = AWN_ZNAM_DEGRADED_MSG,
-        .args = {
-            { "name", AWN_STR, true },
-            { "new_owner", AWN_STR, true },
-            { NULL, AWN_STR, false },
-        },
-    };
-    awn_run(request, reply, &leaf);
-}
-
-void zcl_native_handle_name_renew(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    static const struct awn_leaf leaf = {
-        .action = "name-renew", .method = "name_renew",
-        .plan_commit = true, .require_status = "broadcast",
-        .degraded_code = AWN_ZNAM_DEGRADED_CODE,
-        .degraded_message = AWN_ZNAM_DEGRADED_MSG,
-        .args = {
-            { "name", AWN_STR, true },
-            { NULL, AWN_STR, false },
-        },
-    };
-    awn_run(request, reply, &leaf);
-}
-
-void zcl_native_handle_name_set_record(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    static const struct awn_leaf leaf = {
-        .action = "name-set-record", .method = "name_set_record",
-        .plan_commit = true, .require_status = "broadcast",
-        .degraded_code = AWN_ZNAM_DEGRADED_CODE,
-        .degraded_message = AWN_ZNAM_DEGRADED_MSG,
-        .args = {
-            { "name", AWN_STR, true },
-            { "type", AWN_STR, true },
-            { "value", AWN_STR, true },
-            { NULL, AWN_STR, false },
-        },
-    };
-    awn_run(request, reply, &leaf);
-}
-
-void zcl_native_handle_name_set_text(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    /* value is optional: name_set_text with no value clears the key. */
-    static const struct awn_leaf leaf = {
-        .action = "name-set-text", .method = "name_set_text",
-        .plan_commit = true, .require_status = "broadcast",
-        .degraded_code = AWN_ZNAM_DEGRADED_CODE,
-        .degraded_message = AWN_ZNAM_DEGRADED_MSG,
-        .args = {
-            { "name", AWN_STR, true },
-            { "key", AWN_STR, true },
-            { "value", AWN_STR, false },
-            { NULL, AWN_STR, false },
-        },
-    };
-    awn_run(request, reply, &leaf);
-}
 
 /* ── Messaging (ZMSG) ───────────────────────────────────────────────── */
 
-/* msg_send's first positional argument is the recipient, and its type depends
- * on the channel: a numeric connected-peer id for "p2p", a zs1... shielded
- * address for "onchain". The native leaf keeps them as two distinct, typed
- * input keys (peer_id / to) and picks the one the channel names, so a caller
- * cannot silently address the wrong channel. */
+/* msg_send's first positional argument is the recipient, typed by channel:
+ * numeric peer id for "p2p", zs1... address for "onchain". The leaf keeps
+ * two distinct typed keys (peer_id / to) and picks the one the channel
+ * names, so a caller cannot silently address the wrong channel. */
 void zcl_native_handle_message_send(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {

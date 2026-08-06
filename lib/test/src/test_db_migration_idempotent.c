@@ -230,6 +230,76 @@ static int t_reopen_is_idempotent(void)
     return failures;
 }
 
+static int t_market_content_registry_schema(void)
+{
+    int failures = 0;
+    char dir[256];
+    db_mig_path(dir, sizeof(dir), "market_content");
+    mkdir_p(dir);
+    char dbpath[512];
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("db_mig: v57-v60 app and intent resources install once") {
+        struct node_db ndb;
+        ASSERT(node_db_open(&ndb, dbpath));
+        ASSERT_EQ(node_db_schema_version(&ndb), NODE_DB_SCHEMA_LATEST);
+        node_db_close(&ndb);
+
+        sqlite3 *raw = NULL;
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM schema_migrations "
+            "WHERE version='057'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM schema_migrations "
+            "WHERE version='058'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM schema_migrations "
+            "WHERE version='059'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM schema_migrations "
+            "WHERE version='060'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master "
+            "WHERE type='table' AND name='market_contents'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND "
+            "name IN ('idx_market_contents_root',"
+            "'idx_market_contents_registered')") == 2);
+        ASSERT(db_mig_column_exists(raw, "vault_intents",
+                                    "application_kind"));
+        ASSERT(db_mig_column_exists(raw, "vault_intents",
+                                    "idempotency_key"));
+        ASSERT(db_mig_column_exists(raw, "vault_intents",
+                                    "request_digest"));
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND "
+            "name='idx_vault_intents_application_idempotency'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
+            "name IN ('market_downloads','market_download_chunks')") == 2);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND "
+            "name IN ('idx_market_downloads_state',"
+            "'idx_market_download_chunks_plan')") == 2);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
+            "name='vault_intent_inputs'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND "
+            "name='idx_vault_intent_inputs_plan'") == 1);
+        sqlite3_close(raw);
+
+        struct node_db reopened;
+        ASSERT(node_db_open(&reopened, dbpath));
+        ASSERT_EQ(node_db_schema_version(&reopened), NODE_DB_SCHEMA_LATEST);
+        node_db_close(&reopened);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 static int t_memory_open(void)
 {
     int failures = 0;
@@ -374,6 +444,7 @@ int test_db_migration_idempotent(void)
     failures += t_fresh_reaches_latest();
     failures += t_v20_wallet_notes_upgrade_adds_source();
     failures += t_reopen_is_idempotent();
+    failures += t_market_content_registry_schema();
     failures += t_memory_open();
     failures += t_turbo_mode_roundtrip();
     failures += t_newer_schema_refuses_open_before_staging_cleanup();

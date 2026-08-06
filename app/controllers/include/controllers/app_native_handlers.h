@@ -21,7 +21,8 @@
 extern "C" {
 #endif
 
-/* No args -> zslp_listtokens. */
+/* No args -> zslp_listtokens; wraps the RPC's bare array as
+ * {"tokens":[...]} — the native body contract requires an object. */
 char *zcl_native_zslp_listtokens_body(const struct json_value *args,
                                       struct zcl_native_body_err *err);
 
@@ -44,6 +45,10 @@ char *zcl_native_zmarket_list_body(const struct json_value *args,
 /* No args -> zmarket_status. */
 char *zcl_native_zmarket_status_body(const struct json_value *args,
                                      struct zcl_native_body_err *err);
+
+/* No args -> zmarket_content_list; output is path-free and owner-private. */
+char *zcl_native_zmarket_content_list_body(
+    const struct json_value *args, struct zcl_native_body_err *err);
 
 /* No args -> swap_chains. */
 char *zcl_native_swap_chains_body(const struct json_value *args,

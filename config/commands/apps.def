@@ -41,6 +41,127 @@ ZCL_COMMAND_COMPAT_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE | ZCL_COMMAND_TRANSPORT_RPC,
     "zclassic23 appprotocols")
 
+/* Semantic chain-transaction discovery.  This is deliberately separate from
+ * core.wallet.transaction.list, which lists one wallet's transaction history. */
+ZCL_COMMAND_BRANCH("app.transaction-types", "app",
+                   "Discover every semantic ZCL transaction shape and its safe workflow",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "app.transaction-types.list", "app.transaction-types", "",
+    "List base, overlay, composite, process-only, contained, and planned transaction types",
+    "The compile-time semantic transaction catalog: exact builder/commit/inspect "
+    "commands, chain encoding, privacy, network policy, current proof level, "
+    "and transaction-lab case for every known ZClassic23 transaction shape. "
+    "Discovery only; this leaf grants no wallet or broadcast authority.",
+    ZCL_COMMAND_EXTENDED_LIST_BUDGET,
+    "transactions,catalog,zcl,znam,zslp,zcode,sapling,htlc",
+    "zcl.command.empty_input.v1", "zcl.transaction_types.index.v2", "", "",
+    "zclassic23 app transaction-types list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_types_list)
+
+ZCL_COMMAND_READY_READ(
+    "app.transaction-types.show", "app.transaction-types", "",
+    "Inspect one semantic ZCL transaction type and its safe workflow",
+    "One exact catalog entry selected by type: its availability, chain encoding, "
+    "builder/commit/inspect commands, component commands, network containment, "
+    "proof level, and focused test group. Discovery only; it cannot spend.", 0,
+    "transactions,catalog,type,workflow", "zcl.transaction_type_ref.input.v1",
+    "zcl.transaction_type.v2", "type", "type",
+    "zclassic23 app transaction-types show --type=znam_register",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_type_show)
+
+ZCL_COMMAND_READY_READ(
+    "app.transaction-types.guide", "app.transaction-types", "",
+    "Get one AI-ready transaction workflow with exact command contracts",
+    "Joins one semantic transaction type to the live native command registry. "
+    "Returns role-labeled builder, commit, component, and inspection contracts "
+    "with exact schemas, allowed keys, examples, risk, authority, confirmation "
+    "mode, and a fail-closed execution decision. Discovery only; it cannot "
+    "create a plan, authorize a wallet, sign, or broadcast.",
+    ZCL_COMMAND_EXTENDED_LIST_BUDGET,
+    "transactions,catalog,type,workflow,ai,schema,plan,commit",
+    "zcl.transaction_type_ref.input.v1", "zcl.transaction_type_guide.v1",
+    "type", "type",
+    "zclassic23 app transaction-types guide --type=znam_register",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_type_guide)
+
+ZCL_COMMAND_READY_READ(
+    "app.transaction-types.command", "app.transaction-types", "",
+    "Reverse-map one native command to every transaction workflow it can serve",
+    "Joins one exact native command leaf to every semantic transaction type "
+    "that names it as builder, plan, commit, alternate route, component, or "
+    "inspection. An unmapped leaf is explicitly unclassified and is never "
+    "claimed to be off-chain merely because the catalog lacks a row. Returns "
+    "only registry and compile-time catalog facts; it grants no wallet or "
+    "broadcast authority.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "transactions,catalog,command,reverse,workflow,ai,audit",
+    "zcl.transaction_command_ref.input.v1", "zcl.transaction_command.v1",
+    "path", "path",
+    "zclassic23 app transaction-types command core.wallet.transaction.send",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_command)
+
+ZCL_COMMAND_READY_READ(
+    "app.transaction-types.wire", "app.transaction-types", "",
+    "List every consensus transaction wire era and script-processing bucket",
+    "The finite source-derived wire catalog: legacy v1/v2, Overwinter v3, "
+    "Sapling v4, their shielded proof/component gates, all standard output "
+    "script classes plus the nonstandard consensus bucket, and the generic "
+    "opaque-memo/unknown-OP_RETURN paths. This complements semantic workflows "
+    "without pretending arbitrary scripts or future application tags are a "
+    "finite list. Discovery only; it cannot construct or broadcast.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "transactions,wire,version,overwinter,sapling,sprout,script,op_return",
+    "zcl.command.empty_input.v1", "zcl.transaction_wire_catalog.v1", "", "",
+    "zclassic23 app transaction-types wire",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_wire_catalog)
+
+ZCL_COMMAND_READY_READ(
+    "app.transaction-types.micro-lab", "app.transaction-types", "",
+    "Inspect the checked 100-transaction micro-lab campaign or one numbered slot",
+    "The compile-time mainnet-micro-100-v1 plan: 100 exact 1,000-zatoshi "
+    "recipient transactions across 14 amount-bearing semantic types, current "
+    "typed-wallet fee, setup and lifetime envelopes, prerequisites, and the "
+    "next typed guide input. This is discovery only: it reads no wallet or "
+    "notebook and cannot plan, reserve, sign, rebalance, or broadcast.",
+    ZCL_COMMAND_EXTENDED_LIST_BUDGET,
+    "transactions,micro-lab,campaign,ai,fee,budget,slot",
+    "zcl.transaction_micro_lab.input.v1", "zcl.transaction_micro_lab.v1",
+    "slot", "slot",
+    "zclassic23 app transaction-types micro-lab --slot=1",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_transaction_micro_lab)
+
 ZCL_COMMAND_BRANCH("app.invoke", "app", "Invoke a manifest-owned App route",
                    ZCL_COMMAND_LAYER_APP)
 

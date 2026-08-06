@@ -55,6 +55,7 @@
  * the anchor is bound in section 23 and the packed nullifier in section 28. */
 
 #include "sapling/sapling_circuit.h"
+#include "sapling/sapling_prover.h"
 #include "sapling/circuit_bits.h"
 #include "sapling/circuit_gadgets.h"
 #include "sapling/circuit_merkle.h"
@@ -944,10 +945,9 @@ void sapling_spend_prover_native_status(struct spend_prover_native_status *out)
         out->sections_ported = nsec;
         out->constraints_ported = cs.num_constraints;
         if (nsec >= SPEND_CIRCUIT_TOTAL_SECTIONS) {
-            /* All sections synthesize. Round-trip readiness still requires a
-             * verifier-accepted native proof; that promotion is done by the
-             * self-test, not by mere section coverage — stay false here. */
-            out->next_blocker = "port complete (round-trip verification pending)";
+            out->roundtrip_ready = zclassic_sapling_prover_is_ready();
+            out->next_blocker = out->roundtrip_ready ? "none (native proof round-trip ready)"
+                : "port complete (round-trip self-test pending)";
         } else {
             out->next_blocker = SPEND_SECTION_ROADMAP[nsec];
         }

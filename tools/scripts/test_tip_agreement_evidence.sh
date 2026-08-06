@@ -111,6 +111,8 @@ run_probe() {
     if [ "$#" -ge 4 ]; then shift 4; else shift 3; fi
     env "ZCL_PARITY_LEDGER_DIR=$dir" \
         "ZCL_PARITY_NOW=$ts" \
+        "ZCL_PARITY_CANON_DATADIR=/fixture/canonical" \
+        "ZCL_PARITY_CANON_RPCPORT=18232" \
         "ZCL_PARITY_SQL_CMD=$sqlcmd" \
         "ZCL_PARITY_HASH_CMD=$hashcmd" \
         "ZCL_PARITY_STATE_CMD=printf '%s' '$(state_stub "$HEIGHT")'" \

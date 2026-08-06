@@ -25,9 +25,17 @@
 /* For the SHIELDED gate (test_store_e2e_shielded): a real Sapling output
  * built by the production payer path, ivk-decrypted by a merchant wallet. */
 #include "core/uint256.h"
+#include "consensus/upgrades.h"
 #include "primitives/transaction.h"
 #include "sapling/constants.h"
+#include "sapling/fr.h"
 #include "sapling/sapling.h"
+#include "script/sighashtype.h"
+#include "sim/simnet.h"
+#include "sim/simnet_sapling.h"
+#include "support/cleanse.h"
+#include "validation/main_constants.h"
+#include "validation/sighash.h"
 #include "wallet/wallet.h"
 #include "wallet/sapling_keys.h"
 #include "util/safe_alloc.h"
@@ -454,6 +462,27 @@ int test_store_e2e_gate(void)
             }
         }
 
+        /* Regression (C5 collect wedge, second half): the canonical token
+         * key is a 64-hex-char txid. A token[64] route buffer truncated it
+         * to 63 chars (store_parse_query_field caps at out_max-1), the
+         * validator rejected the prefix as a truncated-txid look-alike, and
+         * the gate answered 400 to EVERY full-txid request — only the
+         * 11-char ticker form below ever worked. Assert a full-txid request
+         * now REACHES the gate: honest 403 balance denial, never the 400
+         * "Invalid access request" parse failure. */
+        if (ok) {
+            fail_step = "full-txid token reaches the gate";
+            n = store_handle_request("GET",
+                "/store/access?addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
+                "&token=44A568A771FE2BE73B7181483387EC331501DBCE329615139"
+                "AA1254FFECC7135",
+                NULL, 0, resp, sizeof(resp), datadir);
+            ok = n > 0;
+            ok = ok && strstr((char *)resp, "Invalid access request") == NULL;
+            ok = ok && strstr((char *)resp, "403 Forbidden") != NULL;
+            ok = ok && strstr((char *)resp, "Access Denied") != NULL;
+        }
+
         if (ok) {
             printf("OK (order=%lld payment=%s balance=10)\n",
                    (long long)summaries[0].id, order.payment_addr);
@@ -496,7 +525,8 @@ static bool p11_6_build_paid_output_tx(struct transaction *tx,
                                        const uint8_t to_d[11],
                                        const uint8_t to_pk_d[32],
                                        uint64_t value,
-                                       int64_t order_id)
+                                       int64_t order_id,
+                                       uint8_t output_rcv[32])
 {
     uint8_t ovk[32];
     memset(ovk, 0x5a, 32);
@@ -518,12 +548,14 @@ static bool p11_6_build_paid_output_tx(struct transaction *tx,
 
     if (!sapling_build_output_description(ovk, to_d, to_pk_d, value, memo,
                                           od_cv, od_cm, od_epk,
-                                          od_enc, od_out, od_proof, NULL))
+                                          od_enc, od_out, od_proof,
+                                          output_rcv))
         return false;
 
     transaction_init(tx);
-    tx->version = 4;
+    tx->version = SAPLING_TX_VERSION;
     tx->overwintered = true;
+    tx->version_group_id = SAPLING_VERSION_GROUP_ID;
     tx->value_balance = -(int64_t)value;
     tx->v_shielded_output = zcl_calloc(1, sizeof(struct output_description),
                                        "p11_6_output_desc");
@@ -543,13 +575,57 @@ static bool p11_6_build_paid_output_tx(struct transaction *tx,
     return true;
 }
 
+static bool p11_6_bind_transparent_input(
+    struct transaction *tx, const struct uint256 *funding_txid,
+    const uint8_t output_rcv[32], uint32_t branch_id)
+{
+    if (!tx || !funding_txid || !output_rcv ||
+        !transaction_alloc(tx, 1, 0))
+        return false;
+    tx->vin[0].prevout.hash = *funding_txid;
+    tx->vin[0].prevout.n = 0;
+    tx->vin[0].sequence = UINT32_MAX;
+    {
+        static const uint8_t placeholder_sig[] = {0x00, 0x00};
+        script_set(&tx->vin[0].script_sig, placeholder_sig,
+                   sizeof(placeholder_sig));
+    }
+
+    struct precomputed_tx_data txdata;
+    precompute_tx_data(tx, &txdata);
+    struct script empty;
+    script_init(&empty);
+    struct sighash_type hash_type = {.raw = SIGHASH_ALL};
+    struct uint256 sighash;
+    if (!signature_hash(&empty, tx, NOT_AN_INPUT, hash_type, 0,
+                        branch_id, &txdata, &sighash))
+        return false;
+
+    struct fs rcv, neg, bsk;
+    fs_zero(&bsk);
+    if (!fs_from_bytes(&rcv, output_rcv))
+        return false;
+    fs_neg(&neg, &rcv);
+    fs_add(&bsk, &bsk, &neg);
+    uint8_t bsk_bytes[32];
+    fs_to_bytes(bsk_bytes, &bsk);
+    bool bound = sapling_create_binding_sig(
+        bsk_bytes, sighash.data, tx->binding_sig);
+    memory_cleanse(bsk_bytes, sizeof(bsk_bytes));
+    memory_cleanse(&bsk, sizeof(bsk));
+    if (bound)
+        transaction_compute_hash(tx);
+    return bound;
+}
+
 /* Persist `rn` (a note RECOVERED by ivk-decrypt) into wallet_sapling_notes at
- * `pay_addr`, confirmed at height 97. Every consensus-relevant field comes from
- * the decrypt; only address (string column) and block_height are set by us. */
+ * `pay_addr`, confirmed at `block_height`. Every consensus-relevant field comes
+ * from the decrypt; only address (string column) and block height are set here. */
 static bool p11_6_persist_recovered_note(struct node_db *ndb,
                                          const struct sapling_received_note *rn,
                                          const struct uint256 *txid,
-                                         const char *pay_addr)
+                                         const char *pay_addr,
+                                         int block_height)
 {
     struct db_sapling_note note;
     memset(&note, 0, sizeof(note));
@@ -564,7 +640,7 @@ static bool p11_6_persist_recovered_note(struct node_db *ndb,
     memcpy(note.pk_d, rn->pk_d, 32);
     memcpy(note.cm, rn->cm, 32);
     memcpy(note.nullifier, rn->nf, 32);
-    note.block_height = 97;
+    note.block_height = block_height;
     snprintf(note.address, sizeof(note.address), "%s", pay_addr);
     return db_sapling_note_save(ndb, &note);
 }
@@ -594,6 +670,9 @@ int test_store_e2e_shielded(void)
     struct wallet *w = NULL;
     struct transaction tx, tx2;
     bool tx_built = false, tx2_built = false;
+    struct simnet sim;
+    bool sim_ready = false;
+    int payment_height = 0;
     bool ok = true;
     size_t n = 0;
     int order_count = 0;
@@ -655,8 +734,6 @@ int test_store_e2e_shielded(void)
         }
         fail_step = "order has positive amount";
         ok = ok && amount > 0;
-        fail_step = "seed tip block";
-        ok = ok && p11_5_seed_tip_block(&ndb, 100);
     }
 
     /* (2) Merchant wallet derives the address whose ivk will decrypt payments. */
@@ -675,22 +752,74 @@ int test_store_e2e_shielded(void)
         ok = ok && sapling_keystore_new_address(&w->sapling_keys, to_d, to_pk_d);
     }
 
+    /* A real isolated transparent input funds the shielded order payment.
+     * Proof verification remains at the same deferred boundary used by the
+     * Sapling simnet harness, while note encryption, binding signature,
+     * commitment-tree application, and connect_block are all production. */
+    struct uint256 funding_txid;
+    int payment_target = 0;
+    if (ok) {
+        fail_step = "shielded simnet initialize";
+        ok = simnet_init(&sim);
+        sim_ready = ok;
+    }
+    if (ok) {
+        enum { P11_SAPLING_HEIGHT = 100 };
+        simnet_activate_sapling_at(&sim, P11_SAPLING_HEIGHT);
+        fail_step = "enable shielded commitment tree";
+        ok = simnet_enable_sapling_tree(&sim);
+        simnet_enable_contextual_check(&sim, false);
+        struct script funding_script;
+        script_init(&funding_script);
+        static const uint8_t p2pkh_prefix[] = {0x76, 0xa9, 0x14};
+        script_set(&funding_script, p2pkh_prefix, sizeof(p2pkh_prefix));
+        int funding_height = simnet_tip_height(&sim) + 1;
+        fail_step = "mint and mature shielded payment funding";
+        ok = ok && simnet_mint_coinbase_to(
+            &sim, &funding_script, amount + 10000, &funding_txid);
+        ok = ok && simnet_mint_to_height(
+            &sim, funding_height + COINBASE_MATURITY);
+        payment_target = simnet_tip_height(&sim) + 1;
+    }
+
     /* (3) REAL payment: build a Sapling output to the merchant carrying the
      * order memo, ivk-DECRYPT it, and persist the RECOVERED note. */
+    uint8_t payment_rcv[32] = {0};
     if (ok) {
         tx_built = p11_6_build_paid_output_tx(&tx, to_d, to_pk_d,
-                                              (uint64_t)amount, order_id);
+                                              (uint64_t)amount, order_id,
+                                              payment_rcv);
         fail_step = "build paid output (params-free)";
         ok = tx_built;
     }
+    if (ok) {
+        uint32_t branch_id = consensus_current_epoch_branch_id(
+            payment_target, &sim.params.consensus);
+        fail_step = "bind transparent funding input to shielded output";
+        ok = p11_6_bind_transparent_input(
+            &tx, &funding_txid, payment_rcv, branch_id);
+    }
     struct uint256 txid;
-    memset(&txid, 0, sizeof(txid));
-    txid.data[0] = 0x5C;
-    txid.data[1] = (uint8_t)(order_id & 0xff);
+    txid = tx_built ? tx.hash : (struct uint256){0};
     if (ok) {
         int found = wallet_try_sapling_decrypt(w, &tx, &txid);
         fail_step = "merchant ivk-decrypts the paying note";
         ok = found == 1 && w->num_sapling_notes == 1;
+    }
+    if (ok) {
+        struct output_description *shielded_owned = tx.v_shielded_output;
+        fail_step = "exact memo-bound payment passes connect_block";
+        ok = simnet_mint_txs(&sim, &tx, 1);
+        free(shielded_owned);
+        tx_built = false; /* simnet consumed the ordinary tx allocations */
+        payment_height = simnet_tip_height(&sim);
+        ok = ok && payment_height == payment_target &&
+             simnet_sapling_tree_size(&sim) == 1 &&
+             !simnet_coin_value(&sim, &funding_txid, 0, NULL);
+    }
+    if (ok) {
+        fail_step = "seed three-confirmation projection tip";
+        ok = p11_5_seed_tip_block(&ndb, payment_height + 3);
     }
     if (ok) {
         const struct sapling_received_note *rn = &w->sapling_notes[0];
@@ -704,7 +833,8 @@ int test_store_e2e_shielded(void)
              memcmp(rn->memo, expect, (size_t)el) == 0 && rn->memo[el] == '\0';
         fail_step = "persist recovered note";
         ok = ok && p11_6_persist_recovered_note(&ndb, rn, &txid,
-                                                order.payment_addr);
+                                                order.payment_addr,
+                                                payment_height);
     }
 
     /* (4) The memo-bound finder credits this order; the legacy finder agrees
@@ -712,9 +842,11 @@ int test_store_e2e_shielded(void)
     if (ok) {
         fail_step = "memo-bound finder credits the order";
         ok = db_store_received_payment_for_memo(&ndb, order.payment_addr,
-                                                order_id, 100) == amount;
+                                                order_id,
+                                                payment_height) == amount;
         fail_step = "legacy address+amount finder also sees the note";
-        ok = ok && db_store_received_payment(&ndb, order.payment_addr, 100) == amount;
+        ok = ok && db_store_received_payment(
+            &ndb, order.payment_addr, payment_height) == amount;
     }
 
     /* (5) NEGATIVE: a REAL payment to the SAME address whose memo names a
@@ -722,7 +854,8 @@ int test_store_e2e_shielded(void)
      * finder wrongly counts both. This is the hole the memo bind closes. */
     if (ok) {
         tx2_built = p11_6_build_paid_output_tx(&tx2, to_d, to_pk_d,
-                                               (uint64_t)amount, other_order);
+                                               (uint64_t)amount, other_order,
+                                               NULL);
         fail_step = "build other-order payment";
         ok = tx2_built;
     }
@@ -738,18 +871,21 @@ int test_store_e2e_shielded(void)
     if (ok) {
         fail_step = "persist second recovered note";
         ok = p11_6_persist_recovered_note(&ndb, &w->sapling_notes[1], &txid2,
-                                          order.payment_addr);
+                                          order.payment_addr,
+                                          payment_height);
     }
     if (ok) {
         fail_step = "memo finder still credits ONLY this order's amount";
         ok = db_store_received_payment_for_memo(&ndb, order.payment_addr,
-                                                order_id, 100) == amount;
+                                                order_id,
+                                                payment_height) == amount;
         fail_step = "memo finder credits the OTHER order separately";
         ok = ok && db_store_received_payment_for_memo(&ndb, order.payment_addr,
-                                                      other_order, 100) == amount;
+                                                      other_order,
+                                                      payment_height) == amount;
         fail_step = "legacy finder over-counts both (the closed hole)";
-        ok = ok && db_store_received_payment(&ndb, order.payment_addr, 100)
-                   == amount * 2;
+        ok = ok && db_store_received_payment(
+            &ndb, order.payment_addr, payment_height) == amount * 2;
     }
 
     if (ndb.open)
@@ -758,6 +894,8 @@ int test_store_e2e_shielded(void)
         transaction_free(&tx);
     if (tx2_built)
         transaction_free(&tx2);
+    if (sim_ready)
+        simnet_free(&sim);
     if (w) {
         wallet_free(w);
         free(w);

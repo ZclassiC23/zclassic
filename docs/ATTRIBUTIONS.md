@@ -89,6 +89,51 @@ tree. Credited here for the script-format concept.
 Embedded database for the canonical UTXO store, wallet keystore, block
 index (with CRC), and application state.
 
+## RGFW 1.8.1 — zlib License
+
+**Repository:** https://github.com/ColleagueRiley/RGFW
+**Pinned revision:** `d96684e6877d3ef11c731b122b8949942ed071c9`
+**Vendored path:** `vendor/rgfw/`
+**Attribution:** Copyright © 2022-2025 Riley Mabb (@ColleagueRiley)
+
+The private software-window backend for `lib/presentation`. ZClassic23 exposes
+its own bounded bitmap ABI; no RGFW type crosses the public boundary.
+
+## QR Code generator 1.8.0 — MIT
+
+**Repository:** https://github.com/nayuki/QR-Code-generator
+**Pinned revision:** `720f62bddb7226106071d4728c292cb1df519ceb`
+**Vendored path:** `vendor/qrcodegen/`
+**Attribution:** Copyright © Project Nayuki
+
+The dependency-free QR Model 2 encoder behind `lib/encoding/qr`.
+
+## ZClassic logo — CC BY 4.0
+
+**Source:** https://commons.wikimedia.org/wiki/File:ZClassic_Logo.svg
+**Attribution:** @jojo, ZClassic Slack/Rocket.Chat, 2016-12-05
+
+`lib/presentation/src/zclassic_icon_mask.inc` is a 64px one-bit rasterization
+of the official mark. The shape and canonical `#C87035` color are unchanged.
+
+## stb_truetype — MIT or Public Domain
+
+**Repository:** https://github.com/nothings/stb
+**Pinned revision:** `2c980bb59875b0d32144a71867fbdebb2f77cd20`
+**Attribution:** Copyright © 2017 Sean Barrett
+
+The private antialiased font rasterizer behind the presentation canvas.
+
+## Noto Sans Basic Latin subset — SIL OFL 1.1
+
+**Repository:** https://github.com/notofonts/noto-fonts
+**Pinned revision:** `ffebf8c1ee449e544955a7e813c54f9b73848eac`
+**Attribution:** Copyright 2018 The Noto Project Authors
+
+The embedded Basic Latin font bytes behind dependency-free presentation text.
+The full upstream font is subset during vendoring; the exact recipe and both
+source/subset hashes are recorded in `vendor/typography/SOURCE`.
+
 ## AGENTS.md portable-standard (community convention) — no license
 
 **Reference:** https://www.augmentcode.com/guides/how-to-build-agents-md,

@@ -963,6 +963,24 @@ int test_rpc(void) {
         ok = ok && !rpc_should_convert_param("estimatefee", 1);
         ok = ok && rpc_should_convert_param("sendtoaddress", 1);
         ok = ok && !rpc_should_convert_param("sendtoaddress", 0);
+        ok = ok && rpc_should_convert_param("agentsession", 1);
+        ok = ok && !rpc_should_convert_param("agentsession", 0);
+
+        const char *agent_params[] = {
+            "custody", "{\"wallet_scope\":\"dev\"}"
+        };
+        struct json_value agent_result;
+        ok = ok && rpc_convert_values("agentsession", agent_params, 2,
+                                      &agent_result);
+        ok = ok && agent_result.type == JSON_ARR &&
+            json_size(&agent_result) == 2;
+        ok = ok && strcmp(json_get_str(json_at(&agent_result, 0)),
+                          "custody") == 0;
+        const struct json_value *agent_scope = json_at(&agent_result, 1);
+        ok = ok && agent_scope && agent_scope->type == JSON_OBJ &&
+            strcmp(json_get_str(json_get(agent_scope, "wallet_scope")),
+                   "dev") == 0;
+        json_free(&agent_result);
 
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }

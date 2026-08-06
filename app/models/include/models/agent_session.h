@@ -14,6 +14,7 @@
 
 #include "models/database.h"
 #include "models/activerecord.h"
+#include "models/wallet_identity.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -48,6 +49,12 @@ struct db_agent_session {
     int64_t created_at;
     int64_t expires_at;                              /* 0 = never */
     int revoked;                                     /* 0/1 */
+    /* Empty only on pre-v52 rows. Those rows remain readable and revocable,
+     * but no money authorization may infer a wallet for them. */
+    char wallet_scope[5];                            /* "dev" | "prod" */
+    char wallet_instance_id[WALLET_INSTANCE_ID_HEX_LEN + 1];
+    char wallet_genesis[WALLET_GENESIS_HEX_LEN + 1];
+    int64_t lifetime_spent_zat;                       /* never window-reset */
 };
 
 /* Lazily-initialized callback registry (before_validate hook). */
@@ -94,6 +101,8 @@ enum agent_session_authz {
     AGENT_SESSION_AUTHZ_TX_LIMIT,      /* over max_per_tx_zat */
     AGENT_SESSION_AUTHZ_WINDOW_LIMIT,  /* over max_per_window_zat */
     AGENT_SESSION_AUTHZ_RECIPIENT,     /* not on a non-empty allowlist */
+    AGENT_SESSION_AUTHZ_WALLET_UNBOUND,/* legacy session has no binding */
+    AGENT_SESSION_AUTHZ_WALLET_MISMATCH,/* requested/current wallet differs */
     AGENT_SESSION_AUTHZ_STORE,         /* bad args or the store rejected it */
 };
 
@@ -121,7 +130,9 @@ enum agent_session_authz {
  * `commit=false` evaluates without writing anything. */
 enum agent_session_authz agent_session_authorize(
     struct node_db *ndb, const char *session_id, int64_t amount_zat,
-    const char *recipient, int64_t now_epoch, bool commit,
+    const char *recipient, const char *wallet_scope,
+    const struct wallet_identity_row *current_wallet,
+    int64_t now_epoch, bool commit,
     int64_t *window_remaining_zat);
 
 /* Give a debit back: the spend it paid for never happened (a plan-only
@@ -136,6 +147,11 @@ bool agent_session_release(struct node_db *ndb, const char *session_id,
  * now_epoch (expires_at == 0 never expires). */
 bool agent_session_is_usable(struct node_db *ndb, const char *session_id,
                              int64_t now_epoch);
+
+/* Sum the durable lifetime allocation for one wallet scope. Returns -1 when
+ * the store is unavailable; zero is a real known zero. */
+int64_t agent_session_scope_lifetime_spent(struct node_db *ndb,
+                                           const char *wallet_scope);
 
 /* Bounded JSON dump for `dumpstate agent_sessions` (count + per-session
  * projection; recipient allowlist echoed, no secret material exists). */

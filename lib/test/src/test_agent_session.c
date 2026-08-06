@@ -38,6 +38,19 @@ static const char *const k_account_b = "t1AgentSessionTestAccountB000000000000";
 static const char *const k_sid_a = "0123456789abcdef0123456789abcdef";
 static const char *const k_sid_b = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 static const char *const k_sid_c = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+static const struct wallet_identity_row k_wallet = {
+    .wallet_instance_id = "11111111111111111111111111111111",
+    .network_genesis = { 0x42 },
+    .operator_lane = "canonical",
+    .created_at = 1,
+};
+
+/* Keep the pre-v52 accounting tests readable while driving the new binding
+ * arguments on every authorization. */
+#define agent_session_authorize(ndb_, sid_, amount_, recipient_, now_,       \
+                                commit_, remaining_)                         \
+    agent_session_authorize((ndb_), (sid_), (amount_), (recipient_), "prod", \
+                            &k_wallet, (now_), (commit_), (remaining_))
 
 /* node.db runs PRAGMA foreign_keys=ON, and agent_sessions.account REFERENCES
  * principals(address) — seed the principal rows first. */
@@ -68,6 +81,10 @@ static void mk_session(struct db_agent_session *s, const char *sid,
     s->created_at = 1000;
     s->expires_at = 0;                  /* never */
     s->revoked = 0;
+    snprintf(s->wallet_scope, sizeof(s->wallet_scope), "prod");
+    snprintf(s->wallet_instance_id, sizeof(s->wallet_instance_id), "%s",
+             k_wallet.wallet_instance_id);
+    wallet_identity_genesis_hex(&k_wallet, s->wallet_genesis);
 }
 
 static int open_db(struct node_db *ndb, char *dir, size_t dir_n,
@@ -172,6 +189,14 @@ static int test_list_for_account(void)
         struct db_agent_session s;
         mk_session(&s, k_sid_a, k_account);
         ASSERT(agent_session_save(&ndb, &s));
+        mk_session(&s, k_sid_b, k_account);
+        s.wallet_scope[0] = '\0';
+        s.wallet_instance_id[0] = '\0';
+        s.wallet_genesis[0] = '\0';
+        ASSERT(agent_session_save(&ndb, &s));
+        ASSERT_EQ((int)agent_session_authorize(&ndb, k_sid_b, 1, NULL, 1050,
+                                               true, NULL),
+                  (int)AGENT_SESSION_AUTHZ_WALLET_UNBOUND);
         mk_session(&s, k_sid_b, k_account);
         ASSERT(agent_session_save(&ndb, &s));
         mk_session(&s, k_sid_c, k_account_b);

@@ -14,9 +14,9 @@
  *      or explicitly unavailable — no kind may drop out of the catalog.
  *   4. CONTENT adapter against a real blob: show/list report present with
  *      the local_content_hash grade and chain_bound false; then the CAS
- *      chunk is deleted and the SAME query reports incomplete; then the
- *      manifest is deleted and it reports absent. No stale caching — the
- *      projection has nothing to go stale.
+ *      chunk is deleted and the SAME query reports incomplete; a malformed
+ *      manifest reports an integrity gap rather than absent or disappearing;
+ *      then deletion alone reports absent. No stale caching.
  *   5. ZCODE_PACKAGE adapter against a really published release: owner is
  *      the publisher key, revision is the publisher sequence, and the grade
  *      is local_signature because the envelope's signature is verified IN
@@ -66,6 +66,10 @@
 #include "vcs/package_recipe.h"
 #include "vcs/package_release.h"
 #include "vcs/package_store.h"
+
+/* Test-only seam for deterministic mutation between the hash and final
+ * fingerprint pass. Production callers only see the ordinary property API. */
+#include "../../metaverse/src/metaverse_priv.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -958,7 +962,7 @@ static int t_content_adapter(void)
              strcmp(mv_str(&c.reply.data, "evidence_grade"),
                     "local_content_hash") == 0 &&
              strcmp(mv_str(&c.reply.data, "evidence_source"),
-                    "vcs_package_manifest_root") == 0);
+                    "mv_manifest_verify_possession") == 0);
     MV_CHECK("content: the view is explicitly NOT chain-bound and carries "
              "no freshness height",
              !json_get_bool(json_get(&c.reply.data, "chain_bound")) &&
@@ -1004,10 +1008,20 @@ static int t_content_adapter(void)
     MV_CHECK("content: chunk accounting is complete",
              json_get_int(json_get(&c.reply.data, "chunk_total")) == 1 &&
              json_get_int(json_get(&c.reply.data, "chunks_present")) == 1 &&
+             json_get_int(json_get(&c.reply.data, "chunks_verified")) == 1 &&
+             json_get_int(json_get(&c.reply.data, "bytes_verified")) ==
+                 (int64_t)(sizeof(bytes) - 1u) &&
+             json_get_bool(json_get(&c.reply.data,
+                                    "manifest_root_verified")) &&
+             json_get_bool(json_get(&c.reply.data,
+                                    "verification_complete")) &&
+             strcmp(mv_str(&c.reply.data, "verification_gap"), "") == 0 &&
              json_get_int(json_get(&c.reply.data, "file_count")) == 1);
     /* Keep the chunk hash for the deletion step below. */
     snprintf(chunk_hex, sizeof(chunk_hex), "%s",
              mv_str(&c.reply.data, "content_root"));
+    snprintf(chunk_path, sizeof(chunk_path), "%s/cas/sha3/%.2s/%s",
+             zcode_dir, chunk_hex, chunk_hex);
     mv_cmd_free(&c);
 
     /* list — the blob is in the catalog, and every kind reports a row. */
@@ -1016,6 +1030,10 @@ static int t_content_adapter(void)
              c.reply.status == ZCL_COMMAND_STATUS_PASSED);
     MV_CHECK("content: the blob appears in the unfiltered catalog",
              mv_find_item(&c.reply.data, id_text) != NULL);
+    MV_CHECK("content: a complete store reports no hidden integrity gap",
+             json_get_bool(json_get(&c.reply.data, "integrity_ok")) &&
+             json_get_int(json_get(&c.reply.data,
+                                   "integrity_gap_count")) == 0);
     MV_CHECK("content: every property kind produces a coverage row",
              json_get_int(json_get(&c.reply.data, "kinds_scanned")) ==
                  (int64_t)METAVERSE_KIND_COUNT - 1);
@@ -1035,10 +1053,85 @@ static int t_content_adapter(void)
     }
     mv_cmd_free(&c);
 
+    /* A pathname-shaped CAS entry is not possession. Exercise every cheap
+     * false-positive shape before the missing-file case below. */
+    {
+        uint8_t wrong[sizeof(bytes) - 1u];
+        FILE *f;
+
+        memset(wrong, 0xa5, sizeof(wrong));
+        f = fopen(chunk_path, "wb");
+        MV_CHECK("content: same-length wrong bytes are planted",
+                 f && fwrite(wrong, 1, sizeof(wrong), f) == sizeof(wrong));
+        if (f)
+            fclose(f);
+        mv_show(&c, dd, id_text);
+        MV_CHECK("content: same-length wrong bytes never become PRESENT",
+                 c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+                 strcmp(mv_str(&c.reply.data, "status"), "incomplete") == 0 &&
+                 json_get_int(json_get(&c.reply.data, "chunks_present")) == 1 &&
+                 json_get_int(json_get(&c.reply.data, "chunks_verified")) == 0 &&
+                 !json_get_bool(json_get(&c.reply.data,
+                                         "verification_complete")) &&
+                 strcmp(mv_str(&c.reply.data, "verification_gap"),
+                        "chunk_hash_mismatch") == 0 &&
+                 strcmp(mv_str(&c.reply.data, "actions_csv"), "") == 0);
+        mv_cmd_free(&c);
+
+        f = fopen(chunk_path, "wb");
+        MV_CHECK("content: canonical bytes restore after hash mismatch",
+                 f && fwrite(bytes, 1, sizeof(bytes) - 1u, f) ==
+                          sizeof(bytes) - 1u);
+        if (f)
+            fclose(f);
+        MV_CHECK("content: canonical CAS path is removed for symlink case",
+                 unlink(chunk_path) == 0);
+        MV_CHECK("content: symlink is planted at the CAS coordinate",
+                 symlink("/dev/null", chunk_path) == 0);
+        mv_show(&c, dd, id_text);
+        MV_CHECK("content: O_NOFOLLOW rejects a symlink as possession",
+                 strcmp(mv_str(&c.reply.data, "status"), "incomplete") == 0 &&
+                 strcmp(mv_str(&c.reply.data, "verification_gap"),
+                        "chunk_symlink") == 0 &&
+                 strcmp(mv_str(&c.reply.data, "actions_csv"), "") == 0);
+        mv_cmd_free(&c);
+        MV_CHECK("content: symlink is removed", unlink(chunk_path) == 0);
+
+        f = fopen(chunk_path, "wb");
+        MV_CHECK("content: zero-length CAS object is planted", f != NULL);
+        if (f)
+            fclose(f);
+        mv_show(&c, dd, id_text);
+        MV_CHECK("content: wrong length never becomes possession",
+                 strcmp(mv_str(&c.reply.data, "status"), "incomplete") == 0 &&
+                 strcmp(mv_str(&c.reply.data, "verification_gap"),
+                        "chunk_length_mismatch") == 0 &&
+                 strcmp(mv_str(&c.reply.data, "actions_csv"), "") == 0);
+        mv_cmd_free(&c);
+
+        MV_CHECK("content: zero-length object is removed",
+                 unlink(chunk_path) == 0);
+        MV_CHECK("content: directory is planted at the CAS coordinate",
+                 mkdir(chunk_path, 0700) == 0);
+        mv_show(&c, dd, id_text);
+        MV_CHECK("content: non-regular CAS coordinate never becomes present",
+                 strcmp(mv_str(&c.reply.data, "status"), "incomplete") == 0 &&
+                 strcmp(mv_str(&c.reply.data, "verification_gap"),
+                        "chunk_not_regular") == 0 &&
+                 strcmp(mv_str(&c.reply.data, "actions_csv"), "") == 0);
+        mv_cmd_free(&c);
+        MV_CHECK("content: directory coordinate is removed",
+                 rmdir(chunk_path) == 0);
+        f = fopen(chunk_path, "wb");
+        MV_CHECK("content: canonical bytes restore after shape cases",
+                 f && fwrite(bytes, 1, sizeof(bytes) - 1u, f) ==
+                          sizeof(bytes) - 1u);
+        if (f)
+            fclose(f);
+    }
+
     /* THE NO-STALE-CACHE PROOF, step 1: delete the CAS byte. */
     MV_CHECK("content: the chunk hash was captured", strlen(chunk_hex) == 64);
-    snprintf(chunk_path, sizeof(chunk_path), "%s/cas/sha3/%.2s/%s", zcode_dir,
-             chunk_hex, chunk_hex);
     MV_CHECK("content: the CAS object exists before deletion",
              access(chunk_path, F_OK) == 0);
     MV_CHECK("content: the CAS object is deleted", unlink(chunk_path) == 0);
@@ -1056,25 +1149,71 @@ static int t_content_adapter(void)
     MV_CHECK("content: an incomplete property supports no ACTION at all",
              strcmp(mv_str(&c.reply.data, "actions_csv"), "") == 0);
     MV_CHECK("content: the incomplete view says why",
-             strstr(mv_str(&c.reply.data, "reason"), "CAS") != NULL);
+             strcmp(mv_str(&c.reply.data, "verification_gap"),
+                    "chunk_missing") == 0 &&
+             strstr(mv_str(&c.reply.data, "reason"), "chunk_missing") != NULL);
     mv_cmd_free(&c);
 
-    /* Step 2: delete the manifest — the object is gone entirely. */
+    /* Step 2: corruption is not absence, and must not vanish from list
+     * accounting without an explicit integrity gap. */
     snprintf(manifest_path, sizeof(manifest_path), "%s/manifests/%s",
              zcode_dir, root_hex);
+    {
+        FILE *f = fopen(manifest_path, "wb");
+        bool wrote = f && fwrite("x", 1, 1, f) == 1;
+
+        if (f)
+            fclose(f);
+        MV_CHECK("content: the manifest is replaced by malformed bytes",
+                 wrote);
+    }
+    mv_show(&c, dd, id_text);
+    MV_CHECK("content: malformed is unknown, not absent or determined",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             strcmp(mv_str(&c.reply.data, "status"), "unknown") == 0 &&
+             !json_get_bool(json_get(&c.reply.data, "determined")) &&
+             strcmp(mv_str(&c.reply.data, "evidence_grade"), "unknown") == 0 &&
+             strcmp(mv_str(&c.reply.data, "actions_csv"), "") == 0 &&
+             strstr(mv_str(&c.reply.data, "reason"), "invalid") != NULL);
+    mv_cmd_free(&c);
+
+    mv_list(&c, dd, "content");
+    {
+        const struct json_value *row =
+            mv_find_kind(&c.reply.data, "content");
+        MV_CHECK("content: malformed cannot disappear as an empty inventory",
+                 c.reply.status == ZCL_COMMAND_STATUS_PASSED && row &&
+                 !json_get_bool(json_get(&c.reply.data, "integrity_ok")) &&
+                 json_get_int(json_get(&c.reply.data,
+                                       "integrity_gap_count")) == 1 &&
+                 json_get_bool(json_get(row, "integrity_checked")) &&
+                 !json_get_bool(json_get(row, "integrity_ok")) &&
+                 json_get_int(json_get(row, "integrity_gap_count")) == 1 &&
+                 strstr(mv_str(row, "integrity_reason"), "invalid") != NULL);
+    }
+    mv_cmd_free(&c);
+
+    /* Step 3: deletion alone means the object is gone entirely. */
     MV_CHECK("content: the manifest is deleted", unlink(manifest_path) == 0);
     mv_show(&c, dd, id_text);
     MV_CHECK("content: a removed object reads as absent, determined",
              c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
              strcmp(mv_str(&c.reply.data, "status"), "absent") == 0 &&
-             json_get_bool(json_get(&c.reply.data, "determined")));
+             json_get_bool(json_get(&c.reply.data, "determined")) &&
+             strcmp(mv_str(&c.reply.data, "evidence_grade"),
+                    "local_store_read") == 0 &&
+             !json_get_bool(json_get(&c.reply.data,
+                                     "manifest_root_verified")) &&
+             !json_get_bool(json_get(&c.reply.data,
+                                     "verification_complete")));
     mv_cmd_free(&c);
 
     mv_list(&c, dd, "content");
     MV_CHECK("content: the removed blob is gone from the catalog too",
              c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
              mv_find_item(&c.reply.data, id_text) == NULL &&
-             json_get_int(json_get(&c.reply.data, "rendered")) == 0);
+             json_get_int(json_get(&c.reply.data, "rendered")) == 0 &&
+             json_get_bool(json_get(&c.reply.data, "integrity_ok")));
     mv_cmd_free(&c);
 
     (void)vcs_package_cas_present_in(zcode_dir, chunk_hash);
@@ -1326,6 +1465,33 @@ static bool mv_publish(const char *dd, struct mv_pkg *p, char pub_hex[67],
     return ok;
 }
 
+struct mv_verify_mutation {
+    const char *path;
+    size_t length;
+    bool fired;
+};
+
+static void mv_mutate_after_first_hash(void *context,
+                                       uint32_t chunks_verified)
+{
+    struct mv_verify_mutation *mutation = context;
+    uint8_t *wrong;
+    FILE *f;
+
+    if (!mutation || mutation->fired || chunks_verified != 1)
+        return;
+    wrong = malloc(mutation->length);
+    if (!wrong)
+        return;
+    memset(wrong, 0x5a, mutation->length);
+    f = fopen(mutation->path, "wb");
+    mutation->fired =
+        f && fwrite(wrong, 1, mutation->length, f) == mutation->length;
+    if (f)
+        fclose(f);
+    free(wrong);
+}
+
 /* ── 5: ZCODE_PACKAGE adapter against a real publication ──────────── */
 
 static int t_zcode_adapter(void)
@@ -1337,6 +1503,7 @@ static int t_zcode_adapter(void)
     char pub_hex[67] = {0};
     char release_id_hex[65] = {0};
     char release_path[768];
+    char manifest_path[768];
     struct mv_pkg p;
     struct mv_cmd c;
     bool published;
@@ -1354,6 +1521,63 @@ static int t_zcode_adapter(void)
         return failures;
     }
     snprintf(id_text, sizeof(id_text), "zcode_package:%s", p.root_hex);
+
+    /* Deterministic TOCTOU proof: mutate the first coordinate after it was
+     * hashed but before the verifier's final fingerprint pass. */
+    {
+        static const char first_file[] =
+            "MIT License\n\nPermission is hereby granted.\n";
+        struct mv_manifest_read manifest;
+        struct mv_verify_mutation mutation;
+        char first_hash[65];
+        char first_path[768];
+        uint64_t bytes_used = 0;
+        uint32_t operations_used = 0;
+        FILE *f;
+
+        mv_hex32(p.manifest.files[0].chunk_hashes, first_hash);
+        snprintf(first_path, sizeof(first_path), "%s/cas/sha3/%.2s/%s",
+                 zcode_dir, first_hash, first_hash);
+        mutation = (struct mv_verify_mutation){
+            .path = first_path,
+            .length = sizeof(first_file) - 1u,
+            .fired = false,
+        };
+        MV_CHECK("zcode: canonical manifest opens for bounded race proof",
+                 mv_manifest_read(zcode_dir, p.root_hex, &manifest) ==
+                     MV_MANIFEST_READ_OK);
+        mv_manifest_verify_possession_test(
+            zcode_dir, &manifest, MV_PROPERTY_VERIFY_BYTES,
+            MV_PROPERTY_SHOW_VERIFY_OPS, mv_mutate_after_first_hash,
+            &mutation, &bytes_used, &operations_used);
+        MV_CHECK("zcode: mutation between hash and final recheck is caught",
+                 mutation.fired && !manifest.verification_complete &&
+                 strcmp(manifest.verification_gap,
+                        "chunk_mutated_during_verification") == 0 &&
+                 bytes_used == manifest.total_bytes &&
+                 operations_used > manifest.chunk_total);
+        mv_manifest_free(&manifest);
+
+        f = fopen(first_path, "wb");
+        MV_CHECK("zcode: canonical first chunk restores after race proof",
+                 f && fwrite(first_file, 1, sizeof(first_file) - 1u, f) ==
+                          sizeof(first_file) - 1u);
+        if (f)
+            fclose(f);
+
+        MV_CHECK("zcode: canonical manifest opens for strict budget proof",
+                 mv_manifest_read(zcode_dir, p.root_hex, &manifest) ==
+                     MV_MANIFEST_READ_OK);
+        mv_manifest_verify_possession_test(
+            zcode_dir, &manifest, 0, MV_PROPERTY_SHOW_VERIFY_OPS, NULL, NULL,
+            &bytes_used, &operations_used);
+        MV_CHECK("zcode: zero byte budget performs no content read",
+                 !manifest.verification_complete && bytes_used == 0 &&
+                 operations_used == 0 &&
+                 strcmp(manifest.verification_gap,
+                        "byte_budget_exhausted") == 0);
+        mv_manifest_free(&manifest);
+    }
 
     mv_show(&c, dd, id_text);
     MV_CHECK("zcode: show succeeds",
@@ -1392,7 +1616,13 @@ static int t_zcode_adapter(void)
     MV_CHECK("zcode: all three files and chunks are accounted for",
              json_get_int(json_get(&c.reply.data, "file_count")) == 3 &&
              json_get_int(json_get(&c.reply.data, "chunk_total")) == 3 &&
-             json_get_int(json_get(&c.reply.data, "chunks_present")) == 3);
+             json_get_int(json_get(&c.reply.data, "chunks_present")) == 3 &&
+             json_get_int(json_get(&c.reply.data, "chunks_verified")) == 3 &&
+             json_get_bool(json_get(&c.reply.data,
+                                    "manifest_root_verified")) &&
+             json_get_bool(json_get(&c.reply.data,
+                                    "verification_complete")) &&
+             strcmp(mv_str(&c.reply.data, "verification_gap"), "") == 0);
     mv_cmd_free(&c);
 
     mv_list(&c, dd, "zcode_package");
@@ -1416,6 +1646,50 @@ static int t_zcode_adapter(void)
     }
     mv_cmd_free(&c);
 
+    /* A signed release still proves authorship when its manifest is corrupt,
+     * but it cannot prove possession or a locally re-derived content root.
+     * The item stays visible and the catalog separately reports integrity. */
+    snprintf(manifest_path, sizeof(manifest_path), "%s/manifests/%s",
+             zcode_dir, p.root_hex);
+    {
+        FILE *f = fopen(manifest_path, "wb");
+        bool wrote = f && fwrite("x", 1, 1, f) == 1;
+
+        if (f)
+            fclose(f);
+        MV_CHECK("zcode: fixture manifest is made malformed", wrote);
+    }
+    mv_show(&c, dd, id_text);
+    MV_CHECK("zcode: malformed manifest keeps only verified authorship",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_bool(json_get(&c.reply.data, "determined")) &&
+             strcmp(mv_str(&c.reply.data, "evidence_grade"),
+                    "local_signature") == 0 &&
+             strcmp(mv_str(&c.reply.data, "status"), "incomplete") == 0 &&
+             strstr(mv_str(&c.reply.data, "reason"), "invalid") != NULL &&
+             strcmp(mv_str(&c.reply.data, "actions_csv"), "") == 0);
+    mv_cmd_free(&c);
+
+    mv_list(&c, dd, "zcode_package");
+    {
+        const struct json_value *row =
+            mv_find_kind(&c.reply.data, "zcode_package");
+        MV_CHECK("zcode: malformed manifest is rendered and disclosed",
+                 c.reply.status == ZCL_COMMAND_STATUS_PASSED && row &&
+                 mv_find_item(&c.reply.data, id_text) != NULL &&
+                 !json_get_bool(json_get(row, "integrity_ok")) &&
+                 json_get_int(json_get(row, "integrity_gap_count")) == 1);
+    }
+    mv_cmd_free(&c);
+    {
+        FILE *f = fopen(manifest_path, "wb");
+        bool restored = f && fwrite(p.wire, 1, p.wire_len, f) == p.wire_len;
+
+        if (f)
+            fclose(f);
+        MV_CHECK("zcode: canonical manifest bytes are restored", restored);
+    }
+
     /* THE UNEARNED-CLAIM PROOF: remove the signed envelope. The bytes are
      * untouched, so the package stays present — but the signature can no
      * longer be verified, so the grade must DROP. */
@@ -1437,6 +1711,8 @@ static int t_zcode_adapter(void)
     MV_CHECK("zcode: an absent package claims no signature evidence",
              strcmp(mv_str(&c.reply.data, "evidence_grade"),
                     "local_signature") != 0 &&
+             strcmp(mv_str(&c.reply.data, "evidence_grade"),
+                    "local_store_read") == 0 &&
              strcmp(mv_str(&c.reply.data, "descriptor_root"), "") == 0);
     mv_cmd_free(&c);
 

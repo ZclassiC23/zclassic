@@ -77,7 +77,10 @@
  * attestation is still a successful verification run); 2 usage; 3 the
  * store/release/manifest/recipe/chunks could not be loaded or the package
  * is incomplete; 4 --require-full-isolation on a no-Landlock kernel; 5 an
- * internal/sandbox failure (nothing is signed). */
+ * internal/sandbox failure (nothing is signed); 6 emit mode with
+ * --reproduce-against: the build does NOT reproduce the reference
+ * build-report byte-for-byte (a verdict, not an internal failure — the
+ * mismatch rule and detail are on stderr). */
 
 /* clearenv(3) for the child environment scrub (glibc; the project builds
  * with strict -D_POSIX_C_SOURCE=200809L, so opt in like lib/test does). */
@@ -89,6 +92,7 @@
 #include "vcs/package_build.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_recipe.h"
+#include "vcs/package_reproduce.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/package_release.h"
 
@@ -181,6 +185,7 @@ static void pv_usage(FILE *out)
         "           --key=<file> [--work=<dir>] [--require-full-isolation]\n"
         "   or: zclassic23-package-verify <package-root-hex> --store=<dir>\n"
         "           --emit=<dir> --lock-root=<64hex> [--dep=<64hex>,<dir>]...\n"
+        "           [--reproduce-against=<build-report>]\n"
         "           [--work=<dir>] [--require-full-isolation]\n"
         "   or: zclassic23-package-verify --zbuild-input=<abs>/unit.i\n"
         "           --zbuild-output=<abs>/unit.o --require-full-isolation\n"
@@ -207,6 +212,14 @@ static void pv_usage(FILE *out)
         "receipt commits; each --dep names a locked dependency root and its\n"
         "install dir, whose include/ is granted read-only to the compile\n"
         "children and whose lib/*.a archives join the link line.\n"
+        "--reproduce-against is the THIRD-PARTY BIT-IDENTICAL REPRODUCTION\n"
+        "check (the headline ZCODE acceptance signal): after the emit build\n"
+        "writes its own build-report, the reference build-report named here\n"
+        "(the publisher's or another verifier's) is compared against it\n"
+        "byte-for-byte — same package/recipe/lock commitments and an\n"
+        "identical output set (path, SHA3-256, byte count). MATCH prints on\n"
+        "stdout; any divergence prints a loud REPRODUCTION MISMATCH naming\n"
+        "the first diverging rule on stderr and the exit code is 6.\n"
         "\n"
         "Builds and tests one ZCODE package under confinement (seccomp +\n"
         "rlimits + Landlock where the kernel offers it) following ONLY the\n"
@@ -1465,6 +1478,7 @@ int main(int argc, char **argv)
     const char *work_parent = NULL;
     const char *emit_dir = NULL;
     const char *lock_root_hex = NULL;
+    const char *reproduce_path = NULL;
     bool require_full_isolation = false;
     struct pv_emit_dep emit_deps[PV_EMIT_MAX_DEPS];
     size_t emit_dep_count = 0;
@@ -1480,6 +1494,8 @@ int main(int argc, char **argv)
             emit_dir = argv[i] + 7;
         else if (strncmp(argv[i], "--lock-root=", 12) == 0)
             lock_root_hex = argv[i] + 12;
+        else if (strncmp(argv[i], "--reproduce-against=", 20) == 0)
+            reproduce_path = argv[i] + 20;
         else if (strncmp(argv[i], "--dep=", 6) == 0) {
             /* <64 hex>,<install dir> — the hex is fixed-width, so the comma
              * position is unambiguous even if the path contains commas. */
@@ -1544,10 +1560,13 @@ int main(int argc, char **argv)
         }
     }
     /* The two modes are mutually exclusive: an emit run signs nothing, so a
-     * key would only invite the belief that its output was attested. */
+     * key would only invite the belief that its output was attested.
+     * --reproduce-against belongs to emit mode: it is the byte-identity
+     * check of THIS build's receipt against a reference build-report. */
     if (!root_hex || !store_dir || (!key_path && !emit_dir) ||
         (key_path && emit_dir) || (emit_dir && !lock_root_hex) ||
-        (!emit_dir && (lock_root_hex || emit_dep_count > 0))) {
+        (!emit_dir && (lock_root_hex || emit_dep_count > 0 ||
+                       reproduce_path))) {
         pv_usage(stderr);
         return 2;
     }
@@ -2463,6 +2482,55 @@ int main(int argc, char **argv)
         if (!pv_rm_rf(work))
             fprintf(stderr, "%s: WARNING: temp tree %s not fully removed\n",
                     PV_LOG, work);
+        /* Third-party bit-identical reproduction: compare THIS build's
+         * receipt against a reference build-report (the publisher's or
+         * another verifier's). MATCH is printed on stdout; a divergence is
+         * a loud stderr MISMATCH naming the first diverging rule, and the
+         * exit code says so (6) — reproduction failure is a verdict, not
+         * an internal error. */
+        if (reproduce_path) {
+            size_t ref_len = 0;
+            uint8_t *ref_wire = pv_read_file(reproduce_path,
+                                             VCS_PACKAGE_BUILD_MAX_WIRE_BYTES,
+                                             &ref_len);
+            if (!ref_wire) {
+                fprintf(stderr,
+                        "%s: REPRODUCTION UNREADABLE: cannot read the "
+                        "reference build receipt %s\n", PV_LOG,
+                        reproduce_path);
+                vcs_package_recipe_free(&recipe);
+                vcs_package_manifest_free(&manifest);
+                return 3;
+            }
+            struct vcs_package_build_receipt ref;
+            enum vcs_package_build_error rerr =
+                vcs_package_build_parse(ref_wire, ref_len, &ref);
+            free(ref_wire);
+            if (rerr != VCS_PACKAGE_BUILD_OK) {
+                fprintf(stderr,
+                        "%s: REPRODUCTION UNREADABLE: %s is not a canonical "
+                        "build receipt (%s)\n", PV_LOG, reproduce_path,
+                        vcs_package_build_error_string(rerr));
+                vcs_package_recipe_free(&recipe);
+                vcs_package_manifest_free(&manifest);
+                return 3;
+            }
+            struct vcs_reproduce_verdict verdict;
+            vcs_package_reproduce_compare(&ref, &rec, &verdict);
+            if (!verdict.reproduced) {
+                fprintf(stderr,
+                        "%s: REPRODUCTION MISMATCH (%s): %s — this build "
+                        "does NOT reproduce %s byte-for-byte\n", PV_LOG,
+                        vcs_reproduce_rule_string(
+                            (enum vcs_reproduce_rule)verdict.rule),
+                        verdict.detail, reproduce_path);
+                vcs_package_recipe_free(&recipe);
+                vcs_package_manifest_free(&manifest);
+                return 6;
+            }
+            printf("reproduction=MATCH outputs=%zu reference=%s\n",
+                   rec.output_count, reproduce_path);
+        }
         printf("emit=%s result=%s outputs=%zu isolation=%s\n", emit_dir,
                vcs_package_build_result_string(
                    (enum vcs_package_build_result)rec.result_class),

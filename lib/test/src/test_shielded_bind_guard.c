@@ -189,6 +189,22 @@ static bool sbg_build_chainstate(const char *cs_dir,
            sbg_put_pointer(cs_dir, 'B', &best_block);
 }
 
+static void sbg_best_block(struct uint256 *out)
+{
+    sbg_fill(out, 0xBB, 999);
+}
+
+static bool sbg_import_fixture(sqlite3 *db, const char *cs_dir,
+                               int64_t tip_height,
+                               const struct uint256 *tip_root,
+                               struct shielded_import_report *out)
+{
+    struct uint256 best_block;
+    sbg_best_block(&best_block);
+    return shielded_history_import_from_chainstate(
+        db, cs_dir, tip_height, &best_block, tip_root, out);
+}
+
 /* Seed a wedged progress.kv: both anchor pools + the nullifier marker at a
  * POSITIVE boundary, with both permanent gap blockers raised. */
 static bool sbg_seed_wedge(sqlite3 *db)
@@ -373,7 +389,7 @@ int test_shielded_bind_guard(void)
                   cb == SBG_TIP_H + 100);
 
         struct shielded_import_report rep;
-        bool ok = shielded_history_import_from_chainstate(
+        bool ok = sbg_import_fixture(
             db, cs_dir, SBG_TIP_H, &tip_root, &rep);
         SBG_CHECK("import REFUSES the height-mismatched bind", !ok);
         SBG_CHECK("import did NOT commit", !rep.committed);
@@ -417,7 +433,7 @@ int test_shielded_bind_guard(void)
 
         /* The consistent source: chainstate best block == the island root. */
         struct uint256 island_hash;
-        sbg_fill(&island_hash, 0x1C, 2);
+        sbg_best_block(&island_hash);
         SBG_CHECK("coins island seeded AT the chainstate tip",
                   sbg_seed_coins_best(db, SBG_TIP_H, &island_hash));
 
@@ -427,8 +443,17 @@ int test_shielded_bind_guard(void)
                                                            &cb) &&
                   cb == SBG_TIP_H);
 
+        struct uint256 foreign_best;
+        sbg_fill(&foreign_best, 0xBC, 1000);
         struct shielded_import_report rep;
         bool ok = shielded_history_import_from_chainstate(
+            db, cs_dir, SBG_TIP_H, &foreign_best, &tip_root, &rep);
+        SBG_CHECK("import REFUSES source best block above/below target", !ok);
+        SBG_CHECK("source mismatch did NOT commit", !rep.committed);
+        SBG_CHECK("source mismatch left nullifiers empty",
+                  sbg_count(db, "nullifiers") == 0);
+
+        ok = sbg_import_fixture(
             db, cs_dir, SBG_TIP_H, &tip_root, &rep);
         SBG_CHECK("matching bind imports + commits",
                   ok && rep.committed && rep.tip_anchor_bound);

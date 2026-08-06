@@ -23,6 +23,7 @@
 #include "test/test_core.h"
 #include "models/database.h"
 #include "models/zslp_ledger.h"
+#include "models/zslp_validity.h"
 #include "services/zslp_ledger_backfill_service.h"
 #include "jobs/reducer_frontier.h"
 #include "primitives/transaction.h"
@@ -115,14 +116,28 @@ static void ins_input(struct node_db *ndb, const uint8_t txid[32],
     sqlite3_finalize(s);
 }
 
+static void ins_opreturn(struct node_db *ndb, const uint8_t txid[32],
+                         int height, const uint8_t *script, size_t script_len)
+{
+    sqlite3_stmt *s = NULL;
+    sqlite3_prepare_v2(ndb->db,
+        "INSERT OR REPLACE INTO op_returns"
+        "(txid,block_height,script,is_slp) VALUES(?,?,?,1)", -1, &s, NULL);
+    sqlite3_bind_blob(s, 1, txid, 32, SQLITE_STATIC);
+    sqlite3_bind_int(s, 2, height);
+    sqlite3_bind_blob(s, 3, script, (int)script_len, SQLITE_STATIC);
+    sqlite3_step(s);  // raw-sql-ok:test-fixture-insert
+    sqlite3_finalize(s);
+}
+
 /* GENESIS at h=1: token T minted 1000 to addrA at (txid_genesis, vout 1).
  * SEND at h=2: spends (txid_genesis,1); 600 -> addrA (vout 1), 400 -> addrB
  * (vout 2), at txid_send. Seeds zslp_transfers + tx_outputs + tx_inputs. */
 static void seed_fixture(struct node_db *ndb)
 {
-    fill(g_token, 32, 0xAA);
     fill(g_txid_genesis, 32, 0x11);
     fill(g_txid_send, 32, 0x22);
+    memcpy(g_token, g_txid_genesis, 32);
     fill(g_addr_a, 20, 0xA1);
     fill(g_addr_b, 20, 0xB2);
 
@@ -131,6 +146,11 @@ static void seed_fixture(struct node_db *ndb)
     ins_transfer(ndb, g_txid_genesis, 1, g_token, SLP_TX_GENESIS, 1000, 1,
                  g_addr_a);
     ins_output(ndb, g_txid_genesis, 1, 1 * COIN, g_addr_a, 1);
+    uint8_t genesis_script[256];
+    size_t genesis_len = slp_build_genesis(
+        genesis_script, sizeof(genesis_script), "TST", "Strict Test", "",
+        NULL, 0, 0, 1000);
+    ins_opreturn(ndb, g_txid_genesis, 1, genesis_script, genesis_len);
 
     /* SEND (h=2). */
     ins_transfer(ndb, g_txid_send, 2, g_token, SLP_TX_SEND, 600, 1, g_addr_a);
@@ -138,9 +158,26 @@ static void seed_fixture(struct node_db *ndb)
     ins_output(ndb, g_txid_send, 1, 1 * COIN, g_addr_a, 2);
     ins_output(ndb, g_txid_send, 2, 1 * COIN, g_addr_b, 2);
     ins_input(ndb, g_txid_send, 0, g_txid_genesis, 1, 2);
+    struct uint256 wire_token;
+    for (int i = 0; i < 32; i++)
+        wire_token.data[i] = g_token[31 - i];
+    uint64_t send_q[2] = {600, 400};
+    uint8_t send_script[256];
+    size_t send_len = slp_build_send(send_script, sizeof(send_script),
+                                     &wire_token, send_q, 2);
+    ins_opreturn(ndb, g_txid_send, 2, send_script, send_len);
 }
 
 /* ── (1)+(2)+(3) backfill: genesis, send, spend, balance, cursor ──── */
+
+/* The run_once gate folds only up to the node_db catchup projection tip
+ * (sync_projection_tip_height — the literal mirrors the private
+ * SYNC_PROJECTION_TIP_HEIGHT_KEY in sync_controller_writers.c), so the
+ * fixture must declare its seeded projections as committed. */
+static void fixture_set_projection_tip(struct node_db *ndb, int64_t h)
+{
+    (void)node_db_state_set_int(ndb, "sync_projection_tip_height", h);
+}
 
 static int test_backfill_ledger(void)
 {
@@ -166,6 +203,7 @@ static int test_backfill_ledger(void)
     /* Fold only through h=1 first, so we can observe the GENESIS row BEFORE
      * the SEND spends it. */
     reducer_frontier_provable_tip_set(1);
+    fixture_set_projection_tip(&ndb, 1);
 
     printf("zslp_ledger: backfill folds heights up to H*=1... ");
     { int folded = zslp_ledger_backfill_run_once();
@@ -184,6 +222,7 @@ static int test_backfill_ledger(void)
 
     /* Now advance to H*=2: the SEND spends GENESIS and mints two outputs. */
     reducer_frontier_provable_tip_set(2);
+    fixture_set_projection_tip(&ndb, 2);
 
     printf("zslp_ledger: backfill folds h=2 (SEND)... ");
     { int folded = zslp_ledger_backfill_run_once();
@@ -263,6 +302,7 @@ static int test_digest_and_rebuild(void)
     g_zslp_ledger_backfill_test_ndb = &ndb;
     zslp_ledger_backfill_reset_for_test();
     reducer_frontier_provable_tip_set(2);
+    fixture_set_projection_tip(&ndb, 2);
 
     printf("zslp_ledger: full fold reaches cursor=2... ");
     { (void)zslp_ledger_backfill_run_once();
@@ -424,6 +464,7 @@ static int test_wallet_wide_sweep(void)
     g_zslp_ledger_backfill_test_ndb = &ndb;
     zslp_ledger_backfill_reset_for_test();
     reducer_frontier_provable_tip_set(2);
+    fixture_set_projection_tip(&ndb, 2);
     (void)zslp_ledger_backfill_run_once();
 
     struct zslp_wallet_token held[8];
@@ -497,6 +538,135 @@ static int test_wallet_wide_sweep(void)
     return failures;
 }
 
+static void make_wire_token(const uint8_t internal[32], struct uint256 *wire)
+{
+    for (int i = 0; i < 32; i++)
+        wire->data[i] = internal[31 - i];
+}
+
+static void seed_send_decl(struct node_db *ndb, const uint8_t txid[32],
+                           int height, const uint8_t token[32],
+                           const uint64_t *quantities, int count)
+{
+    struct uint256 wire;
+    make_wire_token(token, &wire);
+    uint8_t script[256];
+    size_t len = slp_build_send(script, sizeof(script), &wire,
+                                quantities, count);
+    ins_opreturn(ndb, txid, height, script, len);
+    for (int i = 0; i < count; i++)
+        if (quantities[i] > 0) {
+            uint8_t addr[20];
+            fill(addr, sizeof(addr), (uint8_t)(0xD0 + i));
+            ins_output(ndb, txid, i + 1, 546, addr, height);
+            ins_transfer(ndb, txid, height, token, SLP_TX_SEND,
+                         (int64_t)quantities[i], i + 1, addr);
+        }
+}
+
+static int test_strict_validity_rejections(void)
+{
+    int failures = 0;
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    if (!node_db_open(&ndb, ":memory:") || !ndb.open) return 1;
+    seed_fixture(&ndb);
+
+    uint8_t inflation[32], forged_mint[32], second_genesis[32];
+    uint8_t mixed[32], missing_parent[32], missing_child[32], burn[32];
+    fill(inflation, 32, 0x33);
+    fill(forged_mint, 32, 0x44);
+    fill(second_genesis, 32, 0x55);
+    fill(mixed, 32, 0x66);
+    fill(missing_parent, 32, 0x77);
+    fill(missing_child, 32, 0x88);
+    fill(burn, 32, 0x99);
+
+    uint64_t inflated_q[1] = {601};
+    seed_send_decl(&ndb, inflation, 3, g_token, inflated_q, 1);
+    ins_input(&ndb, inflation, 0, g_txid_send, 1, 3);
+
+    uint64_t burn_q[1] = {250};
+    seed_send_decl(&ndb, burn, 3, g_token, burn_q, 1);
+    ins_input(&ndb, burn, 0, g_txid_send, 2, 3);
+
+    struct uint256 wire;
+    make_wire_token(g_token, &wire);
+    uint8_t mint_script[256];
+    size_t mint_len = slp_build_mint(mint_script, sizeof(mint_script),
+                                     &wire, 2, 10);
+    ins_opreturn(&ndb, forged_mint, 3, mint_script, mint_len);
+    uint8_t mint_addr[20]; fill(mint_addr, sizeof(mint_addr), 0xE1);
+    ins_output(&ndb, forged_mint, 1, 546, mint_addr, 3);
+    ins_output(&ndb, forged_mint, 2, 546, mint_addr, 3);
+
+    uint8_t second_script[256];
+    size_t second_len = slp_build_genesis(
+        second_script, sizeof(second_script), "TWO", "Second", "", NULL,
+        0, 0, 50);
+    ins_opreturn(&ndb, second_genesis, 3, second_script, second_len);
+    uint8_t second_addr[20]; fill(second_addr, sizeof(second_addr), 0xE2);
+    ins_output(&ndb, second_genesis, 1, 546, second_addr, 3);
+
+    uint64_t mixed_q[1] = {400};
+    seed_send_decl(&ndb, mixed, 4, g_token, mixed_q, 1);
+    ins_input(&ndb, mixed, 0, g_txid_send, 2, 4);
+    ins_input(&ndb, mixed, 1, second_genesis, 1, 4);
+
+    /* Metadata names a token parent, but the raw parent declaration and
+     * outpoint are missing. Descendants stay UNKNOWN, never INVALID/VALID. */
+    ins_transfer(&ndb, missing_parent, 0, g_token, SLP_TX_SEND, 5, 1, NULL);
+    uint64_t missing_q[1] = {5};
+    seed_send_decl(&ndb, missing_child, 4, g_token, missing_q, 1);
+    ins_input(&ndb, missing_child, 0, missing_parent, 1, 4);
+
+    uint8_t digest[32] = {0}, next[32];
+    for (int h = 0; h <= 4; h++) {
+        if (!zslp_ledger_apply_height(&ndb, h, digest, next)) {
+            failures++;
+            break;
+        }
+        memcpy(digest, next, sizeof(digest));
+    }
+
+    char reason[96];
+    printf("zslp strict: inflationary SEND is INVALID and creates no output... ");
+    bool ok = zslp_validity_get(&ndb, inflation, reason, sizeof(reason)) ==
+                  ZSLP_VALIDITY_INVALID &&
+              strcmp(reason, "send_output_exceeds_input") == 0 &&
+              count_rows(&ndb,
+                "SELECT COUNT(*) FROM zslp_ledger WHERE txid=x'3333333333333333333333333333333333333333333333333333333333333333'") == 0;
+    if (ok) printf("OK\n"); else { printf("FAIL (%s)\n", reason); failures++; }
+
+    printf("zslp strict: forged MINT without current baton is INVALID... ");
+    ok = zslp_validity_get(&ndb, forged_mint, reason, sizeof(reason)) ==
+             ZSLP_VALIDITY_INVALID &&
+         strcmp(reason, "mint_baton_lineage_invalid") == 0;
+    if (ok) printf("OK\n"); else { printf("FAIL (%s)\n", reason); failures++; }
+
+    printf("zslp strict: SEND mixing valid token ids is INVALID... ");
+    ok = zslp_validity_get(&ndb, mixed, reason, sizeof(reason)) ==
+             ZSLP_VALIDITY_INVALID && strcmp(reason, "mixed_token_inputs") == 0;
+    if (ok) printf("OK\n"); else { printf("FAIL (%s)\n", reason); failures++; }
+
+    printf("zslp strict: missing declared ancestry remains UNKNOWN... ");
+    ok = zslp_validity_get(&ndb, missing_child, reason, sizeof(reason)) ==
+             ZSLP_VALIDITY_UNKNOWN && strcmp(reason, "send_parent_unknown") == 0;
+    if (ok) printf("OK\n"); else { printf("FAIL (%s)\n", reason); failures++; }
+
+    printf("zslp strict: conservative SEND records the explicit burn... ");
+    struct zslp_token_validity_summary summary;
+    ok = zslp_validity_get(&ndb, burn, reason, sizeof(reason)) ==
+             ZSLP_VALIDITY_VALID && strcmp(reason, "valid_send") == 0 &&
+         zslp_validity_token_summary(&ndb, g_token, &summary) &&
+         summary.total_minted == 1000 && summary.total_burned == 150 &&
+         summary.circulating_supply == 850;
+    if (ok) printf("OK\n"); else { printf("FAIL (%s)\n", reason); failures++; }
+
+    node_db_close(&ndb);
+    return failures;
+}
+
 /* ── Entry point ──────────────────────────────────────────────────── */
 
 int test_zslp_ledger(void)
@@ -507,5 +677,6 @@ int test_zslp_ledger(void)
     failures += test_digest_and_rebuild();
     failures += test_live_hook();
     failures += test_wallet_wide_sweep();
+    failures += test_strict_validity_rejections();
     return failures;
 }

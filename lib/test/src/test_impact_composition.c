@@ -621,7 +621,7 @@ static const char *const ic_superset_paths[] = {
     "app/controllers/include/controllers/diagnostics_dumpers.def",
     "tools/lint/check_core_seal.sh",
     "docs/HANDOFF.md",
-    "lib/crypto/src/sha3.c",
+    "lib/sha3/src/sha3.c",
     "app/models/src/store.c",
     "lib/codeindex/src/codeindex_impact.c",
     "core/consensus/src/pow.c",
@@ -664,10 +664,11 @@ static int test_ic_union_never_loses_a_rule_group(void)
         /* The corpus must actually exercise something. */
         ASSERT(checked > 20);
 
-        /* A consensus-surface change used to name ZERO groups in every array
-         * while its foreground proof was consensus_parity — a group the plan
-         * ran but could not report. It is named now. */
-        const char *crypto[] = { "lib/crypto/src/sha3.c" };
+        /* Scalar SHA3 moved into its own module and now has an explicit
+         * path rule as well as the hard consensus-risk fallback.  The first
+         * selection is therefore semantic, while consensus_parity remains
+         * mandatory and visible in the composed plan. */
+        const char *crypto[] = { "lib/sha3/src/sha3.c" };
         struct zcl_devloop_plan cplan;
         ASSERT(zcl_devloop_plan_files(crypto, 1, &cplan));
         ASSERT(cplan.consensus_risk);
@@ -675,7 +676,7 @@ static int test_ic_union_never_loses_a_rule_group(void)
         const struct zcl_devloop_selection *s = ic_selection(&cplan,
                                                              "consensus_parity");
         ASSERT(s != NULL);
-        ASSERT(s->dim == ZCL_DEVLOOP_DIM_OPAQUE);
+        ASSERT(s->dim == ZCL_DEVLOOP_DIM_SEMANTIC);
 
         system("rm -rf " IC_FIX_MACRO);
         PASS();

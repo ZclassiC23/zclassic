@@ -819,6 +819,19 @@ int block_index_loader_seed_stages_from_cold_import(struct main_state *ms,
         return -1;  // raw-return-ok:logged on the lines above
     }
 
+    /* (5b) Declare the external-seed floor ONCE: this cold-import seed is a
+     *     genuine external-seed path, so bg-validation's fresh walk starts
+     *     above H (the seeded extent has no undo data to script-verify
+     *     against). Absent-guarded — a re-seed keeps the first declaration.
+     *     Advisory: never fail the heal over the marker. */
+    progress_store_tx_lock();
+    bool floor_ok = reducer_seed_floor_declare_if_absent(progress_db, H);
+    progress_store_tx_unlock();
+    if (!floor_ok)
+        LOG_WARN("block_index",
+                 "cold-import seed: seed-floor declare failed H=%d "
+                 "(bg-validation will walk from genesis — slow, correct)", H);
+
     /* (6) Self-check: the seed must have moved H* up to H. If not, the heal
      *     silently did nothing — keep the durable anchor so the next boot
      *     retries rather than booting half-seeded. */

@@ -72,7 +72,7 @@ bool zcl_native_command_is_root(const char *word)
         return false;
     static const char *const roots[] = {
         "status", "core", "app", "dev", "ops", "discover", "code", "vault",
-        "zcode", "metaverse", "help", "search",
+        "zcode", "metaverse", "yardsale", "help", "search",
         /* Operator-UX convenience roots: bare aliases of ops.explain /
          * ops.profile so `zclassic23 explain sync` / `zclassic23 profile`
          * work without the `ops` prefix (each leaf carries the matching
@@ -83,6 +83,14 @@ bool zcl_native_command_is_root(const char *word)
     };
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
         if (strcmp(word, roots[i]) == 0)
+            return true;
+        /* CLI UX contract: the canonical dotted form
+         * (`zclassic23 zcode.science.study.list`) names the same leaf as the
+         * spaced form — a first token of `<root>.<rest>` belongs to this
+         * adapter too, and zcl_native_command_main splits it into path
+         * segments before resolution. */
+        size_t n = strlen(roots[i]);
+        if (strncmp(word, roots[i], n) == 0 && word[n] == '.')
             return true;
     }
     return false;
@@ -133,6 +141,7 @@ static const struct {
     { "app.messaging.inbox", zcl_native_msg_inbox_body },
     { "app.market.list", zcl_native_zmarket_list_body },
     { "app.market.status", zcl_native_zmarket_status_body },
+    { "app.market.content.list", zcl_native_zmarket_content_list_body },
     { "app.swap.chains", zcl_native_swap_chains_body },
     { "app.swap.list", zcl_native_swap_list_body },
 };
@@ -371,6 +380,12 @@ static bool bridge_has_exact_binding(const char *path)
 static char g_bridge_datadir[512];
 static int g_bridge_rpc_port;
 static bool g_bridge_rpc_ready;
+static bool g_native_input_from_stdin;
+
+bool zcl_native_input_was_stdin(void)
+{
+    return g_native_input_from_stdin;
+}
 
 const char *zcl_native_command_datadir(void)
 {
@@ -3201,10 +3216,32 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
 #endif /* ZCL_DEV_BUILD */
 
     /* Word list = root + args (flags included). Resolution stops at the first
-     * flag or dotted/pathy word. */
+     * flag or dotted/pathy word — so a dotted FIRST token (the canonical
+     * `zcode.science.study.list` form the docs and examples use) is split
+     * into path segments here, making it identical to the spaced form. */
+    char root_split[ZCL_COMMAND_MAX_PATH];
     const char *words[NC_MAX_WORDS];
     size_t count = 0;
-    words[count++] = root_word;
+    if (strchr(root_word, '.')) {
+        size_t rl = strlen(root_word);
+        if (rl >= sizeof(root_split)) {
+            nc_print_error(root_word, "UNKNOWN_COMMAND", "resolve",
+                           "command path too long", root_word,
+                           "", "", "");
+            return ZCL_COMMAND_EXIT_INVALID;
+        }
+        memcpy(root_split, root_word, rl + 1);
+        char *seg = root_split;
+        while (seg && *seg && count < NC_MAX_WORDS) {
+            char *dot = strchr(seg, '.');
+            if (dot)
+                *dot = 0;
+            words[count++] = seg;
+            seg = dot ? dot + 1 : NULL;
+        }
+    } else {
+        words[count++] = root_word;
+    }
     for (int i = 0; i < nargs && count < NC_MAX_WORDS; i++)
         words[count++] = args[i];
 
@@ -3425,8 +3462,10 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
      * MAX_ARG_STRLEN (128 KiB), so a multi-megabyte document must arrive on
      * `--input=-` (stdin) — the argv form fails in execve long before here. */
     const size_t input_budget = zcl_command_registry_input_budget_bytes(spec);
+    g_native_input_from_stdin = false;
     if (input_flag) {
         if (strcmp(input_flag, "-") == 0) {
+            g_native_input_from_stdin = true;
             bool oversize = false;
             char *raw = nc_read_stdin(input_budget, &oversize);
             bool ok = raw && json_read(&input, raw, strlen(raw)) &&
@@ -3626,11 +3665,15 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
 #endif
     };
 
-    char out[ZCL_COMMAND_LIST_BUDGET + 1];
+    /* One registry leaf currently declares the 16 KiB extended-list budget.
+     * The dispatcher must offer the largest declared bounded envelope; the
+     * registry still enforces each leaf's own (usually smaller) budget. */
+    char out[ZCL_COMMAND_EXTENDED_LIST_BUDGET + 1];
     enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
     size_t n = zcl_command_registry_execute_json(
         reg, spec, &ctx, &input, was_alias, invoked, view, budget, max_items,
         cursor, out, sizeof(out), &exit_code);
+    g_native_input_from_stdin = false;
     json_free(&input);
     if (n == 0) {
         nc_print_error(spec->path, "EXECUTE_FAILED", "serialize",
@@ -3650,7 +3693,7 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
         bool handled = false;
         if (json_read(&env, out, n) && env.type == JSON_OBJ) {
             const struct json_value *data = json_get(&env, "data");
-            char sel[ZCL_COMMAND_LIST_BUDGET + 1];
+            char sel[ZCL_COMMAND_EXTENDED_LIST_BUDGET + 1];
             char selerr[320];
             if (data && zcl_native_render_field_selection(
                             data, field_csv, sel, sizeof(sel), selerr,

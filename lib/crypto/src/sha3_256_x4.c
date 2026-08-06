@@ -99,10 +99,10 @@ void sha3_256_x4_avx512(const uint8_t *const msgs[4], const size_t lens[4],
             if (full_blocks[i] == b) { any_done = true; break; }
         if (any_done) {
             uint64_t w0[8], w1[8], w2[8], w3[8];
-            _mm512_store_si512((void *)w0, st[0]);
-            _mm512_store_si512((void *)w1, st[1]);
-            _mm512_store_si512((void *)w2, st[2]);
-            _mm512_store_si512((void *)w3, st[3]);
+            _mm512_storeu_si512((void *)w0, st[0]);
+            _mm512_storeu_si512((void *)w1, st[1]);
+            _mm512_storeu_si512((void *)w2, st[2]);
+            _mm512_storeu_si512((void *)w3, st[3]);
             for (int i = 0; i < 4; ++i) {
                 if (full_blocks[i] != b) continue;
                 WriteLE64(out[i] + 0,  w0[i]);

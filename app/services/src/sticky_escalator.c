@@ -45,7 +45,6 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
-
 /* ── Module state ──────────────────────────────────────────────────── */
 
 static struct main_state       *g_ms      = NULL;
@@ -108,7 +107,6 @@ static _Atomic int g_rederive_flat_repairs = 0;
  * pass needs real wall time, and connman_kick_onion_seeds blocks per seed 60s).
  * Reset on episode clear so the next episode kicks immediately. */
 static _Atomic int64_t g_widen_last_kick_unix = 0;
-
 #ifdef ZCL_TESTING
 /* Refold seams: suppress shutdown/respawn; override the artifact gate. */
 static _Atomic bool g_test_suppress_refold_restart = false;
@@ -993,6 +991,8 @@ static void note_cycling_page(int64_t now, enum sticky_rung deepest)
  * `tip` is the observed provable tip (injected in tests). */
 static void apply_drive(int64_t tip, int64_t now)
 {
+    /* A queued callback must not arm cross-boot work during store teardown. */
+    if (thread_registry_shutdown_requested()) return;
     if (!atomic_load(&g_armed)) {
         /* Auto-arm if the condition engine has an unresolved CRITICAL backlog,
          * even without an explicit note_stall (belt + suspenders). Scoped to
@@ -1150,7 +1150,6 @@ static void apply_drive(int64_t tip, int64_t now)
 }
 
 /* ── Public API ────────────────────────────────────────────────────── */
-
 void sticky_escalator_set_datadir(const char *datadir)
 {
     g_datadir = datadir; /* process-lifetime string from boot ctx */
@@ -1165,6 +1164,7 @@ void sticky_escalator_register_rung(enum sticky_rung rung, sticky_rung_fn fn)
 
 void sticky_escalator_note_stall(const char *cause)
 {
+    if (thread_registry_shutdown_requested()) return;
     int64_t now = now_unix();
     bool was = atomic_exchange(&g_armed, true);
     if (!was) {

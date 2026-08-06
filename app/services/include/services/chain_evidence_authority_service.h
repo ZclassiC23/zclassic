@@ -154,7 +154,18 @@ void chain_evidence_controller_init(struct chain_evidence_controller *authority,
                          struct node_db *ndb,
                          struct chain_state_repository *csr);
 
+/* Bind a controller for observation only. Unlike the boot/reconciliation
+ * initializer above, this never repairs or persists evidence. Use it on
+ * status/diagnostic paths, especially while holding sqlite3_db_mutex(). */
+void chain_evidence_controller_init_readonly(
+    struct chain_evidence_controller *authority, struct node_db *ndb,
+    struct chain_state_repository *csr);
+
 enum chain_evidence_controller_state chain_evidence_controller_load_state(
+    struct chain_evidence_controller *authority);
+
+enum chain_evidence_controller_state
+chain_evidence_controller_load_state_readonly(
     struct chain_evidence_controller *authority);
 
 enum chain_evidence_controller_result chain_evidence_controller_import_snapshot_evidence(

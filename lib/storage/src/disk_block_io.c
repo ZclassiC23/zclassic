@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <pthread.h>
 #include "util/safe_alloc.h"
 
@@ -64,6 +65,25 @@ static bool ensure_directory(const char *path)
     return mkdir(path, 0755) == 0;
 }
 
+/* Hardlink tripwire: a blk*.dat with st_nlink > 1 shares its inode with
+ * another path — potentially a live foreign process (e.g. a zclassicd
+ * oracle datadir hardlinked into this one) whose own append pointer can
+ * overwrite records we have just written and indexed. Warn once per file. */
+static uint8_t g_hardlink_warned[10000 / 8 + 1];
+
+static void hardlink_warn_once(int file_idx, const char *path,
+                               unsigned long nlink)
+{
+    uint8_t mask = (uint8_t)(1u << (file_idx & 7));
+    if (g_hardlink_warned[file_idx >> 3] & mask)
+        return; /* benign race: a duplicate warning is harmless */
+    g_hardlink_warned[file_idx >> 3] |= mask;
+    fprintf(stderr,  // obs-ok:hardlink-tripwire-boot-time-foreign-writer-warning
+            "[disk_block_io] %s has %lu hard links — shared blk "
+            "file; foreign appends can invalidate indexed positions\n",
+            path, nlink);
+}
+
 static bool choose_append_block_pos(struct disk_block_pos *pos,
                                     uint32_t block_size,
                                     const char *datadir)
@@ -85,6 +105,8 @@ static bool choose_append_block_pos(struct disk_block_pos *pos,
         struct stat st;
         if (stat(path, &st) != 0)
             break;
+        if (st.st_nlink > 1)
+            hardlink_warn_once(i, path, (unsigned long)st.st_nlink);
         last_file = i;
         last_size = (unsigned int)st.st_size;
     }
@@ -780,5 +802,178 @@ bool block_index_set_have_data_verified(struct block_index *pindex,
 
     block_index_disk_pos_store(pindex, pos->nFile, pos->nPos);
     block_index_status_fetch_or(pindex, BLOCK_HAVE_DATA);
+    return true;
+}
+
+/* ── Hash-targeted position repair ─────────────────────────────
+ * See storage/disk_block_io.h. Motivation (2026-08 producer-fold wedge):
+ * blk*.dat files hardlinked into a live zclassicd datadir are rewritten
+ * under us (zd's rebuilt index appends below physical EOF), so a position
+ * that was hash-valid when stored can dangle while a DUPLICATE copy of the
+ * same block still exists elsewhere in the blk files. A hash-targeted
+ * rescan finds that copy and re-stores through the verified path above. */
+
+/* Enough of a record to cover the full ZClassic header (140 fixed bytes
+ * plus the compactsize-prefixed Equihash solution — the block hash commits
+ * to all of it). Same bound chain_restore_disk_repair uses. */
+#define REPAIR_HDR_READ_SIZE \
+    (4 + 32 + 32 + 32 + 4 + 4 + 32 + 9 + MAX_SOLUTION_SIZE)
+
+/* Walk one blk*.dat record-by-record looking for the block whose hash
+ * equals `target`; on a hit *pos_out takes the canonical nDataPos (record
+ * start + 8). Garbage gaps are skipped by resyncing to the next frame
+ * header — the same policy as the boot blk-file scan. */
+static bool repair_scan_one_file(const char *path,
+                                 const struct uint256 *target,
+                                 unsigned int *pos_out)
+{
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return false;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size <= 0) {
+        close(fd);
+        return false;
+    }
+    long fsize = (long)st.st_size;
+    uint8_t *data = mmap(NULL, (size_t)fsize, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (data == MAP_FAILED)
+        return false;
+
+    bool found = false;
+    long pos = 0;
+    while (!found && pos + 8 + 140 <= fsize) {
+        uint32_t blk_size = 0;
+        if (!disk_block_frame_header_valid(data + pos, &blk_size) ||
+            blk_size < 140 || pos + 8 + (long)blk_size > fsize) {
+            long next = -1;
+            for (long p = pos + 1; p + 8 + 140 <= fsize; p++) {
+                uint32_t sz = 0;
+                if (disk_block_frame_header_valid(data + p, &sz)) {
+                    next = p;
+                    break;
+                }
+            }
+            if (next < 0)
+                break;
+            pos = next;
+            continue;
+        }
+
+        size_t want = (size_t)blk_size < (size_t)REPAIR_HDR_READ_SIZE
+                          ? (size_t)blk_size : (size_t)REPAIR_HDR_READ_SIZE;
+        struct block_header bhdr;
+        block_header_init(&bhdr);
+        struct byte_stream bs;
+        stream_init_from_data(&bs, data + pos + 8, want);
+        bool parsed = block_header_deserialize(&bhdr, &bs);
+        stream_free(&bs);
+        if (parsed) {
+            struct uint256 h;
+            block_header_get_hash(&bhdr, &h);
+            if (uint256_cmp(&h, target) == 0) {
+                *pos_out = (unsigned int)(pos + 8);
+                found = true;
+            }
+        }
+        pos += 8 + (long)blk_size;
+    }
+
+    munmap(data, (size_t)fsize);
+    return found;
+}
+
+bool block_index_repair_pos_from_disk(struct block_index *pindex,
+                                      const char *datadir,
+                                      bool scan_all_files)
+{
+    if (!pindex || !datadir || !datadir[0])
+        LOG_FAIL("disk_block_io",
+                 "repair_pos_from_disk: invalid argument (pindex=%p datadir=%p)",
+                 (void *)pindex, (const void *)datadir);
+    if (!pindex->phashBlock)
+        LOG_FAIL("disk_block_io",
+                 "repair_pos_from_disk: missing block hash at h=%d",
+                 pindex->nHeight);
+
+    struct disk_block_pos cur;
+    disk_block_pos_init(&cur);
+    (void)block_index_disk_pos_snapshot(pindex, &cur, NULL);
+
+    unsigned int found_pos = 0;
+    int found_file = -1;
+
+    /* Pass 1: the file the entry currently points at — the usual case is a
+     * stale offset inside the SAME blk file (a duplicate copy survives
+     * there), so it is both cheapest and most likely. */
+    if (cur.nFile >= 0) {
+        char path[512];
+        get_block_pos_filename(path, sizeof(path), datadir, &cur, "blk");
+        if (repair_scan_one_file(path, pindex->phashBlock, &found_pos))
+            found_file = cur.nFile;
+    }
+
+    /* Pass 2: every other blk*.dat, stopping after 3 consecutive misses
+     * (the boot scan's gap policy). A full sweep hashes every header in the
+     * blk set — throttle it so a mass-missing-bodies episode (blocks-less
+     * bundle) degrades to the clear-and-refetch fallback instead of a full
+     * walk per failure. Pass-1 hits (the common stale-tail case) are never
+     * throttled. */
+    static int64_t g_last_full_scan_unix = 0;
+    if (found_file < 0 && scan_all_files) {
+        int64_t now = platform_time_wall_unix();
+        int64_t last = __atomic_load_n(&g_last_full_scan_unix, __ATOMIC_RELAXED);
+        /* last==0 doubles as "never ran" (a frozen/mocked clock reads 0),
+         * so the first full sweep always runs. */
+        if (last != 0 && now - last < 60) {
+            LOG_WARN("disk_block_io",
+                     "repair_pos_from_disk: h=%d same-file miss, full blk-set "
+                     "scan throttled (%llds since last) — falling back",
+                     pindex->nHeight, (long long)(now - last));
+            return false;
+        }
+        __atomic_store_n(&g_last_full_scan_unix, now, __ATOMIC_RELAXED);
+        int misses = 0;
+        for (int i = 0; i <= 9999 && found_file < 0; i++) {
+            if (i == cur.nFile)
+                continue;
+            char path[512];
+            struct disk_block_pos probe = { .nFile = i, .nPos = 0 };
+            get_block_pos_filename(path, sizeof(path), datadir, &probe, "blk");
+            struct stat st;
+            if (stat(path, &st) != 0 || st.st_size <= 0) {
+                if (++misses >= 3)
+                    break;
+                continue;
+            }
+            misses = 0;
+            if (repair_scan_one_file(path, pindex->phashBlock, &found_pos))
+                found_file = i;
+        }
+    }
+
+    char want_hex[65];
+    uint256_get_hex(pindex->phashBlock, want_hex);
+    if (found_file < 0) {
+        LOG_WARN("disk_block_io",
+                 "repair_pos_from_disk: h=%d hash=%.16s has no copy in any "
+                 "blk file — caller falls back to clear-and-refetch",
+                 pindex->nHeight, want_hex);
+        return false;
+    }
+
+    struct disk_block_pos pos;
+    disk_block_pos_init(&pos);
+    pos.nFile = found_file;
+    pos.nPos = found_pos;
+    if (!block_index_set_have_data_verified(pindex, &pos, datadir))
+        return false; /* verified store already logged the mismatch */
+
+    LOG_WARN("disk_block_io",
+             "repair_pos_from_disk: h=%d repositioned file=%d pos=%u -> "
+             "file=%d pos=%u (hash=%.16s verified on read-back)",
+             pindex->nHeight, cur.nFile, cur.nPos, found_file, found_pos,
+             want_hex);
     return true;
 }

@@ -717,8 +717,8 @@ static int test_app_runtime_transaction(void)
 static int test_app_definition_compiler(void)
 {
     int failures = 0;
-    TEST("dev platform: strict compiler accepts Blog and Social catalog") {
-        struct zcl_app_definition_v1 blog, social;
+    TEST("dev platform: strict compiler accepts Blog, Social, and Yardsale catalog") {
+        struct zcl_app_definition_v1 blog, social, yardsale;
         struct zcl_result result =
             zcl_app_definition_load_v1(".", "blog", &blog);
         ASSERT(result.ok);
@@ -750,21 +750,52 @@ static int test_app_definition_compiler(void)
         ASSERT(strcmp(social.mounts[0].path, "/") == 0);
         ASSERT(social.simulation_count == 4);
 
+        result = zcl_app_definition_load_v1(".", "yardsale", &yardsale);
+        ASSERT(result.ok);
+        ASSERT(strcmp(yardsale.app_id, "yardsale") == 0);
+        ASSERT(strcmp(yardsale.display_name, "ZClassic Yardsale") == 0);
+        ASSERT(yardsale.resource_count == 1);
+        ASSERT(strcmp(yardsale.resources[0].name, "ads") == 0);
+        ASSERT(yardsale.topic_count == 1);
+        ASSERT(strcmp(yardsale.topics[0].name, "yardsale.ads.v1") == 0);
+        ASSERT(yardsale.topics[0].wire_version == 1);
+        ASSERT(yardsale.topics[0].max_event_bytes == 4096);
+        ASSERT(yardsale.mount_count == 1);
+        ASSERT(strcmp(yardsale.mounts[0].path, "/yardsale") == 0);
+        ASSERT(yardsale.onion_declared && yardsale.onion_enabled);
+        ASSERT(yardsale.znam_declared &&
+               strcmp(yardsale.znam, "yardsale") == 0);
+        ASSERT(yardsale.state_schema_declared &&
+               yardsale.state_schema_version == 1);
+        ASSERT(yardsale.simulation_count == 0);
+        ASSERT((yardsale.required_capabilities &
+                (ZCL_APP_CAP_CHAIN_READ | ZCL_APP_CAP_RESIDENT_STATE |
+                 ZCL_APP_CAP_WEB_ROUTES | ZCL_APP_CAP_ONION_BINDING |
+                 ZCL_APP_CAP_ZNAM_BINDING | ZCL_APP_CAP_P2P_TOPICS |
+                 ZCL_APP_CAP_WALLET_REQUESTS)) ==
+               (ZCL_APP_CAP_CHAIN_READ | ZCL_APP_CAP_RESIDENT_STATE |
+                ZCL_APP_CAP_WEB_ROUTES | ZCL_APP_CAP_ONION_BINDING |
+                ZCL_APP_CAP_ZNAM_BINDING | ZCL_APP_CAP_P2P_TOPICS |
+                ZCL_APP_CAP_WALLET_REQUESTS));
+
         struct zcl_app_definition_catalog_v1 catalog;
-        ASSERT(zcl_app_definition_builtin_count_v1() == 2);
+        ASSERT(zcl_app_definition_builtin_count_v1() == 3);
         ASSERT(strcmp(zcl_app_definition_builtin_id_v1(0), "blog") == 0);
         ASSERT(strcmp(zcl_app_definition_builtin_id_v1(1), "social") == 0);
-        ASSERT(zcl_app_definition_builtin_id_v1(2) == NULL);
+        ASSERT(strcmp(zcl_app_definition_builtin_id_v1(2), "yardsale") == 0);
+        ASSERT(zcl_app_definition_builtin_id_v1(3) == NULL);
         ASSERT(zcl_app_definition_builtin_v1("blog"));
+        ASSERT(zcl_app_definition_builtin_v1("yardsale"));
         ASSERT(!zcl_app_definition_builtin_v1("Blog"));
         ASSERT(!zcl_app_definition_builtin_v1("missing"));
         result = zcl_app_definition_builtin_catalog_compile_v1(".", &catalog);
         ASSERT(result.ok);
         ASSERT(catalog.struct_size == sizeof(catalog));
         ASSERT(catalog.catalog_version == ZCL_APP_DEFINITION_V1);
-        ASSERT(catalog.app_count == 2);
+        ASSERT(catalog.app_count == 3);
         ASSERT(strcmp(catalog.apps[0].app_id, "blog") == 0);
         ASSERT(strcmp(catalog.apps[1].app_id, "social") == 0);
+        ASSERT(strcmp(catalog.apps[2].app_id, "yardsale") == 0);
 
         static const char *const duplicate_ids[] = { "blog", "blog" };
         memset(&catalog, 0xa5, sizeof(catalog));

@@ -259,6 +259,14 @@ int test_block_index_loader(void)
         bool loaded = file_ok && load_block_index_flat(tmpdir, &ms2).ok;
         bool count_ok = loaded && (ms2.map_block_index.size == ms.map_block_index.size);
 
+        uint8_t point_hash[32], point_root[32], zero_root[32] = {0};
+        struct uint256 expected_point_hash = make_test_hash(42);
+        struct zcl_result point = block_index_flat_header_at(
+            tmpdir, 42, point_hash, point_root);
+        bool point_ok = point.ok &&
+            memcmp(point_hash, expected_point_hash.data, 32) == 0 &&
+            memcmp(point_root, zero_root, 32) == 0;
+
         bool heights_ok = count_ok;
         for (int h = 0; h < 100 && heights_ok; h++) {
             struct uint256 hash = make_test_hash(h);
@@ -268,6 +276,8 @@ int test_block_index_loader(void)
 
         BIL_CHECK("bil: flat save embeds integrity header, writes no sidecar",
                   file_ok && embedded_header_ok && no_sidecar);
+        BIL_CHECK("bil: point read returns exact block hash + Sapling root",
+                  point_ok);
         BIL_CHECK("bil: flat file round-trip preserves 100 entries", heights_ok);
 
         unlink(sidecar_path);

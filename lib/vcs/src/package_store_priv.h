@@ -39,6 +39,7 @@ struct store_package {
     uint64_t total_bytes;   /* sum of manifest file sizes */
     struct store_unique_chunk *chunks; /* unique hashes, ascending */
     size_t chunk_count;
+    uint64_t mutation_generation;
 };
 
 struct vcs_package_store {
@@ -57,11 +58,18 @@ struct vcs_package_store {
     enum vcs_package_accept_result last_accept;
     uint8_t last_accept_id[32];
     uint64_t logical_clock;
+    uint64_t next_mutation_generation;
     uint64_t evictions_total;
     uint64_t gc_orphans_total;
     uint64_t quota_rejects_total;
     pthread_mutex_t lock;
 };
+
+/* Lock-held mutation epoch helpers. Epoch zero is never published. */
+void store_package_touch(struct vcs_package_store *store,
+                         struct store_package *pkg);
+void store_packages_touch_hash(struct vcs_package_store *store,
+                               const uint8_t hash[32]);
 
 /* ── shared small helpers (package_store_io.c) ────────────────────── */
 

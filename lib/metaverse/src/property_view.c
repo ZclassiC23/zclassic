@@ -27,6 +27,10 @@ static void root_to_hex(const uint8_t root[METAVERSE_ROOT_BYTES],
 const char *metaverse_evidence_name(enum metaverse_evidence evidence)
 {
     switch (evidence) {
+    case METAVERSE_EVIDENCE_LOCAL_STORE_READ:
+        return "local_store_read";
+    case METAVERSE_EVIDENCE_LOCAL_MANIFEST_HASH:
+        return "local_manifest_hash";
     case METAVERSE_EVIDENCE_LOCAL_CONTENT_HASH:
         return "local_content_hash";
     case METAVERSE_EVIDENCE_LOCAL_SIGNATURE:
@@ -239,5 +243,15 @@ bool metaverse_view_to_json(const struct metaverse_property_view *view,
     (void)json_push_kv_int(out, "chunk_total", (int64_t)view->chunk_total);
     (void)json_push_kv_int(out, "chunks_present",
                            (int64_t)view->chunks_present);
+    (void)json_push_kv_bool(out, "manifest_root_verified",
+                            view->manifest_root_verified);
+    (void)json_push_kv_int(out, "chunks_verified",
+                           (int64_t)view->chunks_verified);
+    (void)json_push_kv_int(out, "bytes_verified",
+                           (int64_t)view->bytes_verified);
+    (void)json_push_kv_bool(out, "verification_complete",
+                            view->verification_complete);
+    (void)json_push_kv_str(out, "verification_gap",
+                           view->verification_gap);
     return true;
 }

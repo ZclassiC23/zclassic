@@ -5,7 +5,7 @@
  * The receipts written by tools/agent/gate-receipt.sh commit to the captured
  * output of a gate with a SHA3-256 digest, and tools/agent/check-claims.sh
  * recomputes it. Both need a hash the repo already owns: this links the
- * in-tree FIPS-202 SHA3-256 (lib/crypto/src/sha3.c) and nothing else, so the
+ * in-tree FIPS-202 SHA3-256 (lib/sha3/src/sha3.c) and nothing else, so the
  * harness introduces no hashing dependency and no shell-out to openssl (which
  * is not a dependency of this project and whose sha3 support varies by build).
  *

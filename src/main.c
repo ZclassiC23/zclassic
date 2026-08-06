@@ -25,10 +25,12 @@
 #include "main_cli_modes.h"             /* bench/cli/import/gen run-and-exit modes */
 #include "net/file_service.h"           /* -filesync fast path (fs_client_sync) */
 #include "controllers/agent_controller.h" /* rpc_agent_set_boot_context */
+#include "views/ui_present.h"           /* detached reviewed UI child */
 #include "views/wallet_gui.h"           /* -gui launch */
 #include "config/boot_self_respawn.h"   /* #8/Pillar 7: off-systemd self-respawn */
 #include "util/thread_registry.h"
 #include "util/boot_phase.h"            /* boot_stage_current/boot_stage_name */
+#include "util/signal_handler.h"        /* process-wide signal ownership */
 #include "util/util.h"                  /* ParseParameters */
 #include "util/sd_notify.h"             /* -sandbox=steady NOTIFY_SOCKET check */
 #include "session/agent_broker.h"       /* confined metaverse agent + broker modes */
@@ -145,6 +147,13 @@ static void report_app_init_failed(const struct app_context *ctx)
 
 int main(int argc, char **argv)
 {
+    /* Private same-binary presentation boundary. Exact argv shape only: the
+     * payload arrives later on stdin, never in process-visible argv. Dispatch
+     * before argument parsing and node initialization so the child owns only
+     * its reviewed UI backend and exits when its window closes. */
+    if (argc == 2 && strcmp(argv[1], "--ui-present-child=qr") == 0)
+        return ui_present_child_main("qr");
+
     ParseParameters(argc, (const char *const *)argv);
     apply_argv_loglevel();
 
@@ -209,13 +218,25 @@ int main(int argc, char **argv)
         return cli_main(3, synthetic);
     }
 
-    /* CLI mode: zclassic23 getblockcount */
-    if (argc > 1 && is_cli_mode(argc, argv))
-        return cli_main(argc, argv);
-
+    /* --gen-utxo-snapshot / --legacy-utxo-commitment: dispatched BEFORE
+     * is_cli_mode() below. Both take a bare datadir path argument, and
+     * is_cli_mode() treats ANY bare non-dash token as a command word — so
+     * behind it, `zclassic23 --legacy-utxo-commitment /path` was mis-routed
+     * to cli_main and refused as UNKNOWN_COMMAND (same footgun shape the
+     * --importblockindex anywhere-scan above fixed). Exact argv[1] match
+     * only: these verbs are always invoked first. */
     /* --gen-utxo-snapshot: build sidecar UTXO file from legacy datadir */
     if (argc >= 2 && strcmp(argv[1], "--gen-utxo-snapshot") == 0)
         return gen_utxo_snapshot_mode(argc, argv);
+
+    /* --legacy-utxo-commitment: hash-only SHA3 over the legacy chainstate
+     * UTXO set (byte-exact C8 parity reference) */
+    if (argc >= 2 && strcmp(argv[1], "--legacy-utxo-commitment") == 0)
+        return legacy_utxo_commitment_mode(argc, argv);
+
+    /* CLI mode: zclassic23 getblockcount */
+    if (argc > 1 && is_cli_mode(argc, argv))
+        return cli_main(argc, argv);
 
     /* -import-complete-shielded=<zclassicd-datadir>: owner-gated, copy-prove-
      * gated complete historical anchor+nullifier import into a TARGET-COPY
@@ -428,14 +449,9 @@ int main(int argc, char **argv)
      * before the WAL checkpoint + clean-shutdown marker. sigaction without
      * SA_RESETHAND keeps the handler installed so repeated SIGTERMs are
      * absorbed idempotently (the handler's own g_shutdown_requested guard). */
-    {
-        struct sigaction sa;
-        memset(&sa, 0, sizeof(sa));
-        sa.sa_handler = signal_handler;
-        sigemptyset(&sa.sa_mask);
-        sa.sa_flags = SA_RESTART; /* persistent; restart interrupted syscalls */
-        sigaction(SIGINT, &sa, NULL);
-        sigaction(SIGTERM, &sa, NULL);
+    if (signal_handler_install_termination(signal_handler) != 0) {
+        fprintf(stderr, "FATAL: could not install node termination handlers\n");
+        return 1;
     }
 
     /* -connect mode: only connect to specified peers, no seeds */
@@ -497,6 +513,20 @@ int main(int argc, char **argv)
 
     if (!app_init(&ctx)) {
         report_app_init_failed(&ctx);
+        return 1;
+    }
+
+    /* Embedded Tor initializes inside app_init() and installs process-wide
+     * SIGINT/SIGTERM dispositions for its own event loop. Without reclaiming
+     * them here, systemd's SIGTERM stops Tor but leaves the node running until
+     * TimeoutStopSec expires and SIGKILLs it. The node owns process lifetime;
+     * orderly teardown calls tor_integration_stop() explicitly. Re-install
+     * after every embedded runtime has initialized, before READY/main loop. */
+    if (signal_handler_install_termination(signal_handler) != 0) {
+        fprintf(stderr,
+                "FATAL: embedded runtime displaced termination handlers and "
+                "node ownership could not be restored\n");
+        app_shutdown();
         return 1;
     }
 

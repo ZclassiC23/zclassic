@@ -22,14 +22,10 @@
  * tx_inputs (the spend graph). Never consulted by consensus; rebuildable
  * from scratch via zslp_ledger_truncate + a fresh backfill.
  *
- * SLP-validity divergence (documented on purpose): strict SLP consensus
- * BURNS a SEND whose declared output sum exceeds the sum of its VALID token
- * inputs (the whole tx is invalid, no outputs get tokens). Our explorer
- * path (explorer_index_apply_slp / explorer_index_zslp.c) does NOT validate
- * input sums — it credits every declared SEND output unconditionally. This
- * ledger MATCHES that behavior (parity with our own projection matters more
- * than strict SLP here). A SEND that over-declares therefore mints ledger
- * rows for the extra amount; this is a projection, not consensus.
+ * Strict validity: rows enter this ledger only after zslp_validity validates
+ * GENESIS shape, recursive SEND ancestry/conservation, or current mint-baton
+ * lineage. INVALID and UNKNOWN declarations remain diagnostic-only and never
+ * enter balances or coin selection.
  *
  * Threading contract (mirrors op_return_index.h): row inserts + spend marks
  * are idempotent (INSERT OR IGNORE + deterministic UPDATE) and safe from
@@ -154,5 +150,14 @@ int64_t zslp_ledger_wallet_address_count(struct node_db *ndb);
 /* Row counts for diagnostics. */
 int64_t zslp_ledger_count(struct node_db *ndb);
 int64_t zslp_ledger_unspent_count(struct node_db *ndb);
+
+/* Validator-only model seam. zslp_validity is the sole production caller. */
+bool zslp_ledger_record_valid_output(struct node_db *ndb,
+    const uint8_t token_id[32], const uint8_t txid[32], int32_t vout,
+    int64_t amount, const uint8_t *address_or_null, int32_t created_height,
+    int role);
+bool zslp_ledger_mark_valid_spent(struct node_db *ndb,
+    const uint8_t prev_txid[32], int32_t prev_vout,
+    const uint8_t spender_txid[32], int32_t height);
 
 #endif /* ZCL_DB_MODEL_ZSLP_LEDGER_H */

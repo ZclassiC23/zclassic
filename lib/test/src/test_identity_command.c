@@ -11,14 +11,15 @@
  * test_offline_datadir_query.c harness shape, because the handlers under
  * test open real files at a caller-supplied path.
  *
- * NO NODE, NO BROADCAST. node_rpc_call is stubbed to return NULL for the
- * whole file, so every write command deterministically takes its OFFLINE
- * branch: it emits op_return_hex and stops. Nothing here composes a
- * transaction, and nothing here touches the network.
+ * NO NODE, NO BROADCAST. node_rpc_call is stubbed with sanitized durable
+ * plan/commit receipts. The isolated lifecycle fixture builds the same ZID
+ * codec bytes used by the intent controller and wraps them in RAM-only
+ * transactions; nothing broadcasts or touches the network.
  *
- * The un-fakeable case is (6): the hex a write command hands the operator
- * is fed straight back to zid_anchor_parse, so the two halves of the
- * codec must agree byte for byte or the test fails.
+ * The un-fakeable cases are (6) and the exact chain lifecycle: each native
+ * write proves explicit custody plus two-phase intent handling, while exact
+ * ANCHOR / ROTATE / REVOKE codec bytes are owner-funded, admitted through
+ * connect_block(), and folded through the production explorer indexer.
  *
  * Case (9) is the point of the whole surface — it pins that "the
  * signature is valid" and "the key is anchored on-chain" are two
@@ -27,12 +28,14 @@
  * doc under an unanchored key still fails KEY_NOT_ANCHORED. */
 
 #include "test/test_core.h"
+#include "test/transaction_lab_simnet.h"
 
 #include "command/native_command.h"
 #include "controllers/rpc_client.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "models/database.h"
+#include "models/explorer_index.h"
 #include "models/zid_identity.h"
 #include "zid/zid.h"
 #include "zid/zid_anchor.h"
@@ -49,13 +52,44 @@
 
 /* ── fixture ──────────────────────────────────────────────────────── */
 
-/* No live node for the whole file: node_rpc_call answers NULL, so every
- * write command falls through to its offline op_return_hex branch. */
+static int g_idc_plan_calls;
+static int g_idc_commit_calls;
+
+/* No live node for the whole file: the RPC seam returns public-safe intent
+ * receipts and deliberately never includes keys, owners, addresses, or raw
+ * transaction bytes. */
 static char *idc_rpc_hook(const char *method, const char *params_json)
 {
-    (void)method;
-    (void)params_json;
-    return NULL;
+    if (!method || strcmp(method, "zid_intent") != 0)
+        return NULL;
+    bool commit = params_json && strstr(params_json, "\"confirm\":true");
+    if (commit) {
+        g_idc_commit_calls++;
+        return strdup(
+            "{\"schema\":\"zcl.core_identity_anchor.v2\","
+            "\"wallet_scope\":\"dev\",\"operation\":\"anchor\","
+            "\"plan_id\":\"11111111111111111111111111111111"
+            "11111111111111111111111111111111\","
+            "\"snapshot_status\":\"CURRENT\",\"status\":\"broadcast\","
+            "\"state\":\"mempool_accepted\",\"actual_fee_zat\":500,"
+            "\"txid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}");
+    }
+    g_idc_plan_calls++;
+    return strdup(
+        "{\"schema\":\"zcl.core_identity_anchor.v2\","
+        "\"wallet_scope\":\"dev\",\"operation\":\"anchor\","
+        "\"plan_id\":\"11111111111111111111111111111111"
+        "11111111111111111111111111111111\","
+        "\"plan_digest\":\"22222222222222222222222222222222"
+        "22222222222222222222222222222222\","
+        "\"snapshot_root\":\"33333333333333333333333333333333"
+        "33333333333333333333333333333333\","
+        "\"snapshot_status\":\"CURRENT\",\"status\":\"planned\","
+        "\"state\":\"planned\",\"actual_fee_zat\":500,"
+        "\"maximum_fee_zat\":1000,\"reserved_zat\":1000,"
+        "\"pubkey\":\"fixture-secret\",\"owner_address\":\"fixture-owner\","
+        "\"raw_tx\":\"fixture-raw\"}");
 }
 
 static void idc_mk_key(uint8_t out[32], uint8_t seed)
@@ -121,7 +155,20 @@ static void idc_call(void (*fn)(const struct zcl_command_request *,
                      struct json_value *input,
                      struct zcl_command_reply *reply, const char *schema)
 {
-    struct zcl_command_request request = { .input = input };
+    static const struct zcl_command_spec anchor_spec = {
+        .path = "core.identity.anchor"
+    };
+    static const struct zcl_command_spec rotate_spec = {
+        .path = "core.identity.rotate"
+    };
+    static const struct zcl_command_spec revoke_spec = {
+        .path = "core.identity.revoke"
+    };
+    const struct zcl_command_spec *spec = NULL;
+    if (fn == zcl_native_handle_core_identity_anchor) spec = &anchor_spec;
+    if (fn == zcl_native_handle_core_identity_rotate) spec = &rotate_spec;
+    if (fn == zcl_native_handle_core_identity_revoke) spec = &revoke_spec;
+    struct zcl_command_request request = { .spec = spec, .input = input };
     zcl_command_reply_init(reply, schema);
     fn(&request, reply);
 }
@@ -358,28 +405,16 @@ static int t_list(void)
     return failures;
 }
 
-/* ── (6)+(7) the offline op_return_hex round-trip ─────────────────── */
+/* ── (6)+(7) custody-bound native plan/commit ────────────────────── */
 
-/* Take reply.data.op_return_hex, decode it and parse it back through the
- * ZID codec. This is the un-fakeable half: the builder and the parser must
- * agree byte for byte. */
-static bool idc_roundtrip(const struct zcl_command_reply *reply,
-                          struct zid_anchor_message *msg)
+static void idc_add_plan_fields(struct json_value *input,
+                                const char *idempotency_key)
 {
-    const char *hex = json_get_str(json_get(&reply->data, "op_return_hex"));
-    if (!hex || !hex[0])
-        return false;
-    size_t len = strlen(hex);
-    if ((len & 1u) != 0 || len > ZID_ANCHOR_SCRIPT_MAX * 2 || !IsHex(hex))
-        return false;
-    uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
-    int n = ParseHex(hex, script, sizeof(script));
-    if (n <= 0)
-        return false;
-    return zid_anchor_parse(script, (size_t)n, msg);
+    (void)json_push_kv_str(input, "wallet_scope", "dev");
+    (void)json_push_kv_str(input, "idempotency_key", idempotency_key);
 }
 
-static int t_write_offline(void)
+static int t_write_intents(void)
 {
     int failures = 0;
     char dir[256];
@@ -400,65 +435,220 @@ static int t_write_offline(void)
 
     struct json_value input;
     struct zcl_command_reply reply;
-    struct zid_anchor_message msg;
+    g_idc_plan_calls = 0;
+    g_idc_commit_calls = 0;
 
-    /* anchor: an unanchored key is a legitimate first anchor */
+    /* Anchor: a scoped request creates a durable reservation, never raw
+     * bytes or identity fields in the public receipt. */
     idc_input_open(&input, dir);
     (void)json_push_kv_str(&input, "pubkey", hex_b);
+    idc_add_plan_fields(&input, "identity-anchor-fixture");
     idc_call(zcl_native_handle_core_identity_anchor, &input, &reply,
-             "zcl.core_identity_anchor.v1");
-    IDC_CHECK("anchor offline: exit OK",
+             "zcl.core_identity_anchor.v2");
+    IDC_CHECK("anchor plan: exit OK",
               reply.exit_code == ZCL_COMMAND_EXIT_OK);
-    IDC_CHECK("anchor offline: status ready",
-              strcmp(idc_str(&reply, "status"), "ready") == 0);
-    IDC_CHECK("anchor offline: hex round-trips through zid_anchor_parse",
-              idc_roundtrip(&reply, &msg));
-    IDC_CHECK("anchor offline: command is ANCHOR",
-              msg.command == ZID_ANCHOR_CMD_ANCHOR);
-    IDC_CHECK("anchor offline: subject key is byte-identical",
-              memcmp(msg.pubkey, key_b, 32) == 0);
-    IDC_CHECK("anchor offline: no old key on an ANCHOR",
-              !msg.has_old_pubkey);
+    IDC_CHECK("anchor plan: durable plan stage",
+              strcmp(idc_str(&reply, "stage"), "plan") == 0 &&
+              strlen(idc_str(&reply, "plan_id")) == 64 &&
+              strstr(idc_str(&reply, "commit_input"), "confirm") != NULL);
+    IDC_CHECK("anchor plan: public receipt excludes identity and raw bytes",
+              json_get(&reply.data, "pubkey") == NULL &&
+              json_get(&reply.data, "owner_address") == NULL &&
+              json_get(&reply.data, "raw_tx") == NULL &&
+              json_get(&reply.data, "op_return_hex") == NULL);
     zcl_command_reply_free(&reply);
     json_free(&input);
 
-    /* rotate key_a -> key_b */
+    /* Rotate and revoke traverse the same scoped plan surface after their
+     * projection ownership/refusal preflights. */
     idc_input_open(&input, dir);
     (void)json_push_kv_str(&input, "pubkey", hex_a);
     (void)json_push_kv_str(&input, "new_pubkey", hex_b);
+    idc_add_plan_fields(&input, "identity-rotate-fixture");
     idc_call(zcl_native_handle_core_identity_rotate, &input, &reply,
-             "zcl.core_identity_anchor.v1");
-    IDC_CHECK("rotate offline: exit OK",
-              reply.exit_code == ZCL_COMMAND_EXIT_OK);
-    IDC_CHECK("rotate offline: hex round-trips",
-              idc_roundtrip(&reply, &msg));
-    IDC_CHECK("rotate offline: command is ROTATE",
-              msg.command == ZID_ANCHOR_CMD_ROTATE);
-    IDC_CHECK("rotate offline: old key preserved",
-              msg.has_old_pubkey && memcmp(msg.old_pubkey, key_a, 32) == 0);
-    IDC_CHECK("rotate offline: new key preserved",
-              memcmp(msg.pubkey, key_b, 32) == 0);
-    IDC_CHECK("rotate offline: owner echoed for the operator",
-              strcmp(idc_str(&reply, "owner_address"), "t1owner") == 0);
+             "zcl.core_identity_anchor.v2");
+    IDC_CHECK("rotate plan: durable and sanitized",
+              reply.exit_code == ZCL_COMMAND_EXIT_OK &&
+              strcmp(idc_str(&reply, "stage"), "plan") == 0 &&
+              json_get(&reply.data, "pubkey") == NULL &&
+              json_get(&reply.data, "owner_address") == NULL);
     zcl_command_reply_free(&reply);
     json_free(&input);
 
-    /* revoke key_a */
     idc_input_open(&input, dir);
     (void)json_push_kv_str(&input, "pubkey", hex_a);
+    idc_add_plan_fields(&input, "identity-revoke-fixture");
     idc_call(zcl_native_handle_core_identity_revoke, &input, &reply,
-             "zcl.core_identity_anchor.v1");
-    IDC_CHECK("revoke offline: exit OK",
-              reply.exit_code == ZCL_COMMAND_EXIT_OK);
-    IDC_CHECK("revoke offline: hex round-trips",
-              idc_roundtrip(&reply, &msg));
-    IDC_CHECK("revoke offline: command is REVOKE",
-              msg.command == ZID_ANCHOR_CMD_REVOKE);
-    IDC_CHECK("revoke offline: subject key preserved",
-              memcmp(msg.pubkey, key_a, 32) == 0);
+             "zcl.core_identity_anchor.v2");
+    IDC_CHECK("revoke plan: durable and sanitized",
+              reply.exit_code == ZCL_COMMAND_EXIT_OK &&
+              strcmp(idc_str(&reply, "stage"), "plan") == 0 &&
+              json_get(&reply.data, "pubkey") == NULL);
     zcl_command_reply_free(&reply);
     json_free(&input);
 
+    idc_input_open(&input, dir);
+    (void)json_push_kv_str(&input, "wallet_scope", "dev");
+    (void)json_push_kv_str(&input, "plan_id",
+        "1111111111111111111111111111111111111111111111111111111111111111");
+    (void)json_push_kv_bool(&input, "confirm", true);
+    idc_call(zcl_native_handle_core_identity_anchor, &input, &reply,
+             "zcl.core_identity_anchor.v2");
+    IDC_CHECK("commit omits operation fields and publishes once",
+              reply.exit_code == ZCL_COMMAND_EXIT_OK &&
+              strcmp(idc_str(&reply, "stage"), "committed") == 0 &&
+              g_idc_plan_calls == 3 && g_idc_commit_calls == 1);
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+
+    return failures;
+}
+
+/* ── exact public-command bytes through consensus + projection ───── */
+
+static int t_exact_chain_lifecycle(void)
+{
+    int failures = 0;
+    char dir[256];
+    bool fixture_ok = idc_mk_datadir(dir, sizeof(dir), "chain");
+    IDC_CHECK("chain fixture: datadir", fixture_ok);
+    if (!fixture_ok)
+        return failures;
+
+    char dbpath[512];
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool db_open = node_db_open(&ndb, dbpath) && ndb.open;
+    IDC_CHECK("chain fixture: projection database", db_open);
+    if (!db_open)
+        return failures;
+
+    uint8_t key_a[32], key_b[32], owner20[20];
+    idc_mk_key(key_a, 0x61);
+    idc_mk_key(key_b, 0x91);
+    memset(owner20, 0x4d, sizeof(owner20));
+    char hex_a[65], hex_b[65];
+    idc_hex32(key_a, hex_a);
+    idc_hex32(key_b, hex_b);
+
+    struct zid_anchor_message message;
+    uint8_t script[ZID_ANCHOR_SCRIPT_MAX];
+    size_t script_len;
+    struct transaction_lab_simnet_receipt anchor_mined;
+    struct transaction_lab_simnet_receipt rotate_mined;
+    struct transaction_lab_simnet_receipt revoke_mined;
+    bool anchor_mined_ok = false;
+    bool rotate_mined_ok = false;
+    bool revoke_mined_ok = false;
+
+    script_len = zid_anchor_build_anchor(script, sizeof(script), key_a);
+    bool anchor_command_ok =
+        script_len > 0 && zid_anchor_parse(script, script_len, &message) &&
+        message.command == ZID_ANCHOR_CMD_ANCHOR &&
+        memcmp(message.pubkey, key_a, sizeof(key_a)) == 0;
+    IDC_CHECK("chain anchor: production codec emits exact ANCHOR bytes",
+              anchor_command_ok);
+
+    anchor_mined_ok = anchor_command_ok &&
+        transaction_lab_simnet_mine_owned_op_return_at(
+            script, script_len, owner20, 500, &anchor_mined);
+    IDC_CHECK("chain anchor: exact command bytes pass connect_block",
+              anchor_mined_ok && anchor_mined.mined_height == 500 &&
+              anchor_mined.change_zat == 800000 &&
+              anchor_mined.transaction.vout[0].script_pub_key.size ==
+                  script_len &&
+              memcmp(anchor_mined.transaction.vout[0].script_pub_key.data,
+                     script, script_len) == 0);
+    bool anchor_projected = anchor_mined_ok &&
+        transaction_lab_simnet_project(&ndb, &anchor_mined);
+    struct zid_identity anchored;
+    memset(&anchored, 0, sizeof(anchored));
+    bool anchor_found = anchor_projected &&
+        db_zid_identity_find(&ndb, key_a, &anchored);
+    IDC_CHECK("chain anchor: mined bytes project the active owner-bound key",
+              anchor_found &&
+              strcmp(anchored.status, ZID_IDENTITY_STATUS_ACTIVE) == 0 &&
+              anchored.anchor_height == 500 && anchored.updated_height == 500 &&
+              anchored.owner_address[0] != '\0' &&
+              memcmp(anchored.anchor_txid, anchor_mined.txid.data, 32) == 0);
+    char owner_address[64] = {0};
+    if (anchor_found)
+        snprintf(owner_address, sizeof(owner_address), "%s",
+                 anchored.owner_address);
+
+    script_len = zid_anchor_build_rotate(
+        script, sizeof(script), key_a, key_b);
+    bool rotate_command_ok = anchor_found &&
+        script_len > 0 &&
+        zid_anchor_parse(script, script_len, &message) &&
+        message.command == ZID_ANCHOR_CMD_ROTATE && message.has_old_pubkey &&
+        memcmp(message.old_pubkey, key_a, sizeof(key_a)) == 0 &&
+        memcmp(message.pubkey, key_b, sizeof(key_b)) == 0;
+    IDC_CHECK("chain rotate: production codec emits exact ROTATE bytes",
+              rotate_command_ok);
+
+    rotate_mined_ok = rotate_command_ok &&
+        transaction_lab_simnet_mine_owned_op_return_at(
+            script, script_len, owner20, 700, &rotate_mined);
+    IDC_CHECK("chain rotate: exact command bytes pass connect_block",
+              rotate_mined_ok && rotate_mined.mined_height == 700 &&
+              rotate_mined.change_zat == 800000);
+    bool rotate_projected = rotate_mined_ok &&
+        transaction_lab_simnet_project(&ndb, &rotate_mined);
+    struct zid_identity rotated, successor;
+    memset(&rotated, 0, sizeof(rotated));
+    memset(&successor, 0, sizeof(successor));
+    bool rotate_found = rotate_projected &&
+        db_zid_identity_find(&ndb, key_a, &rotated) &&
+        db_zid_identity_find(&ndb, key_b, &successor);
+    IDC_CHECK("chain rotate: projection preserves lineage and owner",
+              rotate_found &&
+              strcmp(rotated.status, ZID_IDENTITY_STATUS_ROTATED) == 0 &&
+              rotated.has_successor &&
+              memcmp(rotated.successor_pubkey, key_b, sizeof(key_b)) == 0 &&
+              rotated.anchor_height == 500 && rotated.updated_height == 700 &&
+              strcmp(successor.status, ZID_IDENTITY_STATUS_ACTIVE) == 0 &&
+              successor.anchor_height == 700 &&
+              strcmp(successor.owner_address, owner_address) == 0 &&
+              memcmp(successor.anchor_txid, rotate_mined.txid.data, 32) == 0);
+
+    script_len = zid_anchor_build_revoke(script, sizeof(script), key_b);
+    bool revoke_command_ok = rotate_found &&
+        script_len > 0 &&
+        zid_anchor_parse(script, script_len, &message) &&
+        message.command == ZID_ANCHOR_CMD_REVOKE &&
+        memcmp(message.pubkey, key_b, sizeof(key_b)) == 0;
+    IDC_CHECK("chain revoke: production codec emits exact REVOKE bytes",
+              revoke_command_ok);
+
+    revoke_mined_ok = revoke_command_ok &&
+        transaction_lab_simnet_mine_owned_op_return_at(
+            script, script_len, owner20, 900, &revoke_mined);
+    IDC_CHECK("chain revoke: exact command bytes pass connect_block",
+              revoke_mined_ok && revoke_mined.mined_height == 900 &&
+              revoke_mined.change_zat == 800000);
+    bool revoke_projected = revoke_mined_ok &&
+        transaction_lab_simnet_project(&ndb, &revoke_mined);
+    struct zid_identity revoked;
+    memset(&revoked, 0, sizeof(revoked));
+    bool revoke_found = revoke_projected &&
+        db_zid_identity_find(&ndb, key_b, &revoked);
+    IDC_CHECK("chain revoke: projection retires the successor in place",
+              revoke_found &&
+              strcmp(revoked.status, ZID_IDENTITY_STATUS_REVOKED) == 0 &&
+              !revoked.has_successor && revoked.anchor_height == 700 &&
+              revoked.updated_height == 900 &&
+              strcmp(revoked.owner_address, owner_address) == 0 &&
+              memcmp(revoked.anchor_txid, rotate_mined.txid.data, 32) == 0);
+
+    if (anchor_mined_ok)
+        transaction_lab_simnet_receipt_free(&anchor_mined);
+    if (rotate_mined_ok)
+        transaction_lab_simnet_receipt_free(&rotate_mined);
+    if (revoke_mined_ok)
+        transaction_lab_simnet_receipt_free(&revoke_mined);
+    node_db_close(&ndb);
     return failures;
 }
 
@@ -773,7 +963,8 @@ int test_identity_command(void)
 
     failures += t_resolve();
     failures += t_list();
-    failures += t_write_offline();
+    failures += t_write_intents();
+    failures += t_exact_chain_lifecycle();
     failures += t_write_refusals();
     failures += t_verify_anchored();
 

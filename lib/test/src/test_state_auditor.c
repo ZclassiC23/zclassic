@@ -401,6 +401,24 @@ static int test_state_auditor_coins_leg(void)
     state_auditor_reset_for_test();
     state_auditor_set_test_seed(0);
 
+    struct utxo_mirror_sync_service mirror_guard;
+    memset(&mirror_guard, 0, sizeof(mirror_guard));
+    g_utxo_mirror_sync = &mirror_guard;
+    {
+        uint64_t generation = UINT64_MAX;
+        SA_CHECK("mirror audit snapshot is idle at generation zero",
+                 utxo_mirror_sync_audit_snapshot(&generation) &&
+                 generation == 0);
+        atomic_store(&mirror_guard.updates_active, 1u);
+        SA_CHECK("mirror audit snapshot refuses an active rebuild",
+                 !utxo_mirror_sync_audit_snapshot(&generation));
+        atomic_fetch_add(&mirror_guard.update_generation, 2u);
+        atomic_store(&mirror_guard.updates_active, 0u);
+        SA_CHECK("mirror audit snapshot observes completed update generation",
+                 utxo_mirror_sync_audit_snapshot(&generation) &&
+                 generation == 2);
+    }
+
     printf("state_auditor coins: clean cross-check — zero mismatches over "
           "10 ticks... ");
     {
@@ -426,6 +444,20 @@ static int test_state_auditor_coins_leg(void)
         sqlite3_finalize(s);
         SA_CHECK("corruption UPDATE affected exactly 1 row",
                 rc == SQLITE_DONE && sqlite3_changes(ndb.db) == 1);
+    }
+
+    printf("state_auditor coins: active mirror rebuild is skipped, never "
+          "confirmed as corruption... ");
+    {
+        atomic_store(&mirror_guard.updates_active, 1u);
+        for (int i = 0; i < STATE_AUDITOR_CONFIRM_STREAK + 1; i++)
+            state_auditor_tick_once();
+        struct state_auditor_mismatch_info info;
+        state_auditor_get_mismatch(STATE_AUDITOR_LEG_COINS_COMMITMENT, &info);
+        atomic_fetch_add(&mirror_guard.update_generation, 2u);
+        atomic_store(&mirror_guard.updates_active, 0u);
+        if (!info.latched) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     printf("state_auditor coins: corrupted row flagged after %d confirming "
@@ -469,6 +501,7 @@ static int test_state_auditor_coins_leg(void)
 
     g_state_auditor_test_pdb = NULL;
     g_state_auditor_test_ndb = NULL;
+    g_utxo_mirror_sync = NULL;
     state_auditor_reset_for_test();
     node_db_close(&ndb);
     sqlite3_close(pdb);

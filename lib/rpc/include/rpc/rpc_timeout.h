@@ -54,6 +54,7 @@ struct rpc_timeout_slot {
     int      client_fd;
     uint32_t ip_be;              /* network byte order, 0x0100007F for loopback */
     int64_t  start_us;
+    int      timeout_ms;         /* method-scoped deadline; 0 only if disabled */
     char     method[RPC_TIMEOUT_METHOD_LEN];
 };
 
@@ -100,8 +101,8 @@ void rpc_timeout_stop_watchdog(struct rpc_timeout_mgr *mgr);
 int  rpc_timeout_register(struct rpc_timeout_mgr *mgr,
                            int client_fd, uint32_t ip_be);
 
-/* Update the method name on an existing slot once the JSON-RPC
- * request has been parsed.  Truncates to RPC_TIMEOUT_METHOD_LEN-1. */
+/* Update the method name on an existing slot once the JSON-RPC request has
+ * been parsed. Truncates to RPC_TIMEOUT_METHOD_LEN-1. */
 void rpc_timeout_set_method(struct rpc_timeout_mgr *mgr,
                              int slot, const char *method);
 

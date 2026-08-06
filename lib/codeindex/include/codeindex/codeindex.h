@@ -92,6 +92,13 @@ struct ci_ref {
 struct codeindex *codeindex_open(const char *root);
 void codeindex_close(struct codeindex *ci);
 
+/* Exact content root of the source generation this verified handle reads.
+ * codeindex_open() has already matched the store's stat-bound freshness root
+ * to the checkout, so this is a safe generation key for in-process derived
+ * caches. Returns false if the sealed 32-byte metadata record is absent or
+ * malformed; it never fabricates an all-zero generation. */
+bool codeindex_source_root_sha3(struct codeindex *ci, uint8_t out[32]);
+
 /* ── Queries ── */
 
 /* Exact-name lookup. On a hit fills *out and sets *found=true; verify-on-read

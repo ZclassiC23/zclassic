@@ -429,6 +429,16 @@ static inline void explorer_validate_block_history(
         EXPLORER_HISTORY_BAD("blocks projection is empty");
     int64_t raw_missing = out->max_height + 1 - out->block_rows;
     out->missing_heights = raw_missing > 0 ? raw_missing : 0;
+
+    /* Once the cheap MAX/COUNT check proves the projection is outside the
+     * bounded-hole tolerance, do not pay for an exact first-hole search.
+     * On a multi-million-row live index that anti-join can run for minutes.
+     * The caller already has the complete safety answer (degraded), and a
+     * diagnostic must not monopolize the node's shared wallet DB just to add
+     * a more precise height to an already-failed result. */
+    if (out->missing_heights > EXPLORER_HISTORY_MAX_BLOCK_GAP)
+        EXPLORER_HISTORY_BAD("blocks projection has missing heights");
+
     out->first_missing_height = sql_query_i64(db,
         "WITH first_missing(h) AS ("
         "SELECT 0 WHERE NOT EXISTS ("
@@ -443,8 +453,6 @@ static inline void explorer_validate_block_history(
     out->tx_rows = sql_query_i64(db, "SELECT count(*) FROM transactions");
     out->tx_output_rows = sql_query_i64(db, "SELECT count(*) FROM tx_outputs");
     out->integrity_rows = sql_query_i64(db, "SELECT count(*) FROM view_integrity");
-    if (out->missing_heights > EXPLORER_HISTORY_MAX_BLOCK_GAP)
-        EXPLORER_HISTORY_BAD("blocks projection has missing heights");
     if (chain_height > 0 && out->max_height + 1 < chain_height)
         EXPLORER_HISTORY_BAD("blocks projection lags active chain");
 

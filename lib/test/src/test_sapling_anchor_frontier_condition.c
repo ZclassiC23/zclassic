@@ -27,6 +27,7 @@
 #include "jobs/reducer_frontier.h"
 #include "jobs/utxo_apply_anchors.h"
 #include "jobs/utxo_apply_delta.h"
+#include "jobs/utxo_apply_history_hold.h"
 #include "jobs/utxo_apply_nullifiers.h"
 #include "json/json.h"
 #include "primitives/block.h"
@@ -34,11 +35,13 @@
 #include "services/nullifier_backfill_service.h"
 #include "services/sync_monitor.h"
 #include "storage/anchor_kv.h"
+#include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
+#include "validation/process_block.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -417,6 +420,98 @@ int test_sapling_anchor_frontier_condition(void)
             SAFC_CHECK("gap-present: refuses live auto-exec on live datadir",
                        cont && json_get_bool(json_get(cont, "refuses_live")));
             json_free(&dump);
+        }
+        safu_engine_teardown(&fx);
+    }
+
+    /* ── DUAL GAP (EMPTY_TABLE anchor + nullifier blocker): the birth-defect
+     * anchor half is attempted FIRST (tier1 seed), then the named-remedy
+     * ladder owns the nullifier half — the 2026-08-01 seed-boot wedge
+     * routing, where the ladder branch used to win on the NF-blocker
+     * disjunct alone and the tier1-curable anchor side was never tried. ── */
+    {
+        struct safu_engine_fixture fx;
+        bool ok = safu_engine_setup(&fx, "dual");
+        SAFC_CHECK("dual-gap fixture setup", ok);
+        if (ok) {
+            /* activation>0 + empty table == the curable EMPTY_TABLE class.
+             * Nullifier history is initialized too so markers_read (which
+             * needs all three adoption cursors) succeeds for the hold memo. */
+            SAFC_CHECK("dual-gap: anchor history adopted above genesis",
+                       anchor_kv_initialize_history(progress_store_db(), 100));
+            SAFC_CHECK("dual-gap: nullifier history adopted above genesis",
+                       nullifier_kv_initialize_history(progress_store_db(),
+                                                       100));
+            /* Pin the checkpoint path to the hermetic fixture datadir (no
+             * ckpt file there -> tier1 fails closed deterministically,
+             * regardless of suite-order static path state). */
+            set_sapling_checkpoint_datadir(fx.dir);
+
+            struct blocker_record ra, rn;
+            blocker_init(&ra, UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID, "utxo_apply",
+                         BLOCKER_PERMANENT, "test: anchor history gap");
+            blocker_set(&ra);
+            blocker_init(&rn, UTXO_APPLY_NF_GAP_BLOCKER_ID, "utxo_apply",
+                         BLOCKER_PERMANENT, "test: nullifier history gap");
+            blocker_set(&rn);
+
+            /* The 2026-08-02 wedge shape: a GATE_HOLD already recorded the
+             * in-memory history-hold memo on the stall block. Only a LANDED
+             * cure (tier1/tier1b seed) may clear it — a refused seed must
+             * leave the park in place (the fold stays fail-closed). */
+            SAFC_CHECK("dual-gap: history-hold memo recorded",
+                       utxo_apply_history_hold_record(
+                           progress_store_db(), 1, 2, fx.tip->phashBlock));
+            SAFC_CHECK("dual-gap: hold active before remedy",
+                       utxo_apply_history_hold_active());
+
+            condition_engine_tick();
+
+            SAFC_CHECK("dual-gap: remedy ran exactly once",
+                       sapling_anchor_frontier_test_remedy_calls() == 1);
+            SAFC_CHECK("dual-gap: tier1 seed attempted BEFORE the ladder",
+                       sapling_anchor_frontier_test_tier1_attempts() == 1);
+            struct condition_runtime_snapshot snap;
+            bool got = condition_engine_get_registered_snapshot(
+                "sapling_anchor_frontier_unavailable", &snap);
+            SAFC_CHECK("dual-gap: episode stays active (no fake resolve)",
+                       got && snap.currently_active);
+            SAFC_CHECK("dual-gap: outcome is the ladder's, not tier1 OK",
+                       got && snap.last_outcome == COND_REMEDY_FAILED);
+            /* A refused seed wrote nothing and cleared nothing: the hold
+             * memo parks the fold until a cure actually lands (the remedy's
+             * utxo_apply_history_hold_clear runs only on tier1/tier1b
+             * SUCCESS — covered live by the anchor replay-canary). */
+            SAFC_CHECK("dual-gap: hold memo survives a refused seed",
+                       utxo_apply_history_hold_active());
+
+            struct json_value dump;
+            json_init(&dump);
+            json_set_object(&dump);
+            SAFC_CHECK("dual-gap: engine dump ok",
+                       condition_engine_dump_state_json(&dump, NULL));
+            const struct json_value *mine = safu_find_entry(&dump);
+            const struct json_value *detail =
+                mine ? json_get(mine, "detail") : NULL;
+            SAFC_CHECK("dual-gap: episode_kind == BIRTH_DEFECT(1)",
+                       detail &&
+                       json_get_int(json_get(detail, "episode_kind")) == 1);
+            SAFC_CHECK("dual-gap: anchor gap blocker flagged",
+                       detail &&
+                       json_get_bool(json_get(detail, "gap_blocker_present")));
+            SAFC_CHECK("dual-gap: nullifier gap blocker flagged",
+                       detail &&
+                       json_get_bool(json_get(
+                           detail, "nullifier_gap_blocker_present")));
+            json_free(&dump);
+
+            /* The refused tier1 seed wrote nothing: still EMPTY_TABLE. */
+            SAFC_CHECK("dual-gap: anchor side still EMPTY_TABLE after refused seed",
+                       sapling_anchor_frontier_classify(progress_store_db()) ==
+                           SAPLING_ANCHOR_GAP_EMPTY_TABLE);
+
+            set_sapling_checkpoint_datadir(NULL);
+            utxo_apply_history_hold_clear();
         }
         safu_engine_teardown(&fx);
     }

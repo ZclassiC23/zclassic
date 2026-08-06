@@ -8,18 +8,10 @@
  *
  * Consensus verification is the independent C23 implementation in sapling.c
  * and is present in every build — it never depends on a proving backend.
- * Wallet-side PROVING (creating your own shielded transactions) is the one
- * capability that needs a backend, and it lives in exactly one of two sibling
- * translation units selected at build time:
- *
- *   sapling_prover_librustzcash.c  — `make ZCL_WITH_RUST=1`, links the pinned
- *                                    librustzcash archive.
- *   sapling_prover_unavailable.c   — the DEFAULT, no Rust toolchain needed;
- *                                    every proving entry point returns a typed
- *                                    refusal naming the rebuild flag.
- *
- * Nothing in this file branches on that choice, so the consensus surface is
- * never inside a preprocessor conditional.
+ * Wallet-side PROVING is implemented by sapling_prover_native.c and remains
+ * fail-closed until its in-process Spend/Output/binding proof bundle passes the
+ * verifier here. Nothing in this file branches on proving readiness, so the
+ * consensus surface is never inside that policy boundary.
  */
 
 #include "sapling/sapling_prover.h"

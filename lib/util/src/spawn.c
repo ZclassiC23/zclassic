@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -42,12 +43,18 @@ static bool spawn_reap(pid_t pid, int *status)
  * success. On failure, best-effort writes errno to err_fd (if >= 0) and
  * _exit(127). Only async-signal-safe calls happen in this function. */
 static void spawn_grandchild_exec(const char *const argv[],
-                                   const char *log_path, int err_fd)
+                                   const char *log_path, int err_fd,
+                                   int stdin_fd)
 {
-    int devnull_in = open("/dev/null", O_RDONLY);
-    if (devnull_in >= 0) {
-        dup2(devnull_in, STDIN_FILENO);
-        if (devnull_in > STDERR_FILENO) close(devnull_in);
+    if (stdin_fd >= 0) {
+        dup2(stdin_fd, STDIN_FILENO);
+        if (stdin_fd > STDERR_FILENO) close(stdin_fd);
+    } else {
+        int devnull_in = open("/dev/null", O_RDONLY);
+        if (devnull_in >= 0) {
+            dup2(devnull_in, STDIN_FILENO);
+            if (devnull_in > STDERR_FILENO) close(devnull_in);
+        }
     }
 
     int out_fd = log_path ? open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0600)
@@ -70,13 +77,39 @@ static void spawn_grandchild_exec(const char *const argv[],
 struct zcl_result zcl_spawn_detached(const char *const argv[],
                                       const char *log_path)
 {
+    return zcl_spawn_detached_input(argv, NULL, 0, log_path);
+}
+
+struct zcl_result zcl_spawn_detached_input(const char *const argv[],
+                                            const void *input,
+                                            size_t input_len,
+                                            const char *log_path)
+{
     if (!argv || !argv[0])
-        return ZCL_ERR(-1, "zcl_spawn_detached: NULL/empty argv");
+        return ZCL_ERR(-1, "zcl_spawn_detached_input: NULL/empty argv");
+    if ((!input && input_len != 0) || input_len > ZCL_SPAWN_INPUT_MAX)
+        return ZCL_ERR(-1,
+                       "zcl_spawn_detached_input: invalid input length %zu",
+                       input_len);
+
+    int input_pair[2] = { -1, -1 };
+    if (input || input_len > 0) {
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, input_pair) != 0)
+            return ZCL_ERR(-errno,
+                           "zcl_spawn_detached_input: socketpair() failed: %s",
+                           strerror(errno));
+    }
 
     int errpipe[2];
-    if (pipe(errpipe) != 0)
-        return ZCL_ERR(-errno, "zcl_spawn_detached: pipe() failed: %s",
-                       strerror(errno));
+    if (pipe(errpipe) != 0) {
+        int e = errno;
+        if (input_pair[0] >= 0) {
+            close(input_pair[0]);
+            close(input_pair[1]);
+        }
+        return ZCL_ERR(-e, "zcl_spawn_detached_input: pipe() failed: %s",
+                       strerror(e));
+    }
     /* Write end must close-on-exec: a successful grandchild exec closes
      * it automatically (its only copy), which is how the parent learns
      * "exec succeeded" (EOF on read) vs "exec failed" (errno bytes
@@ -84,7 +117,11 @@ struct zcl_result zcl_spawn_detached(const char *const argv[],
     if (fcntl(errpipe[1], F_SETFD, FD_CLOEXEC) != 0) {
         int e = errno;
         close(errpipe[0]); close(errpipe[1]);
-        return ZCL_ERR(-e, "zcl_spawn_detached: fcntl(FD_CLOEXEC) failed: %s",
+        if (input_pair[0] >= 0) {
+            close(input_pair[0]);
+            close(input_pair[1]);
+        }
+        return ZCL_ERR(-e, "zcl_spawn_detached_input: fcntl(FD_CLOEXEC) failed: %s",
                        strerror(e));
     }
 
@@ -92,7 +129,11 @@ struct zcl_result zcl_spawn_detached(const char *const argv[],
     if (child1 < 0) {
         int e = errno;
         close(errpipe[0]); close(errpipe[1]);
-        return ZCL_ERR(-e, "zcl_spawn_detached: fork() failed: %s",
+        if (input_pair[0] >= 0) {
+            close(input_pair[0]);
+            close(input_pair[1]);
+        }
+        return ZCL_ERR(-e, "zcl_spawn_detached_input: fork() failed: %s",
                        strerror(e));
     }
 
@@ -101,6 +142,7 @@ struct zcl_result zcl_spawn_detached(const char *const argv[],
          * tty), then fork the grandchild that actually execs. Only
          * async-signal-safe calls from here to _exit()/exec(). */
         close(errpipe[0]);
+        if (input_pair[0] >= 0) close(input_pair[0]);
         setsid();
 
         pid_t child2 = fork();
@@ -111,18 +153,20 @@ struct zcl_result zcl_spawn_detached(const char *const argv[],
             _exit(127);
         }
         if (child2 == 0) {
-            spawn_grandchild_exec(argv, log_path, errpipe[1]);
+            spawn_grandchild_exec(argv, log_path, errpipe[1], input_pair[1]);
             /* unreachable */
         }
         /* Still child1: hand off immediately so the grandchild is
          * reparented to init/subreaper without delay. Do not wait for
          * it — that is the entire point of "detached". */
         close(errpipe[1]);
+        if (input_pair[1] >= 0) close(input_pair[1]);
         _exit(0);
     }
 
     /* Parent. */
     close(errpipe[1]);   /* close our own copy, else read() below never sees EOF */
+    if (input_pair[1] >= 0) close(input_pair[1]);
 
     int status = 0;
     spawn_reap(child1, &status);   /* reap the intermediate child; ECHILD-tolerant */
@@ -135,17 +179,40 @@ struct zcl_result zcl_spawn_detached(const char *const argv[],
     close(errpipe[0]);
 
     if (n == (ssize_t)sizeof(child_errno)) {
+        if (input_pair[0] >= 0) close(input_pair[0]);
         return ZCL_ERR(-child_errno,
-                       "zcl_spawn_detached: execvp(%s) failed: %s",
+                       "zcl_spawn_detached_input: execvp(%s) failed: %s",
                        argv[0], strerror(child_errno));
     }
     if (n < 0) {
-        return ZCL_ERR(-errno,
-                       "zcl_spawn_detached: read(errpipe) failed: %s",
-                       strerror(errno));
+        int e = errno;
+        if (input_pair[0] >= 0) close(input_pair[0]);
+        return ZCL_ERR(-e,
+                       "zcl_spawn_detached_input: read(errpipe) failed: %s",
+                       strerror(e));
     }
     /* n == 0: EOF with no error bytes -> the grandchild's exec succeeded
      * (its CLOEXEC copy of the write end closed as part of exec()). */
+    if (input_pair[0] >= 0) {
+        const unsigned char *bytes = input;
+        size_t sent = 0;
+        while (sent < input_len) {
+            ssize_t nw = send(input_pair[0], bytes + sent,
+                              input_len - sent, MSG_NOSIGNAL);
+            if (nw > 0) {
+                sent += (size_t)nw;
+                continue;
+            }
+            if (nw < 0 && errno == EINTR) continue;
+            int e = nw < 0 ? errno : EIO;
+            close(input_pair[0]);
+            return ZCL_ERR(-e,
+                           "zcl_spawn_detached_input: stdin delivery failed: %s",
+                           strerror(e));
+        }
+        (void)shutdown(input_pair[0], SHUT_WR);
+        close(input_pair[0]);
+    }
     return ZCL_OK;
 }
 

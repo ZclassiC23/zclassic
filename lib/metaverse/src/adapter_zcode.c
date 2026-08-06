@@ -8,12 +8,13 @@
  * THE EVIDENCE GRADE IS EARNED IN THIS CALL, NOT INHERITED.
  * package_index.h states plainly that the index "never verifies signatures
  * (publication did)". A view built from the index alone therefore could
- * only claim local_content_hash. So this adapter re-reads the persisted
+ * only claim local_manifest_hash. So this adapter re-reads the persisted
  * envelope and runs vcs_package_release_verify() — full field validation,
  * release-id recomputation, low-S check, secp256k1 ECDSA verify — during
  * the read, and only then reports local_signature. If that verify fails or
- * the envelope is unreadable, the grade DROPS to local_content_hash with
- * the reason stated; it is never silently kept.
+ * the envelope is unreadable, the grade is local_content_hash only when all
+ * chunks verify; otherwise it drops to local_manifest_hash. It is never
+ * silently kept.
  *
  * Still not chain-bound. A publisher signature proves authorship of exactly
  * those bytes. It is not a consensus fact, so chain_bound stays false and
@@ -61,27 +62,46 @@
 
 struct mv_zcode_facts {
     bool have_manifest;
+    enum mv_manifest_read_status manifest_status;
     struct mv_manifest_read m;
     bool signature_verified;
     struct vcs_package_release release;
 };
 
 /* Fill a view from one index entry, re-verifying the envelope. */
-static void zcode_fill(const struct metaverse_adapter_ctx *ctx,
+static bool zcode_fill(const struct metaverse_adapter_ctx *ctx,
                        const struct vcs_package_index_entry *e,
-                       struct metaverse_property_view *out)
+                       struct metaverse_property_view *out,
+                       uint64_t verify_byte_budget,
+                       uint32_t verify_operation_budget,
+                       uint64_t *verify_bytes_used,
+                       uint32_t *verify_operations_used)
 {
     struct mv_zcode_facts f;
     bool complete;
+    bool manifest_integrity_ok;
     uint8_t release_id[VCS_PACKAGE_RELEASE_ID_BYTES];
 
     memset(&f, 0, sizeof(f));
     snprintf(out->display_name, sizeof(out->display_name), "%s", e->name);
-    f.have_manifest = mv_manifest_read(ctx->zcode_dir, e->package_root_hex,
-                                       &f.m);
+    f.manifest_status = mv_manifest_read(ctx->zcode_dir, e->package_root_hex,
+                                         &f.m);
+    f.have_manifest = f.manifest_status == MV_MANIFEST_READ_OK;
+    manifest_integrity_ok = f.have_manifest
+                                ? f.m.root_matches_name
+                                : f.manifest_status == MV_MANIFEST_READ_ABSENT;
     f.signature_verified = mv_release_read_verified(ctx->zcode_dir,
                                                     e->release_id_hex,
                                                     &f.release);
+    if (verify_bytes_used)
+        *verify_bytes_used = 0;
+    if (verify_operations_used)
+        *verify_operations_used = 0;
+    if (f.have_manifest && f.m.root_matches_name)
+        mv_manifest_verify_possession(
+            ctx->zcode_dir, &f.m, verify_byte_budget,
+            verify_operation_budget, verify_bytes_used,
+            verify_operations_used);
 
     /* The immutable root is the manifest root. Claim it re-derived only
      * when we actually re-derived it from the stored wire. */
@@ -92,8 +112,13 @@ static void zcode_fill(const struct metaverse_adapter_ctx *ctx,
         out->file_count     = f.m.file_count;
         out->chunk_total    = f.m.chunk_total;
         out->chunks_present = f.m.chunks_present;
-        complete = f.m.chunk_total > 0 &&
-                   f.m.chunks_present == f.m.chunk_total;
+        out->manifest_root_verified = f.m.manifest_root_verified;
+        out->chunks_verified = f.m.chunks_verified;
+        out->bytes_verified = f.m.bytes_verified;
+        out->verification_complete = f.m.verification_complete;
+        snprintf(out->verification_gap, sizeof(out->verification_gap), "%s",
+                 f.m.verification_gap);
+        complete = f.m.verification_complete;
     } else {
         /* No manifest wire: the release names a root whose bytes this node
          * does not hold. The index summary would report zeros here, and a
@@ -101,6 +126,10 @@ static void zcode_fill(const struct metaverse_adapter_ctx *ctx,
         out->file_count = e->file_count;
         out->total_bytes = e->total_bytes;
         out->chunk_total = e->chunk_total;
+        snprintf(out->verification_gap, sizeof(out->verification_gap), "%s",
+                 f.manifest_status == MV_MANIFEST_READ_ABSENT
+                     ? "manifest_absent"
+                     : "manifest_unavailable");
         complete = false;
     }
 
@@ -143,29 +172,54 @@ static void zcode_fill(const struct metaverse_adapter_ctx *ctx,
         (void)metaverse_view_determined(out,
                                         METAVERSE_EVIDENCE_LOCAL_SIGNATURE,
                                         "vcs_package_release_verify");
-    } else {
+    } else if (f.have_manifest && f.m.root_matches_name) {
         snprintf(out->provenance, sizeof(out->provenance),
                  "manifest root re-derived locally; publisher signature NOT "
                  "verified in this call");
         (void)metaverse_view_determined(
-            out, METAVERSE_EVIDENCE_LOCAL_CONTENT_HASH,
+            out, complete ? METAVERSE_EVIDENCE_LOCAL_CONTENT_HASH
+                          : METAVERSE_EVIDENCE_LOCAL_MANIFEST_HASH,
             "vcs_package_manifest_root");
+    } else {
+        snprintf(out->provenance, sizeof(out->provenance),
+                 "neither a verified release signature nor a matching "
+                 "locally re-derived manifest root is available");
+        metaverse_view_undetermined(
+            out, "manifest is %s and the release signature did not verify; "
+                 "refusing to claim local_content_hash evidence",
+            f.have_manifest ? "root_mismatched"
+                            : mv_manifest_read_status_name(f.manifest_status));
     }
 
     /* Reason carries whichever caveat applies; a determined view may still
      * have one, and the sharp cases must not be silent. */
-    if (!f.have_manifest)
+    if (!out->determined) {
+        /* metaverse_view_undetermined() already installed the precise
+         * fail-closed reason; do not overwrite it with a lesser caveat. */
+    } else if (!f.have_manifest &&
+               f.manifest_status == MV_MANIFEST_READ_ABSENT)
         snprintf(out->reason, sizeof(out->reason),
                  "no manifest wire stored for this root: byte counts are the "
                  "release's own claim, not measured");
+    else if (!f.have_manifest &&
+             f.manifest_status != MV_MANIFEST_READ_ABSENT)
+        snprintf(out->reason, sizeof(out->reason),
+                 "manifest wire is %s: byte counts are the release's own "
+                 "claim, not measured",
+                 mv_manifest_read_status_name(f.manifest_status));
     else if (!f.m.root_matches_name)
         snprintf(out->reason, sizeof(out->reason),
                  "stored manifest re-derives a different root than its "
                  "filename");
     else if (!complete)
         snprintf(out->reason, sizeof(out->reason),
-                 "%u of %u chunk(s) present in the CAS", out->chunks_present,
-                 out->chunk_total);
+                 "possession not proven: %s (%u/%u chunks and %llu/%llu "
+                 "bytes verified)",
+                 out->verification_gap[0] ? out->verification_gap
+                                          : "incomplete",
+                 out->chunks_verified, out->chunk_total,
+                 (unsigned long long)out->bytes_verified,
+                 (unsigned long long)out->total_bytes);
     else if (!f.signature_verified)
         snprintf(out->reason, sizeof(out->reason),
                  "release envelope absent or its signature failed to verify: "
@@ -173,6 +227,7 @@ static void zcode_fill(const struct metaverse_adapter_ctx *ctx,
 
     if (f.have_manifest)
         mv_manifest_free(&f.m);
+    return manifest_integrity_ok;
 }
 
 static bool zcode_show(const struct metaverse_adapter_ctx *ctx,
@@ -203,57 +258,95 @@ static bool zcode_show(const struct metaverse_adapter_ctx *ctx,
         snprintf(out->reason, sizeof(out->reason),
                  "no published release names this package root");
         (void)metaverse_view_determined(
-            out, METAVERSE_EVIDENCE_LOCAL_CONTENT_HASH,
+            out, METAVERSE_EVIDENCE_LOCAL_STORE_READ,
             "vcs_package_index_find_root");
         vcs_package_index_free(index);
         return true;
     }
-    zcode_fill(ctx, e, out);
+    (void)zcode_fill(ctx, e, out, MV_PROPERTY_VERIFY_BYTES,
+                     MV_PROPERTY_SHOW_VERIFY_OPS, NULL, NULL);
     vcs_package_index_free(index);
     return true;
 }
 
 static size_t zcode_list(const struct metaverse_adapter_ctx *ctx,
                          struct metaverse_property_view *out, size_t out_cap,
-                         size_t *total_out, bool *truncated_out)
+                         struct metaverse_adapter_list_report *report)
 {
     struct vcs_package_index *index;
     size_t total;
     size_t written = 0;
+    uint64_t verify_bytes_left = MV_PROPERTY_VERIFY_BYTES;
+    uint32_t verify_operations_left = MV_PROPERTY_LIST_VERIFY_OPS;
 
-    if (total_out)
-        *total_out = 0;
-    if (truncated_out)
-        *truncated_out = false;
+    if (report)
+        memset(report, 0, sizeof(*report));
     /* out_cap == 0 is the legal count-only call; `out` is then unused. */
-    if (!ctx || (!out && out_cap > 0))
+    if (!ctx || !report || (!out && out_cap > 0))
         return 0;
 
     index = vcs_package_index_build(ctx->zcode_dir);
-    if (!index)
+    if (!index) {
+        report->integrity_gap_count = 1;
+        snprintf(report->integrity_reason,
+                 sizeof(report->integrity_reason),
+                 "package index could not be built over the release store");
         return 0;
+    }
     total = vcs_package_index_count(index);
-    for (size_t i = 0; i < total && written < out_cap; i++) {
+    for (size_t i = 0; i < total; i++) {
         const struct vcs_package_index_entry *e =
             vcs_package_index_at(index, i);
         struct metaverse_property_id id;
+        struct metaverse_property_view scratch;
+        struct metaverse_property_view *view =
+            written < out_cap ? &out[written] : &scratch;
         uint8_t root[32];
 
-        if (!e || !zcl_hex_decode_lower(e->package_root_hex, root, 32))
+        if (!e || !zcl_hex_decode_lower(e->package_root_hex, root, 32)) {
+            report->integrity_gap_count++;
+            if (report->integrity_reason[0] == '\0')
+                snprintf(report->integrity_reason,
+                         sizeof(report->integrity_reason),
+                         "package index row %zu has an invalid root", i);
             continue;
+        }
         if (!metaverse_property_id_make(METAVERSE_KIND_ZCODE_PACKAGE, root,
                                         &id) ||
-            !metaverse_view_begin(&out[written], &id))
+            !metaverse_view_begin(view, &id)) {
+            report->integrity_gap_count++;
+            if (report->integrity_reason[0] == '\0')
+                snprintf(report->integrity_reason,
+                         sizeof(report->integrity_reason),
+                         "package index row %zu could not be rendered", i);
             continue;
-        zcode_fill(ctx, e, &out[written]);
-        written++;
+        }
+        uint64_t bytes_used = 0;
+        uint32_t operations_used = 0;
+        uint64_t byte_budget = written < out_cap ? verify_bytes_left : 0;
+        uint32_t operation_budget =
+            written < out_cap ? verify_operations_left : 0;
+
+        if (!zcode_fill(ctx, e, view, byte_budget, operation_budget,
+                        &bytes_used, &operations_used)) {
+            report->integrity_gap_count++;
+            if (report->integrity_reason[0] == '\0')
+                snprintf(report->integrity_reason,
+                         sizeof(report->integrity_reason),
+                         "package %.64s has a corrupt or root-mismatched "
+                         "manifest",
+                         e->package_root_hex);
+        }
+        verify_bytes_left -= bytes_used;
+        verify_operations_left -= operations_used;
+        if (written < out_cap)
+            written++;
     }
     vcs_package_index_free(index);
 
-    if (total_out)
-        *total_out = total;
-    if (truncated_out)
-        *truncated_out = written < total;
+    report->total = total;
+    report->truncated = written < total;
+    report->integrity_ok = report->integrity_gap_count == 0;
     return written;
 }
 

@@ -9,8 +9,10 @@
  * signature, no chain anchor. blob_store.h calls this the authentication
  * split and preserves it deliberately. This adapter preserves it too:
  *
- *   evidence grade  local_content_hash — this node re-derived the root
- *                   from the manifest wire it holds. Byte identity only.
+ *   evidence grade  local_content_hash — this node re-derived the manifest
+ *                   root and byte-verified every committed chunk in this
+ *                   call. Byte identity only. A missing/corrupt/budgeted
+ *                   chunk earns only local_manifest_hash.
  *   owner principal "" with owner_principal_kind = "none", because the
  *                   authority records none. That is a FACT about content,
  *                   not a failed lookup, and it is why TRANSFER and
@@ -37,7 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* One CAS-present blob supports these. Availability, not authority.
+/* One fully byte-verified blob supports these. Availability, not authority.
  * Inspection is absent because it is no longer an action: reading is a
  * QUERY (metaverse/property_action.h), always available to a principal the
  * grant lets look, and never gated on the object's state. */
@@ -60,7 +62,7 @@ static const char k_content_provenance[] =
 static void content_fill(struct metaverse_property_view *out,
                          const struct mv_manifest_read *m)
 {
-    bool complete = m->chunks_present == m->chunk_total;
+    bool complete = m->verification_complete;
 
     out->has_content_root = true;
     memcpy(out->content_root, m->manifest.files[0].chunk_hashes, 32);
@@ -73,19 +75,31 @@ static void content_fill(struct metaverse_property_view *out,
     out->file_count           = m->file_count;
     out->chunk_total          = m->chunk_total;
     out->chunks_present       = m->chunks_present;
+    out->manifest_root_verified = m->manifest_root_verified;
+    out->chunks_verified      = m->chunks_verified;
+    out->bytes_verified       = m->bytes_verified;
+    out->verification_complete = m->verification_complete;
+    snprintf(out->verification_gap, sizeof(out->verification_gap), "%s",
+             m->verification_gap);
     out->status = complete ? METAVERSE_STATUS_PRESENT
                            : METAVERSE_STATUS_INCOMPLETE;
     out->actions = complete ? MV_CONTENT_ACTIONS_PRESENT
                             : MV_CONTENT_ACTIONS_INCOMPLETE;
     snprintf(out->provenance, sizeof(out->provenance), "%s",
              k_content_provenance);
-    (void)metaverse_view_determined(out,
-                                    METAVERSE_EVIDENCE_LOCAL_CONTENT_HASH,
-                                    "vcs_package_manifest_root");
+    (void)metaverse_view_determined(
+        out, complete ? METAVERSE_EVIDENCE_LOCAL_CONTENT_HASH
+                      : METAVERSE_EVIDENCE_LOCAL_MANIFEST_HASH,
+        complete ? "mv_manifest_verify_possession"
+                 : "vcs_package_manifest_root");
     if (!complete)
         snprintf(out->reason, sizeof(out->reason),
-                 "%u of %u chunk(s) present in the CAS", m->chunks_present,
-                 m->chunk_total);
+                 "possession not proven: %s (%u/%u chunks and %llu/%llu "
+                 "bytes verified)",
+                 m->verification_gap[0] ? m->verification_gap : "incomplete",
+                 m->chunks_verified, m->chunk_total,
+                 (unsigned long long)m->bytes_verified,
+                 (unsigned long long)m->total_bytes);
 }
 
 static bool content_show(const struct metaverse_adapter_ctx *ctx,
@@ -94,6 +108,7 @@ static bool content_show(const struct metaverse_adapter_ctx *ctx,
 {
     char root_hex[65];
     struct mv_manifest_read m;
+    enum mv_manifest_read_status read_status;
 
     if (!ctx || !id || !out || id->kind != METAVERSE_KIND_CONTENT)
         return false;
@@ -101,7 +116,8 @@ static bool content_show(const struct metaverse_adapter_ctx *ctx,
         return false;
 
     zcl_hex_encode(id->root, 32, root_hex);
-    if (!mv_manifest_read(ctx->zcode_dir, root_hex, &m)) {
+    read_status = mv_manifest_read(ctx->zcode_dir, root_hex, &m);
+    if (read_status == MV_MANIFEST_READ_ABSENT) {
         /* Asked and answered: the authority holds nothing here. ABSENT is
          * a determined verdict, not a gap. No ACTION is available on an
          * object the authority does not hold; re-asking is a query. */
@@ -112,7 +128,14 @@ static bool content_show(const struct metaverse_adapter_ctx *ctx,
         snprintf(out->reason, sizeof(out->reason),
                  "no manifest at this root in the local content store");
         (void)metaverse_view_determined(
-            out, METAVERSE_EVIDENCE_LOCAL_CONTENT_HASH, "mv_manifest_read");
+            out, METAVERSE_EVIDENCE_LOCAL_STORE_READ, "mv_manifest_read");
+        return true;
+    }
+    if (read_status != MV_MANIFEST_READ_OK) {
+        metaverse_view_undetermined(
+            out, "manifest at this root is %s; refusing to report corrupt "
+                 "or unreadable content as absent",
+            mv_manifest_read_status_name(read_status));
         return true;
     }
     if (!m.root_matches_name) {
@@ -132,6 +155,9 @@ static bool content_show(const struct metaverse_adapter_ctx *ctx,
         mv_manifest_free(&m);
         return true;
     }
+    mv_manifest_verify_possession(ctx->zcode_dir, &m,
+                                  MV_PROPERTY_VERIFY_BYTES,
+                                  MV_PROPERTY_SHOW_VERIFY_OPS, NULL, NULL);
     content_fill(out, &m);
     mv_manifest_free(&m);
     return true;
@@ -139,8 +165,8 @@ static bool content_show(const struct metaverse_adapter_ctx *ctx,
 
 static size_t content_list(const struct metaverse_adapter_ctx *ctx,
                            struct metaverse_property_view *out,
-                           size_t out_cap, size_t *total_out,
-                           bool *truncated_out)
+                           size_t out_cap,
+                           struct metaverse_adapter_list_report *report)
 {
     char (*names)[65];
     size_t seen = 0;
@@ -148,29 +174,60 @@ static size_t content_list(const struct metaverse_adapter_ctx *ctx,
     size_t written = 0;
     size_t matched = 0;
     bool scan_truncated = false;
+    uint64_t verify_bytes_left = MV_PROPERTY_VERIFY_BYTES;
+    uint32_t verify_operations_left = MV_PROPERTY_LIST_VERIFY_OPS;
 
-    if (total_out)
-        *total_out = 0;
-    if (truncated_out)
-        *truncated_out = false;
+    if (report)
+        memset(report, 0, sizeof(*report));
     /* out_cap == 0 is the legal count-only call; `out` is then unused. */
-    if (!ctx || (!out && out_cap > 0))
+    if (!ctx || !report || (!out && out_cap > 0))
         return 0;
 
     names = zcl_malloc(MV_MANIFEST_SCAN_MAX * sizeof(*names),
                        "mv_content_names");
-    if (!names)
-        return 0; /* the caller reports the kind as truncated/incomplete */
-    scanned = mv_manifest_names(ctx->zcode_dir, names, MV_MANIFEST_SCAN_MAX,
-                                &seen, &scan_truncated);
+    if (!names) {
+        report->integrity_gap_count = 1;
+        snprintf(report->integrity_reason,
+                 sizeof(report->integrity_reason),
+                 "manifest name scan allocation failed");
+        return 0;
+    }
+    if (!mv_manifest_names(ctx->zcode_dir, names, MV_MANIFEST_SCAN_MAX,
+                           &scanned, &seen, &scan_truncated)) {
+        free(names);
+        report->integrity_gap_count = 1;
+        snprintf(report->integrity_reason,
+                 sizeof(report->integrity_reason),
+                 "manifest directory scan failed after readiness check");
+        return 0;
+    }
 
     for (size_t i = 0; i < scanned; i++) {
         struct mv_manifest_read m;
         struct metaverse_property_id id;
+        enum mv_manifest_read_status read_status;
 
-        if (!mv_manifest_read(ctx->zcode_dir, names[i], &m))
+        read_status = mv_manifest_read(ctx->zcode_dir, names[i], &m);
+        if (read_status != MV_MANIFEST_READ_OK) {
+            report->integrity_gap_count++;
+            if (report->integrity_reason[0] == '\0')
+                snprintf(report->integrity_reason,
+                         sizeof(report->integrity_reason),
+                         "manifest %.64s became %s during enumeration",
+                         names[i], mv_manifest_read_status_name(read_status));
             continue;
-        if (!m.root_matches_name || !mv_manifest_is_blob(&m.manifest)) {
+        }
+        if (!m.root_matches_name) {
+            report->integrity_gap_count++;
+            if (report->integrity_reason[0] == '\0')
+                snprintf(report->integrity_reason,
+                         sizeof(report->integrity_reason),
+                         "manifest %.64s re-derives a different root",
+                         names[i]);
+            mv_manifest_free(&m);
+            continue;
+        }
+        if (!mv_manifest_is_blob(&m.manifest)) {
             mv_manifest_free(&m);
             continue;
         }
@@ -181,17 +238,30 @@ static size_t content_list(const struct metaverse_adapter_ctx *ctx,
         }
         if (metaverse_property_id_make(METAVERSE_KIND_CONTENT, m.root, &id) &&
             metaverse_view_begin(&out[written], &id)) {
+            uint64_t bytes_used = 0;
+            uint32_t operations_used = 0;
+
+            mv_manifest_verify_possession(
+                ctx->zcode_dir, &m, verify_bytes_left,
+                verify_operations_left, &bytes_used, &operations_used);
+            verify_bytes_left -= bytes_used;
+            verify_operations_left -= operations_used;
             content_fill(&out[written], &m);
             written++;
+        } else {
+            report->integrity_gap_count++;
+            if (report->integrity_reason[0] == '\0')
+                snprintf(report->integrity_reason,
+                         sizeof(report->integrity_reason),
+                         "valid blob %.64s could not be rendered", names[i]);
         }
         mv_manifest_free(&m);
     }
     free(names);
 
-    if (total_out)
-        *total_out = matched;
-    if (truncated_out)
-        *truncated_out = scan_truncated || written < matched;
+    report->total = matched;
+    report->truncated = scan_truncated || written < matched;
+    report->integrity_ok = report->integrity_gap_count == 0;
     return written;
 }
 

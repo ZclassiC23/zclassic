@@ -5,6 +5,12 @@ the payout-first tail of [`ZCODE_PLAN.md`](./ZCODE_PLAN.md). The package-hosting
 work remains the foundation; its old slice numbers are no longer the execution
 order.
 
+The owner-directed scientific-evidence, discovery-network, contribution,
+committee, and custody extension is specified separately in
+[`ZCODE_SCIENTIFIC_METAVERSE.md`](./ZCODE_SCIENTIFIC_METAVERSE.md). It composes
+with the byte-stable objects in this document and may not duplicate their CAS,
+worker, identity, transport, or authority owners.
+
 ## Mission
 
 ZCODE is a free, requester-coordinated P2P C23 development network: immutable
@@ -70,6 +76,38 @@ The domains are:
 - `zcl.zcode.write_scope.v1\0`
 - `zcl.zcode.patch.v1\0`
 - `zcl.zcode.action_input.v1\0`
+
+The scientific extension in
+[`ZCODE_SCIENTIFIC_METAVERSE.md`](./ZCODE_SCIENTIFIC_METAVERSE.md) adds these
+separate domain tags without changing any wire above:
+
+- `zcl.zcode.study_spec.v1\0`
+- `zcl.zcode.benchmark_result.v1\0`
+- `zcl.zcode.reproduction.v1\0`
+- `zcl.zcode.science_findings.v1\0`
+- `zcl.zcode.curation_vote.v1\0`
+- `zcl.zcode.discovery_graph.v1\0`
+- `zcl.zcode.discovery_seed_set.v1\0`
+- `zcl.zcode.discovery_rank_result.v1\0`
+
+Its fixed `c23.benchmark.v1` and `c23.benchmark.reproduce.v1` action
+identities are registered beside `c23.review.v1`. The local worker still
+fail-closes them as `fixed-action-executor-unavailable`; confined benchmark
+and reproduction execution is a later landing unit, so an action identity is
+not misreported as a live executor.
+
+The deterministic discovery-only PageRank core is also live in
+`lib/vcs/include/vcs/zcode_discovery_rank.h`. It ranks only study/package
+property roots, never contributors, and binds its canonical graph, local seed
+set, filter policy, exact returned mass coverage, and truncation. It has no
+database, command, proof-acceptance, committee, wallet, or reward authority;
+the rebuildable projection and `zcode.science.rank` adapter wait for the S3
+science service slice.
+
+<!-- claim: file-present lib/vcs/include/vcs/zcode_science.h # canonical scientific object contract -->
+<!-- claim: symbol-present vcs_zcode_benchmark_result_validate_for_study lib/vcs/src/zcode_science.c # study/task/candidate cross-object gate -->
+<!-- claim: symbol-present VCS_BUILD_ACTION_KIND_BENCHMARK_V1 lib/vcs/include/vcs/build_action.h # closed benchmark action identity -->
+<!-- claim: symbol-present vcs_zcode_discovery_rank_compute lib/vcs/src/zcode_discovery_rank.c # deterministic discovery-only integer PageRank -->
 
 The trailing NUL is part of each SHA3 preimage, matching the existing package
 manifest, recipe, lock, release, and attestation convention.

@@ -144,9 +144,11 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/base") == 0) return "dependency sink: LOG_*/GUARD* macros, log-level filter, checked allocators, zcl_result (references nothing in-tree)";
     if (strcmp(group, "lib/bloom") == 0) return "bloom filters + merkle proofs for lightweight block/tx filtering";
     if (strcmp(group, "lib/chain") == 0) return "chain index primitives: MMB/MMR fast-sync proofs, UTXO-root ladder, snapshot loader";
+    if (strcmp(group, "lib/codec") == 0) return "allocation-free bounded reader/writer cursors over caller-owned buffers";
     if (strcmp(group, "lib/coins") == 0) return "the UTXO set: coins view, undo data, compression, SHA3 UTXO commitment";
     if (strcmp(group, "lib/core") == 0) return "small consensus-adjacent primitives: amount, random, time-since-epoch helpers";
-    if (strcmp(group, "lib/crypto") == 0) return "hash/cipher/PoW primitives: SHA-2/3, Blake2, ChaCha20-Poly1305, Ed25519, Equihash";
+    if (strcmp(group, "lib/sha3") == 0) return "scalar FIPS-202 SHA3/SHAKE primitives";
+    if (strcmp(group, "lib/crypto") == 0) return "hash/cipher/PoW primitives and batched SHA3 acceleration: SHA-2, Blake2, ChaCha20-Poly1305, Ed25519, Equihash";
     if (strcmp(group, "lib/crypto_registry") == 0) return "singleton catalog of pluggable cryptographic verifier implementations";
     if (strcmp(group, "lib/encoding") == 0) return "string encoding helpers: money strings, hex/bin string encodings";
     if (strcmp(group, "lib/event") == 0) return "the in-process publish/subscribe event bus that decouples subsystems";
@@ -162,13 +164,14 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/noise") == 0) return "secure-session transport: Noise handshake (NK/XX) + post-handshake AEAD record layer";
     if (strcmp(group, "lib/platform") == 0) return "thin OS-portability wrappers: monotonic clock, RNG, time_t/timespec conversions";
     if (strcmp(group, "lib/policy") == 0) return "mempool/relay fee policy (min relay fee, fee estimation)";
+    if (strcmp(group, "lib/presentation") == 0) return "bounded cross-platform native bitmap windows for QR, charts, Metaverse, and reviewed App output";
     if (strcmp(group, "lib/primitives") == 0) return "consensus wire primitives: CBlock/CBlockHeader, CTransaction";
     if (strcmp(group, "lib/rpc") == 0) return "JSON-RPC client/server plumbing: HTTP server, RPC dispatch, legacy zclassicd oracle client";
     if (strcmp(group, "lib/script") == 0) return "Bitcoin Script interpreter, sig cache/encoding, HTLC + standard script templates";
     if (strcmp(group, "lib/session") == 0) return "confined-agent broker: MVAP wire protocol, grant translation onto the metaverse evaluator, signed audit chain";
     if (strcmp(group, "lib/sim") == 0) return "deterministic simnet: byzantine/cluster harnesses, seed-tape replay, HTLC contract overlay";
     if (strcmp(group, "lib/storage") == 0) return "persistence layer: event log, coins/anchor/nullifier KV stores, block index, projections";
-    if (strcmp(group, "lib/support") == 0) return "low-level memory-safety helpers: secure cleanse, page-locked (mlock) allocations";
+    if (strcmp(group, "lib/support") == 0) return "page-locked allocations and the compatibility include for base-owned secure cleanse";
     if (strcmp(group, "lib/sync") == 0) return "sync + snapshot-sync state machines (single owner of sync_state/sync_planner)";
     if (strcmp(group, "lib/util") == 0) return "shared low-level utilities: logging, boot phase/progress, blockers, supervisor, safe_alloc";
     if (strcmp(group, "lib/validation") == 0) return "consensus block/tx validation: connect_block, mempool accept, checkpoint, tx_verifier";
@@ -177,6 +180,7 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/sapling") == 0) return "Sapling zk-SNARK primitives: Groth16 prover, Jubjub/BLS12-381, note encryption, circuits";
     if (strcmp(group, "lib/overlay") == 0) return "overlay SDK: shared OP_RETURN codec + rebuildable-projection scaffold behind ZNAM/ZSLP/ZMSG/ZANC";
     if (strcmp(group, "lib/zslp") == 0) return "Simple Ledger Protocol (SLP) token support encoded in OP_RETURN outputs";
+    if (strcmp(group, "lib/zswap") == 0) return "atomic ZSLP-token/ZCL P2P swaps: the canonical signed quote wire (zswap_quote.v1, pure codec) + the yardsale gossip-ad cache";
     if (strcmp(group, "lib/znam") == 0) return "ZCL Names (ZNAM) on-chain name registry protocol (ENS-inspired)";
     if (strcmp(group, "lib/zanc") == 0) return "ZCL Anchors (ZANC) on-chain SHA2/SHA3 software-package anchoring overlay";
     if (strcmp(group, "lib/zdir") == 0) return "ZCL Directory (ZDIR) on-chain node directory overlay — .onion peer discovery folded from block history";

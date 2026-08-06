@@ -183,6 +183,13 @@ static bool provider_bind(void *ctx, struct agent_authority_ref *out,
             return false;
         }
         snprintf(c->source, sizeof(c->source), "grant-spec");
+        if (!broker_provider_money_from_spec(
+                c->grant_spec, c->money, AGENT_MONEY_BINDINGS_MAX,
+                &c->money_count, why, why_cap)) {
+            snprintf(c->refusal, sizeof(c->refusal), "%s",
+                     why && why[0] ? why : "custody bindings were refused");
+            return false;
+        }
     } else {
         snprintf(id, sizeof(id), "%s", c->grant_id);
         snprintf(c->source, sizeof(c->source), "grant-id");
@@ -208,6 +215,19 @@ static bool provider_bind(void *ctx, struct agent_authority_ref *out,
     snprintf(c->principal, sizeof(c->principal), "%s", g.holder);
     out->bound = true;
     c->bound = true;
+    return true;
+}
+
+static bool provider_money_bindings(void *ctx,
+                                    struct agent_money_binding *out,
+                                    size_t max, size_t *count)
+{
+    const struct broker_provider_ctx *c = ctx;
+    if (!c || !out || !count || max < c->money_count)
+        return false;
+    if (c->money_count)
+        memcpy(out, c->money, c->money_count * sizeof(*out));
+    *count = c->money_count;
     return true;
 }
 
@@ -424,6 +444,7 @@ static const struct agent_broker_provider k_provider = {
     .authorize = provider_authorize,
     .debit     = provider_debit,
     .status    = provider_status,
+    .money_bindings = provider_money_bindings,
     .ops       = broker_provider_ops,
     .ctx       = &g_ctx,
     .name      = "property_catalog + property_grant_service",

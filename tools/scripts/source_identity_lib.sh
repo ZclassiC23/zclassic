@@ -96,6 +96,50 @@ zcl_json_first_sha256() {
         grep -oE '[0-9a-f]{64}' || true
 }
 
+# zcl_agentbuild_v2_top_source_id <json-text> — admit only the canonical
+# top-level prefix of a successful v1 agentbuild response. This is stronger
+# than zcl_json_first_sha256(): nested runtime objects legitimately reuse the
+# source_id_sha256 key, so admission must also bind schema, API, status, field
+# position, and the exact top-level value. Invalid/refused input yields empty
+# output and success so callers can apply their own fail-closed diagnostic.
+zcl_agentbuild_v2_top_source_id() {
+    local body="${1:-}" prefix rest source_id suffix
+    prefix='{"schema":"zcl.agent_build.v2","api_version":"v1","status":"ok","source_id_sha256":"'
+    case "$body" in
+        "$prefix"*) ;;
+        *) return 0 ;;
+    esac
+    rest="${body#"$prefix"}"
+    source_id="${rest%%\"*}"
+    zcl_is_sha256 "$source_id" || return 0
+    suffix="${rest#"$source_id"}"
+    case "$suffix" in
+        '","build_commit":"'*) ;;
+        *) return 0 ;;
+    esac
+    printf '%s\n' "$source_id"
+}
+
+# zcl_agentbuild_v2_top_build_commit <json-text> — display-only commit paired
+# with the same admitted top-level source identity. The caller still applies
+# its own character allowlist before exporting it.
+zcl_agentbuild_v2_top_build_commit() {
+    local body="${1:-}" source_id prefix rest
+    source_id="$(zcl_agentbuild_v2_top_source_id "$body")"
+    [ -n "$source_id" ] || return 0
+    prefix='{"schema":"zcl.agent_build.v2","api_version":"v1","status":"ok","source_id_sha256":"'"$source_id"'","build_commit":"'
+    case "$body" in
+        "$prefix"*) ;;
+        *) return 0 ;;
+    esac
+    rest="${body#"$prefix"}"
+    case "$rest" in
+        *\"*) ;;
+        *) return 0 ;;
+    esac
+    printf '%s\n' "${rest%%\"*}"
+}
+
 # zcl_binary_source_id <path-to-binary> — the BAKED source identity of a
 # binary: runs `<path> agentbuild` and returns its first source_id_sha256
 # via zcl_json_first_sha256. Preserves dev_lib.sh's baked_source_id()

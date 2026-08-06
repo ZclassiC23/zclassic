@@ -73,7 +73,51 @@ static int test_spawn_detached_writes_log_no_zombie(void)
     return failures;
 }
 
-/* Case 2: capture returns the child's stdout. */
+/* Case 2: a detached child receives bounded bytes on stdin. The marker is not
+ * present in argv: /bin/cat can emit it only by reading the private stream. */
+static int test_spawn_detached_delivers_private_stdin(void)
+{
+    int failures = 0;
+    TEST("spawn: detached input is delivered through stdin") {
+        char log_path[128];
+        snprintf(log_path, sizeof(log_path),
+                 "/tmp/test_spawn_detached_input_%d.log", (int)getpid());
+        unlink(log_path);
+
+        static const char marker[] = "private-stdin-presentation-marker\n";
+        const char *argv[] = { "/bin/cat", NULL };
+        struct zcl_result r = zcl_spawn_detached_input(
+            argv, marker, sizeof(marker) - 1u, log_path);
+        ASSERT(r.ok);
+
+        char buf[256] = {0};
+        bool got = false;
+        for (int i = 0; i < 100 && !got; i++) {
+            FILE *f = fopen(log_path, "r");
+            if (f) {
+                size_t n = fread(buf, 1, sizeof(buf) - 1u, f);
+                buf[n] = '\0';
+                fclose(f);
+                got = spawn_contains(buf, marker);
+            }
+            if (!got)
+                nanosleep(&(struct timespec){ .tv_nsec = 20 * 1000 * 1000 },
+                          NULL);
+        }
+        ASSERT(got);
+
+        unsigned char oversized[ZCL_SPAWN_INPUT_MAX + 1u];
+        struct zcl_result rejected = zcl_spawn_detached_input(
+            argv, oversized, sizeof(oversized), log_path);
+        ASSERT(!rejected.ok);
+
+        unlink(log_path);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Case 3: capture returns the child's stdout. */
 static int test_spawn_capture_echo(void)
 {
     int failures = 0;
@@ -88,7 +132,7 @@ static int test_spawn_capture_echo(void)
     return failures;
 }
 
-/* Case 3: capture timeout kills a sleeping child within the budget. */
+/* Case 4: capture timeout kills a sleeping child within the budget. */
 static int test_spawn_capture_timeout_kills(void)
 {
     int failures = 0;
@@ -127,7 +171,7 @@ static int test_spawn_capture_cancel_kills(void)
     return failures;
 }
 
-/* Case 4: capture is ECHILD-tolerant — under a process-wide SA_NOCLDWAIT
+/* Case 5: capture is ECHILD-tolerant — under a process-wide SA_NOCLDWAIT
  * SIGCHLD disposition (exactly as alerts.c:287-291 installs), waitpid()
  * fails ECHILD internally, yet the captured output is still valid and the
  * documented "exit status unknown -> 0" contract holds. The SIGCHLD
@@ -161,7 +205,7 @@ static int test_spawn_capture_echild_tolerant(void)
     return failures;
 }
 
-/* Case 5: oversized output truncates cleanly at cap without deadlocking.
+/* Case 6: oversized output truncates cleanly at cap without deadlocking.
  * The child writes ~100 KB (well past a 64 KB pipe buffer), so the parent's
  * drain-and-discard path is exercised; only cap-1 bytes are retained and the
  * buffer stays NUL-terminated. Completion is via EOF-drain (well under the
@@ -194,7 +238,7 @@ static int test_spawn_capture_truncates_oversized(void)
     return failures;
 }
 
-/* Case 6: with the DEFAULT SIGCHLD disposition (no SA_NOCLDWAIT — exactly the
+/* Case 7: with the DEFAULT SIGCHLD disposition (no SA_NOCLDWAIT — exactly the
  * process state after alerts.c stopped installing it as the LAST step of
  * os-substrate Rung 0), zcl_spawn_capture()'s internal waitpid() returns a
  * REAL exit code: /bin/false exits 1, /bin/true exits 0. This is the proof
@@ -237,6 +281,7 @@ int test_spawn(void)
     printf("\n=== Spawn Tests ===\n");
 
     failures += test_spawn_detached_writes_log_no_zombie();
+    failures += test_spawn_detached_delivers_private_stdin();
     failures += test_spawn_capture_echo();
     failures += test_spawn_capture_timeout_kills();
     failures += test_spawn_capture_cancel_kills();

@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* A representative private key payload (32 bytes — Sapling spending
  * key length).  Tests use this so the format we exercise matches
@@ -429,13 +430,13 @@ static int test_wallet_lock_register(void)
 {
     int failures = 0;
 
-    /* The lock state reads ZCL_WALLET_PASSPHRASE for its env fallback;
-     * snapshot + clear so the test is environment-independent. */
+    /* Snapshot + clear the legacy environment variable so the test proves
+     * it cannot auto-unlock an encrypted wallet. */
     const char *saved_pass = getenv("ZCL_WALLET_PASSPHRASE");
     char *pass_copy = saved_pass ? strdup(saved_pass) : NULL;
     unsetenv("ZCL_WALLET_PASSPHRASE");
 
-    TEST("wallet_lock: register-only unlock/lock, guard, env fallback, bad input") {
+    TEST("wallet_lock: register-only unlock/lock, guard, env refusal, bad input") {
         /* Fresh: no at-rest encryption seen -> nothing to lock. */
         wallet_lock_reset_for_test();
         unsetenv("ZCL_WALLET_PASSPHRASE");
@@ -459,20 +460,31 @@ static int test_wallet_lock_register(void)
         ASSERT(wallet_lock_is_unlocked());
         ASSERT(wallet_lock_spend_guard().ok);
 
+        /* A bounded unlock expires without another wallet API call. */
+        ASSERT(wallet_lock_arm_timeout(NULL, 1).ok);
+        struct timespec wait = { .tv_sec = 1, .tv_nsec = 200000000 };
+        while (nanosleep(&wait, &wait) != 0) { }
+        ASSERT(wallet_lock_effective_passphrase() == NULL);
+        ASSERT(!wallet_lock_is_unlocked());
+
+        ASSERT(wallet_lock_unlock(NULL, NULL, k_passphrase).ok);
+        ASSERT(!wallet_lock_arm_timeout(NULL, 0).ok);
+        ASSERT(!wallet_lock_arm_timeout(NULL, 3601).ok);
+
         /* Lock scrubs it: encrypted + no pass => locked again. */
         wallet_lock_lock(NULL);
         ASSERT(wallet_lock_effective_passphrase() == NULL);
         ASSERT(!wallet_lock_is_unlocked());
         ASSERT(!wallet_lock_spend_guard().ok);
 
-        /* Env passphrase auto-unlocks (backward compat); explicit lock wins. */
+        /* Environment passphrases never auto-unlock a live wallet. */
         wallet_lock_reset_for_test();
         wallet_lock_note_encrypted_at_rest();
         ASSERT(!wallet_lock_is_unlocked());
         setenv("ZCL_WALLET_PASSPHRASE", "env-secret", 1);
         eff = wallet_lock_effective_passphrase();
-        ASSERT(eff != NULL && strcmp(eff, "env-secret") == 0);
-        ASSERT(wallet_lock_is_unlocked());
+        ASSERT(eff == NULL);
+        ASSERT(!wallet_lock_is_unlocked());
         wallet_lock_lock(NULL);
         ASSERT(wallet_lock_effective_passphrase() == NULL);
         ASSERT(!wallet_lock_is_unlocked());

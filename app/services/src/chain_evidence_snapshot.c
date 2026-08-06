@@ -78,7 +78,11 @@ void chain_evidence_controller_snapshot(
     if (!authority)
         return;
 
-    out->state = chain_evidence_controller_load_state(authority);
+    /* A snapshot is an observation, never a reconciliation boundary. The
+     * mutating loader may clear/backfill stale freeze state and can submit a
+     * DB-service write; doing that while a diagnostic holds sqlite3_db_mutex
+     * self-deadlocks against the DB worker. Boot init owns those repairs. */
+    out->state = chain_evidence_controller_load_state_readonly(authority);
     memset(&csv, 0, sizeof(csv));
     csr_snapshot(authority->csr, &csv);
     out->active_tip_height = csv.tip_height;

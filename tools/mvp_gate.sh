@@ -288,31 +288,90 @@ else
 fi
 
 # ────────────────────────────────────────────────────────────────────
-# C8 — consensus parity with zclassicd. Live coarse probe: compare c23
-# height to the zclassicd oracle height. A COARSE height MATCH at tip is
-# the most a live plain-RPC probe can show; the FULL "0 byte-mismatches
-# over the soak window" needs an exact reference + the window (BLOCKED).
-# If the oracle is reindexing/unreachable we say so honestly.
+# C8 — consensus parity with zclassicd. TWO evidence tiers, merged:
+#
+#   1. The standing REPLAY CANARY ledger (tools/scripts/replay_canary.sh,
+#      sentinels in $ZCL_CANARY_VERDICT_DIR) — the EXACT tier. A
+#      from=genesis PASS means: full-history replay through the HEAD
+#      reducer with ZERO consensus rejects, the byte-exact UTXO SHA3
+#      checkpoint matched at anchor 3,056,758, every script verified, and
+#      tip bestblock/txouts/total_amount equal to zclassicd's
+#      gettxoutsetinfo. This is the reference the coarse live probe cannot
+#      be; per the 2026-08-01 review it is THE C8 gate, and it must
+#      ACCUMULATE: a fresh PASS earns C8, a fresh FAIL is a consensus-grade
+#      alarm, and a stale/absent ledger is a named gap, never a silent one.
+#   2. The live COARSE probe (height vs the zclassicd oracle) — a
+#      divergence here FAILs regardless of the ledger.
+#
+# Freshness: a sentinel older than CANARY_MAX_AGE_S (default 7 days — the
+# canary is meant to run on the nightly/weekly linger cadence, see
+# `make install-replay-canary`) is treated as absent, so C8 cannot ride
+# indefinitely on one old PASS.
 # ────────────────────────────────────────────────────────────────────
+CANARY_DIR="${ZCL_CANARY_VERDICT_DIR:-$HOME/.local/state/zclassic23-canary}"
+CANARY_MAX_AGE_S="${CANARY_MAX_AGE_S:-604800}"
+NOW_TS="$(date +%s)"
+
+# canary_read <track> → sets C_VERDICT C_TS C_AGE C_FRESH(1/0) C_SRC
+canary_read() {
+    local f="$CANARY_DIR/replay_canary_$1.json"
+    C_VERDICT="absent"; C_TS=0; C_AGE=-1; C_FRESH=0; C_SRC=""
+    [[ -f "$f" ]] || return 0
+    local blob; blob="$(cat "$f" 2>/dev/null)"
+    C_VERDICT="$(json_str "$blob" verdict)"; C_VERDICT="${C_VERDICT:-unreadable}"
+    C_TS="$(json_num "$blob" ts)"; C_TS="${C_TS:-0}"
+    C_SRC="$(json_str "$blob" source_id_sha256)"
+    if [[ "$C_TS" =~ ^[0-9]+$ && "$C_TS" -gt 0 ]]; then
+        C_AGE=$(( NOW_TS - C_TS ))
+        [[ "$C_AGE" -le "$CANARY_MAX_AGE_S" ]] && C_FRESH=1
+    fi
+}
+
+canary_read genesis;  G_VERDICT="$C_VERDICT"; G_AGE="$C_AGE"; G_FRESH="$C_FRESH"
+canary_read anchor;   A_VERDICT="$C_VERDICT"; A_AGE="$C_AGE"; A_FRESH="$C_FRESH"
+
+CANARY_LEDGER="canary[genesis=$G_VERDICT age=${G_AGE}s anchor=$A_VERDICT age=${A_AGE}s max_age=${CANARY_MAX_AGE_S}s]"
+
 ZD_GBC="$(zd_rpc getblockcount)"
 ZD_H="$(json_num "${ZD_GBC:-}" result)"
 # getblockcount returns {"result":<n>,...}; json_num matches result:<n>.
+COARSE="unavailable"; COARSE_DETAIL=""
 if [[ -z "$ZD_H" ]]; then
     ZD_ERR="$(zd_rpc getblockchaininfo 2>&1)"
     if printf '%s' "$ZD_ERR" | grep -qiE 'reindex|height 0|code.*-28|Activating best chain'; then
-        set_v 8 "BLOCKED" "zclassicd oracle (RPC $ZD_RPCPORT) is reindexing/not-ready — cannot diff; retry when oracle is at tip" 0
+        COARSE_DETAIL="zclassicd oracle (RPC $ZD_RPCPORT) is reindexing/not-ready — cannot diff; retry when oracle is at tip"
     else
-        set_v 8 "BLOCKED" "zclassicd oracle (RPC $ZD_RPCPORT) unreachable; parity proven by make ci-mvp-gates parity_slice + utxo_parity service" 0
+        COARSE_DETAIL="zclassicd oracle (RPC $ZD_RPCPORT) unreachable"
     fi
 elif [[ "$NODE_UP" == 1 && -n "$HEIGHT" ]]; then
     ZDGAP=$(( ZD_H - HEIGHT )); [[ "$ZDGAP" -lt 0 ]] && ZDGAP=$(( -ZDGAP ))
     if [[ "$ZDGAP" -le "$TIP_GAP_OK" ]]; then
-        set_v 8 "BLOCKED" "coarse height MATCH vs zclassicd (c23=$HEIGHT zd=$ZD_H |Δ|=$ZDGAP); exact 0-byte-mismatch over soak window still needed" 0
+        COARSE="match"
+        COARSE_DETAIL="coarse height MATCH vs zclassicd (c23=$HEIGHT zd=$ZD_H |Δ|=$ZDGAP)"
     else
-        set_v 8 "FAIL" "height divergence vs zclassicd (c23=$HEIGHT zd=$ZD_H |Δ|=$ZDGAP > $TIP_GAP_OK)" 0
+        COARSE="diverged"
+        COARSE_DETAIL="height divergence vs zclassicd (c23=$HEIGHT zd=$ZD_H |Δ|=$ZDGAP > $TIP_GAP_OK)"
     fi
 else
-    set_v 8 "BLOCKED" "node unreachable for parity diff" 0
+    COARSE_DETAIL="node unreachable for parity diff"
+fi
+
+# Verdict precedence: fresh canary FAIL > live divergence > fresh genesis
+# PASS (+coarse match) > BLOCKED with the exact gap named.
+if [[ "$G_FRESH" == 1 && "$G_VERDICT" == "FAIL" ]]; then
+    set_v 8 "FAIL" "replay canary (genesis) FAIL — full-history parity alarm; $CANARY_LEDGER" 0
+elif [[ "$A_FRESH" == 1 && "$A_VERDICT" == "FAIL" ]]; then
+    set_v 8 "FAIL" "replay canary (anchor) FAIL — replay parity alarm; $CANARY_LEDGER" 0
+elif [[ "$COARSE" == "diverged" ]]; then
+    set_v 8 "FAIL" "$COARSE_DETAIL; $CANARY_LEDGER" 0
+elif [[ "$G_FRESH" == 1 && "$G_VERDICT" == "PASS" && "$COARSE" == "match" ]]; then
+    set_v 8 "PASS" "EXACT parity: replay-canary (genesis) PASS — 0 consensus rejects over full history, byte-exact UTXO SHA3 at anchor 3056758, tip bestblock/txouts/supply == zclassicd — plus live $COARSE_DETAIL" 1
+elif [[ "$G_FRESH" == 1 && "$G_VERDICT" == "PASS" ]]; then
+    set_v 8 "BLOCKED" "replay-canary (genesis) PASS but live coarse probe not confirming ($COARSE_DETAIL); $CANARY_LEDGER" 0
+elif [[ "$A_FRESH" == 1 && "$A_VERDICT" == "PASS" && "$COARSE" == "match" ]]; then
+    set_v 8 "BLOCKED" "anchor-track replay clean + live coarse match; FULL C8 needs a fresh from=genesis PASS (make replay-canary-genesis); $CANARY_LEDGER" 0
+else
+    set_v 8 "BLOCKED" "$COARSE_DETAIL; no fresh canary PASS — the exact-tier gate is unearned (run make replay-canary-anchor / -genesis on the linger cadence); $CANARY_LEDGER" 0
 fi
 
 # ════════════════════════════════════════════════════════════════════

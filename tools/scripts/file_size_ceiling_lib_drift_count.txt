@@ -257,7 +257,55 @@
 # cohesive scoring module mirroring package_store.c's one-file shape).
 # Freshly baselined at its starting size (845) so future growth on it
 # becomes visible; count unchanged.
-14
+#
+# 2026-08-02 (fold position-repair, 8769fb1ce): disk_block_io.c is a NEW
+# 978-line oversized file (was 769) — the hash-keyed
+# block_index_repair_pos_from_disk self-heal (mmap one blk file, walk
+# records resyncing to the next frame on garbage, compare the full-header
+# hash incl. compactsize+Equihash solution, re-store via
+# block_index_set_have_data_verified) plus the st_nlink>1 hardlink
+# tripwire. Real defensive growth that converts the 2026-08-02 producer-fold
+# permanent stall (314 overwritten tail copies) into transparent same-file
+# repairs. Freshly baselined at 978 in file_size_ceiling_lib_baseline.txt
+# (then 979 after the obs-ok marker on the tripwire line) so future growth
+# on it stays visible; the recorded count STAYS 14.
+# Same commit family: wallet_sqlite.c 1655 -> 1668 (nested-BEGIN retry in
+# wallet_sqlite_flush_r — "cannot start a transaction within a transaction"
+# on the shared FULLMUTEX connection is retryable busy on the bounded
+# 8-attempt schedule, plus its regression test). Re-baselined at 1668;
+# count STAYS 14.
+#
+# 2026-08-02 (science-object + contributor-binding hardening wave): two
+# lib/vcs files crossed the 800 ceiling and are freshly BASELINED at their
+# current LOC rather than spending ratchet slots; the recorded count STAYS
+# 14.
+#   lib/vcs/src/zcode_science.c 864 — submit-vs-verify expiry split
+#       (vcs_zcode_study_spec_accepts_submission_at), findings/review
+#       time-order fix, canonical-action binding, and the strengthened
+#       reproduction/findings cross-checks (owner directive H1-H3).
+#   lib/vcs/src/zcode_contributor_binding.c 983 — contributor_binding.v2
+#       alongside the frozen v1: three-signature ROTATE (ZID + old ZCL +
+#       new ZCL), delayed RECOVER path, chain-level retired-key reuse ban
+#       (owner directive H4).
+# Both are canonical wire/validation modules mirroring package_store.c's
+# one-file shape; baselining keeps future growth on them visible.
+#
+# 2026-08-02 (science evidence objects, same wave): zcode_science.c grew
+# 864 -> 1387 adding hardware_profile.v1 (222-byte wire + never-fatal
+# Linux capture over util/hw_profile), benchmark_method.v1 (121-byte
+# workload/timer/distribution/estimator wire), and benchmark_result.v2
+# (363-byte wire binding method + hardware-profile roots; v1 frozen).
+# Re-baselined at 1387; count STAYS 14.
+#
+# Paydown 2026-08-03 (G2 swarm closure, ratchet re-tighten): the G2 slice
+# re-baselined wallet_sqlite.c (1668 -> 1694, restored drift from
+# c4399ac6d) and package_swarm_node.c (1801 -> 1840, announce dedup +
+# active-downloads accessor), removing wallet_sqlite.c from the grown
+# list. Live drift measured at 13; the gate fails on slack, so the
+# recorded count tightens 14 -> 13. See the G2 note at the end of this
+# file for the slice itself.
+#
+13
 #
 # 2026-07-27 (os_sandbox dynamic Landlock handled-set): os_sandbox_linux.c
 # grew 1415 -> 1422 — the slice-6 unconditional handled-set addition of
@@ -483,3 +531,77 @@
 #
 # circuit_gadgets.c also tightened from 1646 -> 1064. Tightening does not
 # move this count; it only removes obsolete growth headroom.
+#
+# 2026-08-01 (C8 byte-exact parity tier): src/main_cli_modes.c grew
+# 4128 -> 4180 adding --legacy-utxo-commitment (the hash-only sibling of
+# --gen-utxo-snapshot: streams zclassicd's chainstate through the existing
+# ldb snapshot + legacy reader + canonical SHA3 fold and prints the
+# byte-exact UTXO commitment as JSON — the C8 reference gettxoutsetinfo
+# cannot be). The growth is one new CLI mode reusing the file's existing
+# gen_snap machinery; the replay-canary exact tier (d) consumes it.
+# Re-baselined in file_size_ceiling_lib_baseline.txt (4180); count STAYS 14.
+#
+# 2026-08-02 (replay-canary shielded importer, C8 anchor lane): two files
+# grew, both BASELINED at their new LOC rather than spending a ratchet
+# slot; the recorded count STAYS 14.
+#   src/main_cli_modes.c   4180 -> 4223 — the -import-complete-shielded
+#       verb's stable WAL-inclusive chainstate copy + target-derived tip
+#       bind (reuse of the existing utxo_recovery stable-copy helper plus
+#       the seed-floor/coins-best tip read; one mode's growth, no new file
+#       because it composes the file's existing import-mode machinery).
+#   lib/vcs/src/package_store.c 1070 -> 1132 — restored committed drift,
+#       not fresh: 06a1ea06b (wf_f107ec68-02b-1 integration) added
+#       vcs_package_store_try_totals() (the non-blocking totals read) and
+#       the lane was merged without re-baselining. Re-baselined at 1132.
+#
+# 2026-08-02 (replay-canary FAIL#6/#7, tip-bind root source): two files
+# grew, both BASELINED at their new LOC; the recorded count STAYS 14.
+#   src/main_cli_modes.c   4223 -> 4231 — the -import-complete-shielded
+#       verb's expected tip root now comes from the block_index flat
+#       point read (block_index_flat_header_at) instead of the
+#       blocks projection (FAIL#6: header-only heights have no blocks
+#       row) or the event-log projection (FAIL#7: empty after a bulk P2P
+#       header sync). Includes the graceful-shutdown requirement note.
+#   app/services/src/block_index_loader.c 857 -> 965 (app-side baseline
+#       file) — the new mmap + embedded-integrity-verify + binary-search
+#       point reader, declared in block_index_loader.h.
+#
+# 2026-08-02 (replay-canary FAIL#9c, LEG verb stable copy):
+# src/main_cli_modes.c 4231 -> 4244 — legacy_utxo_run (shared by
+# --legacy-utxo-commitment and --gen-utxo-snapshot) now snapshots the
+# oracle chainstate through the WAL-inclusive stable copy
+# (utxo_recovery_copy_chainstate_stable) instead of the WAL-dropping
+# ldb_snapshot_make: the SST-only snapshot sat ~19k blocks behind the
+# live tip, so the byte-exact C8 tier could never bind and SKIPped every
+# run. Reuse of the file's existing import-mode helper pattern; no new
+# file. Baselined at 4244; count STAYS 14.
+#
+# 2026-08-02 (CLI env target naming): src/main_cli_modes.c 4244 -> 4282 —
+# cli_main now honors the ZCL_DATADIR/ZCL_RPCPORT env convention
+# (tools/zcl-rpc.c, soak, crash-recovery tests already pin it) as an
+# operator-named target setting the same datadir_set/rpcport_set bits the
+# flags set, so the native CLI stops silently answering from the LIVE
+# node when the caller pinned an isolated one. Baselined at 4282; count
+# STAYS 14.
+#
+# 2026-08-03 (ZCODE S4 deterministic-envelope fix): zcode_science.c grew
+# 1387 -> 1411 — vcs_zcode_hardware_profile_capture() no longer binds the
+# volatile instantaneous /proc/cpuinfo "cpu MHz" reading (frequency
+# scaling moves it run-to-run) into tsc_freq_hz; the field now comes from
+# the invariant hardware source (CPUID 0x15 crystal math, 0x16 base
+# frequency, else the documented 0 "unknown"). Two captures of the same
+# machine now produce the same profile object, which the S4 deterministic
+# benchmark envelope requires. Re-baselined at 1411; count STAYS 14.
+#
+# 2026-08-03 (G2 swarm closure): two files grew, both BASELINED at their
+# new LOC rather than spending a ratchet slot (and the wallet re-baseline
+# removed one grown entry — recorded count tightens 14 -> 13, see the
+# paydown note beside the count line).
+#   lib/vcs/src/package_swarm_node.c 1801 -> 1840 — the G2 fixes: per-peer
+#       announce dedup (announced table + peer_was_announced) and the
+#       vcs_swarm_engine_active_downloads() accessor the supervisor
+#       clock-driven swarm tick uses for its progress/idle verdict.
+#   lib/wallet/src/wallet_sqlite.c 1668 -> 1694 — restored committed
+#       drift, not fresh: c4399ac6d (C5 proof) added the full-txid token
+#       gate + time-budgeted flush BEGIN retry and the lane merged
+#       without re-baselining. Re-baselined at 1694.

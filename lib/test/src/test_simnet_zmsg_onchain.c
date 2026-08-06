@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ZMSG on-chain channel — in-sim end-to-end proof.
+ * ZMSG and ZPAY Sapling memos — in-sim end-to-end proof.
  * =====================================================================
  *
  * WHAT THIS PROVES
@@ -21,6 +21,9 @@
  *        connect_block), then DECRYPTED by the recipient (ka_agree/kdf/
  *        note_decrypt), PARSED (zmsg_memo_decode), INGESTED, and surfaced in
  *        the store with the original body — the full on-chain ZMSG transport.
+ *     4. A second REAL t→z output carries a canonical ZPAY payment. Recipient
+ *        decryption, strict decode, anonymous-auth state, network/time policy,
+ *        mining through connect_block, and the second tree append all pass.
  *
  * Consensus is untouched: the memo is opaque free-form bytes. The prover<->
  * verifier gap (see test_simnet_sapling_shielded_send.c) does NOT affect this
@@ -48,6 +51,7 @@
 
 #include "net/zmsg.h"
 #include "models/zmsg.h"
+#include "zid/zpay.h"
 
 #include "primitives/transaction.h"
 #include "validation/sighash.h"
@@ -301,6 +305,128 @@ int test_simnet_zmsg_onchain(void)
     ZM_CHECK("mint t->z (mined in-sim)", simnet_mint_txs(&s, &tz, 1));
     ZM_CHECK("tree has 1 note after t->z", simnet_sapling_tree_size(&s) == 1);
     free(shielded_owned);
+
+    /* A second real Sapling transaction carries a canonical ZPAY payment
+     * envelope. This shares only Sapling's opaque 512-byte carrier with ZMSG;
+     * the strict application decoder and current-network policy are ZPAY's. */
+    struct uint256 zpay_cb_txid;
+    ZM_CHECK("mint ZPAY funding coinbase",
+             simnet_mint_coinbase_to(&s, &fund_script, FUND_VALUE,
+                                     &zpay_cb_txid));
+    int zpay_mature_height = simnet_tip_height(&s) + COINBASE_MATURITY;
+    ZM_CHECK("mature ZPAY funding coinbase",
+             simnet_mint_to_height(&s, zpay_mature_height));
+
+    struct zpay_envelope zpay_in;
+    memset(&zpay_in, 0, sizeof(zpay_in));
+    zpay_in.network = ZPAY_NETWORK_REGTEST;
+    zpay_in.message_type = ZPAY_MESSAGE_PAYMENT;
+    zpay_in.created_at = 1700000000;
+    zpay_in.expires_at = 1700000600;
+    memcpy(zpay_in.asset, "ZCL", 4);
+    for (size_t i = 0; i < sizeof(zpay_in.nonce); i++)
+        zpay_in.nonce[i] = (uint8_t)(0x11 + i);
+    for (size_t i = 0; i < sizeof(zpay_in.request_id); i++)
+        zpay_in.request_id[i] = (uint8_t)(0x31 + i);
+    for (size_t i = 0; i < sizeof(zpay_in.invoice_digest); i++)
+        zpay_in.invoice_digest[i] = (uint8_t)(0x51 + i);
+    for (size_t i = 0; i < sizeof(zpay_in.amount_commitment); i++)
+        zpay_in.amount_commitment[i] = (uint8_t)(0x71 + i);
+    zpay_in.has_reply = true;
+    for (size_t i = 0; i < sizeof(zpay_in.reply_ref); i++)
+        zpay_in.reply_ref[i] = (uint8_t)(0x91 + i);
+    uint8_t zpay_memo[ZPAY_MEMO_LEN];
+    ZM_CHECK("encode canonical ZPAY payment memo",
+             zpay_memo_encode(zpay_memo, &zpay_in, NULL));
+
+    struct transaction zpay_tx;
+    transaction_init(&zpay_tx);
+    zpay_tx.overwintered = true;
+    zpay_tx.version = SAPLING_TX_VERSION;
+    zpay_tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+    ZM_CHECK("alloc ZPAY transparent funding input",
+             transaction_alloc(&zpay_tx, 1, 0));
+    zpay_tx.vin[0].prevout.hash = zpay_cb_txid;
+    zpay_tx.vin[0].prevout.n = 0;
+    zpay_tx.vin[0].sequence = 0xFFFFFFFF;
+    { uint8_t ss[2] = {0x00, 0x00};
+      script_set(&zpay_tx.vin[0].script_sig, ss, sizeof(ss)); }
+    zpay_tx.value_balance = -SHIELDED_VALUE;
+    zpay_tx.v_shielded_output = zcl_calloc(
+        1, sizeof(struct output_description), "zpay_tz_out");
+    ZM_CHECK("alloc ZPAY shielded output",
+             zpay_tx.v_shielded_output != NULL);
+    zpay_tx.num_shielded_output = 1;
+
+    bool zpay_built = false;
+    int zpay_height = simnet_tip_height(&s) + 1;
+    if (zpay_tx.v_shielded_output) {
+        struct output_description *od = &zpay_tx.v_shielded_output[0];
+        uint8_t zpay_rcv[32];
+        zpay_built = sapling_build_output_description(
+            id.ovk, id.d, id.pk_d, (uint64_t)SHIELDED_VALUE, zpay_memo,
+            od->cv.data, od->cm.data, od->ephemeral_key.data,
+            od->enc_ciphertext, od->out_ciphertext, od->zkproof, zpay_rcv);
+        ZM_CHECK("build t->z output carrying ZPAY memo (real prover)",
+                 zpay_built);
+        transaction_compute_hash(&zpay_tx);
+        uint32_t branch = consensus_current_epoch_branch_id(
+            zpay_height, &s.params.consensus);
+        struct sighash_type ht; ht.raw = 1;
+        struct precomputed_tx_data txd;
+        precompute_tx_data(&zpay_tx, &txd);
+        struct script empty; empty.size = 0;
+        struct uint256 sighash;
+        bool sighash_ok = signature_hash(
+            &empty, &zpay_tx, NOT_AN_INPUT, ht, 0, branch, &txd, &sighash);
+        ZM_CHECK("ZPAY t->z binding sighash", sighash_ok);
+        ZM_CHECK("ZPAY t->z binding signature",
+                 sighash_ok && zpay_built &&
+                 zm_binding_sig(zpay_rcv, sighash.data,
+                                zpay_tx.binding_sig));
+    }
+
+    if (zpay_built && zpay_tx.v_shielded_output) {
+        struct output_description *od = &zpay_tx.v_shielded_output[0];
+        uint8_t dhsecret[32], enckey[32], pt[564];
+        bool dec = sapling_ka_agree(od->ephemeral_key.data, id.ivk,
+                                    dhsecret) &&
+                   sapling_kdf(enckey, dhsecret,
+                               od->ephemeral_key.data) &&
+                   sapling_note_decrypt(enckey, od->enc_ciphertext,
+                                        sizeof(od->enc_ciphertext), pt);
+        ZM_CHECK("recipient decrypts ZPAY note (AEAD authenticates)", dec);
+        if (dec) {
+            struct zpay_envelope zpay_out;
+            ZM_CHECK("decrypted memo parses as canonical ZPAY",
+                     zpay_memo_decode(pt + 52, &zpay_out));
+            ZM_CHECK("ZPAY payment fields survive shielded transport",
+                     zpay_out.message_type == ZPAY_MESSAGE_PAYMENT &&
+                     strcmp(zpay_out.asset, "ZCL") == 0 &&
+                     memcmp(zpay_out.request_id, zpay_in.request_id,
+                            sizeof(zpay_in.request_id)) == 0);
+            ZM_CHECK("anonymous ZPAY stays explicitly anonymous",
+                     zpay_memo_authenticate(pt + 52, 1700000100,
+                                            &zpay_out) ==
+                         ZPAY_SENDER_ANONYMOUS);
+            ZM_CHECK("received ZPAY is current on the bound network",
+                     zpay_envelope_is_current(&zpay_out,
+                                              ZPAY_NETWORK_REGTEST,
+                                              1700000100));
+            ZM_CHECK("same ZPAY refuses the wrong network",
+                     !zpay_envelope_is_current(&zpay_out,
+                                               ZPAY_NETWORK_MAINNET,
+                                               1700000100));
+        }
+    }
+
+    struct output_description *zpay_shielded_owned =
+        zpay_tx.v_shielded_output;
+    ZM_CHECK("mine ZPAY t->z through connect_block",
+             simnet_mint_txs(&s, &zpay_tx, 1));
+    ZM_CHECK("tree has 2 notes after ZMSG and ZPAY",
+             simnet_sapling_tree_size(&s) == 2);
+    free(zpay_shielded_owned);
     simnet_free(&s);
 
     printf("ZMSG on-chain: %s (%d failures)\n",

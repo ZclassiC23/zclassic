@@ -48,6 +48,18 @@ int t_canonical_deploy_proof_binding_contract(void)
         const char *record_verify = source_compare
             ? strstr(source_compare, "tools/dev/source-identity.sh verify-record")
             : NULL;
+        const char *service_preserve = record_verify
+            ? strstr(record_verify,
+                     "deploy: preserving existing canonical service unit")
+            : NULL;
+        const char *launcher_guard = service_preserve
+            ? strstr(service_preserve,
+                     "service_path\" = \"$(CURDIR)/deploy/zclassic23-launch.sh")
+            : NULL;
+        const char *binary_target = launcher_guard
+            ? strstr(launcher_guard,
+                     "n == 2")
+            : NULL;
         const char *candidate_install = record_verify
             ? strstr(record_verify,
                      "install -m 755 \"$$candidate\" \"$$SERVICE_BIN\"")
@@ -62,9 +74,21 @@ int t_canonical_deploy_proof_binding_contract(void)
         ASSERT(agentbuild != NULL && agentbuild < seed_target);
         ASSERT(source_compare != NULL && source_compare < seed_target);
         ASSERT(record_verify != NULL && record_verify < seed_target);
+        ASSERT(service_preserve != NULL && service_preserve < seed_target);
+        ASSERT(launcher_guard != NULL && launcher_guard < seed_target);
+        ASSERT(binary_target != NULL && binary_target < seed_target);
+        ASSERT(strstr(binary_target,
+                      "[ \"$$SERVICE_BIN\" = \"$(CURDIR)/build/bin/zclassic23\" ]")
+               != NULL);
         ASSERT(candidate_install != NULL && candidate_install < seed_target);
         ASSERT(restart != NULL && restart < seed_target);
         ASSERT(proof != NULL && proof < seed_target);
+        ASSERT(strstr(deploy_recipe, "rollback_armed=1") != NULL);
+        ASSERT(strstr(deploy_recipe, "ZCL_DEPLOY_STAGE=rollback") != NULL);
+        ASSERT(strstr(deploy_recipe, "deploy: ROLLED_BACK") != NULL);
+        ASSERT(strstr(deploy_recipe,
+                      "deploy: CRITICAL — rollback verification failed")
+               != NULL);
         const char *nested_after_freeze = strstr(frozen_candidate, "$(MAKE)");
         ASSERT(nested_after_freeze == NULL || nested_after_freeze >= seed_target);
         ASSERT(strstr(candidate_install,
@@ -75,16 +99,28 @@ int t_canonical_deploy_proof_binding_contract(void)
         ASSERT(read_entire_file(path, &verify_buf) == 0);
         ASSERT(strstr(verify_buf, "SERVICE_MAIN_PID") != NULL);
         ASSERT(strstr(verify_buf, "/proc/$SERVICE_MAIN_PID/cmdline") != NULL);
+        ASSERT(strstr(verify_buf, "exec_argv_values_from_text") != NULL);
+        ASSERT(strstr(verify_buf, "SERVICE_NODE_ARG") != NULL);
+        ASSERT(strstr(verify_buf,
+                      "SERVICE_NODE_EXE\" = \"$SERVICE_EXE") != NULL);
         ASSERT(strstr(verify_buf, "SERVICE_START_TICKS") != NULL);
         ASSERT(strstr(verify_buf, "service_pid_is_stable") != NULL);
         ASSERT(strstr(verify_buf, "mainpid_owns_rpc_listener") != NULL);
         ASSERT(strstr(verify_buf, "RPC_CONNECT=\"127.0.0.1\"") != NULL);
+        ASSERT(strstr(verify_buf,
+                      "out=$(rpc_call dumpstate \"\\\"$component\\\"\" \"\\\"$key\\\"\"")
+               != NULL);
+        ASSERT(strstr(verify_buf,
+                      "out=$(rpc_call dumpstate \"$component\" \"$key\"")
+               != NULL);
         ASSERT(strstr(verify_buf,
                       "unset ZCL_DATADIR ZCL_RPCPORT ZCL_RPCCONNECT") != NULL);
         ASSERT(strstr(verify_buf, "${ZCL_DATADIR:-") == NULL);
         ASSERT(strstr(verify_buf, "${ZCL_RPCPORT:-") == NULL);
         ASSERT(strstr(verify_buf, "${ZCL_RPCCONNECT:-") == NULL);
         ASSERT(strstr(verify_buf, "ZCL_DEPLOY_VERIFY_SELFTEST") != NULL);
+        ASSERT(strstr(verify_buf, "ZCL_DEPLOY_STAGE") != NULL);
+        ASSERT(strstr(verify_buf, "CHALLENGER_STAGED (unqualified)") != NULL);
         ASSERT(run_gate_script_with_env("tools/deploy_verify.sh",
                                         "ZCL_DEPLOY_VERIFY_SELFTEST", "1") == 0);
         PASS();

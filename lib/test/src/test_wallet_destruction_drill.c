@@ -73,6 +73,7 @@
 #include "models/wallet_tx.h"
 
 #include "wallet/wallet.h"
+#include "wallet/wallet_lock.h"
 #include "wallet/wallet_sqlite.h"
 #include "wallet/sapling_keys.h"
 
@@ -1001,7 +1002,10 @@ static bool dr_verify(const struct transaction *tx,
 {
     struct validation_state st;
     validation_state_init(&st);
-    return contextual_check_transaction(tx, &st, cp, height, 100);
+    bool ok = contextual_check_transaction(tx, &st, cp, height, 100);
+    if (!ok)
+        printf("    contextual reject: %s\n", st.reject_reason);
+    return ok;
 }
 
 static void dr_rsk(const uint8_t ask[32], const uint8_t ar[32], uint8_t rsk[32])
@@ -1283,7 +1287,7 @@ static int act3_shielded(void)
     {
         sqlite3_stmt *st = NULL;
         const char *sql = "SELECT value, rcm, cm FROM wallet_sapling_notes "
-                          "WHERE is_spent = 0 LIMIT 1";
+                          "WHERE spent_txid IS NULL LIMIT 1";
         if (sqlite3_prepare_v2(new_ndb.db, sql, -1, &st, NULL) == SQLITE_OK &&
             sqlite3_step(st) == SQLITE_ROW) {
             got_value = sqlite3_column_int64(st, 0);
@@ -1349,7 +1353,9 @@ static int act3_shielded(void)
         zt.overwintered     = true;
         zt.version          = SAPLING_TX_VERSION;
         zt.version_group_id = SAPLING_VERSION_GROUP_ID;
-        zt.value_balance    = SHIELDED_VALUE - FEE;   /* value OUT of the pool */
+        /* The pool loses the full note value. The transparent output is lower
+         * by FEE; fees do not reduce Sapling valueBalance itself. */
+        zt.value_balance    = SHIELDED_VALUE;
 
         struct dr_key sink;
         dr_make_key(&sink);
@@ -1927,7 +1933,10 @@ static int act4_recovery_phrase(void)
         char lockdb[320];
         snprintf(lockdb, sizeof(lockdb), "%s/node.db", lockdir);
 
-        setenv("ZCL_WALLET_PASSPHRASE", "act4-the-right-passphrase", 1);
+        wallet_lock_reset_for_test();
+        DR_CHECK("act4/locked: explicitly unlock the fixture",
+                 wallet_lock_unlock(NULL, NULL,
+                                    "act4-the-right-passphrase").ok);
         struct node_db lndb;
         memset(&lndb, 0, sizeof(lndb));
         DR_CHECK("act4/locked: open the fixture db",
@@ -1947,9 +1956,8 @@ static int act4_recovery_phrase(void)
         wallet_sqlite_close(&lws);
         node_db_close(&lndb);
 
-        /* Walk away with the wrong passphrase, exactly as a user who
-         * mistyped it or lost the environment variable would. */
-        setenv("ZCL_WALLET_PASSPHRASE", "act4-the-WRONG-passphrase", 1);
+        /* Lock it, exactly as a fresh process must see an encrypted wallet. */
+        wallet_lock_lock(NULL);
 
         struct wallet_recovery_report lrep;
         struct zcl_result lpre =
@@ -1975,6 +1983,9 @@ static int act4_recovery_phrase(void)
                  "seed it could not read",
                  !lrep.seed_installed);
 
+        /* The at-rest gate runs before target inspection. Allow this call to
+         * reach the refusal under test: the existing encrypted seed row. */
+        setenv("ZCL_ALLOW_PLAINTEXT_WALLET", "1", 1);
         struct wallet_recovery_request lrr = {
             .phrase = phrase, .datadir = lockdir, .dry_run = false };
         struct wallet_recovery_report lwrep;
@@ -1983,7 +1994,8 @@ static int act4_recovery_phrase(void)
                  "a seed it merely could not decrypt",
                  !lwr.ok && lwr.code == -62);
 
-        unsetenv("ZCL_WALLET_PASSPHRASE");
+        unsetenv("ZCL_ALLOW_PLAINTEXT_WALLET");
+        wallet_lock_reset_for_test();
         memory_cleanse(lseed, sizeof(lseed));
         dr_destroy_tree(lockdir, 2);
     }
@@ -2018,8 +2030,8 @@ int test_wallet_destruction_drill(void)
     failures += act2_bodyless_restore_must_fail_loud();
     failures += act4_recovery_phrase();
 
-    /* Act 3 needs the proving parameters AND a working production prover
-     * (ZCL_WITH_RUST=1). Without both, the shielded half cannot be proven
+    /* Act 3 needs the proving parameters AND the native C23 prover self-test.
+     * Without both, the shielded half cannot be proven
      * here, so it SKIPs and says so rather than asserting something weaker.
      * "SKIP (" is the harness sentinel — this stays visible in the suite's
      * skipped-coverage ledger instead of vanishing. */
@@ -2038,8 +2050,8 @@ int test_wallet_destruction_drill(void)
         fclose(probe);
         if (!sapling_init_params(params_dir) ||
             !zclassic_sapling_prover_is_ready()) {
-            printf("  act 3 (shielded): production prover not ready — SKIP "
-                   "(status=%s; rebuild with ZCL_WITH_RUST=1)\n",
+            printf("  act 3 (shielded): native C23 prover not ready — SKIP "
+                   "(status=%s; inspect the Spend/Output/binding self-test)\n",
                    zclassic_sapling_prover_status());
         } else {
             printf("  act 3 (shielded): production prover READY (backend=%s)\n",

@@ -44,6 +44,10 @@ struct app_context {
     const char *params_dir;
     bool testnet;
     bool regtest;
+    bool regtest_shielded;  /* -regtestshielded : with -regtest, activate
+                             * Overwinter+Sapling from genesis on this node's
+                             * runtime params (zcashd's -nuparams equivalent;
+                             * ignored with a warning off regtest) */
     bool daemon;
     bool gen;
     int gen_threads;

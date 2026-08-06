@@ -77,6 +77,55 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_agent_status)
 
 ZCL_COMMAND_READY_READ(
+    "metaverse.agent.money", "metaverse.agent", "",
+    "Identity-bound dev/prod custody, never an implied zero",
+    "Reconciles the owner-created dev and prod wallet bindings in one broker "
+    "directory against each running node's persistent wallet identity and "
+    "authoritative vault/intent readers. Every wallet reports CURRENT, "
+    "UNKNOWN, STALE, or CONFLICTED with completeness, reason, confirmed, "
+    "pending, encumbered, intent-reserved, and agent-available ZCL plus tip "
+    "and observation evidence. Missing or unreachable readers never collapse "
+    "to zero. The portfolio total appears only when both assigned wallets are "
+    "current and complete. Output contains no endpoint, datadir, address, key, "
+    "or grant token.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "metaverse,agent,money,custody,wallet,balance,identity,reserve",
+    "zcl.metaverse_agent_money.input.v1", "zcl.metaverse_agent_money.v1",
+    "dir", "dir",
+    "zclassic23 metaverse agent money --dir=/tmp/mv-broker",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_agent_money)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.agent.liquidity", "metaverse.agent", "",
+    "Plan parallel transaction liquidity without moving funds",
+    "Reads one explicitly bound dev or prod wallet through the broker and "
+    "reports whether the requested number of simultaneous payments has enough "
+    "independent reservation-eligible transparent UTXOs. Exact recipient value "
+    "plus maximum fee is budgeted per slot. If value exists but coin fan-out is "
+    "needed, returns aggregate output count/value and the existing vault-intent "
+    "address/plan/commit route. This is advisory: it creates no address, plan, "
+    "reservation, signature, transaction, or automatic rebalance. Missing, "
+    "stale, conflicting, or unreachable custody remains explicit and no "
+    "address, outpoint, endpoint, datadir, key, or grant token is returned.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "metaverse,agent,liquidity,utxo,fanout,parallel,transaction,plan",
+    "zcl.metaverse_agent_liquidity.input.v1",
+    "zcl.metaverse_agent_liquidity.v1",
+    "dir,wallet_scope,recipient_value_zat,maximum_fee_zat,concurrency",
+    "dir,wallet_scope,recipient_value_zat,maximum_fee_zat,concurrency",
+    "zclassic23 metaverse agent liquidity --input='{\"dir\":\"/private/broker\",\"wallet_scope\":\"dev\",\"recipient_value_zat\":1000,\"maximum_fee_zat\":10000,\"concurrency\":10}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_metaverse_agent_liquidity)
+
+ZCL_COMMAND_READY_READ(
     "metaverse.agent.audit", "metaverse.agent", "",
     "Every action the confined agent took, and whether the log is intact",
     "The broker's append-only receipt log for one broker directory, verified "
@@ -171,6 +220,217 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE,
     zcl_native_handle_metaverse_property_show)
+
+ZCL_COMMAND_BRANCH("metaverse.space", "metaverse",
+                   "Signed sovereign spaces and generic typed services",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.space.plan", "metaverse.space", "",
+    "Plan one signed space manifest or typed service descriptor",
+    "Canonicalizes and validates either a read-only service_descriptor.v1 or "
+    "a delegated, expiring space_manifest.v1, then returns its semantic root "
+    "and an exact stateless plan token. Planning writes no CAS bytes, DHT "
+    "records, policy rows, or indexes. A manifest signature proves its ZID "
+    "delegation only when the running node independently confirms that "
+    "delegation against current chain state. Service descriptors carry roots "
+    "and read verbs only: they grant no authority and are never executable.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "metaverse,space,manifest,service,plan,signature,sovereignty",
+    "zcl.metaverse_space_plan.input.v1", "zcl.metaverse_space_plan.v1",
+    "kind,protocol_root,read_only_verbs,object_roots,capability_roots,sequence,not_before,expiry,name,description,service_roots,portal_roots,admission_root,datadir",
+    "kind",
+    "zclassic23 metaverse space plan --input='{\"kind\":\"service_descriptor\",\"protocol_root\":\"<64hex>\",\"read_only_verbs\":[\"discover\"]}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_space_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "metaverse.space.commit", "metaverse.space", "",
+    "Commit one exactly planned space object to local CAS",
+    "Requires confirm:true and the exact stateless plan token, revalidates the "
+    "whole object and current local STORE and INDEX policy, then writes the "
+    "canonical bytes to the named workspace CAS. Existing bytes are re-read "
+    "and re-hashed before an idempotent success; a corrupt or colliding object "
+    "fails closed. This does not publish, fetch, execute, or grant authority.",
+    0, "metaverse,space,manifest,service,commit,cas,policy",
+    "zcl.metaverse_space_commit.input.v1", "zcl.metaverse_space_commit.v1",
+    "kind,protocol_root,read_only_verbs,object_roots,capability_roots,sequence,not_before,expiry,name,description,service_roots,portal_roots,admission_root,plan_token,confirm,datadir,workspace",
+    "kind,plan_token,confirm",
+    "zclassic23 metaverse space commit --input='{\"kind\":\"service_descriptor\",\"protocol_root\":\"<64hex>\",\"read_only_verbs\":[\"discover\"],\"plan_token\":\"<64hex>\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_metaverse_space_commit)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.space.show", "metaverse.space", "",
+    "Re-derive one local space object and its evidence grade",
+    "Reads canonical CAS bytes by semantic root and re-derives the root and "
+    "typed contents. A manifest reports its preserved signature evidence, "
+    "current validity window and current chain-authorization separately; an "
+    "expired manifest remains inspectable but is not called chain-bound. A "
+    "service descriptor is content-hash evidence only and never executable.",
+    ZCL_COMMAND_RESULT_BUDGET, "metaverse,space,show,evidence,cas,signature",
+    "zcl.metaverse_space_show.input.v1", "zcl.metaverse_space_show.v1",
+    "root,workspace,datadir", "root",
+    "zclassic23 metaverse space show <64hex>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_space_show)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.space.status", "metaverse.space", "",
+    "Explain whether this node can publish, discover, or scout a Space",
+    "Composes the existing identity/delegation, authenticated DHT, package "
+    "store, sovereignty-policy, Space CAS and local signed-record owners into "
+    "one non-creating readiness view. An optional exact semantic root adds "
+    "local manifest/descriptor visibility plus publication and declared "
+    "replication state. Replies expose readiness booleans, counts, blocker "
+    "codes and one safe next command—never keys, identities, peer addresses, "
+    "private policy rules, endpoints, or filesystem paths.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "metaverse,space,status,readiness,blockers,publication,replication",
+    "zcl.metaverse_space_status.input.v1",
+    "zcl.metaverse_space_status.v1",
+    "root,kind,workspace,datadir", "",
+    "zclassic23 metaverse space status --input='{\"root\":\"<64hex>\",\"kind\":\"space_manifest\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_space_status)
+
+ZCL_COMMAND_READY_COMMAND(
+    "metaverse.space.publish", "metaverse.space", "",
+    "Publish one local space object through the existing signed DHT",
+    "Revalidates the local CAS object, derives a bounded generic blob carrier, "
+    "and checks this node's STORE, INDEX, SERVE and FORWARD policy before any "
+    "write. It then publishes existing generic POINTER and PROVIDER records "
+    "under the space.manifest or space.service namespace; it introduces no "
+    "second discovery protocol. Manifest publication also requires current "
+    "chain authorization. Publication never executes object contents.",
+    0, "metaverse,space,publish,dht,provider,pointer,policy",
+    "zcl.metaverse_space_publish.input.v1", "zcl.metaverse_space_publish.v1",
+    "root,workspace,datadir", "root",
+    "zclassic23 metaverse space publish <64hex>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_metaverse_space_publish)
+
+ZCL_COMMAND_READY_COMMAND(
+    "metaverse.space.discover", "metaverse.space", "",
+    "Discover one exact space root under local admission policy",
+    "Looks up generic signed POINTER records for one exact semantic root, "
+    "deterministically filters conflicts and superseded records, then routes "
+    "only through authenticated restricted PROVIDER records. DISCOVER and "
+    "FETCH policy are checked before routing; STORE and INDEX policy are "
+    "rechecked after bytes are verified and before local CAS admission. The "
+    "reply distinguishes pointer publisher evidence from the manifest owner. "
+    "Operational outcomes are closed as present, pending, blocked, not_found "
+    "or invalid, with retryability, the exact phase, bounded progress and one "
+    "safe next action. A foreground call spends at most ten seconds trying to "
+    "finish a scheduled healthy fetch. No candidate can trigger execution or "
+    "confer authority.",
+    0, "metaverse,space,discover,dht,provider,policy,admission",
+    "zcl.metaverse_space_discover.input.v1", "zcl.metaverse_space_discover.v1",
+    "root,kind,workspace,datadir", "root",
+    "zclassic23 metaverse space discover <64hex> --kind=space_manifest",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_metaverse_space_discover)
+
+ZCL_COMMAND_BRANCH("metaverse.space.scout", "metaverse.space",
+                   "Bounded read-only space missions and signed local evidence",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.space.scout.plan", "metaverse.space.scout", "",
+    "Plan one bounded read-only traversal of sovereign spaces",
+    "Canonicalizes sorted starting roots plus explicit depth, space, portal, "
+    "byte and monotonic-duration caps under the local observer's network. "
+    "Returns an exact stateless plan token and writes nothing. Planning grants "
+    "no interaction or execution authority.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "metaverse,space,scout,plan,bounds,read-only,evidence",
+    "zcl.metaverse_space_scout_plan.input.v1",
+    "zcl.metaverse_space_scout_plan.v1",
+    "starting_roots,observation_unix,maximum_depth,maximum_spaces,maximum_portals,maximum_bytes,deadline_ms,datadir",
+    "", "zclassic23 metaverse space scout plan --input='<mission-json>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_metaverse_space_scout_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "metaverse.space.scout.run", "metaverse.space.scout", "",
+    "Run one exactly planned bounded read-only space scout mission",
+    "Requires confirm:true and the exact stateless plan token. The scout may "
+    "read or discover signed manifests and follow permitted portal roots until "
+    "the first hard cap. Every network lookup uses the mission's monotonic "
+    "deadline and existing generic POINTER/PROVIDER transport. It records a "
+    "deterministic unsigned evidence map plus a separate local signature; it "
+    "never invokes service verbs, packages, wallets, doorbells or messages.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "metaverse,space,scout,run,portal,policy,deadline,evidence",
+    "zcl.metaverse_space_scout_run.input.v1",
+    "zcl.metaverse_space_scout_run.v1",
+    "starting_roots,observation_unix,maximum_depth,maximum_spaces,maximum_portals,maximum_bytes,deadline_ms,plan_token,confirm,workspace,datadir",
+    "", "zclassic23 metaverse space scout run --input='<confirmed-mission-json>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_metaverse_space_scout_run)
+
+ZCL_COMMAND_READY_READ(
+    "metaverse.space.scout.show", "metaverse.space.scout", "",
+    "Show one signed local scout attestation and its canonical evidence map",
+    "Loads the attestation root, verifies its observer delegation/signature, "
+    "loads and re-derives the linked deterministic map root, and renders every "
+    "visited root, owner, advertised service, portal outcome, typed failure, "
+    "policy denial count and truncation reason. The result explicitly remains "
+    "local evidence, never authority or global truth.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "metaverse,space,scout,show,map,attestation,local-evidence",
+    "zcl.metaverse_space_scout_show.input.v1",
+    "zcl.metaverse_space_scout_show.v1",
+    "root,workspace,datadir", "root",
+    "zclassic23 metaverse space scout show <attestation-root>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_metaverse_space_scout_show)
 
 ZCL_COMMAND_BRANCH("metaverse.build", "metaverse",
                    "Content-addressed C23 build jobs, actions, and receipts",

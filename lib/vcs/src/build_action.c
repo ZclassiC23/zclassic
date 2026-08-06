@@ -187,6 +187,10 @@ uint8_t vcs_build_action_v1_work_kind(const char *kind)
         return VCS_ZCODE_WORK_TEST;
     if (strcmp(kind, VCS_BUILD_ACTION_KIND_FUZZ_V1) == 0)
         return VCS_ZCODE_WORK_FUZZ;
+    if (strcmp(kind, VCS_BUILD_ACTION_KIND_BENCHMARK_V1) == 0)
+        return VCS_ZCODE_WORK_TEST;
+    if (strcmp(kind, VCS_BUILD_ACTION_KIND_BENCHMARK_REPRODUCE_V1) == 0)
+        return VCS_ZCODE_WORK_REPRODUCE;
     if (strcmp(kind, VCS_BUILD_ACTION_KIND_REVIEW_V1) == 0)
         return VCS_ZCODE_WORK_REVIEW;
     return 0;
@@ -196,20 +200,29 @@ bool vcs_build_action_v1_descriptors(
     const char *kind, const char **workdir, const char **output,
     const char **resource)
 {
-    uint8_t work_kind = vcs_build_action_v1_work_kind(kind);
-    if (work_kind == VCS_ZCODE_WORK_BUILD) {
+    if (vcs_build_action_v1_work_kind(kind) == 0) return false;
+    if (strcmp(kind, VCS_BUILD_ACTION_KIND_V1) == 0) {
         *workdir = VCS_BUILD_VIRTUAL_ROOT_V1;
         *output = VCS_BUILD_OUTPUT_V1;
         *resource = VCS_BUILD_RESOURCE_POLICY_V1;
-    } else if (work_kind == VCS_ZCODE_WORK_TEST) {
+    } else if (strcmp(kind, VCS_BUILD_ACTION_KIND_TEST_V1) == 0) {
         *workdir = VCS_BUILD_PACKAGE_VIRTUAL_ROOT_V1;
         *output = VCS_BUILD_TEST_OUTPUT_V1;
         *resource = VCS_BUILD_TEST_RESOURCE_POLICY_V1;
-    } else if (work_kind == VCS_ZCODE_WORK_FUZZ) {
+    } else if (strcmp(kind, VCS_BUILD_ACTION_KIND_FUZZ_V1) == 0) {
         *workdir = VCS_BUILD_PACKAGE_VIRTUAL_ROOT_V1;
         *output = VCS_BUILD_FUZZ_OUTPUT_V1;
         *resource = VCS_BUILD_FUZZ_RESOURCE_POLICY_V1;
-    } else if (work_kind == VCS_ZCODE_WORK_REVIEW) {
+    } else if (strcmp(kind, VCS_BUILD_ACTION_KIND_BENCHMARK_V1) == 0) {
+        *workdir = VCS_BUILD_PACKAGE_VIRTUAL_ROOT_V1;
+        *output = VCS_BUILD_BENCHMARK_OUTPUT_V1;
+        *resource = VCS_BUILD_BENCHMARK_RESOURCE_POLICY_V1;
+    } else if (strcmp(kind,
+                      VCS_BUILD_ACTION_KIND_BENCHMARK_REPRODUCE_V1) == 0) {
+        *workdir = VCS_BUILD_PACKAGE_VIRTUAL_ROOT_V1;
+        *output = VCS_BUILD_BENCHMARK_REPRODUCE_OUTPUT_V1;
+        *resource = VCS_BUILD_BENCHMARK_REPRODUCE_RESOURCE_POLICY_V1;
+    } else if (strcmp(kind, VCS_BUILD_ACTION_KIND_REVIEW_V1) == 0) {
         *workdir = VCS_BUILD_REVIEW_VIRTUAL_ROOT_V1;
         *output = VCS_BUILD_REVIEW_OUTPUT_V1;
         *resource = VCS_BUILD_REVIEW_RESOURCE_POLICY_V1;

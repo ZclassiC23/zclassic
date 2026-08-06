@@ -27,7 +27,8 @@ const char *vcs_policy_tier_string(enum vcs_policy_tier tier)
 
 /* The frozen policy table. The new-user row IS the free allowance: a
  * zero-score user can always download public packages and publish once
- * per week. */
+ * per week — and announce that publication (the bounded bootstrap quota),
+ * otherwise the free publish would be undeliverable over the swarm. */
 static const struct vcs_policy_limits
     k_limits[VCS_POLICY_TIER_COUNT] = {
     /* NEW_USER */
@@ -37,7 +38,7 @@ static const struct vcs_policy_limits
         1u,                                    /* max_concurrent_downloads */
         0u,                                    /* queue_priority */
         0u,                                    /* pin_allowance_bytes */
-        0u,                                    /* announces_per_hour */
+        VCS_POLICY_FREE_ANNOUNCE_PER_HOUR,     /* announces_per_hour */
         16u,                                   /* request_burst_per_window */
     },
     /* EARNED_CONTRIBUTOR */

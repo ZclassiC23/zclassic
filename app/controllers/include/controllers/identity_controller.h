@@ -37,5 +37,6 @@ void rpc_identity_set_wallet(struct wallet *w, struct tx_mempool *mp,
                              struct main_state *main_state,
                              struct coins_view_cache *coins_tip);
 void register_identity_rpc_commands(struct rpc_table *t);
+void register_zid_intent_rpc_command(struct rpc_table *table);
 
 #endif /* ZCL_CONTROLLERS_IDENTITY_H */

@@ -19,14 +19,25 @@
  *      a quorum on a FAIL class is not "verified".
  *   3. zcode package verify: verified quorum report over a fixture store,
  *      NO_APPROVED_VERIFIERS without the local allowlist, UNKNOWN_PACKAGE,
- *      BAD_ROOT, and the not-quite-quorum states.
+ *      BAD_ROOT, and the not-quite-quorum states; plus the reproduction
+ *      object (two distinct matching receipts reproduce; a diverging
+ *      receipt is named by rule).
+ *   3b. Bit-identical reproduction (lib/vcs/package_reproduce.*): the
+ *      comparator (MATCH; every named divergence rule; the detail names
+ *      the path and hashes), the receipts-directory scan (distinct build
+ *      events agreeing byte-for-byte reproduce; one receipt does not; a
+ *      tampered output is reported loudly), and the eligibility gates
+ *      passing on a recorded reproduction with no quorum at all.
  *   4. End-to-end external verifier: a tiny real C package is published
  *      into a fixture store, build/bin/zclassic23-package-verify runs it
  *      (gcc + clang, plain + ASan/UBSan), and the signed attestation is
  *      checked (test-pass, verifier key, temp tree cleaned). Hostile
  *      fixtures fail closed with the named rule: a syntax-error source
  *      (build-fail/compile-error) and a test that calls socket()
- *      (test-fail/test-signal — the seccomp network denial firing).
+ *      (test-fail/test-signal — the seccomp network denial firing). The
+ *      reproduction lane runs --emit twice: a second build
+ *      --reproduce-against the first build-report exits 0 with
+ *      reproduction=MATCH; a tampered reference exits 6 (MISMATCH).
  *
  * Command handlers run in-process on ./test-tmp datadirs. The e2e lane
  * forks the real verifier binary — it MUST exist (make
@@ -44,9 +55,12 @@
 #include "keys/pubkey.h"
 #include "util/spawn.h"
 #include "vcs/package_attest.h"
+#include "vcs/package_build.h"
+#include "vcs/package_eligible.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_recipe.h"
 #include "vcs/package_release.h"
+#include "vcs/package_reproduce.h"
 #include "vcs/package_verify_policy.h"
 
 #include <dirent.h>
@@ -1036,6 +1050,269 @@ static bool zv_write_policy(const char *store)
     return n > 0 && zv_write_file(path, text, (size_t)n, 0600);
 }
 
+/* ── 3b. bit-identical reproduction fixtures ────────────────────────── */
+
+/* One installable build receipt: two committed outputs seeded by
+ * out_seed, under a fixed lock root. compiler_version varies the receipt
+ * id (a distinct build event) without touching the output set. */
+static bool zv_receipt(struct vcs_package_build_receipt *r,
+                       const uint8_t package_root[32],
+                       const uint8_t recipe_root[32],
+                       const char *compiler_version, uint8_t out_seed)
+{
+    vcs_package_build_receipt_init(r);
+    memcpy(r->package_root, package_root, 32);
+    memcpy(r->recipe_root, recipe_root, 32);
+    zv_pattern_root(0x77, r->lock_root);
+    snprintf(r->compiler_id, sizeof(r->compiler_id), "gcc");
+    snprintf(r->compiler_version, sizeof(r->compiler_version), "%s",
+             compiler_version);
+    snprintf(r->flags, sizeof(r->flags), "-std=c23 -O1");
+    r->result_class = (uint8_t)VCS_PACKAGE_BUILD_RESULT_TEST_PASS;
+    r->isolation = (uint8_t)VCS_PACKAGE_BUILD_ISOLATION_FULL;
+    r->test_ran = true;
+    r->test_exit_code = 0;
+    uint8_t h1[32], h2[32];
+    zv_pattern_root(out_seed, h1);
+    zv_pattern_root((uint8_t)(out_seed + 1u), h2);
+    return vcs_package_build_add_output(r, "include/add.h", h1, 100) ==
+               VCS_PACKAGE_BUILD_OK &&
+           vcs_package_build_add_output(r, "lib/libaddpkg.a", h2, 4096) ==
+               VCS_PACKAGE_BUILD_OK;
+}
+
+/* Persist one receipt under <receipts_dir>/<receipt-id-hex> (the install
+ * lifecycle's filing convention). */
+static bool zv_store_receipt(const char *receipts_dir,
+                             const struct vcs_package_build_receipt *r)
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    if (vcs_package_build_serialize(r, &wire, &wire_len) !=
+        VCS_PACKAGE_BUILD_OK)
+        return false;
+    uint8_t id[32];
+    bool ok = vcs_package_build_id(r, id) == VCS_PACKAGE_BUILD_OK;
+    if (ok) {
+        char id_hex[65];
+        zv_hex_enc(id, 32, id_hex);
+        char path[4400];
+        int n = snprintf(path, sizeof(path), "%s/%s", receipts_dir, id_hex);
+        ok = n > 0 && (size_t)n < sizeof(path) &&
+             zv_mkdir_p(receipts_dir) &&
+             zv_write_file(path, wire, wire_len, 0600);
+    }
+    free(wire);
+    return ok;
+}
+
+static int t_reproduce(void)
+{
+    int failures = 0;
+    uint8_t package_root[32], recipe_root[32];
+    zv_pattern_root(0x50, package_root);
+    zv_pattern_root(0x51, recipe_root);
+
+    /* Byte-identical outputs reproduce — including the third-party case:
+     * a different compiler version (a distinct receipt id, so a genuinely
+     * separate build event) committing the same output set. */
+    struct vcs_package_build_receipt ref, same, third;
+    ZV_CHECK("reproduce: receipt fixtures build",
+             zv_receipt(&ref, package_root, recipe_root, "14.2.0", 0x40) &&
+             zv_receipt(&same, package_root, recipe_root, "14.2.0", 0x40) &&
+             zv_receipt(&third, package_root, recipe_root,
+                        "15.0.1-third-party", 0x40));
+    struct vcs_reproduce_verdict v;
+    vcs_package_reproduce_compare(&ref, &same, &v);
+    ZV_CHECK("reproduce: identical receipts MATCH",
+             v.reproduced && v.rule == VCS_REPRODUCE_MATCH &&
+             v.detail[0] == '\0');
+    vcs_package_reproduce_compare(&ref, &third, &v);
+    uint8_t id_ref[32], id_third[32];
+    bool ids = vcs_package_build_id(&ref, id_ref) == VCS_PACKAGE_BUILD_OK &&
+               vcs_package_build_id(&third, id_third) == VCS_PACKAGE_BUILD_OK;
+    ZV_CHECK("reproduce: third-party toolchain MATCH, distinct ids",
+             v.reproduced && v.rule == VCS_REPRODUCE_MATCH && ids &&
+             memcmp(id_ref, id_third, 32) != 0);
+
+    /* Every divergence is named, loudly, with the path in the detail. */
+    struct vcs_package_build_receipt bad;
+    ZV_CHECK("reproduce: diverging fixture builds",
+             zv_receipt(&bad, package_root, recipe_root, "14.2.0", 0x99));
+    vcs_package_reproduce_compare(&ref, &bad, &v);
+    ZV_CHECK("reproduce: hash divergence named with path and hashes",
+             !v.reproduced &&
+             v.rule == VCS_REPRODUCE_OUTPUT_HASH_MISMATCH &&
+             strstr(v.detail, "include/add.h") != NULL &&
+             strstr(v.detail, "expected sha3") != NULL);
+
+    struct vcs_package_build_receipt short_build;
+    vcs_package_build_receipt_init(&short_build);
+    memcpy(short_build.package_root, package_root, 32);
+    memcpy(short_build.recipe_root, recipe_root, 32);
+    zv_pattern_root(0x77, short_build.lock_root);
+    snprintf(short_build.compiler_id, sizeof(short_build.compiler_id),
+             "gcc");
+    snprintf(short_build.compiler_version,
+             sizeof(short_build.compiler_version), "14.2.0");
+    snprintf(short_build.flags, sizeof(short_build.flags), "-std=c23 -O1");
+    short_build.result_class = (uint8_t)VCS_PACKAGE_BUILD_RESULT_TEST_PASS;
+    short_build.isolation = (uint8_t)VCS_PACKAGE_BUILD_ISOLATION_FULL;
+    short_build.test_ran = true;
+    uint8_t hdr_hash[32];
+    zv_pattern_root(0x40, hdr_hash);
+    ZV_CHECK("reproduce: short fixture builds",
+             vcs_package_build_add_output(&short_build, "include/add.h",
+                                          hdr_hash, 100) ==
+                 VCS_PACKAGE_BUILD_OK);
+    vcs_package_reproduce_compare(&ref, &short_build, &v);
+    ZV_CHECK("reproduce: missing output named",
+             !v.reproduced && v.rule == VCS_REPRODUCE_OUTPUT_MISSING &&
+             strstr(v.detail, "lib/libaddpkg.a") != NULL);
+    vcs_package_reproduce_compare(&short_build, &ref, &v);
+    ZV_CHECK("reproduce: unexpected output named",
+             !v.reproduced && v.rule == VCS_REPRODUCE_OUTPUT_UNEXPECTED &&
+             strstr(v.detail, "lib/libaddpkg.a") != NULL);
+
+    struct vcs_package_build_receipt other;
+    ZV_CHECK("reproduce: root fixtures build",
+             zv_receipt(&other, package_root, recipe_root, "14.2.0", 0x40));
+    zv_pattern_root(0x52, other.recipe_root);
+    vcs_package_reproduce_compare(&ref, &other, &v);
+    ZV_CHECK("reproduce: recipe root divergence named",
+             !v.reproduced && v.rule == VCS_REPRODUCE_RECIPE_ROOT_MISMATCH);
+    ZV_CHECK("reproduce: recipe fixture rebuilds",
+             zv_receipt(&other, package_root, recipe_root, "14.2.0", 0x40));
+    zv_pattern_root(0x53, other.lock_root);
+    vcs_package_reproduce_compare(&ref, &other, &v);
+    ZV_CHECK("reproduce: lock root divergence named",
+             !v.reproduced && v.rule == VCS_REPRODUCE_LOCK_ROOT_MISMATCH);
+    ZV_CHECK("reproduce: dep fixture rebuilds",
+             zv_receipt(&other, package_root, recipe_root, "14.2.0", 0x40));
+    uint8_t dep[32];
+    zv_pattern_root(0x54, dep);
+    ZV_CHECK("reproduce: dep adds",
+             vcs_package_build_add_dep(&other, dep) ==
+                 VCS_PACKAGE_BUILD_OK);
+    vcs_package_reproduce_compare(&ref, &other, &v);
+    ZV_CHECK("reproduce: dependency set divergence named",
+             !v.reproduced && v.rule == VCS_REPRODUCE_DEP_SET_MISMATCH);
+
+    /* A failing build has nothing to reproduce (no vacuous MATCH on an
+     * empty output set), and a non-canonical receipt is invalid. */
+    ZV_CHECK("reproduce: fail fixture rebuilds",
+             zv_receipt(&other, package_root, recipe_root, "14.2.0", 0x40));
+    other.result_class = (uint8_t)VCS_PACKAGE_BUILD_RESULT_BUILD_FAIL;
+    other.test_ran = false;
+    other.test_exit_code = 0;
+    vcs_package_reproduce_compare(&other, &ref, &v);
+    ZV_CHECK("reproduce: failing reference named, never vacuous",
+             !v.reproduced &&
+             v.rule == VCS_REPRODUCE_REFERENCE_NOT_INSTALLABLE);
+    vcs_package_reproduce_compare(&ref, &other, &v);
+    ZV_CHECK("reproduce: failing rebuild named",
+             !v.reproduced &&
+             v.rule == VCS_REPRODUCE_REBUILD_NOT_INSTALLABLE);
+    struct vcs_package_build_receipt zeroed;
+    memset(&zeroed, 0, sizeof(zeroed));
+    vcs_package_reproduce_compare(&zeroed, &ref, &v);
+    ZV_CHECK("reproduce: invalid reference named",
+             !v.reproduced && v.rule == VCS_REPRODUCE_REFERENCE_INVALID);
+    ZV_CHECK("reproduce: rule strings stable",
+             strcmp(vcs_reproduce_rule_string(VCS_REPRODUCE_MATCH),
+                    "match") == 0 &&
+             strcmp(vcs_reproduce_rule_string(
+                        VCS_REPRODUCE_OUTPUT_HASH_MISMATCH),
+                    "output-hash-mismatch") == 0);
+
+    /* ── the receipts-directory scan ── */
+    char base[4400];
+    snprintf(base, sizeof(base), "test-tmp/zv_repro_%ld", (long)getpid());
+    zv_rm_rf(base);
+    char missing[4400];
+    snprintf(missing, sizeof(missing), "%s/no-such-dir", base);
+    struct vcs_reproduce_report rep;
+    ZV_CHECK("reproduce: a missing receipts dir is an empty report",
+             vcs_package_reproduce_scan(missing, package_root, recipe_root,
+                                        &rep) &&
+             !rep.reproduced && rep.matching == 0 && rep.row_count == 0);
+
+    char receipts_dir[4400];
+    snprintf(receipts_dir, sizeof(receipts_dir), "%s/receipts", base);
+    ZV_CHECK("reproduce: one build recorded, none reproduced",
+             zv_store_receipt(receipts_dir, &ref) &&
+             vcs_package_reproduce_scan(receipts_dir, package_root,
+                                        recipe_root, &rep) &&
+             !rep.reproduced && rep.matching == 1 && rep.row_count == 1 &&
+             rep.rows[0].reference);
+    ZV_CHECK("reproduce: two distinct builds agreeing reproduce",
+             zv_store_receipt(receipts_dir, &third) &&
+             vcs_package_reproduce_scan(receipts_dir, package_root,
+                                        recipe_root, &rep) &&
+             rep.reproduced && rep.matching == 2 && rep.row_count == 2 &&
+             rep.rows[0].reference && !rep.rows[1].reference &&
+             rep.rows[1].rule == VCS_REPRODUCE_MATCH);
+    /* A foreign package's receipt in the same dir is not counted. */
+    uint8_t foreign_root[32];
+    zv_pattern_root(0x5f, foreign_root);
+    struct vcs_package_build_receipt foreign;
+    ZV_CHECK("reproduce: foreign receipt files but never matches",
+             zv_receipt(&foreign, foreign_root, recipe_root, "14.2.0",
+                        0x40) &&
+             zv_store_receipt(receipts_dir, &foreign) &&
+             vcs_package_reproduce_scan(receipts_dir, package_root,
+                                        recipe_root, &rep) &&
+             rep.reproduced && rep.matching == 2);
+    /* A diverging third build kills the verdict and is named by rule. */
+    ZV_CHECK("reproduce: diverging third build files",
+             zv_store_receipt(receipts_dir, &bad));
+    bool scan_ok = vcs_package_reproduce_scan(receipts_dir, package_root,
+                                              recipe_root, &rep);
+    bool named = false;
+    for (size_t i = 0; i < rep.row_count; i++)
+        if (rep.rows[i].rule == VCS_REPRODUCE_OUTPUT_HASH_MISMATCH)
+            named = true;
+    ZV_CHECK("reproduce: a diverging build is rejected loudly",
+             scan_ok && !rep.reproduced && rep.matching == 3 && named);
+    zv_rm_rf(base);
+
+    /* ── the eligibility gates: reproduction outranks the quorum ── */
+    {
+        struct vcs_reward_eligibility_input in;
+        memset(&in, 0, sizeof(in));
+        in.manifest_parsed = true;
+        in.root_matches = true;
+        in.chunks_checked = true;
+        in.chunks_verified = 1;
+        in.chunks_total = 1;
+        in.release_verifies = true;
+        in.license_accepted = true;
+        in.lineage_valid = true;
+        in.lineage_detail = "root release (no parent)";
+        /* NO quorum facts at all — reproduction alone carries gates 5-8. */
+        in.reproduction_verified = true;
+        struct vcs_reward_eligibility e;
+        vcs_reward_eligibility_evaluate(&in, &e);
+        ZV_CHECK("reproduce: eligible on reproduction without a quorum",
+                 e.eligible && e.failed_count == 0 &&
+                 e.reproduction_verified &&
+                 e.gates[VCS_REWARD_GATE_GCC_BUILD].passed &&
+                 e.gates[VCS_REWARD_GATE_CLANG_BUILD].passed &&
+                 e.gates[VCS_REWARD_GATE_TESTS_PASS].passed &&
+                 e.gates[VCS_REWARD_GATE_VERIFIER_QUORUM].passed &&
+                 strstr(e.gates[VCS_REWARD_GATE_VERIFIER_QUORUM].detail,
+                        "reproduction") != NULL);
+        in.reproduction_verified = false;
+        vcs_reward_eligibility_evaluate(&in, &e);
+        ZV_CHECK("reproduce: without it, gates 5-8 fail as before",
+                 !e.eligible && e.failed_count == 4 &&
+                 !e.reproduction_verified &&
+                 strstr(e.gates[VCS_REWARD_GATE_VERIFIER_QUORUM].detail,
+                        "no recorded reproduction") != NULL);
+    }
+    return failures;
+}
+
 static int t_command(void)
 {
     int failures = 0;
@@ -1156,6 +1433,60 @@ static int t_command(void)
                  strcmp(c.reply.error.code, "UNKNOWN_PACKAGE") == 0);
         zv_cmd_free(&c);
     }
+
+    /* The reproduction object: two distinct build receipts committing
+     * byte-identical output sets reproduce; a diverging third receipt
+     * kills the verdict and is named by rule. */
+    {
+        char receipts_dir[4400];
+        snprintf(receipts_dir, sizeof(receipts_dir), "%s/receipts", store);
+        struct vcs_package_build_receipt r1, r2;
+        ZV_CHECK("command: reproduction receipts build",
+                 zv_receipt(&r1, package_root, recipe_root, "14.2.0",
+                            0x40) &&
+                 zv_receipt(&r2, package_root, recipe_root,
+                            "15.0.1-third-party", 0x40));
+        ZV_CHECK("command: reproduction receipts persist",
+                 zv_store_receipt(receipts_dir, &r1) &&
+                 zv_store_receipt(receipts_dir, &r2));
+        struct zv_cmd c;
+        zv_cmd_init(&c, datadir, root_hex);
+        zcl_native_handle_zcode_package_verify(&c.request, &c.reply);
+        const struct json_value *repro =
+            json_get(&c.reply.data, "reproduction");
+        ZV_CHECK("command: distinct matching receipts reproduce",
+                 repro &&
+                 json_get_bool(json_get(repro, "scanned_ok")) &&
+                 json_get_bool(json_get(repro, "reproduced")) &&
+                 json_get_int(json_get(repro, "matching_receipts")) == 2);
+        zv_cmd_free(&c);
+
+        struct vcs_package_build_receipt r3;
+        ZV_CHECK("command: diverging receipt persists",
+                 zv_receipt(&r3, package_root, recipe_root,
+                            "14.2.0-tampered", 0x99) &&
+                 zv_store_receipt(receipts_dir, &r3));
+        struct zv_cmd c2;
+        zv_cmd_init(&c2, datadir, root_hex);
+        zcl_native_handle_zcode_package_verify(&c2.request, &c2.reply);
+        const struct json_value *repro2 =
+            json_get(&c2.reply.data, "reproduction");
+        const struct json_value *rrows =
+            repro2 ? json_get(repro2, "rows") : NULL;
+        bool mismatch_named = false;
+        for (size_t i = 0; rrows && json_at(rrows, i); i++) {
+            const char *rule =
+                json_get_str(json_get(json_at(rrows, i), "rule"));
+            if (rule && strcmp(rule, "output-hash-mismatch") == 0)
+                mismatch_named = true;
+        }
+        ZV_CHECK("command: diverging receipt rejected loudly",
+                 repro2 &&
+                 !json_get_bool(json_get(repro2, "reproduced")) &&
+                 json_get_int(json_get(repro2, "matching_receipts")) == 3 &&
+                 mismatch_named);
+        zv_cmd_free(&c2);
+    }
     zv_rm_rf(datadir);
     return failures;
 }
@@ -1193,6 +1524,41 @@ static int zv_run_verifier(const char *root_hex, const char *store,
     snprintf(work_arg, sizeof(work_arg), "--work=%s", work);
     const char *argv[] = { ZV_VERIFIER_BIN, root_hex, store_arg, key_arg,
                            work_arg, NULL };
+    return zcl_spawn_capture(argv, buf, cap, 300000);
+}
+
+/* Run the verifier binary in EMIT (install-build) mode against a fixture
+ * store; reproduce_against (nullable) arms the third-party byte-identity
+ * check against a reference build-report. Returns the spawn exit code and
+ * fills the captured stdout (stderr is not captured). */
+static int zv_run_emit(const char *root_hex, const char *store,
+                       const char *emit_dir, const char *lock_root_hex,
+                       const char *reproduce_against, const char *work,
+                       char *buf, size_t cap)
+{
+    char store_arg[4400];
+    char emit_arg[4400];
+    char lock_arg[4400];
+    char repro_arg[4400];
+    char work_arg[4400];
+    snprintf(store_arg, sizeof(store_arg), "--store=%s", store);
+    snprintf(emit_arg, sizeof(emit_arg), "--emit=%s", emit_dir);
+    snprintf(lock_arg, sizeof(lock_arg), "--lock-root=%s", lock_root_hex);
+    snprintf(work_arg, sizeof(work_arg), "--work=%s", work);
+    const char *argv[9];
+    size_t n = 0;
+    argv[n++] = ZV_VERIFIER_BIN;
+    argv[n++] = root_hex;
+    argv[n++] = store_arg;
+    argv[n++] = emit_arg;
+    argv[n++] = lock_arg;
+    if (reproduce_against) {
+        snprintf(repro_arg, sizeof(repro_arg), "--reproduce-against=%s",
+                 reproduce_against);
+        argv[n++] = repro_arg;
+    }
+    argv[n++] = work_arg;
+    argv[n] = NULL;
     return zcl_spawn_capture(argv, buf, cap, 300000);
 }
 
@@ -1409,6 +1775,69 @@ static int t_verifier_e2e(void)
                    satt.detail, out);
     }
 
+    /* ── reproduction: --reproduce-against proves byte-identity ────── */
+    {
+        uint8_t lock_root[32];
+        zv_pattern_root(0x66, lock_root);
+        char lock_hex[65];
+        zv_hex_enc(lock_root, 32, lock_hex);
+        char emit1[4400], emit2[4400], emit3[4400];
+        snprintf(emit1, sizeof(emit1), "%s/emit1", base);
+        snprintf(emit2, sizeof(emit2), "%s/emit2", base);
+        snprintf(emit3, sizeof(emit3), "%s/emit3", base);
+
+        int e1 = zv_run_emit(root_hex, store, emit1, lock_hex, NULL, work,
+                             out, sizeof(out));
+        char report1[4400];
+        snprintf(report1, sizeof(report1), "%s/build-report", emit1);
+        struct stat rst;
+        ZV_CHECK("e2e: emit build exits 0 and writes a build-report",
+                 e1 == 0 && stat(report1, &rst) == 0);
+        if (e1 != 0)
+            printf("  zcode_verify: e2e emit rc=%d out=%s\n", e1, out);
+
+        /* The third-party acceptance check: a second, independent build
+         * of the same package reproduces the first byte-for-byte. */
+        int e2 = zv_run_emit(root_hex, store, emit2, lock_hex, report1,
+                             work, out, sizeof(out));
+        ZV_CHECK("e2e: second build reproduces the first (MATCH)",
+                 e2 == 0 && strstr(out, "reproduction=MATCH") != NULL);
+        if (e2 != 0)
+            printf("  zcode_verify: e2e reproduce rc=%d out=%s\n", e2, out);
+
+        /* A tampered reference is rejected loudly: exit 6, and no MATCH
+         * line is printed (the MISMATCH rule + detail go to stderr). */
+        uint8_t rwire[VCS_PACKAGE_BUILD_MAX_WIRE_BYTES];
+        size_t rwire_len = 0;
+        struct vcs_package_build_receipt trec;
+        bool tread = zv_read_file(report1, rwire, sizeof(rwire),
+                                  &rwire_len) &&
+                     vcs_package_build_parse(rwire, rwire_len, &trec) ==
+                         VCS_PACKAGE_BUILD_OK &&
+                     trec.output_count > 0;
+        uint8_t *twire = NULL;
+        size_t twire_len = 0;
+        bool tser = false;
+        if (tread) {
+            trec.outputs[0].sha3[0] ^= 0xff;
+            tser = vcs_package_build_serialize(&trec, &twire, &twire_len) ==
+                   VCS_PACKAGE_BUILD_OK;
+        }
+        char tampered[4400];
+        snprintf(tampered, sizeof(tampered), "%s/tampered-report", base);
+        bool twrote = tser &&
+                      zv_write_file(tampered, twire, twire_len, 0600);
+        free(twire);
+        ZV_CHECK("e2e: tampered reference builds", twrote);
+        int e3 = zv_run_emit(root_hex, store, emit3, lock_hex, tampered,
+                             work, out, sizeof(out));
+        ZV_CHECK("e2e: tampered reference rejected loudly (exit 6)",
+                 e3 == 6 && strstr(out, "reproduction=MATCH") == NULL);
+        if (e3 != 6)
+            printf("  zcode_verify: e2e reproduce-mismatch rc=%d out=%s\n",
+                   e3, out);
+    }
+
     zv_rm_rf(base);
     return failures;
 }
@@ -1421,6 +1850,7 @@ int test_zcode_verify(void)
     failures += t_signature();
     failures += t_policy();
     failures += t_quorum();
+    failures += t_reproduce();
     failures += t_command();
     failures += t_verifier_e2e();
     printf("=== zcode_verify complete: %d failure(s) ===\n", failures);

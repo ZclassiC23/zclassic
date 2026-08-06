@@ -34,7 +34,7 @@ not a gate, so this table is authoritative, not decorative:
 
 | # | Category | Vector | Acceptance bar |
 |---|----------|--------|-----------------|
-| 1 | Self-test end-to-end | prove(reference oracle) for a freshly-built note/Merkle-witness/nullifier/signature bundle | `sapling_check_spend` MUST **accept** |
+| 1 | Self-test end-to-end | prove(native C23) for a freshly-built note/Merkle-witness/nullifier/signature bundle | `sapling_check_spend` MUST **accept** |
 | 2 | Differential | native `sapling_compute_rk(ak,ar)` vs the `rk` the reference-oracle prover returned for the identical `(ak,ar)` | MUST be **byte-identical** (no FFI export for `rk` exists, see H2's doc comment, so this is the closest available cross-check of a public-input wire against ground truth) |
 | 3 | Corrupted proof bytes | single-bit flip at 3 offsets across the 192-byte proof (A's flag byte, C's tail byte, inside B) | MUST be **rejected** |
 | 4 | Corrupted witness | a valid proof from a *different* witness, replayed against the original statement's public inputs | MUST be **rejected** — this is exactly the attack the Groth16 pairing check exists to stop |
@@ -192,35 +192,23 @@ Why 21006 is the right target: bellman's own `test_blake2s_constraints` asserts
 `AllocatedBit::alloc` booleanity constraints — leaving **21006** for the hash,
 exactly the reference spend trace's §10 delta. §27 reuses the gadget unchanged.
 
-### Adjacent, tracked, not fixed here
+### Output circuit and native prover close-out
 
-The **output** circuit is also not at parity: it synthesizes 7571 constraints /
-7567 aux / 5 inputs against a proving key whose `l_len` is 7821 — roughly 254
-aux and 256 constraints short, and one input slot off. It has no section-level
-differential oracle. This matters for the spend port because the shared gadgets
-(`gadget_pedersen_hash`, bit decomposition, `gadget_variable_base_mul`) that
-spend sections 13/15/16/17/19/21 will reuse are therefore **not** known to be
-reference-exact. Confirm with the H1 baseline line
-`OUTPUT match: num_aux==pk.l_len? NO`.
+The **output** circuit now matches the production key: 5 public inputs, 7821
+auxiliary variables, and 7827 constraints. Its gate derives cv/epk/cm from the
+witness, checks every constraint, and pins deterministic synthesis. The
+Groth16 FFT uses the canonical encoding of the published 2^32 root of unity;
+using the upstream Montgomery limb literal as canonical had selected a
+different QAP domain while still passing ordinary FFT round-trip tests.
 
 ## Honest self-test surface — the native prover names its own blocker
 
 `sapling_spend_prover_native_status()` (lib/sapling/src/sapling_circuit.c) is the
 production, params-free coverage probe: it runs a canonical (non-secret)
 synthesis, reports `sections_ported / sections_total`,
-`constraints_ported / constraints_total`, and `next_blocker` (the NAME of the
-first unported section), with `roundtrip_ready = false` while the port is a
-partial prefix. The production prover self-test (`self_test_bundle` in
-`sapling_prover_c23.c`) reads it and emits a **non-gating** honest line:
-
-> native C23 spend prover NOT yet sovereign: 10/28 sections, 24590/98777
-> constraints ported; next blocker: 11:witness g_d; this self-test's
-> spend proof uses the reference oracle (librustzcash), the verifier is native C23
-
-This makes the sovereignty gap first-class and typed at the self-test surface —
-never a stubbed pass. The operational gate that controls `msg_send_onchain`
-(Sapling params loaded + a passing self-test) is **unchanged**: today it still
-produces the spend proof via the reference oracle and checks it with the
-unmodified native C23 consensus verifier. `roundtrip_ready` flips to `true` only
-once every section is ported AND a native-generated proof is accepted by that
-verifier — the honest acceptance bar, not section coverage alone.
+`constraints_ported / constraints_total`, and `next_blocker`. It reports
+`roundtrip_ready = true` only after the production native C23 self-test creates
+a Spend proof, an Output proof, and a binding signature and the independent
+consensus verifier accepts the complete bundle. Counts alone cannot promote
+readiness. The operational send gate uses that same result and requires no Rust
+backend.

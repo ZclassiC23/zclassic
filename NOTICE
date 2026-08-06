@@ -83,6 +83,51 @@ Vendored:   vendor/ (amalgamation)
 
 --------------------------------------------------------------------------------
 
+RGFW 1.8.1 — zlib License
+Copyright (c) 2022-2025 Riley Mabb (@ColleagueRiley)
+
+  Cross-platform software-window backend for libzclpresentation. The project
+  public API does not expose RGFW types.
+
+Upstream:   https://github.com/ColleagueRiley/RGFW
+Revision:   d96684e6877d3ef11c731b122b8949942ed071c9
+Vendored:   vendor/rgfw/
+
+--------------------------------------------------------------------------------
+
+QR Code generator 1.8.0 — MIT License
+Copyright (c) Project Nayuki
+
+  Dependency-free QR Model 2 encoder behind lib/encoding/qr.
+
+Upstream:   https://github.com/nayuki/QR-Code-generator
+Revision:   720f62bddb7226106071d4728c292cb1df519ceb
+Vendored:   vendor/qrcodegen/
+
+--------------------------------------------------------------------------------
+
+stb_truetype — MIT License or Public Domain
+Copyright (c) 2017 Sean Barrett
+
+  Private antialiased font rasterizer behind libzclpresentation.
+
+Upstream:   https://github.com/nothings/stb
+Revision:   2c980bb59875b0d32144a71867fbdebb2f77cd20
+Vendored:   vendor/typography/
+
+--------------------------------------------------------------------------------
+
+Noto Sans Basic Latin subset — SIL Open Font License 1.1
+Copyright 2018 The Noto Project Authors
+
+  Embedded font bytes for libzclpresentation's software canvas.
+
+Upstream:   https://github.com/notofonts/noto-fonts
+Revision:   ffebf8c1ee449e544955a7e813c54f9b73848eac
+Vendored:   vendor/typography/
+
+--------------------------------------------------------------------------------
+
 secp256k1 — MIT License
 Copyright (c) Pieter Wuille and contributors
 

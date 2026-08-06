@@ -334,6 +334,14 @@ int test_wallet_funds_safety(void)
             &ndb, ivk_b, after_success, 4);
         WFS_CHECK("successful reservation hides both notes from reselection",
                   n_after_success == 0);
+
+        /* Restart retry is idempotent, but a different transaction must not
+         * steal the first transaction's durable note reservation. */
+        WFS_CHECK("same transaction can replay its note reservation",
+                  node_db_sync_wallet_sapling_spends(&ndb, &tx));
+        memset(tx.hash.data, 0x87, sizeof(tx.hash.data));
+        WFS_CHECK("conflicting transaction cannot replace note reservation",
+                  !node_db_sync_wallet_sapling_spends(&ndb, &tx));
         transaction_free(&tx);
     }
 
@@ -452,7 +460,7 @@ int test_wallet_funds_safety(void)
             sent = z_sendmany_shielded(&ctx, cp, key1, 1,
                                        NULL, NULL, 0,
                                        NULL, NULL, NULL, NULL, NULL, 0,
-                                       &result);
+                                       NULL, &result);
         } else {
             json_set_str(&result, "setup failed");
         }

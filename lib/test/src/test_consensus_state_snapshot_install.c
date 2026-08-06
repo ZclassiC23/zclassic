@@ -3103,6 +3103,10 @@ int test_consensus_state_snapshot_install(void)
                   sqlite3_open_v2(ares.prior_generation_path, &prior,
                                   SQLITE_OPEN_READONLY, NULL) == SQLITE_OK &&
                   prior);
+        CSI_CHECK("activate: success reason retains the exact prior-generation "
+                  "path",
+                  ares.prior_generation_path[0] != '\0' &&
+                  strstr(ares.reason, ares.prior_generation_path) != NULL);
         CSI_CHECK("activate: prior generation is the protected pre-install "
                   "wedge, not post-cutover state",
                   prior && coins_kv_count(prior) == 1 &&

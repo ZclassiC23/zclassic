@@ -16,7 +16,7 @@ ZCL_COMMAND_READY_READ(
     "zcl.code_group.v1", "group", "group",
     "zclassic23 code group app/services",
     ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
-    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_FOREGROUND,
     ZCL_COMMAND_COST_TINY,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE,
@@ -33,7 +33,7 @@ ZCL_COMMAND_READY_READ(
     "zcl.code_map.v1", "", "",
     "zclassic23 code map",
     ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
-    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_FOREGROUND,
     ZCL_COMMAND_COST_TINY,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE,
@@ -246,10 +246,12 @@ ZCL_COMMAND_READY_READ(
     "Every durable named slot (a key in progress_meta / stage_cursor / "
     "node_state) with the count of distinct FILES that write it, ranked so the "
     "multi-writer slots come first; with a `key`, every writer of that slot as "
-    "file:line via the write function or SQL verb. Re-derived from the tree on "
-    "every call — there is no recorded finding set. `sites_unresolved` is the "
+    "file:line via the write function or SQL verb. Derived from the tree — "
+    "there is no recorded finding set. `sites_unresolved` is the "
     "census's own blind spot: writes whose key argument is not a literal, "
-    "counted rather than dropped.", ZCL_COMMAND_LIST_BUDGET,
+    "counted rather than dropped. Re-derived when the code index's exact "
+    "source root changes; repeated reads memoize that immutable generation.",
+    ZCL_COMMAND_LIST_BUDGET,
     "code,facts,writers,duplication,drift,ledger,slots",
     "zcl.code_facts_input.v1",
     "zcl.code_facts.v1", "key,store", "key",

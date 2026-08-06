@@ -28,7 +28,7 @@ depending on the operator's git install:
    needs a durable record of "what source tree produced this passing
    verdict" that does not depend on an external toolchain. ZVCS supplies
    that record using only stock libc and the in-tree SHA3-256
-   (`lib/crypto/src/sha3.c`).
+   (`lib/sha3/src/sha3.c`).
 2. **"Code fearlessly, not recklessly."** A sealed-path change (see
    ADR-0002) must be structurally impossible to auto-commit. Git has no
    concept of a sealed path; ZVCS's seal guard (`lib/vcs/src/vcs_seal.c`) is
@@ -86,7 +86,7 @@ tree_hash = SHA3(0x22 || concat over sorted entries of
 
 Every hash ZVCS computes is SHA3-256 (the same in-tree FIPS-202
 implementation the sealed `core/` manifest and the node's other integrity
-checks use — `lib/crypto/src/sha3.c`), and every hashed preimage starts with
+checks use — `lib/sha3/src/sha3.c`), and every hashed preimage starts with
 a one-byte **domain tag** so that a blob, a manifest entry, a manifest, and a
 commit can never collide even if their raw bytes happen to match
 (`lib/vcs/include/vcs/vcs_object.h`):

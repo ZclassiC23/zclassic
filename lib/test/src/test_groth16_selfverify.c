@@ -46,25 +46,20 @@ static bool find_diversifier(uint8_t d[11])
     return false;
 }
 
-/* The static below is used only by the prover-backed section at the bottom of
- * this file, which the default Rust-free build skips; guarding it keeps
- * -Werror=unused-function honest instead of suppressed. */
-#ifdef ZCL_WITH_RUST
 /* ── Native C23 Groth16 prover baseline (H1 harness) ──────────────────
  *
- * NON-GATING diagnostic. The production/gated prover is librustzcash (the
- * assertions above pin the Rust->C23-verifier round-trip). This section
- * measures the SEPARATE pure-C23 native circuits (sapling_output_synthesize /
- * sapling_spend_synthesize in lib/sapling/src/sapling_circuit.c) against the
+ * NON-GATING diagnostic. The production/gated prover is native C23. This
+ * section measures its circuits (sapling_output_synthesize /
+ * sapling_spend_synthesize) against the
  * trusted-setup proving keys, so the spend-prover campaign can track exact
  * var/constraint counts vs target without re-deriving them each lane.
  *
- * A native circuit only round-trips when its counts EXACTLY match the pk from
- * the trusted setup:  num_aux == pk.l_len  AND  num_vars == pk.a_len. The
- * printed table is the baseline; it asserts NOTHING (the native prover is a
- * known-incomplete work item — the OUTPUT native round-trip is documented as
- * rejecting in test_simnet_sapling_shielded_send.c, and the SPEND circuit is a
- * stub). Emitting the numbers here is the foundation, not a pass/fail gate. */
+ * A native circuit only round-trips when its auxiliary assignment matches the
+ * pk L query and its query densities match the key. `a_len` is a compact query
+ * density, not the total variable count, so comparing it to num_vars is
+ * meaningless; groth16_prove() validates those densities while proving. This
+ * table remains informational because the exact circuit gates below carry the
+ * assertions. */
 static void native_circuit_baseline(void)
 {
     printf("\n--- H1 baseline: native C23 circuit counts (NON-GATING) ---\n");
@@ -99,7 +94,10 @@ static void native_circuit_baseline(void)
                 sapling_generate_r(wit.esk);
                 sapling_generate_r(wit.rcv);
                 struct sapling_output_inputs pub;
-                memset(&pub, 0, sizeof pub);
+                sapling_value_commit(wit.value, wit.rcv, pub.cv);
+                sapling_ka_derivepublic(wit.diversifier, wit.esk, pub.epk);
+                sapling_compute_cm(wit.diversifier, wit.pk_d, wit.value,
+                                   wit.rcm, pub.cm);
 
                 struct constraint_system cs;
                 cs_init(&cs);
@@ -111,9 +109,8 @@ static void native_circuit_baseline(void)
                            cs.num_inputs, cs.num_vars, num_aux,
                            cs.num_constraints);
                     printf("  OUTPUT match: num_aux==pk.l_len? %s  "
-                           "num_vars==pk.a_len? %s\n",
-                           (num_aux == opk.l_len) ? "YES" : "NO",
-                           (cs.num_vars == opk.a_len) ? "YES" : "NO");
+                           "query densities checked while proving\n",
+                           (num_aux == opk.l_len) ? "YES" : "NO");
                 }
                 cs_free(&cs);
             }
@@ -164,9 +161,8 @@ static void native_circuit_baseline(void)
                        "num_aux=%zu num_constraints=%zu (target ~98777)\n",
                        cs.num_inputs, cs.num_vars, num_aux, cs.num_constraints);
                 printf("  SPEND  match: num_aux==pk.l_len? %s  "
-                       "num_vars==pk.a_len? %s\n",
-                       (num_aux == spk.l_len) ? "YES" : "NO",
-                       (cs.num_vars == spk.a_len) ? "YES" : "NO");
+                       "query densities checked while proving\n",
+                       (num_aux == spk.l_len) ? "YES" : "NO");
             }
             cs_free(&cs);
             groth16_pk_free(&spk);
@@ -178,7 +174,63 @@ static void native_circuit_baseline(void)
     }
     printf("--- end H1 baseline (informational) ---\n");
 }
-#endif /* ZCL_WITH_RUST */
+
+/* Output is small enough to gate as one exact production circuit. This is
+ * params-free: it proves the C23 synthesis has the trusted-setup shape and an
+ * honest, fully-derived public witness before any multi-minute proof runs. */
+static int output_circuit_shape_gate(void)
+{
+    printf("\n--- H1: Sapling OUTPUT native C23 circuit gate ---\n");
+    int failures = 0;
+    struct sapling_output_witness wit;
+    memset(&wit, 0, sizeof(wit));
+    wit.value = UINT64_C(54321);
+    wit.rcv[0] = 0x31;
+    wit.esk[0] = 0x29;
+    wit.rcm[0] = 0x47;
+
+    uint8_t ivk[32] = {0};
+    ivk[0] = 0x19;
+    bool recipient_ok = find_diversifier(wit.diversifier) &&
+        sapling_ivk_to_pkd(ivk, wit.diversifier, wit.pk_d);
+    PROVER_CHECK("constructed deterministic output recipient", recipient_ok);
+
+    struct sapling_output_inputs pub;
+    memset(&pub, 0, sizeof(pub));
+    bool public_ok = recipient_ok &&
+        sapling_value_commit(wit.value, wit.rcv, pub.cv) &&
+        sapling_ka_derivepublic(wit.diversifier, wit.esk, pub.epk) &&
+        sapling_compute_cm(wit.diversifier, wit.pk_d, wit.value, wit.rcm,
+                           pub.cm);
+    PROVER_CHECK("derived cv, epk, and cm from the output witness", public_ok);
+
+    struct constraint_system cs;
+    cs_init(&cs);
+    bool synth_ok = public_ok && sapling_output_synthesize(&cs, &wit, &pub);
+    PROVER_CHECK("native output synthesis succeeded", synth_ok);
+    PROVER_CHECK("output public input count == 5", cs.num_inputs == 5);
+    PROVER_CHECK("output auxiliary count == production pk l_len (7821)",
+                 cs.num_vars == cs.num_inputs + 1 + 7821);
+    PROVER_CHECK("output constraint count == reference (7827)",
+                 cs.num_constraints == 7827);
+    size_t bad = SIZE_MAX;
+    PROVER_CHECK("honest output witness satisfies every constraint",
+                 synth_ok && cs_is_satisfied(&cs, &bad));
+
+    struct constraint_system cs2;
+    cs_init(&cs2);
+    bool synth2 = public_ok && sapling_output_synthesize(&cs2, &wit, &pub);
+    PROVER_CHECK("output synthesis is deterministic",
+                 synth2 && cs.num_vars == cs2.num_vars &&
+                 cs.num_constraints == cs2.num_constraints &&
+                 memcmp(cs.witness, cs2.witness,
+                        cs.num_vars * sizeof(struct fr)) == 0);
+    cs_free(&cs2);
+    cs_free(&cs);
+    memset(&wit, 0, sizeof(wit));
+    printf("--- end H1 output gate (%d failure[s]) ---\n", failures);
+    return failures;
+}
 
 /* H3 lane: Sapling SPEND circuit port — shape + value + determinism gate.
  *
@@ -776,8 +828,8 @@ int groth16_spend_parity_oracle(void);
  * Params-free. Lives in lib/test/src/groth16_merkle_path.c. */
 int groth16_merkle_path_gate(void);
 
-/* H5 lane: adversarial + negative-control gate over the production SPEND
- * prove (reference oracle) -> verify (native C23) round-trip, plus a
+/* H5 lane: adversarial + negative-control gate over the production native C23
+ * prove -> independent native C23 verify round-trip, plus a
  * proving-key-parser fuzz spot-check and zeroization spot-checks. Requires
  * proving params (guarded below by the same is-ready check the rest of this
  * self-test block uses). Lives in lib/test/src/groth16_spend_adversarial.c. */
@@ -789,29 +841,12 @@ int test_groth16_selfverify(void)
     printf("\n=== Sapling prover -> consensus verifier capability ===\n");
     int failures = 0;
 
+    failures += output_circuit_shape_gate();
     failures += groth16_spend_reference_oracle();
     failures += spend_circuit_shape_gate();
     failures += groth16_spend_parity_oracle();
     failures += groth16_merkle_path_gate();
 
-#ifndef ZCL_WITH_RUST
-    /* The DEFAULT build links no proving backend (see ZCL_WITH_RUST at the top
-     * of the Makefile). Everything above this point is pure C23 and has
-     * already run and gated: the H2 reference differential against the baked
-     * KAT, the H3 spend-circuit shape gate, and the H4 parity oracle. What
-     * remains below needs a prover, so skip it by name — and skip BEFORE the
-     * first PROVER_CHECK, because "backend provenance is pinned librustzcash"
-     * and the self-test assertion would hard-fail on a host that merely
-     * happens to have ~/.zcash-params on disk. */
-    printf("  SKIP (prover self-test) — %s (status=%s). The H2 reference "
-           "differential, the H3 shape gate and the H4 parity oracle above are "
-           "pure C23 and already ran.\n",
-           zclassic_sapling_prover_backend(),
-           zclassic_sapling_prover_status());
-    printf("Sapling prover capability: %s (%d failures)\n",
-           failures == 0 ? "OK" : "FAIL", failures);
-    return failures;
-#else
     const char *home = getenv("HOME");
     char params_dir[512];
     char output_path[640];
@@ -830,9 +865,9 @@ int test_groth16_selfverify(void)
 
     const bool initialized = sapling_init_params(params_dir);
     PROVER_CHECK("parameter loader completed", initialized);
-    PROVER_CHECK("backend provenance is pinned librustzcash",
+    PROVER_CHECK("backend provenance is native C23",
                  strcmp(zclassic_sapling_prover_backend(),
-                        "librustzcash-06da3b9ac8f2") == 0);
+                        "native-c23-groth16") == 0);
     PROVER_CHECK("full Spend+Output+binding self-test returned true",
                  initialized && zclassic_sapling_prover_run_self_test());
     PROVER_CHECK("proving capability is READY",
@@ -895,5 +930,4 @@ int test_groth16_selfverify(void)
     printf("Sapling prover capability: %s (%d failures)\n",
            failures == 0 ? "OK" : "FAIL", failures);
     return failures;
-#endif /* ZCL_WITH_RUST */
 }

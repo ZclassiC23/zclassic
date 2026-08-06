@@ -24,8 +24,12 @@ ZCL_ZERO_SHA256 = 00000000000000000000000000000000000000000000000000000000000000
 # object depfile graphs — skipping them takes the observable loop from ~13 s
 # to ~2 s. The set is exact: any other goal (including hotswap-module-so
 # itself, which stamps artifacts with the real identity) forces the full
-# authoritative parse.
-ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply
+# authoritative parse. The standalone presentation package has the same
+# property: its explicit, tiny dependency graph neither consumes nor stamps a
+# whole-node source identity, so visual relaunches share this lean parse path.
+ZCL_HOTSWAP_LOOP_GOALS := hotswap-try hotswap-apply \
+	presentation-lib presentation-demo presentation-relaunch \
+	presentation-desktop-install presentation-portability
 ZCL_HOTSWAP_LOOP_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out $(ZCL_HOTSWAP_LOOP_GOALS),$(MAKECMDGOALS))),,1),)
 
 # hotswap-module-so compiles exactly one TU via a direct $(CC) shell command in
@@ -46,19 +50,10 @@ ZCL_HOTSWAP_DEPFILE_LEAN_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(fi
 # exemption shape as ZCL_HOTSWAP_LOOP_ONLY above.
 ZCL_WORKTREE_PRIME_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out worktree-prime,$(MAKECMDGOALS))),,1),)
 
-# ── Optional Rust proving backend ─────────────────────────────────────────
-# librustzcash.a is the ONE vendored archive that needs a Rust toolchain
-# (cargo + rustc), and it buys exactly ONE capability: creating Sapling proofs,
-# i.e. SENDING shielded value. Consensus verification, shielded receive, the
-# explorer, mining, the wallet's transparent side and every other subsystem are
-# native C23 and never call it.
-#
-# So it is OFF by default: `make` on a host with no Rust toolchain builds a
-# working full node, and shielded send returns a typed refusal naming this
-# flag (lib/sapling/src/sapling_prover_unavailable.c). Opt in with
-#     make ZCL_WITH_RUST=1
-# which adds the archive to the vendor bootstrap, links -lrustzcash, and
-# compiles lib/sapling/src/sapling_prover_librustzcash.c in its place.
+# ── Optional reference-only Rust proving backend ──────────────────────────
+# The production/default wallet prover is native C23. ZCL_WITH_RUST remains a
+# developer differential-oracle configuration for the pinned historical
+# backend; no release or shielded-send capability depends on it.
 #
 # This must be decided BEFORE VENDOR_ARCHIVES below: a Rust-free clone would
 # otherwise enter the vendor parse-restart trying to build an archive it does
@@ -239,16 +234,10 @@ $(BUILD_MUTATION_STAMP): tools/dev/source-identity.sh
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
 
-# The Sapling proving backend (ZCL_WITH_RUST, declared at the top of this file)
-# selects a different translation unit AND a different link line, but it does
-# not change one byte of source — so without it in this key, flipping the flag
-# would leave the previous configuration's binary sitting at the same path,
-# newer than every prerequisite, and `make` would report nothing to do. Keying
-# the identity stamp on it makes every link rule (node, tools, test candidates,
-# dev profiles — they all take this stamp as a prerequisite) relink on a flip.
-# Object roots are already separated by the compile epoch, which hashes $(LIBS)
-# and $(CFLAGS); this is the binary-level counterpart.
-BUILD_PROVER_BACKEND := $(if $(ZCL_WITH_RUST),librustzcash,none)
+# The wallet prover is always native C23. ZCL_WITH_RUST only links a developer
+# differential-oracle archive, so key it separately without misreporting the
+# production backend.
+BUILD_PROVER_BACKEND := native-c23$(if $(ZCL_WITH_RUST),-reference-oracle,)
 BUILD_IDENTITY_STAMP := $(BUILD_DIR)/identity/$(BUILD_SOURCE_ID).$(BUILD_CLEAN).$(BUILD_MUTATION).prover-$(BUILD_PROVER_BACKEND).stamp
 $(BUILD_IDENTITY_STAMP): $(BUILD_MUTATION_STAMP) tools/dev/source-identity.sh
 	@set -eu; \
@@ -324,14 +313,12 @@ build nothing rather than fail. Check the file exists and its LIB_MODULE rows \
 are intact)
 endif
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
-# Wallet-side Sapling proving backend: exactly ONE of these two translation
-# units is compiled, chosen by ZCL_WITH_RUST (declared at the top of this
-# file). The unselected one is filtered out of the wildcard below, the same
-# shape DEV_ONLY_SRCS uses. Consensus verification is in neither — it lives in
-# sapling.c behind sapling_prover_c23.c, which is always compiled.
-SAPLING_PROVER_BACKEND_UNUSED = $(if $(ZCL_WITH_RUST),\
-	lib/sapling/src/sapling_prover_unavailable.c,\
-	lib/sapling/src/sapling_prover_librustzcash.c)
+# Wallet-side Sapling proving backend: native C23 by default. The unavailable
+# facade is retained only as historical fail-closed documentation and is never
+# selected. Consensus verification lives independently in sapling.c.
+SAPLING_PROVER_BACKEND_UNUSED = \
+	lib/sapling/src/sapling_prover_unavailable.c \
+	lib/sapling/src/sapling_prover_librustzcash.c
 LIB_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(filter-out $(SAPLING_PROVER_BACKEND_UNUSED),\
 	$(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c))))
@@ -417,6 +404,11 @@ DEVLOOP_SRCS = $(filter-out $(DEV_ONLY_SRCS),$(DEVLOOP_ALL_SRCS))
 # rather than the dev-only lane. Header path -Itools is provided by TOOLS_INCLUDES.
 COMMAND_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tools/command/*.c))
+# Declarative command rows are C include inputs, but the whole-program release
+# rules below do not emit depfiles.  Keep them as explicit prerequisites so a
+# command-contract-only edit cannot leave build/bin/zclassic23 stale.
+COMMAND_CATALOG_DEFS = $(wildcard config/commands/*.def) \
+	$(wildcard config/commands/*/*.def)
 
 NODE_ENTRY_SRCS = src/main.c src/main_cli_modes.c
 ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(CORE_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(DEVLOOP_SRCS) $(COMMAND_SRCS)
@@ -680,9 +672,9 @@ TOR_LIBS = $(if $(TOR_FULL),$(TOR_FULL),-Lvendor/lib -ltor_stub)
 # All dependencies bundled in vendor/lib as static archives.
 # Zero system library requirements beyond libc.
 # OpenSSL 3.0 (Apache 2.0), libevent and zlib — all vendored and statically
-# linked. The Zcash Sapling prover (librustzcash, MIT/Apache 2.0) is linked
-# only under ZCL_WITH_RUST=1 and is used only for wallet-side proving;
-# consensus verification remains in C23 in every build.
+# linked. Under ZCL_WITH_RUST=1, librustzcash (MIT/Apache 2.0) is linked only
+# into developer differential-oracle builds. Wallet proving and consensus
+# verification remain C23 in every configuration.
 # LevelDB is a C++ archive behind a C API. Link with cc for release LTO
 # consistency, but add the C++ driver's stdlib search directory so hosts whose
 # cc/c++ packages are split still find libstdc++.
@@ -969,6 +961,151 @@ $(VENDOR_BOOTSTRAP_MK): vendor-ready
 	trap - EXIT HUP INT TERM
 check-vendor-provenance:
 	@tools/scripts/test_vendor_provenance.sh
+	@sha256sum --check vendor/rgfw/SHA256SUMS
+	@sha256sum --check vendor/qrcodegen/SHA256SUMS
+	@sha256sum --check vendor/typography/SHA256SUMS
+
+# Reusable native presentation package. This deliberately has a tiny source
+# closure: three project TUs plus pinned RGFW headers, with no node/app objects.
+PRESENTATION_BUILD_DIR := build/presentation
+PRESENTATION_PACKAGE_CFLAGS := -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	-Ilib/presentation/include
+PRESENTATION_PACKAGE_SRCS := \
+	lib/presentation/src/presentation.c \
+	lib/presentation/src/canvas.c \
+	lib/presentation/src/zclassic_brand.c
+PRESENTATION_PACKAGE_OBJS := \
+	$(PRESENTATION_BUILD_DIR)/presentation.o \
+	$(PRESENTATION_BUILD_DIR)/canvas.o \
+	$(PRESENTATION_BUILD_DIR)/zclassic_brand.o
+PRESENTATION_PACKAGE_ARCHIVE := build/lib/libzclpresentation.a
+PRESENTATION_DEMO_BIN := $(PRESENTATION_BUILD_DIR)/bitmap-demo
+PRESENTATION_PROVENANCE_STAMP := \
+	$(PRESENTATION_BUILD_DIR)/.vendor-provenance.ok
+PRESENTATION_VENDOR_INPUTS := \
+	vendor/rgfw/RGFW.h vendor/rgfw/XDL.h vendor/rgfw/LICENSE \
+	vendor/rgfw/SOURCE vendor/rgfw/SHA256SUMS \
+	vendor/qrcodegen/qrcodegen.c vendor/qrcodegen/qrcodegen.h \
+	vendor/qrcodegen/LICENSE vendor/qrcodegen/SOURCE \
+	vendor/qrcodegen/SHA256SUMS \
+	vendor/typography/stb_truetype.h \
+	vendor/typography/noto_sans_ascii.inc \
+	vendor/typography/LICENSE.stb vendor/typography/LICENSE.noto \
+	vendor/typography/SOURCE vendor/typography/SHA256SUMS \
+	tools/scripts/test_vendor_provenance.sh
+PRESENTATION_HOST_OS := $(shell uname -s 2>/dev/null)
+ifeq ($(PRESENTATION_HOST_OS),Darwin)
+PRESENTATION_HOST_LIBS := -framework Cocoa -framework CoreGraphics \
+	-framework QuartzCore -framework CoreVideo
+else ifneq ($(filter MINGW% MSYS% CYGWIN%,$(PRESENTATION_HOST_OS)),)
+PRESENTATION_HOST_LIBS := -luser32 -lgdi32 -lshell32 -lole32
+else
+PRESENTATION_HOST_LIBS := -ldl -lm
+endif
+
+.PHONY: presentation-lib presentation-demo presentation-relaunch \
+	presentation-desktop-install \
+	presentation-portability
+presentation-lib: $(PRESENTATION_PACKAGE_ARCHIVE)
+
+$(PRESENTATION_PROVENANCE_STAMP): $(PRESENTATION_VENDOR_INPUTS)
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	@tools/scripts/test_vendor_provenance.sh
+	@sha256sum --check vendor/rgfw/SHA256SUMS
+	@sha256sum --check vendor/qrcodegen/SHA256SUMS
+	@sha256sum --check vendor/typography/SHA256SUMS
+	@touch $@
+
+$(PRESENTATION_BUILD_DIR)/presentation.o: \
+	lib/presentation/src/presentation.c \
+	lib/presentation/include/presentation/presentation.h \
+	vendor/rgfw/RGFW.h vendor/rgfw/XDL.h \
+	$(PRESENTATION_PROVENANCE_STAMP)
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
+		lib/presentation/src/presentation.c \
+		-o $(PRESENTATION_BUILD_DIR)/presentation.o
+
+$(PRESENTATION_BUILD_DIR)/zclassic_brand.o: \
+	lib/presentation/src/zclassic_brand.c \
+	lib/presentation/src/zclassic_icon_mask.inc \
+	lib/presentation/include/presentation/zclassic_brand.h
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
+		lib/presentation/src/zclassic_brand.c \
+		-o $(PRESENTATION_BUILD_DIR)/zclassic_brand.o
+
+$(PRESENTATION_BUILD_DIR)/canvas.o: \
+	lib/presentation/src/canvas.c \
+	lib/presentation/include/presentation/canvas.h \
+	vendor/typography/stb_truetype.h \
+	vendor/typography/noto_sans_ascii.inc \
+	$(PRESENTATION_PROVENANCE_STAMP)
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
+		lib/presentation/src/canvas.c \
+		-o $(PRESENTATION_BUILD_DIR)/canvas.o
+
+$(PRESENTATION_PACKAGE_ARCHIVE): $(PRESENTATION_PACKAGE_OBJS) \
+	$(PRESENTATION_PROVENANCE_STAMP)
+	@mkdir -p build/lib
+	$(AR) rcs $@ $(PRESENTATION_PACKAGE_OBJS)
+
+presentation-demo: $(PRESENTATION_DEMO_BIN)
+
+$(PRESENTATION_DEMO_BIN): lib/presentation/examples/bitmap_demo.c \
+	$(PRESENTATION_PACKAGE_ARCHIVE)
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) \
+		lib/presentation/examples/bitmap_demo.c \
+		$(PRESENTATION_PACKAGE_ARCHIVE) $(PRESENTATION_HOST_LIBS) \
+		-o $@
+
+# Host-side visual iteration: rebuild only stale package objects, replace the
+# previous demo process, and return immediately. Release LTO is not in this
+# path; strict release/full-suite proof remains an end-of-cycle gate.
+presentation-relaunch: presentation-demo
+	@pkill -x bitmap-demo 2>/dev/null || true
+	@nohup $(PRESENTATION_DEMO_BIN) \
+		>$(PRESENTATION_BUILD_DIR)/bitmap-demo.log 2>&1 </dev/null &
+	@printf '%s\n' 'presentation-relaunch: window launched'
+
+# Explicit per-user Linux packaging. The presentation library itself retains
+# no filesystem authority; installation is a developer/operator action.
+presentation-desktop-install:
+	@install -d "$(HOME)/.local/share/applications" \
+		"$(HOME)/.local/share/icons/hicolor/scalable/apps"
+	@install -m 0644 packaging/linux/org.zclassic.ZClassic23.desktop \
+		"$(HOME)/.local/share/applications/org.zclassic.ZClassic23.desktop"
+	@install -m 0644 packaging/linux/org.zclassic.ZClassic23.svg \
+		"$(HOME)/.local/share/icons/hicolor/scalable/apps/org.zclassic.ZClassic23.svg"
+	@if command -v update-desktop-database >/dev/null 2>&1; then \
+		update-desktop-database "$(HOME)/.local/share/applications"; \
+	fi
+	@if command -v kbuildsycoca6 >/dev/null 2>&1; then \
+		kbuildsycoca6 >/dev/null; \
+	elif command -v kbuildsycoca5 >/dev/null 2>&1; then \
+		kbuildsycoca5 >/dev/null; \
+	fi
+	@printf '%s\n' 'presentation-desktop-install: ZClassic23 identity installed'
+
+# Current maintainer host carries MinGW, so this is a real Windows compile+link
+# proof, not a preprocessor simulation. macOS is linked by the hosted matrix.
+presentation-portability: presentation-demo
+	@if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then \
+		mkdir -p $(PRESENTATION_BUILD_DIR)/windows; \
+		x86_64-w64-mingw32-gcc -std=c2x -O2 -Wall -Wextra -Werror \
+			-pedantic -Ilib/presentation/include \
+			lib/presentation/src/presentation.c \
+			lib/presentation/src/canvas.c \
+			lib/presentation/src/zclassic_brand.c \
+			lib/presentation/examples/bitmap_demo.c \
+			-luser32 -lgdi32 -lshell32 -lole32 \
+			-o $(PRESENTATION_BUILD_DIR)/windows/bitmap-demo.exe; \
+		printf '%s\n' 'presentation-portability: Windows cross-link OK'; \
+	else \
+		printf '%s\n' 'presentation-portability: MinGW unavailable (Windows cross-link skipped)'; \
+	fi
 
 .PHONY: worktree-prime
 # Formalizes the "cp -a vendor/lib before a fresh worktree can link" tribal
@@ -1039,7 +1176,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         fuzz-ci-leaks \
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
         test-reindex-smoke test-reindex-killmid \
-        test-two-node-peer-tip chaos chaos-clean \
+        test-two-node-peer-tip test-science-acceptance chaos chaos-clean \
         replay-canary-anchor replay-canary-genesis \
         soak-evidence-report soak-evidence-selftest \
         install-slo-probe slo-probe-status slo-probe-selftest \
@@ -1298,10 +1435,10 @@ $(BIN_DIR)/inspect_html: tools/inspect_html.c lib/base/src/safe_alloc.c
 # target whose stdout is meant to be a machine-readable list. The echo is
 # suppressed; nothing is lost, because gen_templates itself reports what it
 # did (file counts, byte counts, "unchanged") on stderr either way.
-$(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
+$(TMPL_GEN): $(TMPL_SRC) tools/gen_templates.c | $(TMPL_TOOL)
 	@$(TMPL_TOOL) app/views/templates $@ app/views/css
 
-$(SITE_CSS_GEN): $(SITE_CSS_SRC) $(TMPL_TOOL)
+$(SITE_CSS_GEN): $(SITE_CSS_SRC) tools/gen_templates.c | $(TMPL_TOOL)
 	@$(TMPL_TOOL) --single-css $< $@ site_css SITE_CSS_H
 
 # Included near the top of this file. Updating it after its generated-header
@@ -1317,6 +1454,23 @@ $(VIEW_BOOTSTRAP_MK): $(VIEW_GEN_HEADERS)
 
 .PHONY: templates
 templates: $(VIEW_GEN_HEADERS)
+
+# Prove a no-op regeneration changes neither tracked bytes nor filesystem
+# metadata. The source mutation token includes inode/mtime/ctime specifically
+# to catch edit/revert ABA, so this fast check guards the exact contract the
+# build-twice reproducibility gate relies on.
+.PHONY: templates-no-touch-selftest
+templates-no-touch-selftest: $(VIEW_GEN_HEADERS)
+	@set -eu; \
+	before="$$(tools/dev/source-identity.sh capture-record)"; \
+	$(TMPL_TOOL) app/views/templates $(TMPL_GEN) app/views/css >/dev/null; \
+	$(TMPL_TOOL) --single-css $(SITE_CSS_SRC) $(SITE_CSS_GEN) site_css SITE_CSS_H >/dev/null; \
+	after="$$(tools/dev/source-identity.sh capture-record)"; \
+	[ "$$before" = "$$after" ] || { \
+	    echo "templates-no-touch-selftest: source metadata changed on no-op regeneration" >&2; \
+	    exit 1; \
+	}; \
+	echo "templates-no-touch-selftest: PASS"
 
 .PHONY: site-css explorer-css
 site-css: $(SITE_CSS_GEN)
@@ -1337,12 +1491,13 @@ tools/inspect_html: $(BIN_DIR)/inspect_html
 define BUILD_NODE_TOOL
 .PHONY: $(1)
 $(1): $$(BIN_DIR)/$(1)
-$$(BIN_DIR)/$(1): $$(VIEW_GEN_HEADERS) $$(BUILD_IDENTITY_STAMP) $(2) $$(ALL_SRCS) | $$(VENDOR_LIBS)
+$$(BIN_DIR)/$(1): $$(VIEW_GEN_HEADERS) $$(BUILD_IDENTITY_STAMP) \
+		$(2) $$(ALL_SRCS) $$(COMMAND_CATALOG_DEFS) | $$(VENDOR_LIBS)
 	@mkdir -p $$(dir $$@)
 	@set -eu; \
 	tmp="$$$$(mktemp "$$@.link.XXXXXX")"; \
 	trap 'rm -f "$$$$tmp"' EXIT HUP INT TERM; \
-	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o "$$$$tmp" $$(filter-out $$(VIEW_GEN_HEADERS) $$(BUILD_IDENTITY_STAMP),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3); \
+	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o "$$$$tmp" $$(filter-out $$(VIEW_GEN_HEADERS) $$(BUILD_IDENTITY_STAMP) $$(COMMAND_CATALOG_DEFS),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3); \
 	tools/dev/source-identity.sh verify-record "$$(BUILD_SOURCE_ID)" "$$(BUILD_CLEAN)" "$$(BUILD_MUTATION)" >/dev/null; \
 	mv -f -- "$$$$tmp" "$$@"; \
 	trap - EXIT HUP INT TERM
@@ -1467,10 +1622,14 @@ $(TEST_TSAN_CANDIDATE): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(TEST_TSAN_
 $(TEST_TSAN_LINK_RSP): $(TEST_TSAN_OBJS)
 	@$(file >$@,$(TEST_TSAN_OBJS)) test -s "$@"
 
-test-parallel-active: $(TEST_PARALLEL_REL_CANDIDATE)
+# Both active runners execute groups that spawn the fixed external package
+# verifier. Build that exact in-tree helper here, not only on the public
+# test-parallel wrapper: fast-ci/pre-push invokes the active fast runner
+# directly, and a clean checkout must not depend on a leftover binary.
+test-parallel-active: $(TEST_PARALLEL_REL_CANDIDATE) $(BIN_DIR)/zclassic23-package-verify
 	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE)
 
-test-parallel-fast-active: $(TEST_PARALLEL_FAST_CANDIDATE)
+test-parallel-fast-active: $(TEST_PARALLEL_FAST_CANDIDATE) $(BIN_DIR)/zclassic23-package-verify
 	ulimit -s unlimited && $(TEST_PARALLEL_FAST_ACTIVE)
 
 .PHONY: test-parallel
@@ -1587,6 +1746,73 @@ endif
 t-list:
 	@$(T_LIST_TOOL)
 
+# One memorable custody regression command for contributors. Keep the list
+# exact: a substring silently selecting a sibling group is not rollout proof.
+CUSTODY_FOCUSED_TESTS := test_agent_session,test_agent_spend_policy,test_vault_session,test_vault_dispatch,test_transaction_intent,test_metaverse_agent_broker
+.PHONY: custody-check custody-status custody-status-selftest \
+	transaction-micro-lab-wallets-setup transaction-micro-lab-wallets-status \
+	transaction-micro-lab-wallets-selftest
+custody-check:
+	@$(MAKE) --no-print-directory t-fast-exact ONLY='$(CUSTODY_FOCUSED_TESTS)'
+	@echo "custody-check: PASS — no live wallet or funds were touched"
+
+# Read-only live rollout doctor. ARGS may name an owner-created private broker
+# directory: make custody-status ARGS='--broker-dir=/absolute/path'.
+custody-status:
+	@tools/dev/custody-status.sh $(ARGS)
+
+custody-status-selftest:
+	@ZCL_CUSTODY_STATUS_SELFTEST=1 tools/dev/custody-status.sh
+
+# Value-free preparation for the live micro lab. The setup creates two fresh
+# isolated receive wallets, derives transparent + Sapling recipients, stores
+# only private mode-0600 address manifests, stops both nodes, and prints no
+# address/key/path. It never funds, reserves, signs, or broadcasts.
+transaction-micro-lab-wallets-setup:
+	@tools/dev/transaction-micro-lab-wallets.sh setup $(ARGS)
+
+transaction-micro-lab-wallets-status:
+	@tools/dev/transaction-micro-lab-wallets.sh status $(ARGS)
+
+transaction-micro-lab-wallets-selftest:
+	@tools/dev/transaction-micro-lab-wallets.sh selftest
+
+# Transaction-lab evidence is deliberately split from live mainnet spending.
+# These exact groups exercise production transaction builders, signatures,
+# Sapling proofs, consensus verification, script interpretation, and isolated
+# settlement projections without contacting a live wallet.
+# Derived from the notebook catalog so adding a case cannot silently omit its
+# proof from `make transaction-lab-proof`. The check also requires an exact
+# posture row in tools/dev/transaction_live_catalog.def, preventing a new type
+# from silently escaping the live runbook. Stable sort deduplicates groups
+# shared by several semantic transaction types.
+TRANSACTION_LAB_PROOF_TESTS := $(shell { \
+	awk -F'|' 'substr($$0, 1, 1) != sprintf("%c", 35) && NF { print $$5 }' tools/dev/transaction_lab_catalog.def; \
+	awk -F'"' '/^TX_TYPE_SUPPLEMENTAL/ { print $$4 }' app/controllers/include/controllers/transaction_type_supplemental_tests.def; \
+	} | sort -u | paste -sd, -)
+.PHONY: transaction-lab-status transaction-lab-check transaction-lab-proof \
+	transaction-micro-lab-status transaction-micro-lab-check
+transaction-lab-status:
+	@tools/dev/transaction-lab.sh status
+
+transaction-lab-check: transaction-micro-lab-check
+	@tools/dev/transaction-lab.sh check
+	@tools/dev/transaction-lab.sh selftest
+
+transaction-lab-proof:
+	@ZCL_PARAMS_TESTS=1 ZCL_STRESS_TESTS=1 \
+	 $(MAKE) --no-print-directory t-fast-exact ONLY='$(TRANSACTION_LAB_PROOF_TESTS)'
+	@tools/dev/transaction-lab.sh status
+
+# Redacted evidence notebook for the bounded 100 x 1,000-zatoshi campaign.
+# These targets never plan, sign, authorize, broadcast, or touch a datadir.
+transaction-micro-lab-status:
+	@tools/dev/transaction-micro-lab.sh status
+
+transaction-micro-lab-check:
+	@tools/dev/transaction-micro-lab.sh check
+	@tools/dev/transaction-micro-lab.sh selftest
+
 # ── Agent-harness reporting targets ──────────────────────────────────────
 # Three read-only targets the orchestrator was doing by hand. None builds,
 # none writes anything, none touches a datadir.
@@ -1629,13 +1855,73 @@ worktree-gc:
 # tools/agent/gate-receipt.sh — this is EVIDENCE, not proof.
 .PHONY: gate-receipt check-claims agent-velocity agent-sha3
 
-AGENT_SHA3_SRCS := tools/agent/agent_sha3.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c
+AGENT_SHA3_SRCS := tools/agent/agent_sha3.c lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c
 agent-sha3: $(BIN_DIR)/agent_sha3
 $(BIN_DIR)/agent_sha3: $(AGENT_SHA3_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror \
-	    -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
+	    -Ilib/sha3/include -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
 	    -o $@ $(AGENT_SHA3_SRCS)
+
+# Independent package gates compile only the authoritative package trees and
+# their declared direct dependencies.  They never open a node datadir.
+ZCODE_PACKAGE_BASE_TEST_BIN := $(BIN_DIR)/zcode-package-base-test
+ZCODE_PACKAGE_SHA3_TEST_BIN := $(BIN_DIR)/zcode-package-sha3-test
+ZCODE_PACKAGE_CODEC_TEST_BIN := $(BIN_DIR)/zcode-package-codec-test
+ZCODE_PACKAGE_REGISTRY_CHECK_BIN := $(BIN_DIR)/zcode-package-registry-check
+.PHONY: zcode-package-base-test zcode-package-sha3-test zcode-package-codec-test zcode-package-foundation-test tools/zcode_dev_signer
+zcode-package-base-test: $(ZCODE_PACKAGE_BASE_TEST_BIN)
+	@$(ZCODE_PACKAGE_BASE_TEST_BIN)
+$(ZCODE_PACKAGE_BASE_TEST_BIN): lib/base/tests/test_base.c \
+		lib/base/tests/cleanse_probe.c lib/base/src/cleanse.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O3 -flto -Wall -Wextra -Werror -pedantic \
+	    -Ilib/base/include -o $@ $^
+
+zcode-package-sha3-test: $(ZCODE_PACKAGE_SHA3_TEST_BIN)
+	@$(ZCODE_PACKAGE_SHA3_TEST_BIN)
+$(ZCODE_PACKAGE_SHA3_TEST_BIN): lib/sha3/tests/test_sha3.c \
+		lib/sha3/src/sha3.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -Ilib/sha3/include -Ilib/base/include -o $@ $^
+
+zcode-package-codec-test: $(ZCODE_PACKAGE_CODEC_TEST_BIN)
+	@$(ZCODE_PACKAGE_CODEC_TEST_BIN)
+$(ZCODE_PACKAGE_CODEC_TEST_BIN): lib/codec/tests/test_codec.c \
+		lib/codec/src/cursor.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -Ilib/codec/include -Ilib/base/include -o $@ $^
+
+zcode-package-foundation-test: zcode-package-base-test zcode-package-sha3-test zcode-package-codec-test
+
+.PHONY: check-zcode-package-registry print-zcode-monolith-lib-sources
+check-zcode-package-registry: $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN)
+	@tools/lint/check_zcode_package_registry.sh
+print-zcode-monolith-lib-sources:
+	@printf '%s\n' $(LIB_SRCS)
+$(ZCODE_PACKAGE_REGISTRY_CHECK_BIN): tools/zcode_package_registry_check.c \
+        config/zcode_package_registry.def \
+		lib/vcs/src/package_prepare.c lib/vcs/src/package_manifest.c \
+		lib/vcs/src/package_recipe.c lib/vcs/src/package_deps.c \
+		lib/vcs/src/package_capsule.c lib/vcs/src/package_release.c \
+		lib/json/src/json.c lib/codec/src/cursor.c lib/sha3/src/sha3.c \
+		lib/base/src/safe_alloc.c lib/base/src/log_level.c \
+		lib/platform/src/clock.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -D_GNU_SOURCE -O0 -Wall -Wextra -Werror -pedantic \
+	    -Ilib/vcs/include -Ilib/json/include -Ilib/codec/include -Ilib/sha3/include \
+	    -Ilib/crypto/include -Ilib/base/include -Ilib/util/include \
+	    -Ilib/platform/include -Ivendor/include -o $@ $(filter %.c,$^) \
+	    -Lvendor/lib -l:libsecp256k1.a -lpthread -lm
+
+tools/zcode_dev_signer: $(BIN_DIR)/zcode_dev_signer
+$(BIN_DIR)/zcode_dev_signer: tools/zcode_dev_signer.c lib/base/src/cleanse.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -Ilib/base/include -Ivendor/include -o $@ $^ \
+	    -Lvendor/lib -l:libsecp256k1.a -lpthread -lm
 
 # Run a gate and leave a receipt. The wrapper is transparent — same output,
 # same exit status — so this is a drop-in for the bare command:
@@ -1760,6 +2046,19 @@ asan-ci: $(TEST_ASAN_CANDIDATE)
 	    $(TEST_ASAN_ACTIVE) --only=$$g; \
 	  done; \
 	  echo "asan-ci: OK ($(ASAN_CI_GROUPS))"'
+
+# S6 DHT memory/UB gate.  Unlike the broad historical sanitizer profile this
+# focused lane has no sanitizer exclusions: codec, routing, service, lookup,
+# scale-model and lock-lifecycle code all run with the complete ASan+UBSan
+# instrumentation set.  -O2 plus an available frame-pointer register are
+# required by the register-constrained ADX assembly TU linked into the
+# monolithic test harness; neither changes sanitizer coverage, and the epoch
+# key records both.
+.PHONY: zcode-dht-asan
+zcode-dht-asan:
+	@$(MAKE) asan-ci \
+	  ASAN_COMMON_SAN_FLAGS='-fsanitize=address,undefined -fomit-frame-pointer -O2' \
+	  ASAN_CI_GROUPS='test_zcode_dht test_zcode_dht_msgs test_zcode_dht_service test_zcode_dht_lookup test_zcode_dht_model'
 
 # TSan variant of `t-asan`: one group per invocation under the
 # thread-instrumented harness (build/bin/test-tsan, own build/test-tsan-obj
@@ -2276,6 +2575,7 @@ syntax-check: $(VIEW_GEN_HEADERS)
 LINT_FAST_GATES := \
     check-no-stray-untracked-source \
     check-no-stray-root-files \
+    check-no-live-lab-history \
     check-raw-sqlite \
     check-malloc \
     check-raw-malloc \
@@ -2582,12 +2882,13 @@ bootstrap-publish:
 	@echo "  Local bundle production remains available via 'make bootstrap'." >&2
 	@exit 2
 
-$(BIN_DIR)/session: $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) tools/session.c $(ALL_SRCS)
+$(BIN_DIR)/session: $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) tools/session.c \
+		$(ALL_SRCS) $(COMMAND_CATALOG_DEFS)
 	@mkdir -p $(dir $@)
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
 	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(TMPL_GEN) $(BUILD_IDENTITY_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm; \
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) $(COMMAND_CATALOG_DEFS),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
@@ -2595,12 +2896,13 @@ $(BIN_DIR)/session: $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) tools/session.c $(ALL_SR
 session: $(BIN_DIR)/session
 	$(BIN_DIR)/session
 
-$(BIN_DIR)/bot: $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) tools/bot.c $(ALL_SRCS)
+$(BIN_DIR)/bot: $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) tools/bot.c \
+		$(ALL_SRCS) $(COMMAND_CATALOG_DEFS)
 	@mkdir -p $(dir $@)
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
 	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(TMPL_GEN) $(BUILD_IDENTITY_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm; \
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(TMPL_GEN) $(BUILD_IDENTITY_STAMP) $(COMMAND_CATALOG_DEFS),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) -lm; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
@@ -2642,14 +2944,15 @@ zclassic23: $(ZCLASSIC23_BIN)
 # without growing the deployed artifact. The sidecar is staged in a temp
 # dir under its final basename because --add-gnu-debuglink reads the file
 # (stored name + CRC32) at link time.
-$(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(NODE_ENTRY_SRCS) $(ALL_SRCS) | $(VENDOR_LIBS)
+$(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) \
+		$(NODE_ENTRY_SRCS) $(ALL_SRCS) $(COMMAND_CATALOG_DEFS) | $(VENDOR_LIBS)
 	@mkdir -p $(dir $@)
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
 	dbg="$@.debug"; \
 	dbgdir="$$(mktemp -d "$@.dbgdir.XXXXXX")"; \
 	trap 'rm -rf "$$tmp" "$$dbgdir"' EXIT HUP INT TERM; \
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(COMMAND_CATALOG_DEFS),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
 	objcopy --only-keep-debug "$$tmp" "$$dbgdir/$$(basename "$$dbg")"; \
 	strip -s "$$tmp"; \
 	objcopy --add-gnu-debuglink="$$dbgdir/$$(basename "$$dbg")" "$$tmp"; \
@@ -2713,13 +3016,13 @@ $(BIN_DIR)/zcl-portfwd: tools/zcl_portfwd.c
 tools/gen_sha3_windows: $(BIN_DIR)/gen_sha3_windows
 $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 		lib/chain/src/sha3_windows.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/encoding/src/utilstrencodings.c \
+		lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/encoding/src/utilstrencodings.c \
 		lib/json/src/json.c lib/platform/src/clock.c \
-		lib/base/src/safe_alloc.c lib/support/src/cleanse.c
+		lib/base/src/safe_alloc.c lib/base/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O3 -march=native -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
-	    -Ilib/chain/include -Ilib/crypto/include -Ilib/encoding/include \
+	    -Ilib/chain/include -Ilib/sha3/include -Ilib/crypto/include -Ilib/encoding/include \
 	    -Ilib/json/include -Ilib/platform/include -Ilib/base/include -Ilib/util/include \
 	    -Ilib/support/include \
 	    -D_POSIX_C_SOURCE=200809L \
@@ -2738,12 +3041,12 @@ $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 .PHONY: tools/gen_utxo_root_ladder
 tools/gen_utxo_root_ladder: $(BIN_DIR)/gen_utxo_root_ladder
 $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
-		lib/chain/src/mmb.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c \
+		lib/chain/src/mmb.c lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/base/src/cleanse.c \
 		lib/base/src/log_level.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
-	    -Ilib/chain/include -Ilib/crypto/include -Ilib/support/include \
+	    -Ilib/chain/include -Ilib/sha3/include -Ilib/crypto/include -Ilib/support/include \
 	    -Ilib/base/include -Ilib/util/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
@@ -2758,11 +3061,11 @@ $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
 .PHONY: tools/rom_two_builder_compare
 tools/rom_two_builder_compare: $(BIN_DIR)/rom_two_builder_compare
 $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c
+		lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/base/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
-	    -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
+	    -Ilib/sha3/include -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
 	    -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
@@ -2779,11 +3082,11 @@ $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
 tools/checkpoint_rung_export: $(BIN_DIR)/checkpoint_rung_export
 $(BIN_DIR)/checkpoint_rung_export: tools/checkpoint_rung_export.c \
 		lib/storage/src/checkpoint_rung.c lib/base/src/log_level.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c
+		lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/base/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
-	    -Ilib/storage/include -Ilib/crypto/include -Ilib/base/include -Ilib/util/include \
+	    -Ilib/storage/include -Ilib/sha3/include -Ilib/crypto/include -Ilib/base/include -Ilib/util/include \
 	    -Ilib/support/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
@@ -2791,16 +3094,16 @@ $(BIN_DIR)/checkpoint_rung_export: tools/checkpoint_rung_export.c \
 # rom_bundle_sha3: standalone whole-file SHA3-256 digest tool used by
 # tools/scripts/rom-bundle-replicate.sh to verify a ROM bundle replication
 # copy byte-for-byte against its source. No node libs, no sqlite, no Tor —
-# links only lib/crypto/src/sha3.c, the same primitive rom_seed.c and every
+# links only lib/sha3/src/sha3.c, the same primitive rom_seed.c and every
 # other consensus-facing digest in the node uses.
 .PHONY: tools/rom_bundle_sha3
 tools/rom_bundle_sha3: $(BIN_DIR)/rom_bundle_sha3
 $(BIN_DIR)/rom_bundle_sha3: tools/rom_bundle_sha3.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c
+		lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/base/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
-	    -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
+	    -Ilib/sha3/include -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -lm
 
@@ -3337,6 +3640,26 @@ test-reindex-killmid: zclassic23 zcl-rpc
 test-two-node-peer-tip: zclassic23 zcl-rpc
 	@bash tools/scripts/two_node_peer_tip.sh
 
+# ZCODE science-slice v1 acceptance proof: two disjoint isolated regtest
+# nodes (39xxx quads, loopback only, B connect-only to A). Preregister a
+# study, run a confined c23.benchmark.v1 execute, reproduce it via the v1
+# mirror, publish findings/review/vote, rank locally, restart both nodes,
+# and rebuild the science projection byte-identically from CAS hashes
+# (including after a direct SQL wipe of the six projection tables).
+# Proves the generic S7 path: the publisher files a signed one-day POINTER
+# plus a two-hour PROVIDER over the existing authenticated DHT, and the fresh
+# node starts with only the semantic science root.  It resolves, fetches via
+# the existing package verifier, re-derives the science root, admits, restarts,
+# and rebuilds the six projection tables byte-identically from CAS hashes.
+# DELIBERATELY opt-in (NOT in `make ci`) — it spawns two real nodes and
+# depends on the host Landlock/seccomp sandbox for the confined executor.
+.PHONY: test-zcode-dht-acceptance test-science-acceptance
+test-zcode-dht-acceptance: zclassic23 zcl-rpc
+	@bash tools/dev/zcode_dht_acceptance.sh
+
+test-science-acceptance: test-zcode-dht-acceptance
+	@bash tools/dev/science_acceptance.sh
+
 # ── STICKINESS fault-injection matrix (sticky-node-plan §4 metric) ──
 #
 # sticky-matrix: for each fault class, inject on a THROWAWAY /tmp datadir
@@ -3745,6 +4068,32 @@ test-shielded-payment: test_zcl
 # the default suite does not pay extra setup/runtime cost.
 test-store-e2e: test_zcl
 	ZCL_STRESS_TESTS=1 ZCL_TEST_ONLY=store_e2e $(TEST_ZCL_BIN)
+
+# P11.5b store OPERATOR proof (MVP criterion #5 rung A, full binary).
+#
+# The hermetic store_e2e gates above run the store flow inside test_zcl; this
+# target boots a real build/bin/zclassic23 node on regtest in a throwaway
+# /tmp datadir (isolated 391xx ports, dead -connect sink — never the live
+# node, the oracle, or their datadirs) and drives the whole MVP #5 claim
+# through the native typed CLI an operator uses: app.store.list-product with
+# a binary blob carrying embedded NUL bytes -> catalog -> order (the real
+# CSRF + PoW order route) -> pay (real shielded z_sendmany t->z with the
+# ZCL23ORDER:<id> memo, broadcast to the node's own mempool) -> mined
+# confirmations -> purchases until ready_to_collect -> collect -> cmp the
+# delivered bytes against the original. Prints VERDICT=PASS/SKIP/FAIL with
+# the failing stage named. Params-guarded like test-shielded-payment; the
+# script additionally SKIPs if regtest mining is unavailable. Opt-in; NOT in
+# `make ci`.
+test-store-operator-proof: zclassic23 zcl-rpc
+	@set -eu; \
+	params_dir="$$HOME/.zcash-params"; \
+	for f in sapling-spend.params sapling-output.params sprout-groth16.params sprout-verifying.key; do \
+		if [ ! -r "$$params_dir/$$f" ]; then \
+			echo "test-store-operator-proof: SKIP ($$params_dir/$$f missing)"; \
+			exit 0; \
+		fi; \
+	done; \
+	tools/scripts/store_sell_operator_proof.sh
 
 # ── MVP acceptance gates: hermetic vs fixture-bound ───────────
 #
@@ -4545,11 +4894,11 @@ $(BIN_DIR)/bench_fresh_sync: tools/bench_fresh_sync.c \
 # Exits 2 if any tier diverges — a faster path returning different bytes is a
 # chain split, not a win.
 SIMD_BENCH_SRCS = tools/simd_bench.c \
-	lib/crypto/src/sha256.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c \
+	lib/crypto/src/sha256.c lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c \
 	lib/crypto/src/sha3_avx512.c lib/crypto/src/sha3_256_x4.c \
 	lib/crypto/src/blake2b.c lib/crypto/src/blake2b_avx2.c \
 	lib/sapling/src/bn254_accel.c lib/sapling/src/fr_avx512.c \
-	lib/support/src/cleanse.c lib/base/src/log_level.c
+	lib/base/src/cleanse.c lib/base/src/log_level.c
 
 .PHONY: simd_bench
 simd_bench: $(BIN_DIR)/simd_bench
@@ -4557,7 +4906,7 @@ $(BIN_DIR)/simd_bench: $(SIMD_BENCH_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) \
 	    -Wall -Wextra -Werror -pedantic \
-	    -Ilib/crypto/include -Ilib/sapling/include -Ilib/base/include \
+	    -Ilib/sha3/include -Ilib/crypto/include -Ilib/sapling/include -Ilib/base/include \
 	    -Ilib/util/include -Ilib/platform/include -Ilib/support/include \
 	    -D_POSIX_C_SOURCE=200809L -o $@ $^
 
@@ -4590,7 +4939,7 @@ SERIAL_BENCH_SRCS = tools/serial_bench.c \
 	core/math/src/serialize.c core/math/src/uint256.c core/math/src/hash.c \
 	lib/crypto/src/sha256.c lib/crypto/src/sha512.c lib/crypto/src/ripemd160.c \
 	lib/crypto/src/hmac_sha512.c lib/encoding/src/utilstrencodings.c \
-	lib/support/src/cleanse.c lib/base/src/safe_alloc.c lib/base/src/log_level.c
+	lib/base/src/cleanse.c lib/base/src/safe_alloc.c lib/base/src/log_level.c
 
 .PHONY: serial_bench
 serial_bench: $(BIN_DIR)/serial_bench
@@ -4904,8 +5253,47 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	command -v timeout >/dev/null 2>&1 || { \
 	    echo "deploy: timeout is required for candidate preflight" >&2; exit 1; }; \
 	candidate="$$(mktemp "$(dir $(ZCLASSIC23_BIN)).zclassic23.deploy.XXXXXX")"; \
-	dropin_tmp=""; \
-	trap 'rm -f "$$candidate" "$$dropin_tmp"' EXIT HUP INT TERM; \
+	dropin_tmp=""; service_tmp=""; rollback_bin=""; rollback_dropin=""; \
+	rollback_dropin_present=0; rollback_armed=0; rollback_complete=0; \
+	rollback_source_id=""; rollback_artifact_sha256=""; SERVICE_BIN=""; dropin=""; \
+	cleanup_deploy() { \
+	    deploy_rc=$$?; \
+	    trap - EXIT HUP INT TERM; \
+	    set +e; \
+	    if [ "$$rollback_armed" -eq 1 ] && [ "$$rollback_complete" -eq 0 ]; then \
+	        rollback_complete=1; \
+	        echo "deploy: candidate verification failed; restoring pinned prior binary/config" >&2; \
+	        install -m 755 "$$rollback_bin" "$$SERVICE_BIN"; rollback_install_rc=$$?; \
+	        if [ "$$rollback_dropin_present" -eq 1 ]; then \
+	            install -m 644 "$$rollback_dropin" "$$dropin"; rollback_dropin_rc=$$?; \
+	        else \
+	            rm -f "$$dropin"; rollback_dropin_rc=$$?; \
+	        fi; \
+	        systemctl --user daemon-reload; rollback_reload_rc=$$?; \
+	        systemctl --user restart zclassic23; rollback_restart_rc=$$?; \
+	        rollback_verify_rc=1; \
+	        if [ "$$rollback_install_rc" -eq 0 ] && \
+	           [ "$$rollback_dropin_rc" -eq 0 ] && \
+	           [ "$$rollback_reload_rc" -eq 0 ] && \
+	           [ "$$rollback_restart_rc" -eq 0 ]; then \
+	            ZCL_DEPLOY_STAGE=rollback \
+	            ZCL_DEPLOY_EXPECT_SOURCE_ID="$$rollback_source_id" \
+	            ZCL_DEPLOY_EXPECT_ARTIFACT_SHA256="$$rollback_artifact_sha256" \
+	                ./tools/deploy_verify.sh; \
+	            rollback_verify_rc=$$?; \
+	        fi; \
+	        if [ "$$rollback_verify_rc" -eq 0 ]; then \
+	            echo "deploy: ROLLED_BACK — prior executable/config restored and verified" >&2; \
+	        else \
+	            echo "deploy: CRITICAL — rollback verification failed; automation stopped" >&2; \
+	        fi; \
+	    fi; \
+	    rm -f "$$candidate" "$$dropin_tmp" "$$service_tmp" \
+	          "$$rollback_bin" "$$rollback_dropin"; \
+	    exit "$$deploy_rc"; \
+	}; \
+	trap cleanup_deploy EXIT; \
+	trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
 	install -m 755 "$(ZCLASSIC23_BIN)" "$$candidate"; \
 	artifact_sha256="$$(sha256sum < "$$candidate" | awk '{print $$1}')"; \
 	[ "$${#artifact_sha256}" -eq 64 ] || { \
@@ -4933,10 +5321,63 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	        echo "WAL checkpoint failed" >&2; exit 1; }; \
 	fi; \
 	install -d "$(HOME)/.config/systemd/user"; \
-	install -m 644 deploy/zclassic23.service \
-	    "$(HOME)/.config/systemd/user/zclassic23.service"; \
+	service_unit="$(HOME)/.config/systemd/user/zclassic23.service"; \
+	if [ ! -f "$$service_unit" ]; then \
+	    service_tmp="$$(mktemp "$$service_unit.tmp.XXXXXX")"; \
+	    sed 's|%h/zclassic23|$(CURDIR)|g' deploy/zclassic23.service > "$$service_tmp"; \
+	    install -m 644 "$$service_tmp" "$$service_unit"; \
+	    rm -f "$$service_tmp"; service_tmp=""; \
+	    echo "deploy: installed missing canonical service unit from template"; \
+	else \
+	    echo "deploy: preserving existing canonical service unit"; \
+	fi; \
+	systemctl --user daemon-reload; \
+	service_exec="$$(systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null)"; \
+	service_path="$$(printf '%s\n' "$$service_exec" | \
+	    sed -n 's/^.*path=\([^ ;]*\).*$$/\1/p')"; \
+	service_argv="$$(printf '%s\n' "$$service_exec" | \
+	    sed -n 's/^.*argv\[\]=\([^;]*\);.*$$/\1/p')"; \
+	service_argv0="$$(printf '%s\n' "$$service_argv" | tr ' ' '\n' | awk 'NF { print; exit }')"; \
+	[ -n "$$service_path" ] && [ "$$service_path" = "$$service_argv0" ] || { \
+	    echo "deploy: canonical service path and executable argv disagree" >&2; exit 1; }; \
+	if [ "$$service_path" = "$(CURDIR)/deploy/zclassic23-launch.sh" ]; then \
+	    SERVICE_BIN="$$(printf '%s\n' "$$service_argv" | tr ' ' '\n' | \
+	        awk 'NF { n++; if (n == 2) { print; exit } }')"; \
+	    [ "$$SERVICE_BIN" = "$(CURDIR)/build/bin/zclassic23" ] || { \
+	        echo "deploy: canonical launcher node binary does not resolve to this checkout" >&2; exit 1; }; \
+	else \
+	    case "$$service_path" in /*) SERVICE_BIN="$$service_path" ;; *) \
+	        echo "deploy: direct canonical service binary is not absolute" >&2; exit 1;; esac; \
+	fi; \
+	mainpid="$$(systemctl --user show zclassic23 -p MainPID --value 2>/dev/null || true)"; \
+	case "$$mainpid" in ''|*[!0-9]*|0) \
+	    echo "deploy: canonical service must be running before a rollback-safe mutation" >&2; exit 1;; esac; \
+	running_exe="$$(readlink -f "/proc/$$mainpid/exe" 2>/dev/null || true)"; \
+	target_exe="$$(readlink -f "$$SERVICE_BIN" 2>/dev/null || true)"; \
+	[ -n "$$running_exe" ] && [ "$$running_exe" = "$$target_exe" ] || { \
+	    echo "deploy: canonical MainPID executable does not match service target" >&2; exit 1; }; \
+	tools/dev/source-identity.sh verify-record \
+	    "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	install -d "$(HOME)/.config/systemd/user/zclassic23.service.d"; \
 	dropin="$(HOME)/.config/systemd/user/zclassic23.service.d/90-build-identity.conf"; \
+	rollback_bin="$$(mktemp "$$(dirname "$$SERVICE_BIN")/.zclassic23.rollback.XXXXXX")"; \
+	install -m 755 "$$SERVICE_BIN" "$$rollback_bin"; \
+	rollback_artifact_sha256="$$(sha256sum < "$$rollback_bin" | awk '{print $$1}')"; \
+	rollback_agentbuild="$$(timeout 30 "$$rollback_bin" agentbuild 2>&1)" || { \
+	    echo "deploy: prior executable agentbuild preflight failed" >&2; exit 1; }; \
+	rollback_source_id="$$(printf '%s\n' "$$rollback_agentbuild" | \
+	    grep -oE '"source_id_sha256"[[:space:]]*:[[:space:]]*"[^"]*"' | \
+	    head -1 | sed -E 's/.*"source_id_sha256"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"; \
+	[ "$${#rollback_source_id}" -eq 64 ] || { \
+	    echo "deploy: prior executable omitted exact source_id_sha256" >&2; exit 1; }; \
+	case "$$rollback_source_id$$rollback_artifact_sha256" in *[!0-9a-f]*) \
+	    echo "deploy: prior rollback identity is malformed" >&2; exit 1;; esac; \
+	if [ -f "$$dropin" ]; then \
+	    rollback_dropin="$$(mktemp "$$dropin.rollback.XXXXXX")"; \
+	    install -m 644 "$$dropin" "$$rollback_dropin"; \
+	    rollback_dropin_present=1; \
+	fi; \
+	rollback_armed=1; \
 	dropin_tmp="$$(mktemp "$$dropin.tmp.XXXXXX")"; \
 	{ \
 	    printf '[Service]\n'; \
@@ -4947,17 +5388,6 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	install -m 644 "$$dropin_tmp" "$$dropin"; \
 	rm -f "$$dropin_tmp"; dropin_tmp=""; \
 	systemctl --user daemon-reload; \
-	service_paths="$$(systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null | \
-	    tr ' ' '\n' | sed -n 's/^path=//p')"; \
-	service_path_count="$$(printf '%s\n' "$$service_paths" | \
-	    awk 'NF { count++ } END { print count + 0 }')"; \
-	[ "$$service_path_count" -eq 1 ] || { \
-	    echo "deploy: canonical service ExecStart path is missing or ambiguous" >&2; exit 1; }; \
-	SERVICE_BIN="$$(printf '%s\n' "$$service_paths" | awk 'NF { print; exit }')"; \
-	case "$$SERVICE_BIN" in /*) ;; *) \
-	    echo "deploy: canonical service ExecStart path is not absolute" >&2; exit 1;; esac; \
-	tools/dev/source-identity.sh verify-record \
-	    "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	install -m 755 "$$candidate" "$$SERVICE_BIN"; \
 	installed_sha256="$$(sha256sum < "$$SERVICE_BIN" | awk '{print $$1}')"; \
 	[ "$$installed_sha256" = "$$artifact_sha256" ] || { \
@@ -4978,7 +5408,9 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	ZCL_DEPLOY_EXPECT_SOURCE_ID="$(BUILD_SOURCE_ID)" \
 	ZCL_DEPLOY_EXPECT_ARTIFACT_SHA256="$$artifact_sha256" \
 	    ./tools/deploy_verify.sh; \
+	rollback_armed=0; \
 	rm -f "$$candidate"; candidate=""; \
+	rm -f "$$rollback_bin" "$$rollback_dropin"; rollback_bin=""; rollback_dropin=""; \
 	trap - EXIT HUP INT TERM
 
 # Option 2 (DEPLOY-WRITE) snapshot reachability bridge: stage a verified anchor
@@ -5126,7 +5558,10 @@ quality-linger-status:
 .PHONY: install-slo-probe install-slo-pager slo-probe-status
 install-slo-probe:
 	@install -d "$(HOME)/.config/systemd/user"
-	@install -m 644 deploy/zclassic23-slo-probe.service "$(HOME)/.config/systemd/user/zclassic23-slo-probe.service"
+	@set -eu; tmp="$$(mktemp "$(HOME)/.config/systemd/user/zclassic23-slo-probe.service.tmp.XXXXXX")"; \
+		trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+		sed 's|%h/github/zclassic23|$(CURDIR)|g' deploy/zclassic23-slo-probe.service > "$$tmp"; \
+		install -m 644 "$$tmp" "$(HOME)/.config/systemd/user/zclassic23-slo-probe.service"
 	@install -m 644 deploy/zclassic23-slo-probe.timer "$(HOME)/.config/systemd/user/zclassic23-slo-probe.timer"
 	@systemctl --user daemon-reload
 	@systemctl --user enable --now zclassic23-slo-probe.timer
@@ -5211,7 +5646,10 @@ slo-probe-selftest:
 # tools/scripts/tip_agreement_judge.sh (windowed, fails closed).
 install-tip-agreement:
 	@install -d "$(HOME)/.config/systemd/user"
-	@install -m 644 deploy/zclassic23-tip-agreement.service "$(HOME)/.config/systemd/user/zclassic23-tip-agreement.service"
+	@set -eu; tmp="$$(mktemp "$(HOME)/.config/systemd/user/zclassic23-tip-agreement.service.tmp.XXXXXX")"; \
+		trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+		sed 's|%h/github/zclassic23|$(CURDIR)|g' deploy/zclassic23-tip-agreement.service > "$$tmp"; \
+		install -m 644 "$$tmp" "$(HOME)/.config/systemd/user/zclassic23-tip-agreement.service"
 	@install -m 644 deploy/zclassic23-tip-agreement.timer "$(HOME)/.config/systemd/user/zclassic23-tip-agreement.timer"
 	@systemctl --user daemon-reload
 	@systemctl --user enable --now zclassic23-tip-agreement.timer
@@ -5837,34 +6275,44 @@ check-observability-pairing: tools/check_observability_pairing
 .PHONY: core-seal core-seal-check core-unseal check-core-seal check-core-include-boundary check-accel-oracle-pinned check-no-adx-overclaim check-simd-os-support
 CORE_MANIFEST := core/MANIFEST.sha3
 CORE_UNSEAL_TOKEN := .core-unseal-token
-CORE_SEAL_SRCS := tools/core_seal.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c
+# The sealed set: every tracked file under core/ (consensus predicates +
+# parameter tables) PLUS the block-connection ordering layer below. An
+# ordering bug in connect_block/chainstate forks the node exactly as hard as
+# a bug in a sealed check_block predicate (2026-08-01 review), so those files
+# carry the same ritual: editing them requires `make core-unseal REASON=…`.
+CORE_SEAL_PATHS := core/ \
+    lib/validation/src/connect_block.c \
+    lib/validation/src/chainstate.c \
+    lib/validation/include/validation/connect_block.h \
+    lib/validation/include/validation/chainstate.h
+CORE_SEAL_SRCS := tools/core_seal.c lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/base/src/cleanse.c
 
 .PHONY: tools/core_seal
 tools/core_seal: $(BIN_DIR)/core_seal
 $(BIN_DIR)/core_seal: $(CORE_SEAL_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror \
-	    -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
+	    -Ilib/sha3/include -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
 	    -o $@ $(CORE_SEAL_SRCS)
 
 # Freeze the seal: recompute and (re)write core/MANIFEST.sha3 over every tracked
-# file under core/ (excluding the manifest itself), and consume any active
+# file in CORE_SEAL_PATHS (excluding the manifest itself), and consume any active
 # unseal token (the ritual is complete once the seal is re-frozen).
 core-seal: tools/core_seal
 	@echo "══ core: sealing consensus core → $(CORE_MANIFEST) ══"
-	@git ls-files -z core/ | $(BIN_DIR)/core_seal seal $(CORE_MANIFEST)
+	@git ls-files -z $(CORE_SEAL_PATHS) | $(BIN_DIR)/core_seal seal $(CORE_MANIFEST)
 	@rm -f $(CORE_UNSEAL_TOKEN)
 
-# Verify the seal: fail LOUD if core/ drifts from core/MANIFEST.sha3. Honors an
-# active .core-unseal-token (owner-run unseal ritual) for exactly one commit.
+# Verify the seal: fail LOUD if any sealed path drifts from core/MANIFEST.sha3.
+# Honors an active .core-unseal-token (owner-run unseal ritual) for exactly one commit.
 core-seal-check: tools/core_seal
 	@echo "══ core: verifying consensus-core seal ══"
 	@if [ -f "$(CORE_UNSEAL_TOKEN)" ]; then \
 	    echo "core-seal-check: unseal token present — seal check LIFTED for this commit"; \
 	    echo "  (token: $$(cat $(CORE_UNSEAL_TOKEN) 2>/dev/null | head -1)); re-run 'make core-seal' to refreeze."; \
-	    git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST) || true; \
+	    git ls-files -z $(CORE_SEAL_PATHS) | $(BIN_DIR)/core_seal check $(CORE_MANIFEST) || true; \
 	else \
-	    git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST); \
+	    git ls-files -z $(CORE_SEAL_PATHS) | $(BIN_DIR)/core_seal check $(CORE_MANIFEST); \
 	fi
 
 # Owner-run unseal ritual: record the reason + current ROOT hash in the
@@ -5920,9 +6368,9 @@ check-core-seal: tools/core_seal
 	@if [ -f "$(CORE_UNSEAL_TOKEN)" ]; then \
 	    echo "check-core-seal: unseal token present — seal check lifted for this commit"; \
 	    echo "  (owner unseal ritual active; re-run 'make core-seal' to refreeze before commit.)"; \
-	    git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST) || true; \
+	    git ls-files -z $(CORE_SEAL_PATHS) | $(BIN_DIR)/core_seal check $(CORE_MANIFEST) || true; \
 	else \
-	    git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST); \
+	    git ls-files -z $(CORE_SEAL_PATHS) | $(BIN_DIR)/core_seal check $(CORE_MANIFEST); \
 	fi
 
 # Sealed-core include boundary: core/ may not depend upward/sideways (esp. not
@@ -6522,6 +6970,13 @@ check-file-size-ceiling:
 check-no-dev-history-in-contracts:
 	@./tools/scripts/check_no_dev_history_in_contracts.sh
 
+# Funded transaction receipts and isolated recipient-wallet manifests are
+# private local state. Tracked baselines may contain reproducible simnet and
+# public consensus fixtures, but never owner experiment history.
+check-no-live-lab-history:
+	@./tools/scripts/check_no_live_lab_history.sh --selftest
+	@./tools/scripts/check_no_live_lab_history.sh
+
 # Gate E9 — EV_OPERATOR_NEEDED emit must reach a registered sink (HARD).
 # The silent-halt fix: the loud "human needed" signal can never be emitted
 # without a subscriber in lib/event/src/alerts.c.
@@ -7022,6 +7477,7 @@ LINT_GATES := \
     check-git-hooks-installed \
     check-malloc \
     check-byte-order-codec-single \
+    check-zcode-package-registry \
     check-hotswap-dev-only \
     check-hotswap-eligible-scope \
     check-hotswap-static-state \
@@ -7114,6 +7570,7 @@ LINT_GATES := \
     check-no-utxos-mirror-read \
     check-no-authoritative-ram-state \
     check-no-dev-history-in-contracts \
+    check-no-live-lab-history \
     check-stage-advances-or-blocks \
     check-no-silent-ready \
     check-honest-witness \
@@ -7147,13 +7604,14 @@ LINT_GATES := \
     check-standalone-tools-link
 
 # The driver execs gate scripts directly, so the two gates backed by a built
-# tool (check-core-seal, check-observability-pairing) need their binaries
+# tool (check-core-seal, check-observability-pairing, and the package root
+# projection checker) need their binaries
 # present before it starts; in serial mode those deps ride the check-* rules.
 ifeq ($(ZCL_LINT_SERIAL),1)
 lint: $(LINT_GATES)
 	@echo "══ LINT: all checks passed (serial) ══"
 else
-lint: tools/core_seal tools/check_observability_pairing
+lint: tools/core_seal tools/check_observability_pairing $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN)
 	@tools/lint/run_lint.sh --jobs "$(ZCL_LINT_JOBS)" --bin-dir "$(BIN_DIR)" $(LINT_GATES)
 	@echo "══ LINT: all checks passed ══"
 endif

@@ -359,4 +359,5 @@ void register_zdir_rpc_commands(struct rpc_table *t, struct node_db *ndb,
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);
+    register_zdir_intent_rpc_command(t);
 }
