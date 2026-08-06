@@ -1,0 +1,153 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Purpose: canonical ZC23 creation-attribution and policy arithmetic proofs. */
+#include "test/test_core.h"
+
+#include "vcs/zcode_creation_attribution.h"
+
+#include <string.h>
+
+static void creation_fill_root(uint8_t out[32], uint8_t value)
+{
+    memset(out, value, 32);
+}
+
+static void creation_fixture(struct vcs_zcode_creation_attribution_v1 *a)
+{
+    memset(a, 0, sizeof(*a));
+    a->schema_version = VCS_ZCODE_CREATION_ATTRIBUTION_VERSION;
+    a->category = VCS_ZCODE_CREATION_PUBLIC_SOURCE;
+    a->lineage_kind = VCS_ZCODE_CREATION_LINEAGE_NONE;
+    a->epoch = 7;
+    a->award_atoms = UINT64_C(125000000);
+    a->challenge_opening_height = 100;
+    creation_fill_root(a->challenge_opening_hash, 1);
+    a->challenge_opening_mtp = 1000;
+    a->challenge_maturity_height = 8164;
+    a->challenge_maturity_mtp = 605800;
+    a->created_unix = 605801;
+    creation_fill_root(a->network_genesis_root, 2);
+    creation_fill_root(a->zc23_policy_root, 3);
+    creation_fill_root(a->contributor_binding_root, 4);
+    creation_fill_root(a->task_root, 5);
+    creation_fill_root(a->candidate_root, 6);
+    creation_fill_root(a->proof_policy_root, 7);
+    creation_fill_root(a->proof_set_root, 8);
+    creation_fill_root(a->proven_lane_root, 9);
+    creation_fill_root(a->score_receipt_root, 10);
+    creation_fill_root(a->package_root, 11);
+    creation_fill_root(a->release_root, 12);
+    creation_fill_root(a->license_evidence_root, 13);
+}
+
+static int creation_codec_test(void)
+{
+    int failures = 0;
+    TEST("ZC23 creation attribution: exact canonical wire and root") {
+        struct vcs_zcode_creation_attribution_v1 a, parsed;
+        uint8_t first[VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES];
+        uint8_t second[VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES];
+        uint8_t root_a[32], root_b[32];
+        creation_fixture(&a);
+        ASSERT(vcs_zcode_creation_attribution_serialize(&a, first) ==
+               VCS_ZCODE_CREATION_OK);
+        static const uint8_t wire_prefix_kat[32] = {
+            0x5a, 0x43, 0x43, 0x52, 0x45, 0x41, 0x0d, 0x0a,
+            0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x40, 0x59, 0x73, 0x07, 0x00, 0x00, 0x00, 0x00,
+        };
+        ASSERT(memcmp(first, wire_prefix_kat, sizeof(wire_prefix_kat)) == 0);
+        ASSERT(vcs_zcode_creation_attribution_parse(first, sizeof(first),
+                                                    &parsed) ==
+               VCS_ZCODE_CREATION_OK);
+        ASSERT(vcs_zcode_creation_attribution_serialize(&parsed, second) ==
+               VCS_ZCODE_CREATION_OK);
+        ASSERT(memcmp(first, second, sizeof(first)) == 0);
+        ASSERT(vcs_zcode_creation_attribution_root(&a, root_a) ==
+               VCS_ZCODE_CREATION_OK);
+        ASSERT(vcs_zcode_creation_attribution_root(&parsed, root_b) ==
+               VCS_ZCODE_CREATION_OK);
+        ASSERT(memcmp(root_a, root_b, 32) == 0);
+        static const uint8_t root_kat[32] = {
+            0x1b, 0x33, 0xb0, 0x17, 0x2b, 0xc7, 0xe9, 0x91,
+            0xd2, 0xa1, 0x1a, 0x3e, 0x9f, 0x2d, 0xd3, 0x37,
+            0x7e, 0x25, 0xbc, 0x51, 0xd0, 0x78, 0x38, 0x81,
+            0x59, 0x0c, 0xd1, 0x88, 0xd8, 0xb4, 0xc6, 0x89,
+        };
+        ASSERT(memcmp(root_a, root_kat, sizeof(root_kat)) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int creation_rejection_test(void)
+{
+    int failures = 0;
+    TEST("ZC23 creation attribution: malformed and noncanonical inputs fail closed") {
+        struct vcs_zcode_creation_attribution_v1 a, parsed, zero;
+        uint8_t wire[VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES + 1];
+        creation_fixture(&a);
+        memset(&zero, 0, sizeof(zero));
+        ASSERT(vcs_zcode_creation_attribution_serialize(&a, wire) ==
+               VCS_ZCODE_CREATION_OK);
+        ASSERT(vcs_zcode_creation_attribution_parse(wire, sizeof(wire) - 2,
+                                                    &parsed) ==
+               VCS_ZCODE_CREATION_WIRE_SIZE);
+        ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        wire[VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES] = 0;
+        ASSERT(vcs_zcode_creation_attribution_parse(wire, sizeof(wire),
+                                                    &parsed) ==
+               VCS_ZCODE_CREATION_WIRE_SIZE);
+        ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        ASSERT(vcs_zcode_creation_attribution_serialize(&a, wire) ==
+               VCS_ZCODE_CREATION_OK);
+        wire[0] ^= 1;
+        ASSERT(vcs_zcode_creation_attribution_parse(
+                   wire, VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES, &parsed) ==
+               VCS_ZCODE_CREATION_MAGIC);
+        ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        creation_fixture(&a); a.category = 99;
+        ASSERT(vcs_zcode_creation_attribution_validate(&a) ==
+               VCS_ZCODE_CREATION_CATEGORY);
+        creation_fixture(&a); a.award_atoms = 0;
+        ASSERT(vcs_zcode_creation_attribution_validate(&a) ==
+               VCS_ZCODE_CREATION_AMOUNT);
+        creation_fixture(&a); memset(a.release_root, 0, 32);
+        ASSERT(vcs_zcode_creation_attribution_validate(&a) ==
+               VCS_ZCODE_CREATION_ROOT);
+        creation_fixture(&a); a.lineage_kind =
+            VCS_ZCODE_CREATION_LINEAGE_RELEASE;
+        ASSERT(vcs_zcode_creation_attribution_validate(&a) ==
+               VCS_ZCODE_CREATION_LINEAGE);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int creation_arithmetic_test(void)
+{
+    int failures = 0;
+    TEST("ZC23 creation attribution: eight-decimal emission preserves exact cap") {
+        uint64_t atoms = UINT64_MAX;
+        ASSERT(VCS_ZC23_DECIMALS == 8);
+        ASSERT(vcs_zc23_epoch_cap_atoms(0, &atoms) == VCS_ZCODE_CREATION_OK);
+        ASSERT(atoms == UINT64_C(5000000000000));
+        ASSERT(vcs_zc23_epoch_cap_atoms(15, &atoms) ==
+               VCS_ZCODE_CREATION_OK);
+        ASSERT(atoms == VCS_ZC23_ATOMS_PER_TOKEN);
+        ASSERT(vcs_zc23_epoch_cap_atoms(16, &atoms) ==
+               VCS_ZCODE_CREATION_OK && atoms == 0);
+        ASSERT(vcs_zc23_max_supply_atoms(&atoms) == VCS_ZCODE_CREATION_OK);
+        ASSERT(atoms == VCS_ZC23_MAX_SUPPLY_ATOMS);
+        ASSERT(atoms / VCS_ZC23_ATOMS_PER_TOKEN == UINT64_C(20798753));
+        ASSERT(vcs_zc23_max_supply_atoms(NULL) == VCS_ZCODE_CREATION_NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+int test_zcode_creation_attribution(void)
+{
+    return creation_codec_test() + creation_rejection_test() +
+           creation_arithmetic_test();
+}
