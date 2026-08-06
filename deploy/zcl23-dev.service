@@ -18,7 +18,15 @@ StartLimitIntervalSec=60
 StartLimitBurst=3
 
 [Service]
-Type=simple
+# Exercise the same external hang-supervision contract developers will ship:
+# systemd waits for the node's READY=1 before arming the watchdog, then the
+# dedicated atomics-only pet thread must keep the unit alive. This lane's
+# stricter 3G/4G memory envelope makes it the safe copy-proof before restoring
+# canonical service armor.
+Type=notify
+TimeoutStartSec=1800
+WatchdogSec=120
+NotifyAccess=main
 
 # No -tor: the dev lane wants forward-progress + fresh-code exercise with
 # minimal moving parts; the onion surface is the live node's job.

@@ -91,6 +91,22 @@ static bool ph_write_header(struct byte_stream *s,
 
 static struct net_manager g_ph_nm;
 
+static int g_ph_header_votes;
+static uint32_t g_ph_header_vote_peer;
+static int g_ph_header_vote_height;
+static char g_ph_header_vote_hash[65];
+
+static void ph_record_header_vote(uint32_t peer_id, int height,
+                                  const char hash_hex[65], void *ctx)
+{
+    (void)ctx;
+    g_ph_header_votes++;
+    g_ph_header_vote_peer = peer_id;
+    g_ph_header_vote_height = height;
+    snprintf(g_ph_header_vote_hash, sizeof(g_ph_header_vote_hash), "%s",
+             hash_hex ? hash_hex : "");
+}
+
 /* Case 5 authority shims: replay the EXACT inconsistent authority pair
  * found at the finalize frontier — height = tip-1 while
  * the hash resolves to the tip block itself. */
@@ -139,6 +155,7 @@ int test_process_headers_adversarial(void)
     memset(&g_ph_nm, 0, sizeof(g_ph_nm));
     struct msg_processor mp;
     msg_processor_init(&mp, &ms, NULL, NULL, cp, dir, &g_ph_nm, NULL);
+    msg_processor_set_peer_header_vote(&mp, ph_record_header_vote, NULL);
 
     struct p2p_node node;
     ph_setup_node(&node);
@@ -202,6 +219,10 @@ int test_process_headers_adversarial(void)
     }
     PH_CHECK("two connecting regtest headers mined", mined);
     if (mined) {
+        g_ph_header_votes = 0;
+        g_ph_header_vote_peer = 0;
+        g_ph_header_vote_height = -1;
+        g_ph_header_vote_hash[0] = '\0';
         node.disconnect = false;
         atomic_store(&node.misbehavior, 0);
         struct msg_headers_stats st0, st1;
@@ -232,6 +253,13 @@ int test_process_headers_adversarial(void)
                  s.read_pos == payload_end);
         PH_CHECK("valid batch: best header promoted to h=2",
                  ms.pindex_best_header == bi2);
+        char h2_hex[65];
+        uint256_get_hex(&h2_hash, h2_hex);
+        PH_CHECK("valid batch: standard peer contributes header vote",
+                 node.services == 0 && g_ph_header_votes == 1 &&
+                 g_ph_header_vote_peer == (uint32_t)node.id &&
+                 g_ph_header_vote_height == 2 &&
+                 strcmp(g_ph_header_vote_hash, h2_hex) == 0);
         PH_CHECK("valid batch: honest peer not penalized",
                  atomic_load(&node.misbehavior) == 0 && !node.disconnect);
         stream_free(&s);

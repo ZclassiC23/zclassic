@@ -8,8 +8,9 @@
  *   - lag math: cursor below/at/above target
  *   - the shielded activation-gap rows (sprout_anchor / sapling_anchor /
  *     nullifier_history) surface a KNOWN positive-activation-cursor gap as
- *     a strongly positive lag (cursor=0), and a real forward frontier
- *     height once the store is genesis-complete
+ *     a strongly positive lag (cursor=0), and the co-committed reducer
+ *     processing frontier once the store is genesis-complete, even when its
+ *     last sparse state mutation is older
  *   - address_index reports enabled=false when -addressindex=0 is forced
  *     (it is ON by default now), never a crash
  *   - rows backed by app_runtime_node_db() (op_return_index,
@@ -28,6 +29,7 @@
 #include "sapling/incremental_merkle_tree.h"
 #include "storage/anchor_kv.h"
 #include "storage/catalog_completeness.h"
+#include "storage/coins_kv.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "util/util.h"
@@ -95,6 +97,9 @@ int test_catalog_completeness(void)
                  anchor_kv_initialize_history(db, 0));
         CC_CHECK("scenario A: nullifier history from genesis",
                  nullifier_kv_initialize_history(db, 0));
+        CC_CHECK("scenario A: coins schema", coins_kv_ensure_schema(db));
+        CC_CHECK("scenario A: reducer processed through target",
+                 coins_kv_set_applied_height_in_tx(db, 1001));
         CC_CHECK("scenario A: address_index schema",
                  address_index_ensure_schema(db));
 
@@ -114,7 +119,8 @@ int test_catalog_completeness(void)
         CC_CHECK("scenario A: sapling frontier @250",
                  anchor_kv_add_tree(db, ANCHOR_POOL_SAPLING, &sapling, 250));
 
-        /* below target: cursor(250) < target(1000) -> positive lag */
+        /* Sparse state rows are old, but the shared reducer processed every
+         * block through 1000, so all three coverage cursors are current. */
         {
             struct catalog_index_status rows[CATALOG_COMPLETENESS_MAX_INDEXES];
             size_t n = catalog_completeness_snapshot(rows, CATALOG_COMPLETENESS_MAX_INDEXES,
@@ -126,27 +132,25 @@ int test_catalog_completeness(void)
                 cc_find(rows, n, "sprout_anchor");
             CC_CHECK("scenario A: sprout_anchor found + enabled",
                      sprout_row && sprout_row->enabled);
-            CC_CHECK("scenario A: sprout_anchor cursor==100",
-                     sprout_row && sprout_row->cursor == 100);
-            CC_CHECK("scenario A: sprout_anchor lag==900 (below target)",
-                     sprout_row && sprout_row->lag == 900);
+            CC_CHECK("scenario A: sparse sprout mutation processed @1000",
+                     sprout_row && sprout_row->cursor == 1000);
+            CC_CHECK("scenario A: sprout_anchor lag==0",
+                     sprout_row && sprout_row->lag == 0);
 
             const struct catalog_index_status *sapling_row =
                 cc_find(rows, n, "sapling_anchor");
-            CC_CHECK("scenario A: sapling_anchor cursor==250",
-                     sapling_row && sapling_row->cursor == 250);
-            CC_CHECK("scenario A: sapling_anchor lag==750 (below target)",
-                     sapling_row && sapling_row->lag == 750);
+            CC_CHECK("scenario A: sparse sapling mutation processed @1000",
+                     sapling_row && sapling_row->cursor == 1000);
+            CC_CHECK("scenario A: sapling_anchor lag==0",
+                     sapling_row && sapling_row->lag == 0);
 
-            /* nullifier_history proxies the Sapling anchor frontier when
-             * its own activation cursor is 0 (see catalog_completeness.c
-             * header comment). */
+            /* Nullifiers share the same applied-through witness. */
             const struct catalog_index_status *nf_row =
                 cc_find(rows, n, "nullifier_history");
-            CC_CHECK("scenario A: nullifier_history cursor==250 (proxy)",
-                     nf_row && nf_row->cursor == 250);
-            CC_CHECK("scenario A: nullifier_history lag==750",
-                     nf_row && nf_row->lag == 750);
+            CC_CHECK("scenario A: nullifier_history processed @1000",
+                     nf_row && nf_row->cursor == 1000);
+            CC_CHECK("scenario A: nullifier_history lag==0",
+                     nf_row && nf_row->lag == 0);
 
             /* address_index: forced -addressindex=0 -> disabled path. */
             const struct catalog_index_status *ai_row =
@@ -190,13 +194,11 @@ int test_catalog_completeness(void)
             CC_CHECK("scenario A: explorer_projection disabled (no app runtime)",
                      ep_row && !ep_row->enabled);
 
-            /* worst_lag from the real snapshot: the sprout_anchor row (900)
-             * is the max among enabled rows. */
-            CC_CHECK("scenario A: worst_lag == 900",
-                     catalog_completeness_worst_lag(rows, n) == 900);
+            CC_CHECK("scenario A: enabled shielded rows caught up",
+                     catalog_completeness_worst_lag(rows, n) == 0);
         }
 
-        /* at target: cursor(250) == target(250) -> lag==0 */
+        /* Processing cursor above a smaller target clamps lag to zero. */
         {
             struct catalog_index_status rows[CATALOG_COMPLETENESS_MAX_INDEXES];
             size_t n = catalog_completeness_snapshot(rows, CATALOG_COMPLETENESS_MAX_INDEXES,
@@ -204,7 +206,7 @@ int test_catalog_completeness(void)
             const struct catalog_index_status *sapling_row =
                 cc_find(rows, n, "sapling_anchor");
             CC_CHECK("scenario A: at-target lag==0",
-                     sapling_row && sapling_row->cursor == 250 &&
+                     sapling_row && sapling_row->cursor == 1000 &&
                          sapling_row->lag == 0);
         }
 
@@ -217,7 +219,7 @@ int test_catalog_completeness(void)
             const struct catalog_index_status *sapling_row =
                 cc_find(rows, n, "sapling_anchor");
             CC_CHECK("scenario A: above-target lag clamps to 0 (not negative)",
-                     sapling_row && sapling_row->cursor == 250 &&
+                     sapling_row && sapling_row->cursor == 1000 &&
                          sapling_row->lag == 0);
         }
 

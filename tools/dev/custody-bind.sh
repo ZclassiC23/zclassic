@@ -93,24 +93,27 @@ assert_private_target() {
 }
 
 custody_snapshot() {
-    local scope="$1" datadir="$2" port="$3" raw snapshot
-    if ! raw="$(ZCL_DATADIR="$datadir" ZCL_RPCPORT="$port" \
-            "$RPC_BIN" agentsession '"custody"' \
-            "{\"wallet_scope\":\"$scope\"}" 2>/dev/null)"; then
-        fail "$scope wallet custody reader is unreachable"
-    fi
-    snapshot="$(printf '%s\n' "$raw" | jq -cer \
-        --arg scope "$scope" '
-        .result.snapshot |
-        select(.wallet_scope == $scope and .status == "CURRENT" and
-               .complete == true and
-               (.wallet_instance_id | type == "string" and
-                test("^[0-9a-fA-F]{32}$")) and
-               (.network_genesis | type == "string" and
-                test("^[0-9a-fA-F]{64}$")))' 2>/dev/null || true)"
-    [ -n "$snapshot" ] ||
-        fail "$scope wallet money state is not complete and CURRENT"
-    printf '%s\n' "$snapshot"
+    local scope="$1" datadir="$2" port="$3" raw snapshot attempt
+    for attempt in 1 2 3 4 5; do
+        raw="$(ZCL_DATADIR="$datadir" ZCL_RPCPORT="$port" \
+            timeout 12s "$RPC_BIN" agentsession '"custody"' \
+            "{\"wallet_scope\":\"$scope\"}" 2>/dev/null || true)"
+        snapshot="$(printf '%s\n' "$raw" | jq -cer \
+            --arg scope "$scope" '
+            .result.snapshot |
+            select(.wallet_scope == $scope and .status == "CURRENT" and
+                   .complete == true and
+                   (.wallet_instance_id | type == "string" and
+                    test("^[0-9a-fA-F]{32}$")) and
+                   (.network_genesis | type == "string" and
+                    test("^[0-9a-fA-F]{64}$")))' 2>/dev/null || true)"
+        if [ -n "$snapshot" ]; then
+            printf '%s\n' "$snapshot"
+            return 0
+        fi
+        [ "$attempt" -eq 5 ] || sleep 2
+    done
+    fail "$scope wallet money state is not complete and CURRENT"
 }
 
 write_spec() {
@@ -151,13 +154,47 @@ verify_private_file() {
     [ -f "$path" ] && [ "$(stat -c '%a' "$path" 2>/dev/null || true)" = 600 ]
 }
 
+binding_matches_spec() {
+    local binding="$1" spec="$2"
+    jq -e --slurpfile requested "$spec" '
+        (.wallets | sort_by(.scope)) ==
+        ($requested[0].wallets | sort_by(.scope))' "$binding" \
+        >/dev/null 2>&1
+}
+
+verify_money_current() {
+    local money="" attempt
+    for attempt in 1 2 3; do
+        money="$(timeout 25s "$NODE_BIN" metaverse agent money \
+            --dir="$BROKER_DIR" 2>/dev/null || true)"
+        if [ -n "$money" ] &&
+           ! str_contains "$money" 'node_datadir' &&
+           ! str_contains "$money" 'rpc_port' &&
+           ! str_contains "$money" "$DEV_DATADIR" &&
+           ! str_contains "$money" "$PROD_DATADIR" &&
+           printf '%s\n' "$money" | jq -e '
+               .ok == true and
+               ((.data.wallets // []) |
+                 ([.[] | select(.wallet_scope == "dev" and
+                                .status == "CURRENT")] | length) == 1 and
+                 ([.[] | select(.wallet_scope == "prod" and
+                                .status == "CURRENT")] | length) == 1)' \
+               >/dev/null 2>&1; then
+            return 0
+        fi
+        [ "$attempt" -eq 3 ] || sleep 2
+    done
+    fail "one or both identity-bound wallet snapshots are not CURRENT"
+}
+
 setup_binding() {
     assert_private_target
     command -v jq >/dev/null 2>&1 || fail "jq is required"
     [ -x "$NODE_BIN" ] || fail "current development node binary is not built"
     [ -x "$RPC_BIN" ] || fail "RPC helper is not built"
 
-    local dev_snapshot prod_snapshot spec candidate log money
+    local dev_snapshot prod_snapshot spec candidate log generation gen_spec
+    local binding_candidate
     dev_snapshot="$(custody_snapshot dev "$DEV_DATADIR" "$DEV_RPCPORT")"
     prod_snapshot="$(custody_snapshot prod "$PROD_DATADIR" "$PROD_RPCPORT")"
 
@@ -174,43 +211,46 @@ setup_binding() {
     spec="$BROKER_DIR/grant-spec.json"
     candidate="$BROKER_DIR/.grant-spec.json.tmp.$$"
     log="$BROKER_DIR/setup.log"
-    trap 'rm -f -- "$candidate"' RETURN
+    binding_candidate="$BROKER_DIR/.money-bindings.json.tmp.$$"
+    trap 'rm -f -- "$candidate" "$binding_candidate"' RETURN
     write_spec "$dev_snapshot" "$prod_snapshot" "$candidate"
-    mv -f -- "$candidate" "$spec"
 
-    if ! "$NODE_BIN" -datadir="$DEV_DATADIR" --metaverse-broker \
-            --broker-dir="$BROKER_DIR" --grant-spec="$spec" \
-            --script=inspect --requests=1 >"$log" 2>&1; then
-        chmod 600 "$log" 2>/dev/null || true
-        fail "broker refused the private custody specification"
+    if verify_private_file "$BROKER_DIR/money-bindings.json" &&
+       binding_matches_spec "$BROKER_DIR/money-bindings.json" "$candidate"; then
+        mv -f -- "$candidate" "$spec"
+    else
+        install -d -m 700 "$BROKER_DIR/generations"
+        generation="$(mktemp -d "$BROKER_DIR/generations/gen-XXXXXXXX")"
+        chmod 700 "$generation"
+        gen_spec="$generation/grant-spec.json"
+        install -m 600 "$candidate" "$gen_spec"
+        if ! "$NODE_BIN" -datadir="$DEV_DATADIR" --metaverse-broker \
+                --broker-dir="$generation" --grant-spec="$gen_spec" \
+                --script=inspect --requests=1 >"$generation/setup.log" 2>&1; then
+            chmod 600 "$generation/setup.log" 2>/dev/null || true
+            install -m 600 "$generation/setup.log" "$log" 2>/dev/null || true
+            fail "broker refused the private custody specification"
+        fi
+        chmod 600 "$generation/setup.log" 2>/dev/null || true
+        verify_private_file "$generation/money-bindings.json" ||
+            fail "broker did not persist a private money binding"
+        install -m 600 "$generation/money-bindings.json" "$binding_candidate"
+        mv -f -- "$binding_candidate" "$BROKER_DIR/money-bindings.json"
+        mv -f -- "$candidate" "$spec"
+        install -m 600 "$generation/setup.log" "$log"
     fi
-    chmod 600 "$log" 2>/dev/null || true
     verify_private_file "$spec" || fail "private grant specification mode drifted"
     verify_private_file "$BROKER_DIR/money-bindings.json" ||
         fail "broker did not persist a private money binding"
-
-    if ! money="$("$NODE_BIN" metaverse agent money \
-            --dir="$BROKER_DIR" 2>/dev/null)"; then
-        fail "identity-bound money reader is unreachable"
-    fi
-    if str_contains "$money" 'node_datadir' || str_contains "$money" 'rpc_port' ||
-       str_contains "$money" "$DEV_DATADIR" || str_contains "$money" "$PROD_DATADIR"; then
-        fail "public money output exposed a private endpoint"
-    fi
-    printf '%s\n' "$money" | jq -e '
-        .ok == true and
-        ((.data.wallets // []) |
-          ([.[] | select(.wallet_scope == "dev" and .status == "CURRENT")] |
-           length) == 1 and
-          ([.[] | select(.wallet_scope == "prod" and .status == "CURRENT")] |
-           length) == 1)' >/dev/null 2>&1 ||
-        fail "one or both identity-bound wallet snapshots are not CURRENT"
+    binding_matches_spec "$BROKER_DIR/money-bindings.json" "$spec" ||
+        fail "persisted money binding differs from the owner specification"
+    verify_money_current
 
     echo "custody-bind: ready dev=CURRENT prod=CURRENT identities=bound endpoints=private funds_moved=false"
 }
 
 selftest() {
-    local temp fake_rpc fake_node out duplicate_out
+    local temp fake_rpc fake_node call_log out rerun_out rotate_out duplicate_out
     temp="$(mktemp -d /tmp/zcl23-custody-bind-selftest-XXXXXX)"
     case "$temp" in
         /tmp/zcl23-custody-bind-selftest-*) ;;
@@ -219,13 +259,14 @@ selftest() {
     trap 'rm -r -- "$temp"' RETURN
     fake_rpc="$temp/fake-rpc"
     fake_node="$temp/fake-node"
+    call_log="$temp/broker-calls"
     printf '%s\n' \
         '#!/bin/sh' \
         'id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
-        '[ "${ZCL_RPCPORT:-}" = 2 ] && id=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
+        '[ "${ZCL_RPCPORT:-}" != 1 ] && id=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
         '[ "${ZCL_CUSTODY_BIND_DUPLICATE_FIXTURE:-0}" = 1 ] && id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
         'scope=dev' \
-        '[ "${ZCL_RPCPORT:-}" = 2 ] && scope=prod' \
+        '[ "${ZCL_RPCPORT:-}" != 1 ] && scope=prod' \
         'printf '\''{"result":{"ok":true,"snapshot":{"wallet_scope":"%s","wallet_instance_id":"%s","network_genesis":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","status":"CURRENT","complete":true,"confirmed_zcl":"0.00000000"}}}\n'\'' "$scope" "$id"' \
         >"$fake_rpc"
     printf '%s\n' \
@@ -235,6 +276,7 @@ selftest() {
         'for arg in "$@"; do case "$arg" in --broker-dir=*) dir=${arg#*=} ;; --grant-spec=*) spec=${arg#*=} ;; esac; done' \
         'case " $* " in' \
         '  *" --metaverse-broker "*)' \
+        '    [ -z "${ZCL_CUSTODY_BIND_CALL_LOG:-}" ] || printf x >>"$ZCL_CUSTODY_BIND_CALL_LOG"' \
         '    jq '\''{schema:"zcl.agent_money_bindings.v1",wallets:.wallets}'\'' "$spec" >"$dir/money-bindings.json"' \
         '    chmod 600 "$dir/money-bindings.json"' \
         '    printf '\''{}\n'\'' >"$dir/broker.json"; chmod 600 "$dir/broker.json"; exit 0 ;;' \
@@ -244,7 +286,8 @@ selftest() {
         'exit 1' >"$fake_node"
     chmod 700 "$fake_rpc" "$fake_node"
 
-    out="$(ZCL_CUSTODY_BIN="$fake_node" ZCL_CUSTODY_RPC_BIN="$fake_rpc" \
+    out="$(ZCL_CUSTODY_BIND_CALL_LOG="$call_log" \
+        ZCL_CUSTODY_BIN="$fake_node" ZCL_CUSTODY_RPC_BIN="$fake_rpc" \
         ZCL_CUSTODY_DEV_DATADIR="$temp/dev" \
         ZCL_CUSTODY_PROD_DATADIR="$temp/prod" \
         ZCL_CUSTODY_DEV_RPCPORT=1 ZCL_CUSTODY_PROD_RPCPORT=2 \
@@ -252,10 +295,31 @@ selftest() {
     str_contains "$out" 'ready dev=CURRENT prod=CURRENT' || return 1
     verify_private_file "$temp/broker/grant-spec.json" || return 1
     verify_private_file "$temp/broker/money-bindings.json" || return 1
+    [ "$(wc -c <"$call_log")" = 1 ] || return 1
     if str_contains "$out" 'aaaaaaaa' || str_contains "$out" 'cccccccc' ||
        str_contains "$out" "$temp" || str_contains "$out" 'rpc_port'; then
         return 1
     fi
+
+    rerun_out="$(ZCL_CUSTODY_BIND_CALL_LOG="$call_log" \
+        ZCL_CUSTODY_BIN="$fake_node" ZCL_CUSTODY_RPC_BIN="$fake_rpc" \
+        ZCL_CUSTODY_DEV_DATADIR="$temp/dev" \
+        ZCL_CUSTODY_PROD_DATADIR="$temp/prod" \
+        ZCL_CUSTODY_DEV_RPCPORT=1 ZCL_CUSTODY_PROD_RPCPORT=2 \
+        "$0" setup --broker-dir="$temp/broker")"
+    str_contains "$rerun_out" 'ready dev=CURRENT prod=CURRENT' || return 1
+    [ "$(wc -c <"$call_log")" = 1 ] || return 1
+
+    rotate_out="$(ZCL_CUSTODY_BIND_CALL_LOG="$call_log" \
+        ZCL_CUSTODY_BIN="$fake_node" ZCL_CUSTODY_RPC_BIN="$fake_rpc" \
+        ZCL_CUSTODY_DEV_DATADIR="$temp/dev" \
+        ZCL_CUSTODY_PROD_DATADIR="$temp/prod" \
+        ZCL_CUSTODY_DEV_RPCPORT=1 ZCL_CUSTODY_PROD_RPCPORT=3 \
+        "$0" setup --broker-dir="$temp/broker")"
+    str_contains "$rotate_out" 'ready dev=CURRENT prod=CURRENT' || return 1
+    [ "$(wc -c <"$call_log")" = 2 ] || return 1
+    [ "$(jq -r '.wallets[] | select(.scope == "prod") | .rpc_port' \
+        "$temp/broker/money-bindings.json")" = 3 ] || return 1
 
     if duplicate_out="$(ZCL_CUSTODY_BIND_DUPLICATE_FIXTURE=1 \
         ZCL_CUSTODY_BIN="$fake_node" ZCL_CUSTODY_RPC_BIN="$fake_rpc" \
