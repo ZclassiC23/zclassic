@@ -15,6 +15,7 @@
 #include "controllers/wallet_diagnostic_controller.h"
 #include "controllers/wallet_helpers.h"
 #include "controllers/wallet_rescan_controller.h"
+#include "controllers/vault_intent_controller.h"
 #include "core/core_io.h"
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
@@ -246,6 +247,51 @@ static bool rpc_safety_save_projected_block(struct node_db *ndb,
 int test_rpc_safety(void)
 {
     int failures = 0;
+
+    printf("rpc_safety: fanout preflight failure creates no address... ");
+    {
+        ensure_rpc_warmup_finished_once();
+        struct wallet wallet; wallet_init(&wallet);
+        struct main_state ms; main_state_init(&ms);
+        struct rpc_table tbl; rpc_table_init(&tbl);
+        register_vault_intent_rpc_commands(&tbl);
+        wallet_rpc_context_set_base(&wallet, &ms, "/tmp", NULL, NULL, NULL);
+        wallet_rpc_context_set_node_db(NULL);
+        wallet_rpc_context_set_coins_tip(NULL);
+        size_t keys_before = wallet.keystore.num_keys;
+
+        struct json_value params, input, result;
+        json_init(&params); json_set_array(&params);
+        json_init(&input); json_set_object(&input);
+        json_init(&result);
+        (void)json_push_kv_str(&input, "wallet_scope", "dev");
+        (void)json_push_kv_int(&input, "recipient_value_zat", 1000);
+        (void)json_push_kv_int(&input, "maximum_fee_zat", 10000);
+        (void)json_push_kv_int(&input, "concurrency", 10);
+        (void)json_push_kv_str(&input, "idempotency_key", "rpc-safety-1");
+        (void)json_push_back(&params, &input);
+        bool handled = rpc_table_execute(
+            &tbl, "vault_intent_fanout_plan", &params, &result);
+        const char *code = json_get_str(json_get(&result, "code"));
+        bool ok = handled && !json_get_bool(json_get(&result, "ok")) &&
+            code && strcmp(code, "WALLET_UNAVAILABLE") == 0 &&
+            wallet.keystore.num_keys == keys_before &&
+            json_get(&result, "address") == NULL &&
+            json_get(&result, "effects") == NULL;
+        if (!ok)
+            printf("(handled=%d code=%s keys=%zu->%zu address=%d effects=%d) ",
+                   (int)handled, code ? code : "NULL", keys_before,
+                   wallet.keystore.num_keys,
+                   json_get(&result, "address") != NULL,
+                   json_get(&result, "effects") != NULL);
+        json_free(&params); json_free(&input); json_free(&result);
+        wallet_rpc_context_set_base(NULL, NULL, NULL, NULL, NULL, NULL);
+        wallet_rpc_context_set_node_db(NULL);
+        wallet_rpc_context_set_coins_tip(NULL);
+        main_state_free(&ms); wallet_free(&wallet);
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
 
     printf("rpc_safety: reindexchainstate rejects runtime replay... ");
     {

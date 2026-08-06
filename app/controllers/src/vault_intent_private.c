@@ -97,16 +97,6 @@ static enum vault_intent_route vip_route_parse(const char *route)
     return 0;
 }
 
-static bool vip_idempotency_valid(const char *key)
-{
-    if (!key || !key[0] || strlen(key) > VAULT_INTENT_IDEMPOTENCY_MAX)
-        return false;
-    for (const unsigned char *p = (const unsigned char *)key; *p; p++)
-        if (*p < 0x20 || *p > 0x7e)
-            return false;
-    return true;
-}
-
 static bool vip_effect_parse(const struct json_value *value,
                              struct vip_effect *out, int64_t *total,
                              size_t *transparent, size_t *shielded)
@@ -355,7 +345,7 @@ bool vault_intent_private_plan(const struct json_value *input,
                   "wallet_scope must explicitly be dev or prod");
         return true;
     }
-    if (!vip_idempotency_valid(idem)) {
+    if (!vault_intent_idempotency_key_valid(idem)) {
         vip_error(result, "IDEMPOTENCY_KEY_REQUIRED",
                   "idempotency_key must be 1..64 printable characters");
         return true;

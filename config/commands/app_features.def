@@ -161,123 +161,107 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 
-/* The six ZNAM writes below are READY. Each one's backing RPC
- * (app/controllers/src/name_controller.c) validates the name, builds the
- * OP_RETURN, coin-selects a funding input, signs every vin, and hands the tx
- * to zslp_command_commit_with_op_return -> wallet_commit_transaction, which
- * admits it to the mempool and relays it. Owner authorization is real and
- * doubly enforced: the controller refuses to build unless the wallet holds the
- * current owner's key AND funds a coin at that exact address
- * (zslp_command_build_owner_base_tx), and the ZNAM projection independently
- * re-derives the owner from the confirmed tx's vin[0]. RENEW is
- * permissionless by protocol design and funds from any wallet coin. */
+/* The six ZNAM writes use one durable identity-bound intent seam. Planning
+ * signs the exact transaction, reserves its exact inputs plus maximum fee,
+ * and returns only a sanitized plan receipt. Commit accepts only the explicit
+ * wallet scope and durable plan ID, then publishes those same bytes once. */
 
 ZCL_COMMAND_READY_COMMAND(
     "app.names.register", "app.names", "", "Register a ZCL Name on-chain",
-    "Plan/commit ZNAM registration: without confirm, a non-mutating plan "
-    "naming the registration and its commit_input; with confirm:true, the "
-    "broadcast txid and fee paid from name_register at call time "
-    "(stage=committed, status=broadcast). A node with no wallet context is "
-    "reported BLOCKED (NAME_WRITE_NOT_BROADCAST), never as a silent success.",
+    "Prepare an exact signed ZNAM registration and atomically reserve its "
+    "inputs and maximum fee. Commit only the returned scope/plan_id; stale "
+    "custody, changed tip/snapshot, duplicate input, or replay mismatch fails "
+    "closed before publication.",
     0,
     "names,znam,register", "zcl.app_name_register.input.v1",
-    "zcl.app_name_txresult.v1", "name,type,value,confirm", "name",
-    "zclassic23 app names register --input='{\"name\":\"alice\",\"type\":\"zaddr\",\"value\":\"zs1..\",\"confirm\":true}'",
+    "zcl.app_name_txresult.v1", "wallet_scope,name,type,value,idempotency_key,plan_id,confirm", "wallet_scope",
+    "zclassic23 app names register --input='{\"wallet_scope\":\"dev\",\"name\":\"alice\",\"type\":\"zaddr\",\"value\":\"zs1..\",\"idempotency_key\":\"name-register-1\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_ZNAM,
-    ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_name_register)
 
 ZCL_COMMAND_READY_COMMAND(
     "app.names.update", "app.names", "", "Replace a ZCL Name's primary target",
-    "Plan/commit owner-only target replacement: without confirm, a "
-    "non-mutating plan; with confirm:true, the broadcast txid and fee from "
-    "name_update at call time (stage=committed, status=broadcast). Fails with "
-    "the controller's own message when the wallet does not hold the current "
-    "owner's key or has no funded coin at that address.", 0,
+    "Prepare an exact owner-authorized target replacement under explicit "
+    "custody, then commit the durable plan once. Exact inputs and maximum fee "
+    "remain reserved across restart until terminal reconciliation.", 0,
     "names,znam,update", "zcl.app_name_register.input.v1",
-    "zcl.app_name_txresult.v1", "name,type,value,confirm", "name",
-    "zclassic23 app names update --input='{\"name\":\"alice\",\"type\":\"zaddr\",\"value\":\"zs1..\",\"confirm\":true}'",
+    "zcl.app_name_txresult.v1", "wallet_scope,name,type,value,idempotency_key,plan_id,confirm", "wallet_scope",
+    "zclassic23 app names update --input='{\"wallet_scope\":\"dev\",\"name\":\"alice\",\"type\":\"zaddr\",\"value\":\"zs1..\",\"idempotency_key\":\"name-update-1\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_ZNAM,
-    ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_name_update)
 
 ZCL_COMMAND_READY_COMMAND(
     "app.names.transfer", "app.names", "", "Transfer ZCL Name ownership",
-    "Plan/commit owner-only ownership transfer: without confirm, a "
-    "non-mutating plan; with confirm:true, the broadcast txid and fee from "
-    "name_transfer at call time (stage=committed, status=broadcast). The new "
-    "owner takes effect when the tx confirms and the ZNAM projection applies "
-    "it, not at broadcast.", 0,
+    "Prepare an exact owner-authorized transfer under explicit custody, then "
+    "commit the durable plan once. The new owner is projected only after the "
+    "transaction confirms.", 0,
     "names,znam,transfer", "zcl.app_name_transfer.input.v1",
-    "zcl.app_name_txresult.v1", "name,new_owner,confirm", "name",
-    "zclassic23 app names transfer --input='{\"name\":\"alice\",\"new_owner\":\"t1..\",\"confirm\":true}'",
+    "zcl.app_name_txresult.v1", "wallet_scope,name,new_owner,idempotency_key,plan_id,confirm", "wallet_scope",
+    "zclassic23 app names transfer --input='{\"wallet_scope\":\"dev\",\"name\":\"alice\",\"new_owner\":\"t1..\",\"idempotency_key\":\"name-transfer-1\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_ZNAM,
-    ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_name_transfer)
 
 ZCL_COMMAND_READY_COMMAND(
     "app.names.renew", "app.names", "", "Renew a ZCL Name registration term",
-    "Plan/commit permissionless renewal: without confirm, a non-mutating "
-    "plan; with confirm:true, the broadcast txid and fee from name_renew at "
-    "call time (stage=committed, status=broadcast). RENEW is permissionless "
-    "by protocol — the fee comes from any wallet coin and the projection "
-    "applies no owner check.", 0,
+    "Prepare an exact permissionless renewal funded by the explicit custody "
+    "scope, reserve its exact inputs and fee, then commit the durable plan "
+    "once.", 0,
     "names,znam,renew", "zcl.app_name_renew.input.v1",
-    "zcl.app_name_txresult.v1", "name,confirm", "name",
-    "zclassic23 app names renew --input='{\"name\":\"alice\",\"confirm\":true}'",
+    "zcl.app_name_txresult.v1", "wallet_scope,name,idempotency_key,plan_id,confirm", "wallet_scope",
+    "zclassic23 app names renew --input='{\"wallet_scope\":\"dev\",\"name\":\"alice\",\"idempotency_key\":\"name-renew-1\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_ZNAM,
-    ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_name_renew)
 
 ZCL_COMMAND_READY_COMMAND(
     "app.names.set-record", "app.names", "", "Set a multi-coin address record",
-    "Plan/commit owner-only multi-coin record (BTC/LTC/DOGE/..): without "
-    "confirm, a non-mutating plan; with confirm:true, the broadcast txid and "
-    "fee from name_set_record at call time (stage=committed, "
-    "status=broadcast). This adds a resolver record; it does not change the "
-    "name's primary target — that is app names update.", 0,
+    "Prepare an exact owner-authorized multi-coin record under explicit "
+    "custody, reserve its exact inputs and fee, then commit the durable plan "
+    "once. This does not replace the primary target.", 0,
     "names,znam,record", "zcl.app_name_register.input.v1",
-    "zcl.app_name_txresult.v1", "name,type,value,confirm", "name",
-    "zclassic23 app names set-record --input='{\"name\":\"alice\",\"type\":\"btc\",\"value\":\"bc1..\",\"confirm\":true}'",
+    "zcl.app_name_txresult.v1", "wallet_scope,name,type,value,idempotency_key,plan_id,confirm", "wallet_scope",
+    "zclassic23 app names set-record --input='{\"wallet_scope\":\"dev\",\"name\":\"alice\",\"type\":\"btc\",\"value\":\"bc1..\",\"idempotency_key\":\"name-record-1\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_ZNAM,
-    ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_name_set_record)
 
 ZCL_COMMAND_READY_COMMAND(
     "app.names.set-text", "app.names", "", "Set a text record on a ZCL Name",
-    "Plan/commit owner-only key/value text record (email, url, avatar, ..): "
-    "without confirm, a non-mutating plan; with confirm:true, the broadcast "
-    "txid and fee from name_set_text at call time (stage=committed, "
-    "status=broadcast). Omitting value clears the key.", 0,
+    "Prepare an exact owner-authorized text record under explicit custody, "
+    "reserve its exact inputs and fee, then commit the durable plan once. "
+    "Omitting value clears the key.", 0,
     "names,znam,text", "zcl.app_name_set_text.input.v1",
-    "zcl.app_name_txresult.v1", "name,key,value,confirm", "name",
-    "zclassic23 app names set-text --input='{\"name\":\"alice\",\"key\":\"url\",\"value\":\"https://..\",\"confirm\":true}'",
+    "zcl.app_name_txresult.v1", "wallet_scope,name,key,value,idempotency_key,plan_id,confirm", "wallet_scope",
+    "zclassic23 app names set-text --input='{\"wallet_scope\":\"dev\",\"name\":\"alice\",\"key\":\"url\",\"value\":\"https://..\",\"idempotency_key\":\"name-text-1\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_APP_WRITE,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_ZNAM,
-    ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_name_set_text)
 
 /* ── ZSLP tokens ───────────────────────────────────────────────────── */
@@ -296,66 +280,66 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_COMMAND(
     "app.tokens.create", "app.tokens", "", "Create a ZSLP token",
-    "Plan/commit a custody-correct ZSLP GENESIS. The committed transaction "
-    "creates the initial token output and a wallet-controlled mint baton, is "
-    "durably saved before peer relay, and returns token_id/txid/fee.", 0,
+    "Prepare one exact signed ZSLP GENESIS under an explicit custody wallet, "
+    "atomically reserve its fee inputs, then commit only by durable plan ID. "
+    "Private wallet material never appears in the receipt.", 0,
     "tokens,zslp,create,genesis", "zcl.app_token_create.input.v1",
-    "zcl.app_token_txresult.v1", "ticker,name,decimals,supply,confirm", "ticker",
-    "zclassic23 app tokens create --input='{\"ticker\":\"DEMO\",\"name\":\"Demo Token\",\"decimals\":0,\"supply\":\"1000\"}'",
+    "zcl.app_token_txresult.v1", "wallet_scope,ticker,name,decimals,supply,idempotency_key,plan_id,confirm", "wallet_scope",
+    "zclassic23 app tokens create --input='{\"wallet_scope\":\"dev\",\"ticker\":\"DEMO\",\"name\":\"Demo Token\",\"decimals\":0,\"supply\":\"1000\",\"idempotency_key\":\"demo-genesis-1\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_token_create)
 
 ZCL_COMMAND_READY_COMMAND(
     "app.tokens.send", "app.tokens", "", "Send ZSLP token units",
-    "Plan/commit a token transfer that explicitly spends confirmed token "
-    "outputs, returns token change, funds fees only from non-token coins, "
-    "persists the wallet, relays to peers, and returns the txid.", 0,
+    "Prepare one exact signed token transfer under an explicit custody wallet, "
+    "atomically reserve its token and fee inputs, then commit only by durable "
+    "plan ID. The private recipient is omitted from receipts.", 0,
     "tokens,zslp,send", "zcl.app_token_send.input.v1",
-    "zcl.app_token_txresult.v1", "token_id,to,units,confirm", "token_id",
-    "zclassic23 app tokens send --input='{\"token_id\":\"<64-hex>\",\"to\":\"t1...\",\"units\":\"25\"}'",
+    "zcl.app_token_txresult.v1", "wallet_scope,token_id,to,units,idempotency_key,plan_id,confirm", "wallet_scope",
+    "zclassic23 app tokens send --input='{\"wallet_scope\":\"dev\",\"token_id\":\"<64-hex>\",\"to\":\"t1...\",\"units\":\"25\",\"idempotency_key\":\"token-send-1\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_token_send)
 
 ZCL_COMMAND_READY_COMMAND(
     "app.tokens.mint", "app.tokens", "", "Mint ZSLP token units",
-    "Plan/commit an authorized MINT that explicitly consumes the confirmed "
-    "wallet-owned mint baton, recreates the baton, persists the wallet, "
-    "relays to peers, and returns the txid.", 0,
+    "Prepare one exact authorized MINT under an explicit custody wallet, "
+    "atomically reserve its unique mint baton and fee inputs, then commit only "
+    "by durable plan ID.", 0,
     "tokens,zslp,mint", "zcl.app_token_send.input.v1",
-    "zcl.app_token_txresult.v1", "token_id,to,units,confirm", "token_id",
-    "zclassic23 app tokens mint --input='{\"token_id\":\"<64-hex>\",\"to\":\"t1...\",\"units\":\"100\"}'",
+    "zcl.app_token_txresult.v1", "wallet_scope,token_id,to,units,idempotency_key,plan_id,confirm", "wallet_scope",
+    "zclassic23 app tokens mint --input='{\"wallet_scope\":\"dev\",\"token_id\":\"<64-hex>\",\"to\":\"t1...\",\"units\":\"100\",\"idempotency_key\":\"token-mint-1\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_token_mint)
 
 ZCL_COMMAND_READY_COMMAND(
     "app.tokens.burn", "app.tokens", "", "Burn ZSLP token units",
-    "Plan/commit an explicit burn: spends only confirmed VALID token outputs, "
-    "returns any remainder as token change, and reports the provisional txid. "
-    "Supply changes only when strict validity confirms the transaction.", 0,
+    "Prepare one exact explicit burn under an explicit custody wallet, "
+    "atomically reserve its VALID token and fee inputs, then commit only by "
+    "durable plan ID. Supply changes only after strict confirmation.", 0,
     "tokens,zslp,burn,supply", "zcl.app_token_burn.input.v1",
-    "zcl.app_token_txresult.v1", "token_id,units,confirm", "token_id",
-    "zclassic23 app tokens burn --input='{\"token_id\":\"<64-hex>\",\"units\":\"10\"}'",
+    "zcl.app_token_txresult.v1", "wallet_scope,token_id,units,idempotency_key,plan_id,confirm", "wallet_scope",
+    "zclassic23 app tokens burn --input='{\"wallet_scope\":\"dev\",\"token_id\":\"<64-hex>\",\"units\":\"10\",\"idempotency_key\":\"token-burn-1\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_token_burn)
 
 /* ── Messaging (ZMSG) ──────────────────────────────────────────────── */

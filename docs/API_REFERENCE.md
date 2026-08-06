@@ -59,17 +59,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 531 |
+| Registry entries (branches + leaves) | 532 |
 | Top-level roots | 11 |
 | Branches | 120 |
-| Leaves (dispatchable command paths) | 411 |
-| … `ready` (live handler in this build) | 362 |
+| Leaves (dispatchable command paths) | 412 |
+| … `ready` (live handler in this build) | 363 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 135 |
+| Leaves with `effect=mutate` | 136 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 90 |
+| Leaves requiring **owner** authority | 91 |
 
 Per source file:
 
@@ -84,7 +84,7 @@ Per source file:
 | `config/commands/dev.def` | 46 | 11 | 35 |
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
-| `config/commands/vault.def` | 21 | 4 | 17 |
+| `config/commands/vault.def` | 22 | 4 | 18 |
 | `config/commands/zcode.def` | 95 | 18 | 77 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
@@ -440,22 +440,22 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `app names resolve` | ready | read / read / public · fast/low | **`name`** | `zcl.app_name_record.v1` | `zclassic23 app names resolve alice` | Resolve a ZCL Name to its target |
 | `app names list` | ready | read / read / public · fast/low | none | `zcl.app_name_index.v1` | `zclassic23 app names list` | List registered ZCL Names |
-| `app names register` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `type`, `value`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names register --input='{"name":"alice","type":"zaddr","value":"zs1..","confirm":true}'` | Register a ZCL Name on-chain |
-| `app names update` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `type`, `value`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names update --input='{"name":"alice","type":"zaddr","value":"zs1..","confirm":true}'` | Replace a ZCL Name's primary target |
-| `app names transfer` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `new_owner`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names transfer --input='{"name":"alice","new_owner":"t1..","confirm":true}'` | Transfer ZCL Name ownership |
-| `app names renew` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names renew --input='{"name":"alice","confirm":true}'` | Renew a ZCL Name registration term |
-| `app names set-record` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `type`, `value`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names set-record --input='{"name":"alice","type":"btc","value":"bc1..","confirm":true}'` | Set a multi-coin address record |
-| `app names set-text` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`name`**, `key`, `value`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names set-text --input='{"name":"alice","key":"url","value":"https://..","confirm":true}'` | Set a text record on a ZCL Name |
+| `app names register` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `type`, `value`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names register --input='{"wallet_scope":"dev","name":"alice","type":"zaddr","value":"zs1..","idempotency_key":"name-register-1"}'` | Register a ZCL Name on-chain |
+| `app names update` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `type`, `value`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names update --input='{"wallet_scope":"dev","name":"alice","type":"zaddr","value":"zs1..","idempotency_key":"name-update-1"}'` | Replace a ZCL Name's primary target |
+| `app names transfer` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `new_owner`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names transfer --input='{"wallet_scope":"dev","name":"alice","new_owner":"t1..","idempotency_key":"name-transfer-1"}'` | Transfer ZCL Name ownership |
+| `app names renew` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names renew --input='{"wallet_scope":"dev","name":"alice","idempotency_key":"name-renew-1"}'` | Renew a ZCL Name registration term |
+| `app names set-record` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `type`, `value`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names set-record --input='{"wallet_scope":"dev","name":"alice","type":"btc","value":"bc1..","idempotency_key":"name-record-1"}'` | Set a multi-coin address record |
+| `app names set-text` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `name`, `key`, `value`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_name_txresult.v1` | `zclassic23 app names set-text --input='{"wallet_scope":"dev","name":"alice","key":"url","value":"https://..","idempotency_key":"name-text-1"}'` | Set a text record on a ZCL Name |
 
 #### `app.tokens` — Tokens
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `app tokens list` | ready | read / read / public · fast/low | none | `zcl.app_token_index.v1` | `zclassic23 app tokens list` | List ZSLP tokens on the network |
-| `app tokens create` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`ticker`**, `name`, `decimals`, `supply`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens create --input='{"ticker":"DEMO","name":"Demo Token","decimals":0,"supply":"1000"}'` | Create a ZSLP token |
-| `app tokens send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_id`**, `to`, `units`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens send --input='{"token_id":"<64-hex>","to":"t1...","units":"25"}'` | Send ZSLP token units |
-| `app tokens mint` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_id`**, `to`, `units`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens mint --input='{"token_id":"<64-hex>","to":"t1...","units":"100"}'` | Mint ZSLP token units |
-| `app tokens burn` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`token_id`**, `units`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens burn --input='{"token_id":"<64-hex>","units":"10"}'` | Burn ZSLP token units |
+| `app tokens create` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `ticker`, `name`, `decimals`, `supply`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens create --input='{"wallet_scope":"dev","ticker":"DEMO","name":"Demo Token","decimals":0,"supply":"1000","idempotency_key":"demo-genesis-1"}'` | Create a ZSLP token |
+| `app tokens send` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `token_id`, `to`, `units`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens send --input='{"wallet_scope":"dev","token_id":"<64-hex>","to":"t1...","units":"25","idempotency_key":"token-send-1"}'` | Send ZSLP token units |
+| `app tokens mint` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `token_id`, `to`, `units`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens mint --input='{"wallet_scope":"dev","token_id":"<64-hex>","to":"t1...","units":"100","idempotency_key":"token-mint-1"}'` | Mint ZSLP token units |
+| `app tokens burn` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`wallet_scope`**, `token_id`, `units`, `idempotency_key`, `plan_id`, `confirm` | `zcl.app_token_txresult.v1` | `zclassic23 app tokens burn --input='{"wallet_scope":"dev","token_id":"<64-hex>","units":"10","idempotency_key":"token-burn-1"}'` | Burn ZSLP token units |
 
 #### `app.messaging` — Messaging
 
@@ -856,7 +856,8 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `vault intent issue` | ready | mutate / wallet / **owner** · foreground/moderate | `asset`, **`amount`** | `zcl.vault_intent_issue.v1` | `zclassic23 vault intent issue --input='{"asset":"ZCL","amount":"0.01"}'` | Create a fresh transparent ZCL payment request |
-| `vault intent plan` | ready | mutate / wallet / **owner** · background/high | **`wallet_scope`**, `route`, `from`, **`effects`**, `idempotency_key` | `zcl.vault_intent_plan.v1` | `printf '%s' '{"wallet_scope":"dev","route":"transparent","effects":[{"asset":"ZCL","to":"t1...","amount":"0.01"}]}' \| zclassic23 vault intent plan --input=-` | Persist an exact encrypted transaction plan |
+| `vault intent plan` | ready | mutate / wallet / **owner** · background/high | **`wallet_scope`**, `route`, `from`, **`effects`**, **`idempotency_key`** | `zcl.vault_intent_plan.v1` | `printf '%s' '{"wallet_scope":"dev","route":"transparent","idempotency_key":"payment-001","effects":[{"asset":"ZCL","to":"t1...","amount":"0.01"}]}' \| zclassic23 vault intent plan --input=-` | Persist an exact encrypted transaction plan |
+| `vault intent fanout-plan` | ready | mutate / wallet / **owner** · background/high | **`wallet_scope`**, **`recipient_value_zat`**, **`maximum_fee_zat`**, **`concurrency`**, **`idempotency_key`** | `zcl.vault_intent_fanout_plan.v1` | `zclassic23 vault intent fanout-plan --input='{"wallet_scope":"dev","recipient_value_zat":1000,"maximum_fee_zat":10000,"concurrency":10,"idempotency_key":"parallel-lab-001"}'` | Prepare private self-custody outputs for parallel transactions |
 | `vault intent commit` | ready | mutate / wallet / **owner**, idempotency · foreground/high | **`wallet_scope`**, **`plan_id`**, **`confirm`** | `zcl.vault_intent_commit.v1` | `zclassic23 vault intent commit --input='{"wallet_scope":"dev","plan_id":"<64hex>","confirm":true}'` | Commit one exact durable plan without double-paying |
 | `vault intent status` | ready | read / read / operator · fast/low | **`plan_id`** | `zcl.vault_intent_status.v1` | `zclassic23 vault intent status --input='{"plan_id":"<64hex>"}'` | Read one transaction intent's chain-aware state |
 | `vault intent list` | ready | read / read / operator · fast/low | none | `zcl.vault_intent_list.v1` | `zclassic23 vault intent list` | List the newest durable transaction intents |

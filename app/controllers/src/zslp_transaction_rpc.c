@@ -13,6 +13,9 @@
 #include <stdint.h>
 #include <stdio.h>
 
+/* Implemented by the custody-bound intent controller. */
+void register_zslp_intent_rpc_command(struct rpc_table *table);
+
 static bool zslp_tx_rpc_units(const struct json_value *v, uint64_t *out)
 {
     const char *s = json_get_str(v);
@@ -200,4 +203,5 @@ void register_zslp_transaction_rpc_commands(struct rpc_table *t)
     };
     for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
         rpc_table_must_append(t, &commands[i]);
+    register_zslp_intent_rpc_command(t);
 }

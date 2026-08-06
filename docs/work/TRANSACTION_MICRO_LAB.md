@@ -182,8 +182,12 @@ tools/dev/transaction-micro-lab.sh record \
   --block-hash=<64-lowercase-hex>
 ```
 
-`conflicted`, `expired`, and `reorged` are private append-only corrective states. A
-reconfirmed transaction appends a new `confirmed` event with the same txid and
+`conflicted`, `expired`, and `reorged` are private append-only corrective states.
+A recorder override still cannot point inside the repository or weaken the
+operator-owned mode-0600 file requirement, and
+`make check-no-live-lab-history` rejects tracked campaign events or recipient
+wallet manifests before push. A reconfirmed transaction appends a new
+`confirmed` event with the same txid and
 new block identity. The checker rejects slot/case drift, changed accounting,
 duplicate broadcasts, txid reuse, impossible transitions, missing block
 identity, over-ceiling fees, and sensitive field names.

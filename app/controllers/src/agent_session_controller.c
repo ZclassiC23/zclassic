@@ -381,9 +381,10 @@ static bool ags_liquidity(const struct json_value *in,
                            plan.fanout_maximum_fee_zat);
     (void)json_push_kv_int(&fanout, "maximum_slots_under_policy",
                            plan.maximum_fanout_slots);
-    (void)json_push_kv_str(&fanout, "address_command",
-                           "vault.intent.issue");
-    (void)json_push_kv_str(&fanout, "plan_command", "vault.intent.plan");
+    (void)json_push_kv_str(&fanout, "prepare_command",
+                           "vault.intent.fanout-plan");
+    (void)json_push_kv_str(&fanout, "plan_command",
+                           "vault.intent.fanout-plan");
     (void)json_push_kv_str(&fanout, "commit_command",
                            "vault.intent.commit");
     (void)json_push_kv_str(&fanout, "route", "transparent");
@@ -393,7 +394,7 @@ static bool ags_liquidity(const struct json_value *in,
     (void)json_push_kv_bool(result, "advisory", true);
     (void)json_push_kv_str(result, "next_command",
         plan.ready_now ? "app.transaction-types.guide" :
-        plan.fanout_recommended ? "vault.intent.issue" :
+        plan.fanout_recommended ? "vault.intent.fanout-plan" :
         strcmp(plan.status, "NEEDS_TRANSPARENT_LIQUIDITY") == 0
             ? "app.transaction-types.guide" : "metaverse.agent.money");
     json_free(&money_json);

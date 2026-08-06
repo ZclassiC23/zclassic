@@ -9,8 +9,10 @@ struct rpc_table;
 struct json_value;
 struct wallet_rpc_context;
 struct vault_intent_row;
+#define VAULT_INTENT_TRANSPARENT_APPLICATION "vault_transparent"
 void register_vault_intent_rpc_commands(struct rpc_table *table);
 bool vault_intent_parse_zcl_amount(const char *text, int64_t *out_zat);
+bool vault_intent_idempotency_key_valid(const char *key);
 bool vault_intent_context_ready(struct wallet_rpc_context *ctx,
                                 struct json_value *out);
 void vault_intent_digest_payload(const uint8_t *raw, size_t len,
@@ -19,4 +21,11 @@ void vault_intent_digest_payload(const uint8_t *raw, size_t len,
 void vault_intent_render_row(struct wallet_rpc_context *ctx,
                              struct json_value *out,
                              const struct vault_intent_row *row);
+bool vault_intent_plan_transparent_input(const struct json_value *input,
+                                         struct json_value *result);
+bool vault_intent_transparent_shape_matches(
+    const struct vault_intent_row *row, size_t output_count,
+    int64_t output_value_zat);
+bool vault_intent_fanout_plan_rpc(const struct json_value *params, bool help,
+                                  struct json_value *result);
 #endif

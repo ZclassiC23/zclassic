@@ -101,6 +101,14 @@ void zcl_native_handle_vault_intent_plan(
     (void)vni_rpc(request, reply, "vault_intent_plan");
 }
 
+void zcl_native_handle_vault_intent_fanout_plan(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (vni_rpc(request, reply, "vault_intent_fanout_plan"))
+        reply->error.mutated = !json_get_bool_or(&reply->data,
+                                                  "idempotent_plan", false);
+}
+
 void zcl_native_handle_vault_intent_commit(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {

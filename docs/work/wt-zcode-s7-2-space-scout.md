@@ -546,8 +546,8 @@ missing phase-specific proof.
   `test_zcode_dht_delegation` pass. Independent `strace` found zero former
   mkdir hits for both planners and the WAL fixture; final review verdict:
   **BANKABLE**.
-- All lint gates and full-program LTO pass. The final strict cold suite
-  registered all then-current groups, ran 895, cached 0, policy-gated 9 parameter-heavy
+- The complete `make lint` gate set and full-program LTO pass. The final strict cold suite
+  registered 904 groups, ran 895, cached 0, policy-gated 9 parameter-heavy
   groups, failed 0 and reported 22 explicit self-skips (85.0 s, 32 workers).
   `ci-reproducible` produced two byte-identical 22,375,112-byte binaries at
   SHA3-256 `e1cdb6541e0312a7fd47796584070ab85b1654c2b350c94501d38799cb3b19b2`.
@@ -610,8 +610,8 @@ missing phase-specific proof.
   pass inside `test_zcode_dht_service`.
 - Focused ASan+UBSan passes the DHT, message, service, lookup and 32-node/12,000
   transition model gates, including the 16-node proof, with no sanitizer
-  finding or suppression. All lint gates pass. The cold uncached suite
-  registers all then-current groups, runs 895, caches 0, policy-gates 9 parameter-heavy
+  finding or suppression. The complete `make lint` gate set passes. The cold uncached suite
+  registers 904 groups, runs 895, caches 0, policy-gates 9 parameter-heavy
   groups, fails 0 and reports 19 declared self-skip markers in 86.9 seconds on
   32 workers. The first refreshed run had one performance-detector anti-vacuity
   miss under concurrent load; the prescribed isolated reproduction passed

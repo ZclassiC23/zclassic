@@ -239,7 +239,7 @@ static int t_market_content_registry_schema(void)
     char dbpath[512];
     snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
 
-    TEST("db_mig: v57-v59 market resources install once") {
+    TEST("db_mig: v57-v60 app and intent resources install once") {
         struct node_db ndb;
         ASSERT(node_db_open(&ndb, dbpath));
         ASSERT_EQ(node_db_schema_version(&ndb), NODE_DB_SCHEMA_LATEST);
@@ -256,6 +256,9 @@ static int t_market_content_registry_schema(void)
         ASSERT(db_mig_count(raw,
             "SELECT count(*) FROM schema_migrations "
             "WHERE version='059'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM schema_migrations "
+            "WHERE version='060'") == 1);
         ASSERT(db_mig_count(raw,
             "SELECT count(*) FROM sqlite_master "
             "WHERE type='table' AND name='market_contents'") == 1);
@@ -279,6 +282,12 @@ static int t_market_content_registry_schema(void)
             "SELECT count(*) FROM sqlite_master WHERE type='index' AND "
             "name IN ('idx_market_downloads_state',"
             "'idx_market_download_chunks_plan')") == 2);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
+            "name='vault_intent_inputs'") == 1);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND "
+            "name='idx_vault_intent_inputs_plan'") == 1);
         sqlite3_close(raw);
 
         struct node_db reopened;

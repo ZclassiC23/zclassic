@@ -87,6 +87,7 @@ vault.send                 exempt: pure route to core.wallet.transaction.send, w
 vault.send-shielded        exempt: pure route to core.wallet.shielded.send, which owns the disposition
 vault.intent.issue         exempt: persists a wallet receive key, no artifact install
 vault.intent.plan          exempt: encrypted wallet-local plan row, no artifact install
+vault.intent.fanout-plan   exempt: persists receive keys plus one encrypted wallet-local plan, no artifact install
 vault.intent.commit        exempt: signs+broadcasts the exact planned transaction, no artifact install
 vault.swap.redeem          exempt: pure route to the swap_redeem RPC, which owns build/sign/broadcast
 vault.swap.refund          exempt: pure route to the swap_refund RPC, which owns build/sign/broadcast

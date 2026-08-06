@@ -83,7 +83,10 @@ after a record. It prints aggregate counts only and never prints its path.
 
 The recorder accepts no address, path, endpoint, memo, token, or secret field.
 Recording is bookkeeping only; it cannot build, sign, broadcast, or authorize a
-transaction.
+transaction. It also refuses any output ledger path inside the repository and
+requires an operator-owned mode-0600 ledger.
+`make check-no-live-lab-history` mechanically rejects a committed live receipt,
+micro-lab event, recipient-wallet manifest, or duplicate notebook.
 
 ## 2026-08-03 isolated run
 

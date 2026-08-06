@@ -386,7 +386,7 @@ static void liquidity_copy_fanout(struct json_value *dst,
     static const char *const keys[] = {
         "automatic", "output_count", "output_value_zat",
         "outputs_total_zat", "maximum_fee_zat",
-        "maximum_slots_under_policy", "address_command", "plan_command",
+        "maximum_slots_under_policy", "prepare_command", "plan_command",
         "commit_command", "route", "owner_commit_required",
     };
     struct json_value fanout;

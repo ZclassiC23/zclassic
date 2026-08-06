@@ -32,6 +32,7 @@ void rpc_name_set_wallet(struct wallet *w, struct tx_mempool *mp,
                          struct main_state *main_state,
                          struct coins_view_cache *coins_tip);
 void register_name_rpc_commands(struct rpc_table *t);
+void register_znam_intent_rpc_command(struct rpc_table *table);
 const char *znam_type_name(uint8_t t);
 
 /* Boot-wired names runtime context (node.db + wallet path), snapshotted so the

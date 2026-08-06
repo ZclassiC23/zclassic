@@ -1129,6 +1129,21 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
              * 21M-ZCL supply so a nonsense price is refused up front. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
                       json_get_int(value) <= 2100000000000000LL;
+        } else if (strcmp(key, "recipient_value_zat") == 0) {
+            /* Aggregate metaverse liquidity planning uses exact zatoshi.
+             * Keep the transport range aligned with the handler: positive,
+             * and never above the complete ZCL money supply. */
+            type_ok = value->type == JSON_INT && json_get_int(value) > 0 &&
+                      json_get_int(value) <= 2100000000000000LL;
+        } else if (strcmp(key, "maximum_fee_zat") == 0) {
+            /* Zero is a meaningful caller-selected ceiling. The live intent
+             * planner owns any stricter fee-policy decision. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
+                      json_get_int(value) <= 2100000000000000LL;
+        } else if (strcmp(key, "concurrency") == 0) {
+            /* Matches the vault intent's maximum structured effects count. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 50;
         } else if (strcmp(key, "price_zcl") == 0 ||
                    strcmp(key, "price_zatoshi") == 0) {
             /* app.store.list-product asking price, in whichever unit the key
