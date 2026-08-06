@@ -51,6 +51,24 @@ enum vcs_zcode_patronage_error {
     VCS_ZCODE_PATRONAGE_SEQUENCE,
     VCS_ZCODE_PATRONAGE_SHAPE,
     VCS_ZCODE_PATRONAGE_SIGNATURE,
+    VCS_ZCODE_PATRONAGE_CONTEXT,
+    VCS_ZCODE_PATRONAGE_CAS,
+    VCS_ZCODE_PATRONAGE_NETWORK,
+    VCS_ZCODE_PATRONAGE_CONTRIBUTOR,
+    VCS_ZCODE_PATRONAGE_TASK,
+    VCS_ZCODE_PATRONAGE_POLICY,
+    VCS_ZCODE_PATRONAGE_TARGET,
+};
+
+typedef bool (*vcs_zcode_patronage_binding_current_fn)(
+    void *opaque, const uint8_t contributor_binding_root[32]);
+
+struct vcs_zcode_patronage_validation_context {
+    const char *workspace;
+    const uint8_t *expected_network_genesis_root;
+    int64_t now_unix;
+    vcs_zcode_patronage_binding_current_fn binding_is_current;
+    void *callback_opaque;
 };
 
 struct vcs_zcode_patronage_intent_v1 {
@@ -96,5 +114,8 @@ enum vcs_zcode_patronage_error vcs_zcode_patronage_intent_seal(
     const uint8_t secret[32], const uint8_t pubkey[32]);
 enum vcs_zcode_patronage_error vcs_zcode_patronage_intent_verify(
     const struct vcs_zcode_patronage_intent_v1 *intent, int64_t now_unix);
+enum vcs_zcode_patronage_error vcs_zcode_patronage_intent_verify_cas(
+    const struct vcs_zcode_patronage_intent_v1 *intent,
+    const struct vcs_zcode_patronage_validation_context *context);
 
 #endif

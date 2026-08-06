@@ -17,6 +17,7 @@
 #include "vcs/zcode_contributor_binding.h"
 #include "vcs/zcode_creation_attribution.h"
 #include "vcs/zcode_epoch_creation.h"
+#include "vcs/zcode_patronage.h"
 #include "vcs/zcode_score_receipt.h"
 
 #include <stdlib.h>
@@ -769,6 +770,116 @@ static bool creation_test_binding(
            VCS_ZCODE_BINDING_OK;
 }
 
+static int test_patronage_intent_cross_validation(void)
+{
+    int failures = 0;
+    TEST("ZC23 patronage intent: CAS authorities rederive or fail closed") {
+        char workspace[256];
+        test_make_tmpdir(workspace, sizeof(workspace),
+                         "zcode_patronage", "cas");
+        ASSERT(vcs_object_store_init(workspace));
+        uint8_t network[32], zid_pubkey[32], zid_secret[32];
+        score_fill(network, 0xc1);
+        struct vcs_zcode_contributor_binding_v1 binding;
+        ASSERT(creation_test_binding(&binding, network, zid_pubkey,
+                                     zid_secret));
+        uint8_t binding_root[32];
+        uint8_t binding_wire[VCS_ZCODE_CONTRIBUTOR_BINDING_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_contributor_binding_root(&binding, binding_root),
+                  VCS_ZCODE_BINDING_OK);
+        ASSERT_EQ(vcs_zcode_contributor_binding_serialize(
+                      &binding, binding_wire), VCS_ZCODE_BINDING_OK);
+        ASSERT(vcs_object_put_addressed(workspace, binding_root,
+                                        binding_wire, sizeof(binding_wire)));
+
+        struct vcs_zcode_proof_policy_v1 policy;
+        score_policy(&policy);
+        uint8_t policy_root[32];
+        uint8_t policy_wire[VCS_ZCODE_PROOF_POLICY_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_proof_policy_root(&policy, policy_root),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT_EQ(vcs_zcode_proof_policy_serialize(&policy, policy_wire),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT(vcs_object_put_addressed(workspace, policy_root, policy_wire,
+                                        sizeof(policy_wire)));
+
+        struct vcs_zcode_task_v1 task;
+        memset(&task, 0, sizeof(task));
+        task.schema_version = VCS_ZCODE_DEV_VERSION;
+        score_fill(task.source_root, 1);
+        score_fill(task.dependency_lock_root, 2);
+        score_fill(task.toolchain_capsule_root, 3);
+        score_fill(task.write_scope_root, 4);
+        score_fill(task.acceptance_tests_root, 5);
+        memcpy(task.proof_policy_root, policy_root, 32);
+        score_fill(task.model_policy_root, 6);
+        score_fill(task.goal_root, 7);
+        task.capabilities = VCS_ZCODE_TASK_CAP_V1_MASK;
+        task.max_changed_files = 4;
+        task.max_patch_bytes = 4096;
+        task.max_context_bytes = 4096;
+        task.max_cpu_seconds = 60;
+        task.max_memory_bytes = 1024 * 1024;
+        task.max_output_bytes = 1024 * 1024;
+        task.expires_unix = 5000;
+        uint8_t task_root[32], task_wire[VCS_ZCODE_TASK_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_task_root(&task, task_root), VCS_ZCODE_DEV_OK);
+        ASSERT_EQ(vcs_zcode_task_serialize(&task, task_wire),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT(vcs_object_put_addressed(workspace, task_root, task_wire,
+                                        sizeof(task_wire)));
+
+        struct vcs_zcode_patronage_intent_v1 intent;
+        memset(&intent, 0, sizeof(intent));
+        intent.schema_version = VCS_ZCODE_PATRONAGE_INTENT_VERSION;
+        intent.mode = VCS_ZCODE_PATRONAGE_EXACT_TASK_COMMISSION;
+        intent.target_kind = VCS_ZCODE_PATRONAGE_TARGET_TASK;
+        intent.settlement_trust_mode = VCS_ZCODE_PATRONAGE_UNFUNDED_OFFER;
+        intent.flags = VCS_ZCODE_PATRONAGE_NO_AUTHORITY |
+                       VCS_ZCODE_PATRONAGE_SIMULATION_ONLY;
+        memcpy(intent.network_genesis_root, network, 32);
+        score_fill(intent.zc23_token_or_simulation_root, 8);
+        memcpy(intent.patron_contributor_binding_root, binding_root, 32);
+        memcpy(intent.patron_zid_pubkey, zid_pubkey, 32);
+        memcpy(intent.target_root, task_root, 32);
+        memcpy(intent.task_root, task_root, 32);
+        memcpy(intent.proof_policy_root, policy_root, 32);
+        memcpy(intent.intended_recipient_binding_root, binding_root, 32);
+        intent.amount_atoms = 100000000;
+        intent.created_unix = 1000;
+        intent.expires_unix = 2000;
+        intent.refund_height = 3000;
+        intent.refund_unix = 2100;
+        intent.sequence = 1;
+        intent.maximum_zcl_fee_zat = 10000;
+        ASSERT_EQ(vcs_zcode_patronage_intent_seal(
+                      &intent, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_OK);
+        struct vcs_zcode_patronage_validation_context context = {
+            .workspace = workspace,
+            .expected_network_genesis_root = network,
+            .now_unix = 1500,
+        };
+        ASSERT_EQ(vcs_zcode_patronage_intent_verify_cas(&intent, &context),
+                  VCS_ZCODE_PATRONAGE_OK);
+        uint8_t other_network[32]; score_fill(other_network, 0xc2);
+        context.expected_network_genesis_root = other_network;
+        ASSERT_EQ(vcs_zcode_patronage_intent_verify_cas(&intent, &context),
+                  VCS_ZCODE_PATRONAGE_NETWORK);
+        context.expected_network_genesis_root = network;
+        memcpy(intent.task_root, policy_root, 32);
+        memcpy(intent.target_root, policy_root, 32);
+        ASSERT_EQ(vcs_zcode_patronage_intent_seal(
+                      &intent, zid_secret, zid_pubkey),
+                  VCS_ZCODE_PATRONAGE_OK);
+        ASSERT_EQ(vcs_zcode_patronage_intent_verify_cas(&intent, &context),
+                  VCS_ZCODE_PATRONAGE_TASK);
+        test_rm_rf(workspace);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_creation_attribution_cross_validation(void)
 {
     int failures = 0;
@@ -1040,7 +1151,8 @@ int test_zcode_score_receipt(void)
 {
     int failures = test_score_happy_path() + test_score_package_verticals() +
                    test_score_rejections() +
-                   test_creation_attribution_cross_validation();
+                   test_creation_attribution_cross_validation() +
+                   test_patronage_intent_cross_validation();
     printf("=== zcode_score_receipt: %d failures ===\n", failures);
     return failures;
 }

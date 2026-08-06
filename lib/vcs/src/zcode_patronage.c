@@ -35,6 +35,13 @@ const char *vcs_zcode_patronage_error_string(
     case VCS_ZCODE_PATRONAGE_SEQUENCE: return "sequence";
     case VCS_ZCODE_PATRONAGE_SHAPE: return "mode-shape";
     case VCS_ZCODE_PATRONAGE_SIGNATURE: return "signature";
+    case VCS_ZCODE_PATRONAGE_CONTEXT: return "validation-context";
+    case VCS_ZCODE_PATRONAGE_CAS: return "canonical-cas";
+    case VCS_ZCODE_PATRONAGE_NETWORK: return "network-mismatch";
+    case VCS_ZCODE_PATRONAGE_CONTRIBUTOR: return "contributor-binding";
+    case VCS_ZCODE_PATRONAGE_TASK: return "task-binding";
+    case VCS_ZCODE_PATRONAGE_POLICY: return "proof-policy-binding";
+    case VCS_ZCODE_PATRONAGE_TARGET: return "target-binding";
     }
     return "unknown";
 }
