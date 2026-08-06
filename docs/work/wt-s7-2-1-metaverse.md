@@ -6,7 +6,9 @@
 
 **Branch:** `lane/s7-2-1-metaverse`
 
-**Base:** `13d0d255b09548a21ccd05936186f8efc849394a`
+**Base:** current `origin/main` at
+`fec2376bff365f32b7111c6f31cfb9f39cacd887`; the two lane commits were
+rebased conflict-free from the frozen candidate source base before push.
 
 **Authority:** owner directive dated 2026-08-06. Work is isolated from the
 exact-candidate fold, challenger, stable node, canonical datadirs and wallets.
@@ -101,8 +103,13 @@ latest owner direction separately authorizes synchronization and push to main.
   changed production/test translation units pass `-Wall -Wextra -Werror`
   syntax checks; allocation, silent-bool and result-discard ratchets pass;
   `git diff --check` passes; the identity-bound metaverse property island
-  compiles and links at source id `b37477fbbb9abcac578d032ddf187238d51916a71f1aad16fd0bf537bddb26e5`.
+  compiled and linked on the pre-rebase lane at source id
+  `b37477fbbb9abcac578d032ddf187238d51916a71f1aad16fd0bf537bddb26e5`.
   The first island attempt compiled but was correctly refused after isolated
   vendor bootstrap changed its source identity; the stable rerun passed.
+  After the conflict-free rebase onto current `origin/main`, every changed
+  production and test translation unit passed the same warning-as-error syntax
+  gate again using only the vendored SQLite header extracted to a temporary
+  directory.
 - `metaverse_catalog` execution and the heavyweight full gates remain deferred
   until they can run without competing with the exact-candidate fold.
