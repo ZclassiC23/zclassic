@@ -29,6 +29,8 @@
 #include "jobs/refold_progress.h"
 #include "json/json.h"
 #include "models/database.h"
+#include "services/sync_trust_policy.h"
+#include "storage/coins_kv.h"
 #include "storage/consensus_db.h"
 #include "storage/progress_store.h"
 
@@ -197,6 +199,27 @@ void zcl_native_handle_core_sync_frontier_offline(
         return;
     }
 
+    /* Report the exact STATIC half of the spend gate from this copied store.
+     * This is deliberately derived through the same coins_kv predicates and
+     * sync-trust capability table as the live sovereignty controller, never
+     * from filenames or a hand-maintained approximation.  G-SOV part 1 (the
+     * required two-sample H* climb) remains a runtime/copy-proof obligation,
+     * so the field names say `static`: this leaf must not turn one stopped
+     * snapshot into a claim that a live node is safe to spend from. */
+    int32_t applied_height = -1;
+    bool applied_found = false;
+    bool applied_read_ok = coins_kv_get_applied_height(
+        db, &applied_height, &applied_found);
+    bool proven = coins_kv_is_proven_authority(db, NULL);
+    bool refold = coins_kv_contains_refold_marker(db);
+    char self_derived_reason[96] = {0};
+    bool static_self_derived = coins_kv_tip_is_self_derived(
+        db, hstar, self_derived_reason, sizeof(self_derived_reason));
+    enum sync_trust_state trust = sync_trust_derive(
+        proven, refold, static_self_derived);
+    bool spend_allowed = sync_trust_cap_allowed(
+        trust, SYNC_CAP_WALLET_SPEND);
+
     (void)json_push_kv_str(&reply->data, "datadir", datadir);
     (void)json_push_kv_str(&reply->data, "kernel_store", kernel_path);
     (void)json_push_kv_int(&reply->data, "hstar", hstar);
@@ -205,6 +228,29 @@ void zcl_native_handle_core_sync_frontier_offline(
                            REDUCER_FRONTIER_TRUSTED_ANCHOR);
     (void)json_push_kv_bool(&reply->data, "refold_in_progress",
                             refold_in_progress());
+    (void)json_push_kv_bool(&reply->data, "coins_applied_height_known",
+                            applied_read_ok && applied_found);
+    if (applied_read_ok && applied_found)
+        (void)json_push_kv_int(&reply->data, "coins_applied_height",
+                               applied_height);
+    (void)json_push_kv_bool(&reply->data, "proven_authority", proven);
+    (void)json_push_kv_bool(&reply->data, "self_folded_marker", refold);
+    (void)json_push_kv_bool(&reply->data, "static_self_derived",
+                            static_self_derived);
+    (void)json_push_kv_str(&reply->data, "static_self_derived_reason",
+                           static_self_derived ? "ok" :
+                           (self_derived_reason[0] ? self_derived_reason :
+                                                   "not_self_derived"));
+    (void)json_push_kv_str(&reply->data, "static_trust_state",
+                           sync_trust_state_name(trust));
+    (void)json_push_kv_bool(&reply->data, "wallet_spend_static_allowed",
+                            spend_allowed);
+    (void)json_push_kv_str(&reply->data, "wallet_spend_static_reason",
+                           spend_allowed ? "granted" :
+                           (self_derived_reason[0] ? self_derived_reason :
+                                                   "trust_state_denied"));
+    (void)json_push_kv_str(&reply->data, "runtime_proof_required",
+                           "two_sample_hstar_climb_and_current_money_snapshot");
     sqlite3_close(db);
     reply->status = ZCL_COMMAND_STATUS_PASSED;
     reply->exit_code = ZCL_COMMAND_EXIT_OK;
