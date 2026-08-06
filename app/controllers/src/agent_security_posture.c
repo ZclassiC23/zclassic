@@ -157,7 +157,11 @@ static void posture_collect_bootstrap(struct agent_security_posture *out,
         return;
     }
 
-    chain_evidence_controller_init(&cec, ndb, csr_instance());
+    /* This function holds sqlite3_db_mutex across the bounded bootstrap
+     * snapshot. A mutating CEC initializer can submit a DB-service write and
+     * wait for the worker that is itself waiting on this mutex. Observation
+     * must therefore use the explicitly read-only binding. */
+    chain_evidence_controller_init_readonly(&cec, ndb, csr_instance());
     chain_evidence_controller_snapshot(&cec, &view);
     out->snapshot_anchor_height = view.snapshot_anchor_height;
     out->background_validation_height = view.background_validation_height;

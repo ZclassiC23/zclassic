@@ -191,7 +191,21 @@ void chain_evidence_controller_init(struct chain_evidence_controller *authority,
     cec_reconcile_startup(authority);
 }
 
-enum chain_evidence_controller_state chain_evidence_controller_load_state(
+void chain_evidence_controller_init_readonly(
+    struct chain_evidence_controller *authority, struct node_db *ndb,
+    struct chain_state_repository *csr)
+{
+    if (!authority)
+        return;
+    memset(authority, 0, sizeof(*authority));
+    authority->ndb = ndb;
+    authority->csr = csr ? csr : csr_instance();
+    authority->state = CEC_EMPTY;
+    (void)chain_evidence_controller_load_state_readonly(authority);
+}
+
+enum chain_evidence_controller_state
+chain_evidence_controller_load_state_readonly(
     struct chain_evidence_controller *authority)
 {
     char mode[64];
@@ -211,6 +225,16 @@ enum chain_evidence_controller_state chain_evidence_controller_load_state(
     (void)node_db_state_get(authority->ndb, "cec.contradiction_reason",
                             authority->contradiction_reason,
                             sizeof(authority->contradiction_reason) - 1, &len);
+
+    return authority->state;
+}
+
+enum chain_evidence_controller_state chain_evidence_controller_load_state(
+    struct chain_evidence_controller *authority)
+{
+    if (!authority)
+        return CEC_EMPTY;
+    (void)chain_evidence_controller_load_state_readonly(authority);
 
     /* Auto-clear stale freezes from reasons that have been demoted to
      * non-fatal warnings. Without this, a previously frozen node stays
