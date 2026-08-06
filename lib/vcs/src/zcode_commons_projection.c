@@ -29,6 +29,8 @@ struct vcs_zcode_commons_projection {
     size_t creation_count;
     struct vcs_zcode_commons_epoch_entry *epochs;
     size_t epoch_count;
+    struct commons_epoch_ref *refs;
+    size_t ref_count;
     uint64_t attributed_atoms;
     uint64_t minted_atoms;
     uint64_t unissued_atoms;
@@ -36,6 +38,11 @@ struct vcs_zcode_commons_projection {
     bool has_failure;
     uint8_t failure_root[32];
     char failure_reason[48];
+};
+
+struct commons_epoch_ref {
+    uint8_t epoch_root[32];
+    uint8_t attribution_root[32];
 };
 
 static bool commons_hex(const char *text, size_t length)
@@ -104,12 +111,6 @@ static void commons_consider_creation(
     entry->epoch = attribution.epoch;
     entry->award_atoms = attribution.award_atoms;
     entry->category = attribution.category;
-    uint64_t next = 0;
-    if (!zcl_u64_add(projection->attributed_atoms, attribution.award_atoms,
-                     &next))
-        commons_failure(projection, address, "attributed-overflow");
-    else
-        projection->attributed_atoms = next;
 }
 
 static void commons_consider_epoch(
@@ -130,6 +131,12 @@ static void commons_consider_epoch(
         vcs_zcode_epoch_creation_free(&epoch);
         return;
     }
+    if (epoch.attribution_count >
+        VCS_ZCODE_COMMONS_PROJECTION_MAX_OBJECTS - projection->ref_count) {
+        commons_failure(projection, address, "attribution-ref-cap");
+        vcs_zcode_epoch_creation_free(&epoch);
+        return;
+    }
     struct vcs_zcode_commons_epoch_entry *entry =
         &projection->epochs[projection->epoch_count++];
     memset(entry, 0, sizeof(*entry));
@@ -140,6 +147,12 @@ static void commons_consider_epoch(
     entry->minted_atoms = epoch.actual_mint_atoms;
     entry->unissued_atoms = epoch.unissued_atoms;
     entry->attribution_count = (uint32_t)epoch.attribution_count;
+    for (size_t i = 0; i < epoch.attribution_count; i++) {
+        struct commons_epoch_ref *ref =
+            &projection->refs[projection->ref_count++];
+        memcpy(ref->epoch_root, address, 32);
+        memcpy(ref->attribution_root, epoch.attribution_roots[i], 32);
+    }
     uint64_t minted = 0, unissued = 0;
     if (!zcl_u64_add(projection->minted_atoms, epoch.actual_mint_atoms,
                      &minted) ||
@@ -151,6 +164,68 @@ static void commons_consider_epoch(
         projection->unissued_atoms = unissued;
     }
     vcs_zcode_epoch_creation_free(&epoch);
+}
+
+static const struct vcs_zcode_commons_creation_entry *commons_find_creation(
+    const struct vcs_zcode_commons_projection *projection,
+    const uint8_t root[32])
+{
+    return bsearch(root, projection->creations, projection->creation_count,
+                   sizeof(*projection->creations), commons_creation_cmp);
+}
+
+static void commons_check_accounting(
+    struct vcs_zcode_commons_projection *projection)
+{
+    for (size_t i = 0; i < projection->ref_count; i++) {
+        const struct commons_epoch_ref *ref = &projection->refs[i];
+        for (size_t j = 0; j < i; j++) {
+            if (memcmp(ref->attribution_root,
+                       projection->refs[j].attribution_root, 32) == 0) {
+                commons_failure(projection, ref->attribution_root,
+                                "duplicate-attribution");
+                break;
+            }
+        }
+        const struct vcs_zcode_commons_creation_entry *creation =
+            commons_find_creation(projection, ref->attribution_root);
+        if (!creation) {
+            commons_failure(projection, ref->attribution_root,
+                            "missing-attribution");
+            continue;
+        }
+        uint64_t total = 0;
+        if (!zcl_u64_add(projection->attributed_atoms,
+                         creation->award_atoms, &total))
+            commons_failure(projection, ref->attribution_root,
+                            "attributed-overflow");
+        else
+            projection->attributed_atoms = total;
+    }
+    for (size_t i = 0; i < projection->epoch_count; i++) {
+        const struct vcs_zcode_commons_epoch_entry *epoch =
+            &projection->epochs[i];
+        uint64_t total = 0;
+        size_t count = 0;
+        for (size_t j = 0; j < projection->ref_count; j++) {
+            const struct commons_epoch_ref *ref = &projection->refs[j];
+            if (memcmp(ref->epoch_root, epoch->root, 32) != 0)
+                continue;
+            count++;
+            const struct vcs_zcode_commons_creation_entry *creation =
+                commons_find_creation(projection, ref->attribution_root);
+            uint64_t next = 0;
+            if (!creation || creation->epoch != epoch->epoch ||
+                !zcl_u64_add(total, creation->award_atoms, &next)) {
+                commons_failure(projection, epoch->root,
+                                "epoch-attribution-mismatch");
+                continue;
+            }
+            total = next;
+        }
+        if (count != epoch->attribution_count || total != epoch->minted_atoms)
+            commons_failure(projection, epoch->root, "epoch-sum-mismatch");
+    }
 }
 
 static void commons_consider(struct vcs_zcode_commons_projection *projection,
@@ -220,7 +295,10 @@ struct vcs_zcode_commons_projection *vcs_zcode_commons_projection_build(
     projection->epochs = zcl_calloc(
         VCS_ZCODE_COMMONS_PROJECTION_MAX_OBJECTS,
         sizeof(*projection->epochs), "zcode_commons_epochs");
-    if (!projection->creations || !projection->epochs) {
+    projection->refs = zcl_calloc(
+        VCS_ZCODE_COMMONS_PROJECTION_MAX_OBJECTS,
+        sizeof(*projection->refs), "zcode_commons_attribution_refs");
+    if (!projection->creations || !projection->epochs || !projection->refs) {
         vcs_zcode_commons_projection_free(projection);
         return NULL;
     }
@@ -242,6 +320,7 @@ struct vcs_zcode_commons_projection *vcs_zcode_commons_projection_build(
           sizeof(*projection->creations), commons_creation_cmp);
     qsort(projection->epochs, projection->epoch_count,
           sizeof(*projection->epochs), commons_epoch_cmp);
+    commons_check_accounting(projection);
     projection->status = projection->has_failure
         ? VCS_ZCODE_COMMONS_PARTIAL
         : (projection->creation_count || projection->epoch_count)
@@ -253,6 +332,7 @@ void vcs_zcode_commons_projection_free(
     struct vcs_zcode_commons_projection *projection)
 {
     if (!projection) return;
+    free(projection->refs);
     free(projection->epochs);
     free(projection->creations);
     free(projection);

@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 535 |
+| Registry entries (branches + leaves) | 543 |
 | Top-level roots | 11 |
-| Branches | 121 |
-| Leaves (dispatchable command paths) | 414 |
-| … `ready` (live handler in this build) | 365 |
+| Branches | 123 |
+| Leaves (dispatchable command paths) | 420 |
+| … `ready` (live handler in this build) | 371 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -85,7 +85,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 22 | 4 | 18 |
-| `config/commands/zcode.def` | 98 | 19 | 79 |
+| `config/commands/zcode.def` | 106 | 21 | 85 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -878,6 +878,22 @@ represented by its children's sections.
 | `vault swap refund` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `swap_id`, `funding_txid`, `vout`, `confirm` | `zcl.vault_swap_settle.v1` | `zclassic23 vault swap refund --input='{"swap_id":".."}'` | Reclaim an expired swap HTLC by dispatching the node's swap_refund |
 
 ### `zcode` — ZCODE source-package hosting: publish, search, host
+
+#### `zcode.commons` — Read-only ZC23 Living Commons projection
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode commons status` | ready | read / read / operator · fast/low | **`workspace`** | `zcl.zcode_commons_status.v1` | `zclassic23 zcode commons status --input='{"workspace":"."}'` | Show Living Commons status |
+| `zcode commons epoch` | ready | read / read / operator · fast/low | **`workspace`**, **`epoch`** | `zcl.zcode_commons_epoch.v1` | `zclassic23 zcode commons epoch --input='{"workspace":".","epoch":1}'` | Show one creation epoch |
+| `zcode commons lineage` | ready | read / read / operator · fast/low | **`workspace`**, **`package_root`** | `zcl.zcode_commons_lineage.v1` | `zclassic23 zcode commons lineage --input='{"workspace":".","package_root":"<64hex>"}'` | Show package continuity lineage |
+| `zcode commons verify` | ready | read / read / operator · fast/low | **`workspace`** | `zcl.zcode_commons_verify.v1` | `zclassic23 zcode commons verify --input='{"workspace":"."}'` | Verify Living Commons integrity |
+| `zcode commons rebuild` | ready | read / read / operator · fast/low | **`workspace`** | `zcl.zcode_commons_rebuild.v1` | `zclassic23 zcode commons rebuild --input='{"workspace":"."}'` | Rebuild Living Commons projection |
+
+#### `zcode.commons.creation` — Creation-attribution inspection
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode commons creation show` | ready | read / read / operator · fast/low | **`workspace`**, **`root`** | `zcl.zcode_commons_creation_show.v1` | `zclassic23 zcode commons creation show --input='{"workspace":".","root":"<64hex>"}'` | Show one creation attribution |
 
 #### `zcode.package.dev` — Agentic development
 

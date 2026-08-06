@@ -18,6 +18,98 @@ ZCL_COMMAND_BRANCH("zcode", "",
                    "ZCODE source-package hosting: publish, search, host",
                    ZCL_COMMAND_LAYER_APP)
 
+ZCL_COMMAND_BRANCH("zcode.commons", "zcode",
+                   "Read-only ZC23 Living Commons projection",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.creation", "zcode.commons",
+                   "Creation-attribution inspection",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.status", "zcode.commons", "", "Show Living Commons status",
+    "Rebuilds an ephemeral view from canonical workspace CAS objects. A "
+    "missing workspace remains absent. Parsed totals are not called "
+    "policy-valid until active-chain and immutable-policy checks complete.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,commons,zc23,creation,attribution",
+    "zcl.zcode_commons_workspace.input.v1", "zcl.zcode_commons_status.v1",
+    "workspace", "workspace",
+    "zclassic23 zcode commons status --input='{\"workspace\":\".\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_commons_status)
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.epoch", "zcode.commons", "", "Show one creation epoch",
+    "Shows exact parsed cap, minted, unissued and attribution-count facts "
+    "without treating the rebuildable projection as issuance authority.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,commons,zc23,creation,attribution",
+    "zcl.zcode_commons_epoch.input.v1", "zcl.zcode_commons_epoch.v1",
+    "workspace,epoch", "workspace,epoch",
+    "zclassic23 zcode commons epoch --input='{\"workspace\":\".\",\"epoch\":1}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_commons_epoch)
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.creation.show", "zcode.commons.creation", "",
+    "Show one creation attribution",
+    "Loads the exact canonical wire by full root, re-derives its identity, "
+    "and displays objective bindings only.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,zc23,creation,attribution",
+    "zcl.zcode_commons_creation_show.input.v1",
+    "zcl.zcode_commons_creation_show.v1", "workspace,root", "workspace,root",
+    "zclassic23 zcode commons creation show --input='{\"workspace\":\".\",\"root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_creation_show)
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.lineage", "zcode.commons", "",
+    "Show package continuity lineage",
+    "Lists creation attributions matching one exact package root. It does "
+    "not rank importance or imply ownership.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,zc23,creation,attribution",
+    "zcl.zcode_commons_lineage.input.v1", "zcl.zcode_commons_lineage.v1",
+    "workspace,package_root", "workspace,package_root",
+    "zclassic23 zcode commons lineage --input='{\"workspace\":\".\",\"package_root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_commons_lineage)
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.verify", "zcode.commons", "",
+    "Verify Living Commons integrity",
+    "Checks deterministic CAS addressing and exact epoch attribution sums. "
+    "Returns partial or unknown until chain anchors and policy context exists.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,commons,zc23,creation,attribution",
+    "zcl.zcode_commons_workspace.input.v1", "zcl.zcode_commons_verify.v1",
+    "workspace", "workspace",
+    "zclassic23 zcode commons verify --input='{\"workspace\":\".\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_commons_verify)
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.rebuild", "zcode.commons", "",
+    "Rebuild Living Commons projection",
+    "Derives the in-memory projection and root from canonical CAS bytes. "
+    "Nothing is persisted and no directory is created.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,commons,zc23,creation,attribution",
+    "zcl.zcode_commons_workspace.input.v1", "zcl.zcode_commons_rebuild.v1",
+    "workspace", "workspace",
+    "zclassic23 zcode commons rebuild --input='{\"workspace\":\".\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_commons_rebuild)
+
 ZCL_COMMAND_BRANCH("zcode.package.dev", "zcode.package",
                    "Agentic development",
                    ZCL_COMMAND_LAYER_APP)

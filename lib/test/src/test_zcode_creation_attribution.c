@@ -2,6 +2,9 @@
  * Purpose: canonical ZC23 creation-attribution and policy arithmetic proofs. */
 #include "test/test_core.h"
 
+#include "base/hex.h"
+#include "command/native_command.h"
+#include "json/json.h"
 #include "vcs/zcode_creation_attribution.h"
 #include "vcs/zcode_commons_projection.h"
 #include "vcs/zcode_epoch_creation.h"
@@ -303,6 +306,7 @@ static int commons_projection_rebuild_test(void)
         uint8_t creation_wire[VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES];
         uint8_t creation_root[32];
         creation_fixture(&attribution);
+        attribution.epoch = 1;
         ASSERT(vcs_zcode_creation_attribution_serialize(
                    &attribution, creation_wire) == VCS_ZCODE_CREATION_OK);
         ASSERT(vcs_zcode_creation_attribution_root(
@@ -353,10 +357,98 @@ static int commons_projection_rebuild_test(void)
         ASSERT(vcs_zcode_commons_projection_root(second, second_root));
         ASSERT(memcmp(first_root, second_root, 32) == 0);
 
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", workspace));
+        struct zcl_command_request request = {.input = &input};
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.test.commons.v1");
+        zcl_native_handle_zcode_commons_status(&request, &reply);
+        ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_int(json_get(&reply.data, "attributed_atoms")) ==
+               (int64_t)attribution.award_atoms);
+        ASSERT(json_get_int(json_get(&reply.data, "parsed_mint_atoms")) ==
+               (int64_t)epoch.actual_mint_atoms);
+        ASSERT(json_get_bool(json_get(&reply.data, "structural_integrity")));
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", workspace));
+        ASSERT(json_push_kv_int(&input, "epoch", 1));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.commons.v1");
+        zcl_native_handle_zcode_commons_epoch(&request, &reply);
+        ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_int(json_get(&reply.data, "minted_atoms")) ==
+               (int64_t)epoch.actual_mint_atoms);
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        char creation_hex[65], package_hex[65];
+        zcl_hex_encode(creation_root, 32, creation_hex);
+        zcl_hex_encode(attribution.package_root, 32, package_hex);
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&input, "root", creation_hex));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.commons.v1");
+        zcl_native_handle_zcode_commons_creation_show(&request, &reply);
+        ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "category")),
+                      "public_source") == 0);
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&input, "package_root", package_hex));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.commons.v1");
+        zcl_native_handle_zcode_commons_lineage(&request, &reply);
+        ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_int(json_get(&reply.data, "count")) == 1);
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                      "implies_package_ownership")));
+        zcl_command_reply_free(&reply); json_free(&input);
+
         vcs_zcode_commons_projection_free(second);
         vcs_zcode_commons_projection_free(first);
         free(epoch_wire);
         test_rm_rf(workspace);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int commons_command_noncreating_test(void)
+{
+    int failures = 0;
+    TEST("ZC23 commons commands: absent workspace stays absent") {
+        char workspace[256];
+        test_fmt_tmpdir(workspace, sizeof(workspace),
+                        "zcode_commons_command", "absent");
+        test_rm_rf(workspace);
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", workspace));
+        struct zcl_command_request request = {.input = &input};
+        struct zcl_command_reply status, rebuild, verify;
+        zcl_command_reply_init(&status, "zcl.test.commons.v1");
+        zcl_command_reply_init(&rebuild, "zcl.test.commons.v1");
+        zcl_command_reply_init(&verify, "zcl.test.commons.v1");
+        zcl_native_handle_zcode_commons_status(&request, &status);
+        zcl_native_handle_zcode_commons_rebuild(&request, &rebuild);
+        zcl_native_handle_zcode_commons_verify(&request, &verify);
+        ASSERT(status.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(rebuild.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(verify.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(access(workspace, F_OK) != 0);
+        ASSERT(strcmp(json_get_str(json_get(&status.data,
+                                           "verification_status")),
+                      "unknown") == 0);
+        ASSERT(!json_get_bool(json_get(&rebuild.data, "persisted")));
+        zcl_command_reply_free(&verify);
+        zcl_command_reply_free(&rebuild);
+        zcl_command_reply_free(&status);
+        json_free(&input);
         PASS();
     } _test_next:;
     return failures;
@@ -367,5 +459,6 @@ int test_zcode_creation_attribution(void)
     return creation_codec_test() + creation_rejection_test() +
            creation_arithmetic_test() + epoch_creation_codec_test() +
            epoch_creation_accounting_test() + commons_projection_test() +
-           commons_projection_rebuild_test();
+           commons_projection_rebuild_test() +
+           commons_command_noncreating_test();
 }
