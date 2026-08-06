@@ -1,6 +1,6 @@
 {
   "schema": "zcl.zcode_selfhost_validation_ledger.v1",
-  "generated_utc": "2026-08-06T08:08:29Z",
+  "generated_utc": "2026-08-06T08:13:55Z",
   "lane": "lane/zcode-selfhost-foundation",
   "frozen_root_checkout": "13d0d255b09548a21ccd05936186f8efc849394a",
   "safety_ref": "safety/zcode-pre-selfhost-20260806",
@@ -63,6 +63,14 @@
     {
       "kind": "implementation_head_audited_before_ledger_refresh",
       "sha": "63d9d61da4f679e1e33055e9daa596ebecd612f3"
+    },
+    {
+      "kind": "latest_fetch_before_parent_replay_receipts",
+      "sha": "9ab19b4fe996bbe4b6baa26d44ba306ecd00e108"
+    },
+    {
+      "kind": "ledger_audit_head_before_parent_replay_receipts",
+      "sha": "91498ca1afd653f47a0cbfd2e72c25af65496f71"
     }
   ],
   "preservation_reconciliation": {
@@ -132,6 +140,8 @@
     {"gate": "sha3_stream_and_shake_kats", "result": "PASS_REFRESHED_AFTER_VERTICAL_COMPLETION"},
     {"gate": "sha3_x4_differential", "result": "PASS_PRE_AND_POST_EXTRACTION_AVX512_HOST"},
     {"gate": "mmb_mmr_utxo_consensus_vectors", "result": "PASS_IDENTICAL_ORACLES_PRE_AND_POST_EXTRACTION"},
+    {"gate": "base_sha3_exact_parent_replay", "result": "SIGNED_FAIL_RECEIPTS_CAPTURED_RETROSPECTIVELY_AND_LABELLED"},
+    {"gate": "born_red_receipt_integrity", "result": "PASS_SIX_LOG_HASHES_PREIMAGE_DIGESTS_AND_COMPACT_SECP256K1_SIGNATURES"},
     {"gate": "test_zcode_package_dev", "result": "PASS_PREPARE_SEAL_CAPSULE_AND_FAIL_CLOSED_TREE"},
     {"gate": "test_vcs_release", "result": "PASS_SIGNATURE_WIRE_SEQUENCE_DUPLICATE_AND_LINEAGE"},
     {"gate": "test_codec_cursor", "result": "PASS_REFRESHED_AFTER_VERTICAL_COMPLETION"},
@@ -196,10 +206,25 @@
     "docs/work/zcode-selfhost-evidence/born-red-package-dev.json",
     "docs/work/zcode-selfhost-evidence/born-red-codec-cursor.json",
     "docs/work/zcode-selfhost-evidence/born-red-score-receipt.json",
-    "docs/work/zcode-selfhost-evidence/born-red-package-registry.json"
+    "docs/work/zcode-selfhost-evidence/born-red-package-registry.json",
+    "docs/work/zcode-selfhost-evidence/born-red-base-foundation-replay.json",
+    "docs/work/zcode-selfhost-evidence/born-red-sha3-foundation-replay.json"
   ],
   "born_red_provenance": {
     "binding": "Each signed receipt binds the historical exact test source named by test_source_sha3 and its retained FAIL log; later green-only proof extensions do not rewrite that provenance.",
+    "chronology": {
+      "captured_before_corresponding_implementation_slice": [
+        "born-red-package-dev",
+        "born-red-codec-cursor",
+        "born-red-score-receipt",
+        "born-red-package-registry"
+      ],
+      "retrospective_exact_parent_replays": [
+        "born-red-base-foundation-replay",
+        "born-red-sha3-foundation-replay"
+      ],
+      "limitation": "Base and SHA3 were committed before separate FAIL receipts were retained. Their immutable c470c6d30 test sources were replayed against exact parent 6e61feeb3 after implementation and signed, which proves the parent is red but does not rewrite capture chronology."
+    },
     "current_green_extensions": [
       "test_zcode_score_receipt now proves all three package verticals over generic score machinery already present at parent d230a174eb0765aec3586d0b7a3dd7f06cb6458c",
       "test_zcode_package_registry now publishes all three already-signed package releases into isolated scratch stores"
