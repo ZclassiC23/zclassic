@@ -37,6 +37,11 @@
     {
       "kind": "fetched_origin_after_score_registry_slice",
       "sha": "86056e9630d4dab5ae8f98c03dfd78a3b11fb59e"
+    },
+    {
+      "kind": "origin_refresh_merge_after_score_registry_slice",
+      "sha": "81daa353bd05a0326e926766ba1e10d2deceb32a",
+      "origin_parent": "86056e9630d4dab5ae8f98c03dfd78a3b11fb59e"
     }
   ],
   "package_dag": {
