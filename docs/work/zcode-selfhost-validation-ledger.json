@@ -1,6 +1,6 @@
 {
   "schema": "zcl.zcode_selfhost_validation_ledger.v1",
-  "generated_utc": "2026-08-06T07:59:07Z",
+  "generated_utc": "2026-08-06T08:08:29Z",
   "lane": "lane/zcode-selfhost-foundation",
   "frozen_root_checkout": "13d0d255b09548a21ccd05936186f8efc849394a",
   "safety_ref": "safety/zcode-pre-selfhost-20260806",
@@ -55,8 +55,27 @@
       "kind": "origin_refresh_merge_before_deferred_codec_completion",
       "sha": "3814f49a595b53d768b43182c201c1a3c0a20ba2",
       "origin_parent": "9ab19b4fe996bbe4b6baa26d44ba306ecd00e108"
+    },
+    {
+      "kind": "latest_fetch_before_completion_audit",
+      "sha": "9ab19b4fe996bbe4b6baa26d44ba306ecd00e108"
+    },
+    {
+      "kind": "implementation_head_audited_before_ledger_refresh",
+      "sha": "63d9d61da4f679e1e33055e9daa596ebecd612f3"
     }
   ],
+  "preservation_reconciliation": {
+    "preserved_commit_count": 14,
+    "range": "60ed79ddc3727c31d198c41e3a4e113ce2ae3393..13d0d255b09548a21ccd05936186f8efc849394a",
+    "merge": "6e61feeb3b4c806991686d47c0b8688036b9f812",
+    "chain_evidence_implementation": "app/controllers/src/diagnostics_chain_evidence.c",
+    "chain_evidence_function": "diag_chain_evidence_dump_state_json",
+    "implementation_count": 1,
+    "registry_names": ["chain_evidence", "chain_evidence_controller"],
+    "registry_names_are_compatibility_aliases": true,
+    "reconciled_behavior": "local keyed chain-evidence fast path plus upstream bounded private explorer-database helper"
+  },
   "package_dag": {
     "projection": "config/zcode_package_registry.def",
     "monolith_exact_roots": [
@@ -111,8 +130,8 @@
     {"gate": "test_native_api_contract", "result": "PASS"},
     {"gate": "base_foundation", "result": "PASS"},
     {"gate": "sha3_stream_and_shake_kats", "result": "PASS_REFRESHED_AFTER_VERTICAL_COMPLETION"},
-    {"gate": "sha3_x4_differential", "result": "PASS"},
-    {"gate": "mmb_mmr_utxo_consensus_vectors", "result": "PASS_BYTE_IDENTICAL_PRE_POST"},
+    {"gate": "sha3_x4_differential", "result": "PASS_PRE_AND_POST_EXTRACTION_AVX512_HOST"},
+    {"gate": "mmb_mmr_utxo_consensus_vectors", "result": "PASS_IDENTICAL_ORACLES_PRE_AND_POST_EXTRACTION"},
     {"gate": "test_zcode_package_dev", "result": "PASS_PREPARE_SEAL_CAPSULE_AND_FAIL_CLOSED_TREE"},
     {"gate": "test_vcs_release", "result": "PASS_SIGNATURE_WIRE_SEQUENCE_DUPLICATE_AND_LINEAGE"},
     {"gate": "test_codec_cursor", "result": "PASS_REFRESHED_AFTER_VERTICAL_COMPLETION"},
@@ -143,6 +162,36 @@
       "detail": "task/policy/candidate/review/lane/work/context/swarm roots and round trips pass; the later improve subcase requires the intentionally unbuilt build/bin/zclassic23-package-verify helper during the fold freeze"
     }
   ],
+  "pre_post_compatibility": {
+    "pre_extraction_revision": "6e61feeb3b4c806991686d47c0b8688036b9f812",
+    "post_extraction_revision": "63d9d61da4f679e1e33055e9daa596ebecd612f3",
+    "command_template": "make -j4 t-fast ONLY=<group>",
+    "groups_passed_at_both_revisions": [
+      "test_sha3_stream",
+      "test_sha3_256_x4",
+      "test_sha3_512_x4",
+      "test_mmb",
+      "test_mmr",
+      "test_utxo_commitment",
+      "test_consensus_parity"
+    ],
+    "byte_oracle_blob_identity": {
+      "lib/test/src/test_sha3_256_x4.c": "e4be481e7ba6bd8b6f2ff133e0e6eab9dcf26b6f",
+      "lib/test/src/test_sha3_512_x4.c": "f03338767e3795bc8dfd0e7be877923f4001aaf0",
+      "lib/test/src/test_mmb.c": "2414e435635fcac6f088994abb64053425329dd4",
+      "lib/test/src/test_mmr.c": "8816ea3179843fdf71773b14dadf93b4ca32f9f6",
+      "lib/test/src/test_utxo_commitment.c": "49ab89acfcce8858d58d2fe05b8fab026b7bd53d",
+      "lib/test/src/test_consensus_parity.c": "a9989d75762e7b5429a41c361b4c1cb54d85f40e"
+    },
+    "sha3_stream_oracle": {
+      "pre_blob": "9c4d411dc197b3b8f9c1a8a083590dcee2fbf397",
+      "post_blob": "308f26c70b77dc68eada6fb35acd9c9684464396",
+      "preserved_assertions": "FIPS-202 SHA3-256/512 KATs, every length 0..1100, and deterministic split-write differential all pass at both revisions",
+      "post_only_extension": "FIPS-202 SHAKE128/256 KATs plus multi-block squeeze, canary, empty-output and invalid-NULL checks pass"
+    },
+    "timing_excluded_from_identity_claim": true,
+    "result": "PASS_DETERMINISTIC_VECTOR_ASSERTIONS_AT_BOTH_REVISIONS"
+  },
   "born_red_receipts": [
     "docs/work/zcode-selfhost-evidence/born-red-package-dev.json",
     "docs/work/zcode-selfhost-evidence/born-red-codec-cursor.json",
