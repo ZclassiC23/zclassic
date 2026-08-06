@@ -24,6 +24,7 @@
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "models/database.h"
+#include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 
 #include <sqlite3.h>
@@ -237,6 +238,8 @@ static int t_frontier_offline_reads_hstar(void)
         built = built && odq_put_consistent_height(db, h);
     ODQ_CHECK("frontier fixture: rows", built);
     ODQ_CHECK("frontier fixture: cursors", odq_set_all_cursors(db, tip + 1));
+    ODQ_CHECK("frontier fixture: applied height at hstar+1",
+             odq_stamp_proven_authority(db, tip + 1));
     progress_store_close();
 
     struct json_value input;
@@ -259,9 +262,53 @@ static int t_frontier_offline_reads_hstar(void)
              json_get_int(json_get(&reply.data, "compiled_anchor")) == A);
     ODQ_CHECK("frontier offline: refold_in_progress == false",
              !json_get_bool(json_get(&reply.data, "refold_in_progress")));
+    ODQ_CHECK("frontier offline: applied height known",
+             json_get_bool(json_get(&reply.data,
+                                    "coins_applied_height_known")));
+    ODQ_CHECK("frontier offline: applied height == tip+1",
+             json_get_int(json_get(&reply.data,
+                                   "coins_applied_height")) == tip + 1);
+    ODQ_CHECK("frontier offline: borrowed authority is explicit",
+             json_get_bool(json_get(&reply.data, "proven_authority")) &&
+             !json_get_bool(json_get(&reply.data,
+                                     "self_folded_marker")));
+    ODQ_CHECK("frontier offline: borrowed copy cannot spend",
+             !json_get_bool(json_get(&reply.data,
+                                     "wallet_spend_static_allowed")) &&
+             strcmp(json_get_str(json_get(&reply.data,
+                                          "static_trust_state")),
+                    "release_assisted_ready") == 0 &&
+             strcmp(json_get_str(json_get(&reply.data,
+                                          "wallet_spend_static_reason")),
+                    "borrowed_seed_no_refold_marker") == 0);
     ODQ_CHECK("frontier offline: datadir echoed",
              strcmp(json_get_str(json_get(&reply.data, "datadir")), dir) == 0);
 
+    zcl_command_reply_free(&reply);
+
+    /* The exact same copied store becomes statically spend-capable only after
+     * the producer-owned self-fold marker exists.  Runtime H* climb remains a
+     * separate requirement and is named by the response. */
+    ODQ_CHECK("frontier fixture: reopen for self-fold marker",
+             progress_store_open(dir));
+    db = progress_store_db();
+    ODQ_CHECK("frontier fixture: mark self-folded",
+             db && coins_kv_mark_self_folded(db));
+    progress_store_close();
+
+    zcl_command_reply_init(&reply, "zcl.core_sync_frontier_offline.v1");
+    zcl_native_handle_core_sync_frontier_offline(&request, &reply);
+    ODQ_CHECK("frontier offline: self-folded copy is sovereign",
+             reply.exit_code == ZCL_COMMAND_EXIT_OK &&
+             json_get_bool(json_get(&reply.data, "static_self_derived")) &&
+             json_get_bool(json_get(&reply.data,
+                                    "wallet_spend_static_allowed")) &&
+             strcmp(json_get_str(json_get(&reply.data,
+                                          "static_trust_state")),
+                    "sovereign") == 0 &&
+             strcmp(json_get_str(json_get(&reply.data,
+                                          "runtime_proof_required")),
+                    "two_sample_hstar_climb_and_current_money_snapshot") == 0);
     zcl_command_reply_free(&reply);
     json_free(&input);
     return failures;

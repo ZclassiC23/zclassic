@@ -696,7 +696,12 @@ post_tip="$(tip)"; post_tip="${post_tip:--1}"
 body_read_fails=0
 refold_snapshot_loaded=0
 if [ -f "$DEST/repro_node.log" ]; then
-    body_read_fails="$(grep -c 'cannot open .*/blocks/blk' "$DEST/repro_node.log" 2>/dev/null || echo 0)"
+    # `grep -c` prints the valid count "0" while returning status 1 for no
+    # matches.  Appending `|| echo 0` therefore produced "0\n0", corrupting
+    # the otherwise machine-readable result JSON on a clean proof.  Preserve
+    # grep's count and normalize only a genuine read/tool failure.
+    body_read_fails="$(grep -c 'cannot open .*/blocks/blk' "$DEST/repro_node.log" 2>/dev/null)" ||
+        body_read_fails="${body_read_fails:-0}"
     if grep -q '\[boot\] -refold-from-anchor: loaded .* coins from the MINTED snapshot' "$DEST/repro_node.log" 2>/dev/null; then
         refold_snapshot_loaded=1
     fi

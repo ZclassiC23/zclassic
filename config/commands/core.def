@@ -287,11 +287,13 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_READ(
     "core.sync.frontier.offline", "core.sync", "",
     "H* (reducer frontier) of a STOPPED/COPIED datadir",
-    "The pure SELECT-only L0 H* fold (reducer_frontier_compute_hstar) run "
-    "directly against --datadir=<path>'s own consensus.db/progress.kv at "
-    "call time — no node contact, no RPC; works on a stopped node or a "
-    "copy of one.", 0,
-    "sync,frontier,hstar,offline,datadir,copy",
+    "The pure SELECT-only L0 H* fold (reducer_frontier_compute_hstar) and "
+    "static sovereignty/spend predicates run directly against "
+    "--datadir=<path>'s own consensus.db/progress.kv at call time — no node "
+    "contact, no RPC; works on a stopped node or copy. Static spend posture "
+    "never replaces the required two-sample runtime H* climb or current "
+    "identity-bound money snapshot.", 0,
+    "sync,frontier,hstar,offline,datadir,copy,sovereignty,spend",
     "zcl.core_sync_frontier_offline.input.v1",
     "zcl.core_sync_frontier_offline.v1", "datadir", "",
     "zclassic23 core sync frontier offline "
