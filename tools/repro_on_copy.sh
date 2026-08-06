@@ -65,6 +65,11 @@
 #   --expect-climb-past=H
 #                     require the served/provable tip (H*) to climb strictly
 #                     above H before the deadline
+#   --expect-static-spend-ready
+#                     after any requested H* climb, require the copy's offline
+#                     sovereignty fold to report wallet_spend_static_allowed.
+#                     This is still only the static half of spend readiness;
+#                     an identity-bound current money snapshot remains required.
 #   --no-run          snapshot + manifest only; do not launch the node
 #   --json            emit ONE JSON summary object on stdout instead of the
 #                      human banner (progress/log lines move to stderr).
@@ -166,10 +171,12 @@ atomic_write() {
 emit_running_json() {
     printf '{"schema":"zcl.copy_prove_result.v1","state":"running",'\
 '"slug":"%s","copy_path":"%s","src":"%s","node_pid":%s,'\
-'"expect_climb_past":%s,"generated_at":%s}\n' \
+'"expect_climb_past":%s,"expect_static_spend_ready":%s,'\
+'"generated_at":%s}\n' \
         "$(json_escape "$SLUG")" "$(json_escape "$DEST")" \
         "$(json_escape "$SRC")" "${NODE_PID:-0}" \
-        "$(num_or_null "${EXPECT_CLIMB_PAST:--1}")" "$(date +%s)"
+        "$(num_or_null "${EXPECT_CLIMB_PAST:--1}")" \
+        "$(bool_json "${EXPECT_STATIC_SPEND_READY:-0}")" "$(date +%s)"
 }
 
 emit_done_json() {
@@ -180,6 +187,7 @@ emit_done_json() {
 '"verdict":"%s","exit_code":%s,"slug":"%s","copy_path":"%s",'\
 '"src":"%s","h_star_before":%s,"h_star_after":%s,"max_tip":%s,'\
 '"expect_climb_past":%s,"climbed_past":%s,"tip_regression":%s,'\
+'"expect_static_spend_ready":%s,"static_spend_ready":%s,'\
 '"body_read_fails":%s,"refold_requested":%s,'\
 '"refold_snapshot_loaded":%s,"duration_secs":%s,'\
 '"log_path":"%s","node_pid":%s,"generated_at":%s}\n' \
@@ -191,6 +199,8 @@ emit_done_json() {
         "$(num_or_null "${EXPECT_CLIMB_PAST:--1}")" \
         "$(bool_json "${climbed_past:-0}")" \
         "$(bool_json "${regressed:-0}")" \
+        "$(bool_json "${EXPECT_STATIC_SPEND_READY:-0}")" \
+        "$(bool_json "${static_spend_ready:-0}")" \
         "${body_read_fails:-0}" \
         "$(bool_json "${REFOLD_REQUESTED:-0}")" \
         "$(bool_json "${refold_snapshot_loaded:-0}")" \
@@ -207,6 +217,7 @@ CONNECT="127.0.0.1:39999"
 LIGHT=1
 DEADLINE=180
 EXPECT_CLIMB_PAST=""
+EXPECT_STATIC_SPEND_READY=0
 RUN=1
 PASS=""
 JSON=0
@@ -232,6 +243,7 @@ while [ $# -gt 0 ]; do
         --like-live)   LIKE_LIVE=1; LIGHT=0 ;;
         --deadline=*)  DEADLINE="${1#--deadline=}" ;;
         --expect-climb-past=*) EXPECT_CLIMB_PAST="${1#--expect-climb-past=}" ;;
+        --expect-static-spend-ready) EXPECT_STATIC_SPEND_READY=1 ;;
         --no-run)      RUN=0 ;;
         --json)        JSON=1 ;;
         --status-file=*) STATUS_FILE="${1#--status-file=}" ;;
@@ -523,6 +535,7 @@ fi
     echo "https_port:  $HTTPSPORT"
     echo "connect:     $CONNECT"
     echo "climb_past:  ${EXPECT_CLIMB_PAST:-none}"
+    echo "static_spend_ready_required: $([ "$EXPECT_STATIC_SPEND_READY" = 1 ] && echo yes || echo no)"
     echo "refold:      $([ "$REFOLD_REQUESTED" = 1 ] && echo yes || echo no)"
     echo "anchor_snapshot_candidate: ${ANCHOR_CANDIDATE:-none}"
     echo "install_consensus_bundle: ${INSTALL_BUNDLE_RESOLVED:-none}"
@@ -647,6 +660,14 @@ tip()  {
     esac
 }
 
+static_spend_ready_now() {
+    _static_input="{\"datadir\":\"$(json_escape "$DEST")\"}"
+    _static_out="$("$NODE_BIN" core sync frontier offline \
+        --input="$_static_input" 2>/dev/null || true)"
+    printf '%s\n' "$_static_out" |
+        grep -q '"wallet_spend_static_allowed":true'
+}
+
 # Wait for RPC, then watch the tip for regressions over the deadline window.
 deadline=$(( $(date +%s) + DEADLINE ))
 max_tip=-1
@@ -655,6 +676,10 @@ regressed=0
 seen_rpc=0
 climbed_past=0
 seen_at_or_below_climb=0
+static_spend_ready=0
+proof_gate_requested=0
+[ -n "$EXPECT_CLIMB_PAST" ] && proof_gate_requested=1
+[ "$EXPECT_STATIC_SPEND_READY" = "1" ] && proof_gate_requested=1
 while [ "$(date +%s)" -lt "$deadline" ]; do
     if ! kill -0 "$NODE_PID" 2>/dev/null; then
         echo "[repro] node exited early (see $DEST/repro_node.log)"; break
@@ -675,8 +700,23 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
                    [ "$seen_at_or_below_climb" = "1" ]; then
                     climbed_past=1
                     echo "[repro] H* CLIMBED to $t (> $EXPECT_CLIMB_PAST)"
-                    break
                 fi
+            fi
+            climb_gate_ready=1
+            if [ -n "$EXPECT_CLIMB_PAST" ] && [ "$climbed_past" != "1" ]; then
+                climb_gate_ready=0
+            fi
+            if [ "$climb_gate_ready" = "1" ] &&
+               [ "$EXPECT_STATIC_SPEND_READY" = "1" ] &&
+               static_spend_ready_now; then
+                static_spend_ready=1
+                echo "[repro] static wallet-spend predicate READY"
+            fi
+            if [ "$proof_gate_requested" = "1" ] &&
+               [ "$climb_gate_ready" = "1" ] &&
+               { [ "$EXPECT_STATIC_SPEND_READY" = "0" ] ||
+                 [ "$static_spend_ready" = "1" ]; }; then
+                break
             fi
             # Regression = tip dropped meaningfully below the high-water mark.
             if [ "$max_tip" -ge 0 ] && [ "$t" -lt "$((max_tip - 5))" ]; then
@@ -712,6 +752,9 @@ echo "  copy:      $DEST"
 echo "  first_tip: $first_tip   max_tip: $max_tip   post_tip: $post_tip"
 if [ -n "$EXPECT_CLIMB_PAST" ]; then
     echo "  climb_past: $EXPECT_CLIMB_PAST   climbed: $climbed_past"
+fi
+if [ "$EXPECT_STATIC_SPEND_READY" = "1" ]; then
+    echo "  static_spend_ready: $static_spend_ready"
 fi
 if [ "$REFOLD_REQUESTED" = "1" ]; then
     echo "  refold_snapshot_loaded: $refold_snapshot_loaded"
@@ -751,8 +794,17 @@ elif [ -n "$EXPECT_CLIMB_PAST" ] && [ "$climbed_past" != "1" ]; then
     fi
     RC=1
     VERDICT_WORD=FAIL
+elif [ "$EXPECT_STATIC_SPEND_READY" = "1" ] &&
+     [ "$static_spend_ready" != "1" ]; then
+    echo "  VERDICT:   FAIL — the copied frontier never reached the exact"
+    echo "             static wallet-spend-ready predicate within ${DEADLINE}s."
+    echo "             A current identity-bound money snapshot would still be"
+    echo "             required even if this static predicate had passed."
+    RC=1
+    VERDICT_WORD=FAIL
 else
-    echo "  VERDICT:   PASS — tip held/advanced (no regression) over ${DEADLINE}s"
+    echo "  VERDICT:   PASS — required proof reached within ${DEADLINE}s;"
+    echo "             no tip regression occurred while observed."
     RC=0
     VERDICT_WORD=PASS
 fi

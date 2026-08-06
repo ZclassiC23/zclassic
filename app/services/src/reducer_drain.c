@@ -51,6 +51,8 @@
 #include "jobs/refold_cadence.h"   /* refold_cadence_drain_batch (mint/refold) */
 #include "jobs/catchup_cadence.h"  /* peer-gap-gated live-sync batch */
 #include "jobs/reducer_frontier.h" /* reducer_frontier_provable_tip_cached (H* gate) */
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
 #include "validation/chainstate.h" /* active_chain_tip (regtest at-tip publish) */
 #include "chain/chain.h"           /* BLOCK_FAILED_MASK */
 #include "chain/chainparams.h"     /* struct chain_params (fMineBlocksOnDemand) */
@@ -60,6 +62,25 @@
 #include <stdio.h>    /* snprintf */
 #include <stdlib.h>   /* getenv, strtoll */
 #include <string.h>   /* memset */
+
+bool reducer_at_tip_authority_ready(
+    const struct reducer_at_tip_authority_observation *obs)
+{
+    if (!obs || obs->hstar < 0 || obs->active_height < 0 ||
+        obs->active_height == INT32_MAX)
+        return false;
+
+    /* Close exactly the ordinary H* -> applied-head edge. Every other shape
+     * remains with the existing lookahead/failure machinery: no multi-height
+     * authority jump, no header-tip lag, and no failed or foreign candidate. */
+    return !obs->block_failed && obs->active_hash_matches_best &&
+           obs->best_header_height == obs->active_height &&
+           obs->hstar + 1 == obs->active_height &&
+           obs->coins_applied_found &&
+           obs->coins_applied_height == obs->active_height + 1 &&
+           obs->tip_finalize_cursor == (uint64_t)obs->active_height &&
+           obs->utxo_apply_succeeded && obs->normal_lookahead_missing;
+}
 
 /* Clamped env int; `def` when unset/empty/unparsable (mirrors
  * refold_cadence.c's cadence_env_int — local so this TU owns no cross-TU
@@ -502,6 +523,67 @@ int reducer_drain_to_convergence_unbudgeted(void)
                               /*converge_on_frontier_stall=*/true);
 }
 
+/* A clean restart already restores a fully-applied coins-best tip as local
+ * authority without waiting for another block. Keep a continuously-running
+ * node equivalent, but only at the exact normal-lookahead edge: active tip ==
+ * best header, UTXO apply and its co-committed frontier cover that tip, H* is
+ * exactly one behind, and tip_finalize says the only missing fact is a
+ * successor. This never promotes during catch-up or across a reject/hole. */
+static void reducer_publish_fully_applied_at_tip_locked(
+    struct chain_activation_controller *ctl)
+{
+    if (!ctl || !ctl->ms || !ctl->params ||
+        ctl->params->fMineBlocksOnDemand)
+        return;
+
+    struct block_index *tip = active_chain_tip(&ctl->ms->chain_active);
+    struct block_index *best = ctl->ms->pindex_best_header;
+    if (!tip || !best || !tip->phashBlock || !best->phashBlock)
+        return;
+
+    sqlite3 *db = progress_store_db();
+    int32_t applied = -1;
+    bool applied_found = false;
+    bool applied_ok = db && coins_kv_get_applied_height(
+        db, &applied, &applied_found);
+    const char *blocked = tip_finalize_stage_last_blocked_reason();
+
+    struct reducer_at_tip_authority_observation obs = {
+        .hstar = reducer_frontier_provable_tip_cached(),
+        .active_height = tip->nHeight,
+        .best_header_height = best->nHeight,
+        .coins_applied_height = applied,
+        .tip_finalize_cursor = tip_finalize_stage_cursor(),
+        .active_hash_matches_best =
+            memcmp(tip->phashBlock->data, best->phashBlock->data, 32) == 0,
+        .coins_applied_found = applied_ok && applied_found,
+        .utxo_apply_succeeded =
+            utxo_apply_stage_succeeded_at(tip->nHeight),
+        .normal_lookahead_missing =
+            blocked && strcmp(blocked, "lookahead_tip_missing") == 0,
+        .block_failed = (tip->nStatus & BLOCK_FAILED_MASK) != 0,
+    };
+    if (!reducer_at_tip_authority_ready(&obs))
+        return;
+
+    LOG_INFO("reducer",
+             "[reducer] publishing fully-applied at-tip authority h=%d "
+             "(continuous equivalent of clean-restart restore)",
+             tip->nHeight);
+    tip_finalize_stage_set_authoritative_tip(tip->nHeight,
+                                             tip->phashBlock->data);
+}
+
+void reducer_publish_fully_applied_at_tip(
+    struct chain_activation_controller *ctl)
+{
+    if (!ctl)
+        return;
+    zcl_mutex_lock(&ctl->mutex);
+    reducer_publish_fully_applied_at_tip_locked(ctl);
+    zcl_mutex_unlock(&ctl->mutex);
+}
+
 int reducer_kick(struct chain_activation_controller *ctl)
 {
     if (!ctl)
@@ -549,6 +631,8 @@ int reducer_kick(struct chain_activation_controller *ctl)
             tip_finalize_stage_set_authoritative_tip(tip->nHeight,
                                                      tip->phashBlock->data);
     }
+
+    reducer_publish_fully_applied_at_tip_locked(ctl);
 
     zcl_mutex_unlock(&ctl->mutex);
     return advanced;

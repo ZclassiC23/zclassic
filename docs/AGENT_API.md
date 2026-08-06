@@ -668,7 +668,11 @@ top level and under `checks`: `readiness_status`, `chain_serving_ready`,
 `height_contract_status`, `normal_lookahead`, and `sync_fsm_at_tip`. In bounded
 mode, `checks.synced=true` means the served frontier is current or in normal
 one-block lookahead and the chain surface is serving; `sync_fsm_at_tip` is the
-raw legacy sync-state predicate for callers that specifically need it.
+raw legacy sync-state predicate for callers that specifically need it. The
+lookahead is normally transient: when its head is fully applied and exactly
+matches the best header, the reducer publishes that single head through the
+same local-authority anchor used by clean-restart restore. Any failed verdict,
+header lead, hash mismatch, or larger H* gap keeps the lookahead unpromoted.
 
 `agent`, default `healthcheck`, `agentliveness`, and `agentdiagnose` also include
 `first_call` (`zcl.first_call_contract.v1`): `api`,
@@ -924,10 +928,12 @@ do not confuse height surfaces. Top-level `height`, `served_height`,
 `getblockcount`, `getblockchaininfo.blocks`, and P2P `start_height` are the
 served/provable reducer frontier H*. `active_tip_height` is the internal
 sync-window lookahead tip and may be one block above H* while `tip_finalize`
-waits for a canonical successor. In that case `height_contract.status` is
-`normal_lookahead`, not a peer-connectivity failure. `lagging` means the served
-gap is material and should be diagnosed with `getsyncdiag` / `dumpstate
-reducer_frontier`.
+waits for a canonical successor. If that one-block head is fully applied and
+exactly equals the best header, the reducer closes the edge with the same
+authority anchor used on clean restart; otherwise
+`height_contract.status=normal_lookahead` remains an honest transient status,
+not a peer-connectivity failure. `lagging` means the served gap is material and
+should be diagnosed with `getsyncdiag` / `dumpstate reducer_frontier`.
 
 The same response includes `readiness` (`zcl.agent_readiness.v1`) so agents do
 not have to infer operational safety from the top-level status string alone.

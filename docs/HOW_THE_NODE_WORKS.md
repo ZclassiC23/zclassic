@@ -56,6 +56,13 @@ peers) report the height that `tip_finalize` has published. During process
 startup, the public REST/native status surfaces may read the durable
 `tip_finalize` cursor before the in-memory H* cache has been published, so the
 website does not briefly fall back to height 0 while the node is already at tip.
+At the live head, the applied active tip can briefly sit one block above H*
+while the reducer waits for a successor. Once that head is fully UTXO-applied,
+is exactly the best header (height and hash), has no failed verdict, and the
+only hold is `lookahead_tip_missing`, the post-drain path publishes that one
+head through the same local-authority anchor a clean restart already restores.
+It cannot jump more than one height or run while header catch-up is pending;
+this keeps the continuously-running money frontier equivalent to restart.
 
 A **reorg** is just a disconnect: `utxo_apply` saved the inverse of each coin
 change, so the node replays those backward to the fork point, then re-applies the

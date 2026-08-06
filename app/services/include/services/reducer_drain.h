@@ -24,7 +24,10 @@
 #ifndef ZCL_SERVICES_REDUCER_DRAIN_H
 #define ZCL_SERVICES_REDUCER_DRAIN_H
 
+#include <stdbool.h>
 #include <stdint.h>
+
+struct chain_activation_controller;
 
 /* The eight staged-Job reducer stages, in pipeline order. */
 #define REDUCER_DRAIN_NUM_STAGES 8
@@ -106,6 +109,34 @@ void reducer_drain_exit_stats_snapshot(struct reducer_drain_exit_stats *out);
  * reducer_drive dumpstate reads it instead of keeping a second hand-maintained
  * copy that could silently drift out of order. */
 const char *reducer_drain_stage_name(int idx);
+
+/* Exact steady-tip shape where the runtime may publish the same fully-applied
+ * local authority that a clean restart already restores. This deliberately
+ * closes ONE normal lookahead edge only; it can never jump a lagging H*, bless
+ * a different best-header hash, or publish coins that are not co-committed
+ * through the candidate height. */
+struct reducer_at_tip_authority_observation {
+    int32_t hstar;
+    int32_t active_height;
+    int32_t best_header_height;
+    int32_t coins_applied_height;
+    uint64_t tip_finalize_cursor;
+    bool active_hash_matches_best;
+    bool coins_applied_found;
+    bool utxo_apply_succeeded;
+    bool normal_lookahead_missing;
+    bool block_failed;
+};
+
+/* Pure predicate shared by the live reducer and its regression harness. */
+bool reducer_at_tip_authority_ready(
+    const struct reducer_at_tip_authority_observation *obs);
+
+/* Re-evaluate and, only for the exact observation above, publish the fully
+ * applied at-tip authority. Safe from a supervisor tick: acquires the chain
+ * activation controller mutex internally. */
+void reducer_publish_fully_applied_at_tip(
+    struct chain_activation_controller *ctl);
 
 #ifdef ZCL_TESTING
 /* Zero every drain-exit counter (test isolation only — process-global). */
