@@ -52,6 +52,7 @@
 #   # full proof (positive install+climb + negative fail-closed):
 #   tools/scripts/instant-on-copy-prove.sh \
 #       --src=$HOME/.zclassic-c23-some-synced-copy \
+#       --operator-lane=dev \
 #       --expect-climb-past=3056758 --deadline=3600
 #
 #   # fail-closed proof only (fast; no substrate needed):
@@ -80,6 +81,7 @@ CHECKPOINT=3056758                 # REDUCER_FRONTIER_TRUSTED_ANCHOR (mainnet)
 EXPECT_CLIMB_PAST=""               # default filled to CHECKPOINT after parse
 BUNDLE=""
 SRC=""
+OPERATOR_LANE=""                   # auto-read from --src wallet identity
 WORK_BASE=""                       # default: alongside --src's parent, else $HOME
 RPCPORT=39610
 P2PPORT=39611
@@ -100,6 +102,7 @@ for arg in "$@"; do
     case "$arg" in
         --bundle=*)            BUNDLE=${arg#*=} ;;
         --src=*)               SRC=${arg#*=} ;;
+        --operator-lane=*)     OPERATOR_LANE=${arg#*=} ;;
         --work-base=*)         WORK_BASE=${arg#*=} ;;
         --checkpoint=*)        CHECKPOINT=${arg#*=} ;;
         --expect-climb-past=*) EXPECT_CLIMB_PAST=${arg#*=} ;;
@@ -123,6 +126,22 @@ fail_env() { echo "instant-on-copy-prove: $1" >&2; exit 2; }
 
 [ -x "$NODE_BIN" ] || fail_env "node binary not built at $NODE_BIN (run 'make' or set ZCL_NODE_BIN)"
 [ -x "$RPC_BIN" ]  || fail_env "rpc binary not built at $RPC_BIN (run 'make zcl-rpc' or set ZCL_RPC_BIN)"
+
+# A work copy retains its persistent wallet identity, including its operator
+# lane. Preserve that lane so the identity guard can distinguish a valid
+# isolated copy from an accidental lane reassignment. An explicit option wins;
+# otherwise read only the non-secret lane field from the source database.
+if [ -z "$OPERATOR_LANE" ] && [ -n "$SRC" ] && [ -f "$SRC/node.db" ]; then
+    command -v sqlite3 >/dev/null 2>&1 ||
+        fail_env "sqlite3 is required to detect the source operator lane; pass --operator-lane explicitly"
+    OPERATOR_LANE=$(sqlite3 "$SRC/node.db" \
+        'SELECT operator_lane FROM wallet_identity WHERE id=1;' 2>/dev/null || true)
+fi
+[ -n "$OPERATOR_LANE" ] || OPERATOR_LANE=copy
+case "$OPERATOR_LANE" in
+    canonical|dev|test|soak|copy) ;;
+    *) fail_env "unsupported --operator-lane (expected canonical, dev, test, soak, or copy)" ;;
+esac
 
 # ── Path helpers ────────────────────────────────────────────────────────────
 resolve() { # best-effort absolute path (dir need not exist)
@@ -247,6 +266,7 @@ run_negative() {
     HOME="$ISO_HOME" ZCL_MIRROR_SYNC=0 timeout "${DEADLINE}s" \
         "$NODE_BIN" -datadir="$NEG_DD" -rpcport="$RPCPORT" -port="$P2PPORT" \
         -fsport="$FSPORT" -httpsport="$HTTPSPORT" -connect="$CONNECT" \
+        -operator-lane="$OPERATOR_LANE" \
         -nolegacyimport -nofilesync -nobgvalidation \
         -install-consensus-bundle="$FLIP" > "$NEG_LOG" 2>&1 || neg_rc=$?
 
@@ -298,6 +318,11 @@ run_positive() {
         POS_VERDICT=BLOCKED; return
     fi
     [ -d "$SRC" ] || { echo "  POSITIVE INVALID — --src not a directory: $SRC"; POS_VERDICT=INVALID; return; }
+    if [ "$(resolve "$SRC")" = "$(resolve "$HOME/.zclassic-c23")" ] &&
+       [ "$(systemctl --user show zclassic23 -p ActiveState --value 2>/dev/null || true)" = active ]; then
+        echo "  POSITIVE INVALID — canonical source wallet is active; stop it before copying so one wallet identity is never active at two endpoints."
+        POS_VERDICT=INVALID; return
+    fi
 
     WORK="${WORK_BASE:-$(dirname -- "$(resolve "$SRC")")}/.zclassic-c23-INSTANTON-$$"
     if is_denylisted "$WORK"; then
@@ -329,6 +354,7 @@ run_positive() {
     HOME="$ISO_HOME" ZCL_MIRROR_SYNC=0 timeout "${DEADLINE}s" \
         "$NODE_BIN" -datadir="$WORK" -rpcport="$RPCPORT" -port="$P2PPORT" \
         -fsport="$FSPORT" -httpsport="$HTTPSPORT" -connect="$CONNECT" \
+        -operator-lane="$OPERATOR_LANE" \
         -nolegacyimport -nofilesync -nobgvalidation \
         -install-consensus-bundle="$BUNDLE_STAGED" > "$INSTALL_LOG" 2>&1 || ins_rc=$?
     if [ "$ins_rc" != "0" ] || ! grep -q '^INSTALLED: -install-consensus-bundle:' "$INSTALL_LOG"; then
@@ -344,6 +370,7 @@ run_positive() {
     HOME="$ISO_HOME" ZCL_MIRROR_SYNC=0 \
         "$NODE_BIN" -datadir="$WORK" -rpcport="$RPCPORT" -port="$P2PPORT" \
         -fsport="$FSPORT" -httpsport="$HTTPSPORT" -connect="$CONNECT" \
+        -operator-lane="$OPERATOR_LANE" \
         -nolegacyimport -nofilesync -nobgvalidation \
         > "$NODE_LOG" 2>&1 &
     NODE_PID=$!
@@ -391,6 +418,7 @@ run_positive() {
 echo "========================================================================"
 echo "  instant-on-copy-prove   checkpoint=$CHECKPOINT  climb-past=$EXPECT_CLIMB_PAST"
 echo "  node=$NODE_BIN"
+echo "  operator_lane=$OPERATOR_LANE"
 echo "========================================================================"
 
 BUNDLE_RESOLVED=$(discover_bundle || true)

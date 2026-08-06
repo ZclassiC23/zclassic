@@ -5,7 +5,31 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CATALOG="${ZCL_TRANSACTION_LAB_CATALOG:-$REPO/tools/dev/transaction_lab_catalog.def}"
-LEDGER="${ZCL_TRANSACTION_LAB_LEDGER:-$REPO/docs/work/transaction-lab-events.jsonl}"
+ACTION="${1:-status}"
+LEDGER_TEMPLATE="$REPO/docs/work/transaction-lab-events.jsonl"
+PRIVATE_STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/zclassic23-transaction-lab"
+PRIVATE_LEDGER="$PRIVATE_STATE_ROOT/transaction-lab-events.jsonl"
+if [ -n "${ZCL_TRANSACTION_LAB_LEDGER:-}" ]; then
+    LEDGER="$ZCL_TRANSACTION_LAB_LEDGER"
+else
+    case "$ACTION" in
+        record)
+            install -d -m 700 "$PRIVATE_STATE_ROOT"
+            if [ ! -e "$PRIVATE_LEDGER" ]; then
+                install -m 600 "$LEDGER_TEMPLATE" "$PRIVATE_LEDGER"
+            fi
+            LEDGER="$PRIVATE_LEDGER"
+            ;;
+        status|json)
+            if [ -f "$PRIVATE_LEDGER" ]; then
+                LEDGER="$PRIVATE_LEDGER"
+            else
+                LEDGER="$LEDGER_TEMPLATE"
+            fi
+            ;;
+        *) LEDGER="$LEDGER_TEMPLATE" ;;
+    esac
+fi
 TYPE_CATALOG="${ZCL_TRANSACTION_TYPE_CATALOG:-$REPO/app/controllers/include/controllers/transaction_types.def}"
 SUPPLEMENTAL_TESTS="${ZCL_TRANSACTION_LAB_SUPPLEMENTAL_TESTS:-$REPO/app/controllers/include/controllers/transaction_type_supplemental_tests.def}"
 LIVE_CATALOG="${ZCL_TRANSACTION_LIVE_CATALOG:-$REPO/tools/dev/transaction_live_catalog.def}"

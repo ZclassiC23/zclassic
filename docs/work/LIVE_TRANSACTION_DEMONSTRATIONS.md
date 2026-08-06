@@ -64,11 +64,12 @@ Do not create a plan, reserve funds, or broadcast while any item is false:
    every acceptance fact listed there is closed with current evidence.
 2. The installed dev binary identifies the source being reviewed; the node's
    typed `status` and `dumpstate reducer_frontier` reads are current.
-3. `make custody-status ARGS='--broker-dir=<owner-private-absolute-dir>'`
-   reports `[#####] 5/5 status=ready`.
-4. `metaverse agent money` reports both assigned wallet instance IDs as
-   `CURRENT`, a known portfolio total, and a current snapshot root. An
-   unavailable reader is `UNKNOWN`, never zero.
+3. `make custody-status ARGS='--broker-dir=<owner-private-absolute-dir>
+   --wallet-scope=dev'` reports `[#####] 5/5 status=ready scope=dev`.
+4. `metaverse agent money` reports the explicitly targeted dev wallet as
+   `CURRENT` with a current snapshot root. The independent portfolio may remain
+   partial when production is unavailable; that never turns production into
+   zero and never authorizes a production spend.
 5. The explicit source scope is `dev`. The production wallet and legacy
    `zclassicd` wallet are never funding sources for this campaign.
 6. Two fresh isolated lab recipient wallets exist. Their addresses, keys,
@@ -83,7 +84,7 @@ Run the read-only checks first:
 ```bash
 zclassic23 status
 zclassic23 dumpstate reducer_frontier
-make custody-status ARGS='--broker-dir=<owner-private-absolute-dir>'
+make custody-status ARGS='--broker-dir=<owner-private-absolute-dir> --wallet-scope=dev'
 zclassic23 metaverse agent money --dir=<owner-private-absolute-dir>
 make transaction-lab-status
 ```
@@ -168,6 +169,9 @@ tools/dev/transaction-lab.sh record \
 make transaction-lab-check
 make transaction-lab-status
 ```
+
+The recorder writes mode-0600 private local state by default. Never copy its
+live receipts into the repository ledger or push experiment history to `main`.
 
 The txid, confirmation height, and block hash form the stable public-chain
 historical reference. A reorg requires a later correcting event; never edit an

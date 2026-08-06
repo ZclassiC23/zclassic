@@ -54,17 +54,22 @@ and fee totals.
 
 ## Append-only event ledger
 
-The canonical ledger is `docs/work/transaction-lab-events.jsonl`. Existing
-`zcl.transaction_lab_event.v1` lines remain valid. New public-chain receipts
-use `zcl.transaction_lab_event.v2`, which adds confirmation height and block
-hash. Existing lines are evidence and must not be edited or reordered;
-corrections are later events for the same `case_id`. Statistics use the latest
-event per case.
+The repository ledger `docs/work/transaction-lab-events.jsonl` is the public,
+reproducible isolated-test baseline only. Real public-chain receipts go to a
+mode-0600 private working ledger under
+`~/.local/state/zclassic23-transaction-lab/`; they must never be committed or
+pushed. The first `record` privately copies the baseline, and `status`
+automatically reads that private copy when it exists.
+
+Existing `zcl.transaction_lab_event.v1` lines remain valid. New public-chain
+receipts use `zcl.transaction_lab_event.v2`, which adds confirmation height and
+block hash. Existing lines are append-only evidence; corrections are later
+events for the same `case_id`. Statistics use the latest event per case.
 
 Validate before and after recording:
 
 ```bash
-make transaction-lab-check
+make transaction-lab-check # validates the reproducible repository baseline
 tools/dev/transaction-lab.sh record \
   --case=transparent_t_to_t --network=mainnet --proof=live_confirmed \
   --result=PASS --source=owner_visible_receipt --txid=<64-lowercase-hex> \
@@ -72,6 +77,9 @@ tools/dev/transaction-lab.sh record \
   --block-height=<confirmed-height> --block-hash=<64-lowercase-hex>
 make transaction-lab-status
 ```
+
+`transaction-lab-status` validates and summarizes the private working ledger
+after a record. It prints aggregate counts only and never prints its path.
 
 The recorder accepts no address, path, endpoint, memo, token, or secret field.
 Recording is bookkeeping only; it cannot build, sign, broadcast, or authorize a

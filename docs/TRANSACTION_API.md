@@ -363,9 +363,10 @@ make transaction-lab-status
 make transaction-lab-check
 ```
 
-The append-only event ledger is
-[`work/transaction-lab-events.jsonl`](./work/transaction-lab-events.jsonl), and
-the procedure and safety cap are in
+The reproducible isolated-event baseline is
+[`work/transaction-lab-events.jsonl`](./work/transaction-lab-events.jsonl); live
+receipts default to private local state and are never committed. The
+procedure and safety cap are in
 [`work/TRANSACTION_LAB.md`](./work/TRANSACTION_LAB.md). Only a `live_confirmed`
 mainnet event with a public txid increments live counts, recipient value, or
 fees. Simnet confirmation never increments live money statistics.

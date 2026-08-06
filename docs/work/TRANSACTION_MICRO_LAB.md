@@ -78,6 +78,14 @@ The setup envelope covers owner-visible, separately approved prerequisites:
 - the minimum ZSLP inventory and two-party commerce fixtures;
 - their fees and protocol-defined dust outputs.
 
+Create the two unfunded recipient wallets with
+`make transaction-micro-lab-wallets-setup`. The harness uses isolated
+loopback ports, persists private mode-0600 address manifests outside the
+repository, stops both nodes after derivation, and prints only a redacted
+readiness count. Re-running it resumes instead of replacing either wallet.
+`make transaction-micro-lab-wallets-status` is read-only. Neither command
+funds, reserves, signs, broadcasts, or exports a key.
+
 Setup transactions are not secretly counted among the 100. They are separately
 identified public transactions, included in the same lifetime cap, and never
 created automatically. The original four-transaction shield/unshield proposal
@@ -123,8 +131,9 @@ as micro-payments.
 The campaign is serial by default:
 
 1. Re-run the global gate in `LIVE_TRANSACTION_DEMONSTRATIONS.md`. Continue only
-   at custody 5/5 with both wallet identities `CURRENT`, a current tip and money
-   snapshot, no conflicting reservations, and explicit `dev` scope.
+   at scoped custody 5/5 with the dev wallet `CURRENT`, a current tip and money
+   snapshot, no conflicting reservations, and explicit `dev` scope. A partial
+   production reader remains visible but does not authorize or block dev.
 2. Create and confirm the separately approved setup transactions. Refresh the
    identity-bound snapshot after each one.
 3. For the next numbered slot, ask
@@ -145,10 +154,15 @@ and the campaign cannot become a burst of low-value traffic.
 
 ## Notebook and statistics
 
-The redacted append-only ledger is
-`docs/work/transaction-micro-lab-events.jsonl`. It permits only public txids,
-block identity, amounts, fees, and Unix times. Addresses, endpoints, paths,
-grant tokens, plan IDs, memos, secrets, keys, and recovery words are rejected.
+The redacted append-only working ledger is private local state under
+`~/.local/state/zclassic23-transaction-lab/`; it is never a Git input and must
+not be committed or pushed. The repository's
+`docs/work/transaction-micro-lab-events.jsonl` is an empty campaign-header
+template only. The first `record` copies that header into a mode-0600 private
+ledger; `status` automatically reads the private ledger when it exists. It
+permits only public txids, block identity, amounts, fees, and Unix times.
+Addresses, endpoints, paths, grant tokens, plan IDs, memos, secrets, keys, and
+recovery words are rejected.
 
 Immediately after a successful broadcast, the agent records:
 
@@ -168,7 +182,7 @@ tools/dev/transaction-micro-lab.sh record \
   --block-hash=<64-lowercase-hex>
 ```
 
-`conflicted`, `expired`, and `reorged` are append-only corrective states. A
+`conflicted`, `expired`, and `reorged` are private append-only corrective states. A
 reconfirmed transaction appends a new `confirmed` event with the same txid and
 new block identity. The checker rejects slot/case drift, changed accounting,
 duplicate broadcasts, txid reuse, impossible transitions, missing block

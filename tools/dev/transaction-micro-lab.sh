@@ -5,7 +5,31 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CATALOG="${ZCL_TRANSACTION_MICRO_CATALOG:-$REPO/tools/dev/transaction_micro_lab_catalog.def}"
-LEDGER="${ZCL_TRANSACTION_MICRO_LEDGER:-$REPO/docs/work/transaction-micro-lab-events.jsonl}"
+ACTION="${1:-status}"
+LEDGER_TEMPLATE="$REPO/docs/work/transaction-micro-lab-events.jsonl"
+PRIVATE_STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/zclassic23-transaction-lab"
+PRIVATE_LEDGER="$PRIVATE_STATE_ROOT/transaction-micro-lab-events.jsonl"
+if [ -n "${ZCL_TRANSACTION_MICRO_LEDGER:-}" ]; then
+    LEDGER="$ZCL_TRANSACTION_MICRO_LEDGER"
+else
+    case "$ACTION" in
+        record)
+            install -d -m 700 "$PRIVATE_STATE_ROOT"
+            if [ ! -e "$PRIVATE_LEDGER" ]; then
+                install -m 600 "$LEDGER_TEMPLATE" "$PRIVATE_LEDGER"
+            fi
+            LEDGER="$PRIVATE_LEDGER"
+            ;;
+        status)
+            if [ -f "$PRIVATE_LEDGER" ]; then
+                LEDGER="$PRIVATE_LEDGER"
+            else
+                LEDGER="$LEDGER_TEMPLATE"
+            fi
+            ;;
+        *) LEDGER="$LEDGER_TEMPLATE" ;;
+    esac
+fi
 LIVE_CATALOG="${ZCL_TRANSACTION_LIVE_CATALOG:-$REPO/tools/dev/transaction_live_catalog.def}"
 NATIVE_CATALOG="${ZCL_TRANSACTION_MICRO_NATIVE_CATALOG:-$REPO/app/controllers/include/controllers/transaction_micro_lab_profiles.def}"
 CAMPAIGN_ID=mainnet-micro-100-v1

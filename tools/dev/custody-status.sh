@@ -17,17 +17,28 @@ cd "$REPO"
 
 JSON=0
 BROKER_DIR="${ZCL_CUSTODY_BROKER_DIR:-}"
+WALLET_SCOPE="portfolio"
 while [ $# -gt 0 ]; do
     case "$1" in
         --json) JSON=1 ;;
         --broker-dir=*) BROKER_DIR="${1#*=}" ;;
+        --wallet-scope=dev|--wallet-scope=prod)
+            WALLET_SCOPE="${1#*=}"
+            ;;
+        --wallet-scope=*)
+            echo "custody-status: --wallet-scope must be dev or prod" >&2
+            exit 2
+            ;;
         -h|--help)
             cat <<'USAGE'
-usage: tools/dev/custody-status.sh [--json] [--broker-dir=ABSOLUTE_DIR]
+usage: tools/dev/custody-status.sh [--json] [--broker-dir=ABSOLUTE_DIR] [--wallet-scope=dev|prod]
 
 Read-only rollout status for dev/prod custody. A broker directory may also be
 provided through ZCL_CUSTODY_BROKER_DIR. Missing, stale, conflicting, or
 unreachable wallets remain UNKNOWN; this command never creates or fixes state.
+Without --wallet-scope, readiness means the complete two-wallet portfolio is
+current. With an explicit scope, readiness applies only to that target wallet;
+the independent portfolio status remains visible and is never inferred.
 USAGE
             exit 0
             ;;
@@ -75,13 +86,13 @@ fixture_probe() {
         schema:*)
             printf '{"path":"metaverse.agent.money"}\n'
             ;;
-        dev_status:ready)
+        dev_status:ready|dev_status:dev-ready)
             printf '{"installed_matches_source":true,"deploy_blocker":false}\n'
             ;;
         dev_status:*)
             printf '{"installed_matches_source":false,"deploy_blocker":false}\n'
             ;;
-        canonical:ready)
+        canonical:ready|canonical:dev-ready)
             printf '%s\n' "argv[]=zclassic23 -datadir=$PROD_DATADIR -operator-lane=canonical"
             ;;
         canonical:*)
@@ -97,7 +108,10 @@ fixture_probe() {
             return 1
             ;;
         money:ready)
-            printf '{"ok":true,"data":{"wallets":[{"status":"CURRENT"},{"status":"CURRENT"}],"portfolio_total_known":true,"portfolio_confirmed_zcl":"0.30000000"}}\n'
+            printf '{"ok":true,"data":{"wallets":[{"wallet_scope":"dev","status":"CURRENT"},{"wallet_scope":"prod","status":"CURRENT"}],"portfolio_total_known":true,"portfolio_confirmed_zcl":"0.30000000"}}\n'
+            ;;
+        money:dev-ready)
+            printf '{"ok":true,"data":{"wallets":[{"wallet_scope":"dev","status":"CURRENT"},{"wallet_scope":"prod","status":"UNKNOWN"}],"portfolio_total_known":false}}\n'
             ;;
         money:*)
             return 1
@@ -139,7 +153,7 @@ probe() {
 
 broker_state="absent"
 if [ -n "$FIXTURE" ]; then
-    [ "$FIXTURE" = ready ] && broker_state="present"
+    case "$FIXTURE" in ready|dev-ready) broker_state="present" ;; esac
 elif [ -n "$BROKER_DIR" ] && [ -d "$BROKER_DIR" ]; then
     [ -f "$BROKER_DIR/money-bindings.json" ] && broker_state="present"
 fi
@@ -223,8 +237,18 @@ money_status="UNKNOWN"
 portfolio_known=false
 portfolio_total="UNKNOWN"
 current_wallets=0
+dev_money_status="UNKNOWN"
+prod_money_status="UNKNOWN"
 if [ "$broker_state" = present ]; then
     money_body="$(probe_output money)"
+    dev_money_status="$(printf '%s' "$money_body" |
+        sed -n 's/.*"wallet_scope":"dev"[^}]*"status":"\([^"]*\)".*/\1/p' |
+        head -1)"
+    prod_money_status="$(printf '%s' "$money_body" |
+        sed -n 's/.*"wallet_scope":"prod"[^}]*"status":"\([^"]*\)".*/\1/p' |
+        head -1)"
+    [ -n "$dev_money_status" ] || dev_money_status="UNKNOWN"
+    [ -n "$prod_money_status" ] || prod_money_status="UNKNOWN"
     if [ "$(json_bool_field "$money_body" portfolio_total_known)" = true ]; then
         portfolio_known=true
         portfolio_total="$(json_string_field "$money_body" portfolio_confirmed_zcl)"
@@ -236,12 +260,18 @@ if [ "$broker_state" = present ]; then
     fi
 fi
 
+target_money_status="$money_status"
+case "$WALLET_SCOPE" in
+    dev) target_money_status="$dev_money_status" ;;
+    prod) target_money_status="$prod_money_status" ;;
+esac
+
 completed=0
 [ "$source_ready" = true ] && completed=$((completed + 1))
 [ "$dev_current" = true ] && completed=$((completed + 1))
 [ "$canonical_target" = expected_prod ] && completed=$((completed + 1))
 [ "$broker_state" = present ] && completed=$((completed + 1))
-[ "$money_status" = CURRENT ] && completed=$((completed + 1))
+[ "$target_money_status" = CURRENT ] && completed=$((completed + 1))
 
 status="blocked"
 [ "$completed" -eq 5 ] && status="ready"
@@ -254,8 +284,8 @@ elif [ "$canonical_target" != expected_prod ]; then
     next_action="restore canonical to the assigned production datadir"
 elif [ "$broker_state" != present ]; then
     next_action="create the owner custody binding after both wallet identities exist"
-elif [ "$money_status" != CURRENT ]; then
-    next_action="inspect the identity-bound wallet readers; never substitute zero"
+elif [ "$target_money_status" != CURRENT ]; then
+    next_action="inspect the identity-bound ${WALLET_SCOPE} wallet reader; never substitute zero"
 else
     next_action="custody rollout is current; no fund movement is required"
 fi
@@ -264,14 +294,16 @@ emit_json() {
     printf '{'
     printf '"schema":"zcl.custody_rollout_status.v1",'
     printf '"status":"%s",' "$status"
+    printf '"requested_wallet_scope":"%s",' "$WALLET_SCOPE"
     printf '"progress":{"completed":%d,"total":5},' "$completed"
     printf '"source":{"ready":%s},' "$source_ready"
     printf '"dev_runtime":{"current":%s},' "$dev_current"
     printf '"canonical":{"target":"%s"},' "$canonical_target"
     printf '"broker":{"state":"%s"},' "$broker_state"
-    printf '"money":{"status":"%s","portfolio_total_known":%s,"portfolio_confirmed_zcl":"%s","current_wallets":%d},' \
-        "$money_status" "$portfolio_known" "$(json_escape "$portfolio_total")" \
-        "$current_wallets"
+    printf '"money":{"status":"%s","target_status":"%s","dev_status":"%s","prod_status":"%s","portfolio_total_known":%s,"portfolio_confirmed_zcl":"%s","current_wallets":%d},' \
+        "$money_status" "$target_money_status" "$dev_money_status" \
+        "$prod_money_status" "$portfolio_known" \
+        "$(json_escape "$portfolio_total")" "$current_wallets"
     printf '"observed_balances":{"dev":{"status":"%s","zcl":"%s"},"prod":{"status":"%s","zcl":"%s"}},' \
         "$dev_balance_status" "$(json_escape "$dev_balance")" \
         "$prod_balance_status" "$(json_escape "$prod_balance")"
@@ -284,11 +316,13 @@ emit_text() {
     for ((i = 0; i < 5; i++)); do
         if [ "$i" -lt "$completed" ]; then bar+="#"; else bar+="-"; fi
     done
-    printf 'custody-status: [%s] %d/5 status=%s\n' "$bar" "$completed" "$status"
+    printf 'custody-status: [%s] %d/5 status=%s scope=%s\n' \
+        "$bar" "$completed" "$status" "$WALLET_SCOPE"
     printf '  source_support=%s dev_runtime_current=%s canonical_target=%s\n' \
         "$source_ready" "$dev_current" "$canonical_target"
-    printf '  broker=%s money=%s portfolio=%s\n' \
-        "$broker_state" "$money_status" "$portfolio_total"
+    printf '  broker=%s money=%s target_money=%s dev=%s prod=%s portfolio=%s\n' \
+        "$broker_state" "$money_status" "$target_money_status" \
+        "$dev_money_status" "$prod_money_status" "$portfolio_total"
     printf '  dev_balance=%s (%s) prod_balance=%s (%s)\n' \
         "$dev_balance" "$dev_balance_status" \
         "$prod_balance" "$prod_balance_status"
@@ -296,11 +330,15 @@ emit_text() {
 }
 
 custody_status_selftest() {
-    local ready blocked combined
+    local ready dev_ready portfolio_partial blocked combined
     ready="$(ZCL_CUSTODY_STATUS_SELFTEST=0 ZCL_CUSTODY_FIXTURE=ready \
         "$0" --json --broker-dir=/fixture)"
     blocked="$(ZCL_CUSTODY_STATUS_SELFTEST=0 ZCL_CUSTODY_FIXTURE=blocked \
         "$0" --json)"
+    dev_ready="$(ZCL_CUSTODY_STATUS_SELFTEST=0 ZCL_CUSTODY_FIXTURE=dev-ready \
+        "$0" --json --broker-dir=/fixture --wallet-scope=dev)"
+    portfolio_partial="$(ZCL_CUSTODY_STATUS_SELFTEST=0 ZCL_CUSTODY_FIXTURE=dev-ready \
+        "$0" --json --broker-dir=/fixture)"
     str_contains "$ready" '"status":"ready"' || return 1
     str_contains "$ready" '"completed":5' || return 1
     str_contains "$ready" \
@@ -308,7 +346,13 @@ custody_status_selftest() {
     str_contains "$blocked" '"status":"blocked"' || return 1
     str_contains "$blocked" \
         '"portfolio_confirmed_zcl":"UNKNOWN"' || return 1
-    combined="$ready$blocked"
+    str_contains "$dev_ready" '"status":"ready"' || return 1
+    str_contains "$dev_ready" '"requested_wallet_scope":"dev"' || return 1
+    str_contains "$dev_ready" '"target_status":"CURRENT"' || return 1
+    str_contains "$dev_ready" '"portfolio_total_known":false' || return 1
+    str_contains "$portfolio_partial" '"status":"blocked"' || return 1
+    str_contains "$portfolio_partial" '"requested_wallet_scope":"portfolio"' || return 1
+    combined="$ready$dev_ready$portfolio_partial$blocked"
     if str_contains "$combined" '/private/' ||
        str_contains "$combined" 'rpcport' ||
        str_contains "$combined" 'node_datadir'; then

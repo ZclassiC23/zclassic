@@ -1745,7 +1745,9 @@ t-list:
 # One memorable custody regression command for contributors. Keep the list
 # exact: a substring silently selecting a sibling group is not rollout proof.
 CUSTODY_FOCUSED_TESTS := test_agent_session,test_agent_spend_policy,test_vault_session,test_vault_dispatch,test_transaction_intent,test_metaverse_agent_broker
-.PHONY: custody-check custody-status custody-status-selftest
+.PHONY: custody-check custody-status custody-status-selftest \
+	transaction-micro-lab-wallets-setup transaction-micro-lab-wallets-status \
+	transaction-micro-lab-wallets-selftest
 custody-check:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY='$(CUSTODY_FOCUSED_TESTS)'
 	@echo "custody-check: PASS — no live wallet or funds were touched"
@@ -1757,6 +1759,19 @@ custody-status:
 
 custody-status-selftest:
 	@ZCL_CUSTODY_STATUS_SELFTEST=1 tools/dev/custody-status.sh
+
+# Value-free preparation for the live micro lab. The setup creates two fresh
+# isolated receive wallets, derives transparent + Sapling recipients, stores
+# only private mode-0600 address manifests, stops both nodes, and prints no
+# address/key/path. It never funds, reserves, signs, or broadcasts.
+transaction-micro-lab-wallets-setup:
+	@tools/dev/transaction-micro-lab-wallets.sh setup $(ARGS)
+
+transaction-micro-lab-wallets-status:
+	@tools/dev/transaction-micro-lab-wallets.sh status $(ARGS)
+
+transaction-micro-lab-wallets-selftest:
+	@tools/dev/transaction-micro-lab-wallets.sh selftest
 
 # Transaction-lab evidence is deliberately split from live mainnet spending.
 # These exact groups exercise production transaction builders, signatures,

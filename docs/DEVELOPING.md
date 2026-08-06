@@ -164,6 +164,9 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   dev activation, canonical prod targeting, private broker binding, and the
   complete two-wallet snapshot in one five-step progress line. Add
   `ARGS='--broker-dir=/absolute/path'` after the owner creates the binding.
+  For a scoped money operation, add `--wallet-scope=dev|prod`; that reports
+  readiness for the explicitly targeted wallet while continuing to show an
+  incomplete portfolio as partial. It never promotes the other wallet to zero.
   Raw balance reads are labeled `OBSERVED`, never promoted to identity-bound
   `CURRENT`; endpoints and datadir paths are absent from its output. Its
   hermetic contract check is `make custody-status-selftest`.
@@ -171,16 +174,20 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   matrix with real signatures, Sapling proofs, consensus verification, HTLC
   interpretation, and overlay builders. `make transaction-lab-status` prints
   separate proof and live-mainnet bars plus value/fee totals; it never treats
-  simulated confirmation as a live spend. The append-only, redacted notebook
-  and its recording procedure live in `docs/work/TRANSACTION_LAB.md`; validate
-  it with `make transaction-lab-check`.
+  simulated confirmation as a live spend. The append-only, redacted live
+  notebook defaults to private mode-0600 local state and is never committed;
+  its recording procedure lives in `docs/work/TRANSACTION_LAB.md`.
+  `make transaction-lab-check` validates only the reproducible repository
+  baseline, while `make transaction-lab-status` validates the private working
+  ledger when one exists.
   The two Sprout proof eras are independently pinned by
   `test_sprout_phgr13_kat` (mainnet height 241) and
   `test_sprout_groth16_kat` (mainnet height 476970); both embed only public
   transaction/VK bytes and require no wallet or live node.
 - `make transaction-micro-lab-check` validates the stable 100-slot,
   1,000-zatoshi live-campaign allocation and its redacted append-only receipt
-  state machine. `make transaction-micro-lab-status` reports confirmed slot and
+  state-machine template. `make transaction-micro-lab-status` validates the
+  private, never-committed working ledger when present and reports confirmed slot and
   type coverage, exact value/fee totals, fee distribution, and confirmation
   latency. Both are evidence-only and cannot plan, sign, authorize, broadcast,
   or touch a datadir. The owner runbook is
@@ -189,6 +196,9 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   `zclassic23 app transaction-types micro-lab [--slot=N]`; it joins a numbered
   slot to the semantic transaction catalog and current typed guide input
   without reading wallet state or granting spend authority.
+  `make transaction-micro-lab-wallets-setup` creates the two persistent,
+  isolated recipient wallets without funding them or printing their addresses;
+  `make transaction-micro-lab-wallets-status` is the redacted resumable check.
 - Before using or adding a money-shaped native leaf, reverse-audit it with
   `zclassic23 app transaction-types command <path>`. `mapped` names every
   semantic workflow and role; `explicitly_non_chain` carries a reviewed reason;
