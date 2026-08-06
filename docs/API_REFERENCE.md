@@ -59,15 +59,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 532 |
+| Registry entries (branches + leaves) | 535 |
 | Top-level roots | 11 |
-| Branches | 120 |
-| Leaves (dispatchable command paths) | 412 |
-| … `ready` (live handler in this build) | 363 |
+| Branches | 121 |
+| Leaves (dispatchable command paths) | 414 |
+| … `ready` (live handler in this build) | 365 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 136 |
+| Leaves with `effect=mutate` | 137 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 96 |
 
@@ -85,7 +85,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 22 | 4 | 18 |
-| `config/commands/zcode.def` | 95 | 18 | 77 |
+| `config/commands/zcode.def` | 98 | 19 | 79 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -901,6 +901,13 @@ represented by its children's sections.
 | `zcode package dev score commit` | ready | mutate / app-write / operator · fast/low | **`workspace`**, **`receipt_hex`** | `zcl.zcode_score_commit.v1` | `zclassic23 zcode package dev score commit --input='{"workspace":".","receipt_hex":"<hex>"}'` | Verify and store one signed ZC23 Score receipt |
 | `zcode package dev score show` | ready | read / read / operator · fast/low | **`workspace`**, **`root`** | `zcl.zcode_score_show.v1` | `zclassic23 zcode package dev score show --input='{"workspace":".","root":"<64hex>"}'` | Show and reverify one ZC23 Score receipt |
 
+#### `zcode.package.dev.publish` — Publish an explicitly accepted lane
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode package dev publish plan` (aliases: `zcode.publish.plan`) | ready | read / read / operator · foreground/moderate | **`workspace`**, **`datadir`**, **`source_root`**, **`publisher_pubkey`**, **`name`**, **`semver`**, **`license`**, `reward_address`, `znam`, `task_root`, `lane_receipt_root`, `publisher_sequence`, `parent_release_root` | `zcl.zcode_publish_plan.v1` | `zclassic23 zcode publish plan --input='{"workspace":"/src/project","datadir":"/tmp/zcode-dev","source_root":"<64hex>","publisher_pubkey":"<66hex>","name":"publisher/package","semver":"1.0.0","license":"MIT"}'` | Prepare an accepted lane for offline release signing |
+| `zcode package dev publish commit` (aliases: `zcode.publish`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`datadir`**, **`source_root`**, **`release_hex`**, `task_root`, `lane_receipt_root`, `day` | `zcl.zcode_publish_commit.v1` | `zclassic23 zcode publish --input='{"workspace":"/src/project","datadir":"/tmp/zcode-dev","source_root":"<64hex>","release_hex":"<hex>"}'` | Publish one offline-signed accepted-lane release |
+
 #### `zcode.package` — Published packages
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
@@ -1205,6 +1212,8 @@ Every alias resolves through the same grammar as its canonical path
 | `zcode.accept` | `zcode.package.dev.accept` |
 | `zcode.lane` | `zcode.package.dev.lane` |
 | `zcode.tasks` | `zcode.package.dev.tasks` |
+| `zcode.publish.plan` | `zcode.package.dev.publish.plan` |
+| `zcode.publish` | `zcode.package.dev.publish.commit` |
 
 
 ## Shared output schemas
@@ -1236,6 +1245,8 @@ promise the same document shape.
 | `zcl.dev_loop_status.v1` | `dev.loop.ensure`, `dev.loop.status`, `dev.loop.stop` |
 | `zcl.account.v1` | `app.account.show`, `app.account.whoami`, `app.account.add`, `app.account.role`, `app.account.suspend`, `app.account.unsuspend` |
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
+| `zcl.zcode_publish_plan.v1` | `zcode.package.dev.publish.plan`, `zcode.package.publish.plan` |
+| `zcl.zcode_publish_commit.v1` | `zcode.package.dev.publish.commit`, `zcode.package.publish.commit` |
 | `zcl.zcode_leaderboard.v1` | `zcode.leaderboard.daily`, `zcode.leaderboard.weekly`, `zcode.leaderboard.monthly`, `zcode.leaderboard.all` |
 | `zcl.zcode_science_plan.v1` | `zcode.science.study.plan`, `zcode.science.findings.plan`, `zcode.science.work.plan` |
 | `zcl.zcode_science_commit.v1` | `zcode.science.study.commit`, `zcode.science.findings.commit`, `zcode.science.work.commit` |

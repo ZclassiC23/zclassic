@@ -185,6 +185,9 @@ static const struct rlw_leaf g_rlw_leaves[] = {
       "name", "ringbuffer",     NULL, NULL, NULL },
     { "zcode.package.dev.lane", zcl_native_handle_zcode_lane,
       "workspace", ".",         "source_root", RLW_ZID_PUBKEY, NULL },
+    { "zcode.package.dev.publish.plan",
+      zcl_native_handle_zcode_publish_plan,
+      "workspace", ".",         "source_root", RLW_ZID_PUBKEY, NULL },
     /* The seventh. Declared READ, `datadir` defaults to the operator's LIVE
      * one, and it opened node.db with node_db_open() — so pointed at a
      * damaged database it renamed the user's wallet to
@@ -342,6 +345,13 @@ static void rlw_push_single_root_array(struct json_value *input,
 static void rlw_add_complex_input(const struct rlw_leaf *lf,
                                   struct json_value *input)
 {
+    if (strcmp(lf->path, "zcode.package.dev.publish.plan") == 0) {
+        (void)json_push_kv_str(input, "publisher_pubkey", RLW_PUBKEY);
+        (void)json_push_kv_str(input, "name", "fixture/read-probe");
+        (void)json_push_kv_str(input, "semver", "1.0.0");
+        (void)json_push_kv_str(input, "license", "MIT");
+        return;
+    }
     if (strcmp(lf->path, "metaverse.space.plan") == 0) {
         (void)json_push_kv_int(input, "sequence", 1);
         (void)json_push_kv_int(input, "not_before", 1);
