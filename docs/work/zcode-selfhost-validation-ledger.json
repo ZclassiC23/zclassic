@@ -101,11 +101,11 @@
     "asan_ubsan_matrix": "WITHHELD",
     "two_path_reproducibility": "WITHHELD",
     "out_of_band_pre_push_ci": "WITHHELD",
-    "scratch_package_cas_publication": "NOT_EXECUTED",
+    "scratch_package_cas_publication": "PASS_HERMETIC_SHA3_RELEASE_AND_WORKSPACE_RECEIPT_CHAIN",
     "push": "NOT_ATTEMPTED"
   },
   "next_steps": [
-    "When the fold freeze is lifted, publish the already verified development release wires into a scratch existing ZCODE CAS and materialize the SHA3 task/candidate/work/proof/PROVEN receipt chain.",
+    "When the fold freeze is lifted, retain and independently replay the hermetic SHA3 release and task/candidate/work/proof/PROVEN receipt-chain proof outside the local scratch cleanup boundary.",
     "Run the withheld full link, uncached suite, sanitizer, reproducibility, API-doc, package-verification and out-of-band pre-push gates.",
     "Complete base evidence against its frozen root, then codec evidence, without changing either content root.",
     "Register and verify an owner-approved off-host signer before awarding independent_reproduction."

@@ -62,9 +62,16 @@ static bool score_fixture(
         return false;
     memset(task, 0, sizeof(*task));
     task->schema_version = VCS_ZCODE_DEV_VERSION;
-    score_fill(task->source_root, 1);
-    score_fill(task->dependency_lock_root, 2);
-    score_fill(task->toolchain_capsule_root, 3);
+    if (!zcl_hex_decode_lower(
+            "6e03d74b8edab650e790424f4dc8274e8ca262cccfc4f94d5b068ad66f60f48e",
+            task->source_root, 32) ||
+        !zcl_hex_decode_lower(
+            "149b3e4e10eaad9fb93626419bae842b1dfceddf64f8a8b1f065c69bb30dc21a",
+            task->dependency_lock_root, 32) ||
+        !zcl_hex_decode_lower(
+            "c0c3ec6514fd2a7ea242e087aff75b33fdc208a219c61855788509efef37b15d",
+            task->toolchain_capsule_root, 32))
+        return false;
     score_fill(task->write_scope_root, 4);
     score_fill(task->acceptance_tests_root, 5);
     memcpy(task->proof_policy_root, policy_root, 32);
@@ -85,7 +92,7 @@ static bool score_fixture(
     memcpy(candidate->task_root, task_root, 32);
     memcpy(candidate->base_source_root, task->source_root, 32);
     score_fill(candidate->patch_root, 9);
-    score_fill(candidate->candidate_source_root, 10);
+    memcpy(candidate->candidate_source_root, task->source_root, 32);
     score_fill(candidate->adapter_policy_root, 11);
     score_fill(candidate->author_pubkey, 12);
     candidate->sequence = 1;
@@ -170,8 +177,15 @@ static int test_score_happy_path(void)
             receipts[i] = works[i].receipt;
         }
         uint8_t package[32], release[32], recipe[32];
-        score_fill(package, 101); score_fill(release, 102);
-        score_fill(recipe, 103);
+        ASSERT(zcl_hex_decode_lower(
+            "6e03d74b8edab650e790424f4dc8274e8ca262cccfc4f94d5b068ad66f60f48e",
+            package, 32));
+        ASSERT(zcl_hex_decode_lower(
+            "e13fe883c1166c9a9587a864716804b8d30e0246e8802ae477385952c268ed37",
+            release, 32));
+        ASSERT(zcl_hex_decode_lower(
+            "71280e02ba1ec0c8006b28a8c325657cc2d2f5547b70a19442d91411199f7b49",
+            recipe, 32));
         struct vcs_zcode_score_plan_input input = {
             .task = &task, .candidate = &candidate,
             .proof_policy = &policy, .proven_lane = &lane,
@@ -230,6 +244,29 @@ static int test_score_happy_path(void)
         ASSERT_EQ(vcs_zcode_proof_set_serialize(
                       proof_roots, VCS_ZCODE_SCORE_UNITS, proof_wire,
                       sizeof(proof_wire), &proof_len), VCS_ZCODE_DEV_OK);
+        uint8_t task_root[32], candidate_root[32], policy_root[32];
+        uint8_t proof_set_root[32], lane_root[32];
+        ASSERT_EQ(vcs_zcode_task_root(&task, task_root), VCS_ZCODE_DEV_OK);
+        ASSERT_EQ(vcs_zcode_candidate_root(&candidate, candidate_root),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT_EQ(vcs_zcode_proof_policy_root(&policy, policy_root),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT_EQ(vcs_zcode_proof_set_root(
+                      proof_roots, VCS_ZCODE_SCORE_UNITS, proof_set_root),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT_EQ(vcs_zcode_lane_receipt_id(&lane, lane_root),
+                  VCS_ZCODE_DEV_OK);
+        ASSERT(vcs_object_put_addressed(workspace, task_root, task_wire,
+                                         sizeof(task_wire)));
+        ASSERT(vcs_object_put_addressed(workspace, candidate_root,
+                                         candidate_wire,
+                                         sizeof(candidate_wire)));
+        ASSERT(vcs_object_put_addressed(workspace, policy_root, policy_wire,
+                                         sizeof(policy_wire)));
+        ASSERT(vcs_object_put_addressed(workspace, proof_set_root, proof_wire,
+                                         proof_len));
+        ASSERT(vcs_object_put_addressed(workspace, lane_root, lane_wire,
+                                         sizeof(lane_wire)));
         for (size_t i = 0; i < VCS_ZCODE_SCORE_UNITS; i++) {
             uint8_t work_wire[VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES];
             ASSERT_EQ(vcs_zcode_work_receipt_serialize(

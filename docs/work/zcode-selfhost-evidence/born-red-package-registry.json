@@ -1,12 +1,12 @@
 {
   "schema": "zcl.zcode_born_red_receipt.v1",
   "baseline": "3e603d330ded11d8ba13956a8886a8a13a91bd6b",
-  "test_source_sha3": "a77c847fd94c66204b9c7571bd2c699bb7284bdd538e2573ac8dd93a0b28db7b",
+  "test_source_sha3": "c82669b58e9289a450afc28fedf602d46684f94b178a551c073462918a89c062",
   "outcome": "FAIL",
   "exit_code": 1,
-  "log_sha3": "c1ea34a57a440f6810ebebfd918d52bea65124df51283f5b8324c60f60891ad0",
-  "receipt_sha3": "1bbf7660fa3b09eaa62461490f23b4808b2c3796363f49a0fda144a9af57aa68",
+  "log_sha3": "e75af768ca54cac8f7be83fc75a6a6796d6d34184f0db6a7c2a82bdf812686c2",
+  "receipt_sha3": "59b36b7499eb92ba40bf67fc23bf0dc4900b4f6f943a1943c86776dca3107257",
   "signer_pubkey": "03448effe2ae40eb4053acfceb9839163c881b22affff9572283caddeee9207ce4",
-  "signature_compact_low_s": "46a4af76b234e95b12779c0880df421265bfe2839985f08281fcde0ee0c5ad4a220051b4b9006d9a88fb3723b776d44df6089dc47e73e1a5beec1889b423d334",
+  "signature_compact_low_s": "e4f21ee0fbe84c47fcb63755dc62e0b7fefbaf809e721404b5a2fe0be261c0025922209cd7e7c90fd7d864eb143f622817e35ecb901f806ccfc5085e53b3a38b",
   "signature_preimage": "schema=<schema>\\nbaseline=<baseline>\\ntest_source_sha3=<test_source_sha3>\\noutcome=<outcome>\\nexit_code=<exit_code>\\nlog_sha3=<log_sha3>\\n"
 }
