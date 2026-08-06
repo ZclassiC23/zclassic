@@ -8,6 +8,15 @@ contract currently declares. For additional native aliases and operator
 contracts (`agentops`, `agentdiagnose`, `servicecatalog`, and the ZNAM/ZMSG/
 Market/ZSWP methods), see [`docs/AGENT_API.md`](./AGENT_API.md).
 
+The command tree supports the shared mission: people and AI create verifiable
+public work through the same API, while no caller, balance, package index, or UI
+owns the world they build in. Start with `discover search <goal>`, inspect the
+selected leaf with `discover schema <leaf>`, and trust the availability column:
+`ready` is implemented, `planned` fails closed, and neither label grants truth
+or ownership authority. The ZCODE creation path and its free-access guarantees
+are defined in
+[`docs/work/ZC23_LIVING_COMMONS.md`](./work/ZC23_LIVING_COMMONS.md).
+
 ## Source of truth
 
 **This page is generated. Do not edit it by hand.**

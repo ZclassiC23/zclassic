@@ -14,9 +14,27 @@ reference of the implemented agent surface (`agentops`, `agentdiagnose`,
 
 ## 1. North star
 
+> **ZClassic23 is a metaverse where people and AI create real things together,
+> and nobody owns the world they build in.**
+
 The primary interface to ZClassic23 is one shallow, searchable command tree
 owned by the C binary. An LLM loads only the branch needed for its current
 task. It never has to ingest a flat catalog of 100+ tools.
+
+The same tree serves a person, an AI agent, a local automation tool, and every
+UI adapter. The API does not grant different truth or ownership authority based
+on the caller. `discover help`, `discover search <query>`, and
+`discover schema <leaf>` make each available operation and its exact inputs
+self-describing. Canonical roots and signed evidence carry facts across
+adapters; websites and local projections do not become parallel authorities.
+
+For public ZCODE work, the intended path is discover, fetch and inspect, create
+or select a task, produce a candidate, test/reproduce/review, accept, publish,
+attribute, and preserve. A leaf may be advertised as ready only when its command
+descriptor and handler exist. Planned patronage and continuity operations stay
+labelled planned until their simulation-only validation path is complete.
+Public read/build/verify access never requires ZC23, and financial or durable
+mutations retain explicit plan/commit boundaries.
 
 For development, the target steady-state interaction is simpler still:
 

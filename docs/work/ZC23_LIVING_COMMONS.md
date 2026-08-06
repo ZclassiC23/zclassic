@@ -9,6 +9,26 @@ deployment, service restart, canonical-datadir mutation, or consensus change.
 
 ## Purpose and public terminology
 
+The project mission is:
+
+> **ZClassic23 is a metaverse where people and AI create real things together,
+> and nobody owns the world they build in.**
+
+Here, "metaverse" means the shared, permissionless creation environment formed
+by the ZCODE package library, development network, evidence graph, and public
+discovery surfaces. "Real things" means exact retrievable source, executable
+C23 packages, tests, reproductions, reviews, repairs, compatibility work, and
+preservation records—not engagement counters or a claim that software alone
+can judge art.
+
+"Nobody owns the world" does not erase authorship or a contributor's legal
+rights. It means that no operator, AI provider, patron, token holder, committee,
+package index, or website owns the shared protocol space or gains title to
+another contributor's work. Contributors publish under explicit permissive
+licences; everyone retains the freedoms those licences grant. A human and an
+AI-assisted contributor use the same factual evidence rules. Neither identity
+kind receives special truth, scoring, or issuance authority.
+
 ZC23 is planned as a scarce, auditable patronage asset associated with a
 growing public commons of executable C23 work. It may later be used as optional
 commissioning capital for new work and continuity. Its mechanical promise is:
@@ -30,6 +50,38 @@ Existing `zcl.zcode.*` domains, command roots, and internal ZCODE identifiers
 remain. This is a public-language correction, not a destructive rename.
 Compatibility surfaces such as `zcode reward score` remain explicitly legacy
 and non-credit where their schemas already say so.
+
+## One creation API
+
+The native command tree is the common interface for people, AI agents, local
+tools, and presentation adapters. It must make the complete creation loop easy
+to discover without granting any adapter hidden authority:
+
+```text
+discover -> fetch/inspect -> task -> candidate -> prove/reproduce/review
+         -> accept -> publish -> attribute -> preserve or commission again
+```
+
+Every shipped leaf is discoverable through `discover help`, searchable through
+`discover search <query>`, and has an exact input contract through
+`discover schema <leaf>`. Read operations report whether they are complete,
+partial, or unknown and give the next safe diagnostic. They remain non-creating
+on an absent workspace or datadir. Mutations use explicit plan/commit where
+money, publication, installation, or other durable authority is involved.
+
+The implemented foundation already exposes package search/show/recipe/verify,
+package fetch and confined add, development create/use/improve/evidence/accept,
+lane and task inspection, offline release preparation/sealing, signed ZCODE
+Score receipts, and read-only `zcode commons` verification. Patronage and
+continuity commands remain planned until their canonical simulation objects and
+cross-object validators land. No documentation or adapter may label a planned
+leaf ready, a CAS object funded, a local result globally trusted, or a
+simulation as a live transfer.
+
+All adapters consume these same objects and services. A website or onion view
+is a projection, never a second package catalog, evidence authority, identity
+system, or database of truth. Public discovery, retrieval, inspection, build,
+reproduction, and verification remain free and cannot require ZC23.
 
 ZC23 conveys no copyright, title, exclusive licence, royalty, dividend, claim
 against a contributor, promise of appreciation, or protocol judgment of
@@ -322,6 +374,10 @@ authorization.
 | DONE | LC2 CAS attribution summation and observed-MINT equality gate | `4381781b8` | `36f6f3ae5` | one-atom under/over rejection, focused attribution/Score verticals, full lint 134/134 before integration, combined-tree lint-fast, pre-push source-wide suite |
 | DONE | LC3 read-only canonical-CAS projection | `a3424aba6` | `a3424aba6` | absent-workspace non-creation, populated byte-identical rebuild, exact parsed totals, full lint 134/134, pre-push source-wide suite |
 | DONE | LC3 `zcode commons` read views | `84a54696a` | `84a54696a` | born-red unresolved handlers; status/epoch/creation/lineage/verify/rebuild green; command-key and generated-reference gates; full lint 134/134; pre-push source-wide suite |
+| DONE | LC4 simulation-only signed patronage intent | `94141b969` | `94141b969` | born-red unresolved symbols; exact wire, closed mode/trust/target enums, no-authority and simulation flags, focused green, full lint 134/134, pre-push source-wide suite |
+| DONE | LC4 intent CAS authority revalidation | `c1123dbab` | `6da2651dd` | exact patron/recipient binding, task, policy, package/creation target and network reloads; focused green, full lint 134/134, normal pre-push source-wide suite |
+| DONE | LC4 fully simulated funding receipt | `c804a20ae` | `c804a20ae` | exact intent reload, deterministic plan root, no-live-funds/no-transaction-bytes gates, focused green, full lint 134/134, pre-push source-wide suite |
+| DONE | LC4 pure settlement/refund receipt | `f618eb6c5` | `f618eb6c5` | 504-byte wire KAT, truncation zeroing, closed simulation flags, complete-or-empty evidence, signature mutation, focused green, full lint 134/134, pre-push source-wide suite |
 
 The `36f6f3ae5` push integrated concurrent `main` commit `00a0c54c8` through
 lane merge `4c8e7abe2`; no concurrent file was overwritten. Two complete
@@ -335,7 +391,9 @@ LC1 parser fuzzing and the sanitizer/reproducibility matrix remain TODO. LC2's
 canonical set and equality verifier are present; deterministic simulated ZSLP
 MINT-plan binding remains TODO. LC3 intentionally reports `partial` or
 `unknown` rather than policy-valid supply until immutable-policy and
-active-chain anchor context is wired. LC4 patronage simulation and LC5 unique
-continuity-event validation remain TODO. No live token, GENESIS, MINT, SEND,
-wallet, canonical datadir, production port, deployment, service, or consensus
-path was touched by these slices.
+active-chain anchor context is wired. LC4 has canonical intent, independent
+intent validation, simulated funding, and a pure settlement/refund wire;
+settlement CAS cross-validation and native plan/commit/show/list commands
+remain TODO. LC5 unique continuity-event validation remains TODO. No live
+token, GENESIS, MINT, SEND, wallet, canonical datadir, production port,
+deployment, service, or consensus path was touched by these slices.

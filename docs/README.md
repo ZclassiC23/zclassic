@@ -25,6 +25,17 @@ Then [`MVP.md`](./MVP.md) for what "v1" means and an honest readiness account,
 and [`AGENT_TRAPS.md`](./AGENT_TRAPS.md) before you "fix" anything that looks
 broken — several things that look broken are intentional or already done.
 
+## Shared-world mission
+
+> **ZClassic23 is a metaverse where people and AI create real things together,
+> and nobody owns the world they build in.**
+
+[`work/ZC23_LIVING_COMMONS.md`](./work/ZC23_LIVING_COMMONS.md) defines what that
+means mechanically: free public code, factual creation evidence, no
+token-gated access, no ownership or truth authority from balances, and one
+shared API for human and AI contributors. It also separates implemented ZCODE
+surfaces from simulation-only and still-planned ZC23 work.
+
 **`HANDOFF.md` is live state for the maintainer's own hosted node.** Run
 `zclassic23 status` — if it answers, you are on that node and `HANDOFF.md` is
 your first read (that is what `CLAUDE.md`'s fresh-session ritual assumes). If

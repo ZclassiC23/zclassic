@@ -16,6 +16,9 @@ patronage boundary are separately authoritative in
 
 ## Mission
 
+> **ZClassic23 is a metaverse where people and AI create real things together,
+> and nobody owns the world they build in.**
+
 ZCODE is a free, requester-coordinated P2P C23 development network: immutable
 source discovery and fetch, model-neutral tasks, candidate trees, confined
 build/test/fuzz work, independent review, local reproduction, explicit
@@ -26,6 +29,13 @@ protocol requirement.
 Hashes are authority. ZNAM is an optional mutable name. Codex, Claude, Kimi,
 local open models, and future harnesses are adapters selected by the user; an
 adapter name never participates in source or proof authority.
+
+People, AI agents, local tools, and presentation adapters use the same typed
+native command tree and canonical object graph. An adapter may help create or
+explain work; it cannot acquire protocol authority by doing so. Exact source,
+authorship, licensing, tests, reproduction, review, acceptance, and lineage are
+the mechanically checkable facts. The shared network is not owned by its node
+operators, model providers, package indexes, patrons, or token holders.
 
 Basic discovery, fetch, local development, and a bounded peer bootstrap quota
 remain free. Optional reciprocity may expand a peer's local quota later only

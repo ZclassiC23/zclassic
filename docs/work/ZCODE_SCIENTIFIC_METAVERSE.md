@@ -10,6 +10,16 @@ in [`ZC23_LIVING_COMMONS.md`](./ZC23_LIVING_COMMONS.md).
 
 ## Mission and truth boundary
 
+> **ZClassic23 is a metaverse where people and AI create real things together,
+> and nobody owns the world they build in.**
+
+The scientific surface is one factual part of that shared world. Humans and AI
+may propose and execute work together, but neither a model identity nor a human
+identity establishes truth. The evidence graph records exactly what was asked,
+run, observed, reproduced, and reviewed. No operator, committee, balance,
+website, or model owns the world or gains authority over another participant's
+conclusions.
+
 ZCODE is an application overlay with this evidence flow:
 
 ```text
