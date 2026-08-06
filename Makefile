@@ -5202,6 +5202,32 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	else \
 	    echo "deploy: preserving existing canonical service unit"; \
 	fi; \
+	systemctl --user daemon-reload; \
+	service_exec="$$(systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null)"; \
+	service_path="$$(printf '%s\n' "$$service_exec" | \
+	    sed -n 's/^.*path=\([^ ;]*\).*$$/\1/p')"; \
+	service_argv="$$(printf '%s\n' "$$service_exec" | \
+	    sed -n 's/^.*argv\[\]=\([^;]*\);.*$$/\1/p')"; \
+	service_argv0="$$(printf '%s\n' "$$service_argv" | tr ' ' '\n' | awk 'NF { print; exit }')"; \
+	[ -n "$$service_path" ] && [ "$$service_path" = "$$service_argv0" ] || { \
+	    echo "deploy: canonical service path and executable argv disagree" >&2; exit 1; }; \
+	if [ "$$service_path" = "$(CURDIR)/deploy/zclassic23-launch.sh" ]; then \
+	    SERVICE_BIN="$$(printf '%s\n' "$$service_argv" | tr ' ' '\n' | \
+	        awk 'NF { n++; if (n == 2) { print; exit } }')"; \
+	    [ "$$SERVICE_BIN" = "$(CURDIR)/build/bin/zclassic23" ] || { \
+	        echo "deploy: canonical launcher node binary does not resolve to this checkout" >&2; exit 1; }; \
+	else \
+	    case "$$service_path" in /*) SERVICE_BIN="$$service_path" ;; *) \
+	        echo "deploy: direct canonical service binary is not absolute" >&2; exit 1;; esac; \
+	fi; \
+	mainpid="$$(systemctl --user show zclassic23 -p MainPID --value 2>/dev/null || true)"; \
+	case "$$mainpid" in ''|*[!0-9]*|0) ;; *) \
+	    running_exe="$$(readlink -f "/proc/$$mainpid/exe" 2>/dev/null || true)"; \
+	    target_exe="$$(readlink -f "$$SERVICE_BIN" 2>/dev/null || true)"; \
+	    [ -n "$$running_exe" ] && [ "$$running_exe" = "$$target_exe" ] || { \
+	        echo "deploy: canonical MainPID executable does not match service target" >&2; exit 1; };; esac; \
+	tools/dev/source-identity.sh verify-record \
+	    "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	install -d "$(HOME)/.config/systemd/user/zclassic23.service.d"; \
 	dropin="$(HOME)/.config/systemd/user/zclassic23.service.d/90-build-identity.conf"; \
 	dropin_tmp="$$(mktemp "$$dropin.tmp.XXXXXX")"; \
@@ -5214,17 +5240,6 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	install -m 644 "$$dropin_tmp" "$$dropin"; \
 	rm -f "$$dropin_tmp"; dropin_tmp=""; \
 	systemctl --user daemon-reload; \
-	service_exec="$$(systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null)"; \
-	case "$$service_exec" in *"path=$(CURDIR)/deploy/zclassic23-launch.sh"*) ;; *) \
-	    echo "deploy: canonical service launcher does not resolve to this checkout" >&2; exit 1;; esac; \
-	service_argv="$$(printf '%s\n' "$$service_exec" | \
-	    sed -n 's/^.*argv\[\]=\([^;]*\);.*$$/\1/p')"; \
-	SERVICE_BIN="$$(printf '%s\n' "$$service_argv" | tr ' ' '\n' | \
-	    awk 'NF { n++; if (n == 2) { print; exit } }')"; \
-	[ "$$SERVICE_BIN" = "$(CURDIR)/build/bin/zclassic23" ] || { \
-	    echo "deploy: canonical launcher node binary does not resolve to this checkout" >&2; exit 1; }; \
-	tools/dev/source-identity.sh verify-record \
-	    "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	install -m 755 "$$candidate" "$$SERVICE_BIN"; \
 	installed_sha256="$$(sha256sum < "$$SERVICE_BIN" | awk '{print $$1}')"; \
 	[ "$$installed_sha256" = "$$artifact_sha256" ] || { \
