@@ -288,11 +288,19 @@ release/dev/test default builds.
   the run. Deliberately **not** wired into `make ci` (instrumented runs are
   several times slower and push times must stay stable). Override the set
   with `ASAN_CI_GROUPS="..."`.
+- **`make zcode-package-asan`** — permanent self-hosted-package gate. It first
+  builds and runs `base`, `sha3`, and `codec` from their authoritative package
+  trees with full ASan+UBSan instrumentation, then runs the package registry,
+  prepare/seal, accept/publish, work/proof/PROVEN, and score paths through the
+  instrumented monolith harness. UBSan is fail-fast and no sanitizer class is
+  suppressed.
 - **`make dev-asan`** — the dev node under ASan/UBSan
   (`build/bin/zclassic23-dev-asan`, `-Og`, non-LTO, object tree
   `build/dev-asan-obj/`). For local memory/UB debugging on a scratch
   datadir; boot with `ASAN_OPTIONS=detect_leaks=0` until leak triage is
   done.
+
+<!-- claim: symbol-present zcode-package-asan Makefile -->
 
 The test runners set a large **finite** stack limit (1 GiB) rather than the
 usual `ulimit -s unlimited`: ASan + PIE with an unlimited stack

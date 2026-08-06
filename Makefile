@@ -168,7 +168,7 @@ else ifneq ($(filter t-fast t-fast-exact test_parallel_fast test-parallel-fast-a
 ZCL_EPOCH_PROFILES := test-fast
 else ifneq ($(filter t test test_parallel test-parallel test-parallel-active,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := test-strict
-else ifneq ($(filter t-asan test-asan asan-ci,$(ZCL_EPOCH_SINGLE_GOAL)),)
+else ifneq ($(filter t-asan test-asan asan-ci zcode-package-asan,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := test-asan
 else ifneq ($(filter dev-asan zclassic23-dev-asan,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := dev-asan
@@ -1868,8 +1868,11 @@ $(BIN_DIR)/agent_sha3: $(AGENT_SHA3_SRCS)
 ZCODE_PACKAGE_BASE_TEST_BIN := $(BIN_DIR)/zcode-package-base-test
 ZCODE_PACKAGE_SHA3_TEST_BIN := $(BIN_DIR)/zcode-package-sha3-test
 ZCODE_PACKAGE_CODEC_TEST_BIN := $(BIN_DIR)/zcode-package-codec-test
+ZCODE_PACKAGE_BASE_ASAN_BIN := $(BIN_DIR)/zcode-package-base-test-asan
+ZCODE_PACKAGE_SHA3_ASAN_BIN := $(BIN_DIR)/zcode-package-sha3-test-asan
+ZCODE_PACKAGE_CODEC_ASAN_BIN := $(BIN_DIR)/zcode-package-codec-test-asan
 ZCODE_PACKAGE_REGISTRY_CHECK_BIN := $(BIN_DIR)/zcode-package-registry-check
-.PHONY: zcode-package-base-test zcode-package-sha3-test zcode-package-codec-test zcode-package-foundation-test tools/zcode_dev_signer
+.PHONY: zcode-package-base-test zcode-package-sha3-test zcode-package-codec-test zcode-package-foundation-test zcode-package-asan tools/zcode_dev_signer
 zcode-package-base-test: $(ZCODE_PACKAGE_BASE_TEST_BIN)
 	@$(ZCODE_PACKAGE_BASE_TEST_BIN)
 $(ZCODE_PACKAGE_BASE_TEST_BIN): lib/base/tests/test_base.c \
@@ -1895,6 +1898,52 @@ $(ZCODE_PACKAGE_CODEC_TEST_BIN): lib/codec/tests/test_codec.c \
 	    -Ilib/codec/include -Ilib/base/include -o $@ $^
 
 zcode-package-foundation-test: zcode-package-base-test zcode-package-sha3-test zcode-package-codec-test
+
+# Permanent memory/undefined-behavior gate for the self-hosted package
+# foundation and its complete signed evidence lifecycle.  The first three
+# binaries compile ONLY each authoritative package tree plus its declared
+# direct dependencies; the monolith groups then prove the same sources through
+# prepare/seal, registry, accepted-lane publication, work/proof/PROVEN and
+# score paths.  No sanitizer class is suppressed.  Keep this opt-in: like the
+# DHT sanitizer lane it is deliberately too expensive for every pre-push.
+ZCODE_PACKAGE_ASAN_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer -O2 -g
+ZCODE_PACKAGE_ASAN_GROUPS := test_base_foundation test_codec_cursor \
+	test_sha3_256_x4 test_sha3_512_x4 test_zcode_score_receipt \
+	test_zcode_package_registry test_zcode_store test_zcode_publish \
+	test_zcode_package_dev test_zcode_recipe test_zcode_verify \
+	test_zcode_dev_objects
+
+$(ZCODE_PACKAGE_BASE_ASAN_BIN): lib/base/tests/test_base.c \
+		lib/base/tests/cleanse_probe.c lib/base/src/cleanse.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 $(ZCODE_PACKAGE_ASAN_FLAGS) -Wall -Wextra -Werror -pedantic \
+	    -Ilib/base/include -o $@ $^
+
+$(ZCODE_PACKAGE_SHA3_ASAN_BIN): lib/sha3/tests/test_sha3.c \
+		lib/sha3/src/sha3.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 $(ZCODE_PACKAGE_ASAN_FLAGS) -Wall -Wextra -Werror -pedantic \
+	    -Ilib/sha3/include -Ilib/base/include -o $@ $^
+
+$(ZCODE_PACKAGE_CODEC_ASAN_BIN): lib/codec/tests/test_codec.c \
+		lib/codec/src/cursor.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 $(ZCODE_PACKAGE_ASAN_FLAGS) -Wall -Wextra -Werror -pedantic \
+	    -Ilib/codec/include -Ilib/base/include -o $@ $^
+
+zcode-package-asan: $(ZCODE_PACKAGE_BASE_ASAN_BIN) \
+		$(ZCODE_PACKAGE_SHA3_ASAN_BIN) $(ZCODE_PACKAGE_CODEC_ASAN_BIN) \
+		$(BIN_DIR)/zclassic23-package-verify
+	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
+	  sh -c 'set -e; ulimit -s 1048576; \
+	  export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1; \
+	  for t in $(ZCODE_PACKAGE_BASE_ASAN_BIN) $(ZCODE_PACKAGE_SHA3_ASAN_BIN) $(ZCODE_PACKAGE_CODEC_ASAN_BIN); do \
+	    echo "zcode-package-asan: --- $$t ---"; "$$t"; \
+	  done'
+	@$(MAKE) --no-print-directory asan-ci \
+	  ASAN_COMMON_SAN_FLAGS='-fsanitize=address,undefined -fomit-frame-pointer -O2' \
+	  ASAN_CI_GROUPS='$(ZCODE_PACKAGE_ASAN_GROUPS)'
+	@echo "zcode-package-asan: OK (isolated base/sha3/codec + signed package lifecycle)"
 
 .PHONY: check-zcode-package-registry print-zcode-monolith-lib-sources
 check-zcode-package-registry: $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN)
