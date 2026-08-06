@@ -1546,6 +1546,7 @@ int main(int argc, char **argv)
     { extern int test_vcs_accept(void); failures += test_vcs_accept(); }
     { extern int test_zcode_store(void); failures += test_zcode_store(); }
     { extern int test_zcode_publish(void); failures += test_zcode_publish(); }
+    { extern int test_zcode_package_dev(void); failures += test_zcode_package_dev(); }
     { extern int test_zcode_recipe(void); failures += test_zcode_recipe(); }
     { extern int test_zcode_contributor(void); failures += test_zcode_contributor(); }
     { extern int test_zcode_verify(void); failures += test_zcode_verify(); }

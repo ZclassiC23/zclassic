@@ -22,6 +22,49 @@ ZCL_COMMAND_BRANCH("zcode.package.dev", "zcode.package",
                    "Agentic development",
                    ZCL_COMMAND_LAYER_APP)
 
+ZCL_COMMAND_READY_READ(
+    "zcode.package.dev.prepare", "zcode.package.dev", "",
+    "Derive canonical release inputs from a local package tree",
+    "Safely traverses dir without following symlinks, rejects every special "
+    "file and any file that changes while read, and returns the content "
+    "manifest, declarative recipe, target-inclusive exact-root dependency "
+    "lock, bounded public-API capsule, unsigned existing release body, and "
+    "signing digest. It creates no datadir and persists nothing.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,package,dev,prepare,manifest,recipe,lock,capsule,offline",
+    "zcl.zcode_package_dev_prepare.input.v1",
+    "zcl.zcode_package_dev_prepare.v1",
+    "dir,publisher_pubkey,publisher_sequence,reward_address,chain_id",
+    "dir,publisher_pubkey,publisher_sequence",
+    "zclassic23 zcode package dev prepare --input='{\"dir\":\"lib/base\",\"publisher_pubkey\":\"<66hex>\",\"publisher_sequence\":1}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_package_dev_prepare)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.dev.seal", "zcode.package.dev", "",
+    "Verify and attach an offline development signature",
+    "Combines the exact canonical release_body_hex returned by prepare with "
+    "one detached compact low-S secp256k1 signature, verifies the embedded "
+    "publisher key and signing digest, and returns the canonical "
+    "zcl.zcode_release.v1 wire. It creates no datadir and persists nothing.",
+    0, "zcode,package,dev,seal,signature,offline,release",
+    "zcl.zcode_package_dev_seal.input.v1",
+    "zcl.zcode_package_dev_seal.v1",
+    "release_body_hex,signature_hex", "release_body_hex,signature_hex",
+    "zclassic23 zcode package dev seal --input='{\"release_body_hex\":\"<hex>\",\"signature_hex\":\"<128hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_package_dev_seal)
+
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.dev.create", "zcode.package.dev", "zcode.create",
     "Create package",

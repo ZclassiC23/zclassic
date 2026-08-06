@@ -1867,7 +1867,7 @@ $(BIN_DIR)/agent_sha3: $(AGENT_SHA3_SRCS)
 # their declared direct dependencies.  They never open a node datadir.
 ZCODE_PACKAGE_BASE_TEST_BIN := $(BIN_DIR)/zcode-package-base-test
 ZCODE_PACKAGE_SHA3_TEST_BIN := $(BIN_DIR)/zcode-package-sha3-test
-.PHONY: zcode-package-base-test zcode-package-sha3-test zcode-package-foundation-test
+.PHONY: zcode-package-base-test zcode-package-sha3-test zcode-package-foundation-test tools/zcode_dev_signer
 zcode-package-base-test: $(ZCODE_PACKAGE_BASE_TEST_BIN)
 	@$(ZCODE_PACKAGE_BASE_TEST_BIN)
 $(ZCODE_PACKAGE_BASE_TEST_BIN): lib/base/tests/test_base.c \
@@ -1885,6 +1885,13 @@ $(ZCODE_PACKAGE_SHA3_TEST_BIN): lib/sha3/tests/test_sha3.c \
 	    -Ilib/sha3/include -Ilib/base/include -o $@ $^
 
 zcode-package-foundation-test: zcode-package-base-test zcode-package-sha3-test
+
+tools/zcode_dev_signer: $(BIN_DIR)/zcode_dev_signer
+$(BIN_DIR)/zcode_dev_signer: tools/zcode_dev_signer.c lib/base/src/cleanse.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -Ilib/base/include -Ivendor/include -o $@ $^ \
+	    -Lvendor/lib -l:libsecp256k1.a -lpthread -lm
 
 # Run a gate and leave a receipt. The wrapper is transparent — same output,
 # same exit status — so this is a drop-in for the bare command:

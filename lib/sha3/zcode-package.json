@@ -1,12 +1,16 @@
 {
-  "schema": "zcl.zcode_package.v1",
+  "schema": 1,
   "name": "zclassic23/sha3",
-  "version": "0.1.0-dev.1",
+  "semver": "0.1.0-dev.1",
   "language": "c23",
   "license": "MIT",
   "include_dir": "include",
   "source_dir": "src",
   "dependencies": [
-    {"name": "zclassic23/base", "version": "0.1.0-dev.1"}
+    {
+      "root": "7f15ba590a82de200152b1c02b5b1dc11b4932a9b690fbe332e7c2fa60d764fe",
+      "name": "zclassic23/base",
+      "semver": "0.1.0-dev.1"
+    }
   ]
 }
