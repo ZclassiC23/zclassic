@@ -378,6 +378,10 @@ authorization.
 | DONE | LC4 intent CAS authority revalidation | `c1123dbab` | `6da2651dd` | exact patron/recipient binding, task, policy, package/creation target and network reloads; focused green, full lint 134/134, normal pre-push source-wide suite |
 | DONE | LC4 fully simulated funding receipt | `c804a20ae` | `c804a20ae` | exact intent reload, deterministic plan root, no-live-funds/no-transaction-bytes gates, focused green, full lint 134/134, pre-push source-wide suite |
 | DONE | LC4 pure settlement/refund receipt | `f618eb6c5` | `f618eb6c5` | 504-byte wire KAT, truncation zeroing, closed simulation flags, complete-or-empty evidence, signature mutation, focused green, full lint 134/134, pre-push source-wide suite |
+| DONE | LC4 settlement/refund CAS authority revalidation | `264df17ee` | `e2185eb7c` | historical intent/funding reload, full creation-evidence rederivation, exact target and recipient binding, maturity/reorg/refund gates, focused green, full lint 134/134, normal pre-push source-wide suite |
+| DONE | Shared people-and-AI mission and API contract | `d9eea8e09` | `d9eea8e09` | exact mission language, same API/evidence rules, no-world-ownership boundary, READY-versus-PLANNED truth, generated API reference, full lint 134/134, normal pre-push source-wide suite |
+| DONE | LC4 offer/funding plan-commit and exact-root show commands | `788f93149` | `c9c3e786a` | signed exact-wire input, caller-pinned context, CAS revalidation, absent-workspace plan non-creation, simulation/funding truth labels, planned settlement/refund/list fail closed, focused green and full lint 134/134 |
+| DONE | Simulation-only transaction classification | `e90c17ed6` | `e90c17ed6` | exact non-chain declaration for funding CAS commit; API reverse-mapping gate green; 901 active pre-push test groups green |
 
 The `36f6f3ae5` push integrated concurrent `main` commit `00a0c54c8` through
 lane merge `4c8e7abe2`; no concurrent file was overwritten. Two complete
@@ -387,13 +391,22 @@ detector measurements. The exact group then passed on the same combined SHA
 normal, hook-enabled push passed. The failed attempts are not counted as
 passed gates.
 
+The `e90c17ed6` push integrated concurrent `main` commit `8265c423f` through
+lane merge `c9c3e786a`; no concurrent file was overwritten. Its first normal
+push attempt exposed an uncovered transaction-shaped command in `test_api`.
+The command was then explicitly classified as simulation-only/non-chain,
+the focused API gate and full lint passed, and the second normal push passed
+all 901 active pre-push groups. The failed attempt is not counted as a passed
+gate.
+
 LC1 parser fuzzing and the sanitizer/reproducibility matrix remain TODO. LC2's
 canonical set and equality verifier are present; deterministic simulated ZSLP
 MINT-plan binding remains TODO. LC3 intentionally reports `partial` or
 `unknown` rather than policy-valid supply until immutable-policy and
 active-chain anchor context is wired. LC4 has canonical intent, independent
-intent validation, simulated funding, and a pure settlement/refund wire;
-settlement CAS cross-validation and native plan/commit/show/list commands
-remain TODO. LC5 unique continuity-event validation remains TODO. No live
+intent validation, simulated funding, settlement/refund wire and CAS
+validation, and native offer/fund/show commands. Settlement/refund adapters and
+the rebuildable patronage list remain TODO. LC5 unique continuity-event
+validation remains TODO. No live
 token, GENESIS, MINT, SEND, wallet, canonical datadir, production port,
 deployment, service, or consensus path was touched by these slices.
