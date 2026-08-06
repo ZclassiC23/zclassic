@@ -43,6 +43,24 @@ const char *vcs_zcode_creation_error_string(
     case VCS_ZCODE_CREATION_AMOUNT: return "award-amount";
     case VCS_ZCODE_CREATION_TIME: return "challenge-time";
     case VCS_ZCODE_CREATION_OVERFLOW: return "checked-overflow";
+    case VCS_ZCODE_CREATION_CONTEXT: return "validation-context";
+    case VCS_ZCODE_CREATION_CAS: return "cas-object";
+    case VCS_ZCODE_CREATION_NETWORK: return "network-genesis-mismatch";
+    case VCS_ZCODE_CREATION_POLICY: return "zc23-policy-mismatch";
+    case VCS_ZCODE_CREATION_EPOCH: return "epoch-mismatch";
+    case VCS_ZCODE_CREATION_CONTRIBUTOR: return "contributor-binding";
+    case VCS_ZCODE_CREATION_TASK: return "task-object";
+    case VCS_ZCODE_CREATION_CANDIDATE: return "candidate-object";
+    case VCS_ZCODE_CREATION_PROOF_POLICY: return "proof-policy-object";
+    case VCS_ZCODE_CREATION_PROOF_SET: return "proof-set-object";
+    case VCS_ZCODE_CREATION_LANE: return "proven-lane-object";
+    case VCS_ZCODE_CREATION_SCORE: return "score-receipt-object";
+    case VCS_ZCODE_CREATION_PACKAGE: return "package-object";
+    case VCS_ZCODE_CREATION_RELEASE: return "release-object";
+    case VCS_ZCODE_CREATION_LICENSE: return "license-evidence";
+    case VCS_ZCODE_CREATION_IMMATURE: return "challenge-immature";
+    case VCS_ZCODE_CREATION_REORG: return "challenge-anchor-reorged";
+    case VCS_ZCODE_CREATION_DUPLICATE: return "duplicate-contribution";
     }
     return "unknown-creation-error";
 }
