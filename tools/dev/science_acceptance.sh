@@ -315,7 +315,8 @@ sa_jget() { echo "$1" | jget "$2"; }
 sa_build_fixture() {
     cc -std=c23 -O1 -w -D_GNU_SOURCE \
         -I"$REPO_ROOT/lib/vcs/include" -I"$REPO_ROOT/lib/base/include" \
-        -I"$REPO_ROOT/lib/crypto/include" -I"$REPO_ROOT/lib/json/include" \
+        -I"$REPO_ROOT/lib/sha3/include" -I"$REPO_ROOT/lib/crypto/include" \
+        -I"$REPO_ROOT/lib/json/include" \
         -I"$REPO_ROOT/lib/util/include" -I"$REPO_ROOT/lib/platform/include" \
         -I"$REPO_ROOT/lib/support/include" \
         -o "$SA_WORK/zcode_science_fixture" \
@@ -328,14 +329,14 @@ sa_build_fixture() {
         "$REPO_ROOT/lib/vcs/src/package_store_io.c" \
         "$REPO_ROOT/lib/vcs/src/package_manifest.c" \
         "$REPO_ROOT/lib/vcs/src/build_action.c" \
-        "$REPO_ROOT/lib/crypto/src/sha3.c" \
+        "$REPO_ROOT/lib/sha3/src/sha3.c" \
         "$REPO_ROOT/lib/crypto/src/ed25519.c" \
         "$REPO_ROOT/lib/crypto/src/sha512.c" \
         "$REPO_ROOT/lib/crypto/src/sha256.c" \
         "$REPO_ROOT/lib/base/src/safe_alloc.c" \
         "$REPO_ROOT/lib/base/src/log_level.c" \
         "$REPO_ROOT/lib/base/src/result.c" \
-        "$REPO_ROOT/lib/support/src/cleanse.c" \
+        "$REPO_ROOT/lib/base/src/cleanse.c" \
         "$REPO_ROOT/lib/platform/src/clock.c" \
         "$REPO_ROOT/lib/json/src/json.c" \
         "$REPO_ROOT/lib/util/src/hw_profile.c" \

@@ -12,8 +12,8 @@
  * This tool deliberately does NOT shell to git. The Makefile feeds it the file
  * list on stdin (NUL-separated, from `git ls-files -z core/`); the tool only
  * hashes file bytes and reads/writes the manifest. No external dependencies —
- * it links the in-tree FIPS-202 SHA3-256 (lib/crypto/src/sha3.c) plus
- * memory_cleanse (lib/support/src/cleanse.c), stock libc otherwise.
+ * it links the in-tree FIPS-202 SHA3-256 (lib/sha3/src/sha3.c) plus
+ * memory_cleanse (lib/base/src/cleanse.c), stock libc otherwise.
  *
  * Usage (paths on stdin, NUL-separated):
  *   core_seal seal  core/MANIFEST.sha3   < filelist   (writes the manifest)

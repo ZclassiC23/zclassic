@@ -191,7 +191,8 @@ dht_wait_cold_load() {
 dht_build_helper() {
     cc -std=c23 -O1 -w -D_GNU_SOURCE -ffunction-sections -fdata-sections \
         -Wl,--gc-sections -I"$REPO_ROOT/lib/base/include" \
-        -I"$REPO_ROOT/lib/crypto/include" -I"$REPO_ROOT/lib/support/include" \
+        -I"$REPO_ROOT/lib/sha3/include" -I"$REPO_ROOT/lib/crypto/include" \
+        -I"$REPO_ROOT/lib/support/include" \
         -I"$REPO_ROOT/lib/util/include" -I"$REPO_ROOT/lib/platform/include" \
         -I"$REPO_ROOT/lib/json/include" -I"$REPO_ROOT/lib/core/include" \
         -I"$REPO_ROOT/lib/net/include" -I"$REPO_ROOT/lib/noise/include" \
@@ -210,7 +211,7 @@ dht_build_helper() {
         "$REPO_ROOT/lib/crypto/src/ed25519.c" \
         "$REPO_ROOT/lib/crypto/src/sha512.c" \
         "$REPO_ROOT/lib/crypto/src/sha256.c" \
-        "$REPO_ROOT/lib/crypto/src/sha3.c" \
+        "$REPO_ROOT/lib/sha3/src/sha3.c" \
         "$REPO_ROOT/lib/crypto/src/hmac_sha256.c" \
         "$REPO_ROOT/lib/crypto/src/hkdf_sha256.c" \
         "$REPO_ROOT/lib/crypto/src/chacha20poly1305.c" \
@@ -223,7 +224,7 @@ dht_build_helper() {
         "$REPO_ROOT/lib/base/src/safe_alloc.c" \
         "$REPO_ROOT/lib/base/src/log_level.c" \
         "$REPO_ROOT/lib/base/src/result.c" \
-        "$REPO_ROOT/lib/support/src/cleanse.c" \
+        "$REPO_ROOT/lib/base/src/cleanse.c" \
         "$REPO_ROOT/lib/platform/src/clock.c" \
         "$REPO_ROOT/lib/platform/src/rng.c" \
         "$REPO_ROOT/lib/util/src/write_all.c" \

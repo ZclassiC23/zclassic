@@ -124,11 +124,12 @@ if [ ! -x "$SHA3_BIN" ]; then
     # Makefile parse (~6 s on this host) it did not already owe.
     mkdir -p "$REPO/build/bin"
     "${CC:-cc}" -std=c23 -O2 -Wall -Wextra -Werror \
-        -I"$REPO/lib/crypto/include" -I"$REPO/lib/support/include" \
+        -I"$REPO/lib/sha3/include" -I"$REPO/lib/crypto/include" \
+        -I"$REPO/lib/support/include" \
         -I"$REPO/lib/base/include" \
         -o "$SHA3_BIN" \
         "$REPO/tools/agent/agent_sha3.c" \
-        "$REPO/lib/crypto/src/sha3.c" "$REPO/lib/crypto/src/keccak_x4.c" \
+        "$REPO/lib/sha3/src/sha3.c" "$REPO/lib/crypto/src/keccak_x4.c" \
         >&2 || die "cannot build $SHA3_BIN (see above)"
 fi
 

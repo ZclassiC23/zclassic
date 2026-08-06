@@ -1855,13 +1855,36 @@ worktree-gc:
 # tools/agent/gate-receipt.sh — this is EVIDENCE, not proof.
 .PHONY: gate-receipt check-claims agent-velocity agent-sha3
 
-AGENT_SHA3_SRCS := tools/agent/agent_sha3.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c
+AGENT_SHA3_SRCS := tools/agent/agent_sha3.c lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c
 agent-sha3: $(BIN_DIR)/agent_sha3
 $(BIN_DIR)/agent_sha3: $(AGENT_SHA3_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror \
-	    -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
+	    -Ilib/sha3/include -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
 	    -o $@ $(AGENT_SHA3_SRCS)
+
+# Independent package gates compile only the authoritative package trees and
+# their declared direct dependencies.  They never open a node datadir.
+ZCODE_PACKAGE_BASE_TEST_BIN := $(BIN_DIR)/zcode-package-base-test
+ZCODE_PACKAGE_SHA3_TEST_BIN := $(BIN_DIR)/zcode-package-sha3-test
+.PHONY: zcode-package-base-test zcode-package-sha3-test zcode-package-foundation-test
+zcode-package-base-test: $(ZCODE_PACKAGE_BASE_TEST_BIN)
+	@$(ZCODE_PACKAGE_BASE_TEST_BIN)
+$(ZCODE_PACKAGE_BASE_TEST_BIN): lib/base/tests/test_base.c \
+		lib/base/tests/cleanse_probe.c lib/base/src/cleanse.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O3 -flto -Wall -Wextra -Werror -pedantic \
+	    -Ilib/base/include -o $@ $^
+
+zcode-package-sha3-test: $(ZCODE_PACKAGE_SHA3_TEST_BIN)
+	@$(ZCODE_PACKAGE_SHA3_TEST_BIN)
+$(ZCODE_PACKAGE_SHA3_TEST_BIN): lib/sha3/tests/test_sha3.c \
+		lib/sha3/src/sha3.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -Ilib/sha3/include -Ilib/base/include -o $@ $^
+
+zcode-package-foundation-test: zcode-package-base-test zcode-package-sha3-test
 
 # Run a gate and leave a receipt. The wrapper is transparent — same output,
 # same exit status — so this is a drop-in for the bare command:
@@ -2955,13 +2978,13 @@ $(BIN_DIR)/zcl-portfwd: tools/zcl_portfwd.c
 tools/gen_sha3_windows: $(BIN_DIR)/gen_sha3_windows
 $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 		lib/chain/src/sha3_windows.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/encoding/src/utilstrencodings.c \
+		lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/encoding/src/utilstrencodings.c \
 		lib/json/src/json.c lib/platform/src/clock.c \
-		lib/base/src/safe_alloc.c lib/support/src/cleanse.c
+		lib/base/src/safe_alloc.c lib/base/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O3 -march=native -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
-	    -Ilib/chain/include -Ilib/crypto/include -Ilib/encoding/include \
+	    -Ilib/chain/include -Ilib/sha3/include -Ilib/crypto/include -Ilib/encoding/include \
 	    -Ilib/json/include -Ilib/platform/include -Ilib/base/include -Ilib/util/include \
 	    -Ilib/support/include \
 	    -D_POSIX_C_SOURCE=200809L \
@@ -2980,12 +3003,12 @@ $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 .PHONY: tools/gen_utxo_root_ladder
 tools/gen_utxo_root_ladder: $(BIN_DIR)/gen_utxo_root_ladder
 $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
-		lib/chain/src/mmb.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c \
+		lib/chain/src/mmb.c lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/base/src/cleanse.c \
 		lib/base/src/log_level.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
-	    -Ilib/chain/include -Ilib/crypto/include -Ilib/support/include \
+	    -Ilib/chain/include -Ilib/sha3/include -Ilib/crypto/include -Ilib/support/include \
 	    -Ilib/base/include -Ilib/util/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
@@ -3000,11 +3023,11 @@ $(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
 .PHONY: tools/rom_two_builder_compare
 tools/rom_two_builder_compare: $(BIN_DIR)/rom_two_builder_compare
 $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c
+		lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/base/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
-	    -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
+	    -Ilib/sha3/include -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
 	    -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
@@ -3021,11 +3044,11 @@ $(BIN_DIR)/rom_two_builder_compare: tools/rom_two_builder_compare.c \
 tools/checkpoint_rung_export: $(BIN_DIR)/checkpoint_rung_export
 $(BIN_DIR)/checkpoint_rung_export: tools/checkpoint_rung_export.c \
 		lib/storage/src/checkpoint_rung.c lib/base/src/log_level.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c
+		lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/base/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
-	    -Ilib/storage/include -Ilib/crypto/include -Ilib/base/include -Ilib/util/include \
+	    -Ilib/storage/include -Ilib/sha3/include -Ilib/crypto/include -Ilib/base/include -Ilib/util/include \
 	    -Ilib/support/include -Ivendor/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
@@ -3033,16 +3056,16 @@ $(BIN_DIR)/checkpoint_rung_export: tools/checkpoint_rung_export.c \
 # rom_bundle_sha3: standalone whole-file SHA3-256 digest tool used by
 # tools/scripts/rom-bundle-replicate.sh to verify a ROM bundle replication
 # copy byte-for-byte against its source. No node libs, no sqlite, no Tor —
-# links only lib/crypto/src/sha3.c, the same primitive rom_seed.c and every
+# links only lib/sha3/src/sha3.c, the same primitive rom_seed.c and every
 # other consensus-facing digest in the node uses.
 .PHONY: tools/rom_bundle_sha3
 tools/rom_bundle_sha3: $(BIN_DIR)/rom_bundle_sha3
 $(BIN_DIR)/rom_bundle_sha3: tools/rom_bundle_sha3.c \
-		lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c
+		lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/base/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
-	    -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
+	    -Ilib/sha3/include -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -lm
 
@@ -4833,11 +4856,11 @@ $(BIN_DIR)/bench_fresh_sync: tools/bench_fresh_sync.c \
 # Exits 2 if any tier diverges — a faster path returning different bytes is a
 # chain split, not a win.
 SIMD_BENCH_SRCS = tools/simd_bench.c \
-	lib/crypto/src/sha256.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c \
+	lib/crypto/src/sha256.c lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c \
 	lib/crypto/src/sha3_avx512.c lib/crypto/src/sha3_256_x4.c \
 	lib/crypto/src/blake2b.c lib/crypto/src/blake2b_avx2.c \
 	lib/sapling/src/bn254_accel.c lib/sapling/src/fr_avx512.c \
-	lib/support/src/cleanse.c lib/base/src/log_level.c
+	lib/base/src/cleanse.c lib/base/src/log_level.c
 
 .PHONY: simd_bench
 simd_bench: $(BIN_DIR)/simd_bench
@@ -4845,7 +4868,7 @@ $(BIN_DIR)/simd_bench: $(SIMD_BENCH_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) \
 	    -Wall -Wextra -Werror -pedantic \
-	    -Ilib/crypto/include -Ilib/sapling/include -Ilib/base/include \
+	    -Ilib/sha3/include -Ilib/crypto/include -Ilib/sapling/include -Ilib/base/include \
 	    -Ilib/util/include -Ilib/platform/include -Ilib/support/include \
 	    -D_POSIX_C_SOURCE=200809L -o $@ $^
 
@@ -4878,7 +4901,7 @@ SERIAL_BENCH_SRCS = tools/serial_bench.c \
 	core/math/src/serialize.c core/math/src/uint256.c core/math/src/hash.c \
 	lib/crypto/src/sha256.c lib/crypto/src/sha512.c lib/crypto/src/ripemd160.c \
 	lib/crypto/src/hmac_sha512.c lib/encoding/src/utilstrencodings.c \
-	lib/support/src/cleanse.c lib/base/src/safe_alloc.c lib/base/src/log_level.c
+	lib/base/src/cleanse.c lib/base/src/safe_alloc.c lib/base/src/log_level.c
 
 .PHONY: serial_bench
 serial_bench: $(BIN_DIR)/serial_bench
@@ -6224,14 +6247,14 @@ CORE_SEAL_PATHS := core/ \
     lib/validation/src/chainstate.c \
     lib/validation/include/validation/connect_block.h \
     lib/validation/include/validation/chainstate.h
-CORE_SEAL_SRCS := tools/core_seal.c lib/crypto/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/support/src/cleanse.c
+CORE_SEAL_SRCS := tools/core_seal.c lib/sha3/src/sha3.c lib/crypto/src/keccak_x4.c lib/crypto/src/simd_dispatch.c lib/base/src/cleanse.c
 
 .PHONY: tools/core_seal
 tools/core_seal: $(BIN_DIR)/core_seal
 $(BIN_DIR)/core_seal: $(CORE_SEAL_SRCS)
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror \
-	    -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
+	    -Ilib/sha3/include -Ilib/crypto/include -Ilib/support/include -Ilib/base/include \
 	    -o $@ $(CORE_SEAL_SRCS)
 
 # Freeze the seal: recompute and (re)write core/MANIFEST.sha3 over every tracked

@@ -146,7 +146,8 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/chain") == 0) return "chain index primitives: MMB/MMR fast-sync proofs, UTXO-root ladder, snapshot loader";
     if (strcmp(group, "lib/coins") == 0) return "the UTXO set: coins view, undo data, compression, SHA3 UTXO commitment";
     if (strcmp(group, "lib/core") == 0) return "small consensus-adjacent primitives: amount, random, time-since-epoch helpers";
-    if (strcmp(group, "lib/crypto") == 0) return "hash/cipher/PoW primitives: SHA-2/3, Blake2, ChaCha20-Poly1305, Ed25519, Equihash";
+    if (strcmp(group, "lib/sha3") == 0) return "scalar FIPS-202 SHA3/SHAKE primitives";
+    if (strcmp(group, "lib/crypto") == 0) return "hash/cipher/PoW primitives and batched SHA3 acceleration: SHA-2, Blake2, ChaCha20-Poly1305, Ed25519, Equihash";
     if (strcmp(group, "lib/crypto_registry") == 0) return "singleton catalog of pluggable cryptographic verifier implementations";
     if (strcmp(group, "lib/encoding") == 0) return "string encoding helpers: money strings, hex/bin string encodings";
     if (strcmp(group, "lib/event") == 0) return "the in-process publish/subscribe event bus that decouples subsystems";

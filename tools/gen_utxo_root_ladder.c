@@ -81,7 +81,7 @@
  * see docs/work/ and the golden-height ladder lane notes.
  *
  * Links only standalone libs: lib/chain/src/mmb.c (pure, no DB) +
- * lib/crypto/src/sha3.c (mmb.c's own dependency) + libsqlite3.a.
+ * lib/sha3/src/sha3.c (mmb.c's own dependency) + libsqlite3.a.
  * No node libs, no Tor, no RPC. */
 
 #define _POSIX_C_SOURCE 200809L

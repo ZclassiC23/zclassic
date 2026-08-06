@@ -138,7 +138,7 @@ almost never the node that ran `-verify-consensus-bundle`.
 canonical `consensus_state_replay_receipt.v1` the gate looks for) + a SHA3
 record of the producing binary into `DIR`, then re-hashes both copies with
 the standalone `rom_bundle_sha3` tool (`make tools/rom_bundle_sha3`; links
-only `lib/crypto/src/sha3.c`, no node libs) and refuses to report success
+only `lib/sha3/src/sha3.c`, no node libs) and refuses to report success
 unless every digest matches the source exactly. `make rom-bundle-replicate
 BUNDLE=... RECEIPT=... DEST=...` wraps the same script. Point a node's
 `-rombundlereplicadir=DIR` at the result (or at a further copy of it, on a

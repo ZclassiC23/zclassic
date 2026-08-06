@@ -983,6 +983,8 @@ int main(int argc, char **argv)
                failures);
         return failures ? 1 : 0;
     }
+    { extern int test_base_foundation(void);
+      failures += test_base_foundation(); }
     failures += test_game();
     failures += test_crypto();
     failures += test_crypto_registry();

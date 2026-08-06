@@ -59,6 +59,9 @@
 /* Leaf utilities and low-level building blocks. lib/base is the sink — the
  * logging / allocation / result vocabulary every other module speaks. */
 LIB_MODULE("base")
+/* Scalar FIPS-202 primitives depend only on base.  Crypto owns optional
+ * batched acceleration and reaches down through sha3/sha3.h. */
+LIB_MODULE("sha3")
 LIB_MODULE("primitives")
 LIB_MODULE("support")
 LIB_MODULE("json")

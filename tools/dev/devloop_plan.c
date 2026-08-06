@@ -307,6 +307,7 @@ static bool path_is_consensus_risk(const char *path)
     static const char *const prefixes[] = {
         "core/consensus/", "core/params/", "core/chainparams/",
         "lib/validation/", "lib/chain/", "lib/primitives/", "lib/crypto/",
+        "lib/sha3/",
         "lib/sapling/", "app/jobs/",
     };
     if (!path)
