@@ -113,3 +113,10 @@ latest owner direction separately authorizes synchronization and push to main.
   directory.
 - `metaverse_catalog` execution and the heavyweight full gates remain deferred
   until they can run without competing with the exact-candidate fold.
+- First synchronized push attempt was blocked by the remote branch's optional
+  `Xrandr.h` compile dependency. Existing self-contained presentation fix
+  `6e379786c` was transplanted as `00359de6e`; its vendor-provenance proof
+  passes. The next mandatory pre-push gate caught a return-macro mismatch in
+  the new typed manifest reader before publication; it is corrected to return
+  the exact typed I/O state, and `check_log_macro_return_type` plus the focused
+  warning-as-error syntax gate pass.

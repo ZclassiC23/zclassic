@@ -54,8 +54,8 @@ static enum mv_manifest_read_status mv_read_file(
     buf = zcl_malloc(cap + 1u, "mv_read_file");
     if (!buf) {
         fclose(f);
-        LOG_ERR(MV_LOG, "read buffer of %zu bytes for %s", cap + 1u, path);
-        return MV_MANIFEST_READ_IO_ERROR;
+        LOG_RETURN(MV_MANIFEST_READ_IO_ERROR, MV_LOG,
+                   "read buffer of %zu bytes for %s", cap + 1u, path);
     }
     len = fread(buf, 1, cap + 1u, f);
     if (ferror(f)) {
@@ -245,8 +245,7 @@ bool mv_manifest_names(const char *zcode_dir, char (*out)[65],
     names = zcl_malloc(MV_MANIFEST_SCAN_MAX * sizeof(*names), "mv_names");
     if (!names) {
         closedir(dir);
-        LOG_ERR(MV_LOG, "manifest name buffer for %s", path);
-        return false;
+        LOG_FAIL(MV_LOG, "manifest name buffer for %s", path);
     }
     errno = 0;
     while ((ent = readdir(dir)) != NULL) {
