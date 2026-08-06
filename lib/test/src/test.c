@@ -986,6 +986,8 @@ int main(int argc, char **argv)
     { extern int test_base_foundation(void);
       failures += test_base_foundation(); }
     { extern int test_codec_cursor(void); failures += test_codec_cursor(); }
+    { extern int test_zcode_creation_attribution(void);
+      failures += test_zcode_creation_attribution(); }
     { extern int test_zcode_score_receipt(void);
       failures += test_zcode_score_receipt(); }
     { extern int test_zcode_package_registry(void);
