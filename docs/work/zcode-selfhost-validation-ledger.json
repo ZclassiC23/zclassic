@@ -1,6 +1,6 @@
 {
   "schema": "zcl.zcode_selfhost_validation_ledger.v1",
-  "generated_utc": "2026-08-06T08:23:54Z",
+  "generated_utc": "2026-08-06T17:26:33Z",
   "lane": "lane/zcode-selfhost-foundation",
   "frozen_root_checkout": "13d0d255b09548a21ccd05936186f8efc849394a",
   "safety_ref": "safety/zcode-pre-selfhost-20260806",
@@ -79,6 +79,19 @@
     {
       "kind": "parent_replay_head_before_codec_atomicity_fix",
       "sha": "a7f62d07434939fc145500cdff46e0c6deb61f14"
+    },
+    {
+      "kind": "fetched_origin_before_publication_gates",
+      "sha": "9e6f158d4cf8a204718b7280ea496e35d94ca43c"
+    },
+    {
+      "kind": "origin_refresh_merge_before_publication_gates",
+      "sha": "3bc80b0771677b0d2bf0c391705a1c8d3a6672d5",
+      "origin_parent": "9e6f158d4cf8a204718b7280ea496e35d94ca43c"
+    },
+    {
+      "kind": "publication_gate_fix_head_before_ledger_refresh",
+      "sha": "28c5fed7bc0e99e29f35707eda94fde9de9655d6"
     }
   ],
   "preservation_reconciliation": {
@@ -96,7 +109,7 @@
     "projection": "config/zcode_package_registry.def",
     "monolith_exact_roots": [
       "7f15ba590a82de200152b1c02b5b1dc11b4932a9b690fbe332e7c2fa60d764fe",
-      "6e03d74b8edab650e790424f4dc8274e8ca262cccfc4f94d5b068ad66f60f48e",
+      "ea54d7038792764c059a697792d46ee92fe75e29aa302d3c8db3a208a580876e",
       "5b94d188d8f9c1ae367e1954870ec312e24d0d043fe808cc484da9a6114cd50b"
     ],
     "packages": [
@@ -110,10 +123,10 @@
       },
       {
         "name": "zclassic23/sha3@0.1.0-dev.1",
-        "content_root": "6e03d74b8edab650e790424f4dc8274e8ca262cccfc4f94d5b068ad66f60f48e",
-        "release_root": "e13fe883c1166c9a9587a864716804b8d30e0246e8802ae477385952c268ed37",
+        "content_root": "ea54d7038792764c059a697792d46ee92fe75e29aa302d3c8db3a208a580876e",
+        "release_root": "17f33b8f5be818a1a396d7c9bf04de1c11926af9e6d1118b313a9ac0a6335af8",
         "recipe_root": "71280e02ba1ec0c8006b28a8c325657cc2d2f5547b70a19442d91411199f7b49",
-        "dependency_lock_root": "149b3e4e10eaad9fb93626419bae842b1dfceddf64f8a8b1f065c69bb30dc21a",
+        "dependency_lock_root": "a32339729bd0a4e0cf723238faa4c1ad378d93f7de4bad84591781fc782d92a3",
         "api_capsule_root": "c0c3ec6514fd2a7ea242e087aff75b33fdc208a219c61855788509efef37b15d"
       },
       {
@@ -159,7 +172,7 @@
     {"gate": "check-byte-order-codec-single", "result": "PASS"},
     {"gate": "check-test-registration", "result": "PASS"},
     {"gate": "check-core-seal", "result": "PASS_70_SEALED_FILES"},
-    {"gate": "check-api-reference-generated", "result": "PASS_531_ENTRIES"},
+    {"gate": "check-api-reference-generated", "result": "PASS_532_ENTRIES"},
     {"gate": "check-file-purpose", "result": "PASS"},
     {"gate": "check-group-purpose", "result": "PASS"},
     {"gate": "check-doc-accuracy", "result": "PASS"},
@@ -171,6 +184,11 @@
     {"gate": "test_vcs_release_after_codec_migration", "result": "PASS_IDENTICAL_RELEASE_ID_KAT"},
     {"gate": "test_zcode_package_registry_after_codec_migration", "result": "PASS_ALL_PACKAGE_ROOTS_AND_SIGNATURES_UNCHANGED"},
     {"gate": "test_zcode_score_receipt_after_codec_migration", "result": "PASS_ALL_VERTICAL_ROOTS_UNCHANGED"},
+    {"gate": "publication_lint", "result": "PASS_134_OF_134_COLD_GATES"},
+    {"gate": "publication_uncached_suite", "result": "PASS_909_REGISTERED_900_RUN_0_CACHED_9_POLICY_GATED_0_FAILED_19_SELF_SKIPS"},
+    {"gate": "publication_asan_ubsan", "result": "PASS_BASE_SHA3_X4_CODEC_PACKAGE_RELEASE_VERIFY_AND_SCORE_GROUPS_PRESCRIBED_ADX_PROFILE"},
+    {"gate": "sha3_x4_unaligned_store", "result": "BORN_RED_UBSAN_THEN_PASS_BOTH_AVX512_DIFFERENTIAL_GROUPS"},
+    {"gate": "legacy_score_marker_fixture", "result": "BORN_RED_ASAN_THEN_PASS_EXACT_SIZEOF_BOUND"},
     {
       "gate": "test_zcode_add",
       "result": "DEPENDENCY_AND_CYCLE_SUBCASES_PASS_GROUP_FAIL_WITHHELD_HELPER",
@@ -184,7 +202,7 @@
   ],
   "pre_post_compatibility": {
     "pre_extraction_revision": "6e61feeb3b4c806991686d47c0b8688036b9f812",
-    "post_extraction_revision": "63d9d61da4f679e1e33055e9daa596ebecd612f3",
+    "post_extraction_revision": "28c5fed7bc0e99e29f35707eda94fde9de9655d6",
     "command_template": "make -j4 t-fast ONLY=<group>",
     "groups_passed_at_both_revisions": [
       "test_sha3_stream",
@@ -252,7 +270,14 @@
     },
     "assembler_observed": "GNU assembler (GNU Binutils for Ubuntu) 2.42",
     "archiver_observed": "GNU ar (GNU Binutils for Ubuntu) 2.42",
-    "limitation": "Focused compatibility only; pinned deterministic archive and two-path byte reproduction remain withheld by the fold freeze."
+    "reproducibility": {
+      "same_tree_sha3_256": "902c1c3abf42835d36a50e9a934d2f95e5587f08156a0f29bd91277524f39974",
+      "same_tree_size": 22588776,
+      "different_path_sha3_256": "015a6735a00a58585a88ca2b1441a7f19eb6bf8a23f1b33346c3cdf60d7e7edc",
+      "different_path_size": 22588856,
+      "classification": "local_reproduction"
+    },
+    "limitation": "GCC, Clang, deterministic same-tree and different-path local reproduction pass. No owner-approved off-host signer is registered, so independent reproduction credit remains withheld."
   },
   "codec_completion": {
     "first_proven_slice": "task/candidate/review/work/proof/lane wires",
@@ -280,27 +305,27 @@
     {
       "package": "zclassic23/sha3@0.1.0-dev.1",
       "order": 1,
-      "task_root": "c292041febb252c4a0bb992df5218058899e6babfd261d23b04755c1246a9b10",
-      "candidate_root": "38a5555fdf04fe5531fc8e2b7e98a1b13003d39573bca322f853df6becec2870",
+      "task_root": "ef7b6182c3560110e34fbfd70c98ee8b8107f6cb0d7b5a2b3315d92f275de5a7",
+      "candidate_root": "45654ffefad86f3f5d2096f3c829398be0e8d945508a80adedb458f29364a584",
       "proof_policy_root": "6e1021dd7f9d73533f35048cee3a95d555c7473cb1ffcffb3ef06f6f9270b08f",
-      "proof_set_root": "266014129e12d1022bcd72fa69dfcf6ef895e0c4a321ca33600460181369bb54",
-      "proven_lane_root": "ea34d382816534818b7a565bb1b7d5bf0d628ae8b19a23e99175fdd93bdd93d2",
-      "score_receipt_root": "b79bdf0b4649e138f7973695e6ededb8691436923f0f77dc75189cde002a4210",
+      "proof_set_root": "b063663993af9232bfdc1431950135ecc1dc59caa612c078efca4704fa32f83b",
+      "proven_lane_root": "a9f923e63e54051535412f180f4720a797c7ab026ceae4bf9d62d2cced880101",
+      "score_receipt_root": "680882572af552040efb6ec202915a3d5c2f9704e2d389200c07ed770ba6bea8",
       "awarded_mask": 27,
       "score": 4,
       "evidence_roots": {
-        "accepted_extraction": "0dadb21a7b05f5133cd142c1e74a3291022d6b5962c21fa313a910b664415872",
-        "born_red_defect_test": "33fb95bc8455955c9b0850abb3b0da4da9fca42fc0f407774527ab5b201345ec",
-        "independent_reproduction_withheld": "e6fa3dd0f48baf7bf56cb18d64db5b3ff2ef91673defe6f19d59786c4341d551",
-        "exact_capsule_rederivation": "1eceb0fcab10c9e03e6ba77febeb2f14f5f55a4a1938d7cc205b781a20ff681d",
-        "compatibility_maintenance": "b93f2abeb4bb336f0fa6bd0f40ce979e5245fa602ae44e469821a09c49c66da0"
+        "accepted_extraction": "7a6eec7646c1d80dd6683aaec4a90ddf1e8c56df274031513ca252bdf927256b",
+        "born_red_defect_test": "ea9bc0f466fe23c7a1e44625ecf8e04d64630fdfc953fd9afb12ba9835c13cf8",
+        "independent_reproduction_withheld": "47ca7f1e8c41f062e9e6c66a58539c5daca5deff0f9279dfe7c1ec0990a5e88e",
+        "exact_capsule_rederivation": "e20167ca34e47f4226abde185704a352a6ad4a7103a36fd4ccd2e318f2f43da1",
+        "compatibility_maintenance": "315c5193b0a56a75cbb6317877331d57b24e05f15821708bbc3f2dfc8dc339db"
       },
       "work_receipt_roots": {
-        "accepted_extraction": "3c2c8a6270a79f79d19adccad6b37146a20ec842d8f17f90ae0206cea1d603ee",
-        "born_red_defect_test": "4ebe39b5b147c48f4e98a7baa95ca2e8c6f51496052a579988ab6238f4922205",
-        "independent_reproduction_local_only": "7a7419a2dbc833df604ad24aacd5ee5d79f17e727d0313cf71bf60acdceb6b27",
-        "exact_capsule_rederivation": "918cbfff3ea15e868252374a864076e1cc7b9528a01975bdc5045166aaceb282",
-        "compatibility_maintenance": "b49275e7a1eabcc4f1919ca797ab84afcabd9fb014a7399cf3cd578c1bcaf46c"
+        "accepted_extraction": "062d7bb009b12a6546fc66cf94dd8415ace8aac56f9d3d22749517aa0d735e81",
+        "born_red_defect_test": "115c882e25e21c62b24e83f20c26a50c76be12729e9b244124c5eb31848fe419",
+        "independent_reproduction_local_only": "31d96716fbc50504adadd80ba3bb2e4281723ef4c63ddc5261b3f7fcf8d1adcb",
+        "exact_capsule_rederivation": "c99cfad17d7289f056e7b95464cf487a1eaee25de4358785d8ba7095eac83149",
+        "compatibility_maintenance": "df515f2f165759c0153272dcad2b977e9be3fbdf5a558a4e492fb2f3e844fb24"
       }
     },
     {
@@ -357,17 +382,17 @@
     }
   ],
   "freeze_status": {
-    "full_lto": "WITHHELD",
-    "uncached_full_suite": "WITHHELD",
-    "asan_ubsan_matrix": "WITHHELD",
-    "two_path_reproducibility": "WITHHELD",
+    "full_lto": "PASS_CURRENT_SOURCE_REPRODUCTION_LINKS",
+    "uncached_full_suite": "PASS_900_OF_900_RUNNABLE_ZERO_CACHED",
+    "asan_ubsan_matrix": "PASS_PRESCRIBED_ADX_PROFILE_NO_SUPPRESSIONS",
+    "two_path_reproducibility": "PASS_015a6735a00a58585a88ca2b1441a7f19eb6bf8a23f1b33346c3cdf60d7e7edc",
     "out_of_band_pre_push_ci": "WITHHELD",
     "scratch_package_cas_publication": "PASS_HERMETIC_BASE_SHA3_CODEC_RELEASES_AND_WORKSPACE_RECEIPT_CHAINS",
     "push": "NOT_ATTEMPTED"
   },
   "next_steps": [
     "When the fold freeze is lifted, independently replay the three hermetic signed-release and task/candidate/work/proof/PROVEN receipt-chain proofs outside the local scratch cleanup boundary.",
-    "Run the withheld full link, uncached suite, sanitizer, reproducibility, API-doc, package-verification and out-of-band pre-push gates.",
+    "Run the final out-of-band pre-push gate on the ledger commit, then fast-forward origin/main and verify the remote SHA.",
     "Register and verify an owner-approved off-host signer before awarding independent_reproduction."
   ]
 }
