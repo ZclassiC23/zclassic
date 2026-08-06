@@ -3,6 +3,7 @@
 #ifndef ZCL_VCS_ZCODE_CREATION_ATTRIBUTION_H
 #define ZCL_VCS_ZCODE_CREATION_ATTRIBUTION_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -47,6 +48,24 @@ enum vcs_zcode_creation_error {
     VCS_ZCODE_CREATION_AMOUNT,
     VCS_ZCODE_CREATION_TIME,
     VCS_ZCODE_CREATION_OVERFLOW,
+    VCS_ZCODE_CREATION_CONTEXT,
+    VCS_ZCODE_CREATION_CAS,
+    VCS_ZCODE_CREATION_NETWORK,
+    VCS_ZCODE_CREATION_POLICY,
+    VCS_ZCODE_CREATION_EPOCH,
+    VCS_ZCODE_CREATION_CONTRIBUTOR,
+    VCS_ZCODE_CREATION_TASK,
+    VCS_ZCODE_CREATION_CANDIDATE,
+    VCS_ZCODE_CREATION_PROOF_POLICY,
+    VCS_ZCODE_CREATION_PROOF_SET,
+    VCS_ZCODE_CREATION_LANE,
+    VCS_ZCODE_CREATION_SCORE,
+    VCS_ZCODE_CREATION_PACKAGE,
+    VCS_ZCODE_CREATION_RELEASE,
+    VCS_ZCODE_CREATION_LICENSE,
+    VCS_ZCODE_CREATION_IMMATURE,
+    VCS_ZCODE_CREATION_REORG,
+    VCS_ZCODE_CREATION_DUPLICATE,
 };
 
 struct vcs_zcode_creation_attribution_v1 {
@@ -76,6 +95,32 @@ struct vcs_zcode_creation_attribution_v1 {
     uint8_t lineage_root[32];
 };
 
+typedef bool (*vcs_zcode_creation_anchor_active_fn)(
+    void *opaque, uint64_t height, const uint8_t block_hash[32]);
+typedef bool (*vcs_zcode_creation_duplicate_fn)(
+    void *opaque, const uint8_t candidate_root[32],
+    const uint8_t attribution_root[32]);
+typedef bool (*vcs_zcode_creation_binding_current_fn)(
+    void *opaque, const uint8_t contributor_binding_root[32]);
+
+/* Cross-object verification pins policy decisions supplied by the immutable
+ * genesis-policy evaluator. Callbacks resolve active-chain and uniqueness
+ * facts; they are mandatory so an adapter cannot silently assume either. */
+struct vcs_zcode_creation_validation_context {
+    const char *workspace;
+    const uint8_t *expected_network_genesis_root;
+    const uint8_t *expected_zc23_policy_root;
+    uint64_t expected_epoch;
+    uint64_t expected_award_atoms;
+    uint64_t active_height;
+    int64_t active_mtp;
+    int64_t now_unix;
+    vcs_zcode_creation_anchor_active_fn anchor_is_active;
+    vcs_zcode_creation_duplicate_fn contribution_is_duplicate;
+    vcs_zcode_creation_binding_current_fn binding_is_current;
+    void *callback_opaque;
+};
+
 const char *vcs_zcode_creation_error_string(
     enum vcs_zcode_creation_error error);
 enum vcs_zcode_creation_error vcs_zcode_creation_attribution_validate(
@@ -89,6 +134,9 @@ enum vcs_zcode_creation_error vcs_zcode_creation_attribution_parse(
 enum vcs_zcode_creation_error vcs_zcode_creation_attribution_root(
     const struct vcs_zcode_creation_attribution_v1 *attribution,
     uint8_t out[32]);
+enum vcs_zcode_creation_error vcs_zcode_creation_attribution_verify_cas(
+    const struct vcs_zcode_creation_attribution_v1 *attribution,
+    const struct vcs_zcode_creation_validation_context *context);
 
 /* Whole-token emission is converted to atoms after the floor. No fractional
  * tail exists. Every failure zeroes a non-null output. */

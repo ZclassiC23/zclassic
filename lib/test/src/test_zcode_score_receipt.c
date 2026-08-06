@@ -8,7 +8,14 @@
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
+#include "keys/key.h"
+#include "keys/pubkey.h"
+#include "core/uint256.h"
+#include "vcs/package_manifest.h"
+#include "vcs/package_release.h"
 #include "vcs/vcs_object.h"
+#include "vcs/zcode_contributor_binding.h"
+#include "vcs/zcode_creation_attribution.h"
 #include "vcs/zcode_score_receipt.h"
 
 #include <stdlib.h>
@@ -73,7 +80,7 @@ static bool score_fixture_for_roots(
     struct score_work_fixture works[VCS_ZCODE_SCORE_UNITS],
     uint8_t lane_secret[32], uint8_t lane_pubkey[32],
     const uint8_t source_root[32], const uint8_t lock_root[32],
-    const uint8_t capsule_root[32])
+    const uint8_t capsule_root[32], const uint8_t author_pubkey[32])
 {
     score_policy(policy);
     uint8_t policy_root[32], task_root[32], candidate_root[32];
@@ -106,7 +113,10 @@ static bool score_fixture_for_roots(
     score_fill(candidate->patch_root, 9);
     memcpy(candidate->candidate_source_root, task->source_root, 32);
     score_fill(candidate->adapter_policy_root, 11);
-    score_fill(candidate->author_pubkey, 12);
+    if (author_pubkey)
+        memcpy(candidate->author_pubkey, author_pubkey, 32);
+    else
+        score_fill(candidate->author_pubkey, 12);
     candidate->sequence = 1;
     candidate->created_unix = 1000;
     if (vcs_zcode_candidate_root(candidate, candidate_root) !=
@@ -198,7 +208,7 @@ static bool score_fixture(
                capsule, sizeof(capsule)) &&
         score_fixture_for_roots(task, candidate, policy, lane, works,
                                 lane_secret, lane_pubkey, source, lock,
-                                capsule);
+                                capsule, NULL);
 }
 
 static int test_score_happy_path(void)
@@ -496,7 +506,7 @@ static int test_score_package_verticals(void)
             uint8_t secret[32], pubkey[32];
             ASSERT(score_fixture_for_roots(
                 &task, &candidate, &policy, &lane, works, secret, pubkey,
-                content, lock, capsule));
+                content, lock, capsule, NULL));
             uint8_t proof_roots[VCS_ZCODE_SCORE_UNITS][32];
             struct vcs_zcode_work_receipt_v1
                 receipts[VCS_ZCODE_SCORE_UNITS];
@@ -644,10 +654,294 @@ static int test_score_rejections(void)
     return failures;
 }
 
+struct creation_callback_fixture {
+    bool anchor_active;
+    bool duplicate;
+    uint64_t opening_height;
+    uint8_t opening_hash[32];
+};
+
+static bool creation_test_anchor(void *opaque, uint64_t height,
+                                 const uint8_t hash[32])
+{
+    const struct creation_callback_fixture *fixture = opaque;
+    return fixture && fixture->anchor_active &&
+           height == fixture->opening_height &&
+           memcmp(hash, fixture->opening_hash, 32) == 0;
+}
+
+static bool creation_test_duplicate(void *opaque,
+                                    const uint8_t candidate_root[32],
+                                    const uint8_t attribution_root[32])
+{
+    const struct creation_callback_fixture *fixture = opaque;
+    (void)candidate_root;
+    (void)attribution_root;
+    return fixture && fixture->duplicate;
+}
+
+static bool creation_test_keypair(uint8_t value, struct privkey *secret,
+                                  struct pubkey *pubkey)
+{
+    memset(secret->vch, value, 32);
+    secret->fValid = true;
+    secret->fCompressed = true;
+    return privkey_get_pubkey(secret, pubkey) &&
+           pubkey->size == COMPRESSED_PUBLIC_KEY_SIZE;
+}
+
+static bool creation_test_release(struct vcs_package_release *release,
+                                  const uint8_t package_root[32],
+                                  const uint8_t recipe_root[32])
+{
+    struct privkey secret;
+    struct pubkey pubkey;
+    if (!creation_test_keypair(0x31, &secret, &pubkey))
+        return false;
+    memset(release, 0, sizeof(*release));
+    release->schema_version = VCS_PACKAGE_RELEASE_VERSION;
+    (void)snprintf(release->name, sizeof(release->name), "commons/work");
+    (void)snprintf(release->semver, sizeof(release->semver), "0.1.0");
+    memcpy(release->package_root, package_root, 32);
+    memcpy(release->publisher_pubkey, pubkey.vch, 33);
+    release->publisher_sequence = 1;
+    (void)snprintf(release->license, sizeof(release->license), "MIT");
+    memcpy(release->recipe_root, recipe_root, 32);
+    (void)snprintf(release->chain_id, sizeof(release->chain_id),
+                   "zclassic-main");
+    uint8_t id[32];
+    struct uint256 hash;
+    unsigned char compact[COMPACT_SIGNATURE_SIZE];
+    if (vcs_package_release_id(release, id) != VCS_PACKAGE_RELEASE_OK)
+        return false;
+    memcpy(hash.data, id, 32);
+    if (!privkey_sign_compact(&secret, &hash, compact))
+        return false;
+    memcpy(release->signature, compact + 1, 64);
+    return vcs_package_release_verify(release) == VCS_PACKAGE_RELEASE_OK;
+}
+
+static bool creation_test_binding(
+    struct vcs_zcode_contributor_binding_v1 *binding,
+    const uint8_t network[32], uint8_t zid_pubkey[32],
+    uint8_t zid_secret[32])
+{
+    uint8_t zid_seed[32], zcl_secret[32];
+    memset(zid_seed, 0x41, sizeof(zid_seed));
+    memset(zcl_secret, 0x42, sizeof(zcl_secret));
+    ed25519_keypair(zid_pubkey, zid_secret, zid_seed);
+    struct privkey secret;
+    struct pubkey pubkey;
+    if (!creation_test_keypair(0x42, &secret, &pubkey))
+        return false;
+    memset(binding, 0, sizeof(*binding));
+    binding->schema_version = VCS_ZCODE_CONTRIBUTOR_BINDING_VERSION;
+    memcpy(binding->network_genesis_root, network, 32);
+    memcpy(binding->zid_pubkey, zid_pubkey, 32);
+    memcpy(binding->zcl_pubkey, pubkey.vch, 33);
+    struct key_id key_id = pubkey_get_id(&pubkey);
+    memcpy(binding->zcl_key_id, key_id.id.data, 20);
+    binding->sequence = 1;
+    binding->issued_unix = 100;
+    binding->expires_unix = 1000000;
+    binding->operation = VCS_ZCODE_BINDING_ACTIVE;
+    return vcs_zcode_contributor_binding_seal(
+               binding, zid_secret, zid_pubkey, zcl_secret) ==
+           VCS_ZCODE_BINDING_OK;
+}
+
+static int test_creation_attribution_cross_validation(void)
+{
+    int failures = 0;
+    TEST("ZC23 creation attribution: CAS authorities rederive or fail closed") {
+        static const uint8_t license_bytes[] =
+            "MIT License\n\nPermission is hereby granted, free of charge.\n";
+        uint8_t license_chunk[32], package_root[32], license_root[32];
+        ASSERT(vcs_package_chunk_hash(license_bytes,
+                                      sizeof(license_bytes) - 1,
+                                      license_chunk));
+        struct vcs_package_manifest manifest;
+        vcs_package_manifest_init(&manifest);
+        ASSERT(vcs_package_manifest_add(
+            &manifest, "LICENSE", VCS_PACKAGE_MODE_FILE,
+            sizeof(license_bytes) - 1, license_chunk, 1));
+        ASSERT(vcs_package_manifest_root(&manifest, package_root));
+        ASSERT(vcs_package_file_hash(&manifest.files[0], license_root));
+        uint8_t *manifest_wire = NULL; size_t manifest_wire_len = 0;
+        ASSERT(vcs_package_manifest_serialize(
+            &manifest, &manifest_wire, &manifest_wire_len));
+
+        uint8_t network[32], policy_authority[32], recipe[32], lock[32];
+        uint8_t capsule[32], zid_pubkey[32], zid_secret[32];
+        score_fill(network, 0xa1); score_fill(policy_authority, 0xa2);
+        score_fill(recipe, 0xa3); score_fill(lock, 0xa4);
+        score_fill(capsule, 0xa5);
+        struct vcs_zcode_contributor_binding_v1 binding;
+        ASSERT(creation_test_binding(&binding, network, zid_pubkey,
+                                     zid_secret));
+        uint8_t binding_wire[VCS_ZCODE_CONTRIBUTOR_BINDING_WIRE_BYTES];
+        uint8_t binding_root[32];
+        ASSERT_EQ(vcs_zcode_contributor_binding_serialize(
+                      &binding, binding_wire), VCS_ZCODE_BINDING_OK);
+        ASSERT_EQ(vcs_zcode_contributor_binding_root(
+                      &binding, binding_root), VCS_ZCODE_BINDING_OK);
+
+        struct vcs_package_release release;
+        ASSERT(creation_test_release(&release, package_root, recipe));
+        uint8_t *release_wire = NULL; size_t release_wire_len = 0;
+        uint8_t release_root[32];
+        ASSERT_EQ(vcs_package_release_serialize(
+                      &release, &release_wire, &release_wire_len),
+                  VCS_PACKAGE_RELEASE_OK);
+        ASSERT_EQ(vcs_package_release_id(&release, release_root),
+                  VCS_PACKAGE_RELEASE_OK);
+
+        struct vcs_zcode_task_v1 task;
+        struct vcs_zcode_candidate_v1 candidate;
+        struct vcs_zcode_proof_policy_v1 proof_policy;
+        struct vcs_zcode_lane_receipt_v1 lane;
+        struct score_work_fixture works[VCS_ZCODE_SCORE_UNITS];
+        uint8_t lane_secret[32], lane_pubkey[32];
+        ASSERT(score_fixture_for_roots(
+            &task, &candidate, &proof_policy, &lane, works,
+            lane_secret, lane_pubkey, package_root, lock, capsule,
+            zid_pubkey));
+        uint8_t proof_roots[VCS_ZCODE_SCORE_UNITS][32];
+        struct vcs_zcode_work_receipt_v1 receipts[VCS_ZCODE_SCORE_UNITS];
+        for (size_t i = 0; i < VCS_ZCODE_SCORE_UNITS; i++) {
+            memcpy(proof_roots[i], works[i].root, 32);
+            receipts[i] = works[i].receipt;
+        }
+        struct vcs_zcode_score_plan_input score_input = {
+            .task = &task, .candidate = &candidate,
+            .proof_policy = &proof_policy, .proven_lane = &lane,
+            .proof_receipt_roots = proof_roots,
+            .work_receipts = receipts,
+            .work_receipt_count = VCS_ZCODE_SCORE_UNITS,
+            .package_root = package_root, .release_root = release_root,
+            .recipe_root = recipe, .dependency_lock_root = lock,
+            .api_capsule_root = capsule,
+        };
+        struct vcs_zcode_score_receipt_v1 score;
+        ASSERT_EQ(vcs_zcode_score_plan(&score_input, &score),
+                  VCS_ZCODE_SCORE_OK);
+        ASSERT_EQ(vcs_zcode_score_receipt_seal(
+                      &score, lane_secret, lane_pubkey), VCS_ZCODE_SCORE_OK);
+
+        char workspace[256];
+        test_make_tmpdir(workspace, sizeof(workspace),
+                         "zcode_creation", "cross");
+        uint8_t task_root[32], candidate_root[32], proof_set_root[32];
+        uint8_t lane_root[32], score_root[32], proof_policy_root[32];
+        ASSERT(score_store_vertical(
+            workspace, &task, &candidate, &proof_policy, &lane, works,
+            &score, task_root, candidate_root, proof_set_root,
+            lane_root, score_root));
+        ASSERT_EQ(vcs_zcode_proof_policy_root(
+                      &proof_policy, proof_policy_root), VCS_ZCODE_DEV_OK);
+        ASSERT(vcs_object_put_addressed(workspace, package_root,
+                                         manifest_wire,
+                                         manifest_wire_len));
+        ASSERT(vcs_object_put_addressed(workspace, license_chunk,
+                                         license_bytes,
+                                         sizeof(license_bytes) - 1));
+        ASSERT(vcs_object_put_addressed(workspace, release_root,
+                                         release_wire, release_wire_len));
+        ASSERT(vcs_object_put_addressed(workspace, binding_root,
+                                         binding_wire,
+                                         sizeof(binding_wire)));
+
+        struct vcs_zcode_creation_attribution_v1 attribution;
+        memset(&attribution, 0, sizeof(attribution));
+        attribution.schema_version =
+            VCS_ZCODE_CREATION_ATTRIBUTION_VERSION;
+        attribution.category = VCS_ZCODE_CREATION_PUBLIC_SOURCE;
+        attribution.epoch = 3;
+        attribution.award_atoms = UINT64_C(250000000);
+        attribution.challenge_opening_height = 100;
+        score_fill(attribution.challenge_opening_hash, 0xb1);
+        attribution.challenge_opening_mtp = 1000;
+        attribution.challenge_maturity_height = 8164;
+        attribution.challenge_maturity_mtp = 605800;
+        attribution.created_unix = 605801;
+        memcpy(attribution.network_genesis_root, network, 32);
+        memcpy(attribution.zc23_policy_root, policy_authority, 32);
+        memcpy(attribution.contributor_binding_root, binding_root, 32);
+        memcpy(attribution.task_root, task_root, 32);
+        memcpy(attribution.candidate_root, candidate_root, 32);
+        memcpy(attribution.proof_policy_root, proof_policy_root, 32);
+        memcpy(attribution.proof_set_root, proof_set_root, 32);
+        memcpy(attribution.proven_lane_root, lane_root, 32);
+        memcpy(attribution.score_receipt_root, score_root, 32);
+        memcpy(attribution.package_root, package_root, 32);
+        memcpy(attribution.release_root, release_root, 32);
+        memcpy(attribution.license_evidence_root, license_root, 32);
+
+        struct creation_callback_fixture callbacks = {
+            .anchor_active = true, .duplicate = false,
+            .opening_height = attribution.challenge_opening_height,
+        };
+        memcpy(callbacks.opening_hash, attribution.challenge_opening_hash,
+               32);
+        struct vcs_zcode_creation_validation_context context = {
+            .workspace = workspace,
+            .expected_network_genesis_root = network,
+            .expected_zc23_policy_root = policy_authority,
+            .expected_epoch = attribution.epoch,
+            .expected_award_atoms = attribution.award_atoms,
+            .active_height = 9000,
+            .active_mtp = 700000,
+            .now_unix = 700000,
+            .anchor_is_active = creation_test_anchor,
+            .contribution_is_duplicate = creation_test_duplicate,
+            .callback_opaque = &callbacks,
+        };
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &attribution, &context), VCS_ZCODE_CREATION_OK);
+
+        context.active_height = attribution.challenge_maturity_height - 1;
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &attribution, &context), VCS_ZCODE_CREATION_IMMATURE);
+        context.active_height = 9000;
+        callbacks.anchor_active = false;
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &attribution, &context), VCS_ZCODE_CREATION_REORG);
+        callbacks.anchor_active = true; callbacks.duplicate = true;
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &attribution, &context), VCS_ZCODE_CREATION_DUPLICATE);
+        callbacks.duplicate = false;
+
+        struct vcs_zcode_creation_attribution_v1 substituted = attribution;
+        score_fill(substituted.license_evidence_root, 0xb2);
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &substituted, &context), VCS_ZCODE_CREATION_LICENSE);
+        substituted = attribution;
+        memcpy(substituted.proven_lane_root, task_root, 32);
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &substituted, &context), VCS_ZCODE_CREATION_LANE);
+        substituted = attribution;
+        memcpy(substituted.release_root, task_root, 32);
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &substituted, &context), VCS_ZCODE_CREATION_RELEASE);
+        substituted = attribution;
+        memcpy(substituted.contributor_binding_root, task_root, 32);
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &substituted, &context),
+                  VCS_ZCODE_CREATION_CONTRIBUTOR);
+
+        free(release_wire); free(manifest_wire);
+        vcs_package_manifest_free(&manifest);
+        test_rm_rf(workspace);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_score_receipt(void)
 {
     int failures = test_score_happy_path() + test_score_package_verticals() +
-                   test_score_rejections();
+                   test_score_rejections() +
+                   test_creation_attribution_cross_validation();
     printf("=== zcode_score_receipt: %d failures ===\n", failures);
     return failures;
 }
