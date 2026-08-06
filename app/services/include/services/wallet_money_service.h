@@ -46,8 +46,11 @@ struct wallet_money_snapshot {
 };
 
 /* Pure fail-closed classification shared by snapshot construction and tests.
- * CURRENT requires a published H*, at least one live peer, a known peer tip,
- * no provable-tip lag, and the sync FSM's own AT_TIP verdict. */
+ * `network_tip` is the maximum of active-chain, best-header, and observed-peer
+ * height. CURRENT requires a published H*, at least one live peer, no lag to
+ * that target, and a live block-catch-up state. It deliberately does not
+ * require SYNC_AT_TIP: that global verdict also proves complete historical
+ * block-body custody, which a valid bundle-seeded wallet may not possess. */
 enum wallet_money_freshness wallet_money_freshness_classify(
     bool hstar_published, int32_t hstar, int32_t network_tip,
     size_t peer_count, enum sync_state state);

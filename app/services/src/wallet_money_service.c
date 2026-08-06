@@ -57,7 +57,11 @@ enum wallet_money_freshness wallet_money_freshness_classify(
 {
     if (!hstar_published || hstar < 0 || network_tip < 0 || peer_count == 0)
         return WALLET_MONEY_FRESHNESS_UNKNOWN;
-    if (hstar < network_tip || state != SYNC_AT_TIP)
+    const bool live_catchup_state =
+        state == SYNC_BLOCKS_DOWNLOAD ||
+        state == SYNC_CONNECTING_BLOCKS ||
+        state == SYNC_AT_TIP;
+    if (hstar < network_tip || !live_catchup_state)
         return WALLET_MONEY_FRESHNESS_STALE;
     return WALLET_MONEY_FRESHNESS_CURRENT;
 }
@@ -110,8 +114,13 @@ struct zcl_result wallet_money_snapshot_build(
     bool hstar_published = reducer_frontier_provable_tip_is_published();
     int32_t hstar = reducer_frontier_provable_tip_cached();
     bool tip_found = false;
+    int32_t active_height = -1;
+    int32_t header_height = -1;
     zcl_mutex_lock(&main_state->cs_main);
     struct block_index *tip = active_chain_at(&main_state->chain_active, hstar);
+    active_height = active_chain_height(&main_state->chain_active);
+    header_height = main_state->pindex_best_header
+        ? main_state->pindex_best_header->nHeight : active_height;
     if (tip && tip->nHeight == hstar) {
         memcpy(out->tip_hash, tip->hashBlock.data, 32);
         tip_found = true;
@@ -128,6 +137,10 @@ struct zcl_result wallet_money_snapshot_build(
     struct connman *cm = sync_monitor_connman();
     size_t peer_count = cm ? connman_get_node_count(cm) : 0;
     out->network_tip_height = sync_monitor_peer_height_cached();
+    if (active_height > out->network_tip_height)
+        out->network_tip_height = active_height;
+    if (header_height > out->network_tip_height)
+        out->network_tip_height = header_height;
     enum sync_state sync_state = sync_get_state();
     enum wallet_money_freshness freshness = wallet_money_freshness_classify(
         hstar_published, hstar, out->network_tip_height, peer_count,
