@@ -89,6 +89,41 @@ int test_transaction_intent(void)
         PASS();
     }
 
+    TEST("exact intent inputs are atomically exclusive until terminal") {
+        struct node_db exact_db; memset(&exact_db, 0, sizeof(exact_db));
+        ASSERT(node_db_open(&exact_db, ":memory:"));
+        struct wallet_identity_row identity;
+        const uint8_t genesis[32] = { 0x92 };
+        ASSERT(wallet_identity_ensure(&exact_db, genesis, "prod", &identity));
+
+        struct vault_intent_row first, second, parallel;
+        ti_bound_row(&first, 0x31, &identity, 1);
+        ti_bound_row(&second, 0x41, &identity, 1);
+        ti_bound_row(&parallel, 0x51, &identity, 1);
+        (void)snprintf(first.wallet_scope, sizeof(first.wallet_scope), "prod");
+        (void)snprintf(second.wallet_scope, sizeof(second.wallet_scope), "prod");
+        (void)snprintf(parallel.wallet_scope, sizeof(parallel.wallet_scope),
+                       "prod");
+        struct vault_intent_input claimed = { .vout = 7 };
+        memset(claimed.txid, 0xa1, sizeof(claimed.txid));
+        const uint8_t raw[] = { 1, 2, 3 };
+        ASSERT(vault_intent_reserve_with_raw_inputs(
+            &exact_db, &first, 100, raw, sizeof(raw), &claimed, 1));
+        ASSERT(!vault_intent_reserve_with_raw_inputs(
+            &exact_db, &second, 100, raw, sizeof(raw), &claimed, 1));
+
+        struct vault_intent_input other = claimed;
+        other.vout = 8;
+        ASSERT(vault_intent_reserve_with_raw_inputs(
+            &exact_db, &parallel, 100, raw, sizeof(raw), &other, 1));
+        ASSERT(vault_intent_set_state(&exact_db, first.plan_id,
+            VAULT_INTENT_FAILED, NULL, "TEST_RELEASE", 101));
+        ASSERT(vault_intent_reserve_with_raw_inputs(
+            &exact_db, &second, 100, raw, sizeof(raw), &claimed, 1));
+        node_db_close(&exact_db);
+        PASS();
+    }
+
     TEST("transaction intent is encrypted, claim-once, recoverable, idempotent") {
         ASSERT(node_db_open(&ndb, ":memory:"));
         wallet_lock_reset_for_test();

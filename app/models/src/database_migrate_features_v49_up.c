@@ -488,6 +488,31 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 60) {
+        /* v60: exact input reservations for durable transaction intents.
+         * Aggregate ZCL reservations protect the custody budget; this table
+         * independently prevents concurrent prepared plans from claiming the
+         * same token output, mint baton, or ordinary fee coin. Terminal-plan
+         * rows are lazily released inside the next atomic reservation. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS vault_intent_inputs ("
+            "plan_id BLOB NOT NULL CHECK(length(plan_id)=32),"
+            "txid BLOB NOT NULL CHECK(length(txid)=32),"
+            "vout INTEGER NOT NULL CHECK(vout>=0 AND vout<=4294967295),"
+            "PRIMARY KEY(plan_id,txid,vout),"
+            "UNIQUE(txid,vout),"
+            "FOREIGN KEY(plan_id) REFERENCES vault_intents(plan_id) "
+            "ON DELETE CASCADE) WITHOUT ROWID");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_vault_intent_inputs_plan "
+            "ON vault_intent_inputs(plan_id)");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('060')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 60);
+        current_ver = 60;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

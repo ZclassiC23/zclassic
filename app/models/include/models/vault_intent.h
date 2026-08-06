@@ -14,6 +14,15 @@
 
 struct node_db;
 
+/* Exact transparent inputs claimed by a prepared transaction.  The bytes use
+ * the same internal order as transaction input prevouts.  Reservations are
+ * wallet-independent chain outpoints, so the database can reject two active
+ * plans that would race the same token output, mint baton, or fee coin. */
+struct vault_intent_input {
+    uint8_t txid[32];
+    uint32_t vout;
+};
+
 #define VAULT_INTENT_PAYLOAD_MAX 16416
 #define VAULT_INTENT_ERROR_MAX 63
 #define VAULT_INTENT_RAW_MAX 200000
@@ -89,6 +98,13 @@ bool vault_intent_reserve_with_raw(struct node_db *ndb,
                                    int64_t confirmed_zat,
                                    const uint8_t *raw_tx,
                                    size_t raw_tx_len);
+/* Stronger prepared-transaction reservation: value/fee budget, raw bytes,
+ * and every exact input become durable under one BEGIN IMMEDIATE.  A conflict
+ * with any other active intent fails the whole reservation. */
+bool vault_intent_reserve_with_raw_inputs(
+    struct node_db *ndb, const struct vault_intent_row *row,
+    int64_t confirmed_zat, const uint8_t *raw_tx, size_t raw_tx_len,
+    const struct vault_intent_input *inputs, size_t input_count);
 bool vault_intent_find(struct node_db *ndb, const uint8_t plan_id[32],
                        struct vault_intent_row *out);
 /* Application workflows use this relationship to make plan creation

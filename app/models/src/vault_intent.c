@@ -12,6 +12,7 @@
 
 DEFINE_MODEL_CALLBACKS(vault_intent)
 DEFINE_MODEL_CALLBACKS(vault_intent_raw)
+DEFINE_MODEL_CALLBACKS(vault_intent_input)
 
 struct vault_intent_raw_row {
     const uint8_t *plan_id;
@@ -28,6 +29,47 @@ static bool vault_intent_raw_validate(const struct vault_intent_raw_row *r,
                      r->raw_tx_len <= VAULT_INTENT_RAW_MAX, "raw_tx",
                      "has invalid length");
     return !ar_errors_any(errors);
+}
+
+struct vault_intent_input_row {
+    const uint8_t *plan_id;
+    const struct vault_intent_input *input;
+};
+
+static bool vault_intent_input_validate(
+    const struct vault_intent_input_row *r, struct ar_errors *errors)
+{
+    ar_errors_clear(errors);
+    validates_custom(errors, r && r->plan_id, "plan_id", "is absent");
+    validates_custom(errors, r && r->input, "input", "is absent");
+    return !ar_errors_any(errors);
+}
+
+static bool vault_intent_inputs_release_terminal(struct node_db *ndb)
+{
+    struct vault_intent_input_row row = {0};
+    sqlite3_stmt *s = NULL;
+    AR_ADHOC_DESTROY(ndb, s,
+        "DELETE FROM vault_intent_inputs WHERE plan_id IN ("
+        "SELECT plan_id FROM vault_intents WHERE state IN (3,4,6,7,8))",
+        db_vault_intent_input_callbacks(), &row, );
+}
+
+static bool vault_intent_input_save(
+    struct node_db *ndb, const uint8_t plan_id[32],
+    const struct vault_intent_input *input)
+{
+    struct vault_intent_input_row row = {
+        .plan_id = plan_id, .input = input,
+    };
+    sqlite3_stmt *s = NULL;
+    AR_ADHOC_SAVE(ndb, s,
+        "INSERT INTO vault_intent_inputs(plan_id,txid,vout) VALUES(?,?,?)",
+        db_vault_intent_input_callbacks(), "vault_intent_input", &row,
+        vault_intent_input_validate,
+        AR_BIND_BLOB(s, 1, plan_id, 32);
+        AR_BIND_BLOB(s, 2, input->txid, 32);
+        AR_BIND_INT(s, 3, input->vout));
 }
 
 bool vault_intent_validate(const struct vault_intent_row *r,
@@ -167,12 +209,23 @@ bool vault_intent_reserve_with_raw(struct node_db *ndb,
                                    const uint8_t *raw_tx,
                                    size_t raw_tx_len)
 {
+    return vault_intent_reserve_with_raw_inputs(
+        ndb, r, confirmed_zat, raw_tx, raw_tx_len, NULL, 0);
+}
+
+bool vault_intent_reserve_with_raw_inputs(
+    struct node_db *ndb, const struct vault_intent_row *r,
+    int64_t confirmed_zat, const uint8_t *raw_tx, size_t raw_tx_len,
+    const struct vault_intent_input *inputs, size_t input_count)
+{
     if (!ndb || !ndb->open || !r || confirmed_zat < 0 ||
         r->reserved_zat <= 0 || (raw_tx && (raw_tx_len == 0 ||
-        raw_tx_len > VAULT_INTENT_RAW_MAX)) || (!raw_tx && raw_tx_len != 0))
+        raw_tx_len > VAULT_INTENT_RAW_MAX)) || (!raw_tx && raw_tx_len != 0) ||
+        (input_count > 0 && !inputs) || input_count > 4096)
         LOG_FAIL("vault_intent", "reserve: invalid argument");
     if (!node_db_begin_immediate(ndb))
         return false; /* raw-return-ok:busy is a fail-closed reservation */
+    bool inputs_ready = vault_intent_inputs_release_terminal(ndb);
     int64_t reserved = vault_intent_reserved_total(
         ndb, r->wallet_scope, r->wallet_instance_id);
     int64_t lifetime = agent_session_scope_lifetime_spent(
@@ -187,9 +240,11 @@ bool vault_intent_reserve_with_raw(struct node_db *ndb,
     } else if (allowed) {
         allowed = reserved + r->reserved_zat <= confirmed_zat;
     }
-    bool saved = allowed && vault_intent_save(ndb, r) &&
+    bool saved = inputs_ready && allowed && vault_intent_save(ndb, r) &&
         (!raw_tx || vault_intent_store_raw(ndb, r->plan_id,
                                            raw_tx, raw_tx_len));
+    for (size_t i = 0; saved && i < input_count; i++)
+        saved = vault_intent_input_save(ndb, r->plan_id, &inputs[i]);
     if (!saved || !node_db_commit(ndb)) {
         (void)node_db_rollback(ndb);
         return false; /* raw-return-ok:nothing was reserved */
