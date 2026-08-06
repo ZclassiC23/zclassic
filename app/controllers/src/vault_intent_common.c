@@ -4,12 +4,30 @@
 #include "controllers/vault_intent_controller.h"
 
 #include "base/serialize_le.h"
+#include "chain/chain.h"
+#include "controllers/wallet_helpers.h"
 #include "core/amount.h"
 #include "crypto/sha3.h"
+#include "encoding/utilstrencodings.h"
+#include "json/json.h"
 #include "models/vault_intent.h"
+#include "validation/main_state.h"
 
 #include <limits.h>
+#include <stdio.h>
 #include <string.h>
+
+static void vic_hex(const uint8_t in[32], char out[65])
+{
+    HexStr(in, 32, false, out, 65);
+}
+
+static void vic_amount_text(int64_t amount, char out[32])
+{
+    (void)snprintf(out, 32, "%lld.%08lld",
+                   (long long)(amount / COIN),
+                   (long long)(amount % COIN));
+}
 
 /* Amounts are text only. This is deliberately not the permissive legacy RPC
  * amount parser: floats can never cross this boundary. */
@@ -80,4 +98,55 @@ void vault_intent_digest_payload(const uint8_t *raw, size_t len,
     zcl_write_i64_le(money[1], row->max_fee_zat);
     sha3_256_write(&c, (const uint8_t *)money, sizeof(money));
     sha3_256_finalize(&c, out);
+}
+
+void vault_intent_render_row(struct wallet_rpc_context *ctx,
+                             struct json_value *out,
+                             const struct vault_intent_row *row)
+{
+    char id[65]; vic_hex(row->plan_id, id);
+    (void)json_push_kv_str(out, "plan_id", id);
+    (void)json_push_kv_str(out, "state",
+                           vault_intent_state_name(row->state));
+    (void)json_push_kv_int(out, "created_at", row->created_at);
+    (void)json_push_kv_int(out, "expires_at", row->expires_at);
+    if (row->wallet_scope[0]) {
+        char root[65], recipient[32], fee[32], reserved[32];
+        vic_hex(row->snapshot_root, root);
+        vic_amount_text(row->recipient_value_zat, recipient);
+        vic_amount_text(row->max_fee_zat, fee);
+        vic_amount_text(row->reserved_zat, reserved);
+        (void)json_push_kv_str(out, "wallet_scope", row->wallet_scope);
+        (void)json_push_kv_str(out, "wallet_instance_id",
+                               row->wallet_instance_id);
+        (void)json_push_kv_str(out, "network_genesis", row->wallet_genesis);
+        (void)json_push_kv_str(out, "money_snapshot_root", root);
+        (void)json_push_kv_str(out, "recipient_value", recipient);
+        (void)json_push_kv_str(out, "maximum_fee", fee);
+        (void)json_push_kv_str(out, "reserved", reserved);
+    }
+    if (row->has_txid) {
+        char txid[65]; vic_hex(row->txid, txid);
+        (void)json_push_kv_str(out, "txid", txid);
+    } else {
+        struct json_value none; json_init(&none); json_set_null(&none);
+        (void)json_push_kv(out, "txid", &none); json_free(&none);
+    }
+    int64_t confirmations = 0;
+    if (ctx && ctx->main_state && row->confirm_height >= 0 &&
+        row->state != VAULT_INTENT_REORGED) {
+        int tip = active_chain_height(&ctx->main_state->chain_active);
+        if (tip >= row->confirm_height)
+            confirmations = (int64_t)tip - row->confirm_height + 1;
+    }
+    (void)json_push_kv_int(out, "confirmations", confirmations);
+    if (row->confirm_height >= 0) {
+        (void)json_push_kv_int(out, "confirmed_height", row->confirm_height);
+        if (row->has_confirm_hash) {
+            char block_hash[65]; vic_hex(row->confirm_hash, block_hash);
+            (void)json_push_kv_str(out, "confirmed_block_hash", block_hash);
+        }
+    }
+    if (row->error_code[0])
+        (void)json_push_kv_str(out, "error_code", row->error_code);
 }

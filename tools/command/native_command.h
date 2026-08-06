@@ -319,6 +319,8 @@ void zcl_native_handle_vault_intent_issue(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_vault_intent_plan(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_vault_intent_fanout_plan(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_vault_intent_commit(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_vault_intent_status(

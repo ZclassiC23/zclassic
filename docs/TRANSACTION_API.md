@@ -308,13 +308,26 @@ unknown/stale/conflicted status with `amounts_known:false`; it never invents a
 zero balance or plan.
 
 When fan-out is useful, the response gives only output count, value per output,
-total value, maximum fee, and the existing `vault.intent.issue` ->
-`vault.intent.plan` -> `vault.intent.commit` route. It does not return an
+total value, maximum fee, and the private-address
+`vault.intent.fanout-plan` -> `vault.intent.commit` route. It does not return an
 address or outpoint, create the outputs, or rebalance automatically. The owner
-must explicitly issue fresh self-custody destinations, review the exact plan,
-and authorize its commit. Each later transaction still takes a fresh money
-snapshot and reserves recipient value plus maximum fee atomically; the advisory
-plan is never spend authority.
+can prepare the private destinations and exact reservation in one call:
+
+```bash
+zclassic23 vault intent fanout-plan --input='{
+  "wallet_scope":"dev",
+  "recipient_value_zat":1000,
+  "maximum_fee_zat":10000,
+  "concurrency":10,
+  "idempotency_key":"parallel-lab-001"
+}'
+```
+
+The generated wallet-owned addresses stay inside the encrypted plan. The owner
+reviews its aggregate values and plan digest, then separately authorizes
+`vault.intent.commit`; preparation never signs or broadcasts. Each later
+transaction still takes a fresh money snapshot and reserves recipient value
+plus maximum fee atomically; the advisory plan is never spend authority.
 
 Ordinary fee-coin selection minimizes input count deterministically. That makes
 ZSLP operations cheaper to prepare without treating token or mint-baton outputs

@@ -45,7 +45,7 @@
 #define VI_ADDR_MAX 127
 #define VI_TTL 600
 #define VI_PROVING_LEASE 300
-#define VI_APP_KIND "vault_transparent"
+#define VI_APP_KIND VAULT_INTENT_TRANSPARENT_APPLICATION
 
 struct vi_effect { char to[VI_ADDR_MAX + 1]; int64_t amount; };
 struct vi_input { uint8_t txid[32]; uint32_t vout; };
@@ -271,61 +271,6 @@ static bool vi_effects(const struct json_value *input, struct vi_payload *p,
     return true;
 }
 
-void vault_intent_render_row(struct wallet_rpc_context *ctx,
-                             struct json_value *out,
-                             const struct vault_intent_row *row)
-{
-    char id[65]; vi_hex(row->plan_id, id);
-    json_push_kv_str(out, "plan_id", id);
-    json_push_kv_str(out, "state", vault_intent_state_name(row->state));
-    json_push_kv_int(out, "created_at", row->created_at);
-    json_push_kv_int(out, "expires_at", row->expires_at);
-    if (row->wallet_scope[0]) {
-        char root[65], recipient[32], fee[32], reserved[32];
-        vi_hex(row->snapshot_root, root);
-        vi_amount_text(row->recipient_value_zat, recipient);
-        vi_amount_text(row->max_fee_zat, fee);
-        vi_amount_text(row->reserved_zat, reserved);
-        json_push_kv_str(out, "wallet_scope", row->wallet_scope);
-        json_push_kv_str(out, "wallet_instance_id",
-                         row->wallet_instance_id);
-        json_push_kv_str(out, "network_genesis", row->wallet_genesis);
-        json_push_kv_str(out, "money_snapshot_root", root);
-        json_push_kv_str(out, "recipient_value", recipient);
-        json_push_kv_str(out, "maximum_fee", fee);
-        json_push_kv_str(out, "reserved", reserved);
-    }
-    if (row->has_txid) {
-        struct uint256 txid_value;
-        char txid[65];
-        memcpy(txid_value.data, row->txid, sizeof(txid_value.data));
-        uint256_get_hex(&txid_value, txid);
-        json_push_kv_str(out, "txid", txid);
-    } else {
-        struct json_value none; json_init(&none); json_set_null(&none);
-        json_push_kv(out, "txid", &none); json_free(&none);
-    }
-    int64_t confirmations = 0;
-    if (ctx && ctx->main_state && row->confirm_height >= 0 &&
-        row->state != VAULT_INTENT_REORGED) {
-        int tip = active_chain_height(&ctx->main_state->chain_active);
-        if (tip >= row->confirm_height)
-            confirmations = (int64_t)tip - row->confirm_height + 1;
-    }
-    json_push_kv_int(out, "confirmations", confirmations);
-    if (row->confirm_height >= 0) {
-        json_push_kv_int(out, "confirmed_height", row->confirm_height);
-        if (row->has_confirm_hash) {
-            struct uint256 confirmed;
-            char block_hash[65];
-            memcpy(confirmed.data, row->confirm_hash, sizeof(confirmed.data));
-            uint256_get_hex(&confirmed, block_hash);
-            json_push_kv_str(out, "confirmed_block_hash", block_hash);
-        }
-    }
-    if (row->error_code[0]) json_push_kv_str(out, "error_code", row->error_code);
-}
-
 static void vi_refresh_state(struct wallet_rpc_context *ctx,
                              struct vault_intent_row *row, int64_t now)
 {
@@ -523,6 +468,53 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
     }
     json_push_kv(result, "effects", &effects); json_free(&effects);
     return true;
+}
+
+bool vault_intent_plan_transparent_input(const struct json_value *input,
+                                         struct json_value *result)
+{
+    if (!input || input->type != JSON_OBJ || !result)
+        LOG_FAIL("vault_intent", "transparent input wrapper: invalid argument");
+    struct json_value params, copy;
+    json_init(&params); json_set_array(&params);
+    json_init(&copy); json_copy(&copy, input);
+    bool appended = json_push_back(&params, &copy);
+    json_free(&copy);
+    if (!appended) {
+        json_free(&params);
+        vi_error(result, "OUT_OF_MEMORY", "could not stage fanout plan input");
+        return true;
+    }
+    bool handled = rpc_vi_plan(&params, false, result);
+    json_free(&params);
+    return handled;
+}
+
+bool vault_intent_transparent_shape_matches(
+    const struct vault_intent_row *row, size_t output_count,
+    int64_t output_value_zat)
+{
+    struct wallet_rpc_context *ctx = wallet_rpc_context_current();
+    if (!row || !ctx || !ctx->node_db || output_count == 0 ||
+        output_count > VI_EFFECTS_MAX || output_value_zat <= 0 ||
+        row->route != VAULT_INTENT_ROUTE_TRANSPARENT ||
+        strcmp(row->application_kind, VI_APP_KIND) != 0)
+        return false; // raw-return-ok:predicate
+    uint8_t plain[WALLET_METADATA_PLAINTEXT_MAX]; size_t plain_len = 0;
+    if (!wallet_metadata_decrypt(ctx->node_db, row->plan_id, 32,
+            row->encrypted_payload, row->encrypted_payload_len,
+            plain, sizeof(plain), &plain_len))
+        return false; // raw-return-ok:predicate
+    struct vi_payload payload;
+    uint8_t digest[32];
+    vault_intent_digest_payload(plain, plain_len, row, digest);
+    bool matches = memcmp(digest, row->digest, 32) == 0 &&
+        vi_decode(plain, plain_len, &payload) &&
+        payload.effects_len == output_count;
+    for (size_t i = 0; matches && i < payload.effects_len; i++)
+        matches = payload.effects[i].amount == output_value_zat;
+    memory_cleanse(plain, sizeof(plain));
+    return matches;
 }
 
 static bool vi_anchor_ok(struct wallet_rpc_context *ctx,
@@ -772,6 +764,8 @@ void register_vault_intent_rpc_commands(struct rpc_table *t)
 {
     const struct rpc_command cmds[] = {
         { "wallet", "vault_intent_plan", rpc_vi_plan, false },
+        { "wallet", "vault_intent_fanout_plan",
+          vault_intent_fanout_plan_rpc, false },
         { "wallet", "vault_intent_commit", rpc_vi_commit, false },
         { "wallet", "vault_intent_status", rpc_vi_status, false },
         { "wallet", "vault_intent_list", rpc_vi_list, false },

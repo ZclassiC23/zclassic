@@ -220,7 +220,7 @@ int api_transaction_type_focused_tests(void)
         size_t alias_count = 0;
         const struct zcl_transaction_command_alias *aliases =
             zcl_transaction_command_alias_catalog(&alias_count);
-        bool ok = registry && aliases && alias_count == 6;
+        bool ok = registry && aliases && alias_count == 7;
         for (size_t i = 0; ok && i < alias_count; i++) {
             ok = zcl_transaction_type_find(aliases[i].type_id) != NULL &&
                  zcl_command_registry_find(registry,
@@ -450,7 +450,7 @@ int api_transaction_type_focused_tests(void)
                                           "reverse_lookup_command")),
                     "app.transaction-types.command") == 0 &&
              json_get_int(json_get(&root,
-                 "alternate_command_route_count")) == 6 &&
+                 "alternate_command_route_count")) == 7 &&
              json_get_int(json_get(&root,
                  "explicit_non_chain_command_count")) == 18 &&
              strcmp(json_get_str(json_get(&root,
