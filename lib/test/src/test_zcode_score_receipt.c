@@ -6,6 +6,7 @@
 #include "base/hex.h"
 #include "command/native_command.h"
 #include "crypto/ed25519.h"
+#include "crypto/sha3.h"
 #include "json/json.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_score_receipt.h"
@@ -17,6 +18,22 @@ struct score_work_fixture {
     struct vcs_zcode_work_receipt_v1 receipt;
     uint8_t root[32];
 };
+
+struct score_package_fixture {
+    const char *name;
+    const char *content;
+    const char *release;
+    const char *recipe;
+    const char *lock;
+    const char *capsule;
+};
+
+#define ZCODE_PACKAGE(name, dir, sequence, content, release, recipe, lock, capsule, dependency, signature) \
+    {name, content, release, recipe, lock, capsule},
+static const struct score_package_fixture score_packages[] = {
+#include "../../../config/zcode_package_registry.def"
+};
+#undef ZCODE_PACKAGE
 
 static void score_fill(uint8_t out[32], uint8_t value)
 {
@@ -48,13 +65,15 @@ static void score_policy(struct vcs_zcode_proof_policy_v1 *policy)
     policy->maximum_proof_age_seconds = 3600;
 }
 
-static bool score_fixture(
+static bool score_fixture_for_roots(
     struct vcs_zcode_task_v1 *task,
     struct vcs_zcode_candidate_v1 *candidate,
     struct vcs_zcode_proof_policy_v1 *policy,
     struct vcs_zcode_lane_receipt_v1 *lane,
     struct score_work_fixture works[VCS_ZCODE_SCORE_UNITS],
-    uint8_t lane_secret[32], uint8_t lane_pubkey[32])
+    uint8_t lane_secret[32], uint8_t lane_pubkey[32],
+    const uint8_t source_root[32], const uint8_t lock_root[32],
+    const uint8_t capsule_root[32])
 {
     score_policy(policy);
     uint8_t policy_root[32], task_root[32], candidate_root[32];
@@ -62,16 +81,9 @@ static bool score_fixture(
         return false;
     memset(task, 0, sizeof(*task));
     task->schema_version = VCS_ZCODE_DEV_VERSION;
-    if (!zcl_hex_decode_lower(
-            "6e03d74b8edab650e790424f4dc8274e8ca262cccfc4f94d5b068ad66f60f48e",
-            task->source_root, 32) ||
-        !zcl_hex_decode_lower(
-            "149b3e4e10eaad9fb93626419bae842b1dfceddf64f8a8b1f065c69bb30dc21a",
-            task->dependency_lock_root, 32) ||
-        !zcl_hex_decode_lower(
-            "c0c3ec6514fd2a7ea242e087aff75b33fdc208a219c61855788509efef37b15d",
-            task->toolchain_capsule_root, 32))
-        return false;
+    memcpy(task->source_root, source_root, 32);
+    memcpy(task->dependency_lock_root, lock_root, 32);
+    memcpy(task->toolchain_capsule_root, capsule_root, 32);
     score_fill(task->write_scope_root, 4);
     score_fill(task->acceptance_tests_root, 5);
     memcpy(task->proof_policy_root, policy_root, 32);
@@ -114,7 +126,15 @@ static bool score_fixture(
         memcpy(work->toolchain_capsule_root,
                task->toolchain_capsule_root, 32);
         score_fill(work->lease_id, (uint8_t)(40 + i));
-        score_fill(work->evidence_root, (uint8_t)(50 + i));
+        struct sha3_256_ctx evidence_sha;
+        static const char evidence_domain[] =
+            "zcl.zcode.selfhost_vertical_evidence.v1";
+        sha3_256_init(&evidence_sha);
+        sha3_256_write(&evidence_sha, (const uint8_t *)evidence_domain,
+                       sizeof(evidence_domain));
+        sha3_256_write(&evidence_sha, source_root, 32);
+        sha3_256_write(&evidence_sha, work->action_root, 32);
+        sha3_256_finalize(&evidence_sha, work->evidence_root);
         score_fill(work->confinement_root, (uint8_t)(60 + i));
         static const uint8_t kinds[VCS_ZCODE_SCORE_UNITS] = {
             VCS_ZCODE_WORK_REVIEW, VCS_ZCODE_WORK_TEST,
@@ -156,6 +176,29 @@ static bool score_fixture(
     ed25519_keypair(lane_pubkey, lane_secret, lane_seed);
     return vcs_zcode_lane_receipt_seal(lane, lane_secret, lane_pubkey) ==
            VCS_ZCODE_DEV_OK;
+}
+
+static bool score_fixture(
+    struct vcs_zcode_task_v1 *task,
+    struct vcs_zcode_candidate_v1 *candidate,
+    struct vcs_zcode_proof_policy_v1 *policy,
+    struct vcs_zcode_lane_receipt_v1 *lane,
+    struct score_work_fixture works[VCS_ZCODE_SCORE_UNITS],
+    uint8_t lane_secret[32], uint8_t lane_pubkey[32])
+{
+    uint8_t source[32], lock[32], capsule[32];
+    return zcl_hex_decode_lower(
+               "6e03d74b8edab650e790424f4dc8274e8ca262cccfc4f94d5b068ad66f60f48e",
+               source, sizeof(source)) &&
+        zcl_hex_decode_lower(
+               "149b3e4e10eaad9fb93626419bae842b1dfceddf64f8a8b1f065c69bb30dc21a",
+               lock, sizeof(lock)) &&
+        zcl_hex_decode_lower(
+               "c0c3ec6514fd2a7ea242e087aff75b33fdc208a219c61855788509efef37b15d",
+               capsule, sizeof(capsule)) &&
+        score_fixture_for_roots(task, candidate, policy, lane, works,
+                                lane_secret, lane_pubkey, source, lock,
+                                capsule);
 }
 
 static int test_score_happy_path(void)
@@ -358,6 +401,171 @@ static int test_score_happy_path(void)
     return failures;
 }
 
+static bool score_store_vertical(
+    const char *workspace, const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_candidate_v1 *candidate,
+    const struct vcs_zcode_proof_policy_v1 *policy,
+    const struct vcs_zcode_lane_receipt_v1 *lane,
+    const struct score_work_fixture works[VCS_ZCODE_SCORE_UNITS],
+    const struct vcs_zcode_score_receipt_v1 *score,
+    uint8_t task_root[32], uint8_t candidate_root[32],
+    uint8_t proof_set_root[32], uint8_t lane_root[32],
+    uint8_t score_root[32])
+{
+    uint8_t task_wire[VCS_ZCODE_TASK_WIRE_BYTES];
+    uint8_t candidate_wire[VCS_ZCODE_CANDIDATE_WIRE_BYTES];
+    uint8_t policy_wire[VCS_ZCODE_PROOF_POLICY_WIRE_BYTES];
+    uint8_t lane_wire[VCS_ZCODE_LANE_WIRE_BYTES];
+    uint8_t proof_wire[VCS_ZCODE_PROOF_SET_WIRE_MAX];
+    uint8_t score_wire[VCS_ZCODE_SCORE_WIRE_BYTES];
+    uint8_t policy_root[32], proof_roots[VCS_ZCODE_SCORE_UNITS][32];
+    size_t proof_len = 0;
+    for (size_t i = 0; i < VCS_ZCODE_SCORE_UNITS; i++)
+        memcpy(proof_roots[i], works[i].root, 32);
+    if (vcs_zcode_task_serialize(task, task_wire) != VCS_ZCODE_DEV_OK ||
+        vcs_zcode_candidate_serialize(candidate, candidate_wire) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_proof_policy_serialize(policy, policy_wire) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_lane_receipt_serialize(lane, lane_wire) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_proof_set_serialize(
+            proof_roots, VCS_ZCODE_SCORE_UNITS, proof_wire,
+            sizeof(proof_wire), &proof_len) != VCS_ZCODE_DEV_OK ||
+        vcs_zcode_score_receipt_serialize(score, score_wire) !=
+            VCS_ZCODE_SCORE_OK ||
+        vcs_zcode_task_root(task, task_root) != VCS_ZCODE_DEV_OK ||
+        vcs_zcode_candidate_root(candidate, candidate_root) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_proof_policy_root(policy, policy_root) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_proof_set_root(proof_roots, VCS_ZCODE_SCORE_UNITS,
+                                 proof_set_root) != VCS_ZCODE_DEV_OK ||
+        vcs_zcode_lane_receipt_id(lane, lane_root) != VCS_ZCODE_DEV_OK ||
+        vcs_zcode_score_receipt_id(score, score_root) !=
+            VCS_ZCODE_SCORE_OK)
+        return false;
+    if (!vcs_object_store_init(workspace) ||
+        !vcs_object_put_addressed(workspace, task_root, task_wire,
+                                  sizeof(task_wire)) ||
+        !vcs_object_put_addressed(workspace, candidate_root, candidate_wire,
+                                  sizeof(candidate_wire)) ||
+        !vcs_object_put_addressed(workspace, policy_root, policy_wire,
+                                  sizeof(policy_wire)) ||
+        !vcs_object_put_addressed(workspace, proof_set_root, proof_wire,
+                                  proof_len) ||
+        !vcs_object_put_addressed(workspace, lane_root, lane_wire,
+                                  sizeof(lane_wire)) ||
+        !vcs_object_put_addressed(workspace, score_root, score_wire,
+                                  sizeof(score_wire)))
+        return false;
+    for (size_t i = 0; i < VCS_ZCODE_SCORE_UNITS; i++) {
+        uint8_t work_wire[VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES];
+        if (vcs_zcode_work_receipt_serialize(&works[i].receipt, work_wire) !=
+                VCS_ZCODE_DEV_OK ||
+            !vcs_object_put_addressed(workspace, works[i].root, work_wire,
+                                      sizeof(work_wire)))
+            return false;
+    }
+    return true;
+}
+
+static int test_score_package_verticals(void)
+{
+    int failures = 0;
+    TEST("zcode score: SHA3, base, then codec complete hermetic PROVEN verticals") {
+        static const size_t evidence_order[] = {1, 0, 2};
+        static const char *const scratch_labels[] = {"sha3", "base", "codec"};
+        ASSERT_EQ(sizeof(score_packages) / sizeof(score_packages[0]), 3);
+        for (size_t order = 0;
+             order < sizeof(evidence_order) / sizeof(evidence_order[0]);
+             order++) {
+            const struct score_package_fixture *package =
+                &score_packages[evidence_order[order]];
+            uint8_t content[32], release[32], recipe[32], lock[32], capsule[32];
+            ASSERT(zcl_hex_decode_lower(package->content, content, 32));
+            ASSERT(zcl_hex_decode_lower(package->release, release, 32));
+            ASSERT(zcl_hex_decode_lower(package->recipe, recipe, 32));
+            ASSERT(zcl_hex_decode_lower(package->lock, lock, 32));
+            ASSERT(zcl_hex_decode_lower(package->capsule, capsule, 32));
+            struct vcs_zcode_task_v1 task;
+            struct vcs_zcode_candidate_v1 candidate;
+            struct vcs_zcode_proof_policy_v1 policy;
+            struct vcs_zcode_lane_receipt_v1 lane;
+            struct score_work_fixture works[VCS_ZCODE_SCORE_UNITS];
+            uint8_t secret[32], pubkey[32];
+            ASSERT(score_fixture_for_roots(
+                &task, &candidate, &policy, &lane, works, secret, pubkey,
+                content, lock, capsule));
+            uint8_t proof_roots[VCS_ZCODE_SCORE_UNITS][32];
+            struct vcs_zcode_work_receipt_v1
+                receipts[VCS_ZCODE_SCORE_UNITS];
+            for (size_t i = 0; i < VCS_ZCODE_SCORE_UNITS; i++) {
+                memcpy(proof_roots[i], works[i].root, 32);
+                receipts[i] = works[i].receipt;
+            }
+            struct vcs_zcode_score_plan_input input = {
+                .task = &task, .candidate = &candidate,
+                .proof_policy = &policy, .proven_lane = &lane,
+                .proof_receipt_roots = proof_roots,
+                .work_receipts = receipts,
+                .work_receipt_count = VCS_ZCODE_SCORE_UNITS,
+                .package_root = content, .release_root = release,
+                .recipe_root = recipe, .dependency_lock_root = lock,
+                .api_capsule_root = capsule,
+            };
+            struct vcs_zcode_score_receipt_v1 score;
+            ASSERT_EQ(vcs_zcode_score_plan(&input, &score),
+                      VCS_ZCODE_SCORE_OK);
+            ASSERT_EQ(score.awarded_mask, 0x1b);
+            ASSERT_EQ(score.score, 4);
+            ASSERT_EQ(vcs_zcode_score_receipt_seal(&score, secret, pubkey),
+                      VCS_ZCODE_SCORE_OK);
+            ASSERT_EQ(vcs_zcode_score_receipt_verify(&score),
+                      VCS_ZCODE_SCORE_OK);
+            char workspace[256];
+            test_make_tmpdir(workspace, sizeof(workspace),
+                             "zcode_selfhost_vertical",
+                             scratch_labels[order]);
+            uint8_t task_root[32], candidate_root[32], proof_set_root[32];
+            uint8_t policy_root[32], lane_root[32], score_root[32];
+            ASSERT(score_store_vertical(
+                workspace, &task, &candidate, &policy, &lane, works,
+                &score, task_root, candidate_root, proof_set_root,
+                lane_root, score_root));
+            ASSERT_EQ(vcs_zcode_proof_policy_root(&policy, policy_root),
+                      VCS_ZCODE_DEV_OK);
+            char task_hex[65], candidate_hex[65], policy_hex[65];
+            char proof_hex[65];
+            char lane_hex[65], score_hex[65];
+            zcl_hex_encode(task_root, 32, task_hex);
+            zcl_hex_encode(candidate_root, 32, candidate_hex);
+            zcl_hex_encode(policy_root, 32, policy_hex);
+            zcl_hex_encode(proof_set_root, 32, proof_hex);
+            zcl_hex_encode(lane_root, 32, lane_hex);
+            zcl_hex_encode(score_root, 32, score_hex);
+            printf("zcode selfhost vertical: %s task=%s candidate=%s policy=%s proof_set=%s proven_lane=%s score_receipt=%s\n",
+                   package->name, task_hex, candidate_hex, policy_hex,
+                   proof_hex, lane_hex, score_hex);
+            for (size_t i = 0; i < VCS_ZCODE_SCORE_UNITS; i++) {
+                char evidence_hex[65], work_hex[65];
+                zcl_hex_encode(score.evidence_roots[i], 32, evidence_hex);
+                zcl_hex_encode(works[i].root, 32, work_hex);
+                printf("zcode selfhost evidence: %s %s=%s work_receipt=%s awarded=%s\n",
+                       package->name,
+                       vcs_zcode_score_unit_name(
+                           (enum vcs_zcode_score_unit)i),
+                       evidence_hex, work_hex,
+                       (score.awarded_mask & (UINT8_C(1) << i))
+                           ? "true" : "false");
+            }
+            test_rm_rf(workspace);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_score_rejections(void)
 {
     int failures = 0;
@@ -370,15 +578,32 @@ static int test_score_rejections(void)
         uint8_t secret[32], pubkey[32];
         ASSERT(score_fixture(&task, &candidate, &policy, &lane, works,
                              secret, pubkey));
-        memcpy(works[1].receipt.action_root, works[0].receipt.action_root, 32);
+        uint8_t accepted_action[32], born_red_action[32];
+        vcs_zcode_score_action_root(VCS_ZCODE_SCORE_ACCEPTED_EXTRACTION,
+                                    accepted_action);
+        vcs_zcode_score_action_root(VCS_ZCODE_SCORE_BORN_RED_DEFECT_TEST,
+                                    born_red_action);
+        size_t accepted = VCS_ZCODE_SCORE_UNITS;
+        size_t born_red = VCS_ZCODE_SCORE_UNITS;
+        for (size_t i = 0; i < VCS_ZCODE_SCORE_UNITS; i++) {
+            if (memcmp(works[i].receipt.action_root, accepted_action, 32) == 0)
+                accepted = i;
+            if (memcmp(works[i].receipt.action_root, born_red_action, 32) == 0)
+                born_red = i;
+        }
+        ASSERT(accepted < VCS_ZCODE_SCORE_UNITS);
+        ASSERT(born_red < VCS_ZCODE_SCORE_UNITS);
+        memcpy(works[born_red].receipt.action_root, accepted_action, 32);
+        works[born_red].receipt.work_kind = VCS_ZCODE_WORK_REVIEW;
         uint8_t seed[32], worker_secret[32], worker_pubkey[32];
         score_fill(seed, 110);
         ed25519_keypair(worker_pubkey, worker_secret, seed);
         ASSERT_EQ(vcs_zcode_work_receipt_seal(
-                      &works[1].receipt, worker_secret, worker_pubkey),
+                      &works[born_red].receipt, worker_secret, worker_pubkey),
                   VCS_ZCODE_DEV_OK);
         ASSERT_EQ(vcs_zcode_work_receipt_id(
-                      &works[1].receipt, works[1].root), VCS_ZCODE_DEV_OK);
+                      &works[born_red].receipt, works[born_red].root),
+                  VCS_ZCODE_DEV_OK);
         qsort(works, VCS_ZCODE_SCORE_UNITS, sizeof(works[0]),
               score_work_compare);
         uint8_t roots[VCS_ZCODE_SCORE_UNITS][32];
@@ -421,7 +646,8 @@ static int test_score_rejections(void)
 
 int test_zcode_score_receipt(void)
 {
-    int failures = test_score_happy_path() + test_score_rejections();
+    int failures = test_score_happy_path() + test_score_package_verticals() +
+                   test_score_rejections();
     printf("=== zcode_score_receipt: %d failures ===\n", failures);
     return failures;
 }

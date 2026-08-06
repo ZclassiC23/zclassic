@@ -35,7 +35,7 @@ static bool registry_publish_scratch(
     const struct vcs_package_prepared *prepared, const char *source_dir)
 {
     char scratch[256];
-    test_make_tmpdir(scratch, sizeof(scratch), "zcode_registry", "sha3");
+    test_make_tmpdir(scratch, sizeof(scratch), "zcode_registry", "package");
     struct vcs_package_store *store = vcs_package_store_open(
         scratch, UINT64_C(256) * 1024u * 1024u);
     if (!store) return false;
@@ -109,8 +109,7 @@ int test_zcode_package_registry(void)
                        sizeof(prepared.release.signature)));
             ASSERT_EQ(vcs_package_release_verify(&prepared.release),
                       VCS_PACKAGE_RELEASE_OK);
-            if (i == 1) ASSERT(registry_publish_scratch(
-                &prepared, expected->dir));
+            ASSERT(registry_publish_scratch(&prepared, expected->dir));
             if (i == 0) {
                 ASSERT_STR_EQ(expected->dependency_root, "");
                 ASSERT_EQ(prepared.lock.count, 1);

@@ -1896,9 +1896,11 @@ $(ZCODE_PACKAGE_CODEC_TEST_BIN): lib/codec/tests/test_codec.c \
 
 zcode-package-foundation-test: zcode-package-base-test zcode-package-sha3-test zcode-package-codec-test
 
-.PHONY: check-zcode-package-registry
+.PHONY: check-zcode-package-registry print-zcode-monolith-lib-sources
 check-zcode-package-registry: $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN)
-	@$(ZCODE_PACKAGE_REGISTRY_CHECK_BIN)
+	@tools/lint/check_zcode_package_registry.sh
+print-zcode-monolith-lib-sources:
+	@printf '%s\n' $(LIB_SRCS)
 $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN): tools/zcode_package_registry_check.c \
 		lib/vcs/src/package_prepare.c lib/vcs/src/package_manifest.c \
 		lib/vcs/src/package_recipe.c lib/vcs/src/package_deps.c \
