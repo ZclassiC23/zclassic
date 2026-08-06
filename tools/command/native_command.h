@@ -1582,6 +1582,9 @@ void zcl_native_handle_metaverse_agent_status(
 void zcl_native_handle_metaverse_agent_money(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_metaverse_agent_liquidity(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_metaverse_agent_audit(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

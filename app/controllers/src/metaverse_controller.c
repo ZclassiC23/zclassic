@@ -171,6 +171,43 @@ void zcl_native_handle_metaverse_agent_money(
     (void)mv_emit(reply, doc, n);
 }
 
+/* ── metaverse.agent.liquidity ─────────────────────────────────────────── */
+void zcl_native_handle_metaverse_agent_liquidity(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    const char *dir = mv_dir(request, reply);
+    if (!dir)
+        return;
+    const char *scope = json_get_str(json_get(request->input, "wallet_scope"));
+    int64_t recipient_value_zat = json_get_int(
+        json_get(request->input, "recipient_value_zat"));
+    int64_t maximum_fee_zat = json_get_int(
+        json_get(request->input, "maximum_fee_zat"));
+    int64_t concurrency = json_get_int(json_get(request->input,
+                                                "concurrency"));
+    if (!scope || (strcmp(scope, "dev") != 0 && strcmp(scope, "prod") != 0) ||
+        recipient_value_zat <= 0 || maximum_fee_zat < 0 ||
+        concurrency < 1 || concurrency > 50) {
+        mv_fail(reply, ZCL_COMMAND_EXIT_INVALID, "BAD_LIQUIDITY_REQUEST",
+                "wallet_scope dev|prod, positive recipient_value_zat, "
+                "non-negative maximum_fee_zat, and concurrency 1..50 are required",
+                "wallet_scope,recipient_value_zat,maximum_fee_zat,concurrency");
+        return;
+    }
+    char doc[MV_DOC_MAX];
+    size_t n = 0;
+    metaverse_agent_service_set_rpc(mv_money_rpc);
+    struct zcl_result r = metaverse_agent_service_liquidity(
+        dir, scope, recipient_value_zat, maximum_fee_zat, (int)concurrency,
+        doc, sizeof(doc), &n);
+    if (!r.ok) {
+        mv_fail_result(reply, &r);
+        return;
+    }
+    (void)mv_emit(reply, doc, n);
+}
+
 /* ── metaverse.agent.audit ──────────────────────────────────────────────── */
 void zcl_native_handle_metaverse_agent_audit(
     const struct zcl_command_request *request,

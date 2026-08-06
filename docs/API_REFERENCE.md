@@ -59,11 +59,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 524 |
+| Registry entries (branches + leaves) | 525 |
 | Top-level roots | 11 |
 | Branches | 119 |
-| Leaves (dispatchable command paths) | 405 |
-| … `ready` (live handler in this build) | 356 |
+| Leaves (dispatchable command paths) | 406 |
+| … `ready` (live handler in this build) | 357 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -87,7 +87,7 @@ Per source file:
 | `config/commands/vault.def` | 21 | 4 | 17 |
 | `config/commands/zcode.def` | 89 | 17 | 72 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
-| `config/commands/metaverse.def` | 29 | 7 | 22 |
+| `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
@@ -1091,6 +1091,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `metaverse agent status` | ready | read / read / operator · instant/tiny | **`dir`** | `zcl.metaverse_agent_status.v1` | `zclassic23 metaverse agent status --dir=/tmp/mv-broker` | What confinement the agent broker actually achieved |
 | `metaverse agent money` | ready | read / read / operator · fast/moderate | **`dir`** | `zcl.metaverse_agent_money.v1` | `zclassic23 metaverse agent money --dir=/tmp/mv-broker` | Identity-bound dev/prod custody, never an implied zero |
+| `metaverse agent liquidity` | ready | read / read / operator · fast/moderate | **`dir`**, **`wallet_scope`**, **`recipient_value_zat`**, **`maximum_fee_zat`**, **`concurrency`** | `zcl.metaverse_agent_liquidity.v1` | `zclassic23 metaverse agent liquidity --input='{"dir":"/private/broker","wallet_scope":"dev","recipient_value_zat":1000,"maximum_fee_zat":10000,"concurrency":10}'` | Plan parallel transaction liquidity without moving funds |
 | `metaverse agent audit` | ready | read / read / operator · fast/low | **`dir`**, `limit` | `zcl.metaverse_agent_audit.v1` | `zclassic23 metaverse agent audit --dir=/tmp/mv-broker` | Every action the confined agent took, and whether the log is intact |
 
 #### `metaverse.property` — What property exists, who controls it, and how we know

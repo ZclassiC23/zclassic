@@ -24,6 +24,7 @@
 #include "config/runtime.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "wallet/wallet.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -258,6 +259,147 @@ static bool ags_custody(const struct json_value *in, struct json_value *result)
     return true;
 }
 
+/* Read-only execution-readiness planner. It sees exactly the confirmed,
+ * reservation-filtered, non-ZSLP coin inventory used by wallet builders, but
+ * returns only aggregate counts and amounts. No address or outpoint crosses
+ * this internal RPC boundary. */
+static bool ags_liquidity(const struct json_value *in,
+                          struct json_value *result)
+{
+    const char *scope = ags_str(in, "wallet_scope");
+    int64_t recipient_value_zat = ags_int(in, "recipient_value_zat", -1);
+    int64_t maximum_fee_zat = ags_int(in, "maximum_fee_zat", -1);
+    int64_t concurrency = ags_int(in, "concurrency", -1);
+    if (!scope || recipient_value_zat <= 0 || maximum_fee_zat < 0 ||
+        concurrency < 1 || concurrency > 50)
+        return ags_refuse(result, "BAD_ARGS");
+
+    struct wallet_money_snapshot money;
+    struct zcl_result mr = wallet_money_snapshot_build(
+        app_runtime_node_db(), app_runtime_main_state(), scope, &money);
+    if (!mr.ok)
+        return ags_refuse(result, "CUSTODY_UNAVAILABLE");
+    struct json_value money_json;
+    json_init(&money_json);
+    if (!wallet_money_snapshot_to_json(&money, &money_json).ok) {
+        json_free(&money_json);
+        return ags_refuse(result, "CUSTODY_UNAVAILABLE");
+    }
+
+    json_set_object(result);
+    (void)json_push_kv_bool(result, "ok", true);
+    (void)json_push_kv_str(result, "schema", "zcl.wallet_liquidity.v1");
+    const char *identity = json_get_str(json_get(&money_json,
+                                                 "wallet_instance_id"));
+    const char *genesis = json_get_str(json_get(&money_json,
+                                                "network_genesis"));
+    const char *snapshot_root = json_get_str(json_get(&money_json,
+                                                      "snapshot_root"));
+    (void)json_push_kv_str(result, "wallet_scope", scope);
+    (void)json_push_kv_str(result, "wallet_instance_id",
+                           identity ? identity : "");
+    (void)json_push_kv_str(result, "network_genesis",
+                           genesis ? genesis : "");
+    (void)json_push_kv_str(result, "money_status", money.status);
+    (void)json_push_kv_str(result, "money_reason", money.reason);
+    (void)json_push_kv_str(result, "money_snapshot_root",
+                           snapshot_root ? snapshot_root : "");
+    (void)json_push_kv_int(result, "observed_at", money.observed_at);
+    if (!money.complete || strcmp(money.status, "CURRENT") != 0) {
+        (void)json_push_kv_str(result, "status", money.status);
+        (void)json_push_kv_bool(result, "ready_now", false);
+        (void)json_push_kv_bool(result, "fanout_recommended", false);
+        (void)json_push_kv_bool(result, "amounts_known", false);
+        json_free(&money_json);
+        return true;
+    }
+
+    struct wallet *wallet = app_runtime_wallet();
+    if (!wallet) {
+        json_free(&money_json);
+        return ags_refuse(result, "WALLET_UNAVAILABLE");
+    }
+    enum { LIQUIDITY_COIN_CAP = 4096 };
+    struct coin_entry *coins = zcl_calloc(
+        LIQUIDITY_COIN_CAP, sizeof(*coins), "agent_liquidity_coins");
+    if (!coins) {
+        json_free(&money_json);
+        return ags_refuse(result, "ALLOCATION_FAILED");
+    }
+    size_t coin_count = 0;
+    wallet_available_coins(wallet, coins, &coin_count, LIQUIDITY_COIN_CAP,
+                           true, false);
+    int64_t fanout_fee_zat = wallet_default_fee(wallet);
+    struct wallet_liquidity_plan plan;
+    bool planned = fanout_fee_zat >= 0 && wallet_liquidity_plan_compute(
+        coins, coin_count, money.agent_available_zat, recipient_value_zat,
+        maximum_fee_zat, fanout_fee_zat, (int)concurrency, &plan);
+    free(coins);
+    if (!planned) {
+        json_free(&money_json);
+        return ags_refuse(result, "LIQUIDITY_PLAN_FAILED");
+    }
+
+    (void)json_push_kv_bool(result, "amounts_known", true);
+    (void)json_push_kv_str(result, "status", plan.status);
+    (void)json_push_kv_str(result, "reason", plan.reason);
+    (void)json_push_kv_int(result, "requested_concurrency",
+                           plan.requested_concurrency);
+    (void)json_push_kv_int(result, "current_independent_slots",
+                           plan.current_independent_slots);
+    (void)json_push_kv_int(result, "current_inputs_used",
+                           plan.current_inputs_used);
+    (void)json_push_kv_int(result, "recipient_value_zat",
+                           plan.recipient_value_zat);
+    (void)json_push_kv_int(result, "maximum_fee_zat",
+                           plan.maximum_fee_zat);
+    (void)json_push_kv_int(result, "required_per_slot_zat",
+                           plan.required_per_slot_zat);
+    (void)json_push_kv_int(result, "future_total_required_zat",
+                           plan.future_total_required_zat);
+    (void)json_push_kv_int(result, "transparent_available_zat",
+                           plan.transparent_available_zat);
+    (void)json_push_kv_int(result, "agent_available_zat",
+                           plan.agent_available_zat);
+    (void)json_push_kv_bool(result, "ready_now", plan.ready_now);
+    (void)json_push_kv_bool(result, "fanout_recommended",
+                            plan.fanout_recommended);
+    (void)json_push_kv_bool(result, "fanout_possible",
+                            plan.fanout_possible);
+
+    struct json_value fanout;
+    json_init(&fanout);
+    json_set_object(&fanout);
+    (void)json_push_kv_bool(&fanout, "automatic", false);
+    (void)json_push_kv_int(&fanout, "output_count",
+                           plan.recommended_fanout_outputs);
+    (void)json_push_kv_int(&fanout, "output_value_zat",
+                           plan.fanout_output_value_zat);
+    (void)json_push_kv_int(&fanout, "outputs_total_zat",
+                           plan.fanout_outputs_total_zat);
+    (void)json_push_kv_int(&fanout, "maximum_fee_zat",
+                           plan.fanout_maximum_fee_zat);
+    (void)json_push_kv_int(&fanout, "maximum_slots_under_policy",
+                           plan.maximum_fanout_slots);
+    (void)json_push_kv_str(&fanout, "address_command",
+                           "vault.intent.issue");
+    (void)json_push_kv_str(&fanout, "plan_command", "vault.intent.plan");
+    (void)json_push_kv_str(&fanout, "commit_command",
+                           "vault.intent.commit");
+    (void)json_push_kv_str(&fanout, "route", "transparent");
+    (void)json_push_kv_bool(&fanout, "owner_commit_required", true);
+    (void)json_push_kv(result, "fanout", &fanout);
+    json_free(&fanout);
+    (void)json_push_kv_bool(result, "advisory", true);
+    (void)json_push_kv_str(result, "next_command",
+        plan.ready_now ? "app.transaction-types.guide" :
+        plan.fanout_recommended ? "vault.intent.issue" :
+        strcmp(plan.status, "NEEDS_TRANSPARENT_LIQUIDITY") == 0
+            ? "app.transaction-types.guide" : "metaverse.agent.money");
+    json_free(&money_json);
+    return true;
+}
+
 /* ── dispatch ──────────────────────────────────────────────────────────── */
 
 static bool rpc_agentsession(const struct json_value *params, bool help,
@@ -280,6 +422,9 @@ static bool rpc_agentsession(const struct json_value *params, bool help,
         "               debit whose spend never happened\n"
         "  custody   {wallet_scope} -> {ok, snapshot}; identity-bound money\n"
         "               state with no endpoint/path/address/key fields\n"
+        "  liquidity {wallet_scope, recipient_value_zat, maximum_fee_zat,\n"
+        "             concurrency} -> {ok, status, fanout}; aggregate-only\n"
+        "               parallel-spend readiness with no automatic transfer\n"
         "\nA refusal answers {ok:false, why:\"<TOKEN>\"} — a successful RPC\n"
         "carrying a policy decision. Only a transport/usage error fails.");
 
@@ -302,6 +447,8 @@ static bool rpc_agentsession(const struct json_value *params, bool help,
         return ags_release(in, result);
     if (strcmp(action, "custody") == 0)
         return ags_custody(in, result);
+    if (strcmp(action, "liquidity") == 0)
+        return ags_liquidity(in, result);
     return ags_fail(result, "agentsession: unknown action");
 }
 

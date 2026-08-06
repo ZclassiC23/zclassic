@@ -12,6 +12,7 @@
 #include "wallet/keystore.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -205,6 +206,143 @@ bool wallet_select_coins(const struct wallet *w,
     }
     free(candidates);
     return *value_out >= target_value;
+}
+
+bool wallet_liquidity_plan_compute(
+    const struct coin_entry *available, size_t num_available,
+    int64_t agent_available_zat, int64_t recipient_value_zat,
+    int64_t maximum_fee_zat, int64_t fanout_maximum_fee_zat,
+    int requested_concurrency, struct wallet_liquidity_plan *out)
+{
+    if (!out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    if ((!available && num_available != 0) || agent_available_zat < 0 ||
+        recipient_value_zat <= 0 || maximum_fee_zat < 0 ||
+        fanout_maximum_fee_zat < 0 || requested_concurrency < 1 ||
+        requested_concurrency > 50 ||
+        recipient_value_zat > INT64_MAX - maximum_fee_zat) {
+        (void)snprintf(out->status, sizeof(out->status), "INVALID_REQUEST");
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "positive value, non-negative fees, and concurrency 1..50 are required");
+        return false;
+    }
+
+    out->requested_concurrency = requested_concurrency;
+    out->recipient_value_zat = recipient_value_zat;
+    out->maximum_fee_zat = maximum_fee_zat;
+    out->fanout_maximum_fee_zat = fanout_maximum_fee_zat;
+    out->agent_available_zat = agent_available_zat;
+    out->required_per_slot_zat = recipient_value_zat + maximum_fee_zat;
+    if (out->required_per_slot_zat >
+        INT64_MAX / requested_concurrency) {
+        (void)snprintf(out->status, sizeof(out->status), "INVALID_REQUEST");
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "requested concurrency overflows the amount range");
+        return false;
+    }
+    out->future_total_required_zat =
+        out->required_per_slot_zat * requested_concurrency;
+    out->fanout_output_value_zat = out->required_per_slot_zat;
+    out->fanout_outputs_total_zat = out->future_total_required_zat;
+    if (agent_available_zat > fanout_maximum_fee_zat)
+        out->maximum_fanout_slots = (int)((agent_available_zat -
+            fanout_maximum_fee_zat) / out->required_per_slot_zat);
+    if (out->maximum_fanout_slots > 50)
+        out->maximum_fanout_slots = 50;
+
+    if (num_available > SIZE_MAX / sizeof(struct coin_entry))
+        return false;
+    struct coin_entry *working = zcl_malloc(
+        num_available * sizeof(*working), "wallet_liquidity_working");
+    struct coin_entry *picked = zcl_malloc(
+        num_available * sizeof(*picked), "wallet_liquidity_picked");
+    if ((!working || !picked) && num_available != 0) {
+        free(working);
+        free(picked);
+        return false;
+    }
+    if (num_available != 0)
+        memcpy(working, available, num_available * sizeof(*working));
+    for (size_t i = 0; i < num_available; i++) {
+        if (!working[i].spendable || !working[i].wtx ||
+            working[i].i >= working[i].wtx->tx.num_vout)
+            continue;
+        int64_t value = working[i].wtx->tx.vout[working[i].i].value;
+        if (value <= 0)
+            continue;
+        if (out->transparent_available_zat > INT64_MAX - value) {
+            free(working);
+            free(picked);
+            return false;
+        }
+        out->transparent_available_zat += value;
+    }
+    while (out->current_independent_slots < requested_concurrency) {
+        size_t picked_count = 0;
+        int64_t picked_value = 0;
+        if (!wallet_select_coins(NULL, working, num_available,
+                                 out->required_per_slot_zat, picked,
+                                 &picked_count, num_available,
+                                 &picked_value))
+            break;
+        out->current_independent_slots++;
+        out->current_inputs_used += (int)picked_count;
+        for (size_t i = 0; i < picked_count; i++) {
+            for (size_t j = 0; j < num_available; j++) {
+                if (working[j].spendable &&
+                    working[j].wtx == picked[i].wtx &&
+                    working[j].i == picked[i].i) {
+                    working[j].spendable = false;
+                    break;
+                }
+            }
+        }
+    }
+    free(working);
+    free(picked);
+
+    const bool policy_covers_future =
+        out->future_total_required_zat <= agent_available_zat;
+    const bool transparent_covers_fanout =
+        out->fanout_outputs_total_zat <= out->transparent_available_zat &&
+        fanout_maximum_fee_zat <= out->transparent_available_zat -
+            out->fanout_outputs_total_zat;
+    const bool policy_covers_fanout = policy_covers_future &&
+        fanout_maximum_fee_zat <= agent_available_zat -
+            out->future_total_required_zat;
+    out->ready_now = policy_covers_future &&
+        out->current_independent_slots >= requested_concurrency;
+    out->fanout_possible = policy_covers_fanout && transparent_covers_fanout;
+    out->fanout_recommended = !out->ready_now && out->fanout_possible;
+    out->recommended_fanout_outputs = out->fanout_recommended
+        ? requested_concurrency : 0;
+
+    if (out->ready_now) {
+        (void)snprintf(out->status, sizeof(out->status), "READY_NOW");
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "enough independent reserved-eligible UTXOs and policy allowance exist");
+    } else if (!policy_covers_future) {
+        (void)snprintf(out->status, sizeof(out->status),
+                       "INSUFFICIENT_POLICY_BUDGET");
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "identity-bound agent allowance cannot cover every recipient plus maximum fee");
+    } else if (!transparent_covers_fanout) {
+        (void)snprintf(out->status, sizeof(out->status),
+                       "NEEDS_TRANSPARENT_LIQUIDITY");
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "current transparent coins cannot fund the requested self-fanout plus its maximum fee");
+    } else if (!policy_covers_fanout) {
+        (void)snprintf(out->status, sizeof(out->status),
+                       "FANOUT_FEE_EXCEEDS_BUDGET");
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "future payments fit the allowance but the preparation fee does not");
+    } else {
+        (void)snprintf(out->status, sizeof(out->status), "NEEDS_FANOUT");
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "value is sufficient but too few independent UTXOs exist for the requested concurrency");
+    }
+    return true;
 }
 
 bool wallet_create_transaction_selected(struct wallet *w,

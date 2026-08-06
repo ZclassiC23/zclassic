@@ -478,6 +478,61 @@ static int test_candidate_allocation_failure(void)
     return failures;
 }
 
+static int test_liquidity_planner(void)
+{
+    int failures = 0;
+    TEST("coin-sel: liquidity planner separates ready, fanout, and funding states") {
+        struct wallet_liquidity_plan plan;
+        struct coin_entry *coins; struct wallet_tx **wtxs;
+
+        int64_t ready_vals[] = { 2000, 2000, 2000, 2000 };
+        size_t n = make_utxo_set(ready_vals, 4, &coins, &wtxs);
+        ASSERT(wallet_liquidity_plan_compute(
+            coins, n, 5000, 1000, 100, 100, 3, &plan));
+        ASSERT(strcmp(plan.status, "READY_NOW") == 0);
+        ASSERT(plan.ready_now);
+        ASSERT_EQ(plan.current_independent_slots, 3);
+        ASSERT_EQ(plan.current_inputs_used, 3);
+        ASSERT(!plan.fanout_recommended);
+        free_utxo_set(coins, wtxs, n);
+
+        int64_t one_coin[] = { 5000 };
+        n = make_utxo_set(one_coin, 1, &coins, &wtxs);
+        ASSERT(wallet_liquidity_plan_compute(
+            coins, n, 5000, 1000, 100, 100, 3, &plan));
+        ASSERT(strcmp(plan.status, "NEEDS_FANOUT") == 0);
+        ASSERT(!plan.ready_now);
+        ASSERT(plan.fanout_possible);
+        ASSERT(plan.fanout_recommended);
+        ASSERT_EQ(plan.current_independent_slots, 1);
+        ASSERT_EQ(plan.recommended_fanout_outputs, 3);
+        ASSERT_EQ(plan.fanout_output_value_zat, (int64_t)1100);
+        ASSERT_EQ(plan.fanout_outputs_total_zat, (int64_t)3300);
+
+        ASSERT(wallet_liquidity_plan_compute(
+            coins, n, 3000, 1000, 100, 100, 3, &plan));
+        ASSERT(strcmp(plan.status, "INSUFFICIENT_POLICY_BUDGET") == 0);
+        ASSERT(!plan.fanout_possible);
+
+        ASSERT(wallet_liquidity_plan_compute(
+            coins, n, 3300, 1000, 100, 100, 3, &plan));
+        ASSERT(strcmp(plan.status, "FANOUT_FEE_EXCEEDS_BUDGET") == 0);
+        ASSERT_EQ(plan.maximum_fanout_slots, 2);
+        free_utxo_set(coins, wtxs, n);
+
+        int64_t transparent_short[] = { 2000 };
+        n = make_utxo_set(transparent_short, 1, &coins, &wtxs);
+        ASSERT(wallet_liquidity_plan_compute(
+            coins, n, 5000, 1000, 100, 100, 3, &plan));
+        ASSERT(strcmp(plan.status, "NEEDS_TRANSPARENT_LIQUIDITY") == 0);
+        ASSERT(!plan.fanout_possible);
+        free_utxo_set(coins, wtxs, n);
+
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────── */
 
 int test_coin_selection(void);
@@ -503,8 +558,9 @@ int test_coin_selection(void)
     failures += test_change_overshoot();
     failures += test_order_independence();
     failures += test_candidate_allocation_failure();
+    failures += test_liquidity_planner();
 
     printf("%d passed, %d failed\n",
-           16 - failures, failures);
+           17 - failures, failures);
     return failures;
 }
