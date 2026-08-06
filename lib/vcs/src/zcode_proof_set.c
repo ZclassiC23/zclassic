@@ -3,7 +3,7 @@
 
 #include "vcs/zcode_dev.h"
 
-#include "base/serialize_le.h"
+#include "codec/cursor.h"
 #include "crypto/sha3.h"
 
 #include <string.h>
@@ -31,13 +31,17 @@ enum vcs_zcode_dev_error vcs_zcode_proof_set_serialize(
         if (i > 0 && memcmp(roots[i - 1], roots[i], 32) >= 0)
             return VCS_ZCODE_DEV_ERR_POLICY;
     }
-    memcpy(out, "ZCPSET\r\n", 8);
-    zcl_write_u16_le(out + 8, VCS_ZCODE_DEV_VERSION);
-    zcl_write_u16_le(out + 10, (uint16_t)count);
-    for (size_t i = 0; i < count; i++)
-        memcpy(out + VCS_ZCODE_PROOF_SET_HEADER_BYTES + i * 32u,
-               roots[i], 32);
-    *out_len = need;
+    struct zcl_codec_writer writer;
+    zcl_codec_writer_init(&writer, out, out_cap);
+    bool ok = zcl_codec_write_bytes(&writer, "ZCPSET\r\n", 8) &&
+        zcl_codec_write_u16le(&writer, VCS_ZCODE_DEV_VERSION) &&
+        zcl_codec_write_u16le(&writer, (uint16_t)count);
+    for (size_t i = 0; ok && i < count; i++)
+        ok = zcl_codec_write_bytes(&writer, roots[i], 32);
+    size_t written = 0;
+    if (!ok || !zcl_codec_writer_finish(&writer, &written) || written != need)
+        return VCS_ZCODE_DEV_ERR_WIRE_SIZE;
+    *out_len = written;
     return VCS_ZCODE_DEV_OK;
 }
 
@@ -50,16 +54,24 @@ enum vcs_zcode_dev_error vcs_zcode_proof_set_parse(
     if (wire_len < VCS_ZCODE_PROOF_SET_HEADER_BYTES ||
         memcmp(wire, "ZCPSET\r\n", 8) != 0)
         return VCS_ZCODE_DEV_ERR_WIRE_MAGIC;
-    if (zcl_read_u16_le(wire + 8) != VCS_ZCODE_DEV_VERSION)
+    struct zcl_codec_reader reader;
+    zcl_codec_reader_init(&reader, wire + 8, wire_len - 8);
+    uint16_t version, encoded_count;
+    if (!zcl_codec_read_u16le(&reader, &version) ||
+        !zcl_codec_read_u16le(&reader, &encoded_count))
+        return VCS_ZCODE_DEV_ERR_WIRE_SIZE;
+    if (version != VCS_ZCODE_DEV_VERSION)
         return VCS_ZCODE_DEV_ERR_VERSION;
-    size_t n = zcl_read_u16_le(wire + 10);
+    size_t n = encoded_count;
     if (n == 0 || n > VCS_ZCODE_PROOF_SET_MAX_RECEIPTS || n > roots_cap)
         return VCS_ZCODE_DEV_ERR_LIMIT;
     if (wire_len != VCS_ZCODE_PROOF_SET_HEADER_BYTES + n * 32u)
         return VCS_ZCODE_DEV_ERR_WIRE_SIZE;
     for (size_t i = 0; i < n; i++)
-        memcpy(roots[i],
-               wire + VCS_ZCODE_PROOF_SET_HEADER_BYTES + i * 32u, 32);
+        if (!zcl_codec_read_bytes(&reader, roots[i], 32))
+            return VCS_ZCODE_DEV_ERR_WIRE_SIZE;
+    if (!zcl_codec_reader_finish(&reader))
+        return VCS_ZCODE_DEV_ERR_WIRE_SIZE;
     size_t checked_len = 0;
     enum vcs_zcode_dev_error valid = vcs_zcode_proof_set_serialize(
         (const uint8_t (*)[32])roots, n,

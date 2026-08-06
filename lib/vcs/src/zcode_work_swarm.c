@@ -3,8 +3,7 @@
 
 #include "vcs/zcode_work_swarm.h"
 
-#include "vcs_priv.h"
-
+#include "codec/cursor.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 #include "util/log_macros.h"
@@ -117,14 +116,6 @@ size_t vcs_zcode_work_swarm_wire_size(
     return 0;
 }
 
-static void zcws_header(uint8_t *out, uint8_t type)
-{
-    memcpy(out, zcws_magic, sizeof(zcws_magic));
-    vcs_wr_u16le(out + 4, VCS_ZCODE_WORK_SWARM_VERSION);
-    out[6] = type;
-    out[7] = 0;
-}
-
 bool vcs_zcode_work_swarm_serialize(
     const struct vcs_zcode_work_swarm_message *m,
     uint8_t *out, size_t out_cap, size_t *out_len)
@@ -135,62 +126,72 @@ bool vcs_zcode_work_swarm_serialize(
     size_t need = vcs_zcode_work_swarm_wire_size(m);
     if (!need || !out || out_cap < need)
         LOG_FAIL("vcs.work_swarm", "invalid message or short output");
-    zcws_header(out, m->type);
-    size_t off = VCS_ZCODE_WORK_SWARM_HEADER_BYTES;
+    struct zcl_codec_writer writer;
+    zcl_codec_writer_init(&writer, out, out_cap);
+    bool ok = zcl_codec_write_bytes(&writer, zcws_magic,
+                                    sizeof(zcws_magic)) &&
+        zcl_codec_write_u16le(&writer, VCS_ZCODE_WORK_SWARM_VERSION) &&
+        zcl_codec_write_u8(&writer, m->type) &&
+        zcl_codec_write_u8(&writer, 0);
     if (m->type == VCS_ZCODE_WORK_SWARM_CAPABILITY) {
         const struct vcs_zcode_work_capability_v1 *c = &m->body.capability;
-        memcpy(out + off, c->signer_pubkey, 32); off += 32;
-        memcpy(out + off, c->toolchain_capsule_root, 32); off += 32;
-        vcs_wr_u32le(out + off, c->work_kinds); off += 4;
-        vcs_wr_u32le(out + off, c->target); off += 4;
-        vcs_wr_u32le(out + off, c->confinement); off += 4;
-        vcs_wr_u32le(out + off, c->max_cpu_seconds); off += 4;
-        vcs_wr_u64le(out + off, c->max_memory_bytes); off += 8;
-        vcs_wr_u64le(out + off, c->max_output_bytes); off += 8;
-        vcs_wr_u32le(out + off, c->max_lease_seconds); off += 4;
-        vcs_wr_u16le(out + off, c->slots); off += 2;
-        vcs_wr_u16le(out + off, c->queue_headroom); off += 2;
-        vcs_wr_u64le(out + off, (uint64_t)c->expires_unix); off += 8;
-        memcpy(out + off, c->signature, 64); off += 64;
+        ok = ok && zcl_codec_write_bytes(&writer, c->signer_pubkey, 32) &&
+            zcl_codec_write_bytes(&writer, c->toolchain_capsule_root, 32) &&
+            zcl_codec_write_u32le(&writer, c->work_kinds) &&
+            zcl_codec_write_u32le(&writer, c->target) &&
+            zcl_codec_write_u32le(&writer, c->confinement) &&
+            zcl_codec_write_u32le(&writer, c->max_cpu_seconds) &&
+            zcl_codec_write_u64le(&writer, c->max_memory_bytes) &&
+            zcl_codec_write_u64le(&writer, c->max_output_bytes) &&
+            zcl_codec_write_u32le(&writer, c->max_lease_seconds) &&
+            zcl_codec_write_u16le(&writer, c->slots) &&
+            zcl_codec_write_u16le(&writer, c->queue_headroom) &&
+            zcl_codec_write_i64le(&writer, c->expires_unix) &&
+            zcl_codec_write_bytes(&writer, c->signature, 64);
     } else if (m->type == VCS_ZCODE_WORK_SWARM_REQUEST) {
         const struct vcs_zcode_work_request_v1 *r = &m->body.request;
-        vcs_wr_u64le(out + off, r->request_id); off += 8;
-        memcpy(out + off, r->requester_pubkey, 32); off += 32;
-        memcpy(out + off, r->task_root, 32); off += 32;
-        memcpy(out + off, r->candidate_root, 32); off += 32;
-        memcpy(out + off, r->action_root, 32); off += 32;
-        memcpy(out + off, r->input_root, 32); off += 32;
-        memcpy(out + off, r->context_root, 32); off += 32;
-        memcpy(out + off, r->proof_policy_root, 32); off += 32;
-        memcpy(out + off, r->toolchain_capsule_root, 32); off += 32;
-        out[off++] = r->work_kind;
-        out[off++] = r->target;
-        memset(out + off, 0, 6); off += 6;
-        vcs_wr_u32le(out + off, r->max_cpu_seconds); off += 4;
-        vcs_wr_u64le(out + off, r->max_memory_bytes); off += 8;
-        vcs_wr_u64le(out + off, r->max_output_bytes); off += 8;
-        vcs_wr_u64le(out + off, (uint64_t)r->deadline_unix); off += 8;
-        memcpy(out + off, r->signature, 64); off += 64;
+        static const uint8_t reserved[6] = {0};
+        ok = ok && zcl_codec_write_u64le(&writer, r->request_id) &&
+            zcl_codec_write_bytes(&writer, r->requester_pubkey, 32) &&
+            zcl_codec_write_bytes(&writer, r->task_root, 32) &&
+            zcl_codec_write_bytes(&writer, r->candidate_root, 32) &&
+            zcl_codec_write_bytes(&writer, r->action_root, 32) &&
+            zcl_codec_write_bytes(&writer, r->input_root, 32) &&
+            zcl_codec_write_bytes(&writer, r->context_root, 32) &&
+            zcl_codec_write_bytes(&writer, r->proof_policy_root, 32) &&
+            zcl_codec_write_bytes(&writer, r->toolchain_capsule_root, 32) &&
+            zcl_codec_write_u8(&writer, r->work_kind) &&
+            zcl_codec_write_u8(&writer, r->target) &&
+            zcl_codec_write_bytes(&writer, reserved, sizeof(reserved)) &&
+            zcl_codec_write_u32le(&writer, r->max_cpu_seconds) &&
+            zcl_codec_write_u64le(&writer, r->max_memory_bytes) &&
+            zcl_codec_write_u64le(&writer, r->max_output_bytes) &&
+            zcl_codec_write_i64le(&writer, r->deadline_unix) &&
+            zcl_codec_write_bytes(&writer, r->signature, 64);
     } else if (m->type == VCS_ZCODE_WORK_SWARM_RESULT) {
         const struct vcs_zcode_work_result_v1 *r = &m->body.result;
-        vcs_wr_u64le(out + off, r->request_id); off += 8;
-        memcpy(out + off, r->task_root, 32); off += 32;
-        memcpy(out + off, r->candidate_root, 32); off += 32;
-        memcpy(out + off, r->action_root, 32); off += 32;
-        memcpy(out + off, r->output_root, 32); off += 32;
-        if (vcs_zcode_work_receipt_serialize(&r->receipt, out + off) !=
-            VCS_ZCODE_DEV_OK)
+        uint8_t receipt[VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES];
+        if (vcs_zcode_work_receipt_serialize(&r->receipt, receipt) !=
+                VCS_ZCODE_DEV_OK)
             LOG_FAIL("vcs.work_swarm", "receipt serialization failed");
-        off += VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES;
+        ok = ok && zcl_codec_write_u64le(&writer, r->request_id) &&
+            zcl_codec_write_bytes(&writer, r->task_root, 32) &&
+            zcl_codec_write_bytes(&writer, r->candidate_root, 32) &&
+            zcl_codec_write_bytes(&writer, r->action_root, 32) &&
+            zcl_codec_write_bytes(&writer, r->output_root, 32) &&
+            zcl_codec_write_bytes(&writer, receipt, sizeof(receipt));
     } else {
-        vcs_wr_u64le(out + off, m->body.cancel.request_id); off += 8;
-        memcpy(out + off, m->body.cancel.task_root, 32); off += 32;
-        memcpy(out + off, m->body.cancel.requester_pubkey, 32); off += 32;
-        memcpy(out + off, m->body.cancel.signature, 64); off += 64;
+        ok = ok && zcl_codec_write_u64le(
+                &writer, m->body.cancel.request_id) &&
+            zcl_codec_write_bytes(&writer, m->body.cancel.task_root, 32) &&
+            zcl_codec_write_bytes(&writer, m->body.cancel.requester_pubkey,
+                                  32) &&
+            zcl_codec_write_bytes(&writer, m->body.cancel.signature, 64);
     }
-    if (off != need)
+    size_t written = 0;
+    if (!ok || !zcl_codec_writer_finish(&writer, &written) || written != need)
         LOG_FAIL("vcs.work_swarm", "wire size invariant failed");
-    *out_len = off;
+    *out_len = written;
     return true;
 }
 
@@ -294,13 +295,20 @@ bool vcs_zcode_work_cancel_verify(const struct vcs_zcode_work_cancel_v1 *c)
 
 static bool zcws_header_valid(const uint8_t *wire, size_t len, uint8_t *type)
 {
-    if (!wire || len < VCS_ZCODE_WORK_SWARM_HEADER_BYTES ||
-        len > VCS_ZCODE_WORK_SWARM_MAX_WIRE_BYTES ||
-        memcmp(wire, zcws_magic, sizeof(zcws_magic)) != 0 ||
-        vcs_rd_u16le(wire + 4) != VCS_ZCODE_WORK_SWARM_VERSION || wire[7])
+    if (!wire || !type || len < VCS_ZCODE_WORK_SWARM_HEADER_BYTES ||
+        len > VCS_ZCODE_WORK_SWARM_MAX_WIRE_BYTES)
         return false;
-    *type = wire[6];
-    return true;
+    struct zcl_codec_reader reader;
+    uint8_t magic[sizeof(zcws_magic)], reserved;
+    uint16_t version;
+    zcl_codec_reader_init(&reader, wire, VCS_ZCODE_WORK_SWARM_HEADER_BYTES);
+    return zcl_codec_read_bytes(&reader, magic, sizeof(magic)) &&
+        zcl_codec_read_u16le(&reader, &version) &&
+        zcl_codec_read_u8(&reader, type) &&
+        zcl_codec_read_u8(&reader, &reserved) &&
+        zcl_codec_reader_finish(&reader) &&
+        memcmp(magic, zcws_magic, sizeof(magic)) == 0 &&
+        version == VCS_ZCODE_WORK_SWARM_VERSION && reserved == 0;
 }
 
 bool vcs_zcode_work_swarm_parse(
@@ -312,74 +320,80 @@ bool vcs_zcode_work_swarm_parse(
     if (!zcws_header_valid(wire, len, &type))
         LOG_FAIL("vcs.work_swarm", "invalid work swarm header");
     out->type = type;
-    size_t off = VCS_ZCODE_WORK_SWARM_HEADER_BYTES;
+    struct zcl_codec_reader reader;
+    zcl_codec_reader_init(&reader, wire + VCS_ZCODE_WORK_SWARM_HEADER_BYTES,
+                          len - VCS_ZCODE_WORK_SWARM_HEADER_BYTES);
+    bool ok = true;
     if (type == VCS_ZCODE_WORK_SWARM_CAPABILITY &&
         len == ZCWS_CAPABILITY_BYTES) {
         struct vcs_zcode_work_capability_v1 *c = &out->body.capability;
-        memcpy(c->signer_pubkey, wire + off, 32); off += 32;
-        memcpy(c->toolchain_capsule_root, wire + off, 32); off += 32;
-        c->work_kinds = vcs_rd_u32le(wire + off); off += 4;
-        c->target = vcs_rd_u32le(wire + off); off += 4;
-        c->confinement = vcs_rd_u32le(wire + off); off += 4;
-        c->max_cpu_seconds = vcs_rd_u32le(wire + off); off += 4;
-        c->max_memory_bytes = vcs_rd_u64le(wire + off); off += 8;
-        c->max_output_bytes = vcs_rd_u64le(wire + off); off += 8;
-        c->max_lease_seconds = vcs_rd_u32le(wire + off); off += 4;
-        c->slots = vcs_rd_u16le(wire + off); off += 2;
-        c->queue_headroom = vcs_rd_u16le(wire + off); off += 2;
-        c->expires_unix = (int64_t)vcs_rd_u64le(wire + off); off += 8;
-        memcpy(c->signature, wire + off, 64); off += 64;
-        if (!zcws_capability_valid(c) ||
+        ok = zcl_codec_read_bytes(&reader, c->signer_pubkey, 32) &&
+            zcl_codec_read_bytes(&reader, c->toolchain_capsule_root, 32) &&
+            zcl_codec_read_u32le(&reader, &c->work_kinds) &&
+            zcl_codec_read_u32le(&reader, &c->target) &&
+            zcl_codec_read_u32le(&reader, &c->confinement) &&
+            zcl_codec_read_u32le(&reader, &c->max_cpu_seconds) &&
+            zcl_codec_read_u64le(&reader, &c->max_memory_bytes) &&
+            zcl_codec_read_u64le(&reader, &c->max_output_bytes) &&
+            zcl_codec_read_u32le(&reader, &c->max_lease_seconds) &&
+            zcl_codec_read_u16le(&reader, &c->slots) &&
+            zcl_codec_read_u16le(&reader, &c->queue_headroom) &&
+            zcl_codec_read_i64le(&reader, &c->expires_unix) &&
+            zcl_codec_read_bytes(&reader, c->signature, 64);
+        if (!ok || !zcws_capability_valid(c) ||
             !vcs_zcode_work_capability_verify(c)) goto reject;
     } else if (type == VCS_ZCODE_WORK_SWARM_REQUEST &&
                len == ZCWS_REQUEST_BYTES) {
         struct vcs_zcode_work_request_v1 *r = &out->body.request;
-        r->request_id = vcs_rd_u64le(wire + off); off += 8;
-        memcpy(r->requester_pubkey, wire + off, 32); off += 32;
-        memcpy(r->task_root, wire + off, 32); off += 32;
-        memcpy(r->candidate_root, wire + off, 32); off += 32;
-        memcpy(r->action_root, wire + off, 32); off += 32;
-        memcpy(r->input_root, wire + off, 32); off += 32;
-        memcpy(r->context_root, wire + off, 32); off += 32;
-        memcpy(r->proof_policy_root, wire + off, 32); off += 32;
-        memcpy(r->toolchain_capsule_root, wire + off, 32); off += 32;
-        r->work_kind = wire[off++];
-        r->target = wire[off++];
-        for (size_t i = 0; i < 6; i++) if (wire[off + i]) goto reject;
-        off += 6;
-        r->max_cpu_seconds = vcs_rd_u32le(wire + off); off += 4;
-        r->max_memory_bytes = vcs_rd_u64le(wire + off); off += 8;
-        r->max_output_bytes = vcs_rd_u64le(wire + off); off += 8;
-        r->deadline_unix = (int64_t)vcs_rd_u64le(wire + off); off += 8;
-        memcpy(r->signature, wire + off, 64); off += 64;
-        if (!zcws_request_valid(r) || !vcs_zcode_work_request_verify(r))
+        uint8_t reserved[6];
+        ok = zcl_codec_read_u64le(&reader, &r->request_id) &&
+            zcl_codec_read_bytes(&reader, r->requester_pubkey, 32) &&
+            zcl_codec_read_bytes(&reader, r->task_root, 32) &&
+            zcl_codec_read_bytes(&reader, r->candidate_root, 32) &&
+            zcl_codec_read_bytes(&reader, r->action_root, 32) &&
+            zcl_codec_read_bytes(&reader, r->input_root, 32) &&
+            zcl_codec_read_bytes(&reader, r->context_root, 32) &&
+            zcl_codec_read_bytes(&reader, r->proof_policy_root, 32) &&
+            zcl_codec_read_bytes(&reader, r->toolchain_capsule_root, 32) &&
+            zcl_codec_read_u8(&reader, &r->work_kind) &&
+            zcl_codec_read_u8(&reader, &r->target) &&
+            zcl_codec_read_bytes(&reader, reserved, sizeof(reserved)) &&
+            zcl_codec_read_u32le(&reader, &r->max_cpu_seconds) &&
+            zcl_codec_read_u64le(&reader, &r->max_memory_bytes) &&
+            zcl_codec_read_u64le(&reader, &r->max_output_bytes) &&
+            zcl_codec_read_i64le(&reader, &r->deadline_unix) &&
+            zcl_codec_read_bytes(&reader, r->signature, 64);
+        if (!ok || !zcws_zero(reserved, sizeof(reserved)) ||
+            !zcws_request_valid(r) || !vcs_zcode_work_request_verify(r))
             goto reject;
     } else if (type == VCS_ZCODE_WORK_SWARM_RESULT &&
                len == ZCWS_RESULT_BYTES) {
         struct vcs_zcode_work_result_v1 *r = &out->body.result;
-        r->request_id = vcs_rd_u64le(wire + off); off += 8;
-        memcpy(r->task_root, wire + off, 32); off += 32;
-        memcpy(r->candidate_root, wire + off, 32); off += 32;
-        memcpy(r->action_root, wire + off, 32); off += 32;
-        memcpy(r->output_root, wire + off, 32); off += 32;
-        if (vcs_zcode_work_receipt_parse(
-                wire + off, VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES,
-                &r->receipt) != VCS_ZCODE_DEV_OK)
+        uint8_t receipt[VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES];
+        ok = zcl_codec_read_u64le(&reader, &r->request_id) &&
+            zcl_codec_read_bytes(&reader, r->task_root, 32) &&
+            zcl_codec_read_bytes(&reader, r->candidate_root, 32) &&
+            zcl_codec_read_bytes(&reader, r->action_root, 32) &&
+            zcl_codec_read_bytes(&reader, r->output_root, 32) &&
+            zcl_codec_read_bytes(&reader, receipt, sizeof(receipt));
+        if (!ok || vcs_zcode_work_receipt_parse(
+                receipt, sizeof(receipt), &r->receipt) != VCS_ZCODE_DEV_OK)
             goto reject;
-        off += VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES;
         if (!zcws_result_shape(r)) goto reject;
     } else if (type == VCS_ZCODE_WORK_SWARM_CANCEL &&
                len == ZCWS_CANCEL_BYTES) {
-        out->body.cancel.request_id = vcs_rd_u64le(wire + off); off += 8;
-        memcpy(out->body.cancel.task_root, wire + off, 32); off += 32;
-        memcpy(out->body.cancel.requester_pubkey, wire + off, 32); off += 32;
-        memcpy(out->body.cancel.signature, wire + off, 64); off += 64;
-        if (!zcws_cancel_valid(&out->body.cancel) ||
+        ok = zcl_codec_read_u64le(
+                &reader, &out->body.cancel.request_id) &&
+            zcl_codec_read_bytes(&reader, out->body.cancel.task_root, 32) &&
+            zcl_codec_read_bytes(&reader,
+                                 out->body.cancel.requester_pubkey, 32) &&
+            zcl_codec_read_bytes(&reader, out->body.cancel.signature, 64);
+        if (!ok || !zcws_cancel_valid(&out->body.cancel) ||
             !vcs_zcode_work_cancel_verify(&out->body.cancel)) goto reject;
     } else {
         goto reject;
     }
-    if (off != len) goto reject;
+    if (!zcl_codec_reader_finish(&reader)) goto reject;
     return true;
 reject:
     memset(out, 0, sizeof(*out));

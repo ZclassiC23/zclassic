@@ -1867,7 +1867,8 @@ $(BIN_DIR)/agent_sha3: $(AGENT_SHA3_SRCS)
 # their declared direct dependencies.  They never open a node datadir.
 ZCODE_PACKAGE_BASE_TEST_BIN := $(BIN_DIR)/zcode-package-base-test
 ZCODE_PACKAGE_SHA3_TEST_BIN := $(BIN_DIR)/zcode-package-sha3-test
-.PHONY: zcode-package-base-test zcode-package-sha3-test zcode-package-foundation-test tools/zcode_dev_signer
+ZCODE_PACKAGE_CODEC_TEST_BIN := $(BIN_DIR)/zcode-package-codec-test
+.PHONY: zcode-package-base-test zcode-package-sha3-test zcode-package-codec-test zcode-package-foundation-test tools/zcode_dev_signer
 zcode-package-base-test: $(ZCODE_PACKAGE_BASE_TEST_BIN)
 	@$(ZCODE_PACKAGE_BASE_TEST_BIN)
 $(ZCODE_PACKAGE_BASE_TEST_BIN): lib/base/tests/test_base.c \
@@ -1884,7 +1885,15 @@ $(ZCODE_PACKAGE_SHA3_TEST_BIN): lib/sha3/tests/test_sha3.c \
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -Ilib/sha3/include -Ilib/base/include -o $@ $^
 
-zcode-package-foundation-test: zcode-package-base-test zcode-package-sha3-test
+zcode-package-codec-test: $(ZCODE_PACKAGE_CODEC_TEST_BIN)
+	@$(ZCODE_PACKAGE_CODEC_TEST_BIN)
+$(ZCODE_PACKAGE_CODEC_TEST_BIN): lib/codec/tests/test_codec.c \
+		lib/codec/src/cursor.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -Ilib/codec/include -Ilib/base/include -o $@ $^
+
+zcode-package-foundation-test: zcode-package-base-test zcode-package-sha3-test zcode-package-codec-test
 
 tools/zcode_dev_signer: $(BIN_DIR)/zcode_dev_signer
 $(BIN_DIR)/zcode_dev_signer: tools/zcode_dev_signer.c lib/base/src/cleanse.c

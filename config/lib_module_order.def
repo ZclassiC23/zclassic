@@ -62,6 +62,8 @@ LIB_MODULE("base")
 /* Scalar FIPS-202 primitives depend only on base.  Crypto owns optional
  * batched acceleration and reaches down through sha3/sha3.h. */
 LIB_MODULE("sha3")
+/* Bounded wire cursors depend only on base fixed-width byte helpers. */
+LIB_MODULE("codec")
 LIB_MODULE("primitives")
 LIB_MODULE("support")
 LIB_MODULE("json")
