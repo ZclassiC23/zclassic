@@ -54,6 +54,7 @@
 
 #include "platform/time_compat.h"
 #include "services/bg_validation_service.h"
+#include "services/bg_validation_authority.h"
 #include "bg_validation_internal.h"
 #include "supervisors/domains.h"
 #include "validation/main_state.h"
@@ -109,6 +110,7 @@ struct bg_validation_service *g_bg_validation = NULL;
 /* ── How often to save progress and log ─────────────────────── */
 #define SAVE_INTERVAL  1000
 #define LOG_INTERVAL   10000
+#define BG_VALIDATION_COVERAGE_VERSION 1
 #define BG_VALIDATION_SUPERVISOR_DEADLINE_SEC 600
 /* Idle gap between sampled re-verifies (post-COMPLETE). Deliberately long so
  * the always-on re-verify stays a low-rate background witness and NEVER
@@ -208,15 +210,7 @@ static bool bg_validation_register_supervisor(
     return true;
 }
 
-/* Parallel script verification (struct script_check_item +
- * bg_validation_verify_scripts_parallel) lives in
- * bg_validation_scripts.c — see bg_validation_internal.h. */
-
-/* Single-block read-only full validation (read_block_undo +
- * bg_validation_validate_block_proofs) lives in bg_validation_verify_block.c —
- * see bg_validation_internal.h. Split out to keep both TUs under the E1
- * file-size ceiling. Shielded proof verification
- * (bg_validation_verify_shielded_proofs) lives in bg_validation_proofs.c. */
+/* Proof and script workers live in the sibling bg_validation_*.c units. */
 
 /* ── Load/save progress from SQLite ──────────────────────────── */
 
@@ -252,6 +246,22 @@ static void save_skips(const struct bg_validation_store_port *store,
 {
     if (store && store->save_skips)
         store->save_skips(store->self, skips);
+}
+
+static int64_t load_coverage_version(
+    const struct bg_validation_store_port *store)
+{
+    int64_t version = 0;
+    if (store && store->load_coverage_version)
+        store->load_coverage_version(store->self, &version);
+    return version;
+}
+
+static bool save_coverage_version(
+    const struct bg_validation_store_port *store, int64_t version)
+{
+    return store && store->save_coverage_version &&
+           store->save_coverage_version(store->self, version);
 }
 
 /* ── Sampled re-verify loop (after the genesis→tip walk completes) ──── */
@@ -327,6 +337,8 @@ static void *bg_validation_thread(void *arg)
     const struct chain_params *params = svc->params;
     const char *datadir = svc->datadir;
     int num_workers = svc->num_workers;
+    bool external_seeded = false;
+    bool coverage_complete;
 
     /* Genuinely-background bulk walker (full proof/script re-verification
      * of the locally-derived extent) — never the reducer/net/RPC/tip-follow
@@ -336,42 +348,26 @@ static void *bg_validation_thread(void *arg)
 
     bg_validation_supervisor_heartbeat(svc);
 
-    /* Load resume point */
+    int32_t seed_floor = 0;
+    bool seed_floor_found = false;
+    external_seeded = reducer_seed_floor_height_read(
+        progress_store_db(), &seed_floor, &seed_floor_found) &&
+        seed_floor_found && seed_floor > 0;
+
     int start_height = load_progress(&svc->progress_store);
     if (start_height < 0) {
-        start_height = 0;
-        /* Fresh walk on a seeded/finalized node: the extent at/below the
-         * external-seed floor (REDUCER_SEED_FLOOR_HEIGHT_KEY) was not
-         * connected by THIS node — it arrived via a genuine external-seed
-         * path (cold-import wedge heal / consensus-state bundle install),
-         * certified by the sealed compiled checkpoint plus the
-         * SHA3-verified snapshot seed, and its undo data is absent, so
-         * script verification there is impossible anyway (every block
-         * would land in script_verif_skipped_no_undo at full Equihash
-         * cost: ~47 blocks/s single-walk, i.e. ~19 h for the full extent —
-         * the from-genesis-scale degrade the anchor replay-canary's 90-min
-         * budget exists to fail loud on). Start above the floor. The floor
-         * is written ONCE at seed time and never advances — deliberately
-         * NOT the trusted base (REDUCER_TRUSTED_BASE_HEIGHT_KEY), which
-         * tip_finalize keeps raising toward tip as anchors finalize and
-         * had reached ~tip by bg start in the 306 s anchor-canary FAIL,
-         * zeroing the walk out. A from-genesis or reindexed datadir has
-         * NO floor declaration, so the full-history walk there is
-         * unchanged — that walk is the replay-canary --from=genesis exact
-         * tier. */
-        int32_t seed_floor = 0;
-        bool seed_floor_found = false;
-        if (reducer_seed_floor_height_read(progress_store_db(),
-                                           &seed_floor,
-                                           &seed_floor_found) &&
-            seed_floor_found && seed_floor > 0) {
-            start_height = seed_floor + 1;
+        coverage_complete = save_coverage_version(
+            &svc->progress_store, BG_VALIDATION_COVERAGE_VERSION);
+        start_height = external_seeded ? seed_floor + 1 : 0;
+        if (external_seeded) {
             printf("[bg-valid] seed floor at height %d — starting above "
                    "the checkpoint-certified seeded extent\n", seed_floor);
             event_emitf(EV_SYNC_STATE_CHANGE, 0,
                         "bg_validation seed_floor from=%d", seed_floor);
         }
     } else {
+        coverage_complete = load_coverage_version(&svc->progress_store) ==
+                            BG_VALIDATION_COVERAGE_VERSION;
         start_height++; /* Resume from next unverified block */
     }
 
@@ -408,29 +404,32 @@ static void *bg_validation_thread(void *arg)
 
         struct block_index *pindex = active_chain_at(&ms->chain_active, h);
         if (!pindex) {
-            /* Block not yet in chain (snapshot anchor gap) — skip */
-            continue;
+            coverage_complete = false;
+            LOG_WARN("bg_validation", "[bg-valid] coverage gap: no active block h=%d", h);
+            break;
         }
 
-        /* Skip genesis (hardcoded, nothing to validate) and blocks
-         * without valid disk positions */
-        if (h == 0) continue;
+        /* Genesis is hardcoded; every later body must be readable. */
+        if (h == 0) {
+            atomic_store(&svc->progress.verified_height, 0);
+            continue;
+        }
         struct disk_block_pos pos;
         disk_block_pos_init(&pos);
         if (!block_index_disk_pos_snapshot(pindex, &pos, NULL)) {
-            continue;
+            coverage_complete = false;
+            LOG_WARN("bg_validation", "[bg-valid] coverage gap: no disk position h=%d", h);
+            break;
         }
 
         struct block blk;
         block_init(&blk);
         if (!read_block_from_disk_index_pread(&blk, pindex, datadir)) {
-            /* Block file not on disk (e.g. post-snapshot, not yet
-             * downloaded). Skip — these will be validated when they
-             * arrive via delta sync with expensive_checks=true. */
-            continue;
+            coverage_complete = false;
+            LOG_WARN("bg_validation", "[bg-valid] coverage gap: unreadable body h=%d", h);
+            break;
         }
 
-        /* Full validation */
         int64_t block_sigs = 0, block_proofs = 0, block_skips = 0;
         if (!bg_validation_validate_block_proofs(&blk, pindex, datadir, params,
                                     num_workers, svc->max_script_batch,
@@ -454,8 +453,8 @@ static void *bg_validation_thread(void *arg)
 
         /* Save progress periodically */
         if (h % SAVE_INTERVAL == 0) {
-            save_progress(&svc->progress_store, h);
             save_skips(&svc->progress_store, total_skips);
+            save_progress(&svc->progress_store, h);
 
             /* Bound peak RSS. Every block here churns large transient
              * heap — a per-block undo buffer (up to MAX_UNDO_READ = 4 MB),
@@ -502,8 +501,22 @@ static void *bg_validation_thread(void *arg)
             sched_yield();
     }
 
+    if (!atomic_load(&svc->stop_requested) && !coverage_complete) {
+        int verified = atomic_load(&svc->progress.verified_height);
+        save_skips(&svc->progress_store, total_skips);
+        save_progress(&svc->progress_store, verified);
+        atomic_store(&svc->progress.state, BG_VALIDATION_PAUSED);
+        struct zcl_result authority =
+            bg_validation_authority_publish(svc, external_seeded, false);
+        if (!authority.ok)
+            printf("[bg-valid] PAUSED: %s\n", authority.message);
+        bg_validation_supervisor_done();
+        return NULL;
+    }
+
     if (!atomic_load(&svc->stop_requested)) {
         /* Validation complete — save final progress */
+        save_skips(&svc->progress_store, total_skips);
         save_progress(&svc->progress_store, chain_height);
         atomic_store(&svc->progress.verified_height, chain_height);
         atomic_store(&svc->progress.state, BG_VALIDATION_COMPLETE);
@@ -529,16 +542,20 @@ static void *bg_validation_thread(void *arg)
                     chain_height, (long long)total_sigs,
                     (long long)total_proofs, (long long)total_time);
 
-        /* The genesis→tip walk is done — disarm the mission deadline, then keep
-         * the thread alive as an always-on SAMPLED re-verify witness instead of
-         * exiting. State stays COMPLETE (the chain IS fully verified); a sampled
-         * re-verify FAIL flips it to FAILED and raises a blocker. */
+        struct zcl_result authority =
+            bg_validation_authority_publish(svc, external_seeded, true);
+        if (!authority.ok)
+            printf("[bg-valid] COMPLETE without full-history authority: %s\n",
+                   authority.message);
+
+        /* Keep the thread alive as the sampled re-verify witness. */
         bg_validation_supervisor_done();
         bg_validation_sampled_reverify_loop(svc, chain_height, datadir,
                                             params, num_workers);
     } else {
         /* Stopped early — save where we got to */
         int verified = atomic_load(&svc->progress.verified_height);
+        save_skips(&svc->progress_store, total_skips);
         save_progress(&svc->progress_store, verified);
         printf("[bg-valid] Stopped at height %d (will resume next start)\n",
                verified);
@@ -611,7 +628,9 @@ bool bg_validation_start(struct bg_validation_service *svc)
     /* Don't start if already fully validated */
     int saved = load_progress(&svc->progress_store);
     int chain_h = active_chain_height(&svc->ms->chain_active);
-    if (saved >= chain_h && chain_h > 0) {
+    if (saved >= chain_h && chain_h > 0 &&
+        load_coverage_version(&svc->progress_store) !=
+            BG_VALIDATION_COVERAGE_VERSION) {
         printf("[bg-valid] Already fully validated to height %d\n", saved);
         atomic_store(&svc->progress.state, BG_VALIDATION_COMPLETE);
         atomic_store(&svc->progress.verified_height, saved);

@@ -974,10 +974,15 @@ static int p11_7ib_run_phase(void)
         bool pprev_found = node_db_state_get_int(&ndb, "pprev_repaired_height", &pprev_h);
         bool shielded_found = node_db_state_get_int(&ndb, "shielded_backfill_height",
                                                      &shielded_h);
-        bool cursors_consistent = (count == 0)
-            ? (!pprev_found && !shielded_found)
-            : (pprev_found && shielded_found &&
-               pprev_h == IB9_N_BLOCKS - 1 && shielded_h == IB9_N_BLOCKS - 1);
+        bool cursors_absent = !pprev_found && !shielded_found;
+        bool cursors_at_tip = pprev_found && shielded_found &&
+            pprev_h == IB9_N_BLOCKS - 1 &&
+            shielded_h == IB9_N_BLOCKS - 1;
+        /* Full rows with absent cursors is the safe crash window after the
+         * row commit but before the atomic cursor stamp: boot recomputes them.
+         * Empty rows may never retain cursors, and a mixed pair is never safe. */
+        bool cursors_consistent = count == 0 ? cursors_absent :
+                                                (cursors_absent || cursors_at_tip);
         if (!cursors_consistent) {
             printf("FAIL (importblockindex cycle %d: fast-boot cursors "
                    "inconsistent with row count=%d — pprev_found=%d(%lld) "
