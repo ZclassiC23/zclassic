@@ -40,6 +40,8 @@
 #include "vcs/zcode_task_index.h"
 #include "vcs/vcs.h"
 
+#include <secp256k1.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +51,56 @@
 static void zd_root(uint8_t out[32], uint8_t value)
 {
     memset(out, value, 32);
+}
+
+static bool zd_secp_pubkey(secp256k1_context *ctx,
+                           const uint8_t secret[32], uint8_t out[33])
+{
+    secp256k1_pubkey key;
+    size_t len = 33;
+    return secp256k1_ec_pubkey_create(ctx, &key, secret) == 1 &&
+        secp256k1_ec_pubkey_serialize(
+            ctx, out, &len, &key, SECP256K1_EC_COMPRESSED) == 1 &&
+        len == 33;
+}
+
+static bool zd_secp_signature(secp256k1_context *ctx,
+                              const uint8_t secret[32],
+                              const uint8_t digest[32], uint8_t out[64])
+{
+    secp256k1_ecdsa_signature signature, normalized;
+    if (secp256k1_ecdsa_sign(
+            ctx, &signature, digest, secret, NULL, NULL) != 1)
+        return false;
+    (void)secp256k1_ecdsa_signature_normalize(
+        ctx, &normalized, &signature);
+    return secp256k1_ecdsa_signature_serialize_compact(
+               ctx, out, &normalized) == 1;
+}
+
+static bool zd_write_text(const char *path, const char *text)
+{
+    FILE *file = fopen(path, "wb");
+    if (!file) return false;
+    size_t len = strlen(text);
+    bool ok = fwrite(text, 1, len, file) == len;
+    return fclose(file) == 0 && ok;
+}
+
+static bool zd_no_accept_publish_stage(const char *datadir)
+{
+    DIR *dir = opendir(datadir);
+    if (!dir) return false;
+    bool clean = true;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strncmp(entry->d_name, ".accept-publish-", 16) == 0) {
+            clean = false;
+            break;
+        }
+    }
+    closedir(dir);
+    return clean;
 }
 
 static bool zd_copy_executable(const char *source, const char *destination)
@@ -1197,6 +1249,10 @@ static int test_zd_improve_command(void)
         ASSERT(fwrite(indexed_source, 1, sizeof(indexed_source) - 1u,
                       source_file) == sizeof(indexed_source) - 1u);
         ASSERT(fclose(source_file) == 0);
+        char license_path[4352];
+        (void)snprintf(license_path, sizeof(license_path), "%s/LICENSE",
+                       workspace);
+        ASSERT(zd_write_text(license_path, "MIT\n"));
         (void)snprintf(preprocessed, sizeof(preprocessed), "%s/unit.i",
                        workspace);
         FILE *f = fopen(preprocessed, "wb");
@@ -1229,6 +1285,9 @@ static int test_zd_improve_command(void)
         ASSERT(fwrite(candidate_source, 1, sizeof(candidate_source) - 1u,
                       source_file) == sizeof(candidate_source) - 1u);
         ASSERT(fclose(source_file) == 0);
+        (void)snprintf(license_path, sizeof(license_path), "%s/LICENSE",
+                       candidate_workspace);
+        ASSERT(zd_write_text(license_path, "MIT\n"));
         (void)snprintf(candidate_input_path, sizeof(candidate_input_path),
                        "%s/unit.i", candidate_workspace);
         f = fopen(candidate_input_path, "wb");
@@ -1274,11 +1333,12 @@ static int test_zd_improve_command(void)
         struct vcs_manifest captured_manifest;
         ASSERT(vcs_tree_load(workspace, captured_source_root,
                              &captured_manifest));
-        ASSERT_EQ(captured_manifest.count, 4);
-        ASSERT_STR_EQ(captured_manifest.entries[0].path, "src/widget.c");
-        ASSERT_STR_EQ(captured_manifest.entries[1].path, "test.false");
-        ASSERT_STR_EQ(captured_manifest.entries[2].path, "test.true");
-        ASSERT_STR_EQ(captured_manifest.entries[3].path, "unit.i");
+        ASSERT_EQ(captured_manifest.count, 5);
+        ASSERT_STR_EQ(captured_manifest.entries[0].path, "LICENSE");
+        ASSERT_STR_EQ(captured_manifest.entries[1].path, "src/widget.c");
+        ASSERT_STR_EQ(captured_manifest.entries[2].path, "test.false");
+        ASSERT_STR_EQ(captured_manifest.entries[3].path, "test.true");
+        ASSERT_STR_EQ(captured_manifest.entries[4].path, "unit.i");
         vcs_manifest_free(&captured_manifest);
         zcl_hex_encode(captured_source_root, 32, roots[0]);
         struct vcs_package_lock task_lock;
@@ -1878,7 +1938,7 @@ static int test_zd_improve_command(void)
         ASSERT(vcs_package_manifest_parse(
             transfer_manifest_wire, transfer_manifest_len,
             &transfer_manifest));
-        ASSERT_EQ(transfer_manifest.count, 7);
+        ASSERT_EQ(transfer_manifest.count, 8);
         vcs_package_manifest_free(&transfer_manifest);
         free(transfer_manifest_wire);
         struct vcs_zcode_work_context_v1 received_transfer;
@@ -2359,6 +2419,222 @@ static int test_zd_improve_command(void)
                       "CANDIDATE");
         ASSERT_STR_EQ(json_get_str(json_get(&lane_reply.data, "authority")),
                       "SIGNED_CAS_RECEIPT");
+
+        /* Accepted-lane publication is plan -> offline detached signature
+         * -> seal -> commit. The planning surface never receives a secret
+         * and does not create the package store. */
+        uint8_t publish_secret[32] = {0};
+        publish_secret[31] = 7;
+        secp256k1_context *publish_ctx = secp256k1_context_create(
+            SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+        ASSERT(publish_ctx != NULL);
+        uint8_t publish_pubkey[33];
+        ASSERT(zd_secp_pubkey(publish_ctx, publish_secret,
+                              publish_pubkey));
+        char publish_pubkey_hex[67];
+        zcl_hex_encode(publish_pubkey, sizeof(publish_pubkey),
+                       publish_pubkey_hex);
+        const char *accepted_receipt = json_get_str(json_get(
+            &accept_reply.data, "lane_receipt_root"));
+        ASSERT(accepted_receipt && strlen(accepted_receipt) == 64);
+        char accepted_receipt_saved[65];
+        (void)snprintf(accepted_receipt_saved,
+                       sizeof(accepted_receipt_saved), "%s",
+                       accepted_receipt);
+        char zcode_store_path[4352];
+        (void)snprintf(zcode_store_path, sizeof(zcode_store_path),
+                       "%s/zcode", workspace);
+        struct vcs_package_index *pre_publish_index =
+            vcs_package_index_build(zcode_store_path);
+        ASSERT(pre_publish_index != NULL);
+        ASSERT_EQ(vcs_package_index_count(pre_publish_index), 0);
+        vcs_package_index_free(pre_publish_index);
+
+        struct json_value publish_plan_input;
+        json_init(&publish_plan_input);
+        json_set_object(&publish_plan_input);
+        (void)json_push_kv_str(&publish_plan_input, "workspace", workspace);
+        (void)json_push_kv_str(&publish_plan_input, "datadir", workspace);
+        (void)json_push_kv_str(&publish_plan_input, "source_root",
+                               candidate_source_saved);
+        (void)json_push_kv_str(&publish_plan_input, "publisher_pubkey",
+                               publish_pubkey_hex);
+        (void)json_push_kv_str(&publish_plan_input, "name",
+                               "fixture/accepted");
+        (void)json_push_kv_str(&publish_plan_input, "semver", "1.0.0");
+        (void)json_push_kv_str(&publish_plan_input, "license", "MIT");
+        (void)json_push_kv_str(&publish_plan_input, "task_root", task_hex);
+        (void)json_push_kv_str(&publish_plan_input, "lane_receipt_root",
+                               roots[9]);
+        struct zcl_command_request publish_plan_request = {
+            .input = &publish_plan_input,
+        };
+        struct zcl_command_reply stale_publish_plan;
+        zcl_command_reply_init(&stale_publish_plan,
+                               "zcl.zcode_publish_plan.v1");
+        zcl_native_handle_zcode_publish_plan(&publish_plan_request,
+                                             &stale_publish_plan);
+        ASSERT_EQ(stale_publish_plan.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(stale_publish_plan.error.code,
+                      "CLAIMED_BINDING_MISMATCH");
+        zcl_command_reply_free(&stale_publish_plan);
+        json_set_str((struct json_value *)json_get(
+                         &publish_plan_input, "lane_receipt_root"),
+                     accepted_receipt_saved);
+
+        struct zcl_command_reply publish_plan_reply;
+        zcl_command_reply_init(&publish_plan_reply,
+                               "zcl.zcode_publish_plan.v1");
+        zcl_native_handle_zcode_publish_plan(&publish_plan_request,
+                                             &publish_plan_reply);
+        ASSERT_EQ(publish_plan_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&publish_plan_reply.data,
+                                      "read_only")));
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &publish_plan_reply.data, "signature_status")),
+                      "unsigned");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &publish_plan_reply.data, "lane")),
+                      "CANDIDATE");
+        pre_publish_index = vcs_package_index_build(zcode_store_path);
+        ASSERT(pre_publish_index != NULL);
+        ASSERT_EQ(vcs_package_index_count(pre_publish_index), 0);
+        vcs_package_index_free(pre_publish_index);
+        const char *release_body_hex = json_get_str(json_get(
+            &publish_plan_reply.data, "release_body_hex"));
+        const char *signing_digest_hex = json_get_str(json_get(
+            &publish_plan_reply.data, "release_signing_digest"));
+        const char *planned_package_hex = json_get_str(json_get(
+            &publish_plan_reply.data, "package_root"));
+        ASSERT(release_body_hex && signing_digest_hex &&
+               planned_package_hex && strlen(signing_digest_hex) == 64 &&
+               strlen(planned_package_hex) == 64);
+        char release_body_saved[2 * VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES + 1u];
+        char planned_package_saved[65];
+        ASSERT(strlen(release_body_hex) < sizeof(release_body_saved));
+        (void)snprintf(release_body_saved, sizeof(release_body_saved), "%s",
+                       release_body_hex);
+        (void)snprintf(planned_package_saved,
+                       sizeof(planned_package_saved), "%s",
+                       planned_package_hex);
+        uint8_t signing_digest[32], publish_signature[64];
+        ASSERT(zcl_hex_decode_lower(signing_digest_hex,
+                                    signing_digest, 32));
+        ASSERT(zd_secp_signature(publish_ctx, publish_secret,
+                                 signing_digest, publish_signature));
+        memset(publish_secret, 0, sizeof(publish_secret));
+        char publish_signature_hex[129];
+        zcl_hex_encode(publish_signature, sizeof(publish_signature),
+                       publish_signature_hex);
+
+        struct json_value seal_input;
+        json_init(&seal_input);
+        json_set_object(&seal_input);
+        (void)json_push_kv_str(&seal_input, "release_body_hex",
+                               release_body_saved);
+        (void)json_push_kv_str(&seal_input, "signature_hex",
+                               publish_signature_hex);
+        struct zcl_command_request seal_request = { .input = &seal_input };
+        struct zcl_command_reply seal_reply;
+        zcl_command_reply_init(&seal_reply,
+                               "zcl.zcode_package_dev_seal.v1");
+        zcl_native_handle_zcode_package_dev_seal(&seal_request,
+                                                 &seal_reply);
+        ASSERT_EQ(seal_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        const char *sealed_release = json_get_str(json_get(
+            &seal_reply.data, "release_hex"));
+        ASSERT(sealed_release != NULL);
+        char sealed_release_saved[
+            2 * VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES + 1u];
+        ASSERT(strlen(sealed_release) < sizeof(sealed_release_saved));
+        (void)snprintf(sealed_release_saved,
+                       sizeof(sealed_release_saved), "%s", sealed_release);
+
+        struct json_value publish_commit_input;
+        json_init(&publish_commit_input);
+        json_set_object(&publish_commit_input);
+        (void)json_push_kv_str(&publish_commit_input, "workspace", workspace);
+        (void)json_push_kv_str(&publish_commit_input, "datadir", workspace);
+        (void)json_push_kv_str(&publish_commit_input, "source_root",
+                               candidate_source_saved);
+        (void)json_push_kv_str(&publish_commit_input, "release_hex",
+                               sealed_release_saved);
+        (void)json_push_kv_str(&publish_commit_input, "task_root", task_hex);
+        (void)json_push_kv_str(&publish_commit_input,
+                               "lane_receipt_root",
+                               accepted_receipt_saved);
+        (void)json_push_kv_int(&publish_commit_input, "day", 20000);
+        struct zcl_command_request publish_commit_request = {
+            .input = &publish_commit_input,
+        };
+        struct json_value *release_value = (struct json_value *)json_get(
+            &publish_commit_input, "release_hex");
+        size_t sealed_len = strlen(sealed_release_saved);
+        char last = sealed_release_saved[sealed_len - 1u];
+        sealed_release_saved[sealed_len - 1u] = last == '0' ? '1' : '0';
+        json_set_str(release_value, sealed_release_saved);
+        struct zcl_command_reply bad_publish_reply;
+        zcl_command_reply_init(&bad_publish_reply,
+                               "zcl.zcode_publish_commit.v1");
+        zcl_native_handle_zcode_publish_commit(&publish_commit_request,
+                                               &bad_publish_reply);
+        ASSERT_EQ(bad_publish_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(bad_publish_reply.error.code,
+                      "SIGNED_RELEASE_INVALID");
+        ASSERT(zd_no_accept_publish_stage(workspace));
+        zcl_command_reply_free(&bad_publish_reply);
+        sealed_release_saved[sealed_len - 1u] = last;
+        json_set_str(release_value, sealed_release_saved);
+
+        struct zcl_command_reply publish_commit_reply;
+        zcl_command_reply_init(&publish_commit_reply,
+                               "zcl.zcode_publish_commit.v1");
+        zcl_native_handle_zcode_publish_commit(&publish_commit_request,
+                                               &publish_commit_reply);
+        ASSERT_EQ(publish_commit_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &publish_commit_reply.data, "result")),
+                      "published");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &publish_commit_reply.data, "package_root")),
+                      planned_package_saved);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &publish_commit_reply.data, "authority")),
+                      "SIGNED_LANE_RECEIPT_AND_RELEASE_ENVELOPE");
+        ASSERT(zd_no_accept_publish_stage(workspace));
+        struct vcs_package_index *published_index =
+            vcs_package_index_build(zcode_store_path);
+        ASSERT(published_index != NULL);
+        ASSERT_EQ(vcs_package_index_count(published_index), 1);
+        const struct vcs_package_index_entry *published_entry =
+            vcs_package_index_at(published_index, 0);
+        ASSERT(published_entry != NULL);
+        ASSERT_STR_EQ(published_entry->package_root_hex,
+                      planned_package_saved);
+        ASSERT_STR_EQ(published_entry->name, "fixture/accepted");
+        ASSERT(published_entry->manifest_present);
+        ASSERT(published_entry->license_present);
+        ASSERT_EQ(published_entry->file_count, 6u);
+        vcs_package_index_free(published_index);
+
+        struct zcl_command_reply duplicate_publish_reply;
+        zcl_command_reply_init(&duplicate_publish_reply,
+                               "zcl.zcode_publish_commit.v1");
+        zcl_native_handle_zcode_publish_commit(&publish_commit_request,
+                                               &duplicate_publish_reply);
+        ASSERT_EQ(duplicate_publish_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &duplicate_publish_reply.data, "result")),
+                      "duplicate");
+        ASSERT(zd_no_accept_publish_stage(workspace));
+        zcl_command_reply_free(&duplicate_publish_reply);
+        zcl_command_reply_free(&publish_commit_reply);
+        json_free(&publish_commit_input);
+        zcl_command_reply_free(&seal_reply);
+        json_free(&seal_input);
+        zcl_command_reply_free(&publish_plan_reply);
+        json_free(&publish_plan_input);
+        secp256k1_context_destroy(publish_ctx);
 
         json_set_str((struct json_value *)json_get(&accept_input, "lane"),
                      "PROVEN");

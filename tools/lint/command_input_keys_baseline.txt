@@ -28,6 +28,9 @@ zcode.science.publish not_before # discovery helper reads its private RPC object
 zcode.science.publish expiry  # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish plan_token # discovery helper reads its private RPC object built by publish; request->input never reaches that helper.
 zcode.science.publish operation # discovery helper injects operation into its private RPC object; request->input never reaches that helper.
+zcode.package.dev.publish.commit dir # accepted-lane commit injects its unique verified-CAS staging directory into a private package-publish request; request->input never reaches that helper.
+zcode.package.dev.publish.commit manifest_hex # accepted-lane commit injects its CAS-rederived manifest into a private package-publish request; request->input never reaches that helper.
+zcode.package.dev.publish.commit recipe_hex # accepted-lane commit injects its task-bound CAS recipe into a private package-publish request; request->input never reaches that helper.
 metaverse.space.plan delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
 metaverse.space.commit delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
 metaverse.space.show delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.

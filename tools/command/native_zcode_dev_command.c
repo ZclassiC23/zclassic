@@ -5,13 +5,9 @@
 
 #include "base/hex.h"
 #include "base/serialize_le.h"
-#include "chain/chainparams.h"
-#include "core/uint256.h"
 #include "crypto/sha256.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
-#include "keys/key.h"
-#include "keys/pubkey.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
@@ -1421,6 +1417,7 @@ static bool zpub_load_task(const char *workspace, const char *hex,
     size_t len = 0;
     bool ok = zpub_load_wire(workspace, hex, &wire, &len, root) &&
         vcs_zcode_task_parse(wire, len, out) == VCS_ZCODE_DEV_OK &&
+        vcs_zcode_task_validate(out) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_task_root(out, checked) == VCS_ZCODE_DEV_OK &&
         memcmp(root, checked, 32) == 0;
     free(wire);
@@ -1434,6 +1431,7 @@ static bool zpub_load_candidate(const char *workspace, const char *hex,
     size_t len = 0;
     bool ok = zpub_load_wire(workspace, hex, &wire, &len, root) &&
         vcs_zcode_candidate_parse(wire, len, out) == VCS_ZCODE_DEV_OK &&
+        vcs_zcode_candidate_validate(out) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_candidate_root(out, checked) == VCS_ZCODE_DEV_OK &&
         memcmp(root, checked, 32) == 0;
     free(wire);
@@ -1447,6 +1445,7 @@ static bool zpub_load_policy(const char *workspace, const char *hex,
     size_t len = 0;
     bool ok = zpub_load_wire(workspace, hex, &wire, &len, root) &&
         vcs_zcode_proof_policy_parse(wire, len, out) == VCS_ZCODE_DEV_OK &&
+        vcs_zcode_proof_policy_validate(out) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_proof_policy_root(out, checked) == VCS_ZCODE_DEV_OK &&
         memcmp(root, checked, 32) == 0;
     free(wire);
@@ -1477,7 +1476,10 @@ static bool zpub_load_lane_receipt(
 }
 
 /* The accepted proof set must re-derive its bound root from CAS bytes. */
-static bool zpub_proof_set_valid(const char *workspace, const char *hex)
+static bool zpub_proof_set_valid(
+    const char *workspace, const char *hex,
+    const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_candidate_v1 *candidate)
 {
     uint8_t *wire = NULL, root[32], checked[32];
     size_t len = 0, count = 0;
@@ -1494,6 +1496,27 @@ static bool zpub_proof_set_valid(const char *workspace, const char *hex)
                 (const uint8_t (*)[32])roots, count,
                 checked) == VCS_ZCODE_DEV_OK &&
             memcmp(root, checked, 32) == 0;
+    for (size_t i = 0; ok && i < count; i++) {
+        uint8_t *receipt_wire = NULL;
+        size_t receipt_len = 0;
+        struct vcs_zcode_work_receipt_v1 receipt;
+        uint8_t receipt_id[32];
+        ok = vcs_object_load_raw(workspace, roots[i], &receipt_wire,
+                                 &receipt_len) == 0 &&
+            vcs_zcode_work_receipt_parse(receipt_wire, receipt_len,
+                                         &receipt) == VCS_ZCODE_DEV_OK &&
+            vcs_zcode_work_receipt_validate(&receipt) == VCS_ZCODE_DEV_OK &&
+            vcs_zcode_work_receipt_id(&receipt, receipt_id) ==
+                VCS_ZCODE_DEV_OK &&
+            memcmp(receipt_id, roots[i], 32) == 0 &&
+            vcs_zcode_work_receipt_verify(&receipt,
+                                          receipt.signer_pubkey) ==
+                VCS_ZCODE_DEV_OK &&
+            vcs_zcode_work_receipt_validate_for_candidate(
+                task, candidate, &receipt, receipt.finished_unix) ==
+                VCS_ZCODE_DEV_OK;
+        free(receipt_wire);
+    }
     free(roots);
     free(wire);
     return ok;
@@ -1578,7 +1601,7 @@ static bool zpub_source_entry(const char *workspace, const char *dir,
             take = VCS_PACKAGE_CHUNK_BYTES;
         ok = vcs_package_chunk_hash(bytes + off, take, hashes + i * 32u);
     }
-    if (ok)
+    if (ok && package)
         ok = vcs_package_manifest_add(
             package, entry->path,
             (entry->mode & 0111u) != 0 ? VCS_PACKAGE_MODE_EXECUTABLE
@@ -1647,296 +1670,555 @@ static bool zpub_lineage(const char *zcode_dir, const char *publisher_hex,
         }
     }
     vcs_package_index_free(index);
+    if (max_seq == UINT64_MAX)
+        return false;
     *has_parent = max_seq > 0;
     *sequence = max_seq + 1u;
     return !*has_parent || zcl_hex_decode_lower(latest_id, parent_root, 32);
 }
 
-// long-function-ok:accept-publish-ritual — acceptance re-verification,
-// content re-derivation, lineage, signing, staging, and the single delegated
-// commit form one fail-closed publication transaction.
-void zcl_native_handle_zcode_publish(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    if (!request || !reply) return;
-    const char *workspace_arg = zdev_str(request->input, "workspace");
-    const char *source_root_arg = zdev_str(request->input, "source_root");
-    const char *secret_hex = zdev_str(request->input, "publisher_secret");
-    const char *name = zdev_str(request->input, "name");
-    const char *semver = zdev_str(request->input, "semver");
-    const char *license = zdev_str(request->input, "license");
-    const char *datadir = zdev_str(request->input, "datadir");
-    if (!datadir || !datadir[0]) datadir = zcl_native_command_datadir();
+struct zpub_accepted_bundle {
     char workspace[ZDEV_PATH_MAX];
+    char datadir[ZPUB_PATH_MAX];
     uint8_t source_root[32];
-    if (!workspace_arg || !realpath(workspace_arg, workspace) || !datadir ||
-        !source_root_arg ||
-        !zcl_hex_decode_lower(source_root_arg, source_root, 32) ||
-        !secret_hex || !name || !name[0] || !semver || !semver[0] ||
-        !license || !license[0]) {
-        zpub_fail(reply, "BAD_PUBLISH_INPUT",
-                  "workspace, source_root, publisher_secret, name, semver, "
-                  "and license are required; workspace must resolve");
-        return;
+    struct zcode_lane_status lane;
+    struct vcs_zcode_task_v1 task;
+    struct vcs_zcode_candidate_v1 candidate;
+    struct vcs_zcode_proof_policy_v1 policy;
+    uint8_t receipt_wire[VCS_ZCODE_LANE_WIRE_BYTES];
+    struct vcs_manifest tree;
+    uint8_t package_root[32];
+    uint8_t *manifest_wire;
+    size_t manifest_wire_len;
+    uint8_t *recipe_wire;
+    size_t recipe_wire_len;
+};
+
+static void zpub_bundle_free(struct zpub_accepted_bundle *bundle)
+{
+    if (!bundle) return;
+    free(bundle->recipe_wire);
+    free(bundle->manifest_wire);
+    vcs_manifest_free(&bundle->tree);
+    memset(bundle, 0, sizeof(*bundle));
+}
+
+static bool zpub_push_hex(struct json_value *out, const char *key,
+                          const uint8_t *bytes, size_t len)
+{
+    if (!out || !key || (!bytes && len > 0) ||
+        len > (SIZE_MAX - 1u) / 2u)
+        return false;
+    char *hex = zcl_malloc(len * 2u + 1u, "zcode.publish.hex");
+    if (!hex) return false;
+    zcl_hex_encode(bytes, len, hex);
+    bool ok = json_push_kv_str(out, key, hex);
+    free(hex);
+    return ok;
+}
+
+static bool zpub_decode_hex(const char *hex, size_t max_bytes,
+                            uint8_t **bytes_out, size_t *len_out)
+{
+    *bytes_out = NULL;
+    *len_out = 0;
+    size_t hex_len = hex ? strlen(hex) : 0;
+    if (hex_len == 0 || (hex_len & 1u) != 0 ||
+        hex_len > max_bytes * 2u)
+        return false;
+    size_t len = hex_len / 2u;
+    uint8_t *bytes = zcl_malloc(len, "zcode.publish.input");
+    if (!bytes || !zcl_hex_decode_lower(hex, bytes, len)) {
+        free(bytes);
+        return false;
     }
-    /* Acceptance authority: the latest signed lane receipt for this exact
-     * source root, found through the verified projection and re-checked
-     * against CAS below. */
+    *bytes_out = bytes;
+    *len_out = len;
+    return true;
+}
+
+static bool zpub_copy_field(char *out, size_t cap, const char *value)
+{
+    size_t len = value ? strlen(value) : 0;
+    if (!out || cap == 0 || len >= cap)
+        return false;
+    memcpy(out, value ? value : "", len + 1u);
+    return true;
+}
+
+static bool zpub_normalize(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply,
+    struct zpub_accepted_bundle *bundle)
+{
+    memset(bundle, 0, sizeof(*bundle));
+    const char *workspace_arg = zdev_str(request->input, "workspace");
+    const char *datadir_arg = zdev_str(request->input, "datadir");
+    const char *source_root_arg = zdev_str(request->input, "source_root");
+    if (!workspace_arg || !realpath(workspace_arg, bundle->workspace) ||
+        !datadir_arg || !realpath(datadir_arg, bundle->datadir) ||
+        !source_root_arg ||
+        !zcl_hex_decode_lower(source_root_arg, bundle->source_root, 32)) {
+        zpub_fail(reply, "BAD_PUBLISH_INPUT",
+                  "workspace and datadir must resolve to existing directories "
+                  "and source_root must be 64 lowercase hex");
+        return false;
+    }
+    return true;
+}
+
+static bool zpub_lane_acceptable(
+    struct zcl_command_reply *reply, struct zpub_accepted_bundle *bundle,
+    struct zcl_result found)
+{
+    if (!found.ok) {
+        zpub_fail(reply, "LANE_NOT_ACCEPTED", found.message);
+        return false;
+    }
+    if (bundle->lane.lane != VCS_ZCODE_LANE_CANDIDATE &&
+        bundle->lane.lane != VCS_ZCODE_LANE_PROVEN) {
+        zpub_fail(reply, "LANE_NOT_ACCEPTED",
+                  "publication requires an explicit CANDIDATE or PROVEN lane "
+                  "receipt; FRONTIER admission is not acceptance");
+        return false;
+    }
+    return true;
+}
+
+static bool zpub_find_lane_readonly(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply,
+    struct zpub_accepted_bundle *bundle)
+{
+    sqlite3 *db = NULL;
     struct node_db ndb = {0};
-    if (!zdev_open_db(datadir, &ndb)) {
+    if (!zcl_native_node_db_require_readonly(
+            bundle->datadir, reply, "the ZCODE lane ledger", &db, &ndb))
+        return false;
+    struct zcl_result found = zcode_lane_find(
+        &ndb, bundle->workspace, zdev_str(request->input, "source_root"),
+        &bundle->lane);
+    zcl_native_node_db_close_readonly(&db, &ndb);
+    return zpub_lane_acceptable(reply, bundle, found);
+}
+
+static bool zpub_find_lane_commit(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply,
+    struct zpub_accepted_bundle *bundle)
+{
+
+    struct node_db ndb = {0};
+    if (!zdev_open_db(bundle->datadir, &ndb)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "DATABASE_OPEN_FAILED",
                                "accept", true, false,
                                "the ZBuild ledger could not be opened",
                                "zcode.publish");
-        return;
+        return false;
     }
-    struct zcode_lane_status lane;
-    struct zcl_result found = zcode_lane_find(&ndb, workspace,
-                                              source_root_arg, &lane);
+    struct zcl_result found = zcode_lane_find(
+        &ndb, bundle->workspace, zdev_str(request->input, "source_root"),
+        &bundle->lane);
     node_db_close(&ndb);
-    if (!found.ok) {
-        zpub_fail(reply, "LANE_NOT_ACCEPTED", found.message);
-        return;
-    }
-    if (lane.lane != VCS_ZCODE_LANE_CANDIDATE &&
-        lane.lane != VCS_ZCODE_LANE_PROVEN) {
-        zpub_fail(reply, "LANE_NOT_ACCEPTED",
-                  "publication requires an explicit CANDIDATE or PROVEN lane "
-                  "receipt; FRONTIER admission is not acceptance");
-        return;
-    }
-    struct vcs_zcode_task_v1 task;
-    struct vcs_zcode_candidate_v1 candidate;
-    struct vcs_zcode_proof_policy_v1 policy;
+    return zpub_lane_acceptable(reply, bundle, found);
+}
+
+static bool zpub_prepare_accepted_objects(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply,
+    struct zpub_accepted_bundle *bundle)
+{
     struct vcs_zcode_lane_receipt_v1 receipt;
-    uint8_t receipt_wire[VCS_ZCODE_LANE_WIRE_BYTES];
-    if (!zpub_load_task(workspace, lane.task_root_sha3, &task) ||
-        !zpub_load_candidate(workspace, lane.candidate_root_sha3,
-                             &candidate) ||
-        !zpub_load_policy(workspace, lane.proof_policy_root_sha3, &policy) ||
-        !zpub_load_lane_receipt(workspace, lane.receipt_root_sha3, &receipt,
-                                receipt_wire) ||
+    uint8_t proof_set_root[32];
+    bool accepted =
+        zpub_load_task(bundle->workspace, bundle->lane.task_root_sha3,
+                       &bundle->task) &&
+        zpub_load_candidate(bundle->workspace,
+                            bundle->lane.candidate_root_sha3,
+                            &bundle->candidate) &&
+        zpub_load_policy(bundle->workspace,
+                         bundle->lane.proof_policy_root_sha3,
+                         &bundle->policy) &&
+        zpub_load_lane_receipt(bundle->workspace,
+                               bundle->lane.receipt_root_sha3, &receipt,
+                               bundle->receipt_wire) &&
+        zcl_hex_decode_lower(bundle->lane.proof_set_root_sha3,
+                             proof_set_root, 32) &&
         vcs_zcode_lane_receipt_validate_for_candidate(
-            &receipt, &task, &candidate, &policy) != VCS_ZCODE_DEV_OK ||
-        memcmp(candidate.candidate_source_root, source_root, 32) != 0 ||
-        memcmp(receipt.source_root, source_root, 32) != 0) {
+            &receipt, &bundle->task, &bundle->candidate,
+            &bundle->policy) == VCS_ZCODE_DEV_OK &&
+        memcmp(receipt.proof_set_root, proof_set_root, 32) == 0 &&
+        memcmp(bundle->candidate.candidate_source_root,
+               bundle->source_root, 32) == 0 &&
+        memcmp(receipt.source_root, bundle->source_root, 32) == 0;
+    if (!accepted) {
         zpub_fail(reply, "LANE_ACCEPTANCE_INVALID",
-                  "the lane receipt, its signature, or its task, candidate, "
-                  "or policy bindings do not verify from the workspace CAS");
-        return;
+                  "the lane receipt, signature, proof-set root, task, "
+                  "candidate, policy, or source binding failed CAS "
+                  "reverification");
+        return false;
     }
-    if (!zpub_proof_set_valid(workspace, lane.proof_set_root_sha3)) {
+    if (!zpub_proof_set_valid(bundle->workspace,
+                              bundle->lane.proof_set_root_sha3,
+                              &bundle->task, &bundle->candidate)) {
         zpub_fail(reply, "PROOF_SET_INVALID",
-                  "the accepted proof set does not re-derive its bound root "
-                  "from the workspace CAS");
-        return;
+                  "the accepted proof set or one of its signed work receipts "
+                  "does not rederive and bind to this task and candidate");
+        return false;
     }
+
     const char *claimed_task = zdev_str(request->input, "task_root");
-    const char *claimed_receipt = zdev_str(request->input,
-                                           "lane_receipt_root");
+    const char *claimed_receipt =
+        zdev_str(request->input, "lane_receipt_root");
     if ((claimed_task && claimed_task[0] &&
-         strcmp(claimed_task, lane.task_root_sha3) != 0) ||
+         strcmp(claimed_task, bundle->lane.task_root_sha3) != 0) ||
         (claimed_receipt && claimed_receipt[0] &&
-         strcmp(claimed_receipt, lane.receipt_root_sha3) != 0)) {
+         strcmp(claimed_receipt, bundle->lane.receipt_root_sha3) != 0)) {
         zpub_fail(reply, "CLAIMED_BINDING_MISMATCH",
-                  "claimed task_root or lane_receipt_root does not match the "
+                  "task_root or lane_receipt_root does not match the "
                   "verified acceptance");
-        return;
+        return false;
     }
-    /* Package content: the exact accepted source tree from CAS blobs plus
-     * the canonical lane-receipt authority file, staged for the existing
-     * chunk-verified commit lifecycle. */
-    struct vcs_manifest tree;
-    if (!vcs_tree_load(workspace, source_root, &tree)) {
+
+    if (!vcs_tree_load(bundle->workspace, bundle->source_root,
+                       &bundle->tree) ||
+        bundle->tree.count == 0 ||
+        bundle->tree.count >= VCS_PACKAGE_MAX_FILES) {
+        zpub_bundle_free(bundle);
         zpub_fail(reply, "SOURCE_TREE_CAS_INVALID",
-                  "the accepted source manifest is absent or corrupt in the "
-                  "workspace CAS");
-        return;
+                  "the accepted source tree is absent, empty, corrupt, or "
+                  "too large to add its lane authority file");
+        return false;
     }
-    char staging[ZPUB_PATH_MAX];
-    int sn = snprintf(staging, sizeof(staging), "%s/.accept-publish-%ld",
-                      datadir, (long)getpid());
     struct vcs_package_manifest package;
     vcs_package_manifest_init(&package);
-    bool built = sn > 0 && (size_t)sn < sizeof(staging) &&
-        tree.count > 0 && tree.count < VCS_PACKAGE_MAX_FILES &&
-        (mkdir(staging, 0700) == 0 || errno == EEXIST);
-    for (size_t i = 0; built && i < tree.count; i++)
-        built = zpub_source_entry(workspace, staging, &tree.entries[i],
-                                  &package);
+    bool built = true;
+    for (size_t i = 0; built && i < bundle->tree.count; i++)
+        built = zpub_source_entry(bundle->workspace, NULL,
+                                  &bundle->tree.entries[i], &package);
     if (built)
-        built = zpub_package_add_bytes(&package, ZPUB_LANE_RECEIPT_PATH,
-                                       receipt_wire, sizeof(receipt_wire)) &&
-            zpub_stage_file(staging, ZPUB_LANE_RECEIPT_PATH, receipt_wire,
-                            sizeof(receipt_wire));
-    uint8_t package_root[32];
-    uint8_t *manifest_wire = NULL;
-    size_t manifest_wire_len = 0;
-    built = built && vcs_package_manifest_root(&package, package_root) &&
-        vcs_package_manifest_serialize(&package, &manifest_wire,
-                                       &manifest_wire_len);
+        built = zpub_package_add_bytes(
+            &package, ZPUB_LANE_RECEIPT_PATH, bundle->receipt_wire,
+            sizeof(bundle->receipt_wire));
+    built = built &&
+        vcs_package_manifest_root(&package, bundle->package_root) &&
+        vcs_package_manifest_serialize(
+            &package, &bundle->manifest_wire,
+            &bundle->manifest_wire_len);
     vcs_package_manifest_free(&package);
     if (!built) {
-        zpub_stage_cleanup(staging, &tree);
-        free(manifest_wire);
-        vcs_manifest_free(&tree);
+        zpub_bundle_free(bundle);
         zpub_fail(reply, "SOURCE_PACKAGE_FAILED",
-                  "the accepted source tree could not be re-derived and "
-                  "staged as a content.v2 package from CAS blobs");
-        return;
+                  "the accepted source tree could not be rederived as one "
+                  "canonical content.v2 package");
+        return false;
     }
-    /* The task's canonical acceptance recipe is the published build recipe. */
-    uint8_t *recipe_wire = NULL;
-    size_t recipe_wire_len = 0;
+
     uint8_t recipe_checked[32];
     struct vcs_package_recipe recipe;
     vcs_package_recipe_init(&recipe);
     bool recipe_ok =
-        vcs_object_load_raw(workspace, task.acceptance_tests_root,
-                            &recipe_wire, &recipe_wire_len) == 0 &&
-        recipe_wire_len <= VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES &&
-        vcs_package_recipe_parse(recipe_wire, recipe_wire_len, &recipe) ==
-            VCS_PACKAGE_RECIPE_OK &&
+        vcs_object_load_raw(bundle->workspace,
+                            bundle->task.acceptance_tests_root,
+                            &bundle->recipe_wire,
+                            &bundle->recipe_wire_len) == 0 &&
+        bundle->recipe_wire_len <= VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES &&
+        vcs_package_recipe_parse(bundle->recipe_wire,
+                                 bundle->recipe_wire_len,
+                                 &recipe) == VCS_PACKAGE_RECIPE_OK &&
         vcs_package_recipe_root(&recipe, recipe_checked) ==
             VCS_PACKAGE_RECIPE_OK &&
-        memcmp(recipe_checked, task.acceptance_tests_root, 32) == 0;
+        memcmp(recipe_checked, bundle->task.acceptance_tests_root, 32) == 0;
     vcs_package_recipe_free(&recipe);
     if (!recipe_ok) {
-        zpub_stage_cleanup(staging, &tree);
-        free(recipe_wire);
-        free(manifest_wire);
-        vcs_manifest_free(&tree);
+        zpub_bundle_free(bundle);
         zpub_fail(reply, "RECIPE_CAS_INVALID",
-                  "the task's acceptance recipe is absent or corrupt in the "
-                  "workspace CAS");
-        return;
+                  "the task acceptance recipe is absent, corrupt, or does "
+                  "not rederive its CAS root");
+        return false;
     }
-    /* Publisher key, chain binding, and lineage. */
-    chain_params_select(CHAIN_MAIN);
-    struct privkey secret;
-    memset(&secret, 0, sizeof(secret));
-    bool secret_ok = zcl_hex_decode(secret_hex, secret.vch, 32);
-    secret.fValid = secret_ok;
-    secret.fCompressed = true;
-    struct pubkey pk;
-    pubkey_init(&pk);
-    if (!secret_ok || !privkey_range_check(&secret) ||
-        !privkey_get_pubkey(&secret, &pk) ||
-        pk.size != VCS_PACKAGE_RELEASE_PUBKEY_BYTES) {
-        memset(&secret, 0, sizeof(secret));
-        zpub_stage_cleanup(staging, &tree);
-        free(recipe_wire); free(manifest_wire);
-        vcs_manifest_free(&tree);
-        zpub_fail(reply, "BAD_PUBLISHER_SECRET",
-                  "publisher_secret must be a valid 64-hex secp256k1 secret");
-        return;
+    return true;
+}
+
+static bool zpub_release_body(
+    const struct vcs_package_release *release, uint8_t **body_out,
+    size_t *body_len_out, uint8_t digest[32])
+{
+    *body_out = NULL;
+    *body_len_out = 0;
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    enum vcs_package_release_error err =
+        vcs_package_release_id(release, digest);
+    if (err == VCS_PACKAGE_RELEASE_OK)
+        err = vcs_package_release_serialize(release, &wire, &wire_len);
+    if (err != VCS_PACKAGE_RELEASE_OK ||
+        wire_len <= VCS_PACKAGE_RELEASE_SIGNATURE_BYTES) {
+        free(wire);
+        return false;
     }
-    char publisher_hex[2 * VCS_PACKAGE_RELEASE_PUBKEY_BYTES + 1];
-    zcl_hex_encode(pk.vch, VCS_PACKAGE_RELEASE_PUBKEY_BYTES, publisher_hex);
+    size_t body_len = wire_len - VCS_PACKAGE_RELEASE_SIGNATURE_BYTES;
+    uint8_t *body = zcl_malloc(body_len, "zcode.publish.release_body");
+    if (!body) {
+        free(wire);
+        return false;
+    }
+    memcpy(body, wire, body_len);
+    free(wire);
+    *body_out = body;
+    *body_len_out = body_len;
+    return true;
+}
+
+static bool zpub_lineage_claims_match(
+    const struct json_value *input, bool has_parent,
+    const uint8_t parent_root[32], uint64_t sequence)
+{
+    int64_t seq_claim = zdev_int(input, "publisher_sequence", 0);
+    if (seq_claim > 0 && (uint64_t)seq_claim != sequence)
+        return false;
+    const char *parent_claim = zdev_str(input, "parent_release_root");
+    if (!parent_claim || !parent_claim[0])
+        return true;
+    uint8_t checked[32];
+    return has_parent &&
+        zcl_hex_decode_lower(parent_claim, checked, 32) &&
+        memcmp(checked, parent_root, 32) == 0;
+}
+
+static bool zpub_release_lineage_valid(
+    const char *zcode_dir, const struct vcs_package_release *release,
+    const uint8_t release_id[32])
+{
+    struct vcs_package_index *index = vcs_package_index_build(zcode_dir);
+    if (!index)
+        LOG_FAIL("zcode.publish", "package index build failed for %s",
+                 zcode_dir);
+    char publisher_hex[2 * VCS_PACKAGE_RELEASE_PUBKEY_BYTES + 1u];
+    char release_id_hex[65];
+    zcl_hex_encode(release->publisher_pubkey,
+                   VCS_PACKAGE_RELEASE_PUBKEY_BYTES, publisher_hex);
+    zcl_hex_encode(release_id, 32, release_id_hex);
+    uint64_t max_seq = 0;
+    char latest_id[65] = "";
+    bool duplicate = false;
+    for (size_t i = 0; i < vcs_package_index_count(index); i++) {
+        const struct vcs_package_index_entry *entry =
+            vcs_package_index_at(index, i);
+        if (strcmp(entry->publisher_hex, publisher_hex) != 0)
+            continue;
+        if (strcmp(entry->release_id_hex, release_id_hex) == 0)
+            duplicate = true;
+        if (entry->publisher_sequence > max_seq) {
+            max_seq = entry->publisher_sequence;
+            (void)snprintf(latest_id, sizeof(latest_id), "%s",
+                           entry->release_id_hex);
+        }
+    }
+    vcs_package_index_free(index);
+    if (duplicate)
+        return true;
+    if (max_seq == UINT64_MAX)
+        return false;
+    if (release->publisher_sequence != max_seq + 1u ||
+        release->has_parent != (max_seq > 0))
+        return false;
+    uint8_t latest_root[32];
+    return max_seq == 0 ||
+        (zcl_hex_decode_lower(latest_id, latest_root, 32) &&
+         memcmp(release->parent_root, latest_root, 32) == 0);
+}
+
+static void zpub_common_output(
+    struct json_value *out, const struct zpub_accepted_bundle *bundle)
+{
+    zdev_push_root(out, "source_root", bundle->source_root);
+    (void)json_push_kv_str(out, "lane", bundle->lane.lane_name);
+    (void)json_push_kv_str(out, "lane_receipt_root",
+                           bundle->lane.receipt_root_sha3);
+    (void)json_push_kv_str(out, "proof_set_root",
+                           bundle->lane.proof_set_root_sha3);
+    (void)json_push_kv_str(out, "task_root",
+                           bundle->lane.task_root_sha3);
+    (void)json_push_kv_str(out, "candidate_root",
+                           bundle->lane.candidate_root_sha3);
+    (void)json_push_kv_str(
+        out, "authority", "SIGNED_LANE_RECEIPT_AND_RELEASE_ENVELOPE");
+}
+
+void zcl_native_handle_zcode_publish_plan(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    struct zpub_accepted_bundle bundle;
+    if (!zpub_normalize(request, reply, &bundle) ||
+        !zpub_find_lane_readonly(request, reply, &bundle) ||
+        !zpub_prepare_accepted_objects(request, reply, &bundle))
+        return;
+
+    const char *pubkey_hex = zdev_str(request->input, "publisher_pubkey");
+    const char *name = zdev_str(request->input, "name");
+    const char *semver = zdev_str(request->input, "semver");
+    const char *license = zdev_str(request->input, "license");
+    const char *reward = zdev_str(request->input, "reward_address");
+    const char *znam = zdev_str(request->input, "znam");
     struct vcs_package_release release;
     memset(&release, 0, sizeof(release));
     release.schema_version = VCS_PACKAGE_RELEASE_VERSION;
-    (void)snprintf(release.name, sizeof(release.name), "%s", name);
-    (void)snprintf(release.semver, sizeof(release.semver), "%s", semver);
-    (void)snprintf(release.license, sizeof(release.license), "%s", license);
-    memcpy(release.package_root, package_root, 32);
-    memcpy(release.recipe_root, task.acceptance_tests_root, 32);
-    memcpy(release.publisher_pubkey, pk.vch,
-           VCS_PACKAGE_RELEASE_PUBKEY_BYTES);
-    const char *reward = zdev_str(request->input, "reward_address");
-    if (reward && reward[0])
-        (void)snprintf(release.reward_address,
-                       sizeof(release.reward_address), "%s", reward);
-    const char *znam = zdev_str(request->input, "znam");
+    memcpy(release.package_root, bundle.package_root, 32);
+    memcpy(release.recipe_root, bundle.task.acceptance_tests_root, 32);
+    bool fields_ok = pubkey_hex &&
+        zcl_hex_decode_lower(pubkey_hex, release.publisher_pubkey,
+                             sizeof(release.publisher_pubkey)) &&
+        zpub_copy_field(release.name, sizeof(release.name), name) &&
+        zpub_copy_field(release.semver, sizeof(release.semver), semver) &&
+        zpub_copy_field(release.license, sizeof(release.license), license) &&
+        zpub_copy_field(release.reward_address,
+                        sizeof(release.reward_address), reward);
     if (znam && znam[0]) {
         release.has_znam = true;
-        (void)snprintf(release.znam, sizeof(release.znam), "%s", znam);
+        fields_ok = fields_ok &&
+            zpub_copy_field(release.znam, sizeof(release.znam), znam);
     }
     char zcode_dir[ZPUB_PATH_MAX];
-    int zn = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
-    bool envelope_ok = zn > 0 && (size_t)zn < sizeof(zcode_dir) &&
+    int n = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode",
+                     bundle.datadir);
+    fields_ok = fields_ok && n > 0 && (size_t)n < sizeof(zcode_dir) &&
         vcs_package_accept_chain_id(release.chain_id,
                                     sizeof(release.chain_id)) &&
-        zpub_lineage(zcode_dir, publisher_hex, &release.has_parent,
-                     release.parent_root, &release.publisher_sequence);
-    if (!envelope_ok) {
-        memset(&secret, 0, sizeof(secret));
-        zpub_stage_cleanup(staging, &tree);
-        free(recipe_wire); free(manifest_wire);
-        vcs_manifest_free(&tree);
-        zpub_fail(reply, "RELEASE_ENVELOPE_FAILED",
-                  "chain id or publisher lineage could not be derived");
+        zpub_lineage(zcode_dir, pubkey_hex, &release.has_parent,
+                     release.parent_root, &release.publisher_sequence) &&
+        zpub_lineage_claims_match(request->input, release.has_parent,
+                                  release.parent_root,
+                                  release.publisher_sequence);
+    uint8_t *release_body = NULL;
+    size_t release_body_len = 0;
+    uint8_t digest[32];
+    fields_ok = fields_ok &&
+        vcs_package_release_validate(&release) == VCS_PACKAGE_RELEASE_OK &&
+        zpub_release_body(&release, &release_body, &release_body_len,
+                          digest);
+    if (!fields_ok) {
+        free(release_body);
+        zpub_bundle_free(&bundle);
+        zpub_fail(reply, "RELEASE_PLAN_FAILED",
+                  "publisher key, release fields, chain id, or persisted "
+                  "publisher lineage is invalid or stale");
         return;
     }
-    int64_t seq_claim = zdev_int(request->input, "publisher_sequence", 0);
-    const char *parent_claim = zdev_str(request->input,
-                                        "parent_release_root");
-    uint8_t parent_check[32];
-    if ((seq_claim > 0 &&
-         (uint64_t)seq_claim != release.publisher_sequence) ||
-        (parent_claim && parent_claim[0] &&
-         (!release.has_parent ||
-          !zcl_hex_decode_lower(parent_claim, parent_check, 32) ||
-          memcmp(parent_check, release.parent_root, 32) != 0))) {
-        memset(&secret, 0, sizeof(secret));
-        zpub_stage_cleanup(staging, &tree);
-        free(recipe_wire); free(manifest_wire);
-        vcs_manifest_free(&tree);
-        zpub_fail(reply, "LINEAGE_CLAIM_MISMATCH",
-                  "claimed publisher_sequence or parent_release_root does "
-                  "not match the persisted release history");
+
+    bool rendered =
+        zpub_push_hex(&reply->data, "package_root",
+                      bundle.package_root, 32) &&
+        zpub_push_hex(&reply->data, "recipe_root",
+                      bundle.task.acceptance_tests_root, 32) &&
+        zpub_push_hex(&reply->data, "release_signing_digest",
+                      digest, 32) &&
+        zpub_push_hex(&reply->data, "release_body_hex",
+                      release_body, release_body_len) &&
+        zpub_push_hex(&reply->data, "manifest_hex",
+                      bundle.manifest_wire, bundle.manifest_wire_len) &&
+        zpub_push_hex(&reply->data, "recipe_hex",
+                      bundle.recipe_wire, bundle.recipe_wire_len) &&
+        json_push_kv_int(&reply->data, "publisher_sequence",
+                         (int64_t)release.publisher_sequence) &&
+        json_push_kv_bool(&reply->data, "has_parent",
+                          release.has_parent) &&
+        json_push_kv_str(&reply->data, "signature_status", "unsigned") &&
+        json_push_kv_bool(&reply->data, "read_only", true);
+    if (rendered && release.has_parent)
+        rendered = zpub_push_hex(&reply->data, "parent_release_root",
+                                 release.parent_root, 32);
+    if (rendered)
+        zpub_common_output(&reply->data, &bundle);
+    free(release_body);
+    zpub_bundle_free(&bundle);
+    if (!rendered)
+        zpub_fail(reply, "RELEASE_PLAN_OUTPUT",
+                  "bounded canonical publication plan could not be rendered");
+}
+
+void zcl_native_handle_zcode_publish_commit(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    struct zpub_accepted_bundle bundle;
+    if (!zpub_normalize(request, reply, &bundle) ||
+        !zpub_find_lane_commit(request, reply, &bundle) ||
+        !zpub_prepare_accepted_objects(request, reply, &bundle))
         return;
-    }
-    enum vcs_package_release_error rerr =
-        vcs_package_release_validate(&release);
-    if (rerr != VCS_PACKAGE_RELEASE_OK) {
-        memset(&secret, 0, sizeof(secret));
-        zpub_stage_cleanup(staging, &tree);
-        free(recipe_wire); free(manifest_wire);
-        vcs_manifest_free(&tree);
-        zpub_fail(reply, "BAD_RELEASE",
-                  vcs_package_release_error_string(rerr));
-        return;
-    }
-    uint8_t release_id[VCS_PACKAGE_RELEASE_ID_BYTES];
-    struct uint256 hash;
-    unsigned char compact[COMPACT_SIGNATURE_SIZE];
-    bool signed_ok = vcs_package_release_id(&release, release_id) ==
-        VCS_PACKAGE_RELEASE_OK;
-    if (signed_ok) {
-        memcpy(hash.data, release_id, 32);
-        signed_ok = privkey_sign_compact(&secret, &hash, compact);
-    }
-    memset(&secret, 0, sizeof(secret));
-    if (signed_ok)
-        memcpy(release.signature, compact + 1,
-               VCS_PACKAGE_RELEASE_SIGNATURE_BYTES);
+
+    const char *release_hex_input = zdev_str(request->input, "release_hex");
     uint8_t *release_wire = NULL;
     size_t release_wire_len = 0;
-    if (!signed_ok ||
-        vcs_package_release_verify(&release) != VCS_PACKAGE_RELEASE_OK ||
-        vcs_package_release_serialize(&release, &release_wire,
-                                      &release_wire_len) !=
-            VCS_PACKAGE_RELEASE_OK) {
-        zpub_stage_cleanup(staging, &tree);
-        free(release_wire); free(recipe_wire); free(manifest_wire);
-        vcs_manifest_free(&tree);
-        zpub_fail(reply, "RELEASE_SIGN_FAILED",
-                  "the release envelope could not be signed or self-verified");
+    struct vcs_package_release release;
+    uint8_t release_id[32];
+    bool release_ok =
+        zpub_decode_hex(release_hex_input, VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES,
+                        &release_wire, &release_wire_len) &&
+        vcs_package_release_parse(release_wire, release_wire_len,
+                                  &release) == VCS_PACKAGE_RELEASE_OK &&
+        vcs_package_release_verify(&release) == VCS_PACKAGE_RELEASE_OK &&
+        vcs_package_release_id(&release, release_id) ==
+            VCS_PACKAGE_RELEASE_OK &&
+        memcmp(release.package_root, bundle.package_root, 32) == 0 &&
+        memcmp(release.recipe_root,
+               bundle.task.acceptance_tests_root, 32) == 0;
+    char expected_chain[VCS_PACKAGE_RELEASE_CHAIN_ID_MAX + 1u];
+    release_ok = release_ok &&
+        vcs_package_accept_chain_id(expected_chain, sizeof(expected_chain)) &&
+        strcmp(release.chain_id, expected_chain) == 0;
+    char zcode_dir[ZPUB_PATH_MAX];
+    int n = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode",
+                     bundle.datadir);
+    release_ok = release_ok && n > 0 && (size_t)n < sizeof(zcode_dir) &&
+        zpub_release_lineage_valid(zcode_dir, &release, release_id);
+    if (!release_ok) {
+        free(release_wire);
+        zpub_bundle_free(&bundle);
+        zpub_fail(reply, "SIGNED_RELEASE_INVALID",
+                  "release_hex must be one canonical verified offline-signed "
+                  "envelope binding the accepted package, recipe, chain, "
+                  "and current publisher lineage");
         return;
     }
+
+    char staging[ZPUB_PATH_MAX] = {0};
+    n = snprintf(staging, sizeof(staging), "%s/.accept-publish-XXXXXX",
+                 bundle.datadir);
+    bool stage_created = n > 0 && (size_t)n < sizeof(staging) &&
+        mkdtemp(staging) != NULL;
+    bool staged = stage_created;
+    for (size_t i = 0; staged && i < bundle.tree.count; i++)
+        staged = zpub_source_entry(bundle.workspace, staging,
+                                   &bundle.tree.entries[i], NULL);
+    if (staged)
+        staged = zpub_stage_file(
+            staging, ZPUB_LANE_RECEIPT_PATH, bundle.receipt_wire,
+            sizeof(bundle.receipt_wire));
+    if (!staged) {
+        if (stage_created) zpub_stage_cleanup(staging, &bundle.tree);
+        free(release_wire);
+        zpub_bundle_free(&bundle);
+        zpub_fail(reply, "SOURCE_STAGE_FAILED",
+                  "verified CAS source bytes could not be staged in the "
+                  "explicit datadir");
+        return;
+    }
+
     char *release_hex =
-        zcl_malloc(release_wire_len * 2u + 1u, "zcode.publish.release_hex");
+        zcl_malloc(release_wire_len * 2u + 1u,
+                   "zcode.publish.release_hex");
     char *manifest_hex =
-        zcl_malloc(manifest_wire_len * 2u + 1u, "zcode.publish.manifest_hex");
+        zcl_malloc(bundle.manifest_wire_len * 2u + 1u,
+                   "zcode.publish.manifest_hex");
     char *recipe_hex =
-        zcl_malloc(recipe_wire_len * 2u + 1u, "zcode.publish.recipe_hex");
+        zcl_malloc(bundle.recipe_wire_len * 2u + 1u,
+                   "zcode.publish.recipe_hex");
     if (!release_hex || !manifest_hex || !recipe_hex) {
-        zpub_stage_cleanup(staging, &tree);
-        free(release_hex); free(manifest_hex); free(recipe_hex);
-        free(release_wire); free(recipe_wire); free(manifest_wire);
-        vcs_manifest_free(&tree);
+        zpub_stage_cleanup(staging, &bundle.tree);
+        free(release_hex);
+        free(manifest_hex);
+        free(recipe_hex);
+        free(release_wire);
+        zpub_bundle_free(&bundle);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "ALLOC", "publish",
                                false, false, "hex wire buffers",
@@ -1944,10 +2226,11 @@ void zcl_native_handle_zcode_publish(
         return;
     }
     zcl_hex_encode(release_wire, release_wire_len, release_hex);
-    zcl_hex_encode(manifest_wire, manifest_wire_len, manifest_hex);
-    zcl_hex_encode(recipe_wire, recipe_wire_len, recipe_hex);
-    free(release_wire); free(recipe_wire); free(manifest_wire);
-    /* One lifecycle: the existing signed package publication commit. */
+    zcl_hex_encode(bundle.manifest_wire, bundle.manifest_wire_len,
+                   manifest_hex);
+    zcl_hex_encode(bundle.recipe_wire, bundle.recipe_wire_len, recipe_hex);
+    free(release_wire);
+
     struct json_value commit_input;
     json_init(&commit_input);
     json_set_object(&commit_input);
@@ -1955,19 +2238,21 @@ void zcl_native_handle_zcode_publish(
     (void)json_push_kv_str(&commit_input, "manifest_hex", manifest_hex);
     (void)json_push_kv_str(&commit_input, "recipe_hex", recipe_hex);
     (void)json_push_kv_str(&commit_input, "dir", staging);
-    (void)json_push_kv_str(&commit_input, "datadir", datadir);
+    (void)json_push_kv_str(&commit_input, "datadir", bundle.datadir);
     const struct json_value *day = json_get(request->input, "day");
     if (day)
         (void)json_push_kv_int(&commit_input, "day", json_get_int(day));
     struct zcl_command_request commit_request = { .input = &commit_input };
     struct zcl_command_reply commit_reply;
     zcl_command_reply_init(&commit_reply, "zcl.zcode_publish_commit.v1");
-    zcl_native_handle_zcode_package_publish_commit(&commit_request,
-                                                   &commit_reply);
-    zpub_stage_cleanup(staging, &tree);
+    zcl_native_handle_zcode_package_publish_commit(
+        &commit_request, &commit_reply);
+    zpub_stage_cleanup(staging, &bundle.tree);
     json_free(&commit_input);
-    free(release_hex); free(manifest_hex); free(recipe_hex);
-    vcs_manifest_free(&tree);
+    free(release_hex);
+    free(manifest_hex);
+    free(recipe_hex);
+
     if (commit_reply.exit_code != ZCL_COMMAND_EXIT_OK) {
         char code[72], message[192], evidence[256];
         (void)snprintf(code, sizeof(code), "%s",
@@ -1979,22 +2264,15 @@ void zcl_native_handle_zcode_publish(
         (void)snprintf(evidence, sizeof(evidence), "%s",
                        commit_reply.error.evidence);
         zcl_command_reply_free(&commit_reply);
+        zpub_bundle_free(&bundle);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, code, "validate",
                                false, false, message, evidence);
         return;
     }
+
     json_copy(&reply->data, &commit_reply.data);
     zcl_command_reply_free(&commit_reply);
-    zdev_push_root(&reply->data, "source_root", source_root);
-    (void)json_push_kv_str(&reply->data, "lane", lane.lane_name);
-    (void)json_push_kv_str(&reply->data, "lane_receipt_root",
-                           lane.receipt_root_sha3);
-    (void)json_push_kv_str(&reply->data, "proof_set_root",
-                           lane.proof_set_root_sha3);
-    (void)json_push_kv_str(&reply->data, "task_root", lane.task_root_sha3);
-    (void)json_push_kv_str(&reply->data, "candidate_root",
-                           lane.candidate_root_sha3);
-    (void)json_push_kv_str(&reply->data, "authority",
-                           "SIGNED_LANE_RECEIPT_AND_RELEASE_ENVELOPE");
+    zpub_common_output(&reply->data, &bundle);
+    zpub_bundle_free(&bundle);
 }

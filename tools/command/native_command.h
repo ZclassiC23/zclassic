@@ -506,7 +506,10 @@ void zcl_native_handle_zcode_lane(
 void zcl_native_handle_zcode_tasks(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
-void zcl_native_handle_zcode_publish(
+void zcl_native_handle_zcode_publish_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_publish_commit(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 

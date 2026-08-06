@@ -284,33 +284,61 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE,
     zcl_native_handle_zcode_tasks)
 
+ZCL_COMMAND_BRANCH("zcode.package.dev.publish", "zcode.package.dev",
+                   "Publish an explicitly accepted lane",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.dev.publish.plan", "zcode.package.dev.publish",
+    "zcode.publish.plan",
+    "Prepare an accepted lane for offline release signing",
+    "Re-verifies the CANDIDATE or PROVEN signed lane receipt, every bound "
+    "task/candidate/policy object, the canonical proof set, and every signed "
+    "work receipt from the workspace CAS. Re-derives content.v2 from the "
+    "accepted source blobs, embeds the exact lane receipt as "
+    "zcode-lane-receipt.v1, binds the task acceptance recipe and current "
+    "publisher lineage, and returns an unsigned release body plus signing "
+    "digest. The publisher secret never enters this command; sign the digest "
+    "offline and pass the detached signature to zcode package dev seal. No "
+    "package or release is persisted.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,publish,plan,release,lane,accept,offline,sign",
+    "zcl.zcode_publish_plan.input.v1", "zcl.zcode_publish_plan.v1",
+    "workspace,datadir,source_root,publisher_pubkey,name,semver,license,reward_address,znam,task_root,lane_receipt_root,publisher_sequence,parent_release_root",
+    "workspace,datadir,source_root,publisher_pubkey,name,semver,license",
+    "zclassic23 zcode publish plan --input='{\"workspace\":\"/src/project\",\"datadir\":\"/tmp/zcode-dev\",\"source_root\":\"<64hex>\",\"publisher_pubkey\":\"<66hex>\",\"name\":\"publisher/package\",\"semver\":\"1.0.0\",\"license\":\"MIT\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_publish_plan)
+
 ZCL_COMMAND_READY_COMMAND(
-    "zcode.package.dev.publish", "zcode.package.dev", "zcode.publish",
-    "Publish accepted lane",
-    "Publishes a new signed package release from an explicitly accepted lane "
-    "(CANDIDATE or PROVEN) for an exact source root. Rebuilds the acceptance "
-    "verification from the workspace CAS: the signed lane receipt, its "
-    "task/candidate/policy binding, and the proof set must all reload, "
-    "validate, and rederive their roots or the command refuses with "
-    "LANE_NOT_ACCEPTED, LANE_ACCEPTANCE_INVALID, or PROOF_SET_INVALID. "
-    "Package content is re-derived from CAS blobs with the exact lane "
-    "receipt wire embedded as the canonical zcode-lane-receipt.v1 authority "
-    "file, the task acceptance recipe becomes the build recipe, and the "
-    "release commits through the existing zcode.package.publish commit "
-    "lifecycle.",
-    0, "zcode,publish,release,lane,accept,candidate,proven,sign",
-    "zcl.zcode_publish.input.v1", "zcl.zcode_publish.v1",
-    "workspace,datadir,source_root,publisher_secret,name,semver,license,reward_address,znam,task_root,lane_receipt_root,publisher_sequence,parent_release_root,day",
-    "workspace,source_root,publisher_secret,name,semver,license",
-    "zclassic23 zcode publish --input='{\"workspace\":\"/src/project\",\"source_root\":\"<64hex>\",\"publisher_secret\":\"<64hex>\",\"name\":\"publisher/package\",\"semver\":\"1.0.0\",\"license\":\"MIT\"}'",
+    "zcode.package.dev.publish.commit", "zcode.package.dev.publish",
+    "zcode.publish",
+    "Publish one offline-signed accepted-lane release",
+    "Rebuilds the complete accepted-lane plan from CAS, verifies release_hex "
+    "as a canonical low-S secp256k1 envelope over the exact accepted package, "
+    "task recipe, chain and current publisher lineage, then delegates to the "
+    "existing zcode.package.publish commit lifecycle. The source is staged "
+    "only after signature verification in a unique directory beneath the "
+    "explicit datadir and is removed after commit. Duplicate delivery is "
+    "idempotent. No secret, wallet, or second package store is accepted.",
+    0, "zcode,publish,commit,release,lane,accept,offline,cas",
+    "zcl.zcode_publish_commit.input.v1", "zcl.zcode_publish_commit.v1",
+    "workspace,datadir,source_root,release_hex,task_root,lane_receipt_root,day",
+    "workspace,datadir,source_root,release_hex",
+    "zclassic23 zcode publish --input='{\"workspace\":\"/src/project\",\"datadir\":\"/tmp/zcode-dev\",\"source_root\":\"<64hex>\",\"release_hex\":\"<hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
-    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_CONFIRM_NONE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
-    zcl_native_handle_zcode_publish)
+    zcl_native_handle_zcode_publish_commit)
 
 ZCL_COMMAND_BRANCH("zcode.package", "zcode",
                    "Published packages",
