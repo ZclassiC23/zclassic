@@ -123,7 +123,7 @@ service that walks the adapter registry is
 <!-- claim: file-present lib/metaverse/include/metaverse/property_id.h # the property vocabulary -->
 <!-- claim: symbol-present metaverse_adapter_for lib/metaverse/src/adapter_registry.c # the single dispatch point -->
 <!-- claim: symbol-absent vcs_package_store_open lib/metaverse/src/adapter_content.c # the read path opens no store -->
-<!-- claim: symbol-present vcs_package_cas_present_in lib/metaverse/src/manifest_read.c # CAS presence without a store handle -->
+<!-- claim: symbol-present mv_cas_path lib/metaverse/src/manifest_read.c # CAS byte verification without a store handle -->
 
 ### Hexagonal seam — `ports/` + `adapters/`
 
