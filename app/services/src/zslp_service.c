@@ -415,7 +415,7 @@ int64_t zslp_payment_check_received(const char *datadir,
 
     memset(&ndb, 0, sizeof(ndb));
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
-    if (!node_db_open(&ndb, db_path))
+    if (!node_db_open_runtime(&ndb, db_path, "zslp.payment_check"))
         return 0;
 
     received = db_sapling_note_balance_for_address(&ndb, z_addr);
