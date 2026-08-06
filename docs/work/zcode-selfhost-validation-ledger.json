@@ -1,6 +1,6 @@
 {
   "schema": "zcl.zcode_selfhost_validation_ledger.v1",
-  "generated_utc": "2026-08-06T08:13:55Z",
+  "generated_utc": "2026-08-06T08:23:54Z",
   "lane": "lane/zcode-selfhost-foundation",
   "frozen_root_checkout": "13d0d255b09548a21ccd05936186f8efc849394a",
   "safety_ref": "safety/zcode-pre-selfhost-20260806",
@@ -71,6 +71,14 @@
     {
       "kind": "ledger_audit_head_before_parent_replay_receipts",
       "sha": "91498ca1afd653f47a0cbfd2e72c25af65496f71"
+    },
+    {
+      "kind": "latest_fetch_before_codec_atomicity_fix",
+      "sha": "9ab19b4fe996bbe4b6baa26d44ba306ecd00e108"
+    },
+    {
+      "kind": "parent_replay_head_before_codec_atomicity_fix",
+      "sha": "a7f62d07434939fc145500cdff46e0c6deb61f14"
     }
   ],
   "preservation_reconciliation": {
@@ -89,7 +97,7 @@
     "monolith_exact_roots": [
       "7f15ba590a82de200152b1c02b5b1dc11b4932a9b690fbe332e7c2fa60d764fe",
       "6e03d74b8edab650e790424f4dc8274e8ca262cccfc4f94d5b068ad66f60f48e",
-      "37d96e186c69affb4ecaff838a939b70915ba9498c13279680c3c67a314d5dbc"
+      "5b94d188d8f9c1ae367e1954870ec312e24d0d043fe808cc484da9a6114cd50b"
     ],
     "packages": [
       {
@@ -110,10 +118,10 @@
       },
       {
         "name": "zclassic23/codec@0.1.0-dev.1",
-        "content_root": "37d96e186c69affb4ecaff838a939b70915ba9498c13279680c3c67a314d5dbc",
-        "release_root": "b260a6915fb912b9f786a39e09489f28ca79bc627568318972608f7402619a5b",
+        "content_root": "5b94d188d8f9c1ae367e1954870ec312e24d0d043fe808cc484da9a6114cd50b",
+        "release_root": "35abdcc64c7133943c45c511151ccac3b725b81a7ea368c79ca60fa008c7515e",
         "recipe_root": "34eb254d6d8478a44f803ecdf0f1fde3ba8eb4193610873ce4895e326b730ce5",
-        "dependency_lock_root": "37aea64e18fc9fa72408e07ef005495c58ab59b71954a984fa6ab1f19cd1b784",
+        "dependency_lock_root": "e42c66bd582fbd30ece5c13c8b49966731dc116936ae32a3b7d5eef0544cec8c",
         "api_capsule_root": "4fdeb4ea26e177fa7d915d837430d1e9946bedb11f98b730b67e636363fcdd49"
       }
     ],
@@ -142,6 +150,8 @@
     {"gate": "mmb_mmr_utxo_consensus_vectors", "result": "PASS_IDENTICAL_ORACLES_PRE_AND_POST_EXTRACTION"},
     {"gate": "base_sha3_exact_parent_replay", "result": "SIGNED_FAIL_RECEIPTS_CAPTURED_RETROSPECTIVELY_AND_LABELLED"},
     {"gate": "born_red_receipt_integrity", "result": "PASS_SIX_LOG_HASHES_PREIMAGE_DIGESTS_AND_COMPACT_SECP256K1_SIGNATURES"},
+    {"gate": "codec_null_truncated_prefix_atomicity", "result": "PASS_MONOLITH_AND_INDEPENDENT_PACKAGE_TEST_NO_UNINITIALIZED_LENGTH_READ_AND_DESTINATION_UNCHANGED"},
+    {"gate": "registry_projection_rebuild_dependency", "result": "PASS_CONFIG_DEF_CHANGE_FORCES_CHECKER_REBUILD"},
     {"gate": "test_zcode_package_dev", "result": "PASS_PREPARE_SEAL_CAPSULE_AND_FAIL_CLOSED_TREE"},
     {"gate": "test_vcs_release", "result": "PASS_SIGNATURE_WIRE_SEQUENCE_DUPLICATE_AND_LINEAGE"},
     {"gate": "test_codec_cursor", "result": "PASS_REFRESHED_AFTER_VERTICAL_COMPLETION"},
@@ -253,7 +263,7 @@
     ],
     "authority": "lib/codec/include/codec/cursor.h",
     "private_codec_references_remaining_in_migrated_files": 0,
-    "root_effect": "NONE_ALL_RELEASE_RECIPE_LOCK_PACKAGE_AND_SCORE_KATS_IDENTICAL",
+    "root_effect": "INITIAL_WIRE_MIGRATION_PRESERVED_ROOTS; LATER_CURSOR_UB_FIX_ROTATED_ONLY_CODEC_CONTENT_RELEASE_TARGET_INCLUSIVE_LOCK_AND_EVIDENCE_ROOTS",
     "permanent_gate": "check-zcode-package-registry",
     "born_red": "NOT_APPLICABLE_BEHAVIOR_PRESERVING_CODEC_REFACTOR_PROVEN_BY_PRE_POST_CANONICAL_KATS"
   },
@@ -322,27 +332,27 @@
     {
       "package": "zclassic23/codec@0.1.0-dev.1",
       "order": 3,
-      "task_root": "31bb03b5ef1408cdbc45390b66128fe6e5858c2c79bb198846140d7d5404c610",
-      "candidate_root": "d5d84efd70152e9a2650a1a16b7bf26e0593d9c4941365f3a539e6e541d295b4",
+      "task_root": "7399e2e7f64728ed503faccb610204847701004fcb515e9f53ad2e084238989e",
+      "candidate_root": "62e34e1d6f27e0b1b420ff0b9374a037937a4fc5ff4a4a70adc592b9f088ef34",
       "proof_policy_root": "6e1021dd7f9d73533f35048cee3a95d555c7473cb1ffcffb3ef06f6f9270b08f",
-      "proof_set_root": "13639ecda36471298aed79bb089995e09313d74b0fd6255fdd9bb806e1994d40",
-      "proven_lane_root": "823913584e5676e13f3d7eea5fa1dc34fe9a0f7e71dd5322a23bd690d9205977",
-      "score_receipt_root": "c601abeca4556fdb62a3d38510318354efaf55af22a615329b2f09964690b9af",
+      "proof_set_root": "3b94dcfb2f025ce38c28e5679d8820c134d8d7799a3045350e1bdcaddb8c7c5e",
+      "proven_lane_root": "c81b97be99750e7f4ef647a1c779e2999888702a80ea5e6282f58358f675aff3",
+      "score_receipt_root": "ff385c2fd3fa11236812812eeff69abecda209bb6336192fb7cd6f86c34243f3",
       "awarded_mask": 27,
       "score": 4,
       "evidence_roots": {
-        "accepted_extraction": "38b0958d12e3b81cb75798768f54a8868dc7118a89b8a835bbfa6eb2acce5f59",
-        "born_red_defect_test": "2671e84719b7b561dd5ceb6730dd251eac6d05f06a2b47fa1354f01f63c3a41c",
-        "independent_reproduction_withheld": "2357e9fdca6c62af5943342e2f68f34e2f8a218af99067fe2651b582f98d8135",
-        "exact_capsule_rederivation": "c9e46d4f7c09615bf7c4bb32be8d5dc2c6a6c1fbfdc04e57dde3deb0e0a514b2",
-        "compatibility_maintenance": "fc3663770efc64f5dbcee6edb69db3af1aada976824dec90d7a6f9f8a4e9a6ab"
+        "accepted_extraction": "609f9301266a1f5e835527219a8452e58301dcf6e542bb930156d20db854d3c6",
+        "born_red_defect_test": "1bf27135e5e86166348ae82e0ce10debcede1b01b648f2c32fe05a57fd2ee6ad",
+        "independent_reproduction_withheld": "4c12b93150cc40df13eaed12da98be1bcbfc0b076b980e08a6fe017e2e32a466",
+        "exact_capsule_rederivation": "d5762713cb33f764b1ef5fd36e3f2988f6c098ab6bc8f9de8802d7a135456132",
+        "compatibility_maintenance": "c0c5a16d5cb7988d736edf2867ff247cc2484e52313e6a86d574410db5e44cd4"
       },
       "work_receipt_roots": {
-        "accepted_extraction": "6207723eae61c3b44ff433025ce7bb4fde4a3921aaa71688bd93f8da7f30ff49",
-        "born_red_defect_test": "739fe5189f1548c3467e6ca1a3708a4c91879c5dafeeaab36ac17a46897fc72e",
-        "independent_reproduction_local_only": "a68f9c4a794218d5c88f9d8fb9f462b3de72b1edc9ec56babfd6a266cab5445d",
-        "exact_capsule_rederivation": "ea030181f3b5ebe96984dde6b71fbab06d740667d30fc7f1f03b927a23887db0",
-        "compatibility_maintenance": "f863e0aebec3606c3ca28824566e99924ec1054b556af78e7c927768021b2fbe"
+        "accepted_extraction": "32b8626469a3edfd4f4ae1b5a48aa1b6ea87a80584a01170c193c42c1cccd0fa",
+        "born_red_defect_test": "a2ac150605f0d04e1dd509d80212ee0bd0c8b66eafd7cf288120c6424fc1b688",
+        "independent_reproduction_local_only": "b00a2e4ad0a65e3a4fc8c39209193ba8681ca5f82053d7edd18656e5f27b84c5",
+        "exact_capsule_rederivation": "c56f433188bc4512c825497df2c0e5dc2d02be3390e3f20e9a4fb0fc19aec275",
+        "compatibility_maintenance": "ed53e1d7fbc7211d018926f54cf609bb821d7904aeaa674b056fe1b3908b29e7"
       }
     }
   ],

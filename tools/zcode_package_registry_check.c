@@ -28,6 +28,19 @@ static bool root_equal(const uint8_t root[32], const char *expected)
            memcmp(root, decoded, sizeof(decoded)) == 0;
 }
 
+static void print_derived_roots(const struct vcs_package_prepared *prepared)
+{
+    char content[65], release[65], recipe[65], lock[65], capsule[65];
+    zcl_hex_encode(prepared->package_root, 32, content);
+    zcl_hex_encode(prepared->signing_digest, 32, release);
+    zcl_hex_encode(prepared->recipe_root, 32, recipe);
+    zcl_hex_encode(prepared->lock_root, 32, lock);
+    zcl_hex_encode(prepared->capsule_root, 32, capsule);
+    fprintf(stderr,
+            "  derived content=%s release=%s recipe=%s lock=%s capsule=%s\n",
+            content, release, recipe, lock, capsule);
+}
+
 int main(void)
 {
     static const char pubkey_hex[] =
@@ -62,13 +75,16 @@ int main(void)
         else if (ok)
             ok = prepared.lock.count == 2 &&
                  root_equal(prepared.lock.nodes[0].root, rows[i].dependency);
-        vcs_package_prepared_free(&prepared);
         if (!ok) {
             fprintf(stderr, "zcode registry mismatch: %s (%s: %s)\n",
                     rows[i].name, vcs_package_prepare_error_string(err),
                     detail);
+            if (err == VCS_PACKAGE_PREPARE_OK)
+                print_derived_roots(&prepared);
+            vcs_package_prepared_free(&prepared);
             return 1;
         }
+        vcs_package_prepared_free(&prepared);
     }
     puts("zcode package registry: 3 roots and exact dependency DAG rederived");
     return 0;

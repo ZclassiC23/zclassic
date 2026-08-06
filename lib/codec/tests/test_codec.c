@@ -31,5 +31,15 @@ int main(void)
         !zcl_codec_read_u16_string(&reader, text, sizeof(text), &text_len) ||
         text_len != 3 || strcmp(text, "c23") != 0 ||
         !zcl_codec_reader_finish(&reader)) return 3;
+    uint8_t short_prefix[1] = {0};
+    zcl_codec_reader_init(&reader, short_prefix, sizeof(short_prefix));
+    text_len = 77;
+    if (zcl_codec_read_u16_bytes(&reader, NULL, 0, &text_len) ||
+        reader.error != ZCL_CODEC_BOUNDS || reader.position != 0 ||
+        text_len != 77) return 4;
+    uint8_t empty_wire[2] = {0, 0};
+    zcl_codec_reader_init(&reader, empty_wire, sizeof(empty_wire));
+    if (!zcl_codec_read_u16_bytes(&reader, NULL, 0, &text_len) ||
+        text_len != 0 || !zcl_codec_reader_finish(&reader)) return 5;
     return 0;
 }

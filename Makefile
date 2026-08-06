@@ -1902,6 +1902,7 @@ check-zcode-package-registry: $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN)
 print-zcode-monolith-lib-sources:
 	@printf '%s\n' $(LIB_SRCS)
 $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN): tools/zcode_package_registry_check.c \
+        config/zcode_package_registry.def \
 		lib/vcs/src/package_prepare.c lib/vcs/src/package_manifest.c \
 		lib/vcs/src/package_recipe.c lib/vcs/src/package_deps.c \
 		lib/vcs/src/package_capsule.c lib/vcs/src/package_release.c \
@@ -1912,7 +1913,7 @@ $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN): tools/zcode_package_registry_check.c \
 	$(CC) -std=c23 -D_GNU_SOURCE -O0 -Wall -Wextra -Werror -pedantic \
 	    -Ilib/vcs/include -Ilib/json/include -Ilib/codec/include -Ilib/sha3/include \
 	    -Ilib/crypto/include -Ilib/base/include -Ilib/util/include \
-	    -Ilib/platform/include -Ivendor/include -o $@ $^ \
+	    -Ilib/platform/include -Ivendor/include -o $@ $(filter %.c,$^) \
 	    -Lvendor/lib -l:libsecp256k1.a -lpthread -lm
 
 tools/zcode_dev_signer: $(BIN_DIR)/zcode_dev_signer

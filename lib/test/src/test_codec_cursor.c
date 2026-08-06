@@ -73,6 +73,21 @@ static int codec_test_failures(void)
         ASSERT(w.position == before && memcmp(canary, snapshot, sizeof(canary)) == 0);
         ASSERT(w.error == ZCL_CODEC_BOUNDS);
         ASSERT(!zcl_codec_write_u8(&w, 2) && w.position == before);
+        uint8_t short_prefix[1] = {0};
+        struct zcl_codec_reader short_reader;
+        uint16_t untouched_len = 77;
+        zcl_codec_reader_init(&short_reader, short_prefix,
+                              sizeof(short_prefix));
+        ASSERT(!zcl_codec_read_u16_bytes(&short_reader, NULL, 0,
+                                         &untouched_len));
+        ASSERT(short_reader.error == ZCL_CODEC_BOUNDS &&
+               short_reader.position == 0 && untouched_len == 77);
+        uint8_t empty_wire[2] = {0, 0};
+        struct zcl_codec_reader empty_reader;
+        zcl_codec_reader_init(&empty_reader, empty_wire, sizeof(empty_wire));
+        ASSERT(zcl_codec_read_u16_bytes(&empty_reader, NULL, 0,
+                                        &untouched_len));
+        ASSERT(untouched_len == 0 && zcl_codec_reader_finish(&empty_reader));
         struct zcl_codec_reader trailing;
         zcl_codec_reader_init(&trailing, canonical, length);
         char text[16]; uint16_t text_len;

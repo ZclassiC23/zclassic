@@ -233,10 +233,11 @@ bool zcl_codec_read_u16_bytes(struct zcl_codec_reader *reader, void *out,
             reader->error = ZCL_CODEC_INVALID;
         return false;
     }
-    uint16_t length;
-    if (!reader_u16_payload(reader, out_capacity, &length) ||
-        (!out && length)) {
-        if (reader && !out && length && reader->error == ZCL_CODEC_OK)
+    uint16_t length = 0;
+    if (!reader_u16_payload(reader, out_capacity, &length))
+        return false;
+    if (!out && length) {
+        if (reader->error == ZCL_CODEC_OK)
             reader->error = ZCL_CODEC_INVALID;
         return false;
     }
