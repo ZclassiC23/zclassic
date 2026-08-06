@@ -47,6 +47,7 @@ static struct db_build_worker g_local_worker;
 static uint8_t g_local_secret[32];
 static uint8_t g_local_pubkey[32];
 static char g_worker_workspace[4096];
+static char g_worker_datadir[4096];
 static char g_worker_db_path[4096];
 static pthread_t g_worker_thread;
 static _Atomic bool g_worker_started;
@@ -183,7 +184,8 @@ static void *bf_worker_loop(void *arg)
         atomic_fetch_add(&g_worker_dispatches, 1);
         struct db_build_receipt receipt;
         struct zcl_result run = build_fabric_worker_execute(
-            ndb, g_worker_workspace, action.action_id, lease_id,
+            ndb, g_worker_workspace, g_worker_datadir, action.action_id,
+            lease_id,
             g_local_secret, g_local_pubkey, &receipt);
         if (run.ok)
             supervisor_progress(id, (int64_t)++completed);
@@ -217,7 +219,10 @@ struct zcl_result build_fabric_runtime_register(bool worker_enabled,
             return ZCL_ERR(-1, "build worker cannot resolve its workspace");
         int dbn = snprintf(g_worker_db_path, sizeof(g_worker_db_path),
                            "%s/node.db", datadir);
-        if (dbn <= 0 || (size_t)dbn >= sizeof(g_worker_db_path))
+        int ddn = snprintf(g_worker_datadir, sizeof(g_worker_datadir),
+                           "%s", datadir);
+        if (dbn <= 0 || (size_t)dbn >= sizeof(g_worker_db_path) ||
+            ddn <= 0 || (size_t)ddn >= sizeof(g_worker_datadir))
             return ZCL_ERR(-1, "build worker database path is too long");
         ZCL_CHECK(build_fabric_worker_identity_load(
             datadir, &g_local_worker, g_local_secret, g_local_pubkey));

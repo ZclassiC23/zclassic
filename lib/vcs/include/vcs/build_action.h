@@ -10,6 +10,7 @@
 
 #define VCS_BUILD_TARGET_V1 "linux-x86_64-v3"
 #define VCS_BUILD_ACTION_KIND_V1 "c23.compile.preprocessed.v1"
+#define VCS_BUILD_ACTION_KIND_PACKAGE_V1 "c23.package.recipe.v1"
 #define VCS_BUILD_ACTION_KIND_TEST_V1 "c23.package.test.v1"
 #define VCS_BUILD_ACTION_KIND_FUZZ_V1 "c23.package.fuzz.v1"
 #define VCS_BUILD_ACTION_KIND_BENCHMARK_V1 "c23.benchmark.v1"
@@ -21,6 +22,9 @@
 #define VCS_BUILD_RESOURCE_POLICY_V1 \
     "cpu=1,memory_mb=2048,timeout_s=120,network=0"
 #define VCS_BUILD_PACKAGE_VIRTUAL_ROOT_V1 "/zbuild/package"
+#define VCS_BUILD_PACKAGE_OUTPUT_V1 "build-report"
+#define VCS_BUILD_PACKAGE_RESOURCE_POLICY_V1 \
+    "cpu=1,memory_mb=16384,timeout_s=600,network=0"
 #define VCS_BUILD_TEST_OUTPUT_V1 "test.evidence.v1"
 #define VCS_BUILD_FUZZ_OUTPUT_V1 "fuzz.evidence.v1"
 #define VCS_BUILD_BENCHMARK_OUTPUT_V1 "benchmark_result.v1"

@@ -228,11 +228,15 @@ payload only after every binding matches. It repeats that check before receipt
 publication. An outside executable, altered payload, changed path, wrong work
 kind, moved lock/test root, or stale candidate is a named local fallback.
 
-This proves exactly which candidate-addressed bytes were compiled or run. It
-does not yet prove that an executable manifest member was produced from the
-candidate's declarative recipe. Replacing executable inputs with recipe-derived
-compile/link artifacts is the next build-graph slice; current receipts must not
-be described as source-derived executable proofs.
+This proves exactly which candidate-addressed bytes were compiled or run. The
+separate fixed `package_action_input.v1` has no path or payload field: it binds
+task, candidate, candidate/base source, dependency lock, and acceptance recipe
+roots. `c23.package.recipe.v1` reconstructs every candidate file from ZVCS CAS,
+verifies each installed locked dependency against its build report and actual
+output bytes, and gives the external confined verifier only that tree plus the
+canonical recipe. Its build report is source-derived build/test evidence; the
+older exact-test/fuzz actions remain honestly labeled as executions of
+candidate-manifest executable members.
 
 ### `proof_set.v1`
 
@@ -310,10 +314,11 @@ candidate without a shared checkout.
 
 The combined metadata and candidate tree remain under the package store's
 existing 64 MiB anti-abuse cap and the task's smaller context ceiling. The
-action envelope still selects a candidate-manifest preprocessed TU, exact test
+action envelope selects a candidate-manifest preprocessed TU, exact test
 executable, or exact deterministic fuzz executable according to the action
-kind. Recipe-derived whole-package actions are the next executor boundary;
-the complete tree transport does not claim that milestone by itself.
+kind. The package action instead carries the closed path-free package input;
+the receiving peer derives that action kind from the input schema, reconstructs
+the full tree, and applies the same recipe and dependency checks locally.
 
 The receiving peer re-derives the task, candidate, policy, input, toolchain,
 and `build_action.v1` roots and compares every one to the signed request before
@@ -367,8 +372,10 @@ ZBuild action. It never accepts a caller-supplied path or command.
   live lease cannot be stolen.
 - [x] Execute only registered fixed action kinds. Compile consumes one exact
   candidate-manifest preprocessed TU followed by fixed `cc -x cpp-output -c`.
-  Test executes one exact candidate-manifest Linux x86-64 executable with no
-  arguments and emits a
+  Package reconstructs the complete candidate tree from CAS, verifies the
+  exact installed dependency closure, then compiles, links, and tests only the
+  canonical recipe under the external verifier. Test executes one exact
+  candidate-manifest Linux x86-64 executable with no arguments and emits a
   closed 84-byte verdict wire. Fuzz executes one exact executable for the
   policy's canonical seed range `[0,N)`, supplies only `--seed=N` plus the
   matching scrubbed environment value, stops on the first failure, and emits a
@@ -388,9 +395,11 @@ ZBuild action. It never accepts a caller-supplied path or command.
   candidate file travels as an ordinary content.v2 member and must reconstruct
   the exact candidate ZVCS manifest before remote ZBuild admission.
 - [x] Store output chunks and a build-artifact manifest in the existing CAS,
-  then sign `work_receipt.v1` and the existing ZBuild receipt projection. The
-  database projection binds the canonical receipt root; the wire remains CAS
-  authority.
+  then sign `work_receipt.v1` and the existing ZBuild receipt projection. A
+  package action stores the canonical build report and all declared outputs;
+  dependency archives have fixed lock order and per-package lexical order.
+  The database projection binds the canonical receipt root; the wire remains
+  CAS authority.
 - [x] On timeout, crash, cancellation, malformed output, stale state, or sandbox
   failure: record a named outcome and use the existing local fallback policy;
   bounded action deadlines prevent an indefinite wait.
@@ -428,8 +437,9 @@ their own policy.
 
 `zcode improve mode=admit` derives the candidate tree and patch from
 `candidate_workspace`, admits the exact candidate-bound action input, captures
-the GCC capsule, and queues a candidate-bound compile, test, or deterministic
-fuzz action. A remote request additionally packages the complete tree in its
+the GCC capsule, and queues a candidate-bound preprocessed compile,
+recipe-derived package, exact-test, or deterministic-fuzz action. A remote
+request additionally packages the complete tree in its
 bounded content.v2 context. An explicit admit must carry `planned_task_root`,
 `planned_context_root`, and the same `write_scope_csv`; source, task, context,
 scope, candidate, and patch are recomputed before ZBuild admission. Omitting
@@ -439,12 +449,12 @@ candidate. Before submission it creates or re-verifies the exact candidate's
 signed FRONTIER receipt; evidence aggregation follows task/candidate/policy roots across
 their distinct durable jobs. A local worker emits the canonical signed work
 receipt. With `remote_peer`, it builds the action-neutral canonical context
-package itself and signs and queues the exact compile/test/fuzz request for that
-user-selected advertised peer; an unavailable package store, peer, or
+package itself and signs and queues the exact compile/package/test/fuzz
+request for that user-selected advertised peer; an unavailable package store, peer, or
 capability reports `LOCAL_FALLBACK` and preserves the local action. Adapter
-invocation, fixed review execution, and publication are still separate missing
-stages and are not claimed by command discovery. Explicit lane acceptance is
-live through `zcode accept`, but does not itself publish a release.
+invocation and fixed review execution remain separate missing stages. Explicit
+lane acceptance is live through `zcode accept`; an accepted PROVEN lane can now
+be planned and committed through the offline-signed publish workflow.
 
 `zcode evidence` re-reads every canonical receipt from CAS, rechecks task,
 candidate, fixed action kind, input, policy, toolchain, signature, expiry,
@@ -480,7 +490,8 @@ release-byte identity from a translation-unit object.
   proof-set root is stored for later `review.v1` binding.
 - [x] Advertise bounded action kinds, toolchain capsule, target, confinement
   facts, resource ceilings, queue headroom, and expiry. The live worker
-  advertises compile, exact-test, and deterministic-fuzz execution. Review
+  advertises preprocessed compile, recipe-package, exact-test, and
+  deterministic-fuzz execution. Review
   remains unadvertised until an executor can actually author a review.
 - The requester owns job selection, leases, cancellation, quorum, and local
   fallback. There is no global scheduler.

@@ -460,7 +460,8 @@ struct zcl_result build_fabric_proof_evaluate(
     size_t selected = SIZE_MAX, best = 0, best_ties = 0;
     for (size_t i = 0; i < valid_count; i++) {
         if (valid[i].local &&
-            valid[i].work_kind == VCS_ZCODE_WORK_BUILD) {
+            valid[i].work_kind == VCS_ZCODE_WORK_BUILD &&
+            strcmp(valid[i].row.action_id, action_id) == 0) {
             selected = i;
             break;
         }

@@ -561,7 +561,7 @@ static int test_bf_confined_worker(void)
         ASSERT(claimed);
         struct db_build_receipt receipt;
         struct zcl_result executed = build_fabric_worker_execute(
-            &ndb, dir, action_id, id_d, secret, pubkey, &receipt);
+            &ndb, dir, dir, action_id, id_d, secret, pubkey, &receipt);
         if (!executed.ok)
             printf("worker detail: %s\n", executed.message);
         ASSERT(executed.ok);
@@ -658,7 +658,7 @@ static int test_bf_confined_test_worker(void)
         ASSERT(claimed);
         struct db_build_receipt receipt;
         struct zcl_result executed = build_fabric_worker_execute(
-            &ndb, dir, action_id, id_d, secret, pubkey, &receipt);
+            &ndb, dir, dir, action_id, id_d, secret, pubkey, &receipt);
         if (!executed.ok) printf("test worker detail: %s\n", executed.message);
         ASSERT(executed.ok);
         ASSERT_EQ(receipt.exit_status, 0);
@@ -833,6 +833,9 @@ static int test_bf_content_contracts(void)
         ASSERT(vcs_build_action_v1_root(&action, action_b));
         ASSERT(memcmp(action_a, action_b, 32) != 0);
         ASSERT_EQ(vcs_build_action_v1_work_kind(VCS_BUILD_ACTION_KIND_V1),
+                  VCS_ZCODE_WORK_BUILD);
+        ASSERT_EQ(vcs_build_action_v1_work_kind(
+                      VCS_BUILD_ACTION_KIND_PACKAGE_V1),
                   VCS_ZCODE_WORK_BUILD);
         ASSERT_EQ(vcs_build_action_v1_work_kind(
                       VCS_BUILD_ACTION_KIND_TEST_V1),

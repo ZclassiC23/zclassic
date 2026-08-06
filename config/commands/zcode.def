@@ -175,16 +175,15 @@ ZCL_COMMAND_READY_COMMAND(
     "agent_context.v1, and write_scope.v1 roots; it launches nothing. "
     "mode=admit names the planned roots, same write_scope_csv, and "
     "candidate_workspace. It derives the tree/patch, enforces scope/limits, "
-    "and queues ZBuild. The task binds source, canonical lock/recipe wires, "
-    "write scope, model policy, goal, limits, and expiry. action_kind "
-    "selects only fixed compile, test, or deterministic fuzz; "
-    "fixed_input_path selects one captured candidate-relative .i or "
-    "executable; action_input.v1 binds its manifest blob and semantic roots. "
-    "No wallet/node/network authority is granted. Adapter "
-    "provenance never grants acceptance. remote_peer sends the exact "
-    "content.v2 context to that advertised peer; missing/stale capability "
-    "reports LOCAL_FALLBACK and preserves the local queued action.", 0,
-    "zcode,improve,task,agent,zbuild,proof,compile,test,fuzz",
+    "and queues ZBuild. The task binds source, lock/recipe, scope, policies, "
+    "limits, and expiry. action_kind selects fixed preprocessed compile, "
+    "recipe package, test, or deterministic fuzz. Package takes no path: its "
+    "input binds the full candidate, recipe, and dependency lock for confined "
+    "compile/test. Other actions select one captured .i or executable. No "
+    "wallet/node/network authority is granted, and adapter provenance cannot "
+    "grant acceptance. remote_peer sends the exact content.v2 context; a "
+    "missing/stale capability reports LOCAL_FALLBACK and keeps local work.", 0,
+    "zcode,improve,task,agent,zbuild,proof,compile,package,test,fuzz",
     "zcl.zcode_improve.input.v1", "zcl.zcode_improve.v1",
     "workspace,candidate_workspace,datadir,mode,planned_task_root,planned_context_root,candidate_source_sha256,source_root,dependency_lock_root,dependency_lock_hex,write_scope_root,write_scope_csv,acceptance_tests_root,acceptance_recipe_hex,model_policy_root,goal,proof_policy_hex,action_kind,fixed_input_path,fixed_input_relpath,preprocessed_path,patch_root,candidate_source_root,adapter_policy_root,author_pubkey,candidate_sequence,candidate_created_unix,profile,expires_unix,max_changed_files,max_patch_bytes,max_context_bytes,max_cpu_seconds,max_memory_bytes,max_output_bytes,context_symbol,remote_peer",
     "workspace,dependency_lock_hex,write_scope_csv,acceptance_recipe_hex,model_policy_root,goal,proof_policy_hex,expires_unix",

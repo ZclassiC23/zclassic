@@ -23,6 +23,8 @@
 #include "vcs/package_recipe.h"
 #include "vcs/package_store.h"
 #include "vcs/build_action.h"
+#include "vcs/build_artifact_manifest.h"
+#include "vcs/package_build.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_agent_context.h"
@@ -42,6 +44,7 @@
 
 #include <secp256k1.h>
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1343,12 +1346,21 @@ static int test_zd_improve_command(void)
         zcl_hex_encode(captured_source_root, 32, roots[0]);
         struct vcs_package_lock task_lock;
         vcs_package_lock_init(&task_lock);
-        task_lock.count = 1;
-        memcpy(task_lock.nodes[0].root, captured_source_root, 32);
+        uint8_t fixture_dependency_root[32];
+        zd_root(fixture_dependency_root, 209);
+        task_lock.count = 2;
+        memcpy(task_lock.nodes[0].root, fixture_dependency_root, 32);
         (void)snprintf(task_lock.nodes[0].name,
-                       sizeof(task_lock.nodes[0].name), "fixture");
+                       sizeof(task_lock.nodes[0].name), "publisher/dependency");
         (void)snprintf(task_lock.nodes[0].semver,
                        sizeof(task_lock.nodes[0].semver), "1.0.0");
+        task_lock.nodes[0].depth = 1;
+        memcpy(task_lock.nodes[1].root, captured_source_root, 32);
+        (void)snprintf(task_lock.nodes[1].name,
+                       sizeof(task_lock.nodes[1].name), "publisher/fixture");
+        (void)snprintf(task_lock.nodes[1].semver,
+                       sizeof(task_lock.nodes[1].semver), "1.0.0");
+        task_lock.nodes[1].direct_deps = 1;
         uint8_t *task_lock_wire = NULL; size_t task_lock_wire_len = 0;
         uint8_t task_lock_root[32];
         ASSERT_EQ(vcs_package_lock_serialize(
@@ -2039,8 +2051,8 @@ static int test_zd_improve_command(void)
         ASSERT(claimed);
         struct db_build_receipt receipt;
         ASSERT(build_fabric_worker_execute(
-            &ndb, workspace, action_id, lease_hex, worker_secret, worker_key,
-            &receipt).ok);
+            &ndb, workspace, workspace, action_id, lease_hex, worker_secret,
+            worker_key, &receipt).ok);
         ASSERT(strlen(receipt.work_receipt_sha3) == 64);
         uint8_t receipt_root[32], *receipt_wire = NULL;
         size_t receipt_wire_len = 0;
@@ -2060,6 +2072,274 @@ static int test_zd_improve_command(void)
         uint8_t compile_output_root[32];
         memcpy(compile_output_root, work_receipt.output_root, 32);
 
+        /* Install one receipt-checked dependency closure member. The recipe
+         * action must refuse if either this report or its output bytes drift. */
+        char dependency_hex[65], installed_dir[512], installed_lib[560];
+        char installed_archive[640], installed_report[640];
+        zcl_hex_encode(fixture_dependency_root, 32, dependency_hex);
+        (void)snprintf(installed_dir, sizeof(installed_dir),
+                       "%s/zcode/installed", workspace);
+        ASSERT(mkdir(installed_dir, 0700) == 0 || errno == EEXIST);
+        (void)snprintf(installed_dir, sizeof(installed_dir),
+                       "%s/zcode/installed/%s", workspace, dependency_hex);
+        ASSERT(mkdir(installed_dir, 0700) == 0);
+        (void)snprintf(installed_lib, sizeof(installed_lib), "%s/lib",
+                       installed_dir);
+        ASSERT(mkdir(installed_lib, 0700) == 0);
+        (void)snprintf(installed_archive, sizeof(installed_archive),
+                       "%s/libdependency.a", installed_lib);
+        static const uint8_t dependency_bytes[] = "fixed-dependency-artifact";
+        FILE *dependency_file = fopen(installed_archive, "wb");
+        ASSERT(dependency_file != NULL);
+        ASSERT(fwrite(dependency_bytes, 1, sizeof(dependency_bytes) - 1u,
+                      dependency_file) == sizeof(dependency_bytes) - 1u);
+        ASSERT(fclose(dependency_file) == 0);
+        struct vcs_package_build_receipt dependency_receipt;
+        vcs_package_build_receipt_init(&dependency_receipt);
+        memcpy(dependency_receipt.package_root, fixture_dependency_root, 32);
+        zd_root(dependency_receipt.recipe_root, 211);
+        zd_root(dependency_receipt.lock_root, 212);
+        (void)snprintf(dependency_receipt.compiler_id,
+                       sizeof(dependency_receipt.compiler_id), "gcc");
+        (void)snprintf(dependency_receipt.compiler_version,
+                       sizeof(dependency_receipt.compiler_version), "fixture");
+        (void)snprintf(dependency_receipt.flags,
+                       sizeof(dependency_receipt.flags), "-std=c23 -O1 -c");
+        dependency_receipt.result_class =
+            VCS_PACKAGE_BUILD_RESULT_BUILD_PASS;
+        dependency_receipt.isolation = VCS_PACKAGE_BUILD_ISOLATION_FULL;
+        uint8_t dependency_sha[32];
+        sha3_256(dependency_bytes, sizeof(dependency_bytes) - 1u,
+                 dependency_sha);
+        ASSERT_EQ(vcs_package_build_add_output(
+                      &dependency_receipt, "lib/libdependency.a",
+                      dependency_sha, sizeof(dependency_bytes) - 1u),
+                  VCS_PACKAGE_BUILD_OK);
+        uint8_t *dependency_report_wire = NULL;
+        size_t dependency_report_len = 0;
+        ASSERT_EQ(vcs_package_build_serialize(
+                      &dependency_receipt, &dependency_report_wire,
+                      &dependency_report_len), VCS_PACKAGE_BUILD_OK);
+        (void)snprintf(installed_report, sizeof(installed_report),
+                       "%s/build-report", installed_dir);
+        dependency_file = fopen(installed_report, "wb");
+        ASSERT(dependency_file != NULL);
+        ASSERT(fwrite(dependency_report_wire, 1, dependency_report_len,
+                      dependency_file) == dependency_report_len);
+        ASSERT(fclose(dependency_file) == 0);
+        free(dependency_report_wire);
+
+        /* The recipe-package action accepts no prebuilt executable. It
+         * rebuilds the complete candidate tree selected by the canonical
+         * recipe and emits a checked package build receipt. */
+        (void)json_push_kv_str(&input, "action_kind",
+                               VCS_BUILD_ACTION_KIND_PACKAGE_V1);
+        struct zcl_command_reply package_prebuilt_reply;
+        zcl_command_reply_init(&package_prebuilt_reply,
+                               "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &package_prebuilt_reply);
+        ASSERT_EQ(package_prebuilt_reply.exit_code,
+                  ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(package_prebuilt_reply.error.code, "BAD_ACTION_INPUT");
+        zcl_command_reply_free(&package_prebuilt_reply);
+        json_set_str((struct json_value *)json_get(
+                         &input, "fixed_input_path"), "");
+        struct zcl_command_reply package_reply;
+        zcl_command_reply_init(&package_reply, "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &package_reply);
+        ASSERT_EQ(package_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &package_reply.data, "input_schema")),
+                      "zcl.zcode.package_action_input.v1");
+        ASSERT(json_get(&package_reply.data, "fixed_input_relpath") == NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &package_reply.data, "action_kind")),
+                      VCS_BUILD_ACTION_KIND_PACKAGE_V1);
+        const char *package_action_id = json_get_str(json_get(
+            &package_reply.data, "action_id"));
+        ASSERT(package_action_id && strcmp(package_action_id, action_id) != 0);
+        char package_action_saved[65];
+        (void)snprintf(package_action_saved, sizeof(package_action_saved),
+                       "%s", package_action_id);
+        struct db_build_action package_action_row;
+        ASSERT(db_build_action_find(&ndb, package_action_saved,
+                                    &package_action_row));
+        uint8_t package_input_root[32], *package_input_wire = NULL;
+        size_t package_input_wire_len = 0;
+        ASSERT(zcl_hex_decode_lower(package_action_row.input_root_sha3,
+                                    package_input_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(
+                      workspace, package_input_root, &package_input_wire,
+                      &package_input_wire_len), 0);
+        struct vcs_zcode_package_action_input_v1 package_input;
+        ASSERT_EQ(vcs_zcode_package_action_input_parse(
+                      package_input_wire, package_input_wire_len,
+                      &package_input), VCS_ZCODE_ACTION_INPUT_OK);
+        uint8_t package_input_corrupt[
+            VCS_ZCODE_PACKAGE_ACTION_INPUT_WIRE_BYTES + 1u];
+        memcpy(package_input_corrupt, package_input_wire,
+               package_input_wire_len);
+        package_input_corrupt[package_input_wire_len] = 0;
+        struct vcs_zcode_package_action_input_v1 refused_package_input;
+        ASSERT_EQ(vcs_zcode_package_action_input_parse(
+                      package_input_corrupt, package_input_wire_len + 1u,
+                      &refused_package_input),
+                  VCS_ZCODE_ACTION_INPUT_SHAPE);
+        package_input_corrupt[10] = 1;
+        ASSERT_EQ(vcs_zcode_package_action_input_parse(
+                      package_input_corrupt, package_input_wire_len,
+                      &refused_package_input),
+                  VCS_ZCODE_ACTION_INPUT_SHAPE);
+        free(package_input_wire);
+        ASSERT_EQ(vcs_zcode_package_action_input_validate_for_candidate(
+                      workspace, &task, &candidate, &package_input,
+                      task_root, candidate_root),
+                  VCS_ZCODE_ACTION_INPUT_OK);
+        package_input.base_source_root[0] ^= 1u;
+        ASSERT_EQ(vcs_zcode_package_action_input_validate_for_candidate(
+                      workspace, &task, &candidate, &package_input,
+                      task_root, candidate_root),
+                  VCS_ZCODE_ACTION_INPUT_BINDING);
+        uint8_t package_lease_root[32]; char package_lease_hex[65];
+        zd_root(package_lease_root, 64);
+        zcl_hex_encode(package_lease_root, 32, package_lease_hex);
+        claimed = false;
+        ASSERT(build_fabric_claim(
+            &ndb, worker.worker_id, package_lease_hex, now, 300,
+            &package_action_row, &claimed).ok);
+        ASSERT(claimed);
+        struct db_build_receipt package_receipt;
+        struct zcl_result package_executed = build_fabric_worker_execute(
+            &ndb, workspace, workspace, package_action_saved,
+            package_lease_hex, worker_secret, worker_key, &package_receipt);
+        if (!package_executed.ok)
+            printf("package worker detail: %s\n", package_executed.message);
+        ASSERT(package_executed.ok);
+        ASSERT_EQ(package_receipt.exit_status, 0);
+        ASSERT_STR_EQ(package_receipt.confinement,
+                      "landlock=1,seccomp=1,rlimits=1,network=0,package=recipe,source=cas,dependencies=receipted");
+        uint8_t package_work_root[32];
+        ASSERT(zcl_hex_decode_lower(package_receipt.work_receipt_sha3,
+                                    package_work_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(
+                      workspace, package_work_root, &receipt_wire,
+                      &receipt_wire_len), 0);
+        ASSERT_EQ(vcs_zcode_work_receipt_parse(
+                      receipt_wire, receipt_wire_len, &work_receipt),
+                  VCS_ZCODE_DEV_OK);
+        free(receipt_wire); receipt_wire = NULL;
+        ASSERT_EQ(work_receipt.work_kind, VCS_ZCODE_WORK_BUILD);
+        ASSERT_EQ(work_receipt.status, VCS_ZCODE_WORK_PASS);
+        uint8_t *artifact_wire = NULL; size_t artifact_wire_len = 0;
+        ASSERT_EQ(vcs_object_load_raw(
+                      workspace, work_receipt.output_root, &artifact_wire,
+                      &artifact_wire_len), 0);
+        struct vcs_build_artifact_manifest_v1 artifact;
+        ASSERT(vcs_build_artifact_manifest_v1_parse(
+            artifact_wire, artifact_wire_len, &artifact));
+        free(artifact_wire);
+        ASSERT_EQ(artifact.chunk_count, 1);
+        uint8_t *build_report = NULL; size_t build_report_len = 0;
+        ASSERT_EQ(vcs_object_load_raw(
+                      workspace, artifact.chunk_sha3[0], &build_report,
+                      &build_report_len), 0);
+        ASSERT(vcs_build_artifact_manifest_v1_verify_chunk(
+            &artifact, 0, build_report, build_report_len));
+        struct vcs_package_build_receipt package_build;
+        ASSERT_EQ(vcs_package_build_parse(
+                      build_report, build_report_len, &package_build),
+                  VCS_PACKAGE_BUILD_OK);
+        free(build_report);
+        ASSERT(memcmp(package_build.package_root,
+                      candidate.candidate_source_root, 32) == 0);
+        ASSERT(memcmp(package_build.recipe_root,
+                      task.acceptance_tests_root, 32) == 0);
+        ASSERT(memcmp(package_build.lock_root,
+                      task.dependency_lock_root, 32) == 0);
+        ASSERT_EQ(package_build.dep_count, 1);
+        ASSERT(memcmp(package_build.dep_roots[0], fixture_dependency_root,
+                      32) == 0);
+        ASSERT_EQ(package_build.result_class,
+                  VCS_PACKAGE_BUILD_RESULT_BUILD_PASS);
+        ASSERT_EQ(package_build.output_count, 1);
+        ASSERT_STR_EQ(package_build.outputs[0].path,
+                      "lib/libfixture.a");
+
+        dependency_file = fopen(installed_archive, "ab");
+        ASSERT(dependency_file != NULL);
+        ASSERT(fputc('x', dependency_file) == 'x');
+        ASSERT(fclose(dependency_file) == 0);
+        (void)json_push_kv_int(&input, "candidate_sequence", 2);
+        dependency_file = fopen(candidate_source_path, "wb");
+        ASSERT(dependency_file != NULL);
+        static const char candidate_source_v2[] =
+            "int context_widget(int x) { return x + 3; }\n";
+        ASSERT(fwrite(candidate_source_v2, 1,
+                      sizeof(candidate_source_v2) - 1u, dependency_file) ==
+               sizeof(candidate_source_v2) - 1u);
+        ASSERT(fclose(dependency_file) == 0);
+        json_set_str((struct json_value *)json_get(&input, "patch_root"), "");
+        json_set_str((struct json_value *)json_get(
+                         &input, "candidate_source_root"), "");
+        json_set_str((struct json_value *)json_get(
+                         &input, "candidate_source_sha256"), "");
+        struct zcl_command_reply dependency_drift_reply;
+        zcl_command_reply_init(&dependency_drift_reply,
+                               "zcl.zcode_improve.v1");
+        zcl_native_handle_zcode_improve(&request, &dependency_drift_reply);
+        if (dependency_drift_reply.exit_code != ZCL_COMMAND_EXIT_OK)
+            printf("dependency drift admit: %s: %s\n",
+                   dependency_drift_reply.error.code,
+                   dependency_drift_reply.error.message);
+        ASSERT_EQ(dependency_drift_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        dependency_file = fopen(candidate_source_path, "wb");
+        ASSERT(dependency_file != NULL);
+        ASSERT(fwrite(candidate_source, 1, sizeof(candidate_source) - 1u,
+                      dependency_file) == sizeof(candidate_source) - 1u);
+        ASSERT(fclose(dependency_file) == 0);
+        json_set_str((struct json_value *)json_get(&input, "patch_root"),
+                     patch_saved);
+        json_set_str((struct json_value *)json_get(
+                         &input, "candidate_source_root"),
+                     candidate_source_saved);
+        json_set_str((struct json_value *)json_get(
+                         &input, "candidate_source_sha256"), sha256_saved);
+        const char *dependency_drift_action = json_get_str(json_get(
+            &dependency_drift_reply.data, "action_id"));
+        ASSERT(dependency_drift_action &&
+               strcmp(dependency_drift_action, package_action_saved) != 0);
+        struct db_build_action dependency_drift_row;
+        ASSERT(db_build_action_find(&ndb, dependency_drift_action,
+                                    &dependency_drift_row));
+        uint8_t drift_lease_root[32]; char drift_lease_hex[65];
+        zd_root(drift_lease_root, 65);
+        zcl_hex_encode(drift_lease_root, 32, drift_lease_hex);
+        claimed = false;
+        ASSERT(build_fabric_claim(
+            &ndb, worker.worker_id, drift_lease_hex, now, 300,
+            &dependency_drift_row, &claimed).ok);
+        ASSERT(claimed);
+        struct db_build_receipt refused_dependency_receipt;
+        struct zcl_result dependency_refused = build_fabric_worker_execute(
+            &ndb, workspace, workspace, dependency_drift_action,
+            drift_lease_hex, worker_secret, worker_key,
+            &refused_dependency_receipt);
+        ASSERT(!dependency_refused.ok);
+        ASSERT(strstr(dependency_refused.message,
+                      "dependency-output-mismatch") != NULL);
+        ASSERT(db_build_action_find(&ndb, dependency_drift_action,
+                                    &dependency_drift_row));
+        ASSERT_STR_EQ(dependency_drift_row.state, "LOCAL_FALLBACK");
+        zcl_command_reply_free(&dependency_drift_reply);
+        dependency_file = fopen(installed_archive, "wb");
+        ASSERT(dependency_file != NULL);
+        ASSERT(fwrite(dependency_bytes, 1, sizeof(dependency_bytes) - 1u,
+                      dependency_file) == sizeof(dependency_bytes) - 1u);
+        ASSERT(fclose(dependency_file) == 0);
+        json_set_int((struct json_value *)json_get(
+                         &input, "candidate_sequence"), 1);
+        zcl_command_reply_free(&package_reply);
+
         /* Reuse the exact candidate timestamp to queue a second fixed proof
          * action in a distinct job. Evidence aggregation is candidate-bound,
          * not accidentally job-bound. */
@@ -2068,8 +2348,8 @@ static int test_zd_improve_command(void)
                   candidate_created);
         json_set_str((struct json_value *)json_get(
                          &input, "fixed_input_path"), candidate_true);
-        (void)json_push_kv_str(&input, "action_kind",
-                               VCS_BUILD_ACTION_KIND_TEST_V1);
+        json_set_str((struct json_value *)json_get(&input, "action_kind"),
+                     VCS_BUILD_ACTION_KIND_TEST_V1);
         struct zcl_command_reply test_reply;
         zcl_command_reply_init(&test_reply, "zcl.zcode_improve.v1");
         zcl_native_handle_zcode_improve(&request, &test_reply);
@@ -2102,8 +2382,8 @@ static int test_zd_improve_command(void)
         ASSERT(claimed);
         struct db_build_receipt local_test_receipt;
         ASSERT(build_fabric_worker_execute(
-            &ndb, workspace, test_action_id, test_lease_hex, worker_secret,
-            worker_key, &local_test_receipt).ok);
+            &ndb, workspace, workspace, test_action_id, test_lease_hex,
+            worker_secret, worker_key, &local_test_receipt).ok);
         uint8_t local_test_receipt_root[32];
         ASSERT(zcl_hex_decode_lower(local_test_receipt.work_receipt_sha3,
                                     local_test_receipt_root, 32));
@@ -2154,7 +2434,7 @@ static int test_zd_improve_command(void)
         ASSERT(claimed);
         struct db_build_receipt local_fuzz_receipt;
         ASSERT(build_fabric_worker_execute(
-            &ndb, workspace, local_fuzz_action_id, fuzz_lease_hex,
+            &ndb, workspace, workspace, local_fuzz_action_id, fuzz_lease_hex,
             worker_secret, worker_key, &local_fuzz_receipt).ok);
         uint8_t local_fuzz_receipt_root[32];
         ASSERT(zcl_hex_decode_lower(local_fuzz_receipt.work_receipt_sha3,
@@ -2195,7 +2475,7 @@ static int test_zd_improve_command(void)
         ASSERT(claimed);
         struct db_build_receipt fuzz_fail_receipt;
         ASSERT(build_fabric_worker_execute(
-            &ndb, workspace, fuzz_fail_action_id, fail_lease_hex,
+            &ndb, workspace, workspace, fuzz_fail_action_id, fail_lease_hex,
             worker_secret, worker_key, &fuzz_fail_receipt).ok);
         ASSERT_EQ(fuzz_fail_receipt.exit_status, 1);
         ASSERT(db_build_action_find(&ndb, fuzz_fail_action_id,

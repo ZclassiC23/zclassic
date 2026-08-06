@@ -738,12 +738,14 @@ void zcl_native_handle_zcode_improve(
     const char *action_kind = zdev_str(request->input, "action_kind");
     if (!action_kind || !action_kind[0])
         action_kind = VCS_BUILD_ACTION_KIND_V1;
+    bool package_action =
+        strcmp(action_kind, VCS_BUILD_ACTION_KIND_PACKAGE_V1) == 0;
     uint8_t work_kind = vcs_build_action_v1_work_kind(action_kind);
     if (work_kind != VCS_ZCODE_WORK_BUILD &&
         work_kind != VCS_ZCODE_WORK_TEST &&
         work_kind != VCS_ZCODE_WORK_FUZZ) {
         zdev_fail(reply, "BAD_ACTION_KIND",
-                  "action_kind must name the fixed compile, test, or fuzz executor");
+                  "action_kind must name the fixed compile, recipe-package, test, or fuzz executor");
         return;
     }
     const char *fixed_input = zdev_str(request->input, "fixed_input_path");
@@ -765,11 +767,19 @@ void zcl_native_handle_zcode_improve(
           !lock_hex || !lock_hex[0] || !recipe_hex || !recipe_hex[0])) ||
         (explicit_admit &&
          (!candidate_workspace || !candidate_workspace[0])) ||
-        (!plan_only && !fixed_input && !fixed_input_relpath)) {
+        (!plan_only && !package_action && !fixed_input &&
+         !fixed_input_relpath)) {
         zdev_fail(reply, "MISSING_INPUT",
                   plan_only
                     ? "plan requires workspace, goal, proof policy, lock/recipe wires, and context_symbol"
                     : "explicit admit requires planned roots, candidate_workspace, context symbol, and a candidate-relative fixed input");
+        return;
+    }
+    if (package_action &&
+        ((fixed_input && fixed_input[0]) ||
+         (fixed_input_relpath && fixed_input_relpath[0]))) {
+        zdev_fail(reply, "BAD_ACTION_INPUT",
+                  "recipe-package actions derive the whole candidate tree and accept no fixed executable");
         return;
     }
     char workspace[ZDEV_PATH_MAX];
@@ -1059,26 +1069,47 @@ void zcl_native_handle_zcode_improve(
             vcs_zcode_task_authority_result_string(task_authority));
         return;
     }
-    char input_path[VCS_PATH_MAX + 1u];
-    if (!zdev_candidate_input_path(
-            candidate_workspace, fixed_input, fixed_input_relpath,
-            input_path, reply))
-        return;
-    struct vcs_zcode_action_input_v1 bound_input;
-    enum vcs_zcode_action_input_result input_result =
-        vcs_zcode_action_input_derive_cas(
+    char input_path[VCS_PATH_MAX + 1u] = {0};
+    uint8_t *input_wire = NULL; size_t input_len = 0; uint8_t input_root[32];
+    enum vcs_zcode_action_input_result input_result;
+    const char *input_schema;
+    if (package_action) {
+        struct vcs_zcode_package_action_input_v1 package_input;
+        input_result = vcs_zcode_package_action_input_derive(
+            workspace, task_root, candidate_root, &task, &candidate,
+            &package_input);
+        input_len = VCS_ZCODE_PACKAGE_ACTION_INPUT_WIRE_BYTES;
+        input_wire = zcl_malloc(input_len, "zcode.package_action_input");
+        if (input_result == VCS_ZCODE_ACTION_INPUT_OK && !input_wire)
+            input_result = VCS_ZCODE_ACTION_INPUT_ALLOC;
+        if (input_result == VCS_ZCODE_ACTION_INPUT_OK)
+            input_result = vcs_zcode_package_action_input_serialize(
+                &package_input, input_wire);
+        if (input_result == VCS_ZCODE_ACTION_INPUT_OK)
+            input_result = vcs_zcode_package_action_input_root(
+                &package_input, input_root);
+        input_schema = "zcl.zcode.package_action_input.v1";
+    } else {
+        if (!zdev_candidate_input_path(
+                candidate_workspace, fixed_input, fixed_input_relpath,
+                input_path, reply))
+            return;
+        struct vcs_zcode_action_input_v1 bound_input;
+        input_result = vcs_zcode_action_input_derive_cas(
             workspace, task_root, candidate_root, &task, &candidate,
             work_kind, input_path, &bound_input);
-    uint8_t *input_wire = NULL; size_t input_len = 0; uint8_t input_root[32];
-    if (input_result == VCS_ZCODE_ACTION_INPUT_OK)
-        input_result = vcs_zcode_action_input_serialize(
-            &bound_input, &input_wire, &input_len);
+        if (input_result == VCS_ZCODE_ACTION_INPUT_OK)
+            input_result = vcs_zcode_action_input_serialize(
+                &bound_input, &input_wire, &input_len);
+        if (input_result == VCS_ZCODE_ACTION_INPUT_OK)
+            input_result = vcs_zcode_action_input_root(
+                &bound_input, input_root);
+        vcs_zcode_action_input_free(&bound_input);
+        input_schema = "zcl.zcode.action_input.v1";
+    }
     if (input_result == VCS_ZCODE_ACTION_INPUT_OK &&
         input_len > task.max_context_bytes)
         input_result = VCS_ZCODE_ACTION_INPUT_LIMIT;
-    if (input_result == VCS_ZCODE_ACTION_INPUT_OK)
-        input_result = vcs_zcode_action_input_root(&bound_input, input_root);
-    vcs_zcode_action_input_free(&bound_input);
     uint8_t candidate_current[32];
     bool candidate_stable = !explicit_admit ||
         (vcs_tree_capture_into(candidate_workspace, workspace,
@@ -1271,9 +1302,9 @@ void zcl_native_handle_zcode_improve(
     zdev_push_root(&reply->data, "toolchain_capsule_root",
                    task.toolchain_capsule_root);
     zdev_push_root(&reply->data, "input_root", input_root);
-    (void)json_push_kv_str(&reply->data, "fixed_input_relpath", input_path);
-    (void)json_push_kv_str(&reply->data, "input_schema",
-                           "zcl.zcode.action_input.v1");
+    if (!package_action)
+        (void)json_push_kv_str(&reply->data, "fixed_input_relpath", input_path);
+    (void)json_push_kv_str(&reply->data, "input_schema", input_schema);
     (void)json_push_kv_str(&reply->data, "job_id", job.job_id);
     (void)json_push_kv_str(&reply->data, "action_id", action.action_id);
     (void)json_push_kv_str(&reply->data, "action_kind", action_kind);
