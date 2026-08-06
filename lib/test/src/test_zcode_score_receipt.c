@@ -16,6 +16,7 @@
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_contributor_binding.h"
 #include "vcs/zcode_creation_attribution.h"
+#include "vcs/zcode_epoch_creation.h"
 #include "vcs/zcode_score_receipt.h"
 
 #include <stdlib.h>
@@ -659,6 +660,9 @@ struct creation_callback_fixture {
     bool duplicate;
     uint64_t opening_height;
     uint8_t opening_hash[32];
+    uint64_t maturity_height;
+    uint8_t maturity_hash[32];
+    uint64_t expected_award_atoms;
 };
 
 static bool creation_test_anchor(void *opaque, uint64_t height,
@@ -666,8 +670,10 @@ static bool creation_test_anchor(void *opaque, uint64_t height,
 {
     const struct creation_callback_fixture *fixture = opaque;
     return fixture && fixture->anchor_active &&
-           height == fixture->opening_height &&
-           memcmp(hash, fixture->opening_hash, 32) == 0;
+           ((height == fixture->opening_height &&
+             memcmp(hash, fixture->opening_hash, 32) == 0) ||
+            (height == fixture->maturity_height &&
+             memcmp(hash, fixture->maturity_hash, 32) == 0));
 }
 
 static bool creation_test_duplicate(void *opaque,
@@ -678,6 +684,19 @@ static bool creation_test_duplicate(void *opaque,
     (void)candidate_root;
     (void)attribution_root;
     return fixture && fixture->duplicate;
+}
+
+static bool creation_test_award(
+    void *opaque,
+    const struct vcs_zcode_creation_attribution_v1 *attribution,
+    uint64_t *expected_atoms)
+{
+    const struct creation_callback_fixture *fixture = opaque;
+    if (expected_atoms) *expected_atoms = 0;
+    if (!fixture || !attribution || !expected_atoms)
+        return false;
+    *expected_atoms = fixture->expected_award_atoms;
+    return true;
 }
 
 static bool creation_test_keypair(uint8_t value, struct privkey *secret,
@@ -880,8 +899,12 @@ static int test_creation_attribution_cross_validation(void)
         struct creation_callback_fixture callbacks = {
             .anchor_active = true, .duplicate = false,
             .opening_height = attribution.challenge_opening_height,
+            .maturity_height = attribution.challenge_maturity_height,
+            .expected_award_atoms = attribution.award_atoms,
         };
         memcpy(callbacks.opening_hash, attribution.challenge_opening_hash,
+               32);
+        memcpy(callbacks.maturity_hash, attribution.challenge_opening_hash,
                32);
         struct vcs_zcode_creation_validation_context context = {
             .workspace = workspace,
@@ -898,6 +921,82 @@ static int test_creation_attribution_cross_validation(void)
         };
         ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
                       &attribution, &context), VCS_ZCODE_CREATION_OK);
+
+        uint8_t attribution_wire[
+            VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES];
+        uint8_t attribution_root[32];
+        ASSERT_EQ(vcs_zcode_creation_attribution_serialize(
+                      &attribution, attribution_wire),
+                  VCS_ZCODE_CREATION_OK);
+        ASSERT_EQ(vcs_zcode_creation_attribution_root(
+                      &attribution, attribution_root),
+                  VCS_ZCODE_CREATION_OK);
+        ASSERT(vcs_object_put_addressed(
+            workspace, attribution_root, attribution_wire,
+            sizeof(attribution_wire)));
+        struct vcs_zcode_epoch_creation_set_v1 epoch_set;
+        vcs_zcode_epoch_creation_init(&epoch_set);
+        epoch_set.schema_version = VCS_ZCODE_EPOCH_CREATION_VERSION;
+        epoch_set.epoch = attribution.epoch;
+        ASSERT_EQ(vcs_zc23_policy_epoch_cap_atoms(
+                      epoch_set.epoch, &epoch_set.emission_cap_atoms),
+                  VCS_ZCODE_EPOCH_CREATION_OK);
+        epoch_set.actual_mint_atoms = attribution.award_atoms;
+        epoch_set.unissued_atoms = epoch_set.emission_cap_atoms -
+                                   epoch_set.actual_mint_atoms;
+        memcpy(epoch_set.network_genesis_root, network, 32);
+        memcpy(epoch_set.zc23_policy_root, policy_authority, 32);
+        score_fill(epoch_set.previous_epoch_creation_root, 0xc1);
+        score_fill(epoch_set.committee_evidence_snapshot_root, 0xc2);
+        epoch_set.opening_height = attribution.challenge_opening_height;
+        memcpy(epoch_set.opening_hash,
+               attribution.challenge_opening_hash, 32);
+        epoch_set.opening_mtp = attribution.challenge_opening_mtp;
+        epoch_set.maturity_height = attribution.challenge_maturity_height;
+        score_fill(epoch_set.maturity_hash, 0xc3);
+        epoch_set.maturity_mtp = attribution.challenge_maturity_mtp;
+        epoch_set.attribution_roots = &attribution_root;
+        epoch_set.attribution_count = 1;
+        callbacks.maturity_height = epoch_set.maturity_height;
+        memcpy(callbacks.maturity_hash, epoch_set.maturity_hash, 32);
+        struct vcs_zcode_epoch_creation_validation_context epoch_context = {
+            .workspace = workspace,
+            .expected_network_genesis_root = network,
+            .expected_zc23_policy_root = policy_authority,
+            .expected_previous_epoch_creation_root =
+                epoch_set.previous_epoch_creation_root,
+            .observed_actual_mint_atoms = epoch_set.actual_mint_atoms,
+            .active_height = 9000,
+            .active_mtp = 700000,
+            .now_unix = 700000,
+            .anchor_is_active = creation_test_anchor,
+            .contribution_is_duplicate = creation_test_duplicate,
+            .award_atoms_for_creation = creation_test_award,
+            .callback_opaque = &callbacks,
+        };
+        ASSERT_EQ(vcs_zcode_epoch_creation_verify_cas(
+                      &epoch_set, &epoch_context),
+                  VCS_ZCODE_EPOCH_CREATION_OK);
+        epoch_set.actual_mint_atoms--;
+        epoch_set.unissued_atoms++;
+        ASSERT_EQ(vcs_zcode_epoch_creation_verify_cas(
+                      &epoch_set, &epoch_context),
+                  VCS_ZCODE_EPOCH_CREATION_MINT);
+        epoch_set.actual_mint_atoms += 2;
+        epoch_set.unissued_atoms -= 2;
+        ASSERT_EQ(vcs_zcode_epoch_creation_verify_cas(
+                      &epoch_set, &epoch_context),
+                  VCS_ZCODE_EPOCH_CREATION_MINT);
+        epoch_context.observed_actual_mint_atoms =
+            epoch_set.actual_mint_atoms;
+        ASSERT_EQ(vcs_zcode_epoch_creation_verify_cas(
+                      &epoch_set, &epoch_context),
+                  VCS_ZCODE_EPOCH_CREATION_SUM);
+        epoch_set.actual_mint_atoms = attribution.award_atoms;
+        epoch_set.unissued_atoms = epoch_set.emission_cap_atoms -
+                                   epoch_set.actual_mint_atoms;
+        epoch_context.observed_actual_mint_atoms =
+            epoch_set.actual_mint_atoms;
 
         context.active_height = attribution.challenge_maturity_height - 1;
         ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
