@@ -220,6 +220,41 @@ bool wallet_select_coins(const struct wallet *w,
                           struct coin_entry *selected, size_t *num_selected,
                           size_t max_selected, int64_t *value_out);
 
+/* Read-only concurrency plan over the same reservation-filtered coin inventory
+ * the transaction builders consume. It never creates an address, reserves an
+ * input, builds a transaction, or moves funds. `agent_available_zat` is the
+ * identity-bound policy allowance from wallet_money_snapshot_build(); the
+ * planner does not invent or persist a second balance. */
+#define WALLET_LIQUIDITY_STATUS_MAX 40
+#define WALLET_LIQUIDITY_REASON_MAX 160
+struct wallet_liquidity_plan {
+    char status[WALLET_LIQUIDITY_STATUS_MAX + 1];
+    char reason[WALLET_LIQUIDITY_REASON_MAX + 1];
+    int requested_concurrency;
+    int current_independent_slots;
+    int current_inputs_used;
+    int recommended_fanout_outputs;
+    int maximum_fanout_slots;
+    int64_t recipient_value_zat;
+    int64_t maximum_fee_zat;
+    int64_t required_per_slot_zat;
+    int64_t future_total_required_zat;
+    int64_t transparent_available_zat;
+    int64_t agent_available_zat;
+    int64_t fanout_maximum_fee_zat;
+    int64_t fanout_output_value_zat;
+    int64_t fanout_outputs_total_zat;
+    bool ready_now;
+    bool fanout_recommended;
+    bool fanout_possible;
+};
+
+bool wallet_liquidity_plan_compute(
+    const struct coin_entry *available, size_t num_available,
+    int64_t agent_available_zat, int64_t recipient_value_zat,
+    int64_t maximum_fee_zat, int64_t fanout_maximum_fee_zat,
+    int requested_concurrency, struct wallet_liquidity_plan *out);
+
 bool wallet_create_transaction(struct wallet *w,
                                 const struct tx_destination *dest,
                                 int64_t value,

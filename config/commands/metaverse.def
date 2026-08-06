@@ -100,6 +100,32 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_metaverse_agent_money)
 
 ZCL_COMMAND_READY_READ(
+    "metaverse.agent.liquidity", "metaverse.agent", "",
+    "Plan parallel transaction liquidity without moving funds",
+    "Reads one explicitly bound dev or prod wallet through the broker and "
+    "reports whether the requested number of simultaneous payments has enough "
+    "independent reservation-eligible transparent UTXOs. Exact recipient value "
+    "plus maximum fee is budgeted per slot. If value exists but coin fan-out is "
+    "needed, returns aggregate output count/value and the existing vault-intent "
+    "address/plan/commit route. This is advisory: it creates no address, plan, "
+    "reservation, signature, transaction, or automatic rebalance. Missing, "
+    "stale, conflicting, or unreachable custody remains explicit and no "
+    "address, outpoint, endpoint, datadir, key, or grant token is returned.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "metaverse,agent,liquidity,utxo,fanout,parallel,transaction,plan",
+    "zcl.metaverse_agent_liquidity.input.v1",
+    "zcl.metaverse_agent_liquidity.v1",
+    "dir,wallet_scope,recipient_value_zat,maximum_fee_zat,concurrency",
+    "dir,wallet_scope,recipient_value_zat,maximum_fee_zat,concurrency",
+    "zclassic23 metaverse agent liquidity --input='{\"dir\":\"/private/broker\",\"wallet_scope\":\"dev\",\"recipient_value_zat\":1000,\"maximum_fee_zat\":10000,\"concurrency\":10}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_metaverse_agent_liquidity)
+
+ZCL_COMMAND_READY_READ(
     "metaverse.agent.audit", "metaverse.agent", "",
     "Every action the confined agent took, and whether the log is intact",
     "The broker's append-only receipt log for one broker directory, verified "

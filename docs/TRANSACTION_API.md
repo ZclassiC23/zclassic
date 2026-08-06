@@ -15,9 +15,10 @@ of truth; this page explains how to use it safely.
 6. [Consensus wire and script catalog](#consensus-wire-and-script-catalog)
 7. [Transaction families](#transaction-families)
 8. [Safe plan/commit workflow](#safe-plancommit-workflow)
-9. [What is not a chain transaction](#what-is-not-a-chain-transaction)
-10. [Proof and statistics](#proof-and-statistics)
-11. [Adding a transaction type](#adding-a-transaction-type)
+9. [Parallel transaction readiness](#parallel-transaction-readiness)
+10. [What is not a chain transaction](#what-is-not-a-chain-transaction)
+11. [Proof and statistics](#proof-and-statistics)
+12. [Adding a transaction type](#adding-a-transaction-type)
 
 ## Big picture
 
@@ -279,6 +280,48 @@ catalog -> exact command schema -> current bound custody snapshot
 6. Inspect the returned txid or async operation through the member's
    `inspect_command`, wait for the required confirmation state, then record only
    redacted evidence in the transaction notebook.
+
+## Parallel transaction readiness
+
+One large UTXO can contain enough value for many payments while still allowing
+only one of them to reserve that input at a time. Ask the broker whether an
+explicitly scoped wallet already has enough independent, reservation-eligible
+transparent UTXOs for the intended concurrency:
+
+```bash
+zclassic23 metaverse agent liquidity --input='{
+  "dir":"/private/broker",
+  "wallet_scope":"dev",
+  "recipient_value_zat":1000,
+  "maximum_fee_zat":10000,
+  "concurrency":10
+}'
+```
+
+The response is advisory and aggregate-only. `READY_NOW` means the requested
+payments can reserve disjoint inputs now. `NEEDS_FANOUT` means the wallet has
+enough permitted transparent value but needs one owner-approved preparation
+transaction. `INSUFFICIENT_POLICY_BUDGET`, `NEEDS_TRANSPARENT_LIQUIDITY`, and
+`FANOUT_FEE_EXCEEDS_BUDGET` distinguish allowance, pool-liquidity, and fee
+shortfalls. An unavailable or non-current custody reader instead reports an
+unknown/stale/conflicted status with `amounts_known:false`; it never invents a
+zero balance or plan.
+
+When fan-out is useful, the response gives only output count, value per output,
+total value, maximum fee, and the existing `vault.intent.issue` ->
+`vault.intent.plan` -> `vault.intent.commit` route. It does not return an
+address or outpoint, create the outputs, or rebalance automatically. The owner
+must explicitly issue fresh self-custody destinations, review the exact plan,
+and authorize its commit. Each later transaction still takes a fresh money
+snapshot and reserves recipient value plus maximum fee atomically; the advisory
+plan is never spend authority.
+
+Ordinary fee-coin selection minimizes input count deterministically. That makes
+ZSLP operations cheaper to prepare without treating token or mint-baton outputs
+as ordinary ZCL: those outputs remain excluded from the available-coin set.
+For more than 50 simultaneous effects, use reviewed batches of at most 50 so
+the normal intent limits, fee caps, reserve floor, and idempotency checks remain
+in force.
 
 ### P2SH multisig without private-key arguments
 

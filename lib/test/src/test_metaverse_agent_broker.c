@@ -73,6 +73,7 @@ static bool g_money_unavailable;
 static bool g_money_duplicate;
 static long g_money_connect_ms;
 static long g_money_total_ms;
+static bool g_liquidity_params_ok;
 
 /* The grant id the demo grant carries. The child must never see this string —
  * (g) greps for exactly it. */
@@ -103,6 +104,38 @@ static char *mb_money_rpc(const char *method, const char *params)
     char *out = malloc(4096);
     if (!out)
         return NULL;
+    if (params && strstr(params, "\"liquidity\"") != NULL) {
+        g_liquidity_params_ok =
+            strstr(params, "\"recipient_value_zat\":1000") &&
+            strstr(params, "\"maximum_fee_zat\":10000") &&
+            strstr(params, "\"concurrency\":10");
+        (void)snprintf(out, 4096,
+            "{\"ok\":true,\"schema\":\"zcl.wallet_liquidity.v1\","
+            "\"wallet_scope\":\"%s\",\"wallet_instance_id\":\"%s\","
+            "\"network_genesis\":\"%064x\",\"money_status\":\"CURRENT\","
+            "\"money_reason\":\"fixture\",\"money_snapshot_root\":\"%064x\","
+            "\"observed_at\":%lld,\"status\":\"NEEDS_FANOUT\","
+            "\"reason\":\"fixture fanout\",\"amounts_known\":true,"
+            "\"requested_concurrency\":10,\"current_independent_slots\":1,"
+            "\"current_inputs_used\":1,\"recipient_value_zat\":1000,"
+            "\"maximum_fee_zat\":10000,\"required_per_slot_zat\":11000,"
+            "\"future_total_required_zat\":110000,"
+            "\"transparent_available_zat\":5000000,"
+            "\"agent_available_zat\":5000000,\"ready_now\":false,"
+            "\"fanout_recommended\":true,\"fanout_possible\":true,"
+            "\"advisory\":true,\"next_command\":\"vault.intent.issue\","
+            "\"fanout\":{\"automatic\":false,\"output_count\":10,"
+            "\"output_value_zat\":11000,\"outputs_total_zat\":110000,"
+            "\"maximum_fee_zat\":10000,\"maximum_slots_under_policy\":50,"
+            "\"address_command\":\"vault.intent.issue\","
+            "\"plan_command\":\"vault.intent.plan\","
+            "\"commit_command\":\"vault.intent.commit\","
+            "\"route\":\"transparent\",\"owner_commit_required\":true},"
+            "\"node_datadir\":\"/secret/leak\",\"address\":\"t1-secret\"}",
+            dev ? "dev" : "prod", id, 0x42, 0x77,
+            (long long)platform_time_wall_time_t());
+        return out;
+    }
     (void)snprintf(out, 4096,
         "{\"snapshot\":{\"wallet_scope\":\"%s\","
         "\"wallet_instance_id\":\"%s\","
@@ -173,12 +206,32 @@ static int mb_money_portfolio(void)
     MB_CHECK("custody reader keeps a bounded contention-tolerant deadline",
              g_money_connect_ms == 500 && g_money_total_ms == 10000);
 
+    r = metaverse_agent_service_liquidity(
+        absolute, "dev", 1000, 10000, 10, doc, sizeof(doc), &n);
+    MB_CHECK("liquidity planner binds exact request and returns aggregate fanout",
+             r.ok && g_liquidity_params_ok &&
+             strstr(doc, "\"schema\":\"zcl.metaverse_agent_liquidity.v1\"") &&
+             strstr(doc, "\"status\":\"NEEDS_FANOUT\"") &&
+             strstr(doc, "\"current_independent_slots\":1") &&
+             strstr(doc, "\"output_count\":10") &&
+             strstr(doc, "\"automatic_rebalance\":false"));
+    MB_CHECK("liquidity output strips endpoint, datadir, address, and outpoint fields",
+             !strstr(doc, "/secret/") && !strstr(doc, "t1-secret") &&
+             !strstr(doc, "node_datadir") && !strstr(doc, "rpc_port") &&
+             !strstr(doc, "outpoint"));
+
     g_money_duplicate = true;
     r = metaverse_agent_service_money(absolute, doc, sizeof(doc), &n);
     MB_CHECK("a copied wallet id across endpoints is CONFLICTED, never zero",
              r.ok && strstr(doc, "CONFLICTED") &&
              strstr(doc, "duplicate wallet_instance_id") &&
              strstr(doc, "\"portfolio_total_known\":false"));
+    r = metaverse_agent_service_liquidity(
+        absolute, "dev", 1000, 10000, 10, doc, sizeof(doc), &n);
+    MB_CHECK("liquidity also refuses duplicate active wallet identities",
+             r.ok && strstr(doc, "CONFLICTED") &&
+             strstr(doc, "duplicate wallet_instance_id") &&
+             strstr(doc, "\"amounts_known\":false"));
     g_money_duplicate = false;
     g_money_unavailable = true;
     r = metaverse_agent_service_money(absolute, doc, sizeof(doc), &n);
@@ -186,6 +239,12 @@ static int mb_money_portfolio(void)
              r.ok && strstr(doc, "UNKNOWN") &&
              strstr(doc, "bound wallet endpoint is unreachable") &&
              !strstr(doc, "\"confirmed_zat\":0"));
+    r = metaverse_agent_service_liquidity(
+        absolute, "dev", 1000, 10000, 10, doc, sizeof(doc), &n);
+    MB_CHECK("unreachable liquidity reader is UNKNOWN and never a zero plan",
+             r.ok && strstr(doc, "UNKNOWN") &&
+             strstr(doc, "\"amounts_known\":false") &&
+             !strstr(doc, "\"future_total_required_zat\":0"));
     g_money_unavailable = false;
     node_rpc_client_set_test_hook(NULL);
     metaverse_agent_service_set_rpc(NULL);

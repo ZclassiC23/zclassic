@@ -23,6 +23,7 @@
 #include "base/result.h"
 
 #include <stddef.h>
+#include <stdint.h>
 
 /* Controller-owned loopback port. Keeping the transport above services
  * preserves the shape dependency direction. NULL restores fail-closed. */
@@ -58,5 +59,13 @@ struct zcl_result metaverse_agent_service_audit(const char *dir, size_t limit,
 struct zcl_result metaverse_agent_service_money(const char *dir, char *out,
                                                 size_t out_cap,
                                                 size_t *out_len);
+
+/* Ask one explicitly bound wallet for aggregate-only parallel-spend
+ * readiness. The result is advisory and never creates addresses, reserves
+ * coins, or broadcasts the optional self-fanout it describes. */
+struct zcl_result metaverse_agent_service_liquidity(
+    const char *dir, const char *wallet_scope, int64_t recipient_value_zat,
+    int64_t maximum_fee_zat, int requested_concurrency,
+    char *out, size_t out_cap, size_t *out_len);
 
 #endif /* ZCL_SERVICES_METAVERSE_AGENT_SERVICE_H */

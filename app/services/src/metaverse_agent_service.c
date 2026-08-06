@@ -346,3 +346,169 @@ struct zcl_result metaverse_agent_service_money(const char *dir, char *out,
     *out_len = n;
     return ZCL_OK;
 }
+
+static void liquidity_unknown(struct json_value *doc, const char *scope,
+                              const char *status, const char *reason)
+{
+    json_set_object(doc);
+    (void)json_push_kv_str(doc, "schema",
+                           "zcl.metaverse_agent_liquidity.v1");
+    (void)json_push_kv_str(doc, "wallet_scope", scope ? scope : "");
+    (void)json_push_kv_str(doc, "status", status);
+    (void)json_push_kv_str(doc, "reason", reason);
+    (void)json_push_kv_bool(doc, "amounts_known", false);
+    (void)json_push_kv_bool(doc, "ready_now", false);
+    (void)json_push_kv_bool(doc, "fanout_recommended", false);
+    (void)json_push_kv_bool(doc, "automatic_rebalance", false);
+}
+
+static void liquidity_copy_scalar(struct json_value *dst,
+                                  const struct json_value *src,
+                                  const char *key)
+{
+    const struct json_value *v = json_get(src, key);
+    if (!v)
+        return;
+    if (v->type == JSON_STR)
+        (void)json_push_kv_str(dst, key, json_get_str(v));
+    else if (v->type == JSON_INT)
+        (void)json_push_kv_int(dst, key, json_get_int(v));
+    else if (v->type == JSON_BOOL)
+        (void)json_push_kv_bool(dst, key, json_get_bool(v));
+}
+
+static void liquidity_copy_fanout(struct json_value *dst,
+                                  const struct json_value *src)
+{
+    const struct json_value *from = json_get(src, "fanout");
+    if (!from || from->type != JSON_OBJ)
+        return;
+    static const char *const keys[] = {
+        "automatic", "output_count", "output_value_zat",
+        "outputs_total_zat", "maximum_fee_zat",
+        "maximum_slots_under_policy", "address_command", "plan_command",
+        "commit_command", "route", "owner_commit_required",
+    };
+    struct json_value fanout;
+    json_init(&fanout);
+    json_set_object(&fanout);
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+        liquidity_copy_scalar(&fanout, from, keys[i]);
+    (void)json_push_kv(dst, "fanout", &fanout);
+    json_free(&fanout);
+}
+
+struct zcl_result metaverse_agent_service_liquidity(
+    const char *dir, const char *wallet_scope, int64_t recipient_value_zat,
+    int64_t maximum_fee_zat, int requested_concurrency,
+    char *out, size_t out_cap, size_t *out_len)
+{
+    struct zcl_result valid = dir_ok(dir, out, out_cap, out_len);
+    if (!valid.ok)
+        return valid;
+    if (!wallet_scope ||
+        (strcmp(wallet_scope, "dev") != 0 &&
+         strcmp(wallet_scope, "prod") != 0) ||
+        recipient_value_zat <= 0 || maximum_fee_zat < 0 ||
+        requested_concurrency < 1 || requested_concurrency > 50)
+        return ZCL_ERR(MVS_ERR_BAD_ARGS,
+                       "wallet_scope dev|prod, positive recipient value, non-negative fee, and concurrency 1..50 are required");
+
+    struct money_binding_read rows[2];
+    memset(rows, 0, sizeof(rows));
+    for (int i = 0; i < 2; i++)
+        json_init(&rows[i].snapshot);
+    const bool bindings_ok = money_load_bindings(dir, rows);
+    const int slot = strcmp(wallet_scope, "dev") == 0 ? 0 : 1;
+    const int other_slot = slot == 0 ? 1 : 0;
+    struct json_value doc;
+    json_init(&doc);
+    if (!bindings_ok) {
+        liquidity_unknown(&doc, wallet_scope, "CONFLICTED",
+                          "private custody binding file is malformed");
+    } else if (!rows[slot].configured) {
+        liquidity_unknown(&doc, wallet_scope, "UNKNOWN",
+                          "owner created no binding for this wallet scope");
+    } else if (rows[0].configured && rows[1].configured &&
+               strcmp(rows[0].binding.wallet_instance_id,
+                      rows[1].binding.wallet_instance_id) == 0) {
+        liquidity_unknown(&doc, wallet_scope, "CONFLICTED",
+                          "duplicate wallet_instance_id on active bindings");
+    } else if (!g_money_rpc) {
+        liquidity_unknown(&doc, wallet_scope, "UNKNOWN",
+                          "bound wallet endpoint is unreachable");
+    } else {
+        char params[256];
+        (void)snprintf(params, sizeof(params),
+            "[\"liquidity\",{\"wallet_scope\":\"%s\","
+            "\"recipient_value_zat\":%lld,\"maximum_fee_zat\":%lld,"
+            "\"concurrency\":%d}]",
+            wallet_scope, (long long)recipient_value_zat,
+            (long long)maximum_fee_zat, requested_concurrency);
+        char *raw = g_money_rpc(rows[slot].binding.node_datadir,
+                                rows[slot].binding.rpc_port, "agentsession",
+                                params, MVS_MONEY_RPC_CONNECT_MS,
+                                MVS_MONEY_RPC_TOTAL_MS);
+        struct json_value reply;
+        json_init(&reply);
+        bool parsed = raw && json_read(&reply, raw, strlen(raw));
+        free(raw);
+        const char *scope = parsed
+            ? json_get_str(json_get(&reply, "wallet_scope")) : NULL;
+        const char *wid = parsed
+            ? json_get_str(json_get(&reply, "wallet_instance_id")) : NULL;
+        const char *gen = parsed
+            ? json_get_str(json_get(&reply, "network_genesis")) : NULL;
+        bool identity_ok = scope && wid && gen &&
+            strcmp(scope, rows[slot].binding.wallet_scope) == 0 &&
+            strcmp(wid, rows[slot].binding.wallet_instance_id) == 0 &&
+            strcmp(gen, rows[slot].binding.network_genesis) == 0;
+        bool observed_duplicate = false;
+        if (identity_ok && rows[other_slot].configured &&
+            money_query(&rows[other_slot]) &&
+            rows[other_slot].observed_wallet_instance_id[0]) {
+            observed_duplicate = strcmp(
+                wid, rows[other_slot].observed_wallet_instance_id) == 0;
+        }
+        if (!parsed) {
+            liquidity_unknown(&doc, wallet_scope, "UNKNOWN",
+                              "bound wallet endpoint is unreachable");
+        } else if (!identity_ok) {
+            liquidity_unknown(&doc, wallet_scope, "CONFLICTED",
+                              "live wallet identity differs from binding");
+        } else if (observed_duplicate) {
+            liquidity_unknown(&doc, wallet_scope, "CONFLICTED",
+                              "duplicate wallet_instance_id on active bindings");
+        } else {
+            json_set_object(&doc);
+            (void)json_push_kv_str(&doc, "schema",
+                                   "zcl.metaverse_agent_liquidity.v1");
+            static const char *const keys[] = {
+                "wallet_scope", "wallet_instance_id", "network_genesis",
+                "money_status", "money_reason", "money_snapshot_root",
+                "observed_at", "status", "reason", "amounts_known",
+                "requested_concurrency", "current_independent_slots",
+                "current_inputs_used", "recipient_value_zat",
+                "maximum_fee_zat", "required_per_slot_zat",
+                "future_total_required_zat", "transparent_available_zat",
+                "agent_available_zat", "ready_now", "fanout_recommended",
+                "fanout_possible", "advisory", "next_command",
+            };
+            for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+                liquidity_copy_scalar(&doc, &reply, keys[i]);
+            liquidity_copy_fanout(&doc, &reply);
+            (void)json_push_kv_bool(&doc, "automatic_rebalance", false);
+        }
+        json_free(&reply);
+    }
+
+    size_t n = json_write(&doc, out, out_cap);
+    json_free(&doc);
+    for (int i = 0; i < 2; i++)
+        json_free(&rows[i].snapshot);
+    if (n == 0)
+        return ZCL_ERR(MVS_ERR_RENDER_FAILED,
+                       "liquidity document did not fit %zu bytes", out_cap);
+    *out_len = n;
+    return ZCL_OK;
+}
