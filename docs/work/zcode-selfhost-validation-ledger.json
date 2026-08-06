@@ -1,6 +1,6 @@
 {
   "schema": "zcl.zcode_selfhost_validation_ledger.v1",
-  "generated_utc": "2026-08-06T17:33:29Z",
+  "generated_utc": "2026-08-06T17:40:08Z",
   "lane": "lane/zcode-selfhost-foundation",
   "frozen_root_checkout": "13d0d255b09548a21ccd05936186f8efc849394a",
   "safety_ref": "safety/zcode-pre-selfhost-20260806",
@@ -96,6 +96,15 @@
     {
       "kind": "out_of_band_pre_push_ci_head",
       "sha": "ed9244e3ae9098a7f45c4f921d560e3d4833f205"
+    },
+    {
+      "kind": "final_fetch_before_publication",
+      "sha": "faab00a5a5a5571d7b6bb2550fccce5b92d1934a"
+    },
+    {
+      "kind": "final_origin_refresh_merge_before_publication",
+      "sha": "83d09c1c04ec935fe51e77f25b7130af4fc01167",
+      "origin_parent": "faab00a5a5a5571d7b6bb2550fccce5b92d1934a"
     }
   ],
   "preservation_reconciliation": {
