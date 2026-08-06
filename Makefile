@@ -1622,10 +1622,14 @@ $(TEST_TSAN_CANDIDATE): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(TEST_TSAN_
 $(TEST_TSAN_LINK_RSP): $(TEST_TSAN_OBJS)
 	@$(file >$@,$(TEST_TSAN_OBJS)) test -s "$@"
 
-test-parallel-active: $(TEST_PARALLEL_REL_CANDIDATE)
+# Both active runners execute groups that spawn the fixed external package
+# verifier. Build that exact in-tree helper here, not only on the public
+# test-parallel wrapper: fast-ci/pre-push invokes the active fast runner
+# directly, and a clean checkout must not depend on a leftover binary.
+test-parallel-active: $(TEST_PARALLEL_REL_CANDIDATE) $(BIN_DIR)/zclassic23-package-verify
 	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE)
 
-test-parallel-fast-active: $(TEST_PARALLEL_FAST_CANDIDATE)
+test-parallel-fast-active: $(TEST_PARALLEL_FAST_CANDIDATE) $(BIN_DIR)/zclassic23-package-verify
 	ulimit -s unlimited && $(TEST_PARALLEL_FAST_ACTIVE)
 
 .PHONY: test-parallel

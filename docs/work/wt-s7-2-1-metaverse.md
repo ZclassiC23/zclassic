@@ -120,3 +120,12 @@ latest owner direction separately authorizes synchronization and push to main.
   the new typed manifest reader before publication; it is corrected to return
   the exact typed I/O state, and `check_log_macro_return_type` plus the focused
   warning-as-error syntax gate pass.
+- The next pre-push run built cleanly and passed lint, then ran 895 cold groups:
+  891 passed and four failed only because `test-parallel-fast-active` did not
+  build the fixed in-tree `zclassic23-package-verify` helper that those groups
+  execute. Both active test runners now own that prerequisite, matching the
+  existing public `test-parallel` contract. After building the exact helper,
+  fresh focused runs of `test_zcode_verify`, `test_zcode_add`,
+  `test_zcode_dev_objects`, `test_build_fabric`, and the changed
+  `test_metaverse_catalog` group all pass with zero failures and zero cache
+  hits.
