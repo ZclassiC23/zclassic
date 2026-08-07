@@ -4697,7 +4697,7 @@ mvp: test_zcl zclassic23 zcl-rpc
 # exercises. -O1 + -g because aggressive optimisation confuses
 # sanitizer reports.
 #
-# `make fuzz` builds the four binaries. `make fuzz-ci` runs each
+# `make fuzz` builds every listed binary. `make fuzz-ci` runs each
 # for 60 seconds as a smoke test; CI uses this to detect already-
 # latent crashes without chasing exhaustive coverage. Fuzz CI must
 # never false-green without the toolchain: install clang/libFuzzer or
@@ -4721,7 +4721,7 @@ FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra \
 	-fno-sanitize=alignment
 FUZZ_LIBS = $(TOR_LIBS) $(LIBS)
 
-FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p $(BIN_DIR)/fuzz_http $(BIN_DIR)/fuzz_compactblock $(BIN_DIR)/fuzz_snapshot $(BIN_DIR)/fuzz_tx_bundle $(BIN_DIR)/fuzz_rom_manifest $(BIN_DIR)/fuzz_overlay $(BIN_DIR)/fuzz_ecdsa
+FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p $(BIN_DIR)/fuzz_http $(BIN_DIR)/fuzz_compactblock $(BIN_DIR)/fuzz_snapshot $(BIN_DIR)/fuzz_tx_bundle $(BIN_DIR)/fuzz_rom_manifest $(BIN_DIR)/fuzz_overlay $(BIN_DIR)/fuzz_ecdsa $(BIN_DIR)/fuzz_zcode_commons
 # Keep the line above literal and keep one `$(BIN_DIR)/fuzz_<kind>:` rule per
 # harness below: check_fuzz_artifact_replay.sh derives the corpus<->binary map
 # from those rule lines, and background_quality_lane.sh derives its kind list
@@ -4745,7 +4745,7 @@ FUZZ_CI_WALL_TIME ?= 120
 # hand-written header list would rot the same way; the depfiles record the
 # real include closure the compiler actually opened.
 #
-# The nine harnesses share ONE object tree, so this also retires the 9x
+# The harnesses share ONE object tree, so this also retires the per-target
 # redundant compile of $(ALL_SRCS) the old rules paid on every edit.
 FUZZ_OBJ_DIR = $(BUILD_DIR)/fuzz-obj
 FUZZ_HARNESS_SRCS = $(patsubst %,tools/fuzz/%.c,$(FUZZ_TARGET_NAMES))
@@ -4768,7 +4768,7 @@ endif
 # FUZZ_CI_MIN_EXEC_PER_SEC is the under-covered floor the runner enforces after
 # the loop, and the reason the runner prints a rate table at all: a green run
 # that names its own weak harnesses is worth more than a green run that does
-# not. Measured on this tree 2026-07-29, all nine harnesses landed between
+# not. Measured on this tree 2026-07-29, all then-current harnesses landed between
 # 5,202/s (fuzz_script, the slowest) and 40,826/s (fuzz_overlay). The floor is
 # set at a fifth of the slowest — low enough that a loaded box cannot flake it,
 # three to four orders of magnitude above the collapse it exists to catch (the
@@ -4795,8 +4795,9 @@ check-fuzz-ci-tools: check-fuzz-toolchain
 
 fuzz: check-fuzz-toolchain $(FUZZ_TARGETS)
 
-.PHONY: fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock fuzz_snapshot fuzz_tx_bundle fuzz_rom_manifest fuzz_overlay fuzz_ecdsa
+.PHONY: fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock fuzz_snapshot fuzz_tx_bundle fuzz_rom_manifest fuzz_overlay fuzz_ecdsa fuzz_zcode_commons
 fuzz_ecdsa: $(BIN_DIR)/fuzz_ecdsa
+fuzz_zcode_commons: $(BIN_DIR)/fuzz_zcode_commons
 fuzz_block: $(BIN_DIR)/fuzz_block
 fuzz_script: $(BIN_DIR)/fuzz_script
 fuzz_p2p: $(BIN_DIR)/fuzz_p2p
@@ -4807,7 +4808,7 @@ fuzz_tx_bundle: $(BIN_DIR)/fuzz_tx_bundle
 fuzz_rom_manifest: $(BIN_DIR)/fuzz_rom_manifest
 fuzz_overlay: $(BIN_DIR)/fuzz_overlay
 
-# One object per TU, shared by all nine harnesses. -MD -MP writes the
+# One object per TU, shared by every harness. -MD -MP writes the
 # per-object depfile imported above; that is what makes a header edit
 # invalidate exactly the objects that read it.
 $(FUZZ_OBJ_DIR)/%.o: %.c $(TMPL_GEN) $(VIEW_GEN_HEADERS) | check-fuzz-toolchain
@@ -4851,6 +4852,9 @@ $(BIN_DIR)/fuzz_overlay: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_overlay.o $(FUZZ_OBJS) 
 $(BIN_DIR)/fuzz_ecdsa: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_ecdsa.o $(FUZZ_OBJS) | check-fuzz-toolchain
 	$(FUZZ_LINK)
 
+$(BIN_DIR)/fuzz_zcode_commons: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_zcode_commons.o $(FUZZ_OBJS) | check-fuzz-toolchain
+	$(FUZZ_LINK)
+
 fuzz-ci: check-fuzz-ci-tools $(FUZZ_TARGETS)
 	@./tools/fuzz/run_fuzz_ci.sh $(FUZZ_CI_TIME) $(FUZZ_CI_WALL_TIME) \
 		$(FUZZ_CI_MIN_EXEC_PER_SEC) $(FUZZ_CI_PRINT_FUNCS) 0 $(FUZZ_TARGETS)
@@ -4867,7 +4871,7 @@ fuzz-ci: check-fuzz-ci-tools $(FUZZ_TARGETS)
 # in lib/test/fuzz_seeds/ARTIFACT_VERDICTS.txt and names every disagreement.
 #
 # Why it is not part of `make lint`: measured on the dev reference host, the
-# replay itself is 18.3 s for 22 artifacts at -P6, and it needs the nine large
+# replay itself is 18.3 s for 22 artifacts at -P6, and it needs the large
 # sanitizer-instrumented binaries built first. That build was 5 min 45 s at -j6
 # — one whole-program clang per binary over ~1300 TUs, nine times over, with no
 # per-TU object cache — until the shared $(FUZZ_OBJ_DIR) tree above; it is now
