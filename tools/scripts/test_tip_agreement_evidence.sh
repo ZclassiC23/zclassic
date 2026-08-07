@@ -472,7 +472,11 @@ jcase() {
     out="$(env "ZCL_PARITY_JUDGE_NOW=$NOW" bash "$JUDGE" "$ledger" "$@" 2>&1)"
     rc=$?
     tok="$(printf '%s' "$out" | sed -n 's/.*VERDICT=\([A-Z_]*\).*/\1/p' | head -n1)"
-    if [ "$tok" = "$want" ] && [ "$rc" = "$wantrc" ]; then
+    if printf '%s' "$out" | grep -Fq "$ledger" ||
+       printf '%s' "$out" | grep -Eq 'rpcport|datadir|/x'; then
+        bad "$name -> public judge output leaked private ledger fields"
+        echo "        out: $out"
+    elif [ "$tok" = "$want" ] && [ "$rc" = "$wantrc" ]; then
         ok "$name -> $tok (rc=$rc)"
     else
         bad "$name -> got tok='$tok' rc=$rc, wanted '$want' rc=$wantrc"

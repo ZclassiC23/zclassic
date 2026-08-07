@@ -16,7 +16,9 @@ cd "$REPO"
 . "$REPO/tools/scripts/sh_str.sh"  # str_contains
 
 JSON=0
-BROKER_DIR="${ZCL_CUSTODY_BROKER_DIR:-}"
+# Match custody-bind's owner-private default so the memorable read command
+# inspects the binding that the memorable setup command creates.
+BROKER_DIR="${ZCL_CUSTODY_BROKER_DIR:-$HOME/.local/state/zclassic23-custody-broker}"
 WALLET_SCOPE="portfolio"
 while [ $# -gt 0 ]; do
     case "$1" in
