@@ -1961,6 +1961,174 @@ static int test_distill_first_error(void)
     return failures;
 }
 
+static bool dp_hotswap_cache_fixture_init(const char *root,
+                                          const char *compiler)
+{
+    static const char owner_v1[] =
+        "int zcl_hotswap_fixture_owner(void) { return 1; }\n";
+    if (!dp_mk_write(root, "Makefile", "# fixture\n") ||
+        !dp_mk_write(root, "config/hotswap_swappable.def", "/* fixture */\n") ||
+        !dp_mk_write(root, "config/hotswap_islands.def", "/* fixture */\n") ||
+        !dp_mk_write(root, "app/controllers/src/status_native_handlers.c",
+                     owner_v1) ||
+        !dp_mk_write(root, "app/controllers/src/status_native_helpers.c",
+                     "int zcl_hotswap_fixture_helper(void) { return 2; }\n"))
+        return false;
+    char canonical_root[PATH_MAX];
+    if (!realpath(root, canonical_root))
+        return false;
+    char flags[PATH_MAX * 2];
+    int n = snprintf(
+        flags, sizeof(flags),
+        "CC=%s\n"
+        "COMPILER_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "DEV_CFLAGS=-DZCL_DEV_BUILD -ffile-prefix-map=%s=/zclassic23\n"
+        "HOTSWAP_MODULE_LDFLAGS=-shared -Wl,-Bsymbolic\n",
+        compiler, canonical_root);
+    return n > 0 && n < (int)sizeof(flags) &&
+           dp_mk_write(root, "build/hotswap/fast/flags.env", flags);
+}
+
+static bool run_hotswap_artifact_cache_fixture(void)
+{
+    static const char root_a[] = "test-tmp/dev_hotswap_cache_a";
+    static const char root_b[] = "test-tmp/dev_hotswap_cache_b";
+    static const char cache_rel[] = "test-tmp/dev_hotswap_shared_cache";
+    static const char compiler_rel[] = "test-tmp/dev_hotswap_fake_cc.sh";
+    static const char fake_compiler[] =
+        "#!/usr/bin/env bash\n"
+        "set -eu\n"
+        "out= dep= compile=0\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  case \"$1\" in\n"
+        "    -o) out=$2; shift 2 ;;\n"
+        "    -MF) dep=$2; shift 2 ;;\n"
+        "    -c) compile=1; shift ;;\n"
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        "[ -n \"$out\" ]\n"
+        "if [ \"$compile\" -eq 1 ]; then\n"
+        "  printf 'fixture-object-v1\\n' >\"$out\"\n"
+        "  printf '%s: app/controllers/src/status_native_helpers.c app/controllers/src/status_native_handlers.c\\n' \"$out\" >\"$dep\"\n"
+        "else\n"
+        "  printf 'fixture-module-v1\\n' >\"$out\"\n"
+        "fi\n";
+    bool ok = false;
+    char cwd[PATH_MAX], cache[PATH_MAX], compiler[PATH_MAX];
+    char saved_cache[PATH_MAX] = {0};
+    char saved_process[32] = {0};
+    const char *prior_cache = getenv("ZCL_DEV_ARTIFACT_CACHE");
+    const char *prior_process = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+    bool had_cache = prior_cache && prior_cache[0];
+    bool had_process = prior_process && prior_process[0];
+    if (had_cache)
+        (void)snprintf(saved_cache, sizeof(saved_cache), "%s", prior_cache);
+    if (had_process)
+        (void)snprintf(saved_process, sizeof(saved_process), "%s",
+                       prior_process);
+    if (!getcwd(cwd, sizeof(cwd)) ||
+        snprintf(cache, sizeof(cache), "%s/%s", cwd, cache_rel) >=
+            (int)sizeof(cache) ||
+        snprintf(compiler, sizeof(compiler), "%s/%s", cwd, compiler_rel) >=
+            (int)sizeof(compiler))
+        goto out;
+    test_rm_rf_recursive(root_a);
+    test_rm_rf_recursive(root_b);
+    test_rm_rf_recursive(cache_rel);
+    (void)unlink(compiler_rel);
+    if (!dp_mk_write(".", compiler_rel, fake_compiler) ||
+        chmod(compiler_rel, 0700) != 0 ||
+        !dp_hotswap_cache_fixture_init(root_a, compiler) ||
+        !dp_hotswap_cache_fixture_init(root_b, compiler) ||
+        setenv("ZCL_DEV_ARTIFACT_CACHE", cache, 1) != 0 ||
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0)
+        goto out;
+
+    struct zcl_devloop_hotswap_build_receipt first = {0}, built = {0};
+    struct zcl_devloop_hotswap_build_receipt hit = {0}, edited = {0};
+    struct zcl_devloop_hotswap_build_receipt reverted = {0}, cross = {0};
+    struct zcl_devloop_process_result process = {0};
+    char why[256] = {0};
+    const char *owner = "app/controllers/src/status_native_handlers.c";
+
+    if (zcl_devloop_hotswap_build(root_a, owner, &first, &process,
+                                  why, sizeof(why)) ||
+        strcmp(why,
+               "dependency baseline initialized; save once more to activate") != 0 ||
+        first.compiler_processes != 1 || first.linker_processes != 0)
+        goto out;
+    if (!zcl_devloop_hotswap_build(root_a, owner, &built, &process,
+                                   why, sizeof(why)) ||
+        built.artifact_cache_hit || built.compiler_processes != 1 ||
+        built.linker_processes != 1 || strlen(built.artifact_cache_key) != 64)
+        goto out;
+    if (!zcl_devloop_hotswap_build(root_a, owner, &hit, &process,
+                                   why, sizeof(why)) ||
+        !hit.artifact_cache_hit || hit.compiler_processes != 0 ||
+        hit.linker_processes != 0 ||
+        strcmp(hit.artifact_cache_key, built.artifact_cache_key) != 0 ||
+        strcmp(hit.artifact_sha256, built.artifact_sha256) != 0)
+        goto out;
+
+    if (!dp_mk_write(root_a,
+                     "app/controllers/src/status_native_handlers.c",
+                     "int zcl_hotswap_fixture_owner(void) { return 9; }\n") ||
+        !zcl_devloop_hotswap_build(root_a, owner, &edited, &process,
+                                   why, sizeof(why)) ||
+        edited.artifact_cache_hit || edited.compiler_processes != 1 ||
+        edited.linker_processes != 1 ||
+        strcmp(edited.artifact_cache_key, built.artifact_cache_key) == 0)
+        goto out;
+    if (!dp_mk_write(root_a,
+                     "app/controllers/src/status_native_handlers.c",
+                     "int zcl_hotswap_fixture_owner(void) { return 1; }\n") ||
+        !zcl_devloop_hotswap_build(root_a, owner, &reverted, &process,
+                                   why, sizeof(why)) ||
+        !reverted.artifact_cache_hit || reverted.compiler_processes != 0 ||
+        reverted.linker_processes != 0 ||
+        strcmp(reverted.artifact_cache_key, built.artifact_cache_key) != 0)
+        goto out;
+
+    /* The second checkout must learn its depfile once, then reuse the exact
+     * artifact produced in the first checkout without a compiler or linker. */
+    if (zcl_devloop_hotswap_build(root_b, owner, &first, &process,
+                                  why, sizeof(why)) ||
+        !zcl_devloop_hotswap_build(root_b, owner, &cross, &process,
+                                   why, sizeof(why)) ||
+        !cross.artifact_cache_hit || cross.compiler_processes != 0 ||
+        cross.linker_processes != 0 ||
+        strcmp(cross.artifact_cache_key, built.artifact_cache_key) != 0 ||
+        strcmp(cross.artifact_sha256, built.artifact_sha256) != 0)
+        goto out;
+    ok = true;
+
+out:
+    if (had_cache)
+        (void)setenv("ZCL_DEV_ARTIFACT_CACHE", saved_cache, 1);
+    else
+        (void)unsetenv("ZCL_DEV_ARTIFACT_CACHE");
+    if (had_process)
+        (void)setenv("ZCL_DEVLOOP_TEST_PROCESS", saved_process, 1);
+    else
+        (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    test_rm_rf_recursive(root_a);
+    test_rm_rf_recursive(root_b);
+    test_rm_rf_recursive(cache_rel);
+    (void)unlink(compiler_rel);
+    return ok;
+}
+
+static int test_hotswap_artifact_cache(void)
+{
+    int failures = 0;
+    TEST("dev platform: resident artifacts are exact-input cached across edits and worktrees") {
+        ASSERT(run_hotswap_artifact_cache_fixture());
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_native_source_cas_shadow(void)
 {
     int failures = 0;
@@ -2003,6 +2171,7 @@ int test_dev_platform(void)
     int failures = 0;
     failures += test_failure_store();
     failures += test_distill_first_error();
+    failures += test_hotswap_artifact_cache();
     failures += test_native_source_cas_shadow();
     failures += test_menu_and_search();
     failures += test_change_classification();

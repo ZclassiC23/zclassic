@@ -237,6 +237,22 @@ the leaf has a larger response budget) is included in the activation receipt,
 so publication is itself proof of visible behavior; no second status process
 is needed.
 
+Before starting GCC, the executor consults one verified host-local artifact
+cache. Its key binds the compiler capsule, compiler command, normalized
+`DEV_LIVE` flags, link flags, island owner, and the path plus SHA-256 of every
+known dependency. Checkout roots embedded in reproducibility flags normalize
+to `${WORKTREE}`; source paths in the dependency closure normalize to paths
+relative to that root. A hit is accepted only when the stored `.so` hashes to
+its separately published marker, then it is hard-linked into the requesting
+worktree's content-addressed build directory. A corrupt or partial entry is
+removed under a per-key process lock and rebuilt. Cache hits therefore start
+zero compiler and zero linker processes; their receipts expose
+`artifact_cache_hit`, `artifact_cache_key`, `compiler_processes`, and
+`linker_processes`. The first observation of a dependency closure still fails
+closed and asks for one more save. Exact reverts and a second worktree can then
+reuse the verified artifact; the cache is acceleration only and grants no
+probe, activation, or publication authority.
+
 If an event is multi-file or outside the compiled allowlist, auto mode discards
 its publication authority and invokes the ordinary cycle in verify-only mode.
 The generic reload path remains contained. Manual `make hotswap-try`,
@@ -247,6 +263,12 @@ The commit and probe hooks are ONE shared implementation
 (`zcl_native_hotswap_publish_hooks()` in `tools/command/native_dev_hotswap.c`),
 used by the resident RPC, `dev hotswap probe`, and the preload path alike — so
 "how a candidate is validated and published" has exactly one definition.
+
+`make t-fast-exact ONLY=dev_platform` permanently exercises a real isolated
+cache miss, warm hit, changed-source miss, exact revert hit, and second-worktree
+hit. The subprocess seam exists only in `ZCL_TESTING` with the explicit
+`ZCL_DEVLOOP_TEST_PROCESS=1` fixture opt-in; release builds retain the literal
+no-process implementation.
 
 ### Measured floor and the physical limit
 

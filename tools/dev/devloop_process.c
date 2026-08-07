@@ -10,12 +10,13 @@
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-#ifdef ZCL_DEV_BUILD
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 static void capture_tail(struct zcl_devloop_process_result *out,
                          const char *data, size_t len)
 {
@@ -45,6 +46,8 @@ static void drain_output(int fd, struct zcl_devloop_process_result *out)
     for (;;) {
         ssize_t n = read(fd, buf, sizeof(buf));
         if (n > 0) {
+            if ((size_t)n > sizeof(buf))
+                break;
             capture_tail(out, buf, (size_t)n);
             continue;
         }
@@ -66,11 +69,21 @@ static bool process_run_impl(const char *cwd, int exec_fd,
     memset(out, 0, sizeof(*out));
     out->exit_code = -1;
 
-#ifndef ZCL_DEV_BUILD
+#if !defined(ZCL_DEV_BUILD) && !defined(ZCL_TESTING)
     (void)exec_fd;
     fprintf(stderr, "[devloop] process execution is disabled outside a dev build\n");
     return false;
 #else
+#ifdef ZCL_TESTING
+    if (!getenv("ZCL_DEVLOOP_TEST_PROCESS") ||
+        strcmp(getenv("ZCL_DEVLOOP_TEST_PROCESS"), "1") != 0) {
+        (void)exec_fd;
+        fprintf(stderr,
+                "[devloop] process execution is disabled in tests unless the "
+                "isolated fixture opts in\n");
+        return false;
+    }
+#endif
     int fds[2];
     if (pipe(fds) != 0) {
         fprintf(stderr, "[devloop] process: pipe failed: %s\n",

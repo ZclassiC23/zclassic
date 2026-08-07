@@ -57,6 +57,7 @@ classification of every occurrence.
 |---|---|---|---|
 | Baseline | eligible live 83.33%; all non-forbidden live 6.44% | frozen replay latency not yet measured | largest miss: 98 fast-restart edits |
 | P1 profiles | unchanged | `DEV_LIVE`, `DEV_RESTART`, and `INTEGRATION` contain no LTO; `RELEASE` retains LTO | `make check-dev-loop-profiles` PASS |
+| P2 exact artifact cache | unchanged | isolated miss → hit → edit miss → revert hit → second-worktree hit; hits report 0 compiler and 0 linker processes | `test_dev_platform` cold PASS; frozen 100-commit benchmark re-derived unchanged |
 
 The earlier single-island resident microbenchmark measured 227.280 ms p50 and
 232.141 ms p95 on 20 distinct artifacts. That is historical evidence for one
@@ -84,7 +85,6 @@ smuggle release work into a save cycle.
   byte counts.
 - Bring at least 95% of non-forbidden edits under five seconds by live reload
   or isolated fast restart; current measured coverage is 6.44% live-only.
-- Prove exact-input, revert and cross-worktree artifact reuse.
 - Measure two- and four-worktree throughput.
 - Batch at least ten compatible focused-green commits per full-suite/LTO proof
   without adding deployment authority.

@@ -220,13 +220,17 @@ struct zcl_devloop_hotswap_build_receipt {
     char source_tu[256];
     char artifact_path[4096];
     char artifact_sha256[65];
+    char artifact_cache_key[65];
     int64_t plan_load_us;
     int64_t compile_us;
     int64_t link_us;
     int64_t publish_us;
     int64_t total_us;
     bool plan_cache_hit;
+    bool artifact_cache_hit;
     uint32_t dependency_count;
+    uint32_t compiler_processes;
+    uint32_t linker_processes;
 };
 
 /* Build exactly one compiled-allowlist source TU under the cached action plan

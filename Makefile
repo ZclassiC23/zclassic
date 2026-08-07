@@ -2596,6 +2596,7 @@ hotswap-module-so: $(VIEW_GEN_HEADERS)
 	{ \
 	  printf '%s\n' '# zcl.hotswap_fast_flags.v1 — cached by make hotswap-module-so for tools/dev/hotswap-module-fast.sh'; \
 	  printf 'CC=%s\n' '$(CC)'; \
+	  printf 'COMPILER_ID=%s\n' '$(BUILD_COMPILER_ID)'; \
 	  printf 'DEV_CFLAGS=%s\n' '$(DEV_LIVE_CFLAGS)'; \
 	  printf 'HOTSWAP_MODULE_LDFLAGS=%s\n' '$(HOTSWAP_MODULE_LDFLAGS)'; \
 	} > "$$tmp_env"; \

@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -41,6 +42,7 @@
 struct hs_action_plan {
     char root[PATH_MAX];
     char cc[512];
+    char compiler_id[65];
     char cflags[HS_PLAN_TEXT_MAX];
     char ldflags[2048];
     struct stat stamp;
@@ -96,6 +98,17 @@ static bool hs_plan_line(char *dst, size_t cap, const char *line,
         return false;
     memcpy(dst, value, len);
     dst[len] = 0;
+    return true;
+}
+
+static bool hs_lower_hex64(const char *value)
+{
+    if (!value || strlen(value) != 64)
+        return false;
+    for (size_t i = 0; i < 64; i++)
+        if (!((value[i] >= '0' && value[i] <= '9') ||
+              (value[i] >= 'a' && value[i] <= 'f')))
+            return false;
     return true;
 }
 
@@ -159,6 +172,8 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
         if (line[0] == '#' || line[0] == '\n' || line[0] == '\r')
             continue;
         if (hs_plan_line(next.cc, sizeof(next.cc), line, "CC=") ||
+            hs_plan_line(next.compiler_id, sizeof(next.compiler_id), line,
+                         "COMPILER_ID=") ||
             hs_plan_line(next.cflags, sizeof(next.cflags), line,
                          "DEV_CFLAGS=") ||
             hs_plan_line(next.ldflags, sizeof(next.ldflags), line,
@@ -170,7 +185,8 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
     }
     bool read_error = ferror(f) != 0;
     fclose(f);
-    if (read_error || !next.cc[0] || !next.cflags[0] || !next.ldflags[0] ||
+    if (read_error || !next.cc[0] || !hs_lower_hex64(next.compiler_id) ||
+        !next.cflags[0] || !next.ldflags[0] ||
         !strstr(next.cflags, "-DZCL_DEV_BUILD") ||
         !strstr(next.ldflags, "-Wl,-Bsymbolic")) {
         hs_why(why, why_len,
@@ -308,6 +324,225 @@ static bool hs_sha256_file(const char *path, char out[65])
     return true;
 }
 
+static bool hs_mkdirs(const char *path)
+{
+    char tmp[PATH_MAX];
+    struct stat st;
+    if (!path || path[0] != '/' || strlen(path) >= sizeof(tmp))
+        return false;
+    (void)snprintf(tmp, sizeof(tmp), "%s", path);
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p != '/')
+            continue;
+        *p = 0;
+        if (mkdir(tmp, 0700) != 0) {
+            if (errno != EEXIST || lstat(tmp, &st) != 0 ||
+                !S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode))
+                return false;
+        }
+        *p = '/';
+    }
+    if (mkdir(tmp, 0700) != 0 &&
+        (errno != EEXIST || lstat(tmp, &st) != 0 ||
+         !S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)))
+        return false;
+    return chmod(tmp, 0700) == 0;
+}
+
+static bool hs_cache_root(char out[PATH_MAX])
+{
+    const char *configured = getenv("ZCL_DEV_ARTIFACT_CACHE");
+    const char *home = getenv("HOME");
+    int n;
+    if (configured && configured[0]) {
+        if (configured[0] != '/' || strstr(configured, ".."))
+            return false;
+        n = snprintf(out, PATH_MAX, "%s/hotswap-v1", configured);
+    } else {
+        if (!home || home[0] != '/')
+            return false;
+        n = snprintf(out, PATH_MAX,
+                     "%s/.cache/zclassic23/dev-artifacts/hotswap-v1", home);
+    }
+    return n > 0 && n < PATH_MAX && hs_mkdirs(out);
+}
+
+static void hs_key_field(struct sha256_ctx *ctx, const char *label,
+                         const void *data, size_t len)
+{
+    uint64_t n = (uint64_t)len;
+    sha256_write(ctx, (const unsigned char *)label, strlen(label) + 1);
+    sha256_write(ctx, (const unsigned char *)&n, sizeof(n));
+    if (len)
+        sha256_write(ctx, data, len);
+}
+
+static bool hs_normalize_root(const char *text, const char *root,
+                              char *out, size_t out_len)
+{
+    static const char marker[] = "${WORKTREE}";
+    size_t root_len = strlen(root), used = 0;
+    const char *cursor = text;
+    while (*cursor) {
+        const char *match = strstr(cursor, root);
+        size_t chunk = match ? (size_t)(match - cursor) : strlen(cursor);
+        if (chunk >= out_len - used)
+            return false;
+        memcpy(out + used, cursor, chunk);
+        used += chunk;
+        if (!match)
+            break;
+        if (sizeof(marker) - 1 >= out_len - used)
+            return false;
+        memcpy(out + used, marker, sizeof(marker) - 1);
+        used += sizeof(marker) - 1;
+        cursor = match + root_len;
+    }
+    out[used] = 0;
+    return true;
+}
+
+static bool hs_cache_key(const struct hs_action_plan *plan,
+                         const char *root, const char *owner,
+                         const struct hs_dep *deps, size_t dep_count,
+                         char out[65])
+{
+    static const char domain[] = "zcl.dev_artifact_cache.hotswap.v1";
+    char normalized_cflags[HS_PLAN_TEXT_MAX];
+    if (!hs_normalize_root(plan->cflags, root, normalized_cflags,
+                           sizeof(normalized_cflags)))
+        return false;
+    struct sha256_ctx ctx;
+    unsigned char digest[SHA256_OUTPUT_SIZE];
+    sha256_init(&ctx);
+    hs_key_field(&ctx, "domain", domain, sizeof(domain) - 1);
+    hs_key_field(&ctx, "compiler", plan->compiler_id,
+                 strlen(plan->compiler_id));
+    hs_key_field(&ctx, "cc", plan->cc, strlen(plan->cc));
+    hs_key_field(&ctx, "cflags", normalized_cflags,
+                 strlen(normalized_cflags));
+    hs_key_field(&ctx, "ldflags", plan->ldflags, strlen(plan->ldflags));
+    hs_key_field(&ctx, "owner", owner, strlen(owner));
+    for (size_t i = 0; i < dep_count; i++) {
+        const char *path = deps[i].path;
+        size_t root_len = strlen(root);
+        if (strncmp(path, root, root_len) == 0 && path[root_len] == '/')
+            path += root_len + 1;
+        hs_key_field(&ctx, "dependency_path", path, strlen(path));
+        hs_key_field(&ctx, "dependency_sha256", deps[i].sha256,
+                     sizeof(deps[i].sha256));
+    }
+    sha256_finalize(&ctx, digest);
+    zcl_hex_encode(digest, sizeof(digest), out);
+    return true;
+}
+
+static int hs_cache_lock(const char *cache_root, const char key[65],
+                         char so_path[PATH_MAX], char hash_path[PATH_MAX])
+{
+    char lock_path[PATH_MAX];
+    if (snprintf(lock_path, sizeof(lock_path), "%s/%s.lock", cache_root,
+                 key) >= (int)sizeof(lock_path) ||
+        snprintf(so_path, PATH_MAX, "%s/%s.so", cache_root, key) >= PATH_MAX ||
+        snprintf(hash_path, PATH_MAX, "%s/%s.sha256", cache_root, key) >=
+            PATH_MAX)
+        return -1;
+    int fd = open(lock_path,
+                  O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+        flock(fd, LOCK_EX) != 0) {
+        if (fd >= 0) close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static bool hs_read_hash(const char *path, char out[65])
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return false;
+    char extra = 0;
+    bool ok = fscanf(f, "%64[0-9a-f]%c", out, &extra) == 2 &&
+              strlen(out) == 64 && extra == '\n' && fgetc(f) == EOF;
+    fclose(f);
+    if (!ok) out[0] = 0;
+    return ok;
+}
+
+static bool hs_publish_artifact_path(const char *root, const char *safe,
+                                     const char *source_so,
+                                     const char artifact_sha256[65],
+                                     char out[4096])
+{
+    if (snprintf(out, 4096, "%s/build/hotswap/%s-%s.so", root, safe,
+                 artifact_sha256) >= 4096)
+        return false;
+    if (link(source_so, out) != 0) {
+        char existing[65];
+        if (errno != EEXIST || !hs_regular(out, NULL) ||
+            !hs_sha256_file(out, existing) ||
+            strcmp(existing, artifact_sha256) != 0)
+            return false;
+    }
+    return chmod(out, 0444) == 0;
+}
+
+static bool hs_cache_lookup(const char *root, const char *safe,
+                            const char *cache_so, const char *cache_hash,
+                            struct zcl_devloop_hotswap_build_receipt *receipt)
+{
+    char expected[65], actual[65];
+    if (!hs_regular(cache_hash, NULL) || !hs_regular(cache_so, NULL) ||
+        !hs_read_hash(cache_hash, expected) ||
+        !hs_sha256_file(cache_so, actual) || strcmp(expected, actual) != 0)
+        return false;
+    (void)snprintf(receipt->artifact_sha256,
+                   sizeof(receipt->artifact_sha256), "%s", actual);
+    return hs_publish_artifact_path(root, safe, cache_so, actual,
+                                    receipt->artifact_path);
+}
+
+static bool hs_cache_publish(const char *cache_so, const char *cache_hash,
+                             const char *built_so, const char hash[65])
+{
+    if (link(built_so, cache_so) != 0) {
+        char existing[65];
+        if (errno != EEXIST || !hs_regular(cache_so, NULL) ||
+            !hs_sha256_file(cache_so, existing) ||
+            strcmp(existing, hash) != 0)
+            return false;
+    }
+    if (chmod(cache_so, 0444) != 0)
+        return false;
+    char temp[PATH_MAX];
+    int n = snprintf(temp, sizeof(temp), "%s.tmp.%ld", cache_hash,
+                     (long)getpid());
+    if (n <= 0 || n >= (int)sizeof(temp))
+        return false;
+    (void)unlink(temp); /* safe under the per-key lock; clears a crashed writer */
+    int fd = open(temp,
+                  O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                  0600);
+    if (fd < 0)
+        return false;
+    char line[66];
+    (void)snprintf(line, sizeof(line), "%s\n", hash);
+    bool ok = write(fd, line, 65) == 65 && fsync(fd) == 0;
+    int close_rc = close(fd);
+    ok = ok && close_rc == 0;
+    if (!ok) {
+        (void)unlink(temp);
+        return false;
+    }
+    if (rename(temp, cache_hash) != 0) {
+        (void)unlink(temp);
+        return false;
+    }
+    return true;
+}
+
 static bool hs_temp(char *out, size_t out_len, const char *root,
                     const char *suffix)
 {
@@ -323,15 +558,16 @@ static bool hs_temp(char *out, size_t out_len, const char *root,
     return true;
 }
 
-static bool hs_run_compile(const char *root, const char *source_tu,
+static bool hs_run_compile(const struct hs_action_plan *plan,
+                           const char *root, const char *source_tu,
                            const char *compile_input,
                            const char *obj, const char *dep,
                            struct zcl_devloop_process_result *result,
                            int64_t *elapsed_us, char *why, size_t why_len)
 {
-    char cc[sizeof(g_plan.cc)], flags[sizeof(g_plan.cflags)];
-    (void)snprintf(cc, sizeof(cc), "%s", g_plan.cc);
-    (void)snprintf(flags, sizeof(flags), "%s", g_plan.cflags);
+    char cc[sizeof(plan->cc)], flags[sizeof(plan->cflags)];
+    (void)snprintf(cc, sizeof(cc), "%s", plan->cc);
+    (void)snprintf(flags, sizeof(flags), "%s", plan->cflags);
     const char *argv[HS_ARG_MAX];
     size_t argc = zcl_argv_split(cc, argv, HS_ARG_MAX);
     const char *flagv[HS_ARG_MAX];
@@ -455,13 +691,14 @@ static bool hs_unity_source(const char *root, const char *owner,
     return true;
 }
 
-static bool hs_run_link(const char *root, const char *obj, const char *so,
+static bool hs_run_link(const struct hs_action_plan *plan,
+                        const char *root, const char *obj, const char *so,
                         struct zcl_devloop_process_result *result,
                         int64_t *elapsed_us, char *why, size_t why_len)
 {
-    char cc[sizeof(g_plan.cc)], flags[sizeof(g_plan.ldflags)];
-    (void)snprintf(cc, sizeof(cc), "%s", g_plan.cc);
-    (void)snprintf(flags, sizeof(flags), "%s", g_plan.ldflags);
+    char cc[sizeof(plan->cc)], flags[sizeof(plan->ldflags)];
+    (void)snprintf(cc, sizeof(cc), "%s", plan->cc);
+    (void)snprintf(flags, sizeof(flags), "%s", plan->ldflags);
     const char *argv[HS_ARG_MAX], *flagv[HS_ARG_MAX];
     size_t argc = zcl_argv_split(cc, argv, HS_ARG_MAX);
     size_t flagc = zcl_argv_split(flags, flagv, HS_ARG_MAX);
@@ -510,9 +747,12 @@ bool zcl_devloop_hotswap_build(
         return false;
     }
 
+    struct hs_action_plan plan = {0};
     pthread_mutex_lock(&g_plan_mu);
     bool plan_ok = hs_plan_load_locked(root, &receipt->plan_cache_hit,
                                        &receipt->plan_load_us, why, why_len);
+    if (plan_ok)
+        plan = g_plan;
     pthread_mutex_unlock(&g_plan_mu);
     if (!plan_ok)
         return false;
@@ -531,6 +771,9 @@ bool zcl_devloop_hotswap_build(
     }
     char cached_dep[PATH_MAX], tmp_o[PATH_MAX] = {0}, tmp_d[PATH_MAX] = {0};
     char tmp_so[PATH_MAX] = {0}, unity[PATH_MAX] = {0};
+    char cache_root[PATH_MAX] = {0}, cache_so[PATH_MAX] = {0};
+    char cache_hash[PATH_MAX] = {0};
+    int cache_fd = -1;
     if (snprintf(cached_dep, sizeof(cached_dep),
                  "%s/build/hotswap/fast/%s.d", root, safe) >=
             (int)sizeof(cached_dep) ||
@@ -559,7 +802,41 @@ bool zcl_devloop_hotswap_build(
     size_t before_n = 0, after_n = 0;
     bool have_baseline = hs_depfile_read(root, cached_dep, before, &before_n,
                                          true);
-    if (!hs_run_compile(root, owner, compile_input, tmp_o, tmp_d, process,
+    if (have_baseline &&
+        hs_cache_key(&plan, root, owner, before, before_n,
+                     receipt->artifact_cache_key) &&
+        hs_cache_root(cache_root)) {
+        cache_fd = hs_cache_lock(cache_root, receipt->artifact_cache_key,
+                                 cache_so, cache_hash);
+        if (cache_fd >= 0 &&
+            hs_cache_lookup(root, safe, cache_so, cache_hash, receipt)) {
+            receipt->artifact_cache_hit = true;
+            receipt->dependency_count = (uint32_t)before_n;
+            (void)snprintf(receipt->source_tu, sizeof(receipt->source_tu),
+                           "%s", owner);
+            receipt->publish_us = platform_time_monotonic_us() - started -
+                                  receipt->plan_load_us;
+            receipt->total_us = platform_time_monotonic_us() - started;
+            free(before);
+            free(after);
+            (void)flock(cache_fd, LOCK_UN);
+            (void)close(cache_fd);
+            (void)unlink(tmp_o);
+            (void)unlink(tmp_d);
+            (void)unlink(tmp_so);
+            return true;
+        }
+        if (cache_fd >= 0) {
+            /* A .so without its final hash marker, or a marker whose content
+             * does not verify, is a partial/corrupt entry. Under the per-key
+             * lock it cannot be a publisher still in flight. */
+            (void)unlink(cache_so);
+            (void)unlink(cache_hash);
+        }
+    }
+    receipt->compiler_processes = 1;
+    if (!hs_run_compile(&plan, root, owner, compile_input, tmp_o, tmp_d,
+                        process,
                         &receipt->compile_us, why, why_len)) {
         free(before);
         free(after);
@@ -584,6 +861,14 @@ bool zcl_devloop_hotswap_build(
     receipt->dependency_count = (uint32_t)after_n;
     bool stable = have_baseline &&
         hs_deps_unchanged(before, before_n, after, after_n, why, why_len);
+    char post_key[65] = {0};
+    if (stable && receipt->artifact_cache_key[0] &&
+        (!hs_cache_key(&plan, root, owner, after, after_n, post_key) ||
+         strcmp(post_key, receipt->artifact_cache_key) != 0)) {
+        hs_why(why, why_len,
+               "artifact cache key changed across dependency verification");
+        stable = false;
+    }
     free(before);
     free(after);
     if (!stable) {
@@ -592,7 +877,8 @@ bool zcl_devloop_hotswap_build(
                    "dependency baseline initialized; save once more to activate");
         goto fail;
     }
-    if (!hs_run_link(root, tmp_o, tmp_so, process, &receipt->link_us,
+    receipt->linker_processes = 1;
+    if (!hs_run_link(&plan, root, tmp_o, tmp_so, process, &receipt->link_us,
                      why, why_len))
         goto fail;
 
@@ -601,36 +887,41 @@ bool zcl_devloop_hotswap_build(
         hs_why(why, why_len, "could not hash resident module artifact");
         goto fail;
     }
-    if (snprintf(receipt->artifact_path, sizeof(receipt->artifact_path),
-                 "%s/build/hotswap/%s-%s.so", root, safe,
-                 receipt->artifact_sha256) >=
-        (int)sizeof(receipt->artifact_path)) {
-        hs_why(why, why_len, "content-addressed artifact path overflow");
+    if (cache_fd >= 0 &&
+        !hs_cache_publish(cache_so, cache_hash, tmp_so,
+                          receipt->artifact_sha256)) {
+        hs_why(why, why_len,
+               "shared artifact cache publication or verification failed");
         goto fail;
     }
-    if (link(tmp_so, receipt->artifact_path) != 0) {
-        char existing[65];
-        if (errno != EEXIST ||
-            !hs_sha256_file(receipt->artifact_path, existing) ||
-            strcmp(existing, receipt->artifact_sha256) != 0) {
-            hs_why(why, why_len,
-                   "content-addressed artifact collision or publish failure");
-            goto fail;
-        }
+    const char *published_source = cache_fd >= 0 ? cache_so : tmp_so;
+    if (!hs_publish_artifact_path(root, safe, published_source,
+                                  receipt->artifact_sha256,
+                                  receipt->artifact_path)) {
+        hs_why(why, why_len,
+               "content-addressed artifact collision or publish failure");
+        goto fail;
     }
-    (void)chmod(receipt->artifact_path, 0444);
     receipt->publish_us = platform_time_monotonic_us() - publish_started;
     (void)snprintf(receipt->source_tu, sizeof(receipt->source_tu), "%s",
                    owner);
     receipt->total_us = platform_time_monotonic_us() - started;
     (void)unlink(tmp_o);
     (void)unlink(tmp_so);
+    if (cache_fd >= 0) {
+        (void)flock(cache_fd, LOCK_UN);
+        (void)close(cache_fd);
+    }
     return true;
 
 fail:
     if (tmp_o[0]) (void)unlink(tmp_o);
     if (tmp_d[0]) (void)unlink(tmp_d);
     if (tmp_so[0]) (void)unlink(tmp_so);
+    if (cache_fd >= 0) {
+        (void)flock(cache_fd, LOCK_UN);
+        (void)close(cache_fd);
+    }
     receipt->total_us = platform_time_monotonic_us() - started;
     return false;
 }
@@ -753,8 +1044,17 @@ static bool hs_emit_event(const char *root, const char *source,
                                build->artifact_sha256);
         (void)json_push_kv_bool(&receipt, "plan_cache_hit",
                                 build->plan_cache_hit);
+        (void)json_push_kv_bool(&receipt, "artifact_cache_hit",
+                                build->artifact_cache_hit);
+        if (build->artifact_cache_key[0])
+            (void)json_push_kv_str(&receipt, "artifact_cache_key",
+                                   build->artifact_cache_key);
         (void)json_push_kv_int(&receipt, "dependencies",
                                build->dependency_count);
+        (void)json_push_kv_int(&receipt, "compiler_processes",
+                               build->compiler_processes);
+        (void)json_push_kv_int(&receipt, "linker_processes",
+                               build->linker_processes);
         (void)json_push_kv_int(&receipt, "plan_load_us",
                                build->plan_load_us);
         (void)json_push_kv_int(&receipt, "compile_us", build->compile_us);
