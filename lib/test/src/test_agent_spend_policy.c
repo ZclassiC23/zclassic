@@ -314,6 +314,18 @@ static int test_operator_exemption(void)
 static int test_money_freshness_fails_closed(void)
 {
     int failures = 0;
+    TEST("money scope maps isolated test custody without changing dev/prod") {
+        ASSERT(wallet_money_scope_valid("dev"));
+        ASSERT(wallet_money_scope_valid("prod"));
+        ASSERT(wallet_money_scope_valid("test"));
+        ASSERT(!wallet_money_scope_valid("canonical"));
+        ASSERT(!wallet_money_scope_valid(""));
+        ASSERT_STR_EQ(wallet_money_scope_expected_lane("dev"), "dev");
+        ASSERT_STR_EQ(wallet_money_scope_expected_lane("prod"), "canonical");
+        ASSERT_STR_EQ(wallet_money_scope_expected_lane("test"), "test");
+        ASSERT(wallet_money_scope_expected_lane("other") == NULL);
+        PASS();
+    }
     TEST("money freshness is current only at a published fully reduced tip") {
         ASSERT_EQ(wallet_money_freshness_classify(
                       true, 100, 100, 100, 1, SYNC_AT_TIP),

@@ -176,7 +176,13 @@ void rpc_timeout_set_method(struct rpc_timeout_mgr *mgr,
          * surfaces the bounded proof-building budget. The
          * generic deadline still wins when an operator configured it higher;
          * a method label can extend a slot, never shorten one. */
-        if ((strcmp(method, "vault_intent_plan") == 0 ||
+        if ((strcmp(method, "getnewaddress") == 0 ||
+             strcmp(method, "z_getnewaddress") == 0) &&
+            RPC_WALLET_MUTATION_TIMEOUT_MS > mgr->slots[slot].timeout_ms) {
+            mgr->slots[slot].timeout_ms = RPC_WALLET_MUTATION_TIMEOUT_MS;
+        }
+        if ((strcmp(method, "z_sendmany") == 0 ||
+             strcmp(method, "vault_intent_plan") == 0 ||
              strcmp(method, "vault_intent_fanout_plan") == 0 ||
              strcmp(method, "vault_intent_commit") == 0) &&
             mgr->proof_timeout_ms > mgr->slots[slot].timeout_ms) {

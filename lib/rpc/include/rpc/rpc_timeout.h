@@ -48,6 +48,10 @@ extern "C" {
 
 #define RPC_TIMEOUT_MAX_SLOTS   128
 #define RPC_TIMEOUT_METHOD_LEN  64
+/* Durable key creation flushes the complete encrypted wallet projection and
+ * can exceed the generic request budget on a large live node. It is still a
+ * much smaller operation than Sapling proof construction. */
+#define RPC_WALLET_MUTATION_TIMEOUT_MS 60000
 /* Sapling plan preflight performs a full proof build before reserving funds.
  * Real mainnet hardware has measured above two minutes while the reducer is
  * active, so keep the proof-specific client and server budgets aligned at a

@@ -271,7 +271,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     atomic_store(&g_ua_last_step_unix, platform_time_wall_unix());
 
     struct main_state *ms = g_ms;
-    if (!ms) return JOB_IDLE;
+    if (utxo_apply_sapling_rebuild_paused() || !ms) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
 

@@ -156,9 +156,9 @@ bool vault_intent_fanout_plan_rpc(const struct json_value *params, bool help,
         ? json_get_int(json_get(input, "maximum_fee_zat")) : -1;
     int64_t concurrency = input && input->type == JSON_OBJ
         ? json_get_int(json_get(input, "concurrency")) : 0;
-    if (!scope || (strcmp(scope, "dev") != 0 && strcmp(scope, "prod") != 0)) {
+    if (!wallet_money_scope_valid(scope)) {
         vif_error(result, "WALLET_SCOPE_REQUIRED",
-                  "wallet_scope must explicitly be dev or prod");
+                  "wallet_scope must explicitly be dev, prod, or test");
         return true;
     }
     if (!vault_intent_idempotency_key_valid(user_key)) {

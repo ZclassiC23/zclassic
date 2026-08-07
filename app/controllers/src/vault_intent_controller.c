@@ -313,10 +313,9 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
         return true;
     }
     const char *wallet_scope = json_get_str(json_get(input, "wallet_scope"));
-    if (!wallet_scope || (strcmp(wallet_scope, "dev") != 0 &&
-                          strcmp(wallet_scope, "prod") != 0)) {
+    if (!wallet_money_scope_valid(wallet_scope)) {
         vi_error(result, "WALLET_SCOPE_REQUIRED",
-                 "wallet_scope must explicitly be dev or prod");
+                 "wallet_scope must explicitly be dev, prod, or test");
         return true;
     }
     const char *route = json_get_str(json_get(input, "route"));
@@ -614,9 +613,7 @@ static bool rpc_vi_commit(const struct json_value *params, bool help,
     const char *wallet_scope = in
         ? json_get_str(json_get(in, "wallet_scope")) : NULL;
     uint8_t id[32];
-    if (!in || !wallet_scope ||
-        (strcmp(wallet_scope, "dev") != 0 &&
-         strcmp(wallet_scope, "prod") != 0) ||
+    if (!in || !wallet_money_scope_valid(wallet_scope) ||
         !json_get_bool_or(in, "confirm", false) || !vi_unhex(hex, id)) {
         vi_error(result, "CONFIRM_REQUIRED",
                  "wallet_scope, plan_id, and confirm:true are required");

@@ -10,6 +10,7 @@
 #include "primitives/transaction.h"
 #include "consensus/params.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* accept_to_mempool — the ONE shared mempool-acceptance gate.
@@ -79,5 +80,16 @@ enum mempool_accept_result accept_to_mempool(
     struct main_state *main_state,
     const struct chain_params *params,
     struct transaction *tx);
+
+/* Same gate with one bounded, non-secret reject token for operator-created
+ * transactions. The ordinary P2P callers keep the compact enum-only API. */
+enum mempool_accept_result accept_to_mempool_detailed(
+    struct tx_mempool *pool,
+    struct coins_view_cache *coins_tip,
+    struct main_state *main_state,
+    const struct chain_params *params,
+    struct transaction *tx,
+    char *detail_out,
+    size_t detail_cap);
 
 #endif /* ZCL_ACCEPT_TO_MEMPOOL_H */

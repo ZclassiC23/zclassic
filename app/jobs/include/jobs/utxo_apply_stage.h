@@ -78,6 +78,12 @@ void utxo_apply_stage_shutdown(void);
 job_result_t utxo_apply_stage_step_once(void);
 int utxo_apply_stage_drain(int max_steps);
 
+/* A commitment-tree rebuild replaces the Sapling frontier as one verified
+ * unit. Coin/anchor application must remain parked for that interval; folding
+ * even one block from the pre-rebuild frontier can create a durable false
+ * sapling_frontier_mismatch above an otherwise correct replay. */
+bool utxo_apply_sapling_rebuild_paused(void);
+
 /* Test observability for the lane-A1 decoupled created_outputs prune: `runs`
  * counts how many times the post-commit prune tx committed; `last_floor` is the
  * retention floor of the most recent successful prune (-1 if none). Both may be
