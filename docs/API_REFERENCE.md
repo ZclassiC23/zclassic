@@ -918,7 +918,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode commons shadow plan` | ready | read / read / operator · fast/low | **`workspace`**, **`score_receipt_root`** | `zcl.zcode_commons_shadow.v1` | `zclassic23 zcode commons shadow plan --input='{"workspace":"/tmp/zclassic23-zcode-scratch","score_receipt_root":"<64hex>"}'` | Explain whether the first shadow epoch can be proven |
+| `zcode commons shadow plan` | ready | read / read / operator · fast/low | **`workspace`**, **`score_receipt_root`**, **`policy_candidate_root`**, **`reproduction_request_root`**, **`reproduction_proof_set_root`**, **`epoch`**, **`now_unix`** | `zcl.zcode_commons_shadow.v1` | `zclassic23 zcode commons shadow plan --input='{"workspace":"/tmp/zclassic23-zcode-scratch","score_receipt_root":"<64hex>","policy_candidate_root":"<64hex>","reproduction_request_root":"<64hex>","reproduction_proof_set_root":"<64hex>","epoch":1,"now_unix":1}'` | Explain whether the first shadow epoch can be proven |
 
 #### `zcode.commons.reproduction` — Portable simulation-only reproduction challenges
 

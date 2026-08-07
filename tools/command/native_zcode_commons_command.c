@@ -9,6 +9,7 @@
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_commons_projection.h"
 #include "vcs/zcode_creation_attribution.h"
+#include "vcs/zcode_reproduction_qualification.h"
 #include "vcs/zcode_score_receipt.h"
 
 #include <stdlib.h>
@@ -348,16 +349,26 @@ void zcl_native_handle_zcode_commons_shadow_plan(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
     static const char *const keys[] = {
-        "workspace", "score_receipt_root"
+        "workspace", "score_receipt_root", "policy_candidate_root",
+        "reproduction_request_root", "reproduction_proof_set_root",
+        "epoch", "now_unix"
     };
     const char *workspace = request ? zcc_str(request->input, "workspace")
                                     : NULL;
-    uint8_t score_root[32], derived[32], *wire = NULL;
+    const struct json_value *epoch_value = request
+        ? json_get(request->input, "epoch") : NULL;
+    const struct json_value *now_value = request
+        ? json_get(request->input, "now_unix") : NULL;
+    uint8_t score_root[32], policy_root[32], reproduction_root[32];
+    uint8_t reproduction_proof_set_root[32];
+    uint8_t derived[32], *wire = NULL;
     size_t wire_len = 0;
     if (!request || !reply || !workspace ||
-        !zcc_keys(request->input, keys, 2)) {
+        !zcc_keys(request->input, keys, 7) || !epoch_value || !now_value ||
+        epoch_value->type != JSON_INT || now_value->type != JSON_INT ||
+        json_get_int(epoch_value) < 0 || json_get_int(now_value) <= 0) {
         zcc_fail(reply, "BAD_SHADOW_INPUT",
-                 "closed input requires workspace and score_receipt_root");
+                 "closed input requires workspace, score/policy/request/result-proof-set roots, epoch and now_unix");
         return;
     }
     if (!zcl_native_zcode_workspace_is_explicit_scratch(workspace)) {
@@ -365,8 +376,12 @@ void zcl_native_handle_zcode_commons_shadow_plan(
                  "workspace must explicitly name an isolated tmp, test-tmp, or scratch path");
         return;
     }
-    if (
-        !zcc_root(request->input, "score_receipt_root", score_root) ||
+    if (!zcc_root(request->input, "score_receipt_root", score_root) ||
+        !zcc_root(request->input, "policy_candidate_root", policy_root) ||
+        !zcc_root(request->input, "reproduction_request_root",
+                  reproduction_root) ||
+        !zcc_root(request->input, "reproduction_proof_set_root",
+                  reproduction_proof_set_root) ||
         vcs_object_load_raw_bounded(
             workspace, score_root, VCS_ZCODE_SCORE_WIRE_BYTES,
             &wire, &wire_len) != 0) {
@@ -396,11 +411,21 @@ void zcl_native_handle_zcode_commons_shadow_plan(
         return;
     }
 
-    bool offhost = (score.awarded_mask &
-        (UINT8_C(1) << VCS_ZCODE_SCORE_INDEPENDENT_REPRODUCTION)) != 0;
+    struct vcs_zcode_reproduction_qualification_report qualification;
+    enum vcs_zcode_reproduction_qualification verdict =
+        vcs_zcode_reproduction_qualify_cas(
+            workspace, score_root, policy_root, reproduction_root,
+            reproduction_proof_set_root,
+            (uint64_t)json_get_int(epoch_value), json_get_int(now_value),
+            &qualification);
+    bool ready = verdict == VCS_ZCODE_QUALIFICATION_READY;
     (void)json_push_kv_str(&reply->data, "mode", "shadow_pre_genesis");
     (void)json_push_kv_str(&reply->data, "package_name", package->name);
     zcc_hex(&reply->data, "score_receipt_root", score_root);
+    zcc_hex(&reply->data, "policy_candidate_root", policy_root);
+    zcc_hex(&reply->data, "reproduction_request_root", reproduction_root);
+    zcc_hex(&reply->data, "reproduction_proof_set_root",
+            reproduction_proof_set_root);
     zcc_hex(&reply->data, "package_root", score.package_root);
     zcc_hex(&reply->data, "release_root", score.release_root);
     zcc_hex(&reply->data, "task_root", score.task_root);
@@ -413,14 +438,41 @@ void zcl_native_handle_zcode_commons_shadow_plan(
     zcc_hex(&reply->data, "independent_reproduction_evidence_root",
             score.evidence_roots[VCS_ZCODE_SCORE_INDEPENDENT_REPRODUCTION]);
     (void)json_push_kv_bool(&reply->data, "vertical_reverified", true);
+    (void)json_push_kv_bool(&reply->data, "exact_reproduction_match",
+                            qualification.exact_reproduction_match);
+    (void)json_push_kv_bool(&reply->data, "distinct_signer",
+                            qualification.distinct_signer);
+    (void)json_push_kv_bool(&reply->data, "signer_policy_approved",
+                            qualification.signer_policy_approved);
     (void)json_push_kv_bool(&reply->data,
-                            "approved_off_host_reproduction", offhost);
+        "declared_operator_group_distinct",
+        qualification.declared_operator_group_distinct);
+    (void)json_push_kv_bool(&reply->data, "remote_transport_used",
+                            qualification.remote_transport_used);
+    (void)json_push_kv_bool(&reply->data,
+        "physical_independence_proven",
+        qualification.physical_independence_proven);
+    (void)json_push_kv_bool(&reply->data, "identity_linkage_complete",
+                            qualification.identity_linkage_complete);
+    (void)json_push_kv_int(&reply->data, "reproduction_receipts",
+                           qualification.reproduction_receipts);
+    (void)json_push_kv_str(&reply->data, "reproduction_compare_rule",
+        vcs_reproduce_rule_string(
+            (enum vcs_reproduce_rule)qualification.reproduce_rule));
+    if (ready) {
+        zcc_hex(&reply->data, "reproduction_receipt_root",
+                qualification.reproduction_receipt_root);
+        zcc_hex(&reply->data, "reproducer_contributor_binding_root",
+                qualification.reproducer_contributor_binding_root);
+        zcc_hex(&reply->data, "declared_operator_group_root",
+                qualification.operator_group_root);
+    }
     (void)json_push_kv_str(&reply->data, "shadow_status",
-        offhost ? "ready_for_creation_attribution_plan"
-                : "blocked_off_host_reproduction");
-    if (!offhost)
-        (void)json_push_kv_str(&reply->data, "blocker",
-            "no_owner_approved_off_host_reproducer_is_registered");
+        ready ? "ready_for_shadow_attribution"
+              : "blocked_reproduction_qualification");
+    (void)json_push_kv_str(&reply->data,
+        ready ? "qualification" : "blocker",
+        vcs_zcode_reproduction_qualification_string(verdict));
     (void)json_push_kv_str(&reply->data, "why_shadow_units_would_exist",
         "challenge_matured_public_c23_creation_with_approved_off_host_reproduction");
     (void)json_push_kv_int(&reply->data, "shadow_award_atoms", 0);
@@ -435,8 +487,8 @@ void zcl_native_handle_zcode_commons_shadow_plan(
     (void)json_push_kv_bool(&reply->data,
                             "permissive_license_validation_required", true);
     (void)json_push_kv_str(&reply->data, "next_safe_action",
-        offhost ? "prepare_unsigned_shadow_attribution_for_owner_review"
-                : "register_and_verify_an_owner_approved_off_host_reproducer");
+        ready ? "prepare_scratch_only_shadow_attribution_plan"
+              : "inspect_qualification_blocker_and_exact_cas_roots");
 }
 
 void zcl_native_handle_zcode_commons_verify(

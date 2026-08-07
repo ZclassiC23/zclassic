@@ -86,14 +86,14 @@ ZCL_COMMAND_READY_COMMAND(
 ZCL_COMMAND_READY_READ(
     "zcode.commons.shadow.plan", "zcode.commons.shadow", "",
     "Explain whether the first shadow epoch can be proven",
-    "Reloads and rederives one signed Score vertical for a registered C23 "
-    "package. It creates no attribution or epoch and awards zero shadow "
-    "units unless approved off-host reproduction is present.",
+    "Reloads the signed Score vertical, policy candidate, reproducer set, "
+    "portable challenge and exact reproduction evidence. It creates no "
+    "attribution or epoch and never treats a signature as physical-host proof.",
     ZCL_COMMAND_LIST_BUDGET, "zcode,commons,shadow,epoch,reproduction",
     "zcl.zcode_commons_shadow.input.v1",
-    "zcl.zcode_commons_shadow.v1", "workspace,score_receipt_root",
-    "workspace,score_receipt_root",
-    "zclassic23 zcode commons shadow plan --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"score_receipt_root\":\"<64hex>\"}'",
+    "zcl.zcode_commons_shadow.v1", "workspace,score_receipt_root,policy_candidate_root,reproduction_request_root,reproduction_proof_set_root,epoch,now_unix",
+    "workspace,score_receipt_root,policy_candidate_root,reproduction_request_root,reproduction_proof_set_root,epoch,now_unix",
+    "zclassic23 zcode commons shadow plan --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"score_receipt_root\":\"<64hex>\",\"policy_candidate_root\":\"<64hex>\",\"reproduction_request_root\":\"<64hex>\",\"reproduction_proof_set_root\":\"<64hex>\",\"epoch\":1,\"now_unix\":1}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
