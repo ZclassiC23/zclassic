@@ -638,7 +638,7 @@ authorization.
 | DONE | O4 scratch attribution and epoch plan/commit | `3b45e7991` | `c7ddc1fd9` | full policy/Score/reproduction/binding/package/release/license reload; deterministic fixture anchors; exact award/mint equality; changed branch, missing predecessor, duplicate candidate, policy substitution and one-atom drift rejection; six typed shadow leaves; focused/API gates, full lint 134/134 and normal pre-push source-wide suite |
 | DONE | O5 three-party portable reproduction acceptance | `6b933d4ea` | `6b933d4ea` | requester, reproducer and observer in distinct processes/workspaces/stores; root-addressed content/package transfer; independent qualification and byte-identical projection rebuild; real swarm/DHT corruption, cancellation, fallback, resume and restart owners composed by one exact 6/6 gate; `actual_off_host_credit=false`; full lint 134/134 and normal pre-push 902-group suite |
 | DONE | O6 four linked protocol shadow simulations | `fc7b88bab`, `e237f13fa` | `e237f13fa` | actual base/SHA3/codec package verticals; three distinct mature creations followed by one empty epoch; exact predecessor and cumulative 300,000,000-atom equality; byte-identical rebuild after every epoch; boundary reorg and deterministic replacement roots; cross-epoch duplicate refusal; read-only typed report; focused creation/Score/catalog/API gates, full lint 134/134 and normal pre-push 902-group suite; `same_host_fixture_only`, real genesis gate false |
-| DONE | O7 fixture-only C23 seed and shadow-election foundation | `d623a3043` | `d623a3043` | exact 721-byte dual-signed seed wire; generated/vendor/copied exclusion; height+MTP maturity and reorg gates; canonical evidence snapshot; 26-epoch decay and 10,000 weight cap; unbiased weighted selection without replacement; one ZID per seat; concentration metrics; four frozen election KAT roots; focused green, full lint 134/134, 10,000 ASan+UBSan fuzz iterations and normal pre-push 903-group suite; `simulation_only=true`, `authority_conferred=false` |
+| DONE | O7 fixture-only C23 seed and shadow-election foundation | `d623a3043` | `37a8c8aa6` | exact 721-byte dual-signed seed wire; generated/vendor/copied exclusion; height+MTP maturity and reorg gates; canonical evidence snapshot; 26-epoch decay and 10,000 weight cap; unbiased weighted selection without replacement; one ZID per seat; concentration metrics; four frozen election KAT roots; focused green, full lint 134/134, 10,000 ASan+UBSan fuzz iterations and normal pre-push 903-group suite; `simulation_only=true`, `authority_conferred=false` |
 | BLOCKED | Real SHA3 off-host independence gate | `fc62b9c4a` | `fc62b9c4a` | SHA3 Score remains honestly 4/5; local evidence and O5 same-host simulation do not prove physical independence or authorize a real shadow epoch, token genesis, mint or custody |
 
 Historical-truth hardening began from fetched `origin/main` `7091051aa`
@@ -802,3 +802,11 @@ proved local HEAD and `origin/main` both at `d623a3043`. The seed authorities,
 chain anchors and elections are test fixtures only: no production seed was
 admitted and the elections set `simulation_only=true` and
 `authority_conferred=false`.
+
+While the O7 documentation push gate ran, concurrent `main` advanced to
+`201f558b131b404949ebe07079d50db8710b21b3b`; the completed green push was
+correctly rejected as stale. Its disjoint metaverse custody-reader contention
+fix was merged without modification through `37a8c8aa6`. Both affected
+focused groups and the complete 134-gate lint set passed on the combined tree
+before the integration retry. The stale rejected push is not counted as a
+completed publication.
