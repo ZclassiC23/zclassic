@@ -6,6 +6,7 @@
 #include "base/hex.h"
 #include "base/cleanse.h"
 #include "json/json.h"
+#include "platform/os_proc.h"
 #include "platform/time_compat.h"
 #include "models/database.h"
 #include "services/build_fabric_service.h"
@@ -13,6 +14,7 @@
 #include "sha3/sha3.h"
 #include "util/file_tree_ops.h"
 #include "util/safe_alloc.h"
+#include "util/spawn.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_object.h"
 #include "vcs/build_action.h"
@@ -24,6 +26,7 @@
 #include "vcs/zcode_write_scope.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +34,8 @@
 #include <unistd.h>
 
 #define ZWORK_RUN_PATH_MAX 4400
+#define ZWORK_ADAPTER_OUTPUT_MAX (32u * 1024u)
+#define ZWORK_ADAPTER_PACKET_MAX (512u * 1024u)
 
 static const char *run_str(const struct json_value *input, const char *key)
 {
@@ -45,6 +50,87 @@ static void run_fail(struct zcl_command_reply *reply, const char *code,
     zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                            ZCL_COMMAND_EXIT_INVALID, code, phase, retryable,
                            mutated, detail, "zcode.work.run");
+}
+
+static bool run_codex_runner_path(char out[ZWORK_RUN_PATH_MAX])
+{
+    char executable[ZWORK_RUN_PATH_MAX];
+    const char *api_key = getenv("CODEX_API_KEY");
+    const char *access_token = getenv("CODEX_ACCESS_TOKEN");
+    if ((!api_key || !api_key[0]) &&
+        (!access_token || !access_token[0]))
+        return false;
+    if ((api_key && api_key[0]) && (access_token && access_token[0]))
+        return false;
+    if (!os_proc_exe_path(executable, sizeof(executable)))
+        return false;
+    char *slash = strrchr(executable, '/');
+    if (!slash)
+        return false;
+    *slash = '\0';
+    int n = snprintf(out, ZWORK_RUN_PATH_MAX,
+                     "%s/zclassic23-zcode-adapter-runner", executable);
+    return n > 0 && (size_t)n < ZWORK_RUN_PATH_MAX &&
+           access(out, X_OK) == 0;
+}
+
+static bool run_write_packet(const char *candidate_workspace,
+                             const struct json_value *packet,
+                             char path[ZWORK_RUN_PATH_MAX])
+{
+    size_t len = json_write(packet, NULL, 0);
+    if (len == 0 || len > ZWORK_ADAPTER_PACKET_MAX)
+        return false;
+    char *wire = zcl_malloc(len + 1u, "zcode.work.adapter.packet");
+    if (!wire || json_write(packet, wire, len + 1u) != len) {
+        free(wire);
+        return false;
+    }
+    int n = snprintf(path, ZWORK_RUN_PATH_MAX, "%s/.zcode-adapter-packet.json",
+                     candidate_workspace);
+    if (n <= 0 || (size_t)n >= ZWORK_RUN_PATH_MAX) {
+        free(wire);
+        return false;
+    }
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                  0600);
+    bool ok = fd >= 0;
+    size_t off = 0;
+    while (ok && off < len) {
+        ssize_t wrote = write(fd, wire + off, len - off);
+        if (wrote < 0 && errno == EINTR)
+            continue;
+        if (wrote <= 0)
+            ok = false;
+        else
+            off += (size_t)wrote;
+    }
+    if (ok)
+        ok = fsync(fd) == 0;
+    if (fd >= 0 && close(fd) != 0)
+        ok = false;
+    if (!ok)
+        (void)unlink(path);
+    free(wire);
+    return ok;
+}
+
+static void run_adapter_cleanup(const char *candidate_workspace,
+                                const char *packet_path)
+{
+    if (packet_path && packet_path[0])
+        (void)unlink(packet_path);
+    char path[ZWORK_RUN_PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/.zcode-adapter-home",
+                     candidate_workspace);
+    if (n > 0 && (size_t)n < sizeof(path))
+        ZCL_IGNORE_RESULT(zcl_tree_remove(path),
+                          "remove private ephemeral adapter home");
+    n = snprintf(path, sizeof(path), "%s/.zcode-adapter-tmp",
+                 candidate_workspace);
+    if (n > 0 && (size_t)n < sizeof(path))
+        ZCL_IGNORE_RESULT(zcl_tree_remove(path),
+                          "remove private ephemeral adapter temp");
 }
 
 static const struct vcs_zcode_task_index_entry *run_resolve(
@@ -408,7 +494,7 @@ static bool run_admit(
     const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_agent_context_v1 *context,
     const struct vcs_zcode_write_scope_v1 *scope,
-    uint64_t candidate_sequence,
+    uint64_t candidate_sequence, const char *adapter_name,
     struct zcl_command_reply *reply)
 {
     char datadir[ZWORK_RUN_PATH_MAX];
@@ -430,9 +516,12 @@ static bool run_admit(
     bool rooted = zcl_hex_decode_lower(context_entry->context_root_hex,
                                        context_root, 32);
     struct sha3_256_ctx sha;
-    static const char domain[] = "zcl.zcode.adapter.manual.v1";
+    static const char manual_domain[] = "zcl.zcode.adapter.manual.v1";
+    static const char codex_domain[] = "zcl.zcode.adapter.codex.v1";
+    const char *domain = strcmp(adapter_name, "codex") == 0
+        ? codex_domain : manual_domain;
     sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
+    sha3_256_write(&sha, (const uint8_t *)domain, strlen(domain) + 1u);
     if (rooted) sha3_256_write(&sha, context_root, sizeof(context_root));
     if (rooted && candidate_sequence > 1u) {
         uint8_t parent_root[32];
@@ -554,7 +643,7 @@ static bool run_admit(
                           next_workspace)) &&
         (!retry_ready ||
          json_push_kv(&reply->data, "repair_packet", &repair_packet)) &&
-        json_push_kv_str(&reply->data, "adapter", "manual") &&
+        json_push_kv_str(&reply->data, "adapter", adapter_name) &&
         json_push_kv_str(&reply->data, "next_safe_command",
                          passed ? "zcode work status" :
                          retry_ready ? "edit candidate_workspace, then rerun zcode work run" :
@@ -578,10 +667,18 @@ void zcl_native_handle_zcode_work_run(
     const char *adapter = run_str(request->input, "adapter");
     if (!workspace_arg || !workspace_arg[0]) workspace_arg = ".";
     if (!adapter || !adapter[0]) adapter = "manual";
-    if (strcmp(adapter, "manual") != 0) {
+    bool codex_adapter = strcmp(adapter, "codex") == 0;
+    if (strcmp(adapter, "manual") != 0 && !codex_adapter) {
         run_fail(reply, "ADAPTER_REFUSED", "adapter",
-                 "adapter must name the fixed available adapter: manual",
+                 "adapter must name one fixed adapter: manual or codex",
                  false, false);
+        return;
+    }
+    char codex_runner[ZWORK_RUN_PATH_MAX] = {0};
+    if (codex_adapter && !run_codex_runner_path(codex_runner)) {
+        run_fail(reply, "ADAPTER_UNAVAILABLE", "adapter",
+                 "the fixed confined Codex runner or one supported single-run CODEX credential is unavailable; manual remains safe",
+                 true, false);
         return;
     }
     char workspace[ZWORK_RUN_PATH_MAX];
@@ -689,7 +786,7 @@ void zcl_native_handle_zcode_work_run(
         if (memcmp(candidate_root, materialize_root, 32) != 0) {
             bool handled = run_admit(
                 workspace, candidate_workspace, goal, entry, context_entry,
-                &task, &context, &scope, candidate_sequence, reply);
+                &task, &context, &scope, candidate_sequence, "manual", reply);
             if (!handled)
                 run_fail(reply, "CANDIDATE_ADMISSION_FAILED", "admit",
                          "scratch identity or existing task composition failed",
@@ -703,8 +800,70 @@ void zcl_native_handle_zcode_work_run(
     char work_id[32];
     (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                    entry->task_root_hex);
-    bool ok = run_packet(&packet, goal, candidate_workspace, entry,
-                         context_entry, &task, &context, &scope) &&
+    bool packet_ok = run_packet(&packet, goal, candidate_workspace, entry,
+                                context_entry, &task, &context, &scope);
+    if (packet_ok && codex_adapter) {
+        char packet_path[ZWORK_RUN_PATH_MAX] = {0};
+        char *adapter_output = zcl_malloc(ZWORK_ADAPTER_OUTPUT_MAX,
+                                          "zcode.work.adapter.output");
+        bool staged = adapter_output && run_write_packet(
+            candidate_workspace, &packet, packet_path);
+        const char *const argv[] = {
+            codex_runner, candidate_workspace, packet_path, NULL,
+        };
+        int rc = staged ? zcl_spawn_capture(
+            argv, adapter_output, ZWORK_ADAPTER_OUTPUT_MAX, 300000) : -1;
+        run_adapter_cleanup(candidate_workspace, packet_path);
+        if (!staged || rc != 0) {
+            char detail[384];
+            const char *kind = rc == 137 ? "timed out" :
+                               rc == 69 || rc == 127 ? "is unavailable" :
+                               "refused or failed";
+            const char *output_tail = adapter_output ? adapter_output : "";
+            size_t output_len = strlen(output_tail);
+            if (output_len > 220u) output_tail += output_len - 220u;
+            (void)snprintf(detail, sizeof(detail),
+                           "confined Codex adapter %s (exit=%d)%s%.220s",
+                           kind, rc,
+                           adapter_output && adapter_output[0] ? ": " : "",
+                           output_tail);
+            run_fail(reply, rc == 137 ? "ADAPTER_TIMEOUT" :
+                       rc == 69 || rc == 127 ? "ADAPTER_UNAVAILABLE" :
+                                              "ADAPTER_REFUSAL",
+                     "adapter", detail, rc != 70, staged);
+            free(adapter_output); json_free(&packet); free(goal);
+            vcs_zcode_agent_context_free(&context);
+            vcs_zcode_task_index_free(index); return;
+        }
+        uint8_t candidate_root[32];
+        bool captured = vcs_tree_capture_into(candidate_workspace, workspace,
+                                              candidate_root) == VCS_OK;
+        if (!captured || memcmp(candidate_root, materialize_root, 32) == 0) {
+            run_fail(reply, captured ? "ADAPTER_REFUSAL" :
+                                      "CANDIDATE_CAPTURE_FAILED",
+                     captured ? "adapter" : "capture",
+                     captured ? "Codex completed without an admissible source change"
+                              : "Codex output could not be captured safely",
+                     true, true);
+            free(adapter_output); json_free(&packet); free(goal);
+            vcs_zcode_agent_context_free(&context);
+            vcs_zcode_task_index_free(index); return;
+        }
+        bool handled = run_admit(
+            workspace, candidate_workspace, goal, entry, context_entry,
+            &task, &context, &scope, candidate_sequence, "codex", reply);
+        if (handled && reply->status == ZCL_COMMAND_STATUS_PASSED)
+            (void)json_push_kv_str(&reply->data, "adapter_output",
+                                   adapter_output);
+        if (!handled)
+            run_fail(reply, "CANDIDATE_ADMISSION_FAILED", "admit",
+                     "confined Codex result could not enter existing candidate authority",
+                     true, true);
+        free(adapter_output); json_free(&packet); free(goal);
+        vcs_zcode_agent_context_free(&context);
+        vcs_zcode_task_index_free(index); return;
+    }
+    bool ok = packet_ok &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
         json_push_kv_str(&reply->data, "adapter", "manual") &&
         json_push_kv_str(&reply->data, "state", repairing

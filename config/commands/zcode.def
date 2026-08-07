@@ -128,12 +128,13 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_work_status)
 
 ZCL_COMMAND_READY_COMMAND(
-    "zcode.work.run", "zcode.work", "", "Prepare one contained adapter handoff",
+    "zcode.work.run", "zcode.work", "", "Run one contained adapter handoff",
     "Reloads the verified task and canonical agent context, materializes an "
-    "isolated candidate workspace, and emits a bounded manual adapter packet. "
-    "The adapter receives no acceptance or publication authority.",
+    "isolated candidate workspace, and either emits a bounded manual packet or "
+    "runs the fixed opt-in Codex adapter behind Landlock, a scrubbed environment "
+    "and strict limits. No adapter receives acceptance or publication authority.",
     ZCL_COMMAND_RESULT_BUDGET,
-    "zcode,work,run,adapter,manual,contained,candidate",
+    "zcode,work,run,adapter,manual,codex,contained,candidate",
     "zcl.zcode_work_run.input.v1", "zcl.zcode_work_run.v1",
     "workspace,work,adapter", "",
     "zclassic23-dev zcode work run --input='{\"work\":\"latest\",\"adapter\":\"manual\"}'",

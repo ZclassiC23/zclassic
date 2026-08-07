@@ -53,14 +53,16 @@ static void zpd_fixture_cleanup(const char *root)
 {
     static const char *const files[] = {
         "link", "special", "LICENSE", "zcode-package.json", "src/x.c",
-        "include/x.h", "tests/test.c",
+        "include/x.h", "tests/test.c", ".zvcs/control", ".codeindex/control",
     };
     char path[512];
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
         (void)snprintf(path, sizeof(path), "%s/%s", root, files[i]);
         (void)unlink(path);
     }
-    static const char *const dirs[] = { "src", "include", "tests" };
+    static const char *const dirs[] = {
+        "src", "include", "tests", ".zvcs", ".codeindex",
+    };
     for (size_t i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
         (void)snprintf(path, sizeof(path), "%s/%s", root, dirs[i]);
         (void)rmdir(path);
@@ -209,6 +211,42 @@ static int zpd_test_base(secp256k1_context *ctx, const uint8_t secret[32],
     return failures;
 }
 
+static int zpd_test_control_stores(const uint8_t pubkey[33])
+{
+    int failures = 0;
+    TEST("zcode package dev prepare: local control stores do not alter package roots") {
+        char root[256], path[320];
+        (void)snprintf(root, sizeof(root),
+                       "test-tmp/zcode-package-control-%ld", (long)getpid());
+        ASSERT(zpd_fixture(root, false));
+        struct vcs_package_prepare_options options = {
+            .dir = root, .publisher_sequence = 1,
+            .reward_address = "", .chain_id = "zclassic-main",
+        };
+        memcpy(options.publisher_pubkey, pubkey, 33);
+        struct vcs_package_prepared before, after;
+        char detail[256];
+        ASSERT(vcs_package_prepare(&options, &before, detail,
+                                   sizeof(detail)) == VCS_PACKAGE_PREPARE_OK);
+        (void)snprintf(path, sizeof(path), "%s/.zvcs", root);
+        ASSERT(mkdir(path, 0700) == 0);
+        (void)snprintf(path, sizeof(path), "%s/.zvcs/control", root);
+        ASSERT(zpd_write(path, "local vcs state\n"));
+        (void)snprintf(path, sizeof(path), "%s/.codeindex", root);
+        ASSERT(mkdir(path, 0700) == 0);
+        (void)snprintf(path, sizeof(path), "%s/.codeindex/control", root);
+        ASSERT(zpd_write(path, "derived index state\n"));
+        ASSERT(vcs_package_prepare(&options, &after, detail,
+                                   sizeof(detail)) == VCS_PACKAGE_PREPARE_OK);
+        ASSERT(memcmp(before.package_root, after.package_root, 32) == 0);
+        vcs_package_prepared_free(&after);
+        vcs_package_prepared_free(&before);
+        zpd_fixture_cleanup(root);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int zpd_test_fail_closed(const uint8_t pubkey[33])
 {
     int failures = 0;
@@ -226,6 +264,13 @@ static int zpd_test_fail_closed(const uint8_t pubkey[33])
         memcpy(options.publisher_pubkey, pubkey, 33);
         struct vcs_package_prepared prepared;
         char detail[256];
+        (void)snprintf(path, sizeof(path), "%s/.zvcs", root);
+        ASSERT(symlink("src", path) == 0);
+        ASSERT(vcs_package_prepare(&options, &prepared, detail,
+                                   sizeof(detail)) ==
+               VCS_PACKAGE_PREPARE_ERR_FILE_TYPE);
+        ASSERT(unlink(path) == 0);
+        (void)snprintf(path, sizeof(path), "%s/link", root);
         ASSERT(vcs_package_prepare(&options, &prepared, detail,
                                    sizeof(detail)) ==
                VCS_PACKAGE_PREPARE_ERR_FILE_TYPE);
@@ -736,6 +781,18 @@ static int zpd_test_work_start(void)
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "workspace", root));
         ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        ASSERT(json_push_kv_str(&input, "adapter", "codex"));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_run_test.v1");
+        zcl_native_handle_zcode_work_run(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(strcmp(reply.error.code, "ADAPTER_UNAVAILABLE") == 0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", saved_work_id));
         ASSERT(json_push_kv_str(&input, "adapter", "shell"));
         request.input = &input;
         zcl_command_reply_init(&reply, "zcl.zcode_work_run_test.v1");
@@ -768,6 +825,7 @@ int test_zcode_package_dev(void)
         return 1;
     }
     int failures = zpd_test_base(ctx, secret, pubkey) +
+                   zpd_test_control_stores(pubkey) +
                    zpd_test_fail_closed(pubkey) +
                    zpd_test_project_inspect() +
                    zpd_test_project_init() +

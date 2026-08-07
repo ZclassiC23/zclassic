@@ -1190,7 +1190,8 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         install-tip-agreement tip-agreement-status tip-agreement-selftest
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c lib/base/src/log_level.c
-all: test_zcl zclassic23 zclassic-cli zcl-rpc zclassic23-package-verify
+all: test_zcl zclassic23 zclassic-cli zcl-rpc zclassic23-package-verify \
+	zclassic23-zcode-adapter-runner
 
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard lib/test/src/*.c))
@@ -2271,7 +2272,7 @@ verify-change:
 # runs the changed-file dev compile gate, then links the non-LTO dev binary.
 # This deliberately does not replace `zclassic23`, `make deploy`, or release
 # artifacts.
-dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN)
+dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN) zclassic23-zcode-adapter-runner
 # Checkout-locked (see CHECKOUT_LOCK above) — the watcher invokes this same
 # target via run_rebuild_command, so it defers instead of racing a foreground
 # rebuild in the same checkout.
@@ -2996,6 +2997,25 @@ $(eval $(call BUILD_NODE_TOOL,rebuild_recent,tools/rebuild_recent.c,-lm,-fopenmp
 # compiles/executes package code, sandboxed per child (seccomp + rlimits +
 # Landlock). The node binary never does. See tools/package_verify.c.
 $(eval $(call BUILD_NODE_TOOL,zclassic23-package-verify,tools/package_verify.c))
+# Opt-in C23 development adapter. This small front process enters Landlock and
+# scrubs credentials before it invokes the fixed Codex CLI; the node handler
+# never executes a caller-supplied command.
+ZCODE_ADAPTER_RUNNER_SRCS = tools/zcode_adapter_runner.c \
+	lib/platform/src/os_sandbox_linux.c lib/base/src/cleanse.c \
+	lib/base/src/log_level.c lib/base/src/result.c
+.PHONY: zclassic23-zcode-adapter-runner
+zclassic23-zcode-adapter-runner: $(BIN_DIR)/zclassic23-zcode-adapter-runner
+$(BIN_DIR)/zclassic23-zcode-adapter-runner: $(BUILD_IDENTITY_STAMP) \
+		$(ZCODE_ADAPTER_RUNNER_SRCS)
+	@mkdir -p $(dir $@)
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" \
+		$(ZCODE_ADAPTER_RUNNER_SRCS); \
+	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
 
 .PHONY: sim dump check-wallet
 sim: wallet_sim

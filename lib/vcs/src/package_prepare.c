@@ -225,6 +225,12 @@ static bool prepare_regular(struct prepare_walk *walk, int parent_fd,
     return ok;
 }
 
+static bool prepare_local_control_dir(const char *prefix, const char *name)
+{
+    return prefix[0] == '\0' &&
+           (strcmp(name, ".zvcs") == 0 || strcmp(name, ".codeindex") == 0);
+}
+
 static bool prepare_walk_dir(struct prepare_walk *walk, int dir_fd,
                              const char *prefix)
 {
@@ -275,6 +281,9 @@ static bool prepare_walk_dir(struct prepare_walk *walk, int dir_fd,
             walk->error = VCS_PACKAGE_PREPARE_ERR_IO;
             prepare_detail(walk, "%s: stat: %s", path, strerror(errno));
             ok = false;
+        } else if (S_ISDIR(listed.st_mode) &&
+                   prepare_local_control_dir(prefix, entry->d_name)) {
+            continue;
         } else if (S_ISDIR(listed.st_mode)) {
             int child = openat(dir_fd, entry->d_name,
                                O_RDONLY | O_DIRECTORY | O_CLOEXEC |

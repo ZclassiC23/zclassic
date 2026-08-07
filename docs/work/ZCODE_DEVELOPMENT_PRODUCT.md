@@ -241,7 +241,8 @@ deployment/consensus paths.
 | P8a patch summary | `7894d50cf852470a5fd3caa5525a9ef2f055b099` | patch root lookup and manual file counting | 0 | no context expansion | +210 / -7 | status re-verifies `patch.v1` and CAS blobs, then reports changed paths, files, exact line-content additions/deletions, and public-header impact |
 | P6d declared-test evidence | `9726dbf148cb184b9ef14287ad6fef62174ebae5` | separate evidence command inputs for a declared package test | 0 | no context expansion | +134 / -3 | the existing package action's chunked output is reconstructed and independently rechecked; an exact isolated `TEST_PASS` now satisfies both compile and declared-test facts for `quick` |
 | P4 accept | `483b0b76c10e5bc26459e9e02f63676be0d63d54` | action ID, source root, scratch ledger, evidence and lane commands | 3 expert calls | no context expansion | recorded in commit | one explicit human command advances the existing signed FRONTIER→CANDIDATE→PROVEN chain, is idempotent, leaves source unchanged, and rebuilds `PROVEN` from CAS after projection deletion |
-| P1 init/status | commit subject `feat(zcode): initialize inferred C23 projects` | hand-authored package metadata and unsafe filesystem setup | 0 on an existing project; initialization is one explicit plan/commit pair | no model context expansion | +622 / -12 production lines | inspection proposes correctable metadata before initialization; commit rechecks the exact source/config plan, creates only `zcode-package.json` with `O_EXCL`, refuses stale plans and overwrite, and status remains read-only |
+| P1 init/status | `1e101f3126b16c9bc717d5a332f8af3b6607e4da` | hand-authored package metadata and unsafe filesystem setup | 0 on an existing project; initialization is one explicit plan/commit pair | no model context expansion | +622 / -12 production lines | inspection proposes correctable metadata before initialization; commit rechecks the exact source/config plan, creates only `zcode-package.json` with `O_EXCL`, refuses stale plans and overwrite, and status remains read-only |
+| P5 Codex adapter | commit subject `feat(zcode): run a confined Codex adapter` | external packet export/import ceremony | 0; `work run --adapter=codex` edits, captures, admits and builds in one command | exact P3 packet only; combined output capture capped at 32 KiB | +438 / -15 production lines | fixed executable registry, environment scrub, Landlock write-only candidate boundary, no model acceptance/publication authority, typed unavailable/refusal/timeout; measured runner rebuild fell from about 60 s to 10.5 s after replacing the whole-node link with its exact five-source dependency set; manual remains the default |
 
 The P5 delta includes promoting the build worker's private CAS-tree materializer
 to one shared ZVCS primitive; 59 production lines of duplicate materialization
@@ -259,6 +260,29 @@ task index orders attempts by candidate sequence and derives `REPAIR_NEEDED`
 only from a verified signed receipt for the latest candidate. Compiler output
 is intentionally summarized to the canonical failure class and exit status;
 unbounded logs are neither made authority nor copied into the adapter packet.
+The same audit covers the Codex adapter: existing
+`candidate.v1.adapter_policy_root` already owns adapter provenance. The
+runner derives that field from the exact context, the parent candidate when
+repairing, and a fixed local adapter-policy label. It adds no wire, source
+store, task, candidate, receipt, or workflow authority.
+
+The first installed-adapter dogfood run exposed two fail-closed integration
+defects before any authoritative source changed. `RLIMIT_NPROC` was initially
+applied as an absolute 128-task ceiling even though Linux charges it across the
+real uid; the runner now rebases its 128-task allowance over the measured uid
+task count. The next run reached the installed Codex client but the inherited
+`OPENAI_API_KEY` produced HTTP 401. The fixed adapter now accepts exactly one
+documented single-run credential, `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN`, and
+otherwise returns `ADAPTER_UNAVAILABLE`. It does not copy the user's
+`auth.json` into the candidate or expose a credential to model-run commands.
+This host currently has neither supported single-run variable, so the real
+adapter benchmark remains honestly blocked while the manual adapter remains
+operational.
+The same dogfood run caught local `.zvcs` and `.codeindex` control directories
+changing a package root. Package preparation now ignores only genuine
+root-level directories with those two fixed names; a symlink or special file
+under either name is still rejected. The derived package source and root stay
+unchanged while local task/CAS and derived-index state remain non-authoritative.
 P8 line counts are deterministic content-multiset deltas: identical lines are
 matched regardless of position, so a pure move is not presented as creation.
 Binary files and text files above the fixed 65,536-line bound set
