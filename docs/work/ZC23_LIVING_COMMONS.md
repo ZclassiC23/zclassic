@@ -220,10 +220,15 @@ licence-evidence root, a closed contribution category or mask, exact award in
 atoms, opening anchor, maturity height and median-time-past, optional
 predecessor attribution or release-lineage root, and creation time.
 
-Valid categories describe mechanically demonstrated events: new public source,
-born-red test plus fix, security repair, benchmark evidence, independent
-reproduction, structured review or negative finding, compatibility
-maintenance, and long-interval preservation/reproduction. Ordinary upload,
+The v1 wire admits only mechanically demonstrated public source, born-red
+repair, independent reproduction, compatibility maintenance, and preservation.
+`SECURITY_FIX` is retained as a display label but has exactly the born-red
+evidence and award class: v1 binds no structured security-finding authority,
+so selecting that label cannot increase issuance. Benchmark and structured
+review/negative-finding categories are not admitted by v1; existing science
+receipts are useful evidence, but this wire has no independent field that can
+bind them without overloading lineage. Adding them requires a separately
+reviewed versioned authority, not reinterpretation of v1. Ordinary upload,
 bandwidth, signing, voting, DHT publication, balance, payment, line count,
 generated volume, formatting, renaming, version bumps, no-op rebuilds,
 delete-and-readd novelty, copied/lightly transformed work, circular review,
@@ -236,6 +241,30 @@ non-permissive licensing; duplicate contribution roots; contributor-binding
 mismatch; zero or overflowing awards; epoch mismatch; package/release/recipe/
 lock substitution; contradictory source lineage; and any caller assertion not
 proved by canonical bytes. One contribution root credits one contributor once.
+
+Historical authorship and current payment authority are deliberately separate.
+The contributor binding referenced by an attribution is verified at the
+candidate's `created_unix`, when the authorship event occurred. Later key
+rotation, binding expiry, or revocation does not erase valid history. Any
+future payout path must independently re-check current authority at the time of
+payment; historical validity never authorizes current funds.
+
+`PUBLIC_SOURCE` lineage is authority, not a hint. `NONE` requires both an empty
+lineage root and a signed root release with no parent. `RELEASE` reloads the
+signed direct parent and proves exact parent root, package name, chain,
+publisher key, and next publisher sequence. `PREDECESSOR_ATTRIBUTION` reloads
+and recursively re-verifies the complete prior attribution, then proves that
+its signed release is the direct parent. Recursion is bounded and arbitrary,
+missing, substituted, cross-policy, future, or contradictory roots fail
+closed.
+
+Continuity creation is neutral with respect to patronage. The
+`zcl.zcode.creation_event_key.v1\0` identity derives from the registered Score
+evidence plus exact package, release, and toolchain capsule. A born-red fix,
+independent reproduction, compatibility event, or preservation event may
+qualify with a verified release/predecessor lineage and no patron at all. An
+optional continuity policy may add a patron's caps or transition constraints,
+but it neither creates the event nor changes its duplicate identity.
 
 ## Epoch creation set and fungibility
 
@@ -258,6 +287,42 @@ a collectible permanently attached to one package. The valid statement is
 aggregate and exact: all policy-valid issued supply is accounted for by
 creation attributions. A display must never claim that a mixed token still
 belongs to one historical work.
+
+## First shadow epoch: exact current blocker
+
+The first shadow candidate is the real MIT-licensed
+`zclassic23/sha3@0.1.0-dev.1` package. Its current exact evidence vertical is:
+
+- package `ea54d7038792764c059a697792d46ee92fe75e29aa302d3c8db3a208a580876e`;
+- task `ef7b6182c3560110e34fbfd70c98ee8b8107f6cb0d7b5a2b3315d92f275de5a7`;
+- candidate `45654ffefad86f3f5d2096f3c829398be0e8d945508a80adedb458f29364a584`;
+- proof policy `6e1021dd7f9d73533f35048cee3a95d555c7473cb1ffcffb3ef06f6f9270b08f`;
+- proof set `b063663993af9232bfdc1431950135ecc1dc59caa612c078efca4704fa32f83b`;
+- PROVEN lane `a9f923e63e54051535412f180f4720a797c7ab026ceae4bf9d62d2cced880101`;
+- Score receipt `680882572af552040efb6ec202915a3d5c2f9704e2d389200c07ed770ba6bea8`.
+
+The local Score is honestly 4/5. Its independent-reproduction evidence root is
+`47ca7f1e8c41f062e9e6c66a58539c5daca5deff0f9279dfe7c1ec0990a5e88e`,
+but its signer is same-host/local-only and no owner-approved off-host signer is
+registered. Therefore the first shadow epoch is **blocked before attribution**:
+shadow award = 0 atoms, no creation attribution exists, no epoch-creation set
+exists, and exact shadow supply equality is the vacuous `0 == 0`. This is not a
+completed epoch and earns no independent-reproduction unit.
+
+The read-only demonstration is:
+
+```text
+zclassic23 zcode commons shadow plan --input='{"workspace":"<scratch-cas>","score_receipt_root":"680882572af552040efb6ec202915a3d5c2f9704e2d389200c07ed770ba6bea8"}'
+```
+
+It reloads and rederives the task, candidate, policy, proof set, work receipts,
+PROVEN lane, signed Score receipt, and generated package-registry match. It
+reports the exact blocker, created thing, evidence roots, why shadow units would
+exist, and that there is no live money, ownership right, token access key,
+attribution, or epoch. It is literally non-creating on an absent workspace.
+After an approved off-host reproduction exists, the next step is a separately
+reviewed scratch-only attribution/epoch plan with challenge anchors and exact
+sum equality—not a live token action.
 
 ## Patronage, commissions, and continuity
 
@@ -389,6 +454,28 @@ authorization.
 | DONE | LC4 rebuildable patronage list | `fc0813d2a` | `fc0813d2a` | deterministic CAS projection, historically signed intent/funding/continuity verification, first-failure reporting, absent-workspace non-creation, every row truthfully `funded:false` and `persisted:false`; focused green, full lint 134/134, normal pre-push 910-group suite |
 | DONE | Living Commons parser truncation sweeps | `cbaae2112` | `cbaae2112` | every truncation of creation-attribution, epoch-creation, patronage-intent/funding/settlement and continuity-policy wires fails closed; focused GCC groups green; Clang 20 ASan+UBSan green with fail-fast UBSan; full lint 134/134; normal pre-push 910-group suite |
 | DONE | Six-arm Living Commons parser fuzzer | `a0cfe7fe4` | `a0cfe7fe4` | shared libFuzzer owner, one seed per canonical parser, ASan+UBSan and leak detection; 1,537,885 mutations in 31 seconds at 49,609/s with no finding; full lint 134/134 |
+| DONE | Historical binding time and complete public-source lineage | `7c2ebdea0` | `84a816754` | born-red expiry and arbitrary-lineage failures; event-time binding verification; signed release parent and recursively verified predecessor paths; focused green; normal pre-push 901/901 active groups |
+| DONE | Neutral creation identity and security-label normalization | `66a81064e` | `66a81064e` | patron-independent event-key KAT; release-lineage continuity without funding; `SECURITY_FIX` normalized to born-red eligibility and award; focused green; normal pre-push 901/901 active groups |
+| BLOCKED | First complete SHA3 shadow epoch | `fc62b9c4a` | `fc62b9c4a` | read-only full Score vertical rederivation and package-registry match; zero award and no attribution/epoch because no owner-approved off-host reproducer exists; full lint 134/134; ZCODE ASan+UBSan green; LTO and both local byte-reproduction gates green; normal pre-push 901/901 active groups |
+
+Historical-truth hardening began from fetched `origin/main` `7091051aa`
+through lane integration `a96275b52`. Before the first slice was pushed, new
+main `6b410bd34` was integrated through `84a816754`; no concurrent wallet file
+was edited or overwritten. Normal hook-enabled pushes advanced remote main
+through `84a816754`, `66a81064e`, and `fc62b9c4a`. Each push passed the
+repository pre-push lane: 910 registered, 901 active run, zero cached, nine
+policy-gated, zero failures. The final source also passed full lint 134/134,
+the dedicated ZCODE ASan+UBSan lifecycle, default whole-program LTO, same-tree
+byte reproduction
+(`868e83bececddce7e6c0ba36b48962c46fcd7af5346f2c0ba92b23d6d3c1f118`,
+22,809,352 bytes), and two-path local reproduction
+(`ac79afa294c101aa77e8d81caaf4d65c1e61c30e9bbf00cb16627568caae58e6`,
+22,809,432 bytes). Both reproduction
+results are local and earn no independent-reproduction credit.
+
+Before freezing this ledger, concurrent `origin/main` `8df6c3961` was merged
+through `d77ccce74`. The disjoint vault changes were preserved exactly; the
+Living Commons documentation did not overwrite them.
 
 The `36f6f3ae5` push integrated concurrent `main` commit `00a0c54c8` through
 lane merge `4c8e7abe2`; no concurrent file was overwritten. Two complete

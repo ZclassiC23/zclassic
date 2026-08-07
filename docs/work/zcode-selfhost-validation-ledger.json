@@ -1,6 +1,6 @@
 {
   "schema": "zcl.zcode_selfhost_validation_ledger.v1",
-  "generated_utc": "2026-08-06T17:40:08Z",
+  "generated_utc": "2026-08-07T04:05:00Z",
   "lane": "lane/zcode-selfhost-foundation",
   "frozen_root_checkout": "13d0d255b09548a21ccd05936186f8efc849394a",
   "safety_ref": "safety/zcode-pre-selfhost-20260806",
@@ -394,6 +394,95 @@
       }
     }
   ],
+  "living_commons_hardening": {
+    "lane": "lane/zc23-living-commons",
+    "integrations": [
+      {
+        "kind": "initial_origin_main",
+        "sha": "7091051aa"
+      },
+      {
+        "kind": "initial_lane_merge",
+        "sha": "a96275b52"
+      },
+      {
+        "kind": "origin_main_before_historical_slice",
+        "sha": "6b410bd34"
+      },
+      {
+        "kind": "historical_slice_integration_merge",
+        "sha": "84a816754"
+      },
+      {
+        "kind": "neutral_creation_slice",
+        "sha": "66a81064e"
+      },
+      {
+        "kind": "shadow_blocker_slice",
+        "sha": "fc62b9c4a"
+      },
+      {
+        "kind": "origin_main_before_truth_ledger",
+        "sha": "8df6c3961"
+      },
+      {
+        "kind": "truth_ledger_integration_merge",
+        "sha": "d77ccce74"
+      }
+    ],
+    "historical_truth": {
+      "binding_evaluation_time": "candidate.created_unix",
+      "current_payout_authority_is_separate": true,
+      "public_source_lineage": [
+        "empty NONE only for a root release",
+        "signed direct RELEASE parent",
+        "bounded recursively reverified PREDECESSOR_ATTRIBUTION"
+      ]
+    },
+    "category_covenant": {
+      "security_fix_v1": "ordinary_born_red_evidence_and_award",
+      "benchmark_category_added": false,
+      "structured_review_or_negative_finding_category_added": false,
+      "reason": "creation_attribution.v1 has no independent structured science-evidence field; v1 was not reinterpreted"
+    },
+    "neutral_creation_event": {
+      "domain": "zcl.zcode.creation_event_key.v1",
+      "patronage_required": false,
+      "duplicate_identity_kat": "7bae4e36261433d84647745417142e33a3e424720d978c0abf685ed9397e1c65"
+    },
+    "first_shadow_epoch": {
+      "package": "zclassic23/sha3@0.1.0-dev.1",
+      "package_root": "ea54d7038792764c059a697792d46ee92fe75e29aa302d3c8db3a208a580876e",
+      "task_root": "ef7b6182c3560110e34fbfd70c98ee8b8107f6cb0d7b5a2b3315d92f275de5a7",
+      "candidate_root": "45654ffefad86f3f5d2096f3c829398be0e8d945508a80adedb458f29364a584",
+      "proof_policy_root": "6e1021dd7f9d73533f35048cee3a95d555c7473cb1ffcffb3ef06f6f9270b08f",
+      "proof_set_root": "b063663993af9232bfdc1431950135ecc1dc59caa612c078efca4704fa32f83b",
+      "proven_lane_root": "a9f923e63e54051535412f180f4720a797c7ab026ceae4bf9d62d2cced880101",
+      "score_receipt_root": "680882572af552040efb6ec202915a3d5c2f9704e2d389200c07ed770ba6bea8",
+      "status": "BLOCKED_OFF_HOST_REPRODUCTION",
+      "blocker": "no owner-approved off-host reproducer is registered; same-host receipt is local_reproduction only",
+      "shadow_award_atoms": 0,
+      "creation_attribution_created": false,
+      "epoch_creation_set_created": false,
+      "supply_equality": "0 == 0",
+      "complete_epoch_claimed": false
+    },
+    "current_gates": [
+      "PASS_make_lint_134_of_134",
+      "PASS_pre_push_910_registered_901_active_0_cached_9_gated_0_failed",
+      "PASS_zcode_package_asan_address_and_undefined_no_suppressions",
+      "PASS_default_whole_program_LTO_build",
+      "PASS_same_tree_reproduction_868e83bececddce7e6c0ba36b48962c46fcd7af5346f2c0ba92b23d6d3c1f118_22809352_bytes",
+      "PASS_two_path_local_reproduction_ac79afa294c101aa77e8d81caaf4d65c1e61c30e9bbf00cb16627568caae58e6_22809432_bytes"
+    ],
+    "safety": {
+      "live_zc23": false,
+      "wallet_or_custody_movement": false,
+      "canonical_datadir_touched": false,
+      "deployment_or_restart": false,
+      "consensus_change": false
+    }
+  },
   "freeze_status": {
     "full_lto": "PASS_CURRENT_SOURCE_REPRODUCTION_LINKS",
     "uncached_full_suite": "PASS_900_OF_900_RUNNABLE_ZERO_CACHED",
