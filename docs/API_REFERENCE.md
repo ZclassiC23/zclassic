@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 589 |
+| Registry entries (branches + leaves) | 590 |
 | Top-level roots | 11 |
 | Branches | 136 |
-| Leaves (dispatchable command paths) | 453 |
-| … `ready` (live handler in this build) | 400 |
+| Leaves (dispatchable command paths) | 454 |
+| … `ready` (live handler in this build) | 401 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 35 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 151 |
+| Leaves with `effect=mutate` | 152 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 96 |
 
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 22 | 4 | 18 |
-| `config/commands/zcode.def` | 152 | 34 | 118 |
+| `config/commands/zcode.def` | 153 | 34 | 119 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -916,6 +916,7 @@ represented by its children's sections.
 | `zcode work show` | ready | read / read / operator · fast/low | `workspace`, `work` | `zcl.zcode_work_status.v1` | `zclassic23-dev zcode work show --input='{"work":"latest"}'` | Show one human-first work result |
 | `zcode work run` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `adapter` | `zcl.zcode_work_run.v1` | `zclassic23-dev zcode work run --input='{"work":"latest","adapter":"manual"}'` | Run one contained adapter handoff |
 | `zcode work accept` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work` | `zcl.zcode_work_accept.v1` | `zclassic23-dev zcode work accept --input='{"work":"latest"}'` | Accept one exact proven candidate |
+| `zcode work review` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `adapter`, **`verdict`**, **`findings`** | `zcl.zcode_work_review.v1` | `zclassic23-dev zcode work review --input='{"work":"latest","adapter":"manual","verdict":"approve","findings":"No blocking findings."}'` | Review one exact candidate |
 
 #### `zcode.commons` — Read-only ZC23 Living Commons projection
 

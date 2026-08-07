@@ -60,6 +60,9 @@ struct vcs_zcode_task_index_entry {
     uint32_t candidate_count; /* projected candidates binding this task */
     uint32_t receipt_count;
     uint32_t passing_receipt_count;
+    uint32_t review_count;
+    uint8_t latest_review_verdict;
+    char latest_review_root_hex[65];
     uint64_t latest_candidate_sequence;
     char latest_candidate_root_hex[65];
     char latest_candidate_source_root_hex[65];
@@ -102,6 +105,7 @@ struct vcs_zcode_task_receipt_entry {
     char receipt_root_hex[65];
     char output_root_hex[65];
     char action_root_hex[65];
+    char signer_pubkey_hex[65];
     uint8_t work_kind;
     uint8_t status;
     int32_t exit_status;

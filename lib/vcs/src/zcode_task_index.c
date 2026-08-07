@@ -199,6 +199,8 @@ static void index_consider_object(const char *repo_root, const char *hex64,
             zcl_hex_encode(address, 32, e->receipt_root_hex);
             zcl_hex_encode(receipt.output_root, 32, e->output_root_hex);
             zcl_hex_encode(receipt.action_root, 32, e->action_root_hex);
+            zcl_hex_encode(receipt.signer_pubkey, 32,
+                           e->signer_pubkey_hex);
             e->work_kind = receipt.work_kind;
             e->status = receipt.status;
             e->exit_status = receipt.exit_status;
@@ -312,6 +314,42 @@ static bool index_proof_set_valid(const char *repo_root, const char *root_hex)
     free(wire); return ok;
 }
 
+static bool index_review_valid(
+    const char *repo_root, const struct vcs_zcode_task_index_entry *task,
+    const struct vcs_zcode_task_candidate_entry *candidate,
+    const struct vcs_zcode_task_receipt_entry *receipt,
+    uint8_t *verdict_out)
+{
+    uint8_t root[32], checked[32], signer[32], *wire = NULL;
+    size_t wire_len = 0;
+    struct vcs_zcode_review_v1 review;
+    bool ok = receipt->work_kind == VCS_ZCODE_WORK_REVIEW &&
+        receipt->status == VCS_ZCODE_WORK_PASS && receipt->exit_status == 0 &&
+        zcl_hex_decode_lower(receipt->output_root_hex, root, 32) &&
+        zcl_hex_decode_lower(receipt->signer_pubkey_hex, signer, 32) &&
+        vcs_object_load_raw_bounded(repo_root, root,
+                                    VCS_ZCODE_REVIEW_WIRE_BYTES,
+                                    &wire, &wire_len) == 0 &&
+        vcs_zcode_review_parse(wire, wire_len, &review) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_review_root(&review, checked) == VCS_ZCODE_DEV_OK &&
+        memcmp(root, checked, 32) == 0 &&
+        memcmp(review.reviewer_pubkey, signer, 32) == 0;
+    free(wire);
+    if (!ok) return false;
+    char bound[65];
+    zcl_hex_encode(review.task_root, 32, bound);
+    ok = strcmp(bound, task->task_root_hex) == 0;
+    zcl_hex_encode(review.candidate_root, 32, bound);
+    ok = ok && strcmp(bound, candidate->candidate_root_hex) == 0;
+    zcl_hex_encode(review.proof_policy_root, 32, bound);
+    ok = ok && strcmp(bound, task->proof_policy_root_hex) == 0;
+    zcl_hex_encode(review.proof_set_root, 32, bound);
+    ok = ok && index_proof_set_valid(repo_root, bound);
+    if (ok && verdict_out) *verdict_out = review.verdict;
+    return ok;
+}
+
 static bool index_lane_chain_valid(
     const struct vcs_zcode_task_index *index, const char *repo_root,
     const struct vcs_zcode_task_lane_entry *lane, unsigned depth)
@@ -369,7 +407,7 @@ static void index_derive_states(struct vcs_zcode_task_index *index,
                            sizeof(e->latest_patch_root_hex), "%s",
                            latest_candidate->patch_root_hex);
         }
-        int64_t latest_finished = 0;
+        int64_t latest_finished = 0, latest_review_finished = 0;
         for (size_t r = 0; r < index->receipt_count; r++) {
             const struct vcs_zcode_task_receipt_entry *receipt =
                 &index->receipts[r];
@@ -393,6 +431,24 @@ static void index_derive_states(struct vcs_zcode_task_index *index,
             if (receipt->status == VCS_ZCODE_WORK_PASS &&
                 receipt->exit_status == 0)
                 e->passing_receipt_count++;
+            uint8_t review_verdict = 0;
+            if (latest_candidate &&
+                strcmp(receipt->candidate_root_hex,
+                       latest_candidate->candidate_root_hex) == 0 &&
+                index_review_valid(repo_root, e, latest_candidate, receipt,
+                                   &review_verdict)) {
+                e->review_count++;
+                if (receipt->finished_unix > latest_review_finished ||
+                    (receipt->finished_unix == latest_review_finished &&
+                     strcmp(receipt->output_root_hex,
+                            e->latest_review_root_hex) > 0)) {
+                    latest_review_finished = receipt->finished_unix;
+                    e->latest_review_verdict = review_verdict;
+                    (void)snprintf(e->latest_review_root_hex,
+                                   sizeof(e->latest_review_root_hex), "%s",
+                                   receipt->output_root_hex);
+                }
+            }
             if (latest_candidate &&
                 strcmp(receipt->candidate_root_hex,
                        latest_candidate->candidate_root_hex) == 0 &&

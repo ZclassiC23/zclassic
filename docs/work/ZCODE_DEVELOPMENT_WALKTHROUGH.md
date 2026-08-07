@@ -83,6 +83,19 @@ zclassic23-dev zcode work show \
 goal, changed files, line delta, API impact, build/test result, remaining risk,
 scope violations, and next safe command before looking at expert roots.
 
+When the selected profile requires a separate review, a human reviewer records
+bounded findings without editing or accepting the candidate:
+
+```bash
+zclassic23-dev zcode work review \
+  --input='{"workspace":".","work":"latest","adapter":"manual","verdict":"approve","findings":"No blocking findings."}'
+```
+
+The command binds the already-trusted non-review proof set, uses a distinct
+reviewer identity, and creates the existing `review.v1` plus signed REVIEW work
+receipt. Status then shows the verdict; conflicting-review execution remains a
+named v0.1 blocker rather than silently replacing the first review.
+
 ## 5. Make the human decision
 
 Acceptance is explicit and pins the exact candidate and evidence:

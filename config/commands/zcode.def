@@ -184,6 +184,26 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_work_accept)
 
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.work.review", "zcode.work", "", "Review one exact candidate",
+    "Reloads the exact candidate and its trusted non-review proof set, stores "
+    "bounded findings in the existing CAS, emits review.v1 plus a signed "
+    "REVIEW work receipt from a reviewer identity distinct from the candidate "
+    "author, and re-evaluates the existing proof policy. Review cannot edit, "
+    "accept, or publish the candidate.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,work,review,manual,findings,verdict,evidence",
+    "zcl.zcode_work_review.input.v1", "zcl.zcode_work_review.v1",
+    "workspace,work,adapter,verdict,findings", "verdict,findings",
+    "zclassic23-dev zcode work review --input='{\"work\":\"latest\",\"adapter\":\"manual\",\"verdict\":\"approve\",\"findings\":\"No blocking findings.\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_zcode_work_review)
+
 ZCL_COMMAND_READY_READ(
     "zcode.guide", "zcode", "", "Start creating in the shared C23 commons",
     "Returns the shortest ready command paths for finding, inspecting, "

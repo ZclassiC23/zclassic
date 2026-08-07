@@ -741,6 +741,43 @@ static int zpd_test_work_start(void)
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "workspace", root));
         ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        ASSERT(json_push_kv_str(&input, "verdict", "approve"));
+        ASSERT(json_push_kv_str(&input, "findings",
+                                "Declared build and tests support approval."));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_review_test.v1");
+        zcl_native_handle_zcode_work_review(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "verdict")),
+                      "approve") == 0);
+        ASSERT(json_get_bool(json_get(&reply.data,
+                                      "independent_reviewer")));
+        ASSERT(json_get_int(json_get(&reply.data, "review_receipts")) == 1);
+        ASSERT(strlen(json_get_str(json_get(&reply.data,
+                                            "review_root"))) == 64);
+        ASSERT(strlen(json_get_str(json_get(&reply.data,
+                                            "work_receipt_root"))) == 64);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_status_test.v1");
+        zcl_native_handle_zcode_work_status(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "review_verdict")),
+                      "approve") == 0);
+        ASSERT(strlen(json_get_str(json_get(
+                   json_get(&reply.data, "expert"), "review_root"))) == 64);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", saved_work_id));
         request.input = &input;
         zcl_command_reply_init(&reply, "zcl.zcode_work_accept_test.v1");
         zcl_native_handle_zcode_work_accept(&request, &reply);

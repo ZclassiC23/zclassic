@@ -4,19 +4,28 @@
 #include "command/native_command.h"
 
 #include "base/checked.h"
+#include "base/cleanse.h"
 #include "base/hex.h"
+#include "crypto/ed25519.h"
 #include "json/json.h"
+#include "models/build_fabric.h"
+#include "models/database.h"
 #include "platform/time_compat.h"
+#include "services/build_fabric_service.h"
+#include "services/build_fabric_worker.h"
 #include "services/zcode_goal_context_service.h"
 #include "sha3/sha3.h"
 #include "util/safe_alloc.h"
+#include "util/file_tree_ops.h"
 #include "vcs/package_recipe.h"
+#include "vcs/build_action.h"
 #include "vcs/vcs.h"
 #include "vcs/package_prepare.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev_product.h"
 #include "vcs/zcode_patch.h"
 #include "vcs/zcode_task_index.h"
+#include "vcs/zcode_work_swarm.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -541,6 +550,12 @@ void zcl_native_handle_zcode_work_status(
     bool accepted = strcmp(state, VCS_ZCODE_TASK_STATE_ACCEPTED_CANDIDATE) == 0 ||
                     strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0;
     bool build_passed = evidence_ready || accepted;
+    const char *next_safe_command = entry->expired ? "zcode work start" :
+        strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0
+            ? "apply or reject the accepted patch in source control" :
+        evidence_ready ? "zcode work accept" :
+        repair_needed && entry->candidate_count >= 3u
+            ? "zcode work start" : "zcode work run";
     struct zwork_patch_summary summary;
     if (!zwork_patch_summary_load(workspace, entry, &summary)) {
         zwork_fail(reply, "PATCH_SUMMARY_FAILED", "rebuild",
@@ -565,6 +580,12 @@ void zcl_native_handle_zcode_work_status(
         (void)snprintf(api_summary, sizeof(api_summary), "%zu public header file%s changed",
                        summary.public_api_changes,
                        summary.public_api_changes == 1 ? "" : "s");
+    const char *review_summary = entry->latest_review_verdict ==
+            VCS_ZCODE_REVIEW_APPROVE ? "approve" :
+        entry->latest_review_verdict == VCS_ZCODE_REVIEW_REQUEST_CHANGES
+            ? "request_changes" :
+        entry->latest_review_verdict == VCS_ZCODE_REVIEW_REJECT
+            ? "reject" : "not_started";
     bool ok = paths_ok &&
         json_push_kv_str(&expert, "task_root", entry->task_root_hex) &&
         json_push_kv_str(&expert, "source_root", entry->source_root_hex) &&
@@ -583,6 +604,8 @@ void zcl_native_handle_zcode_work_status(
                          entry->latest_lane_receipt_hex) &&
         json_push_kv_str(&expert, "proof_set_root",
                          entry->latest_proof_set_root_hex) &&
+        json_push_kv_str(&expert, "review_root",
+                         entry->latest_review_root_hex) &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
         json_push_kv_str(&reply->data, "goal", goal) &&
         json_push_kv_str(&reply->data, "state", state) &&
@@ -606,7 +629,7 @@ void zcl_native_handle_zcode_work_status(
         json_push_kv_str(&reply->data, "sanitizer_result", "not_started") &&
         json_push_kv_str(&reply->data, "fuzz_result", "not_started") &&
         json_push_kv_str(&reply->data, "reproduction_grade", "none") &&
-        json_push_kv_str(&reply->data, "review_verdict", "not_started") &&
+        json_push_kv_str(&reply->data, "review_verdict", review_summary) &&
         json_push_kv_str(&reply->data, "remaining_risks",
                          entry->expired ? "task expired" :
                          strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0
@@ -618,9 +641,7 @@ void zcl_native_handle_zcode_work_status(
                             : "candidate not admitted") &&
         json_push_kv_int(&reply->data, "scope_violations", 0) &&
         json_push_kv_str(&reply->data, "next_safe_command",
-                         entry->expired ? "zcode work start" :
-                         repair_needed && entry->candidate_count >= 3u
-                           ? "zcode work start" : "zcode work run") &&
+                         next_safe_command) &&
         json_push_kv(&reply->data, "expert", &expert);
     json_free(&changed_paths); json_free(&expert);
     vcs_zcode_patch_free(&summary.patch);
@@ -689,6 +710,326 @@ static void zwork_evidence_inner(const char *workspace, const char *datadir,
         zwork_fail(reply, "EVIDENCE_INPUT_FAILED", "compose",
                    "existing evidence evaluation input could not be composed",
                    false, false);
+}
+
+static bool zwork_review_load_objects(
+    const char *workspace, const struct vcs_zcode_task_index_entry *entry,
+    struct vcs_zcode_task_v1 *task,
+    struct vcs_zcode_candidate_v1 *candidate)
+{
+    uint8_t root[32], *wire = NULL;
+    size_t wire_len = 0;
+    bool ok = zcl_hex_decode_lower(entry->task_root_hex, root, 32) &&
+        vcs_object_load_raw(workspace, root, &wire, &wire_len) == 0 &&
+        vcs_zcode_task_parse(wire, wire_len, task) == VCS_ZCODE_DEV_OK;
+    free(wire); wire = NULL; wire_len = 0;
+    if (!ok || !zcl_hex_decode_lower(entry->latest_candidate_root_hex,
+                                     root, 32) ||
+        vcs_object_load_raw(workspace, root, &wire, &wire_len) != 0 ||
+        vcs_zcode_candidate_parse(wire, wire_len, candidate) !=
+            VCS_ZCODE_DEV_OK) {
+        free(wire);
+        return false;
+    }
+    free(wire);
+    return vcs_zcode_candidate_validate_for_task(
+               task, candidate, platform_time_wall_unix()) ==
+           VCS_ZCODE_DEV_OK;
+}
+
+static bool zwork_review_action(
+    struct node_db *ndb, const struct db_build_action *base,
+    const struct db_build_job *base_job, int64_t now,
+    struct db_build_action *review)
+{
+    memset(review, 0, sizeof(*review));
+    review->sequence = base->sequence + 1;
+    (void)snprintf(review->kind, sizeof(review->kind), "%s",
+                   VCS_BUILD_ACTION_KIND_REVIEW_V1);
+    (void)snprintf(review->state, sizeof(review->state), "SNAPSHOTTED");
+    (void)snprintf(review->input_root_sha3,
+                   sizeof(review->input_root_sha3), "%s",
+                   base->candidate_root_sha3);
+    (void)snprintf(review->task_root_sha3,
+                   sizeof(review->task_root_sha3), "%s",
+                   base->task_root_sha3);
+    (void)snprintf(review->candidate_root_sha3,
+                   sizeof(review->candidate_root_sha3), "%s",
+                   base->candidate_root_sha3);
+    (void)snprintf(review->proof_policy_root_sha3,
+                   sizeof(review->proof_policy_root_sha3), "%s",
+                   base->proof_policy_root_sha3);
+    (void)snprintf(review->target, sizeof(review->target), "%s",
+                   VCS_BUILD_TARGET_V1);
+    uint8_t flags[32], environment[32];
+    if (!vcs_build_action_v1_fixed_flags_root_for_kind(
+            review->kind, flags) ||
+        !vcs_build_action_v1_fixed_environment_root_for_kind(
+            review->kind, environment))
+        return false;
+    zcl_hex_encode(flags, 32, review->flags_sha3);
+    zcl_hex_encode(environment, 32, review->environment_sha3);
+    (void)snprintf(review->virtual_workdir,
+                   sizeof(review->virtual_workdir), "%s",
+                   VCS_BUILD_REVIEW_VIRTUAL_ROOT_V1);
+    (void)snprintf(review->declared_outputs,
+                   sizeof(review->declared_outputs), "%s",
+                   VCS_BUILD_REVIEW_OUTPUT_V1);
+    (void)snprintf(review->resource_policy,
+                   sizeof(review->resource_policy), "%s",
+                   VCS_BUILD_REVIEW_RESOURCE_POLICY_V1);
+    review->created_at = review->updated_at = now;
+    struct db_build_job job = *base_job;
+    job.job_id[0] = '\0';
+    (void)snprintf(job.state, sizeof(job.state), "PLANNED");
+    job.outcome[0] = '\0';
+    job.created_at = job.updated_at = now;
+    if (!build_fabric_action_id(&job, review, review->action_id).ok ||
+        !build_fabric_job_id(&job, review->action_id, job.job_id).ok)
+        return false;
+    (void)snprintf(review->job_id, sizeof(review->job_id), "%s", job.job_id);
+    return db_build_job_save(ndb, &job) && db_build_action_save(ndb, review);
+}
+
+static bool zwork_review_receipt(
+    struct node_db *ndb, const char *workspace,
+    const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_candidate_v1 *candidate,
+    const struct db_build_action *action, const uint8_t proof_set_root[32],
+    const uint8_t review_root[32], const uint8_t secret[32],
+    const uint8_t pubkey[32], int64_t now, char receipt_root[65])
+{
+    struct vcs_zcode_work_request_v1 request = {
+        .request_id = (uint64_t)now,
+        .work_kind = VCS_ZCODE_WORK_REVIEW,
+        .target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3,
+        .max_cpu_seconds = task->max_cpu_seconds,
+        .max_memory_bytes = task->max_memory_bytes,
+        .max_output_bytes = task->max_output_bytes,
+        .deadline_unix = task->expires_unix - 1,
+    };
+    uint8_t task_root[32], candidate_root[32], action_root[32];
+    if (vcs_zcode_task_root(task, task_root) != VCS_ZCODE_DEV_OK ||
+        vcs_zcode_candidate_root(candidate, candidate_root) !=
+            VCS_ZCODE_DEV_OK ||
+        !zcl_hex_decode_lower(action->action_id, action_root, 32))
+        return false;
+    memcpy(request.task_root, task_root, 32);
+    memcpy(request.candidate_root, candidate_root, 32);
+    memcpy(request.action_root, action_root, 32);
+    memcpy(request.input_root, candidate_root, 32);
+    memcpy(request.context_root, proof_set_root, 32);
+    memcpy(request.proof_policy_root, task->proof_policy_root, 32);
+    memcpy(request.toolchain_capsule_root,
+           task->toolchain_capsule_root, 32);
+    if (!vcs_zcode_work_request_seal(&request, secret, pubkey))
+        return false;
+    struct vcs_zcode_work_result_v1 result = {0};
+    result.request_id = request.request_id;
+    memcpy(result.task_root, task_root, 32);
+    memcpy(result.candidate_root, candidate_root, 32);
+    memcpy(result.action_root, action_root, 32);
+    memcpy(result.output_root, review_root, 32);
+    struct vcs_zcode_work_receipt_v1 *receipt = &result.receipt;
+    receipt->schema_version = VCS_ZCODE_DEV_VERSION;
+    memcpy(receipt->task_root, task_root, 32);
+    memcpy(receipt->candidate_root, candidate_root, 32);
+    memcpy(receipt->action_root, action_root, 32);
+    memcpy(receipt->input_root, candidate_root, 32);
+    memcpy(receipt->output_root, review_root, 32);
+    memcpy(receipt->proof_policy_root, task->proof_policy_root, 32);
+    memcpy(receipt->toolchain_capsule_root,
+           task->toolchain_capsule_root, 32);
+    static const char lease_domain[] = "zcl.zcode.review.manual.lease.v1";
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    sha3_256_write(&sha, (const uint8_t *)lease_domain,
+                   sizeof(lease_domain));
+    sha3_256_write(&sha, review_root, 32);
+    sha3_256_finalize(&sha, receipt->lease_id);
+    memcpy(receipt->evidence_root, proof_set_root, 32);
+    static const char confinement[] =
+        "zcode-review:manual;candidate=read-only;accept=0;publish=0";
+    sha3_256((const uint8_t *)confinement, sizeof(confinement),
+             receipt->confinement_root);
+    receipt->work_kind = VCS_ZCODE_WORK_REVIEW;
+    receipt->status = VCS_ZCODE_WORK_PASS;
+    receipt->started_unix = now > 0 ? now - 1 : 0;
+    receipt->finished_unix = now;
+    if (vcs_zcode_work_receipt_seal(receipt, secret, pubkey) !=
+        VCS_ZCODE_DEV_OK)
+        return false;
+    return build_fabric_receipt_observe_remote(
+               ndb, workspace, &request, &result, now, receipt_root).ok;
+}
+
+// long-function-ok:review-authority-transaction — object, action, receipt and
+// evidence evaluation must remain one fail-closed operation over one candidate.
+void zcl_native_handle_zcode_work_review(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    const char *workspace_arg = zwork_str(request->input, "workspace");
+    const char *work = zwork_str(request->input, "work");
+    const char *adapter = zwork_str(request->input, "adapter");
+    const char *verdict_text = zwork_str(request->input, "verdict");
+    const char *findings = zwork_str(request->input, "findings");
+    if (!workspace_arg || !workspace_arg[0]) workspace_arg = ".";
+    if (!adapter || !adapter[0]) adapter = "manual";
+    uint8_t verdict = verdict_text && strcmp(verdict_text, "approve") == 0
+        ? VCS_ZCODE_REVIEW_APPROVE
+        : verdict_text && strcmp(verdict_text, "request_changes") == 0
+        ? VCS_ZCODE_REVIEW_REQUEST_CHANGES
+        : verdict_text && strcmp(verdict_text, "reject") == 0
+        ? VCS_ZCODE_REVIEW_REJECT : 0;
+    if (strcmp(adapter, "manual") != 0 || verdict == 0 || !findings ||
+        findings[0] == '\0' || strlen(findings) > 4096u) {
+        zwork_fail(reply, strcmp(adapter, "manual") != 0
+                         ? "REVIEW_ADAPTER_UNAVAILABLE" : "BAD_REVIEW_INPUT",
+                   "review", "manual review requires a closed verdict and 1..4096 bytes of findings",
+                   false, false);
+        return;
+    }
+    char workspace[ZWORK_PATH_MAX];
+    if (!realpath(workspace_arg, workspace)) {
+        zwork_fail(reply, "BAD_WORKSPACE", "resolve",
+                   "workspace must resolve to an existing directory",
+                   false, false);
+        return;
+    }
+    int64_t now = platform_time_wall_unix();
+    struct vcs_zcode_task_index *index =
+        vcs_zcode_task_index_build(workspace, now);
+    bool ambiguous = false;
+    const struct vcs_zcode_task_index_entry *entry = index
+        ? zwork_resolve(index, work, &ambiguous) : NULL;
+    struct vcs_zcode_task_v1 task;
+    struct vcs_zcode_candidate_v1 candidate;
+    if (!entry || entry->expired || !entry->latest_action_root_hex[0] ||
+        !zwork_review_load_objects(workspace, entry, &task, &candidate)) {
+        zwork_fail(reply, ambiguous ? "AMBIGUOUS_WORK" : "WORK_NOT_REVIEWABLE",
+                   "review", "a current candidate with signed non-review evidence is required",
+                   false, false);
+        vcs_zcode_task_index_free(index);
+        return;
+    }
+    char datadir[ZWORK_PATH_MAX], reviewer_dir[ZWORK_PATH_MAX], db_path[ZWORK_PATH_MAX];
+    int dn = snprintf(datadir, sizeof(datadir),
+                      "/tmp/zclassic23-zcode-workspaces/%lu/%.64s/zbuild",
+                      (unsigned long)getuid(), entry->task_root_hex);
+    int rn = snprintf(reviewer_dir, sizeof(reviewer_dir), "%s/reviewer", datadir);
+    int bn = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    struct node_db ndb = {0};
+    struct db_build_action base_action, review_action;
+    struct db_build_job base_job;
+    struct build_fabric_proof_evaluation before = {0}, after = {0};
+    struct db_build_worker reviewer;
+    uint8_t secret[32] = {0}, pubkey[32] = {0};
+    bool opened = dn > 0 && (size_t)dn < sizeof(datadir) && rn > 0 &&
+        (size_t)rn < sizeof(reviewer_dir) && bn > 0 &&
+        (size_t)bn < sizeof(db_path) && node_db_open(&ndb, db_path);
+    const char *failed_stage = opened ? "base_action" : "scratch_ledger";
+    bool ready = opened && db_build_action_find(
+        &ndb, entry->latest_action_root_hex, &base_action);
+    if (ready) failed_stage = "base_job";
+    ready = ready && db_build_job_find(&ndb, base_action.job_id, &base_job);
+    if (ready) failed_stage = "non_review_proof_set";
+    ready = ready && build_fabric_proof_evaluate(
+        &ndb, workspace, entry->latest_action_root_hex, now, &before).ok &&
+        before.valid_receipts > 0 && before.review_receipts == 0;
+    if (ready) failed_stage = "reviewer_directory";
+    ready = ready && zcl_mkdir_p(reviewer_dir, 0700).ok;
+    if (ready) failed_stage = "reviewer_identity";
+    ready = ready && build_fabric_worker_identity_load(
+        reviewer_dir, &reviewer, secret, pubkey).ok;
+    if (ready) failed_stage = "reviewer_independence";
+    ready = ready && memcmp(pubkey, candidate.author_pubkey, 32) != 0;
+    if (ready) failed_stage = "reviewer_approval";
+    ready = ready && build_fabric_worker_approve(&ndb, &reviewer, now).ok;
+    uint8_t proof_set_root[32], findings_root[32], review_root[32];
+    struct vcs_zcode_review_v1 review = {
+        .schema_version = VCS_ZCODE_DEV_VERSION,
+        .verdict = verdict,
+        .sequence = 1,
+        .created_unix = now,
+    };
+    if (ready) failed_stage = "proof_set_root";
+    ready = ready && zcl_hex_decode_lower(
+        before.proof_set_root_sha3, proof_set_root, 32);
+    if (ready) {
+        (void)vcs_zcode_task_root(&task, review.task_root);
+        (void)vcs_zcode_candidate_root(&candidate, review.candidate_root);
+        memcpy(review.proof_policy_root, task.proof_policy_root, 32);
+        memcpy(review.proof_set_root, proof_set_root, 32);
+        sha3_256((const uint8_t *)findings, strlen(findings), findings_root);
+        memcpy(review.findings_root, findings_root, 32);
+        memcpy(review.reviewer_pubkey, pubkey, 32);
+    }
+    uint8_t review_wire[VCS_ZCODE_REVIEW_WIRE_BYTES];
+    if (ready) failed_stage = "findings_store";
+    ready = ready && vcs_object_put_addressed(
+        workspace, findings_root, (const uint8_t *)findings, strlen(findings));
+    if (ready) failed_stage = "review_wire";
+    ready = ready && vcs_zcode_review_serialize(
+        &review, review_wire) == VCS_ZCODE_DEV_OK &&
+        vcs_zcode_review_root(&review, review_root) == VCS_ZCODE_DEV_OK;
+    if (ready) failed_stage = "review_store";
+    ready = ready && vcs_object_put_addressed(
+        workspace, review_root, review_wire, sizeof(review_wire));
+    if (ready) failed_stage = "review_action";
+    ready = ready && zwork_review_action(
+        &ndb, &base_action, &base_job, now, &review_action);
+    char receipt_root[65] = {0};
+    if (ready) failed_stage = "review_receipt";
+    ready = ready && zwork_review_receipt(
+        &ndb, workspace, &task, &candidate, &review_action,
+        proof_set_root, review_root, secret, pubkey, now, receipt_root);
+    if (ready) failed_stage = "proof_re_evaluation";
+    ready = ready && build_fabric_proof_evaluate(
+        &ndb, workspace, entry->latest_action_root_hex, now, &after).ok;
+    memory_cleanse(secret, sizeof(secret));
+    if (opened) node_db_close(&ndb);
+    if (!ready) {
+        char detail[256];
+        (void)snprintf(detail, sizeof(detail),
+                       "review stopped at %s; prior canonical evidence is preserved",
+                       failed_stage);
+        zwork_fail(reply, before.review_receipts > 0 ? "REVIEW_ALREADY_PRESENT" :
+                   "REVIEW_EXECUTION_FAILED", failed_stage,
+                   before.review_receipts > 0
+                     ? "the candidate already has a trusted review; conflicting-review support is not yet complete"
+                     : detail,
+                   true, opened);
+        vcs_zcode_task_index_free(index);
+        return;
+    }
+    char review_hex[65], reviewer_hex[65];
+    zcl_hex_encode(review_root, 32, review_hex);
+    zcl_hex_encode(pubkey, 32, reviewer_hex);
+    char work_id[32];
+    (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
+                   entry->task_root_hex);
+    bool rendered = json_push_kv_str(&reply->data, "work_id", work_id) &&
+        json_push_kv_str(&reply->data, "adapter", "manual") &&
+        json_push_kv_str(&reply->data, "verdict", verdict_text) &&
+        json_push_kv_bool(&reply->data, "independent_reviewer", true) &&
+        json_push_kv_int(&reply->data, "review_receipts",
+                         (int64_t)after.review_receipts) &&
+        json_push_kv_bool(&reply->data, "review_satisfied",
+                          after.review_satisfied) &&
+        json_push_kv_bool(&reply->data, "policy_satisfied",
+                          after.policy_satisfied) &&
+        json_push_kv_str(&reply->data, "review_root", review_hex) &&
+        json_push_kv_str(&reply->data, "work_receipt_root", receipt_root) &&
+        json_push_kv_str(&reply->data, "reviewer_pubkey", reviewer_hex) &&
+        json_push_kv_str(&reply->data, "proof_set_reviewed",
+                         before.proof_set_root_sha3) &&
+        json_push_kv_str(&reply->data, "next_safe_command",
+                         "zcode work status");
+    vcs_zcode_task_index_free(index);
+    if (!rendered)
+        zwork_fail(reply, "REVIEW_OUTPUT_FAILED", "render",
+                   "review result could not be rendered", false, true);
 }
 
 void zcl_native_handle_zcode_work_accept(
