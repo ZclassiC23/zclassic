@@ -12,6 +12,7 @@
 #include "services/overlay_transaction_intent_service.h"
 #include "services/znam_transaction_intent_service.h"
 #include "services/zslp_transaction_intent_service.h"
+#include "validation/main_state.h"
 #include "wallet/wallet_lock.h"
 
 #include <sqlite3.h>
@@ -216,7 +217,7 @@ int test_transaction_intent(void)
     TEST("vault intent receipts render chain hashes in canonical display order") {
         struct vault_intent_row row;
         memset(&row, 0, sizeof(row));
-        row.state = VAULT_INTENT_MEMPOOL_ACCEPTED;
+        row.state = VAULT_INTENT_CONFIRMED;
         row.confirm_height = 42;
         row.has_txid = true;
         row.has_confirm_hash = true;
@@ -236,6 +237,60 @@ int test_transaction_intent(void)
             "bfbebdbcbbbab9b8b7b6b5b4b3b2b1b0"
             "afaeadacabaaa9a8a7a6a5a4a3a2a1a0");
         json_free(&rendered);
+
+        /* Zero-initialized creation rows historically rendered height zero
+         * and tip+1 confirmations while still only mempool-accepted. State is
+         * the authority: no confirmed fields exist before CONFIRMED. */
+        memset(&row, 0, sizeof(row));
+        row.state = VAULT_INTENT_MEMPOOL_ACCEPTED;
+        row.has_txid = true;
+        json_init(&rendered);
+        json_set_object(&rendered);
+        vault_intent_render_row(NULL, &rendered, &row);
+        ASSERT_EQ(json_get_int(json_get(&rendered, "confirmations")), 0);
+        ASSERT(json_get(&rendered, "confirmed_height") == NULL);
+        ASSERT(json_get(&rendered, "confirmed_block_hash") == NULL);
+        json_free(&rendered);
+        PASS();
+    }
+
+    TEST("vault intent confirmations derive from canonical block height") {
+        struct main_state ms;
+        main_state_init(&ms);
+        struct block_index blocks[8];
+        struct uint256 hashes[8];
+        memset(blocks, 0, sizeof(blocks));
+        memset(hashes, 0, sizeof(hashes));
+        bool built = true;
+        for (int i = 0; i < 8; i++) {
+            hashes[i].data[0] = (uint8_t)(i + 1);
+            blocks[i].nHeight = i;
+            blocks[i].pprev = i > 0 ? &blocks[i - 1] : NULL;
+            built = built && block_map_insert(&ms.map_block_index,
+                                               &hashes[i], &blocks[i]);
+        }
+        built = built && active_chain_move_window_tip(&ms.chain_active,
+                                                       &blocks[7]);
+        ASSERT(built);
+
+        int32_t height = -1;
+        int32_t confirmations = 0;
+        ASSERT(vault_intent_chain_confirmation(&ms, hashes[2].data,
+                                                &height, &confirmations));
+        ASSERT_EQ(height, 2);
+        ASSERT_EQ(confirmations, 6);
+
+        struct block_index fork;
+        struct uint256 fork_hash;
+        memset(&fork, 0, sizeof(fork));
+        memset(&fork_hash, 0, sizeof(fork_hash));
+        fork_hash.data[0] = 0xf2;
+        fork.nHeight = 2;
+        fork.pprev = &blocks[1];
+        ASSERT(block_map_insert(&ms.map_block_index, &fork_hash, &fork));
+        ASSERT(!vault_intent_chain_confirmation(&ms, fork_hash.data,
+                                                 &height, &confirmations));
+        main_state_free(&ms);
         PASS();
     }
 

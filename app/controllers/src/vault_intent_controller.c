@@ -283,10 +283,12 @@ static void vi_refresh_state(struct wallet_rpc_context *ctx,
     struct uint256 txid;
     memcpy(txid.data, row->txid, 32);
     const struct wallet_tx *wtx = wallet_get_tx(ctx->wallet, &txid);
-    if (wtx && wtx->confirms > 0 && !uint256_is_null(&wtx->hash_block)) {
-        int tip = active_chain_height(&ctx->main_state->chain_active);
-        int32_t height = tip - wtx->confirms + 1;
-        enum vault_intent_state state = wtx->confirms >= 6
+    int32_t height = -1;
+    int32_t confirmations = 0;
+    if (wtx && !uint256_is_null(&wtx->hash_block) &&
+        vault_intent_chain_confirmation(ctx->main_state,
+            wtx->hash_block.data, &height, &confirmations)) {
+        enum vault_intent_state state = confirmations >= 6
             ? VAULT_INTENT_FINALIZED : VAULT_INTENT_CONFIRMED;
         if (vault_intent_set_confirmation(ctx->node_db, row->plan_id, state,
                 height, wtx->hash_block.data, now))

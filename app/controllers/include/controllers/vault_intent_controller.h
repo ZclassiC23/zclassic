@@ -9,6 +9,7 @@ struct rpc_table;
 struct json_value;
 struct wallet_rpc_context;
 struct vault_intent_row;
+struct main_state;
 #define VAULT_INTENT_TRANSPARENT_APPLICATION "vault_transparent"
 void register_vault_intent_rpc_commands(struct rpc_table *table);
 bool vault_intent_parse_zcl_amount(const char *text, int64_t *out_zat);
@@ -28,4 +29,8 @@ bool vault_intent_transparent_shape_matches(
     int64_t output_value_zat);
 bool vault_intent_fanout_plan_rpc(const struct json_value *params, bool help,
                                   struct json_value *result);
+bool vault_intent_chain_confirmation(struct main_state *ms,
+                                     const uint8_t block_hash[32],
+                                     int32_t *height_out,
+                                     int32_t *confirmations_out);
 #endif

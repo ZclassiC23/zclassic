@@ -38,8 +38,13 @@ static bool vni_rpc(const struct zcl_command_request *request,
         return false;
     }
     struct json_value body;
+    /* Private commit rebuilds and persists the exact signed Sapling
+     * transaction before relay, so it needs the same bounded proof budget as
+     * the non-broadcasting preflight.  Treating commit as an ordinary 10 s
+     * RPC makes a timeout ambiguous precisely at the broadcast boundary. */
     bool proof_build = strcmp(method, "vault_intent_plan") == 0 ||
-                       strcmp(method, "vault_intent_fanout_plan") == 0;
+                       strcmp(method, "vault_intent_fanout_plan") == 0 ||
+                       strcmp(method, "vault_intent_commit") == 0;
     bool called = proof_build
         ? wnh_call_rpc_deadline(reply, method, params,
                                 RPC_PROOF_BUILD_TIMEOUT_MS, &body)

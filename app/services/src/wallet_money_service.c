@@ -63,7 +63,11 @@ enum wallet_money_freshness wallet_money_freshness_classify(
         state == SYNC_CONNECTING_BLOCKS ||
         state == SYNC_AT_TIP;
     const int64_t fold_edge = (int64_t)money_tip - (int64_t)hstar;
-    if (money_tip < network_tip || fold_edge < 0 || fold_edge > 1 ||
+    /* The sovereignty spend gate requires coins_applied_height == H* + 1,
+     * which is exactly money_tip == H*.  Calling a one-block run-ahead money
+     * view CURRENT advertises a spend-ready snapshot that every wallet
+     * mutation must immediately refuse.  Keep that transient state STALE. */
+    if (money_tip < network_tip || fold_edge != 0 ||
         !live_catchup_state)
         return WALLET_MONEY_FRESHNESS_STALE;
     return WALLET_MONEY_FRESHNESS_CURRENT;

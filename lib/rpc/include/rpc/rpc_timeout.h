@@ -48,7 +48,11 @@ extern "C" {
 
 #define RPC_TIMEOUT_MAX_SLOTS   128
 #define RPC_TIMEOUT_METHOD_LEN  64
-#define RPC_PROOF_BUILD_TIMEOUT_MS 120000
+/* Sapling plan preflight performs a full proof build before reserving funds.
+ * Real mainnet hardware has measured above two minutes while the reducer is
+ * active, so keep the proof-specific client and server budgets aligned at a
+ * bounded five minutes.  Generic RPC remains on its much shorter deadline. */
+#define RPC_PROOF_BUILD_TIMEOUT_MS 300000
 
 struct rpc_timeout_slot {
     bool     in_use;
