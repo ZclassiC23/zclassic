@@ -441,6 +441,10 @@ exact group passed alone (`000034`), and the repository-prescribed complete
 cold retry passed 901/901 with zero cached groups (`000035`). The failed first
 attempt remains recorded and is not counted as a passed gate.
 
+Final evidence closure integrated concurrent `main` commit `58f11e335`
+through lane merge `af5865a0fa`; its service-envelope and live-state
+documentation was retained without modification.
+
 LC2's canonical set and verifier already own award truth: they independently
 reload every ordered attribution, check active-chain maturity/reorg context,
 checked-sum award atoms and require exact equality with observed MINT. The
