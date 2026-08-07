@@ -198,6 +198,17 @@ static int t_health_snapshot(void)
     WC_RUN("health: mismatch populates last_error",
            h.last_error[0] != '\0');
 
+    /* An unreadable row count is UNKNOWN, never an apparent match. This is
+     * the production spend gate's fail-closed persistence authority. */
+    WC_RUN("health: fixture wallet_keys table drops cleanly",
+           sqlite3_exec(f.ndb.db, "DROP TABLE wallet_keys", NULL, NULL,
+                        NULL) == SQLITE_OK);
+    h = wallet_persistence_get_health(f.ndb.db, 3);
+    WC_RUN("health: unreadable row count is fail-closed mismatch",
+           h.row_count == -1 && h.mismatch);
+    WC_RUN("health: unreadable row count names the query failure",
+           h.last_error[0] != '\0');
+
     /* NULL db → open=false, row_count=-1. */
     h = wallet_persistence_get_health(NULL, 3);
     WC_RUN("health: open false for NULL handle",

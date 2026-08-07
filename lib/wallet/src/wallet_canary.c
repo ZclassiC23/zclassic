@@ -176,6 +176,7 @@ wallet_persistence_get_health(sqlite3 *db, int keystore_count)
     int rc = sqlite3_prepare_v2(db, "SELECT count(*) FROM wallet_keys",
                                  -1, &st, NULL);
     if (rc != SQLITE_OK) {
+        h.mismatch = true;
         snprintf(h.last_error, sizeof(h.last_error),
                  "prepare count: rc=%d err=%s", rc, sqlite3_errmsg(db));
         return h;
@@ -192,6 +193,7 @@ wallet_persistence_get_health(sqlite3 *db, int keystore_count)
             }
         }
     } else {
+        h.mismatch = true;
         snprintf(h.last_error, sizeof(h.last_error),
                  "step count: rc=%d err=%s", rc, sqlite3_errmsg(db));
     }
