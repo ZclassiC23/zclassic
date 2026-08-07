@@ -177,6 +177,13 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
                "resident action plan incomplete or missing safety flags");
         return false;
     }
+    if (strstr(next.cflags, "-flto") || strstr(next.ldflags, "-flto") ||
+        strstr(next.cflags, "-fuse-linker-plugin") ||
+        strstr(next.ldflags, "-fuse-linker-plugin")) {
+        hs_why(why, why_len,
+               "resident action plan contains release-only LTO flags");
+        return false;
+    }
     (void)snprintf(next.root, sizeof(next.root), "%s", root);
     next.stamp = stamp;
     next.loaded = true;

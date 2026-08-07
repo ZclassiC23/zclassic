@@ -1,0 +1,93 @@
+# C23 development-loop performance ledger
+
+This is the one performance authority for the live C23 developer loop. It
+records measurements, not aspirations. The product contract remains
+[`ZCODE_DEVELOPMENT_PRODUCT.md`](./ZCODE_DEVELOPMENT_PRODUCT.md); the runtime
+and safety contract remains [`HOTSWAP.md`](./HOTSWAP.md).
+
+The mission is simple: edit C23, let the resident owner classify and prove the
+change, then read one concise result. Production remains one static,
+reproducible, LTO-optimized binary. Consensus, reducer, storage, wallet,
+transaction, network, supervisor and deployment authority never becomes
+dynamically reloadable.
+
+## Frozen benchmark v1
+
+Command: `make dev-loop-history-bench`. The history window is permanently
+anchored at `cdb0305a7a68544cdd26209e9074adaeda24a1a9`; later implementations
+are compared against the same edit population. The generated, gitignored receipt is
+`build/dev-loop/history-benchmark.json`; `make
+dev-loop-history-bench-selftest` pins the boundary classifications.
+
+At source head `cdb0305a7a68544cdd26209e9074adaeda24a1a9`, the benchmark walks
+the latest 100 commits that each changed at least one production C translation
+unit. It covers 259 edit occurrences in 158 current translation units, from
+`b0d0f218ea5253a85a36686ae6ac0b557190491d` back through
+`ee05b19a2b2dfdf0590d28800ecdf948d98b781d`; the frozen classified rows hash to
+SHA-256 `2d3beeba79ceb1f69333adfc34a8583a4584d55d9c53e37d89cca1b034684b01`.
+
+| Current class | Edit occurrences | Unique TUs |
+|---|---:|---:|
+| currently live-reloaded | 15 | 9 |
+| eligible but unregistered | 3 | 2 |
+| blocked by mutable file-scope state | 21 | 16 |
+| blocked by direct global/state access | 61 | 31 |
+| blocked by whole-node/host ABI assumptions | 35 | 21 |
+| requires fast restart | 98 | 60 |
+| forbidden dynamic authority | 26 | 19 |
+
+The current narrow eligibility denominator is deliberately conservative:
+existing live islands plus explicit pure codec/base/JSON/encoding/view/
+condition roots that pass the static-state and direct-state scans. On that
+denominator, weighted live-reload coverage is 15/18 = **83.33%**. Across all
+non-forbidden production edits, only 15/233 = **6.44%** currently reach the
+resident live-feedback path. The largest measured miss is therefore fast
+restart and component coverage—not the already-fast status example.
+
+The representative replay set is derived, not handpicked: the 16 most frequent
+non-forbidden current TUs, ordered by edit frequency then path. Its leading
+members are the vault-intent controller, ZCODE task index, ZCODE work command
+owners, Living Commons codecs/verifiers, build-fabric executor and current
+wallet/metaverse read islands. The JSON receipt carries the exact full list and
+classification of every occurrence.
+
+## Measurement ledger
+
+| Slice | Coverage | Latency/process evidence | Result |
+|---|---|---|---|
+| Baseline | eligible live 83.33%; all non-forbidden live 6.44% | frozen replay latency not yet measured | largest miss: 98 fast-restart edits |
+| P1 profiles | unchanged | `DEV_LIVE`, `DEV_RESTART`, and `INTEGRATION` contain no LTO; `RELEASE` retains LTO | `make check-dev-loop-profiles` PASS |
+
+The earlier single-island resident microbenchmark measured 227.280 ms p50 and
+232.141 ms p95 on 20 distinct artifacts. That is historical evidence for one
+status island, not a result for this frozen representative benchmark and not a
+coverage claim. The next measurement must replay the derived set and report
+detection, identity, compile, link/reload, test, total time, process counts,
+bytes scanned, cache disposition and LTO/whole-node-link counts.
+
+## Build profiles
+
+- `DEV_LIVE`: one admitted module/island, affected immediate probe, no LTO.
+- `DEV_RESTART`: affected cached objects plus an incremental static dev link,
+  isolated restart/probe, no LTO.
+- `INTEGRATION`: static non-LTO combined build and required test union.
+- `RELEASE`: clean whole-program LTO and reproducibility proof.
+
+`make check-dev-loop-profiles` is part of `watcher-safety-gates` and
+`dev-loop-selftest`. The resident action-plan loader independently rejects
+`-flto` and linker-plugin flags, so a stale or edited `flags.env` cannot
+smuggle release work into a save cycle.
+
+## Open gates
+
+- Replay the representative benchmark and establish p50/p95 plus process and
+  byte counts.
+- Bring at least 95% of non-forbidden edits under five seconds by live reload
+  or isolated fast restart; current measured coverage is 6.44% live-only.
+- Prove exact-input, revert and cross-worktree artifact reuse.
+- Measure two- and four-worktree throughput.
+- Batch at least ten compatible focused-green commits per full-suite/LTO proof
+  without adding deployment authority.
+
+No live service, canonical datadir, wallet, transaction, custody, deployment,
+core or consensus path is part of this ledger or its benchmark.

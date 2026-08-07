@@ -52,6 +52,15 @@ The platform exists so you **drop in C and let the machine classify, build, and 
    The Make/dev-loop control plane captures one exact source record and reuses it across nested Makes. Exact single-profile goals load only their depfiles; mixed, unknown, and default goals load every profile. Use `make ff`, `make t-fast ONLY=<group>`, and `make fast-compile` for iteration, then run the strict gates below. Full-suite success is summary-only; focused runs and failures retain diagnostics, and `--verbose` requests the transcript. **Never fabricate or manually pass `BUILD_SOURCE_RECORD` / `ZCL_FAST_BUILD_SOURCE_RECORD`**—the parent Make or watcher owns capture, and every artifact session verifies it.
 
    The watcher coalesces only an exact, deterministic compiler diagnostic. Source bytes, ABA mutation token, execution/toolchain epoch, flags, and phase must all match; any change forces execution. Tests, lint, timeouts, signals, locks, infrastructure failures, and malformed receipts always execute. The current cycle verdict's `failure_id` is authoritative; `dev.diagnose.latest` is only the most recently recorded compiler failure and can be stale after an edit or green cycle. Inspect the returned ID with `zclassic23-dev dev diagnose show <failure_id>`; use `--view=full` only for the bounded capsule. `zclassic23-dev dev ff` deliberately reruns the current checkout without coalescing—it is not historical replay. Cycle and failure state are worktree-scoped and SHA3-sealed. Never edit or delete their files to influence a verdict.
+
+   Four explicit profiles keep release proof out of ordinary iteration:
+   `DEV_LIVE` (one island), `DEV_RESTART` (incremental dev executable),
+   `INTEGRATION` (static non-LTO combined proof), and `RELEASE` (the clean
+   whole-program LTO/reproducibility path). Run `make
+   check-dev-loop-profiles` to inspect the enforced boundary. Coverage and
+   representative timing live in
+   [`work/C23_DEV_LOOP_PERFORMANCE.md`](work/C23_DEV_LOOP_PERFORMANCE.md), not
+   in remembered anecdotes from the status-island microbenchmark.
 3. **Typed commands over bash — always.** `zclassic23 status` (compact status), `ops state --subsystem=<name>`, `ops logs`, `core storage query`, `discover help|search <q>`, `dev status` — instead of `ss`/`ps`/`tail`/`grep`. **Every reach for bash to inspect the node is a missing typed command — add it.** The registry is the only agent interface.
 4. **Big refactor/test campaigns → workflows of tiered subagents.** Author a `Workflow` (Opus for hard lanes, Sonnet for scoped, to save tokens); each lane runs in an isolated worktree (`isolation:'worktree'`), self-gates (build + focused test + `make lint`), and commits its green work to a `wf/<name>` branch. You then merge the green branches to main and push. Orchestrate + review; the fleet does the volume.
 

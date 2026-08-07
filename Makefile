@@ -622,6 +622,16 @@ DEV_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) $(ZCL_DEV_OPT
 DEV_HOT_CFLAGS = $(filter-out $(ZCL_DEV_OPT),$(DEV_CFLAGS)) $(ZCL_DEV_HOT_OPT)
 DEV_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS)) $(ZCL_DEV_LINKER)
 
+# Explicit save-to-release profiles.  Live modules, incremental restarts, and
+# static integration are non-LTO by contract; only RELEASE retains the
+# production whole-program optimizer.  check-dev-loop-profiles inspects the
+# expanded values and the recipes that consume them.
+DEV_LIVE_CFLAGS := $(DEV_CFLAGS)
+DEV_RESTART_CFLAGS := $(DEV_CFLAGS)
+DEV_RESTART_LDFLAGS := $(DEV_LDFLAGS)
+RELEASE_CFLAGS := $(CFLAGS)
+RELEASE_LDFLAGS := $(LDFLAGS)
+
 # Sanitizer flags shared by the two opt-in ASan/UBSan profiles (t-asan,
 # dev-asan). -fsanitize must appear at both compile and link time. These
 # flags are referenced ONLY by the ASan profiles below — they are never
@@ -1271,6 +1281,8 @@ TEST_REL_CFLAGS = $(filter-out -flto=auto,$(CACHED_CFLAGS)) -DZCL_TESTING \
 	-Wno-array-bounds -Wno-stringop-truncation -Wno-stringop-overread \
 	-Wno-restrict -Wno-nonnull -Wno-maybe-uninitialized
 TEST_REL_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS))
+INTEGRATION_CFLAGS := $(TEST_REL_CFLAGS)
+INTEGRATION_LDFLAGS := $(TEST_REL_LDFLAGS)
 TEST_REL_EPOCH_COMPILE_FLAGS := $(strip $(TEST_REL_CFLAGS) deps=-MD,-MP)
 TEST_REL_EPOCH_LINK_FLAGS := $(strip $(TEST_REL_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 ifneq ($(filter test-strict,$(ZCL_EPOCH_PROFILES)),)
@@ -2243,7 +2255,23 @@ fast-changed-compile:
 # One exact goal keeps both mandatory watcher gates under one conservative
 # contract without turning their old mixed-goal invocation into a reason to
 # import unrelated compiler depfiles.
-watcher-safety-gates: check-core-seal check-consensus-parity
+watcher-safety-gates: check-core-seal check-consensus-parity check-dev-loop-profiles
+
+.PHONY: check-dev-loop-profiles dev-loop-profile-flags dev-loop-history-bench dev-loop-history-bench-selftest
+dev-loop-profile-flags:
+	@printf 'DEV_LIVE\t%s\t%s\n' '$(DEV_LIVE_CFLAGS)' '$(HOTSWAP_MODULE_LDFLAGS)'
+	@printf 'DEV_RESTART\t%s\t%s\n' '$(DEV_RESTART_CFLAGS)' '$(DEV_RESTART_LDFLAGS)'
+	@printf 'INTEGRATION\t%s\t%s\n' '$(INTEGRATION_CFLAGS)' '$(INTEGRATION_LDFLAGS)'
+	@printf 'RELEASE\t%s\t%s\n' '$(RELEASE_CFLAGS)' '$(RELEASE_LDFLAGS)'
+
+check-dev-loop-profiles:
+	@tools/dev/dev-loop-profile-selftest.sh
+
+dev-loop-history-bench:
+	@tools/dev/dev-loop-history-bench.sh run
+
+dev-loop-history-bench-selftest:
+	@tools/dev/dev-loop-history-bench.sh --self-test
 
 # Cheap pre-execution identity for deterministic negative-receipt lookup.  The
 # dev compile epoch already binds the exact source+ABA record, compiler and
@@ -2298,7 +2326,7 @@ $(DEV_CANDIDATE_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(DEV_OBJ_COMP
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
 	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
-	$(CC) $(DEV_CFLAGS) $(DEV_LDFLAGS) -o "$$tmp" "@$(DEV_LINK_RSP)" $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	$(CC) $(DEV_RESTART_CFLAGS) $(DEV_RESTART_LDFLAGS) -o "$$tmp" "@$(DEV_LINK_RSP)" $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
 	$(BUILD_EPOCH_SESSION_TOOL) verify "$(DEV_SESSION)" "$(DEV_LEASE)" \
 	  "$(DEV_OBJ_ROOT)" "$(BIN_DIR)/dev" "$(BUILD_EPOCH_KEEP)" \
 	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" "$(BUILD_COMPILER_ID)" \
@@ -2555,7 +2583,7 @@ hotswap-module-so: $(VIEW_GEN_HEADERS)
 	  [ -f "$$pe_dst" ] && [ ! -L "$$pe_dst" ] && cmp -s "$$pe_src" "$$pe_dst" || return 1; \
 	  rm -f "$$pe_src"; \
 	}; \
-	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_MODULE_GEN \
+	$(CC) $(DEV_LIVE_CFLAGS) -fPIC -DZCL_HOTSWAP_MODULE_GEN \
 	  -DZCL_HOTSWAP_MODULE_SOURCE_TU=\"$$src\" \
 	  -MD -MF "$$tmp_d" -c -o "$$tmp_o" "$$compile_src" >&2; \
 	$(CC) $(HOTSWAP_MODULE_LDFLAGS) -o "$$tmp_so" "$$tmp_o" >&2; \
@@ -2568,7 +2596,7 @@ hotswap-module-so: $(VIEW_GEN_HEADERS)
 	{ \
 	  printf '%s\n' '# zcl.hotswap_fast_flags.v1 — cached by make hotswap-module-so for tools/dev/hotswap-module-fast.sh'; \
 	  printf 'CC=%s\n' '$(CC)'; \
-	  printf 'DEV_CFLAGS=%s\n' '$(DEV_CFLAGS)'; \
+	  printf 'DEV_CFLAGS=%s\n' '$(DEV_LIVE_CFLAGS)'; \
 	  printf 'HOTSWAP_MODULE_LDFLAGS=%s\n' '$(HOTSWAP_MODULE_LDFLAGS)'; \
 	} > "$$tmp_env"; \
 	mv -f -- "$$tmp_env" "$(HOTSWAP_SO_DIR)/fast/flags.env"; \
@@ -2772,7 +2800,7 @@ native-dev-loop-wait-selftest: dev-bin
 native-dev-failure-selftest: dev-bin
 	@tools/dev/native-dev-failure-selftest.sh
 
-dev-loop-selftest: dev-watch-selftest dev-activation-selftest dev-loop-bench-selftest native-dev-loop-wait-selftest native-dev-failure-selftest hotswap-sim
+dev-loop-selftest: check-dev-loop-profiles dev-watch-selftest dev-activation-selftest dev-loop-bench-selftest native-dev-loop-wait-selftest native-dev-failure-selftest hotswap-sim
 	@echo "dev-loop-selftest: PASS"
 
 remote-node-plan:
@@ -5171,7 +5199,7 @@ $(OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 # consensus/crypto/script/validation hot paths at a configurable optimized
 # level. This catches more optimizer-sensitive behavior without paying global
 # LTO or making every unrelated edit slow.
-DEV_COMPILE_CFLAGS = $(DEV_CFLAGS)
+DEV_COMPILE_CFLAGS = $(DEV_RESTART_CFLAGS)
 $(DEV_OBJ_DIR)/lib/chain/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/core/chainparams/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/core/params/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)

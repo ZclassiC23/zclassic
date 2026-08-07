@@ -18,6 +18,14 @@ ZClassic23 has three development layers:
 
 None is publication authority for the canonical node or a release build.
 
+The build profiles are explicit: resident modules use `DEV_LIVE`, an isolated
+incremental process replacement uses `DEV_RESTART`, static combined proof uses
+`INTEGRATION`, and production uses `RELEASE`. The first three are permanently
+non-LTO; the last deliberately retains whole-program LTO. `make
+check-dev-loop-profiles` proves the expanded flags and recipe ownership, while
+the resident action-plan loader rejects an action plan containing `-flto` or
+linker-plugin flags before it compiles anything.
+
 ## Real module ABI (activatable, gated)
 
 The module path loads ONE swappable translation unit per `.so`, carrying EVERY
