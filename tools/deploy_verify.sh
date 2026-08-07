@@ -703,9 +703,9 @@ verify_contract() {
     else
         # Challenger staging and rollback recovery are deliberately weaker
         # than stable promotion: they prove exact bytes, process identity,
-        # RPC/P2P readiness, evidence consistency, and a <=1 tip gap while
-        # preserving baseline blockers.  Neither claims PROVEN merely because
-        # the process came back.
+        # RPC/P2P readiness, evidence consistency, and a <=1 tip gap.  Neither
+        # claims PROVEN or baseline equivalence merely because the process came
+        # back; named health blockers remain visible for owner review.
         json_top_has_key "$health" healthy ||
             { last_err="challenger healthcheck omitted healthy verdict: $health"; return 1; }
         json_health_gap_at_most_one "$health" ||
@@ -754,7 +754,7 @@ verify_contract() {
     fi
 
     if [ "$DEPLOY_STAGE" = "challenger" ]; then
-        echo "CHALLENGER_STAGED (unqualified): RPC live at block $height (source_id $running_source_id, artifact_sha256 $running_artifact_sha256, build_commit ${running_commit:-unknown} display-only); canonical diagnostics ready; stable channel unchanged."
+        echo "CHALLENGER_ACTIVE (unqualified): RPC live at block $height (source_id $running_source_id, artifact_sha256 $running_artifact_sha256, build_commit ${running_commit:-unknown} display-only); canonical diagnostics ready; stable health promotion not claimed."
     elif [ "$DEPLOY_STAGE" = "rollback" ]; then
         echo "ROLLBACK_VERIFIED: prior RPC live at block $height (source_id $running_source_id, artifact_sha256 $running_artifact_sha256, build_commit ${running_commit:-unknown} display-only); canonical diagnostics ready."
     else
