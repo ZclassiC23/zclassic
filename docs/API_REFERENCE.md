@@ -365,7 +365,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `core wallet backup status` | ready | read / read / operator · fast/low | none | `zcl.wallet_backup_status.v1` | `zclassic23 core wallet backup status` | Wallet backup freshness |
-| `core wallet backup now` | ready | mutate / wallet / **owner**, plan-commit · fast/low | `confirm` | `zcl.wallet_backup.v1` | `zclassic23 core wallet backup now` | Take a wallet backup now |
+| `core wallet backup now` | ready | mutate / wallet / **owner**, plan-commit · fast/low | `confirm`, `password` | `zcl.wallet_backup.v1` | `zclassic23 core wallet backup now` | Take a wallet backup now |
 | `core wallet backup decrypt` | ready | mutate / wallet / **owner**, plan-commit · foreground/low | **`from`**, `to`, `password`, `confirm` | `zcl.wallet_backup_decrypt.v1` | `zclassic23 core wallet backup decrypt --input='{"from":"~/wallet_backups/wallet_backup_1.sqlite.enc","to":"/tmp/wb.sqlite"}'` | Decrypt an encrypted wallet backup file |
 
 #### `core.wallet.recovery` — Recovery phrase (the twelve words)

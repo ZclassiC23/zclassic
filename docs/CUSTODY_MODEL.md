@@ -42,11 +42,15 @@ Row 5 copies exactly `wallet_keys`, `wallet_sapling_keys`, `wallet_seed`
 (`app/services/src/wallet_backup_service.c:78-80`) with `CREATE TABLE … AS
 SELECT *`, so a backup taken from an encrypted wallet contains encrypted
 blobs and a backup taken from a plaintext wallet contains raw keys. The two
-passphrases are **independent env vars**: `ZCL_WALLET_PASSPHRASE` wraps the
-rows, `WALLET_BACKUP_PASSWORD` wraps the backup file
-(`wallet_backup_service.c:210-242`, ChaCha20-Poly1305 over the whole file).
-Setting one does not set the other, and leaving `WALLET_BACKUP_PASSWORD` unset
-logs one warning and proceeds.
+layers use **independent passphrases**: `ZCL_WALLET_PASSPHRASE` wraps the rows,
+while `WALLET_BACKUP_PASSWORD` wraps every scheduled backup file
+(`wallet_backup_service.c`, ChaCha20-Poly1305 over the whole file). For an
+operator who will not place the second secret in an environment,
+`core wallet backup now --input=-` also accepts an invocation-scoped
+`password`: it is stdin-only, is never retained in service configuration, and
+is deliberately absent from the rendered `commit_input`. Setting one layer
+does not set the other, and leaving scheduled-backup encryption unset logs one
+warning and proceeds.
 
 **Export paths** (deliberate, OWNER-gated, plan/commit): `dumpprivkey` /
 `z_exportkey` over JSON-RPC, and `core.wallet.address.export-key` over the

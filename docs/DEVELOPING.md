@@ -181,6 +181,13 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   `make custody-bind-selftest`. Rerunning an unchanged binding is idempotent;
   an endpoint or identity change is provisioned in a fresh private generation
   and promoted atomically, preserving every older signed audit chain.
+- `core wallet backup now --input=-` accepts an optional `password` beside
+  `confirm`. This satisfies the encrypted-backup spend gate without placing
+  `WALLET_BACKUP_PASSWORD` in a unit or process environment: the password is
+  stdin-only, applies to one synchronous backup, is not retained by the
+  service, and is never copied into `commit_input`. Keep it in the operator's
+  secret service and supply it again for commit. Scheduled backups retain
+  their existing environment policy.
 
 The isolated `zcl23-dev.service` uses the same `Type=notify` + external
 watchdog handshake as production, under a strict 4G memory envelope. A

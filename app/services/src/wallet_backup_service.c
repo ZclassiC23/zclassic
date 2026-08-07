@@ -372,6 +372,42 @@ struct zcl_result wallet_backup_now(void)
     return res;
 }
 
+struct zcl_result wallet_backup_now_encrypted(const char *password)
+{
+    if (!password || !password[0])
+        return ZCL_ERR(-11, "backup_now_encrypted: password is empty");
+
+    pthread_mutex_lock(&g_wbs.lock);
+    if (!g_wbs.db || !g_wbs.cfg.backup_dir) {
+        struct zcl_result r = ZCL_ERR(-10,
+                "backup_now_encrypted: service not initialized");
+        pthread_mutex_unlock(&g_wbs.lock);
+        return r;
+    }
+
+    bool saved_encrypt = g_wbs.cfg.encrypt;
+    const char *saved_password = g_wbs.cfg.encrypt_password;
+    int64_t failures_before = g_wbs.total_failures;
+    g_wbs.cfg.encrypt = true;
+    g_wbs.cfg.encrypt_password = password;
+    struct zcl_result res = wbs_run_one_locked();
+    g_wbs.cfg.encrypt = saved_encrypt;
+    g_wbs.cfg.encrypt_password = saved_password;
+
+    size_t path_len = strlen(g_wbs.last_path);
+    size_t suffix_len = strlen(WALLET_BACKUP_FILENAME_SUFFIX_ENC);
+    bool encrypted = res.ok && g_wbs.total_failures == failures_before &&
+        path_len >= suffix_len &&
+        strcmp(g_wbs.last_path + path_len - suffix_len,
+               WALLET_BACKUP_FILENAME_SUFFIX_ENC) == 0;
+    pthread_mutex_unlock(&g_wbs.lock);
+
+    if (!encrypted)
+        return ZCL_ERR(-12,
+            "backup_now_encrypted: verified encrypted backup was not created");
+    return res;
+}
+
 /* ── Thread loop ────────────────────────────────────────────── */
 
 static void *wbs_thread_fn(void *arg)

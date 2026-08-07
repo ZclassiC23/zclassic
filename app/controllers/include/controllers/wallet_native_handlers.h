@@ -56,6 +56,16 @@ void wnh_fail(struct zcl_command_reply *reply,
 bool wnh_call_rpc(struct zcl_command_reply *reply, const char *method,
                   const char *params_json, struct json_value *out);
 
+/* Shared non-secret plan rendering for the mutating wallet controller
+ * siblings. */
+void wnh_plan_token(char out[17], const char *a, const char *b,
+                    const char *c);
+bool wnh_commit_input(const struct json_value *input, char *out,
+                      size_t out_cap);
+void wnh_emit_plan(struct zcl_command_reply *reply, const char *path,
+                   const char *action, const char *token,
+                   const char *commit_input);
+
 #ifdef __cplusplus
 }
 #endif

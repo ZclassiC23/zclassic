@@ -163,6 +163,13 @@ void wallet_backup_stop(void);
  * any thread — serialised by the service mutex. */
 struct zcl_result wallet_backup_now(void);
 
+/* Run one synchronously verified backup with an invocation-scoped second
+ * encryption layer. The password is consumed only while the service lock is
+ * held; it is never retained in service state after this call returns. This
+ * is the safe native-command path for operators who refuse to put
+ * WALLET_BACKUP_PASSWORD in a process environment or unit file. */
+struct zcl_result wallet_backup_now_encrypted(const char *password);
+
 /* ── Event triggers (debounced) ─────────────────────────────── */
 
 /* Minimum interval between trigger-driven backups. Triggers that

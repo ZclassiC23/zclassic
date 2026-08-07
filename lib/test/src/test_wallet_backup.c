@@ -531,6 +531,60 @@ static int t_force_now_repeatable(void)
     return failures;
 }
 
+/* ── 9b. One-shot encryption does not require an env secret ───── */
+
+static int t_force_now_encrypted(void)
+{
+    int failures = 0;
+    wb_install_observer();
+    supervisor_reset_for_testing();
+
+    struct wb_fixture f;
+    wb_fixture_init(&f, "forcenowenc");
+    int seeded = wb_seed_keys(&f.ndb, 3);
+
+    struct wallet_backup_config cfg;
+    wallet_backup_config_defaults(&cfg);
+    cfg.backup_dir = f.backup_dir;
+    cfg.interval_seconds = 999999;
+    cfg.encrypt = false;
+    cfg.encrypt_password = NULL;
+
+    struct wallet_backup_status before;
+    wallet_backup_status_snapshot(&before);
+    bool started = wallet_backup_start(&cfg, &f.ndb).ok;
+    struct wallet_backup_status after_start;
+    wb_wait_runs_past(before.total_runs, &after_start);
+
+    bool ran = wallet_backup_now_encrypted("invocation-only-password").ok;
+    struct wallet_backup_status status;
+    wallet_backup_status_snapshot(&status);
+    wallet_backup_stop();
+
+    size_t path_len = strlen(status.last_path);
+    size_t suffix_len = strlen(WALLET_BACKUP_FILENAME_SUFFIX_ENC);
+    bool has_encrypted_suffix = path_len >= suffix_len &&
+        strcmp(status.last_path + path_len - suffix_len,
+               WALLET_BACKUP_FILENAME_SUFFIX_ENC) == 0;
+    char restored[640];
+    snprintf(restored, sizeof(restored), "%s/restored-one-shot.sqlite",
+             f.backup_dir);
+    bool decrypted = has_encrypted_suffix &&
+        wallet_backup_decrypt_file(status.last_path, restored,
+                                   "invocation-only-password").ok;
+    int64_t rows = decrypted
+        ? wb_count_rows_in_file(restored, "wallet_keys") : -1;
+
+    WB_RUN("wb: one-shot password creates a verified encrypted backup",
+           started && ran && has_encrypted_suffix && seeded == 3 && rows == 3 &&
+           status.total_runs == after_start.total_runs + 1 &&
+           status.total_failures == after_start.total_failures);
+
+    wb_fixture_tear_down(&f);
+    supervisor_reset_for_testing();
+    return failures;
+}
+
 /* ── 10. Stop is idempotent + safe without start ──────────── */
 
 static int t_stop_safe(void)
@@ -966,6 +1020,7 @@ int test_wallet_backup(void)
     failures += t_status_snapshot();
     failures += t_dump_state_json();
     failures += t_force_now_repeatable();
+    failures += t_force_now_encrypted();
     failures += t_stop_safe();
     failures += t_roundtrip_verify();
     failures += t_encrypt_roundtrip();
