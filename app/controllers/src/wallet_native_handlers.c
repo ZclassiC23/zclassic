@@ -129,8 +129,8 @@ bool wnh_call_rpc(struct zcl_command_reply *reply, const char *method,
 /* Deterministic, non-secret plan token binding a plan preview to its exact
  * parameters (FNV-1a over the parts, 16 hex). The operator can compare it
  * across the plan and the committed reply; no server state is stored. */
-static void wnh_plan_token(char out[17], const char *a, const char *b,
-                           const char *c)
+void wnh_plan_token(char out[17], const char *a, const char *b,
+                    const char *c)
 {
     uint64_t h = 1469598103934665603ULL;
     const char *parts[3] = { a, b, c };
@@ -233,8 +233,8 @@ void wnh_fail(struct zcl_command_reply *reply,
  * Truncating to {"confirm":true} silently discards the recipient and is not a
  * plan; callers must fail the plan when their declared response budget cannot
  * carry every binding. */
-static bool wnh_commit_input(const struct json_value *ci, char *commit,
-                             size_t commit_size)
+bool wnh_commit_input(const struct json_value *ci, char *commit,
+                      size_t commit_size)
 {
     size_t n = json_write(ci, commit, commit_size);
     if (n == 0 || n >= commit_size) {
@@ -258,9 +258,9 @@ static bool wnh_commit_input(const struct json_value *ci, char *commit,
  * of a plan, and the plan/commit flow could not be driven from the typed
  * interface at all. The caller needs the committing input, not a link; it is
  * `commit_input` below, and re-running this leaf with it executes the plan. */
-static void wnh_emit_plan(struct zcl_command_reply *reply, const char *path,
-                          const char *action, const char *token,
-                          const char *commit_input)
+void wnh_emit_plan(struct zcl_command_reply *reply, const char *path,
+                   const char *action, const char *token,
+                   const char *commit_input)
 {
     (void)path; /* the commit re-runs THIS leaf; see the note above */
     (void)json_push_kv_str(&reply->data, "stage", "plan");
@@ -656,58 +656,6 @@ void zcl_native_handle_wallet_shielded_send(
         (void)json_push_kv_str(&reply->data, "memo", memo);
     if (idem && idem[0])
         (void)json_push_kv_str(&reply->data, "idempotency_key", idem);
-    (void)json_push_kv_str(&reply->data, "plan_token", token);
-    reply->error.mutated = true;
-    json_free(&body);
-}
-
-void zcl_native_handle_wallet_backup_now(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    bool confirm = json_get_bool_or(request->input, "confirm", false);
-    char token[17];
-    wnh_plan_token(token, "backup-now", "", "");
-
-    /* CONFIRM_PLAN_COMMIT. A wallet backup exports EVERY key at once, into
-     * a file that is plaintext unless WALLET_BACKUP_PASSWORD is set — a
-     * strictly larger disclosure than export-key, which has always demanded
-     * a confirm for ONE key. The plan half names the exposure and writes
-     * nothing. (The periodic background service is unaffected: it calls
-     * wallet_backup_now() directly, not through this leaf.) */
-    if (!confirm) {
-        const char *pw = getenv("WALLET_BACKUP_PASSWORD");
-        bool encrypted = pw && pw[0];
-        struct json_value ci;
-        json_init(&ci);
-        json_set_object(&ci);
-        (void)json_push_kv_bool(&ci, "confirm", true);
-        char commit[128];
-        bool encoded = wnh_commit_input(&ci, commit, sizeof(commit));
-        json_free(&ci);
-        if (!encoded) {
-            wnh_fail(reply, ZCL_COMMAND_EXIT_INTERNAL, "PLAN_TOO_LARGE",
-                     "exact backup commit input exceeds its budget", "confirm");
-            return;
-        }
-        (void)json_push_kv_bool(&reply->data, "encrypted", encrypted);
-        (void)json_push_kv_str(
-            &reply->data, "warning",
-            encrypted
-                ? "commit writes every wallet key to a backup file, "
-                  "encrypted under WALLET_BACKUP_PASSWORD"
-                : "commit writes every wallet key to a backup file IN THE "
-                  "CLEAR (WALLET_BACKUP_PASSWORD is not set)");
-        wnh_emit_plan(reply, request->spec->path, "backup-now", token, commit);
-        return;
-    }
-
-    struct json_value body;
-    if (!wnh_call_rpc(reply, "walletbackupnow", NULL, &body))
-        return;
-    (void)json_push_kv(&reply->data, "backup", &body);
-    (void)json_push_kv_str(&reply->data, "stage", "committed");
-    (void)json_push_kv_bool(&reply->data, "committed", true);
-    (void)json_push_kv_bool(&reply->data, "created", true);
     (void)json_push_kv_str(&reply->data, "plan_token", token);
     reply->error.mutated = true;
     json_free(&body);

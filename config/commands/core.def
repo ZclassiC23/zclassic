@@ -1118,7 +1118,8 @@ ZCL_COMMAND_READY_COMMAND(
     "written by the running node's walletbackupnow at call time "
     "(stage=committed, created true once the file is on disk).", 0,
     "wallet,backup,now",
-    "zcl.core_confirm.input.v1", "zcl.wallet_backup.v1", "confirm", "",
+    "zcl.wallet_backup_now.input.v2", "zcl.wallet_backup.v1",
+    "confirm,password", "",
     "zclassic23 core wallet backup now",
     /* CONFIRM_PLAN_COMMIT, not CONFIRM_NONE. This exports EVERY key at once
      * into a file that is plaintext unless WALLET_BACKUP_PASSWORD happens to

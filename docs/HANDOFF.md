@@ -15,10 +15,10 @@ tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 
 ## Current state
 
-**2026-08-06 21:15 AST — identity-bound custody is CURRENT; the transaction
-laboratory remains gated and has broadcast zero transactions.** Re-derived
-from the live native readers after the owner-gated challenger deployment and
-two watched restarts:
+**2026-08-06 21:54 AST — identity-bound custody and the transaction-laboratory
+infrastructure gate are CURRENT; the laboratory remains unfunded and has
+broadcast zero transactions.** Re-derived from the live native readers after
+the owner-gated challenger deployment and watched restarts:
 
 - `metaverse agent money` reports both assigned wallets complete and CURRENT:
   dev confirmed `0.30000000 ZCL`, pending/encumbered/intent-reserved zero,
@@ -26,27 +26,35 @@ two watched restarts:
   other amounts zero. The known portfolio total is `0.30000000 ZCL`. The
   private binding was rotated to the live persistent identities; no funds
   moved.
-- Canonical is active at H* with no next-frontier blocker, `NRestarts=0`, a
-  120-second watchdog, and the watchdog timestamp advancing. A 6G live trial
-  pinned the full-datadir cgroup at its soft cap and starved RPC; a clean 24G
-  restart restored RPC and current custody. The committed service template is
-  being corrected to that measured 24G production envelope. The isolated dev
-  lane is active under its 4G hard envelope and 120-second watchdog; its prior
-  3G soft cap produced intermittent custody RPC and one restart, so the
-  committed soft limit is being raised to the unchanged 4G hard boundary.
+- Canonical typed `status` passes and `reducer_frontier` reports complete H*
+  exactly equal to the observed network tip with no next-frontier blocker.
+  Canonical remains active with `NRestarts=0`, a 120-second watchdog, and an
+  advancing watchdog timestamp. A 6G live trial pinned the full-datadir cgroup
+  at its soft cap and starved RPC; a clean 24G restart restored RPC and current
+  custody. Commit `58f11e33` records that measured 24G production envelope.
+  The isolated dev lane is active under its matching 4G soft/hard envelope and
+  120-second watchdog. Its prior 3G soft cap produced intermittent custody RPC
+  and one restart (`NRestarts=1` remains visible); the 4G envelope is committed
+  rather than hiding that measured result.
 - `catalog_coverage` reports `sprout_anchor` complete at the live tip with lag
   zero; no active sprout/catalog blocker remains. This closes the former false
   sparse-journal lag fact.
-- Off-host parity improved from no evidence to one clean agreeing sample with
-  five distinct remote peers and zero disagreement. The fixed judge remains
-  `THIN_EVIDENCE`: it requires six clean samples spanning at least 45 minutes.
-  Raw endpoint/path-bearing ledger rows are no longer printed by
-  `make tip-agreement-status`.
+- The fixed off-host judge is `PASS`: six clean agreeing samples span 7,375
+  seconds, every clean sample is backed by at least two distinct remote peers,
+  and there are zero contested witnesses and zero disagreements. The timer
+  remains active. Its history also contains 141 fail-closed `could-not-ask`
+  rows, principally intermittent native query-budget interruptions; those are
+  operational evidence to improve, not agreement and not a reason to weaken
+  the judge. Raw endpoint/path-bearing rows remain private and are not printed
+  by `make tip-agreement-status`.
 - `make transaction-lab-status` remains 39/39 isolated proofs, 38/39
   simulated/live confirmations, 35/39 mainnet-capable, and **0/39 live**.
-  Do not fund or broadcast until the off-host evidence window passes and a
-  fresh synchronous custody snapshot is CURRENT for the explicitly targeted
-  wallet.
+  The two isolated micro-lab wallets are 2/2 ready, address-redacted,
+  key-unexported, and unfunded. The infrastructure stop is cleared; the next
+  money action is still an exact, non-broadcasting `dev` plan followed by the
+  separate owner-review/approval message required by the live runbook. Never
+  treat this acceptance result as blanket approval for unknown outputs or
+  changed fees.
 
 The real-Tor fork fix is on its `main`; parent `main` contains reproducible
 `make tor-full`, rollback-safe deploy capture, explicit owner-only challenger
