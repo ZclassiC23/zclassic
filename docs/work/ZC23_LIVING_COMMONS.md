@@ -638,6 +638,7 @@ authorization.
 | DONE | O4 scratch attribution and epoch plan/commit | `3b45e7991` | `c7ddc1fd9` | full policy/Score/reproduction/binding/package/release/license reload; deterministic fixture anchors; exact award/mint equality; changed branch, missing predecessor, duplicate candidate, policy substitution and one-atom drift rejection; six typed shadow leaves; focused/API gates, full lint 134/134 and normal pre-push source-wide suite |
 | DONE | O5 three-party portable reproduction acceptance | `6b933d4ea` | `6b933d4ea` | requester, reproducer and observer in distinct processes/workspaces/stores; root-addressed content/package transfer; independent qualification and byte-identical projection rebuild; real swarm/DHT corruption, cancellation, fallback, resume and restart owners composed by one exact 6/6 gate; `actual_off_host_credit=false`; full lint 134/134 and normal pre-push 902-group suite |
 | DONE | O6 four linked protocol shadow simulations | `fc7b88bab`, `e237f13fa` | `e237f13fa` | actual base/SHA3/codec package verticals; three distinct mature creations followed by one empty epoch; exact predecessor and cumulative 300,000,000-atom equality; byte-identical rebuild after every epoch; boundary reorg and deterministic replacement roots; cross-epoch duplicate refusal; read-only typed report; focused creation/Score/catalog/API gates, full lint 134/134 and normal pre-push 902-group suite; `same_host_fixture_only`, real genesis gate false |
+| DONE | O7 fixture-only C23 seed and shadow-election foundation | `d623a3043` | `d623a3043` | exact 721-byte dual-signed seed wire; generated/vendor/copied exclusion; height+MTP maturity and reorg gates; canonical evidence snapshot; 26-epoch decay and 10,000 weight cap; unbiased weighted selection without replacement; one ZID per seat; concentration metrics; four frozen election KAT roots; focused green, full lint 134/134, 10,000 ASan+UBSan fuzz iterations and normal pre-push 903-group suite; `simulation_only=true`, `authority_conferred=false` |
 | BLOCKED | Real SHA3 off-host independence gate | `fc62b9c4a` | `fc62b9c4a` | SHA3 Score remains honestly 4/5; local evidence and O5 same-host simulation do not prove physical independence or authorize a real shadow epoch, token genesis, mint or custody |
 
 Historical-truth hardening began from fetched `origin/main` `7091051aa`
@@ -694,13 +695,17 @@ binary, 22,793,048 bytes with SHA3-256
 (`000026`). This is `local_reproduction`, not approved independent off-host
 reproduction and earns no independent-reproduction unit.
 
-The permanent `fuzz_zcode_commons` target covers creation attribution, epoch
-creation, patronage intent, patronage funding, patronage settlement/refund and
-continuity policy through the repository's shared libFuzzer object tree.
+The permanent `fuzz_zcode_commons` target now has ten arms covering creation
+attribution, epoch creation, patronage intent, patronage funding, patronage
+settlement/refund, continuity policy, approved reproducer set, shadow policy
+candidate, reproduction request and `c23.seed.v1` through the repository's
+shared libFuzzer object tree.
 Receipt `000027` is the born-red missing-target result; `000028` proves the
 harness builds, and `000029` records 1,537,885 leak-detecting ASan+UBSan
-mutations with no finding. This bounded local run is parser hardening, not a
-claim of exhaustive input-space coverage.
+mutations over the original six-arm harness with no finding. O7 additionally
+built the expanded sanitizer harness and ran 10,000 mutations with no finding.
+These bounded local runs are parser hardening, not claims of exhaustive
+input-space coverage.
 
 The final explicit `--no-cache` source-wide run executed 901 of 910 registered
 groups; nine parameter-heavy groups were policy-gated and 22 tests reported
@@ -777,3 +782,23 @@ self-skip markers. Pull verification proved both local HEAD and `origin/main`
 at `e237f13fa404aebe5b8431e673eaf17b839afb3a`. All four rows remain
 `same_host_fixture_only`, `owner_required_green_shadow_epochs=false`, and
 `genesis_gate_satisfied=false`.
+
+O7 began from fetched `origin/main`
+`04acb417569abe051528794c1c1eaee5950882ee`. No concurrent integration was
+required before source and integration commit
+`d623a3043125f054521e26d9c4a1e01c35132f7d`. The fixed seed wire root is
+`ce3b43aabcc2a3feedaa489161bc76756d8e8a34fe14d280c0eac9293ec12c93`.
+The four fixture election roots are
+`911bf472f1eb07ee50fa706881aff82d0c56b2daa9c406697f79f4575a1c1610`,
+`89e8c26d59957de264063915eead7640ac5da1d6f17bed8125ba0edd27bd1a06`,
+`6cc3bbef00ccbd30206ac916beb62648ba223b83e5a6cc2cd2e959c95526f24b`,
+and `f46912d939cdcfbfd8937429717851cfb771702469caca60cc59666bb418a1ce`.
+The first lint attempt correctly found the test-group count ratchet at 911;
+the documentation count was updated to the code-measured 912 and the complete
+134-gate lint retry passed. The normal hook-enabled push then passed 903/903
+active groups with zero cache hits; nine parameter-heavy groups were policy-
+gated and 19 tests emitted documented self-skip markers. Pull verification
+proved local HEAD and `origin/main` both at `d623a3043`. The seed authorities,
+chain anchors and elections are test fixtures only: no production seed was
+admitted and the elections set `simulation_only=true` and
+`authority_conferred=false`.
