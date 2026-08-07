@@ -16,6 +16,7 @@
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_contributor_binding.h"
 #include "vcs/zcode_creation_attribution.h"
+#include "vcs/zcode_continuity_policy.h"
 #include "vcs/zcode_epoch_creation.h"
 #include "vcs/zcode_patronage.h"
 #include "vcs/zcode_patronage_funding.h"
@@ -1498,6 +1499,77 @@ static int test_creation_attribution_cross_validation(void)
             .expected_network_genesis_root = network,
             .now_unix = 700000,
         };
+        struct vcs_zcode_continuity_policy_v1 continuity;
+        memset(&continuity, 0, sizeof(continuity));
+        continuity.schema_version = VCS_ZCODE_CONTINUITY_POLICY_VERSION;
+        continuity.event_mask = VCS_ZCODE_CONTINUITY_BORN_RED_FIX |
+            VCS_ZCODE_CONTINUITY_SECURITY_FIX |
+            VCS_ZCODE_CONTINUITY_INDEPENDENT_REPRODUCTION |
+            VCS_ZCODE_CONTINUITY_COMPATIBILITY |
+            VCS_ZCODE_CONTINUITY_PRESERVATION;
+        continuity.flags = VCS_ZCODE_CONTINUITY_NO_AUTHORITY |
+                           VCS_ZCODE_CONTINUITY_SIMULATION_ONLY;
+        memcpy(continuity.network_genesis_root, network, 32);
+        score_fill(continuity.zc23_token_or_simulation_root, 0xe1);
+        memcpy(continuity.patron_contributor_binding_root, binding_root, 32);
+        memcpy(continuity.patron_zid_pubkey, zid_pubkey, 32);
+        memcpy(continuity.package_root, package_root, 32);
+        memcpy(continuity.current_release_root, release_root, 32);
+        score_fill(continuity.from_capsule_root, 0xe2);
+        score_fill(continuity.to_capsule_root, 0xe3);
+        memcpy(continuity.proof_policy_root, proof_policy_root, 32);
+        continuity.maximum_cycles = 3;
+        continuity.per_cycle_cap_atoms = UINT64_C(100000000);
+        continuity.total_cap_atoms = UINT64_C(300000000);
+        continuity.created_unix = 1000;
+        continuity.expires_unix = 800000;
+        continuity.sequence = 1;
+        ASSERT_EQ(vcs_zcode_continuity_policy_seal(
+                      &continuity, zid_secret, zid_pubkey),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_continuity_policy_verify_cas(
+                      &continuity, &patronage_context),
+                  VCS_ZCODE_CONTINUITY_OK);
+        memcpy(continuity.patron_contributor_binding_root, task_root, 32);
+        ASSERT_EQ(vcs_zcode_continuity_policy_seal(
+                      &continuity, zid_secret, zid_pubkey),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_continuity_policy_verify_cas(
+                      &continuity, &patronage_context),
+                  VCS_ZCODE_CONTINUITY_CONTRIBUTOR);
+        memcpy(continuity.patron_contributor_binding_root, binding_root, 32);
+        memcpy(continuity.package_root, task_root, 32);
+        ASSERT_EQ(vcs_zcode_continuity_policy_seal(
+                      &continuity, zid_secret, zid_pubkey),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_continuity_policy_verify_cas(
+                      &continuity, &patronage_context),
+                  VCS_ZCODE_CONTINUITY_PACKAGE);
+        memcpy(continuity.package_root, package_root, 32);
+        memcpy(continuity.current_release_root, task_root, 32);
+        ASSERT_EQ(vcs_zcode_continuity_policy_seal(
+                      &continuity, zid_secret, zid_pubkey),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_continuity_policy_verify_cas(
+                      &continuity, &patronage_context),
+                  VCS_ZCODE_CONTINUITY_RELEASE);
+        memcpy(continuity.current_release_root, release_root, 32);
+        memcpy(continuity.proof_policy_root, task_root, 32);
+        ASSERT_EQ(vcs_zcode_continuity_policy_seal(
+                      &continuity, zid_secret, zid_pubkey),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_continuity_policy_verify_cas(
+                      &continuity, &patronage_context),
+                  VCS_ZCODE_CONTINUITY_PROOF_POLICY);
+        memcpy(continuity.proof_policy_root, proof_policy_root, 32);
+        score_fill(continuity.network_genesis_root, 0xe4);
+        ASSERT_EQ(vcs_zcode_continuity_policy_seal(
+                      &continuity, zid_secret, zid_pubkey),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_continuity_policy_verify_cas(
+                      &continuity, &patronage_context),
+                  VCS_ZCODE_CONTINUITY_NETWORK);
+        memcpy(continuity.network_genesis_root, network, 32);
         struct vcs_zcode_patronage_settlement_validation_context
             settlement_context = {
                 .patronage = &patronage_context,

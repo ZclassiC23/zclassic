@@ -48,6 +48,13 @@ const char *vcs_zcode_continuity_error_string(
     case VCS_ZCODE_CONTINUITY_TIME: return "time-order";
     case VCS_ZCODE_CONTINUITY_SEQUENCE: return "sequence";
     case VCS_ZCODE_CONTINUITY_SIGNATURE: return "signature";
+    case VCS_ZCODE_CONTINUITY_CONTEXT: return "validation-context";
+    case VCS_ZCODE_CONTINUITY_CAS: return "canonical-cas";
+    case VCS_ZCODE_CONTINUITY_NETWORK: return "network-mismatch";
+    case VCS_ZCODE_CONTINUITY_CONTRIBUTOR: return "contributor-binding";
+    case VCS_ZCODE_CONTINUITY_PACKAGE: return "package-binding";
+    case VCS_ZCODE_CONTINUITY_RELEASE: return "release-binding";
+    case VCS_ZCODE_CONTINUITY_PROOF_POLICY: return "proof-policy-binding";
     }
     return "unknown";
 }

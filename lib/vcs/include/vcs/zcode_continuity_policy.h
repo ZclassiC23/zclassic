@@ -3,6 +3,8 @@
 #ifndef ZCL_VCS_ZCODE_CONTINUITY_POLICY_H
 #define ZCL_VCS_ZCODE_CONTINUITY_POLICY_H
 
+#include "vcs/zcode_patronage.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -44,6 +46,13 @@ enum vcs_zcode_continuity_error {
     VCS_ZCODE_CONTINUITY_TIME,
     VCS_ZCODE_CONTINUITY_SEQUENCE,
     VCS_ZCODE_CONTINUITY_SIGNATURE,
+    VCS_ZCODE_CONTINUITY_CONTEXT,
+    VCS_ZCODE_CONTINUITY_CAS,
+    VCS_ZCODE_CONTINUITY_NETWORK,
+    VCS_ZCODE_CONTINUITY_CONTRIBUTOR,
+    VCS_ZCODE_CONTINUITY_PACKAGE,
+    VCS_ZCODE_CONTINUITY_RELEASE,
+    VCS_ZCODE_CONTINUITY_PROOF_POLICY,
 };
 
 struct vcs_zcode_continuity_policy_v1 {
@@ -85,5 +94,8 @@ enum vcs_zcode_continuity_error vcs_zcode_continuity_policy_seal(
     const uint8_t secret[32], const uint8_t pubkey[32]);
 enum vcs_zcode_continuity_error vcs_zcode_continuity_policy_verify(
     const struct vcs_zcode_continuity_policy_v1 *policy, int64_t now_unix);
+enum vcs_zcode_continuity_error vcs_zcode_continuity_policy_verify_cas(
+    const struct vcs_zcode_continuity_policy_v1 *policy,
+    const struct vcs_zcode_patronage_validation_context *context);
 
 #endif /* ZCL_VCS_ZCODE_CONTINUITY_POLICY_H */
