@@ -76,6 +76,25 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_work_status)
 
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.work.run", "zcode.work", "", "Prepare one contained adapter handoff",
+    "Reloads the verified task and canonical agent context, materializes an "
+    "isolated candidate workspace, and emits a bounded manual adapter packet. "
+    "The adapter receives no acceptance or publication authority.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,work,run,adapter,manual,contained,candidate",
+    "zcl.zcode_work_run.input.v1", "zcl.zcode_work_run.v1",
+    "workspace,work,adapter", "",
+    "zclassic23-dev zcode work run --input='{\"work\":\"latest\",\"adapter\":\"manual\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_work_run)
+
 ZCL_COMMAND_READY_READ(
     "zcode.guide", "zcode", "", "Start creating in the shared C23 commons",
     "Returns the shortest ready command paths for finding, inspecting, "

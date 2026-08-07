@@ -89,6 +89,15 @@ int vcs_tree_capture_into(const char *scan_root, const char *object_store_root,
 bool vcs_tree_load(const char *repo_root, const uint8_t tree_hash[32],
                    struct vcs_manifest *out);
 
+/* Rebuild one captured tree from verified CAS blobs into an existing empty
+ * destination. Files are created with O_EXCL and the caller-selected 0400 or
+ * 0600 mode; source paths must remain canonical regular files. This is the
+ * shared materializer for confined builds and candidate handoff workspaces. */
+int vcs_tree_materialize(const char *object_store_root,
+                         const uint8_t tree_hash[32],
+                         const char *destination, uint64_t maximum_bytes,
+                         uint32_t file_mode);
+
 /* Take a snapshot: build the worktree manifest, store dirty blobs + the
  * manifest, check the seal, append a commit, and advance HEAD/anchor/seal_pin.
  * On success writes the 32-byte commit id to out_commit_id. Returns VCS_OK,

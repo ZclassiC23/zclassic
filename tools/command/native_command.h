@@ -379,6 +379,9 @@ void zcl_native_handle_zcode_project_inspect(
 void zcl_native_handle_zcode_work_start(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_work_run(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_work_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

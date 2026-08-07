@@ -11,6 +11,7 @@
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
 #include "vcs/vcs_object.h"
+#include "vcs/zcode_agent_context.h"
 #include "vcs/zcode_dev.h"
 
 #include <dirent.h>
@@ -24,12 +25,15 @@
  * of the right size is even a candidate for projection. */
 static const uint8_t task_magic[8] = {'Z','C','T','A','S','K','\r','\n'};
 static const uint8_t candidate_magic[8] = {'Z','C','C','A','N','D','\r','\n'};
+static const uint8_t context_magic[8] = {'Z','C','A','C','T','X','\r','\n'};
 
 struct vcs_zcode_task_index {
     struct vcs_zcode_task_index_entry *tasks;
     size_t task_count;
     struct vcs_zcode_task_candidate_entry *candidates;
     size_t candidate_count;
+    struct vcs_zcode_task_context_entry *contexts;
+    size_t context_count;
 };
 
 static bool index_hex_lower(const char *s, size_t want)
@@ -118,6 +122,38 @@ static void index_consider_object(const char *repo_root, const char *hex64,
             e->sequence = candidate.sequence;
             e->created_unix = candidate.created_unix;
         }
+    } else if (len >= VCS_ZCODE_AGENT_CONTEXT_FIXED_BYTES &&
+               memcmp(wire, context_magic, sizeof(context_magic)) == 0) {
+        struct vcs_zcode_agent_context_v1 context;
+        uint8_t root[32];
+        bool parsed = vcs_zcode_agent_context_parse(
+                wire, len, VCS_ZCODE_TASK_MAX_CONTEXT_BYTES, &context) ==
+                VCS_ZCODE_AGENT_CONTEXT_OK;
+        bool ok = parsed && vcs_zcode_agent_context_root(
+                &context, VCS_ZCODE_TASK_MAX_CONTEXT_BYTES, root) ==
+                VCS_ZCODE_AGENT_CONTEXT_OK && memcmp(root, address, 32) == 0;
+        if (!ok) {
+            LOG_ERROR(INDEX_LOG, "skipping context-magic object %.8s: "
+                      "parse, validation, or root agreement failed", hex64);
+        } else if (index->context_count >= VCS_ZCODE_TASK_INDEX_MAX_CONTEXTS) {
+            if (!*cap_logged) {
+                LOG_ERROR(INDEX_LOG, "context index cap %u reached",
+                          VCS_ZCODE_TASK_INDEX_MAX_CONTEXTS);
+                *cap_logged = true;
+            }
+        } else {
+            struct vcs_zcode_task_context_entry *e =
+                &index->contexts[index->context_count++];
+            memset(e, 0, sizeof(*e));
+            zcl_hex_encode(context.task_root, 32, e->task_root_hex);
+            zcl_hex_encode(address, 32, e->context_root_hex);
+            (void)snprintf(e->query, sizeof(e->query), "%s", context.query);
+            e->wire_bytes = len;
+            e->file_count = (uint32_t)context.file_count;
+            for (size_t i = 0; i < context.file_count; i++)
+                e->excerpt_bytes += context.files[i].content_len;
+        }
+        if (parsed) vcs_zcode_agent_context_free(&context);
     }
     free(wire);
 }
@@ -190,7 +226,11 @@ struct vcs_zcode_task_index *vcs_zcode_task_index_build(
     index->candidates = zcl_malloc(sizeof(*index->candidates) *
                                    VCS_ZCODE_TASK_INDEX_MAX_CANDIDATES,
                                    "task_index_candidates");
-    if (!index->tasks || !index->candidates) {
+    index->contexts = zcl_malloc(sizeof(*index->contexts) *
+                                 VCS_ZCODE_TASK_INDEX_MAX_CONTEXTS,
+                                 "task_index_contexts");
+    if (!index->tasks || !index->candidates || !index->contexts) {
+        free(index->contexts);
         free(index->candidates);
         free(index->tasks);
         free(index);
@@ -232,6 +272,7 @@ void vcs_zcode_task_index_free(struct vcs_zcode_task_index *index)
 {
     if (!index)
         return;
+    free(index->contexts);
     free(index->candidates);
     free(index->tasks);
     free(index);
@@ -264,6 +305,26 @@ vcs_zcode_task_index_candidate_at(const struct vcs_zcode_task_index *index,
     if (!index || i >= index->candidate_count)
         return NULL;
     return &index->candidates[i];
+}
+
+const struct vcs_zcode_task_context_entry *
+vcs_zcode_task_index_context_for_task(
+    const struct vcs_zcode_task_index *index, const char *task_root_hex,
+    bool *ambiguous)
+{
+    if (ambiguous) *ambiguous = false;
+    if (!index || !task_root_hex) return NULL;
+    const struct vcs_zcode_task_context_entry *found = NULL;
+    for (size_t i = 0; i < index->context_count; i++) {
+        const struct vcs_zcode_task_context_entry *at = &index->contexts[i];
+        if (strcmp(at->task_root_hex, task_root_hex) != 0) continue;
+        if (found) {
+            if (ambiguous) *ambiguous = true;
+            return NULL;
+        }
+        found = at;
+    }
+    return found;
 }
 
 const struct vcs_zcode_task_index_entry *vcs_zcode_task_index_find(

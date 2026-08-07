@@ -2,20 +2,21 @@
  *
  * zcode_task_index — the local ZCODE dev-task search index. This is a
  * REBUILDABLE PROJECTION over the workspace CAS (<repo_root>/.zvcs/objects):
- * the persisted task.v1 and candidate.v1 wires stay authoritative and this
- * index holds no truth of its own — like package_index, it is rebuilt from
+ * the persisted task.v1, candidate.v1 and agent_context.v1 wires stay
+ * authoritative and this index holds no truth of its own — like package_index, it is rebuilt from
  * the canonical objects on every build and may be discarded at any time. No
  * task table is created.
  *
  * A task entry projects one persisted task wire whose parse, structural
  * validation, and rederived root all succeed and whose root equals its CAS
- * address (the object file name). A candidate entry projects one persisted
- * candidate wire under the same discipline. Objects of any other size or
- * magic are other CAS citizens and are skipped unread; a file carrying task
- * or candidate magic that fails parse/validation/root agreement is logged
+ * address (the object file name). Candidate and context entries project their
+ * persisted wires under the same discipline. Objects of any other size or
+ * magic are other CAS citizens and are skipped unread; a file carrying task,
+ * candidate or context magic that fails parse/validation/root agreement is logged
  * and skipped — a forged or misplaced file cannot enter the projection.
  * Entries are sorted by root hex for deterministic output. Bounds: at most
- * VCS_ZCODE_TASK_INDEX_MAX_TASKS tasks and MAX_CANDIDATES candidates.
+ * VCS_ZCODE_TASK_INDEX_MAX_TASKS tasks, MAX_CANDIDATES candidates and
+ * MAX_CONTEXTS contexts.
  *
  * Read-only: the index never writes to the CAS and never verifies receipt
  * signatures (evidence evaluation owns those). */
@@ -29,6 +30,7 @@
 
 #define VCS_ZCODE_TASK_INDEX_MAX_TASKS 1024u
 #define VCS_ZCODE_TASK_INDEX_MAX_CANDIDATES 4096u
+#define VCS_ZCODE_TASK_INDEX_MAX_CONTEXTS 4096u
 
 /* Derived per-task states. EXPIRED takes precedence: an expired task is
  * refused by task_validate_at no matter what its candidates look like. */
@@ -56,6 +58,15 @@ struct vcs_zcode_task_candidate_entry {
     int64_t created_unix;
 };
 
+struct vcs_zcode_task_context_entry {
+    char task_root_hex[65];
+    char context_root_hex[65];
+    char query[257];
+    uint64_t wire_bytes;
+    uint64_t excerpt_bytes;
+    uint32_t file_count;
+};
+
 struct vcs_zcode_task_index; /* opaque */
 
 /* Build the projection from repo_root's workspace CAS. A missing/empty
@@ -75,6 +86,13 @@ size_t vcs_zcode_task_index_candidate_count(
 const struct vcs_zcode_task_candidate_entry *
 vcs_zcode_task_index_candidate_at(const struct vcs_zcode_task_index *index,
                                   size_t i);
+
+/* Return the one verified context bound to task_root_hex. Multiple distinct
+ * contexts are ambiguous because task.v1 intentionally does not choose one. */
+const struct vcs_zcode_task_context_entry *
+vcs_zcode_task_index_context_for_task(
+    const struct vcs_zcode_task_index *index, const char *task_root_hex,
+    bool *ambiguous);
 
 /* Look up one task entry by task root (32 bytes). NULL when absent. */
 const struct vcs_zcode_task_index_entry *vcs_zcode_task_index_find(

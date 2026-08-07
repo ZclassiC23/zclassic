@@ -226,6 +226,21 @@ candidate-bound evidence, byte-identical projection rebuild, restart behavior,
 exact acceptance binding, and non-reachability of wallet/token/custody/
 deployment/consensus paths.
 
+## Implementation ledger
+
+| Slice | Integrated commit | Ordinary inputs removed | Commands removed | Context effect | Production delta | Measured effect |
+|---|---|---|---:|---|---:|---|
+| P1 inspect | `3a43baeeb5c574cf5199c56b7e44dd2962442eb6` | publisher key, sequence, reward address, chain ID, manifest/recipe/lock wires | 1 expert prepare invocation | reports project bytes without creating `.zvcs` | recorded in commit | one required field: `workspace` |
+| P2 profiles | `aa3a4c2c71dd40a704753b1e8159f7b99f0b4c6e` | proof-policy wire and manual policy fields | 0 | none | recorded in commit | `quick|standard|strong|release` expand to inspectable existing policy objects |
+| P3 goal context | `20a698e33c184c54c03aaf8fb1a159394a1af458`, `0a28ffb607f3933ce3c22d4a2d432a6f727a2907` | exact symbol on the ordinary path | 0 | codec goal: 9,776 / 15,050 source bytes, 1 file, 8 candidates, 0 dropped, 24,213 us | recorded in commits | deterministic explained selection; exact override remains expert-only |
+| P4 start/status | `4a0b7be71085c4d00e6e348564346cdc032585f6` | raw roots, wires, timestamps, toolchain capsule, write-scope CSV, context symbol | at least 5 expert composition/status steps | same codec packet: 65.0% of package source | +593 / -40 | `workspace`, `goal`, optional `profile`; human-first status |
+| P5 manual handoff | commit subject `feat(zcode): add contained manual handoff` | candidate path construction and manual context/CAS lookup | 1 undocumented handoff procedure | reuses the exact P3 context with no expansion | +581 / -67 before generated docs/tests | isolated candidate tree and bounded packet; candidate admission/build remains next |
+
+The P5 delta includes promoting the build worker's private CAS-tree materializer
+to one shared ZVCS primitive; 59 production lines of duplicate materialization
+were removed. No canonical domain was added. The manual adapter is a closed
+registry entry, creates no candidate authority, and does not run a model.
+
 ## Benchmark acceptance
 
 The frozen targets are: zero ordinary raw roots or wire hex; no more than five
@@ -246,4 +261,3 @@ web IDE, arbitrary model shell, or multi-package workspace work. It never
 executes downloaded source automatically and never lets a model accept or
 publish its own result. Genuine independent reproduction requires another
 physical machine and remains a separate owner-gated operational task.
-

@@ -26,24 +26,18 @@
 static bool bfp_write(const char *path, const uint8_t *bytes, size_t len)
 {
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0400);
-    if (fd < 0)
-        return false;
+    if (fd < 0) return false;
     size_t off = 0;
     while (off < len) {
         ssize_t wrote = write(fd, bytes + off, len - off);
-        if (wrote < 0 && errno == EINTR)
-            continue;
-        if (wrote <= 0) {
-            close(fd);
-            (void)unlink(path);
-            return false;
-        }
+        if (wrote < 0 && errno == EINTR) continue;
+        if (wrote <= 0) break;
         off += (size_t)wrote;
     }
-    bool synced = fsync(fd) == 0;
-    bool ok = close(fd) == 0 && synced;
-    if (!ok)
-        (void)unlink(path);
+    bool synced = off == len && fsync(fd) == 0;
+    bool closed = close(fd) == 0;
+    bool ok = synced && closed;
+    if (!ok) (void)unlink(path);
     return ok;
 }
 
@@ -111,52 +105,11 @@ static struct zcl_result bfp_materialize_tree(
     const char *workspace, const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_candidate_v1 *candidate, const char *destination)
 {
-    struct vcs_manifest tree;
-    if (!vcs_tree_load(workspace, candidate->candidate_source_root, &tree))
-        return ZCL_ERR(-1, "candidate-tree-cas-miss");
-    uint64_t total = 0;
-    struct zcl_result result = ZCL_OK;
-    for (size_t i = 0; i < tree.count && result.ok; i++) {
-        const struct vcs_entry *entry = &tree.entries[i];
-        if (!S_ISREG(entry->mode) || !vcs_package_path_valid(entry->path) ||
-            UINT64_MAX - total < entry->size ||
-            total + entry->size > task->max_context_bytes) {
-            result = ZCL_ERR(-1, "candidate-tree-entry-refused: %s",
-                             entry->path);
-            break;
-        }
-        uint8_t *bytes = NULL;
-        size_t len = 0;
-        if (entry->size > SIZE_MAX ||
-            vcs_object_get(workspace, entry->blob, VCS_TAG_BLOB,
-                           &bytes, &len) != 0 || len != entry->size) {
-            free(bytes);
-            result = ZCL_ERR(-1, "candidate-tree-blob-missing: %s",
-                             entry->path);
-            break;
-        }
-        char path[BFP_PATH_MAX];
-        char parent[BFP_PATH_MAX];
-        int n = snprintf(path, sizeof(path), "%s/%s", destination,
-                         entry->path);
-        if (n <= 0 || (size_t)n >= sizeof(path)) {
-            free(bytes);
-            result = ZCL_ERR(-1, "candidate-tree-path-too-long");
-            break;
-        }
-        (void)snprintf(parent, sizeof(parent), "%s", path);
-        char *slash = strrchr(parent, '/');
-        if (slash)
-            *slash = '\0';
-        struct zcl_result made = zcl_mkdir_p(parent, 0700);
-        if (!made.ok || !bfp_write(path, bytes, len))
-            result = ZCL_ERR(-1, "candidate-tree-materialize-failed: %s",
-                             entry->path);
-        free(bytes);
-        total += entry->size;
-    }
-    vcs_manifest_free(&tree);
-    return result;
+    int result = vcs_tree_materialize(
+        workspace, candidate->candidate_source_root, destination,
+        task->max_context_bytes, 0400u);
+    return result == VCS_OK
+        ? ZCL_OK : ZCL_ERR(-1, "candidate-tree-materialize-failed: %d", result);
 }
 
 static struct zcl_result bfp_verify_dependency(

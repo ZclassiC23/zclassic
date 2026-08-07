@@ -5,6 +5,7 @@
 #include "base/hex.h"
 #include "command/native_command.h"
 #include "json/json.h"
+#include "util/file_tree_ops.h"
 #include "vcs/package_capsule.h"
 #include "vcs/package_prepare.h"
 #include "vcs/vcs.h"
@@ -356,6 +357,9 @@ static int zpd_test_work_start(void)
             json_get(&reply.data, "selected_context");
         const struct json_value *expert = json_get(&reply.data, "expert");
         ASSERT(work_id && strncmp(json_get_str(work_id), "work-", 5) == 0);
+        char saved_work_id[32];
+        (void)snprintf(saved_work_id, sizeof(saved_work_id), "%s",
+                       json_get_str(work_id));
         ASSERT(state && strcmp(json_get_str(state),
                                "AWAITING_CANDIDATE") == 0);
         ASSERT(context && context->type == JSON_OBJ);
@@ -376,6 +380,46 @@ static int zpd_test_work_start(void)
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
                       "AWAITING_CANDIDATE") == 0);
         ASSERT(json_get(&reply.data, "next_safe_command") != NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_run_test.v1");
+        zcl_native_handle_zcode_work_run(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        const struct json_value *candidate_workspace =
+            json_get(&reply.data, "candidate_workspace");
+        const struct json_value *packet =
+            json_get(&reply.data, "adapter_packet");
+        ASSERT(candidate_workspace &&
+               json_get_str(candidate_workspace)[0] == '/');
+        ASSERT(packet && packet->type == JSON_OBJ);
+        ASSERT(strcmp(json_get_str(json_get(packet, "goal")), "Fix x") == 0);
+        ASSERT(json_get(packet, "selected_excerpts") != NULL);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "authority")),
+                      "NONE_MANUAL_HANDOFF") == 0);
+        ASSERT(vcs_tree_capture_path(root, source_after) == VCS_OK);
+        ASSERT(memcmp(source_before, source_after, sizeof(source_before)) == 0);
+        struct stat candidate_stat;
+        ASSERT(stat(json_get_str(candidate_workspace), &candidate_stat) == 0 &&
+               S_ISDIR(candidate_stat.st_mode));
+        ASSERT(zcl_tree_remove(json_get_str(candidate_workspace)).ok);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        ASSERT(json_push_kv_str(&input, "adapter", "shell"));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_run_test.v1");
+        zcl_native_handle_zcode_work_run(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(strcmp(reply.error.code, "ADAPTER_REFUSED") == 0);
         zcl_command_reply_free(&reply);
         json_free(&input);
         zpd_fixture_cleanup(root);

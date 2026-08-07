@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 583 |
+| Registry entries (branches + leaves) | 584 |
 | Top-level roots | 11 |
 | Branches | 136 |
-| Leaves (dispatchable command paths) | 447 |
-| … `ready` (live handler in this build) | 394 |
+| Leaves (dispatchable command paths) | 448 |
+| … `ready` (live handler in this build) | 395 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 35 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 148 |
+| Leaves with `effect=mutate` | 149 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 96 |
 
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 22 | 4 | 18 |
-| `config/commands/zcode.def` | 146 | 34 | 112 |
+| `config/commands/zcode.def` | 147 | 34 | 113 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -910,6 +910,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode work start` | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`goal`**, `profile`, `context_symbol` | `zcl.zcode_work_start.v1` | `zclassic23-dev zcode work start --input='{"workspace":".","goal":"Make the parser reject overflowing lengths","profile":"standard"}'` | Start one bounded C23 change |
 | `zcode work status` | ready | read / read / operator · fast/low | `workspace`, `work` | `zcl.zcode_work_status.v1` | `zclassic23-dev zcode work status --input='{"work":"latest"}'` | Show one human-first work status |
+| `zcode work run` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `adapter` | `zcl.zcode_work_run.v1` | `zclassic23-dev zcode work run --input='{"work":"latest","adapter":"manual"}'` | Prepare one contained adapter handoff |
 
 #### `zcode.commons` — Read-only ZC23 Living Commons projection
 
