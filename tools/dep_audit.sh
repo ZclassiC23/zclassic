@@ -234,7 +234,7 @@ else
     elif [[ "$RUSTZCASH_STATUS" == "NOT_IN_BUILD" ]]; then
         printf "  %-20s %-14s %-10s \033[33m%-6s\033[0m %s\n" \
             "librustzcash" "${RUSTZCASH_COMMIT:0:12}" "optional" "SKIP" \
-            "not linked (default build); shielded SEND needs ZCL_WITH_RUST=1"
+            "not linked; native C23 Sapling proving remains available; ZCL_WITH_RUST=1 adds only the differential oracle"
     else
         printf "  %-20s %-14s %-10s \033[31m%-6s\033[0m %s\n" \
             "librustzcash" "${RUSTZCASH_COMMIT:0:12}" "pinned" "FAIL" \
