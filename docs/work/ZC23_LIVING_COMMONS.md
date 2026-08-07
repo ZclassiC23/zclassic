@@ -609,7 +609,8 @@ authorization.
 | DONE | O2 portable simulation-only reproduction challenge | `c41cebd99` | `c41cebd99` | 512-byte request KAT, public-root and confinement bindings, noncreating plan, idempotent scratch-CAS commit, focused green, full lint 134/134, normal pre-push 911-group suite |
 | DONE | O3 policy-bound reproduction qualification | `307556653` | `307556653` | complete Score/proof/request/build/manifest/policy/identity CAS rederivation; missing output, missing approval identity, stale epoch and contradictory-result rejections; command readiness derives from the evaluator; physical independence remains explicitly unproven; focused/API gates and full lint 134/134 |
 | DONE | O4 scratch attribution and epoch plan/commit | `3b45e7991` | `c7ddc1fd9` | full policy/Score/reproduction/binding/package/release/license reload; deterministic fixture anchors; exact award/mint equality; changed branch, missing predecessor, duplicate candidate, policy substitution and one-atom drift rejection; six typed shadow leaves; focused/API gates, full lint 134/134 and normal pre-push source-wide suite |
-| BLOCKED | Real SHA3 off-host independence gate | `fc62b9c4a` | `fc62b9c4a` | SHA3 Score remains honestly 4/5; local evidence and O4 simulation do not prove physical independence or authorize a real shadow epoch, token genesis, mint or custody |
+| DONE | O5 three-party portable reproduction acceptance | `6b933d4ea` | `6b933d4ea` | requester, reproducer and observer in distinct processes/workspaces/stores; root-addressed content/package transfer; independent qualification and byte-identical projection rebuild; real swarm/DHT corruption, cancellation, fallback, resume and restart owners composed by one exact 6/6 gate; `actual_off_host_credit=false`; full lint 134/134 and normal pre-push 902-group suite |
+| BLOCKED | Real SHA3 off-host independence gate | `fc62b9c4a` | `fc62b9c4a` | SHA3 Score remains honestly 4/5; local evidence and O5 same-host simulation do not prove physical independence or authorize a real shadow epoch, token genesis, mint or custody |
 
 Historical-truth hardening began from fetched `origin/main` `7091051aa`
 through lane integration `a96275b52`. Before the first slice was pushed, new
@@ -717,3 +718,13 @@ correctly rejected because concurrent `main` advanced to
 `32f946668cc2b2df9adf562f57cc4d6f972e11a1`. That disjoint replayable
 shielded-plan work was merged without modification through `c7ddc1fd9` before
 the O4 integration retry. The failed race is not counted as a completed push.
+
+O5 began from fetched `origin/main`
+`f4e9d7653ffbe0c04f7e6e81e1cb78f3cb61ae29`. No concurrent integration was
+required before source and integration commit `6b933d4ea`. The exact
+`make zcode-reproduction-acceptance` gate passed all six selected permanent
+groups with zero cache hits. Full lint passed 134/134. The normal hook-enabled
+push ran 902 active groups with zero failures and zero cache hits; nine
+parameter-heavy groups were policy-gated and 19 tests emitted their documented
+self-skip markers. Pull verification then proved local HEAD and `origin/main`
+were both `6b933d4ea53fd087468ccfedd73c0e53bcc6aca3`.
