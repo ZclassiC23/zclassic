@@ -756,6 +756,38 @@ static bool creation_test_release(struct vcs_package_release *release,
     return vcs_package_release_verify(release) == VCS_PACKAGE_RELEASE_OK;
 }
 
+static bool creation_test_child_release(
+    struct vcs_package_release *release,
+    const struct vcs_package_release *parent,
+    const uint8_t parent_root[32], const uint8_t package_root[32],
+    const uint8_t recipe_root[32])
+{
+    if (!release || !parent || !parent_root || !package_root || !recipe_root)
+        return false;
+    struct privkey secret;
+    struct pubkey pubkey;
+    if (!creation_test_keypair(0x31, &secret, &pubkey))
+        return false;
+    *release = *parent;
+    (void)snprintf(release->semver, sizeof(release->semver), "0.1.1");
+    memcpy(release->package_root, package_root, 32);
+    release->has_parent = true;
+    memcpy(release->parent_root, parent_root, 32);
+    release->publisher_sequence = parent->publisher_sequence + 1;
+    memcpy(release->recipe_root, recipe_root, 32);
+    memset(release->signature, 0, sizeof(release->signature));
+    uint8_t id[32];
+    struct uint256 hash;
+    unsigned char compact[COMPACT_SIGNATURE_SIZE];
+    if (vcs_package_release_id(release, id) != VCS_PACKAGE_RELEASE_OK)
+        return false;
+    memcpy(hash.data, id, 32);
+    if (!privkey_sign_compact(&secret, &hash, compact))
+        return false;
+    memcpy(release->signature, compact + 1, 64);
+    return vcs_package_release_verify(release) == VCS_PACKAGE_RELEASE_OK;
+}
+
 static bool creation_test_binding(
     struct vcs_zcode_contributor_binding_v1 *binding,
     const uint8_t network[32], uint8_t zid_pubkey[32],
@@ -1246,8 +1278,20 @@ static int test_creation_attribution_cross_validation(void)
         ASSERT_EQ(vcs_zcode_contributor_binding_root(
                       &binding, binding_root), VCS_ZCODE_BINDING_OK);
 
-        struct vcs_package_release release;
-        ASSERT(creation_test_release(&release, package_root, recipe));
+        struct vcs_package_release parent_release, release;
+        ASSERT(creation_test_release(&parent_release, package_root, recipe));
+        uint8_t *parent_release_wire = NULL;
+        size_t parent_release_wire_len = 0;
+        uint8_t parent_release_root[32];
+        ASSERT_EQ(vcs_package_release_serialize(
+                      &parent_release, &parent_release_wire,
+                      &parent_release_wire_len), VCS_PACKAGE_RELEASE_OK);
+        ASSERT_EQ(vcs_package_release_id(
+                      &parent_release, parent_release_root),
+                  VCS_PACKAGE_RELEASE_OK);
+        ASSERT(creation_test_child_release(
+            &release, &parent_release, parent_release_root,
+            package_root, recipe));
         uint8_t *release_wire = NULL; size_t release_wire_len = 0;
         uint8_t release_root[32];
         ASSERT_EQ(vcs_package_release_serialize(
@@ -1307,6 +1351,9 @@ static int test_creation_attribution_cross_validation(void)
                                          sizeof(license_bytes) - 1));
         ASSERT(vcs_object_put_addressed(workspace, release_root,
                                          release_wire, release_wire_len));
+        ASSERT(vcs_object_put_addressed(
+            workspace, parent_release_root, parent_release_wire,
+            parent_release_wire_len));
         ASSERT(vcs_object_put_addressed(workspace, binding_root,
                                          binding_wire,
                                          sizeof(binding_wire)));
@@ -1336,6 +1383,8 @@ static int test_creation_attribution_cross_validation(void)
         memcpy(attribution.package_root, package_root, 32);
         memcpy(attribution.release_root, release_root, 32);
         memcpy(attribution.license_evidence_root, license_root, 32);
+        attribution.lineage_kind = VCS_ZCODE_CREATION_LINEAGE_RELEASE;
+        memcpy(attribution.lineage_root, parent_release_root, 32);
 
         struct creation_callback_fixture callbacks = {
             .anchor_active = true, .duplicate = false,
@@ -1362,6 +1411,136 @@ static int test_creation_attribution_cross_validation(void)
         };
         ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
                       &attribution, &context), VCS_ZCODE_CREATION_OK);
+
+        /* Historical authorship is evaluated at the candidate event.  A
+         * binding that was valid then remains valid after its later expiry;
+         * current payout authority is a separate adapter decision. */
+        struct vcs_zcode_contributor_binding_v1 historical_binding = binding;
+        historical_binding.expires_unix = 2000;
+        ASSERT_EQ(vcs_zcode_contributor_binding_seal(
+                      &historical_binding, zid_secret, zid_pubkey,
+                      (const uint8_t[32]){
+                          0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+                          0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+                          0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+                          0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42}),
+                  VCS_ZCODE_BINDING_OK);
+        uint8_t historical_binding_root[32];
+        uint8_t historical_binding_wire[
+            VCS_ZCODE_CONTRIBUTOR_BINDING_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_contributor_binding_root(
+                      &historical_binding, historical_binding_root),
+                  VCS_ZCODE_BINDING_OK);
+        ASSERT_EQ(vcs_zcode_contributor_binding_serialize(
+                      &historical_binding, historical_binding_wire),
+                  VCS_ZCODE_BINDING_OK);
+        ASSERT(vcs_object_put_addressed(
+            workspace, historical_binding_root, historical_binding_wire,
+            sizeof(historical_binding_wire)));
+        struct vcs_zcode_creation_attribution_v1 historical = attribution;
+        memcpy(historical.contributor_binding_root,
+               historical_binding_root, 32);
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &historical, &context), VCS_ZCODE_CREATION_OK);
+
+        /* A PUBLIC_SOURCE lineage root is authority, not a narrative hint.
+         * The signed direct parent above succeeds; claiming the current
+         * release itself or an unrelated CAS object must fail closed. */
+        struct vcs_zcode_creation_attribution_v1 bad_lineage = attribution;
+        memcpy(bad_lineage.lineage_root, release_root, 32);
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &bad_lineage, &context), VCS_ZCODE_CREATION_RELEASE);
+        memcpy(bad_lineage.lineage_root, task_root, 32);
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &bad_lineage, &context), VCS_ZCODE_CREATION_RELEASE);
+
+        /* A predecessor-attribution lineage reloads and re-verifies the
+         * complete prior vertical, then proves that its signed release is
+         * the direct parent of this release. */
+        struct vcs_zcode_task_v1 prior_task;
+        struct vcs_zcode_candidate_v1 prior_candidate;
+        struct vcs_zcode_proof_policy_v1 prior_policy;
+        struct vcs_zcode_lane_receipt_v1 prior_lane;
+        struct score_work_fixture prior_works[VCS_ZCODE_SCORE_UNITS];
+        uint8_t prior_lane_secret[32], prior_lane_pubkey[32];
+        uint8_t prior_capsule[32];
+        score_fill(prior_capsule, 0xa6);
+        ASSERT(score_fixture_for_roots(
+            &prior_task, &prior_candidate, &prior_policy, &prior_lane,
+            prior_works, prior_lane_secret, prior_lane_pubkey,
+            package_root, lock, prior_capsule, zid_pubkey));
+        uint8_t prior_proof_roots[VCS_ZCODE_SCORE_UNITS][32];
+        struct vcs_zcode_work_receipt_v1
+            prior_receipts[VCS_ZCODE_SCORE_UNITS];
+        for (size_t i = 0; i < VCS_ZCODE_SCORE_UNITS; i++) {
+            memcpy(prior_proof_roots[i], prior_works[i].root, 32);
+            prior_receipts[i] = prior_works[i].receipt;
+        }
+        struct vcs_zcode_score_plan_input prior_score_input = {
+            .task = &prior_task, .candidate = &prior_candidate,
+            .proof_policy = &prior_policy, .proven_lane = &prior_lane,
+            .proof_receipt_roots = prior_proof_roots,
+            .work_receipts = prior_receipts,
+            .work_receipt_count = VCS_ZCODE_SCORE_UNITS,
+            .package_root = package_root,
+            .release_root = parent_release_root,
+            .recipe_root = recipe, .dependency_lock_root = lock,
+            .api_capsule_root = prior_capsule,
+        };
+        struct vcs_zcode_score_receipt_v1 prior_score;
+        ASSERT_EQ(vcs_zcode_score_plan(&prior_score_input, &prior_score),
+                  VCS_ZCODE_SCORE_OK);
+        ASSERT_EQ(vcs_zcode_score_receipt_seal(
+                      &prior_score, prior_lane_secret, prior_lane_pubkey),
+                  VCS_ZCODE_SCORE_OK);
+        uint8_t prior_task_root[32], prior_candidate_root[32];
+        uint8_t prior_proof_set_root[32], prior_lane_root[32];
+        uint8_t prior_score_root[32], prior_policy_root[32];
+        ASSERT(score_store_vertical(
+            workspace, &prior_task, &prior_candidate, &prior_policy,
+            &prior_lane, prior_works, &prior_score, prior_task_root,
+            prior_candidate_root, prior_proof_set_root, prior_lane_root,
+            prior_score_root));
+        ASSERT_EQ(vcs_zcode_proof_policy_root(
+                      &prior_policy, prior_policy_root), VCS_ZCODE_DEV_OK);
+        struct vcs_zcode_creation_attribution_v1 prior_attribution =
+            attribution;
+        prior_attribution.epoch = 2;
+        prior_attribution.created_unix = attribution.created_unix - 1;
+        memcpy(prior_attribution.task_root, prior_task_root, 32);
+        memcpy(prior_attribution.candidate_root, prior_candidate_root, 32);
+        memcpy(prior_attribution.proof_policy_root, prior_policy_root, 32);
+        memcpy(prior_attribution.proof_set_root, prior_proof_set_root, 32);
+        memcpy(prior_attribution.proven_lane_root, prior_lane_root, 32);
+        memcpy(prior_attribution.score_receipt_root, prior_score_root, 32);
+        memcpy(prior_attribution.release_root, parent_release_root, 32);
+        prior_attribution.lineage_kind = VCS_ZCODE_CREATION_LINEAGE_NONE;
+        memset(prior_attribution.lineage_root, 0, 32);
+        uint8_t prior_attribution_wire[
+            VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES];
+        uint8_t prior_attribution_root[32];
+        ASSERT_EQ(vcs_zcode_creation_attribution_serialize(
+                      &prior_attribution, prior_attribution_wire),
+                  VCS_ZCODE_CREATION_OK);
+        ASSERT_EQ(vcs_zcode_creation_attribution_root(
+                      &prior_attribution, prior_attribution_root),
+                  VCS_ZCODE_CREATION_OK);
+        ASSERT(vcs_object_put_addressed(
+            workspace, prior_attribution_root, prior_attribution_wire,
+            sizeof(prior_attribution_wire)));
+        struct vcs_zcode_creation_attribution_v1 predecessor_lineage =
+            attribution;
+        predecessor_lineage.lineage_kind =
+            VCS_ZCODE_CREATION_LINEAGE_PREDECESSOR_ATTRIBUTION;
+        memcpy(predecessor_lineage.lineage_root,
+               prior_attribution_root, 32);
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &predecessor_lineage, &context),
+                  VCS_ZCODE_CREATION_OK);
+        predecessor_lineage.lineage_root[0] ^= 1u;
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &predecessor_lineage, &context),
+                  VCS_ZCODE_CREATION_LINEAGE);
 
         uint8_t attribution_wire[
             VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES];
@@ -1934,7 +2113,7 @@ static int test_creation_attribution_cross_validation(void)
                       &substituted, &context),
                   VCS_ZCODE_CREATION_CONTRIBUTOR);
 
-        free(release_wire); free(manifest_wire);
+        free(parent_release_wire); free(release_wire); free(manifest_wire);
         vcs_package_manifest_free(&manifest);
         test_rm_rf(workspace);
         PASS();

@@ -27,6 +27,13 @@ struct creation_vertical {
     size_t proof_count;
 };
 
+#define CREATION_LINEAGE_MAX_DEPTH 256u
+
+static enum vcs_zcode_creation_error creation_verify_cas_depth(
+    const struct vcs_zcode_creation_attribution_v1 *a,
+    const struct vcs_zcode_creation_validation_context *context,
+    unsigned depth);
+
 static bool creation_equal(const uint8_t a[32], const uint8_t b[32])
 {
     return memcmp(a, b, 32) == 0;
@@ -121,7 +128,7 @@ static enum vcs_zcode_creation_error creation_load_contributor(
         if (binding_error == VCS_ZCODE_BINDING_OK)
             binding_error = vcs_zcode_contributor_binding_verify(
                 &binding, a->network_genesis_root, binding.zid_pubkey,
-                context->now_unix);
+                candidate->created_unix);
         operation = binding.operation;
         memcpy(zid_pubkey, binding.zid_pubkey, sizeof(zid_pubkey));
     } else if (wire_len == VCS_ZCODE_CONTRIBUTOR_BINDING_V2_WIRE_BYTES) {
@@ -134,7 +141,7 @@ static enum vcs_zcode_creation_error creation_load_contributor(
         if (binding_error == VCS_ZCODE_BINDING_OK)
             binding_error = vcs_zcode_contributor_binding_verify_v2(
                 &binding, a->network_genesis_root, binding.zid_pubkey,
-                context->now_unix);
+                candidate->created_unix);
         operation = binding.operation;
         memcpy(zid_pubkey, binding.zid_pubkey, sizeof(zid_pubkey));
     }
@@ -144,11 +151,11 @@ static enum vcs_zcode_creation_error creation_load_contributor(
         !creation_equal(zid_pubkey, candidate->author_pubkey) ||
         operation == VCS_ZCODE_BINDING_REVOKE)
         return VCS_ZCODE_CREATION_CONTRIBUTOR;
-    if (operation != VCS_ZCODE_BINDING_ACTIVE &&
-        (!context->binding_is_current ||
-         !context->binding_is_current(context->callback_opaque,
-                                      a->contributor_binding_root)))
-        return VCS_ZCODE_CREATION_CONTRIBUTOR;
+    /* Historical attribution proves who authored the candidate at its
+     * event time.  Rotation, expiry, or later revocation cannot erase that
+     * fact.  Financial adapters must check current payout authority as a
+     * separate decision; this verifier deliberately does not consult
+     * binding_is_current. */
     return VCS_ZCODE_CREATION_OK;
 }
 
@@ -228,6 +235,107 @@ static enum vcs_zcode_creation_error creation_load_package(
         return VCS_ZCODE_CREATION_RELEASE;
     }
     free(wire);
+    return VCS_ZCODE_CREATION_OK;
+}
+
+static enum vcs_zcode_creation_error creation_load_release(
+    const char *workspace, const uint8_t release_root[32],
+    struct vcs_package_release *release)
+{
+    uint8_t *wire = NULL, observed_root[32];
+    size_t wire_len = 0;
+    if (!creation_load(workspace, release_root,
+                       VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES,
+                       &wire, &wire_len) ||
+        vcs_package_release_parse(wire, wire_len, release) !=
+            VCS_PACKAGE_RELEASE_OK ||
+        vcs_package_release_verify(release) != VCS_PACKAGE_RELEASE_OK ||
+        vcs_package_release_id(release, observed_root) !=
+            VCS_PACKAGE_RELEASE_OK ||
+        !creation_equal(observed_root, release_root)) {
+        free(wire);
+        memset(release, 0, sizeof(*release));
+        return VCS_ZCODE_CREATION_RELEASE;
+    }
+    free(wire);
+    return VCS_ZCODE_CREATION_OK;
+}
+
+static bool creation_release_is_direct_parent(
+    const struct vcs_package_release *current,
+    const struct vcs_package_release *parent,
+    const uint8_t parent_root[32])
+{
+    return current->has_parent &&
+        creation_equal(current->parent_root, parent_root) &&
+        strcmp(current->name, parent->name) == 0 &&
+        strcmp(current->chain_id, parent->chain_id) == 0 &&
+        memcmp(current->publisher_pubkey, parent->publisher_pubkey,
+               sizeof(current->publisher_pubkey)) == 0 &&
+        parent->publisher_sequence != UINT64_MAX &&
+        current->publisher_sequence == parent->publisher_sequence + 1;
+}
+
+static enum vcs_zcode_creation_error creation_verify_lineage(
+    const struct vcs_zcode_creation_attribution_v1 *a,
+    const struct vcs_zcode_creation_validation_context *context,
+    const struct creation_vertical *vertical, unsigned depth)
+{
+    if (a->lineage_kind == VCS_ZCODE_CREATION_LINEAGE_CONTINUITY_POLICY)
+        return VCS_ZCODE_CREATION_OK;
+    if (a->lineage_kind == VCS_ZCODE_CREATION_LINEAGE_NONE)
+        return vertical->release.has_parent ? VCS_ZCODE_CREATION_RELEASE
+                                            : VCS_ZCODE_CREATION_OK;
+
+    struct vcs_package_release parent_release;
+    memset(&parent_release, 0, sizeof(parent_release));
+    if (a->lineage_kind == VCS_ZCODE_CREATION_LINEAGE_RELEASE) {
+        enum vcs_zcode_creation_error error = creation_load_release(
+            context->workspace, a->lineage_root, &parent_release);
+        if (error != VCS_ZCODE_CREATION_OK ||
+            !creation_release_is_direct_parent(
+                &vertical->release, &parent_release, a->lineage_root))
+            return VCS_ZCODE_CREATION_RELEASE;
+        return VCS_ZCODE_CREATION_OK;
+    }
+    if (a->lineage_kind !=
+            VCS_ZCODE_CREATION_LINEAGE_PREDECESSOR_ATTRIBUTION ||
+        depth >= CREATION_LINEAGE_MAX_DEPTH)
+        return VCS_ZCODE_CREATION_LINEAGE;
+
+    uint8_t *wire = NULL, prior_root[32];
+    size_t wire_len = 0;
+    struct vcs_zcode_creation_attribution_v1 prior;
+    if (!creation_load(context->workspace, a->lineage_root,
+                       VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES,
+                       &wire, &wire_len) ||
+        vcs_zcode_creation_attribution_parse(wire, wire_len, &prior) !=
+            VCS_ZCODE_CREATION_OK ||
+        vcs_zcode_creation_attribution_root(&prior, prior_root) !=
+            VCS_ZCODE_CREATION_OK ||
+        !creation_equal(prior_root, a->lineage_root) ||
+        !creation_equal(prior.network_genesis_root,
+                        a->network_genesis_root) ||
+        !creation_equal(prior.zc23_policy_root, a->zc23_policy_root) ||
+        prior.epoch > a->epoch || prior.created_unix >= a->created_unix) {
+        free(wire);
+        return VCS_ZCODE_CREATION_LINEAGE;
+    }
+    free(wire);
+
+    struct vcs_zcode_creation_validation_context prior_context = *context;
+    prior_context.expected_epoch = prior.epoch;
+    prior_context.expected_award_atoms = prior.award_atoms;
+    enum vcs_zcode_creation_error error = creation_verify_cas_depth(
+        &prior, &prior_context, depth + 1u);
+    if (error != VCS_ZCODE_CREATION_OK)
+        return VCS_ZCODE_CREATION_LINEAGE;
+    if (creation_load_release(context->workspace, prior.release_root,
+                              &parent_release) !=
+            VCS_ZCODE_CREATION_OK ||
+        !creation_release_is_direct_parent(
+            &vertical->release, &parent_release, prior.release_root))
+        return VCS_ZCODE_CREATION_RELEASE;
     return VCS_ZCODE_CREATION_OK;
 }
 
@@ -422,9 +530,10 @@ static enum vcs_zcode_creation_error creation_verify_continuity(
     return VCS_ZCODE_CREATION_OK;
 }
 
-enum vcs_zcode_creation_error vcs_zcode_creation_attribution_verify_cas(
+static enum vcs_zcode_creation_error creation_verify_cas_depth(
     const struct vcs_zcode_creation_attribution_v1 *a,
-    const struct vcs_zcode_creation_validation_context *context)
+    const struct vcs_zcode_creation_validation_context *context,
+    unsigned depth)
 {
     enum vcs_zcode_creation_error error =
         vcs_zcode_creation_attribution_validate(a);
@@ -478,6 +587,9 @@ enum vcs_zcode_creation_error vcs_zcode_creation_attribution_verify_cas(
     error = creation_rederive_score(a, &vertical);
     if (error != VCS_ZCODE_CREATION_OK)
         return error;
+    error = creation_verify_lineage(a, context, &vertical, depth);
+    if (error != VCS_ZCODE_CREATION_OK)
+        return error;
     uint8_t attribution_root[32];
     if (vcs_zcode_creation_attribution_root(a, attribution_root) !=
             VCS_ZCODE_CREATION_OK)
@@ -487,4 +599,11 @@ enum vcs_zcode_creation_error vcs_zcode_creation_attribution_verify_cas(
         return VCS_ZCODE_CREATION_DUPLICATE;
     return creation_verify_continuity(
         a, context, &vertical, attribution_root);
+}
+
+enum vcs_zcode_creation_error vcs_zcode_creation_attribution_verify_cas(
+    const struct vcs_zcode_creation_attribution_v1 *a,
+    const struct vcs_zcode_creation_validation_context *context)
+{
+    return creation_verify_cas_depth(a, context, 0);
 }
