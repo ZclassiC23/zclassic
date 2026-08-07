@@ -31,6 +31,7 @@
  * proof_group (tools/dev/devloop_plan.c) for the same single changed file. */
 #include "command/native_command.h"
 #include "devloop.h"
+#include "services/zcode_goal_context_service.h"
 
 #include <sqlite3.h>
 
@@ -638,6 +639,27 @@ int test_codeindex(void)
     CI_CHECK("indexed path text finds declarations deterministically",
              ntext >= 1 &&
              (text_hits[0].match_mask & CI_SEARCH_MATCH_PATH) != 0);
+
+    struct zcode_goal_selection selected, selected_again;
+    CI_CHECK("goal selector ranks the checksum symbol from plain language",
+             zcode_goal_context_select(
+                 FIX, "Repair the data frame checksum length", NULL,
+                 &selected).ok &&
+             strcmp(selected.selected.name, "foo_checksum") == 0 &&
+             selected.token_count >= 3 && selected.candidate_count >= 1 &&
+             selected.generation_us > 0 && selected.why[0] != '\0');
+    CI_CHECK("goal selection is deterministic across repeated runs",
+             zcode_goal_context_select(
+                 FIX, "Repair the data frame checksum length", NULL,
+                 &selected_again).ok &&
+             strcmp(selected.selected_symbol_id,
+                    selected_again.selected_symbol_id) == 0 &&
+             selected.candidate_count == selected_again.candidate_count);
+    CI_CHECK("exact symbol override remains available",
+             zcode_goal_context_select(FIX, "ignored", "helper_add",
+                                       &selected).ok &&
+             strcmp(selected.selected.name, "helper_add") == 0 &&
+             strcmp(selected.why, "exact_symbol_override") == 0);
 
     /* refs */
     struct ci_ref refs[32];
