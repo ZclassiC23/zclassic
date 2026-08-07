@@ -993,6 +993,13 @@ static int test_patronage_intent_cross_validation(void)
                   VCS_ZCODE_PATRONAGE_FUNDING_OK);
         ASSERT_EQ(vcs_zcode_patronage_funding_verify(&parsed_funding),
                   VCS_ZCODE_PATRONAGE_FUNDING_OK);
+        for (size_t cut = 0; cut < sizeof(funding_wire); cut++) {
+            ASSERT_EQ(vcs_zcode_patronage_funding_parse(
+                          funding_wire, cut, &parsed_funding),
+                      VCS_ZCODE_PATRONAGE_FUNDING_WIRE_SIZE);
+            ASSERT(memcmp(&parsed_funding, &zero_funding,
+                          sizeof(parsed_funding)) == 0);
+        }
         ASSERT_EQ(vcs_zcode_patronage_funding_parse(
                       funding_wire, sizeof(funding_wire) - 1,
                       &parsed_funding),

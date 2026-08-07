@@ -101,6 +101,13 @@ static int creation_rejection_test(void)
         memset(&zero, 0, sizeof(zero));
         ASSERT(vcs_zcode_creation_attribution_serialize(&a, wire) ==
                VCS_ZCODE_CREATION_OK);
+        for (size_t cut = 0;
+             cut < VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES; cut++) {
+            ASSERT(vcs_zcode_creation_attribution_parse(
+                       wire, cut, &parsed) ==
+                   VCS_ZCODE_CREATION_WIRE_SIZE);
+            ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        }
         ASSERT(vcs_zcode_creation_attribution_parse(wire, sizeof(wire) - 2,
                                                     &parsed) ==
                VCS_ZCODE_CREATION_WIRE_SIZE);
@@ -202,6 +209,14 @@ static int epoch_creation_codec_test(void)
         ASSERT(vcs_zcode_epoch_creation_serialize(
                    &set, &wire, &wire_len) == VCS_ZCODE_EPOCH_CREATION_OK);
         ASSERT(wire_len == VCS_ZCODE_EPOCH_CREATION_HEADER_BYTES + 32u);
+        ASSERT(vcs_zcode_epoch_creation_parse(wire, wire_len, &parsed) ==
+               VCS_ZCODE_EPOCH_CREATION_OK);
+        vcs_zcode_epoch_creation_free(&parsed);
+        for (size_t cut = 0; cut < wire_len; cut++) {
+            ASSERT(vcs_zcode_epoch_creation_parse(wire, cut, &parsed) !=
+                   VCS_ZCODE_EPOCH_CREATION_OK);
+            vcs_zcode_epoch_creation_free(&parsed);
+        }
         ASSERT(vcs_zcode_epoch_creation_parse(wire, wire_len, &parsed) ==
                VCS_ZCODE_EPOCH_CREATION_OK);
         ASSERT(vcs_zcode_epoch_creation_serialize(
@@ -561,6 +576,12 @@ static int patronage_intent_test(void)
                VCS_ZCODE_PATRONAGE_OK);
         ASSERT(vcs_zcode_patronage_intent_verify(&parsed, 1500) ==
                VCS_ZCODE_PATRONAGE_OK);
+        for (size_t cut = 0; cut < sizeof(wire); cut++) {
+            ASSERT(vcs_zcode_patronage_intent_parse(
+                       wire, cut, &parsed) ==
+                   VCS_ZCODE_PATRONAGE_WIRE_SIZE);
+            ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        }
         wire[sizeof(wire) - 1] ^= 1;
         ASSERT(vcs_zcode_patronage_intent_parse(wire, sizeof(wire), &parsed) ==
                VCS_ZCODE_PATRONAGE_OK);
@@ -632,6 +653,12 @@ static int patronage_settlement_codec_test(void)
         ASSERT(vcs_zcode_patronage_settlement_parse(
                    wire, sizeof(wire), &parsed) ==
                VCS_ZCODE_PATRONAGE_SETTLEMENT_OK);
+        for (size_t cut = 0; cut < sizeof(wire); cut++) {
+            ASSERT(vcs_zcode_patronage_settlement_parse(
+                       wire, cut, &parsed) ==
+                   VCS_ZCODE_PATRONAGE_SETTLEMENT_WIRE_SIZE);
+            ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        }
         ASSERT(vcs_zcode_patronage_settlement_parse(
                    wire, sizeof(wire) - 1, &parsed) ==
                VCS_ZCODE_PATRONAGE_SETTLEMENT_WIRE_SIZE);
@@ -708,6 +735,15 @@ static int continuity_policy_codec_test(void)
             81,81,81,81,81,81,81,81,
         };
         ASSERT(memcmp(first, prefix_kat, sizeof(prefix_kat)) == 0);
+        ASSERT_EQ(vcs_zcode_continuity_policy_parse(
+                      first, sizeof(first), &parsed),
+                  VCS_ZCODE_CONTINUITY_OK);
+        for (size_t cut = 0; cut < sizeof(first); cut++) {
+            ASSERT_EQ(vcs_zcode_continuity_policy_parse(
+                          first, cut, &parsed),
+                      VCS_ZCODE_CONTINUITY_WIRE_SIZE);
+            ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        }
         ASSERT_EQ(vcs_zcode_continuity_policy_parse(
                       first, sizeof(first), &parsed),
                   VCS_ZCODE_CONTINUITY_OK);
