@@ -84,6 +84,21 @@ struct ci_ref {
     char enclosing[128];
 };
 
+enum ci_search_match {
+    CI_SEARCH_MATCH_NAME = 1u << 0,
+    CI_SEARCH_MATCH_SIGNATURE = 1u << 1,
+    CI_SEARCH_MATCH_PATH = 1u << 2,
+    CI_SEARCH_MATCH_DOC = 1u << 3,
+};
+
+/* One explained full-index search result. score is a deterministic ranking
+ * convenience; the mask says which indexed fields contained the query. */
+struct ci_search_hit {
+    struct ci_symbol symbol;
+    uint32_t match_mask;
+    int score;
+};
+
 /* ── Lifecycle ── */
 
 /* Open (creating if needed) <root>/.codeindex/index.kv. If the store is
@@ -118,6 +133,12 @@ bool codeindex_symbol_by_id(struct codeindex *ci, const char *id,
  * Fills up to `cap` rows in `out`, returns the count (>=0), -1 on error. */
 int codeindex_find(struct codeindex *ci, const char *query,
                    struct ci_symbol *out, int cap);
+
+/* Ranked literal substring search over names, signatures, definition/
+ * declaration paths, and indexed documentation. Exact/prefix/name matches
+ * precede signature, path, and doc matches; ties are byte-stable. */
+int codeindex_search_text(struct codeindex *ci, const char *query,
+                          struct ci_search_hit *out, int cap);
 
 /* Call sites referencing `callee`, ordered by (ref_file, ref_line). Fills up
  * to `cap` rows, returns count (>=0), -1 on error. */

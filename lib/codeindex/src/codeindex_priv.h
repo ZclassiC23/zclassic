@@ -105,6 +105,8 @@ bool ci_store_symbol_by_name_path(struct ci_store *s, const char *name,
                                   struct ci_symbol *out, bool *found);
 int  ci_store_find_symbols(struct ci_store *s, const char *q,
                            struct ci_symbol *out, int cap);
+int  ci_store_search_text(struct ci_store *s, const char *q,
+                          struct ci_search_hit *out, int cap);
 int  ci_store_refs_by_callee(struct ci_store *s, const char *callee,
                              struct ci_ref *out, int cap);
 /* Refs whose enclosing function is `enclosing` (the callee side of the call

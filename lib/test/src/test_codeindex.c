@@ -623,6 +623,22 @@ int test_codeindex(void)
              s.def_path[0] == '\0' &&
              strstr(s.decl_path, "include/net/foo.h") != NULL);
 
+    struct ci_search_hit text_hits[8];
+    int ntext = codeindex_search_text(ci, "data frame", text_hits, 8);
+    CI_CHECK("indexed doc text finds its symbol with an explained match",
+             ntext >= 1 &&
+             strcmp(text_hits[0].symbol.name, "foo_checksum") == 0 &&
+             (text_hits[0].match_mask & CI_SEARCH_MATCH_DOC) != 0);
+    ntext = codeindex_search_text(ci, "size_t len", text_hits, 8);
+    CI_CHECK("indexed signature text finds its symbol before broad matches",
+             ntext >= 1 &&
+             strcmp(text_hits[0].symbol.name, "foo_checksum") == 0 &&
+             (text_hits[0].match_mask & CI_SEARCH_MATCH_SIGNATURE) != 0);
+    ntext = codeindex_search_text(ci, "foo.h", text_hits, 8);
+    CI_CHECK("indexed path text finds declarations deterministically",
+             ntext >= 1 &&
+             (text_hits[0].match_mask & CI_SEARCH_MATCH_PATH) != 0);
+
     /* refs */
     struct ci_ref refs[32];
     int nref = codeindex_refs(ci, "helper_add", refs, 32);
