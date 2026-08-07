@@ -771,6 +771,13 @@ int test_transaction_intent(void)
         ASSERT(vault_intent_reserve(&ndb, &b, 30000000));
         ASSERT_EQ(vault_intent_reserved_total(
                       &ndb, "dev", identity.wallet_instance_id), 5000000);
+        ASSERT_EQ(vault_intent_reserved_total_at(
+                      &ndb, "dev", identity.wallet_instance_id, 699),
+                  5000000);
+        ASSERT_EQ(vault_intent_reserved_total_at(
+                      &ndb, "dev", identity.wallet_instance_id, 700), 0);
+        ASSERT_EQ(vault_intent_reserved_total_at(
+                      &ndb, "dev", identity.wallet_instance_id, -1), -1);
         ASSERT(!vault_intent_reserve(&ndb, &over, 30000000));
         ASSERT(vault_intent_set_state(&ndb, a.plan_id, VAULT_INTENT_FAILED,
                                       NULL, "LAB_ROLLBACK", 200));

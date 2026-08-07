@@ -327,6 +327,8 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
         return true;
     }
     if (!vault_intent_context_ready(ctx, result)) return true;
+    (void)vault_intent_expire_due(
+        ctx->node_db, (int64_t)platform_time_wall_time_t());
     struct vi_payload p; memset(&p, 0, sizeof(p));
     if (!vi_effects(input, &p, result)) return true;
     int64_t target = 0;

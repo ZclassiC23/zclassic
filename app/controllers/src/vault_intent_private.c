@@ -370,6 +370,8 @@ bool vault_intent_private_plan(const struct json_value *input,
         return true;
     }
     if (!vault_intent_context_ready(ctx, result)) return true;
+    (void)vault_intent_expire_due(
+        ctx->node_db, (int64_t)platform_time_wall_time_t());
 
     struct vip_payload p;
     int64_t target = 0;

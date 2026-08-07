@@ -214,8 +214,9 @@ struct zcl_result wallet_money_snapshot_build(
     out->confirmed_zat = vault.zcl_spendable;
     out->pending_zat = vault.zcl_pending;
     out->encumbered_zat = vault.zcl_encumbered + vault.zcl_immature;
-    out->intent_reserved_zat = vault_intent_reserved_total(
-        ndb, wallet_scope, out->identity.wallet_instance_id);
+    out->intent_reserved_zat = vault_intent_reserved_total_at(
+        ndb, wallet_scope, out->identity.wallet_instance_id,
+        out->observed_at);
     out->lifetime_lab_spent_zat =
         agent_session_scope_lifetime_spent(ndb, wallet_scope);
     if (out->intent_reserved_zat < 0 ||
