@@ -74,6 +74,14 @@ static bool run_codex_runner_path(char out[ZWORK_RUN_PATH_MAX])
            access(out, X_OK) == 0;
 }
 
+static bool run_packet_path(const char *candidate_workspace,
+                            char path[ZWORK_RUN_PATH_MAX])
+{
+    int n = snprintf(path, ZWORK_RUN_PATH_MAX,
+                     "%s/.zcode-adapter-packet.json", candidate_workspace);
+    return n > 0 && (size_t)n < ZWORK_RUN_PATH_MAX;
+}
+
 static bool run_write_packet(const char *candidate_workspace,
                              const struct json_value *packet,
                              char path[ZWORK_RUN_PATH_MAX])
@@ -86,9 +94,7 @@ static bool run_write_packet(const char *candidate_workspace,
         free(wire);
         return false;
     }
-    int n = snprintf(path, ZWORK_RUN_PATH_MAX, "%s/.zcode-adapter-packet.json",
-                     candidate_workspace);
-    if (n <= 0 || (size_t)n >= ZWORK_RUN_PATH_MAX) {
+    if (!run_packet_path(candidate_workspace, path)) {
         free(wire);
         return false;
     }
@@ -579,11 +585,19 @@ static bool run_admit(
         return true;
     }
     struct json_value expert;
-    json_init(&expert); json_copy(&expert, &inner.data);
-    (void)json_push_kv_str(&expert, "receipt_id", receipt.receipt_id);
-    (void)json_push_kv_str(&expert, "output_root", receipt.output_sha3);
-    (void)json_push_kv_str(&expert, "work_receipt_root",
-                           receipt.work_receipt_sha3);
+    json_init(&expert); json_set_object(&expert);
+    bool expert_ok = action && candidate && candidate_source && patch &&
+        json_push_kv_str(&expert, "task_root", entry->task_root_hex) &&
+        json_push_kv_str(&expert, "candidate_root",
+                         json_get_str(candidate)) &&
+        json_push_kv_str(&expert, "candidate_source_root",
+                         json_get_str(candidate_source)) &&
+        json_push_kv_str(&expert, "patch_root", json_get_str(patch)) &&
+        json_push_kv_str(&expert, "action_id", json_get_str(action)) &&
+        json_push_kv_str(&expert, "receipt_id", receipt.receipt_id) &&
+        json_push_kv_str(&expert, "output_root", receipt.output_sha3) &&
+        json_push_kv_str(&expert, "work_receipt_root",
+                         receipt.work_receipt_sha3);
     char work_id[32];
     (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                    entry->task_root_hex);
@@ -621,7 +635,7 @@ static bool run_admit(
          json_push_kv_str(&repair_packet, "prior_patch_root",
                           json_get_str(patch)) &&
          json_push_kv(&repair_packet, "diagnostic", &diagnostic));
-    bool ok = changed && candidate && patch && diagnostic_ok &&
+    bool ok = changed && candidate && patch && diagnostic_ok && expert_ok &&
         repair_packet_ok && receipt.work_receipt_sha3[0] &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
         json_push_kv_str(&reply->data, "state", passed ? "EVIDENCE_READY" :
@@ -742,6 +756,13 @@ void zcl_native_handle_zcode_work_run(
         free(goal); vcs_zcode_agent_context_free(&context);
         vcs_zcode_task_index_free(index); return;
     }
+    if (strcmp(entry->state, VCS_ZCODE_TASK_STATE_CANDIDATE_ADMITTED) == 0) {
+        run_fail(reply, "CANDIDATE_EXECUTION_INCOMPLETE", "build",
+                 "the candidate is captured but its prior package execution produced no signed work receipt; preserve it and diagnose the package prerequisite before starting another attempt",
+                 true, true);
+        free(goal); vcs_zcode_agent_context_free(&context);
+        vcs_zcode_task_index_free(index); return;
+    }
     bool repairing = strcmp(entry->state,
                             VCS_ZCODE_TASK_STATE_REPAIR_NEEDED) == 0;
     if (entry->candidate_count >= 3u) {
@@ -773,6 +794,9 @@ void zcl_native_handle_zcode_work_run(
         free(goal); vcs_zcode_agent_context_free(&context);
         vcs_zcode_task_index_free(index); return;
     }
+    char prior_packet_path[ZWORK_RUN_PATH_MAX] = {0};
+    if (run_packet_path(candidate_workspace, prior_packet_path))
+        run_adapter_cleanup(candidate_workspace, prior_packet_path);
     if (!created) {
         uint8_t candidate_root[32];
         if (vcs_tree_capture_into(candidate_workspace, workspace,
@@ -863,7 +887,11 @@ void zcl_native_handle_zcode_work_run(
         vcs_zcode_agent_context_free(&context);
         vcs_zcode_task_index_free(index); return;
     }
-    bool ok = packet_ok &&
+    char manual_packet_path[ZWORK_RUN_PATH_MAX] = {0};
+    size_t manual_packet_bytes = packet_ok ? json_write(&packet, NULL, 0) : 0;
+    bool manual_staged = packet_ok && manual_packet_bytes > 0 &&
+        run_write_packet(candidate_workspace, &packet, manual_packet_path);
+    bool ok = manual_staged &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
         json_push_kv_str(&reply->data, "adapter", "manual") &&
         json_push_kv_str(&reply->data, "state", repairing
@@ -871,7 +899,10 @@ void zcl_native_handle_zcode_work_run(
         json_push_kv_str(&reply->data, "candidate_workspace",
                          candidate_workspace) &&
         json_push_kv_bool(&reply->data, "workspace_created", created) &&
-        json_push_kv(&reply->data, "adapter_packet", &packet) &&
+        json_push_kv_str(&reply->data, "adapter_packet_path",
+                         manual_packet_path) &&
+        json_push_kv_int(&reply->data, "adapter_packet_bytes",
+                         (int64_t)manual_packet_bytes) &&
         json_push_kv_str(&reply->data, "authority", "NONE_MANUAL_HANDOFF") &&
         json_push_kv_str(&reply->data, "next_safe_command", repairing
                          ? "edit candidate_workspace, then rerun zcode work run"

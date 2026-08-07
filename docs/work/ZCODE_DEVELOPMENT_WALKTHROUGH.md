@@ -44,10 +44,12 @@ zclassic23-dev zcode work run \
   --input='{"workspace":".","work":"latest","adapter":"manual"}'
 ```
 
-Give `adapter_packet` to the external coding tool you choose, and allow it to
-edit only the returned `candidate_workspace`. Do not edit the authoritative
-workspace. The packet names the goal, selected excerpts, write scope, recipe,
-proof expectations, and resource ceilings.
+Give the file at `adapter_packet_path` to the external coding tool you choose,
+and allow it to edit only the returned `candidate_workspace`. Do not edit the
+authoritative workspace. Keeping the bounded packet in a mode-0600 file avoids
+the native command's small human-result budget while preserving its exact goal,
+selected excerpts, write scope, recipe, proof expectations, and resource
+ceilings.
 
 An installed Codex CLI is an opt-in convenience when exactly one documented
 single-run credential (`CODEX_API_KEY` or `CODEX_ACCESS_TOKEN`) is present:

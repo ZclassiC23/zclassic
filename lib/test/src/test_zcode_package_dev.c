@@ -571,17 +571,21 @@ static int zpd_test_work_start(void)
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
         const struct json_value *candidate_workspace =
             json_get(&reply.data, "candidate_workspace");
-        const struct json_value *packet =
-            json_get(&reply.data, "adapter_packet");
+        const struct json_value *packet_path =
+            json_get(&reply.data, "adapter_packet_path");
         ASSERT(candidate_workspace &&
                json_get_str(candidate_workspace)[0] == '/');
         char saved_candidate_workspace[4400];
         (void)snprintf(saved_candidate_workspace,
                        sizeof(saved_candidate_workspace), "%s",
                        json_get_str(candidate_workspace));
-        ASSERT(packet && packet->type == JSON_OBJ);
-        ASSERT(strcmp(json_get_str(json_get(packet, "goal")), "Fix x") == 0);
-        ASSERT(json_get(packet, "selected_excerpts") != NULL);
+        ASSERT(packet_path && json_get_str(packet_path)[0] == '/');
+        ASSERT(strncmp(json_get_str(packet_path),
+                       saved_candidate_workspace,
+                       strlen(saved_candidate_workspace)) == 0);
+        ASSERT(access(json_get_str(packet_path), F_OK) == 0);
+        ASSERT(json_get_int(json_get(&reply.data,
+                                     "adapter_packet_bytes")) > 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "authority")),
                       "NONE_MANUAL_HANDOFF") == 0);
         ASSERT(vcs_tree_capture_path(root, source_after) == VCS_OK);
@@ -685,6 +689,7 @@ static int zpd_test_work_start(void)
         const struct json_value *run_action = run_expert
             ? json_get(run_expert, "action_id") : NULL;
         ASSERT(run_action && strlen(json_get_str(run_action)) == 64);
+        ASSERT(json_write(&reply.data, NULL, 0) < 4096u);
         char saved_action_id[65];
         (void)snprintf(saved_action_id, sizeof(saved_action_id), "%s",
                        json_get_str(run_action));

@@ -292,6 +292,36 @@ history. V0.1 therefore does not advertise `zcode work cancel`. A human rejects
 a candidate by withholding `work accept`; adding a durable `CANCELLED` task
 state remains blocked on an explicit authority decision rather than a display
 projection or misuse of the transport cancel wire.
+
+The first manual-adapter self-hosting exercise found three additional product
+failures and preserved all canonical evidence. First, embedding an 11,607-byte
+adapter packet in the ordinary response exceeded the command's 4 KiB human
+result budget. Manual handoff now writes that bounded packet mode-0600 inside
+the isolated candidate and returns only its path and byte count. Second, the
+successful package action copied the expert admission payload back into the
+ordinary response and again exceeded 4 KiB; the response now selects only the
+eight exact roots and IDs needed for expert audit. Third, a codec candidate was
+captured but could not execute because its exact base dependency was not
+installed in the scratch worker. A repeated run previously created a fresh
+empty attempt. It now fails closed as `CANDIDATE_EXECUTION_INCOMPLETE`, keeps
+the captured candidate, and names the missing execution receipt instead of
+advancing history.
+
+The dependency-free base dogfood task selected 470 of 56,140 source bytes
+(0.84%) in 27,139 us, but ranked `memory_cleanse` above the requested checked
+arithmetic API. Attempt 1 added the requested NULL-output regression and then
+correctly exposed a pre-existing strict-C23 portability failure: `flockfile`
+and `funlockfile` lacked the POSIX feature declaration. Attempt 2 added
+`_POSIX_C_SOURCE=200809L`, passed the confined declared package tests, and
+reached PROVEN with task `dc2505113e53b70d56f75dd6d39f21a2d9be2c5877b265d18d7ab7f0aff1ee3b`,
+candidate `f9ddf356a2ecbecd794b5a3ebfd1147ceb728898faff0c615932efedaa63cf2b`,
+work receipt `1f285da15457ddb5ff64aaffaa7b761e6166a2488ded4d744187cfd3a0b32609`,
+proof set `c2796d706f8fb0802936914bd0093451e6143704d0335b2d3a7a42dcd78a9a40`,
+and PROVEN lane `f235ef47595276737e6c811eb05cef305590122ba682a116820e6c5d18778f44`.
+The accepted patch is not applied here because changing the frozen base root
+would also invalidate the signed SHA3/codec dependency DAG. It is evidence of
+the product path, not a claimed self-hosted commit.
+
 P8 line counts are deterministic content-multiset deltas: identical lines are
 matched regardless of position, so a pure move is not presented as creation.
 Binary files and text files above the fixed 65,536-line bound set
