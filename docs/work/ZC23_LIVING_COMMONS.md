@@ -591,7 +591,8 @@ authorization.
 | DONE | Shared mission/API and explicit scratch-workspace safety | `6df06b721` | `6df06b721` | exact people-and-AI mission, ready `zcode guide`, canonical/live workspace refusal, generated API reference, full lint 134/134, normal pre-push 911-group suite |
 | DONE | O2 portable simulation-only reproduction challenge | `c41cebd99` | `c41cebd99` | 512-byte request KAT, public-root and confinement bindings, noncreating plan, idempotent scratch-CAS commit, focused green, full lint 134/134, normal pre-push 911-group suite |
 | DONE | O3 policy-bound reproduction qualification | `307556653` | `307556653` | complete Score/proof/request/build/manifest/policy/identity CAS rederivation; missing output, missing approval identity, stale epoch and contradictory-result rejections; command readiness derives from the evaluator; physical independence remains explicitly unproven; focused/API gates and full lint 134/134 |
-| BLOCKED | First complete SHA3 shadow epoch | `fc62b9c4a` | `fc62b9c4a` | read-only full Score vertical rederivation and package-registry match; zero award and no attribution/epoch because no owner-approved off-host reproducer exists; full lint 134/134; ZCODE ASan+UBSan green; LTO and both local byte-reproduction gates green; normal pre-push 901/901 active groups |
+| DONE | O4 scratch attribution and epoch plan/commit | `3b45e7991` | `c7ddc1fd9` | full policy/Score/reproduction/binding/package/release/license reload; deterministic fixture anchors; exact award/mint equality; changed branch, missing predecessor, duplicate candidate, policy substitution and one-atom drift rejection; six typed shadow leaves; focused/API gates, full lint 134/134 and normal pre-push source-wide suite |
+| BLOCKED | Real SHA3 off-host independence gate | `fc62b9c4a` | `fc62b9c4a` | SHA3 Score remains honestly 4/5; local evidence and O4 simulation do not prove physical independence or authorize a real shadow epoch, token genesis, mint or custody |
 
 Historical-truth hardening began from fetched `origin/main` `7091051aa`
 through lane integration `a96275b52`. Before the first slice was pushed, new
@@ -692,3 +693,10 @@ proves protocol wiring only and does not clear the real SHA3 off-host blocker.
 Before the O3 push, concurrent `origin/main` `468d0319281b6298f5e9669c877042c389069fac`
 was integrated through merge `10a0480b4`. Its disjoint transaction-lab files
 were preserved without modification.
+
+O4 began from fetched `origin/main` `1db74339874030462d243830222bf0f4465b55f0`.
+The first push attempt passed the complete pre-push source suite, then was
+correctly rejected because concurrent `main` advanced to
+`32f946668cc2b2df9adf562f57cc4d6f972e11a1`. That disjoint replayable
+shielded-plan work was merged without modification through `c7ddc1fd9` before
+the O4 integration retry. The failed race is not counted as a completed push.
