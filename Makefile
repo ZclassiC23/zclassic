@@ -255,6 +255,7 @@ $(BUILD_IDENTITY_STAMP): $(BUILD_MUTATION_STAMP) tools/dev/source-identity.sh
 
 ZCLASSIC23_BIN = $(BIN_DIR)/zclassic23
 ZCLASSIC23_DEV_BIN = $(BIN_DIR)/zclassic23-dev
+DEV_RESTART_PLAN = $(BUILD_DIR)/dev-loop/restart.env
 TEST_ZCL_BIN = $(BIN_DIR)/test_zcl
 TEST_PARALLEL_BIN = $(BIN_DIR)/test_parallel
 ZCLASSIC_CLI_BIN = $(BIN_DIR)/zclassic-cli
@@ -390,7 +391,7 @@ DEVLOOP_ALL_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tools/dev/*.c))
 DEV_ONLY_SRCS = tools/dev/devloop_cli.c tools/dev/devloop_cycle.c \
 	tools/dev/devloop_watch.c tools/dev/devloop_process.c \
-	tools/dev/devloop_hotswap_build.c \
+	tools/dev/devloop_hotswap_build.c tools/dev/devloop_restart_build.c \
 	tools/dev/devloop_baseline.c tools/dev/dev_failure_store.c \
 	tools/dev/dev_source_identity.c
 DEVLOOP_SRCS = $(filter-out $(DEV_ONLY_SRCS),$(DEVLOOP_ALL_SRCS))
@@ -1207,7 +1208,7 @@ TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard lib/test/src/*.c))
 TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c tools/dev/dev_failure_store.c \
 	tools/dev/dev_source_identity.c tools/dev/devloop_process.c \
-	tools/dev/devloop_hotswap_build.c
+	tools/dev/devloop_hotswap_build.c tools/dev/devloop_restart_build.c
 SPEC_SRCS = $(wildcard lib/test/spec/*.c)
 CHAOS_SIM_SRCS = tools/sim/sim_peer.c
 
@@ -2304,7 +2305,7 @@ verify-change:
 # runs the changed-file dev compile gate, then links the non-LTO dev binary.
 # This deliberately does not replace `zclassic23`, `make deploy`, or release
 # artifacts.
-dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN) zclassic23-zcode-adapter-runner
+dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN) $(DEV_RESTART_PLAN) zclassic23-zcode-adapter-runner
 # Checkout-locked (see CHECKOUT_LOCK above) — the watcher invokes this same
 # target via run_rebuild_command, so it defers instead of racing a foreground
 # rebuild in the same checkout.
@@ -2338,6 +2339,24 @@ $(DEV_CANDIDATE_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(DEV_OBJ_COMP
 DEV_LINK_RSP = $(DEV_OBJ_DIR)/link-inputs.rsp
 $(DEV_LINK_RSP): $(DEV_OBJS)
 	@$(file >$@,$(DEV_OBJS)) test -s "$@"
+
+$(DEV_RESTART_PLAN): $(DEV_OBJ_COMPLETE) $(DEV_LINK_RSP) Makefile FORCE
+	@set -eu; \
+	mkdir -p "$(dir $@)"; \
+	tmp="$$(mktemp "$(dir $@).restart.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	{ \
+	  printf 'CC=%s\n' '$(CC)'; \
+	  printf 'COMPILER_ID=%s\n' '$(BUILD_COMPILER_ID)'; \
+	  printf 'BASE_GENERATION=%s\n' '$(BUILD_MUTATION)'; \
+	  printf 'DEV_CFLAGS=%s\n' '$(DEV_RESTART_CFLAGS)'; \
+	  printf 'DEV_LDFLAGS=%s\n' '$(DEV_RESTART_LDFLAGS)'; \
+	  printf 'DEV_LIBS=%s\n' '$(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)'; \
+	  printf 'DEV_OBJ_DIR=%s\n' '$(DEV_OBJ_DIR)'; \
+	  printf 'DEV_LINK_RSP=%s\n' '$(DEV_LINK_RSP)'; \
+	} >"$$tmp"; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
 
 $(DEV_CANDIDATE_BIN): $(DEV_LINK_RSP)
 

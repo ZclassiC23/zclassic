@@ -2129,6 +2129,136 @@ static int test_hotswap_artifact_cache(void)
     return failures;
 }
 
+static bool run_resident_restart_fixture(void)
+{
+    static const char root[] = "test-tmp/dev_resident_restart";
+    static const char compiler_rel[] = "test-tmp/dev_restart_fake_cc.sh";
+    static const char fake_compiler[] =
+        "#!/usr/bin/env bash\n"
+        "set -eu\n"
+        "out= dep= compile=0 rsp=\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  case \"$1\" in\n"
+        "    -o) out=$2; shift 2 ;;\n"
+        "    -MF) dep=$2; shift 2 ;;\n"
+        "    -c) compile=1; shift ;;\n"
+        "    @*) rsp=${1#@}; shift ;;\n"
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        "[ -n \"$out\" ]\n"
+        "if [ \"$compile\" -eq 1 ]; then\n"
+        "  printf 'restart-object-v1\\n' >\"$out\"\n"
+        "  printf '%s: app/services/src/restart_fixture.c\\n' \"$out\" >\"$dep\"\n"
+        "else\n"
+        "  [ -n \"$rsp\" ]\n"
+        "  grep -q 'build/dev-loop/restart-objects/app/services/src/restart_fixture.o' \"$rsp\"\n"
+        "  ! grep -q 'build/dev-obj/fixture/app/services/src/restart_fixture.o' \"$rsp\"\n"
+        "  grep -q 'build/dev-obj/fixture/lib/base/src/other.o' \"$rsp\"\n"
+        "  printf '#!/usr/bin/env bash\\nexit 0\\n' >\"$out\"\n"
+        "  chmod 0700 \"$out\"\n"
+        "fi\n";
+    bool ok = false;
+    char cwd[PATH_MAX], compiler[PATH_MAX], plan[PATH_MAX * 4];
+    char saved_process[32] = {0};
+    const char *prior_process = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+    bool had_process = prior_process && prior_process[0];
+    if (had_process)
+        (void)snprintf(saved_process, sizeof(saved_process), "%s",
+                       prior_process);
+    test_rm_rf_recursive(root);
+    (void)unlink(compiler_rel);
+    if (!getcwd(cwd, sizeof(cwd)) ||
+        snprintf(compiler, sizeof(compiler), "%s/%s", cwd, compiler_rel) >=
+            (int)sizeof(compiler) ||
+        !dp_mk_write(".", compiler_rel, fake_compiler) ||
+        chmod(compiler_rel, 0700) != 0 ||
+        !dp_mk_write(root, "Makefile", "# fixture\n") ||
+        !dp_mk_write(root, "app/services/src/restart_fixture.c",
+                     "int restart_fixture(void) { return 7; }\n") ||
+        !dp_mk_write(root, "app/services/src/restart_second.c",
+                     "int restart_second(void) { return 8; }\n") ||
+        !dp_mk_write(root,
+                     "build/dev-obj/fixture/app/services/src/restart_fixture.o",
+                     "old-object\n") ||
+        !dp_mk_write(root,
+                     "build/dev-obj/fixture/app/services/src/restart_second.o",
+                     "old-second-object\n") ||
+        !dp_mk_write(root, "build/dev-obj/fixture/lib/base/src/other.o",
+                     "other-object\n") ||
+        !dp_mk_write(root, "build/dev-obj/fixture/link-inputs.rsp",
+                     "build/dev-obj/fixture/app/services/src/restart_fixture.o build/dev-obj/fixture/app/services/src/restart_second.o build/dev-obj/fixture/lib/base/src/other.o\n"))
+        goto out;
+    int n = snprintf(
+        plan, sizeof(plan),
+        "CC=%s\n"
+        "COMPILER_ID=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+        "BASE_GENERATION=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n"
+        "DEV_CFLAGS=-DZCL_DEV_BUILD\n"
+        "DEV_LDFLAGS=-pthread\n"
+        "DEV_LIBS=-lm\n"
+        "DEV_OBJ_DIR=build/dev-obj/fixture\n"
+        "DEV_LINK_RSP=build/dev-obj/fixture/link-inputs.rsp\n",
+        compiler);
+    if (n <= 0 || n >= (int)sizeof(plan) ||
+        !dp_mk_write(root, "build/dev-loop/restart.env", plan) ||
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0)
+        goto out;
+
+    const char *changed[] = { "app/services/src/restart_fixture.c" };
+    struct zcl_devloop_restart_build_receipt receipt = {0};
+    struct zcl_devloop_process_result process = {0};
+    char why[256] = {0};
+    if (!zcl_devloop_restart_build(root, changed, 1, &receipt, &process,
+                                   why, sizeof(why)) ||
+        !receipt.candidate_probe_passed || receipt.changed_sources != 1 ||
+        receipt.compiler_processes != 1 || receipt.linker_processes != 1 ||
+        receipt.probe_processes != 1 ||
+        strcmp(receipt.probe, "discover.help") != 0 ||
+        strlen(receipt.artifact_sha256) != 64)
+        goto out;
+
+    /* A later edit links both its new overlay and the prior source's still
+     * exact overlay. The fake linker always requires the first overlay, so
+     * this second call fails if the resident forgets earlier direct edits. */
+    const char *second[] = { "app/services/src/restart_second.c" };
+    memset(&receipt, 0, sizeof(receipt));
+    if (!zcl_devloop_restart_build(root, second, 1, &receipt, &process,
+                                   why, sizeof(why)) ||
+        !receipt.candidate_probe_passed || receipt.compiler_processes != 1 ||
+        receipt.linker_processes != 1 || receipt.probe_processes != 1)
+        goto out;
+
+    const char *forbidden[] = { "core/consensus/src/restart_fixture.c" };
+    memset(&receipt, 0, sizeof(receipt));
+    if (zcl_devloop_restart_build(root, forbidden, 1, &receipt, &process,
+                                  why, sizeof(why)) ||
+        strcmp(why, "consensus-risk input is excluded from fast restart") != 0 ||
+        receipt.compiler_processes != 0 || receipt.linker_processes != 0 ||
+        receipt.probe_processes != 0)
+        goto out;
+    ok = true;
+
+out:
+    if (had_process)
+        (void)setenv("ZCL_DEVLOOP_TEST_PROCESS", saved_process, 1);
+    else
+        (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    test_rm_rf_recursive(root);
+    (void)unlink(compiler_rel);
+    return ok;
+}
+
+static int test_resident_restart_builder(void)
+{
+    int failures = 0;
+    TEST("dev platform: resident restart builds and probes an isolated candidate without Make") {
+        ASSERT(run_resident_restart_fixture());
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_native_source_cas_shadow(void)
 {
     int failures = 0;
@@ -2172,6 +2302,7 @@ int test_dev_platform(void)
     failures += test_failure_store();
     failures += test_distill_first_error();
     failures += test_hotswap_artifact_cache();
+    failures += test_resident_restart_builder();
     failures += test_native_source_cas_shadow();
     failures += test_menu_and_search();
     failures += test_change_classification();

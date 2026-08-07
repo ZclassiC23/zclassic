@@ -270,6 +270,35 @@ hit. The subprocess seam exists only in `ZCL_TESTING` with the explicit
 `ZCL_DEVLOOP_TEST_PROCESS=1` fixture opt-in; release builds retain the literal
 no-process implementation.
 
+### Resident process-restart candidate
+
+`make dev-bin` freezes a non-LTO `DEV_RESTART` action plan beside the dev
+object graph. For a bounded set of ordinary non-consensus `.c` edits, the
+watcher now snapshots the source CAS, invokes the pinned compiler directly for
+only those translation units, reuses every prior overlay whose generation and
+source digest remain current, links the complete isolated candidate directly,
+rechecks the source CAS, and runs `discover help` as a five-second
+command-runtime probe. The resident owner starts only compiler, linker, and
+candidate children: it starts no Make process or shell.
+
+The result is intentionally a **candidate**, not proof or publication. Its
+cycle reports `status=candidate_ready`, `phase=command_runtime_probe`,
+`runtime_published=false`, and `proof_complete=false`; the content-addressed
+executable stays under the worktree build directory. No node is restarted.
+Headers, build-graph changes, consensus-risk inputs, oversized batches, and
+anything outside the frozen plan stay on the conservative path. A later slice
+must run the mapped proof graph inside the same resident authority before a
+candidate can become eligible for isolated runtime replacement.
+
+On this host, one real watcher event for
+`tools/dev/devloop_restart_build.c` took 1.993 seconds end to end: 168 ms
+compile, 1.416 seconds link, and 70 ms candidate probe, with one compiler, one
+linker, one candidate, zero Make/shell/LTO processes, and no datadir, port, or
+service access. A separately audited isolated regtest launch took 11.054
+seconds cold and 11.204 seconds after a crash; graceful shutdown did not drain
+within ten seconds. That full-node path therefore does **not** satisfy the
+five-second restart target and is not used by the watcher.
+
 ### Measured floor and the physical limit
 
 `tools/dev/hotswap-resident-bench.sh` rewrites a retained fixed-width module

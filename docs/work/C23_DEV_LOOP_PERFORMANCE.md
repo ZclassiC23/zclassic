@@ -58,6 +58,7 @@ classification of every occurrence.
 | Baseline | eligible live 83.33%; all non-forbidden live 6.44% | frozen replay latency not yet measured | largest miss: 98 fast-restart edits |
 | P1 profiles | unchanged | `DEV_LIVE`, `DEV_RESTART`, and `INTEGRATION` contain no LTO; `RELEASE` retains LTO | `make check-dev-loop-profiles` PASS |
 | P2 exact artifact cache | unchanged | isolated miss → hit → edit miss → revert hit → second-worktree hit; hits report 0 compiler and 0 linker processes | `test_dev_platform` cold PASS; frozen 100-commit benchmark re-derived unchanged |
+| P3 resident restart candidate | bounded non-consensus `.c` edits outside live islands now receive isolated candidate feedback; mapped-proof coverage is not yet claimed | one real watcher edit: 1.993 s total = 168 ms compile + 1.416 s link + 70 ms probe; 1 compiler, 1 linker, 1 candidate; 0 Make/shell/LTO/datadir/port/service processes | `candidate_ready`; `runtime_published=false`; `proof_complete=false` |
 
 The earlier single-island resident microbenchmark measured 227.280 ms p50 and
 232.141 ms p95 on 20 distinct artifacts. That is historical evidence for one
@@ -65,6 +66,14 @@ status island, not a result for this frozen representative benchmark and not a
 coverage claim. The next measurement must replay the derived set and report
 detection, identity, compile, link/reload, test, total time, process counts,
 bytes scanned, cache disposition and LTO/whole-node-link counts.
+
+The existing non-LTO dev object graph relinks directly in 1.37 seconds and a
+candidate `discover help` probe takes 0.05 seconds. Those measurements justify
+the candidate path but not full process replacement: audited isolated regtest
+readiness took 11.054 seconds cold and 11.204 seconds after a crash, while a
+graceful stop did not drain within ten seconds. Full-node restart therefore
+remains an integration tier rather than being mislabeled a sub-five-second
+inner loop.
 
 ## Build profiles
 
@@ -83,6 +92,10 @@ smuggle release work into a save cycle.
 
 - Replay the representative benchmark and establish p50/p95 plus process and
   byte counts.
+- Execute the affected test graph inside the resident authority and keep
+  `proof_complete=false` until every mapped proof is present and green.
+- Replace an isolated runtime only after that proof layer exists; the measured
+  full-node launch is currently too slow for the five-second target.
 - Bring at least 95% of non-forbidden edits under five seconds by live reload
   or isolated fast restart; current measured coverage is 6.44% live-only.
 - Measure two- and four-worktree throughput.

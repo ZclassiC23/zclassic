@@ -354,6 +354,9 @@ int zcl_devloop_watch_mode(const char *repo_root,
         fflush(stdout);
         int fast = ctx.changed_count == 1
             ? zcl_devloop_hotswap_event(ctx.root, files[0], publish_mode) : 0;
+        if (fast == 0)
+            fast = zcl_devloop_restart_event(ctx.root, files,
+                                             ctx.changed_count, publish_mode);
         if (fast == 0) {
             /* APPLY authority is intentionally narrower than the generic
              * cycle: only one compiled-allowlist island may publish live.

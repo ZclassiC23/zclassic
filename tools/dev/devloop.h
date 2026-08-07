@@ -244,6 +244,40 @@ bool zcl_devloop_hotswap_build(
     struct zcl_devloop_process_result *process,
     char *why, size_t why_len);
 
+/* One non-LTO process-restart candidate produced directly by the resident
+ * watcher from Make's frozen action plan. This is a candidate command-runtime
+ * proof, never release/deployment authority and never a live-node restart. */
+struct zcl_devloop_restart_build_receipt {
+    char artifact_path[4096];
+    char artifact_sha256[65];
+    char probe[64];
+    int64_t plan_load_us;
+    int64_t compile_us;
+    int64_t link_us;
+    int64_t probe_us;
+    int64_t total_us;
+    uint32_t changed_sources;
+    uint32_t compiler_processes;
+    uint32_t linker_processes;
+    uint32_t probe_processes;
+    bool plan_cache_hit;
+    bool candidate_probe_passed;
+};
+
+bool zcl_devloop_restart_build(
+    const char *repo_root, const char *const *source_tus, size_t source_count,
+    struct zcl_devloop_restart_build_receipt *receipt,
+    struct zcl_devloop_process_result *process,
+    char *why, size_t why_len);
+
+/* Try the resident process-candidate lane for a bounded set of changed C TUs.
+ * Returns 0 when the set belongs on the conservative path, 1 after persisting
+ * a candidate-ready/refusal cycle, and -1 on receipt persistence failure. */
+int zcl_devloop_restart_event(const char *repo_root,
+                              const char *const *source_tus,
+                              size_t source_count,
+                              enum zcl_devloop_publish_mode publish_mode);
+
 /* Try the resident fast lane for one watcher epoch. Returns 0 when the file
  * is not a hot-swap island (caller must use the conservative path), 1 when a
  * machine-readable pass/refusal receipt was emitted and persisted, and -1 on
