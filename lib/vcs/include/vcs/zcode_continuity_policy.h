@@ -4,6 +4,9 @@
 #define ZCL_VCS_ZCODE_CONTINUITY_POLICY_H
 
 #include "vcs/zcode_patronage.h"
+#include "vcs/zcode_creation_attribution.h"
+#include "vcs/zcode_dev.h"
+#include "vcs/zcode_score_receipt.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -12,6 +15,8 @@
     "zcl.zcode.continuity_policy.v1"
 #define VCS_ZCODE_CONTINUITY_POLICY_ROOT_DOMAIN \
     "zcl.zcode.continuity_policy.root.v1"
+#define VCS_ZCODE_CONTINUITY_EVENT_KEY_DOMAIN \
+    "zcl.zcode.continuity_event_key.v1"
 #define VCS_ZCODE_CONTINUITY_POLICY_VERSION 1u
 #define VCS_ZCODE_CONTINUITY_POLICY_BODY_BYTES 352u
 #define VCS_ZCODE_CONTINUITY_POLICY_WIRE_BYTES 416u
@@ -97,5 +102,10 @@ enum vcs_zcode_continuity_error vcs_zcode_continuity_policy_verify(
 enum vcs_zcode_continuity_error vcs_zcode_continuity_policy_verify_cas(
     const struct vcs_zcode_continuity_policy_v1 *policy,
     const struct vcs_zcode_patronage_validation_context *context);
+enum vcs_zcode_continuity_error vcs_zcode_continuity_event_key(
+    const struct vcs_zcode_creation_attribution_v1 *attribution,
+    const struct vcs_zcode_continuity_policy_v1 *policy,
+    const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_score_receipt_v1 *score, uint8_t out[32]);
 
 #endif /* ZCL_VCS_ZCODE_CONTINUITY_POLICY_H */

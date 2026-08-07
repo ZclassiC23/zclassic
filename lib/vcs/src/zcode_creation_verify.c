@@ -6,6 +6,7 @@
 #include "vcs/package_release.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_contributor_binding.h"
+#include "vcs/zcode_continuity_policy.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_lane.h"
 #include "vcs/zcode_score_receipt.h"
@@ -373,6 +374,54 @@ static enum vcs_zcode_creation_error creation_rederive_score(
     return VCS_ZCODE_CREATION_OK;
 }
 
+static enum vcs_zcode_creation_error creation_verify_continuity(
+    const struct vcs_zcode_creation_attribution_v1 *a,
+    const struct vcs_zcode_creation_validation_context *context,
+    const struct creation_vertical *vertical,
+    const uint8_t attribution_root[32])
+{
+    if (a->category == VCS_ZCODE_CREATION_PUBLIC_SOURCE)
+        return VCS_ZCODE_CREATION_OK;
+    if (!context->continuity_is_duplicate ||
+        a->lineage_kind !=
+            VCS_ZCODE_CREATION_LINEAGE_CONTINUITY_POLICY)
+        return VCS_ZCODE_CREATION_CONTINUITY;
+
+    uint8_t *wire = NULL, policy_root[32], event_key[32];
+    size_t wire_len = 0;
+    struct vcs_zcode_continuity_policy_v1 policy;
+    if (!creation_load(context->workspace, a->lineage_root,
+                       VCS_ZCODE_CONTINUITY_POLICY_WIRE_BYTES,
+                       &wire, &wire_len) ||
+        vcs_zcode_continuity_policy_parse(wire, wire_len, &policy) !=
+            VCS_ZCODE_CONTINUITY_OK ||
+        vcs_zcode_continuity_policy_root(&policy, policy_root) !=
+            VCS_ZCODE_CONTINUITY_OK ||
+        !creation_equal(policy_root, a->lineage_root)) {
+        free(wire);
+        return VCS_ZCODE_CREATION_CONTINUITY;
+    }
+    free(wire);
+    struct vcs_zcode_patronage_validation_context policy_context = {
+        .workspace = context->workspace,
+        .expected_network_genesis_root =
+            context->expected_network_genesis_root,
+        .now_unix = context->now_unix,
+        .binding_is_current = context->binding_is_current,
+        .callback_opaque = context->callback_opaque,
+    };
+    if (vcs_zcode_continuity_policy_verify_cas(
+            &policy, &policy_context) != VCS_ZCODE_CONTINUITY_OK ||
+        vcs_zcode_continuity_event_key(
+            a, &policy, &vertical->task, &vertical->score, event_key) !=
+            VCS_ZCODE_CONTINUITY_OK)
+        return VCS_ZCODE_CREATION_CONTINUITY;
+    if (context->continuity_is_duplicate(
+            context->callback_opaque, event_key, attribution_root))
+        return VCS_ZCODE_CREATION_DUPLICATE;
+    return VCS_ZCODE_CREATION_OK;
+}
+
 enum vcs_zcode_creation_error vcs_zcode_creation_attribution_verify_cas(
     const struct vcs_zcode_creation_attribution_v1 *a,
     const struct vcs_zcode_creation_validation_context *context)
@@ -436,5 +485,6 @@ enum vcs_zcode_creation_error vcs_zcode_creation_attribution_verify_cas(
     if (context->contribution_is_duplicate(
             context->callback_opaque, a->candidate_root, attribution_root))
         return VCS_ZCODE_CREATION_DUPLICATE;
-    return VCS_ZCODE_CREATION_OK;
+    return creation_verify_continuity(
+        a, context, &vertical, attribution_root);
 }

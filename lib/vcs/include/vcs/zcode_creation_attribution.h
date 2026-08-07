@@ -33,6 +33,7 @@ enum vcs_zcode_creation_lineage_kind {
     VCS_ZCODE_CREATION_LINEAGE_NONE = 0,
     VCS_ZCODE_CREATION_LINEAGE_PREDECESSOR_ATTRIBUTION = 1,
     VCS_ZCODE_CREATION_LINEAGE_RELEASE = 2,
+    VCS_ZCODE_CREATION_LINEAGE_CONTINUITY_POLICY = 3,
 };
 
 enum vcs_zcode_creation_error {
@@ -63,6 +64,7 @@ enum vcs_zcode_creation_error {
     VCS_ZCODE_CREATION_PACKAGE,
     VCS_ZCODE_CREATION_RELEASE,
     VCS_ZCODE_CREATION_LICENSE,
+    VCS_ZCODE_CREATION_CONTINUITY,
     VCS_ZCODE_CREATION_IMMATURE,
     VCS_ZCODE_CREATION_REORG,
     VCS_ZCODE_CREATION_DUPLICATE,
@@ -102,6 +104,9 @@ typedef bool (*vcs_zcode_creation_duplicate_fn)(
     const uint8_t attribution_root[32]);
 typedef bool (*vcs_zcode_creation_binding_current_fn)(
     void *opaque, const uint8_t contributor_binding_root[32]);
+typedef bool (*vcs_zcode_creation_continuity_duplicate_fn)(
+    void *opaque, const uint8_t event_key[32],
+    const uint8_t attribution_root[32]);
 
 /* Cross-object verification pins policy decisions supplied by the immutable
  * genesis-policy evaluator. Callbacks resolve active-chain and uniqueness
@@ -118,6 +123,7 @@ struct vcs_zcode_creation_validation_context {
     vcs_zcode_creation_anchor_active_fn anchor_is_active;
     vcs_zcode_creation_duplicate_fn contribution_is_duplicate;
     vcs_zcode_creation_binding_current_fn binding_is_current;
+    vcs_zcode_creation_continuity_duplicate_fn continuity_is_duplicate;
     void *callback_opaque;
 };
 

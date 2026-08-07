@@ -77,6 +77,7 @@ struct vcs_zcode_epoch_creation_validation_context {
     vcs_zcode_creation_anchor_active_fn anchor_is_active;
     vcs_zcode_creation_duplicate_fn contribution_is_duplicate;
     vcs_zcode_creation_binding_current_fn binding_is_current;
+    vcs_zcode_creation_continuity_duplicate_fn continuity_is_duplicate;
     vcs_zcode_epoch_award_atoms_fn award_atoms_for_creation;
     void *callback_opaque;
 };

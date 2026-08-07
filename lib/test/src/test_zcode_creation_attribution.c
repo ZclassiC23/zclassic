@@ -130,6 +130,14 @@ static int creation_rejection_test(void)
             VCS_ZCODE_CREATION_LINEAGE_RELEASE;
         ASSERT(vcs_zcode_creation_attribution_validate(&a) ==
                VCS_ZCODE_CREATION_LINEAGE);
+        creation_fixture(&a); a.lineage_kind =
+            VCS_ZCODE_CREATION_LINEAGE_CONTINUITY_POLICY;
+        creation_fill_root(a.lineage_root, 91);
+        ASSERT(vcs_zcode_creation_attribution_validate(&a) ==
+               VCS_ZCODE_CREATION_LINEAGE);
+        creation_fixture(&a); a.category = VCS_ZCODE_CREATION_COMPATIBILITY;
+        ASSERT(vcs_zcode_creation_attribution_validate(&a) ==
+               VCS_ZCODE_CREATION_LINEAGE);
         PASS();
     } _test_next:;
     return failures;

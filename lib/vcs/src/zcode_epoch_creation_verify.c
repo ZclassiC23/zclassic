@@ -133,6 +133,7 @@ enum vcs_zcode_epoch_creation_error vcs_zcode_epoch_creation_verify_cas(
             .contribution_is_duplicate =
                 context->contribution_is_duplicate,
             .binding_is_current = context->binding_is_current,
+            .continuity_is_duplicate = context->continuity_is_duplicate,
             .callback_opaque = context->callback_opaque,
         };
         if (vcs_zcode_creation_attribution_verify_cas(

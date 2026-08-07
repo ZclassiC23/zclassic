@@ -662,6 +662,7 @@ static int test_score_rejections(void)
 struct creation_callback_fixture {
     bool anchor_active;
     bool duplicate;
+    bool continuity_duplicate;
     uint64_t opening_height;
     uint8_t opening_hash[32];
     uint64_t maturity_height;
@@ -678,6 +679,16 @@ static bool creation_test_anchor(void *opaque, uint64_t height,
              memcmp(hash, fixture->opening_hash, 32) == 0) ||
             (height == fixture->maturity_height &&
              memcmp(hash, fixture->maturity_hash, 32) == 0));
+}
+
+static bool creation_test_continuity_duplicate(
+    void *opaque, const uint8_t event_key[32],
+    const uint8_t attribution_root[32])
+{
+    const struct creation_callback_fixture *fixture = opaque;
+    (void)event_key;
+    (void)attribution_root;
+    return fixture && fixture->continuity_duplicate;
 }
 
 static bool creation_test_duplicate(void *opaque,
@@ -1518,11 +1529,11 @@ static int test_creation_attribution_cross_validation(void)
         memcpy(continuity.package_root, package_root, 32);
         memcpy(continuity.current_release_root, release_root, 32);
         score_fill(continuity.from_capsule_root, 0xe2);
-        score_fill(continuity.to_capsule_root, 0xe3);
+        memcpy(continuity.to_capsule_root, capsule, 32);
         memcpy(continuity.proof_policy_root, proof_policy_root, 32);
         continuity.maximum_cycles = 3;
-        continuity.per_cycle_cap_atoms = UINT64_C(100000000);
-        continuity.total_cap_atoms = UINT64_C(300000000);
+        continuity.per_cycle_cap_atoms = UINT64_C(250000000);
+        continuity.total_cap_atoms = UINT64_C(750000000);
         continuity.created_unix = 1000;
         continuity.expires_unix = 800000;
         continuity.sequence = 1;
@@ -1532,6 +1543,25 @@ static int test_creation_attribution_cross_validation(void)
         ASSERT_EQ(vcs_zcode_continuity_policy_verify_cas(
                       &continuity, &patronage_context),
                   VCS_ZCODE_CONTINUITY_OK);
+        struct vcs_zcode_creation_attribution_v1 continuity_attribution =
+            attribution;
+        continuity_attribution.category = VCS_ZCODE_CREATION_COMPATIBILITY;
+        continuity_attribution.lineage_kind =
+            VCS_ZCODE_CREATION_LINEAGE_CONTINUITY_POLICY;
+        uint8_t continuity_policy_root[32], continuity_event_key[32];
+        ASSERT_EQ(vcs_zcode_continuity_policy_root(
+                      &continuity, continuity_policy_root),
+                  VCS_ZCODE_CONTINUITY_OK);
+        memcpy(continuity_attribution.lineage_root,
+               continuity_policy_root, 32);
+        ASSERT_EQ(vcs_zcode_continuity_event_key(
+                      &continuity_attribution, &continuity, &task, &score,
+                      continuity_event_key),
+                  VCS_ZCODE_CONTINUITY_OK);
+        char continuity_event_key_hex[65];
+        zcl_hex_encode(continuity_event_key, 32, continuity_event_key_hex);
+        ASSERT_STR_EQ(continuity_event_key_hex,
+            "aa520e9943150bf70bdda88fe56f94bdc276eebc6ee90a0f14b93678add2e50c");
         uint8_t continuity_wire[VCS_ZCODE_CONTINUITY_POLICY_WIRE_BYTES];
         uint8_t continuity_root[32];
         char continuity_hex[sizeof(continuity_wire) * 2u + 1u];
@@ -1633,6 +1663,60 @@ static int test_creation_attribution_cross_validation(void)
         ASSERT(!json_get_bool(json_get(&continuity_reply.data, "funded")));
         zcl_command_reply_free(&continuity_reply);
         json_free(&continuity_status_input);
+
+        context.continuity_is_duplicate =
+            creation_test_continuity_duplicate;
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &continuity_attribution, &context),
+                  VCS_ZCODE_CREATION_OK);
+        context.continuity_is_duplicate = NULL;
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &continuity_attribution, &context),
+                  VCS_ZCODE_CREATION_CONTINUITY);
+        context.continuity_is_duplicate =
+            creation_test_continuity_duplicate;
+        callbacks.continuity_duplicate = true;
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &continuity_attribution, &context),
+                  VCS_ZCODE_CREATION_DUPLICATE);
+        callbacks.continuity_duplicate = false;
+
+        struct vcs_zcode_creation_attribution_v1 born_red_attribution =
+            continuity_attribution;
+        struct vcs_zcode_creation_attribution_v1 security_attribution =
+            continuity_attribution;
+        born_red_attribution.category = VCS_ZCODE_CREATION_BORN_RED_FIX;
+        security_attribution.category = VCS_ZCODE_CREATION_SECURITY_FIX;
+        uint8_t born_red_event_key[32], security_event_key[32];
+        ASSERT_EQ(vcs_zcode_continuity_event_key(
+                      &born_red_attribution, &continuity, &task, &score,
+                      born_red_event_key),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_continuity_event_key(
+                      &security_attribution, &continuity, &task, &score,
+                      security_event_key),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT(memcmp(born_red_event_key, security_event_key, 32) == 0);
+
+        struct vcs_zcode_continuity_policy_v1 mismatched_continuity =
+            continuity;
+        score_fill(mismatched_continuity.to_capsule_root, 0xe3);
+        ASSERT_EQ(vcs_zcode_continuity_policy_seal(
+                      &mismatched_continuity, zid_secret, zid_pubkey),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_continuity_policy_root(
+                      &mismatched_continuity,
+                      continuity_attribution.lineage_root),
+                  VCS_ZCODE_CONTINUITY_OK);
+        uint8_t zero_event_key[32];
+        memset(zero_event_key, 0, sizeof(zero_event_key));
+        memset(continuity_event_key, 0xa5, sizeof(continuity_event_key));
+        ASSERT_EQ(vcs_zcode_continuity_event_key(
+                      &continuity_attribution, &mismatched_continuity,
+                      &task, &score, continuity_event_key),
+                  VCS_ZCODE_CONTINUITY_TRANSITION);
+        ASSERT(memcmp(continuity_event_key, zero_event_key,
+                      sizeof(zero_event_key)) == 0);
 
         memcpy(continuity.patron_contributor_binding_root, task_root, 32);
         ASSERT_EQ(vcs_zcode_continuity_policy_seal(

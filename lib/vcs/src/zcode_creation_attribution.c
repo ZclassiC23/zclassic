@@ -58,6 +58,7 @@ const char *vcs_zcode_creation_error_string(
     case VCS_ZCODE_CREATION_PACKAGE: return "package-object";
     case VCS_ZCODE_CREATION_RELEASE: return "release-object";
     case VCS_ZCODE_CREATION_LICENSE: return "license-evidence";
+    case VCS_ZCODE_CREATION_CONTINUITY: return "continuity-policy-or-event";
     case VCS_ZCODE_CREATION_IMMATURE: return "challenge-immature";
     case VCS_ZCODE_CREATION_REORG: return "challenge-anchor-reorged";
     case VCS_ZCODE_CREATION_DUPLICATE: return "duplicate-contribution";
@@ -75,10 +76,14 @@ enum vcs_zcode_creation_error vcs_zcode_creation_attribution_validate(
     if (a->category < VCS_ZCODE_CREATION_PUBLIC_SOURCE ||
         a->category > VCS_ZCODE_CREATION_PRESERVATION)
         return VCS_ZCODE_CREATION_CATEGORY;
-    if (a->lineage_kind > VCS_ZCODE_CREATION_LINEAGE_RELEASE)
+    if (a->lineage_kind > VCS_ZCODE_CREATION_LINEAGE_CONTINUITY_POLICY)
         return VCS_ZCODE_CREATION_LINEAGE;
     if ((a->lineage_kind == VCS_ZCODE_CREATION_LINEAGE_NONE) !=
         creation_root_zero(a->lineage_root))
+        return VCS_ZCODE_CREATION_LINEAGE;
+    if ((a->category == VCS_ZCODE_CREATION_PUBLIC_SOURCE) ==
+        (a->lineage_kind ==
+         VCS_ZCODE_CREATION_LINEAGE_CONTINUITY_POLICY))
         return VCS_ZCODE_CREATION_LINEAGE;
     if (a->award_atoms == 0 ||
         a->award_atoms > VCS_ZC23_MAX_SUPPLY_ATOMS)
