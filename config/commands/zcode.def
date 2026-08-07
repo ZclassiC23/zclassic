@@ -48,6 +48,9 @@ ZCL_COMMAND_BRANCH("zcode.commons.shadow.attribution", "zcode.commons.shadow",
 ZCL_COMMAND_BRANCH("zcode.commons.shadow.epoch", "zcode.commons.shadow",
                    "Scratch-only epoch-accounting simulation",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.shadow.protocol", "zcode.commons.shadow",
+                   "Four linked protocol shadow simulations",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("zcode.commons.reproduction", "zcode.commons",
                    "Portable simulation-only reproduction challenges",
                    ZCL_COMMAND_LAYER_APP)

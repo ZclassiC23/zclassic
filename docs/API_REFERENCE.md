@@ -74,9 +74,9 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 577 |
+| Registry entries (branches + leaves) | 578 |
 | Top-level roots | 11 |
-| Branches | 133 |
+| Branches | 134 |
 | Leaves (dispatchable command paths) | 444 |
 | … `ready` (live handler in this build) | 391 |
 | … `compat` (metadata only, names a fallback) | 18 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 22 | 4 | 18 |
-| `config/commands/zcode.def` | 140 | 31 | 109 |
+| `config/commands/zcode.def` | 141 | 32 | 109 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -935,6 +935,12 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode commons shadow epoch plan` | ready | read / read / operator · fast/low | **`workspace`**, **`policy_candidate_root`**, **`attribution_root`**, **`fixture_branch_root`**, **`previous_epoch_creation_root`**, **`now_unix`** | `zcl.zcode_commons_shadow_epoch.v1` | `zclassic23 zcode commons shadow epoch plan --input='{...}'` | Plan exact shadow epoch accounting |
 | `zcode commons shadow epoch commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`policy_candidate_root`**, **`attribution_root`**, **`fixture_branch_root`**, **`previous_epoch_creation_root`**, **`now_unix`** | `zcl.zcode_commons_shadow_epoch.v1` | `zclassic23 zcode commons shadow epoch commit --input='{...}'` | Store one verified shadow epoch in scratch CAS |
+
+#### `zcode.commons.shadow.protocol` — Four linked protocol shadow simulations
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode commons shadow protocol verify` | ready | read / read / operator · fast/low | **`workspace`**, **`policy_candidate_root`**, **`epoch_0_root`**, **`epoch_1_root`**, **`epoch_2_root`**, **`epoch_3_root`**, **`branch_0_root`**, **`branch_1_root`**, **`branch_2_root`**, **`branch_3_root`**, **`now_unix`** | `zcl.zcode_commons_shadow_protocol.v1` | `zclassic23 zcode commons shadow protocol verify --input='{...}'` | Verify four linked protocol shadow simulations |
 
 #### `zcode.commons.reproduction` — Portable simulation-only reproduction challenges
 
