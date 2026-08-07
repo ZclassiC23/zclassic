@@ -14,9 +14,13 @@
 #include "json/json.h"
 
 #include <pthread.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 /* Bound the cached passphrase so it lives in a fixed, cleansable buffer
  * (no heap copy of the secret to chase). 512 bytes is far past any real
@@ -203,6 +207,59 @@ struct zcl_result wallet_lock_unlock(struct wallet *w, struct wallet_sqlite *ws,
 
     memory_cleanse(prev_pass, sizeof(prev_pass));
     return ZCL_OK;
+}
+
+struct zcl_result wallet_lock_register_boot_credential(void)
+{
+    const char *dir = getenv("CREDENTIALS_DIRECTORY");
+    if (!dir || !dir[0])
+        return ZCL_OK;
+
+    char path[1024];
+    int n = snprintf(path, sizeof(path), "%s/wallet-passphrase", dir);
+    if (n < 0 || (size_t)n >= sizeof(path))
+        return ZCL_ERR(WLK_CREDENTIAL_IO,
+                       "boot credential path exceeds internal bound");
+
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+        if (errno == ENOENT)
+            return ZCL_OK;
+        return ZCL_ERR(WLK_CREDENTIAL_IO,
+                       "boot credential could not be opened");
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+        st.st_uid != geteuid() ||
+        (st.st_mode & 077) != 0 || st.st_size <= 0 ||
+        st.st_size > WLK_MAX_PASS) {
+        close(fd);
+        return ZCL_ERR(WLK_CREDENTIAL_MODE,
+                       "boot credential is not a private bounded file");
+    }
+
+    char secret[WLK_MAX_PASS + 1];
+    size_t need = (size_t)st.st_size;
+    size_t off = 0;
+    while (off < need) {
+        ssize_t got = read(fd, secret + off, need - off);
+        if (got < 0 && errno == EINTR)
+            continue;
+        if (got <= 0)
+            break;
+        off += (size_t)got;
+    }
+    close(fd);
+    if (off != need || memchr(secret, '\0', need) != NULL) {
+        memory_cleanse(secret, sizeof(secret));
+        return ZCL_ERR(WLK_CREDENTIAL_IO,
+                       "boot credential read was incomplete or invalid");
+    }
+    secret[need] = '\0';
+    struct zcl_result registered = wallet_lock_unlock(NULL, NULL, secret);
+    memory_cleanse(secret, sizeof(secret));
+    return registered;
 }
 
 struct zcl_result wallet_lock_arm_timeout(struct wallet *w,

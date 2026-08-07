@@ -439,7 +439,8 @@ The automatic GENERATION (manifest/staging) path stays contained:
   and `dev.change.apply` all refuse before generation relinking.
 
 The deliberate exception is the owner-gated native transaction:
-`zclassic23-dev dev generation activate --idempotency-key=<key>`. Its first
+`zclassic23-dev dev generation activate
+--input='{"idempotency_key":"<key>"}'`. Its first
 call stages and preflights the exact binary without stopping the service and
 returns `commit_input`. Re-running the same leaf with that input verifies the
 source identity, ABA mutation token, source CAS root, expiry, and resident

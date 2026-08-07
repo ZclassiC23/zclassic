@@ -538,7 +538,8 @@ ZCL_COMMAND_DEV_COMMAND(
     "zcl.dev_generation_activate_input.v1",
     "zcl.dev_generation_activate.v1",
     "idempotency_key,expires_in_seconds,intent_id,effect_digest,candidate_sha256,source_id_sha256,source_mutation_sha256,source_cas_sha3,expected_current_generation,expires_unix,confirm",
-    "", "zclassic23-dev dev generation activate --idempotency-key=upgrade-001",
+    "", "zclassic23-dev dev generation activate "
+    "--input='{\"idempotency_key\":\"upgrade-001\"}'",
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
     ZCL_COMMAND_SCOPE_DEV_LANE, ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_MODE_JOB, ZCL_COMMAND_LATENCY_FOREGROUND,

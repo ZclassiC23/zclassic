@@ -527,4 +527,6 @@ bool boot_wallet_identity_ensure(struct node_db *ndb,
                                  const uint8_t network_genesis[32],
                                  const char *operator_lane);
 
+void boot_wallet_credential_register_or_die(void);
+
 #endif

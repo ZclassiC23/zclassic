@@ -1593,7 +1593,7 @@ bool app_init(struct app_context *ctx)
      * the user's wallet with a fresh keypool. Refuse to do that here. */
     t_phase = boot_clock_ms();
     wallet_init(&g_wallet);
-
+    boot_wallet_credential_register_or_die();
     /* OS-S2: bind the boot cursors to the tip_finalize reorg-rewind chokepoint
      * so a live reorg clamps them down (next boot re-derives above the fork). */
     if (g_node_db.open)

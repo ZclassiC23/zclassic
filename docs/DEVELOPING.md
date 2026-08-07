@@ -73,7 +73,7 @@ and elapsed microseconds. It is deliberately marked `source_cas_authority:
 shadow`; the exact shell-derived SHA-256 source/mutation record remains build
 and publication authority during differential rollout.
 5. **Push flow + its two traps:** `make lint && make -j"$(nproc)" build-only`, run the mapped focused tests with parallel Make, then `git push` (hook runs `make pre-push-ci`). **Trap A (impact-rules):** every changed `.c` must map to a focused group in `app/controllers/include/controllers/agent_impact_rules.def` or the push is BLOCKED ("no focused test mapping") — add the mapping. **Trap B (pre-push SIGPIPE):** git may not drain the hook's stdout, so a GREEN `make pre-push-ci` can die with `make[2]: write error: stdout` and spuriously block — confirm green out-of-band (`make pre-push-ci >log 2>&1; echo $?` → 0) then `git push --no-verify` (verified, not skipped).
-6. **ZVCS:** each green cycle may anchor candidate source/artifact evidence. Source revert is available only with generation relinking disabled. Explicit full-generation publication uses `zclassic23-dev dev generation activate --idempotency-key=<key>` and its returned `commit_input`; automatic relinking remains contained. Sealed-core changes require the owner unseal ritual (`check-core-seal`).
+6. **ZVCS:** each green cycle may anchor candidate source/artifact evidence. Source revert is available only with generation relinking disabled. Explicit full-generation publication uses `zclassic23-dev dev generation activate --input='{"idempotency_key":"<key>"}'` and its returned `commit_input`; automatic relinking remains contained. Sealed-core changes require the owner unseal ritual (`check-core-seal`).
 
 **Full-generation activation:** the narrow auto watcher still publishes only an allowlisted read-only island. An owner may explicitly stage and activate a full isolated-dev generation with the native plan/commit command above. It resolves an immutable source epoch, stages and preflights the exact candidate, compare-and-swaps the expected resident epoch under the activation lock, quiesces and atomically publishes, probes the exact process through the public registry, and accepts or restores the prior generation. Canonical-node and release publication remain separate and contained.
 
@@ -188,6 +188,13 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   service, and is never copied into `commit_input`. Keep it in the operator's
   secret service and supply it again for commit. Scheduled backups retain
   their existing environment policy.
+- `make dev-wallet-credential-setup` provisions the isolated dev wallet's
+  headless boot credential before at-rest encryption. It generates or reuses
+  the Secret Service entry, converts it to a user-scoped encrypted systemd
+  credential through stdin, and installs only the encrypted-file binding in a
+  dedicated unit drop-in. `make dev-wallet-credential-status` is redacted and
+  read-only. The node consumes `wallet-passphrase` once before reading WKS1
+  rows; ordinary environment variables still cannot auto-unlock it.
 
 The isolated `zcl23-dev.service` uses the same `Type=notify` + external
 watchdog handshake as production, under a strict 4G memory envelope. A
@@ -249,7 +256,8 @@ before any owner restores canonical service armor.
   remains the sole value-moving step. Inspect requires an explicit expected
   network and clock. Neither leaf accepts an identity seed.
 - `make deploy` is owner-gated live deployment. For the isolated dev lane,
-  `zclassic23-dev dev generation activate --idempotency-key=<key>` is the sole
+  `zclassic23-dev dev generation activate
+  --input='{"idempotency_key":"<key>"}'` is the sole
   full-generation authority: its plan returns exact `commit_input`, and its
   commit is source/resident-CAS-bound with exact-process verification and
   rollback. Other dev publication, relink, and recovery-apply entry points

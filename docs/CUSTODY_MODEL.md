@@ -130,9 +130,18 @@ The passphrase is resolved in one place,
 order:
 
 1. force-locked (explicit `lock`) → NULL, wins over everything
-2. runtime passphrase (explicit `unlock`) → that value
-3. `ZCL_WALLET_PASSPHRASE` non-empty → the env value
-4. otherwise → NULL
+2. runtime passphrase (explicit stdin `unlock`, or the one boot credential)
+   → that value
+3. otherwise → NULL
+
+`ZCL_WALLET_PASSPHRASE` remains a first-creation/recovery policy input, but it
+cannot auto-unlock a live encrypted wallet. A headless service instead receives
+the user-scoped systemd credential named `wallet-passphrase`; boot reads its
+private bounded file once before the first WKS1 row and registers it in the
+same cleansable runtime buffer used by explicit unlock. A missing credential
+leaves the wallet locked, a malformed credential fails boot by name, and a
+wrong passphrase reaches the existing wallet persistence abort guards rather
+than silently dropping keys.
 
 NULL means "no encryption": writes go out in cleartext and enveloped rows on
 disk fail to decrypt and are dropped with a counted warning
@@ -270,7 +279,8 @@ node's uid. Therefore an agent that does not cooperate can:
 - read `<datadir>/.cookie` and call `sendtoaddress` straight over JSON-RPC,
   below the kernel and below this policy entirely
   (`app/controllers/src/rpc_client.c:184`);
-- read `ZCL_WALLET_PASSPHRASE` out of its own environment;
+- read any wallet secret deliberately placed in its own environment, and—when
+  it shares the node uid—may reach the node's user-scoped boot credential;
 - read the node's memory, where every spending key is resident.
 
 Confining an agent is an **operating-system** job: a separate uid with no read
