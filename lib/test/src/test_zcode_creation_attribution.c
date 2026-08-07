@@ -8,6 +8,7 @@
 #include "json/json.h"
 #include "vcs/zcode_creation_attribution.h"
 #include "vcs/zcode_commons_projection.h"
+#include "vcs/zcode_continuity_policy.h"
 #include "vcs/zcode_epoch_creation.h"
 #include "vcs/zcode_patronage.h"
 #include "vcs/zcode_patronage_settlement.h"
@@ -595,6 +596,140 @@ static int patronage_settlement_codec_test(void)
     return failures;
 }
 
+static int continuity_policy_codec_test(void)
+{
+    int failures = 0;
+    TEST("ZC23 continuity policy: exact bounded simulation wire rejects churn-shaped policy") {
+        uint8_t seed[32], secret[32], pubkey[32];
+        memset(seed, 64, sizeof(seed));
+        zcl_ed25519_keypair(pubkey, secret, seed);
+        struct vcs_zcode_continuity_policy_v1 policy;
+        memset(&policy, 0, sizeof(policy));
+        policy.schema_version = VCS_ZCODE_CONTINUITY_POLICY_VERSION;
+        policy.event_mask = VCS_ZCODE_CONTINUITY_BORN_RED_FIX |
+            VCS_ZCODE_CONTINUITY_SECURITY_FIX |
+            VCS_ZCODE_CONTINUITY_INDEPENDENT_REPRODUCTION |
+            VCS_ZCODE_CONTINUITY_COMPATIBILITY |
+            VCS_ZCODE_CONTINUITY_PRESERVATION;
+        policy.flags = VCS_ZCODE_CONTINUITY_NO_AUTHORITY |
+                       VCS_ZCODE_CONTINUITY_SIMULATION_ONLY;
+        uint8_t *roots[] = {
+            policy.network_genesis_root,
+            policy.zc23_token_or_simulation_root,
+            policy.patron_contributor_binding_root,
+            policy.package_root, policy.current_release_root,
+            policy.from_capsule_root, policy.to_capsule_root,
+            policy.proof_policy_root,
+        };
+        for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++)
+            creation_fill_root(roots[i], (uint8_t)(81 + i));
+        memcpy(policy.patron_zid_pubkey, pubkey, 32);
+        policy.maximum_cycles = 3;
+        policy.per_cycle_cap_atoms = UINT64_C(100000000);
+        policy.total_cap_atoms = UINT64_C(300000000);
+        policy.created_unix = 1000;
+        policy.expires_unix = 2000;
+        policy.sequence = 1;
+        ASSERT_EQ(vcs_zcode_continuity_policy_seal(
+                      &policy, secret, pubkey),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_continuity_policy_verify(&policy, 1500),
+                  VCS_ZCODE_CONTINUITY_OK);
+
+        uint8_t first[VCS_ZCODE_CONTINUITY_POLICY_WIRE_BYTES];
+        uint8_t second[VCS_ZCODE_CONTINUITY_POLICY_WIRE_BYTES];
+        uint8_t root_a[32], root_b[32];
+        struct vcs_zcode_continuity_policy_v1 parsed, zero;
+        memset(&zero, 0, sizeof(zero));
+        ASSERT_EQ(vcs_zcode_continuity_policy_serialize(&policy, first),
+                  VCS_ZCODE_CONTINUITY_OK);
+        static const uint8_t prefix_kat[] = {
+            'Z','C','C','O','N','T','\r','\n', 1,0, 31,0, 3,0,0,0,
+            81,81,81,81,81,81,81,81,
+        };
+        ASSERT(memcmp(first, prefix_kat, sizeof(prefix_kat)) == 0);
+        ASSERT_EQ(vcs_zcode_continuity_policy_parse(
+                      first, sizeof(first), &parsed),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_continuity_policy_serialize(&parsed, second),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT(memcmp(first, second, sizeof(first)) == 0);
+        ASSERT_EQ(vcs_zcode_continuity_policy_root(&policy, root_a),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_continuity_policy_root(&parsed, root_b),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT(memcmp(root_a, root_b, sizeof(root_a)) == 0);
+        static const uint8_t root_kat[32] = {
+            0x4b, 0x24, 0x7c, 0xbe, 0x21, 0x6e, 0x2e, 0x2e,
+            0xf3, 0xd7, 0x6c, 0x2e, 0xac, 0x4b, 0xb5, 0xd3,
+            0xaa, 0x1e, 0x57, 0x9f, 0xd4, 0x02, 0x10, 0xe0,
+            0xd9, 0x76, 0x82, 0x5d, 0x7c, 0x3d, 0x92, 0xcd,
+        };
+        ASSERT(memcmp(root_a, root_kat, sizeof(root_kat)) == 0);
+        ASSERT_EQ(vcs_zcode_continuity_policy_parse(
+                      first, sizeof(first) - 1, &parsed),
+                  VCS_ZCODE_CONTINUITY_WIRE_SIZE);
+        ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        uint8_t malformed[VCS_ZCODE_CONTINUITY_POLICY_WIRE_BYTES + 1];
+        memcpy(malformed, first, sizeof(first));
+        malformed[sizeof(first)] = 0;
+        ASSERT_EQ(vcs_zcode_continuity_policy_parse(
+                      malformed, sizeof(malformed), &parsed),
+                  VCS_ZCODE_CONTINUITY_WIRE_SIZE);
+        ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        malformed[0] ^= 1;
+        ASSERT_EQ(vcs_zcode_continuity_policy_parse(
+                      malformed, sizeof(first), &parsed),
+                  VCS_ZCODE_CONTINUITY_MAGIC);
+        ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        memcpy(malformed, first, sizeof(first));
+        malformed[8] = 2;
+        ASSERT_EQ(vcs_zcode_continuity_policy_parse(
+                      malformed, sizeof(first), &parsed),
+                  VCS_ZCODE_CONTINUITY_VERSION);
+        ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        memcpy(malformed, first, sizeof(first));
+        malformed[13] = 1;
+        ASSERT_EQ(vcs_zcode_continuity_policy_parse(
+                      malformed, sizeof(first), &parsed),
+                  VCS_ZCODE_CONTINUITY_FLAGS);
+        ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        memcpy(malformed, first, sizeof(first));
+        malformed[sizeof(first) - 1] ^= 1;
+        ASSERT_EQ(vcs_zcode_continuity_policy_parse(
+                      malformed, sizeof(first), &parsed),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_continuity_policy_verify(&parsed, 1500),
+                  VCS_ZCODE_CONTINUITY_SIGNATURE);
+
+        policy.event_mask |= UINT16_C(0x8000);
+        ASSERT_EQ(vcs_zcode_continuity_policy_validate(&policy),
+                  VCS_ZCODE_CONTINUITY_EVENT_MASK);
+        policy.event_mask &= UINT16_C(0x7fff);
+        memcpy(policy.to_capsule_root, policy.from_capsule_root, 32);
+        ASSERT_EQ(vcs_zcode_continuity_policy_validate(&policy),
+                  VCS_ZCODE_CONTINUITY_TRANSITION);
+        creation_fill_root(policy.to_capsule_root, 87);
+        policy.total_cap_atoms++;
+        ASSERT_EQ(vcs_zcode_continuity_policy_validate(&policy),
+                  VCS_ZCODE_CONTINUITY_CAP);
+        policy.total_cap_atoms--;
+        policy.maximum_cycles = UINT32_MAX;
+        policy.per_cycle_cap_atoms = UINT64_MAX;
+        policy.total_cap_atoms = UINT64_MAX;
+        ASSERT_EQ(vcs_zcode_continuity_policy_validate(&policy),
+                  VCS_ZCODE_CONTINUITY_CAP);
+        policy.maximum_cycles = 3;
+        policy.per_cycle_cap_atoms = UINT64_C(100000000);
+        policy.total_cap_atoms = UINT64_C(300000000);
+        policy.flags &= (uint8_t)~VCS_ZCODE_CONTINUITY_NO_AUTHORITY;
+        ASSERT_EQ(vcs_zcode_continuity_policy_validate(&policy),
+                  VCS_ZCODE_CONTINUITY_FLAGS);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_creation_attribution(void)
 {
     return creation_codec_test() + creation_rejection_test() +
@@ -602,5 +737,5 @@ int test_zcode_creation_attribution(void)
            epoch_creation_accounting_test() + commons_projection_test() +
            commons_projection_rebuild_test() +
            commons_command_noncreating_test() + patronage_intent_test() +
-           patronage_settlement_codec_test();
+           patronage_settlement_codec_test() + continuity_policy_codec_test();
 }
