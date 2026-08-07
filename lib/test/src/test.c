@@ -1564,6 +1564,8 @@ int main(int argc, char **argv)
     { extern int test_zcode_rank(void); failures += test_zcode_rank(); }
     { extern int test_zcode_discovery_rank(void);
       failures += test_zcode_discovery_rank(); }
+    { extern int test_zcode_seed_election(void);
+      failures += test_zcode_seed_election(); }
     { extern int test_zcode_dht(void); failures += test_zcode_dht(); }
     { extern int test_zcode_dht_delegation(void);
       failures += test_zcode_dht_delegation(); }

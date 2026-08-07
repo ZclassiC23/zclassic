@@ -5,7 +5,7 @@
  * ZCODE CAS before their signatures, roots, or cross-object authorities are
  * trusted, so parsing must be total and bounded for every possible input.
  *
- * Byte 0 selects one of nine parsers. The remainder is passed at its exact
+ * Byte 0 selects one of ten parsers. The remainder is passed at its exact
  * length. The epoch parser is the only arm that can allocate; it is freed on
  * every success or failure path. ASan+UBSan are supplied by FUZZ_CFLAGS.
  */
@@ -18,6 +18,7 @@
 #include "vcs/zcode_patronage_settlement.h"
 #include "vcs/zcode_shadow_policy.h"
 #include "vcs/zcode_reproduction_request.h"
+#include "vcs/zcode_seed.h"
 
 #include "base/hex.h"
 
@@ -27,7 +28,7 @@
 
 volatile sig_atomic_t g_shutdown_requested = 0;
 
-#define FUZZ_ZCODE_COMMONS_ARMS 9u
+#define FUZZ_ZCODE_COMMONS_ARMS 10u
 #define FUZZ_ZCODE_COMMONS_MAX_INPUT \
     (VCS_ZCODE_EPOCH_CREATION_MAX_WIRE_BYTES + 1u)
 
@@ -69,7 +70,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     if (size == 0 || size > FUZZ_ZCODE_COMMONS_MAX_INPUT)
         return 0;
 
-    const uint8_t arm = data[0] >= '0' && data[0] <= '8'
+    const uint8_t arm = data[0] >= '0' && data[0] <= '9'
         ? (uint8_t)(data[0] - '0')
         : (uint8_t)(data[0] % FUZZ_ZCODE_COMMONS_ARMS);
     const uint8_t *wire = data + 1;
@@ -135,6 +136,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         bool hex = fuzz_hex_wire(wire, wire_len, decoded, sizeof(decoded),
                                  &decoded_len);
         (void)vcs_zcode_reproduction_request_parse(
+            hex ? decoded : wire, hex ? decoded_len : wire_len, &out);
+        break;
+    }
+    case 9: {
+        struct vcs_c23_seed_v1 out;
+        uint8_t decoded[VCS_C23_SEED_WIRE_BYTES];
+        size_t decoded_len = 0;
+        bool hex = fuzz_hex_wire(wire, wire_len, decoded, sizeof(decoded),
+                                 &decoded_len);
+        (void)vcs_c23_seed_parse(
             hex ? decoded : wire, hex ? decoded_len : wire_len, &out);
         break;
     }
