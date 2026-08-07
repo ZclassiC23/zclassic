@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "name": "fixture/tiny-lines",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": []
+}
