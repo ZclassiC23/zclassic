@@ -18,8 +18,9 @@
  * VCS_ZCODE_TASK_INDEX_MAX_TASKS tasks, MAX_CANDIDATES candidates and
  * MAX_CONTEXTS contexts.
  *
- * Read-only: the index never writes to the CAS and never verifies receipt
- * signatures (evidence evaluation owns those). */
+ * Read-only: the index never writes to the CAS. Signed work receipts are
+ * re-rooted and signature-checked before they may affect display state; full
+ * proof-policy evaluation remains with the evidence owner. */
 
 #ifndef ZCL_VCS_ZCODE_TASK_INDEX_H
 #define ZCL_VCS_ZCODE_TASK_INDEX_H
@@ -38,6 +39,7 @@
 #define VCS_ZCODE_TASK_STATE_EXPIRED "EXPIRED"
 #define VCS_ZCODE_TASK_STATE_AWAITING_CANDIDATE "AWAITING_CANDIDATE"
 #define VCS_ZCODE_TASK_STATE_CANDIDATE_ADMITTED "CANDIDATE_ADMITTED"
+#define VCS_ZCODE_TASK_STATE_REPAIR_NEEDED "REPAIR_NEEDED"
 #define VCS_ZCODE_TASK_STATE_EVIDENCE_READY "EVIDENCE_READY"
 
 struct vcs_zcode_task_index_entry {
@@ -51,13 +53,22 @@ struct vcs_zcode_task_index_entry {
     uint32_t candidate_count; /* projected candidates binding this task */
     uint32_t receipt_count;
     uint32_t passing_receipt_count;
+    uint64_t latest_candidate_sequence;
+    char latest_candidate_root_hex[65];
+    char latest_candidate_source_root_hex[65];
+    char latest_patch_root_hex[65];
     char latest_work_receipt_hex[65];
+    char latest_receipt_output_root_hex[65];
+    uint8_t latest_receipt_status;
+    int32_t latest_receipt_exit_status;
     char state[24];
 };
 
 struct vcs_zcode_task_candidate_entry {
     char task_root_hex[65];
     char candidate_root_hex[65];
+    char candidate_source_root_hex[65];
+    char patch_root_hex[65];
     char author_pubkey_hex[65];
     uint64_t sequence;
     int64_t created_unix;

@@ -380,6 +380,7 @@ void zcl_native_handle_zcode_work_status(
                    entry->task_root_hex);
     const char *state = entry->expired ? "BLOCKED" : entry->state;
     bool evidence_ready = strcmp(state, VCS_ZCODE_TASK_STATE_EVIDENCE_READY) == 0;
+    bool repair_needed = strcmp(state, VCS_ZCODE_TASK_STATE_REPAIR_NEEDED) == 0;
     struct json_value expert;
     json_init(&expert); json_set_object(&expert);
     bool ok = json_push_kv_str(&expert, "task_root", entry->task_root_hex) &&
@@ -389,6 +390,10 @@ void zcl_native_handle_zcode_work_status(
                          entry->proof_policy_root_hex) &&
         json_push_kv_str(&expert, "toolchain_capsule_root",
                          entry->toolchain_capsule_root_hex) &&
+        json_push_kv_str(&expert, "candidate_root",
+                         entry->latest_candidate_root_hex) &&
+        json_push_kv_str(&expert, "patch_root",
+                         entry->latest_patch_root_hex) &&
         json_push_kv_str(&expert, "work_receipt_root",
                          entry->latest_work_receipt_hex) &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
@@ -397,10 +402,12 @@ void zcl_native_handle_zcode_work_status(
         json_push_kv_int(&reply->data, "changed_files", 0) &&
         json_push_kv_str(&reply->data, "public_api_changes", "not_yet_available") &&
         json_push_kv_str(&reply->data, "build_result",
-                         evidence_ready ? "passed" : "not_started") &&
+                         evidence_ready ? "passed" : repair_needed
+                           ? "failed" : "not_started") &&
         json_push_kv_str(&reply->data, "test_result",
                          evidence_ready ? "passed_declared_tests" :
-                                          "not_started") &&
+                         repair_needed ? "failed_or_not_reached" :
+                                         "not_started") &&
         json_push_kv_str(&reply->data, "sanitizer_result", "not_started") &&
         json_push_kv_str(&reply->data, "fuzz_result", "not_started") &&
         json_push_kv_str(&reply->data, "reproduction_grade", "none") &&
@@ -408,10 +415,14 @@ void zcl_native_handle_zcode_work_status(
         json_push_kv_str(&reply->data, "remaining_risks",
                          entry->expired ? "task expired" : evidence_ready
                             ? "proof profile and independent review not yet evaluated"
+                         : repair_needed
+                            ? "latest candidate failed confined package build or tests"
                             : "candidate not admitted") &&
         json_push_kv_int(&reply->data, "scope_violations", 0) &&
         json_push_kv_str(&reply->data, "next_safe_command",
-                         entry->expired ? "zcode work start" : "zcode work run") &&
+                         entry->expired ? "zcode work start" :
+                         repair_needed && entry->candidate_count >= 3u
+                           ? "zcode work start" : "zcode work run") &&
         json_push_kv(&reply->data, "expert", &expert);
     json_free(&expert); free(goal); vcs_zcode_task_index_free(index);
     if (!ok)

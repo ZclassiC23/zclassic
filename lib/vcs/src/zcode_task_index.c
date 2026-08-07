@@ -121,6 +121,9 @@ static void index_consider_object(const char *repo_root, const char *hex64,
             memset(e, 0, sizeof(*e));
             zcl_hex_encode(candidate.task_root, 32, e->task_root_hex);
             zcl_hex_encode(address, 32, e->candidate_root_hex);
+            zcl_hex_encode(candidate.candidate_source_root, 32,
+                           e->candidate_source_root_hex);
+            zcl_hex_encode(candidate.patch_root, 32, e->patch_root_hex);
             zcl_hex_encode(candidate.author_pubkey, 32, e->author_pubkey_hex);
             e->sequence = candidate.sequence;
             e->created_unix = candidate.created_unix;
@@ -239,10 +242,34 @@ static void index_derive_states(struct vcs_zcode_task_index *index,
 {
     for (size_t i = 0; i < index->task_count; i++) {
         struct vcs_zcode_task_index_entry *e = &index->tasks[i];
-        for (size_t c = 0; c < index->candidate_count; c++)
-            if (strcmp(index->candidates[c].task_root_hex,
-                       e->task_root_hex) == 0)
+        const struct vcs_zcode_task_candidate_entry *latest_candidate = NULL;
+        for (size_t c = 0; c < index->candidate_count; c++) {
+            const struct vcs_zcode_task_candidate_entry *candidate =
+                &index->candidates[c];
+            if (strcmp(candidate->task_root_hex, e->task_root_hex) == 0) {
                 e->candidate_count++;
+                if (!latest_candidate ||
+                    candidate->sequence > latest_candidate->sequence ||
+                    (candidate->sequence == latest_candidate->sequence &&
+                     (candidate->created_unix > latest_candidate->created_unix ||
+                      (candidate->created_unix == latest_candidate->created_unix &&
+                       strcmp(candidate->candidate_root_hex,
+                              latest_candidate->candidate_root_hex) > 0))))
+                    latest_candidate = candidate;
+            }
+        }
+        if (latest_candidate) {
+            e->latest_candidate_sequence = latest_candidate->sequence;
+            (void)snprintf(e->latest_candidate_root_hex,
+                           sizeof(e->latest_candidate_root_hex), "%s",
+                           latest_candidate->candidate_root_hex);
+            (void)snprintf(e->latest_candidate_source_root_hex,
+                           sizeof(e->latest_candidate_source_root_hex), "%s",
+                           latest_candidate->candidate_source_root_hex);
+            (void)snprintf(e->latest_patch_root_hex,
+                           sizeof(e->latest_patch_root_hex), "%s",
+                           latest_candidate->patch_root_hex);
+        }
         int64_t latest_finished = 0;
         for (size_t r = 0; r < index->receipt_count; r++) {
             const struct vcs_zcode_task_receipt_entry *receipt =
@@ -265,20 +292,34 @@ static void index_derive_states(struct vcs_zcode_task_index *index,
             if (!candidate_bound) continue;
             e->receipt_count++;
             if (receipt->status == VCS_ZCODE_WORK_PASS &&
-                receipt->exit_status == 0) {
+                receipt->exit_status == 0)
                 e->passing_receipt_count++;
-                if (receipt->finished_unix > latest_finished) {
-                    latest_finished = receipt->finished_unix;
-                    (void)snprintf(e->latest_work_receipt_hex,
-                                   sizeof(e->latest_work_receipt_hex), "%s",
-                                   receipt->receipt_root_hex);
-                }
+            if (latest_candidate &&
+                strcmp(receipt->candidate_root_hex,
+                       latest_candidate->candidate_root_hex) == 0 &&
+                (receipt->finished_unix > latest_finished ||
+                 (receipt->finished_unix == latest_finished &&
+                  strcmp(receipt->receipt_root_hex,
+                         e->latest_work_receipt_hex) > 0))) {
+                latest_finished = receipt->finished_unix;
+                (void)snprintf(e->latest_work_receipt_hex,
+                               sizeof(e->latest_work_receipt_hex), "%s",
+                               receipt->receipt_root_hex);
+                (void)snprintf(e->latest_receipt_output_root_hex,
+                               sizeof(e->latest_receipt_output_root_hex), "%s",
+                               receipt->output_root_hex);
+                e->latest_receipt_status = receipt->status;
+                e->latest_receipt_exit_status = receipt->exit_status;
             }
         }
         e->expired = now_unix > 0 && now_unix >= e->expires_unix;
         const char *state = e->expired ? VCS_ZCODE_TASK_STATE_EXPIRED
-            : e->passing_receipt_count > 0
+            : e->latest_work_receipt_hex[0] &&
+              e->latest_receipt_status == VCS_ZCODE_WORK_PASS &&
+              e->latest_receipt_exit_status == 0
                 ? VCS_ZCODE_TASK_STATE_EVIDENCE_READY
+            : e->latest_work_receipt_hex[0]
+                ? VCS_ZCODE_TASK_STATE_REPAIR_NEEDED
             : e->candidate_count > 0 ? VCS_ZCODE_TASK_STATE_CANDIDATE_ADMITTED
             : VCS_ZCODE_TASK_STATE_AWAITING_CANDIDATE;
         (void)snprintf(e->state, sizeof(e->state), "%s", state);

@@ -184,7 +184,8 @@ static bool run_excerpts_json(
 
 static bool run_candidate_workspace(const char *store,
                                     const struct vcs_zcode_task_v1 *task,
-                                    const char *task_hex, char out[4400],
+                                    const char *task_hex, uint32_t attempt,
+                                    const uint8_t source_root[32], char out[4400],
                                     bool *created)
 {
     char parent[ZWORK_RUN_PATH_MAX];
@@ -193,11 +194,11 @@ static bool run_candidate_workspace(const char *store,
                      (unsigned long)getuid(), task_hex);
     if (n <= 0 || (size_t)n >= sizeof(parent)) return false;
     struct zcl_result made = zcl_mkdir_p(parent, 0700);
-    n = snprintf(out, ZWORK_RUN_PATH_MAX, "%s/attempt-1", parent);
+    n = snprintf(out, ZWORK_RUN_PATH_MAX, "%s/attempt-%u", parent, attempt);
     if (!made.ok || n <= 0 || (size_t)n >= ZWORK_RUN_PATH_MAX) return false;
     if (mkdir(out, 0700) == 0) {
         *created = true;
-        if (vcs_tree_materialize(store, task->source_root, out,
+        if (vcs_tree_materialize(store, source_root, out,
                                  task->max_output_bytes, 0u) != VCS_OK) {
             ZCL_IGNORE_RESULT(
                 zcl_tree_remove(out),
@@ -310,7 +311,7 @@ static bool run_admit_input(
     const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_agent_context_v1 *context,
     const struct vcs_zcode_write_scope_v1 *scope, const char *author_hex,
-    const char *adapter_hex)
+    const char *adapter_hex, uint64_t candidate_sequence)
 {
     char *policy = run_wire_hex(workspace, task->proof_policy_root,
                                 VCS_ZCODE_PROOF_POLICY_WIRE_BYTES);
@@ -338,6 +339,8 @@ static bool run_admit_input(
         json_push_kv_str(input, "candidate_workspace", candidate_workspace) &&
         json_push_kv_str(input, "adapter_policy_root", adapter_hex) &&
         json_push_kv_str(input, "author_pubkey", author_hex) &&
+        json_push_kv_int(input, "candidate_sequence",
+                         (int64_t)candidate_sequence) &&
         json_push_kv_str(input, "action_kind",
                          VCS_BUILD_ACTION_KIND_PACKAGE_V1) &&
         json_push_kv_str(input, "profile", "zcode-v0.1") &&
@@ -405,6 +408,7 @@ static bool run_admit(
     const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_agent_context_v1 *context,
     const struct vcs_zcode_write_scope_v1 *scope,
+    uint64_t candidate_sequence,
     struct zcl_command_reply *reply)
 {
     char datadir[ZWORK_RUN_PATH_MAX];
@@ -430,6 +434,14 @@ static bool run_admit(
     sha3_256_init(&sha);
     sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
     if (rooted) sha3_256_write(&sha, context_root, sizeof(context_root));
+    if (rooted && candidate_sequence > 1u) {
+        uint8_t parent_root[32];
+        if (!zcl_hex_decode_lower(entry->latest_candidate_root_hex,
+                                  parent_root, sizeof(parent_root)))
+            rooted = false;
+        else
+            sha3_256_write(&sha, parent_root, sizeof(parent_root));
+    }
     sha3_256_finalize(&sha, adapter_root);
     zcl_hex_encode(adapter_root, 32, adapter_hex);
     if (!identity.ok || !rooted) {
@@ -439,7 +451,7 @@ static bool run_admit(
     struct json_value input;
     if (!run_admit_input(&input, workspace, datadir, candidate_workspace,
                          goal, entry, context_entry, task, context, scope,
-                         author_hex, adapter_hex)) {
+                         author_hex, adapter_hex, candidate_sequence)) {
         memory_cleanse(secret, sizeof(secret));
         return false;
     }
@@ -461,6 +473,8 @@ static bool run_admit(
     }
     const struct json_value *changed = json_get(&inner.data, "changed_files");
     const struct json_value *candidate = json_get(&inner.data, "candidate_root");
+    const struct json_value *candidate_source =
+        json_get(&inner.data, "candidate_source_root");
     const struct json_value *patch = json_get(&inner.data, "patch_root");
     const struct json_value *action = json_get(&inner.data, "action_id");
     struct db_build_receipt receipt;
@@ -484,9 +498,45 @@ static bool run_admit(
     char work_id[32];
     (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                    entry->task_root_hex);
-    bool ok = changed && candidate && patch && receipt.work_receipt_sha3[0] &&
+    bool passed = receipt.exit_status == 0;
+    char next_workspace[ZWORK_RUN_PATH_MAX] = {0};
+    bool next_created = false;
+    uint8_t next_source_root[32];
+    bool retry_ready = !passed && candidate_sequence < 3u &&
+        candidate_source && json_get_str(candidate_source) &&
+        zcl_hex_decode_lower(json_get_str(candidate_source), next_source_root,
+                             sizeof(next_source_root)) &&
+        run_candidate_workspace(workspace, task, entry->task_root_hex,
+                                (uint32_t)candidate_sequence + 1u,
+                                next_source_root, next_workspace,
+                                &next_created);
+    (void)next_created;
+    struct json_value diagnostic;
+    json_init(&diagnostic); json_set_object(&diagnostic);
+    bool diagnostic_ok = json_push_kv_str(&diagnostic, "stage",
+                                           "package_build_and_tests") &&
+        json_push_kv_int(&diagnostic, "attempt",
+                         (int64_t)candidate_sequence) &&
+        json_push_kv_int(&diagnostic, "exit_status", receipt.exit_status) &&
+        json_push_kv_str(&diagnostic, "evidence_root", receipt.output_sha3) &&
+        json_push_kv_str(&diagnostic, "work_receipt_root",
+                         receipt.work_receipt_sha3) &&
+        json_push_kv_bool(&diagnostic, "retry_safe", retry_ready);
+    struct json_value repair_packet;
+    json_init(&repair_packet); json_set_object(&repair_packet);
+    bool repair_packet_ok = !retry_ready ||
+        (candidate && patch && run_packet(&repair_packet, goal, next_workspace, entry,
+                    context_entry, task, context, scope) &&
+         json_push_kv_str(&repair_packet, "parent_candidate_root",
+                          json_get_str(candidate)) &&
+         json_push_kv_str(&repair_packet, "prior_patch_root",
+                          json_get_str(patch)) &&
+         json_push_kv(&repair_packet, "diagnostic", &diagnostic));
+    bool ok = changed && candidate && patch && diagnostic_ok &&
+        repair_packet_ok && receipt.work_receipt_sha3[0] &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
-        json_push_kv_str(&reply->data, "state", "EVIDENCE_READY") &&
+        json_push_kv_str(&reply->data, "state", passed ? "EVIDENCE_READY" :
+                         retry_ready ? "REPAIR_NEEDED" : "BLOCKED") &&
         json_push_kv_int(&reply->data, "changed_files",
                          json_get_int(changed)) &&
         json_push_kv_str(&reply->data, "candidate_root",
@@ -494,12 +544,24 @@ static bool run_admit(
         json_push_kv_str(&reply->data, "patch_root", json_get_str(patch)) &&
         json_push_kv_str(&reply->data, "work_receipt_root",
                          receipt.work_receipt_sha3) &&
-        json_push_kv_str(&reply->data, "build_result", "passed") &&
+        json_push_kv_str(&reply->data, "build_result",
+                         passed ? "passed" : "failed") &&
+        json_push_kv_int(&reply->data, "attempt",
+                         (int64_t)candidate_sequence) &&
+        json_push_kv(&reply->data, "diagnostic", &diagnostic) &&
+        (!retry_ready ||
+         json_push_kv_str(&reply->data, "candidate_workspace",
+                          next_workspace)) &&
+        (!retry_ready ||
+         json_push_kv(&reply->data, "repair_packet", &repair_packet)) &&
         json_push_kv_str(&reply->data, "adapter", "manual") &&
         json_push_kv_str(&reply->data, "next_safe_command",
-                         "zcode work status") &&
+                         passed ? "zcode work status" :
+                         retry_ready ? "edit candidate_workspace, then rerun zcode work run" :
+                                       "zcode work status") &&
         json_push_kv(&reply->data, "expert", &expert);
-    json_free(&expert); zcl_command_reply_free(&inner);
+    json_free(&repair_packet); json_free(&diagnostic); json_free(&expert);
+    zcl_command_reply_free(&inner);
     if (!ok)
         run_fail(reply, "ADMISSION_OUTPUT_FAILED", "render",
                  "candidate admission summary could not be rendered",
@@ -567,11 +629,46 @@ void zcl_native_handle_zcode_work_run(
         memcmp(context.task_root, task_root, 32) == 0 &&
         memcmp(context.source_root, task.source_root, 32) == 0 &&
         memcmp(context.goal_root, task.goal_root, 32) == 0;
+    if (strcmp(entry->state, VCS_ZCODE_TASK_STATE_EVIDENCE_READY) == 0) {
+        char work_id[32];
+        (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
+                       entry->task_root_hex);
+        bool ok = json_push_kv_str(&reply->data, "work_id", work_id) &&
+            json_push_kv_str(&reply->data, "state", "EVIDENCE_READY") &&
+            json_push_kv_str(&reply->data, "build_result", "passed") &&
+            json_push_kv_str(&reply->data, "next_safe_command",
+                             "zcode work status");
+        if (!ok)
+            run_fail(reply, "HANDOFF_OUTPUT_FAILED", "render",
+                     "evidence-ready summary could not be rendered",
+                     false, false);
+        free(goal); vcs_zcode_agent_context_free(&context);
+        vcs_zcode_task_index_free(index); return;
+    }
+    bool repairing = strcmp(entry->state,
+                            VCS_ZCODE_TASK_STATE_REPAIR_NEEDED) == 0;
+    if (entry->candidate_count >= 3u) {
+        run_fail(reply, "REPAIR_LIMIT_REACHED", "repair",
+                 "three candidate attempts are preserved; start a new bounded work item",
+                 false, false);
+        free(goal); vcs_zcode_agent_context_free(&context);
+        vcs_zcode_task_index_free(index); return;
+    }
+    uint64_t candidate_sequence = entry->candidate_count + 1u;
+    uint8_t materialize_root[32];
+    bool materialize_root_ok = true;
+    if (repairing)
+        materialize_root_ok = zcl_hex_decode_lower(
+            entry->latest_candidate_source_root_hex, materialize_root,
+            sizeof(materialize_root));
+    else
+        memcpy(materialize_root, task.source_root, sizeof(materialize_root));
     char candidate_workspace[ZWORK_RUN_PATH_MAX];
     bool created = false;
-    if (!bindings || !run_candidate_workspace(
-            workspace, &task, entry->task_root_hex, candidate_workspace,
-            &created)) {
+    if (!bindings || !materialize_root_ok || !run_candidate_workspace(
+            workspace, &task, entry->task_root_hex,
+            (uint32_t)candidate_sequence, materialize_root,
+            candidate_workspace, &created)) {
         run_fail(reply, "HANDOFF_REFUSED", "materialize",
                  bindings ? "isolated candidate workspace could not be created"
                           : "task and context bindings disagree",
@@ -589,10 +686,10 @@ void zcl_native_handle_zcode_work_run(
             free(goal); vcs_zcode_agent_context_free(&context);
             vcs_zcode_task_index_free(index); return;
         }
-        if (memcmp(candidate_root, task.source_root, 32) != 0) {
+        if (memcmp(candidate_root, materialize_root, 32) != 0) {
             bool handled = run_admit(
                 workspace, candidate_workspace, goal, entry, context_entry,
-                &task, &context, &scope, reply);
+                &task, &context, &scope, candidate_sequence, reply);
             if (!handled)
                 run_fail(reply, "CANDIDATE_ADMISSION_FAILED", "admit",
                          "scratch identity or existing task composition failed",
@@ -610,14 +707,16 @@ void zcl_native_handle_zcode_work_run(
                          context_entry, &task, &context, &scope) &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
         json_push_kv_str(&reply->data, "adapter", "manual") &&
-        json_push_kv_str(&reply->data, "state", "AWAITING_CANDIDATE") &&
+        json_push_kv_str(&reply->data, "state", repairing
+                         ? "REPAIR_NEEDED" : "AWAITING_CANDIDATE") &&
         json_push_kv_str(&reply->data, "candidate_workspace",
                          candidate_workspace) &&
         json_push_kv_bool(&reply->data, "workspace_created", created) &&
         json_push_kv(&reply->data, "adapter_packet", &packet) &&
         json_push_kv_str(&reply->data, "authority", "NONE_MANUAL_HANDOFF") &&
-        json_push_kv_str(&reply->data, "next_safe_command",
-                         "edit only candidate_workspace, then inspect status");
+        json_push_kv_str(&reply->data, "next_safe_command", repairing
+                         ? "edit candidate_workspace, then rerun zcode work run"
+                         : "edit only candidate_workspace, then inspect status");
     json_free(&packet); free(goal); vcs_zcode_agent_context_free(&context);
     vcs_zcode_task_index_free(index);
     if (!ok)

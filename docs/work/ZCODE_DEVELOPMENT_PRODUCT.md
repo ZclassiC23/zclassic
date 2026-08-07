@@ -236,12 +236,25 @@ deployment/consensus paths.
 | P4 start/status | `4a0b7be71085c4d00e6e348564346cdc032585f6` | raw roots, wires, timestamps, toolchain capsule, write-scope CSV, context symbol | at least 5 expert composition/status steps | same codec packet: 65.0% of package source | +593 / -40 | `workspace`, `goal`, optional `profile`; human-first status |
 | P5 manual handoff | `81502a4ae1d1b7148e13d314fe6f248def706abb` | candidate path construction and manual context/CAS lookup | 1 undocumented handoff procedure | reuses the exact P3 context with no expansion | +581 / -67 before generated docs/tests | isolated candidate tree and bounded packet; candidate admission/build remains next |
 | P6a candidate admission | `1021f81aec22542ea458cebef625922107d6fed3` | planned task/context roots, scope/recipe/lock wires, candidate/patch roots, action IDs, timestamps, scratch datadir, adapter and author roots | 1 expert admit invocation | exact P3 context reused | +217 / -8 before lint rationale/tests/docs | one in-scope edit reaches `CANDIDATE_ADMITTED`; an out-of-scope license edit fails closed before build |
-| P6b contained build | commit subject `feat(zcode): execute admitted package work` | worker approval, lease, action ID, receipt lookup | 1 worker/evidence procedure | no context expansion | +193 / -10 before tests/docs | the same run captures, builds and tests the candidate; signed `work_receipt.v1` rebuilds status as `EVIDENCE_READY` |
+| P6b contained build | `5fa6b1c60c37b278a13c26cff26890c214173e43` | worker approval, lease, action ID, receipt lookup | 1 worker/evidence procedure | no context expansion | +193 / -10 before tests/docs | the same run captures, builds and tests the candidate; signed `work_receipt.v1` rebuilds status as `EVIDENCE_READY` |
+| P6c bounded repair | commit subject `feat(zcode): bound failed candidate repair` | candidate sequence, parent and failure roots, next attempt path | 0 | reuses the same bounded excerpts; no build log expansion | recorded in commit | a born-red compile failure becomes `REPAIR_NEEDED`, preserves signed failure evidence and attempt 1, then a repaired attempt 2 reaches `EVIDENCE_READY`; attempt 4 is unreachable |
 
 The P5 delta includes promoting the build worker's private CAS-tree materializer
 to one shared ZVCS primitive; 59 production lines of duplicate materialization
 were removed. No canonical domain was added. The manual adapter is a closed
 registry entry, creates no candidate authority, and does not run a model.
+
+The P6 canonical-domain audit found no missing wire. `candidate.v1` already
+binds the task, cumulative patch, captured source, adapter-policy root, author,
+sequence, and creation time. `work_receipt.v1` already binds each candidate to
+its fixed action, failed or passing output evidence, confinement, toolchain,
+times, and signer. The repair adapter-policy digest additionally commits to the
+prior candidate root, while the next cumulative patch remains based on the
+task's immutable source as required by existing validation. The rebuildable
+task index orders attempts by candidate sequence and derives `REPAIR_NEEDED`
+only from a verified signed receipt for the latest candidate. Compiler output
+is intentionally summarized to the canonical failure class and exit status;
+unbounded logs are neither made authority nor copied into the adapter packet.
 
 ## Benchmark acceptance
 
