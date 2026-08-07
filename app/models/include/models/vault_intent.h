@@ -139,6 +139,13 @@ bool vault_intent_has_raw(struct node_db *ndb, const uint8_t plan_id[32]);
 int64_t vault_intent_reserved_total(struct node_db *ndb,
                                     const char *wallet_scope,
                                     const char *wallet_instance_id);
+/* Same reservation authority, but a planned row whose expiry is at or before
+ * `now_unix` no longer encumbers money even before the lifecycle writer has
+ * persisted its EXPIRED state. Proving/broadcast/reorg rows remain reserved. */
+int64_t vault_intent_reserved_total_at(struct node_db *ndb,
+                                       const char *wallet_scope,
+                                       const char *wallet_instance_id,
+                                       int64_t now_unix);
 const char *vault_intent_state_name(enum vault_intent_state state);
 
 #endif
