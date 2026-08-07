@@ -506,6 +506,13 @@ static int zpd_test_work_start(void)
                       "EVIDENCE_READY") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "build_result")),
                       "passed") == 0);
+        const struct json_value *run_expert = json_get(&reply.data, "expert");
+        const struct json_value *run_action = run_expert
+            ? json_get(run_expert, "action_id") : NULL;
+        ASSERT(run_action && strlen(json_get_str(run_action)) == 64);
+        char saved_action_id[65];
+        (void)snprintf(saved_action_id, sizeof(saved_action_id), "%s",
+                       json_get_str(run_action));
         zcl_command_reply_free(&reply);
         json_free(&input);
 
@@ -526,6 +533,28 @@ static int zpd_test_work_start(void)
         ASSERT(strcmp(json_get_str(json_get(&reply.data,
                                             "public_api_changes")),
                       "none") == 0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        char zbuild_datadir[4400];
+        (void)snprintf(zbuild_datadir, sizeof(zbuild_datadir), "%s",
+                       saved_candidate_workspace);
+        char *attempt_dir = strrchr(zbuild_datadir, '/');
+        ASSERT(attempt_dir != NULL);
+        (void)snprintf(attempt_dir,
+                       (size_t)(zbuild_datadir + sizeof(zbuild_datadir) -
+                                attempt_dir), "/zbuild");
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "datadir", zbuild_datadir));
+        ASSERT(json_push_kv_str(&input, "action_id", saved_action_id));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_evidence_test.v1");
+        zcl_native_handle_zcode_evidence(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(json_get_bool(json_get(&reply.data, "compile_satisfied")));
+        ASSERT(json_get_bool(json_get(&reply.data, "test_satisfied")));
+        ASSERT(json_get_bool(json_get(&reply.data, "policy_satisfied")));
         zcl_command_reply_free(&reply);
         json_free(&input);
 

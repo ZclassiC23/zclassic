@@ -7,7 +7,10 @@
 #include "base/serialize_le.h"
 #include "crypto/sha3.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include "vcs/build_action.h"
+#include "vcs/build_artifact_manifest.h"
+#include "vcs/package_build.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_work_swarm.h"
@@ -196,6 +199,7 @@ struct bf_verified_receipt {
     bool approved;
     bool local;
     bool review_approved;
+    bool package_test_passed;
 };
 
 static int bf_root_compare(const void *left, const void *right)
@@ -214,6 +218,66 @@ static bool bf_load_dev_object(const char *workspace, const char *root_hex,
 static bool bf_receipt_trusted(const struct bf_verified_receipt *receipt)
 {
     return receipt && (receipt->local || receipt->approved);
+}
+
+static bool bf_package_evidence_verify(
+    const char *workspace, const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_candidate_v1 *candidate,
+    const struct vcs_zcode_work_receipt_v1 *receipt,
+    bool *test_passed)
+{
+    *test_passed = false;
+    uint8_t *manifest_wire = NULL;
+    size_t manifest_len = 0;
+    if (vcs_object_load_raw_bounded(
+            workspace, receipt->output_root, VCS_BUILD_ARTIFACT_WIRE_MAX,
+            &manifest_wire, &manifest_len) != 0)
+        return false;
+    struct vcs_build_artifact_manifest_v1 manifest;
+    uint8_t checked[32];
+    bool manifest_ok = vcs_build_artifact_manifest_v1_parse(
+            manifest_wire, manifest_len, &manifest) &&
+        vcs_build_artifact_manifest_v1_root(&manifest, checked) &&
+        memcmp(checked, receipt->output_root, 32) == 0 &&
+        memcmp(manifest.action_sha3, receipt->action_root, 32) == 0 &&
+        manifest.total_bytes > 0 &&
+        manifest.total_bytes <= VCS_PACKAGE_BUILD_MAX_WIRE_BYTES;
+    free(manifest_wire);
+    if (!manifest_ok) return false;
+    size_t wire_len = (size_t)manifest.total_bytes;
+    uint8_t *wire = zcl_malloc(wire_len, "build_fabric.package_evidence");
+    if (!wire) return false;
+    size_t offset = 0;
+    for (uint32_t i = 0; i < manifest.chunk_count; i++) {
+        uint8_t *chunk = NULL;
+        size_t chunk_len = 0;
+        if (vcs_object_load_raw_bounded(
+                workspace, manifest.chunk_sha3[i],
+                VCS_BUILD_ARTIFACT_CHUNK_BYTES, &chunk, &chunk_len) != 0 ||
+            !vcs_build_artifact_manifest_v1_verify_chunk(
+                &manifest, i, chunk, chunk_len) ||
+            chunk_len > wire_len - offset) {
+            free(chunk); free(wire); return false;
+        }
+        memcpy(wire + offset, chunk, chunk_len);
+        offset += chunk_len;
+        free(chunk);
+    }
+    if (offset != wire_len) { free(wire); return false; }
+    struct vcs_package_build_receipt package;
+    bool ok = vcs_package_build_parse(wire, wire_len, &package) ==
+            VCS_PACKAGE_BUILD_OK &&
+        memcmp(package.package_root, candidate->candidate_source_root, 32) == 0 &&
+        memcmp(package.recipe_root, task->acceptance_tests_root, 32) == 0 &&
+        memcmp(package.lock_root, task->dependency_lock_root, 32) == 0 &&
+        package.isolation == VCS_PACKAGE_BUILD_ISOLATION_FULL &&
+        vcs_package_build_installable(&package);
+    free(wire);
+    if (ok)
+        *test_passed = package.result_class ==
+                VCS_PACKAGE_BUILD_RESULT_TEST_PASS &&
+            package.test_ran && package.test_exit_code == 0;
+    return ok;
 }
 
 static bool bf_trusted_evidence_has_root(
@@ -314,6 +378,31 @@ static size_t bf_count_approved_kind(
             (required_output && memcmp(valid[i].receipt.output_root,
                                        required_output, 32) != 0))
             continue;
+        bool duplicate = false;
+        if (independent)
+            for (size_t j = 0; j < count; j++)
+                if (memcmp(signers[j], valid[i].receipt.signer_pubkey,
+                           32) == 0)
+                    duplicate = true;
+        if (!duplicate) {
+            memcpy(signers[count], valid[i].receipt.signer_pubkey, 32);
+            count++;
+        }
+    }
+    return count;
+}
+
+static size_t bf_count_tests(const struct bf_verified_receipt *valid,
+                             size_t valid_count, bool independent)
+{
+    uint8_t signers[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS][32];
+    size_t count = 0;
+    for (size_t i = 0; i < valid_count; i++) {
+        bool is_test = valid[i].work_kind == VCS_ZCODE_WORK_TEST ||
+                       valid[i].package_test_passed;
+        bool trusted = bf_receipt_trusted(&valid[i]) ||
+                       bf_has_local_match(valid, valid_count, i);
+        if (!is_test || !trusted) continue;
         bool duplicate = false;
         if (independent)
             for (size_t j = 0; j < count; j++)
@@ -434,6 +523,12 @@ struct zcl_result build_fabric_proof_evaluate(
             (policy.maximum_proof_age_seconds == 0 ||
              now - receipt.finished_unix <=
                  (int64_t)policy.maximum_proof_age_seconds);
+        bool package_test_passed = false;
+        if (verified && strcmp(receipt_action.kind,
+                              VCS_BUILD_ACTION_KIND_PACKAGE_V1) == 0)
+            verified = bf_package_evidence_verify(
+                workspace, &task, &candidate, &receipt,
+                &package_test_passed);
         if (!verified || valid_count >= VCS_ZCODE_PROOF_SET_MAX_RECEIPTS)
             continue;
         struct db_build_worker worker;
@@ -448,6 +543,7 @@ struct zcl_result build_fabric_proof_evaluate(
         valid[valid_count].approved = approved;
         valid[valid_count].local =
             strcmp(rows[i].trust_state, "LOCAL_ACCEPTED") == 0;
+        valid[valid_count].package_test_passed = package_test_passed;
         valid_count++;
     }
     for (size_t i = 0; i < valid_count; i++)
@@ -526,8 +622,7 @@ struct zcl_result build_fabric_proof_evaluate(
         ? bf_count_kind(valid, valid_count, VCS_ZCODE_WORK_BUILD,
                         selected_output, independent)
         : 0;
-    out->test_receipts = bf_count_kind(
-        valid, valid_count, VCS_ZCODE_WORK_TEST, NULL, independent);
+    out->test_receipts = bf_count_tests(valid, valid_count, independent);
     out->fuzz_receipts = bf_count_kind(
         valid, valid_count, VCS_ZCODE_WORK_FUZZ, NULL, independent);
     out->review_receipts = bf_count_kind(
