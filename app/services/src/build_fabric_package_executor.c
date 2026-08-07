@@ -175,8 +175,8 @@ static struct zcl_result bfp_load_inputs(
         vcs_package_lock_root(&out->lock, checked_lock) !=
             VCS_PACKAGE_DEPS_OK ||
         memcmp(checked_lock, task->dependency_lock_root, 32) != 0 ||
-        memcmp(out->lock.nodes[out->lock.count - 1u].root,
-               task->source_root, 32) != 0)
+        out->lock.nodes[out->lock.count - 1u].depth != 0 ||
+        out->lock.nodes[out->lock.count - 1u].name[0] == '\0')
         return ZCL_ERR(-1, "package-dependency-lock-target-mismatch");
     (void)snprintf(package_name, VCS_PACKAGE_RELEASE_NAME_MAX + 1u, "%s",
                    out->lock.nodes[out->lock.count - 1u].name);

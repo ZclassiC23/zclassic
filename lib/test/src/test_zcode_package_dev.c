@@ -390,6 +390,9 @@ static int zpd_test_work_start(void)
         request.input = &input;
         zcl_command_reply_init(&reply, "zcl.zcode_work_run_test.v1");
         zcl_native_handle_zcode_work_run(&request, &reply);
+        if (reply.status != ZCL_COMMAND_STATUS_PASSED)
+            printf("work admission failed: %s: %s\n", reply.error.code,
+                   reply.error.message);
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
         const struct json_value *candidate_workspace =
             json_get(&reply.data, "candidate_workspace");
@@ -397,6 +400,10 @@ static int zpd_test_work_start(void)
             json_get(&reply.data, "adapter_packet");
         ASSERT(candidate_workspace &&
                json_get_str(candidate_workspace)[0] == '/');
+        char saved_candidate_workspace[4400];
+        (void)snprintf(saved_candidate_workspace,
+                       sizeof(saved_candidate_workspace), "%s",
+                       json_get_str(candidate_workspace));
         ASSERT(packet && packet->type == JSON_OBJ);
         ASSERT(strcmp(json_get_str(json_get(packet, "goal")), "Fix x") == 0);
         ASSERT(json_get(packet, "selected_excerpts") != NULL);
@@ -407,7 +414,47 @@ static int zpd_test_work_start(void)
         struct stat candidate_stat;
         ASSERT(stat(json_get_str(candidate_workspace), &candidate_stat) == 0 &&
                S_ISDIR(candidate_stat.st_mode));
-        ASSERT(zcl_tree_remove(json_get_str(candidate_workspace)).ok);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        char candidate_license[4500];
+        (void)snprintf(candidate_license, sizeof(candidate_license),
+                       "%s/LICENSE", saved_candidate_workspace);
+        ASSERT(zpd_write(candidate_license, "proprietary\n"));
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_run_test.v1");
+        zcl_native_handle_zcode_work_run(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(strcmp(reply.error.code, "PATCH_OUTSIDE_SCOPE") == 0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        ASSERT(zpd_write(candidate_license, "MIT\n"));
+
+        char candidate_source[4500];
+        (void)snprintf(candidate_source, sizeof(candidate_source), "%s/src/x.c",
+                       saved_candidate_workspace);
+        ASSERT(zpd_write(candidate_source,
+                         "int x(void) { return 2; }\n"));
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_run_test.v1");
+        zcl_native_handle_zcode_work_run(&request, &reply);
+        if (reply.status != ZCL_COMMAND_STATUS_PASSED)
+            printf("candidate admission failed: %s: %s\n", reply.error.code,
+                   reply.error.message);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                      "CANDIDATE_ADMITTED") == 0);
+        ASSERT(json_get(&reply.data, "changed_files") &&
+               json_get_int(json_get(&reply.data, "changed_files")) == 1);
+        ASSERT(json_get(&reply.data, "candidate_root") != NULL);
         zcl_command_reply_free(&reply);
         json_free(&input);
 
@@ -422,6 +469,13 @@ static int zpd_test_work_start(void)
         ASSERT(strcmp(reply.error.code, "ADAPTER_REFUSED") == 0);
         zcl_command_reply_free(&reply);
         json_free(&input);
+        char session_root[4400];
+        (void)snprintf(session_root, sizeof(session_root), "%s",
+                       saved_candidate_workspace);
+        char *attempt = strrchr(session_root, '/');
+        ASSERT(attempt != NULL);
+        *attempt = '\0';
+        ASSERT(zcl_tree_remove(session_root).ok);
         zpd_fixture_cleanup(root);
         PASS();
     } _test_next:;

@@ -85,3 +85,39 @@ zcode.work.start candidate_source_sha256 # the nested improve handler reads this
 zcode.work.start adapter_policy_root # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
 zcode.work.start author_pubkey # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
 zcode.work.start remote_peer # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
+zcode.work.run mode # work run injects mode=admit into its private canonical admission request; request->input never reaches the nested handler.
+zcode.work.run datadir # work run derives a task-local scratch ZBuild directory for its private admission request; request->input never reaches it.
+zcode.work.run goal # work run reloads the canonical goal and injects it into its private admission request; request->input never reaches it.
+zcode.work.run proof_policy_hex # work run reloads the task-bound policy wire for its private admission request; request->input never reaches it.
+zcode.work.run dependency_lock_hex # work run reloads the task-bound lock wire for its private admission request; request->input never reaches it.
+zcode.work.run acceptance_recipe_hex # work run reloads the task-bound recipe wire for its private admission request; request->input never reaches it.
+zcode.work.run write_scope_csv # work run reloads the canonical write scope for its private admission request; request->input never reaches it.
+zcode.work.run model_policy_root # work run reloads the task-bound model policy for its private admission request; request->input never reaches it.
+zcode.work.run context_symbol # work run reloads the exact canonical context query for its private admission request; request->input never reaches it.
+zcode.work.run planned_task_root # work run injects the reverified task root into its private admission request; request->input never reaches it.
+zcode.work.run planned_context_root # work run injects the unique reverified context root into its private admission request; request->input never reaches it.
+zcode.work.run candidate_workspace # work run derives the isolated task workspace for its private admission request; request->input never reaches it.
+zcode.work.run adapter_policy_root # work run derives the fixed manual-adapter commitment for its private admission request; request->input never reaches it.
+zcode.work.run author_pubkey # work run derives the scratch worker public key for its private admission request; request->input never reaches it.
+zcode.work.run action_kind # work run fixes the private admission action to the closed whole-package executor; request->input never reaches it.
+zcode.work.run profile # work run fixes the private build profile label; request->input never reaches it.
+zcode.work.run expires_unix # work run reloads the task expiry for its private admission request; request->input never reaches it.
+zcode.work.run max_changed_files # work run reloads the task limit for its private admission request; request->input never reaches it.
+zcode.work.run max_patch_bytes # work run reloads the task limit for its private admission request; request->input never reaches it.
+zcode.work.run max_context_bytes # work run reloads the task limit for its private admission request; request->input never reaches it.
+zcode.work.run max_cpu_seconds # work run reloads the task limit for its private admission request; request->input never reaches it.
+zcode.work.run max_memory_bytes # work run reloads the task limit for its private admission request; request->input never reaches it.
+zcode.work.run max_output_bytes # work run reloads the task limit for its private admission request; request->input never reaches it.
+zcode.work.run fixed_input_path # the nested handler reads this only for non-package expert actions; work run fixes a package action.
+zcode.work.run preprocessed_path # the nested handler reads this only for non-package expert actions; work run fixes a package action.
+zcode.work.run fixed_input_relpath # the nested handler reads this only for non-package expert actions; work run fixes a package action.
+zcode.work.run source_root # the nested handler reads this only as an optional expert cross-check; work run rederives source authority.
+zcode.work.run dependency_lock_root # the nested handler reads this only as an optional expert cross-check; work run rederives lock authority.
+zcode.work.run acceptance_tests_root # the nested handler reads this only as an optional expert cross-check; work run rederives recipe authority.
+zcode.work.run write_scope_root # the nested handler reads this only as an optional expert cross-check; work run rederives scope authority.
+zcode.work.run candidate_sequence # the nested handler applies the fixed first-attempt default; request->input never reaches it.
+zcode.work.run candidate_created_unix # the nested handler derives candidate time inside the private request; request->input never reaches it.
+zcode.work.run patch_root # the nested handler reads this only as an optional expert cross-check; work run derives the patch.
+zcode.work.run candidate_source_root # the nested handler reads this only as an optional expert cross-check; work run captures the candidate tree.
+zcode.work.run candidate_source_sha256 # the nested handler derives this from the candidate manifest for explicit admission; request->input never reaches it.
+zcode.work.run remote_peer # the nested handler reads this only for opt-in P2P execution; work run remains local scratch-only.

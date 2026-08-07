@@ -44,7 +44,8 @@ int vcs_tree_materialize(const char *object_store_root,
 {
     struct stat st;
     if (!object_store_root || !tree_hash || !destination ||
-        maximum_bytes == 0 || (file_mode != 0400u && file_mode != 0600u) ||
+        maximum_bytes == 0 ||
+        (file_mode != 0u && file_mode != 0400u && file_mode != 0600u) ||
         lstat(destination, &st) != 0 || !S_ISDIR(st.st_mode))
         return VCS_ERR;
     struct vcs_manifest tree;
@@ -81,7 +82,8 @@ int vcs_tree_materialize(const char *object_store_root,
         char *slash = strrchr(parent, '/');
         if (slash) *slash = '\0';
         struct zcl_result made = zcl_mkdir_p(parent, 0700);
-        if (!made.ok || !materialize_write(path, bytes, len, file_mode))
+        uint32_t mode = file_mode ? file_mode : entry->mode & 0777u;
+        if (!made.ok || !materialize_write(path, bytes, len, mode))
             result = VCS_ERR;
         free(bytes);
         if (result != VCS_OK) break;

@@ -90,8 +90,9 @@ bool vcs_tree_load(const char *repo_root, const uint8_t tree_hash[32],
                    struct vcs_manifest *out);
 
 /* Rebuild one captured tree from verified CAS blobs into an existing empty
- * destination. Files are created with O_EXCL and the caller-selected 0400 or
- * 0600 mode; source paths must remain canonical regular files. This is the
+ * destination. Files are created with O_EXCL and either their captured mode
+ * (file_mode 0) or the caller-selected 0400/0600 mode; source paths must
+ * remain canonical regular files. This is the
  * shared materializer for confined builds and candidate handoff workspaces. */
 int vcs_tree_materialize(const char *object_store_root,
                          const uint8_t tree_hash[32],
