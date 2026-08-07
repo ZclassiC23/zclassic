@@ -660,6 +660,12 @@ int test_codeindex(void)
                                        &selected).ok &&
              strcmp(selected.selected.name, "helper_add") == 0 &&
              strcmp(selected.why, "exact_symbol_override") == 0);
+    CI_CHECK("behavior-only goal gets an explicit project-entry fallback",
+             zcode_goal_context_select(
+                 FIX, "Eliminate the seeded oscillation", NULL,
+                 &selected).ok &&
+             selected.selected.name[0] != '\0' &&
+             strcmp(selected.why, "project_entry_fallback") == 0);
 
     /* refs */
     struct ci_ref refs[32];

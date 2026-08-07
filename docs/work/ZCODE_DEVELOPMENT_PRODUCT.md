@@ -246,6 +246,7 @@ deployment/consensus paths.
 | P4 show / P10 acceptance | commit subject `docs(zcode): add the development acceptance path` | separate expert status spelling and undocumented acceptance procedure | 0 (`show` is the same verified read path) | no context expansion | recorded in commit | five-minute walkthrough plus one exact hermetic target covering source identity, isolation, scope refusal, repair, evidence, projection rebuild and explicit acceptance |
 | P9 first self-host | `ac2709e190e9d9734cc88e1b6c649e1aa0280588` | all roots, wires, timestamps, toolchain and action IDs | ordinary path is 5 commands from goal through status | 541 / 1,487 source bytes (36.4%), 1 file, 1 symbol, 11,227 us | accepted patch +8 / -1 in a test-only fixture | one attempt passed confined build and declared tests, explicit acceptance reached PROVEN, and the committed files were byte-identical to the captured candidate |
 | P7 manual review | commit subject `feat(zcode): execute independent manual reviews` | review wire, findings root, proof-set root, reviewer key and REVIEW action/receipt construction | replaces the expert review ceremony with one command | reviews the existing immutable non-review proof set; no context expansion | recorded in commit | a distinct scratch reviewer signs existing `review.v1` and a REVIEW receipt; status rebuilds verdict and review root from CAS without opening the scratch database |
+| P9 frozen benchmark | commit subject `test(zcode): prove the twelve-task development benchmark` | exact symbols plus all roots, wires, timestamps, action IDs and scratch paths | ordinary success path is exactly 5 commands | 312 / 816 aggregate source bytes (38.2%); 70,859 us selection time | recorded in commit | 10/12 compiled, satisfied `quick`, and reached PROVEN; 2/2 out-of-scope requests failed closed; 14.933 s total |
 
 The P5 delta includes promoting the build worker's private CAS-tree materializer
 to one shared ZVCS primitive; 59 production lines of duplicate materialization
@@ -363,6 +364,48 @@ has a concise human summary; and honest context/time measurements.
 
 Each slice reports expert inputs and commands removed, context reduction,
 production lines added, lines deleted/consolidated, and benchmark effect.
+
+### Frozen twelve-task result
+
+The permanent `test_zcode_package_dev` benchmark runs twelve unchanged goals
+against three freshly generated, permissively licensed C23 package workspaces.
+The manual adapter harness performs the candidate edit because this host has no
+supported Codex single-run credential. It therefore measures the ZCODE product
+loop—context selection, isolation, capture, scope enforcement, package action,
+evidence, human acceptance, status rebuild, and workspace immutability—not the
+semantic coding quality of an external model.
+
+| # | Project | Class | Frozen goal | Result |
+|---:|---|---|---|---|
+| 1 | benchmark-0 | seeded repair | Repair seeded parser branch A | PROVEN |
+| 2 | benchmark-1 | seeded repair | Repair seeded parser branch B | PROVEN |
+| 3 | benchmark-2 | seeded repair | Repair seeded parser branch C | PROVEN |
+| 4 | benchmark-0 | seeded repair | Repair seeded return regression | PROVEN |
+| 5 | benchmark-1 | bounded API | Add bounded API behavior A | PROVEN |
+| 6 | benchmark-2 | bounded API | Add bounded API behavior B | PROVEN |
+| 7 | benchmark-0 | bounded API | Add bounded API behavior C | PROVEN |
+| 8 | benchmark-1 | malformed/UB | Repair malformed input handling | PROVEN |
+| 9 | benchmark-2 | malformed/UB | Repair portability boundary | PROVEN |
+| 10 | benchmark-0 | malformed/UB | Repair undefined behavior guard | PROVEN |
+| 11 | benchmark-1 | impossible | Modify LICENSE outside the write scope | refused: `PATCH_OUTSIDE_SCOPE` |
+| 12 | benchmark-2 | impossible | Replace package identity outside scope | refused: `PATCH_OUTSIDE_SCOPE` |
+
+Measured aggregate: 12 tasks, 3 projects, 10 compiling candidates, 10 policy
+satisfactions, 10 explicit human acceptances, and 2 scope refusals. Context was
+312 of 816 source bytes (38.2%), selected in 70,859 us; the whole benchmark
+took 14.933 seconds. Every successful path used five calls (`start`, two
+`run` calls for handoff and admission, `accept`, `status`), supplied no raw
+root or wire, and ended with a human summary. The impossible paths stopped at
+the second `run`. Exact source roots captured before the tasks matched after
+all tasks, proving zero authoritative-workspace writes. No result claims
+independent reproduction or adapter authorship.
+
+The born-red failure preceding this result was `CONTEXT_SELECTION_FAILED` for
+goal language with no literal indexed-symbol overlap. The tasks were not
+changed. The selector now performs a bounded deterministic project-entry
+fallback, reports `project_entry_fallback` instead of pretending the goal
+matched, and preserves the exact-symbol expert override. This was the largest
+recurring product failure class in the frozen benchmark.
 
 ## Hard boundary
 

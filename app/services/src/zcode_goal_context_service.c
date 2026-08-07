@@ -11,6 +11,9 @@
 #include <string.h>
 
 #define ZGOAL_HITS_PER_TOKEN 16
+#define ZGOAL_FALLBACK_GROUPS 128
+#define ZGOAL_FALLBACK_FILES 64
+#define ZGOAL_FALLBACK_SYMBOLS 32
 
 static bool zgoal_stopword(const char *word)
 {
@@ -109,6 +112,80 @@ static int zgoal_candidate_cmp(const void *a, const void *b)
 }
 
 static bool zgoal_add(struct zcode_goal_selection *out,
+                      const struct ci_search_hit *hit, const char *token);
+
+static int zgoal_fallback_score(const struct ci_symbol *symbol)
+{
+    int score = 0;
+    if (symbol->kind == 'T') score += 400;
+    else if (symbol->kind == 't') score += 250;
+    else if (symbol->kind == 'Y' || symbol->kind == 'S' ||
+             symbol->kind == 'E') score += 100;
+    if (strstr(symbol->def_path, "/src/") ||
+        strncmp(symbol->def_path, "src/", 4) == 0)
+        score += 80;
+    if (strstr(symbol->def_path, "/test") ||
+        strncmp(symbol->def_path, "test", 4) == 0)
+        score -= 200;
+    if (strcmp(symbol->name, "main") == 0) score -= 300;
+    return score;
+}
+
+/* A plain-language goal may describe behavior without sharing any spelling
+ * with a tiny project's symbols.  In that case select a deterministic real
+ * project entry point rather than requiring the user to discover and supply
+ * an internal name.  This is explicitly context policy, not evidence that the
+ * chosen symbol semantically satisfies the goal. */
+static struct zcl_result zgoal_project_fallback(
+    struct codeindex *index, struct zcode_goal_selection *out)
+{
+    struct ci_group groups[ZGOAL_FALLBACK_GROUPS];
+    int group_count = codeindex_groups(index, groups, ZGOAL_FALLBACK_GROUPS);
+    if (group_count < 0)
+        return ZCL_ERR(-1, "indexed project fallback could not list groups");
+    if (group_count == ZGOAL_FALLBACK_GROUPS) out->budget_exhausted = true;
+
+    for (int g = 0; g < group_count; g++) {
+        struct ci_file files[ZGOAL_FALLBACK_FILES];
+        int file_count = codeindex_files_in_group(
+            index, groups[g].path, files, ZGOAL_FALLBACK_FILES);
+        if (file_count < 0)
+            return ZCL_ERR(-1, "indexed project fallback could not list files");
+        if (file_count == ZGOAL_FALLBACK_FILES) out->budget_exhausted = true;
+        for (int f = 0; f < file_count; f++) {
+            struct ci_symbol symbols[ZGOAL_FALLBACK_SYMBOLS];
+            int symbol_count = codeindex_symbols_in_file(
+                index, files[f].path, symbols, ZGOAL_FALLBACK_SYMBOLS);
+            if (symbol_count < 0)
+                return ZCL_ERR(-1,
+                               "indexed project fallback could not list symbols");
+            if (symbol_count == ZGOAL_FALLBACK_SYMBOLS)
+                out->budget_exhausted = true;
+            for (int s = 0; s < symbol_count; s++) {
+                struct ci_search_hit hit = {
+                    .symbol = symbols[s],
+                    .score = zgoal_fallback_score(&symbols[s]),
+                };
+                if (!zgoal_add(out, &hit, "project"))
+                    return ZCL_ERR(-1,
+                                   "fallback selected symbol identity failed");
+                for (size_t c = 0; c < out->candidate_count; c++) {
+                    if (!zgoal_same(&out->candidates[c], &symbols[s]))
+                        continue;
+                    (void)snprintf(out->candidates[c].why,
+                                   sizeof(out->candidates[c].why),
+                                   "project_entry_fallback");
+                    break;
+                }
+            }
+        }
+    }
+    if (out->candidate_count == 0)
+        return ZCL_ERR(-1, "project contains no indexed context symbol");
+    return ZCL_OK;
+}
+
+static bool zgoal_add(struct zcode_goal_selection *out,
                       const struct ci_search_hit *hit, const char *token)
 {
     out->total_matches++;
@@ -194,7 +271,7 @@ struct zcl_result zcode_goal_context_select(
             }
         }
         if (result.ok && out->candidate_count == 0)
-            result = ZCL_ERR(-1, "goal did not match an indexed symbol");
+            result = zgoal_project_fallback(index, out);
         if (result.ok) {
             qsort(out->candidates, out->candidate_count,
                   sizeof(out->candidates[0]), zgoal_candidate_cmp);
@@ -202,9 +279,14 @@ struct zcl_result zcode_goal_context_select(
             (void)snprintf(out->selected_symbol_id,
                            sizeof(out->selected_symbol_id), "%s",
                            out->candidates[0].symbol_id);
-            (void)snprintf(out->why, sizeof(out->why), "%s:%s",
-                           out->candidates[0].matched_token,
-                           out->candidates[0].why);
+            if (strcmp(out->candidates[0].why,
+                       "project_entry_fallback") == 0)
+                (void)snprintf(out->why, sizeof(out->why), "%s",
+                               out->candidates[0].why);
+            else
+                (void)snprintf(out->why, sizeof(out->why), "%s:%s",
+                               out->candidates[0].matched_token,
+                               out->candidates[0].why);
         }
     }
     codeindex_close(index);

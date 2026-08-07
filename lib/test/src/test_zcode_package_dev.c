@@ -5,6 +5,7 @@
 #include "base/hex.h"
 #include "command/native_command.h"
 #include "json/json.h"
+#include "platform/time_compat.h"
 #include "util/file_tree_ops.h"
 #include "vcs/package_capsule.h"
 #include "vcs/package_prepare.h"
@@ -92,6 +93,215 @@ static bool zpd_fixture(const char *root, bool unknown_key)
     return zpd_write(path, unknown_key
         ? "{\"schema\":1,\"name\":\"zclassic23/fixture\",\"semver\":\"0.1.0-dev.1\",\"language\":\"c23\",\"license\":\"MIT\",\"include_dir\":\"include\",\"source_dir\":\"src\",\"dependencies\":[],\"smuggled\":true}\n"
         : "{\"schema\":1,\"name\":\"zclassic23/fixture\",\"semver\":\"0.1.0-dev.1\",\"language\":\"c23\",\"license\":\"MIT\",\"include_dir\":\"include\",\"source_dir\":\"src\",\"dependencies\":[]}\n");
+}
+
+static bool zpd_benchmark_project(const char *root, const char *name,
+                                  int value)
+{
+    ZCL_IGNORE_RESULT(zcl_tree_remove(root), "benchmark fixture reset");
+    if (mkdir(root, 0700) != 0) return false;
+    char path[512], text[512];
+    static const char *const dirs[] = {"src", "include", "tests"};
+    for (size_t i = 0; i < 3; i++) {
+        (void)snprintf(path, sizeof(path), "%s/%s", root, dirs[i]);
+        if (mkdir(path, 0700) != 0) return false;
+    }
+    (void)snprintf(path, sizeof(path), "%s/LICENSE", root);
+    if (!zpd_write(path, "MIT\n")) return false;
+    (void)snprintf(path, sizeof(path), "%s/include/x.h", root);
+    if (!zpd_write(path, "int x(void);\n")) return false;
+    (void)snprintf(text, sizeof(text), "int x(void) { return %d; }\n", value);
+    (void)snprintf(path, sizeof(path), "%s/src/x.c", root);
+    if (!zpd_write(path, text)) return false;
+    (void)snprintf(path, sizeof(path), "%s/tests/test.c", root);
+    if (!zpd_write(path, "int main(void) { return 0; }\n")) return false;
+    (void)snprintf(text, sizeof(text),
+        "{\"schema\":1,\"name\":\"fixture/%s\",\"semver\":\"0.1.0\","
+        "\"language\":\"c23\",\"license\":\"MIT\",\"include_dir\":"
+        "\"include\",\"source_dir\":\"src\",\"dependencies\":[]}\n",
+        name);
+    (void)snprintf(path, sizeof(path), "%s/zcode-package.json", root);
+    return zpd_write(path, text);
+}
+
+struct zpd_benchmark_case {
+    const char *kind;
+    const char *goal;
+    uint8_t project;
+    bool refused;
+};
+
+static int zpd_test_twelve_task_benchmark(void)
+{
+    static const struct zpd_benchmark_case cases[] = {
+        {"seeded_repair", "Repair seeded parser branch A", 0, false},
+        {"seeded_repair", "Repair seeded parser branch B", 1, false},
+        {"seeded_repair", "Repair seeded parser branch C", 2, false},
+        {"seeded_repair", "Repair seeded return regression", 0, false},
+        {"bounded_api", "Add bounded API behavior A", 1, false},
+        {"bounded_api", "Add bounded API behavior B", 2, false},
+        {"bounded_api", "Add bounded API behavior C", 0, false},
+        {"malformed_ub", "Repair malformed input handling", 1, false},
+        {"malformed_ub", "Repair portability boundary", 2, false},
+        {"malformed_ub", "Repair undefined behavior guard", 0, false},
+        {"impossible", "Modify LICENSE outside the write scope", 1, true},
+        {"impossible", "Replace package identity outside scope", 2, true},
+    };
+    int failures = 0;
+    TEST("zcode development benchmark: 12 frozen tasks across 3 projects") {
+        int64_t benchmark_started = platform_time_monotonic_us();
+        char roots[3][256];
+        for (int p = 0; p < 3; p++) {
+            (void)snprintf(roots[p], sizeof(roots[p]),
+                           "test-tmp/zcode-benchmark-%ld-%d",
+                           (long)getpid(), p);
+            char name[32];
+            (void)snprintf(name, sizeof(name), "benchmark-%d", p);
+            ASSERT(zpd_benchmark_project(roots[p], name, p + 1));
+        }
+        uint8_t source_roots[3][32], source_after[32];
+        for (int p = 0; p < 3; p++)
+            ASSERT(vcs_tree_capture_path(roots[p], source_roots[p]) == VCS_OK);
+        size_t compiling = 0, profile = 0, refused = 0, accepted = 0;
+        uint64_t selected_bytes = 0, total_bytes = 0, context_us = 0;
+        for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            struct json_value input;
+            json_init(&input); json_set_object(&input);
+            ASSERT(json_push_kv_str(&input, "workspace",
+                                    roots[cases[i].project]));
+            ASSERT(json_push_kv_str(&input, "goal", cases[i].goal));
+            ASSERT(json_push_kv_str(&input, "profile", "quick"));
+            struct zcl_command_request request = {.input = &input};
+            struct zcl_command_reply reply;
+            zcl_command_reply_init(&reply, "zcl.zcode_benchmark_start.v1");
+            zcl_native_handle_zcode_work_start(&request, &reply);
+            if (reply.status != ZCL_COMMAND_STATUS_PASSED)
+                printf("benchmark case %zu start: %s %s\n", i,
+                       reply.error.code, reply.error.message);
+            ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+            const struct json_value *context =
+                json_get(&reply.data, "selected_context");
+            ASSERT(context && context->type == JSON_OBJ);
+            selected_bytes += (uint64_t)json_get_int(
+                json_get(context, "selected_context_bytes"));
+            total_bytes += (uint64_t)json_get_int(
+                json_get(context, "total_source_bytes"));
+            context_us += (uint64_t)json_get_int(
+                json_get(context, "generation_us"));
+            char work_id[32];
+            (void)snprintf(work_id, sizeof(work_id), "%s",
+                json_get_str(json_get(&reply.data, "work_id")));
+            zcl_command_reply_free(&reply); json_free(&input);
+
+            json_init(&input); json_set_object(&input);
+            ASSERT(json_push_kv_str(&input, "workspace",
+                                    roots[cases[i].project]));
+            ASSERT(json_push_kv_str(&input, "work", work_id));
+            ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+            request.input = &input;
+            zcl_command_reply_init(&reply, "zcl.zcode_benchmark_run.v1");
+            zcl_native_handle_zcode_work_run(&request, &reply);
+            if (reply.status != ZCL_COMMAND_STATUS_PASSED)
+                printf("benchmark case %zu handoff: %s %s\n", i,
+                       reply.error.code, reply.error.message);
+            ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+            char candidate[4500];
+            (void)snprintf(candidate, sizeof(candidate), "%s",
+                json_get_str(json_get(&reply.data, "candidate_workspace")));
+            zcl_command_reply_free(&reply); json_free(&input);
+            char changed[4600], contents[128];
+            if (cases[i].refused) {
+                (void)snprintf(changed, sizeof(changed), "%s/LICENSE",
+                               candidate);
+                ASSERT(zpd_write(changed, "Proprietary\n"));
+            } else {
+                (void)snprintf(changed, sizeof(changed), "%s/src/x.c",
+                               candidate);
+                (void)snprintf(contents, sizeof(contents),
+                               "int x(void) { return %zu; }\n", i + 10u);
+                ASSERT(zpd_write(changed, contents));
+            }
+            json_init(&input); json_set_object(&input);
+            ASSERT(json_push_kv_str(&input, "workspace",
+                                    roots[cases[i].project]));
+            ASSERT(json_push_kv_str(&input, "work", work_id));
+            ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+            request.input = &input;
+            zcl_command_reply_init(&reply, "zcl.zcode_benchmark_admit.v1");
+            zcl_native_handle_zcode_work_run(&request, &reply);
+            if (cases[i].refused) {
+                ASSERT(reply.status == ZCL_COMMAND_STATUS_FAILED);
+                ASSERT(strcmp(reply.error.code, "PATCH_OUTSIDE_SCOPE") == 0);
+                refused++;
+            } else {
+                ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+                ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                              "EVIDENCE_READY") == 0);
+                compiling++;
+            }
+            zcl_command_reply_free(&reply); json_free(&input);
+
+            if (!cases[i].refused) {
+                json_init(&input); json_set_object(&input);
+                ASSERT(json_push_kv_str(&input, "workspace",
+                                        roots[cases[i].project]));
+                ASSERT(json_push_kv_str(&input, "work", work_id));
+                request.input = &input;
+                zcl_command_reply_init(&reply,
+                                       "zcl.zcode_benchmark_accept.v1");
+                zcl_native_handle_zcode_work_accept(&request, &reply);
+                ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+                ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                              "PROVEN") == 0);
+                profile++; accepted++;
+                zcl_command_reply_free(&reply); json_free(&input);
+
+                json_init(&input); json_set_object(&input);
+                ASSERT(json_push_kv_str(&input, "workspace",
+                                        roots[cases[i].project]));
+                ASSERT(json_push_kv_str(&input, "work", work_id));
+                request.input = &input;
+                zcl_command_reply_init(&reply,
+                                       "zcl.zcode_benchmark_status.v1");
+                zcl_native_handle_zcode_work_status(&request, &reply);
+                ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+                ASSERT(strcmp(json_get_str(json_get(&reply.data, "goal")),
+                              cases[i].goal) == 0);
+                ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                              "PROVEN") == 0);
+                ASSERT(json_get(&reply.data, "next_safe_command") != NULL);
+                zcl_command_reply_free(&reply); json_free(&input);
+            }
+            char *attempt = strrchr(candidate, '/');
+            ASSERT(attempt != NULL); *attempt = '\0';
+            ASSERT(zcl_tree_remove(candidate).ok);
+        }
+        ASSERT(compiling == 10);
+        ASSERT(profile == 10);
+        ASSERT(accepted == 10);
+        ASSERT(refused == 2);
+        ASSERT(selected_bytes > 0 && selected_bytes < total_bytes);
+        ASSERT(context_us > 0);
+        int64_t benchmark_elapsed =
+            platform_time_monotonic_us() - benchmark_started;
+        ASSERT(benchmark_elapsed > 0);
+        printf("benchmark: tasks=12 projects=3 compiling=%zu profile=%zu "
+               "accepted=%zu refused=%zu context=%llu/%llu bytes "
+               "context_us=%llu elapsed_us=%llu\n",
+               compiling, profile, accepted, refused,
+               (unsigned long long)selected_bytes,
+               (unsigned long long)total_bytes,
+               (unsigned long long)context_us,
+               (unsigned long long)benchmark_elapsed);
+        for (int p = 0; p < 3; p++) {
+            ASSERT(vcs_tree_capture_path(roots[p], source_after) == VCS_OK);
+            ASSERT(memcmp(source_roots[p], source_after,
+                          sizeof(source_after)) == 0);
+            ASSERT(zcl_tree_remove(roots[p]).ok);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
 }
 
 static int zpd_test_base(secp256k1_context *ctx, const uint8_t secret[32],
@@ -871,7 +1081,8 @@ int test_zcode_package_dev(void)
                    zpd_test_fail_closed(pubkey) +
                    zpd_test_project_inspect() +
                    zpd_test_project_init() +
-                   zpd_test_work_start();
+                   zpd_test_work_start() +
+                   zpd_test_twelve_task_benchmark();
     secp256k1_context_destroy(ctx);
     return failures;
 }
