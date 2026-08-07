@@ -1933,6 +1933,7 @@ zcode-package-foundation-test: zcode-package-base-test zcode-package-sha3-test z
 ZCODE_PACKAGE_ASAN_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer -O2 -g
 ZCODE_PACKAGE_ASAN_GROUPS := test_base_foundation test_codec_cursor \
 	test_sha3_256_x4 test_sha3_512_x4 test_zcode_score_receipt \
+	test_zcode_shadow_policy \
 	test_zcode_package_registry test_zcode_store test_zcode_publish \
 	test_zcode_package_dev test_zcode_recipe test_zcode_verify \
 	test_zcode_dev_objects

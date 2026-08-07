@@ -5,7 +5,7 @@
  * ZCODE CAS before their signatures, roots, or cross-object authorities are
  * trusted, so parsing must be total and bounded for every possible input.
  *
- * Byte 0 selects one of six parsers. The remainder is passed at its exact
+ * Byte 0 selects one of eight parsers. The remainder is passed at its exact
  * length. The epoch parser is the only arm that can allocate; it is freed on
  * every success or failure path. ASan+UBSan are supplied by FUZZ_CFLAGS.
  */
@@ -16,6 +16,9 @@
 #include "vcs/zcode_patronage.h"
 #include "vcs/zcode_patronage_funding.h"
 #include "vcs/zcode_patronage_settlement.h"
+#include "vcs/zcode_shadow_policy.h"
+
+#include "base/hex.h"
 
 #include <signal.h>
 #include <stddef.h>
@@ -23,11 +26,42 @@
 
 volatile sig_atomic_t g_shutdown_requested = 0;
 
-#define FUZZ_ZCODE_COMMONS_ARMS 6u
+#define FUZZ_ZCODE_COMMONS_ARMS 8u
 #define FUZZ_ZCODE_COMMONS_MAX_INPUT \
     (VCS_ZCODE_EPOCH_CREATION_MAX_WIRE_BYTES + 1u)
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+
+static bool fuzz_hex_wire(const uint8_t *text, size_t text_len,
+                          uint8_t *wire, size_t wire_cap, size_t *wire_len)
+{
+    size_t digits = 0;
+    for (size_t i = 0; i < text_len; i++) {
+        if (text[i] == ' ' || text[i] == '\n' || text[i] == '\r' ||
+            text[i] == '\t')
+            continue;
+        if (zcl_hex_nibble((char)text[i], true) < 0) return false;
+        digits++;
+    }
+    if (digits == 0 || (digits & 1u) != 0 || digits / 2u > wire_cap)
+        return false;
+    size_t out = 0;
+    int high = -1;
+    for (size_t i = 0; i < text_len; i++) {
+        if (text[i] == ' ' || text[i] == '\n' || text[i] == '\r' ||
+            text[i] == '\t')
+            continue;
+        int nibble = zcl_hex_nibble((char)text[i], true);
+        if (high < 0) {
+            high = nibble;
+        } else {
+            wire[out++] = (uint8_t)((high << 4) | nibble);
+            high = -1;
+        }
+    }
+    *wire_len = out;
+    return true;
+}
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
@@ -69,6 +103,26 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     case 5: {
         struct vcs_zcode_continuity_policy_v1 out;
         (void)vcs_zcode_continuity_policy_parse(wire, wire_len, &out);
+        break;
+    }
+    case 6: {
+        struct vcs_zcode_approved_reproducer_set_v1 out;
+        uint8_t decoded[VCS_ZCODE_APPROVED_REPRODUCER_SET_MAX_WIRE_BYTES];
+        size_t decoded_len = 0;
+        bool hex = fuzz_hex_wire(wire, wire_len, decoded, sizeof(decoded),
+                                 &decoded_len);
+        (void)vcs_zcode_approved_reproducer_set_parse(
+            hex ? decoded : wire, hex ? decoded_len : wire_len, &out);
+        break;
+    }
+    case 7: {
+        struct vcs_zcode_policy_candidate_v1 out;
+        uint8_t decoded[VCS_ZCODE_POLICY_CANDIDATE_WIRE_BYTES];
+        size_t decoded_len = 0;
+        bool hex = fuzz_hex_wire(wire, wire_len, decoded, sizeof(decoded),
+                                 &decoded_len);
+        (void)vcs_zcode_policy_candidate_parse(
+            hex ? decoded : wire, hex ? decoded_len : wire_len, &out);
         break;
     }
     }
