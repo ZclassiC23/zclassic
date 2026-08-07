@@ -3727,12 +3727,27 @@ test-two-node-peer-tip: zclassic23 zcl-rpc
 # and rebuilds the six projection tables byte-identically from CAS hashes.
 # DELIBERATELY opt-in (NOT in `make ci`) — it spawns two real nodes and
 # depends on the host Landlock/seccomp sandbox for the confined executor.
-.PHONY: test-zcode-dht-acceptance test-science-acceptance
+.PHONY: test-zcode-dht-acceptance test-science-acceptance \
+	zcode-reproduction-acceptance
 test-zcode-dht-acceptance: zclassic23 zcl-rpc
 	@bash tools/dev/zcode_dht_acceptance.sh
 
 test-science-acceptance: test-zcode-dht-acceptance
 	@bash tools/dev/science_acceptance.sh
+
+# O5 Living Commons protocol acceptance.  Keep these exact registered groups
+# together: the Score/Commons group owns the three disjoint scratch processes
+# and policy admission, shadow_policy owns expiry/replay/approval bounds,
+# swarm owns cancellation races, swarm_net owns real zpkgswm frames plus
+# corruption, restart/resume and provider failover, dht_service owns signed
+# root-only discovery/churn/restart, and science_store owns corrupt-CAS refusal
+# and byte-identical projection rebuild.  This is deliberately same-host
+# protocol proof; it cannot award the real independent-reproduction unit.
+ZCODE_REPRODUCTION_ACCEPTANCE_TESTS := test_zcode_score_receipt,test_zcode_shadow_policy,test_zcode_swarm,test_zcode_swarm_net,test_zcode_dht_service,test_zcode_science_store
+zcode-reproduction-acceptance:
+	@$(MAKE) --no-print-directory t-fast-exact \
+	  ONLY='$(ZCODE_REPRODUCTION_ACCEPTANCE_TESTS)'
+	@echo "zcode-reproduction-acceptance: PASS distinct_signer_simulation=true approved_fixture_policy=true actual_off_host_credit=false"
 
 # ── STICKINESS fault-injection matrix (sticky-node-plan §4 metric) ──
 #

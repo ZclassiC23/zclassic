@@ -454,6 +454,23 @@ elections. O7 may begin only after O1–O6 are green. P2SH, threshold signing,
 DKG, live ZC23 GENESIS/MINT/SEND, and all custody work remain outside this
 authorization.
 
+### O5 portable acceptance boundary
+
+The exact local acceptance command is `make zcode-reproduction-acceptance`.
+It composes the three-process requester/reproducer/observer policy path with
+the existing real `zpkgswm` wire, signed DHT discovery, corrupt-provider,
+restart/resume, and projection-rebuild owners. The three processes use
+separate scratch CAS and package stores and begin from root-addressed public
+objects. The result is labelled exactly `distinct_signer_simulation=true`,
+`approved_fixture_policy=true`, and `actual_off_host_credit=false`.
+
+The portable second-machine procedure is
+[`ZC23_REPRODUCTION_RUNBOOK.md`](./ZC23_REPRODUCTION_RUNBOOK.md). A confined
+byte-identical rebuild is necessary but insufficient: the reproduced report
+must also be bound into the existing signed work-receipt/proof-set path and
+admitted under the approved-reproducer policy. No command, fixture, process
+boundary, IP address, or hostname may manufacture physical independence.
+
 ## Patronage, commissions, and continuity
 
 Patronage never creates protocol emission, proof status, score, committee
