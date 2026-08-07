@@ -68,11 +68,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 562 |
+| Registry entries (branches + leaves) | 564 |
 | Top-level roots | 11 |
-| Branches | 129 |
-| Leaves (dispatchable command paths) | 433 |
-| … `ready` (live handler in this build) | 380 |
+| Branches | 130 |
+| Leaves (dispatchable command paths) | 434 |
+| … `ready` (live handler in this build) | 381 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 35 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -94,7 +94,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 22 | 4 | 18 |
-| `config/commands/zcode.def` | 125 | 27 | 98 |
+| `config/commands/zcode.def` | 127 | 28 | 99 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -903,6 +903,12 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode commons creation show` | ready | read / read / operator · fast/low | **`workspace`**, **`root`** | `zcl.zcode_commons_creation_show.v1` | `zclassic23 zcode commons creation show --input='{"workspace":".","root":"<64hex>"}'` | Show one creation attribution |
+
+#### `zcode.commons.shadow` — Read-only pre-genesis shadow-epoch proof
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode commons shadow plan` | ready | read / read / operator · fast/low | **`workspace`**, **`score_receipt_root`** | `zcl.zcode_commons_shadow.v1` | `zclassic23 zcode commons shadow plan --input='{"workspace":".","score_receipt_root":"<64hex>"}'` | Explain whether the first shadow epoch can be proven |
 
 #### `zcode.patronage` — Simulation-only commissions, continuity and gifts
 

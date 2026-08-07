@@ -477,6 +477,21 @@ static int commons_command_noncreating_test(void)
         zcl_command_reply_free(&status);
         json_free(&input);
 
+        char missing_score_root[65];
+        memset(missing_score_root, '2', sizeof(missing_score_root) - 1u);
+        missing_score_root[sizeof(missing_score_root) - 1u] = '\0';
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&input, "score_receipt_root",
+                                missing_score_root));
+        request.input = &input;
+        zcl_command_reply_init(&status, "zcl.test.commons_shadow.v1");
+        zcl_native_handle_zcode_commons_shadow_plan(&request, &status);
+        ASSERT(status.exit_code == ZCL_COMMAND_EXIT_INVALID);
+        ASSERT(access(workspace, F_OK) != 0);
+        zcl_command_reply_free(&status);
+        json_free(&input);
+
         char policy_hex[VCS_ZCODE_CONTINUITY_POLICY_WIRE_BYTES * 2u + 1u];
         char zero_root[65];
         memset(policy_hex, '0', sizeof(policy_hex) - 1u);

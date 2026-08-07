@@ -24,6 +24,26 @@ ZCL_COMMAND_BRANCH("zcode.commons", "zcode",
 ZCL_COMMAND_BRANCH("zcode.commons.creation", "zcode.commons",
                    "Creation-attribution inspection",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.shadow", "zcode.commons",
+                   "Read-only pre-genesis shadow-epoch proof",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.shadow.plan", "zcode.commons.shadow", "",
+    "Explain whether the first shadow epoch can be proven",
+    "Reloads and rederives one signed Score vertical for a registered C23 "
+    "package. It creates no attribution or epoch and awards zero shadow "
+    "units unless approved off-host reproduction is present.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,commons,shadow,epoch,reproduction",
+    "zcl.zcode_commons_shadow.input.v1",
+    "zcl.zcode_commons_shadow.v1", "workspace,score_receipt_root",
+    "workspace,score_receipt_root",
+    "zclassic23 zcode commons shadow plan --input='{\"workspace\":\".\",\"score_receipt_root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_commons_shadow_plan)
 
 ZCL_COMMAND_READY_READ(
     "zcode.commons.status", "zcode.commons", "", "Show Living Commons status",

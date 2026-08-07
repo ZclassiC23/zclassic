@@ -31,6 +31,7 @@ enum vcs_zcode_score_error {
     VCS_ZCODE_SCORE_PROOF,
     VCS_ZCODE_SCORE_DUPLICATE,
     VCS_ZCODE_SCORE_SIGNATURE,
+    VCS_ZCODE_SCORE_CAS,
 };
 
 struct vcs_zcode_score_receipt_v1 {
@@ -91,6 +92,12 @@ enum vcs_zcode_score_error vcs_zcode_score_receipt_seal(
     struct vcs_zcode_score_receipt_v1 *receipt,
     const uint8_t secret[32], const uint8_t pubkey[32]);
 enum vcs_zcode_score_error vcs_zcode_score_receipt_verify(
+    const struct vcs_zcode_score_receipt_v1 *receipt);
+/* Reload and rederive the complete task/candidate/policy/proof/PROVEN lane
+ * vertical from the existing workspace CAS.  No directory or object is
+ * created. */
+enum vcs_zcode_score_error vcs_zcode_score_receipt_verify_cas(
+    const char *workspace,
     const struct vcs_zcode_score_receipt_v1 *receipt);
 
 #endif /* ZCL_VCS_ZCODE_SCORE_RECEIPT_H */

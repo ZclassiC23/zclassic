@@ -6,7 +6,9 @@
 #include "codec/cursor.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
+#include "vcs/vcs_object.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 static const uint8_t score_magic[8] = {
@@ -37,6 +39,7 @@ const char *vcs_zcode_score_error_string(enum vcs_zcode_score_error error)
     case VCS_ZCODE_SCORE_PROOF: return "unverified-score-proof";
     case VCS_ZCODE_SCORE_DUPLICATE: return "duplicate-score-proof";
     case VCS_ZCODE_SCORE_SIGNATURE: return "score-signature-invalid";
+    case VCS_ZCODE_SCORE_CAS: return "score-cas-object-invalid";
     }
     return "unknown-score-error";
 }
@@ -238,6 +241,140 @@ enum vcs_zcode_score_error vcs_zcode_score_receipt_verify(
     return ed25519_verify(receipt->signature, id, sizeof(id),
                           receipt->lane_signer)
         ? VCS_ZCODE_SCORE_OK : VCS_ZCODE_SCORE_SIGNATURE;
+}
+
+static bool score_cas_load(const char *workspace, const uint8_t root[32],
+                           size_t maximum, uint8_t **wire, size_t *wire_len)
+{
+    *wire = NULL;
+    *wire_len = 0;
+    return workspace && vcs_object_load_raw_bounded(
+        workspace, root, maximum, wire, wire_len) == 0;
+}
+
+enum vcs_zcode_score_error vcs_zcode_score_receipt_verify_cas(
+    const char *workspace,
+    const struct vcs_zcode_score_receipt_v1 *receipt)
+{
+    if (!workspace || !receipt)
+        return VCS_ZCODE_SCORE_NULL;
+    if (vcs_zcode_score_receipt_verify(receipt) != VCS_ZCODE_SCORE_OK)
+        return VCS_ZCODE_SCORE_SIGNATURE;
+
+    struct vcs_zcode_task_v1 task;
+    struct vcs_zcode_candidate_v1 candidate;
+    struct vcs_zcode_proof_policy_v1 policy;
+    struct vcs_zcode_lane_receipt_v1 lane;
+    uint8_t proof_roots[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS][32];
+    struct vcs_zcode_work_receipt_v1
+        works[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS];
+    size_t proof_count = 0;
+    uint8_t *wire = NULL, observed_root[32];
+    size_t wire_len = 0;
+
+    if (!score_cas_load(workspace, receipt->task_root,
+                        VCS_ZCODE_TASK_WIRE_BYTES, &wire, &wire_len) ||
+        vcs_zcode_task_parse(wire, wire_len, &task) != VCS_ZCODE_DEV_OK ||
+        vcs_zcode_task_root(&task, observed_root) != VCS_ZCODE_DEV_OK ||
+        memcmp(observed_root, receipt->task_root, 32) != 0) {
+        free(wire);
+        return VCS_ZCODE_SCORE_CAS;
+    }
+    free(wire); wire = NULL;
+    if (!score_cas_load(workspace, receipt->candidate_root,
+                        VCS_ZCODE_CANDIDATE_WIRE_BYTES, &wire, &wire_len) ||
+        vcs_zcode_candidate_parse(wire, wire_len, &candidate) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_candidate_root(&candidate, observed_root) !=
+            VCS_ZCODE_DEV_OK ||
+        memcmp(observed_root, receipt->candidate_root, 32) != 0) {
+        free(wire);
+        return VCS_ZCODE_SCORE_CAS;
+    }
+    free(wire); wire = NULL;
+    if (!score_cas_load(workspace, receipt->proof_policy_root,
+                        VCS_ZCODE_PROOF_POLICY_WIRE_BYTES,
+                        &wire, &wire_len) ||
+        vcs_zcode_proof_policy_parse(wire, wire_len, &policy) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_proof_policy_root(&policy, observed_root) !=
+            VCS_ZCODE_DEV_OK ||
+        memcmp(observed_root, receipt->proof_policy_root, 32) != 0) {
+        free(wire);
+        return VCS_ZCODE_SCORE_CAS;
+    }
+    free(wire); wire = NULL;
+    if (!score_cas_load(workspace, receipt->proof_set_root,
+                        VCS_ZCODE_PROOF_SET_WIRE_MAX, &wire, &wire_len) ||
+        vcs_zcode_proof_set_parse(
+            wire, wire_len, proof_roots,
+            VCS_ZCODE_PROOF_SET_MAX_RECEIPTS, &proof_count) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_proof_set_root(proof_roots, proof_count, observed_root) !=
+            VCS_ZCODE_DEV_OK ||
+        memcmp(observed_root, receipt->proof_set_root, 32) != 0) {
+        free(wire);
+        return VCS_ZCODE_SCORE_CAS;
+    }
+    free(wire); wire = NULL;
+    if (!score_cas_load(workspace, receipt->proven_lane_root,
+                        VCS_ZCODE_LANE_WIRE_BYTES, &wire, &wire_len) ||
+        vcs_zcode_lane_receipt_parse(wire, wire_len, &lane) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_lane_receipt_id(&lane, observed_root) != VCS_ZCODE_DEV_OK ||
+        memcmp(observed_root, receipt->proven_lane_root, 32) != 0 ||
+        lane.lane != VCS_ZCODE_LANE_PROVEN ||
+        vcs_zcode_lane_receipt_verify(&lane, receipt->lane_signer) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_lane_receipt_validate_for_candidate(
+            &lane, &task, &candidate, &policy) != VCS_ZCODE_DEV_OK) {
+        free(wire);
+        return VCS_ZCODE_SCORE_PROOF;
+    }
+    free(wire); wire = NULL;
+
+    for (size_t i = 0; i < proof_count; i++) {
+        if (!score_cas_load(workspace, proof_roots[i],
+                            VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES,
+                            &wire, &wire_len) ||
+            vcs_zcode_work_receipt_parse(wire, wire_len, &works[i]) !=
+                VCS_ZCODE_DEV_OK ||
+            vcs_zcode_work_receipt_id(&works[i], observed_root) !=
+                VCS_ZCODE_DEV_OK ||
+            memcmp(observed_root, proof_roots[i], 32) != 0 ||
+            vcs_zcode_work_receipt_verify(
+                &works[i], works[i].signer_pubkey) != VCS_ZCODE_DEV_OK) {
+            free(wire);
+            return VCS_ZCODE_SCORE_PROOF;
+        }
+        free(wire); wire = NULL;
+    }
+
+    struct vcs_zcode_score_plan_input input = {
+        .task = &task,
+        .candidate = &candidate,
+        .proof_policy = &policy,
+        .proven_lane = &lane,
+        .proof_receipt_roots = proof_roots,
+        .work_receipts = works,
+        .work_receipt_count = proof_count,
+        .package_root = receipt->package_root,
+        .release_root = receipt->release_root,
+        .recipe_root = receipt->recipe_root,
+        .dependency_lock_root = receipt->dependency_lock_root,
+        .api_capsule_root = receipt->api_capsule_root,
+    };
+    struct vcs_zcode_score_receipt_v1 expected;
+    uint8_t actual_body[VCS_ZCODE_SCORE_BODY_BYTES];
+    uint8_t expected_body[VCS_ZCODE_SCORE_BODY_BYTES];
+    if (vcs_zcode_score_plan(&input, &expected) != VCS_ZCODE_SCORE_OK ||
+        vcs_zcode_score_receipt_body(receipt, actual_body) !=
+            VCS_ZCODE_SCORE_OK ||
+        vcs_zcode_score_receipt_body(&expected, expected_body) !=
+            VCS_ZCODE_SCORE_OK ||
+        memcmp(actual_body, expected_body, sizeof(actual_body)) != 0)
+        return VCS_ZCODE_SCORE_BINDING;
+    return VCS_ZCODE_SCORE_OK;
 }
 
 static int score_unit_for_receipt(

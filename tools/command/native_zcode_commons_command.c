@@ -9,9 +9,23 @@
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_commons_projection.h"
 #include "vcs/zcode_creation_attribution.h"
+#include "vcs/zcode_score_receipt.h"
 
 #include <stdlib.h>
 #include <string.h>
+
+struct zcc_shadow_package {
+    const char *name;
+    const char *content_root_hex;
+    const char *release_root_hex;
+};
+
+#define ZCODE_PACKAGE(name, dir, sequence, content, release, recipe, lock, capsule, dependency, signature) \
+    {name, content, release},
+static const struct zcc_shadow_package zcc_shadow_packages[] = {
+#include "../../config/zcode_package_registry.def"
+};
+#undef ZCODE_PACKAGE
 
 static const char *zcc_str(const struct json_value *input, const char *key)
 {
@@ -213,6 +227,109 @@ void zcl_native_handle_zcode_commons_rebuild(
     (void)json_push_kv_bool(&reply->data, "persisted", false);
     (void)json_push_kv_str(&reply->data, "authority", "canonical_workspace_cas");
     vcs_zcode_commons_projection_free(projection);
+}
+
+static const struct zcc_shadow_package *zcc_shadow_package_lookup(
+    const uint8_t package_root[32], const uint8_t release_root[32])
+{
+    for (size_t i = 0;
+         i < sizeof(zcc_shadow_packages) / sizeof(zcc_shadow_packages[0]);
+         i++) {
+        uint8_t package[32], release[32];
+        if (zcl_hex_decode_lower(zcc_shadow_packages[i].content_root_hex,
+                                 package, sizeof(package)) &&
+            zcl_hex_decode_lower(zcc_shadow_packages[i].release_root_hex,
+                                 release, sizeof(release)) &&
+            memcmp(package, package_root, 32) == 0 &&
+            memcmp(release, release_root, 32) == 0)
+            return &zcc_shadow_packages[i];
+    }
+    return NULL;
+}
+
+void zcl_native_handle_zcode_commons_shadow_plan(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    static const char *const keys[] = {
+        "workspace", "score_receipt_root"
+    };
+    const char *workspace = request ? zcc_str(request->input, "workspace")
+                                    : NULL;
+    uint8_t score_root[32], derived[32], *wire = NULL;
+    size_t wire_len = 0;
+    if (!request || !reply || !workspace ||
+        !zcc_keys(request->input, keys, 2) ||
+        !zcc_root(request->input, "score_receipt_root", score_root) ||
+        vcs_object_load_raw_bounded(
+            workspace, score_root, VCS_ZCODE_SCORE_WIRE_BYTES,
+            &wire, &wire_len) != 0) {
+        free(wire);
+        zcc_fail(reply, "SHADOW_SCORE_NOT_FOUND",
+                 "exact Score receipt root absent or input malformed");
+        return;
+    }
+    struct vcs_zcode_score_receipt_v1 score;
+    bool parsed = vcs_zcode_score_receipt_parse(
+            wire, wire_len, &score) == VCS_ZCODE_SCORE_OK &&
+        vcs_zcode_score_receipt_id(&score, derived) == VCS_ZCODE_SCORE_OK &&
+        memcmp(derived, score_root, 32) == 0;
+    free(wire);
+    if (!parsed ||
+        vcs_zcode_score_receipt_verify_cas(workspace, &score) !=
+            VCS_ZCODE_SCORE_OK) {
+        zcc_fail(reply, "SHADOW_VERTICAL_INVALID",
+                 "Score task/candidate/proof/PROVEN vertical did not rederive");
+        return;
+    }
+    const struct zcc_shadow_package *package = zcc_shadow_package_lookup(
+        score.package_root, score.release_root);
+    if (!package) {
+        zcc_fail(reply, "SHADOW_PACKAGE_UNREGISTERED",
+                 "Score package/release pair is absent from the generated registry");
+        return;
+    }
+
+    bool offhost = (score.awarded_mask &
+        (UINT8_C(1) << VCS_ZCODE_SCORE_INDEPENDENT_REPRODUCTION)) != 0;
+    (void)json_push_kv_str(&reply->data, "mode", "shadow_pre_genesis");
+    (void)json_push_kv_str(&reply->data, "package_name", package->name);
+    zcc_hex(&reply->data, "score_receipt_root", score_root);
+    zcc_hex(&reply->data, "package_root", score.package_root);
+    zcc_hex(&reply->data, "release_root", score.release_root);
+    zcc_hex(&reply->data, "task_root", score.task_root);
+    zcc_hex(&reply->data, "candidate_root", score.candidate_root);
+    zcc_hex(&reply->data, "proof_policy_root", score.proof_policy_root);
+    zcc_hex(&reply->data, "proof_set_root", score.proof_set_root);
+    zcc_hex(&reply->data, "proven_lane_root", score.proven_lane_root);
+    zcc_hex(&reply->data, "accepted_extraction_evidence_root",
+            score.evidence_roots[VCS_ZCODE_SCORE_ACCEPTED_EXTRACTION]);
+    zcc_hex(&reply->data, "independent_reproduction_evidence_root",
+            score.evidence_roots[VCS_ZCODE_SCORE_INDEPENDENT_REPRODUCTION]);
+    (void)json_push_kv_bool(&reply->data, "vertical_reverified", true);
+    (void)json_push_kv_bool(&reply->data,
+                            "approved_off_host_reproduction", offhost);
+    (void)json_push_kv_str(&reply->data, "shadow_status",
+        offhost ? "ready_for_creation_attribution_plan"
+                : "blocked_off_host_reproduction");
+    if (!offhost)
+        (void)json_push_kv_str(&reply->data, "blocker",
+            "no_owner_approved_off_host_reproducer_is_registered");
+    (void)json_push_kv_str(&reply->data, "why_shadow_units_would_exist",
+        "challenge_matured_public_c23_creation_with_approved_off_host_reproduction");
+    (void)json_push_kv_int(&reply->data, "shadow_award_atoms", 0);
+    (void)json_push_kv_bool(&reply->data,
+                            "creation_attribution_created", false);
+    (void)json_push_kv_bool(&reply->data,
+                            "epoch_creation_set_created", false);
+    (void)json_push_kv_bool(&reply->data, "moves_live_funds", false);
+    (void)json_push_kv_bool(&reply->data, "creates_ownership_right", false);
+    (void)json_push_kv_bool(&reply->data, "token_required_for_access", false);
+    (void)json_push_kv_bool(&reply->data, "money_establishes_truth", false);
+    (void)json_push_kv_bool(&reply->data,
+                            "permissive_license_validation_required", true);
+    (void)json_push_kv_str(&reply->data, "next_safe_action",
+        offhost ? "prepare_unsigned_shadow_attribution_for_owner_review"
+                : "register_and_verify_an_owner_approved_off_host_reproducer");
 }
 
 void zcl_native_handle_zcode_commons_verify(

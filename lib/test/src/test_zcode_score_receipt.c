@@ -549,6 +549,13 @@ static int test_score_package_verticals(void)
                 workspace, &task, &candidate, &policy, &lane, works,
                 &score, task_root, candidate_root, proof_set_root,
                 lane_root, score_root));
+            ASSERT_EQ(vcs_zcode_score_receipt_verify_cas(workspace, &score),
+                      VCS_ZCODE_SCORE_OK);
+            struct vcs_zcode_score_receipt_v1 substituted_score = score;
+            substituted_score.task_root[0] ^= 1u;
+            ASSERT_EQ(vcs_zcode_score_receipt_verify_cas(
+                          workspace, &substituted_score),
+                      VCS_ZCODE_SCORE_SIGNATURE);
             ASSERT_EQ(vcs_zcode_proof_policy_root(&policy, policy_root),
                       VCS_ZCODE_DEV_OK);
             char task_hex[65], candidate_hex[65], policy_hex[65];
@@ -572,8 +579,48 @@ static int test_score_package_verticals(void)
                        vcs_zcode_score_unit_name(
                            (enum vcs_zcode_score_unit)i),
                        evidence_hex, work_hex,
-                       (score.awarded_mask & (UINT8_C(1) << i))
+                           (score.awarded_mask & (UINT8_C(1) << i))
                            ? "true" : "false");
+            }
+            if (strcmp(package->name, "zclassic23/sha3") == 0) {
+                struct json_value shadow_input;
+                json_init(&shadow_input); json_set_object(&shadow_input);
+                ASSERT(json_push_kv_str(&shadow_input, "workspace",
+                                        workspace));
+                ASSERT(json_push_kv_str(&shadow_input,
+                                        "score_receipt_root", score_hex));
+                struct zcl_command_request shadow_request = {
+                    .input = &shadow_input,
+                };
+                struct zcl_command_reply shadow_reply;
+                zcl_command_reply_init(&shadow_reply,
+                                       "zcl.test.commons_shadow.v1");
+                zcl_native_handle_zcode_commons_shadow_plan(
+                    &shadow_request, &shadow_reply);
+                ASSERT_EQ(shadow_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+                ASSERT_STR_EQ(json_get_str(json_get(
+                    &shadow_reply.data, "package_name")),
+                    "zclassic23/sha3");
+                ASSERT_STR_EQ(json_get_str(json_get(
+                    &shadow_reply.data, "shadow_status")),
+                    "blocked_off_host_reproduction");
+                ASSERT_STR_EQ(json_get_str(json_get(
+                    &shadow_reply.data, "blocker")),
+                    "no_owner_approved_off_host_reproducer_is_registered");
+                ASSERT_EQ(json_get_int(json_get(
+                    &shadow_reply.data, "shadow_award_atoms")), 0);
+                ASSERT(!json_get_bool(json_get(
+                    &shadow_reply.data, "creation_attribution_created")));
+                ASSERT(!json_get_bool(json_get(
+                    &shadow_reply.data, "epoch_creation_set_created")));
+                ASSERT(!json_get_bool(json_get(
+                    &shadow_reply.data, "moves_live_funds")));
+                ASSERT(!json_get_bool(json_get(
+                    &shadow_reply.data, "creates_ownership_right")));
+                ASSERT(!json_get_bool(json_get(
+                    &shadow_reply.data, "token_required_for_access")));
+                zcl_command_reply_free(&shadow_reply);
+                json_free(&shadow_input);
             }
             test_rm_rf(workspace);
         }
