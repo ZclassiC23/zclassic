@@ -30,11 +30,13 @@
 /* A custody snapshot can contend with the reducer's authoritative wallet and
  * vault readers while the dev lane is catching up.  Use the RPC client's
  * normal bounded read deadline: a shorter front-door latency budget turned a
- * valid six-second snapshot into the false claim that its endpoint was
- * unreachable.  Freshness is still decided from the returned snapshot, never
- * from how quickly it arrived. */
+ * valid snapshot into the false claim that its endpoint was unreachable. A
+ * live dev-lane restart reproduced a correct response just beyond ten seconds
+ * while the reducer held the authority lock, so retain a finite 30-second
+ * bound. Freshness is still decided from the returned snapshot, never from
+ * how quickly it arrived. */
 #define MVS_MONEY_RPC_CONNECT_MS 500L
-#define MVS_MONEY_RPC_TOTAL_MS 10000L
+#define MVS_MONEY_RPC_TOTAL_MS 30000L
 
 static metaverse_agent_rpc_fn g_money_rpc;
 

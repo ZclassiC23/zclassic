@@ -204,7 +204,7 @@ static int mb_money_portfolio(void)
              strstr(doc, "\"confirmed_zcl\":\"0.00000000\"") &&
              !strstr(doc, "/secret/") && !strstr(doc, "rpc_port"));
     MB_CHECK("custody reader keeps a bounded contention-tolerant deadline",
-             g_money_connect_ms == 500 && g_money_total_ms == 10000);
+             g_money_connect_ms == 500 && g_money_total_ms == 30000);
 
     r = metaverse_agent_service_liquidity(
         absolute, "dev", 1000, 10000, 10, doc, sizeof(doc), &n);
