@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 568 |
+| Registry entries (branches + leaves) | 576 |
 | Top-level roots | 11 |
-| Branches | 131 |
-| Leaves (dispatchable command paths) | 437 |
-| … `ready` (live handler in this build) | 384 |
+| Branches | 133 |
+| Leaves (dispatchable command paths) | 443 |
+| … `ready` (live handler in this build) | 390 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 35 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 145 |
+| Leaves with `effect=mutate` | 147 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 96 |
 
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 22 | 4 | 18 |
-| `config/commands/zcode.def` | 131 | 29 | 102 |
+| `config/commands/zcode.def` | 139 | 31 | 108 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -919,6 +919,22 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode commons shadow plan` | ready | read / read / operator · fast/low | **`workspace`**, **`score_receipt_root`**, **`policy_candidate_root`**, **`reproduction_request_root`**, **`reproduction_proof_set_root`**, **`epoch`**, **`now_unix`** | `zcl.zcode_commons_shadow.v1` | `zclassic23 zcode commons shadow plan --input='{"workspace":"/tmp/zclassic23-zcode-scratch","score_receipt_root":"<64hex>","policy_candidate_root":"<64hex>","reproduction_request_root":"<64hex>","reproduction_proof_set_root":"<64hex>","epoch":1,"now_unix":1}'` | Explain whether the first shadow epoch can be proven |
+| `zcode commons shadow status` | ready | read / read / operator · fast/low | **`workspace`** | `zcl.zcode_commons_shadow_status.v1` | `zclassic23 zcode commons shadow status --input='{"workspace":"/tmp/zclassic23-zcode-scratch"}'` | Show scratch shadow accounting status |
+| `zcode commons shadow verify` | ready | read / read / operator · fast/low | **`workspace`** | `zcl.zcode_commons_shadow_verify.v1` | `zclassic23 zcode commons shadow verify --input='{"workspace":"/tmp/zclassic23-zcode-scratch"}'` | Verify scratch shadow accounting structure |
+
+#### `zcode.commons.shadow.attribution` — Scratch-only creation-attribution simulation
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode commons shadow attribution plan` | ready | read / read / operator · fast/low | **`workspace`**, **`score_receipt_root`**, **`policy_candidate_root`**, **`reproduction_request_root`**, **`reproduction_proof_set_root`**, **`contributor_binding_root`**, **`epoch`**, **`now_unix`** | `zcl.zcode_commons_shadow_attribution.v1` | `zclassic23 zcode commons shadow attribution plan --input='{...}'` | Plan one creation-backed shadow attribution |
+| `zcode commons shadow attribution commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`score_receipt_root`**, **`policy_candidate_root`**, **`reproduction_request_root`**, **`reproduction_proof_set_root`**, **`contributor_binding_root`**, **`epoch`**, **`now_unix`** | `zcl.zcode_commons_shadow_attribution.v1` | `zclassic23 zcode commons shadow attribution commit --input='{...}'` | Store one verified shadow attribution in scratch CAS |
+
+#### `zcode.commons.shadow.epoch` — Scratch-only epoch-accounting simulation
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode commons shadow epoch plan` | ready | read / read / operator · fast/low | **`workspace`**, **`policy_candidate_root`**, **`attribution_root`**, **`fixture_branch_root`**, **`previous_epoch_creation_root`**, **`now_unix`** | `zcl.zcode_commons_shadow_epoch.v1` | `zclassic23 zcode commons shadow epoch plan --input='{...}'` | Plan exact shadow epoch accounting |
+| `zcode commons shadow epoch commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`policy_candidate_root`**, **`attribution_root`**, **`fixture_branch_root`**, **`previous_epoch_creation_root`**, **`now_unix`** | `zcl.zcode_commons_shadow_epoch.v1` | `zclassic23 zcode commons shadow epoch commit --input='{...}'` | Store one verified shadow epoch in scratch CAS |
 
 #### `zcode.commons.reproduction` — Portable simulation-only reproduction challenges
 
@@ -1337,6 +1353,8 @@ promise the same document shape.
 | `zcl.account.v1` | `app.account.show`, `app.account.whoami`, `app.account.add`, `app.account.role`, `app.account.suspend`, `app.account.unsuspend` |
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
 | `zcl.zcode_reproduction_challenge.v1` | `zcode.commons.reproduction.challenge.plan`, `zcode.commons.reproduction.challenge.commit` |
+| `zcl.zcode_commons_shadow_attribution.v1` | `zcode.commons.shadow.attribution.plan`, `zcode.commons.shadow.attribution.commit` |
+| `zcl.zcode_commons_shadow_epoch.v1` | `zcode.commons.shadow.epoch.plan`, `zcode.commons.shadow.epoch.commit` |
 | `zcl.zcode_patronage_offer.v1` | `zcode.patronage.offer.plan`, `zcode.patronage.offer.commit` |
 | `zcl.zcode_patronage_funding.v1` | `zcode.patronage.fund.plan`, `zcode.patronage.fund.commit` |
 | `zcl.zcode_continuity_policy.view.v1` | `zcode.continuity.plan`, `zcode.continuity.commit`, `zcode.continuity.status` |

@@ -13,6 +13,8 @@
 #include "core/uint256.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_build.h"
+#include "vcs/package_prepare.h"
+#include "vcs/package_publish.h"
 #include "vcs/package_release.h"
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/vcs_object.h"
@@ -28,6 +30,7 @@
 #include "vcs/zcode_reproduction_request.h"
 #include "vcs/zcode_score_receipt.h"
 #include "vcs/zcode_shadow_policy.h"
+#include "vcs/zcode_shadow_simulation.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -39,15 +42,18 @@ struct score_work_fixture {
 
 struct score_package_fixture {
     const char *name;
+    const char *dir;
+    uint64_t sequence;
     const char *content;
     const char *release;
     const char *recipe;
     const char *lock;
     const char *capsule;
+    const char *signature;
 };
 
 #define ZCODE_PACKAGE(name, dir, sequence, content, release, recipe, lock, capsule, dependency, signature) \
-    {name, content, release, recipe, lock, capsule},
+    {name, dir, sequence, content, release, recipe, lock, capsule, signature},
 static const struct score_package_fixture score_packages[] = {
 #include "../../../config/zcode_package_registry.def"
 };
@@ -2278,14 +2284,13 @@ static int test_reproduction_qualification(void)
 
         uint8_t release_root[32];
         uint8_t package[32], recipe[32], lock[32], capsule[32], network[32];
-        uint8_t author[32];
-        ASSERT(zcl_hex_decode_lower(score_packages[1].content, package, 32));
-        ASSERT(zcl_hex_decode_lower(score_packages[1].release,
+        ASSERT(zcl_hex_decode_lower(score_packages[0].content, package, 32));
+        ASSERT(zcl_hex_decode_lower(score_packages[0].release,
                                     release_root, 32));
-        ASSERT(zcl_hex_decode_lower(score_packages[1].recipe, recipe, 32));
-        ASSERT(zcl_hex_decode_lower(score_packages[1].lock, lock, 32));
-        ASSERT(zcl_hex_decode_lower(score_packages[1].capsule, capsule, 32));
-        score_fill(network, 0xa5); score_fill(author, 0xa6);
+        ASSERT(zcl_hex_decode_lower(score_packages[0].recipe, recipe, 32));
+        ASSERT(zcl_hex_decode_lower(score_packages[0].lock, lock, 32));
+        ASSERT(zcl_hex_decode_lower(score_packages[0].capsule, capsule, 32));
+        score_fill(network, 0xa5);
 
         struct vcs_zcode_task_v1 task;
         struct vcs_zcode_candidate_v1 candidate;
@@ -2293,10 +2298,6 @@ static int test_reproduction_qualification(void)
         struct vcs_zcode_lane_receipt_v1 lane;
         struct score_work_fixture works[VCS_ZCODE_SCORE_UNITS];
         uint8_t lane_secret[32], lane_pubkey[32];
-        ASSERT(score_fixture_for_roots(
-            &task, &candidate, &proof_policy, &lane, works,
-            lane_secret, lane_pubkey, package, lock, capsule, author));
-
         struct vcs_zcode_contributor_binding_v1 requester_binding;
         struct vcs_zcode_contributor_binding_v1 reproducer_binding;
         uint8_t requester_pubkey[32], requester_secret[32];
@@ -2307,6 +2308,10 @@ static int test_reproduction_qualification(void)
         ASSERT(qualification_test_binding(
             &reproducer_binding, network, 0xc1, 0xc2,
             reproducer_pubkey, reproducer_secret));
+        ASSERT(score_fixture_for_roots(
+            &task, &candidate, &proof_policy, &lane, works,
+            lane_secret, lane_pubkey, package, lock, capsule,
+            requester_pubkey));
         uint8_t requester_binding_root[32], reproducer_binding_root[32];
         ASSERT_EQ(vcs_zcode_contributor_binding_root(
                       &requester_binding, requester_binding_root),
@@ -2366,7 +2371,7 @@ static int test_reproduction_qualification(void)
         memcpy(entry.contributor_binding_root, reproducer_binding_root, 32);
         score_fill(entry.operator_group_root, 0xd3);
         memcpy(entry.action_root, manifest.action_sha3, 32);
-        entry.valid_from_epoch = 2;
+        entry.valid_from_epoch = 0;
         entry.valid_through_epoch = 8;
         entry.valid_from_unix = 1000;
         entry.valid_through_unix = 9000;
@@ -2407,7 +2412,7 @@ static int test_reproduction_qualification(void)
         memcpy(request.requester_contributor_binding_root,
                requester_binding_root, 32);
         request.created_unix = 1000;
-        request.expires_unix = 5000;
+        request.expires_unix = 605800;
         request.max_cpu_seconds = 60;
         request.max_processes = 4;
         request.max_memory_bytes = 1024 * 1024;
@@ -2545,6 +2550,152 @@ static int test_reproduction_qualification(void)
         ASSERT(!report.identity_linkage_complete);
         ASSERT_EQ(report.reproduce_rule, VCS_REPRODUCE_MATCH);
 
+        /* The shadow planner must reload the real frozen package manifest,
+         * signed release and LICENSE bytes rather than trusting Score roots. */
+        static const char publisher_pubkey_hex[] =
+            "03448effe2ae40eb4053acfceb9839163c881b22affff9572283caddeee9207ce4";
+        struct vcs_package_prepare_options package_options = {
+            .dir = score_packages[0].dir,
+            .publisher_sequence = score_packages[0].sequence,
+            .reward_address = "",
+            .chain_id = "zclassic-main",
+        };
+        ASSERT(zcl_hex_decode_lower(
+            publisher_pubkey_hex, package_options.publisher_pubkey,
+            sizeof(package_options.publisher_pubkey)));
+        struct vcs_package_prepared prepared;
+        char prepare_detail[256];
+        ASSERT_EQ(vcs_package_prepare(
+                      &package_options, &prepared, prepare_detail,
+                      sizeof(prepare_detail)), VCS_PACKAGE_PREPARE_OK);
+        ASSERT(memcmp(prepared.package_root, package, 32) == 0);
+        ASSERT(zcl_hex_decode_lower(
+            score_packages[0].signature, prepared.release.signature,
+            sizeof(prepared.release.signature)));
+        ASSERT_EQ(vcs_package_release_verify(&prepared.release),
+                  VCS_PACKAGE_RELEASE_OK);
+        uint8_t prepared_release_root[32];
+        ASSERT_EQ(vcs_package_release_id(
+                      &prepared.release, prepared_release_root),
+                  VCS_PACKAGE_RELEASE_OK);
+        ASSERT(memcmp(prepared_release_root, release_root, 32) == 0);
+        uint8_t *package_release_wire = NULL;
+        size_t package_release_wire_len = 0;
+        ASSERT_EQ(vcs_package_release_serialize(
+                      &prepared.release, &package_release_wire,
+                      &package_release_wire_len), VCS_PACKAGE_RELEASE_OK);
+        ASSERT(vcs_object_put_addressed(
+            workspace, package, prepared.manifest_wire,
+            prepared.manifest_wire_len));
+        ASSERT(vcs_object_put_addressed(
+            workspace, release_root, package_release_wire,
+            package_release_wire_len));
+        const struct vcs_package_file *license_file = NULL;
+        for (size_t i = 0; i < prepared.manifest.count; i++)
+            if (strcmp(prepared.manifest.files[i].path, "LICENSE") == 0)
+                license_file = &prepared.manifest.files[i];
+        ASSERT(license_file != NULL);
+        uint8_t chunk[VCS_PACKAGE_CHUNK_BYTES];
+        for (uint32_t i = 0; i < license_file->chunk_count; i++) {
+            size_t chunk_len = 0;
+            enum vcs_package_publish_rule rule;
+            ASSERT(vcs_package_publish_read_chunk(
+                score_packages[0].dir, license_file, i, chunk,
+                &chunk_len, &rule));
+            ASSERT(vcs_object_put_addressed(
+                workspace, license_file->chunk_hashes + (size_t)i * 32u,
+                chunk, chunk_len));
+        }
+
+        struct vcs_zcode_shadow_attribution_input attribution_input = {
+            .workspace = workspace,
+            .score_receipt_root = score_root,
+            .policy_candidate_root = policy_root,
+            .reproduction_request_root = request_root,
+            .reproduction_proof_set_root = proof_set_root,
+            .contributor_binding_root = requester_binding_root,
+            .epoch = 0,
+            .now_unix = 605800,
+        };
+        struct vcs_zcode_shadow_attribution_plan attribution_plan;
+        struct vcs_zcode_shadow_attribution_plan repeated_attribution;
+        ASSERT_EQ(vcs_zcode_shadow_attribution_plan_cas(
+                      &attribution_input, &attribution_plan),
+                  VCS_ZCODE_SHADOW_SIMULATION_OK);
+        ASSERT_EQ(vcs_zcode_shadow_attribution_plan_cas(
+                      &attribution_input, &repeated_attribution),
+                  VCS_ZCODE_SHADOW_SIMULATION_OK);
+        ASSERT(memcmp(attribution_plan.attribution_root,
+                      repeated_attribution.attribution_root, 32) == 0);
+        ASSERT_EQ(attribution_plan.attribution.award_atoms,
+                  VCS_ZC23_SHADOW_PUBLIC_SOURCE_ATOMS);
+        ASSERT(!attribution_plan.qualification.physical_independence_proven);
+        uint8_t shadow_attribution_wire[
+            VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES];
+        ASSERT_EQ(vcs_zcode_creation_attribution_serialize(
+                      &attribution_plan.attribution,
+                      shadow_attribution_wire), VCS_ZCODE_CREATION_OK);
+        ASSERT(vcs_object_put_addressed(
+            workspace, attribution_plan.attribution_root,
+            shadow_attribution_wire, sizeof(shadow_attribution_wire)));
+
+        struct vcs_zcode_shadow_epoch_input epoch_input = {
+            .workspace = workspace,
+            .policy_candidate_root = policy_root,
+            .attribution_root = attribution_plan.attribution_root,
+            .fixture_branch_root = attribution_plan.fixture_branch_root,
+            .previous_epoch_creation_root = (const uint8_t[32]){0},
+            .now_unix = 605800,
+        };
+        struct vcs_zcode_shadow_epoch_plan shadow_epoch;
+        ASSERT_EQ(vcs_zcode_shadow_epoch_plan_cas(
+                      &epoch_input, &shadow_epoch),
+                  VCS_ZCODE_SHADOW_SIMULATION_OK);
+        ASSERT_EQ(shadow_epoch.epoch.actual_mint_atoms,
+                  attribution_plan.attribution.award_atoms);
+        ASSERT_EQ(shadow_epoch.epoch.unissued_atoms,
+                  shadow_epoch.epoch.emission_cap_atoms -
+                  shadow_epoch.epoch.actual_mint_atoms);
+
+        uint8_t reorg_branch[32];
+        memcpy(reorg_branch, attribution_plan.fixture_branch_root, 32);
+        reorg_branch[0] ^= 1u;
+        epoch_input.fixture_branch_root = reorg_branch;
+        struct vcs_zcode_shadow_epoch_plan rejected_epoch;
+        ASSERT_EQ(vcs_zcode_shadow_epoch_plan_cas(
+                      &epoch_input, &rejected_epoch),
+                  VCS_ZCODE_SHADOW_SIMULATION_ANCHOR);
+        epoch_input.fixture_branch_root = attribution_plan.fixture_branch_root;
+        uint8_t false_predecessor[32]; score_fill(false_predecessor, 0xf1);
+        epoch_input.previous_epoch_creation_root = false_predecessor;
+        ASSERT_EQ(vcs_zcode_shadow_epoch_plan_cas(
+                      &epoch_input, &rejected_epoch),
+                  VCS_ZCODE_SHADOW_SIMULATION_PREDECESSOR);
+        epoch_input.previous_epoch_creation_root = (const uint8_t[32]){0};
+
+        shadow_epoch.epoch.actual_mint_atoms--;
+        ASSERT_EQ(vcs_zcode_epoch_creation_validate(&shadow_epoch.epoch),
+                  VCS_ZCODE_EPOCH_CREATION_SUM);
+        shadow_epoch.epoch.actual_mint_atoms++;
+
+        uint8_t substituted_policy[32];
+        memcpy(substituted_policy, policy_root, 32);
+        substituted_policy[0] ^= 1u;
+        attribution_input.policy_candidate_root = substituted_policy;
+        ASSERT_EQ(vcs_zcode_shadow_attribution_plan_cas(
+                      &attribution_input, &repeated_attribution),
+                  VCS_ZCODE_SHADOW_SIMULATION_QUALIFICATION);
+        attribution_input.policy_candidate_root = policy_root;
+        attribution_input.epoch = 1;
+        ASSERT_EQ(vcs_zcode_shadow_attribution_plan_cas(
+                      &attribution_input, &repeated_attribution),
+                  VCS_ZCODE_SHADOW_SIMULATION_DUPLICATE);
+        attribution_input.epoch = 0;
+
+        vcs_zcode_shadow_epoch_plan_free(&shadow_epoch);
+        free(package_release_wire);
+        vcs_package_prepared_free(&prepared);
+
         size_t qualified_index = VCS_ZCODE_SCORE_UNITS;
         for (size_t i = 0; i < VCS_ZCODE_SCORE_UNITS; i++)
             if (memcmp(works[i].receipt.input_root, request_root, 32) == 0)
@@ -2628,6 +2779,88 @@ static int test_reproduction_qualification(void)
             &command_reply.data, "physical_independence_proven")));
         ASSERT_EQ(json_get_int(json_get(
             &command_reply.data, "shadow_award_atoms")), 0);
+        zcl_command_reply_free(&command_reply);
+        json_free(&command_input);
+
+        char contributor_hex[65], attribution_hex[65], branch_hex[65];
+        char zero_hex[65]; memset(zero_hex, '0', 64); zero_hex[64] = '\0';
+        zcl_hex_encode(requester_binding_root, 32, contributor_hex);
+        zcl_hex_encode(attribution_plan.attribution_root, 32,
+                       attribution_hex);
+        zcl_hex_encode(attribution_plan.fixture_branch_root, 32, branch_hex);
+        json_init(&command_input); json_set_object(&command_input);
+        ASSERT(json_push_kv_str(&command_input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&command_input, "score_receipt_root",
+                                score_hex));
+        ASSERT(json_push_kv_str(&command_input, "policy_candidate_root",
+                                policy_hex));
+        ASSERT(json_push_kv_str(&command_input, "reproduction_request_root",
+                                request_hex));
+        ASSERT(json_push_kv_str(&command_input,
+                                "reproduction_proof_set_root",
+                                proof_set_hex));
+        ASSERT(json_push_kv_str(&command_input, "contributor_binding_root",
+                                contributor_hex));
+        ASSERT(json_push_kv_int(&command_input, "epoch", 0));
+        ASSERT(json_push_kv_int(&command_input, "now_unix", 605800));
+        command_request.input = &command_input;
+        zcl_command_reply_init(&command_reply,
+                               "zcl.test.shadow_attribution.v1");
+        zcl_native_handle_zcode_commons_shadow_attribution_commit(
+            &command_request, &command_reply);
+        ASSERT_EQ(command_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&command_reply.data, "simulated")));
+        ASSERT(json_get_bool(json_get(&command_reply.data, "persisted")));
+        ASSERT(!json_get_bool(json_get(&command_reply.data, "token_exists")));
+        ASSERT(!json_get_bool(json_get(&command_reply.data, "funds_moved")));
+        ASSERT(!json_get_bool(json_get(&command_reply.data, "custody_used")));
+        ASSERT(!json_get_bool(json_get(
+            &command_reply.data, "genesis_gate_satisfied")));
+        ASSERT_STR_EQ(json_get_str(json_get(
+            &command_reply.data, "creation_attribution_root")),
+            attribution_hex);
+        zcl_command_reply_free(&command_reply);
+        json_free(&command_input);
+
+        json_init(&command_input); json_set_object(&command_input);
+        ASSERT(json_push_kv_str(&command_input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&command_input, "policy_candidate_root",
+                                policy_hex));
+        ASSERT(json_push_kv_str(&command_input, "attribution_root",
+                                attribution_hex));
+        ASSERT(json_push_kv_str(&command_input, "fixture_branch_root",
+                                branch_hex));
+        ASSERT(json_push_kv_str(&command_input,
+                                "previous_epoch_creation_root", zero_hex));
+        ASSERT(json_push_kv_int(&command_input, "now_unix", 605800));
+        command_request.input = &command_input;
+        zcl_command_reply_init(&command_reply,
+                               "zcl.test.shadow_epoch.v1");
+        zcl_native_handle_zcode_commons_shadow_epoch_commit(
+            &command_request, &command_reply);
+        ASSERT_EQ(command_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&command_reply.data, "persisted")));
+        ASSERT(json_get_bool(json_get(
+            &command_reply.data, "exact_attribution_sum")));
+        ASSERT_EQ(json_get_int(json_get(
+            &command_reply.data, "actual_mint_atoms")),
+            VCS_ZC23_SHADOW_PUBLIC_SOURCE_ATOMS);
+        ASSERT(!json_get_bool(json_get(&command_reply.data, "token_exists")));
+        zcl_command_reply_free(&command_reply);
+        json_free(&command_input);
+
+        json_init(&command_input); json_set_object(&command_input);
+        ASSERT(json_push_kv_str(&command_input, "workspace", workspace));
+        command_request.input = &command_input;
+        zcl_command_reply_init(&command_reply,
+                               "zcl.test.shadow_verify.v1");
+        zcl_native_handle_zcode_commons_shadow_verify(
+            &command_request, &command_reply);
+        ASSERT_EQ(command_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&command_reply.data, "simulated")));
+        ASSERT(!json_get_bool(json_get(&command_reply.data, "token_exists")));
+        ASSERT(!json_get_bool(json_get(
+            &command_reply.data, "genesis_gate_satisfied")));
         zcl_command_reply_free(&command_reply);
         json_free(&command_input);
 

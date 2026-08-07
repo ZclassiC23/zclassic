@@ -407,6 +407,24 @@ void zcl_native_handle_zcode_commons_rebuild(
 void zcl_native_handle_zcode_commons_shadow_plan(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_shadow_attribution_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_shadow_attribution_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_shadow_epoch_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_shadow_epoch_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_shadow_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_shadow_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_reproduction_challenge_plan(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

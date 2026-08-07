@@ -42,6 +42,12 @@ ZCL_COMMAND_BRANCH("zcode.commons.creation", "zcode.commons",
 ZCL_COMMAND_BRANCH("zcode.commons.shadow", "zcode.commons",
                    "Read-only pre-genesis shadow-epoch proof",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.shadow.attribution", "zcode.commons.shadow",
+                   "Scratch-only creation-attribution simulation",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.shadow.epoch", "zcode.commons.shadow",
+                   "Scratch-only epoch-accounting simulation",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("zcode.commons.reproduction", "zcode.commons",
                    "Portable simulation-only reproduction challenges",
                    ZCL_COMMAND_LAYER_APP)
@@ -99,6 +105,119 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_commons_shadow_plan)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.shadow.attribution.plan",
+    "zcode.commons.shadow.attribution", "",
+    "Plan one creation-backed shadow attribution",
+    "Reloads and verifies the policy, Score vertical, approved reproduction, "
+    "historical contributor binding, signed package release, license bytes "
+    "and deterministic challenge fixture. It writes nothing and grants no "
+    "mint authority.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,shadow,attribution,plan,simulation",
+    "zcl.zcode_commons_shadow_attribution.input.v1",
+    "zcl.zcode_commons_shadow_attribution.v1",
+    "workspace,score_receipt_root,policy_candidate_root,reproduction_request_root,reproduction_proof_set_root,contributor_binding_root,epoch,now_unix",
+    "workspace,score_receipt_root,policy_candidate_root,reproduction_request_root,reproduction_proof_set_root,contributor_binding_root,epoch,now_unix",
+    "zclassic23 zcode commons shadow attribution plan --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_shadow_attribution_plan)
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.commons.shadow.attribution.commit",
+    "zcode.commons.shadow.attribution", "",
+    "Store one verified shadow attribution in scratch CAS",
+    "Repeats attribution-plan verification and stores only the canonical "
+    "creation-attribution wire in the explicit scratch CAS. The root-addressed "
+    "write is idempotent and creates no token, custody or live funds.", 0,
+    "zcode,commons,shadow,attribution,commit,simulation,cas",
+    "zcl.zcode_commons_shadow_attribution.input.v1",
+    "zcl.zcode_commons_shadow_attribution.v1",
+    "workspace,score_receipt_root,policy_candidate_root,reproduction_request_root,reproduction_proof_set_root,contributor_binding_root,epoch,now_unix",
+    "workspace,score_receipt_root,policy_candidate_root,reproduction_request_root,reproduction_proof_set_root,contributor_binding_root,epoch,now_unix",
+    "zclassic23 zcode commons shadow attribution commit --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_commons_shadow_attribution_commit)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.shadow.epoch.plan", "zcode.commons.shadow.epoch", "",
+    "Plan exact shadow epoch accounting",
+    "Reloads the policy and verified attribution, re-derives fixture anchors "
+    "and predecessor lineage, and proves award equals simulated mint while "
+    "unused capacity expires. It writes nothing.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,shadow,epoch,plan,simulation",
+    "zcl.zcode_commons_shadow_epoch.input.v1",
+    "zcl.zcode_commons_shadow_epoch.v1",
+    "workspace,policy_candidate_root,attribution_root,fixture_branch_root,previous_epoch_creation_root,now_unix",
+    "workspace,policy_candidate_root,attribution_root,fixture_branch_root,previous_epoch_creation_root,now_unix",
+    "zclassic23 zcode commons shadow epoch plan --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_shadow_epoch_plan)
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.commons.shadow.epoch.commit", "zcode.commons.shadow.epoch", "",
+    "Store one verified shadow epoch in scratch CAS",
+    "Repeats epoch-plan verification and stores only the canonical ordered "
+    "epoch-creation wire in the explicit scratch CAS. It is idempotent and "
+    "does not create a MINT transaction or token.", 0,
+    "zcode,commons,shadow,epoch,commit,simulation,cas",
+    "zcl.zcode_commons_shadow_epoch.input.v1",
+    "zcl.zcode_commons_shadow_epoch.v1",
+    "workspace,policy_candidate_root,attribution_root,fixture_branch_root,previous_epoch_creation_root,now_unix",
+    "workspace,policy_candidate_root,attribution_root,fixture_branch_root,previous_epoch_creation_root,now_unix",
+    "zclassic23 zcode commons shadow epoch commit --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_commons_shadow_epoch_commit)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.shadow.status", "zcode.commons.shadow", "",
+    "Show scratch shadow accounting status",
+    "Rebuilds the existing Commons projection without writing and labels all "
+    "figures simulation-only, with token, funds, custody and genesis false.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,commons,shadow,status,simulation",
+    "zcl.zcode_commons_workspace.input.v1",
+    "zcl.zcode_commons_shadow_status.v1", "workspace", "workspace",
+    "zclassic23 zcode commons shadow status --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_shadow_status)
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.shadow.verify", "zcode.commons.shadow", "",
+    "Verify scratch shadow accounting structure",
+    "Rebuilds and checks root addressing and exact attribution sums without "
+    "writing. Active-chain validity remains unavailable and every result is "
+    "explicitly simulation-only.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,shadow,verify,simulation",
+    "zcl.zcode_commons_workspace.input.v1",
+    "zcl.zcode_commons_shadow_verify.v1", "workspace", "workspace",
+    "zclassic23 zcode commons shadow verify --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_shadow_verify)
 
 ZCL_COMMAND_READY_READ(
     "zcode.commons.status", "zcode.commons", "", "Show Living Commons status",

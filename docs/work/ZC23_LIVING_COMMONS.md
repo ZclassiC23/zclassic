@@ -72,10 +72,11 @@ money, publication, installation, or other durable authority is involved.
 The implemented foundation already exposes package search/show/recipe/verify,
 package fetch and confined add, development create/use/improve/evidence/accept,
 lane and task inspection, offline release preparation/sealing, signed ZCODE
-Score receipts, and read-only `zcode commons` verification. Patronage and
-continuity commands remain planned until their canonical simulation objects and
-cross-object validators land. No documentation or adapter may label a planned
-leaf ready, a CAS object funded, a local result globally trusted, or a
+Score receipts, read-only `zcode commons` verification, scratch-only shadow
+attribution/epoch planning, simulation-only patronage offers/funding, and
+continuity-policy inspection. Live settlement, refund, custody and issuance
+remain planned and fail closed. No documentation or adapter may label a
+planned leaf ready, a CAS object funded, a local result globally trusted, or a
 simulation as a live transfer.
 
 All adapters consume these same objects and services. A website or onion view
@@ -288,7 +289,7 @@ aggregate and exact: all policy-valid issued supply is accounted for by
 creation attributions. A display must never claim that a mixed token still
 belongs to one historical work.
 
-## First shadow epoch: exact current blocker
+## First shadow epoch: implemented simulation and real-world blocker
 
 The first shadow candidate is the real MIT-licensed
 `zclassic23/sha3@0.1.0-dev.1` package. Its current exact evidence vertical is:
@@ -303,26 +304,45 @@ The first shadow candidate is the real MIT-licensed
 
 The local Score is honestly 4/5. Its independent-reproduction evidence root is
 `47ca7f1e8c41f062e9e6c66a58539c5daca5deff0f9279dfe7c1ec0990a5e88e`,
-but its signer is same-host/local-only and no owner-approved off-host signer is
-registered. Therefore the first shadow epoch is **blocked before attribution**:
-shadow award = 0 atoms, no creation attribution exists, no epoch-creation set
-exists, and exact shadow supply equality is the vacuous `0 == 0`. This is not a
-completed epoch and earns no independent-reproduction unit.
+and its signer remains same-host/local-only. The O4 protocol simulation can now
+derive, verify and optionally store a deterministic creation attribution and
+ordered epoch-creation set when the separate policy qualification evaluator
+returns ready. That exercises exact amount and lineage invariants; it does not
+upgrade the Score receipt, prove physical independence, authorize genesis or
+make the fixture's simulated units exist.
 
-The read-only demonstration is:
+The permanent acceptance fixture uses the real self-hosted base package bytes,
+signed release and Apache-2.0 `LICENSE`, then reloads the full task, candidate,
+proof policy/set, PROVEN lane, Score, contributor binding, reproduction request,
+approved-reproducer policy and deterministic challenge anchors. It proves
+plan/commit idempotency and rejects a changed branch, missing predecessor,
+duplicate candidate, policy substitution and one-atom accounting drift. The
+fixture explicitly reports `physical_independence_proven=false`.
+
+The qualification view is:
 
 ```text
 zclassic23 zcode commons shadow plan --input='{"workspace":"<scratch-cas>","score_receipt_root":"680882572af552040efb6ec202915a3d5c2f9704e2d389200c07ed770ba6bea8","policy_candidate_root":"<64hex>","reproduction_request_root":"<64hex>","reproduction_proof_set_root":"<64hex>","epoch":<n>,"now_unix":<seconds>}'
 ```
 
 It reloads and rederives the task, candidate, policy, proof set, work receipts,
-PROVEN lane, signed Score receipt, and generated package-registry match. It
-reports the exact blocker, created thing, evidence roots, why shadow units would
-exist, and that there is no live money, ownership right, token access key,
-attribution, or epoch. It is literally non-creating on an absent workspace.
-After an approved off-host reproduction exists, the next step is a separately
-reviewed scratch-only attribution/epoch plan with challenge anchors and exact
-sum equality—not a live token action.
+PROVEN lane, signed Score receipt, exact reproduction objects and generated
+package-registry match. Once ready, the scratch-only object flow is:
+
+```text
+zcode commons shadow attribution plan|commit
+zcode commons shadow epoch plan|commit
+zcode commons shadow status
+zcode commons shadow verify
+```
+
+Use `discover schema <leaf>` for the exact closed input keys. Plans write
+nothing; commits store only root-addressed attribution/epoch wires in an
+explicit scratch CAS. Every result says `simulated=true`, `token_exists=false`,
+`funds_moved=false`, `custody_used=false`, and
+`genesis_gate_satisfied=false`. A genuinely separate approved reproducer is
+still required to clear the real SHA3 off-host gate. Until then no completed
+real-world shadow epoch or independent-reproduction Score unit may be claimed.
 
 ## Independent reproduction and shadow-epoch contract
 
