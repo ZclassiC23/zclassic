@@ -13,7 +13,7 @@
  * Consumer defines ZCL_COMMAND_*; see config/src/command_catalog.c. */
 
 ZCL_COMMAND_BRANCH("zcode.science", "zcode",
-                   "Scientific studies, benchmark evidence, curation",
+                   "Scientific evidence",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_BRANCH("zcode.science.study", "zcode.science",

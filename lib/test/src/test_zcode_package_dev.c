@@ -7,6 +7,7 @@
 #include "json/json.h"
 #include "vcs/package_capsule.h"
 #include "vcs/package_prepare.h"
+#include "vcs/vcs.h"
 
 #include <secp256k1.h>
 #include <stdio.h>
@@ -326,6 +327,63 @@ static int zpd_test_project_inspect(void)
     return failures;
 }
 
+static int zpd_test_work_start(void)
+{
+    int failures = 0;
+    TEST("zcode work start: goal and profile compose existing task owners") {
+        char root[256];
+        (void)snprintf(root, sizeof(root),
+                       "test-tmp/zcode-work-start-%ld", (long)getpid());
+        ASSERT(zpd_fixture(root, false));
+        uint8_t source_before[32], source_after[32];
+        ASSERT(vcs_tree_capture_path(root, source_before) == VCS_OK);
+
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "goal", "Fix x"));
+        ASSERT(json_push_kv_str(&input, "profile", "quick"));
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_start_test.v1");
+        zcl_native_handle_zcode_work_start(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(vcs_tree_capture_path(root, source_after) == VCS_OK);
+        ASSERT(memcmp(source_before, source_after, sizeof(source_before)) == 0);
+        const struct json_value *work_id = json_get(&reply.data, "work_id");
+        const struct json_value *state = json_get(&reply.data, "state");
+        const struct json_value *context =
+            json_get(&reply.data, "selected_context");
+        const struct json_value *expert = json_get(&reply.data, "expert");
+        ASSERT(work_id && strncmp(json_get_str(work_id), "work-", 5) == 0);
+        ASSERT(state && strcmp(json_get_str(state),
+                               "AWAITING_CANDIDATE") == 0);
+        ASSERT(context && context->type == JSON_OBJ);
+        ASSERT(strcmp(json_get_str(json_get(context, "symbol")), "x") == 0);
+        ASSERT(expert && json_get(expert, "task_root") != NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", "latest"));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_status_test.v1");
+        zcl_native_handle_zcode_work_status(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "goal")),
+                      "Fix x") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                      "AWAITING_CANDIDATE") == 0);
+        ASSERT(json_get(&reply.data, "next_safe_command") != NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        zpd_fixture_cleanup(root);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_package_dev(void)
 {
     secp256k1_context *ctx = secp256k1_context_create(
@@ -338,7 +396,8 @@ int test_zcode_package_dev(void)
     }
     int failures = zpd_test_base(ctx, secret, pubkey) +
                    zpd_test_fail_closed(pubkey) +
-                   zpd_test_project_inspect();
+                   zpd_test_project_inspect() +
+                   zpd_test_work_start();
     secp256k1_context_destroy(ctx);
     return failures;
 }

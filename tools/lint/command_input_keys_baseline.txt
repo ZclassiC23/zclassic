@@ -52,3 +52,36 @@ metaverse.space.publish not_before # DHT publication reads its private plan/comm
 metaverse.space.publish expiry # DHT publication reads its private plan/commit RPC object; request->input never reaches that helper.
 metaverse.space.publish plan_token # DHT publication reads its private plan/commit RPC object; request->input never reaches that helper.
 metaverse.space.publish operation # DHT publication injects operation into its private RPC object; request->input never reaches that helper.
+zcode.work.start mode # work start injects this into its private canonical improve-plan request; request->input never reaches the nested planner.
+zcode.work.start dependency_lock_hex # work start derives this from package preparation for its private improve-plan request; request->input never reaches the nested planner.
+zcode.work.start write_scope_csv # work start derives this from the inspected recipe for its private improve-plan request; request->input never reaches the nested planner.
+zcode.work.start acceptance_recipe_hex # work start derives this from package preparation for its private improve-plan request; request->input never reaches the nested planner.
+zcode.work.start model_policy_root # work start derives the fixed contained-adapter policy for its private improve-plan request; request->input never reaches the nested planner.
+zcode.work.start proof_policy_hex # work start expands the named profile for its private improve-plan request; request->input never reaches the nested planner.
+zcode.work.start expires_unix # work start derives a bounded expiry for its private improve-plan request; request->input never reaches the nested planner.
+zcode.work.start max_context_bytes # work start injects the product context cap into its private improve-plan request; request->input never reaches the nested planner.
+zcode.work.start datadir # the nested improve handler reads this only outside the work-start plan path; request->input never reaches that branch.
+zcode.work.start planned_task_root # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
+zcode.work.start planned_context_root # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
+zcode.work.start action_kind # the nested improve handler applies its fixed compile default to the private plan; request->input never reaches it.
+zcode.work.start fixed_input_path # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
+zcode.work.start preprocessed_path # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
+zcode.work.start fixed_input_relpath # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
+zcode.work.start candidate_workspace # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
+zcode.work.start source_root # the nested improve handler reads this only as an optional expert cross-check; work start derives source authority itself.
+zcode.work.start dependency_lock_root # the nested improve handler reads this only as an optional expert cross-check; work start derives lock authority itself.
+zcode.work.start acceptance_tests_root # the nested improve handler reads this only as an optional expert cross-check; work start derives recipe authority itself.
+zcode.work.start write_scope_root # the nested improve handler reads this only as an optional expert cross-check; work start derives scope authority itself.
+zcode.work.start max_changed_files # the nested improve handler applies its fixed product default; request->input never reaches it.
+zcode.work.start max_patch_bytes # the nested improve handler applies its fixed product default; request->input never reaches it.
+zcode.work.start max_cpu_seconds # the nested improve handler applies its fixed product default; request->input never reaches it.
+zcode.work.start max_memory_bytes # the nested improve handler applies its fixed product default; request->input never reaches it.
+zcode.work.start max_output_bytes # the nested improve handler applies its fixed product default; request->input never reaches it.
+zcode.work.start candidate_sequence # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
+zcode.work.start candidate_created_unix # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
+zcode.work.start patch_root # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
+zcode.work.start candidate_source_root # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
+zcode.work.start candidate_source_sha256 # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
+zcode.work.start adapter_policy_root # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
+zcode.work.start author_pubkey # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
+zcode.work.start remote_peer # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.

@@ -19,7 +19,10 @@ ZCL_COMMAND_BRANCH("zcode", "",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_BRANCH("zcode.project", "zcode",
-                   "Inspect and initialize one C23 package project",
+                   "C23 projects",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.work", "zcode",
+                   "Proven C23 work",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -38,6 +41,40 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_project_inspect)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.work.start", "zcode.work", "", "Start one bounded C23 change",
+    "Composes existing package, task, scope, context, toolchain and proof-policy "
+    "owners from a workspace, plain-language goal and named profile. It changes "
+    "no source file and launches no model or build.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,work,start,goal,profile,context,c23",
+    "zcl.zcode_work_start.input.v1", "zcl.zcode_work_start.v1",
+    "workspace,goal,profile,context_symbol", "workspace,goal",
+    "zclassic23-dev zcode work start --input='{\"workspace\":\".\",\"goal\":\"Make the parser reject overflowing lengths\",\"profile\":\"standard\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_work_start)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.work.status", "zcode.work", "", "Show one human-first work status",
+    "Rebuilds state from verified canonical task and candidate objects. A work "
+    "ID or latest is only a local alias; roots remain grouped under expert, and "
+    "every blocked state names the next safe command.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,work,status,human,evidence,latest",
+    "zcl.zcode_work_status.input.v1", "zcl.zcode_work_status.v1",
+    "workspace,work", "",
+    "zclassic23-dev zcode work status --input='{\"work\":\"latest\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_work_status)
 
 ZCL_COMMAND_READY_READ(
     "zcode.guide", "zcode", "", "Start creating in the shared C23 commons",
@@ -350,7 +387,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_commons_rebuild)
 
 ZCL_COMMAND_BRANCH("zcode.patronage", "zcode",
-                   "Simulation-only commissions, continuity and gifts",
+                   "Simulated patronage",
                    ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("zcode.patronage.offer", "zcode.patronage",
                    "Signed patronage offers", ZCL_COMMAND_LAYER_APP)
@@ -448,7 +485,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_patronage_show)
 
 ZCL_COMMAND_BRANCH("zcode.continuity", "zcode",
-                   "Simulation-only package continuity policies",
+                   "Package continuity",
                    ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_READY_READ(
     "zcode.continuity.plan", "zcode.continuity", "",
@@ -1116,7 +1153,7 @@ ZCL_COMMAND_READY_READ(
  * and bound only when the name owner equals the publisher key's P2PKH. */
 
 ZCL_COMMAND_BRANCH("zcode.contributor", "zcode",
-                   "Contributors: secp256k1 publisher-key identities",
+                   "Contributor identities",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1202,8 +1239,7 @@ ZCL_COMMAND_READY_READ(
  * belongs to slice 8. */
 
 ZCL_COMMAND_BRANCH("zcode.reward", "zcode",
-                   "Contribution scoring and SIMULATED settlement "
-                   "(placeholder token only)",
+                   "Legacy contribution rewards",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1390,7 +1426,7 @@ ZCL_COMMAND_READY_READ(
  * unavailable and report zero honestly until slices 11-12. */
 
 ZCL_COMMAND_BRANCH("zcode.leaderboard", "zcode",
-                   "ZCODE Rankings: earned score, never token balances",
+                   "Evidence rankings",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1493,7 +1529,7 @@ ZCL_COMMAND_READY_READ(
  * callback. */
 
 ZCL_COMMAND_BRANCH("zcode.badge", "zcode",
-                   "ZCODE Badges: achievement evidence (SIMULATED assets)",
+                   "Evidence badges",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1619,7 +1655,7 @@ ZCL_COMMAND_READY_READ(
  * checkpoint is already wired into zcode package publish commit. */
 
 ZCL_COMMAND_BRANCH("zcode.seed", "zcode",
-                   "Local seeding facts: verified-bytes ratio and tiers",
+                   "Local seeding facts",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1677,7 +1713,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_seed_ratio)
 
 ZCL_COMMAND_BRANCH("zcode.storage", "zcode",
-                   "The content-addressed store: quota pools and policy",
+                   "Content-addressed storage",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1824,7 +1860,7 @@ ZCL_COMMAND_READY_COMMAND(
  * separately from signature validity.
  * See docs/spec/sovereign-identity-layer.md. */
 ZCL_COMMAND_BRANCH("zcode.release", "zcode",
-                   "Release records: sign/verify against a master key",
+                   "Release records",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_COMMAND(
@@ -1961,7 +1997,7 @@ ZCL_COMMAND_READY_READ(
  * one carries, whether that root is on-chain, and what leaves are under
  * it. Also exposed as `zclassic23 dumpstate zid_domains`. */
 ZCL_COMMAND_BRANCH("zcode.domain", "zcode",
-                   "Anchor domains: leaf sets behind batch proofs",
+                   "Anchor domains",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -2017,7 +2053,7 @@ ZCL_COMMAND_READY_READ(
  * zid_identities projection READONLY via db_zid_identity_find, and stays
  * not_checked without one. `node_free` in the report says which. */
 ZCL_COMMAND_BRANCH("zcode.proof", "zcode",
-                   "Light-client proof-chain verification",
+                   "Proof verification",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -2074,7 +2110,7 @@ ZCL_COMMAND_READY_READ(
  * verified_against:"supplied_key".
  * See docs/spec/sovereign-identity-layer.md and lib/zid/include/zid/zdesc.h. */
 ZCL_COMMAND_BRANCH("zcode.network", "zcode",
-                   "Noise-bound read-only DHT", ZCL_COMMAND_LAYER_APP)
+                   "Package DHT", ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_COMMAND(
     "zcode.network.delegate", "zcode.network", "",
@@ -2389,7 +2425,7 @@ ZCL_COMMAND_READY_READ(
     zcl_native_handle_zcode_network_replication)
 
 ZCL_COMMAND_BRANCH("zcode.desc", "zcode",
-                   "Onion descriptors: signed service records",
+                   "Onion descriptors",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_COMMAND(
@@ -2509,7 +2545,7 @@ ZCL_COMMAND_READY_READ(
  *
  * See lib/zid/include/zid/zendp.h and lib/vcs/include/vcs/zendp_swarm.h. */
 ZCL_COMMAND_BRANCH("zcode.endpoint", "zcode",
-                   "Signed node addresses, chain-anchored",
+                   "Signed node addresses",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_COMMAND(
