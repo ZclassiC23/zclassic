@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 565 |
+| Registry entries (branches + leaves) | 568 |
 | Top-level roots | 11 |
-| Branches | 130 |
-| Leaves (dispatchable command paths) | 435 |
-| … `ready` (live handler in this build) | 382 |
+| Branches | 131 |
+| Leaves (dispatchable command paths) | 437 |
+| … `ready` (live handler in this build) | 384 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 35 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 144 |
+| Leaves with `effect=mutate` | 145 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 96 |
 
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 22 | 4 | 18 |
-| `config/commands/zcode.def` | 128 | 28 | 100 |
+| `config/commands/zcode.def` | 131 | 29 | 102 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -920,6 +920,13 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode commons shadow plan` | ready | read / read / operator · fast/low | **`workspace`**, **`score_receipt_root`** | `zcl.zcode_commons_shadow.v1` | `zclassic23 zcode commons shadow plan --input='{"workspace":"/tmp/zclassic23-zcode-scratch","score_receipt_root":"<64hex>"}'` | Explain whether the first shadow epoch can be proven |
 
+#### `zcode.commons.reproduction` — Portable simulation-only reproduction challenges
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode commons reproduction challenge plan` | ready | read / read / operator · fast/low | **`workspace`**, **`request_hex`**, **`now_unix`** | `zcl.zcode_reproduction_challenge.v1` | `zclassic23 zcode commons reproduction challenge plan --input='{"workspace":"/tmp/zclassic23-zcode-scratch","request_hex":"<hex>","now_unix":1}'` | Validate a portable reproduction challenge |
+| `zcode commons reproduction challenge commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`request_hex`**, **`now_unix`** | `zcl.zcode_reproduction_challenge.v1` | `zclassic23 zcode commons reproduction challenge commit --input='{...}'` | Store a portable reproduction challenge in scratch CAS |
+
 #### `zcode.patronage` — Simulation-only commissions, continuity and gifts
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
@@ -1329,6 +1336,7 @@ promise the same document shape.
 | `zcl.dev_loop_status.v1` | `dev.loop.ensure`, `dev.loop.status`, `dev.loop.stop` |
 | `zcl.account.v1` | `app.account.show`, `app.account.whoami`, `app.account.add`, `app.account.role`, `app.account.suspend`, `app.account.unsuspend` |
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
+| `zcl.zcode_reproduction_challenge.v1` | `zcode.commons.reproduction.challenge.plan`, `zcode.commons.reproduction.challenge.commit` |
 | `zcl.zcode_patronage_offer.v1` | `zcode.patronage.offer.plan`, `zcode.patronage.offer.commit` |
 | `zcl.zcode_patronage_funding.v1` | `zcode.patronage.fund.plan`, `zcode.patronage.fund.commit` |
 | `zcl.zcode_continuity_policy.view.v1` | `zcode.continuity.plan`, `zcode.continuity.commit`, `zcode.continuity.status` |

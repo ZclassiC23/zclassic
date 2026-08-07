@@ -42,6 +42,46 @@ ZCL_COMMAND_BRANCH("zcode.commons.creation", "zcode.commons",
 ZCL_COMMAND_BRANCH("zcode.commons.shadow", "zcode.commons",
                    "Read-only pre-genesis shadow-epoch proof",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.reproduction", "zcode.commons",
+                   "Portable simulation-only reproduction challenges",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.reproduction.challenge.plan", "zcode.commons.reproduction",
+    "", "Validate a portable reproduction challenge",
+    "Validates exact canonical request bytes, freshness, full confinement and "
+    "bounded resources. The plan is non-creating and accepts public package "
+    "roots only; it never executes downloaded code.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,reproduction,challenge,plan,simulation",
+    "zcl.zcode_reproduction_challenge.input.v1",
+    "zcl.zcode_reproduction_challenge.v1",
+    "workspace,request_hex,now_unix", "workspace,request_hex,now_unix",
+    "zclassic23 zcode commons reproduction challenge plan --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"request_hex\":\"<hex>\",\"now_unix\":1}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_reproduction_challenge_plan)
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.commons.reproduction.challenge.commit", "zcode.commons.reproduction",
+    "", "Store a portable reproduction challenge in scratch CAS",
+    "Repeats plan validation and stores only the canonical public request in "
+    "the existing scratch CAS. It creates no token, funds, custody or genesis "
+    "authority and is idempotent by request root.", 0,
+    "zcode,commons,reproduction,challenge,commit,simulation,cas",
+    "zcl.zcode_reproduction_challenge.input.v1",
+    "zcl.zcode_reproduction_challenge.v1",
+    "workspace,request_hex,now_unix", "workspace,request_hex,now_unix",
+    "zclassic23 zcode commons reproduction challenge commit --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_reproduction_challenge_commit)
 
 ZCL_COMMAND_READY_READ(
     "zcode.commons.shadow.plan", "zcode.commons.shadow", "",
