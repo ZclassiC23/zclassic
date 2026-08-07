@@ -39,6 +39,8 @@ set -uo pipefail
 export LC_ALL=C
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/scripts/sh_str.sh
+. "$SCRIPT_DIR/sh_str.sh"
 PROBE="$SCRIPT_DIR/tip_agreement_probe.sh"
 JUDGE="$SCRIPT_DIR/tip_agreement_judge.sh"
 
@@ -472,8 +474,9 @@ jcase() {
     out="$(env "ZCL_PARITY_JUDGE_NOW=$NOW" bash "$JUDGE" "$ledger" "$@" 2>&1)"
     rc=$?
     tok="$(printf '%s' "$out" | sed -n 's/.*VERDICT=\([A-Z_]*\).*/\1/p' | head -n1)"
-    if printf '%s' "$out" | grep -Fq "$ledger" ||
-       printf '%s' "$out" | grep -Eq 'rpcport|datadir|/x'; then
+    if str_contains "$out" "$ledger" ||
+       str_contains "$out" "rpcport" ||
+       str_contains "$out" "datadir" || str_contains "$out" "/x"; then
         bad "$name -> public judge output leaked private ledger fields"
         echo "        out: $out"
     elif [ "$tok" = "$want" ] && [ "$rc" = "$wantrc" ]; then
