@@ -1,6 +1,6 @@
 # ZC23 Living Commons
 
-Status: owner-directed specification, 2026-08-06. This document freezes the
+Status: owner-directed specification, updated 2026-08-07. This document freezes the
 safe pre-genesis policy and implementation order for creation-backed ZC23
 issuance. It authorizes specifications, codecs, validation, rebuildable
 projections, read-only views, and simulations only. It does **not** authorize a
@@ -323,6 +323,116 @@ attribution, or epoch. It is literally non-creating on an absent workspace.
 After an approved off-host reproduction exists, the next step is a separately
 reviewed scratch-only attribution/epoch plan with challenge anchors and exact
 sum equality—not a live token action.
+
+## Independent reproduction and shadow-epoch contract
+
+The independent-reproduction path has three distinct completion grades. They
+must never be collapsed in code or presentation:
+
+1. protocol and native-command implementation complete;
+2. hermetic same-host, multi-process acceptance complete, explicitly labelled
+   simulation rather than independent reproduction; and
+3. a receipt from a genuinely separate, policy-approved reproducer imported
+   and accepted.
+
+Only grade 3 clears the real SHA3 shadow blocker. A different process, path,
+user, container, VM, workspace, datadir, or signing key on the same physical
+host remains same-host evidence. A signature cannot prove physical location.
+Every qualification report therefore exposes the separate facts
+`exact_reproduction_match`, `distinct_signer`, `signer_policy_approved`,
+`declared_operator_group_distinct`, `remote_transport_used`, and
+`physical_independence_proven`. V1 always reports the last fact as false; an
+operator may supply trusted external knowledge outside the canonical object,
+but the protocol must not rename that knowledge cryptographic proof.
+
+### Existing-owner reuse map
+
+No slice in this program creates a second identity, artifact, build report,
+CAS, worker, scheduler, transport, verifier, proof set, grant ledger, package
+store, chain simulator, or policy database.
+
+| Required fact or operation | Existing authority reused | Boundary |
+|---|---|---|
+| Historical 4/5 contribution evidence | `zcl.zcode.score_receipt.v1`, `work_receipt.v1`, `proof_set.v1`, and the PROVEN lane | Score v1 bytes and semantics stay frozen; its independent bit remains forbidden |
+| Exact package inputs | `content.v2`, package manifest/release, recipe, dependency lock, toolchain capsule | Public bytes only; no downloaded scripts, credentials, or machine-specific source paths |
+| Reference and rebuilt outputs | `zcl.zcode_build.v1` package-build reports plus `build_artifact_manifest.v1` | Existing canonical output paths, SHA3 hashes, sizes, and dependency roots remain authoritative |
+| Byte-identity verdict | `vcs_package_reproduce_compare` and `zclassic23-package-verify --emit --reproduce-against` | Exact package/recipe/lock/dependency/output match; no favorable-result selection |
+| Confinement | existing package verifier and ZBuild worker | Declarative recipe, Landlock, seccomp, rlimits, no network, bounded resources; degraded confinement cannot qualify |
+| Work transport and result | ZBuild worker, `zcode_work_swarm`, signed `work_receipt.v1`, `zpkgswm`, signed provider records, and DHT | Remote transport is reported as a fact, never inferred from a signer or hostname |
+| Signer identity and history | contributor binding/ZID and existing delegated worker identity | Approval is checked at receipt time; later expiry preserves history but cannot authorize new work |
+| Local package-verifier allowlist | `package_verify_policy` | Parsing/evaluation precedent only: mutable local configuration cannot define immutable issuance policy |
+| Local discovery policy | `zcode_sovereignty_policy` | Remains per-node fetch/store/execute policy and cannot change a shadow-policy root |
+| Metaverse property grants | existing property-grant evaluator/service | Continue to govern a holder's local property actions; never establish evidence truth, issuance, or reproducer approval |
+| Attribution and accounting | `creation_attribution.v1`, `epoch_creation_set.v1`, and the rebuildable Commons projection | Scratch simulation only; no ZSLP transaction, wallet, custody, or second ledger |
+| Opening and maturity anchors | existing deterministic chain-test/simnet owner | No second blockchain and no consensus edit |
+
+`vcs_zcode_score_offhost_reproducer_approved()` remains fail-closed, and both
+Score-v1 planning and validation continue to reject the independent bit. The
+versioned extension is a separate policy-bound reproduction qualification over
+the existing proof vertical. It does not upgrade or reinterpret the historical
+Score receipt.
+
+### Canonical shadow-policy candidate
+
+The simulation authority consists of two new pure canonical objects:
+`zcl.zcode.approved_reproducer_set.v1` and
+`zcl.zcode.zc23_policy_candidate.v1`. The reproducer set contains sorted,
+unique entries binding an Ed25519 work-receipt signer, existing contributor or
+ZID binding root, declared operator-group root, fixed reproduction action root,
+valid epoch/time interval, and set sequence/lineage. The policy candidate binds
+network genesis, `ZC23`, eight decimals, the exact unchanged cap algorithm and
+constants, challenge blocks/MTP delay, no-carry and complete-attribution rules,
+closed creation categories, deterministic bounded shadow awards, reproducer-set
+root, covenant-document root, policy version, and mandatory
+`SIMULATION_ONLY` plus `NOT_OWNER_APPROVED` flags.
+
+Fixture authorities are valid only under a structurally simulation-only policy.
+They cannot be promoted to a production policy by configuration. Final economic
+awards and the immutable mainnet policy root remain owner-gated. Shadow award
+evaluation is pure from the exact policy-candidate bytes; commands and callbacks
+cannot choose an amount.
+
+### Portable challenge and qualification
+
+A reproduction request composes existing roots rather than copying their
+payloads into a new report: task, candidate, package, release, recipe, lock,
+toolchain capsule, reference build report, output manifest, fixed action,
+challenge nonce, requester, creation/expiry, confinement grade, and CPU,
+memory, process, and output budgets. Export is a root-addressed `content.v2`
+carrier containing every public byte required by another node and no wallet,
+private key, API/SSH credential, canonical-datadir path, or absolute source
+path. Plan is non-creating; commit writes canonical public objects only to an
+explicit isolated scratch CAS.
+
+The pure qualification evaluator reloads the complete proof set, request,
+reference report, artifact manifest, reproduction work receipt, evidence report,
+reproducer set, policy candidate, contributor bindings, and challenge facts.
+It requires a canonical signed `REPRODUCE` PASS with exit status zero, exact
+task/candidate/policy/toolchain/input/output bindings, byte-identical artifacts,
+full confinement, approval valid at event time and epoch, signer separation,
+fresh challenge, and unique signer/event. Publisher, candidate author, lane
+signer, requester, and safely related operator group are refused where their
+identity relationship is provable. Missing linkage remains unknown rather than
+proof of independence. Contradictory valid results produce `CONTRADICTION`.
+
+### Workspace and command safety
+
+Every Commons/reproduction command requires an explicit workspace. Empty
+strings, filesystem root, traversal, and implicit or canonical live datadirs
+are rejected. Read plans remain literally non-creating on an absent path.
+Commits require an explicit isolated scratch workspace and are deterministic,
+idempotent, and root-addressed. They must report `simulated=true`,
+`token_exists=false`, `funds_moved=false`, `custody_used=false`, and
+`genesis_gate_satisfied=false`.
+
+The ordered implementation is O0 contract/reuse freeze; O1 policy candidate
+and reproducer set; O2 portable challenge; O3 policy-bound qualification; O4
+scratch attribution/epoch plan-commit; O5 three-party same-host acceptance and
+second-machine runbook; O6 four linked protocol shadow simulations with reorg
+and byte-identical rebuild; then O7 seed credential and fixture-only shadow
+elections. O7 may begin only after O1–O6 are green. P2SH, threshold signing,
+DKG, live ZC23 GENESIS/MINT/SEND, and all custody work remain outside this
+authorization.
 
 ## Patronage, commissions, and continuity
 
