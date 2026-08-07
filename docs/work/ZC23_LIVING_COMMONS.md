@@ -637,6 +637,7 @@ authorization.
 | DONE | O3 policy-bound reproduction qualification | `307556653` | `307556653` | complete Score/proof/request/build/manifest/policy/identity CAS rederivation; missing output, missing approval identity, stale epoch and contradictory-result rejections; command readiness derives from the evaluator; physical independence remains explicitly unproven; focused/API gates and full lint 134/134 |
 | DONE | O4 scratch attribution and epoch plan/commit | `3b45e7991` | `c7ddc1fd9` | full policy/Score/reproduction/binding/package/release/license reload; deterministic fixture anchors; exact award/mint equality; changed branch, missing predecessor, duplicate candidate, policy substitution and one-atom drift rejection; six typed shadow leaves; focused/API gates, full lint 134/134 and normal pre-push source-wide suite |
 | DONE | O5 three-party portable reproduction acceptance | `6b933d4ea` | `6b933d4ea` | requester, reproducer and observer in distinct processes/workspaces/stores; root-addressed content/package transfer; independent qualification and byte-identical projection rebuild; real swarm/DHT corruption, cancellation, fallback, resume and restart owners composed by one exact 6/6 gate; `actual_off_host_credit=false`; full lint 134/134 and normal pre-push 902-group suite |
+| DONE | O6 four linked protocol shadow simulations | `fc7b88bab`, `e237f13fa` | `e237f13fa` | actual base/SHA3/codec package verticals; three distinct mature creations followed by one empty epoch; exact predecessor and cumulative 300,000,000-atom equality; byte-identical rebuild after every epoch; boundary reorg and deterministic replacement roots; cross-epoch duplicate refusal; read-only typed report; focused creation/Score/catalog/API gates, full lint 134/134 and normal pre-push 902-group suite; `same_host_fixture_only`, real genesis gate false |
 | BLOCKED | Real SHA3 off-host independence gate | `fc62b9c4a` | `fc62b9c4a` | SHA3 Score remains honestly 4/5; local evidence and O5 same-host simulation do not prove physical independence or authorize a real shadow epoch, token genesis, mint or custody |
 
 Historical-truth hardening began from fetched `origin/main` `7091051aa`
@@ -755,3 +756,24 @@ push ran 902 active groups with zero failures and zero cache hits; nine
 parameter-heavy groups were policy-gated and 19 tests emitted their documented
 self-skip markers. Pull verification then proved local HEAD and `origin/main`
 were both `6b933d4ea53fd087468ccfedd73c0e53bcc6aca3`.
+
+O6 began from fetched `origin/main`
+`dc4a41e5b36b9ef989ec80b0940ae2ad090236e1`. Before integration, concurrent
+vault reservation work at `9d1c2173369e2654b478df2860eb8f5ab474f1a4` was
+merged without modification through `e0046058c`. The canonical replacement-
+branch epoch roots are
+`6207eef8dacd6f6f5b9ee30b0287924a6a2d48dceed41d1445b693679e19090a`,
+`7160b9135614d8813bf05d222e0c892a7826a73bc8444f1acb294bc9145f13d9`,
+`d8dc59fae773b8e16bd084699a6bea9d4bc9096e4d821ac0245ee3228694d755`,
+and `f1e901fa6f2a4f3a85283c809d32bb65a8d65258f5f98d4129d6e460099c9dbd`.
+Their cumulative simulated issue and cumulative attribution are both exactly
+300,000,000 atoms. The first push attempt ran the complete source-wide suite
+and failed only because the new leaf's explicit protocol parent branch was
+missing; that attempt is not counted as a pass. Commit `e237f13fa` added the
+branch, regenerated the API reference, and made the exact catalog test green.
+The corrected normal push passed 902/902 active groups with zero cache hits;
+nine parameter-heavy groups were policy-gated and 19 tests emitted documented
+self-skip markers. Pull verification proved both local HEAD and `origin/main`
+at `e237f13fa404aebe5b8431e673eaf17b839afb3a`. All four rows remain
+`same_host_fixture_only`, `owner_required_green_shadow_epochs=false`, and
+`genesis_gate_satisfied=false`.
