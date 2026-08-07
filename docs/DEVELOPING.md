@@ -183,7 +183,7 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   and promoted atomically, preserving every older signed audit chain.
 
 The isolated `zcl23-dev.service` uses the same `Type=notify` + external
-watchdog handshake as production, under a stricter 3G/4G memory envelope. A
+watchdog handshake as production, under a strict 4G memory envelope. A
 fresh build therefore copy-proves READY and watchdog petting on the dev lane
 before any owner restores canonical service armor.
 - `make transaction-lab-proof` — run the exact isolated transaction evidence

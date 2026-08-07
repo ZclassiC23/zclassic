@@ -15,6 +15,47 @@ tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 
 ## Current state
 
+**2026-08-06 21:15 AST — identity-bound custody is CURRENT; the transaction
+laboratory remains gated and has broadcast zero transactions.** Re-derived
+from the live native readers after the owner-gated challenger deployment and
+two watched restarts:
+
+- `metaverse agent money` reports both assigned wallets complete and CURRENT:
+  dev confirmed `0.30000000 ZCL`, pending/encumbered/intent-reserved zero,
+  agent-available `0.05000000 ZCL`; prod confirmed `0.00000000 ZCL` with all
+  other amounts zero. The known portfolio total is `0.30000000 ZCL`. The
+  private binding was rotated to the live persistent identities; no funds
+  moved.
+- Canonical is active at H* with no next-frontier blocker, `NRestarts=0`, a
+  120-second watchdog, and the watchdog timestamp advancing. A 6G live trial
+  pinned the full-datadir cgroup at its soft cap and starved RPC; a clean 24G
+  restart restored RPC and current custody. The committed service template is
+  being corrected to that measured 24G production envelope. The isolated dev
+  lane is active under its 4G hard envelope and 120-second watchdog; its prior
+  3G soft cap produced intermittent custody RPC and one restart, so the
+  committed soft limit is being raised to the unchanged 4G hard boundary.
+- `catalog_coverage` reports `sprout_anchor` complete at the live tip with lag
+  zero; no active sprout/catalog blocker remains. This closes the former false
+  sparse-journal lag fact.
+- Off-host parity improved from no evidence to one clean agreeing sample with
+  five distinct remote peers and zero disagreement. The fixed judge remains
+  `THIN_EVIDENCE`: it requires six clean samples spanning at least 45 minutes.
+  Raw endpoint/path-bearing ledger rows are no longer printed by
+  `make tip-agreement-status`.
+- `make transaction-lab-status` remains 39/39 isolated proofs, 38/39
+  simulated/live confirmations, 35/39 mainnet-capable, and **0/39 live**.
+  Do not fund or broadcast until the off-host evidence window passes and a
+  fresh synchronous custody snapshot is CURRENT for the explicitly targeted
+  wallet.
+
+The real-Tor fork fix is on its `main`; parent `main` contains reproducible
+`make tor-full`, rollback-safe deploy capture, explicit owner-only challenger
+verification, accurate native-C23 Sapling audit text, and private status
+output. The live challenger proves exact bytes and diagnostics but deliberately
+does not claim the structurally unavailable stable-health verdict on this
+snapshot-seeded datadir. Re-check live commands before trusting this paragraph;
+newer `main` commits landed after the challenger build.
+
 **2026-08-05 — S7.2 operational integrity plus Sovereign Space/Scout COMPLETE
 on integrated `main`; not deployed.** Initial integration merge `21428f0a9`
 preserves fetched `origin/main` `9f678f70f`, final lane head `d77d61eef` and
