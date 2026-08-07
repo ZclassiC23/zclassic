@@ -433,6 +433,14 @@ harness builds, and `000029` records 1,537,885 leak-detecting ASan+UBSan
 mutations with no finding. This bounded local run is parser hardening, not a
 claim of exhaustive input-space coverage.
 
+The final explicit `--no-cache` source-wide run executed 901 of 910 registered
+groups; nine parameter-heavy groups were policy-gated and 22 tests reported
+their documented self-skip markers. Its first attempt (`000033`) had one
+load-sensitive failure in the runner's nested exact-selector self-test. The
+exact group passed alone (`000034`), and the repository-prescribed complete
+cold retry passed 901/901 with zero cached groups (`000035`). The failed first
+attempt remains recorded and is not counted as a passed gate.
+
 LC2's canonical set and verifier already own award truth: they independently
 reload every ordered attribution, check active-chain maturity/reorg context,
 checked-sum award atoms and require exact equality with observed MINT. The
