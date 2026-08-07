@@ -302,7 +302,7 @@ print_status() {
     printf '  latest_events=%d failures=%d blocked=%d\n' "$seen" "$failed" "$blocked"
     printf '  live_recipient_zat=%s live_fee_zat=%s live_total_zat=%s\n' \
         "$live_recipient" "$live_fee" "$((live_recipient + live_fee))"
-    printf '  mainnet_gate=BLOCKED next=clear HANDOFF and identity-bound custody gates\n'
+    printf '  mainnet_gate=EXTERNAL_REQUIRED next=evaluate HANDOFF and identity-bound custody gates\n'
 }
 
 print_json() {
@@ -320,7 +320,7 @@ print_json() {
         "$live_total" "$live_ready" "$live_process" "$live_contained" "$live_isolated"
     printf '"live_recipient_zat":%s,"live_fee_zat":%s,"live_total_zat":%s,' \
         "$live_recipient" "$live_fee" "$((live_recipient + live_fee))"
-    printf '"mainnet_gate":"BLOCKED"}\n'
+    printf '"mainnet_gate":"EXTERNAL_REQUIRED"}\n'
 }
 
 record_event() {
@@ -424,7 +424,8 @@ selftest() {
     if [[ "$body" != *'"mainnet_confirmed":1'* ]] ||
        [[ "$body" != *'"live_recipient_zat":1000'* ]] ||
        [[ "$body" != *'"live_fee_zat":100'* ]] ||
-       [[ "$body" != *'"live_total_zat":1100'* ]]; then
+       [[ "$body" != *'"live_total_zat":1100'* ]] ||
+       [[ "$body" != *'"mainnet_gate":"EXTERNAL_REQUIRED"'* ]]; then
         die "selftest stats did not include the fixture mainnet receipt"
     fi
     if ZCL_TRANSACTION_LAB_CATALOG="$CATALOG" \
