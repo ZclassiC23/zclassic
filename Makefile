@@ -1773,8 +1773,8 @@ custody-bind:
 custody-bind-selftest:
 	@tools/dev/custody-bind.sh selftest
 
-# Read-only live rollout doctor. ARGS may name an owner-created private broker
-# directory: make custody-status ARGS='--broker-dir=/absolute/path'.
+# Read-only live rollout doctor. With no ARGS it reads custody-bind's private
+# default; ARGS may name a different owner-created private broker directory.
 custody-status:
 	@tools/dev/custody-status.sh $(ARGS)
 
@@ -5751,12 +5751,11 @@ install-tip-agreement:
 	@systemctl --user daemon-reload
 	@systemctl --user enable --now zclassic23-tip-agreement.timer
 	@echo "installed off-host tip-hash agreement recorder: zclassic23-tip-agreement.timer (every 10 min)"
-	@echo "ledger:  $(HOME)/.local/state/zclassic23-parity/agreement-ledger.jsonl"
+	@echo "ledger: owner-private state recorded"
 	@echo "verdict: make tip-agreement-status"
 
 tip-agreement-status:
 	@systemctl --user list-timers zclassic23-tip-agreement.timer --no-pager 2>/dev/null || true
-	@tail -n 5 "$(HOME)/.local/state/zclassic23-parity/agreement-ledger.jsonl" 2>/dev/null || echo "no agreement ledger yet"
 	@./tools/scripts/tip_agreement_judge.sh "$(HOME)/.local/state/zclassic23-parity/agreement-ledger.jsonl" || true
 
 # tip-agreement-selftest: hermetic regression guard for the recorder AND the

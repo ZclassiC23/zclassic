@@ -246,7 +246,7 @@ verdict() {
     local mp="${7:--}"
     case "$mp" in -1) mp="-" ;; esac
     local sp="${SPAN:--}"; case "$sp" in -1) sp="-" ;; esac
-    echo "tip-agreement-judge: VERDICT=$1 reason=$2 window_hours=$WINDOW_HOURS samples=${3:-0} agrees=${4:-0} clean_agrees=${CLEAN:-0} contested=${CONTESTED:-0} unverifiable=${UNRESOLVED:-0} disagrees=${5:-0} could_not_ask=${6:-0} min_peers_seen=$mp clean_span_s=$sp newest_age_s=${8:--} ledger=$LEDGER"
+    echo "tip-agreement-judge: VERDICT=$1 reason=$2 window_hours=$WINDOW_HOURS samples=${3:-0} agrees=${4:-0} clean_agrees=${CLEAN:-0} contested=${CONTESTED:-0} unverifiable=${UNRESOLVED:-0} disagrees=${5:-0} could_not_ask=${6:-0} min_peers_seen=$mp clean_span_s=$sp newest_age_s=${8:--} ledger=owner_private"
 }
 
 if [ ! -s "$LEDGER" ]; then
