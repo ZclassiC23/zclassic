@@ -5,6 +5,16 @@
 [![status](https://img.shields.io/badge/status-pre--v1-orange.svg)](docs/MVP.md)
 [![CI](https://img.shields.io/badge/CI-local%20make%20lint-success.svg)](docs/DEFENSIVE_CODING.md)
 
+> **ZClassic23 is a metaverse where people and AI create real things together,
+> and nobody owns the world they build in.**
+
+That mission means a shared, permissionless world with verifiable public work:
+authorship and evidence remain attributable, permissively licensed code remains
+free to discover, fetch, inspect, build and use, and neither a token balance nor
+a website becomes technical truth or ownership authority. The implemented
+ZCODE package, task, evidence and Living Commons surfaces are the foundation;
+ZC23 issuance and custody remain pre-genesis and simulation-only.
+
 A single self-contained C23 binary implementing a complete **ZClassic (ZCL)
 node**: Equihash 200,9 proof-of-work, transparent and Sapling shielded
 transactions, consensus-compatible with `zclassicd` bit for bit.

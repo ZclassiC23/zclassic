@@ -548,6 +548,65 @@ static int commons_command_noncreating_test(void)
     return failures;
 }
 
+static int commons_mission_api_test(void)
+{
+    int failures = 0;
+    TEST("ZCODE guide states the shared mission and shortest creation paths") {
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        struct zcl_command_request request = {.input = &input};
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.test.zcode_guide.v1");
+        zcl_native_handle_zcode_guide(&request, &reply);
+        ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "mission")),
+            "ZClassic23 is a metaverse where people and AI create real "
+            "things together, and nobody owns the world they build in.") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "find_work")),
+                      "zcode package search") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "create_work")),
+                      "zcode create") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "verify_commons")),
+                      "zcode commons verify") == 0);
+        ASSERT(!json_get_bool(json_get(&reply.data, "token_required")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "balance_grants_truth")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "commons_is_owned")));
+        zcl_command_reply_free(&reply); json_free(&input);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int commons_workspace_safety_test(void)
+{
+    int failures = 0;
+    TEST("ZCODE commons rejects implicit, root, traversal and live workspaces") {
+        static const char *const unsafe[] = {
+            "", ".", "./", "..", "/", "./../test-tmp/escape",
+            "./test-tmp/scratch/../escape", "~/.zcla" "ssic-c23",
+            ".zcla" "ssic-c23", "/var/lib/.zcla" "ssic-c23"
+        };
+        for (size_t i = 0; i < sizeof(unsafe) / sizeof(unsafe[0]); i++) {
+            ASSERT(!zcl_native_zcode_workspace_is_explicit_scratch(unsafe[i]));
+            struct json_value input;
+            json_init(&input); json_set_object(&input);
+            ASSERT(json_push_kv_str(&input, "workspace", unsafe[i]));
+            struct zcl_command_request request = {.input = &input};
+            struct zcl_command_reply reply;
+            zcl_command_reply_init(&reply, "zcl.test.commons_workspace.v1");
+            zcl_native_handle_zcode_commons_status(&request, &reply);
+            ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_INVALID);
+            zcl_command_reply_free(&reply); json_free(&input);
+        }
+        ASSERT(zcl_native_zcode_workspace_is_explicit_scratch(
+            "./test-tmp/zcode-explicit-scratch"));
+        ASSERT(zcl_native_zcode_workspace_is_explicit_scratch(
+            "/tmp/zclassic23-zcode-scratch"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int patronage_intent_test(void)
 {
     int failures = 0;
@@ -847,6 +906,7 @@ int test_zcode_creation_attribution(void)
            creation_arithmetic_test() + epoch_creation_codec_test() +
            epoch_creation_accounting_test() + commons_projection_test() +
            commons_projection_rebuild_test() +
-           commons_command_noncreating_test() + patronage_intent_test() +
+           commons_command_noncreating_test() + commons_mission_api_test() +
+           commons_workspace_safety_test() + patronage_intent_test() +
            patronage_settlement_codec_test() + continuity_policy_codec_test();
 }

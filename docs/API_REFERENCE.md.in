@@ -17,6 +17,12 @@ or ownership authority. The ZCODE creation path and its free-access guarantees
 are defined in
 [`docs/work/ZC23_LIVING_COMMONS.md`](./work/ZC23_LIVING_COMMONS.md).
 
+For the shortest executable route, run `zclassic23 zcode guide`. It points to
+the ready leaves for finding, inspecting, creating, improving, evidencing,
+accepting, publishing and verifying work. Commands that inspect pre-genesis
+Living Commons state require an explicit isolated scratch workspace; `.` and
+live/canonical datadirs are rejected rather than guessed.
+
 ## Source of truth
 
 **This page is generated. Do not edit it by hand.**

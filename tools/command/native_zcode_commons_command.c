@@ -46,6 +46,68 @@ static bool zcc_keys(const struct json_value *input,
     return true;
 }
 
+static bool zcc_segment_contains(const char *segment, size_t segment_len,
+                                 const char *needle, size_t needle_len)
+{
+    if (!segment || !needle || needle_len == 0 || needle_len > segment_len)
+        return false;
+    for (size_t i = 0; i + needle_len <= segment_len; i++)
+        if (memcmp(segment + i, needle, needle_len) == 0) return true;
+    return false;
+}
+
+static bool zcc_workspace_is_lexical_scratch(const char *workspace)
+{
+    if (!workspace || workspace[0] == '\0' || workspace[0] == '~')
+        return false;
+    size_t len = strlen(workspace);
+    if (len > 4096 || strcmp(workspace, "/") == 0 ||
+        strcmp(workspace, ".") == 0 || strcmp(workspace, "./") == 0 ||
+        strcmp(workspace, "..") == 0)
+        return false;
+
+    size_t pos = 0;
+    if (workspace[0] == '/') pos = 1;
+    else if (workspace[0] == '.' && workspace[1] == '/') pos = 2;
+    bool scratch_named = false;
+    while (pos < len) {
+        size_t start = pos;
+        while (pos < len && workspace[pos] != '/') {
+            unsigned char ch = (unsigned char)workspace[pos];
+            if (ch < 0x20 || ch == 0x7f) return false;
+            pos++;
+        }
+        size_t segment_len = pos - start;
+        if (segment_len == 0 ||
+            (segment_len == 1 && workspace[start] == '.') ||
+            (segment_len == 2 && workspace[start] == '.' &&
+             workspace[start + 1] == '.'))
+            return false;
+        if (segment_len >= 9 &&
+            memcmp(workspace + start, ".zclassic", 9) == 0)
+            return false;
+        if ((segment_len == 3 &&
+             memcmp(workspace + start, "tmp", 3) == 0) ||
+            (segment_len == 8 &&
+             memcmp(workspace + start, "test-tmp", 8) == 0) ||
+            zcc_segment_contains(workspace + start, segment_len,
+                                 "scratch", 7))
+            scratch_named = true;
+        if (pos < len) pos++;
+    }
+    return scratch_named && workspace[len - 1] != '/';
+}
+
+bool zcl_native_zcode_workspace_is_explicit_scratch(const char *workspace)
+{
+    if (!zcc_workspace_is_lexical_scratch(workspace)) return false;
+    char resolved[4097];
+    if (realpath(workspace, resolved) != NULL &&
+        !zcc_workspace_is_lexical_scratch(resolved))
+        return false;
+    return true;
+}
+
 static void zcc_fail(struct zcl_command_reply *reply, const char *code,
                      const char *detail)
 {
@@ -67,6 +129,36 @@ static bool zcc_root(const struct json_value *input, const char *key,
 {
     const char *hex = zcc_str(input, key);
     return hex && strlen(hex) == 64 && zcl_hex_decode_lower(hex, root, 32);
+}
+
+void zcl_native_handle_zcode_guide(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply || !zcc_keys(request->input, NULL, 0)) {
+        zcc_fail(reply, "BAD_ZCODE_GUIDE_INPUT",
+                 "zcode guide accepts no input keys");
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "mission",
+        "ZClassic23 is a metaverse where people and AI create real things "
+        "together, and nobody owns the world they build in.");
+    (void)json_push_kv_str(&reply->data, "find_work", "zcode package search");
+    (void)json_push_kv_str(&reply->data, "inspect_work", "zcode package show");
+    (void)json_push_kv_str(&reply->data, "fetch_work", "zcode package fetch");
+    (void)json_push_kv_str(&reply->data, "create_work", "zcode create");
+    (void)json_push_kv_str(&reply->data, "improve_work", "zcode improve");
+    (void)json_push_kv_str(&reply->data, "record_evidence", "zcode evidence");
+    (void)json_push_kv_str(&reply->data, "accept_work", "zcode accept");
+    (void)json_push_kv_str(&reply->data, "publish_work", "zcode publish plan");
+    (void)json_push_kv_str(&reply->data, "verify_commons",
+                           "zcode commons verify");
+    (void)json_push_kv_str(&reply->data, "exact_inputs",
+                           "discover schema <leaf>");
+    (void)json_push_kv_bool(&reply->data, "token_required", false);
+    (void)json_push_kv_bool(&reply->data, "balance_grants_truth", false);
+    (void)json_push_kv_bool(&reply->data, "commons_is_owned", false);
+    (void)json_push_kv_str(&reply->data, "availability_rule",
+                           "ready executes; planned fails closed");
 }
 
 static const char *zcc_status_name(
@@ -194,6 +286,11 @@ static struct vcs_zcode_commons_projection *zcc_build(
                  "closed input requires an explicit workspace");
         return NULL;
     }
+    if (!zcl_native_zcode_workspace_is_explicit_scratch(workspace)) {
+        zcc_fail(reply, "UNSAFE_COMMONS_WORKSPACE",
+                 "workspace must explicitly name an isolated tmp, test-tmp, or scratch path");
+        return NULL;
+    }
     struct vcs_zcode_commons_projection *projection =
         vcs_zcode_commons_projection_build(workspace);
     if (!projection)
@@ -258,7 +355,17 @@ void zcl_native_handle_zcode_commons_shadow_plan(
     uint8_t score_root[32], derived[32], *wire = NULL;
     size_t wire_len = 0;
     if (!request || !reply || !workspace ||
-        !zcc_keys(request->input, keys, 2) ||
+        !zcc_keys(request->input, keys, 2)) {
+        zcc_fail(reply, "BAD_SHADOW_INPUT",
+                 "closed input requires workspace and score_receipt_root");
+        return;
+    }
+    if (!zcl_native_zcode_workspace_is_explicit_scratch(workspace)) {
+        zcc_fail(reply, "UNSAFE_COMMONS_WORKSPACE",
+                 "workspace must explicitly name an isolated tmp, test-tmp, or scratch path");
+        return;
+    }
+    if (
         !zcc_root(request->input, "score_receipt_root", score_root) ||
         vcs_object_load_raw_bounded(
             workspace, score_root, VCS_ZCODE_SCORE_WIRE_BYTES,
@@ -431,7 +538,17 @@ void zcl_native_handle_zcode_commons_creation_show(
     const char *workspace = request ? zcc_str(request->input, "workspace")
                                     : NULL;
     if (!request || !reply || !workspace ||
-        !zcc_keys(request->input, keys, 2) ||
+        !zcc_keys(request->input, keys, 2)) {
+        zcc_fail(reply, "BAD_CREATION_INPUT",
+                 "closed input requires workspace and creation root");
+        return;
+    }
+    if (!zcl_native_zcode_workspace_is_explicit_scratch(workspace)) {
+        zcc_fail(reply, "UNSAFE_COMMONS_WORKSPACE",
+                 "workspace must explicitly name an isolated tmp, test-tmp, or scratch path");
+        return;
+    }
+    if (
         !zcc_root(request->input, "root", root) ||
         vcs_object_load_raw_bounded(workspace, root,
             VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES, &wire, &wire_len) != 0) {

@@ -102,6 +102,7 @@ void zcl_native_handle_zcode_package_dev_score_plan(
     const char *proof_hex = zsc_str(input, "proof_set_hex");
     size_t proof_len = proof_hex ? strlen(proof_hex) / 2u : 0;
     if (!zsc_keys(input, keys, sizeof(keys) / sizeof(keys[0])) || !workspace ||
+        !zcl_native_zcode_workspace_is_explicit_scratch(workspace) ||
         !zsc_hex_fixed(input, "task_hex", task_wire, sizeof(task_wire)) ||
         !zsc_hex_fixed(input, "candidate_hex", candidate_wire,
                        sizeof(candidate_wire)) ||
@@ -189,6 +190,7 @@ void zcl_native_handle_zcode_package_dev_score_commit(
     const char *workspace = zsc_str(request->input, "workspace");
     uint8_t wire[VCS_ZCODE_SCORE_WIRE_BYTES];
     if (!zsc_keys(request->input, keys, 2) || !workspace ||
+        !zcl_native_zcode_workspace_is_explicit_scratch(workspace) ||
         !zsc_hex_fixed(request->input, "receipt_hex", wire, sizeof(wire))) {
         zsc_fail(reply, "BAD_SCORE_COMMIT", "workspace and exact receipt_hex required");
         return;
@@ -216,6 +218,7 @@ void zcl_native_handle_zcode_package_dev_score_show(
     const char *workspace = zsc_str(request->input, "workspace");
     uint8_t root[32], *wire = NULL; size_t len = 0;
     if (!zsc_keys(request->input, keys, 2) || !workspace ||
+        !zcl_native_zcode_workspace_is_explicit_scratch(workspace) ||
         !zsc_hex_fixed(request->input, "root", root, sizeof(root)) ||
         vcs_object_load_raw_bounded(workspace, root,
             VCS_ZCODE_SCORE_WIRE_BYTES, &wire, &len) != 0) {
