@@ -5280,6 +5280,11 @@ $(DEV_TSAN_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 #            reload are skipped (binaries are only staged under DESTDIR).
 PREFIX  ?= /usr/local
 DESTDIR ?=
+# Stable remains the default promotion bar.  An owner maintaining a node with
+# pre-existing named blockers may explicitly choose `challenger`: exact source,
+# artifact, process, RPC/P2P, diagnostic, and <=1-tip-gap checks still apply,
+# but the deployment does not claim that the stable health bar was met.
+DEPLOY_VERIFY_STAGE ?= stable
 .PHONY: install
 install: vendor-ready zclassic23 zcl-rpc
 	install -d "$(DESTDIR)$(PREFIX)/bin"
@@ -5297,6 +5302,8 @@ install: vendor-ready zclassic23 zcl-rpc
 
 deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	@./tools/deploy_guard.sh canonical-deploy
+	@case "$(DEPLOY_VERIFY_STAGE)" in stable|challenger) ;; *) \
+	    echo "deploy: DEPLOY_VERIFY_STAGE must be stable or challenger" >&2; exit 2;; esac
 	@# Snapshot the executable inode owned by the stable MainPID before the
 	@# forced relink below unlinks build/bin/zclassic23.  The running process
 	@# remains valid after unlink, but the pathname then names the challenger;
@@ -5494,6 +5501,7 @@ deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	    echo "deploy: refreshed PATH shadow $(HOME)/bin/zclassic23 -> $$SERVICE_BIN"; \
 	fi; \
 	systemctl --user restart zclassic23; \
+	ZCL_DEPLOY_STAGE="$(DEPLOY_VERIFY_STAGE)" \
 	ZCL_DEPLOY_EXPECT_SOURCE_ID="$(BUILD_SOURCE_ID)" \
 	ZCL_DEPLOY_EXPECT_ARTIFACT_SHA256="$$artifact_sha256" \
 	    ./tools/deploy_verify.sh; \

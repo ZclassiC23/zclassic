@@ -548,6 +548,7 @@ make -j"$(nproc)" test_parallel_wpo  # whole-program LTO test binary (debug per-
 make lint           # every defensive-coding gate; it prints the list it ran
 make ci             # local gate: lint + tests + MVP slices (runs locally, not on GitHub Actions)
 make deploy         # rebuild + restart; verify exact source ID and running executable SHA-256
+make deploy DEPLOY_VERIFY_STAGE=challenger  # owner-only: activate exact bytes without claiming stable health
 ```
 
 This page deliberately does not state how many defensive-coding gates exist.
@@ -563,6 +564,7 @@ awk '/^LINT_GATES[[:space:]]*:=/{f=1} f{print; if ($0 !~ /\\[[:space:]]*$/) exit
 ```
 
 `make deploy` pins its outer `BUILD_SOURCE_RECORD` into every recursive Make,
+captures the running executable inode for rollback before the forced relink,
 then freezes one candidate before any install or restart. Candidate-local
 `agentbuild`, the current source record, the installed executable digest, and
 the post-restart digest must all identify that same source/artifact pair. The
@@ -570,6 +572,11 @@ post-restart verifier ignores inherited `ZCL_DATADIR`, `ZCL_RPCPORT`, and
 `ZCL_RPCCONNECT`: it derives the loopback RPC endpoint from the canonical
 systemd service's captured `MainPID`/`ExecStart`/process argv, confirms that PID
 owns the RPC listener, and rejects a PID or executable change during the proof.
+The default `stable` stage also requires a healthy verdict. An owner maintaining
+a node with already-named health blockers may explicitly select `challenger`;
+that still proves exact bytes, process identity, RPC/P2P diagnostics, evidence
+consistency, and a tip gap no greater than one, while clearly withholding any
+stable-health claim. Invalid stage names fail before the relink.
 
 Default target is `-march=x86-64-v3` (portable AVX2/FMA/BMI2); pass `ZCL_NATIVE=1`
 to build for the host CPU only.

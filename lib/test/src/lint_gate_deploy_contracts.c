@@ -67,8 +67,12 @@ int t_canonical_deploy_proof_binding_contract(void)
         const char *restart = candidate_install
             ? strstr(candidate_install, "systemctl --user restart zclassic23")
             : NULL;
-        const char *proof = restart
-            ? strstr(restart, "./tools/deploy_verify.sh") : NULL;
+        const char *stage_bind = restart
+            ? strstr(restart,
+                     "ZCL_DEPLOY_STAGE=\"$(DEPLOY_VERIFY_STAGE)\"")
+            : NULL;
+        const char *proof = stage_bind
+            ? strstr(stage_bind, "./tools/deploy_verify.sh") : NULL;
         ASSERT(pinned_build != NULL && pinned_build < seed_target);
         ASSERT(frozen_candidate != NULL && frozen_candidate < seed_target);
         ASSERT(agentbuild != NULL && agentbuild < seed_target);
@@ -82,7 +86,11 @@ int t_canonical_deploy_proof_binding_contract(void)
                != NULL);
         ASSERT(candidate_install != NULL && candidate_install < seed_target);
         ASSERT(restart != NULL && restart < seed_target);
+        ASSERT(stage_bind != NULL && stage_bind < seed_target);
         ASSERT(proof != NULL && proof < seed_target);
+        ASSERT(strstr(deploy_recipe,
+                      "DEPLOY_VERIFY_STAGE must be stable or challenger")
+               != NULL);
         ASSERT(strstr(deploy_recipe, "rollback_armed=1") != NULL);
         const char *prior_capture = strstr(
             deploy_recipe,
@@ -134,7 +142,7 @@ int t_canonical_deploy_proof_binding_contract(void)
         ASSERT(strstr(verify_buf, "${ZCL_RPCCONNECT:-") == NULL);
         ASSERT(strstr(verify_buf, "ZCL_DEPLOY_VERIFY_SELFTEST") != NULL);
         ASSERT(strstr(verify_buf, "ZCL_DEPLOY_STAGE") != NULL);
-        ASSERT(strstr(verify_buf, "CHALLENGER_STAGED (unqualified)") != NULL);
+        ASSERT(strstr(verify_buf, "CHALLENGER_ACTIVE (unqualified)") != NULL);
         ASSERT(run_gate_script_with_env("tools/deploy_verify.sh",
                                         "ZCL_DEPLOY_VERIFY_SELFTEST", "1") == 0);
         PASS();

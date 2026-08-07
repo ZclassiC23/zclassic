@@ -249,8 +249,12 @@ before any owner restores canonical service armor.
   still hard-refuse; source identities and environment variables alone grant
   no activation authority. Gated leaf hot-swap remains available through
   `hotswap-try`/`hotswap-apply`.
-  `make deploy` rm's the stale binary first
-  (a stale binary was a real multi-day outage) and verifies `build_commit`.
+  `make deploy` snapshots the running executable inode for rollback, then rm's
+  the stale pathname first (a stale binary was a real multi-day outage) and
+  verifies exact source/artifact identity. Stable health remains the default
+  bar; an owner can explicitly use
+  `make deploy DEPLOY_VERIFY_STAGE=challenger` on a degraded node to prove the
+  new process without claiming stable health.
 - **Gate every change with `tools/scripts/gate-and-report.sh <lintlog> <testlog>`**
   — `make lint` → full link build → `make test-parallel`, keyed on the pass
   token rather than a grep match. Running it by hand: the runner prints
