@@ -84,11 +84,14 @@ static bool wnh_body_is_error(const struct json_value *body,
 /* Call one wallet RPC method. On success returns true and fills *out (caller
  * json_free's it). On any failure sets a typed error body on `reply`, releases
  * its own scratch, and returns false — never leaves `reply` silent. */
-bool wnh_call_rpc(struct zcl_command_reply *reply, const char *method,
-                         const char *params_json, struct json_value *out)
+static bool wnh_call_rpc_common(struct zcl_command_reply *reply,
+                                const char *method, const char *params_json,
+                                long total_ms, struct json_value *out)
 {
     zcl_native_bridge_ensure_rpc();
-    char *raw = node_rpc_call(method, params_json);
+    char *raw = total_ms > 0
+        ? node_rpc_call_deadline(method, params_json, 2000, total_ms)
+        : node_rpc_call(method, params_json);
     if (!raw) {
         LOG_ERROR(WNH_TAG, "RPC %s returned null", method);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
@@ -124,6 +127,19 @@ bool wnh_call_rpc(struct zcl_command_reply *reply, const char *method,
         return false;
     }
     return true;
+}
+
+bool wnh_call_rpc(struct zcl_command_reply *reply, const char *method,
+                  const char *params_json, struct json_value *out)
+{
+    return wnh_call_rpc_common(reply, method, params_json, 0, out);
+}
+
+bool wnh_call_rpc_deadline(struct zcl_command_reply *reply, const char *method,
+                           const char *params_json, long total_ms,
+                           struct json_value *out)
+{
+    return wnh_call_rpc_common(reply, method, params_json, total_ms, out);
 }
 
 /* Deterministic, non-secret plan token binding a plan preview to its exact

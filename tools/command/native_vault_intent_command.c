@@ -7,6 +7,7 @@
 #include "controllers/wallet_native_handlers.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
+#include "rpc/rpc_timeout.h"
 #include "util/log_macros.h"
 
 #include <stdio.h>
@@ -37,7 +38,12 @@ static bool vni_rpc(const struct zcl_command_request *request,
         return false;
     }
     struct json_value body;
-    bool called = wnh_call_rpc(reply, method, params, &body);
+    bool proof_build = strcmp(method, "vault_intent_plan") == 0 ||
+                       strcmp(method, "vault_intent_fanout_plan") == 0;
+    bool called = proof_build
+        ? wnh_call_rpc_deadline(reply, method, params,
+                                RPC_PROOF_BUILD_TIMEOUT_MS, &body)
+        : wnh_call_rpc(reply, method, params, &body);
     free(params);
     if (!called) return false;
     bool ok = json_get_bool(json_get(&body, "ok"));

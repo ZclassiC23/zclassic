@@ -44,9 +44,11 @@
 #include "zanc/zanc.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2266,6 +2268,118 @@ struct partial_reply_server {
     int accepted_fd;
 };
 
+static void *delayed_vault_plan_serve(void *arg)
+{
+    struct partial_reply_server *s = arg;
+    struct pollfd pfd = { .fd = s->listen_fd, .events = POLLIN };
+    int ready;
+    do {
+        ready = poll(&pfd, 1, 2000);
+    } while (ready < 0 && errno == EINTR);
+    if (ready <= 0)
+        return NULL;
+    int fd = accept(s->listen_fd, NULL, NULL);
+    if (fd < 0)
+        return NULL;
+    s->accepted_fd = fd;
+
+    /* Longer than the deliberately tiny generic test deadline below, but
+     * comfortably inside the compile-time vault proof budget. */
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 350 * 1000 * 1000 };
+    (void)nanosleep(&ts, NULL);
+    static const char body[] =
+        "{\"result\":{\"ok\":true,\"idempotent_plan\":true},"
+        "\"error\":null,\"id\":1}";
+    char hdr[256];
+    int hlen = snprintf(hdr, sizeof(hdr),
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+        "Content-Length: %zu\r\nConnection: close\r\n\r\n",
+        sizeof(body) - 1);
+    (void)!write(fd, hdr, (size_t)hlen);
+    (void)!write(fd, body, sizeof(body) - 1);
+    close(fd);
+    s->accepted_fd = -1;
+    return NULL;
+}
+
+static int test_vault_proof_plan_uses_long_rpc_deadline(void)
+{
+    int failures = 0;
+    pthread_t th = 0;
+    bool joined = false;
+    struct partial_reply_server srv = { .listen_fd = -1, .accepted_fd = -1 };
+    char *dir = NULL;
+
+    TEST("vault.intent.fanout-plan: proof work can outlive the generic RPC "
+         "deadline and still return a valid typed result") {
+        node_rpc_client_set_test_hook(NULL);
+        srv.listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+        ASSERT(srv.listen_fd >= 0);
+        struct sockaddr_in addr = { 0 };
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(0);
+        ASSERT(bind(srv.listen_fd, (struct sockaddr *)&addr,
+                    sizeof(addr)) == 0);
+        socklen_t alen = sizeof(addr);
+        ASSERT(getsockname(srv.listen_fd, (struct sockaddr *)&addr,
+                           &alen) == 0);
+        ASSERT(listen(srv.listen_fd, 1) == 0);
+        ASSERT(pthread_create(&th, NULL, delayed_vault_plan_serve, &srv) == 0);
+
+        char dir_template[] = "/tmp/zcl-vault-proof-rpc-XXXXXX";
+        dir = strdup(mkdtemp(dir_template));
+        ASSERT(dir != NULL);
+        char cookie_path[320];
+        (void)snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", dir);
+        FILE *cf = fopen(cookie_path, "w");
+        ASSERT(cf != NULL);
+        (void)fprintf(cf, "dummyuser:dummypass\n");
+        (void)fclose(cf);
+        zcl_native_bridge_bind_rpc(dir, (int)ntohs(addr.sin_port));
+        ASSERT(setenv("ZCL_RPC_DEADLINE_MS", "100", 1) == 0);
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.vault_intent_fanout_plan.v1");
+        zcl_native_handle_vault_intent_fanout_plan(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(json_get_bool(json_get(&reply.data, "ok")));
+        ASSERT(json_get_bool(json_get(&reply.data, "idempotent_plan")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        (void)unsetenv("ZCL_RPC_DEADLINE_MS");
+        PASS();
+    } _test_next:;
+
+    if (srv.listen_fd >= 0) {
+        close(srv.listen_fd);
+        srv.listen_fd = -1;
+    }
+    if (th) {
+        (void)pthread_join(th, NULL);
+        joined = true;
+    }
+    if (srv.accepted_fd >= 0)
+        close(srv.accepted_fd);
+    if (th && !joined)
+        (void)pthread_join(th, NULL);
+    if (dir) {
+        char cookie_path[320];
+        (void)snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", dir);
+        (void)unlink(cookie_path);
+        (void)rmdir(dir);
+        free(dir);
+    }
+    (void)unsetenv("ZCL_RPC_DEADLINE_MS");
+    zcl_native_bridge_bind_rpc("", 0);
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 static void *partial_reply_serve(void *arg)
 {
     struct partial_reply_server *s = arg;
@@ -2393,6 +2507,7 @@ int test_native_api_contract(void)
     failures += test_status_frontdoor_preserves_rpc_error();
     failures += test_status_brief_body_schema_skew_tolerance();
     failures += test_status_brief_body_front_door_deadline();
+    failures += test_vault_proof_plan_uses_long_rpc_deadline();
     failures += test_partial_rpc_reply_names_the_timeout();
     printf("=== native_api_contract: %d failures ===\n", failures);
     return failures;

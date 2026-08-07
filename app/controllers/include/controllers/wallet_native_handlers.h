@@ -56,6 +56,14 @@ void wnh_fail(struct zcl_command_reply *reply,
 bool wnh_call_rpc(struct zcl_command_reply *reply, const char *method,
                   const char *params_json, struct json_value *out);
 
+/* Same typed wallet-RPC adapter with an explicit bounded total deadline.
+ * Reserved for methods whose documented work class exceeds the generic
+ * client ceiling; callers still choose from compile-time policy, never
+ * operator/agent input. */
+bool wnh_call_rpc_deadline(struct zcl_command_reply *reply, const char *method,
+                           const char *params_json, long total_ms,
+                           struct json_value *out);
+
 /* Shared non-secret plan rendering for the mutating wallet controller
  * siblings. */
 void wnh_plan_token(char out[17], const char *a, const char *b,
