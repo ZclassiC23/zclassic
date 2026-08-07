@@ -31,6 +31,7 @@
 #include "controllers/wallet_shielded_controller.h"
 #include "services/wallet_backup_service.h"
 #include "wallet/keystore.h"
+#include "wallet/wallet_canary.h"
 #include "wallet/wallet_lock.h"
 #include "wallet/wallet_sqlite.h"
 #include "chain/chain.h"
@@ -416,7 +417,8 @@ int test_shielded_payment_gate(void)
          * right after node_db_open succeeds. A NULL wallet_db here would
          * trip that guard on the very first RPC call. */
         struct zcl_result wsql_r = wallet_sqlite_open_r(&wsql, ndb.db);
-        ok = wsql_r.ok && wallet_sqlite_self_test(&wsql).ok;
+        ok = wsql_r.ok && wallet_sqlite_self_test(&wsql).ok &&
+            wallet_canary_run(ndb.db, NULL) == WALLET_CANARY_OK;
         if (ok) {
             wsql_open = true;
         } else {

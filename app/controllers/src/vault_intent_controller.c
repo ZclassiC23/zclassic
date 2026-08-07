@@ -32,6 +32,7 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "wallet/wallet.h"
+#include "wallet/wallet_canary.h"
 #include "wallet/wallet_lock.h"
 #include "wallet/wallet_sqlite.h"
 
@@ -201,10 +202,13 @@ bool vault_intent_context_ready(struct wallet_rpc_context *ctx,
         vi_error(out, "WALLET_LOCKED", "unlock the wallet through stdin before planning");
         return false;
     }
-    struct wallet_sqlite_health h = wallet_sqlite_get_health(
-        ctx->wallet_db, (int)ctx->wallet->keystore.num_keys);
-    if (!h.open || !h.canary_ok || h.mismatch) {
-        vi_error(out, "WALLET_PERSISTENCE_UNHEALTHY", "wallet persistence health gate failed");
+    sqlite3 *db = ctx->wallet_db->open ? ctx->wallet_db->db : NULL;
+    struct wallet_persistence_health h = wallet_persistence_get_health(
+        db, (int)ctx->wallet->keystore.num_keys);
+    if (!h.open || !h.canary_ok || h.row_count < 0 || h.mismatch ||
+        h.corrupt_rows > 0) {
+        vi_error(out, "WALLET_PERSISTENCE_UNHEALTHY",
+                 "wallet persistence health gate failed; inspect core wallet status");
         return false;
     }
     struct wallet_backup_status backup;
