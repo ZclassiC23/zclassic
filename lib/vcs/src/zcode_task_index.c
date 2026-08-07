@@ -13,6 +13,7 @@
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_agent_context.h"
 #include "vcs/zcode_dev.h"
+#include "vcs/zcode_lane.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -27,6 +28,7 @@ static const uint8_t task_magic[8] = {'Z','C','T','A','S','K','\r','\n'};
 static const uint8_t candidate_magic[8] = {'Z','C','C','A','N','D','\r','\n'};
 static const uint8_t context_magic[8] = {'Z','C','A','C','T','X','\r','\n'};
 static const uint8_t receipt_magic[8] = {'Z','C','W','R','C','P','\r','\n'};
+static const uint8_t lane_magic[8] = {'Z','C','L','A','N','E','\r','\n'};
 
 struct vcs_zcode_task_index {
     struct vcs_zcode_task_index_entry *tasks;
@@ -37,6 +39,8 @@ struct vcs_zcode_task_index {
     size_t context_count;
     struct vcs_zcode_task_receipt_entry *receipts;
     size_t receipt_count;
+    struct vcs_zcode_task_lane_entry *lanes;
+    size_t lane_count;
 };
 
 static bool index_hex_lower(const char *s, size_t want)
@@ -194,10 +198,50 @@ static void index_consider_object(const char *repo_root, const char *hex64,
                            e->toolchain_capsule_root_hex);
             zcl_hex_encode(address, 32, e->receipt_root_hex);
             zcl_hex_encode(receipt.output_root, 32, e->output_root_hex);
+            zcl_hex_encode(receipt.action_root, 32, e->action_root_hex);
             e->work_kind = receipt.work_kind;
             e->status = receipt.status;
             e->exit_status = receipt.exit_status;
             e->finished_unix = receipt.finished_unix;
+        }
+    } else if (len == VCS_ZCODE_LANE_WIRE_BYTES &&
+               memcmp(wire, lane_magic, sizeof(lane_magic)) == 0) {
+        struct vcs_zcode_lane_receipt_v1 lane;
+        uint8_t root[32];
+        bool ok = vcs_zcode_lane_receipt_parse(wire, len, &lane) ==
+                VCS_ZCODE_DEV_OK &&
+            vcs_zcode_lane_receipt_id(&lane, root) == VCS_ZCODE_DEV_OK &&
+            memcmp(root, address, 32) == 0 &&
+            vcs_zcode_lane_receipt_verify(&lane, lane.signer_pubkey) ==
+                VCS_ZCODE_DEV_OK;
+        if (!ok) {
+            LOG_ERROR(INDEX_LOG, "skipping lane-magic object %.8s: "
+                      "parse, signature, or root agreement failed", hex64);
+        } else if (index->lane_count >= VCS_ZCODE_TASK_INDEX_MAX_LANES) {
+            if (!*cap_logged) {
+                LOG_ERROR(INDEX_LOG, "lane index cap %u reached",
+                          VCS_ZCODE_TASK_INDEX_MAX_LANES);
+                *cap_logged = true;
+            }
+        } else {
+            struct vcs_zcode_task_lane_entry *e =
+                &index->lanes[index->lane_count++];
+            memset(e, 0, sizeof(*e));
+            zcl_hex_encode(address, 32, e->receipt_root_hex);
+            zcl_hex_encode(lane.task_root, 32, e->task_root_hex);
+            zcl_hex_encode(lane.candidate_root, 32, e->candidate_root_hex);
+            zcl_hex_encode(lane.source_root, 32, e->source_root_hex);
+            zcl_hex_encode(lane.proof_policy_root, 32,
+                           e->proof_policy_root_hex);
+            if (lane.lane != VCS_ZCODE_LANE_FRONTIER) {
+                zcl_hex_encode(lane.proof_set_root, 32,
+                               e->proof_set_root_hex);
+                zcl_hex_encode(lane.prior_receipt_root, 32,
+                               e->prior_receipt_root_hex);
+            }
+            zcl_hex_encode(lane.signer_pubkey, 32, e->signer_pubkey_hex);
+            e->lane = lane.lane;
+            e->created_unix = lane.created_unix;
         }
     }
     free(wire);
@@ -239,7 +283,60 @@ static int index_candidate_cmp(const void *a, const void *b)
         ((const struct vcs_zcode_task_candidate_entry *)b)->candidate_root_hex);
 }
 
+static const struct vcs_zcode_task_lane_entry *index_lane_find(
+    const struct vcs_zcode_task_index *index, const char *root_hex)
+{
+    for (size_t i = 0; i < index->lane_count; i++)
+        if (strcmp(index->lanes[i].receipt_root_hex, root_hex) == 0)
+            return &index->lanes[i];
+    return NULL;
+}
+
+static bool index_proof_set_valid(const char *repo_root, const char *root_hex)
+{
+    uint8_t root[32], checked[32], *wire = NULL;
+    uint8_t receipts[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS][32];
+    size_t wire_len = 0, receipt_count = 0;
+    bool ok = zcl_hex_decode_lower(root_hex, root, sizeof(root)) &&
+        vcs_object_load_raw_bounded(repo_root, root,
+                                    VCS_ZCODE_PROOF_SET_WIRE_MAX,
+                                    &wire, &wire_len) == 0 &&
+        vcs_zcode_proof_set_parse(
+            wire, wire_len, receipts,
+            VCS_ZCODE_PROOF_SET_MAX_RECEIPTS, &receipt_count) ==
+                VCS_ZCODE_DEV_OK &&
+        vcs_zcode_proof_set_root(
+            (const uint8_t (*)[32])receipts, receipt_count, checked) ==
+                VCS_ZCODE_DEV_OK &&
+        memcmp(root, checked, sizeof(root)) == 0;
+    free(wire); return ok;
+}
+
+static bool index_lane_chain_valid(
+    const struct vcs_zcode_task_index *index, const char *repo_root,
+    const struct vcs_zcode_task_lane_entry *lane, unsigned depth)
+{
+    if (!lane || depth > VCS_ZCODE_LANE_PROVEN) return false;
+    if (lane->lane == VCS_ZCODE_LANE_FRONTIER)
+        return lane->prior_receipt_root_hex[0] == '\0' &&
+               lane->proof_set_root_hex[0] == '\0';
+    if (!index_proof_set_valid(repo_root, lane->proof_set_root_hex))
+        return false;
+    const struct vcs_zcode_task_lane_entry *prior = index_lane_find(
+        index, lane->prior_receipt_root_hex);
+    return prior && prior->lane + 1u == lane->lane &&
+        prior->created_unix <= lane->created_unix &&
+        strcmp(prior->task_root_hex, lane->task_root_hex) == 0 &&
+        strcmp(prior->candidate_root_hex, lane->candidate_root_hex) == 0 &&
+        strcmp(prior->source_root_hex, lane->source_root_hex) == 0 &&
+        strcmp(prior->proof_policy_root_hex,
+               lane->proof_policy_root_hex) == 0 &&
+        strcmp(prior->signer_pubkey_hex, lane->signer_pubkey_hex) == 0 &&
+        index_lane_chain_valid(index, repo_root, prior, depth + 1u);
+}
+
 static void index_derive_states(struct vcs_zcode_task_index *index,
+                                const char *repo_root,
                                 int64_t now_unix)
 {
     for (size_t i = 0; i < index->task_count; i++) {
@@ -310,12 +407,48 @@ static void index_derive_states(struct vcs_zcode_task_index *index,
                 (void)snprintf(e->latest_receipt_output_root_hex,
                                sizeof(e->latest_receipt_output_root_hex), "%s",
                                receipt->output_root_hex);
+                (void)snprintf(e->latest_action_root_hex,
+                               sizeof(e->latest_action_root_hex), "%s",
+                               receipt->action_root_hex);
                 e->latest_receipt_status = receipt->status;
                 e->latest_receipt_exit_status = receipt->exit_status;
             }
         }
+        const struct vcs_zcode_task_lane_entry *latest_lane = NULL;
+        for (size_t l = 0; latest_candidate && l < index->lane_count; l++) {
+            const struct vcs_zcode_task_lane_entry *lane = &index->lanes[l];
+            if (strcmp(lane->task_root_hex, e->task_root_hex) != 0 ||
+                strcmp(lane->candidate_root_hex,
+                       latest_candidate->candidate_root_hex) != 0 ||
+                strcmp(lane->source_root_hex,
+                       latest_candidate->candidate_source_root_hex) != 0 ||
+                strcmp(lane->proof_policy_root_hex,
+                       e->proof_policy_root_hex) != 0 ||
+                !index_lane_chain_valid(index, repo_root, lane, 1u))
+                continue;
+            if (!latest_lane || lane->lane > latest_lane->lane ||
+                (lane->lane == latest_lane->lane &&
+                 (lane->created_unix > latest_lane->created_unix ||
+                  (lane->created_unix == latest_lane->created_unix &&
+                   strcmp(lane->receipt_root_hex,
+                          latest_lane->receipt_root_hex) > 0))))
+                latest_lane = lane;
+        }
+        if (latest_lane) {
+            e->latest_lane = latest_lane->lane;
+            (void)snprintf(e->latest_lane_receipt_hex,
+                           sizeof(e->latest_lane_receipt_hex), "%s",
+                           latest_lane->receipt_root_hex);
+            (void)snprintf(e->latest_proof_set_root_hex,
+                           sizeof(e->latest_proof_set_root_hex), "%s",
+                           latest_lane->proof_set_root_hex);
+        }
         e->expired = now_unix > 0 && now_unix >= e->expires_unix;
         const char *state = e->expired ? VCS_ZCODE_TASK_STATE_EXPIRED
+            : e->latest_lane == VCS_ZCODE_LANE_PROVEN
+                ? VCS_ZCODE_TASK_STATE_PROVEN
+            : e->latest_lane == VCS_ZCODE_LANE_CANDIDATE
+                ? VCS_ZCODE_TASK_STATE_ACCEPTED_CANDIDATE
             : e->latest_work_receipt_hex[0] &&
               e->latest_receipt_status == VCS_ZCODE_WORK_PASS &&
               e->latest_receipt_exit_status == 0
@@ -349,8 +482,12 @@ struct vcs_zcode_task_index *vcs_zcode_task_index_build(
     index->receipts = zcl_malloc(sizeof(*index->receipts) *
                                  VCS_ZCODE_TASK_INDEX_MAX_RECEIPTS,
                                  "task_index_receipts");
+    index->lanes = zcl_malloc(sizeof(*index->lanes) *
+                              VCS_ZCODE_TASK_INDEX_MAX_LANES,
+                              "task_index_lanes");
     if (!index->tasks || !index->candidates || !index->contexts ||
-        !index->receipts) {
+        !index->receipts || !index->lanes) {
+        free(index->lanes);
         free(index->receipts);
         free(index->contexts);
         free(index->candidates);
@@ -386,7 +523,7 @@ struct vcs_zcode_task_index *vcs_zcode_task_index_build(
     if (index->candidate_count > 1)
         qsort(index->candidates, index->candidate_count,
               sizeof(*index->candidates), index_candidate_cmp);
-    index_derive_states(index, now_unix);
+    index_derive_states(index, repo_root, now_unix);
     return index;
 }
 
@@ -394,6 +531,7 @@ void vcs_zcode_task_index_free(struct vcs_zcode_task_index *index)
 {
     if (!index)
         return;
+    free(index->lanes);
     free(index->receipts);
     free(index->contexts);
     free(index->candidates);

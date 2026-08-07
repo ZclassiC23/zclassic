@@ -95,6 +95,27 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_work_run)
 
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.work.accept", "zcode.work", "", "Accept one exact proven candidate",
+    "This explicit human decision reloads the latest canonical candidate, "
+    "signed work evidence and current signed lane, requires the exact proof "
+    "policy, then advances the existing CANDIDATE and PROVEN lane receipts. "
+    "It does not edit source files, publish a package, or give the adapter "
+    "acceptance authority. Repeating an already-PROVEN acceptance is "
+    "idempotent.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,work,accept,human,proven,lane,evidence",
+    "zcl.zcode_work_accept.input.v1", "zcl.zcode_work_accept.v1",
+    "workspace,work", "",
+    "zclassic23-dev zcode work accept --input='{\"work\":\"latest\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_work_accept)
+
 ZCL_COMMAND_READY_READ(
     "zcode.guide", "zcode", "", "Start creating in the shared C23 commons",
     "Returns the shortest ready command paths for finding, inspecting, "

@@ -121,3 +121,7 @@ zcode.work.run patch_root # the nested handler reads this only as an optional ex
 zcode.work.run candidate_source_root # the nested handler reads this only as an optional expert cross-check; work run captures the candidate tree.
 zcode.work.run candidate_source_sha256 # the nested handler derives this from the candidate manifest for explicit admission; request->input never reaches it.
 zcode.work.run remote_peer # the nested handler reads this only for opt-in P2P execution; work run remains local scratch-only.
+zcode.work.accept datadir # work accept derives the task-local scratch ledger for private evidence/lane calls; request->input never reaches them.
+zcode.work.accept source_root # work accept reloads the latest canonical candidate source for its private lane lookup; request->input never reaches it.
+zcode.work.accept action_id # work accept reloads the latest signed receipt action for private evidence/promotion calls; request->input never reaches it.
+zcode.work.accept lane # work accept fixes sequential CANDIDATE then PROVEN transitions after private evidence evaluation; request->input never reaches it.

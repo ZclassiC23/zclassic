@@ -20,7 +20,10 @@
  *
  * Read-only: the index never writes to the CAS. Signed work receipts are
  * re-rooted and signature-checked before they may affect display state; full
- * proof-policy evaluation remains with the evidence owner. */
+ * proof-policy evaluation remains with the evidence owner. Signed lane
+ * receipts are additionally prior-chained and joined to the latest exact
+ * task/candidate/policy/source and canonical proof set before CANDIDATE or
+ * PROVEN may affect display state. */
 
 #ifndef ZCL_VCS_ZCODE_TASK_INDEX_H
 #define ZCL_VCS_ZCODE_TASK_INDEX_H
@@ -33,6 +36,7 @@
 #define VCS_ZCODE_TASK_INDEX_MAX_CANDIDATES 4096u
 #define VCS_ZCODE_TASK_INDEX_MAX_CONTEXTS 4096u
 #define VCS_ZCODE_TASK_INDEX_MAX_RECEIPTS 8192u
+#define VCS_ZCODE_TASK_INDEX_MAX_LANES 8192u
 
 /* Derived per-task states. EXPIRED takes precedence: an expired task is
  * refused by task_validate_at no matter what its candidates look like. */
@@ -41,6 +45,8 @@
 #define VCS_ZCODE_TASK_STATE_CANDIDATE_ADMITTED "CANDIDATE_ADMITTED"
 #define VCS_ZCODE_TASK_STATE_REPAIR_NEEDED "REPAIR_NEEDED"
 #define VCS_ZCODE_TASK_STATE_EVIDENCE_READY "EVIDENCE_READY"
+#define VCS_ZCODE_TASK_STATE_ACCEPTED_CANDIDATE "ACCEPTED_CANDIDATE"
+#define VCS_ZCODE_TASK_STATE_PROVEN "PROVEN"
 
 struct vcs_zcode_task_index_entry {
     char task_root_hex[65];
@@ -59,9 +65,13 @@ struct vcs_zcode_task_index_entry {
     char latest_candidate_source_root_hex[65];
     char latest_patch_root_hex[65];
     char latest_work_receipt_hex[65];
+    char latest_action_root_hex[65];
     char latest_receipt_output_root_hex[65];
     uint8_t latest_receipt_status;
     int32_t latest_receipt_exit_status;
+    uint8_t latest_lane;
+    char latest_lane_receipt_hex[65];
+    char latest_proof_set_root_hex[65];
     char state[24];
 };
 
@@ -91,10 +101,24 @@ struct vcs_zcode_task_receipt_entry {
     char toolchain_capsule_root_hex[65];
     char receipt_root_hex[65];
     char output_root_hex[65];
+    char action_root_hex[65];
     uint8_t work_kind;
     uint8_t status;
     int32_t exit_status;
     int64_t finished_unix;
+};
+
+struct vcs_zcode_task_lane_entry {
+    char receipt_root_hex[65];
+    char task_root_hex[65];
+    char candidate_root_hex[65];
+    char source_root_hex[65];
+    char proof_policy_root_hex[65];
+    char proof_set_root_hex[65];
+    char prior_receipt_root_hex[65];
+    char signer_pubkey_hex[65];
+    uint8_t lane;
+    int64_t created_unix;
 };
 
 struct vcs_zcode_task_index; /* opaque */

@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define ZWORK_PATH_MAX 4400
 #define ZWORK_LINE_COUNT_MAX 65536u
@@ -537,6 +538,9 @@ void zcl_native_handle_zcode_work_status(
     const char *state = entry->expired ? "BLOCKED" : entry->state;
     bool evidence_ready = strcmp(state, VCS_ZCODE_TASK_STATE_EVIDENCE_READY) == 0;
     bool repair_needed = strcmp(state, VCS_ZCODE_TASK_STATE_REPAIR_NEEDED) == 0;
+    bool accepted = strcmp(state, VCS_ZCODE_TASK_STATE_ACCEPTED_CANDIDATE) == 0 ||
+                    strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0;
+    bool build_passed = evidence_ready || accepted;
     struct zwork_patch_summary summary;
     if (!zwork_patch_summary_load(workspace, entry, &summary)) {
         zwork_fail(reply, "PATCH_SUMMARY_FAILED", "rebuild",
@@ -575,6 +579,10 @@ void zcl_native_handle_zcode_work_status(
                          entry->latest_patch_root_hex) &&
         json_push_kv_str(&expert, "work_receipt_root",
                          entry->latest_work_receipt_hex) &&
+        json_push_kv_str(&expert, "lane_receipt_root",
+                         entry->latest_lane_receipt_hex) &&
+        json_push_kv_str(&expert, "proof_set_root",
+                         entry->latest_proof_set_root_hex) &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
         json_push_kv_str(&reply->data, "goal", goal) &&
         json_push_kv_str(&reply->data, "state", state) &&
@@ -589,10 +597,10 @@ void zcl_native_handle_zcode_work_status(
                           summary.line_counts_exact) &&
         json_push_kv_str(&reply->data, "public_api_changes", api_summary) &&
         json_push_kv_str(&reply->data, "build_result",
-                         evidence_ready ? "passed" : repair_needed
+                         build_passed ? "passed" : repair_needed
                            ? "failed" : "not_started") &&
         json_push_kv_str(&reply->data, "test_result",
-                         evidence_ready ? "passed_declared_tests" :
+                         build_passed ? "passed_declared_tests" :
                          repair_needed ? "failed_or_not_reached" :
                                          "not_started") &&
         json_push_kv_str(&reply->data, "sanitizer_result", "not_started") &&
@@ -600,7 +608,10 @@ void zcl_native_handle_zcode_work_status(
         json_push_kv_str(&reply->data, "reproduction_grade", "none") &&
         json_push_kv_str(&reply->data, "review_verdict", "not_started") &&
         json_push_kv_str(&reply->data, "remaining_risks",
-                         entry->expired ? "task expired" : evidence_ready
+                         entry->expired ? "task expired" :
+                         strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0
+                            ? "accepted candidate is not automatically applied or published"
+                         : evidence_ready
                             ? "proof profile and independent review not yet evaluated"
                          : repair_needed
                             ? "latest candidate failed confined package build or tests"
@@ -617,4 +628,199 @@ void zcl_native_handle_zcode_work_status(
     if (!ok || !paths_ok)
         zwork_fail(reply, "WORK_STATUS_OUTPUT", "render",
                    "human work status could not be rendered", false, false);
+}
+
+static void zwork_accept_inner(const char *workspace, const char *datadir,
+                               const char *action_id, const char *lane,
+                               struct zcl_command_reply *reply)
+{
+    struct json_value input;
+    json_init(&input); json_set_object(&input);
+    bool ok = json_push_kv_str(&input, "workspace", workspace) &&
+        json_push_kv_str(&input, "datadir", datadir) &&
+        json_push_kv_str(&input, "action_id", action_id) &&
+        json_push_kv_str(&input, "lane", lane);
+    if (ok) {
+        struct zcl_command_request request = { .input = &input };
+        zcl_native_handle_zcode_accept(&request, reply);
+    }
+    json_free(&input);
+    if (!ok)
+        zwork_fail(reply, "ACCEPT_INPUT_FAILED", "compose",
+                   "existing lane acceptance input could not be composed",
+                   false, false);
+}
+
+static void zwork_lane_inner(const char *workspace, const char *datadir,
+                             const char *source_root,
+                             struct zcl_command_reply *reply)
+{
+    struct json_value input;
+    json_init(&input); json_set_object(&input);
+    bool ok = json_push_kv_str(&input, "workspace", workspace) &&
+        json_push_kv_str(&input, "datadir", datadir) &&
+        json_push_kv_str(&input, "source_root", source_root);
+    if (ok) {
+        struct zcl_command_request request = { .input = &input };
+        zcl_native_handle_zcode_lane(&request, reply);
+    }
+    json_free(&input);
+    if (!ok)
+        zwork_fail(reply, "LANE_INPUT_FAILED", "compose",
+                   "existing lane lookup input could not be composed",
+                   false, false);
+}
+
+static void zwork_evidence_inner(const char *workspace, const char *datadir,
+                                 const char *action_id,
+                                 struct zcl_command_reply *reply)
+{
+    struct json_value input;
+    json_init(&input); json_set_object(&input);
+    bool ok = json_push_kv_str(&input, "workspace", workspace) &&
+        json_push_kv_str(&input, "datadir", datadir) &&
+        json_push_kv_str(&input, "action_id", action_id);
+    if (ok) {
+        struct zcl_command_request request = { .input = &input };
+        zcl_native_handle_zcode_evidence(&request, reply);
+    }
+    json_free(&input);
+    if (!ok)
+        zwork_fail(reply, "EVIDENCE_INPUT_FAILED", "compose",
+                   "existing evidence evaluation input could not be composed",
+                   false, false);
+}
+
+void zcl_native_handle_zcode_work_accept(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    const char *workspace_arg = zwork_str(request->input, "workspace");
+    const char *work = zwork_str(request->input, "work");
+    if (!workspace_arg || !workspace_arg[0]) workspace_arg = ".";
+    char workspace[ZWORK_PATH_MAX];
+    if (!realpath(workspace_arg, workspace)) {
+        zwork_fail(reply, "BAD_WORKSPACE", "resolve",
+                   "workspace must resolve to an existing directory",
+                   false, false);
+        return;
+    }
+    struct vcs_zcode_task_index *index = vcs_zcode_task_index_build(
+        workspace, platform_time_wall_unix());
+    bool ambiguous = false;
+    const struct vcs_zcode_task_index_entry *entry = index
+        ? zwork_resolve(index, work, &ambiguous) : NULL;
+    bool ready = entry && !entry->expired &&
+        (strcmp(entry->state, VCS_ZCODE_TASK_STATE_EVIDENCE_READY) == 0 ||
+         strcmp(entry->state,
+                VCS_ZCODE_TASK_STATE_ACCEPTED_CANDIDATE) == 0 ||
+         strcmp(entry->state, VCS_ZCODE_TASK_STATE_PROVEN) == 0);
+    if (!ready || !entry->latest_action_root_hex[0] ||
+        !entry->latest_candidate_source_root_hex[0]) {
+        zwork_fail(reply, ambiguous ? "AMBIGUOUS_WORK" :
+                     "WORK_NOT_READY_FOR_ACCEPTANCE", "accept",
+                   entry && entry->expired ? "task expired" :
+                   "the latest candidate lacks verified passing evidence",
+                   false, false);
+        vcs_zcode_task_index_free(index); return;
+    }
+    char datadir[ZWORK_PATH_MAX];
+    int n = snprintf(datadir, sizeof(datadir),
+                     "/tmp/zclassic23-zcode-workspaces/%lu/%.64s/zbuild",
+                     (unsigned long)getuid(), entry->task_root_hex);
+    if (n <= 0 || (size_t)n >= sizeof(datadir)) {
+        zwork_fail(reply, "ACCEPT_PATH_FAILED", "resolve",
+                   "task-local ZBuild path is too long", false, false);
+        vcs_zcode_task_index_free(index); return;
+    }
+    struct zcl_command_reply lane_reply;
+    zcl_command_reply_init(&lane_reply, "zcl.zcode_lane.v1");
+    zwork_lane_inner(workspace, datadir,
+                     entry->latest_candidate_source_root_hex, &lane_reply);
+    const struct json_value *lane_value = lane_reply.status ==
+            ZCL_COMMAND_STATUS_PASSED
+        ? json_get(&lane_reply.data, "lane") : NULL;
+    const char *lane = lane_value && lane_value->type == JSON_STR
+        ? json_get_str(lane_value) : NULL;
+    if (!lane) {
+        zwork_fail(reply, "LANE_STATE_MISSING", "accept",
+                   lane_reply.error.message[0] ? lane_reply.error.message :
+                   "the signed FRONTIER lane could not be reloaded",
+                   true, false);
+        zcl_command_reply_free(&lane_reply);
+        vcs_zcode_task_index_free(index); return;
+    }
+    bool already_proven = strcmp(lane, "PROVEN") == 0;
+    struct zcl_command_reply final_reply;
+    zcl_command_reply_init(&final_reply, "zcl.zcode_accept.v1");
+    if (already_proven) {
+        json_copy(&final_reply.data, &lane_reply.data);
+        final_reply.status = ZCL_COMMAND_STATUS_PASSED;
+    } else {
+        struct zcl_command_reply evidence;
+        zcl_command_reply_init(&evidence, "zcl.zcode_evidence.v1");
+        zwork_evidence_inner(workspace, datadir,
+                             entry->latest_action_root_hex, &evidence);
+        const struct json_value *satisfied = evidence.status ==
+                ZCL_COMMAND_STATUS_PASSED
+            ? json_get(&evidence.data, "policy_satisfied") : NULL;
+        if (!satisfied || !json_get_bool(satisfied)) {
+            zwork_fail(reply, "PROOF_PROFILE_INCOMPLETE", "evidence",
+                       evidence.status == ZCL_COMMAND_STATUS_PASSED
+                         ? "the exact proof profile is not yet satisfied; preserved evidence remains inspectable"
+                         : evidence.error.message,
+                       true, false);
+            zcl_command_reply_free(&evidence);
+            zcl_command_reply_free(&final_reply);
+            zcl_command_reply_free(&lane_reply);
+            vcs_zcode_task_index_free(index); return;
+        }
+        zcl_command_reply_free(&evidence);
+        if (strcmp(lane, "FRONTIER") == 0) {
+            struct zcl_command_reply candidate;
+            zcl_command_reply_init(&candidate, "zcl.zcode_accept.v1");
+            zwork_accept_inner(workspace, datadir,
+                               entry->latest_action_root_hex,
+                               "CANDIDATE", &candidate);
+            if (candidate.status != ZCL_COMMAND_STATUS_PASSED) {
+                zwork_fail(reply, "CANDIDATE_ACCEPTANCE_REFUSED", "accept",
+                           candidate.error.message, false, false);
+                zcl_command_reply_free(&candidate);
+                zcl_command_reply_free(&final_reply);
+                zcl_command_reply_free(&lane_reply);
+                vcs_zcode_task_index_free(index); return;
+            }
+            zcl_command_reply_free(&candidate);
+        }
+        zwork_accept_inner(workspace, datadir,
+                           entry->latest_action_root_hex, "PROVEN",
+                           &final_reply);
+    }
+    if (final_reply.status != ZCL_COMMAND_STATUS_PASSED) {
+        zwork_fail(reply, "PROVEN_ACCEPTANCE_REFUSED", "accept",
+                   final_reply.error.message, false, true);
+    } else {
+        struct json_value expert;
+        json_init(&expert); json_copy(&expert, &final_reply.data);
+        char work_id[32];
+        (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
+                       entry->task_root_hex);
+        bool ok = json_push_kv_str(&reply->data, "work_id", work_id) &&
+            json_push_kv_str(&reply->data, "goal_decision", "accepted") &&
+            json_push_kv_str(&reply->data, "state", "PROVEN") &&
+            json_push_kv_bool(&reply->data, "idempotent", already_proven) &&
+            json_push_kv_str(&reply->data, "authoritative_workspace",
+                             "unchanged") &&
+            json_push_kv_str(&reply->data, "next_safe_command",
+                             "zcode work status") &&
+            json_push_kv(&reply->data, "expert", &expert);
+        json_free(&expert);
+        if (!ok)
+            zwork_fail(reply, "ACCEPT_OUTPUT_FAILED", "render",
+                       "human acceptance summary could not be rendered",
+                       false, !already_proven);
+    }
+    zcl_command_reply_free(&final_reply);
+    zcl_command_reply_free(&lane_reply);
+    vcs_zcode_task_index_free(index);
 }

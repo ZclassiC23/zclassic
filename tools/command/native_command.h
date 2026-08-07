@@ -385,6 +385,9 @@ void zcl_native_handle_zcode_work_run(
 void zcl_native_handle_zcode_work_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_work_accept(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_package_dev_score_plan(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
