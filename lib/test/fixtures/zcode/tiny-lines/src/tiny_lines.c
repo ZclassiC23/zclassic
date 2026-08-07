@@ -11,9 +11,12 @@ bool tiny_count_lines(const char *text, size_t length, size_t *out_lines)
     if (length == 0)
         return true;
     size_t lines = 1;
-    for (size_t i = 0; i < length; i++)
+    for (size_t i = 0; i < length; i++) {
+        if (text[i] == '\0')
+            return false;
         if (text[i] == '\n' && i + 1 < length)
             lines++;
+    }
     *out_lines = lines;
     return true;
 }

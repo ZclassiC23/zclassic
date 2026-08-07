@@ -17,5 +17,9 @@ int main(void)
     CHECK(tiny_count_lines("one\ntwo", 7, &lines) && lines == 2);
     CHECK(tiny_count_lines("one\n", 4, &lines) && lines == 1);
     CHECK(!tiny_count_lines(NULL, 1, &lines) && lines == 0);
+    const char embedded_nul[] = {'a', '\0', 'b'};
+    lines = 99;
+    CHECK(!tiny_count_lines(embedded_nul, sizeof(embedded_nul), &lines) &&
+          lines == 0);
     return 0;
 }
