@@ -34,8 +34,10 @@ shield/private/unshield sequence are in the
 - The notebook never stores addresses, endpoints, datadir paths, grant tokens,
   private keys, recovery words, memos, or swap secrets. A mainnet txid is public
   and may be recorded after broadcast.
-- `docs/HANDOFF.md` currently says not to start the mainnet transaction lab.
-  That operational gate and all custody checks must be clear first.
+- `docs/HANDOFF.md` is the current operational authority. Do not start while
+  it says to stop the mainnet transaction lab; when it clears the
+  infrastructure stop, the live identity-bound custody checks and the exact
+  per-transaction owner approval are still required.
 
 ## Evidence vocabulary
 
