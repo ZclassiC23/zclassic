@@ -810,3 +810,10 @@ fix was merged without modification through `37a8c8aa6`. Both affected
 focused groups and the complete 134-gate lint set passed on the combined tree
 before the integration retry. The stale rejected push is not counted as a
 completed publication.
+
+Final O7 closure ran `make repro-verify`, which performed two clean whole-
+program LTO builds from different absolute source paths. Both shipped binaries
+were byte-identical at 22,924,056 bytes with SHA3-256
+`6d73161684a038508e222ac6ce5e0fc7b3ad4d56a5762d81be2cd3701d926c39`.
+This is same-host `local_reproduction` only; it does not prove physical
+independence, award the withheld Score unit, or satisfy the real genesis gate.
