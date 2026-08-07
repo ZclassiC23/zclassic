@@ -237,7 +237,8 @@ deployment/consensus paths.
 | P5 manual handoff | `81502a4ae1d1b7148e13d314fe6f248def706abb` | candidate path construction and manual context/CAS lookup | 1 undocumented handoff procedure | reuses the exact P3 context with no expansion | +581 / -67 before generated docs/tests | isolated candidate tree and bounded packet; candidate admission/build remains next |
 | P6a candidate admission | `1021f81aec22542ea458cebef625922107d6fed3` | planned task/context roots, scope/recipe/lock wires, candidate/patch roots, action IDs, timestamps, scratch datadir, adapter and author roots | 1 expert admit invocation | exact P3 context reused | +217 / -8 before lint rationale/tests/docs | one in-scope edit reaches `CANDIDATE_ADMITTED`; an out-of-scope license edit fails closed before build |
 | P6b contained build | `5fa6b1c60c37b278a13c26cff26890c214173e43` | worker approval, lease, action ID, receipt lookup | 1 worker/evidence procedure | no context expansion | +193 / -10 before tests/docs | the same run captures, builds and tests the candidate; signed `work_receipt.v1` rebuilds status as `EVIDENCE_READY` |
-| P6c bounded repair | commit subject `feat(zcode): bound failed candidate repair` | candidate sequence, parent and failure roots, next attempt path | 0 | reuses the same bounded excerpts; no build log expansion | recorded in commit | a born-red compile failure becomes `REPAIR_NEEDED`, preserves signed failure evidence and attempt 1, then a repaired attempt 2 reaches `EVIDENCE_READY`; attempt 4 is unreachable |
+| P6c bounded repair | `b7479b3f6934ecc025032795a1afd3f2648381de` (integrated by `ffbcda7d50d1dbdcb37421ecbd5579929775face`) | candidate sequence, parent and failure roots, next attempt path | 0 | reuses the same bounded excerpts; no build log expansion | +261 / -38 | a born-red compile failure becomes `REPAIR_NEEDED`, preserves signed failure evidence and attempt 1, then a repaired attempt 2 reaches `EVIDENCE_READY`; attempt 4 is unreachable |
+| P8a patch summary | commit subject `feat(zcode): derive human patch summary` | patch root lookup and manual file counting | 0 | no context expansion | recorded in commit | status re-verifies `patch.v1` and CAS blobs, then reports changed paths, files, exact line-content additions/deletions, and public-header impact |
 
 The P5 delta includes promoting the build worker's private CAS-tree materializer
 to one shared ZVCS primitive; 59 production lines of duplicate materialization
@@ -255,6 +256,10 @@ task index orders attempts by candidate sequence and derives `REPAIR_NEEDED`
 only from a verified signed receipt for the latest candidate. Compiler output
 is intentionally summarized to the canonical failure class and exit status;
 unbounded logs are neither made authority nor copied into the adapter packet.
+P8 line counts are deterministic content-multiset deltas: identical lines are
+matched regardless of position, so a pure move is not presented as creation.
+Binary files and text files above the fixed 65,536-line bound set
+`line_counts_complete=false` instead of silently inventing a number.
 
 ## Benchmark acceptance
 

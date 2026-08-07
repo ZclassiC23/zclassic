@@ -47,6 +47,7 @@ struct vcs_zcode_task_index_entry {
     char source_root_hex[65];
     char goal_root_hex[65];
     char proof_policy_root_hex[65];
+    char acceptance_tests_root_hex[65];
     char toolchain_capsule_root_hex[65];
     int64_t expires_unix;
     bool expired;             /* at the build's now_unix */

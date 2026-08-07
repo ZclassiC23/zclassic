@@ -520,6 +520,12 @@ static int zpd_test_work_start(void)
                       "EVIDENCE_READY") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "build_result")),
                       "passed") == 0);
+        ASSERT(json_get_int(json_get(&reply.data, "changed_files")) == 1);
+        ASSERT(json_get_int(json_get(&reply.data, "added_lines")) == 1);
+        ASSERT(json_get_int(json_get(&reply.data, "deleted_lines")) == 1);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data,
+                                            "public_api_changes")),
+                      "none") == 0);
         zcl_command_reply_free(&reply);
         json_free(&input);
 

@@ -92,6 +92,8 @@ static void index_consider_object(const char *repo_root, const char *hex64,
             zcl_hex_encode(task.goal_root, 32, e->goal_root_hex);
             zcl_hex_encode(task.proof_policy_root, 32,
                            e->proof_policy_root_hex);
+            zcl_hex_encode(task.acceptance_tests_root, 32,
+                           e->acceptance_tests_root_hex);
             zcl_hex_encode(task.toolchain_capsule_root, 32,
                            e->toolchain_capsule_root_hex);
             e->expires_unix = task.expires_unix;

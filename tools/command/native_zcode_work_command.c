@@ -10,9 +10,12 @@
 #include "services/zcode_goal_context_service.h"
 #include "sha3/sha3.h"
 #include "util/safe_alloc.h"
+#include "vcs/package_recipe.h"
+#include "vcs/vcs.h"
 #include "vcs/package_prepare.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev_product.h"
+#include "vcs/zcode_patch.h"
 #include "vcs/zcode_task_index.h"
 
 #include <limits.h>
@@ -21,6 +24,15 @@
 #include <string.h>
 
 #define ZWORK_PATH_MAX 4400
+#define ZWORK_LINE_COUNT_MAX 65536u
+
+struct zwork_patch_summary {
+    struct vcs_zcode_patch_v1 patch;
+    uint64_t added_lines;
+    uint64_t deleted_lines;
+    size_t public_api_changes;
+    bool line_counts_exact;
+};
 
 static const char *zwork_str(const struct json_value *input, const char *key)
 {
@@ -348,6 +360,150 @@ static char *zwork_load_goal(const char *workspace, const char *root_hex)
     return goal;
 }
 
+static int zwork_line_hash_compare(const void *left, const void *right)
+{
+    return memcmp(left, right, 32);
+}
+
+static bool zwork_line_hashes(const uint8_t *bytes, size_t len,
+                              uint8_t **out, size_t *count_out,
+                              bool *text_out)
+{
+    *out = NULL; *count_out = 0; *text_out = false;
+    if (len > 0 && (!bytes || memchr(bytes, '\0', len))) return true;
+    size_t count = 0;
+    for (size_t i = 0; i < len; i++)
+        if (bytes[i] == '\n') count++;
+    if (len > 0 && bytes[len - 1u] != '\n') count++;
+    if (count > ZWORK_LINE_COUNT_MAX) return true;
+    uint8_t *hashes = count > 0
+        ? zcl_malloc(count * 32u, "zcode.work.line_hashes") : NULL;
+    if (count > 0 && !hashes) return false;
+    size_t start = 0, at = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (bytes[i] != '\n') continue;
+        sha3_256(bytes + start, i + 1u - start, hashes + at++ * 32u);
+        start = i + 1u;
+    }
+    if (start < len)
+        sha3_256(bytes + start, len - start, hashes + at++ * 32u);
+    if (at != count) { free(hashes); return false; }
+    if (count > 1)
+        qsort(hashes, count, 32u, zwork_line_hash_compare);
+    *out = hashes; *count_out = count; *text_out = true;
+    return true;
+}
+
+static bool zwork_blob(const char *workspace, const uint8_t root[32],
+                       uint8_t **bytes, size_t *len)
+{
+    return vcs_object_get(workspace, root, VCS_TAG_BLOB, bytes, len) == 0;
+}
+
+static bool zwork_line_delta(const char *workspace,
+                             const struct vcs_zcode_patch_change_v1 *change,
+                             uint64_t *added, uint64_t *deleted,
+                             bool *exact)
+{
+    uint8_t *old_bytes = NULL, *new_bytes = NULL;
+    size_t old_len = 0, new_len = 0;
+    bool have_old = change->kind != VCS_DIFF_ADDED;
+    bool have_new = change->kind != VCS_DIFF_REMOVED;
+    if ((have_old && !zwork_blob(workspace, change->old_blob,
+                                 &old_bytes, &old_len)) ||
+        (have_new && !zwork_blob(workspace, change->new_blob,
+                                 &new_bytes, &new_len))) {
+        free(new_bytes); free(old_bytes); return false;
+    }
+    uint8_t *old_hashes = NULL, *new_hashes = NULL;
+    size_t old_count = 0, new_count = 0;
+    bool old_text = true, new_text = true;
+    bool ok = (!have_old || zwork_line_hashes(
+                   old_bytes, old_len, &old_hashes, &old_count, &old_text)) &&
+        (!have_new || zwork_line_hashes(
+                   new_bytes, new_len, &new_hashes, &new_count, &new_text));
+    free(new_bytes); free(old_bytes);
+    if (!ok) { free(new_hashes); free(old_hashes); return false; }
+    if (!old_text || !new_text) {
+        *exact = false; free(new_hashes); free(old_hashes); return true;
+    }
+    size_t oi = 0, ni = 0, common = 0;
+    while (oi < old_count && ni < new_count) {
+        int cmp = memcmp(old_hashes + oi * 32u, new_hashes + ni * 32u, 32u);
+        if (cmp < 0) oi++;
+        else if (cmp > 0) ni++;
+        else { common++; oi++; ni++; }
+    }
+    *deleted += old_count - common;
+    *added += new_count - common;
+    free(new_hashes); free(old_hashes); return true;
+}
+
+static bool zwork_recipe_load(const char *workspace, const char *root_hex,
+                              struct vcs_package_recipe *recipe)
+{
+    uint8_t root[32], checked[32], *wire = NULL;
+    size_t len = 0;
+    bool ok = zcl_hex_decode_lower(root_hex, root, sizeof(root)) &&
+        vcs_object_load_raw_bounded(workspace, root,
+                                    VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES,
+                                    &wire, &len) == 0 &&
+        vcs_package_recipe_parse(wire, len, recipe) == VCS_PACKAGE_RECIPE_OK &&
+        vcs_package_recipe_root(recipe, checked) == VCS_PACKAGE_RECIPE_OK &&
+        memcmp(root, checked, sizeof(root)) == 0;
+    free(wire); return ok;
+}
+
+static bool zwork_is_public_header(const struct vcs_package_recipe *recipe,
+                                   const char *path)
+{
+    for (size_t i = 0; i < recipe->public_headers.count; i++)
+        if (strcmp(recipe->public_headers.items[i], path) == 0) return true;
+    return false;
+}
+
+static bool zwork_patch_summary_load(
+    const char *workspace, const struct vcs_zcode_task_index_entry *entry,
+    struct zwork_patch_summary *out)
+{
+    memset(out, 0, sizeof(*out));
+    vcs_zcode_patch_init(&out->patch);
+    out->line_counts_exact = true;
+    if (!entry->latest_patch_root_hex[0]) return true;
+    uint8_t root[32], checked[32], *wire = NULL;
+    size_t len = 0;
+    bool ok = zcl_hex_decode_lower(entry->latest_patch_root_hex, root,
+                                   sizeof(root)) &&
+        vcs_object_load_raw_bounded(workspace, root,
+                                    VCS_ZCODE_TASK_MAX_PATCH_BYTES,
+                                    &wire, &len) == 0 &&
+        vcs_zcode_patch_parse(wire, len, &out->patch) == VCS_ZCODE_PATCH_OK &&
+        vcs_zcode_patch_root(&out->patch, checked) == VCS_ZCODE_PATCH_OK &&
+        memcmp(root, checked, sizeof(root)) == 0;
+    free(wire);
+    struct vcs_package_recipe recipe;
+    vcs_package_recipe_init(&recipe);
+    ok = ok && zwork_recipe_load(workspace, entry->acceptance_tests_root_hex,
+                                 &recipe);
+    if (!ok) {
+        vcs_package_recipe_free(&recipe);
+        vcs_zcode_patch_free(&out->patch);
+        return false;
+    }
+    for (size_t i = 0; i < out->patch.count && ok; i++) {
+        const struct vcs_zcode_patch_change_v1 *change =
+            &out->patch.changes[i];
+        ok = zwork_line_delta(workspace, change, &out->added_lines,
+                              &out->deleted_lines,
+                              &out->line_counts_exact);
+        if (zwork_is_public_header(&recipe, change->path))
+            out->public_api_changes++;
+    }
+    vcs_package_recipe_free(&recipe);
+    if (!ok) vcs_zcode_patch_free(&out->patch);
+    return ok;
+}
+
 void zcl_native_handle_zcode_work_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -381,9 +537,32 @@ void zcl_native_handle_zcode_work_status(
     const char *state = entry->expired ? "BLOCKED" : entry->state;
     bool evidence_ready = strcmp(state, VCS_ZCODE_TASK_STATE_EVIDENCE_READY) == 0;
     bool repair_needed = strcmp(state, VCS_ZCODE_TASK_STATE_REPAIR_NEEDED) == 0;
-    struct json_value expert;
+    struct zwork_patch_summary summary;
+    if (!zwork_patch_summary_load(workspace, entry, &summary)) {
+        zwork_fail(reply, "PATCH_SUMMARY_FAILED", "rebuild",
+                   "latest canonical patch or its source blobs could not be reverified",
+                   false, false);
+        free(goal); vcs_zcode_task_index_free(index); return;
+    }
+    struct json_value expert, changed_paths;
     json_init(&expert); json_set_object(&expert);
-    bool ok = json_push_kv_str(&expert, "task_root", entry->task_root_hex) &&
+    json_init(&changed_paths); json_set_array(&changed_paths);
+    bool paths_ok = true;
+    for (size_t i = 0; paths_ok && i < summary.patch.count; i++) {
+        struct json_value path;
+        json_init(&path); json_set_str(&path, summary.patch.changes[i].path);
+        paths_ok = json_push_back(&changed_paths, &path);
+        json_free(&path);
+    }
+    char api_summary[96];
+    if (summary.public_api_changes == 0)
+        (void)snprintf(api_summary, sizeof(api_summary), "none");
+    else
+        (void)snprintf(api_summary, sizeof(api_summary), "%zu public header file%s changed",
+                       summary.public_api_changes,
+                       summary.public_api_changes == 1 ? "" : "s");
+    bool ok = paths_ok &&
+        json_push_kv_str(&expert, "task_root", entry->task_root_hex) &&
         json_push_kv_str(&expert, "source_root", entry->source_root_hex) &&
         json_push_kv_str(&expert, "goal_root", entry->goal_root_hex) &&
         json_push_kv_str(&expert, "proof_policy_root",
@@ -399,8 +578,16 @@ void zcl_native_handle_zcode_work_status(
         json_push_kv_str(&reply->data, "work_id", work_id) &&
         json_push_kv_str(&reply->data, "goal", goal) &&
         json_push_kv_str(&reply->data, "state", state) &&
-        json_push_kv_int(&reply->data, "changed_files", 0) &&
-        json_push_kv_str(&reply->data, "public_api_changes", "not_yet_available") &&
+        json_push_kv_int(&reply->data, "changed_files",
+                         (int64_t)summary.patch.count) &&
+        json_push_kv(&reply->data, "changed_paths", &changed_paths) &&
+        json_push_kv_int(&reply->data, "added_lines",
+                         (int64_t)summary.added_lines) &&
+        json_push_kv_int(&reply->data, "deleted_lines",
+                         (int64_t)summary.deleted_lines) &&
+        json_push_kv_bool(&reply->data, "line_counts_complete",
+                          summary.line_counts_exact) &&
+        json_push_kv_str(&reply->data, "public_api_changes", api_summary) &&
         json_push_kv_str(&reply->data, "build_result",
                          evidence_ready ? "passed" : repair_needed
                            ? "failed" : "not_started") &&
@@ -424,8 +611,10 @@ void zcl_native_handle_zcode_work_status(
                          repair_needed && entry->candidate_count >= 3u
                            ? "zcode work start" : "zcode work run") &&
         json_push_kv(&reply->data, "expert", &expert);
-    json_free(&expert); free(goal); vcs_zcode_task_index_free(index);
-    if (!ok)
+    json_free(&changed_paths); json_free(&expert);
+    vcs_zcode_patch_free(&summary.patch);
+    free(goal); vcs_zcode_task_index_free(index);
+    if (!ok || !paths_ok)
         zwork_fail(reply, "WORK_STATUS_OUTPUT", "render",
                    "human work status could not be rendered", false, false);
 }
