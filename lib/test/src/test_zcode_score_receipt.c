@@ -669,6 +669,8 @@ struct creation_callback_fixture {
     uint64_t maturity_height;
     uint8_t maturity_hash[32];
     uint64_t expected_award_atoms;
+    uint64_t security_award_atoms;
+    uint16_t last_award_category;
 };
 
 static bool creation_test_anchor(void *opaque, uint64_t height,
@@ -707,11 +709,16 @@ static bool creation_test_award(
     const struct vcs_zcode_creation_attribution_v1 *attribution,
     uint64_t *expected_atoms)
 {
-    const struct creation_callback_fixture *fixture = opaque;
+    struct creation_callback_fixture *fixture = opaque;
     if (expected_atoms) *expected_atoms = 0;
     if (!fixture || !attribution || !expected_atoms)
         return false;
-    *expected_atoms = fixture->expected_award_atoms;
+    fixture->last_award_category = attribution->category;
+    *expected_atoms =
+        attribution->category == VCS_ZCODE_CREATION_SECURITY_FIX &&
+                fixture->security_award_atoms != 0
+            ? fixture->security_award_atoms
+            : fixture->expected_award_atoms;
     return true;
 }
 
@@ -1926,6 +1933,86 @@ static int test_creation_attribution_cross_validation(void)
                       security_event_key),
                   VCS_ZCODE_CONTINUITY_OK);
         ASSERT(memcmp(born_red_event_key, security_event_key, 32) == 0);
+
+        /* Creation is useful without a patron.  The signed release lineage
+         * and registered score evidence must be sufficient to identify and
+         * deduplicate a born-red/security repair. */
+        struct vcs_zcode_creation_attribution_v1 neutral_born_red =
+            born_red_attribution;
+        neutral_born_red.lineage_kind = VCS_ZCODE_CREATION_LINEAGE_RELEASE;
+        memcpy(neutral_born_red.lineage_root, parent_release_root, 32);
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &neutral_born_red, &context),
+                  VCS_ZCODE_CREATION_OK);
+        struct vcs_zcode_creation_attribution_v1 neutral_security =
+            neutral_born_red;
+        neutral_security.category = VCS_ZCODE_CREATION_SECURITY_FIX;
+        ASSERT_EQ(vcs_zcode_creation_attribution_verify_cas(
+                      &neutral_security, &context),
+                  VCS_ZCODE_CREATION_OK);
+        uint8_t neutral_policy_key[32], neutral_release_key[32];
+        uint8_t neutral_security_key[32];
+        ASSERT_EQ(vcs_zcode_creation_event_key(
+                      &born_red_attribution, &task, &score,
+                      neutral_policy_key), VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_creation_event_key(
+                      &neutral_born_red, &task, &score,
+                      neutral_release_key), VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_creation_event_key(
+                      &neutral_security, &task, &score,
+                      neutral_security_key), VCS_ZCODE_CONTINUITY_OK);
+        ASSERT(memcmp(neutral_policy_key, neutral_release_key, 32) == 0);
+        ASSERT(memcmp(neutral_release_key, neutral_security_key, 32) == 0);
+        char neutral_event_key_hex[65];
+        zcl_hex_encode(neutral_release_key, 32, neutral_event_key_hex);
+        ASSERT_STR_EQ(neutral_event_key_hex,
+            "7bae4e36261433d84647745417142e33a3e424720d978c0abf685ed9397e1c65");
+
+        uint8_t neutral_security_wire[
+            VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES];
+        uint8_t neutral_security_root[32];
+        ASSERT_EQ(vcs_zcode_creation_attribution_serialize(
+                      &neutral_security, neutral_security_wire),
+                  VCS_ZCODE_CREATION_OK);
+        ASSERT_EQ(vcs_zcode_creation_attribution_root(
+                      &neutral_security, neutral_security_root),
+                  VCS_ZCODE_CREATION_OK);
+        ASSERT(vcs_object_put_addressed(
+            workspace, neutral_security_root, neutral_security_wire,
+            sizeof(neutral_security_wire)));
+        epoch_set.attribution_roots = &neutral_security_root;
+        epoch_context.continuity_is_duplicate =
+            creation_test_continuity_duplicate;
+        callbacks.security_award_atoms = attribution.award_atoms + 1;
+        ASSERT_EQ(vcs_zcode_epoch_creation_verify_cas(
+                      &epoch_set, &epoch_context),
+                  VCS_ZCODE_EPOCH_CREATION_OK);
+        ASSERT_EQ(callbacks.last_award_category,
+                  VCS_ZCODE_CREATION_BORN_RED_FIX);
+        callbacks.security_award_atoms = 0;
+        epoch_context.continuity_is_duplicate = NULL;
+        epoch_set.attribution_roots = &attribution_root;
+
+        /* SECURITY_FIX v1 has no structured security-finding authority.  It
+         * therefore consumes exactly the ordinary born-red policy class;
+         * the caller-selected label cannot open a separate issuance class. */
+        struct vcs_zcode_continuity_policy_v1 born_red_only = continuity;
+        born_red_only.event_mask &=
+            (uint16_t)~VCS_ZCODE_CONTINUITY_SECURITY_FIX;
+        ASSERT_EQ(vcs_zcode_continuity_policy_seal(
+                      &born_red_only, zid_secret, zid_pubkey),
+                  VCS_ZCODE_CONTINUITY_OK);
+        uint8_t born_red_only_root[32];
+        ASSERT_EQ(vcs_zcode_continuity_policy_root(
+                      &born_red_only, born_red_only_root),
+                  VCS_ZCODE_CONTINUITY_OK);
+        struct vcs_zcode_creation_attribution_v1 labeled_security =
+            security_attribution;
+        memcpy(labeled_security.lineage_root, born_red_only_root, 32);
+        ASSERT_EQ(vcs_zcode_continuity_event_key(
+                      &labeled_security, &born_red_only, &task, &score,
+                      security_event_key),
+                  VCS_ZCODE_CONTINUITY_OK);
 
         struct vcs_zcode_continuity_policy_v1 mismatched_continuity =
             continuity;

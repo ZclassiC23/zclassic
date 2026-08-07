@@ -329,7 +329,7 @@ enum vcs_zcode_continuity_error vcs_zcode_continuity_event_key(
         from = zero; to = zero;
         break;
     case VCS_ZCODE_CREATION_SECURITY_FIX:
-        if ((policy->event_mask & VCS_ZCODE_CONTINUITY_SECURITY_FIX) == 0)
+        if ((policy->event_mask & VCS_ZCODE_CONTINUITY_BORN_RED_FIX) == 0)
             return VCS_ZCODE_CONTINUITY_EVENT_MASK;
         event_class = 1;
         score_unit = VCS_ZCODE_SCORE_BORN_RED_DEFECT_TEST;
@@ -377,6 +377,66 @@ enum vcs_zcode_continuity_error vcs_zcode_continuity_event_key(
     sha3_256_write(&sha, subject, 32);
     sha3_256_write(&sha, from, 32);
     sha3_256_write(&sha, to, 32);
+    sha3_256_finalize(&sha, out);
+    return VCS_ZCODE_CONTINUITY_OK;
+}
+
+enum vcs_zcode_continuity_error vcs_zcode_creation_event_key(
+    const struct vcs_zcode_creation_attribution_v1 *attribution,
+    const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_score_receipt_v1 *score, uint8_t out[32])
+{
+    if (out) memset(out, 0, 32);
+    if (!attribution || !task || !score || !out)
+        return VCS_ZCODE_CONTINUITY_NULL;
+    if (vcs_zcode_creation_attribution_validate(attribution) !=
+            VCS_ZCODE_CREATION_OK ||
+        attribution->category == VCS_ZCODE_CREATION_PUBLIC_SOURCE)
+        return VCS_ZCODE_CONTINUITY_EVENT_MASK;
+    if (vcs_zcode_score_receipt_verify(score) != VCS_ZCODE_SCORE_OK ||
+        memcmp(score->task_root, attribution->task_root, 32) != 0 ||
+        memcmp(score->candidate_root, attribution->candidate_root, 32) != 0 ||
+        memcmp(score->package_root, attribution->package_root, 32) != 0 ||
+        memcmp(score->release_root, attribution->release_root, 32) != 0 ||
+        memcmp(task->proof_policy_root,
+               attribution->proof_policy_root, 32) != 0)
+        return VCS_ZCODE_CONTINUITY_CAS;
+
+    uint8_t event_class = 0, score_unit = 0;
+    switch (attribution->category) {
+    case VCS_ZCODE_CREATION_BORN_RED_FIX:
+    case VCS_ZCODE_CREATION_SECURITY_FIX:
+        event_class = 1;
+        score_unit = VCS_ZCODE_SCORE_BORN_RED_DEFECT_TEST;
+        break;
+    case VCS_ZCODE_CREATION_INDEPENDENT_REPRODUCTION:
+        event_class = 2;
+        score_unit = VCS_ZCODE_SCORE_INDEPENDENT_REPRODUCTION;
+        break;
+    case VCS_ZCODE_CREATION_COMPATIBILITY:
+        event_class = 3;
+        score_unit = VCS_ZCODE_SCORE_COMPATIBILITY_MAINTENANCE;
+        break;
+    case VCS_ZCODE_CREATION_PRESERVATION:
+        event_class = 4;
+        score_unit = VCS_ZCODE_SCORE_COMPATIBILITY_MAINTENANCE;
+        break;
+    default:
+        return VCS_ZCODE_CONTINUITY_EVENT_MASK;
+    }
+    if ((score->awarded_mask & (UINT8_C(1) << score_unit)) == 0 ||
+        !continuity_nonzero(score->evidence_roots[score_unit]))
+        return VCS_ZCODE_CONTINUITY_CAS;
+
+    struct sha3_256_ctx sha;
+    static const char domain[] = VCS_ZCODE_CREATION_EVENT_KEY_DOMAIN;
+    sha3_256_init(&sha);
+    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
+    sha3_256_write(&sha, &event_class, sizeof(event_class));
+    sha3_256_write(&sha, score->evidence_roots[score_unit], 32);
+    sha3_256_write(&sha, attribution->package_root, 32);
+    sha3_256_write(&sha, attribution->release_root, 32);
+    sha3_256_write(&sha, task->toolchain_capsule_root, 32);
     sha3_256_finalize(&sha, out);
     return VCS_ZCODE_CONTINUITY_OK;
 }

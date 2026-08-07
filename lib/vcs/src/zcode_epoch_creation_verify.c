@@ -113,8 +113,16 @@ enum vcs_zcode_epoch_creation_error vcs_zcode_epoch_creation_verify_cas(
         memcpy(seen_candidates[i], attribution.candidate_root, 32);
 
         uint64_t expected_award = 0;
+        struct vcs_zcode_creation_attribution_v1 policy_attribution =
+            attribution;
+        /* v1 has no security-specific structured finding root.  A caller
+         * may display SECURITY_FIX, but issuance must evaluate it as the
+         * ordinary born-red class so the label can never increase award. */
+        if (policy_attribution.category == VCS_ZCODE_CREATION_SECURITY_FIX)
+            policy_attribution.category = VCS_ZCODE_CREATION_BORN_RED_FIX;
         if (!context->award_atoms_for_creation(
-                context->callback_opaque, &attribution, &expected_award) ||
+                context->callback_opaque, &policy_attribution,
+                &expected_award) ||
             expected_award == 0 || expected_award != attribution.award_atoms) {
             free(seen_candidates);
             return VCS_ZCODE_EPOCH_CREATION_ATTRIBUTION;

@@ -81,9 +81,12 @@ enum vcs_zcode_creation_error vcs_zcode_creation_attribution_validate(
     if ((a->lineage_kind == VCS_ZCODE_CREATION_LINEAGE_NONE) !=
         creation_root_zero(a->lineage_root))
         return VCS_ZCODE_CREATION_LINEAGE;
-    if ((a->category == VCS_ZCODE_CREATION_PUBLIC_SOURCE) ==
-        (a->lineage_kind ==
-         VCS_ZCODE_CREATION_LINEAGE_CONTINUITY_POLICY))
+    if (a->category == VCS_ZCODE_CREATION_PUBLIC_SOURCE &&
+        a->lineage_kind ==
+            VCS_ZCODE_CREATION_LINEAGE_CONTINUITY_POLICY)
+        return VCS_ZCODE_CREATION_LINEAGE;
+    if (a->category != VCS_ZCODE_CREATION_PUBLIC_SOURCE &&
+        a->lineage_kind == VCS_ZCODE_CREATION_LINEAGE_NONE)
         return VCS_ZCODE_CREATION_LINEAGE;
     if (a->award_atoms == 0 ||
         a->award_atoms > VCS_ZC23_MAX_SUPPLY_ATOMS)

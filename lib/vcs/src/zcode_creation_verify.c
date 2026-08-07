@@ -490,40 +490,51 @@ static enum vcs_zcode_creation_error creation_verify_continuity(
 {
     if (a->category == VCS_ZCODE_CREATION_PUBLIC_SOURCE)
         return VCS_ZCODE_CREATION_OK;
-    if (!context->continuity_is_duplicate ||
-        a->lineage_kind !=
-            VCS_ZCODE_CREATION_LINEAGE_CONTINUITY_POLICY)
+    if (!context->continuity_is_duplicate)
         return VCS_ZCODE_CREATION_CONTINUITY;
 
-    uint8_t *wire = NULL, policy_root[32], event_key[32];
-    size_t wire_len = 0;
-    struct vcs_zcode_continuity_policy_v1 policy;
-    if (!creation_load(context->workspace, a->lineage_root,
-                       VCS_ZCODE_CONTINUITY_POLICY_WIRE_BYTES,
-                       &wire, &wire_len) ||
-        vcs_zcode_continuity_policy_parse(wire, wire_len, &policy) !=
-            VCS_ZCODE_CONTINUITY_OK ||
-        vcs_zcode_continuity_policy_root(&policy, policy_root) !=
-            VCS_ZCODE_CONTINUITY_OK ||
-        !creation_equal(policy_root, a->lineage_root)) {
-        free(wire);
-        return VCS_ZCODE_CREATION_CONTINUITY;
-    }
-    free(wire);
-    struct vcs_zcode_patronage_validation_context policy_context = {
-        .workspace = context->workspace,
-        .expected_network_genesis_root =
-            context->expected_network_genesis_root,
-        .now_unix = context->now_unix,
-        .binding_is_current = context->binding_is_current,
-        .callback_opaque = context->callback_opaque,
-    };
-    if (vcs_zcode_continuity_policy_verify_cas(
-            &policy, &policy_context) != VCS_ZCODE_CONTINUITY_OK ||
-        vcs_zcode_continuity_event_key(
-            a, &policy, &vertical->task, &vertical->score, event_key) !=
+    uint8_t event_key[32];
+    if (vcs_zcode_creation_event_key(
+            a, &vertical->task, &vertical->score, event_key) !=
             VCS_ZCODE_CONTINUITY_OK)
         return VCS_ZCODE_CREATION_CONTINUITY;
+
+    /* Patronage is an optional additional constraint.  When a v1
+     * attribution names a continuity policy, verify its funding caps and
+     * transition claims; otherwise the already-verified signed release or
+     * predecessor lineage is sufficient creation authority. */
+    if (a->lineage_kind ==
+            VCS_ZCODE_CREATION_LINEAGE_CONTINUITY_POLICY) {
+        uint8_t *wire = NULL, policy_root[32], policy_event_key[32];
+        size_t wire_len = 0;
+        struct vcs_zcode_continuity_policy_v1 policy;
+        if (!creation_load(context->workspace, a->lineage_root,
+                           VCS_ZCODE_CONTINUITY_POLICY_WIRE_BYTES,
+                           &wire, &wire_len) ||
+            vcs_zcode_continuity_policy_parse(wire, wire_len, &policy) !=
+                VCS_ZCODE_CONTINUITY_OK ||
+            vcs_zcode_continuity_policy_root(&policy, policy_root) !=
+                VCS_ZCODE_CONTINUITY_OK ||
+            !creation_equal(policy_root, a->lineage_root)) {
+            free(wire);
+            return VCS_ZCODE_CREATION_CONTINUITY;
+        }
+        free(wire);
+        struct vcs_zcode_patronage_validation_context policy_context = {
+            .workspace = context->workspace,
+            .expected_network_genesis_root =
+                context->expected_network_genesis_root,
+            .now_unix = context->now_unix,
+            .binding_is_current = context->binding_is_current,
+            .callback_opaque = context->callback_opaque,
+        };
+        if (vcs_zcode_continuity_policy_verify_cas(
+                &policy, &policy_context) != VCS_ZCODE_CONTINUITY_OK ||
+            vcs_zcode_continuity_event_key(
+                a, &policy, &vertical->task, &vertical->score,
+                policy_event_key) != VCS_ZCODE_CONTINUITY_OK)
+            return VCS_ZCODE_CREATION_CONTINUITY;
+    }
     if (context->continuity_is_duplicate(
             context->callback_opaque, event_key, attribution_root))
         return VCS_ZCODE_CREATION_DUPLICATE;
