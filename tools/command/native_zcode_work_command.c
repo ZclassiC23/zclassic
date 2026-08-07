@@ -379,6 +379,7 @@ void zcl_native_handle_zcode_work_status(
     (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                    entry->task_root_hex);
     const char *state = entry->expired ? "BLOCKED" : entry->state;
+    bool evidence_ready = strcmp(state, VCS_ZCODE_TASK_STATE_EVIDENCE_READY) == 0;
     struct json_value expert;
     json_init(&expert); json_set_object(&expert);
     bool ok = json_push_kv_str(&expert, "task_root", entry->task_root_hex) &&
@@ -388,19 +389,26 @@ void zcl_native_handle_zcode_work_status(
                          entry->proof_policy_root_hex) &&
         json_push_kv_str(&expert, "toolchain_capsule_root",
                          entry->toolchain_capsule_root_hex) &&
+        json_push_kv_str(&expert, "work_receipt_root",
+                         entry->latest_work_receipt_hex) &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
         json_push_kv_str(&reply->data, "goal", goal) &&
         json_push_kv_str(&reply->data, "state", state) &&
         json_push_kv_int(&reply->data, "changed_files", 0) &&
         json_push_kv_str(&reply->data, "public_api_changes", "not_yet_available") &&
-        json_push_kv_str(&reply->data, "build_result", "not_started") &&
-        json_push_kv_str(&reply->data, "test_result", "not_started") &&
+        json_push_kv_str(&reply->data, "build_result",
+                         evidence_ready ? "passed" : "not_started") &&
+        json_push_kv_str(&reply->data, "test_result",
+                         evidence_ready ? "passed_declared_tests" :
+                                          "not_started") &&
         json_push_kv_str(&reply->data, "sanitizer_result", "not_started") &&
         json_push_kv_str(&reply->data, "fuzz_result", "not_started") &&
         json_push_kv_str(&reply->data, "reproduction_grade", "none") &&
         json_push_kv_str(&reply->data, "review_verdict", "not_started") &&
         json_push_kv_str(&reply->data, "remaining_risks",
-                         entry->expired ? "task expired" : "candidate not admitted") &&
+                         entry->expired ? "task expired" : evidence_ready
+                            ? "proof profile and independent review not yet evaluated"
+                            : "candidate not admitted") &&
         json_push_kv_int(&reply->data, "scope_violations", 0) &&
         json_push_kv_str(&reply->data, "next_safe_command",
                          entry->expired ? "zcode work start" : "zcode work run") &&

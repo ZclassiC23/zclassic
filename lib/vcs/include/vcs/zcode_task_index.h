@@ -31,12 +31,14 @@
 #define VCS_ZCODE_TASK_INDEX_MAX_TASKS 1024u
 #define VCS_ZCODE_TASK_INDEX_MAX_CANDIDATES 4096u
 #define VCS_ZCODE_TASK_INDEX_MAX_CONTEXTS 4096u
+#define VCS_ZCODE_TASK_INDEX_MAX_RECEIPTS 8192u
 
 /* Derived per-task states. EXPIRED takes precedence: an expired task is
  * refused by task_validate_at no matter what its candidates look like. */
 #define VCS_ZCODE_TASK_STATE_EXPIRED "EXPIRED"
 #define VCS_ZCODE_TASK_STATE_AWAITING_CANDIDATE "AWAITING_CANDIDATE"
 #define VCS_ZCODE_TASK_STATE_CANDIDATE_ADMITTED "CANDIDATE_ADMITTED"
+#define VCS_ZCODE_TASK_STATE_EVIDENCE_READY "EVIDENCE_READY"
 
 struct vcs_zcode_task_index_entry {
     char task_root_hex[65];
@@ -47,6 +49,9 @@ struct vcs_zcode_task_index_entry {
     int64_t expires_unix;
     bool expired;             /* at the build's now_unix */
     uint32_t candidate_count; /* projected candidates binding this task */
+    uint32_t receipt_count;
+    uint32_t passing_receipt_count;
+    char latest_work_receipt_hex[65];
     char state[24];
 };
 
@@ -65,6 +70,19 @@ struct vcs_zcode_task_context_entry {
     uint64_t wire_bytes;
     uint64_t excerpt_bytes;
     uint32_t file_count;
+};
+
+struct vcs_zcode_task_receipt_entry {
+    char task_root_hex[65];
+    char candidate_root_hex[65];
+    char proof_policy_root_hex[65];
+    char toolchain_capsule_root_hex[65];
+    char receipt_root_hex[65];
+    char output_root_hex[65];
+    uint8_t work_kind;
+    uint8_t status;
+    int32_t exit_status;
+    int64_t finished_unix;
 };
 
 struct vcs_zcode_task_index; /* opaque */

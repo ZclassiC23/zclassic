@@ -7,6 +7,8 @@
 #include "base/cleanse.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
+#include "models/database.h"
+#include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
 #include "sha3/sha3.h"
 #include "util/file_tree_ops.h"
@@ -355,6 +357,47 @@ static bool run_admit_input(
     return ok;
 }
 
+static struct zcl_result run_execute_action(
+    const char *workspace, const char *datadir, const char *action_id,
+    struct db_build_worker *worker, const uint8_t secret[32],
+    const uint8_t pubkey[32], struct db_build_receipt *receipt)
+{
+    char db_path[ZWORK_RUN_PATH_MAX];
+    int n = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    struct node_db ndb = {0};
+    if (n <= 0 || (size_t)n >= sizeof(db_path) ||
+        !node_db_open(&ndb, db_path))
+        return ZCL_ERR(-1, "scratch ZBuild ledger could not be reopened");
+    int64_t now = platform_time_wall_unix();
+    worker->last_seen_at = now;
+    struct zcl_result result = build_fabric_worker_approve(
+        &ndb, worker, now);
+    uint8_t lease_root[32];
+    struct sha3_256_ctx sha;
+    static const char domain[] = "zcl.zcode.work.local_lease.v1";
+    sha3_256_init(&sha);
+    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
+    sha3_256_write(&sha, (const uint8_t *)action_id, strlen(action_id));
+    sha3_256_finalize(&sha, lease_root);
+    char lease_id[65];
+    zcl_hex_encode(lease_root, 32, lease_id);
+    struct db_build_action claimed_action;
+    bool claimed = false;
+    if (result.ok)
+        result = build_fabric_claim(
+            &ndb, worker->worker_id, lease_id, now,
+            BUILD_FABRIC_LEASE_SECONDS_MAX, &claimed_action, &claimed);
+    if (result.ok && (!claimed ||
+        strcmp(claimed_action.action_id, action_id) != 0))
+        result = ZCL_ERR(-1, "queued action was not claimable by exact id");
+    if (result.ok)
+        result = build_fabric_worker_execute(
+            &ndb, workspace, datadir, action_id, lease_id,
+            secret, pubkey, receipt);
+    node_db_close(&ndb);
+    return result;
+}
+
 static bool run_admit(
     const char *workspace, const char *candidate_workspace, const char *goal,
     const struct vcs_zcode_task_index_entry *entry,
@@ -389,13 +432,17 @@ static bool run_admit(
     if (rooted) sha3_256_write(&sha, context_root, sizeof(context_root));
     sha3_256_finalize(&sha, adapter_root);
     zcl_hex_encode(adapter_root, 32, adapter_hex);
-    memory_cleanse(secret, sizeof(secret));
-    if (!identity.ok || !rooted) return false;
+    if (!identity.ok || !rooted) {
+        memory_cleanse(secret, sizeof(secret));
+        return false;
+    }
     struct json_value input;
     if (!run_admit_input(&input, workspace, datadir, candidate_workspace,
                          goal, entry, context_entry, task, context, scope,
-                         author_hex, adapter_hex))
+                         author_hex, adapter_hex)) {
+        memory_cleanse(secret, sizeof(secret));
         return false;
+    }
     struct zcl_command_request inner_request = { .input = &input };
     struct zcl_command_reply inner;
     zcl_command_reply_init(&inner, "zcl.zcode_improve.v1");
@@ -408,26 +455,46 @@ static bool run_admit(
                  inner.error.message[0] ? inner.error.message :
                      "existing candidate admission refused",
                  inner.error.retryable, inner.error.mutated);
+        memory_cleanse(secret, sizeof(secret));
         zcl_command_reply_free(&inner);
         return true;
     }
     const struct json_value *changed = json_get(&inner.data, "changed_files");
     const struct json_value *candidate = json_get(&inner.data, "candidate_root");
     const struct json_value *patch = json_get(&inner.data, "patch_root");
+    const struct json_value *action = json_get(&inner.data, "action_id");
+    struct db_build_receipt receipt;
+    struct zcl_result executed = action && json_get_str(action)
+        ? run_execute_action(workspace, datadir, json_get_str(action), &worker,
+                             secret, pubkey, &receipt)
+        : ZCL_ERR(-1, "admission did not return an action id");
+    memory_cleanse(secret, sizeof(secret));
+    if (!executed.ok) {
+        run_fail(reply, "PACKAGE_BUILD_FAILED", "build", executed.message,
+                 true, true);
+        zcl_command_reply_free(&inner);
+        return true;
+    }
     struct json_value expert;
     json_init(&expert); json_copy(&expert, &inner.data);
+    (void)json_push_kv_str(&expert, "receipt_id", receipt.receipt_id);
+    (void)json_push_kv_str(&expert, "output_root", receipt.output_sha3);
+    (void)json_push_kv_str(&expert, "work_receipt_root",
+                           receipt.work_receipt_sha3);
     char work_id[32];
     (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                    entry->task_root_hex);
-    bool ok = changed && candidate && patch &&
+    bool ok = changed && candidate && patch && receipt.work_receipt_sha3[0] &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
-        json_push_kv_str(&reply->data, "state", "CANDIDATE_ADMITTED") &&
+        json_push_kv_str(&reply->data, "state", "EVIDENCE_READY") &&
         json_push_kv_int(&reply->data, "changed_files",
                          json_get_int(changed)) &&
         json_push_kv_str(&reply->data, "candidate_root",
                          json_get_str(candidate)) &&
         json_push_kv_str(&reply->data, "patch_root", json_get_str(patch)) &&
-        json_push_kv_str(&reply->data, "build_result", "queued") &&
+        json_push_kv_str(&reply->data, "work_receipt_root",
+                         receipt.work_receipt_sha3) &&
+        json_push_kv_str(&reply->data, "build_result", "passed") &&
         json_push_kv_str(&reply->data, "adapter", "manual") &&
         json_push_kv_str(&reply->data, "next_safe_command",
                          "zcode work status") &&

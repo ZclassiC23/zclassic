@@ -26,6 +26,7 @@
 static const uint8_t task_magic[8] = {'Z','C','T','A','S','K','\r','\n'};
 static const uint8_t candidate_magic[8] = {'Z','C','C','A','N','D','\r','\n'};
 static const uint8_t context_magic[8] = {'Z','C','A','C','T','X','\r','\n'};
+static const uint8_t receipt_magic[8] = {'Z','C','W','R','C','P','\r','\n'};
 
 struct vcs_zcode_task_index {
     struct vcs_zcode_task_index_entry *tasks;
@@ -34,6 +35,8 @@ struct vcs_zcode_task_index {
     size_t candidate_count;
     struct vcs_zcode_task_context_entry *contexts;
     size_t context_count;
+    struct vcs_zcode_task_receipt_entry *receipts;
+    size_t receipt_count;
 };
 
 static bool index_hex_lower(const char *s, size_t want)
@@ -154,6 +157,43 @@ static void index_consider_object(const char *repo_root, const char *hex64,
                 e->excerpt_bytes += context.files[i].content_len;
         }
         if (parsed) vcs_zcode_agent_context_free(&context);
+    } else if (len == VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES &&
+               memcmp(wire, receipt_magic, sizeof(receipt_magic)) == 0) {
+        struct vcs_zcode_work_receipt_v1 receipt;
+        uint8_t root[32];
+        bool ok = vcs_zcode_work_receipt_parse(wire, len, &receipt) ==
+                VCS_ZCODE_DEV_OK &&
+            vcs_zcode_work_receipt_id(&receipt, root) == VCS_ZCODE_DEV_OK &&
+            memcmp(root, address, 32) == 0 &&
+            vcs_zcode_work_receipt_verify(
+                &receipt, receipt.signer_pubkey) == VCS_ZCODE_DEV_OK;
+        if (!ok) {
+            LOG_ERROR(INDEX_LOG, "skipping receipt-magic object %.8s: "
+                      "parse, signature, or root agreement failed", hex64);
+        } else if (index->receipt_count >= VCS_ZCODE_TASK_INDEX_MAX_RECEIPTS) {
+            if (!*cap_logged) {
+                LOG_ERROR(INDEX_LOG, "receipt index cap %u reached",
+                          VCS_ZCODE_TASK_INDEX_MAX_RECEIPTS);
+                *cap_logged = true;
+            }
+        } else {
+            struct vcs_zcode_task_receipt_entry *e =
+                &index->receipts[index->receipt_count++];
+            memset(e, 0, sizeof(*e));
+            zcl_hex_encode(receipt.task_root, 32, e->task_root_hex);
+            zcl_hex_encode(receipt.candidate_root, 32,
+                           e->candidate_root_hex);
+            zcl_hex_encode(receipt.proof_policy_root, 32,
+                           e->proof_policy_root_hex);
+            zcl_hex_encode(receipt.toolchain_capsule_root, 32,
+                           e->toolchain_capsule_root_hex);
+            zcl_hex_encode(address, 32, e->receipt_root_hex);
+            zcl_hex_encode(receipt.output_root, 32, e->output_root_hex);
+            e->work_kind = receipt.work_kind;
+            e->status = receipt.status;
+            e->exit_status = receipt.exit_status;
+            e->finished_unix = receipt.finished_unix;
+        }
     }
     free(wire);
 }
@@ -203,8 +243,42 @@ static void index_derive_states(struct vcs_zcode_task_index *index,
             if (strcmp(index->candidates[c].task_root_hex,
                        e->task_root_hex) == 0)
                 e->candidate_count++;
+        int64_t latest_finished = 0;
+        for (size_t r = 0; r < index->receipt_count; r++) {
+            const struct vcs_zcode_task_receipt_entry *receipt =
+                &index->receipts[r];
+            if (strcmp(receipt->task_root_hex, e->task_root_hex) != 0 ||
+                strcmp(receipt->proof_policy_root_hex,
+                       e->proof_policy_root_hex) != 0 ||
+                strcmp(receipt->toolchain_capsule_root_hex,
+                       e->toolchain_capsule_root_hex) != 0)
+                continue;
+            bool candidate_bound = false;
+            for (size_t c = 0; c < index->candidate_count; c++)
+                if (strcmp(index->candidates[c].task_root_hex,
+                           e->task_root_hex) == 0 &&
+                    strcmp(index->candidates[c].candidate_root_hex,
+                           receipt->candidate_root_hex) == 0) {
+                    candidate_bound = true;
+                    break;
+                }
+            if (!candidate_bound) continue;
+            e->receipt_count++;
+            if (receipt->status == VCS_ZCODE_WORK_PASS &&
+                receipt->exit_status == 0) {
+                e->passing_receipt_count++;
+                if (receipt->finished_unix > latest_finished) {
+                    latest_finished = receipt->finished_unix;
+                    (void)snprintf(e->latest_work_receipt_hex,
+                                   sizeof(e->latest_work_receipt_hex), "%s",
+                                   receipt->receipt_root_hex);
+                }
+            }
+        }
         e->expired = now_unix > 0 && now_unix >= e->expires_unix;
         const char *state = e->expired ? VCS_ZCODE_TASK_STATE_EXPIRED
+            : e->passing_receipt_count > 0
+                ? VCS_ZCODE_TASK_STATE_EVIDENCE_READY
             : e->candidate_count > 0 ? VCS_ZCODE_TASK_STATE_CANDIDATE_ADMITTED
             : VCS_ZCODE_TASK_STATE_AWAITING_CANDIDATE;
         (void)snprintf(e->state, sizeof(e->state), "%s", state);
@@ -229,7 +303,12 @@ struct vcs_zcode_task_index *vcs_zcode_task_index_build(
     index->contexts = zcl_malloc(sizeof(*index->contexts) *
                                  VCS_ZCODE_TASK_INDEX_MAX_CONTEXTS,
                                  "task_index_contexts");
-    if (!index->tasks || !index->candidates || !index->contexts) {
+    index->receipts = zcl_malloc(sizeof(*index->receipts) *
+                                 VCS_ZCODE_TASK_INDEX_MAX_RECEIPTS,
+                                 "task_index_receipts");
+    if (!index->tasks || !index->candidates || !index->contexts ||
+        !index->receipts) {
+        free(index->receipts);
         free(index->contexts);
         free(index->candidates);
         free(index->tasks);
@@ -272,6 +351,7 @@ void vcs_zcode_task_index_free(struct vcs_zcode_task_index *index)
 {
     if (!index)
         return;
+    free(index->receipts);
     free(index->contexts);
     free(index->candidates);
     free(index->tasks);
