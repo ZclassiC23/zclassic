@@ -220,6 +220,27 @@ ZCL_COMMAND_READY_READ(
     zcl_native_handle_zcode_commons_shadow_verify)
 
 ZCL_COMMAND_READY_READ(
+    "zcode.commons.shadow.protocol.verify", "zcode.commons.shadow.protocol", "",
+    "Verify four linked protocol shadow simulations",
+    "Reloads exactly four selected epoch roots and their deterministic fixture "
+    "branch roots, revalidates every canonical attribution and predecessor, "
+    "and reports cumulative equality plus reorg-sensitive active projection. "
+    "The result is same-host simulation evidence and never clears genesis.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,shadow,protocol,epochs,reorg,simulation",
+    "zcl.zcode_commons_shadow_protocol.input.v1",
+    "zcl.zcode_commons_shadow_protocol.v1",
+    "workspace,policy_candidate_root,epoch_0_root,epoch_1_root,epoch_2_root,epoch_3_root,branch_0_root,branch_1_root,branch_2_root,branch_3_root,now_unix",
+    "workspace,policy_candidate_root,epoch_0_root,epoch_1_root,epoch_2_root,epoch_3_root,branch_0_root,branch_1_root,branch_2_root,branch_3_root,now_unix",
+    "zclassic23 zcode commons shadow protocol verify --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_shadow_protocol_verify)
+
+ZCL_COMMAND_READY_READ(
     "zcode.commons.status", "zcode.commons", "", "Show Living Commons status",
     "Rebuilds an ephemeral view from canonical workspace CAS objects. A "
     "missing workspace remains absent. Parsed totals are not called "

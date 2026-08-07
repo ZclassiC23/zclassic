@@ -326,3 +326,109 @@ void zcl_native_handle_zcode_commons_shadow_verify(
     if (reply && reply->status == ZCL_COMMAND_STATUS_PASSED)
         zcs_safety(&reply->data, false);
 }
+
+static bool zcs_parse_protocol(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply,
+    struct vcs_zcode_shadow_protocol_input *input,
+    uint8_t policy_root[32], uint8_t epoch_roots[4][32],
+    uint8_t branch_roots[4][32])
+{
+    static const char *const keys[] = {
+        "workspace", "policy_candidate_root",
+        "epoch_0_root", "epoch_1_root", "epoch_2_root", "epoch_3_root",
+        "branch_0_root", "branch_1_root", "branch_2_root", "branch_3_root",
+        "now_unix",
+    };
+    static const char *const epoch_keys[4] = {
+        "epoch_0_root", "epoch_1_root", "epoch_2_root", "epoch_3_root",
+    };
+    static const char *const branch_keys[4] = {
+        "branch_0_root", "branch_1_root", "branch_2_root", "branch_3_root",
+    };
+    memset(input, 0, sizeof(*input));
+    const char *workspace = request
+        ? zcs_str(request->input, "workspace") : NULL;
+    bool ok = request && reply && workspace &&
+        zcs_keys(request->input, keys, sizeof(keys) / sizeof(keys[0])) &&
+        zcs_root(request->input, "policy_candidate_root", policy_root) &&
+        zcs_i64_positive(request->input, "now_unix", &input->now_unix);
+    for (size_t i = 0; ok && i < 4; i++)
+        ok = zcs_root(request->input, epoch_keys[i], epoch_roots[i]) &&
+             zcs_root(request->input, branch_keys[i], branch_roots[i]);
+    if (!ok) {
+        zcs_fail(reply, "BAD_SHADOW_PROTOCOL_INPUT",
+                 "closed input requires workspace, policy, four epoch roots, four branch roots and now_unix");
+        return false;
+    }
+    if (!zcs_workspace(workspace, reply)) return false;
+    input->workspace = workspace;
+    input->policy_candidate_root = policy_root;
+    input->epoch_roots = epoch_roots;
+    input->fixture_branch_roots = branch_roots;
+    return true;
+}
+
+void zcl_native_handle_zcode_commons_shadow_protocol_verify(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    struct vcs_zcode_shadow_protocol_input input;
+    struct vcs_zcode_shadow_protocol_report report;
+    uint8_t policy_root[32], epoch_roots[4][32], branch_roots[4][32];
+    if (!zcs_parse_protocol(request, reply, &input, policy_root,
+                            epoch_roots, branch_roots))
+        return;
+    enum vcs_zcode_shadow_simulation_error error =
+        vcs_zcode_shadow_protocol_verify_cas(&input, &report);
+    if (error != VCS_ZCODE_SHADOW_SIMULATION_OK) {
+        zcs_fail(reply, "SHADOW_PROTOCOL_REFUSED",
+                 vcs_zcode_shadow_simulation_error_string(error));
+        return;
+    }
+    struct json_value epochs;
+    json_init(&epochs); json_set_array(&epochs);
+    for (size_t i = 0; i < report.epoch_count; i++) {
+        const struct vcs_zcode_shadow_protocol_epoch_report *source =
+            &report.epochs[i];
+        struct json_value row;
+        json_init(&row); json_set_object(&row);
+        zcs_hex(&row, "epoch_creation_root", source->epoch_root);
+        zcs_hex(&row, "predecessor_root", source->predecessor_root);
+        zcs_hex(&row, "fixture_branch_root", source->fixture_branch_root);
+        (void)json_push_kv_int(&row, "epoch", (int64_t)source->epoch);
+        (void)json_push_kv_int(&row, "creations",
+                               (int64_t)source->creations);
+        (void)json_push_kv_int(&row, "cap_atoms",
+                               (int64_t)source->cap_atoms);
+        (void)json_push_kv_int(&row, "simulated_issue_atoms",
+                               (int64_t)source->simulated_issue_atoms);
+        (void)json_push_kv_int(&row, "attributed_atoms",
+                               (int64_t)source->attributed_atoms);
+        (void)json_push_kv_int(&row, "unissued_atoms",
+                               (int64_t)source->unissued_atoms);
+        (void)json_push_kv_bool(&row, "active_anchor_status",
+                                source->active_anchor_status);
+        (void)json_push_kv_str(&row, "reproduction_grade",
+                               "same_host_fixture_only");
+        (void)json_push_kv_bool(&row, "cumulative_equality",
+                                source->cumulative_equality);
+        (void)json_push_back(&epochs, &row);
+        json_free(&row);
+    }
+    (void)json_push_kv(&reply->data, "epochs", &epochs);
+    json_free(&epochs);
+    zcs_hex(&reply->data, "active_projection_root",
+            report.active_projection_root);
+    (void)json_push_kv_int(&reply->data, "cumulative_issue_atoms",
+                           (int64_t)report.cumulative_issue_atoms);
+    (void)json_push_kv_int(&reply->data, "cumulative_attributed_atoms",
+                           (int64_t)report.cumulative_attributed_atoms);
+    (void)json_push_kv_int(&reply->data, "cumulative_unissued_atoms",
+                           (int64_t)report.cumulative_unissued_atoms);
+    (void)json_push_kv_bool(&reply->data, "cumulative_equality",
+                            report.cumulative_equality);
+    (void)json_push_kv_bool(&reply->data,
+                            "protocol_shadow_simulations", true);
+    (void)json_push_kv_bool(&reply->data,
+                            "owner_required_green_shadow_epochs", false);
+    zcs_safety(&reply->data, false);
+}

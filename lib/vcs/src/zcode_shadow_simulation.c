@@ -70,16 +70,22 @@ const char *vcs_zcode_shadow_simulation_error_string(
     return "unknown";
 }
 
-static bool shadow_fixture_hash(const uint8_t policy_root[32],
-                                const uint8_t branch_root[32], uint64_t epoch,
-                                uint8_t label, uint8_t out[32])
+bool vcs_zcode_shadow_fixture_anchor_root(
+    const uint8_t policy_root[32], const uint8_t branch_root[32],
+    uint64_t epoch, uint8_t anchor_kind, uint8_t out[32])
 {
+    if (!policy_root || !branch_root || !out ||
+        shadow_sim_zero(policy_root) || shadow_sim_zero(branch_root) ||
+        (anchor_kind != 1u && anchor_kind != 2u)) {
+        if (out) memset(out, 0, 32);
+        return false;
+    }
     uint8_t numbers[9];
     struct zcl_codec_writer writer;
     zcl_codec_writer_init(&writer, numbers, sizeof(numbers));
     size_t written = 0;
     if (!zcl_codec_write_u64le(&writer, epoch) ||
-        !zcl_codec_write_u8(&writer, label) ||
+        !zcl_codec_write_u8(&writer, anchor_kind) ||
         !zcl_codec_writer_finish(&writer, &written) ||
         written != sizeof(numbers))
         return false;
@@ -321,9 +327,9 @@ vcs_zcode_shadow_attribution_plan_cas(
         input->workspace, &score, attribution->license_evidence_root,
         &attribution->lineage_kind, attribution->lineage_root);
     if (error != VCS_ZCODE_SHADOW_SIMULATION_OK) return error;
-    if (!shadow_fixture_hash(input->policy_candidate_root,
-                             out->fixture_branch_root, input->epoch, 1,
-                             attribution->challenge_opening_hash))
+    if (!vcs_zcode_shadow_fixture_anchor_root(
+            input->policy_candidate_root, out->fixture_branch_root,
+            input->epoch, 1, attribution->challenge_opening_hash))
         return VCS_ZCODE_SHADOW_SIMULATION_ANCHOR;
     if (vcs_zcode_creation_attribution_root(
             attribution, out->attribution_root) != VCS_ZCODE_CREATION_OK)
@@ -339,9 +345,9 @@ vcs_zcode_shadow_attribution_plan_cas(
         .maturity_height = maturity_height,
     };
     memcpy(fixture.opening_hash, attribution->challenge_opening_hash, 32);
-    (void)shadow_fixture_hash(input->policy_candidate_root,
-                              out->fixture_branch_root, input->epoch, 2,
-                              fixture.maturity_hash);
+    (void)vcs_zcode_shadow_fixture_anchor_root(
+        input->policy_candidate_root, out->fixture_branch_root,
+        input->epoch, 2, fixture.maturity_hash);
     struct vcs_zcode_creation_validation_context context = {
         .workspace = input->workspace,
         .expected_network_genesis_root = policy.network_genesis_root,
@@ -450,13 +456,13 @@ enum vcs_zcode_shadow_simulation_error vcs_zcode_shadow_epoch_plan_cas(
     epoch->maturity_height = attribution.challenge_maturity_height;
     epoch->maturity_mtp = attribution.challenge_maturity_mtp;
     uint8_t expected_opening_hash[32];
-    if (!shadow_fixture_hash(input->policy_candidate_root,
-                             input->fixture_branch_root, epoch->epoch, 1,
-                             expected_opening_hash) ||
+    if (!vcs_zcode_shadow_fixture_anchor_root(
+            input->policy_candidate_root, input->fixture_branch_root,
+            epoch->epoch, 1, expected_opening_hash) ||
         !shadow_sim_equal(expected_opening_hash, epoch->opening_hash) ||
-        !shadow_fixture_hash(input->policy_candidate_root,
-                             input->fixture_branch_root, epoch->epoch, 2,
-                             epoch->maturity_hash)) {
+        !vcs_zcode_shadow_fixture_anchor_root(
+            input->policy_candidate_root, input->fixture_branch_root,
+            epoch->epoch, 2, epoch->maturity_hash)) {
         vcs_zcode_epoch_creation_free(epoch);
         return VCS_ZCODE_SHADOW_SIMULATION_ANCHOR;
     }

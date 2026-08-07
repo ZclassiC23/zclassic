@@ -144,10 +144,13 @@ enum vcs_zcode_epoch_creation_error vcs_zcode_epoch_creation_verify_cas(
             .continuity_is_duplicate = context->continuity_is_duplicate,
             .callback_opaque = context->callback_opaque,
         };
-        if (vcs_zcode_creation_attribution_verify_cas(
-                &attribution, &creation_context) != VCS_ZCODE_CREATION_OK) {
+        creation_error = vcs_zcode_creation_attribution_verify_cas(
+            &attribution, &creation_context);
+        if (creation_error != VCS_ZCODE_CREATION_OK) {
             free(seen_candidates);
-            return VCS_ZCODE_EPOCH_CREATION_ATTRIBUTION;
+            return creation_error == VCS_ZCODE_CREATION_DUPLICATE
+                ? VCS_ZCODE_EPOCH_CREATION_DUPLICATE
+                : VCS_ZCODE_EPOCH_CREATION_ATTRIBUTION;
         }
         if (!zcl_u64_add(sum, attribution.award_atoms, &sum)) {
             free(seen_candidates);

@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 576 |
+| Registry entries (branches + leaves) | 577 |
 | Top-level roots | 11 |
 | Branches | 133 |
-| Leaves (dispatchable command paths) | 443 |
-| … `ready` (live handler in this build) | 390 |
+| Leaves (dispatchable command paths) | 444 |
+| … `ready` (live handler in this build) | 391 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 35 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 22 | 4 | 18 |
-| `config/commands/zcode.def` | 139 | 31 | 108 |
+| `config/commands/zcode.def` | 140 | 31 | 109 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |

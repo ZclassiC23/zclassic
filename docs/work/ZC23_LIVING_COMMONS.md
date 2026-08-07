@@ -471,6 +471,33 @@ must also be bound into the existing signed work-receipt/proof-set path and
 admitted under the approved-reproducer policy. No command, fixture, process
 boundary, IP address, or hostname may manufacture physical independence.
 
+### O6 four-epoch protocol simulation
+
+`zcode commons shadow protocol verify` is a read-only, scratch-only verifier
+for exactly four selected epoch roots and their deterministic fixture-branch
+roots. It independently reloads the policy candidate, each canonical epoch,
+every creation attribution and the complete task/candidate/proof/PROVEN/Score/
+package/release/licence authority chain. It then checks exact predecessor
+linkage, active opening and maturity anchors, no repeated candidate or
+continuity event, checked cumulative accounting, and the rule that every
+epoch's unused capacity expires rather than carrying forward.
+
+The permanent fixture uses the actual permissively licensed `lib/base`,
+`lib/sha3`, and `lib/codec` package trees as three distinct challenge-mature
+contributions in epochs 0–2; epoch 3 intentionally issues zero. It rebuilds
+the Commons projection twice after every epoch and requires byte-identical
+roots. Replacing the fixture branch at the epoch-2 boundary invalidates the
+old epoch and descendants; rebuilding epochs 2–3 gives deterministic new
+roots while the old objects remain in CAS as inactive historical evidence.
+Mixing branch roots or repeating a candidate fails closed.
+
+Every row is labelled `reproduction_grade=same_host_fixture_only`. The report
+also says `protocol_shadow_simulations=true`,
+`owner_required_green_shadow_epochs=false`, and
+`genesis_gate_satisfied=false`. These are protocol simulations, not the four
+owner-required green shadow epochs, and they create no token, issuance,
+custody, authority, or claim of physical independence.
+
 ## Patronage, commissions, and continuity
 
 Patronage never creates protocol emission, proof status, score, committee
