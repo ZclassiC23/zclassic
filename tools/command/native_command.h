@@ -376,6 +376,15 @@ void zcl_native_handle_zcode_package_dev_seal(
 void zcl_native_handle_zcode_project_inspect(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_project_init_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_project_init_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_project_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_work_start(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

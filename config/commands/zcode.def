@@ -33,7 +33,7 @@ ZCL_COMMAND_READY_READ(
     "keeps canonical roots in an expert section.", ZCL_COMMAND_LIST_BUDGET,
     "zcode,project,inspect,c23,recipe,context,read-only",
     "zcl.zcode_project_inspect.input.v1", "zcl.zcode_project_inspect.v1",
-    "workspace", "workspace",
+    "workspace,name,semver,license", "workspace",
     "zclassic23-dev zcode project inspect --input='{\"workspace\":\".\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
@@ -41,6 +41,57 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_project_inspect)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.project.init.plan", "zcode.project", "", "Plan C23 project initialization",
+    "Safely scans an uninitialized single-package workspace without writing, "
+    "then displays a correctable zcode-package.json proposal and a plan bound "
+    "to the exact pre-initialization source tree.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,project,init,plan,c23,read-only",
+    "zcl.zcode_project_init_plan.input.v1", "zcl.zcode_project_init_plan.v1",
+    "workspace,name,semver,license", "workspace",
+    "zclassic23-dev zcode project init plan --input='{\"workspace\":\".\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_project_init_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.project.init.commit", "zcode.project", "", "Initialize one C23 project",
+    "Re-derives the exact plan, refuses stale input and overwrite, and creates "
+    "only zcode-package.json with exclusive no-follow filesystem operations. "
+    "No source, datadir, package publication or execution is touched.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,project,init,commit,c23,exclusive",
+    "zcl.zcode_project_init_commit.input.v1", "zcl.zcode_project_init_commit.v1",
+    "workspace,name,semver,license,plan_id,confirm", "workspace,plan_id,confirm",
+    "zclassic23-dev zcode project init commit --input='{\"workspace\":\".\",\"plan_id\":\"<plan from init plan>\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_zcode_project_init_commit)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.project.status", "zcode.project", "", "Show C23 project readiness",
+    "Reports INITIALIZATION_REQUIRED or READY from a fresh safe scan. It writes "
+    "nothing and keeps package roots in the expert section.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,project,status,c23,read-only",
+    "zcl.zcode_project_status.input.v1", "zcl.zcode_project_status.v1",
+    "workspace,name,semver,license", "workspace",
+    "zclassic23-dev zcode project status --input='{\"workspace\":\".\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_project_status)
 
 ZCL_COMMAND_READY_COMMAND(
     "zcode.work.start", "zcode.work", "", "Start one bounded C23 change",

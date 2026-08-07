@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 585 |
+| Registry entries (branches + leaves) | 588 |
 | Top-level roots | 11 |
 | Branches | 136 |
-| Leaves (dispatchable command paths) | 449 |
-| … `ready` (live handler in this build) | 396 |
+| Leaves (dispatchable command paths) | 452 |
+| … `ready` (live handler in this build) | 399 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 35 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 150 |
+| Leaves with `effect=mutate` | 151 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 96 |
 
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 22 | 4 | 18 |
-| `config/commands/zcode.def` | 148 | 34 | 114 |
+| `config/commands/zcode.def` | 151 | 34 | 117 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -902,7 +902,10 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode project inspect` | ready | read / read / operator · fast/moderate | **`workspace`** | `zcl.zcode_project_inspect.v1` | `zclassic23-dev zcode project inspect --input='{"workspace":"."}'` | Inspect one C23 project |
+| `zcode project inspect` | ready | read / read / operator · fast/moderate | **`workspace`**, `name`, `semver`, `license` | `zcl.zcode_project_inspect.v1` | `zclassic23-dev zcode project inspect --input='{"workspace":"."}'` | Inspect one C23 project |
+| `zcode project init plan` | ready | read / read / operator · fast/moderate | **`workspace`**, `name`, `semver`, `license` | `zcl.zcode_project_init_plan.v1` | `zclassic23-dev zcode project init plan --input='{"workspace":"."}'` | Plan C23 project initialization |
+| `zcode project init commit` | ready | mutate / app-write / operator, plan-commit · fast/moderate | **`workspace`**, `name`, `semver`, `license`, **`plan_id`**, **`confirm`** | `zcl.zcode_project_init_commit.v1` | `zclassic23-dev zcode project init commit --input='{"workspace":".","plan_id":"<plan from init plan>","confirm":true}'` | Initialize one C23 project |
+| `zcode project status` | ready | read / read / operator · fast/moderate | **`workspace`**, `name`, `semver`, `license` | `zcl.zcode_project_status.v1` | `zclassic23-dev zcode project status --input='{"workspace":"."}'` | Show C23 project readiness |
 
 #### `zcode.work` — Proven C23 work
 

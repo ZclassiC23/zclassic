@@ -328,6 +328,136 @@ static int zpd_test_project_inspect(void)
     return failures;
 }
 
+static int zpd_test_project_init(void)
+{
+    int failures = 0;
+    TEST("zcode project init: plan is read-only and commit is exact and exclusive") {
+        char root[256], meta[320], added[320];
+        (void)snprintf(root, sizeof(root),
+                       "test-tmp/zcode-project-init-%ld", (long)getpid());
+        ASSERT(zpd_fixture(root, false));
+        (void)snprintf(meta, sizeof(meta), "%s/zcode-package.json", root);
+        ASSERT(unlink(meta) == 0);
+
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.zcode_project_inspect_test.v1");
+        zcl_native_handle_zcode_project_inspect(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(json_get(&reply.data, "existing_package_config") &&
+               !json_get_bool(json_get(&reply.data,
+                                       "existing_package_config")));
+        ASSERT(access(meta, F_OK) != 0);
+        zcl_command_reply_free(&reply);
+
+        zcl_command_reply_init(&reply, "zcl.zcode_project_init_plan_test.v1");
+        zcl_native_handle_zcode_project_init_plan(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        const char *plan_id = json_get_str(json_get(&reply.data, "plan_id"));
+        const char *config =
+            json_get_str(json_get(&reply.data, "configuration_text"));
+        ASSERT(plan_id && strlen(plan_id) == 64);
+        ASSERT(config && strstr(config, "\"name\": \"local/zcode-project-init-") != NULL);
+        ASSERT(access(meta, F_OK) != 0);
+        char saved_plan[65];
+        (void)snprintf(saved_plan, sizeof(saved_plan), "%s", plan_id);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "name", "example/parser"));
+        ASSERT(json_push_kv_str(&input, "semver", "1.2.3"));
+        ASSERT(json_push_kv_str(&input, "license", "MIT"));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_project_init_plan_test.v1");
+        zcl_native_handle_zcode_project_init_plan(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "name")),
+                      "example/parser") == 0);
+        plan_id = json_get_str(json_get(&reply.data, "plan_id"));
+        ASSERT(plan_id && strlen(plan_id) == 64);
+        (void)snprintf(saved_plan, sizeof(saved_plan), "%s", plan_id);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "name", "example/parser"));
+        ASSERT(json_push_kv_str(&input, "semver", "1.2.3"));
+        ASSERT(json_push_kv_str(&input, "license", "MIT"));
+        ASSERT(json_push_kv_str(&input, "plan_id", saved_plan));
+        ASSERT(json_push_kv_bool(&input, "confirm", true));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_project_init_commit_test.v1");
+        zcl_native_handle_zcode_project_init_commit(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(access(meta, F_OK) == 0);
+        ASSERT(json_get(&reply.data, "created") &&
+               json_get_bool(json_get(&reply.data, "created")));
+        zcl_command_reply_free(&reply);
+
+        zcl_command_reply_init(&reply, "zcl.zcode_project_status_test.v1");
+        zcl_native_handle_zcode_project_status(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")), "READY") == 0);
+        zcl_command_reply_free(&reply);
+
+        zcl_command_reply_init(&reply, "zcl.zcode_project_init_commit_test.v1");
+        zcl_native_handle_zcode_project_init_commit(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_FAILED);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        ASSERT(unlink(meta) == 0);
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_project_init_plan_test.v1");
+        zcl_native_handle_zcode_project_init_plan(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        plan_id = json_get_str(json_get(&reply.data, "plan_id"));
+        ASSERT(plan_id && strlen(plan_id) == 64);
+        (void)snprintf(saved_plan, sizeof(saved_plan), "%s", plan_id);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        (void)snprintf(added, sizeof(added), "%s/src/added.c", root);
+        ASSERT(zpd_write(added, "int added(void) { return 0; }\n"));
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "plan_id", saved_plan));
+        ASSERT(json_push_kv_bool(&input, "confirm", true));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_project_init_commit_test.v1");
+        zcl_native_handle_zcode_project_init_commit(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(access(meta, F_OK) != 0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        ASSERT(unlink(added) == 0);
+
+        char link[320];
+        (void)snprintf(link, sizeof(link), "%s/link", root);
+        ASSERT(symlink("LICENSE", link) == 0);
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_project_init_plan_test.v1");
+        zcl_native_handle_zcode_project_init_plan(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(access(meta, F_OK) != 0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        zpd_fixture_cleanup(root);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int zpd_test_work_start(void)
 {
     int failures = 0;
@@ -640,6 +770,7 @@ int test_zcode_package_dev(void)
     int failures = zpd_test_base(ctx, secret, pubkey) +
                    zpd_test_fail_closed(pubkey) +
                    zpd_test_project_inspect() +
+                   zpd_test_project_init() +
                    zpd_test_work_start();
     secp256k1_context_destroy(ctx);
     return failures;
