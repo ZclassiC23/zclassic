@@ -488,6 +488,14 @@ and expiry. Commit revalidates those bindings and is idempotent. This is the
 developer-facing multi-recipient API; the legacy `sendmany` RPC is compatibility
 surface, not the custody workflow agents should build against.
 
+Every successful first plan and same-request idempotent retry returns the same
+complete review fields: `digest`, `fee`, `confirmation_policy`, `route`,
+`privacy`, and `effects` (plus `from` for shielded routes). An agent may safely
+retry a timed-out plan request and present that response for owner review; it
+must not reconstruct missing outputs from memory. Receipt `txid` and
+`confirmed_block_hash` values use canonical blockchain display order, so they
+can be passed directly to transaction lookup and explorer surfaces.
+
 The same API handles every pool shape without guessing from defaults. Supply
 an explicit source address and a route matching the effects: `shield` for
 transparent-to-Sapling, `private` for Sapling-to-Sapling, `unshield` for
@@ -506,6 +514,14 @@ stores the exact signed bytes before relay. A retry publishes those same bytes;
 a different transaction cannot steal a Sapling-note reservation. The current
 bounded-agent policy still default-denies this multi-effect owner workflow;
 developers must not bypass that denial with a weaker single-amount grant.
+
+The opt-in isolated end-to-end regression uses real Sapling proving parameters,
+replays the exact plan, commits it to an isolated mempool, rejects a tampered
+proof, decrypts the wallet-owned note, and mines the transaction in simnet:
+
+```bash
+ZCL_STRESS_TESTS=1 make -j"$(nproc)" t-fast ONLY=shielded_payment_gate
+```
 
 The ZPAY sequence deliberately keeps composition separate from custody:
 

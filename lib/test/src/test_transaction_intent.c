@@ -4,6 +4,7 @@
 #include "test/test_core.h"
 
 #include "controllers/vault_intent_controller.h"
+#include "json/json.h"
 #include "models/database.h"
 #include "models/vault_intent.h"
 #include "models/wallet_identity.h"
@@ -211,6 +212,32 @@ int test_transaction_intent(void)
 {
     int failures = 0;
     struct node_db ndb; memset(&ndb, 0, sizeof(ndb));
+
+    TEST("vault intent receipts render chain hashes in canonical display order") {
+        struct vault_intent_row row;
+        memset(&row, 0, sizeof(row));
+        row.state = VAULT_INTENT_MEMPOOL_ACCEPTED;
+        row.confirm_height = 42;
+        row.has_txid = true;
+        row.has_confirm_hash = true;
+        for (size_t i = 0; i < 32; i++) {
+            row.txid[i] = (uint8_t)i;
+            row.confirm_hash[i] = (uint8_t)(0xa0 + i);
+        }
+        struct json_value rendered;
+        json_init(&rendered);
+        json_set_object(&rendered);
+        vault_intent_render_row(NULL, &rendered, &row);
+        ASSERT_STR_EQ(json_get_str(json_get(&rendered, "txid")),
+            "1f1e1d1c1b1a19181716151413121110"
+            "0f0e0d0c0b0a09080706050403020100");
+        ASSERT_STR_EQ(json_get_str(json_get(&rendered,
+            "confirmed_block_hash")),
+            "bfbebdbcbbbab9b8b7b6b5b4b3b2b1b0"
+            "afaeadacabaaa9a8a7a6a5a4a3a2a1a0");
+        json_free(&rendered);
+        PASS();
+    }
 
     TEST("transaction intent amount grammar is exact and range bounded") {
         int64_t amount = 0;
