@@ -18,6 +18,27 @@ ZCL_COMMAND_BRANCH("zcode", "",
                    "Create, verify and preserve public C23 work together",
                    ZCL_COMMAND_LAYER_APP)
 
+ZCL_COMMAND_BRANCH("zcode.project", "zcode",
+                   "Inspect and initialize one C23 package project",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.project.inspect", "zcode.project", "", "Inspect one C23 project",
+    "Derives a human-first package layout, declarative recipe, dependency "
+    "lock, write scopes, resource ceilings and suggested proof profile from "
+    "one existing workspace. It follows no symlink, writes nothing, and "
+    "keeps canonical roots in an expert section.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,project,inspect,c23,recipe,context,read-only",
+    "zcl.zcode_project_inspect.input.v1", "zcl.zcode_project_inspect.v1",
+    "workspace", "workspace",
+    "zclassic23-dev zcode project inspect --input='{\"workspace\":\".\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_project_inspect)
+
 ZCL_COMMAND_READY_READ(
     "zcode.guide", "zcode", "", "Start creating in the shared C23 commons",
     "Returns the shortest ready command paths for finding, inspecting, "

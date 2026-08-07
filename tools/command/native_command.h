@@ -373,6 +373,9 @@ void zcl_native_handle_zcode_package_dev_prepare(
 void zcl_native_handle_zcode_package_dev_seal(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_project_inspect(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_package_dev_score_plan(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

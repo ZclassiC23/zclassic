@@ -245,6 +245,74 @@ static int zpd_test_fail_closed(const uint8_t pubkey[33])
     return failures;
 }
 
+static int zpd_test_project_inspect(void)
+{
+    int failures = 0;
+    TEST("zcode project inspect: human summary is read-only and root-free by default") {
+        char root[256], hidden[320];
+        (void)snprintf(root, sizeof(root),
+                       "test-tmp/zcode-project-inspect-%ld", (long)getpid());
+        ASSERT(zpd_fixture(root, false));
+        (void)snprintf(hidden, sizeof(hidden), "%s/.zvcs", root);
+        ASSERT(access(hidden, F_OK) != 0);
+
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.zcode_project_inspect_test.v1");
+        zcl_native_handle_zcode_project_inspect(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(access(hidden, F_OK) != 0);
+
+        const struct json_value *name = json_get(&reply.data, "name");
+        const struct json_value *layout = json_get(&reply.data, "layout");
+        const struct json_value *headers = layout
+            ? json_get(layout, "public_headers") : NULL;
+        const struct json_value *sources = layout
+            ? json_get(layout, "sources") : NULL;
+        const struct json_value *tests = layout
+            ? json_get(layout, "tests") : NULL;
+        const struct json_value *profile =
+            json_get(&reply.data, "suggested_profile");
+        const struct json_value *expert = json_get(&reply.data, "expert");
+        ASSERT(name && strcmp(json_get_str(name), "zclassic23/fixture") == 0);
+        ASSERT(layout && layout->type == JSON_OBJ);
+        ASSERT(headers && headers->type == JSON_ARR &&
+               headers->num_children == 1);
+        ASSERT(sources && sources->type == JSON_ARR &&
+               sources->num_children == 1);
+        ASSERT(tests && tests->type == JSON_ARR && tests->num_children == 1);
+        ASSERT(profile && strcmp(json_get_str(profile), "standard") == 0);
+        ASSERT(json_get(&reply.data, "recipe_hex") == NULL);
+        ASSERT(json_get(&reply.data, "dependency_lock_hex") == NULL);
+        ASSERT(expert && expert->type == JSON_OBJ);
+        ASSERT(json_get(expert, "package_root") != NULL);
+        ASSERT(json_get(&reply.data, "read_only") &&
+               json_get_bool(json_get(&reply.data, "read_only")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        zpd_fixture_cleanup(root);
+
+        char absent[256];
+        (void)snprintf(absent, sizeof(absent),
+                       "test-tmp/zcode-project-absent-%ld", (long)getpid());
+        ASSERT(access(absent, F_OK) != 0);
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", absent));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_project_inspect_test.v1");
+        zcl_native_handle_zcode_project_inspect(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(access(absent, F_OK) != 0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_package_dev(void)
 {
     secp256k1_context *ctx = secp256k1_context_create(
@@ -256,7 +324,8 @@ int test_zcode_package_dev(void)
         return 1;
     }
     int failures = zpd_test_base(ctx, secret, pubkey) +
-                   zpd_test_fail_closed(pubkey);
+                   zpd_test_fail_closed(pubkey) +
+                   zpd_test_project_inspect();
     secp256k1_context_destroy(ctx);
     return failures;
 }

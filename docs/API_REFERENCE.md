@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 578 |
+| Registry entries (branches + leaves) | 580 |
 | Top-level roots | 11 |
-| Branches | 134 |
-| Leaves (dispatchable command paths) | 444 |
-| … `ready` (live handler in this build) | 391 |
+| Branches | 135 |
+| Leaves (dispatchable command paths) | 445 |
+| … `ready` (live handler in this build) | 392 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 35 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 22 | 4 | 18 |
-| `config/commands/zcode.def` | 141 | 32 | 109 |
+| `config/commands/zcode.def` | 143 | 33 | 110 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -897,6 +897,12 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode guide` | ready | read / read / public · instant/tiny | none | `zcl.zcode_guide.v1` | `zclassic23 zcode guide` | Start creating in the shared C23 commons |
+
+#### `zcode.project` — Inspect and initialize one C23 package project
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode project inspect` | ready | read / read / operator · fast/moderate | **`workspace`** | `zcl.zcode_project_inspect.v1` | `zclassic23-dev zcode project inspect --input='{"workspace":"."}'` | Inspect one C23 project |
 
 #### `zcode.commons` — Read-only ZC23 Living Commons projection
 
