@@ -246,7 +246,7 @@ deployment/consensus paths.
 | P4 show / P10 acceptance | commit subject `docs(zcode): add the development acceptance path` | separate expert status spelling and undocumented acceptance procedure | 0 (`show` is the same verified read path) | no context expansion | recorded in commit | five-minute walkthrough plus one exact hermetic target covering source identity, isolation, scope refusal, repair, evidence, projection rebuild and explicit acceptance |
 | P9 first self-host | `ac2709e190e9d9734cc88e1b6c649e1aa0280588` | all roots, wires, timestamps, toolchain and action IDs | ordinary path is 5 commands from goal through status | 541 / 1,487 source bytes (36.4%), 1 file, 1 symbol, 11,227 us | accepted patch +8 / -1 in a test-only fixture | one attempt passed confined build and declared tests, explicit acceptance reached PROVEN, and the committed files were byte-identical to the captured candidate |
 | P7 manual review | commit subject `feat(zcode): execute independent manual reviews` | review wire, findings root, proof-set root, reviewer key and REVIEW action/receipt construction | replaces the expert review ceremony with one command | reviews the existing immutable non-review proof set; no context expansion | recorded in commit | a distinct scratch reviewer signs existing `review.v1` and a REVIEW receipt; status rebuilds verdict and review root from CAS without opening the scratch database |
-| P9 frozen benchmark | commit subject `test(zcode): prove the twelve-task development benchmark` | exact symbols plus all roots, wires, timestamps, action IDs and scratch paths | ordinary success path is exactly 5 commands | 312 / 816 aggregate source bytes (38.2%); 70,859 us selection time | recorded in commit | 10/12 compiled, satisfied `quick`, and reached PROVEN; 2/2 out-of-scope requests failed closed; 14.933 s total |
+| P9 frozen benchmark | `463255b19a3319eeed483df58c4e94f23a021764` | exact symbols plus all roots, wires, timestamps, action IDs and scratch paths | ordinary success path is exactly 5 commands | 312 / 816 aggregate source bytes (38.2%); 70,859 us selection time | +347 / -5 across selector, tests and ledger | 10/12 compiled, satisfied `quick`, and reached PROVEN; 2/2 out-of-scope requests failed closed; 14.933 s total |
 
 The P5 delta includes promoting the build worker's private CAS-tree materializer
 to one shared ZVCS primitive; 59 production lines of duplicate materialization
@@ -406,6 +406,68 @@ changed. The selector now performs a bounded deterministic project-entry
 fallback, reports `project_entry_fallback` instead of pretending the goal
 matched, and preserves the exact-symbol expert override. This was the largest
 recurring product failure class in the frozen benchmark.
+
+## V0.1 validation ledger and remaining blockers
+
+The benchmark slice is commit
+`463255b19a3319eeed483df58c4e94f23a021764`. Required current-main integration
+is merge commit `4843d0b7da58abc2eee89578a37ba332cc637235`; it preserves the disjoint
+concurrent transaction-lab history and changes no ZCODE product file.
+
+The measured gates for the product slice were:
+
+- `make zcode-development-acceptance`: PASS, including the twelve-task
+  benchmark and fresh-workspace invariants.
+- `make lint`: PASS, 134/134 gates.
+- `make zcode-package-asan`: PASS under ASan+UBSan with no suppressions for
+  isolated base/SHA3/codec and all 13 ZCODE lifecycle groups, including
+  `test_zcode_package_dev`.
+- Generic `make t-asan ONLY=zcode_package_dev`: did not reach tests because
+  the pre-existing Sapling ADX assembly cannot allocate registers with that
+  profile's `-fno-omit-frame-pointer`; the repository-prescribed ZCODE
+  sanitizer posture above uses `-fomit-frame-pointer -O2` for the monolith and
+  passed.
+- Strict uncached suite: first run was 903/904 passing with only the
+  load-sensitive `test_simnet_perf` red; its isolated rerun passed at 962
+  permille clean growth versus the 1800 limit, and the complete rerun passed
+  904/904 runnable groups, 0 cached, 9 parameter-heavy groups policy-gated and
+  19 declared self-skips.
+- Release whole-program LTO build: PASS.
+- `make ci-reproducible`: PASS, two same-checkout builds byte-identical at
+  SHA3-256 `42754e3adfb8c6d40f6577d0d61de3d884482ca3ccffbd1031b8ddcf1ce28cd4`
+  and 23,031,208 bytes.
+- `make repro-verify`: PASS across two different absolute checkout paths at
+  SHA3-256 `f9902c16ee26c5ea4cd35b58a145c6187b2c82d305264aad1a2034a26229e74f`
+  and 23,031,288 bytes.
+- Both pushes and the integration merge passed the repository pre-push gate
+  and were pull-verified against `origin/main`.
+
+The safe quick-profile development loop is shipped. The broader owner
+directive is not represented as fully closed for these reasons:
+
+1. `standard`, `strong`, and `release` profiles expand to exact policies, but
+   the one-front-door runner currently emits only the package build/test work
+   receipt. Sanitizer findings are intentionally owned by the separate
+   package-attestation lane and omitted from the installable build receipt.
+   Consequently a `standard` accept fails closed as
+   `PROOF_PROFILE_INCOMPLETE`; quick evidence is never mislabeled as sanitizer
+   evidence. Composing those existing evidence owners is the largest remaining
+   product bottleneck.
+2. The fixed Codex coding adapter is implemented, but this host has neither
+   `CODEX_API_KEY` nor `CODEX_ACCESS_TOKEN`. No real adapter coding or
+   adapter-produced review receipt was fabricated. Manual handoff and manual
+   independent review are operational.
+3. A codec dogfood candidate remains preserved but unexecuted because its
+   exact frozen base dependency is not installed in that scratch worker.
+4. Durable `work cancel` remains intentionally absent: the existing canonical
+   cancel wire owns a P2P request, not a task. Rejecting a candidate means
+   withholding human acceptance until an owner chooses an appropriate durable
+   task-cancellation authority.
+5. Genuine independent reproduction still requires another physical machine.
+
+No new canonical domain was added. The product reuses the existing task,
+context, scope, candidate, patch, recipe, lock, package action, work receipt,
+proof set, review, lane and acceptance authorities.
 
 ## Hard boundary
 
