@@ -7,6 +7,7 @@
 #include "base/hex.h"
 #include "json/json.h"
 #include "vcs/package_prepare.h"
+#include "vcs/zcode_dev_product.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -108,6 +109,55 @@ static bool zproject_render_expert(struct json_value *out,
                               prepared->capsule_root);
 }
 
+static bool zproject_render_profile(struct json_value *out)
+{
+    struct vcs_zcode_dev_profile profile;
+    uint8_t root[32];
+    if (!vcs_zcode_dev_profile_expand("standard", &profile) ||
+        vcs_zcode_proof_policy_root(&profile.policy, root) !=
+            VCS_ZCODE_DEV_OK)
+        return false;
+    struct json_value exact;
+    json_init(&exact);
+    json_set_object(&exact);
+    bool ok = zproject_push_root(&exact, "root", root) &&
+        json_push_kv_int(&exact, "required_proofs",
+                         profile.policy.required_proofs) &&
+        json_push_kv_int(&exact, "minimum_compile_receipts",
+                         profile.policy.minimum_compile_receipts) &&
+        json_push_kv_int(&exact, "minimum_test_receipts",
+                         profile.policy.minimum_test_receipts) &&
+        json_push_kv_int(&exact, "minimum_fuzz_receipts",
+                         profile.policy.minimum_fuzz_receipts) &&
+        json_push_kv_int(&exact, "minimum_reviews",
+                         profile.policy.minimum_reviews) &&
+        json_push_kv_int(&exact, "minimum_matching_receipts",
+                         profile.policy.minimum_matching_receipts) &&
+        json_push_kv_int(&exact, "maximum_proof_age_seconds",
+                         profile.policy.maximum_proof_age_seconds);
+    json_init(out);
+    json_set_object(out);
+    if (ok) {
+        ok = json_push_kv_str(out, "name", profile.name) &&
+             json_push_kv_bool(out, "package_build", true) &&
+             json_push_kv_bool(out, "declared_tests", true) &&
+             json_push_kv_bool(out, "warning_fatal",
+                               profile.warning_fatal) &&
+             json_push_kv_bool(out, "sanitizers", profile.sanitizers) &&
+             json_push_kv_bool(out, "deterministic_fuzz",
+                               profile.deterministic_fuzz) &&
+             json_push_kv_bool(out, "local_reproduction",
+                               profile.local_reproduction) &&
+             json_push_kv_bool(out, "separate_review",
+                               profile.separate_review) &&
+             json_push_kv_bool(out, "approved_reproduction",
+                               profile.approved_reproduction) &&
+             json_push_kv(out, "exact_policy", &exact);
+    }
+    json_free(&exact);
+    return ok;
+}
+
 static bool zproject_total_bytes(const struct vcs_package_manifest *manifest,
                                  uint64_t *out)
 {
@@ -160,12 +210,14 @@ void zcl_native_handle_zcode_project_inspect(
     }
 
     uint64_t total_bytes = 0;
-    struct json_value layout, expert, limits, scopes;
+    struct json_value layout, expert, profile, limits, scopes;
     json_init(&layout);
     json_init(&expert);
+    json_init(&profile);
     bool ok = zproject_total_bytes(&prepared.manifest, &total_bytes) &&
               zproject_render_layout(&layout, &prepared) &&
-              zproject_render_expert(&expert, &prepared);
+              zproject_render_expert(&expert, &prepared) &&
+              zproject_render_profile(&profile);
     json_init(&limits); json_set_object(&limits);
     json_init(&scopes); json_set_array(&scopes);
     if (ok) {
@@ -204,13 +256,15 @@ void zcl_native_handle_zcode_project_inspect(
              json_push_kv(&reply->data, "likely_write_scopes", &scopes) &&
              json_push_kv(&reply->data, "resource_ceilings", &limits) &&
              json_push_kv_str(&reply->data, "suggested_profile", "standard") &&
+             json_push_kv(&reply->data, "proof_profile", &profile) &&
              json_push_kv_bool(&reply->data, "existing_package_config", true) &&
              json_push_kv_bool(&reply->data, "read_only", true) &&
              json_push_kv_str(&reply->data, "next_safe_command",
                               "zcode work start") &&
              json_push_kv(&reply->data, "expert", &expert);
     }
-    json_free(&scopes); json_free(&limits); json_free(&expert);
+    json_free(&scopes); json_free(&limits); json_free(&profile);
+    json_free(&expert);
     json_free(&layout);
     vcs_package_prepared_free(&prepared);
     if (!ok)

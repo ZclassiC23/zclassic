@@ -276,6 +276,10 @@ static int zpd_test_project_inspect(void)
             ? json_get(layout, "tests") : NULL;
         const struct json_value *profile =
             json_get(&reply.data, "suggested_profile");
+        const struct json_value *profile_detail =
+            json_get(&reply.data, "proof_profile");
+        const struct json_value *exact_policy = profile_detail
+            ? json_get(profile_detail, "exact_policy") : NULL;
         const struct json_value *expert = json_get(&reply.data, "expert");
         ASSERT(name && strcmp(json_get_str(name), "zclassic23/fixture") == 0);
         ASSERT(layout && layout->type == JSON_OBJ);
@@ -285,6 +289,15 @@ static int zpd_test_project_inspect(void)
                sources->num_children == 1);
         ASSERT(tests && tests->type == JSON_ARR && tests->num_children == 1);
         ASSERT(profile && strcmp(json_get_str(profile), "standard") == 0);
+        ASSERT(profile_detail && profile_detail->type == JSON_OBJ);
+        ASSERT(json_get(profile_detail, "warning_fatal") &&
+               json_get_bool(json_get(profile_detail, "warning_fatal")));
+        ASSERT(json_get(profile_detail, "sanitizers") &&
+               json_get_bool(json_get(profile_detail, "sanitizers")));
+        ASSERT(exact_policy && exact_policy->type == JSON_OBJ);
+        ASSERT(json_get(exact_policy, "root") != NULL);
+        ASSERT(json_get_int(json_get(exact_policy,
+                                     "minimum_compile_receipts")) == 2);
         ASSERT(json_get(&reply.data, "recipe_hex") == NULL);
         ASSERT(json_get(&reply.data, "dependency_lock_hex") == NULL);
         ASSERT(expert && expert->type == JSON_OBJ);
