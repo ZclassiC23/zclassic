@@ -100,20 +100,26 @@ static int test_set_method_truncates(void)
 static int test_proof_methods_receive_bounded_extension(void)
 {
     int failures = 0;
-    TEST("rpc_timeout: only vault proof builders receive the long deadline") {
+    TEST("rpc_timeout: only vault proof operations receive the long deadline") {
         fresh_mgr();
         int ordinary_pair[2] = { -1, -1 };
         int proof_pair[2] = { -1, -1 };
+        int commit_pair[2] = { -1, -1 };
         ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, ordinary_pair) == 0);
         ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, proof_pair) == 0);
+        ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, commit_pair) == 0);
 
         int ordinary = rpc_timeout_register(&mgr, ordinary_pair[0], 0);
         int proof = rpc_timeout_register(&mgr, proof_pair[0], 0);
-        ASSERT(ordinary >= 0 && proof >= 0);
+        int commit = rpc_timeout_register(&mgr, commit_pair[0], 0);
+        ASSERT(ordinary >= 0 && proof >= 0 && commit >= 0);
         rpc_timeout_set_method(&mgr, ordinary, "getwalletinfo");
         rpc_timeout_set_method(&mgr, proof, "vault_intent_plan");
+        rpc_timeout_set_method(&mgr, commit, "vault_intent_commit");
         ASSERT(mgr.slots[ordinary].timeout_ms == 10000);
         ASSERT(mgr.slots[proof].timeout_ms == RPC_PROOF_BUILD_TIMEOUT_MS);
+        ASSERT(mgr.slots[commit].timeout_ms == RPC_PROOF_BUILD_TIMEOUT_MS);
+        rpc_timeout_unregister(&mgr, commit);
 
         ASSERT(rpc_timeout_sweep(
                    &mgr, mgr.slots[ordinary].start_us + 11000 * 1000LL) == 1);
@@ -130,6 +136,8 @@ static int test_proof_methods_receive_bounded_extension(void)
         close(ordinary_pair[1]);
         close(proof_pair[0]);
         close(proof_pair[1]);
+        close(commit_pair[0]);
+        close(commit_pair[1]);
         PASS();
     } _test_next:;
     return failures;

@@ -365,9 +365,33 @@ static char *node_rpc_call_http_impl(const char *method,
     }
     buf[len] = 0;
 
-    /* Skip HTTP headers */
+    /* Validate HTTP framing before stripping headers.  A server-side request
+     * watchdog can close the socket after the HTTP preamble was written but
+     * before the JSON body is complete.  recv() then reports a clean EOF, not
+     * EAGAIN, so `timed_out` is false even though the response is truncated.
+     * Never hand that fragment to the JSON layer as a misleading BAD_RPC_BODY. */
     char *body_start = strstr(buf, "\r\n\r\n");
     if (body_start) {
+        size_t body_offset = (size_t)(body_start + 4 - buf);
+        size_t body_len = len >= body_offset ? len - body_offset : 0;
+        char *content_length = strstr(buf, "Content-Length:");
+        if (content_length && content_length < body_start) {
+            char *value = content_length + strlen("Content-Length:");
+            while (value < body_start && (*value == ' ' || *value == '\t'))
+                value++;
+            errno = 0;
+            char *end = NULL;
+            unsigned long long expected = strtoull(value, &end, 10);
+            if (errno == 0 && end && end > value && end <= body_start &&
+                expected > (unsigned long long)body_len) {
+                free(buf);
+                return rpc_transport_error(
+                    "node connection closed before the complete response "
+                    "arrived (truncated reply) — the node is busy or its "
+                    "request deadline is too short; retry, or inspect "
+                    "`ops state --subsystem=supervisor`");
+            }
+        }
         body_start += 4;
         size_t bslen = len - (size_t)(body_start - buf);
         memmove(buf, body_start, bslen + 1);

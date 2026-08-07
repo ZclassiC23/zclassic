@@ -320,14 +320,15 @@ static int test_money_freshness_fails_closed(void)
                   WALLET_MONEY_FRESHNESS_CURRENT);
         /* A seeded node may permanently remain in blocks_download because the
          * global AT_TIP verdict also requires historical body completeness.
-         * Current wallet custody instead depends on H* matching the maximum
-         * active/header/peer target supplied by the snapshot builder. */
+         * That state is accepted only when the money tip exactly equals H*;
+         * one-block coins run-ahead cannot pass the stricter spend gate and
+         * therefore must not be advertised as CURRENT custody. */
         ASSERT_EQ(wallet_money_freshness_classify(
                       true, 99, 100, 100, 1, SYNC_BLOCKS_DOWNLOAD),
-                  WALLET_MONEY_FRESHNESS_CURRENT);
+                  WALLET_MONEY_FRESHNESS_STALE);
         ASSERT_EQ(wallet_money_freshness_classify(
                       true, 99, 100, 100, 1, SYNC_CONNECTING_BLOCKS),
-                  WALLET_MONEY_FRESHNESS_CURRENT);
+                  WALLET_MONEY_FRESHNESS_STALE);
         ASSERT_EQ(wallet_money_freshness_classify(
                       true, 98, 100, 100, 1, SYNC_BLOCKS_DOWNLOAD),
                   WALLET_MONEY_FRESHNESS_STALE);

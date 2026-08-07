@@ -170,13 +170,15 @@ void rpc_timeout_set_method(struct rpc_timeout_mgr *mgr,
         memcpy(mgr->slots[slot].method, method, n);
         mgr->slots[slot].method[n] = '\0';
         /* Shielded planning performs a real, non-broadcast Sapling proof
-         * preflight before it persists a reservation. Keep the ordinary
-         * 10-second worker ceiling for every other method, but give these
-         * two exact owner surfaces the bounded proof-building budget. The
+         * preflight before it persists a reservation, and commit rebuilds
+         * the exact proof before durable relay. Keep the ordinary 10-second
+         * worker ceiling for every other method, but give these exact owner
+         * surfaces the bounded proof-building budget. The
          * generic deadline still wins when an operator configured it higher;
          * a method label can extend a slot, never shorten one. */
         if ((strcmp(method, "vault_intent_plan") == 0 ||
-             strcmp(method, "vault_intent_fanout_plan") == 0) &&
+             strcmp(method, "vault_intent_fanout_plan") == 0 ||
+             strcmp(method, "vault_intent_commit") == 0) &&
             mgr->proof_timeout_ms > mgr->slots[slot].timeout_ms) {
             mgr->slots[slot].timeout_ms = mgr->proof_timeout_ms;
         }

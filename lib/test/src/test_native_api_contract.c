@@ -2302,7 +2302,7 @@ static void *delayed_vault_plan_serve(void *arg)
     return NULL;
 }
 
-static int test_vault_proof_plan_uses_long_rpc_deadline(void)
+static int test_vault_proof_commit_uses_long_rpc_deadline(void)
 {
     int failures = 0;
     pthread_t th = 0;
@@ -2310,7 +2310,7 @@ static int test_vault_proof_plan_uses_long_rpc_deadline(void)
     struct partial_reply_server srv = { .listen_fd = -1, .accepted_fd = -1 };
     char *dir = NULL;
 
-    TEST("vault.intent.fanout-plan: proof work can outlive the generic RPC "
+    TEST("vault.intent.commit: proof work can outlive the generic RPC "
          "deadline and still return a valid typed result") {
         node_rpc_client_set_test_hook(NULL);
         srv.listen_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -2344,8 +2344,8 @@ static int test_vault_proof_plan_uses_long_rpc_deadline(void)
         json_set_object(&input);
         struct zcl_command_request request = { .input = &input };
         struct zcl_command_reply reply;
-        zcl_command_reply_init(&reply, "zcl.vault_intent_fanout_plan.v1");
-        zcl_native_handle_vault_intent_fanout_plan(&request, &reply);
+        zcl_command_reply_init(&reply, "zcl.vault_intent_commit.v1");
+        zcl_native_handle_vault_intent_commit(&request, &reply);
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
         ASSERT(json_get_bool(json_get(&reply.data, "ok")));
         ASSERT(json_get_bool(json_get(&reply.data, "idempotent_plan")));
@@ -2383,9 +2383,9 @@ static int test_vault_proof_plan_uses_long_rpc_deadline(void)
 static void *partial_reply_serve(void *arg)
 {
     struct partial_reply_server *s = arg;
-    /* Send the response HEADERS and nothing else, then hold the connection
-     * open — exactly the shape a node produces when its handler blocks after
-     * the HTTP preamble is already on the wire. */
+    /* Send the response HEADERS and nothing else, then close the connection.
+     * This is the exact server-watchdog shape from a proof request whose
+     * method deadline fires: recv() sees EOF rather than a client timeout. */
     int fd = accept(s->listen_fd, NULL, NULL);
     if (fd < 0)
         return NULL;
@@ -2394,13 +2394,8 @@ static void *partial_reply_serve(void *arg)
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
         "Content-Length: 64\r\nConnection: close\r\n\r\n";
     (void)!write(fd, hdr, sizeof(hdr) - 1);
-    /* Park until the parent closes us out; never write the body. */
-    for (int i = 0; i < 200; i++) {
-        struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000 };
-        (void)nanosleep(&ts, NULL);
-        if (s->listen_fd < 0)
-            break;
-    }
+    close(fd);
+    s->accepted_fd = -1;
     return NULL;
 }
 
@@ -2414,8 +2409,8 @@ static int test_partial_rpc_reply_names_the_timeout(void)
     struct partial_reply_server srv = { .listen_fd = -1, .accepted_fd = -1 };
     char *out = malloc(ZCL_COMMAND_LIST_BUDGET + 1);
 
-    TEST("core.wallet.utxo.list: a node that sends only the HTTP headers "
-        "before the deadline renders a named transport timeout, never "
+    TEST("core.wallet.utxo.list: a node that closes after only the HTTP "
+        "headers renders a named transport truncation, never "
         "'unparseable body'") {
         ASSERT(out != NULL);
         node_rpc_client_set_test_hook(NULL);
@@ -2507,7 +2502,7 @@ int test_native_api_contract(void)
     failures += test_status_frontdoor_preserves_rpc_error();
     failures += test_status_brief_body_schema_skew_tolerance();
     failures += test_status_brief_body_front_door_deadline();
-    failures += test_vault_proof_plan_uses_long_rpc_deadline();
+    failures += test_vault_proof_commit_uses_long_rpc_deadline();
     failures += test_partial_rpc_reply_names_the_timeout();
     printf("=== native_api_contract: %d failures ===\n", failures);
     return failures;
