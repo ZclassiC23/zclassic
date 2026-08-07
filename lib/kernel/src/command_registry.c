@@ -1076,6 +1076,7 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                    strcmp(key, "action_sequence") == 0 ||
                    strcmp(key, "result_sequence") == 0 ||
                    strcmp(key, "reproduction_sequence") == 0 ||
+                   strcmp(key, "publisher_sequence") == 0 ||
                    strcmp(key, "max") == 0) {
             /* zcode.science int pins the same bug class as now_unix: the
              * handlers read them with json_get_int, so the default string
