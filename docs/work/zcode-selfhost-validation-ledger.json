@@ -452,6 +452,14 @@
       {
         "kind": "living_commons_o3_qualification",
         "sha": "307556653"
+      },
+      {
+        "kind": "origin_main_before_o3_push",
+        "sha": "468d0319281b6298f5e9669c877042c389069fac"
+      },
+      {
+        "kind": "o3_push_integration_merge",
+        "sha": "10a0480b4"
       }
     ],
     "historical_truth": {

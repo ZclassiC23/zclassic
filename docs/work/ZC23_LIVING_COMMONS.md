@@ -669,3 +669,6 @@ No concurrent integration was required before source commit `307556653`.
 The evaluator intentionally reports `remote_transport_used=false` and
 `physical_independence_proven=false` for the same-host fixture. That fixture
 proves protocol wiring only and does not clear the real SHA3 off-host blocker.
+Before the O3 push, concurrent `origin/main` `468d0319281b6298f5e9669c877042c389069fac`
+was integrated through merge `10a0480b4`. Its disjoint transaction-lab files
+were preserved without modification.
