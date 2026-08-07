@@ -428,6 +428,30 @@
       {
         "kind": "truth_ledger_integration_merge",
         "sha": "d77ccce74"
+      },
+      {
+        "kind": "living_commons_o0_contract",
+        "sha": "209aac342"
+      },
+      {
+        "kind": "living_commons_o1_policy",
+        "sha": "08d7f1af2"
+      },
+      {
+        "kind": "living_commons_mission_api",
+        "sha": "6df06b721"
+      },
+      {
+        "kind": "living_commons_o2_request",
+        "sha": "c41cebd99"
+      },
+      {
+        "kind": "origin_main_before_o3_qualification",
+        "sha": "c41cebd9967c88332e3dfa6bd2487283c7ddce88"
+      },
+      {
+        "kind": "living_commons_o3_qualification",
+        "sha": "307556653"
       }
     ],
     "historical_truth": {

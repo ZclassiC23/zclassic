@@ -312,7 +312,7 @@ completed epoch and earns no independent-reproduction unit.
 The read-only demonstration is:
 
 ```text
-zclassic23 zcode commons shadow plan --input='{"workspace":"<scratch-cas>","score_receipt_root":"680882572af552040efb6ec202915a3d5c2f9704e2d389200c07ed770ba6bea8"}'
+zclassic23 zcode commons shadow plan --input='{"workspace":"<scratch-cas>","score_receipt_root":"680882572af552040efb6ec202915a3d5c2f9704e2d389200c07ed770ba6bea8","policy_candidate_root":"<64hex>","reproduction_request_root":"<64hex>","reproduction_proof_set_root":"<64hex>","epoch":<n>,"now_unix":<seconds>}'
 ```
 
 It reloads and rederives the task, candidate, policy, proof set, work receipts,
@@ -566,6 +566,11 @@ authorization.
 | DONE | Six-arm Living Commons parser fuzzer | `a0cfe7fe4` | `a0cfe7fe4` | shared libFuzzer owner, one seed per canonical parser, ASan+UBSan and leak detection; 1,537,885 mutations in 31 seconds at 49,609/s with no finding; full lint 134/134 |
 | DONE | Historical binding time and complete public-source lineage | `7c2ebdea0` | `84a816754` | born-red expiry and arbitrary-lineage failures; event-time binding verification; signed release parent and recursively verified predecessor paths; focused green; normal pre-push 901/901 active groups |
 | DONE | Neutral creation identity and security-label normalization | `66a81064e` | `66a81064e` | patron-independent event-key KAT; release-lineage continuity without funding; `SECURITY_FIX` normalized to born-red eligibility and award; focused green; normal pre-push 901/901 active groups |
+| DONE | O0 reproduction owner/reuse contract freeze | `209aac342` | `209aac342` | Score v1 frozen; existing CAS, proof, build, artifact, identity, transport and chain-test owners mapped; no live authority granted |
+| DONE | O1 simulation-only policy candidate and approved reproducer set | `08d7f1af2` | `08d7f1af2` | exact canonical roots, closed flags and award table, approval epoch/time bounds, focused green, full lint 134/134, normal pre-push 911-group suite |
+| DONE | Shared mission/API and explicit scratch-workspace safety | `6df06b721` | `6df06b721` | exact people-and-AI mission, ready `zcode guide`, canonical/live workspace refusal, generated API reference, full lint 134/134, normal pre-push 911-group suite |
+| DONE | O2 portable simulation-only reproduction challenge | `c41cebd99` | `c41cebd99` | 512-byte request KAT, public-root and confinement bindings, noncreating plan, idempotent scratch-CAS commit, focused green, full lint 134/134, normal pre-push 911-group suite |
+| DONE | O3 policy-bound reproduction qualification | `307556653` | `307556653` | complete Score/proof/request/build/manifest/policy/identity CAS rederivation; missing output, missing approval identity, stale epoch and contradictory-result rejections; command readiness derives from the evaluator; physical independence remains explicitly unproven; focused/API gates and full lint 134/134 |
 | BLOCKED | First complete SHA3 shadow epoch | `fc62b9c4a` | `fc62b9c4a` | read-only full Score vertical rederivation and package-registry match; zero award and no attribution/epoch because no owner-approved off-host reproducer exists; full lint 134/134; ZCODE ASan+UBSan green; LTO and both local byte-reproduction gates green; normal pre-push 901/901 active groups |
 
 Historical-truth hardening began from fetched `origin/main` `7091051aa`
@@ -658,3 +663,9 @@ are complete.
 
 No live token, GENESIS, MINT, SEND, wallet, canonical datadir, production port,
 deployment, service, or consensus path was touched by these slices.
+
+O3 began from fetched `origin/main` `c41cebd9967c88332e3dfa6bd2487283c7ddce88`.
+No concurrent integration was required before source commit `307556653`.
+The evaluator intentionally reports `remote_transport_used=false` and
+`physical_independence_proven=false` for the same-host fixture. That fixture
+proves protocol wiring only and does not clear the real SHA3 off-host blocker.
