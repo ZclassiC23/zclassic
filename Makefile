@@ -2058,6 +2058,10 @@ t-fast-exact: $(TEST_PARALLEL_FAST_CANDIDATE)
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED)'
 
+.PHONY: zcode-development-acceptance
+zcode-development-acceptance:
+	@$(MAKE) --no-print-directory t-fast-exact ONLY=test_zcode_package_dev
+
 # Regenerate the pinned Sapling SPEND reference ground-truth vector (H2 lane).
 # Runs the groth16_selfverify group's oracle in emit mode against
 # vendor/lib/librustzcash.a and prints a ready-to-paste C block for

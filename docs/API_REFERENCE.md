@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 588 |
+| Registry entries (branches + leaves) | 589 |
 | Top-level roots | 11 |
 | Branches | 136 |
-| Leaves (dispatchable command paths) | 452 |
-| … `ready` (live handler in this build) | 399 |
+| Leaves (dispatchable command paths) | 453 |
+| … `ready` (live handler in this build) | 400 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 35 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 22 | 4 | 18 |
-| `config/commands/zcode.def` | 151 | 34 | 117 |
+| `config/commands/zcode.def` | 152 | 34 | 118 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -913,6 +913,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode work start` | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`goal`**, `profile`, `context_symbol` | `zcl.zcode_work_start.v1` | `zclassic23-dev zcode work start --input='{"workspace":".","goal":"Make the parser reject overflowing lengths","profile":"standard"}'` | Start one bounded C23 change |
 | `zcode work status` | ready | read / read / operator · fast/low | `workspace`, `work` | `zcl.zcode_work_status.v1` | `zclassic23-dev zcode work status --input='{"work":"latest"}'` | Show one human-first work status |
+| `zcode work show` | ready | read / read / operator · fast/low | `workspace`, `work` | `zcl.zcode_work_status.v1` | `zclassic23-dev zcode work show --input='{"work":"latest"}'` | Show one human-first work result |
 | `zcode work run` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `adapter` | `zcl.zcode_work_run.v1` | `zclassic23-dev zcode work run --input='{"work":"latest","adapter":"manual"}'` | Run one contained adapter handoff |
 | `zcode work accept` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work` | `zcl.zcode_work_accept.v1` | `zclassic23-dev zcode work accept --input='{"work":"latest"}'` | Accept one exact proven candidate |
 
@@ -1376,6 +1377,7 @@ promise the same document shape.
 | `zcl.dev_loop_status.v1` | `dev.loop.ensure`, `dev.loop.status`, `dev.loop.stop` |
 | `zcl.account.v1` | `app.account.show`, `app.account.whoami`, `app.account.add`, `app.account.role`, `app.account.suspend`, `app.account.unsuspend` |
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
+| `zcl.zcode_work_status.v1` | `zcode.work.status`, `zcode.work.show` |
 | `zcl.zcode_reproduction_challenge.v1` | `zcode.commons.reproduction.challenge.plan`, `zcode.commons.reproduction.challenge.commit` |
 | `zcl.zcode_commons_shadow_attribution.v1` | `zcode.commons.shadow.attribution.plan`, `zcode.commons.shadow.attribution.commit` |
 | `zcl.zcode_commons_shadow_epoch.v1` | `zcode.commons.shadow.epoch.plan`, `zcode.commons.shadow.epoch.commit` |

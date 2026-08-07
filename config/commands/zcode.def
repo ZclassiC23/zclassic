@@ -127,6 +127,22 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_work_status)
 
+ZCL_COMMAND_READY_READ(
+    "zcode.work.show", "zcode.work", "", "Show one human-first work result",
+    "A discoverable alias for work status. It rebuilds the same verified task, "
+    "candidate, evidence and lane summary; no display alias becomes authority.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,work,show,human,evidence,result,latest",
+    "zcl.zcode_work_status.input.v1", "zcl.zcode_work_status.v1",
+    "workspace,work", "",
+    "zclassic23-dev zcode work show --input='{\"work\":\"latest\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_work_status)
+
 ZCL_COMMAND_READY_COMMAND(
     "zcode.work.run", "zcode.work", "", "Run one contained adapter handoff",
     "Reloads the verified task and canonical agent context, materializes an "
