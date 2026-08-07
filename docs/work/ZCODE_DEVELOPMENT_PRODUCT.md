@@ -244,6 +244,7 @@ deployment/consensus paths.
 | P1 init/status | `1e101f3126b16c9bc717d5a332f8af3b6607e4da` | hand-authored package metadata and unsafe filesystem setup | 0 on an existing project; initialization is one explicit plan/commit pair | no model context expansion | +622 / -12 production lines | inspection proposes correctable metadata before initialization; commit rechecks the exact source/config plan, creates only `zcode-package.json` with `O_EXCL`, refuses stale plans and overwrite, and status remains read-only |
 | P5 Codex adapter | `aeb7586c559bad8e8d5f6fe916555d6e7e59ff5a` | external packet export/import ceremony | 0; `work run --adapter=codex` edits, captures, admits and builds in one command | exact P3 packet only; combined output capture capped at 32 KiB | +438 / -15 production lines | fixed executable registry, environment scrub, Landlock write-only candidate boundary, no model acceptance/publication authority, typed unavailable/refusal/timeout; measured runner rebuild fell from about 60 s to 10.5 s after replacing the whole-node link with its exact five-source dependency set; manual remains the default |
 | P4 show / P10 acceptance | commit subject `docs(zcode): add the development acceptance path` | separate expert status spelling and undocumented acceptance procedure | 0 (`show` is the same verified read path) | no context expansion | recorded in commit | five-minute walkthrough plus one exact hermetic target covering source identity, isolation, scope refusal, repair, evidence, projection rebuild and explicit acceptance |
+| P9 first self-host | `ac2709e190e9d9734cc88e1b6c649e1aa0280588` | all roots, wires, timestamps, toolchain and action IDs | ordinary path is 5 commands from goal through status | 541 / 1,487 source bytes (36.4%), 1 file, 1 symbol, 11,227 us | accepted patch +8 / -1 in a test-only fixture | one attempt passed confined build and declared tests, explicit acceptance reached PROVEN, and the committed files were byte-identical to the captured candidate |
 
 The P5 delta includes promoting the build worker's private CAS-tree materializer
 to one shared ZVCS primitive; 59 production lines of duplicate materialization
@@ -321,6 +322,24 @@ and PROVEN lane `f235ef47595276737e6c811eb05cef305590122ba682a116820e6c5d18778f4
 The accepted patch is not applied here because changing the frozen base root
 would also invalidate the signed SHA3/codec dependency DAG. It is evidence of
 the product path, not a claimed self-hosted commit.
+
+The first committed self-host used the tracked dependency-free
+`fixture/tiny-lines` project. The ordinary caller supplied only `workspace`,
+`goal`, `profile`, the display `work` alias, and `adapter`; no canonical root,
+wire, timestamp, toolchain, policy field, or action ID was supplied. The goal
+was to reject embedded NUL bytes and prove that failure zeroes the output line
+count. ZCODE selected the exact `tiny_count_lines` symbol, emitted a 2,001-byte
+manual packet, captured two changed files, passed the declared package build
+and tests in 1,264 ms, and reached PROVEN after the explicit human accept.
+The authoritative files applied in commit
+`ac2709e190e9d9734cc88e1b6c649e1aa0280588` were byte-identical to the
+captured candidate. Its canonical audit trail is task
+`a91af3fda92a797a27eddc397e0a5da9c724f768b3464a5faf78bca5449a2781`,
+candidate `0211e7574d72e5e6d3fb8062351bc91d508981cd660c7720f4551f19a80e8ab1`,
+patch `b0911db43c6b1348a59de01b3d0b794a27ee1712afe0ce5947ba1f1cd7b78bab`,
+work receipt `05778f5a8591c81c83472848f920b86fc875077a743ce7dfc8222f433b26e4dc`,
+proof set `a89fbfcee0f7ea3b8fb369d8cadea7bf9e180042134afcb296440037f2b8c877`,
+and PROVEN lane `523eb5476448178c6779c8425c1b3228e349f49c8b324f1c03da1851c51e666b`.
 
 P8 line counts are deterministic content-multiset deltas: identical lines are
 matched regardless of position, so a pure move is not presented as creation.
