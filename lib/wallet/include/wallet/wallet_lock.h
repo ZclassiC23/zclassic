@@ -16,10 +16,13 @@
  *   2. runtime passphrase  -> that value     (explicit `unlock`)
  *   3. otherwise           -> NULL           (locked / no passphrase)
  *
- * Environment auto-unlock is deliberately unsupported: live encrypted
- * wallets start locked, and secret input enters through the bounded native
- * stdin unlock surface. A plaintext wallet (no at-rest encryption in use) is
- * considered unlocked because there is nothing to decrypt.
+ * Environment auto-unlock is deliberately unsupported. Interactive wallets
+ * start locked and secret input enters through the bounded native stdin unlock
+ * surface. A headless service may make one explicit boot-time exception by
+ * provisioning systemd's `wallet-passphrase` credential; boot registers that
+ * credential before persistence reads any encrypted rows. A plaintext wallet
+ * (no at-rest encryption in use) is considered unlocked because there is
+ * nothing to decrypt.
  *
  * Consensus-neutral: this is wallet-local key handling.  It changes no tx
  * bytes, no proof, and no consensus check — a tx signed by an unlocked
@@ -53,6 +56,8 @@ enum wallet_lock_err {
     WLK_LOCKED          = -204,   /* spend attempted on a locked wallet */
     WLK_TIMEOUT_RANGE   = -205,
     WLK_TIMER_FAIL      = -206,
+    WLK_CREDENTIAL_IO   = -207,
+    WLK_CREDENTIAL_MODE = -208,
 };
 
 /* The passphrase the persistence layer must decrypt/encrypt with, per the
@@ -92,6 +97,14 @@ struct zcl_result wallet_lock_spend_guard(void);
  * wired, or in unit tests).  Rejects NULL/empty/over-long passphrases. */
 struct zcl_result wallet_lock_unlock(struct wallet *w, struct wallet_sqlite *ws,
                                      const char *passphrase);
+
+/* Register the systemd `wallet-passphrase` credential before boot reads
+ * encrypted rows. Missing CREDENTIALS_DIRECTORY or a missing named credential
+ * is a clean no-op. Present credentials must be regular, private, bounded
+ * files; contents are read once, registered through wallet_lock_unlock(NULL,
+ * NULL, ...), cleansed, and never logged. Environment passphrases are not
+ * consulted here. */
+struct zcl_result wallet_lock_register_boot_credential(void);
 
 /* Arm automatic lock after a successful unlock. `timeout_seconds` is bounded
  * to 1..3600; expiry scrubs the cached passphrase and resident private keys.

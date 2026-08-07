@@ -1757,6 +1757,7 @@ t-list:
 # exact: a substring silently selecting a sibling group is not rollout proof.
 CUSTODY_FOCUSED_TESTS := test_agent_session,test_agent_spend_policy,test_vault_session,test_vault_dispatch,test_transaction_intent,test_metaverse_agent_broker
 .PHONY: custody-check custody-bind custody-bind-selftest custody-status custody-status-selftest \
+	dev-wallet-credential-setup dev-wallet-credential-status \
 	transaction-micro-lab-wallets-setup transaction-micro-lab-wallets-status \
 	transaction-micro-lab-wallets-selftest
 custody-check:
@@ -1780,6 +1781,12 @@ custody-status:
 
 custody-status-selftest:
 	@ZCL_CUSTODY_STATUS_SELFTEST=1 tools/dev/custody-status.sh
+
+dev-wallet-credential-setup:
+	@tools/dev/dev-wallet-credential.sh setup
+
+dev-wallet-credential-status:
+	@tools/dev/dev-wallet-credential.sh status
 
 # Value-free preparation for the live micro lab. The setup creates two fresh
 # isolated receive wallets, derives transparent + Sapling recipients, stores

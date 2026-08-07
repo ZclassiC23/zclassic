@@ -42,7 +42,8 @@ historical fixture passes, then deploy/restart intentionally.
   `/explorer/hodl` without `jq` and fails on "refresh", "not processed",
   "retry", or "waiting" user-visible states.
 - **Runtime-generation publication has one owner-gated native authority.**
-  `zclassic23-dev dev generation activate --idempotency-key=<key>` stages and
+  `zclassic23-dev dev generation activate
+  --input='{"idempotency_key":"<key>"}'` stages and
   preflights an immutable dev generation, then returns the exact
   `commit_input` required to activate it. The commit binds the candidate,
   source identity + ABA mutation + CAS root, resident generation, and expiry;

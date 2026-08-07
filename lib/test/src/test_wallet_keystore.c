@@ -8,10 +8,13 @@
 #include "wallet/keystore.h"   /* basic_keystore + keystore_wipe_private_keys */
 #include "config/boot.h"   /* wallet_at_rest_boot_decision + operator lanes */
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 /* A representative private key payload (32 bytes — Sapling spending
  * key length).  Tests use this so the format we exercise matches
@@ -506,6 +509,49 @@ static int test_wallet_lock_register(void)
     return failures;
 }
 
+static int test_wallet_lock_boot_credential(void)
+{
+    int failures = 0;
+    const char *saved_dir = getenv("CREDENTIALS_DIRECTORY");
+    char *saved_copy = saved_dir ? strdup(saved_dir) : NULL;
+    char dir[] = "/tmp/zcl-wallet-credential-XXXXXX";
+    char *made = mkdtemp(dir);
+    char path[256];
+    snprintf(path, sizeof(path), "%s/wallet-passphrase", made ? made : dir);
+
+    TEST("wallet_lock: private systemd credential registers once at boot") {
+        ASSERT(made != NULL);
+        wallet_lock_reset_for_test();
+        setenv("CREDENTIALS_DIRECTORY", dir, 1);
+        ASSERT(wallet_lock_register_boot_credential().ok);
+        ASSERT(wallet_lock_effective_passphrase() == NULL);
+
+        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        ASSERT(fd >= 0);
+        ASSERT(write(fd, k_passphrase, strlen(k_passphrase)) ==
+               (ssize_t)strlen(k_passphrase));
+        ASSERT(close(fd) == 0);
+        ASSERT(wallet_lock_register_boot_credential().ok);
+        ASSERT(wallet_lock_effective_passphrase() != NULL);
+        ASSERT(strcmp(wallet_lock_effective_passphrase(), k_passphrase) == 0);
+
+        wallet_lock_reset_for_test();
+        ASSERT(chmod(path, 0644) == 0);
+        struct zcl_result unsafe = wallet_lock_register_boot_credential();
+        ASSERT(!unsafe.ok && unsafe.code == WLK_CREDENTIAL_MODE);
+        ASSERT(wallet_lock_effective_passphrase() == NULL);
+        PASS();
+    } _test_next:;
+
+    unlink(path);
+    rmdir(dir);
+    wallet_lock_reset_for_test();
+    if (saved_copy) setenv("CREDENTIALS_DIRECTORY", saved_copy, 1);
+    else unsetenv("CREDENTIALS_DIRECTORY");
+    free(saved_copy);
+    return failures;
+}
+
 /* ── Keystore secure-erase (deliverable 2/5) ─────────────────── */
 
 /* Portable byte-substring search (avoids the glibc-specific memmem). */
@@ -577,6 +623,7 @@ int test_wallet_keystore(void)
     failures += test_long_plaintext();
     failures += test_null_passphrase();
     failures += test_wallet_lock_register();
+    failures += test_wallet_lock_boot_credential();
     failures += test_keystore_secure_erase();
 
     return failures;
