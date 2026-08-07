@@ -72,9 +72,9 @@ zclassic23 discover schema <path> --side=input|output
 | Top-level roots | 11 |
 | Branches | 129 |
 | Leaves (dispatchable command paths) | 433 |
-| … `ready` (live handler in this build) | 379 |
+| … `ready` (live handler in this build) | 380 |
 | … `compat` (metadata only, names a fallback) | 18 |
-| … `planned` (fail-closed BLOCKED, exit 3) | 36 |
+| … `planned` (fail-closed BLOCKED, exit 3) | 35 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
 | Leaves with `effect=mutate` | 144 |
 | Leaves with `effect=destructive` | 4 |
@@ -909,7 +909,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode patronage show` | ready | read / read / operator · fast/low | **`workspace`**, **`root`**, **`expected_network_genesis_root`**, **`now_unix`** | `zcl.zcode_patronage_show.v1` | `zclassic23 zcode patronage show --input='{"workspace":".","root":"<64hex>","expected_network_genesis_root":"<64hex>","now_unix":1}'` | Show and reverify one patronage offer or simulated funding receipt |
-| `zcode patronage list` | planned | read / read / operator · fast/low | **`workspace`** | `zcl.zcode_patronage_list.v1` | `zclassic23 zcode patronage list --input='{"workspace":"."}'` | List patronage objects — *requires the rebuildable patronage projection; exact objects remain available through zcode patronage show* |
+| `zcode patronage list` | ready | read / read / operator · fast/low | **`workspace`**, **`expected_network_genesis_root`**, **`now_unix`** | `zcl.zcode_patronage_list.v1` | `zclassic23 zcode patronage list --input='{"workspace":".","expected_network_genesis_root":"<64hex>","now_unix":1}'` | List patronage objects |
 
 #### `zcode.patronage.offer` — Signed patronage offers
 

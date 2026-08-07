@@ -415,6 +415,9 @@ void zcl_native_handle_zcode_patronage_fund_commit(
 void zcl_native_handle_zcode_patronage_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_patronage_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_continuity_plan(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

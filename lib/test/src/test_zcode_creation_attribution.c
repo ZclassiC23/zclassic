@@ -495,6 +495,24 @@ static int commons_command_noncreating_test(void)
         ASSERT(access(workspace, F_OK) != 0);
         zcl_command_reply_free(&status);
         json_free(&input);
+
+        char nonzero_root[65];
+        memset(nonzero_root, '1', sizeof(nonzero_root) - 1u);
+        nonzero_root[sizeof(nonzero_root) - 1u] = '\0';
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&input, "expected_network_genesis_root",
+                                nonzero_root));
+        ASSERT(json_push_kv_int(&input, "now_unix", 1));
+        request.input = &input;
+        zcl_command_reply_init(&status, "zcl.test.patronage_list.v1");
+        zcl_native_handle_zcode_patronage_list(&request, &status);
+        ASSERT(status.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_int(json_get(&status.data, "count")) == 0);
+        ASSERT(!json_get_bool(json_get(&status.data, "persisted")));
+        ASSERT(access(workspace, F_OK) != 0);
+        zcl_command_reply_free(&status);
+        json_free(&input);
         PASS();
     } _test_next:;
     return failures;

@@ -273,20 +273,21 @@ ZCL_COMMAND_BRANCH("zcode.patronage.settle", "zcode.patronage",
 ZCL_COMMAND_BRANCH("zcode.patronage.refund", "zcode.patronage",
                    "Expiry-conditioned simulated refunds",
                    ZCL_COMMAND_LAYER_APP)
-ZCL_COMMAND_PLANNED_READ(
+ZCL_COMMAND_READY_READ(
     "zcode.patronage.list", "zcode.patronage", "", "List patronage objects",
-    "Will list verified simulation objects from a rebuildable CAS projection. "
-    "No second index is added; today the leaf fails closed.",
+    "Rebuilds a deterministic view of historically valid signed offers, "
+    "simulated funding receipts and continuity policies from canonical CAS. "
+    "It creates no index or directory and never presents simulation as funds.",
     ZCL_COMMAND_LIST_BUDGET, "zcode,patronage,list,simulation",
     "zcl.zcode_patronage_list.input.v1", "zcl.zcode_patronage_list.v1",
-    "workspace", "workspace",
-    "zclassic23 zcode patronage list --input='{\"workspace\":\".\"}'",
+    "workspace,expected_network_genesis_root,now_unix",
+    "workspace,expected_network_genesis_root,now_unix",
+    "zclassic23 zcode patronage list --input='{\"workspace\":\".\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_NONE,
-    "requires the rebuildable patronage projection; exact objects remain "
-    "available through zcode patronage show")
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_patronage_list)
 ZCL_COMMAND_PLANNED_COMMAND(
     "zcode.patronage.settle.plan", "zcode.patronage.settle", "",
     "Plan proof-conditioned simulated settlement",

@@ -6,8 +6,11 @@
 #include "json/json.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_patronage_funding.h"
+#include "vcs/zcode_patronage_projection.h"
 #include "vcs/zcode_patronage_settlement.h"
 
+#include <inttypes.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -333,4 +336,93 @@ void zcl_native_handle_zcode_patronage_show(
     }
     (void)json_push_kv_str(&reply->data, "validation_authority",
                            "caller_pinned_simulation_context");
+}
+
+static const char *zpc_projection_kind(uint8_t kind)
+{
+    switch (kind) {
+    case VCS_ZCODE_PATRONAGE_PROJECTION_OFFER: return "unfunded_offer";
+    case VCS_ZCODE_PATRONAGE_PROJECTION_SIMULATED_FUNDING:
+        return "simulated_funding";
+    case VCS_ZCODE_PATRONAGE_PROJECTION_CONTINUITY_POLICY:
+        return "continuity_policy";
+    default: return "invalid";
+    }
+}
+
+void zcl_native_handle_zcode_patronage_list(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    static const char *const keys[] = {
+        "workspace", "expected_network_genesis_root", "now_unix",
+    };
+    if (!request || !reply) return;
+    uint8_t network[32], projection_root[32], failure_root[32];
+    struct vcs_zcode_patronage_validation_context context;
+    if (!zpc_keys(request->input, keys, sizeof(keys) / sizeof(keys[0])) ||
+        !zpc_context(request->input, &context, network)) {
+        zpc_fail(reply, "BAD_PATRONAGE_LIST", "closed list input rejected");
+        return;
+    }
+    struct vcs_zcode_patronage_projection *projection =
+        vcs_zcode_patronage_projection_build(&context);
+    if (!projection || !vcs_zcode_patronage_projection_root(
+                            projection, projection_root)) {
+        vcs_zcode_patronage_projection_free(projection);
+        zpc_fail(reply, "PATRONAGE_LIST_REFUSED",
+                 "read-only canonical CAS rebuild failed");
+        return;
+    }
+    struct json_value rows;
+    json_init(&rows); json_set_array(&rows);
+    size_t offers = 0, fundings = 0, policies = 0;
+    size_t count = vcs_zcode_patronage_projection_count(projection);
+    for (size_t i = 0; i < count; i++) {
+        const struct vcs_zcode_patronage_projection_entry *entry =
+            vcs_zcode_patronage_projection_at(projection, i);
+        struct json_value row;
+        json_init(&row); json_set_object(&row);
+        zpc_root(&row, "root", entry->root);
+        zpc_root(&row, "target_root", entry->target_root);
+        (void)json_push_kv_str(&row, "kind",
+                               zpc_projection_kind(entry->kind));
+        char amount[21];
+        (void)snprintf(amount, sizeof(amount), "%" PRIu64,
+                       entry->amount_atoms);
+        (void)json_push_kv_str(&row, "amount_atoms", amount);
+        (void)json_push_kv_int(&row, "created_unix", entry->created_unix);
+        (void)json_push_kv_int(&row, "expires_unix", entry->expires_unix);
+        bool active = entry->expires_unix > 0 &&
+                      context.now_unix < entry->expires_unix;
+        (void)json_push_kv_bool(&row, "active", active);
+        (void)json_push_kv_bool(&row, "funded", false);
+        (void)json_push_back(&rows, &row); json_free(&row);
+        offers += entry->kind == VCS_ZCODE_PATRONAGE_PROJECTION_OFFER;
+        fundings += entry->kind ==
+            VCS_ZCODE_PATRONAGE_PROJECTION_SIMULATED_FUNDING;
+        policies += entry->kind ==
+            VCS_ZCODE_PATRONAGE_PROJECTION_CONTINUITY_POLICY;
+    }
+    zpc_root(&reply->data, "projection_root", projection_root);
+    (void)json_push_kv_int(&reply->data, "count", (int64_t)count);
+    (void)json_push_kv_int(&reply->data, "offer_count", (int64_t)offers);
+    (void)json_push_kv_int(&reply->data, "simulated_funding_count",
+                           (int64_t)fundings);
+    (void)json_push_kv_int(&reply->data, "continuity_policy_count",
+                           (int64_t)policies);
+    (void)json_push_kv(&reply->data, "objects", &rows); json_free(&rows);
+    const char *reason = NULL;
+    bool failed = vcs_zcode_patronage_projection_first_failure(
+        projection, failure_root, &reason);
+    (void)json_push_kv_str(&reply->data, "verification_status",
+        failed ? "partial" : count ? "historically_verified" : "unknown");
+    if (failed) {
+        zpc_root(&reply->data, "first_failure_root", failure_root);
+        (void)json_push_kv_str(&reply->data, "first_failure", reason);
+    }
+    (void)json_push_kv_bool(&reply->data, "funded", false);
+    (void)json_push_kv_bool(&reply->data, "moves_live_funds", false);
+    (void)json_push_kv_bool(&reply->data, "persisted", false);
+    (void)json_push_kv_bool(&reply->data, "creates_score", false);
+    vcs_zcode_patronage_projection_free(projection);
 }

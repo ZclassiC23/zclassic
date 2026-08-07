@@ -20,6 +20,7 @@
 #include "vcs/zcode_epoch_creation.h"
 #include "vcs/zcode_patronage.h"
 #include "vcs/zcode_patronage_funding.h"
+#include "vcs/zcode_patronage_projection.h"
 #include "vcs/zcode_patronage_settlement.h"
 #include "vcs/zcode_score_receipt.h"
 
@@ -1663,6 +1664,48 @@ static int test_creation_attribution_cross_validation(void)
         ASSERT(!json_get_bool(json_get(&continuity_reply.data, "funded")));
         zcl_command_reply_free(&continuity_reply);
         json_free(&continuity_status_input);
+
+        struct json_value patronage_list_input;
+        json_init(&patronage_list_input);
+        json_set_object(&patronage_list_input);
+        ASSERT(json_push_kv_str(&patronage_list_input, "workspace",
+                                workspace));
+        ASSERT(json_push_kv_str(&patronage_list_input,
+                                "expected_network_genesis_root",
+                                network_hex));
+        ASSERT(json_push_kv_int(&patronage_list_input, "now_unix", 700000));
+        struct zcl_command_request patronage_list_request = {
+            .input = &patronage_list_input,
+        };
+        zcl_command_reply_init(&continuity_reply,
+                               "zcl.test.patronage_list.v1");
+        zcl_native_handle_zcode_patronage_list(
+            &patronage_list_request, &continuity_reply);
+        ASSERT_EQ(continuity_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_EQ(json_get_int(json_get(&continuity_reply.data, "count")), 3);
+        ASSERT_EQ(json_get_int(json_get(&continuity_reply.data,
+                                        "offer_count")), 1);
+        ASSERT_EQ(json_get_int(json_get(&continuity_reply.data,
+                                        "simulated_funding_count")), 1);
+        ASSERT_EQ(json_get_int(json_get(&continuity_reply.data,
+                                        "continuity_policy_count")), 1);
+        ASSERT(!json_get_bool(json_get(&continuity_reply.data, "funded")));
+        ASSERT(!json_get_bool(json_get(&continuity_reply.data, "persisted")));
+        zcl_command_reply_free(&continuity_reply);
+        json_free(&patronage_list_input);
+        struct vcs_zcode_patronage_projection *first_patronage =
+            vcs_zcode_patronage_projection_build(&patronage_context);
+        struct vcs_zcode_patronage_projection *second_patronage =
+            vcs_zcode_patronage_projection_build(&patronage_context);
+        uint8_t first_patronage_root[32], second_patronage_root[32];
+        ASSERT(first_patronage && second_patronage);
+        ASSERT(vcs_zcode_patronage_projection_root(
+            first_patronage, first_patronage_root));
+        ASSERT(vcs_zcode_patronage_projection_root(
+            second_patronage, second_patronage_root));
+        ASSERT(memcmp(first_patronage_root, second_patronage_root, 32) == 0);
+        vcs_zcode_patronage_projection_free(second_patronage);
+        vcs_zcode_patronage_projection_free(first_patronage);
 
         context.continuity_is_duplicate =
             creation_test_continuity_duplicate;
