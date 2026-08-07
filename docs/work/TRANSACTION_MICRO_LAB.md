@@ -92,6 +92,14 @@ created automatically. The original four-transaction shield/unshield proposal
 in `LIVE_TRANSACTION_DEMONSTRATIONS.md` is superseded by this campaign's setup
 when this campaign is selected; do not fund both.
 
+The two recipient wallets persist the isolated `test` operator lane. After an
+explicit dev setup transaction funds one, chained Z-to-Z and Z-to-T work must
+target that wallet's own endpoint with `wallet_scope=test`. The wallet-local
+money snapshot still requires matching identity, genesis, current tip, complete
+money readers, and exact reservations. Its liquid confirmed balance is its
+entire transaction envelope: `test` is not a third broker portfolio domain and
+cannot spend or aggregate the dev, prod, legacy, or sibling lab wallet.
+
 ## The 100 numbered slots
 
 The stable machine-readable allocation is

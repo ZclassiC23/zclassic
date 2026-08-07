@@ -513,6 +513,74 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 61) {
+        /* v61: isolated wallet-local transaction intents. The broker and
+         * agent-session authorities remain dev/prod-only; this widens only
+         * the durable vault-intent scope so a pre-funded operator-lane=test
+         * wallet can reserve and recover its own exact transaction plans.
+         * SQLite cannot ALTER a CHECK constraint, so rebuild the parent
+         * table atomically and preserve every existing intent and index. */
+        if (!node_db_exec(ndb,
+            "PRAGMA foreign_keys=OFF;"
+            "BEGIN IMMEDIATE;"
+            "CREATE TABLE vault_intents_v61 ("
+            "plan_id BLOB PRIMARY KEY CHECK(length(plan_id)=32),"
+            "digest BLOB NOT NULL CHECK(length(digest)=32),"
+            "state INTEGER NOT NULL DEFAULT 0,"
+            "route INTEGER NOT NULL,"
+            "created_at INTEGER NOT NULL,"
+            "expires_at INTEGER NOT NULL,"
+            "anchor_height INTEGER NOT NULL,"
+            "anchor_hash BLOB NOT NULL CHECK(length(anchor_hash)=32),"
+            "encrypted_payload BLOB NOT NULL,"
+            "txid BLOB CHECK(txid IS NULL OR length(txid)=32),"
+            "confirm_height INTEGER NOT NULL DEFAULT -1,"
+            "confirm_hash BLOB CHECK(confirm_hash IS NULL OR length(confirm_hash)=32),"
+            "error_code TEXT NOT NULL DEFAULT '',"
+            "updated_at INTEGER NOT NULL,"
+            "wallet_scope TEXT NOT NULL DEFAULT '' "
+            "CHECK(wallet_scope IN ('','dev','prod','test')),"
+            "wallet_instance_id TEXT NOT NULL DEFAULT '' "
+            "CHECK(length(wallet_instance_id) IN (0,32)),"
+            "wallet_genesis TEXT NOT NULL DEFAULT '' "
+            "CHECK(length(wallet_genesis) IN (0,64)),"
+            "snapshot_root BLOB "
+            "CHECK(snapshot_root IS NULL OR length(snapshot_root)=32),"
+            "recipient_value_zat INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(recipient_value_zat>=0),"
+            "max_fee_zat INTEGER NOT NULL DEFAULT 0 CHECK(max_fee_zat>=0),"
+            "reserved_zat INTEGER NOT NULL DEFAULT 0 CHECK(reserved_zat>=0),"
+            "application_kind TEXT NOT NULL DEFAULT '' "
+            "CHECK(length(application_kind)<=32),"
+            "idempotency_key TEXT NOT NULL DEFAULT '' "
+            "CHECK(length(idempotency_key)<=64),"
+            "request_digest BLOB "
+            "CHECK(request_digest IS NULL OR length(request_digest)=32)"
+            ") WITHOUT ROWID;"
+            "INSERT INTO vault_intents_v61 SELECT * FROM vault_intents;"
+            "DROP TABLE vault_intents;"
+            "ALTER TABLE vault_intents_v61 RENAME TO vault_intents;"
+            "CREATE INDEX idx_vault_intents_state_time "
+            "ON vault_intents(state,created_at DESC);"
+            "CREATE INDEX idx_vault_intents_wallet_reserve "
+            "ON vault_intents(wallet_scope,wallet_instance_id,state);"
+            "CREATE UNIQUE INDEX idx_vault_intents_application_idempotency "
+            "ON vault_intents(wallet_scope,application_kind,idempotency_key) "
+            "WHERE application_kind<>'' AND idempotency_key<>'';"
+            "COMMIT;"
+            "PRAGMA foreign_keys=ON;")) {
+            (void)node_db_exec(ndb, "ROLLBACK;PRAGMA foreign_keys=ON;");
+            LOG_ERR("db", "migrate v61: atomic vault-intent rebuild failed");
+        }
+        if (!node_db_exec(ndb,
+                "INSERT OR IGNORE INTO schema_migrations(version) "
+                "VALUES('061')"))
+            LOG_ERR("db", "migrate v61: migration stamp failed");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 61);
+        current_ver = 61;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

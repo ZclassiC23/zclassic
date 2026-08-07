@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: reconcile authoritative wallet readers into custody snapshots. */
+// one-result-type-ok:wallet-scope predicates are pure total classification
 
 #include "services/wallet_money_service.h"
 
@@ -73,6 +74,21 @@ enum wallet_money_freshness wallet_money_freshness_classify(
     return WALLET_MONEY_FRESHNESS_CURRENT;
 }
 
+bool wallet_money_scope_valid(const char *wallet_scope)
+{
+    return wallet_scope &&
+        (strcmp(wallet_scope, "dev") == 0 ||
+         strcmp(wallet_scope, "prod") == 0 ||
+         strcmp(wallet_scope, "test") == 0);
+}
+
+const char *wallet_money_scope_expected_lane(const char *wallet_scope)
+{
+    if (!wallet_money_scope_valid(wallet_scope))
+        return NULL;
+    return strcmp(wallet_scope, "prod") == 0 ? "canonical" : wallet_scope;
+}
+
 struct money_chain_view {
     int32_t target_height;
     size_t peer_count;
@@ -128,10 +144,10 @@ struct zcl_result wallet_money_snapshot_build(
     struct node_db *ndb, struct main_state *main_state,
     const char *wallet_scope, struct wallet_money_snapshot *out)
 {
-    if (!ndb || !ndb->open || !main_state || !wallet_scope || !out ||
-        (strcmp(wallet_scope, "dev") != 0 &&
-         strcmp(wallet_scope, "prod") != 0))
-        return ZCL_ERR(-1, "open node_db, main_state, and dev|prod scope are required");
+    if (!ndb || !ndb->open || !main_state || !out ||
+        !wallet_money_scope_valid(wallet_scope))
+        return ZCL_ERR(-1,
+                       "open node_db, main_state, and dev|prod|test scope are required");
     memset(out, 0, sizeof(*out));
     (void)snprintf(out->wallet_scope, sizeof(out->wallet_scope), "%s",
                    wallet_scope);
@@ -146,8 +162,7 @@ struct zcl_result wallet_money_snapshot_build(
         money_root(out);
         return ZCL_OK;
     }
-    const char *expected_lane = strcmp(wallet_scope, "prod") == 0
-        ? "canonical" : "dev";
+    const char *expected_lane = wallet_money_scope_expected_lane(wallet_scope);
     if (strcmp(out->identity.operator_lane, expected_lane) != 0) {
         (void)snprintf(out->status, sizeof(out->status), "CONFLICTED");
         (void)snprintf(out->reason, sizeof(out->reason),
@@ -250,10 +265,16 @@ struct zcl_result wallet_money_snapshot_build(
             ? DEV_LAB_CAP_ZAT - allocated : 0;
         out->agent_available_zat =
             above_reserve < lab_left ? above_reserve : lab_left;
-    } else {
+    } else if (strcmp(wallet_scope, "prod") == 0) {
         /* Production is deliberately unfunded/unallocated in this rollout.
          * A later owner grant may define a non-zero production policy. */
         out->agent_available_zat = 0;
+    } else {
+        /* An isolated test wallet can spend only value explicitly transferred
+         * into that wallet. It is outside the dev/prod portfolio and cannot
+         * draw from either custody domain; its liquid balance is the complete
+         * envelope for chained shielded transaction demonstrations. */
+        out->agent_available_zat = liquid;
     }
 
     /* The authoritative readers live in separate stores. Re-read both chain

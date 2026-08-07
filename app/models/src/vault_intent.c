@@ -104,7 +104,8 @@ bool vault_intent_validate(const struct vault_intent_row *r,
         r->max_fee_zat == 0 && r->reserved_zat == 0;
     const bool bound =
         (strcmp(r->wallet_scope, "dev") == 0 ||
-         strcmp(r->wallet_scope, "prod") == 0) &&
+         strcmp(r->wallet_scope, "prod") == 0 ||
+         strcmp(r->wallet_scope, "test") == 0) &&
         zcl_is_hex_string(r->wallet_instance_id,
                           WALLET_INSTANCE_ID_HEX_LEN) &&
         zcl_is_hex_string(r->wallet_genesis, WALLET_GENESIS_HEX_LEN) &&

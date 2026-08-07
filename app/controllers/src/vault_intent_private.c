@@ -387,9 +387,9 @@ bool vault_intent_private_plan(const struct json_value *input,
     struct wallet_rpc_context *ctx = wallet_rpc_context_current();
     const char *scope = json_get_str(json_get(input, "wallet_scope"));
     const char *idem = json_get_str(json_get(input, "idempotency_key"));
-    if (!scope || (strcmp(scope, "dev") != 0 && strcmp(scope, "prod") != 0)) {
+    if (!wallet_money_scope_valid(scope)) {
         vip_error(result, "WALLET_SCOPE_REQUIRED",
-                  "wallet_scope must explicitly be dev or prod");
+                  "wallet_scope must explicitly be dev, prod, or test");
         return true;
     }
     if (!vault_intent_idempotency_key_valid(idem)) {

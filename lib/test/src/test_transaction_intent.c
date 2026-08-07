@@ -844,6 +844,40 @@ int test_transaction_intent(void)
         PASS();
     }
 
+    TEST("isolated test custody reserves and survives restart without "
+         "entering dev or prod scope") {
+        if (ndb.open) node_db_close(&ndb);
+        char dir[256], path[320];
+        test_make_tmpdir(dir, sizeof(dir), "transaction_intent", "test_scope");
+        snprintf(path, sizeof(path), "%s/node.db", dir);
+        ASSERT(node_db_open(&ndb, path));
+        const uint8_t genesis[32] = { 0x52 };
+        struct wallet_identity_row identity;
+        ASSERT(wallet_identity_ensure(&ndb, genesis, "test", &identity));
+        struct vault_intent_row planned;
+        ti_bound_row(&planned, 0x41, &identity, 21000);
+        snprintf(planned.wallet_scope, sizeof(planned.wallet_scope), "test");
+        ASSERT(vault_intent_reserve(&ndb, &planned, 600000));
+        ASSERT_EQ(vault_intent_reserved_total(
+                      &ndb, "test", identity.wallet_instance_id), 21000);
+        ASSERT_EQ(vault_intent_reserved_total(
+                      &ndb, "dev", identity.wallet_instance_id), 0);
+        ASSERT_EQ(vault_intent_reserved_total(
+                      &ndb, "prod", identity.wallet_instance_id), 0);
+        node_db_close(&ndb);
+
+        ASSERT(node_db_open(&ndb, path));
+        struct vault_intent_row recovered;
+        ASSERT(vault_intent_find(&ndb, planned.plan_id, &recovered));
+        ASSERT_STR_EQ(recovered.wallet_scope, "test");
+        ASSERT_EQ(recovered.reserved_zat, 21000);
+        ASSERT_EQ(vault_intent_reserved_total(
+                      &ndb, "test", identity.wallet_instance_id), 21000);
+        node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    }
+
 _test_next:;
     if (ndb.open) node_db_close(&ndb);
     wallet_lock_reset_for_test();

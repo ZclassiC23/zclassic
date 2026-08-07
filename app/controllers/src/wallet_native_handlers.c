@@ -12,6 +12,7 @@
  * shared header is included from both files. */
 
 #include "controllers/wallet_native_handlers.h"
+#include "controllers/wallet_shielded_controller.h"
 
 #include "json/json.h"
 #include "controllers/rpc_client.h"
@@ -20,6 +21,8 @@
 #include "encoding/utilstrencodings.h"
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
+#include "rpc/rpc_timeout.h"
+#include "services/wallet_money_service.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -306,7 +309,8 @@ void zcl_native_handle_wallet_address_new(
 {
     (void)request;
     struct json_value body;
-    if (!wnh_call_rpc(reply, "getnewaddress", NULL, &body))
+    if (!wnh_call_rpc_deadline(reply, "getnewaddress", NULL,
+                               RPC_WALLET_MUTATION_TIMEOUT_MS, &body))
         return;
     const char *addr = wnh_string_result(&body);
     if (!addr) {
@@ -326,14 +330,17 @@ void zcl_native_handle_wallet_shielded_address(
 {
     (void)request;
     struct json_value body;
-    if (!wnh_call_rpc(reply, "z_getnewaddress", NULL, &body))
+    if (!wnh_call_rpc_deadline(reply, "z_getnewaddress", NULL,
+                               RPC_WALLET_MUTATION_TIMEOUT_MS, &body))
         return;
     const char *addr = wnh_string_result(&body);
-    if (!addr) {
+    if (!addr || !wallet_addr_is_sapling(addr)) {
+        const char *failure = addr && addr[0]
+            ? addr
+            : "z_getnewaddress did not return a shielded address";
+        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "SHIELDED_ADDRESS_FAILED",
+                 failure, "z_getnewaddress");
         json_free(&body);
-        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "NO_ADDRESS",
-                 "z_getnewaddress did not return a shielded address",
-                 "z_getnewaddress");
         return;
     }
     (void)json_push_kv_str(&reply->data, "address", addr);
@@ -524,10 +531,9 @@ void zcl_native_handle_wallet_shielded_send(
 {
     const char *wallet_scope =
         json_get_str(json_get(request->input, "wallet_scope"));
-    if (!wallet_scope || (strcmp(wallet_scope, "dev") != 0 &&
-                          strcmp(wallet_scope, "prod") != 0)) {
+    if (!wallet_money_scope_valid(wallet_scope)) {
         wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "INVALID_WALLET_SCOPE",
-                 "wallet_scope must explicitly be dev or prod",
+                 "wallet_scope must explicitly be dev, prod, or test",
                  "core.wallet.shielded.send");
         return;
     }
@@ -544,7 +550,7 @@ void zcl_native_handle_wallet_shielded_send(
                           amount)) {
         wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "INVALID_AMOUNT",
                  "amount must be positive, in range, and exact to 8 decimals",
-                 to);
+                 "amount");
         return;
     }
     (void)amount_zats; /* exact range proof; the RPC consumes decimal text */
@@ -640,20 +646,28 @@ void zcl_native_handle_wallet_shielded_send(
     char *params = rpc_arg_builder_to_json(&p);
     if (!params) {
         wnh_fail(reply, ZCL_COMMAND_EXIT_INTERNAL, "ARG_BUILD_FAILED",
-                 "could not encode z_sendmany params", to);
+                 "could not encode z_sendmany params", "z_sendmany");
         return;
     }
     struct json_value body;
-    bool ok = wnh_call_rpc(reply, "z_sendmany", params, &body);
+    /* Sapling proof construction legitimately exceeds the generic wallet
+     * RPC deadline on a busy full node. Keep this client deadline aligned
+     * with the server's bounded proof-class deadline so a successful
+     * broadcast never becomes an ambiguous timeout at the native surface. */
+    bool ok = wnh_call_rpc_deadline(reply, "z_sendmany", params,
+                                    RPC_PROOF_BUILD_TIMEOUT_MS, &body);
     free(params);
     if (!ok)
         return;
     /* z_sendmany is synchronous here and returns the broadcast txid. */
     const char *txid = wnh_string_result(&body);
     if (!txid || strlen(txid) != 64 || !IsHex(txid)) {
+        const char *failure = txid && txid[0]
+            ? txid
+            : "z_sendmany did not return a transaction result";
+        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "SHIELDED_SEND_FAILED",
+                 failure, "z_sendmany");
         json_free(&body);
-        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "NO_TXID",
-                 "z_sendmany did not return a 64-hex transaction id", to);
         return;
     }
     (void)json_push_kv_str(&reply->data, "stage", "committed");

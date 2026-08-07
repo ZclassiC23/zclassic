@@ -269,7 +269,11 @@ catalog -> exact command schema -> current bound custody snapshot
    exact input keys.
 3. Read `metaverse agent money --dir=<broker-dir>`. A missing, stale,
    conflicted, incomplete, or wrong-wallet snapshot is a refusal, never a zero
-   balance. The wallet scope must be explicit.
+   balance. The wallet scope must be explicit. The broker portfolio recognizes
+   only `dev` and `prod`; a separately targeted, pre-funded isolated wallet may
+   use `wallet_scope=test` for a wallet-local vault intent. That scope must
+   match its persisted `test` operator lane, is never aggregated into the
+   dev/prod portfolio, and cannot draw from either portfolio wallet.
 4. Create the typed plan and preserve its wallet identity, outputs, maximum
    fee, expiry, snapshot root, and idempotency identity exactly. Some plans are
    pure previews; durable vault and market-purchase plans intentionally mutate

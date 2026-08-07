@@ -1082,6 +1082,26 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&shield_commit);
 
+        /* Isolated pre-funded laboratories are a typed custody lane, not a
+         * CLI default.  They may exercise the same exact plan surface while
+         * remaining outside the dev/prod portfolio. */
+        json_init(&shield_plan);
+        json_set_object(&shield_plan);
+        (void)json_push_kv_str(&shield_plan, "wallet_scope", "test");
+        (void)json_push_kv_str(&shield_plan, "from", "zs1LabSource");
+        (void)json_push_kv_str(&shield_plan, "to", "zs1LabRecipient");
+        (void)json_push_kv_str(&shield_plan, "amount", "0.00001000");
+        shield_req.input = &shield_plan;
+        zcl_command_reply_init(&reply, shield_spec->output_schema);
+        zcl_native_handle_wallet_shielded_send(&shield_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "wallet_scope")),
+                      "test");
+        ASSERT_EQ(g_wallet_z_sendmany_calls, 1);
+        zcl_command_reply_free(&reply);
+        json_free(&shield_plan);
+
         /* The full 512-byte binary memo must survive in commit_input. This
          * catches the old 512-byte buffer's confirm-only fallback. */
         char max_memo_hex[1025];

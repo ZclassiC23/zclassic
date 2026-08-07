@@ -26,6 +26,14 @@
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
 
+#include <stdio.h>
+
+static void mempool_accept_detail(char *out, size_t cap, const char *detail)
+{
+    if (out && cap > 0)
+        (void)snprintf(out, cap, "%s", detail && detail[0] ? detail : "invalid");
+}
+
 /* Verify every transparent input's scriptSig against its prevout's
  * scriptPubKey. Mirrors the per-input check in connect_block.c exactly
  * (same flags, same branch id, same precomputed sighash data) so a tx
@@ -74,20 +82,26 @@ static bool verify_tx_inputs_scripts(struct coins_view_cache *view,
     return true;
 }
 
-enum mempool_accept_result accept_to_mempool(
+enum mempool_accept_result accept_to_mempool_detailed(
     struct tx_mempool *pool,
     struct coins_view_cache *coins_tip,
     struct main_state *main_state,
     const struct chain_params *params,
-    struct transaction *tx)
+    struct transaction *tx,
+    char *detail_out,
+    size_t detail_cap)
 {
+    if (detail_out && detail_cap > 0)
+        detail_out[0] = '\0';
     if (!pool || !tx)
         return MEMPOOL_ACCEPT_INTERNAL_ERROR;
 
     /* Coinbase txs are only valid as the first tx of a block; they must
      * never be relayed standalone. */
-    if (transaction_is_coinbase(tx))
+    if (transaction_is_coinbase(tx)) {
+        mempool_accept_detail(detail_out, detail_cap, "coinbase-standalone");
         return MEMPOOL_ACCEPT_INVALID;
+    }
 
     /* 1. Structural / context-free checks. STANDALONE context on
      * purpose: a NEW tx always gets the strict post-Sapling 102000 size
@@ -96,8 +110,10 @@ enum mempool_accept_result accept_to_mempool(
      * CheckTransaction, which is always strict. */
     struct validation_state state;
     validation_state_init(&state);
-    if (!check_transaction(tx, &state))
+    if (!check_transaction(tx, &state)) {
+        mempool_accept_detail(detail_out, detail_cap, state.reject_reason);
         return MEMPOOL_ACCEPT_INVALID;
+    }
 
     /* A live acceptance decision is impossible without all three chain
      * authorities. Historically NULL test scaffolding skipped proof, input,
@@ -149,8 +165,10 @@ enum mempool_accept_result accept_to_mempool(
      *    contextual check in zclassicd's AcceptToMemoryPool. */
     validation_state_init(&state);
     if (!contextual_check_transaction(tx, &state, &params->consensus,
-                                      next_height, 100))
+                                      next_height, 100)) {
+        mempool_accept_detail(detail_out, detail_cap, state.reject_reason);
         return MEMPOOL_ACCEPT_INVALID;
+    }
 
     /* 3. Input-dependent checks. The transparent SIGNATURE check
      *    (verify_script) lives here because it needs each prevout's
@@ -158,16 +176,23 @@ enum mempool_accept_result accept_to_mempool(
     int64_t fee = 0;
     if (!coins_view_cache_have_inputs(coins_tip, tx))
         return MEMPOOL_ACCEPT_MISSING_INPUTS;
-    if (!coins_view_cache_have_joinsplit_requirements(coins_tip, tx))
+    if (!coins_view_cache_have_joinsplit_requirements(coins_tip, tx)) {
+        mempool_accept_detail(detail_out, detail_cap,
+                              "shielded-requirements-missing");
         return MEMPOOL_ACCEPT_INVALID;
+    }
 
     int64_t value_in = coins_view_cache_get_value_in(coins_tip, tx);
-    if (value_in < 0)
+    if (value_in < 0) {
+        mempool_accept_detail(detail_out, detail_cap, "input-value-invalid");
         return MEMPOOL_ACCEPT_INVALID;
+    }
 
     int64_t value_out = transaction_get_value_out(tx);
-    if (value_out < 0 || value_in < value_out)
+    if (value_out < 0 || value_in < value_out) {
+        mempool_accept_detail(detail_out, detail_cap, "value-balance-invalid");
         return MEMPOOL_ACCEPT_INVALID;
+    }
 
     fee = value_in - value_out;
 
@@ -180,6 +205,9 @@ enum mempool_accept_result accept_to_mempool(
     bool missing_inputs = false;
     if (!verify_tx_inputs_scripts(coins_tip, tx, branch_id,
                                   &missing_inputs)) {
+        if (!missing_inputs)
+            mempool_accept_detail(detail_out, detail_cap,
+                                  "transparent-script-invalid");
         return missing_inputs ? MEMPOOL_ACCEPT_MISSING_INPUTS
                               : MEMPOOL_ACCEPT_INVALID;
     }
@@ -206,4 +234,15 @@ enum mempool_accept_result accept_to_mempool(
         return MEMPOOL_ACCEPT_INTERNAL_ERROR;
 
     return MEMPOOL_ACCEPT_OK;
+}
+
+enum mempool_accept_result accept_to_mempool(
+    struct tx_mempool *pool,
+    struct coins_view_cache *coins_tip,
+    struct main_state *main_state,
+    const struct chain_params *params,
+    struct transaction *tx)
+{
+    return accept_to_mempool_detailed(pool, coins_tip, main_state, params, tx,
+                                      NULL, 0);
 }
