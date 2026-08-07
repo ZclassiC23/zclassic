@@ -362,7 +362,7 @@ Nothing in this document grants that authorization.
 
 ## Implementation ledger
 
-Updated 2026-08-06. This is an implementation record, not token or deployment
+Updated 2026-08-07. This is an implementation record, not token or deployment
 authorization.
 
 | State | Slice | Source commit | Integrated `main` | Evidence |
@@ -382,6 +382,13 @@ authorization.
 | DONE | Shared people-and-AI mission and API contract | `d9eea8e09` | `d9eea8e09` | exact mission language, same API/evidence rules, no-world-ownership boundary, READY-versus-PLANNED truth, generated API reference, full lint 134/134, normal pre-push source-wide suite |
 | DONE | LC4 offer/funding plan-commit and exact-root show commands | `788f93149` | `c9c3e786a` | signed exact-wire input, caller-pinned context, CAS revalidation, absent-workspace plan non-creation, simulation/funding truth labels, planned settlement/refund/list fail closed, focused green and full lint 134/134 |
 | DONE | Simulation-only transaction classification | `e90c17ed6` | `e90c17ed6` | exact non-chain declaration for funding CAS commit; API reverse-mapping gate green; 901 active pre-push test groups green |
+| DONE | LC5 bounded signed continuity-policy wire | `a9cff6c45` | `d2facab04` | exact wire KAT, closed event/capsule enums, checked cycle and amount caps, anti-churn invariants, focused green, full lint 134/134, normal pre-push source-wide suite |
+| DONE | LC5 continuity-policy CAS authority rederivation | `eb258785a` | `d2facab04` | historical package/release/proof-policy/capsule reloads, package-lineage and cap checks, focused green, normal pre-push source-wide suite |
+| DONE | LC5 `zcode continuity plan\|commit\|status` commands | `90bb3d3cd` | `90bb3d3cd` | read-only plan on an absent workspace, exact signed CAS commit, exact-root status revalidation, lossless `uint64_t` display, no-funds/no-income/no-score/no-emission labels, focused green, full lint 134/134, normal pre-push source-wide suite |
+| DONE | LC5 unique continuity-event validation | `ba9f8d0d0` | `dfa62d73f` | domain-separated event key KAT; one package/capsule transition or defect root credits once; born-red/security category splitting rejected; continuity policy and evidence independently reloaded; focused green, full lint 134/134, normal pre-push source-wide suite |
+| DONE | LC4 rebuildable patronage list | `fc0813d2a` | `fc0813d2a` | deterministic CAS projection, historically signed intent/funding/continuity verification, first-failure reporting, absent-workspace non-creation, every row truthfully `funded:false` and `persisted:false`; focused green, full lint 134/134, normal pre-push 910-group suite |
+| DONE | Living Commons parser truncation sweeps | `cbaae2112` | `cbaae2112` | every truncation of creation-attribution, epoch-creation, patronage-intent/funding/settlement and continuity-policy wires fails closed; focused GCC groups green; Clang 20 ASan+UBSan green with fail-fast UBSan; full lint 134/134; normal pre-push 910-group suite |
+| DONE | Six-arm Living Commons parser fuzzer | `a0cfe7fe4` | `a0cfe7fe4` | shared libFuzzer owner, one seed per canonical parser, ASan+UBSan and leak detection; 1,537,885 mutations in 31 seconds at 49,609/s with no finding; full lint 134/134 |
 
 The `36f6f3ae5` push integrated concurrent `main` commit `00a0c54c8` through
 lane merge `4c8e7abe2`; no concurrent file was overwritten. Two complete
@@ -399,14 +406,46 @@ the focused API gate and full lint passed, and the second normal push passed
 all 901 active pre-push groups. The failed attempt is not counted as a passed
 gate.
 
-LC1 parser fuzzing and the sanitizer/reproducibility matrix remain TODO. LC2's
-canonical set and equality verifier are present; deterministic simulated ZSLP
-MINT-plan binding remains TODO. LC3 intentionally reports `partial` or
-`unknown` rather than policy-valid supply until immutable-policy and
-active-chain anchor context is wired. LC4 has canonical intent, independent
-intent validation, simulated funding, settlement/refund wire and CAS
-validation, and native offer/fund/show commands. Settlement/refund adapters and
-the rebuildable patronage list remain TODO. LC5 unique continuity-event
-validation remains TODO. No live
-token, GENESIS, MINT, SEND, wallet, canonical datadir, production port,
+Continuity authority integrated concurrent `main` through `def31919d` and
+`d2facab04`. Unique continuity evidence later integrated concurrent commit
+`64f6a8b66` through `dfa62d73f`; the combined tree exposed a pre-existing
+pipefail-sensitive parity shell assertion, fixed narrowly in `db1a0f271`.
+No concurrent implementation was overwritten, and the final normal pushes
+passed the full source-wide suite.
+
+The permanent parser truncation sweeps passed under GCC focused tests and
+under Clang 20 ASan+UBSan with `UBSAN_OPTIONS=halt_on_error=1`. Receipt
+`000022` records that the default GCC sanitizer profile is blocked before the
+selected tests by the pre-existing Sapling AVX-512 inline assembly failing to
+compile with "impossible constraints"; this is not counted as a sanitizer
+pass. Clang receipts `000023` and `000024` are passes with no sanitizer
+findings. Two different absolute-path builds produced a byte-identical shipped
+binary, 22,793,048 bytes with SHA3-256
+`29d8305557a31903e0bafca9f85f08bfda1bb26b93bb8d04ae896b83bd7e82e1`
+(`000026`). This is `local_reproduction`, not approved independent off-host
+reproduction and earns no independent-reproduction unit.
+
+The permanent `fuzz_zcode_commons` target covers creation attribution, epoch
+creation, patronage intent, patronage funding, patronage settlement/refund and
+continuity policy through the repository's shared libFuzzer object tree.
+Receipt `000027` is the born-red missing-target result; `000028` proves the
+harness builds, and `000029` records 1,537,885 leak-detecting ASan+UBSan
+mutations with no finding. This bounded local run is parser hardening, not a
+claim of exhaustive input-space coverage.
+
+LC2's canonical set and verifier already own award truth: they independently
+reload every ordered attribution, check active-chain maturity/reorg context,
+checked-sum award atoms and require exact equality with observed MINT. The
+existing generic ZSLP MINT builder has one recipient, while the durable wallet
+intent owner binds exact transaction bytes. Therefore the final ordered
+recipient/transaction adapter remains owner-gated with real custody and is not
+replaced by a parallel canonical object. LC3 intentionally reports `partial`
+or `unknown` rather than policy-valid supply until immutable-policy and
+active-chain anchor context is wired. LC4 settlement/refund commands remain
+planned because their validators require authentic active-chain,
+immutable-policy and uniqueness callbacks; caller assertions cannot substitute
+for those authorities. LC5 policy, commands and unique continuity validation
+are complete.
+
+No live token, GENESIS, MINT, SEND, wallet, canonical datadir, production port,
 deployment, service, or consensus path was touched by these slices.
