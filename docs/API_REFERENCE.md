@@ -68,15 +68,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 558 |
+| Registry entries (branches + leaves) | 562 |
 | Top-level roots | 11 |
-| Branches | 128 |
-| Leaves (dispatchable command paths) | 430 |
-| … `ready` (live handler in this build) | 376 |
+| Branches | 129 |
+| Leaves (dispatchable command paths) | 433 |
+| … `ready` (live handler in this build) | 379 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 36 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 143 |
+| Leaves with `effect=mutate` | 144 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 96 |
 
@@ -94,7 +94,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 22 | 4 | 18 |
-| `config/commands/zcode.def` | 121 | 26 | 95 |
+| `config/commands/zcode.def` | 125 | 27 | 98 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -925,6 +925,14 @@ represented by its children's sections.
 | `zcode patronage fund plan` | ready | read / read / operator · fast/low | **`workspace`**, **`funding_hex`**, **`expected_network_genesis_root`**, **`now_unix`** | `zcl.zcode_patronage_funding.v1` | `zclassic23 zcode patronage fund plan --input='{"workspace":".","funding_hex":"<hex>","expected_network_genesis_root":"<64hex>","now_unix":1}'` | Validate a fully simulated funding receipt |
 | `zcode patronage fund commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`funding_hex`**, **`expected_network_genesis_root`**, **`now_unix`** | `zcl.zcode_patronage_funding.v1` | `zclassic23 zcode patronage fund commit --input='{...}'` | Verify and store a fully simulated funding receipt |
 
+#### `zcode.continuity` — Simulation-only package continuity policies
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode continuity plan` | ready | read / read / operator · fast/low | **`workspace`**, **`policy_hex`**, **`expected_network_genesis_root`**, **`now_unix`** | `zcl.zcode_continuity_policy.view.v1` | `zclassic23 zcode continuity plan --input='{"workspace":".","policy_hex":"<hex>","expected_network_genesis_root":"<64hex>","now_unix":1}'` | Validate a signed simulation-only continuity policy |
+| `zcode continuity commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`policy_hex`**, **`expected_network_genesis_root`**, **`now_unix`** | `zcl.zcode_continuity_policy.view.v1` | `zclassic23 zcode continuity commit --input='{...}'` | Verify and store a signed simulation-only continuity policy |
+| `zcode continuity status` | ready | read / read / operator · fast/low | **`workspace`**, **`root`**, **`expected_network_genesis_root`**, **`now_unix`** | `zcl.zcode_continuity_policy.view.v1` | `zclassic23 zcode continuity status --input='{"workspace":".","root":"<64hex>","expected_network_genesis_root":"<64hex>","now_unix":1}'` | Show and reverify one package continuity policy |
+
 #### `zcode.patronage.settle` — Proof-conditioned simulated settlement
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
@@ -1307,6 +1315,7 @@ promise the same document shape.
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
 | `zcl.zcode_patronage_offer.v1` | `zcode.patronage.offer.plan`, `zcode.patronage.offer.commit` |
 | `zcl.zcode_patronage_funding.v1` | `zcode.patronage.fund.plan`, `zcode.patronage.fund.commit` |
+| `zcl.zcode_continuity_policy.view.v1` | `zcode.continuity.plan`, `zcode.continuity.commit`, `zcode.continuity.status` |
 | `zcl.zcode_patronage_settle.v1` | `zcode.patronage.settle.plan`, `zcode.patronage.settle.commit` |
 | `zcl.zcode_patronage_refund.v1` | `zcode.patronage.refund.plan`, `zcode.patronage.refund.commit` |
 | `zcl.zcode_publish_plan.v1` | `zcode.package.dev.publish.plan`, `zcode.package.publish.plan` |

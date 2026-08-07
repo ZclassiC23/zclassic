@@ -453,6 +453,40 @@ static int commons_command_noncreating_test(void)
         zcl_command_reply_free(&rebuild);
         zcl_command_reply_free(&status);
         json_free(&input);
+
+        char policy_hex[VCS_ZCODE_CONTINUITY_POLICY_WIRE_BYTES * 2u + 1u];
+        char zero_root[65];
+        memset(policy_hex, '0', sizeof(policy_hex) - 1u);
+        policy_hex[sizeof(policy_hex) - 1u] = '\0';
+        memset(zero_root, '0', sizeof(zero_root) - 1u);
+        zero_root[sizeof(zero_root) - 1u] = '\0';
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&input, "policy_hex", policy_hex));
+        ASSERT(json_push_kv_str(&input, "expected_network_genesis_root",
+                                zero_root));
+        ASSERT(json_push_kv_int(&input, "now_unix", 1));
+        request.input = &input;
+        zcl_command_reply_init(&status, "zcl.test.continuity.v1");
+        zcl_native_handle_zcode_continuity_plan(&request, &status);
+        ASSERT(status.exit_code == ZCL_COMMAND_EXIT_INVALID);
+        ASSERT(access(workspace, F_OK) != 0);
+        zcl_command_reply_free(&status);
+        json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&input, "root", zero_root));
+        ASSERT(json_push_kv_str(&input, "expected_network_genesis_root",
+                                zero_root));
+        ASSERT(json_push_kv_int(&input, "now_unix", 1));
+        request.input = &input;
+        zcl_command_reply_init(&status, "zcl.test.continuity.v1");
+        zcl_native_handle_zcode_continuity_status(&request, &status);
+        ASSERT(status.exit_code == ZCL_COMMAND_EXIT_INVALID);
+        ASSERT(access(workspace, F_OK) != 0);
+        zcl_command_reply_free(&status);
+        json_free(&input);
         PASS();
     } _test_next:;
     return failures;

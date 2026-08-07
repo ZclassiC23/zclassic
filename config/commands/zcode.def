@@ -208,6 +208,65 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_patronage_show)
 
+ZCL_COMMAND_BRANCH("zcode.continuity", "zcode",
+                   "Simulation-only package continuity policies",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_READY_READ(
+    "zcode.continuity.plan", "zcode.continuity", "",
+    "Validate a signed simulation-only continuity policy",
+    "Re-verifies the signature and independently reloads the patron binding, "
+    "package, release and proof policy from the existing workspace CAS. It "
+    "persists nothing, moves no funds and grants no authority.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,continuity,plan,simulation,package",
+    "zcl.zcode_continuity_policy.input.v1",
+    "zcl.zcode_continuity_policy.view.v1",
+    "workspace,policy_hex,expected_network_genesis_root,now_unix",
+    "workspace,policy_hex,expected_network_genesis_root,now_unix",
+    "zclassic23 zcode continuity plan --input='{\"workspace\":\".\",\"policy_hex\":\"<hex>\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_continuity_plan)
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.continuity.commit", "zcode.continuity", "",
+    "Verify and store a signed simulation-only continuity policy",
+    "Repeats plan validation, then stores only the exact signed policy in the "
+    "existing workspace CAS. This is idempotent and creates no funding, "
+    "income promise, ZCODE Score, ZC23 emission or technical authority.", 0,
+    "zcode,continuity,commit,simulation,package,cas",
+    "zcl.zcode_continuity_policy.input.v1",
+    "zcl.zcode_continuity_policy.view.v1",
+    "workspace,policy_hex,expected_network_genesis_root,now_unix",
+    "workspace,policy_hex,expected_network_genesis_root,now_unix",
+    "zclassic23 zcode continuity commit --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_continuity_commit)
+ZCL_COMMAND_READY_READ(
+    "zcode.continuity.status", "zcode.continuity", "",
+    "Show and reverify one package continuity policy",
+    "Loads the exact root from the existing workspace CAS and rechecks every "
+    "available authority. Capsule roots remain policy commitments until "
+    "event evidence proves the transition. Funded and guaranteed-income "
+    "fields are always false.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,continuity,status,simulation,package,cas",
+    "zcl.zcode_continuity_status.input.v1",
+    "zcl.zcode_continuity_policy.view.v1",
+    "workspace,root,expected_network_genesis_root,now_unix",
+    "workspace,root,expected_network_genesis_root,now_unix",
+    "zclassic23 zcode continuity status --input='{\"workspace\":\".\",\"root\":\"<64hex>\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_continuity_status)
+
 ZCL_COMMAND_BRANCH("zcode.patronage.settle", "zcode.patronage",
                    "Proof-conditioned simulated settlement",
                    ZCL_COMMAND_LAYER_APP)

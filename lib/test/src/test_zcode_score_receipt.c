@@ -1211,8 +1211,10 @@ static int test_creation_attribution_cross_validation(void)
             &manifest, &manifest_wire, &manifest_wire_len));
 
         uint8_t network[32], policy_authority[32], recipe[32], lock[32];
+        char network_hex[65];
         uint8_t capsule[32], zid_pubkey[32], zid_secret[32];
         score_fill(network, 0xa1); score_fill(policy_authority, 0xa2);
+        zcl_hex_encode(network, sizeof(network), network_hex);
         score_fill(recipe, 0xa3); score_fill(lock, 0xa4);
         score_fill(capsule, 0xa5);
         struct vcs_zcode_contributor_binding_v1 binding;
@@ -1530,6 +1532,108 @@ static int test_creation_attribution_cross_validation(void)
         ASSERT_EQ(vcs_zcode_continuity_policy_verify_cas(
                       &continuity, &patronage_context),
                   VCS_ZCODE_CONTINUITY_OK);
+        uint8_t continuity_wire[VCS_ZCODE_CONTINUITY_POLICY_WIRE_BYTES];
+        uint8_t continuity_root[32];
+        char continuity_hex[sizeof(continuity_wire) * 2u + 1u];
+        char continuity_root_hex[65];
+        ASSERT_EQ(vcs_zcode_continuity_policy_serialize(
+                      &continuity, continuity_wire),
+                  VCS_ZCODE_CONTINUITY_OK);
+        ASSERT_EQ(vcs_zcode_continuity_policy_root(
+                      &continuity, continuity_root),
+                  VCS_ZCODE_CONTINUITY_OK);
+        zcl_hex_encode(continuity_wire, sizeof(continuity_wire),
+                       continuity_hex);
+        zcl_hex_encode(continuity_root, sizeof(continuity_root),
+                       continuity_root_hex);
+        struct json_value continuity_input;
+        json_init(&continuity_input); json_set_object(&continuity_input);
+        ASSERT(json_push_kv_str(&continuity_input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&continuity_input, "policy_hex",
+                                continuity_hex));
+        ASSERT(json_push_kv_str(&continuity_input,
+                                "expected_network_genesis_root",
+                                network_hex));
+        ASSERT(json_push_kv_int(&continuity_input, "now_unix", 700000));
+        struct zcl_command_request continuity_request = {
+            .input = &continuity_input,
+        };
+        struct zcl_command_reply continuity_reply;
+        zcl_command_reply_init(&continuity_reply,
+                               "zcl.test.continuity.v1");
+        zcl_native_handle_zcode_continuity_plan(
+            &continuity_request, &continuity_reply);
+        ASSERT_EQ(continuity_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(!json_get_bool(json_get(&continuity_reply.data, "persisted")));
+        ASSERT(json_get_bool(json_get(&continuity_reply.data,
+                                      "simulation_only")));
+        ASSERT(json_get_bool(json_get(&continuity_reply.data,
+                                      "no_authority")));
+        ASSERT(!json_get_bool(json_get(&continuity_reply.data, "funded")));
+        ASSERT(!json_get_bool(json_get(&continuity_reply.data,
+                                       "guaranteed_income")));
+        zcl_command_reply_free(&continuity_reply);
+
+        ASSERT(json_push_kv_bool(&continuity_input, "unknown", true));
+        zcl_command_reply_init(&continuity_reply,
+                               "zcl.test.continuity.v1");
+        zcl_native_handle_zcode_continuity_plan(
+            &continuity_request, &continuity_reply);
+        ASSERT_EQ(continuity_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        zcl_command_reply_free(&continuity_reply);
+        json_free(&continuity_input);
+
+        json_init(&continuity_input); json_set_object(&continuity_input);
+        ASSERT(json_push_kv_str(&continuity_input, "workspace", workspace));
+        ASSERT(json_push_kv_str(&continuity_input, "policy_hex",
+                                continuity_hex));
+        ASSERT(json_push_kv_str(&continuity_input,
+                                "expected_network_genesis_root",
+                                network_hex));
+        ASSERT(json_push_kv_int(&continuity_input, "now_unix", 700000));
+        continuity_request.input = &continuity_input;
+        zcl_command_reply_init(&continuity_reply,
+                               "zcl.test.continuity.v1");
+        zcl_native_handle_zcode_continuity_commit(
+            &continuity_request, &continuity_reply);
+        ASSERT_EQ(continuity_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&continuity_reply.data, "persisted")));
+        ASSERT(!json_get_bool(json_get(&continuity_reply.data,
+                                       "moves_live_funds")));
+        zcl_command_reply_free(&continuity_reply);
+        json_free(&continuity_input);
+
+        struct json_value continuity_status_input;
+        json_init(&continuity_status_input);
+        json_set_object(&continuity_status_input);
+        ASSERT(json_push_kv_str(&continuity_status_input, "workspace",
+                                workspace));
+        ASSERT(json_push_kv_str(&continuity_status_input, "root",
+                                continuity_root_hex));
+        ASSERT(json_push_kv_str(&continuity_status_input,
+                                "expected_network_genesis_root",
+                                network_hex));
+        ASSERT(json_push_kv_int(&continuity_status_input, "now_unix",
+                                700000));
+        struct zcl_command_request continuity_status_request = {
+            .input = &continuity_status_input,
+        };
+        zcl_command_reply_init(&continuity_reply,
+                               "zcl.test.continuity.v1");
+        zcl_native_handle_zcode_continuity_status(
+            &continuity_status_request, &continuity_reply);
+        ASSERT_EQ(continuity_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&continuity_reply.data, "object")),
+                      "continuity_policy");
+        ASSERT_STR_EQ(json_get_str(json_get(&continuity_reply.data,
+                                            "continuity_policy_root")),
+                      continuity_root_hex);
+        ASSERT_EQ(json_get_int(json_get(&continuity_reply.data,
+                                        "maximum_cycles")), 3);
+        ASSERT(!json_get_bool(json_get(&continuity_reply.data, "funded")));
+        zcl_command_reply_free(&continuity_reply);
+        json_free(&continuity_status_input);
+
         memcpy(continuity.patron_contributor_binding_root, task_root, 32);
         ASSERT_EQ(vcs_zcode_continuity_policy_seal(
                       &continuity, zid_secret, zid_pubkey),
