@@ -7,6 +7,7 @@
 #include "chain/chain.h"
 #include "controllers/wallet_helpers.h"
 #include "core/amount.h"
+#include "core/uint256.h"
 #include "crypto/sha3.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
@@ -20,6 +21,13 @@
 static void vic_hex(const uint8_t in[32], char out[65])
 {
     HexStr(in, 32, false, out, 65);
+}
+
+static void vic_chain_hash_hex(const uint8_t in[32], char out[65])
+{
+    struct uint256 hash;
+    memcpy(hash.data, in, sizeof(hash.data));
+    uint256_get_hex(&hash, out);
 }
 
 static void vic_amount_text(int64_t amount, char out[32])
@@ -126,7 +134,7 @@ void vault_intent_render_row(struct wallet_rpc_context *ctx,
         (void)json_push_kv_str(out, "reserved", reserved);
     }
     if (row->has_txid) {
-        char txid[65]; vic_hex(row->txid, txid);
+        char txid[65]; vic_chain_hash_hex(row->txid, txid);
         (void)json_push_kv_str(out, "txid", txid);
     } else {
         struct json_value none; json_init(&none); json_set_null(&none);
@@ -143,7 +151,8 @@ void vault_intent_render_row(struct wallet_rpc_context *ctx,
     if (row->confirm_height >= 0) {
         (void)json_push_kv_int(out, "confirmed_height", row->confirm_height);
         if (row->has_confirm_hash) {
-            char block_hash[65]; vic_hex(row->confirm_hash, block_hash);
+            char block_hash[65];
+            vic_chain_hash_hex(row->confirm_hash, block_hash);
             (void)json_push_kv_str(out, "confirmed_block_hash", block_hash);
         }
     }

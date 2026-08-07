@@ -334,6 +334,25 @@ static void vip_render_effects(const struct vip_payload *p,
     (void)json_push_kv(result, "effects", &effects); json_free(&effects);
 }
 
+static void vip_render_plan_details(const struct vip_payload *p,
+                                    const struct vault_intent_row *row,
+                                    struct json_value *result)
+{
+    char digest[65], fee[32];
+    vip_hex(row->digest, digest);
+    vip_amount_text(p->fee, fee);
+    (void)json_push_kv_str(result, "digest", digest);
+    (void)json_push_kv_str(result, "fee", fee);
+    (void)json_push_kv_int(result, "confirmation_policy", 6);
+    (void)json_push_kv_str(result, "from", p->from);
+    (void)json_push_kv_str(result, "route", vip_route_name(p->route));
+    (void)json_push_kv_str(result, "privacy",
+        p->route == VAULT_INTENT_ROUTE_PRIVATE
+            ? "PRIVATE: Sapling recipients, values, memos, and graph are encrypted"
+            : "MIXED POOLS: transparent legs are public; Sapling legs are encrypted");
+    vip_render_effects(p, result);
+}
+
 bool vault_intent_private_plan(const struct json_value *input,
                                struct json_value *result)
 {
@@ -377,15 +396,17 @@ bool vault_intent_private_plan(const struct json_value *input,
         bool same = existing.has_request_digest &&
             memcmp(existing.request_digest, request_digest, 32) == 0;
         memory_cleanse(plain, sizeof(plain));
-        memory_cleanse(&p, sizeof(p));
         if (!same) {
+            memory_cleanse(&p, sizeof(p));
             vip_error(result, "IDEMPOTENCY_CONFLICT",
                       "that idempotency key already names a different request");
             return true;
         }
         json_set_object(result); (void)json_push_kv_bool(result, "ok", true);
         vault_intent_render_row(ctx, result, &existing);
+        vip_render_plan_details(&p, &existing, result);
         (void)json_push_kv_bool(result, "idempotent_plan", true);
+        memory_cleanse(&p, sizeof(p));
         return true;
     }
 
@@ -484,17 +505,8 @@ bool vault_intent_private_plan(const struct json_value *input,
     }
     json_set_object(result); (void)json_push_kv_bool(result, "ok", true);
     vault_intent_render_row(ctx, result, &row);
-    char digest[65], fee[32]; vip_hex(row.digest, digest); vip_amount_text(p.fee, fee);
-    (void)json_push_kv_str(result, "digest", digest);
-    (void)json_push_kv_str(result, "fee", fee);
-    (void)json_push_kv_str(result, "from", p.from);
-    (void)json_push_kv_str(result, "route", vip_route_name(p.route));
-    (void)json_push_kv_str(result, "privacy",
-        p.route == VAULT_INTENT_ROUTE_PRIVATE
-            ? "PRIVATE: Sapling recipients, values, memos, and graph are encrypted"
-            : "MIXED POOLS: transparent legs are public; Sapling legs are encrypted");
+    vip_render_plan_details(&p, &row, result);
     (void)json_push_kv_bool(result, "idempotent_plan", false);
-    vip_render_effects(&p, result);
 
 plan_clean:
     memory_cleanse(plain, sizeof(plain));
