@@ -301,6 +301,14 @@ bool db_sapling_note_save_witness(struct node_db *ndb,
                                    const uint8_t txid[32], uint32_t output_index,
                                    const uint8_t *witness_blob, size_t blob_len,
                                    int height);
+/* Witness creation reveals the note's exact commitment-tree position.  Persist
+ * the position-derived nullifier in the SAME row update so subsequent atomic
+ * reservation matches the SpendDescription rather than the decrypt-time
+ * position-0 placeholder. */
+bool db_sapling_note_save_witness_and_nullifier(
+    struct node_db *ndb, const uint8_t txid[32], uint32_t output_index,
+    const uint8_t *witness_blob, size_t blob_len, int height,
+    const uint8_t nullifier[32]);
 bool db_sapling_note_load_witness(struct node_db *ndb,
                                    const uint8_t txid[32], uint32_t output_index,
                                    uint8_t **witness_blob_out, size_t *blob_len_out,

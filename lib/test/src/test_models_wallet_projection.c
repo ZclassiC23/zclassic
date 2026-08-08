@@ -73,6 +73,30 @@ int test_model_wallet_projection(void)
             note.block_height = 22;
             ok = ok && db_sapling_note_save(&ndb, &note);
 
+            uint8_t witness_blob[] = {0x71, 0x72, 0x73};
+            uint8_t exact_nf[32];
+            memset(exact_nf, 0x7a, sizeof(exact_nf));
+            ok = ok && db_sapling_note_save_witness_and_nullifier(
+                &ndb, note.txid, note.output_index, witness_blob,
+                sizeof(witness_blob), 24, exact_nf);
+            struct db_sapling_note *saved_notes = NULL;
+            int saved_count = db_sapling_note_list_unspent_alloc(
+                &ndb, &saved_notes);
+            ok = ok && saved_count == 1 && saved_notes &&
+                 memcmp(saved_notes[0].nullifier, exact_nf, 32) == 0;
+            uint8_t *loaded_witness = NULL;
+            size_t loaded_witness_len = 0;
+            int loaded_witness_height = 0;
+            ok = ok && db_sapling_note_load_witness(
+                &ndb, note.txid, note.output_index, &loaded_witness,
+                &loaded_witness_len, &loaded_witness_height) &&
+                 loaded_witness_len == sizeof(witness_blob) &&
+                 memcmp(loaded_witness, witness_blob,
+                        sizeof(witness_blob)) == 0 &&
+                 loaded_witness_height == 24;
+            free(loaded_witness);
+            free(saved_notes);
+
             ok = ok && db_wallet_projection_summary(&ndb, &summary);
             ok = ok && (summary.chain_tip_height == 25);
             ok = ok && (summary.effective_tip_height == 30);
@@ -293,6 +317,15 @@ int test_model_wallet_projection(void)
             tx.time_received = 123;
             ok = ok && db_wallet_tx_save(&ndb, &tx);
             if (ok) {
+                struct db_wallet_tx unconfirmed;
+                memset(&unconfirmed, 0, sizeof(unconfirmed));
+                ok = sqlite3_exec(ndb.db,
+                    "UPDATE wallet_transactions SET block_height=0 "
+                    "WHERE txid=x'8181818181818181818181818181818181818181818181818181818181818181'",
+                    NULL, NULL, NULL) == SQLITE_OK;
+                ok = ok && db_wallet_tx_find(&ndb, tx.txid, &unconfirmed) &&
+                     !unconfirmed.has_block && unconfirmed.block_height == 0;
+                db_wallet_tx_free(&unconfirmed);
                 int count = db_wallet_tx_list_unconfirmed(&ndb, refs, 4);
                 ok = (count == 1);
                 ok = ok && memcmp(refs[0].txid, tx.txid, 32) == 0;

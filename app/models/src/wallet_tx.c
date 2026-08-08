@@ -200,7 +200,12 @@ static void db_wallet_tx_read_row(sqlite3_stmt *s, int col,
 
     if (sqlite3_column_type(s, col) != SQLITE_NULL) {
         out->block_height = (int)AR_COL_INT(s, col);
-        out->has_block = true;
+        /* Historical/imported rows can carry the legacy unconfirmed sentinel
+         * height 0.  It is not a block assignment: treating it as one turns
+         * tip_height - 0 + 1 into millions of fictional confirmations and
+         * exposes an all-zero block hash through gettransaction. */
+        if (out->block_height > 0)
+            out->has_block = true;
     }
     col++;
 

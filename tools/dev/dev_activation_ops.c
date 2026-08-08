@@ -119,7 +119,12 @@ static int dev_op_preflight(void *ctx, const char *cand_bin,
     const struct dev_activation_request *req = ctx;
     struct zcl_devloop_process_result res = {0};
     const char *ab[] = { cand_bin, "agentbuild", NULL };
-    if (dev_run_argv(req->repo_root, ab, 30000, &res) != 0)
+    /* Source identity walks the complete tracked epoch.  A cold, busy build
+     * host has measured just beyond the old 30s edge even though the exact
+     * same candidate returns in ~11s warm; preflight then quarantined healthy
+     * generations.  This is setup-only and still bounded well below the
+     * activation intent expiry. */
+    if (dev_run_argv(req->repo_root, ab, 90000, &res) != 0)
         return -1;
     if (!strstr(res.output, "zcl.agent_build.v2"))
         return -1;

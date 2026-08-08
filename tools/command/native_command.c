@@ -3177,6 +3177,10 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
 {
     if (!root_word || !root_word[0])
         return ZCL_COMMAND_EXIT_INVALID;
+    /* This one-shot process never runs resident boot, but wallet handlers do
+     * local network-aware address validation after RPC. Native CLI targeting
+     * is mainnet-only today, matching the offline recovery leaves. */
+    chain_params_select(CHAIN_MAIN);
     zcl_native_bridge_bind_rpc(datadir, rpc_port);
 
     const struct zcl_command_registry *reg = catalog();
