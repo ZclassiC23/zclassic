@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +24,7 @@
 static volatile sig_atomic_t g_process_cancel_requested;
 static zcl_devloop_process_cancel_poll_fn g_process_cancel_poll;
 static void *g_process_cancel_poll_opaque;
+static pthread_mutex_t g_process_cancel_poll_mu = PTHREAD_MUTEX_INITIALIZER;
 
 void zcl_devloop_process_cancel_request(void)
 {
@@ -42,14 +44,18 @@ bool zcl_devloop_process_cancel_requested(void)
 void zcl_devloop_process_cancel_poll_set(
     zcl_devloop_process_cancel_poll_fn poll_fn, void *opaque)
 {
+    pthread_mutex_lock(&g_process_cancel_poll_mu);
     g_process_cancel_poll = poll_fn;
     g_process_cancel_poll_opaque = opaque;
+    pthread_mutex_unlock(&g_process_cancel_poll_mu);
 }
 
 void zcl_devloop_process_cancel_poll_clear(void)
 {
+    pthread_mutex_lock(&g_process_cancel_poll_mu);
     g_process_cancel_poll = NULL;
     g_process_cancel_poll_opaque = NULL;
+    pthread_mutex_unlock(&g_process_cancel_poll_mu);
 }
 
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
@@ -270,9 +276,15 @@ static bool process_run_impl(const char *cwd, int exec_fd,
     bool finished = false;
     int64_t deadline_us = started_us + (int64_t)timeout_ms * 1000;
     while (!finished) {
-        if (!g_process_cancel_requested && g_process_cancel_poll &&
-            g_process_cancel_poll(g_process_cancel_poll_opaque))
-            zcl_devloop_process_cancel_request();
+        if (!g_process_cancel_requested) {
+            pthread_mutex_lock(&g_process_cancel_poll_mu);
+            zcl_devloop_process_cancel_poll_fn poll_fn =
+                g_process_cancel_poll;
+            void *poll_opaque = g_process_cancel_poll_opaque;
+            bool requested = poll_fn && poll_fn(poll_opaque);
+            pthread_mutex_unlock(&g_process_cancel_poll_mu);
+            if (requested) zcl_devloop_process_cancel_request();
+        }
         drain_output(fds[0], out);
         pid_t waited = waitpid(pid, &status, WNOHANG);
         if (waited == pid) {

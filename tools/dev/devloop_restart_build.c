@@ -19,6 +19,7 @@
 #include "platform/time_compat.h"
 #include "util/safe_alloc.h"
 #include "util/spawn.h"
+#include "util/thread_registry.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -1022,7 +1023,8 @@ static bool rr_emit_event(
     const struct zcl_devloop_restart_proof_receipt *proof,
     const struct zcl_devloop_process_result *process, const char *why,
     int64_t source_guard_us, uint32_t source_guard_captures,
-    int64_t closure_us)
+    int64_t closure_us, bool closure_refresh_deferred,
+    bool feedback_parallel)
 {
     struct json_value doc, files, receipt;
     json_init(&doc); json_set_object(&doc);
@@ -1041,6 +1043,9 @@ static bool rr_emit_event(
                             proof && proof->immediate_proof_complete);
     (void)json_push_kv_bool(&doc, "integration_proof_deferred",
                             proof && proof->integration_proof_deferred);
+    (void)json_push_kv_bool(&doc, "closure_refresh_deferred",
+                            closure_refresh_deferred);
+    (void)json_push_kv_bool(&doc, "feedback_parallel", feedback_parallel);
     (void)json_push_kv_int(&doc, "elapsed_us", elapsed_us);
     (void)json_push_kv_int(&doc, "elapsed_ms", elapsed_us / 1000);
     (void)json_push_kv_int(&doc, "source_guard_us", source_guard_us);
@@ -1161,6 +1166,26 @@ static bool rr_emit_event(
     return true;
 }
 
+struct rr_build_job {
+    const char *repo_root;
+    const char *const *sources;
+    size_t source_count;
+    struct zcl_devloop_restart_build_receipt *receipt;
+    struct zcl_devloop_process_result *process;
+    char why[512];
+    bool ok;
+};
+
+static void *rr_build_worker(void *opaque)
+{
+    struct rr_build_job *job = opaque;
+    job->ok = rr_restart_build(job->repo_root, job->sources,
+                               job->source_count, job->receipt,
+                               job->process, job->why, sizeof(job->why),
+                               false);
+    return NULL;
+}
+
 int zcl_devloop_restart_event(const char *repo_root,
                               const char *const *source_tus,
                               size_t source_count,
@@ -1182,7 +1207,8 @@ int zcl_devloop_restart_event(const char *repo_root,
     uint32_t source_guard_captures = 0;
     struct zcl_devloop_restart_build_receipt build = {0};
     struct zcl_devloop_restart_proof_receipt proof = {0};
-    struct zcl_devloop_process_result process = {0};
+    struct zcl_devloop_process_result build_process = {0};
+    struct zcl_devloop_process_result proof_process = {0};
     char why[512] = {0};
     struct dev_source_record source_before = {0}, source_after = {0};
     int64_t guard_started = platform_time_monotonic_us();
@@ -1193,12 +1219,25 @@ int zcl_devloop_restart_event(const char *repo_root,
     if (!ok)
         rr_why(why, sizeof(why),
                "restart epoch source snapshot could not be captured");
-    if (ok)
+    struct rr_build_job build_job = {
+        .repo_root = repo_root,
+        .sources = source_tus,
+        .source_count = source_count,
+        .receipt = &build,
+        .process = &build_process,
+    };
+    pthread_t build_thread;
+    /* thread-supervision-ok: bounded candidate branch joined below before
+     * the resident save epoch can emit or return. */
+    bool feedback_parallel = ok &&
+        thread_registry_spawn("zcl_dev_candidate", rr_build_worker,
+                              &build_job, &build_thread) == 0;
+    if (ok && !feedback_parallel)
         ok = rr_restart_build(repo_root, source_tus, source_count, &build,
-                              &process, why, sizeof(why), false);
+                              &build_process, why, sizeof(why), false);
     int64_t closure_started = platform_time_monotonic_us();
-    if (ok && (!zcl_devloop_plan_add_closure(repo_root, source_tus,
-                                             source_count, &plan) ||
+    if (ok && (!zcl_devloop_plan_add_closure_snapshot(
+                   repo_root, source_tus, source_count, &plan) ||
                !zcl_devloop_plan_proof_admissible(&plan, NULL))) {
         rr_why(why, sizeof(why),
                "affected proof closure is incomplete or unavailable");
@@ -1207,7 +1246,17 @@ int zcl_devloop_restart_event(const char *repo_root,
     closure_us = platform_time_monotonic_us() - closure_started;
     if (ok)
         ok = rr_restart_prove(repo_root, source_tus, source_count, &plan,
-                              &proof, &process, why, sizeof(why), true, false);
+                              &proof, &proof_process, why, sizeof(why), true,
+                              false);
+    if (feedback_parallel) {
+        (void)pthread_join(build_thread, NULL);
+        if (!build_job.ok) {
+            if (ok)
+                rr_why(why, sizeof(why), build_job.why[0]
+                    ? build_job.why : "restart candidate build failed");
+            ok = false;
+        }
+    }
     if (ok) {
         guard_started = platform_time_monotonic_us();
         source_guard_captures++;
@@ -1220,14 +1269,17 @@ int zcl_devloop_restart_event(const char *repo_root,
             rr_why(why, sizeof(why),
                    "restart epoch source changed during feedback build");
     }
-    if (process.cancelled || zcl_devloop_process_cancel_requested())
+    if (build_process.cancelled || proof_process.cancelled ||
+        zcl_devloop_process_cancel_requested())
         return 2;
+    const struct zcl_devloop_process_result *display_process =
+        proof_process.output_len ? &proof_process : &build_process;
     bool emitted = rr_emit_event(
         repo_root, source_tus, source_count,
         ok ? "feedback_ready" : "rejected",
         ok ? "immediate_affected_proofs" : "compile_link_probe",
         platform_time_monotonic_us() - started, publish_mode, &build,
-        &proof, &process, why, source_guard_us, source_guard_captures,
-        closure_us);
+        &proof, display_process, why, source_guard_us, source_guard_captures,
+        closure_us, plan.closure_snapshot, feedback_parallel);
     return emitted ? 1 : -1;
 }

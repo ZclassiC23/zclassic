@@ -170,6 +170,7 @@ struct zcl_devloop_plan {
     char closure_groups[ZCL_DEVLOOP_MAX_PLAN_GROUPS][ZCL_DEVLOOP_GROUP_MAX];
     size_t closure_groups_len;
     bool closure_attempted;   /* zcl_devloop_plan_add_closure() ran */
+    bool closure_snapshot;    /* resident used existing graph + current bytes */
     /* Back-compat boolean: true iff an applicable SEMANTIC or INCLUDE
      * dimension is INCOMPLETE/UNAVAILABLE. NOT_APPLICABLE is sufficient. It
      * no longer implies closure_groups is empty — read `dims`. */
@@ -416,6 +417,9 @@ size_t zcl_devloop_plan_json(const char *const *files, size_t file_count,
 bool zcl_devloop_plan_add_closure(const char *repo_root,
                                   const char *const *files, size_t file_count,
                                   struct zcl_devloop_plan *plan);
+bool zcl_devloop_plan_add_closure_snapshot(
+    const char *repo_root, const char *const *files, size_t file_count,
+    struct zcl_devloop_plan *plan);
 
 /* Like zcl_devloop_plan_json but also runs the symbol closure at `repo_root`
  * and emits the additional "path_groups", "closure_groups", and

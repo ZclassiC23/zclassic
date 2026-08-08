@@ -789,7 +789,11 @@ static void dev_emit_loop_status(const char *repo_root,
         static const char *const summary_fields[] = {
             "schema", "producer", "status", "action", "reason", "phase",
             "runtime_published", "elapsed_us", "elapsed_ms", "source_tu",
-            "proof_complete", "failure_capsule", "agent_next_action",
+            "file_count", "proof_complete", "immediate_proof_complete",
+            "integration_proof_deferred", "closure_refresh_deferred",
+            "feedback_parallel", "source_guard_us",
+            "source_guard_captures", "closure_us", "failure_capsule",
+            "agent_next_action",
         };
         struct json_value summary;
         json_init(&summary);

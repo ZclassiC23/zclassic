@@ -261,10 +261,38 @@ static bool ci_closure_expand_symbol(struct ci_closure_ctx *c,
     return true;
 }
 
-int codeindex_impact_closure(struct codeindex *ci,
-                             const char (*changed_files)[256], int n_changed,
-                             int max_depth,
-                             char (*out)[256], int cap, bool *truncated)
+struct ci_overlay_seed {
+    struct ci_closure_ctx *closure;
+    struct ci_strlist *frontier;
+    bool *truncated;
+    bool failed;
+};
+
+static void ci_overlay_sym(const struct ci_symbol *sym, void *user)
+{
+    struct ci_overlay_seed *seed = user;
+    if (seed->failed || !sym || !sym->name[0]) return;
+    if (seed->closure->seen_syms.len >= CI_CLOSURE_MAX_SYMS) {
+        *seed->truncated = true;
+        return;
+    }
+    bool added = false;
+    if (!ci_strset_add(&seed->closure->seen_syms, sym->name, &added) ||
+        (added && !ci_strlist_push(seed->frontier, sym->name)))
+        seed->failed = true;
+}
+
+static void ci_overlay_ignore_ref(const char *callee, const char *ref_file,
+                                  int ref_line, const char *enclosing,
+                                  void *user)
+{
+    (void)callee; (void)ref_file; (void)ref_line; (void)enclosing; (void)user;
+}
+
+static int impact_closure_impl(
+    struct codeindex *ci, const char *overlay_root,
+    const char (*changed_files)[256], int n_changed, int max_depth,
+    char (*out)[256], int cap, bool *truncated)
 {
     if (truncated) *truncated = false;
     if (!ci || !ci->store || !changed_files || n_changed < 0 || !out ||
@@ -296,6 +324,18 @@ int codeindex_impact_closure(struct codeindex *ci,
         if (!ci_closure_seed_file(&c, ci, changed_files[i], &frontier,
                                   truncated))
             goto done;
+        if (overlay_root) {
+            struct ci_overlay_seed seed = {
+                .closure = &c,
+                .frontier = &frontier,
+                .truncated = truncated,
+            };
+            uint8_t current_sha3[32];
+            if (!ci_scan_file(overlay_root, changed_files[i], ci_overlay_sym,
+                              ci_overlay_ignore_ref, &seed, current_sha3,
+                              NULL) || seed.failed)
+                goto done;
+        }
     }
 
     for (int d = 0; d < depth && frontier.len > 0; d++) {
@@ -338,6 +378,28 @@ done:
     if (rc < 0)
         LOG_ERR("codeindex", "closure traversal failed");
     return rc;
+}
+
+int codeindex_impact_closure(struct codeindex *ci,
+                             const char (*changed_files)[256], int n_changed,
+                             int max_depth,
+                             char (*out)[256], int cap, bool *truncated)
+{
+    return impact_closure_impl(ci, NULL, changed_files, n_changed, max_depth,
+                               out, cap, truncated);
+}
+
+int codeindex_impact_closure_overlay(
+    struct codeindex *ci, const char *root,
+    const char (*changed_files)[256], int n_changed, int max_depth,
+    char (*out)[256], int cap, bool *truncated)
+{
+    if (!root || !root[0]) {
+        if (truncated) *truncated = false;
+        LOG_ERR("codeindex", "overlay closure root is empty");
+    }
+    return impact_closure_impl(ci, root, changed_files, n_changed, max_depth,
+                               out, cap, truncated);
 }
 
 /* ── reverse INCLUDE closure ────────────────────────────────────────────

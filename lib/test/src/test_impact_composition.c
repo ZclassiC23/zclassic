@@ -52,6 +52,7 @@
 #define IC_FIX_DEF    IC_FIX_ROOT "/registry"
 #define IC_FIX_MACRO  IC_FIX_ROOT "/macro"
 #define IC_FIX_NODEPS IC_FIX_ROOT "/nodeps"
+#define IC_FIX_SNAPSHOT IC_FIX_ROOT "/snapshot"
 
 /* ── fixture helpers ──────────────────────────────────────────────────── */
 
@@ -741,6 +742,41 @@ static int test_ic_dimension_applicability_and_exact_execution(void)
     return failures;
 }
 
+static int test_ic_snapshot_overlays_current_symbols(void)
+{
+    int failures = 0;
+    TEST("impact composition: resident snapshot overlays current changed symbols") {
+        system("rm -rf " IC_FIX_SNAPSHOT);
+        ASSERT(ic_write(IC_FIX_SNAPSHOT, "lib/net/src/tor_integration.c",
+                        "int old_unreferenced(void) { return 1; }\n"));
+        ASSERT(ic_write(IC_FIX_SNAPSHOT, "lib/net/src/download.c",
+                        "int future_leaf(void);\n"
+                        "int download_future(void) { return future_leaf(); }\n"));
+        ASSERT(ic_write_depfiles(IC_FIX_SNAPSHOT));
+
+        const char *files[] = { "lib/net/src/tor_integration.c" };
+        struct zcl_devloop_plan baseline;
+        ASSERT(zcl_devloop_plan_files(files, 1, &baseline));
+        ASSERT(zcl_devloop_plan_add_closure(
+            IC_FIX_SNAPSHOT, files, 1, &baseline));
+        ASSERT(!ic_planned(&baseline, "download"));
+
+        ASSERT(ic_write(IC_FIX_SNAPSHOT, "lib/net/src/tor_integration.c",
+                        "int future_leaf(void) { return 2; }\n"));
+        struct zcl_devloop_plan snapshot;
+        ASSERT(zcl_devloop_plan_files(files, 1, &snapshot));
+        ASSERT(zcl_devloop_plan_add_closure_snapshot(
+            IC_FIX_SNAPSHOT, files, 1, &snapshot));
+        ASSERT(snapshot.closure_snapshot);
+        ASSERT(ic_planned(&snapshot, "download"));
+        ASSERT(zcl_devloop_plan_proof_admissible(&snapshot, NULL));
+
+        system("rm -rf " IC_FIX_SNAPSHOT);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_impact_composition(void)
 {
     int failures = 0;
@@ -752,5 +788,6 @@ int test_impact_composition(void)
     failures += test_ic_every_selection_has_a_reason();
     failures += test_ic_union_never_loses_a_rule_group();
     failures += test_ic_dimension_applicability_and_exact_execution();
+    failures += test_ic_snapshot_overlays_current_symbols();
     return failures;
 }
