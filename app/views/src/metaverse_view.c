@@ -46,7 +46,7 @@ size_t metaverse_view_index(const struct metaverse_view_index_input *in,
     int n = metaverse_body_start(body, sizeof(body), "Metaverse");
     if (n > 0) off = (size_t)n;
 
-    n = snprintf(body + off, sizeof(body) - off,
+    SITE_APPEND(off, body, sizeof(body),
         "<h1>Metaverse</h1>"
         "<p>A metaverse where people and AI create real things together, "
         "and nobody owns the world they build in. This site reads the same "
@@ -89,18 +89,16 @@ size_t metaverse_view_index(const struct metaverse_view_index_input *in,
         in->commons_built ? in->commons_status : "unknown",
         in->commons_built ? in->commons_creations : 0,
         in->commons_built ? in->commons_epochs : 0);
-    if (n > 0) off += (size_t)n;
 
     if (!in->property_read || !in->space_read || !in->commons_built) {
-        n = snprintf(body + off, sizeof(body) - off,
+        SITE_APPEND(off, body, sizeof(body),
             "<p class='meta'>One or more projections could not be read; "
             "the affected counts render as zero here and each section page "
             "names its own failure rather than inventing data.</p>");
-        if (n > 0) off += (size_t)n;
     }
 
     if (in->commons_built) {
-        n = snprintf(body + off, sizeof(body) - off,
+        SITE_APPEND(off, body, sizeof(body),
             "<div class='card'><h2>Commons summary (SIMULATION)</h2>"
             "<div class='kv'><b>minted atoms (simulated)</b>"
             "<span class='val'>%llu</span></div>"
@@ -108,7 +106,6 @@ size_t metaverse_view_index(const struct metaverse_view_index_input *in,
             "<span class='val'>%llu</span></div></div>",
             (unsigned long long)in->commons_minted_atoms,
             (unsigned long long)in->commons_attributed_atoms);
-        if (n > 0) off += (size_t)n;
     }
 
     n = metaverse_body_end(body + off, sizeof(body) - off);
@@ -132,7 +129,7 @@ size_t metaverse_view_property(const struct property_catalog_page *page,
     if (kind_filter && kind_filter[0])
         html_escape(safe_filter, sizeof(safe_filter), kind_filter);
 
-    n = snprintf(body + off, sizeof(body) - off,
+    SITE_APPEND(off, body, sizeof(body),
         "<h1>Sovereign Property</h1>"
         "<p>The property catalog is a projection, not a source of truth: "
         "every read asks each property kind's authoritative model directly. "
@@ -143,31 +140,28 @@ size_t metaverse_view_property(const struct property_catalog_page *page,
         kind_filter && kind_filter[0] ? " (filtered to kind <b>" : "",
         kind_filter && kind_filter[0] ? safe_filter : "",
         kind_filter && kind_filter[0] ? "</b>)" : "");
-    if (n > 0) off += (size_t)n;
 
     if (!page->store_read) {
         char safe_reason[256];
         html_escape(safe_reason, sizeof(safe_reason), page->store_reason);
-        n = snprintf(body + off, sizeof(body) - off,
+        SITE_APPEND(off, body, sizeof(body),
             "<p class='bad'>A store under this datadir is present but "
             "unreadable: %s. An empty list below is a failure to look, not "
             "an inventory.</p>", safe_reason);
-        if (n > 0) off += (size_t)n;
     }
 
     /* Per-kind coverage: every kind gets a row, including unavailable
      * ones — a kind that vanished would read as "owns nothing". */
-    n = snprintf(body + off, sizeof(body) - off,
+    SITE_APPEND(off, body, sizeof(body),
         "<div class='card'><h2>Property kinds</h2>"
         "<table><thead><tr><th>kind</th><th>authority</th>"
         "<th>settlement class</th><th>status</th><th>total</th>"
         "<th>shown</th></tr></thead><tbody>");
-    if (n > 0) off += (size_t)n;
     for (size_t i = 0; i < page->kind_count && off < sizeof(body) - 1024;
          i++) {
         const struct property_catalog_kind_row *k = &page->kinds[i];
         if (k->available) {
-            n = snprintf(body + off, sizeof(body) - off,
+            SITE_APPEND(off, body, sizeof(body),
                 "<tr><td class='mono'>%s</td><td class='mono'>%s</td>"
                 "<td><span class='pill'>%s</span></td>"
                 "<td>available%s%s</td><td>%zu</td><td>%zu%s</td></tr>",
@@ -182,29 +176,25 @@ size_t metaverse_view_property(const struct property_catalog_page *page,
             char safe_reason[256];
             html_escape(safe_reason, sizeof(safe_reason),
                         k->unavailable_reason ? k->unavailable_reason : "");
-            n = snprintf(body + off, sizeof(body) - off,
+            SITE_APPEND(off, body, sizeof(body),
                 "<tr><td class='mono'>%s</td><td class='mono'>%s</td>"
                 "<td><span class='pill'>%s</span></td>"
                 "<td colspan='3'>unavailable &mdash; %s</td></tr>",
                 k->kind_name, k->authority_source,
                 metaverse_settlement_name(k->settlement), safe_reason);
         }
-        if (n > 0) off += (size_t)n;
     }
-    n = snprintf(body + off, sizeof(body) - off,
+    SITE_APPEND(off, body, sizeof(body),
         "</tbody></table></div>");
-    if (n > 0) off += (size_t)n;
 
     /* The bounded property rows: status + evidence grade per property. */
-    n = snprintf(body + off, sizeof(body) - off,
+    SITE_APPEND(off, body, sizeof(body),
         "<div class='card'><h2>Properties</h2>");
-    if (n > 0) off += (size_t)n;
     if (page->count > 0) {
-        n = snprintf(body + off, sizeof(body) - off,
+        SITE_APPEND(off, body, sizeof(body),
             "<table><thead><tr><th>property</th><th>name</th>"
             "<th>status</th><th>evidence grade</th><th>owner</th></tr>"
             "</thead><tbody>");
-        if (n > 0) off += (size_t)n;
         for (size_t i = 0; i < page->count && off < sizeof(body) - 1024;
              i++) {
             const struct metaverse_property_view *v = &page->items[i];
@@ -216,35 +206,30 @@ size_t metaverse_view_property(const struct property_catalog_page *page,
                             ? v->owner_principal
                             : (v->owner_principal_kind
                                    ? v->owner_principal_kind : "none"));
-            n = snprintf(body + off, sizeof(body) - off,
+            SITE_APPEND(off, body, sizeof(body),
                 "<tr><td class='mono'>%s</td><td>%s</td>"
                 "<td>%s</td><td><span class='pill'>%s</span></td>"
                 "<td class='mono'>%s</td></tr>",
                 safe_id, safe_name[0] ? safe_name : "&mdash;",
                 metaverse_property_status_name(v->status),
                 metaverse_evidence_name(v->evidence), safe_owner);
-            if (n > 0) off += (size_t)n;
         }
-        n = snprintf(body + off, sizeof(body) - off, "</tbody></table>");
-        if (n > 0) off += (size_t)n;
+        SITE_APPEND(off, body, sizeof(body), "</tbody></table>");
         if (page->total_across_kinds > page->count) {
-            n = snprintf(body + off, sizeof(body) - off,
+            SITE_APPEND(off, body, sizeof(body),
                 "<p class='meta'>%zu more propert%s not shown (page cap "
                 "%u).</p>", page->total_across_kinds - page->count,
                 page->total_across_kinds - page->count == 1 ? "y" : "ies",
                 METAVERSE_VIEW_MAX_ROWS);
-            if (n > 0) off += (size_t)n;
         }
     } else {
-        n = snprintf(body + off, sizeof(body) - off,
+        SITE_APPEND(off, body, sizeof(body),
             "<p>No properties projected%s &mdash; an empty catalog renders "
             "empty, never padded.</p>",
             page->store_read ? "" : " (see the store failure above)");
-        if (n > 0) off += (size_t)n;
     }
-    n = snprintf(body + off, sizeof(body) - off,
+    SITE_APPEND(off, body, sizeof(body),
         "</div><p><a href='/metaverse'>&larr; Metaverse</a></p>");
-    if (n > 0) off += (size_t)n;
 
     n = metaverse_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
@@ -263,7 +248,7 @@ size_t metaverse_view_route_not_found(const char *path, uint8_t *resp,
     if (n > 0) off = (size_t)n;
     char safe_path[256];
     html_escape(safe_path, sizeof(safe_path), path ? path : "");
-    n = snprintf(body + off, sizeof(body) - off,
+    SITE_APPEND(off, body, sizeof(body),
         "<h1>Unknown metaverse route</h1>"
         "<div class='card'>"
         "<p><code>%s</code> is not a metaverse site route.</p>"
@@ -272,7 +257,6 @@ size_t metaverse_view_route_not_found(const char *path, uint8_t *resp,
         "<code>/metaverse/commons</code>.</p>"
         "<p><a href='/metaverse'>&larr; Metaverse</a></p></div>",
         safe_path);
-    if (n > 0) off += (size_t)n;
     n = metaverse_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
     return metaverse_error_response("404 Not Found", body, off, resp, max);

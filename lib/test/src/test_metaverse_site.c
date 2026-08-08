@@ -63,6 +63,9 @@ static const char *ms_get(const char *dd, const char *path, size_t *len_out)
 {
     size_t n = metaverse_site_handle_request("GET", path, NULL, 0, g_resp,
                                              MS_RESP_CAP - 1, dd);
+    /* snprintf-style would-be length: clamp before indexing g_resp. */
+    if (n >= MS_RESP_CAP)
+        n = MS_RESP_CAP - 1;
     g_resp[n] = '\0';
     if (len_out)
         *len_out = n;

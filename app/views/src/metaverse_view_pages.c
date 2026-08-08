@@ -22,7 +22,7 @@ size_t metaverse_view_space(const struct metaverse_view_space_row *rows,
     int n = metaverse_body_start(body, sizeof(body), "Metaverse Spaces");
     if (n > 0) off = (size_t)n;
 
-    n = snprintf(body + off, sizeof(body) - off,
+    SITE_APPEND(off, body, sizeof(body),
         "<h1>Published Spaces</h1>"
         "<p>Every <code>space_manifest.v1</code> record in this node's "
         "workspace CAS, re-parsed and re-derived on this read by the same "
@@ -34,20 +34,18 @@ size_t metaverse_view_space(const struct metaverse_view_space_row *rows,
         services, services == 1 ? "" : "s",
         scanned, scanned == 1 ? "" : "s",
         truncated ? " (scan or page cap reached)" : "");
-    if (n > 0) off += (size_t)n;
 
     if (shown > 0) {
-        n = snprintf(body + off, sizeof(body) - off,
+        SITE_APPEND(off, body, sizeof(body),
             "<table><thead><tr><th>space</th><th>owner</th>"
             "<th>sequence</th><th>validity window</th>"
             "<th>services/objects/portals</th><th>evidence</th></tr>"
             "</thead><tbody>");
-        if (n > 0) off += (size_t)n;
         for (size_t i = 0; i < shown && off < sizeof(body) - 1024; i++) {
             const struct metaverse_view_space_row *r = &rows[i];
             char safe_name[160];
             html_escape(safe_name, sizeof(safe_name), r->name);
-            n = snprintf(body + off, sizeof(body) - off,
+            SITE_APPEND(off, body, sizeof(body),
                 "<tr><td><b>%s</b><br><span class='mono'>%.16s&hellip;"
                 "</span></td>"
                 "<td class='mono'>%.16s&hellip;</td>"
@@ -64,27 +62,22 @@ size_t metaverse_view_space(const struct metaverse_view_space_row *rows,
                 r->currently_active ? "pill-ok" : "",
                 r->currently_active ? "local_signature (active)"
                                     : "local_signature (expired/pending)");
-            if (n > 0) off += (size_t)n;
         }
-        n = snprintf(body + off, sizeof(body) - off, "</tbody></table>");
-        if (n > 0) off += (size_t)n;
+        SITE_APPEND(off, body, sizeof(body), "</tbody></table>");
         if (total > shown) {
-            n = snprintf(body + off, sizeof(body) - off,
+            SITE_APPEND(off, body, sizeof(body),
                 "<p class='meta'>%zu more space%s not shown (page cap "
                 "%u).</p>", total - shown, total - shown == 1 ? "" : "s",
                 METAVERSE_VIEW_MAX_SPACES);
-            if (n > 0) off += (size_t)n;
         }
     } else {
-        n = snprintf(body + off, sizeof(body) - off,
+        SITE_APPEND(off, body, sizeof(body),
             "<p>No published spaces known locally yet &mdash; an empty CAS "
             "renders empty, never padded.</p>");
-        if (n > 0) off += (size_t)n;
     }
 
-    n = snprintf(body + off, sizeof(body) - off,
+    SITE_APPEND(off, body, sizeof(body),
         "<p><a href='/metaverse'>&larr; Metaverse</a></p>");
-    if (n > 0) off += (size_t)n;
     n = metaverse_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
     return metaverse_html_response(body, off, resp, max);
@@ -142,7 +135,7 @@ size_t metaverse_view_commons(
     bool has_failure = vcs_zcode_commons_projection_first_failure(
         projection, failed, &failure_reason);
 
-    n = snprintf(body + off, sizeof(body) - off,
+    SITE_APPEND(off, body, sizeof(body),
         "<h1>ZC23 Living Commons</h1>"
         "<p><span class='pill'>SIMULATION</span> The Living Commons "
         "projection, rebuilt read-only from the workspace CAS on every "
@@ -173,7 +166,6 @@ size_t metaverse_view_commons(
         (unsigned long long)unissued,
         creations, epochs,
         has_failure ? "FAILED (first failure named below)" : "ok");
-    if (n > 0) off += (size_t)n;
 
     if (has_failure) {
         char root_hex[65];
@@ -181,10 +173,9 @@ size_t metaverse_view_commons(
         char safe_reason[256];
         html_escape(safe_reason, sizeof(safe_reason),
                     failure_reason ? failure_reason : "");
-        n = snprintf(body + off, sizeof(body) - off,
+        SITE_APPEND(off, body, sizeof(body),
             "<p class='bad'>First integrity failure: <span class='mono'>%s"
             "</span> &mdash; %s</p>", root_hex, safe_reason);
-        if (n > 0) off += (size_t)n;
     }
 
     /* Creation counts by category (the zcode.commons.status summary). */
@@ -197,42 +188,37 @@ size_t metaverse_view_commons(
             if (category < 7)
                 categories[category]++;
         }
-        n = snprintf(body + off, sizeof(body) - off,
+        SITE_APPEND(off, body, sizeof(body),
             "<div class='card'><h2>Creations by category</h2>"
             "<table><thead><tr><th>category</th><th>creations</th></tr>"
             "</thead><tbody>");
-        if (n > 0) off += (size_t)n;
         for (uint16_t c = 1; c < 7 && off < sizeof(body) - 512; c++) {
             if (!categories[c])
                 continue;
-            n = snprintf(body + off, sizeof(body) - off,
+            SITE_APPEND(off, body, sizeof(body),
                 "<tr><td class='mono'>%s</td><td>%llu</td></tr>",
                 mv_commons_category_name(c),
                 (unsigned long long)categories[c]);
-            if (n > 0) off += (size_t)n;
         }
-        n = snprintf(body + off, sizeof(body) - off,
+        SITE_APPEND(off, body, sizeof(body),
             "</tbody></table></div>");
-        if (n > 0) off += (size_t)n;
     }
 
     /* The epoch table (the zcode.commons.epoch facts). */
-    n = snprintf(body + off, sizeof(body) - off,
+    SITE_APPEND(off, body, sizeof(body),
         "<div class='card'><h2>Epochs</h2>");
-    if (n > 0) off += (size_t)n;
     if (epochs > 0) {
-        n = snprintf(body + off, sizeof(body) - off,
+        SITE_APPEND(off, body, sizeof(body),
             "<table><thead><tr><th>epoch</th><th>cap atoms</th>"
             "<th>minted atoms</th><th>unissued atoms</th>"
             "<th>attributions</th><th>creation root</th></tr></thead>"
             "<tbody>");
-        if (n > 0) off += (size_t)n;
         for (size_t i = 0; i < epochs && off < sizeof(body) - 640; i++) {
             const struct vcs_zcode_commons_epoch_entry *e =
                 vcs_zcode_commons_projection_epoch_at(projection, i);
             char root_hex[65];
             zcl_hex_encode(e->root, 32, root_hex);
-            n = snprintf(body + off, sizeof(body) - off,
+            SITE_APPEND(off, body, sizeof(body),
                 "<tr><td>%llu</td><td>%llu</td><td>%llu</td><td>%llu</td>"
                 "<td>%u</td><td class='mono'>%.16s&hellip;</td></tr>",
                 (unsigned long long)e->epoch,
@@ -240,21 +226,17 @@ size_t metaverse_view_commons(
                 (unsigned long long)e->minted_atoms,
                 (unsigned long long)e->unissued_atoms,
                 e->attribution_count, root_hex);
-            if (n > 0) off += (size_t)n;
         }
-        n = snprintf(body + off, sizeof(body) - off,
+        SITE_APPEND(off, body, sizeof(body),
             "</tbody></table></div>");
-        if (n > 0) off += (size_t)n;
     } else {
-        n = snprintf(body + off, sizeof(body) - off,
+        SITE_APPEND(off, body, sizeof(body),
             "<p>No epochs in the workspace CAS yet &mdash; an empty "
             "commons renders empty, never padded.</p></div>");
-        if (n > 0) off += (size_t)n;
     }
 
-    n = snprintf(body + off, sizeof(body) - off,
+    SITE_APPEND(off, body, sizeof(body),
         "<p><a href='/metaverse'>&larr; Metaverse</a></p>");
-    if (n > 0) off += (size_t)n;
     n = metaverse_body_end(body + off, sizeof(body) - off);
     if (n > 0) off += (size_t)n;
     return metaverse_html_response(body, off, resp, max);
