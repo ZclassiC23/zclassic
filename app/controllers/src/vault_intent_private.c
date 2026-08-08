@@ -8,6 +8,7 @@
 #include "controllers/vault_intent_controller.h"
 #include "controllers/wallet_helpers.h"
 #include "controllers/wallet_shielded_controller.h"
+#include "coins/coins_view.h"
 #include "core/amount.h"
 #include "core/serialize.h"
 #include "crypto/sha3.h"
@@ -61,6 +62,43 @@ static void vip_error(struct json_value *out, const char *code,
     (void)json_push_kv_bool(out, "ok", false);
     (void)json_push_kv_str(out, "code", code);
     (void)json_push_kv_str(out, "message", message);
+}
+
+bool vault_intent_private_requirements_current(
+    struct wallet_rpc_context *ctx, const struct transaction *tx,
+    struct json_value *result)
+{
+    if (!ctx || !ctx->coins_tip || !tx || !result) {
+        vip_error(result, "SHIELDED_AUTHORITY_UNAVAILABLE",
+                  "current shielded authority is unavailable");
+        LOG_ERROR("vault_intent",
+                  "private requirement preflight has incomplete context");
+        return false;
+    }
+    enum coins_shielded_requirements_result verdict =
+        coins_view_cache_check_shielded_requirements(ctx->coins_tip, tx);
+    if (verdict == COINS_SHIELDED_REQUIREMENTS_OK)
+        return true;
+    if (verdict == COINS_SHIELDED_REQUIREMENTS_MISSING_ANCHOR) {
+        vip_error(result, "WITNESS_RESCAN_REQUIRED",
+                  "shielded witness anchor is not current; run "
+                  "core.wallet.rescan-witnesses before planning again");
+        LOG_ERROR("vault_intent",
+                  "private requirement preflight requires witness rescan");
+        return false;
+    }
+    if (verdict == COINS_SHIELDED_REQUIREMENTS_HISTORY_INCOMPLETE) {
+        vip_error(result, "SHIELDED_HISTORY_INCOMPLETE",
+                  "canonical shielded anchor history is incomplete");
+        LOG_ERROR("vault_intent",
+                  "private requirement preflight found incomplete history");
+        return false;
+    }
+    vip_error(result, "SHIELDED_AUTHORITY_UNAVAILABLE",
+              "canonical shielded anchor authority is unreadable");
+    LOG_ERROR("vault_intent",
+              "private requirement preflight could not read authority");
+    return false;
 }
 
 static void vip_hex(const uint8_t in[32], char out[65])
@@ -464,6 +502,11 @@ bool vault_intent_private_plan(const struct json_value *input,
         goto plan_clean;
     }
     json_free(&prepare_result);
+    if (!vault_intent_private_requirements_current(
+            ctx, &prepared.tx, result)) {
+        transaction_free(&prepared.tx);
+        goto plan_clean;
+    }
     transaction_free(&prepared.tx);
 
     /* A real Sapling proof may take tens of seconds.  The tip, mempool, or a
@@ -596,6 +639,11 @@ bool vault_intent_private_build_prepared(
         return false;
     }
     json_free(&prepared_result);
+    if (!vault_intent_private_requirements_current(ctx, &wtx->tx, result)) {
+        transaction_free(&wtx->tx);
+        memory_cleanse(&p, sizeof(p));
+        return false;
+    }
     struct byte_stream raw; stream_init(&raw, 2048);
     bool stored = transaction_serialize(&wtx->tx, &raw) &&
         raw.size <= VAULT_INTENT_RAW_MAX &&

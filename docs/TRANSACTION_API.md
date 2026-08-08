@@ -377,15 +377,22 @@ body and spending transaction before the note is atomically marked spent. If
 the nullifier history, active body, or wallet write lane is unavailable, plan
 execution stops before proof construction or relay. This keeps stale wallet
 projections from producing a transaction that peers will immediately reject.
+The private-plan preflight also checks the prepared transaction's exact anchor
+against the current coins view before creating a reservation. A missing anchor
+returns `WITNESS_RESCAN_REQUIRED`; run `core wallet rescan-witnesses`, refresh
+the encrypted backup after that wallet-state write, and create a fresh plan.
+`SHIELDED_HISTORY_INCOMPLETE` and `SHIELDED_AUTHORITY_UNAVAILABLE` are
+authority failures, not retry or zero-balance signals. Commit repeats the same
+check before persisting its exact signed bytes.
 Before retrying, a read-only reservation probe must identify every shielded
 nullifier as an available wallet note or an idempotent reservation by that same
 transaction. A missing nullifier becomes `PREPARED_NOTE_MISMATCH`; a note owned
 by another transaction becomes `PREPARED_NOTE_CONFLICT`. Both are terminal and
 require a fresh plan—neither may loop forever or generate replacement bytes.
 Mempool refusal is also typed durably. In particular,
-`SHIELDED_REQUIREMENTS_MISSING` means the transaction's anchor or nullifier is
-not present in the node's current shielded view; refresh/reconcile wallet
-witnesses and create a fresh plan. Other stable codes distinguish invalid
+`SHIELDED_REQUIREMENTS_MISSING` is the defensive commit/mempool fallback when
+an already prepared transaction's anchor or nullifier is no longer present in
+the node's current shielded view. Other stable codes distinguish invalid
 proof/script data, transparent missing inputs, conflicts, insufficient relay
 fee, non-final locktime, near expiry, and internal admission failure. Agents
 must branch on `error_code`, never parse log prose or resubmit a terminal plan.
