@@ -35,6 +35,8 @@ TX_NONCHAIN_COMMAND("core.wallet.rescan", "wallet_scan",
     "Replays existing chain history into the local wallet; it creates no transaction.")
 TX_NONCHAIN_COMMAND("vault.intent.issue", "receive_request",
     "Creates a receive key and payment URI only; a later payer creates any transaction.")
+TX_NONCHAIN_COMMAND("vault.intent.cancel", "intent_lifecycle",
+    "Atomically terminates only an unclaimed durable plan and releases its reservation; it never constructs, signs, or relays a transaction.")
 TX_NONCHAIN_COMMAND("vault.session.create", "agent_authority",
     "Creates a bounded local agent grant; the grant can authorize later commands but is not a transaction.")
 TX_NONCHAIN_COMMAND("vault.session.revoke", "agent_authority",
@@ -45,3 +47,7 @@ TX_NONCHAIN_COMMAND("zcode.endpoint.accept", "p2p_endpoint_record",
     "Accepts a signed endpoint record into local ZCODE state; it creates no chain transaction.")
 TX_NONCHAIN_COMMAND("zcode.patronage.fund.commit", "patronage_simulation",
     "Stores a verified simulation-only funding receipt in the existing ZCODE CAS; it creates, signs, submits, and confirms no chain transaction.")
+TX_NONCHAIN_COMMAND("zcode.commons.shadow.attribution.commit", "commons_simulation",
+    "Stores one verified creation-attribution wire in an explicit scratch CAS; it creates, signs, submits, and confirms no chain transaction.")
+TX_NONCHAIN_COMMAND("zcode.commons.shadow.epoch.commit", "commons_simulation",
+    "Stores one verified epoch-accounting wire in an explicit scratch CAS; it creates, signs, submits, and confirms no chain transaction.")

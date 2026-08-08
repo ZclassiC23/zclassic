@@ -311,7 +311,8 @@ static void *db_service_ckpt_main(void *arg)
     return NULL;
 }
 
-bool db_service_start(struct db_service *svc)
+static bool db_service_start_impl(struct db_service *svc,
+                                  bool start_checkpointer)
 {
     if (!svc || !svc->node_db)
         return false;
@@ -337,13 +338,14 @@ bool db_service_start(struct db_service *svc)
      * chain_tip.c keeps tip durability independent). */
     svc->ckpt_stop_requested = false;
     // supervised:zcl_db_ckpt (thread_liveness_register below)
-    if (thread_registry_spawn("zcl_db_ckpt", db_service_ckpt_main,
-                                  svc, &svc->ckpt_thread) == 0) {
+    if (start_checkpointer &&
+        thread_registry_spawn("zcl_db_ckpt", db_service_ckpt_main,
+                              svc, &svc->ckpt_thread) == 0) {
         svc->ckpt_started = true;
         (void)thread_liveness_register(&g_ckpt_child, "zcl_db_ckpt",
                                        /*deadline_secs=*/60,
                                        /*progress_quiet_us=*/0);
-    } else {
+    } else if (start_checkpointer) {
         fprintf(stderr,
             "[wal-checkpoint] failed to start periodic checkpoint thread\n");
     }
@@ -352,6 +354,18 @@ bool db_service_start(struct db_service *svc)
     svc->started_at = db_service_now();
     return true;
 }
+
+bool db_service_start(struct db_service *svc)
+{
+    return db_service_start_impl(svc, true);
+}
+
+#ifdef ZCL_TESTING
+bool db_service_start_test_worker(struct db_service *svc)
+{
+    return db_service_start_impl(svc, false);
+}
+#endif
 
 void db_service_stop(struct db_service *svc)
 {

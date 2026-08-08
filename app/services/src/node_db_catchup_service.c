@@ -119,7 +119,7 @@ bool node_db_sync_wallet_tx_checked(struct node_db *ndb,
 bool advance_wallet_witnesses(struct node_db *ndb,
                               const struct block *blk,
                               struct incremental_merkle_tree *tree,
-                              int height);
+                              int height, struct wallet *wallet);
 
 /* Lean index: block header + txid index + the full explorer projections.
  *
@@ -257,7 +257,7 @@ static bool catchup_set_sparse_projection_tip(struct node_db *ndb,
 
 int node_db_catchup_service_run(struct node_db *ndb,
                                 const struct active_chain *chain,
-                                const struct wallet *w,
+                                struct wallet *w,
                                 const char *datadir)
 {
     bool interrupted = false;
@@ -611,7 +611,7 @@ int node_db_catchup_service_run(struct node_db *ndb,
         if (failed) break;
 
         /* Advance Sapling tree + wallet witnesses */
-        if (!advance_wallet_witnesses(ndb, &blk, &sapling_tree, h)) {
+        if (!advance_wallet_witnesses(ndb, &blk, &sapling_tree, h, w)) {
             LOG_WARN("catchup", "catchup: witness/tree advance failed at height %d", h);
             block_free(&blk);
             failed = true;

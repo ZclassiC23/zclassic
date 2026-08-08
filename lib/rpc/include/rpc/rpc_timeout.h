@@ -21,6 +21,7 @@
  * Config is read from the environment:
  *
  *   ZCL_RPC_TIMEOUT_MS          per-request deadline (default 10000)
+ *   ZCL_RPC_PROOF_TIMEOUT_MS    proof-building deadline (default 120000)
  *   ZCL_RPC_TIMEOUT_SWEEP_MS    watchdog poll interval (default 250)
  *
  * Setting `ZCL_RPC_TIMEOUT_MS=0` disables the module entirely — every
@@ -47,6 +48,15 @@ extern "C" {
 
 #define RPC_TIMEOUT_MAX_SLOTS   128
 #define RPC_TIMEOUT_METHOD_LEN  64
+/* Durable key creation flushes the complete encrypted wallet projection and
+ * can exceed the generic request budget on a large live node. It is still a
+ * much smaller operation than Sapling proof construction. */
+#define RPC_WALLET_MUTATION_TIMEOUT_MS 60000
+/* Sapling plan preflight performs a full proof build before reserving funds.
+ * Real mainnet hardware has measured above two minutes while the reducer is
+ * active, so keep the proof-specific client and server budgets aligned at a
+ * bounded five minutes.  Generic RPC remains on its much shorter deadline. */
+#define RPC_PROOF_BUILD_TIMEOUT_MS 300000
 
 struct rpc_timeout_slot {
     bool     in_use;
@@ -61,6 +71,7 @@ struct rpc_timeout_slot {
 struct rpc_timeout_mgr {
     /* Config */
     int     timeout_ms;          /* 0 = disabled */
+    int     proof_timeout_ms;    /* vault proof-building methods only */
     int     watchdog_period_ms;
 
     /* Slots */
@@ -130,6 +141,7 @@ struct rpc_timeout_mgr *rpc_timeout_get_global(void);
  * native RPC diagnostics and Prometheus. */
 struct rpc_timeout_snapshot {
     int      timeout_ms;
+    int      proof_timeout_ms;
     int      watchdog_period_ms;
     size_t   active_slots;
     uint64_t registered;

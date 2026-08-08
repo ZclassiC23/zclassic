@@ -36,6 +36,13 @@ char *node_rpc_call(const char *method, const char *params_json);
 char *node_rpc_call_deadline(const char *method, const char *params_json,
                              long connect_ms, long total_ms);
 
+/* Endpoint-explicit variant for concurrent multi-wallet readers. Unlike the
+ * legacy init+call pair, this does not read or mutate process-global endpoint
+ * state, so independent dev/prod calls cannot cross-wire cookies or ports. */
+char *node_rpc_call_at_deadline(const char *datadir, int rpc_port,
+                                const char *method, const char *params_json,
+                                long connect_ms, long total_ms);
+
 /* The default out-of-process HTTP backend (socket + JSON-RPC POST), using
  * the env-configurable defaults. */
 char *node_rpc_call_http(const char *method, const char *params_json);

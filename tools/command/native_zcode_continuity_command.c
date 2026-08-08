@@ -69,7 +69,9 @@ static bool zcc_context(
 {
     const char *workspace = zcc_str(input, "workspace");
     const struct json_value *now = input ? json_get(input, "now_unix") : NULL;
-    if (!workspace || !zcc_hex(input, "expected_network_genesis_root",
+    if (!workspace ||
+        !zcl_native_zcode_workspace_is_explicit_scratch(workspace) ||
+        !zcc_hex(input, "expected_network_genesis_root",
                                 network, 32) || !now ||
         now->type != JSON_INT || json_get_int(now) <= 0)
         return false;

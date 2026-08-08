@@ -10,16 +10,20 @@
 #include "hotswap/hotswap_module.h"
 #include "json/json.h"
 #include "keys/key.h"
+#include "platform/time_compat.h"
 #include "sim/social_app_sim.h"
 #include "util/safe_alloc.h"
 #include "wallet/wallet.h"
 
 #include <fcntl.h>
+#include <errno.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/inotify.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -235,6 +239,14 @@ static int test_change_classification(void)
             ASSERT(strcmp(plan.proof_group, "hotswap_simnet") == 0);
             ASSERT(strcmp(plan.probe_tool, hot[i].probe) == 0);
         }
+
+        const char *island_member[] = {
+            "app/services/src/metaverse_agent_service.c",
+        };
+        ASSERT(zcl_devloop_plan_files(island_member, 1, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
+        ASSERT(strcmp(plan.proof_group, "hotswap_simnet") == 0);
+        ASSERT(strcmp(plan.probe_tool, "metaverse.property.list") == 0);
 
         const char *multi_hot[] = {
             hot[0].path, hot[1].path,
@@ -1512,6 +1524,21 @@ static int test_watch_relevance(void)
         ASSERT(!zcl_devloop_path_is_relevant(".git/index"));
         ASSERT(!zcl_devloop_path_is_relevant(""));
         ASSERT(!zcl_devloop_path_is_relevant(NULL));
+        /* Reading/compiling source may update atime and emit IN_ATTRIB. That
+         * is not a save and must never recursively cancel the active epoch. */
+        ASSERT(!zcl_devloop_watch_event_is_mutation(IN_ATTRIB));
+        ASSERT(zcl_devloop_watch_event_is_mutation(IN_CLOSE_WRITE));
+        ASSERT(zcl_devloop_watch_event_is_mutation(IN_MOVED_TO));
+        ASSERT(zcl_devloop_watch_event_is_mutation(IN_DELETE));
+        /* A cancelled focused test can leave its dot-prefixed scratch
+         * directory briefly visible at the checkout root. Directory noise
+         * the recursive watcher never enters must not synthesize a Makefile
+         * change and supersede the exact source epoch being proved. */
+        ASSERT(zcl_devloop_watch_dir_is_ignored(".zcl_test_api"));
+        ASSERT(zcl_devloop_watch_dir_is_ignored("test-tmp"));
+        ASSERT(zcl_devloop_watch_dir_is_ignored("build"));
+        ASSERT(!zcl_devloop_watch_dir_is_ignored("app"));
+        ASSERT(!zcl_devloop_watch_dir_is_ignored("lib"));
         PASS();
     } _test_next:;
     return failures;
@@ -1961,6 +1988,596 @@ static int test_distill_first_error(void)
     return failures;
 }
 
+static bool dp_hotswap_cache_fixture_init(const char *root,
+                                          const char *compiler)
+{
+    static const char owner_v1[] =
+        "int zcl_hotswap_fixture_owner(void) { return 1; }\n";
+    if (!dp_mk_write(root, "Makefile", "# fixture\n") ||
+        !dp_mk_write(root, "config/hotswap_swappable.def", "/* fixture */\n") ||
+        !dp_mk_write(root, "config/hotswap_islands.def", "/* fixture */\n") ||
+        !dp_mk_write(root, "app/controllers/src/status_native_handlers.c",
+                     owner_v1) ||
+        !dp_mk_write(root, "app/controllers/src/status_native_helpers.c",
+                     "int zcl_hotswap_fixture_helper(void) { return 2; }\n"))
+        return false;
+    char canonical_root[PATH_MAX];
+    if (!realpath(root, canonical_root))
+        return false;
+    char flags[PATH_MAX * 2];
+    int n = snprintf(
+        flags, sizeof(flags),
+        "CC=%s\n"
+        "COMPILER_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        "DEV_CFLAGS=-DZCL_DEV_BUILD -ffile-prefix-map=%s=/zclassic23\n"
+        "HOTSWAP_MODULE_LDFLAGS=-shared -Wl,-Bsymbolic\n",
+        compiler, canonical_root);
+    return n > 0 && n < (int)sizeof(flags) &&
+           dp_mk_write(root, "build/hotswap/fast/flags.env", flags);
+}
+
+static bool run_hotswap_artifact_cache_fixture(void)
+{
+    static const char root_a[] = "test-tmp/dev_hotswap_cache_a";
+    static const char root_b[] = "test-tmp/dev_hotswap_cache_b";
+    static const char cache_rel[] = "test-tmp/dev_hotswap_shared_cache";
+    static const char compiler_rel[] = "test-tmp/dev_hotswap_fake_cc.sh";
+    static const char fake_compiler[] =
+        "#!/usr/bin/env bash\n"
+        "set -eu\n"
+        "out= dep= compile=0\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  case \"$1\" in\n"
+        "    -o) out=$2; shift 2 ;;\n"
+        "    -MF) dep=$2; shift 2 ;;\n"
+        "    -c) compile=1; shift ;;\n"
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        "[ -n \"$out\" ]\n"
+        "if [ \"$compile\" -eq 1 ]; then\n"
+        "  printf 'fixture-object-v1\\n' >\"$out\"\n"
+        "  printf '%s: app/controllers/src/status_native_helpers.c app/controllers/src/status_native_handlers.c\\n' \"$out\" >\"$dep\"\n"
+        "else\n"
+        "  printf 'fixture-module-v1\\n' >\"$out\"\n"
+        "fi\n";
+    bool ok = false;
+    char cwd[PATH_MAX], cache[PATH_MAX], compiler[PATH_MAX];
+    char saved_cache[PATH_MAX] = {0};
+    char saved_process[32] = {0};
+    const char *prior_cache = getenv("ZCL_DEV_ARTIFACT_CACHE");
+    const char *prior_process = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+    bool had_cache = prior_cache && prior_cache[0];
+    bool had_process = prior_process && prior_process[0];
+    if (had_cache)
+        (void)snprintf(saved_cache, sizeof(saved_cache), "%s", prior_cache);
+    if (had_process)
+        (void)snprintf(saved_process, sizeof(saved_process), "%s",
+                       prior_process);
+    if (!getcwd(cwd, sizeof(cwd)) ||
+        snprintf(cache, sizeof(cache), "%s/%s", cwd, cache_rel) >=
+            (int)sizeof(cache) ||
+        snprintf(compiler, sizeof(compiler), "%s/%s", cwd, compiler_rel) >=
+            (int)sizeof(compiler))
+        goto out;
+    test_rm_rf_recursive(root_a);
+    test_rm_rf_recursive(root_b);
+    test_rm_rf_recursive(cache_rel);
+    (void)unlink(compiler_rel);
+    if (!dp_mk_write(".", compiler_rel, fake_compiler) ||
+        chmod(compiler_rel, 0700) != 0 ||
+        !dp_hotswap_cache_fixture_init(root_a, compiler) ||
+        !dp_hotswap_cache_fixture_init(root_b, compiler) ||
+        setenv("ZCL_DEV_ARTIFACT_CACHE", cache, 1) != 0 ||
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0)
+        goto out;
+
+    struct zcl_devloop_hotswap_build_receipt first = {0}, built = {0};
+    struct zcl_devloop_hotswap_build_receipt hit = {0}, edited = {0};
+    struct zcl_devloop_hotswap_build_receipt reverted = {0}, cross = {0};
+    struct zcl_devloop_process_result process = {0};
+    char why[256] = {0};
+    const char *owner = "app/controllers/src/status_native_handlers.c";
+
+    if (zcl_devloop_hotswap_build(root_a, owner, &first, &process,
+                                  why, sizeof(why)) ||
+        strcmp(why,
+               "dependency baseline initialized; save once more to activate") != 0 ||
+        first.compiler_processes != 1 || first.linker_processes != 0)
+        goto out;
+    if (!zcl_devloop_hotswap_build(root_a, owner, &built, &process,
+                                   why, sizeof(why)) ||
+        built.artifact_cache_hit || built.compiler_processes != 1 ||
+        built.linker_processes != 1 || strlen(built.artifact_cache_key) != 64)
+        goto out;
+    if (!zcl_devloop_hotswap_build(root_a, owner, &hit, &process,
+                                   why, sizeof(why)) ||
+        !hit.artifact_cache_hit || hit.compiler_processes != 0 ||
+        hit.linker_processes != 0 ||
+        strcmp(hit.artifact_cache_key, built.artifact_cache_key) != 0 ||
+        strcmp(hit.artifact_sha256, built.artifact_sha256) != 0)
+        goto out;
+
+    if (!dp_mk_write(root_a,
+                     "app/controllers/src/status_native_handlers.c",
+                     "int zcl_hotswap_fixture_owner(void) { return 9; }\n") ||
+        !zcl_devloop_hotswap_build(root_a, owner, &edited, &process,
+                                   why, sizeof(why)) ||
+        edited.artifact_cache_hit || edited.compiler_processes != 1 ||
+        edited.linker_processes != 1 ||
+        strcmp(edited.artifact_cache_key, built.artifact_cache_key) == 0)
+        goto out;
+    if (!dp_mk_write(root_a,
+                     "app/controllers/src/status_native_handlers.c",
+                     "int zcl_hotswap_fixture_owner(void) { return 1; }\n") ||
+        !zcl_devloop_hotswap_build(root_a, owner, &reverted, &process,
+                                   why, sizeof(why)) ||
+        !reverted.artifact_cache_hit || reverted.compiler_processes != 0 ||
+        reverted.linker_processes != 0 ||
+        strcmp(reverted.artifact_cache_key, built.artifact_cache_key) != 0)
+        goto out;
+
+    /* The second checkout must learn its depfile once, then reuse the exact
+     * artifact produced in the first checkout without a compiler or linker. */
+    if (zcl_devloop_hotswap_build(root_b, owner, &first, &process,
+                                  why, sizeof(why)) ||
+        !zcl_devloop_hotswap_build(root_b, owner, &cross, &process,
+                                   why, sizeof(why)) ||
+        !cross.artifact_cache_hit || cross.compiler_processes != 0 ||
+        cross.linker_processes != 0 ||
+        strcmp(cross.artifact_cache_key, built.artifact_cache_key) != 0 ||
+        strcmp(cross.artifact_sha256, built.artifact_sha256) != 0)
+        goto out;
+    ok = true;
+
+out:
+    if (had_cache)
+        (void)setenv("ZCL_DEV_ARTIFACT_CACHE", saved_cache, 1);
+    else
+        (void)unsetenv("ZCL_DEV_ARTIFACT_CACHE");
+    if (had_process)
+        (void)setenv("ZCL_DEVLOOP_TEST_PROCESS", saved_process, 1);
+    else
+        (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    test_rm_rf_recursive(root_a);
+    test_rm_rf_recursive(root_b);
+    test_rm_rf_recursive(cache_rel);
+    (void)unlink(compiler_rel);
+    return ok;
+}
+
+static int test_hotswap_artifact_cache(void)
+{
+    int failures = 0;
+    TEST("dev platform: resident artifacts are exact-input cached across edits and worktrees") {
+        ASSERT(run_hotswap_artifact_cache_fixture());
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool run_resident_restart_fixture(void)
+{
+    static const char root[] = "test-tmp/dev_resident_restart";
+    static const char cache_rel[] = "test-tmp/dev_restart_shared_cache";
+    static const char compiler_rel[] = "test-tmp/dev_restart_fake_cc.sh";
+    static const char fake_compiler[] =
+        "#!/usr/bin/env bash\n"
+        "set -eu\n"
+        "out= dep= compile=0 rsp= source= base= allow=0 overlay_first=0\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  case \"$1\" in\n"
+        "    -o) out=$2; shift 2 ;;\n"
+        "    -MF) dep=$2; shift 2 ;;\n"
+        "    -c) compile=1; shift ;;\n"
+        "    @*) rsp=${1#@}; overlay_first=1; shift ;;\n"
+        "    *restart-base.o) [ \"$overlay_first\" -eq 1 ]; base=$1; shift ;;\n"
+        "    -Wl,--allow-multiple-definition) allow=1; shift ;;\n"
+        "    *.c) source=$1; shift ;;\n"
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        "[ -n \"$out\" ]\n"
+        "if [ \"$compile\" -eq 1 ]; then\n"
+        "  [ -n \"$source\" ]\n"
+        "  cp \"$source\" \"$out\"\n"
+        "  printf '%s: tools/dev/restart_fixture.c\\n' \"$out\" >\"$dep\"\n"
+        "else\n"
+        "  [ -n \"$rsp\" ]\n"
+        "  [ -n \"$base\" ]\n"
+        "  [ \"$allow\" -eq 1 ]\n"
+        "  if grep -q 'restart-test-objects' \"$rsp\"; then\n"
+        "    case \"$base\" in *test-obj/fixture/restart-base.o) :;; *) exit 9;; esac\n"
+        "    grep -q 'build/dev-loop/restart-test-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "    ! grep -q 'build/test-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "    printf '#!/usr/bin/env bash\\nset -eu\\ngroups= cache=0 snapshot=0 changed=\\nfor arg in \"$@\"; do case \"$arg\" in --exact=*) groups=${arg#--exact=};; --cache) cache=1;; --cache-snapshot) snapshot=1;; --changed-source=*) changed=${arg#--changed-source=};; esac; done\\n[ -n \"$groups\" ]\\n[ \"$cache\" -eq 1 ]\\n[ \"$snapshot\" -eq 1 ]\\n[ \"$changed\" = tools/dev/restart_fixture.c ]\\ncount=1\\nrest=$groups\\nwhile [ \"${rest#*,}\" != \"$rest\" ]; do count=$((count+1)); rest=${rest#*,}; done\\nran=$((count-1))\\nprintf \"SUITE VERDICT mode=cached groups_total=921 groups_ran=%%s groups_cached=1 groups_gated=0 groups_failed=0 self_skips=0\\\\n\" \"$ran\"\\nexit 0\\n' >\"$out\"\n"
+        "  else\n"
+        "    case \"$base\" in *dev-obj/fixture/restart-base.o) :;; *) exit 9;; esac\n"
+        "    grep -q 'build/dev-loop/restart-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "    ! grep -q 'build/dev-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "    ! grep -q 'build/dev-obj/fixture/lib/base/src/other.o' \"$rsp\"\n"
+        "    printf '#!/usr/bin/env bash\\nexit 0\\n' >\"$out\"\n"
+        "  fi\n"
+        "  chmod 0700 \"$out\"\n"
+        "fi\n";
+    bool ok = false;
+    char cwd[PATH_MAX], cache[PATH_MAX], compiler[PATH_MAX], plan[PATH_MAX * 4];
+    char saved_cache[PATH_MAX] = {0};
+    char saved_process[32] = {0};
+    const char *prior_cache = getenv("ZCL_DEV_ARTIFACT_CACHE");
+    const char *prior_process = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+    bool had_cache = prior_cache && prior_cache[0];
+    bool had_process = prior_process && prior_process[0];
+    if (had_cache)
+        (void)snprintf(saved_cache, sizeof(saved_cache), "%s", prior_cache);
+    if (had_process)
+        (void)snprintf(saved_process, sizeof(saved_process), "%s",
+                       prior_process);
+    test_rm_rf_recursive(root);
+    test_rm_rf_recursive(cache_rel);
+    (void)unlink(compiler_rel);
+    if (!getcwd(cwd, sizeof(cwd)) ||
+        snprintf(cache, sizeof(cache), "%s/%s", cwd, cache_rel) >=
+            (int)sizeof(cache) ||
+        snprintf(compiler, sizeof(compiler), "%s/%s", cwd, compiler_rel) >=
+            (int)sizeof(compiler) ||
+        !dp_mk_write(".", compiler_rel, fake_compiler) ||
+        chmod(compiler_rel, 0700) != 0 ||
+        !dp_mk_write(root, "Makefile", "# fixture\n") ||
+        !dp_mk_write(root, "tools/dev/restart_fixture.c",
+                     "int restart_fixture(void) { return 7; }\n") ||
+        !dp_mk_write(root, "tools/dev/restart_second.c",
+                     "int restart_second(void) { return 8; }\n") ||
+        !dp_mk_write(root,
+                     "build/dev-obj/fixture/tools/dev/restart_fixture.o",
+                     "old-object\n") ||
+        !dp_mk_write(root,
+                     "build/dev-obj/fixture/tools/dev/restart_second.o",
+                     "old-second-object\n") ||
+        !dp_mk_write(root, "build/dev-obj/fixture/lib/base/src/other.o",
+                     "other-object\n") ||
+        !dp_mk_write(root, "build/dev-obj/fixture/link-inputs.rsp",
+                     "build/dev-obj/fixture/tools/dev/restart_fixture.o build/dev-obj/fixture/tools/dev/restart_second.o build/dev-obj/fixture/lib/base/src/other.o\n") ||
+        !dp_mk_write(root, "build/dev-obj/fixture/restart-base.o",
+                     "frozen-dev-base\n") ||
+        !dp_mk_write(root,
+                     "build/test-obj/fixture/tools/dev/restart_fixture.o",
+                     "old-test-object\n") ||
+        !dp_mk_write(root, "build/test-obj/fixture/lib/base/src/other.o",
+                     "other-test-object\n") ||
+        !dp_mk_write(root, "build/test-obj/fixture/link-inputs.rsp",
+                     "build/test-obj/fixture/tools/dev/restart_fixture.o build/test-obj/fixture/lib/base/src/other.o\n") ||
+        !dp_mk_write(root, "build/test-obj/fixture/restart-base.o",
+                     "frozen-test-base\n") ||
+        setenv("ZCL_DEV_ARTIFACT_CACHE", cache, 1) != 0)
+        goto out;
+    int n = snprintf(
+        plan, sizeof(plan),
+        "CC=%s\n"
+        "COMPILER_ID=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+        "BASE_GENERATION=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n"
+        "DEV_CFLAGS=-DZCL_DEV_BUILD\n"
+        "DEV_LDFLAGS=-pthread\n"
+        "DEV_LIBS=-lm\n"
+        "DEV_OBJ_DIR=build/dev-obj/fixture\n"
+        "DEV_LINK_RSP=build/dev-obj/fixture/link-inputs.rsp\n"
+        "DEV_BASE_RELOC=build/dev-obj/fixture/restart-base.o\n"
+        "TEST_CFLAGS=-DZCL_TESTING\n"
+        "TEST_LDFLAGS=-pthread\n"
+        "TEST_LIBS=-lm\n"
+        "TEST_OBJ_DIR=build/test-obj/fixture\n"
+        "TEST_LINK_RSP=build/test-obj/fixture/link-inputs.rsp\n"
+        "TEST_BASE_RELOC=build/test-obj/fixture/restart-base.o\n",
+        compiler);
+    if (n <= 0 || n >= (int)sizeof(plan) ||
+        !dp_mk_write(root, "build/dev-loop/restart.env", plan) ||
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0)
+        goto out;
+
+    const char *changed[] = { "tools/dev/restart_fixture.c" };
+    struct zcl_devloop_restart_build_receipt receipt = {0};
+    struct zcl_devloop_process_result process = {0};
+    char why[256] = {0};
+    if (!zcl_devloop_restart_build(root, changed, 1, &receipt, &process,
+                                   why, sizeof(why)) ||
+        !receipt.candidate_probe_passed || receipt.changed_sources != 1 ||
+        receipt.artifact_cache_hit || receipt.compiler_processes != 1 ||
+        receipt.linker_processes != 1 ||
+        receipt.complete_graph_linker_processes != 0 ||
+        receipt.probe_processes != 1 || receipt.source_guard_captures != 2 ||
+        strcmp(receipt.probe, "discover.help") != 0 ||
+        strlen(receipt.artifact_sha256) != 64 ||
+        strlen(receipt.artifact_cache_key) != 64)
+        goto out;
+    char first_build_key[65], first_build_hash[65];
+    (void)snprintf(first_build_key, sizeof(first_build_key), "%s",
+                   receipt.artifact_cache_key);
+    (void)snprintf(first_build_hash, sizeof(first_build_hash), "%s",
+                   receipt.artifact_sha256);
+
+    struct zcl_devloop_plan proof_plan = {0};
+    if (!zcl_devloop_plan_files(changed, 1, &proof_plan))
+        goto out;
+    for (size_t d = 0; d < ZCL_DEVLOOP_DIM__COUNT; d++)
+        proof_plan.dims[d].status = ZCL_DEVLOOP_DIM_NOT_APPLICABLE;
+    struct zcl_devloop_restart_proof_receipt proof = {0};
+    if (!zcl_devloop_restart_prove(root, changed, 1, &proof_plan, &proof,
+                                   &process, why, sizeof(why)) ||
+        !proof.proof_complete || !proof.immediate_proof_complete ||
+        proof.integration_proof_deferred || proof.deferred_group_count != 0 ||
+        proof.group_count != 18 ||
+        proof.groups_ran != 17 || proof.groups_cached != 1 ||
+        proof.self_skips != 0 ||
+        !strstr(proof.groups, "test_dev_platform") ||
+        !strstr(proof.groups, "test_make_lint_gates_heavy_02") ||
+        proof.artifact_cache_hit || proof.compiler_processes != 1 ||
+        proof.linker_processes != 1 ||
+        proof.complete_graph_linker_processes != 0 ||
+        proof.test_processes != 1 || proof.source_guard_captures != 2 ||
+        strlen(proof.artifact_sha256) != 64 ||
+        strlen(proof.artifact_cache_key) != 64 ||
+        strlen(proof.groups_sha256) != 64)
+        goto out;
+
+    memset(&proof, 0, sizeof(proof));
+    memset(&process, 0, sizeof(process));
+    if (!zcl_devloop_restart_prove_immediate(
+            root, changed, 1, &proof_plan, &proof, &process,
+            why, sizeof(why)) ||
+        proof.proof_complete || !proof.immediate_proof_complete ||
+        !proof.integration_proof_deferred || proof.group_count != 5 ||
+        proof.deferred_group_count != 13 ||
+        proof.groups_ran != 4 || proof.groups_cached != 1 ||
+        proof.self_skips != 0 ||
+        !proof.artifact_cache_hit || proof.compiler_processes != 1 ||
+        proof.linker_processes != 0 ||
+        strstr(proof.groups, "test_make_lint_gates") ||
+        !strstr(proof.deferred_groups,
+                "test_make_lint_gates_heavy_02") ||
+        strlen(proof.deferred_groups_sha256) != 64)
+        goto out;
+
+    /* Exact, edit, and revert cycles compile the source for diagnostic
+     * freshness, but only new complete-graph link inputs may invoke a linker. */
+    memset(&receipt, 0, sizeof(receipt));
+    if (!zcl_devloop_restart_build(root, changed, 1, &receipt, &process,
+                                   why, sizeof(why)) ||
+        !receipt.artifact_cache_hit || receipt.compiler_processes != 1 ||
+        receipt.linker_processes != 0 ||
+        strcmp(receipt.artifact_cache_key, first_build_key) != 0 ||
+        strcmp(receipt.artifact_sha256, first_build_hash) != 0)
+        goto out;
+    if (!dp_mk_write(root, "tools/dev/restart_fixture.c",
+                     "int restart_fixture(void) { return 9; }\n"))
+        goto out;
+    memset(&receipt, 0, sizeof(receipt));
+    if (!zcl_devloop_restart_build(root, changed, 1, &receipt, &process,
+                                   why, sizeof(why)) ||
+        receipt.artifact_cache_hit || receipt.compiler_processes != 1 ||
+        receipt.linker_processes != 1 ||
+        receipt.complete_graph_linker_processes != 0 ||
+        strcmp(receipt.artifact_cache_key, first_build_key) == 0)
+        goto out;
+    if (!dp_mk_write(root, "tools/dev/restart_fixture.c",
+                     "int restart_fixture(void) { return 7; }\n"))
+        goto out;
+    memset(&receipt, 0, sizeof(receipt));
+    if (!zcl_devloop_restart_build(root, changed, 1, &receipt, &process,
+                                   why, sizeof(why)) ||
+        !receipt.artifact_cache_hit || receipt.compiler_processes != 1 ||
+        receipt.linker_processes != 0 ||
+        strcmp(receipt.artifact_cache_key, first_build_key) != 0 ||
+        strcmp(receipt.artifact_sha256, first_build_hash) != 0)
+        goto out;
+
+    struct zcl_devloop_plan overwide = proof_plan;
+    (void)snprintf(overwide.closure_groups[0],
+                   sizeof(overwide.closure_groups[0]), "%s", "wallet");
+    (void)snprintf(overwide.closure_groups[1],
+                   sizeof(overwide.closure_groups[1]), "%s", "net");
+    overwide.closure_groups_len = 2;
+    memset(&proof, 0, sizeof(proof));
+    memset(&process, 0, sizeof(process));
+    if (!zcl_devloop_restart_prove_immediate(
+            root, changed, 1, &overwide, &proof, &process,
+            why, sizeof(why)) ||
+        !proof.immediate_proof_complete || proof.proof_complete ||
+        !proof.integration_proof_deferred || !proof.bounded_proof_deferred ||
+        proof.group_count == 0 || proof.group_count > 32 ||
+        proof.deferred_group_count == 0 ||
+        !strstr(proof.groups, "test_dev_platform") ||
+        strstr(proof.groups, "test_wallet") || strstr(proof.groups, "test_net") ||
+        !strstr(proof.deferred_groups, "test_wallet") ||
+        !strstr(proof.deferred_groups, "test_net") ||
+        proof.compiler_processes != 1 || proof.linker_processes != 0 ||
+        proof.test_processes != 1)
+        goto out;
+
+    struct zcl_devloop_plan substituted = proof_plan;
+    (void)snprintf(substituted.path_groups[0],
+                   sizeof(substituted.path_groups[0]), "%s", "json");
+    memset(&proof, 0, sizeof(proof));
+    memset(&process, 0, sizeof(process));
+    if (zcl_devloop_restart_prove(root, changed, 1, &substituted, &proof,
+                                  &process, why, sizeof(why)) ||
+        strcmp(why,
+               "affected proof plan does not match the changed source set") != 0 ||
+        proof.compiler_processes != 0 || proof.linker_processes != 0 ||
+        proof.test_processes != 0)
+        goto out;
+
+    /* A later edit links both its new overlay and the prior source's still
+     * exact overlay. The fake linker always requires the first overlay, so
+     * this second call fails if the resident forgets earlier direct edits. */
+    const char *second[] = { "tools/dev/restart_second.c" };
+    memset(&receipt, 0, sizeof(receipt));
+    if (!zcl_devloop_restart_build(root, second, 1, &receipt, &process,
+                                   why, sizeof(why)) ||
+        !receipt.candidate_probe_passed || receipt.compiler_processes != 1 ||
+        receipt.linker_processes != 1 ||
+        receipt.complete_graph_linker_processes != 0 ||
+        receipt.probe_processes != 1)
+        goto out;
+
+    if (!dp_mk_write(root, "tools/dev/restart_second.c",
+                     "const char *restart_second(void) { return \".init_array\"; }\n"))
+        goto out;
+    memset(&receipt, 0, sizeof(receipt));
+    if (zcl_devloop_restart_build(root, second, 1, &receipt, &process,
+                                  why, sizeof(why)) ||
+        strcmp(why,
+               "overlay link input is missing, unreadable, or owns process initialization") != 0 ||
+        receipt.compiler_processes != 1 || receipt.linker_processes != 0 ||
+        receipt.complete_graph_linker_processes != 0 ||
+        receipt.probe_processes != 0)
+        goto out;
+
+    const char *forbidden[] = { "core/consensus/src/restart_fixture.c" };
+    memset(&receipt, 0, sizeof(receipt));
+    if (zcl_devloop_restart_build(root, forbidden, 1, &receipt, &process,
+                                  why, sizeof(why)) ||
+        strcmp(why, "consensus-risk input is excluded from fast restart") != 0 ||
+        receipt.compiler_processes != 0 || receipt.linker_processes != 0 ||
+        receipt.probe_processes != 0)
+        goto out;
+    ok = true;
+
+out:
+    if (had_cache)
+        (void)setenv("ZCL_DEV_ARTIFACT_CACHE", saved_cache, 1);
+    else
+        (void)unsetenv("ZCL_DEV_ARTIFACT_CACHE");
+    if (had_process)
+        (void)setenv("ZCL_DEVLOOP_TEST_PROCESS", saved_process, 1);
+    else
+        (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    test_rm_rf_recursive(root);
+    test_rm_rf_recursive(cache_rel);
+    (void)unlink(compiler_rel);
+    return ok;
+}
+
+static int test_resident_restart_builder(void)
+{
+    int failures = 0;
+    TEST("dev platform: resident restart builds and probes an isolated candidate without Make") {
+        ASSERT(run_resident_restart_fixture());
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_resident_process_cancellation(void)
+{
+    int failures = 0;
+    TEST("dev platform: resident cancellation promptly stops an active child group") {
+        const char *saved = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+        char *saved_copy = saved ? strdup(saved) : NULL;
+        ASSERT(!saved || saved_copy);
+        ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
+
+        const char *argv[] = { "sleep", "30", NULL };
+        struct zcl_devloop_process_result result = {0};
+        zcl_devloop_process_cancel_request();
+        int64_t started = platform_time_monotonic_us();
+        ASSERT(zcl_devloop_process_run(".", argv, 60000, &result));
+        int64_t elapsed_us = platform_time_monotonic_us() - started;
+        ASSERT(result.cancelled);
+        ASSERT(!result.timed_out);
+        ASSERT(result.term_signal == SIGTERM);
+        ASSERT(elapsed_us >= 0 && elapsed_us < INT64_C(1000000));
+        zcl_devloop_process_cancel_clear();
+
+        if (saved_copy) {
+            ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", saved_copy, 1) == 0);
+            free(saved_copy);
+        } else {
+            ASSERT(unsetenv("ZCL_DEVLOOP_TEST_PROCESS") == 0);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+struct process_poll_fixture {
+    unsigned calls;
+    unsigned cancel_after;
+};
+
+static bool cancel_after_poll(void *opaque)
+{
+    struct process_poll_fixture *fixture = opaque;
+    fixture->calls++;
+    return fixture->calls >= fixture->cancel_after;
+}
+
+static int test_resident_process_supersession(void)
+{
+    int failures = 0;
+    TEST("dev platform: resident process polling cancels superseded work") {
+        const char *saved = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+        char *saved_copy = saved ? strdup(saved) : NULL;
+        ASSERT(!saved || saved_copy);
+        ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
+
+        struct process_poll_fixture fixture = { .cancel_after = 2 };
+        zcl_devloop_process_cancel_poll_set(cancel_after_poll, &fixture);
+        const char *argv[] = { "sleep", "30", NULL };
+        struct zcl_devloop_process_result result = {0};
+        ASSERT(zcl_devloop_process_run(".", argv, 60000, &result));
+        zcl_devloop_process_cancel_poll_clear();
+        ASSERT(fixture.calls >= 2);
+        ASSERT(result.cancelled);
+        ASSERT(!result.timed_out);
+        ASSERT(result.elapsed_ms < 1000);
+        zcl_devloop_process_cancel_clear();
+
+        char pid_path[PATH_MAX], script[PATH_MAX + 160];
+        ASSERT(snprintf(pid_path, sizeof(pid_path),
+                        "test-tmp/devloop_nested_%ld.pid", (long)getpid()) > 0);
+        ASSERT(snprintf(script, sizeof(script),
+                        "timeout 30 sh -c 'echo $$ > %s; sleep 30'",
+                        pid_path) > 0);
+        (void)unlink(pid_path);
+        fixture.calls = 0;
+        fixture.cancel_after = 10;
+        zcl_devloop_process_cancel_poll_set(cancel_after_poll, &fixture);
+        const char *nested_argv[] = { "sh", "-c", script, NULL };
+        memset(&result, 0, sizeof(result));
+        ASSERT(zcl_devloop_process_run(".", nested_argv, 60000, &result));
+        zcl_devloop_process_cancel_poll_clear();
+        ASSERT(result.cancelled);
+        FILE *pid_file = fopen(pid_path, "r");
+        ASSERT(pid_file != NULL);
+        long nested_pid = 0;
+        ASSERT(fscanf(pid_file, "%ld", &nested_pid) == 1);
+        ASSERT(fclose(pid_file) == 0);
+        ASSERT(nested_pid > 1);
+        bool gone = false;
+        const struct timespec retry_delay = { .tv_nsec = 10000000L };
+        for (int i = 0; i < 100; i++) {
+            errno = 0;
+            if (kill((pid_t)nested_pid, 0) != 0 && errno == ESRCH) {
+                gone = true;
+                break;
+            }
+            (void)nanosleep(&retry_delay, NULL);
+        }
+        ASSERT(gone);
+        ASSERT(unlink(pid_path) == 0);
+        zcl_devloop_process_cancel_clear();
+
+        if (saved_copy) {
+            ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", saved_copy, 1) == 0);
+            free(saved_copy);
+        } else {
+            ASSERT(unsetenv("ZCL_DEVLOOP_TEST_PROCESS") == 0);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_native_source_cas_shadow(void)
 {
     int failures = 0;
@@ -1978,6 +2595,8 @@ static int test_native_source_cas_shadow(void)
         ASSERT(strlen(first.cas_root_sha3) == 64);
         ASSERT(first.cas_files_total == 2);
         ASSERT(first.cas_files_read == 2);
+        ASSERT(first.cas_bytes_total == 61);
+        ASSERT(first.cas_bytes_read == 61);
 
         ASSERT(zcl_dev_source_cas_capture(fixture, &warm));
         ASSERT(warm.cas_present);
@@ -1985,12 +2604,16 @@ static int test_native_source_cas_shadow(void)
         ASSERT(warm.cas_files_total == 2);
         ASSERT(warm.cas_files_read == 0);
         ASSERT(warm.cas_nodes_hashed == 0);
+        ASSERT(warm.cas_bytes_total == 61);
+        ASSERT(warm.cas_bytes_read == 0);
 
         ASSERT(dp_mk_write(fixture, "lib/net/src/source_cas_a.c",
                            "int source_cas_a(void) { return 2; }\n"));
         ASSERT(zcl_dev_source_cas_capture(fixture, &edited));
         ASSERT(edited.cas_present);
         ASSERT(edited.cas_files_read == 1);
+        ASSERT(edited.cas_bytes_total == 61);
+        ASSERT(edited.cas_bytes_read == 37);
         ASSERT(strcmp(first.cas_root_sha3, edited.cas_root_sha3) != 0);
         ASSERT(system("rm -rf test-tmp/dev_source_cas_shadow") == 0);
         PASS();
@@ -2003,6 +2626,10 @@ int test_dev_platform(void)
     int failures = 0;
     failures += test_failure_store();
     failures += test_distill_first_error();
+    failures += test_hotswap_artifact_cache();
+    failures += test_resident_restart_builder();
+    failures += test_resident_process_cancellation();
+    failures += test_resident_process_supersession();
     failures += test_native_source_cas_shadow();
     failures += test_menu_and_search();
     failures += test_change_classification();

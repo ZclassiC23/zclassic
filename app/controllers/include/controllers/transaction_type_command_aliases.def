@@ -11,15 +11,27 @@ TX_COMMAND_ALIAS("transparent_t_to_t", "vault.send", ZCL_TRANSACTION_COMMAND_ROL
     "Vault pass-through to core.wallet.transaction.send; it builds no second transaction.")
 TX_COMMAND_ALIAS("transparent_t_to_t", "vault.intent.list", ZCL_TRANSACTION_COMMAND_ROLE_INSPECT,
     "Lists redacted durable transparent transaction-intent state without decrypting effects.")
+TX_COMMAND_ALIAS("transparent_t_to_t", "vault.intent.submit", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
+    "Queues the canonical durable intent commit and returns its plan id immediately; it owns no second transaction builder.")
 TX_COMMAND_ALIAS("transparent_multi_recipient", "vault.intent.fanout-plan", ZCL_TRANSACTION_COMMAND_ROLE_PLAN,
     "Prepares private wallet-owned destinations and one exact multi-output transparent plan; a separate vault.intent.commit owns broadcast.")
+TX_COMMAND_ALIAS("transparent_multi_recipient", "vault.intent.submit", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
+    "Queues the canonical durable intent commit and returns its plan id immediately; the bound plan determines the exact outputs.")
+TX_COMMAND_ALIAS("sapling_mixed_recipient", "vault.intent.submit", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
+    "Queues the canonical durable mixed-recipient intent commit; proving and broadcast remain owned by that intent.")
 
 TX_COMMAND_ALIAS("sapling_t_to_z", "vault.send-shielded", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
     "Vault pass-through to core.wallet.shielded.send; the runtime from/to pools select this shape.")
+TX_COMMAND_ALIAS("sapling_t_to_z", "vault.intent.submit", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
+    "Queues the canonical durable shielding intent commit and returns before proof construction completes.")
 TX_COMMAND_ALIAS("sapling_z_to_z", "vault.send-shielded", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
     "Vault pass-through to core.wallet.shielded.send; the runtime from/to pools select this shape.")
+TX_COMMAND_ALIAS("sapling_z_to_z", "vault.intent.submit", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
+    "Queues the canonical durable shielded intent commit and returns before proof construction completes.")
 TX_COMMAND_ALIAS("sapling_z_to_t", "vault.send-shielded", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
     "Vault pass-through to core.wallet.shielded.send; the runtime from/to pools select this shape.")
+TX_COMMAND_ALIAS("sapling_z_to_t", "vault.intent.submit", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
+    "Queues the canonical durable unshielding intent commit and returns before proof construction completes.")
 
 TX_COMMAND_ALIAS("zslp_send", "vault.send-token", ZCL_TRANSACTION_COMMAND_ROLE_ROUTE,
     "Vault pass-through to app.tokens.send; token selection, signing, persistence, and relay stay canonical.")

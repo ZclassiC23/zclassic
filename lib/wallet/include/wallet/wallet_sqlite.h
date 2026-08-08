@@ -128,8 +128,8 @@ struct zcl_result wallet_sqlite_open_r(struct wallet_sqlite *ws, sqlite3 *db);
  * open, or a prepare/write/read-mismatch error (recorded in
  * ws->last_error). */
 struct zcl_result wallet_sqlite_self_test(struct wallet_sqlite *ws);
-/* Load every row of wallet_keys into w->keystore (decrypting WKS1
- * envelopes). Malformed or undecryptable rows are skipped, counted via
+/* Load every row of wallet_keys into w->keystore (decrypting legacy WKS1 or
+ * wrapped-DEK WKD1 envelopes). Malformed or undecryptable rows are skipped, counted via
  * wallet_sqlite_read_keys_corrupt_count(), and do not fail the call.
  * Returns ZCL_OK once all rows are consumed; WSQL_NULL_ARG if ws or w is
  * NULL, WSQL_DB_NOT_OPEN if not open, or WSQL_READ_FAIL on a step error. */
@@ -166,6 +166,13 @@ struct zcl_result wallet_sqlite_delete_key_r(struct wallet_sqlite *ws,
  * BEGIN/COMMIT failure. */
 struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
                                         struct wallet *w);
+/* Persist mutable wallet transaction rows and the scan-height cursor without
+ * rewriting immutable key/seed/script material.  This is the pre-relay hot
+ * path after builders have already proven any consumed change key durable;
+ * full-state checkpoints, key creation, recovery, and repair continue to use
+ * wallet_sqlite_flush_r(). */
+struct zcl_result wallet_sqlite_flush_transactions_r(
+    struct wallet_sqlite *ws, struct wallet *w);
 
 /* Test-only override for the flush BEGIN IMMEDIATE time budget (see
  * WALLET_FLUSH_BEGIN_BUDGET_MS in wallet_sqlite.c). Production never calls
@@ -175,14 +182,20 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
 void wallet_sqlite_flush_set_begin_budget_ms(int64_t ms);
 /* One-time migration scrub for datadirs that hold PLAINTEXT secret rows
  * (written before at-rest encryption was configured, or by the deleted
- * plaintext mirror writer).  When a passphrase is configured, wraps every
- * non-envelope blob in wallet_keys.privkey, wallet_sapling_keys.xsk, and
- * wallet_seed.seed into a WKS1 envelope IN PLACE (byte content preserved;
- * nothing is deleted).  No-op when no passphrase is set — raw 32-byte
+ * plaintext mirror writer). When a passphrase is configured, upgrades
+ * wallet_keys.privkey to a fast WKD1 envelope under one passphrase-wrapped
+ * wallet DEK, while wallet_sapling_keys.xsk and wallet_seed.seed retain WKS1.
+ * Byte content is preserved and nothing is deleted. No-op without a passphrase — raw 32-byte
  * secrets are the legitimate format for an unencrypted wallet.  Runs
  * inside one BEGIN IMMEDIATE transaction; any failure rolls back and
  * returns a WSQL_* error.  Idempotent. */
 struct zcl_result wallet_sqlite_scrub_plaintext_r(struct wallet_sqlite *ws);
+/* Rewrite loaded transparent keys under WKD1 in one transaction. This is the
+ * one-time bridge from legacy WKS1 without paying its KDF twice: boot first
+ * decrypts those rows into `w`, then this function persists the same keys
+ * under the wallet DEK before the residual scrub handles unloaded rows. */
+struct zcl_result wallet_sqlite_migrate_transparent_keys_r(
+    struct wallet_sqlite *ws, struct wallet *w);
 /* Return a non-destructive health snapshot: open/canary state, the live
  * SELECT COUNT(*) FROM wallet_keys row_count, the caller-supplied
  * keystore_count, their mismatch flag, and the last recorded error. If

@@ -14,6 +14,7 @@
 #include "wallet/wallet_sqlite.h"
 #include "wallet/wallet_keystore.h"
 #include "wallet/wallet_lock.h"
+#include "wallet/wallet_sqlite_key_crypto.h"
 #include "wallet/keystore.h"
 #include "keys/key.h"
 #include "keys/key_io.h"
@@ -459,6 +460,7 @@ void wallet_sqlite_close(struct wallet_sqlite *ws)
     if (ws->stmt_scan_height_read)  { sqlite3_finalize(ws->stmt_scan_height_read);  ws->stmt_scan_height_read = NULL; }
     ws->db = NULL;
     ws->open = false;
+    wallet_sqlite_key_crypto_reset();
 }
 
 /* ── Self-test ─────────────────────────────────────────────────── *
@@ -587,9 +589,19 @@ struct zcl_result wallet_sqlite_write_key_r(struct wallet_sqlite *ws,
     struct key_id kid = pubkey_get_id(pk);
     bool existed = wsql_wallet_key_row_exists(ws, &kid);
 
-    uint8_t *enc_blob = NULL;
+    uint8_t enc_blob[WSQL_KEY_ENVELOPE_OVERHEAD + 32];
     size_t enc_len = 0;
-    bool encrypted = wallet_encrypt_blob(key->vch, 32, &enc_blob, &enc_len);
+    bool encryption_required =
+        wallet_lock_effective_passphrase() != NULL ||
+        wallet_lock_encrypted_at_rest();
+    bool encrypted = encryption_required && wallet_sqlite_key_encrypt(
+        ws->db, kid.id.data, key->vch, 32, enc_blob, sizeof(enc_blob),
+        &enc_len);
+    if (encryption_required && !encrypted) {
+        memory_cleanse(enc_blob, sizeof(enc_blob));
+        return wsql_fail(ws, ZCL_ERR(WSQL_WRITE_FAIL,
+            "write_key: encrypted wallet key wrapping failed"));
+    }
 
     sqlite3_stmt *s = ws->stmt_key_write;
     sqlite3_reset(s);
@@ -602,7 +614,7 @@ struct zcl_result wallet_sqlite_write_key_r(struct wallet_sqlite *ws,
     sqlite3_bind_int(s, 4, key->fCompressed ? 1 : 0);
 
     int rc = AR_STEP_WRITE(s);
-    if (enc_blob) { memory_cleanse(enc_blob, enc_len); free(enc_blob); }
+    memory_cleanse(enc_blob, sizeof(enc_blob));
 
     if (rc != SQLITE_DONE)
         return wsql_fail(ws, ZCL_ERR(WSQL_WRITE_FAIL,
@@ -700,7 +712,18 @@ struct zcl_result wallet_sqlite_read_single_key(struct wallet_sqlite *ws,
             priv_len));
 
     privkey_init(out_key);
-    if (is_wks1_blob(priv_buf, (size_t)priv_len)) {
+    if (wallet_sqlite_key_is_envelope(priv_buf, (size_t)priv_len)) {
+        size_t plain_len = 0;
+        if (!wallet_sqlite_key_decrypt(ws->db, kid.id.data,
+                priv_buf, (size_t)priv_len, out_key->vch,
+                sizeof(out_key->vch), &plain_len) || plain_len != 32) {
+            memory_cleanse(priv_buf, sizeof(priv_buf));
+            memory_cleanse(out_key->vch, sizeof(out_key->vch));
+            return wsql_fail(ws, ZCL_ERR(WSQL_READ_FAIL,
+                "read_single_key: WKD1 decrypt failed "
+                "(wrong passphrase, row swap, or tamper?)"));
+        }
+    } else if (is_wks1_blob(priv_buf, (size_t)priv_len)) {
         uint8_t *plain = NULL;
         size_t plain_len = 0;
         if (!wallet_decrypt_blob(priv_buf, (size_t)priv_len,
@@ -770,7 +793,22 @@ struct zcl_result wallet_sqlite_read_keys_r(struct wallet_sqlite *ws,
         struct privkey key;
         privkey_init(&key);
 
-        if (is_wks1_blob(priv_data, (size_t)priv_len)) {
+        struct key_id kid = pubkey_get_id(&pk);
+        if (wallet_sqlite_key_is_envelope(priv_data, (size_t)priv_len)) {
+            size_t plain_len = 0;
+            if (!wallet_sqlite_key_decrypt(ws->db, kid.id.data,
+                    priv_data, (size_t)priv_len, key.vch,
+                    sizeof(key.vch), &plain_len) || plain_len != 32) {
+                memory_cleanse(key.vch, sizeof(key.vch));
+                fprintf(stderr,  // obs-ok:corrupt-row-counted-via-g_read_keys_corrupt_rows
+                    "[wallet_sqlite] %s:%d %s(): read_keys: dropping "
+                    "row rowid=%lld — WKD1 decrypt failed "
+                    "(wrong passphrase, row swap, or tamper?)\n",
+                    __FILE__, __LINE__, __func__, (long long)rowid);
+                g_read_keys_corrupt_rows++;
+                continue;
+            }
+        } else if (is_wks1_blob(priv_data, (size_t)priv_len)) {
             uint8_t *plain = NULL;
             size_t plain_len = 0;
             if (!wallet_decrypt_blob(priv_data, (size_t)priv_len,
@@ -1295,8 +1333,8 @@ bool wallet_sqlite_read_watch_only(struct wallet_sqlite *ws, struct wallet *w)
 
 /* ── Flush all wallet state to SQLite ──────────────────────────── */
 
-struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
-                                        struct wallet *w)
+static struct zcl_result wallet_sqlite_flush_scope_r(
+    struct wallet_sqlite *ws, struct wallet *w, bool full_state)
 {
     if (!ws)
         return ZCL_ERR(WSQL_NULL_ARG, "wallet_sqlite pointer is NULL");
@@ -1305,6 +1343,14 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
     if (!ws->open)
         return wsql_fail(ws, ZCL_ERR(WSQL_DB_NOT_OPEN,
             "flush: wallet_sqlite is not open"));
+
+    /* Create/load the wallet DEK before BEGIN. Creating it inside this
+     * transaction and later rolling back would leave a cached orphan key. */
+    if ((wallet_lock_effective_passphrase() != NULL ||
+         wallet_lock_encrypted_at_rest()) &&
+        !wallet_sqlite_key_crypto_prepare(ws->db))
+        return wsql_fail(ws, ZCL_ERR(WSQL_WRITE_FAIL,
+            "flush: wallet key data-encryption key unavailable"));
 
     /* Boot/load reads use cached SELECT statements. If a read cursor is left
      * active, SQLite can reject the next BEGIN IMMEDIATE on the same handle
@@ -1396,8 +1442,8 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
      * no production path takes the reverse order. Without these inner locks a
      * concurrent address/import operation could publish half an entry while
      * the flush serialized it. */
-    zcl_mutex_lock(&w->keystore.cs);
-    zcl_mutex_lock(&w->sapling_keys.cs);
+    if (full_state) zcl_mutex_lock(&w->keystore.cs);
+    if (full_state) zcl_mutex_lock(&w->sapling_keys.cs);
 
     /* Invariant: if ANY writer fails, ROLLBACK the whole transaction
      * rather than COMMIT a partial state — committing only the writes
@@ -1413,7 +1459,7 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
     int n_script_fail = 0;
     int n_scanh_fail = 0;
 
-    for (size_t i = 0; i < w->keystore.num_keys; i++) {
+    for (size_t i = 0; full_state && i < w->keystore.num_keys; i++) {
         if (!w->keystore.keys[i].used) continue;
         if (!w->keystore.keys[i].key.fValid) continue;
 
@@ -1433,7 +1479,6 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
             goto rollback;
         }
     }
-
     for (size_t i = 0; i < MAX_WALLET_TX; i++) {
         if (!w->map_wallet[i].used) continue;
         if (!wallet_sqlite_write_tx(ws, &w->map_wallet[i])) {
@@ -1443,9 +1488,8 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
             goto rollback;
         }
     }
-
     struct sapling_keystore *sks = &w->sapling_keys;
-    if (sks->has_seed) {
+    if (full_state && sks->has_seed) {
         if (!wallet_sqlite_write_sapling_seed(ws, sks->seed)) {
             n_zseed_fail++;
             if (first_fail.ok) first_fail = ZCL_ERR(WSQL_WRITE_FAIL,
@@ -1453,7 +1497,7 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
             goto rollback;
         }
     }
-    for (size_t i = 0; i < sks->num_keys; i++) {
+    for (size_t i = 0; full_state && i < sks->num_keys; i++) {
         if (!sks->keys[i].used) continue;
         if (!wallet_sqlite_write_sapling_key(ws, sks->keys[i].child_index,
                                               &sks->keys[i])) {
@@ -1465,7 +1509,7 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
         }
     }
 
-    for (size_t i = 0; i < w->keystore.num_scripts; i++) {
+    for (size_t i = 0; full_state && i < w->keystore.num_scripts; i++) {
         if (!w->keystore.scripts[i].used) continue;
         if (!wallet_sqlite_write_script(ws,
                                          &w->keystore.scripts[i].script_id,
@@ -1484,8 +1528,8 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
         goto rollback;
     }
 
-    zcl_mutex_unlock(&w->sapling_keys.cs);
-    zcl_mutex_unlock(&w->keystore.cs);
+    if (full_state) zcl_mutex_unlock(&w->sapling_keys.cs);
+    if (full_state) zcl_mutex_unlock(&w->keystore.cs);
     zcl_mutex_unlock(&w->cs);
 
     char *commit_err = NULL;
@@ -1502,8 +1546,8 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
     return ZCL_OK;
 
 rollback:
-    zcl_mutex_unlock(&w->sapling_keys.cs);
-    zcl_mutex_unlock(&w->keystore.cs);
+    if (full_state) zcl_mutex_unlock(&w->sapling_keys.cs);
+    if (full_state) zcl_mutex_unlock(&w->keystore.cs);
     zcl_mutex_unlock(&w->cs);
     {
         char *rb_err = NULL;
@@ -1525,6 +1569,8 @@ rollback:
         first_fail.ok ? "(none captured)" : first_fail.message));
 }
 
+struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws, struct wallet *w) { return wallet_sqlite_flush_scope_r(ws, w, true); }
+struct zcl_result wallet_sqlite_flush_transactions_r(struct wallet_sqlite *ws, struct wallet *w) { return wallet_sqlite_flush_scope_r(ws, w, false); }
 bool wallet_sqlite_flush(struct wallet_sqlite *ws, struct wallet *w)
 {
     struct zcl_result r = wallet_sqlite_flush_r(ws, w);
@@ -1532,129 +1578,6 @@ bool wallet_sqlite_flush(struct wallet_sqlite *ws, struct wallet *w)
     LOG_FAIL("wallet_sqlite", "code=%d (%s:%d) %s",
              r.code,
              r.source_file ? r.source_file : "?", r.source_line, r.message);
-}
-
-/* ── Plaintext-at-rest scrub ───────────────────────────────────── */
-
-/* Upgrade one secret column row-by-row: every non-NULL, non-empty blob
- * that is not already a WKS1 envelope is wrapped in place under the
- * configured passphrase.  The blob is encrypted byte-for-byte as
- * stored, so rows the in-memory wallet never loaded (oversized
- * keystore, stale mirror-era rows) are UPGRADED, never deleted — the
- * scrub cannot destroy key material.  Returns rows upgraded, or -1 on
- * failure (the caller rolls back). */
-static int wsql_scrub_column(sqlite3 *db, const char *table,
-                             const char *secret_col)
-{
-    char select_sql[160];
-    char update_sql[160];
-    snprintf(select_sql, sizeof(select_sql),
-             "SELECT rowid, %s FROM %s", secret_col, table);
-    snprintf(update_sql, sizeof(update_sql),
-             "UPDATE %s SET %s=?1 WHERE rowid=?2", table, secret_col);
-
-    sqlite3_stmt *scan = NULL;
-    if (sqlite3_prepare_v2(db, select_sql, -1, &scan, NULL) != SQLITE_OK ||
-        !scan) {
-        if (scan) sqlite3_finalize(scan);
-        return -1;
-    }
-    sqlite3_stmt *upd = NULL;
-    if (sqlite3_prepare_v2(db, update_sql, -1, &upd, NULL) != SQLITE_OK ||
-        !upd) {
-        if (upd) sqlite3_finalize(upd);
-        sqlite3_finalize(scan);
-        return -1;
-    }
-
-    /* Updating rows under the scan's own read cursor is safe here: the
-     * UPDATE touches only rows already classified, changes no rowid,
-     * and inserts nothing, so every row is still visited exactly once. */
-    int upgraded = 0;
-    bool fail = false;
-    int rc;
-    while ((rc = AR_STEP_ROW_READONLY(scan)) == SQLITE_ROW) {
-        const void *blob = sqlite3_column_blob(scan, 1);
-        int blen = sqlite3_column_bytes(scan, 1);
-        if (!blob || blen <= 0)
-            continue;      /* malformed — the read path drops it loudly */
-        if (is_wks1_blob(blob, (size_t)blen))
-            continue;      /* already an envelope */
-
-        int64_t rid = sqlite3_column_int64(scan, 0);
-        uint8_t *enc = NULL;
-        size_t enc_len = 0;
-        if (!wallet_encrypt_blob(blob, (size_t)blen, &enc, &enc_len)) {
-            fail = true;
-            break;
-        }
-        sqlite3_reset(upd);
-        sqlite3_bind_blob(upd, 1, enc, (int)enc_len, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(upd, 2, rid);
-        int urc = AR_STEP_WRITE(upd);
-        memory_cleanse(enc, enc_len);
-        free(enc);
-        if (urc != SQLITE_DONE) {
-            fail = true;
-            break;
-        }
-        upgraded++;
-    }
-    sqlite3_finalize(upd);
-    sqlite3_finalize(scan);
-    if (fail || rc != SQLITE_DONE)
-        return -1;
-    return upgraded;
-}
-
-struct zcl_result wallet_sqlite_scrub_plaintext_r(struct wallet_sqlite *ws)
-{
-    if (!ws)
-        return ZCL_ERR(WSQL_NULL_ARG, "wallet_sqlite pointer is NULL");
-    if (!ws->open)
-        return wsql_fail(ws, ZCL_ERR(WSQL_DB_NOT_OPEN,
-            "scrub: wallet_sqlite is not open"));
-
-    /* No passphrase: raw 32-byte secrets are the legitimate at-rest
-     * format (Bitcoin-Core unlocked-wallet semantics) — no-op. */
-    if (!wallet_passphrase())
-        return ZCL_OK;
-
-    char *err = NULL;
-    if (sqlite3_exec(ws->db, "BEGIN IMMEDIATE", NULL, NULL, &err)
-            != SQLITE_OK) {
-        struct zcl_result r = ZCL_ERR(WSQL_TXN_BEGIN_FAIL,
-            "scrub: BEGIN IMMEDIATE failed: %s", err ? err : "(unknown)");
-        if (err) sqlite3_free(err);
-        return wsql_fail(ws, r);
-    }
-
-    int t = wsql_scrub_column(ws->db, "wallet_keys", "privkey");
-    int z = (t < 0) ? -1
-                    : wsql_scrub_column(ws->db, "wallet_sapling_keys", "xsk");
-    int sd = (t < 0 || z < 0) ? -1
-                    : wsql_scrub_column(ws->db, "wallet_seed", "seed");
-
-    if (t < 0 || z < 0 || sd < 0) {
-        sqlite3_exec(ws->db, "ROLLBACK", NULL, NULL, NULL);
-        return wsql_fail(ws, ZCL_ERR(WSQL_WRITE_FAIL,
-            "scrub: plaintext upgrade failed: %s", sqlite3_errmsg(ws->db)));
-    }
-
-    err = NULL;
-    if (sqlite3_exec(ws->db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) {
-        struct zcl_result r = ZCL_ERR(WSQL_TXN_COMMIT_FAIL,
-            "scrub: COMMIT failed: %s", err ? err : "(unknown)");
-        if (err) sqlite3_free(err);
-        sqlite3_exec(ws->db, "ROLLBACK", NULL, NULL, NULL);
-        return wsql_fail(ws, r);
-    }
-
-    if (t + z + sd > 0)
-        printf("wallet_sqlite: scrubbed %d plaintext secret row(s) into "
-               "WKS1 envelopes (keys=%d sapling=%d seed=%d)\n",
-               t + z + sd, t, z, sd);
-    return ZCL_OK;
 }
 
 /* ── Health snapshot ───────────────────────────────────────────── */

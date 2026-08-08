@@ -1,0 +1,36 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Exact test groups which are required by complete integration proof but are
+ * too expensive for the save-cycle feedback tier. Include with
+ * ZCL_TEST_INTEGRATION_ONLY(full_id). Every unlisted catalog group remains an
+ * immediate proof. This list changes scheduling only, never full expansion.
+ */
+
+/* Policy/tooling self-tests validate repository-wide lint machinery rather
+ * than the behavior of an edited production TU. Several create hermetic
+ * worktrees or invoke nested builds; the exclusive leaf also plants temporary
+ * tracked fixtures. The selector group recursively executes its own base
+ * binary and checks that build's source identity, which is deliberately not
+ * the overlay candidate identity. Keep these in INTEGRATION. */
+ZCL_TEST_INTEGRATION_ONLY("test_test_group_selector")
+ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates")
+ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_shard_01")
+ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_shard_02")
+ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_shard_03")
+ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_shard_04")
+ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_shard_05")
+ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_shard_06")
+ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_shard_07")
+ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_shard_08")
+ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_realroot")
+ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_partition")
+ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_heavy_01")
+ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_heavy_02")
+
+/* These groups are explicitly opt-in proofs. The ordinary event-log
+ * correctness group remains immediate; its kill9 and throughput work have
+ * their own environment contracts. The shielded payment gate likewise needs
+ * the separately provisioned Sapling parameters and stress lane. */
+ZCL_TEST_INTEGRATION_ONLY("test_event_log_kill9")
+ZCL_TEST_INTEGRATION_ONLY("test_event_log_benchmark")
+ZCL_TEST_INTEGRATION_ONLY("test_shielded_payment_gate")

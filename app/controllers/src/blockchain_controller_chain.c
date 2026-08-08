@@ -40,6 +40,7 @@
 #include "storage/progress_store.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
@@ -268,6 +269,47 @@ bool rpc_getmempoolinfo(const struct json_value *params, bool help,
                      ctx->mempool ? (int64_t)ctx->mempool->num_entries : 0);
     json_push_kv_int(result, "bytes",
                      ctx->mempool ? (int64_t)ctx->mempool->total_tx_size : 0);
+    return true;
+}
+
+bool rpc_getrawmempool(const struct json_value *params, bool help,
+                       struct json_value *result)
+{
+    struct blockchain_context *ctx = blockchain_ctx();
+    (void)params;
+    RPC_HELP(help, result,
+        "getrawmempool\nReturns all transaction ids in the mempool.");
+
+    json_set_array(result);
+    if (!ctx->mempool)
+        return true;
+
+    size_t capacity = tx_mempool_size(ctx->mempool);
+    if (capacity == 0)
+        return true;
+    if (capacity > SIZE_MAX / sizeof(struct uint256))
+        LOG_FAIL("blockchain", "getrawmempool: entry count overflow");
+
+    struct uint256 *hashes = zcl_malloc(
+        capacity * sizeof(*hashes), "getrawmempool_hashes");
+    if (!hashes)
+        LOG_FAIL("blockchain", "getrawmempool: hash snapshot allocation failed");
+
+    size_t count = 0;
+    tx_mempool_query_hashes(ctx->mempool, hashes, capacity, &count);
+    for (size_t i = 0; i < count; i++) {
+        char hash_hex[65];
+        struct json_value item = {0};
+        uint256_get_hex(&hashes[i], hash_hex);
+        json_set_str(&item, hash_hex);
+        bool pushed = json_push_back(result, &item);
+        json_free(&item);
+        if (!pushed) {
+            free(hashes);
+            LOG_FAIL("blockchain", "getrawmempool: result append failed");
+        }
+    }
+    free(hashes);
     return true;
 }
 

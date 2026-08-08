@@ -10,6 +10,7 @@
 
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
+#include "util/ar_step_readonly.h"
 #include "models/wallet_tx.h"
 #include "models/wallet_tx_internal.h"
 #include "models/wallet_key.h"
@@ -233,6 +234,49 @@ enum db_mark_spent_result db_sapling_note_reserve_spend(
             ? DB_MARK_SPENT_OK
             : DB_MARK_SPENT_NOT_FOUND;
     }
+}
+
+enum db_sapling_note_reservation_state db_sapling_note_reservation_probe(
+                                struct node_db *ndb,
+                                const uint8_t nullifier[32],
+                                const uint8_t spending_txid[32])
+{
+    if (!ndb || !ndb->open || !nullifier || !spending_txid) {
+        LOG_ERROR("sapling_note", "reservation probe: invalid argument");
+        return DB_NOTE_RESERVATION_ERROR;
+    }
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT spent_txid FROM wallet_sapling_notes "
+            "WHERE nullifier=? LIMIT 1", -1, &s, NULL) != SQLITE_OK || !s) {
+        LOG_ERROR("sapling_note", "reservation probe prepare failed: %s",
+                  sqlite3_errmsg(ndb->db));
+        if (s) sqlite3_finalize(s);
+        return DB_NOTE_RESERVATION_ERROR;
+    }
+    sqlite3_bind_blob(s, 1, nullifier, 32, SQLITE_TRANSIENT);
+    int rc = AR_STEP_ROW_READONLY(s);
+    enum db_sapling_note_reservation_state state =
+        DB_NOTE_RESERVATION_ERROR;
+    if (rc == SQLITE_DONE) {
+        state = DB_NOTE_RESERVATION_MISSING;
+    } else if (rc == SQLITE_ROW) {
+        if (sqlite3_column_type(s, 0) == SQLITE_NULL) {
+            state = DB_NOTE_RESERVATION_AVAILABLE;
+        } else {
+            const uint8_t *spent = sqlite3_column_blob(s, 0);
+            int spent_len = sqlite3_column_bytes(s, 0);
+            state = spent && spent_len == 32 &&
+                    memcmp(spent, spending_txid, 32) == 0
+                ? DB_NOTE_RESERVATION_SAME_TX
+                : DB_NOTE_RESERVATION_CONFLICT;
+        }
+    } else {
+        LOG_ERROR("sapling_note", "reservation probe step failed: %s",
+                  sqlite3_errmsg(ndb->db));
+    }
+    sqlite3_finalize(s);
+    return state;
 }
 
 bool db_sapling_note_mark_spent_bool_compat(struct node_db *ndb,
@@ -470,6 +514,43 @@ bool db_sapling_note_save_witness(struct node_db *ndb,
     bool ok = AR_STEP_DONE(s);
     AR_FINALIZE(s);
     return ok;
+}
+
+bool db_sapling_note_save_witness_and_nullifier(
+    struct node_db *ndb, const uint8_t txid[32], uint32_t output_index,
+    const uint8_t *witness_blob, size_t blob_len, int height,
+    const uint8_t nullifier[32])
+{
+    if (!ndb || !ndb->open || !txid || !witness_blob || blob_len == 0 ||
+        !nullifier)
+        return false;
+    struct db_sapling_note note;
+    sqlite3_stmt *read = NULL;
+    AR_PREPARE_BOOL(ndb, read,
+        "SELECT txid,output_index,value,rcm,memo,ivk,diversifier,pk_d,cm,"
+        "nullifier,block_height,source FROM wallet_sapling_notes"
+        " WHERE txid=? AND output_index=?");
+    AR_BIND_BLOB(read, 1, txid, 32);
+    AR_BIND_INT(read, 2, (int)output_index);
+    if (!AR_STEP_ROW(read)) {
+        AR_FINALIZE(read);
+        return false;
+    }
+    db_sapling_note_read_row(read, 0, &note);
+    AR_FINALIZE(read);
+    memcpy(note.nullifier, nullifier, sizeof(note.nullifier));
+
+    struct ar_callbacks *cbs = db_sapling_note_callbacks();
+    sqlite3_stmt *s = NULL;
+    AR_ADHOC_SAVE(ndb, s,
+        "UPDATE wallet_sapling_notes SET witness_data=?,witness_height=?,"
+        " nullifier=? WHERE txid=? AND output_index=?",
+        cbs, "sapling_note", &note, db_sapling_note_validate,
+        AR_BIND_BLOB(s, 1, witness_blob, (int)blob_len);
+        AR_BIND_INT(s, 2, height);
+        AR_BIND_BLOB(s, 3, note.nullifier, 32);
+        AR_BIND_BLOB(s, 4, note.txid, 32);
+        AR_BIND_INT(s, 5, (int)note.output_index));
 }
 
 bool db_sapling_note_load_witness(struct node_db *ndb,

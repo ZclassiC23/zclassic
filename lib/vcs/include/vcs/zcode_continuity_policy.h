@@ -17,6 +17,8 @@
     "zcl.zcode.continuity_policy.root.v1"
 #define VCS_ZCODE_CONTINUITY_EVENT_KEY_DOMAIN \
     "zcl.zcode.continuity_event_key.v1"
+#define VCS_ZCODE_CREATION_EVENT_KEY_DOMAIN \
+    "zcl.zcode.creation_event_key.v1"
 #define VCS_ZCODE_CONTINUITY_POLICY_VERSION 1u
 #define VCS_ZCODE_CONTINUITY_POLICY_BODY_BYTES 352u
 #define VCS_ZCODE_CONTINUITY_POLICY_WIRE_BYTES 416u
@@ -105,6 +107,16 @@ enum vcs_zcode_continuity_error vcs_zcode_continuity_policy_verify_cas(
 enum vcs_zcode_continuity_error vcs_zcode_continuity_event_key(
     const struct vcs_zcode_creation_attribution_v1 *attribution,
     const struct vcs_zcode_continuity_policy_v1 *policy,
+    const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_score_receipt_v1 *score, uint8_t out[32]);
+
+/* Neutral duplicate identity for continuity creation.  It is derived only
+ * from registered creation evidence and never from a patronage policy, so a
+ * useful repair/reproduction/preservation exists independently of funding.
+ * SECURITY_FIX deliberately aliases BORN_RED_FIX until a future wire binds
+ * a structured security-finding authority. */
+enum vcs_zcode_continuity_error vcs_zcode_creation_event_key(
+    const struct vcs_zcode_creation_attribution_v1 *attribution,
     const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_score_receipt_v1 *score, uint8_t out[32]);
 

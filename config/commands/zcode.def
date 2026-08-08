@@ -15,8 +15,209 @@
  * Consumer defines ZCL_COMMAND_*; see config/src/command_catalog.c. */
 
 ZCL_COMMAND_BRANCH("zcode", "",
-                   "ZCODE source-package hosting: publish, search, host",
+                   "Create, verify and preserve public C23 work together",
                    ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_BRANCH("zcode.project", "zcode",
+                   "C23 projects",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.work", "zcode",
+                   "Proven C23 work",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.project.inspect", "zcode.project", "", "Inspect one C23 project",
+    "Derives a human-first package layout, declarative recipe, dependency "
+    "lock, write scopes, resource ceilings and suggested proof profile from "
+    "one existing workspace. It follows no symlink, writes nothing, and "
+    "keeps canonical roots in an expert section.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,project,inspect,c23,recipe,context,read-only",
+    "zcl.zcode_project_inspect.input.v1", "zcl.zcode_project_inspect.v1",
+    "workspace,name,semver,license", "workspace",
+    "zclassic23-dev zcode project inspect --input='{\"workspace\":\".\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_project_inspect)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.project.init.plan", "zcode.project", "", "Plan C23 project initialization",
+    "Safely scans an uninitialized single-package workspace without writing, "
+    "then displays a correctable zcode-package.json proposal and a plan bound "
+    "to the exact pre-initialization source tree.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,project,init,plan,c23,read-only",
+    "zcl.zcode_project_init_plan.input.v1", "zcl.zcode_project_init_plan.v1",
+    "workspace,name,semver,license", "workspace",
+    "zclassic23-dev zcode project init plan --input='{\"workspace\":\".\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_project_init_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.project.init.commit", "zcode.project", "", "Initialize one C23 project",
+    "Re-derives the exact plan, refuses stale input and overwrite, and creates "
+    "only zcode-package.json with exclusive no-follow filesystem operations. "
+    "No source, datadir, package publication or execution is touched.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,project,init,commit,c23,exclusive",
+    "zcl.zcode_project_init_commit.input.v1", "zcl.zcode_project_init_commit.v1",
+    "workspace,name,semver,license,plan_id,confirm", "workspace,plan_id,confirm",
+    "zclassic23-dev zcode project init commit --input='{\"workspace\":\".\",\"plan_id\":\"<plan from init plan>\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_zcode_project_init_commit)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.project.status", "zcode.project", "", "Show C23 project readiness",
+    "Reports INITIALIZATION_REQUIRED or READY from a fresh safe scan. It writes "
+    "nothing and keeps package roots in the expert section.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,project,status,c23,read-only",
+    "zcl.zcode_project_status.input.v1", "zcl.zcode_project_status.v1",
+    "workspace,name,semver,license", "workspace",
+    "zclassic23-dev zcode project status --input='{\"workspace\":\".\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_project_status)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.work.start", "zcode.work", "", "Start one bounded C23 change",
+    "Composes existing package, task, scope, context, toolchain and proof-policy "
+    "owners from a workspace, plain-language goal and named profile. It changes "
+    "no source file and launches no model or build.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,work,start,goal,profile,context,c23",
+    "zcl.zcode_work_start.input.v1", "zcl.zcode_work_start.v1",
+    "workspace,goal,profile,context_symbol", "workspace,goal",
+    "zclassic23-dev zcode work start --input='{\"workspace\":\".\",\"goal\":\"Make the parser reject overflowing lengths\",\"profile\":\"standard\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_work_start)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.work.status", "zcode.work", "", "Show one human-first work status",
+    "Rebuilds state from verified canonical task and candidate objects. A work "
+    "ID or latest is only a local alias; roots remain grouped under expert, and "
+    "every blocked state names the next safe command.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,work,status,human,evidence,latest",
+    "zcl.zcode_work_status.input.v1", "zcl.zcode_work_status.v1",
+    "workspace,work", "",
+    "zclassic23-dev zcode work status --input='{\"work\":\"latest\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_work_status)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.work.show", "zcode.work", "", "Show one human-first work result",
+    "A discoverable alias for work status. It rebuilds the same verified task, "
+    "candidate, evidence and lane summary; no display alias becomes authority.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,work,show,human,evidence,result,latest",
+    "zcl.zcode_work_status.input.v1", "zcl.zcode_work_status.v1",
+    "workspace,work", "",
+    "zclassic23-dev zcode work show --input='{\"work\":\"latest\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_work_status)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.work.run", "zcode.work", "", "Run one contained adapter handoff",
+    "Reloads the verified task and canonical agent context, materializes an "
+    "isolated candidate workspace, and either emits a bounded manual packet or "
+    "runs the fixed opt-in Codex adapter behind Landlock, a scrubbed environment "
+    "and strict limits. No adapter receives acceptance or publication authority.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,work,run,adapter,manual,codex,contained,candidate",
+    "zcl.zcode_work_run.input.v1", "zcl.zcode_work_run.v1",
+    "workspace,work,adapter", "",
+    "zclassic23-dev zcode work run --input='{\"work\":\"latest\",\"adapter\":\"manual\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_work_run)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.work.accept", "zcode.work", "", "Accept one exact proven candidate",
+    "This explicit human decision reloads the latest canonical candidate, "
+    "signed work evidence and current signed lane, requires the exact proof "
+    "policy, then advances the existing CANDIDATE and PROVEN lane receipts. "
+    "It does not edit source files, publish a package, or give the adapter "
+    "acceptance authority. Repeating an already-PROVEN acceptance is "
+    "idempotent.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,work,accept,human,proven,lane,evidence",
+    "zcl.zcode_work_accept.input.v1", "zcl.zcode_work_accept.v1",
+    "workspace,work", "",
+    "zclassic23-dev zcode work accept --input='{\"work\":\"latest\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_work_accept)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.work.review", "zcode.work", "", "Review one exact candidate",
+    "Reloads the exact candidate and its trusted non-review proof set, stores "
+    "bounded findings in the existing CAS, emits review.v1 plus a signed "
+    "REVIEW work receipt from a reviewer identity distinct from the candidate "
+    "author, and re-evaluates the existing proof policy. Review cannot edit, "
+    "accept, or publish the candidate.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,work,review,manual,findings,verdict,evidence",
+    "zcl.zcode_work_review.input.v1", "zcl.zcode_work_review.v1",
+    "workspace,work,adapter,verdict,findings", "verdict,findings",
+    "zclassic23-dev zcode work review --input='{\"work\":\"latest\",\"adapter\":\"manual\",\"verdict\":\"approve\",\"findings\":\"No blocking findings.\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_zcode_work_review)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.guide", "zcode", "", "Start creating in the shared C23 commons",
+    "Returns the shortest ready command paths for finding, inspecting, "
+    "creating, improving, evidencing, accepting, publishing and verifying "
+    "public work. It grants no ownership or truth authority.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,guide,mission,create,people,ai,commons,metaverse",
+    "zcl.zcode_guide.input.v1", "zcl.zcode_guide.v1", "", "",
+    "zclassic23 zcode guide", ZCL_COMMAND_LAYER_APP,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_INSTANT, ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_guide)
 
 ZCL_COMMAND_BRANCH("zcode.commons", "zcode",
                    "Read-only ZC23 Living Commons projection",
@@ -24,6 +225,209 @@ ZCL_COMMAND_BRANCH("zcode.commons", "zcode",
 ZCL_COMMAND_BRANCH("zcode.commons.creation", "zcode.commons",
                    "Creation-attribution inspection",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.shadow", "zcode.commons",
+                   "Read-only pre-genesis shadow-epoch proof",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.shadow.attribution", "zcode.commons.shadow",
+                   "Scratch-only creation-attribution simulation",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.shadow.epoch", "zcode.commons.shadow",
+                   "Scratch-only epoch-accounting simulation",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.shadow.protocol", "zcode.commons.shadow",
+                   "Four linked protocol shadow simulations",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.reproduction", "zcode.commons",
+                   "Portable simulation-only reproduction challenges",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.reproduction.challenge.plan", "zcode.commons.reproduction",
+    "", "Validate a portable reproduction challenge",
+    "Validates exact canonical request bytes, freshness, full confinement and "
+    "bounded resources. The plan is non-creating and accepts public package "
+    "roots only; it never executes downloaded code.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,reproduction,challenge,plan,simulation",
+    "zcl.zcode_reproduction_challenge.input.v1",
+    "zcl.zcode_reproduction_challenge.v1",
+    "workspace,request_hex,now_unix", "workspace,request_hex,now_unix",
+    "zclassic23 zcode commons reproduction challenge plan --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"request_hex\":\"<hex>\",\"now_unix\":1}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_reproduction_challenge_plan)
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.commons.reproduction.challenge.commit", "zcode.commons.reproduction",
+    "", "Store a portable reproduction challenge in scratch CAS",
+    "Repeats plan validation and stores only the canonical public request in "
+    "the existing scratch CAS. It creates no token, funds, custody or genesis "
+    "authority and is idempotent by request root.", 0,
+    "zcode,commons,reproduction,challenge,commit,simulation,cas",
+    "zcl.zcode_reproduction_challenge.input.v1",
+    "zcl.zcode_reproduction_challenge.v1",
+    "workspace,request_hex,now_unix", "workspace,request_hex,now_unix",
+    "zclassic23 zcode commons reproduction challenge commit --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_reproduction_challenge_commit)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.shadow.plan", "zcode.commons.shadow", "",
+    "Explain whether the first shadow epoch can be proven",
+    "Reloads the signed Score vertical, policy candidate, reproducer set, "
+    "portable challenge and exact reproduction evidence. It creates no "
+    "attribution or epoch and never treats a signature as physical-host proof.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,commons,shadow,epoch,reproduction",
+    "zcl.zcode_commons_shadow.input.v1",
+    "zcl.zcode_commons_shadow.v1", "workspace,score_receipt_root,policy_candidate_root,reproduction_request_root,reproduction_proof_set_root,epoch,now_unix",
+    "workspace,score_receipt_root,policy_candidate_root,reproduction_request_root,reproduction_proof_set_root,epoch,now_unix",
+    "zclassic23 zcode commons shadow plan --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"score_receipt_root\":\"<64hex>\",\"policy_candidate_root\":\"<64hex>\",\"reproduction_request_root\":\"<64hex>\",\"reproduction_proof_set_root\":\"<64hex>\",\"epoch\":1,\"now_unix\":1}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_commons_shadow_plan)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.shadow.attribution.plan",
+    "zcode.commons.shadow.attribution", "",
+    "Plan one creation-backed shadow attribution",
+    "Reloads and verifies the policy, Score vertical, approved reproduction, "
+    "historical contributor binding, signed package release, license bytes "
+    "and deterministic challenge fixture. It writes nothing and grants no "
+    "mint authority.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,shadow,attribution,plan,simulation",
+    "zcl.zcode_commons_shadow_attribution.input.v1",
+    "zcl.zcode_commons_shadow_attribution.v1",
+    "workspace,score_receipt_root,policy_candidate_root,reproduction_request_root,reproduction_proof_set_root,contributor_binding_root,epoch,now_unix",
+    "workspace,score_receipt_root,policy_candidate_root,reproduction_request_root,reproduction_proof_set_root,contributor_binding_root,epoch,now_unix",
+    "zclassic23 zcode commons shadow attribution plan --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_shadow_attribution_plan)
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.commons.shadow.attribution.commit",
+    "zcode.commons.shadow.attribution", "",
+    "Store one verified shadow attribution in scratch CAS",
+    "Repeats attribution-plan verification and stores only the canonical "
+    "creation-attribution wire in the explicit scratch CAS. The root-addressed "
+    "write is idempotent and creates no token, custody or live funds.", 0,
+    "zcode,commons,shadow,attribution,commit,simulation,cas",
+    "zcl.zcode_commons_shadow_attribution.input.v1",
+    "zcl.zcode_commons_shadow_attribution.v1",
+    "workspace,score_receipt_root,policy_candidate_root,reproduction_request_root,reproduction_proof_set_root,contributor_binding_root,epoch,now_unix",
+    "workspace,score_receipt_root,policy_candidate_root,reproduction_request_root,reproduction_proof_set_root,contributor_binding_root,epoch,now_unix",
+    "zclassic23 zcode commons shadow attribution commit --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_commons_shadow_attribution_commit)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.shadow.epoch.plan", "zcode.commons.shadow.epoch", "",
+    "Plan exact shadow epoch accounting",
+    "Reloads the policy and verified attribution, re-derives fixture anchors "
+    "and predecessor lineage, and proves award equals simulated mint while "
+    "unused capacity expires. It writes nothing.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,shadow,epoch,plan,simulation",
+    "zcl.zcode_commons_shadow_epoch.input.v1",
+    "zcl.zcode_commons_shadow_epoch.v1",
+    "workspace,policy_candidate_root,attribution_root,fixture_branch_root,previous_epoch_creation_root,now_unix",
+    "workspace,policy_candidate_root,attribution_root,fixture_branch_root,previous_epoch_creation_root,now_unix",
+    "zclassic23 zcode commons shadow epoch plan --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_shadow_epoch_plan)
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.commons.shadow.epoch.commit", "zcode.commons.shadow.epoch", "",
+    "Store one verified shadow epoch in scratch CAS",
+    "Repeats epoch-plan verification and stores only the canonical ordered "
+    "epoch-creation wire in the explicit scratch CAS. It is idempotent and "
+    "does not create a MINT transaction or token.", 0,
+    "zcode,commons,shadow,epoch,commit,simulation,cas",
+    "zcl.zcode_commons_shadow_epoch.input.v1",
+    "zcl.zcode_commons_shadow_epoch.v1",
+    "workspace,policy_candidate_root,attribution_root,fixture_branch_root,previous_epoch_creation_root,now_unix",
+    "workspace,policy_candidate_root,attribution_root,fixture_branch_root,previous_epoch_creation_root,now_unix",
+    "zclassic23 zcode commons shadow epoch commit --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_commons_shadow_epoch_commit)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.shadow.status", "zcode.commons.shadow", "",
+    "Show scratch shadow accounting status",
+    "Rebuilds the existing Commons projection without writing and labels all "
+    "figures simulation-only, with token, funds, custody and genesis false.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,commons,shadow,status,simulation",
+    "zcl.zcode_commons_workspace.input.v1",
+    "zcl.zcode_commons_shadow_status.v1", "workspace", "workspace",
+    "zclassic23 zcode commons shadow status --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_shadow_status)
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.shadow.verify", "zcode.commons.shadow", "",
+    "Verify scratch shadow accounting structure",
+    "Rebuilds and checks root addressing and exact attribution sums without "
+    "writing. Active-chain validity remains unavailable and every result is "
+    "explicitly simulation-only.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,shadow,verify,simulation",
+    "zcl.zcode_commons_workspace.input.v1",
+    "zcl.zcode_commons_shadow_verify.v1", "workspace", "workspace",
+    "zclassic23 zcode commons shadow verify --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_shadow_verify)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.shadow.protocol.verify", "zcode.commons.shadow.protocol", "",
+    "Verify four linked protocol shadow simulations",
+    "Reloads exactly four selected epoch roots and their deterministic fixture "
+    "branch roots, revalidates every canonical attribution and predecessor, "
+    "and reports cumulative equality plus reorg-sensitive active projection. "
+    "The result is same-host simulation evidence and never clears genesis.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,shadow,protocol,epochs,reorg,simulation",
+    "zcl.zcode_commons_shadow_protocol.input.v1",
+    "zcl.zcode_commons_shadow_protocol.v1",
+    "workspace,policy_candidate_root,epoch_0_root,epoch_1_root,epoch_2_root,epoch_3_root,branch_0_root,branch_1_root,branch_2_root,branch_3_root,now_unix",
+    "workspace,policy_candidate_root,epoch_0_root,epoch_1_root,epoch_2_root,epoch_3_root,branch_0_root,branch_1_root,branch_2_root,branch_3_root,now_unix",
+    "zclassic23 zcode commons shadow protocol verify --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_shadow_protocol_verify)
 
 ZCL_COMMAND_READY_READ(
     "zcode.commons.status", "zcode.commons", "", "Show Living Commons status",
@@ -33,7 +437,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LIST_BUDGET, "zcode,commons,zc23,creation,attribution",
     "zcl.zcode_commons_workspace.input.v1", "zcl.zcode_commons_status.v1",
     "workspace", "workspace",
-    "zclassic23 zcode commons status --input='{\"workspace\":\".\"}'",
+    "zclassic23 zcode commons status --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -46,7 +450,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LIST_BUDGET, "zcode,commons,zc23,creation,attribution",
     "zcl.zcode_commons_epoch.input.v1", "zcl.zcode_commons_epoch.v1",
     "workspace,epoch", "workspace,epoch",
-    "zclassic23 zcode commons epoch --input='{\"workspace\":\".\",\"epoch\":1}'",
+    "zclassic23 zcode commons epoch --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"epoch\":1}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -60,7 +464,7 @@ ZCL_COMMAND_READY_READ(
     "zcode,commons,zc23,creation,attribution",
     "zcl.zcode_commons_creation_show.input.v1",
     "zcl.zcode_commons_creation_show.v1", "workspace,root", "workspace,root",
-    "zclassic23 zcode commons creation show --input='{\"workspace\":\".\",\"root\":\"<64hex>\"}'",
+    "zclassic23 zcode commons creation show --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"root\":\"<64hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -75,7 +479,7 @@ ZCL_COMMAND_READY_READ(
     "zcode,commons,zc23,creation,attribution",
     "zcl.zcode_commons_lineage.input.v1", "zcl.zcode_commons_lineage.v1",
     "workspace,package_root", "workspace,package_root",
-    "zclassic23 zcode commons lineage --input='{\"workspace\":\".\",\"package_root\":\"<64hex>\"}'",
+    "zclassic23 zcode commons lineage --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"package_root\":\"<64hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -89,7 +493,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LIST_BUDGET, "zcode,commons,zc23,creation,attribution",
     "zcl.zcode_commons_workspace.input.v1", "zcl.zcode_commons_verify.v1",
     "workspace", "workspace",
-    "zclassic23 zcode commons verify --input='{\"workspace\":\".\"}'",
+    "zclassic23 zcode commons verify --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -103,7 +507,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LIST_BUDGET, "zcode,commons,zc23,creation,attribution",
     "zcl.zcode_commons_workspace.input.v1", "zcl.zcode_commons_rebuild.v1",
     "workspace", "workspace",
-    "zclassic23 zcode commons rebuild --input='{\"workspace\":\".\"}'",
+    "zclassic23 zcode commons rebuild --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -111,7 +515,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_commons_rebuild)
 
 ZCL_COMMAND_BRANCH("zcode.patronage", "zcode",
-                   "Simulation-only commissions, continuity and gifts",
+                   "Simulated patronage",
                    ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("zcode.patronage.offer", "zcode.patronage",
                    "Signed patronage offers", ZCL_COMMAND_LAYER_APP)
@@ -129,7 +533,7 @@ ZCL_COMMAND_READY_READ(
     "zcl.zcode_patronage_offer.input.v1", "zcl.zcode_patronage_offer.v1",
     "workspace,intent_hex,expected_network_genesis_root,now_unix",
     "workspace,intent_hex,expected_network_genesis_root,now_unix",
-    "zclassic23 zcode patronage offer plan --input='{\"workspace\":\".\",\"intent_hex\":\"<hex>\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
+    "zclassic23 zcode patronage offer plan --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"intent_hex\":\"<hex>\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -165,7 +569,7 @@ ZCL_COMMAND_READY_READ(
     "zcl.zcode_patronage_fund.input.v1", "zcl.zcode_patronage_funding.v1",
     "workspace,funding_hex,expected_network_genesis_root,now_unix",
     "workspace,funding_hex,expected_network_genesis_root,now_unix",
-    "zclassic23 zcode patronage fund plan --input='{\"workspace\":\".\",\"funding_hex\":\"<hex>\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
+    "zclassic23 zcode patronage fund plan --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"funding_hex\":\"<hex>\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -201,7 +605,7 @@ ZCL_COMMAND_READY_READ(
     "zcl.zcode_patronage_show.input.v1", "zcl.zcode_patronage_show.v1",
     "workspace,root,expected_network_genesis_root,now_unix",
     "workspace,root,expected_network_genesis_root,now_unix",
-    "zclassic23 zcode patronage show --input='{\"workspace\":\".\",\"root\":\"<64hex>\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
+    "zclassic23 zcode patronage show --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"root\":\"<64hex>\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -209,7 +613,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_patronage_show)
 
 ZCL_COMMAND_BRANCH("zcode.continuity", "zcode",
-                   "Simulation-only package continuity policies",
+                   "Package continuity",
                    ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_READY_READ(
     "zcode.continuity.plan", "zcode.continuity", "",
@@ -222,7 +626,7 @@ ZCL_COMMAND_READY_READ(
     "zcl.zcode_continuity_policy.view.v1",
     "workspace,policy_hex,expected_network_genesis_root,now_unix",
     "workspace,policy_hex,expected_network_genesis_root,now_unix",
-    "zclassic23 zcode continuity plan --input='{\"workspace\":\".\",\"policy_hex\":\"<hex>\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
+    "zclassic23 zcode continuity plan --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"policy_hex\":\"<hex>\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -260,7 +664,7 @@ ZCL_COMMAND_READY_READ(
     "zcl.zcode_continuity_policy.view.v1",
     "workspace,root,expected_network_genesis_root,now_unix",
     "workspace,root,expected_network_genesis_root,now_unix",
-    "zclassic23 zcode continuity status --input='{\"workspace\":\".\",\"root\":\"<64hex>\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
+    "zclassic23 zcode continuity status --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"root\":\"<64hex>\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -282,7 +686,7 @@ ZCL_COMMAND_READY_READ(
     "zcl.zcode_patronage_list.input.v1", "zcl.zcode_patronage_list.v1",
     "workspace,expected_network_genesis_root,now_unix",
     "workspace,expected_network_genesis_root,now_unix",
-    "zclassic23 zcode patronage list --input='{\"workspace\":\".\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
+    "zclassic23 zcode patronage list --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"expected_network_genesis_root\":\"<64hex>\",\"now_unix\":1}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -443,7 +847,7 @@ ZCL_COMMAND_READY_COMMAND(
     "zcode,package,dev,score,commit,cas",
     "zcl.zcode_score_commit.input.v1", "zcl.zcode_score_commit.v1",
     "workspace,receipt_hex", "workspace,receipt_hex",
-    "zclassic23 zcode package dev score commit --input='{\"workspace\":\".\",\"receipt_hex\":\"<hex>\"}'",
+    "zclassic23 zcode package dev score commit --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"receipt_hex\":\"<hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
@@ -461,7 +865,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LIST_BUDGET, "zcode,package,dev,score,show,cas",
     "zcl.zcode_score_show.input.v1", "zcl.zcode_score_show.v1",
     "workspace,root", "workspace,root",
-    "zclassic23 zcode package dev score show --input='{\"workspace\":\".\",\"root\":\"<64hex>\"}'",
+    "zclassic23 zcode package dev score show --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"root\":\"<64hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
     ZCL_COMMAND_COST_LOW,
@@ -877,7 +1281,7 @@ ZCL_COMMAND_READY_READ(
  * and bound only when the name owner equals the publisher key's P2PKH. */
 
 ZCL_COMMAND_BRANCH("zcode.contributor", "zcode",
-                   "Contributors: secp256k1 publisher-key identities",
+                   "Contributor identities",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -963,8 +1367,7 @@ ZCL_COMMAND_READY_READ(
  * belongs to slice 8. */
 
 ZCL_COMMAND_BRANCH("zcode.reward", "zcode",
-                   "Contribution scoring and SIMULATED settlement "
-                   "(placeholder token only)",
+                   "Legacy contribution rewards",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1151,7 +1554,7 @@ ZCL_COMMAND_READY_READ(
  * unavailable and report zero honestly until slices 11-12. */
 
 ZCL_COMMAND_BRANCH("zcode.leaderboard", "zcode",
-                   "ZCODE Rankings: earned score, never token balances",
+                   "Evidence rankings",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1254,7 +1657,7 @@ ZCL_COMMAND_READY_READ(
  * callback. */
 
 ZCL_COMMAND_BRANCH("zcode.badge", "zcode",
-                   "ZCODE Badges: achievement evidence (SIMULATED assets)",
+                   "Evidence badges",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1380,7 +1783,7 @@ ZCL_COMMAND_READY_READ(
  * checkpoint is already wired into zcode package publish commit. */
 
 ZCL_COMMAND_BRANCH("zcode.seed", "zcode",
-                   "Local seeding facts: verified-bytes ratio and tiers",
+                   "Local seeding facts",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1438,7 +1841,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_seed_ratio)
 
 ZCL_COMMAND_BRANCH("zcode.storage", "zcode",
-                   "The content-addressed store: quota pools and policy",
+                   "Content-addressed storage",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1585,7 +1988,7 @@ ZCL_COMMAND_READY_COMMAND(
  * separately from signature validity.
  * See docs/spec/sovereign-identity-layer.md. */
 ZCL_COMMAND_BRANCH("zcode.release", "zcode",
-                   "Release records: sign/verify against a master key",
+                   "Release records",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_COMMAND(
@@ -1722,7 +2125,7 @@ ZCL_COMMAND_READY_READ(
  * one carries, whether that root is on-chain, and what leaves are under
  * it. Also exposed as `zclassic23 dumpstate zid_domains`. */
 ZCL_COMMAND_BRANCH("zcode.domain", "zcode",
-                   "Anchor domains: leaf sets behind batch proofs",
+                   "Anchor domains",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1778,7 +2181,7 @@ ZCL_COMMAND_READY_READ(
  * zid_identities projection READONLY via db_zid_identity_find, and stays
  * not_checked without one. `node_free` in the report says which. */
 ZCL_COMMAND_BRANCH("zcode.proof", "zcode",
-                   "Light-client proof-chain verification",
+                   "Proof verification",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
@@ -1835,7 +2238,7 @@ ZCL_COMMAND_READY_READ(
  * verified_against:"supplied_key".
  * See docs/spec/sovereign-identity-layer.md and lib/zid/include/zid/zdesc.h. */
 ZCL_COMMAND_BRANCH("zcode.network", "zcode",
-                   "Noise-bound read-only DHT", ZCL_COMMAND_LAYER_APP)
+                   "Package DHT", ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_COMMAND(
     "zcode.network.delegate", "zcode.network", "",
@@ -2150,7 +2553,7 @@ ZCL_COMMAND_READY_READ(
     zcl_native_handle_zcode_network_replication)
 
 ZCL_COMMAND_BRANCH("zcode.desc", "zcode",
-                   "Onion descriptors: signed service records",
+                   "Onion descriptors",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_COMMAND(
@@ -2270,7 +2673,7 @@ ZCL_COMMAND_READY_READ(
  *
  * See lib/zid/include/zid/zendp.h and lib/vcs/include/vcs/zendp_swarm.h. */
 ZCL_COMMAND_BRANCH("zcode.endpoint", "zcode",
-                   "Signed node addresses, chain-anchored",
+                   "Signed node addresses",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_COMMAND(

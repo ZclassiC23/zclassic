@@ -68,6 +68,14 @@ int codeindex_find(struct codeindex *ci, const char *query,
     return ci_store_find_symbols(ci->store, query, out, cap);
 }
 
+int codeindex_search_text(struct codeindex *ci, const char *query,
+                          struct ci_search_hit *out, int cap)
+{
+    if (!ci || !ci->store || !query || !query[0] || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad arg to codeindex_search_text");
+    return ci_store_search_text(ci->store, query, out, cap);
+}
+
 int codeindex_refs(struct codeindex *ci, const char *callee,
                    struct ci_ref *out, int cap)
 {

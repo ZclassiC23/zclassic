@@ -6,6 +6,7 @@
 #include "codeindex/codeindex.h"
 #include "controllers/agent_impact_rules.h"
 #include "crypto/sha3.h"
+#include "hotswap/hotswap_module.h"
 #include "test_group_catalog.h"
 #include "util/safe_alloc.h"
 
@@ -13,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/inotify.h>
 #include <unistd.h>
 
 struct hotswap_eligible_entry {
@@ -41,9 +43,12 @@ static bool path_is_safe(const char *path)
 
 static const struct hotswap_eligible_entry *hotswap_entry(const char *path)
 {
+    const char *owner = hotswap_island_owner_for_path(path);
+    if (!owner)
+        return NULL;
     for (size_t i = 0; i < sizeof(g_hotswap_eligible) /
                             sizeof(g_hotswap_eligible[0]); i++) {
-        if (strcmp(path, g_hotswap_eligible[i].path) == 0)
+        if (strcmp(owner, g_hotswap_eligible[i].path) == 0)
             return &g_hotswap_eligible[i];
     }
     return NULL;
@@ -104,6 +109,21 @@ bool zcl_devloop_path_is_relevant(const char *path)
         (strcmp(dot, ".c") == 0 || strcmp(dot, ".h") == 0 ||
          strcmp(dot, ".def") == 0 || strcmp(dot, ".md") == 0 ||
          strcmp(dot, ".mk") == 0 || strcmp(dot, ".service") == 0);
+}
+
+bool zcl_devloop_watch_event_is_mutation(uint32_t inotify_mask)
+{
+    return (inotify_mask &
+            (IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM |
+             IN_CREATE | IN_DELETE)) != 0;
+}
+
+bool zcl_devloop_watch_dir_is_ignored(const char *name)
+{
+    return !name || !name[0] || name[0] == '.' ||
+           strcmp(name, "build") == 0 || strcmp(name, "vendor") == 0 ||
+           strcmp(name, "target") == 0 || strcmp(name, "node_modules") == 0 ||
+           strcmp(name, "test-tmp") == 0;
 }
 
 /* ── the three dimensions (C3) ─────────────────────────────────────────── */
@@ -503,15 +523,24 @@ static bool plan_fold_reached_file(struct zcl_devloop_plan *plan,
     return true;
 }
 
-bool zcl_devloop_plan_add_closure(const char *repo_root,
-                                  const char *const *files, size_t file_count,
-                                  struct zcl_devloop_plan *plan)
+static bool plan_reached_proof_owner(const char *path, void *user)
+{
+    (void)user;
+    struct agent_impact_acc impact = {0};
+    (void)agent_impact_apply_shared_rules(path, &impact);
+    return impact.shared_rule_hits > 0;
+}
+
+static bool plan_add_closure(const char *repo_root,
+                             const char *const *files, size_t file_count,
+                             struct zcl_devloop_plan *plan, bool snapshot)
 {
     if (!plan || (file_count > 0 && !files) ||
         file_count > ZCL_DEVLOOP_MAX_FILES)
         return false;
 
     plan->closure_attempted = true;
+    plan->closure_snapshot = false;
     plan->closure_groups_len = 0;
     /* This call OWNS the two graph dimensions; reset them and let the walks
      * below escalate. The OPAQUE dimension belongs to the path floor and is
@@ -539,7 +568,11 @@ bool zcl_devloop_plan_add_closure(const char *repo_root,
     }
 
     const char *root = (repo_root && repo_root[0]) ? repo_root : ".";
-    struct codeindex *ci = codeindex_open(root);
+    struct codeindex *ci = snapshot ? codeindex_open_existing(root) : NULL;
+    if (snapshot && ci)
+        plan->closure_snapshot = true;
+    if (!ci)
+        ci = codeindex_open(root);
     if (!ci) {
         /* No index: the path floor still stands and its tests still run, but
          * neither graph dimension was consulted. Say UNAVAILABLE — the old
@@ -574,9 +607,19 @@ bool zcl_devloop_plan_add_closure(const char *repo_root,
         plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC,
                      ZCL_DEVLOOP_DIM_COMPLETE, "");
         bool truncated = false;
-        int n = codeindex_impact_closure(
-            ci, changed, (int)semantic_count, 0, impacted,
-            ZCL_DEVLOOP_CLOSURE_FILE_CAP, &truncated);
+        /* A reached file with an explicit proof-owner rule is the terminal
+         * evidence layer. Record it below, but do not walk back through its
+         * generic caller/dispatcher and select unrelated proof families. An
+         * unowned caller is never a boundary and the graph keeps climbing. */
+        int n = plan->closure_snapshot
+            ? codeindex_impact_closure_overlay_with_terminal(
+                ci, root, changed, (int)semantic_count, 0,
+                plan_reached_proof_owner, NULL, impacted,
+                ZCL_DEVLOOP_CLOSURE_FILE_CAP, &truncated)
+            : codeindex_impact_closure_with_terminal(
+                ci, changed, (int)semantic_count, 0,
+                plan_reached_proof_owner, NULL, impacted,
+                ZCL_DEVLOOP_CLOSURE_FILE_CAP, &truncated);
         if (n < 0) {
             plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC,
                          ZCL_DEVLOOP_DIM_UNAVAILABLE, "closure-query-error");
@@ -658,6 +701,20 @@ out:
     free(impacted);
     codeindex_close(ci);
     return ok;
+}
+
+bool zcl_devloop_plan_add_closure(const char *repo_root,
+                                  const char *const *files, size_t file_count,
+                                  struct zcl_devloop_plan *plan)
+{
+    return plan_add_closure(repo_root, files, file_count, plan, false);
+}
+
+bool zcl_devloop_plan_add_closure_snapshot(
+    const char *repo_root, const char *const *files, size_t file_count,
+    struct zcl_devloop_plan *plan)
+{
+    return plan_add_closure(repo_root, files, file_count, plan, true);
 }
 
 static bool appendf(char *out, size_t out_sz, size_t *pos,
@@ -825,8 +882,10 @@ static size_t plan_json_body(const struct zcl_devloop_plan *plan,
         if (!append_group_array(out, out_sz, &pos, "closure_groups",
                                 plan->closure_groups,
                                 plan->closure_groups_len) ||
-            !appendf(out, out_sz, &pos, ",\"closure_truncated\":%s",
-                     plan->closure_truncated ? "true" : "false"))
+            !appendf(out, out_sz, &pos,
+                     ",\"closure_truncated\":%s,\"closure_snapshot\":%s",
+                     plan->closure_truncated ? "true" : "false",
+                     plan->closure_snapshot ? "true" : "false"))
             return 0;
 
         /* C5: why each selected group is here. A reader answers "why is THIS

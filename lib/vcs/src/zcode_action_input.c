@@ -405,7 +405,12 @@ static enum vcs_zcode_action_input_result package_action_lock_target(
     free(wire);
     if (parsed != VCS_PACKAGE_DEPS_OK || lock.count == 0)
         return VCS_ZCODE_ACTION_INPUT_CAS;
-    return memcmp(lock.nodes[lock.count - 1u].root, task->source_root, 32) == 0
+    const struct vcs_package_lock_node *target = &lock.nodes[lock.count - 1u];
+    /* The lock target is a package-release/content root. task.source_root is
+     * the ZVCS structural tree captured for editing. They are intentionally
+     * different address spaces; the task binds both exact roots while the
+     * candidate authority check below proves recipe membership in the tree. */
+    return target->depth == 0 && target->name[0] != '\0'
         ? VCS_ZCODE_ACTION_INPUT_OK : VCS_ZCODE_ACTION_INPUT_BINDING;
 }
 

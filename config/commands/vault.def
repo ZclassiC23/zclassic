@@ -196,9 +196,10 @@ ZCL_COMMAND_READY_COMMAND(
     "Persist an exact encrypted transaction plan",
     "Accepts 1..50 effects with strict decimal-string ZCL amounts and requires "
     "a durable idempotency_key for every route. Transparent fan-out uses "
-    "route=transparent. Sapling routes additionally require from: private "
-    "(z-to-z), shield (t-to-z), unshield (z-to-t), or "
-    "mixed (both recipient pools); a mismatched route fails closed. Returns a "
+    "route=transparent and omits from. Sapling plans require from=<exact "
+    "owned source address> and route=private (z-to-z), shield (t-to-z), "
+    "unshield (z-to-t), or mixed (both recipient pools); a mismatched route "
+    "fails closed. Returns a "
     "ten-minute plan_id, digest, exact effects and maximum fee, tip/money "
     "anchor, confirmation policy, and an explicit privacy warning. "
     "Recipient details are encrypted under the wallet metadata DEK at rest; "
@@ -224,15 +225,17 @@ ZCL_COMMAND_READY_COMMAND(
     "vault.intent.fanout-plan", "vault.intent", "",
     "Prepare private self-custody outputs for parallel transactions",
     "Creates 2..50 fresh durable wallet-owned transparent destinations and "
-    "atomically reserves one exact transparent fanout plan. Each output is "
+    "atomically reserves one exact transparent fanout plan after a current "
+    "encrypted-backup preflight. Each output is "
     "recipient_value_zat plus maximum_fee_zat, so it can later fund one "
     "independent transaction at the requested ceiling. A required durable "
     "idempotency_key makes retries return the same plan and rejects a changed "
     "shape. Output contains only aggregate counts, zatoshi values, plan id and "
     "digest: generated addresses, selected inputs, endpoints and paths never "
     "leave the wallet. This command never signs, broadcasts, commits, or "
-    "automatically rebalances; the owner must separately call "
-    "vault.intent.commit after reviewing the plan. All normal wallet "
+    "automatically rebalances; the owner must take a fresh encrypted backup "
+    "containing the new destinations, then separately call vault.intent.commit "
+    "after reviewing the plan. All normal wallet "
     "encryption, backup, sovereignty, custody, reserve and lab-cap gates apply.",
     0,
     "vault,intent,fanout,liquidity,utxo,parallel,idempotent,private-address",
@@ -269,12 +272,55 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_vault_intent_commit)
 
+ZCL_COMMAND_READY_COMMAND(
+    "vault.intent.submit", "vault.intent", "",
+    "Queue an exact durable plan and return immediately",
+    "Requires wallet_scope, plan_id and confirm:true. Returns operation_id "
+    "immediately; operation_id is deliberately the durable plan_id, so "
+    "vault.intent.status is the one status authority rather than a second job "
+    "ledger. A node restart requeues a planned ASYNC_QUEUED intent, duplicate "
+    "submissions share one in-process worker, transient non-current money state "
+    "waits fail-closed, and the normal commit path still revalidates identity, "
+    "snapshot, exact effects, fee, reservation and raw bytes before relay.", 0,
+    "vault,intent,submit,async,operation,queue,restart,idempotent",
+    "zcl.vault_intent_submit.input.v1", "zcl.vault_intent_submit.v1",
+    "wallet_scope,plan_id,confirm", "wallet_scope,plan_id,confirm",
+    "zclassic23 vault intent submit --input='{\"wallet_scope\":\"dev\",\"plan_id\":\"<64hex>\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_IDEMPOTENCY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_vault_intent_submit)
+
+ZCL_COMMAND_READY_COMMAND(
+    "vault.intent.cancel", "vault.intent", "",
+    "Cancel an unclaimed durable transaction plan",
+    "Requires wallet_scope, plan_id and confirm:true. Atomically cancels only a "
+    "still-planned intent and releases its reservation. Once proving, signed "
+    "bytes, mempool admission or confirmation may exist, cancellation refuses "
+    "as unsafe. Repeating an already completed owner cancellation is "
+    "idempotent.", 0,
+    "vault,intent,cancel,async,reservation,owner,idempotent",
+    "zcl.vault_intent_cancel.input.v1", "zcl.vault_intent_cancel.v1",
+    "wallet_scope,plan_id,confirm", "wallet_scope,plan_id,confirm",
+    "zclassic23 vault intent cancel --input='{\"wallet_scope\":\"dev\",\"plan_id\":\"<64hex>\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_IDEMPOTENCY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_vault_intent_cancel)
+
 ZCL_COMMAND_READY_READ(
     "vault.intent.status", "vault.intent", "",
     "Read one transaction intent's chain-aware state",
     "Returns planned, proving, mempool_accepted, confirmed, finalized, reorged, "
-    "conflicted, expired or failed plus txid when one exists; never substitutes "
-    "an asynchronous operation id.", ZCL_COMMAND_LIST_BUDGET,
+    "conflicted, expired or failed plus txid when one exists. For asynchronous "
+    "submission the operation_id is the same durable plan_id, so this remains "
+    "the only status authority.", ZCL_COMMAND_LIST_BUDGET,
     "vault,intent,status,txid,reorg", "zcl.vault_intent_status.input.v1",
     "zcl.vault_intent_status.v1", "plan_id", "plan_id",
     "zclassic23 vault intent status --input='{\"plan_id\":\"<64hex>\"}'",

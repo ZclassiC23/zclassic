@@ -12,6 +12,7 @@
  * shared header is included from both files. */
 
 #include "controllers/wallet_native_handlers.h"
+#include "controllers/wallet_shielded_controller.h"
 
 #include "json/json.h"
 #include "controllers/rpc_client.h"
@@ -20,6 +21,8 @@
 #include "encoding/utilstrencodings.h"
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
+#include "rpc/rpc_timeout.h"
+#include "services/wallet_money_service.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -84,11 +87,14 @@ static bool wnh_body_is_error(const struct json_value *body,
 /* Call one wallet RPC method. On success returns true and fills *out (caller
  * json_free's it). On any failure sets a typed error body on `reply`, releases
  * its own scratch, and returns false — never leaves `reply` silent. */
-bool wnh_call_rpc(struct zcl_command_reply *reply, const char *method,
-                         const char *params_json, struct json_value *out)
+static bool wnh_call_rpc_common(struct zcl_command_reply *reply,
+                                const char *method, const char *params_json,
+                                long total_ms, struct json_value *out)
 {
     zcl_native_bridge_ensure_rpc();
-    char *raw = node_rpc_call(method, params_json);
+    char *raw = total_ms > 0
+        ? node_rpc_call_deadline(method, params_json, 2000, total_ms)
+        : node_rpc_call(method, params_json);
     if (!raw) {
         LOG_ERROR(WNH_TAG, "RPC %s returned null", method);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
@@ -126,11 +132,24 @@ bool wnh_call_rpc(struct zcl_command_reply *reply, const char *method,
     return true;
 }
 
+bool wnh_call_rpc(struct zcl_command_reply *reply, const char *method,
+                  const char *params_json, struct json_value *out)
+{
+    return wnh_call_rpc_common(reply, method, params_json, 0, out);
+}
+
+bool wnh_call_rpc_deadline(struct zcl_command_reply *reply, const char *method,
+                           const char *params_json, long total_ms,
+                           struct json_value *out)
+{
+    return wnh_call_rpc_common(reply, method, params_json, total_ms, out);
+}
+
 /* Deterministic, non-secret plan token binding a plan preview to its exact
  * parameters (FNV-1a over the parts, 16 hex). The operator can compare it
  * across the plan and the committed reply; no server state is stored. */
-static void wnh_plan_token(char out[17], const char *a, const char *b,
-                           const char *c)
+void wnh_plan_token(char out[17], const char *a, const char *b,
+                    const char *c)
 {
     uint64_t h = 1469598103934665603ULL;
     const char *parts[3] = { a, b, c };
@@ -233,8 +252,8 @@ void wnh_fail(struct zcl_command_reply *reply,
  * Truncating to {"confirm":true} silently discards the recipient and is not a
  * plan; callers must fail the plan when their declared response budget cannot
  * carry every binding. */
-static bool wnh_commit_input(const struct json_value *ci, char *commit,
-                             size_t commit_size)
+bool wnh_commit_input(const struct json_value *ci, char *commit,
+                      size_t commit_size)
 {
     size_t n = json_write(ci, commit, commit_size);
     if (n == 0 || n >= commit_size) {
@@ -258,9 +277,9 @@ static bool wnh_commit_input(const struct json_value *ci, char *commit,
  * of a plan, and the plan/commit flow could not be driven from the typed
  * interface at all. The caller needs the committing input, not a link; it is
  * `commit_input` below, and re-running this leaf with it executes the plan. */
-static void wnh_emit_plan(struct zcl_command_reply *reply, const char *path,
-                          const char *action, const char *token,
-                          const char *commit_input)
+void wnh_emit_plan(struct zcl_command_reply *reply, const char *path,
+                   const char *action, const char *token,
+                   const char *commit_input)
 {
     (void)path; /* the commit re-runs THIS leaf; see the note above */
     (void)json_push_kv_str(&reply->data, "stage", "plan");
@@ -290,7 +309,8 @@ void zcl_native_handle_wallet_address_new(
 {
     (void)request;
     struct json_value body;
-    if (!wnh_call_rpc(reply, "getnewaddress", NULL, &body))
+    if (!wnh_call_rpc_deadline(reply, "getnewaddress", NULL,
+                               RPC_WALLET_MUTATION_TIMEOUT_MS, &body))
         return;
     const char *addr = wnh_string_result(&body);
     if (!addr) {
@@ -310,14 +330,17 @@ void zcl_native_handle_wallet_shielded_address(
 {
     (void)request;
     struct json_value body;
-    if (!wnh_call_rpc(reply, "z_getnewaddress", NULL, &body))
+    if (!wnh_call_rpc_deadline(reply, "z_getnewaddress", NULL,
+                               RPC_WALLET_MUTATION_TIMEOUT_MS, &body))
         return;
     const char *addr = wnh_string_result(&body);
-    if (!addr) {
+    if (!addr || !wallet_addr_is_sapling(addr)) {
+        const char *failure = addr && addr[0]
+            ? addr
+            : "z_getnewaddress did not return a shielded address";
+        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "SHIELDED_ADDRESS_FAILED",
+                 failure, "z_getnewaddress");
         json_free(&body);
-        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "NO_ADDRESS",
-                 "z_getnewaddress did not return a shielded address",
-                 "z_getnewaddress");
         return;
     }
     (void)json_push_kv_str(&reply->data, "address", addr);
@@ -508,10 +531,9 @@ void zcl_native_handle_wallet_shielded_send(
 {
     const char *wallet_scope =
         json_get_str(json_get(request->input, "wallet_scope"));
-    if (!wallet_scope || (strcmp(wallet_scope, "dev") != 0 &&
-                          strcmp(wallet_scope, "prod") != 0)) {
+    if (!wallet_money_scope_valid(wallet_scope)) {
         wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "INVALID_WALLET_SCOPE",
-                 "wallet_scope must explicitly be dev or prod",
+                 "wallet_scope must explicitly be dev, prod, or test",
                  "core.wallet.shielded.send");
         return;
     }
@@ -528,7 +550,7 @@ void zcl_native_handle_wallet_shielded_send(
                           amount)) {
         wnh_fail(reply, ZCL_COMMAND_EXIT_INVALID, "INVALID_AMOUNT",
                  "amount must be positive, in range, and exact to 8 decimals",
-                 to);
+                 "amount");
         return;
     }
     (void)amount_zats; /* exact range proof; the RPC consumes decimal text */
@@ -624,20 +646,28 @@ void zcl_native_handle_wallet_shielded_send(
     char *params = rpc_arg_builder_to_json(&p);
     if (!params) {
         wnh_fail(reply, ZCL_COMMAND_EXIT_INTERNAL, "ARG_BUILD_FAILED",
-                 "could not encode z_sendmany params", to);
+                 "could not encode z_sendmany params", "z_sendmany");
         return;
     }
     struct json_value body;
-    bool ok = wnh_call_rpc(reply, "z_sendmany", params, &body);
+    /* Sapling proof construction legitimately exceeds the generic wallet
+     * RPC deadline on a busy full node. Keep this client deadline aligned
+     * with the server's bounded proof-class deadline so a successful
+     * broadcast never becomes an ambiguous timeout at the native surface. */
+    bool ok = wnh_call_rpc_deadline(reply, "z_sendmany", params,
+                                    RPC_PROOF_BUILD_TIMEOUT_MS, &body);
     free(params);
     if (!ok)
         return;
     /* z_sendmany is synchronous here and returns the broadcast txid. */
     const char *txid = wnh_string_result(&body);
     if (!txid || strlen(txid) != 64 || !IsHex(txid)) {
+        const char *failure = txid && txid[0]
+            ? txid
+            : "z_sendmany did not return a transaction result";
+        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "SHIELDED_SEND_FAILED",
+                 failure, "z_sendmany");
         json_free(&body);
-        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "NO_TXID",
-                 "z_sendmany did not return a 64-hex transaction id", to);
         return;
     }
     (void)json_push_kv_str(&reply->data, "stage", "committed");
@@ -656,58 +686,6 @@ void zcl_native_handle_wallet_shielded_send(
         (void)json_push_kv_str(&reply->data, "memo", memo);
     if (idem && idem[0])
         (void)json_push_kv_str(&reply->data, "idempotency_key", idem);
-    (void)json_push_kv_str(&reply->data, "plan_token", token);
-    reply->error.mutated = true;
-    json_free(&body);
-}
-
-void zcl_native_handle_wallet_backup_now(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
-{
-    bool confirm = json_get_bool_or(request->input, "confirm", false);
-    char token[17];
-    wnh_plan_token(token, "backup-now", "", "");
-
-    /* CONFIRM_PLAN_COMMIT. A wallet backup exports EVERY key at once, into
-     * a file that is plaintext unless WALLET_BACKUP_PASSWORD is set — a
-     * strictly larger disclosure than export-key, which has always demanded
-     * a confirm for ONE key. The plan half names the exposure and writes
-     * nothing. (The periodic background service is unaffected: it calls
-     * wallet_backup_now() directly, not through this leaf.) */
-    if (!confirm) {
-        const char *pw = getenv("WALLET_BACKUP_PASSWORD");
-        bool encrypted = pw && pw[0];
-        struct json_value ci;
-        json_init(&ci);
-        json_set_object(&ci);
-        (void)json_push_kv_bool(&ci, "confirm", true);
-        char commit[128];
-        bool encoded = wnh_commit_input(&ci, commit, sizeof(commit));
-        json_free(&ci);
-        if (!encoded) {
-            wnh_fail(reply, ZCL_COMMAND_EXIT_INTERNAL, "PLAN_TOO_LARGE",
-                     "exact backup commit input exceeds its budget", "confirm");
-            return;
-        }
-        (void)json_push_kv_bool(&reply->data, "encrypted", encrypted);
-        (void)json_push_kv_str(
-            &reply->data, "warning",
-            encrypted
-                ? "commit writes every wallet key to a backup file, "
-                  "encrypted under WALLET_BACKUP_PASSWORD"
-                : "commit writes every wallet key to a backup file IN THE "
-                  "CLEAR (WALLET_BACKUP_PASSWORD is not set)");
-        wnh_emit_plan(reply, request->spec->path, "backup-now", token, commit);
-        return;
-    }
-
-    struct json_value body;
-    if (!wnh_call_rpc(reply, "walletbackupnow", NULL, &body))
-        return;
-    (void)json_push_kv(&reply->data, "backup", &body);
-    (void)json_push_kv_str(&reply->data, "stage", "committed");
-    (void)json_push_kv_bool(&reply->data, "committed", true);
-    (void)json_push_kv_bool(&reply->data, "created", true);
     (void)json_push_kv_str(&reply->data, "plan_token", token);
     reply->error.mutated = true;
     json_free(&body);

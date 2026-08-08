@@ -13,7 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 
-struct codeindex *codeindex_open(const char *root)
+static struct codeindex *codeindex_alloc(const char *root)
 {
     if (!root || !root[0])
         LOG_NULL("codeindex", "null root");
@@ -28,6 +28,25 @@ struct codeindex *codeindex_open(const char *root)
         LOG_NULL("codeindex", "root too long");
     }
 
+    return ci;
+}
+
+struct codeindex *codeindex_open_existing(const char *root)
+{
+    struct codeindex *ci = codeindex_alloc(root);
+    if (!ci) return NULL;
+    ci->store = ci_store_open(root);
+    if (!ci->store) {
+        codeindex_close(ci);
+        return NULL;
+    }
+    return ci;
+}
+
+struct codeindex *codeindex_open(const char *root)
+{
+    struct codeindex *ci = codeindex_alloc(root);
+    if (!ci) return NULL;
     bool stale = true;
     ci->store = ci_store_open(root);
     if (ci->store && !codeindex_is_stale(ci, &stale)) {

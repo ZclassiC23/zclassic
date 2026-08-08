@@ -25,8 +25,8 @@
  * ------
  *
  *   - A background thread started from boot. Every
- *     `interval_seconds` the thread copies the six wallet tables
- *     (`wallet_keys`, `wallet_sapling_keys`, `wallet_seed`,
+ *     `interval_seconds` the thread copies the eight wallet tables
+ *     (`wallet_keys`, `wallet_key_encryption`, `wallet_sapling_keys`, `wallet_seed`,
  *     `wallet_scripts`, `wallet_transactions`, `wallet_utxos`,
  *     `wallet_sapling_notes`) via ATTACH + `CREATE TABLE AS
  *     SELECT` into a `wallet_backup_<unix_ts>.sqlite` file in
@@ -162,6 +162,13 @@ void wallet_backup_stop(void);
  * Callable whether or not the thread is running. Safe to call from
  * any thread — serialised by the service mutex. */
 struct zcl_result wallet_backup_now(void);
+
+/* Run one synchronously verified backup with an invocation-scoped second
+ * encryption layer. The password is consumed only while the service lock is
+ * held; it is never retained in service state after this call returns. This
+ * is the safe native-command path for operators who refuse to put
+ * WALLET_BACKUP_PASSWORD in a process environment or unit file. */
+struct zcl_result wallet_backup_now_encrypted(const char *password);
 
 /* ── Event triggers (debounced) ─────────────────────────────── */
 

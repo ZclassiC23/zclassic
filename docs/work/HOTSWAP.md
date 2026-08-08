@@ -18,6 +18,14 @@ ZClassic23 has three development layers:
 
 None is publication authority for the canonical node or a release build.
 
+The build profiles are explicit: resident modules use `DEV_LIVE`, an isolated
+incremental process replacement uses `DEV_RESTART`, static combined proof uses
+`INTEGRATION`, and production uses `RELEASE`. The first three are permanently
+non-LTO; the last deliberately retains whole-program LTO. `make
+check-dev-loop-profiles` proves the expanded flags and recipe ownership, while
+the resident action-plan loader rejects an action plan containing `-flto` or
+linker-plugin flags before it compiles anything.
+
 ## Real module ABI (activatable, gated)
 
 The module path loads ONE swappable translation unit per `.so`, carrying EVERY
@@ -157,9 +165,11 @@ fixtures in `lib/test/src/test_make_lint_gates.c`.
 
 The current owners are read-only `app/controllers/` leaves, each with its
 emitter in the owning TU. Status and wallet carry their read helpers. The
-Metaverse property owner carries its pure property-catalog service plus the
-property ID codec, view, work/action rules, and adapters declared in
-`config/hotswap_islands.def`:
+Metaverse owner carries its pure property-catalog closure and the read-only
+agent status/audit/money/liquidity service. That service receives its
+controller-owned RPC transport explicitly on each call; it owns no mutable
+transport slot and cannot create wallet or transaction authority. All island
+members are declared in `config/hotswap_islands.def`:
 
 | Owning TU (`app/controllers/src/`) | Swappable leaves | Probe leaf |
 |---|---|---|
@@ -169,7 +179,7 @@ property ID codec, view, work/action rules, and adapters declared in
 | `wallet_native_handlers.c` | `core.wallet.address.list` | `core.wallet.address.list` |
 | `chain_native_handlers.c` | `core.consensus.utxo.audit` | `core.consensus.utxo.audit` |
 | `app_native_handlers.c` | `app.names.list` | `app.names.list` |
-| `metaverse_controller.c` | `metaverse.property.list`, `metaverse.property.show` | `metaverse.property.list` |
+| `metaverse_controller.c` | `metaverse.agent.status`, `metaverse.agent.money`, `metaverse.agent.liquidity`, `metaverse.agent.audit`, `metaverse.property.list`, `metaverse.property.show` | `metaverse.property.list` |
 
 Adding a leaf to an existing file is: append it to that row's leaf list AND add
 its trampoline to the TU's `#ifdef ZCL_HOTSWAP_MODULE_GEN` leaf table. Adding a
@@ -229,6 +239,22 @@ the leaf has a larger response budget) is included in the activation receipt,
 so publication is itself proof of visible behavior; no second status process
 is needed.
 
+Before starting GCC, the executor consults one verified host-local artifact
+cache. Its key binds the compiler capsule, compiler command, normalized
+`DEV_LIVE` flags, link flags, island owner, and the path plus SHA-256 of every
+known dependency. Checkout roots embedded in reproducibility flags normalize
+to `${WORKTREE}`; source paths in the dependency closure normalize to paths
+relative to that root. A hit is accepted only when the stored `.so` hashes to
+its separately published marker, then it is hard-linked into the requesting
+worktree's content-addressed build directory. A corrupt or partial entry is
+removed under a per-key process lock and rebuilt. Cache hits therefore start
+zero compiler and zero linker processes; their receipts expose
+`artifact_cache_hit`, `artifact_cache_key`, `compiler_processes`, and
+`linker_processes`. The first observation of a dependency closure still fails
+closed and asks for one more save. Exact reverts and a second worktree can then
+reuse the verified artifact; the cache is acceleration only and grants no
+probe, activation, or publication authority.
+
 If an event is multi-file or outside the compiled allowlist, auto mode discards
 its publication authority and invokes the ordinary cycle in verify-only mode.
 The generic reload path remains contained. Manual `make hotswap-try`,
@@ -239,6 +265,136 @@ The commit and probe hooks are ONE shared implementation
 (`zcl_native_hotswap_publish_hooks()` in `tools/command/native_dev_hotswap.c`),
 used by the resident RPC, `dev hotswap probe`, and the preload path alike — so
 "how a candidate is validated and published" has exactly one definition.
+
+`make t-fast-exact ONLY=dev_platform` permanently exercises a real isolated
+cache miss, warm hit, changed-source miss, exact revert hit, and second-worktree
+hit. The subprocess seam exists only in `ZCL_TESTING` with the explicit
+`ZCL_DEVLOOP_TEST_PROCESS=1` fixture opt-in; release builds retain the literal
+no-process implementation.
+
+### Resident process-restart candidate
+
+`make dev-bin` freezes non-LTO dev and proof relocatable bases plus a
+`DEV_RESTART` action plan beside their object graphs. For a bounded set of
+ordinary non-consensus `.c` edits, the
+watcher now snapshots the source CAS, invokes the pinned compiler directly for
+only those translation units, reuses every prior overlay whose generation and
+source digest remain current, links those overlays ahead of the exact frozen
+base, then
+rechecks the source CAS, and runs `discover help` as a five-second
+command-runtime probe. The resident owner starts only compiler, linker, and
+candidate children: it starts no Make process or shell.
+
+The save link never enumerates the complete object graph. Make performs one
+epoch-owned `-r` prelink when it establishes the dev environment; the action
+plan binds that regular file, and the artifact key hashes it. Each save then
+links only the current overlay response plus that frozen base, with overlay
+definitions ordered first. An overlay containing `.preinit_array`,
+`.init_array`, or `.fini_array` ownership fails closed before the linker so a
+translation unit cannot execute both its frozen and replacement initializer.
+Receipts count all linker processes separately from
+`complete_graph_linker_processes`; the latter stays zero on this path.
+
+The cycle also exposes the exact source-CAS I/O it paid:
+`source_guard_bytes_read`, `source_bytes_total`, `changed_source_bytes`, and
+`source_byte_accounting_complete`. A newly started watcher deliberately
+forgets the prior Merkle snapshot on its first observed edit so that events
+between watch installation and the first cycle cannot be hidden; that first
+cycle may therefore re-read the whole indexed source tree. Later edits on the
+same resident watcher reuse the persistent snapshot and normally re-read only
+the files whose stat keys changed. Missing, overflowing, or incomplete byte
+accounting is labeled incomplete, never rendered as a trustworthy zero.
+`dev.loop.wait` uses the list-sized response budget because the existing cycle
+schema may contain a full bounded proof receipt; concise loop status continues
+to project only its decision fields.
+
+Candidate and proof links share a verified host-local restart-artifact cache.
+Its key binds the compiler capsule, base object generation, normalized compile
+and link actions, the ordered rewritten response, and the SHA-256 of every
+active overlay object. Candidate and test profiles therefore remain distinct.
+Each entry is process-locked and accepted only when the executable hashes to
+its separate marker; a partial or corrupt pair is removed and rebuilt. A hit
+is hard-linked into the worktree's content-addressed candidate directory and
+still runs the compiler, source guards, candidate probe and affected tests—it
+removes only an identical overlay link. Receipts expose
+`artifact_cache_key`, `artifact_cache_hit`, and exact process counts. Exact
+outputs and reverts may reuse an artifact; cache state grants no evidence or
+publication authority.
+
+Candidate health is not publication. After the command-runtime probe, the
+same resident owner derives the complete existing proof plan, refuses an
+incomplete dependency dimension or substituted path floor, expands plan
+families to canonical exact test IDs, compiles the changed units under the
+frozen non-LTO test profile, and directly links a content-addressed test
+artifact from those bytes. The test runner may reuse an existing skip-free
+content-addressed PASS only when its snapshot proves that the cached group's
+closure does not reach the changed source; its summary must account for every
+selected group as fresh or verified-cached with zero failures and zero
+self-skips. Large-stack fixtures inherit the test profile's hard stack limit
+directly in the child—no `ulimit` shell wrapper. The durable receipt carries
+the exact-group count and selector SHA-256; `dev.test.plan` re-derives the
+inspectable list.
+
+The save tier never silently truncates a caller closure. When the immediate
+union would exceed 32 exact groups, it runs the complete explicit path-owned
+floor and moves the broader reverse-caller closure into the exact deferred
+set. Both sets retain canonical order and separate hashes; the receipt exposes
+`bounded_proof_deferred=true`, and `proof_complete` stays false until the
+deferred set runs through integration. If the explicit path floor itself
+exceeds the bound, the cycle still refuses before compilation. This is
+trustworthy focused feedback, not acceptance or a claim that broader proofs
+passed.
+
+A complete run reports `status=proof_ready`, `phase=affected_proofs`, and
+`proof_complete=true`. Even then `runtime_published=false`: the
+content-addressed executables stay under the worktree build directory and no
+node is restarted. Headers, build-graph changes, consensus-risk inputs,
+oversized batches, and anything outside the frozen plan stay on the
+conservative path.
+
+On this host, the first candidate-only watcher event for
+`tools/dev/devloop_restart_build.c` took 1.993 seconds end to end: 168 ms
+compile, 1.416 seconds link, and 70 ms candidate probe. The first complete
+resident proof, for `app/services/src/bg_validation_dump.c`, took 73.150
+seconds: the process candidate took 2.649 seconds, the proof artifact took
+2.078 seconds to compile/link, and 21 cold mapped groups took 63.412 seconds.
+Every group passed with zero self-skips. This misses the five-second proof
+target because the selected `make_lint_gates` heavy family dominates; compiler
+and linker latency is no longer the limiting stage.
+
+One closure remains explicitly incomplete: tooling edits that select
+`code_capsule` can reach an otherwise unchanged `clientversion` object whose
+embedded source identity belongs to the setup epoch. The resident refuses that
+stale identity instead of blessing it. Rebuilding that generated identity in
+the resident proof epoch is required before this edit class can report
+`proof_complete=true`.
+
+The watcher also owns cancellation. `SIGTERM` records an async-signal-safe
+cancellation request; the bounded process runner terminates and reaps the
+active child process session, including nested process groups, before the
+watcher releases its worktree lock. A new relevant source event uses the same
+mechanism: the obsolete epoch emits no verdict, its exact replacement paths
+remain queued, and the debounced newest batch runs next. Metadata-only
+`IN_ATTRIB` events are excluded because compiler reads may update atime and are
+not source saves. On
+this host, `dev loop stop` interrupted a generic `make ff` tree and completed
+in 0.30 seconds, where the prior implementation retained the lock past its
+five-second command deadline. Cancellation is reported separately from a
+process timeout and never activates a candidate.
+
+The ordinary `dev-bin` bootstrap now writes the frozen non-LTO module action
+plan. The resident no longer requires a one-off `make hotswap-module-so` just
+to learn compiler and linker flags. A real latest-wins probe superseded an
+active `bg_validation_dump.c` proof with a `status_native_handlers.c` save;
+only the latter published a cycle epoch, the session had zero descendants
+after stop, and its first dependency-baseline compile took 225.6 ms.
+
+The candidate build used one compiler, one linker, one candidate, zero
+Make/shell/LTO processes, and no datadir, port, or service access. A separately
+audited isolated regtest launch took 11.054
+seconds cold and 11.204 seconds after a crash; graceful shutdown did not drain
+within ten seconds. That full-node path therefore does **not** satisfy the
+five-second restart target and is not used by the watcher.
 
 ### Measured floor and the physical limit
 
@@ -439,7 +595,8 @@ The automatic GENERATION (manifest/staging) path stays contained:
   and `dev.change.apply` all refuse before generation relinking.
 
 The deliberate exception is the owner-gated native transaction:
-`zclassic23-dev dev generation activate --idempotency-key=<key>`. Its first
+`zclassic23-dev dev generation activate
+--input='{"idempotency_key":"<key>"}'`. Its first
 call stages and preflights the exact binary without stopping the service and
 returns `commit_input`. Re-running the same leaf with that input verifies the
 source identity, ABA mutation token, source CAS root, expiry, and resident

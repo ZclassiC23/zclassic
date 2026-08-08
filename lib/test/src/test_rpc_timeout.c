@@ -40,6 +40,7 @@ static int test_init_defaults(void)
         fresh_mgr();
         ASSERT(mgr.initialized);
         ASSERT(mgr.timeout_ms == 10000);
+        ASSERT(mgr.proof_timeout_ms == RPC_PROOF_BUILD_TIMEOUT_MS);
         ASSERT(mgr.watchdog_period_ms == 250);
         ASSERT(mgr.stat_registered == 0);
         ASSERT(mgr.stat_completed == 0);
@@ -91,6 +92,77 @@ static int test_set_method_truncates(void)
         ASSERT(strlen(mgr.slots[s].method) == RPC_TIMEOUT_METHOD_LEN - 1);
 
         rpc_timeout_unregister(&mgr, s);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_proof_methods_receive_bounded_extension(void)
+{
+    int failures = 0;
+    TEST("rpc_timeout: bounded slow wallet operations receive scoped deadlines") {
+        fresh_mgr();
+        int ordinary_pair[2] = { -1, -1 };
+        int proof_pair[2] = { -1, -1 };
+        int commit_pair[2] = { -1, -1 };
+        int shielded_pair[2] = { -1, -1 };
+        int key_pair[2] = { -1, -1 };
+        int witness_pair[2] = { -1, -1 };
+        ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, ordinary_pair) == 0);
+        ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, proof_pair) == 0);
+        ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, commit_pair) == 0);
+        ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, shielded_pair) == 0);
+        ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, key_pair) == 0);
+        ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, witness_pair) == 0);
+
+        int ordinary = rpc_timeout_register(&mgr, ordinary_pair[0], 0);
+        int proof = rpc_timeout_register(&mgr, proof_pair[0], 0);
+        int commit = rpc_timeout_register(&mgr, commit_pair[0], 0);
+        int shielded = rpc_timeout_register(&mgr, shielded_pair[0], 0);
+        int key = rpc_timeout_register(&mgr, key_pair[0], 0);
+        int witness = rpc_timeout_register(&mgr, witness_pair[0], 0);
+        ASSERT(ordinary >= 0 && proof >= 0 && commit >= 0 && shielded >= 0 &&
+               key >= 0 && witness >= 0);
+        rpc_timeout_set_method(&mgr, ordinary, "getwalletinfo");
+        rpc_timeout_set_method(&mgr, proof, "vault_intent_plan");
+        rpc_timeout_set_method(&mgr, commit, "vault_intent_commit");
+        rpc_timeout_set_method(&mgr, shielded, "z_sendmany");
+        rpc_timeout_set_method(&mgr, key, "z_getnewaddress");
+        rpc_timeout_set_method(&mgr, witness, "rescanwitnesses");
+        ASSERT(mgr.slots[ordinary].timeout_ms == 10000);
+        ASSERT(mgr.slots[proof].timeout_ms == RPC_PROOF_BUILD_TIMEOUT_MS);
+        ASSERT(mgr.slots[commit].timeout_ms == RPC_PROOF_BUILD_TIMEOUT_MS);
+        ASSERT(mgr.slots[shielded].timeout_ms == RPC_PROOF_BUILD_TIMEOUT_MS);
+        ASSERT(mgr.slots[key].timeout_ms == RPC_WALLET_MUTATION_TIMEOUT_MS);
+        ASSERT(mgr.slots[witness].timeout_ms == RPC_PROOF_BUILD_TIMEOUT_MS);
+        rpc_timeout_unregister(&mgr, commit);
+        rpc_timeout_unregister(&mgr, shielded);
+        rpc_timeout_unregister(&mgr, key);
+        rpc_timeout_unregister(&mgr, witness);
+
+        ASSERT(rpc_timeout_sweep(
+                   &mgr, mgr.slots[ordinary].start_us + 11000 * 1000LL) == 1);
+        ASSERT(rpc_timeout_was_killed(&mgr, ordinary));
+        ASSERT(!rpc_timeout_was_killed(&mgr, proof));
+        ASSERT(rpc_timeout_sweep(
+                   &mgr, mgr.slots[proof].start_us +
+                         (RPC_PROOF_BUILD_TIMEOUT_MS + 1) * 1000LL) == 1);
+        ASSERT(rpc_timeout_was_killed(&mgr, proof));
+
+        rpc_timeout_unregister(&mgr, ordinary);
+        rpc_timeout_unregister(&mgr, proof);
+        close(ordinary_pair[0]);
+        close(ordinary_pair[1]);
+        close(proof_pair[0]);
+        close(proof_pair[1]);
+        close(commit_pair[0]);
+        close(commit_pair[1]);
+        close(shielded_pair[0]);
+        close(shielded_pair[1]);
+        close(key_pair[0]);
+        close(key_pair[1]);
+        close(witness_pair[0]);
+        close(witness_pair[1]);
         PASS();
     } _test_next:;
     return failures;
@@ -312,9 +384,11 @@ static int test_env_overrides(void)
     TEST("rpc_timeout: ZCL_RPC_TIMEOUT_MS + sweep_ms env overrides") {
         fresh_mgr();
         setenv("ZCL_RPC_TIMEOUT_MS",       "3500", 1);
+        setenv("ZCL_RPC_PROOF_TIMEOUT_MS", "45000", 1);
         setenv("ZCL_RPC_TIMEOUT_SWEEP_MS", "125",  1);
         rpc_timeout_load_from_env(&mgr);
         ASSERT(mgr.timeout_ms == 3500);
+        ASSERT(mgr.proof_timeout_ms == 45000);
         ASSERT(mgr.watchdog_period_ms == 125);
 
         /* Clamping at the lower bound */
@@ -323,6 +397,7 @@ static int test_env_overrides(void)
         ASSERT(mgr.watchdog_period_ms == 10);
 
         unsetenv("ZCL_RPC_TIMEOUT_MS");
+        unsetenv("ZCL_RPC_PROOF_TIMEOUT_MS");
         unsetenv("ZCL_RPC_TIMEOUT_SWEEP_MS");
         PASS();
     } _test_next:;
@@ -351,6 +426,7 @@ static int test_snapshot_mirrors_live(void)
         struct rpc_timeout_snapshot snap;
         rpc_timeout_snapshot_take(&mgr, &snap);
         ASSERT(snap.timeout_ms == 50);
+        ASSERT(snap.proof_timeout_ms == RPC_PROOF_BUILD_TIMEOUT_MS);
         ASSERT(snap.active_slots == 2);
         ASSERT(snap.registered == 2);
         ASSERT(snap.killed == 2);
@@ -459,6 +535,7 @@ int test_rpc_timeout(void)
     failures += test_init_defaults();
     failures += test_register_unregister_roundtrip();
     failures += test_set_method_truncates();
+    failures += test_proof_methods_receive_bounded_extension();
     failures += test_table_full_returns_minus_one();
     failures += test_disabled_module_skips_registration();
     failures += test_sweep_no_expiries();

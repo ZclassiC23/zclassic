@@ -7,6 +7,7 @@
 #include "controllers/sync_controller.h"
 #include "core/serialize.h"
 #include "event/event.h"
+#include "jobs/utxo_apply_stage.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "sapling/incremental_merkle_tree.h"
@@ -849,7 +850,15 @@ int test_unclean_shutdown_advance(void)
     process_block_test_fail_next_sapling_persists(3);
     atomic_store(&g_sapling_tree_rebuilding, false);
 
-    bool ok = opened && attached && started;
+    bool apply_runs_before_rebuild =
+        !utxo_apply_sapling_rebuild_paused();
+    atomic_store(&g_sapling_tree_rebuilding, true);
+    bool apply_pauses_during_rebuild =
+        utxo_apply_sapling_rebuild_paused();
+    atomic_store(&g_sapling_tree_rebuilding, false);
+
+    bool ok = opened && attached && started && apply_runs_before_rebuild &&
+              apply_pauses_during_rebuild;
     bool first = process_block_test_persist_sapling_tree(false);
     bool second = process_block_test_persist_sapling_tree(false);
     bool third = process_block_test_persist_sapling_tree(false);

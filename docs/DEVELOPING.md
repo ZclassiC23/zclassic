@@ -45,13 +45,24 @@ The index is derived and read-only. The current efficient loop is **`code sym`/`
 The platform exists so you **drop in C and let the machine classify, build, and test it.** Do not hand-run every step or drop to bash to inspect — that is the slow path the platform was built to remove.
 
 1. **Persistent watcher (default-safe, hot when requested):** `zclassic23-dev dev loop ensure` (or `make dev-watch`) starts verify mode. For the interpreter-like inner loop on the isolated armed dev node, use `zclassic23-dev dev loop ensure --input='{"mode":"auto"}'` once. Then just **Edit `.c`**. One allowlisted stateless island takes the resident compile→link→probe→atomic publish path; everything else is downgraded to verify-only. Read the machine receipt with `zclassic23-dev dev status` (`dev.status`) or block on `dev loop wait`.
+   `dev loop stop` cancels the watcher's active bounded child process group before releasing ownership; it does not wait behind an obsolete compile or test.
+   A newer relevant save also cancels the obsolete epoch and queues the latest exact path batch; stale epochs do not publish verdicts. Bounded tools run in private process sessions, so nested test process groups cannot escape cancellation.
 2. **Hot-swap tiers for the fast inner loop — three of them, pick by surface:**
-   - **Swappable read-only island (sub-250 ms measured loop):** owners are enumerated in `config/hotswap_swappable.def`; additional stateless controller/view/service/codec/metaverse TUs are attached in `config/hotswap_islands.def`. With the auto watcher running, edit any island member. The persistent authority reuses its native action plan, invokes stock GCC/Clang directly, links one `-Bsymbolic` module, probes the candidate against the resident node, and atomically replaces the owner leaf set. It does not start Make, a shell, or a throwaway command process. `tools/dev/hotswap-resident-bench.sh` is the 20-distinct-artifact p95 gate. Manual `make hotswap-try`, `make hotswap-apply`, and `dev hotswap probe` remain useful diagnosis surfaces. See `docs/work/HOTSWAP.md`.
-   - **Everything else — two verification tiers, know which proof you need:** eligible stateless handler changes may build a candidate shared object and run `dev.hotswap.probe` without changing the resident registry. All other changes use the mapped compile/test proof lane and produce a reload candidate only. Neither tier publishes or restarts a process.
+   - **Swappable read-only island (sub-250 ms measured loop):** owners are enumerated in `config/hotswap_swappable.def`; additional stateless controller/view/service/codec/metaverse TUs are attached in `config/hotswap_islands.def`. With the auto watcher running, edit any island member. The persistent authority reuses its native action plan, invokes stock GCC/Clang directly, links one `-Bsymbolic` module, probes the candidate against the resident node, and atomically replaces the owner leaf set. It does not start Make, a shell, or a throwaway command process. Exact inputs and exact reverts reuse a SHA-256-verified host cache across worktrees with zero compiler/linker children; cache hits never bypass resident probe or activation gates. `tools/dev/hotswap-resident-bench.sh` is the 20-distinct-artifact p95 gate. Manual `make hotswap-try`, `make hotswap-apply`, and `dev hotswap probe` remain useful diagnosis surfaces. See `docs/work/HOTSWAP.md`.
+   - **Bounded non-consensus C — exact candidate plus affected proof:** when exactly one to 32 ordinary C translation units change, the resident owner snapshots the source CAS, compiles only those units from its frozen `DEV_RESTART` plan, reuses any still-current prior overlays, directly relinks an isolated executable, rechecks the CAS, and runs its bounded command-runtime probe. It then expands the existing proof policy to canonical exact test IDs, relinks a test artifact from the same changed bytes, and runs those groups cold. The build path starts no Make or shell process. A complete accounted run reports `proof_ready`; failures, skipped proof work, incomplete closure, source mutation, and substituted plans refuse. `runtime_published` remains false: no node is restarted. Headers, build-graph edits, consensus-risk paths, and oversized batches stay on the conservative proof path. Eligible stateless handlers may instead use the shared-object probe path.
 
    The Make/dev-loop control plane captures one exact source record and reuses it across nested Makes. Exact single-profile goals load only their depfiles; mixed, unknown, and default goals load every profile. Use `make ff`, `make t-fast ONLY=<group>`, and `make fast-compile` for iteration, then run the strict gates below. Full-suite success is summary-only; focused runs and failures retain diagnostics, and `--verbose` requests the transcript. **Never fabricate or manually pass `BUILD_SOURCE_RECORD` / `ZCL_FAST_BUILD_SOURCE_RECORD`**—the parent Make or watcher owns capture, and every artifact session verifies it.
 
    The watcher coalesces only an exact, deterministic compiler diagnostic. Source bytes, ABA mutation token, execution/toolchain epoch, flags, and phase must all match; any change forces execution. Tests, lint, timeouts, signals, locks, infrastructure failures, and malformed receipts always execute. The current cycle verdict's `failure_id` is authoritative; `dev.diagnose.latest` is only the most recently recorded compiler failure and can be stale after an edit or green cycle. Inspect the returned ID with `zclassic23-dev dev diagnose show <failure_id>`; use `--view=full` only for the bounded capsule. `zclassic23-dev dev ff` deliberately reruns the current checkout without coalescing—it is not historical replay. Cycle and failure state are worktree-scoped and SHA3-sealed. Never edit or delete their files to influence a verdict.
+
+   Four explicit profiles keep release proof out of ordinary iteration:
+   `DEV_LIVE` (one island), `DEV_RESTART` (incremental dev executable),
+   `INTEGRATION` (static non-LTO combined proof), and `RELEASE` (the clean
+   whole-program LTO/reproducibility path). Run `make
+   check-dev-loop-profiles` to inspect the enforced boundary. Coverage and
+   representative timing live in
+   [`work/C23_DEV_LOOP_PERFORMANCE.md`](work/C23_DEV_LOOP_PERFORMANCE.md), not
+   in remembered anecdotes from the status-island microbenchmark.
 3. **Typed commands over bash — always.** `zclassic23 status` (compact status), `ops state --subsystem=<name>`, `ops logs`, `core storage query`, `discover help|search <q>`, `dev status` — instead of `ss`/`ps`/`tail`/`grep`. **Every reach for bash to inspect the node is a missing typed command — add it.** The registry is the only agent interface.
 4. **Big refactor/test campaigns → workflows of tiered subagents.** Author a `Workflow` (Opus for hard lanes, Sonnet for scoped, to save tokens); each lane runs in an isolated worktree (`isolation:'worktree'`), self-gates (build + focused test + `make lint`), and commits its green work to a `wf/<name>` branch. You then merge the green branches to main and push. Orchestrate + review; the fleet does the volume.
 
@@ -73,7 +84,7 @@ and elapsed microseconds. It is deliberately marked `source_cas_authority:
 shadow`; the exact shell-derived SHA-256 source/mutation record remains build
 and publication authority during differential rollout.
 5. **Push flow + its two traps:** `make lint && make -j"$(nproc)" build-only`, run the mapped focused tests with parallel Make, then `git push` (hook runs `make pre-push-ci`). **Trap A (impact-rules):** every changed `.c` must map to a focused group in `app/controllers/include/controllers/agent_impact_rules.def` or the push is BLOCKED ("no focused test mapping") — add the mapping. **Trap B (pre-push SIGPIPE):** git may not drain the hook's stdout, so a GREEN `make pre-push-ci` can die with `make[2]: write error: stdout` and spuriously block — confirm green out-of-band (`make pre-push-ci >log 2>&1; echo $?` → 0) then `git push --no-verify` (verified, not skipped).
-6. **ZVCS:** each green cycle may anchor candidate source/artifact evidence. Source revert is available only with generation relinking disabled. Explicit full-generation publication uses `zclassic23-dev dev generation activate --idempotency-key=<key>` and its returned `commit_input`; automatic relinking remains contained. Sealed-core changes require the owner unseal ritual (`check-core-seal`).
+6. **ZVCS:** each green cycle may anchor candidate source/artifact evidence. Source revert is available only with generation relinking disabled. Explicit full-generation publication uses `zclassic23-dev dev generation activate --input='{"idempotency_key":"<key>"}'` and its returned `commit_input`; automatic relinking remains contained. Sealed-core changes require the owner unseal ritual (`check-core-seal`).
 
 **Full-generation activation:** the narrow auto watcher still publishes only an allowlisted read-only island. An owner may explicitly stage and activate a full isolated-dev generation with the native plan/commit command above. It resolves an immutable source epoch, stages and preflights the exact candidate, compare-and-swaps the expected resident epoch under the activation lock, quiesces and atomically publishes, probes the exact process through the public registry, and accepts or restores the prior generation. Canonical-node and release publication remain separate and contained.
 
@@ -181,6 +192,20 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   `make custody-bind-selftest`. Rerunning an unchanged binding is idempotent;
   an endpoint or identity change is provisioned in a fresh private generation
   and promoted atomically, preserving every older signed audit chain.
+- `core wallet backup now --input=-` accepts an optional `password` beside
+  `confirm`. This satisfies the encrypted-backup spend gate without placing
+  `WALLET_BACKUP_PASSWORD` in a unit or process environment: the password is
+  stdin-only, applies to one synchronous backup, is not retained by the
+  service, and is never copied into `commit_input`. Keep it in the operator's
+  secret service and supply it again for commit. Scheduled backups retain
+  their existing environment policy.
+- `make dev-wallet-credential-setup` provisions the isolated dev wallet's
+  headless boot credential before at-rest encryption. It generates or reuses
+  the Secret Service entry, converts it to a user-scoped encrypted systemd
+  credential through stdin, and installs only the encrypted-file binding in a
+  dedicated unit drop-in. `make dev-wallet-credential-status` is redacted and
+  read-only. The node consumes `wallet-passphrase` once before reading
+  WKS1/WKD1 rows; ordinary environment variables still cannot auto-unlock it.
 
 The isolated `zcl23-dev.service` uses the same `Type=notify` + external
 watchdog handshake as production, under a strict 4G memory envelope. A
@@ -242,7 +267,8 @@ before any owner restores canonical service armor.
   remains the sole value-moving step. Inspect requires an explicit expected
   network and clock. Neither leaf accepts an identity seed.
 - `make deploy` is owner-gated live deployment. For the isolated dev lane,
-  `zclassic23-dev dev generation activate --idempotency-key=<key>` is the sole
+  `zclassic23-dev dev generation activate
+  --input='{"idempotency_key":"<key>"}'` is the sole
   full-generation authority: its plan returns exact `commit_input`, and its
   commit is source/resident-CAS-bound with exact-process verification and
   rollback. Other dev publication, relink, and recovery-apply entry points

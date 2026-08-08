@@ -8,9 +8,43 @@
 #include "json/json.h"
 #include "models/database.h"
 #include "models/vault_intent.h"
+#include "models/wallet_tx.h"
 #include "net/connman.h"
 #include "util/log_macros.h"
+#include "validation/accept_to_mempool.h"
 #include "wallet/wallet.h"
+
+#include <string.h>
+
+const char *vault_intent_mempool_error_code(int result_code,
+                                             const char *message)
+{
+    /* Detailed tokens originate in accept_to_mempool_detailed() and contain
+     * no transaction material.  Preserve the useful shielded/script cases
+     * before falling back to the stable result enum. */
+    if (message) {
+        if (strstr(message, "shielded-requirements-missing"))
+            return "SHIELDED_REQUIREMENTS_MISSING";
+        if (strstr(message, "transparent-script-invalid"))
+            return "TRANSPARENT_SCRIPT_INVALID";
+        if (strstr(message, "input-value-invalid"))
+            return "INPUT_VALUE_INVALID";
+        if (strstr(message, "value-balance-invalid"))
+            return "VALUE_BALANCE_INVALID";
+    }
+
+    switch (result_code) {
+    case -100 - MEMPOOL_ACCEPT_INVALID:        return "MEMPOOL_INVALID";
+    case -100 - MEMPOOL_ACCEPT_DUPLICATE:      return "MEMPOOL_DUPLICATE";
+    case -100 - MEMPOOL_ACCEPT_CONFLICT:       return "MEMPOOL_CONFLICT";
+    case -100 - MEMPOOL_ACCEPT_BELOW_FEE:      return "MEMPOOL_BELOW_FEE";
+    case -100 - MEMPOOL_ACCEPT_MISSING_INPUTS: return "MEMPOOL_MISSING_INPUTS";
+    case -100 - MEMPOOL_ACCEPT_NONFINAL:       return "MEMPOOL_NONFINAL";
+    case -100 - MEMPOOL_ACCEPT_EXPIRING_SOON:  return "MEMPOOL_EXPIRING_SOON";
+    case -100 - MEMPOOL_ACCEPT_INTERNAL_ERROR: return "MEMPOOL_INTERNAL_ERROR";
+    default:                                   return "MEMPOOL_REJECTED";
+    }
+}
 
 static void vipub_error(struct json_value *out, const char *code,
                         const char *message)
@@ -21,18 +55,64 @@ static void vipub_error(struct json_value *out, const char *code,
     (void)json_push_kv_str(out, "message", message);
 }
 
+static bool vipub_preflight_sapling_notes(struct wallet_rpc_context *ctx,
+                                          const uint8_t id[32],
+                                          const struct wallet_tx *wtx,
+                                          int64_t now,
+                                          struct json_value *result)
+{
+    for (size_t i = 0; i < wtx->tx.num_shielded_spend; i++) {
+        enum db_sapling_note_reservation_state state =
+            db_sapling_note_reservation_probe(
+                ctx->node_db, wtx->tx.v_shielded_spend[i].nullifier.data,
+                wtx->tx.hash.data);
+        if (state == DB_NOTE_RESERVATION_AVAILABLE ||
+            state == DB_NOTE_RESERVATION_SAME_TX)
+            continue;
+        if (state == DB_NOTE_RESERVATION_MISSING) {
+            (void)vault_intent_set_state(ctx->node_db, id,
+                VAULT_INTENT_FAILED, wtx->tx.hash.data,
+                "PREPARED_NOTE_MISMATCH", now);
+            vipub_error(result, "PREPARED_NOTE_MISMATCH",
+                "prepared transaction names no current wallet note; create a fresh plan");
+            return false;
+        }
+        if (state == DB_NOTE_RESERVATION_CONFLICT) {
+            (void)vault_intent_set_state(ctx->node_db, id,
+                VAULT_INTENT_CONFLICTED, wtx->tx.hash.data,
+                "PREPARED_NOTE_CONFLICT", now);
+            vipub_error(result, "PREPARED_NOTE_CONFLICT",
+                "prepared transaction note is reserved by another transaction");
+            return false;
+        }
+        vipub_error(result, "NOTE_RESERVATION_FAILED",
+                    "shielded-note reservation state is temporarily unreadable");
+        return false;
+    }
+    return true;
+}
+
 bool vault_intent_publish_prepared(struct wallet_rpc_context *ctx,
                                    const uint8_t id[32],
                                    struct wallet_tx *wtx, int64_t now,
                                    struct json_value *result)
 {
+    if (wtx->tx.num_shielded_spend > 0 &&
+        !vipub_preflight_sapling_notes(ctx, id, wtx, now, result))
+        return false;
     bool already_durable = wallet_get_tx(ctx->wallet, &wtx->tx.hash) != NULL;
     if (!already_durable) {
         struct zcl_result r = wallet_commit_from_context(ctx, wtx);
         if (!r.ok) {
+            const char *error_code =
+                vault_intent_mempool_error_code(r.code, r.message);
+            LOG_ERROR("vault_intent",
+                      "prepared transaction mempool admission failed "
+                      "(code=%d status=%s): %s",
+                      r.code, error_code, r.message);
             (void)vault_intent_set_state(ctx->node_db, id,
-                VAULT_INTENT_FAILED, NULL, "MEMPOOL_REJECTED", now);
-            vipub_error(result, "MEMPOOL_REJECTED", r.message);
+                VAULT_INTENT_FAILED, NULL, error_code, now);
+            vipub_error(result, error_code, r.message);
             return false;
         }
         r = wallet_persist_commit_before_relay(ctx, wtx);

@@ -39,6 +39,10 @@
  * with pointer aliases in wallet_helpers.c. Functions in boot_index.c
  * and boot_services.c receive what they need via parameters. */
 
+void boot_wallet_migrate_envelopes_or_exit(
+    const char *datadir, struct wallet_sqlite *wallet_db,
+    struct wallet *wallet);
+
 /* ── boot_index.c ───────────────────────────────────────────── */
 
 /* Block index load/save moved to services/block_index_loader.{h,c}.
@@ -526,5 +530,7 @@ void boot_apply_regtest_shielded(bool enabled, bool regtest);
 bool boot_wallet_identity_ensure(struct node_db *ndb,
                                  const uint8_t network_genesis[32],
                                  const char *operator_lane);
+
+void boot_wallet_credential_register_or_die(void);
 
 #endif

@@ -58,7 +58,7 @@ struct node_db_sync_catchup_job {
     struct {
         struct node_db *ndb;
         const struct active_chain *chain;
-        const struct wallet *w;
+        struct wallet *w;
         const char *datadir;
     } args;
 };
@@ -162,6 +162,9 @@ void sapling_tree_rebuild_test_force_begin_busy(int attempts);
  * so counts do not leak across tests. */
 int sapling_tree_rebuild_test_persist_deferrals(void);
 void sapling_tree_rebuild_test_reset_persist_deferrals(void);
+bool sync_wallet_note_nullifier_refresh_for_test(
+    struct wallet *wallet, const uint8_t txid[32], uint32_t output_index,
+    const uint8_t nf[32]);
 #endif
 
 /* Called after a block is successfully connected to the active chain.
@@ -182,7 +185,7 @@ bool node_db_sync_connect_block_async(struct node_db *ndb,
 bool node_db_sync_connect_block_async_with_wallet(struct node_db *ndb,
                                                   const struct block *blk,
                                                   const struct block_index *pindex,
-                                                  const struct wallet *wallet);
+                                                  struct wallet *wallet);
 
 /* Called when a transaction is added to the wallet.
  * Tracks wallet-owned UTXOs and marks spent inputs. */
@@ -190,6 +193,13 @@ bool node_db_sync_wallet_tx(struct node_db *ndb,
                             const struct transaction *tx,
                             const struct wallet *w,
                             int block_height);
+
+/* Fire-and-forget confirmed-wallet projection for the live tip path. Copies
+ * the exact transaction and block identity before enqueueing on the existing
+ * single DB writer, so a reducer thread never waits on SQLite. */
+bool node_db_sync_wallet_tx_confirmed_async(
+    struct node_db *ndb, const struct transaction *tx, const struct wallet *w,
+    int block_height, const uint8_t block_hash[32], int64_t block_time);
 
 /* Called when a transaction enters the mempool. */
 bool node_db_sync_mempool_add(struct node_db *ndb,
@@ -278,7 +288,7 @@ bool node_db_sync_reset_tip(struct node_db *ndb);
  * Called once at startup after chain is loaded. */
 int node_db_sync_catchup(struct node_db *ndb,
                          const struct active_chain *chain,
-                         const struct wallet *w,
+                         struct wallet *w,
                          const char *datadir);
 
 /* Import the full UTXO set from chainstate LevelDB into SQLite.
@@ -309,7 +319,7 @@ void node_db_sync_catchup_job_init(struct node_db_sync_catchup_job *job);
 bool node_db_sync_catchup_job_start(struct node_db_sync_catchup_job *job,
                                     struct node_db *ndb,
                                     const struct active_chain *chain,
-                                    const struct wallet *w,
+                                    struct wallet *w,
                                     const char *datadir);
 bool node_db_sync_catchup_job_join(struct node_db_sync_catchup_job *job,
                                    int *result_out);

@@ -159,6 +159,14 @@ zclassic23 vault intent commit --input='{
 zclassic23 vault intent status --input='{"plan_id":"<64hex>"}'
 ```
 
+Repeating the identical plan request is the supported timeout-recovery path. It
+returns the same plan ID and the same complete `digest`, `fee`,
+`confirmation_policy`, `from`, `route`, `privacy`, and `effects` document with
+`idempotent_plan:true`. Never fill in an omitted review field from memory. The
+commit/status `txid` and `confirmed_block_hash` are canonical display-order
+chain identifiers and may be copied directly into the explorer or the private
+lab recorder.
+
 Wait for confirmation and a refreshed `CURRENT` money snapshot before planning
 the next row. Repeat with route `private` and a Sapling source for Z-to-Z, route
 `unshield` and a Sapling source for Z-to-T, and route `mixed` with one

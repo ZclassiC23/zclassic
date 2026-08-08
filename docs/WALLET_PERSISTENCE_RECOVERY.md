@@ -72,11 +72,14 @@ damaged `node.db` is not the only copy:
 ls -lt ~/wallet_backups/wallet_backup_*.sqlite | head
 ```
 
-Each file is a standalone SQLite database holding the seven wallet tables as of
+Each file is a standalone SQLite database holding the eight wallet tables as of
 that run, plus a `wallet_backup_manifest` table recording, per wallet table,
 whether the source had it and how many rows were written. The service verifies
-every one of the seven against the source before calling a backup good; a run
+every one of the eight against the source before calling a backup good; a run
 that dropped `wallet_sapling_keys` fails loudly instead of reporting success.
+The set includes `wallet_key_encryption`: without its passphrase-wrapped DEK,
+restored WKD1 transparent keys would be authenticated ciphertext with no
+recovery key.
 Check what the last run saw:
 
 ```sh

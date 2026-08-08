@@ -220,7 +220,7 @@ int api_transaction_type_focused_tests(void)
         size_t alias_count = 0;
         const struct zcl_transaction_command_alias *aliases =
             zcl_transaction_command_alias_catalog(&alias_count);
-        bool ok = registry && aliases && alias_count == 7;
+        bool ok = registry && aliases && alias_count == 13;
         for (size_t i = 0; ok && i < alias_count; i++) {
             ok = zcl_transaction_type_find(aliases[i].type_id) != NULL &&
                  zcl_command_registry_find(registry,
@@ -253,7 +253,7 @@ int api_transaction_type_focused_tests(void)
         size_t nonchain_count = 0;
         const struct zcl_transaction_nonchain_command *nonchain =
             zcl_transaction_nonchain_command_catalog(&nonchain_count);
-        ok = ok && nonchain && nonchain_count == 19;
+        ok = ok && nonchain && nonchain_count == 22;
         for (size_t i = 0; ok && i < nonchain_count; i++) {
             const struct zcl_command_spec *spec =
                 zcl_command_registry_find(registry,
@@ -450,9 +450,9 @@ int api_transaction_type_focused_tests(void)
                                           "reverse_lookup_command")),
                     "app.transaction-types.command") == 0 &&
              json_get_int(json_get(&root,
-                 "alternate_command_route_count")) == 7 &&
+                 "alternate_command_route_count")) == 13 &&
              json_get_int(json_get(&root,
-                 "explicit_non_chain_command_count")) == 19 &&
+                 "explicit_non_chain_command_count")) == 22 &&
              strcmp(json_get_str(json_get(&root,
                          "checked_in_proof_source")),
                     "docs/work/transaction-lab-events.jsonl") == 0 &&
@@ -664,7 +664,7 @@ int api_transaction_type_focused_tests(void)
         struct json_value input;
         json_init(&input);
         json_set_object(&input);
-        json_push_kv_str(&input, "type", "znam_register");
+        json_push_kv_str(&input, "type", "sapling_z_to_t");
         char output[ZCL_COMMAND_EXTENDED_LIST_BUDGET + 1];
         enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
         size_t n = spec ? zcl_command_registry_execute_json(
@@ -685,16 +685,33 @@ int api_transaction_type_focused_tests(void)
             json_get(data, "command_contracts") : NULL;
         const struct json_value *builder = contracts ?
             api_test_find_str_field(contracts, "role", "builder") : NULL;
-        ok = ok && data && type && contracts && builder &&
+        const struct json_value *submit = contracts ?
+            api_test_find_str_field(contracts, "role", "submit") : NULL;
+        ok = ok && data && type && contracts && builder && submit &&
             strcmp(json_get_str(json_get(data, "schema")),
                    ZCL_TRANSACTION_TYPE_GUIDE_SCHEMA) == 0 &&
-            strcmp(json_get_str(json_get(type, "id")), "znam_register") == 0 &&
+            strcmp(json_get_str(json_get(type, "id")), "sapling_z_to_t") == 0 &&
             json_get_bool(json_get(data, "can_execute")) &&
             json_get_bool(json_get(data, "money_snapshot_required")) &&
             json_get_bool(json_get(data, "owner_authorization_required")) &&
-            json_size(contracts) == 3 &&
+            json_size(contracts) == 5 &&
             strcmp(json_get_str(json_get(builder, "command")),
-                   "app.names.register") == 0 &&
+                   "vault.intent.plan") == 0 &&
+            strcmp(json_get_str(json_get(submit, "command")),
+                   "vault.intent.submit") == 0 &&
+            strcmp(json_get_str(json_get(data,
+                   "preferred_submission_mode")),
+                   "immediate_ack_async") == 0 &&
+            strcmp(json_get_str(json_get(data,
+                   "preferred_submission_command")),
+                   "vault.intent.submit") == 0 &&
+            strcmp(json_get_str(json_get(data, "initial_reply_boundary")),
+                   "durable_queue") == 0 &&
+            strcmp(json_get_str(json_get(data, "operation_id_source")),
+                   "plan_id") == 0 &&
+            strcmp(json_get_str(json_get(data, "status_command")),
+                   "vault.intent.status") == 0 &&
+            json_size(json_get(data, "lifecycle_states")) == 9 &&
             json_get(builder, "allowed_keys") &&
             json_size(json_get(builder, "allowed_keys")) > 0 &&
             strlen(json_get_str(json_get(builder, "input_schema"))) > 0 &&

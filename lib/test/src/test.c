@@ -988,8 +988,22 @@ int main(int argc, char **argv)
     { extern int test_codec_cursor(void); failures += test_codec_cursor(); }
     { extern int test_zcode_creation_attribution(void);
       failures += test_zcode_creation_attribution(); }
+    { extern int test_zcode_shadow_policy(void);
+      failures += test_zcode_shadow_policy(); }
     { extern int test_zcode_score_receipt(void);
       failures += test_zcode_score_receipt(); }
+    { extern int test_zcode_score_receipt_packages(void);
+      failures += test_zcode_score_receipt_packages(); }
+    { extern int test_zcode_score_receipt_rejections(void);
+      failures += test_zcode_score_receipt_rejections(); }
+    { extern int test_zcode_score_receipt_creation(void);
+      failures += test_zcode_score_receipt_creation(); }
+    { extern int test_zcode_score_receipt_patronage(void);
+      failures += test_zcode_score_receipt_patronage(); }
+    { extern int test_zcode_score_receipt_reproduction(void);
+      failures += test_zcode_score_receipt_reproduction(); }
+    { extern int test_zcode_score_receipt_shadow(void);
+      failures += test_zcode_score_receipt_shadow(); }
     { extern int test_zcode_package_registry(void);
       failures += test_zcode_package_registry(); }
     failures += test_game();
@@ -1239,6 +1253,7 @@ int main(int argc, char **argv)
     failures += test_hotswap_module_v2();
     failures += test_dev_platform();
     failures += test_command_registry_catalog();
+    failures += test_command_registry_latency();
     failures += test_native_api_contract();
     failures += test_metric_alerts();
     failures += test_db_validators();
@@ -1519,6 +1534,8 @@ int main(int argc, char **argv)
     failures += test_projection_consumer();
     failures += test_progress_store();
     failures += test_event_log();
+    failures += test_event_log_kill9();
+    failures += test_event_log_benchmark();
     failures += test_mempool_projection();
     failures += test_peers_projection();
     { extern int test_topology_store(void);
@@ -1554,6 +1571,7 @@ int main(int argc, char **argv)
     { extern int test_zcode_store(void); failures += test_zcode_store(); }
     { extern int test_zcode_publish(void); failures += test_zcode_publish(); }
     { extern int test_zcode_package_dev(void); failures += test_zcode_package_dev(); }
+    { extern int test_zcode_dev_product(void); failures += test_zcode_dev_product(); }
     { extern int test_zcode_recipe(void); failures += test_zcode_recipe(); }
     { extern int test_zcode_contributor(void); failures += test_zcode_contributor(); }
     { extern int test_zcode_verify(void); failures += test_zcode_verify(); }
@@ -1562,6 +1580,8 @@ int main(int argc, char **argv)
     { extern int test_zcode_rank(void); failures += test_zcode_rank(); }
     { extern int test_zcode_discovery_rank(void);
       failures += test_zcode_discovery_rank(); }
+    { extern int test_zcode_seed_election(void);
+      failures += test_zcode_seed_election(); }
     { extern int test_zcode_dht(void); failures += test_zcode_dht(); }
     { extern int test_zcode_dht_delegation(void);
       failures += test_zcode_dht_delegation(); }

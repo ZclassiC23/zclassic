@@ -4,17 +4,56 @@
 #include "test/test_core.h"
 
 #include "controllers/vault_intent_controller.h"
+#include "controllers/vault_intent_publish.h"
+#include "json/json.h"
 #include "models/database.h"
 #include "models/vault_intent.h"
 #include "models/wallet_identity.h"
 #include "models/wallet_metadata_crypto.h"
+#include "platform/time_compat.h"
 #include "services/overlay_transaction_intent_service.h"
+#include "services/vault_intent_async_service.h"
 #include "services/znam_transaction_intent_service.h"
 #include "services/zslp_transaction_intent_service.h"
+#include "validation/accept_to_mempool.h"
+#include "validation/main_state.h"
 #include "wallet/wallet_lock.h"
 
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <string.h>
+
+static struct node_db *g_ti_async_ndb;
+static uint8_t g_ti_async_plan_id[32];
+static _Atomic int g_ti_async_gate;
+static _Atomic int g_ti_async_calls;
+static _Atomic int g_ti_async_transient_once;
+
+static bool ti_async_execute(const struct json_value *input,
+                             struct json_value *result)
+{
+    (void)input;
+    int call = atomic_fetch_add(&g_ti_async_calls, 1) + 1;
+    int transient = atomic_load(&g_ti_async_transient_once);
+    if (transient && call == 1) {
+        json_set_object(result);
+        (void)json_push_kv_bool(result, "ok", false);
+        (void)json_push_kv_str(result, "code",
+            transient == 2 ? "NOTE_RESERVATION_FAILED" : "WALLET_LOCKED");
+        return true;
+    }
+    while (!atomic_load(&g_ti_async_gate))
+        platform_sleep_ms(1);
+    uint8_t txid[32]; memset(txid, 0xa7, sizeof(txid));
+    bool stored = vault_intent_set_state(
+        g_ti_async_ndb, g_ti_async_plan_id,
+        VAULT_INTENT_MEMPOOL_ACCEPTED, txid, "", 200);
+    json_set_object(result);
+    (void)json_push_kv_bool(result, "ok", stored);
+    if (!stored)
+        (void)json_push_kv_str(result, "code", "FIXTURE_PERSIST_FAILED");
+    return true;
+}
 
 static bool ti_db_contains(struct node_db *ndb, const char *needle)
 {
@@ -212,6 +251,108 @@ int test_transaction_intent(void)
     int failures = 0;
     struct node_db ndb; memset(&ndb, 0, sizeof(ndb));
 
+    TEST("vault intents retain typed mempool rejection reasons") {
+        ASSERT_STR_EQ(vault_intent_mempool_error_code(
+            -100 - MEMPOOL_ACCEPT_INVALID,
+            "wallet commit: mempool admission rejected transaction "
+            "(invalid: shielded-requirements-missing)"),
+            "SHIELDED_REQUIREMENTS_MISSING");
+        ASSERT_STR_EQ(vault_intent_mempool_error_code(
+            -100 - MEMPOOL_ACCEPT_INVALID,
+            "wallet commit: mempool admission rejected transaction "
+            "(invalid: transparent-script-invalid)"),
+            "TRANSPARENT_SCRIPT_INVALID");
+        ASSERT_STR_EQ(vault_intent_mempool_error_code(
+            -100 - MEMPOOL_ACCEPT_BELOW_FEE, "below fee"),
+            "MEMPOOL_BELOW_FEE");
+        ASSERT_STR_EQ(vault_intent_mempool_error_code(
+            -100 - MEMPOOL_ACCEPT_MISSING_INPUTS, "missing inputs"),
+            "MEMPOOL_MISSING_INPUTS");
+        ASSERT_STR_EQ(vault_intent_mempool_error_code(-999, NULL),
+                      "MEMPOOL_REJECTED");
+        PASS();
+    }
+
+    TEST("vault intent receipts render chain hashes in canonical display order") {
+        struct vault_intent_row row;
+        memset(&row, 0, sizeof(row));
+        row.state = VAULT_INTENT_CONFIRMED;
+        row.confirm_height = 42;
+        row.has_txid = true;
+        row.has_confirm_hash = true;
+        for (size_t i = 0; i < 32; i++) {
+            row.txid[i] = (uint8_t)i;
+            row.confirm_hash[i] = (uint8_t)(0xa0 + i);
+        }
+        struct json_value rendered;
+        json_init(&rendered);
+        json_set_object(&rendered);
+        vault_intent_render_row(NULL, &rendered, &row);
+        ASSERT_STR_EQ(json_get_str(json_get(&rendered, "txid")),
+            "1f1e1d1c1b1a19181716151413121110"
+            "0f0e0d0c0b0a09080706050403020100");
+        ASSERT_STR_EQ(json_get_str(json_get(&rendered,
+            "confirmed_block_hash")),
+            "bfbebdbcbbbab9b8b7b6b5b4b3b2b1b0"
+            "afaeadacabaaa9a8a7a6a5a4a3a2a1a0");
+        json_free(&rendered);
+
+        /* Zero-initialized creation rows historically rendered height zero
+         * and tip+1 confirmations while still only mempool-accepted. State is
+         * the authority: no confirmed fields exist before CONFIRMED. */
+        memset(&row, 0, sizeof(row));
+        row.state = VAULT_INTENT_MEMPOOL_ACCEPTED;
+        row.has_txid = true;
+        json_init(&rendered);
+        json_set_object(&rendered);
+        vault_intent_render_row(NULL, &rendered, &row);
+        ASSERT_EQ(json_get_int(json_get(&rendered, "confirmations")), 0);
+        ASSERT(json_get(&rendered, "confirmed_height") == NULL);
+        ASSERT(json_get(&rendered, "confirmed_block_hash") == NULL);
+        json_free(&rendered);
+        PASS();
+    }
+
+    TEST("vault intent confirmations derive from canonical block height") {
+        struct main_state ms;
+        main_state_init(&ms);
+        struct block_index blocks[8];
+        struct uint256 hashes[8];
+        memset(blocks, 0, sizeof(blocks));
+        memset(hashes, 0, sizeof(hashes));
+        bool built = true;
+        for (int i = 0; i < 8; i++) {
+            hashes[i].data[0] = (uint8_t)(i + 1);
+            blocks[i].nHeight = i;
+            blocks[i].pprev = i > 0 ? &blocks[i - 1] : NULL;
+            built = built && block_map_insert(&ms.map_block_index,
+                                               &hashes[i], &blocks[i]);
+        }
+        built = built && active_chain_move_window_tip(&ms.chain_active,
+                                                       &blocks[7]);
+        ASSERT(built);
+
+        int32_t height = -1;
+        int32_t confirmations = 0;
+        ASSERT(vault_intent_chain_confirmation(&ms, hashes[2].data,
+                                                &height, &confirmations));
+        ASSERT_EQ(height, 2);
+        ASSERT_EQ(confirmations, 6);
+
+        struct block_index fork;
+        struct uint256 fork_hash;
+        memset(&fork, 0, sizeof(fork));
+        memset(&fork_hash, 0, sizeof(fork_hash));
+        fork_hash.data[0] = 0xf2;
+        fork.nHeight = 2;
+        fork.pprev = &blocks[1];
+        ASSERT(block_map_insert(&ms.map_block_index, &fork_hash, &fork));
+        ASSERT(!vault_intent_chain_confirmation(&ms, fork_hash.data,
+                                                 &height, &confirmations));
+        main_state_free(&ms);
+        PASS();
+    }
+
     TEST("transaction intent amount grammar is exact and range bounded") {
         int64_t amount = 0;
         ASSERT(vault_intent_parse_zcl_amount("0.00000001", &amount));
@@ -272,6 +413,128 @@ int test_transaction_intent(void)
         ASSERT(vault_intent_reserve_with_raw_inputs(
             &exact_db, &second, 100, raw, sizeof(raw), &claimed, 1));
         node_db_close(&exact_db);
+        PASS();
+    }
+
+    TEST("async queue marker and owner cancellation are atomic") {
+        struct node_db async_db; memset(&async_db, 0, sizeof(async_db));
+        ASSERT(node_db_open(&async_db, ":memory:"));
+        struct wallet_identity_row identity;
+        const uint8_t genesis[32] = { 0x93 };
+        ASSERT(wallet_identity_ensure(&async_db, genesis, "prod", &identity));
+
+        struct vault_intent_row row;
+        ti_bound_row(&row, 0x61, &identity, 1);
+        (void)snprintf(row.wallet_scope, sizeof(row.wallet_scope), "prod");
+        ASSERT(vault_intent_save(&async_db, &row));
+        ASSERT(vault_intent_record_planned_error(
+            &async_db, row.plan_id, "ASYNC_QUEUED", 101));
+        struct vault_intent_row got;
+        ASSERT(vault_intent_find(&async_db, row.plan_id, &got));
+        ASSERT_EQ(got.state, VAULT_INTENT_PLANNED);
+        ASSERT(strcmp(got.error_code, "ASYNC_QUEUED") == 0);
+        ASSERT(vault_intent_cancel_planned(&async_db, row.plan_id, 102));
+        ASSERT(!vault_intent_cancel_planned(&async_db, row.plan_id, 103));
+        ASSERT(!vault_intent_record_planned_error(
+            &async_db, row.plan_id, "LATE_WORKER", 104));
+        ASSERT(vault_intent_find(&async_db, row.plan_id, &got));
+        ASSERT_EQ(got.state, VAULT_INTENT_FAILED);
+        ASSERT(strcmp(got.error_code, "CANCELLED_BY_OWNER") == 0);
+        ASSERT_EQ(vault_intent_reserved_total(
+            &async_db, "prod", identity.wallet_instance_id), 0);
+        node_db_close(&async_db);
+        PASS();
+    }
+
+    TEST("async intent execution returns immediately and deduplicates") {
+        struct node_db async_db; memset(&async_db, 0, sizeof(async_db));
+        ASSERT(node_db_open(&async_db, ":memory:"));
+        struct wallet_identity_row identity;
+        const uint8_t genesis[32] = { 0x94 };
+        ASSERT(wallet_identity_ensure(&async_db, genesis, "prod", &identity));
+        struct vault_intent_row row;
+        ti_bound_row(&row, 0x71, &identity, 1);
+        row.expires_at = (int64_t)platform_time_wall_time_t() + 600;
+        (void)snprintf(row.wallet_scope, sizeof(row.wallet_scope), "prod");
+        ASSERT(vault_intent_save(&async_db, &row));
+
+        char plan_hex[65];
+        for (size_t i = 0; i < 32; i++)
+            (void)snprintf(plan_hex + i * 2, 3, "%02x", row.plan_id[i]);
+        g_ti_async_ndb = &async_db;
+        memcpy(g_ti_async_plan_id, row.plan_id, sizeof(g_ti_async_plan_id));
+        atomic_store(&g_ti_async_gate, 0);
+        atomic_store(&g_ti_async_calls, 0);
+        atomic_store(&g_ti_async_transient_once, 0);
+        bool duplicate = false;
+        ASSERT(vault_intent_async_start(
+            &async_db, &row, plan_hex, true, ti_async_execute,
+            &duplicate).ok);
+        ASSERT(!duplicate);
+        ASSERT(vault_intent_async_start(
+            &async_db, &row, plan_hex, true, ti_async_execute,
+            &duplicate).ok);
+        ASSERT(duplicate);
+        struct vault_intent_row queued;
+        ASSERT(vault_intent_find(&async_db, row.plan_id, &queued));
+        ASSERT(strcmp(queued.error_code, "ASYNC_QUEUED") == 0);
+        atomic_store(&g_ti_async_gate, 1);
+        for (int i = 0; i < 100 && atomic_load(&g_ti_async_calls) < 1; i++)
+            platform_sleep_ms(5);
+        for (int i = 0; i < 100; i++) {
+            ASSERT(vault_intent_find(&async_db, row.plan_id, &queued));
+            if (queued.state == VAULT_INTENT_MEMPOOL_ACCEPTED)
+                break;
+            platform_sleep_ms(5);
+        }
+        ASSERT_EQ(atomic_load(&g_ti_async_calls), 1);
+        ASSERT_EQ(queued.state, VAULT_INTENT_MEMPOOL_ACCEPTED);
+        ASSERT(vault_intent_async_recover(&async_db, ti_async_execute).ok);
+        platform_sleep_ms(10);
+        ASSERT_EQ(atomic_load(&g_ti_async_calls), 1);
+        g_ti_async_ndb = NULL;
+        memset(g_ti_async_plan_id, 0, sizeof(g_ti_async_plan_id));
+        node_db_close(&async_db);
+        PASS();
+    }
+
+    TEST("async prepared-note reservation blocker remains queued and retries") {
+        struct node_db retry_db; memset(&retry_db, 0, sizeof(retry_db));
+        ASSERT(node_db_open(&retry_db, ":memory:"));
+        struct wallet_identity_row identity;
+        const uint8_t genesis[32] = { 0x95 };
+        ASSERT(wallet_identity_ensure(&retry_db, genesis, "prod", &identity));
+        struct vault_intent_row row;
+        ti_bound_row(&row, 0x81, &identity, 1);
+        row.expires_at = (int64_t)platform_time_wall_time_t() + 600;
+        (void)snprintf(row.wallet_scope, sizeof(row.wallet_scope), "prod");
+        ASSERT(vault_intent_save(&retry_db, &row));
+        char plan_hex[65];
+        for (size_t i = 0; i < 32; i++)
+            (void)snprintf(plan_hex + i * 2, 3, "%02x", row.plan_id[i]);
+        g_ti_async_ndb = &retry_db;
+        memcpy(g_ti_async_plan_id, row.plan_id, sizeof(g_ti_async_plan_id));
+        atomic_store(&g_ti_async_gate, 1);
+        atomic_store(&g_ti_async_calls, 0);
+        atomic_store(&g_ti_async_transient_once, 2);
+        bool duplicate = false;
+        ASSERT(vault_intent_async_start(
+            &retry_db, &row, plan_hex, true, ti_async_execute,
+            &duplicate).ok);
+        ASSERT(!duplicate);
+        struct vault_intent_row got;
+        for (int i = 0; i < 300; i++) {
+            ASSERT(vault_intent_find(&retry_db, row.plan_id, &got));
+            if (got.state == VAULT_INTENT_MEMPOOL_ACCEPTED)
+                break;
+            platform_sleep_ms(5);
+        }
+        ASSERT_EQ(atomic_load(&g_ti_async_calls), 2);
+        ASSERT_EQ(got.state, VAULT_INTENT_MEMPOOL_ACCEPTED);
+        atomic_store(&g_ti_async_transient_once, 0);
+        g_ti_async_ndb = NULL;
+        memset(g_ti_async_plan_id, 0, sizeof(g_ti_async_plan_id));
+        node_db_close(&retry_db);
         PASS();
     }
 
@@ -360,6 +623,20 @@ int test_transaction_intent(void)
         ASSERT(strcmp(got.error_code, "PLAN_EXPIRED") == 0);
         struct vault_intent_row rows[4];
         ASSERT_EQ(vault_intent_list(&ndb, rows, 4), 2);
+        PASS();
+    }
+
+    TEST("prepared-byte recovery requires exact durable proving state") {
+        struct vault_intent_row row; memset(&row, 0, sizeof(row));
+        row.state = VAULT_INTENT_PLANNED;
+        row.expires_at = 110;
+        ASSERT(!vault_intent_prepared_retry_allowed(&row, false));
+        ASSERT(!vault_intent_prepared_retry_allowed(&row, true));
+        row.state = VAULT_INTENT_PROVING;
+        ASSERT(!vault_intent_prepared_retry_allowed(&row, false));
+        ASSERT(vault_intent_prepared_retry_allowed(&row, true));
+        row.state = VAULT_INTENT_EXPIRED;
+        ASSERT(!vault_intent_prepared_retry_allowed(&row, true));
         PASS();
     }
 
@@ -744,12 +1021,53 @@ int test_transaction_intent(void)
         ASSERT(vault_intent_reserve(&ndb, &b, 30000000));
         ASSERT_EQ(vault_intent_reserved_total(
                       &ndb, "dev", identity.wallet_instance_id), 5000000);
+        ASSERT_EQ(vault_intent_reserved_total_at(
+                      &ndb, "dev", identity.wallet_instance_id, 699),
+                  5000000);
+        ASSERT_EQ(vault_intent_reserved_total_at(
+                      &ndb, "dev", identity.wallet_instance_id, 700), 0);
+        ASSERT_EQ(vault_intent_reserved_total_at(
+                      &ndb, "dev", identity.wallet_instance_id, -1), -1);
         ASSERT(!vault_intent_reserve(&ndb, &over, 30000000));
         ASSERT(vault_intent_set_state(&ndb, a.plan_id, VAULT_INTENT_FAILED,
                                       NULL, "LAB_ROLLBACK", 200));
         ASSERT(vault_intent_reserve(&ndb, &over, 30000000));
         ASSERT_EQ(vault_intent_reserved_total(
                       &ndb, "dev", identity.wallet_instance_id), 2000001);
+        node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    }
+
+    TEST("isolated test custody reserves and survives restart without "
+         "entering dev or prod scope") {
+        if (ndb.open) node_db_close(&ndb);
+        char dir[256], path[320];
+        test_make_tmpdir(dir, sizeof(dir), "transaction_intent", "test_scope");
+        snprintf(path, sizeof(path), "%s/node.db", dir);
+        ASSERT(node_db_open(&ndb, path));
+        const uint8_t genesis[32] = { 0x52 };
+        struct wallet_identity_row identity;
+        ASSERT(wallet_identity_ensure(&ndb, genesis, "test", &identity));
+        struct vault_intent_row planned;
+        ti_bound_row(&planned, 0x41, &identity, 21000);
+        snprintf(planned.wallet_scope, sizeof(planned.wallet_scope), "test");
+        ASSERT(vault_intent_reserve(&ndb, &planned, 600000));
+        ASSERT_EQ(vault_intent_reserved_total(
+                      &ndb, "test", identity.wallet_instance_id), 21000);
+        ASSERT_EQ(vault_intent_reserved_total(
+                      &ndb, "dev", identity.wallet_instance_id), 0);
+        ASSERT_EQ(vault_intent_reserved_total(
+                      &ndb, "prod", identity.wallet_instance_id), 0);
+        node_db_close(&ndb);
+
+        ASSERT(node_db_open(&ndb, path));
+        struct vault_intent_row recovered;
+        ASSERT(vault_intent_find(&ndb, planned.plan_id, &recovered));
+        ASSERT_STR_EQ(recovered.wallet_scope, "test");
+        ASSERT_EQ(recovered.reserved_zat, 21000);
+        ASSERT_EQ(vault_intent_reserved_total(
+                      &ndb, "test", identity.wallet_instance_id), 21000);
         node_db_close(&ndb);
         test_rm_rf(dir);
         PASS();

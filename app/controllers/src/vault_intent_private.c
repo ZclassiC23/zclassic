@@ -33,6 +33,8 @@
 #define VIP_ADDR_MAX 127
 #define VIP_TTL 600
 #define VIP_APP_KIND "vault_multi"
+#define VIP_SNAPSHOT_BIND_ATTEMPTS 60
+#define VIP_SNAPSHOT_BIND_RETRY_MS 250
 
 enum vip_memo_kind { VIP_MEMO_NONE = 0, VIP_MEMO_TEXT = 1, VIP_MEMO_HEX = 2 };
 
@@ -334,15 +336,60 @@ static void vip_render_effects(const struct vip_payload *p,
     (void)json_push_kv(result, "effects", &effects); json_free(&effects);
 }
 
+static void vip_render_plan_details(const struct vip_payload *p,
+                                    const struct vault_intent_row *row,
+                                    struct json_value *result)
+{
+    char digest[65], fee[32];
+    vip_hex(row->digest, digest);
+    vip_amount_text(p->fee, fee);
+    (void)json_push_kv_str(result, "digest", digest);
+    (void)json_push_kv_str(result, "fee", fee);
+    (void)json_push_kv_int(result, "confirmation_policy", 6);
+    (void)json_push_kv_str(result, "from", p->from);
+    (void)json_push_kv_str(result, "route", vip_route_name(p->route));
+    (void)json_push_kv_str(result, "privacy",
+        p->route == VAULT_INTENT_ROUTE_PRIVATE
+            ? "PRIVATE: Sapling recipients, values, memos, and graph are encrypted"
+            : "MIXED POOLS: transparent legs are public; Sapling legs are encrypted");
+    vip_render_effects(p, result);
+}
+
+static bool vip_refresh_money_for_reservation(
+    struct wallet_rpc_context *ctx, const char *scope, int64_t reservation,
+    struct wallet_money_snapshot *money, struct json_value *result)
+{
+    memset(money, 0, sizeof(*money));
+    struct zcl_result mr = wallet_money_snapshot_build(
+        ctx->node_db, ctx->main_state, scope, money);
+    if (!mr.ok || !money->complete || strcmp(money->status, "CURRENT") != 0) {
+        vip_error(result, "MONEY_STATE_NOT_CURRENT",
+                  mr.ok ? money->reason : mr.message);
+        return false;
+    }
+    int64_t available = money->confirmed_zat >= money->intent_reserved_zat
+        ? money->confirmed_zat - money->intent_reserved_zat : 0;
+    if (reservation > available ||
+        (strcmp(scope, "dev") == 0 &&
+         reservation > money->agent_available_zat)) {
+        vip_error(result, strcmp(scope, "dev") == 0
+            ? "DEVELOPMENT_RESERVE_OR_LAB_CAP"
+            : "INSUFFICIENT_CONFIRMED_FUNDS",
+            "recipient value plus maximum fee exceeds current custody allocation");
+        return false;
+    }
+    return true;
+}
+
 bool vault_intent_private_plan(const struct json_value *input,
                                struct json_value *result)
 {
     struct wallet_rpc_context *ctx = wallet_rpc_context_current();
     const char *scope = json_get_str(json_get(input, "wallet_scope"));
     const char *idem = json_get_str(json_get(input, "idempotency_key"));
-    if (!scope || (strcmp(scope, "dev") != 0 && strcmp(scope, "prod") != 0)) {
+    if (!wallet_money_scope_valid(scope)) {
         vip_error(result, "WALLET_SCOPE_REQUIRED",
-                  "wallet_scope must explicitly be dev or prod");
+                  "wallet_scope must explicitly be dev, prod, or test");
         return true;
     }
     if (!vault_intent_idempotency_key_valid(idem)) {
@@ -351,6 +398,8 @@ bool vault_intent_private_plan(const struct json_value *input,
         return true;
     }
     if (!vault_intent_context_ready(ctx, result)) return true;
+    (void)vault_intent_expire_due(
+        ctx->node_db, (int64_t)platform_time_wall_time_t());
 
     struct vip_payload p;
     int64_t target = 0;
@@ -377,37 +426,25 @@ bool vault_intent_private_plan(const struct json_value *input,
         bool same = existing.has_request_digest &&
             memcmp(existing.request_digest, request_digest, 32) == 0;
         memory_cleanse(plain, sizeof(plain));
-        memory_cleanse(&p, sizeof(p));
         if (!same) {
+            memory_cleanse(&p, sizeof(p));
             vip_error(result, "IDEMPOTENCY_CONFLICT",
                       "that idempotency key already names a different request");
             return true;
         }
         json_set_object(result); (void)json_push_kv_bool(result, "ok", true);
         vault_intent_render_row(ctx, result, &existing);
+        vip_render_plan_details(&p, &existing, result);
         (void)json_push_kv_bool(result, "idempotent_plan", true);
+        memory_cleanse(&p, sizeof(p));
         return true;
     }
 
-    struct wallet_money_snapshot money; memset(&money, 0, sizeof(money));
-    struct zcl_result mr = wallet_money_snapshot_build(
-        ctx->node_db, ctx->main_state, scope, &money);
     int64_t reservation = target + p.fee;
-    int64_t available = money.confirmed_zat >= money.intent_reserved_zat
-        ? money.confirmed_zat - money.intent_reserved_zat : 0;
-    if (!mr.ok || !money.complete || strcmp(money.status, "CURRENT") != 0) {
-        vip_error(result, "MONEY_STATE_NOT_CURRENT",
-                  mr.ok ? money.reason : mr.message);
+    struct wallet_money_snapshot money;
+    if (!vip_refresh_money_for_reservation(
+            ctx, scope, reservation, &money, result))
         goto plan_clean;
-    }
-    if (reservation > available ||
-        (strcmp(scope, "dev") == 0 && reservation > money.agent_available_zat)) {
-        vip_error(result, strcmp(scope, "dev") == 0
-            ? "DEVELOPMENT_RESERVE_OR_LAB_CAP"
-            : "INSUFFICIENT_CONFIRMED_FUNDS",
-            "recipient value plus maximum fee exceeds current custody allocation");
-        goto plan_clean;
-    }
 
     /* Non-broadcast monetary preflight: prove the current source, witnesses,
      * keys, fee, recipients, and prover can build. The signed candidate is
@@ -428,6 +465,15 @@ bool vault_intent_private_plan(const struct json_value *input,
     }
     json_free(&prepare_result);
     transaction_free(&prepared.tx);
+
+    /* A real Sapling proof may take tens of seconds.  The tip, mempool, or a
+     * concurrent reservation can change while it is built, so the pre-proof
+     * money document is no longer eligible to bind a durable intent. Refresh
+     * every authority after proof generation; only this post-proof snapshot
+     * feeds identity, allocation, anchor, digest, and atomic reservation. */
+    if (!vip_refresh_money_for_reservation(
+            ctx, scope, reservation, &money, result))
+        goto plan_clean;
 
     struct block_index *anchor = active_chain_tip(&ctx->main_state->chain_active);
     if (!anchor) {
@@ -462,12 +508,28 @@ bool vault_intent_private_plan(const struct json_value *input,
     bool stored = encrypted && vault_intent_reserve(
         ctx->node_db, &row, money.confirmed_zat);
     if (stored) {
+        /* The reservation is itself part of the canonical money root.  A
+         * reducer transition can make the first post-insert observation
+         * transiently STALE even though the reservation is valid.  Wait a
+         * bounded 15 seconds for one fully current observation rather than
+         * failing every plan whose proof straddled a block. */
         struct wallet_money_snapshot reserved;
-        struct zcl_result refreshed = wallet_money_snapshot_build(
-            ctx->node_db, ctx->main_state, scope, &reserved);
-        stored = refreshed.ok && reserved.complete &&
-            strcmp(reserved.status, "CURRENT") == 0;
+        bool bound = false;
+        for (int attempt = 0; attempt < VIP_SNAPSHOT_BIND_ATTEMPTS; attempt++) {
+            struct zcl_result refreshed = wallet_money_snapshot_build(
+                ctx->node_db, ctx->main_state, scope, &reserved);
+            bound = refreshed.ok && reserved.complete &&
+                strcmp(reserved.status, "CURRENT") == 0;
+            if (bound)
+                break;
+            if (attempt + 1 < VIP_SNAPSHOT_BIND_ATTEMPTS)
+                platform_sleep_ms(VIP_SNAPSHOT_BIND_RETRY_MS);
+        }
+        stored = bound;
         if (stored) {
+            row.anchor_height = reserved.tip_height;
+            memcpy(row.anchor_hash, reserved.tip_hash,
+                   sizeof(row.anchor_hash));
             memcpy(row.snapshot_root, reserved.snapshot_root, 32);
             vault_intent_digest_payload(plain, plain_len, &row, row.digest);
             stored = vault_intent_save(ctx->node_db, &row);
@@ -484,17 +546,8 @@ bool vault_intent_private_plan(const struct json_value *input,
     }
     json_set_object(result); (void)json_push_kv_bool(result, "ok", true);
     vault_intent_render_row(ctx, result, &row);
-    char digest[65], fee[32]; vip_hex(row.digest, digest); vip_amount_text(p.fee, fee);
-    (void)json_push_kv_str(result, "digest", digest);
-    (void)json_push_kv_str(result, "fee", fee);
-    (void)json_push_kv_str(result, "from", p.from);
-    (void)json_push_kv_str(result, "route", vip_route_name(p.route));
-    (void)json_push_kv_str(result, "privacy",
-        p.route == VAULT_INTENT_ROUTE_PRIVATE
-            ? "PRIVATE: Sapling recipients, values, memos, and graph are encrypted"
-            : "MIXED POOLS: transparent legs are public; Sapling legs are encrypted");
+    vip_render_plan_details(&p, &row, result);
     (void)json_push_kv_bool(result, "idempotent_plan", false);
-    vip_render_effects(&p, result);
 
 plan_clean:
     memory_cleanse(plain, sizeof(plain));

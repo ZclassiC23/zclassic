@@ -423,7 +423,7 @@ int test_wallet_restore(void)
     struct zcl_result r = wallet_restore_run(&req, &rep);
     WR_CHECK("dry run ok", r.ok);
     WR_CHECK("dry run reports itself as a dry run", rep.dry_run);
-    WR_CHECK("dry run found all seven wallet tables in the backup",
+    WR_CHECK("dry run found all eight wallet tables in the backup",
              rep.tables_in_backup == (int)n_wallet_tables);
     WR_CHECK("dry run would insert 4+3+1+2 = 10 rows",
              rep.total_inserted == 10);
@@ -467,6 +467,52 @@ int test_wallet_restore(void)
              wr_table_has_pk(target_db, "wallet_sapling_notes"));
     WR_CHECK("the BACKUP file, by contrast, lost its primary key",
              !wr_table_has_pk(backup_path, "wallet_keys"));
+
+    /* A different wrapped DEK must refuse before importing unreadable WKD1
+     * ciphertext. The normal source fixture leaves this table empty, so plant
+     * distinct identities only for this negative restore. */
+    {
+        sqlite3 *t = NULL;
+        if (sqlite3_open(target_db, &t) == SQLITE_OK) {
+            (void)wr_exec(t, "INSERT OR REPLACE INTO wallet_key_encryption "
+                             "(id,wrapped_dek) VALUES(1,X'01020304')");
+            sqlite3_close(t);
+        }
+        char conflict[512];
+        snprintf(conflict, sizeof(conflict), "%s/dek-conflict.sqlite",
+                 backup_dir);
+        wr_rm(conflict);
+        FILE *in = fopen(backup_path, "rb");
+        FILE *out = fopen(conflict, "wb");
+        bool copied = in && out;
+        if (copied) {
+            char bytes[4096];
+            size_t n;
+            while ((n = fread(bytes, 1, sizeof(bytes), in)) > 0)
+                if (fwrite(bytes, 1, n, out) != n) {
+                    copied = false;
+                    break;
+                }
+        }
+        if (in) fclose(in);
+        if (out) fclose(out);
+        WR_CHECK("copied backup for wrapped-DEK conflict", copied);
+        sqlite3 *c = NULL;
+        if (copied && sqlite3_open(conflict, &c) == SQLITE_OK) {
+            (void)wr_exec(c, "INSERT INTO wallet_key_encryption "
+                             "(id,wrapped_dek) VALUES(1,X'05060708')");
+            sqlite3_close(c);
+        }
+        struct wallet_restore_request conflict_req = req;
+        conflict_req.backup_path = conflict;
+        struct zcl_result conflict_result =
+            wallet_restore_run(&conflict_req, &rep);
+        WR_CHECK("restore refuses a conflicting wrapped wallet DEK",
+                 !conflict_result.ok);
+        WR_CHECK("DEK conflict imports no wallet keys",
+                 wr_count_in_file(target_db, "wallet_keys") == 4);
+        wr_rm(conflict);
+    }
 
     /* ---- keep-existing: a second restore changes nothing ---- */
     r = wallet_restore_run(&req, &rep);
@@ -575,7 +621,7 @@ int test_wallet_restore(void)
         ereq.password = "restore-test-pw";
         struct zcl_result pr = wallet_restore_run(&ereq, &rep);
         WR_CHECK("restores an encrypted backup with the password", pr.ok);
-        WR_CHECK("encrypted restore sees all seven tables",
+        WR_CHECK("encrypted restore sees all eight tables",
                  rep.tables_in_backup == (int)n_wallet_tables);
         char tmp[512];
         snprintf(tmp, sizeof(tmp), "%s.restore-%ld.tmp", target_db,

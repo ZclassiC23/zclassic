@@ -29,8 +29,12 @@
 #include "models/wallet_identity.h"
 #include "controllers/wallet_controller.h"
 #include "controllers/wallet_shielded_controller.h"
+#include "net/connman.h"
+#include "services/sync_monitor.h"
 #include "services/wallet_backup_service.h"
+#include "sync/sync_state.h"
 #include "wallet/keystore.h"
+#include "wallet/wallet_canary.h"
 #include "wallet/wallet_lock.h"
 #include "wallet/wallet_sqlite.h"
 #include "chain/chain.h"
@@ -44,12 +48,15 @@
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/reducer_frontier_schema.h"
 #include "sim/simnet.h"
 #include "sim/simnet_sapling.h"
 
 #include <errno.h>
 #include <sqlite3.h>
 #include <stdatomic.h>
+
+#define P11_4_TIP_HEIGHT 500000
 
 static bool p11_4_params_available(char *params_dir, size_t params_dir_size)
 {
@@ -113,26 +120,83 @@ static bool p11_4_save_tip(struct node_db *ndb,
  * wallet test exits before reaching Sapling transaction construction. */
 static bool p11_4_open_trust_fixture(const char *dir)
 {
-    if (!progress_store_open(dir))
+    if (!progress_store_open(dir)) {
+        printf("(trust fixture: progress_store_open) ");
         return false;
+    }
     sqlite3 *db = progress_store_db();
-    if (!db || !coins_kv_ensure_schema(db))
+    if (!db) {
+        printf("(trust fixture: progress_store_db) ");
         return false;
-    reducer_frontier_provable_tip_set(50);
+    }
+    if (!coins_kv_ensure_schema(db)) {
+        printf("(trust fixture: coins schema: %s) ", sqlite3_errmsg(db));
+        return false;
+    }
+    if (!reducer_frontier_ensure_schema(db)) {
+        printf("(trust fixture: reducer schema: %s) ", sqlite3_errmsg(db));
+        return false;
+    }
+    reducer_frontier_provable_tip_set(P11_4_TIP_HEIGHT);
     struct uint256 txid;
     uint256_set_null(&txid);
     txid.data[0] = 0x51;
     txid.data[31] = 0x77;
     const unsigned char script[4] = {0xE0, 0xE0, 0xE0, 0xE0};
-    if (!coins_kv_add(db, txid.data, 0, 1234, 50, true,
-                      script, sizeof(script)))
+    if (!coins_kv_add(db, txid.data, 0, 1234, P11_4_TIP_HEIGHT, true,
+                      script, sizeof(script))) {
+        printf("(trust fixture: authority coin: %s) ", sqlite3_errmsg(db));
         return false;
+    }
+    uint8_t migrated = 1;
+    uint8_t tip_hash[32];
+    memset(tip_hash, 0x50, sizeof(tip_hash));
     char *err = NULL;
-    bool ok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) == SQLITE_OK
-           && coins_kv_set_applied_height_in_tx(db, 51)
-           && sqlite3_exec(db, "COMMIT", NULL, NULL, &err) == SQLITE_OK;
+    bool began = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) ==
+        SQLITE_OK;
+    bool applied = began && coins_kv_set_applied_height_in_tx(
+        db, P11_4_TIP_HEIGHT + 1);
+    bool stamped = applied && progress_meta_set_in_tx(
+        db, COINS_KV_MIGRATION_COMPLETE_KEY, &migrated, sizeof(migrated));
+    bool ok = began && applied && stamped;
+    sqlite3_stmt *st = NULL;
+    bool header_prepared = false;
+    bool header_written = false;
+    bool committed = false;
+    bool self_folded = false;
+    if (ok) {
+        ok = sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO validate_headers_log"
+            "(height,hash,ok,validated_at) VALUES(?1,?2,1,0)",
+            -1, &st, NULL) == SQLITE_OK;
+        header_prepared = ok;
+    }
+    if (ok) {
+        sqlite3_bind_int(st, 1, P11_4_TIP_HEIGHT);
+        sqlite3_bind_blob(st, 2, tip_hash, sizeof(tip_hash), SQLITE_STATIC);
+        ok = sqlite3_step(st) == SQLITE_DONE;
+        header_written = ok;
+    }
+    if (st)
+        sqlite3_finalize(st);
+    if (ok) {
+        ok = sqlite3_exec(db, "COMMIT", NULL, NULL, &err) == SQLITE_OK;
+        committed = ok;
+    } else if (began) {
+        (void)sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    }
+    if (ok) {
+        ok = coins_kv_mark_self_folded(db);
+        self_folded = ok;
+    }
     if (err)
         sqlite3_free(err);
+    if (!ok)
+        printf("(trust fixture: begin=%d applied=%d stamped=%d "
+               "header_prepared=%d header_written=%d committed=%d "
+               "self_folded=%d sqlite=%s) ", began, applied, stamped,
+               header_prepared, header_written, committed, self_folded,
+               sqlite3_errmsg(db));
     return ok;
 }
 
@@ -233,17 +297,67 @@ static bool p11_4_vault_mixed(struct rpc_table *tbl,
     bool ok = rpc_table_execute(tbl, "vault_intent_plan", &params, &result);
     const char *plan_id = ok && result.type == JSON_OBJ
         ? json_get_str(json_get(&result, "plan_id")) : NULL;
+    const char *digest = ok && result.type == JSON_OBJ
+        ? json_get_str(json_get(&result, "digest")) : NULL;
+    const char *route = ok && result.type == JSON_OBJ
+        ? json_get_str(json_get(&result, "route")) : NULL;
+    const char *from = ok && result.type == JSON_OBJ
+        ? json_get_str(json_get(&result, "from")) : NULL;
+    const struct json_value *plan_effects = ok && result.type == JSON_OBJ
+        ? json_get(&result, "effects") : NULL;
     char plan_id_copy[65] = {0};
+    char digest_copy[65] = {0};
     ok = ok && json_get_bool(json_get(&result, "ok")) &&
-        plan_id && strlen(plan_id) == 64 && tx_mempool_size(mempool) == 0;
+        plan_id && strlen(plan_id) == 64 && digest && strlen(digest) == 64 &&
+        route && strcmp(route, "mixed") == 0 && from &&
+        strcmp(from, from_addr) == 0 &&
+        json_get_int(json_get(&result, "confirmation_policy")) == 6 &&
+        plan_effects && plan_effects->type == JSON_ARR &&
+        json_size(plan_effects) == 2 &&
+        json_get(&result, "idempotent_plan") != NULL &&
+        !json_get_bool(json_get(&result, "idempotent_plan")) &&
+        tx_mempool_size(mempool) == 0;
     if (!ok) {
         const char *code = json_get_str(json_get(&result, "code"));
         const char *message = json_get_str(json_get(&result, "message"));
         printf("(plan code=%s message=%s) ", code ? code : "RPC_FAILURE",
                message ? message : "no message");
     }
-    if (ok)
+    if (ok) {
         snprintf(plan_id_copy, sizeof(plan_id_copy), "%s", plan_id);
+        snprintf(digest_copy, sizeof(digest_copy), "%s", digest);
+    }
+
+    /* An agent reviewing an idempotent retry must receive the same complete
+     * owner-visible plan, not merely a plan id and reservation row. */
+    json_free(&result); json_init(&result);
+    ok = ok && rpc_table_execute(tbl, "vault_intent_plan", &params, &result);
+    plan_id = ok && result.type == JSON_OBJ
+        ? json_get_str(json_get(&result, "plan_id")) : NULL;
+    digest = ok && result.type == JSON_OBJ
+        ? json_get_str(json_get(&result, "digest")) : NULL;
+    route = ok && result.type == JSON_OBJ
+        ? json_get_str(json_get(&result, "route")) : NULL;
+    from = ok && result.type == JSON_OBJ
+        ? json_get_str(json_get(&result, "from")) : NULL;
+    plan_effects = ok && result.type == JSON_OBJ
+        ? json_get(&result, "effects") : NULL;
+    ok = ok && json_get_bool(json_get(&result, "ok")) &&
+        json_get_bool(json_get(&result, "idempotent_plan")) &&
+        plan_id && strcmp(plan_id, plan_id_copy) == 0 && digest &&
+        strcmp(digest, digest_copy) == 0 &&
+        route && strcmp(route, "mixed") == 0 && from &&
+        strcmp(from, from_addr) == 0 &&
+        json_get_int(json_get(&result, "confirmation_policy")) == 6 &&
+        plan_effects && plan_effects->type == JSON_ARR &&
+        json_size(plan_effects) == 2 && tx_mempool_size(mempool) == 0;
+    if (!ok) {
+        const char *code = json_get_str(json_get(&result, "code"));
+        const char *message = json_get_str(json_get(&result, "message"));
+        printf("(idempotent plan code=%s message=%s) ",
+               code ? code : "RPC_FAILURE",
+               message ? message : "incomplete retry review");
+    }
 
     json_free(&params); json_init(&params); json_set_array(&params);
     json_free(&input); json_init(&input); json_set_object(&input);
@@ -320,6 +434,9 @@ int test_shielded_payment_gate(void)
     struct wallet *wallet = NULL;
     struct main_state ms;
     struct tx_mempool mempool;
+    struct connman cm;
+    struct p2p_node peer;
+    struct p2p_node *peer_slots[1];
     struct coins_view null_coins_view;
     struct coins_view_cache coins_tip;
     struct block_index tip;
@@ -346,6 +463,9 @@ int test_shielded_payment_gate(void)
     memset(&wsql, 0, sizeof(wsql));
     memset(&ms, 0, sizeof(ms));
     memset(&mempool, 0, sizeof(mempool));
+    memset(&cm, 0, sizeof(cm));
+    memset(&peer, 0, sizeof(peer));
+    memset(peer_slots, 0, sizeof(peer_slots));
     memset(&null_coins_view, 0, sizeof(null_coins_view));
     memset(&coins_tip, 0, sizeof(coins_tip));
     memset(&tip, 0, sizeof(tip));
@@ -393,14 +513,29 @@ int test_shielded_payment_gate(void)
     block_index_init(&tip);
     transaction_init(&sent_tx);
 
-    tip.nHeight = 500000;
+    tip.nHeight = P11_4_TIP_HEIGHT;
     tip.nTime = (uint32_t)platform_time_wall_time_t();
     memset(tip.hashBlock.data, 0x50, sizeof(tip.hashBlock.data));
     active_chain_move_window_tip(&ms.chain_active, &tip);
     wallet->best_block = &tip;
     wallet->best_block_height = tip.nHeight;
+    zcl_mutex_init(&cm.manager.cs_nodes);
+    peer.id = 1;
+    peer.starting_height = tip.nHeight;
+    peer.state = PEER_ACTIVE;
+    peer.services = NODE_NETWORK;
+    peer_slots[0] = &peer;
+    cm.manager.nodes = peer_slots;
+    cm.manager.num_nodes = 1;
+    sync_monitor_set_context(&cm, NULL, &ms);
+    (void)sync_set_state(SYNC_IDLE, "shielded payment fixture reset");
+    ok = sync_set_state(SYNC_FINDING_PEERS, "shielded payment fixture") &&
+         sync_set_state(SYNC_HEADERS_DOWNLOAD, "shielded payment fixture") &&
+         sync_set_state(SYNC_BLOCKS_DOWNLOAD, "shielded payment fixture") &&
+         sync_set_state(SYNC_CONNECTING_BLOCKS, "shielded payment fixture") &&
+         sync_set_state(SYNC_AT_TIP, "shielded payment fixture");
 
-    ok = node_db_open(&ndb, dbpath);
+    ok = ok && node_db_open(&ndb, dbpath);
     if (!ok)
         printf("(node_db_open failed for %s)\n", dbpath);
 
@@ -416,7 +551,8 @@ int test_shielded_payment_gate(void)
          * right after node_db_open succeeds. A NULL wallet_db here would
          * trip that guard on the very first RPC call. */
         struct zcl_result wsql_r = wallet_sqlite_open_r(&wsql, ndb.db);
-        ok = wsql_r.ok && wallet_sqlite_self_test(&wsql).ok;
+        ok = wsql_r.ok && wallet_sqlite_self_test(&wsql).ok &&
+            wallet_canary_run(ndb.db, NULL) == WALLET_CANARY_OK;
         if (ok) {
             wsql_open = true;
         } else {
@@ -641,6 +777,8 @@ int test_shielded_payment_gate(void)
     rpc_wallet_set_node_db(NULL);
     rpc_wallet_set_coins_tip(NULL);
     rpc_wallet_set_state(NULL, NULL, NULL, NULL, NULL, NULL);
+    sync_monitor_set_context(NULL, NULL, NULL);
+    (void)sync_set_state(SYNC_IDLE, "shielded payment fixture cleanup");
     reducer_frontier_provable_tip_reset();
     progress_store_close();
     wallet_backup_stop();

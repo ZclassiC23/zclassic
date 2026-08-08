@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: reconcile authoritative wallet readers into custody snapshots. */
+// one-result-type-ok:wallet-scope predicates are pure total classification
 
 #include "services/wallet_money_service.h"
 
@@ -63,10 +64,29 @@ enum wallet_money_freshness wallet_money_freshness_classify(
         state == SYNC_CONNECTING_BLOCKS ||
         state == SYNC_AT_TIP;
     const int64_t fold_edge = (int64_t)money_tip - (int64_t)hstar;
-    if (money_tip < network_tip || fold_edge < 0 || fold_edge > 1 ||
+    /* The sovereignty spend gate requires coins_applied_height == H* + 1,
+     * which is exactly money_tip == H*.  Calling a one-block run-ahead money
+     * view CURRENT advertises a spend-ready snapshot that every wallet
+     * mutation must immediately refuse.  Keep that transient state STALE. */
+    if (money_tip < network_tip || fold_edge != 0 ||
         !live_catchup_state)
         return WALLET_MONEY_FRESHNESS_STALE;
     return WALLET_MONEY_FRESHNESS_CURRENT;
+}
+
+bool wallet_money_scope_valid(const char *wallet_scope)
+{
+    return wallet_scope &&
+        (strcmp(wallet_scope, "dev") == 0 ||
+         strcmp(wallet_scope, "prod") == 0 ||
+         strcmp(wallet_scope, "test") == 0);
+}
+
+const char *wallet_money_scope_expected_lane(const char *wallet_scope)
+{
+    if (!wallet_money_scope_valid(wallet_scope))
+        return NULL;
+    return strcmp(wallet_scope, "prod") == 0 ? "canonical" : wallet_scope;
 }
 
 struct money_chain_view {
@@ -124,10 +144,10 @@ struct zcl_result wallet_money_snapshot_build(
     struct node_db *ndb, struct main_state *main_state,
     const char *wallet_scope, struct wallet_money_snapshot *out)
 {
-    if (!ndb || !ndb->open || !main_state || !wallet_scope || !out ||
-        (strcmp(wallet_scope, "dev") != 0 &&
-         strcmp(wallet_scope, "prod") != 0))
-        return ZCL_ERR(-1, "open node_db, main_state, and dev|prod scope are required");
+    if (!ndb || !ndb->open || !main_state || !out ||
+        !wallet_money_scope_valid(wallet_scope))
+        return ZCL_ERR(-1,
+                       "open node_db, main_state, and dev|prod|test scope are required");
     memset(out, 0, sizeof(*out));
     (void)snprintf(out->wallet_scope, sizeof(out->wallet_scope), "%s",
                    wallet_scope);
@@ -142,8 +162,7 @@ struct zcl_result wallet_money_snapshot_build(
         money_root(out);
         return ZCL_OK;
     }
-    const char *expected_lane = strcmp(wallet_scope, "prod") == 0
-        ? "canonical" : "dev";
+    const char *expected_lane = wallet_money_scope_expected_lane(wallet_scope);
     if (strcmp(out->identity.operator_lane, expected_lane) != 0) {
         (void)snprintf(out->status, sizeof(out->status), "CONFLICTED");
         (void)snprintf(out->reason, sizeof(out->reason),
@@ -189,9 +208,11 @@ struct zcl_result wallet_money_snapshot_build(
                            "wallet coins tip is %d blocks behind network tip",
                            out->network_tip_height - money_tip);
         else if (freshness == WALLET_MONEY_FRESHNESS_STALE &&
-                 (money_tip < hstar || (int64_t)money_tip - hstar > 1))
+                 money_tip != hstar)
             (void)snprintf(out->reason, sizeof(out->reason),
-                           "wallet coins tip is outside the proven fold edge");
+                           money_tip == hstar + 1
+                               ? "wallet coins tip is one block ahead of the proven fold edge"
+                               : "wallet coins tip is outside the proven fold edge");
         else if (freshness == WALLET_MONEY_FRESHNESS_STALE)
             (void)snprintf(out->reason, sizeof(out->reason),
                            "node sync state is %s",
@@ -214,8 +235,9 @@ struct zcl_result wallet_money_snapshot_build(
     out->confirmed_zat = vault.zcl_spendable;
     out->pending_zat = vault.zcl_pending;
     out->encumbered_zat = vault.zcl_encumbered + vault.zcl_immature;
-    out->intent_reserved_zat = vault_intent_reserved_total(
-        ndb, wallet_scope, out->identity.wallet_instance_id);
+    out->intent_reserved_zat = vault_intent_reserved_total_at(
+        ndb, wallet_scope, out->identity.wallet_instance_id,
+        out->observed_at);
     out->lifetime_lab_spent_zat =
         agent_session_scope_lifetime_spent(ndb, wallet_scope);
     if (out->intent_reserved_zat < 0 ||
@@ -245,10 +267,16 @@ struct zcl_result wallet_money_snapshot_build(
             ? DEV_LAB_CAP_ZAT - allocated : 0;
         out->agent_available_zat =
             above_reserve < lab_left ? above_reserve : lab_left;
-    } else {
+    } else if (strcmp(wallet_scope, "prod") == 0) {
         /* Production is deliberately unfunded/unallocated in this rollout.
          * A later owner grant may define a non-zero production policy. */
         out->agent_available_zat = 0;
+    } else {
+        /* An isolated test wallet can spend only value explicitly transferred
+         * into that wallet. It is outside the dev/prod portfolio and cannot
+         * draw from either custody domain; its liquid balance is the complete
+         * envelope for chained shielded transaction demonstrations. */
+        out->agent_available_zat = liquid;
     }
 
     /* The authoritative readers live in separate stores. Re-read both chain

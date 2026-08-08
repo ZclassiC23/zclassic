@@ -7,10 +7,12 @@
 #include "chain/chain.h"
 #include "controllers/wallet_helpers.h"
 #include "core/amount.h"
+#include "core/uint256.h"
 #include "crypto/sha3.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "models/vault_intent.h"
+#include "util/log_macros.h"
 #include "validation/main_state.h"
 
 #include <limits.h>
@@ -22,11 +24,52 @@ static void vic_hex(const uint8_t in[32], char out[65])
     HexStr(in, 32, false, out, 65);
 }
 
+static void vic_chain_hash_hex(const uint8_t in[32], char out[65])
+{
+    struct uint256 hash;
+    memcpy(hash.data, in, sizeof(hash.data));
+    uint256_get_hex(&hash, out);
+}
+
 static void vic_amount_text(int64_t amount, char out[32])
 {
     (void)snprintf(out, 32, "%lld.%08lld",
                    (long long)(amount / COIN),
                    (long long)(amount % COIN));
+}
+
+bool vault_intent_chain_confirmation(struct main_state *ms,
+                                     const uint8_t block_hash[32],
+                                     int32_t *height_out,
+                                     int32_t *confirmations_out)
+{
+    if (!ms || !block_hash || !height_out || !confirmations_out)
+        LOG_FAIL("vault_intent", "chain confirmation: NULL argument");
+
+    struct uint256 hash;
+    memcpy(hash.data, block_hash, sizeof(hash.data));
+    bool found = false;
+    int32_t height = -1;
+    int32_t confirmations = 0;
+
+    /* Wallet confirmation counters can lag tip advancement. Resolve the
+     * recorded block hash against the canonical active chain instead. */
+    zcl_mutex_lock(&ms->cs_main);
+    struct block_index *bi = block_map_find(&ms->map_block_index, &hash);
+    int tip = active_chain_height(&ms->chain_active);
+    if (bi && bi->nHeight >= 0 && bi->nHeight <= tip &&
+        active_chain_at(&ms->chain_active, bi->nHeight) == bi) {
+        height = bi->nHeight;
+        confirmations = tip - bi->nHeight + 1;
+        found = confirmations > 0;
+    }
+    zcl_mutex_unlock(&ms->cs_main);
+
+    if (!found)
+        return false;
+    *height_out = height;
+    *confirmations_out = confirmations;
+    return true;
 }
 
 /* Amounts are text only. This is deliberately not the permissive legacy RPC
@@ -126,24 +169,30 @@ void vault_intent_render_row(struct wallet_rpc_context *ctx,
         (void)json_push_kv_str(out, "reserved", reserved);
     }
     if (row->has_txid) {
-        char txid[65]; vic_hex(row->txid, txid);
+        char txid[65]; vic_chain_hash_hex(row->txid, txid);
         (void)json_push_kv_str(out, "txid", txid);
     } else {
         struct json_value none; json_init(&none); json_set_null(&none);
         (void)json_push_kv(out, "txid", &none); json_free(&none);
     }
+    const bool confirmation_known =
+        (row->state == VAULT_INTENT_CONFIRMED ||
+         row->state == VAULT_INTENT_FINALIZED ||
+         row->state == VAULT_INTENT_REORGED) &&
+        row->confirm_height >= 0;
     int64_t confirmations = 0;
-    if (ctx && ctx->main_state && row->confirm_height >= 0 &&
+    if (ctx && ctx->main_state && confirmation_known &&
         row->state != VAULT_INTENT_REORGED) {
         int tip = active_chain_height(&ctx->main_state->chain_active);
         if (tip >= row->confirm_height)
             confirmations = (int64_t)tip - row->confirm_height + 1;
     }
     (void)json_push_kv_int(out, "confirmations", confirmations);
-    if (row->confirm_height >= 0) {
+    if (confirmation_known) {
         (void)json_push_kv_int(out, "confirmed_height", row->confirm_height);
         if (row->has_confirm_hash) {
-            char block_hash[65]; vic_hex(row->confirm_hash, block_hash);
+            char block_hash[65];
+            vic_chain_hash_hex(row->confirm_hash, block_hash);
             (void)json_push_kv_str(out, "confirmed_block_hash", block_hash);
         }
     }

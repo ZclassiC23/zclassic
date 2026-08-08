@@ -348,6 +348,32 @@ static int64_t wrs_count_collisions(sqlite3 *db, const char *table,
     return n;
 }
 
+/* A target and backup may each carry WKD1 rows only when they name the same
+ * wrapped DEK. INSERT OR IGNORE on id=1 would otherwise keep the target
+ * wrapper while importing ciphertext encrypted under the backup's different
+ * DEK, producing durable but permanently unreadable keys. */
+static bool wrs_key_encryption_compatible(sqlite3 *db)
+{
+    if (!wrs_table_exists(db, "main", "wallet_key_encryption") ||
+        !wrs_table_exists(db, "bak", "wallet_key_encryption"))
+        return true;
+    sqlite3_stmt *stmt = NULL;
+    const char *sql =
+        "SELECT m.wrapped_dek=b.wrapped_dek "
+        "FROM main.wallet_key_encryption m "
+        "CROSS JOIN bak.wallet_key_encryption b "
+        "WHERE m.id=1 AND b.id=1";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK || !stmt) {
+        if (stmt) sqlite3_finalize(stmt);
+        return false;
+    }
+    int rc = AR_STEP_ROW_READONLY(stmt);
+    bool compatible = rc == SQLITE_DONE ||
+        (rc == SQLITE_ROW && sqlite3_column_int(stmt, 0) == 1);
+    sqlite3_finalize(stmt);
+    return compatible;
+}
+
 static enum wallet_restore_store_status wrs_merge_into_target(
     void *self,
     const char *backup_path,
@@ -389,6 +415,15 @@ static enum wallet_restore_store_status wrs_merge_into_target(
     }
 
     enum wallet_restore_store_status status = WR_STORE_OK;
+
+    if (!wrs_key_encryption_compatible(db)) {
+        if (err && err_cap)
+            snprintf(err, err_cap,
+                     "backup wallet-key encryption identity conflicts with "
+                     "the target; restore into a fresh datadir");
+        (void)sqlite3_exec(db, "DETACH DATABASE bak", NULL, NULL, NULL);
+        return WR_STORE_MERGE_FAILED;
+    }
 
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
         if (err && err_cap)

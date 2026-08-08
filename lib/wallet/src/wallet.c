@@ -1046,18 +1046,18 @@ struct zcl_result wallet_commit_transaction(
             (void *)admission->main_state, (const void *)admission->params);
     }
 
-    /* Validate BEFORE wallet mutation. accept_to_mempool performs structural,
-     * contextual shielded-proof/binding-signature, input, fee, and transparent
-     * script checks before inserting the transaction. */
-    enum mempool_accept_result ar = accept_to_mempool(
+    /* Validate BEFORE wallet mutation: structural, shielded proof/signature,
+     * input, fee, and transparent script checks all precede insertion. */
+    char reject_detail[128];
+    enum mempool_accept_result ar = accept_to_mempool_detailed(
         admission->mempool, admission->coins_tip, admission->main_state,
-        admission->params, &wtx->tx);
+        admission->params, &wtx->tx, reject_detail, sizeof(reject_detail));
     if (ar != MEMPOOL_ACCEPT_OK) {
         return ZCL_ERR(-100 - (int)ar,
-            "wallet commit: mempool admission rejected transaction (%s)",
-            wallet_mempool_result_name(ar));
+            "wallet commit: mempool admission rejected transaction (%s%s%s)",
+            wallet_mempool_result_name(ar), reject_detail[0] ? ": " : "",
+            reject_detail);
     }
-
     if (!wallet_add_to_wallet(w, wtx)) {
         /* Admission succeeded but the wallet record failed (e.g. OOM/cap).
          * Roll back the pool so callers never relay a transaction whose
@@ -1150,8 +1150,8 @@ int wallet_advance_confirmations(struct wallet *w, int new_best_height)
     return raised;
 }
 
-void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
-                              const struct block_index *pindex)
+bool wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
+                             const struct block_index *pindex)
 {
     zcl_mutex_lock(&w->cs);
 
@@ -1174,7 +1174,7 @@ void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
 
     if (!dominated) {
         zcl_mutex_unlock(&w->cs);
-        return;
+        return false;
     }
 
     struct wallet_tx wtx;
@@ -1217,11 +1217,11 @@ void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
         wtx.tx.vin = (struct tx_in *)tx->vin;
         wtx.tx.vout = (struct tx_out *)tx->vout;
         zcl_mutex_unlock(&w->cs);
-        wallet_add_to_wallet(w, &wtx);
-        return;
+        return wallet_add_to_wallet(w, &wtx);
     }
 
     zcl_mutex_unlock(&w->cs);
+    return true;
 }
 
 bool wallet_import_key(struct wallet *w, const struct privkey *key)

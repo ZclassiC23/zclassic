@@ -18,6 +18,11 @@ size_t zcl_test_group_catalog_count(void);
 const char *zcl_test_group_catalog_at(size_t index);
 bool zcl_test_group_catalog_contains(const char *full_id);
 
+/* True only for exact catalog groups whose wall-clock assertions must run
+ * before the worker pool starts. Repository-exclusive lint groups remain a
+ * separate runner policy. */
+bool zcl_test_group_requires_exclusive_run(const char *full_id);
+
 /* True only for a mechanically audited test translation-unit proof leaf. */
 bool zcl_test_group_source_is_semantic_leaf(const char *path);
 
@@ -36,6 +41,15 @@ bool zcl_test_group_plan_selects(const char *plan_id, const char *full_id);
  * greater than cap, the first cap rows are retained and *truncated is true. A
  * missing/ambiguous primary fails closed and returns SIZE_MAX. */
 size_t zcl_test_group_expand_plan(
+    const char *const *plan_ids, size_t plan_count,
+    char (*out)[ZCL_TEST_GROUP_FULL_MAX], size_t cap, bool *truncated);
+
+/* Integration-only groups remain in the complete expansion above but are
+ * excluded from the bounded save-cycle expansion below. The predicate accepts
+ * exact canonical IDs only. */
+bool zcl_test_group_is_integration_only(const char *full_id);
+bool zcl_test_group_integration_policy_valid(void);
+size_t zcl_test_group_expand_plan_immediate(
     const char *const *plan_ids, size_t plan_count,
     char (*out)[ZCL_TEST_GROUP_FULL_MAX], size_t cap, bool *truncated);
 

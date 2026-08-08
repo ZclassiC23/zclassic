@@ -9,6 +9,7 @@
 #include "vcs/package_recipe.h"
 #include "vcs/package_release.h"
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -70,5 +71,15 @@ void vcs_package_prepared_free(struct vcs_package_prepared *prepared);
 enum vcs_package_prepare_error vcs_package_prepare(
     const struct vcs_package_prepare_options *options,
     struct vcs_package_prepared *out, char *detail, size_t detail_cap);
+
+/* Read-only pre-initialization scan. It applies the exact same no-follow,
+ * regular-file-only traversal as prepare(), and derives the existing recipe
+ * layout without requiring zcode-package.json. Only out->manifest and
+ * out->recipe are populated; callers release them with
+ * vcs_package_prepared_free(). has_package_config reports whether the scan
+ * observed the metadata file. No canonical object is persisted. */
+enum vcs_package_prepare_error vcs_package_scan_layout(
+    const char *dir, struct vcs_package_prepared *out,
+    bool *has_package_config, char *detail, size_t detail_cap);
 
 #endif /* ZCL_VCS_PACKAGE_PREPARE_H */

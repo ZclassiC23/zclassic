@@ -16,6 +16,7 @@
 #include "controllers/wallet_helpers.h"
 #include "controllers/wallet_rescan_controller.h"
 #include "controllers/vault_intent_controller.h"
+#include "base/hex.h"
 #include "core/core_io.h"
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
@@ -28,6 +29,7 @@
 #include "storage/progress_store.h"
 #include "support/cleanse.h"
 #include "validation/main_state.h"
+#include "validation/txmempool.h"
 #include "wallet/wallet.h"
 #include <stdbool.h>
 #include <stdio.h>
@@ -313,6 +315,64 @@ int test_rpc_safety(void)
 
         json_free(&params);
         json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("rpc_safety: getrawmempool returns live transaction ids... ");
+    {
+        ensure_rpc_warmup_finished_once();
+
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct transaction tx;
+        transaction_init(&tx);
+        bool ok = transaction_alloc(&tx, 1, 1);
+        if (ok) {
+            memset(tx.vin[0].prevout.hash.data, 0x6d, 32);
+            tx.vin[0].prevout.n = 1;
+            tx.vin[0].sequence = UINT32_MAX;
+            tx.vout[0].value = 1000;
+            transaction_compute_hash(&tx);
+        }
+
+        struct mempool_entry entry;
+        memset(&entry, 0, sizeof(entry));
+        if (ok) {
+            mempool_entry_init(&entry, &tx, 10000, 1700000000, 1e9,
+                               100, true, false, 0);
+            ok = tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
+        }
+
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        rpc_blockchain_set_state(NULL, &pool, NULL);
+        register_blockchain_rpc_commands(&tbl);
+
+        struct json_value params = {0};
+        struct json_value result = {0};
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+
+        ok = ok && rpc_table_execute(&tbl, "getrawmempool", &params,
+                                     &result);
+        char expected[65] = {0};
+        if (ok)
+            uint256_get_hex(&tx.hash, expected);
+        ok = ok && result.type == JSON_ARR && result.num_children == 1 &&
+             result.children[0].type == JSON_STR &&
+             strcmp(json_get_str(&result.children[0]), expected) == 0;
+
+        json_free(&params);
+        json_free(&result);
+        rpc_blockchain_set_state(NULL, NULL, NULL);
+        if (tx.hash.data[0] || tx.num_vin || tx.num_vout)
+            mempool_entry_free(&entry);
+        transaction_free(&tx);
+        tx_mempool_free(&pool);
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }
@@ -885,6 +945,113 @@ int test_rpc_safety(void)
             rpc_rawtx_set_keystore(NULL);
             keystore_free(ks);
         }
+        free(ks);
+        free(tbl);
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("rpc_safety: raw-sign P2SH 2-of-2 emits both signatures... ");
+    {
+        struct basic_keystore *ks = calloc(1, sizeof(*ks));
+        struct rpc_table *tbl = calloc(1, sizeof(*tbl));
+        struct privkey keys[2] = {0};
+        bool ok = ks && tbl;
+        if (ok) {
+            keystore_init(ks);
+            rpc_table_init(tbl);
+            rpc_rawtx_set_state(NULL, NULL, NULL, "/tmp");
+            rpc_rawtx_set_keystore(ks);
+            register_rawtransaction_rpc_commands(tbl);
+
+            struct pubkey pubs[2];
+            for (size_t i = 0; i < 2 && ok; i++) {
+                privkey_make_new(&keys[i], true);
+                ok = privkey_get_pubkey(&keys[i], &pubs[i]) &&
+                     keystore_add_key(ks, &keys[i]);
+            }
+            struct script redeem = {0}, p2sh = {0};
+            script_for_multisig(&redeem, 2, pubs, 2);
+            struct script_id redeem_id;
+            script_id_from_script(&redeem_id, &redeem);
+            script_for_p2sh(&p2sh, &redeem_id);
+
+            struct transaction tx;
+            transaction_init(&tx);
+            tx.overwintered = true;
+            tx.version = SAPLING_TX_VERSION;
+            tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+            tx.vin = calloc(1, sizeof(*tx.vin));
+            tx.vout = calloc(1, sizeof(*tx.vout));
+            ok = ok && tx.vin && tx.vout;
+            if (ok) {
+                tx.num_vin = 1;
+                tx.vin[0].prevout.n = 0;
+                tx.vin[0].sequence = UINT32_MAX;
+                tx.num_vout = 1;
+                tx.vout[0].value = 1000;
+                struct key_id recipient = {0};
+                script_for_p2pkh(&tx.vout[0].script_pub_key, &recipient);
+            }
+            char tx_hex[2048] = {0};
+            size_t tx_hex_len = ok ?
+                encode_hex_tx(&tx, tx_hex, sizeof(tx_hex)) : 0;
+            ok = ok && tx_hex_len > 0 && tx_hex_len < sizeof(tx_hex);
+            transaction_free(&tx);
+
+            char p2sh_hex[2 * MAX_SCRIPT_SIZE + 1];
+            char redeem_hex[2 * MAX_SCRIPT_SIZE + 1];
+            zcl_hex_encode(p2sh.data, p2sh.size, p2sh_hex);
+            zcl_hex_encode(redeem.data, redeem.size, redeem_hex);
+
+            struct json_value params, prevs, prev, value, result;
+            json_init(&params); json_set_array(&params);
+            json_init(&value); json_set_str(&value, tx_hex);
+            json_push_back(&params, &value); json_free(&value);
+            json_init(&prevs); json_set_array(&prevs);
+            json_init(&prev); json_set_object(&prev);
+            json_push_kv_str(&prev, "txid",
+                "0000000000000000000000000000000000000000000000000000000000000000");
+            json_push_kv_int(&prev, "vout", 0);
+            json_push_kv_str(&prev, "scriptPubKey", p2sh_hex);
+            json_push_kv_real(&prev, "amount", 0.00022);
+            json_push_kv_str(&prev, "redeemScript", redeem_hex);
+            json_push_back(&prevs, &prev); json_free(&prev);
+            json_push_back(&params, &prevs); json_free(&prevs);
+            json_init(&result);
+
+            ok = ok && rpc_table_execute(tbl, "signrawtransaction", &params,
+                                         &result) &&
+                 json_get_bool(json_get(&result, "complete"));
+            const char *signed_hex = json_get_str(json_get(&result, "hex"));
+            struct transaction signed_tx;
+            transaction_init(&signed_tx);
+            ok = ok && signed_hex && decode_hex_tx(&signed_tx, signed_hex) &&
+                 signed_tx.num_vin == 1;
+            if (ok) {
+                const struct script *ss = &signed_tx.vin[0].script_sig;
+                size_t pos = 0;
+                ok = ss->size > redeem.size + 4 &&
+                     ss->data[pos++] == OP_0;
+                for (size_t i = 0; i < 2 && ok; i++) {
+                    size_t sig_len = ss->data[pos++];
+                    ok = sig_len >= 70 && sig_len <= SIGNATURE_SIZE + 1 &&
+                         pos + sig_len <= ss->size;
+                    pos += sig_len;
+                }
+                ok = ok && pos < ss->size &&
+                     ss->data[pos++] == redeem.size &&
+                     pos + redeem.size == ss->size &&
+                     memcmp(ss->data + pos, redeem.data, redeem.size) == 0;
+            }
+            transaction_free(&signed_tx);
+            json_free(&params);
+            json_free(&result);
+            rpc_rawtx_set_keystore(NULL);
+            keystore_free(ks);
+        }
+        for (size_t i = 0; i < 2; i++)
+            memory_cleanse(keys[i].vch, sizeof(keys[i].vch));
         free(ks);
         free(tbl);
         if (ok) printf("OK\n");

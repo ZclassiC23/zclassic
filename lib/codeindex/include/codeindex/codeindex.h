@@ -84,12 +84,32 @@ struct ci_ref {
     char enclosing[128];
 };
 
+enum ci_search_match {
+    CI_SEARCH_MATCH_NAME = 1u << 0,
+    CI_SEARCH_MATCH_SIGNATURE = 1u << 1,
+    CI_SEARCH_MATCH_PATH = 1u << 2,
+    CI_SEARCH_MATCH_DOC = 1u << 3,
+};
+
+/* One explained full-index search result. score is a deterministic ranking
+ * convenience; the mask says which indexed fields contained the query. */
+struct ci_search_hit {
+    struct ci_symbol symbol;
+    uint32_t match_mask;
+    int score;
+};
+
 /* ── Lifecycle ── */
 
 /* Open (creating if needed) <root>/.codeindex/index.kv. If the store is
  * missing or the source tree's staleness stamp no longer matches, this
  * rebuilds it before returning. NULL on hard failure. */
 struct codeindex *codeindex_open(const char *root);
+/* Open only an already-built, verify-on-read store. This never rebuilds and
+ * therefore may describe the immediately preceding source generation. It is
+ * for bounded resident overlay queries which scan changed files themselves;
+ * callers must not present the handle as a fresh source index. */
+struct codeindex *codeindex_open_existing(const char *root);
 void codeindex_close(struct codeindex *ci);
 
 /* Exact content root of the source generation this verified handle reads.
@@ -118,6 +138,12 @@ bool codeindex_symbol_by_id(struct codeindex *ci, const char *id,
  * Fills up to `cap` rows in `out`, returns the count (>=0), -1 on error. */
 int codeindex_find(struct codeindex *ci, const char *query,
                    struct ci_symbol *out, int cap);
+
+/* Ranked literal substring search over names, signatures, definition/
+ * declaration paths, and indexed documentation. Exact/prefix/name matches
+ * precede signature, path, and doc matches; ties are byte-stable. */
+int codeindex_search_text(struct codeindex *ci, const char *query,
+                          struct ci_search_hit *out, int cap);
 
 /* Call sites referencing `callee`, ordered by (ref_file, ref_line). Fills up
  * to `cap` rows, returns count (>=0), -1 on error. */
@@ -239,6 +265,30 @@ int codeindex_impact_closure(struct codeindex *ci,
                              const char (*changed_files)[256], int n_changed,
                              int max_depth,
                              char (*out)[256], int cap, bool *truncated);
+
+/* Conservative resident variant: union the existing store's symbols for each
+ * changed file with symbols scanned from its current bytes before walking
+ * callers. Other files are unchanged within the caller's guarded source epoch,
+ * so their reverse edges remain the exact caller authority. */
+int codeindex_impact_closure_overlay(
+    struct codeindex *ci, const char *root,
+    const char (*changed_files)[256], int n_changed, int max_depth,
+    char (*out)[256], int cap, bool *truncated);
+
+/* Proof-selection variant: record a caller file, then ask whether that file is
+ * a terminal evidence owner. Terminal callers are not traversed through into
+ * generic dispatchers; non-terminal callers retain the ordinary reverse walk.
+ * The callback does not run on the changed seed itself. */
+typedef bool (*codeindex_impact_terminal_fn)(const char *path, void *user);
+int codeindex_impact_closure_with_terminal(
+    struct codeindex *ci, const char (*changed_files)[256], int n_changed,
+    int max_depth, codeindex_impact_terminal_fn terminal, void *terminal_user,
+    char (*out)[256], int cap, bool *truncated);
+int codeindex_impact_closure_overlay_with_terminal(
+    struct codeindex *ci, const char *root,
+    const char (*changed_files)[256], int n_changed, int max_depth,
+    codeindex_impact_terminal_fn terminal, void *terminal_user,
+    char (*out)[256], int cap, bool *truncated);
 
 /* ── Forward (callee) input-closure query — the content-addressed test cache
  * key input (symmetric mirror of codeindex_impact_closure) ──────────────

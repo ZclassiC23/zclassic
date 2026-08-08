@@ -131,7 +131,7 @@ static bool rpc_getwalletinfo(const struct json_value *params, bool help,
      * count query so operators and tooling can see at a glance whether
      * the wallet storage is healthy.
      *
-     *   healthy = open && canary_ok && !mismatch
+     *   healthy = open && canary_ok && count known && !mismatch && no corrupt rows
      *
      * A false value here means the persistence-abort paths would fire
      * on the next restart — surface it before the user sends funds to
@@ -146,7 +146,8 @@ static bool rpc_getwalletinfo(const struct json_value *params, bool help,
     json_init(&persistence);
     json_set_object(&persistence);
     json_push_kv_bool(&persistence, "healthy",
-                       h.open && h.canary_ok && !h.mismatch);
+                       h.open && h.canary_ok && h.row_count >= 0 &&
+                       !h.mismatch && h.corrupt_rows == 0);
     json_push_kv_bool(&persistence, "open",              h.open);
     json_push_kv_bool(&persistence, "canary_ok",         h.canary_ok);
     json_push_kv_int (&persistence, "canary_last_ok_ts", h.canary_last_ok_ts);
@@ -264,6 +265,14 @@ static bool rpc_walletencrypt(const struct json_value *params, bool help,
     if (!unlocked.ok) {
         json_set_str(result, "Error: wallet encryption setup failed");
         LOG_FAIL("wallet", "walletencrypt: unlock code=%d", unlocked.code);
+    }
+    struct zcl_result migrated =
+        wallet_sqlite_migrate_transparent_keys_r(ctx->wallet_db, ctx->wallet);
+    if (!migrated.ok) {
+        wallet_lock_lock(ctx->wallet);
+        json_set_str(result, "Error: wallet key encryption transaction failed");
+        LOG_FAIL("wallet", "walletencrypt: key migration code=%d",
+                 migrated.code);
     }
     struct zcl_result scrubbed =
         wallet_sqlite_scrub_plaintext_r(ctx->wallet_db);

@@ -78,7 +78,7 @@ static bool catchup_lifecycle_join_thread_bounded(pthread_t thread,
 bool catchup_lifecycle_start(struct node_db_sync_catchup_job *job,
                              struct node_db *ndb,
                              const struct active_chain *chain,
-                             const struct wallet *w,
+                             struct wallet *w,
                              const char *datadir)
 {
     if (!job || node_db_sync_catchup_job_is_started(job))

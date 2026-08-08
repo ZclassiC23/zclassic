@@ -415,6 +415,33 @@ static int t_liquidity_numeric_input(void)
     return failures;
 }
 
+/* ── 6. Package preparation's documented sequence reaches its handler ── */
+
+static int t_package_prepare_sequence(void)
+{
+    int failures = 0;
+    const struct zcl_command_spec *spec = zcl_command_registry_find(
+        zcl_command_catalog(), "zcode.package.dev.prepare", NULL);
+    CIB_CHECK("zcode.package.dev.prepare resolves", spec != NULL);
+    if (!spec)
+        return failures;
+
+    struct json_value input;
+    char why[192] = {0};
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, "dir", "lib/sha3");
+    (void)json_push_kv_str(
+        &input, "publisher_pubkey",
+        "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798");
+    (void)json_push_kv_int(&input, "publisher_sequence", 1);
+    CIB_CHECK("documented package publisher sequence passes transport validation",
+              zcl_command_registry_input_validate(spec, &input, why,
+                                                  sizeof(why)));
+    json_free(&input);
+    return failures;
+}
+
 int test_command_input_bounds(void)
 {
     printf("\n=== command_input_bounds: per-key input length rules ===\n");
@@ -424,6 +451,7 @@ int test_command_input_bounds(void)
     failures += t_no_collateral_loosening();
     failures += t_vault_effects_array();
     failures += t_liquidity_numeric_input();
+    failures += t_package_prepare_sequence();
     printf("=== command_input_bounds complete: %d failure(s) ===\n", failures);
     return failures;
 }

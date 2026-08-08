@@ -13,6 +13,7 @@
  *   their own validates_* paths. */
 
 #include "platform/time_compat.h"
+#include "platform/os_proc.h"
 #include "util/log_macros.h"
 #include "util/db_txn_trace.h"
 #include "util/hw_profile.h"
@@ -122,8 +123,8 @@ void node_db_note_activity(struct node_db *ndb, const char *op, int rc)
     node_db_stamp_activity(ndb, NULL, false, op, rc);
 }
 
-static void node_db_note_tx_state(struct node_db *ndb, bool tx_open,
-                                  const char *op, int rc)
+void node_db_note_tx_state(struct node_db *ndb, bool tx_open,
+                           const char *op, int rc)
 {
     node_db_stamp_activity(ndb, ndb ? &ndb->tx_open : NULL, tx_open, op, rc);
 }
@@ -318,14 +319,52 @@ static bool prepare_statements(struct node_db *ndb)
  * boot_index.c:306 landmine (stale mmap pages can SIGSEGV above 256 MB). */
 #define ZCL_NODE_DB_CACHE_CEIL_KIB     (64 * 1024)            /* 64 MiB */
 #define ZCL_NODE_DB_MMAP_CEILING_BYTES (256LL * 1024 * 1024)  /* 256 MiB */
+#define ZCL_NODE_DB_CONSTRAINED_BYTES  (4LL * 1024 * 1024 * 1024)
+#define ZCL_NODE_DB_MIDRANGE_BYTES     (8LL * 1024 * 1024 * 1024)
+#define ZCL_NODE_DB_MIDRANGE_MMAP      (64LL * 1024 * 1024)
 #define ZCL_NODE_DB_BUSY_TIMEOUT_MS 10000
 
-static void db_set_pragmas(sqlite3 *db)
+static int64_t db_effective_ram_bytes(void)
 {
     hw_profile_init(NULL);
     int64_t ram = hw_profile_ram_bytes();
-    int64_t cache_kib = hw_profile_sqlite_cache_kib(ram, 0, ZCL_NODE_DB_CACHE_CEIL_KIB);
-    int64_t mmap_bytes = hw_profile_sqlite_mmap_bytes(ram, 0, ZCL_NODE_DB_MMAP_CEILING_BYTES);
+    struct os_proc_mem mem;
+    if (!os_proc_mem_read(&mem))
+        return ram;
+    int64_t cap = mem.cgroup_high > 0 ? mem.cgroup_high : mem.cgroup_max;
+    if (cap > 0 && (ram <= 0 || cap < ram))
+        ram = cap;
+    return ram;
+}
+
+int64_t node_db_recommended_mmap_bytes(void)
+{
+    int64_t ram = db_effective_ram_bytes();
+    if (ram > 0 && ram <= ZCL_NODE_DB_CONSTRAINED_BYTES)
+        return 0;
+    int64_t ceiling = ram > 0 && ram <= ZCL_NODE_DB_MIDRANGE_BYTES
+        ? ZCL_NODE_DB_MIDRANGE_MMAP : ZCL_NODE_DB_MMAP_CEILING_BYTES;
+    return hw_profile_sqlite_mmap_bytes(ram, 0, ceiling);
+}
+
+bool node_db_apply_readonly_tuning(sqlite3 *db)
+{
+    if (!db)
+        LOG_FAIL("db", "readonly tuning requires an open SQLite handle");
+    char pragma[64];
+    (void)snprintf(pragma, sizeof(pragma), "PRAGMA mmap_size=%lld",
+                   (long long)node_db_recommended_mmap_bytes());
+    return db_exec_checked(db, pragma, "readonly_mmap_tuning") == SQLITE_OK;
+}
+
+static void db_set_pragmas(sqlite3 *db)
+{
+    int64_t ram = db_effective_ram_bytes();
+    int64_t cache_ceiling = ram > 0 && ram <= ZCL_NODE_DB_CONSTRAINED_BYTES
+        ? 16 * 1024 : ZCL_NODE_DB_CACHE_CEIL_KIB;
+    int64_t cache_kib = hw_profile_sqlite_cache_kib(
+        ram, 16 * 1024, cache_ceiling);
+    int64_t mmap_bytes = node_db_recommended_mmap_bytes();
 
     /* One exec call to keep the PRAGMA batch atomic with respect to
      * other threads that might latch onto the connection immediately
@@ -562,6 +601,57 @@ bool node_db_open_runtime(struct node_db *ndb, const char *path,
     return node_db_open_impl(ndb, path, /*boot_ceremony=*/false, reason);
 }
 
+bool node_db_open_existing_runtime(struct node_db *ndb, const char *path,
+                                   const char *reason)
+{
+    if (!ndb)
+        LOG_FAIL("db", "node_db_open_existing_runtime: output is required");
+    memset(ndb, 0, sizeof(*ndb));
+    if (!path || !path[0] || !reason || !reason[0])
+        LOG_FAIL("db", "node_db_open_existing_runtime: path and reason are "
+                 "mandatory");
+
+    (void)snprintf(ndb->path, sizeof(ndb->path), "%s", path);
+    node_db_state_init(ndb);
+    LOG_INFO("db", "db: lightweight runtime reopen (reason=%s) path=%s",
+             reason, path);
+
+    int rc = sqlite3_open_v2(path, &ndb->db,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL);
+    if (rc != SQLITE_OK || !ndb->db) {
+        LOG_WARN("db", "lightweight runtime reopen failed: %s",
+                 ndb->db ? sqlite3_errmsg(ndb->db) : "no sqlite handle");
+        return node_db_open_abort(ndb);
+    }
+
+    /* The boot connection already selected WAL for the database. These are
+     * connection-local settings only: no journal-mode transition, mmap, schema
+     * DDL, migration, or full cached-statement preparation on a periodic open.
+     * A small cache prevents a short-lived poller from competing with the
+     * canonical connection for the lane's memory ceiling. */
+    (void)sqlite3_exec(ndb->db,
+        "PRAGMA synchronous=NORMAL;"
+        "PRAGMA cache_size=-2048;"
+        "PRAGMA temp_store=MEMORY;"
+        "PRAGMA foreign_keys=ON",
+        NULL, NULL, NULL);
+    (void)sqlite3_busy_timeout(ndb->db, ZCL_NODE_DB_BUSY_TIMEOUT_MS);
+    ndb->open = true;
+
+    int schema = node_db_schema_version(ndb);
+    if (schema != NODE_DB_MAX_SCHEMA) {
+        LOG_WARN("db", "lightweight runtime reopen refused schema=%d "
+                 "expected=%d reason=%s", schema, NODE_DB_MAX_SCHEMA, reason);
+        ndb->open = false;
+        return node_db_open_abort(ndb);
+    }
+
+    db_register_all_validators();
+    zcl_db_txn_trace_register(ndb->db, reason);
+    node_db_note_activity(ndb, "open_existing_runtime", SQLITE_OK);
+    return true;
+}
+
 void node_db_close(struct node_db *ndb)
 {
     if (!ndb)
@@ -596,189 +686,6 @@ void node_db_close(struct node_db *ndb)
     }
     ndb->open = false;
     node_db_state_destroy(ndb);
-}
-
-bool node_db_exec(struct node_db *ndb, const char *sql)
-{
-    if (!ndb->open) return false;
-    char *err = NULL;
-    int rc = sqlite3_exec(ndb->db, sql, NULL, NULL, &err);
-    if (rc != SQLITE_OK) {
-        LOG_WARN("db", "db: exec failed: %s", err);
-        node_db_note_activity(ndb, sql ? sql : "exec", rc);
-        sqlite3_free(err);
-        return false;
-    }
-    node_db_note_activity(ndb, sql ? sql : "exec", rc);
-    return true;
-}
-
-bool node_db_prepare_readonly_stmt(sqlite3 *db, const char *sql,
-                                   sqlite3_stmt **stmt_out)
-{
-    if (!db || !sql || !stmt_out)
-        LOG_FAIL("db", "prepare_readonly_stmt called with invalid arguments");
-
-    *stmt_out = NULL;
-    int rc = sqlite3_prepare_v2(db, sql, -1, stmt_out, NULL);
-    if (rc != SQLITE_OK || !*stmt_out) {
-        LOG_FAIL("db", "prepare_readonly_stmt failed: rc=%d msg=%s sql=%s",
-                 rc, sqlite3_errmsg(db), sql);
-    }
-    if (!sqlite3_stmt_readonly(*stmt_out)) {
-        sqlite3_finalize(*stmt_out);
-        *stmt_out = NULL;
-        LOG_FAIL("db", "prepare_readonly_stmt rejected writable statement: %s",
-                 sql);
-    }
-    return true;
-}
-
-bool node_db_prepare_readonly_query(struct node_db *ndb, const char *sql,
-                                    sqlite3_stmt **stmt_out)
-{
-    if (!ndb || !ndb->open || !sql || !stmt_out)
-        LOG_FAIL("db", "prepare_readonly_query called with invalid arguments");
-
-    bool ok = node_db_prepare_readonly_stmt(ndb->db, sql, stmt_out);
-    node_db_note_activity(ndb, "prepare_readonly_query",
-                          (ok && *stmt_out) ? SQLITE_OK : SQLITE_ERROR);
-    return ok;
-}
-
-/* Preserve the REAL sqlite rc node_db_exec() stamped into last_sqlite_rc
- * (BUSY/LOCKED/ERROR "cannot start a transaction within a transaction", ...)
- * on a failed BEGIN/COMMIT/ROLLBACK instead of clobbering it with a hardcoded
- * SQLITE_ERROR — callers classify on it (retry only on BUSY/LOCKED). The
- * lock-taking node_db_get_status() keeps the failure-path read race-free;
- * set_tx_open marks in-transaction only for a SUCCESSFUL begin. */
-static bool node_db_tx_op(struct node_db *ndb, const char *sql,
-                          bool set_tx_open)
-{
-    bool ok = node_db_exec(ndb, sql);
-    int rc = SQLITE_OK;
-    if (!ok) {
-        struct node_db_status st;
-        node_db_get_status(ndb, &st);
-        rc = st.last_sqlite_rc;
-    }
-    node_db_note_tx_state(ndb, set_tx_open && ok, sql, rc);
-    return ok;
-}
-
-bool node_db_begin(struct node_db *ndb) { return node_db_tx_op(ndb, "BEGIN TRANSACTION", true); }
-bool node_db_begin_immediate(struct node_db *ndb)
-{
-    return node_db_tx_op(ndb, "BEGIN IMMEDIATE", true);
-}
-
-/* Poisoned-COMMIT runtime recovery — the always-on seatbelt (the
- * ZCL_DB_TXN_TRACE=1 detector in lib/util/src/db_txn_trace.c stays opt-in).
- *
- * If a write VM (INSERT/UPDATE/DELETE, incl. ...RETURNING) is abandoned in
- * RUN state on this shared FULLMUTEX handle, every later COMMIT fails with
- * "cannot commit transaction - SQL statements in progress" (the db->
- * nVdbeWrite>0 guard) until process restart — the 2026-07-24→27 incident
- * ran the live node poisoned for days (13k+ failed catchup COMMITs). The
- * cure at runtime: walk the handle's statement list (the same
- * sqlite3_next_stmt walk node_db_close() uses), LOG the offending SQL, and
- * sqlite3_reset() the abandoned VM. RESET, never finalize: the cached
- * ndb->stmt_* hot-path statements share this list and finalizing one would
- * dangle its cached pointer. Only BUSY non-readonly VMs are touched — a
- * mid-scan read cursor neither poisons COMMIT (the guard counts write VMs)
- * nor may be restarted under a concurrent reader. */
-static _Atomic uint64_t g_commit_recovery_walks = 0;
-
-static int node_db_reset_abandoned_write_vms(struct node_db *ndb)
-{
-    int reset = 0;
-    for (sqlite3_stmt *s = sqlite3_next_stmt(ndb->db, NULL); s;
-         s = sqlite3_next_stmt(ndb->db, s)) {
-        if (!sqlite3_stmt_busy(s) || sqlite3_stmt_readonly(s))
-            continue;
-        const char *sql = sqlite3_sql(s);
-        LOG_WARN("db",
-                 "db: poisoned COMMIT — abandoned write VM in RUN state, "
-                 "resetting: %s", sql ? sql : "(null)");
-        sqlite3_reset(s);
-        reset++;
-    }
-    return reset;
-}
-
-bool node_db_commit(struct node_db *ndb)
-{
-    if (node_db_tx_op(ndb, "COMMIT", false))
-        return true;
-    /* The walk fires only on the exact poison class (the nVdbeWrite guard's
-     * own message) so an ordinary BUSY/LOCKED commit failure never disturbs
-     * a legitimately in-flight statement on this shared handle. Recovery
-     * leaves the open transaction to the caller: it must still ROLLBACK. */
-    const char *msg = ndb && ndb->db ? sqlite3_errmsg(ndb->db) : NULL;
-    if (msg && strstr(msg, "statements in progress")) {
-        int reset = node_db_reset_abandoned_write_vms(ndb);
-        if (reset > 0) {
-            atomic_fetch_add(&g_commit_recovery_walks, 1);
-            LOG_WARN("db",
-                     "db: COMMIT unpoisoned — reset %d abandoned write VM(s); "
-                     "caller must ROLLBACK this transaction", reset);
-        }
-    }
-    return false;
-}
-
-bool node_db_rollback(struct node_db *ndb) { return node_db_tx_op(ndb, "ROLLBACK", false); }
-
-#ifdef ZCL_TESTING
-/* Count of poisoned-COMMIT recovery walks that reset at least one abandoned
- * write VM (test assertion surface for the seatbelt above). */
-uint64_t node_db_test_commit_recovery_walks(void)
-{
-    return atomic_load(&g_commit_recovery_walks);
-}
-#endif
-
-void node_db_set_sync_batch_size(struct node_db *ndb, int batch_size)
-{
-    if (!ndb) return;
-    ndb->sync_batch_size = batch_size > 0 ? batch_size : 1;
-    node_db_note_activity(ndb, "set_sync_batch_size", SQLITE_OK);
-}
-
-bool node_db_sync_flush(struct node_db *ndb)
-{
-    if (!ndb || !ndb->open) return false;
-    if (ndb->sync_in_batch) {
-        bool ok = node_db_commit(ndb);
-        ndb->sync_in_batch = false;
-        ndb->sync_pending_blocks = 0;
-        return ok;
-    }
-    return true;
-}
-
-void node_db_get_status(struct node_db *ndb, struct node_db_status *out)
-{
-    struct node_db_status empty = {0};
-
-    if (!out)
-        return;
-    *out = empty;
-    if (!ndb)
-        return;
-
-    if (ndb->state_mutex_init)
-        zcl_mutex_lock(&ndb->state_mutex);
-    out->open = ndb->open;
-    out->tx_open = ndb->tx_open;
-    out->turbo_mode = ndb->turbo_mode;
-    out->sync_batch_size = ndb->sync_batch_size;
-    out->sync_pending_blocks = ndb->sync_pending_blocks;
-    out->last_activity_time = ndb->last_activity_time;
-    out->last_sqlite_rc = ndb->last_sqlite_rc;
-    snprintf(out->last_op, sizeof(out->last_op), "%s", ndb->last_op);
-    if (ndb->state_mutex_init)
-        zcl_mutex_unlock(&ndb->state_mutex);
 }
 
 /* node_db_state_*, node_db_schema_version, and node_db_migrate live

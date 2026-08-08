@@ -191,6 +191,7 @@ static void pv_usage(FILE *out)
         "           --zbuild-package-source=<abs-dir>\n"
         "           --zbuild-package-recipe=<abs-file>\n"
         "           --zbuild-package-name=<publisher/package>\n"
+        "           --zbuild-package-profile=<quick|standard>\n"
         "           --emit=<abs-dir> --lock-root=<64hex>\n"
         "           [--dep=<64hex>,<installed-dir>]...\n"
         "           --require-full-isolation\n"
@@ -894,11 +895,12 @@ struct pv_compile_args {
     char inc[8][4200];   /* -I args */
     char dep[PV_EMIT_MAX_DEPS][2100]; /* -I args for locked dependencies */
     char def[64][80];    /* -D args */
-    char san[1][64];
+    char san[2][64];
 };
 
 static size_t pv_compile_argv(struct pv_compile_args *store,
                               const char *cc, bool sanitize,
+                              bool warning_fatal,
                               const struct vcs_package_recipe *recipe,
                               const char *src_root,
                               const struct pv_emit_dep *deps, size_t dep_count,
@@ -909,10 +911,17 @@ static size_t pv_compile_argv(struct pv_compile_args *store,
     store->argv[n++] = "-std=c23";
     store->argv[n++] = "-O1";
     store->argv[n++] = "-fno-omit-frame-pointer";
+    if (warning_fatal) {
+        store->argv[n++] = "-Wall";
+        store->argv[n++] = "-Wextra";
+        store->argv[n++] = "-Werror";
+    }
     if (sanitize) {
         snprintf(store->san[0], sizeof(store->san[0]),
                  "-fsanitize=address,undefined");
         store->argv[n++] = store->san[0];
+        snprintf(store->san[1], sizeof(store->san[1]), "-fno-pie");
+        store->argv[n++] = store->san[1];
     }
     for (size_t i = 0; i < recipe->include_dirs.count &&
                         i < sizeof(store->inc) / sizeof(store->inc[0]); i++) {
@@ -1544,6 +1553,7 @@ int main(int argc, char **argv)
     const char *candidate_source_arg = NULL;
     const char *candidate_recipe_arg = NULL;
     const char *candidate_name = NULL;
+    const char *candidate_profile = NULL;
     bool require_full_isolation = false;
     struct pv_emit_dep emit_deps[PV_EMIT_MAX_DEPS];
     size_t emit_dep_count = 0;
@@ -1567,6 +1577,8 @@ int main(int argc, char **argv)
             candidate_recipe_arg = argv[i] + 24;
         else if (strncmp(argv[i], "--zbuild-package-name=", 22) == 0)
             candidate_name = argv[i] + 22;
+        else if (strncmp(argv[i], "--zbuild-package-profile=", 25) == 0)
+            candidate_profile = argv[i] + 25;
         else if (strncmp(argv[i], "--dep=", 6) == 0) {
             /* <64 hex>,<install dir> — the hex is fixed-width, so the comma
              * position is unambiguous even if the path contains commas. */
@@ -1632,7 +1644,12 @@ int main(int argc, char **argv)
     }
     bool candidate_mode = candidate_source_arg != NULL ||
                           candidate_recipe_arg != NULL ||
-                          candidate_name != NULL;
+                          candidate_name != NULL ||
+                          candidate_profile != NULL;
+    bool standard_profile = candidate_profile &&
+                            strcmp(candidate_profile, "standard") == 0;
+    bool known_candidate_profile = candidate_profile &&
+        (standard_profile || strcmp(candidate_profile, "quick") == 0);
     /* The modes are mutually exclusive: an emit run signs nothing, so a
      * key would only invite the belief that its output was attested.
      * --reproduce-against belongs to emit mode: it is the byte-identity
@@ -1645,6 +1662,7 @@ int main(int argc, char **argv)
     bool candidate_shape = candidate_mode && root_hex && !store_dir &&
         !key_path && emit_dir && lock_root_hex && candidate_source_arg &&
         candidate_recipe_arg && candidate_name && candidate_name[0] &&
+        known_candidate_profile &&
         !reproduce_path && require_full_isolation;
     if (!normal_shape && !candidate_shape) {
         pv_usage(stderr);
@@ -2080,6 +2098,11 @@ int main(int argc, char **argv)
                      "unavailable");
         }
     }
+    /* Sanitizers need one real runtime execution, not a same-host quorum.
+     * Prefer Clang deterministically: GCC ASan can be unavailable when its
+     * fixed shadow range collides with the worker process layout. Plain
+     * warning-fatal compilation still covers every available compiler. */
+    size_t sanitizer_compiler = compilers[0].available ? 0u : 1u;
 
     struct pv_dep_archives dep_archives;
     memset(&dep_archives, 0, sizeof(dep_archives));
@@ -2160,7 +2183,8 @@ int main(int argc, char **argv)
         for (int variant = 0; variant < 2 && cc_ok; variant++) {
             const bool sanitize = variant == 1;
             /* Sanitizer binaries are only needed when tests will run. */
-            if (sanitize && !have_tests)
+            if (sanitize &&
+                (!have_tests || ci != sanitizer_compiler))
                 continue;
             char fail_prefix[32];
             snprintf(fail_prefix, sizeof(fail_prefix), "%s%s", cc,
@@ -2180,7 +2204,8 @@ int main(int argc, char **argv)
                          "%s/%s_%d_%zu.o", build_root, cc, variant, si);
                 struct pv_compile_args args;
                 memset(&args, 0, sizeof(args));
-                pv_compile_argv(&args, cc, sanitize, &recipe, src_root,
+                pv_compile_argv(&args, cc, sanitize, standard_profile,
+                                &recipe, src_root,
                                 emit_deps, emit_dep_count, src_file,
                                 obj_file);
                 struct pv_run pr = pv_run_child(
@@ -2223,6 +2248,8 @@ int main(int argc, char **argv)
                 largv[ln++] = cc;
                 if (sanitize)
                     largv[ln++] = "-fsanitize=address,undefined";
+                if (sanitize)
+                    largv[ln++] = "-no-pie";
                 for (size_t o = 0; o < total_sources &&
                                    o < sizeof(lobjs) / sizeof(lobjs[0]);
                      o++) {
@@ -2340,12 +2367,17 @@ int main(int argc, char **argv)
                 snprintf(test_fail_detail, sizeof(test_fail_detail),
                          "%s: killed by signal %d", cc, pr.term_signal);
             }
-            /* Sanitizer run: the UB-detector diagnostic. */
+            /* Sanitizer run: one deterministic real ASan+UBSan execution. */
+            if (ci != sanitizer_compiler)
+                continue;
             char san_bin[4200];
             snprintf(san_bin, sizeof(san_bin), "%s/%s_1_test", build_root,
                      cc);
+            const char *const sanitizer_argv[] = {
+                "setarch", "x86_64", "-R", san_bin, NULL,
+            };
             struct pv_run sr = pv_run_child(
-                (const char *const[]){ san_bin, NULL }, build_root,
+                sanitizer_argv, build_root,
                 &san_test_limits, landlock, rules, n_rules, san_env,
                 (int)recipe.maximum_test_seconds * 1000 + 5000);
             if (!sr.launched || sr.sandbox_fail) {
@@ -2415,6 +2447,9 @@ int main(int argc, char **argv)
                         VCS_PACKAGE_ATTEST_OUTCOME_UNAVAILABLE;
                     att.sanitizers[1].outcome =
                         VCS_PACKAGE_ATTEST_OUTCOME_UNAVAILABLE;
+                    pv_san_detail_from_stderr(
+                        sprefix, sr.stderr_buf, sanitizer_fail_detail,
+                        sizeof(sanitizer_fail_detail));
                 }
                 continue;   /* an unavailable diagnostic decides nothing */
             }
@@ -2480,6 +2515,28 @@ int main(int argc, char **argv)
         return 5;
     }
 
+    bool standard_sanitizers_passed = have_tests && test_ran && test_ok &&
+        att.sanitizer_count == 2u &&
+        att.sanitizers[0].outcome == VCS_PACKAGE_ATTEST_OUTCOME_PASS &&
+        att.sanitizers[1].outcome == VCS_PACKAGE_ATTEST_OUTCOME_PASS;
+    if (candidate_mode && standard_profile && !standard_sanitizers_passed) {
+        fprintf(stdout,
+                "zbuild-package-standard-refused=1 asan=%u ubsan=%u "
+                "detail=%.120s\n", att.sanitizers[0].outcome,
+                att.sanitizers[1].outcome,
+                sanitizer_fail_detail[0] ? sanitizer_fail_detail : "none");
+        fprintf(stderr,
+                "%s: standard profile requires declared tests and clean "
+                "ASan+UBSan runs; package evidence refused "
+                "(asan=%u ubsan=%u detail=%s)\n", PV_LOG,
+                att.sanitizers[0].outcome, att.sanitizers[1].outcome,
+                sanitizer_fail_detail[0] ? sanitizer_fail_detail : "none");
+        pv_rm_rf(work);
+        vcs_package_recipe_free(&recipe);
+        vcs_package_manifest_free(&manifest);
+        return 6;
+    }
+
     /* ── emit mode: archive, install-stage, receipt (nothing is signed) ── */
     if (emit_dir) {
         struct vcs_package_build_receipt rec;
@@ -2507,7 +2564,8 @@ int main(int argc, char **argv)
         snprintf(rec.compiler_version, sizeof(rec.compiler_version), "%s",
                  compilers[pick].version);
         snprintf(rec.flags, sizeof(rec.flags), "%s",
-                 "-std=c23 -O1 -fno-omit-frame-pointer -c");
+                 standard_profile ? VCS_PACKAGE_BUILD_FLAGS_STANDARD_V1
+                                  : VCS_PACKAGE_BUILD_FLAGS_QUICK_V1);
         rec.isolation = landlock
                             ? (uint8_t)VCS_PACKAGE_BUILD_ISOLATION_FULL
                             : (uint8_t)VCS_PACKAGE_BUILD_ISOLATION_DEGRADED;
@@ -2521,11 +2579,12 @@ int main(int argc, char **argv)
             rec.result_class = (uint8_t)VCS_PACKAGE_BUILD_RESULT_TEST_PASS;
         else
             rec.result_class = (uint8_t)VCS_PACKAGE_BUILD_RESULT_BUILD_PASS;
-        /* A sanitizer finding is not a build/test verdict in emit mode; the
+        /* A sanitizer finding is not a build/test verdict in quick emit mode; the
          * attestation lane owns that diagnostic. The receipt records the
          * build+test verdict only, so a clean test that trips ASan still
          * installs — exactly as the attestation quorum, not the installer,
-         * is the place that judges sanitizer cleanliness. */
+         * is the place that judges sanitizer cleanliness. Standard mode
+         * failed closed above unless both ASan and UBSan were clean. */
 
         bool emitted = true;
         if (vcs_package_build_installable(&rec)) {

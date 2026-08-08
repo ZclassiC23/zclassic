@@ -89,6 +89,7 @@ void rpc_timeout_init(struct rpc_timeout_mgr *mgr)
     if (!mgr) return;
     memset(mgr, 0, sizeof(*mgr));
     mgr->timeout_ms          = RPC_TIMEOUT_DEFAULT_MS;
+    mgr->proof_timeout_ms    = RPC_PROOF_BUILD_TIMEOUT_MS;
     mgr->watchdog_period_ms  = RPC_TIMEOUT_DEFAULT_SWEEP_MS;
     pthread_mutex_init(&mgr->lock, NULL);
     pthread_cond_init(&mgr->wakeup, NULL);
@@ -109,6 +110,7 @@ void rpc_timeout_load_from_env(struct rpc_timeout_mgr *mgr)
     if (!mgr || !mgr->initialized) return;
     pthread_mutex_lock(&mgr->lock);
     parse_env_int("ZCL_RPC_TIMEOUT_MS",       &mgr->timeout_ms,         0, 600000);
+    parse_env_int("ZCL_RPC_PROOF_TIMEOUT_MS", &mgr->proof_timeout_ms,   1, 600000);
     parse_env_int("ZCL_RPC_TIMEOUT_SWEEP_MS", &mgr->watchdog_period_ms, 10, 60000);
     pthread_mutex_unlock(&mgr->lock);
 }
@@ -167,6 +169,26 @@ void rpc_timeout_set_method(struct rpc_timeout_mgr *mgr,
         size_t n = strnlen(method, RPC_TIMEOUT_METHOD_LEN - 1);
         memcpy(mgr->slots[slot].method, method, n);
         mgr->slots[slot].method[n] = '\0';
+        /* Shielded planning performs a real, non-broadcast Sapling proof
+         * preflight before it persists a reservation, and commit rebuilds
+         * the exact proof before durable relay. Keep the ordinary 10-second
+         * worker ceiling for every other method, but give these exact owner
+         * surfaces the bounded proof-building budget. The
+         * generic deadline still wins when an operator configured it higher;
+         * a method label can extend a slot, never shorten one. */
+        if ((strcmp(method, "getnewaddress") == 0 ||
+             strcmp(method, "z_getnewaddress") == 0) &&
+            RPC_WALLET_MUTATION_TIMEOUT_MS > mgr->slots[slot].timeout_ms) {
+            mgr->slots[slot].timeout_ms = RPC_WALLET_MUTATION_TIMEOUT_MS;
+        }
+        if ((strcmp(method, "z_sendmany") == 0 ||
+             strcmp(method, "rescanwitnesses") == 0 ||
+             strcmp(method, "vault_intent_plan") == 0 ||
+             strcmp(method, "vault_intent_fanout_plan") == 0 ||
+             strcmp(method, "vault_intent_commit") == 0) &&
+            mgr->proof_timeout_ms > mgr->slots[slot].timeout_ms) {
+            mgr->slots[slot].timeout_ms = mgr->proof_timeout_ms;
+        }
     }
     pthread_mutex_unlock(&mgr->lock);
 }
@@ -366,6 +388,7 @@ void rpc_timeout_snapshot_take(struct rpc_timeout_mgr *mgr,
 
     pthread_mutex_lock(&mgr->lock);
     out->timeout_ms          = mgr->timeout_ms;
+    out->proof_timeout_ms    = mgr->proof_timeout_ms;
     out->watchdog_period_ms  = mgr->watchdog_period_ms;
     out->registered          = mgr->stat_registered;
     out->completed           = mgr->stat_completed;

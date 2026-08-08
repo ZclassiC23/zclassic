@@ -225,6 +225,12 @@ static bool prepare_regular(struct prepare_walk *walk, int parent_fd,
     return ok;
 }
 
+static bool prepare_local_control_dir(const char *prefix, const char *name)
+{
+    return prefix[0] == '\0' &&
+           (strcmp(name, ".zvcs") == 0 || strcmp(name, ".codeindex") == 0);
+}
+
 static bool prepare_walk_dir(struct prepare_walk *walk, int dir_fd,
                              const char *prefix)
 {
@@ -275,6 +281,9 @@ static bool prepare_walk_dir(struct prepare_walk *walk, int dir_fd,
             walk->error = VCS_PACKAGE_PREPARE_ERR_IO;
             prepare_detail(walk, "%s: stat: %s", path, strerror(errno));
             ok = false;
+        } else if (S_ISDIR(listed.st_mode) &&
+                   prepare_local_control_dir(prefix, entry->d_name)) {
+            continue;
         } else if (S_ISDIR(listed.st_mode)) {
             int child = openat(dir_fd, entry->d_name,
                                O_RDONLY | O_DIRECTORY | O_CLOEXEC |
@@ -557,6 +566,66 @@ enum vcs_package_prepare_error vcs_package_prepare(
     if (err != VCS_PACKAGE_PREPARE_OK) {
         vcs_package_prepared_free(out);
         vcs_package_prepared_init(out);
+    }
+    return err;
+}
+
+enum vcs_package_prepare_error vcs_package_scan_layout(
+    const char *dir, struct vcs_package_prepared *out,
+    bool *has_package_config, char *detail, size_t detail_cap)
+{
+    if (!dir || !out || !has_package_config)
+        return VCS_PACKAGE_PREPARE_ERR_NULL;
+    vcs_package_prepared_init(out);
+    *has_package_config = false;
+    if (detail && detail_cap)
+        detail[0] = '\0';
+    int root_fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (root_fd < 0) {
+        if (detail && detail_cap)
+            (void)snprintf(detail, detail_cap, "%s: %s", dir,
+                           strerror(errno));
+        return VCS_PACKAGE_PREPARE_ERR_PATH;
+    }
+    struct prepare_walk walk = {
+        .out = out,
+        .error = VCS_PACKAGE_PREPARE_OK,
+        .detail = detail,
+        .detail_cap = detail_cap,
+    };
+    bool walked = prepare_walk_dir(&walk, root_fd, "");
+    close(root_fd);
+    enum vcs_package_prepare_error err = walked
+        ? VCS_PACKAGE_PREPARE_OK : walk.error;
+    *has_package_config = walk.meta != NULL;
+    free(walk.meta);
+    if (err == VCS_PACKAGE_PREPARE_OK) {
+        enum vcs_package_recipe_error rerr = VCS_PACKAGE_RECIPE_OK;
+        if (out->recipe.public_headers.count > 0 &&
+            !vcs_package_recipe_add_include_dir(&out->recipe, "include",
+                                                &rerr)) {
+            if (detail && detail_cap)
+                (void)snprintf(detail, detail_cap, "recipe include: %s",
+                               vcs_package_recipe_error_string(rerr));
+            err = VCS_PACKAGE_PREPARE_ERR_RECIPE;
+        }
+        if (err == VCS_PACKAGE_PREPARE_OK) {
+            vcs_package_recipe_set_test_limits(&out->recipe, 0,
+                                               PREPARE_TEST_SECONDS,
+                                               PREPARE_TEST_MEMORY);
+            rerr = vcs_package_recipe_validate(&out->recipe);
+            if (rerr != VCS_PACKAGE_RECIPE_OK) {
+                if (detail && detail_cap)
+                    (void)snprintf(detail, detail_cap, "recipe: %s",
+                                   vcs_package_recipe_error_string(rerr));
+                err = VCS_PACKAGE_PREPARE_ERR_RECIPE;
+            }
+        }
+    }
+    if (err != VCS_PACKAGE_PREPARE_OK) {
+        vcs_package_prepared_free(out);
+        vcs_package_prepared_init(out);
+        *has_package_config = false;
     }
     return err;
 }

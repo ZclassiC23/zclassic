@@ -9,9 +9,24 @@
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_commons_projection.h"
 #include "vcs/zcode_creation_attribution.h"
+#include "vcs/zcode_reproduction_qualification.h"
+#include "vcs/zcode_score_receipt.h"
 
 #include <stdlib.h>
 #include <string.h>
+
+struct zcc_shadow_package {
+    const char *name;
+    const char *content_root_hex;
+    const char *release_root_hex;
+};
+
+#define ZCODE_PACKAGE(name, dir, sequence, content, release, recipe, lock, capsule, dependency, signature) \
+    {name, content, release},
+static const struct zcc_shadow_package zcc_shadow_packages[] = {
+#include "../../config/zcode_package_registry.def"
+};
+#undef ZCODE_PACKAGE
 
 static const char *zcc_str(const struct json_value *input, const char *key)
 {
@@ -29,6 +44,68 @@ static bool zcc_keys(const struct json_value *input,
             known = known || strcmp(input->keys[i], allowed[j]) == 0;
         if (!known) return false;
     }
+    return true;
+}
+
+static bool zcc_segment_contains(const char *segment, size_t segment_len,
+                                 const char *needle, size_t needle_len)
+{
+    if (!segment || !needle || needle_len == 0 || needle_len > segment_len)
+        return false;
+    for (size_t i = 0; i + needle_len <= segment_len; i++)
+        if (memcmp(segment + i, needle, needle_len) == 0) return true;
+    return false;
+}
+
+static bool zcc_workspace_is_lexical_scratch(const char *workspace)
+{
+    if (!workspace || workspace[0] == '\0' || workspace[0] == '~')
+        return false;
+    size_t len = strlen(workspace);
+    if (len > 4096 || strcmp(workspace, "/") == 0 ||
+        strcmp(workspace, ".") == 0 || strcmp(workspace, "./") == 0 ||
+        strcmp(workspace, "..") == 0)
+        return false;
+
+    size_t pos = 0;
+    if (workspace[0] == '/') pos = 1;
+    else if (workspace[0] == '.' && workspace[1] == '/') pos = 2;
+    bool scratch_named = false;
+    while (pos < len) {
+        size_t start = pos;
+        while (pos < len && workspace[pos] != '/') {
+            unsigned char ch = (unsigned char)workspace[pos];
+            if (ch < 0x20 || ch == 0x7f) return false;
+            pos++;
+        }
+        size_t segment_len = pos - start;
+        if (segment_len == 0 ||
+            (segment_len == 1 && workspace[start] == '.') ||
+            (segment_len == 2 && workspace[start] == '.' &&
+             workspace[start + 1] == '.'))
+            return false;
+        if (segment_len >= 9 &&
+            memcmp(workspace + start, ".zclassic", 9) == 0)
+            return false;
+        if ((segment_len == 3 &&
+             memcmp(workspace + start, "tmp", 3) == 0) ||
+            (segment_len == 8 &&
+             memcmp(workspace + start, "test-tmp", 8) == 0) ||
+            zcc_segment_contains(workspace + start, segment_len,
+                                 "scratch", 7))
+            scratch_named = true;
+        if (pos < len) pos++;
+    }
+    return scratch_named && workspace[len - 1] != '/';
+}
+
+bool zcl_native_zcode_workspace_is_explicit_scratch(const char *workspace)
+{
+    if (!zcc_workspace_is_lexical_scratch(workspace)) return false;
+    char resolved[4097];
+    if (realpath(workspace, resolved) != NULL &&
+        !zcc_workspace_is_lexical_scratch(resolved))
+        return false;
     return true;
 }
 
@@ -53,6 +130,36 @@ static bool zcc_root(const struct json_value *input, const char *key,
 {
     const char *hex = zcc_str(input, key);
     return hex && strlen(hex) == 64 && zcl_hex_decode_lower(hex, root, 32);
+}
+
+void zcl_native_handle_zcode_guide(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply || !zcc_keys(request->input, NULL, 0)) {
+        zcc_fail(reply, "BAD_ZCODE_GUIDE_INPUT",
+                 "zcode guide accepts no input keys");
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "mission",
+        "ZClassic23 is a metaverse where people and AI create real things "
+        "together, and nobody owns the world they build in.");
+    (void)json_push_kv_str(&reply->data, "find_work", "zcode package search");
+    (void)json_push_kv_str(&reply->data, "inspect_work", "zcode package show");
+    (void)json_push_kv_str(&reply->data, "fetch_work", "zcode package fetch");
+    (void)json_push_kv_str(&reply->data, "create_work", "zcode create");
+    (void)json_push_kv_str(&reply->data, "improve_work", "zcode improve");
+    (void)json_push_kv_str(&reply->data, "record_evidence", "zcode evidence");
+    (void)json_push_kv_str(&reply->data, "accept_work", "zcode accept");
+    (void)json_push_kv_str(&reply->data, "publish_work", "zcode publish plan");
+    (void)json_push_kv_str(&reply->data, "verify_commons",
+                           "zcode commons verify");
+    (void)json_push_kv_str(&reply->data, "exact_inputs",
+                           "discover schema <leaf>");
+    (void)json_push_kv_bool(&reply->data, "token_required", false);
+    (void)json_push_kv_bool(&reply->data, "balance_grants_truth", false);
+    (void)json_push_kv_bool(&reply->data, "commons_is_owned", false);
+    (void)json_push_kv_str(&reply->data, "availability_rule",
+                           "ready executes; planned fails closed");
 }
 
 static const char *zcc_status_name(
@@ -180,6 +287,11 @@ static struct vcs_zcode_commons_projection *zcc_build(
                  "closed input requires an explicit workspace");
         return NULL;
     }
+    if (!zcl_native_zcode_workspace_is_explicit_scratch(workspace)) {
+        zcc_fail(reply, "UNSAFE_COMMONS_WORKSPACE",
+                 "workspace must explicitly name an isolated tmp, test-tmp, or scratch path");
+        return NULL;
+    }
     struct vcs_zcode_commons_projection *projection =
         vcs_zcode_commons_projection_build(workspace);
     if (!projection)
@@ -213,6 +325,170 @@ void zcl_native_handle_zcode_commons_rebuild(
     (void)json_push_kv_bool(&reply->data, "persisted", false);
     (void)json_push_kv_str(&reply->data, "authority", "canonical_workspace_cas");
     vcs_zcode_commons_projection_free(projection);
+}
+
+static const struct zcc_shadow_package *zcc_shadow_package_lookup(
+    const uint8_t package_root[32], const uint8_t release_root[32])
+{
+    for (size_t i = 0;
+         i < sizeof(zcc_shadow_packages) / sizeof(zcc_shadow_packages[0]);
+         i++) {
+        uint8_t package[32], release[32];
+        if (zcl_hex_decode_lower(zcc_shadow_packages[i].content_root_hex,
+                                 package, sizeof(package)) &&
+            zcl_hex_decode_lower(zcc_shadow_packages[i].release_root_hex,
+                                 release, sizeof(release)) &&
+            memcmp(package, package_root, 32) == 0 &&
+            memcmp(release, release_root, 32) == 0)
+            return &zcc_shadow_packages[i];
+    }
+    return NULL;
+}
+
+void zcl_native_handle_zcode_commons_shadow_plan(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    static const char *const keys[] = {
+        "workspace", "score_receipt_root", "policy_candidate_root",
+        "reproduction_request_root", "reproduction_proof_set_root",
+        "epoch", "now_unix"
+    };
+    const char *workspace = request ? zcc_str(request->input, "workspace")
+                                    : NULL;
+    const struct json_value *epoch_value = request
+        ? json_get(request->input, "epoch") : NULL;
+    const struct json_value *now_value = request
+        ? json_get(request->input, "now_unix") : NULL;
+    uint8_t score_root[32], policy_root[32], reproduction_root[32];
+    uint8_t reproduction_proof_set_root[32];
+    uint8_t derived[32], *wire = NULL;
+    size_t wire_len = 0;
+    if (!request || !reply || !workspace ||
+        !zcc_keys(request->input, keys, 7) || !epoch_value || !now_value ||
+        epoch_value->type != JSON_INT || now_value->type != JSON_INT ||
+        json_get_int(epoch_value) < 0 || json_get_int(now_value) <= 0) {
+        zcc_fail(reply, "BAD_SHADOW_INPUT",
+                 "closed input requires workspace, score/policy/request/result-proof-set roots, epoch and now_unix");
+        return;
+    }
+    if (!zcl_native_zcode_workspace_is_explicit_scratch(workspace)) {
+        zcc_fail(reply, "UNSAFE_COMMONS_WORKSPACE",
+                 "workspace must explicitly name an isolated tmp, test-tmp, or scratch path");
+        return;
+    }
+    if (!zcc_root(request->input, "score_receipt_root", score_root) ||
+        !zcc_root(request->input, "policy_candidate_root", policy_root) ||
+        !zcc_root(request->input, "reproduction_request_root",
+                  reproduction_root) ||
+        !zcc_root(request->input, "reproduction_proof_set_root",
+                  reproduction_proof_set_root) ||
+        vcs_object_load_raw_bounded(
+            workspace, score_root, VCS_ZCODE_SCORE_WIRE_BYTES,
+            &wire, &wire_len) != 0) {
+        free(wire);
+        zcc_fail(reply, "SHADOW_SCORE_NOT_FOUND",
+                 "exact Score receipt root absent or input malformed");
+        return;
+    }
+    struct vcs_zcode_score_receipt_v1 score;
+    bool parsed = vcs_zcode_score_receipt_parse(
+            wire, wire_len, &score) == VCS_ZCODE_SCORE_OK &&
+        vcs_zcode_score_receipt_id(&score, derived) == VCS_ZCODE_SCORE_OK &&
+        memcmp(derived, score_root, 32) == 0;
+    free(wire);
+    if (!parsed ||
+        vcs_zcode_score_receipt_verify_cas(workspace, &score) !=
+            VCS_ZCODE_SCORE_OK) {
+        zcc_fail(reply, "SHADOW_VERTICAL_INVALID",
+                 "Score task/candidate/proof/PROVEN vertical did not rederive");
+        return;
+    }
+    const struct zcc_shadow_package *package = zcc_shadow_package_lookup(
+        score.package_root, score.release_root);
+    if (!package) {
+        zcc_fail(reply, "SHADOW_PACKAGE_UNREGISTERED",
+                 "Score package/release pair is absent from the generated registry");
+        return;
+    }
+
+    struct vcs_zcode_reproduction_qualification_report qualification;
+    enum vcs_zcode_reproduction_qualification verdict =
+        vcs_zcode_reproduction_qualify_cas(
+            workspace, score_root, policy_root, reproduction_root,
+            reproduction_proof_set_root,
+            (uint64_t)json_get_int(epoch_value), json_get_int(now_value),
+            &qualification);
+    bool ready = verdict == VCS_ZCODE_QUALIFICATION_READY;
+    (void)json_push_kv_str(&reply->data, "mode", "shadow_pre_genesis");
+    (void)json_push_kv_str(&reply->data, "package_name", package->name);
+    zcc_hex(&reply->data, "score_receipt_root", score_root);
+    zcc_hex(&reply->data, "policy_candidate_root", policy_root);
+    zcc_hex(&reply->data, "reproduction_request_root", reproduction_root);
+    zcc_hex(&reply->data, "reproduction_proof_set_root",
+            reproduction_proof_set_root);
+    zcc_hex(&reply->data, "package_root", score.package_root);
+    zcc_hex(&reply->data, "release_root", score.release_root);
+    zcc_hex(&reply->data, "task_root", score.task_root);
+    zcc_hex(&reply->data, "candidate_root", score.candidate_root);
+    zcc_hex(&reply->data, "proof_policy_root", score.proof_policy_root);
+    zcc_hex(&reply->data, "proof_set_root", score.proof_set_root);
+    zcc_hex(&reply->data, "proven_lane_root", score.proven_lane_root);
+    zcc_hex(&reply->data, "accepted_extraction_evidence_root",
+            score.evidence_roots[VCS_ZCODE_SCORE_ACCEPTED_EXTRACTION]);
+    zcc_hex(&reply->data, "independent_reproduction_evidence_root",
+            score.evidence_roots[VCS_ZCODE_SCORE_INDEPENDENT_REPRODUCTION]);
+    (void)json_push_kv_bool(&reply->data, "vertical_reverified", true);
+    (void)json_push_kv_bool(&reply->data, "exact_reproduction_match",
+                            qualification.exact_reproduction_match);
+    (void)json_push_kv_bool(&reply->data, "distinct_signer",
+                            qualification.distinct_signer);
+    (void)json_push_kv_bool(&reply->data, "signer_policy_approved",
+                            qualification.signer_policy_approved);
+    (void)json_push_kv_bool(&reply->data,
+        "declared_operator_group_distinct",
+        qualification.declared_operator_group_distinct);
+    (void)json_push_kv_bool(&reply->data, "remote_transport_used",
+                            qualification.remote_transport_used);
+    (void)json_push_kv_bool(&reply->data,
+        "physical_independence_proven",
+        qualification.physical_independence_proven);
+    (void)json_push_kv_bool(&reply->data, "identity_linkage_complete",
+                            qualification.identity_linkage_complete);
+    (void)json_push_kv_int(&reply->data, "reproduction_receipts",
+                           qualification.reproduction_receipts);
+    (void)json_push_kv_str(&reply->data, "reproduction_compare_rule",
+        vcs_reproduce_rule_string(
+            (enum vcs_reproduce_rule)qualification.reproduce_rule));
+    if (ready) {
+        zcc_hex(&reply->data, "reproduction_receipt_root",
+                qualification.reproduction_receipt_root);
+        zcc_hex(&reply->data, "reproducer_contributor_binding_root",
+                qualification.reproducer_contributor_binding_root);
+        zcc_hex(&reply->data, "declared_operator_group_root",
+                qualification.operator_group_root);
+    }
+    (void)json_push_kv_str(&reply->data, "shadow_status",
+        ready ? "ready_for_shadow_attribution"
+              : "blocked_reproduction_qualification");
+    (void)json_push_kv_str(&reply->data,
+        ready ? "qualification" : "blocker",
+        vcs_zcode_reproduction_qualification_string(verdict));
+    (void)json_push_kv_str(&reply->data, "why_shadow_units_would_exist",
+        "challenge_matured_public_c23_creation_with_approved_off_host_reproduction");
+    (void)json_push_kv_int(&reply->data, "shadow_award_atoms", 0);
+    (void)json_push_kv_bool(&reply->data,
+                            "creation_attribution_created", false);
+    (void)json_push_kv_bool(&reply->data,
+                            "epoch_creation_set_created", false);
+    (void)json_push_kv_bool(&reply->data, "moves_live_funds", false);
+    (void)json_push_kv_bool(&reply->data, "creates_ownership_right", false);
+    (void)json_push_kv_bool(&reply->data, "token_required_for_access", false);
+    (void)json_push_kv_bool(&reply->data, "money_establishes_truth", false);
+    (void)json_push_kv_bool(&reply->data,
+                            "permissive_license_validation_required", true);
+    (void)json_push_kv_str(&reply->data, "next_safe_action",
+        ready ? "prepare_scratch_only_shadow_attribution_plan"
+              : "inspect_qualification_blocker_and_exact_cas_roots");
 }
 
 void zcl_native_handle_zcode_commons_verify(
@@ -314,7 +590,17 @@ void zcl_native_handle_zcode_commons_creation_show(
     const char *workspace = request ? zcc_str(request->input, "workspace")
                                     : NULL;
     if (!request || !reply || !workspace ||
-        !zcc_keys(request->input, keys, 2) ||
+        !zcc_keys(request->input, keys, 2)) {
+        zcc_fail(reply, "BAD_CREATION_INPUT",
+                 "closed input requires workspace and creation root");
+        return;
+    }
+    if (!zcl_native_zcode_workspace_is_explicit_scratch(workspace)) {
+        zcc_fail(reply, "UNSAFE_COMMONS_WORKSPACE",
+                 "workspace must explicitly name an isolated tmp, test-tmp, or scratch path");
+        return;
+    }
+    if (
         !zcc_root(request->input, "root", root) ||
         vcs_object_load_raw_bounded(workspace, root,
             VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES, &wire, &wire_len) != 0) {

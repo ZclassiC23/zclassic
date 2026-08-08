@@ -110,7 +110,13 @@ typedef bool (*vcs_zcode_creation_continuity_duplicate_fn)(
 
 /* Cross-object verification pins policy decisions supplied by the immutable
  * genesis-policy evaluator. Callbacks resolve active-chain and uniqueness
- * facts; they are mandatory so an adapter cannot silently assume either. */
+ * facts; they are mandatory so an adapter cannot silently assume either.
+ *
+ * Authorship is historical: the referenced contributor binding is verified
+ * at candidate.created_unix. `now_unix` evaluates challenge maturity only.
+ * `binding_is_current` is retained for source compatibility with financial
+ * contexts, but creation verification never consults it; payout authority
+ * must be checked separately at the time of a financial action. */
 struct vcs_zcode_creation_validation_context {
     const char *workspace;
     const uint8_t *expected_network_genesis_root;

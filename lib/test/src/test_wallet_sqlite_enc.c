@@ -18,6 +18,7 @@
 #include "wallet/wallet_sqlite.h"
 #include "wallet/wallet_keystore.h"
 #include "wallet/wallet_lock.h"
+#include "wallet/wallet_sqlite_key_crypto.h"
 #include "wallet/wallet.h"
 #include "wallet/sapling_keys.h"   /* MAX_SAPLING_KEYS (break-park regression) */
 #include "keys/key.h"
@@ -37,6 +38,8 @@ static const char k_schema[] =
     "CREATE TABLE wallet_keys("
     "pubkey_hash BLOB PRIMARY KEY,"
     "pubkey BLOB,privkey BLOB,compressed INT,created_at INT);"
+    "CREATE TABLE wallet_key_encryption("
+    "id INTEGER PRIMARY KEY CHECK(id=1),wrapped_dek BLOB NOT NULL);"
     "CREATE TABLE wallet_sapling_keys("
     "ivk BLOB PRIMARY KEY,xsk BLOB,xfvk BLOB,"
     "diversifier BLOB,pk_d BLOB,child_index INT,address TEXT);"
@@ -207,8 +210,7 @@ static int test_encrypted_unreadable_without_pass(void)
         make_test_key(&key, &pk, 0x77);
         ASSERT(wallet_sqlite_write_key(&ws, &pk, &key));
 
-        /* Remove passphrase — the read should skip the key since it
-         * detects the WKS1 envelope but has no passphrase to decrypt. */
+        /* Remove passphrase — the read skips the authenticated envelope. */
         set_passphrase(NULL);
 
         struct wallet *w = alloc_wallet();
@@ -579,14 +581,14 @@ static int test_runtime_unlock_lock_reload(void)
         ASSERT(wallet_sqlite_write_key(&ws, &p1, &k1));
         ASSERT(wallet_sqlite_write_key(&ws, &p2, &k2));
 
-        /* On-disk bytes are a WKS1 envelope, never the raw scalar. */
+        /* On-disk bytes are a WKD1 envelope, never the raw scalar. */
         sqlite3_stmt *st = NULL;
         ASSERT(sqlite3_prepare_v2(db, "SELECT privkey FROM wallet_keys LIMIT 1",
                                   -1, &st, NULL) == SQLITE_OK);
         ASSERT(sqlite3_step(st) == SQLITE_ROW);
         const void *blob = sqlite3_column_blob(st, 0);
         int blen = sqlite3_column_bytes(st, 0);
-        ASSERT(blob && blen >= 4 && memcmp(blob, "WKS1", 4) == 0);
+        ASSERT(blob && blen >= 4 && memcmp(blob, "WKD1", 4) == 0);
         /* Portable "raw key absent" scan (avoids glibc-specific memmem). */
         bool raw_present = false;
         if (blob && blen >= 32) {
@@ -609,6 +611,10 @@ static int test_runtime_unlock_lock_reload(void)
         wallet_lock_lock(w);
         ASSERT(w->keystore.num_keys == 0);
         ASSERT(!wallet_lock_is_unlocked());
+        struct privkey locked_read;
+        privkey_init(&locked_read);
+        ASSERT(!wallet_sqlite_read_single_key(
+            &ws, &p1, &locked_read).ok);
 
         /* Wrong passphrase: typed failure, no partial reload, still locked. */
         struct zcl_result bad = wallet_lock_unlock(w, &ws, "WRONG");
@@ -634,8 +640,9 @@ static int test_runtime_unlock_lock_reload(void)
 /* Boot-time plaintext scrub (wallet_sqlite_scrub_plaintext_r): with a
  * passphrase configured, every plaintext secret row — including rows the
  * in-memory wallet never loaded, like the removed mirror writer's stale
- * plantings — is wrapped into a WKS1 envelope IN PLACE; nothing is
- * deleted. Assert all three secret columns are envelopes after the
+ * plantings — is wrapped IN PLACE; transparent keys use WKD1 while Sapling
+ * keys and the seed retain WKS1 compatibility. Nothing is deleted. Assert
+ * all three secret columns are envelopes after the
  * scrub, the decrypting read path still returns the original bytes, the
  * diagnostic reader (db_wallet_key_each) still sees the rows, and a
  * second scrub is a no-op. */
@@ -690,12 +697,13 @@ static int test_scrub_upgrades_plaintext_rows(void)
         set_passphrase("scrub-pass");
         ASSERT(wallet_sqlite_scrub_plaintext_r(&ws).ok);
 
-        /* Every secret column in every row is now a WKS1 envelope. */
+        /* Every secret column is now its domain's authenticated envelope. */
         static const char *k_cols[] = {
             "SELECT privkey FROM wallet_keys",
             "SELECT xsk FROM wallet_sapling_keys",
             "SELECT seed FROM wallet_seed",
         };
+        static const char *k_magic[] = { "WKD1", "WKS1", "WKS1" };
         int envelope_rows = 0;
         for (size_t q = 0; q < sizeof(k_cols) / sizeof(k_cols[0]); q++) {
             sqlite3_stmt *st = NULL;
@@ -705,7 +713,7 @@ static int test_scrub_upgrades_plaintext_rows(void)
                 const void *blob = sqlite3_column_blob(st, 0);
                 int blen = sqlite3_column_bytes(st, 0);
                 ASSERT(blob && blen > 60);
-                ASSERT(memcmp(blob, "WKS1", 4) == 0);
+                ASSERT(memcmp(blob, k_magic[q], 4) == 0);
                 envelope_rows++;
             }
             sqlite3_finalize(st);
@@ -800,6 +808,147 @@ static int test_scrub_noop_without_passphrase(void)
     return failures;
 }
 
+static int test_legacy_wks1_migrates_and_restarts(void)
+{
+    int failures = 0;
+    TEST("wallet_sqlite_enc: legacy WKS1 key migrates to WKD1 and restarts") {
+        set_passphrase("legacy-migration-pass");
+        sqlite3 *db = open_mem_db();
+        ASSERT(db);
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open(&ws, db));
+
+        struct privkey key;
+        struct pubkey pk;
+        make_test_key(&key, &pk, 0x61);
+        struct key_id kid = pubkey_get_id(&pk);
+        uint8_t legacy[WKS_HEADER_LEN + 32];
+        size_t legacy_len = 0;
+        ASSERT(wks_encrypt(key.vch, 32, "legacy-migration-pass",
+                           WKS_MIN_ITERS, legacy, sizeof(legacy),
+                           &legacy_len));
+        sqlite3_stmt *ins = NULL;
+        ASSERT(sqlite3_prepare_v2(db,
+            "INSERT INTO wallet_keys(pubkey_hash,pubkey,privkey,compressed) "
+            "VALUES(?1,?2,?3,1)", -1, &ins, NULL) == SQLITE_OK);
+        sqlite3_bind_blob(ins, 1, kid.id.data, 20, SQLITE_STATIC);
+        sqlite3_bind_blob(ins, 2, pk.vch, (int)pk.size, SQLITE_STATIC);
+        sqlite3_bind_blob(ins, 3, legacy, (int)legacy_len, SQLITE_STATIC);
+        ASSERT(sqlite3_step(ins) == SQLITE_DONE);
+        sqlite3_finalize(ins);
+        memory_cleanse(legacy, sizeof(legacy));
+
+        struct wallet *before = alloc_wallet();
+        ASSERT(before);
+        ASSERT(wallet_sqlite_read_keys(&ws, before));
+        ASSERT(before->keystore.num_keys == 1);
+
+        ASSERT(wallet_sqlite_migrate_transparent_keys_r(&ws, before).ok);
+        ASSERT(wallet_sqlite_scrub_plaintext_r(&ws).ok);
+        free_wallet(before);
+        sqlite3_stmt *sel = NULL;
+        ASSERT(sqlite3_prepare_v2(db,
+            "SELECT privkey FROM wallet_keys WHERE pubkey_hash=?1",
+            -1, &sel, NULL) == SQLITE_OK);
+        sqlite3_bind_blob(sel, 1, kid.id.data, 20, SQLITE_STATIC);
+        ASSERT(sqlite3_step(sel) == SQLITE_ROW);
+        const void *blob = sqlite3_column_blob(sel, 0);
+        int blob_len = sqlite3_column_bytes(sel, 0);
+        ASSERT(wallet_sqlite_key_is_envelope(blob, (size_t)blob_len));
+        sqlite3_finalize(sel);
+
+        wallet_sqlite_close(&ws);
+        set_passphrase("legacy-migration-pass");
+        ASSERT(wallet_sqlite_open(&ws, db));
+        struct wallet *after = alloc_wallet();
+        ASSERT(after);
+        ASSERT(wallet_sqlite_read_keys(&ws, after));
+        ASSERT(after->keystore.num_keys == 1);
+        struct privkey got;
+        privkey_init(&got);
+        ASSERT(keystore_get_key(&after->keystore, &kid, &got));
+        ASSERT(memcmp(got.vch, key.vch, 32) == 0);
+
+        wallet_sqlite_close(&ws);
+        free_wallet(after);
+        sqlite3_close(db);
+        set_passphrase(NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_wkd1_batch_and_row_swap_authentication(void)
+{
+    int failures = 0;
+    TEST("wallet_sqlite_enc: WKD1 batch shares one wrapper and rejects row swap") {
+        set_passphrase("batch-envelope-pass");
+        sqlite3 *db = open_mem_db();
+        ASSERT(db);
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open(&ws, db));
+
+        struct privkey keys[10];
+        struct pubkey pubs[10];
+        struct key_id ids[10];
+        for (size_t i = 0; i < 10; i++) {
+            make_test_key(&keys[i], &pubs[i], (uint8_t)(0x70 + i));
+            ids[i] = pubkey_get_id(&pubs[i]);
+            ASSERT(wallet_sqlite_write_key(&ws, &pubs[i], &keys[i]));
+        }
+
+        sqlite3_stmt *count = NULL;
+        ASSERT(sqlite3_prepare_v2(db,
+            "SELECT count(*) FROM wallet_key_encryption WHERE id=1",
+            -1, &count, NULL) == SQLITE_OK);
+        ASSERT(sqlite3_step(count) == SQLITE_ROW);
+        ASSERT(sqlite3_column_int(count, 0) == 1);
+        sqlite3_finalize(count);
+
+        uint8_t envelopes[2][WSQL_KEY_ENVELOPE_OVERHEAD + 32];
+        size_t envelope_lens[2] = {0};
+        for (size_t i = 0; i < 2; i++) {
+            sqlite3_stmt *sel = NULL;
+            ASSERT(sqlite3_prepare_v2(db,
+                "SELECT privkey FROM wallet_keys WHERE pubkey_hash=?1",
+                -1, &sel, NULL) == SQLITE_OK);
+            sqlite3_bind_blob(sel, 1, ids[i].id.data, 20, SQLITE_STATIC);
+            ASSERT(sqlite3_step(sel) == SQLITE_ROW);
+            int n = sqlite3_column_bytes(sel, 0);
+            const void *blob = sqlite3_column_blob(sel, 0);
+            ASSERT(blob && n == (int)sizeof(envelopes[i]));
+            memcpy(envelopes[i], blob, (size_t)n);
+            envelope_lens[i] = (size_t)n;
+            sqlite3_finalize(sel);
+        }
+        ASSERT(envelope_lens[0] == envelope_lens[1]);
+
+        for (size_t i = 0; i < 2; i++) {
+            sqlite3_stmt *upd = NULL;
+            ASSERT(sqlite3_prepare_v2(db,
+                "UPDATE wallet_keys SET privkey=?1 WHERE pubkey_hash=?2",
+                -1, &upd, NULL) == SQLITE_OK);
+            sqlite3_bind_blob(upd, 1, envelopes[1 - i],
+                              (int)envelope_lens[1 - i], SQLITE_STATIC);
+            sqlite3_bind_blob(upd, 2, ids[i].id.data, 20, SQLITE_STATIC);
+            ASSERT(sqlite3_step(upd) == SQLITE_DONE);
+            sqlite3_finalize(upd);
+        }
+
+        struct privkey swapped;
+        privkey_init(&swapped);
+        ASSERT(!wallet_sqlite_read_single_key(&ws, &pubs[0], &swapped).ok);
+        ASSERT(!wallet_sqlite_read_single_key(&ws, &pubs[1], &swapped).ok);
+
+        memory_cleanse(envelopes, sizeof(envelopes));
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        set_passphrase(NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────────── */
 
 int test_wallet_sqlite_enc(void);
@@ -823,6 +972,8 @@ int test_wallet_sqlite_enc(void)
     failures += test_runtime_unlock_lock_reload();
     failures += test_scrub_upgrades_plaintext_rows();
     failures += test_scrub_noop_without_passphrase();
+    failures += test_legacy_wks1_migrates_and_restarts();
+    failures += test_wkd1_batch_and_row_swap_authentication();
 
     /* Cleanup: scrub the test unlock register. */
     set_passphrase(NULL);

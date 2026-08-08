@@ -11,7 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define NODE_DB_SCHEMA_LATEST 60
+#define NODE_DB_SCHEMA_LATEST 61
 
 struct node_db_status {
     bool open;
@@ -109,6 +109,32 @@ bool node_db_open(struct node_db *ndb, const char *path);
  * anonymous. A NULL/empty reason is a programming error and is refused. */
 bool node_db_open_runtime(struct node_db *ndb, const char *path,
                           const char *reason);
+
+/* Open an EXISTING, already-booted node database for a short-lived runtime
+ * task that uses only ad-hoc model statements. Unlike node_db_open_runtime(),
+ * this deliberately does not run CREATE TABLE, migrations, or prepare the
+ * full cached statement catalog. It refuses a missing database and refuses
+ * any schema version other than NODE_DB_MAX_SCHEMA, so callers cannot trade
+ * latency for an implicit migration or a downgrade hazard.
+ *
+ * Use this for periodic workers which open their own connection and otherwise
+ * make an idle node repeat boot/schema work. Callers needing the cached
+ * node_db statements must continue to use node_db_open_runtime(). `reason` is
+ * mandatory and is logged exactly like the full runtime reopen. */
+bool node_db_open_existing_runtime(struct node_db *ndb, const char *path,
+                                   const char *reason);
+
+/* Recommended SQLite mmap window for this process's effective memory budget.
+ * The budget is the smaller of measured RAM and cgroup memory.high/max. A
+ * strict <=4 GiB lane returns zero; <=8 GiB returns at most 64 MiB; larger
+ * lanes retain the historical 256 MiB ceiling. Read-only projection handles
+ * should use this instead of hard-coding a window that can force reclaim. */
+int64_t node_db_recommended_mmap_bytes(void);
+
+/* Apply the cgroup-aware mmap recommendation to an already-open read-only
+ * SQLite projection handle. This keeps controllers/views out of raw PRAGMA
+ * policy and gives every developer-created explorer reader one tuning path. */
+bool node_db_apply_readonly_tuning(sqlite3 *db);
 void node_db_close(struct node_db *ndb);
 
 /* Optional quick_check-skip probe (Tier-2 fast restart). When registered,

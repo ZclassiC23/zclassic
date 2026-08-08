@@ -33,6 +33,7 @@
 #include "command/native_command.h"
 #include "controllers/rpc_client.h"
 #include "controllers/status_native_handlers.h"
+#include "controllers/wallet_native_handlers.h"
 #include "json/json.h"
 #include "keys/key_io.h"
 #include "platform/time_compat.h"
@@ -44,9 +45,11 @@
 #include "zanc/zanc.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -628,6 +631,13 @@ static int test_native_bridge_resident_binding(void)
         zcl_native_bridge_bind_rpc("/tmp/zcl-resident-dev", 18252);
         zcl_native_bridge_ensure_rpc();
         ASSERT_STR_EQ(node_rpc_client_datadir(), "/tmp/zcl-resident-dev");
+        node_rpc_client_set_test_hook(status_body_mock_rpc);
+        char *reply = node_rpc_call_at_deadline(
+            "/tmp/zcl-other-wallet", 18262, "fixture", "[]", 1, 1);
+        ASSERT(reply != NULL);
+        free(reply);
+        ASSERT_STR_EQ(node_rpc_client_datadir(), "/tmp/zcl-resident-dev");
+        node_rpc_client_set_test_hook(NULL);
         zcl_native_bridge_bind_rpc("", 0);
         PASS();
     } _test_next:;
@@ -827,12 +837,19 @@ static int g_wallet_send_calls;
 static int g_wallet_z_sendmany_calls;
 static int g_wallet_raw_broadcast_calls;
 static int g_wallet_multisig_compose_calls;
+static bool g_wallet_raw_reject;
 static char g_wallet_z_sendmany_params[4096];
 
 static char *wallet_stub_rpc(const char *method, const char *params_json)
 {
     if (method && strcmp(method, "getnewaddress") == 0)
         return strdup("\"t1StubTransparentAddress00000000000\"");
+    if (method && strcmp(method, "validateaddress") == 0)
+        return strdup(
+            "{\"isvalid\":true,\"ismine\":true,"
+            "\"pubkey\":\"02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+            "\"iscompressed\":true}");
     if (method && strcmp(method, "sendtoaddress") == 0) {
         g_wallet_send_calls++;
         return strdup(
@@ -855,6 +872,9 @@ static char *wallet_stub_rpc(const char *method, const char *params_json)
                       "\"complete\":true}");
     if (method && strcmp(method, "sendrawtransaction") == 0) {
         g_wallet_raw_broadcast_calls++;
+        if (g_wallet_raw_reject)
+            return strdup("\"TX rejected: failed verification "
+                          "(bad signature, proof, or structure)\"");
         return strdup(
             "\"bb11bb22cc33dd44ee55ff66aa77bb88"
             "cc99dd00ee11ff22aa33bb44cc55dd77\"");
@@ -879,6 +899,7 @@ static int test_wallet_mutating_native_e2e(void)
         g_wallet_z_sendmany_calls = 0;
         g_wallet_raw_broadcast_calls = 0;
         g_wallet_multisig_compose_calls = 0;
+        g_wallet_raw_reject = false;
         g_wallet_z_sendmany_params[0] = '\0';
         node_rpc_client_set_test_hook(wallet_stub_rpc);
 
@@ -905,7 +926,39 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&empty);
 
-        /* 2. transaction.send WITHOUT confirm returns a plan and DOES NOT
+        /* 2. address.public-key exposes only the resident public key. */
+        const struct zcl_command_spec *pubkey_spec =
+            find_spec(reg, "core.wallet.address.public-key");
+        ASSERT(pubkey_spec != NULL);
+        ASSERT(pubkey_spec->availability == ZCL_COMMAND_READY);
+        ASSERT(pubkey_spec->effect == ZCL_COMMAND_EFFECT_READ);
+        ASSERT(pubkey_spec->risk == ZCL_COMMAND_RISK_READ);
+        struct json_value pubkey_in;
+        json_init(&pubkey_in);
+        json_set_object(&pubkey_in);
+        (void)json_push_kv_str(&pubkey_in, "address",
+                               "t1StubTransparentAddress00000000000");
+        struct zcl_native_body_err pubkey_err = {
+            .status = ZCL_NATIVE_BODY_OK,
+        };
+        char *pubkey_body =
+            zcl_native_address_public_key_body(&pubkey_in, &pubkey_err);
+        ASSERT(pubkey_body != NULL);
+        ASSERT_EQ(pubkey_err.status, ZCL_NATIVE_BODY_OK);
+        struct json_value pubkey_doc;
+        json_init(&pubkey_doc);
+        ASSERT(json_read(&pubkey_doc, pubkey_body, strlen(pubkey_body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&pubkey_doc, "pubkey")),
+                      "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        ASSERT(json_get_bool(json_get(&pubkey_doc, "compressed")));
+        ASSERT(json_get_bool(json_get(&pubkey_doc, "owned")));
+        ASSERT(json_get(&pubkey_doc, "privkey") == NULL);
+        json_free(&pubkey_doc);
+        free(pubkey_body);
+        json_free(&pubkey_in);
+
+        /* 3. transaction.send WITHOUT confirm returns a plan and DOES NOT
          *    broadcast (g_wallet_send_calls stays 0). */
         const struct zcl_command_spec *send_spec =
             find_spec(reg, "core.wallet.transaction.send");
@@ -970,7 +1023,7 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&plan_in);
 
-        /* 3. transaction.send WITH confirm:true broadcasts and returns a txid;
+        /* 4. transaction.send WITH confirm:true broadcasts and returns a txid;
          *    exactly one sendtoaddress call fired. */
         struct json_value commit_in;
         json_init(&commit_in);
@@ -994,7 +1047,7 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&commit_in);
 
-        /* 4. shielded.send plans the exact scope/amount/memo without an RPC,
+        /* 5. shielded.send plans the exact scope/amount/memo without an RPC,
          *    then synchronously returns the z_sendmany transaction id. */
         const struct zcl_command_spec *shield_spec =
             find_spec(reg, "core.wallet.shielded.send");
@@ -1079,6 +1132,26 @@ static int test_wallet_mutating_native_e2e(void)
         json_free(&sent_params);
         zcl_command_reply_free(&reply);
         json_free(&shield_commit);
+
+        /* Isolated pre-funded laboratories are a typed custody lane, not a
+         * CLI default.  They may exercise the same exact plan surface while
+         * remaining outside the dev/prod portfolio. */
+        json_init(&shield_plan);
+        json_set_object(&shield_plan);
+        (void)json_push_kv_str(&shield_plan, "wallet_scope", "test");
+        (void)json_push_kv_str(&shield_plan, "from", "zs1LabSource");
+        (void)json_push_kv_str(&shield_plan, "to", "zs1LabRecipient");
+        (void)json_push_kv_str(&shield_plan, "amount", "0.00001000");
+        shield_req.input = &shield_plan;
+        zcl_command_reply_init(&reply, shield_spec->output_schema);
+        zcl_native_handle_wallet_shielded_send(&shield_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "stage")), "plan");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "wallet_scope")),
+                      "test");
+        ASSERT_EQ(g_wallet_z_sendmany_calls, 1);
+        zcl_command_reply_free(&reply);
+        json_free(&shield_plan);
 
         /* The full 512-byte binary memo must survive in commit_input. This
          * catches the old 512-byte buffer's confirm-only fallback. */
@@ -1176,6 +1249,16 @@ static int test_wallet_mutating_native_e2e(void)
                       "committed");
         ASSERT_EQ(g_wallet_raw_broadcast_calls, 1);
         zcl_command_reply_free(&reply);
+
+        g_wallet_raw_reject = true;
+        zcl_command_reply_init(&reply, raw_broadcast->output_schema);
+        zcl_native_handle_wallet_raw_broadcast(&raw_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_FAILED);
+        ASSERT_STR_EQ(reply.error.code, "BROADCAST_REJECTED");
+        ASSERT(!reply.error.mutated);
+        ASSERT_EQ(g_wallet_raw_broadcast_calls, 2);
+        zcl_command_reply_free(&reply);
+        g_wallet_raw_reject = false;
         json_free(&raw_in);
 
         /* 6. multisig composition accepts public material only and returns
@@ -1196,6 +1279,10 @@ static int test_wallet_mutating_native_e2e(void)
         json_free(&public_key);
         (void)json_push_kv(&multisig_in, "public_keys", &public_keys);
         json_free(&public_keys);
+        char multisig_why[160] = {0};
+        ASSERT(zcl_command_registry_input_validate(
+            multisig_compose, &multisig_in, multisig_why,
+            sizeof(multisig_why)));
         struct zcl_command_request multisig_request = {
             .spec = multisig_compose, .input = &multisig_in,
             .view = "normal",
@@ -2266,12 +2353,124 @@ struct partial_reply_server {
     int accepted_fd;
 };
 
+static void *delayed_vault_plan_serve(void *arg)
+{
+    struct partial_reply_server *s = arg;
+    struct pollfd pfd = { .fd = s->listen_fd, .events = POLLIN };
+    int ready;
+    do {
+        ready = poll(&pfd, 1, 2000);
+    } while (ready < 0 && errno == EINTR);
+    if (ready <= 0)
+        return NULL;
+    int fd = accept(s->listen_fd, NULL, NULL);
+    if (fd < 0)
+        return NULL;
+    s->accepted_fd = fd;
+
+    /* Longer than the deliberately tiny generic test deadline below, but
+     * comfortably inside the compile-time vault proof budget. */
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 350 * 1000 * 1000 };
+    (void)nanosleep(&ts, NULL);
+    static const char body[] =
+        "{\"result\":{\"ok\":true,\"idempotent_plan\":true},"
+        "\"error\":null,\"id\":1}";
+    char hdr[256];
+    int hlen = snprintf(hdr, sizeof(hdr),
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+        "Content-Length: %zu\r\nConnection: close\r\n\r\n",
+        sizeof(body) - 1);
+    (void)!write(fd, hdr, (size_t)hlen);
+    (void)!write(fd, body, sizeof(body) - 1);
+    close(fd);
+    s->accepted_fd = -1;
+    return NULL;
+}
+
+static int test_vault_proof_commit_uses_long_rpc_deadline(void)
+{
+    int failures = 0;
+    pthread_t th = 0;
+    bool joined = false;
+    struct partial_reply_server srv = { .listen_fd = -1, .accepted_fd = -1 };
+    char *dir = NULL;
+
+    TEST("vault.intent.commit: proof work can outlive the generic RPC "
+         "deadline and still return a valid typed result") {
+        node_rpc_client_set_test_hook(NULL);
+        srv.listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+        ASSERT(srv.listen_fd >= 0);
+        struct sockaddr_in addr = { 0 };
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(0);
+        ASSERT(bind(srv.listen_fd, (struct sockaddr *)&addr,
+                    sizeof(addr)) == 0);
+        socklen_t alen = sizeof(addr);
+        ASSERT(getsockname(srv.listen_fd, (struct sockaddr *)&addr,
+                           &alen) == 0);
+        ASSERT(listen(srv.listen_fd, 1) == 0);
+        ASSERT(pthread_create(&th, NULL, delayed_vault_plan_serve, &srv) == 0);
+
+        char dir_template[] = "/tmp/zcl-vault-proof-rpc-XXXXXX";
+        dir = strdup(mkdtemp(dir_template));
+        ASSERT(dir != NULL);
+        char cookie_path[320];
+        (void)snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", dir);
+        FILE *cf = fopen(cookie_path, "w");
+        ASSERT(cf != NULL);
+        (void)fprintf(cf, "dummyuser:dummypass\n");
+        (void)fclose(cf);
+        zcl_native_bridge_bind_rpc(dir, (int)ntohs(addr.sin_port));
+        ASSERT(setenv("ZCL_RPC_DEADLINE_MS", "100", 1) == 0);
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.vault_intent_commit.v1");
+        zcl_native_handle_vault_intent_commit(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(json_get_bool(json_get(&reply.data, "ok")));
+        ASSERT(json_get_bool(json_get(&reply.data, "idempotent_plan")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        (void)unsetenv("ZCL_RPC_DEADLINE_MS");
+        PASS();
+    } _test_next:;
+
+    if (srv.listen_fd >= 0) {
+        close(srv.listen_fd);
+        srv.listen_fd = -1;
+    }
+    if (th) {
+        (void)pthread_join(th, NULL);
+        joined = true;
+    }
+    if (srv.accepted_fd >= 0)
+        close(srv.accepted_fd);
+    if (th && !joined)
+        (void)pthread_join(th, NULL);
+    if (dir) {
+        char cookie_path[320];
+        (void)snprintf(cookie_path, sizeof(cookie_path), "%s/.cookie", dir);
+        (void)unlink(cookie_path);
+        (void)rmdir(dir);
+        free(dir);
+    }
+    (void)unsetenv("ZCL_RPC_DEADLINE_MS");
+    zcl_native_bridge_bind_rpc("", 0);
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 static void *partial_reply_serve(void *arg)
 {
     struct partial_reply_server *s = arg;
-    /* Send the response HEADERS and nothing else, then hold the connection
-     * open — exactly the shape a node produces when its handler blocks after
-     * the HTTP preamble is already on the wire. */
+    /* Send the response HEADERS and nothing else, then close the connection.
+     * This is the exact server-watchdog shape from a proof request whose
+     * method deadline fires: recv() sees EOF rather than a client timeout. */
     int fd = accept(s->listen_fd, NULL, NULL);
     if (fd < 0)
         return NULL;
@@ -2280,13 +2479,8 @@ static void *partial_reply_serve(void *arg)
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
         "Content-Length: 64\r\nConnection: close\r\n\r\n";
     (void)!write(fd, hdr, sizeof(hdr) - 1);
-    /* Park until the parent closes us out; never write the body. */
-    for (int i = 0; i < 200; i++) {
-        struct timespec ts = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000 };
-        (void)nanosleep(&ts, NULL);
-        if (s->listen_fd < 0)
-            break;
-    }
+    close(fd);
+    s->accepted_fd = -1;
     return NULL;
 }
 
@@ -2300,8 +2494,8 @@ static int test_partial_rpc_reply_names_the_timeout(void)
     struct partial_reply_server srv = { .listen_fd = -1, .accepted_fd = -1 };
     char *out = malloc(ZCL_COMMAND_LIST_BUDGET + 1);
 
-    TEST("core.wallet.utxo.list: a node that sends only the HTTP headers "
-        "before the deadline renders a named transport timeout, never "
+    TEST("core.wallet.utxo.list: a node that closes after only the HTTP "
+        "headers renders a named transport truncation, never "
         "'unparseable body'") {
         ASSERT(out != NULL);
         node_rpc_client_set_test_hook(NULL);
@@ -2334,7 +2528,11 @@ static int test_partial_rpc_reply_names_the_timeout(void)
         (void)fprintf(cf, "dummyuser:dummypass\n");
         (void)fclose(cf);
         node_rpc_client_init(dir, (int)port);
-        ASSERT(setenv("ZCL_RPC_DEADLINE_MS", "400", 1) == 0);
+        /* This case proves EOF classification, not command latency. Under a
+         * focused proof pool the helper thread may compete with 14 other
+         * groups; give it a scheduler allowance large enough that starvation
+         * cannot turn the intended partial reply into a client timeout. */
+        ASSERT(setenv("ZCL_RPC_DEADLINE_MS", "2000", 1) == 0);
 
         const struct zcl_command_spec *s =
             find_spec(reg, "core.wallet.utxo.list");
@@ -2347,6 +2545,9 @@ static int test_partial_rpc_reply_names_the_timeout(void)
 
         /* The rendered bytes are the contract: a busy node is named as one. */
         ASSERT(strstr(out, "unparseable body") == NULL);
+        if (strstr(out, "truncated reply") == NULL)
+            fprintf(stderr, "partial reply rendered unexpected body: %s\n",
+                    out);
         ASSERT(strstr(out, "truncated reply") != NULL);
         ASSERT(strstr(out, "\"ok\":false") != NULL);
         PASS();
@@ -2393,6 +2594,7 @@ int test_native_api_contract(void)
     failures += test_status_frontdoor_preserves_rpc_error();
     failures += test_status_brief_body_schema_skew_tolerance();
     failures += test_status_brief_body_front_door_deadline();
+    failures += test_vault_proof_commit_uses_long_rpc_deadline();
     failures += test_partial_rpc_reply_names_the_timeout();
     printf("=== native_api_contract: %d failures ===\n", failures);
     return failures;

@@ -17,6 +17,10 @@
 #define VCS_BUILD_ACTION_KIND_BENCHMARK_REPRODUCE_V1 \
     "c23.benchmark.reproduce.v1"
 #define VCS_BUILD_ACTION_KIND_REVIEW_V1 "c23.review.v1"
+#define VCS_BUILD_PACKAGE_PROFILE_LEGACY_V1 "zcode-v0.1"
+#define VCS_BUILD_PACKAGE_PROFILE_QUICK_V1 "zcode-quick-v0.1"
+#define VCS_BUILD_PACKAGE_PROFILE_STANDARD_A_V1 "zcode-standard-a-v0.1"
+#define VCS_BUILD_PACKAGE_PROFILE_STANDARD_B_V1 "zcode-standard-b-v0.1"
 #define VCS_BUILD_VIRTUAL_ROOT_V1 "/zbuild/src"
 #define VCS_BUILD_OUTPUT_V1 "unit.o"
 #define VCS_BUILD_RESOURCE_POLICY_V1 \
@@ -74,6 +78,11 @@ bool vcs_toolchain_capsule_v1_root(
  * No mtime participates. */
 bool vcs_toolchain_capsule_v1_capture_gcc(
     struct vcs_toolchain_capsule_v1 *out);
+#ifdef ZCL_TESTING
+void vcs_toolchain_capsule_v1_cache_reset_for_test(void);
+void vcs_toolchain_capsule_v1_cache_stats_for_test(
+    uint64_t *fresh_captures, uint64_t *cache_hits);
+#endif
 void vcs_build_action_v1_fixed_flags_root(uint8_t out[32]);
 void vcs_build_action_v1_fixed_environment_root(uint8_t out[32]);
 /* Closed fixed-action registry. The returned work kind uses the canonical

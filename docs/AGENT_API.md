@@ -1160,11 +1160,11 @@ This is a C23 project, so the edit loop should compile only what changed.
   It links without LTO, keeps symbols, defaults most code to
   `ZCL_DEV_OPT=-Og`, and keeps hot consensus/crypto/script/validation buckets
   at `ZCL_DEV_HOT_OPT=-O2`. `ZCL_DEV_LINKER` probes for `mold`, then `ld.lld`,
-  and expands to **empty** when neither is on `PATH` — which is the common
-  case, and means dev links fall back to the platform linker with no speedup
-  and no warning. Do not assume you are getting a fast link; check with
+  then `ld.gold`, and expands to **empty** only when none is on `PATH`. That
+  means dev links otherwise fall back to the platform linker with no speedup
+  and no warning. Check the resolved choice with
   `make -sp 2>/dev/null | grep -m1 '^ZCL_DEV_LINKER'` (or
-  `command -v mold ld.lld`). Set it empty to force the platform linker
+  `command -v mold ld.lld ld.gold`). Set it empty to force the platform linker
   explicitly. This binary is for local agent/API iteration, not deploy or
   release.
 - `make agent-dev-status` is the no-build dev-lane status command. It reports

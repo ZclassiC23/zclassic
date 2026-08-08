@@ -15,10 +15,11 @@ of truth; this page explains how to use it safely.
 6. [Consensus wire and script catalog](#consensus-wire-and-script-catalog)
 7. [Transaction families](#transaction-families)
 8. [Safe plan/commit workflow](#safe-plancommit-workflow)
-9. [Parallel transaction readiness](#parallel-transaction-readiness)
-10. [What is not a chain transaction](#what-is-not-a-chain-transaction)
-11. [Proof and statistics](#proof-and-statistics)
-12. [Adding a transaction type](#adding-a-transaction-type)
+9. [Immediate asynchronous submission](#immediate-asynchronous-submission)
+10. [Parallel transaction readiness](#parallel-transaction-readiness)
+11. [What is not a chain transaction](#what-is-not-a-chain-transaction)
+12. [Proof and statistics](#proof-and-statistics)
+13. [Adding a transaction type](#adding-a-transaction-type)
 
 ## Big picture
 
@@ -104,6 +105,15 @@ input keys, example, effect, risk, authority, and confirmation mode. It also
 returns a fail-closed `agent_decision`, whether a current custody snapshot and
 owner authorization are required, the focused proof group, and a short safety
 checklist.
+
+When a transaction type supports durable background execution, the guide also
+returns `preferred_submission_mode: immediate_ack_async`, names
+`vault.intent.submit` as `preferred_submission_command`, and states that the
+initial reply boundary is `durable_queue`. Its `operation_id_source` is the
+existing `plan_id`, its `status_command` is `vault.intent.status`, and its
+finite `lifecycle_states` array tells an AI exactly which later states it may
+report. Types without that route say `foreground_commit`; an agent must not
+invent asynchronous completion for them.
 
 The guide grants no authority and executes nothing. A `ready` member may say
 `can_execute:true` when every referenced command is currently ready; a
@@ -269,7 +279,11 @@ catalog -> exact command schema -> current bound custody snapshot
    exact input keys.
 3. Read `metaverse agent money --dir=<broker-dir>`. A missing, stale,
    conflicted, incomplete, or wrong-wallet snapshot is a refusal, never a zero
-   balance. The wallet scope must be explicit.
+   balance. The wallet scope must be explicit. The broker portfolio recognizes
+   only `dev` and `prod`; a separately targeted, pre-funded isolated wallet may
+   use `wallet_scope=test` for a wallet-local vault intent. That scope must
+   match its persisted `test` operator lane, is never aggregated into the
+   dev/prod portfolio, and cannot draw from either portfolio wallet.
 4. Create the typed plan and preserve its wallet identity, outputs, maximum
    fee, expiry, snapshot root, and idempotency identity exactly. Some plans are
    pure previews; durable vault and market-purchase plans intentionally mutate
@@ -289,6 +303,75 @@ omit token/name values, destination or owner addresses, raw transaction bytes,
 wallet paths, node endpoints, and keys; those semantics remain encrypted in the
 durable intent and the public chain reveals only what its protocol requires
 after an authorized broadcast.
+
+## Immediate asynchronous submission
+
+Interactive agents should acknowledge a long-running Sapling proof as soon as
+the exact authorized plan is durably queued, rather than holding the user
+connection open until broadcast or mining. The queue boundary is not a claim
+that the transaction reached the mempool:
+
+```text
+owner-authorized plan
+        |
+        v
+vault.intent.submit ---- immediate reply: operation_status=queued
+        |
+        +--> proving --> mempool_accepted --> confirmed --> finalized
+                 |              |                |
+                 +-------- vault.intent.status --+
+```
+
+Use the exact plan ID returned by `vault.intent.plan`:
+
+```bash
+zclassic23 vault intent submit --input='{
+  "wallet_scope":"dev",
+  "plan_id":"<64hex>",
+  "confirm":true
+}'
+
+zclassic23 vault intent status --input='{"plan_id":"<64hex>"}'
+```
+
+`vault.intent.submit` returns the same plan ID as `operation_id`, persists the
+`ASYNC_QUEUED` marker before starting proof work, and deduplicates repeated
+submissions. A restart requeues the durable plan. Before first signing, the
+worker still performs the normal synchronous commit checks: wallet identity,
+current money snapshot, exact effects, fee, reservation, and tip-bound state
+are never weakened by the asynchronous boundary.
+An expired plan cannot start new proof or signing work. If exact signed bytes
+were already durably prepared before expiry, the worker may finish publishing
+only those same bytes; this is restart recovery, not renewed spend authority.
+Transient shielded-note reservation lag stays queued and retries the same raw
+transaction instead of creating a replacement. That prepared-byte retry still
+requires current money readers and the same wallet identity, but it does not
+pretend the old tip snapshot is current; present-chain mempool validation is
+the authority for admitting the exact already-signed transaction.
+Before retrying, a read-only reservation probe must identify every shielded
+nullifier as an available wallet note or an idempotent reservation by that same
+transaction. A missing nullifier becomes `PREPARED_NOTE_MISMATCH`; a note owned
+by another transaction becomes `PREPARED_NOTE_CONFLICT`. Both are terminal and
+require a fresh plan—neither may loop forever or generate replacement bytes.
+Mempool refusal is also typed durably. In particular,
+`SHIELDED_REQUIREMENTS_MISSING` means the transaction's anchor or nullifier is
+not present in the node's current shielded view; refresh/reconcile wallet
+witnesses and create a fresh plan. Other stable codes distinguish invalid
+proof/script data, transparent missing inputs, conflicts, insufficient relay
+fee, non-final locktime, near expiry, and internal admission failure. Agents
+must branch on `error_code`, never parse log prose or resubmit a terminal plan.
+
+Report states literally. `proving` means background construction or retry is
+active; `mempool_accepted` means the node admitted the transaction;
+`confirmed` and `finalized` are chain states. `reorged`, `conflicted`,
+`expired`, and `failed` must never be rendered as zero or success. Cancellation
+is safe only while an intent remains unclaimed and planned; once proof work or
+signed bytes may exist, `vault.intent.cancel` refuses.
+
+This route is the preferred conversational API for transparent and Sapling
+vault intents, especially `t->z`, `z->z`, `z->t`, and mixed-recipient proofs.
+Application-specific foreground commands remain foreground until their typed
+guide explicitly advertises an asynchronous route.
 
 ## Parallel transaction readiness
 
@@ -372,22 +455,27 @@ AI-ready contract rather than memorizing these steps:
 zclassic23 app transaction-types guide --type=transparent_p2sh_multisig_spend
 ```
 
-Compose a 2-of-3 policy from public keys only:
+Resolve each freshly created wallet address to its resident public key without
+exporting a private key, then compose a 2-of-3 policy from those public keys:
 
 ```bash
+zclassic23 core wallet address public-key --address=<wallet-owned-address>
+
 zclassic23 core wallet transaction multisig compose --input='{
   "required_signatures":2,
   "public_keys":["02...","03...","02..."]
 }'
 ```
 
-The result returns `address`, `redeem_script_hex`, and the exact fund,
-create-spend, sign, and broadcast command paths. Fund `address` using the
-ordinary identity-bound transparent payment workflow. To spend the resulting
-outpoint, use `core wallet transaction raw create`, then pass its exact
-`scriptPubKey`, amount, and returned `redeem_script_hex` as `redeemScript` in
-the `prevtxs` array for `core wallet transaction raw sign`. Preview and commit
-the exact signed bytes with `core wallet transaction raw broadcast`.
+The public-key lookup fails closed for invalid, external, watch-only, and script
+addresses and returns no address or private material. The composition result
+returns `address`, `redeem_script_hex`, and the exact fund, create-spend, sign,
+and broadcast command paths. Fund `address` using the ordinary identity-bound
+transparent payment workflow. To spend the resulting outpoint, use
+`core wallet transaction raw create`, then pass its exact `scriptPubKey`,
+amount, and returned `redeem_script_hex` as `redeemScript` in the `prevtxs`
+array for `core wallet transaction raw sign`. Preview and commit the exact
+signed bytes with `core wallet transaction raw broadcast`.
 
 The resident owner wallet must already contain at least the threshold number
 of private keys. The typed API deliberately accepts no private keys and does
@@ -488,6 +576,14 @@ and expiry. Commit revalidates those bindings and is idempotent. This is the
 developer-facing multi-recipient API; the legacy `sendmany` RPC is compatibility
 surface, not the custody workflow agents should build against.
 
+Every successful first plan and same-request idempotent retry returns the same
+complete review fields: `digest`, `fee`, `confirmation_policy`, `route`,
+`privacy`, and `effects` (plus `from` for shielded routes). An agent may safely
+retry a timed-out plan request and present that response for owner review; it
+must not reconstruct missing outputs from memory. Receipt `txid` and
+`confirmed_block_hash` values use canonical blockchain display order, so they
+can be passed directly to transaction lookup and explorer surfaces.
+
 The same API handles every pool shape without guessing from defaults. Supply
 an explicit source address and a route matching the effects: `shield` for
 transparent-to-Sapling, `private` for Sapling-to-Sapling, `unshield` for
@@ -506,6 +602,14 @@ stores the exact signed bytes before relay. A retry publishes those same bytes;
 a different transaction cannot steal a Sapling-note reservation. The current
 bounded-agent policy still default-denies this multi-effect owner workflow;
 developers must not bypass that denial with a weaker single-amount grant.
+
+The opt-in isolated end-to-end regression uses real Sapling proving parameters,
+replays the exact plan, commits it to an isolated mempool, rejects a tampered
+proof, decrypts the wallet-owned note, and mines the transaction in simnet:
+
+```bash
+ZCL_STRESS_TESTS=1 make -j"$(nproc)" t-fast ONLY=shielded_payment_gate
+```
 
 The ZPAY sequence deliberately keeps composition separate from custody:
 

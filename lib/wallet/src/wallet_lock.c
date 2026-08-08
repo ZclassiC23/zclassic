@@ -5,6 +5,7 @@
 #include "wallet/wallet_lock.h"
 #include "wallet/wallet.h"
 #include "wallet/wallet_sqlite.h"
+#include "wallet/wallet_sqlite_key_crypto.h"
 #include "wallet/keystore.h"
 
 #include "support/cleanse.h"
@@ -14,9 +15,13 @@
 #include "json/json.h"
 
 #include <pthread.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 /* Bound the cached passphrase so it lives in a fixed, cleansable buffer
  * (no heap copy of the secret to chase). 512 bytes is far past any real
@@ -73,11 +78,16 @@ static void *wallet_lock_timer_main(void *opaque)
         if (!current)
             break;
     }
+    bool locked_now = false;
     pthread_mutex_lock(&g_mu);
     if (!thread_registry_shutdown_requested() && remaining == 0 &&
-        timer->generation == g_timeout_generation)
+        timer->generation == g_timeout_generation) {
         wallet_lock_apply_locked(timer->wallet);
+        locked_now = true;
+    }
     pthread_mutex_unlock(&g_mu);
+    if (locked_now)
+        wallet_sqlite_key_crypto_reset();
     free(timer);
     return NULL;
 }
@@ -153,6 +163,10 @@ struct zcl_result wallet_lock_unlock(struct wallet *w, struct wallet_sqlite *ws,
         return ZCL_ERR(WLK_PASS_TOO_LONG,
                        "unlock: passphrase exceeds %d bytes", WLK_MAX_PASS);
 
+    /* A new unlock attempt must never reuse a DEK cached under an older or
+     * wrong passphrase. The wrapper is authenticated again below. */
+    wallet_sqlite_key_crypto_reset();
+
     /* Snapshot prior state so a wrong passphrase leaves NO trace. */
     pthread_mutex_lock(&g_mu);
     bool  prev_have = g_have_runtime_pass;
@@ -173,7 +187,7 @@ struct zcl_result wallet_lock_unlock(struct wallet *w, struct wallet_sqlite *ws,
     }
 
     /* Reload transparent + Sapling keys from disk under the new passphrase.
-     * read_keys_r decrypts each WKS1 blob via wallet_lock_effective_passphrase
+     * read_keys_r decrypts WKS1/WKD1 via wallet_lock_effective_passphrase
      * (now the just-cached value); a wrong passphrase drops every encrypted
      * row and loads zero keys. */
     struct wallet_sqlite_health before = wallet_sqlite_get_health(ws, 0);
@@ -195,6 +209,7 @@ struct zcl_result wallet_lock_unlock(struct wallet *w, struct wallet_sqlite *ws,
         g_have_runtime_pass = prev_have;
         g_force_locked = prev_force;
         pthread_mutex_unlock(&g_mu);
+        wallet_sqlite_key_crypto_reset();
         memory_cleanse(prev_pass, sizeof(prev_pass));
         return ZCL_ERR(WLK_WRONG_PASS,
             "unlock: passphrase did not decrypt any of %d on-disk key row(s)",
@@ -203,6 +218,59 @@ struct zcl_result wallet_lock_unlock(struct wallet *w, struct wallet_sqlite *ws,
 
     memory_cleanse(prev_pass, sizeof(prev_pass));
     return ZCL_OK;
+}
+
+struct zcl_result wallet_lock_register_boot_credential(void)
+{
+    const char *dir = getenv("CREDENTIALS_DIRECTORY");
+    if (!dir || !dir[0])
+        return ZCL_OK;
+
+    char path[1024];
+    int n = snprintf(path, sizeof(path), "%s/wallet-passphrase", dir);
+    if (n < 0 || (size_t)n >= sizeof(path))
+        return ZCL_ERR(WLK_CREDENTIAL_IO,
+                       "boot credential path exceeds internal bound");
+
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+        if (errno == ENOENT)
+            return ZCL_OK;
+        return ZCL_ERR(WLK_CREDENTIAL_IO,
+                       "boot credential could not be opened");
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+        st.st_uid != geteuid() ||
+        (st.st_mode & 077) != 0 || st.st_size <= 0 ||
+        st.st_size > WLK_MAX_PASS) {
+        close(fd);
+        return ZCL_ERR(WLK_CREDENTIAL_MODE,
+                       "boot credential is not a private bounded file");
+    }
+
+    char secret[WLK_MAX_PASS + 1];
+    size_t need = (size_t)st.st_size;
+    size_t off = 0;
+    while (off < need) {
+        ssize_t got = read(fd, secret + off, need - off);
+        if (got < 0 && errno == EINTR)
+            continue;
+        if (got <= 0)
+            break;
+        off += (size_t)got;
+    }
+    close(fd);
+    if (off != need || memchr(secret, '\0', need) != NULL) {
+        memory_cleanse(secret, sizeof(secret));
+        return ZCL_ERR(WLK_CREDENTIAL_IO,
+                       "boot credential read was incomplete or invalid");
+    }
+    secret[need] = '\0';
+    struct zcl_result registered = wallet_lock_unlock(NULL, NULL, secret);
+    memory_cleanse(secret, sizeof(secret));
+    return registered;
 }
 
 struct zcl_result wallet_lock_arm_timeout(struct wallet *w,
@@ -238,6 +306,7 @@ void wallet_lock_lock(struct wallet *w)
     pthread_mutex_lock(&g_mu);
     wallet_lock_apply_locked(w);
     pthread_mutex_unlock(&g_mu);
+    wallet_sqlite_key_crypto_reset();
 }
 
 void wallet_lock_status_json(struct json_value *out)
@@ -268,4 +337,5 @@ void wallet_lock_reset_for_test(void)
     g_encrypted_at_rest = false;
     g_timeout_generation++;
     pthread_mutex_unlock(&g_mu);
+    wallet_sqlite_key_crypto_reset();
 }

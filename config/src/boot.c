@@ -1593,7 +1593,7 @@ bool app_init(struct app_context *ctx)
      * the user's wallet with a fresh keypool. Refuse to do that here. */
     t_phase = boot_clock_ms();
     wallet_init(&g_wallet);
-
+    boot_wallet_credential_register_or_die();
     /* OS-S2: bind the boot cursors to the tip_finalize reorg-rewind chokepoint
      * so a live reorg clamps them down (next boot re-derives above the fork). */
     if (g_node_db.open)
@@ -1642,8 +1642,7 @@ bool app_init(struct app_context *ctx)
         exit(1);
     }
 
-    /* STATE C: load everything. */
-    if (sqlite_open) {
+    if (sqlite_open) { /* STATE C: load everything. */
         {
             struct zcl_result _r = wallet_sqlite_read_keys_r(
                 &g_wallet_sqlite, &g_wallet);
@@ -1718,6 +1717,7 @@ bool app_init(struct app_context *ctx)
                         g_wallet.keystore.num_keys);
             exit(1);
         }
+        boot_wallet_migrate_envelopes_or_exit(ctx->datadir, &g_wallet_sqlite, &g_wallet);
     } else {
         /* STATE A/B: new datadir, no user keys at risk. */
         printf("New wallet created.\n");

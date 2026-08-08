@@ -53,6 +53,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,8 +72,11 @@
 static char g_dir[256];
 static bool g_money_unavailable;
 static bool g_money_duplicate;
-static long g_money_connect_ms;
-static long g_money_total_ms;
+static _Atomic long g_money_connect_ms;
+static _Atomic long g_money_total_ms;
+static _Atomic int g_money_rpc_active;
+static _Atomic int g_money_rpc_max_active;
+static _Atomic int g_money_rpc_delay_ms;
 static bool g_liquidity_params_ok;
 
 /* The grant id the demo grant carries. The child must never see this string —
@@ -163,9 +167,19 @@ static char *mb_money_transport(const char *datadir, int rpc_port,
 {
     (void)datadir;
     (void)rpc_port;
-    g_money_connect_ms = connect_ms;
-    g_money_total_ms = total_ms;
-    return node_rpc_call_deadline(method, params, connect_ms, total_ms);
+    atomic_store(&g_money_connect_ms, connect_ms);
+    atomic_store(&g_money_total_ms, total_ms);
+    int active = atomic_fetch_add(&g_money_rpc_active, 1) + 1;
+    int seen = atomic_load(&g_money_rpc_max_active);
+    while (active > seen &&
+           !atomic_compare_exchange_weak(&g_money_rpc_max_active,
+                                         &seen, active)) {}
+    int delay_ms = atomic_load(&g_money_rpc_delay_ms);
+    if (delay_ms > 0)
+        platform_sleep_ms(delay_ms);
+    char *reply = node_rpc_call_deadline(method, params, connect_ms, total_ms);
+    (void)atomic_fetch_sub(&g_money_rpc_active, 1);
+    return reply;
 }
 
 static int mb_money_portfolio(void)
@@ -191,10 +205,12 @@ static int mb_money_portfolio(void)
         0x42, 0x42);
     (void)fclose(f);
     node_rpc_client_set_test_hook(mb_money_rpc);
-    metaverse_agent_service_set_rpc(mb_money_transport);
+    atomic_store(&g_money_rpc_max_active, 0);
+    atomic_store(&g_money_rpc_delay_ms, 25);
     char doc[16384]; size_t n = 0;
     struct zcl_result r = metaverse_agent_service_money(
-        absolute, doc, sizeof(doc), &n);
+        absolute, mb_money_transport, doc, sizeof(doc), &n);
+    atomic_store(&g_money_rpc_delay_ms, 0);
     MB_CHECK("dev 0.3 and prod zero remain identified, not conflated",
              r.ok && n > 0 &&
              strstr(doc, "\"portfolio_confirmed_zcl\":\"0.30000000\"") &&
@@ -204,10 +220,14 @@ static int mb_money_portfolio(void)
              strstr(doc, "\"confirmed_zcl\":\"0.00000000\"") &&
              !strstr(doc, "/secret/") && !strstr(doc, "rpc_port"));
     MB_CHECK("custody reader keeps a bounded contention-tolerant deadline",
-             g_money_connect_ms == 500 && g_money_total_ms == 10000);
+             atomic_load(&g_money_connect_ms) == 500 &&
+             atomic_load(&g_money_total_ms) == 30000);
+    MB_CHECK("dev and prod custody authorities are read concurrently",
+             atomic_load(&g_money_rpc_max_active) == 2);
 
     r = metaverse_agent_service_liquidity(
-        absolute, "dev", 1000, 10000, 10, doc, sizeof(doc), &n);
+        absolute, "dev", 1000, 10000, 10, mb_money_transport,
+        doc, sizeof(doc), &n);
     MB_CHECK("liquidity planner binds exact request and returns aggregate fanout",
              r.ok && g_liquidity_params_ok &&
              strstr(doc, "\"schema\":\"zcl.metaverse_agent_liquidity.v1\"") &&
@@ -221,33 +241,36 @@ static int mb_money_portfolio(void)
              !strstr(doc, "outpoint"));
 
     g_money_duplicate = true;
-    r = metaverse_agent_service_money(absolute, doc, sizeof(doc), &n);
+    r = metaverse_agent_service_money(
+        absolute, mb_money_transport, doc, sizeof(doc), &n);
     MB_CHECK("a copied wallet id across endpoints is CONFLICTED, never zero",
              r.ok && strstr(doc, "CONFLICTED") &&
              strstr(doc, "duplicate wallet_instance_id") &&
              strstr(doc, "\"portfolio_total_known\":false"));
     r = metaverse_agent_service_liquidity(
-        absolute, "dev", 1000, 10000, 10, doc, sizeof(doc), &n);
+        absolute, "dev", 1000, 10000, 10, mb_money_transport,
+        doc, sizeof(doc), &n);
     MB_CHECK("liquidity also refuses duplicate active wallet identities",
              r.ok && strstr(doc, "CONFLICTED") &&
              strstr(doc, "duplicate wallet_instance_id") &&
              strstr(doc, "\"amounts_known\":false"));
     g_money_duplicate = false;
     g_money_unavailable = true;
-    r = metaverse_agent_service_money(absolute, doc, sizeof(doc), &n);
+    r = metaverse_agent_service_money(
+        absolute, mb_money_transport, doc, sizeof(doc), &n);
     MB_CHECK("unreachable wallet readers report UNKNOWN, never numeric zero",
              r.ok && strstr(doc, "UNKNOWN") &&
              strstr(doc, "bound wallet endpoint is unreachable") &&
              !strstr(doc, "\"confirmed_zat\":0"));
     r = metaverse_agent_service_liquidity(
-        absolute, "dev", 1000, 10000, 10, doc, sizeof(doc), &n);
+        absolute, "dev", 1000, 10000, 10, mb_money_transport,
+        doc, sizeof(doc), &n);
     MB_CHECK("unreachable liquidity reader is UNKNOWN and never a zero plan",
              r.ok && strstr(doc, "UNKNOWN") &&
              strstr(doc, "\"amounts_known\":false") &&
              !strstr(doc, "\"future_total_required_zat\":0"));
     g_money_unavailable = false;
     node_rpc_client_set_test_hook(NULL);
-    metaverse_agent_service_set_rpc(NULL);
     return failures;
 }
 

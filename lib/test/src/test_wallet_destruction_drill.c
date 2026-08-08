@@ -413,7 +413,7 @@ static int act1_transparent(void)
              built && simnet_mint_txs(&s, &fund_for_mint, 1));
 
     /* The wallet's own record of the funded coin — wallet_utxos is one of
-     * the seven tables a backup captures, so this is the row whose survival
+     * the eight tables a backup captures, so this is the row whose survival
      * the whole drill turns on. */
     struct db_wallet_utxo wu;
     memset(&wu, 0, sizeof(wu));

@@ -2,6 +2,7 @@
  * SQLite ActiveRecord model tests for ZClassic C23. */
 
 #include "platform/time_compat.h"
+#include "platform/os_proc.h"
 #include "test/test_core.h"
 #include "chain/chainparams.h"
 #include "storage/coins_db.h"
@@ -9,6 +10,7 @@
 #include "controllers/snapshot_controller.h"
 #include "controllers/sync_controller.h"
 #include "config/db_service.h"
+#include "config/boot_projection_hole_scan.h"
 #include "config/runtime.h"
 #include "services/chain_evidence_persistence_service.h"
 #include "wallet/wallet.h"
@@ -562,6 +564,57 @@ int test_sqlite(void) {
     }
 
     {
+        /* Periodic workers need an exact-schema connection without repeating
+         * CREATE/migrate/full-statement preparation every poll. The light open
+         * must preserve ordinary model access, never create a missing file,
+         * and fail closed on a schema written by another binary version. */
+        printf("node_db_open_existing_runtime: exact schema, no create... ");
+        char dir_template[] = "/tmp/zclassic23-existing-reopen-XXXXXX";
+        char *dir_path = mkdtemp(dir_template);
+        char db_path[1024], missing_path[1024];
+        struct node_db ndb;
+        bool ok = dir_path != NULL;
+        int64_t value = 0;
+
+        memset(&ndb, 0, sizeof(ndb));
+        if (ok) {
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
+            snprintf(missing_path, sizeof(missing_path), "%s/missing.db",
+                     dir_path);
+            ok = node_db_open(&ndb, db_path);
+        }
+        ok = ok && node_db_state_set_int(&ndb, "existing_open_test", 23);
+        if (ndb.open) node_db_close(&ndb);
+
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && node_db_open_existing_runtime(
+            &ndb, db_path, "test.existing_reopen");
+        ok = ok && node_db_state_get_int(&ndb, "existing_open_test", &value);
+        ok = ok && value == 23;
+        if (ndb.open) node_db_close(&ndb);
+
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && !node_db_open_existing_runtime(
+            &ndb, missing_path, "test.must_not_create");
+        ok = ok && access(missing_path, F_OK) != 0;
+
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && node_db_open_runtime(&ndb, db_path,
+                                        "test.schema_mismatch_setup");
+        int32_t future_schema = NODE_DB_MAX_SCHEMA + 1;
+        ok = ok && node_db_state_set(&ndb, "schema_version", &future_schema,
+                                     sizeof(future_schema));
+        if (ndb.open) node_db_close(&ndb);
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && !node_db_open_existing_runtime(
+            &ndb, db_path, "test.schema_mismatch");
+
+        cleanup_temp_db_dir(dir_path);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    {
         printf("SQLite snapshot tx-index job starts and joins cleanly... ");
         char dir_template[] = "/tmp/zclassic23-tx-index-job-XXXXXX";
         char *dir_path = mkdtemp(dir_template);
@@ -754,6 +807,21 @@ int test_sqlite(void) {
         ok = ok && !saved_wallet_tx.has_block;
         ok = ok && saved_wallet_tx.block_height == 0;
         free(wallet_utxo.script);
+        free(saved_wallet_tx.raw_tx);
+        memset(&saved_wallet_tx, 0, sizeof(saved_wallet_tx));
+
+        uint8_t confirmed_hash[32];
+        memset(confirmed_hash, 0x5c, sizeof(confirmed_hash));
+        ok = ok && node_db_sync_wallet_tx_confirmed_async(
+            &ndb, &wallet_tx, wallet, 321, confirmed_hash, 1700000321);
+        ok = ok && db_service_flush_write(&svc);
+        ok = ok && db_wallet_tx_find(
+            &ndb, wallet_tx.hash.data, &saved_wallet_tx);
+        ok = ok && saved_wallet_tx.has_block;
+        ok = ok && saved_wallet_tx.block_height == 321;
+        ok = ok && memcmp(saved_wallet_tx.block_hash,
+                          confirmed_hash, sizeof(confirmed_hash)) == 0;
+        ok = ok && saved_wallet_tx.time_received == 1700000321;
         free(saved_wallet_tx.raw_tx);
         if (wallet) {
             wallet_free(wallet);
@@ -1025,6 +1093,79 @@ int test_sqlite(void) {
         ok = ok && missing == -1;
 
         node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Projection hole audit cadence + isolated connection. */
+    {
+        printf("SQLite projection hole scan is isolated and bounded... ");
+        char dir_template[] = "/tmp/zclassic23-projection-hole-XXXXXX";
+        char *dir_path = mkdtemp(dir_template);
+        char db_path[1024];
+        struct node_db ndb;
+        bool opened = false;
+        bool ok = dir_path != NULL;
+        if (ok) {
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
+            opened = node_db_open(&ndb, db_path);
+            ok = opened;
+        }
+
+        uint8_t sol[] = {0x01, 0x02, 0x03};
+        for (int h = 0; ok && h <= 2; h++) {
+            struct db_block blk;
+            memset(&blk, 0, sizeof(blk));
+            memset(blk.hash, 0x60 + h, 32);
+            blk.hash[0] = (uint8_t)(0x60 + h);
+            blk.height = h;
+            if (h > 0)
+                memset(blk.prev_hash, 0x70 + h, 32);
+            memset(blk.merkle_root, 0x80 + h, 32);
+            blk.version = 4;
+            blk.time = 1700000100 + (uint32_t)h;
+            blk.bits = 0x1d00ffff;
+            memset(blk.nonce, 0x90 + h, 32);
+            blk.solution = sol;
+            blk.solution_len = sizeof(sol);
+            memset(blk.chain_work, 0xA0 + h, 32);
+            blk.status = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            blk.file_num = 1;
+            blk.data_pos = h * 100;
+            blk.num_tx = 1;
+            ok = db_block_save(&ndb, &blk);
+        }
+
+        struct boot_projection_hole_scan scan;
+        boot_projection_hole_scan_init(&scan);
+        bool ran = false;
+        int missing = -2;
+        ok = ok && boot_projection_hole_scan_if_due(
+            &scan, &ndb, 2, false, false, false, 2, 100, &ran, &missing);
+        ok = ok && ran && missing == -1 && scan.next_scan_unix == 3700;
+
+        ran = true;
+        ok = ok && boot_projection_hole_scan_if_due(
+            &scan, &ndb, 2, false, false, false, 2, 101, &ran, &missing);
+        ok = ok && !ran;
+
+        ok = ok && boot_projection_hole_scan_if_due(
+            &scan, &ndb, 2, false, true, true, 2, 101, &ran, &missing);
+        ok = ok && ran && missing == -1 && scan.next_scan_unix == 3701;
+
+        ran = true;
+        ok = ok && boot_projection_hole_scan_if_due(
+            &scan, &ndb, 2, false, true, true, 2, 102, &ran, &missing);
+        ok = ok && !ran;
+
+        ok = ok && db_block_delete_by_height(&ndb, 1);
+        ok = ok && boot_projection_hole_scan_if_due(
+            &scan, &ndb, 2, false, false, false, 2, 3701, &ran, &missing);
+        ok = ok && ran && missing == 1 && scan.next_scan_unix == 0;
+
+        if (opened)
+            node_db_close(&ndb);
+        cleanup_temp_db_dir(dir_path);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -1934,6 +2075,43 @@ int test_sqlite(void) {
                        (long long)cache_pages, (long long)mmap_bytes);
         else { printf("FAIL (cache=%lld mmap=%lld)\n",
                       (long long)cache_pages, (long long)mmap_bytes);
+               failures++; }
+    }
+
+    {
+        /* A large host does not make a 4 GiB cgroup a large lane. Reproduce
+         * the live dev envelope and prove both the persistent node handle and
+         * read-only explorer helper receive a zero mmap window rather than a
+         * 256 MiB working set that repeatedly crosses memory.high. */
+        printf("SQLite PRAGMA tuning honors constrained cgroup budget... ");
+        struct os_proc_mem constrained = {
+            .rss_bytes = 1024 * 1024,
+            .vsize_bytes = 2 * 1024 * 1024,
+            .cgroup_current = 2LL * 1024 * 1024 * 1024,
+            .cgroup_high = 4LL * 1024 * 1024 * 1024,
+            .cgroup_max = 8LL * 1024 * 1024 * 1024,
+            .sys_total_bytes = 64LL * 1024 * 1024 * 1024,
+            .sys_avail_bytes = 32LL * 1024 * 1024 * 1024,
+        };
+        os_proc_mem_set_override(&constrained);
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        sqlite3_stmt *s = NULL;
+        int64_t cache_pages = 0;
+        if (ok && sqlite3_prepare_v2(ndb.db, "PRAGMA cache_size",
+                                     -1, &s, NULL) == SQLITE_OK &&
+            sqlite3_step(s) == SQLITE_ROW)
+            cache_pages = sqlite3_column_int64(s, 0);
+        else
+            ok = false;
+        sqlite3_finalize(s);
+        ok = ok && cache_pages == -(16 * 1024);
+        ok = ok && node_db_recommended_mmap_bytes() == 0;
+        if (ndb.open) node_db_close(&ndb);
+        os_proc_mem_set_override(NULL);
+        if (ok) printf("OK (cache=%lld mmap=0)\n",
+                       (long long)cache_pages);
+        else { printf("FAIL (cache=%lld)\n", (long long)cache_pages);
                failures++; }
     }
 

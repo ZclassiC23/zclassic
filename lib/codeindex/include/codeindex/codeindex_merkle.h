@@ -67,6 +67,7 @@ struct ci_merkle_cost {
     uint32_t files_total;    /* leaves in the tree */
     uint32_t files_read;     /* leaves whose bytes were re-read this refresh */
     uint32_t leaves_reused;  /* leaves served from the snapshot (files_total-read) */
+    uint64_t bytes_total;    /* total bytes represented by every leaf */
     uint64_t bytes_read;     /* file bytes hashed this refresh */
     uint32_t nodes_total;    /* directory nodes incl. the root */
     uint32_t nodes_hashed;   /* directory nodes whose digest was recomputed */

@@ -83,9 +83,9 @@ static bool event_log_exhaustive_enabled(void)
 
 /* ── Task 2: append + read round-trip ──────────────────────────────── */
 
-static int run_append_read_roundtrip(int *failures)
+static int run_append_read_roundtrip(int *failures_out)
 {
-    int start_failures = *failures;
+    int failures = 0;
     char dir[256];
     test_fmt_tmpdir(dir, sizeof(dir), "event_log", "rt");
     el_mkdir_p(dir);
@@ -95,9 +95,11 @@ static int run_append_read_roundtrip(int *failures)
     event_log_t *log = event_log_open(path);
     EL_CHECK("open fresh log", log != NULL);
     if (!log) goto done;
+    event_log_set_deferred_sync(log, true);
 
     const int N = event_log_exhaustive_enabled() ? 1000 : 64;
     uint64_t offsets[1000];
+    event_log_test_reset_append_stats();
     /* Variable-size payloads so we exercise different lengths. */
     for (int i = 0; i < N; i++) {
         uint8_t buf[200];
@@ -112,6 +114,13 @@ static int run_append_read_roundtrip(int *failures)
     for (int i = 0; i < N; i++)
         if (offsets[i] == UINT64_MAX) { all_ok = false; break; }
     EL_CHECK("append/read: all selected appends succeed", all_ok);
+
+    uint64_t barrier = 0, deferred = 0, barrier_us = 0;
+    event_log_append_stats(&barrier, &deferred, &barrier_us);
+    EL_CHECK("append/read: bulk fixture takes no per-event barriers",
+             barrier == 0 && deferred == (uint64_t)N);
+    EL_CHECK("append/read: publish bulk fixture once",
+             event_log_flush(log));
 
     /* Round-trip every event. */
     bool rt_ok = true;
@@ -141,7 +150,9 @@ static int run_append_read_roundtrip(int *failures)
     event_log_close(log);
     test_cleanup_tmpdir(dir);
 done:
-    return *failures - start_failures;
+    event_log_test_reset_append_stats();
+    *failures_out += failures;
+    return failures;
 }
 
 /* ── Task 3: stream callback ───────────────────────────────────────── */
@@ -167,9 +178,9 @@ static bool stream_cb(uint64_t offset, enum event_log_type type,
     return true;
 }
 
-static int run_stream(int *failures)
+static int run_stream(int *failures_out)
 {
-    int start_failures = *failures;
+    int failures = 0;
     char dir[256];
     test_fmt_tmpdir(dir, sizeof(dir), "event_log", "stream");
     el_mkdir_p(dir);
@@ -179,6 +190,8 @@ static int run_stream(int *failures)
     event_log_t *log = event_log_open(path);
     EL_CHECK("stream: open OK", log != NULL);
     if (!log) goto done;
+    event_log_set_deferred_sync(log, true);
+    event_log_test_reset_append_stats();
 
     const int N = event_log_exhaustive_enabled() ? 1000 : 64;
     for (int i = 0; i < N; i++) {
@@ -186,6 +199,11 @@ static int run_stream(int *failures)
         memset(buf, (int)(i & 0xFF), sizeof(buf));
         event_log_append(log, EV_BLOCK_BODY, buf, sizeof(buf));
     }
+    uint64_t barrier = 0, deferred = 0, barrier_us = 0;
+    event_log_append_stats(&barrier, &deferred, &barrier_us);
+    EL_CHECK("stream: bulk fixture takes no per-event barriers",
+             barrier == 0 && deferred == (uint64_t)N);
+    EL_CHECK("stream: publish bulk fixture once", event_log_flush(log));
     struct stream_ctx c = {0};
     c.ordered = true;
     c.max = N;
@@ -205,14 +223,16 @@ static int run_stream(int *failures)
     event_log_close(log);
     test_cleanup_tmpdir(dir);
 done:
-    return *failures - start_failures;
+    event_log_test_reset_append_stats();
+    *failures_out += failures;
+    return failures;
 }
 
 /* ── Task 4: fingerprint ───────────────────────────────────────────── */
 
-static int run_fingerprint(int *failures)
+static int run_fingerprint(int *failures_out)
 {
-    int start_failures = *failures;
+    int failures = 0;
     char dir1[256], dir2[256];
     test_fmt_tmpdir(dir1, sizeof(dir1), "event_log", "fp1");
     test_fmt_tmpdir(dir2, sizeof(dir2), "event_log", "fp2");
@@ -227,6 +247,9 @@ static int run_fingerprint(int *failures)
     EL_CHECK("fp: open a", a != NULL);
     EL_CHECK("fp: open b", b != NULL);
     if (!a || !b) goto done;
+    event_log_set_deferred_sync(a, true);
+    event_log_set_deferred_sync(b, true);
+    event_log_test_reset_append_stats();
 
     const int N = event_log_exhaustive_enabled() ? 256 : 32;
     for (int i = 0; i < N; i++) {
@@ -236,6 +259,12 @@ static int run_fingerprint(int *failures)
         event_log_append(a, EV_UTXO_ADD, buf, sizeof(buf));
         event_log_append(b, EV_UTXO_ADD, buf, sizeof(buf));
     }
+    uint64_t barrier = 0, deferred = 0, barrier_us = 0;
+    event_log_append_stats(&barrier, &deferred, &barrier_us);
+    EL_CHECK("fp: bulk fixtures take no per-event barriers",
+             barrier == 0 && deferred == (uint64_t)(2 * N));
+    EL_CHECK("fp: publish fixture a once", event_log_flush(a));
+    EL_CHECK("fp: publish fixture b once", event_log_flush(b));
     uint8_t ha[32], hb[32];
     EL_CHECK("fp(a)", event_log_fingerprint(a, ha) == 0);
     EL_CHECK("fp(b)", event_log_fingerprint(b, hb) == 0);
@@ -245,6 +274,7 @@ static int run_fingerprint(int *failures)
     /* Append one more event to b — fingerprints must differ. */
     uint8_t extra[1] = {0xFF};
     event_log_append(b, EV_UTXO_ADD, extra, 1);
+    EL_CHECK("fp: publish mutation once", event_log_flush(b));
     EL_CHECK("fp(b) after extra append", event_log_fingerprint(b, hb) == 0);
     EL_CHECK("one-byte change → different fingerprint",
              memcmp(ha, hb, 32) != 0);
@@ -276,7 +306,9 @@ static int run_fingerprint(int *failures)
     test_cleanup_tmpdir(dir2);
     test_cleanup_tmpdir(dir3);
 done:
-    return *failures - start_failures;
+    event_log_test_reset_append_stats();
+    *failures_out += failures;
+    return failures;
 }
 
 /* ── Task 5: kill-9 fuzz harness (LOAD-BEARING) ────────────────────── */
@@ -1098,10 +1130,24 @@ int test_event_log(void)
     run_deferred_sync(&failures);
     run_append_path_attribution(&failures);
     run_targeted_recovery(&failures);
-    run_kill9_fuzz(&failures);
     run_crc32c_dispatch(&failures);
-    run_benchmark(&failures);
 
     printf("event_log: %d failures\n", failures);
+    return failures;
+}
+
+int test_event_log_kill9(void)
+{
+    int failures = 0;
+    printf("\n=== event_log kill9 integration proof ===\n");
+    run_kill9_fuzz(&failures);
+    return failures;
+}
+
+int test_event_log_benchmark(void)
+{
+    int failures = 0;
+    printf("\n=== event_log benchmark integration proof ===\n");
+    run_benchmark(&failures);
     return failures;
 }

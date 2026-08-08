@@ -7,7 +7,7 @@
  * supervisor contract); wallet_backup_run.c owns the one-shot snapshot
  * primitive and its per-table verification. The split exists because the
  * combined file passed the 800-line shape ceiling once verification grew
- * from one table to all seven. Nothing outside those two files (plus the
+ * from one table to all eight. Nothing outside those two files (plus the
  * rotation/crypto siblings) may include this header — the public contract
  * is services/wallet_backup_service.h.
  */
@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 /* Comma-joined names of the wallet tables the SOURCE did not have on the
- * last run. Seven names of at most 21 chars fits with room to spare. */
+ * last run. Eight bounded names fit with room to spare. */
 #define WBS_MISSING_TABLES_MAX 256
 
 /* What per-table verification found, threaded out of the run so the caller

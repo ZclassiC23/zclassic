@@ -82,7 +82,7 @@ bool node_db_catchup_test_sync_block_lean(struct node_db *ndb,
  * Logs every failure path internally. */
 int node_db_catchup_service_run(struct node_db *ndb,
                                 const struct active_chain *chain,
-                                const struct wallet *w,
+                                struct wallet *w,
                                 const char *datadir);
 
 #endif /* ZCL_SERVICES_NODE_DB_CATCHUP_SERVICE_H */

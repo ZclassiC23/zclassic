@@ -778,6 +778,22 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_wallet_address_new)
 ZCL_COMMAND_READY_READ(
+    "core.wallet.address.public-key", "core.wallet.address", "",
+    "Get a wallet-owned address's public key",
+    "The canonical SEC public key for one wallet-owned transparent key "
+    "address, resolved by the running node without exporting or reading "
+    "private-key material. Invalid, watch-only, external, and script "
+    "addresses fail closed.", 0,
+    "wallet,address,pubkey,multisig",
+    "zcl.wallet_address_public_key.input.v1",
+    "zcl.wallet_public_key.v1", "address", "address",
+    "zclassic23 core wallet address public-key --address=<addr>",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
     "core.wallet.address.list", "core.wallet.address", "",
     "List transparent addresses",
     "Every transparent address currently held in the wallet, read "
@@ -1118,7 +1134,8 @@ ZCL_COMMAND_READY_COMMAND(
     "written by the running node's walletbackupnow at call time "
     "(stage=committed, created true once the file is on disk).", 0,
     "wallet,backup,now",
-    "zcl.core_confirm.input.v1", "zcl.wallet_backup.v1", "confirm", "",
+    "zcl.wallet_backup_now.input.v2", "zcl.wallet_backup.v1",
+    "confirm,password", "",
     "zclassic23 core wallet backup now",
     /* CONFIRM_PLAN_COMMIT, not CONFIRM_NONE. This exports EVERY key at once
      * into a file that is plaintext unless WALLET_BACKUP_PASSWORD happens to

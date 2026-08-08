@@ -23,6 +23,8 @@
 #ifdef ZCL_DEV_BUILD
 
 #define DEVLOOP_MAX_WATCHES 512
+#define DEVLOOP_MUTATION_MASK                                                \
+    (IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_CREATE | IN_DELETE)
 
 struct watched_dir {
     int wd;
@@ -52,6 +54,22 @@ static void watch_signal(int sig)
 {
     (void)sig;
     g_watch_stop = 1;
+    zcl_devloop_process_cancel_request();
+}
+
+static void print_json_string(FILE *stream, const char *value)
+{
+    (void)fputc('"', stream);
+    for (const unsigned char *p =
+             (const unsigned char *)(value ? value : ""); *p; p++) {
+        if (*p == '"' || *p == '\\')
+            (void)fprintf(stream, "\\%c", *p);
+        else if (*p < 0x20)
+            (void)fprintf(stream, "\\u%04x", *p);
+        else
+            (void)fputc(*p, stream);
+    }
+    (void)fputc('"', stream);
 }
 
 static bool mkdirs(const char *path)
@@ -73,10 +91,7 @@ static bool mkdirs(const char *path)
 
 static bool ignored_dir(const char *name)
 {
-    return !name || !name[0] || name[0] == '.' ||
-           strcmp(name, "build") == 0 || strcmp(name, "vendor") == 0 ||
-           strcmp(name, "target") == 0 || strcmp(name, "node_modules") == 0 ||
-           strcmp(name, "test-tmp") == 0;
+    return zcl_devloop_watch_dir_is_ignored(name);
 }
 
 static bool relevant_file(const char *path)
@@ -109,8 +124,7 @@ static bool add_watch_recursive(struct watch_context *ctx, const char *rel)
         return false;
 
     int wd = inotify_add_watch(ctx->fd, full,
-        IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_CREATE |
-        IN_DELETE | IN_ATTRIB | IN_DELETE_SELF | IN_MOVE_SELF);
+        DEVLOOP_MUTATION_MASK | IN_DELETE_SELF | IN_MOVE_SELF);
     if (wd < 0)
         return false;
     struct watched_dir *slot = &ctx->dirs[ctx->dir_count++];
@@ -207,6 +221,13 @@ static bool collect_events(struct watch_context *ctx)
             if (rn <= 0 || (size_t)rn >= sizeof(rel))
                 continue;
             if (ev->mask & IN_ISDIR) {
+                /* The recursive watch deliberately never enters generated,
+                 * dependency, or dot-prefixed scratch directories. Their
+                 * create/remove traffic is equally irrelevant: treating it
+                 * as a synthetic Makefile edit cancels the exact proof that
+                 * created a test scratch directory in the first place. */
+                if (ignored_dir(ev->name))
+                    continue;
                 mutation_sequence_advance(ctx);
                 add_changed(ctx, "Makefile");
                 saw = true;
@@ -219,8 +240,7 @@ static bool collect_events(struct watch_context *ctx)
                 continue;
             }
             if (!(ev->mask & IN_ISDIR) &&
-                (ev->mask & (IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM |
-                             IN_CREATE | IN_DELETE | IN_ATTRIB))) {
+                zcl_devloop_watch_event_is_mutation(ev->mask)) {
                 mutation_sequence_advance(ctx);
                 size_t before = ctx->changed_count;
                 add_changed(ctx, rel);
@@ -229,6 +249,14 @@ static bool collect_events(struct watch_context *ctx)
         }
     }
     return saw;
+}
+
+static bool watch_cancel_poll(void *opaque)
+{
+    struct watch_context *ctx = opaque;
+    if (g_watch_stop)
+        return true;
+    return collect_events(ctx) && ctx->changed_count > 0;
 }
 
 static int open_singleton_lock(const char *repo_root,
@@ -296,6 +324,8 @@ int zcl_devloop_watch_mode(const char *repo_root,
     ctx.force_full_source_rescan = true;
 
     g_watch_stop = 0;
+    zcl_devloop_process_cancel_clear();
+    zcl_devloop_process_cancel_poll_clear();
     signal(SIGINT, watch_signal);
     signal(SIGTERM, watch_signal);
     printf("{\"schema\":\"zcl.dev_watch_heartbeat.v1\","
@@ -308,19 +338,21 @@ int zcl_devloop_watch_mode(const char *repo_root,
     fflush(stdout);
 
     while (!g_watch_stop) {
-        struct pollfd pfd = { .fd = ctx.fd, .events = POLLIN };
-        int prc = poll(&pfd, 1, 1000);
-        if (prc < 0 && errno == EINTR)
-            continue;
-        if (prc < 0) {
-            fprintf(stderr, "[devloop] watch: poll failed: %s\n",
-                    strerror(errno));
-            break;
+        if (ctx.changed_count == 0) {
+            struct pollfd pfd = { .fd = ctx.fd, .events = POLLIN };
+            int prc = poll(&pfd, 1, 1000);
+            if (prc < 0 && errno == EINTR)
+                continue;
+            if (prc < 0) {
+                fprintf(stderr, "[devloop] watch: poll failed: %s\n",
+                        strerror(errno));
+                break;
+            }
+            if (prc == 0)
+                continue;
+            if (!collect_events(&ctx) || ctx.changed_count == 0)
+                continue;
         }
-        if (prc == 0)
-            continue;
-        if (!collect_events(&ctx) || ctx.changed_count == 0)
-            continue;
 
         /* Coalesce editor temp-file renames and multi-file saves into one
          * source epoch. Each newly observed event extends the quiet window. */
@@ -338,34 +370,60 @@ int zcl_devloop_watch_mode(const char *repo_root,
                 break;
         }
 
+        char epoch_changed[ZCL_DEVLOOP_MAX_FILES][ZCL_DEVLOOP_PATH_MAX];
         const char *files[ZCL_DEVLOOP_MAX_FILES];
-        for (size_t i = 0; i < ctx.changed_count; i++)
-            files[i] = ctx.changed[i];
+        size_t epoch_count = ctx.changed_count;
+        for (size_t i = 0; i < epoch_count; i++) {
+            snprintf(epoch_changed[i], sizeof(epoch_changed[i]), "%s",
+                     ctx.changed[i]);
+            files[i] = epoch_changed[i];
+        }
+        ctx.changed_count = 0;
         bool full_rescan = ctx.force_full_source_rescan;
-        if (ctx.force_full_source_rescan) {
+        ctx.force_full_source_rescan = false;
+        if (full_rescan) {
             (void)ci_merkle_forget(ctx.root);
-            ctx.force_full_source_rescan = false;
         }
         printf("{\"schema\":\"zcl.dev_source_epoch.v1\","
                "\"mutation_sequence\":%llu,\"full_rescan\":%s,"
-               "\"changed_paths\":%zu}\n",
+               "\"changed_paths\":%zu,\"first_path\":",
                (unsigned long long)ctx.mutation_sequence,
-               full_rescan ? "true" : "false", ctx.changed_count);
+               full_rescan ? "true" : "false", epoch_count);
+        print_json_string(stdout, epoch_changed[0]);
+        printf("}\n");
         fflush(stdout);
-        int fast = ctx.changed_count == 1
+        zcl_devloop_process_cancel_poll_set(watch_cancel_poll, &ctx);
+        int fast = epoch_count == 1
             ? zcl_devloop_hotswap_event(ctx.root, files[0], publish_mode) : 0;
+        if (fast == 0)
+            fast = zcl_devloop_restart_event(ctx.root, files,
+                                             epoch_count, publish_mode);
         if (fast == 0) {
             /* APPLY authority is intentionally narrower than the generic
              * cycle: only one compiled-allowlist island may publish live.
              * Storage/reducers/network/consensus and ordinary reload edits
              * remain on the verify-only contained path. */
             (void)zcl_devloop_run_cycle_mode(
-                ctx.root, files, ctx.changed_count,
+                ctx.root, files, epoch_count,
                 ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY);
         }
-        ctx.changed_count = 0;
+        zcl_devloop_process_cancel_poll_clear();
+        if (g_watch_stop)
+            break;
+        bool superseded = ctx.changed_count > 0;
+        zcl_devloop_process_cancel_clear();
+        if (superseded) {
+            printf("{\"schema\":\"zcl.dev_source_epoch.v1\","
+                   "\"status\":\"superseded\","
+                   "\"queued_paths\":%zu,\"first_queued_path\":",
+                   ctx.changed_count);
+            print_json_string(stdout, ctx.changed[0]);
+            printf(",\"agent_next_action\":\"wait for latest verdict\"}\n");
+            fflush(stdout);
+        }
     }
 
+    zcl_devloop_process_cancel_poll_clear();
     printf("{\"schema\":\"zcl.dev_watch_heartbeat.v1\","
            "\"status\":\"stopped\",\"pid\":%ld}\n", (long)getpid());
     close(ctx.fd);

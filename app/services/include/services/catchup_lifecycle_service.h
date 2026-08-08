@@ -43,7 +43,7 @@ struct node_db_sync_catchup_job; /* defined in controllers/sync_controller.h */
 bool catchup_lifecycle_start(struct node_db_sync_catchup_job *job,
                              struct node_db *ndb,
                              const struct active_chain *chain,
-                             const struct wallet *w,
+                             struct wallet *w,
                              const char *datadir);
 
 /* Bounded join for shutdown: waits up to timeout_sec for the catchup

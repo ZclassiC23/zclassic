@@ -132,7 +132,9 @@ static bool zpc_context(
 {
     const char *workspace = zpc_str(input, "workspace");
     int64_t now = 0;
-    if (!workspace || !zpc_hex(input, "expected_network_genesis_root",
+    if (!workspace ||
+        !zcl_native_zcode_workspace_is_explicit_scratch(workspace) ||
+        !zpc_hex(input, "expected_network_genesis_root",
                                 network, 32) || !zpc_now(input, &now))
         return false;
     memset(context, 0, sizeof(*context));

@@ -78,6 +78,11 @@ struct db_service {
 void db_service_init(struct db_service *svc);
 bool db_service_attach(struct db_service *svc, struct node_db *node_db);
 bool db_service_start(struct db_service *svc);
+#ifdef ZCL_TESTING
+/* Fixture owner: starts the serialized writer without a five-minute periodic
+ * checkpoint thread. The fixture closes its private DB after every case. */
+bool db_service_start_test_worker(struct db_service *svc);
+#endif
 void db_service_stop(struct db_service *svc);
 struct node_db *db_service_node_db(struct db_service *svc);
 sqlite3 *db_service_query_db(struct db_service *svc);

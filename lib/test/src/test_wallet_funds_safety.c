@@ -121,8 +121,7 @@ int test_wallet_funds_safety(void)
     int failures = 0;
 
     char dbdir[256], dbpath[320];
-    snprintf(dbdir, sizeof(dbdir), ".zcl_test_funds_safety_%d", (int)getpid());
-    mkdir(dbdir, 0755);
+    test_make_tmpdir(dbdir, sizeof(dbdir), "wallet_funds_safety", "main");
     snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
 
     struct node_db ndb;
@@ -130,8 +129,7 @@ int test_wallet_funds_safety(void)
     bool opened = node_db_open(&ndb, dbpath);
     WFS_CHECK("node.db opened", opened);
     if (!opened) {
-        char cmd[512]; snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        (void)system(cmd);
+        (void)test_rm_rf_recursive(dbdir);
         return failures + 1;
     }
 
@@ -313,6 +311,15 @@ int test_wallet_funds_safety(void)
             memset(tx.v_shielded_spend[1].nullifier.data, 0xFF, 32);
         }
 
+        WFS_CHECK("reservation probe identifies an available note",
+            db_sapling_note_reservation_probe(&ndb, nf_0, tx.hash.data) ==
+                DB_NOTE_RESERVATION_AVAILABLE);
+        uint8_t missing_nf[32]; memset(missing_nf, 0xFE, sizeof(missing_nf));
+        WFS_CHECK("reservation probe identifies a stale nullifier",
+            db_sapling_note_reservation_probe(
+                &ndb, missing_nf, tx.hash.data) ==
+                DB_NOTE_RESERVATION_MISSING);
+
         bool reserved = tx.num_shielded_spend == 2 &&
             node_db_sync_wallet_sapling_spends(&ndb, &tx);
         WFS_CHECK("reservation rejects when any selected note is missing",
@@ -339,7 +346,13 @@ int test_wallet_funds_safety(void)
          * steal the first transaction's durable note reservation. */
         WFS_CHECK("same transaction can replay its note reservation",
                   node_db_sync_wallet_sapling_spends(&ndb, &tx));
+        WFS_CHECK("reservation probe recognizes the same transaction",
+            db_sapling_note_reservation_probe(&ndb, nf_0, tx.hash.data) ==
+                DB_NOTE_RESERVATION_SAME_TX);
         memset(tx.hash.data, 0x87, sizeof(tx.hash.data));
+        WFS_CHECK("reservation probe identifies a conflicting transaction",
+            db_sapling_note_reservation_probe(&ndb, nf_0, tx.hash.data) ==
+                DB_NOTE_RESERVATION_CONFLICT);
         WFS_CHECK("conflicting transaction cannot replace note reservation",
                   !node_db_sync_wallet_sapling_spends(&ndb, &tx));
         transaction_free(&tx);
@@ -475,11 +488,49 @@ int test_wallet_funds_safety(void)
         }
     }
 
-    node_db_close(&ndb);
+    /* Trial decryption deliberately stores a position-0 placeholder
+     * nullifier. Block-connect witness creation must replace it in the live
+     * wallet by stable note identity, or immediate shielded change spends
+     * cannot be marked/reserved without a later deep rescan. */
     {
-        char cmd[512]; snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        (void)system(cmd);
+        struct wallet *w = zcl_calloc(1, sizeof(*w),
+                                      "wfs_nullifier_refresh_wallet");
+        bool ok = w != NULL;
+        if (w) {
+            wallet_init(w);
+            w->sapling_notes = zcl_calloc(
+                1, sizeof(*w->sapling_notes), "wfs_nullifier_refresh_note");
+            ok = ok && w->sapling_notes != NULL;
+        }
+        uint8_t txid[32], old_nf[32], real_nf[32];
+        memset(txid, 0x41, sizeof(txid));
+        memset(old_nf, 0x42, sizeof(old_nf));
+        memset(real_nf, 0x43, sizeof(real_nf));
+        if (ok) {
+            w->num_sapling_notes = 1;
+            w->sapling_notes_cap = 1;
+            w->sapling_notes[0].used = true;
+            w->sapling_notes[0].output_index = 7;
+            memcpy(w->sapling_notes[0].txid.data, txid, sizeof(txid));
+            memcpy(w->sapling_notes[0].nf, old_nf, sizeof(old_nf));
+        }
+        bool refreshed = ok && sync_wallet_note_nullifier_refresh_for_test(
+            w, txid, 7, real_nf);
+        bool wrong_output_refused = ok &&
+            !sync_wallet_note_nullifier_refresh_for_test(
+                w, txid, 8, old_nf);
+        WFS_CHECK("witness creation replaces the live nullifier placeholder",
+                  refreshed && wrong_output_refused &&
+                  memcmp(w->sapling_notes[0].nf,
+                         real_nf, sizeof(real_nf)) == 0);
+        if (w) {
+            wallet_free(w);
+            free(w);
+        }
     }
+
+    node_db_close(&ndb);
+    (void)test_rm_rf_recursive(dbdir);
 
     if (failures == 0)
         printf("wallet_funds_safety: OK (all funds-safety gates pass)\n");

@@ -31,13 +31,13 @@
 struct catchup_args {
     struct node_db *ndb;
     const struct active_chain *chain;
-    const struct wallet *w;
+    struct wallet *w;
     const char *datadir;
 };
 
 struct catchup_lane_ctx {
     const struct active_chain *chain;
-    const struct wallet *w;
+    struct wallet *w;
     const char *datadir;
     int result;
 };
@@ -148,7 +148,7 @@ void node_db_sync_catchup_job_init(struct node_db_sync_catchup_job *job)
 bool node_db_sync_catchup_job_start(struct node_db_sync_catchup_job *job,
                                     struct node_db *ndb,
                                     const struct active_chain *chain,
-                                    const struct wallet *w,
+                                    struct wallet *w,
                                     const char *datadir)
 {
     if (!job || job->started || !ndb || !chain)

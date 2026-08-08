@@ -327,6 +327,10 @@ void zcl_native_handle_vault_intent_fanout_plan(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_vault_intent_commit(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_vault_intent_submit(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_vault_intent_cancel(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_vault_intent_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_vault_intent_list(
@@ -373,6 +377,33 @@ void zcl_native_handle_zcode_package_dev_prepare(
 void zcl_native_handle_zcode_package_dev_seal(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_project_inspect(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_project_init_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_project_init_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_project_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_work_start(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_work_run(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_work_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_work_review(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_work_accept(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_package_dev_score_plan(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
@@ -382,6 +413,10 @@ void zcl_native_handle_zcode_package_dev_score_commit(
 void zcl_native_handle_zcode_package_dev_score_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_guide(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+bool zcl_native_zcode_workspace_is_explicit_scratch(const char *workspace);
 void zcl_native_handle_zcode_commons_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
@@ -398,6 +433,36 @@ void zcl_native_handle_zcode_commons_verify(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_commons_rebuild(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_shadow_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_shadow_attribution_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_shadow_attribution_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_shadow_epoch_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_shadow_epoch_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_shadow_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_shadow_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_shadow_protocol_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_reproduction_challenge_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_reproduction_challenge_commit(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_patronage_offer_plan(

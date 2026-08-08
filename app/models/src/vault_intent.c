@@ -104,7 +104,8 @@ bool vault_intent_validate(const struct vault_intent_row *r,
         r->max_fee_zat == 0 && r->reserved_zat == 0;
     const bool bound =
         (strcmp(r->wallet_scope, "dev") == 0 ||
-         strcmp(r->wallet_scope, "prod") == 0) &&
+         strcmp(r->wallet_scope, "prod") == 0 ||
+         strcmp(r->wallet_scope, "test") == 0) &&
         zcl_is_hex_string(r->wallet_instance_id,
                           WALLET_INSTANCE_ID_HEX_LEN) &&
         zcl_is_hex_string(r->wallet_genesis, WALLET_GENESIS_HEX_LEN) &&
@@ -226,8 +227,8 @@ bool vault_intent_reserve_with_raw_inputs(
     if (!node_db_begin_immediate(ndb))
         return false; /* raw-return-ok:busy is a fail-closed reservation */
     bool inputs_ready = vault_intent_inputs_release_terminal(ndb);
-    int64_t reserved = vault_intent_reserved_total(
-        ndb, r->wallet_scope, r->wallet_instance_id);
+    int64_t reserved = vault_intent_reserved_total_at(
+        ndb, r->wallet_scope, r->wallet_instance_id, r->created_at);
     int64_t lifetime = agent_session_scope_lifetime_spent(
         ndb, r->wallet_scope);
     bool allowed = reserved >= 0 && lifetime >= 0 &&
@@ -381,6 +382,40 @@ bool vault_intent_reclaim_proving(struct node_db *ndb,
         AR_BIND_INT(s, 5, stale_before_unix));
 }
 
+bool vault_intent_record_planned_error(struct node_db *ndb,
+                                       const uint8_t plan_id[32],
+                                       const char *error_code,
+                                       int64_t now_unix)
+{
+    if (!ndb || !ndb->open || !plan_id || !error_code ||
+        strlen(error_code) > VAULT_INTENT_ERROR_MAX || now_unix < 0)
+        LOG_FAIL("vault_intent", "record planned error: invalid argument");
+    sqlite3_stmt *s = NULL;
+    AR_EXEC_CHANGED_BOOL(ndb, s,
+        "UPDATE vault_intents SET error_code=?,updated_at=? "
+        "WHERE plan_id=? AND state=?",
+        AR_BIND_TEXT(s, 1, error_code);
+        AR_BIND_INT(s, 2, now_unix);
+        AR_BIND_BLOB(s, 3, plan_id, 32);
+        AR_BIND_INT(s, 4, VAULT_INTENT_PLANNED));
+}
+
+bool vault_intent_cancel_planned(struct node_db *ndb,
+                                 const uint8_t plan_id[32],
+                                 int64_t now_unix)
+{
+    if (!ndb || !ndb->open || !plan_id || now_unix < 0)
+        LOG_FAIL("vault_intent", "cancel planned: invalid argument");
+    sqlite3_stmt *s = NULL;
+    AR_EXEC_CHANGED_BOOL(ndb, s,
+        "UPDATE vault_intents SET state=?,error_code='CANCELLED_BY_OWNER',"
+        "updated_at=? WHERE plan_id=? AND state=?",
+        AR_BIND_INT(s, 1, VAULT_INTENT_FAILED);
+        AR_BIND_INT(s, 2, now_unix);
+        AR_BIND_BLOB(s, 3, plan_id, 32);
+        AR_BIND_INT(s, 4, VAULT_INTENT_PLANNED));
+}
+
 bool vault_intent_set_state(struct node_db *ndb, const uint8_t plan_id[32],
                             enum vault_intent_state state,
                             const uint8_t txid[32], const char *error_code,
@@ -485,9 +520,9 @@ bool vault_intent_has_raw(struct node_db *ndb, const uint8_t plan_id[32])
         AR_BIND_BLOB(s, 1, plan_id, 32), ;);
 }
 
-int64_t vault_intent_reserved_total(struct node_db *ndb,
-                                    const char *wallet_scope,
-                                    const char *wallet_instance_id)
+static int64_t vault_intent_reserved_total_query(
+    struct node_db *ndb, const char *wallet_scope,
+    const char *wallet_instance_id, bool apply_expiry, int64_t now_unix)
 {
     sqlite3_stmt *s = NULL;
     if (!ndb || !ndb->open || !wallet_scope || !wallet_scope[0] ||
@@ -496,14 +531,36 @@ int64_t vault_intent_reserved_total(struct node_db *ndb,
     AR_PREPARE_RET(ndb, s,
         "SELECT COALESCE(SUM(reserved_zat),0) FROM vault_intents "
         "WHERE wallet_scope=? AND wallet_instance_id=? "
-        "AND state IN (0,1,2,5)", -1);
+        "AND state IN (0,1,2,5) "
+        "AND (?=0 OR state!=0 OR expires_at>?)", -1);
     AR_BIND_TEXT(s, 1, wallet_scope);
     AR_BIND_TEXT(s, 2, wallet_instance_id);
+    AR_BIND_INT(s, 3, apply_expiry ? 1 : 0);
+    AR_BIND_INT(s, 4, now_unix);
     int64_t total = -1;
     if (AR_STEP_ROW(s))
         total = AR_COL_INT(s, 0);
     AR_FINALIZE(s);
     return total;
+}
+
+int64_t vault_intent_reserved_total(struct node_db *ndb,
+                                    const char *wallet_scope,
+                                    const char *wallet_instance_id)
+{
+    return vault_intent_reserved_total_query(
+        ndb, wallet_scope, wallet_instance_id, false, 0);
+}
+
+int64_t vault_intent_reserved_total_at(struct node_db *ndb,
+                                       const char *wallet_scope,
+                                       const char *wallet_instance_id,
+                                       int64_t now_unix)
+{
+    if (now_unix < 0)
+        LOG_ERR("vault_intent", "reserved_total_at: invalid observation time");
+    return vault_intent_reserved_total_query(
+        ndb, wallet_scope, wallet_instance_id, true, now_unix);
 }
 
 const char *vault_intent_state_name(enum vault_intent_state state)

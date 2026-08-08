@@ -32,6 +32,7 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "wallet/wallet.h"
+#include "wallet/wallet_canary.h"
 #include "wallet/wallet_lock.h"
 #include "wallet/wallet_sqlite.h"
 
@@ -185,8 +186,9 @@ static bool vi_decode(const uint8_t *raw, size_t len, struct vi_payload *p)
     return true;
 }
 
-bool vault_intent_context_ready(struct wallet_rpc_context *ctx,
-                                struct json_value *out)
+static bool vi_context_ready(struct wallet_rpc_context *ctx,
+                             struct json_value *out,
+                             bool require_current_backup)
 {
     if (!ctx || !ctx->wallet || !ctx->wallet_db || !ctx->node_db ||
         !ctx->mempool || !ctx->coins_tip || !ctx->main_state) {
@@ -201,24 +203,29 @@ bool vault_intent_context_ready(struct wallet_rpc_context *ctx,
         vi_error(out, "WALLET_LOCKED", "unlock the wallet through stdin before planning");
         return false;
     }
-    struct wallet_sqlite_health h = wallet_sqlite_get_health(
-        ctx->wallet_db, (int)ctx->wallet->keystore.num_keys);
-    if (!h.open || !h.canary_ok || h.mismatch) {
-        vi_error(out, "WALLET_PERSISTENCE_UNHEALTHY", "wallet persistence health gate failed");
+    sqlite3 *db = ctx->wallet_db->open ? ctx->wallet_db->db : NULL;
+    struct wallet_persistence_health h = wallet_persistence_get_health(
+        db, (int)ctx->wallet->keystore.num_keys);
+    if (!h.open || !h.canary_ok || h.row_count < 0 || h.mismatch ||
+        h.corrupt_rows > 0) {
+        vi_error(out, "WALLET_PERSISTENCE_UNHEALTHY",
+                 "wallet persistence health gate failed; inspect core wallet status");
         return false;
     }
-    struct wallet_backup_status backup;
-    wallet_backup_status_snapshot(&backup);
-    int64_t now = (int64_t)platform_time_wall_time_t();
-    size_t path_len = strlen(backup.last_path);
-    bool encrypted_backup = path_len > 4 &&
-        strcmp(backup.last_path + path_len - 4, ".enc") == 0;
-    if (backup.last_run_unix <= 0 || now < backup.last_run_unix ||
-        now - backup.last_run_unix > 86400 || !encrypted_backup ||
-        backup.last_tables_verified != backup.wallet_table_count) {
-        vi_error(out, "ENCRYPTED_BACKUP_REQUIRED",
-                 "a current-key encrypted, fully verified wallet backup under 24 hours old is required");
-        return false;
+    if (require_current_backup) {
+        struct wallet_backup_status backup;
+        wallet_backup_status_snapshot(&backup);
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        size_t path_len = strlen(backup.last_path);
+        bool encrypted_backup = path_len > 4 &&
+            strcmp(backup.last_path + path_len - 4, ".enc") == 0;
+        if (backup.last_run_unix <= 0 || now < backup.last_run_unix ||
+            now - backup.last_run_unix > 86400 || !encrypted_backup ||
+            backup.last_tables_verified != backup.wallet_table_count) {
+            vi_error(out, "ENCRYPTED_BACKUP_REQUIRED",
+                     "a current-key encrypted, fully verified wallet backup under 24 hours old is required");
+            return false;
+        }
     }
     char why[96] = {0};
     if (!sovereignty_guard_allow("wallet_spend", why, sizeof(why))) {
@@ -227,6 +234,10 @@ bool vault_intent_context_ready(struct wallet_rpc_context *ctx,
     }
     return true;
 }
+
+bool vault_intent_context_ready(struct wallet_rpc_context *ctx,
+                                struct json_value *out)
+{ return vi_context_ready(ctx, out, true); }
 
 static bool vi_effects(const struct json_value *input, struct vi_payload *p,
                        struct json_value *out)
@@ -279,10 +290,12 @@ static void vi_refresh_state(struct wallet_rpc_context *ctx,
     struct uint256 txid;
     memcpy(txid.data, row->txid, 32);
     const struct wallet_tx *wtx = wallet_get_tx(ctx->wallet, &txid);
-    if (wtx && wtx->confirms > 0 && !uint256_is_null(&wtx->hash_block)) {
-        int tip = active_chain_height(&ctx->main_state->chain_active);
-        int32_t height = tip - wtx->confirms + 1;
-        enum vault_intent_state state = wtx->confirms >= 6
+    int32_t height = -1;
+    int32_t confirmations = 0;
+    if (wtx && !uint256_is_null(&wtx->hash_block) &&
+        vault_intent_chain_confirmation(ctx->main_state,
+            wtx->hash_block.data, &height, &confirmations)) {
+        enum vault_intent_state state = confirmations >= 6
             ? VAULT_INTENT_FINALIZED : VAULT_INTENT_CONFIRMED;
         if (vault_intent_set_confirmation(ctx->node_db, row->plan_id, state,
                 height, wtx->hash_block.data, now))
@@ -295,8 +308,9 @@ static void vi_refresh_state(struct wallet_rpc_context *ctx,
     }
 }
 
-static bool rpc_vi_plan(const struct json_value *params, bool help,
-                        struct json_value *result)
+static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
+                                struct json_value *result,
+                                bool backup_preflight_held)
 {
     RPC_HELP(help, result,
              "vault_intent_plan {wallet_scope,route,effects,idempotency_key}\n");
@@ -307,10 +321,9 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
         return true;
     }
     const char *wallet_scope = json_get_str(json_get(input, "wallet_scope"));
-    if (!wallet_scope || (strcmp(wallet_scope, "dev") != 0 &&
-                          strcmp(wallet_scope, "prod") != 0)) {
+    if (!wallet_money_scope_valid(wallet_scope)) {
         vi_error(result, "WALLET_SCOPE_REQUIRED",
-                 "wallet_scope must explicitly be dev or prod");
+                 "wallet_scope must explicitly be dev, prod, or test");
         return true;
     }
     const char *route = json_get_str(json_get(input, "route"));
@@ -322,7 +335,14 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
                  "idempotency_key must be 1..64 printable characters");
         return true;
     }
-    if (!vault_intent_context_ready(ctx, result)) return true;
+    /* A fanout holds this full preflight while it mints durable self-custody
+     * destinations. Re-running it after key generation made a long batch race
+     * normal tip-finalize cursor movement and stranded the new keys. The plan
+     * below still performs fresh money/input/tip binding and atomic reservation. Commit repeats the full
+     * context/backup/sovereignty gate before any value can move. */
+    if (!backup_preflight_held && !vi_context_ready(ctx, result, true)) return true;
+    (void)vault_intent_expire_due(
+        ctx->node_db, (int64_t)platform_time_wall_time_t());
     struct vi_payload p; memset(&p, 0, sizeof(p));
     if (!vi_effects(input, &p, result)) return true;
     int64_t target = 0;
@@ -470,24 +490,16 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
     return true;
 }
 
-bool vault_intent_plan_transparent_input(const struct json_value *input,
-                                         struct json_value *result)
+static bool rpc_vi_plan(const struct json_value *params, bool help,
+                        struct json_value *result)
+{ return rpc_vi_plan_checked(params, help, result, false); }
+
+bool vault_intent_plan_transparent_fanout_continuation(
+    const struct json_value *params, struct json_value *result)
 {
-    if (!input || input->type != JSON_OBJ || !result)
-        LOG_FAIL("vault_intent", "transparent input wrapper: invalid argument");
-    struct json_value params, copy;
-    json_init(&params); json_set_array(&params);
-    json_init(&copy); json_copy(&copy, input);
-    bool appended = json_push_back(&params, &copy);
-    json_free(&copy);
-    if (!appended) {
-        json_free(&params);
-        vi_error(result, "OUT_OF_MEMORY", "could not stage fanout plan input");
-        return true;
-    }
-    bool handled = rpc_vi_plan(&params, false, result);
-    json_free(&params);
-    return handled;
+    if (!params || params->type != JSON_ARR || !result)
+        LOG_FAIL("vault_intent", "fanout continuation: invalid argument");
+    return rpc_vi_plan_checked(params, false, result, true);
 }
 
 bool vault_intent_transparent_shape_matches(
@@ -515,14 +527,6 @@ bool vault_intent_transparent_shape_matches(
         matches = payload.effects[i].amount == output_value_zat;
     memory_cleanse(plain, sizeof(plain));
     return matches;
-}
-
-static bool vi_anchor_ok(struct wallet_rpc_context *ctx,
-                         const struct vault_intent_row *row)
-{
-    struct block_index *bi = active_chain_tip(&ctx->main_state->chain_active);
-    return bi && bi->nHeight == row->anchor_height &&
-        memcmp(bi->hashBlock.data, row->anchor_hash, 32) == 0;
 }
 
 static bool vi_build_prepared(struct wallet_rpc_context *ctx,
@@ -576,11 +580,12 @@ static bool vi_build_prepared(struct wallet_rpc_context *ctx,
             outputs, p.effects_len, wtx, &fee, &why) || fee != p.fee) {
         vi_error(result, "EXACT_BUILD_FAILED", why ? why : "fee changed since planning"); return false;
     }
-    struct zcl_result flushed = wallet_flush_from_context(ctx);
-    if (!flushed.ok) {
-        transaction_free(&wtx->tx);
-        vi_error(result, "CHANGE_KEY_PERSIST_FAILED", flushed.message); return false;
-    }
+    /* wallet_create_transaction_selected() can consume only a keypool entry
+     * whose private key was durably flushed before it became eligible.  No
+     * new key material is created here, so a full all-key re-encryption is
+     * neither a durability boundary nor part of the plan hot path.  The new
+     * wallet transaction itself is persisted before relay by
+     * wallet_persist_commit_before_relay(). */
     struct byte_stream s; stream_init(&s, 1024);
     bool saved = transaction_serialize(&wtx->tx, &s) &&
         s.size <= VAULT_INTENT_RAW_MAX &&
@@ -596,19 +601,14 @@ static bool vi_build_prepared(struct wallet_rpc_context *ctx,
     return true;
 }
 
-static bool rpc_vi_commit(const struct json_value *params, bool help,
-                          struct json_value *result)
+bool vault_intent_commit_input(const struct json_value *in,
+                               struct json_value *result)
 {
-    RPC_HELP(help, result,
-             "vault_intent_commit {wallet_scope,plan_id,confirm:true}\n");
-    const struct json_value *in = json_at(params, 0);
     const char *hex = in ? json_get_str(json_get(in, "plan_id")) : NULL;
     const char *wallet_scope = in
         ? json_get_str(json_get(in, "wallet_scope")) : NULL;
     uint8_t id[32];
-    if (!in || !wallet_scope ||
-        (strcmp(wallet_scope, "dev") != 0 &&
-         strcmp(wallet_scope, "prod") != 0) ||
+    if (!in || !wallet_money_scope_valid(wallet_scope) ||
         !json_get_bool_or(in, "confirm", false) || !vi_unhex(hex, id)) {
         vi_error(result, "CONFIRM_REQUIRED",
                  "wallet_scope, plan_id, and confirm:true are required");
@@ -633,7 +633,10 @@ static bool rpc_vi_commit(const struct json_value *params, bool help,
         json_set_object(result); json_push_kv_bool(result, "ok", true);
         vault_intent_render_row(ctx, result, &row); json_push_kv_bool(result, "idempotent_replay", true); return true;
     }
-    if (row.state == VAULT_INTENT_EXPIRED || row.expires_at <= now) {
+    const bool prepared_retry = vault_intent_prepared_retry_allowed(
+        &row, vault_intent_has_raw(ctx->node_db, id));
+    if (!prepared_retry &&
+        (row.state == VAULT_INTENT_EXPIRED || row.expires_at <= now)) {
         vi_error(result, "PLAN_EXPIRED", "the ten-minute plan lifetime elapsed"); return true;
     }
     struct wallet_money_snapshot money;
@@ -656,8 +659,8 @@ static bool rpc_vi_commit(const struct json_value *params, bool help,
                  "wallet instance or network no longer matches the plan");
         return true;
     }
-    if (!vi_anchor_ok(ctx, &row) ||
-        memcmp(row.snapshot_root, money.snapshot_root, 32) != 0) {
+    if (!prepared_retry && (!vault_intent_anchor_current(ctx, &row) ||
+        memcmp(row.snapshot_root, money.snapshot_root, 32) != 0)) {
         (void)vault_intent_set_state(ctx->node_db, id,
             VAULT_INTENT_CONFLICTED, NULL, "MONEY_SNAPSHOT_CHANGED", now);
         vi_error(result, "MONEY_SNAPSHOT_CHANGED",
@@ -705,8 +708,16 @@ static bool rpc_vi_commit(const struct json_value *params, bool help,
         free(raw);
         const char *code = json_get_str(json_get(result, "code"));
         if (code && strcmp(code, "INPUT_CONFLICT") == 0)
-            vault_intent_set_state(ctx->node_db, id, VAULT_INTENT_CONFLICTED,
-                                   NULL, "INPUT_CONFLICT", now);
+            (void)vault_intent_set_state(ctx->node_db, id,
+                VAULT_INTENT_CONFLICTED, NULL, "INPUT_CONFLICT", now);
+        else
+            /* The proving claim owns no broadcast bytes yet. A failed exact
+             * build must become terminal immediately: leaving it PROVING for
+             * the five-minute crash lease makes a known failure look busy and
+             * keeps its reservation needlessly locked. */
+            (void)vault_intent_set_state(ctx->node_db, id,
+                VAULT_INTENT_FAILED, NULL,
+                code && code[0] ? code : "EXACT_BUILD_FAILED", now);
         return true;
     }
     free(raw);
@@ -716,6 +727,14 @@ static bool rpc_vi_commit(const struct json_value *params, bool help,
     json_set_object(result); json_push_kv_bool(result, "ok", true);
     vault_intent_render_row(ctx, result, &row); json_push_kv_bool(result, "idempotent_replay", false);
     return true;
+}
+
+static bool rpc_vi_commit(const struct json_value *params, bool help,
+                          struct json_value *result)
+{
+    RPC_HELP(help, result,
+             "vault_intent_commit {wallet_scope,plan_id,confirm:true}\n");
+    return vault_intent_commit_input(json_at(params, 0), result);
 }
 
 static bool rpc_vi_status(const struct json_value *params, bool help,
@@ -772,4 +791,5 @@ void register_vault_intent_rpc_commands(struct rpc_table *t)
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);
+    register_vault_intent_async_rpc_commands(t);
 }

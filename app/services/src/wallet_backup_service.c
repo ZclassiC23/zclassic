@@ -11,11 +11,11 @@
  * the status snapshot, the diagnostics dumper, and the supervisor liveness
  * contract. See the header for rationale.
  *
- * The one-shot snapshot primitive and its all-seven-tables verification
+ * The one-shot snapshot primitive and its all-eight-tables verification
  * live in wallet_backup_run.c (declared in wallet_backup_internal.h);
  * rotation/listing in wallet_backup_rotation.c; the WBE1 crypto in
  * wallet_backup_crypto.c. The split happened when verification grew from
- * one table to seven and this file passed the 800-line shape ceiling.
+ * one table to eight and this file passed the 800-line shape ceiling.
  */
 
 #include "base/result.h"
@@ -369,6 +369,42 @@ struct zcl_result wallet_backup_now(void)
     }
     struct zcl_result res = wbs_run_one_locked();
     pthread_mutex_unlock(&g_wbs.lock);
+    return res;
+}
+
+struct zcl_result wallet_backup_now_encrypted(const char *password)
+{
+    if (!password || !password[0])
+        return ZCL_ERR(-11, "backup_now_encrypted: password is empty");
+
+    pthread_mutex_lock(&g_wbs.lock);
+    if (!g_wbs.db || !g_wbs.cfg.backup_dir) {
+        struct zcl_result r = ZCL_ERR(-10,
+                "backup_now_encrypted: service not initialized");
+        pthread_mutex_unlock(&g_wbs.lock);
+        return r;
+    }
+
+    bool saved_encrypt = g_wbs.cfg.encrypt;
+    const char *saved_password = g_wbs.cfg.encrypt_password;
+    int64_t failures_before = g_wbs.total_failures;
+    g_wbs.cfg.encrypt = true;
+    g_wbs.cfg.encrypt_password = password;
+    struct zcl_result res = wbs_run_one_locked();
+    g_wbs.cfg.encrypt = saved_encrypt;
+    g_wbs.cfg.encrypt_password = saved_password;
+
+    size_t path_len = strlen(g_wbs.last_path);
+    size_t suffix_len = strlen(WALLET_BACKUP_FILENAME_SUFFIX_ENC);
+    bool encrypted = res.ok && g_wbs.total_failures == failures_before &&
+        path_len >= suffix_len &&
+        strcmp(g_wbs.last_path + path_len - suffix_len,
+               WALLET_BACKUP_FILENAME_SUFFIX_ENC) == 0;
+    pthread_mutex_unlock(&g_wbs.lock);
+
+    if (!encrypted)
+        return ZCL_ERR(-12,
+            "backup_now_encrypted: verified encrypted backup was not created");
     return res;
 }
 

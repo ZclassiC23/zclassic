@@ -54,6 +54,14 @@ struct testcache;
  * .zvcs object store exists. Returns NULL on hard failure — the caller then
  * runs every group (fail-safe: no cache, never a wrong skip). */
 struct testcache *testcache_open(const char *repo_root);
+/* Resident save-cycle variant: open only the already-verified index snapshot
+ * and bind the exact changed source set. A group's old forward closure may be
+ * reused only when it excludes every changed source; any affected group runs
+ * fresh. Missing snapshots fail safe by returning NULL, never rebuilding the
+ * full index in the feedback path. */
+struct testcache *testcache_open_snapshot(
+    const char *repo_root, const char *const *changed_sources,
+    size_t changed_source_count);
 void testcache_close(struct testcache *tc);
 
 /* Why a group was (not) cacheable. A STABLE identity for histogram bucketing —
@@ -70,6 +78,7 @@ enum testcache_reason {
     TESTCACHE_R_FILE_UNREADABLE,   /* an input file could not be hashed */
     TESTCACHE_R_NO_INCLUDE_GRAPH,  /* build/ carries no depfiles at all */
     TESTCACHE_R_GRAPH_STALE,       /* an input is newer than the include graph */
+    TESTCACHE_R_CHANGED_INPUT,     /* resident snapshot closure reaches edit */
     TESTCACHE_R__COUNT
 };
 

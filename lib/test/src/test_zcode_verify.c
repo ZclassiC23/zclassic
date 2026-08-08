@@ -76,7 +76,7 @@
     else { printf("  zcode_verify: %s... FAIL\n", (name)); failures++; } \
 } while (0)
 
-#define ZV_VERIFIER_BIN "build/bin/zclassic23-package-verify"
+#define ZV_VERIFIER_BIN "build/bin/zclassic23-package-verify-dev"
 
 /* ── small fixtures ─────────────────────────────────────────────────── */
 
@@ -1610,7 +1610,7 @@ static int t_verifier_e2e(void)
     struct stat st;
     if (stat(ZV_VERIFIER_BIN, &st) != 0) {
         printf("  zcode_verify: e2e... FAIL (%s missing — run `make "
-               "zclassic23-package-verify` first)\n", ZV_VERIFIER_BIN);
+               "dev-bin` first)\n", ZV_VERIFIER_BIN);
         return 1;
     }
     char base[4400];

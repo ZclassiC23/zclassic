@@ -53,7 +53,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Upper bound on the wallet table set (currently seven). */
+/* Upper bound on the wallet table set (currently eight). */
 #define WALLET_RESTORE_TABLE_MAX 16
 
 struct wallet_restore_request {

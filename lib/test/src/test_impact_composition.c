@@ -52,6 +52,7 @@
 #define IC_FIX_DEF    IC_FIX_ROOT "/registry"
 #define IC_FIX_MACRO  IC_FIX_ROOT "/macro"
 #define IC_FIX_NODEPS IC_FIX_ROOT "/nodeps"
+#define IC_FIX_SNAPSHOT IC_FIX_ROOT "/snapshot"
 
 /* ── fixture helpers ──────────────────────────────────────────────────── */
 
@@ -267,6 +268,28 @@ static int test_ic_group_cap_preserves_groups(void)
         ASSERT(strstr(body, "\"execution_groups_abridged\":") != NULL);
 
         system("rm -rf " IC_FIX_GROUP);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_ic_command_latency_scope_is_precise(void)
+{
+    int failures = 0;
+    TEST("impact composition: command latency follows only latency owners") {
+        const char *code_files[] = { "lib/codeindex/src/codeindex.c" };
+        struct zcl_devloop_plan code_plan;
+        ASSERT(zcl_devloop_plan_files(code_files, 1, &code_plan));
+        ASSERT(ic_planned(&code_plan, "command_registry_catalog"));
+        ASSERT(ic_planned(&code_plan, "command_registry_latency"));
+
+        const char *zcode_files[] = {
+            "tools/command/native_zcode_dev_command.c"
+        };
+        struct zcl_devloop_plan zcode_plan;
+        ASSERT(zcl_devloop_plan_files(zcode_files, 1, &zcode_plan));
+        ASSERT(ic_planned(&zcode_plan, "command_registry_catalog"));
+        ASSERT(!ic_planned(&zcode_plan, "command_registry_latency"));
         PASS();
     } _test_next:;
     return failures;
@@ -730,6 +753,16 @@ static int test_ic_dimension_applicability_and_exact_execution(void)
         ASSERT(!zcl_devloop_plan_proof_admissible(&gap, &why));
         ASSERT(strcmp(why, "unmapped-code-change") == 0);
 
+        struct agent_impact_acc executor = {0};
+        (void)agent_impact_apply_shared_rules(
+            "app/services/src/build_fabric_package_executor.c", &executor);
+        ASSERT(executor.shared_rule_hits > 0);
+        bool executor_has_build_proof = false;
+        for (size_t i = 0; i < executor.groups_len; i++)
+            if (strcmp(executor.groups[i], "build_fabric") == 0)
+                executor_has_build_proof = true;
+        ASSERT(executor_has_build_proof);
+
         struct zcl_devloop_plan stale = plan;
         snprintf(stale.path_groups[0], sizeof(stale.path_groups[0]),
                  "missing_catalog_group");
@@ -741,16 +774,92 @@ static int test_ic_dimension_applicability_and_exact_execution(void)
     return failures;
 }
 
+static int test_ic_snapshot_overlays_current_symbols(void)
+{
+    int failures = 0;
+    TEST("impact composition: resident snapshot overlays current changed symbols") {
+        system("rm -rf " IC_FIX_SNAPSHOT);
+        ASSERT(ic_write(IC_FIX_SNAPSHOT, "lib/net/src/tor_integration.c",
+                        "int old_unreferenced(void) { return 1; }\n"));
+        ASSERT(ic_write(IC_FIX_SNAPSHOT, "lib/net/src/download.c",
+                        "int future_leaf(void);\n"
+                        "int download_future(void) { return future_leaf(); }\n"));
+        ASSERT(ic_write_depfiles(IC_FIX_SNAPSHOT));
+
+        const char *files[] = { "lib/net/src/tor_integration.c" };
+        struct zcl_devloop_plan baseline;
+        ASSERT(zcl_devloop_plan_files(files, 1, &baseline));
+        ASSERT(zcl_devloop_plan_add_closure(
+            IC_FIX_SNAPSHOT, files, 1, &baseline));
+        ASSERT(!ic_planned(&baseline, "download"));
+
+        ASSERT(ic_write(IC_FIX_SNAPSHOT, "lib/net/src/tor_integration.c",
+                        "int future_leaf(void) { return 2; }\n"));
+        struct zcl_devloop_plan snapshot;
+        ASSERT(zcl_devloop_plan_files(files, 1, &snapshot));
+        ASSERT(zcl_devloop_plan_add_closure_snapshot(
+            IC_FIX_SNAPSHOT, files, 1, &snapshot));
+        ASSERT(snapshot.closure_snapshot);
+        ASSERT(ic_planned(&snapshot, "download"));
+        ASSERT(zcl_devloop_plan_proof_admissible(&snapshot, NULL));
+
+        system("rm -rf " IC_FIX_SNAPSHOT);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static bool ic_acc_has_group(const struct agent_impact_acc *acc,
+                             const char *group)
+{
+    for (size_t i = 0; i < acc->groups_len; i++)
+        if (strcmp(acc->groups[i], group) == 0)
+            return true;
+    return false;
+}
+
+static int test_ic_code_capsule_stays_with_code_owner(void)
+{
+    int failures = 0;
+    TEST("impact composition: code capsule proof stays with code commands") {
+        struct agent_impact_acc zcode = {0};
+        (void)agent_impact_apply_shared_rules(
+            "tools/command/native_zcode_dev_command.c", &zcode);
+        ASSERT(ic_acc_has_group(&zcode, "command_registry_catalog"));
+        ASSERT(!ic_acc_has_group(&zcode, "code_capsule"));
+
+        struct agent_impact_acc shared_header = {0};
+        (void)agent_impact_apply_shared_rules(
+            "tools/command/native_command.h", &shared_header);
+        ASSERT(ic_acc_has_group(&shared_header,
+                                "command_registry_catalog"));
+        ASSERT(!ic_acc_has_group(&shared_header, "codeindex"));
+        ASSERT(!ic_acc_has_group(&shared_header, "code_capsule"));
+        ASSERT(!ic_acc_has_group(&shared_header, "code_impact"));
+
+        struct agent_impact_acc code = {0};
+        (void)agent_impact_apply_shared_rules(
+            "tools/command/native_code_command.c", &code);
+        ASSERT(ic_acc_has_group(&code, "command_registry_catalog"));
+        ASSERT(ic_acc_has_group(&code, "code_capsule"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_impact_composition(void)
 {
     int failures = 0;
     failures += test_ic_truncated_closure_preserves_groups();
     failures += test_ic_group_cap_preserves_groups();
+    failures += test_ic_command_latency_scope_is_precise();
     failures += test_ic_registry_def_has_dependents();
     failures += test_ic_macro_only_header_has_dependents();
     failures += test_ic_incomplete_dimension_refuses_proof();
     failures += test_ic_every_selection_has_a_reason();
     failures += test_ic_union_never_loses_a_rule_group();
     failures += test_ic_dimension_applicability_and_exact_execution();
+    failures += test_ic_snapshot_overlays_current_symbols();
+    failures += test_ic_code_capsule_stays_with_code_owner();
     return failures;
 }

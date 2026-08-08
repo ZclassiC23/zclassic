@@ -129,6 +129,8 @@ static int test_cm_determinism(void)
         ASSERT(ra.file_count == 5);
         ASSERT(ra.total_bytes > 0);
         ASSERT(c1.files_read == 5 && c1.files_total == 5);
+        ASSERT(c1.bytes_total == ra.total_bytes);
+        ASSERT(c1.bytes_read == c1.bytes_total);
         ASSERT(c1.nodes_hashed == c1.nodes_total);
         ASSERT(!c1.snapshot_used && !c1.snapshot_saved);
 
@@ -230,6 +232,7 @@ static int test_cm_incremental(void)
         ASSERT(idle.snapshot_used);
         ASSERT(idle.files_read == 0);
         ASSERT(idle.bytes_read == 0);
+        ASSERT(idle.bytes_total == cold.bytes_total);
         ASSERT(idle.leaves_reused == 5);
         ASSERT(idle.nodes_hashed == 0);
         ASSERT(idle.nodes_reused == nodes_total);
@@ -246,6 +249,8 @@ static int test_cm_incremental(void)
         ASSERT(inc);
         ASSERT(warm.snapshot_used);
         ASSERT(warm.files_read == 1);       /* ONE file re-read, not five */
+        ASSERT(warm.bytes_total > 0);
+        ASSERT(warm.bytes_read < warm.bytes_total);
         ASSERT(warm.leaves_reused == 4);
         /* exactly the edited file's path to the root: lib/net/src, lib/net,
          * lib, "" — 4 of 9, the other 5 kept their stored digest. */

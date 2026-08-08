@@ -284,7 +284,21 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
 
             for (size_t i = 0; i < blk->num_vtx; i++) {
                 const struct transaction *tx = &blk->vtx[i];
-                wallet_sync_transaction(wallet, tx, pindex_new);
+                bool wallet_involved =
+                    wallet_sync_transaction(wallet, tx, pindex_new);
+                /* Mainnet/testnet use a narrow async projection only for
+                 * wallet-relevant transactions. The reducer never waits on
+                 * SQLite, and blocks with no wallet activity enqueue nothing.
+                 * Regtest keeps its existing whole-block async job below. */
+                if (!regtest_on_demand && wallet_involved && ndb &&
+                    !node_db_sync_wallet_tx_confirmed_async(
+                        ndb, tx, wallet, pindex_new->nHeight,
+                        pindex_new->phashBlock->data, pindex_new->nTime)) {
+                    LOG_WARN("tip_finalize",
+                             "wallet confirmation projection enqueue failed "
+                             "at height %d tx %zu",
+                             pindex_new->nHeight, i);
+                }
                 /* Trial-decrypt Sapling shielded outputs for our wallet */
                 if (tx->num_shielded_output > 0 &&
                     wallet->sapling_keys.num_keys > 0) {

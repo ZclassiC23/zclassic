@@ -4,7 +4,7 @@
 > bar: [`../METAVERSE_MVP.md`](../METAVERSE_MVP.md). This document stays the
 > authoritative maintainer spec.
 
-Status: owner-directed specification, 2026-08-06. This document freezes the
+Status: owner-directed specification, updated 2026-08-07. This document freezes the
 safe pre-genesis policy and implementation order for creation-backed ZC23
 issuance. It authorizes specifications, codecs, validation, rebuildable
 projections, read-only views, and simulations only. It does **not** authorize a
@@ -76,10 +76,11 @@ money, publication, installation, or other durable authority is involved.
 The implemented foundation already exposes package search/show/recipe/verify,
 package fetch and confined add, development create/use/improve/evidence/accept,
 lane and task inspection, offline release preparation/sealing, signed ZCODE
-Score receipts, and read-only `zcode commons` verification. Patronage and
-continuity commands remain planned until their canonical simulation objects and
-cross-object validators land. No documentation or adapter may label a planned
-leaf ready, a CAS object funded, a local result globally trusted, or a
+Score receipts, read-only `zcode commons` verification, scratch-only shadow
+attribution/epoch planning, simulation-only patronage offers/funding, and
+continuity-policy inspection. Live settlement, refund, custody and issuance
+remain planned and fail closed. No documentation or adapter may label a
+planned leaf ready, a CAS object funded, a local result globally trusted, or a
 simulation as a live transfer.
 
 All adapters consume these same objects and services. A website or onion view
@@ -224,10 +225,15 @@ licence-evidence root, a closed contribution category or mask, exact award in
 atoms, opening anchor, maturity height and median-time-past, optional
 predecessor attribution or release-lineage root, and creation time.
 
-Valid categories describe mechanically demonstrated events: new public source,
-born-red test plus fix, security repair, benchmark evidence, independent
-reproduction, structured review or negative finding, compatibility
-maintenance, and long-interval preservation/reproduction. Ordinary upload,
+The v1 wire admits only mechanically demonstrated public source, born-red
+repair, independent reproduction, compatibility maintenance, and preservation.
+`SECURITY_FIX` is retained as a display label but has exactly the born-red
+evidence and award class: v1 binds no structured security-finding authority,
+so selecting that label cannot increase issuance. Benchmark and structured
+review/negative-finding categories are not admitted by v1; existing science
+receipts are useful evidence, but this wire has no independent field that can
+bind them without overloading lineage. Adding them requires a separately
+reviewed versioned authority, not reinterpretation of v1. Ordinary upload,
 bandwidth, signing, voting, DHT publication, balance, payment, line count,
 generated volume, formatting, renaming, version bumps, no-op rebuilds,
 delete-and-readd novelty, copied/lightly transformed work, circular review,
@@ -240,6 +246,30 @@ non-permissive licensing; duplicate contribution roots; contributor-binding
 mismatch; zero or overflowing awards; epoch mismatch; package/release/recipe/
 lock substitution; contradictory source lineage; and any caller assertion not
 proved by canonical bytes. One contribution root credits one contributor once.
+
+Historical authorship and current payment authority are deliberately separate.
+The contributor binding referenced by an attribution is verified at the
+candidate's `created_unix`, when the authorship event occurred. Later key
+rotation, binding expiry, or revocation does not erase valid history. Any
+future payout path must independently re-check current authority at the time of
+payment; historical validity never authorizes current funds.
+
+`PUBLIC_SOURCE` lineage is authority, not a hint. `NONE` requires both an empty
+lineage root and a signed root release with no parent. `RELEASE` reloads the
+signed direct parent and proves exact parent root, package name, chain,
+publisher key, and next publisher sequence. `PREDECESSOR_ATTRIBUTION` reloads
+and recursively re-verifies the complete prior attribution, then proves that
+its signed release is the direct parent. Recursion is bounded and arbitrary,
+missing, substituted, cross-policy, future, or contradictory roots fail
+closed.
+
+Continuity creation is neutral with respect to patronage. The
+`zcl.zcode.creation_event_key.v1\0` identity derives from the registered Score
+evidence plus exact package, release, and toolchain capsule. A born-red fix,
+independent reproduction, compatibility event, or preservation event may
+qualify with a verified release/predecessor lineage and no patron at all. An
+optional continuity policy may add a patron's caps or transition constraints,
+but it neither creates the event nor changes its duplicate identity.
 
 ## Epoch creation set and fungibility
 
@@ -262,6 +292,215 @@ a collectible permanently attached to one package. The valid statement is
 aggregate and exact: all policy-valid issued supply is accounted for by
 creation attributions. A display must never claim that a mixed token still
 belongs to one historical work.
+
+## First shadow epoch: implemented simulation and real-world blocker
+
+The first shadow candidate is the real MIT-licensed
+`zclassic23/sha3@0.1.0-dev.1` package. Its current exact evidence vertical is:
+
+- package `ea54d7038792764c059a697792d46ee92fe75e29aa302d3c8db3a208a580876e`;
+- task `ef7b6182c3560110e34fbfd70c98ee8b8107f6cb0d7b5a2b3315d92f275de5a7`;
+- candidate `45654ffefad86f3f5d2096f3c829398be0e8d945508a80adedb458f29364a584`;
+- proof policy `6e1021dd7f9d73533f35048cee3a95d555c7473cb1ffcffb3ef06f6f9270b08f`;
+- proof set `b063663993af9232bfdc1431950135ecc1dc59caa612c078efca4704fa32f83b`;
+- PROVEN lane `a9f923e63e54051535412f180f4720a797c7ab026ceae4bf9d62d2cced880101`;
+- Score receipt `680882572af552040efb6ec202915a3d5c2f9704e2d389200c07ed770ba6bea8`.
+
+The local Score is honestly 4/5. Its independent-reproduction evidence root is
+`47ca7f1e8c41f062e9e6c66a58539c5daca5deff0f9279dfe7c1ec0990a5e88e`,
+and its signer remains same-host/local-only. The O4 protocol simulation can now
+derive, verify and optionally store a deterministic creation attribution and
+ordered epoch-creation set when the separate policy qualification evaluator
+returns ready. That exercises exact amount and lineage invariants; it does not
+upgrade the Score receipt, prove physical independence, authorize genesis or
+make the fixture's simulated units exist.
+
+The permanent acceptance fixture uses the real self-hosted base package bytes,
+signed release and Apache-2.0 `LICENSE`, then reloads the full task, candidate,
+proof policy/set, PROVEN lane, Score, contributor binding, reproduction request,
+approved-reproducer policy and deterministic challenge anchors. It proves
+plan/commit idempotency and rejects a changed branch, missing predecessor,
+duplicate candidate, policy substitution and one-atom accounting drift. The
+fixture explicitly reports `physical_independence_proven=false`.
+
+The qualification view is:
+
+```text
+zclassic23 zcode commons shadow plan --input='{"workspace":"<scratch-cas>","score_receipt_root":"680882572af552040efb6ec202915a3d5c2f9704e2d389200c07ed770ba6bea8","policy_candidate_root":"<64hex>","reproduction_request_root":"<64hex>","reproduction_proof_set_root":"<64hex>","epoch":<n>,"now_unix":<seconds>}'
+```
+
+It reloads and rederives the task, candidate, policy, proof set, work receipts,
+PROVEN lane, signed Score receipt, exact reproduction objects and generated
+package-registry match. Once ready, the scratch-only object flow is:
+
+```text
+zcode commons shadow attribution plan|commit
+zcode commons shadow epoch plan|commit
+zcode commons shadow status
+zcode commons shadow verify
+```
+
+Use `discover schema <leaf>` for the exact closed input keys. Plans write
+nothing; commits store only root-addressed attribution/epoch wires in an
+explicit scratch CAS. Every result says `simulated=true`, `token_exists=false`,
+`funds_moved=false`, `custody_used=false`, and
+`genesis_gate_satisfied=false`. A genuinely separate approved reproducer is
+still required to clear the real SHA3 off-host gate. Until then no completed
+real-world shadow epoch or independent-reproduction Score unit may be claimed.
+
+## Independent reproduction and shadow-epoch contract
+
+The independent-reproduction path has three distinct completion grades. They
+must never be collapsed in code or presentation:
+
+1. protocol and native-command implementation complete;
+2. hermetic same-host, multi-process acceptance complete, explicitly labelled
+   simulation rather than independent reproduction; and
+3. a receipt from a genuinely separate, policy-approved reproducer imported
+   and accepted.
+
+Only grade 3 clears the real SHA3 shadow blocker. A different process, path,
+user, container, VM, workspace, datadir, or signing key on the same physical
+host remains same-host evidence. A signature cannot prove physical location.
+Every qualification report therefore exposes the separate facts
+`exact_reproduction_match`, `distinct_signer`, `signer_policy_approved`,
+`declared_operator_group_distinct`, `remote_transport_used`, and
+`physical_independence_proven`. V1 always reports the last fact as false; an
+operator may supply trusted external knowledge outside the canonical object,
+but the protocol must not rename that knowledge cryptographic proof.
+
+### Existing-owner reuse map
+
+No slice in this program creates a second identity, artifact, build report,
+CAS, worker, scheduler, transport, verifier, proof set, grant ledger, package
+store, chain simulator, or policy database.
+
+| Required fact or operation | Existing authority reused | Boundary |
+|---|---|---|
+| Historical 4/5 contribution evidence | `zcl.zcode.score_receipt.v1`, `work_receipt.v1`, `proof_set.v1`, and the PROVEN lane | Score v1 bytes and semantics stay frozen; its independent bit remains forbidden |
+| Exact package inputs | `content.v2`, package manifest/release, recipe, dependency lock, toolchain capsule | Public bytes only; no downloaded scripts, credentials, or machine-specific source paths |
+| Reference and rebuilt outputs | `zcl.zcode_build.v1` package-build reports plus `build_artifact_manifest.v1` | Existing canonical output paths, SHA3 hashes, sizes, and dependency roots remain authoritative |
+| Byte-identity verdict | `vcs_package_reproduce_compare` and `zclassic23-package-verify --emit --reproduce-against` | Exact package/recipe/lock/dependency/output match; no favorable-result selection |
+| Confinement | existing package verifier and ZBuild worker | Declarative recipe, Landlock, seccomp, rlimits, no network, bounded resources; degraded confinement cannot qualify |
+| Work transport and result | ZBuild worker, `zcode_work_swarm`, signed `work_receipt.v1`, `zpkgswm`, signed provider records, and DHT | Remote transport is reported as a fact, never inferred from a signer or hostname |
+| Signer identity and history | contributor binding/ZID and existing delegated worker identity | Approval is checked at receipt time; later expiry preserves history but cannot authorize new work |
+| Local package-verifier allowlist | `package_verify_policy` | Parsing/evaluation precedent only: mutable local configuration cannot define immutable issuance policy |
+| Local discovery policy | `zcode_sovereignty_policy` | Remains per-node fetch/store/execute policy and cannot change a shadow-policy root |
+| Metaverse property grants | existing property-grant evaluator/service | Continue to govern a holder's local property actions; never establish evidence truth, issuance, or reproducer approval |
+| Attribution and accounting | `creation_attribution.v1`, `epoch_creation_set.v1`, and the rebuildable Commons projection | Scratch simulation only; no ZSLP transaction, wallet, custody, or second ledger |
+| Opening and maturity anchors | existing deterministic chain-test/simnet owner | No second blockchain and no consensus edit |
+
+`vcs_zcode_score_offhost_reproducer_approved()` remains fail-closed, and both
+Score-v1 planning and validation continue to reject the independent bit. The
+versioned extension is a separate policy-bound reproduction qualification over
+the existing proof vertical. It does not upgrade or reinterpret the historical
+Score receipt.
+
+### Canonical shadow-policy candidate
+
+The simulation authority consists of two new pure canonical objects:
+`zcl.zcode.approved_reproducer_set.v1` and
+`zcl.zcode.zc23_policy_candidate.v1`. The reproducer set contains sorted,
+unique entries binding an Ed25519 work-receipt signer, existing contributor or
+ZID binding root, declared operator-group root, fixed reproduction action root,
+valid epoch/time interval, and set sequence/lineage. The policy candidate binds
+network genesis, `ZC23`, eight decimals, the exact unchanged cap algorithm and
+constants, challenge blocks/MTP delay, no-carry and complete-attribution rules,
+closed creation categories, deterministic bounded shadow awards, reproducer-set
+root, covenant-document root, policy version, and mandatory
+`SIMULATION_ONLY` plus `NOT_OWNER_APPROVED` flags.
+
+Fixture authorities are valid only under a structurally simulation-only policy.
+They cannot be promoted to a production policy by configuration. Final economic
+awards and the immutable mainnet policy root remain owner-gated. Shadow award
+evaluation is pure from the exact policy-candidate bytes; commands and callbacks
+cannot choose an amount.
+
+### Portable challenge and qualification
+
+A reproduction request composes existing roots rather than copying their
+payloads into a new report: task, candidate, package, release, recipe, lock,
+toolchain capsule, reference build report, output manifest, fixed action,
+challenge nonce, requester, creation/expiry, confinement grade, and CPU,
+memory, process, and output budgets. Export is a root-addressed `content.v2`
+carrier containing every public byte required by another node and no wallet,
+private key, API/SSH credential, canonical-datadir path, or absolute source
+path. Plan is non-creating; commit writes canonical public objects only to an
+explicit isolated scratch CAS.
+
+The pure qualification evaluator reloads the complete proof set, request,
+reference report, artifact manifest, reproduction work receipt, evidence report,
+reproducer set, policy candidate, contributor bindings, and challenge facts.
+It requires a canonical signed `REPRODUCE` PASS with exit status zero, exact
+task/candidate/policy/toolchain/input/output bindings, byte-identical artifacts,
+full confinement, approval valid at event time and epoch, signer separation,
+fresh challenge, and unique signer/event. Publisher, candidate author, lane
+signer, requester, and safely related operator group are refused where their
+identity relationship is provable. Missing linkage remains unknown rather than
+proof of independence. Contradictory valid results produce `CONTRADICTION`.
+
+### Workspace and command safety
+
+Every Commons/reproduction command requires an explicit workspace. Empty
+strings, filesystem root, traversal, and implicit or canonical live datadirs
+are rejected. Read plans remain literally non-creating on an absent path.
+Commits require an explicit isolated scratch workspace and are deterministic,
+idempotent, and root-addressed. They must report `simulated=true`,
+`token_exists=false`, `funds_moved=false`, `custody_used=false`, and
+`genesis_gate_satisfied=false`.
+
+The ordered implementation is O0 contract/reuse freeze; O1 policy candidate
+and reproducer set; O2 portable challenge; O3 policy-bound qualification; O4
+scratch attribution/epoch plan-commit; O5 three-party same-host acceptance and
+second-machine runbook; O6 four linked protocol shadow simulations with reorg
+and byte-identical rebuild; then O7 seed credential and fixture-only shadow
+elections. O7 may begin only after O1–O6 are green. P2SH, threshold signing,
+DKG, live ZC23 GENESIS/MINT/SEND, and all custody work remain outside this
+authorization.
+
+### O5 portable acceptance boundary
+
+The exact local acceptance command is `make zcode-reproduction-acceptance`.
+It composes the three-process requester/reproducer/observer policy path with
+the existing real `zpkgswm` wire, signed DHT discovery, corrupt-provider,
+restart/resume, and projection-rebuild owners. The three processes use
+separate scratch CAS and package stores and begin from root-addressed public
+objects. The result is labelled exactly `distinct_signer_simulation=true`,
+`approved_fixture_policy=true`, and `actual_off_host_credit=false`.
+
+The portable second-machine procedure is
+[`ZC23_REPRODUCTION_RUNBOOK.md`](./ZC23_REPRODUCTION_RUNBOOK.md). A confined
+byte-identical rebuild is necessary but insufficient: the reproduced report
+must also be bound into the existing signed work-receipt/proof-set path and
+admitted under the approved-reproducer policy. No command, fixture, process
+boundary, IP address, or hostname may manufacture physical independence.
+
+### O6 four-epoch protocol simulation
+
+`zcode commons shadow protocol verify` is a read-only, scratch-only verifier
+for exactly four selected epoch roots and their deterministic fixture-branch
+roots. It independently reloads the policy candidate, each canonical epoch,
+every creation attribution and the complete task/candidate/proof/PROVEN/Score/
+package/release/licence authority chain. It then checks exact predecessor
+linkage, active opening and maturity anchors, no repeated candidate or
+continuity event, checked cumulative accounting, and the rule that every
+epoch's unused capacity expires rather than carrying forward.
+
+The permanent fixture uses the actual permissively licensed `lib/base`,
+`lib/sha3`, and `lib/codec` package trees as three distinct challenge-mature
+contributions in epochs 0–2; epoch 3 intentionally issues zero. It rebuilds
+the Commons projection twice after every epoch and requires byte-identical
+roots. Replacing the fixture branch at the epoch-2 boundary invalidates the
+old epoch and descendants; rebuilding epochs 2–3 gives deterministic new
+roots while the old objects remain in CAS as inactive historical evidence.
+Mixing branch roots or repeating a candidate fails closed.
+
+Every row is labelled `reproduction_grade=same_host_fixture_only`. The report
+also says `protocol_shadow_simulations=true`,
+`owner_required_green_shadow_epochs=false`, and
+`genesis_gate_satisfied=false`. These are protocol simulations, not the four
+owner-required green shadow epochs, and they create no token, issuance,
+custody, authority, or claim of physical independence.
 
 ## Patronage, commissions, and continuity
 
@@ -393,6 +632,37 @@ authorization.
 | DONE | LC4 rebuildable patronage list | `fc0813d2a` | `fc0813d2a` | deterministic CAS projection, historically signed intent/funding/continuity verification, first-failure reporting, absent-workspace non-creation, every row truthfully `funded:false` and `persisted:false`; focused green, full lint 134/134, normal pre-push 910-group suite |
 | DONE | Living Commons parser truncation sweeps | `cbaae2112` | `cbaae2112` | every truncation of creation-attribution, epoch-creation, patronage-intent/funding/settlement and continuity-policy wires fails closed; focused GCC groups green; Clang 20 ASan+UBSan green with fail-fast UBSan; full lint 134/134; normal pre-push 910-group suite |
 | DONE | Six-arm Living Commons parser fuzzer | `a0cfe7fe4` | `a0cfe7fe4` | shared libFuzzer owner, one seed per canonical parser, ASan+UBSan and leak detection; 1,537,885 mutations in 31 seconds at 49,609/s with no finding; full lint 134/134 |
+| DONE | Historical binding time and complete public-source lineage | `7c2ebdea0` | `84a816754` | born-red expiry and arbitrary-lineage failures; event-time binding verification; signed release parent and recursively verified predecessor paths; focused green; normal pre-push 901/901 active groups |
+| DONE | Neutral creation identity and security-label normalization | `66a81064e` | `66a81064e` | patron-independent event-key KAT; release-lineage continuity without funding; `SECURITY_FIX` normalized to born-red eligibility and award; focused green; normal pre-push 901/901 active groups |
+| DONE | O0 reproduction owner/reuse contract freeze | `209aac342` | `209aac342` | Score v1 frozen; existing CAS, proof, build, artifact, identity, transport and chain-test owners mapped; no live authority granted |
+| DONE | O1 simulation-only policy candidate and approved reproducer set | `08d7f1af2` | `08d7f1af2` | exact canonical roots, closed flags and award table, approval epoch/time bounds, focused green, full lint 134/134, normal pre-push 911-group suite |
+| DONE | Shared mission/API and explicit scratch-workspace safety | `6df06b721` | `6df06b721` | exact people-and-AI mission, ready `zcode guide`, canonical/live workspace refusal, generated API reference, full lint 134/134, normal pre-push 911-group suite |
+| DONE | O2 portable simulation-only reproduction challenge | `c41cebd99` | `c41cebd99` | 512-byte request KAT, public-root and confinement bindings, noncreating plan, idempotent scratch-CAS commit, focused green, full lint 134/134, normal pre-push 911-group suite |
+| DONE | O3 policy-bound reproduction qualification | `307556653` | `307556653` | complete Score/proof/request/build/manifest/policy/identity CAS rederivation; missing output, missing approval identity, stale epoch and contradictory-result rejections; command readiness derives from the evaluator; physical independence remains explicitly unproven; focused/API gates and full lint 134/134 |
+| DONE | O4 scratch attribution and epoch plan/commit | `3b45e7991` | `c7ddc1fd9` | full policy/Score/reproduction/binding/package/release/license reload; deterministic fixture anchors; exact award/mint equality; changed branch, missing predecessor, duplicate candidate, policy substitution and one-atom drift rejection; six typed shadow leaves; focused/API gates, full lint 134/134 and normal pre-push source-wide suite |
+| DONE | O5 three-party portable reproduction acceptance | `6b933d4ea` | `6b933d4ea` | requester, reproducer and observer in distinct processes/workspaces/stores; root-addressed content/package transfer; independent qualification and byte-identical projection rebuild; real swarm/DHT corruption, cancellation, fallback, resume and restart owners composed by one exact 6/6 gate; `actual_off_host_credit=false`; full lint 134/134 and normal pre-push 902-group suite |
+| DONE | O6 four linked protocol shadow simulations | `fc7b88bab`, `e237f13fa` | `e237f13fa` | actual base/SHA3/codec package verticals; three distinct mature creations followed by one empty epoch; exact predecessor and cumulative 300,000,000-atom equality; byte-identical rebuild after every epoch; boundary reorg and deterministic replacement roots; cross-epoch duplicate refusal; read-only typed report; focused creation/Score/catalog/API gates, full lint 134/134 and normal pre-push 902-group suite; `same_host_fixture_only`, real genesis gate false |
+| DONE | O7 fixture-only C23 seed and shadow-election foundation | `d623a3043` | `37a8c8aa6` | exact 721-byte dual-signed seed wire; generated/vendor/copied exclusion; height+MTP maturity and reorg gates; canonical evidence snapshot; 26-epoch decay and 10,000 weight cap; unbiased weighted selection without replacement; one ZID per seat; concentration metrics; four frozen election KAT roots; focused green, full lint 134/134, 10,000 ASan+UBSan fuzz iterations and normal pre-push 903-group suite; `simulation_only=true`, `authority_conferred=false` |
+| BLOCKED | Real SHA3 off-host independence gate | `fc62b9c4a` | `fc62b9c4a` | SHA3 Score remains honestly 4/5; local evidence and O5 same-host simulation do not prove physical independence or authorize a real shadow epoch, token genesis, mint or custody |
+
+Historical-truth hardening began from fetched `origin/main` `7091051aa`
+through lane integration `a96275b52`. Before the first slice was pushed, new
+main `6b410bd34` was integrated through `84a816754`; no concurrent wallet file
+was edited or overwritten. Normal hook-enabled pushes advanced remote main
+through `84a816754`, `66a81064e`, and `fc62b9c4a`. Each push passed the
+repository pre-push lane: 910 registered, 901 active run, zero cached, nine
+policy-gated, zero failures. The final source also passed full lint 134/134,
+the dedicated ZCODE ASan+UBSan lifecycle, default whole-program LTO, same-tree
+byte reproduction
+(`868e83bececddce7e6c0ba36b48962c46fcd7af5346f2c0ba92b23d6d3c1f118`,
+22,809,352 bytes), and two-path local reproduction
+(`ac79afa294c101aa77e8d81caaf4d65c1e61c30e9bbf00cb16627568caae58e6`,
+22,809,432 bytes). Both reproduction
+results are local and earn no independent-reproduction credit.
+
+Before freezing this ledger, concurrent `origin/main` `8df6c3961` was merged
+through `d77ccce74`. The disjoint vault changes were preserved exactly; the
+Living Commons documentation did not overwrite them.
 
 The `36f6f3ae5` push integrated concurrent `main` commit `00a0c54c8` through
 lane merge `4c8e7abe2`; no concurrent file was overwritten. Two complete
@@ -429,13 +699,17 @@ binary, 22,793,048 bytes with SHA3-256
 (`000026`). This is `local_reproduction`, not approved independent off-host
 reproduction and earns no independent-reproduction unit.
 
-The permanent `fuzz_zcode_commons` target covers creation attribution, epoch
-creation, patronage intent, patronage funding, patronage settlement/refund and
-continuity policy through the repository's shared libFuzzer object tree.
+The permanent `fuzz_zcode_commons` target now has ten arms covering creation
+attribution, epoch creation, patronage intent, patronage funding, patronage
+settlement/refund, continuity policy, approved reproducer set, shadow policy
+candidate, reproduction request and `c23.seed.v1` through the repository's
+shared libFuzzer object tree.
 Receipt `000027` is the born-red missing-target result; `000028` proves the
 harness builds, and `000029` records 1,537,885 leak-detecting ASan+UBSan
-mutations with no finding. This bounded local run is parser hardening, not a
-claim of exhaustive input-space coverage.
+mutations over the original six-arm harness with no finding. O7 additionally
+built the expanded sanitizer harness and ran 10,000 mutations with no finding.
+These bounded local runs are parser hardening, not claims of exhaustive
+input-space coverage.
 
 The final explicit `--no-cache` source-wide run executed 901 of 910 registered
 groups; nine parameter-heavy groups were policy-gated and 22 tests reported
@@ -465,3 +739,85 @@ are complete.
 
 No live token, GENESIS, MINT, SEND, wallet, canonical datadir, production port,
 deployment, service, or consensus path was touched by these slices.
+
+O3 began from fetched `origin/main` `c41cebd9967c88332e3dfa6bd2487283c7ddce88`.
+No concurrent integration was required before source commit `307556653`.
+The evaluator intentionally reports `remote_transport_used=false` and
+`physical_independence_proven=false` for the same-host fixture. That fixture
+proves protocol wiring only and does not clear the real SHA3 off-host blocker.
+Before the O3 push, concurrent `origin/main` `468d0319281b6298f5e9669c877042c389069fac`
+was integrated through merge `10a0480b4`. Its disjoint transaction-lab files
+were preserved without modification.
+
+O4 began from fetched `origin/main` `1db74339874030462d243830222bf0f4465b55f0`.
+The first push attempt passed the complete pre-push source suite, then was
+correctly rejected because concurrent `main` advanced to
+`32f946668cc2b2df9adf562f57cc4d6f972e11a1`. That disjoint replayable
+shielded-plan work was merged without modification through `c7ddc1fd9` before
+the O4 integration retry. The failed race is not counted as a completed push.
+
+O5 began from fetched `origin/main`
+`f4e9d7653ffbe0c04f7e6e81e1cb78f3cb61ae29`. No concurrent integration was
+required before source and integration commit `6b933d4ea`. The exact
+`make zcode-reproduction-acceptance` gate passed all six selected permanent
+groups with zero cache hits. Full lint passed 134/134. The normal hook-enabled
+push ran 902 active groups with zero failures and zero cache hits; nine
+parameter-heavy groups were policy-gated and 19 tests emitted their documented
+self-skip markers. Pull verification then proved local HEAD and `origin/main`
+were both `6b933d4ea53fd087468ccfedd73c0e53bcc6aca3`.
+
+O6 began from fetched `origin/main`
+`dc4a41e5b36b9ef989ec80b0940ae2ad090236e1`. Before integration, concurrent
+vault reservation work at `9d1c2173369e2654b478df2860eb8f5ab474f1a4` was
+merged without modification through `e0046058c`. The canonical replacement-
+branch epoch roots are
+`6207eef8dacd6f6f5b9ee30b0287924a6a2d48dceed41d1445b693679e19090a`,
+`7160b9135614d8813bf05d222e0c892a7826a73bc8444f1acb294bc9145f13d9`,
+`d8dc59fae773b8e16bd084699a6bea9d4bc9096e4d821ac0245ee3228694d755`,
+and `f1e901fa6f2a4f3a85283c809d32bb65a8d65258f5f98d4129d6e460099c9dbd`.
+Their cumulative simulated issue and cumulative attribution are both exactly
+300,000,000 atoms. The first push attempt ran the complete source-wide suite
+and failed only because the new leaf's explicit protocol parent branch was
+missing; that attempt is not counted as a pass. Commit `e237f13fa` added the
+branch, regenerated the API reference, and made the exact catalog test green.
+The corrected normal push passed 902/902 active groups with zero cache hits;
+nine parameter-heavy groups were policy-gated and 19 tests emitted documented
+self-skip markers. Pull verification proved both local HEAD and `origin/main`
+at `e237f13fa404aebe5b8431e673eaf17b839afb3a`. All four rows remain
+`same_host_fixture_only`, `owner_required_green_shadow_epochs=false`, and
+`genesis_gate_satisfied=false`.
+
+O7 began from fetched `origin/main`
+`04acb417569abe051528794c1c1eaee5950882ee`. No concurrent integration was
+required before source and integration commit
+`d623a3043125f054521e26d9c4a1e01c35132f7d`. The fixed seed wire root is
+`ce3b43aabcc2a3feedaa489161bc76756d8e8a34fe14d280c0eac9293ec12c93`.
+The four fixture election roots are
+`911bf472f1eb07ee50fa706881aff82d0c56b2daa9c406697f79f4575a1c1610`,
+`89e8c26d59957de264063915eead7640ac5da1d6f17bed8125ba0edd27bd1a06`,
+`6cc3bbef00ccbd30206ac916beb62648ba223b83e5a6cc2cd2e959c95526f24b`,
+and `f46912d939cdcfbfd8937429717851cfb771702469caca60cc59666bb418a1ce`.
+The first lint attempt correctly found the test-group count ratchet at 911;
+the documentation count was updated to the code-measured 912 and the complete
+134-gate lint retry passed. The normal hook-enabled push then passed 903/903
+active groups with zero cache hits; nine parameter-heavy groups were policy-
+gated and 19 tests emitted documented self-skip markers. Pull verification
+proved local HEAD and `origin/main` both at `d623a3043`. The seed authorities,
+chain anchors and elections are test fixtures only: no production seed was
+admitted and the elections set `simulation_only=true` and
+`authority_conferred=false`.
+
+While the O7 documentation push gate ran, concurrent `main` advanced to
+`201f558b131b404949ebe07079d50db8710b21b3b`; the completed green push was
+correctly rejected as stale. Its disjoint metaverse custody-reader contention
+fix was merged without modification through `37a8c8aa6`. Both affected
+focused groups and the complete 134-gate lint set passed on the combined tree
+before the integration retry. The stale rejected push is not counted as a
+completed publication.
+
+Final O7 closure ran `make repro-verify`, which performed two clean whole-
+program LTO builds from different absolute source paths. Both shipped binaries
+were byte-identical at 22,924,056 bytes with SHA3-256
+`6d73161684a038508e222ac6ce5e0fc7b3ad4d56a5762d81be2cd3701d926c39`.
+This is same-host `local_reproduction` only; it does not prove physical
+independence, award the withheld Score unit, or satisfy the real genesis gate.

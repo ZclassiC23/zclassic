@@ -46,6 +46,8 @@ extern char **environ;
  * overflows codeindex_forward_closure's cap and comes back *truncated -> the
  * group is UNCACHEABLE, which is exactly what we want for a giant blast radius. */
 #define TRC_MAX_CLOSURE 8192
+#define TRC_CHANGED_MAX 32
+#define TRC_PATH_MAX 256
 
 /* ── on-disk verdict record (fixed 56 bytes, addressed BY the cache key) ── */
 #define TRC_MAGIC "ZTCACHE1"      /* 8 bytes, no NUL */
@@ -79,6 +81,9 @@ struct testcache {
     size_t            dep_count;       /* depfiles the graph was built from */
     int64_t           dep_newest_ns;   /* newest depfile mtime */
     uint8_t           envkey[32];      /* SHA3 of the coverage-gating env */
+    char              changed[TRC_CHANGED_MAX][TRC_PATH_MAX];
+    size_t            changed_count;
+    bool              snapshot_mode;
 };
 
 static uint64_t trc_hash_str(const char *s)
@@ -463,11 +468,11 @@ static bool trc_compute_key(struct testcache *tc, const char *group_name,
     struct sha3_256_ctx ctx;
     sha3_256_init(&ctx);
 
-    /* v2: the preimage now carries the coverage-gating environment. Bumping the
-     * domain tag retires every v1 record, which is required — a v1 key was
-     * computed WITHOUT the environment, so honoring one could serve a PASS
-     * recorded by a run that skipped the coverage a v2 run intends to execute. */
-    static const char DOMAIN[] = "zcl.testcache.key.v2";
+    /* v3: only skip-free executions may mint reusable PASS records. Retire
+     * v2 because it could store a zero-exit group that printed SKIP; the
+     * environment digest distinguished skip modes but did not make a skip a
+     * proof. v2 already added the coverage-gating environment over v1. */
+    static const char DOMAIN[] = "zcl.testcache.key.v3";
     sha3_256_write(&ctx, (const unsigned char *)DOMAIN, sizeof(DOMAIN)); /* +NUL */
 
     const char *tk = ZCL_TESTCACHE_TOOLKEY;
@@ -502,13 +507,19 @@ static bool trc_compute_key(struct testcache *tc, const char *group_name,
     return true;
 }
 
-struct testcache *testcache_open(const char *repo_root)
+static struct testcache *testcache_open_mode(
+    const char *repo_root, const char *const *changed_sources,
+    size_t changed_source_count, bool snapshot_mode)
 {
     const char *root = repo_root;
     if (!root || !root[0]) {
         const char *env = getenv("ZCL_DEV_SOURCE_ROOT");
         root = (env && env[0]) ? env : ".";
     }
+
+    if ((changed_source_count > 0 && !changed_sources) ||
+        changed_source_count > TRC_CHANGED_MAX)
+        LOG_NULL("testcache", "invalid changed source set");
 
     struct testcache *tc = zcl_calloc(1, sizeof(*tc), "testcache");
     if (!tc)
@@ -539,13 +550,25 @@ struct testcache *testcache_open(const char *repo_root)
     }
 
     trc_env_digest(tc->envkey);
+    tc->snapshot_mode = snapshot_mode;
+    for (size_t i = 0; i < changed_source_count; i++) {
+        const char *path = changed_sources[i];
+        if (!path || !path[0] || path[0] == '/' || strstr(path, "..") ||
+            strlen(path) >= sizeof(tc->changed[0])) {
+            testcache_close(tc);
+            LOG_NULL("testcache", "invalid changed source path");
+        }
+        snprintf(tc->changed[tc->changed_count++],
+                 sizeof(tc->changed[0]), "%s", path);
+    }
     if (!codeindex_depfile_graph(tc->root, &tc->dep_count,
                                  &tc->dep_newest_ns)) {
         tc->dep_count = 0;
         tc->dep_newest_ns = 0;
     }
 
-    tc->ci = codeindex_open(tc->root);
+    tc->ci = snapshot_mode ? codeindex_open_existing(tc->root)
+                           : codeindex_open(tc->root);
     if (!tc->ci) {
         trc_memo_free(&tc->memo);
         free(tc->closure);
@@ -553,6 +576,21 @@ struct testcache *testcache_open(const char *repo_root)
         LOG_NULL("testcache", "codeindex_open failed under %s", root);
     }
     return tc;
+}
+
+struct testcache *testcache_open(const char *repo_root)
+{
+    return testcache_open_mode(repo_root, NULL, 0, false);
+}
+
+struct testcache *testcache_open_snapshot(
+    const char *repo_root, const char *const *changed_sources,
+    size_t changed_source_count)
+{
+    if (!changed_sources || changed_source_count == 0)
+        return NULL;
+    return testcache_open_mode(repo_root, changed_sources,
+                               changed_source_count, true);
 }
 
 size_t testcache_depfile_count(const struct testcache *tc)
@@ -573,6 +611,7 @@ const char *testcache_reason_label(enum testcache_reason r)
     case TESTCACHE_R_FILE_UNREADABLE:  return "input-file-unreadable";
     case TESTCACHE_R_NO_INCLUDE_GRAPH: return "no-include-graph";
     case TESTCACHE_R_GRAPH_STALE:      return "input-newer-than-include-graph";
+    case TESTCACHE_R_CHANGED_INPUT:    return "changed-input-runs-fresh";
     case TESTCACHE_R__COUNT:           break;
     }
     return "unknown";
@@ -658,6 +697,24 @@ void testcache_probe_group(struct testcache *tc, const char *group_name,
         out->code = TESTCACHE_R_EMPTY_CLOSURE;
         snprintf(out->reason, sizeof(out->reason), "empty closure");
         return;
+    }
+
+    /* A verified snapshot describes the generation immediately before the
+     * resident edit. It is sound for an unchanged group's closure. If that
+     * closure reaches any edited TU, run the group fresh: the edit may have
+     * changed its outgoing call/include edges, so the old closure is not a
+     * complete cache key for it. */
+    if (tc->snapshot_mode) {
+        for (int i = 0; i < nc; i++) {
+            for (size_t c = 0; c < tc->changed_count; c++) {
+                if (strcmp(tc->closure[i], tc->changed[c]) != 0)
+                    continue;
+                out->code = TESTCACHE_R_CHANGED_INPUT;
+                snprintf(out->reason, sizeof(out->reason),
+                         "closure reaches changed source");
+                return;
+            }
+        }
     }
 
     bool stale = false;

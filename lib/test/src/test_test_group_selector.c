@@ -166,6 +166,7 @@ static int test_native_catalog_resolution(void)
     TEST("test group selector: C catalog owns exact proof expansion") {
         ASSERT(zcl_test_group_catalog_count() > 800);
         ASSERT(zcl_test_group_catalog_contains("test_api"));
+        ASSERT(zcl_test_group_integration_policy_valid());
         ASSERT(!zcl_test_group_catalog_contains("api"));
         ASSERT(zcl_test_group_source_is_semantic_leaf(
             "lib/test/src/test_stage_repair_coin_backfill.c"));
@@ -210,6 +211,65 @@ static int test_native_catalog_resolution(void)
         const char *invalid[] = { "api_missing" };
         ASSERT(zcl_test_group_expand_plan(invalid, 1, one, 1, &truncated) ==
                SIZE_MAX);
+
+        const char *lint_ids[] = { "make_lint_gates" };
+        char immediate[32][ZCL_TEST_GROUP_FULL_MAX];
+        truncated = true;
+        size_t immediate_total = zcl_test_group_expand_plan_immediate(
+            lint_ids, 1, immediate,
+            sizeof(immediate) / sizeof(immediate[0]), &truncated);
+        ASSERT(immediate_total == 0);
+        ASSERT(!truncated);
+        ASSERT(zcl_test_group_is_integration_only(
+            "test_make_lint_gates_heavy_01"));
+        ASSERT(zcl_test_group_is_integration_only(
+            "test_make_lint_gates_heavy_02"));
+        ASSERT(zcl_test_group_is_integration_only(
+            "test_make_lint_gates_shard_01"));
+        ASSERT(zcl_test_group_is_integration_only(
+            "test_shielded_payment_gate"));
+        ASSERT(zcl_test_group_is_integration_only(
+            "test_event_log_kill9"));
+        ASSERT(zcl_test_group_is_integration_only(
+            "test_event_log_benchmark"));
+        ASSERT(!zcl_test_group_is_integration_only("test_event_log"));
+        ASSERT(zcl_test_group_catalog_contains(
+            "test_zcode_score_receipt_packages"));
+        ASSERT(zcl_test_group_catalog_contains(
+            "test_zcode_score_receipt_rejections"));
+        ASSERT(zcl_test_group_catalog_contains(
+            "test_zcode_score_receipt_creation"));
+        ASSERT(zcl_test_group_catalog_contains(
+            "test_zcode_score_receipt_patronage"));
+        ASSERT(zcl_test_group_catalog_contains(
+            "test_zcode_score_receipt_reproduction"));
+        ASSERT(zcl_test_group_catalog_contains(
+            "test_zcode_score_receipt_shadow"));
+        for (size_t i = 0; i < immediate_total; i++) {
+            ASSERT(strcmp(immediate[i],
+                          "test_make_lint_gates_heavy_01") != 0);
+            ASSERT(strcmp(immediate[i],
+                          "test_make_lint_gates_heavy_02") != 0);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_latency_group_is_the_only_catalog_exclusive(void)
+{
+    int failures = 0;
+    TEST("command registry latency is isolated without serializing catalog structure") {
+        ASSERT(zcl_test_group_catalog_contains(
+            "test_command_registry_latency"));
+        ASSERT(zcl_test_group_requires_exclusive_run(
+            "test_command_registry_latency"));
+        ASSERT(!zcl_test_group_requires_exclusive_run(
+            "test_command_registry_catalog"));
+        ASSERT(!zcl_test_group_plan_selects(
+            "command_registry_catalog", "test_command_registry_latency"));
+        ASSERT(zcl_test_group_plan_selects(
+            "command_registry_latency", "test_command_registry_latency"));
         PASS();
     } _test_next:;
     return failures;
@@ -337,6 +397,7 @@ int test_test_group_selector(void)
     failures += test_selector_predicate();
     failures += test_registry_exact_resolution();
     failures += test_native_catalog_resolution();
+    failures += test_latency_group_is_the_only_catalog_exclusive();
     failures += test_runner_exact_selection();
     return failures;
 }

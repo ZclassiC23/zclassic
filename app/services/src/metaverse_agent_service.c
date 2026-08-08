@@ -1,5 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: reconcile broker custody bindings with authoritative wallet reads.
+ * // supervisor-ok:bounded-custody-readers — at most two one-shot workers,
+ * joined by money_query_configured before the service returns.
  *
  * See services/metaverse_agent_service.h. Two readers over a broker directory,
  * plus the one validation both share.
@@ -18,6 +20,7 @@
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "session/agent_broker.h"
+#include "util/thread_registry.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -30,18 +33,13 @@
 /* A custody snapshot can contend with the reducer's authoritative wallet and
  * vault readers while the dev lane is catching up.  Use the RPC client's
  * normal bounded read deadline: a shorter front-door latency budget turned a
- * valid six-second snapshot into the false claim that its endpoint was
- * unreachable.  Freshness is still decided from the returned snapshot, never
- * from how quickly it arrived. */
+ * valid snapshot into the false claim that its endpoint was unreachable. A
+ * live dev-lane restart reproduced a correct response just beyond ten seconds
+ * while the reducer held the authority lock, so retain a finite 30-second
+ * bound. Freshness is still decided from the returned snapshot, never from
+ * how quickly it arrived. */
 #define MVS_MONEY_RPC_CONNECT_MS 500L
-#define MVS_MONEY_RPC_TOTAL_MS 10000L
-
-static metaverse_agent_rpc_fn g_money_rpc;
-
-void metaverse_agent_service_set_rpc(metaverse_agent_rpc_fn fn)
-{
-    g_money_rpc = fn;
-}
+#define MVS_MONEY_RPC_TOTAL_MS 30000L
 
 /* The one validation both readers share. Every refusal names which of the
  * three shape rules the caller broke, because "bad dir" alone does not tell an
@@ -105,6 +103,7 @@ struct money_binding_read {
     struct agent_money_binding binding;
     struct json_value snapshot;
     char observed_wallet_instance_id[33];
+    metaverse_agent_rpc_fn rpc;
     bool configured;
     bool current;
 };
@@ -184,16 +183,15 @@ static void money_unknown(struct json_value *out, const char *scope,
 
 static bool money_query(struct money_binding_read *row)
 {
-    if (!g_money_rpc)
+    if (!row->rpc)
         return false; /* raw-return-ok:no transport means explicit UNKNOWN */
     char params[96];
     (void)snprintf(params, sizeof(params),
                    "[\"custody\",{\"wallet_scope\":\"%s\"}]",
                    row->binding.wallet_scope);
-    char *raw = g_money_rpc(row->binding.node_datadir, row->binding.rpc_port,
-                            "agentsession", params,
-                            MVS_MONEY_RPC_CONNECT_MS,
-                            MVS_MONEY_RPC_TOTAL_MS);
+    char *raw = row->rpc(row->binding.node_datadir, row->binding.rpc_port,
+                         "agentsession", params, MVS_MONEY_RPC_CONNECT_MS,
+                         MVS_MONEY_RPC_TOTAL_MS);
     if (!raw)
         return false;
     struct json_value reply;
@@ -247,6 +245,50 @@ static bool money_query(struct money_binding_read *row)
     return true;
 }
 
+struct money_query_job {
+    struct money_binding_read *row;
+    bool ok;
+};
+
+static void *money_query_thread(void *arg)
+{
+    struct money_query_job *job = arg;
+    job->ok = money_query(job->row);
+    return NULL;
+}
+
+/* Dev and prod are independent custody authorities. Reading them serially
+ * doubled the user-visible deadline (two bounded 30 s RPCs) without adding
+ * consistency: the portfolio root already records each observation and is
+ * known only when both are CURRENT. Run both bounded reads concurrently, then
+ * reconcile them in deterministic dev/prod order. If a worker cannot start,
+ * execute that read inline so resource pressure degrades latency, never truth. */
+static void money_query_configured(struct money_binding_read rows[2],
+                                   bool queried[2])
+{
+    struct money_query_job jobs[2] = {
+        { .row = &rows[0] }, { .row = &rows[1] },
+    };
+    pthread_t threads[2];
+    bool spawned[2] = { false, false };
+    for (int i = 0; i < 2; i++) {
+        if (!rows[i].configured)
+            continue;
+        // thread-supervision-ok:bounded two-reader pool joined below
+        int rc = thread_registry_spawn("zcl_money_rpc", money_query_thread,
+                                       &jobs[i], &threads[i]);
+        if (rc == 0)
+            spawned[i] = true;
+        else
+            jobs[i].ok = money_query(jobs[i].row);
+    }
+    for (int i = 0; i < 2; i++) {
+        if (spawned[i])
+            (void)pthread_join(threads[i], NULL);
+        queried[i] = rows[i].configured && jobs[i].ok;
+    }
+}
+
 static void money_portfolio_root(const struct money_binding_read rows[2],
                                  char out[65])
 {
@@ -269,18 +311,23 @@ static void money_portfolio_root(const struct money_binding_read rows[2],
     zcl_hex_encode(root, 32, out);
 }
 
-struct zcl_result metaverse_agent_service_money(const char *dir, char *out,
-                                                size_t out_cap,
-                                                size_t *out_len)
+struct zcl_result metaverse_agent_service_money(
+    const char *dir, metaverse_agent_rpc_fn rpc,
+    char *out, size_t out_cap, size_t *out_len)
 {
     struct zcl_result valid = dir_ok(dir, out, out_cap, out_len);
     if (!valid.ok)
         return valid;
     struct money_binding_read rows[2];
     memset(rows, 0, sizeof(rows));
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 2; i++) {
+        rows[i].rpc = rpc;
         json_init(&rows[i].snapshot);
+    }
     bool binding_ok = money_load_bindings(dir, rows);
+    bool queried[2] = { false, false };
+    if (binding_ok)
+        money_query_configured(rows, queried);
     for (int i = 0; i < 2; i++) {
         const char *scope = i == 0 ? "dev" : "prod";
         if (!binding_ok)
@@ -289,7 +336,7 @@ struct zcl_result metaverse_agent_service_money(const char *dir, char *out,
         else if (!rows[i].configured)
             money_unknown(&rows[i].snapshot, scope, "UNKNOWN",
                           "owner created no binding for this wallet scope");
-        else if (!money_query(&rows[i]))
+        else if (!queried[i])
             money_unknown(&rows[i].snapshot, scope, "UNKNOWN",
                           "bound wallet endpoint is unreachable");
     }
@@ -401,7 +448,7 @@ static void liquidity_copy_fanout(struct json_value *dst,
 struct zcl_result metaverse_agent_service_liquidity(
     const char *dir, const char *wallet_scope, int64_t recipient_value_zat,
     int64_t maximum_fee_zat, int requested_concurrency,
-    char *out, size_t out_cap, size_t *out_len)
+    metaverse_agent_rpc_fn rpc, char *out, size_t out_cap, size_t *out_len)
 {
     struct zcl_result valid = dir_ok(dir, out, out_cap, out_len);
     if (!valid.ok)
@@ -416,8 +463,10 @@ struct zcl_result metaverse_agent_service_liquidity(
 
     struct money_binding_read rows[2];
     memset(rows, 0, sizeof(rows));
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 2; i++) {
+        rows[i].rpc = rpc;
         json_init(&rows[i].snapshot);
+    }
     const bool bindings_ok = money_load_bindings(dir, rows);
     const int slot = strcmp(wallet_scope, "dev") == 0 ? 0 : 1;
     const int other_slot = slot == 0 ? 1 : 0;
@@ -434,7 +483,7 @@ struct zcl_result metaverse_agent_service_liquidity(
                       rows[1].binding.wallet_instance_id) == 0) {
         liquidity_unknown(&doc, wallet_scope, "CONFLICTED",
                           "duplicate wallet_instance_id on active bindings");
-    } else if (!g_money_rpc) {
+    } else if (!rpc) {
         liquidity_unknown(&doc, wallet_scope, "UNKNOWN",
                           "bound wallet endpoint is unreachable");
     } else {
@@ -445,10 +494,9 @@ struct zcl_result metaverse_agent_service_liquidity(
             "\"concurrency\":%d}]",
             wallet_scope, (long long)recipient_value_zat,
             (long long)maximum_fee_zat, requested_concurrency);
-        char *raw = g_money_rpc(rows[slot].binding.node_datadir,
-                                rows[slot].binding.rpc_port, "agentsession",
-                                params, MVS_MONEY_RPC_CONNECT_MS,
-                                MVS_MONEY_RPC_TOTAL_MS);
+        char *raw = rpc(rows[slot].binding.node_datadir,
+                        rows[slot].binding.rpc_port, "agentsession", params,
+                        MVS_MONEY_RPC_CONNECT_MS, MVS_MONEY_RPC_TOTAL_MS);
         struct json_value reply;
         json_init(&reply);
         bool parsed = raw && json_read(&reply, raw, strlen(raw));

@@ -7,6 +7,10 @@
 
 #include "test/test_core.h"
 #include "controllers/wallet_rescan_controller_internal.h"
+#include "storage/anchor_kv.h"
+
+#include <sqlite3.h>
+#include <string.h>
 
 static struct uint256 test_root(uint8_t seed)
 {
@@ -58,6 +62,50 @@ int test_rescanwitnesses_diverge_guard(void)
     check_case("NULL header root is invalid",
                rescan_result_consensus_valid(&root, NULL, 0), false,
                &failures);
+
+    sqlite3 *db = NULL;
+    struct active_chain chain;
+    active_chain_init(&chain);
+    struct incremental_merkle_tree anchored;
+    sapling_tree_init(&anchored);
+    struct uint256 cm = test_root(0x44);
+    incremental_tree_append(&anchored, &cm);
+    struct uint256 anchor_root;
+    incremental_tree_root(&anchored, &anchor_root);
+    struct block_index prior;
+    block_index_init(&prior);
+    prior.nHeight = 500000;
+    prior.hashBlock = test_root(0x55);
+    prior.phashBlock = &prior.hashBlock;
+    prior.hashFinalSaplingRoot = anchor_root;
+    prior.nStatus = BLOCK_HAVE_DATA;
+    struct db_sapling_note note;
+    memset(&note, 0, sizeof(note));
+    note.block_height = 500001;
+    struct incremental_merkle_tree seeded;
+    sapling_tree_init(&seeded);
+    int replay_start = -1;
+    int seed_height = -1;
+    bool seed_ok = sqlite3_open(":memory:", &db) == SQLITE_OK &&
+        anchor_kv_ensure_schema(db) && anchor_kv_initialize_history(db, 0) &&
+        anchor_kv_add_tree(db, ANCHOR_POOL_SAPLING, &anchored, 499999) &&
+        active_chain_install_tip_slot(&chain, &prior) &&
+        rescan_seed_before_oldest_note_from_db(
+            db, &chain, &note, 1, &seeded, &replay_start, &seed_height);
+    struct uint256 seeded_root;
+    incremental_tree_root(&seeded, &seeded_root);
+    check_case("header-bound prior anchor seeds at the oldest note",
+               seed_ok && replay_start == 500001 && seed_height == 500000 &&
+               uint256_eq(&seeded_root, &anchor_root), true, &failures);
+
+    prior.hashFinalSaplingRoot = test_root(0x66);
+    check_case("missing prior-header anchor refuses the shortcut",
+               rescan_seed_before_oldest_note_from_db(
+                   db, &chain, &note, 1, &seeded, &replay_start,
+                   &seed_height), false, &failures);
+    if (db)
+        sqlite3_close(db);
+    active_chain_free(&chain);
 
     printf("rescanwitnesses divergence guard: %s (%d failures)\n",
            failures == 0 ? "OK" : "FAIL", failures);

@@ -41,12 +41,16 @@ bool rpc_walletbackupstatus(const struct json_value *params, bool help,
 bool rpc_walletbackupnow(const struct json_value *params, bool help,
                          struct json_value *result)
 {
-    (void)params;
     RPC_HELP(help, result,
-        "walletbackupnow\n"
-        "Runs one synchronous wallet backup and verifies the copied rows.");
+        "walletbackupnow [password]\n"
+        "Runs one synchronous wallet backup and verifies the copied rows. "
+        "A non-empty password adds the WBE1 backup-file encryption layer "
+        "for this invocation only.");
 
-    struct zcl_result r = wallet_backup_now();
+    const char *password = params && json_size(params) > 0
+        ? json_get_str(json_at(params, 0)) : NULL;
+    struct zcl_result r = password && password[0]
+        ? wallet_backup_now_encrypted(password) : wallet_backup_now();
     if (!r.ok) {
         json_set_object(result);
         json_push_kv_bool(result, "ok", false);

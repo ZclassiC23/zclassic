@@ -7,6 +7,7 @@
 #include "controllers/wallet_native_handlers.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
+#include "rpc/rpc_timeout.h"
 #include "util/log_macros.h"
 
 #include <stdio.h>
@@ -37,7 +38,17 @@ static bool vni_rpc(const struct zcl_command_request *request,
         return false;
     }
     struct json_value body;
-    bool called = wnh_call_rpc(reply, method, params, &body);
+    /* Private commit rebuilds and persists the exact signed Sapling
+     * transaction before relay, so it needs the same bounded proof budget as
+     * the non-broadcasting preflight.  Treating commit as an ordinary 10 s
+     * RPC makes a timeout ambiguous precisely at the broadcast boundary. */
+    bool proof_build = strcmp(method, "vault_intent_plan") == 0 ||
+                       strcmp(method, "vault_intent_fanout_plan") == 0 ||
+                       strcmp(method, "vault_intent_commit") == 0;
+    bool called = proof_build
+        ? wnh_call_rpc_deadline(reply, method, params,
+                                RPC_PROOF_BUILD_TIMEOUT_MS, &body)
+        : wnh_call_rpc(reply, method, params, &body);
     free(params);
     if (!called) return false;
     bool ok = json_get_bool(json_get(&body, "ok"));
@@ -115,6 +126,22 @@ void zcl_native_handle_vault_intent_commit(
     if (vni_rpc(request, reply, "vault_intent_commit"))
         reply->error.mutated = !json_get_bool_or(&reply->data,
                                                  "idempotent_replay", false);
+}
+
+void zcl_native_handle_vault_intent_submit(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (vni_rpc(request, reply, "vault_intent_submit"))
+        reply->error.mutated = !json_get_bool_or(&reply->data,
+                                                 "idempotent_submit", false);
+}
+
+void zcl_native_handle_vault_intent_cancel(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (vni_rpc(request, reply, "vault_intent_cancel"))
+        reply->error.mutated = !json_get_bool_or(&reply->data,
+                                                 "idempotent_cancel", false);
 }
 
 void zcl_native_handle_vault_intent_status(

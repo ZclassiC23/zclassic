@@ -104,11 +104,22 @@ struct sapling_spend_sync_ctx {
     enum db_mark_spent_result result;     /* tri-state for catchup callers    */
 };
 
+struct wallet_tx_confirmed_async_ctx {
+    struct transaction tx;
+    const struct wallet *wallet;
+    int block_height;
+    uint8_t block_hash[32];
+    int64_t block_time;
+    bool copied;
+};
+
 
 bool node_db_sync_wallet_tx_local(struct node_db *ndb,
                                   const struct transaction *tx,
                                   const struct wallet *w,
                                   int block_height,
+                                  const uint8_t block_hash[32],
+                                  int64_t block_time,
                                   bool *is_ours_out)
 {
     if (!ndb || !ndb->open || !tx || !w)
@@ -210,12 +221,20 @@ bool node_db_sync_wallet_tx_local(struct node_db *ndb,
             wtx.has_block = (block_height > 0);
             wtx.block_height = block_height;
             if (wtx.has_block) {
-                struct db_block blk;
-                if (db_block_find_by_height(ndb, block_height, &blk)) {
-                    memcpy(wtx.block_hash, blk.hash, 32);
-                    wtx.time_received = (int64_t)blk.time;
+                if (block_hash) {
+                    memcpy(wtx.block_hash, block_hash, 32);
+                    wtx.time_received = block_time > 0
+                        ? block_time
+                        : (int64_t)platform_time_wall_time_t();
                 } else {
-                    wtx.time_received = (int64_t)platform_time_wall_time_t();
+                    struct db_block blk;
+                    if (db_block_find_by_height(ndb, block_height, &blk)) {
+                        memcpy(wtx.block_hash, blk.hash, 32);
+                        wtx.time_received = (int64_t)blk.time;
+                    } else {
+                        wtx.time_received =
+                            (int64_t)platform_time_wall_time_t();
+                    }
                 }
             } else {
                 wtx.time_received = (int64_t)platform_time_wall_time_t();
@@ -246,6 +265,8 @@ bool node_db_sync_wallet_tx_write(struct node_db *ndb, void *ctx)
                                            sync->tx,
                                            sync->wallet,
                                            sync->block_height,
+                                           sync->block_hash,
+                                           sync->block_time,
                                            &sync->is_ours);
     return true;
 }
@@ -259,6 +280,8 @@ bool node_db_sync_wallet_tx(struct node_db *ndb,
         .tx = tx,
         .wallet = w,
         .block_height = block_height,
+        .block_hash = NULL,
+        .block_time = 0,
         .is_ours = false,
         .ok = false,
     };
@@ -268,6 +291,62 @@ bool node_db_sync_wallet_tx(struct node_db *ndb,
                  (void *)ndb, (void *)tx, (void *)w);
     return sync_run_write(ndb, node_db_sync_wallet_tx_write, &ctx) &&
            ctx.ok && ctx.is_ours;
+}
+
+static bool node_db_sync_wallet_tx_confirmed_async_write(
+    struct node_db *ndb, void *opaque)
+{
+    struct wallet_tx_confirmed_async_ctx *ctx = opaque;
+    bool is_ours = false;
+
+    if (!ctx || !ctx->copied || !ctx->wallet)
+        LOG_FAIL("sync", "confirmed wallet async write: invalid context");
+    return node_db_sync_wallet_tx_local(
+        ndb, &ctx->tx, ctx->wallet, ctx->block_height, ctx->block_hash,
+        ctx->block_time, &is_ours) && is_ours;
+}
+
+static void node_db_sync_wallet_tx_confirmed_async_free(void *opaque)
+{
+    struct wallet_tx_confirmed_async_ctx *ctx = opaque;
+
+    if (!ctx)
+        return;
+    if (ctx->copied)
+        transaction_free(&ctx->tx);
+    free(ctx);
+}
+
+bool node_db_sync_wallet_tx_confirmed_async(
+    struct node_db *ndb, const struct transaction *tx, const struct wallet *w,
+    int block_height, const uint8_t block_hash[32], int64_t block_time)
+{
+    struct db_service *dbsvc = sync_db_service_for(ndb);
+    struct wallet_tx_confirmed_async_ctx *ctx;
+
+    if (!ndb || !ndb->open || !tx || !w || block_height <= 0 ||
+        !block_hash)
+        LOG_FAIL("sync", "confirmed wallet async enqueue: invalid arguments");
+    if (!dbsvc)
+        LOG_FAIL("sync", "confirmed wallet async enqueue: DB service unavailable");
+
+    ctx = zcl_calloc(1, sizeof(*ctx), "confirmed wallet async ctx");
+    if (!ctx)
+        return false;
+    transaction_init(&ctx->tx);
+    if (!transaction_copy(&ctx->tx, tx)) {
+        free(ctx);
+        return false;
+    }
+    ctx->wallet = w;
+    ctx->block_height = block_height;
+    memcpy(ctx->block_hash, block_hash, sizeof(ctx->block_hash));
+    ctx->block_time = block_time;
+    ctx->copied = true;
+
+    return db_service_enqueue_write(
+        dbsvc, node_db_sync_wallet_tx_confirmed_async_write, ctx,
+        node_db_sync_wallet_tx_confirmed_async_free);
 }
 
 static bool node_db_sync_mempool_add_local(struct node_db *ndb,

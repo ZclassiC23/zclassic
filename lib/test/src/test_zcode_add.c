@@ -592,9 +592,9 @@ static int t_e2e(void)
         printf("  zcode_add: cannot create the fixture datadir... FAIL\n");
         return 1;
     }
-    if (!za_exists("build/bin/zclassic23-package-verify")) {
-        printf("  zcode_add: build/bin/zclassic23-package-verify missing "
-               "(make zclassic23-package-verify)... FAIL\n");
+    if (!za_exists("build/bin/zclassic23-package-verify-dev")) {
+        printf("  zcode_add: build/bin/zclassic23-package-verify-dev missing "
+               "(make dev-bin)... FAIL\n");
         za_rm_rf(base);
         return 1;
     }

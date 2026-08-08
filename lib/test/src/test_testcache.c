@@ -328,6 +328,39 @@ int test_testcache(void)
         }
     }
 
+    /* ── Phase C2: resident snapshot mode never rebuilds or trusts an edit ──
+     * The verified index still describes Phase C. An in-closure edit must run
+     * fresh; an out-of-closure edit may reuse the exact stored PASS. */
+    TC_CHECK("snapshot fixture edits reachable leaf without refreshing graph",
+             mk_write(TC_FIX, "lib/net/src/tc_leaf.c", TC_LEAF_B));
+    {
+        const char *changed[] = {"lib/net/src/tc_leaf.c"};
+        struct testcache *tc = testcache_open_snapshot(TC_FIX, changed, 1);
+        TC_CHECK("snapshot cache opens existing verified index", tc != NULL);
+        if (tc) {
+            struct testcache_probe p;
+            testcache_probe_group(tc, "test_demo_entry", &p);
+            TC_CHECK("snapshot closure reaching edit is uncacheable",
+                     !p.cacheable &&
+                     p.code == TESTCACHE_R_CHANGED_INPUT);
+            testcache_close(tc);
+        }
+    }
+    TC_CHECK("snapshot fixture restores closure and edits unrelated source",
+             write_fixture(TC_LEAF_A, TC_OTHER_A, TC_H_A));
+    {
+        const char *changed[] = {"lib/net/src/tc_other.c"};
+        struct testcache *tc = testcache_open_snapshot(TC_FIX, changed, 1);
+        if (tc) {
+            struct testcache_probe p;
+            testcache_probe_group(tc, "test_demo_entry", &p);
+            TC_CHECK("snapshot excludes unrelated edit and reuses exact PASS",
+                     p.cacheable && p.hit && have_keyA &&
+                     memcmp(keyA, p.key, 32) == 0);
+            testcache_close(tc);
+        }
+    }
+
     /* ── Phase D: UNCACHEABLE cases ── */
     {
         struct testcache *tc = testcache_open(TC_FIX);
@@ -569,6 +602,12 @@ int test_testcache(void)
     TC_CHECK("runner marks a cached pass as (CACHED)",
              file_contains("lib/test/src/test_parallel.c",
                            "ALL TESTS PASSED (CACHED)"));
+    TC_CHECK("runner never stores a self-skipped group as PASS",
+             file_contains("lib/test/src/test_parallel.c",
+                           "results[i].skip_markers == 0"));
+    TC_CHECK("v3 key retires PASS records minted before skip rejection",
+             file_contains("lib/test/src/testcache.c",
+                           "zcl.testcache.key.v3"));
     /* The label has to describe the run, not the flag. Keying it on cache_mode
      * made `ZCL_TEST_CACHE=1 ... --only=<group>` report "mode=cached ...
      * groups_cached=0" and the (CACHED) headline for a run in which everything
