@@ -211,10 +211,15 @@ static size_t zcc_unique_packages(
 
 static void zcc_render_summary(
     struct json_value *data,
-    const struct vcs_zcode_commons_projection *projection)
+    const struct vcs_zcode_commons_projection *projection,
+    bool anchors_complete)
 {
     enum vcs_zcode_commons_verification_status status =
         vcs_zcode_commons_projection_status(projection);
+    /* Anchors verified only ever upgrades; a structural failure can never be
+     * papered over because the caller refuses to set anchors_complete then. */
+    if (anchors_complete)
+        status = VCS_ZCODE_COMMONS_COMPLETE;
     uint64_t attributed =
         vcs_zcode_commons_projection_attributed_atoms(projection);
     uint64_t minted = vcs_zcode_commons_projection_minted_atoms(projection);
@@ -303,11 +308,43 @@ static struct vcs_zcode_commons_projection *zcc_build(
 void zcl_native_handle_zcode_commons_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
-    static const char *const keys[] = {"workspace"};
+    /* The anchor/policy pins are optional but all-or-nothing: supplied in
+     * full, every indexed creation attribution is re-verified under them and
+     * the status can report complete; absent or partial, a NAMED blocker is
+     * reported — never a silent unknown. */
+    static const char *const keys[] = {
+        "workspace", "expected_network_genesis_root",
+        "expected_zc23_policy_root", "expected_epoch", "expected_award_atoms",
+        "active_height", "active_mtp", "anchor_opening_height",
+        "anchor_opening_hash", "anchor_maturity_height",
+        "anchor_maturity_hash", "now_unix",
+    };
     struct vcs_zcode_commons_projection *projection =
-        zcc_build(request, reply, keys, 1);
+        zcc_build(request, reply, keys, 12);
     if (!projection) return;
-    zcc_render_summary(&reply->data, projection);
+    struct zcl_native_zcode_anchor_report report;
+    bool answered = zcl_native_zcode_anchor_verify_commons(request->input,
+                                                           &report);
+    uint8_t failed[32]; const char *reason = NULL;
+    bool structural_failure = vcs_zcode_commons_projection_first_failure(
+        projection, failed, &reason);
+    bool complete = answered && report.context_bound && report.verified &&
+                    !structural_failure;
+    zcc_render_summary(&reply->data, projection, complete);
+    (void)json_push_kv_bool(&reply->data, "anchor_context_bound",
+                            answered && report.context_bound);
+    (void)json_push_kv_int(&reply->data, "anchor_verified_attributions",
+                           report.attributions_checked);
+    if (!complete) {
+        const char *blocker =
+            report.context_blocker[0] ? report.context_blocker
+            : report.first_failure[0] ? report.first_failure
+            : "commons_projection_incomplete";
+        (void)json_push_kv_str(&reply->data, "verification_blocker", blocker);
+        if (report.first_failure[0])
+            zcc_hex(&reply->data, "anchor_first_failure_root",
+                    report.first_failure_root);
+    }
     vcs_zcode_commons_projection_free(projection);
 }
 
@@ -319,7 +356,7 @@ void zcl_native_handle_zcode_commons_rebuild(
         zcc_build(request, reply, keys, 1);
     if (!projection) return;
     uint8_t root[32];
-    zcc_render_summary(&reply->data, projection);
+    zcc_render_summary(&reply->data, projection, false);
     if (vcs_zcode_commons_projection_root(projection, root))
         zcc_hex(&reply->data, "projection_root", root);
     (void)json_push_kv_bool(&reply->data, "persisted", false);
@@ -498,7 +535,7 @@ void zcl_native_handle_zcode_commons_verify(
     struct vcs_zcode_commons_projection *projection =
         zcc_build(request, reply, keys, 1);
     if (!projection) return;
-    zcc_render_summary(&reply->data, projection);
+    zcc_render_summary(&reply->data, projection, false);
     uint8_t failed[32]; const char *reason = NULL;
     bool structural = !vcs_zcode_commons_projection_first_failure(
         projection, failed, &reason);

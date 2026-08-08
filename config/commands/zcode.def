@@ -380,10 +380,15 @@ ZCL_COMMAND_READY_READ(
     "zcode.commons.shadow.status", "zcode.commons.shadow", "",
     "Show scratch shadow accounting status",
     "Rebuilds the existing Commons projection without writing and labels all "
-    "figures simulation-only, with token, funds, custody and genesis false.",
+    "figures simulation-only, with token, funds, custody and genesis false. "
+    "Delegates to zcode.commons.status, so the same all-or-nothing "
+    "simulation context pins (numeric pins as decimal strings) are accepted "
+    "and gate the complete/verification_blocker report identically.",
     ZCL_COMMAND_LIST_BUDGET, "zcode,commons,shadow,status,simulation",
-    "zcl.zcode_commons_workspace.input.v1",
-    "zcl.zcode_commons_shadow_status.v1", "workspace", "workspace",
+    "zcl.zcode_commons_status.input.v1",
+    "zcl.zcode_commons_shadow_status.v1",
+    "workspace,expected_network_genesis_root,expected_zc23_policy_root,expected_epoch,expected_award_atoms,active_height,active_mtp,anchor_opening_height,anchor_opening_hash,anchor_maturity_height,anchor_maturity_hash,now_unix",
+    "workspace",
     "zclassic23 zcode commons shadow status --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
@@ -432,11 +437,17 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_READ(
     "zcode.commons.status", "zcode.commons", "", "Show Living Commons status",
     "Rebuilds an ephemeral view from canonical workspace CAS objects. A "
-    "missing workspace remains absent. Parsed totals are not called "
-    "policy-valid until active-chain and immutable-policy checks complete.",
+    "missing workspace remains absent. When the caller pins the immutable "
+    "ZC23 policy root, expected epoch/award, active-chain height/MTP and "
+    "both declared simulation anchors (all-or-nothing, numeric pins as "
+    "decimal strings), every indexed creation attribution is re-verified "
+    "under them and the status reports complete only when all pass; "
+    "otherwise a named verification_blocker is reported, never a silent "
+    "unknown.",
     ZCL_COMMAND_LIST_BUDGET, "zcode,commons,zc23,creation,attribution",
-    "zcl.zcode_commons_workspace.input.v1", "zcl.zcode_commons_status.v1",
-    "workspace", "workspace",
+    "zcl.zcode_commons_status.input.v1", "zcl.zcode_commons_status.v1",
+    "workspace,expected_network_genesis_root,expected_zc23_policy_root,expected_epoch,expected_award_atoms,active_height,active_mtp,anchor_opening_height,anchor_opening_hash,anchor_maturity_height,anchor_maturity_hash,now_unix",
+    "workspace",
     "zclassic23 zcode commons status --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
@@ -692,33 +703,40 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_patronage_list)
-ZCL_COMMAND_PLANNED_COMMAND(
+ZCL_COMMAND_READY_READ(
     "zcode.patronage.settle.plan", "zcode.patronage.settle", "",
-    "Plan proof-conditioned simulated settlement",
-    "Will bind the existing settlement verifier to immutable policy and "
-    "active-chain anchor authority; it fails closed until those contexts are "
-    "available to the adapter.", 0,
+    "Validate a proof-conditioned simulated settlement",
+    "Reloads the committed intent and simulated funding from the existing "
+    "workspace CAS, re-verifies signature, amount and time order, and checks "
+    "the creation proof chain under a caller-pinned immutable ZC23 policy "
+    "root, declared simulation anchors and CAS-derived continuity "
+    "uniqueness. It persists nothing, moves no live funds and implies no "
+    "custody. Numeric context pins are decimal strings.",
+    ZCL_COMMAND_LIST_BUDGET,
     "zcode,patronage,settle,plan,simulation",
     "zcl.zcode_patronage_settle.input.v1", "zcl.zcode_patronage_settle.v1",
-    "workspace,settlement_hex", "workspace,settlement_hex",
-    "zclassic23 zcode patronage settle plan --input='{...}'",
-    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
-    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
-    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
-    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
-    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    "workspace,settlement_hex,expected_network_genesis_root,expected_zc23_policy_root,expected_epoch,expected_award_atoms,active_height,active_mtp,anchor_opening_height,anchor_opening_hash,anchor_maturity_height,anchor_maturity_hash,now_unix",
+    "workspace,settlement_hex,expected_network_genesis_root,expected_zc23_policy_root,expected_epoch,expected_award_atoms,active_height,active_mtp,anchor_opening_height,anchor_opening_hash,anchor_maturity_height,anchor_maturity_hash,now_unix",
+    "zclassic23 zcode patronage settle plan --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"settlement_hex\":\"<hex>\",\"expected_network_genesis_root\":\"<64hex>\",\"expected_zc23_policy_root\":\"<64hex>\",\"expected_epoch\":\"1\",\"expected_award_atoms\":\"500000000\",\"active_height\":\"200\",\"active_mtp\":\"1650\",\"anchor_opening_height\":\"100\",\"anchor_opening_hash\":\"<64hex>\",\"anchor_maturity_height\":\"200\",\"anchor_maturity_hash\":\"<64hex>\",\"now_unix\":1700}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
-    "active-chain maturity/reorg and immutable ZC23 policy contexts are not "
-    "yet bound to this isolated simulation command")
-ZCL_COMMAND_PLANNED_COMMAND(
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_patronage_settle_plan)
+ZCL_COMMAND_READY_COMMAND(
     "zcode.patronage.settle.commit", "zcode.patronage.settle", "",
-    "Commit proof-conditioned simulated settlement",
-    "Will store a settlement only after plan revalidation; it currently fails "
-    "closed and cannot imply custody or live payment.", 0,
-    "zcode,patronage,settle,commit,simulation",
+    "Verify and store a proof-conditioned simulated settlement",
+    "Repeats settle-plan validation under the same caller-pinned immutable "
+    "policy and declared simulation anchors, then stores only the signed "
+    "settlement wire in the existing workspace CAS. It is idempotent by "
+    "object root and cannot contain transaction bytes, move live funds or "
+    "create custody or ZC23 emission. Numeric context pins are decimal "
+    "strings.", 0,
+    "zcode,patronage,settle,commit,simulation,cas",
     "zcl.zcode_patronage_settle.input.v1", "zcl.zcode_patronage_settle.v1",
-    "workspace,settlement_hex", "workspace,settlement_hex",
+    "workspace,settlement_hex,expected_network_genesis_root,expected_zc23_policy_root,expected_epoch,expected_award_atoms,active_height,active_mtp,anchor_opening_height,anchor_opening_hash,anchor_maturity_height,anchor_maturity_hash,now_unix",
+    "workspace,settlement_hex,expected_network_genesis_root,expected_zc23_policy_root,expected_epoch,expected_award_atoms,active_height,active_mtp,anchor_opening_height,anchor_opening_hash,anchor_maturity_height,anchor_maturity_hash,now_unix",
     "zclassic23 zcode patronage settle commit --input='{...}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
@@ -727,34 +745,38 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
-    "settlement commit is blocked until its plan has authentic active-chain "
-    "and immutable-policy validation context")
-ZCL_COMMAND_PLANNED_COMMAND(
+    zcl_native_handle_zcode_patronage_settle_commit)
+ZCL_COMMAND_READY_READ(
     "zcode.patronage.refund.plan", "zcode.patronage.refund", "",
-    "Plan an expiry-conditioned simulated refund",
-    "Will verify both refund height and median-time-past under active-chain "
-    "authority; it fails closed until that context is command-bound.", 0,
+    "Validate an expiry-conditioned simulated refund",
+    "Reloads the committed intent and simulated funding from the existing "
+    "workspace CAS and re-verifies that the caller-pinned active-chain "
+    "height and median-time pins satisfy the intent's refund schedule. It "
+    "persists nothing, moves no live funds and implies no custody. Numeric "
+    "context pins are decimal strings.",
+    ZCL_COMMAND_LIST_BUDGET,
     "zcode,patronage,refund,plan,simulation",
     "zcl.zcode_patronage_refund.input.v1", "zcl.zcode_patronage_refund.v1",
-    "workspace,settlement_hex", "workspace,settlement_hex",
-    "zclassic23 zcode patronage refund plan --input='{...}'",
-    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
-    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
-    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
-    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
-    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    "workspace,settlement_hex,expected_network_genesis_root,active_height,active_mtp,now_unix",
+    "workspace,settlement_hex,expected_network_genesis_root,active_height,active_mtp,now_unix",
+    "zclassic23 zcode patronage refund plan --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"settlement_hex\":\"<hex>\",\"expected_network_genesis_root\":\"<64hex>\",\"active_height\":\"200\",\"active_mtp\":\"2200\",\"now_unix\":2100}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
-    "active-chain height and MTP authority are not yet available to the "
-    "isolated patronage adapter")
-ZCL_COMMAND_PLANNED_COMMAND(
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_patronage_refund_plan)
+ZCL_COMMAND_READY_COMMAND(
     "zcode.patronage.refund.commit", "zcode.patronage.refund", "",
-    "Commit an expiry-conditioned simulated refund",
-    "Will store only a fully revalidated simulation receipt; it currently "
-    "fails closed and never touches a wallet or transaction builder.", 0,
-    "zcode,patronage,refund,commit,simulation",
+    "Verify and store an expiry-conditioned simulated refund",
+    "Repeats refund-plan validation and stores only the fully revalidated "
+    "simulation receipt in the existing workspace CAS. It is idempotent by "
+    "object root and never touches a wallet or transaction builder. Numeric "
+    "context pins are decimal strings.", 0,
+    "zcode,patronage,refund,commit,simulation,cas",
     "zcl.zcode_patronage_refund.input.v1", "zcl.zcode_patronage_refund.v1",
-    "workspace,settlement_hex", "workspace,settlement_hex",
+    "workspace,settlement_hex,expected_network_genesis_root,active_height,active_mtp,now_unix",
+    "workspace,settlement_hex,expected_network_genesis_root,active_height,active_mtp,now_unix",
     "zclassic23 zcode patronage refund commit --input='{...}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
@@ -763,8 +785,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
-    "refund commit is blocked until its plan has authentic active-chain "
-    "height and MTP validation context")
+    zcl_native_handle_zcode_patronage_refund_commit)
 
 ZCL_COMMAND_BRANCH("zcode.package.dev", "zcode.package",
                    "Agentic development",

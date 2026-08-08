@@ -78,11 +78,11 @@ zclassic23 discover schema <path> --side=input|output
 | Top-level roots | 11 |
 | Branches | 136 |
 | Leaves (dispatchable command paths) | 457 |
-| … `ready` (live handler in this build) | 404 |
+| … `ready` (live handler in this build) | 408 |
 | … `compat` (metadata only, names a fallback) | 18 |
-| … `planned` (fail-closed BLOCKED, exit 3) | 35 |
+| … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 154 |
+| Leaves with `effect=mutate` | 152 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 98 |
 
@@ -925,7 +925,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode commons status` | ready | read / read / operator · fast/low | **`workspace`** | `zcl.zcode_commons_status.v1` | `zclassic23 zcode commons status --input='{"workspace":"/tmp/zclassic23-zcode-scratch"}'` | Show Living Commons status |
+| `zcode commons status` | ready | read / read / operator · fast/low | **`workspace`**, `expected_network_genesis_root`, `expected_zc23_policy_root`, `expected_epoch`, `expected_award_atoms`, `active_height`, `active_mtp`, `anchor_opening_height`, `anchor_opening_hash`, `anchor_maturity_height`, `anchor_maturity_hash`, `now_unix` | `zcl.zcode_commons_status.v1` | `zclassic23 zcode commons status --input='{"workspace":"/tmp/zclassic23-zcode-scratch"}'` | Show Living Commons status |
 | `zcode commons epoch` | ready | read / read / operator · fast/low | **`workspace`**, **`epoch`** | `zcl.zcode_commons_epoch.v1` | `zclassic23 zcode commons epoch --input='{"workspace":"/tmp/zclassic23-zcode-scratch","epoch":1}'` | Show one creation epoch |
 | `zcode commons lineage` | ready | read / read / operator · fast/low | **`workspace`**, **`package_root`** | `zcl.zcode_commons_lineage.v1` | `zclassic23 zcode commons lineage --input='{"workspace":"/tmp/zclassic23-zcode-scratch","package_root":"<64hex>"}'` | Show package continuity lineage |
 | `zcode commons verify` | ready | read / read / operator · fast/low | **`workspace`** | `zcl.zcode_commons_verify.v1` | `zclassic23 zcode commons verify --input='{"workspace":"/tmp/zclassic23-zcode-scratch"}'` | Verify Living Commons integrity |
@@ -942,7 +942,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode commons shadow plan` | ready | read / read / operator · fast/low | **`workspace`**, **`score_receipt_root`**, **`policy_candidate_root`**, **`reproduction_request_root`**, **`reproduction_proof_set_root`**, **`epoch`**, **`now_unix`** | `zcl.zcode_commons_shadow.v1` | `zclassic23 zcode commons shadow plan --input='{"workspace":"/tmp/zclassic23-zcode-scratch","score_receipt_root":"<64hex>","policy_candidate_root":"<64hex>","reproduction_request_root":"<64hex>","reproduction_proof_set_root":"<64hex>","epoch":1,"now_unix":1}'` | Explain whether the first shadow epoch can be proven |
-| `zcode commons shadow status` | ready | read / read / operator · fast/low | **`workspace`** | `zcl.zcode_commons_shadow_status.v1` | `zclassic23 zcode commons shadow status --input='{"workspace":"/tmp/zclassic23-zcode-scratch"}'` | Show scratch shadow accounting status |
+| `zcode commons shadow status` | ready | read / read / operator · fast/low | **`workspace`**, `expected_network_genesis_root`, `expected_zc23_policy_root`, `expected_epoch`, `expected_award_atoms`, `active_height`, `active_mtp`, `anchor_opening_height`, `anchor_opening_hash`, `anchor_maturity_height`, `anchor_maturity_hash`, `now_unix` | `zcl.zcode_commons_shadow_status.v1` | `zclassic23 zcode commons shadow status --input='{"workspace":"/tmp/zclassic23-zcode-scratch"}'` | Show scratch shadow accounting status |
 | `zcode commons shadow verify` | ready | read / read / operator · fast/low | **`workspace`** | `zcl.zcode_commons_shadow_verify.v1` | `zclassic23 zcode commons shadow verify --input='{"workspace":"/tmp/zclassic23-zcode-scratch"}'` | Verify scratch shadow accounting structure |
 
 #### `zcode.commons.shadow.attribution` — Scratch-only creation-attribution simulation
@@ -1005,15 +1005,15 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode patronage settle plan` | planned | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`settlement_hex`** | `zcl.zcode_patronage_settle.v1` | `zclassic23 zcode patronage settle plan --input='{...}'` | Plan proof-conditioned simulated settlement — *active-chain maturity/reorg and immutable ZC23 policy contexts are not yet bound to this isolated simulation command* |
-| `zcode patronage settle commit` | planned | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`settlement_hex`** | `zcl.zcode_patronage_settle.v1` | `zclassic23 zcode patronage settle commit --input='{...}'` | Commit proof-conditioned simulated settlement — *settlement commit is blocked until its plan has authentic active-chain and immutable-policy validation context* |
+| `zcode patronage settle plan` | ready | read / read / operator · fast/low | **`workspace`**, **`settlement_hex`**, **`expected_network_genesis_root`**, **`expected_zc23_policy_root`**, **`expected_epoch`**, **`expected_award_atoms`**, **`active_height`**, **`active_mtp`**, **`anchor_opening_height`**, **`anchor_opening_hash`**, **`anchor_maturity_height`**, **`anchor_maturity_hash`**, **`now_unix`** | `zcl.zcode_patronage_settle.v1` | `zclassic23 zcode patronage settle plan --input='{"workspace":"/tmp/zclassic23-zcode-scratch","settlement_hex":"<hex>","expected_network_genesis_root":"<64hex>","expected_zc23_policy_root":"<64hex>","expected_epoch":"1","expected_award_atoms":"500000000","active_height":"200","active_mtp":"1650","anchor_opening_height":"100","anchor_opening_hash":"<64hex>","anchor_maturity_height":"200","anchor_maturity_hash":"<64hex>","now_unix":1700}'` | Validate a proof-conditioned simulated settlement |
+| `zcode patronage settle commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`settlement_hex`**, **`expected_network_genesis_root`**, **`expected_zc23_policy_root`**, **`expected_epoch`**, **`expected_award_atoms`**, **`active_height`**, **`active_mtp`**, **`anchor_opening_height`**, **`anchor_opening_hash`**, **`anchor_maturity_height`**, **`anchor_maturity_hash`**, **`now_unix`** | `zcl.zcode_patronage_settle.v1` | `zclassic23 zcode patronage settle commit --input='{...}'` | Verify and store a proof-conditioned simulated settlement |
 
 #### `zcode.patronage.refund` — Expiry-conditioned simulated refunds
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode patronage refund plan` | planned | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`settlement_hex`** | `zcl.zcode_patronage_refund.v1` | `zclassic23 zcode patronage refund plan --input='{...}'` | Plan an expiry-conditioned simulated refund — *active-chain height and MTP authority are not yet available to the isolated patronage adapter* |
-| `zcode patronage refund commit` | planned | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`settlement_hex`** | `zcl.zcode_patronage_refund.v1` | `zclassic23 zcode patronage refund commit --input='{...}'` | Commit an expiry-conditioned simulated refund — *refund commit is blocked until its plan has authentic active-chain height and MTP validation context* |
+| `zcode patronage refund plan` | ready | read / read / operator · fast/low | **`workspace`**, **`settlement_hex`**, **`expected_network_genesis_root`**, **`active_height`**, **`active_mtp`**, **`now_unix`** | `zcl.zcode_patronage_refund.v1` | `zclassic23 zcode patronage refund plan --input='{"workspace":"/tmp/zclassic23-zcode-scratch","settlement_hex":"<hex>","expected_network_genesis_root":"<64hex>","active_height":"200","active_mtp":"2200","now_unix":2100}'` | Validate an expiry-conditioned simulated refund |
+| `zcode patronage refund commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`settlement_hex`**, **`expected_network_genesis_root`**, **`active_height`**, **`active_mtp`**, **`now_unix`** | `zcl.zcode_patronage_refund.v1` | `zclassic23 zcode patronage refund commit --input='{...}'` | Verify and store an expiry-conditioned simulated refund |
 
 #### `zcode.package.dev` — Agentic development
 

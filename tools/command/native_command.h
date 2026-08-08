@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -483,6 +484,36 @@ void zcl_native_handle_zcode_patronage_show(
 void zcl_native_handle_zcode_patronage_list(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_patronage_settle_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_patronage_settle_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_patronage_refund_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_patronage_refund_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+/* Simulation anchor/policy verification report for the ZC23 Living Commons
+ * status surfaces (docs/METAVERSE_MVP.md MM4/LC3). `complete` is reported
+ * only when the caller pins the immutable policy root, expected epoch/award,
+ * active-chain height/MTP and both declared simulation anchors AND every
+ * indexed creation attribution re-verifies under them; otherwise a NAMED
+ * blocker is carried in context_blocker or first_failure — never a silent
+ * `unknown`. All-or-nothing: a partial pin set names its first missing pin. */
+struct zcl_native_zcode_anchor_report {
+    bool context_bound;
+    bool verified;
+    int64_t attributions_checked;
+    uint8_t first_failure_root[32];
+    char first_failure[64];
+    char context_blocker[96];
+};
+bool zcl_native_zcode_anchor_verify_commons(
+    const struct json_value *input,
+    struct zcl_native_zcode_anchor_report *report);
 void zcl_native_handle_zcode_continuity_plan(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

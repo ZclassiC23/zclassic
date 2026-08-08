@@ -44,6 +44,17 @@ static bool noic_rpc_error(const struct json_value *body, const char **message)
                 : json_get_str(error);
         return true;
     }
+    /* node_rpc_call returns the envelope's error VALUE bare on failure
+     * ({ok:false,code,message,...}) — no "error" key. Without this rung
+     * every node-side refusal falls through to the status check and is
+     * misreported as "expected planned, got absent". */
+    const struct json_value *ok = json_get(body, "ok");
+    const struct json_value *msg = json_get(body, "message");
+    if (ok && ok->type == JSON_BOOL && !json_get_bool(ok) &&
+        msg && msg->type == JSON_STR) {
+        if (message) *message = json_get_str(msg);
+        return true;
+    }
     return false;
 }
 
