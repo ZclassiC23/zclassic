@@ -43,8 +43,8 @@
 } while (0)
 
 /* Global site nav — the one bar that unifies every route family. `active`
- * is one of "explorer", "names", "store", "blog", "metaverse",
- * "directory" (the link gets class='active'), or NULL to highlight
+ * is one of "explorer", "names", "store", "blog", "metaverse", "yardsale",
+ * "zcode", "directory" (the link gets class='active'), or NULL to highlight
  * nothing. The link set is generated: g_zcl_site_nav_app is expanded from
  * net/site_routes.def (the single site-route inventory) in
  * lib/net/src/site_routes.c — add a row there, never a link here.
@@ -86,6 +86,8 @@ static inline size_t site_emit_global_nav(char *buf, size_t max,
     "<a href='/store'>Store</a>" \
     "<a href='/blog'>Blog</a>" \
     "<a href='/metaverse'>Metaverse</a>" \
+    "<a href='/yardsale'>Yardsale</a>" \
+    "<a href='/zcode'>Zcode</a>" \
     "<a href='/directory'>Directory</a>" \
     "</nav></header>"
 

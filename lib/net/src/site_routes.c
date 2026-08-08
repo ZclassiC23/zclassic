@@ -33,9 +33,10 @@ const size_t g_zcl_site_routes_count =
 
 /* ── Global navs ────────────────────────────────────────────────────────
  *
- * Chrome rows ([0] Explorer, [5] Directory) stay hand-written; the app
- * rows land at their historical slots via the ZCL_SITE_POS_* selectors,
- * so emitted HTML stays byte-identical while the link data has one home. */
+ * Chrome rows ([0] Explorer, [7] Directory) stay hand-written; the app
+ * rows land at their fixed slots via the ZCL_SITE_POS_* selectors, so
+ * emitted HTML stays byte-stable while the link data has one home. Both
+ * transports carry the same app set — a nav slot token means both navs. */
 
 const struct zcl_site_nav_link g_zcl_site_nav_app[] = {
     [0] = { "/explorer", "Explorer", "explorer" },
@@ -45,7 +46,7 @@ const struct zcl_site_nav_link g_zcl_site_nav_app[] = {
     ZCL_SITE_POS_##nav_app(nav_href, nav_label, nav_id)
 #include "net/site_routes.def"
 #undef SITE_ROUTE
-    [5] = { "/directory", "Directory", "directory" },
+    [7] = { "/directory", "Directory", "directory" },
 };
 
 const size_t g_zcl_site_nav_app_count =
@@ -59,7 +60,7 @@ const struct zcl_site_nav_link g_zcl_site_nav_onion[] = {
     ZCL_SITE_POS_##nav_onion(nav_href, nav_label, nav_id)
 #include "net/site_routes.def"
 #undef SITE_ROUTE
-    [5] = { "/directory", "Directory", "directory" },
+    [7] = { "/directory", "Directory", "directory" },
 };
 
 const size_t g_zcl_site_nav_onion_count =
@@ -67,8 +68,8 @@ const size_t g_zcl_site_nav_onion_count =
 
 /* ── Landing-page app grid ──────────────────────────────────────────────
  *
- * Same fixed-position scheme: [0] Explorer, [4] Directory, [5] Status API
- * are chrome; the def rows fill [1..3]. */
+ * Same fixed-position scheme: [0] Explorer, [5] Directory, [6] Status API
+ * are chrome; the def rows fill [1..4]. */
 
 const struct zcl_site_grid_entry g_zcl_site_app_grid[] = {
     [0] = { "/explorer", "Explorer",
@@ -80,10 +81,10 @@ const struct zcl_site_grid_entry g_zcl_site_app_grid[] = {
     ZCL_SITE_POS_##grid(nav_href, nav_label, grid_desc)
 #include "net/site_routes.def"
 #undef SITE_ROUTE
-    [4] = { "/directory", "Directory",
+    [5] = { "/directory", "Directory",
             "On-chain discovered peer/app directory for the Tor-only "
             "network." },
-    [5] = { "/status", "Status API",
+    [6] = { "/status", "Status API",
             "Machine-readable node, sync, and onion reachability status." },
 };
 

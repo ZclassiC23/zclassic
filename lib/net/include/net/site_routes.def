@@ -44,10 +44,11 @@
  *   route_key — puzzle-binding key onion_route_classify() reports for an
  *               EXPENSIVE row ("" for none)
  *   nav_app   — slot in the app-side global nav (site_layout.h):
- *               NONE or P1..P4 ([0] is always the Explorer chrome entry,
- *               [5] always Directory)
- *   nav_onion — slot in the onion front-door nav: NONE or P1..P4
- *   grid      — slot in the onion landing-page app grid: NONE or P1..P3
+ *               NONE or P1..P6 ([0] is always the Explorer chrome entry,
+ *               [7] always Directory)
+ *   nav_onion — slot in the onion front-door nav: NONE or P1..P6
+ *               (same chrome: [0] Explorer, [7] Directory)
+ *   grid      — slot in the onion landing-page app grid: NONE or P1..P4
  *   nav_label / nav_href / nav_id — link text, href, and the `active`
  *               match id for nav members (NULL when the row is in no nav)
  *   grid_desc — landing-grid description (NULL when not in the grid)
@@ -104,14 +105,17 @@ SITE_ROUTE(names, "/names", name_site_handle_request, PLAIN,
  * no scan, no mint. */
 SITE_ROUTE(zcode, "/zcode", zcode_site_handle_request, DATADIR,
            0, ZCL_SITE_COST_CHEAP, "",
-           NONE, NONE, NONE,
-           NULL, NULL, NULL, NULL, NULL, NULL)
+           P6, P6, P4,
+           "Zcode", "/zcode", "zcode",
+           "Packages, publishers, rankings, and downloads from the "
+           "on-node ZCODE library.",
+           NULL, NULL)
 
 /* Metaverse — landing, sovereign property catalog, published spaces, and
  * the Living Commons (SIMULATION). Read-only: no POST surface. */
 SITE_ROUTE(metaverse, "/metaverse", metaverse_site_handle_request, DATADIR,
            0, ZCL_SITE_COST_CHEAP, "",
-           P4, NONE, NONE,
+           P4, P4, NONE,
            "Metaverse", "/metaverse", "metaverse", NULL, NULL, NULL)
 
 /* Blog MVC App — a signed mount: it must never degrade into the unrelated
@@ -131,7 +135,7 @@ SITE_ROUTE(blog, "/blog", blog_site_handle_request, FAILCLOSED,
  * and HTTPS read the same zswap_ads projection. */
 SITE_ROUTE(yardsale, "/yardsale", yardsale_site_handle_request, FAILCLOSED,
            ZCL_SITE_F_POST_ONION, ZCL_SITE_COST_CHEAP, "",
-           NONE, P4, P3,
+           P5, P5, P3,
            "Yardsale", "/yardsale", "yardsale",
            "Signed for-sale-by-owner token signs; buyers settle directly "
            "with sellers.",

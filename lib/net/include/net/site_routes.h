@@ -76,12 +76,16 @@
 #define ZCL_SITE_POS_P2(a, b, c)   [2] = { a, b, c },
 #define ZCL_SITE_POS_P3(a, b, c)   [3] = { a, b, c },
 #define ZCL_SITE_POS_P4(a, b, c)   [4] = { a, b, c },
+#define ZCL_SITE_POS_P5(a, b, c)   [5] = { a, b, c },
+#define ZCL_SITE_POS_P6(a, b, c)   [6] = { a, b, c },
 
 #define ZCL_SITE_POSNUM_NONE 0
 #define ZCL_SITE_POSNUM_P1   1
 #define ZCL_SITE_POSNUM_P2   2
 #define ZCL_SITE_POSNUM_P3   3
 #define ZCL_SITE_POSNUM_P4   4
+#define ZCL_SITE_POSNUM_P5   5
+#define ZCL_SITE_POSNUM_P6   6
 
 /* ── Test-visible generated tables (defined in site_routes.c) ────────── */
 
@@ -121,8 +125,9 @@ extern const struct zcl_site_route g_zcl_site_routes[];
 extern const size_t g_zcl_site_routes_count;
 
 /* The two global navs, chrome entries included, at their historical
- * positions: app (site_layout.h) has Metaverse where the onion front door
- * has Yardsale. */
+ * positions. Both transports carry the same app set — Names, Store, Blog,
+ * Metaverse, Yardsale, Zcode — between the Explorer [0] and Directory [7]
+ * chrome entries. */
 extern const struct zcl_site_nav_link g_zcl_site_nav_app[];
 extern const size_t g_zcl_site_nav_app_count;
 extern const struct zcl_site_nav_link g_zcl_site_nav_onion[];

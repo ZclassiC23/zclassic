@@ -64,12 +64,16 @@ static const struct { const char *id; const char *prefix; } k_rows[] = {
 };
 #define K_ROW_COUNT (sizeof(k_rows) / sizeof(k_rows[0]))
 
+/* Both navs carry the same app set — the wayfinding contract is that the
+ * two transports never disagree about the map of the world. */
 static const struct zcl_site_nav_link k_nav_app[] = {
     { "/explorer",  "Explorer",  "explorer"  },
     { "/names",     "Names",     "names"     },
     { "/store",     "Store",     "store"     },
     { "/blog",      "Blog",      "blog"      },
     { "/metaverse", "Metaverse", "metaverse" },
+    { "/yardsale",  "Yardsale",  "yardsale"  },
+    { "/zcode",     "Zcode",     "zcode"     },
     { "/directory", "Directory", "directory" },
 };
 
@@ -78,7 +82,9 @@ static const struct zcl_site_nav_link k_nav_onion[] = {
     { "/names",     "Names",     "names"     },
     { "/store",     "Store",     "store"     },
     { "/blog",      "Blog",      "blog"      },
+    { "/metaverse", "Metaverse", "metaverse" },
     { "/yardsale",  "Yardsale",  "yardsale"  },
+    { "/zcode",     "Zcode",     "zcode"     },
     { "/directory", "Directory", "directory" },
 };
 
@@ -92,6 +98,9 @@ static const struct zcl_site_grid_entry k_grid[] = {
     { "/yardsale", "Yardsale",
       "Signed for-sale-by-owner token signs; buyers settle directly with "
       "sellers." },
+    { "/zcode", "Zcode",
+      "Packages, publishers, rankings, and downloads from the on-node "
+      "ZCODE library." },
     { "/directory", "Directory",
       "On-chain discovered peer/app directory for the Tor-only network." },
     { "/status", "Status API",
@@ -109,7 +118,9 @@ static const char k_onion_nav_html[] =
     "<a href='/names'>Names</a>"
     "<a href='/store'>Store</a>"
     "<a href='/blog'>Blog</a>"
+    "<a href='/metaverse'>Metaverse</a>"
     "<a href='/yardsale'>Yardsale</a>"
+    "<a href='/zcode'>Zcode</a>"
     "<a href='/directory'>Directory</a>"
     "</nav></header>";
 
