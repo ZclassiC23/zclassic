@@ -166,16 +166,21 @@ public `443`, and troubleshooting a site that stopped loading) is in
 
 The node also hosts a permissionless creation commons — the ZCODE package
 library, sovereign property, signed spaces, and the ZC23 Living Commons
-projection. Five read-only commands give you the tour. Point them at a
-scratch datadir/workspace to try them with zero commitment:
+projection. Start with the guide, then tour the read-only views against a
+scratch datadir/workspace with zero commitment (empty listings are the honest
+answer until you or your peers publish something):
 
 ```bash
-build/bin/zclassic23 discover search metaverse     # orient in the live command tree
+build/bin/zclassic23 zcode guide                       # the creator's map: find, inspect, fetch, create, improve
+build/bin/zclassic23 discover search metaverse         # orient in the live command tree
 build/bin/zclassic23 zcode package search --input='{"datadir":"/tmp/zcl23-tour"}'
 build/bin/zclassic23 metaverse property list --input='{"datadir":"/tmp/zcl23-tour"}'
-build/bin/zclassic23 metaverse space show --input='{"root":"<64hex>","datadir":"/tmp/zcl23-tour"}'
 build/bin/zclassic23 zcode commons status --input='{"workspace":"/tmp/zcl23-tour-commons"}'
 ```
+
+Want a real committed space instead of an empty listing? `metaverse space
+plan` then `metaverse space commit` returns the 64-hex root for
+`metaverse space show --input='{"root":"<64hex>",...}'`.
 
 The ZCODE package site is served alongside the explorer at `/zcode` (onion or
 HTTPS). ZC23 patronage is **simulation-only** — there is no live token, and

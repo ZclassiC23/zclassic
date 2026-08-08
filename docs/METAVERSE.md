@@ -10,15 +10,23 @@ machine, reachable over your own onion.
 
 ## The five-minute tour
 
-Every command below is typed, local-first, and safe to run on any node:
+Every command below is typed, local-first, and safe to run on any node. Start
+with the guide — it maps the whole create/inspect/fetch loop; the listings
+will be empty until you or your peers publish something, and that is the
+honest answer, not a bug:
 
 ```bash
-build/bin/zclassic23 discover search metaverse        # orient in the live command tree
+build/bin/zclassic23 zcode guide                            # the creator's map: find, inspect, fetch, create, improve
+build/bin/zclassic23 discover search metaverse              # orient in the live command tree
 build/bin/zclassic23 zcode package search --input='{"datadir":"/tmp/zcl23-tour"}'   # browse the local commons
 build/bin/zclassic23 metaverse property list --input='{"datadir":"/tmp/zcl23-tour"}'   # holdings, with evidence grades
-build/bin/zclassic23 metaverse space show --input='{"root":"<64hex>","datadir":"/tmp/zcl23-tour"}'   # a committed space
 build/bin/zclassic23 zcode commons status --input='{"workspace":"/tmp/zcl23-tour-commons"}'   # the ZC23 Living Commons projection
 ```
+
+To see a real committed space instead of an empty listing, create one:
+`metaverse space plan` then `metaverse space commit` returns the 64-hex root
+to paste into `metaverse space show --input='{"root":"<64hex>",...}'`. The
+scripted tour below walks exactly that path.
 
 The hermetic, scripted version of this tour (isolated regtest node, zero live
 state) is criterion MM1 of [`docs/METAVERSE_MVP.md`](./METAVERSE_MVP.md).

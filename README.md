@@ -192,6 +192,7 @@ spaces, and browse the ZC23 Living Commons projection — a world where people
 and AI create real things together, and nobody owns the world they build in.
 
 ```bash
+build/bin/zclassic23 zcode guide                    # the creator's map: find, inspect, fetch, create, improve
 build/bin/zclassic23 discover search metaverse      # orient in the command tree
 build/bin/zclassic23 metaverse property list --input='{"datadir":"/tmp/zcl23-tour"}'
 build/bin/zclassic23 zcode commons status --input='{"workspace":"/tmp/zcl23-tour-commons"}'
