@@ -15,10 +15,11 @@ of truth; this page explains how to use it safely.
 6. [Consensus wire and script catalog](#consensus-wire-and-script-catalog)
 7. [Transaction families](#transaction-families)
 8. [Safe plan/commit workflow](#safe-plancommit-workflow)
-9. [Parallel transaction readiness](#parallel-transaction-readiness)
-10. [What is not a chain transaction](#what-is-not-a-chain-transaction)
-11. [Proof and statistics](#proof-and-statistics)
-12. [Adding a transaction type](#adding-a-transaction-type)
+9. [Immediate asynchronous submission](#immediate-asynchronous-submission)
+10. [Parallel transaction readiness](#parallel-transaction-readiness)
+11. [What is not a chain transaction](#what-is-not-a-chain-transaction)
+12. [Proof and statistics](#proof-and-statistics)
+13. [Adding a transaction type](#adding-a-transaction-type)
 
 ## Big picture
 
@@ -104,6 +105,15 @@ input keys, example, effect, risk, authority, and confirmation mode. It also
 returns a fail-closed `agent_decision`, whether a current custody snapshot and
 owner authorization are required, the focused proof group, and a short safety
 checklist.
+
+When a transaction type supports durable background execution, the guide also
+returns `preferred_submission_mode: immediate_ack_async`, names
+`vault.intent.submit` as `preferred_submission_command`, and states that the
+initial reply boundary is `durable_queue`. Its `operation_id_source` is the
+existing `plan_id`, its `status_command` is `vault.intent.status`, and its
+finite `lifecycle_states` array tells an AI exactly which later states it may
+report. Types without that route say `foreground_commit`; an agent must not
+invent asynchronous completion for them.
 
 The guide grants no authority and executes nothing. A `ready` member may say
 `can_execute:true` when every referenced command is currently ready; a
@@ -293,6 +303,63 @@ omit token/name values, destination or owner addresses, raw transaction bytes,
 wallet paths, node endpoints, and keys; those semantics remain encrypted in the
 durable intent and the public chain reveals only what its protocol requires
 after an authorized broadcast.
+
+## Immediate asynchronous submission
+
+Interactive agents should acknowledge a long-running Sapling proof as soon as
+the exact authorized plan is durably queued, rather than holding the user
+connection open until broadcast or mining. The queue boundary is not a claim
+that the transaction reached the mempool:
+
+```text
+owner-authorized plan
+        |
+        v
+vault.intent.submit ---- immediate reply: operation_status=queued
+        |
+        +--> proving --> mempool_accepted --> confirmed --> finalized
+                 |              |                |
+                 +-------- vault.intent.status --+
+```
+
+Use the exact plan ID returned by `vault.intent.plan`:
+
+```bash
+zclassic23 vault intent submit --input='{
+  "wallet_scope":"dev",
+  "plan_id":"<64hex>",
+  "confirm":true
+}'
+
+zclassic23 vault intent status --input='{"plan_id":"<64hex>"}'
+```
+
+`vault.intent.submit` returns the same plan ID as `operation_id`, persists the
+`ASYNC_QUEUED` marker before starting proof work, and deduplicates repeated
+submissions. A restart requeues the durable plan. Before first signing, the
+worker still performs the normal synchronous commit checks: wallet identity,
+current money snapshot, exact effects, fee, reservation, and tip-bound state
+are never weakened by the asynchronous boundary.
+An expired plan cannot start new proof or signing work. If exact signed bytes
+were already durably prepared before expiry, the worker may finish publishing
+only those same bytes; this is restart recovery, not renewed spend authority.
+Transient shielded-note reservation lag stays queued and retries the same raw
+transaction instead of creating a replacement. That prepared-byte retry still
+requires current money readers and the same wallet identity, but it does not
+pretend the old tip snapshot is current; present-chain mempool validation is
+the authority for admitting the exact already-signed transaction.
+
+Report states literally. `proving` means background construction or retry is
+active; `mempool_accepted` means the node admitted the transaction;
+`confirmed` and `finalized` are chain states. `reorged`, `conflicted`,
+`expired`, and `failed` must never be rendered as zero or success. Cancellation
+is safe only while an intent remains unclaimed and planned; once proof work or
+signed bytes may exist, `vault.intent.cancel` refuses.
+
+This route is the preferred conversational API for transparent and Sapling
+vault intents, especially `t->z`, `z->z`, `z->t`, and mixed-recipient proofs.
+Application-specific foreground commands remain foreground until their typed
+guide explicitly advertises an asynchronous route.
 
 ## Parallel transaction readiness
 

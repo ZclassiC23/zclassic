@@ -312,7 +312,7 @@ bool zcl_transaction_types_index_json(struct json_value *out)
     (void)json_push_kv_str(out, "authority",
         "discovery_only_catalog_grants_no_wallet_or_broadcast_authority");
     (void)json_push_kv_str(out, "agent_workflow",
-        "select_type_then_discover_schema_then_plan_then_owner_authorized_commit_then_inspect_txid");
+        "select_type_then_discover_schema_then_plan_then_owner_authorized_submit_or_commit_then_poll_status");
     /* Reproducible isolated fixtures are public; owner-funded history is not
      * a repository artifact, even when its txid is publicly visible on-chain. */
     (void)json_push_kv_str(out, "checked_in_proof_source",

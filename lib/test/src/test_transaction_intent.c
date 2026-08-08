@@ -32,10 +32,12 @@ static bool ti_async_execute(const struct json_value *input,
 {
     (void)input;
     int call = atomic_fetch_add(&g_ti_async_calls, 1) + 1;
-    if (atomic_load(&g_ti_async_transient_once) && call == 1) {
+    int transient = atomic_load(&g_ti_async_transient_once);
+    if (transient && call == 1) {
         json_set_object(result);
         (void)json_push_kv_bool(result, "ok", false);
-        (void)json_push_kv_str(result, "code", "WALLET_LOCKED");
+        (void)json_push_kv_str(result, "code",
+            transient == 2 ? "NOTE_RESERVATION_FAILED" : "WALLET_LOCKED");
         return true;
     }
     while (!atomic_load(&g_ti_async_gate))
@@ -472,7 +474,7 @@ int test_transaction_intent(void)
         PASS();
     }
 
-    TEST("async readiness blocker remains queued and retries") {
+    TEST("async prepared-note reservation blocker remains queued and retries") {
         struct node_db retry_db; memset(&retry_db, 0, sizeof(retry_db));
         ASSERT(node_db_open(&retry_db, ":memory:"));
         struct wallet_identity_row identity;
@@ -490,7 +492,7 @@ int test_transaction_intent(void)
         memcpy(g_ti_async_plan_id, row.plan_id, sizeof(g_ti_async_plan_id));
         atomic_store(&g_ti_async_gate, 1);
         atomic_store(&g_ti_async_calls, 0);
-        atomic_store(&g_ti_async_transient_once, 1);
+        atomic_store(&g_ti_async_transient_once, 2);
         bool duplicate = false;
         ASSERT(vault_intent_async_start(
             &retry_db, &row, plan_hex, true, ti_async_execute,
@@ -597,6 +599,20 @@ int test_transaction_intent(void)
         ASSERT(strcmp(got.error_code, "PLAN_EXPIRED") == 0);
         struct vault_intent_row rows[4];
         ASSERT_EQ(vault_intent_list(&ndb, rows, 4), 2);
+        PASS();
+    }
+
+    TEST("prepared-byte recovery requires exact durable proving state") {
+        struct vault_intent_row row; memset(&row, 0, sizeof(row));
+        row.state = VAULT_INTENT_PLANNED;
+        row.expires_at = 110;
+        ASSERT(!vault_intent_prepared_retry_allowed(&row, false));
+        ASSERT(!vault_intent_prepared_retry_allowed(&row, true));
+        row.state = VAULT_INTENT_PROVING;
+        ASSERT(!vault_intent_prepared_retry_allowed(&row, false));
+        ASSERT(vault_intent_prepared_retry_allowed(&row, true));
+        row.state = VAULT_INTENT_EXPIRED;
+        ASSERT(!vault_intent_prepared_retry_allowed(&row, true));
         PASS();
     }
 

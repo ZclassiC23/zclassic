@@ -529,14 +529,6 @@ bool vault_intent_transparent_shape_matches(
     return matches;
 }
 
-static bool vi_anchor_ok(struct wallet_rpc_context *ctx,
-                         const struct vault_intent_row *row)
-{
-    struct block_index *bi = active_chain_tip(&ctx->main_state->chain_active);
-    return bi && bi->nHeight == row->anchor_height &&
-        memcmp(bi->hashBlock.data, row->anchor_hash, 32) == 0;
-}
-
 static bool vi_build_prepared(struct wallet_rpc_context *ctx,
                               const struct vault_intent_row *row,
                               struct wallet_tx *wtx, struct json_value *result)
@@ -641,7 +633,10 @@ bool vault_intent_commit_input(const struct json_value *in,
         json_set_object(result); json_push_kv_bool(result, "ok", true);
         vault_intent_render_row(ctx, result, &row); json_push_kv_bool(result, "idempotent_replay", true); return true;
     }
-    if (row.state == VAULT_INTENT_EXPIRED || row.expires_at <= now) {
+    const bool prepared_retry = vault_intent_prepared_retry_allowed(
+        &row, vault_intent_has_raw(ctx->node_db, id));
+    if (!prepared_retry &&
+        (row.state == VAULT_INTENT_EXPIRED || row.expires_at <= now)) {
         vi_error(result, "PLAN_EXPIRED", "the ten-minute plan lifetime elapsed"); return true;
     }
     struct wallet_money_snapshot money;
@@ -664,8 +659,8 @@ bool vault_intent_commit_input(const struct json_value *in,
                  "wallet instance or network no longer matches the plan");
         return true;
     }
-    if (!vi_anchor_ok(ctx, &row) ||
-        memcmp(row.snapshot_root, money.snapshot_root, 32) != 0) {
+    if (!prepared_retry && (!vault_intent_anchor_current(ctx, &row) ||
+        memcmp(row.snapshot_root, money.snapshot_root, 32) != 0)) {
         (void)vault_intent_set_state(ctx->node_db, id,
             VAULT_INTENT_CONFLICTED, NULL, "MONEY_SNAPSHOT_CHANGED", now);
         vi_error(result, "MONEY_SNAPSHOT_CHANGED",

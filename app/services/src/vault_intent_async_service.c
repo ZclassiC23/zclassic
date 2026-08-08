@@ -129,7 +129,8 @@ static bool via_error_retryable(const char *code)
            strcmp(code, "WALLET_LOCKED") == 0 ||
            strcmp(code, "WALLET_PERSISTENCE_UNHEALTHY") == 0 ||
            strcmp(code, "ENCRYPTED_BACKUP_REQUIRED") == 0 ||
-           strcmp(code, "SOVEREIGNTY_GATE") == 0;
+           strcmp(code, "SOVEREIGNTY_GATE") == 0 ||
+           strcmp(code, "NOTE_RESERVATION_FAILED") == 0;
 }
 
 static void *via_commit_thread(void *opaque)

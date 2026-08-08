@@ -121,9 +121,27 @@ static size_t tt_component_contracts(
     return count;
 }
 
+static bool tt_has_command_alias(const char *type_id,
+                                 const char *command_path)
+{
+    size_t count = 0;
+    const struct zcl_transaction_command_alias *aliases =
+        zcl_transaction_command_alias_catalog(&count);
+    if (!type_id || !command_path)
+        return false;
+    for (size_t i = 0; i < count; i++)
+        if (strcmp(aliases[i].type_id, type_id) == 0 &&
+            strcmp(aliases[i].command_path, command_path) == 0)
+            return true;
+    return false;
+}
+
 static const char *tt_agent_decision(
     const struct zcl_transaction_type_contract *type)
 {
+    if (strcmp(type->availability, "ready") == 0 &&
+        tt_has_command_alias(type->id, "vault.intent.submit"))
+        return "discover_schema_then_plan_then_owner_authorized_submit_then_poll_status";
     if (strcmp(type->availability, "ready") == 0)
         return "discover_schema_then_plan_then_request_owner_commit";
     if (strcmp(type->availability, "process_only") == 0)
@@ -299,6 +317,37 @@ void zcl_native_handle_transaction_type_guide(
     (void)json_push_kv_str(&reply->data, "agent_decision",
                            tt_agent_decision(type));
 
+    const bool async_submit =
+        tt_has_command_alias(type->id, "vault.intent.submit");
+    (void)json_push_kv_str(&reply->data, "preferred_submission_mode",
+        async_submit ? "immediate_ack_async" : "foreground_commit");
+    (void)json_push_kv_str(&reply->data, "preferred_submission_command",
+        async_submit ? "vault.intent.submit" : type->commit_command);
+    (void)json_push_kv_str(&reply->data, "initial_reply_boundary",
+        async_submit ? "durable_queue" : "commit_result");
+    (void)json_push_kv_str(&reply->data, "operation_id_source",
+        async_submit ? "plan_id" : "none");
+    (void)json_push_kv_str(&reply->data, "status_command",
+        type->inspect_command);
+    struct json_value lifecycle_states;
+    json_init(&lifecycle_states);
+    json_set_array(&lifecycle_states);
+    if (async_submit) {
+        static const char *const states[] = {
+            "planned", "proving", "mempool_accepted", "confirmed",
+            "finalized", "reorged", "conflicted", "expired", "failed",
+        };
+        for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
+            struct json_value item;
+            json_init(&item);
+            json_set_str(&item, states[i]);
+            (void)json_push_back(&lifecycle_states, &item);
+            json_free(&item);
+        }
+    }
+    (void)json_push_kv(&reply->data, "lifecycle_states", &lifecycle_states);
+    json_free(&lifecycle_states);
+
     bool all_ready = true;
     bool needs_money = type->commit_command[0] != 0;
     bool needs_owner = false;
@@ -310,6 +359,10 @@ void zcl_native_handle_transaction_type_guide(
         &contracts, &all_ready, &needs_money, &needs_owner) ? 1u : 0u;
     count += tt_command_contract(registry, "commit", type->commit_command,
         &contracts, &all_ready, &needs_money, &needs_owner) ? 1u : 0u;
+    if (async_submit)
+        count += tt_command_contract(registry, "submit",
+            "vault.intent.submit", &contracts, &all_ready, &needs_money,
+            &needs_owner) ? 1u : 0u;
     count += tt_component_contracts(registry, type, &contracts, &all_ready,
                                     &needs_money, &needs_owner);
     count += tt_command_contract(registry, "inspect", type->inspect_command,
@@ -337,7 +390,7 @@ void zcl_native_handle_transaction_type_guide(
         "discover current schemas; never infer flags or wallet scope",
         "obtain a current identity-bound money snapshot before any spend",
         "plan first and preserve outputs, fee, expiry, snapshot, and idempotency",
-        "commit only after explicit owner authorization",
+        "submit or commit only after explicit owner authorization",
         "inspect txid or operation state before recording redacted evidence",
     };
     struct json_value safety;
