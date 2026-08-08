@@ -60,6 +60,10 @@ proven, gate by gate):
   the commons stays free, money is neither truth nor reputation). **ZC23 today
   is simulation-only** — no live token, no GENESIS/MINT/SEND, no wallet or
   consensus path. Spec: [`docs/work/ZC23_LIVING_COMMONS.md`](./work/ZC23_LIVING_COMMONS.md).
+  The additive pre-genesis Family Commons and evidence-economics v2 contract is
+  [`docs/work/C23_LIVING_COMMONS_V2.md`](./work/C23_LIVING_COMMONS_V2.md);
+  `family-c23.v1` is the default public profile and incomplete evidence fails
+  closed.
   Commands: `zcode commons *`, `zcode patronage *` (simulation),
   `zcode continuity *`.
 - **Spaces and property** — signed, delegated `space_manifest.v1` /
@@ -98,4 +102,5 @@ proven, gate by gate):
 <!-- claim: file-present docs/work/ZCODE_DEVELOPMENT_NETWORK.md # dev network spec -->
 <!-- claim: file-present docs/work/ZCODE_SCIENTIFIC_METAVERSE.md # science spec -->
 <!-- claim: file-present docs/work/ZC23_LIVING_COMMONS.md # Living Commons spec -->
+<!-- claim: file-present docs/work/C23_LIVING_COMMONS_V2.md # additive Family Commons v2 spec -->
 <!-- claim: symbol-present metaverse-score Makefile # the live score target -->

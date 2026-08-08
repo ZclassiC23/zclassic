@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 593 |
+| Registry entries (branches + leaves) | 599 |
 | Top-level roots | 11 |
-| Branches | 136 |
-| Leaves (dispatchable command paths) | 457 |
-| … `ready` (live handler in this build) | 408 |
+| Branches | 139 |
+| Leaves (dispatchable command paths) | 460 |
+| … `ready` (live handler in this build) | 411 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 31 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 153 | 34 | 119 |
+| `config/commands/zcode.def` | 159 | 37 | 122 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -971,6 +971,19 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode commons reproduction challenge plan` | ready | read / read / operator · fast/low | **`workspace`**, **`request_hex`**, **`now_unix`** | `zcl.zcode_reproduction_challenge.v1` | `zclassic23 zcode commons reproduction challenge plan --input='{"workspace":"/tmp/zclassic23-zcode-scratch","request_hex":"<hex>","now_unix":1}'` | Validate a portable reproduction challenge |
 | `zcode commons reproduction challenge commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`request_hex`**, **`now_unix`** | `zcl.zcode_reproduction_challenge.v1` | `zclassic23 zcode commons reproduction challenge commit --input='{...}'` | Store a portable reproduction challenge in scratch CAS |
+
+#### `zcode.commons.economics` — Simulation-only v2 evidence economics
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode commons economics status` | ready | read / read / public · instant/tiny | none | `zcl.zcode_commons_economics_status.v2` | `zclassic23 zcode commons economics status` | Show simulation-only v2 evidence economics |
+
+#### `zcode.moderation.policy` — Immutable family policy profiles
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode moderation policy list` | ready | read / read / public · instant/tiny | none | `zcl.zcode_moderation_policy_list.v1` | `zclassic23 zcode moderation policy list` | List immutable Family Commons policies |
+| `zcode moderation policy show` | ready | read / read / public · instant/tiny | **`profile`** | `zcl.zcode_moderation_policy_show.v1` | `zclassic23 zcode moderation policy show --input='{"profile":"family-c23.v1"}'` | Show one immutable Family Commons policy |
 
 #### `zcode.patronage` — Simulated patronage
 

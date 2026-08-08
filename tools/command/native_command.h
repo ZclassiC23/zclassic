@@ -436,6 +436,15 @@ void zcl_native_handle_zcode_commons_verify(
 void zcl_native_handle_zcode_commons_rebuild(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_moderation_policy_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_moderation_policy_show(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_economics_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_commons_shadow_plan(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

@@ -1,5 +1,10 @@
 # ZC23 Living Commons
 
+> Additive v2 evidence economics and the default decentralized Family Commons
+> profile are specified in
+> [`C23_LIVING_COMMONS_V2.md`](./C23_LIVING_COMMONS_V2.md). V2 never
+> reinterprets the v1 authorities frozen in this document.
+
 > User-facing entry point: [`../METAVERSE.md`](../METAVERSE.md); acceptance
 > bar: [`../METAVERSE_MVP.md`](../METAVERSE_MVP.md). This document stays the
 > authoritative maintainer spec.

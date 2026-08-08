@@ -240,6 +240,67 @@ ZCL_COMMAND_BRANCH("zcode.commons.shadow.protocol", "zcode.commons.shadow",
 ZCL_COMMAND_BRANCH("zcode.commons.reproduction", "zcode.commons",
                    "Portable simulation-only reproduction challenges",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.economics", "zcode.commons",
+                   "Simulation-only v2 evidence economics",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.moderation", "zcode",
+                   "Decentralized Family Commons moderation",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.moderation.policy", "zcode.moderation",
+                   "Immutable family policy profiles",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.economics.status", "zcode.commons.economics", "",
+    "Show simulation-only v2 evidence economics",
+    "Shows the exact award schedule, dual maturity, deterministic queue and "
+    "recipient/lineage caps. It reads no wallet or live token state and "
+    "cannot create issuance.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,economics,v2,simulation,awards,backlog",
+    "zcl.zcode_commons_economics_status.input.v2",
+    "zcl.zcode_commons_economics_status.v2", "", "",
+    "zclassic23 zcode commons economics status",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_economics_status)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.moderation.policy.list", "zcode.moderation.policy", "",
+    "List immutable Family Commons policies",
+    "Lists the default family-c23.v1 policy and its frozen root. A future "
+    "policy is a separate profile and cannot rewrite v1.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,moderation,family,policy,list",
+    "zcl.zcode_moderation_policy_list.input.v1",
+    "zcl.zcode_moderation_policy_list.v1", "", "",
+    "zclassic23 zcode moderation policy list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_moderation_policy_list)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.moderation.policy.show", "zcode.moderation.policy", "",
+    "Show one immutable Family Commons policy",
+    "Shows the closed audience/behavior axes, fail-closed incomplete rule, "
+    "contextual-education allowance and immutable family-c23.v1 root.",
+    ZCL_COMMAND_LIST_BUDGET, "zcode,moderation,family,policy,show",
+    "zcl.zcode_moderation_policy_show.input.v1",
+    "zcl.zcode_moderation_policy_show.v1", "profile", "profile",
+    "zclassic23 zcode moderation policy show --input='{\"profile\":\"family-c23.v1\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_moderation_policy_show)
 
 ZCL_COMMAND_READY_READ(
     "zcode.commons.reproduction.challenge.plan", "zcode.commons.reproduction",
