@@ -335,12 +335,12 @@ static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
                  "idempotency_key must be 1..64 printable characters");
         return true;
     }
-    /* A fanout has already passed the full gate immediately before it mints
-     * durable self-custody destinations. Requiring that backup again here
-     * made the workflow impossible: those keys necessarily postdate it.
-     * Repeat all other gates; commit uses vault_intent_context_ready() and
-     * therefore cannot move value until the exact new keys are backed up. */
-    if (!vi_context_ready(ctx, result, !backup_preflight_held)) return true;
+    /* A fanout holds this full preflight while it mints durable self-custody
+     * destinations. Re-running it after key generation made a long batch race
+     * normal tip-finalize cursor movement and stranded the new keys. The plan
+     * below still performs fresh money/input/tip binding and atomic reservation. Commit repeats the full
+     * context/backup/sovereignty gate before any value can move. */
+    if (!backup_preflight_held && !vi_context_ready(ctx, result, true)) return true;
     (void)vault_intent_expire_due(
         ctx->node_db, (int64_t)platform_time_wall_time_t());
     struct vi_payload p; memset(&p, 0, sizeof(p));
