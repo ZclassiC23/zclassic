@@ -385,24 +385,41 @@ bool wallet_direct_getnewaddresses(
                  generated_count, count);
     }
 
-    /* Persist every fresh key in one transaction BEFORE handing any address
-     * to the user. If the flush fails, roll back the exact generated key IDs.
-     * Never return an address we cannot persist: a
-     * receive to an unsaved key would lose funds on the next restart. */
+    /* Persist only the fresh keys BEFORE handing out any address. A full
+     * wallet flush re-encrypts every historical key; at hundreds of keys that
+     * took longer than a block interval and made the money snapshot stale.
+     * Each row write is encrypted and read back. On failure, keep any already
+     * durable keys as harmless unused receive keys and remove only the exact
+     * unpersisted suffix from memory. */
     if (ctx->wallet_db && direct_generated) {
-        struct zcl_result fr = wallet_flush_from_context(ctx);
-        if (!fr.ok) {
+        for (size_t i = 0; i < generated_count; i++) {
+            struct privkey key;
+            struct pubkey pk;
+            privkey_init(&key);
+            bool have = keystore_get_key(
+                    &ctx->wallet->keystore, &generated[i], &key) &&
+                keystore_get_pubkey(
+                    &ctx->wallet->keystore, &generated[i], &pk);
+            struct zcl_result wr = have
+                ? wallet_sqlite_write_key_r(ctx->wallet_db, &pk, &key)
+                : ZCL_ERR(-1, "generated key disappeared before persistence");
+            bool verified = wr.ok && wallet_readback_key(
+                ctx->wallet_db, &pk, &key);
+            memory_cleanse(key.vch, sizeof(key.vch));
+            if (verified)
+                continue;
             size_t removed = 0;
-            for (size_t i = 0; i < generated_count; i++)
-                removed += wallet_remove_key(ctx->wallet, &generated[i]) ? 1 : 0;
+            for (size_t j = i + (wr.ok ? 1 : 0); j < generated_count; j++)
+                removed += wallet_remove_key(
+                    ctx->wallet, &generated[j]) ? 1 : 0;
             memset(addresses, 0, count * WALLET_DIRECT_ADDRESS_MAX);
             (void)snprintf(err_out, err_max,
-                "wallet persistence failed. New addresses NOT saved. "
-                "Check getwalletinfo.persistence and node.log.");
+                "incremental key persistence failed at %zu of %zu",
+                i + 1, generated_count);
             LOG_FAIL("wallet",
-                     "new_durable_addresses: wallet flush failed "
-                     "(exact_keys_removed=%zu/%zu, code=%d): %s",
-                     removed, generated_count, fr.code, fr.message);
+                     "new_durable_addresses: incremental persist failed "
+                     "at=%zu/%zu removed_unpersisted=%zu code=%d: %s",
+                     i + 1, generated_count, removed, wr.code, wr.message);
         }
     }
 

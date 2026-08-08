@@ -38,10 +38,11 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
 bool wallet_direct_getnewaddress(char *addr_out, size_t addr_max,
                                  char *err_out, size_t err_max);
 
-/* Mint 1..50 transparent receive addresses with one durability flush. Every
- * returned address is backed by a persisted private key before this returns;
- * on failure all outputs are empty and no unpersisted direct-generated key is
- * left in the wallet. This is the fanout path's bounded batch primitive. */
+/* Mint 1..50 transparent receive addresses with bounded incremental key
+ * persistence. Every returned address is backed by an encrypted persisted
+ * private key before this returns; on failure all outputs are empty and no
+ * unpersisted direct-generated key is left in the wallet. This is the fanout
+ * path's bounded batch primitive. */
 #define WALLET_DIRECT_ADDRESS_MAX 128
 #define WALLET_DIRECT_ADDRESS_BATCH_MAX 50
 bool wallet_direct_getnewaddresses(
