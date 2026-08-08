@@ -240,6 +240,14 @@ static int test_change_classification(void)
             ASSERT(strcmp(plan.probe_tool, hot[i].probe) == 0);
         }
 
+        const char *island_member[] = {
+            "app/services/src/metaverse_agent_service.c",
+        };
+        ASSERT(zcl_devloop_plan_files(island_member, 1, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
+        ASSERT(strcmp(plan.proof_group, "hotswap_simnet") == 0);
+        ASSERT(strcmp(plan.probe_tool, "metaverse.property.list") == 0);
+
         const char *multi_hot[] = {
             hot[0].path, hot[1].path,
         };

@@ -25,13 +25,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Controller-owned loopback port. Keeping the transport above services
- * preserves the shape dependency direction. NULL restores fail-closed. */
+/* Controller-owned loopback transport. Keeping it explicit and above services
+ * preserves the shape dependency direction and prevents module-owned mutable
+ * state. NULL remains a fail-closed unreachable reader. */
 typedef char *(*metaverse_agent_rpc_fn)(const char *node_datadir, int rpc_port,
                                         const char *method,
                                         const char *params_json,
                                         long connect_ms, long total_ms);
-void metaverse_agent_service_set_rpc(metaverse_agent_rpc_fn fn);
 
 /* Refusal codes carried in struct zcl_result::code. */
 enum {
@@ -56,9 +56,9 @@ struct zcl_result metaverse_agent_service_audit(const char *dir, size_t limit,
 /* Reconcile the broker's owner-created dev/prod bindings against each live
  * node. Missing/unreachable/conflicting readers stay explicit; no endpoint or
  * datadir path is rendered. */
-struct zcl_result metaverse_agent_service_money(const char *dir, char *out,
-                                                size_t out_cap,
-                                                size_t *out_len);
+struct zcl_result metaverse_agent_service_money(
+    const char *dir, metaverse_agent_rpc_fn rpc,
+    char *out, size_t out_cap, size_t *out_len);
 
 /* Ask one explicitly bound wallet for aggregate-only parallel-spend
  * readiness. The result is advisory and never creates addresses, reserves
@@ -66,6 +66,6 @@ struct zcl_result metaverse_agent_service_money(const char *dir, char *out,
 struct zcl_result metaverse_agent_service_liquidity(
     const char *dir, const char *wallet_scope, int64_t recipient_value_zat,
     int64_t maximum_fee_zat, int requested_concurrency,
-    char *out, size_t out_cap, size_t *out_len);
+    metaverse_agent_rpc_fn rpc, char *out, size_t out_cap, size_t *out_len);
 
 #endif /* ZCL_SERVICES_METAVERSE_AGENT_SERVICE_H */

@@ -6,6 +6,7 @@
 #include "codeindex/codeindex.h"
 #include "controllers/agent_impact_rules.h"
 #include "crypto/sha3.h"
+#include "hotswap/hotswap_module.h"
 #include "test_group_catalog.h"
 #include "util/safe_alloc.h"
 
@@ -42,9 +43,12 @@ static bool path_is_safe(const char *path)
 
 static const struct hotswap_eligible_entry *hotswap_entry(const char *path)
 {
+    const char *owner = hotswap_island_owner_for_path(path);
+    if (!owner)
+        return NULL;
     for (size_t i = 0; i < sizeof(g_hotswap_eligible) /
                             sizeof(g_hotswap_eligible[0]); i++) {
-        if (strcmp(path, g_hotswap_eligible[i].path) == 0)
+        if (strcmp(owner, g_hotswap_eligible[i].path) == 0)
             return &g_hotswap_eligible[i];
     }
     return NULL;

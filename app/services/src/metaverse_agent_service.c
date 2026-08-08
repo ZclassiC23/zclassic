@@ -41,13 +41,6 @@
 #define MVS_MONEY_RPC_CONNECT_MS 500L
 #define MVS_MONEY_RPC_TOTAL_MS 30000L
 
-static metaverse_agent_rpc_fn g_money_rpc;
-
-void metaverse_agent_service_set_rpc(metaverse_agent_rpc_fn fn)
-{
-    g_money_rpc = fn;
-}
-
 /* The one validation both readers share. Every refusal names which of the
  * three shape rules the caller broke, because "bad dir" alone does not tell an
  * operator whether to fix the path, the spelling, or the directory. */
@@ -110,6 +103,7 @@ struct money_binding_read {
     struct agent_money_binding binding;
     struct json_value snapshot;
     char observed_wallet_instance_id[33];
+    metaverse_agent_rpc_fn rpc;
     bool configured;
     bool current;
 };
@@ -189,16 +183,15 @@ static void money_unknown(struct json_value *out, const char *scope,
 
 static bool money_query(struct money_binding_read *row)
 {
-    if (!g_money_rpc)
+    if (!row->rpc)
         return false; /* raw-return-ok:no transport means explicit UNKNOWN */
     char params[96];
     (void)snprintf(params, sizeof(params),
                    "[\"custody\",{\"wallet_scope\":\"%s\"}]",
                    row->binding.wallet_scope);
-    char *raw = g_money_rpc(row->binding.node_datadir, row->binding.rpc_port,
-                            "agentsession", params,
-                            MVS_MONEY_RPC_CONNECT_MS,
-                            MVS_MONEY_RPC_TOTAL_MS);
+    char *raw = row->rpc(row->binding.node_datadir, row->binding.rpc_port,
+                         "agentsession", params, MVS_MONEY_RPC_CONNECT_MS,
+                         MVS_MONEY_RPC_TOTAL_MS);
     if (!raw)
         return false;
     struct json_value reply;
@@ -318,17 +311,19 @@ static void money_portfolio_root(const struct money_binding_read rows[2],
     zcl_hex_encode(root, 32, out);
 }
 
-struct zcl_result metaverse_agent_service_money(const char *dir, char *out,
-                                                size_t out_cap,
-                                                size_t *out_len)
+struct zcl_result metaverse_agent_service_money(
+    const char *dir, metaverse_agent_rpc_fn rpc,
+    char *out, size_t out_cap, size_t *out_len)
 {
     struct zcl_result valid = dir_ok(dir, out, out_cap, out_len);
     if (!valid.ok)
         return valid;
     struct money_binding_read rows[2];
     memset(rows, 0, sizeof(rows));
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 2; i++) {
+        rows[i].rpc = rpc;
         json_init(&rows[i].snapshot);
+    }
     bool binding_ok = money_load_bindings(dir, rows);
     bool queried[2] = { false, false };
     if (binding_ok)
@@ -453,7 +448,7 @@ static void liquidity_copy_fanout(struct json_value *dst,
 struct zcl_result metaverse_agent_service_liquidity(
     const char *dir, const char *wallet_scope, int64_t recipient_value_zat,
     int64_t maximum_fee_zat, int requested_concurrency,
-    char *out, size_t out_cap, size_t *out_len)
+    metaverse_agent_rpc_fn rpc, char *out, size_t out_cap, size_t *out_len)
 {
     struct zcl_result valid = dir_ok(dir, out, out_cap, out_len);
     if (!valid.ok)
@@ -468,8 +463,10 @@ struct zcl_result metaverse_agent_service_liquidity(
 
     struct money_binding_read rows[2];
     memset(rows, 0, sizeof(rows));
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < 2; i++) {
+        rows[i].rpc = rpc;
         json_init(&rows[i].snapshot);
+    }
     const bool bindings_ok = money_load_bindings(dir, rows);
     const int slot = strcmp(wallet_scope, "dev") == 0 ? 0 : 1;
     const int other_slot = slot == 0 ? 1 : 0;
@@ -486,7 +483,7 @@ struct zcl_result metaverse_agent_service_liquidity(
                       rows[1].binding.wallet_instance_id) == 0) {
         liquidity_unknown(&doc, wallet_scope, "CONFLICTED",
                           "duplicate wallet_instance_id on active bindings");
-    } else if (!g_money_rpc) {
+    } else if (!rpc) {
         liquidity_unknown(&doc, wallet_scope, "UNKNOWN",
                           "bound wallet endpoint is unreachable");
     } else {
@@ -497,10 +494,9 @@ struct zcl_result metaverse_agent_service_liquidity(
             "\"concurrency\":%d}]",
             wallet_scope, (long long)recipient_value_zat,
             (long long)maximum_fee_zat, requested_concurrency);
-        char *raw = g_money_rpc(rows[slot].binding.node_datadir,
-                                rows[slot].binding.rpc_port, "agentsession",
-                                params, MVS_MONEY_RPC_CONNECT_MS,
-                                MVS_MONEY_RPC_TOTAL_MS);
+        char *raw = rpc(rows[slot].binding.node_datadir,
+                        rows[slot].binding.rpc_port, "agentsession", params,
+                        MVS_MONEY_RPC_CONNECT_MS, MVS_MONEY_RPC_TOTAL_MS);
         struct json_value reply;
         json_init(&reply);
         bool parsed = raw && json_read(&reply, raw, strlen(raw));

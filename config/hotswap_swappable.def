@@ -66,4 +66,4 @@ HOTSWAP_SWAPPABLE("app/controllers/src/app_native_handlers.c",
 /* Project-neutral App/Metaverse property projection. The owner has no state;
  * its pure service/view/codec/adapter closure is one reloadable island. */
 HOTSWAP_SWAPPABLE("app/controllers/src/metaverse_controller.c",
-                  "metaverse.property.list metaverse.property.show")
+                  "metaverse.agent.status metaverse.agent.money metaverse.agent.liquidity metaverse.agent.audit metaverse.property.list metaverse.property.show")

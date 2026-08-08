@@ -161,9 +161,9 @@ void zcl_native_handle_metaverse_agent_money(
         return;
     char doc[MV_DOC_MAX];
     size_t n = 0;
-    metaverse_agent_service_set_rpc(mv_money_rpc);
     struct zcl_result r =
-        metaverse_agent_service_money(dir, doc, sizeof(doc), &n);
+        metaverse_agent_service_money(dir, mv_money_rpc,
+                                      doc, sizeof(doc), &n);
     if (!r.ok) {
         mv_fail_result(reply, &r);
         return;
@@ -197,10 +197,9 @@ void zcl_native_handle_metaverse_agent_liquidity(
     }
     char doc[MV_DOC_MAX];
     size_t n = 0;
-    metaverse_agent_service_set_rpc(mv_money_rpc);
     struct zcl_result r = metaverse_agent_service_liquidity(
         dir, scope, recipient_value_zat, maximum_fee_zat, (int)concurrency,
-        doc, sizeof(doc), &n);
+        mv_money_rpc, doc, sizeof(doc), &n);
     if (!r.ok) {
         mv_fail_result(reply, &r);
         return;
@@ -478,6 +477,11 @@ void zcl_native_handle_metaverse_property_show(
 #ifdef ZCL_HOTSWAP_GEN
 #include "hotswap/hotswap.h"
 static const struct zcl_hotswap_leaf_replacement k_metaverse_leaves[] = {
+    { "metaverse.agent.status", zcl_native_handle_metaverse_agent_status },
+    { "metaverse.agent.money", zcl_native_handle_metaverse_agent_money },
+    { "metaverse.agent.liquidity",
+      zcl_native_handle_metaverse_agent_liquidity },
+    { "metaverse.agent.audit", zcl_native_handle_metaverse_agent_audit },
     { "metaverse.property.list", zcl_native_handle_metaverse_property_list },
     { "metaverse.property.show", zcl_native_handle_metaverse_property_show },
 };
@@ -489,6 +493,11 @@ ZCL_HOTSWAP_EXPORT_LEAVES(
 #ifdef ZCL_HOTSWAP_MODULE_GEN
 #include "hotswap/hotswap_module.h"
 static const struct zcl_hotswap_leaf k_metaverse_module_leaves[] = {
+    { "metaverse.agent.status", zcl_native_handle_metaverse_agent_status },
+    { "metaverse.agent.money", zcl_native_handle_metaverse_agent_money },
+    { "metaverse.agent.liquidity",
+      zcl_native_handle_metaverse_agent_liquidity },
+    { "metaverse.agent.audit", zcl_native_handle_metaverse_agent_audit },
     { "metaverse.property.list", zcl_native_handle_metaverse_property_list },
     { "metaverse.property.show", zcl_native_handle_metaverse_property_show },
 };

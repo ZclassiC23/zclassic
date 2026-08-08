@@ -165,9 +165,11 @@ fixtures in `lib/test/src/test_make_lint_gates.c`.
 
 The current owners are read-only `app/controllers/` leaves, each with its
 emitter in the owning TU. Status and wallet carry their read helpers. The
-Metaverse property owner carries its pure property-catalog service plus the
-property ID codec, view, work/action rules, and adapters declared in
-`config/hotswap_islands.def`:
+Metaverse owner carries its pure property-catalog closure and the read-only
+agent status/audit/money/liquidity service. That service receives its
+controller-owned RPC transport explicitly on each call; it owns no mutable
+transport slot and cannot create wallet or transaction authority. All island
+members are declared in `config/hotswap_islands.def`:
 
 | Owning TU (`app/controllers/src/`) | Swappable leaves | Probe leaf |
 |---|---|---|
@@ -177,7 +179,7 @@ property ID codec, view, work/action rules, and adapters declared in
 | `wallet_native_handlers.c` | `core.wallet.address.list` | `core.wallet.address.list` |
 | `chain_native_handlers.c` | `core.consensus.utxo.audit` | `core.consensus.utxo.audit` |
 | `app_native_handlers.c` | `app.names.list` | `app.names.list` |
-| `metaverse_controller.c` | `metaverse.property.list`, `metaverse.property.show` | `metaverse.property.list` |
+| `metaverse_controller.c` | `metaverse.agent.status`, `metaverse.agent.money`, `metaverse.agent.liquidity`, `metaverse.agent.audit`, `metaverse.property.list`, `metaverse.property.show` | `metaverse.property.list` |
 
 Adding a leaf to an existing file is: append it to that row's leaf list AND add
 its trampoline to the TU's `#ifdef ZCL_HOTSWAP_MODULE_GEN` leaf table. Adding a

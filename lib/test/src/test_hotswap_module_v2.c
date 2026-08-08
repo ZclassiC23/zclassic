@@ -460,11 +460,19 @@ static int t_allowlist_is_per_file(void)
         ASSERT_STR_EQ(hotswap_island_owner_for_path(
                           "app/services/src/property_catalog_service.c"),
                       V2_TU_METAVERSE);
+        const char *agent_owner = hotswap_island_owner_for_path(
+            "app/services/src/metaverse_agent_service.c");
+        ASSERT(agent_owner != NULL);
+        ASSERT_STR_EQ(agent_owner, V2_TU_METAVERSE);
         ASSERT_STR_EQ(hotswap_island_owner_for_path(
                           "lib/metaverse/src/property_view.c"),
                       V2_TU_METAVERSE);
         ASSERT(hotswap_source_is_swappable(V2_TU_METAVERSE));
         ASSERT(hotswap_handler_is_swappable("metaverse.property.list"));
+        ASSERT(hotswap_handler_is_swappable("metaverse.agent.status"));
+        ASSERT(hotswap_handler_is_swappable("metaverse.agent.money"));
+        ASSERT(hotswap_handler_is_swappable("metaverse.agent.liquidity"));
+        ASSERT(hotswap_handler_is_swappable("metaverse.agent.audit"));
         ASSERT(hotswap_island_owner_for_path("lib/storage/src/storage.c") ==
                NULL);
         ASSERT(strstr(hotswap_island_members_for_source(V2_TU_STATUS),

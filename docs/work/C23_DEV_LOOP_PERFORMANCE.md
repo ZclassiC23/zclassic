@@ -24,23 +24,23 @@ the latest 100 commits that each changed at least one production C translation
 unit. It covers 259 edit occurrences in 158 current translation units, from
 `b0d0f218ea5253a85a36686ae6ac0b557190491d` back through
 `ee05b19a2b2dfdf0590d28800ecdf948d98b781d`; the frozen classified rows hash to
-SHA-256 `2d3beeba79ceb1f69333adfc34a8583a4584d55d9c53e37d89cca1b034684b01`.
+SHA-256 `e42c793d14b0e8f4eb3659592a291f5b1af83bb9d462e483790e5dcbfe6caa25`.
 
 | Current class | Edit occurrences | Unique TUs |
 |---|---:|---:|
-| currently live-reloaded | 15 | 9 |
+| currently live-reloaded | 19 | 10 |
 | eligible but unregistered | 3 | 2 |
 | blocked by mutable file-scope state | 21 | 16 |
 | blocked by direct global/state access | 61 | 31 |
 | blocked by whole-node/host ABI assumptions | 35 | 21 |
-| requires fast restart | 98 | 60 |
+| requires fast restart | 94 | 59 |
 | forbidden dynamic authority | 26 | 19 |
 
 The current narrow eligibility denominator is deliberately conservative:
 existing live islands plus explicit pure codec/base/JSON/encoding/view/
 condition roots that pass the static-state and direct-state scans. On that
-denominator, weighted live-reload coverage is 15/18 = **83.33%**. Across all
-non-forbidden production edits, only 15/233 = **6.44%** currently reach the
+denominator, weighted live-reload coverage is 19/22 = **86.36%**. Across all
+non-forbidden production edits, 19/233 = **8.15%** currently reach the
 resident live-feedback path. The largest measured miss is therefore fast
 restart and component coverage—not the already-fast status example.
 
@@ -73,6 +73,7 @@ classification of every occurrence.
 | P15 parallel score proofs | the seven independent score/package, rejection, creation, patronage, reproduction and shadow contracts are separate exact groups under the existing `zcode_score_receipt` proof family; the full family still runs, but its members execute concurrently instead of serially in one process | the former 5–7 s score group became seven groups whose slowest measured member was reproduction at 3–5 s; frozen p50 fell 8.679→8.143 s and p95 12.163→11.957 s; 45/65 weighted occurrences remain trustworthy-green and zero Make/shell/LTO were invoked | no evidence was removed; **0/65 within 5 s** because cache planning rebuilds the source index for about 3.3 s in every focused-test process before those groups run |
 | P16 resident proof-cache snapshot | the resident proof runner opens the already verified dependency snapshot and supplies every changed translation unit explicitly; a prior group closure that reaches any edit is forced fresh, while an unrelated closure may reuse its exact skip-free PASS. Missing snapshots and invalid or empty changed sets disable reuse rather than rebuilding or guessing | two consecutive frozen replays reported startup around 0.25–0.33 s instead of about 3.3 s. The transition run measured p50 5.592 s / p95 11.487 s; the immediately repeated run measured p50 5.387 s / p95 13.231 s. Both had 133/202 exact group hits across 9 paths, 24 compiler, 24 complete-graph linker, 10 test and 14 probe processes, and zero Make/shell/LTO | trustworthy sub-five-second coverage rose **0/65→10/65 (15.38%)**; 45/65 still produce trustworthy-green feedback. The remaining latency is dominated by fresh group bodies and two complete-graph links per admitted restart path, while 20/65 still fail closed at proof selection |
 | P17 proof-owner terminals | reverse-call selection now records a reached file with an explicit shared impact rule as a terminal proof owner instead of climbing through its generic dispatcher into unrelated suites. Unowned callers still traverse. The package executor gained the missing existing `build_fabric` route, and resident execution refuses more than 32 immediate exact groups before compiling or linking | task-index expansion fell 181→28 groups; vault 100→76; wallet 94→86; package executor became a mapped 23-group plan. Frozen replay completed with p50 5.145 s / p95 12.336 s, 91/164 executed groups served from exact cache across 11 paths, 26 compiler/linker, 12 test and 14 probe processes, and zero Make/shell/LTO | trustworthy-green coverage rose **45/65→54/65** and sub-five-second coverage **10/65→14/65 (21.54%)**. The remaining 11/65 are explicit `affected immediate proof set exceeds resident bound` refusals, not timeouts or silently shortened plans |
+| P18 metaverse read island | the read-only agent service now receives its controller-owned RPC transport as an explicit call input instead of storing it in mutable file-scope state. Its four READY/read-only leaves join the existing metaverse owner, and the native planner resolves an edited island member back to that owner and probe | frozen live occurrences rose 15→19, narrow eligible coverage 83.33→86.36%, and all-nonforbidden live coverage 6.44→8.15%; the restart replay population shrank 65→61. The public plan selected `hotswap`, `metaverse.property.list`, and an admissible 27-group closure; the real six-leaf unity module linked. A clean verify-only replay was `partial`: 3/13 paths hit the 10 s verdict bound; bound-sample p50 7.403 s, p95 10.086 s; 8/61 weighted occurrences were trustworthy under 5 s; 18 compiler, 18 complete-graph linker, 8 test and 10 probe processes; zero Make/shell/LTO | source behavior tests and all hot-swap lint gates pass. No resident activation benchmark was run because it requires the isolated dev datadir/process, which this work explicitly did not touch; no sub-250 ms result is claimed for this larger island |
 
 The earlier single-island resident microbenchmark measured 227.280 ms p50 and
 232.141 ms p95 on 20 distinct artifacts. That is historical evidence for one
@@ -105,11 +106,13 @@ smuggle release work into a save cycle.
 ## Open gates
 
 - Bring the remaining broad plans under the resident proof bound without
-  shortening them silently. All 65 weighted occurrences now terminate with
-  exact receipts; 54 are trustworthy-green and 14 are below five seconds.
-  The remaining 11 are two plans with more than 32 immediate exact groups,
-  refused before proof compilation/linking. The current complete replay is
-  p50 5.145 s and p95 12.336 s. Source-byte instrumentation remains open.
+  shortening them silently. The restart-only population is now 61 weighted
+  occurrences. The latest clean replay was partial because three paths hit the
+  10-second verdict bound; two other plans (11 weighted occurrences) still
+  exceed 32 immediate exact groups and are refused before proof
+  compilation/linking. Its bound samples measured p50 7.403 s and p95 10.086
+  s, with 8/61 trustworthy under five seconds. Source-byte instrumentation
+  remains open.
 - The pull-verifying P7 pre-push retry visibly invoked `cc -flto=auto` while
   linking `test_parallel_fast`. Reconcile that effective command with the
   non-LTO `INTEGRATION` contract; the current profile-text gate is not enough.
@@ -120,7 +123,7 @@ smuggle release work into a save cycle.
 - Replace an isolated runtime only after that proof layer exists; the measured
   full-node launch is currently too slow for the five-second target.
 - Bring at least 95% of non-forbidden edits under five seconds by live reload
-  or isolated fast restart; current measured coverage is 6.44% live-only.
+  or isolated fast restart; current measured coverage is 8.15% live-only.
 - Measure two- and four-worktree throughput.
 - Batch at least ten compatible focused-green commits per full-suite/LTO proof
   without adding deployment authority.
