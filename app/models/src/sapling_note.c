@@ -236,6 +236,20 @@ enum db_mark_spent_result db_sapling_note_reserve_spend(
     }
 }
 
+bool db_sapling_note_release_reservation(struct node_db *ndb,
+                                         const uint8_t spent_by[32])
+{
+    if (!ndb || !ndb->open || !spent_by)
+        LOG_FAIL("sapling_note", "release reservation: invalid argument");
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_BOOL(ndb, s,
+        "UPDATE wallet_sapling_notes SET spent_txid=NULL WHERE spent_txid=?");
+    AR_BIND_BLOB(s, 1, spent_by, 32);
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(s, ok);
+    return ok;
+}
+
 enum db_sapling_note_reservation_state db_sapling_note_reservation_probe(
                                 struct node_db *ndb,
                                 const uint8_t nullifier[32],

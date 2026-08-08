@@ -239,6 +239,11 @@ enum db_mark_spent_result db_sapling_note_reserve_spend(
                                 const uint8_t nullifier[32],
                                 const uint8_t spent_by[32]);
 
+/* Release every wallet-note reservation owned by one transaction. Used only
+ * after exact bytes are consensus-expired or an unrelayed commit rolls back. */
+bool db_sapling_note_release_reservation(struct node_db *ndb,
+                                         const uint8_t spent_by[32]);
+
 enum db_sapling_note_reservation_state {
     DB_NOTE_RESERVATION_ERROR = 0,
     DB_NOTE_RESERVATION_MISSING,

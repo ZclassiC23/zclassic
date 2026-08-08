@@ -23,6 +23,8 @@ void vault_intent_digest_payload(const uint8_t *raw, size_t len,
 void vault_intent_render_row(struct wallet_rpc_context *ctx,
                              struct json_value *out,
                              const struct vault_intent_row *row);
+void vault_intent_refresh_state(struct wallet_rpc_context *ctx,
+                                struct vault_intent_row *row, int64_t now);
 /* Fanout validates the encrypted-backup gate before creating its durable
  * receive keys. This continuation repeats every other plan gate but does not
  * reject those newly-created keys merely because they postdate that preflight.
