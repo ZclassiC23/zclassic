@@ -3,20 +3,28 @@
 
 #include "test/test_core.h"
 
+#include "controllers/wallet_helpers.h"
 #include "controllers/vault_intent_controller.h"
 #include "controllers/vault_intent_publish.h"
+#include "core/serialize.h"
 #include "json/json.h"
 #include "models/database.h"
 #include "models/vault_intent.h"
 #include "models/wallet_identity.h"
 #include "models/wallet_metadata_crypto.h"
 #include "platform/time_compat.h"
+#include "primitives/block.h"
 #include "services/overlay_transaction_intent_service.h"
 #include "services/vault_intent_async_service.h"
 #include "services/znam_transaction_intent_service.h"
 #include "services/zslp_transaction_intent_service.h"
+#include "storage/disk_block_io.h"
+#include "storage/nullifier_kv.h"
+#include "storage/progress_store.h"
+#include "util/safe_alloc.h"
 #include "validation/accept_to_mempool.h"
 #include "validation/main_state.h"
+#include "wallet/wallet.h"
 #include "wallet/wallet_lock.h"
 
 #include <sqlite3.h>
@@ -350,6 +358,118 @@ int test_transaction_intent(void)
         ASSERT(!vault_intent_chain_confirmation(&ms, fork_hash.data,
                                                  &height, &confirmations));
         main_state_free(&ms);
+        PASS();
+    }
+
+    TEST("shielded intent confirmation falls back to exact canonical body") {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "transaction_intent", "shielded");
+        ASSERT(progress_store_open(dir));
+        sqlite3 *pdb = progress_store_db();
+        ASSERT(pdb != NULL);
+        ASSERT(nullifier_kv_initialize_history(pdb, 0));
+
+        struct transaction shielded;
+        transaction_init(&shielded);
+        shielded.overwintered = true;
+        shielded.version = SAPLING_TX_VERSION;
+        shielded.version_group_id = SAPLING_VERSION_GROUP_ID;
+        shielded.expiry_height = 100;
+        shielded.v_shielded_spend = zcl_calloc(
+            1, sizeof(*shielded.v_shielded_spend),
+            "transaction_intent.shielded_spend");
+        ASSERT(shielded.v_shielded_spend != NULL);
+        shielded.num_shielded_spend = 1;
+        memset(shielded.v_shielded_spend[0].nullifier.data, 0x5a, 32);
+        transaction_compute_hash(&shielded);
+
+        struct byte_stream raw;
+        stream_init(&raw, 512);
+        ASSERT(transaction_serialize(&shielded, &raw));
+        ASSERT(nullifier_kv_add(pdb,
+            shielded.v_shielded_spend[0].nullifier.data,
+            NULLIFIER_POOL_SAPLING, 2));
+
+        struct block body;
+        block_init(&body);
+        body.header.nVersion = 4;
+        body.header.nTime = 1700000000;
+        body.header.nBits = 0x2000ffff;
+        body.vtx = zcl_calloc(1, sizeof(*body.vtx),
+                              "transaction_intent.block_tx");
+        ASSERT(body.vtx != NULL);
+        body.num_vtx = 1;
+        transaction_init(&body.vtx[0]);
+        ASSERT(transaction_copy(&body.vtx[0], &shielded));
+        struct uint256 body_hash;
+        block_get_hash(&body, &body_hash);
+        struct disk_block_pos pos;
+        disk_block_pos_init(&pos);
+        const unsigned char msg_start[4] = { 0x24, 0xe9, 0x27, 0x64 };
+        ASSERT(write_block_to_disk(&body, &pos, dir, msg_start));
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct block_index blocks[8];
+        struct uint256 hashes[8];
+        memset(blocks, 0, sizeof(blocks));
+        memset(hashes, 0, sizeof(hashes));
+        bool built = true;
+        for (int i = 0; i < 8; i++) {
+            hashes[i].data[0] = (uint8_t)(0x80 + i);
+            if (i == 2)
+                hashes[i] = body_hash;
+            blocks[i].nHeight = i;
+            blocks[i].pprev = i > 0 ? &blocks[i - 1] : NULL;
+            built = built && block_map_insert(&ms.map_block_index,
+                                               &hashes[i], &blocks[i]);
+        }
+        blocks[2].nFile = pos.nFile;
+        blocks[2].nDataPos = pos.nPos;
+        blocks[2].nStatus = BLOCK_HAVE_DATA;
+        built = built && active_chain_move_window_tip(&ms.chain_active,
+                                                       &blocks[7]);
+        ASSERT(built);
+
+        struct node_db chain_db;
+        memset(&chain_db, 0, sizeof(chain_db));
+        ASSERT(node_db_open(&chain_db, ":memory:"));
+        struct wallet_identity_row identity;
+        const uint8_t genesis[32] = { 0xb6 };
+        ASSERT(wallet_identity_ensure(&chain_db, genesis, "dev", &identity));
+        struct vault_intent_row row;
+        ti_bound_row(&row, 0xb7, &identity, 2000);
+        row.state = VAULT_INTENT_EXPIRED;
+        row.has_txid = true;
+        memcpy(row.txid, shielded.hash.data, sizeof(row.txid));
+        snprintf(row.error_code, sizeof(row.error_code),
+                 "TX_EXPIRED_UNCONFIRMED");
+        ASSERT(vault_intent_save(&chain_db, &row));
+        ASSERT(vault_intent_store_raw(&chain_db, row.plan_id,
+                                      raw.data, raw.size));
+
+        struct wallet wallet;
+        wallet_init(&wallet);
+        struct wallet_rpc_context ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.wallet = &wallet;
+        ctx.main_state = &ms;
+        ctx.datadir = dir;
+        ctx.node_db = &chain_db;
+        vault_intent_refresh_state(&ctx, &row, 1000);
+        ASSERT_EQ(row.state, VAULT_INTENT_FINALIZED);
+        ASSERT_EQ(row.confirm_height, 2);
+        ASSERT(row.has_confirm_hash &&
+               memcmp(row.confirm_hash, body_hash.data, 32) == 0);
+
+        wallet_free(&wallet);
+        node_db_close(&chain_db);
+        main_state_free(&ms);
+        block_free(&body);
+        transaction_free(&shielded);
+        stream_free(&raw);
+        progress_store_close();
+        (void)test_rm_rf_recursive(dir);
         PASS();
     }
 

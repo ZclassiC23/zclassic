@@ -249,6 +249,13 @@ bool node_db_sync_sapling_spend_bool_compat(struct node_db *ndb,
 bool node_db_sync_wallet_sapling_spends(
     struct node_db *ndb, const struct transaction *tx);
 
+/* Atomically reconcile every Sapling spend from an exact canonical
+ * transaction. Canonical evidence supersedes an unconfirmed local
+ * reservation for the same note; a later rollback of that losing txid must
+ * not make the mined note spendable again. */
+bool node_db_sync_confirmed_sapling_spends(
+    struct node_db *ndb, const struct transaction *tx);
+
 /* Delete an unrelayed wallet transaction through the node.db single-writer
  * lane. Used as the durable compensation step when a post-flush reservation
  * fails. */
