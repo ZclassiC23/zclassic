@@ -28,6 +28,7 @@
 #include "storage/progress_store.h"
 #include "support/cleanse.h"
 #include "validation/main_state.h"
+#include "validation/txmempool.h"
 #include "wallet/wallet.h"
 #include <stdbool.h>
 #include <stdio.h>
@@ -313,6 +314,64 @@ int test_rpc_safety(void)
 
         json_free(&params);
         json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("rpc_safety: getrawmempool returns live transaction ids... ");
+    {
+        ensure_rpc_warmup_finished_once();
+
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct transaction tx;
+        transaction_init(&tx);
+        bool ok = transaction_alloc(&tx, 1, 1);
+        if (ok) {
+            memset(tx.vin[0].prevout.hash.data, 0x6d, 32);
+            tx.vin[0].prevout.n = 1;
+            tx.vin[0].sequence = UINT32_MAX;
+            tx.vout[0].value = 1000;
+            transaction_compute_hash(&tx);
+        }
+
+        struct mempool_entry entry;
+        memset(&entry, 0, sizeof(entry));
+        if (ok) {
+            mempool_entry_init(&entry, &tx, 10000, 1700000000, 1e9,
+                               100, true, false, 0);
+            ok = tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
+        }
+
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        rpc_blockchain_set_state(NULL, &pool, NULL);
+        register_blockchain_rpc_commands(&tbl);
+
+        struct json_value params = {0};
+        struct json_value result = {0};
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+
+        ok = ok && rpc_table_execute(&tbl, "getrawmempool", &params,
+                                     &result);
+        char expected[65] = {0};
+        if (ok)
+            uint256_get_hex(&tx.hash, expected);
+        ok = ok && result.type == JSON_ARR && result.num_children == 1 &&
+             result.children[0].type == JSON_STR &&
+             strcmp(json_get_str(&result.children[0]), expected) == 0;
+
+        json_free(&params);
+        json_free(&result);
+        rpc_blockchain_set_state(NULL, NULL, NULL);
+        if (tx.hash.data[0] || tx.num_vin || tx.num_vout)
+            mempool_entry_free(&entry);
+        transaction_free(&tx);
+        tx_mempool_free(&pool);
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }
