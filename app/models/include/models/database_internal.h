@@ -76,6 +76,12 @@ void node_db_note_turbo_mode(struct node_db *ndb, bool turbo_mode,
  * in database_migrate.c.) */
 void node_db_note_activity(struct node_db *ndb, const char *op, int rc);
 
+/* Atomically stamp transaction-open state with the same health activity
+ * fields. Defined by the connection lifecycle unit and used by the runtime
+ * transaction operations sibling. */
+void node_db_note_tx_state(struct node_db *ndb, bool tx_open,
+                           const char *op, int rc);
+
 /* ── Long-running maintenance-op machinery (database_long_op.c) ─────────
  *
  * The progress-handler wrappers and the lock-free busy-op registry that backs

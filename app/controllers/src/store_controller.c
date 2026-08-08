@@ -665,7 +665,8 @@ void store_process_payments(const char *datadir)
     /* Background 30 s scan — a runtime reopen, NOT a boot. Re-running the boot
      * ceremony here every cycle (quick_check + staging DELETE + version banner)
      * is what made a merely-stalled node look like a silent boot loop. */
-    if (!node_db_open_runtime(&ndb, db_path, "store.payment_scan")) return;
+    if (!node_db_open_existing_runtime(&ndb, db_path,
+                                       "store.payment_scan")) return;
 
     struct db_store_pending_payment pending_orders[64];
     int pending_count = db_store_order_list_pending_payments(&ndb,
@@ -744,4 +745,3 @@ void store_process_payments(const char *datadir)
 
     node_db_close(&ndb);
 }
-
