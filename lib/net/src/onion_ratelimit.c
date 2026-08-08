@@ -166,7 +166,7 @@ enum onion_route_class onion_route_classify(const char *method,
      * Only an EXPENSIVE row carries a route key (names_gateway today). */
 #define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
                    nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
-                   grid_desc, fail_body) \
+                   grid_desc, fail_body, app_id) \
     if (path_prefix(path, prefix, sizeof(prefix) - 1)) { \
         if (route_key_out && (rkey)[0]) \
             snprintf(route_key_out, 32, "%s", rkey); \

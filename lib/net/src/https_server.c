@@ -199,7 +199,7 @@ static void https_write_all(SSL *ssl, const unsigned char *buf, size_t n)
  * and the ratelimit classification in onion_ratelimit.c. */
 #define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
                    nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
-                   grid_desc, fail_body) \
+                   grid_desc, fail_body, app_id) \
     ZCL_SITE_EXTERN_##flavor(handler)
 #include "net/site_routes.def"
 #undef SITE_ROUTE
@@ -352,7 +352,7 @@ static void handle_https_client(SSL *ssl)
     }
 #define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
                    nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
-                   grid_desc, fail_body) \
+                   grid_desc, fail_body, app_id) \
     ZCL_HTTPS_DISPATCH_##flavor(id, prefix, handler, fail_body)
 #include "net/site_routes.def"
 #undef SITE_ROUTE

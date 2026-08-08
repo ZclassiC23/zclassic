@@ -52,6 +52,14 @@
  *               match id for nav members (NULL when the row is in no nav)
  *   grid_desc — landing-grid description (NULL when not in the grid)
  *   fail_body — 503 body text for FAILCLOSED rows (NULL otherwise)
+ *   app_id    — the app-catalog id (apps/<id>/app.def) this mount serves,
+ *               or NULL when the mount is not an app-catalog App (store,
+ *               names, zcode, metaverse predate the catalog). The set of
+ *               rows with an app_id IS this node's onion App advertisement
+ *               (the "apps" list on the self /directory.json row);
+ *               test_site_routes cross-checks each against the app.def
+ *               ZCL_APP_ONION(true) + ZCL_APP_WEB_MOUNT declarations so the
+ *               column can never drift from the catalog.
  *
  * ROW ORDER IS ONION DISPATCH ORDER — the test_site_routes group pins it.
  * No app prefix is a prefix of another, so relative order changes no
@@ -67,7 +75,7 @@ SITE_ROUTE(store, "/store", store_handle_request, STORE,
            P2, P2, P1,
            "Store", "/store", "store",
            "Commerce and token purchase flows hosted directly on the node.",
-           NULL)
+           NULL, NULL)
 
 /* ZCL Names — name→site resolution gateway. With the operator opt-in
  * ZCL_NAMES_ONION_GATEWAY on, /n/<name> DIALS a third-party onion on an
@@ -78,7 +86,7 @@ SITE_ROUTE(store, "/store", store_handle_request, STORE,
 SITE_ROUTE(names_gateway, "/n/", name_site_handle_request, PLAIN,
            0, ZCL_SITE_COST_EXPENSIVE, "name-gateway",
            NONE, NONE, NONE,
-           NULL, NULL, NULL, NULL, NULL)
+           NULL, NULL, NULL, NULL, NULL, NULL)
 
 /* ZCL Names — registry browse/profile pages. CHEAP: indexed lookups, not
  * the gateway prefix above. The register POST is onion-only, like the
@@ -87,7 +95,7 @@ SITE_ROUTE(names_gateway, "/n/", name_site_handle_request, PLAIN,
 SITE_ROUTE(names, "/names", name_site_handle_request, PLAIN,
            ZCL_SITE_F_POST_ONION, ZCL_SITE_COST_CHEAP, "",
            P1, P1, NONE,
-           "Names", "/names", "names", NULL, NULL)
+           "Names", "/names", "names", NULL, NULL, NULL)
 
 /* ZCODE Library — packages, publishers, rankings, badges, downloads.
  * Read-only: no POST surface. Bounded listing/lookup pages over the
@@ -97,14 +105,14 @@ SITE_ROUTE(names, "/names", name_site_handle_request, PLAIN,
 SITE_ROUTE(zcode, "/zcode", zcode_site_handle_request, DATADIR,
            0, ZCL_SITE_COST_CHEAP, "",
            NONE, NONE, NONE,
-           NULL, NULL, NULL, NULL, NULL)
+           NULL, NULL, NULL, NULL, NULL, NULL)
 
 /* Metaverse — landing, sovereign property catalog, published spaces, and
  * the Living Commons (SIMULATION). Read-only: no POST surface. */
 SITE_ROUTE(metaverse, "/metaverse", metaverse_site_handle_request, DATADIR,
            0, ZCL_SITE_COST_CHEAP, "",
            P4, NONE, NONE,
-           "Metaverse", "/metaverse", "metaverse", NULL, NULL)
+           "Metaverse", "/metaverse", "metaverse", NULL, NULL, NULL)
 
 /* Blog MVC App — a signed mount: it must never degrade into the unrelated
  * legacy static-file Blog when proof storage is absent, so a handler 0 is
@@ -115,7 +123,7 @@ SITE_ROUTE(blog, "/blog", blog_site_handle_request, FAILCLOSED,
            P3, P3, P2,
            "Blog", "/blog", "blog",
            "Static site hosting from your datadir over the onion service.",
-           "Blog storage is unavailable.\n")
+           "Blog storage is unavailable.\n", "blog")
 
 /* Yardsale MVC App — the for-sale-by-owner swap signs plus the bilateral
  * ceremony endpoints. The ceremony POSTs (/yardsale/buy,
@@ -127,4 +135,4 @@ SITE_ROUTE(yardsale, "/yardsale", yardsale_site_handle_request, FAILCLOSED,
            "Yardsale", "/yardsale", "yardsale",
            "Signed for-sale-by-owner token signs; buyers settle directly "
            "with sellers.",
-           "Yardsale storage is unavailable.\n")
+           "Yardsale storage is unavailable.\n", "yardsale")

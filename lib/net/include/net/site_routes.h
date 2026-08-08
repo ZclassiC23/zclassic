@@ -101,6 +101,7 @@ struct zcl_site_route {
     const char *nav_id;       /* the site_emit_global_nav() `active` id    */
     const char *grid_desc;    /* NULL when not in the landing grid         */
     const char *fail_body;    /* 503 body for FAILCLOSED rows, else NULL   */
+    const char *app_id;       /* app-catalog id this mount serves, or NULL */
 };
 
 struct zcl_site_nav_link {

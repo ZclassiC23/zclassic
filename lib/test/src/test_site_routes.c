@@ -25,7 +25,10 @@
  *      blog and yardsale each mount exactly the prefix of their def row;
  *      social's "/" mount is the documented manifest-only exception (the
  *      "/" front door is node chrome, serve_landing_page, not an app
- *      runtime route) and is asserted to have NO row.
+ *      runtime route) and is asserted to have NO row. The app_id column
+ *      (the /directory.json "apps" advertisement set) is pinned to
+ *      exactly {blog, yardsale}, each cross-checked against its app.def's
+ *      ZCL_APP_ONION(true).
  *   5. Byte-exact nav/grid pins: both generated nav tables, the landing
  *      app grid, the SITE_GLOBAL_NAV literal twin contract, and the
  *      zcl_site_onion_nav_emit() output (the former ONION_GLOBAL_NAV).
@@ -168,6 +171,23 @@ static bool sr_app_mount(const char *def_path, char *out, size_t out_max)
     return found;
 }
 
+/* True when the app.def declares ZCL_APP_ONION(true). */
+static bool sr_app_onion_enabled(const char *def_path)
+{
+    FILE *f = fopen(def_path, "r");
+    if (!f) return false; // raw-return-ok:fixture-read-fails-closed
+    char line[512];
+    bool found = false;
+    while (fgets(line, sizeof(line), f)) {
+        if (strstr(line, "ZCL_APP_ONION(true)")) {
+            found = true;
+            break;
+        }
+    }
+    fclose(f);
+    return found;
+}
+
 /* ── The group ───────────────────────────────────────────────────────── */
 
 int test_site_routes(void)
@@ -298,6 +318,35 @@ int test_site_routes(void)
     }
     SR_CHECK("rows named for apps mount their app.def prefix; no row "
              "claims \"/\"", reverse_ok);
+
+    /* 4b. The app_id column: exactly the mounted app-catalog Apps carry
+     * their id (blog, yardsale — the set served as "apps" on this node's
+     * /directory.json self row), and every one of them declares
+     * ZCL_APP_ONION(true) in its app.def, so the advertisement can never
+     * drift from the catalog. social declares ONION(true) but has no row
+     * (the documented "/" exception) and so advertises nothing. */
+    bool appcol_ok = true;
+    for (size_t i = 0; i < g_zcl_site_routes_count; i++) {
+        const struct zcl_site_route *r = &g_zcl_site_routes[i];
+        const char *want = NULL;
+        if (strcmp(r->id, "blog") == 0) want = "blog";
+        if (strcmp(r->id, "yardsale") == 0) want = "yardsale";
+        if (!want) {
+            if (r->app_id != NULL)
+                appcol_ok = false;
+            continue;
+        }
+        if (!r->app_id || strcmp(r->app_id, want) != 0) {
+            appcol_ok = false;
+            continue;
+        }
+        char path[128];
+        snprintf(path, sizeof(path), "apps/%s/app.def", r->app_id);
+        if (!sr_app_onion_enabled(path))
+            appcol_ok = false;
+    }
+    SR_CHECK("app_id column is exactly {blog, yardsale}, each ZCL_APP_"
+             "ONION(true) in its app.def", appcol_ok);
 
     /* 5. Byte-exact nav/grid pins. */
     SR_CHECK("app-side nav table",

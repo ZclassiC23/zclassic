@@ -186,12 +186,50 @@ void onion_directory_reset_self_clearnet(void);
  * This is the parser for that field. Pure: no I/O, no allocation, no
  * globals. Every hostname goes through onion_hostname_valid(); duplicates
  * and `self_host` are skipped; at most `max` hints are written, which is
- * how the caller caps a single response's contribution. */
+ * how the caller caps a single response's contribution.
+ *
+ * Each hint also carries the object's "apps" advertisement — the
+ * app-catalog ids the host serves on its onion ("yardsale", "blog"),
+ * normalized to a bounded CSV by the one rule every apps string in this
+ * directory obeys: lowercase alnum ids of at most ONION_DIR_APP_ID_MAX
+ * chars, deduped, at most ONION_DIR_APPS_MAX of them. Junk ids are
+ * dropped, never fatal — the same posture as the hostname scan. */
+#define ONION_DIR_APP_ID_MAX   32   /* one app id's length cap            */
+#define ONION_DIR_APPS_MAX     8    /* ids one advertisement may carry    */
+/* CSV worst case: ONION_DIR_APPS_MAX ids + the commas between them. */
+#define ONION_DIR_APPS_CSV_MAX \
+    (ONION_DIR_APPS_MAX * (ONION_DIR_APP_ID_MAX + 1) - 1)
+
+/* The one app-id shape rule: 1..ONION_DIR_APP_ID_MAX chars, lowercase
+ * ASCII alnum. Every apps string entering or leaving the directory passes
+ * it. Pure. */
+bool onion_directory_app_id_valid(const char *app_id);
+
+/* Extract and normalize the "apps":["id",...] array of ONE bounded
+ * directory-object segment into CSV form. Returns the CSV length (0 when
+ * the key is absent or nothing in it validated). Pure. */
+size_t onion_directory_apps_from_json(const char *seg,
+                                      char *out, size_t out_len);
+
+/* Re-normalize a stored CSV: drop junk tokens, dedupe, cap. Rows written
+ * by a pre-validation binary may be hostile, so readers run this rather
+ * than trusting the column. Returns the CSV length. Pure. */
+size_t onion_directory_apps_normalize(const char *csv,
+                                      char *out, size_t out_len);
+
+/* Extract one named host's apps advertisement from a whole fetched
+ * /directory.json body — used for the node we just fetched, whose own row
+ * the relay-hint learn loop deliberately skips. Returns the CSV length.
+ * Pure. */
+size_t onion_directory_apps_for_onion(const char *body, const char *onion,
+                                      char *out, size_t out_len);
+
 struct onion_relay_hint {
     char    hostname[64];
     int     port;
     int     height;
     int64_t last_seen;   /* the ADVERTISING node's stamp; 0 when absent */
+    char    apps[ONION_DIR_APPS_CSV_MAX + 1];   /* normalized CSV, "" none */
 };
 
 int onion_directory_parse_relay_hints(const char *body, const char *self_host,
@@ -224,9 +262,39 @@ void onion_directory_reset_relay_follow(void);
  * is the advertising node's own stamp and is clamped into
  * [now - ONION_DIR_EXPIRE_SECS, now] — hearsay can make a row look older
  * than we would, never newer. False when the hostname fails the v3 rule
- * or the directory is not open. */
+ * or the directory is not open.
+ *
+ * `apps` (NULL/"" for none) is the host's normalized app advertisement.
+ * It is the ONE field hearsay may refresh on an existing row: the apps
+ * list is a what-they-serve hint, never identity, so a fresher
+ * advertisement may replace it — but an empty one never clears it, and no
+ * other column is touched. The string is re-normalized here, so callers
+ * may hand in an unvalidated CSV. */
 bool onion_service_directory_learn(const char *hostname, int port, int height,
-                                   int64_t peer_last_seen);
+                                   int64_t peer_last_seen, const char *apps);
+
+/* ── Seller/app discovery (read side) ───────────────────────────────
+ *
+ * The /yardsale landing page (and any app mount that wants "who else
+ * serves this app") reads FRESH, non-self rows whose apps advertisement
+ * names one app id. FRESH is the one freshness rule
+ * (onion_directory_freshness): last_seen within ONION_DIR_STALE_SECS —
+ * stale rows age out of the view the same way they flag on /directory,
+ * and expired ones are gone from the table anyway. Every returned row is
+ * re-validated (hostname rule) and its apps re-normalized on the way out:
+ * rows stored by pre-validation binaries may be hostile. */
+struct onion_directory_app_peer {
+    char onion[64];
+    char apps[ONION_DIR_APPS_CSV_MAX + 1];  /* sanitized CSV */
+};
+
+/* Newest-first, at most `max` rows. Returns the row count (0 when the
+ * table is absent or nothing matches — both are "none discovered", never
+ * an error). `app_id` must pass onion_directory_app_id_valid(). */
+int onion_directory_app_peers_db(struct sqlite3 *db, const char *app_id,
+                                 int64_t now,
+                                 struct onion_directory_app_peer *out,
+                                 int max);
 
 /* Initialize the onion service layer.
  * Called from app_init() after Tor is linked in.

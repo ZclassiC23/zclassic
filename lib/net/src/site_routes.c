@@ -18,12 +18,12 @@
 const struct zcl_site_route g_zcl_site_routes[] = {
 #define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
                    nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
-                   grid_desc, fail_body) \
+                   grid_desc, fail_body, app_id) \
     { #id, prefix, #handler, #flavor, cost, rkey, \
       (ZCL_SITE_FLAGS_##flavor) | (methods), \
       ZCL_SITE_POSNUM_##nav_app, ZCL_SITE_POSNUM_##nav_onion, \
       ZCL_SITE_POSNUM_##grid, nav_label, nav_href, nav_id, grid_desc, \
-      fail_body },
+      fail_body, app_id },
 #include "net/site_routes.def"
 #undef SITE_ROUTE
 };
@@ -41,7 +41,7 @@ const struct zcl_site_nav_link g_zcl_site_nav_app[] = {
     [0] = { "/explorer", "Explorer", "explorer" },
 #define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
                    nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
-                   grid_desc, fail_body) \
+                   grid_desc, fail_body, app_id) \
     ZCL_SITE_POS_##nav_app(nav_href, nav_label, nav_id)
 #include "net/site_routes.def"
 #undef SITE_ROUTE
@@ -55,7 +55,7 @@ const struct zcl_site_nav_link g_zcl_site_nav_onion[] = {
     [0] = { "/explorer", "Explorer", "explorer" },
 #define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
                    nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
-                   grid_desc, fail_body) \
+                   grid_desc, fail_body, app_id) \
     ZCL_SITE_POS_##nav_onion(nav_href, nav_label, nav_id)
 #include "net/site_routes.def"
 #undef SITE_ROUTE
@@ -76,7 +76,7 @@ const struct zcl_site_grid_entry g_zcl_site_app_grid[] = {
             "reads." },
 #define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
                    nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
-                   grid_desc, fail_body) \
+                   grid_desc, fail_body, app_id) \
     ZCL_SITE_POS_##grid(nav_href, nav_label, grid_desc)
 #include "net/site_routes.def"
 #undef SITE_ROUTE

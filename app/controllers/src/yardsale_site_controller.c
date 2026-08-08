@@ -13,10 +13,13 @@
 #include "keys/key_io.h"
 #include "models/database.h"
 #include "models/zswap_ad.h"
+#include "net/onion_service.h"
 #include "platform/time_compat.h"
 #include "support/cleanse.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/template.h"
+#include "znam/znam.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -138,7 +141,14 @@ static const char *parse_form_field(const char *body, size_t len,
     "td,th{border:1px solid #333;padding:6px 8px;text-align:left;" \
     "font-size:13px}th{color:#00ff88}input{width:100%%;background:#111;" \
     "color:#e0e0e0;border:1px solid #333;font-family:monospace;" \
-    "padding:4px}label{font-size:12px;color:#999}"
+    "padding:4px}label{font-size:12px;color:#999}" \
+    ".seller{margin:10px 0}.desc{color:#999;font-size:12px}"
+
+/* Defined just below the index renderer; appends the "Known sellers"
+ * section at `off` and returns the byte count it wrote. */
+static size_t yardsale_render_known_sellers(struct node_db *ndb, int64_t now,
+                                            uint8_t *out, size_t out_cap,
+                                            size_t off);
 
 static size_t yardsale_render_index(struct node_db *ndb, int64_t now,
                                     uint8_t *out, size_t out_cap)
@@ -189,9 +199,76 @@ static size_t yardsale_render_index(struct node_db *ndb, int64_t now,
         off += (size_t)snprintf((char *)out + off, out_cap - off,
             "<tr><td colspan='7'>no live signs — the yard is empty"
             "</td></tr>");
+    int closed = snprintf((char *)out + off, out_cap - off, "</table>");
+    if (closed > 0)
+        off += (size_t)closed;
+    off += yardsale_render_known_sellers(ndb, now, out, out_cap, off);
     snprintf((char *)out + off, out_cap - off,
-        "</table><p><a href='/'>Home</a></p></body></html>");
+        "<p><a href='/'>Home</a></p></body></html>");
     return strlen((const char *)out);
+}
+
+/* ── Known sellers (peer-directory read, discovery hints only) ───────
+ *
+ * Fresh peer_directory rows whose apps advertisement names the yardsale
+ * App, rendered as links to their /yardsale mounts. These are discovery
+ * HINTS — a row says where to look, never who is there (the directory
+ * contract in net/onion_service.h) — and every rendered value passes
+ * html_escape on top of the directory's own read-time re-validation. The
+ * empty state is honest: gossip carries the ads with or without this
+ * section. */
+
+#define YARDSALE_KNOWN_SELLERS_CAP 50
+
+static size_t yardsale_render_known_sellers(struct node_db *ndb, int64_t now,
+                                            uint8_t *out, size_t out_cap,
+                                            size_t off)
+{
+    size_t start = off;
+    int n = snprintf((char *)out + off, out_cap - off,
+        "<h2>Known sellers</h2>");
+    if (n > 0)
+        off += (size_t)n;
+
+    struct onion_directory_app_peer peers[YARDSALE_KNOWN_SELLERS_CAP];
+    int n_peers = onion_directory_app_peers_db(ndb->db, "yardsale", now,
+                                               peers,
+                                               YARDSALE_KNOWN_SELLERS_CAP);
+
+    int shown = 0;
+    for (int i = 0; i < n_peers && off + 768 < out_cap; i++) {
+        /* The ZNAM label join that already exists for directory rows: a
+         * name is a label for an address, never a substitute, so the raw
+         * .onion the buyer would dial is always shown beside it. */
+        char name[ZNAM_NAME_MAX + 1];
+        name[0] = '\0';
+        (void)onion_directory_name_for_db(ndb->db, peers[i].onion,
+                                          name, sizeof(name));
+        char esc_onion[384], esc_name[256], esc_apps[1600];
+        html_escape(esc_onion, sizeof(esc_onion), peers[i].onion);
+        html_escape(esc_name, sizeof(esc_name), name);
+        html_escape(esc_apps, sizeof(esc_apps), peers[i].apps);
+        bool named = name[0] != '\0';
+        n = snprintf((char *)out + off, out_cap - off,
+            "<div class='seller'><a href='http://%s/yardsale'>%s</a>"
+            "<div class='desc'>%s &middot; serves: %s</div></div>",
+            esc_onion, named ? esc_name : esc_onion,
+            named ? esc_onion : "this node",
+            esc_apps);
+        if (n < 0)
+            break;
+        off += (size_t)n;
+        shown++;
+    }
+
+    if (shown == 0) {
+        n = snprintf((char *)out + off, out_cap - off,
+            "<p>no sellers discovered yet &mdash; ads still propagate "
+            "by gossip.</p>");
+        if (n > 0)
+            off += (size_t)n;
+    }
+    return off - start;
 }
 
 /* ── GET /yardsale/ad/<root> — one sign + the buy form ───────────── */

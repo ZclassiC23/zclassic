@@ -600,7 +600,8 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
         "version, self, clearnet_ip, clearnet_port, "
         "COALESCE(first_seen,0), COALESCE(last_probe,0), "
         "COALESCE(probe_ok,0), COALESCE(fail_count,0), COALESCE(source,''), "
-        "COALESCE(last_success,0), COALESCE(dial_success_count,0) "
+        "COALESCE(last_success,0), COALESCE(dial_success_count,0), "
+        "COALESCE(apps,'') "
         "FROM peer_directory "
         "ORDER BY self DESC, last_seen DESC LIMIT " ONION_DIR_STR(ONION_DIR_SERVE_MAX),
         -1, &s, NULL) != SQLITE_OK || !s) {
@@ -611,7 +612,7 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
 
     int count = 0;
     int skipped_expired = 0;
-    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 900 < sizeof(body)) {
+    while (AR_STEP_ROW_READONLY(s) == SQLITE_ROW && off + 1300 < sizeof(body)) {
         const char *addr = (const char *)sqlite3_column_text(s, 0);
         int port = sqlite3_column_int(s, 1);
         int svc = sqlite3_column_int(s, 2);
@@ -628,6 +629,7 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
         const char *src = (const char *)sqlite3_column_text(s, 13);
         int64_t lsucc = sqlite3_column_int64(s, 14);
         int64_t ok_n = sqlite3_column_int64(s, 15);
+        const char *apps_col = (const char *)sqlite3_column_text(s, 16);
 
         /* Rows stored by pre-validation binaries may be hostile. */
         if (!onion_hostname_valid(addr)) continue;
@@ -658,16 +660,47 @@ static size_t serve_directory_json(uint8_t *response, size_t max)
         (void)onion_directory_name_for_db(db, addr, name, sizeof(name));
         log_json_escape(name_esc, sizeof(name_esc), name);
 
+        /* The app-service advertisement (Track 2): which app-catalog Apps
+         * this host serves on its onion. Emitted right after "name" —
+         * NEVER between clearnet_ip and clearnet_port, whose adjacency the
+         * connman seed-fetch string-scan relies on (lib/net/src/connman.c
+         * try_onion_seed_fetch_depth reads clearnet_port within 50 chars
+         * of clearnet_ip). Old consumers ignore the unknown key; every
+         * token is re-validated on the way out, so a row stored by a
+         * pre-validation binary cannot inject text into the array. */
+        char apps_json[2 * ONION_DIR_APPS_CSV_MAX + 16];
+        size_t aj = (size_t)snprintf(apps_json, sizeof(apps_json),
+                                     "\"apps\":[");
+        const char *ap = apps_col;
+        bool first_app = true;
+        while (ap && *ap && aj + 40 < sizeof(apps_json)) {
+            const char *comma = strchr(ap, ',');
+            size_t tl = comma ? (size_t)(comma - ap) : strlen(ap);
+            char tok[ONION_DIR_APP_ID_MAX + 1];
+            if (tl > 0 && tl <= ONION_DIR_APP_ID_MAX) {
+                memcpy(tok, ap, tl);
+                tok[tl] = '\0';
+                if (onion_directory_app_id_valid(tok)) {
+                    int wn = snprintf(apps_json + aj, sizeof(apps_json) - aj,
+                                      "%s\"%s\"", first_app ? "" : ",", tok);
+                    if (wn > 0) aj += (size_t)wn;
+                    first_app = false;
+                }
+            }
+            ap += tl + (comma ? 1 : 0);
+        }
+        (void)snprintf(apps_json + aj, sizeof(apps_json) - aj, "]");
+
         if (count > 0) off += (size_t)snprintf(body + off, sizeof(body) - off, ",");
         off += (size_t)snprintf(body + off, sizeof(body) - off,
-            "{\"onion\":\"%s\",\"name\":\"%s\",\"port\":%d,\"services\":%d,"
+            "{\"onion\":\"%s\",\"name\":\"%s\",%s,\"port\":%d,\"services\":%d,"
             "\"height\":%d,\"last_seen\":%lld,\"version\":\"%s\",\"self\":%s,"
             "\"clearnet_ip\":\"%s\",\"clearnet_port\":%d,"
             "\"age_secs\":%lld,\"stale\":%s,\"first_seen\":%lld,"
             "\"last_probe\":%lld,\"probe_ok\":%s,\"fail_count\":%d,"
             "\"last_success\":%lld,\"dial_success_count\":%lld,"
             "\"source\":\"%s\"}",
-            addr_esc, name_esc, port, svc, h,
+            addr_esc, name_esc, apps_json, port, svc, h,
             (long long)ls, ver_esc,
             self ? "true" : "false",
             cip_esc, cport,
@@ -1003,7 +1036,7 @@ static size_t serve_puzzle_required(const struct onion_pow_challenge *ch,
  * declarations they replace. */
 #define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
                    nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
-                   grid_desc, fail_body) \
+                   grid_desc, fail_body, app_id) \
     ZCL_SITE_EXTERN_##flavor(handler)
 #include "net/site_routes.def"
 #undef SITE_ROUTE
@@ -1109,7 +1142,7 @@ size_t onion_service_handle_request(const char *method,
     }
 #define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
                    nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
-                   grid_desc, fail_body) \
+                   grid_desc, fail_body, app_id) \
     ZCL_SITE_DISPATCH_##flavor(prefix, handler, fail_body)
 #include "net/site_routes.def"
 #undef SITE_ROUTE

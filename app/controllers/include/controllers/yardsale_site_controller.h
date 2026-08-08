@@ -8,7 +8,12 @@
  *   GET  /yardsale            the yard: every live sign this node
  *                             remembers (the zswap_ads projection), best
  *                             unit price first — a browse page, never a
- *                             matching engine.
+ *                             matching engine. Below the signs, a "Known
+ *                             sellers" section: fresh peer_directory rows
+ *                             advertising the yardsale App, linked by
+ *                             their .onion (discovery hints only — with
+ *                             none discovered, the ads still propagate by
+ *                             gossip and the page says so).
  *   GET  /yardsale/ad/<root>  one sign in full, plus the buy form.
  *   POST /yardsale/buy        begin the ceremony: the buyer's accept data
  *                             (his inputs, receive/change addresses, fee,

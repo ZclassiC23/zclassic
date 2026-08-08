@@ -33,6 +33,16 @@
  *     definition in the tree; the shape assertions below run against it,
  *     not against a second copy that could drift.
  *
+ *  5. Track 2 — the app-service advertisement. Every served row carries
+ *     "apps":[...] (the app-catalog Apps the host serves on its onion;
+ *     the self row's list comes from the ONE site-route registry), the
+ *     harvest normalizes and persists it (junk ids rejected, capped,
+ *     deduped; the one column hearsay may refresh on an existing row),
+ *     and the seller-discovery read returns only FRESH, non-self rows
+ *     with read-time re-validation. Old consumers ignore the unknown key:
+ *     the clearnet_ip → clearnet_port adjacency connman's string-scan
+ *     relies on is pinned below.
+ *
  * The load-bearing property throughout: a directory record is a HINT
  * ABOUT WHERE TO LOOK, never proof of who is there. So every path here
  * may only ever ADD a place to try. The asserts that matter most are the
@@ -137,10 +147,12 @@ static int od_parse_relay_hints(void)
     /* A response shaped exactly like the one this node serves. */
     static const char BODY[] =
         "{\"nodes\":["
-        "{\"onion\":\"" OD_HOST_A "\",\"port\":8033,\"services\":1029,"
+        "{\"onion\":\"" OD_HOST_A "\",\"name\":\"\",\"apps\":[\"yardsale\",\"blog\"],"
+        "\"port\":8033,\"services\":1029,"
         "\"height\":3196556,\"last_seen\":1799999000,\"version\":\"0.1.0\","
         "\"self\":true,\"clearnet_ip\":\"1.2.3.4\",\"clearnet_port\":8033},"
-        "{\"onion\":\"" OD_HOST_B "\",\"port\":9033,\"services\":0,"
+        "{\"onion\":\"" OD_HOST_B "\",\"name\":\"\",\"apps\":[],"
+        "\"port\":9033,\"services\":0,"
         "\"height\":42,\"last_seen\":1799998000,\"version\":\"0.1.0\","
         "\"self\":false,\"clearnet_ip\":\"\",\"clearnet_port\":0}"
         "],\"count\":2}";
@@ -162,6 +174,45 @@ static int od_parse_relay_hints(void)
              hints[1].last_seen == 1799998000);
     OD_CHECK("clearnet_port is not mistaken for port",
              n == 2 && hints[1].port == 9033);
+    OD_CHECK("each entry keeps its OWN apps advertisement, as CSV",
+             n == 2 && strcmp(hints[0].apps, "yardsale,blog") == 0 &&
+             hints[1].apps[0] == '\0');
+
+    /* Junk app ids are dropped, never fatal — the hostname and the honest
+     * ids around the junk survive, exactly the hostname scan's posture. */
+    static const char JUNKAPPS[] =
+        "{\"nodes\":["
+        "{\"onion\":\"" OD_HOST_A "\",\"apps\":[\"yardsale\",\"Yardsale\","
+        "\"yard sale\",\"\",\"blog\",\"yardsale\"],\"port\":8033},"
+        "{\"onion\":\"" OD_HOST_B "\",\"apps\":\"not-an-array\",\"port\":9033}"
+        "]}";
+    memset(hints, 0, sizeof(hints));
+    n = onion_directory_parse_relay_hints(JUNKAPPS, NULL, hints, 16);
+    OD_CHECK("junk app ids are rejected, the valid ones kept and deduped",
+             n == 2 && strcmp(hints[0].apps, "yardsale,blog") == 0);
+    OD_CHECK("a non-array apps field reads as no advertisement",
+             n == 2 && hints[1].apps[0] == '\0');
+
+    /* The cap: more ids than ONION_DIR_APPS_MAX keeps exactly the first
+     * ONION_DIR_APPS_MAX valid ones. */
+    static const char OVERCAP[] =
+        "{\"nodes\":[{\"onion\":\"" OD_HOST_A "\",\"apps\":["
+        "\"a1\",\"a2\",\"a3\",\"a4\",\"a5\",\"a6\",\"a7\",\"a8\",\"a9\""
+        "],\"port\":8033}]}";
+    memset(hints, 0, sizeof(hints));
+    n = onion_directory_parse_relay_hints(OVERCAP, NULL, hints, 16);
+    OD_CHECK("the apps list is capped",
+             n == 1 &&
+             strcmp(hints[0].apps, "a1,a2,a3,a4,a5,a6,a7,a8") == 0);
+    /* An over-long id is rejected, not truncated into a valid one. */
+    static const char LONGID[] =
+        "{\"nodes\":[{\"onion\":\"" OD_HOST_A "\",\"apps\":["
+        "\"abcdefghijabcdefghijabcdefghijabcdefghij\",\"ok\""
+        "],\"port\":8033}]}";
+    memset(hints, 0, sizeof(hints));
+    n = onion_directory_parse_relay_hints(LONGID, NULL, hints, 16);
+    OD_CHECK("an over-long app id is rejected, the next one survives",
+             n == 1 && strcmp(hints[0].apps, "ok") == 0);
 
     /* Asking about ourselves must not learn ourselves. */
     memset(hints, 0, sizeof(hints));
@@ -215,6 +266,79 @@ static int od_parse_relay_hints(void)
              onion_directory_parse_relay_hints(NULL, NULL, hints, 16) == 0);
     OD_CHECK("zero capacity is a clean zero",
              onion_directory_parse_relay_hints(BODY, NULL, hints, 0) == 0);
+    return failures;
+}
+
+/* ── 2b. The apps normalizers (pure) ──────────────────────────────── */
+
+static int od_apps_pure_helpers(void)
+{
+    int failures = 0;
+    char csv[ONION_DIR_APPS_CSV_MAX + 1];
+
+    /* The one app-id shape rule, deliberately at-or-tighter than the app
+     * catalog's own (which also allows interior hyphens): it can only
+     * ever withhold an id, never invent one. */
+    OD_CHECK("plain lowercase ids are valid",
+             onion_directory_app_id_valid("yardsale") &&
+             onion_directory_app_id_valid("blog") &&
+             onion_directory_app_id_valid("z2"));
+    OD_CHECK("NULL and empty ids are refused",
+             !onion_directory_app_id_valid(NULL) &&
+             !onion_directory_app_id_valid(""));
+    OD_CHECK("uppercase, hyphens, and punctuation are refused",
+             !onion_directory_app_id_valid("Yardsale") &&
+             !onion_directory_app_id_valid("yard-sale") &&
+             !onion_directory_app_id_valid("yard<sale") &&
+             !onion_directory_app_id_valid("yard sale"));
+    OD_CHECK("an id past the length cap is refused",
+             !onion_directory_app_id_valid(
+                 "abcdefghijabcdefghijabcdefghijabcdefghij") &&
+             onion_directory_app_id_valid(
+                 "abcdefghijabcdefghijabcdefghijab"));
+
+    /* JSON extraction: absent key, malformed shapes, truncation. */
+    OD_CHECK("a segment with no apps key yields nothing",
+             onion_directory_apps_from_json("\"port\":8033", csv,
+                                            sizeof(csv)) == 0 &&
+             csv[0] == '\0');
+    OD_CHECK("a NULL segment yields nothing",
+             onion_directory_apps_from_json(NULL, csv, sizeof(csv)) == 0);
+    OD_CHECK("a scalar apps value yields nothing",
+             onion_directory_apps_from_json("\"apps\":\"yardsale\"", csv,
+                                            sizeof(csv)) == 0);
+    OD_CHECK("an unterminated array keeps the ids already validated",
+             onion_directory_apps_from_json(
+                 "\"apps\":[\"yardsale\",\"blo", csv, sizeof(csv)) > 0 &&
+             strcmp(csv, "yardsale") == 0);
+
+    /* CSV re-normalization: junk tokens out, duplicates out, order kept. */
+    OD_CHECK("normalize drops empties, junk, and duplicates",
+             onion_directory_apps_normalize("yardsale,,blog,Yard,sale,"
+                                            "yardsale", csv,
+                                            sizeof(csv)) > 0 &&
+             strcmp(csv, "yardsale,blog,sale") == 0);
+    OD_CHECK("normalize of NULL/empty is empty",
+             onion_directory_apps_normalize(NULL, csv, sizeof(csv)) == 0 &&
+             csv[0] == '\0');
+
+    /* Whole-body extraction for the node we just fetched: the match is
+     * bound to ITS object, never a neighbour's. */
+    static const char TWO[] =
+        "{\"nodes\":["
+        "{\"onion\":\"" OD_HOST_A "\",\"apps\":[\"yardsale\"]},"
+        "{\"onion\":\"" OD_HOST_B "\",\"apps\":[\"blog\"]}"
+        "]}";
+    OD_CHECK("apps_for_onion reads the named host's own object",
+             onion_directory_apps_for_onion(TWO, OD_HOST_B, csv,
+                                            sizeof(csv)) > 0 &&
+             strcmp(csv, "blog") == 0);
+    OD_CHECK("apps_for_onion on an unknown host yields nothing",
+             onion_directory_apps_for_onion(TWO, OD_HOST_C, csv,
+                                            sizeof(csv)) == 0);
+    OD_CHECK("apps_for_onion refuses a malformed hostname",
+             onion_directory_apps_for_onion(TWO, "bogus", csv,
+                                            sizeof(csv)) == 0);
     return failures;
 }
 
@@ -321,6 +445,28 @@ static bool od_row_source(sqlite3 *db, const char *host, char *out, size_t n)
     return found;
 }
 
+/* Read one TEXT column for one host. False when the row is gone. */
+static bool od_row_text(sqlite3 *db, const char *host, const char *col,
+                        char *out, size_t n)
+{
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+             "SELECT COALESCE(%s,'') FROM peer_directory "
+             "WHERE onion_address = ?", col);
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
+    sqlite3_bind_text(s, 1, host, -1, SQLITE_STATIC);
+    bool found = false;
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        const char *v = (const char *)sqlite3_column_text(s, 0);
+        snprintf(out, n, "%s", v ? v : "");
+        found = true;
+    }
+    sqlite3_finalize(s);
+    return found;
+}
+
 static void od_insert_row(sqlite3 *db, const char *host, int64_t last_seen,
                           const char *source)
 {
@@ -366,29 +512,65 @@ static int od_durable_directory(void)
 
     /* ── learn(): hearsay may only ADD ───────────────────────────── */
     OD_CHECK("a malformed relayed hostname is refused",
-             !onion_service_directory_learn(OD_HOST_BAD, 8033, 1, now - 60));
+             !onion_service_directory_learn(OD_HOST_BAD, 8033, 1, now - 60,
+                                            NULL));
     OD_CHECK("a valid relayed hostname is recorded",
-             onion_service_directory_learn(OD_HOST_A, 8033, 99, now - 60));
+             onion_service_directory_learn(OD_HOST_A, 8033, 99, now - 60,
+                                           NULL));
     { char src[32] = "";
       OD_CHECK("a relayed row is marked as hearsay, not as our own measurement",
                od_row_source(db, OD_HOST_A, src, sizeof(src)) &&
                strcmp(src, "relay") == 0); }
     OD_CHECK("a relayed stamp already past expiry is refused outright",
              !onion_service_directory_learn(OD_HOST_C, 8033, 1,
-                                            now - ONION_DIR_EXPIRE_SECS - 1));
+                                            now - ONION_DIR_EXPIRE_SECS - 1,
+                                            NULL));
     OD_CHECK("the refused stale hearsay left no row behind",
              od_row_int(db, OD_HOST_C, "last_seen") == -1);
 
     /* A first-hand row must survive a peer telling us about it. */
     od_insert_row(db, OD_HOST_B, now - 120, "discovery");
     OD_CHECK("learn() on a host we already know reports success",
-             onion_service_directory_learn(OD_HOST_B, 1234, 7, now - 3600));
+             onion_service_directory_learn(OD_HOST_B, 1234, 7, now - 3600,
+                                           NULL));
     { char src[32] = "";
       OD_CHECK("hearsay never overwrites a first-hand row",
                od_row_source(db, OD_HOST_B, src, sizeof(src)) &&
                strcmp(src, "discovery") == 0); }
     OD_CHECK("hearsay never rewrites a first-hand last_seen",
              od_row_int(db, OD_HOST_B, "last_seen") == now - 120);
+
+    /* ── learn(): the apps advertisement round-trip ──────────────────
+     * The apps list is the ONE field hearsay may refresh on an existing
+     * row: a fresher non-empty advertisement replaces it, an empty one
+     * never clears it, and junk ids are normalized out before storage. */
+    OD_CHECK("an advertisement with apps is stored on the existing row",
+             onion_service_directory_learn(OD_HOST_A, 8033, 99, now - 60,
+                                           "yardsale,blog"));
+    { char apps[320] = "";
+      OD_CHECK("the stored apps round-trip as normalized CSV",
+               od_row_text(db, OD_HOST_A, "apps", apps, sizeof(apps)) &&
+               strcmp(apps, "yardsale,blog") == 0); }
+    OD_CHECK("a re-learn with no apps reports success",
+             onion_service_directory_learn(OD_HOST_A, 8033, 99, now - 30,
+                                           NULL));
+    { char apps[320] = "";
+      OD_CHECK("an empty advertisement never clears the stored one",
+               od_row_text(db, OD_HOST_A, "apps", apps, sizeof(apps)) &&
+               strcmp(apps, "yardsale,blog") == 0); }
+    OD_CHECK("a fresher advertisement may replace the stored one",
+             onion_service_directory_learn(OD_HOST_A, 8033, 99, now - 10,
+                                           "blog,<script>,yardsale"));
+    { char apps[320] = "";
+      OD_CHECK("junk ids are normalized out before storage",
+               od_row_text(db, OD_HOST_A, "apps", apps, sizeof(apps)) &&
+               strcmp(apps, "blog,yardsale") == 0); }
+    OD_CHECK("apps refresh never moves last_seen (INSERT OR IGNORE stands)",
+             od_row_int(db, OD_HOST_A, "last_seen") == now - 60);
+    { char src[32] = "";
+      OD_CHECK("the row is still marked hearsay, not contact",
+               od_row_source(db, OD_HOST_A, src, sizeof(src)) &&
+               strcmp(src, "relay") == 0); }
 
     /* ── observe(): the census bridge ────────────────────────────── */
     struct onion_directory_observation obs[3];
@@ -489,6 +671,17 @@ static int od_durable_directory(void)
              strstr(json, OD_HOST_C) == NULL);
     OD_CHECK("the response admits how many rows it withheld",
              strstr(json, "\"skipped_expired\":1") != NULL);
+    /* Track 2: every row carries its app-service advertisement, right
+     * after "name" and never between clearnet_ip and clearnet_port (the
+     * connman seed-fetch string-scan reads clearnet_port within 50 chars
+     * of clearnet_ip — the adjacency below is the interop pin). */
+    OD_CHECK("a row with an advertisement serves it as a JSON array",
+             strstr(json, "\"apps\":[\"blog\",\"yardsale\"]") != NULL);
+    OD_CHECK("a row with no advertisement serves an empty array",
+             strstr(json, "\"apps\":[]") != NULL);
+    OD_CHECK("the apps key never splits clearnet_ip from clearnet_port",
+             strstr(json, "\"clearnet_ip\":\"1.2.3.4\",\"clearnet_port\":") ||
+             strstr(json, "\"clearnet_ip\":\"\",\"clearnet_port\":"));
 
     sqlite3_close(db);
     onion_service_stop();
@@ -686,13 +879,13 @@ static int od_test_observe(const char *datadir)
     /* Nothing may reach the directory before the service publishes a
      * datadir: a net-layer probe can never race the boot path. */
     OD_CHECK("learn before the service has a datadir is refused",
-             !onion_service_directory_learn(HOST_A, 8033, 1234, 0));
+             !onion_service_directory_learn(HOST_A, 8033, 1234, 0, NULL));
 
     onion_service_start(datadir);
 
     /* ADVERTISED creates the row: heard about, never contacted. */
     OD_CHECK("advertised creates a row",
-             onion_service_directory_learn(HOST_A, 8033, 1234, 0));
+             onion_service_directory_learn(HOST_A, 8033, 1234, 0, NULL));
     sqlite3 *db = od_open(datadir);
     if (!db) { printf("onion_directory: cannot open fixture db\n"); return 1; }
 
@@ -766,8 +959,9 @@ static int od_test_observe(const char *datadir)
 
     /* Malformed hostnames never reach the table. */
     OD_CHECK("malformed host is refused by learn",
-             !onion_service_directory_learn("not-an-onion", 8033, 1, 0) &&
-             !onion_service_directory_learn(NULL, 8033, 1, 0));
+             !onion_service_directory_learn("not-an-onion", 8033, 1, 0,
+                                            NULL) &&
+             !onion_service_directory_learn(NULL, 8033, 1, 0, NULL));
     memset(&obs, 0, sizeof(obs));
     snprintf(obs.hostname, sizeof(obs.hostname), "%s", "not-an-onion");
     obs.reachable = true;
@@ -863,6 +1057,13 @@ static int od_test_self_clearnet(const char *datadir)
                            "onion_address='" HOST_SELF "' AND self=1 AND "
                            "clearnet_ip='203.0.113.7' AND clearnet_port=8033",
                        -1) == 1);
+    /* Track 2: the self row also advertises the mounted app-catalog Apps,
+     * computed from the ONE site-route registry (net/site_routes.def app_id
+     * column, def-row order) — blog and yardsale today. */
+    OD_CHECK("the self row advertises the mounted app-catalog Apps",
+             od_scalar(db, "SELECT COUNT(*) FROM peer_directory WHERE "
+                           "onion_address='" HOST_SELF "' AND self=1 AND "
+                           "apps='blog,yardsale'", -1) == 1);
     sqlite3_close(db);
 
     /* Clearing the cache is published too: the next round drops the
@@ -928,6 +1129,91 @@ static int od_test_name_join(const char *datadir)
              !onion_directory_name_for(datadir, "bogus", name, sizeof(name)));
     OD_CHECK("NULL datadir resolves to no name",
              !onion_directory_name_for(NULL, HOST_A, name, sizeof(name)));
+    return failures;
+}
+
+/* ── 9. seller/app discovery: fresh rows advertising an app ──────────
+ *
+ * The read side of Track 2: /yardsale's "Known sellers" section queries
+ * FRESH, non-self rows whose apps name the app. The assertions that
+ * matter are the withholdings: a stale row, the SELF row (we are not our
+ * own discovered seller), a hostile hostname, and a junk apps token all
+ * stay out, whatever raw SQL put in the table. */
+static int od_test_app_peers(const char *datadir)
+{
+    int failures = 0;
+    struct onion_directory_app_peer peers[8];
+
+    int64_t now = (int64_t)platform_time_wall_time_t();
+
+    /* HOST_A already exists (fresh, no apps): the refresh fills them in. */
+    OD_CHECK("apps refresh on the existing fresh row",
+             onion_service_directory_learn(HOST_A, 8033, 1234, 0,
+                                           "yardsale,blog"));
+
+    sqlite3 *db = od_open(datadir);
+    if (!db) { printf("onion_directory: cannot open fixture db\n"); return 1; }
+
+    char sql[768];
+    /* A STALE seller (last_seen past the fresh window): withheld. */
+    snprintf(sql, sizeof(sql),
+        "INSERT OR REPLACE INTO peer_directory "
+        "(onion_address, port, services, height, last_seen, version, self,"
+        " apps) "
+        "VALUES ('" HOST_C "',8033,0,0,%lld,'test',0,'yardsale')",
+        (long long)(now - ONION_DIR_STALE_SECS - 60));
+    OD_CHECK("stale seller row inserted", od_exec(db, sql));
+    /* A hostile hostname row: skipped by the read-time v3 rule. */
+    snprintf(sql, sizeof(sql),
+        "INSERT OR REPLACE INTO peer_directory "
+        "(onion_address, port, services, height, last_seen, version, self,"
+        " apps) "
+        "VALUES ('not-an-onion',8033,0,0,%lld,'test',0,'yardsale')",
+        (long long)now);
+    OD_CHECK("hostile hostname row inserted", od_exec(db, sql));
+    /* A junk-apps row, as a pre-validation binary might have stored it:
+     * the valid token survives, the hostile one is normalized out. */
+    snprintf(sql, sizeof(sql),
+        "INSERT OR REPLACE INTO peer_directory "
+        "(onion_address, port, services, height, last_seen, version, self,"
+        " apps) "
+        "VALUES ('" HOST_B "',8033,0,0,%lld,'test',0,"
+        "'yardsale,<img src=x>')",
+        (long long)now);
+    OD_CHECK("junk-apps row inserted", od_exec(db, sql));
+
+    int n = onion_directory_app_peers_db(db, "yardsale", now, peers, 8);
+    OD_CHECK("exactly the fresh non-self yardsale sellers are returned",
+             n == 2);
+    bool got_a = false, got_b = false;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(peers[i].onion, HOST_A) == 0)
+            got_a = strcmp(peers[i].apps, "yardsale,blog") == 0;
+        if (strcmp(peers[i].onion, HOST_B) == 0)
+            got_b = strcmp(peers[i].apps, "yardsale") == 0;
+    }
+    OD_CHECK("the fresh seller carries its full sanitized list", got_a);
+    OD_CHECK("the junk token was normalized out of the read", got_b);
+    OD_CHECK("the SELF row is never a discovered seller",
+             n == 2);   /* HOST_SELF serves blog,yardsale — would be 3rd */
+
+    n = onion_directory_app_peers_db(db, "blog", now, peers, 8);
+    OD_CHECK("an app only one peer serves finds exactly that peer",
+             n == 1 && strcmp(peers[0].onion, HOST_A) == 0);
+
+    n = onion_directory_app_peers_db(db, "yardsale", now, peers, 1);
+    OD_CHECK("the caller's cap bounds the listing", n == 1);
+
+    OD_CHECK("a malformed app id is refused, not matched",
+             onion_directory_app_peers_db(db, "Bad", now, peers, 8) == 0);
+    OD_CHECK("an app nobody serves is an honest zero",
+             onion_directory_app_peers_db(db, "metaverse", now, peers,
+                                          8) == 0);
+    OD_CHECK("a NULL db is an honest zero",
+             onion_directory_app_peers_db(NULL, "yardsale", now, peers,
+                                          8) == 0);
+
+    sqlite3_close(db);
     return failures;
 }
 
@@ -1000,6 +1286,10 @@ static int od_test_served_pages(const char *datadir)
     OD_CHECK("directory.json declares its freshness policy",
              strstr(js, "\"expire_after_secs\":") != NULL &&
              strstr(js, "\"stale_after_secs\":") != NULL);
+    /* Track 2: the self row serves its app advertisement (the mounted
+     * app-catalog Apps from the site-route registry). */
+    OD_CHECK("directory.json serves the self row's app advertisement",
+             strstr(js, "\"apps\":[\"blog\",\"yardsale\"]") != NULL);
 
     /* DIRECTORY HTML — name as the heading, address still rendered. */
     onion_ratelimit_test_reset();
@@ -1043,6 +1333,7 @@ int test_onion_directory(void)
 
     failures += od_freshness_rule();
     failures += od_parse_relay_hints();
+    failures += od_apps_pure_helpers();
     failures += od_follow_budget();
     failures += od_durable_directory();
 
@@ -1056,6 +1347,7 @@ int test_onion_directory(void)
     failures += od_test_expiry(datadir);
     failures += od_test_self_clearnet(datadir);
     failures += od_test_name_join(datadir);
+    failures += od_test_app_peers(datadir);
     failures += od_test_served_pages(datadir);
 
     test_cleanup_tmpdir(datadir);

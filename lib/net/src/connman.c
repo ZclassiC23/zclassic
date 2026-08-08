@@ -369,8 +369,13 @@ static void try_onion_seed_fetch_depth(struct connman *cm, const char *onion,
 
     /* We reached it ourselves: this one IS contact, not hearsay. learn()
      * makes sure the row exists (a configured seed may never have been
-     * advertised to us); the observation then stamps last_success. */
-    (void)onion_service_directory_learn(onion, 0, 0, 0);
+     * advertised to us); the observation then stamps last_success. The
+     * node's OWN app advertisement rides along — its self row is skipped
+     * by the relay-hint learn loop below, so it is extracted here. */
+    char self_apps[ONION_DIR_APPS_CSV_MAX + 1];
+    (void)onion_directory_apps_for_onion((const char *)result.body, onion,
+                                         self_apps, sizeof(self_apps));
+    (void)onion_service_directory_learn(onion, 0, 0, 0, self_apps);
     onion_seed_note_dial(onion, true);
 
     /* Fallback when a directory response omits/malforms clearnet_port —
@@ -447,7 +452,8 @@ static void try_onion_seed_fetch_depth(struct connman *cm, const char *onion,
         if (strcmp(hints[i].hostname, onion) == 0)
             continue;                       /* the node we just fetched */
         if (onion_service_directory_learn(hints[i].hostname, hints[i].port,
-                                          hints[i].height, hints[i].last_seen))
+                                          hints[i].height, hints[i].last_seen,
+                                          hints[i].apps))
             learned++;
     }
 

@@ -18,6 +18,8 @@
 
 #include "base/hex.h"
 #include "chain/chainparams.h"
+#include "config/db_service.h"
+#include "config/runtime.h"
 #include "controllers/yardsale_controller.h"
 #include "controllers/yardsale_site_controller.h"
 #include "crypto/ed25519.h"
@@ -25,14 +27,18 @@
 #include "keys/key.h"
 #include "keys/key_io.h"
 #include "keys/pubkey.h"
+#include "models/database.h"
+#include "net/onion_service.h"
 #include "platform/time_compat.h"
 #include "script/standard.h"
 #include "sim/simnet.h"
+#include "znam/znam.h"
 #include "zswap/zswap_assembly.h"
 #include "zswap/zswap_ceremony.h"
 #include "zswap/zswap_quote.h"
 #include "zswap/zswap_yardsale.h"
 
+#include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -873,6 +879,188 @@ static int t_seller_web_endpoint(void)
     return failures;
 }
 
+/* ── Known sellers on the landing page (Track 2) ─────────────────────
+ *
+ * The /yardsale index reads FRESH peer_directory rows advertising the
+ * yardsale App and links their /yardsale mounts, with the ZNAM label join
+ * beside the raw .onion. Asserted: fixture rows render, the ZNAM label
+ * shows WITH the raw address, a stale seller and a non-yardsale peer are
+ * withheld, a hostile stored apps token never reaches the page, and the
+ * empty state is honest. The fixture wires a tmp node.db through a
+ * db_service into app_runtime_set_current — the same seam
+ * test_vault_session.c uses — and drives the REAL directory writer
+ * (onion_service_directory_learn) for the live rows. */
+
+#define YSA_SELLER_A \
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaax.onion"
+#define YSA_SELLER_B \
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbx.onion"
+#define YSA_SELLER_STALE \
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccx.onion"
+
+static int t_known_sellers(void)
+{
+    int failures = 0;
+    ysa_reset_all();
+
+    /* The onion address singleton is process-global; the sequential
+     * runner shares it across groups. Snapshot and restore. */
+    const char *prev = onion_service_get_address();
+    char saved[128] = "";
+    if (prev)
+        snprintf(saved, sizeof(saved), "%s", prev);
+    onion_service_set_address(NULL);
+
+    /* Static: onion_service_start() borrows this pointer. */
+    static char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "yardsale_site", "sellers");
+    char dbpath[320];
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    if (!node_db_open(&ndb, dbpath)) {
+        printf("  yardsale_app: sellers fixture node_db_open... FAIL\n");
+        test_cleanup_tmpdir(dir);
+        onion_service_set_address(saved[0] ? saved : NULL);
+        return 1;
+    }
+    struct db_service dbsvc;
+    memset(&dbsvc, 0, sizeof(dbsvc));
+    struct app_runtime_context rt;
+    memset(&rt, 0, sizeof(rt));
+    db_service_init(&dbsvc);
+    if (!db_service_attach(&dbsvc, &ndb) || !db_service_start(&dbsvc)) {
+        printf("  yardsale_app: sellers fixture db_service... FAIL\n");
+        node_db_close(&ndb);
+        test_cleanup_tmpdir(dir);
+        onion_service_set_address(saved[0] ? saved : NULL);
+        return 1;
+    }
+    rt.db_service = &dbsvc;
+    app_runtime_set_current(&rt);
+    onion_service_start(dir);   /* creates peer_directory in the same db */
+
+    static uint8_t resp[262144];
+
+    /* HONEST EMPTY: no sellers discovered yet, and the page says so. */
+    memset(resp, 0, sizeof(resp));
+    size_t n = yardsale_site_handle_request("GET", "/yardsale", NULL, 0,
+                                            resp, sizeof(resp) - 1);
+    YSA_CHECK("sellers: empty index renders", n > 0 && n < sizeof(resp));
+    if (n > 0 && n < sizeof(resp))
+        resp[n] = '\0';
+    YSA_CHECK("sellers: the section is on the landing page",
+              n > 0 && strstr((const char *)resp, "Known sellers") != NULL);
+    YSA_CHECK("sellers: empty state is honest about gossip",
+              n > 0 &&
+              strstr((const char *)resp, "no sellers discovered yet") &&
+              strstr((const char *)resp, "gossip"));
+
+    /* Seed through the REAL harvest writer: one fresh yardsale seller,
+     * one peer serving only the blog App. */
+    YSA_CHECK("sellers: fresh yardsale peer learned",
+              onion_service_directory_learn(YSA_SELLER_A, 8033, 777, 0,
+                                            "yardsale,blog"));
+    YSA_CHECK("sellers: non-yardsale peer learned",
+              onion_service_directory_learn(YSA_SELLER_B, 8033, 100, 0,
+                                            "blog"));
+
+    /* The ZNAM label join: register a name for the seller. */
+    bool named = node_db_exec(&ndb,
+        "CREATE TABLE IF NOT EXISTS znam_names ("
+        "name TEXT PRIMARY KEY,"
+        "owner_address TEXT NOT NULL,"
+        "target_type INTEGER NOT NULL,"
+        "target_value TEXT NOT NULL,"
+        "reg_txid BLOB NOT NULL,"
+        "reg_height INTEGER NOT NULL,"
+        "last_update_txid BLOB NOT NULL)");
+    if (named) {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(ndb.db,
+            "INSERT OR REPLACE INTO znam_names "
+            "(name, owner_address, target_type, target_value, reg_txid,"
+            " reg_height, last_update_txid) "
+            "VALUES (?1,'t1owner',?2,?3,zeroblob(32),?4,zeroblob(32))",
+            -1, &s, NULL) == SQLITE_OK && s) {
+            sqlite3_bind_text(s, 1, "sellerama", -1, SQLITE_STATIC);
+            sqlite3_bind_int(s, 2, ZNAM_TYPE_ONION);
+            sqlite3_bind_text(s, 3, YSA_SELLER_A, -1, SQLITE_STATIC);
+            sqlite3_bind_int(s, 4, 100);
+            named = sqlite3_step(s) == SQLITE_DONE; // raw-sql-ok: test fixture write
+        }
+        sqlite3_finalize(s);
+    }
+    YSA_CHECK("sellers: ZNAM fixture name registered", named);
+
+    /* A STALE seller (last_seen past the fresh window) and a junk-apps
+     * row as a pre-validation binary might have stored them. */
+    char sql[768];
+    snprintf(sql, sizeof(sql),
+        "INSERT OR REPLACE INTO peer_directory "
+        "(onion_address, port, services, height, last_seen, version, self,"
+        " apps) "
+        "VALUES ('%s',8033,0,0,%lld,'test',0,'yardsale')",
+        YSA_SELLER_STALE,
+        (long long)((int64_t)platform_time_wall_time_t() -
+                    ONION_DIR_STALE_SECS - 60));
+    YSA_CHECK("sellers: stale seller fixture row",
+              node_db_exec(&ndb, sql));
+    snprintf(sql, sizeof(sql),
+        "INSERT OR REPLACE INTO peer_directory "
+        "(onion_address, port, services, height, last_seen, version, self,"
+        " apps) "
+        "VALUES ('%s',8033,0,0,%lld,'test',0,'yardsale,<img src=x>')",
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddx.onion",
+        (long long)platform_time_wall_time_t());
+    YSA_CHECK("sellers: junk-apps fixture row",
+              node_db_exec(&ndb, sql));
+
+    memset(resp, 0, sizeof(resp));
+    n = yardsale_site_handle_request("GET", "/yardsale", NULL, 0,
+                                     resp, sizeof(resp) - 1);
+    YSA_CHECK("sellers: populated index renders", n > 0 && n < sizeof(resp));
+    if (n > 0 && n < sizeof(resp))
+        resp[n] = '\0';
+    const char *page = (const char *)resp;
+    YSA_CHECK("sellers: fresh seller linked by its onion mount",
+              n > 0 && strstr(page,
+                  "http://" YSA_SELLER_A "/yardsale") != NULL);
+    YSA_CHECK("sellers: the ZNAM label renders as the link text",
+              n > 0 && strstr(page, ">sellerama</a>") != NULL);
+    YSA_CHECK("sellers: the raw .onion shows beside the label",
+              n > 0 && strstr(page, YSA_SELLER_A) != NULL);
+    YSA_CHECK("sellers: the sanitized serves list renders",
+              n > 0 && strstr(page, "serves: yardsale,blog") != NULL);
+    YSA_CHECK("sellers: a peer serving only another App is withheld",
+              n > 0 && strstr(page, YSA_SELLER_B) == NULL);
+    YSA_CHECK("sellers: a stale seller is withheld",
+              n > 0 && strstr(page, YSA_SELLER_STALE) == NULL);
+    YSA_CHECK("sellers: the honest empty state is gone once peers exist",
+              n > 0 && strstr(page, "no sellers discovered yet") == NULL);
+    /* The junk-apps row DOES serve yardsale, so its onion renders — but
+     * the hostile token in its stored apps list never reaches the page
+     * (read-time re-validation drops it before html_escape ever sees
+     * it). */
+    YSA_CHECK("sellers: junk-apps peer renders sanitized",
+              n > 0 && strstr(page,
+                  "http://"
+                  "dddddddddddddddddddddddddddddddddddddddddddddddddddddddx"
+                  ".onion/yardsale") != NULL);
+    YSA_CHECK("sellers: hostile stored apps token never rendered",
+              n > 0 && strstr(page, "<img") == NULL);
+
+    onion_service_stop();
+    app_runtime_set_current(NULL);
+    db_service_stop(&dbsvc);
+    node_db_close(&ndb);
+    test_cleanup_tmpdir(dir);
+    onion_service_set_address(saved[0] ? saved : NULL);
+    ysa_reset_all();
+    return failures;
+}
+
 int test_yardsale_app(void)
 {
     printf("\n=== yardsale_app: manifest + ceremony through the controller ===\n");
@@ -883,6 +1071,7 @@ int test_yardsale_app(void)
     failures += t_ingress_negatives();
     failures += t_peer_clamp();
     failures += t_seller_web_endpoint();
+    failures += t_known_sellers();
     printf("=== yardsale_app complete: %d failure(s) ===\n", failures);
     return failures;
 }

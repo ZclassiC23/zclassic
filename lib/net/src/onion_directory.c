@@ -31,6 +31,7 @@
 #include "platform/time_compat.h"
 #include "net/onion_service.h"
 #include "net/onion_peer_merge.h"
+#include "net/site_routes.h"
 #include "znam/znam.h"
 #include "util/log_json.h"
 #include "util/log_macros.h"
@@ -46,6 +47,153 @@
 #include <sqlite3.h>
 
 #define ODIR_LOG "net.onion_directory"
+
+/* ── App advertisements: one id rule, two normalizers ─────────────
+ *
+ * A directory row may carry the app-catalog ids its host serves on its
+ * onion ("apps":["yardsale",...] on /directory.json, a bounded CSV in the
+ * peer_directory.apps column). The rule is deliberately local, like the
+ * ZNAM render guard above: lib/net ranks below lib/framework
+ * (check-lib-module-order), so the catalog's own predicate
+ * (zcl_app_definition_id_valid_v1) is unreachable from here — and this
+ * rule is kept at or tighter than that one, so it can only ever withhold
+ * an id, never invent one. */
+bool onion_directory_app_id_valid(const char *app_id)
+{
+    if (!app_id || !app_id[0]) return false;
+    size_t n = strlen(app_id);
+    if (n > ONION_DIR_APP_ID_MAX) return false;
+    for (size_t i = 0; i < n; i++) {
+        char c = app_id[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')))
+            return false;
+    }
+    return true;
+}
+
+/* Append `tok` to the CSV in `out` when it is not already a token of it.
+ * Returns the new length, or the old one when the token is a duplicate or
+ * would exceed out_len / ONION_DIR_APPS_MAX. */
+static size_t odir_apps_csv_add(char *out, size_t out_len, size_t cur,
+                                const char *tok, size_t tok_len)
+{
+    char id[ONION_DIR_APP_ID_MAX + 1];
+    if (tok_len == 0 || tok_len > ONION_DIR_APP_ID_MAX)
+        return cur;
+    memcpy(id, tok, tok_len);
+    id[tok_len] = '\0';
+    if (!onion_directory_app_id_valid(id))
+        return cur;
+
+    /* Count + dedupe against what is already kept. */
+    size_t kept = 0;
+    const char *p = out;
+    while (*p) {
+        const char *comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        if (len == tok_len && memcmp(p, tok, len) == 0)
+            return cur;                 /* duplicate: keep first sighting */
+        kept++;
+        p += len + (comma ? 1 : 0);
+    }
+    if (kept >= ONION_DIR_APPS_MAX)
+        return cur;                     /* the cap is a hard stop */
+    size_t need = cur + (cur ? 1 : 0) + tok_len;
+    if (need + 1 > out_len)
+        return cur;
+    if (cur)
+        out[cur++] = ',';
+    memcpy(out + cur, tok, tok_len);
+    cur += tok_len;
+    out[cur] = '\0';
+    return cur;
+}
+
+size_t onion_directory_apps_normalize(const char *csv,
+                                      char *out, size_t out_len)
+{
+    if (!out || out_len == 0)
+        return 0;
+    out[0] = '\0';
+    if (!csv)
+        return 0;
+    size_t cur = 0;
+    const char *p = csv;
+    while (*p) {
+        const char *comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        cur = odir_apps_csv_add(out, out_len, cur, p, len);
+        p += len + (comma ? 1 : 0);
+    }
+    return cur;
+}
+
+size_t onion_directory_apps_from_json(const char *seg,
+                                      char *out, size_t out_len)
+{
+    if (!out || out_len == 0)
+        return 0;
+    out[0] = '\0';
+    if (!seg)
+        return 0;
+
+    const char *k = strstr(seg, "\"apps\"");
+    if (!k)
+        return 0;
+    k += sizeof("\"apps\"") - 1;
+    while (*k == ' ' || *k == ':')
+        k++;
+    if (*k != '[')
+        return 0;
+    k++;
+
+    size_t cur = 0;
+    for (;;) {
+        while (*k == ' ' || *k == ',')
+            k++;
+        if (*k == ']')
+            break;
+        if (*k != '"')
+            break;          /* unterminated or non-string: keep what we have */
+        k++;
+        const char *end = strchr(k, '"');
+        if (!end)
+            break;
+        cur = odir_apps_csv_add(out, out_len, cur, k, (size_t)(end - k));
+        k = end + 1;
+    }
+    return cur;
+}
+
+size_t onion_directory_apps_for_onion(const char *body, const char *onion,
+                                      char *out, size_t out_len)
+{
+    if (!out || out_len == 0)
+        return 0;
+    out[0] = '\0';
+    if (!body || !onion_hostname_valid(onion))
+        return 0;
+
+    /* Find THIS host's object, then bound the segment exactly like the
+     * relay-hint walk does, so a later object's apps can never be read as
+     * this one's. */
+    char needle[96];
+    int nn = snprintf(needle, sizeof(needle), "\"onion\":\"%s\"", onion);
+    if (nn <= 0 || (size_t)nn >= sizeof(needle))
+        return 0;
+    const char *hit = strstr(body, needle);
+    if (!hit)
+        return 0;
+    const char *val = hit + nn;
+    char seg[512];
+    const char *obj_end = strchr(val, '}');
+    size_t seglen = obj_end ? (size_t)(obj_end - val) : strlen(val);
+    if (seglen >= sizeof(seg))
+        seglen = sizeof(seg) - 1;
+    memcpy(seg, val, seglen);
+    seg[seglen] = '\0';
+    return onion_directory_apps_from_json(seg, out, out_len);
+}
 
 /* ── Render guard for an on-chain label ───────────────────────
  *
@@ -190,7 +338,8 @@ static void ensure_directory_table(sqlite3 *db)
         "version TEXT,"
         "self INTEGER NOT NULL DEFAULT 0,"
         "clearnet_ip TEXT DEFAULT '',"
-        "clearnet_port INTEGER DEFAULT 0"
+        "clearnet_port INTEGER DEFAULT 0,"
+        "apps TEXT NOT NULL DEFAULT ''"
         ")", NULL, NULL, &err);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "onion_service: failed to create directory table: %s\n",  // obs-ok:pre-existing-diagnostic
@@ -224,6 +373,13 @@ static void ensure_directory_table(sqlite3 *db)
     sqlite3_exec(db, "ALTER TABLE peer_directory ADD COLUMN last_success INTEGER DEFAULT 0",
                  NULL, NULL, NULL);
     sqlite3_exec(db, "ALTER TABLE peer_directory ADD COLUMN dial_success_count INTEGER DEFAULT 0",
+                 NULL, NULL, NULL);
+    /* The app-service advertisement (Track 2): which app-catalog Apps the
+     * host serves on its onion, as a bounded normalized CSV ("yardsale" —
+     * see the helpers at the top of this file). Additive exactly like the
+     * ALTERs above: a duplicate-column error on an existing database is an
+     * expected no-op, and rows that predate the column read as ''. */
+    sqlite3_exec(db, "ALTER TABLE peer_directory ADD COLUMN apps TEXT NOT NULL DEFAULT ''",
                  NULL, NULL, NULL);
     sqlite3_exec(db, "CREATE INDEX IF NOT EXISTS idx_peer_directory_last_seen "
                      "ON peer_directory(last_seen)", NULL, NULL, NULL);
@@ -411,6 +567,27 @@ static uint16_t self_clearnet_snapshot(char *out, size_t out_len)
     return port;
 }
 
+/* Our own app advertisement: the mounted app-catalog Apps, read off the
+ * ONE registry of app web mounts (net/site_routes.def — a row carries an
+ * app_id only when it mounts that App, and test_site_routes cross-checks
+ * the column against apps/<id>/app.def's ZCL_APP_ONION(true) declaration,
+ * so this list cannot drift from what the catalog declares onion-enabled).
+ * Compile-time static, so no cache and no publisher is needed — unlike the
+ * clearnet endpoint above, nothing here can change at runtime. */
+static size_t self_apps_csv(char *out, size_t out_len)
+{
+    if (!out || out_len == 0) return 0;
+    out[0] = '\0';
+    size_t cur = 0;
+    for (size_t i = 0; i < g_zcl_site_routes_count; i++) {
+        const char *id = g_zcl_site_routes[i].app_id;
+        if (!id)
+            continue;
+        cur = odir_apps_csv_add(out, out_len, cur, id, strlen(id));
+    }
+    return cur;
+}
+
 void onion_directory_reset_self_clearnet(void)
 {
     pthread_mutex_lock(&g_self_ep_mutex);
@@ -431,6 +608,11 @@ static bool register_self(sqlite3 *db)
     char ip_str[64] = "";
     uint16_t ip_port = self_clearnet_snapshot(ip_str, sizeof(ip_str));
 
+    /* Our mounted app-catalog Apps, off the site-route registry. Static
+     * per build; re-published every round like the rest of the row. */
+    char apps[ONION_DIR_APPS_CSV_MAX + 1];
+    self_apps_csv(apps, sizeof(apps));
+
     /* UPSERT rather than INSERT OR REPLACE: replacing the row would reset
      * first_seen, losing how long this node has been announcing itself. */
     sqlite3_stmt *ins = NULL;
@@ -438,16 +620,18 @@ static bool register_self(sqlite3 *db)
         "INSERT INTO peer_directory "
         "(onion_address, port, services, height, first_seen, last_seen,"
         " last_probe, last_success, probe_ok, dial_success_count,"
-        " fail_count, version, self, clearnet_ip, clearnet_port, source) "
+        " fail_count, version, self, clearnet_ip, clearnet_port, source,"
+        " apps) "
         "VALUES (?, 8033, 1029, 0, ?, ?, ?, ?, 1, 0, 0, '0.1.0', 1, ?, ?,"
-        " 'self') "
+        " 'self', ?) "
         "ON CONFLICT(onion_address) DO UPDATE SET "
         "  last_seen = excluded.last_seen,"
         "  last_probe = excluded.last_probe,"
         "  last_success = excluded.last_success,"
         "  probe_ok = 1, fail_count = 0, self = 1, source = 'self',"
         "  clearnet_ip = excluded.clearnet_ip,"
-        "  clearnet_port = excluded.clearnet_port",
+        "  clearnet_port = excluded.clearnet_port,"
+        "  apps = excluded.apps",
         -1, &ins, NULL) != SQLITE_OK || !ins) {
         fprintf(stderr, "onion_service: failed to prepare self-register: %s\n",
                 sqlite3_errmsg(db));
@@ -461,6 +645,7 @@ static bool register_self(sqlite3 *db)
     sqlite3_bind_int64(ins, 5, now);
     sqlite3_bind_text(ins, 6, ip_str[0] ? ip_str : "", -1, SQLITE_STATIC);
     sqlite3_bind_int(ins, 7, ip_str[0] ? (int)ip_port : 0);
+    sqlite3_bind_text(ins, 8, apps, -1, SQLITE_STATIC);
     bool ok = (AR_STEP_WRITE(ins) == SQLITE_DONE);
     sqlite3_finalize(ins);
     return ok;
@@ -654,6 +839,11 @@ int onion_directory_parse_relay_hints(const char *body, const char *self_host,
         out[kept].height = (height > 0 && height <= 0x7fffffff) ? (int)height : 0;
         int64_t seen = odir_json_int(seg, "\"last_seen\"", 0);
         out[kept].last_seen = seen > 0 ? seen : 0;
+        /* The app-service advertisement, same per-object binding: only the
+         * rest of THIS object, normalized (junk ids dropped, capped). An
+         * old peer simply has no "apps" key and reads as "". */
+        (void)onion_directory_apps_from_json(seg, out[kept].apps,
+                                             sizeof(out[kept].apps));
         kept++;
     }
     return kept;
@@ -706,7 +896,7 @@ void onion_directory_reset_relay_follow(void)
 }
 
 bool onion_service_directory_learn(const char *hostname, int port, int height,
-                                   int64_t peer_last_seen)
+                                   int64_t peer_last_seen, const char *apps)
 {
     if (!onion_hostname_valid(hostname))
         LOG_FAIL(ODIR_LOG, "learn: hostname fails the v3 rule");
@@ -720,6 +910,11 @@ bool onion_service_directory_learn(const char *hostname, int port, int height,
                  "learn: relayed stamp is already past expiry (age %llds)",
                  (long long)(now - stamp));
 
+    /* Re-normalize whatever the caller handed in: the column only ever
+     * holds bounded, validated CSV. */
+    char apps_csv[ONION_DIR_APPS_CSV_MAX + 1];
+    (void)onion_directory_apps_normalize(apps, apps_csv, sizeof(apps_csv));
+
     sqlite3 *db = directory_open_rw();
     if (!db)
         LOG_FAIL(ODIR_LOG, "learn: directory not open (no datadir)");
@@ -732,8 +927,8 @@ bool onion_service_directory_learn(const char *hostname, int port, int height,
             "INSERT OR IGNORE INTO peer_directory "
             "(onion_address, port, services, height, first_seen, last_seen,"
             " last_probe, probe_ok, fail_count, version, self,"
-            " clearnet_ip, clearnet_port, source) "
-            "VALUES (?, ?, 0, ?, ?, ?, 0, 0, 0, 'relay', 0, '', 0, 'relay')",
+            " clearnet_ip, clearnet_port, source, apps) "
+            "VALUES (?, ?, 0, ?, ?, ?, 0, 0, 0, 'relay', 0, '', 0, 'relay', ?)",
             -1, &ins, NULL) != SQLITE_OK || !ins) {
         LOG_WARN(ODIR_LOG, "learn: prepare failed: %s", sqlite3_errmsg(db));
         sqlite3_finalize(ins);
@@ -745,12 +940,100 @@ bool onion_service_directory_learn(const char *hostname, int port, int height,
     sqlite3_bind_int(ins, 3, height > 0 ? height : 0);
     sqlite3_bind_int64(ins, 4, now);
     sqlite3_bind_int64(ins, 5, stamp);
+    sqlite3_bind_text(ins, 6, apps_csv, -1, SQLITE_STATIC);
     bool ok = (AR_STEP_WRITE(ins) == SQLITE_DONE);
     sqlite3_finalize(ins);
-    sqlite3_close(db);
-    if (!ok)
+    if (!ok) {
+        sqlite3_close(db);
         LOG_FAIL(ODIR_LOG, "learn: insert failed for a valid hostname");
+    }
+
+    /* The apps list is the ONE field hearsay may refresh on an existing
+     * row (a what-they-serve hint, never identity): a fresh non-empty
+     * advertisement replaces the stored one; an empty one clears nothing,
+     * and no other column is touched. */
+    if (apps_csv[0]) {
+        sqlite3_stmt *up = NULL;
+        if (sqlite3_prepare_v2(db,
+                "UPDATE peer_directory SET apps = ? WHERE onion_address = ?",
+                -1, &up, NULL) != SQLITE_OK || !up) {
+            LOG_WARN(ODIR_LOG, "learn: apps refresh prepare failed: %s",
+                     sqlite3_errmsg(db));
+        } else {
+            sqlite3_bind_text(up, 1, apps_csv, -1, SQLITE_STATIC);
+            sqlite3_bind_text(up, 2, hostname, -1, SQLITE_STATIC);
+            (void)AR_STEP_WRITE(up);
+        }
+        sqlite3_finalize(up);
+    }
+    sqlite3_close(db);
     return true;
+}
+
+/* ── Seller/app discovery (read side) ─────────────────────────────── */
+
+/* Does `csv` (already normalized) carry `tok` as a whole token? */
+static bool odir_csv_has_token(const char *csv, const char *tok)
+{
+    size_t want = strlen(tok);
+    const char *p = csv;
+    while (*p) {
+        const char *comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        if (len == want && memcmp(p, tok, len) == 0)
+            return true;
+        p += len + (comma ? 1 : 0);
+    }
+    return false;
+}
+
+int onion_directory_app_peers_db(sqlite3 *db, const char *app_id,
+                                 int64_t now,
+                                 struct onion_directory_app_peer *out,
+                                 int max)
+{
+    if (!db || !out || max <= 0 || !onion_directory_app_id_valid(app_id))
+        return 0;
+
+    /* FRESH per the one freshness rule (age < ONION_DIR_STALE_SECS ⇔
+     * last_seen > now - ONION_DIR_STALE_SECS; a future stamp reads FRESH,
+     * same as onion_directory_freshness). Self rows are excluded — our own
+     * node is not a discovered seller. A missing peer_directory table is
+     * "none discovered", never an error: the prepare simply fails. */
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT onion_address, COALESCE(apps,'') FROM peer_directory "
+        "WHERE self = 0 AND last_seen > 0 AND last_seen > ?1 "
+        "AND INSTR(',' || COALESCE(apps,'') || ',', ',' || ?2 || ',') > 0 "
+        "ORDER BY last_seen DESC LIMIT ?3",
+        -1, &s, NULL) != SQLITE_OK || !s) {
+        if (s) sqlite3_finalize(s);
+        return 0;
+    }
+    sqlite3_bind_int64(s, 1, now - ONION_DIR_STALE_SECS);
+    sqlite3_bind_text(s, 2, app_id, -1, SQLITE_STATIC);
+    sqlite3_bind_int(s, 3, max);
+
+    int kept = 0;
+    while (kept < max && AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
+        const char *addr = (const char *)sqlite3_column_text(s, 0);
+        const char *apps = (const char *)sqlite3_column_text(s, 1);
+        /* Rows stored by pre-validation binaries may be hostile: the
+         * hostname goes through the one v3 rule and the apps through the
+         * one normalizer, and a row whose sanitized list no longer names
+         * the app is dropped. */
+        if (!onion_hostname_valid(addr))
+            continue;
+        char clean[ONION_DIR_APPS_CSV_MAX + 1];
+        (void)onion_directory_apps_normalize(apps, clean, sizeof(clean));
+        if (!odir_csv_has_token(clean, app_id))
+            continue;
+        snprintf(out[kept].onion, sizeof(out[kept].onion), "%s", addr);
+        snprintf(out[kept].apps, sizeof(out[kept].apps), "%s", clean);
+        kept++;
+    }
+    sqlite3_finalize(s);
+    return kept;
 }
 
 /* ── Supervised refresh (no dedicated thread) ─────────────── */
