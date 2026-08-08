@@ -19,6 +19,7 @@
 #include "platform/time_compat.h"
 #include "services/sticky_escalator.h"
 #include "services/sticky_escalator_resnapshot.h"
+#include "services/sticky_escalator_trigger.h"
 
 #include "supervisors/domains.h"
 #include "framework/condition.h"
@@ -889,22 +890,14 @@ static void apply_drive(int64_t tip, int64_t now)
     /* A queued callback must not arm cross-boot work during store teardown. */
     if (thread_registry_shutdown_requested()) return;
     if (!atomic_load(&g_armed)) {
-        /* Auto-arm if the condition engine has an unresolved CRITICAL backlog,
-         * even without an explicit note_stall (belt + suspenders). Scoped to
-         * COND_CRITICAL (condition_engine_get_unresolved_critical_count), NOT
-         * the raw unresolved count: a WARN-severity condition (e.g.
-         * download_queue_starved, a peer/bandwidth fault with its own
-         * unbounded self-contained cooldown re-arm) must never itself arm this
-         * chain-recovery ladder, which can reach the reindex-chainstate rung.
-         * An unscoped count would let a stuck WARN condition
-         * silently re-arm this ladder every few minutes on an otherwise
-         * healthy, tip-synced node. */
-        if (condition_engine_get_unresolved_critical_count() > 0) {
-            atomic_store(&g_armed, true);
-            enter_rung(STICKY_RUNG_RETRY, now);
-        } else {
+        /* Generic CRITICAL conditions are only a belt-and-suspenders trigger
+         * while chain work is pending. Named stall signals use note_stall(). */
+        if (!sticky_trigger_auto_arm_allowed(
+                g_ms, tip,
+                condition_engine_get_unresolved_critical_count()))
             return;
-        }
+        atomic_store(&g_armed, true);
+        enter_rung(STICKY_RUNG_RETRY, now);
     }
 
     /* Honour the post-deepest-rung cooldown before re-driving. */
@@ -1167,6 +1160,9 @@ bool sticky_escalator_dump_state_json(struct json_value *out, const char *key)
                      (int64_t)atomic_load(&g_livelock_force_advances));
     json_push_kv_int(out, "resnapshot_dispatch_state",
                      sticky_resnapshot_gate_state());
+    json_push_kv_bool(out, "auto_arm_suppressed_at_tip", sticky_trigger_auto_arm_suppressed());
+    json_push_kv_int(out, "auto_arm_suppressions",
+                     (int64_t)sticky_trigger_auto_arm_suppressions());
     json_push_kv_int(out, "unresolved_conditions",
                      condition_engine_get_unresolved_count());
 
@@ -1215,6 +1211,7 @@ void sticky_escalator_test_reset(void)
     atomic_store(&g_rederive_last_repair_unix, (int64_t)0);
     atomic_store(&g_rederive_flat_repairs, 0);
     sticky_resnapshot_gate_reset();
+    sticky_trigger_test_reset();
     atomic_store(&g_widen_last_kick_unix, (int64_t)0);
     atomic_store(&g_livelock_no_progress_passes, 0);
     atomic_store(&g_livelock_last_tip, (int64_t)-1);
@@ -1262,6 +1259,9 @@ uint64_t sticky_escalator_test_rung_dispatches(enum sticky_rung rung)
         return 0;
     return atomic_load(&g_rung_dispatches[rung]);
 }
+
+void sticky_escalator_test_set_pending_work(int v)
+{ sticky_trigger_test_set_pending_work(v); }
 
 bool sticky_escalator_test_held_by_permanent(void)
 { return atomic_load(&g_held_by_permanent); }
