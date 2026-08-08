@@ -555,7 +555,8 @@ struct zcl_result build_fabric_worker_execute(
     if (materialized && package_action) {
         struct zcl_result prepared = build_fabric_package_prepare(
             workspace, datadir, paths.worker, paths.src, paths.emit,
-            paths.recipe, &zcode_task, &zcode_candidate, &package_execution);
+            paths.recipe, job.profile, &zcode_task, &zcode_candidate,
+            &package_execution);
         if (!prepared.ok) {
             free(input);
             bfw_paths_cleanup(&paths);

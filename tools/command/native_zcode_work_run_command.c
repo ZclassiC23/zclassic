@@ -403,7 +403,8 @@ static bool run_admit_input(
     const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_agent_context_v1 *context,
     const struct vcs_zcode_write_scope_v1 *scope, const char *author_hex,
-    const char *adapter_hex, uint64_t candidate_sequence)
+    const char *adapter_hex, uint64_t candidate_sequence,
+    const char *execution_profile)
 {
     char *policy = run_wire_hex(workspace, task->proof_policy_root,
                                 VCS_ZCODE_PROOF_POLICY_WIRE_BYTES);
@@ -435,7 +436,7 @@ static bool run_admit_input(
                          (int64_t)candidate_sequence) &&
         json_push_kv_str(input, "action_kind",
                          VCS_BUILD_ACTION_KIND_PACKAGE_V1) &&
-        json_push_kv_str(input, "profile", "zcode-v0.1") &&
+        json_push_kv_str(input, "profile", execution_profile) &&
         json_push_kv_int(input, "expires_unix", task->expires_unix) &&
         json_push_kv_int(input, "max_changed_files",
                          task->max_changed_files) &&
@@ -450,6 +451,80 @@ static bool run_admit_input(
                          (int64_t)task->max_output_bytes);
     free(recipe); free(lock); free(policy);
     return ok;
+}
+
+static bool run_standard_policy(
+    const char *workspace, const struct vcs_zcode_task_v1 *task,
+    bool *standard)
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    struct vcs_zcode_proof_policy_v1 policy;
+    if (!standard || vcs_object_load_raw_bounded(
+            workspace, task->proof_policy_root,
+            VCS_ZCODE_PROOF_POLICY_WIRE_BYTES, &wire, &wire_len) != 0)
+        return false;
+    bool ok = vcs_zcode_proof_policy_parse(wire, wire_len, &policy) ==
+              VCS_ZCODE_DEV_OK;
+    free(wire);
+    if (!ok) return false;
+    *standard = policy.minimum_compile_receipts >= 2u ||
+                policy.minimum_test_receipts >= 2u;
+    return true;
+}
+
+static struct zcl_result run_plan_standard_peer(
+    const char *datadir, const char *primary_action_id,
+    char peer_action_id[BUILD_FABRIC_ID_HEX + 1])
+{
+    char db_path[ZWORK_RUN_PATH_MAX];
+    int n = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    struct node_db ndb = {0};
+    if (n <= 0 || (size_t)n >= sizeof(db_path) ||
+        !node_db_open(&ndb, db_path))
+        return ZCL_ERR(-1, "scratch ZBuild ledger could not be reopened");
+    struct db_build_action action;
+    struct db_build_job job;
+    bool found = db_build_action_find(&ndb, primary_action_id, &action) &&
+                 db_build_job_find(&ndb, action.job_id, &job);
+    if (!found) {
+        node_db_close(&ndb);
+        return ZCL_ERR(-1, "primary package action is absent");
+    }
+    int64_t now = platform_time_wall_unix();
+    (void)snprintf(job.profile, sizeof(job.profile), "%s",
+                   VCS_BUILD_PACKAGE_PROFILE_STANDARD_B_V1);
+    job.job_id[0] = '\0';
+    (void)snprintf(job.state, sizeof(job.state), "PLANNED");
+    job.outcome[0] = '\0';
+    job.cancel_requested = 0;
+    job.created_at = job.updated_at = now;
+    action.action_id[0] = '\0';
+    action.job_id[0] = '\0';
+    (void)snprintf(action.state, sizeof(action.state), "SNAPSHOTTED");
+    action.outcome[0] = '\0';
+    action.output_root_sha3[0] = '\0';
+    action.worker_id[0] = '\0';
+    action.lease_id[0] = '\0';
+    action.last_error[0] = '\0';
+    action.lease_expires_at = action.lease_heartbeat_at = 0;
+    action.attempt_count = action.claimed_at = action.started_at = 0;
+    action.finished_at = 0;
+    action.created_at = action.updated_at = now;
+    struct zcl_result result = build_fabric_action_id(
+        &job, &action, action.action_id);
+    if (result.ok)
+        result = build_fabric_job_id(&job, action.action_id, job.job_id);
+    if (result.ok)
+        (void)snprintf(action.job_id, sizeof(action.job_id), "%s",
+                       job.job_id);
+    if (result.ok) result = build_fabric_plan(&ndb, &job, &action);
+    if (result.ok) result = build_fabric_submit(&ndb, job.job_id, now);
+    if (result.ok)
+        (void)snprintf(peer_action_id, BUILD_FABRIC_ID_HEX + 1u, "%s",
+                       action.action_id);
+    node_db_close(&ndb);
+    return result;
 }
 
 static struct zcl_result run_execute_action(
@@ -543,10 +618,19 @@ static bool run_admit(
         memory_cleanse(secret, sizeof(secret));
         return false;
     }
+    bool standard = false;
+    if (!run_standard_policy(workspace, task, &standard)) {
+        memory_cleanse(secret, sizeof(secret));
+        return false;
+    }
+    const char *execution_profile = standard
+        ? VCS_BUILD_PACKAGE_PROFILE_STANDARD_A_V1
+        : VCS_BUILD_PACKAGE_PROFILE_QUICK_V1;
     struct json_value input;
     if (!run_admit_input(&input, workspace, datadir, candidate_workspace,
                          goal, entry, context_entry, task, context, scope,
-                         author_hex, adapter_hex, candidate_sequence)) {
+                         author_hex, adapter_hex, candidate_sequence,
+                         execution_profile)) {
         memory_cleanse(secret, sizeof(secret));
         return false;
     }
@@ -577,6 +661,17 @@ static bool run_admit(
         ? run_execute_action(workspace, datadir, json_get_str(action), &worker,
                              secret, pubkey, &receipt)
         : ZCL_ERR(-1, "admission did not return an action id");
+    char peer_action_id[BUILD_FABRIC_ID_HEX + 1] = {0};
+    struct db_build_receipt peer_receipt;
+    memset(&peer_receipt, 0, sizeof(peer_receipt));
+    if (executed.ok && receipt.exit_status == 0 && standard) {
+        executed = run_plan_standard_peer(
+            datadir, json_get_str(action), peer_action_id);
+        if (executed.ok)
+            executed = run_execute_action(
+                workspace, datadir, peer_action_id, &worker, secret, pubkey,
+                &peer_receipt);
+    }
     memory_cleanse(secret, sizeof(secret));
     if (!executed.ok) {
         run_fail(reply, "PACKAGE_BUILD_FAILED", "build", executed.message,
@@ -597,11 +692,17 @@ static bool run_admit(
         json_push_kv_str(&expert, "receipt_id", receipt.receipt_id) &&
         json_push_kv_str(&expert, "output_root", receipt.output_sha3) &&
         json_push_kv_str(&expert, "work_receipt_root",
-                         receipt.work_receipt_sha3);
+                         receipt.work_receipt_sha3) &&
+        (!standard ||
+         (json_push_kv_str(&expert, "standard_peer_action_id",
+                           peer_action_id) &&
+          json_push_kv_str(&expert, "standard_peer_work_receipt_root",
+                           peer_receipt.work_receipt_sha3)));
     char work_id[32];
     (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                    entry->task_root_hex);
-    bool passed = receipt.exit_status == 0;
+    bool passed = receipt.exit_status == 0 &&
+                  (!standard || peer_receipt.exit_status == 0);
     char next_workspace[ZWORK_RUN_PATH_MAX] = {0};
     bool next_created = false;
     uint8_t next_source_root[32];
@@ -649,6 +750,14 @@ static bool run_admit(
                          receipt.work_receipt_sha3) &&
         json_push_kv_str(&reply->data, "build_result",
                          passed ? "passed" : "failed") &&
+        json_push_kv_int(&reply->data, "compile_receipts",
+                         passed ? (standard ? 2 : 1) : 0) &&
+        json_push_kv_int(&reply->data, "test_receipts",
+                         passed ? (standard ? 2 : 1) : 0) &&
+        json_push_kv_str(&reply->data, "sanitizer_result",
+                         passed && standard ? "passed_asan_ubsan" :
+                         standard ? "failed_or_unavailable" :
+                                    "not_required") &&
         json_push_kv_int(&reply->data, "attempt",
                          (int64_t)candidate_sequence) &&
         json_push_kv(&reply->data, "diagnostic", &diagnostic) &&

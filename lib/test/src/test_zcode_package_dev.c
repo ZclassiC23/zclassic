@@ -1066,6 +1066,93 @@ static int zpd_test_work_start(void)
     return failures;
 }
 
+static int zpd_test_standard_profile(void)
+{
+    int failures = 0;
+    TEST("zcode work standard: warning-fatal sanitizer evidence reaches acceptance") {
+        char root[256];
+        (void)snprintf(root, sizeof(root),
+                       "test-tmp/zcode-standard-%ld", (long)getpid());
+        ASSERT(zpd_fixture(root, false));
+
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "goal", "Make x return two"));
+        ASSERT(json_push_kv_str(&input, "profile", "standard"));
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.zcode_standard_start_test.v1");
+        zcl_native_handle_zcode_work_start(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        char work_id[32];
+        (void)snprintf(work_id, sizeof(work_id), "%s",
+                       json_get_str(json_get(&reply.data, "work_id")));
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", work_id));
+        ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_standard_run_test.v1");
+        zcl_native_handle_zcode_work_run(&request, &reply);
+        if (reply.status != ZCL_COMMAND_STATUS_PASSED)
+            fprintf(stderr, "standard admission failed: %s: %s\n",
+                    reply.error.code, reply.error.message);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        char candidate[4400];
+        (void)snprintf(candidate, sizeof(candidate), "%s",
+                       json_get_str(json_get(&reply.data,
+                                             "candidate_workspace")));
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        char source[4500];
+        (void)snprintf(source, sizeof(source), "%s/src/x.c", candidate);
+        ASSERT(zpd_write(source, "int x(void) { return 2; }\n"));
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", work_id));
+        ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_standard_run_test.v1");
+        zcl_native_handle_zcode_work_run(&request, &reply);
+        if (reply.status != ZCL_COMMAND_STATUS_PASSED)
+            fprintf(stderr, "standard execution failed: %s: %s\n",
+                    reply.error.code, reply.error.message);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(json_get_int(json_get(&reply.data,
+                                     "compile_receipts")) == 2);
+        ASSERT(json_get_int(json_get(&reply.data,
+                                     "test_receipts")) == 2);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data,
+                                            "sanitizer_result")),
+                      "passed_asan_ubsan") == 0);
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", work_id));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_standard_accept_test.v1");
+        zcl_native_handle_zcode_work_accept(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                      "PROVEN") == 0);
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        char session_root[4400];
+        (void)snprintf(session_root, sizeof(session_root), "%s", candidate);
+        char *attempt = strrchr(session_root, '/');
+        ASSERT(attempt != NULL);
+        *attempt = '\0';
+        ASSERT(zcl_tree_remove(session_root).ok);
+        zpd_fixture_cleanup(root);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_package_dev(void)
 {
     secp256k1_context *ctx = secp256k1_context_create(
@@ -1082,6 +1169,7 @@ int test_zcode_package_dev(void)
                    zpd_test_project_inspect() +
                    zpd_test_project_init() +
                    zpd_test_work_start() +
+                   zpd_test_standard_profile() +
                    zpd_test_twelve_task_benchmark();
     secp256k1_context_destroy(ctx);
     return failures;

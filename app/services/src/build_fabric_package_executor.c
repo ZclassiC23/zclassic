@@ -8,6 +8,7 @@
 #include "util/file_tree_ops.h"
 #include "util/safe_alloc.h"
 #include "vcs/build_artifact_manifest.h"
+#include "vcs/build_action.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_recipe.h"
 #include "vcs/vcs.h"
@@ -233,13 +234,21 @@ static struct zcl_result bfp_load_inputs(
 struct zcl_result build_fabric_package_prepare(
     const char *workspace, const char *datadir, const char *worker,
     const char *source_dir, const char *emit_dir, const char *recipe_path,
+    const char *profile,
     const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_candidate_v1 *candidate,
     struct build_fabric_package_execution *out)
 {
     if (!workspace || !datadir || !worker || !source_dir || !emit_dir ||
-        !recipe_path || !task || !candidate || !out)
+        !recipe_path || !profile || !task || !candidate || !out)
         return ZCL_ERR(-1, "package execution requires closed inputs");
+    bool quick = strcmp(profile, VCS_BUILD_PACKAGE_PROFILE_LEGACY_V1) == 0 ||
+                 strcmp(profile, VCS_BUILD_PACKAGE_PROFILE_QUICK_V1) == 0;
+    bool standard =
+        strcmp(profile, VCS_BUILD_PACKAGE_PROFILE_STANDARD_A_V1) == 0 ||
+        strcmp(profile, VCS_BUILD_PACKAGE_PROFILE_STANDARD_B_V1) == 0;
+    if (!quick && !standard)
+        return ZCL_ERR(-1, "package execution profile is not registered");
     memset(out, 0, sizeof(*out));
     uint8_t *recipe_wire = NULL;
     size_t recipe_wire_len = 0;
@@ -266,6 +275,9 @@ struct zcl_result build_fabric_package_prepare(
                    "--zbuild-package-recipe=%s", recipe_path);
     (void)snprintf(out->name_arg, sizeof(out->name_arg),
                    "--zbuild-package-name=%s", package_name);
+    (void)snprintf(out->profile_arg, sizeof(out->profile_arg),
+                   "--zbuild-package-profile=%s",
+                   standard ? "standard" : "quick");
     (void)snprintf(out->emit_arg, sizeof(out->emit_arg), "--emit=%s", emit_dir);
     (void)snprintf(out->lock_arg, sizeof(out->lock_arg),
                    "--lock-root=%s", lock_hex);
@@ -275,6 +287,7 @@ struct zcl_result build_fabric_package_prepare(
     out->argv[n++] = out->source_arg;
     out->argv[n++] = out->recipe_arg;
     out->argv[n++] = out->name_arg;
+    out->argv[n++] = out->profile_arg;
     out->argv[n++] = out->emit_arg;
     out->argv[n++] = out->lock_arg;
     for (size_t i = 0; i < out->dep_count; i++) {

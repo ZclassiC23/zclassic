@@ -17,6 +17,10 @@
 #define VCS_BUILD_ACTION_KIND_BENCHMARK_REPRODUCE_V1 \
     "c23.benchmark.reproduce.v1"
 #define VCS_BUILD_ACTION_KIND_REVIEW_V1 "c23.review.v1"
+#define VCS_BUILD_PACKAGE_PROFILE_LEGACY_V1 "zcode-v0.1"
+#define VCS_BUILD_PACKAGE_PROFILE_QUICK_V1 "zcode-quick-v0.1"
+#define VCS_BUILD_PACKAGE_PROFILE_STANDARD_A_V1 "zcode-standard-a-v0.1"
+#define VCS_BUILD_PACKAGE_PROFILE_STANDARD_B_V1 "zcode-standard-b-v0.1"
 #define VCS_BUILD_VIRTUAL_ROOT_V1 "/zbuild/src"
 #define VCS_BUILD_OUTPUT_V1 "unit.o"
 #define VCS_BUILD_RESOURCE_POLICY_V1 \
