@@ -63,6 +63,7 @@ classification of every occurrence.
 | P5 prompt cancellation | watcher shutdown no longer waits behind its active bounded compiler, test, or generic proof child group | real watcher interrupted an active generic `make ff`: 0.30 s stop wall time; watcher lock released; complete descendant tree absent | typed cancellation is distinct from timeout; prior source remains unchanged |
 | P6 latest-wins resident | a newer save cancels the active epoch, preserves a debounced exact path batch, suppresses the stale verdict, and reaps every process group in the bounded child session | real `bg_validation_dump.c` proof superseded by `status_native_handlers.c`; only the latter became epoch 15; stop 0.07 s; zero session descendants; automatic action-plan first compile 225.6 ms | no manual hot-swap-plan command; zero Make/shell/LTO processes on the selected newest live path |
 | P7 proof tiers | all production behavior groups remain immediate; the closed `make_lint_gates` policy/tooling self-test family remains required by full integration expansion and is explicitly deferred from save cycles | `bg_validation_dump.c`: 9.057 s total = 1.942 s candidate + 1.280 s proof compile/link + 2.090 s for 8 immediate groups + 3.745 s identity/closure/overhead; 13 integration groups deferred and hash-bound; zero failures/skips | `feedback_ready`; `immediate_proof_complete=true`; `integration_proof_deferred=true`; `proof_complete=false`; 73.150 s baseline reduced 87.6%, five-second target still MISSED |
+| P8 epoch source guard | candidate and proof builders retain two guards when called independently; one resident epoch now guards the combined candidate/closure/proof transaction once before and once after instead of rescanning around both sub-builds | `bg_validation_dump.c`: 8.823 s total; 2 source guards = 0.248 s; closure = 3.443 s; candidate = 1.627 s; proof = 3.504 s (including 2.090 s tests) | exact source stayed stable; sub-receipts report zero private guards and the epoch reports two; five-second target still MISSED |
 
 The earlier single-island resident microbenchmark measured 227.280 ms p50 and
 232.141 ms p95 on 20 distinct artifacts. That is historical evidence for one
@@ -96,9 +97,13 @@ smuggle release work into a save cycle.
 
 - Replay the representative benchmark and establish p50/p95 plus process and
   byte counts.
-- Reduce the remaining 3.745-second identity/closure overhead and duplicate
-  candidate/proof links. The first honest tiered receipt is 9.057 seconds:
-  substantially faster, but still outside the five-second save-cycle target.
+- Replace the 3.443-second full code-index closure refresh with a correct
+  incremental changed-file refresh, and eliminate duplicate candidate/proof
+  links where source/flag identity permits. The latest receipt is 8.823
+  seconds, still outside the five-second save-cycle target.
+- The pull-verifying P7 pre-push retry visibly invoked `cc -flto=auto` while
+  linking `test_parallel_fast`. Reconcile that effective command with the
+  non-LTO `INTEGRATION` contract; the current profile-text gate is not enough.
 - Rebuild the generated source-identity object inside the resident proof epoch.
   Tooling edits whose closure reaches `code_capsule` currently fail closed
   because the otherwise unchanged `clientversion` object still binds the

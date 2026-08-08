@@ -2241,7 +2241,7 @@ static bool run_resident_restart_fixture(void)
                                    why, sizeof(why)) ||
         !receipt.candidate_probe_passed || receipt.changed_sources != 1 ||
         receipt.compiler_processes != 1 || receipt.linker_processes != 1 ||
-        receipt.probe_processes != 1 ||
+        receipt.probe_processes != 1 || receipt.source_guard_captures != 2 ||
         strcmp(receipt.probe, "discover.help") != 0 ||
         strlen(receipt.artifact_sha256) != 64)
         goto out;
@@ -2260,7 +2260,8 @@ static bool run_resident_restart_fixture(void)
         !strstr(proof.groups, "test_dev_platform") ||
         !strstr(proof.groups, "test_make_lint_gates_heavy_02") ||
         proof.compiler_processes != 1 || proof.linker_processes != 1 ||
-        proof.test_processes != 1 || strlen(proof.artifact_sha256) != 64 ||
+        proof.test_processes != 1 || proof.source_guard_captures != 2 ||
+        strlen(proof.artifact_sha256) != 64 ||
         strlen(proof.groups_sha256) != 64)
         goto out;
 

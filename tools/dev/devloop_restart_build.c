@@ -581,11 +581,11 @@ static bool rr_link(const struct rr_plan *plan, const char *root,
     return true;
 }
 
-bool zcl_devloop_restart_build(
+static bool rr_restart_build(
     const char *repo_root, const char *const *source_tus, size_t source_count,
     struct zcl_devloop_restart_build_receipt *receipt,
     struct zcl_devloop_process_result *process,
-    char *why, size_t why_len)
+    char *why, size_t why_len, bool guard_source)
 {
     int64_t started = platform_time_monotonic_us();
     if (why && why_len) why[0] = 0;
@@ -626,8 +626,10 @@ bool zcl_devloop_restart_build(
     if (!plan_ok) return false;
 
     struct dev_source_record source_before = {0}, source_after = {0};
-    if (!zcl_dev_source_cas_capture(root, &source_before) ||
-        !source_before.cas_present) {
+    if (guard_source) receipt->source_guard_captures++;
+    if (guard_source &&
+        (!zcl_dev_source_cas_capture(root, &source_before) ||
+         !source_before.cas_present)) {
         rr_why(why, why_len,
                "restart source snapshot could not be captured before compile");
         return false;
@@ -683,9 +685,11 @@ bool zcl_devloop_restart_build(
         receipt->total_us = platform_time_monotonic_us() - started;
         return false;
     }
-    if (!zcl_dev_source_cas_capture(root, &source_after) ||
-        !source_after.cas_present ||
-        strcmp(source_before.cas_root_sha3, source_after.cas_root_sha3) != 0) {
+    if (guard_source) receipt->source_guard_captures++;
+    if (guard_source &&
+        (!zcl_dev_source_cas_capture(root, &source_after) ||
+         !source_after.cas_present ||
+         strcmp(source_before.cas_root_sha3, source_after.cas_root_sha3) != 0)) {
         rr_why(why, why_len,
                "restart source snapshot changed during candidate build");
         receipt->total_us = platform_time_monotonic_us() - started;
@@ -713,6 +717,16 @@ bool zcl_devloop_restart_build(
         return false;
     }
     return true;
+}
+
+bool zcl_devloop_restart_build(
+    const char *repo_root, const char *const *source_tus, size_t source_count,
+    struct zcl_devloop_restart_build_receipt *receipt,
+    struct zcl_devloop_process_result *process,
+    char *why, size_t why_len)
+{
+    return rr_restart_build(repo_root, source_tus, source_count, receipt,
+                            process, why, why_len, true);
 }
 
 static bool rr_append_group(char out[4096], const char *group)
@@ -803,7 +817,7 @@ static bool rr_restart_prove(
     const struct zcl_devloop_plan *proof_plan,
     struct zcl_devloop_restart_proof_receipt *receipt,
     struct zcl_devloop_process_result *process,
-    char *why, size_t why_len, bool immediate_only)
+    char *why, size_t why_len, bool immediate_only, bool guard_source)
 {
     int64_t started = platform_time_monotonic_us();
     if (why && why_len) why[0] = 0;
@@ -864,8 +878,10 @@ static bool rr_restart_prove(
                    base.test_link_rsp);
 
     struct dev_source_record source_before = {0}, source_after = {0};
-    if (!zcl_dev_source_cas_capture(root, &source_before) ||
-        !source_before.cas_present) {
+    if (guard_source) receipt->source_guard_captures++;
+    if (guard_source &&
+        (!zcl_dev_source_cas_capture(root, &source_before) ||
+         !source_before.cas_present)) {
         rr_why(why, why_len,
                "proof source snapshot could not be captured before compile");
         return false;
@@ -921,9 +937,12 @@ static bool rr_restart_prove(
         receipt->total_us = platform_time_monotonic_us() - started;
         return false;
     }
-    if (!zcl_dev_source_cas_capture(root, &source_after) ||
-        !source_after.cas_present ||
-        strcmp(source_before.cas_root_sha3, source_after.cas_root_sha3) != 0 ||
+    if (guard_source) receipt->source_guard_captures++;
+    if ((guard_source &&
+         (!zcl_dev_source_cas_capture(root, &source_after) ||
+          !source_after.cas_present ||
+          strcmp(source_before.cas_root_sha3,
+                 source_after.cas_root_sha3) != 0)) ||
         !rr_sha256_file(receipt->artifact_path, receipt->artifact_sha256)) {
         rr_why(why, why_len,
                "proof source changed or its candidate could not be rehashed");
@@ -972,7 +991,7 @@ bool zcl_devloop_restart_prove(
     char *why, size_t why_len)
 {
     return rr_restart_prove(repo_root, source_tus, source_count, proof_plan,
-                            receipt, process, why, why_len, false);
+                            receipt, process, why, why_len, false, true);
 }
 
 bool zcl_devloop_restart_prove_immediate(
@@ -983,7 +1002,7 @@ bool zcl_devloop_restart_prove_immediate(
     char *why, size_t why_len)
 {
     return rr_restart_prove(repo_root, source_tus, source_count, proof_plan,
-                            receipt, process, why, why_len, true);
+                            receipt, process, why, why_len, true, true);
 }
 
 static void rr_output_preview(const struct zcl_devloop_process_result *process,
@@ -1001,7 +1020,9 @@ static bool rr_emit_event(
     enum zcl_devloop_publish_mode requested_mode,
     const struct zcl_devloop_restart_build_receipt *build,
     const struct zcl_devloop_restart_proof_receipt *proof,
-    const struct zcl_devloop_process_result *process, const char *why)
+    const struct zcl_devloop_process_result *process, const char *why,
+    int64_t source_guard_us, uint32_t source_guard_captures,
+    int64_t closure_us)
 {
     struct json_value doc, files, receipt;
     json_init(&doc); json_set_object(&doc);
@@ -1022,6 +1043,10 @@ static bool rr_emit_event(
                             proof && proof->integration_proof_deferred);
     (void)json_push_kv_int(&doc, "elapsed_us", elapsed_us);
     (void)json_push_kv_int(&doc, "elapsed_ms", elapsed_us / 1000);
+    (void)json_push_kv_int(&doc, "source_guard_us", source_guard_us);
+    (void)json_push_kv_int(&doc, "source_guard_captures",
+                           source_guard_captures);
+    (void)json_push_kv_int(&doc, "closure_us", closure_us);
     (void)json_push_kv_int(&doc, "file_count", (int64_t)source_count);
     json_init(&files); json_set_array(&files);
     for (size_t i = 0; i < source_count; i++) {
@@ -1063,6 +1088,8 @@ static bool rr_emit_event(
                                build->linker_processes);
         (void)json_push_kv_int(&receipt, "probe_processes",
                                build->probe_processes);
+        (void)json_push_kv_int(&receipt, "source_guard_captures",
+                               build->source_guard_captures);
         (void)json_push_kv_int(&receipt, "plan_load_us",
                                build->plan_load_us);
         (void)json_push_kv_int(&receipt, "compile_us", build->compile_us);
@@ -1104,6 +1131,8 @@ static bool rr_emit_event(
                                proof->linker_processes);
         (void)json_push_kv_int(&receipt, "test_processes",
                                proof->test_processes);
+        (void)json_push_kv_int(&receipt, "source_guard_captures",
+                               proof->source_guard_captures);
         (void)json_push_kv_int(&receipt, "compile_us", proof->compile_us);
         (void)json_push_kv_int(&receipt, "link_us", proof->link_us);
         (void)json_push_kv_int(&receipt, "test_us", proof->test_us);
@@ -1148,12 +1177,26 @@ int zcl_devloop_restart_event(const char *repo_root,
         if (!rr_source_is_c(source_tus[i]))
             return 0;
     int64_t started = platform_time_monotonic_us();
+    int64_t source_guard_us = 0;
+    int64_t closure_us = 0;
+    uint32_t source_guard_captures = 0;
     struct zcl_devloop_restart_build_receipt build = {0};
     struct zcl_devloop_restart_proof_receipt proof = {0};
     struct zcl_devloop_process_result process = {0};
     char why[512] = {0};
-    bool ok = zcl_devloop_restart_build(repo_root, source_tus, source_count,
-                                        &build, &process, why, sizeof(why));
+    struct dev_source_record source_before = {0}, source_after = {0};
+    int64_t guard_started = platform_time_monotonic_us();
+    source_guard_captures++;
+    bool ok = zcl_dev_source_cas_capture(repo_root, &source_before) &&
+              source_before.cas_present;
+    source_guard_us += platform_time_monotonic_us() - guard_started;
+    if (!ok)
+        rr_why(why, sizeof(why),
+               "restart epoch source snapshot could not be captured");
+    if (ok)
+        ok = rr_restart_build(repo_root, source_tus, source_count, &build,
+                              &process, why, sizeof(why), false);
+    int64_t closure_started = platform_time_monotonic_us();
     if (ok && (!zcl_devloop_plan_add_closure(repo_root, source_tus,
                                              source_count, &plan) ||
                !zcl_devloop_plan_proof_admissible(&plan, NULL))) {
@@ -1161,10 +1204,22 @@ int zcl_devloop_restart_event(const char *repo_root,
                "affected proof closure is incomplete or unavailable");
         ok = false;
     }
+    closure_us = platform_time_monotonic_us() - closure_started;
     if (ok)
-        ok = zcl_devloop_restart_prove_immediate(
-            repo_root, source_tus, source_count, &plan, &proof, &process,
-            why, sizeof(why));
+        ok = rr_restart_prove(repo_root, source_tus, source_count, &plan,
+                              &proof, &process, why, sizeof(why), true, false);
+    if (ok) {
+        guard_started = platform_time_monotonic_us();
+        source_guard_captures++;
+        ok = zcl_dev_source_cas_capture(repo_root, &source_after) &&
+             source_after.cas_present &&
+             strcmp(source_before.cas_root_sha3,
+                    source_after.cas_root_sha3) == 0;
+        source_guard_us += platform_time_monotonic_us() - guard_started;
+        if (!ok)
+            rr_why(why, sizeof(why),
+                   "restart epoch source changed during feedback build");
+    }
     if (process.cancelled || zcl_devloop_process_cancel_requested())
         return 2;
     bool emitted = rr_emit_event(
@@ -1172,6 +1227,7 @@ int zcl_devloop_restart_event(const char *repo_root,
         ok ? "feedback_ready" : "rejected",
         ok ? "immediate_affected_proofs" : "compile_link_probe",
         platform_time_monotonic_us() - started, publish_mode, &build,
-        &proof, &process, why);
+        &proof, &process, why, source_guard_us, source_guard_captures,
+        closure_us);
     return emitted ? 1 : -1;
 }

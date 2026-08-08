@@ -261,6 +261,7 @@ struct zcl_devloop_restart_build_receipt {
     uint32_t compiler_processes;
     uint32_t linker_processes;
     uint32_t probe_processes;
+    uint32_t source_guard_captures;
     bool plan_cache_hit;
     bool candidate_probe_passed;
 };
@@ -285,6 +286,7 @@ struct zcl_devloop_restart_proof_receipt {
     uint32_t compiler_processes;
     uint32_t linker_processes;
     uint32_t test_processes;
+    uint32_t source_guard_captures;
     bool immediate_proof_complete;
     bool integration_proof_deferred;
     bool proof_complete;
