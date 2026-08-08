@@ -382,6 +382,40 @@ bool vault_intent_reclaim_proving(struct node_db *ndb,
         AR_BIND_INT(s, 5, stale_before_unix));
 }
 
+bool vault_intent_record_planned_error(struct node_db *ndb,
+                                       const uint8_t plan_id[32],
+                                       const char *error_code,
+                                       int64_t now_unix)
+{
+    if (!ndb || !ndb->open || !plan_id || !error_code ||
+        strlen(error_code) > VAULT_INTENT_ERROR_MAX || now_unix < 0)
+        LOG_FAIL("vault_intent", "record planned error: invalid argument");
+    sqlite3_stmt *s = NULL;
+    AR_EXEC_CHANGED_BOOL(ndb, s,
+        "UPDATE vault_intents SET error_code=?,updated_at=? "
+        "WHERE plan_id=? AND state=?",
+        AR_BIND_TEXT(s, 1, error_code);
+        AR_BIND_INT(s, 2, now_unix);
+        AR_BIND_BLOB(s, 3, plan_id, 32);
+        AR_BIND_INT(s, 4, VAULT_INTENT_PLANNED));
+}
+
+bool vault_intent_cancel_planned(struct node_db *ndb,
+                                 const uint8_t plan_id[32],
+                                 int64_t now_unix)
+{
+    if (!ndb || !ndb->open || !plan_id || now_unix < 0)
+        LOG_FAIL("vault_intent", "cancel planned: invalid argument");
+    sqlite3_stmt *s = NULL;
+    AR_EXEC_CHANGED_BOOL(ndb, s,
+        "UPDATE vault_intents SET state=?,error_code='CANCELLED_BY_OWNER',"
+        "updated_at=? WHERE plan_id=? AND state=?",
+        AR_BIND_INT(s, 1, VAULT_INTENT_FAILED);
+        AR_BIND_INT(s, 2, now_unix);
+        AR_BIND_BLOB(s, 3, plan_id, 32);
+        AR_BIND_INT(s, 4, VAULT_INTENT_PLANNED));
+}
+
 bool vault_intent_set_state(struct node_db *ndb, const uint8_t plan_id[32],
                             enum vault_intent_state state,
                             const uint8_t txid[32], const char *error_code,

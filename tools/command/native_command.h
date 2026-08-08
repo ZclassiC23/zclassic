@@ -327,6 +327,10 @@ void zcl_native_handle_vault_intent_fanout_plan(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_vault_intent_commit(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_vault_intent_submit(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_vault_intent_cancel(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_vault_intent_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_vault_intent_list(

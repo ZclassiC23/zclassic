@@ -150,3 +150,5 @@ core.zdir.deregister       exempt: reserves and broadcasts an owner-bound direct
 yardsale.seller.arm      exempt: configures a process-memory seller profile from the operator's own wallet keys behind an exact expiring plan/commit; persists only a plan row and installs no privileged artifact
 yardsale.seller.disarm   exempt: clears the process-memory seller profile (cleansing the retained key); persists nothing and installs no privileged artifact
 yardsale.buy             exempt: floods a signed accept through the existing ceremony + relay gates behind an exact expiring plan/commit; persists only a plan row and installs no privileged artifact
+vault.intent.submit      exempt: schedules an already reserved wallet intent through the existing identity, snapshot, exact-byte, admission, durability and relay gates; installs no privileged artifact
+vault.intent.cancel      exempt: atomically terminates only an unclaimed planned wallet intent and releases its reservation; installs no privileged artifact

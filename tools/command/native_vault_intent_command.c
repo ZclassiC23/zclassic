@@ -128,6 +128,22 @@ void zcl_native_handle_vault_intent_commit(
                                                  "idempotent_replay", false);
 }
 
+void zcl_native_handle_vault_intent_submit(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (vni_rpc(request, reply, "vault_intent_submit"))
+        reply->error.mutated = !json_get_bool_or(&reply->data,
+                                                 "idempotent_submit", false);
+}
+
+void zcl_native_handle_vault_intent_cancel(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (vni_rpc(request, reply, "vault_intent_cancel"))
+        reply->error.mutated = !json_get_bool_or(&reply->data,
+                                                 "idempotent_cancel", false);
+}
+
 void zcl_native_handle_vault_intent_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {

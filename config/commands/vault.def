@@ -269,12 +269,55 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_vault_intent_commit)
 
+ZCL_COMMAND_READY_COMMAND(
+    "vault.intent.submit", "vault.intent", "",
+    "Queue an exact durable plan and return immediately",
+    "Requires wallet_scope, plan_id and confirm:true. Returns operation_id "
+    "immediately; operation_id is deliberately the durable plan_id, so "
+    "vault.intent.status is the one status authority rather than a second job "
+    "ledger. A node restart requeues a planned ASYNC_QUEUED intent, duplicate "
+    "submissions share one in-process worker, transient non-current money state "
+    "waits fail-closed, and the normal commit path still revalidates identity, "
+    "snapshot, exact effects, fee, reservation and raw bytes before relay.", 0,
+    "vault,intent,submit,async,operation,queue,restart,idempotent",
+    "zcl.vault_intent_submit.input.v1", "zcl.vault_intent_submit.v1",
+    "wallet_scope,plan_id,confirm", "wallet_scope,plan_id,confirm",
+    "zclassic23 vault intent submit --input='{\"wallet_scope\":\"dev\",\"plan_id\":\"<64hex>\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_IDEMPOTENCY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_vault_intent_submit)
+
+ZCL_COMMAND_READY_COMMAND(
+    "vault.intent.cancel", "vault.intent", "",
+    "Cancel an unclaimed durable transaction plan",
+    "Requires wallet_scope, plan_id and confirm:true. Atomically cancels only a "
+    "still-planned intent and releases its reservation. Once proving, signed "
+    "bytes, mempool admission or confirmation may exist, cancellation refuses "
+    "as unsafe. Repeating an already completed owner cancellation is "
+    "idempotent.", 0,
+    "vault,intent,cancel,async,reservation,owner,idempotent",
+    "zcl.vault_intent_cancel.input.v1", "zcl.vault_intent_cancel.v1",
+    "wallet_scope,plan_id,confirm", "wallet_scope,plan_id,confirm",
+    "zclassic23 vault intent cancel --input='{\"wallet_scope\":\"dev\",\"plan_id\":\"<64hex>\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_IDEMPOTENCY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_vault_intent_cancel)
+
 ZCL_COMMAND_READY_READ(
     "vault.intent.status", "vault.intent", "",
     "Read one transaction intent's chain-aware state",
     "Returns planned, proving, mempool_accepted, confirmed, finalized, reorged, "
-    "conflicted, expired or failed plus txid when one exists; never substitutes "
-    "an asynchronous operation id.", ZCL_COMMAND_LIST_BUDGET,
+    "conflicted, expired or failed plus txid when one exists. For asynchronous "
+    "submission the operation_id is the same durable plan_id, so this remains "
+    "the only status authority.", ZCL_COMMAND_LIST_BUDGET,
     "vault,intent,status,txid,reorg", "zcl.vault_intent_status.input.v1",
     "zcl.vault_intent_status.v1", "plan_id", "plan_id",
     "zclassic23 vault intent status --input='{\"plan_id\":\"<64hex>\"}'",

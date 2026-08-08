@@ -122,6 +122,17 @@ bool vault_intent_reclaim_proving(struct node_db *ndb,
                                   const uint8_t plan_id[32],
                                   int64_t stale_before_unix,
                                   int64_t now_unix);
+/* Record queue/attempt diagnostics without changing the money lifecycle.
+ * The conditional write prevents a late worker from overwriting a state that
+ * another commit, cancellation, or confirmation already advanced. */
+bool vault_intent_record_planned_error(struct node_db *ndb,
+                                       const uint8_t plan_id[32],
+                                       const char *error_code,
+                                       int64_t now_unix);
+/* Owner cancellation is safe only before a commit claims the plan. */
+bool vault_intent_cancel_planned(struct node_db *ndb,
+                                 const uint8_t plan_id[32],
+                                 int64_t now_unix);
 bool vault_intent_set_state(struct node_db *ndb, const uint8_t plan_id[32],
                             enum vault_intent_state state,
                             const uint8_t txid[32], const char *error_code,

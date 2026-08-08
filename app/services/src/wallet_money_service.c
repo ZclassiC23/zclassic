@@ -208,9 +208,11 @@ struct zcl_result wallet_money_snapshot_build(
                            "wallet coins tip is %d blocks behind network tip",
                            out->network_tip_height - money_tip);
         else if (freshness == WALLET_MONEY_FRESHNESS_STALE &&
-                 (money_tip < hstar || (int64_t)money_tip - hstar > 1))
+                 money_tip != hstar)
             (void)snprintf(out->reason, sizeof(out->reason),
-                           "wallet coins tip is outside the proven fold edge");
+                           money_tip == hstar + 1
+                               ? "wallet coins tip is one block ahead of the proven fold edge"
+                               : "wallet coins tip is outside the proven fold edge");
         else if (freshness == WALLET_MONEY_FRESHNESS_STALE)
             (void)snprintf(out->reason, sizeof(out->reason),
                            "node sync state is %s",

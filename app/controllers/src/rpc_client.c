@@ -129,7 +129,6 @@ static char *rpc_transport_error(const char *reason)
     return out;
 }
 
-static char g_cookie[256];
 static int g_port = 18232;
 static char g_datadir[512];
 
@@ -178,23 +177,22 @@ static void base64_encode(const char *in, size_t len, char *out)
  * with an empty credential, because the node then answers 401 Unauthorized
  * with no hint that the real cause is a cookie problem.  That silent 401
  * masquerades as a generic auth failure on every tool. */
-static bool read_cookie(void)
+static bool read_cookie_at(const char *datadir, char *cookie,
+                           size_t cookie_cap)
 {
     char path[600];
-    snprintf(path, sizeof(path), "%s/.cookie", g_datadir);
+    snprintf(path, sizeof(path), "%s/.cookie", datadir);
     FILE *f = fopen(path, "r");
     if (!f) {
-        /* Drop any previously-loaded cookie so we never send a stale
-         * credential after the file goes away (e.g. datadir unmounted). */
-        g_cookie[0] = 0;
+        cookie[0] = 0;
         return false;
     }
-    size_t n = fread(g_cookie, 1, sizeof(g_cookie) - 1, f);
+    size_t n = fread(cookie, 1, cookie_cap - 1, f);
     fclose(f);
-    g_cookie[n] = 0;
-    char *nl = strchr(g_cookie, '\n');
+    cookie[n] = 0;
+    char *nl = strchr(cookie, '\n');
     if (nl) *nl = 0;
-    if (g_cookie[0] == 0)
+    if (cookie[0] == 0)
         return false;
     return n > 0;
 }
@@ -203,7 +201,7 @@ static bool read_cookie(void)
  * Heap-allocated like every other node_rpc_call return value; caller frees.
  * Naming the cookie path turns a cryptic 401 into an actionable message
  * ("is the node running? is -datadir correct?"). */
-static char *cookie_error_body(void)
+static char *cookie_error_body(const char *datadir)
 {
     char *out = zcl_malloc(768, "rpc cookie error json");
     if (!out) return NULL;
@@ -212,7 +210,7 @@ static char *cookie_error_body(void)
         "\"cannot read RPC auth cookie at %s/.cookie — is the node "
         "running and is the selected datadir correct? (proceeding would "
         "send an empty credential and 401)\"}}",
-        g_datadir[0] ? g_datadir : "(unset datadir)");
+        datadir && datadir[0] ? datadir : "(unset datadir)");
     return out;
 }
 
@@ -234,15 +232,18 @@ const char *node_rpc_client_datadir(void)
  * way so no caller can accidentally request an unbounded wait. */
 static char *node_rpc_call_http_impl(const char *method,
                                      const char *params_json,
-                                     long connect_ms, long total_ms)
+                                     long connect_ms, long total_ms,
+                                     const char *datadir, int rpc_port)
 {
     connect_ms = rpc_clamp_ms(connect_ms, 1, 60000);
     total_ms = rpc_clamp_ms(total_ms, 1, 600000);
 
     /* Fail fast with an actionable message rather than sending an empty
      * credential that the node would reject with a cryptic 401. */
-    if (!read_cookie())
-        return cookie_error_body();
+    char cookie[256];
+    if (!datadir || !datadir[0] || !read_cookie_at(
+            datadir, cookie, sizeof(cookie)))
+        return cookie_error_body(datadir);
 
     char body[8192];
     int blen;
@@ -263,7 +264,7 @@ static char *node_rpc_call_http_impl(const char *method,
 
     struct sockaddr_in addr = {
         .sin_family = AF_INET,
-        .sin_port = htons((uint16_t)g_port),
+        .sin_port = htons((uint16_t)rpc_port),
     };
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
 
@@ -305,7 +306,8 @@ static char *node_rpc_call_http_impl(const char *method,
     }
 
     char auth_b64[512];
-    base64_encode(g_cookie, strlen(g_cookie), auth_b64);
+    base64_encode(cookie, strlen(cookie), auth_b64);
+    memset(cookie, 0, sizeof(cookie));
 
     char header[1024];
     int hlen = snprintf(header, sizeof(header),
@@ -448,7 +450,7 @@ static char *node_rpc_call_http_impl(const char *method,
 char *node_rpc_call_http(const char *method, const char *params_json)
 {
     return node_rpc_call_http_impl(method, params_json, rpc_connect_ms(),
-                                   rpc_total_ms());
+                                   rpc_total_ms(), g_datadir, g_port);
 }
 
 /* Same HTTP backend, but with the caller's own connect/total budget instead
@@ -458,7 +460,20 @@ char *node_rpc_call_http(const char *method, const char *params_json)
 char *node_rpc_call_http_deadline(const char *method, const char *params_json,
                                   long connect_ms, long total_ms)
 {
-    return node_rpc_call_http_impl(method, params_json, connect_ms, total_ms);
+    return node_rpc_call_http_impl(method, params_json, connect_ms, total_ms,
+                                   g_datadir, g_port);
+}
+
+char *node_rpc_call_at_deadline(const char *datadir, int rpc_port,
+                                const char *method, const char *params_json,
+                                long connect_ms, long total_ms)
+{
+#ifdef ZCL_TESTING
+    if (g_test_rpc_hook)
+        return g_test_rpc_hook(method, params_json);
+#endif
+    return node_rpc_call_http_impl(method, params_json, connect_ms, total_ms,
+                                   datadir, rpc_port);
 }
 
 /* Public entry every controller and the diagnostics dumper call. Routes to

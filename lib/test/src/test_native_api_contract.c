@@ -630,6 +630,13 @@ static int test_native_bridge_resident_binding(void)
         zcl_native_bridge_bind_rpc("/tmp/zcl-resident-dev", 18252);
         zcl_native_bridge_ensure_rpc();
         ASSERT_STR_EQ(node_rpc_client_datadir(), "/tmp/zcl-resident-dev");
+        node_rpc_client_set_test_hook(status_body_mock_rpc);
+        char *reply = node_rpc_call_at_deadline(
+            "/tmp/zcl-other-wallet", 18262, "fixture", "[]", 1, 1);
+        ASSERT(reply != NULL);
+        free(reply);
+        ASSERT_STR_EQ(node_rpc_client_datadir(), "/tmp/zcl-resident-dev");
+        node_rpc_client_set_test_hook(NULL);
         zcl_native_bridge_bind_rpc("", 0);
         PASS();
     } _test_next:;

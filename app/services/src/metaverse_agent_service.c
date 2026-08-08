@@ -1,5 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: reconcile broker custody bindings with authoritative wallet reads.
+ * // supervisor-ok:bounded-custody-readers — at most two one-shot workers,
+ * joined by money_query_configured before the service returns.
  *
  * See services/metaverse_agent_service.h. Two readers over a broker directory,
  * plus the one validation both share.
@@ -18,6 +20,7 @@
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "session/agent_broker.h"
+#include "util/thread_registry.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -249,6 +252,50 @@ static bool money_query(struct money_binding_read *row)
     return true;
 }
 
+struct money_query_job {
+    struct money_binding_read *row;
+    bool ok;
+};
+
+static void *money_query_thread(void *arg)
+{
+    struct money_query_job *job = arg;
+    job->ok = money_query(job->row);
+    return NULL;
+}
+
+/* Dev and prod are independent custody authorities. Reading them serially
+ * doubled the user-visible deadline (two bounded 30 s RPCs) without adding
+ * consistency: the portfolio root already records each observation and is
+ * known only when both are CURRENT. Run both bounded reads concurrently, then
+ * reconcile them in deterministic dev/prod order. If a worker cannot start,
+ * execute that read inline so resource pressure degrades latency, never truth. */
+static void money_query_configured(struct money_binding_read rows[2],
+                                   bool queried[2])
+{
+    struct money_query_job jobs[2] = {
+        { .row = &rows[0] }, { .row = &rows[1] },
+    };
+    pthread_t threads[2];
+    bool spawned[2] = { false, false };
+    for (int i = 0; i < 2; i++) {
+        if (!rows[i].configured)
+            continue;
+        // thread-supervision-ok:bounded two-reader pool joined below
+        int rc = thread_registry_spawn("zcl_money_rpc", money_query_thread,
+                                       &jobs[i], &threads[i]);
+        if (rc == 0)
+            spawned[i] = true;
+        else
+            jobs[i].ok = money_query(jobs[i].row);
+    }
+    for (int i = 0; i < 2; i++) {
+        if (spawned[i])
+            (void)pthread_join(threads[i], NULL);
+        queried[i] = rows[i].configured && jobs[i].ok;
+    }
+}
+
 static void money_portfolio_root(const struct money_binding_read rows[2],
                                  char out[65])
 {
@@ -283,6 +330,9 @@ struct zcl_result metaverse_agent_service_money(const char *dir, char *out,
     for (int i = 0; i < 2; i++)
         json_init(&rows[i].snapshot);
     bool binding_ok = money_load_bindings(dir, rows);
+    bool queried[2] = { false, false };
+    if (binding_ok)
+        money_query_configured(rows, queried);
     for (int i = 0; i < 2; i++) {
         const char *scope = i == 0 ? "dev" : "prod";
         if (!binding_ok)
@@ -291,7 +341,7 @@ struct zcl_result metaverse_agent_service_money(const char *dir, char *out,
         else if (!rows[i].configured)
             money_unknown(&rows[i].snapshot, scope, "UNKNOWN",
                           "owner created no binding for this wallet scope");
-        else if (!money_query(&rows[i]))
+        else if (!queried[i])
             money_unknown(&rows[i].snapshot, scope, "UNKNOWN",
                           "bound wallet endpoint is unreachable");
     }

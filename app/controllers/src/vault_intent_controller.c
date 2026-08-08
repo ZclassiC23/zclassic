@@ -603,12 +603,9 @@ static bool vi_build_prepared(struct wallet_rpc_context *ctx,
     return true;
 }
 
-static bool rpc_vi_commit(const struct json_value *params, bool help,
-                          struct json_value *result)
+bool vault_intent_commit_input(const struct json_value *in,
+                               struct json_value *result)
 {
-    RPC_HELP(help, result,
-             "vault_intent_commit {wallet_scope,plan_id,confirm:true}\n");
-    const struct json_value *in = json_at(params, 0);
     const char *hex = in ? json_get_str(json_get(in, "plan_id")) : NULL;
     const char *wallet_scope = in
         ? json_get_str(json_get(in, "wallet_scope")) : NULL;
@@ -710,8 +707,16 @@ static bool rpc_vi_commit(const struct json_value *params, bool help,
         free(raw);
         const char *code = json_get_str(json_get(result, "code"));
         if (code && strcmp(code, "INPUT_CONFLICT") == 0)
-            vault_intent_set_state(ctx->node_db, id, VAULT_INTENT_CONFLICTED,
-                                   NULL, "INPUT_CONFLICT", now);
+            (void)vault_intent_set_state(ctx->node_db, id,
+                VAULT_INTENT_CONFLICTED, NULL, "INPUT_CONFLICT", now);
+        else
+            /* The proving claim owns no broadcast bytes yet. A failed exact
+             * build must become terminal immediately: leaving it PROVING for
+             * the five-minute crash lease makes a known failure look busy and
+             * keeps its reservation needlessly locked. */
+            (void)vault_intent_set_state(ctx->node_db, id,
+                VAULT_INTENT_FAILED, NULL,
+                code && code[0] ? code : "EXACT_BUILD_FAILED", now);
         return true;
     }
     free(raw);
@@ -721,6 +726,14 @@ static bool rpc_vi_commit(const struct json_value *params, bool help,
     json_set_object(result); json_push_kv_bool(result, "ok", true);
     vault_intent_render_row(ctx, result, &row); json_push_kv_bool(result, "idempotent_replay", false);
     return true;
+}
+
+static bool rpc_vi_commit(const struct json_value *params, bool help,
+                          struct json_value *result)
+{
+    RPC_HELP(help, result,
+             "vault_intent_commit {wallet_scope,plan_id,confirm:true}\n");
+    return vault_intent_commit_input(json_at(params, 0), result);
 }
 
 static bool rpc_vi_status(const struct json_value *params, bool help,
@@ -777,4 +790,5 @@ void register_vault_intent_rpc_commands(struct rpc_table *t)
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);
+    register_vault_intent_async_rpc_commands(t);
 }

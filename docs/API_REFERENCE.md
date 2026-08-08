@@ -74,17 +74,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 590 |
+| Registry entries (branches + leaves) | 592 |
 | Top-level roots | 11 |
 | Branches | 136 |
-| Leaves (dispatchable command paths) | 454 |
-| … `ready` (live handler in this build) | 401 |
+| Leaves (dispatchable command paths) | 456 |
+| … `ready` (live handler in this build) | 403 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 35 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 152 |
+| Leaves with `effect=mutate` | 154 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 96 |
+| Leaves requiring **owner** authority | 98 |
 
 Per source file:
 
@@ -99,7 +99,7 @@ Per source file:
 | `config/commands/dev.def` | 46 | 11 | 35 |
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
-| `config/commands/vault.def` | 22 | 4 | 18 |
+| `config/commands/vault.def` | 24 | 4 | 20 |
 | `config/commands/zcode.def` | 153 | 34 | 119 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
@@ -874,6 +874,8 @@ represented by its children's sections.
 | `vault intent plan` | ready | mutate / wallet / **owner** · background/high | **`wallet_scope`**, `route`, `from`, **`effects`**, **`idempotency_key`** | `zcl.vault_intent_plan.v1` | `printf '%s' '{"wallet_scope":"dev","route":"transparent","idempotency_key":"payment-001","effects":[{"asset":"ZCL","to":"t1...","amount":"0.01"}]}' \| zclassic23 vault intent plan --input=-` | Persist an exact encrypted transaction plan |
 | `vault intent fanout-plan` | ready | mutate / wallet / **owner** · background/high | **`wallet_scope`**, **`recipient_value_zat`**, **`maximum_fee_zat`**, **`concurrency`**, **`idempotency_key`** | `zcl.vault_intent_fanout_plan.v1` | `zclassic23 vault intent fanout-plan --input='{"wallet_scope":"dev","recipient_value_zat":1000,"maximum_fee_zat":10000,"concurrency":10,"idempotency_key":"parallel-lab-001"}'` | Prepare private self-custody outputs for parallel transactions |
 | `vault intent commit` | ready | mutate / wallet / **owner**, idempotency · foreground/high | **`wallet_scope`**, **`plan_id`**, **`confirm`** | `zcl.vault_intent_commit.v1` | `zclassic23 vault intent commit --input='{"wallet_scope":"dev","plan_id":"<64hex>","confirm":true}'` | Commit one exact durable plan without double-paying |
+| `vault intent submit` | ready | mutate / wallet / **owner**, idempotency · instant/low | **`wallet_scope`**, **`plan_id`**, **`confirm`** | `zcl.vault_intent_submit.v1` | `zclassic23 vault intent submit --input='{"wallet_scope":"dev","plan_id":"<64hex>","confirm":true}'` | Queue an exact durable plan and return immediately |
+| `vault intent cancel` | ready | mutate / wallet / **owner**, idempotency · instant/low | **`wallet_scope`**, **`plan_id`**, **`confirm`** | `zcl.vault_intent_cancel.v1` | `zclassic23 vault intent cancel --input='{"wallet_scope":"dev","plan_id":"<64hex>","confirm":true}'` | Cancel an unclaimed durable transaction plan |
 | `vault intent status` | ready | read / read / operator · fast/low | **`plan_id`** | `zcl.vault_intent_status.v1` | `zclassic23 vault intent status --input='{"plan_id":"<64hex>"}'` | Read one transaction intent's chain-aware state |
 | `vault intent list` | ready | read / read / operator · fast/low | none | `zcl.vault_intent_list.v1` | `zclassic23 vault intent list` | List the newest durable transaction intents |
 

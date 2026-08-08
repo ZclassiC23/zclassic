@@ -9,14 +9,40 @@
 #include "models/vault_intent.h"
 #include "models/wallet_identity.h"
 #include "models/wallet_metadata_crypto.h"
+#include "platform/time_compat.h"
 #include "services/overlay_transaction_intent_service.h"
+#include "services/vault_intent_async_service.h"
 #include "services/znam_transaction_intent_service.h"
 #include "services/zslp_transaction_intent_service.h"
 #include "validation/main_state.h"
 #include "wallet/wallet_lock.h"
 
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <string.h>
+
+static struct node_db *g_ti_async_ndb;
+static uint8_t g_ti_async_plan_id[32];
+static _Atomic int g_ti_async_gate;
+static _Atomic int g_ti_async_calls;
+
+static bool ti_async_execute(const struct json_value *input,
+                             struct json_value *result)
+{
+    (void)input;
+    (void)atomic_fetch_add(&g_ti_async_calls, 1);
+    while (!atomic_load(&g_ti_async_gate))
+        platform_sleep_ms(1);
+    uint8_t txid[32]; memset(txid, 0xa7, sizeof(txid));
+    bool stored = vault_intent_set_state(
+        g_ti_async_ndb, g_ti_async_plan_id,
+        VAULT_INTENT_MEMPOOL_ACCEPTED, txid, "", 200);
+    json_set_object(result);
+    (void)json_push_kv_bool(result, "ok", stored);
+    if (!stored)
+        (void)json_push_kv_str(result, "code", "FIXTURE_PERSIST_FAILED");
+    return true;
+}
 
 static bool ti_db_contains(struct node_db *ndb, const char *needle)
 {
@@ -354,6 +380,86 @@ int test_transaction_intent(void)
         ASSERT(vault_intent_reserve_with_raw_inputs(
             &exact_db, &second, 100, raw, sizeof(raw), &claimed, 1));
         node_db_close(&exact_db);
+        PASS();
+    }
+
+    TEST("async queue marker and owner cancellation are atomic") {
+        struct node_db async_db; memset(&async_db, 0, sizeof(async_db));
+        ASSERT(node_db_open(&async_db, ":memory:"));
+        struct wallet_identity_row identity;
+        const uint8_t genesis[32] = { 0x93 };
+        ASSERT(wallet_identity_ensure(&async_db, genesis, "prod", &identity));
+
+        struct vault_intent_row row;
+        ti_bound_row(&row, 0x61, &identity, 1);
+        (void)snprintf(row.wallet_scope, sizeof(row.wallet_scope), "prod");
+        ASSERT(vault_intent_save(&async_db, &row));
+        ASSERT(vault_intent_record_planned_error(
+            &async_db, row.plan_id, "ASYNC_QUEUED", 101));
+        struct vault_intent_row got;
+        ASSERT(vault_intent_find(&async_db, row.plan_id, &got));
+        ASSERT_EQ(got.state, VAULT_INTENT_PLANNED);
+        ASSERT(strcmp(got.error_code, "ASYNC_QUEUED") == 0);
+        ASSERT(vault_intent_cancel_planned(&async_db, row.plan_id, 102));
+        ASSERT(!vault_intent_cancel_planned(&async_db, row.plan_id, 103));
+        ASSERT(!vault_intent_record_planned_error(
+            &async_db, row.plan_id, "LATE_WORKER", 104));
+        ASSERT(vault_intent_find(&async_db, row.plan_id, &got));
+        ASSERT_EQ(got.state, VAULT_INTENT_FAILED);
+        ASSERT(strcmp(got.error_code, "CANCELLED_BY_OWNER") == 0);
+        ASSERT_EQ(vault_intent_reserved_total(
+            &async_db, "prod", identity.wallet_instance_id), 0);
+        node_db_close(&async_db);
+        PASS();
+    }
+
+    TEST("async intent execution returns immediately and deduplicates") {
+        struct node_db async_db; memset(&async_db, 0, sizeof(async_db));
+        ASSERT(node_db_open(&async_db, ":memory:"));
+        struct wallet_identity_row identity;
+        const uint8_t genesis[32] = { 0x94 };
+        ASSERT(wallet_identity_ensure(&async_db, genesis, "prod", &identity));
+        struct vault_intent_row row;
+        ti_bound_row(&row, 0x71, &identity, 1);
+        (void)snprintf(row.wallet_scope, sizeof(row.wallet_scope), "prod");
+        ASSERT(vault_intent_save(&async_db, &row));
+
+        char plan_hex[65];
+        for (size_t i = 0; i < 32; i++)
+            (void)snprintf(plan_hex + i * 2, 3, "%02x", row.plan_id[i]);
+        g_ti_async_ndb = &async_db;
+        memcpy(g_ti_async_plan_id, row.plan_id, sizeof(g_ti_async_plan_id));
+        atomic_store(&g_ti_async_gate, 0);
+        atomic_store(&g_ti_async_calls, 0);
+        bool duplicate = false;
+        ASSERT(vault_intent_async_start(
+            &async_db, &row, plan_hex, true, ti_async_execute,
+            &duplicate).ok);
+        ASSERT(!duplicate);
+        ASSERT(vault_intent_async_start(
+            &async_db, &row, plan_hex, true, ti_async_execute,
+            &duplicate).ok);
+        ASSERT(duplicate);
+        struct vault_intent_row queued;
+        ASSERT(vault_intent_find(&async_db, row.plan_id, &queued));
+        ASSERT(strcmp(queued.error_code, "ASYNC_QUEUED") == 0);
+        atomic_store(&g_ti_async_gate, 1);
+        for (int i = 0; i < 100 && atomic_load(&g_ti_async_calls) < 1; i++)
+            platform_sleep_ms(5);
+        for (int i = 0; i < 100; i++) {
+            ASSERT(vault_intent_find(&async_db, row.plan_id, &queued));
+            if (queued.state == VAULT_INTENT_MEMPOOL_ACCEPTED)
+                break;
+            platform_sleep_ms(5);
+        }
+        ASSERT_EQ(atomic_load(&g_ti_async_calls), 1);
+        ASSERT_EQ(queued.state, VAULT_INTENT_MEMPOOL_ACCEPTED);
+        ASSERT(vault_intent_async_recover(&async_db, ti_async_execute).ok);
+        platform_sleep_ms(10);
+        ASSERT_EQ(atomic_load(&g_ti_async_calls), 1);
+        g_ti_async_ndb = NULL;
+        memset(g_ti_async_plan_id, 0, sizeof(g_ti_async_plan_id));
+        node_db_close(&async_db);
         PASS();
     }
 

@@ -220,7 +220,7 @@ int api_transaction_type_focused_tests(void)
         size_t alias_count = 0;
         const struct zcl_transaction_command_alias *aliases =
             zcl_transaction_command_alias_catalog(&alias_count);
-        bool ok = registry && aliases && alias_count == 7;
+        bool ok = registry && aliases && alias_count == 13;
         for (size_t i = 0; ok && i < alias_count; i++) {
             ok = zcl_transaction_type_find(aliases[i].type_id) != NULL &&
                  zcl_command_registry_find(registry,
@@ -253,7 +253,7 @@ int api_transaction_type_focused_tests(void)
         size_t nonchain_count = 0;
         const struct zcl_transaction_nonchain_command *nonchain =
             zcl_transaction_nonchain_command_catalog(&nonchain_count);
-        ok = ok && nonchain && nonchain_count == 21;
+        ok = ok && nonchain && nonchain_count == 22;
         for (size_t i = 0; ok && i < nonchain_count; i++) {
             const struct zcl_command_spec *spec =
                 zcl_command_registry_find(registry,
@@ -450,9 +450,9 @@ int api_transaction_type_focused_tests(void)
                                           "reverse_lookup_command")),
                     "app.transaction-types.command") == 0 &&
              json_get_int(json_get(&root,
-                 "alternate_command_route_count")) == 7 &&
+                 "alternate_command_route_count")) == 13 &&
              json_get_int(json_get(&root,
-                 "explicit_non_chain_command_count")) == 21 &&
+                 "explicit_non_chain_command_count")) == 22 &&
              strcmp(json_get_str(json_get(&root,
                          "checked_in_proof_source")),
                     "docs/work/transaction-lab-events.jsonl") == 0 &&

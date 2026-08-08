@@ -57,8 +57,8 @@ static char *mv_money_rpc(const char *datadir, int rpc_port,
                           const char *method, const char *params,
                           long connect_ms, long total_ms)
 {
-    node_rpc_client_init(datadir, rpc_port);
-    return node_rpc_call_deadline(method, params, connect_ms, total_ms);
+    return node_rpc_call_at_deadline(datadir, rpc_port, method, params,
+                                     connect_ms, total_ms);
 }
 
 static void mv_fail(struct zcl_command_reply *reply,

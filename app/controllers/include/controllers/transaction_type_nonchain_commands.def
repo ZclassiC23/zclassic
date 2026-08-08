@@ -35,6 +35,8 @@ TX_NONCHAIN_COMMAND("core.wallet.rescan", "wallet_scan",
     "Replays existing chain history into the local wallet; it creates no transaction.")
 TX_NONCHAIN_COMMAND("vault.intent.issue", "receive_request",
     "Creates a receive key and payment URI only; a later payer creates any transaction.")
+TX_NONCHAIN_COMMAND("vault.intent.cancel", "intent_lifecycle",
+    "Atomically terminates only an unclaimed durable plan and releases its reservation; it never constructs, signs, or relays a transaction.")
 TX_NONCHAIN_COMMAND("vault.session.create", "agent_authority",
     "Creates a bounded local agent grant; the grant can authorize later commands but is not a transaction.")
 TX_NONCHAIN_COMMAND("vault.session.revoke", "agent_authority",
