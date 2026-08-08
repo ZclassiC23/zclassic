@@ -118,10 +118,31 @@ static void via_slot_release(const uint8_t plan_id[32])
     (void)pthread_mutex_unlock(&g_via_lock);
 }
 
+static bool via_error_retryable(const char *code)
+{
+    if (!code || !code[0])
+        return false;
+    return strcmp(code, "MONEY_STATE_NOT_CURRENT") == 0 ||
+           strcmp(code, "COMMIT_BUSY") == 0 ||
+           strcmp(code, "WALLET_UNAVAILABLE") == 0 ||
+           strcmp(code, "WALLET_NOT_ENCRYPTED") == 0 ||
+           strcmp(code, "WALLET_LOCKED") == 0 ||
+           strcmp(code, "WALLET_PERSISTENCE_UNHEALTHY") == 0 ||
+           strcmp(code, "ENCRYPTED_BACKUP_REQUIRED") == 0 ||
+           strcmp(code, "SOVEREIGNTY_GATE") == 0;
+}
+
 static void *via_commit_thread(void *opaque)
 {
     struct via_job *job = opaque;
     while (!thread_registry_shutdown_requested()) {
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        (void)vault_intent_expire_due(job->ndb, now);
+        struct vault_intent_row current;
+        if (!vault_intent_find(job->ndb, job->plan_id, &current) ||
+            (current.state != VAULT_INTENT_PLANNED &&
+             current.state != VAULT_INTENT_PROVING))
+            break;
         struct json_value input, result;
         json_init(&input); json_set_object(&input);
         (void)json_push_kv_str(&input, "wallet_scope", job->wallet_scope);
@@ -140,8 +161,7 @@ static void *via_commit_thread(void *opaque)
         if (ok)
             break;
 
-        const bool retry = strcmp(code, "MONEY_STATE_NOT_CURRENT") == 0 ||
-                           strcmp(code, "COMMIT_BUSY") == 0;
+        const bool retry = via_error_retryable(code);
         if (!retry) {
             if (job->ndb && job->ndb->open)
                 (void)vault_intent_record_planned_error(

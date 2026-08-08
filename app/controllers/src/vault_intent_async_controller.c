@@ -60,6 +60,21 @@ static bool via_scope_matches(const struct vault_intent_row *row,
     return false;
 }
 
+/* Queueing and cancellation mutate only the durable intent ledger. Spend
+ * readiness belongs to the worker immediately before claim/sign/broadcast;
+ * making an RPC caller wait for wallet health, backup, sovereignty, or a
+ * money snapshot defeats the purpose of the asynchronous boundary. */
+static struct wallet_rpc_context *via_storage_context(
+    struct json_value *result)
+{
+    struct wallet_rpc_context *ctx = wallet_rpc_context_current();
+    if (ctx && ctx->node_db && ctx->node_db->open)
+        return ctx;
+    via_error(result, "WALLET_UNAVAILABLE",
+              "the durable wallet intent ledger is unavailable");
+    return NULL;
+}
+
 static bool rpc_via_submit(const struct json_value *params, bool help,
                            struct json_value *result)
 {
@@ -69,11 +84,9 @@ static bool rpc_via_submit(const struct json_value *params, bool help,
     uint8_t id[32]; const char *scope = NULL; const char *hex = NULL;
     if (!via_input(input, id, &scope, &hex, result))
         return true;
-    struct wallet_rpc_context *ctx = wallet_rpc_context_current();
-    if (!vault_intent_context_ready(ctx, result))
+    struct wallet_rpc_context *ctx = via_storage_context(result);
+    if (!ctx)
         return true;
-    (void)vault_intent_expire_due(
-        ctx->node_db, (int64_t)platform_time_wall_time_t());
     struct vault_intent_row row;
     if (!vault_intent_find(ctx->node_db, id, &row)) {
         via_error(result, "PLAN_NOT_FOUND", "no durable plan has that id");
@@ -81,6 +94,11 @@ static bool rpc_via_submit(const struct json_value *params, bool help,
     }
     if (!via_scope_matches(&row, scope, result))
         return true;
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    if (row.state == VAULT_INTENT_PLANNED && row.expires_at <= now) {
+        (void)vault_intent_expire_due(ctx->node_db, now);
+        (void)vault_intent_find(ctx->node_db, id, &row);
+    }
     if (row.state >= VAULT_INTENT_MEMPOOL_ACCEPTED &&
         row.state <= VAULT_INTENT_FINALIZED) {
         json_set_object(result); (void)json_push_kv_bool(result, "ok", true);
@@ -126,8 +144,8 @@ static bool rpc_via_cancel(const struct json_value *params, bool help,
     uint8_t id[32]; const char *scope = NULL; const char *hex = NULL;
     if (!via_input(input, id, &scope, &hex, result))
         return true;
-    struct wallet_rpc_context *ctx = wallet_rpc_context_current();
-    if (!vault_intent_context_ready(ctx, result))
+    struct wallet_rpc_context *ctx = via_storage_context(result);
+    if (!ctx)
         return true;
     struct vault_intent_row row;
     if (!vault_intent_find(ctx->node_db, id, &row)) {
