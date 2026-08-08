@@ -376,22 +376,27 @@ AI-ready contract rather than memorizing these steps:
 zclassic23 app transaction-types guide --type=transparent_p2sh_multisig_spend
 ```
 
-Compose a 2-of-3 policy from public keys only:
+Resolve each freshly created wallet address to its resident public key without
+exporting a private key, then compose a 2-of-3 policy from those public keys:
 
 ```bash
+zclassic23 core wallet address public-key --address=<wallet-owned-address>
+
 zclassic23 core wallet transaction multisig compose --input='{
   "required_signatures":2,
   "public_keys":["02...","03...","02..."]
 }'
 ```
 
-The result returns `address`, `redeem_script_hex`, and the exact fund,
-create-spend, sign, and broadcast command paths. Fund `address` using the
-ordinary identity-bound transparent payment workflow. To spend the resulting
-outpoint, use `core wallet transaction raw create`, then pass its exact
-`scriptPubKey`, amount, and returned `redeem_script_hex` as `redeemScript` in
-the `prevtxs` array for `core wallet transaction raw sign`. Preview and commit
-the exact signed bytes with `core wallet transaction raw broadcast`.
+The public-key lookup fails closed for invalid, external, watch-only, and script
+addresses and returns no address or private material. The composition result
+returns `address`, `redeem_script_hex`, and the exact fund, create-spend, sign,
+and broadcast command paths. Fund `address` using the ordinary identity-bound
+transparent payment workflow. To spend the resulting outpoint, use
+`core wallet transaction raw create`, then pass its exact `scriptPubKey`,
+amount, and returned `redeem_script_hex` as `redeemScript` in the `prevtxs`
+array for `core wallet transaction raw sign`. Preview and commit the exact
+signed bytes with `core wallet transaction raw broadcast`.
 
 The resident owner wallet must already contain at least the threshold number
 of private keys. The typed API deliberately accepts no private keys and does

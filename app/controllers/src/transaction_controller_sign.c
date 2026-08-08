@@ -135,7 +135,10 @@ static bool sign_one_input(struct transaction *tx, unsigned int idx,
         memcpy(&ss->data[ss->size], spk.vch, spk.size);
         ss->size += spk.size;
     } else if (type == TX_MULTISIG) {
-        int n_required = solutions[0][0] - 0x50;
+        /* script_solver returns the decoded small integer m, not OP_m.
+         * Subtracting the opcode base here made every threshold negative,
+         * emitted no signatures, and still reported the input complete. */
+        int n_required = solutions[0][0];
         int n_keys = (int)num_solutions - 2;
 
         ss->data[ss->size++] = OP_0; /* dummy for CHECKMULTISIG bug */

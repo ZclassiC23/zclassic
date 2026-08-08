@@ -33,6 +33,7 @@
 #include "command/native_command.h"
 #include "controllers/rpc_client.h"
 #include "controllers/status_native_handlers.h"
+#include "controllers/wallet_native_handlers.h"
 #include "json/json.h"
 #include "keys/key_io.h"
 #include "platform/time_compat.h"
@@ -836,12 +837,19 @@ static int g_wallet_send_calls;
 static int g_wallet_z_sendmany_calls;
 static int g_wallet_raw_broadcast_calls;
 static int g_wallet_multisig_compose_calls;
+static bool g_wallet_raw_reject;
 static char g_wallet_z_sendmany_params[4096];
 
 static char *wallet_stub_rpc(const char *method, const char *params_json)
 {
     if (method && strcmp(method, "getnewaddress") == 0)
         return strdup("\"t1StubTransparentAddress00000000000\"");
+    if (method && strcmp(method, "validateaddress") == 0)
+        return strdup(
+            "{\"isvalid\":true,\"ismine\":true,"
+            "\"pubkey\":\"02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+            "\"iscompressed\":true}");
     if (method && strcmp(method, "sendtoaddress") == 0) {
         g_wallet_send_calls++;
         return strdup(
@@ -864,6 +872,9 @@ static char *wallet_stub_rpc(const char *method, const char *params_json)
                       "\"complete\":true}");
     if (method && strcmp(method, "sendrawtransaction") == 0) {
         g_wallet_raw_broadcast_calls++;
+        if (g_wallet_raw_reject)
+            return strdup("\"TX rejected: failed verification "
+                          "(bad signature, proof, or structure)\"");
         return strdup(
             "\"bb11bb22cc33dd44ee55ff66aa77bb88"
             "cc99dd00ee11ff22aa33bb44cc55dd77\"");
@@ -888,6 +899,7 @@ static int test_wallet_mutating_native_e2e(void)
         g_wallet_z_sendmany_calls = 0;
         g_wallet_raw_broadcast_calls = 0;
         g_wallet_multisig_compose_calls = 0;
+        g_wallet_raw_reject = false;
         g_wallet_z_sendmany_params[0] = '\0';
         node_rpc_client_set_test_hook(wallet_stub_rpc);
 
@@ -914,7 +926,39 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&empty);
 
-        /* 2. transaction.send WITHOUT confirm returns a plan and DOES NOT
+        /* 2. address.public-key exposes only the resident public key. */
+        const struct zcl_command_spec *pubkey_spec =
+            find_spec(reg, "core.wallet.address.public-key");
+        ASSERT(pubkey_spec != NULL);
+        ASSERT(pubkey_spec->availability == ZCL_COMMAND_READY);
+        ASSERT(pubkey_spec->effect == ZCL_COMMAND_EFFECT_READ);
+        ASSERT(pubkey_spec->risk == ZCL_COMMAND_RISK_READ);
+        struct json_value pubkey_in;
+        json_init(&pubkey_in);
+        json_set_object(&pubkey_in);
+        (void)json_push_kv_str(&pubkey_in, "address",
+                               "t1StubTransparentAddress00000000000");
+        struct zcl_native_body_err pubkey_err = {
+            .status = ZCL_NATIVE_BODY_OK,
+        };
+        char *pubkey_body =
+            zcl_native_address_public_key_body(&pubkey_in, &pubkey_err);
+        ASSERT(pubkey_body != NULL);
+        ASSERT_EQ(pubkey_err.status, ZCL_NATIVE_BODY_OK);
+        struct json_value pubkey_doc;
+        json_init(&pubkey_doc);
+        ASSERT(json_read(&pubkey_doc, pubkey_body, strlen(pubkey_body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&pubkey_doc, "pubkey")),
+                      "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        ASSERT(json_get_bool(json_get(&pubkey_doc, "compressed")));
+        ASSERT(json_get_bool(json_get(&pubkey_doc, "owned")));
+        ASSERT(json_get(&pubkey_doc, "privkey") == NULL);
+        json_free(&pubkey_doc);
+        free(pubkey_body);
+        json_free(&pubkey_in);
+
+        /* 3. transaction.send WITHOUT confirm returns a plan and DOES NOT
          *    broadcast (g_wallet_send_calls stays 0). */
         const struct zcl_command_spec *send_spec =
             find_spec(reg, "core.wallet.transaction.send");
@@ -979,7 +1023,7 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&plan_in);
 
-        /* 3. transaction.send WITH confirm:true broadcasts and returns a txid;
+        /* 4. transaction.send WITH confirm:true broadcasts and returns a txid;
          *    exactly one sendtoaddress call fired. */
         struct json_value commit_in;
         json_init(&commit_in);
@@ -1003,7 +1047,7 @@ static int test_wallet_mutating_native_e2e(void)
         zcl_command_reply_free(&reply);
         json_free(&commit_in);
 
-        /* 4. shielded.send plans the exact scope/amount/memo without an RPC,
+        /* 5. shielded.send plans the exact scope/amount/memo without an RPC,
          *    then synchronously returns the z_sendmany transaction id. */
         const struct zcl_command_spec *shield_spec =
             find_spec(reg, "core.wallet.shielded.send");
@@ -1205,6 +1249,16 @@ static int test_wallet_mutating_native_e2e(void)
                       "committed");
         ASSERT_EQ(g_wallet_raw_broadcast_calls, 1);
         zcl_command_reply_free(&reply);
+
+        g_wallet_raw_reject = true;
+        zcl_command_reply_init(&reply, raw_broadcast->output_schema);
+        zcl_native_handle_wallet_raw_broadcast(&raw_req, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_FAILED);
+        ASSERT_STR_EQ(reply.error.code, "BROADCAST_REJECTED");
+        ASSERT(!reply.error.mutated);
+        ASSERT_EQ(g_wallet_raw_broadcast_calls, 2);
+        zcl_command_reply_free(&reply);
+        g_wallet_raw_reject = false;
         json_free(&raw_in);
 
         /* 6. multisig composition accepts public material only and returns
@@ -1225,6 +1279,10 @@ static int test_wallet_mutating_native_e2e(void)
         json_free(&public_key);
         (void)json_push_kv(&multisig_in, "public_keys", &public_keys);
         json_free(&public_keys);
+        char multisig_why[160] = {0};
+        ASSERT(zcl_command_registry_input_validate(
+            multisig_compose, &multisig_in, multisig_why,
+            sizeof(multisig_why)));
         struct zcl_command_request multisig_request = {
             .spec = multisig_compose, .input = &multisig_in,
             .view = "normal",

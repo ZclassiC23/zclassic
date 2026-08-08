@@ -25,6 +25,11 @@ char *zcl_native_listtransactions_body(const struct json_value *args,
 char *zcl_native_gettransaction_body(const struct json_value *args,
                                       struct zcl_native_body_err *err);
 
+/* address -> validateaddress, projected to the public key for a wallet-owned
+ * transparent key address. Never returns or reads a private key. */
+char *zcl_native_address_public_key_body(
+    const struct json_value *args, struct zcl_native_body_err *err);
+
 /* listwalletkeys[false] projected to
  * {t_addresses:[...], z_addresses:[...]}. */
 char *zcl_native_listaddresses_body(const struct json_value *args,

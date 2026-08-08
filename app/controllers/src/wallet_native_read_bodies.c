@@ -23,6 +23,7 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
+#include <ctype.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -139,6 +140,91 @@ char *zcl_native_gettransaction_body(const struct json_value *args,
                  "RPC %s failed: %s", "gettransaction", ctx);
         LOG_NULL("native.wallet", "%s failed: %s", "gettransaction", ctx);
     }
+    return out;
+}
+
+char *zcl_native_address_public_key_body(
+    const struct json_value *args, struct zcl_native_body_err *err)
+{
+    const char *address = json_get_str(json_get(args, "address"));
+    if (!address || !address[0]) {
+        err->status = ZCL_NATIVE_BODY_INVALID;
+        (void)snprintf(err->message, sizeof(err->message),
+                       "address is required");
+        LOG_NULL("native.wallet", "%s",
+                 "address public-key lookup missing address");
+    }
+    if (err->status != ZCL_NATIVE_BODY_OK)
+        return NULL;
+
+    struct rpc_arg_builder p;
+    rpc_arg_builder_init(&p);
+    rpc_arg_builder_push_str(&p, address);
+    char *params = rpc_arg_builder_to_json(&p);
+    char *raw = params ? node_rpc_call("validateaddress", params) : NULL;
+    free(params);
+    if (!raw) {
+        err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
+        (void)snprintf(err->message, sizeof(err->message),
+                       "RPC validateaddress returned null");
+        LOG_NULL("native.wallet", "%s",
+                 "RPC validateaddress returned null");
+    }
+    if (err->status != ZCL_NATIVE_BODY_OK)
+        return NULL;
+
+    struct json_value root;
+    bool parsed = json_read(&root, raw, strlen(raw));
+    free(raw);
+    if (!parsed) {
+        json_free(&root);
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        (void)snprintf(err->message, sizeof(err->message),
+                       "validateaddress returned an unparseable body");
+        LOG_NULL("native.wallet", "%s",
+                 "validateaddress returned an unparseable body");
+    }
+    if (err->status != ZCL_NATIVE_BODY_OK)
+        return NULL;
+
+    if (root.type == JSON_OBJ && json_get(&root, "error")) {
+        char *out = wnh_body_render(&root, "validateaddress",
+                                    WNH_SMALL_BODY, err);
+        json_free(&root);
+        return out;
+    }
+
+    bool valid = json_get_bool(json_get(&root, "isvalid"));
+    bool owned = json_get_bool(json_get(&root, "ismine"));
+    const char *pubkey = json_get_str(json_get(&root, "pubkey"));
+    size_t pubkey_len = pubkey ? strlen(pubkey) : 0;
+    bool pubkey_hex = pubkey_len == 66 || pubkey_len == 130;
+    for (size_t i = 0; pubkey_hex && i < pubkey_len; i++)
+        pubkey_hex = isxdigit((unsigned char)pubkey[i]) != 0;
+    if (!valid || !owned || !pubkey_hex) {
+        json_free(&root);
+        err->status = ZCL_NATIVE_BODY_INVALID;
+        const char *why = !valid ? "address is not valid"
+            : !owned ? "address is not owned by this wallet"
+                     : "wallet address has no canonical public key";
+        (void)snprintf(err->message, sizeof(err->message), "%s", why);
+        LOG_NULL("native.wallet", "address public-key lookup refused: %s",
+                 why);
+        return NULL;
+    }
+
+    struct json_value doc;
+    json_init(&doc);
+    json_set_object(&doc);
+    (void)json_push_kv_str(&doc, "schema", "zcl.wallet_public_key.v1");
+    (void)json_push_kv_str(&doc, "pubkey", pubkey);
+    (void)json_push_kv_bool(&doc, "compressed", pubkey_len == 66);
+    (void)json_push_kv_bool(&doc, "owned", true);
+    json_free(&root);
+
+    char *out = wnh_body_render(&doc, "validateaddress",
+                                WNH_SMALL_BODY, err);
+    json_free(&doc);
     return out;
 }
 

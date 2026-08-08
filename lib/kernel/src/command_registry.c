@@ -979,6 +979,22 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             type_ok = value->type == JSON_ARR &&
                       value->num_children >= 1u &&
                       value->num_children <= 50u;
+        } else if (strcmp(key, "public_keys") == 0) {
+            /* P2SH multisig composition accepts public material only. Keep
+             * the transport shape aligned with the handler so the documented
+             * JSON array reaches it instead of being rejected as a string. */
+            type_ok = value->type == JSON_ARR &&
+                      value->num_children >= 1u &&
+                      value->num_children <= 16u;
+            for (size_t j = 0; type_ok && j < value->num_children; j++) {
+                const struct json_value *item = &value->children[j];
+                const char *text = json_get_str(item);
+                size_t len = text ? strlen(text) : 0;
+                type_ok = item->type == JSON_STR &&
+                          (len == 66u || len == 130u);
+                for (size_t k = 0; type_ok && k < len; k++)
+                    type_ok = isxdigit((unsigned char)text[k]) != 0;
+            }
         } else if (strcmp(key, "inputs") == 0 ||
                    strcmp(key, "prevtxs") == 0) {
             type_ok = value->type == JSON_ARR &&
@@ -1022,6 +1038,12 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
         } else if (strcmp(key, "decimals") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
                       json_get_int(value) <= 8;
+        } else if (strcmp(key, "required_signatures") == 0) {
+            /* Multisig threshold; the handler additionally checks it does
+             * not exceed the supplied public-key count. */
+            type_ok = value->type == JSON_INT &&
+                      json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 16;
         } else if (strcmp(key, "action_mask") == 0) {
             /* Seven local-sovereignty actions occupy bits 0..6. Keep this
              * transport validator aligned with the policy handler so the

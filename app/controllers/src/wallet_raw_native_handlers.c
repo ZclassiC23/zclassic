@@ -10,6 +10,7 @@
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
+#include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +21,15 @@ static const char *raw_native_string(const struct json_value *body)
     if (!body || body->type != JSON_STR) return NULL;
     const char *value = json_get_str(body);
     return value && value[0] ? value : NULL;
+}
+
+static const char *raw_native_txid(const struct json_value *body)
+{
+    const char *value = raw_native_string(body);
+    if (!value || strlen(value) != 64u) return NULL;
+    for (size_t i = 0; i < 64u; i++)
+        if (!isxdigit((unsigned char)value[i])) return NULL;
+    return value;
 }
 
 static void raw_native_plan_token(char out[17], const char *raw_hex,
@@ -274,12 +284,15 @@ void zcl_native_handle_wallet_raw_broadcast(
     bool ok = wnh_call_rpc(reply, "sendrawtransaction", params, &body);
     free(params);
     if (!ok) return;
-    const char *txid = raw_native_string(&body);
+    const char *txid = raw_native_txid(&body);
     if (!txid) {
-        json_free(&body);
-        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "NO_TXID",
-                 "sendrawtransaction did not return a transaction id",
+        const char *reason = raw_native_string(&body);
+        wnh_fail(reply, ZCL_COMMAND_EXIT_FAILED, "BROADCAST_REJECTED",
+                 reason && strncmp(reason, "TX ", 3) == 0
+                     ? reason
+                     : "sendrawtransaction did not return a transaction id",
                  "sendrawtransaction");
+        json_free(&body);
         return;
     }
     (void)json_push_kv_str(&reply->data, "stage", "committed");

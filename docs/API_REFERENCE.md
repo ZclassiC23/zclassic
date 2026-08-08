@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 592 |
+| Registry entries (branches + leaves) | 593 |
 | Top-level roots | 11 |
 | Branches | 136 |
-| Leaves (dispatchable command paths) | 456 |
-| … `ready` (live handler in this build) | 403 |
+| Leaves (dispatchable command paths) | 457 |
+| … `ready` (live handler in this build) | 404 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 35 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -91,7 +91,7 @@ Per source file:
 | `.def` file | Entries | Branches | Leaves |
 |---|---|---|---|
 | `config/commands/root.def` | 10 | 5 | 5 |
-| `config/commands/core.def` | 117 | 29 | 88 |
+| `config/commands/core.def` | 118 | 29 | 89 |
 | `config/commands/apps.def` | 16 | 3 | 13 |
 | `config/commands/app_features.def` | 49 | 12 | 37 |
 | `config/commands/store.def` | 5 | 0 | 5 |
@@ -323,6 +323,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `core wallet address new` | ready | mutate / wallet / **owner** · fast/low | none | `zcl.wallet_address.v1` | `zclassic23 core wallet address new` | Derive and persist a new transparent address |
+| `core wallet address public-key` | ready | read / read / operator · fast/low | **`address`** | `zcl.wallet_public_key.v1` | `zclassic23 core wallet address public-key --address=<addr>` | Get a wallet-owned address's public key |
 | `core wallet address list` | ready | read / read / operator · fast/low | none | `zcl.wallet_addresses.v1` | `zclassic23 core wallet address list` | List transparent addresses |
 | `core wallet address import` | ready | mutate / wallet / **owner** · fast/low | **`address`** | `zcl.wallet_address.v1` | `zclassic23 core wallet address import --address=<addr>` | Import a watch-only address |
 | `core wallet address export-key` | ready | mutate / wallet / **owner**, plan-commit · fast/low | **`address`**, `confirm` | `zcl.wallet_privkey.v1` | `zclassic23 core wallet address export-key --address=<addr>` | Export the private key for an address |
