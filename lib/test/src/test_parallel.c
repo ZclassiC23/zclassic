@@ -540,6 +540,9 @@ int main(int argc, char **argv)
     bool cli_cache = false;      /* --cache */
     bool cli_no_cache = false;   /* --no-cache */
     bool cli_cold_audit = false; /* --cold-audit */
+    bool cache_snapshot = false;
+    const char *changed_sources[32];
+    size_t changed_source_count = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--jobs=", 7) == 0) {
@@ -573,6 +576,17 @@ int main(int argc, char **argv)
             only_exact = true;
         } else if (strcmp(argv[i], "--cache") == 0) {
             cli_cache = true;
+        } else if (strcmp(argv[i], "--cache-snapshot") == 0) {
+            cache_snapshot = true;
+        } else if (strncmp(argv[i], "--changed-source=", 17) == 0) {
+            const char *path = argv[i] + 17;
+            if (!path[0] || path[0] == '/' || strstr(path, "..") ||
+                strlen(path) >= 256 || changed_source_count >= 32) {
+                fprintf(stderr,
+                        "test_parallel: invalid --changed-source path\n");
+                return 2;
+            }
+            changed_sources[changed_source_count++] = path;
         } else if (strcmp(argv[i], "--no-cache") == 0) {
             cli_no_cache = true;
         } else if (strcmp(argv[i], "--cold-audit") == 0) {
@@ -583,10 +597,17 @@ int main(int argc, char **argv)
                     "[--list|--source-id|--source-record] "
                     "[--only=SUBSTR|--exact=FULL_ID[,FULL...]] "
                     "[--cache|--no-cache] "
+                    "[--cache-snapshot --changed-source=PATH] "
                     "[--cold-audit]\n",
                     argv[0]);
             return 2;
         }
+    }
+    if (cache_snapshot != (changed_source_count > 0) ||
+        (cache_snapshot && !cli_cache)) {
+        fprintf(stderr, "test_parallel: cache snapshot requires --cache and "
+                        "one or more --changed-source paths\n");
+        return 2;
     }
 
     /* Diagnostic surface: ZCL_TEST_CACHE_DUMP=<group> prints the group's forward
@@ -712,7 +733,10 @@ int main(int argc, char **argv)
     size_t cacheable_count = 0;
     size_t reason_hist[TESTCACHE_R__COUNT] = {0};
     if (cache_mode != CACHE_OFF) {
-        tc = testcache_open(NULL);
+        tc = cache_snapshot
+            ? testcache_open_snapshot(NULL, changed_sources,
+                                      changed_source_count)
+            : testcache_open(NULL);
         if (!tc) {
             fprintf(stderr, "test_parallel: cache open failed — "
                             "running every group uncached\n");

@@ -956,9 +956,21 @@ static bool rr_restart_prove(
         rr_why(why, why_len, "affected proof selector exceeds its bound");
         return false;
     }
-    const char *test_argv[] = {
-        receipt->artifact_path, exact, "--cache", NULL
+    const char *test_argv[RR_SOURCE_MAX + 5] = {
+        receipt->artifact_path, exact, "--cache", "--cache-snapshot",
     };
+    char changed_args[RR_SOURCE_MAX][ZCL_DEVLOOP_PATH_MAX + 24];
+    size_t test_argc = 4;
+    for (size_t i = 0; i < source_count; i++) {
+        if (snprintf(changed_args[i], sizeof(changed_args[i]),
+                     "--changed-source=%s", source_tus[i]) >=
+            (int)sizeof(changed_args[i])) {
+            rr_why(why, why_len, "changed source selector exceeds its bound");
+            return false;
+        }
+        test_argv[test_argc++] = changed_args[i];
+    }
+    test_argv[test_argc] = NULL;
     receipt->test_processes = 1;
     int64_t test_started = platform_time_monotonic_us();
     bool ran = zcl_devloop_process_run_test(root, test_argv, 300000, process);

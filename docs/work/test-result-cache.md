@@ -38,6 +38,17 @@ uncacheable reasons — that histogram is how a whole-run degradation (an absent
 include graph making every group uncacheable, say) becomes visible instead of
 looking like a normal cold run.
 
+The resident save loop uses the narrower internal form
+`--cache --cache-snapshot --changed-source=<path>`. It opens the already
+verified code-index snapshot instead of rebuilding it in the feedback process.
+That is safe only under a fail-closed rule: if a group's old forward closure
+contains any changed translation unit, that group is uncacheable and runs
+fresh (`changed-input-runs-fresh`). Only an old closure that excludes every
+changed source may reuse an exact PASS. A missing snapshot, an empty changed
+set, or an invalid path disables the cache; it never falls back to a smaller
+key. This form is resident-loop plumbing, not a substitute for the ordinary
+fresh-index and cold-audit gates.
+
 `make ci`'s single retry on a `test_parallel` failure runs `--no-cache`. Its
 justification — "a real regression fails BOTH passes" — holds only while both
 passes execute the same groups. With the cache on, pass 1 would store a `PASS`
@@ -164,6 +175,9 @@ A group is **UNCACHEABLE (always runs)** when its inputs cannot be bounded:
 - **an input is newer than the include graph** — if any closure file's mtime is
   newer than the newest depfile the graph was built from, the graph cannot
   describe that file, so an include added since is invisible to the key.
+- **the resident snapshot closure reaches an edited translation unit** — its
+  prior edges cannot describe the edited body, so that group runs fresh. The
+  snapshot may serve only groups proven unrelated by the prior closure.
 
 The one residual assumption is the standard one for any source-based
 "affected-tests" analysis: the call graph captures a test's dependency edges by

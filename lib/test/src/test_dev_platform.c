@@ -2174,7 +2174,7 @@ static bool run_resident_restart_fixture(void)
         "  if grep -q 'restart-test-objects' \"$rsp\"; then\n"
         "    grep -q 'build/dev-loop/restart-test-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
         "    ! grep -q 'build/test-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
-        "    printf '#!/usr/bin/env bash\\nset -eu\\ngroups= cache=0\\nfor arg in \"$@\"; do case \"$arg\" in --exact=*) groups=${arg#--exact=};; --cache) cache=1;; esac; done\\n[ -n \"$groups\" ]\\n[ \"$cache\" -eq 1 ]\\ncount=1\\nrest=$groups\\nwhile [ \"${rest#*,}\" != \"$rest\" ]; do count=$((count+1)); rest=${rest#*,}; done\\nran=$((count-1))\\nprintf \"SUITE VERDICT mode=cached groups_total=915 groups_ran=%%s groups_cached=1 groups_gated=0 groups_failed=0 self_skips=0\\\\n\" \"$ran\"\\nexit 0\\n' >\"$out\"\n"
+        "    printf '#!/usr/bin/env bash\\nset -eu\\ngroups= cache=0 snapshot=0 changed=\\nfor arg in \"$@\"; do case \"$arg\" in --exact=*) groups=${arg#--exact=};; --cache) cache=1;; --cache-snapshot) snapshot=1;; --changed-source=*) changed=${arg#--changed-source=};; esac; done\\n[ -n \"$groups\" ]\\n[ \"$cache\" -eq 1 ]\\n[ \"$snapshot\" -eq 1 ]\\n[ \"$changed\" = tools/dev/restart_fixture.c ]\\ncount=1\\nrest=$groups\\nwhile [ \"${rest#*,}\" != \"$rest\" ]; do count=$((count+1)); rest=${rest#*,}; done\\nran=$((count-1))\\nprintf \"SUITE VERDICT mode=cached groups_total=921 groups_ran=%%s groups_cached=1 groups_gated=0 groups_failed=0 self_skips=0\\\\n\" \"$ran\"\\nexit 0\\n' >\"$out\"\n"
         "  else\n"
         "    grep -q 'build/dev-loop/restart-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
         "    ! grep -q 'build/dev-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
