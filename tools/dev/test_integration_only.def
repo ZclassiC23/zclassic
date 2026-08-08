@@ -9,7 +9,10 @@
 /* Policy/tooling self-tests validate repository-wide lint machinery rather
  * than the behavior of an edited production TU. Several create hermetic
  * worktrees or invoke nested builds; the exclusive leaf also plants temporary
- * tracked fixtures. Keep the whole closed family in INTEGRATION. */
+ * tracked fixtures. The selector group recursively executes its own base
+ * binary and checks that build's source identity, which is deliberately not
+ * the overlay candidate identity. Keep these in INTEGRATION. */
+ZCL_TEST_INTEGRATION_ONLY("test_test_group_selector")
 ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates")
 ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_shard_01")
 ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_shard_02")

@@ -91,10 +91,7 @@ static bool mkdirs(const char *path)
 
 static bool ignored_dir(const char *name)
 {
-    return !name || !name[0] || name[0] == '.' ||
-           strcmp(name, "build") == 0 || strcmp(name, "vendor") == 0 ||
-           strcmp(name, "target") == 0 || strcmp(name, "node_modules") == 0 ||
-           strcmp(name, "test-tmp") == 0;
+    return zcl_devloop_watch_dir_is_ignored(name);
 }
 
 static bool relevant_file(const char *path)
@@ -224,6 +221,13 @@ static bool collect_events(struct watch_context *ctx)
             if (rn <= 0 || (size_t)rn >= sizeof(rel))
                 continue;
             if (ev->mask & IN_ISDIR) {
+                /* The recursive watch deliberately never enters generated,
+                 * dependency, or dot-prefixed scratch directories. Their
+                 * create/remove traffic is equally irrelevant: treating it
+                 * as a synthetic Makefile edit cancels the exact proof that
+                 * created a test scratch directory in the first place. */
+                if (ignored_dir(ev->name))
+                    continue;
                 mutation_sequence_advance(ctx);
                 add_changed(ctx, "Makefile");
                 saw = true;

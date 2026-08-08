@@ -114,6 +114,14 @@ bool zcl_devloop_watch_event_is_mutation(uint32_t inotify_mask)
              IN_CREATE | IN_DELETE)) != 0;
 }
 
+bool zcl_devloop_watch_dir_is_ignored(const char *name)
+{
+    return !name || !name[0] || name[0] == '.' ||
+           strcmp(name, "build") == 0 || strcmp(name, "vendor") == 0 ||
+           strcmp(name, "target") == 0 || strcmp(name, "node_modules") == 0 ||
+           strcmp(name, "test-tmp") == 0;
+}
+
 /* ── the three dimensions (C3) ─────────────────────────────────────────── */
 
 const char *zcl_devloop_dim_name(enum zcl_devloop_dim dim)

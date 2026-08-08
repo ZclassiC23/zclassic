@@ -1522,6 +1522,15 @@ static int test_watch_relevance(void)
         ASSERT(zcl_devloop_watch_event_is_mutation(IN_CLOSE_WRITE));
         ASSERT(zcl_devloop_watch_event_is_mutation(IN_MOVED_TO));
         ASSERT(zcl_devloop_watch_event_is_mutation(IN_DELETE));
+        /* A cancelled focused test can leave its dot-prefixed scratch
+         * directory briefly visible at the checkout root. Directory noise
+         * the recursive watcher never enters must not synthesize a Makefile
+         * change and supersede the exact source epoch being proved. */
+        ASSERT(zcl_devloop_watch_dir_is_ignored(".zcl_test_api"));
+        ASSERT(zcl_devloop_watch_dir_is_ignored("test-tmp"));
+        ASSERT(zcl_devloop_watch_dir_is_ignored("build"));
+        ASSERT(!zcl_devloop_watch_dir_is_ignored("app"));
+        ASSERT(!zcl_devloop_watch_dir_is_ignored("lib"));
         PASS();
     } _test_next:;
     return failures;

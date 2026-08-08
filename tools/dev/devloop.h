@@ -525,6 +525,7 @@ bool zcl_devloop_watch_lock_path(const char *repo_root,
 /* Content/directory-entry mutations wake the loop. Metadata-only access-time
  * changes from compilers and indexers do not constitute a source save. */
 bool zcl_devloop_watch_event_is_mutation(uint32_t inotify_mask);
+bool zcl_devloop_watch_dir_is_ignored(const char *name);
 /* Canonical-worktree identity and SHA3-sealed cycle state.  Readers never
  * create state. ABSENT is an honest empty result; INVALID must fail closed. */
 bool zcl_devloop_workspace_id(const char *repo_root, char out[65]);

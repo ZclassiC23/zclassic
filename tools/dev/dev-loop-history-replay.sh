@@ -266,7 +266,8 @@ while IFS= read -r row; do
         fail 'worktree already has a watcher; refusing to take or stop its lease'
     watcher_id="$(jq -r '.data.watcher_id // 0' <<<"$ensure")"
     epoch="$(jq -r '.data.epoch // 0' <<<"$ensure")"
-    [[ "$watcher_id" =~ ^[2-9][0-9]*$ && "$epoch" =~ ^[0-9]+$ ]] ||
+    [[ "$watcher_id" =~ ^[0-9]+$ && "$epoch" =~ ^[0-9]+$ ]] &&
+        [ "$watcher_id" -gt 1 ] ||
         fail 'watcher identity or starting epoch is invalid'
     staged="$(mktemp "$(dirname "$source")/.zcl-replay.XXXXXX")"
     cp -p -- "$source" "$staged"
@@ -327,6 +328,7 @@ while IFS= read -r row; do
         elif (.error.code // "") != "" then
           (.error.code + ": " + (.error.message // "no diagnostic"))
         else "" end' <<<"$verdict")" \
+      --arg process_output_tail "$(jq -r '.process_output // ""' <<<"$data")" \
       '{path:$path,class:$class,frequency:$frequency,action:$action,
         status:$status,result_bound:$result_bound,
         feedback_green:$feedback_green,feedback_us:$feedback_us,
@@ -338,7 +340,7 @@ while IFS= read -r row; do
         test_processes:$test,probe_processes:$probe,
         make_processes:0,shell_processes:0,lto_invocations:0,
         complete_graph_links:$complete_graph_links,
-        failure_capsule:$failure}' \
+        failure_capsule:$failure,process_output_tail:$process_output_tail}' \
       | jq --argjson cycle "$data" '
           .source_guard_us=($cycle.source_guard_us // 0) |
           .closure_us=($cycle.closure_us // 0) |
