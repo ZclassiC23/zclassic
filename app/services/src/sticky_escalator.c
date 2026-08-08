@@ -18,6 +18,7 @@
 
 #include "platform/time_compat.h"
 #include "services/sticky_escalator.h"
+#include "services/sticky_escalator_resnapshot.h"
 
 #include "supervisors/domains.h"
 #include "framework/condition.h"
@@ -163,32 +164,6 @@ static int64_t observe_tip(void)
         return (int64_t)active_chain_height(&g_ms->chain_active);
     return -1; // raw-return-ok:no-tip-observable-sentinel-not-an-error
 }
-
-/* Optional in-process range re-derivation primitive (fail-safe-architecture.md
- * §0c). A sibling lane may link a real stage_rederive_range that rewinds the
- * suspect stage cursors to `height` and re-derives [height, H*] from
- * PoW-verified on-disk bodies (delete rows >= height in the lowest stage log and
- * every downstream log, lower the cursors, let the forward fold rewrite fresh
- * verdicts). WEAK: the symbol resolves to NULL until that lane lands, at which
- * point the resnapshot rung invokes it automatically with no edit here — the
- * "detect at runtime, fall back cleanly if absent" contract. Same idiom as
- * lib/net/src/tor_integration.c's dynhost_client_fetch weak reference. */
-struct sqlite3;
-struct main_state;
-struct stage_rederive_range_result;
-extern bool stage_rederive_range(struct sqlite3 *db, struct main_state *ms,
-                                 int from_height, int to_height,
-                                 struct stage_rederive_range_result *out)
-    __attribute__((weak));
-
-/* The ONE canonical nearest-self-verified-base selector (app/jobs/src/reducer_
- * frontier_rewind_bases.c), reached via the same private-jobs-symbol extern
- * idiom this file already uses for stage_rederive_range. The _loadable_ variant
- * gates the compiled checkpoint on artifact availability and returns
- * self-verified bases only (never a borrowed root). */
-extern bool reducer_frontier_nearest_loadable_self_verified_base(
-    int32_t at_or_below, bool compiled_checkpoint_loadable,
-    int32_t *base_height_out, const char **base_kind_out);
 
 /* ── Blocker-aware hold predicate (defect D5) ──────────────────────────────
  *
@@ -420,90 +395,8 @@ static void name_dependency_blocker(const char *id, const char *reason)
 
 static enum sticky_rung_result rung_resnapshot_default(void)
 {
-    /* In-process re-derivation from the nearest SELF-VERIFIED rewind base.
-     * Emphatically NOT a borrowed-state snapshot pull (that would reinstate the
-     * trust root the sovereign cure deletes, docs/work/self-verified-tip-plan.md):
-     * the base is locally verified and the forward stages re-fold the SAME
-     * on-disk bodies to the SAME verdicts (consensus parity preserved). */
-    sqlite3 *db = progress_store_db();
-    struct main_state *ms = g_ms ? g_ms : sync_monitor_main_state();
-    if (!db || !ms) {
-        /* NOT LOG_FAIL: that returns false == STICKY_RUNG_RESOLVED here. */
-        LOG_WARN("sticky_escalator",
-                 "[sticky_escalator] resnapshot: %s unavailable — cannot locate "
-                 "a rewind base", db ? "main_state" : "progress db");
-        return STICKY_RUNG_FAILED;
-    }
-
-    /* Nearest self-verified rewind base via the ONE canonical enumerator
-     * (reducer_frontier_rewind_bases) — the SAME source of truth the JSON
-     * observability and the generic rewind driver fold over. Self-verified
-     * FIRST (a self-valid seal beats the compiled checkpoint by nearness); a
-     * BORROWED root is never returned. The compiled SHA3 checkpoint is a proven
-     * HASH, not loadable STATE — so it is a usable base ONLY when its verified
-     * snapshot artifact is on disk: reachable whenever the artifact is present,
-     * fail-closed excluded when absent. A self-valid seal needs no artifact. */
-    int32_t anchor_h = -1;
-    bool artifact =
-        boot_refold_from_anchor_artifact_available(app_runtime_node_db(),
-                                                   &anchor_h);
-    int32_t base_h = -1;
-    const char *base_kind = "none";
-    bool have_base = reducer_frontier_nearest_loadable_self_verified_base(
-        INT32_MAX, artifact, &base_h, &base_kind);
-
-    if (!have_base) {
-        /* Precondition absent: no reachable self-verified base (no self-valid
-         * seal; compiled checkpoint unusable because its artifact is absent).
-         * FAIL-CLOSED — name the clue and defer to the durable from-bodies rungs
-         * (reindex / self_mint_refold / refold_from_anchor). Never a faked
-         * "done": a missing base is real, and only an operator can supply one
-         * — hence the OWNER hand-off carrying the decision. */
-        name_dependency_blocker("sticky_escalator.resnapshot_no_base",
-            "resnapshot: no self-verified rewind base reachable (no self-valid "
-            "seal, no verified utxo-anchor.snapshot artifact on disk) — deferring "
-            "to reindex/refold. A PERSON decides: see `dumpstate blocker`.");
-        event_emitf(EV_RECOVERY_ACTION, 0,
-                    "action=sticky-resnapshot-skip reason=no_verified_base");
-        return STICKY_RUNG_FAILED;
-    }
-
-    /* If the in-process range re-derivation primitive is linked (weak symbol,
-     * detected at runtime), run it from the base. */
-    if (stage_rederive_range) {
-        /* Rewind to base_h and re-derive [base_h, observed tip] from
-         * PoW-verified on-disk bodies; the primitive refuses cleanly if the tip
-         * is not above the base. out=NULL: only the ran/refused signal is used. */
-        bool ran = stage_rederive_range(db, ms, base_h, (int)observe_tip(),
-                                        NULL);
-        LOG_WARN("sticky_escalator",
-                 "[sticky_escalator] resnapshot: in-process re-derive from %s "
-                 "base_h=%d ran=%d", base_kind, base_h, (int)ran);
-        event_emitf(EV_RECOVERY_ACTION, 0,
-                    "action=sticky-resnapshot-rederive base=%s base_h=%d ran=%d",
-                    base_kind, base_h, (int)ran);
-        /* Ran -> the forward stages consume the rewind (hold the rung); refused
-         * -> nothing actionable here, advance to the durable rungs. */
-        return ran ? STICKY_RUNG_PROGRESSING : STICKY_RUNG_FAILED;
-    }
-
-    /* Base reachable but no in-process rewind consumer linked: name the base +
-     * missing consumer and defer to the durable from-bodies rungs (never a
-     * borrowed pull, never a faked "done"). */
-    {
-        char reason[BLOCKER_REASON_MAX];
-        snprintf(reason, sizeof(reason),
-                 "resnapshot: self-verified rewind base %s@%d reachable but no "
-                 "in-process rewind consumer (stage_rederive_range / seal "
-                 "window_rebuild) is linked — deferring to reindex/refold",
-                 base_kind, base_h);
-        name_dependency_blocker("sticky_escalator.resnapshot_no_consumer",
-                                reason);
-    }
-    event_emitf(EV_RECOVERY_ACTION, 0,
-                "action=sticky-resnapshot-defer base=%s base_h=%d "
-                "reason=no_inprocess_consumer", base_kind, base_h);
-    return STICKY_RUNG_FAILED;
+    return sticky_escalator_resnapshot_run(
+        g_ms ? g_ms : sync_monitor_main_state(), (int)observe_tip());
 }
 
 static bool reindex_replay_executable(int *probe_height_out,
@@ -872,6 +765,7 @@ static void enter_rung(enum sticky_rung r, int64_t now)
     atomic_store(&g_tip_at_rung, observe_tip());
     atomic_store(&g_rung_entered_unix, now);
     atomic_store(&g_rederive_flat_repairs, 0);
+    sticky_resnapshot_gate_reset();
     livelock_reset();
 }
 
@@ -943,6 +837,7 @@ static void clear_episode(int64_t now, int64_t tip)
     atomic_store(&g_rearm_until_unix, 0);
     atomic_store(&g_rederive_last_repair_unix, 0);
     atomic_store(&g_rederive_flat_repairs, 0);
+    sticky_resnapshot_gate_reset();
     atomic_store(&g_widen_last_kick_unix, 0);
     /* Release the blocker-aware hold state (defect D5): the tip climbed, so the
      * episode genuinely cleared. The fires counter stays monotonic (diagnostic);
@@ -1116,9 +1011,35 @@ static void apply_drive(int64_t tip, int64_t now)
         atomic_store(&g_livelock_last_rung, (int)cur);
     }
 
-    /* Dispatch the current rung action (idempotent; each kicks durable work). */
-    enum sticky_rung_result res = rung_action(cur)();
-    atomic_fetch_add(&g_rung_dispatches[cur], 1u);
+    /* Most rung actions are idempotent nudges and may run each tick.  The
+     * resnapshot action is different: it rewinds a range. Dispatch it exactly
+     * once per rung entry, then let the forward stages consume that rewind.
+     * Reaching the pre-rewind entry frontier is the exact completion witness;
+     * requiring the generic +2 margin here would advance into deeper recovery
+     * after a successful catch-up merely because no new block arrived. */
+    enum sticky_rung_result res;
+    if (cur == STICKY_RUNG_RESNAPSHOT) {
+        enum sticky_resnapshot_gate_decision decision =
+            sticky_resnapshot_gate_decide(entry, tip);
+        if (decision == STICKY_RESNAPSHOT_COMPLETE) {
+            event_emitf(EV_RECOVERY_ACTION, 0,
+                        "action=sticky-resnapshot-complete tip=%lld "
+                        "entry=%lld dispatches=1",
+                        (long long)tip, (long long)entry);
+            clear_episode(now, tip);
+            return;
+        }
+        if (decision == STICKY_RESNAPSHOT_HOLD) {
+            res = STICKY_RUNG_PROGRESSING;
+        } else {
+            res = rung_action(cur)();
+            atomic_fetch_add(&g_rung_dispatches[cur], 1u);
+            sticky_resnapshot_gate_finish(res == STICKY_RUNG_PROGRESSING);
+        }
+    } else {
+        res = rung_action(cur)();
+        atomic_fetch_add(&g_rung_dispatches[cur], 1u);
+    }
 
     if (res == STICKY_RUNG_RESOLVED) {
         clear_episode(now, tip);
@@ -1244,6 +1165,8 @@ bool sticky_escalator_dump_state_json(struct json_value *out, const char *key)
                      (int64_t)STICKY_LIVELOCK_MAX_PASSES);
     json_push_kv_int(out, "livelock_force_advances",
                      (int64_t)atomic_load(&g_livelock_force_advances));
+    json_push_kv_int(out, "resnapshot_dispatch_state",
+                     sticky_resnapshot_gate_state());
     json_push_kv_int(out, "unresolved_conditions",
                      condition_engine_get_unresolved_count());
 
@@ -1291,6 +1214,7 @@ void sticky_escalator_test_reset(void)
     atomic_store(&g_ladder_cycles, 0u);
     atomic_store(&g_rederive_last_repair_unix, (int64_t)0);
     atomic_store(&g_rederive_flat_repairs, 0);
+    sticky_resnapshot_gate_reset();
     atomic_store(&g_widen_last_kick_unix, (int64_t)0);
     atomic_store(&g_livelock_no_progress_passes, 0);
     atomic_store(&g_livelock_last_tip, (int64_t)-1);
@@ -1331,6 +1255,13 @@ uint64_t sticky_escalator_test_widen_kicks(void)
 
 uint64_t sticky_escalator_test_livelock_force_advances(void)
 { return atomic_load(&g_livelock_force_advances); }
+
+uint64_t sticky_escalator_test_rung_dispatches(enum sticky_rung rung)
+{
+    if ((int)rung < 0 || rung >= STICKY_RUNG_COUNT)
+        return 0;
+    return atomic_load(&g_rung_dispatches[rung]);
+}
 
 bool sticky_escalator_test_held_by_permanent(void)
 { return atomic_load(&g_held_by_permanent); }

@@ -40,7 +40,7 @@ app/services/src/block_index_loader_rebuild.c 853 # ADR-0008 (seed-floor declara
 app/services/src/node_db_catchup_service.c 862
 app/services/src/rolling_anchor_service.c 801
 
-app/services/src/sticky_escalator.c 1340
+app/services/src/sticky_escalator.c 1271
 app/services/src/sync_monitor.c 811
 # ZCODE Scientific Metaverse S4: closed benchmark/reproduction executor —
 # the confined runner (fork + Landlock/seccomp/rlimits + sandbox self-check

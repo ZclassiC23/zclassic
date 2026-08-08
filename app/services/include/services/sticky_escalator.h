@@ -134,6 +134,8 @@ uint64_t sticky_escalator_test_widen_kicks(void);
 /* Livelock backstop test seam: count of times a rung was force-advanced by the
  * per-episode zero-progress assertion (STICKY_LIVELOCK_MAX_PASSES). */
 uint64_t sticky_escalator_test_livelock_force_advances(void);
+/* Actual action invocations (not hold polls) for one rung. */
+uint64_t sticky_escalator_test_rung_dispatches(enum sticky_rung rung);
 
 /* Blocker-aware HOLD test seams (defect D5): whether the last drive HELD on a
  * permanent sync-domain blocker, and the monotonic count of held drives. */
