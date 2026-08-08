@@ -348,6 +348,11 @@ transaction instead of creating a replacement. That prepared-byte retry still
 requires current money readers and the same wallet identity, but it does not
 pretend the old tip snapshot is current; present-chain mempool validation is
 the authority for admitting the exact already-signed transaction.
+Before retrying, a read-only reservation probe must identify every shielded
+nullifier as an available wallet note or an idempotent reservation by that same
+transaction. A missing nullifier becomes `PREPARED_NOTE_MISMATCH`; a note owned
+by another transaction becomes `PREPARED_NOTE_CONFLICT`. Both are terminal and
+require a fresh plan—neither may loop forever or generate replacement bytes.
 
 Report states literally. `proving` means background construction or retry is
 active; `mempool_accepted` means the node admitted the transaction;

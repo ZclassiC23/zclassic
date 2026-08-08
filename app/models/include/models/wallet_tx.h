@@ -239,6 +239,22 @@ enum db_mark_spent_result db_sapling_note_reserve_spend(
                                 const uint8_t nullifier[32],
                                 const uint8_t spent_by[32]);
 
+enum db_sapling_note_reservation_state {
+    DB_NOTE_RESERVATION_ERROR = 0,
+    DB_NOTE_RESERVATION_MISSING,
+    DB_NOTE_RESERVATION_AVAILABLE,
+    DB_NOTE_RESERVATION_SAME_TX,
+    DB_NOTE_RESERVATION_CONFLICT,
+};
+
+/* Read-only preflight for durable prepared-byte recovery. It distinguishes a
+ * temporarily unreadable database from a permanently stale nullifier and an
+ * idempotent same-transaction reservation. */
+enum db_sapling_note_reservation_state db_sapling_note_reservation_probe(
+                                struct node_db *ndb,
+                                const uint8_t nullifier[32],
+                                const uint8_t spending_txid[32]);
+
 /* Legacy bool wrapper: true only when an indexed note was updated.
  * Treats both NOT_FOUND and ERROR as false — do NOT use this in catchup. */
 bool db_sapling_note_mark_spent_bool_compat(struct node_db *ndb,

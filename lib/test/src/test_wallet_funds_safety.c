@@ -311,6 +311,15 @@ int test_wallet_funds_safety(void)
             memset(tx.v_shielded_spend[1].nullifier.data, 0xFF, 32);
         }
 
+        WFS_CHECK("reservation probe identifies an available note",
+            db_sapling_note_reservation_probe(&ndb, nf_0, tx.hash.data) ==
+                DB_NOTE_RESERVATION_AVAILABLE);
+        uint8_t missing_nf[32]; memset(missing_nf, 0xFE, sizeof(missing_nf));
+        WFS_CHECK("reservation probe identifies a stale nullifier",
+            db_sapling_note_reservation_probe(
+                &ndb, missing_nf, tx.hash.data) ==
+                DB_NOTE_RESERVATION_MISSING);
+
         bool reserved = tx.num_shielded_spend == 2 &&
             node_db_sync_wallet_sapling_spends(&ndb, &tx);
         WFS_CHECK("reservation rejects when any selected note is missing",
@@ -337,7 +346,13 @@ int test_wallet_funds_safety(void)
          * steal the first transaction's durable note reservation. */
         WFS_CHECK("same transaction can replay its note reservation",
                   node_db_sync_wallet_sapling_spends(&ndb, &tx));
+        WFS_CHECK("reservation probe recognizes the same transaction",
+            db_sapling_note_reservation_probe(&ndb, nf_0, tx.hash.data) ==
+                DB_NOTE_RESERVATION_SAME_TX);
         memset(tx.hash.data, 0x87, sizeof(tx.hash.data));
+        WFS_CHECK("reservation probe identifies a conflicting transaction",
+            db_sapling_note_reservation_probe(&ndb, nf_0, tx.hash.data) ==
+                DB_NOTE_RESERVATION_CONFLICT);
         WFS_CHECK("conflicting transaction cannot replace note reservation",
                   !node_db_sync_wallet_sapling_spends(&ndb, &tx));
         transaction_free(&tx);
