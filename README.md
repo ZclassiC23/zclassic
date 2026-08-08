@@ -5,8 +5,10 @@
 [![status](https://img.shields.io/badge/status-pre--v1-orange.svg)](docs/MVP.md)
 [![CI](https://img.shields.io/badge/CI-local%20make%20lint-success.svg)](docs/DEFENSIVE_CODING.md)
 
-> **ZClassic23 is a metaverse where people and AI create real things together,
-> and nobody owns the world they build in.**
+> **One binary, one onion, one stack.** A self-contained ZClassic full node —
+> wallet, Tor onion services, and a metaverse creation commons (ZC23/ZCODE)
+> where people and AI create real things together, and nobody owns the world
+> they build in.
 
 That mission means a shared, permissionless world with verifiable public work:
 authorship and evidence remain attributable, permissively licensed code remains
@@ -26,6 +28,8 @@ The same process — no extra daemons, no sidecars, no reverse proxy — also ru
 | **Tor onion service** | in-process, so the node's HTTP surface is reachable with no domain name, no static IP, and no TLS certificate |
 | **Block explorer + REST API** | `/explorer` and `/api/v1`, served over the onion or over HTTPS |
 | **Wallet** | transparent and Sapling shielded keys — see the encryption caveat below before storing value |
+| **P2P marketplace** | yardsale: signed, expiring sale ads gossiped between nodes, settled bilaterally over Tor — buyer and seller IPs stay hidden |
+| **Metaverse creation commons** | publish/reproduce C23 packages (ZCODE), hold sovereign property, design signed spaces, browse the ZC23 Living Commons projection |
 | **Name registry (ZNAM)** | on-chain names resolving to ZCL/BTC/LTC/DOGE addresses plus text records |
 | **Messaging** | Sapling-memo on-chain messages, and direct node-to-node messages |
 | **Command registry** | typed commands with declared input/output schemas, byte budgets and risk classes — the interface an AI agent uses to operate the node (`discover help` lists the live set) |
@@ -84,6 +88,25 @@ Prefer clearnet? Drop a certificate at `<datadir>/ssl/fullchain.pem` and
 tip. With no cert and no Tor, there is deliberately **no** public endpoint — the
 node is private by default.
 
+### Buy and sell without exposing your IP
+
+Yardsale is the built-in P2P marketplace. Sellers pin up signed, expiring sale
+ads; nodes gossip them byte-identically; a buyer settles directly with the
+seller through a short bilateral ceremony. There is no matching engine and no
+middleman. Everything rides the onion surface — the ad board at `/yardsale`,
+and the mutating `accept` step is served **only** on the onion, never on
+clearnet HTTPS — so neither side needs to expose an IP address, a domain name,
+or an account.
+
+```bash
+build/bin/zclassic23 -tor                    # your .onion hosts /yardsale
+build/bin/zclassic23 discover help yardsale  # the typed ad/ceremony commands
+```
+
+Any node can host its own MVC-style web app on its onion the same way the
+explorer and yardsale do — the recipe is
+[`docs/cookbook/13_host_your_own_mvc_onion_app.md`](docs/cookbook/13_host_your_own_mvc_onion_app.md).
+
 ### Register an on-chain name
 
 ZNAM is a working on-chain registry. Names are 1–63 characters, first-come,
@@ -133,6 +156,8 @@ separate server process, no vendor SDK, no model lock-in.
 ```bash
 build/bin/zclassic23 status                 # height, peers, sync, health, one call
 build/bin/zclassic23 discover help          # the live command catalog
+build/bin/zclassic23 discover search <query>     # find a command by keyword
+build/bin/zclassic23 discover schema <leaf>      # exact input keys before you call
 build/bin/zclassic23 code map               # navigate the source tree
 build/bin/zclassic23 ops logs --pattern='error|warn'
 ```
@@ -141,6 +166,14 @@ Every reply is self-describing and size-bounded, and no failure reply lacks a
 `next` action to run. A stall is never silent: either the tip gap grows or a
 blocker is named. Full contract:
 [`docs/NATIVE_COMMAND_INTERFACE.md`](docs/NATIVE_COMMAND_INTERFACE.md).
+
+**Working on this repository with an agent?** Start with
+[`AGENTS.md`](AGENTS.md) — the mission, the safety boundary, the first five
+commands in a fresh clone, and the lint gates the agent must respect. The
+daily-driver manuals are [`docs/DEVELOPING.md`](docs/DEVELOPING.md) and
+[`docs/CODEBASE_MAP.md`](docs/CODEBASE_MAP.md), and
+[`docs/AI_SAFETY_GATES.md`](docs/AI_SAFETY_GATES.md) lists the gates that stop
+an agent from claiming a result it cannot cite.
 
 ### Measure peers, and play P2P games
 
@@ -321,14 +354,17 @@ cite: [`docs/AI_SAFETY_GATES.md`](docs/AI_SAFETY_GATES.md).
 eight acceptance criteria in [`docs/MVP.md`](docs/MVP.md).
 
 Working now: full node and validation, wallet, mining, explorer and REST API,
-onion service, ZNAM names, on-chain shielded messaging, the native command
-registry, P2P games.
+onion service, the yardsale P2P marketplace (signed ad gossip + bilateral
+settlement), the ZCODE package commons and metaverse surfaces
+(simulation-complete, no live ZC23), ZNAM names, on-chain shielded messaging,
+the native command registry, P2P games.
 
 Not finished yet, plainly: off-chain messaging is plaintext on the wire;
 cross-chain atomic swaps have contract and settlement plumbing but are not an
-end-to-end trade; the file marketplace serves and gates chunks but payment
-settlement is not wired through; the ~1-minute cold sync the fast-sync stack is
-designed for is a target, not today's proven path.
+end-to-end trade; the older chunk-serving file market (distinct from yardsale)
+gates chunks but payment settlement is not wired through; ZC23 issuance and
+custody are pre-genesis and simulation-only; the ~1-minute cold sync the
+fast-sync stack is designed for is a target, not today's proven path.
 
 Ask the running node rather than trusting this page: `zclassic23 status`.
 
