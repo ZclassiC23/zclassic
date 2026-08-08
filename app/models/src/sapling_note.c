@@ -472,6 +472,43 @@ bool db_sapling_note_save_witness(struct node_db *ndb,
     return ok;
 }
 
+bool db_sapling_note_save_witness_and_nullifier(
+    struct node_db *ndb, const uint8_t txid[32], uint32_t output_index,
+    const uint8_t *witness_blob, size_t blob_len, int height,
+    const uint8_t nullifier[32])
+{
+    if (!ndb || !ndb->open || !txid || !witness_blob || blob_len == 0 ||
+        !nullifier)
+        return false;
+    struct db_sapling_note note;
+    sqlite3_stmt *read = NULL;
+    AR_PREPARE_BOOL(ndb, read,
+        "SELECT txid,output_index,value,rcm,memo,ivk,diversifier,pk_d,cm,"
+        "nullifier,block_height,source FROM wallet_sapling_notes"
+        " WHERE txid=? AND output_index=?");
+    AR_BIND_BLOB(read, 1, txid, 32);
+    AR_BIND_INT(read, 2, (int)output_index);
+    if (!AR_STEP_ROW(read)) {
+        AR_FINALIZE(read);
+        return false;
+    }
+    db_sapling_note_read_row(read, 0, &note);
+    AR_FINALIZE(read);
+    memcpy(note.nullifier, nullifier, sizeof(note.nullifier));
+
+    struct ar_callbacks *cbs = db_sapling_note_callbacks();
+    sqlite3_stmt *s = NULL;
+    AR_ADHOC_SAVE(ndb, s,
+        "UPDATE wallet_sapling_notes SET witness_data=?,witness_height=?,"
+        " nullifier=? WHERE txid=? AND output_index=?",
+        cbs, "sapling_note", &note, db_sapling_note_validate,
+        AR_BIND_BLOB(s, 1, witness_blob, (int)blob_len);
+        AR_BIND_INT(s, 2, height);
+        AR_BIND_BLOB(s, 3, note.nullifier, 32);
+        AR_BIND_BLOB(s, 4, note.txid, 32);
+        AR_BIND_INT(s, 5, (int)note.output_index));
+}
+
 bool db_sapling_note_load_witness(struct node_db *ndb,
                                    const uint8_t txid[32], uint32_t output_index,
                                    uint8_t **witness_blob_out, size_t *blob_len_out,

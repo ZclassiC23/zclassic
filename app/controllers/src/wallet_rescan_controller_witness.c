@@ -7,6 +7,12 @@
 
 #include "controllers/wallet_rescan_controller_internal.h"
 
+#include "storage/anchor_kv.h"
+#include "storage/progress_store.h"
+
+#include <limits.h>
+#include <sqlite3.h>
+
 static bool uint256_is_zero_local(const struct uint256 *v)
 {
     static const uint8_t zero[32] = {0};
@@ -25,6 +31,73 @@ bool rescan_result_consensus_valid(const struct uint256 *our_root,
         return false;
     return memcmp(our_root->data, header_root->data,
                   sizeof(our_root->data)) == 0;
+}
+
+/* Seed a witness rebuild from the header-bound Sapling frontier immediately
+ * before the oldest unspent note, when that frontier is present in the
+ * canonical anchor ledger.  Snapshot/bundle nodes intentionally do not have
+ * every pre-seed block body, so replaying from activation can never reproduce
+ * their header root.  They do have the imported anchor frontiers, and a note
+ * received after the seed needs only the frontier before its own block plus
+ * the locally-present suffix.
+ *
+ * anchor_kv_get() verifies that the serialized tree hashes back to the prior
+ * block's header root before returning it.  The root may have been created at
+ * an earlier height (blocks without Sapling outputs repeat it), but it is still
+ * exactly the frontier at oldest_height-1; start replay at oldest_height so no
+ * absent, commitment-free gap needs a body. */
+bool rescan_seed_before_oldest_note_from_db(
+    sqlite3 *anchor_db, const struct active_chain *chain,
+    const struct db_sapling_note *notes, int n_notes,
+    struct incremental_merkle_tree *tree_out, int *start_height_out,
+    int *seed_height_out)
+{
+    if (!anchor_db || !chain || !notes || n_notes <= 0 || !tree_out ||
+        !start_height_out || !seed_height_out)
+        return false;
+
+    int oldest_height = INT_MAX;
+    for (int i = 0; i < n_notes; i++) {
+        if (notes[i].block_height >= 476969 &&
+            notes[i].block_height < oldest_height)
+            oldest_height = notes[i].block_height;
+    }
+    if (oldest_height == INT_MAX || oldest_height <= 476969)
+        return false;
+
+    const struct block_index *prior = active_chain_at(chain,
+                                                       oldest_height - 1);
+    if (!prior || uint256_is_zero_local(&prior->hashFinalSaplingRoot))
+        return false;
+
+    struct incremental_merkle_tree seed;
+    sapling_tree_init(&seed);
+    int64_t created_height = -1;
+    enum anchor_kv_lookup_result found = anchor_kv_get(
+        anchor_db, ANCHOR_POOL_SAPLING, &prior->hashFinalSaplingRoot, &seed,
+        &created_height);
+    if (found != ANCHOR_KV_FOUND || created_height > oldest_height - 1)
+        return false;
+
+    *tree_out = seed;
+    *start_height_out = oldest_height;
+    *seed_height_out = oldest_height - 1;
+    return true;
+}
+
+static bool rescan_seed_before_oldest_note(
+    const struct active_chain *chain, const struct db_sapling_note *notes,
+    int n_notes, struct incremental_merkle_tree *tree_out,
+    int *start_height_out, int *seed_height_out)
+{
+    sqlite3 *rdb = progress_store_open_reader();
+    if (!rdb)
+        return false;
+    bool ok = rescan_seed_before_oldest_note_from_db(
+        rdb, chain, notes, n_notes, tree_out, start_height_out,
+        seed_height_out);
+    sqlite3_close(rdb);
+    return ok;
 }
 
 bool rpc_rescanwitnesses(const struct json_value *params, bool help,
@@ -82,6 +155,16 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
     /* Initialize empty tree and per-note witness state */
     struct incremental_merkle_tree tree;
     sapling_tree_init(&tree);
+    int seed_height = sapling_start - 1;
+    const char *seed_source = "activation";
+    if (rescan_seed_before_oldest_note(&ctx->main_state->chain_active,
+                                       notes, n_notes, &tree,
+                                       &sapling_start, &seed_height)) {
+        seed_source = "anchor_kv_before_oldest_note";
+        LOG_INFO("rescanwitnesses",
+                 "rebuilding from header-bound Sapling frontier h=%d; "
+                 "oldest unspent note h=%d", seed_height, sapling_start);
+    }
 
     struct incremental_witness *witnesses = zcl_calloc((size_t)n_notes,
         sizeof(struct incremental_witness), "rescan witnesses");
@@ -113,6 +196,31 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
      * blocks will be handled by normal connect_block processing. */
     int safe_tip = zcl_immutable_height(chain_tip);
     if (safe_tip < sapling_start) safe_tip = chain_tip;
+    /* The published height may briefly lead the materialized active-chain
+     * vector during catch-up.  Pick the newest immutable endpoint that is
+     * actually readable and header-bound instead of scanning toward a height
+     * whose final root can only become the all-zero sentinel. */
+    const struct block_index *save_block = NULL;
+    while (safe_tip >= sapling_start) {
+        save_block = active_chain_at(&ctx->main_state->chain_active, safe_tip);
+        if (save_block && save_block->phashBlock &&
+            (save_block->nStatus & BLOCK_HAVE_DATA) &&
+            !uint256_is_zero_local(&save_block->hashFinalSaplingRoot))
+            break;
+        safe_tip--;
+    }
+    if (safe_tip < sapling_start || !save_block) {
+        free(witnesses);
+        free(witness_active);
+        free(notes);
+        atomic_store(&g_sapling_rescan_active, false);
+        json_set_str(result,
+                     "No readable header-bound endpoint at or above the "
+                     "oldest unspent note");
+        return false;
+    }
+    struct uint256 endpoint_hash = *save_block->phashBlock;
+    struct uint256 endpoint_root = save_block->hashFinalSaplingRoot;
 
     for (int h = sapling_start; h <= safe_tip; h++) {
         const struct block_index *pindex =
@@ -226,10 +334,13 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
 
     /* Verify tree root matches block header at save height */
     {
-        const struct block_index *save_block =
+        const struct block_index *current_save_block =
             active_chain_at(&ctx->main_state->chain_active, safe_tip);
-        if (save_block) {
-            final_header_root = save_block->hashFinalSaplingRoot;
+        if (current_save_block && current_save_block->phashBlock &&
+            uint256_eq(current_save_block->phashBlock, &endpoint_hash) &&
+            uint256_eq(&current_save_block->hashFinalSaplingRoot,
+                       &endpoint_root)) {
+            final_header_root = endpoint_root;
             char oh[65], bh[65];
             uint256_get_hex(&final_tree_root, oh);
             uint256_get_hex(&final_header_root, bh);
@@ -337,14 +448,34 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
     for (int ni = 0; ni < n_notes; ni++) {
         if (!witness_active[ni]) continue;
 
+        const struct sapling_key_entry *key =
+            sapling_keystore_find_by_ivk(&ctx->wallet->sapling_keys,
+                                         notes[ni].ivk);
+        if (!key || incremental_tree_size(&witnesses[ni].tree) == 0)
+            continue;
+        uint8_t ak[32], nk[32], nf[32];
+        sapling_ask_to_ak(key->xsk.expsk.ask, ak);
+        sapling_nsk_to_nk(key->xsk.expsk.nsk, nk);
+        uint64_t position = incremental_tree_size(&witnesses[ni].tree) - 1;
+        if (!sapling_compute_nf(notes[ni].diversifier, notes[ni].pk_d,
+                                (uint64_t)notes[ni].value, notes[ni].rcm,
+                                ak, nk, position, nf)) {
+            memory_cleanse(ak, sizeof(ak));
+            memory_cleanse(nk, sizeof(nk));
+            continue;
+        }
+        memory_cleanse(ak, sizeof(ak));
+        memory_cleanse(nk, sizeof(nk));
+
         struct byte_stream ws;
         stream_init(&ws, 4096);
         if (incremental_witness_serialize(&witnesses[ni], &ws)) {
-            db_sapling_note_save_witness(ctx->node_db,
-                notes[ni].txid, notes[ni].output_index,
-                ws.data, ws.size, safe_tip);
-            saved++;
+            if (db_sapling_note_save_witness_and_nullifier(
+                    ctx->node_db, notes[ni].txid, notes[ni].output_index,
+                    ws.data, ws.size, safe_tip, nf))
+                saved++;
         }
+        memory_cleanse(nf, sizeof(nf));
         stream_free(&ws);
     }
 
@@ -363,6 +494,9 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
     fflush(stdout);
 
     json_set_object(result);
+    json_push_kv_str(result, "seed_source", seed_source);
+    json_push_kv_int(result, "seed_height", seed_height);
+    json_push_kv_int(result, "replay_start_height", sapling_start);
     json_push_kv_int(result, "blocks_scanned", blocks_scanned);
     json_push_kv_int(result, "notes_total", n_notes);
     json_push_kv_int(result, "witnesses_built", witnesses_built);

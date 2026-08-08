@@ -182,6 +182,7 @@ void rpc_timeout_set_method(struct rpc_timeout_mgr *mgr,
             mgr->slots[slot].timeout_ms = RPC_WALLET_MUTATION_TIMEOUT_MS;
         }
         if ((strcmp(method, "z_sendmany") == 0 ||
+             strcmp(method, "rescanwitnesses") == 0 ||
              strcmp(method, "vault_intent_plan") == 0 ||
              strcmp(method, "vault_intent_fanout_plan") == 0 ||
              strcmp(method, "vault_intent_commit") == 0) &&

@@ -31,6 +31,7 @@
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
+#include "rpc/rpc_timeout.h"
 #include "services/wallet_backup_service.h"
 #include "services/wallet_restore_service.h"
 #include "util/log_macros.h"
@@ -378,11 +379,11 @@ void zcl_native_handle_wallet_rescan_witnesses(
 {
     (void)request;
     struct json_value body;
-    if (!wnh_call_rpc(reply, "rescanwitnesses", NULL, &body))
+    if (!wnh_call_rpc_deadline(reply, "rescanwitnesses", NULL,
+                               RPC_PROOF_BUILD_TIMEOUT_MS, &body))
         return;
     (void)json_push_kv(&reply->data, "result", &body);
     (void)json_push_kv_bool(&reply->data, "completed", true);
     reply->error.mutated = true;
     json_free(&body);
 }
-

@@ -74,6 +74,12 @@ bool rpc_coinanalysis(const struct json_value *params, bool help,
 bool rescan_result_consensus_valid(const struct uint256 *our_root,
                                    const struct uint256 *header_root,
                                    int witness_mismatches);
+struct sqlite3;
+bool rescan_seed_before_oldest_note_from_db(
+    struct sqlite3 *anchor_db, const struct active_chain *chain,
+    const struct db_sapling_note *notes, int n_notes,
+    struct incremental_merkle_tree *tree_out, int *start_height_out,
+    int *seed_height_out);
 bool rpc_rescanwitnesses(const struct json_value *params, bool help,
                          struct json_value *result);
 
