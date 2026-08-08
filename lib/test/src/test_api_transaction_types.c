@@ -687,7 +687,9 @@ int api_transaction_type_focused_tests(void)
             api_test_find_str_field(contracts, "role", "builder") : NULL;
         const struct json_value *submit = contracts ?
             api_test_find_str_field(contracts, "role", "submit") : NULL;
-        ok = ok && data && type && contracts && builder && submit &&
+        const struct json_value *inspect = contracts ?
+            api_test_find_str_field(contracts, "role", "inspect") : NULL;
+        ok = ok && data && type && contracts && builder && submit && inspect &&
             strcmp(json_get_str(json_get(data, "schema")),
                    ZCL_TRANSACTION_TYPE_GUIDE_SCHEMA) == 0 &&
             strcmp(json_get_str(json_get(type, "id")), "sapling_z_to_t") == 0 &&
@@ -711,6 +713,10 @@ int api_transaction_type_focused_tests(void)
                    "plan_id") == 0 &&
             strcmp(json_get_str(json_get(data, "status_command")),
                    "vault.intent.status") == 0 &&
+            strstr(json_get_str(json_get(inspect, "semantics")),
+                   "SHIELDED_REQUIREMENTS_MISSING") != NULL &&
+            strstr(json_get_str(json_get(inspect, "semantics")),
+                   "error_code") != NULL &&
             json_size(json_get(data, "lifecycle_states")) == 9 &&
             json_get(builder, "allowed_keys") &&
             json_size(json_get(builder, "allowed_keys")) > 0 &&
