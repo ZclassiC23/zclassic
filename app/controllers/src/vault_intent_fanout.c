@@ -239,20 +239,20 @@ bool vault_intent_fanout_plan_rpc(const struct json_value *params, bool help,
     (void)json_push_kv_str(&plan, "wallet_scope", scope);
     (void)json_push_kv_str(&plan, "route", "transparent");
     (void)json_push_kv_str(&plan, "idempotency_key", internal_key);
-    bool addresses_ready = true;
+    char addresses[VIF_MAX_OUTPUTS][WALLET_DIRECT_ADDRESS_MAX];
+    char why[192];
+    bool addresses_ready = wallet_direct_getnewaddresses(
+        addresses, (size_t)concurrency, why, sizeof(why));
     for (int64_t i = 0; i < concurrency; i++) {
-        char address[128], why[192], amount[32];
-        if (!wallet_direct_getnewaddress(address, sizeof(address), why,
-                                         sizeof(why))) {
-            addresses_ready = false;
+        char amount[32];
+        if (!addresses_ready)
             break;
-        }
         (void)snprintf(amount, sizeof(amount), "%lld.%08lld",
             (long long)(output_value / COIN),
             (long long)(output_value % COIN));
         struct json_value effect; json_init(&effect); json_set_object(&effect);
         (void)json_push_kv_str(&effect, "asset", "ZCL");
-        (void)json_push_kv_str(&effect, "to", address);
+        (void)json_push_kv_str(&effect, "to", addresses[i]);
         (void)json_push_kv_str(&effect, "amount", amount);
         addresses_ready = json_push_back(&effects, &effect);
         json_free(&effect);
@@ -262,7 +262,8 @@ bool vault_intent_fanout_plan_rpc(const struct json_value *params, bool help,
     if (!addresses_ready) {
         json_free(&effects); json_free(&plan);
         vif_error(result, "DURABLE_ADDRESS_FAILED",
-                  "could not persist every private fanout destination");
+                  why[0] ? why
+                         : "could not persist every private fanout destination");
         (void)pthread_mutex_unlock(&g_vif_mutex);
         return true;
     }

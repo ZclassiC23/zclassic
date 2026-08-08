@@ -317,14 +317,16 @@ bool rpc_importaddress(const struct json_value *params, bool help,
  * direct C API can share it. The durability discipline is the whole point of
  * the function and must not be reimplemented by callers: an address returned
  * but not persisted loses every coin paid to it on the next restart. */
-bool wc_new_durable_address(char *addr_out, size_t addr_max,
-                                   char *err_out, size_t err_max)
+bool wallet_direct_getnewaddresses(
+    char (*addresses)[WALLET_DIRECT_ADDRESS_MAX], size_t count,
+    char *err_out, size_t err_max)
 {
     struct wallet_rpc_context *ctx = wallet_ctx();
 
-    if (!addr_out || addr_max < 80 || !err_out || err_max == 0)
+    if (!addresses || count == 0 ||
+        count > WALLET_DIRECT_ADDRESS_BATCH_MAX || !err_out || err_max == 0)
         return false;
-    addr_out[0] = '\0';
+    memset(addresses, 0, count * WALLET_DIRECT_ADDRESS_MAX);
     err_out[0] = '\0';
 
     if (!ctx->wallet) {
@@ -363,38 +365,65 @@ bool wc_new_durable_address(char *addr_out, size_t addr_max,
             ctx->wallet, pool_generation);
     }
 
-    struct key_id generated_kid;
-    if (!wallet_get_new_address_with_key_id(ctx->wallet, addr_out, addr_max,
-                                   &generated_kid)) {
+    struct key_id generated[WALLET_DIRECT_ADDRESS_BATCH_MAX];
+    size_t generated_count = 0;
+    for (; generated_count < count; generated_count++) {
+        if (wallet_get_new_address_with_key_id(
+                ctx->wallet, addresses[generated_count],
+                WALLET_DIRECT_ADDRESS_MAX, &generated[generated_count]))
+            continue;
         (void)snprintf(err_out, err_max,
-                       "no durable keypool address available");
-        LOG_FAIL("wallet", "new_durable_address: durable keypool ran out");
+                       "durable keypool ran out after %zu of %zu addresses",
+                       generated_count, count);
+        if (direct_generated) {
+            for (size_t i = 0; i < generated_count; i++)
+                (void)wallet_remove_key(ctx->wallet, &generated[i]);
+        }
+        memset(addresses, 0, count * WALLET_DIRECT_ADDRESS_MAX);
+        LOG_FAIL("wallet",
+                 "new_durable_addresses: keypool ran out at %zu/%zu",
+                 generated_count, count);
     }
 
-    /* Persist the fresh key to wallet_keys BEFORE handing the address
-     * to the user. If the flush fails, roll back the exact returned key ID
-     * so concurrent key generation cannot make us remove a different key.
+    /* Persist every fresh key in one transaction BEFORE handing any address
+     * to the user. If the flush fails, roll back the exact generated key IDs.
      * Never return an address we cannot persist: a
      * receive to an unsaved key would lose funds on the next restart. */
     if (ctx->wallet_db && direct_generated) {
         struct zcl_result fr = wallet_flush_from_context(ctx);
         if (!fr.ok) {
-            bool removed = wallet_remove_key(ctx->wallet, &generated_kid);
-            addr_out[0] = '\0';
+            size_t removed = 0;
+            for (size_t i = 0; i < generated_count; i++)
+                removed += wallet_remove_key(ctx->wallet, &generated[i]) ? 1 : 0;
+            memset(addresses, 0, count * WALLET_DIRECT_ADDRESS_MAX);
             (void)snprintf(err_out, err_max,
-                "wallet persistence failed. New address NOT saved. "
+                "wallet persistence failed. New addresses NOT saved. "
                 "Check getwalletinfo.persistence and node.log.");
             LOG_FAIL("wallet",
-                     "new_durable_address: wallet_sqlite_flush_r failed "
-                     "(exact_key_removed=%d, code=%d): %s",
-                     (int)removed, fr.code, fr.message);
+                     "new_durable_addresses: wallet flush failed "
+                     "(exact_keys_removed=%zu/%zu, code=%d): %s",
+                     removed, generated_count, fr.code, fr.message);
         }
     }
 
-    /* Success: kick the JSON backup writer so the mirror follows. */
+    /* Success: one coalesced backup trigger for the whole durable batch. */
     if (ctx->wallet_db)
         wallet_backup_service_on_key_change();
 
+    return true;
+}
+
+bool wc_new_durable_address(char *addr_out, size_t addr_max,
+                            char *err_out, size_t err_max)
+{
+    if (!addr_out || addr_max < 80)
+        return false;
+    char addresses[1][WALLET_DIRECT_ADDRESS_MAX];
+    if (!wallet_direct_getnewaddresses(addresses, 1, err_out, err_max)) {
+        addr_out[0] = '\0';
+        return false;
+    }
+    (void)snprintf(addr_out, addr_max, "%s", addresses[0]);
     return true;
 }
 
