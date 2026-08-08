@@ -87,6 +87,7 @@ classification of every occurrence.
 | P29 bounded caller-closure tier | an overwide reverse-caller union no longer becomes an opaque rejection: the save cycle executes every exact group selected by the file's explicit path floor, and canonical-order/hash-binds every broader caller and integration group as deferred. `bounded_proof_deferred=true`, `integration_proof_deferred=true`, and `proof_complete=false` make the tier visible; full integration still expands and runs the complete original union. The only slow explicit floor was `agent_spend_policy`: its eleven isolated in-memory cases now start only the serialized test writer, never the production five-minute checkpointer | born-red `agent_spend_policy` was 12.376 s and launched 11 periodic checkpoint threads; green is 0.433 s with zero checkpoint threads (**28.6x** test-body speedup). The final fresh-cache replay returned bound green feedback for all 61 occurrences at p50 4.847 s / p95 5.278 s and 35/61 under five seconds. Its exact-output replay was p50 4.047 s / p95 4.595 s and **61/61 (100%)** under five seconds, with 26 compilers, 0 linkers, 13 tests, 13 probes and zero Make/shell/LTO | the five-second trustworthy-feedback and fast-restart p95 gates pass on the stable warm loop, while every broader proof remains named and required before acceptance. Fresh changed-object feedback still misses p95 and performs 26 complete-graph links, so the cold incremental-link gate remains open. Ordinary commands, inputs and context bytes are unchanged; this slice is +124/-54 lines and adds no canonical domain |
 | P30 generation-frozen relocatable base | `make dev-bin` now prelinks the exact non-LTO dev and proof object generations once and records both regular files in the frozen restart plan. A changed-object cycle links only its canonical overlay response ahead of the hashed frozen base; exact/revert caching remains layered above it. Receipt accounting separates total linker processes from complete-graph links, and an overlay that owns pre-init/init/fini arrays refuses before link rather than running duplicate initialization | isolated real microbenchmarks measured the one-time dev/proof base prelinks at 0.84/0.79 s and subsequent overlay links at 0.29/0.44 s; both real command and focused-proof probes passed. A fresh safe C23/ZCODE replay covered 9 paths / 41 weighted edits with 18 overlay links and **0 complete-graph links**, zero Make/shell/LTO, p50 4.964 s and p95 6.656 s under host load. The immediate exact-artifact run used 0 linkers, but host load drove four watcher waits past their 10 s measurement bound, so it is recorded partial rather than used to replace P29's stable latency result | gate 6 is closed architecturally: narrow changed-object saves no longer perform whole-node links. The trustworthy-feedback and fast-restart gates retain P29's stable p95 4.595 s evidence; P30 does not claim the loaded rerun improved it. Ordinary commands, inputs and context bytes are unchanged; the dev-loop production/tooling delta is +150/-11 lines, no canonical domain was added, and release/consensus/deployment paths remain static and untouched |
 | P31 source-byte and throughput accounting | the persistent SHA3 source-CAS cost now carries exact total and re-read byte counts through the restart cycle and compact status. `dev.loop.wait` declares the list-sized envelope its existing 8 KiB cycle contract requires; the born-red real replay had previously collapsed to `RESPONSE_BUDGET_EXCEEDED`, and the registry test now pins the corrected budget. Replay aggregation marks missing byte fields partial instead of treating them as zero | the first edit after intentionally starting a fresh watcher re-read all 56,666,421 source bytes, making the cold safety cost visible. The exact revert on that same resident watcher re-read only the changed 31,550-byte TU out of 56,666,379 bytes, with 55.936 ms in two source guards, 4.594 s total feedback, 1 compiler, 1 overlay linker, 1 probe, 3 fresh + 9 cached proof groups, and zero complete-graph/Make/shell/LTO work. The repository-pinned one-file whole-program-LTO baseline is 67.0 s = 53.73 cycles/hour; P29's conservative stable p95 of 4.595 s = 783.46 cycles/hour, or **14.58x** the old upper-bound capacity | source byte accounting is complete and the measured focused-green capacity clears the required 10x throughput ratio. Focused Merkle/platform/catalog plus profile/replay gates passed; lint passed 134/134; the cold suite passed 913/913 runnable groups with 9 policy gates and 20 declared self-skips. This is a capacity comparison, not a claim that 783 human acceptances were observed; ordinary commands, inputs and context bytes are unchanged; +78/-9 production/tooling lines, +17 test lines and +26/-10 documentation lines; no canonical domain was added |
+| P32 batched release proof | proof source `f00e25667928662cc5320c5fc356ee854bd27a54` is 12 commits after P23's prior proof source, while every pushed intermediate retained the range-derived focused gate. This ledger-only descendant records the batch without changing executable source | dedicated ZCODE package/lifecycle ASan+UBSan PASS with no suppressions; default whole-program release LTO PASS. Same-tree builds were byte-identical at SHA3-256 `4b4730bf6076e5818a37fa93e4f95a8a928f4a1754d2901934b2ebd0c1ef437b` (23,104,360 bytes); different absolute source paths were byte-identical at `b9d026b6c94aa0731ec2d1b1de0d61e4e1dcec069dd9ab224f90848342f3430f` (23,104,440 bytes) | release evidence binds exact executable source `f00e25667`; the final ledger commit is documentation-only. No canonical domain, authority, deployment or runtime state was added |
 
 The earlier single-island resident microbenchmark measured 227.280 ms p50 and
 232.141 ms p95 on 20 distinct artifacts. That is historical evidence for one
@@ -117,7 +118,25 @@ inner loop.
 `-flto` and linker-plugin flags, so a stale or edited `flags.env` cannot
 smuggle release work into a save cycle.
 
-## Open gates
+## Acceptance gate closure
+
+| Gate | Evidence | Verdict |
+|---|---|---|
+| eligible live coverage at least 70% | frozen narrow denominator 19/22 = 86.36% | PASS |
+| live p50 below 300 ms and p95 below 750 ms | 227.280 ms / 232.141 ms across 20 distinct status-island artifacts | PASS |
+| trustworthy feedback at least 95% below five seconds | stable warm weighted replay 61/61 = 100%; static routing covers every non-forbidden class through live or restart | PASS |
+| fast restart p95 below five seconds | stable warm p95 4.595 s | PASS |
+| no LTO on edit, candidate, focused or ordinary commit | save receipts report zero LTO/Make/shell; ordinary pre-push uses non-LTO build/test profiles; release LTO remains opt-in | PASS |
+| narrow saves perform no complete-graph link | P30 changed-object receipts report zero complete-graph links | PASS |
+| exact output and revert reuse | P28 content-addressed artifact miss/hit/edit/revert/cross-worktree sequence | PASS |
+| at least ten commits per release LTO | 12 commits from P23 proof source through `f00e25667` | PASS |
+| static release remains reproducible | both P32 byte-identity gates above | PASS |
+| dynamic authority boundary remains closed | consensus, reducer, storage, wallet, transaction, network, supervisor and deployment owners remain excluded and lint-enforced | PASS |
+
+Measured focused-green capacity is 14.58x the repository-pinned old LTO-only
+upper bound, above the required 10x target.
+
+## Remaining non-blocking follow-ups
 
 - Repeat the full changed-object latency population on an idle host. Stable
   warm feedback remains complete at p50 4.047 s / p95 4.595 s and 61/61
@@ -137,8 +156,9 @@ smuggle release work into a save cycle.
   setup epoch; no proof-complete claim is made for that class yet.
 - Replace an isolated runtime only after that proof layer exists; the measured
   full-node launch is currently too slow for the five-second target.
-- Bring at least 95% of non-forbidden edits under five seconds by live reload
-  or isolated fast restart; current measured coverage is 8.15% live-only.
+- Extend the timed replay from the frozen representative weighted population to
+  every non-forbidden historical TU. Static routing already covers those edits,
+  but exhaustive timing would narrow the remaining sampling uncertainty.
 
 P23 closed the ten-commit release-proof batching gate with 11 descendant
 commits between exact release proofs. Keep range-derived focused proof on every
