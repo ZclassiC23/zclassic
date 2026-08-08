@@ -1098,10 +1098,24 @@ int test_event_log(void)
     run_deferred_sync(&failures);
     run_append_path_attribution(&failures);
     run_targeted_recovery(&failures);
-    run_kill9_fuzz(&failures);
     run_crc32c_dispatch(&failures);
-    run_benchmark(&failures);
 
     printf("event_log: %d failures\n", failures);
+    return failures;
+}
+
+int test_event_log_kill9(void)
+{
+    int failures = 0;
+    printf("\n=== event_log kill9 integration proof ===\n");
+    run_kill9_fuzz(&failures);
+    return failures;
+}
+
+int test_event_log_benchmark(void)
+{
+    int failures = 0;
+    printf("\n=== event_log benchmark integration proof ===\n");
+    run_benchmark(&failures);
     return failures;
 }

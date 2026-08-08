@@ -226,6 +226,13 @@ static int test_native_catalog_resolution(void)
             "test_make_lint_gates_heavy_02"));
         ASSERT(zcl_test_group_is_integration_only(
             "test_make_lint_gates_shard_01"));
+        ASSERT(zcl_test_group_is_integration_only(
+            "test_shielded_payment_gate"));
+        ASSERT(zcl_test_group_is_integration_only(
+            "test_event_log_kill9"));
+        ASSERT(zcl_test_group_is_integration_only(
+            "test_event_log_benchmark"));
+        ASSERT(!zcl_test_group_is_integration_only("test_event_log"));
         for (size_t i = 0; i < immediate_total; i++) {
             ASSERT(strcmp(immediate[i],
                           "test_make_lint_gates_heavy_01") != 0);

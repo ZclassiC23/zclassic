@@ -26,3 +26,11 @@ ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_realroot")
 ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_partition")
 ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_heavy_01")
 ZCL_TEST_INTEGRATION_ONLY("test_make_lint_gates_heavy_02")
+
+/* These groups are explicitly opt-in proofs. The ordinary event-log
+ * correctness group remains immediate; its kill9 and throughput work have
+ * their own environment contracts. The shielded payment gate likewise needs
+ * the separately provisioned Sapling parameters and stress lane. */
+ZCL_TEST_INTEGRATION_ONLY("test_event_log_kill9")
+ZCL_TEST_INTEGRATION_ONLY("test_event_log_benchmark")
+ZCL_TEST_INTEGRATION_ONLY("test_shielded_payment_gate")
