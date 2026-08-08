@@ -562,6 +562,57 @@ int test_sqlite(void) {
     }
 
     {
+        /* Periodic workers need an exact-schema connection without repeating
+         * CREATE/migrate/full-statement preparation every poll. The light open
+         * must preserve ordinary model access, never create a missing file,
+         * and fail closed on a schema written by another binary version. */
+        printf("node_db_open_existing_runtime: exact schema, no create... ");
+        char dir_template[] = "/tmp/zclassic23-existing-reopen-XXXXXX";
+        char *dir_path = mkdtemp(dir_template);
+        char db_path[1024], missing_path[1024];
+        struct node_db ndb;
+        bool ok = dir_path != NULL;
+        int64_t value = 0;
+
+        memset(&ndb, 0, sizeof(ndb));
+        if (ok) {
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
+            snprintf(missing_path, sizeof(missing_path), "%s/missing.db",
+                     dir_path);
+            ok = node_db_open(&ndb, db_path);
+        }
+        ok = ok && node_db_state_set_int(&ndb, "existing_open_test", 23);
+        if (ndb.open) node_db_close(&ndb);
+
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && node_db_open_existing_runtime(
+            &ndb, db_path, "test.existing_reopen");
+        ok = ok && node_db_state_get_int(&ndb, "existing_open_test", &value);
+        ok = ok && value == 23;
+        if (ndb.open) node_db_close(&ndb);
+
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && !node_db_open_existing_runtime(
+            &ndb, missing_path, "test.must_not_create");
+        ok = ok && access(missing_path, F_OK) != 0;
+
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && node_db_open_runtime(&ndb, db_path,
+                                        "test.schema_mismatch_setup");
+        int32_t future_schema = NODE_DB_MAX_SCHEMA + 1;
+        ok = ok && node_db_state_set(&ndb, "schema_version", &future_schema,
+                                     sizeof(future_schema));
+        if (ndb.open) node_db_close(&ndb);
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && !node_db_open_existing_runtime(
+            &ndb, db_path, "test.schema_mismatch");
+
+        cleanup_temp_db_dir(dir_path);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    {
         printf("SQLite snapshot tx-index job starts and joins cleanly... ");
         char dir_template[] = "/tmp/zclassic23-tx-index-job-XXXXXX";
         char *dir_path = mkdtemp(dir_template);

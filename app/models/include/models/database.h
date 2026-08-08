@@ -109,6 +109,20 @@ bool node_db_open(struct node_db *ndb, const char *path);
  * anonymous. A NULL/empty reason is a programming error and is refused. */
 bool node_db_open_runtime(struct node_db *ndb, const char *path,
                           const char *reason);
+
+/* Open an EXISTING, already-booted node database for a short-lived runtime
+ * task that uses only ad-hoc model statements. Unlike node_db_open_runtime(),
+ * this deliberately does not run CREATE TABLE, migrations, or prepare the
+ * full cached statement catalog. It refuses a missing database and refuses
+ * any schema version other than NODE_DB_MAX_SCHEMA, so callers cannot trade
+ * latency for an implicit migration or a downgrade hazard.
+ *
+ * Use this for periodic workers which open their own connection and otherwise
+ * make an idle node repeat boot/schema work. Callers needing the cached
+ * node_db statements must continue to use node_db_open_runtime(). `reason` is
+ * mandatory and is logged exactly like the full runtime reopen. */
+bool node_db_open_existing_runtime(struct node_db *ndb, const char *path,
+                                   const char *reason);
 void node_db_close(struct node_db *ndb);
 
 /* Optional quick_check-skip probe (Tier-2 fast restart). When registered,
