@@ -283,17 +283,32 @@ rechecks the source CAS, and runs `discover help` as a five-second
 command-runtime probe. The resident owner starts only compiler, linker, and
 candidate children: it starts no Make process or shell.
 
+Candidate and proof links share a verified host-local restart-artifact cache.
+Its key binds the compiler capsule, base object generation, normalized compile
+and link actions, the ordered rewritten response, and the SHA-256 of every
+active overlay object. Candidate and test profiles therefore remain distinct.
+Each entry is process-locked and accepted only when the executable hashes to
+its separate marker; a partial or corrupt pair is removed and rebuilt. A hit
+is hard-linked into the worktree's content-addressed candidate directory and
+still runs the compiler, source guards, candidate probe and affected tests—it
+removes only an identical complete-graph link. Receipts expose
+`artifact_cache_key`, `artifact_cache_hit`, and exact process counts. Exact
+outputs and reverts may reuse an artifact; cache state grants no evidence or
+publication authority.
+
 Candidate health is not publication. After the command-runtime probe, the
 same resident owner derives the complete existing proof plan, refuses an
 incomplete dependency dimension or substituted path floor, expands plan
 families to canonical exact test IDs, compiles the changed units under the
 frozen non-LTO test profile, and directly links a content-addressed test
-artifact from those bytes. The test runner is invoked with caching disabled;
-its cold suite summary must account for every selected group with zero
-failures and zero self-skips. Large-stack fixtures inherit the test profile's
-hard stack limit directly in the child—no `ulimit` shell wrapper. The durable
-receipt carries the exact-group count and selector SHA-256; `dev.test.plan`
-re-derives the inspectable list.
+artifact from those bytes. The test runner may reuse an existing skip-free
+content-addressed PASS only when its snapshot proves that the cached group's
+closure does not reach the changed source; its summary must account for every
+selected group as fresh or verified-cached with zero failures and zero
+self-skips. Large-stack fixtures inherit the test profile's hard stack limit
+directly in the child—no `ulimit` shell wrapper. The durable receipt carries
+the exact-group count and selector SHA-256; `dev.test.plan` re-derives the
+inspectable list.
 
 A complete run reports `status=proof_ready`, `phase=affected_proofs`, and
 `proof_complete=true`. Even then `runtime_published=false`: the

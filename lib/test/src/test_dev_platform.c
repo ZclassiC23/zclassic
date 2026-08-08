@@ -2159,23 +2159,26 @@ static int test_hotswap_artifact_cache(void)
 static bool run_resident_restart_fixture(void)
 {
     static const char root[] = "test-tmp/dev_resident_restart";
+    static const char cache_rel[] = "test-tmp/dev_restart_shared_cache";
     static const char compiler_rel[] = "test-tmp/dev_restart_fake_cc.sh";
     static const char fake_compiler[] =
         "#!/usr/bin/env bash\n"
         "set -eu\n"
-        "out= dep= compile=0 rsp=\n"
+        "out= dep= compile=0 rsp= source=\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  case \"$1\" in\n"
         "    -o) out=$2; shift 2 ;;\n"
         "    -MF) dep=$2; shift 2 ;;\n"
         "    -c) compile=1; shift ;;\n"
         "    @*) rsp=${1#@}; shift ;;\n"
+        "    *.c) source=$1; shift ;;\n"
         "    *) shift ;;\n"
         "  esac\n"
         "done\n"
         "[ -n \"$out\" ]\n"
         "if [ \"$compile\" -eq 1 ]; then\n"
-        "  printf 'restart-object-v1\\n' >\"$out\"\n"
+        "  [ -n \"$source\" ]\n"
+        "  cp \"$source\" \"$out\"\n"
         "  printf '%s: tools/dev/restart_fixture.c\\n' \"$out\" >\"$dep\"\n"
         "else\n"
         "  [ -n \"$rsp\" ]\n"
@@ -2192,16 +2195,24 @@ static bool run_resident_restart_fixture(void)
         "  chmod 0700 \"$out\"\n"
         "fi\n";
     bool ok = false;
-    char cwd[PATH_MAX], compiler[PATH_MAX], plan[PATH_MAX * 4];
+    char cwd[PATH_MAX], cache[PATH_MAX], compiler[PATH_MAX], plan[PATH_MAX * 4];
+    char saved_cache[PATH_MAX] = {0};
     char saved_process[32] = {0};
+    const char *prior_cache = getenv("ZCL_DEV_ARTIFACT_CACHE");
     const char *prior_process = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+    bool had_cache = prior_cache && prior_cache[0];
     bool had_process = prior_process && prior_process[0];
+    if (had_cache)
+        (void)snprintf(saved_cache, sizeof(saved_cache), "%s", prior_cache);
     if (had_process)
         (void)snprintf(saved_process, sizeof(saved_process), "%s",
                        prior_process);
     test_rm_rf_recursive(root);
+    test_rm_rf_recursive(cache_rel);
     (void)unlink(compiler_rel);
     if (!getcwd(cwd, sizeof(cwd)) ||
+        snprintf(cache, sizeof(cache), "%s/%s", cwd, cache_rel) >=
+            (int)sizeof(cache) ||
         snprintf(compiler, sizeof(compiler), "%s/%s", cwd, compiler_rel) >=
             (int)sizeof(compiler) ||
         !dp_mk_write(".", compiler_rel, fake_compiler) ||
@@ -2227,7 +2238,8 @@ static bool run_resident_restart_fixture(void)
         !dp_mk_write(root, "build/test-obj/fixture/lib/base/src/other.o",
                      "other-test-object\n") ||
         !dp_mk_write(root, "build/test-obj/fixture/link-inputs.rsp",
-                     "build/test-obj/fixture/tools/dev/restart_fixture.o build/test-obj/fixture/lib/base/src/other.o\n"))
+                     "build/test-obj/fixture/tools/dev/restart_fixture.o build/test-obj/fixture/lib/base/src/other.o\n") ||
+        setenv("ZCL_DEV_ARTIFACT_CACHE", cache, 1) != 0)
         goto out;
     int n = snprintf(
         plan, sizeof(plan),
@@ -2257,11 +2269,18 @@ static bool run_resident_restart_fixture(void)
     if (!zcl_devloop_restart_build(root, changed, 1, &receipt, &process,
                                    why, sizeof(why)) ||
         !receipt.candidate_probe_passed || receipt.changed_sources != 1 ||
-        receipt.compiler_processes != 1 || receipt.linker_processes != 1 ||
+        receipt.artifact_cache_hit || receipt.compiler_processes != 1 ||
+        receipt.linker_processes != 1 ||
         receipt.probe_processes != 1 || receipt.source_guard_captures != 2 ||
         strcmp(receipt.probe, "discover.help") != 0 ||
-        strlen(receipt.artifact_sha256) != 64)
+        strlen(receipt.artifact_sha256) != 64 ||
+        strlen(receipt.artifact_cache_key) != 64)
         goto out;
+    char first_build_key[65], first_build_hash[65];
+    (void)snprintf(first_build_key, sizeof(first_build_key), "%s",
+                   receipt.artifact_cache_key);
+    (void)snprintf(first_build_hash, sizeof(first_build_hash), "%s",
+                   receipt.artifact_sha256);
 
     struct zcl_devloop_plan proof_plan = {0};
     if (!zcl_devloop_plan_files(changed, 1, &proof_plan))
@@ -2278,9 +2297,11 @@ static bool run_resident_restart_fixture(void)
         proof.self_skips != 0 ||
         !strstr(proof.groups, "test_dev_platform") ||
         !strstr(proof.groups, "test_make_lint_gates_heavy_02") ||
-        proof.compiler_processes != 1 || proof.linker_processes != 1 ||
+        proof.artifact_cache_hit || proof.compiler_processes != 1 ||
+        proof.linker_processes != 1 ||
         proof.test_processes != 1 || proof.source_guard_captures != 2 ||
         strlen(proof.artifact_sha256) != 64 ||
+        strlen(proof.artifact_cache_key) != 64 ||
         strlen(proof.groups_sha256) != 64)
         goto out;
 
@@ -2294,10 +2315,44 @@ static bool run_resident_restart_fixture(void)
         proof.deferred_group_count != 13 ||
         proof.groups_ran != 4 || proof.groups_cached != 1 ||
         proof.self_skips != 0 ||
+        !proof.artifact_cache_hit || proof.compiler_processes != 1 ||
+        proof.linker_processes != 0 ||
         strstr(proof.groups, "test_make_lint_gates") ||
         !strstr(proof.deferred_groups,
                 "test_make_lint_gates_heavy_02") ||
         strlen(proof.deferred_groups_sha256) != 64)
+        goto out;
+
+    /* Exact, edit, and revert cycles compile the source for diagnostic
+     * freshness, but only new complete-graph link inputs may invoke a linker. */
+    memset(&receipt, 0, sizeof(receipt));
+    if (!zcl_devloop_restart_build(root, changed, 1, &receipt, &process,
+                                   why, sizeof(why)) ||
+        !receipt.artifact_cache_hit || receipt.compiler_processes != 1 ||
+        receipt.linker_processes != 0 ||
+        strcmp(receipt.artifact_cache_key, first_build_key) != 0 ||
+        strcmp(receipt.artifact_sha256, first_build_hash) != 0)
+        goto out;
+    if (!dp_mk_write(root, "tools/dev/restart_fixture.c",
+                     "int restart_fixture(void) { return 9; }\n"))
+        goto out;
+    memset(&receipt, 0, sizeof(receipt));
+    if (!zcl_devloop_restart_build(root, changed, 1, &receipt, &process,
+                                   why, sizeof(why)) ||
+        receipt.artifact_cache_hit || receipt.compiler_processes != 1 ||
+        receipt.linker_processes != 1 ||
+        strcmp(receipt.artifact_cache_key, first_build_key) == 0)
+        goto out;
+    if (!dp_mk_write(root, "tools/dev/restart_fixture.c",
+                     "int restart_fixture(void) { return 7; }\n"))
+        goto out;
+    memset(&receipt, 0, sizeof(receipt));
+    if (!zcl_devloop_restart_build(root, changed, 1, &receipt, &process,
+                                   why, sizeof(why)) ||
+        !receipt.artifact_cache_hit || receipt.compiler_processes != 1 ||
+        receipt.linker_processes != 0 ||
+        strcmp(receipt.artifact_cache_key, first_build_key) != 0 ||
+        strcmp(receipt.artifact_sha256, first_build_hash) != 0)
         goto out;
 
     struct zcl_devloop_plan overwide = proof_plan;
@@ -2351,11 +2406,16 @@ static bool run_resident_restart_fixture(void)
     ok = true;
 
 out:
+    if (had_cache)
+        (void)setenv("ZCL_DEV_ARTIFACT_CACHE", saved_cache, 1);
+    else
+        (void)unsetenv("ZCL_DEV_ARTIFACT_CACHE");
     if (had_process)
         (void)setenv("ZCL_DEVLOOP_TEST_PROCESS", saved_process, 1);
     else
         (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
     test_rm_rf_recursive(root);
+    test_rm_rf_recursive(cache_rel);
     (void)unlink(compiler_rel);
     return ok;
 }

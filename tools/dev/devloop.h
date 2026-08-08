@@ -252,6 +252,7 @@ bool zcl_devloop_hotswap_build(
 struct zcl_devloop_restart_build_receipt {
     char artifact_path[4096];
     char artifact_sha256[65];
+    char artifact_cache_key[65];
     char probe[64];
     int64_t plan_load_us;
     int64_t compile_us;
@@ -264,6 +265,7 @@ struct zcl_devloop_restart_build_receipt {
     uint32_t probe_processes;
     uint32_t source_guard_captures;
     bool plan_cache_hit;
+    bool artifact_cache_hit;
     bool candidate_probe_passed;
 };
 
@@ -275,6 +277,7 @@ struct zcl_devloop_restart_build_receipt {
 struct zcl_devloop_restart_proof_receipt {
     char artifact_path[4096];
     char artifact_sha256[65];
+    char artifact_cache_key[65];
     char groups[4096];
     char groups_sha256[65];
     char deferred_groups[4096];
@@ -292,6 +295,7 @@ struct zcl_devloop_restart_proof_receipt {
     uint32_t linker_processes;
     uint32_t test_processes;
     uint32_t source_guard_captures;
+    bool artifact_cache_hit;
     bool immediate_proof_complete;
     bool integration_proof_deferred;
     bool proof_complete;

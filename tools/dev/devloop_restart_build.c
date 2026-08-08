@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -306,6 +307,203 @@ static void rr_sha256_bytes(const void *data, size_t len, char out[65])
     zcl_hex_encode(digest, sizeof(digest), out);
 }
 
+static void rr_key_field(struct sha256_ctx *ctx, const char *label,
+                         const void *data, size_t len)
+{
+    uint64_t n = (uint64_t)len;
+    sha256_write(ctx, (const unsigned char *)label, strlen(label) + 1);
+    sha256_write(ctx, (const unsigned char *)&n, sizeof(n));
+    if (len)
+        sha256_write(ctx, data, len);
+}
+
+static bool rr_normalize_root(const char *text, const char *root,
+                              char *out, size_t out_len)
+{
+    static const char marker[] = "${WORKTREE}";
+    size_t root_len = strlen(root), used = 0;
+    const char *cursor = text;
+    while (*cursor) {
+        const char *match = strstr(cursor, root);
+        size_t chunk = match ? (size_t)(match - cursor) : strlen(cursor);
+        if (chunk >= out_len - used)
+            return false;
+        memcpy(out + used, cursor, chunk);
+        used += chunk;
+        if (!match)
+            break;
+        if (sizeof(marker) - 1 >= out_len - used)
+            return false;
+        memcpy(out + used, marker, sizeof(marker) - 1);
+        used += sizeof(marker) - 1;
+        cursor = match + root_len;
+    }
+    out[used] = 0;
+    return true;
+}
+
+static bool rr_cache_root(char out[PATH_MAX])
+{
+    const char *configured = getenv("ZCL_DEV_ARTIFACT_CACHE");
+    const char *home = getenv("HOME");
+    int n;
+    if (configured && configured[0] == '/') {
+        n = snprintf(out, PATH_MAX, "%s/restart-v1", configured);
+    } else {
+        if (!home || home[0] != '/')
+            return false;
+        n = snprintf(out, PATH_MAX,
+                     "%s/.cache/zclassic23/dev-artifacts/restart-v1", home);
+    }
+    return n > 0 && n < PATH_MAX && rr_mkdirs(out);
+}
+
+static bool rr_cache_key(const struct rr_plan *plan, const char *root,
+                         const char *rsp, char out[65])
+{
+    static const char domain[] = "zcl.dev_artifact_cache.restart.v1";
+    char cc[sizeof(plan->cc)], cflags[sizeof(plan->cflags)];
+    char ldflags[sizeof(plan->ldflags)], libs[sizeof(plan->libs)];
+    if (!rr_normalize_root(plan->cc, root, cc, sizeof(cc)) ||
+        !rr_normalize_root(plan->cflags, root, cflags, sizeof(cflags)) ||
+        !rr_normalize_root(plan->ldflags, root, ldflags, sizeof(ldflags)) ||
+        !rr_normalize_root(plan->libs, root, libs, sizeof(libs)))
+        return false;
+    FILE *f = fopen(rsp, "r");
+    if (!f)
+        return false;
+    struct sha256_ctx ctx;
+    unsigned char digest[SHA256_OUTPUT_SIZE];
+    sha256_init(&ctx);
+    rr_key_field(&ctx, "domain", domain, sizeof(domain) - 1);
+    rr_key_field(&ctx, "compiler", plan->compiler_id,
+                 strlen(plan->compiler_id));
+    rr_key_field(&ctx, "base_generation", plan->base_generation,
+                 strlen(plan->base_generation));
+    rr_key_field(&ctx, "cc", cc, strlen(cc));
+    rr_key_field(&ctx, "cflags", cflags, strlen(cflags));
+    rr_key_field(&ctx, "ldflags", ldflags, strlen(ldflags));
+    rr_key_field(&ctx, "libs", libs, strlen(libs));
+    char token[PATH_MAX];
+    bool ok = true;
+    while (ok && fscanf(f, "%4095s", token) == 1) {
+        rr_key_field(&ctx, "link_input", token, strlen(token));
+        if (strncmp(token, "build/dev-loop/restart-objects/", 31) == 0 ||
+            strncmp(token, "build/dev-loop/restart-test-objects/", 36) == 0) {
+            char full[PATH_MAX], hash[65];
+            ok = rr_join_root(root, token, full) && rr_regular(full, NULL) &&
+                 rr_sha256_file(full, hash);
+            if (ok)
+                rr_key_field(&ctx, "overlay_sha256", hash, strlen(hash));
+        }
+    }
+    ok = ok && !ferror(f);
+    fclose(f);
+    if (!ok)
+        return false;
+    sha256_finalize(&ctx, digest);
+    zcl_hex_encode(digest, sizeof(digest), out);
+    return true;
+}
+
+static bool rr_read_hash(const char *path, char out[65])
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return false;
+    char extra = 0;
+    bool ok = fscanf(f, "%64[0-9a-f]%c", out, &extra) == 2 &&
+              strlen(out) == 64 && extra == '\n' && fgetc(f) == EOF;
+    fclose(f);
+    if (!ok) out[0] = 0;
+    return ok;
+}
+
+static int rr_cache_lock(const char *cache_root, const char key[65],
+                         char binary[PATH_MAX], char hash[PATH_MAX])
+{
+    char lock[PATH_MAX];
+    if (snprintf(lock, sizeof(lock), "%s/%s.lock", cache_root, key) >=
+            (int)sizeof(lock) ||
+        snprintf(binary, PATH_MAX, "%s/%s.bin", cache_root, key) >= PATH_MAX ||
+        snprintf(hash, PATH_MAX, "%s/%s.sha256", cache_root, key) >= PATH_MAX)
+        return -1;
+    int fd = open(lock, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+        flock(fd, LOCK_EX) != 0) {
+        if (fd >= 0) close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static bool rr_publish_candidate(const char *root, const char *candidate_dir,
+                                 const char *source, const char hash[65],
+                                 char out[PATH_MAX])
+{
+    char candidates[PATH_MAX];
+    if (snprintf(candidates, sizeof(candidates), "%s/%s", root,
+                 candidate_dir) >= (int)sizeof(candidates) ||
+        !rr_mkdirs(candidates) ||
+        snprintf(out, PATH_MAX, "%s/%s-zclassic23-dev", candidates,
+                 hash) >= PATH_MAX)
+        return false;
+    if (link(source, out) != 0) {
+        char existing[65];
+        if (errno != EEXIST || !rr_regular(out, NULL) ||
+            !rr_sha256_file(out, existing) || strcmp(existing, hash) != 0)
+            return false;
+    }
+    return chmod(out, 0555) == 0;
+}
+
+static bool rr_cache_lookup(const char *root, const char *candidate_dir,
+                            const char *cache_binary, const char *cache_hash,
+                            char out[PATH_MAX])
+{
+    char expected[65], actual[65];
+    return rr_regular(cache_binary, NULL) && rr_regular(cache_hash, NULL) &&
+           rr_read_hash(cache_hash, expected) &&
+           rr_sha256_file(cache_binary, actual) &&
+           strcmp(expected, actual) == 0 &&
+           rr_publish_candidate(root, candidate_dir, cache_binary, actual, out);
+}
+
+static bool rr_cache_publish(const char *cache_binary, const char *cache_hash,
+                             const char *built, const char hash[65])
+{
+    if (link(built, cache_binary) != 0) {
+        char existing[65];
+        if (errno != EEXIST || !rr_regular(cache_binary, NULL) ||
+            !rr_sha256_file(cache_binary, existing) ||
+            strcmp(existing, hash) != 0)
+            return false;
+    }
+    if (chmod(cache_binary, 0555) != 0)
+        return false;
+    char temp[PATH_MAX];
+    int n = snprintf(temp, sizeof(temp), "%s.tmp.%ld", cache_hash,
+                     (long)getpid());
+    if (n <= 0 || n >= (int)sizeof(temp))
+        return false;
+    (void)unlink(temp);
+    int fd = open(temp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                  0600);
+    if (fd < 0)
+        return false;
+    char line[66];
+    (void)snprintf(line, sizeof(line), "%s\n", hash);
+    bool ok = write(fd, line, 65) == 65 && fsync(fd) == 0;
+    int close_rc = close(fd);
+    ok = ok && close_rc == 0;
+    if (!ok || rename(temp, cache_hash) != 0) {
+        (void)unlink(temp);
+        return false;
+    }
+    return true;
+}
+
 static bool rr_temp(char out[PATH_MAX], const char *dir, const char *suffix)
 {
     int n = snprintf(out, PATH_MAX, "%s/.restart-XXXXXX%s", dir, suffix);
@@ -558,29 +756,66 @@ static bool rr_link(const struct rr_plan *plan, const char *root,
         rr_why(why, why_len, "restart candidate link failed");
         return false;
     }
-    char hash[65], candidates[PATH_MAX];
+    char hash[65];
     if (!rr_sha256_file(temp, hash) ||
-        snprintf(candidates, sizeof(candidates), "%s/%s", root,
-                 candidate_dir) >=
-            (int)sizeof(candidates) || !rr_mkdirs(candidates) ||
-        snprintf(binary, PATH_MAX, "%s/%s-zclassic23-dev", candidates,
-                 hash) >= PATH_MAX) {
+        !rr_publish_candidate(root, candidate_dir, temp, hash, binary)) {
         (void)unlink(temp);
         rr_why(why, why_len, "could not address restart candidate");
         return false;
     }
-    if (link(temp, binary) != 0) {
-        char existing[65];
-        if (errno != EEXIST || !rr_regular(binary, NULL) ||
-            !rr_sha256_file(binary, existing) || strcmp(existing, hash) != 0) {
-            (void)unlink(temp);
-            rr_why(why, why_len, "restart candidate publication collision");
-            return false;
-        }
-    }
-    (void)chmod(binary, 0555);
     (void)unlink(temp);
     return true;
+}
+
+static bool rr_link_cached(const struct rr_plan *plan, const char *root,
+                           const char *rsp, const char *candidate_dir,
+                           char binary[PATH_MAX], char cache_key[65],
+                           bool *cache_hit, uint32_t *linker_processes,
+                           struct zcl_devloop_process_result *process,
+                           int64_t *elapsed_us, char *why, size_t why_len)
+{
+    *cache_hit = false;
+    if (!rr_cache_key(plan, root, rsp, cache_key)) {
+        rr_why(why, why_len, "could not derive exact restart artifact key");
+        return false;
+    }
+    char cache_root[PATH_MAX] = {0}, cache_binary[PATH_MAX] = {0};
+    char cache_hash[PATH_MAX] = {0};
+    int cache_fd = -1;
+    if (rr_cache_root(cache_root))
+        cache_fd = rr_cache_lock(cache_root, cache_key,
+                                 cache_binary, cache_hash);
+    if (cache_fd >= 0 &&
+        rr_cache_lookup(root, candidate_dir, cache_binary, cache_hash,
+                        binary)) {
+        *cache_hit = true;
+        (void)flock(cache_fd, LOCK_UN);
+        (void)close(cache_fd);
+        return true;
+    }
+    if (cache_fd >= 0) {
+        /* With the per-key lock held, an unverifiable pair is stale or
+         * corrupt rather than a publisher in flight. Repair it from a new
+         * exact link; never accept one side alone. */
+        (void)unlink(cache_binary);
+        (void)unlink(cache_hash);
+    }
+    (*linker_processes)++;
+    bool ok = rr_link(plan, root, rsp, candidate_dir, binary, process,
+                      elapsed_us, why, why_len);
+    if (ok && cache_fd >= 0) {
+        char hash[65];
+        ok = rr_sha256_file(binary, hash) &&
+             rr_cache_publish(cache_binary, cache_hash, binary, hash);
+        if (!ok)
+            rr_why(why, why_len,
+                   "restart artifact cache publication failed");
+    }
+    if (cache_fd >= 0) {
+        (void)flock(cache_fd, LOCK_UN);
+        (void)close(cache_fd);
+    }
+    return ok;
 }
 
 static bool rr_restart_build(
@@ -675,11 +910,13 @@ static bool rr_restart_build(
                                  why, why_len))
         ok = false;
     if (ok) {
-        receipt->linker_processes = 1;
-        ok = rr_link(&plan, root, rsp,
-                     "build/dev-loop/restart-candidates",
-                     receipt->artifact_path, process, &receipt->link_us,
-                     why, why_len);
+        ok = rr_link_cached(&plan, root, rsp,
+                            "build/dev-loop/restart-candidates",
+                            receipt->artifact_path,
+                            receipt->artifact_cache_key,
+                            &receipt->artifact_cache_hit,
+                            &receipt->linker_processes, process,
+                            &receipt->link_us, why, why_len);
     }
     if (rsp[0]) (void)unlink(rsp);
     free(overlays);
@@ -932,11 +1169,13 @@ static bool rr_restart_prove(
                                  why, why_len))
         ok = false;
     if (ok) {
-        receipt->linker_processes = 1;
-        ok = rr_link(&plan, root, rsp,
-                     "build/dev-loop/restart-test-candidates",
-                     receipt->artifact_path, process, &receipt->link_us,
-                     why, why_len);
+        ok = rr_link_cached(&plan, root, rsp,
+                            "build/dev-loop/restart-test-candidates",
+                            receipt->artifact_path,
+                            receipt->artifact_cache_key,
+                            &receipt->artifact_cache_hit,
+                            &receipt->linker_processes, process,
+                            &receipt->link_us, why, why_len);
     }
     if (rsp[0]) (void)unlink(rsp);
     free(overlays);
@@ -1104,11 +1343,16 @@ static bool rr_emit_event(
         if (build->artifact_sha256[0])
             (void)json_push_kv_str(&receipt, "artifact_sha256",
                                    build->artifact_sha256);
+        if (build->artifact_cache_key[0])
+            (void)json_push_kv_str(&receipt, "artifact_cache_key",
+                                   build->artifact_cache_key);
         (void)json_push_kv_str(&receipt, "probe", build->probe);
         (void)json_push_kv_bool(&receipt, "candidate_probe_passed",
                                 build->candidate_probe_passed);
         (void)json_push_kv_bool(&receipt, "plan_cache_hit",
                                 build->plan_cache_hit);
+        (void)json_push_kv_bool(&receipt, "artifact_cache_hit",
+                                build->artifact_cache_hit);
         (void)json_push_kv_int(&receipt, "changed_sources",
                                build->changed_sources);
         (void)json_push_kv_int(&receipt, "compiler_processes",
@@ -1138,6 +1382,9 @@ static bool rr_emit_event(
         if (proof->artifact_sha256[0])
             (void)json_push_kv_str(&receipt, "artifact_sha256",
                                    proof->artifact_sha256);
+        if (proof->artifact_cache_key[0])
+            (void)json_push_kv_str(&receipt, "artifact_cache_key",
+                                   proof->artifact_cache_key);
         if (proof->groups_sha256[0])
             (void)json_push_kv_str(&receipt, "exact_groups_sha256",
                                    proof->groups_sha256);
@@ -1147,6 +1394,8 @@ static bool rr_emit_event(
                                    proof->deferred_groups_sha256);
         (void)json_push_kv_bool(&receipt, "proof_complete",
                                 proof->proof_complete);
+        (void)json_push_kv_bool(&receipt, "artifact_cache_hit",
+                                proof->artifact_cache_hit);
         (void)json_push_kv_bool(&receipt, "immediate_proof_complete",
                                 proof->immediate_proof_complete);
         (void)json_push_kv_bool(&receipt, "integration_proof_deferred",
