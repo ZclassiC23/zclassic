@@ -167,6 +167,17 @@ commit/status `txid` and `confirmed_block_hash` are canonical display-order
 chain identifiers and may be copied directly into the explorer or the private
 lab recorder.
 
+For a Sapling source, group confirmed unspent notes by exact address and sum
+their decimal amounts; select an address whose total covers recipient value
+plus maximum fee. Do not select the address attached to the oldest note merely
+because it has the most confirmations—one confirmed note may still be too
+small. If planning returns `WITNESS_RESCAN_REQUIRED`, run the typed
+`core wallet rescan-witnesses` command. It rebuilds and header-verifies the
+witnesses without moving funds. Because that updates wallet state, take a new
+stdin-password encrypted backup before creating a fresh plan and idempotency
+key. `SHIELDED_HISTORY_INCOMPLETE` or `SHIELDED_AUTHORITY_UNAVAILABLE` remains
+a stop condition.
+
 Wait for confirmation and a refreshed `CURRENT` money snapshot before planning
 the next row. Repeat with route `private` and a Sapling source for Z-to-Z, route
 `unshield` and a Sapling source for Z-to-T, and route `mixed` with one

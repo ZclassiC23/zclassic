@@ -6,7 +6,9 @@
 #include "controllers/wallet_helpers.h"
 #include "controllers/sync_controller.h"
 #include "controllers/vault_intent_controller.h"
+#include "controllers/vault_intent_private.h"
 #include "controllers/vault_intent_publish.h"
+#include "coins/coins_view.h"
 #include "core/serialize.h"
 #include "json/json.h"
 #include "models/database.h"
@@ -31,6 +33,26 @@
 #include <sqlite3.h>
 #include <stdatomic.h>
 #include <string.h>
+
+struct ti_anchor_view {
+    struct coins_view view;
+    enum coins_anchor_lookup_result verdict;
+};
+
+static enum coins_anchor_lookup_result ti_anchor_lookup(
+    void *self, enum coins_anchor_pool pool, const struct uint256 *root,
+    struct incremental_merkle_tree *tree_out)
+{
+    struct ti_anchor_view *view = self;
+    (void)pool;
+    (void)root;
+    (void)tree_out;
+    return view->verdict;
+}
+
+static struct coins_view_vtable g_ti_anchor_vtable = {
+    .get_anchor = ti_anchor_lookup,
+};
 
 static struct node_db *g_ti_async_ndb;
 static uint8_t g_ti_async_plan_id[32];
@@ -279,6 +301,54 @@ int test_transaction_intent(void)
             "MEMPOOL_MISSING_INPUTS");
         ASSERT_STR_EQ(vault_intent_mempool_error_code(-999, NULL),
                       "MEMPOOL_REJECTED");
+        PASS();
+    }
+
+    TEST("private intent planning types stale shielded anchor authority") {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.v_shielded_spend = zcl_calloc(
+            1, sizeof(*tx.v_shielded_spend),
+            "transaction_intent.anchor_preflight");
+        ASSERT(tx.v_shielded_spend != NULL);
+        tx.num_shielded_spend = 1;
+        memset(tx.v_shielded_spend[0].anchor.data, 0x71, 32);
+
+        struct ti_anchor_view backing;
+        memset(&backing, 0, sizeof(backing));
+        backing.view.vtable = &g_ti_anchor_vtable;
+        backing.view.impl = &backing;
+        struct coins_view_cache cache;
+        coins_view_cache_init(&cache, &backing.view);
+        struct wallet_rpc_context ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.coins_tip = &cache;
+        struct json_value result;
+        json_init(&result);
+
+        backing.verdict = COINS_ANCHOR_MISSING;
+        ASSERT(!vault_intent_private_requirements_current(
+            &ctx, &tx, &result));
+        ASSERT_STR_EQ(json_get_str(json_get(&result, "code")),
+                      "WITNESS_RESCAN_REQUIRED");
+        json_free(&result); json_init(&result);
+
+        backing.verdict = COINS_ANCHOR_HISTORY_INCOMPLETE;
+        ASSERT(!vault_intent_private_requirements_current(
+            &ctx, &tx, &result));
+        ASSERT_STR_EQ(json_get_str(json_get(&result, "code")),
+                      "SHIELDED_HISTORY_INCOMPLETE");
+        json_free(&result); json_init(&result);
+
+        backing.verdict = COINS_ANCHOR_ERROR;
+        ASSERT(!vault_intent_private_requirements_current(
+            &ctx, &tx, &result));
+        ASSERT_STR_EQ(json_get_str(json_get(&result, "code")),
+                      "SHIELDED_AUTHORITY_UNAVAILABLE");
+
+        json_free(&result);
+        coins_view_cache_free(&cache);
+        transaction_free(&tx);
         PASS();
     }
 
