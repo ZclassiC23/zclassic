@@ -41,8 +41,9 @@
 } while (0)
 
 /* Global site nav — the one bar that unifies every route family. `active`
- * is one of "explorer", "names", "store", "blog", "directory" (the link
- * gets class='active'), or NULL to highlight nothing. Keep the link set
+ * is one of "explorer", "names", "store", "blog", "metaverse",
+ * "directory" (the link gets class='active'), or NULL to highlight
+ * nothing. Keep the link set
  * here and in SITE_GLOBAL_NAV below in lockstep. */
 static inline size_t site_emit_global_nav(char *buf, size_t max,
                                           const char *active)
@@ -53,6 +54,7 @@ static inline size_t site_emit_global_nav(char *buf, size_t max,
         { "/names",     "Names",     "names"     },
         { "/store",     "Store",     "store"     },
         { "/blog",      "Blog",      "blog"      },
+        { "/metaverse", "Metaverse", "metaverse" },
         { "/directory", "Directory", "directory" },
     };
     size_t off = 0;
@@ -84,6 +86,7 @@ static inline size_t site_emit_global_nav(char *buf, size_t max,
     "<a href='/names'>Names</a>" \
     "<a href='/store'>Store</a>" \
     "<a href='/blog'>Blog</a>" \
+    "<a href='/metaverse'>Metaverse</a>" \
     "<a href='/directory'>Directory</a>" \
     "</nav></header>"
 

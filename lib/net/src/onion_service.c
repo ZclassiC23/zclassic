@@ -1086,6 +1086,22 @@ size_t onion_service_handle_request(const char *method,
                                          onion_ctx()->datadir);
     }
 
+    /* Metaverse — landing, sovereign property catalog, published spaces,
+     * and the Living Commons (SIMULATION). Same handler is wired into the
+     * HTTPS dispatch chain, so the site reads identically over onion and
+     * HTTPS (the same projections the metaverse.* / zcode.commons.* typed
+     * commands call — no second truth). Read-only: no POST surface here. */
+    if (strncmp(path, "/metaverse", 10) == 0 &&
+        (path[10] == 0 || path[10] == '/' || path[10] == '?') &&
+        onion_ctx()->datadir) {
+        extern size_t metaverse_site_handle_request(const char *,
+            const char *, const uint8_t *, size_t, uint8_t *, size_t,
+            const char *);
+        return metaverse_site_handle_request(method, path, body, body_len,
+                                             response, response_max,
+                                             onion_ctx()->datadir);
+    }
+
     /* Blog MVC App. The same path handler is used by public HTTPS, so
      * zclnet.net/blog and a node's onion expose the same local projection. */
     if (strncmp(path, "/blog", 5) == 0 &&
