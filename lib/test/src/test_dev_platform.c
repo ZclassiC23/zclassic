@@ -2164,13 +2164,15 @@ static bool run_resident_restart_fixture(void)
     static const char fake_compiler[] =
         "#!/usr/bin/env bash\n"
         "set -eu\n"
-        "out= dep= compile=0 rsp= source=\n"
+        "out= dep= compile=0 rsp= source= base= allow=0 overlay_first=0\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  case \"$1\" in\n"
         "    -o) out=$2; shift 2 ;;\n"
         "    -MF) dep=$2; shift 2 ;;\n"
         "    -c) compile=1; shift ;;\n"
-        "    @*) rsp=${1#@}; shift ;;\n"
+        "    @*) rsp=${1#@}; overlay_first=1; shift ;;\n"
+        "    *restart-base.o) [ \"$overlay_first\" -eq 1 ]; base=$1; shift ;;\n"
+        "    -Wl,--allow-multiple-definition) allow=1; shift ;;\n"
         "    *.c) source=$1; shift ;;\n"
         "    *) shift ;;\n"
         "  esac\n"
@@ -2182,14 +2184,18 @@ static bool run_resident_restart_fixture(void)
         "  printf '%s: tools/dev/restart_fixture.c\\n' \"$out\" >\"$dep\"\n"
         "else\n"
         "  [ -n \"$rsp\" ]\n"
+        "  [ -n \"$base\" ]\n"
+        "  [ \"$allow\" -eq 1 ]\n"
         "  if grep -q 'restart-test-objects' \"$rsp\"; then\n"
+        "    case \"$base\" in *test-obj/fixture/restart-base.o) :;; *) exit 9;; esac\n"
         "    grep -q 'build/dev-loop/restart-test-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
         "    ! grep -q 'build/test-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
         "    printf '#!/usr/bin/env bash\\nset -eu\\ngroups= cache=0 snapshot=0 changed=\\nfor arg in \"$@\"; do case \"$arg\" in --exact=*) groups=${arg#--exact=};; --cache) cache=1;; --cache-snapshot) snapshot=1;; --changed-source=*) changed=${arg#--changed-source=};; esac; done\\n[ -n \"$groups\" ]\\n[ \"$cache\" -eq 1 ]\\n[ \"$snapshot\" -eq 1 ]\\n[ \"$changed\" = tools/dev/restart_fixture.c ]\\ncount=1\\nrest=$groups\\nwhile [ \"${rest#*,}\" != \"$rest\" ]; do count=$((count+1)); rest=${rest#*,}; done\\nran=$((count-1))\\nprintf \"SUITE VERDICT mode=cached groups_total=921 groups_ran=%%s groups_cached=1 groups_gated=0 groups_failed=0 self_skips=0\\\\n\" \"$ran\"\\nexit 0\\n' >\"$out\"\n"
         "  else\n"
+        "    case \"$base\" in *dev-obj/fixture/restart-base.o) :;; *) exit 9;; esac\n"
         "    grep -q 'build/dev-loop/restart-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
         "    ! grep -q 'build/dev-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
-        "    grep -q 'build/dev-obj/fixture/lib/base/src/other.o' \"$rsp\"\n"
+        "    ! grep -q 'build/dev-obj/fixture/lib/base/src/other.o' \"$rsp\"\n"
         "    printf '#!/usr/bin/env bash\\nexit 0\\n' >\"$out\"\n"
         "  fi\n"
         "  chmod 0700 \"$out\"\n"
@@ -2232,6 +2238,8 @@ static bool run_resident_restart_fixture(void)
                      "other-object\n") ||
         !dp_mk_write(root, "build/dev-obj/fixture/link-inputs.rsp",
                      "build/dev-obj/fixture/tools/dev/restart_fixture.o build/dev-obj/fixture/tools/dev/restart_second.o build/dev-obj/fixture/lib/base/src/other.o\n") ||
+        !dp_mk_write(root, "build/dev-obj/fixture/restart-base.o",
+                     "frozen-dev-base\n") ||
         !dp_mk_write(root,
                      "build/test-obj/fixture/tools/dev/restart_fixture.o",
                      "old-test-object\n") ||
@@ -2239,6 +2247,8 @@ static bool run_resident_restart_fixture(void)
                      "other-test-object\n") ||
         !dp_mk_write(root, "build/test-obj/fixture/link-inputs.rsp",
                      "build/test-obj/fixture/tools/dev/restart_fixture.o build/test-obj/fixture/lib/base/src/other.o\n") ||
+        !dp_mk_write(root, "build/test-obj/fixture/restart-base.o",
+                     "frozen-test-base\n") ||
         setenv("ZCL_DEV_ARTIFACT_CACHE", cache, 1) != 0)
         goto out;
     int n = snprintf(
@@ -2251,11 +2261,13 @@ static bool run_resident_restart_fixture(void)
         "DEV_LIBS=-lm\n"
         "DEV_OBJ_DIR=build/dev-obj/fixture\n"
         "DEV_LINK_RSP=build/dev-obj/fixture/link-inputs.rsp\n"
+        "DEV_BASE_RELOC=build/dev-obj/fixture/restart-base.o\n"
         "TEST_CFLAGS=-DZCL_TESTING\n"
         "TEST_LDFLAGS=-pthread\n"
         "TEST_LIBS=-lm\n"
         "TEST_OBJ_DIR=build/test-obj/fixture\n"
-        "TEST_LINK_RSP=build/test-obj/fixture/link-inputs.rsp\n",
+        "TEST_LINK_RSP=build/test-obj/fixture/link-inputs.rsp\n"
+        "TEST_BASE_RELOC=build/test-obj/fixture/restart-base.o\n",
         compiler);
     if (n <= 0 || n >= (int)sizeof(plan) ||
         !dp_mk_write(root, "build/dev-loop/restart.env", plan) ||
@@ -2271,6 +2283,7 @@ static bool run_resident_restart_fixture(void)
         !receipt.candidate_probe_passed || receipt.changed_sources != 1 ||
         receipt.artifact_cache_hit || receipt.compiler_processes != 1 ||
         receipt.linker_processes != 1 ||
+        receipt.complete_graph_linker_processes != 0 ||
         receipt.probe_processes != 1 || receipt.source_guard_captures != 2 ||
         strcmp(receipt.probe, "discover.help") != 0 ||
         strlen(receipt.artifact_sha256) != 64 ||
@@ -2299,6 +2312,7 @@ static bool run_resident_restart_fixture(void)
         !strstr(proof.groups, "test_make_lint_gates_heavy_02") ||
         proof.artifact_cache_hit || proof.compiler_processes != 1 ||
         proof.linker_processes != 1 ||
+        proof.complete_graph_linker_processes != 0 ||
         proof.test_processes != 1 || proof.source_guard_captures != 2 ||
         strlen(proof.artifact_sha256) != 64 ||
         strlen(proof.artifact_cache_key) != 64 ||
@@ -2341,6 +2355,7 @@ static bool run_resident_restart_fixture(void)
                                    why, sizeof(why)) ||
         receipt.artifact_cache_hit || receipt.compiler_processes != 1 ||
         receipt.linker_processes != 1 ||
+        receipt.complete_graph_linker_processes != 0 ||
         strcmp(receipt.artifact_cache_key, first_build_key) == 0)
         goto out;
     if (!dp_mk_write(root, "tools/dev/restart_fixture.c",
@@ -2399,7 +2414,22 @@ static bool run_resident_restart_fixture(void)
     if (!zcl_devloop_restart_build(root, second, 1, &receipt, &process,
                                    why, sizeof(why)) ||
         !receipt.candidate_probe_passed || receipt.compiler_processes != 1 ||
-        receipt.linker_processes != 1 || receipt.probe_processes != 1)
+        receipt.linker_processes != 1 ||
+        receipt.complete_graph_linker_processes != 0 ||
+        receipt.probe_processes != 1)
+        goto out;
+
+    if (!dp_mk_write(root, "tools/dev/restart_second.c",
+                     "const char *restart_second(void) { return \".init_array\"; }\n"))
+        goto out;
+    memset(&receipt, 0, sizeof(receipt));
+    if (zcl_devloop_restart_build(root, second, 1, &receipt, &process,
+                                  why, sizeof(why)) ||
+        strcmp(why,
+               "overlay link input is missing, unreadable, or owns process initialization") != 0 ||
+        receipt.compiler_processes != 1 || receipt.linker_processes != 0 ||
+        receipt.complete_graph_linker_processes != 0 ||
+        receipt.probe_processes != 0)
         goto out;
 
     const char *forbidden[] = { "core/consensus/src/restart_fixture.c" };

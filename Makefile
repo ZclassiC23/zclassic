@@ -1605,6 +1605,18 @@ $(TEST_PARALLEL_REL_LINK_RSP): $(TEST_PARALLEL_REL_OBJS)
 $(TEST_PARALLEL_FAST_LINK_RSP): $(TEST_PARALLEL_FAST_OBJS)
 	@$(file >$@,$(TEST_PARALLEL_FAST_OBJS)) test -s "$@"
 
+TEST_RESTART_BASE_RELOC = $(TEST_FAST_OBJ_DIR)/restart-base.o
+$(TEST_RESTART_BASE_RELOC): $(TEST_PARALLEL_FAST_LINK_RSP) \
+		$(TEST_PARALLEL_FAST_OBJS)
+	@set -eu; \
+	tmp="$$(mktemp "$@.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(ZCL_DEV_LINKER) -r -nostdlib -o "$$tmp" \
+	  "@$(TEST_PARALLEL_FAST_LINK_RSP)"; \
+	chmod 0444 "$$tmp"; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
+
 test-asan: $(TEST_ASAN_BIN)
 
 $(TEST_ASAN_BIN): $(TEST_ASAN_CANDIDATE) FORCE
@@ -2357,8 +2369,18 @@ $(DEV_CANDIDATE_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(DEV_OBJ_COMP
 	trap - EXIT HUP INT TERM
 
 DEV_LINK_RSP = $(DEV_OBJ_DIR)/link-inputs.rsp
+DEV_RESTART_BASE_RELOC = $(DEV_OBJ_DIR)/restart-base.o
 $(DEV_LINK_RSP): $(DEV_OBJS)
 	@$(file >$@,$(DEV_OBJS)) test -s "$@"
+
+$(DEV_RESTART_BASE_RELOC): $(DEV_LINK_RSP) $(DEV_OBJS)
+	@set -eu; \
+	tmp="$$(mktemp "$@.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(ZCL_DEV_LINKER) -r -nostdlib -o "$$tmp" "@$(DEV_LINK_RSP)"; \
+	chmod 0444 "$$tmp"; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
 
 # Focused tests intentionally select only their own compile epoch at parse
 # time.  The common path compares one identity-bound readiness line; only a
@@ -2420,7 +2442,8 @@ $(DEV_PACKAGE_VERIFY_LINK_RSP): $(DEV_PACKAGE_VERIFY_OBJ) \
 	@$(file >$@,$(DEV_PACKAGE_VERIFY_OBJ) $(DEV_PACKAGE_VERIFY_NODE_OBJS)) test -s "$@"
 
 $(DEV_RESTART_PLAN): $(DEV_OBJ_COMPLETE) $(DEV_LINK_RSP) \
-		$(TEST_PARALLEL_FAST_LINK_RSP) Makefile FORCE
+		$(DEV_RESTART_BASE_RELOC) $(TEST_PARALLEL_FAST_LINK_RSP) \
+		$(TEST_RESTART_BASE_RELOC) Makefile FORCE
 	@set -eu; \
 	mkdir -p "$(dir $@)"; \
 	tmp="$$(mktemp "$(dir $@).restart.XXXXXX")"; \
@@ -2434,11 +2457,13 @@ $(DEV_RESTART_PLAN): $(DEV_OBJ_COMPLETE) $(DEV_LINK_RSP) \
 	  printf 'DEV_LIBS=%s\n' '$(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)'; \
 	  printf 'DEV_OBJ_DIR=%s\n' '$(DEV_OBJ_DIR)'; \
 	  printf 'DEV_LINK_RSP=%s\n' '$(DEV_LINK_RSP)'; \
+	  printf 'DEV_BASE_RELOC=%s\n' '$(DEV_RESTART_BASE_RELOC)'; \
 	  printf 'TEST_CFLAGS=%s\n' '$(TEST_FAST_CFLAGS)'; \
 	  printf 'TEST_LDFLAGS=%s\n' '$(TEST_FAST_LDFLAGS)'; \
 	  printf 'TEST_LIBS=%s\n' '$(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)'; \
 	  printf 'TEST_OBJ_DIR=%s\n' '$(TEST_FAST_OBJ_DIR)'; \
 	  printf 'TEST_LINK_RSP=%s\n' '$(TEST_PARALLEL_FAST_LINK_RSP)'; \
+	  printf 'TEST_BASE_RELOC=%s\n' '$(TEST_RESTART_BASE_RELOC)'; \
 	} >"$$tmp"; \
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM

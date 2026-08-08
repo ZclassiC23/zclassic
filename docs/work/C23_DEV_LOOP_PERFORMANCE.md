@@ -85,6 +85,7 @@ classification of every occurrence.
 | P27 shared command-header proof ownership | the all-command declaration header retains generic registry/API/snapshot/hot-swap/platform proofs but no longer owns `codeindex`, `code_capsule`, or `code_impact`; those behavior proofs remain attached to the code-index implementation and `native_code_command.c`. A born-red/green ownership test pins both the shared-header exclusion and the code-owner inclusion | `native_zcode_work_command.c` previously inherited the three navigator groups through `native_command.h`; `code_capsule` alone measured 4.318 s. Its exact plan now drops those groups while retaining 26 generic/ZCODE exact groups. Two complete replays were run; the stable replay measured p50 4.808 s / p95 5.295 s and 26/61 (**42.62%**) under five seconds, with zero Make/shell/LTO | no code-navigator owner lost evidence, and the shared header remains covered by the broad command contract. Integrated trustworthy coverage rose 29.51%→42.62%; the next admitted-path cost is the 5.30 s proof/link overlap, while 11 occurrences still fail closed at the plan bound |
 | P28 exact restart-artifact reuse | candidate and proof links now consult one verified host-local cache keyed by the compiler capsule, base generation, normalized profile actions, ordered rewritten response and every active overlay object's SHA-256. The cache is acceleration only: source guards, both profile compiles, the runtime probe and affected proofs still execute, and corrupt/partial entries rebuild under a per-key lock | a real four-cycle `native_zcode_work_run_command.c` sequence measured a 5.482 s cold miss with 2 links, followed by three exact-output/revert hits at 2.634–2.896 s with 0 links. A fresh-cache full replay was p50 4.805 s / p95 5.881 s and 25/61 under five seconds; its immediate exact-output replay was p50 3.985 s / p95 4.389 s and 50/61 (**81.97%**), with 24 compilers, 0 linkers, 11 test and 13 probe processes and zero Make/shell/LTO | exact/revert artifact reuse is now receipt-bound, and the repeated admitted population has zero whole-graph links. The remaining 11/61 occurrences are the same two fail-closed overwide plans, so gate 3 remains below 95%; cold changed-object cycles still link and are not misreported as hits |
 | P29 bounded caller-closure tier | an overwide reverse-caller union no longer becomes an opaque rejection: the save cycle executes every exact group selected by the file's explicit path floor, and canonical-order/hash-binds every broader caller and integration group as deferred. `bounded_proof_deferred=true`, `integration_proof_deferred=true`, and `proof_complete=false` make the tier visible; full integration still expands and runs the complete original union. The only slow explicit floor was `agent_spend_policy`: its eleven isolated in-memory cases now start only the serialized test writer, never the production five-minute checkpointer | born-red `agent_spend_policy` was 12.376 s and launched 11 periodic checkpoint threads; green is 0.433 s with zero checkpoint threads (**28.6x** test-body speedup). The final fresh-cache replay returned bound green feedback for all 61 occurrences at p50 4.847 s / p95 5.278 s and 35/61 under five seconds. Its exact-output replay was p50 4.047 s / p95 4.595 s and **61/61 (100%)** under five seconds, with 26 compilers, 0 linkers, 13 tests, 13 probes and zero Make/shell/LTO | the five-second trustworthy-feedback and fast-restart p95 gates pass on the stable warm loop, while every broader proof remains named and required before acceptance. Fresh changed-object feedback still misses p95 and performs 26 complete-graph links, so the cold incremental-link gate remains open. Ordinary commands, inputs and context bytes are unchanged; this slice is +124/-54 lines and adds no canonical domain |
+| P30 generation-frozen relocatable base | `make dev-bin` now prelinks the exact non-LTO dev and proof object generations once and records both regular files in the frozen restart plan. A changed-object cycle links only its canonical overlay response ahead of the hashed frozen base; exact/revert caching remains layered above it. Receipt accounting separates total linker processes from complete-graph links, and an overlay that owns pre-init/init/fini arrays refuses before link rather than running duplicate initialization | isolated real microbenchmarks measured the one-time dev/proof base prelinks at 0.84/0.79 s and subsequent overlay links at 0.29/0.44 s; both real command and focused-proof probes passed. A fresh safe C23/ZCODE replay covered 9 paths / 41 weighted edits with 18 overlay links and **0 complete-graph links**, zero Make/shell/LTO, p50 4.964 s and p95 6.656 s under host load. The immediate exact-artifact run used 0 linkers, but host load drove four watcher waits past their 10 s measurement bound, so it is recorded partial rather than used to replace P29's stable latency result | gate 6 is closed architecturally: narrow changed-object saves no longer perform whole-node links. The trustworthy-feedback and fast-restart gates retain P29's stable p95 4.595 s evidence; P30 does not claim the loaded rerun improved it. Ordinary commands, inputs and context bytes are unchanged; the dev-loop production/tooling delta is +150/-11 lines, no canonical domain was added, and release/consensus/deployment paths remain static and untouched |
 
 The earlier single-island resident microbenchmark measured 227.280 ms p50 and
 232.141 ms p95 on 20 distinct artifacts. That is historical evidence for one
@@ -104,8 +105,8 @@ inner loop.
 ## Build profiles
 
 - `DEV_LIVE`: one admitted module/island, affected immediate probe, no LTO.
-- `DEV_RESTART`: affected cached objects plus an incremental static dev link,
-  isolated restart/probe, no LTO.
+- `DEV_RESTART`: affected cached objects plus an overlay/frozen-base link,
+  isolated restart/probe, no LTO and no complete-graph save link.
 - `INTEGRATION`: static non-LTO combined build and required test union.
 - `RELEASE`: clean whole-program LTO and reproducibility proof.
 
@@ -116,14 +117,13 @@ smuggle release work into a save cycle.
 
 ## Open gates
 
-- Remove complete-graph links from fresh changed-object cycles. The
-  restart-only population is 61 weighted occurrences. Stable warm feedback is
-  complete at p50 4.047 s / p95 4.595 s and 61/61 trustworthy under five
-  seconds, with zero links. The fresh-cache replay is p50 4.847 s / p95 5.278
-  s and performs two complete-graph links for each of 13 paths. Every former
-  broad plan now returns a bound focused verdict and exact deferred set; no
-  caller proof was dropped or claimed green. Source-byte instrumentation
-  remains open.
+- Instrument source bytes and repeat the changed-object latency population on
+  an idle host. Stable warm feedback remains complete at p50 4.047 s / p95
+  4.595 s and 61/61 trustworthy under five seconds. P30 removes every
+  complete-graph save link, but its safe 9-path changed-object replay ran under
+  load and measured p50 4.964 s / p95 6.656 s; its follow-up became partial
+  when four watcher waits exceeded the 10 s measurement bound. No proof was
+  dropped or claimed green on timeout.
 - The effective `dev-bin` recipe graph is now mechanically checked for LTO,
   including its package-verifier and adapter companions. Extend the same
   expanded-command proof to every integration/pre-push entry point; profile

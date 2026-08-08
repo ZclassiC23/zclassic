@@ -274,14 +274,26 @@ no-process implementation.
 
 ### Resident process-restart candidate
 
-`make dev-bin` freezes a non-LTO `DEV_RESTART` action plan beside the dev
-object graph. For a bounded set of ordinary non-consensus `.c` edits, the
+`make dev-bin` freezes non-LTO dev and proof relocatable bases plus a
+`DEV_RESTART` action plan beside their object graphs. For a bounded set of
+ordinary non-consensus `.c` edits, the
 watcher now snapshots the source CAS, invokes the pinned compiler directly for
 only those translation units, reuses every prior overlay whose generation and
-source digest remain current, links the complete isolated candidate directly,
+source digest remain current, links those overlays ahead of the exact frozen
+base, then
 rechecks the source CAS, and runs `discover help` as a five-second
 command-runtime probe. The resident owner starts only compiler, linker, and
 candidate children: it starts no Make process or shell.
+
+The save link never enumerates the complete object graph. Make performs one
+epoch-owned `-r` prelink when it establishes the dev environment; the action
+plan binds that regular file, and the artifact key hashes it. Each save then
+links only the current overlay response plus that frozen base, with overlay
+definitions ordered first. An overlay containing `.preinit_array`,
+`.init_array`, or `.fini_array` ownership fails closed before the linker so a
+translation unit cannot execute both its frozen and replacement initializer.
+Receipts count all linker processes separately from
+`complete_graph_linker_processes`; the latter stays zero on this path.
 
 Candidate and proof links share a verified host-local restart-artifact cache.
 Its key binds the compiler capsule, base object generation, normalized compile
@@ -291,7 +303,7 @@ Each entry is process-locked and accepted only when the executable hashes to
 its separate marker; a partial or corrupt pair is removed and rebuilt. A hit
 is hard-linked into the worktree's content-addressed candidate directory and
 still runs the compiler, source guards, candidate probe and affected tests—it
-removes only an identical complete-graph link. Receipts expose
+removes only an identical overlay link. Receipts expose
 `artifact_cache_key`, `artifact_cache_hit`, and exact process counts. Exact
 outputs and reverts may reuse an artifact; cache state grants no evidence or
 publication authority.

@@ -2,7 +2,7 @@
  *
  * Resident DEV_RESTART builder. Make freezes the compiler/link action once;
  * the watcher compiles only changed C translation units, substitutes their
- * objects into the complete static-dev link response, links directly, and
+ * objects ahead of one generation-frozen relocatable base, links directly, and
  * executes one bounded command-runtime probe. The same owner then links an
  * exact-source test candidate and runs the complete affected proof set cold,
  * without accepting cached verdicts. It never starts Make or a shell and
@@ -52,11 +52,13 @@ struct rr_plan {
     char libs[4096];
     char obj_dir[PATH_MAX];
     char link_rsp[PATH_MAX];
+    char base_reloc[PATH_MAX];
     char test_cflags[RR_TEXT_MAX];
     char test_ldflags[4096];
     char test_libs[4096];
     char test_obj_dir[PATH_MAX];
     char test_link_rsp[PATH_MAX];
+    char test_base_reloc[PATH_MAX];
     struct stat stamp;
     bool loaded;
 };
@@ -222,6 +224,8 @@ static bool rr_plan_load_locked(const char *root, struct rr_plan *out,
                     "DEV_OBJ_DIR=") ||
             rr_line(next.link_rsp, sizeof(next.link_rsp), line,
                     "DEV_LINK_RSP=") ||
+            rr_line(next.base_reloc, sizeof(next.base_reloc), line,
+                    "DEV_BASE_RELOC=") ||
             rr_line(next.test_cflags, sizeof(next.test_cflags), line,
                     "TEST_CFLAGS=") ||
             rr_line(next.test_ldflags, sizeof(next.test_ldflags), line,
@@ -231,7 +235,9 @@ static bool rr_plan_load_locked(const char *root, struct rr_plan *out,
             rr_line(next.test_obj_dir, sizeof(next.test_obj_dir), line,
                     "TEST_OBJ_DIR=") ||
             rr_line(next.test_link_rsp, sizeof(next.test_link_rsp), line,
-                    "TEST_LINK_RSP="))
+                    "TEST_LINK_RSP=") ||
+            rr_line(next.test_base_reloc, sizeof(next.test_base_reloc), line,
+                    "TEST_BASE_RELOC="))
             continue;
         fclose(f);
         rr_why(why, why_len, "restart action plan has an unknown field");
@@ -239,20 +245,25 @@ static bool rr_plan_load_locked(const char *root, struct rr_plan *out,
     }
     bool read_error = ferror(f) != 0;
     fclose(f);
-    char obj_full[PATH_MAX], rsp_full[PATH_MAX];
+    char obj_full[PATH_MAX], rsp_full[PATH_MAX], base_reloc_full[PATH_MAX];
     char test_obj_full[PATH_MAX], test_rsp_full[PATH_MAX];
+    char test_base_reloc_full[PATH_MAX];
     if (read_error || !next.cc[0] || !rr_hex64(next.compiler_id) ||
         !rr_hex64(next.base_generation) ||
         !next.cflags[0] || !next.ldflags[0] || !next.libs[0] ||
         !rr_join_root(root, next.obj_dir, obj_full) ||
         !rr_join_root(root, next.link_rsp, rsp_full) ||
+        !rr_join_root(root, next.base_reloc, base_reloc_full) ||
         !rr_directory(obj_full) || !rr_regular(rsp_full, NULL) ||
+        !rr_regular(base_reloc_full, NULL) ||
         !strstr(next.cflags, "-DZCL_DEV_BUILD") ||
         !next.test_cflags[0] || !next.test_ldflags[0] ||
         !next.test_libs[0] ||
         !rr_join_root(root, next.test_obj_dir, test_obj_full) ||
         !rr_join_root(root, next.test_link_rsp, test_rsp_full) ||
+        !rr_join_root(root, next.test_base_reloc, test_base_reloc_full) ||
         !rr_directory(test_obj_full) || !rr_regular(test_rsp_full, NULL) ||
+        !rr_regular(test_base_reloc_full, NULL) ||
         !strstr(next.test_cflags, "-DZCL_TESTING")) {
         rr_why(why, why_len,
                "restart action plan incomplete or its object graph is absent");
@@ -361,7 +372,7 @@ static bool rr_cache_root(char out[PATH_MAX])
 static bool rr_cache_key(const struct rr_plan *plan, const char *root,
                          const char *rsp, char out[65])
 {
-    static const char domain[] = "zcl.dev_artifact_cache.restart.v1";
+    static const char domain[] = "zcl.dev_artifact_cache.restart.v2";
     char cc[sizeof(plan->cc)], cflags[sizeof(plan->cflags)];
     char ldflags[sizeof(plan->ldflags)], libs[sizeof(plan->libs)];
     if (!rr_normalize_root(plan->cc, root, cc, sizeof(cc)) ||
@@ -384,6 +395,16 @@ static bool rr_cache_key(const struct rr_plan *plan, const char *root,
     rr_key_field(&ctx, "cflags", cflags, strlen(cflags));
     rr_key_field(&ctx, "ldflags", ldflags, strlen(ldflags));
     rr_key_field(&ctx, "libs", libs, strlen(libs));
+    char base_reloc_full[PATH_MAX], base_reloc_hash[65];
+    if (!rr_join_root(root, plan->base_reloc, base_reloc_full) ||
+        !rr_regular(base_reloc_full, NULL) ||
+        !rr_sha256_file(base_reloc_full, base_reloc_hash)) {
+        fclose(f);
+        return false;
+    }
+    rr_key_field(&ctx, "link_mode", "overlay_base_v1", 15);
+    rr_key_field(&ctx, "base_reloc_sha256", base_reloc_hash,
+                 strlen(base_reloc_hash));
     char token[PATH_MAX];
     bool ok = true;
     while (ok && fscanf(f, "%4095s", token) == 1) {
@@ -512,6 +533,79 @@ static bool rr_temp(char out[PATH_MAX], const char *dir, const char *suffix)
     if (fd < 0) return false;
     close(fd);
     return true;
+}
+
+static bool rr_overlay_object_safe(const char *path)
+{
+    static const char *const forbidden[] = {
+        ".preinit_array", ".init_array", ".fini_array",
+    };
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return false;
+    unsigned char buf[65536 + 32];
+    size_t carry = 0;
+    bool safe = true;
+    while (safe) {
+        size_t n = fread(buf + carry, 1, 65536, f);
+        size_t total = carry + n;
+        for (size_t i = 0; i < sizeof(forbidden) / sizeof(forbidden[0]); i++)
+            if (memmem(buf, total, forbidden[i], strlen(forbidden[i]))) {
+                safe = false;
+                break;
+            }
+        if (n < 65536)
+            break;
+        carry = total < 31 ? total : 31;
+        memmove(buf, buf + total - carry, carry);
+    }
+    safe = safe && ferror(f) == 0;
+    fclose(f);
+    return safe;
+}
+
+static bool rr_write_overlay_response(const char *root, const char *rsp,
+                                      char out[PATH_MAX], char *why,
+                                      size_t why_len)
+{
+    char dir[PATH_MAX];
+    if (snprintf(dir, sizeof(dir), "%s/build/dev-loop", root) >=
+            (int)sizeof(dir) || !rr_temp(out, dir, ".overlays.rsp")) {
+        rr_why(why, why_len, "could not prepare overlay-only link response");
+        return false;
+    }
+    FILE *in = fopen(rsp, "r"), *dst = fopen(out, "w");
+    if (!in || !dst) {
+        if (in) fclose(in);
+        if (dst) fclose(dst);
+        (void)unlink(out);
+        rr_why(why, why_len, "could not open overlay-only link response");
+        return false;
+    }
+    char token[PATH_MAX], full[PATH_MAX];
+    size_t count = 0;
+    bool ok = true;
+    while (ok && fscanf(in, "%4095s", token) == 1) {
+        bool overlay =
+            strncmp(token, "build/dev-loop/restart-objects/", 31) == 0 ||
+            strncmp(token, "build/dev-loop/restart-test-objects/", 36) == 0;
+        if (!overlay)
+            continue;
+        ok = rr_join_root(root, token, full) && rr_regular(full, NULL) &&
+             rr_overlay_object_safe(full) && fprintf(dst, "%s\n", token) > 0;
+        if (ok)
+            count++;
+    }
+    ok = ok && count > 0 && !ferror(in) && fflush(dst) == 0 &&
+         fsync(fileno(dst)) == 0;
+    fclose(in);
+    fclose(dst);
+    if (!ok) {
+        (void)unlink(out);
+        rr_why(why, why_len,
+               "overlay link input is missing, unreadable, or owns process initialization");
+    }
+    return ok;
 }
 
 static bool rr_source_is_c(const char *path)
@@ -714,6 +808,7 @@ static bool rr_write_response(const struct rr_plan *plan, const char *root,
 static bool rr_link(const struct rr_plan *plan, const char *root,
                     const char *rsp, const char *candidate_dir,
                     char binary[PATH_MAX],
+                    uint32_t *linker_processes,
                     struct zcl_devloop_process_result *process,
                     int64_t *elapsed_us, char *why, size_t why_len)
 {
@@ -723,6 +818,11 @@ static bool rr_link(const struct rr_plan *plan, const char *root,
         rr_why(why, why_len, "could not allocate restart binary temporary");
         return false;
     }
+    char overlay_rsp[PATH_MAX] = {0};
+    if (!rr_write_overlay_response(root, rsp, overlay_rsp, why, why_len)) {
+        (void)unlink(temp);
+        return false;
+    }
     char cc[sizeof(plan->cc)], cflags[sizeof(plan->cflags)];
     char flags[sizeof(plan->ldflags)];
     char libs[sizeof(plan->libs)], rsp_arg[PATH_MAX + 2];
@@ -730,26 +830,31 @@ static bool rr_link(const struct rr_plan *plan, const char *root,
     (void)snprintf(cflags, sizeof(cflags), "%s", plan->cflags);
     (void)snprintf(flags, sizeof(flags), "%s", plan->ldflags);
     (void)snprintf(libs, sizeof(libs), "%s", plan->libs);
-    (void)snprintf(rsp_arg, sizeof(rsp_arg), "@%s", rsp);
+    (void)snprintf(rsp_arg, sizeof(rsp_arg), "@%s", overlay_rsp);
     const char *argv[RR_ARG_MAX], *cflagv[RR_ARG_MAX];
     const char *flagv[RR_ARG_MAX], *libv[RR_ARG_MAX];
     size_t argc = zcl_argv_split(cc, argv, RR_ARG_MAX);
     size_t cflagc = zcl_argv_split(cflags, cflagv, RR_ARG_MAX);
     size_t flagc = zcl_argv_split(flags, flagv, RR_ARG_MAX);
     size_t libc = zcl_argv_split(libs, libv, RR_ARG_MAX);
-    if (!argc || argc + cflagc + flagc + libc + 4 >= RR_ARG_MAX) {
+    if (!argc || argc + cflagc + flagc + libc + 6 >= RR_ARG_MAX) {
         (void)unlink(temp);
+        (void)unlink(overlay_rsp);
         rr_why(why, why_len, "restart link action exceeds argv bound");
         return false;
     }
     for (size_t i = 0; i < cflagc; i++) argv[argc++] = cflagv[i];
     for (size_t i = 0; i < flagc; i++) argv[argc++] = flagv[i];
     argv[argc++] = "-o"; argv[argc++] = temp; argv[argc++] = rsp_arg;
+    argv[argc++] = plan->base_reloc;
+    argv[argc++] = "-Wl,--allow-multiple-definition";
     for (size_t i = 0; i < libc; i++) argv[argc++] = libv[i];
     argv[argc] = NULL;
+    (*linker_processes)++;
     int64_t started = platform_time_monotonic_us();
     bool ran = zcl_devloop_process_run(root, argv, 30000, process);
     *elapsed_us = platform_time_monotonic_us() - started;
+    (void)unlink(overlay_rsp);
     if (!ran || process->timed_out || process->term_signal ||
         process->exit_code != 0 || !rr_regular(temp, NULL)) {
         (void)unlink(temp);
@@ -800,8 +905,8 @@ static bool rr_link_cached(const struct rr_plan *plan, const char *root,
         (void)unlink(cache_binary);
         (void)unlink(cache_hash);
     }
-    (*linker_processes)++;
-    bool ok = rr_link(plan, root, rsp, candidate_dir, binary, process,
+    bool ok = rr_link(plan, root, rsp, candidate_dir, binary,
+                      linker_processes, process,
                       elapsed_us, why, why_len);
     if (ok && cache_fd >= 0) {
         char hash[65];
@@ -1139,6 +1244,8 @@ static bool rr_restart_prove(
     (void)snprintf(plan.obj_dir, sizeof(plan.obj_dir), "%s", base.test_obj_dir);
     (void)snprintf(plan.link_rsp, sizeof(plan.link_rsp), "%s",
                    base.test_link_rsp);
+    (void)snprintf(plan.base_reloc, sizeof(plan.base_reloc), "%s",
+                   base.test_base_reloc);
 
     struct dev_source_record source_before = {0}, source_after = {0};
     if (guard_source) receipt->source_guard_captures++;
@@ -1380,6 +1487,8 @@ static bool rr_emit_event(
                                build->compiler_processes);
         (void)json_push_kv_int(&receipt, "linker_processes",
                                build->linker_processes);
+        (void)json_push_kv_int(&receipt, "complete_graph_linker_processes",
+                               build->complete_graph_linker_processes);
         (void)json_push_kv_int(&receipt, "probe_processes",
                                build->probe_processes);
         (void)json_push_kv_int(&receipt, "source_guard_captures",
@@ -1434,6 +1543,8 @@ static bool rr_emit_event(
                                proof->compiler_processes);
         (void)json_push_kv_int(&receipt, "linker_processes",
                                proof->linker_processes);
+        (void)json_push_kv_int(&receipt, "complete_graph_linker_processes",
+                               proof->complete_graph_linker_processes);
         (void)json_push_kv_int(&receipt, "test_processes",
                                proof->test_processes);
         (void)json_push_kv_int(&receipt, "source_guard_captures",

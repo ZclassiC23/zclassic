@@ -320,8 +320,9 @@ while IFS= read -r row; do
        (.proof_receipt.linker_processes // 0))' <<<"$data")"
     test_processes="$(jq -r '.proof_receipt.test_processes // 0' <<<"$data")"
     probe_processes="$(jq -r '.build_receipt.probe_processes // 0' <<<"$data")"
-    complete_graph_links=0
-    [ "$action" != restart ] || complete_graph_links="$linker_processes"
+    complete_graph_links="$(jq -r '
+      ((.build_receipt.complete_graph_linker_processes // 0) +
+       (.proof_receipt.complete_graph_linker_processes // 0))' <<<"$data")"
     test_timing_bound=false
     test_group_timings='[]'
     if [ "$test_processes" -gt 0 ] && [ -r "$TEST_TIMING" ]; then

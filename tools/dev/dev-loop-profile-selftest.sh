@@ -57,6 +57,17 @@ fi
 
 git -C "$ROOT" grep -q '\$(DEV_RESTART_CFLAGS) \$(DEV_RESTART_LDFLAGS)' -- Makefile ||
     fail 'incremental dev link is not owned by DEV_RESTART'
+git -C "$ROOT" grep -q '^$(DEV_RESTART_BASE_RELOC):' -- Makefile ||
+    fail 'generation-frozen dev relocatable base is missing'
+git -C "$ROOT" grep -q '^$(TEST_RESTART_BASE_RELOC):' -- Makefile ||
+    fail 'generation-frozen proof relocatable base is missing'
+git -C "$ROOT" grep -q "printf 'DEV_BASE_RELOC=" -- Makefile ||
+    fail 'restart plan does not bind the dev relocatable base'
+git -C "$ROOT" grep -q "printf 'TEST_BASE_RELOC=" -- Makefile ||
+    fail 'restart plan does not bind the proof relocatable base'
+git -C "$ROOT" grep -q -- '-Wl,--allow-multiple-definition' -- \
+    tools/dev/devloop_restart_build.c ||
+    fail 'overlay objects are not ordered ahead of the frozen base'
 git -C "$ROOT" grep -q 'dev-bin zclassic23-dev:.*\$(ZCLASSIC23_DEV_BIN)' -- Makefile ||
     fail 'dev-bin target is missing'
 git -C "$ROOT" grep -q '\$(HOTSWAP_ACTION_PLAN) dev-package-verifier' -- Makefile ||
