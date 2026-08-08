@@ -1895,6 +1895,12 @@ static int test_dev_branch_leaves(void)
         ASSERT_EQ(failure_show->budget_bytes, (size_t)6144);
         ASSERT_STR_EQ(failure_show->positional_keys, "failure_id");
 
+        const struct zcl_command_spec *loop_wait =
+            find_spec(reg, "dev.loop.wait");
+        ASSERT(loop_wait != NULL);
+        ASSERT_EQ(loop_wait->budget_bytes,
+                  (size_t)ZCL_COMMAND_LIST_BUDGET);
+
         PASS();
     } _test_next:;
     return failures;

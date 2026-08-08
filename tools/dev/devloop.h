@@ -357,6 +357,8 @@ struct dev_source_record {
     uint32_t cas_files_total;
     uint32_t cas_files_read;
     uint32_t cas_nodes_hashed;
+    uint64_t cas_bytes_total;
+    uint64_t cas_bytes_read;
     int64_t cas_elapsed_us;
     bool cas_present;
 };

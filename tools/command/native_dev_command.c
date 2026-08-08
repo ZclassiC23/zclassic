@@ -793,7 +793,9 @@ static void dev_emit_loop_status(const char *repo_root,
             "integration_proof_deferred", "bounded_proof_deferred",
             "closure_refresh_deferred",
             "feedback_parallel", "source_guard_us",
-            "source_guard_captures", "closure_us", "failure_capsule",
+            "source_guard_captures", "source_guard_bytes_read",
+            "source_bytes_total", "changed_source_bytes",
+            "source_byte_accounting_complete", "closure_us", "failure_capsule",
             "agent_next_action",
         };
         struct json_value summary;

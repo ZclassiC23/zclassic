@@ -102,7 +102,15 @@ aggregate()
            map(select(.[0].failure_capsule != "") |
              {failure:.[0].failure_capsule,paths:length,
               weighted_edit_occurrences:(map(.frequency)|add)})),
-         bytes_scanned:{status:"not_yet_instrumented"},
+         bytes_scanned:{
+           status:(if all($samples[]; .source_byte_accounting_complete)
+                   then "complete" else "partial" end),
+           source_guard_bytes_read:
+             ([$samples[]|(.source_guard_bytes_read // 0)]|add),
+           changed_source_bytes:
+             ([$samples[]|(.changed_source_bytes // 0)]|add),
+           source_bytes_total_max:
+             ([$samples[]|(.source_bytes_total // 0)]|max)},
          samples:$samples}
       end' "$samples" >"$output"
 }
@@ -115,9 +123,9 @@ self_test()
     samples="$scratch/samples.jsonl"
     receipt="$scratch/receipt.json"
     printf '%s\n' \
-      '{"path":"a.c","class":"requires_fast_restart","frequency":2,"feedback_us":1000000,"result_bound":true,"feedback_green":true,"failure_capsule":"","compiler_processes":2,"linker_processes":2,"test_processes":1,"probe_processes":1,"make_processes":0,"shell_processes":0,"lto_invocations":0,"complete_graph_links":2}' \
-      '{"path":"b.c","class":"requires_fast_restart","frequency":1,"feedback_us":4000000,"result_bound":true,"feedback_green":true,"failure_capsule":"","compiler_processes":2,"linker_processes":2,"test_processes":1,"probe_processes":1,"make_processes":0,"shell_processes":0,"lto_invocations":0,"complete_graph_links":2}' \
-      '{"path":"c.c","class":"requires_fast_restart","frequency":1,"feedback_us":6000000,"result_bound":false,"feedback_green":false,"failure_capsule":"WAIT_TIMEOUT","compiler_processes":1,"linker_processes":0,"test_processes":0,"probe_processes":0,"make_processes":0,"shell_processes":0,"lto_invocations":0,"complete_graph_links":0}' \
+      '{"path":"a.c","class":"requires_fast_restart","frequency":2,"feedback_us":1000000,"result_bound":true,"feedback_green":true,"failure_capsule":"","compiler_processes":2,"linker_processes":2,"test_processes":1,"probe_processes":1,"make_processes":0,"shell_processes":0,"lto_invocations":0,"complete_graph_links":2,"source_byte_accounting_complete":true,"source_guard_bytes_read":100,"source_bytes_total":1000,"changed_source_bytes":10}' \
+      '{"path":"b.c","class":"requires_fast_restart","frequency":1,"feedback_us":4000000,"result_bound":true,"feedback_green":true,"failure_capsule":"","compiler_processes":2,"linker_processes":2,"test_processes":1,"probe_processes":1,"make_processes":0,"shell_processes":0,"lto_invocations":0,"complete_graph_links":2,"source_byte_accounting_complete":true,"source_guard_bytes_read":200,"source_bytes_total":1000,"changed_source_bytes":20}' \
+      '{"path":"c.c","class":"requires_fast_restart","frequency":1,"feedback_us":6000000,"result_bound":false,"feedback_green":false,"failure_capsule":"WAIT_TIMEOUT","compiler_processes":1,"linker_processes":0,"test_processes":0,"probe_processes":0,"make_processes":0,"shell_processes":0,"lto_invocations":0,"complete_graph_links":0,"source_byte_accounting_complete":true,"source_guard_bytes_read":300,"source_bytes_total":1000,"changed_source_bytes":30}' \
       >"$samples"
     aggregate "$samples" "$receipt"
     jq -e '
@@ -131,7 +139,10 @@ self_test()
       .processes.compiler == 5 and .processes.lto == 0 and
       .gates.feedback_p95_under_5s == false and
       .gates.zero_lto == true and
-      .bytes_scanned.status == "not_yet_instrumented"' \
+      .bytes_scanned.status == "complete" and
+      .bytes_scanned.source_guard_bytes_read == 600 and
+      .bytes_scanned.changed_source_bytes == 60 and
+      .bytes_scanned.source_bytes_total_max == 1000' \
       "$receipt" >/dev/null || fail 'weighted aggregation contract regressed'
     printf '{"path":"bad"}\n' >"$samples"
     if aggregate "$samples" "$receipt" 2>/dev/null; then
@@ -385,6 +396,12 @@ while IFS= read -r row; do
           .bounded_proof_deferred=
             ($cycle.proof_receipt.bounded_proof_deferred // false) |
           .artifact_cache_hit=($cycle.build_receipt.artifact_cache_hit // false)' \
+      | jq --argjson cycle "$data" '
+          .source_byte_accounting_complete=
+            ($cycle.source_byte_accounting_complete // false) |
+          .source_guard_bytes_read=($cycle.source_guard_bytes_read // 0) |
+          .source_bytes_total=($cycle.source_bytes_total // 0) |
+          .changed_source_bytes=($cycle.changed_source_bytes // 0)' \
       >>"$samples"
     printf 'replay %02d %-58s %8dus %s/%s\n' \
       "$sample_no" "$path" "$feedback_us" "$action" "$status" >&2

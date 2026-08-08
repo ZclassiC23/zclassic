@@ -295,6 +295,19 @@ translation unit cannot execute both its frozen and replacement initializer.
 Receipts count all linker processes separately from
 `complete_graph_linker_processes`; the latter stays zero on this path.
 
+The cycle also exposes the exact source-CAS I/O it paid:
+`source_guard_bytes_read`, `source_bytes_total`, `changed_source_bytes`, and
+`source_byte_accounting_complete`. A newly started watcher deliberately
+forgets the prior Merkle snapshot on its first observed edit so that events
+between watch installation and the first cycle cannot be hidden; that first
+cycle may therefore re-read the whole indexed source tree. Later edits on the
+same resident watcher reuse the persistent snapshot and normally re-read only
+the files whose stat keys changed. Missing, overflowing, or incomplete byte
+accounting is labeled incomplete, never rendered as a trustworthy zero.
+`dev.loop.wait` uses the list-sized response budget because the existing cycle
+schema may contain a full bounded proof receipt; concise loop status continues
+to project only its decision fields.
+
 Candidate and proof links share a verified host-local restart-artifact cache.
 Its key binds the compiler capsule, base object generation, normalized compile
 and link actions, the ordered rewritten response, and the SHA-256 of every

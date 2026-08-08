@@ -824,7 +824,6 @@ static bool merkle_file_cb(const char *relpath, const struct stat *st,
         leaf.dirty = !(prev && memcmp(prev->digest.bytes, leaf.digest.bytes,
                                       32) == 0);
     }
-
     char dir[256];
     const char *slash = strrchr(relpath, '/');
     if (slash) {
@@ -921,8 +920,8 @@ static struct ci_merkle *merkle_run(const char *root, bool use_snapshot,
     qsort(m->nodes, m->nnodes, sizeof(*m->nodes), merkle_node_cmp);
 
     b.cost.files_total = b.nleaves;
+    b.cost.bytes_total = root_node.total_bytes;
     b.cost.nodes_total = b.nnodes;
-
     /* Persist only when something actually moved: a repeat refresh over an
      * untouched tree writes nothing. */
     if (use_snapshot &&

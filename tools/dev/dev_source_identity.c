@@ -86,6 +86,8 @@ bool zcl_dev_source_cas_capture(const char *repo_root,
         out->cas_files_total = cost.files_total;
         out->cas_files_read = cost.files_read;
         out->cas_nodes_hashed = cost.nodes_hashed;
+        out->cas_bytes_total = cost.bytes_total;
+        out->cas_bytes_read = cost.bytes_read;
         out->cas_present = true;
     }
     ci_merkle_free(tree);

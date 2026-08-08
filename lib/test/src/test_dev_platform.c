@@ -2595,6 +2595,8 @@ static int test_native_source_cas_shadow(void)
         ASSERT(strlen(first.cas_root_sha3) == 64);
         ASSERT(first.cas_files_total == 2);
         ASSERT(first.cas_files_read == 2);
+        ASSERT(first.cas_bytes_total == 61);
+        ASSERT(first.cas_bytes_read == 61);
 
         ASSERT(zcl_dev_source_cas_capture(fixture, &warm));
         ASSERT(warm.cas_present);
@@ -2602,12 +2604,16 @@ static int test_native_source_cas_shadow(void)
         ASSERT(warm.cas_files_total == 2);
         ASSERT(warm.cas_files_read == 0);
         ASSERT(warm.cas_nodes_hashed == 0);
+        ASSERT(warm.cas_bytes_total == 61);
+        ASSERT(warm.cas_bytes_read == 0);
 
         ASSERT(dp_mk_write(fixture, "lib/net/src/source_cas_a.c",
                            "int source_cas_a(void) { return 2; }\n"));
         ASSERT(zcl_dev_source_cas_capture(fixture, &edited));
         ASSERT(edited.cas_present);
         ASSERT(edited.cas_files_read == 1);
+        ASSERT(edited.cas_bytes_total == 61);
+        ASSERT(edited.cas_bytes_read == 37);
         ASSERT(strcmp(first.cas_root_sha3, edited.cas_root_sha3) != 0);
         ASSERT(system("rm -rf test-tmp/dev_source_cas_shadow") == 0);
         PASS();

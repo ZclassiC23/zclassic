@@ -13,6 +13,7 @@
 #include "devloop.h"
 #include "test_group_catalog.h"
 
+#include "base/checked.h"
 #include "base/hex.h"
 #include "crypto/sha256.h"
 #include "json/json.h"
@@ -1412,6 +1413,8 @@ static bool rr_emit_event(
     const struct zcl_devloop_restart_proof_receipt *proof,
     const struct zcl_devloop_process_result *process, const char *why,
     int64_t source_guard_us, uint32_t source_guard_captures,
+    uint64_t source_guard_bytes_read, uint64_t source_bytes_total,
+    bool source_byte_accounting_complete,
     int64_t closure_us, bool closure_refresh_deferred,
     bool feedback_parallel)
 {
@@ -1442,6 +1445,33 @@ static bool rr_emit_event(
     (void)json_push_kv_int(&doc, "source_guard_us", source_guard_us);
     (void)json_push_kv_int(&doc, "source_guard_captures",
                            source_guard_captures);
+    uint64_t changed_source_bytes = 0;
+    bool changed_bytes_complete = true;
+    for (size_t i = 0; i < source_count; i++) {
+        char full[PATH_MAX];
+        struct stat st;
+        uint64_t next = 0;
+        if (!rr_join_root(root, sources[i], full) ||
+            !rr_regular(full, &st) || st.st_size < 0 ||
+            !zcl_u64_add(changed_source_bytes, (uint64_t)st.st_size, &next)) {
+            changed_bytes_complete = false;
+            break;
+        }
+        changed_source_bytes = next;
+    }
+    source_byte_accounting_complete = source_byte_accounting_complete &&
+        changed_bytes_complete && source_guard_bytes_read <= INT64_MAX &&
+        source_bytes_total <= INT64_MAX && changed_source_bytes <= INT64_MAX;
+    (void)json_push_kv_bool(&doc, "source_byte_accounting_complete",
+                            source_byte_accounting_complete);
+    if (source_byte_accounting_complete) {
+        (void)json_push_kv_int(&doc, "source_guard_bytes_read",
+                               (int64_t)source_guard_bytes_read);
+        (void)json_push_kv_int(&doc, "source_bytes_total",
+                               (int64_t)source_bytes_total);
+        (void)json_push_kv_int(&doc, "changed_source_bytes",
+                               (int64_t)changed_source_bytes);
+    }
     (void)json_push_kv_int(&doc, "closure_us", closure_us);
     (void)json_push_kv_int(&doc, "file_count", (int64_t)source_count);
     json_init(&files); json_set_array(&files);
@@ -1614,6 +1644,9 @@ int zcl_devloop_restart_event(const char *repo_root,
             return 0;
     int64_t started = platform_time_monotonic_us();
     int64_t source_guard_us = 0;
+    uint64_t source_guard_bytes_read = 0;
+    uint64_t source_bytes_total = 0;
+    bool source_byte_accounting_complete = false;
     int64_t closure_us = 0;
     uint32_t source_guard_captures = 0;
     struct zcl_devloop_restart_build_receipt build = {0};
@@ -1626,6 +1659,10 @@ int zcl_devloop_restart_event(const char *repo_root,
     source_guard_captures++;
     bool ok = zcl_dev_source_cas_capture(repo_root, &source_before) &&
               source_before.cas_present;
+    if (ok) {
+        source_guard_bytes_read = source_before.cas_bytes_read;
+        source_bytes_total = source_before.cas_bytes_total;
+    }
     source_guard_us += platform_time_monotonic_us() - guard_started;
     if (!ok)
         rr_why(why, sizeof(why),
@@ -1685,6 +1722,13 @@ int zcl_devloop_restart_event(const char *repo_root,
              strcmp(source_before.cas_root_sha3,
                     source_after.cas_root_sha3) == 0;
         source_guard_us += platform_time_monotonic_us() - guard_started;
+        uint64_t combined_bytes = 0;
+        source_byte_accounting_complete = ok &&
+            source_after.cas_bytes_total == source_bytes_total &&
+            zcl_u64_add(source_guard_bytes_read,
+                        source_after.cas_bytes_read, &combined_bytes);
+        if (source_byte_accounting_complete)
+            source_guard_bytes_read = combined_bytes;
         if (!ok)
             rr_why(why, sizeof(why),
                    "restart epoch source changed during feedback build");
@@ -1700,6 +1744,8 @@ int zcl_devloop_restart_event(const char *repo_root,
         ok ? "immediate_affected_proofs" : "compile_link_probe",
         platform_time_monotonic_us() - started, publish_mode, &build,
         &proof, display_process, why, source_guard_us, source_guard_captures,
+        source_guard_bytes_read, source_bytes_total,
+        source_byte_accounting_complete,
         closure_us, plan.closure_snapshot, feedback_parallel);
     return emitted ? 1 : -1;
 }
