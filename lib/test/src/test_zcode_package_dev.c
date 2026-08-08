@@ -1146,6 +1146,24 @@ static int zpd_test_standard_profile(void)
         char *attempt = strrchr(session_root, '/');
         ASSERT(attempt != NULL);
         *attempt = '\0';
+        char ledger[4500];
+        (void)snprintf(ledger, sizeof(ledger), "%s/zbuild/node.db",
+                       session_root);
+        ASSERT(unlink(ledger) == 0);
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", work_id));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_standard_status_test.v1");
+        zcl_native_handle_zcode_work_status(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                      "PROVEN") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data,
+                                            "sanitizer_result")),
+                      "passed_asan_ubsan") == 0);
+        zcl_command_reply_free(&reply); json_free(&input);
+
         ASSERT(zcl_tree_remove(session_root).ok);
         zpd_fixture_cleanup(root);
         PASS();

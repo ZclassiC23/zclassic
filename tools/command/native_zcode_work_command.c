@@ -514,6 +514,24 @@ static bool zwork_patch_summary_load(
     return ok;
 }
 
+static bool zwork_policy_load(
+    const char *workspace, const char *root_hex,
+    struct vcs_zcode_proof_policy_v1 *policy)
+{
+    uint8_t root[32], checked[32], *wire = NULL;
+    size_t wire_len = 0;
+    bool ok = policy && zcl_hex_decode_lower(root_hex, root, 32) &&
+        vcs_object_load_raw_bounded(
+            workspace, root, VCS_ZCODE_PROOF_POLICY_WIRE_BYTES,
+            &wire, &wire_len) == 0 &&
+        vcs_zcode_proof_policy_parse(wire, wire_len, policy) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_proof_policy_root(policy, checked) == VCS_ZCODE_DEV_OK &&
+        memcmp(root, checked, sizeof(root)) == 0;
+    free(wire);
+    return ok;
+}
+
 void zcl_native_handle_zcode_work_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -557,10 +575,14 @@ void zcl_native_handle_zcode_work_status(
         repair_needed && entry->candidate_count >= 3u
             ? "zcode work start" : "zcode work run";
     struct zwork_patch_summary summary;
-    if (!zwork_patch_summary_load(workspace, entry, &summary)) {
+    struct vcs_zcode_proof_policy_v1 policy;
+    if (!zwork_patch_summary_load(workspace, entry, &summary) ||
+        !zwork_policy_load(workspace, entry->proof_policy_root_hex,
+                           &policy)) {
         zwork_fail(reply, "PATCH_SUMMARY_FAILED", "rebuild",
                    "latest canonical patch or its source blobs could not be reverified",
                    false, false);
+        vcs_zcode_patch_free(&summary.patch);
         free(goal); vcs_zcode_task_index_free(index); return;
     }
     struct json_value expert, changed_paths;
@@ -586,6 +608,14 @@ void zcl_native_handle_zcode_work_status(
             ? "request_changes" :
         entry->latest_review_verdict == VCS_ZCODE_REVIEW_REJECT
             ? "reject" : "not_started";
+    bool standard_evidence = policy.minimum_compile_receipts >= 2u ||
+                             policy.minimum_test_receipts >= 2u;
+    const char *sanitizer_summary = !standard_evidence ? "not_required" :
+        strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0
+            ? "passed_asan_ubsan" :
+        repair_needed ? "failed_or_unavailable" :
+        evidence_ready || accepted ? "awaiting_policy_verification" :
+                                    "not_started";
     bool ok = paths_ok &&
         json_push_kv_str(&expert, "task_root", entry->task_root_hex) &&
         json_push_kv_str(&expert, "source_root", entry->source_root_hex) &&
@@ -626,7 +656,8 @@ void zcl_native_handle_zcode_work_status(
                          build_passed ? "passed_declared_tests" :
                          repair_needed ? "failed_or_not_reached" :
                                          "not_started") &&
-        json_push_kv_str(&reply->data, "sanitizer_result", "not_started") &&
+        json_push_kv_str(&reply->data, "sanitizer_result",
+                         sanitizer_summary) &&
         json_push_kv_str(&reply->data, "fuzz_result", "not_started") &&
         json_push_kv_str(&reply->data, "reproduction_grade", "none") &&
         json_push_kv_str(&reply->data, "review_verdict", review_summary) &&
