@@ -200,7 +200,8 @@ static bool read_cookie_at(const char *datadir, char *cookie,
 /* Build a self-describing error body for the "no usable auth cookie" case.
  * Heap-allocated like every other node_rpc_call return value; caller frees.
  * Naming the cookie path turns a cryptic 401 into an actionable message
- * ("is the node running? is -datadir correct?"). */
+ * ("is the node running? is -datadir correct?"). Kept short so it survives
+ * the 192-byte native-handler message budget (native_handler_body.h). */
 static char *cookie_error_body(const char *datadir)
 {
     char *out = zcl_malloc(768, "rpc cookie error json");
@@ -208,8 +209,7 @@ static char *cookie_error_body(const char *datadir)
     snprintf(out, 768,
         "{\"error\":{\"code\":-32603,\"message\":"
         "\"cannot read RPC auth cookie at %s/.cookie — is the node "
-        "running and is the selected datadir correct? (proceeding would "
-        "send an empty credential and 401)\"}}",
+        "running? is -datadir correct?\"}}",
         datadir && datadir[0] ? datadir : "(unset datadir)");
     return out;
 }

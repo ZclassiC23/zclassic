@@ -223,7 +223,7 @@ struct zcl_result metaverse_space_show_bounded(
   if (wire_bytes_out)
     *wire_bytes_out = 0;
   if (!workspace || !hex_root(object_root, root) || !out || !wire_bytes_out)
-    return ZCL_ERR(-1, "space-show-input-invalid");
+    return ZCL_ERR(-1, "root must be 64 lowercase hex characters");
   int loaded = vcs_object_load_raw_bounded(
       workspace, root, maximum_wire_bytes, &wire, &wire_len);
   if (loaded == -2)

@@ -290,6 +290,13 @@ static bool mvspace_manifest(
       memcmp(online_pubkey, manifest->delegation.online_pubkey, 32) != 0 ||
       vcs_space_manifest_sign(manifest, online_seed) != VCS_SPACE_OK) {
     memory_cleanse(online_seed, sizeof(online_seed));
+    /* A missing DHT identity file is provisioned by the delegate flow
+     * (native_zcode_network_command.c load_or_create) — name the remedy
+     * instead of leaving the operator with a bare I/O error. */
+    if (strcmp(error, "cannot open DHT identity file") == 0)
+      (void)snprintf(error, sizeof(error),
+                     "cannot open DHT identity file — run `zclassic23 zcode "
+                     "network delegate` once to provision it");
     mvspace_blocked(reply, "IDENTITY_UNAVAILABLE",
                     error[0] ? error :
                     "local online key/delegation cannot sign this manifest",

@@ -90,12 +90,14 @@ size_t zcode_view_index(size_t packages, uint64_t settled_facts,
 
     n = snprintf(body + off, sizeof(body) - off,
         "<h1>ZCODE Library</h1>"
-        "<p>Publish, test, maintain and share permissive C23 code through "
+        "<p><span class='pill'>SIMULATION</span> Publish, test, maintain "
+        "and share permissive C23 code through "
         "ZClassic23. Earn ZCODE, climb the rankings and collect permanent "
         "contributor badges. This site reads the same local projections as "
         "the <code>zcode.*</code> typed commands &mdash; the signed release "
         "envelopes and verified chunks under the node's package store are "
-        "the only package truth.</p>"
+        "the only package truth. ZCODE score and rewards are "
+        "simulation-only &mdash; no live token exists.</p>"
         "<div class='grid'>"
         "<div class='card'><h3><a href='/zcode/packages'>Packages</a></h3>"
         "<div class='kv'><b>published releases</b>"
@@ -157,8 +159,10 @@ size_t zcode_view_packages(const struct vcs_package_index_entry **rows,
             total, total == 1 ? "" : "es", safe_query, rendered, scanned);
     } else {
         n = snprintf(body + off, sizeof(body) - off,
-            "<p>%zu published release%s (%zu shown).</p>",
-            total, total == 1 ? "" : "s", rendered);
+            "<p>%zu published release%s (%zu shown).%s</p>",
+            total, total == 1 ? "" : "s", rendered,
+            total == 0 ? " Publish your first package: "
+                         "`zclassic23 zcode guide`." : "");
     }
     if (n > 0) off += (size_t)n;
 

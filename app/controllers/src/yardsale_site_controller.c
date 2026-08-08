@@ -198,7 +198,8 @@ static size_t yardsale_render_index(struct node_db *ndb, int64_t now,
     if (count == 0)
         off += (size_t)snprintf((char *)out + off, out_cap - off,
             "<tr><td colspan='7'>no live signs — the yard is empty"
-            "</td></tr>");
+            " — pin your own sign: `zclassic23 discover help yardsale` "
+            "(seller commands)</td></tr>");
     int closed = snprintf((char *)out + off, out_cap - off, "</table>");
     if (closed > 0)
         off += (size_t)closed;

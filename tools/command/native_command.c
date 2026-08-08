@@ -2939,8 +2939,18 @@ void zcl_native_status_brief_render(const struct json_value *d, char *buf,
      * spec forbids. */
     if (len > 0 && buf[len - 1] == ' ')
         buf[--len] = '\0';
-    if (len > 200)
-        buf[200] = '\0';
+    if (len > 200) {
+        /* Clamp at the last space inside the 200-byte contract so the
+         * line never ends mid-token; the hard clamp is the fallback when
+         * no space exists. */
+        size_t cut = 200;
+        while (cut > 0 && buf[cut - 1] != ' ')
+            cut--;
+        if (cut > 0)
+            buf[cut - 1] = '\0';
+        else
+            buf[200] = '\0';
+    }
 }
 
 /* Pick one short, deterministic next step from the same brief body: a named
@@ -3743,7 +3753,10 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
                                          sizeof(colored)) > 0)
                     emit = colored;
                 printf("%s\n", emit);
-                if (suggest_next &&
+                /* The next: line prints by default on a human terminal
+                 * (nc_human); pipes keep the frozen one-line contract
+                 * unless --next was passed explicitly. */
+                if ((suggest_next || nc_human()) &&
                     (strcmp(spec->path, "status") == 0 ||
                      strcmp(spec->path, "core.status.brief") == 0))
                     printf("next: %s\n",

@@ -231,7 +231,10 @@ void explain_compose_blockers(const struct explain_inputs *in,
                               struct json_value *out)
 {
     json_set_object(out);
-    char t[1600];
+    /* Sized for the header + dominant line + 8 rows at a full-length
+     * blocker reason (~220 chars) each, so a reason never truncates
+     * mid-sentence. */
+    char t[3200];
     size_t len = 0;
 
     const struct json_value *arr = in->blockers;
