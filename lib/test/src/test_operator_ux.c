@@ -335,8 +335,12 @@ static int test_producer_status_synthetic(void)
         ASSERT(db != NULL);
         ASSERT(stage_set_named_cursor(db, "utxo_apply", 12345));
         ASSERT(stage_set_named_cursor(db, "tip_finalize", 12300));
-        ASSERT(producer_status_exec(
-            db,
+        /* Capture one clock value. Two separate SQLite statements using
+         * strftime('now') can straddle a second boundary under full-suite
+         * load, turning the exact 60-second fixture into 59 or 61 seconds. */
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        char seed_sql[1024];
+        int seed_n = snprintf(seed_sql, sizeof(seed_sql),
             "CREATE TABLE utxo_apply_log("
             "height INTEGER PRIMARY KEY,status TEXT NOT NULL,"
             "ok INTEGER NOT NULL,spent_count INTEGER NOT NULL,"
@@ -344,11 +348,12 @@ static int test_producer_status_synthetic(void)
             "first_failure_kind TEXT,first_failure_detail BLOB,"
             "applied_at INTEGER NOT NULL);"
             "INSERT INTO utxo_apply_log VALUES("
-            "12000,'ok',1,0,0,0,NULL,NULL,"
-            "CAST(strftime('%s','now') AS INTEGER)-60);"
+            "12000,'ok',1,0,0,0,NULL,NULL,%lld);"
             "INSERT INTO utxo_apply_log VALUES("
-            "12344,'ok',1,0,0,0,NULL,NULL,"
-            "CAST(strftime('%s','now') AS INTEGER));"));
+            "12344,'ok',1,0,0,0,NULL,NULL,%lld);",
+            (long long)(now - 60), (long long)now);
+        ASSERT(seed_n > 0 && (size_t)seed_n < sizeof(seed_sql));
+        ASSERT(producer_status_exec(db, seed_sql));
         progress_store_close();
 
         struct producer_status_read st;
