@@ -609,7 +609,7 @@ CFLAGS = -std=c23 -g -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flt
 	$(ZCL_WARN_STRINGOP_OVERFLOW) $(ZCL_WARN_UNUSED_RESULT) \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(TOOLS_INCLUDES) $(DEVLOOP_INCLUDES) \
 	-Ilib/test/include \
-	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE $(BUILD_IDENTITY_CPPFLAGS) -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
+	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE $(BUILD_IDENTITY_CPPFLAGS) -Ivendor/include -Ivendor/x11/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS) $(if $(ZCL_WITH_RUST),-DZCL_WITH_RUST=1)
 LDFLAGS = -pthread -flto=auto -rdynamic $(HARDEN_LDFLAGS)
 CACHED_CFLAGS = $(filter-out -DZCL_BUILD_SOURCE_ID=% -DZCL_BUILD_CLEAN=%,$(CFLAGS))
@@ -971,12 +971,13 @@ check-vendor-provenance:
 	@sha256sum --check vendor/rgfw/SHA256SUMS
 	@sha256sum --check vendor/qrcodegen/SHA256SUMS
 	@sha256sum --check vendor/typography/SHA256SUMS
+	@sha256sum --check vendor/x11/SHA256SUMS
 
 # Reusable native presentation package. This deliberately has a tiny source
 # closure: three project TUs plus pinned RGFW headers, with no node/app objects.
 PRESENTATION_BUILD_DIR := build/presentation
 PRESENTATION_PACKAGE_CFLAGS := -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	-Ilib/presentation/include
+	-Ilib/presentation/include -Ivendor/x11/include
 PRESENTATION_PACKAGE_SRCS := \
 	lib/presentation/src/presentation.c \
 	lib/presentation/src/canvas.c \
@@ -999,6 +1000,9 @@ PRESENTATION_VENDOR_INPUTS := \
 	vendor/typography/noto_sans_ascii.inc \
 	vendor/typography/LICENSE.stb vendor/typography/LICENSE.noto \
 	vendor/typography/SOURCE vendor/typography/SHA256SUMS \
+	vendor/x11/LICENSE vendor/x11/SOURCE vendor/x11/SHA256SUMS \
+	$(wildcard vendor/x11/include/X11/*.h) \
+	$(wildcard vendor/x11/include/X11/extensions/*.h) \
 	tools/scripts/test_vendor_provenance.sh
 PRESENTATION_HOST_OS := $(shell uname -s 2>/dev/null)
 ifeq ($(PRESENTATION_HOST_OS),Darwin)
@@ -1021,6 +1025,7 @@ $(PRESENTATION_PROVENANCE_STAMP): $(PRESENTATION_VENDOR_INPUTS)
 	@sha256sum --check vendor/rgfw/SHA256SUMS
 	@sha256sum --check vendor/qrcodegen/SHA256SUMS
 	@sha256sum --check vendor/typography/SHA256SUMS
+	@sha256sum --check vendor/x11/SHA256SUMS
 	@touch $@
 
 $(PRESENTATION_BUILD_DIR)/presentation.o: \
@@ -3726,6 +3731,53 @@ test-zcode-dht-acceptance: zclassic23 zcl-rpc
 test-science-acceptance: test-zcode-dht-acceptance
 	@bash tools/dev/science_acceptance.sh
 
+# ── metaverse-tour / metaverse-verify (docs/METAVERSE_MVP.md, MM1 + MM7) ──
+#
+# metaverse-tour is criterion MM1: ONE hermetic script driving an isolated
+# regtest node (own /tmp datadir + 39xxx ports, same discipline as
+# tools/scripts/isolated_node_env.sh) through the five-step tour — publish a
+# package, space plan/commit/show, scout plan/run/show, commons status,
+# property list. Exit 0 only when every step's typed output confirms.
+.PHONY: metaverse-tour
+metaverse-tour: zclassic23 zcl-rpc
+	@bash tools/dev/metaverse_tour.sh
+
+# metaverse-verify is criterion MM7: the ONE-COMMAND local aggregate of the
+# metaverse MVP proofs, modeled on mvp-verify — runs ALL members and reports
+# each (a FAIL does not stop the run), then exits non-zero if any failed.
+# The multi-daemon members stay OUT of hermetic `make ci` by the same rule
+# as mvp-verify (they spawn real /tmp regtest nodes).
+.PHONY: metaverse-verify
+metaverse-verify: zclassic23 zcl-rpc zclassic23-package-verify
+	@bash -c 'set -uo pipefail; \
+	 echo "══════════════════════════════════════════════════════════════"; \
+	 echo "  metaverse-verify: LOCAL metaverse MVP proofs (MM1-MM7)"; \
+	 echo "  Daemon-spawning members stay OUT of hermetic make ci."; \
+	 echo "══════════════════════════════════════════════════════════════"; \
+	 declare -A NAME=( \
+	   [1]="MM1 metaverse tour, isolated regtest node (metaverse-tour)" \
+	   [2]="MM2 package lifecycle groups (publish/fetch/verify)" \
+	   [3]="MM3 property catalog decision table (metaverse_catalog)" \
+	   [4]="MM4 ZC23 simulation unit groups (patronage/continuity/commons)" \
+	   [5]="MM5 metaverse site render gate (metaverse_site)" \
+	   [6]="MM7a seven-daemon DHT acceptance (test-zcode-dht-acceptance)" \
+	   [7]="MM7b two-daemon science acceptance (test-science-acceptance)" ); \
+	 declare -A TGT=( [1]=metaverse-tour \
+	   [2]="t-fast-exact ONLY=zcode_publish,zcode_fetch,zcode_verify" \
+	   [3]="t-fast ONLY=metaverse_catalog" \
+	   [4]="t-fast-exact ONLY=zcode_patronage,zcode_continuity,zcode_commons_projection" \
+	   [5]="t-fast ONLY=metaverse_site" \
+	   [6]=test-zcode-dht-acceptance [7]=test-science-acceptance ); \
+	 declare -A ST; fails=0; \
+	 for i in 1 2 3 4 5 6 7; do \
+	   echo ""; echo "── metaverse-verify [$$i/7]: $${NAME[$$i]} ──"; \
+	   if $(MAKE) $${TGT[$$i]}; then ST[$$i]="PASS"; else ST[$$i]="FAIL"; fails=$$((fails+1)); fi; \
+	 done; \
+	 echo ""; echo "══ metaverse-verify SUMMARY ══"; \
+	 for i in 1 2 3 4 5 6 7; do printf "  [%s] %-62s %s\n" "$$i" "$${NAME[$$i]}" "$${ST[$$i]}"; done; \
+	 [ "$$fails" = 0 ] || { echo "metaverse-verify: $$fails member(s) FAILED"; exit 1; }; \
+	 echo "metaverse-verify: ALL MEMBERS PASS"'
+
 # ── STICKINESS fault-injection matrix (sticky-node-plan §4 metric) ──
 #
 # sticky-matrix: for each fault class, inject on a THROWAWAY /tmp datadir
@@ -4057,6 +4109,13 @@ stopwatch-symmetry-prove:
 # "chase these next". This is the LLM's on-track compass toward instant-on.
 arch-score:
 	@bash tools/scripts/arch_score.sh
+
+.PHONY: metaverse-score
+# Mechanical completion score for the METAVERSE MVP (docs/METAVERSE_MVP.md,
+# criteria MM1-MM8). Same rules as arch-score: the score rises only on a
+# mechanical proof; never edit the scorer to win; ZC23 stays simulation-only.
+metaverse-score:
+	@bash tools/scripts/metaverse_score.sh
 
 # ── netdisrupt-stopwatch (PROOF B, SELF-CONTAINED two-node RUNNER) ────
 #
@@ -4721,7 +4780,7 @@ FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra \
 	-fno-sanitize=alignment
 FUZZ_LIBS = $(TOR_LIBS) $(LIBS)
 
-FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p $(BIN_DIR)/fuzz_http $(BIN_DIR)/fuzz_compactblock $(BIN_DIR)/fuzz_snapshot $(BIN_DIR)/fuzz_tx_bundle $(BIN_DIR)/fuzz_rom_manifest $(BIN_DIR)/fuzz_overlay $(BIN_DIR)/fuzz_ecdsa $(BIN_DIR)/fuzz_zcode_commons
+FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p $(BIN_DIR)/fuzz_http $(BIN_DIR)/fuzz_compactblock $(BIN_DIR)/fuzz_snapshot $(BIN_DIR)/fuzz_tx_bundle $(BIN_DIR)/fuzz_rom_manifest $(BIN_DIR)/fuzz_overlay $(BIN_DIR)/fuzz_ecdsa $(BIN_DIR)/fuzz_zcode_commons $(BIN_DIR)/fuzz_zcode_dht $(BIN_DIR)/fuzz_zcode_science
 # Keep the line above literal and keep one `$(BIN_DIR)/fuzz_<kind>:` rule per
 # harness below: check_fuzz_artifact_replay.sh derives the corpus<->binary map
 # from those rule lines, and background_quality_lane.sh derives its kind list
@@ -4795,9 +4854,11 @@ check-fuzz-ci-tools: check-fuzz-toolchain
 
 fuzz: check-fuzz-toolchain $(FUZZ_TARGETS)
 
-.PHONY: fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock fuzz_snapshot fuzz_tx_bundle fuzz_rom_manifest fuzz_overlay fuzz_ecdsa fuzz_zcode_commons
+.PHONY: fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock fuzz_snapshot fuzz_tx_bundle fuzz_rom_manifest fuzz_overlay fuzz_ecdsa fuzz_zcode_commons fuzz_zcode_dht fuzz_zcode_science
 fuzz_ecdsa: $(BIN_DIR)/fuzz_ecdsa
 fuzz_zcode_commons: $(BIN_DIR)/fuzz_zcode_commons
+fuzz_zcode_dht: $(BIN_DIR)/fuzz_zcode_dht
+fuzz_zcode_science: $(BIN_DIR)/fuzz_zcode_science
 fuzz_block: $(BIN_DIR)/fuzz_block
 fuzz_script: $(BIN_DIR)/fuzz_script
 fuzz_p2p: $(BIN_DIR)/fuzz_p2p
@@ -4853,6 +4914,12 @@ $(BIN_DIR)/fuzz_ecdsa: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_ecdsa.o $(FUZZ_OBJS) | ch
 	$(FUZZ_LINK)
 
 $(BIN_DIR)/fuzz_zcode_commons: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_zcode_commons.o $(FUZZ_OBJS) | check-fuzz-toolchain
+	$(FUZZ_LINK)
+
+$(BIN_DIR)/fuzz_zcode_dht: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_zcode_dht.o $(FUZZ_OBJS) | check-fuzz-toolchain
+	$(FUZZ_LINK)
+
+$(BIN_DIR)/fuzz_zcode_science: $(FUZZ_OBJ_DIR)/tools/fuzz/fuzz_zcode_science.o $(FUZZ_OBJS) | check-fuzz-toolchain
 	$(FUZZ_LINK)
 
 fuzz-ci: check-fuzz-ci-tools $(FUZZ_TARGETS)

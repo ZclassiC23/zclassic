@@ -379,6 +379,50 @@ static int t_adapter_registry(void)
     return failures;
 }
 
+/* ── 3a: the MVP scope partition is a pinned decision ───────────────────── */
+
+/* docs/METAVERSE_MVP.md criterion MM3: the catalog is complete OR honestly
+ * scoped. This table IS the scope decision — the four datadir-provable kinds
+ * are in MVP scope, the four runtime/node.db kinds are explicitly out — and
+ * it is asserted against the live registry so a kind silently moving between
+ * the two sets (or an unwired kind losing its reason) fails here. The
+ * MV_MVP_SCOPE marker naming this contract lives with the declarations in
+ * lib/metaverse/src/adapter_registry.c. */
+static int t_mvp_scope_decision(void)
+{
+    int failures = 0;
+    static const enum metaverse_kind k_in_scope[] = {
+        METAVERSE_KIND_CONTENT, METAVERSE_KIND_ZCODE_PACKAGE,
+        METAVERSE_KIND_ZNAM_NAME, METAVERSE_KIND_ZSLP_ASSET,
+    };
+    static const enum metaverse_kind k_out_of_scope[] = {
+        METAVERSE_KIND_HOSTED_SERVICE, METAVERSE_KIND_ENDPOINT_ONION,
+        METAVERSE_KIND_STOREFRONT_PRODUCT, METAVERSE_KIND_CONTRACT_SWAP,
+    };
+    size_t in_wired = 0, out_reasoned = 0;
+
+    for (size_t i = 0; i < sizeof(k_in_scope) / sizeof(k_in_scope[0]); i++) {
+        const struct metaverse_adapter *a =
+            metaverse_adapter_for(k_in_scope[i]);
+        if (a && metaverse_adapter_ready(a))
+            in_wired++;
+    }
+    for (size_t i = 0; i < sizeof(k_out_of_scope) / sizeof(k_out_of_scope[0]);
+         i++) {
+        const struct metaverse_adapter *a =
+            metaverse_adapter_for(k_out_of_scope[i]);
+        if (a && !metaverse_adapter_ready(a) && a->unavailable_reason &&
+            a->unavailable_reason[0])
+            out_reasoned++;
+    }
+    MV_CHECK("mvp-scope: the four datadir-provable kinds are wired",
+             in_wired == 4);
+    MV_CHECK("mvp-scope: the four out-of-scope kinds stay unavailable and "
+             "each still says why",
+             out_reasoned == 4);
+    return failures;
+}
+
 /* ── 3b: settlement classes ───────────────────────────────────────── */
 
 /* An independent second opinion on the kind table's fourth column. The
@@ -2358,6 +2402,7 @@ int test_metaverse_catalog(void)
     failures += t_property_id_rules();
     failures += t_action_vocabulary();
     failures += t_adapter_registry();
+    failures += t_mvp_scope_decision();
     failures += t_settlement_classes();
     failures += t_work_measurement();
     failures += t_settlement_is_surfaced();
