@@ -10,6 +10,7 @@
 #include "controllers/snapshot_controller.h"
 #include "controllers/sync_controller.h"
 #include "config/db_service.h"
+#include "config/boot_projection_hole_scan.h"
 #include "config/runtime.h"
 #include "services/chain_evidence_persistence_service.h"
 #include "wallet/wallet.h"
@@ -1077,6 +1078,79 @@ int test_sqlite(void) {
         ok = ok && missing == -1;
 
         node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Projection hole audit cadence + isolated connection. */
+    {
+        printf("SQLite projection hole scan is isolated and bounded... ");
+        char dir_template[] = "/tmp/zclassic23-projection-hole-XXXXXX";
+        char *dir_path = mkdtemp(dir_template);
+        char db_path[1024];
+        struct node_db ndb;
+        bool opened = false;
+        bool ok = dir_path != NULL;
+        if (ok) {
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
+            opened = node_db_open(&ndb, db_path);
+            ok = opened;
+        }
+
+        uint8_t sol[] = {0x01, 0x02, 0x03};
+        for (int h = 0; ok && h <= 2; h++) {
+            struct db_block blk;
+            memset(&blk, 0, sizeof(blk));
+            memset(blk.hash, 0x60 + h, 32);
+            blk.hash[0] = (uint8_t)(0x60 + h);
+            blk.height = h;
+            if (h > 0)
+                memset(blk.prev_hash, 0x70 + h, 32);
+            memset(blk.merkle_root, 0x80 + h, 32);
+            blk.version = 4;
+            blk.time = 1700000100 + (uint32_t)h;
+            blk.bits = 0x1d00ffff;
+            memset(blk.nonce, 0x90 + h, 32);
+            blk.solution = sol;
+            blk.solution_len = sizeof(sol);
+            memset(blk.chain_work, 0xA0 + h, 32);
+            blk.status = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            blk.file_num = 1;
+            blk.data_pos = h * 100;
+            blk.num_tx = 1;
+            ok = db_block_save(&ndb, &blk);
+        }
+
+        struct boot_projection_hole_scan scan;
+        boot_projection_hole_scan_init(&scan);
+        bool ran = false;
+        int missing = -2;
+        ok = ok && boot_projection_hole_scan_if_due(
+            &scan, &ndb, 2, false, false, false, 2, 100, &ran, &missing);
+        ok = ok && ran && missing == -1 && scan.next_scan_unix == 3700;
+
+        ran = true;
+        ok = ok && boot_projection_hole_scan_if_due(
+            &scan, &ndb, 2, false, false, false, 2, 101, &ran, &missing);
+        ok = ok && !ran;
+
+        ok = ok && boot_projection_hole_scan_if_due(
+            &scan, &ndb, 2, false, true, true, 2, 101, &ran, &missing);
+        ok = ok && ran && missing == -1 && scan.next_scan_unix == 3701;
+
+        ran = true;
+        ok = ok && boot_projection_hole_scan_if_due(
+            &scan, &ndb, 2, false, true, true, 2, 102, &ran, &missing);
+        ok = ok && !ran;
+
+        ok = ok && db_block_delete_by_height(&ndb, 1);
+        ok = ok && boot_projection_hole_scan_if_due(
+            &scan, &ndb, 2, false, false, false, 2, 3701, &ran, &missing);
+        ok = ok && ran && missing == 1 && scan.next_scan_unix == 0;
+
+        if (opened)
+            node_db_close(&ndb);
+        cleanup_temp_db_dir(dir_path);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

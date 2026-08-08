@@ -27,6 +27,7 @@
 #include "platform/time_compat.h"
 #include "config/boot_internal.h"
 #include "config/boot_background_workers.h"
+#include "config/boot_projection_hole_scan.h"
 #include "config/boot_snapshot_import.h"
 #include "services/hodl_history_service.h"
 #include "services/node_db_catchup_service.h"
@@ -35,8 +36,6 @@
 #include "jobs/refold_progress.h"  /* refold_in_progress — suppress projection
                                     * backfill while a mint/refold discards the
                                     * upper tip (see the guard below). */
-#include "storage/coins_kv.h"
-#include "storage/progress_store.h"
 #include "models/block.h"
 #include "event/event.h"
 #include "supervisors/domains.h"
@@ -65,21 +64,6 @@ extern void *backfill_addresses_thread(void *arg);
  * forward declarations). */
 static void *payment_processor_thread(void *arg);
 static void *address_backfill_service_thread(void *arg);
-
-static bool projection_sparse_prefix_is_expected(int projection_tip,
-                                                 int chain_tip)
-{
-    if (projection_tip <= 0 || chain_tip < 0 || projection_tip > chain_tip)
-        return false;
-    sqlite3 *pdb = progress_store_db();
-    if (!pdb)
-        return false;
-    int32_t applied = -1;
-    progress_store_tx_lock();
-    bool ok = coins_kv_is_proven_authority(pdb, &applied);
-    progress_store_tx_unlock();
-    return ok && applied > projection_tip;
-}
 
 /* ── Supervisor liveness (Model A — MONITOR; disk_monitor.c exemplar) ─
  *
@@ -380,6 +364,8 @@ static void *projection_backfill_service_thread(void *arg)
     int hole_rewind_attempts = 0;
     bool hole_rewind_gave_up_reported = false;
     int last_projection_cursor = -1;
+    struct boot_projection_hole_scan hole_scan;
+    boot_projection_hole_scan_init(&hole_scan);
     int64_t loop_iterations = 0;
 
     /* Genuinely-background bulk backfill worker — never the
@@ -419,6 +405,8 @@ static void *projection_backfill_service_thread(void *arg)
         bool behind = !refolding && !tail_folding &&
                       projection_cursor >= 0 && chain_tip >= 0 &&
                       projection_cursor < chain_tip;
+        bool cursor_frozen = behind &&
+                             projection_cursor == last_projection_cursor;
 
         supervisor_child_id sup_id =
             atomic_load(&g_projection_backfill_sup_id);
@@ -467,8 +455,8 @@ static void *projection_backfill_service_thread(void *arg)
             projection_tip = node_db_sync_get_tip_height(ndb);
             projection_block_tip = db_block_max_height(ndb);
             bool sparse_prefix =
-                projection_sparse_prefix_is_expected(projection_tip,
-                                                     chain_tip);
+                boot_projection_sparse_prefix_is_expected(projection_tip,
+                                                          chain_tip);
             /* node_db_catchup_service_run always starts its walk at
              * projection_tip + 1 (start = db_tip + 1), so THAT height, not
              * chain_tip, is the slot a fresh catchup pass must resolve to
@@ -501,9 +489,13 @@ static void *projection_backfill_service_thread(void *arg)
                 }
             }
             int repair_cap = projection_tip < chain_tip ? projection_tip : chain_tip;
-            if (repair_cap >= 0 &&
-                db_block_first_missing_connected_height(ndb, repair_cap,
-                                                        &first_missing_height) &&
+            bool hole_scan_ran = false;
+            bool hole_scan_ok = boot_projection_hole_scan_if_due(
+                &hole_scan, ndb, repair_cap, sparse_prefix, behind,
+                cursor_frozen, projection_cursor,
+                (int64_t)platform_time_wall_time_t(), &hole_scan_ran,
+                &first_missing_height);
+            if (hole_scan_ran && hole_scan_ok &&
                 first_missing_height >= 0 &&
                 first_missing_height <= repair_cap &&
                 !sparse_prefix) {
@@ -562,7 +554,8 @@ static void *projection_backfill_service_thread(void *arg)
                         projection_tip, first_missing_height, repair_cap,
                         hole_rewind_attempts);
                 }
-            } else if (first_missing_height < 0 || sparse_prefix) {
+            } else if ((hole_scan_ran && hole_scan_ok &&
+                        first_missing_height < 0) || sparse_prefix) {
                 last_hole_rewind_height = -1;
                 hole_rewind_attempts = 0;
                 hole_rewind_gave_up_reported = false;
