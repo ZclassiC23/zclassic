@@ -473,6 +473,47 @@ int test_wallet_funds_safety(void)
         }
     }
 
+    /* Trial decryption deliberately stores a position-0 placeholder
+     * nullifier. Block-connect witness creation must replace it in the live
+     * wallet by stable note identity, or immediate shielded change spends
+     * cannot be marked/reserved without a later deep rescan. */
+    {
+        struct wallet *w = zcl_calloc(1, sizeof(*w),
+                                      "wfs_nullifier_refresh_wallet");
+        bool ok = w != NULL;
+        if (w) {
+            wallet_init(w);
+            w->sapling_notes = zcl_calloc(
+                1, sizeof(*w->sapling_notes), "wfs_nullifier_refresh_note");
+            ok = ok && w->sapling_notes != NULL;
+        }
+        uint8_t txid[32], old_nf[32], real_nf[32];
+        memset(txid, 0x41, sizeof(txid));
+        memset(old_nf, 0x42, sizeof(old_nf));
+        memset(real_nf, 0x43, sizeof(real_nf));
+        if (ok) {
+            w->num_sapling_notes = 1;
+            w->sapling_notes_cap = 1;
+            w->sapling_notes[0].used = true;
+            w->sapling_notes[0].output_index = 7;
+            memcpy(w->sapling_notes[0].txid.data, txid, sizeof(txid));
+            memcpy(w->sapling_notes[0].nf, old_nf, sizeof(old_nf));
+        }
+        bool refreshed = ok && sync_wallet_note_nullifier_refresh_for_test(
+            w, txid, 7, real_nf);
+        bool wrong_output_refused = ok &&
+            !sync_wallet_note_nullifier_refresh_for_test(
+                w, txid, 8, old_nf);
+        WFS_CHECK("witness creation replaces the live nullifier placeholder",
+                  refreshed && wrong_output_refused &&
+                  memcmp(w->sapling_notes[0].nf,
+                         real_nf, sizeof(real_nf)) == 0);
+        if (w) {
+            wallet_free(w);
+            free(w);
+        }
+    }
+
     node_db_close(&ndb);
     (void)test_rm_rf_recursive(dbdir);
 

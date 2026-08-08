@@ -97,7 +97,7 @@ uint8_t *sync_controller_mmap_block_file(const char *datadir, int file_num,
 
 int node_db_sync_catchup(struct node_db *ndb,
                          const struct active_chain *chain,
-                         const struct wallet *w,
+                         struct wallet *w,
                          const char *datadir)
 {
     /* Parse/validate front matter: the controller boundary rejects a bad

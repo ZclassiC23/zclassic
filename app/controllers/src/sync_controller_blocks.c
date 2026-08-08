@@ -60,6 +60,7 @@ extern volatile sig_atomic_t g_shutdown_requested;
 struct connect_block_sync_ctx {
     const struct block *blk;
     const struct block_index *pindex;
+    struct wallet *wallet;
     bool ok;
 };
 
@@ -67,7 +68,7 @@ struct connect_block_async_ctx {
     struct block blk;
     struct block_index pindex;
     struct uint256 hash;
-    const struct wallet *wallet;  /* NULL: block projection only */
+    struct wallet *wallet;  /* NULL: block projection only */
     bool copied;
 };
 
@@ -84,6 +85,71 @@ uint8_t *serialize_tx(const struct transaction *tx,
     return s.data;
 }
 
+static bool sync_wallet_note_nullifier_refresh(
+    struct wallet *wallet, const uint8_t txid[32], uint32_t output_index,
+    const uint8_t nf[32])
+{
+    bool found = false;
+    if (!wallet || !txid || !nf)
+        return false;
+    zcl_mutex_lock(&wallet->cs);
+    for (size_t i = 0; i < wallet->num_sapling_notes; i++) {
+        struct sapling_received_note *note = &wallet->sapling_notes[i];
+        if (note->used && note->output_index == output_index &&
+            memcmp(note->txid.data, txid, 32) == 0) {
+            memcpy(note->nf, nf, 32);
+            found = true;
+            break;
+        }
+    }
+    zcl_mutex_unlock(&wallet->cs);
+    return found;
+}
+
+static bool sync_wallet_note_save_witness(
+    struct node_db *ndb, struct wallet *wallet,
+    const struct db_sapling_note *note,
+    const struct incremental_witness *witness,
+    const uint8_t *witness_data, size_t witness_len, int height)
+{
+    const struct sapling_key_entry *key = wallet
+        ? sapling_keystore_find_by_ivk(&wallet->sapling_keys, note->ivk)
+        : NULL;
+    if (!key || incremental_tree_size(&witness->tree) == 0)
+        return db_sapling_note_save_witness(
+            ndb, note->txid, note->output_index,
+            witness_data, witness_len, height);
+
+    uint8_t ak[32], nk[32], nf[32];
+    sapling_ask_to_ak(key->xsk.expsk.ask, ak);
+    sapling_nsk_to_nk(key->xsk.expsk.nsk, nk);
+    uint64_t position = incremental_tree_size(&witness->tree) - 1;
+    bool computed = sapling_compute_nf(
+        note->diversifier, note->pk_d, (uint64_t)note->value, note->rcm,
+        ak, nk, position, nf);
+    bool saved = computed && db_sapling_note_save_witness_and_nullifier(
+        ndb, note->txid, note->output_index,
+        witness_data, witness_len, height, nf);
+    if (saved && !sync_wallet_note_nullifier_refresh(
+            wallet, note->txid, note->output_index, nf))
+        LOG_WARN("sync", "advance_wallet_witnesses: in-memory note "
+                 "disappeared during nullifier update");
+    memory_cleanse(ak, sizeof(ak));
+    memory_cleanse(nk, sizeof(nk));
+    memory_cleanse(nf, sizeof(nf));
+    return saved;
+}
+
+#ifdef ZCL_TESTING
+bool sync_wallet_note_nullifier_refresh_for_test(
+    struct wallet *wallet, const uint8_t txid[32], uint32_t output_index,
+    const uint8_t nf[32])
+{
+    return sync_wallet_note_nullifier_refresh(
+        wallet, txid, output_index, nf);
+}
+#endif
+
 
 /* Advance Sapling commitment tree and all wallet witnesses for one block.
  * Creates initial witnesses for wallet notes whose cm appears in this block.
@@ -91,7 +157,7 @@ uint8_t *serialize_tx(const struct transaction *tx,
 bool advance_wallet_witnesses(struct node_db *ndb,
                                      const struct block *blk,
                                      struct incremental_merkle_tree *tree,
-                                     int height)
+                                     int height, struct wallet *wallet)
 {
     /* Load ALL unspent notes that may need initial witnesses. A fixed 256-cap
      * here (ORDER BY value DESC) left every note ranked below #256 without a
@@ -180,9 +246,10 @@ bool advance_wallet_witnesses(struct node_db *ndb,
                 struct byte_stream iwout;
                 stream_init(&iwout, 2048);
                 incremental_witness_serialize(&iw, &iwout);
-                if (!db_sapling_note_save_witness(ndb,
-                    wnotes[wi].txid, wnotes[wi].output_index,
-                    iwout.data, iwout.size, height))
+                bool saved = sync_wallet_note_save_witness(
+                    ndb, wallet, &wnotes[wi], &iw,
+                    iwout.data, iwout.size, height);
+                if (!saved)
                     ok = false;
                 stream_free(&iwout);
                 has_witness[wi] = true;
@@ -204,9 +271,9 @@ bool advance_wallet_witnesses(struct node_db *ndb,
             stream_init(&wout, 2048);
             incremental_witness_serialize(&witnesses[wi], &wout);
             int idx = witness_idx[wi];
-            if (!db_sapling_note_save_witness(ndb,
-                wnotes[idx].txid, wnotes[idx].output_index,
-                wout.data, wout.size, height))
+            if (!sync_wallet_note_save_witness(
+                    ndb, wallet, &wnotes[idx], &witnesses[wi],
+                    wout.data, wout.size, height))
                 ok = false;
             stream_free(&wout);
         }
@@ -237,7 +304,8 @@ bool advance_wallet_witnesses(struct node_db *ndb,
 
 static bool node_db_sync_connect_block_local(struct node_db *ndb,
                                              const struct block *blk,
-                                             const struct block_index *pindex)
+                                             const struct block_index *pindex,
+                                             struct wallet *wallet)
 {
     bool tx_active = false;
     const char *fail_reason = "unknown";
@@ -353,7 +421,8 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
             incremental_tree_deserialize(&tree, &ts);
         }
 
-        if (!advance_wallet_witnesses(ndb, blk, &tree, pindex->nHeight)) {
+        if (!advance_wallet_witnesses(ndb, blk, &tree, pindex->nHeight,
+                                      wallet)) {
             fail_reason = "advance_wallet_witnesses";
             goto fail;
         }
@@ -464,7 +533,8 @@ static bool node_db_sync_connect_block_write(struct node_db *ndb, void *ctx)
 
     if (!sync || !sync->blk || !sync->pindex)
         LOG_FAIL("sync", "connect_block_write: invalid ctx (sync=%p)", (void *)sync);
-    sync->ok = node_db_sync_connect_block_local(ndb, sync->blk, sync->pindex);
+    sync->ok = node_db_sync_connect_block_local(
+        ndb, sync->blk, sync->pindex, sync->wallet);
     return sync->ok;
 }
 
@@ -531,8 +601,8 @@ static bool node_db_sync_connect_block_async_write(struct node_db *ndb,
 
     if (!async || !async->copied)
         LOG_FAIL("sync", "connect_block_async_write: invalid ctx");
-    bool ok = node_db_sync_connect_block_local(ndb, &async->blk,
-                                               &async->pindex);
+    bool ok = node_db_sync_connect_block_local(
+        ndb, &async->blk, &async->pindex, async->wallet);
     /* Fold the explorer projections (op_returns / tx_outputs / tx_inputs /
      * zslp overlays / the chained view_integrity receipt) into the SAME
      * job. Load-bearing, not redundant with catchup: connect_block_local
@@ -612,6 +682,7 @@ bool node_db_sync_connect_block(struct node_db *ndb,
     struct connect_block_sync_ctx ctx = {
         .blk = blk,
         .pindex = pindex,
+        .wallet = NULL,
         .ok = false,
     };
 
@@ -630,7 +701,7 @@ bool node_db_sync_connect_block_async(struct node_db *ndb,
 bool node_db_sync_connect_block_async_with_wallet(struct node_db *ndb,
                                                   const struct block *blk,
                                                   const struct block_index *pindex,
-                                                  const struct wallet *wallet)
+                                                  struct wallet *wallet)
 {
     struct db_service *dbsvc = sync_db_service_for(ndb);
     struct connect_block_async_ctx *ctx;

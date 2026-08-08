@@ -110,7 +110,7 @@ uint8_t *serialize_tx(const struct transaction *tx, size_t *out_len);
 bool advance_wallet_witnesses(struct node_db *ndb,
                               const struct block *blk,
                               struct incremental_merkle_tree *tree,
-                              int height);
+                              int height, struct wallet *wallet);
 uint8_t *sync_controller_mmap_block_file(const char *datadir,
                                          int file_num,
                                          size_t *out_size);
