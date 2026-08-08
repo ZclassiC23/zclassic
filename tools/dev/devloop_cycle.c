@@ -841,6 +841,15 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
                         int64_t started_us, const char *capsule,
                         const char *repo_root, const char *generation_hex)
 {
+    /* A watcher saw a newer source epoch while this synchronous cycle was in
+     * flight. It owns the replacement batch; never publish this stale result
+     * or anchor its superseded bytes. */
+    if (zcl_devloop_process_cancel_requested()) {
+#ifdef ZCL_DEV_BUILD
+        cycle_failure_reset();
+#endif
+        return 4;
+    }
     char body[16384];
     int64_t elapsed_ms = (platform_time_monotonic_us() - started_us) / 1000;
 

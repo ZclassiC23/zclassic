@@ -16,12 +16,14 @@
 #include "wallet/wallet.h"
 
 #include <fcntl.h>
+#include <errno.h>
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/inotify.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -1514,6 +1516,12 @@ static int test_watch_relevance(void)
         ASSERT(!zcl_devloop_path_is_relevant(".git/index"));
         ASSERT(!zcl_devloop_path_is_relevant(""));
         ASSERT(!zcl_devloop_path_is_relevant(NULL));
+        /* Reading/compiling source may update atime and emit IN_ATTRIB. That
+         * is not a save and must never recursively cancel the active epoch. */
+        ASSERT(!zcl_devloop_watch_event_is_mutation(IN_ATTRIB));
+        ASSERT(zcl_devloop_watch_event_is_mutation(IN_CLOSE_WRITE));
+        ASSERT(zcl_devloop_watch_event_is_mutation(IN_MOVED_TO));
+        ASSERT(zcl_devloop_watch_event_is_mutation(IN_DELETE));
         PASS();
     } _test_next:;
     return failures;
@@ -2340,6 +2348,85 @@ static int test_resident_process_cancellation(void)
     return failures;
 }
 
+struct process_poll_fixture {
+    unsigned calls;
+    unsigned cancel_after;
+};
+
+static bool cancel_after_poll(void *opaque)
+{
+    struct process_poll_fixture *fixture = opaque;
+    fixture->calls++;
+    return fixture->calls >= fixture->cancel_after;
+}
+
+static int test_resident_process_supersession(void)
+{
+    int failures = 0;
+    TEST("dev platform: resident process polling cancels superseded work") {
+        const char *saved = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+        char *saved_copy = saved ? strdup(saved) : NULL;
+        ASSERT(!saved || saved_copy);
+        ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
+
+        struct process_poll_fixture fixture = { .cancel_after = 2 };
+        zcl_devloop_process_cancel_poll_set(cancel_after_poll, &fixture);
+        const char *argv[] = { "sleep", "30", NULL };
+        struct zcl_devloop_process_result result = {0};
+        ASSERT(zcl_devloop_process_run(".", argv, 60000, &result));
+        zcl_devloop_process_cancel_poll_clear();
+        ASSERT(fixture.calls >= 2);
+        ASSERT(result.cancelled);
+        ASSERT(!result.timed_out);
+        ASSERT(result.elapsed_ms < 1000);
+        zcl_devloop_process_cancel_clear();
+
+        char pid_path[PATH_MAX], script[PATH_MAX + 160];
+        ASSERT(snprintf(pid_path, sizeof(pid_path),
+                        "test-tmp/devloop_nested_%ld.pid", (long)getpid()) > 0);
+        ASSERT(snprintf(script, sizeof(script),
+                        "timeout 30 sh -c 'echo $$ > %s; sleep 30'",
+                        pid_path) > 0);
+        (void)unlink(pid_path);
+        fixture.calls = 0;
+        fixture.cancel_after = 10;
+        zcl_devloop_process_cancel_poll_set(cancel_after_poll, &fixture);
+        const char *nested_argv[] = { "sh", "-c", script, NULL };
+        memset(&result, 0, sizeof(result));
+        ASSERT(zcl_devloop_process_run(".", nested_argv, 60000, &result));
+        zcl_devloop_process_cancel_poll_clear();
+        ASSERT(result.cancelled);
+        FILE *pid_file = fopen(pid_path, "r");
+        ASSERT(pid_file != NULL);
+        long nested_pid = 0;
+        ASSERT(fscanf(pid_file, "%ld", &nested_pid) == 1);
+        ASSERT(fclose(pid_file) == 0);
+        ASSERT(nested_pid > 1);
+        bool gone = false;
+        const struct timespec retry_delay = { .tv_nsec = 10000000L };
+        for (int i = 0; i < 100; i++) {
+            errno = 0;
+            if (kill((pid_t)nested_pid, 0) != 0 && errno == ESRCH) {
+                gone = true;
+                break;
+            }
+            (void)nanosleep(&retry_delay, NULL);
+        }
+        ASSERT(gone);
+        ASSERT(unlink(pid_path) == 0);
+        zcl_devloop_process_cancel_clear();
+
+        if (saved_copy) {
+            ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", saved_copy, 1) == 0);
+            free(saved_copy);
+        } else {
+            ASSERT(unsetenv("ZCL_DEVLOOP_TEST_PROCESS") == 0);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_native_source_cas_shadow(void)
 {
     int failures = 0;
@@ -2385,6 +2472,7 @@ int test_dev_platform(void)
     failures += test_hotswap_artifact_cache();
     failures += test_resident_restart_builder();
     failures += test_resident_process_cancellation();
+    failures += test_resident_process_supersession();
     failures += test_native_source_cas_shadow();
     failures += test_menu_and_search();
     failures += test_change_classification();

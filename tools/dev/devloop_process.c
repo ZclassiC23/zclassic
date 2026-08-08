@@ -5,8 +5,11 @@
 
 #include "platform/time_compat.h"
 
+#include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -18,6 +21,8 @@
 #include <unistd.h>
 
 static volatile sig_atomic_t g_process_cancel_requested;
+static zcl_devloop_process_cancel_poll_fn g_process_cancel_poll;
+static void *g_process_cancel_poll_opaque;
 
 void zcl_devloop_process_cancel_request(void)
 {
@@ -28,6 +33,89 @@ void zcl_devloop_process_cancel_clear(void)
 {
     g_process_cancel_requested = 0;
 }
+
+bool zcl_devloop_process_cancel_requested(void)
+{
+    return g_process_cancel_requested != 0;
+}
+
+void zcl_devloop_process_cancel_poll_set(
+    zcl_devloop_process_cancel_poll_fn poll_fn, void *opaque)
+{
+    g_process_cancel_poll = poll_fn;
+    g_process_cancel_poll_opaque = opaque;
+}
+
+void zcl_devloop_process_cancel_poll_clear(void)
+{
+    g_process_cancel_poll = NULL;
+    g_process_cancel_poll_opaque = NULL;
+}
+
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+static pid_t proc_session_id(pid_t pid)
+{
+    char path[64], body[1024];
+    int n = snprintf(path, sizeof(path), "/proc/%ld/stat", (long)pid);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        return -1;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
+    ssize_t got;
+    do {
+        got = read(fd, body, sizeof(body) - 1);
+    } while (got < 0 && errno == EINTR);
+    close(fd);
+    if (got <= 0)
+        return -1;
+    body[got] = 0;
+    char *fields = strrchr(body, ')');
+    char state = 0;
+    long parent = 0, group = 0, session = 0;
+    if (!fields || sscanf(fields + 1, " %c %ld %ld %ld", &state, &parent,
+                          &group, &session) != 4 || session <= 0)
+        return -1;
+    return (pid_t)session;
+}
+
+static void signal_session_members(pid_t session, int sig)
+{
+    DIR *proc = opendir("/proc");
+    if (!proc)
+        return;
+    struct dirent *entry;
+    while ((entry = readdir(proc)) != NULL) {
+        const unsigned char *p = (const unsigned char *)entry->d_name;
+        if (!*p)
+            continue;
+        bool digits = true;
+        for (; *p; p++)
+            if (!isdigit(*p)) {
+                digits = false;
+                break;
+            }
+        if (!digits)
+            continue;
+        char *end = NULL;
+        long value = strtol(entry->d_name, &end, 10);
+        if (!end || *end || value <= 1 || value > INT_MAX)
+            continue;
+        pid_t member = (pid_t)value;
+        if (proc_session_id(member) == session)
+            (void)kill(member, sig);
+    }
+    closedir(proc);
+}
+
+static void terminate_child_session(pid_t leader, int sig)
+{
+    /* The leader may have spawned grandchildren into distinct process groups.
+     * Stop its own group first so it cannot race the /proc session sweep. */
+    (void)kill(-leader, sig);
+    signal_session_members(leader, sig);
+}
+#endif
 
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 static void capture_tail(struct zcl_devloop_process_result *out,
@@ -99,14 +187,20 @@ static bool process_run_impl(const char *cwd, int exec_fd,
         return false;
     }
 #endif
-    int fds[2];
-    if (pipe(fds) != 0) {
+    int fds[2] = {-1, -1}, ready_fds[2] = {-1, -1};
+    if (pipe(fds) != 0 || pipe(ready_fds) != 0) {
         fprintf(stderr, "[devloop] process: pipe failed: %s\n",
                 strerror(errno));
+        if (fds[0] >= 0) close(fds[0]);
+        if (fds[1] >= 0) close(fds[1]);
+        if (ready_fds[0] >= 0) close(ready_fds[0]);
+        if (ready_fds[1] >= 0) close(ready_fds[1]);
         return false;
     }
     (void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
     (void)fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(ready_fds[0], F_SETFD, FD_CLOEXEC);
+    (void)fcntl(ready_fds[1], F_SETFD, FD_CLOEXEC);
 
     int64_t started_us = platform_time_monotonic_us();
     pid_t pid = fork();
@@ -115,10 +209,18 @@ static bool process_run_impl(const char *cwd, int exec_fd,
                 strerror(errno));
         close(fds[0]);
         close(fds[1]);
+        close(ready_fds[0]);
+        close(ready_fds[1]);
         return false;
     }
     if (pid == 0) {
-        (void)setpgid(0, 0);
+        close(ready_fds[0]);
+        if (setsid() < 0)
+            _exit(126);
+        char ready = '1';
+        if (write(ready_fds[1], &ready, 1) != 1)
+            _exit(126);
+        close(ready_fds[1]);
         close(fds[0]);
         if (raise_stack) {
             struct rlimit limit;
@@ -146,8 +248,20 @@ static bool process_run_impl(const char *cwd, int exec_fd,
     }
 
     close(fds[1]);
-    /* Close the fork/setpgid race before the parent ever signals -pid. */
-    (void)setpgid(pid, pid);
+    close(ready_fds[1]);
+    char ready = 0;
+    ssize_t ready_got;
+    do {
+        ready_got = read(ready_fds[0], &ready, 1);
+    } while (ready_got < 0 && errno == EINTR);
+    close(ready_fds[0]);
+    if (ready_got != 1 || ready != '1') {
+        (void)kill(pid, SIGKILL);
+        (void)waitpid(pid, NULL, 0);
+        close(fds[0]);
+        fprintf(stderr, "[devloop] process: child session setup failed\n");
+        return false;
+    }
     int flags = fcntl(fds[0], F_GETFL, 0);
     if (flags >= 0)
         (void)fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
@@ -156,6 +270,9 @@ static bool process_run_impl(const char *cwd, int exec_fd,
     bool finished = false;
     int64_t deadline_us = started_us + (int64_t)timeout_ms * 1000;
     while (!finished) {
+        if (!g_process_cancel_requested && g_process_cancel_poll &&
+            g_process_cancel_poll(g_process_cancel_poll_opaque))
+            zcl_devloop_process_cancel_request();
         drain_output(fds[0], out);
         pid_t waited = waitpid(pid, &status, WNOHANG);
         if (waited == pid) {
@@ -165,7 +282,7 @@ static bool process_run_impl(const char *cwd, int exec_fd,
         if (waited < 0 && errno != EINTR) {
             fprintf(stderr, "[devloop] process: waitpid failed for %s: %s\n",
                     argv[0], strerror(errno));
-            (void)kill(-pid, SIGKILL);
+            terminate_child_session(pid, SIGKILL);
             (void)waitpid(pid, &status, 0);
             close(fds[0]);
             return false;
@@ -174,7 +291,7 @@ static bool process_run_impl(const char *cwd, int exec_fd,
         if (cancelled || platform_time_monotonic_us() >= deadline_us) {
             out->cancelled = cancelled;
             out->timed_out = !cancelled;
-            (void)kill(-pid, SIGTERM);
+            terminate_child_session(pid, SIGTERM);
             for (int i = 0; i < 20; i++) {
                 if (waitpid(pid, &status, WNOHANG) == pid) {
                     finished = true;
@@ -183,7 +300,7 @@ static bool process_run_impl(const char *cwd, int exec_fd,
                 usleep(10000);
             }
             if (!finished) {
-                (void)kill(-pid, SIGKILL);
+                terminate_child_session(pid, SIGKILL);
                 while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
                 finished = true;
             }
@@ -192,6 +309,11 @@ static bool process_run_impl(const char *cwd, int exec_fd,
         struct pollfd pfd = { .fd = fds[0], .events = POLLIN };
         (void)poll(&pfd, 1, 25);
     }
+    /* A bounded command may not daemonize work past its receipt. Reap any
+     * descendant process group that stayed in the command's private session. */
+    signal_session_members(pid, SIGTERM);
+    usleep(10000);
+    signal_session_members(pid, SIGKILL);
     drain_output(fds[0], out);
     close(fds[0]);
 

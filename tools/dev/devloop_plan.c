@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/inotify.h>
 #include <unistd.h>
 
 struct hotswap_eligible_entry {
@@ -104,6 +105,13 @@ bool zcl_devloop_path_is_relevant(const char *path)
         (strcmp(dot, ".c") == 0 || strcmp(dot, ".h") == 0 ||
          strcmp(dot, ".def") == 0 || strcmp(dot, ".md") == 0 ||
          strcmp(dot, ".mk") == 0 || strcmp(dot, ".service") == 0);
+}
+
+bool zcl_devloop_watch_event_is_mutation(uint32_t inotify_mask)
+{
+    return (inotify_mask &
+            (IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM |
+             IN_CREATE | IN_DELETE)) != 0;
 }
 
 /* ── the three dimensions (C3) ─────────────────────────────────────────── */

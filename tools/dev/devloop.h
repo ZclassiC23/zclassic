@@ -463,6 +463,11 @@ bool zcl_devloop_process_run_fd(const char *cwd, int exec_fd,
  * watcher begins a new ownership lifetime. */
 void zcl_devloop_process_cancel_request(void);
 void zcl_devloop_process_cancel_clear(void);
+bool zcl_devloop_process_cancel_requested(void);
+typedef bool (*zcl_devloop_process_cancel_poll_fn)(void *opaque);
+void zcl_devloop_process_cancel_poll_set(
+    zcl_devloop_process_cancel_poll_fn poll_fn, void *opaque);
+void zcl_devloop_process_cancel_poll_clear(void);
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 bool zcl_devloop_deterministic_compile_failure(
     const struct zcl_devloop_process_result *result,
@@ -496,6 +501,9 @@ enum zcl_devloop_publish_mode zcl_devloop_default_watch_publish_mode(void);
  * is being watched; distinct worktrees consequently receive distinct locks. */
 bool zcl_devloop_watch_lock_path(const char *repo_root,
                                  char *out, size_t out_sz);
+/* Content/directory-entry mutations wake the loop. Metadata-only access-time
+ * changes from compilers and indexers do not constitute a source save. */
+bool zcl_devloop_watch_event_is_mutation(uint32_t inotify_mask);
 /* Canonical-worktree identity and SHA3-sealed cycle state.  Readers never
  * create state. ABSENT is an honest empty result; INVALID must fail closed. */
 bool zcl_devloop_workspace_id(const char *repo_root, char out[65]);

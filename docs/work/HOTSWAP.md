@@ -319,11 +319,23 @@ the resident proof epoch is required before this edit class can report
 
 The watcher also owns cancellation. `SIGTERM` records an async-signal-safe
 cancellation request; the bounded process runner terminates and reaps the
-active child process group before the watcher releases its worktree lock. On
+active child process session, including nested process groups, before the
+watcher releases its worktree lock. A new relevant source event uses the same
+mechanism: the obsolete epoch emits no verdict, its exact replacement paths
+remain queued, and the debounced newest batch runs next. Metadata-only
+`IN_ATTRIB` events are excluded because compiler reads may update atime and are
+not source saves. On
 this host, `dev loop stop` interrupted a generic `make ff` tree and completed
 in 0.30 seconds, where the prior implementation retained the lock past its
 five-second command deadline. Cancellation is reported separately from a
 process timeout and never activates a candidate.
+
+The ordinary `dev-bin` bootstrap now writes the frozen non-LTO module action
+plan. The resident no longer requires a one-off `make hotswap-module-so` just
+to learn compiler and linker flags. A real latest-wins probe superseded an
+active `bg_validation_dump.c` proof with a `status_native_handlers.c` save;
+only the latter published a cycle epoch, the session had zero descendants
+after stop, and its first dependency-baseline compile took 225.6 ms.
 
 The candidate build used one compiler, one linker, one candidate, zero
 Make/shell/LTO processes, and no datadir, port, or service access. A separately

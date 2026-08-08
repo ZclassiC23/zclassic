@@ -2309,7 +2309,9 @@ verify-change:
 # runs the changed-file dev compile gate, then links the non-LTO dev binary.
 # This deliberately does not replace `zclassic23`, `make deploy`, or release
 # artifacts.
-dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN) $(DEV_RESTART_PLAN) zclassic23-zcode-adapter-runner
+HOTSWAP_ACTION_PLAN = $(BUILD_DIR)/hotswap/fast/flags.env
+dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN) $(DEV_RESTART_PLAN) \
+	$(HOTSWAP_ACTION_PLAN) zclassic23-zcode-adapter-runner
 # Checkout-locked (see CHECKOUT_LOCK above) — the watcher invokes this same
 # target via run_rebuild_command, so it defers instead of racing a foreground
 # rebuild in the same checkout.
@@ -2554,6 +2556,7 @@ hotswap: $(VIEW_GEN_HEADERS)
 # back onto the resident (old) code and the swap silently does nothing.
 HOTSWAP_MODULE_LDFLAGS = -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
 	-Wl,-z,noexecstack -Wl,-Bsymbolic
+
 # Intentionally NOT ordered on $(BUILD_IDENTITY_STAMP): that stamp exists to
 # gate $(BUILD_IDENTITY_CPPFLAGS) into clientversion.o for whole-program
 # binaries, and DEV_CFLAGS (used below) never carries those flags (see
@@ -2564,7 +2567,23 @@ HOTSWAP_MODULE_LDFLAGS = -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
 # the compile, catching an edit-during-build TOCTOU right before publish).
 # BUILD_SOURCE_ID/CLEAN/MUTATION themselves are ordinary parse-time variables
 # and remain available regardless.
-hotswap-module-so: $(VIEW_GEN_HEADERS)
+$(HOTSWAP_ACTION_PLAN): Makefile config/hotswap_swappable.def \
+		config/hotswap_islands.def
+	@set -eu; \
+	mkdir -p "$(dir $@)"; \
+	tmp="$$(mktemp "$(dir $@).flags.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	{ \
+	  printf '%s\n' '# zcl.hotswap_fast_flags.v1 — frozen resident action plan'; \
+	  printf 'CC=%s\n' '$(CC)'; \
+	  printf 'COMPILER_ID=%s\n' '$(BUILD_COMPILER_ID)'; \
+	  printf 'DEV_CFLAGS=%s\n' '$(DEV_LIVE_CFLAGS)'; \
+	  printf 'HOTSWAP_MODULE_LDFLAGS=%s\n' '$(HOTSWAP_MODULE_LDFLAGS)'; \
+	} > "$$tmp"; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
+
+hotswap-module-so: $(VIEW_GEN_HEADERS) $(HOTSWAP_ACTION_PLAN)
 	@if [ -z "$(HANDLER)$(FILE)" ]; then \
 	  echo "usage: make hotswap-module-so FILE=app/controllers/src/status_native_handlers.c" >&2; \
 	  echo "   or: make hotswap-module-so HANDLER=core.status" >&2; exit 2; fi
@@ -2604,8 +2623,7 @@ hotswap-module-so: $(VIEW_GEN_HEADERS)
 	tmp_o="$$(mktemp "$(HOTSWAP_OBJ_DIR)/.module.XXXXXX.o")"; \
 	tmp_d="$$(mktemp "$(HOTSWAP_SO_DIR)/fast/.module.XXXXXX.d")"; \
 	tmp_so="$$(mktemp "$(HOTSWAP_SO_DIR)/.module.XXXXXX.so")"; \
-	tmp_env="$$(mktemp "$(HOTSWAP_SO_DIR)/fast/.flags.XXXXXX")"; \
-	trap 'rm -f "$$tmp_o" "$$tmp_d" "$$tmp_so" "$$tmp_env"' EXIT HUP INT TERM; \
+	trap 'rm -f "$$tmp_o" "$$tmp_d" "$$tmp_so"' EXIT HUP INT TERM; \
 	publish_exact() { \
 	  pe_src="$$1"; pe_dst="$$2"; \
 	  if ln -- "$$pe_src" "$$pe_dst" 2>/dev/null; then rm -f "$$pe_src"; return 0; fi; \
@@ -2622,14 +2640,6 @@ hotswap-module-so: $(VIEW_GEN_HEADERS)
 	publish_exact "$$tmp_so" "$$so" || { \
 	  echo "hotswap-module-so: REFUSING mismatched existing candidate $$so" >&2; exit 3; }; \
 	chmod a-w "$$o" "$$so"; \
-	{ \
-	  printf '%s\n' '# zcl.hotswap_fast_flags.v1 — cached by make hotswap-module-so for tools/dev/hotswap-module-fast.sh'; \
-	  printf 'CC=%s\n' '$(CC)'; \
-	  printf 'COMPILER_ID=%s\n' '$(BUILD_COMPILER_ID)'; \
-	  printf 'DEV_CFLAGS=%s\n' '$(DEV_LIVE_CFLAGS)'; \
-	  printf 'HOTSWAP_MODULE_LDFLAGS=%s\n' '$(HOTSWAP_MODULE_LDFLAGS)'; \
-	} > "$$tmp_env"; \
-	mv -f -- "$$tmp_env" "$(HOTSWAP_SO_DIR)/fast/flags.env"; \
 	cache_o="$(HOTSWAP_SO_DIR)/fast/$$safe.o"; \
 	cache_d="$(HOTSWAP_SO_DIR)/fast/$$safe.d"; \
 	cache_cmd="$(HOTSWAP_SO_DIR)/fast/$$safe.cmd"; \

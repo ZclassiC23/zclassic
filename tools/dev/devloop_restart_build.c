@@ -1107,6 +1107,8 @@ int zcl_devloop_restart_event(const char *repo_root,
         ok = zcl_devloop_restart_prove(repo_root, source_tus, source_count,
                                        &plan, &proof, &process,
                                        why, sizeof(why));
+    if (process.cancelled || zcl_devloop_process_cancel_requested())
+        return 2;
     bool emitted = rr_emit_event(
         repo_root, source_tus, source_count,
         ok ? "proof_ready" : "rejected",

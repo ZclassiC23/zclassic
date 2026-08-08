@@ -136,7 +136,7 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
     struct stat stamp, make_st, manifest_st, islands_st;
     if (!hs_regular(flags_path, &stamp)) {
         hs_why(why, why_len,
-               "resident action plan absent; run make hotswap-module-so once");
+               "resident action plan absent; run make dev-bin once");
         return false;
     }
     if (!hs_regular(makefile, &make_st) || !hs_regular(manifest, &manifest_st) ||
@@ -1103,6 +1103,8 @@ int zcl_devloop_hotswap_event(const char *repo_root, const char *source_tu,
     char why[512] = {0};
     if (!zcl_devloop_hotswap_build(repo_root, source_tu, &build, &process,
                                    why, sizeof(why))) {
+        if (process.cancelled || zcl_devloop_process_cancel_requested())
+            return 2;
         return hs_emit_event(repo_root, source_tu, "rejected", "compile",
                              false, platform_time_monotonic_us() - started,
                              &build, 0, NULL, &process, why) ? 1 : -1;
@@ -1113,6 +1115,10 @@ int zcl_devloop_hotswap_event(const char *repo_root, const char *source_tu,
     int64_t activation_us = 0;
     bool ok = hs_resident_call(build.artifact_path, activate, &resident,
                                &activation_us, why, sizeof(why));
+    if (zcl_devloop_process_cancel_requested()) {
+        json_free(&resident);
+        return 2;
+    }
     const char *phase = ok ? (activate ? "resident_commit" : "resident_probe")
                            : "resident_probe";
     bool emitted = hs_emit_event(
