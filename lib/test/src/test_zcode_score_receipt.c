@@ -3782,12 +3782,37 @@ static int test_shadow_protocol_contract(void)
 
 int test_zcode_score_receipt(void)
 {
-    int failures = test_score_happy_path() + test_score_package_verticals() +
-                   test_score_rejections() +
-                   test_creation_attribution_cross_validation() +
-                   test_patronage_intent_cross_validation() +
-                   test_reproduction_qualification() +
-                   test_shadow_protocol_contract();
+    int failures = test_score_happy_path();
     printf("=== zcode_score_receipt: %d failures ===\n", failures);
     return failures;
+}
+
+int test_zcode_score_receipt_packages(void)
+{
+    return test_score_package_verticals();
+}
+
+int test_zcode_score_receipt_rejections(void)
+{
+    return test_score_rejections();
+}
+
+int test_zcode_score_receipt_creation(void)
+{
+    return test_creation_attribution_cross_validation();
+}
+
+int test_zcode_score_receipt_patronage(void)
+{
+    return test_patronage_intent_cross_validation();
+}
+
+int test_zcode_score_receipt_reproduction(void)
+{
+    return test_reproduction_qualification();
+}
+
+int test_zcode_score_receipt_shadow(void)
+{
+    return test_shadow_protocol_contract();
 }

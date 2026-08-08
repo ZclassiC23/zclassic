@@ -992,6 +992,18 @@ int main(int argc, char **argv)
       failures += test_zcode_shadow_policy(); }
     { extern int test_zcode_score_receipt(void);
       failures += test_zcode_score_receipt(); }
+    { extern int test_zcode_score_receipt_packages(void);
+      failures += test_zcode_score_receipt_packages(); }
+    { extern int test_zcode_score_receipt_rejections(void);
+      failures += test_zcode_score_receipt_rejections(); }
+    { extern int test_zcode_score_receipt_creation(void);
+      failures += test_zcode_score_receipt_creation(); }
+    { extern int test_zcode_score_receipt_patronage(void);
+      failures += test_zcode_score_receipt_patronage(); }
+    { extern int test_zcode_score_receipt_reproduction(void);
+      failures += test_zcode_score_receipt_reproduction(); }
+    { extern int test_zcode_score_receipt_shadow(void);
+      failures += test_zcode_score_receipt_shadow(); }
     { extern int test_zcode_package_registry(void);
       failures += test_zcode_package_registry(); }
     failures += test_game();

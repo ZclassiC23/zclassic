@@ -233,6 +233,18 @@ static int test_native_catalog_resolution(void)
         ASSERT(zcl_test_group_is_integration_only(
             "test_event_log_benchmark"));
         ASSERT(!zcl_test_group_is_integration_only("test_event_log"));
+        ASSERT(zcl_test_group_catalog_contains(
+            "test_zcode_score_receipt_packages"));
+        ASSERT(zcl_test_group_catalog_contains(
+            "test_zcode_score_receipt_rejections"));
+        ASSERT(zcl_test_group_catalog_contains(
+            "test_zcode_score_receipt_creation"));
+        ASSERT(zcl_test_group_catalog_contains(
+            "test_zcode_score_receipt_patronage"));
+        ASSERT(zcl_test_group_catalog_contains(
+            "test_zcode_score_receipt_reproduction"));
+        ASSERT(zcl_test_group_catalog_contains(
+            "test_zcode_score_receipt_shadow"));
         for (size_t i = 0; i < immediate_total; i++) {
             ASSERT(strcmp(immediate[i],
                           "test_make_lint_gates_heavy_01") != 0);
