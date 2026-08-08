@@ -300,6 +300,12 @@ struct zcl_result wallet_commit_transaction(
     struct wallet *w, struct wallet_tx *wtx,
     const struct wallet_tx_admission *admission);
 
+/* Re-admit exact bytes already durably recorded in the wallet. This is the
+ * restart/rebroadcast seam: it performs full current mempool validation but
+ * never adds a second wallet row or changes selected inputs. */
+struct zcl_result wallet_reaccept_transaction(
+    struct wallet_tx *wtx, const struct wallet_tx_admission *admission);
+
 /* Undo an unrelayed commit after a durability step fails. Removes the
  * transaction from the mempool and wallet map and restores transparent and
  * shielded spent markers. This is only safe before relay. */

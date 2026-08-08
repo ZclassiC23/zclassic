@@ -21,4 +21,10 @@ bool vault_intent_publish_prepared(struct wallet_rpc_context *ctx,
                                    struct wallet_tx *wtx, int64_t now,
                                    struct json_value *result);
 
+/* Load and re-admit the exact signed bytes of a durable mempool-accepted
+ * intent when a restart left them absent from the current mempool. */
+bool vault_intent_republish_durable(struct wallet_rpc_context *ctx,
+                                    const uint8_t id[32], int64_t now,
+                                    struct json_value *result);
+
 #endif

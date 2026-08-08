@@ -320,7 +320,13 @@ ZCL_COMMAND_READY_READ(
     "Returns planned, proving, mempool_accepted, confirmed, finalized, reorged, "
     "conflicted, expired or failed plus txid when one exists. For asynchronous "
     "submission the operation_id is the same durable plan_id, so this remains "
-    "the only status authority.", ZCL_COMMAND_LIST_BUDGET,
+    "the only status authority. Terminal failures carry a stable error_code; "
+    "agents branch on it rather than log prose. Codes distinguish "
+    "SHIELDED_REQUIREMENTS_MISSING, PREPARED_NOTE_MISMATCH or conflict, "
+    "invalid proof/script, missing inputs, fee policy, locktime, expiry, and "
+    "internal admission failure. After restart, a mempool_accepted intent "
+    "revalidates and re-relays only its exact durable bytes when absent from "
+    "the new process mempool.", ZCL_COMMAND_LIST_BUDGET,
     "vault,intent,status,txid,reorg", "zcl.vault_intent_status.input.v1",
     "zcl.vault_intent_status.v1", "plan_id", "plan_id",
     "zclassic23 vault intent status --input='{\"plan_id\":\"<64hex>\"}'",
