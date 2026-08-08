@@ -269,7 +269,7 @@ else
 fi
 
 echo
-echo "Build SPEED (ccache, mold/lld, clang, ...) is a different question:"
+echo "Build SPEED (ccache, mold/lld/gold, clang, ...) is a different question:"
 echo "  make doctor-build"
 echo "Where the wall time actually goes on this host:"
 echo "  make timings"

@@ -53,7 +53,7 @@ else
         "every build-only/test-fast/dev-bin epoch reruns the full C front-end for every recompiled TU (~0.5-2 s per TU x hundreds on a header edit) instead of ~50-200 ms cache hits"
 fi
 
-# mold/lld — fast linker selected for the DEV (non-LTO) binary link
+# mold/lld/gold — fast linker selected for the DEV (non-LTO) binary link
 # (Makefile:305, ZCL_DEV_LINKER).
 if have mold; then
     found mold "$(command -v mold) ($(mold --version 2>/dev/null | sed -n '1p'))" \
@@ -61,9 +61,12 @@ if have mold; then
 elif have ld.lld; then
     found ld.lld "$(command -v ld.lld)" \
         "faster link of the non-LTO dev binary (Makefile:305, ZCL_DEV_LINKER=-fuse-ld=lld)"
+elif have ld.gold; then
+    found ld.gold "$(command -v ld.gold)" \
+        "faster link of the non-LTO dev binary (Makefile:305, ZCL_DEV_LINKER=-fuse-ld=gold)"
 else
-    absent mold/lld "dev-bin non-LTO link falls back to GNU ld (Makefile:305 finds neither)" \
-        "the hot dev-reload/dev-bin link over ~1000 objects goes from ~1-3 s (mold/lld) to ~10-30 s (GNU ld) on every edit-link cycle"
+    absent mold/lld/gold "dev-bin non-LTO link falls back to GNU ld (Makefile:305 finds none)" \
+        "the hot dev-reload/dev-bin link over ~1000 objects misses the fastest installed linker on every edit-link cycle"
 fi
 
 # clang — libFuzzer + ASan/UBSan toolchain (Makefile:2594, FUZZ_CC ?= clang).

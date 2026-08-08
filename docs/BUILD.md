@@ -187,7 +187,7 @@ override in the running `zcl23-dev` node, gated on `-hotswap-activate` +
 `make fast-rebuild` (alias for `make dev-bin`) links without LTO, keeps
 symbols, defaults to `ZCL_DEV_OPT=-Og` with consensus/crypto/script/validation
 hot paths at `ZCL_DEV_HOT_OPT=-O2` (both overrideable), and auto-selects
-`mold`/`ld.lld` via `ZCL_DEV_LINKER`. `make fast-changed-compile` /
+  `mold`/`ld.lld`/`ld.gold` via `ZCL_DEV_LINKER`. `make fast-changed-compile` /
 `make fast-compile` are the cheapest no-link edit check. The compile-epoch key
 (source SHA-256 + toolchain fingerprint + flags) makes per-TU object/candidate
 publication atomic and `ccache`/`sccache`-cacheable; retention is bounded by

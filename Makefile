@@ -627,7 +627,7 @@ CACHED_CFLAGS = $(filter-out -DZCL_BUILD_SOURCE_ID=% -DZCL_BUILD_CLEAN=%,$(CFLAG
 BUILD_ONLY_CFLAGS = $(CACHED_CFLAGS) -Wno-deprecated-declarations
 ZCL_DEV_OPT ?= -Og
 ZCL_DEV_HOT_OPT ?= -O2
-ZCL_DEV_LINKER ?= $(shell if command -v mold >/dev/null 2>&1; then printf '%s' '-fuse-ld=mold'; elif command -v ld.lld >/dev/null 2>&1; then printf '%s' '-fuse-ld=lld'; fi)
+ZCL_DEV_LINKER ?= $(shell if command -v mold >/dev/null 2>&1; then printf '%s' '-fuse-ld=mold'; elif command -v ld.lld >/dev/null 2>&1; then printf '%s' '-fuse-ld=lld'; elif command -v ld.gold >/dev/null 2>&1; then printf '%s' '-fuse-ld=gold'; fi)
 DEV_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) $(ZCL_DEV_OPT) -g3 -DZCL_DEV_BUILD \
 	-Wno-deprecated-declarations -Wno-format-truncation -Wno-maybe-uninitialized
 DEV_HOT_CFLAGS = $(filter-out $(ZCL_DEV_OPT),$(DEV_CFLAGS)) $(ZCL_DEV_HOT_OPT)
@@ -5759,7 +5759,7 @@ agent-clear-stale-dev-reindex:
 agent-doctor:
 	@tools/dev/agent-doctor.sh $(ARGS)
 
-# Build-host accelerator health: ccache, mold/lld, clang, inotifywait, lcov,
+# Build-host accelerator health: ccache, mold/lld/gold, clang, inotifywait, lcov,
 # clangd, nproc — with the concrete per-iteration cost of each missing one.
 # Read-only, always exit 0.
 doctor-build:

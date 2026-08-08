@@ -39,6 +39,22 @@ case " $release " in
     *) fail 'RELEASE no longer carries whole-program LTO' ;;
 esac
 
+if ! command -v mold >/dev/null 2>&1 &&
+   ! command -v ld.lld >/dev/null 2>&1 &&
+   command -v ld.gold >/dev/null 2>&1; then
+    restart="$(profile_line DEV_RESTART)" ||
+        fail 'missing DEV_RESTART profile for linker selection'
+    case " $restart " in
+        *' -fuse-ld=gold '*) ;;
+        *) fail 'installed gold linker is not selected for DEV_RESTART' ;;
+    esac
+    case " $release " in
+        *' -fuse-ld=gold '*)
+            fail 'development linker leaked into RELEASE'
+            ;;
+    esac
+fi
+
 git -C "$ROOT" grep -q '\$(DEV_RESTART_CFLAGS) \$(DEV_RESTART_LDFLAGS)' -- Makefile ||
     fail 'incremental dev link is not owned by DEV_RESTART'
 git -C "$ROOT" grep -q 'dev-bin zclassic23-dev:.*\$(ZCLASSIC23_DEV_BIN)' -- Makefile ||
