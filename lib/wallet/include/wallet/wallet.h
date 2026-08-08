@@ -307,8 +307,12 @@ struct zcl_result wallet_rollback_transaction(
     struct wallet *w, const struct wallet_tx *wtx,
     struct tx_mempool *mempool);
 
-void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
-                              const struct block_index *pindex);
+/* Returns true when the transaction belongs to the wallet (owned output or
+ * spend of a wallet transaction), including an existing row that was just
+ * stamped confirmed. Callers may use that result to enqueue derived durable
+ * projections without rescanning every transaction in the block. */
+bool wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
+                             const struct block_index *pindex);
 
 /* Advance every stored confirmation depth after the chain tip moved FORWARD,
  * and republish w->best_block_height as `new_best_height`.

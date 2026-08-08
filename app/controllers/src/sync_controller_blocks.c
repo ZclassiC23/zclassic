@@ -581,7 +581,9 @@ static bool node_db_sync_connect_block_async_write(struct node_db *ndb,
         for (size_t i = 0; i < async->blk.num_vtx; i++) {
             if (!node_db_sync_wallet_tx_local(ndb, &async->blk.vtx[i],
                                               async->wallet,
-                                              async->pindex.nHeight, NULL)) {
+                                              async->pindex.nHeight,
+                                              async->pindex.phashBlock->data,
+                                              async->pindex.nTime, NULL)) {
                 LOG_WARN("sync",
                          "async projection: wallet_tx sync failed at height "
                          "%d tx %zu", async->pindex.nHeight, i);

@@ -808,6 +808,21 @@ int test_sqlite(void) {
         ok = ok && saved_wallet_tx.block_height == 0;
         free(wallet_utxo.script);
         free(saved_wallet_tx.raw_tx);
+        memset(&saved_wallet_tx, 0, sizeof(saved_wallet_tx));
+
+        uint8_t confirmed_hash[32];
+        memset(confirmed_hash, 0x5c, sizeof(confirmed_hash));
+        ok = ok && node_db_sync_wallet_tx_confirmed_async(
+            &ndb, &wallet_tx, wallet, 321, confirmed_hash, 1700000321);
+        ok = ok && db_service_flush_write(&svc);
+        ok = ok && db_wallet_tx_find(
+            &ndb, wallet_tx.hash.data, &saved_wallet_tx);
+        ok = ok && saved_wallet_tx.has_block;
+        ok = ok && saved_wallet_tx.block_height == 321;
+        ok = ok && memcmp(saved_wallet_tx.block_hash,
+                          confirmed_hash, sizeof(confirmed_hash)) == 0;
+        ok = ok && saved_wallet_tx.time_received == 1700000321;
+        free(saved_wallet_tx.raw_tx);
         if (wallet) {
             wallet_free(wallet);
             free(wallet);

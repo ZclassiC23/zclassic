@@ -71,6 +71,8 @@ struct wallet_tx_sync_ctx {
     const struct transaction *tx;
     const struct wallet *wallet;
     int block_height;
+    const uint8_t *block_hash;
+    int64_t block_time;
     bool is_ours;
     bool ok;
 };
@@ -89,6 +91,8 @@ bool node_db_sync_wallet_tx_local(struct node_db *ndb,
                                   const struct transaction *tx,
                                   const struct wallet *w,
                                   int block_height,
+                                  const uint8_t block_hash[32],
+                                  int64_t block_time,
                                   bool *is_ours_out);
 
 /* Defined in sync_controller.c — used by sync_controller_catchup.c. */

@@ -1150,8 +1150,8 @@ int wallet_advance_confirmations(struct wallet *w, int new_best_height)
     return raised;
 }
 
-void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
-                              const struct block_index *pindex)
+bool wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
+                             const struct block_index *pindex)
 {
     zcl_mutex_lock(&w->cs);
 
@@ -1174,7 +1174,7 @@ void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
 
     if (!dominated) {
         zcl_mutex_unlock(&w->cs);
-        return;
+        return false;
     }
 
     struct wallet_tx wtx;
@@ -1217,11 +1217,11 @@ void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
         wtx.tx.vin = (struct tx_in *)tx->vin;
         wtx.tx.vout = (struct tx_out *)tx->vout;
         zcl_mutex_unlock(&w->cs);
-        wallet_add_to_wallet(w, &wtx);
-        return;
+        return wallet_add_to_wallet(w, &wtx);
     }
 
     zcl_mutex_unlock(&w->cs);
+    return true;
 }
 
 bool wallet_import_key(struct wallet *w, const struct privkey *key)

@@ -191,6 +191,13 @@ bool node_db_sync_wallet_tx(struct node_db *ndb,
                             const struct wallet *w,
                             int block_height);
 
+/* Fire-and-forget confirmed-wallet projection for the live tip path. Copies
+ * the exact transaction and block identity before enqueueing on the existing
+ * single DB writer, so a reducer thread never waits on SQLite. */
+bool node_db_sync_wallet_tx_confirmed_async(
+    struct node_db *ndb, const struct transaction *tx, const struct wallet *w,
+    int block_height, const uint8_t block_hash[32], int64_t block_time);
+
 /* Called when a transaction enters the mempool. */
 bool node_db_sync_mempool_add(struct node_db *ndb,
                               const struct transaction *tx,
