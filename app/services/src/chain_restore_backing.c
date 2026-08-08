@@ -13,6 +13,7 @@
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
 #include "util/log_macros.h"
+#include "util/util.h"
 
 bool chain_restore_block_is_consensus_backed(
     const struct block_index *tip)
@@ -80,8 +81,21 @@ bool chain_restore_block_is_consensus_backed_on_disk_seeded(
         return false;
 
     struct block blk;
-    if (!read_block_from_disk_index_pread(&blk, tip, datadir))
-        return false;  // raw-return-ok:predicate-negative
+    if (!read_block_from_disk_index_pread(&blk, tip, datadir)) {
+        /* blk-file writers and stage readers resolve under GetDataDir(true)
+         * — the NET-SPECIFIC datadir (<base>/regtest on regtest/testnet,
+         * ==base on mainnet; see reducer_ingest_service.c body persist).
+         * Boot-recovery callers pass the BASE datadir, so on a subdir net
+         * the first read misses every persisted body and the tip restore
+         * refuses ("not disk-backed") on a fully-persisted chain. Retry
+         * under the canonical net dir; on mainnet it equals datadir and
+         * the retry is a cheap no-op. */
+        char net_dir[2048];
+        GetDataDir(true, net_dir, sizeof(net_dir));
+        if (!net_dir[0] || strcmp(net_dir, datadir) == 0 ||
+            !read_block_from_disk_index_pread(&blk, tip, net_dir))
+            return false;  // raw-return-ok:predicate-negative
+    }
 
     bool ok = true;
     struct uint256 disk_hash;

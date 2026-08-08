@@ -469,7 +469,14 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
                     LOG_WARN("sync", "Sapling tree mismatch " "at h=%d (size=%zu) — will rebuild at next boot", pindex->nHeight, tsize);
                     fflush(stderr);
                 }
-                if (!atomic_load(&g_sapling_tree_rebuilding))
+                /* Arm the live pause flag only for a substantial tree (one
+                 * that had genuinely accumulated notes). The same atomic is
+                 * utxo_apply's pause seam, so setting it on a small or empty
+                 * tree (regtest, early history — where a header-root/empty-
+                 * tree mismatch is spurious and benign) would idle the fold
+                 * forever with no rebuild in flight and no named blocker. */
+                if (tsize >= 500000 &&
+                    !atomic_load(&g_sapling_tree_rebuilding))
                     atomic_store(&g_sapling_tree_rebuilding, true);
             }
         }

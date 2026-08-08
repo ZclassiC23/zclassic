@@ -18,12 +18,14 @@
 #include "test/test_core.h"
 #include "json/json.h"
 
+#include "chain/chain.h"
 #include "coins/utxo_commitment.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "models/database.h"
 #include "models/utxo.h"
 #include "script/standard.h"
+#include "services/chain_state_service.h"
 #include "services/utxo_mirror_delta.h"
 #include "services/utxo_mirror_sync_service.h"
 #include "storage/coins_kv.h"
@@ -458,6 +460,75 @@ int test_utxo_mirror_sync(void)
          * sharing this datadir sees a consistent state. */
         int64_t v110 = 110;
         node_db_state_set(&ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &v110, sizeof(v110));
+    }
+
+    /* ── HEADER-TIP GUARD — cursor is next-height-to-apply ─────────────
+     * The symmetric header guard in utxo_mirror_sync_run_once must compare
+     * header_tip against frontier - 1 (the last APPLIED height), not the raw
+     * utxo_apply cursor (the NEXT height to apply). With the raw cursor a
+     * quiet at-tip node (frontier == tip + 1, header_tip == tip) deferred
+     * every tick forever, the mirror never completed, and the wallet/vault
+     * read models starved. Wire a fake header tip into the csr singleton
+     * (this binary never boots the real one) and prove all three arms. */
+    {
+        struct chain_state_repository *csr = csr_instance();
+        bool was_init = csr->initialized;
+        struct block_index **was_slot = csr->pindex_best_hdr;
+
+        struct block_index bi;
+        memset(&bi, 0, sizeof(bi));
+        struct block_index *slot = &bi;
+        csr->pindex_best_hdr = &slot;
+        csr->initialized = true;
+
+        /* (a) Steady state: headers AT the last applied height (frontier - 1).
+         *     The pass must NOT defer — this is the arm that used to starve. */
+        bi.nHeight = 110;
+        UMS_CHECK("guard: advance frontier 111 (applied through 110)",
+                  ums_set_frontier(pdb, 111));
+        int64_t wg = utxo_mirror_sync_run_once(&svc);
+        UMS_CHECK("guard: frontier-1 == header_tip does NOT defer "
+                  "(wholesale fallback rebuild, 2 rows)", wg == 2);
+        UMS_CHECK("guard: mirror count still 2", db_utxo_count(&ndb) == 2);
+        {
+            int64_t cur = -1;
+            node_db_state_get_int(&ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &cur);
+            UMS_CHECK("guard: cursor advanced to 111", cur == 111);
+        }
+
+        /* (b) Headers genuinely BEHIND the last applied height (the snapshot-
+         *     seed shape the guard exists for): the pass MUST defer. */
+        UMS_CHECK("guard: add coin 0x99@111", ums_add_coin(pdb, 0x99, 7777, 111));
+        UMS_CHECK("guard: advance frontier 112", ums_set_frontier(pdb, 112));
+        bi.nHeight = 100;
+        UMS_CHECK("guard: frontier-1 > header_tip defers (0 rows)",
+                  utxo_mirror_sync_run_once(&svc) == 0);
+        UMS_CHECK("guard: deferred pass left mirror untouched (count 2)",
+                  db_utxo_count(&ndb) == 2);
+        {
+            int64_t cur = -1;
+            node_db_state_get_int(&ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &cur);
+            UMS_CHECK("guard: deferred pass left cursor at 111", cur == 111);
+        }
+
+        /* (c) Headers catch up to the last applied height: the SAME pass now
+         *     runs and picks up the coin added while deferred. */
+        bi.nHeight = 111;
+        UMS_CHECK("guard: caught-up pass rebuilds 3 rows",
+                  utxo_mirror_sync_run_once(&svc) == 3);
+        UMS_CHECK("guard: mirror count == 3 after catch-up",
+                  db_utxo_count(&ndb) == 3);
+        UMS_CHECK("guard: 0x99 present after catch-up",
+                  db_utxo_exists(&ndb,
+                      (const uint8_t[32]){[0]=0x99,[31]=0x9c}, 0));
+        {
+            int64_t cur = -1;
+            node_db_state_get_int(&ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &cur);
+            UMS_CHECK("guard: cursor advanced to 112", cur == 112);
+        }
+
+        csr->initialized = was_init;
+        csr->pindex_best_hdr = was_slot;
     }
 
     app_runtime_set_current(NULL);

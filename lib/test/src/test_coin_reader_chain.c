@@ -42,6 +42,7 @@
 #include "test/test_core.h"
 
 #include "core/uint256.h"
+#include "jobs/utxo_apply_stage.h"
 #include "models/database.h"
 #include "models/hodl_wave.h"
 #include "models/utxo.h"
@@ -356,6 +357,77 @@ static int crc_case_read_models(const char *dir)
     return failures;
 }
 
+/* ── Part D: the forward fold is self-derived on the boot that stamps it ──
+ *
+ * A from-genesis node's coins_kv is populated by its own utxo_apply fold with
+ * NO migration stamp (every borrowed-state path — node.db import seed,
+ * consensus-state bundle install, anchor refold — stamps migration-complete in
+ * the same transaction that populates the set). The boot that recognises that
+ * set (coins_kv_boot_rebuild_if_needed on a populated, unstamped store) must
+ * stamp migration-complete AND the self-folded marker together: stamping only
+ * the former flips the sovereignty gate to release_assisted
+ * ("borrowed_seed_no_refold_marker") on the very boot that first makes the
+ * money gate's proven-authority rung pass — a catch-22 that strands a fresh
+ * self-folded node unable to mint or spend. */
+static int crc_case_forward_fold_sovereign_stamp(const char *dir)
+{
+    int failures = 0;
+    char kv_path[512];
+    sqlite3 *kv = NULL;
+
+    snprintf(kv_path, sizeof(kv_path), "%s/fold_progress_kv.db", dir);
+    (void)unlink(kv_path);
+    if (sqlite3_open(kv_path, &kv) != SQLITE_OK) {
+        printf("  coin_reader_chain: open fold progress_kv... FAIL\n");
+        if (kv) sqlite3_close(kv);
+        return failures + 1;
+    }
+    CRC_CHECK("fold store schema + meta table",
+              coins_kv_ensure_schema(kv) && progress_meta_table_ensure(kv));
+
+    /* The node's own fold output: a coin present and the applied frontier
+     * advanced, with NOT ONE stamp (borrowed paths always co-commit theirs). */
+    {
+        struct uint256 a = crc_txid(0xD4);
+        uint8_t script[3] = {0x76, 0xA9, 0x14};
+        CRC_CHECK("fold coin applied",
+                  coins_kv_add(kv, a.data, 0, CRC_V_A, CRC_H_A, true,
+                               script, sizeof(script)));
+    }
+    {
+        bool frontier_ok = false;
+        if (crc_exec(kv, "BEGIN IMMEDIATE")) {
+            frontier_ok = coins_kv_set_applied_height_in_tx(kv, CRC_H_A + 1) &&
+                          crc_exec(kv, "COMMIT");
+        }
+        CRC_CHECK("fold applied frontier advanced", frontier_ok);
+    }
+    CRC_CHECK("no migration stamp before boot", !crc_stamp_present(kv));
+    CRC_CHECK("no self-folded marker before boot",
+              !coins_kv_contains_refold_marker(kv));
+    {
+        char why[96] = {0};
+        CRC_CHECK("unstamped fold is not treated as borrowed",
+                  coins_kv_tip_is_self_derived(kv, CRC_H_A, why, sizeof(why)));
+    }
+
+    CRC_CHECK("boot recognises the populated fold",
+              coins_kv_boot_rebuild_if_needed(kv));
+    CRC_CHECK("boot stamped migration-complete", crc_stamp_present(kv));
+    CRC_CHECK("boot stamped the self-folded marker",
+              coins_kv_contains_refold_marker(kv));
+    CRC_CHECK("boot-recognised fold is proven authority",
+              coins_kv_is_proven_authority(kv, NULL));
+    {
+        char why[96] = {0};
+        CRC_CHECK("stamped fold stays self-derived (no catch-22)",
+                  coins_kv_tip_is_self_derived(kv, CRC_H_A, why, sizeof(why)));
+    }
+
+    sqlite3_close(kv);
+    return failures;
+}
+
 /* ── Entry point ───────────────────────────────────────────────────────── */
 
 int test_coin_reader_chain(void)
@@ -372,6 +444,7 @@ int test_coin_reader_chain(void)
     }
 
     failures += crc_case_canonical_ledger(dir);
+    failures += crc_case_forward_fold_sovereign_stamp(dir);
     failures += crc_case_read_models(dir);
 
     /* The whole chain ran without any component creating the demoted copy's

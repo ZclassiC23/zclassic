@@ -26,6 +26,7 @@
 #include "wallet/wallet.h"
 #include "wallet/keystore.h"
 #include "core/serialize.h"
+#include "util/util.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -219,6 +220,17 @@ int wallet_scan_blocks(struct node_db *ndb,
     if (!ndb || !ndb->open || !chain || !w || !datadir)
         LOG_ERR("wallet_scan", "scan_blocks: invalid args (ndb=%p chain=%p w=%p datadir=%p)",
                 (void *)ndb, (void *)chain, (void *)w, (void *)datadir);
+
+    /* blk files live under GetDataDir(true) — the NET-SPECIFIC datadir
+     * (<base>/regtest on regtest/testnet; ==base on mainnet, same
+     * convention as reducer_ingest_service.c body persist). Boot/rescan
+     * callers pass the BASE datadir, so on a subdir net the file glob
+     * below finds 0 files and the wallet comes up believing it has no
+     * UTXOs. Resolve the canonical dir; byte-identical on mainnet. */
+    char net_dir[2048];
+    GetDataDir(true, net_dir, sizeof(net_dir));
+    if (net_dir[0])
+        datadir = net_dir;
 
     /* range fast-path. Empty range = nothing to do. */
     if (start_height > end_height) {

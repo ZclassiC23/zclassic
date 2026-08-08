@@ -360,8 +360,12 @@ static int64_t mirror_rebuild_from_coins_kv(struct node_db *ndb, int32_t frontie
                                              u.address_hash, &u.has_address);
 
         if (!db_utxo_insert_raw(ndb, &u)) {
-            LOG_WARN("utxo_mirror", "rebuild: db_utxo_insert_raw failed at vout=%u",
-                     u.vout);
+            LOG_WARN("utxo_mirror",
+                     "rebuild: db_utxo_insert_raw failed at vout=%u (height=%d "
+                     "value=%lld script_len=%zu script_type=%d has_address=%d): %s",
+                     u.vout, (int)u.height, (long long)u.value, u.script_len,
+                     (int)u.script_type, (int)u.has_address,
+                     sqlite3_errmsg(ndb->db));
             ok = false;
             break;
         }
@@ -537,8 +541,16 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
      * concurrent with the fold — the observed blocks-less crash window. "Near
      * tip" requires the headers to have actually reached the coins frontier,
      * not the reverse. The first pass once headers catch up (header_tip >=
-     * frontier) rebuilds it once, near the real tip. */
-    if (header_tip > 0 && (int64_t)frontier > header_tip) {
+     * frontier) rebuilds it once, near the real tip.
+     *
+     * frontier is the utxo_apply CURSOR (coins_applied_height), i.e. the NEXT
+     * height to apply = last applied + 1 (utxo_apply_stage.c co-commits
+     * cursor_in + 1), so compare header_tip against frontier - 1. The raw
+     * cursor defers forever at steady state (frontier == tip + 1 > header_tip
+     * == tip on every tick): the mirror never completes and every downstream
+     * read model (coins view → wallet_verify_utxos prune → vault spendable →
+     * the overlay-intent fee reserve) starves on an otherwise healthy node. */
+    if (header_tip > 0 && (int64_t)frontier - 1 > header_tip) {
         atomic_store(&svc->last_pass_unix, platform_time_wall_unix());
         return 0;
     }

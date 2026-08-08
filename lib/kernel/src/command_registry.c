@@ -999,6 +999,26 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                    strcmp(key, "prevtxs") == 0) {
             type_ok = value->type == JSON_ARR &&
                       value->num_children <= 256u;
+        } else if (strcmp(key, "read_only_verbs") == 0 ||
+                   strcmp(key, "object_roots") == 0 ||
+                   strcmp(key, "capability_roots") == 0 ||
+                   strcmp(key, "service_roots") == 0 ||
+                   strcmp(key, "portal_roots") == 0 ||
+                   strcmp(key, "starting_roots") == 0) {
+            /* Space manifest/service root sets, service verb sets, and
+             * scout starting roots are bounded string arrays. The handlers
+             * own the exact grammar (64-hex roots, uniqueness, the four
+             * read-only verb names, the per-set caps); the transport only
+             * admits the declared array-of-strings shape. Without this rule
+             * the default branch demanded a string and every one of these
+             * leaves was uninvokable from the shell. */
+            type_ok = value->type == JSON_ARR && value->num_children <= 64u;
+            for (size_t j = 0; type_ok && j < value->num_children; j++) {
+                const struct json_value *item = &value->children[j];
+                const char *text = json_get_str(item);
+                type_ok = item->type == JSON_STR && text && text[0] &&
+                          strlen(text) <= 64u;
+            }
         } else if (strcmp(key, "outputs") == 0) {
             type_ok = value->type == JSON_OBJ &&
                       value->num_children <= 256u;
@@ -1088,6 +1108,42 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
              * string while every handler reads JSON_INT, making the declared
              * commands uninvokable through the CLI. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "sequence") == 0 ||
+                   strcmp(key, "not_before") == 0 ||
+                   strcmp(key, "expiry") == 0 ||
+                   strcmp(key, "observation_unix") == 0) {
+            /* Space manifests, scout missions, and the zcode.network
+             * publish/storage_ack records all carry positive integer
+             * sequence/window fields; every declared example types them as
+             * integers and every handler reads JSON_INT (mvspace_int,
+             * scout_int). The default string branch made
+             * metaverse.space.plan|commit and metaverse.space.scout.plan|run
+             * uninvokable through the typed CLI: an integer failed here and
+             * a numeric string passed here only to read as 0 in the handler
+             * (json_get_int on a JSON_STR), which then refused with
+             * BAD_MANIFEST/BAD_SCOUT_MISSION. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1;
+        } else if (strcmp(key, "maximum_depth") == 0) {
+            /* Scout traversal bound: 0 is "the starting roots only". The
+             * cap mirrors VCS_SPACE_SCOUT_DEPTH_MAX. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
+                      json_get_int(value) <= 8;
+        } else if (strcmp(key, "maximum_spaces") == 0) {
+            /* Cap mirrors VCS_SPACE_SCOUT_SPACES_MAX. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 32;
+        } else if (strcmp(key, "maximum_portals") == 0) {
+            /* Cap mirrors VCS_SPACE_SCOUT_PORTALS_MAX. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 64;
+        } else if (strcmp(key, "maximum_bytes") == 0) {
+            /* Cap mirrors VCS_SPACE_SCOUT_BYTES_MAX (8 MiB). */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 8 * 1024 * 1024;
+        } else if (strcmp(key, "deadline_ms") == 0) {
+            /* Cap mirrors VCS_SPACE_SCOUT_DEADLINE_MS_MAX (60 s). */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 60000;
         } else if (strcmp(key, "expires_in_seconds") == 0) {
             /* Owner-gated dev activation plan lifetime. The handler repeats
              * this exact bound; recognizing the integer here lets the typed

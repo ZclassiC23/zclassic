@@ -843,6 +843,99 @@ _test_next:;
   return failures;
 }
 
+/* Regression: a manifest whose window does not fit inside the DHT
+ * delegation's window must be refused WITH THAT REASON NAMED. The handler
+ * used to collapse every signer-side failure into the bare "local online
+ * key/delegation cannot sign this manifest" body — which reads as a missing
+ * identity and sends operators to re-delegate a healthy one (the metaverse
+ * tour hit exactly this by backdating not_before 60s before a delegation
+ * minted seconds earlier). The positive arm proves a fitting window passes
+ * the signer gate and fails only at the next one (chain authorization —
+ * offline in this test process). */
+static int test_space_native_manifest_sign_refusal_named(void)
+{
+  int failures = 0;
+  TEST("space plan: signer/window refusals are named, not collapsed") {
+    char datadir[] = "/tmp/zcl_space_signrefuse_XXXXXX";
+    ASSERT(mkdtemp(datadir) != NULL);
+
+    /* Provision the identity exactly as zcode network delegate would: an
+     * online key file plus a delegation over that same key, current now. */
+    uint8_t online_seed[32], online_pub[32];
+    char identity_error[192] = {0};
+    ASSERT(vcs_zcode_dht_online_key_load_or_create(
+        datadir, online_seed, online_pub, identity_error,
+        sizeof(identity_error)));
+    uint8_t master_seed[32], master_pub[32], master_secret[32];
+    uint8_t noise[32], beacon[32], genesis[32];
+    memset(master_seed, 0x2a, 32);
+    memset(noise, 0x4a, 32);
+    memset(beacon, 0x5a, 32);
+    memset(genesis, 0x6a, 32);
+    ed25519_keypair(master_pub, master_secret, master_seed);
+    uint64_t now = (uint64_t)platform_time_wall_unix();
+    ASSERT(now > 120);
+    struct vcs_zcode_dht_delegation delegation;
+    ASSERT_EQ(vcs_zcode_dht_delegation_sign(
+                  &delegation, genesis, online_pub, noise, 100, beacon,
+                  now - 1, now + 3600, 1, master_seed),
+              VCS_ZCODE_DHT_DELEGATION_OK);
+    memset(master_seed, 0, sizeof(master_seed));
+    memset(master_secret, 0, sizeof(master_secret));
+    (void)master_pub;
+    ASSERT(vcs_zcode_dht_delegation_save(
+        datadir, &delegation, identity_error, sizeof(identity_error)));
+
+    /* not_before 60s BEFORE the delegation's own window start: the signer
+     * must refuse, and the refusal must name the validity window. */
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    json_push_kv_str(&input, "kind", "space_manifest");
+    json_push_kv_str(&input, "datadir", datadir);
+    json_push_kv_int(&input, "sequence", 1);
+    json_push_kv_str(&input, "name", "window regression");
+    json_push_kv_str(&input, "description", "window must fit the delegation");
+    json_push_kv_int(&input, "not_before", (int64_t)(now - 60));
+    json_push_kv_int(&input, "expiry", (int64_t)(now + 1800));
+    struct zcl_command_request request = {.input = &input};
+    struct zcl_command_reply reply;
+    zcl_command_reply_init(&reply, "zcl.metaverse_space_plan.v1");
+    zcl_native_handle_metaverse_space_plan(&request, &reply);
+    ASSERT(reply.status != ZCL_COMMAND_STATUS_PASSED);
+    ASSERT(strcmp(reply.error.code, "IDENTITY_UNAVAILABLE") == 0);
+    ASSERT(strstr(reply.error.message, "validity-window") != NULL);
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+
+    /* A window that DOES fit clears the signer gate; the refusal then comes
+     * from the NEXT gate (chain authorization, offline here) — proving the
+     * identity itself was never the problem. */
+    json_init(&input);
+    json_set_object(&input);
+    json_push_kv_str(&input, "kind", "space_manifest");
+    json_push_kv_str(&input, "datadir", datadir);
+    json_push_kv_int(&input, "sequence", 1);
+    json_push_kv_str(&input, "name", "window regression");
+    json_push_kv_str(&input, "description", "window must fit the delegation");
+    json_push_kv_int(&input, "not_before", (int64_t)now);
+    json_push_kv_int(&input, "expiry", (int64_t)(now + 1800));
+    zcl_command_reply_init(&reply, "zcl.metaverse_space_plan.v1");
+    zcl_native_handle_metaverse_space_plan(&request, &reply);
+    ASSERT(reply.status != ZCL_COMMAND_STATUS_PASSED);
+    ASSERT(strcmp(reply.error.code, "OWNER_NOT_CHAIN_AUTHORIZED") == 0);
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+
+    char cleanup[600];
+    ASSERT(snprintf(cleanup, sizeof(cleanup), "rm -rf '%s'", datadir) > 0);
+    ASSERT(system(cleanup) == 0);
+    PASS();
+  }
+_test_next:;
+  return failures;
+}
+
 int test_space(void)
 {
   int failures = 0;
@@ -850,6 +943,7 @@ int test_space(void)
   failures += test_manifest_wire();
   failures += test_space_plan_commit_carrier();
   failures += test_space_native_plan_commit_show();
+  failures += test_space_native_manifest_sign_refusal_named();
   failures += test_space_pointer_diversity();
   failures += test_space_admit_policy_identities();
   failures += test_space_provider_discovery_order();

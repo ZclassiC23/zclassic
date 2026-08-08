@@ -53,7 +53,14 @@ kpi 10 "$s" "MM3-property-catalog" "$n"
 
 # ── MM4 (20) — ZC23 simulation-complete. (a, 10) patronage settle/refund no
 #    longer PLANNED fail-closed; (b, 10) dedicated unit groups registered. ───
-planned=$(grep -c 'ZCL_COMMAND_PLANNED_COMMAND' "$DEF" 2>/dev/null || echo 4)
+# grep -c prints 0 and exits 1 on no match, so the naive `|| echo 4`
+# fallback yields "0\n4" exactly when MM4(a) is complete; keep the
+# missing-file default without appending to a real count.
+if [ -f "$DEF" ]; then
+  planned=$(grep -c 'ZCL_COMMAND_PLANNED_COMMAND' "$DEF" 2>/dev/null || true)
+else
+  planned=4
+fi
 pa=$(( 10 * (4 - planned) / 4 )); [ "$pa" -lt 0 ] && pa=0
 pb=0
 for g in zcode_patronage zcode_continuity zcode_commons_projection; do

@@ -283,13 +283,30 @@ static bool mvspace_manifest(
   const char *datadir = mvspace_datadir(input);
   uint8_t online_seed[32], online_pubkey[32];
   char error[192] = {0};
-  if (!datadir || !vcs_zcode_dht_delegation_load(
-                       datadir, &manifest->delegation, error, sizeof(error)) ||
-      !vcs_zcode_dht_online_key_load(datadir, online_seed, online_pubkey,
-                                    error, sizeof(error)) ||
-      memcmp(online_pubkey, manifest->delegation.online_pubkey, 32) != 0 ||
-      vcs_space_manifest_sign(manifest, online_seed) != VCS_SPACE_OK) {
-    memory_cleanse(online_seed, sizeof(online_seed));
+  enum vcs_space_result sign_rc = VCS_SPACE_OK;
+  bool identity_loaded =
+      datadir && vcs_zcode_dht_delegation_load(
+                     datadir, &manifest->delegation, error, sizeof(error)) &&
+      vcs_zcode_dht_online_key_load(datadir, online_seed, online_pubkey,
+                                    error, sizeof(error));
+  if (identity_loaded) {
+    /* A signer/window refusal is a DIFFERENT failure from a missing identity
+     * file and must be named as itself: collapsing it into the generic
+     * "cannot sign" body sent operators to re-provision a healthy identity
+     * when the real problem was e.g. a manifest window (ERR_TIME) that does
+     * not fit inside the delegation's, or an online key (ERR_SIGNER) that is
+     * not the delegated one. */
+    if (memcmp(online_pubkey, manifest->delegation.online_pubkey, 32) != 0)
+      sign_rc = VCS_SPACE_ERR_SIGNER;
+    else
+      sign_rc = vcs_space_manifest_sign(manifest, online_seed);
+    if (sign_rc != VCS_SPACE_OK)
+      (void)snprintf(error, sizeof(error),
+                     "local online key cannot sign this manifest: %s",
+                     vcs_space_result_string(sign_rc));
+  }
+  memory_cleanse(online_seed, sizeof(online_seed));
+  if (!identity_loaded || sign_rc != VCS_SPACE_OK) {
     /* A missing DHT identity file is provisioned by the delegate flow
      * (native_zcode_network_command.c load_or_create) — name the remedy
      * instead of leaving the operator with a bare I/O error. */
@@ -303,7 +320,6 @@ static bool mvspace_manifest(
                     leaf);
     return false;
   }
-  memory_cleanse(online_seed, sizeof(online_seed));
   if (!zcl_native_zcode_delegation_authorized(
           &manifest->delegation, error, sizeof(error)) ||
       vcs_zcode_dht_delegation_encode(&manifest->delegation, proof->wire) !=

@@ -115,11 +115,19 @@ bool coins_kv_boot_rebuild_if_needed(sqlite3 *progress_db)
         return true;
 
     /* Already populated forward (fresh sync / self-derived fold) — stamp done,
-     * never re-scan. */
+     * never re-scan. Populated-yet-unstamped is reachable ONLY via the node's
+     * own utxo_apply fold: every borrowed-state path (node.db import seed,
+     * consensus-state bundle install, anchor refold) stamps migration-complete
+     * in the same transaction that populates the set. So this store is
+     * self-derived by construction and must carry the self-folded marker too —
+     * stamping migration-complete WITHOUT it flips the sovereignty gate to
+     * release_assisted (stamped, no refold marker) on the very boot that first
+     * recognises the set, stranding a from-genesis node unable to mint or
+     * spend behind "borrowed_seed_no_refold_marker". */
     if (coins_kv_count(progress_db) > 0) {
         uint8_t one = 1;
         (void)progress_meta_set(progress_db, COINS_KV_MIGRATION_KEY, &one, 1);
-        return true;
+        return coins_kv_mark_self_folded(progress_db);
     }
 
     /* coins_kv is empty and there is no live set to migrate from: the

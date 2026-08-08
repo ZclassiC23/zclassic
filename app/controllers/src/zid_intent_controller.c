@@ -274,7 +274,15 @@ static bool rpc_zid_intent(const struct json_value *params, bool help,
     }
     struct overlay_intent_runtime runtime;
     struct zcl_result ready = ziic_runtime(&runtime, result);
-    if (!ready.ok) return false;
+    if (!ready.ok) {
+        /* ziic_runtime's own refusals (context incomplete, active tip
+         * unavailable) never touch `result` — without this the envelope
+         * ships {"result":null,"error":null} and every caller reports an
+         * empty, causeless failure. */
+        if (json_get_str(result) == NULL && result->type != JSON_OBJ)
+            json_set_str(result, ready.message);
+        return false;
+    }
     struct overlay_intent_result intent;
     struct zcl_result outcome;
     if (confirm) {

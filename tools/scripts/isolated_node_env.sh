@@ -64,6 +64,21 @@ ISO_HTTPSPORT=0
 ISO_CONNECT_SINK=39999
 ISO_NODE_PID=""
 ISO_PGID=""
+# Optional second node (iso_spawn_peer): a real P2P peer for gates that
+# require peer_count > 0 (e.g. the wallet money-freshness classifier, which
+# fails closed to UNKNOWN on a zero-peer node). The peer lives INSIDE
+# $ISO_DD/peer so the cleanup trap's rm -rf and the datadir-substring pkill
+# cover it too. The port quad is derived in iso_init (values only — the
+# live-set refusal, band check, and LISTEN preflight all stay in
+# iso_spawn_peer) so a primary that must dial the peer can name the
+# -connect target before the peer process exists.
+ISO_PEER_DD=""
+ISO_PEER_PORT=0
+ISO_PEER_RPCPORT=0
+ISO_PEER_FSPORT=0
+ISO_PEER_HTTPSPORT=0
+ISO_PEER_PID=""
+ISO_PEER_PGID=""
 ISO_CLEANED=0
 ISO_NODE_BIN="${ISO_NODE_BIN:-./build/bin/zclassic23}"
 ISO_RPC_BIN="${ISO_RPC_BIN:-./build/bin/zcl-rpc}"
@@ -99,6 +114,10 @@ iso_cleanup() {
     [ "$ISO_CLEANED" = "1" ] && return 0
     ISO_CLEANED=1
 
+    # Peer first (it is the leaf; the primary outlives it by milliseconds).
+    if [ -n "$ISO_PEER_PGID" ]; then
+        kill -TERM "-$ISO_PEER_PGID" 2>/dev/null || true
+    fi
     if [ -n "$ISO_PGID" ]; then
         # Graceful first, then hard. Negative PID == "the whole group".
         kill -TERM "-$ISO_PGID" 2>/dev/null || true
@@ -109,6 +128,9 @@ iso_cleanup() {
             sleep 0.2
         done
         kill -KILL "-$ISO_PGID" 2>/dev/null || true
+    fi
+    if [ -n "$ISO_PEER_PGID" ]; then
+        kill -KILL "-$ISO_PEER_PGID" 2>/dev/null || true
     fi
 
     # Belt-and-suspenders: only ever matches our throwaway datadir
@@ -153,6 +175,17 @@ iso_init() {
     ISO_RPCPORT=$((base + 1))
     ISO_FSPORT=$((base + 2))
     ISO_HTTPSPORT=$((base + 3))
+
+    # Derive the optional-peer quad eagerly (iso_spawn_peer validates and
+    # binds it later). A primary that must DIAL its peer — required for
+    # money-gated flows, whose sync-state machine only leaves finding_peers
+    # on an OUTBOUND peer — needs the peer's -connect target before the
+    # peer process exists; the +10 quad is deterministic, so it can be
+    # named up front.
+    ISO_PEER_PORT=$((base + 10))
+    ISO_PEER_RPCPORT=$((ISO_PEER_PORT + 1))
+    ISO_PEER_FSPORT=$((ISO_PEER_PORT + 2))
+    ISO_PEER_HTTPSPORT=$((ISO_PEER_PORT + 3))
 
     local p
     for p in "$ISO_PORT" "$ISO_RPCPORT" "$ISO_FSPORT" "$ISO_HTTPSPORT"; do
@@ -230,11 +263,119 @@ iso_spawn_node() {
     ISO_PGID="$ISO_NODE_PID"   # setsid leader: PGID == PID
 }
 
+# ── Optional second node: a REAL peer for the primary ──────────────
+# Some gates fail closed on a zero-peer node (the wallet money-freshness
+# classifier returns UNKNOWN when connman has no connected node, so any
+# money-gated intent is refused no matter how caught-up the chain is).
+# iso_spawn_peer forks a second regtest node on the +10 port quad whose
+# ONLY job is to be a connected peer: it dials the primary over the same
+# -connect operator lane, giving the primary peer_count=1 (inbound) while
+# staying inside every isolation invariant above:
+#   - datadir is $ISO_DD/peer — inside the throwaway tree, so the trap's
+#     rm -rf and the "-datadir=$ISO_DD" substring pkill both cover it;
+#   - ports are derived, live-set-refused, and LISTEN-preflighted exactly
+#     like the primary quad (the trap is already armed, so a refusal here
+#     still cleans up).
+#
+# INBOUND alone is not enough for every gate: the sync-state machine only
+# leaves finding_peers on an OUTBOUND peer (syncsvc_begin_peer_sync
+# refuses inbound nodes), and the money-freshness classifier fails closed
+# on finding_peers. A sourcing script whose flow is money-gated should
+# therefore also pass `-connect=127.0.0.1:$ISO_PEER_PORT` in the primary's
+# iso_spawn_node extras — each -connect is a one-shot direct dial
+# (main.c → app_add_node → connman_open_connection) re-issued on every
+# fresh primary boot, so the primary (re)connects outbound to the peer as
+# soon as both are up. The pair stays a closed two-node loop either way:
+# nobody dials anything but the dead sink and each other.
+iso_spawn_peer() {
+    local extra="${1:-}"
+    [ -n "$ISO_DD" ] || iso_die "iso_spawn_peer called before iso_init"
+    [ -n "$ISO_PGID" ] || iso_die "iso_spawn_peer called before iso_spawn_node"
+    [ -z "$ISO_PEER_PGID" ] || iso_die "iso_spawn_peer called twice"
+
+    # The quad itself was derived in iso_init; validate + preflight it here
+    # (only peer users pay the band check).
+    # Keep the whole peer quad inside the isolation band and clear of the
+    # dead-sink port (39999).
+    [ "$ISO_PEER_HTTPSPORT" -lt "$ISO_CONNECT_SINK" ] \
+        || iso_die "ISO_PORT_BASE too high for a +10 peer quad (peer https $ISO_PEER_HTTPSPORT >= sink $ISO_CONNECT_SINK)"
+
+    local p
+    for p in "$ISO_PEER_PORT" "$ISO_PEER_RPCPORT" "$ISO_PEER_FSPORT" "$ISO_PEER_HTTPSPORT"; do
+        iso_assert_not_live_port "$p"
+        iso_assert_port_free "$p"
+    done
+
+    ISO_PEER_DD="$ISO_DD/peer"
+    mkdir -p "$ISO_PEER_DD"
+
+    # The peer dials ISO_PEER_DIAL (default: the PRIMARY; never anything
+    # external). A sourcing script can set ISO_PEER_DIAL="$ISO_CONNECT_SINK"
+    # before calling (e.g. for a post-restart respawn) when the PRIMARY
+    # will own the pair's only link via its own outbound dial — the
+    # sync-state machine needs an OUTBOUND peer on the gated node, and
+    # connman_open_connection skips an already-connected address, so the
+    # peer must not be dialling the primary when the primary dials it.
+    # Either way the pair is a closed two-node loop.
+    # shellcheck disable=SC2086
+    setsid "$ISO_NODE_BIN" \
+        -datadir="$ISO_PEER_DD" -regtest \
+        -port="$ISO_PEER_PORT" -rpcport="$ISO_PEER_RPCPORT" \
+        -fsport="$ISO_PEER_FSPORT" -httpsport="$ISO_PEER_HTTPSPORT" \
+        -connect=127.0.0.1:"${ISO_PEER_DIAL:-$ISO_PORT}" \
+        -nobgvalidation -nolegacyimport -nofilesync -showmetrics=0 \
+        $extra \
+        >"$ISO_PEER_DD/node.log" 2>&1 &
+    ISO_PEER_PID=$!
+    ISO_PEER_PGID="$ISO_PEER_PID"
+}
+
 # ── RPC against the ISOLATED node ONLY ─────────────────────────────
 # Threads ZCL_DATADIR + ZCL_RPCPORT on EVERY call so zcl-rpc can never
 # fall through to the live default RPC port (18232) / the live cookie.
 iso_rpc() {
     ZCL_DATADIR="$ISO_DD" ZCL_RPCPORT="$ISO_RPCPORT" "$ISO_RPC_BIN" "$@" 2>/dev/null || true
+}
+
+# RPC against the PEER node spawned by iso_spawn_peer (same threading rules).
+iso_peer_rpc() {
+    ZCL_DATADIR="$ISO_PEER_DD" ZCL_RPCPORT="$ISO_PEER_RPCPORT" "$ISO_RPC_BIN" "$@" 2>/dev/null || true
+}
+
+# Poll until the peer's P2P port is LISTENING — the precondition for an
+# outbound dial TO the peer landing (e.g. the primary's addnode onetry).
+# $1=secs.
+iso_wait_peer_listen() {
+    local timeout="${1:-60}" deadline
+    deadline=$(( $(date +%s) + timeout ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if [ -n "$ISO_PEER_PID" ] && ! kill -0 "$ISO_PEER_PID" 2>/dev/null; then
+            echo "isolated_node_env: peer node exited (see $ISO_PEER_DD/node.log)" >&2
+            return 1
+        fi
+        ss -tlnH "sport = :$ISO_PEER_PORT" 2>/dev/null | grep -q . && return 0
+        sleep 0.5
+    done
+    return 1
+}
+
+# Poll the primary until it reports >=1 connected peer (i.e. the peer node's
+# inbound handshake completed), or timeout. $1=secs.
+iso_wait_peer_connected() {    local timeout="${1:-60}" deadline n
+    deadline=$(( $(date +%s) + timeout ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if [ -n "$ISO_PEER_PID" ] && ! kill -0 "$ISO_PEER_PID" 2>/dev/null; then
+            echo "isolated_node_env: peer node exited (see $ISO_PEER_DD/node.log)" >&2
+            return 1
+        fi
+        # Extract the integer after "result": — never tr(1) the whole JSON
+        # line, which would mash version/id digits into a false positive.
+        n="$(iso_rpc getconnectioncount \
+            | sed -n 's/.*"result"[^0-9-]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p' | head -1)"
+        [ -n "$n" ] && [ "$n" -ge 1 ] && return 0
+        sleep 0.5
+    done
+    return 1
 }
 
 # Poll the isolated RPC until getblockcount answers, or timeout. $1=secs.
