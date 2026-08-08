@@ -1295,8 +1295,8 @@ bool wallet_sqlite_read_watch_only(struct wallet_sqlite *ws, struct wallet *w)
 
 /* ── Flush all wallet state to SQLite ──────────────────────────── */
 
-struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
-                                        struct wallet *w)
+static struct zcl_result wallet_sqlite_flush_scope_r(
+    struct wallet_sqlite *ws, struct wallet *w, bool full_state)
 {
     if (!ws)
         return ZCL_ERR(WSQL_NULL_ARG, "wallet_sqlite pointer is NULL");
@@ -1396,8 +1396,8 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
      * no production path takes the reverse order. Without these inner locks a
      * concurrent address/import operation could publish half an entry while
      * the flush serialized it. */
-    zcl_mutex_lock(&w->keystore.cs);
-    zcl_mutex_lock(&w->sapling_keys.cs);
+    if (full_state) zcl_mutex_lock(&w->keystore.cs);
+    if (full_state) zcl_mutex_lock(&w->sapling_keys.cs);
 
     /* Invariant: if ANY writer fails, ROLLBACK the whole transaction
      * rather than COMMIT a partial state — committing only the writes
@@ -1413,7 +1413,7 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
     int n_script_fail = 0;
     int n_scanh_fail = 0;
 
-    for (size_t i = 0; i < w->keystore.num_keys; i++) {
+    for (size_t i = 0; full_state && i < w->keystore.num_keys; i++) {
         if (!w->keystore.keys[i].used) continue;
         if (!w->keystore.keys[i].key.fValid) continue;
 
@@ -1433,7 +1433,6 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
             goto rollback;
         }
     }
-
     for (size_t i = 0; i < MAX_WALLET_TX; i++) {
         if (!w->map_wallet[i].used) continue;
         if (!wallet_sqlite_write_tx(ws, &w->map_wallet[i])) {
@@ -1443,9 +1442,8 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
             goto rollback;
         }
     }
-
     struct sapling_keystore *sks = &w->sapling_keys;
-    if (sks->has_seed) {
+    if (full_state && sks->has_seed) {
         if (!wallet_sqlite_write_sapling_seed(ws, sks->seed)) {
             n_zseed_fail++;
             if (first_fail.ok) first_fail = ZCL_ERR(WSQL_WRITE_FAIL,
@@ -1453,7 +1451,7 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
             goto rollback;
         }
     }
-    for (size_t i = 0; i < sks->num_keys; i++) {
+    for (size_t i = 0; full_state && i < sks->num_keys; i++) {
         if (!sks->keys[i].used) continue;
         if (!wallet_sqlite_write_sapling_key(ws, sks->keys[i].child_index,
                                               &sks->keys[i])) {
@@ -1465,7 +1463,7 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
         }
     }
 
-    for (size_t i = 0; i < w->keystore.num_scripts; i++) {
+    for (size_t i = 0; full_state && i < w->keystore.num_scripts; i++) {
         if (!w->keystore.scripts[i].used) continue;
         if (!wallet_sqlite_write_script(ws,
                                          &w->keystore.scripts[i].script_id,
@@ -1484,8 +1482,8 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
         goto rollback;
     }
 
-    zcl_mutex_unlock(&w->sapling_keys.cs);
-    zcl_mutex_unlock(&w->keystore.cs);
+    if (full_state) zcl_mutex_unlock(&w->sapling_keys.cs);
+    if (full_state) zcl_mutex_unlock(&w->keystore.cs);
     zcl_mutex_unlock(&w->cs);
 
     char *commit_err = NULL;
@@ -1502,8 +1500,8 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
     return ZCL_OK;
 
 rollback:
-    zcl_mutex_unlock(&w->sapling_keys.cs);
-    zcl_mutex_unlock(&w->keystore.cs);
+    if (full_state) zcl_mutex_unlock(&w->sapling_keys.cs);
+    if (full_state) zcl_mutex_unlock(&w->keystore.cs);
     zcl_mutex_unlock(&w->cs);
     {
         char *rb_err = NULL;
@@ -1525,6 +1523,8 @@ rollback:
         first_fail.ok ? "(none captured)" : first_fail.message));
 }
 
+struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws, struct wallet *w) { return wallet_sqlite_flush_scope_r(ws, w, true); }
+struct zcl_result wallet_sqlite_flush_transactions_r(struct wallet_sqlite *ws, struct wallet *w) { return wallet_sqlite_flush_scope_r(ws, w, false); }
 bool wallet_sqlite_flush(struct wallet_sqlite *ws, struct wallet *w)
 {
     struct zcl_result r = wallet_sqlite_flush_r(ws, w);

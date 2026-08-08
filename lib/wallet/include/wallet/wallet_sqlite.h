@@ -166,6 +166,13 @@ struct zcl_result wallet_sqlite_delete_key_r(struct wallet_sqlite *ws,
  * BEGIN/COMMIT failure. */
 struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
                                         struct wallet *w);
+/* Persist mutable wallet transaction rows and the scan-height cursor without
+ * rewriting immutable key/seed/script material.  This is the pre-relay hot
+ * path after builders have already proven any consumed change key durable;
+ * full-state checkpoints, key creation, recovery, and repair continue to use
+ * wallet_sqlite_flush_r(). */
+struct zcl_result wallet_sqlite_flush_transactions_r(
+    struct wallet_sqlite *ws, struct wallet *w);
 
 /* Test-only override for the flush BEGIN IMMEDIATE time budget (see
  * WALLET_FLUSH_BEGIN_BUDGET_MS in wallet_sqlite.c). Production never calls
