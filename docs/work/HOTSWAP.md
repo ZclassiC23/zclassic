@@ -310,6 +310,16 @@ directly in the child—no `ulimit` shell wrapper. The durable receipt carries
 the exact-group count and selector SHA-256; `dev.test.plan` re-derives the
 inspectable list.
 
+The save tier never silently truncates a caller closure. When the immediate
+union would exceed 32 exact groups, it runs the complete explicit path-owned
+floor and moves the broader reverse-caller closure into the exact deferred
+set. Both sets retain canonical order and separate hashes; the receipt exposes
+`bounded_proof_deferred=true`, and `proof_complete` stays false until the
+deferred set runs through integration. If the explicit path floor itself
+exceeds the bound, the cycle still refuses before compilation. This is
+trustworthy focused feedback, not acceptance or a claim that broader proofs
+passed.
+
 A complete run reports `status=proof_ready`, `phase=affected_proofs`, and
 `proof_complete=true`. Even then `runtime_published=false`: the
 content-addressed executables stay under the worktree build directory and no

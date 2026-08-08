@@ -296,6 +296,7 @@ struct zcl_devloop_restart_proof_receipt {
     uint32_t test_processes;
     uint32_t source_guard_captures;
     bool artifact_cache_hit;
+    bool bounded_proof_deferred;
     bool immediate_proof_complete;
     bool integration_proof_deferred;
     bool proof_complete;
@@ -314,9 +315,10 @@ bool zcl_devloop_restart_prove(
     struct zcl_devloop_process_result *process,
     char *why, size_t why_len);
 
-/* Save-cycle tier: executes every selected group except the exact groups
- * explicitly classified as integration-only. The receipt names and hashes
- * the deferred set; proof_complete remains false until that set is run. */
+/* Save-cycle tier: executes every selected group except exact integration-only
+ * groups. If a reverse-caller closure exceeds the resident bound, it executes
+ * the complete explicit path floor and hash-binds the broader closure into the
+ * deferred set. proof_complete remains false until every deferred group runs. */
 bool zcl_devloop_restart_prove_immediate(
     const char *repo_root, const char *const *source_tus, size_t source_count,
     const struct zcl_devloop_plan *plan,

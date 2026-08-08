@@ -87,6 +87,8 @@ aggregate()
            ran:([$samples[]|(.tests_run // 0)]|add),
            cached:([$samples[]|(.tests_cached // 0)]|add),
            deferred:([$samples[]|(.tests_deferred // 0)]|add),
+           paths_with_bounded_deferred:
+             ([$samples[]|select(.bounded_proof_deferred // false)]|length),
            paths_with_cache_hits:
              ([$samples[]|select((.tests_cached // 0) > 0)]|length)},
          gates:{
@@ -379,6 +381,8 @@ while IFS= read -r row; do
           .tests_run=($cycle.proof_receipt.groups_ran // 0) |
           .tests_cached=($cycle.proof_receipt.groups_cached // 0) |
           .tests_deferred=($cycle.proof_receipt.deferred_group_count // 0) |
+          .bounded_proof_deferred=
+            ($cycle.proof_receipt.bounded_proof_deferred // false) |
           .artifact_cache_hit=($cycle.build_receipt.artifact_cache_hit // false)' \
       >>"$samples"
     printf 'replay %02d %-58s %8dus %s/%s\n' \

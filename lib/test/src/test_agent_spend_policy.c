@@ -72,7 +72,6 @@ struct asp_fixture {
     struct app_runtime_context runtime;
     struct rpc_table tbl;
     struct wallet wallet;
-    char dir[256];
 };
 
 static struct asp_fixture *g_fixture;
@@ -80,6 +79,7 @@ static const char *g_sendtoaddress_result;  /* NULL -> the send RPC fails */
 static int g_commit_calls;                  /* the double-debit detector */
 static int g_release_calls;
 static bool g_node_down;
+static int g_checkpoint_threads;
 
 static void seed_principal(struct node_db *ndb, const char *address)
 {
@@ -92,6 +92,21 @@ static void seed_principal(struct node_db *ndb, const char *address)
     p.status = PRINCIPAL_STATUS_ACTIVE;
     p.sybil_proof_height = -1;
     (void)db_principal_save(ndb, &p);
+}
+
+static bool asp_seed_base(struct node_db *ndb)
+{
+    seed_principal(ndb, k_account);
+    struct wallet_identity_row wallet_identity;
+    const uint8_t genesis[32] = { 0x42 };
+    return wallet_identity_ensure(ndb, genesis, "canonical",
+                                  &wallet_identity) &&
+        sqlite3_exec(ndb->db,
+            "INSERT INTO wallet_utxos"
+            "(txid,vout,value,address_hash,script,height,is_coinbase) VALUES("
+            "x'0101010101010101010101010101010101010101010101010101010101010101',"
+            "0,30000000,x'0101010101010101010101010101010101010101',x'51',1,0)",
+            NULL, NULL, NULL) == SQLITE_OK;
 }
 
 /* Stands in for the loopback socket: runs the real RPC handler in-process. */
@@ -150,47 +165,26 @@ static char *asp_rpc_hook(const char *method, const char *params_json)
 
 static int asp_open(struct asp_fixture *f, const char *tag)
 {
-    char dbpath[320];
-    test_make_tmpdir(f->dir, sizeof(f->dir), "agent_spend_policy", tag);
-    snprintf(dbpath, sizeof(dbpath), "%s/node.db", f->dir);
+    (void)tag;
     memset(&f->ndb, 0, sizeof(f->ndb));
     memset(&f->dbsvc, 0, sizeof(f->dbsvc));
     memset(&f->runtime, 0, sizeof(f->runtime));
-    if (!node_db_open(&f->ndb, dbpath)) {
+    if (!node_db_open(&f->ndb, ":memory:") || !asp_seed_base(&f->ndb)) {
         printf("agent_spend_policy: node_db_open... FAIL\n");
-        test_rm_rf(f->dir);
-        return 0;
-    }
-    seed_principal(&f->ndb, k_account);
-    struct wallet_identity_row wallet_identity;
-    const uint8_t genesis[32] = { 0x42 };
-    if (!wallet_identity_ensure(&f->ndb, genesis, "canonical", &wallet_identity)) {
         node_db_close(&f->ndb);
-        test_rm_rf(f->dir);
-        return 0;
-    }
-    /* 0.30000000 ZCL confirmed fixture balance: spending up to the global
-     * 0.05000000 lab cap leaves the mandatory 0.25000000 reserve. */
-    if (sqlite3_exec(f->ndb.db,
-            "INSERT INTO wallet_utxos"
-            "(txid,vout,value,address_hash,script,height,is_coinbase) VALUES("
-            "x'0101010101010101010101010101010101010101010101010101010101010101',"
-            "0,30000000,x'0101010101010101010101010101010101010101',x'51',1,0)",
-            NULL, NULL, NULL) != SQLITE_OK) {
-        node_db_close(&f->ndb);
-        test_rm_rf(f->dir);
         return 0;
     }
     wallet_init(&f->wallet);
     f->wallet.default_fee = 0;
     db_service_init(&f->dbsvc);
     if (!db_service_attach(&f->dbsvc, &f->ndb) ||
-        !db_service_start(&f->dbsvc)) {
+        !db_service_start_test_worker(&f->dbsvc)) {
         printf("agent_spend_policy: db_service start... FAIL\n");
         node_db_close(&f->ndb);
-        test_rm_rf(f->dir);
         return 0;
     }
+    if (f->dbsvc.ckpt_started)
+        g_checkpoint_threads++;
     f->runtime.db_service = &f->dbsvc;
     f->runtime.wallet = &f->wallet;
     /* app_runtime is what the NODE side of the RPC uses; the policy side never
@@ -219,7 +213,6 @@ static void asp_close(struct asp_fixture *f)
     wallet_free(&f->wallet);
     db_service_stop(&f->dbsvc);
     node_db_close(&f->ndb);
-    test_rm_rf(f->dir);
 }
 
 static void mk_session(struct db_agent_session *s, const char *sid,
@@ -920,6 +913,16 @@ static int test_failed_handler_releases_debit(void)
     return failures;
 }
 
+static int test_fixture_thread_scope(void)
+{
+    int failures = 0;
+    TEST("agent spend cases start no periodic checkpoint threads") {
+        ASSERT_EQ((int64_t)g_checkpoint_threads, (int64_t)0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_agent_spend_policy(void);
 int test_agent_spend_policy(void)
 {
@@ -937,6 +940,7 @@ int test_agent_spend_policy(void)
     failures += test_kernel_hook_rendered_bytes();
     failures += test_vault_send_debits_once();
     failures += test_failed_handler_releases_debit();
+    failures += test_fixture_thread_scope();
     printf("agent_spend_policy: %s (%d failures)\n",
            failures == 0 ? "OK" : "FAIL", failures);
     return failures;

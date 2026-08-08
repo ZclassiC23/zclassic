@@ -979,13 +979,17 @@ static bool rr_append_group(char out[4096], const char *group)
 static bool rr_collect_groups(const struct zcl_devloop_plan *plan,
                               bool immediate_only,
                               char out[4096], uint32_t *count,
-                              char deferred[4096], uint32_t *deferred_count)
+                              char deferred[4096], uint32_t *deferred_count,
+                              bool *bounded_deferred)
 {
-    if (!plan || !out || !count || !deferred || !deferred_count) return false;
+    if (!plan || !out || !count || !deferred || !deferred_count ||
+        !bounded_deferred)
+        return false;
     out[0] = 0;
     deferred[0] = 0;
     *count = 0;
     *deferred_count = 0;
+    *bounded_deferred = false;
     const char *why = NULL;
     if (!zcl_devloop_plan_proof_admissible(plan, &why))
         return false;
@@ -1002,11 +1006,25 @@ static bool rr_collect_groups(const struct zcl_devloop_plan *plan,
                                                &truncated);
     if (total == SIZE_MAX || total == 0 || truncated)
         return false;
+    size_t immediate_total = 0;
+    for (size_t i = 0; i < total; i++)
+        if (!zcl_test_group_is_integration_only(exact[i]))
+            immediate_total++;
+    bool tier_closure = immediate_only &&
+        immediate_total > RR_IMMEDIATE_GROUP_MAX;
     for (size_t i = 0; i < total; i++) {
-        if (immediate_only &&
-            zcl_test_group_is_integration_only(exact[i])) {
+        bool path_owned = false;
+        for (size_t p = 0; p < plan->path_groups_len; p++)
+            if (zcl_test_group_plan_selects(plan->path_groups[p], exact[i])) {
+                path_owned = true;
+                break;
+            }
+        bool integration = zcl_test_group_is_integration_only(exact[i]);
+        if (immediate_only && (integration || (tier_closure && !path_owned))) {
             if (!rr_append_group(deferred, exact[i])) return false;
             (*deferred_count)++;
+            if (!integration)
+                *bounded_deferred = true;
             continue;
         }
         if (!rr_append_group(out, exact[i])) return false;
@@ -1074,7 +1092,8 @@ static bool rr_restart_prove(
     }
     if (!rr_collect_groups(proof_plan, immediate_only, receipt->groups,
                            &receipt->group_count, receipt->deferred_groups,
-                           &receipt->deferred_group_count)) {
+                           &receipt->deferred_group_count,
+                           &receipt->bounded_proof_deferred)) {
         rr_why(why, why_len,
                "affected proof plan is incomplete or has no exact groups");
         return false;
@@ -1306,6 +1325,8 @@ static bool rr_emit_event(
                             proof && proof->immediate_proof_complete);
     (void)json_push_kv_bool(&doc, "integration_proof_deferred",
                             proof && proof->integration_proof_deferred);
+    (void)json_push_kv_bool(&doc, "bounded_proof_deferred",
+                            proof && proof->bounded_proof_deferred);
     (void)json_push_kv_bool(&doc, "closure_refresh_deferred",
                             closure_refresh_deferred);
     (void)json_push_kv_bool(&doc, "feedback_parallel", feedback_parallel);
@@ -1400,6 +1421,8 @@ static bool rr_emit_event(
                                 proof->immediate_proof_complete);
         (void)json_push_kv_bool(&receipt, "integration_proof_deferred",
                                 proof->integration_proof_deferred);
+        (void)json_push_kv_bool(&receipt, "bounded_proof_deferred",
+                                proof->bounded_proof_deferred);
         (void)json_push_kv_int(&receipt, "group_count", proof->group_count);
         (void)json_push_kv_int(&receipt, "deferred_group_count",
                                proof->deferred_group_count);
