@@ -129,6 +129,10 @@ SA_DD_A=""; SA_DD_B=""; SA_WORK=""
 SA_PGID_A=""; SA_PGID_B=""
 SA_CLEANED=0
 SA_KEEP="${SCIENCE_KEEP:-0}"
+# Throwaway passphrases for the wallet-custody recipe (never argv: they
+# ride the wallet-passphrase credential file and --input=- stdin only).
+SA_WALLET_PASS="science-acceptance-wallet-pass"
+SA_BACKUP_PASS="science-acceptance-backup-pass"
 SA_STEP_START=$(date +%s)
 
 sa_die() { echo "science-acceptance: FATAL: $*" >&2; exit 2; }
@@ -228,11 +232,15 @@ sa_spawn() { # $1=datadir $2=p2p $3=rpc $4=fs $5=https $6=connect-target $7=mode
     local dd="$1" p2p="$2" rpc="$3" fs="$4" https="$5" conn="$6"
     local mode="${7:-hosting}" service_args=(-packagehost=1 -nofilesync)
     [ "$mode" = "bootstrap" ] && service_args=(-packagehost=0)
+    # No -allow-plaintext-wallet: the ZID anchor's overlay-intent custody
+    # gate refuses a plaintext-at-rest wallet. The wallet-passphrase
+    # credential (CREDENTIALS_DIRECTORY, exported below) encrypts key
+    # writes at rest (WKS1); -operator-lane=dev arms the dev wallet scope.
     setsid "$NODE_BIN" \
         -datadir="$dd" -regtest \
         -port="$p2p" -rpcport="$rpc" -fsport="$fs" -httpsport="$https" \
         -connect="$conn" "${service_args[@]}" -v2transport \
-        -allow-plaintext-wallet -wallet-no-phrase-backup \
+        -operator-lane=dev -wallet-no-phrase-backup \
         -nobgvalidation -nolegacyimport -showmetrics=0 \
         >"$dd/node.log" 2>&1 &
     echo "$!"   # PID == PGID (setsid leader)
@@ -293,6 +301,147 @@ sa_wait_rpc() { # $1=dd $2=rpc $3=pid $4=secs
     return 1
 }
 
+# ── wallet-custody helpers (the ZID anchor's overlay-intent gate) ─────
+# The anchor's custody gate requires the wallet encrypted at rest (the
+# wallet-passphrase credential armed at first boot), unlocked, and covered
+# by a current-key encrypted backup; its money gate requires an OUTBOUND
+# peer with a live sync state and a positive vault spendable. This is the
+# metaverse-tour recipe (tools/dev/metaverse_tour.sh) adapted to sa_*
+# style; passphrases ride --input=- stdin only, never argv.
+sa_native() { # $1=datadir $2.. = argv (no --input appended)
+    local dd="$1"; shift
+    local rpc="$A_RPC"
+    [ "$dd" = "$SA_DD_B" ] && rpc="$B_RPC"
+    "$NODE_BIN" -datadir="$dd" -rpcport="$rpc" "$@" 2>/dev/null | tail -1 || true
+}
+sa_sci_stdin() { # $1=datadir $2=leaf; the JSON input rides stdin
+    local dd="$1" leaf="$2"
+    local rpc="$A_RPC"
+    [ "$dd" = "$SA_DD_B" ] && rpc="$B_RPC"
+    "$NODE_BIN" -datadir="$dd" -rpcport="$rpc" "$leaf" --input=- 2>/dev/null | tail -1 || true
+}
+sa_wait_connected() { # $1=datadir $2=rpcport
+    local deadline n
+    deadline=$(( $(date +%s) + 90 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        n="$(sa_rpc "$1" "$2" getconnectioncount | sa_result 2>/dev/null || true)"
+        [ "${n:-0}" -ge 1 ] 2>/dev/null && return 0
+        sleep 0.5
+    done
+    return 1
+}
+# The money freshness classifier fails closed on finding_peers; the sync
+# FSM only leaves it behind a peer it can sync FROM (outbound).
+sa_wait_sync_live() { # $1=datadir $2=rpcport
+    local deadline state
+    deadline=$(( $(date +%s) + 90 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        state="$(sa_rpc "$1" "$2" downloadstats \
+            | jget 'd["result"]["sync_state"]' 2>/dev/null || true)"
+        case "$state" in
+            blocks_download|connecting_blocks|at_tip) return 0 ;;
+        esac
+        sleep 0.5
+    done
+    return 1
+}
+# The money gate reads the REDUCER pipeline, not the active chain: the
+# authoritative coins tip AND H* must both reach the mined height.
+sa_wait_fold() { # $1=datadir $2=tip
+    local deadline dump coins hstar
+    deadline=$(( $(date +%s) + 90 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        dump="$(sa_native "$1" dumpstate reducer_frontier)"
+        coins="$(sa_jget "$dump" 'd["state"]["coins_best_height"]' 2>/dev/null || true)"
+        hstar="$(sa_jget "$dump" 'd["state"]["hstar"]' 2>/dev/null || true)"
+        [ "$coins" = "$2" ] && [ "$hstar" = "$2" ] && return 0
+        sleep 1
+    done
+    echo "science-acceptance: reducer_frontier at stall: $dump" >&2
+    return 1
+}
+# RPC-ready != chain-loaded: the anchor's runtime gate needs the active
+# chain index, which loads after the RPC starts serving.
+sa_wait_chain_loaded() { # $1=datadir $2=rpcport $3=tip
+    local deadline loaded
+    deadline=$(( $(date +%s) + 90 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        loaded="$(sa_rpc "$1" "$2" getblockchaininfo 2>/dev/null | python3 -c '
+import json,sys
+tip = int(sys.argv[1])
+try:
+    d = json.load(sys.stdin).get("result")
+except Exception:
+    d = None
+print(isinstance(d, dict) and d.get("blocks") == tip and d.get("initialblockdownload") is not True)' \
+            "$3" 2>/dev/null || true)"
+        [ "$loaded" = "True" ] && return 0
+        sleep 1
+    done
+    return 1
+}
+# The fee-reserve rung reads the vault read model's zcl_spendable, which
+# lags the reducer fold while the wallet re-derives its spendable coins.
+sa_wait_spendable() { # $1=datadir
+    local deadline spend
+    deadline=$(( $(date +%s) + 90 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        spend="$(sa_native "$1" dumpstate vault \
+            | jget 'd["state"]["zcl"]["spendable"]' 2>/dev/null || true)"
+        case "$spend" in
+            ''|*[!0-9]*) ;;
+            *) [ "$spend" -gt 0 ] && return 0 ;;
+        esac
+        sleep 1
+    done
+    return 1
+}
+sa_unlock_wallet() { # $1=datadir
+    local status unlock
+    status="$(sa_native "$1" core.wallet.security.status)"
+    [ "$(sa_jget "$status" 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] || {
+        printf '%s\n' "$status" >&2; return 1; }
+    if [ "$(sa_jget "$status" 'd["data"]["unlocked"]' 2>/dev/null || true)" != "True" ]; then
+        unlock="$(printf '%s' "{\"passphrase\":\"$SA_WALLET_PASS\",\"timeout_seconds\":3600}" \
+            | sa_sci_stdin "$1" core.wallet.security.unlock)"
+        [ "$(sa_jget "$unlock" 'd["data"]["unlocked"]' 2>/dev/null || true)" = "True" ] || {
+            printf '%s\n' "$unlock" >&2; return 1; }
+    fi
+    return 0
+}
+sa_backup_wallet() { # $1=datadir
+    local out
+    out="$(printf '%s' "{\"confirm\":true,\"password\":\"$SA_BACKUP_PASS\"}" \
+        | sa_sci_stdin "$1" core.wallet.backup.now)"
+    [ "$(sa_jget "$out" 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] || {
+        printf '%s\n' "$out" >&2; return 1; }
+}
+# Plan (retrying ONLY the transient OVERLAY_INTENT_REFUSED money-currency
+# skew — the idempotency key makes a repeated plan safe), then commit the
+# returned plan_id. Prints the commit reply; nonzero on any refusal.
+sa_anchor() { # $1=datadir $2=pubkey $3=idempotency-key
+    local dd="$1" pubkey="$2" key="$3" plan plan_id commit try
+    plan=""
+    for try in $(seq 1 20); do
+        plan="$(sa_sci "$dd" core.identity.anchor \
+            "{\"wallet_scope\":\"dev\",\"pubkey\":\"$pubkey\",\"idempotency_key\":\"$key\"}")"
+        case "$plan" in
+            *OVERLAY_INTENT_REFUSED*) sleep 1 ;;
+            *) break ;;
+        esac
+    done
+    [ "$(sa_jget "$plan" 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] &&
+    [ "$(sa_jget "$plan" 'd["data"]["stage"]' 2>/dev/null || true)" = "plan" ] || {
+        printf '%s\n' "$plan" >&2; return 1; }
+    plan_id="$(sa_jget "$plan" 'd["data"]["plan_id"]' 2>/dev/null)" || return 1
+    commit="$(sa_sci "$dd" core.identity.anchor \
+        "{\"wallet_scope\":\"dev\",\"plan_id\":\"$plan_id\",\"confirm\":true}")"
+    [ "$(sa_jget "$commit" 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] &&
+    [ "$(sa_jget "$commit" 'd["data"]["stage"]' 2>/dev/null || true)" = "committed" ] || {
+        printf '%s\n' "$commit" >&2; return 1; }
+    printf '%s\n' "$commit"
+}
+
 # ── science leaf driver + assertions ──────────────────────────────────
 # sa_sci <datadir> <leaf> <json> → prints the reply's one JSON line.
 sa_sci() {
@@ -316,7 +465,7 @@ sa_build_fixture() {
     cc -std=c23 -O1 -w -D_GNU_SOURCE \
         -I"$REPO_ROOT/lib/vcs/include" -I"$REPO_ROOT/lib/base/include" \
         -I"$REPO_ROOT/lib/sha3/include" -I"$REPO_ROOT/lib/crypto/include" \
-        -I"$REPO_ROOT/lib/json/include" \
+        -I"$REPO_ROOT/lib/json/include" -I"$REPO_ROOT/lib/codec/include" \
         -I"$REPO_ROOT/lib/util/include" -I"$REPO_ROOT/lib/platform/include" \
         -I"$REPO_ROOT/lib/support/include" \
         -o "$SA_WORK/zcode_science_fixture" \
@@ -329,6 +478,7 @@ sa_build_fixture() {
         "$REPO_ROOT/lib/vcs/src/package_store_io.c" \
         "$REPO_ROOT/lib/vcs/src/package_manifest.c" \
         "$REPO_ROOT/lib/vcs/src/build_action.c" \
+        "$REPO_ROOT/lib/codec/src/cursor.c" \
         "$REPO_ROOT/lib/sha3/src/sha3.c" \
         "$REPO_ROOT/lib/crypto/src/ed25519.c" \
         "$REPO_ROOT/lib/crypto/src/sha512.c" \
@@ -594,6 +744,15 @@ echo "science-acceptance: A{dd=$SA_DD_A p2p=$A_PORT rpc=$A_RPC} B{dd=$SA_DD_B p2
 
 # ── [1] boot A and B on the loopback-only provisioning link ─────────
 sa_step 1 "boot isolated pre-delegation A<->B link"
+# Wallet custody: boot every node with a passphrase credential so key
+# writes encrypt at rest (WKS1) — the ZID anchor's overlay-intent custody
+# gate refuses a plaintext-at-rest wallet. The current-key encrypted
+# backup itself happens after mining below, once the spend key exists.
+SA_CRED_DIR="$SA_WORK/cred"
+install -d -m 700 "$SA_CRED_DIR"
+install -m 600 /dev/null "$SA_CRED_DIR/wallet-passphrase"
+printf '%s\n' "$SA_WALLET_PASS" >"$SA_CRED_DIR/wallet-passphrase"
+export CREDENTIALS_DIRECTORY="$SA_CRED_DIR"
 SA_PGID_A="$(sa_spawn "$SA_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK" bootstrap)"
 sa_wait_rpc "$SA_DD_A" "$A_RPC" "$SA_PGID_A" "$RPC_WARMUP" \
     || { tail -20 "$SA_DD_A/node.log" >&2; sa_die "A RPC never came up"; }
@@ -607,13 +766,48 @@ sa_step 1b "anchor two ZID masters and enable their Noise-bound DHT delegations"
 ADDR="$(a_rpc getnewaddress | sa_result)"
 sa_mine_to 101 "$ADDR"
 sa_wait_height "$SA_DD_B" "$B_RPC" 101 || sa_die "B did not sync funding chain"
-out="$(sa_sci "$SA_DD_A" core.identity.anchor "{\"pubkey\":\"$PUB_A\"}")"
-[ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "A identity anchor failed: $out"
+sa_wait_fold "$SA_DD_A" 101 || sa_die "A reducer fold did not reach the funding tip"
+
+# The ZID anchor's overlay-intent custody gate requires the wallet
+# encrypted at rest, unlocked, and covered by a current-key encrypted
+# backup; its money gate requires A to hold an OUTBOUND peer with a live
+# sync state (the money-freshness classifier fails closed on
+# finding_peers, and the sync FSM only leaves it behind an outbound peer).
+# Mirror the metaverse-tour recipe: bounce B onto the dead sink so the
+# pair's only post-restart link is A's outbound onetry below (B's own
+# redial-backoff was measured >60s — deterministic, no already-connected
+# skip), then restart A so the forward-folded coins set stamps its
+# authority (the coins_kv authority stamps land only at boot).
+sa_kill_group "$SA_PGID_B"; SA_PGID_B=""
+SA_PGID_B="$(sa_spawn "$SA_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$DEAD_SINK" bootstrap)"
+sa_wait_rpc "$SA_DD_B" "$B_RPC" "$SA_PGID_B" "$RPC_WARMUP" || sa_die "B dead-sink bounce failed"
+sa_kill_group "$SA_PGID_A"; SA_PGID_A=""
+SA_PGID_A="$(sa_spawn "$SA_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK" bootstrap)"
+sa_wait_rpc "$SA_DD_A" "$A_RPC" "$SA_PGID_A" "$RPC_WARMUP" || sa_die "A custody restart failed"
+sa_wait_fold "$SA_DD_A" 101 || sa_die "A reducer fold did not survive the restart"
+# Operator-directed onetry: bypasses the reachable-port policy and lands
+# immediately — B is up, listening, and not connected to us.
+a_rpc addnode "\"127.0.0.1:$B_PORT\"" "\"onetry\"" >/dev/null || true
+sa_wait_connected "$SA_DD_A" "$A_RPC" || sa_die "A never connected outbound to B"
+sa_wait_sync_live "$SA_DD_A" "$A_RPC" || sa_die "A sync never left finding_peers"
+sa_wait_chain_loaded "$SA_DD_A" "$A_RPC" 101 || sa_die "A active chain index did not load"
+
+# The restart re-locks the encrypted-at-rest wallet; the anchor's
+# funding-input build draws from the key pool, which a locked wallet
+# refuses. Unlock explicitly (passphrase via --input=- only), re-top the
+# RAM-only keypool bookkeeping with one getnewaddress, then take the
+# current-key encrypted backup the custody gate demands (AFTER the top-up,
+# so the backup covers the key the anchor spends from).
+sa_unlock_wallet "$SA_DD_A" || sa_die "A wallet unlock failed"
+a_rpc getnewaddress | sa_result >/dev/null || sa_die "post-restart keypool top-up failed"
+sa_backup_wallet "$SA_DD_A" || sa_die "A custody backup failed"
+sa_wait_spendable "$SA_DD_A" || sa_die "A vault spendable never became positive"
+
+out="$(sa_anchor "$SA_DD_A" "$PUB_A" "science-anchor-a")" || sa_die "A identity anchor failed"
 [ "$(sa_jget "$out" 'd["data"].get("status")')" = "broadcast" ] || sa_die "A identity anchor was not broadcast: $out"
 sa_mine_empty 1
 sa_wait_height "$SA_DD_B" "$B_RPC" 102 || sa_die "B did not fold A's anchor block"
-out="$(sa_sci "$SA_DD_A" core.identity.anchor "{\"pubkey\":\"$PUB_B\"}")"
-[ "$(sa_jget "$out" 'd["ok"]')" = "True" ] || sa_die "B identity anchor failed: $out"
+out="$(sa_anchor "$SA_DD_A" "$PUB_B" "science-anchor-b")" || sa_die "B identity anchor failed"
 [ "$(sa_jget "$out" 'd["data"].get("status")')" = "broadcast" ] || sa_die "B identity anchor was not broadcast: $out"
 sa_mine_empty 1
 sa_wait_height "$SA_DD_B" "$B_RPC" 103 || sa_die "B did not fold its anchor block"

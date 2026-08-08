@@ -25,6 +25,10 @@ DHT_WORK=""; DHT_DD_A=""; DHT_DD_B=""; DHT_PGID_A=""; DHT_PGID_B=""
 DHT_EXTRA_PGIDS=()
 DHT_CLEANED=0
 DHT_KEEP="${DHT_KEEP:-0}"
+# Throwaway passphrases for the wallet-custody recipe (never argv: they
+# ride the wallet-passphrase credential file and --input=- stdin only).
+DHT_WALLET_PASS="zcode-dht-acceptance-wallet-pass"
+DHT_BACKUP_PASS="zcode-dht-acceptance-backup-pass"
 
 dht_die() {
     echo "zcode-dht-acceptance: FATAL: $*" >&2
@@ -104,10 +108,14 @@ dht_spawn() {
     local args=() connect
     for connect in "$@"; do args+=("-connect=$connect"); done
     [ "${#args[@]}" -gt 0 ] || args+=("-connect=127.0.0.1:$DEAD_SINK")
+    # No -allow-plaintext-wallet: the ZID anchor's overlay-intent custody
+    # gate refuses a plaintext-at-rest wallet. The wallet-passphrase
+    # credential (CREDENTIALS_DIRECTORY, exported below) encrypts key
+    # writes at rest (WKS1); -operator-lane=dev arms the dev wallet scope.
     setsid "$NODE_BIN" -datadir="$dd" -regtest -port="$p2p" \
         -rpcport="$rpc" -fsport="$fs" -httpsport="$https" \
         "${args[@]}" -packagehost=0 -v2transport \
-        -allow-plaintext-wallet -wallet-no-phrase-backup \
+        -operator-lane=dev -wallet-no-phrase-backup \
         -nobgvalidation -nolegacyimport -showmetrics=0 \
         >>"$dd/node.log" 2>&1 &
     echo "$!"
@@ -186,6 +194,135 @@ dht_wait_cold_load() {
         sleep 0.5
     done
     return 1
+}
+
+# ── Wallet-custody helpers (the ZID anchor's overlay-intent gate) ─────
+# The anchor's custody gate requires the wallet encrypted at rest (the
+# wallet-passphrase credential armed at first boot), unlocked, and covered
+# by a current-key encrypted backup; its money gate requires an OUTBOUND
+# peer with a live sync state and a positive vault spendable. This is the
+# metaverse-tour recipe (tools/dev/metaverse_tour.sh) adapted to dht_*
+# style; passphrases ride --input=- stdin only, never argv.
+dht_wait_connected() {
+    local dd="$1" rpc="$2" deadline n
+    deadline=$(( $(date +%s) + DHT_WAIT ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        n="$(dht_rpc "$dd" "$rpc" getconnectioncount 2>/dev/null | dht_result 2>/dev/null || true)"
+        [ "${n:-0}" -ge 1 ] 2>/dev/null && return 0
+        sleep 0.5
+    done
+    return 1
+}
+# The money freshness classifier fails closed on finding_peers; the sync
+# FSM only leaves it behind a peer it can sync FROM (outbound).
+dht_wait_sync_live() {
+    local dd="$1" rpc="$2" deadline state
+    deadline=$(( $(date +%s) + DHT_WAIT ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        state="$(dht_rpc "$dd" "$rpc" downloadstats 2>/dev/null \
+            | dht_jget 'd["result"]["sync_state"]' 2>/dev/null || true)"
+        case "$state" in
+            blocks_download|connecting_blocks|at_tip) return 0 ;;
+        esac
+        sleep 0.5
+    done
+    return 1
+}
+# The money gate reads the REDUCER pipeline, not the active chain: the
+# authoritative coins tip AND H* must both reach the mined height.
+dht_wait_fold() {
+    local dd="$1" rpc="$2" tip="$3" deadline dump coins hstar
+    deadline=$(( $(date +%s) + DHT_WAIT ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        dump="$(dht_native "$dd" "$rpc" dumpstate reducer_frontier || true)"
+        coins="$(printf '%s' "$dump" | dht_jget 'd["state"]["coins_best_height"]' 2>/dev/null || true)"
+        hstar="$(printf '%s' "$dump" | dht_jget 'd["state"]["hstar"]' 2>/dev/null || true)"
+        [ "$coins" = "$tip" ] && [ "$hstar" = "$tip" ] && return 0
+        sleep 1
+    done
+    echo "zcode-dht-acceptance: reducer_frontier at stall: $dump" >&2
+    return 1
+}
+# RPC-ready != chain-loaded: the anchor's runtime gate needs the active
+# chain index, which loads after the RPC starts serving.
+dht_wait_chain_loaded() {
+    local dd="$1" rpc="$2" tip="$3" deadline loaded
+    deadline=$(( $(date +%s) + DHT_WAIT ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        loaded="$(dht_rpc "$dd" "$rpc" getblockchaininfo 2>/dev/null | python3 -c '
+import json,sys
+tip = int(sys.argv[1])
+try:
+    d = json.load(sys.stdin).get("result")
+except Exception:
+    d = None
+print(isinstance(d, dict) and d.get("blocks") == tip and d.get("initialblockdownload") is not True)' \
+            "$tip" 2>/dev/null || true)"
+        [ "$loaded" = "True" ] && return 0
+        sleep 1
+    done
+    return 1
+}
+# The fee-reserve rung reads the vault read model's zcl_spendable, which
+# lags the reducer fold while the wallet re-derives its spendable coins.
+dht_wait_spendable() {
+    local dd="$1" rpc="$2" deadline spend
+    deadline=$(( $(date +%s) + DHT_WAIT ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        spend="$(dht_native "$dd" "$rpc" dumpstate vault 2>/dev/null \
+            | dht_jget 'd["state"]["zcl"]["spendable"]' 2>/dev/null || true)"
+        case "$spend" in
+            ''|*[!0-9]*) ;;
+            *) [ "$spend" -gt 0 ] && return 0 ;;
+        esac
+        sleep 1
+    done
+    return 1
+}
+dht_unlock_wallet() {
+    local dd="$1" rpc="$2" status unlock
+    status="$(dht_native "$dd" "$rpc" core wallet security status || true)"
+    [ "$(printf '%s' "$status" | dht_jget 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] || {
+        printf '%s\n' "$status" >&2; return 1; }
+    if [ "$(printf '%s' "$status" | dht_jget 'd["data"]["unlocked"]' 2>/dev/null || true)" != "True" ]; then
+        unlock="$(printf '%s' "{\"passphrase\":\"$DHT_WALLET_PASS\",\"timeout_seconds\":3600}" \
+            | dht_native "$dd" "$rpc" core wallet security unlock --input=- || true)"
+        [ "$(printf '%s' "$unlock" | dht_jget 'd["data"]["unlocked"]' 2>/dev/null || true)" = "True" ] || {
+            printf '%s\n' "$unlock" >&2; return 1; }
+    fi
+    return 0
+}
+dht_backup_wallet() {
+    local dd="$1" rpc="$2" out
+    out="$(printf '%s' "{\"confirm\":true,\"password\":\"$DHT_BACKUP_PASS\"}" \
+        | dht_native "$dd" "$rpc" core wallet backup now --input=- || true)"
+    [ "$(printf '%s' "$out" | dht_jget 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] || {
+        printf '%s\n' "$out" >&2; return 1; }
+}
+# Plan (retrying ONLY the transient OVERLAY_INTENT_REFUSED money-currency
+# skew — the idempotency key makes a repeated plan safe), then commit the
+# returned plan_id. Prints the commit reply; nonzero on any refusal.
+dht_anchor() {
+    local dd="$1" rpc="$2" pubkey="$3" key="$4" plan plan_id commit try
+    plan=""
+    for try in $(seq 1 20); do
+        plan="$(dht_native "$dd" "$rpc" core identity anchor \
+            --input="{\"wallet_scope\":\"dev\",\"pubkey\":\"$pubkey\",\"idempotency_key\":\"$key\"}" || true)"
+        case "$plan" in
+            *OVERLAY_INTENT_REFUSED*) sleep 1 ;;
+            *) break ;;
+        esac
+    done
+    [ "$(printf '%s' "$plan" | dht_jget 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] &&
+    [ "$(printf '%s' "$plan" | dht_jget 'd["data"]["stage"]' 2>/dev/null || true)" = "plan" ] || {
+        printf '%s\n' "$plan" >&2; return 1; }
+    plan_id="$(printf '%s' "$plan" | dht_jget 'd["data"]["plan_id"]' 2>/dev/null)" || return 1
+    commit="$(dht_native "$dd" "$rpc" core identity anchor \
+        --input="{\"wallet_scope\":\"dev\",\"plan_id\":\"$plan_id\",\"confirm\":true}" || true)"
+    [ "$(printf '%s' "$commit" | dht_jget 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] &&
+    [ "$(printf '%s' "$commit" | dht_jget 'd["data"]["stage"]' 2>/dev/null || true)" = "committed" ] || {
+        printf '%s\n' "$commit" >&2; return 1; }
+    printf '%s\n' "$commit"
 }
 
 dht_build_helper() {
@@ -326,6 +463,16 @@ for i in 2 3 4 5 6; do
     PUBS[$i]="$("$DHT_WORK/dht-peer" pubkey "${SEEDS[$i]}")"
 done
 
+# Wallet custody: boot every node with a passphrase credential so key
+# writes encrypt at rest (WKS1) — the ZID anchor's overlay-intent custody
+# gate refuses a plaintext-at-rest wallet. The current-key encrypted
+# backup itself happens after mining below, once the spend key exists.
+DHT_CRED_DIR="$DHT_WORK/cred"
+install -d -m 700 "$DHT_CRED_DIR"
+install -m 600 /dev/null "$DHT_CRED_DIR/wallet-passphrase"
+printf '%s\n' "$DHT_WALLET_PASS" >"$DHT_CRED_DIR/wallet-passphrase"
+export CREDENTIALS_DIRECTORY="$DHT_CRED_DIR"
+
 dht_note "booting two clean packagehost-off regtest nodes"
 DHT_PGID_A="$(dht_spawn "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK")"
 dht_wait_rpc "$DHT_DD_A" "$A_RPC" "$DHT_PGID_A" || dht_die "node A RPC warmup failed"
@@ -334,21 +481,58 @@ dht_wait_rpc "$DHT_DD_B" "$B_RPC" "$DHT_PGID_B" || dht_die "node B RPC warmup fa
 ! rg -q "unrecognized flag '-v2transport'" "$DHT_DD_A/node.log" "$DHT_DD_B/node.log" ||
     dht_die "v2transport was not recognized"
 
-dht_note "mining spendable regtest funds and anchoring seven masters"
+dht_note "mining spendable regtest funds"
 ADDR="$(a_rpc getnewaddress | dht_result)"
 dht_mine_to_address 101 "$ADDR"
 dht_wait_height "$DHT_DD_B" "$B_RPC" 101 || dht_die "B did not sync funding chain"
-ANCHOR_A="$(dht_native "$DHT_DD_A" "$A_RPC" core identity anchor --input="{\"pubkey\":\"$PUB_A\"}")"
-[ "$(printf '%s' "$ANCHOR_A" | dht_jget 'd["ok"]')" = True ] || dht_die "A anchor failed: $ANCHOR_A"
+dht_wait_fold "$DHT_DD_A" "$A_RPC" 101 || dht_die "A reducer fold did not reach the funding tip"
+
+# The ZID anchor's overlay-intent custody gate requires the wallet
+# encrypted at rest, unlocked, and covered by a current-key encrypted
+# backup; its money gate requires A to hold an OUTBOUND peer with a live
+# sync state (the money-freshness classifier fails closed on
+# finding_peers, and the sync FSM only leaves it behind an outbound peer).
+# Mirror the metaverse-tour recipe: bounce B onto the dead sink so the
+# pair's only post-restart link is A's outbound onetry below (B's own
+# redial-backoff was measured >60s — deterministic, no already-connected
+# skip), then restart A so the forward-folded coins set stamps its
+# authority (the coins_kv authority stamps land only at boot).
+dht_note "bouncing B onto the dead sink (A will own the custody-phase link)"
+dht_kill_group "$DHT_PGID_B"; DHT_PGID_B=""
+DHT_PGID_B="$(dht_spawn "$DHT_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$DEAD_SINK")"
+dht_wait_rpc "$DHT_DD_B" "$B_RPC" "$DHT_PGID_B" || dht_die "B dead-sink bounce failed"
+dht_note "restarting A so the forward-folded coins set stamps its authority"
+dht_kill_group "$DHT_PGID_A"; DHT_PGID_A=""
+DHT_PGID_A="$(dht_spawn "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK")"
+dht_wait_rpc "$DHT_DD_A" "$A_RPC" "$DHT_PGID_A" || dht_die "A custody restart failed"
+dht_wait_fold "$DHT_DD_A" "$A_RPC" 101 || dht_die "A reducer fold did not survive the restart"
+# Operator-directed onetry: bypasses the reachable-port policy and lands
+# immediately — B is up, listening, and not connected to us.
+a_rpc addnode "\"127.0.0.1:$B_PORT\"" "\"onetry\"" >/dev/null || true
+dht_wait_connected "$DHT_DD_A" "$A_RPC" || dht_die "A never connected outbound to B"
+dht_wait_sync_live "$DHT_DD_A" "$A_RPC" || dht_die "A sync never left finding_peers"
+dht_wait_chain_loaded "$DHT_DD_A" "$A_RPC" 101 || dht_die "A active chain index did not load"
+
+# The restart re-locks the encrypted-at-rest wallet; the anchor's
+# funding-input build draws from the key pool, which a locked wallet
+# refuses. Unlock explicitly (passphrase via --input=- only), re-top the
+# RAM-only keypool bookkeeping with one getnewaddress, then take the
+# current-key encrypted backup the custody gate demands (AFTER the top-up,
+# so the backup covers the key the anchor spends from).
+dht_note "unlocking the wallet and taking the current-key encrypted backup"
+dht_unlock_wallet "$DHT_DD_A" "$A_RPC" || dht_die "A wallet unlock failed"
+a_rpc getnewaddress | dht_result >/dev/null || dht_die "post-restart keypool top-up failed"
+dht_backup_wallet "$DHT_DD_A" "$A_RPC" || dht_die "A custody backup failed"
+dht_wait_spendable "$DHT_DD_A" "$A_RPC" || dht_die "A vault spendable never became positive"
+
+dht_note "anchoring seven masters (plan/commit under identity custody)"
+ANCHOR_A="$(dht_anchor "$DHT_DD_A" "$A_RPC" "$PUB_A" "dht-anchor-a")" || dht_die "A anchor failed"
 dht_mine_empty 1; sleep 1
-ANCHOR_B="$(dht_native "$DHT_DD_A" "$A_RPC" core identity anchor --input="{\"pubkey\":\"$PUB_B\"}")"
-[ "$(printf '%s' "$ANCHOR_B" | dht_jget 'd["ok"]')" = True ] || dht_die "B anchor failed: $ANCHOR_B"
+ANCHOR_B="$(dht_anchor "$DHT_DD_A" "$A_RPC" "$PUB_B" "dht-anchor-b")" || dht_die "B anchor failed"
 dht_mine_empty 1; sleep 1
 for i in 2 3 4 5 6; do
-    anchor="$(dht_native "$DHT_DD_A" "$A_RPC" core identity anchor \
-        --input="{\"pubkey\":\"${PUBS[$i]}\"}")"
-    [ "$(printf '%s' "$anchor" | dht_jget 'd["ok"]')" = True ] ||
-        dht_die "anchor $i failed: $anchor"
+    dht_anchor "$DHT_DD_A" "$A_RPC" "${PUBS[$i]}" "dht-anchor-$i" >/dev/null ||
+        dht_die "anchor $i failed"
     dht_mine_empty 1; sleep 1
 done
 dht_mine_empty 21
