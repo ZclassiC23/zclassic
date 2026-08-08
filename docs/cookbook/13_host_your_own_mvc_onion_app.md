@@ -17,12 +17,13 @@ the repo as the worked examples:
 
 The shape, end to end:
 
-1. **Write the manifest** — `apps/<id>/app.def`. This is data, not
-   authority: it names the app, the capabilities it ASKS for
+1. **Write the manifest** — `apps/<id>/app.def`. This declares intent —
+   it names the app, the capabilities it ASKS for
    (`ZCL_APP_CAPABILITY(...)`), its resources, its P2P topic, its web
    mount, and whether it binds the onion and a ZNAM name. The strict
-   compiler (`lib/framework/src/app_definition.c`) rejects anything else.
-   Copy the yardsale's:
+   compiler (`lib/framework/src/app_definition.c`) rejects anything else,
+   and the `site_routes` test group proves the declared mount and the
+   route registry can never drift apart. Copy the yardsale's:
 
    ```
    ZCL_APP("yardsale", "ZClassic Yardsale", "0.1.0")
@@ -59,16 +60,20 @@ The shape, end to end:
    version: security headers, urlencoded form parsing, named error pages,
    and the 800-line file-size ceiling in mind from the first keystroke.
 
-4. **Mount it** — one dispatch branch in `lib/net/src/onion_service.c`
-   and one in `lib/net/src/https_server.c`, both calling your
-   `<id>_site_handle_request` by `extern` declaration (the
-   `/blog` and `/yardsale` branches are the pattern; the onion serves
-   POSTs, the public listener is GET/HEAD-only, so mutating forms are
-   onion-only). Re-baseline both files in
-   `tools/scripts/file_size_ceiling_lib_baseline.txt` — the ceiling gate
-   expects exactly that move (the ZCODE slice-13 note in
-   `tools/scripts/file_size_ceiling_lib_drift_count.txt` is the
-   precedent).
+4. **Mount it — one registry row.** Add a single `SITE_ROUTE(...)` row to
+   `lib/net/include/net/site_routes.def`. That one row is expanded by
+   every consumer at once: the onion dispatch chain, the HTTPS dispatch
+   chain, the rate-limit cost classifier, the onion + app navs, and the
+   landing-page grid. There is no step two — the days of hand-editing
+   `onion_service.c` / `https_server.c` / `onion_ratelimit.c` and two nav
+   tables in lockstep are over. Pick the flavor column by copying the
+   nearest neighbor: `DATADIR` for read-only projection pages (zcode,
+   metaverse), `FAILCLOSED` when a missing projection must be a 503
+   (blog, yardsale), `ZCL_SITE_F_POST_ONION` when you take mutating form
+   POSTs — POSTs are honored only on the onion transport, the public
+   HTTPS listener is GET/HEAD-only, so mutating forms are onion-only by
+   construction. Choose the cost class honestly: it is your DoS budget
+   on an unauthenticated surface.
 
 5. **Prove it** — a new `lib/test/src/test_<id>_app.c` with
    `int test_<id>_app(void)`, registered in BOTH places the
@@ -81,6 +86,7 @@ The shape, end to end:
    ```bash
    make -j"$(nproc)"
    make -j"$(nproc)" t-fast ONLY=<id>_app
+   make -j"$(nproc)" t-fast ONLY=site_routes   # registry <-> manifest drift check
    make lint
    ```
 
@@ -89,6 +95,32 @@ dispatch row in `lib/net/src/msgprocessor.c`'s table plus an injected
 port (lib/net never names your lib's symbols — the composition root in
 `config/src/boot_msg_callbacks.c` wires it), and the ceremony/app logic
 in your controller where tests can drive it in-process.
+
+## Privacy posture — why the onion is the whole point
+
+A marketplace where participants must expose an IP address is not a P2P
+marketplace. The rules that keep it one:
+
+- **Mutating forms are onion-only.** `ZCL_SITE_F_POST_ONION` rows are
+  honored only on the onion transport; the clearnet HTTPS listener
+  rejects non-GET/HEAD before dispatch. A buyer's `accept` never travels
+  a path that reveals their IP to the seller's web logs — it arrives
+  through a Tor rendezvous circuit like every other onion request.
+- **The unauthenticated surface is budgeted.** Your row's cost class is
+  enforced per-route with escalation to a proof-of-work puzzle; choose
+  EXPENSIVE for anything that blocks or dials out (the `/n/` gateway
+  precedent).
+- **The whole response fits 64 KiB.** One dynhost buffer, no streaming —
+  render with `SITE_APPEND` truncation guards from the first keystroke.
+- **A node with no clearnet endpoint loses nothing.** Tor-only operators
+  keep the full app surface; clearnet HTTPS is only ever a convenience
+  mirror of the read-only pages.
+
+To smoke two onion nodes trading, build the vendored Tor
+(`git submodule update --init vendor/tor`, then per `docs/BUILD.md`),
+boot two isolated datadirs with `-tor` (see
+`tools/scripts/isolated_node_env.sh` for the port-discipline pattern),
+and walk the seller → gossip → buyer-accept loop by hand.
 
 ## Build / run
 
