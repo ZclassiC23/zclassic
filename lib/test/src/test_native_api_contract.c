@@ -2470,7 +2470,11 @@ static int test_partial_rpc_reply_names_the_timeout(void)
         (void)fprintf(cf, "dummyuser:dummypass\n");
         (void)fclose(cf);
         node_rpc_client_init(dir, (int)port);
-        ASSERT(setenv("ZCL_RPC_DEADLINE_MS", "400", 1) == 0);
+        /* This case proves EOF classification, not command latency. Under a
+         * focused proof pool the helper thread may compete with 14 other
+         * groups; give it a scheduler allowance large enough that starvation
+         * cannot turn the intended partial reply into a client timeout. */
+        ASSERT(setenv("ZCL_RPC_DEADLINE_MS", "2000", 1) == 0);
 
         const struct zcl_command_spec *s =
             find_spec(reg, "core.wallet.utxo.list");
@@ -2483,6 +2487,9 @@ static int test_partial_rpc_reply_names_the_timeout(void)
 
         /* The rendered bytes are the contract: a busy node is named as one. */
         ASSERT(strstr(out, "unparseable body") == NULL);
+        if (strstr(out, "truncated reply") == NULL)
+            fprintf(stderr, "partial reply rendered unexpected body: %s\n",
+                    out);
         ASSERT(strstr(out, "truncated reply") != NULL);
         ASSERT(strstr(out, "\"ok\":false") != NULL);
         PASS();
