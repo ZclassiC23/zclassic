@@ -2,6 +2,7 @@
  * SQLite ActiveRecord model tests for ZClassic C23. */
 
 #include "platform/time_compat.h"
+#include "platform/os_proc.h"
 #include "test/test_core.h"
 #include "chain/chainparams.h"
 #include "storage/coins_db.h"
@@ -1985,6 +1986,43 @@ int test_sqlite(void) {
                        (long long)cache_pages, (long long)mmap_bytes);
         else { printf("FAIL (cache=%lld mmap=%lld)\n",
                       (long long)cache_pages, (long long)mmap_bytes);
+               failures++; }
+    }
+
+    {
+        /* A large host does not make a 4 GiB cgroup a large lane. Reproduce
+         * the live dev envelope and prove both the persistent node handle and
+         * read-only explorer helper receive a zero mmap window rather than a
+         * 256 MiB working set that repeatedly crosses memory.high. */
+        printf("SQLite PRAGMA tuning honors constrained cgroup budget... ");
+        struct os_proc_mem constrained = {
+            .rss_bytes = 1024 * 1024,
+            .vsize_bytes = 2 * 1024 * 1024,
+            .cgroup_current = 2LL * 1024 * 1024 * 1024,
+            .cgroup_high = 4LL * 1024 * 1024 * 1024,
+            .cgroup_max = 8LL * 1024 * 1024 * 1024,
+            .sys_total_bytes = 64LL * 1024 * 1024 * 1024,
+            .sys_avail_bytes = 32LL * 1024 * 1024 * 1024,
+        };
+        os_proc_mem_set_override(&constrained);
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        sqlite3_stmt *s = NULL;
+        int64_t cache_pages = 0;
+        if (ok && sqlite3_prepare_v2(ndb.db, "PRAGMA cache_size",
+                                     -1, &s, NULL) == SQLITE_OK &&
+            sqlite3_step(s) == SQLITE_ROW)
+            cache_pages = sqlite3_column_int64(s, 0);
+        else
+            ok = false;
+        sqlite3_finalize(s);
+        ok = ok && cache_pages == -(16 * 1024);
+        ok = ok && node_db_recommended_mmap_bytes() == 0;
+        if (ndb.open) node_db_close(&ndb);
+        os_proc_mem_set_override(NULL);
+        if (ok) printf("OK (cache=%lld mmap=0)\n",
+                       (long long)cache_pages);
+        else { printf("FAIL (cache=%lld)\n", (long long)cache_pages);
                failures++; }
     }
 

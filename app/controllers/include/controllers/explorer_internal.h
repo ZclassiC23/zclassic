@@ -14,6 +14,7 @@
 #include <math.h>
 #include <time.h>
 #include <sqlite3.h>
+#include "models/database.h"
 #include "util/log_macros.h"
 #include "views/format_helpers.h"
 #include "views/site_layout.h"
@@ -375,6 +376,7 @@ static inline bool explorer_open_readonly_db(const char *datadir, sqlite3 **db_o
         return false;
     }
 
+    (void)node_db_apply_readonly_tuning(*db_out);
     sqlite3_busy_timeout(*db_out, 30000);
     return true;
 }

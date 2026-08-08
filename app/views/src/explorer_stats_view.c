@@ -389,7 +389,6 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
         if (db) sqlite3_close(db);
         return 0;
     }
-    sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
     sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
 
     /* ════════════════════════════════════════════════════════
