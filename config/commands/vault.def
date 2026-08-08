@@ -196,9 +196,10 @@ ZCL_COMMAND_READY_COMMAND(
     "Persist an exact encrypted transaction plan",
     "Accepts 1..50 effects with strict decimal-string ZCL amounts and requires "
     "a durable idempotency_key for every route. Transparent fan-out uses "
-    "route=transparent. Sapling routes additionally require from: private "
-    "(z-to-z), shield (t-to-z), unshield (z-to-t), or "
-    "mixed (both recipient pools); a mismatched route fails closed. Returns a "
+    "route=transparent and omits from. Sapling plans require from=<exact "
+    "owned source address> and route=private (z-to-z), shield (t-to-z), "
+    "unshield (z-to-t), or mixed (both recipient pools); a mismatched route "
+    "fails closed. Returns a "
     "ten-minute plan_id, digest, exact effects and maximum fee, tip/money "
     "anchor, confirmation policy, and an explicit privacy warning. "
     "Recipient details are encrypted under the wallet metadata DEK at rest; "
