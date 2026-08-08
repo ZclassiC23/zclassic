@@ -25,12 +25,19 @@ static struct node_db *g_ti_async_ndb;
 static uint8_t g_ti_async_plan_id[32];
 static _Atomic int g_ti_async_gate;
 static _Atomic int g_ti_async_calls;
+static _Atomic int g_ti_async_transient_once;
 
 static bool ti_async_execute(const struct json_value *input,
                              struct json_value *result)
 {
     (void)input;
-    (void)atomic_fetch_add(&g_ti_async_calls, 1);
+    int call = atomic_fetch_add(&g_ti_async_calls, 1) + 1;
+    if (atomic_load(&g_ti_async_transient_once) && call == 1) {
+        json_set_object(result);
+        (void)json_push_kv_bool(result, "ok", false);
+        (void)json_push_kv_str(result, "code", "WALLET_LOCKED");
+        return true;
+    }
     while (!atomic_load(&g_ti_async_gate))
         platform_sleep_ms(1);
     uint8_t txid[32]; memset(txid, 0xa7, sizeof(txid));
@@ -421,6 +428,7 @@ int test_transaction_intent(void)
         ASSERT(wallet_identity_ensure(&async_db, genesis, "prod", &identity));
         struct vault_intent_row row;
         ti_bound_row(&row, 0x71, &identity, 1);
+        row.expires_at = (int64_t)platform_time_wall_time_t() + 600;
         (void)snprintf(row.wallet_scope, sizeof(row.wallet_scope), "prod");
         ASSERT(vault_intent_save(&async_db, &row));
 
@@ -431,6 +439,7 @@ int test_transaction_intent(void)
         memcpy(g_ti_async_plan_id, row.plan_id, sizeof(g_ti_async_plan_id));
         atomic_store(&g_ti_async_gate, 0);
         atomic_store(&g_ti_async_calls, 0);
+        atomic_store(&g_ti_async_transient_once, 0);
         bool duplicate = false;
         ASSERT(vault_intent_async_start(
             &async_db, &row, plan_hex, true, ti_async_execute,
@@ -460,6 +469,46 @@ int test_transaction_intent(void)
         g_ti_async_ndb = NULL;
         memset(g_ti_async_plan_id, 0, sizeof(g_ti_async_plan_id));
         node_db_close(&async_db);
+        PASS();
+    }
+
+    TEST("async readiness blocker remains queued and retries") {
+        struct node_db retry_db; memset(&retry_db, 0, sizeof(retry_db));
+        ASSERT(node_db_open(&retry_db, ":memory:"));
+        struct wallet_identity_row identity;
+        const uint8_t genesis[32] = { 0x95 };
+        ASSERT(wallet_identity_ensure(&retry_db, genesis, "prod", &identity));
+        struct vault_intent_row row;
+        ti_bound_row(&row, 0x81, &identity, 1);
+        row.expires_at = (int64_t)platform_time_wall_time_t() + 600;
+        (void)snprintf(row.wallet_scope, sizeof(row.wallet_scope), "prod");
+        ASSERT(vault_intent_save(&retry_db, &row));
+        char plan_hex[65];
+        for (size_t i = 0; i < 32; i++)
+            (void)snprintf(plan_hex + i * 2, 3, "%02x", row.plan_id[i]);
+        g_ti_async_ndb = &retry_db;
+        memcpy(g_ti_async_plan_id, row.plan_id, sizeof(g_ti_async_plan_id));
+        atomic_store(&g_ti_async_gate, 1);
+        atomic_store(&g_ti_async_calls, 0);
+        atomic_store(&g_ti_async_transient_once, 1);
+        bool duplicate = false;
+        ASSERT(vault_intent_async_start(
+            &retry_db, &row, plan_hex, true, ti_async_execute,
+            &duplicate).ok);
+        ASSERT(!duplicate);
+        struct vault_intent_row got;
+        for (int i = 0; i < 300; i++) {
+            ASSERT(vault_intent_find(&retry_db, row.plan_id, &got));
+            if (got.state == VAULT_INTENT_MEMPOOL_ACCEPTED)
+                break;
+            platform_sleep_ms(5);
+        }
+        ASSERT_EQ(atomic_load(&g_ti_async_calls), 2);
+        ASSERT_EQ(got.state, VAULT_INTENT_MEMPOOL_ACCEPTED);
+        atomic_store(&g_ti_async_transient_once, 0);
+        g_ti_async_ndb = NULL;
+        memset(g_ti_async_plan_id, 0, sizeof(g_ti_async_plan_id));
+        node_db_close(&retry_db);
         PASS();
     }
 
