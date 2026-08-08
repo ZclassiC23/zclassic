@@ -867,6 +867,7 @@ int test_sticky_escalator(void)
         };
         condition_engine_reset_for_testing();
         sticky_escalator_test_reset();
+        sticky_escalator_test_set_pending_work(1);
         reducer_frontier_provable_tip_reset();
 
         SE_CHECK("T7: register a WARN-only unresolved condition",
@@ -906,6 +907,7 @@ int test_sticky_escalator(void)
         };
         condition_engine_reset_for_testing();
         sticky_escalator_test_reset();
+        sticky_escalator_test_set_pending_work(1);
         reducer_frontier_provable_tip_reset();
 
         SE_CHECK("T8: register a CRITICAL unresolved condition",
@@ -919,6 +921,12 @@ int test_sticky_escalator(void)
         sticky_escalator_test_drive(0, t8);
         SE_CHECK("T8: an unresolved CRITICAL backlog DOES auto-arm the ladder",
                  sticky_escalator_test_armed());
+
+        sticky_escalator_test_reset();
+        sticky_escalator_test_set_pending_work(0);
+        sticky_escalator_test_drive(0, t8 + 1);
+        SE_CHECK("T8: a CRITICAL backlog at a caught-up tip does NOT auto-arm",
+                 !sticky_escalator_test_armed());
 
         condition_engine_reset_for_testing();
         sticky_escalator_test_reset();

@@ -136,6 +136,9 @@ uint64_t sticky_escalator_test_widen_kicks(void);
 uint64_t sticky_escalator_test_livelock_force_advances(void);
 /* Actual action invocations (not hold polls) for one rung. */
 uint64_t sticky_escalator_test_rung_dispatches(enum sticky_rung rung);
+/* Override the generic auto-arm's pending-chain-work witness:
+ * -1=live context, 0=caught up, 1=work pending. */
+void sticky_escalator_test_set_pending_work(int override_value);
 
 /* Blocker-aware HOLD test seams (defect D5): whether the last drive HELD on a
  * permanent sync-domain blocker, and the monotonic count of held drives. */
