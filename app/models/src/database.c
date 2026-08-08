@@ -13,6 +13,7 @@
  *   their own validates_* paths. */
 
 #include "platform/time_compat.h"
+#include "platform/os_proc.h"
 #include "util/log_macros.h"
 #include "util/db_txn_trace.h"
 #include "util/hw_profile.h"
@@ -318,14 +319,52 @@ static bool prepare_statements(struct node_db *ndb)
  * boot_index.c:306 landmine (stale mmap pages can SIGSEGV above 256 MB). */
 #define ZCL_NODE_DB_CACHE_CEIL_KIB     (64 * 1024)            /* 64 MiB */
 #define ZCL_NODE_DB_MMAP_CEILING_BYTES (256LL * 1024 * 1024)  /* 256 MiB */
+#define ZCL_NODE_DB_CONSTRAINED_BYTES  (4LL * 1024 * 1024 * 1024)
+#define ZCL_NODE_DB_MIDRANGE_BYTES     (8LL * 1024 * 1024 * 1024)
+#define ZCL_NODE_DB_MIDRANGE_MMAP      (64LL * 1024 * 1024)
 #define ZCL_NODE_DB_BUSY_TIMEOUT_MS 10000
 
-static void db_set_pragmas(sqlite3 *db)
+static int64_t db_effective_ram_bytes(void)
 {
     hw_profile_init(NULL);
     int64_t ram = hw_profile_ram_bytes();
-    int64_t cache_kib = hw_profile_sqlite_cache_kib(ram, 0, ZCL_NODE_DB_CACHE_CEIL_KIB);
-    int64_t mmap_bytes = hw_profile_sqlite_mmap_bytes(ram, 0, ZCL_NODE_DB_MMAP_CEILING_BYTES);
+    struct os_proc_mem mem;
+    if (!os_proc_mem_read(&mem))
+        return ram;
+    int64_t cap = mem.cgroup_high > 0 ? mem.cgroup_high : mem.cgroup_max;
+    if (cap > 0 && (ram <= 0 || cap < ram))
+        ram = cap;
+    return ram;
+}
+
+int64_t node_db_recommended_mmap_bytes(void)
+{
+    int64_t ram = db_effective_ram_bytes();
+    if (ram > 0 && ram <= ZCL_NODE_DB_CONSTRAINED_BYTES)
+        return 0;
+    int64_t ceiling = ram > 0 && ram <= ZCL_NODE_DB_MIDRANGE_BYTES
+        ? ZCL_NODE_DB_MIDRANGE_MMAP : ZCL_NODE_DB_MMAP_CEILING_BYTES;
+    return hw_profile_sqlite_mmap_bytes(ram, 0, ceiling);
+}
+
+bool node_db_apply_readonly_tuning(sqlite3 *db)
+{
+    if (!db)
+        LOG_FAIL("db", "readonly tuning requires an open SQLite handle");
+    char pragma[64];
+    (void)snprintf(pragma, sizeof(pragma), "PRAGMA mmap_size=%lld",
+                   (long long)node_db_recommended_mmap_bytes());
+    return db_exec_checked(db, pragma, "readonly_mmap_tuning") == SQLITE_OK;
+}
+
+static void db_set_pragmas(sqlite3 *db)
+{
+    int64_t ram = db_effective_ram_bytes();
+    int64_t cache_ceiling = ram > 0 && ram <= ZCL_NODE_DB_CONSTRAINED_BYTES
+        ? 16 * 1024 : ZCL_NODE_DB_CACHE_CEIL_KIB;
+    int64_t cache_kib = hw_profile_sqlite_cache_kib(
+        ram, 16 * 1024, cache_ceiling);
+    int64_t mmap_bytes = node_db_recommended_mmap_bytes();
 
     /* One exec call to keep the PRAGMA batch atomic with respect to
      * other threads that might latch onto the connection immediately

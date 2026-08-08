@@ -133,8 +133,6 @@ size_t explorer_view_tokens(const char *datadir, uint8_t *r, size_t max)
         LOG_ERR("explorer", "explorer_view_tokens: failed to open db");
         return explorer_emit_error_page(r, max, 500, "Database Error", "Failed to open block index");
     }
-    sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
-
     size_t off = 0;
 
     APPEND(off, r, max, EXPLORER_HEADER("ZSLP Tokens"));
@@ -298,8 +296,6 @@ size_t explorer_view_token_detail(const char *token_id_hex,
         LOG_ERR("explorer", "explorer_view_token_detail: failed to open db");
         return explorer_emit_error_page(r, max, 500, "Database Error", "Failed to open block index");
     }
-    sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
-
     /* Parse hex token ID — try direct first, then reversed byte order */
     uint8_t token_id[32];
     uint8_t token_id_rev[32];
