@@ -61,6 +61,13 @@ bool zcl_test_group_catalog_contains(const char *full_id)
     return false;
 }
 
+bool zcl_test_group_requires_exclusive_run(const char *full_id)
+{
+    return full_id &&
+           strcmp(full_id, "test_command_registry_latency") == 0 &&
+           zcl_test_group_catalog_contains(full_id);
+}
+
 bool zcl_test_group_source_is_semantic_leaf(const char *path)
 {
     if (!path || !path[0])

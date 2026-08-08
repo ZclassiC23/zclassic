@@ -205,6 +205,7 @@ int test_hotswap_module(void);
 int test_hotswap_module_v2(void);
 int test_dev_platform(void);
 int test_command_registry_catalog(void);
+int test_command_registry_latency(void);
 int test_metaverse_agent_broker(void);
 int test_metaverse_broker_authority(void);
 int test_metaverse_broker_idempotency(void);

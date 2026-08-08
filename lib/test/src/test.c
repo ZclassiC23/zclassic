@@ -1253,6 +1253,7 @@ int main(int argc, char **argv)
     failures += test_hotswap_module_v2();
     failures += test_dev_platform();
     failures += test_command_registry_catalog();
+    failures += test_command_registry_latency();
     failures += test_native_api_contract();
     failures += test_metric_alerts();
     failures += test_db_validators();

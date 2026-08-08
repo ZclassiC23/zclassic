@@ -40,6 +40,7 @@
 #include "platform/time_compat.h"
 #include "session/agent_broker.h"
 #include "test/test_group_selector.h"
+#include "test_group_catalog.h"
 #include "test/test_helpers.h"
 #include "test/testcache.h"
 #include "event/event.h"
@@ -263,9 +264,7 @@ static bool group_requires_exclusive_repo(const char *name)
 static bool group_requires_exclusive_run(const char *name)
 {
     if (group_requires_exclusive_repo(name)) return true;
-    if (!name) return false;
-    if (strncmp(name, "test_", 5) == 0) name += 5;
-    return strcmp(name, "command_registry_catalog") == 0;
+    return zcl_test_group_requires_exclusive_run(name);
 }
 
 /* Params-heavy opt-in gate. These groups load the multi-MB Sapling Groth16

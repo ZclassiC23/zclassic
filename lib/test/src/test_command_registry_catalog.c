@@ -1668,7 +1668,7 @@ static int test_status_brief_names_first_failing_field(void)
  * schema" together with an elapsed_ms far past budget_ms; assert all three
  * properties together, on both fixtures, rather than leaving them scattered
  * across the other status_brief_* tests above. */
-static int test_status_ok_schema_valid_under_budget_healthy_and_fresh(void)
+int command_registry_status_latency_contract(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
@@ -2484,7 +2484,7 @@ static bool b2_latency_in_scope(const struct zcl_command_spec *s)
            strncmp(s->path, "code.", 5) == 0;
 }
 
-static int test_ready_read_leaves_meet_latency_bucket(void)
+int command_registry_ready_read_latency_contract(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
@@ -3044,7 +3044,6 @@ int test_command_registry_catalog(void)
     failures += test_every_describe_document_fits();
     failures += test_latency_budget_mapping();
     failures += test_envelope_carries_latency_contract();
-    failures += test_ready_read_leaves_meet_latency_bucket();
     failures += test_describe_emits_observed_p99();
     failures += test_next_actions_fail_closed();
     failures += test_domain_leaf_counts();
@@ -3072,7 +3071,6 @@ int test_command_registry_catalog(void)
     failures += test_status_brief_valid_unknown_and_partial_contracts();
     failures += test_status_brief_rejects_contract_contradictions();
     failures += test_status_brief_names_first_failing_field();
-    failures += test_status_ok_schema_valid_under_budget_healthy_and_fresh();
     failures += test_bridge_bindings();
     failures += test_planned_fail_closed();
     failures += test_envelope_vectors();

@@ -18,6 +18,11 @@ size_t zcl_test_group_catalog_count(void);
 const char *zcl_test_group_catalog_at(size_t index);
 bool zcl_test_group_catalog_contains(const char *full_id);
 
+/* True only for exact catalog groups whose wall-clock assertions must run
+ * before the worker pool starts. Repository-exclusive lint groups remain a
+ * separate runner policy. */
+bool zcl_test_group_requires_exclusive_run(const char *full_id);
+
 /* True only for a mechanically audited test translation-unit proof leaf. */
 bool zcl_test_group_source_is_semantic_leaf(const char *path);
 

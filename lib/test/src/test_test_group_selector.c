@@ -256,6 +256,25 @@ static int test_native_catalog_resolution(void)
     return failures;
 }
 
+static int test_latency_group_is_the_only_catalog_exclusive(void)
+{
+    int failures = 0;
+    TEST("command registry latency is isolated without serializing catalog structure") {
+        ASSERT(zcl_test_group_catalog_contains(
+            "test_command_registry_latency"));
+        ASSERT(zcl_test_group_requires_exclusive_run(
+            "test_command_registry_latency"));
+        ASSERT(!zcl_test_group_requires_exclusive_run(
+            "test_command_registry_catalog"));
+        ASSERT(!zcl_test_group_plan_selects(
+            "command_registry_catalog", "test_command_registry_latency"));
+        ASSERT(zcl_test_group_plan_selects(
+            "command_registry_latency", "test_command_registry_latency"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_runner_exact_selection(void)
 {
     int failures = 0;
@@ -378,6 +397,7 @@ int test_test_group_selector(void)
     failures += test_selector_predicate();
     failures += test_registry_exact_resolution();
     failures += test_native_catalog_resolution();
+    failures += test_latency_group_is_the_only_catalog_exclusive();
     failures += test_runner_exact_selection();
     return failures;
 }

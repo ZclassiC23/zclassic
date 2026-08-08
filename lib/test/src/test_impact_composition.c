@@ -273,6 +273,28 @@ static int test_ic_group_cap_preserves_groups(void)
     return failures;
 }
 
+static int test_ic_command_latency_scope_is_precise(void)
+{
+    int failures = 0;
+    TEST("impact composition: command latency follows only latency owners") {
+        const char *code_files[] = { "lib/codeindex/src/codeindex.c" };
+        struct zcl_devloop_plan code_plan;
+        ASSERT(zcl_devloop_plan_files(code_files, 1, &code_plan));
+        ASSERT(ic_planned(&code_plan, "command_registry_catalog"));
+        ASSERT(ic_planned(&code_plan, "command_registry_latency"));
+
+        const char *zcode_files[] = {
+            "tools/command/native_zcode_dev_command.c"
+        };
+        struct zcl_devloop_plan zcode_plan;
+        ASSERT(zcl_devloop_plan_files(zcode_files, 1, &zcode_plan));
+        ASSERT(ic_planned(&zcode_plan, "command_registry_catalog"));
+        ASSERT(!ic_planned(&zcode_plan, "command_registry_latency"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── T2: a .def registry's dependents ARE found ───────────────────────── */
 
 static int test_ic_registry_def_has_dependents(void)
@@ -792,6 +814,7 @@ int test_impact_composition(void)
     int failures = 0;
     failures += test_ic_truncated_closure_preserves_groups();
     failures += test_ic_group_cap_preserves_groups();
+    failures += test_ic_command_latency_scope_is_precise();
     failures += test_ic_registry_def_has_dependents();
     failures += test_ic_macro_only_header_has_dependents();
     failures += test_ic_incomplete_dimension_refuses_proof();
