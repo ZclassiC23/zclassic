@@ -277,11 +277,28 @@ static const char *CL_H =
     "int cl_c(int x);\n"
     "#endif\n";
 
+static const char *CL_TEST_C =
+    "/* terminal proof leaf: the harness calls this, but closure may stop here. */\n"
+    "#include \"net/cl.h\"\n"
+    "int test_cl(void)\n"
+    "{\n"
+    "    return cl_a(1);\n"
+    "}\n";
+
+static const char *CL_HARNESS_C =
+    "int test_cl(void);\n"
+    "int cl_harness(void)\n"
+    "{\n"
+    "    return test_cl();\n"
+    "}\n";
+
 static bool write_cl_fixture(void)
 {
     return mk_write(CL_FIX, "lib/net/src/cl_a.c", CL_A_C) &&
            mk_write(CL_FIX, "lib/net/src/cl_b.c", CL_B_C) &&
            mk_write(CL_FIX, "lib/net/src/cl_c.c", CL_C_C) &&
+           mk_write(CL_FIX, "lib/test/src/test_cl.c", CL_TEST_C) &&
+           mk_write(CL_FIX, "lib/test/src/test.c", CL_HARNESS_C) &&
            mk_write(CL_FIX, "lib/net/include/net/cl.h", CL_H) &&
            mk_write(CL_FIX, "build/obj/cl_a.d",
                     "build/obj/cl_a.o: lib/net/src/cl_a.c "
@@ -292,6 +309,12 @@ static bool write_cl_fixture(void)
            mk_write(CL_FIX, "build/obj/cl_c.d",
                     "build/obj/cl_c.o: lib/net/src/cl_c.c "
                     "lib/net/include/net/cl.h\n");
+}
+
+static bool cl_test_tree_terminal(const char *path, void *user)
+{
+    (void)user;
+    return path && strncmp(path, "lib/test/src/", 13) == 0;
 }
 
 static bool write_fixture(void)
@@ -1294,11 +1317,26 @@ int test_codeindex(void)
 
             /* Full closure: cl_c.c seeds -> cl_b.c -> cl_a.c, sorted unique. */
             int n = codeindex_impact_closure(cl, changed, 1, 0, out, 64, &trunc);
-            CI_CHECK("closure(cl_c.c) = {cl_a.c, cl_b.c, cl_c.c} sorted, untruncated",
-                     n == 3 && !trunc &&
+            CI_CHECK("full closure walks through test leaf into harness",
+                     n == 5 && !trunc &&
                      strcmp(out[0], "lib/net/src/cl_a.c") == 0 &&
                      strcmp(out[1], "lib/net/src/cl_b.c") == 0 &&
-                     strcmp(out[2], "lib/net/src/cl_c.c") == 0);
+                     strcmp(out[2], "lib/net/src/cl_c.c") == 0 &&
+                     strcmp(out[3], "lib/test/src/test.c") == 0 &&
+                     strcmp(out[4], "lib/test/src/test_cl.c") == 0);
+
+            char outt[64][256];
+            bool trunct = true;
+            int nt = codeindex_impact_closure_with_terminal(
+                cl, changed, 1, 0, cl_test_tree_terminal, NULL,
+                outt, 64, &trunct);
+            CI_CHECK("terminal callback records test leaf but does not "
+                     "walk into umbrella harness",
+                     nt == 4 && !trunct &&
+                     strcmp(outt[0], "lib/net/src/cl_a.c") == 0 &&
+                     strcmp(outt[1], "lib/net/src/cl_b.c") == 0 &&
+                     strcmp(outt[2], "lib/net/src/cl_c.c") == 0 &&
+                     strcmp(outt[3], "lib/test/src/test_cl.c") == 0);
 
             /* Deterministic: a second identical query yields the identical set. */
             char out2[64][256];
@@ -1332,13 +1370,13 @@ int test_codeindex(void)
                      strcmp(outc[0], "lib/net/src/cl_a.c") == 0);
 
             /* A leaf change with no callers impacts only the changed file. */
-            const char lone[1][256] = { "lib/net/src/cl_a.c" };
+            const char lone[1][256] = { "lib/test/src/test.c" };
             char outl[64][256];
             bool truncl = true;
             int nl = codeindex_impact_closure(cl, lone, 1, 0, outl, 64, &truncl);
-            CI_CHECK("closure(cl_a.c) = itself only (no callers)",
+            CI_CHECK("closure(test.c) = itself only (no callers)",
                      nl == 1 && !truncl &&
-                     strcmp(outl[0], "lib/net/src/cl_a.c") == 0);
+                     strcmp(outl[0], "lib/test/src/test.c") == 0);
 
             /* Bad args are rejected (not found is never an error). */
             bool tb = false;

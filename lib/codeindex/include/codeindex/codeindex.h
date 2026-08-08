@@ -275,6 +275,21 @@ int codeindex_impact_closure_overlay(
     const char (*changed_files)[256], int n_changed, int max_depth,
     char (*out)[256], int cap, bool *truncated);
 
+/* Proof-selection variant: record a caller file, then ask whether that file is
+ * a terminal evidence owner. Terminal callers are not traversed through into
+ * generic dispatchers; non-terminal callers retain the ordinary reverse walk.
+ * The callback does not run on the changed seed itself. */
+typedef bool (*codeindex_impact_terminal_fn)(const char *path, void *user);
+int codeindex_impact_closure_with_terminal(
+    struct codeindex *ci, const char (*changed_files)[256], int n_changed,
+    int max_depth, codeindex_impact_terminal_fn terminal, void *terminal_user,
+    char (*out)[256], int cap, bool *truncated);
+int codeindex_impact_closure_overlay_with_terminal(
+    struct codeindex *ci, const char *root,
+    const char (*changed_files)[256], int n_changed, int max_depth,
+    codeindex_impact_terminal_fn terminal, void *terminal_user,
+    char (*out)[256], int cap, bool *truncated);
+
 /* ── Forward (callee) input-closure query — the content-addressed test cache
  * key input (symmetric mirror of codeindex_impact_closure) ──────────────
  *

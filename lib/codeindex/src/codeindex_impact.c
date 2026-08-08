@@ -234,7 +234,9 @@ static bool ci_closure_seed_file(struct ci_closure_ctx *c, struct codeindex *ci,
 /* Expand one symbol: pull its callers, record their files, queue new callers. */
 static bool ci_closure_expand_symbol(struct ci_closure_ctx *c,
                                      struct codeindex *ci, const char *sym,
-                                     struct ci_strlist *next, bool *truncated)
+                                     struct ci_strlist *next, bool *truncated,
+                                     codeindex_impact_terminal_fn terminal,
+                                     void *terminal_user)
 {
     int nc = codeindex_callers(ci, sym, c->refbuf, CI_CLOSURE_QUERY_BATCH);
     if (nc < 0)
@@ -245,6 +247,8 @@ static bool ci_closure_expand_symbol(struct ci_closure_ctx *c,
     for (int i = 0; i < nc; i++) {
         if (!ci_closure_add_file(c, c->refbuf[i].ref_file, truncated))
             return false;
+        if (terminal && terminal(c->refbuf[i].ref_file, terminal_user))
+            continue;
         const char *caller = c->refbuf[i].enclosing;
         if (!caller[0])
             continue;  /* file-scope reference: file recorded, no symbol to walk */
@@ -292,6 +296,7 @@ static void ci_overlay_ignore_ref(const char *callee, const char *ref_file,
 static int impact_closure_impl(
     struct codeindex *ci, const char *overlay_root,
     const char (*changed_files)[256], int n_changed, int max_depth,
+    codeindex_impact_terminal_fn terminal, void *terminal_user,
     char (*out)[256], int cap, bool *truncated)
 {
     if (truncated) *truncated = false;
@@ -344,7 +349,7 @@ static int impact_closure_impl(
               ci_str_cmp);
         for (size_t i = 0; i < frontier.len; i++) {
             if (!ci_closure_expand_symbol(&c, ci, frontier.items[i], &next,
-                                          truncated))
+                                          truncated, terminal, terminal_user))
                 goto done;
         }
         ci_strlist_free(&frontier);
@@ -386,7 +391,7 @@ int codeindex_impact_closure(struct codeindex *ci,
                              char (*out)[256], int cap, bool *truncated)
 {
     return impact_closure_impl(ci, NULL, changed_files, n_changed, max_depth,
-                               out, cap, truncated);
+                               NULL, NULL, out, cap, truncated);
 }
 
 int codeindex_impact_closure_overlay(
@@ -399,7 +404,34 @@ int codeindex_impact_closure_overlay(
         LOG_ERR("codeindex", "overlay closure root is empty");
     }
     return impact_closure_impl(ci, root, changed_files, n_changed, max_depth,
-                               out, cap, truncated);
+                               NULL, NULL, out, cap, truncated);
+}
+
+int codeindex_impact_closure_with_terminal(
+    struct codeindex *ci, const char (*changed_files)[256], int n_changed,
+    int max_depth, codeindex_impact_terminal_fn terminal, void *terminal_user,
+    char (*out)[256], int cap, bool *truncated)
+{
+    if (!terminal) {
+        if (truncated) *truncated = false;
+        LOG_ERR("codeindex", "terminal closure callback is empty");
+    }
+    return impact_closure_impl(ci, NULL, changed_files, n_changed, max_depth,
+                               terminal, terminal_user, out, cap, truncated);
+}
+
+int codeindex_impact_closure_overlay_with_terminal(
+    struct codeindex *ci, const char *root,
+    const char (*changed_files)[256], int n_changed, int max_depth,
+    codeindex_impact_terminal_fn terminal, void *terminal_user,
+    char (*out)[256], int cap, bool *truncated)
+{
+    if (!root || !root[0] || !terminal) {
+        if (truncated) *truncated = false;
+        LOG_ERR("codeindex", "overlay terminal closure input is empty");
+    }
+    return impact_closure_impl(ci, root, changed_files, n_changed, max_depth,
+                               terminal, terminal_user, out, cap, truncated);
 }
 
 /* ── reverse INCLUDE closure ────────────────────────────────────────────

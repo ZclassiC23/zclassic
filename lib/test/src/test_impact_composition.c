@@ -731,6 +731,16 @@ static int test_ic_dimension_applicability_and_exact_execution(void)
         ASSERT(!zcl_devloop_plan_proof_admissible(&gap, &why));
         ASSERT(strcmp(why, "unmapped-code-change") == 0);
 
+        struct agent_impact_acc executor = {0};
+        (void)agent_impact_apply_shared_rules(
+            "app/services/src/build_fabric_package_executor.c", &executor);
+        ASSERT(executor.shared_rule_hits > 0);
+        bool executor_has_build_proof = false;
+        for (size_t i = 0; i < executor.groups_len; i++)
+            if (strcmp(executor.groups[i], "build_fabric") == 0)
+                executor_has_build_proof = true;
+        ASSERT(executor_has_build_proof);
+
         struct zcl_devloop_plan stale = plan;
         snprintf(stale.path_groups[0], sizeof(stale.path_groups[0]),
                  "missing_catalog_group");

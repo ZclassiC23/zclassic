@@ -2292,6 +2292,22 @@ static bool run_resident_restart_fixture(void)
         strlen(proof.deferred_groups_sha256) != 64)
         goto out;
 
+    struct zcl_devloop_plan overwide = proof_plan;
+    (void)snprintf(overwide.closure_groups[0],
+                   sizeof(overwide.closure_groups[0]), "%s", "wallet");
+    (void)snprintf(overwide.closure_groups[1],
+                   sizeof(overwide.closure_groups[1]), "%s", "net");
+    overwide.closure_groups_len = 2;
+    memset(&proof, 0, sizeof(proof));
+    memset(&process, 0, sizeof(process));
+    if (zcl_devloop_restart_prove_immediate(
+            root, changed, 1, &overwide, &proof, &process,
+            why, sizeof(why)) ||
+        strcmp(why, "affected immediate proof set exceeds resident bound") != 0 ||
+        proof.compiler_processes != 0 || proof.linker_processes != 0 ||
+        proof.test_processes != 0)
+        goto out;
+
     struct zcl_devloop_plan substituted = proof_plan;
     (void)snprintf(substituted.path_groups[0],
                    sizeof(substituted.path_groups[0]), "%s", "json");

@@ -39,6 +39,7 @@
 #define RR_ARG_MAX 512
 #define RR_SOURCE_MAX 32
 #define RR_EXACT_GROUP_MAX 128
+#define RR_IMMEDIATE_GROUP_MAX 32
 
 struct rr_plan {
     char root[PATH_MAX];
@@ -839,6 +840,11 @@ static bool rr_restart_prove(
                            &receipt->deferred_group_count)) {
         rr_why(why, why_len,
                "affected proof plan is incomplete or has no exact groups");
+        return false;
+    }
+    if (immediate_only && receipt->group_count > RR_IMMEDIATE_GROUP_MAX) {
+        rr_why(why, why_len,
+               "affected immediate proof set exceeds resident bound");
         return false;
     }
     rr_sha256_bytes(receipt->groups, strlen(receipt->groups),

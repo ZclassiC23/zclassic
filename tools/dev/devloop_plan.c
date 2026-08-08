@@ -519,6 +519,14 @@ static bool plan_fold_reached_file(struct zcl_devloop_plan *plan,
     return true;
 }
 
+static bool plan_reached_proof_owner(const char *path, void *user)
+{
+    (void)user;
+    struct agent_impact_acc impact = {0};
+    (void)agent_impact_apply_shared_rules(path, &impact);
+    return impact.shared_rule_hits > 0;
+}
+
 static bool plan_add_closure(const char *repo_root,
                              const char *const *files, size_t file_count,
                              struct zcl_devloop_plan *plan, bool snapshot)
@@ -595,12 +603,18 @@ static bool plan_add_closure(const char *repo_root,
         plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC,
                      ZCL_DEVLOOP_DIM_COMPLETE, "");
         bool truncated = false;
+        /* A reached file with an explicit proof-owner rule is the terminal
+         * evidence layer. Record it below, but do not walk back through its
+         * generic caller/dispatcher and select unrelated proof families. An
+         * unowned caller is never a boundary and the graph keeps climbing. */
         int n = plan->closure_snapshot
-            ? codeindex_impact_closure_overlay(
-                ci, root, changed, (int)semantic_count, 0, impacted,
+            ? codeindex_impact_closure_overlay_with_terminal(
+                ci, root, changed, (int)semantic_count, 0,
+                plan_reached_proof_owner, NULL, impacted,
                 ZCL_DEVLOOP_CLOSURE_FILE_CAP, &truncated)
-            : codeindex_impact_closure(
-                ci, changed, (int)semantic_count, 0, impacted,
+            : codeindex_impact_closure_with_terminal(
+                ci, changed, (int)semantic_count, 0,
+                plan_reached_proof_owner, NULL, impacted,
                 ZCL_DEVLOOP_CLOSURE_FILE_CAP, &truncated);
         if (n < 0) {
             plan_dim_set(plan, ZCL_DEVLOOP_DIM_SEMANTIC,

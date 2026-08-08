@@ -72,6 +72,7 @@ classification of every occurrence.
 | P14 content-addressed focused proofs | the resident runner requests the existing per-group cache and accepts a cached result only when `groups_ran + groups_cached` equals the exact selected set. Skip-free executions alone may mint PASS records; the v3 key domain retires older records that could represent self-skips | 124/172 selected group executions were verified cache hits across 9 paths; 48 ran fresh. Frozen replay p50 fell 10.958→8.679 s and p95 15.421→12.163 s; 45/65 weighted occurrences remain trustworthy-green, with 24 compiler, 24 complete-graph linker, 10 test and 14 probe processes and zero Make/shell/LTO | cache accounting is receipt-bound and benchmarked, but **0/65 within 5 s**; per-group timing now identifies `test_zcode_score_receipt` (5–7 s), `test_zcode_dev_objects` (6 s), event-log correctness (6 s) and transaction intent (3–4 s) as the fresh critical groups |
 | P15 parallel score proofs | the seven independent score/package, rejection, creation, patronage, reproduction and shadow contracts are separate exact groups under the existing `zcode_score_receipt` proof family; the full family still runs, but its members execute concurrently instead of serially in one process | the former 5–7 s score group became seven groups whose slowest measured member was reproduction at 3–5 s; frozen p50 fell 8.679→8.143 s and p95 12.163→11.957 s; 45/65 weighted occurrences remain trustworthy-green and zero Make/shell/LTO were invoked | no evidence was removed; **0/65 within 5 s** because cache planning rebuilds the source index for about 3.3 s in every focused-test process before those groups run |
 | P16 resident proof-cache snapshot | the resident proof runner opens the already verified dependency snapshot and supplies every changed translation unit explicitly; a prior group closure that reaches any edit is forced fresh, while an unrelated closure may reuse its exact skip-free PASS. Missing snapshots and invalid or empty changed sets disable reuse rather than rebuilding or guessing | two consecutive frozen replays reported startup around 0.25–0.33 s instead of about 3.3 s. The transition run measured p50 5.592 s / p95 11.487 s; the immediately repeated run measured p50 5.387 s / p95 13.231 s. Both had 133/202 exact group hits across 9 paths, 24 compiler, 24 complete-graph linker, 10 test and 14 probe processes, and zero Make/shell/LTO | trustworthy sub-five-second coverage rose **0/65→10/65 (15.38%)**; 45/65 still produce trustworthy-green feedback. The remaining latency is dominated by fresh group bodies and two complete-graph links per admitted restart path, while 20/65 still fail closed at proof selection |
+| P17 proof-owner terminals | reverse-call selection now records a reached file with an explicit shared impact rule as a terminal proof owner instead of climbing through its generic dispatcher into unrelated suites. Unowned callers still traverse. The package executor gained the missing existing `build_fabric` route, and resident execution refuses more than 32 immediate exact groups before compiling or linking | task-index expansion fell 181→28 groups; vault 100→76; wallet 94→86; package executor became a mapped 23-group plan. Frozen replay completed with p50 5.145 s / p95 12.336 s, 91/164 executed groups served from exact cache across 11 paths, 26 compiler/linker, 12 test and 14 probe processes, and zero Make/shell/LTO | trustworthy-green coverage rose **45/65→54/65** and sub-five-second coverage **10/65→14/65 (21.54%)**. The remaining 11/65 are explicit `affected immediate proof set exceeds resident bound` refusals, not timeouts or silently shortened plans |
 
 The earlier single-island resident microbenchmark measured 227.280 ms p50 and
 232.141 ms p95 on 20 distinct artifacts. That is historical evidence for one
@@ -103,14 +104,12 @@ smuggle release work into a save cycle.
 
 ## Open gates
 
-- Remove the restart replay's dominant proof-selection failures. All 65
-  weighted occurrences terminate with exact receipts and 45 are now
-  trustworthy-green; 10 are below five seconds. Of the remaining 20,
-  11 hit the bounded plan-group cap, 6 have no exact group and 3 are unmapped.
-  Before group reuse, p50 was 10.958 s and p95 was 15.421 s. Snapshot reuse
-  removes the repeated 3.3 s index rebuild and moves 10/65 occurrences under
-  five seconds, but consecutive runs still measured p50 5.592/5.387 s and p95
-  11.487/13.231 s. Source-byte instrumentation also remains open.
+- Bring the remaining broad plans under the resident proof bound without
+  shortening them silently. All 65 weighted occurrences now terminate with
+  exact receipts; 54 are trustworthy-green and 14 are below five seconds.
+  The remaining 11 are two plans with more than 32 immediate exact groups,
+  refused before proof compilation/linking. The current complete replay is
+  p50 5.145 s and p95 12.336 s. Source-byte instrumentation remains open.
 - The pull-verifying P7 pre-push retry visibly invoked `cc -flto=auto` while
   linking `test_parallel_fast`. Reconcile that effective command with the
   non-LTO `INTEGRATION` contract; the current profile-text gate is not enough.
