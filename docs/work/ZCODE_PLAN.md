@@ -1,5 +1,9 @@
 # ZCODE — decentralized C23 source-package hosting (foundation, 2026-07-27)
 
+> User-facing entry point: [`../METAVERSE.md`](../METAVERSE.md); acceptance
+> bar: [`../METAVERSE_MVP.md`](../METAVERSE_MVP.md). This document stays the
+> authoritative maintainer spec.
+
 > **Execution order superseded on 2026-08-01.** Slices 1–13 below are the
 > shipped package-hosting foundation. The unchecked payout slices 14–15 are
 > deliberately not next. Active work is the free P2P agentic C23 development

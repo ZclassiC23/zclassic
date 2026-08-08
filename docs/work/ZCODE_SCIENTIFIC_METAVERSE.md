@@ -1,5 +1,9 @@
 # ZCODE scientific metaverse and proof-of-contribution network
 
+> User-facing entry point: [`../METAVERSE.md`](../METAVERSE.md); acceptance
+> bar: [`../METAVERSE_MVP.md`](../METAVERSE_MVP.md). This document stays the
+> authoritative maintainer spec.
+
 Status: owner-directed implementation plan, 2026-08-02. This plan extends the
 live ZCODE package and agentic-development foundations. It does not displace
 the sovereign-node MVP order in [`FORWARD_PLAN.md`](./FORWARD_PLAN.md), change

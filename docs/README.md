@@ -30,11 +30,18 @@ broken — several things that look broken are intentional or already done.
 > **ZClassic23 is a metaverse where people and AI create real things together,
 > and nobody owns the world they build in.**
 
-[`work/ZC23_LIVING_COMMONS.md`](./work/ZC23_LIVING_COMMONS.md) defines what that
-means mechanically: free public code, factual creation evidence, no
-token-gated access, no ownership or truth authority from balances, and one
-shared API for human and AI contributors. It also separates implemented ZCODE
-surfaces from simulation-only and still-planned ZC23 work.
+Start at [`METAVERSE.md`](./METAVERSE.md) — the user-facing tour, architecture
+map, terminology, and honest status. The acceptance bar and live tracker are
+[`METAVERSE_MVP.md`](./METAVERSE_MVP.md) and `make metaverse-score`. The four
+authoritative specs stay on the maintainer side:
+[`work/ZCODE_PLAN.md`](./work/ZCODE_PLAN.md) (package commons),
+[`work/ZCODE_DEVELOPMENT_NETWORK.md`](./work/ZCODE_DEVELOPMENT_NETWORK.md),
+[`work/ZCODE_SCIENTIFIC_METAVERSE.md`](./work/ZCODE_SCIENTIFIC_METAVERSE.md),
+and [`work/ZC23_LIVING_COMMONS.md`](./work/ZC23_LIVING_COMMONS.md), which
+defines what the mission means mechanically: free public code, factual
+creation evidence, no token-gated access, no ownership or truth authority from
+balances, and one shared API for human and AI contributors. It also separates
+implemented ZCODE surfaces from simulation-only and still-planned ZC23 work.
 
 **`HANDOFF.md` is live state for the maintainer's own hosted node.** Run
 `zclassic23 status` — if it answers, you are on that node and `HANDOFF.md` is

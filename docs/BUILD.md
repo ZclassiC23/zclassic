@@ -480,6 +480,18 @@ Notes:
 - Downloads are cached under `vendor/.cache/` (gitignored); build trees live in
   `vendor/.build/` (removed on a clean full run). To bump a version, edit the
   pinned version + SHA256 in `tools/scripts/build_vendor.sh`.
+- **X11 compile-time headers are vendored, not a system dependency.** The
+  presentation layer (`lib/presentation`) compiles the vendored RGFW single
+  header, which `#include`s `<X11/…>` on Linux even though X11 itself is
+  loaded at *runtime* by the vendored XDL layer (`-ldl`, no link-time
+  `libX11`). The exact 17-header closure those includes need is committed
+  under `vendor/x11/` (X.Org MIT license, verbatim upstream, SHA256-pinned and
+  checked by `make check-vendor-provenance`), and the build adds
+  `-Ivendor/x11/include`. A headless host with **zero** X11 `-dev` packages
+  therefore builds the full binary; only the runtime `libX11.so` matters, and
+  only when a window is actually opened.
+<!-- claim: file-present vendor/x11/SHA256SUMS # vendored X11 header pin -->
+<!-- claim: symbol-present vendor/x11/include Makefile # the include wiring -->
 
 ### Retiring the C++ requirement
 

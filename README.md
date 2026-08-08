@@ -141,6 +141,23 @@ microseconds, and a working TicTacToe as the reference implementation.
 build/bin/zclassic23 core network peers latency
 ```
 
+### Create in the metaverse
+
+The same binary hosts a permissionless creation commons: publish and verify
+C23 packages, hold sovereign property with evidence grades, design signed
+spaces, and browse the ZC23 Living Commons projection — a world where people
+and AI create real things together, and nobody owns the world they build in.
+
+```bash
+build/bin/zclassic23 discover search metaverse      # orient in the command tree
+build/bin/zclassic23 metaverse property list --datadir=/tmp/zcl23-tour
+build/bin/zclassic23 zcode commons status --datadir=/tmp/zcl23-tour
+```
+
+Honest scope: ZC23 patronage today is **simulation-only** — no live token, and
+every live-money path fails closed by design. The tour, the architecture, and
+the truth-about-status page: [`docs/METAVERSE.md`](docs/METAVERSE.md).
+
 ---
 
 ## Getting there

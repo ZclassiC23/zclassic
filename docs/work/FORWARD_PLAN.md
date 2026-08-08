@@ -9,6 +9,13 @@
 > OFF the v1 path. Do NOT jump the queue into it.** It is reference, not the
 > mission.
 
+> **OWNER DIRECTIVE 2026-08-08 — the metaverse lane is OPEN in parallel.**
+> The bar is [`../METAVERSE_MVP.md`](../METAVERSE_MVP.md) (MM1–MM8), the
+> tracker is `make metaverse-score`. This supersedes the "ZCode work stays
+> parked" note in the post-v1 decisions list below for the simulation-only
+> scope defined there: no live ZC23 token, no consensus change, no relaxation
+> of owner-gated deploy/custody rules, and no deprioritization of C3/C5/C6/C8.
+
 ---
 
 ## #1 PRIORITY — win Q1 on a COPY; keep canonical recovery owner-gated
@@ -498,6 +505,10 @@ limiter; parallelizing it is consensus-adjacent and must be copy-proven.
    the headline acceptance test; demote signer quorum to a latency
    optimization. Post-v1 backlog.
 5. Attention: noted — ZCode work stays parked until C3/C5/C6/C8 close.
+   **Superseded 2026-08-08** by the owner directive at the top of this file:
+   the simulation-only metaverse MVP lane ([`../METAVERSE_MVP.md`](../METAVERSE_MVP.md))
+   is open in parallel; live-token and consensus-adjacent ZCode work remains
+   parked.
 
 ### Live-node incident + cure (2026-08-02 08:21-09:34 UTC)
 Cause: the pre-8733cdd88 `--importblockindex` accident opened the canonical

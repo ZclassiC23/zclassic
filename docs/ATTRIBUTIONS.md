@@ -99,6 +99,20 @@ index (with CRC), and application state.
 The private software-window backend for `lib/presentation`. ZClassic23 exposes
 its own bounded bitmap ABI; no RGFW type crosses the public boundary.
 
+## X.Org client headers — X.Org MIT License
+
+**Source:** https://xorg.freedesktop.org/releases/individual/lib/ +
+https://xorg.freedesktop.org/releases/individual/proto/ (verbatim headers as
+packaged by Ubuntu 24.04 `libx11-dev` 2:1.8.7-1build1 + `x11proto-dev`
+2023.2-1)
+**Vendored path:** `vendor/x11/`
+**Attribution:** Copyright © the X.Org Foundation and contributors (see
+`vendor/x11/LICENSE` for the canonical X.Org permission notice)
+
+The 17 compile-time headers RGFW's Linux backend `#include`s. X11 itself is
+loaded at runtime by the vendored XDL layer — these headers exist so a
+headless host with no system `-dev` packages still builds the full binary.
+
 ## QR Code generator 1.8.0 — MIT
 
 **Repository:** https://github.com/nayuki/QR-Code-generator

@@ -1,5 +1,9 @@
 # ZC23 Living Commons
 
+> User-facing entry point: [`../METAVERSE.md`](../METAVERSE.md); acceptance
+> bar: [`../METAVERSE_MVP.md`](../METAVERSE_MVP.md). This document stays the
+> authoritative maintainer spec.
+
 Status: owner-directed specification, 2026-08-06. This document freezes the
 safe pre-genesis policy and implementation order for creation-backed ZC23
 issuance. It authorizes specifications, codecs, validation, rebuildable
