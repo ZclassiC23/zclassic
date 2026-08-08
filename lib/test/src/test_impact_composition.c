@@ -809,6 +809,35 @@ static int test_ic_snapshot_overlays_current_symbols(void)
     return failures;
 }
 
+static bool ic_acc_has_group(const struct agent_impact_acc *acc,
+                             const char *group)
+{
+    for (size_t i = 0; i < acc->groups_len; i++)
+        if (strcmp(acc->groups[i], group) == 0)
+            return true;
+    return false;
+}
+
+static int test_ic_code_capsule_stays_with_code_owner(void)
+{
+    int failures = 0;
+    TEST("impact composition: code capsule proof stays with code commands") {
+        struct agent_impact_acc zcode = {0};
+        (void)agent_impact_apply_shared_rules(
+            "tools/command/native_zcode_dev_command.c", &zcode);
+        ASSERT(ic_acc_has_group(&zcode, "command_registry_catalog"));
+        ASSERT(!ic_acc_has_group(&zcode, "code_capsule"));
+
+        struct agent_impact_acc code = {0};
+        (void)agent_impact_apply_shared_rules(
+            "tools/command/native_code_command.c", &code);
+        ASSERT(ic_acc_has_group(&code, "command_registry_catalog"));
+        ASSERT(ic_acc_has_group(&code, "code_capsule"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_impact_composition(void)
 {
     int failures = 0;
@@ -822,5 +851,6 @@ int test_impact_composition(void)
     failures += test_ic_union_never_loses_a_rule_group();
     failures += test_ic_dimension_applicability_and_exact_execution();
     failures += test_ic_snapshot_overlays_current_symbols();
+    failures += test_ic_code_capsule_stays_with_code_owner();
     return failures;
 }
