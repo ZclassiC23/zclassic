@@ -191,6 +191,12 @@ tools/dev/transaction-micro-lab.sh record \
 ```
 
 `conflicted`, `expired`, and `reorged` are private append-only corrective states.
+A later canonical block-body proof may append `confirmed` after a local
+`conflicted` or `expired` observation for the same txid.  This is a correction
+of incomplete local indexing, not a second broadcast: the earlier observation
+remains in the ledger, the exact txid/fee must match, and the confirming event
+must carry canonical height, block hash, and time.  Future agents must prefer
+that stronger chain evidence and must never edit the older event.
 A recorder override still cannot point inside the repository or weaken the
 operator-owned mode-0600 file requirement, and
 `make check-no-live-lab-history` rejects tracked campaign events or recipient

@@ -364,6 +364,50 @@ int test_wallet_funds_safety(void)
         transaction_free(&tx);
     }
 
+    /* Canonical block evidence must supersede an unconfirmed transaction's
+     * reservation. Rolling back the loser afterward cannot resurrect the
+     * mined note. */
+    {
+        uint8_t ivk_c[32]; memset(ivk_c, 0x88, sizeof(ivk_c));
+        uint8_t nf_c[32]; memset(nf_c, 0x89, sizeof(nf_c));
+        bool ok = wfs_save_note(&ndb, 0x8a, ivk_c, 6000, 200, 0x89);
+        struct transaction losing;
+        struct transaction mined;
+        transaction_init(&losing);
+        transaction_init(&mined);
+        losing.v_shielded_spend = zcl_calloc(
+            1, sizeof(*losing.v_shielded_spend),
+            "wallet_funds_safety.losing_spend");
+        mined.v_shielded_spend = zcl_calloc(
+            1, sizeof(*mined.v_shielded_spend),
+            "wallet_funds_safety.mined_spend");
+        losing.num_shielded_spend = losing.v_shielded_spend ? 1 : 0;
+        mined.num_shielded_spend = mined.v_shielded_spend ? 1 : 0;
+        memset(losing.hash.data, 0x8b, sizeof(losing.hash.data));
+        memset(mined.hash.data, 0x8c, sizeof(mined.hash.data));
+        if (losing.v_shielded_spend)
+            memcpy(losing.v_shielded_spend[0].nullifier.data, nf_c, 32);
+        if (mined.v_shielded_spend)
+            memcpy(mined.v_shielded_spend[0].nullifier.data, nf_c, 32);
+        ok = ok && losing.num_shielded_spend == 1 &&
+            mined.num_shielded_spend == 1 &&
+            node_db_sync_wallet_sapling_spends(&ndb, &losing);
+        WFS_CHECK("unconfirmed shielded transaction reserves its note", ok);
+        ok = ok && node_db_sync_confirmed_sapling_spends(&ndb, &mined);
+        WFS_CHECK("canonical shielded spend supersedes losing reservation", ok);
+        ok = ok && db_sapling_note_release_reservation(
+            &ndb, losing.hash.data);
+        struct db_sapling_note should_be_empty[1];
+        WFS_CHECK("losing rollback cannot resurrect canonically spent note",
+            ok && db_sapling_note_reservation_probe(
+                &ndb, nf_c, mined.hash.data) ==
+                DB_NOTE_RESERVATION_SAME_TX &&
+            db_sapling_note_list_unspent_for_ivk(
+                &ndb, ivk_c, should_be_empty, 1) == 0);
+        transaction_free(&losing);
+        transaction_free(&mined);
+    }
+
     /* Durable compensation deletes an unrelayed wallet transaction through
      * the same serialized node.db write lane used in production. */
     {

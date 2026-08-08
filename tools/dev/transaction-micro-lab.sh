@@ -214,13 +214,23 @@ check_events() {
                     bad("txid reused by slots " txid_owner[txid] " and " slot)
                 txid_owner[txid]=slot; first_txid[slot]=txid; first_fee[slot]=fee
             }
-            if (closed[slot]) bad("event follows terminal failure for slot " slot)
+            # A local node can lose transaction-index/wallet projection
+            # coverage while the canonical block body still proves that the
+            # exact tx mined.  Keep the ledger append-only and allow that
+            # stronger evidence to correct an earlier expired/conflicted
+            # observation.  Every other post-terminal transition remains
+            # invalid.
+            if (closed[slot] && state != "confirmed")
+                bad("event follows terminal failure for slot " slot)
             if (state == "conflicted" || state == "expired") closed[slot]=1
             if (state == "reorged" && last_state[slot] != "confirmed")
                 bad("reorged must follow confirmed for slot " slot)
             if (state == "confirmed" && last_state[slot] != "broadcast" &&
-                last_state[slot] != "reorged")
-                bad("confirmed must follow broadcast or reorged for slot " slot)
+                last_state[slot] != "reorged" &&
+                last_state[slot] != "conflicted" &&
+                last_state[slot] != "expired")
+                bad("confirmed must follow broadcast, reorged, or a corrected local terminal observation for slot " slot)
+            if (state == "confirmed") closed[slot]=0
             if ((state == "conflicted" || state == "expired") &&
                 last_state[slot] != "broadcast" && last_state[slot] != "reorged")
                 bad(state " must follow broadcast or reorged for slot " slot)
@@ -417,15 +427,35 @@ selftest() {
         --block-hash=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd >/dev/null
     output="$(ZCL_TRANSACTION_MICRO_LEDGER="$fixture_ledger" "$0" status)"
     [[ "$output" == *'avg_confirmation_seconds=180'* ]] || die "selftest did not reconcile reorg"
-    if ZCL_TRANSACTION_MICRO_LEDGER="$fixture_ledger" "$0" record \
+
+    # A canonical block-body proof may correct an earlier local expiry.  The
+    # correction is a new append-only event; the old observation is retained.
+    ZCL_TRANSACTION_MICRO_LEDGER="$fixture_ledger" "$0" record \
         --slot=2 --state=broadcast \
+        --txid=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+        --fee-zat=10000 --broadcast-unix=1000 >/dev/null
+    ZCL_TRANSACTION_MICRO_LEDGER="$fixture_ledger" "$0" record \
+        --slot=2 --state=expired \
+        --txid=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+        --fee-zat=10000 --broadcast-unix=1000 >/dev/null
+    ZCL_TRANSACTION_MICRO_LEDGER="$fixture_ledger" "$0" record \
+        --slot=2 --state=confirmed \
+        --txid=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+        --fee-zat=10000 --broadcast-unix=1000 --confirmed-unix=1190 \
+        --block-height=123458 \
+        --block-hash=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee >/dev/null
+    output="$(ZCL_TRANSACTION_MICRO_LEDGER="$fixture_ledger" "$0" status)"
+    [[ "$output" == *'2/100 transactions'* ]] ||
+        die "selftest did not accept canonical correction after local expiry"
+    if ZCL_TRANSACTION_MICRO_LEDGER="$fixture_ledger" "$0" record \
+        --slot=3 --state=broadcast \
         --txid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
         --fee-zat=10000 --broadcast-unix=1001 >/dev/null 2>&1; then
         die "selftest accepted a txid reused by two slots"
     fi
     if ZCL_TRANSACTION_MICRO_LEDGER="$fixture_ledger" "$0" record \
-        --slot=2 --state=broadcast \
-        --txid=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+        --slot=3 --state=broadcast \
+        --txid=ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff \
         --fee-zat=10001 --broadcast-unix=1001 >/dev/null 2>&1; then
         die "selftest accepted a fee different from the checked campaign fee"
     fi

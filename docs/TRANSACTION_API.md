@@ -358,6 +358,18 @@ Once the next-block height is beyond those exact bytes' consensus expiry, the
 status reconciler marks `TX_EXPIRED_UNCONFIRMED`, removes the stale wallet
 transaction, and releases only that txid's note reservations. A later payment
 must use a fresh plan and receives a new transaction ID.
+For a fully shielded transaction, wallet history and txindex are not sufficient
+confirmation authorities: either projection may lag or omit a transaction with
+no transparent inputs or outputs. Before applying expiry, the reconciler looks
+up the exact durable transaction's Sapling nullifiers in the canonical
+nullifier set, reads the active block at the revealed height, and requires the
+exact txid in that block body. Exact body evidence corrects an earlier local
+`expired` or `conflicted` observation to `confirmed`/`finalized` and atomically
+restores the wallet notes to canonically spent. A matching nullifier without
+the exact transaction body is `SHIELDED_NULLIFIER_CONFLICT`; the losing local
+transaction is rolled back before its reservation is released. Unavailable,
+non-canonical, or incomplete evidence leaves the prior state and reservation
+fail-closed—it is never interpreted as zero, expiry, or confirmation.
 Before retrying, a read-only reservation probe must identify every shielded
 nullifier as an available wallet note or an idempotent reservation by that same
 transaction. A missing nullifier becomes `PREPARED_NOTE_MISMATCH`; a note owned
