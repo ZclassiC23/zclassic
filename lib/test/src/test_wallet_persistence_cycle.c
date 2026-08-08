@@ -574,6 +574,60 @@ static int test_read_single_key_not_found(void)
     return failures;
 }
 
+static int test_transaction_flush_skips_key_rewrite(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: transaction-only flush leaves durable keys untouched") {
+        clear_passphrase();
+        sqlite3 *db = open_fixture_db(":memory:", true);
+        ASSERT(db);
+
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open_r(&ws, db).ok);
+        struct wallet *w = alloc_wallet();
+        ASSERT(w);
+
+        struct privkey key;
+        struct pubkey pk;
+        make_test_key(&key, &pk, 0x6D);
+        ASSERT(keystore_add_key(&w->keystore, &key));
+        ASSERT(wallet_sqlite_flush_r(&ws, w).ok);
+
+        /* Any attempt to replay the immutable key INSERT now aborts.  The hot
+         * transaction durability path must still commit its wallet tx. */
+        ASSERT(sqlite3_exec(db,
+            "CREATE TRIGGER reject_key_rewrite BEFORE INSERT ON wallet_keys "
+            "BEGIN SELECT RAISE(ABORT,'key rewrite'); END",
+            NULL, NULL, NULL) == SQLITE_OK);
+        struct wallet_tx *wtx = &w->map_wallet[0];
+        memset(wtx, 0, sizeof(*wtx));
+        transaction_init(&wtx->tx);
+        wtx->tx.hash.data[0] = 0xA5;
+        wtx->time_received = 1713000000;
+        wtx->from_me = true;
+        wtx->used = true;
+        w->num_wallet_tx = 1;
+
+        ASSERT(wallet_sqlite_flush_transactions_r(&ws, w).ok);
+        sqlite3_stmt *count = NULL;
+        ASSERT(sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM wallet_transactions", -1,
+            &count, NULL) == SQLITE_OK);
+        ASSERT(AR_STEP_ROW_READONLY(count) == SQLITE_ROW);
+        ASSERT(sqlite3_column_int(count, 0) == 1);
+        sqlite3_finalize(count);
+
+        /* Prove the trigger was armed rather than silently ineffective. */
+        ASSERT(!wallet_sqlite_flush_r(&ws, w).ok);
+
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        free_wallet(w);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_delete_key_roundtrip(void)
 {
     int failures = 0;
@@ -776,6 +830,7 @@ int test_wallet_persistence_cycle(void)
     failures += test_flush_retries_under_same_connection_tx();
     failures += test_flush_waits_out_transient_lock();
     failures += test_flush_resets_cached_read_cursors();
+    failures += test_transaction_flush_skips_key_rewrite();
     failures += test_read_single_key_not_found();
     failures += test_delete_key_roundtrip();
     failures += test_write_key_invariants();

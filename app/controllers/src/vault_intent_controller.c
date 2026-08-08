@@ -583,11 +583,12 @@ static bool vi_build_prepared(struct wallet_rpc_context *ctx,
             outputs, p.effects_len, wtx, &fee, &why) || fee != p.fee) {
         vi_error(result, "EXACT_BUILD_FAILED", why ? why : "fee changed since planning"); return false;
     }
-    struct zcl_result flushed = wallet_flush_from_context(ctx);
-    if (!flushed.ok) {
-        transaction_free(&wtx->tx);
-        vi_error(result, "CHANGE_KEY_PERSIST_FAILED", flushed.message); return false;
-    }
+    /* wallet_create_transaction_selected() can consume only a keypool entry
+     * whose private key was durably flushed before it became eligible.  No
+     * new key material is created here, so a full all-key re-encryption is
+     * neither a durability boundary nor part of the plan hot path.  The new
+     * wallet transaction itself is persisted before relay by
+     * wallet_persist_commit_before_relay(). */
     struct byte_stream s; stream_init(&s, 1024);
     bool saved = transaction_serialize(&wtx->tx, &s) &&
         s.size <= VAULT_INTENT_RAW_MAX &&

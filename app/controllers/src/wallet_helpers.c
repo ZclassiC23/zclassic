@@ -26,6 +26,7 @@ struct wallet_rpc_context g_wallet_ctx = {0};
 struct wallet_flush_lane_ctx {
     struct wallet_sqlite *wallet_db;
     struct wallet *wallet;
+    bool transactions_only;
     struct zcl_result result;
 };
 
@@ -43,7 +44,9 @@ static bool wallet_flush_lane_write(struct node_db *ndb, void *opaque)
             "wallet flush lane: pending node.db batch commit failed");
         LOG_FAIL("wallet", "%s", flush->result.message);
     }
-    flush->result = wallet_sqlite_flush_r(flush->wallet_db, flush->wallet);
+    flush->result = flush->transactions_only
+        ? wallet_sqlite_flush_transactions_r(flush->wallet_db, flush->wallet)
+        : wallet_sqlite_flush_r(flush->wallet_db, flush->wallet);
     if (!flush->result.ok)
         LOG_FAIL("wallet", "wallet flush lane failed (code=%d): %s",
                  flush->result.code, flush->result.message);
@@ -64,8 +67,8 @@ struct zcl_result wallet_commit_from_context(
     return wallet_commit_transaction(ctx->wallet, wtx, &admission);
 }
 
-struct zcl_result wallet_flush_from_context(
-    const struct wallet_rpc_context *ctx)
+static struct zcl_result wallet_flush_scope_from_context(
+    const struct wallet_rpc_context *ctx, bool transactions_only)
 {
     if (!ctx || !ctx->wallet)
         return ZCL_ERR(-1, "wallet flush: incomplete context");
@@ -75,6 +78,7 @@ struct zcl_result wallet_flush_from_context(
     struct wallet_flush_lane_ctx flush = {
         .wallet_db = ctx->wallet_db,
         .wallet = ctx->wallet,
+        .transactions_only = transactions_only,
         .result = ZCL_ERR(-1, "wallet flush lane did not run"),
     };
     struct db_service *dbsvc = app_runtime_db_service();
@@ -90,6 +94,12 @@ struct zcl_result wallet_flush_from_context(
     return flush.result;
 }
 
+struct zcl_result wallet_flush_from_context(
+    const struct wallet_rpc_context *ctx)
+{
+    return wallet_flush_scope_from_context(ctx, false);
+}
+
 struct zcl_result wallet_persist_commit_before_relay(
     const struct wallet_rpc_context *ctx, const struct wallet_tx *wtx)
 {
@@ -99,7 +109,11 @@ struct zcl_result wallet_persist_commit_before_relay(
     if (!ctx->wallet_db)
         return ZCL_OK;
 
-    struct zcl_result flushed = wallet_flush_from_context(ctx);
+    /* Transaction construction consumes only already-persisted keypool
+     * entries.  The pre-relay durability boundary therefore persists the
+     * newly admitted wallet transaction without re-encrypting every immutable
+     * key, seed, and script on each payment. */
+    struct zcl_result flushed = wallet_flush_scope_from_context(ctx, true);
     if (flushed.ok)
         return ZCL_OK;
 
