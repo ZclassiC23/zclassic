@@ -2149,13 +2149,19 @@ static bool run_resident_restart_fixture(void)
         "[ -n \"$out\" ]\n"
         "if [ \"$compile\" -eq 1 ]; then\n"
         "  printf 'restart-object-v1\\n' >\"$out\"\n"
-        "  printf '%s: app/services/src/restart_fixture.c\\n' \"$out\" >\"$dep\"\n"
+        "  printf '%s: tools/dev/restart_fixture.c\\n' \"$out\" >\"$dep\"\n"
         "else\n"
         "  [ -n \"$rsp\" ]\n"
-        "  grep -q 'build/dev-loop/restart-objects/app/services/src/restart_fixture.o' \"$rsp\"\n"
-        "  ! grep -q 'build/dev-obj/fixture/app/services/src/restart_fixture.o' \"$rsp\"\n"
-        "  grep -q 'build/dev-obj/fixture/lib/base/src/other.o' \"$rsp\"\n"
-        "  printf '#!/usr/bin/env bash\\nexit 0\\n' >\"$out\"\n"
+        "  if grep -q 'restart-test-objects' \"$rsp\"; then\n"
+        "    grep -q 'build/dev-loop/restart-test-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "    ! grep -q 'build/test-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "    printf '#!/usr/bin/env bash\\nprintf \"SUITE VERDICT mode=cold groups_total=913 groups_ran=18 groups_cached=0 groups_gated=895 groups_failed=0 self_skips=0\\n\"\\nexit 0\\n' >\"$out\"\n"
+        "  else\n"
+        "    grep -q 'build/dev-loop/restart-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "    ! grep -q 'build/dev-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "    grep -q 'build/dev-obj/fixture/lib/base/src/other.o' \"$rsp\"\n"
+        "    printf '#!/usr/bin/env bash\\nexit 0\\n' >\"$out\"\n"
+        "  fi\n"
         "  chmod 0700 \"$out\"\n"
         "fi\n";
     bool ok = false;
@@ -2174,20 +2180,27 @@ static bool run_resident_restart_fixture(void)
         !dp_mk_write(".", compiler_rel, fake_compiler) ||
         chmod(compiler_rel, 0700) != 0 ||
         !dp_mk_write(root, "Makefile", "# fixture\n") ||
-        !dp_mk_write(root, "app/services/src/restart_fixture.c",
+        !dp_mk_write(root, "tools/dev/restart_fixture.c",
                      "int restart_fixture(void) { return 7; }\n") ||
-        !dp_mk_write(root, "app/services/src/restart_second.c",
+        !dp_mk_write(root, "tools/dev/restart_second.c",
                      "int restart_second(void) { return 8; }\n") ||
         !dp_mk_write(root,
-                     "build/dev-obj/fixture/app/services/src/restart_fixture.o",
+                     "build/dev-obj/fixture/tools/dev/restart_fixture.o",
                      "old-object\n") ||
         !dp_mk_write(root,
-                     "build/dev-obj/fixture/app/services/src/restart_second.o",
+                     "build/dev-obj/fixture/tools/dev/restart_second.o",
                      "old-second-object\n") ||
         !dp_mk_write(root, "build/dev-obj/fixture/lib/base/src/other.o",
                      "other-object\n") ||
         !dp_mk_write(root, "build/dev-obj/fixture/link-inputs.rsp",
-                     "build/dev-obj/fixture/app/services/src/restart_fixture.o build/dev-obj/fixture/app/services/src/restart_second.o build/dev-obj/fixture/lib/base/src/other.o\n"))
+                     "build/dev-obj/fixture/tools/dev/restart_fixture.o build/dev-obj/fixture/tools/dev/restart_second.o build/dev-obj/fixture/lib/base/src/other.o\n") ||
+        !dp_mk_write(root,
+                     "build/test-obj/fixture/tools/dev/restart_fixture.o",
+                     "old-test-object\n") ||
+        !dp_mk_write(root, "build/test-obj/fixture/lib/base/src/other.o",
+                     "other-test-object\n") ||
+        !dp_mk_write(root, "build/test-obj/fixture/link-inputs.rsp",
+                     "build/test-obj/fixture/tools/dev/restart_fixture.o build/test-obj/fixture/lib/base/src/other.o\n"))
         goto out;
     int n = snprintf(
         plan, sizeof(plan),
@@ -2198,14 +2211,19 @@ static bool run_resident_restart_fixture(void)
         "DEV_LDFLAGS=-pthread\n"
         "DEV_LIBS=-lm\n"
         "DEV_OBJ_DIR=build/dev-obj/fixture\n"
-        "DEV_LINK_RSP=build/dev-obj/fixture/link-inputs.rsp\n",
+        "DEV_LINK_RSP=build/dev-obj/fixture/link-inputs.rsp\n"
+        "TEST_CFLAGS=-DZCL_TESTING\n"
+        "TEST_LDFLAGS=-pthread\n"
+        "TEST_LIBS=-lm\n"
+        "TEST_OBJ_DIR=build/test-obj/fixture\n"
+        "TEST_LINK_RSP=build/test-obj/fixture/link-inputs.rsp\n",
         compiler);
     if (n <= 0 || n >= (int)sizeof(plan) ||
         !dp_mk_write(root, "build/dev-loop/restart.env", plan) ||
         setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0)
         goto out;
 
-    const char *changed[] = { "app/services/src/restart_fixture.c" };
+    const char *changed[] = { "tools/dev/restart_fixture.c" };
     struct zcl_devloop_restart_build_receipt receipt = {0};
     struct zcl_devloop_process_result process = {0};
     char why[256] = {0};
@@ -2218,10 +2236,39 @@ static bool run_resident_restart_fixture(void)
         strlen(receipt.artifact_sha256) != 64)
         goto out;
 
+    struct zcl_devloop_plan proof_plan = {0};
+    if (!zcl_devloop_plan_files(changed, 1, &proof_plan))
+        goto out;
+    for (size_t d = 0; d < ZCL_DEVLOOP_DIM__COUNT; d++)
+        proof_plan.dims[d].status = ZCL_DEVLOOP_DIM_NOT_APPLICABLE;
+    struct zcl_devloop_restart_proof_receipt proof = {0};
+    if (!zcl_devloop_restart_prove(root, changed, 1, &proof_plan, &proof,
+                                   &process, why, sizeof(why)) ||
+        !proof.proof_complete || proof.group_count != 18 ||
+        !strstr(proof.groups, "test_dev_platform") ||
+        !strstr(proof.groups, "test_make_lint_gates_heavy_02") ||
+        proof.compiler_processes != 1 || proof.linker_processes != 1 ||
+        proof.test_processes != 1 || strlen(proof.artifact_sha256) != 64 ||
+        strlen(proof.groups_sha256) != 64)
+        goto out;
+
+    struct zcl_devloop_plan substituted = proof_plan;
+    (void)snprintf(substituted.path_groups[0],
+                   sizeof(substituted.path_groups[0]), "%s", "json");
+    memset(&proof, 0, sizeof(proof));
+    memset(&process, 0, sizeof(process));
+    if (zcl_devloop_restart_prove(root, changed, 1, &substituted, &proof,
+                                  &process, why, sizeof(why)) ||
+        strcmp(why,
+               "affected proof plan does not match the changed source set") != 0 ||
+        proof.compiler_processes != 0 || proof.linker_processes != 0 ||
+        proof.test_processes != 0)
+        goto out;
+
     /* A later edit links both its new overlay and the prior source's still
      * exact overlay. The fake linker always requires the first overlay, so
      * this second call fails if the resident forgets earlier direct edits. */
-    const char *second[] = { "app/services/src/restart_second.c" };
+    const char *second[] = { "tools/dev/restart_second.c" };
     memset(&receipt, 0, sizeof(receipt));
     if (!zcl_devloop_restart_build(root, second, 1, &receipt, &process,
                                    why, sizeof(why)) ||

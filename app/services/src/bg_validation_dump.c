@@ -10,7 +10,8 @@
  * E1 file-size ceiling. See CLAUDE.md "Adding state introspection".
  *
  * Reads only the public surface: the global service handle g_bg_validation,
- * the lock-free progress snapshot accessor, and the state-name helper. */
+ * the lock-free progress snapshot accessor, and the state-name helper. It
+ * never changes validation state or advances an authority cursor. */
 
 #include "services/bg_validation_service.h"
 

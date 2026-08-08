@@ -281,20 +281,45 @@ rechecks the source CAS, and runs `discover help` as a five-second
 command-runtime probe. The resident owner starts only compiler, linker, and
 candidate children: it starts no Make process or shell.
 
-The result is intentionally a **candidate**, not proof or publication. Its
-cycle reports `status=candidate_ready`, `phase=command_runtime_probe`,
-`runtime_published=false`, and `proof_complete=false`; the content-addressed
-executable stays under the worktree build directory. No node is restarted.
-Headers, build-graph changes, consensus-risk inputs, oversized batches, and
-anything outside the frozen plan stay on the conservative path. A later slice
-must run the mapped proof graph inside the same resident authority before a
-candidate can become eligible for isolated runtime replacement.
+Candidate health is not publication. After the command-runtime probe, the
+same resident owner derives the complete existing proof plan, refuses an
+incomplete dependency dimension or substituted path floor, expands plan
+families to canonical exact test IDs, compiles the changed units under the
+frozen non-LTO test profile, and directly links a content-addressed test
+artifact from those bytes. The test runner is invoked with caching disabled;
+its cold suite summary must account for every selected group with zero
+failures and zero self-skips. Large-stack fixtures inherit the test profile's
+hard stack limit directly in the child—no `ulimit` shell wrapper. The durable
+receipt carries the exact-group count and selector SHA-256; `dev.test.plan`
+re-derives the inspectable list.
 
-On this host, one real watcher event for
+A complete run reports `status=proof_ready`, `phase=affected_proofs`, and
+`proof_complete=true`. Even then `runtime_published=false`: the
+content-addressed executables stay under the worktree build directory and no
+node is restarted. Headers, build-graph changes, consensus-risk inputs,
+oversized batches, and anything outside the frozen plan stay on the
+conservative path.
+
+On this host, the first candidate-only watcher event for
 `tools/dev/devloop_restart_build.c` took 1.993 seconds end to end: 168 ms
-compile, 1.416 seconds link, and 70 ms candidate probe, with one compiler, one
-linker, one candidate, zero Make/shell/LTO processes, and no datadir, port, or
-service access. A separately audited isolated regtest launch took 11.054
+compile, 1.416 seconds link, and 70 ms candidate probe. The first complete
+resident proof, for `app/services/src/bg_validation_dump.c`, took 73.150
+seconds: the process candidate took 2.649 seconds, the proof artifact took
+2.078 seconds to compile/link, and 21 cold mapped groups took 63.412 seconds.
+Every group passed with zero self-skips. This misses the five-second proof
+target because the selected `make_lint_gates` heavy family dominates; compiler
+and linker latency is no longer the limiting stage.
+
+One closure remains explicitly incomplete: tooling edits that select
+`code_capsule` can reach an otherwise unchanged `clientversion` object whose
+embedded source identity belongs to the setup epoch. The resident refuses that
+stale identity instead of blessing it. Rebuilding that generated identity in
+the resident proof epoch is required before this edit class can report
+`proof_complete=true`.
+
+The candidate build used one compiler, one linker, one candidate, zero
+Make/shell/LTO processes, and no datadir, port, or service access. A separately
+audited isolated regtest launch took 11.054
 seconds cold and 11.204 seconds after a crash; graceful shutdown did not drain
 within ten seconds. That full-node path therefore does **not** satisfy the
 five-second restart target and is not used by the watcher.

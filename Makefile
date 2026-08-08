@@ -162,8 +162,10 @@ else ifeq ($(words $(MAKECMDGOALS)),1)
 ZCL_EPOCH_SINGLE_GOAL := $(firstword $(MAKECMDGOALS))
 ifneq ($(filter build-only,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := build-only
-else ifneq ($(filter fast-compile dev-build-only dev-bin zclassic23-dev,$(ZCL_EPOCH_SINGLE_GOAL)),)
+else ifneq ($(filter fast-compile dev-build-only,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := dev
+else ifneq ($(filter dev-bin zclassic23-dev,$(ZCL_EPOCH_SINGLE_GOAL)),)
+ZCL_EPOCH_PROFILES := dev test-fast
 else ifneq ($(filter t-fast t-fast-exact test_parallel_fast test-parallel-fast-active,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := test-fast
 else ifneq ($(filter t test test_parallel test-parallel test-parallel-active,$(ZCL_EPOCH_SINGLE_GOAL)),)
@@ -898,8 +900,10 @@ else ifeq ($(words $(MAKECMDGOALS)),1)
 ZCL_DEPFILE_SINGLE_GOAL := $(firstword $(MAKECMDGOALS))
 ifneq ($(filter build-only,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := build-only
-else ifneq ($(filter fast-compile dev-build-only dev-bin zclassic23-dev,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+else ifneq ($(filter fast-compile dev-build-only,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev
+else ifneq ($(filter dev-bin zclassic23-dev,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+ZCL_DEPFILE_PROFILES := dev test-fast
 else ifneq ($(filter t-fast t-fast-exact test_parallel_fast test-parallel-fast-active,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-fast
 else ifneq ($(filter t test test_parallel test-parallel test-parallel-active,$(ZCL_DEPFILE_SINGLE_GOAL)),)
@@ -2340,7 +2344,8 @@ DEV_LINK_RSP = $(DEV_OBJ_DIR)/link-inputs.rsp
 $(DEV_LINK_RSP): $(DEV_OBJS)
 	@$(file >$@,$(DEV_OBJS)) test -s "$@"
 
-$(DEV_RESTART_PLAN): $(DEV_OBJ_COMPLETE) $(DEV_LINK_RSP) Makefile FORCE
+$(DEV_RESTART_PLAN): $(DEV_OBJ_COMPLETE) $(DEV_LINK_RSP) \
+		$(TEST_PARALLEL_FAST_LINK_RSP) Makefile FORCE
 	@set -eu; \
 	mkdir -p "$(dir $@)"; \
 	tmp="$$(mktemp "$(dir $@).restart.XXXXXX")"; \
@@ -2354,6 +2359,11 @@ $(DEV_RESTART_PLAN): $(DEV_OBJ_COMPLETE) $(DEV_LINK_RSP) Makefile FORCE
 	  printf 'DEV_LIBS=%s\n' '$(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)'; \
 	  printf 'DEV_OBJ_DIR=%s\n' '$(DEV_OBJ_DIR)'; \
 	  printf 'DEV_LINK_RSP=%s\n' '$(DEV_LINK_RSP)'; \
+	  printf 'TEST_CFLAGS=%s\n' '$(TEST_FAST_CFLAGS)'; \
+	  printf 'TEST_LDFLAGS=%s\n' '$(TEST_FAST_LDFLAGS)'; \
+	  printf 'TEST_LIBS=%s\n' '$(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)'; \
+	  printf 'TEST_OBJ_DIR=%s\n' '$(TEST_FAST_OBJ_DIR)'; \
+	  printf 'TEST_LINK_RSP=%s\n' '$(TEST_PARALLEL_FAST_LINK_RSP)'; \
 	} >"$$tmp"; \
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM

@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -60,6 +61,7 @@ static void drain_output(int fd, struct zcl_devloop_process_result *out)
 
 static bool process_run_impl(const char *cwd, int exec_fd,
                              const char *const argv[], int timeout_ms,
+                             bool raise_stack,
                              struct zcl_devloop_process_result *out)
 {
     if (!cwd || !cwd[0] || !argv || !argv[0] || !out || timeout_ms <= 0) {
@@ -71,6 +73,7 @@ static bool process_run_impl(const char *cwd, int exec_fd,
 
 #if !defined(ZCL_DEV_BUILD) && !defined(ZCL_TESTING)
     (void)exec_fd;
+    (void)raise_stack;
     fprintf(stderr, "[devloop] process execution is disabled outside a dev build\n");
     return false;
 #else
@@ -105,6 +108,16 @@ static bool process_run_impl(const char *cwd, int exec_fd,
     if (pid == 0) {
         (void)setpgid(0, 0);
         close(fds[0]);
+        if (raise_stack) {
+            struct rlimit limit;
+            if (getrlimit(RLIMIT_STACK, &limit) != 0)
+                _exit(126);
+            if (limit.rlim_cur != limit.rlim_max) {
+                limit.rlim_cur = limit.rlim_max;
+                if (setrlimit(RLIMIT_STACK, &limit) != 0)
+                    _exit(126);
+            }
+        }
         if (chdir(cwd) != 0)
             _exit(126);
         if (dup2(fds[1], STDOUT_FILENO) < 0 ||
@@ -180,7 +193,14 @@ bool zcl_devloop_process_run(const char *cwd,
                              int timeout_ms,
                              struct zcl_devloop_process_result *out)
 {
-    return process_run_impl(cwd, -1, argv, timeout_ms, out);
+    return process_run_impl(cwd, -1, argv, timeout_ms, false, out);
+}
+
+bool zcl_devloop_process_run_test(const char *cwd,
+                                  const char *const argv[], int timeout_ms,
+                                  struct zcl_devloop_process_result *out)
+{
+    return process_run_impl(cwd, -1, argv, timeout_ms, true, out);
 }
 
 bool zcl_devloop_process_run_fd(const char *cwd, int exec_fd,
@@ -191,5 +211,5 @@ bool zcl_devloop_process_run_fd(const char *cwd, int exec_fd,
         fprintf(stderr, "[devloop] process: invalid executable fd\n");
         return false;
     }
-    return process_run_impl(cwd, exec_fd, argv, timeout_ms, out);
+    return process_run_impl(cwd, exec_fd, argv, timeout_ms, false, out);
 }

@@ -59,6 +59,7 @@ classification of every occurrence.
 | P1 profiles | unchanged | `DEV_LIVE`, `DEV_RESTART`, and `INTEGRATION` contain no LTO; `RELEASE` retains LTO | `make check-dev-loop-profiles` PASS |
 | P2 exact artifact cache | unchanged | isolated miss → hit → edit miss → revert hit → second-worktree hit; hits report 0 compiler and 0 linker processes | `test_dev_platform` cold PASS; frozen 100-commit benchmark re-derived unchanged |
 | P3 resident restart candidate | bounded non-consensus `.c` edits outside live islands now receive isolated candidate feedback; mapped-proof coverage is not yet claimed | one real watcher edit: 1.993 s total = 168 ms compile + 1.416 s link + 70 ms probe; 1 compiler, 1 linker, 1 candidate; 0 Make/shell/LTO/datadir/port/service processes | `candidate_ready`; `runtime_published=false`; `proof_complete=false` |
+| P4 resident affected proof | bounded non-consensus `.c` candidates now relink the exact changed bytes into the existing fast-test graph and execute the complete canonical exact-group expansion cold | `bg_validation_dump.c`: 2.649 s candidate + 2.078 s proof compile/link + 63.412 s for 21 groups = 73.150 s total; zero failures/skips | `proof_ready`; `proof_complete=true`; `runtime_published=false`; five-second proof target MISSED |
 
 The earlier single-island resident microbenchmark measured 227.280 ms p50 and
 232.141 ms p95 on 20 distinct artifacts. That is historical evidence for one
@@ -92,8 +93,13 @@ smuggle release work into a save cycle.
 
 - Replay the representative benchmark and establish p50/p95 plus process and
   byte counts.
-- Execute the affected test graph inside the resident authority and keep
-  `proof_complete=false` until every mapped proof is present and green.
+- Separate immediate behavior proofs from the integration-only policy family
+  without weakening either. The current `make_lint_gates` expansion includes
+  two 24–64 second hermetic groups and dominates the green P4 receipt.
+- Rebuild the generated source-identity object inside the resident proof epoch.
+  Tooling edits whose closure reaches `code_capsule` currently fail closed
+  because the otherwise unchanged `clientversion` object still binds the
+  setup epoch; no proof-complete claim is made for that class yet.
 - Replace an isolated runtime only after that proof layer exists; the measured
   full-node launch is currently too slow for the five-second target.
 - Bring at least 95% of non-forbidden edits under five seconds by live reload

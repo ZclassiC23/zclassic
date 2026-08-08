@@ -3,13 +3,15 @@
  * Resident DEV_RESTART builder. Make freezes the compiler/link action once;
  * the watcher compiles only changed C translation units, substitutes their
  * objects into the complete static-dev link response, links directly, and
- * executes one bounded command-runtime probe. Every candidate is explicitly
- * incomplete until mapped proofs run. It never starts Make or a shell and
+ * executes one bounded command-runtime probe. The same owner then links an
+ * exact-source test candidate and runs the complete affected proof set cold,
+ * without accepting cached verdicts. It never starts Make or a shell and
  * never publishes to a service, datadir, wallet, or release path.
  */
 
 #define _GNU_SOURCE
 #include "devloop.h"
+#include "test_group_catalog.h"
 
 #include "base/hex.h"
 #include "crypto/sha256.h"
@@ -35,6 +37,7 @@
 #define RR_TEXT_MAX 16384
 #define RR_ARG_MAX 512
 #define RR_SOURCE_MAX 32
+#define RR_EXACT_GROUP_MAX 128
 
 struct rr_plan {
     char root[PATH_MAX];
@@ -46,6 +49,11 @@ struct rr_plan {
     char libs[4096];
     char obj_dir[PATH_MAX];
     char link_rsp[PATH_MAX];
+    char test_cflags[RR_TEXT_MAX];
+    char test_ldflags[4096];
+    char test_libs[4096];
+    char test_obj_dir[PATH_MAX];
+    char test_link_rsp[PATH_MAX];
     struct stat stamp;
     bool loaded;
 };
@@ -210,7 +218,17 @@ static bool rr_plan_load_locked(const char *root, struct rr_plan *out,
             rr_line(next.obj_dir, sizeof(next.obj_dir), line,
                     "DEV_OBJ_DIR=") ||
             rr_line(next.link_rsp, sizeof(next.link_rsp), line,
-                    "DEV_LINK_RSP="))
+                    "DEV_LINK_RSP=") ||
+            rr_line(next.test_cflags, sizeof(next.test_cflags), line,
+                    "TEST_CFLAGS=") ||
+            rr_line(next.test_ldflags, sizeof(next.test_ldflags), line,
+                    "TEST_LDFLAGS=") ||
+            rr_line(next.test_libs, sizeof(next.test_libs), line,
+                    "TEST_LIBS=") ||
+            rr_line(next.test_obj_dir, sizeof(next.test_obj_dir), line,
+                    "TEST_OBJ_DIR=") ||
+            rr_line(next.test_link_rsp, sizeof(next.test_link_rsp), line,
+                    "TEST_LINK_RSP="))
             continue;
         fclose(f);
         rr_why(why, why_len, "restart action plan has an unknown field");
@@ -219,20 +237,31 @@ static bool rr_plan_load_locked(const char *root, struct rr_plan *out,
     bool read_error = ferror(f) != 0;
     fclose(f);
     char obj_full[PATH_MAX], rsp_full[PATH_MAX];
+    char test_obj_full[PATH_MAX], test_rsp_full[PATH_MAX];
     if (read_error || !next.cc[0] || !rr_hex64(next.compiler_id) ||
         !rr_hex64(next.base_generation) ||
         !next.cflags[0] || !next.ldflags[0] || !next.libs[0] ||
         !rr_join_root(root, next.obj_dir, obj_full) ||
         !rr_join_root(root, next.link_rsp, rsp_full) ||
         !rr_directory(obj_full) || !rr_regular(rsp_full, NULL) ||
-        !strstr(next.cflags, "-DZCL_DEV_BUILD")) {
+        !strstr(next.cflags, "-DZCL_DEV_BUILD") ||
+        !next.test_cflags[0] || !next.test_ldflags[0] ||
+        !next.test_libs[0] ||
+        !rr_join_root(root, next.test_obj_dir, test_obj_full) ||
+        !rr_join_root(root, next.test_link_rsp, test_rsp_full) ||
+        !rr_directory(test_obj_full) || !rr_regular(test_rsp_full, NULL) ||
+        !strstr(next.test_cflags, "-DZCL_TESTING")) {
         rr_why(why, why_len,
                "restart action plan incomplete or its object graph is absent");
         return false;
     }
     if (strstr(next.cflags, "-flto") || strstr(next.ldflags, "-flto") ||
         strstr(next.cflags, "-fuse-linker-plugin") ||
-        strstr(next.ldflags, "-fuse-linker-plugin")) {
+        strstr(next.ldflags, "-fuse-linker-plugin") ||
+        strstr(next.test_cflags, "-flto") ||
+        strstr(next.test_ldflags, "-flto") ||
+        strstr(next.test_cflags, "-fuse-linker-plugin") ||
+        strstr(next.test_ldflags, "-fuse-linker-plugin")) {
         rr_why(why, why_len,
                "restart action plan contains release-only LTO flags");
         return false;
@@ -263,6 +292,16 @@ static bool rr_sha256_file(const char *path, char out[65])
     sha256_finalize(&sha, digest);
     zcl_hex_encode(digest, sizeof(digest), out);
     return true;
+}
+
+static void rr_sha256_bytes(const void *data, size_t len, char out[65])
+{
+    struct sha256_ctx sha;
+    unsigned char digest[SHA256_OUTPUT_SIZE];
+    sha256_init(&sha);
+    sha256_write(&sha, data, len);
+    sha256_finalize(&sha, digest);
+    zcl_hex_encode(digest, sizeof(digest), out);
 }
 
 static bool rr_temp(char out[PATH_MAX], const char *dir, const char *suffix)
@@ -378,6 +417,7 @@ static bool rr_compile_one(const struct rr_plan *plan, const char *root,
 
 static bool rr_overlay_for_base(const struct rr_plan *plan, const char *root,
                                 const char *base_object,
+                                const char *overlay_prefix,
                                 char overlay_relative[PATH_MAX])
 {
     size_t prefix_len = strlen(plan->obj_dir);
@@ -392,8 +432,8 @@ static bool rr_overlay_for_base(const struct rr_plan *plan, const char *root,
         return false;
     size_t source_len = strlen(source);
     source[source_len - 1] = 'c';
-    if (snprintf(overlay_relative, PATH_MAX,
-                 "build/dev-loop/restart-objects/%s", stem) >= PATH_MAX ||
+    if (snprintf(overlay_relative, PATH_MAX, "%s/%s",
+                 overlay_prefix, stem) >= PATH_MAX ||
         snprintf(overlay, sizeof(overlay), "%s/%s", root,
                  overlay_relative) >= (int)sizeof(overlay) ||
         snprintf(marker, sizeof(marker), "%s.source", overlay) >=
@@ -416,7 +456,8 @@ static bool rr_overlay_for_base(const struct rr_plan *plan, const char *root,
 
 static bool rr_write_response(const struct rr_plan *plan, const char *root,
                               const struct rr_overlay *overlays,
-                              size_t overlay_count, char out[PATH_MAX],
+                              size_t overlay_count, const char *overlay_prefix,
+                              char out[PATH_MAX],
                               char *why, size_t why_len)
 {
     char rsp_full[PATH_MAX], dir[PATH_MAX];
@@ -454,7 +495,7 @@ static bool rr_write_response(const struct rr_plan *plan, const char *root,
                 break;
             }
         }
-        if (!current && rr_overlay_for_base(plan, root, token,
+        if (!current && rr_overlay_for_base(plan, root, token, overlay_prefix,
                                             persistent_overlay))
             write_path = persistent_overlay;
         ok = fprintf(dst, "%s\n", write_path) > 0;
@@ -471,7 +512,8 @@ static bool rr_write_response(const struct rr_plan *plan, const char *root,
 }
 
 static bool rr_link(const struct rr_plan *plan, const char *root,
-                    const char *rsp, char binary[PATH_MAX],
+                    const char *rsp, const char *candidate_dir,
+                    char binary[PATH_MAX],
                     struct zcl_devloop_process_result *process,
                     int64_t *elapsed_us, char *why, size_t why_len)
 {
@@ -481,21 +523,26 @@ static bool rr_link(const struct rr_plan *plan, const char *root,
         rr_why(why, why_len, "could not allocate restart binary temporary");
         return false;
     }
-    char cc[sizeof(plan->cc)], flags[sizeof(plan->ldflags)];
+    char cc[sizeof(plan->cc)], cflags[sizeof(plan->cflags)];
+    char flags[sizeof(plan->ldflags)];
     char libs[sizeof(plan->libs)], rsp_arg[PATH_MAX + 2];
     (void)snprintf(cc, sizeof(cc), "%s", plan->cc);
+    (void)snprintf(cflags, sizeof(cflags), "%s", plan->cflags);
     (void)snprintf(flags, sizeof(flags), "%s", plan->ldflags);
     (void)snprintf(libs, sizeof(libs), "%s", plan->libs);
     (void)snprintf(rsp_arg, sizeof(rsp_arg), "@%s", rsp);
-    const char *argv[RR_ARG_MAX], *flagv[RR_ARG_MAX], *libv[RR_ARG_MAX];
+    const char *argv[RR_ARG_MAX], *cflagv[RR_ARG_MAX];
+    const char *flagv[RR_ARG_MAX], *libv[RR_ARG_MAX];
     size_t argc = zcl_argv_split(cc, argv, RR_ARG_MAX);
+    size_t cflagc = zcl_argv_split(cflags, cflagv, RR_ARG_MAX);
     size_t flagc = zcl_argv_split(flags, flagv, RR_ARG_MAX);
     size_t libc = zcl_argv_split(libs, libv, RR_ARG_MAX);
-    if (!argc || argc + flagc + libc + 4 >= RR_ARG_MAX) {
+    if (!argc || argc + cflagc + flagc + libc + 4 >= RR_ARG_MAX) {
         (void)unlink(temp);
         rr_why(why, why_len, "restart link action exceeds argv bound");
         return false;
     }
+    for (size_t i = 0; i < cflagc; i++) argv[argc++] = cflagv[i];
     for (size_t i = 0; i < flagc; i++) argv[argc++] = flagv[i];
     argv[argc++] = "-o"; argv[argc++] = temp; argv[argc++] = rsp_arg;
     for (size_t i = 0; i < libc; i++) argv[argc++] = libv[i];
@@ -511,8 +558,8 @@ static bool rr_link(const struct rr_plan *plan, const char *root,
     }
     char hash[65], candidates[PATH_MAX];
     if (!rr_sha256_file(temp, hash) ||
-        snprintf(candidates, sizeof(candidates),
-                 "%s/build/dev-loop/restart-candidates", root) >=
+        snprintf(candidates, sizeof(candidates), "%s/%s", root,
+                 candidate_dir) >=
             (int)sizeof(candidates) || !rr_mkdirs(candidates) ||
         snprintf(binary, PATH_MAX, "%s/%s-zclassic23-dev", candidates,
                  hash) >= PATH_MAX) {
@@ -619,13 +666,16 @@ bool zcl_devloop_restart_build(
         }
     }
     char rsp[PATH_MAX] = {0};
-    if (ok && !rr_write_response(&plan, root, overlays, source_count, rsp,
+    if (ok && !rr_write_response(&plan, root, overlays, source_count,
+                                 "build/dev-loop/restart-objects", rsp,
                                  why, why_len))
         ok = false;
     if (ok) {
         receipt->linker_processes = 1;
-        ok = rr_link(&plan, root, rsp, receipt->artifact_path, process,
-                     &receipt->link_us, why, why_len);
+        ok = rr_link(&plan, root, rsp,
+                     "build/dev-loop/restart-candidates",
+                     receipt->artifact_path, process, &receipt->link_us,
+                     why, why_len);
     }
     if (rsp[0]) (void)unlink(rsp);
     free(overlays);
@@ -665,6 +715,233 @@ bool zcl_devloop_restart_build(
     return true;
 }
 
+static bool rr_collect_groups(const struct zcl_devloop_plan *plan,
+                              char out[4096], uint32_t *count)
+{
+    if (!plan || !out || !count) return false;
+    out[0] = 0;
+    *count = 0;
+    const char *why = NULL;
+    if (!zcl_devloop_plan_proof_admissible(plan, &why))
+        return false;
+    const char *ids[ZCL_DEVLOOP_MAX_PLAN_GROUPS * 2];
+    size_t id_count = 0;
+    for (size_t i = 0; i < plan->path_groups_len; i++)
+        ids[id_count++] = plan->path_groups[i];
+    for (size_t i = 0; i < plan->closure_groups_len; i++)
+        ids[id_count++] = plan->closure_groups[i];
+    char exact[RR_EXACT_GROUP_MAX][ZCL_TEST_GROUP_FULL_MAX];
+    bool truncated = false;
+    size_t total = zcl_test_group_expand_plan(ids, id_count, exact,
+                                               RR_EXACT_GROUP_MAX,
+                                               &truncated);
+    if (total == SIZE_MAX || total == 0 || truncated)
+        return false;
+    size_t used = 0;
+    for (size_t i = 0; i < total; i++) {
+        int wrote = snprintf(out + used, 4096 - used, "%s%s",
+                             used ? "," : "", exact[i]);
+        if (wrote <= 0 || (size_t)wrote >= 4096 - used)
+            return false;
+        used += (size_t)wrote;
+    }
+    *count = (uint32_t)total;
+    return *count > 0;
+}
+
+static bool rr_plan_matches_sources(const struct zcl_devloop_plan *plan,
+                                    const char *const *sources,
+                                    size_t source_count)
+{
+    struct zcl_devloop_plan expected;
+    if (!plan || plan->file_count != source_count ||
+        !zcl_devloop_plan_files(sources, source_count, &expected) ||
+        expected.consensus_risk || expected.docs_only ||
+        expected.path_groups_len != plan->path_groups_len)
+        return false;
+    for (size_t i = 0; i < expected.path_groups_len; i++)
+        if (strcmp(expected.path_groups[i], plan->path_groups[i]) != 0)
+            return false;
+    return true;
+}
+
+static bool rr_summary_value(const char *summary, const char *key,
+                             uint32_t *out)
+{
+    if (!summary || !key || !out) return false;
+    const char *line = strstr(summary, "SUITE VERDICT ");
+    if (!line) return false;
+    const char *at = strstr(line, key);
+    if (!at) return false;
+    at += strlen(key);
+    if (*at < '0' || *at > '9') return false;
+    errno = 0;
+    char *end = NULL;
+    unsigned long value = strtoul(at, &end, 10);
+    if (errno || !end || end == at || value > UINT32_MAX ||
+        (*end != ' ' && *end != '\n' && *end != 0))
+        return false;
+    *out = (uint32_t)value;
+    return true;
+}
+
+bool zcl_devloop_restart_prove(
+    const char *repo_root, const char *const *source_tus, size_t source_count,
+    const struct zcl_devloop_plan *proof_plan,
+    struct zcl_devloop_restart_proof_receipt *receipt,
+    struct zcl_devloop_process_result *process,
+    char *why, size_t why_len)
+{
+    int64_t started = platform_time_monotonic_us();
+    if (why && why_len) why[0] = 0;
+    if (!repo_root || !source_tus || !proof_plan || !receipt || !process ||
+        source_count == 0 || source_count > RR_SOURCE_MAX) {
+        rr_why(why, why_len, "restart proof source set is invalid");
+        return false;
+    }
+    memset(receipt, 0, sizeof(*receipt));
+    memset(process, 0, sizeof(*process));
+    if (!rr_plan_matches_sources(proof_plan, source_tus, source_count)) {
+        rr_why(why, why_len,
+               "affected proof plan does not match the changed source set");
+        return false;
+    }
+    if (!rr_collect_groups(proof_plan, receipt->groups,
+                           &receipt->group_count)) {
+        rr_why(why, why_len,
+               "affected proof plan is incomplete or has no exact groups");
+        return false;
+    }
+    rr_sha256_bytes(receipt->groups, strlen(receipt->groups),
+                    receipt->groups_sha256);
+    for (size_t i = 0; i < source_count; i++) {
+        if (!rr_source_is_c(source_tus[i])) {
+            rr_why(why, why_len,
+                   "restart proof requires changed C translation units");
+            return false;
+        }
+    }
+    char root[PATH_MAX];
+    if (!realpath(repo_root, root)) {
+        rr_why(why, why_len, "restart proof checkout root could not be resolved");
+        return false;
+    }
+    struct rr_plan base = {0};
+    bool cache_hit = false;
+    int64_t plan_us = 0;
+    pthread_mutex_lock(&g_rr_mu);
+    bool plan_ok = rr_plan_load_locked(root, &base, &cache_hit, &plan_us,
+                                       why, why_len);
+    pthread_mutex_unlock(&g_rr_mu);
+    (void)cache_hit;
+    (void)plan_us;
+    if (!plan_ok) return false;
+
+    struct rr_plan plan = base;
+    (void)snprintf(plan.cflags, sizeof(plan.cflags), "%s", base.test_cflags);
+    (void)snprintf(plan.ldflags, sizeof(plan.ldflags), "%s", base.test_ldflags);
+    (void)snprintf(plan.libs, sizeof(plan.libs), "%s", base.test_libs);
+    (void)snprintf(plan.obj_dir, sizeof(plan.obj_dir), "%s", base.test_obj_dir);
+    (void)snprintf(plan.link_rsp, sizeof(plan.link_rsp), "%s",
+                   base.test_link_rsp);
+
+    struct dev_source_record source_before = {0}, source_after = {0};
+    if (!zcl_dev_source_cas_capture(root, &source_before) ||
+        !source_before.cas_present) {
+        rr_why(why, why_len,
+               "proof source snapshot could not be captured before compile");
+        return false;
+    }
+    struct rr_overlay *overlays = zcl_calloc(source_count, sizeof(*overlays),
+                                              "restart proof overlays");
+    if (!overlays) {
+        rr_why(why, why_len, "restart proof overlay allocation failed");
+        return false;
+    }
+    bool ok = true;
+    for (size_t i = 0; i < source_count; i++) {
+        size_t n = strlen(source_tus[i]);
+        (void)snprintf(overlays[i].source, sizeof(overlays[i].source), "%s",
+                       source_tus[i]);
+        char stem[ZCL_DEVLOOP_PATH_MAX];
+        (void)snprintf(stem, sizeof(stem), "%s", source_tus[i]);
+        stem[n - 1] = 'o';
+        if (snprintf(overlays[i].base_object,
+                     sizeof(overlays[i].base_object), "%s/%s",
+                     plan.obj_dir, stem) >=
+                (int)sizeof(overlays[i].base_object) ||
+            snprintf(overlays[i].overlay_object,
+                     sizeof(overlays[i].overlay_object),
+                     "%s/build/dev-loop/restart-test-objects/%s", root,
+                     stem) >= (int)sizeof(overlays[i].overlay_object)) {
+            rr_why(why, why_len, "restart proof object path overflow");
+            ok = false;
+            break;
+        }
+        receipt->compiler_processes++;
+        if (!rr_compile_one(&plan, root, &overlays[i], process,
+                            &receipt->compile_us, why, why_len)) {
+            ok = false;
+            break;
+        }
+    }
+    char rsp[PATH_MAX] = {0};
+    if (ok && !rr_write_response(&plan, root, overlays, source_count,
+                                 "build/dev-loop/restart-test-objects", rsp,
+                                 why, why_len))
+        ok = false;
+    if (ok) {
+        receipt->linker_processes = 1;
+        ok = rr_link(&plan, root, rsp,
+                     "build/dev-loop/restart-test-candidates",
+                     receipt->artifact_path, process, &receipt->link_us,
+                     why, why_len);
+    }
+    if (rsp[0]) (void)unlink(rsp);
+    free(overlays);
+    if (!ok) {
+        receipt->total_us = platform_time_monotonic_us() - started;
+        return false;
+    }
+    if (!zcl_dev_source_cas_capture(root, &source_after) ||
+        !source_after.cas_present ||
+        strcmp(source_before.cas_root_sha3, source_after.cas_root_sha3) != 0 ||
+        !rr_sha256_file(receipt->artifact_path, receipt->artifact_sha256)) {
+        rr_why(why, why_len,
+               "proof source changed or its candidate could not be rehashed");
+        receipt->total_us = platform_time_monotonic_us() - started;
+        return false;
+    }
+    char exact[sizeof(receipt->groups) + 16];
+    if (snprintf(exact, sizeof(exact), "--exact=%s", receipt->groups) >=
+        (int)sizeof(exact)) {
+        rr_why(why, why_len, "affected proof selector exceeds its bound");
+        return false;
+    }
+    const char *test_argv[] = {
+        receipt->artifact_path, exact, "--no-cache", NULL
+    };
+    receipt->test_processes = 1;
+    int64_t test_started = platform_time_monotonic_us();
+    bool ran = zcl_devloop_process_run_test(root, test_argv, 300000, process);
+    receipt->test_us = platform_time_monotonic_us() - test_started;
+    uint32_t groups_ran = 0, groups_failed = 0, self_skips = 0;
+    receipt->proof_complete = ran && !process->timed_out &&
+        !process->term_signal && process->exit_code == 0 &&
+        rr_summary_value(process->output, "groups_ran=", &groups_ran) &&
+        rr_summary_value(process->output, "groups_failed=", &groups_failed) &&
+        rr_summary_value(process->output, "self_skips=", &self_skips) &&
+        groups_ran == receipt->group_count && groups_failed == 0 &&
+        self_skips == 0;
+    receipt->total_us = platform_time_monotonic_us() - started;
+    if (!receipt->proof_complete) {
+        rr_why(why, why_len,
+               "affected proof runner did not account for every exact group");
+        return false;
+    }
+    return true;
+}
+
 static void rr_output_preview(const struct zcl_devloop_process_result *process,
                               char out[1025])
 {
@@ -679,6 +956,7 @@ static bool rr_emit_event(
     const char *status, const char *phase, int64_t elapsed_us,
     enum zcl_devloop_publish_mode requested_mode,
     const struct zcl_devloop_restart_build_receipt *build,
+    const struct zcl_devloop_restart_proof_receipt *proof,
     const struct zcl_devloop_process_result *process, const char *why)
 {
     struct json_value doc, files, receipt;
@@ -692,7 +970,8 @@ static bool rr_emit_event(
     (void)json_push_kv_bool(&doc, "runtime_published", false);
     (void)json_push_kv_bool(&doc, "publication_requested",
                             zcl_devloop_publish_mode_applies(requested_mode));
-    (void)json_push_kv_bool(&doc, "proof_complete", false);
+    (void)json_push_kv_bool(&doc, "proof_complete",
+                            proof && proof->proof_complete);
     (void)json_push_kv_int(&doc, "elapsed_us", elapsed_us);
     (void)json_push_kv_int(&doc, "elapsed_ms", elapsed_us / 1000);
     (void)json_push_kv_int(&doc, "file_count", (int64_t)source_count);
@@ -745,10 +1024,39 @@ static bool rr_emit_event(
         (void)json_push_kv(&doc, "build_receipt", &receipt);
         json_free(&receipt);
     }
+    if (proof) {
+        json_init(&receipt); json_set_object(&receipt);
+        (void)json_push_kv_str(&receipt, "schema",
+                               "zcl.dev_restart_proof_receipt.v1");
+        if (proof->artifact_path[0])
+            (void)json_push_kv_str(&receipt, "artifact_path",
+                                   proof->artifact_path);
+        if (proof->artifact_sha256[0])
+            (void)json_push_kv_str(&receipt, "artifact_sha256",
+                                   proof->artifact_sha256);
+        if (proof->groups_sha256[0])
+            (void)json_push_kv_str(&receipt, "exact_groups_sha256",
+                                   proof->groups_sha256);
+        (void)json_push_kv_bool(&receipt, "proof_complete",
+                                proof->proof_complete);
+        (void)json_push_kv_int(&receipt, "group_count", proof->group_count);
+        (void)json_push_kv_int(&receipt, "compiler_processes",
+                               proof->compiler_processes);
+        (void)json_push_kv_int(&receipt, "linker_processes",
+                               proof->linker_processes);
+        (void)json_push_kv_int(&receipt, "test_processes",
+                               proof->test_processes);
+        (void)json_push_kv_int(&receipt, "compile_us", proof->compile_us);
+        (void)json_push_kv_int(&receipt, "link_us", proof->link_us);
+        (void)json_push_kv_int(&receipt, "test_us", proof->test_us);
+        (void)json_push_kv_int(&receipt, "proof_total_us", proof->total_us);
+        (void)json_push_kv(&doc, "proof_receipt", &receipt);
+        json_free(&receipt);
+    }
     (void)json_push_kv_str(
         &doc, "agent_next_action",
-        strcmp(status, "candidate_ready") == 0
-            ? "candidate runtime is healthy; resident mapped proofs must pass before acceptance"
+        strcmp(status, "proof_ready") == 0
+            ? "candidate runtime and affected proofs are green; inspect exact evidence before acceptance"
             : "repair the named restart refusal; no service or source was replaced");
     char wire[16384];
     size_t n = json_write(&doc, wire, sizeof(wire) - 1);
@@ -783,15 +1091,27 @@ int zcl_devloop_restart_event(const char *repo_root,
             return 0;
     int64_t started = platform_time_monotonic_us();
     struct zcl_devloop_restart_build_receipt build = {0};
+    struct zcl_devloop_restart_proof_receipt proof = {0};
     struct zcl_devloop_process_result process = {0};
     char why[512] = {0};
     bool ok = zcl_devloop_restart_build(repo_root, source_tus, source_count,
                                         &build, &process, why, sizeof(why));
+    if (ok && (!zcl_devloop_plan_add_closure(repo_root, source_tus,
+                                             source_count, &plan) ||
+               !zcl_devloop_plan_proof_admissible(&plan, NULL))) {
+        rr_why(why, sizeof(why),
+               "affected proof closure is incomplete or unavailable");
+        ok = false;
+    }
+    if (ok)
+        ok = zcl_devloop_restart_prove(repo_root, source_tus, source_count,
+                                       &plan, &proof, &process,
+                                       why, sizeof(why));
     bool emitted = rr_emit_event(
         repo_root, source_tus, source_count,
-        ok ? "candidate_ready" : "rejected",
-        ok ? "command_runtime_probe" : "compile_link_probe",
+        ok ? "proof_ready" : "rejected",
+        ok ? "affected_proofs" : "compile_link_probe",
         platform_time_monotonic_us() - started, publish_mode, &build,
-        &process, why);
+        &proof, &process, why);
     return emitted ? 1 : -1;
 }

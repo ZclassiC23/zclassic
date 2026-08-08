@@ -264,9 +264,36 @@ struct zcl_devloop_restart_build_receipt {
     bool candidate_probe_passed;
 };
 
+/* Exact affected-proof execution against a test binary linked from the same
+ * changed source bytes as the process candidate. A green exit alone is not
+ * proof: the receipt is complete only when the runner's cold-suite summary
+ * accounts for every selected group with zero failures or self-skips. */
+struct zcl_devloop_restart_proof_receipt {
+    char artifact_path[4096];
+    char artifact_sha256[65];
+    char groups[4096];
+    char groups_sha256[65];
+    int64_t compile_us;
+    int64_t link_us;
+    int64_t test_us;
+    int64_t total_us;
+    uint32_t group_count;
+    uint32_t compiler_processes;
+    uint32_t linker_processes;
+    uint32_t test_processes;
+    bool proof_complete;
+};
+
 bool zcl_devloop_restart_build(
     const char *repo_root, const char *const *source_tus, size_t source_count,
     struct zcl_devloop_restart_build_receipt *receipt,
+    struct zcl_devloop_process_result *process,
+    char *why, size_t why_len);
+
+bool zcl_devloop_restart_prove(
+    const char *repo_root, const char *const *source_tus, size_t source_count,
+    const struct zcl_devloop_plan *plan,
+    struct zcl_devloop_restart_proof_receipt *receipt,
     struct zcl_devloop_process_result *process,
     char *why, size_t why_len);
 
@@ -419,6 +446,11 @@ bool zcl_devloop_process_run(const char *cwd,
                              const char *const argv[],
                              int timeout_ms,
                              struct zcl_devloop_process_result *out);
+/* Test fixtures include intentionally large stack frames. Raise only the
+ * test child's soft stack limit to its inherited hard limit before exec. */
+bool zcl_devloop_process_run_test(const char *cwd,
+                                  const char *const argv[], int timeout_ms,
+                                  struct zcl_devloop_process_result *out);
 /* Execute the already-open regular executable at `exec_fd`. The caller owns
  * and closes the fd after return. This pins one inode across identity query +
  * execution even when a stable build/bin alias is atomically republished. */
