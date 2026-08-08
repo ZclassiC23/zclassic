@@ -715,12 +715,24 @@ bool zcl_devloop_restart_build(
     return true;
 }
 
-static bool rr_collect_groups(const struct zcl_devloop_plan *plan,
-                              char out[4096], uint32_t *count)
+static bool rr_append_group(char out[4096], const char *group)
 {
-    if (!plan || !out || !count) return false;
+    size_t used = strlen(out);
+    int wrote = snprintf(out + used, 4096 - used, "%s%s",
+                         used ? "," : "", group);
+    return wrote > 0 && (size_t)wrote < 4096 - used;
+}
+
+static bool rr_collect_groups(const struct zcl_devloop_plan *plan,
+                              bool immediate_only,
+                              char out[4096], uint32_t *count,
+                              char deferred[4096], uint32_t *deferred_count)
+{
+    if (!plan || !out || !count || !deferred || !deferred_count) return false;
     out[0] = 0;
+    deferred[0] = 0;
     *count = 0;
+    *deferred_count = 0;
     const char *why = NULL;
     if (!zcl_devloop_plan_proof_admissible(plan, &why))
         return false;
@@ -737,15 +749,16 @@ static bool rr_collect_groups(const struct zcl_devloop_plan *plan,
                                                &truncated);
     if (total == SIZE_MAX || total == 0 || truncated)
         return false;
-    size_t used = 0;
     for (size_t i = 0; i < total; i++) {
-        int wrote = snprintf(out + used, 4096 - used, "%s%s",
-                             used ? "," : "", exact[i]);
-        if (wrote <= 0 || (size_t)wrote >= 4096 - used)
-            return false;
-        used += (size_t)wrote;
+        if (immediate_only &&
+            zcl_test_group_is_integration_only(exact[i])) {
+            if (!rr_append_group(deferred, exact[i])) return false;
+            (*deferred_count)++;
+            continue;
+        }
+        if (!rr_append_group(out, exact[i])) return false;
+        (*count)++;
     }
-    *count = (uint32_t)total;
     return *count > 0;
 }
 
@@ -785,12 +798,12 @@ static bool rr_summary_value(const char *summary, const char *key,
     return true;
 }
 
-bool zcl_devloop_restart_prove(
+static bool rr_restart_prove(
     const char *repo_root, const char *const *source_tus, size_t source_count,
     const struct zcl_devloop_plan *proof_plan,
     struct zcl_devloop_restart_proof_receipt *receipt,
     struct zcl_devloop_process_result *process,
-    char *why, size_t why_len)
+    char *why, size_t why_len, bool immediate_only)
 {
     int64_t started = platform_time_monotonic_us();
     if (why && why_len) why[0] = 0;
@@ -806,14 +819,19 @@ bool zcl_devloop_restart_prove(
                "affected proof plan does not match the changed source set");
         return false;
     }
-    if (!rr_collect_groups(proof_plan, receipt->groups,
-                           &receipt->group_count)) {
+    if (!rr_collect_groups(proof_plan, immediate_only, receipt->groups,
+                           &receipt->group_count, receipt->deferred_groups,
+                           &receipt->deferred_group_count)) {
         rr_why(why, why_len,
                "affected proof plan is incomplete or has no exact groups");
         return false;
     }
     rr_sha256_bytes(receipt->groups, strlen(receipt->groups),
                     receipt->groups_sha256);
+    if (receipt->deferred_group_count > 0)
+        rr_sha256_bytes(receipt->deferred_groups,
+                        strlen(receipt->deferred_groups),
+                        receipt->deferred_groups_sha256);
     for (size_t i = 0; i < source_count; i++) {
         if (!rr_source_is_c(source_tus[i])) {
             rr_why(why, why_len,
@@ -926,20 +944,46 @@ bool zcl_devloop_restart_prove(
     bool ran = zcl_devloop_process_run_test(root, test_argv, 300000, process);
     receipt->test_us = platform_time_monotonic_us() - test_started;
     uint32_t groups_ran = 0, groups_failed = 0, self_skips = 0;
-    receipt->proof_complete = ran && !process->timed_out &&
+    receipt->immediate_proof_complete = ran && !process->timed_out &&
         !process->term_signal && process->exit_code == 0 &&
         rr_summary_value(process->output, "groups_ran=", &groups_ran) &&
         rr_summary_value(process->output, "groups_failed=", &groups_failed) &&
         rr_summary_value(process->output, "self_skips=", &self_skips) &&
         groups_ran == receipt->group_count && groups_failed == 0 &&
         self_skips == 0;
+    receipt->integration_proof_deferred = receipt->deferred_group_count > 0;
+    receipt->proof_complete = receipt->immediate_proof_complete &&
+        !receipt->integration_proof_deferred;
     receipt->total_us = platform_time_monotonic_us() - started;
-    if (!receipt->proof_complete) {
+    if (!receipt->immediate_proof_complete) {
         rr_why(why, why_len,
                "affected proof runner did not account for every exact group");
         return false;
     }
     return true;
+}
+
+
+bool zcl_devloop_restart_prove(
+    const char *repo_root, const char *const *source_tus, size_t source_count,
+    const struct zcl_devloop_plan *proof_plan,
+    struct zcl_devloop_restart_proof_receipt *receipt,
+    struct zcl_devloop_process_result *process,
+    char *why, size_t why_len)
+{
+    return rr_restart_prove(repo_root, source_tus, source_count, proof_plan,
+                            receipt, process, why, why_len, false);
+}
+
+bool zcl_devloop_restart_prove_immediate(
+    const char *repo_root, const char *const *source_tus, size_t source_count,
+    const struct zcl_devloop_plan *proof_plan,
+    struct zcl_devloop_restart_proof_receipt *receipt,
+    struct zcl_devloop_process_result *process,
+    char *why, size_t why_len)
+{
+    return rr_restart_prove(repo_root, source_tus, source_count, proof_plan,
+                            receipt, process, why, why_len, true);
 }
 
 static void rr_output_preview(const struct zcl_devloop_process_result *process,
@@ -972,6 +1016,10 @@ static bool rr_emit_event(
                             zcl_devloop_publish_mode_applies(requested_mode));
     (void)json_push_kv_bool(&doc, "proof_complete",
                             proof && proof->proof_complete);
+    (void)json_push_kv_bool(&doc, "immediate_proof_complete",
+                            proof && proof->immediate_proof_complete);
+    (void)json_push_kv_bool(&doc, "integration_proof_deferred",
+                            proof && proof->integration_proof_deferred);
     (void)json_push_kv_int(&doc, "elapsed_us", elapsed_us);
     (void)json_push_kv_int(&doc, "elapsed_ms", elapsed_us / 1000);
     (void)json_push_kv_int(&doc, "file_count", (int64_t)source_count);
@@ -1037,9 +1085,19 @@ static bool rr_emit_event(
         if (proof->groups_sha256[0])
             (void)json_push_kv_str(&receipt, "exact_groups_sha256",
                                    proof->groups_sha256);
+        if (proof->deferred_groups_sha256[0])
+            (void)json_push_kv_str(&receipt,
+                                   "deferred_groups_sha256",
+                                   proof->deferred_groups_sha256);
         (void)json_push_kv_bool(&receipt, "proof_complete",
                                 proof->proof_complete);
+        (void)json_push_kv_bool(&receipt, "immediate_proof_complete",
+                                proof->immediate_proof_complete);
+        (void)json_push_kv_bool(&receipt, "integration_proof_deferred",
+                                proof->integration_proof_deferred);
         (void)json_push_kv_int(&receipt, "group_count", proof->group_count);
+        (void)json_push_kv_int(&receipt, "deferred_group_count",
+                               proof->deferred_group_count);
         (void)json_push_kv_int(&receipt, "compiler_processes",
                                proof->compiler_processes);
         (void)json_push_kv_int(&receipt, "linker_processes",
@@ -1055,8 +1113,8 @@ static bool rr_emit_event(
     }
     (void)json_push_kv_str(
         &doc, "agent_next_action",
-        strcmp(status, "proof_ready") == 0
-            ? "candidate runtime and affected proofs are green; inspect exact evidence before acceptance"
+        strcmp(status, "feedback_ready") == 0
+            ? "candidate runtime and immediate affected proofs are green; run integration proofs before acceptance"
             : "repair the named restart refusal; no service or source was replaced");
     char wire[16384];
     size_t n = json_write(&doc, wire, sizeof(wire) - 1);
@@ -1104,15 +1162,15 @@ int zcl_devloop_restart_event(const char *repo_root,
         ok = false;
     }
     if (ok)
-        ok = zcl_devloop_restart_prove(repo_root, source_tus, source_count,
-                                       &plan, &proof, &process,
-                                       why, sizeof(why));
+        ok = zcl_devloop_restart_prove_immediate(
+            repo_root, source_tus, source_count, &plan, &proof, &process,
+            why, sizeof(why));
     if (process.cancelled || zcl_devloop_process_cancel_requested())
         return 2;
     bool emitted = rr_emit_event(
         repo_root, source_tus, source_count,
-        ok ? "proof_ready" : "rejected",
-        ok ? "affected_proofs" : "compile_link_probe",
+        ok ? "feedback_ready" : "rejected",
+        ok ? "immediate_affected_proofs" : "compile_link_probe",
         platform_time_monotonic_us() - started, publish_mode, &build,
         &proof, &process, why);
     return emitted ? 1 : -1;

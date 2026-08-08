@@ -2165,7 +2165,7 @@ static bool run_resident_restart_fixture(void)
         "  if grep -q 'restart-test-objects' \"$rsp\"; then\n"
         "    grep -q 'build/dev-loop/restart-test-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
         "    ! grep -q 'build/test-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
-        "    printf '#!/usr/bin/env bash\\nprintf \"SUITE VERDICT mode=cold groups_total=913 groups_ran=18 groups_cached=0 groups_gated=895 groups_failed=0 self_skips=0\\n\"\\nexit 0\\n' >\"$out\"\n"
+        "    printf '#!/usr/bin/env bash\\nset -eu\\ngroups=\\nfor arg in \"$@\"; do case \"$arg\" in --exact=*) groups=${arg#--exact=};; esac; done\\n[ -n \"$groups\" ]\\ncount=1\\nrest=$groups\\nwhile [ \"${rest#*,}\" != \"$rest\" ]; do count=$((count+1)); rest=${rest#*,}; done\\nprintf \"SUITE VERDICT mode=cold groups_total=913 groups_ran=%%s groups_cached=0 groups_gated=0 groups_failed=0 self_skips=0\\\\n\" \"$count\"\\nexit 0\\n' >\"$out\"\n"
         "  else\n"
         "    grep -q 'build/dev-loop/restart-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
         "    ! grep -q 'build/dev-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
@@ -2254,12 +2254,28 @@ static bool run_resident_restart_fixture(void)
     struct zcl_devloop_restart_proof_receipt proof = {0};
     if (!zcl_devloop_restart_prove(root, changed, 1, &proof_plan, &proof,
                                    &process, why, sizeof(why)) ||
-        !proof.proof_complete || proof.group_count != 18 ||
+        !proof.proof_complete || !proof.immediate_proof_complete ||
+        proof.integration_proof_deferred || proof.deferred_group_count != 0 ||
+        proof.group_count != 18 ||
         !strstr(proof.groups, "test_dev_platform") ||
         !strstr(proof.groups, "test_make_lint_gates_heavy_02") ||
         proof.compiler_processes != 1 || proof.linker_processes != 1 ||
         proof.test_processes != 1 || strlen(proof.artifact_sha256) != 64 ||
         strlen(proof.groups_sha256) != 64)
+        goto out;
+
+    memset(&proof, 0, sizeof(proof));
+    memset(&process, 0, sizeof(process));
+    if (!zcl_devloop_restart_prove_immediate(
+            root, changed, 1, &proof_plan, &proof, &process,
+            why, sizeof(why)) ||
+        proof.proof_complete || !proof.immediate_proof_complete ||
+        !proof.integration_proof_deferred || proof.group_count != 5 ||
+        proof.deferred_group_count != 13 ||
+        strstr(proof.groups, "test_make_lint_gates") ||
+        !strstr(proof.deferred_groups,
+                "test_make_lint_gates_heavy_02") ||
+        strlen(proof.deferred_groups_sha256) != 64)
         goto out;
 
     struct zcl_devloop_plan substituted = proof_plan;

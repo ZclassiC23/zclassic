@@ -62,6 +62,7 @@ classification of every occurrence.
 | P4 resident affected proof | bounded non-consensus `.c` candidates now relink the exact changed bytes into the existing fast-test graph and execute the complete canonical exact-group expansion cold | `bg_validation_dump.c`: 2.649 s candidate + 2.078 s proof compile/link + 63.412 s for 21 groups = 73.150 s total; zero failures/skips | `proof_ready`; `proof_complete=true`; `runtime_published=false`; five-second proof target MISSED |
 | P5 prompt cancellation | watcher shutdown no longer waits behind its active bounded compiler, test, or generic proof child group | real watcher interrupted an active generic `make ff`: 0.30 s stop wall time; watcher lock released; complete descendant tree absent | typed cancellation is distinct from timeout; prior source remains unchanged |
 | P6 latest-wins resident | a newer save cancels the active epoch, preserves a debounced exact path batch, suppresses the stale verdict, and reaps every process group in the bounded child session | real `bg_validation_dump.c` proof superseded by `status_native_handlers.c`; only the latter became epoch 15; stop 0.07 s; zero session descendants; automatic action-plan first compile 225.6 ms | no manual hot-swap-plan command; zero Make/shell/LTO processes on the selected newest live path |
+| P7 proof tiers | all production behavior groups remain immediate; the closed `make_lint_gates` policy/tooling self-test family remains required by full integration expansion and is explicitly deferred from save cycles | `bg_validation_dump.c`: 9.057 s total = 1.942 s candidate + 1.280 s proof compile/link + 2.090 s for 8 immediate groups + 3.745 s identity/closure/overhead; 13 integration groups deferred and hash-bound; zero failures/skips | `feedback_ready`; `immediate_proof_complete=true`; `integration_proof_deferred=true`; `proof_complete=false`; 73.150 s baseline reduced 87.6%, five-second target still MISSED |
 
 The earlier single-island resident microbenchmark measured 227.280 ms p50 and
 232.141 ms p95 on 20 distinct artifacts. That is historical evidence for one
@@ -95,9 +96,9 @@ smuggle release work into a save cycle.
 
 - Replay the representative benchmark and establish p50/p95 plus process and
   byte counts.
-- Separate immediate behavior proofs from the integration-only policy family
-  without weakening either. The current `make_lint_gates` expansion includes
-  two 24–64 second hermetic groups and dominates the green P4 receipt.
+- Reduce the remaining 3.745-second identity/closure overhead and duplicate
+  candidate/proof links. The first honest tiered receipt is 9.057 seconds:
+  substantially faster, but still outside the five-second save-cycle target.
 - Rebuild the generated source-identity object inside the resident proof epoch.
   Tooling edits whose closure reaches `code_capsule` currently fail closed
   because the otherwise unchanged `clientversion` object still binds the

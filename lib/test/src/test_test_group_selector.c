@@ -166,6 +166,7 @@ static int test_native_catalog_resolution(void)
     TEST("test group selector: C catalog owns exact proof expansion") {
         ASSERT(zcl_test_group_catalog_count() > 800);
         ASSERT(zcl_test_group_catalog_contains("test_api"));
+        ASSERT(zcl_test_group_integration_policy_valid());
         ASSERT(!zcl_test_group_catalog_contains("api"));
         ASSERT(zcl_test_group_source_is_semantic_leaf(
             "lib/test/src/test_stage_repair_coin_backfill.c"));
@@ -210,6 +211,27 @@ static int test_native_catalog_resolution(void)
         const char *invalid[] = { "api_missing" };
         ASSERT(zcl_test_group_expand_plan(invalid, 1, one, 1, &truncated) ==
                SIZE_MAX);
+
+        const char *lint_ids[] = { "make_lint_gates" };
+        char immediate[32][ZCL_TEST_GROUP_FULL_MAX];
+        truncated = true;
+        size_t immediate_total = zcl_test_group_expand_plan_immediate(
+            lint_ids, 1, immediate,
+            sizeof(immediate) / sizeof(immediate[0]), &truncated);
+        ASSERT(immediate_total == 0);
+        ASSERT(!truncated);
+        ASSERT(zcl_test_group_is_integration_only(
+            "test_make_lint_gates_heavy_01"));
+        ASSERT(zcl_test_group_is_integration_only(
+            "test_make_lint_gates_heavy_02"));
+        ASSERT(zcl_test_group_is_integration_only(
+            "test_make_lint_gates_shard_01"));
+        for (size_t i = 0; i < immediate_total; i++) {
+            ASSERT(strcmp(immediate[i],
+                          "test_make_lint_gates_heavy_01") != 0);
+            ASSERT(strcmp(immediate[i],
+                          "test_make_lint_gates_heavy_02") != 0);
+        }
         PASS();
     } _test_next:;
     return failures;

@@ -274,14 +274,19 @@ struct zcl_devloop_restart_proof_receipt {
     char artifact_sha256[65];
     char groups[4096];
     char groups_sha256[65];
+    char deferred_groups[4096];
+    char deferred_groups_sha256[65];
     int64_t compile_us;
     int64_t link_us;
     int64_t test_us;
     int64_t total_us;
     uint32_t group_count;
+    uint32_t deferred_group_count;
     uint32_t compiler_processes;
     uint32_t linker_processes;
     uint32_t test_processes;
+    bool immediate_proof_complete;
+    bool integration_proof_deferred;
     bool proof_complete;
 };
 
@@ -292,6 +297,16 @@ bool zcl_devloop_restart_build(
     char *why, size_t why_len);
 
 bool zcl_devloop_restart_prove(
+    const char *repo_root, const char *const *source_tus, size_t source_count,
+    const struct zcl_devloop_plan *plan,
+    struct zcl_devloop_restart_proof_receipt *receipt,
+    struct zcl_devloop_process_result *process,
+    char *why, size_t why_len);
+
+/* Save-cycle tier: executes every selected group except the exact groups
+ * explicitly classified as integration-only. The receipt names and hashes
+ * the deferred set; proof_complete remains false until that set is run. */
+bool zcl_devloop_restart_prove_immediate(
     const char *repo_root, const char *const *source_tus, size_t source_count,
     const struct zcl_devloop_plan *plan,
     struct zcl_devloop_restart_proof_receipt *receipt,

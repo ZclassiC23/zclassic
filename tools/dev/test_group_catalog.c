@@ -34,6 +34,13 @@ static const struct proof_family g_proof_families[] = {
 #undef ZCL_TEST_PROOF_FAMILY
 };
 
+static const char *const g_integration_only[] = {
+#define ZCL_TEST_INTEGRATION_ONLY(full_id_) full_id_,
+#include "test_integration_only.def"
+#undef ZCL_TEST_INTEGRATION_ONLY
+    NULL,
+};
+
 size_t zcl_test_group_catalog_count(void)
 {
     return sizeof(g_test_groups) / sizeof(g_test_groups[0]);
@@ -114,13 +121,37 @@ bool zcl_test_group_plan_selects(const char *plan_id, const char *full_id)
            declared_family_selects(plan_id, full_id);
 }
 
-size_t zcl_test_group_expand_plan(
+bool zcl_test_group_is_integration_only(const char *full_id)
+{
+    if (!zcl_test_group_catalog_contains(full_id))
+        return false;
+    for (size_t i = 0; g_integration_only[i] != NULL; i++)
+        if (strcmp(g_integration_only[i], full_id) == 0)
+            return true;
+    return false;
+}
+
+bool zcl_test_group_integration_policy_valid(void)
+{
+    for (size_t i = 0; g_integration_only[i] != NULL; i++) {
+        if (!zcl_test_group_catalog_contains(g_integration_only[i]))
+            return false;
+        for (size_t j = 0; j < i; j++)
+            if (strcmp(g_integration_only[i], g_integration_only[j]) == 0)
+                return false;
+    }
+    return true;
+}
+
+static size_t expand_plan(
     const char *const *plan_ids, size_t plan_count,
-    char (*out)[ZCL_TEST_GROUP_FULL_MAX], size_t cap, bool *truncated)
+    char (*out)[ZCL_TEST_GROUP_FULL_MAX], size_t cap, bool *truncated,
+    bool immediate_only)
 {
     if (truncated)
         *truncated = false;
-    if ((!plan_ids && plan_count > 0) || (!out && cap > 0) || !truncated)
+    if ((!plan_ids && plan_count > 0) || (!out && cap > 0) || !truncated ||
+        (immediate_only && !zcl_test_group_integration_policy_valid()))
         return SIZE_MAX;
     for (size_t p = 0; p < plan_count; p++) {
         char primary[ZCL_TEST_GROUP_FULL_MAX];
@@ -138,10 +169,27 @@ size_t zcl_test_group_expand_plan(
         }
         if (!selected)
             continue;
+        if (immediate_only &&
+            zcl_test_group_is_integration_only(g_test_groups[i]))
+            continue;
         if (total < cap)
             snprintf(out[total], ZCL_TEST_GROUP_FULL_MAX, "%s", g_test_groups[i]);
         total++;
     }
     *truncated = total > cap;
     return total;
+}
+
+size_t zcl_test_group_expand_plan(
+    const char *const *plan_ids, size_t plan_count,
+    char (*out)[ZCL_TEST_GROUP_FULL_MAX], size_t cap, bool *truncated)
+{
+    return expand_plan(plan_ids, plan_count, out, cap, truncated, false);
+}
+
+size_t zcl_test_group_expand_plan_immediate(
+    const char *const *plan_ids, size_t plan_count,
+    char (*out)[ZCL_TEST_GROUP_FULL_MAX], size_t cap, bool *truncated)
+{
+    return expand_plan(plan_ids, plan_count, out, cap, truncated, true);
 }

@@ -39,6 +39,15 @@ size_t zcl_test_group_expand_plan(
     const char *const *plan_ids, size_t plan_count,
     char (*out)[ZCL_TEST_GROUP_FULL_MAX], size_t cap, bool *truncated);
 
+/* Integration-only groups remain in the complete expansion above but are
+ * excluded from the bounded save-cycle expansion below. The predicate accepts
+ * exact canonical IDs only. */
+bool zcl_test_group_is_integration_only(const char *full_id);
+bool zcl_test_group_integration_policy_valid(void);
+size_t zcl_test_group_expand_plan_immediate(
+    const char *const *plan_ids, size_t plan_count,
+    char (*out)[ZCL_TEST_GROUP_FULL_MAX], size_t cap, bool *truncated);
+
 #ifdef __cplusplus
 }
 #endif
