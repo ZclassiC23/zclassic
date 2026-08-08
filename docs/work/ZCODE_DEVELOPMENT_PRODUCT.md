@@ -429,20 +429,24 @@ The measured gates for the product slice were:
   profile's `-fno-omit-frame-pointer`; the repository-prescribed ZCODE
   sanitizer posture above uses `-fomit-frame-pointer -O2` for the monolith and
   passed.
-- Strict uncached suite: first run was 903/904 passing with only the
-  load-sensitive `test_simnet_perf` red; its isolated rerun passed at 962
-  permille clean growth versus the 1800 limit, and the complete rerun passed
-  904/904 runnable groups, 0 cached, 9 parameter-heavy groups policy-gated and
-  19 declared self-skips.
+- Strict uncached suite: the final integrated pre-push run passed 912/912
+  runnable groups, 0 cached, with 9 parameter-heavy groups policy-gated and 20
+  declared self-skips. Earlier load-sensitive failures in `test_simnet_perf`
+  and `test_native_api_contract` both passed their exact isolated reruns before
+  the clean complete reruns.
 - Release whole-program LTO build: PASS.
-- `make ci-reproducible`: PASS, two same-checkout builds byte-identical at
-  SHA3-256 `42754e3adfb8c6d40f6577d0d61de3d884482ca3ccffbd1031b8ddcf1ce28cd4`
-  and 23,031,208 bytes.
-- `make repro-verify`: PASS across two different absolute checkout paths at
-  SHA3-256 `f9902c16ee26c5ea4cd35b58a145c6187b2c82d305264aad1a2034a26229e74f`
-  and 23,031,288 bytes.
-- Both pushes and the integration merge passed the repository pre-push gate
-  and were pull-verified against `origin/main`.
+- `make ci-reproducible`: PASS on the integrated implementation, two
+  same-checkout builds byte-identical at SHA3-256
+  `dc77e053e94119c2dca26571d82f56920e40d729c2470d90c7697170689a4c13`
+  and 23,080,328 bytes.
+- `make repro-verify`: PASS across two deliberately different absolute build
+  paths at SHA3-256
+  `08607a56bb491eddf196b61251cd892126dd9e6c26aaba457b2ef41d93e055a2`
+  and 23,080,408 bytes.
+- Every implementation push and both integration merges passed the repository
+  pre-push gate. The final integrated implementation was pushed and
+  pull-verified as `deb59fea56ca6f3cd1169038371a76e0f2020725` before this
+  documentation-only ledger update.
 
 The safe quick- and standard-profile development loops are shipped. The broader owner
 directive is not represented as fully closed for these reasons:
