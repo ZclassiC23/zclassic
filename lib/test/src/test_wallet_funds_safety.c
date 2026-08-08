@@ -121,8 +121,7 @@ int test_wallet_funds_safety(void)
     int failures = 0;
 
     char dbdir[256], dbpath[320];
-    snprintf(dbdir, sizeof(dbdir), ".zcl_test_funds_safety_%d", (int)getpid());
-    mkdir(dbdir, 0755);
+    test_make_tmpdir(dbdir, sizeof(dbdir), "wallet_funds_safety", "main");
     snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
 
     struct node_db ndb;
@@ -130,8 +129,7 @@ int test_wallet_funds_safety(void)
     bool opened = node_db_open(&ndb, dbpath);
     WFS_CHECK("node.db opened", opened);
     if (!opened) {
-        char cmd[512]; snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        (void)system(cmd);
+        (void)test_rm_rf_recursive(dbdir);
         return failures + 1;
     }
 
@@ -476,10 +474,7 @@ int test_wallet_funds_safety(void)
     }
 
     node_db_close(&ndb);
-    {
-        char cmd[512]; snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        (void)system(cmd);
-    }
+    (void)test_rm_rf_recursive(dbdir);
 
     if (failures == 0)
         printf("wallet_funds_safety: OK (all funds-safety gates pass)\n");

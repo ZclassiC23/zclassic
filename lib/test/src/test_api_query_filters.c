@@ -303,9 +303,8 @@ static bool name_route_cases(void)
     bool opened, ok;
 
     memset(&ndb, 0, sizeof(ndb));
-    snprintf(dir, sizeof(dir), ".zcl_test_api_query_filters_%d", (int)getpid());
+    test_make_tmpdir(dir, sizeof(dir), "api_query_filters", "name_route");
     snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
-    (void)mkdir(dir, 0755);
     opened = node_db_open(&ndb, dbpath);
     memset(&entry, 0, sizeof(entry));
     snprintf(entry.name, sizeof(entry.name), "filtercase");

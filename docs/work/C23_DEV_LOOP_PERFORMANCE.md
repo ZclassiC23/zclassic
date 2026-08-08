@@ -66,6 +66,7 @@ classification of every occurrence.
 | P8 epoch source guard | candidate and proof builders retain two guards when called independently; one resident epoch now guards the combined candidate/closure/proof transaction once before and once after instead of rescanning around both sub-builds | `bg_validation_dump.c`: 8.823 s total; 2 source guards = 0.248 s; closure = 3.443 s; candidate = 1.627 s; proof = 3.504 s (including 2.090 s tests) | exact source stayed stable; sub-receipts report zero private guards and the epoch reports two; five-second target still MISSED |
 | P9 resident closure snapshot | the save cycle opens the existing verified graph, unions its old symbols with a direct scan of the current changed file, and defers the fresh full-index rebuild to integration; a hermetic born-red case proves a newly defined symbol still reaches its pre-existing caller | `bg_validation_dump.c`: 5.411 s total; closure fell from 3.443 s to 6.6 ms; 2 source guards = 0.247 s; candidate = 1.645 s; proof = 3.511 s | `closure_refresh_deferred=true`; full expert plans still rebuild; five-second target narrowly MISSED |
 | P10 parallel feedback branches | candidate compile/link/probe and affected proof compile/link/test run concurrently inside the same before/after source epoch; cancellation polling is mutex-serialized so both branches observe latest-save cancellation without racing the watcher | `bg_validation_dump.c`: 3.832 s total; candidate branch 1.612 s overlapped proof branch 3.560 s; closure 7.5 ms; source guards 0.264 s; 8 immediate groups green, 13 integration groups deferred | representative restart feedback target PASSED; status now exposes proof tier, closure deferral, parallelism and timing without opening the full receipt |
+| P11 frozen restart replay | `make dev-loop-history-replay` derives and replays all 14 non-live paths in the 16-path representative set; every sample is verify-only, comment-only, watcher-stopped, and byte-restored before the next path | 65 weighted edit occurrences: censored p50 10.070 s, p95 10.087 s; 10 paths/45 occurrences hit the 10 s bound, 2 paths/11 occurrences hit `plan-group-cap`, 1 path/6 occurrences had no exact group, and 1 path/3 occurrences was unmapped; observed bound receipts used 4 compiler, 4 complete-graph linker and 4 probe processes, with zero Make/shell/LTO | **0/65 trustworthy within 5 s**; receipt is honestly `partial` because timeouts have no final bound cycle; all replayed source bytes restored and no watcher remained |
 
 The earlier single-island resident microbenchmark measured 227.280 ms p50 and
 232.141 ms p95 on 20 distinct artifacts. That is historical evidence for one
@@ -97,10 +98,11 @@ smuggle release work into a save cycle.
 
 ## Open gates
 
-- Replay the representative benchmark and establish p50/p95 plus process and
-  byte counts.
-- Replay the frozen representative set: the first restart-class measurement is
-  now 3.832 seconds, but one passing example is not a p50/p95 or coverage claim.
+- Remove the restart replay's dominant proof-selection failure: 45/65 weighted
+  occurrences exceed the bounded wait without an in-progress stage receipt,
+  while another 20/65 fail closed on capped, empty, or unmapped proof closure.
+  The current 10-second percentile values are censoring bounds, not claims that
+  the timed-out work completed. Source-byte instrumentation also remains open.
 - The pull-verifying P7 pre-push retry visibly invoked `cc -flto=auto` while
   linking `test_parallel_fast`. Reconcile that effective command with the
   non-LTO `INTEGRATION` contract; the current profile-text gate is not enough.

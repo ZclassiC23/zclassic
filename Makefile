@@ -2262,7 +2262,7 @@ fast-changed-compile:
 # import unrelated compiler depfiles.
 watcher-safety-gates: check-core-seal check-consensus-parity check-dev-loop-profiles
 
-.PHONY: check-dev-loop-profiles dev-loop-profile-flags dev-loop-history-bench dev-loop-history-bench-selftest
+.PHONY: check-dev-loop-profiles dev-loop-profile-flags dev-loop-history-bench dev-loop-history-bench-selftest dev-loop-history-replay dev-loop-history-replay-selftest
 dev-loop-profile-flags:
 	@printf 'DEV_LIVE\t%s\t%s\n' '$(DEV_LIVE_CFLAGS)' '$(HOTSWAP_MODULE_LDFLAGS)'
 	@printf 'DEV_RESTART\t%s\t%s\n' '$(DEV_RESTART_CFLAGS)' '$(DEV_RESTART_LDFLAGS)'
@@ -2277,6 +2277,12 @@ dev-loop-history-bench:
 
 dev-loop-history-bench-selftest:
 	@tools/dev/dev-loop-history-bench.sh --self-test
+
+dev-loop-history-replay:
+	@tools/dev/dev-loop-history-replay.sh run
+
+dev-loop-history-replay-selftest:
+	@tools/dev/dev-loop-history-replay.sh --self-test
 
 # Cheap pre-execution identity for deterministic negative-receipt lookup.  The
 # dev compile epoch already binds the exact source+ABA record, compiler and
@@ -2840,7 +2846,7 @@ native-dev-loop-wait-selftest: dev-bin
 native-dev-failure-selftest: dev-bin
 	@tools/dev/native-dev-failure-selftest.sh
 
-dev-loop-selftest: check-dev-loop-profiles dev-watch-selftest dev-activation-selftest dev-loop-bench-selftest native-dev-loop-wait-selftest native-dev-failure-selftest hotswap-sim
+dev-loop-selftest: check-dev-loop-profiles dev-loop-history-replay-selftest dev-watch-selftest dev-activation-selftest dev-loop-bench-selftest native-dev-loop-wait-selftest native-dev-failure-selftest hotswap-sim
 	@echo "dev-loop-selftest: PASS"
 
 remote-node-plan:

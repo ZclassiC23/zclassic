@@ -1236,12 +1236,21 @@ int zcl_devloop_restart_event(const char *repo_root,
         ok = rr_restart_build(repo_root, source_tus, source_count, &build,
                               &build_process, why, sizeof(why), false);
     int64_t closure_started = platform_time_monotonic_us();
-    if (ok && (!zcl_devloop_plan_add_closure_snapshot(
-                   repo_root, source_tus, source_count, &plan) ||
-               !zcl_devloop_plan_proof_admissible(&plan, NULL))) {
-        rr_why(why, sizeof(why),
-               "affected proof closure is incomplete or unavailable");
-        ok = false;
+    if (ok) {
+        const char *closure_reason = "";
+        bool closure_added = zcl_devloop_plan_add_closure_snapshot(
+            repo_root, source_tus, source_count, &plan);
+        bool closure_admissible = closure_added &&
+            zcl_devloop_plan_proof_admissible(&plan, &closure_reason);
+        if (!closure_admissible) {
+            char detail[256];
+            (void)snprintf(
+                detail, sizeof(detail), "affected proof closure refused: %s",
+                closure_added && closure_reason && closure_reason[0]
+                    ? closure_reason : "closure_unavailable");
+            rr_why(why, sizeof(why), detail);
+            ok = false;
+        }
     }
     closure_us = platform_time_monotonic_us() - closure_started;
     if (ok)
