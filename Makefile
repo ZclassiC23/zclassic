@@ -166,6 +166,8 @@ else ifneq ($(filter fast-compile dev-build-only,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := dev
 else ifneq ($(filter dev-bin zclassic23-dev,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := dev test-fast
+else ifneq ($(filter dev-package-verifier,$(ZCL_EPOCH_SINGLE_GOAL)),)
+ZCL_EPOCH_PROFILES := dev
 else ifneq ($(filter t-fast t-fast-exact test_parallel_fast test-parallel-fast-active,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := test-fast
 else ifneq ($(filter t test test_parallel test-parallel test-parallel-active,$(ZCL_EPOCH_SINGLE_GOAL)),)
@@ -422,6 +424,12 @@ ALL_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
 DEV_SRCS = $(NODE_ENTRY_SRCS) $(ALL_SRCS) $(DEV_ONLY_SRCS)
 DEV_OBJS = $(patsubst %.c,$(DEV_OBJ_DIR)/%.o,$(DEV_SRCS))
 DEV_OBJ_COMPLETE = $(DEV_OBJ_DIR)/.complete
+DEV_PACKAGE_VERIFY_OBJ = $(DEV_OBJ_DIR)/tools/package_verify.o
+DEV_PACKAGE_VERIFY_NODE_OBJS = $(patsubst %.c,$(DEV_OBJ_DIR)/%.o,\
+	$(ALL_SRCS) $(DEV_ONLY_SRCS))
+DEV_PACKAGE_VERIFY_LINK_RSP = $(DEV_OBJ_DIR)/package-verify-link-inputs.rsp
+DEV_PACKAGE_VERIFY_BIN = $(BIN_DIR)/zclassic23-package-verify-dev
+DEV_PACKAGE_VERIFY_ENSURE_STAMP = $(BUILD_DIR)/dev-package-verifier.ensure
 
 # pkg-config probes feed only compile/link flag expansion. The hot-swap loop
 # compiles nothing inside this parse (the fast path replays cached flags), so
@@ -1651,10 +1659,10 @@ $(TEST_TSAN_LINK_RSP): $(TEST_TSAN_OBJS)
 # verifier. Build that exact in-tree helper here, not only on the public
 # test-parallel wrapper: fast-ci/pre-push invokes the active fast runner
 # directly, and a clean checkout must not depend on a leftover binary.
-test-parallel-active: $(TEST_PARALLEL_REL_CANDIDATE) $(BIN_DIR)/zclassic23-package-verify
+test-parallel-active: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
 	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE)
 
-test-parallel-fast-active: $(TEST_PARALLEL_FAST_CANDIDATE) $(BIN_DIR)/zclassic23-package-verify
+test-parallel-fast-active: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
 	ulimit -s unlimited && $(TEST_PARALLEL_FAST_ACTIVE)
 
 .PHONY: test-parallel
@@ -1667,16 +1675,15 @@ test-parallel-fast-active: $(TEST_PARALLEL_FAST_CANDIDATE) $(BIN_DIR)/zclassic23
 # Always foreground (the watcher never calls this target — it runs test_parallel
 # through `make ff`, which is itself checkout-locked).
 #
-# zclassic23-package-verify is a hard prerequisite because test_zcode_verify
-# execs it. Without it that group fails with a named "binary missing" error,
-# which makes the suite's verdict depend on which binaries the checkout happens
-# to have built rather than on the code — an environment-dependent red that has
-# already cost one wrong diagnosis. The acceptance gate builds what it tests.
+# The fixed development package verifier is a hard prerequisite because the
+# ZCODE groups exec it.  Test/integration profiles deliberately use the
+# non-LTO DEV_RESTART companion; the separately named release verifier remains
+# part of `all` and release proof, never the focused-feedback critical path.
 #
 # TEST_PARALLEL_ARGS is empty by default, so the canonical gate is byte-for-byte
 # the historical cold run; pass e.g. TEST_PARALLEL_ARGS=--cold-audit (verify the
 # content cache) or --no-cache (force cold with ZCL_TEST_CACHE set).
-test-parallel: $(TEST_PARALLEL_REL_CANDIDATE) $(BIN_DIR)/zclassic23-package-verify
+test-parallel: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE) $(TEST_PARALLEL_ARGS)'
@@ -2053,7 +2060,7 @@ agent-velocity:
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
 # Checkout-locked — see the `test-parallel` target above for why.
-t: $(TEST_PARALLEL_REL_CANDIDATE)
+t: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE) --only=$(ONLY)'
@@ -2062,7 +2069,7 @@ t: $(TEST_PARALLEL_REL_CANDIDATE)
 # a cached, stable (toolchain+flags-keyed) per-file epoch and links a non-LTO harness; use strict `make t`
 # before push/release or when chasing optimizer-dependent behavior.
 # Checkout-locked — see the `test-parallel` target above for why.
-t-fast: $(TEST_PARALLEL_FAST_CANDIDATE)
+t-fast: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --only=$(ONLY)'
@@ -2070,7 +2077,7 @@ t-fast: $(TEST_PARALLEL_FAST_CANDIDATE)
 # Proof-facing sibling of t-fast. The human convenience target above keeps its
 # documented substring behavior; impact plans and durable receipts use this
 # exact-ID path so a stale mapping cannot pass by selecting a sibling group.
-t-fast-exact: $(TEST_PARALLEL_FAST_CANDIDATE)
+t-fast-exact: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED)'
@@ -2116,7 +2123,7 @@ endif
 # measured ~11/15 failures here at unlimited, 0/15 at 1 GiB). 1 GiB keeps
 # the deep-recursion headroom the suite needs.
 # Checkout-locked — see the `test-parallel` target above for why.
-t-asan: $(TEST_ASAN_CANDIDATE)
+t-asan: $(TEST_ASAN_CANDIDATE) dev-package-verifier-ensure
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s 1048576 && exec $(TEST_ASAN_ACTIVE) --only=$(ONLY)'
@@ -2132,7 +2139,7 @@ t-asan: $(TEST_ASAN_CANDIDATE)
 # in the default set is verified clean under this posture — a red asan-ci
 # run is a real finding to fix, never an expected failure.
 ASAN_CI_GROUPS ?= test_bloom test_json test_parse_num test_zcl_result test_supervisor test_encoding test_zcode_site
-asan-ci: $(TEST_ASAN_CANDIDATE)
+asan-ci: $(TEST_ASAN_CANDIDATE) dev-package-verifier-ensure
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'set -e; ulimit -s 1048576; \
@@ -2172,7 +2179,7 @@ zcode-dht-asan:
 # release artifacts, so no-ASLR is an acceptable trade.
 # Checkout-locked — see the `test-parallel` target above for why.
 TSAN_SUPP_FILE = $(CURDIR)/tools/tsan.supp
-t-tsan: $(TEST_TSAN_CANDIDATE)
+t-tsan: $(TEST_TSAN_CANDIDATE) dev-package-verifier-ensure
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s 1048576 && \
@@ -2191,7 +2198,7 @@ t-tsan: $(TEST_TSAN_CANDIDATE)
 # is a real NEW finding, not expected noise. setarch -R: see the t-tsan note
 # above.
 TSAN_CI_GROUPS ?= test_supervisor test_workpool test_mailbox test_parallel_range_fold test_validate_parallel_determinism test_net_bootstrap test_cpu_topology
-tsan-ci: $(TEST_TSAN_CANDIDATE)
+tsan-ci: $(TEST_TSAN_CANDIDATE) dev-package-verifier-ensure
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'set -e; ulimit -s 1048576; \
@@ -2317,7 +2324,8 @@ verify-change:
 # artifacts.
 HOTSWAP_ACTION_PLAN = $(BUILD_DIR)/hotswap/fast/flags.env
 dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN) $(DEV_RESTART_PLAN) \
-	$(HOTSWAP_ACTION_PLAN) zclassic23-zcode-adapter-runner
+	$(HOTSWAP_ACTION_PLAN) dev-package-verifier \
+	zclassic23-zcode-adapter-runner
 # Checkout-locked (see CHECKOUT_LOCK above) — the watcher invokes this same
 # target via run_rebuild_command, so it defers instead of racing a foreground
 # rebuild in the same checkout.
@@ -2351,6 +2359,65 @@ $(DEV_CANDIDATE_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(DEV_OBJ_COMP
 DEV_LINK_RSP = $(DEV_OBJ_DIR)/link-inputs.rsp
 $(DEV_LINK_RSP): $(DEV_OBJS)
 	@$(file >$@,$(DEV_OBJS)) test -s "$@"
+
+# Focused tests intentionally select only their own compile epoch at parse
+# time.  The common path compares one identity-bound readiness line; only a
+# missing/stale helper enters a nested dev-profile build.  This gives a clean
+# checkout its prerequisite without paying a recursive Make on every test.
+.PHONY: dev-package-verifier dev-package-verifier-ensure
+dev-package-verifier: $(DEV_PACKAGE_VERIFY_BIN)
+	@mkdir -p '$(dir $(DEV_PACKAGE_VERIFY_ENSURE_STAMP))'
+	@set -eu; \
+	tmp="$$(mktemp '$(DEV_PACKAGE_VERIFY_ENSURE_STAMP).XXXXXX')"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	printf '%s %s %s\n' '$(BUILD_SOURCE_ID)' '$(BUILD_CLEAN)' \
+	  '$(BUILD_MUTATION)' > "$$tmp"; \
+	mv -f -- "$$tmp" '$(DEV_PACKAGE_VERIFY_ENSURE_STAMP)'; \
+	trap - EXIT HUP INT TERM
+
+ifeq ($(ZCL_STANDALONE_CLEAN),1)
+dev-package-verifier-ensure:
+	@:
+else
+dev-package-verifier-ensure:
+	@set -eu; \
+	want='$(BUILD_SOURCE_ID) $(BUILD_CLEAN) $(BUILD_MUTATION)'; \
+	have=''; \
+	if test -r '$(DEV_PACKAGE_VERIFY_ENSURE_STAMP)'; then \
+	  IFS= read -r have < '$(DEV_PACKAGE_VERIFY_ENSURE_STAMP)' || :; \
+	fi; \
+	if ! test -x '$(DEV_PACKAGE_VERIFY_BIN)' || test "$$have" != "$$want"; then \
+	  $(MAKE) --no-print-directory dev-package-verifier; \
+	fi
+endif
+
+# The confined ZBuild worker is a runtime prerequisite of several focused
+# ZCODE groups.  A fresh dev worktree must not need the release-only,
+# whole-program-LTO verifier before those groups can produce feedback.  Reuse
+# the already compiled DEV_RESTART object graph, add only the verifier main,
+# and link this fixed dev-only companion once during environment bootstrap.
+# Save cycles never rebuild it unless one of its exact inputs changed.
+$(DEV_PACKAGE_VERIFY_BIN): $(DEV_PACKAGE_VERIFY_LINK_RSP) \
+		$(DEV_OBJ_COMPLETE) | $(VENDOR_LIBS)
+	@mkdir -p $(dir $@)
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(DEV_RESTART_CFLAGS) $(DEV_RESTART_LDFLAGS) -o "$$tmp" \
+	  "@$(DEV_PACKAGE_VERIFY_LINK_RSP)" \
+	  $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	$(BUILD_EPOCH_SESSION_TOOL) verify "$(DEV_SESSION)" "$(DEV_LEASE)" \
+	  "$(DEV_OBJ_ROOT)" "$(BIN_DIR)/dev" "$(BUILD_EPOCH_KEEP)" \
+	  "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" \
+	  "$(BUILD_COMPILER_ID)" "$(DEV_COMPILE_EPOCH)" "$(DEV_PROFILE)" \
+	  "$(DEV_EPOCH_COMPILE_FLAGS)" "$(DEV_EPOCH_LINK_FLAGS)" \
+	  "$(CC)" "$(CXX)" "$$PPID" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
+
+$(DEV_PACKAGE_VERIFY_LINK_RSP): $(DEV_PACKAGE_VERIFY_OBJ) \
+		$(DEV_PACKAGE_VERIFY_NODE_OBJS)
+	@$(file >$@,$(DEV_PACKAGE_VERIFY_OBJ) $(DEV_PACKAGE_VERIFY_NODE_OBJS)) test -s "$@"
 
 $(DEV_RESTART_PLAN): $(DEV_OBJ_COMPLETE) $(DEV_LINK_RSP) \
 		$(TEST_PARALLEL_FAST_LINK_RSP) Makefile FORCE
@@ -3089,7 +3156,8 @@ $(BIN_DIR)/zclassic23-zcode-adapter-runner: $(BUILD_IDENTITY_STAMP) \
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
 	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" \
+	$(CC) $(DEV_RESTART_CFLAGS) -Wno-deprecated-declarations \
+		$(DEV_RESTART_LDFLAGS) -o "$$tmp" \
 		$(ZCODE_ADAPTER_RUNNER_SRCS); \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	mv -f -- "$$tmp" "$@"; \
@@ -3385,7 +3453,7 @@ $(BIN_DIR)/zcl-blog: tools/zcl-blog
 # The slow single-process binary is still available as `make test-full`.
 # Doctrine: never run test_zcl in the inner loop — use `make t ONLY=<group>`.
 # Checkout-locked — see the `test-parallel` target above for why.
-test: $(TEST_PARALLEL_REL_CANDIDATE)
+test: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE) $(TEST_PARALLEL_ARGS)'

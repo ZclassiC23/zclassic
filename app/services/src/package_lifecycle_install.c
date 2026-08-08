@@ -6,7 +6,7 @@
  * and pin.
  *
  * The node NEVER compiles anything and NEVER loads a package's output. The
- * only compilation is inside build/bin/zclassic23-package-verify --emit; the
+ * only compilation is inside the fixed package verifier --emit; the
  * only thing that crosses back is bytes on disk, and every one of those bytes
  * is re-hashed here against the worker's own receipt before it is installed.
  * There is no dlopen anywhere in this file by design. */
@@ -32,7 +32,8 @@
 /* A confined build of a v1-sized package (static archive, no network, no
  * generated build system) that has not finished in ten minutes is wedged. */
 #define PKGL_BUILD_TIMEOUT_MS 600000
-#define PKGL_WORKER_NAME "zclassic23-package-verify"
+#define PKGL_DEV_WORKER_NAME "zclassic23-package-verify-dev"
+#define PKGL_RELEASE_WORKER_NAME "zclassic23-package-verify"
 
 /* ── worker discovery ───────────────────────────────────────────────── */
 
@@ -54,24 +55,32 @@ static struct zcl_result pkgl_worker_path(char *out, size_t cap)
     if (!slash)
         return ZCL_ERR(-1, "resolved executable path has no directory component");
     *slash = '\0';
-    int w = snprintf(out, cap, "%s/%s", exe, PKGL_WORKER_NAME);
-    if (w <= 0 || (size_t)w >= cap)
-        return ZCL_ERR(-1, "worker path too long");
     bool present = false;
-    ZCL_CHECK(pkgl_exists(out, &present));
-    if (present)
-        return ZCL_OK;
-    w = snprintf(out, cap, "build/bin/%s", PKGL_WORKER_NAME);
-    if (w <= 0 || (size_t)w >= cap)
-        return ZCL_ERR(-1, "worker path too long");
-    ZCL_CHECK(pkgl_exists(out, &present));
-    if (!present)
-        return ZCL_ERR(-1,
-                       "the build worker %s is neither next to this binary "
-                       "nor in build/bin — build it (make "
-                       "zclassic23-package-verify) before installing "
-                       "packages", PKGL_WORKER_NAME);
-    return ZCL_OK;
+    const char *names[] = {
+        PKGL_DEV_WORKER_NAME,
+        PKGL_RELEASE_WORKER_NAME,
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        int w = snprintf(out, cap, "%s/%s", exe, names[i]);
+        if (w <= 0 || (size_t)w >= cap)
+            return ZCL_ERR(-1, "worker path too long");
+        ZCL_CHECK(pkgl_exists(out, &present));
+        if (present)
+            return ZCL_OK;
+    }
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        int w = snprintf(out, cap, "build/bin/%s", names[i]);
+        if (w <= 0 || (size_t)w >= cap)
+            return ZCL_ERR(-1, "worker path too long");
+        ZCL_CHECK(pkgl_exists(out, &present));
+        if (present)
+            return ZCL_OK;
+    }
+    return ZCL_ERR(-1,
+                   "the fixed development or release package verifier is "
+                   "neither next to this binary nor in build/bin — build "
+                   "the development helper (make dev-bin) before "
+                   "installing packages");
 }
 
 /* ── streaming copy that hashes what it wrote ───────────────────────── */

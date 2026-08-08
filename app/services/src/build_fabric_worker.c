@@ -73,17 +73,18 @@ static struct zcl_result bfw_worker_path(const char *workspace,
     char *slash = strrchr(exe, '/');
     if (!slash) return ZCL_ERR(-1, "running executable has no directory");
     *slash = '\0';
-    int n = snprintf(out, cap, "%s/zclassic23-package-verify", exe);
-    if (n > 0 && (size_t)n < cap && access(out, X_OK) == 0)
-        return ZCL_OK;
-    n = snprintf(out, cap, "%s/build/bin/zclassic23-package-verify",
-                 workspace);
-    if (n > 0 && (size_t)n < cap && access(out, X_OK) == 0)
-        return ZCL_OK;
-    n = snprintf(out, cap, "build/bin/zclassic23-package-verify");
-    if (n > 0 && (size_t)n < cap && access(out, X_OK) == 0)
-        return ZCL_OK;
-    return ZCL_ERR(-1, "fixed package verifier is not built");
+    const char *roots[] = {exe, workspace, "."};
+    const char *mids[] = {"/", "/build/bin/", "/build/bin/"};
+    const char *names[] = {"zclassic23-package-verify-dev",
+                           "zclassic23-package-verify"};
+    for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
+        for (size_t j = 0; j < sizeof(names) / sizeof(names[0]); j++) {
+            int n = snprintf(out, cap, "%s%s%s", roots[i], mids[i], names[j]);
+            if (n > 0 && (size_t)n < cap && access(out, X_OK) == 0)
+                return ZCL_OK;
+        }
+    }
+    return ZCL_ERR(-1, "fixed development or release package verifier is not built");
 }
 
 static struct zcl_result bfw_paths_init(const char *workspace,
