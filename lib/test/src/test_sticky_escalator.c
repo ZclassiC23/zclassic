@@ -1653,6 +1653,32 @@ int test_sticky_escalator(void)
                  cursor_value(db, "proof_validate") == A + 3 &&
                  cursor_value(db, "body_fetch") == A + 3 &&
                  cursor_value(db, "script_validate") != A);
+        SE_CHECK("T21: resnapshot dispatched exactly once",
+                 sticky_escalator_test_rung_dispatches(
+                     STICKY_RUNG_RESNAPSHOT) == 1);
+
+        /* A supervisor poll while the fold is still below its pre-rewind
+         * frontier must HOLD without dispatching the destructive range rewind
+         * again.  This is the live custody sawtooth regression: before the fix,
+         * every five-second poll re-entered the same seal and the wallet money
+         * snapshot oscillated CURRENT -> STALE forever. */
+        SE_CHECK("T21: catch-up poll holds on resnapshot",
+                 sticky_escalator_test_drive(A + 9, t + 34) ==
+                     STICKY_RUNG_RESNAPSHOT);
+        SE_CHECK("T21: catch-up poll does not redispatch the rewind",
+                 sticky_escalator_test_rung_dispatches(
+                     STICKY_RUNG_RESNAPSHOT) == 1);
+
+        /* Regaining the exact pre-rewind frontier is sufficient.  Waiting for
+         * two newer blocks would wrongly push a completed repair into reindex
+         * on a quiet chain. */
+        SE_CHECK("T21: regaining entry frontier clears the episode",
+                 sticky_escalator_test_drive(A + 10, t + 35) ==
+                     STICKY_RUNG_RETRY &&
+                 !sticky_escalator_test_armed());
+        SE_CHECK("T21: completion still records one rewind dispatch",
+                 sticky_escalator_test_rung_dispatches(
+                     STICKY_RUNG_RESNAPSHOT) == 1);
 
         blocker_reset_for_testing();
         reducer_frontier_provable_tip_reset();
