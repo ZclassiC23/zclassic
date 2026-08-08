@@ -1611,6 +1611,7 @@ int main(int argc, char **argv)
     { extern int test_zcode_discovery_projection(void);
       failures += test_zcode_discovery_projection(); }
     { extern int test_metaverse_catalog(void); failures += test_metaverse_catalog(); }
+    { extern int test_site_routes(void); failures += test_site_routes(); }
     { extern int test_space(void); failures += test_space(); }
     { extern int test_space_scout(void); failures += test_space_scout(); }
     { extern int test_vcs_devloop(void); failures += test_vcs_devloop(); }

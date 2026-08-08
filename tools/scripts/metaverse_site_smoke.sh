@@ -24,14 +24,14 @@ for route in /metaverse /metaverse/property /metaverse/space /metaverse/commons;
     echo "SMOKE 200 $route ($(printf '%s' "$body" | wc -c) bytes)"
 done
 body="$(curl -kfsS --max-time 15 "https://127.0.0.1:$ISO_HTTPSPORT/metaverse")"
-printf '%s' "$body" | grep -q "nobody owns the world they build in" \
+grep -q "nobody owns the world they build in" <<<"$body" \
     && echo "SMOKE marker: mission text OK" || { echo "SMOKE FAIL: mission"; fail=1; }
-printf '%s' "$body" | grep -q "SIMULATION" \
+grep -q "SIMULATION" <<<"$body" \
     && echo "SMOKE marker: SIMULATION label OK" || { echo "SMOKE FAIL: sim"; fail=1; }
 body="$(curl -kfsS --max-time 15 "https://127.0.0.1:$ISO_HTTPSPORT/metaverse/property")"
-printf '%s' "$body" | grep -q "zcode_package" \
+grep -q "zcode_package" <<<"$body" \
     && echo "SMOKE marker: property kinds OK" || { echo "SMOKE FAIL: kinds"; fail=1; }
 body="$(curl -kfsS --max-time 15 "https://127.0.0.1:$ISO_HTTPSPORT/metaverse/commons")"
-printf '%s' "$body" | grep -q "ZC23 Living Commons" \
+grep -q "ZC23 Living Commons" <<<"$body" \
     && echo "SMOKE marker: commons OK" || { echo "SMOKE FAIL: commons"; fail=1; }
 exit "$fail"

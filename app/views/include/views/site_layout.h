@@ -27,6 +27,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "net/site_routes.h"
+
 /* Same append-with-truncation-guard semantics as APPEND in
  * controllers/explorer_internal.h; separate name so both headers can be
  * included together. */
@@ -43,20 +45,14 @@
 /* Global site nav — the one bar that unifies every route family. `active`
  * is one of "explorer", "names", "store", "blog", "metaverse",
  * "directory" (the link gets class='active'), or NULL to highlight
- * nothing. Keep the link set
- * here and in SITE_GLOBAL_NAV below in lockstep. */
+ * nothing. The link set is generated: g_zcl_site_nav_app is expanded from
+ * net/site_routes.def (the single site-route inventory) in
+ * lib/net/src/site_routes.c — add a row there, never a link here.
+ * SITE_GLOBAL_NAV below stays the literal twin for one-shot snprintf
+ * format strings; test_site_routes pins the twin contract byte-exactly. */
 static inline size_t site_emit_global_nav(char *buf, size_t max,
                                           const char *active)
 {
-    static const struct { const char *href; const char *label; const char *id; }
-        links[] = {
-        { "/explorer",  "Explorer",  "explorer"  },
-        { "/names",     "Names",     "names"     },
-        { "/store",     "Store",     "store"     },
-        { "/blog",      "Blog",      "blog"      },
-        { "/metaverse", "Metaverse", "metaverse" },
-        { "/directory", "Directory", "directory" },
-    };
     size_t off = 0;
     SITE_APPEND(off, buf, max,
         "<header class='site-top'>"
@@ -64,18 +60,21 @@ static inline size_t site_emit_global_nav(char *buf, size_t max,
         "<span class='glyph' aria-hidden='true'>Z</span>"
         "<span>ZClassic23</span></a>"
         "<nav aria-label='Site'>");
-    for (size_t i = 0; i < sizeof(links) / sizeof(links[0]); i++) {
-        bool act = active && strcmp(active, links[i].id) == 0;
+    for (size_t i = 0; i < g_zcl_site_nav_app_count; i++) {
+        bool act = active && strcmp(active, g_zcl_site_nav_app[i].id) == 0;
         SITE_APPEND(off, buf, max, "<a href='%s'%s>%s</a>",
-                    links[i].href, act ? " class='active'" : "",
-                    links[i].label);
+                    g_zcl_site_nav_app[i].href, act ? " class='active'" : "",
+                    g_zcl_site_nav_app[i].label);
     }
     SITE_APPEND(off, buf, max, "</nav></header>");
     return off;
 }
 
 /* Literal twin of site_emit_global_nav(active=NULL) for one-shot snprintf
- * format strings (legacy explorer error pages). */
+ * format strings (legacy explorer error pages). A compile-time string
+ * cannot be generated from the def (macro expansion cannot order rows
+ * other than def order), so the twin relationship is pinned byte-exactly
+ * by the test_site_routes group instead. */
 #define SITE_GLOBAL_NAV \
     "<header class='site-top'>" \
     "<a class='brand' href='/'>" \

@@ -15,6 +15,7 @@
 
 #include "platform/time_compat.h"
 #include "net/onion_ratelimit.h"
+#include "net/site_routes.h"
 #include "net/puzzle.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
@@ -27,9 +28,16 @@
 
 /* ── Route classification table ───────────────────────────────────────
  *
- * Every path onion_service_handle_request() (lib/net/src/onion_service.c)
- * can reach, audited against that dispatcher and the controllers it
- * delegates to. A trailing "..." below means "any suffix".
+ * The app MVC mounts classify from the rows of net/site_routes.def — the
+ * single inventory the onion dispatch chain, the HTTPS dispatch chain,
+ * both site navs, AND this classifier all expand. Every new app route
+ * MUST be a row there; never add a parallel route table here.
+ *
+ * The hand-written remainder below is what a per-row class cannot
+ * express — exact-match STATIC assets, the method-sensitive store POST
+ * special, and the free-text search prefixes — audited against
+ * onion_service_handle_request() (lib/net/src/onion_service.c) and the
+ * controllers it delegates to. A trailing "..." means "any suffix".
  *
  *   PATH                              TIER       WHY
  *   ────────────────────────────────  ─────────  ──────────────────────
@@ -40,18 +48,15 @@
  *   /favicon.ico,                     STATIC     fixed asset, no DB
  *   /explorer/style.css,
  *   /explorer/favicon.png
- *   /directory.json, /directory       CHEAP      bounded SELECT, LIMIT
- *   /blog/...                         CHEAP      signed MVC mount, one
- *                                                 indexed read
- *   /store, /store/products           CHEAP      product listing SELECT
- *   /store/product/...                CHEAP      single-row SELECT
- *   /store/order/... (GET)            CHEAP      order status, single row
- *   /store/access...                  CHEAP      one constant-time HMAC
- *                                                 compare, not a mint
+ *   /search...                        EXPENSIVE  free-text scan over the
+ *                                                 peer directory
+ *   /explorer/search...               EXPENSIVE  free-text scan across
+ *                                                 blocks/tx/address/token
  *   /store/orders (POST),             EXPENSIVE  MINTS a Sapling
  *   /store/buy/...                               z-address + writes an
  *                                                 `orders` row
- *   /n/...                            EXPENSIVE  the ZCL Names gateway:
+ *   /n/...                            EXPENSIVE  (def row names_gateway)
+ *                                                 the ZCL Names gateway:
  *                                                 with the operator opt-in
  *                                                 ZCL_NAMES_ONION_GATEWAY
  *                                                 on, this DIALS a
@@ -77,24 +82,20 @@
  *                                                 one. /names (the browse
  *                                                 and profile pages) is
  *                                                 NOT this prefix and
- *                                                 stays CHEAP.
- *   /search...                        EXPENSIVE  free-text scan over the
- *                                                 peer directory
- *   /explorer/search...               EXPENSIVE  free-text scan across
- *                                                 blocks/tx/address/token
- *   /explorer/..., /names,            CHEAP      dashboards, listings,
- *   shortcuts (/stats,/tokens,/hodl,             and single-key indexed
- *   /events,/factoids,/market,                   lookups
- *   /swaps,/messages), /wallet
- *   /zcode...                         CHEAP      bounded listing/lookup
- *                                                 pages over the rebuildable
- *                                                 ZCODE read projections (row
- *                                                 caps mirror the zcode.*
- *                                                 command render caps);
- *                                                 /zcode/download serves one
- *                                                 bounded CAS object with
- *                                                 attachment semantics, no
- *                                                 write, no scan, no mint
+ *                                                 stays CHEAP (def row
+ *                                                 names).
+ *   /directory.json, /directory       CHEAP      bounded SELECT, LIMIT
+ *   /explorer/..., shortcuts          CHEAP      dashboards, listings,
+ *   (/stats,/tokens,/hodl,/events,               and single-key indexed
+ *   /factoids,/market,/swaps,                    lookups (chrome)
+ *   /messages), /wallet
+ *   every other def row               CHEAP      /blog..., /store...
+ *                                                 (GET), /names...,
+ *                                                 /zcode...,
+ *                                                 /metaverse...,
+ *                                                 /yardsale...: bounded
+ *                                                 listings and single-key
+ *                                                 indexed lookups
  *   the REST API prefix               UNREACHABLE onion dispatch only
  *                                                 forwards "/explorer" or
  *                                                 a canonical shortcut to
@@ -104,10 +105,12 @@
  *                                                 prefix.
  *
  * Anything not positively matched defaults CHEAP. A new route that mints,
- * writes, or scans must be added to the EXPENSIVE list explicitly — that
- * is fail-open toward review, not a silent hole: an unclassified
- * expensive route still degrades behind the CHEAP budget, it is just not
- * eligible for puzzle escalation until it is classified. */
+ * writes, or scans must be classified EXPENSIVE — by its def row's cost
+ * column when the whole prefix is expensive, or by a hand-written special
+ * below when the trigger is method- or sub-path-sensitive. That is
+ * fail-open toward review, not a silent hole: an unclassified expensive
+ * route still degrades behind the CHEAP budget, it is just not eligible
+ * for puzzle escalation until it is classified. */
 
 static bool path_prefix(const char *path, const char *prefix, size_t plen)
 {
@@ -126,15 +129,6 @@ enum onion_route_class onion_route_classify(const char *method,
      * classification can never disagree with routing. */
     if (path_prefix(path, "/search", 7)) {
         if (route_key_out) snprintf(route_key_out, 32, "search-hostname");
-        return ONION_ROUTE_EXPENSIVE;
-    }
-
-    /* EXPENSIVE: the ZCL Names gateway — an outbound Tor dial chosen by an
-     * anonymous visitor, on a thread it holds while the circuit builds.
-     * Prefix-matches exactly the way onion_service_handle_request()
-     * dispatches "/n/", so classification cannot disagree with routing. */
-    if (path_prefix(path, "/n/", 3)) {
-        if (route_key_out) snprintf(route_key_out, 32, "name-gateway");
         return ONION_ROUTE_EXPENSIVE;
     }
 
@@ -165,6 +159,21 @@ enum onion_route_class onion_route_classify(const char *method,
         strcmp(path, "/explorer/style.css") == 0 ||
         strcmp(path, "/explorer/favicon.png") == 0)
         return ONION_ROUTE_STATIC;
+
+    /* App MVC mounts — the rows of net/site_routes.def, prefix-matched in
+     * dispatch order, exactly the way onion_service_handle_request()
+     * dispatches them, so classification can never disagree with routing.
+     * Only an EXPENSIVE row carries a route key (names_gateway today). */
+#define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
+                   nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
+                   grid_desc, fail_body) \
+    if (path_prefix(path, prefix, sizeof(prefix) - 1)) { \
+        if (route_key_out && (rkey)[0]) \
+            snprintf(route_key_out, 32, "%s", rkey); \
+        return cost; \
+    }
+#include "net/site_routes.def"
+#undef SITE_ROUTE
 
     return ONION_ROUTE_CHEAP;
 }

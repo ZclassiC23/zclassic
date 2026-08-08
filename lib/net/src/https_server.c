@@ -11,6 +11,7 @@
 
 #define _XOPEN_SOURCE 700
 #include "net/https_server.h"
+#include "net/site_routes.h"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <arpa/inet.h>
@@ -179,6 +180,30 @@ static bool plain_read_line(int fd, char *buf, size_t max)
  * explorer/API clients send well under this. */
 #define HTTP_MAX_REQUEST_HEADERS 512
 
+/* SSL_write may not accept the whole buffer at once — write in chunks. */
+static void https_write_all(SSL *ssl, const unsigned char *buf, size_t n)
+{
+    size_t written = 0;
+    while (written < n) {
+        size_t chunk = n - written;
+        if (chunk > 16384) chunk = 16384;
+        int w = SSL_write(ssl, buf + written, (int)chunk);
+        if (w <= 0) break;
+        written += (size_t)w;
+    }
+}
+
+/* App-mount handler prototypes — expanded from net/site_routes.def, the
+ * single registry (lib/net never includes app/ headers). The same def
+ * also generates the dispatch below, the onion twin in onion_service.c,
+ * and the ratelimit classification in onion_ratelimit.c. */
+#define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
+                   nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
+                   grid_desc, fail_body) \
+    ZCL_SITE_EXTERN_##flavor(handler)
+#include "net/site_routes.def"
+#undef SITE_ROUTE
+
 /* ── HTTPS handler ────────────────────────────────────────── */
 
 static void handle_https_client(SSL *ssl)
@@ -266,160 +291,75 @@ static void handle_https_client(SSL *ssl)
         }
     }
 
-    /* Public Blog App mount. Reverse-proxying this listener at zclnet.net
-     * therefore serves the exact same /blog resource as each onion. */
-    if (strncmp(path, "/blog", 5) == 0 &&
-        (path[5] == 0 || path[5] == '/' || path[5] == '?')) {
-        extern size_t blog_site_handle_request(const char *, const char *,
-            const unsigned char *, size_t, unsigned char *, size_t);
-        unsigned char *buf = zcl_malloc(HTTPS_RESPONSE_BUFFER_SIZE,
-                                        "https_blog_buf");
-        if (!buf) return;
-        size_t n = blog_site_handle_request(method, path, NULL, 0, buf,
-                                            HTTPS_RESPONSE_BUFFER_SIZE);
-        if (n > 0) {
-            size_t written = 0;
-            while (written < n) {
-                size_t chunk = n - written;
-                if (chunk > 16384) chunk = 16384;
-                int w = SSL_write(ssl, buf + written, (int)chunk);
-                if (w <= 0) break;
-                written += (size_t)w;
-            }
-        } else {
-            const char *resp =
-                "HTTP/1.1 503 Service Unavailable\r\n"
-                "Content-Type: text/plain\r\n"
-                "Connection: close\r\n\r\n"
-                "Blog storage is unavailable.\n";
-            SSL_write(ssl, resp, (int)strlen(resp));
-        }
-        free(buf);
-        return;
+    /* App MVC mounts — expanded from net/site_routes.def in registry
+     * order. This listener is GET/HEAD-only (checked above), so every
+     * row's POST surface (the store's order mints, the names register,
+     * the yardsale ceremony) stays onion-only; the store mount itself is
+     * onion-only and expands to nothing here. PLAIN rows prefix-match
+     * with no boundary guard; DATADIR and FAILCLOSED rows keep their
+     * path[N] ∈ {NUL, '/', '?'} guard; DATADIR passes NULL for the
+     * datadir (the handler resolves GetDataDir(true) itself — this
+     * listener carries no datadir context); FAILCLOSED turns a handler 0
+     * into a 503 carrying the row's fail_body. */
+#define ZCL_HTTPS_DISPATCH_STORE(id, prefix, handler, fail_body) \
+    /* onion-only mount — this listener never serves it */
+#define ZCL_HTTPS_DISPATCH_PLAIN(id, prefix, handler, fail_body) \
+    if (strncmp(path, prefix, sizeof(prefix) - 1) == 0) { \
+        unsigned char *buf = zcl_malloc(HTTPS_RESPONSE_BUFFER_SIZE, \
+                                        "https_" #id "_buf"); \
+        if (!buf) return; \
+        size_t site_n_ = handler(method, path, NULL, 0, buf, \
+                                 HTTPS_RESPONSE_BUFFER_SIZE); \
+        if (site_n_ > 0) \
+            https_write_all(ssl, buf, site_n_); \
+        free(buf); \
+        return; \
     }
-
-    /* Public Yardsale App mount — the same browse pages the onion serves.
-     * This listener is GET/HEAD-only, so the ceremony POSTs (/yardsale/buy,
-     * /yardsale/accept) are onion-only, like the store's order POSTs. */
-    if (strncmp(path, "/yardsale", 9) == 0 &&
-        (path[9] == 0 || path[9] == '/' || path[9] == '?')) {
-        extern size_t yardsale_site_handle_request(const char *,
-            const char *, const unsigned char *, size_t,
-            unsigned char *, size_t);
-        unsigned char *buf = zcl_malloc(HTTPS_RESPONSE_BUFFER_SIZE,
-                                        "https_yardsale_buf");
-        if (!buf) return;
-        size_t n = yardsale_site_handle_request(method, path, NULL, 0, buf,
-                                                HTTPS_RESPONSE_BUFFER_SIZE);
-        if (n > 0) {
-            size_t written = 0;
-            while (written < n) {
-                size_t chunk = n - written;
-                if (chunk > 16384) chunk = 16384;
-                int w = SSL_write(ssl, buf + written, (int)chunk);
-                if (w <= 0) break;
-                written += (size_t)w;
-            }
-        } else {
-            const char *resp =
-                "HTTP/1.1 503 Service Unavailable\r\n"
-                "Content-Type: text/plain\r\n"
-                "Connection: close\r\n\r\n"
-                "Yardsale storage is unavailable.\n";
-            SSL_write(ssl, resp, (int)strlen(resp));
-        }
-        free(buf);
-        return;
+#define ZCL_HTTPS_DISPATCH_DATADIR(id, prefix, handler, fail_body) \
+    if (strncmp(path, prefix, sizeof(prefix) - 1) == 0 && \
+        (path[sizeof(prefix) - 1] == 0 || path[sizeof(prefix) - 1] == '/' || \
+         path[sizeof(prefix) - 1] == '?')) { \
+        unsigned char *buf = zcl_malloc(HTTPS_RESPONSE_BUFFER_SIZE, \
+                                        "https_" #id "_buf"); \
+        if (!buf) return; \
+        size_t site_n_ = handler(method, path, NULL, 0, buf, \
+                                 HTTPS_RESPONSE_BUFFER_SIZE, NULL); \
+        if (site_n_ > 0) \
+            https_write_all(ssl, buf, site_n_); \
+        free(buf); \
+        return; \
     }
-
-    /* ZCL Names — name→site resolution (/n/<name>) + registry (/names),
-     * the same handler the onion service uses so a name resolves identically
-     * on both transports. This listener is GET/HEAD-only (checked above), so
-     * the register POST is onion-only, like the store's; GET resolve/browse/
-     * profile are served here. */
-    if (strncmp(path, "/n/", 3) == 0 || strncmp(path, "/names", 6) == 0) {
-        extern size_t name_site_handle_request(const char *, const char *,
-            const unsigned char *, size_t, unsigned char *, size_t);
-        unsigned char *buf = zcl_malloc(HTTPS_RESPONSE_BUFFER_SIZE,
-                                        "https_names_buf");
-        if (!buf) return;
-        size_t n = name_site_handle_request(method, path, NULL, 0, buf,
-                                            HTTPS_RESPONSE_BUFFER_SIZE);
-        if (n > 0) {
-            size_t written = 0;
-            while (written < n) {
-                size_t chunk = n - written;
-                if (chunk > 16384) chunk = 16384;
-                int w = SSL_write(ssl, buf + written, (int)chunk);
-                if (w <= 0) break;
-                written += (size_t)w;
-            }
-        }
-        free(buf);
-        return;
+#define ZCL_HTTPS_DISPATCH_FAILCLOSED(id, prefix, handler, fail_body) \
+    if (strncmp(path, prefix, sizeof(prefix) - 1) == 0 && \
+        (path[sizeof(prefix) - 1] == 0 || path[sizeof(prefix) - 1] == '/' || \
+         path[sizeof(prefix) - 1] == '?')) { \
+        unsigned char *buf = zcl_malloc(HTTPS_RESPONSE_BUFFER_SIZE, \
+                                        "https_" #id "_buf"); \
+        if (!buf) return; \
+        size_t site_n_ = handler(method, path, NULL, 0, buf, \
+                                 HTTPS_RESPONSE_BUFFER_SIZE); \
+        if (site_n_ > 0) { \
+            https_write_all(ssl, buf, site_n_); \
+        } else { \
+            const char *resp = \
+                "HTTP/1.1 503 Service Unavailable\r\n" \
+                "Content-Type: text/plain\r\n" \
+                "Connection: close\r\n\r\n" fail_body; \
+            SSL_write(ssl, resp, (int)strlen(resp)); \
+        } \
+        free(buf); \
+        return; \
     }
-
-    /* ZCODE Library — packages, publishers, rankings, badges, downloads,
-     * the same handler the onion service uses so the site reads
-     * identically on both transports (datadir NULL → the handler resolves
-     * GetDataDir(true) itself, this listener carrying no datadir context).
-     * This listener is GET/HEAD-only (checked above) and the ZCODE site is
-     * a read-only surface, so every route is served here. */
-    if (strncmp(path, "/zcode", 6) == 0 &&
-        (path[6] == 0 || path[6] == '/' || path[6] == '?')) {
-        extern size_t zcode_site_handle_request(const char *, const char *,
-            const unsigned char *, size_t, unsigned char *, size_t,
-            const char *);
-        unsigned char *buf = zcl_malloc(HTTPS_RESPONSE_BUFFER_SIZE,
-                                        "https_zcode_buf");
-        if (!buf) return;
-        size_t n = zcode_site_handle_request(method, path, NULL, 0, buf,
-                                             HTTPS_RESPONSE_BUFFER_SIZE,
-                                             NULL);
-        if (n > 0) {
-            size_t written = 0;
-            while (written < n) {
-                size_t chunk = n - written;
-                if (chunk > 16384) chunk = 16384;
-                int w = SSL_write(ssl, buf + written, (int)chunk);
-                if (w <= 0) break;
-                written += (size_t)w;
-            }
-        }
-        free(buf);
-        return;
-    }
-
-    /* Metaverse — landing, property catalog, spaces, commons (SIMULATION),
-     * the same handler the onion service uses so the site reads
-     * identically on both transports (datadir NULL → the handler resolves
-     * GetDataDir(true) itself). This listener is GET/HEAD-only (checked
-     * above) and the metaverse site is a read-only surface, so every route
-     * is served here. */
-    if (strncmp(path, "/metaverse", 10) == 0 &&
-        (path[10] == 0 || path[10] == '/' || path[10] == '?')) {
-        extern size_t metaverse_site_handle_request(const char *,
-            const char *, const unsigned char *, size_t, unsigned char *,
-            size_t, const char *);
-        unsigned char *buf = zcl_malloc(HTTPS_RESPONSE_BUFFER_SIZE,
-                                        "https_metaverse_buf");
-        if (!buf) return;
-        size_t n = metaverse_site_handle_request(method, path, NULL, 0, buf,
-                                                 HTTPS_RESPONSE_BUFFER_SIZE,
-                                                 NULL);
-        if (n > 0) {
-            size_t written = 0;
-            while (written < n) {
-                size_t chunk = n - written;
-                if (chunk > 16384) chunk = 16384;
-                int w = SSL_write(ssl, buf + written, (int)chunk);
-                if (w <= 0) break;
-                written += (size_t)w;
-            }
-        }
-        free(buf);
-        return;
-    }
+#define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
+                   nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
+                   grid_desc, fail_body) \
+    ZCL_HTTPS_DISPATCH_##flavor(id, prefix, handler, fail_body)
+#include "net/site_routes.def"
+#undef SITE_ROUTE
+#undef ZCL_HTTPS_DISPATCH_FAILCLOSED
+#undef ZCL_HTTPS_DISPATCH_DATADIR
+#undef ZCL_HTTPS_DISPATCH_PLAIN
+#undef ZCL_HTTPS_DISPATCH_STORE
 
     extern const char *explorer_canonical_shortcut(const char *path);
 

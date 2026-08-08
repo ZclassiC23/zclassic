@@ -7,6 +7,7 @@
 #include "net/onion_service.h"
 #include "net/onion_peer_merge.h"
 #include "net/onion_ratelimit.h"
+#include "net/site_routes.h"
 #include "net/tor_integration.h"
 #include "net/rom_seed.h"
 #include "net/peer_strategy.h"
@@ -156,21 +157,10 @@ static const char ONION_PAGE_CSS[] =
     "@media(max-width:640px){.dashboard{grid-template-columns:1fr}"
     ".site-top{gap:4px 10px}}";
 
-/* The same global nav the app-side site_layout.h emits (kept in lockstep;
- * duplicated here because lib/net sits below app/views). */
-#define ONION_GLOBAL_NAV \
-    "<header class='site-top'>" \
-    "<a class='brand' href='/'>" \
-    "<span class='glyph' aria-hidden='true'>Z</span>" \
-    "<span>ZClassic23</span></a>" \
-    "<nav aria-label='Site'>" \
-    "<a href='/explorer'>Explorer</a>" \
-    "<a href='/names'>Names</a>" \
-    "<a href='/store'>Store</a>" \
-    "<a href='/blog'>Blog</a>" \
-    "<a href='/yardsale'>Yardsale</a>" \
-    "<a href='/directory'>Directory</a>" \
-    "</nav></header>"
+/* The global nav these pages emit is generated: zcl_site_onion_nav_emit()
+ * (lib/net/src/site_routes.c) walks the nav table expanded from
+ * net/site_routes.def — the single inventory — so this file no longer
+ * keeps a hand-written lockstep copy of the app-side site_layout.h nav. */
 
 /* Request admission — cost-tiered budgets plus an adaptive client puzzle
  * on expensive routes under sustained pressure. See net/onion_ratelimit.h
@@ -244,12 +234,16 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         "<meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>ZClassic23 Node</title>"
-        "<style>%s</style></head><body>"
-        ONION_GLOBAL_NAV
-        "<h1>ZClassic23 Node</h1>"
-        "<p class='muted'>A new internet. Tor-only. No DNS. No cloud.</p>",
+        "<style>%s</style></head><body>",
         ONION_PAGE_CSS);
     if (n > 0) off = (size_t)n;
+
+    off += zcl_site_onion_nav_emit(body + off, sizeof(body) - off);
+
+    n = snprintf(body + off, sizeof(body) - off,
+        "<h1>ZClassic23 Node</h1>"
+        "<p class='muted'>A new internet. Tor-only. No DNS. No cloud.</p>");
+    if (n > 0) off += (size_t)n;
 
     /* Node .onion address */
     if (onion) {
@@ -290,20 +284,19 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
 
     n = snprintf(body + off, sizeof(body) - off,
         "<h2>Power Node Apps</h2>"
-        "<div class='apps'>"
-        "<div class='app'><a href='/explorer'>Explorer</a>"
-        "<div class='desc'>REST-style chain, block, transaction, address, and token reads.</div></div>"
-        "<div class='app'><a href='/store'>Store</a>"
-        "<div class='desc'>Commerce and token purchase flows hosted directly on the node.</div></div>"
-        "<div class='app'><a href='/blog'>Blog</a>"
-        "<div class='desc'>Static site hosting from your datadir over the onion service.</div></div>"
-        "<div class='app'><a href='/yardsale'>Yardsale</a>"
-        "<div class='desc'>Signed for-sale-by-owner token signs; buyers settle directly with sellers.</div></div>"
-        "<div class='app'><a href='/directory'>Directory</a>"
-        "<div class='desc'>On-chain discovered peer/app directory for the Tor-only network.</div></div>"
-        "<div class='app'><a href='/status'>Status API</a>"
-        "<div class='desc'>Machine-readable node, sync, and onion reachability status.</div></div>"
-        "</div>");
+        "<div class='apps'>");
+    if (n > 0) off += (size_t)n;
+    /* Grid entries come from net/site_routes.def via g_zcl_site_app_grid
+     * (chrome rows included, at their historical positions). */
+    for (size_t gi = 0; gi < g_zcl_site_app_grid_count; gi++) {
+        n = snprintf(body + off, sizeof(body) - off,
+            "<div class='app'><a href='%s'>%s</a>"
+            "<div class='desc'>%s</div></div>",
+            g_zcl_site_app_grid[gi].href, g_zcl_site_app_grid[gi].label,
+            g_zcl_site_app_grid[gi].desc);
+        if (n > 0) off += (size_t)n;
+    }
+    n = snprintf(body + off, sizeof(body) - off, "</div>");
     if (n > 0) off += (size_t)n;
 
     /* Peer directory */
@@ -510,12 +503,17 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
         "<meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>Search: %s</title>"
-        "<style>%s</style></head><body>"
-        ONION_GLOBAL_NAV
+        "<style>%s</style></head><body>",
+        safe_query, ONION_PAGE_CSS);
+    if (n > 0) off = (size_t)n;
+
+    off += zcl_site_onion_nav_emit(body + off, sizeof(body) - off);
+
+    n = snprintf(body + off, sizeof(body) - off,
         "<h1>Search</h1>"
         "<p>Results for: <b>%s</b></p>",
-        safe_query, ONION_PAGE_CSS, safe_query);
-    if (n > 0) off = (size_t)n;
+        safe_query);
+    if (n > 0) off += (size_t)n;
 
     int found = 0;
     for (int i = 0; i < nhits && off + 640 < sizeof(body); i++) {
@@ -732,12 +730,16 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
         "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>ZClassic23 Node Directory</title>"
-        "<style>%s</style></head><body>"
-        ONION_GLOBAL_NAV
-        "<h1>Node Directory</h1>"
-        "<p class='muted'>Decentralized .onion network &mdash; every node is a server</p>",
+        "<style>%s</style></head><body>",
         ONION_PAGE_CSS);
     if (n > 0) off = (size_t)n;
+
+    off += zcl_site_onion_nav_emit(body + off, sizeof(body) - off);
+
+    n = snprintf(body + off, sizeof(body) - off,
+        "<h1>Node Directory</h1>"
+        "<p class='muted'>Decentralized .onion network &mdash; every node is a server</p>");
+    if (n > 0) off += (size_t)n;
 
     off += (size_t)snprintf(body + off, sizeof(body) - off,
         "<div class='table-wrap'><table><tr><th>Node</th><th>Port</th>"
@@ -995,6 +997,17 @@ static size_t serve_puzzle_required(const struct onion_pow_challenge *ch,
         ch->bits, ch->seed_hex, ch->token_hex, (long long)ch->server_time);
 }
 
+/* App-mount handler prototypes — expanded from net/site_routes.def, the
+ * single registry. lib/net must not include app/ headers (layering), so
+ * the externs are generated inline, exactly like the hand-written
+ * declarations they replace. */
+#define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
+                   nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
+                   grid_desc, fail_body) \
+    ZCL_SITE_EXTERN_##flavor(handler)
+#include "net/site_routes.def"
+#undef SITE_ROUTE
+
 /* ── Main request handler ─────────────────────────────────── */
 
 size_t onion_service_handle_request(const char *method,
@@ -1052,96 +1065,58 @@ size_t onion_service_handle_request(const char *method,
         if (n > 0) return n;
     }
 
-    /* Store — ZSLP token commerce */
-    if (strncmp(path, "/store", 6) == 0 && onion_ctx()->datadir) {
-        extern size_t store_handle_request(const char *, const char *,
-            const uint8_t *, size_t, uint8_t *, size_t, const char *);
-        return store_handle_request(method, path, body, body_len,
-                                    response, response_max,
-                                    onion_ctx()->datadir);
+    /* App MVC mounts — expanded from net/site_routes.def in dispatch
+     * order (store → names → zcode → metaverse → blog → yardsale), after
+     * the core chrome above and before the 404 below. The behavior
+     * contracts that used to be comments beside each hand-written route
+     * now live beside their registry rows in the def. Each flavor keeps
+     * its historical guard shape exactly: STORE and PLAIN prefix-match
+     * with no boundary guard; DATADIR and FAILCLOSED require
+     * path[N] ∈ {NUL, '/', '?'}; STORE and DATADIR also require the node
+     * datadir; FAILCLOSED turns a handler 0 into a 503 carrying the row's
+     * fail_body rather than falling through. */
+#define ZCL_SITE_DISPATCH_STORE(prefix, handler, fail_body) \
+    if (strncmp(path, prefix, sizeof(prefix) - 1) == 0 && \
+        onion_ctx()->datadir) \
+        return handler(method, path, body, body_len, response, \
+                       response_max, onion_ctx()->datadir);
+#define ZCL_SITE_DISPATCH_PLAIN(prefix, handler, fail_body) \
+    if (strncmp(path, prefix, sizeof(prefix) - 1) == 0) \
+        return handler(method, path, body, body_len, response, \
+                       response_max);
+#define ZCL_SITE_DISPATCH_DATADIR(prefix, handler, fail_body) \
+    if (strncmp(path, prefix, sizeof(prefix) - 1) == 0 && \
+        (path[sizeof(prefix) - 1] == 0 || path[sizeof(prefix) - 1] == '/' || \
+         path[sizeof(prefix) - 1] == '?') && \
+        onion_ctx()->datadir) \
+        return handler(method, path, body, body_len, response, \
+                       response_max, onion_ctx()->datadir);
+#define ZCL_SITE_DISPATCH_FAILCLOSED(prefix, handler, fail_body) \
+    if (strncmp(path, prefix, sizeof(prefix) - 1) == 0 && \
+        (path[sizeof(prefix) - 1] == 0 || path[sizeof(prefix) - 1] == '/' || \
+         path[sizeof(prefix) - 1] == '?')) { \
+        size_t site_n_ = handler(method, path, body, body_len, response, \
+                                 response_max); \
+        if (site_n_ > 0) \
+            return site_n_; \
+        /* Fail closed: a signed MVC mount must never degrade into an \
+         * unrelated legacy static fallback when proof storage is absent. */ \
+        return (size_t)snprintf((char *)response, response_max, \
+            "HTTP/1.1 503 Service Unavailable\r\n" \
+            "Content-Type: text/plain; charset=utf-8\r\n" \
+            "Cache-Control: no-store\r\n" \
+            "Connection: close\r\n\r\n" fail_body); \
     }
-
-    /* ZCL Names — name→site resolution (/n/<name>) + registry (/names).
-     * Same handler is wired into the HTTPS dispatch chain, so a name
-     * resolves identically over onion and HTTPS. */
-    if (strncmp(path, "/n/", 3) == 0 || strncmp(path, "/names", 6) == 0) {
-        extern size_t name_site_handle_request(const char *, const char *,
-            const uint8_t *, size_t, uint8_t *, size_t);
-        return name_site_handle_request(method, path, body, body_len,
-                                        response, response_max);
-    }
-
-    /* ZCODE Library — packages, publishers, rankings, badges, downloads.
-     * Same handler is wired into the HTTPS dispatch chain, so the site
-     * reads identically over onion and HTTPS (the same lib/vcs read
-     * projections the zcode.* typed commands call — no second package
-     * truth). Read-only: no POST surface here. */
-    if (strncmp(path, "/zcode", 6) == 0 &&
-        (path[6] == 0 || path[6] == '/' || path[6] == '?') &&
-        onion_ctx()->datadir) {
-        extern size_t zcode_site_handle_request(const char *, const char *,
-            const uint8_t *, size_t, uint8_t *, size_t, const char *);
-        return zcode_site_handle_request(method, path, body, body_len,
-                                         response, response_max,
-                                         onion_ctx()->datadir);
-    }
-
-    /* Metaverse — landing, sovereign property catalog, published spaces,
-     * and the Living Commons (SIMULATION). Same handler is wired into the
-     * HTTPS dispatch chain, so the site reads identically over onion and
-     * HTTPS (the same projections the metaverse.* / zcode.commons.* typed
-     * commands call — no second truth). Read-only: no POST surface here. */
-    if (strncmp(path, "/metaverse", 10) == 0 &&
-        (path[10] == 0 || path[10] == '/' || path[10] == '?') &&
-        onion_ctx()->datadir) {
-        extern size_t metaverse_site_handle_request(const char *,
-            const char *, const uint8_t *, size_t, uint8_t *, size_t,
-            const char *);
-        return metaverse_site_handle_request(method, path, body, body_len,
-                                             response, response_max,
-                                             onion_ctx()->datadir);
-    }
-
-    /* Blog MVC App. The same path handler is used by public HTTPS, so
-     * zclnet.net/blog and a node's onion expose the same local projection. */
-    if (strncmp(path, "/blog", 5) == 0 &&
-        (path[5] == 0 || path[5] == '/' || path[5] == '?')) {
-        extern size_t blog_site_handle_request(const char *, const char *,
-            const uint8_t *, size_t, uint8_t *, size_t);
-        size_t n = blog_site_handle_request(method, path, body, body_len,
-                                            response, response_max);
-        if (n > 0)
-            return n;
-        /* Fail closed: this signed MVC mount must never degrade into the
-         * unrelated legacy static-file Blog when proof storage is absent. */
-        return (size_t)snprintf((char *)response, response_max,
-            "HTTP/1.1 503 Service Unavailable\r\n"
-            "Content-Type: text/plain; charset=utf-8\r\n"
-            "Cache-Control: no-store\r\n"
-            "Connection: close\r\n\r\n"
-            "Blog storage is unavailable.\n");
-    }
-
-    /* Yardsale MVC App — the for-sale-by-owner swap signs + the bilateral
-     * ceremony endpoints. The same path handler is wired into the HTTPS
-     * dispatch chain, so onion and HTTPS read the same zswap_ads
-     * projection. */
-    if (strncmp(path, "/yardsale", 9) == 0 &&
-        (path[9] == 0 || path[9] == '/' || path[9] == '?')) {
-        extern size_t yardsale_site_handle_request(const char *,
-            const char *, const uint8_t *, size_t, uint8_t *, size_t);
-        size_t n = yardsale_site_handle_request(method, path, body,
-                                                body_len, response,
-                                                response_max);
-        if (n > 0)
-            return n;
-        return (size_t)snprintf((char *)response, response_max,
-            "HTTP/1.1 503 Service Unavailable\r\n"
-            "Content-Type: text/plain; charset=utf-8\r\n"
-            "Cache-Control: no-store\r\n"
-            "Connection: close\r\n\r\n"
-            "Yardsale storage is unavailable.\n");
-    }
+#define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
+                   nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
+                   grid_desc, fail_body) \
+    ZCL_SITE_DISPATCH_##flavor(prefix, handler, fail_body)
+#include "net/site_routes.def"
+#undef SITE_ROUTE
+#undef ZCL_SITE_DISPATCH_FAILCLOSED
+#undef ZCL_SITE_DISPATCH_DATADIR
+#undef ZCL_SITE_DISPATCH_PLAIN
+#undef ZCL_SITE_DISPATCH_STORE
 
     /* 404 */
     return (size_t)snprintf((char *)response, response_max,
