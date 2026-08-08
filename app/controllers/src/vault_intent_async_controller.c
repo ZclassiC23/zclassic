@@ -16,6 +16,7 @@
 #include "services/wallet_money_service.h"
 #include "util/log_macros.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static void via_error(struct json_value *out, const char *code,
@@ -170,6 +171,35 @@ static bool rpc_via_cancel(const struct json_value *params, bool help,
     return true;
 }
 
+static void via_recover_mempool_intents(struct node_db *ndb)
+{
+    struct vault_intent_row rows[100];
+    int count = vault_intent_list(ndb, rows, 100);
+    for (int i = 0; i < count; i++) {
+        if (rows[i].state != VAULT_INTENT_MEMPOOL_ACCEPTED ||
+            !rows[i].wallet_scope[0])
+            continue;
+        char plan_hex[65];
+        for (size_t j = 0; j < sizeof(rows[i].plan_id); j++)
+            (void)snprintf(plan_hex + j * 2, 3, "%02x", rows[i].plan_id[j]);
+        struct json_value input, result;
+        json_init(&input); json_set_object(&input);
+        (void)json_push_kv_str(&input, "wallet_scope", rows[i].wallet_scope);
+        (void)json_push_kv_str(&input, "plan_id", plan_hex);
+        (void)json_push_kv_bool(&input, "confirm", true);
+        json_init(&result);
+        (void)vault_intent_commit_input(&input, &result);
+        if (!json_get_bool(json_get(&result, "ok"))) {
+            const char *code = json_get_str(json_get(&result, "code"));
+            LOG_WARN("vault_intent",
+                     "startup exact-transaction restore deferred: %s",
+                     code && code[0] ? code : "UNKNOWN");
+        }
+        json_free(&result);
+        json_free(&input);
+    }
+}
+
 void register_vault_intent_async_rpc_commands(struct rpc_table *table)
 {
     const struct rpc_command commands[] = {
@@ -182,6 +212,7 @@ void register_vault_intent_async_rpc_commands(struct rpc_table *table)
     struct node_db *ndb = wallet_rpc_node_db();
     if (!ndb || !ndb->open)
         return;
+    via_recover_mempool_intents(ndb);
     struct zcl_result recovered = vault_intent_async_recover(
         ndb, vault_intent_commit_input);
     if (!recovered.ok)

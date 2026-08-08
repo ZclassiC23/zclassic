@@ -348,6 +348,12 @@ transaction instead of creating a replacement. That prepared-byte retry still
 requires current money readers and the same wallet identity, but it does not
 pretend the old tip snapshot is current; present-chain mempool validation is
 the authority for admitting the exact already-signed transaction.
+After restart, a durable `mempool_accepted` intent is also reconciled against
+the new process's mempool. If absent, the node loads the encrypted exact bytes,
+verifies their txid, runs full current mempool validation, and relays them
+again. It never selects inputs, changes outputs, or signs replacement bytes;
+a transient re-admission failure leaves the accepted intent durable for an
+idempotent retry.
 Before retrying, a read-only reservation probe must identify every shielded
 nullifier as an available wallet note or an idempotent reservation by that same
 transaction. A missing nullifier becomes `PREPARED_NOTE_MISMATCH`; a note owned

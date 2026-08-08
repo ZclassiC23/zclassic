@@ -93,6 +93,11 @@ bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx);
 struct zcl_result wallet_commit_from_context(
     const struct wallet_rpc_context *ctx, struct wallet_tx *wtx);
 
+/* Revalidate and restore an already-durable exact transaction to the current
+ * mempool without creating another wallet mutation. */
+struct zcl_result wallet_reaccept_from_context(
+    const struct wallet_rpc_context *ctx, struct wallet_tx *wtx);
+
 /* Flush the in-memory wallet through the node.db single-writer lane. Any
  * open reducer batch is committed first, so wallet_sqlite never starts a
  * nested transaction on the shared SQLite handle. A missing wallet DB is a

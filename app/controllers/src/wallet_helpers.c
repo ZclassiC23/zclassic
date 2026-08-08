@@ -67,6 +67,21 @@ struct zcl_result wallet_commit_from_context(
     return wallet_commit_transaction(ctx->wallet, wtx, &admission);
 }
 
+struct zcl_result wallet_reaccept_from_context(
+    const struct wallet_rpc_context *ctx, struct wallet_tx *wtx)
+{
+    if (!ctx || !wtx)
+        return ZCL_ERR(-1,
+            "wallet reaccept context: NULL context or transaction");
+    struct wallet_tx_admission admission = {
+        .mempool = ctx->mempool,
+        .coins_tip = ctx->coins_tip,
+        .main_state = ctx->main_state,
+        .params = chain_params_get(),
+    };
+    return wallet_reaccept_transaction(wtx, &admission);
+}
+
 static struct zcl_result wallet_flush_scope_from_context(
     const struct wallet_rpc_context *ctx, bool transactions_only)
 {

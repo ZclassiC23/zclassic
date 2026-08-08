@@ -465,6 +465,16 @@ int test_accept_to_mempool(void)
             ok = ok && wallet->num_spent == 0;
             ok = ok && !wallet_is_outpoint_spent(wallet, &utxo, 0);
 
+            /* Restart recovery re-admits the same signed bytes without
+             * recreating the already-durable wallet mutation. */
+            struct zcl_result reaccepted =
+                wallet_reaccept_transaction(&wtx, &admission);
+            ok = ok && reaccepted.ok;
+            ok = ok && tx_mempool_exists(&pool, &wtx.tx.hash);
+            ok = ok && wallet->num_wallet_tx == 0;
+            ok = ok && wallet->num_spent == 0;
+            tx_mempool_remove(&pool, &wtx.tx.hash);
+
             transaction_free(&wtx.tx);
             wallet_free(wallet);
             free(wallet);

@@ -630,6 +630,10 @@ bool vault_intent_commit_input(const struct json_value *in,
     }
     if (row.state >= VAULT_INTENT_MEMPOOL_ACCEPTED &&
         row.state <= VAULT_INTENT_FINALIZED) {
+        if (row.state == VAULT_INTENT_MEMPOOL_ACCEPTED &&
+            !vault_intent_republish_durable(ctx, id, now, result))
+            return true;
+        (void)vault_intent_find(ctx->node_db, id, &row);
         json_set_object(result); json_push_kv_bool(result, "ok", true);
         vault_intent_render_row(ctx, result, &row); json_push_kv_bool(result, "idempotent_replay", true); return true;
     }
