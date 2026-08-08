@@ -355,6 +355,12 @@ int test_wallet_funds_safety(void)
                 DB_NOTE_RESERVATION_CONFLICT);
         WFS_CHECK("conflicting transaction cannot replace note reservation",
                   !node_db_sync_wallet_sapling_spends(&ndb, &tx));
+        memset(tx.hash.data, 0x86, sizeof(tx.hash.data));
+        WFS_CHECK("expired transaction releases its exact note reservations",
+                  db_sapling_note_release_reservation(&ndb, tx.hash.data));
+        WFS_CHECK("released notes return to spendable selection",
+            db_sapling_note_list_unspent_for_ivk(
+                &ndb, ivk_b, after_success, 4) == 2);
         transaction_free(&tx);
     }
 

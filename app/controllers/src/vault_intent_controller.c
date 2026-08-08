@@ -282,32 +282,6 @@ static bool vi_effects(const struct json_value *input, struct vi_payload *p,
     return true;
 }
 
-static void vi_refresh_state(struct wallet_rpc_context *ctx,
-                             struct vault_intent_row *row, int64_t now)
-{
-    if (!ctx || !row || !row->has_txid)
-        return;
-    struct uint256 txid;
-    memcpy(txid.data, row->txid, 32);
-    const struct wallet_tx *wtx = wallet_get_tx(ctx->wallet, &txid);
-    int32_t height = -1;
-    int32_t confirmations = 0;
-    if (wtx && !uint256_is_null(&wtx->hash_block) &&
-        vault_intent_chain_confirmation(ctx->main_state,
-            wtx->hash_block.data, &height, &confirmations)) {
-        enum vault_intent_state state = confirmations >= 6
-            ? VAULT_INTENT_FINALIZED : VAULT_INTENT_CONFIRMED;
-        if (vault_intent_set_confirmation(ctx->node_db, row->plan_id, state,
-                height, wtx->hash_block.data, now))
-            (void)vault_intent_find(ctx->node_db, row->plan_id, row);
-    } else if (row->state == VAULT_INTENT_CONFIRMED ||
-               row->state == VAULT_INTENT_FINALIZED) {
-        if (vault_intent_set_state(ctx->node_db, row->plan_id,
-                VAULT_INTENT_REORGED, row->txid, "CONFIRMATION_REORGED", now))
-            (void)vault_intent_find(ctx->node_db, row->plan_id, row);
-    }
-}
-
 static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
                                 struct json_value *result,
                                 bool backup_preflight_held)
@@ -753,8 +727,8 @@ static bool rpc_vi_status(const struct json_value *params, bool help,
     }
     vault_intent_expire_due(ndb, (int64_t)platform_time_wall_time_t());
     vault_intent_find(ndb, id, &row);
-    vi_refresh_state(wallet_rpc_context_current(), &row,
-                     (int64_t)platform_time_wall_time_t());
+    vault_intent_refresh_state(wallet_rpc_context_current(), &row,
+                               (int64_t)platform_time_wall_time_t());
     json_set_object(result); json_push_kv_bool(result, "ok", true);
     vault_intent_render_row(wallet_rpc_context_current(), result, &row);
     return true;
@@ -769,8 +743,8 @@ static bool rpc_vi_list(const struct json_value *params, bool help,
     vault_intent_expire_due(ndb, (int64_t)platform_time_wall_time_t());
     struct vault_intent_row rows[100]; int n = vault_intent_list(ndb, rows, 100);
     for (int i = 0; i < n; i++)
-        vi_refresh_state(wallet_rpc_context_current(), &rows[i],
-                         (int64_t)platform_time_wall_time_t());
+        vault_intent_refresh_state(wallet_rpc_context_current(), &rows[i],
+                                   (int64_t)platform_time_wall_time_t());
     json_set_object(result); json_push_kv_bool(result, "ok", true);
     struct json_value items; json_init(&items); json_set_array(&items);
     for (int i = 0; i < n; i++) {

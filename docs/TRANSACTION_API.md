@@ -354,6 +354,10 @@ verifies their txid, runs full current mempool validation, and relays them
 again. It never selects inputs, changes outputs, or signs replacement bytes;
 a transient re-admission failure leaves the accepted intent durable for an
 idempotent retry.
+Once the next-block height is beyond those exact bytes' consensus expiry, the
+status reconciler marks `TX_EXPIRED_UNCONFIRMED`, removes the stale wallet
+transaction, and releases only that txid's note reservations. A later payment
+must use a fresh plan and receives a new transaction ID.
 Before retrying, a read-only reservation probe must identify every shielded
 nullifier as an available wallet note or an idempotent reservation by that same
 transaction. A missing nullifier becomes `PREPARED_NOTE_MISMATCH`; a note owned

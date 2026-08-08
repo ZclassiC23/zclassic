@@ -2,6 +2,7 @@
  * Purpose: thin RPC adapter for durable asynchronous vault intents. */
 
 #include "controllers/vault_intent_controller.h"
+#include "controllers/vault_intent_publish.h"
 
 #include "controllers/native_handler_body.h"
 #include "controllers/strong_params.h"
@@ -16,7 +17,6 @@
 #include "services/wallet_money_service.h"
 #include "util/log_macros.h"
 
-#include <stdio.h>
 #include <string.h>
 
 static void via_error(struct json_value *out, const char *code,
@@ -173,30 +173,26 @@ static bool rpc_via_cancel(const struct json_value *params, bool help,
 
 static void via_recover_mempool_intents(struct node_db *ndb)
 {
+    struct wallet_rpc_context *ctx = wallet_rpc_context_current();
+    if (!ctx)
+        return;
     struct vault_intent_row rows[100];
     int count = vault_intent_list(ndb, rows, 100);
     for (int i = 0; i < count; i++) {
         if (rows[i].state != VAULT_INTENT_MEMPOOL_ACCEPTED ||
             !rows[i].wallet_scope[0])
             continue;
-        char plan_hex[65];
-        for (size_t j = 0; j < sizeof(rows[i].plan_id); j++)
-            (void)snprintf(plan_hex + j * 2, 3, "%02x", rows[i].plan_id[j]);
-        struct json_value input, result;
-        json_init(&input); json_set_object(&input);
-        (void)json_push_kv_str(&input, "wallet_scope", rows[i].wallet_scope);
-        (void)json_push_kv_str(&input, "plan_id", plan_hex);
-        (void)json_push_kv_bool(&input, "confirm", true);
+        struct json_value result;
         json_init(&result);
-        (void)vault_intent_commit_input(&input, &result);
-        if (!json_get_bool(json_get(&result, "ok"))) {
+        if (!vault_intent_republish_durable(
+                ctx, rows[i].plan_id,
+                (int64_t)platform_time_wall_time_t(), &result)) {
             const char *code = json_get_str(json_get(&result, "code"));
             LOG_WARN("vault_intent",
                      "startup exact-transaction restore deferred: %s",
                      code && code[0] ? code : "UNKNOWN");
         }
         json_free(&result);
-        json_free(&input);
     }
 }
 
