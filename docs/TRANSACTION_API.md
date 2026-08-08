@@ -370,6 +370,13 @@ the exact transaction body is `SHIELDED_NULLIFIER_CONFLICT`; the losing local
 transaction is rolled back before its reservation is released. Unavailable,
 non-canonical, or incomplete evidence leaves the prior state and reservation
 fail-closed—it is never interpreted as zero, expiry, or confirmation.
+Shielded coin selection runs the same authority check before choosing notes:
+every locally unspent Sapling note is checked against the complete canonical
+nullifier ledger, and a canonical match must resolve to the exact active block
+body and spending transaction before the note is atomically marked spent. If
+the nullifier history, active body, or wallet write lane is unavailable, plan
+execution stops before proof construction or relay. This keeps stale wallet
+projections from producing a transaction that peers will immediately reject.
 Before retrying, a read-only reservation probe must identify every shielded
 nullifier as an available wallet note or an idempotent reservation by that same
 transaction. A missing nullifier becomes `PREPARED_NOTE_MISMATCH`; a note owned

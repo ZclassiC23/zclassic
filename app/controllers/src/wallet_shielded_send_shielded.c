@@ -35,7 +35,9 @@ bool z_sendmany_shielded(
 
         int64_t fee = ctx->wallet->default_fee;
 
-        /* Select unspent notes for the from z-address */
+        /* Preserve the precise view-only/no-funds diagnostic before requiring
+         * live chain authority. This is only a capability probe; actual coin
+         * selection re-reads the notes after canonical reconciliation. */
         struct db_sapling_note notes[256];
         int num_notes = db_sapling_note_list_unspent_for_ivk(
             ctx->node_db, from_z_key->ivk, notes, 256);
@@ -55,6 +57,22 @@ bool z_sendmany_shielded(
             }
             json_set_str(result, "No unspent shielded notes for this address");
             LOG_FAIL("wallet_shielded", "z_sendmany: no unspent notes for from z-address");
+        }
+
+        size_t reconciled = 0;
+        if (!node_db_reconcile_canonical_sapling_notes(
+                ctx->node_db, ctx->main_state, ctx->datadir, &reconciled)) {
+            json_set_str(result,
+                         "Canonical shielded note state is unavailable");
+            LOG_FAIL("wallet_shielded",
+                     "z_sendmany: canonical note reconciliation failed");
+        }
+        num_notes = db_sapling_note_list_unspent_for_ivk(
+            ctx->node_db, from_z_key->ivk, notes, 256);
+        if (num_notes <= 0) {
+            json_set_str(result, "No unspent shielded notes for this address");
+            LOG_FAIL("wallet_shielded",
+                     "z_sendmany: no notes remain after canonical reconciliation");
         }
 
         /* Coin selection: pick notes until we have enough */

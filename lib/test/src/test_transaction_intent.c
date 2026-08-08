@@ -4,6 +4,7 @@
 #include "test/test_core.h"
 
 #include "controllers/wallet_helpers.h"
+#include "controllers/sync_controller.h"
 #include "controllers/vault_intent_controller.h"
 #include "controllers/vault_intent_publish.h"
 #include "core/serialize.h"
@@ -437,6 +438,25 @@ int test_transaction_intent(void)
         struct wallet_identity_row identity;
         const uint8_t genesis[32] = { 0xb6 };
         ASSERT(wallet_identity_ensure(&chain_db, genesis, "dev", &identity));
+        uint8_t note_txid[32], rcm[32], memo[512], ivk[32], diversifier[11];
+        uint8_t pk_d[32], cm[32];
+        memset(note_txid, 0xb8, sizeof(note_txid));
+        memset(rcm, 0xb9, sizeof(rcm));
+        memset(memo, 0xf6, sizeof(memo));
+        memset(ivk, 0xba, sizeof(ivk));
+        memset(diversifier, 0xbb, sizeof(diversifier));
+        memset(pk_d, 0xbc, sizeof(pk_d));
+        memset(cm, 0xbd, sizeof(cm));
+        ASSERT(node_db_sync_sapling_note(&chain_db, note_txid, 0, 2000,
+            rcm, memo, sizeof(memo), ivk, diversifier, pk_d, cm,
+            shielded.v_shielded_spend[0].nullifier.data, 1));
+        size_t reconciled = 0;
+        ASSERT(node_db_reconcile_canonical_sapling_notes(
+            &chain_db, &ms, dir, &reconciled));
+        ASSERT_EQ(reconciled, 1);
+        ASSERT(db_sapling_note_reservation_probe(
+            &chain_db, shielded.v_shielded_spend[0].nullifier.data,
+            shielded.hash.data) == DB_NOTE_RESERVATION_SAME_TX);
         struct vault_intent_row row;
         ti_bound_row(&row, 0xb7, &identity, 2000);
         row.state = VAULT_INTENT_EXPIRED;

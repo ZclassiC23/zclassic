@@ -256,6 +256,14 @@ bool node_db_sync_wallet_sapling_spends(
 bool node_db_sync_confirmed_sapling_spends(
     struct node_db *ndb, const struct transaction *tx);
 
+/* Before wallet coin selection, reconcile every locally-unspent Sapling note
+ * against the complete canonical nullifier ledger and exact active block
+ * body. Returns false when that authority is incomplete or unreadable, so a
+ * stale note can never be selected merely because reconciliation was down. */
+bool node_db_reconcile_canonical_sapling_notes(
+    struct node_db *ndb, struct main_state *ms, const char *datadir,
+    size_t *reconciled_out);
+
 /* Delete an unrelayed wallet transaction through the node.db single-writer
  * lane. Used as the durable compensation step when a post-flush reservation
  * fails. */
