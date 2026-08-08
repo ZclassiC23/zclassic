@@ -14,10 +14,10 @@ Every command below is typed, local-first, and safe to run on any node:
 
 ```bash
 build/bin/zclassic23 discover search metaverse        # orient in the live command tree
-build/bin/zclassic23 zcode package search --input='{"query":".","datadir":"/tmp/zcl23-tour"}'   # browse the local commons
-build/bin/zclassic23 metaverse property list --datadir=/tmp/zcl23-tour   # holdings, with evidence grades
+build/bin/zclassic23 zcode package search --input='{"datadir":"/tmp/zcl23-tour"}'   # browse the local commons
+build/bin/zclassic23 metaverse property list --input='{"datadir":"/tmp/zcl23-tour"}'   # holdings, with evidence grades
 build/bin/zclassic23 metaverse space show --input='{"root":"<64hex>","datadir":"/tmp/zcl23-tour"}'   # a committed space
-build/bin/zclassic23 zcode commons status --datadir=/tmp/zcl23-tour      # the ZC23 Living Commons projection
+build/bin/zclassic23 zcode commons status --input='{"workspace":"/tmp/zcl23-tour-commons"}'   # the ZC23 Living Commons projection
 ```
 
 The hermetic, scripted version of this tour (isolated regtest node, zero live

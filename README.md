@@ -160,8 +160,8 @@ and AI create real things together, and nobody owns the world they build in.
 
 ```bash
 build/bin/zclassic23 discover search metaverse      # orient in the command tree
-build/bin/zclassic23 metaverse property list --datadir=/tmp/zcl23-tour
-build/bin/zclassic23 zcode commons status --datadir=/tmp/zcl23-tour
+build/bin/zclassic23 metaverse property list --input='{"datadir":"/tmp/zcl23-tour"}'
+build/bin/zclassic23 zcode commons status --input='{"workspace":"/tmp/zcl23-tour-commons"}'
 ```
 
 Honest scope: ZC23 patronage today is **simulation-only** — no live token, and
