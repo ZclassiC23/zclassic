@@ -23,8 +23,13 @@ void vault_intent_digest_payload(const uint8_t *raw, size_t len,
 void vault_intent_render_row(struct wallet_rpc_context *ctx,
                              struct json_value *out,
                              const struct vault_intent_row *row);
-bool vault_intent_plan_transparent_input(const struct json_value *input,
-                                         struct json_value *result);
+/* Fanout validates the encrypted-backup gate before creating its durable
+ * receive keys. This continuation repeats every other plan gate but does not
+ * reject those newly-created keys merely because they postdate that preflight.
+ * Commit still performs the normal current-backup gate, so the owner must back
+ * up the exact destinations before any value can move. */
+bool vault_intent_plan_transparent_fanout_continuation(
+    const struct json_value *params, struct json_value *result);
 bool vault_intent_transparent_shape_matches(
     const struct vault_intent_row *row, size_t output_count,
     int64_t output_value_zat);

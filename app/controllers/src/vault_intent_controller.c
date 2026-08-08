@@ -186,8 +186,9 @@ static bool vi_decode(const uint8_t *raw, size_t len, struct vi_payload *p)
     return true;
 }
 
-bool vault_intent_context_ready(struct wallet_rpc_context *ctx,
-                                struct json_value *out)
+static bool vi_context_ready(struct wallet_rpc_context *ctx,
+                             struct json_value *out,
+                             bool require_current_backup)
 {
     if (!ctx || !ctx->wallet || !ctx->wallet_db || !ctx->node_db ||
         !ctx->mempool || !ctx->coins_tip || !ctx->main_state) {
@@ -211,18 +212,20 @@ bool vault_intent_context_ready(struct wallet_rpc_context *ctx,
                  "wallet persistence health gate failed; inspect core wallet status");
         return false;
     }
-    struct wallet_backup_status backup;
-    wallet_backup_status_snapshot(&backup);
-    int64_t now = (int64_t)platform_time_wall_time_t();
-    size_t path_len = strlen(backup.last_path);
-    bool encrypted_backup = path_len > 4 &&
-        strcmp(backup.last_path + path_len - 4, ".enc") == 0;
-    if (backup.last_run_unix <= 0 || now < backup.last_run_unix ||
-        now - backup.last_run_unix > 86400 || !encrypted_backup ||
-        backup.last_tables_verified != backup.wallet_table_count) {
-        vi_error(out, "ENCRYPTED_BACKUP_REQUIRED",
-                 "a current-key encrypted, fully verified wallet backup under 24 hours old is required");
-        return false;
+    if (require_current_backup) {
+        struct wallet_backup_status backup;
+        wallet_backup_status_snapshot(&backup);
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        size_t path_len = strlen(backup.last_path);
+        bool encrypted_backup = path_len > 4 &&
+            strcmp(backup.last_path + path_len - 4, ".enc") == 0;
+        if (backup.last_run_unix <= 0 || now < backup.last_run_unix ||
+            now - backup.last_run_unix > 86400 || !encrypted_backup ||
+            backup.last_tables_verified != backup.wallet_table_count) {
+            vi_error(out, "ENCRYPTED_BACKUP_REQUIRED",
+                     "a current-key encrypted, fully verified wallet backup under 24 hours old is required");
+            return false;
+        }
     }
     char why[96] = {0};
     if (!sovereignty_guard_allow("wallet_spend", why, sizeof(why))) {
@@ -231,6 +234,10 @@ bool vault_intent_context_ready(struct wallet_rpc_context *ctx,
     }
     return true;
 }
+
+bool vault_intent_context_ready(struct wallet_rpc_context *ctx,
+                                struct json_value *out)
+{ return vi_context_ready(ctx, out, true); }
 
 static bool vi_effects(const struct json_value *input, struct vi_payload *p,
                        struct json_value *out)
@@ -301,8 +308,9 @@ static void vi_refresh_state(struct wallet_rpc_context *ctx,
     }
 }
 
-static bool rpc_vi_plan(const struct json_value *params, bool help,
-                        struct json_value *result)
+static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
+                                struct json_value *result,
+                                bool backup_preflight_held)
 {
     RPC_HELP(help, result,
              "vault_intent_plan {wallet_scope,route,effects,idempotency_key}\n");
@@ -327,7 +335,12 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
                  "idempotency_key must be 1..64 printable characters");
         return true;
     }
-    if (!vault_intent_context_ready(ctx, result)) return true;
+    /* A fanout has already passed the full gate immediately before it mints
+     * durable self-custody destinations. Requiring that backup again here
+     * made the workflow impossible: those keys necessarily postdate it.
+     * Repeat all other gates; commit uses vault_intent_context_ready() and
+     * therefore cannot move value until the exact new keys are backed up. */
+    if (!vi_context_ready(ctx, result, !backup_preflight_held)) return true;
     (void)vault_intent_expire_due(
         ctx->node_db, (int64_t)platform_time_wall_time_t());
     struct vi_payload p; memset(&p, 0, sizeof(p));
@@ -477,24 +490,16 @@ static bool rpc_vi_plan(const struct json_value *params, bool help,
     return true;
 }
 
-bool vault_intent_plan_transparent_input(const struct json_value *input,
-                                         struct json_value *result)
+static bool rpc_vi_plan(const struct json_value *params, bool help,
+                        struct json_value *result)
+{ return rpc_vi_plan_checked(params, help, result, false); }
+
+bool vault_intent_plan_transparent_fanout_continuation(
+    const struct json_value *params, struct json_value *result)
 {
-    if (!input || input->type != JSON_OBJ || !result)
-        LOG_FAIL("vault_intent", "transparent input wrapper: invalid argument");
-    struct json_value params, copy;
-    json_init(&params); json_set_array(&params);
-    json_init(&copy); json_copy(&copy, input);
-    bool appended = json_push_back(&params, &copy);
-    json_free(&copy);
-    if (!appended) {
-        json_free(&params);
-        vi_error(result, "OUT_OF_MEMORY", "could not stage fanout plan input");
-        return true;
-    }
-    bool handled = rpc_vi_plan(&params, false, result);
-    json_free(&params);
-    return handled;
+    if (!params || params->type != JSON_ARR || !result)
+        LOG_FAIL("vault_intent", "fanout continuation: invalid argument");
+    return rpc_vi_plan_checked(params, false, result, true);
 }
 
 bool vault_intent_transparent_shape_matches(

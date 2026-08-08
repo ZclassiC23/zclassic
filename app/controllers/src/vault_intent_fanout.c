@@ -36,6 +36,25 @@ static void vif_error(struct json_value *result, const char *code,
     (void)json_push_kv_str(result, "message", message);
 }
 
+static bool vif_continue_plan(const struct json_value *plan,
+                              struct json_value *result)
+{
+    struct json_value params, copy;
+    json_init(&params); json_set_array(&params);
+    json_init(&copy); json_copy(&copy, plan);
+    bool appended = json_push_back(&params, &copy);
+    json_free(&copy);
+    if (!appended) {
+        json_free(&params);
+        vif_error(result, "OUT_OF_MEMORY", "could not stage fanout plan input");
+        return true;
+    }
+    bool handled = vault_intent_plan_transparent_fanout_continuation(
+        &params, result);
+    json_free(&params);
+    return handled;
+}
+
 static void vif_internal_key(const char *scope, const char *user_key,
                              char out[VAULT_INTENT_IDEMPOTENCY_MAX + 1])
 {
@@ -80,6 +99,10 @@ static void vif_render(struct json_value *result,
     (void)json_push_kv_bool(result, "automatic", false);
     (void)json_push_kv_bool(result, "owner_commit_required", true);
     (void)json_push_kv_str(result, "commit_command", "vault.intent.commit");
+    (void)json_push_kv_str(result, "backup_before_commit_command",
+                           "core.wallet.backup.now");
+    (void)json_push_kv_str(result, "commit_prerequisite",
+        "fresh encrypted backup after fanout destination creation");
     (void)json_push_kv_str(result, "route", "transparent");
     (void)json_push_kv_str(result, "privacy",
         "PUBLIC_AFTER_COMMIT: output values and transaction graph are visible");
@@ -245,7 +268,7 @@ bool vault_intent_fanout_plan_rpc(const struct json_value *params, bool help,
     }
     (void)json_push_kv(&plan, "effects", &effects);
     json_free(&effects);
-    (void)vault_intent_plan_transparent_input(&plan, result);
+    (void)vif_continue_plan(&plan, result);
     json_free(&plan);
 
     const char *plan_hex = json_get_bool(json_get(result, "ok"))

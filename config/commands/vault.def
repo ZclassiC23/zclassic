@@ -224,15 +224,17 @@ ZCL_COMMAND_READY_COMMAND(
     "vault.intent.fanout-plan", "vault.intent", "",
     "Prepare private self-custody outputs for parallel transactions",
     "Creates 2..50 fresh durable wallet-owned transparent destinations and "
-    "atomically reserves one exact transparent fanout plan. Each output is "
+    "atomically reserves one exact transparent fanout plan after a current "
+    "encrypted-backup preflight. Each output is "
     "recipient_value_zat plus maximum_fee_zat, so it can later fund one "
     "independent transaction at the requested ceiling. A required durable "
     "idempotency_key makes retries return the same plan and rejects a changed "
     "shape. Output contains only aggregate counts, zatoshi values, plan id and "
     "digest: generated addresses, selected inputs, endpoints and paths never "
     "leave the wallet. This command never signs, broadcasts, commits, or "
-    "automatically rebalances; the owner must separately call "
-    "vault.intent.commit after reviewing the plan. All normal wallet "
+    "automatically rebalances; the owner must take a fresh encrypted backup "
+    "containing the new destinations, then separately call vault.intent.commit "
+    "after reviewing the plan. All normal wallet "
     "encryption, backup, sovereignty, custody, reserve and lab-cap gates apply.",
     0,
     "vault,intent,fanout,liquidity,utxo,parallel,idempotent,private-address",
