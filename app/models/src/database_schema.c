@@ -107,6 +107,10 @@ static const char *SCHEMA[] = {
     "privkey BLOB NOT NULL,compressed INTEGER NOT NULL DEFAULT 1,"
     "created_at INTEGER NOT NULL DEFAULT 0)",
 
+    "CREATE TABLE IF NOT EXISTS wallet_key_encryption ("
+    "id INTEGER PRIMARY KEY CHECK (id=1),"
+    "wrapped_dek BLOB NOT NULL)",
+
     "CREATE TABLE IF NOT EXISTS wallet_sapling_keys ("
     "ivk BLOB PRIMARY KEY,xsk BLOB NOT NULL,xfvk BLOB NOT NULL,"
     "diversifier BLOB NOT NULL,pk_d BLOB NOT NULL,"

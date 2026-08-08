@@ -11,11 +11,11 @@
  * the status snapshot, the diagnostics dumper, and the supervisor liveness
  * contract. See the header for rationale.
  *
- * The one-shot snapshot primitive and its all-seven-tables verification
+ * The one-shot snapshot primitive and its all-eight-tables verification
  * live in wallet_backup_run.c (declared in wallet_backup_internal.h);
  * rotation/listing in wallet_backup_rotation.c; the WBE1 crypto in
  * wallet_backup_crypto.c. The split happened when verification grew from
- * one table to seven and this file passed the 800-line shape ceiling.
+ * one table to eight and this file passed the 800-line shape ceiling.
  */
 
 #include "base/result.h"

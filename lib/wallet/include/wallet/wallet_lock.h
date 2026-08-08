@@ -3,9 +3,9 @@
  * Wallet lock/unlock — the at-rest key-availability gate.
  *
  * wallet_keystore.{h,c} is the crypto primitive (WKS1 envelope); the
- * wallet_sqlite read/write paths already wrap every private key, Sapling
- * spending key, and HD seed under ZCL_WALLET_PASSPHRASE before it hits
- * node.db.  This module owns the *runtime* half of that story: whether the
+ * wallet_sqlite read/write paths wrap transparent keys under a WKD1 wallet
+ * DEK and Sapling/HD secrets in WKS1 before they hit node.db. This module
+ * owns the *runtime* half of that story: whether the
  * passphrase is currently available, so a wallet can be LOCKED (keys not
  * decryptable / not resident in RAM) and UNLOCKED (passphrase supplied) at
  * runtime — the standard `walletlock` / `walletpassphrase` posture.
@@ -72,7 +72,7 @@ const char *wallet_lock_effective_passphrase(void);
 bool wallet_lock_copy_passphrase(char *out, size_t out_size);
 
 /* Record that the wallet uses at-rest encryption — the persistence layer
- * calls this the first time it encrypts or detects a WKS1 envelope, so the
+ * calls this the first time it encrypts or detects a WKS1/WKD1 envelope, so the
  * lock subsystem can tell an encrypted wallet (lockable) from a plaintext
  * one (nothing to lock).  Idempotent, thread-safe. */
 void wallet_lock_note_encrypted_at_rest(void);

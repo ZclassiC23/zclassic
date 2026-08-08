@@ -27,7 +27,8 @@ network-reachable.
 
 | # | Location | Form | Encrypted at rest |
 |---|---|---|---|
-| 1 | `node.db` → `wallet_keys.privkey` (32 B secp256k1 scalar) | blob | WKS1 envelope when a passphrase is in force |
+| 1 | `node.db` → `wallet_keys.privkey` (32 B secp256k1 scalar) | blob | WKD1 envelope under the wallet DEK when a passphrase is in force |
+| 1a | `node.db` → `wallet_key_encryption.wrapped_dek` | blob | the random wallet DEK wrapped once in WKS1 under the passphrase |
 | 2 | `node.db` → `wallet_sapling_keys.xsk` (169 B extended spending key) | blob | WKS1 envelope when a passphrase is in force |
 | 3 | `node.db` → `wallet_seed.seed` (32 B HD seed) | blob | WKS1 envelope when a passphrase is in force |
 | 4 | Process RAM — `wallet.keystore` and `wallet.sapling_keys` | cleartext | never; this is the working set |
@@ -38,8 +39,8 @@ reason a core dump, a debugger attach, or `/proc/<pid>/mem` read as the node's
 uid is a total compromise, and the reason confining the agent is an OS problem
 (§7).
 
-Row 5 copies exactly `wallet_keys`, `wallet_sapling_keys`, `wallet_seed`
-(`app/services/src/wallet_backup_service.c:78-80`) with `CREATE TABLE … AS
+Row 5 copies `wallet_keys`, `wallet_key_encryption`, `wallet_sapling_keys`,
+`wallet_seed`, and the other wallet-owned tables with `CREATE TABLE … AS
 SELECT *`, so a backup taken from an encrypted wallet contains encrypted
 blobs and a backup taken from a plaintext wallet contains raw keys. The two
 layers use **independent passphrases**: `ZCL_WALLET_PASSPHRASE` wraps the rows,
@@ -109,21 +110,34 @@ Two typed commands read and use this, both `AUTH_OWNER`:
 
 ## 3. What is encrypted, with what
 
-The primitive is `lib/wallet/src/wallet_keystore.c` — the **WKS1 envelope**:
+Two authenticated envelopes are used. `lib/wallet/src/wallet_keystore.c`
+provides the passphrase-facing **WKS1 envelope**:
 
 ```
 magic "WKS1" | version u32be | kdf_iters u32be | reserved u32 | salt[16] | nonce[12] | tag[16] | ciphertext
 ```
 
 PBKDF2-HMAC-SHA512 (200 000 iterations by default) from the passphrase, then
-AES-256-GCM with a fresh 12-byte nonce and a 16-byte tag, empty AAD. The
-header is 60 bytes; a wrong passphrase or a tampered byte fails the tag and
-returns false rather than plausible garbage.
+AES-256-GCM with a fresh 12-byte nonce and a 16-byte tag. Sapling spending
+keys and the HD seed remain WKS1 rows. Transparent keys use WKS1 once to wrap
+a random 32-byte wallet data-encryption key in `wallet_key_encryption`, then
+`lib/wallet/src/wallet_sqlite_key_crypto.c` writes fast **WKD1** rows:
 
-The persistence layer applies it. `lib/wallet/src/wallet_sqlite.c:134-183`
-wraps on write and unwraps on read; `is_wks1_blob()` (`:122`) sniffs the magic
-so a plaintext row still loads — this is the backwards-compatible path, and it
-is why a wallet can be **mixed**: some rows enveloped, some not.
+```
+magic "WKD1" | version u32be | nonce[12] | tag[16] | ciphertext
+```
+
+WKD1 uses AES-256-GCM under that DEK and authenticates the row's 20-byte
+public-key hash as AAD. Copying ciphertext to another wallet row therefore
+fails authentication. The password KDF is paid once per unlocked database,
+not once per address; explicit lock, auto-lock, passphrase changes, and
+database close wipe the cached DEK.
+
+The persistence layer applies both formats. `wallet_sqlite.c` dispatches
+transparent reads to legacy WKS1 or WKD1 and still accepts a plaintext row for
+backward compatibility. `wallet_sqlite_key_crypto.c` owns the wrapped DEK,
+WKD1 AEAD, and migration transaction. A wallet may therefore be mixed during
+an interrupted upgrade without any row being mistaken for zero or deleted.
 
 The passphrase is resolved in one place,
 `wallet_lock_effective_passphrase()` (`lib/wallet/src/wallet_lock.c`), in this
@@ -137,7 +151,7 @@ order:
 `ZCL_WALLET_PASSPHRASE` remains a first-creation/recovery policy input, but it
 cannot auto-unlock a live encrypted wallet. A headless service instead receives
 the user-scoped systemd credential named `wallet-passphrase`; boot reads its
-private bounded file once before the first WKS1 row and registers it in the
+private bounded file once before the first WKS1/WKD1 row and registers it in the
 same cleansable runtime buffer used by explicit unlock. A missing credential
 leaves the wallet locked, a malformed credential fails boot by name, and a
 wrong passphrase reaches the existing wallet persistence abort guards rather
@@ -164,16 +178,15 @@ return, and the key-saved event / wallet-projection feed moved into that
 writer (emitted once per new row). `reindexdb` now repairs through the
 encryption-aware `wallet_sqlite_flush_r`.
 
-**Legacy plaintext rows are scrubbed at boot.** Datadirs written before this
-change may still hold plaintext secret rows. After wallet load (and after
-the STATE F keystore-count invariant), boot runs
-`wallet_sqlite_scrub_plaintext_r`: when a passphrase is configured, every
-non-envelope blob in the three secret columns is wrapped into a WKS1
-envelope **in place** — byte content preserved, nothing deleted, so a row
-the in-memory wallet never loaded is upgraded rather than destroyed. With
-no passphrase configured the scrub is a no-op (raw 32-byte rows are the
-legitimate format for an unencrypted wallet). A scrub SQL/encrypt failure
-aborts the boot loudly instead of leaving plaintext at rest silently.
+**Legacy rows are migrated at boot.** After wallet load and the STATE F
+keystore-count invariant, `wallet_sqlite_migrate_transparent_keys_r` rewrites
+the already-decrypted transparent keys into WKD1 in one transaction. Thus a
+legacy WKS1 row pays its password KDF once, during the load that was already
+required, rather than again during migration. `wallet_sqlite_scrub_plaintext_r`
+then upgrades any residual unloaded transparent row to WKD1 and retains WKS1
+for Sapling keys and the seed. Byte content is preserved and nothing is
+deleted. With no passphrase the migration and scrub are no-ops. Any SQL,
+encryption, authentication, or commit failure aborts boot loudly.
 
 One residual blind spot remains: neither `getwalletinfo.persistence` nor any
 dumper counts enveloped-vs-plaintext rows, so an operator cannot ask the node

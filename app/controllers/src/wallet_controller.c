@@ -266,6 +266,14 @@ static bool rpc_walletencrypt(const struct json_value *params, bool help,
         json_set_str(result, "Error: wallet encryption setup failed");
         LOG_FAIL("wallet", "walletencrypt: unlock code=%d", unlocked.code);
     }
+    struct zcl_result migrated =
+        wallet_sqlite_migrate_transparent_keys_r(ctx->wallet_db, ctx->wallet);
+    if (!migrated.ok) {
+        wallet_lock_lock(ctx->wallet);
+        json_set_str(result, "Error: wallet key encryption transaction failed");
+        LOG_FAIL("wallet", "walletencrypt: key migration code=%d",
+                 migrated.code);
+    }
     struct zcl_result scrubbed =
         wallet_sqlite_scrub_plaintext_r(ctx->wallet_db);
     if (!scrubbed.ok) {

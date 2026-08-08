@@ -10,7 +10,7 @@
  * write the per-table manifest, then reopen the file read-only and verify
  * the row count of EVERY wallet table against the source.
  *
- * Verifying one table of seven — which is what this did for a long time —
+ * Verifying one table of eight — which is what this did for a long time —
  * let a copy that dropped wallet_sapling_keys, wallet_seed, or
  * wallet_sapling_notes verify clean and emit a SUCCESS event. The user
  * found out at restore time, which is the one moment they cannot afford
@@ -54,6 +54,7 @@ static _Atomic int64_t g_wbs_last_backup_path_us = 0;
 
 static const char *const WALLET_TABLES[] = {
     "wallet_keys",
+    "wallet_key_encryption",
     "wallet_sapling_keys",
     "wallet_seed",
     "wallet_scripts",
@@ -249,7 +250,7 @@ struct zcl_result wbs_run_once_impl(const char *backup_dir,
         return r;
     }
 
-    /* Round-trip verification over ALL SEVEN wallet tables: reopen the
+    /* Round-trip verification over ALL EIGHT wallet tables: reopen the
      * backup file read-only and compare each table's row count against the
      * source's. Verifying only wallet_keys let a copy that dropped
      * wallet_sapling_keys / wallet_seed / wallet_sapling_notes emit a
@@ -322,4 +323,3 @@ struct zcl_result wallet_backup_run_once(const char *backup_dir,
     return wbs_run_once_impl(backup_dir, db, out_path, out_path_cap,
                              out_key_count, err_out, err_cap, &vout);
 }
-

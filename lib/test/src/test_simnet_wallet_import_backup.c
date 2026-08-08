@@ -47,6 +47,7 @@
 #include "models/wallet_tx.h"
 
 #include "wallet/wallet.h"
+#include "wallet/wallet_lock.h"
 #include "wallet/wallet_sqlite.h"
 
 #include "services/wallet_backup_service.h"
@@ -614,10 +615,15 @@ static int part2_backup_restore(void)
     struct wallet_sqlite ws;
     IB_CHECK("part2: wallet_sqlite_open", wallet_sqlite_open(&ws, ndb.db));
 
+    wallet_lock_reset_for_test();
+    IB_CHECK("part2: unlock encrypted wallet fixture",
+             wallet_lock_unlock(NULL, NULL,
+                                "ib-wallet-row-passphrase").ok);
+
     struct ib_key keyB;
     ib_make_key(&keyB);
     struct zcl_result wr = wallet_sqlite_write_key_r(&ws, &keyB.pub, &keyB.priv);
-    IB_CHECK("part2: write a real key into wallet_keys", wr.ok);
+    IB_CHECK("part2: write an encrypted real key into wallet_keys", wr.ok);
 
     const int64_t BALANCE = 42 * COIN_VALUE;
     struct db_wallet_utxo wu;
@@ -681,7 +687,7 @@ static int part2_backup_restore(void)
             ZCL_ERR(-1, "wallet_sqlite_open failed");
         bool key_survives = rr.ok && got.fValid &&
                            memcmp(got.vch, keyB.priv.vch, 32) == 0;
-        IB_CHECK("part2: restored wallet_keys row matches the original key",
+        IB_CHECK("part2: restored encrypted key and wrapped DEK recover",
                  key_survives);
         memory_cleanse(got.vch, 32);
         if (ws_ok)
@@ -704,6 +710,7 @@ static int part2_backup_restore(void)
     memory_cleanse(keyB.priv.vch, 32);
     wallet_sqlite_close(&ws);
     node_db_close(&ndb);
+    wallet_lock_reset_for_test();
 
     test_cleanup_tmpdir(srcdir);
     test_cleanup_tmpdir(backupdir);

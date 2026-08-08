@@ -79,6 +79,11 @@ CREATE TABLE IF NOT EXISTS wallet_keys (
     created_at INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS wallet_key_encryption (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    wrapped_dek BLOB NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS wallet_watch_only (
     address_hash BLOB PRIMARY KEY,
     address TEXT NOT NULL,

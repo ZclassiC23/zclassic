@@ -204,8 +204,8 @@ lint gate" is in `docs/CODEBASE_MAP.md`.
   the Secret Service entry, converts it to a user-scoped encrypted systemd
   credential through stdin, and installs only the encrypted-file binding in a
   dedicated unit drop-in. `make dev-wallet-credential-status` is redacted and
-  read-only. The node consumes `wallet-passphrase` once before reading WKS1
-  rows; ordinary environment variables still cannot auto-unlock it.
+  read-only. The node consumes `wallet-passphrase` once before reading
+  WKS1/WKD1 rows; ordinary environment variables still cannot auto-unlock it.
 
 The isolated `zcl23-dev.service` uses the same `Type=notify` + external
 watchdog handshake as production, under a strict 4G memory envelope. A
