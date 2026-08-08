@@ -828,6 +828,15 @@ static int test_ic_code_capsule_stays_with_code_owner(void)
         ASSERT(ic_acc_has_group(&zcode, "command_registry_catalog"));
         ASSERT(!ic_acc_has_group(&zcode, "code_capsule"));
 
+        struct agent_impact_acc shared_header = {0};
+        (void)agent_impact_apply_shared_rules(
+            "tools/command/native_command.h", &shared_header);
+        ASSERT(ic_acc_has_group(&shared_header,
+                                "command_registry_catalog"));
+        ASSERT(!ic_acc_has_group(&shared_header, "codeindex"));
+        ASSERT(!ic_acc_has_group(&shared_header, "code_capsule"));
+        ASSERT(!ic_acc_has_group(&shared_header, "code_impact"));
+
         struct agent_impact_acc code = {0};
         (void)agent_impact_apply_shared_rules(
             "tools/command/native_code_command.c", &code);
