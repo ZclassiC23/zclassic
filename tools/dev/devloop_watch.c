@@ -52,6 +52,7 @@ static void watch_signal(int sig)
 {
     (void)sig;
     g_watch_stop = 1;
+    zcl_devloop_process_cancel_request();
 }
 
 static bool mkdirs(const char *path)
@@ -296,6 +297,7 @@ int zcl_devloop_watch_mode(const char *repo_root,
     ctx.force_full_source_rescan = true;
 
     g_watch_stop = 0;
+    zcl_devloop_process_cancel_clear();
     signal(SIGINT, watch_signal);
     signal(SIGTERM, watch_signal);
     printf("{\"schema\":\"zcl.dev_watch_heartbeat.v1\","

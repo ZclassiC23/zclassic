@@ -317,6 +317,14 @@ stale identity instead of blessing it. Rebuilding that generated identity in
 the resident proof epoch is required before this edit class can report
 `proof_complete=true`.
 
+The watcher also owns cancellation. `SIGTERM` records an async-signal-safe
+cancellation request; the bounded process runner terminates and reaps the
+active child process group before the watcher releases its worktree lock. On
+this host, `dev loop stop` interrupted a generic `make ff` tree and completed
+in 0.30 seconds, where the prior implementation retained the lock past its
+five-second command deadline. Cancellation is reported separately from a
+process timeout and never activates a candidate.
+
 The candidate build used one compiler, one linker, one candidate, zero
 Make/shell/LTO processes, and no datadir, port, or service access. A separately
 audited isolated regtest launch took 11.054

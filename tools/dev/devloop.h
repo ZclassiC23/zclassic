@@ -207,6 +207,7 @@ struct zcl_devloop_process_result {
     int exit_code;
     int term_signal;
     bool timed_out;
+    bool cancelled;
     int64_t elapsed_ms;
     char output[ZCL_DEVLOOP_OUTPUT_MAX];
     size_t output_len;
@@ -457,6 +458,11 @@ bool zcl_devloop_process_run_test(const char *cwd,
 bool zcl_devloop_process_run_fd(const char *cwd, int exec_fd,
                                 const char *const argv[], int timeout_ms,
                                 struct zcl_devloop_process_result *out);
+/* Async-signal-safe cancellation owned by the resident watcher. A request
+ * terminates the active bounded child process group; clear only when the
+ * watcher begins a new ownership lifetime. */
+void zcl_devloop_process_cancel_request(void);
+void zcl_devloop_process_cancel_clear(void);
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 bool zcl_devloop_deterministic_compile_failure(
     const struct zcl_devloop_process_result *result,

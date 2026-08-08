@@ -17,6 +17,18 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+static volatile sig_atomic_t g_process_cancel_requested;
+
+void zcl_devloop_process_cancel_request(void)
+{
+    g_process_cancel_requested = 1;
+}
+
+void zcl_devloop_process_cancel_clear(void)
+{
+    g_process_cancel_requested = 0;
+}
+
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 static void capture_tail(struct zcl_devloop_process_result *out,
                          const char *data, size_t len)
@@ -134,6 +146,8 @@ static bool process_run_impl(const char *cwd, int exec_fd,
     }
 
     close(fds[1]);
+    /* Close the fork/setpgid race before the parent ever signals -pid. */
+    (void)setpgid(pid, pid);
     int flags = fcntl(fds[0], F_GETFL, 0);
     if (flags >= 0)
         (void)fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
@@ -156,8 +170,10 @@ static bool process_run_impl(const char *cwd, int exec_fd,
             close(fds[0]);
             return false;
         }
-        if (platform_time_monotonic_us() >= deadline_us) {
-            out->timed_out = true;
+        bool cancelled = g_process_cancel_requested != 0;
+        if (cancelled || platform_time_monotonic_us() >= deadline_us) {
+            out->cancelled = cancelled;
+            out->timed_out = !cancelled;
             (void)kill(-pid, SIGTERM);
             for (int i = 0; i < 20; i++) {
                 if (waitpid(pid, &status, WNOHANG) == pid) {

@@ -10,12 +10,14 @@
 #include "hotswap/hotswap_module.h"
 #include "json/json.h"
 #include "keys/key.h"
+#include "platform/time_compat.h"
 #include "sim/social_app_sim.h"
 #include "util/safe_alloc.h"
 #include "wallet/wallet.h"
 
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2306,6 +2308,38 @@ static int test_resident_restart_builder(void)
     return failures;
 }
 
+static int test_resident_process_cancellation(void)
+{
+    int failures = 0;
+    TEST("dev platform: resident cancellation promptly stops an active child group") {
+        const char *saved = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+        char *saved_copy = saved ? strdup(saved) : NULL;
+        ASSERT(!saved || saved_copy);
+        ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) == 0);
+
+        const char *argv[] = { "sleep", "30", NULL };
+        struct zcl_devloop_process_result result = {0};
+        zcl_devloop_process_cancel_request();
+        int64_t started = platform_time_monotonic_us();
+        ASSERT(zcl_devloop_process_run(".", argv, 60000, &result));
+        int64_t elapsed_us = platform_time_monotonic_us() - started;
+        ASSERT(result.cancelled);
+        ASSERT(!result.timed_out);
+        ASSERT(result.term_signal == SIGTERM);
+        ASSERT(elapsed_us >= 0 && elapsed_us < INT64_C(1000000));
+        zcl_devloop_process_cancel_clear();
+
+        if (saved_copy) {
+            ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", saved_copy, 1) == 0);
+            free(saved_copy);
+        } else {
+            ASSERT(unsetenv("ZCL_DEVLOOP_TEST_PROCESS") == 0);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_native_source_cas_shadow(void)
 {
     int failures = 0;
@@ -2350,6 +2384,7 @@ int test_dev_platform(void)
     failures += test_distill_first_error();
     failures += test_hotswap_artifact_cache();
     failures += test_resident_restart_builder();
+    failures += test_resident_process_cancellation();
     failures += test_native_source_cas_shadow();
     failures += test_menu_and_search();
     failures += test_change_classification();
