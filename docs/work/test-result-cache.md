@@ -20,6 +20,9 @@ SUITE VERDICT mode=<cold|cached> groups_total=N groups_ran=N groups_cached=N \
 ```
 
 `groups_ran` is the count actually forked, and it is the first number to read.
+Only a skip-free fresh PASS is stored; a zero-exit group that prints `SKIP (`
+never becomes a reusable PASS. The v3 key domain retires older records that
+could have been stored before this rule existed.
 Only a **cold** run prints the bare token `ALL TESTS PASSED`; a cached run prints
 `ALL TESTS PASSED (CACHED)`. `tools/scripts/gate-and-report.sh` reads the
 `SUITE VERDICT` line, rejects anything whose `mode` is not `cold`, and rejects

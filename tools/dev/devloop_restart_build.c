@@ -957,20 +957,26 @@ static bool rr_restart_prove(
         return false;
     }
     const char *test_argv[] = {
-        receipt->artifact_path, exact, "--no-cache", NULL
+        receipt->artifact_path, exact, "--cache", NULL
     };
     receipt->test_processes = 1;
     int64_t test_started = platform_time_monotonic_us();
     bool ran = zcl_devloop_process_run_test(root, test_argv, 300000, process);
     receipt->test_us = platform_time_monotonic_us() - test_started;
-    uint32_t groups_ran = 0, groups_failed = 0, self_skips = 0;
+    uint32_t groups_failed = 0;
     receipt->immediate_proof_complete = ran && !process->timed_out &&
         !process->term_signal && process->exit_code == 0 &&
-        rr_summary_value(process->output, "groups_ran=", &groups_ran) &&
+        rr_summary_value(process->output, "groups_ran=",
+                         &receipt->groups_ran) &&
+        rr_summary_value(process->output, "groups_cached=",
+                         &receipt->groups_cached) &&
         rr_summary_value(process->output, "groups_failed=", &groups_failed) &&
-        rr_summary_value(process->output, "self_skips=", &self_skips) &&
-        groups_ran == receipt->group_count && groups_failed == 0 &&
-        self_skips == 0;
+        rr_summary_value(process->output, "self_skips=",
+                         &receipt->self_skips) &&
+        receipt->groups_ran <= receipt->group_count &&
+        receipt->groups_cached ==
+            receipt->group_count - receipt->groups_ran &&
+        groups_failed == 0 && receipt->self_skips == 0;
     receipt->integration_proof_deferred = receipt->deferred_group_count > 0;
     receipt->proof_complete = receipt->immediate_proof_complete &&
         !receipt->integration_proof_deferred;
@@ -1130,6 +1136,10 @@ static bool rr_emit_event(
         (void)json_push_kv_int(&receipt, "group_count", proof->group_count);
         (void)json_push_kv_int(&receipt, "deferred_group_count",
                                proof->deferred_group_count);
+        (void)json_push_kv_int(&receipt, "groups_ran", proof->groups_ran);
+        (void)json_push_kv_int(&receipt, "groups_cached",
+                               proof->groups_cached);
+        (void)json_push_kv_int(&receipt, "self_skips", proof->self_skips);
         (void)json_push_kv_int(&receipt, "compiler_processes",
                                proof->compiler_processes);
         (void)json_push_kv_int(&receipt, "linker_processes",

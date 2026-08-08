@@ -1073,7 +1073,10 @@ int main(int argc, char **argv)
             if (results[i].cached) { cached_n++; continue; }
             ran++;
             bool pass = !results[i].signaled && results[i].exit_code == 0;
-            if (pass && probes && probes[i].cacheable) {
+            /* A zero-exit group that printed SKIP did not prove its complete
+             * contract. Never persist that partial run as a reusable PASS. */
+            if (pass && results[i].skip_markers == 0 && probes &&
+                probes[i].cacheable) {
                 testcache_store_pass(tc, probes[i].key);
                 stored++;
             }

@@ -569,6 +569,12 @@ int test_testcache(void)
     TC_CHECK("runner marks a cached pass as (CACHED)",
              file_contains("lib/test/src/test_parallel.c",
                            "ALL TESTS PASSED (CACHED)"));
+    TC_CHECK("runner never stores a self-skipped group as PASS",
+             file_contains("lib/test/src/test_parallel.c",
+                           "results[i].skip_markers == 0"));
+    TC_CHECK("v3 key retires PASS records minted before skip rejection",
+             file_contains("lib/test/src/testcache.c",
+                           "zcl.testcache.key.v3"));
     /* The label has to describe the run, not the flag. Keying it on cache_mode
      * made `ZCL_TEST_CACHE=1 ... --only=<group>` report "mode=cached ...
      * groups_cached=0" and the (CACHED) headline for a run in which everything

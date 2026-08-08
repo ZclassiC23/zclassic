@@ -12,6 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN="${ZCL_DEV_REPLAY_BIN:-$ROOT/build/bin/zclassic23-dev}"
 HISTORY="${ZCL_DEV_HISTORY_OUTPUT:-$ROOT/build/dev-loop/history-benchmark.json}"
 OUTPUT="${ZCL_DEV_REPLAY_OUTPUT:-$ROOT/build/dev-loop/history-replay.json}"
+TEST_TIMING="$ROOT/.cache/test-timing/last-run.json"
 LIMIT="${ZCL_DEV_REPLAY_LIMIT:-0}"
 WAIT_MS="${ZCL_DEV_REPLAY_WAIT_MS:-10000}"
 MODE="${1:-run}"
@@ -81,6 +82,13 @@ aggregate()
            shell:([$samples[].shell_processes]|add),
            lto:([$samples[].lto_invocations]|add),
            complete_graph_links:([$samples[].complete_graph_links]|add)},
+         proof_groups:{
+           selected:([$samples[]|(.tests_selected // 0)]|add),
+           ran:([$samples[]|(.tests_run // 0)]|add),
+           cached:([$samples[]|(.tests_cached // 0)]|add),
+           deferred:([$samples[]|(.tests_deferred // 0)]|add),
+           paths_with_cache_hits:
+             ([$samples[]|select((.tests_cached // 0) > 0)]|length)},
          gates:{
            feedback_p95_under_5s:(percentile($latencies; 95) < 5000000),
            feedback_95pct_under_5s:
@@ -312,6 +320,20 @@ while IFS= read -r row; do
     probe_processes="$(jq -r '.build_receipt.probe_processes // 0' <<<"$data")"
     complete_graph_links=0
     [ "$action" != restart ] || complete_graph_links="$linker_processes"
+    test_timing_bound=false
+    test_group_timings='[]'
+    if [ "$test_processes" -gt 0 ] && [ -r "$TEST_TIMING" ]; then
+        expected_ran="$(jq -r '.proof_receipt.groups_ran // 0' <<<"$data")"
+        expected_cached="$(jq -r '.proof_receipt.groups_cached // 0' <<<"$data")"
+        if jq -e --argjson ran "$expected_ran" --argjson cached "$expected_cached" '
+             .schema == "zcl.test_timing.v1" and
+             .groups_ran == $ran and .groups_cached == $cached and
+             (.groups | type) == "array"' "$TEST_TIMING" >/dev/null; then
+            test_timing_bound=true
+            test_group_timings="$(jq -c '[.groups[] |
+              {name,ms,cached}]' "$TEST_TIMING")"
+        fi
+    fi
     jq -cn \
       --arg path "$path" --arg class "$class" --arg action "$action" \
       --arg status "$status" --argjson frequency "$frequency" \
@@ -323,6 +345,8 @@ while IFS= read -r row; do
       --argjson linker "$linker_processes" \
       --argjson test "$test_processes" --argjson probe "$probe_processes" \
       --argjson complete_graph_links "$complete_graph_links" \
+      --argjson test_timing_bound "$test_timing_bound" \
+      --argjson test_group_timings "$test_group_timings" \
       --arg failure "$(jq -r '
         if (.data.failure_capsule // "") != "" then .data.failure_capsule
         elif (.error.code // "") != "" then
@@ -340,6 +364,8 @@ while IFS= read -r row; do
         test_processes:$test,probe_processes:$probe,
         make_processes:0,shell_processes:0,lto_invocations:0,
         complete_graph_links:$complete_graph_links,
+        test_timing_bound:$test_timing_bound,
+        test_group_timings:$test_group_timings,
         failure_capsule:$failure,process_output_tail:$process_output_tail}' \
       | jq --argjson cycle "$data" '
           .source_guard_us=($cycle.source_guard_us // 0) |
@@ -349,7 +375,9 @@ while IFS= read -r row; do
           .link_us=(($cycle.build_receipt.link_us // 0) +
                     ($cycle.proof_receipt.link_us // 0)) |
           .test_us=($cycle.proof_receipt.test_us // 0) |
-          .tests_run=($cycle.proof_receipt.group_count // 0) |
+          .tests_selected=($cycle.proof_receipt.group_count // 0) |
+          .tests_run=($cycle.proof_receipt.groups_ran // 0) |
+          .tests_cached=($cycle.proof_receipt.groups_cached // 0) |
           .tests_deferred=($cycle.proof_receipt.deferred_group_count // 0) |
           .artifact_cache_hit=($cycle.build_receipt.artifact_cache_hit // false)' \
       >>"$samples"

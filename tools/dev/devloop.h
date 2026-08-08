@@ -269,8 +269,9 @@ struct zcl_devloop_restart_build_receipt {
 
 /* Exact affected-proof execution against a test binary linked from the same
  * changed source bytes as the process candidate. A green exit alone is not
- * proof: the receipt is complete only when the runner's cold-suite summary
- * accounts for every selected group with zero failures or self-skips. */
+ * proof: the receipt is complete only when the runner's summary accounts for
+ * every selected group as a fresh execution or a verified content-addressed
+ * PASS, with zero failures or self-skips. */
 struct zcl_devloop_restart_proof_receipt {
     char artifact_path[4096];
     char artifact_sha256[65];
@@ -284,6 +285,9 @@ struct zcl_devloop_restart_proof_receipt {
     int64_t total_us;
     uint32_t group_count;
     uint32_t deferred_group_count;
+    uint32_t groups_ran;
+    uint32_t groups_cached;
+    uint32_t self_skips;
     uint32_t compiler_processes;
     uint32_t linker_processes;
     uint32_t test_processes;

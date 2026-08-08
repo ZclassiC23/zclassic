@@ -463,11 +463,11 @@ static bool trc_compute_key(struct testcache *tc, const char *group_name,
     struct sha3_256_ctx ctx;
     sha3_256_init(&ctx);
 
-    /* v2: the preimage now carries the coverage-gating environment. Bumping the
-     * domain tag retires every v1 record, which is required — a v1 key was
-     * computed WITHOUT the environment, so honoring one could serve a PASS
-     * recorded by a run that skipped the coverage a v2 run intends to execute. */
-    static const char DOMAIN[] = "zcl.testcache.key.v2";
+    /* v3: only skip-free executions may mint reusable PASS records. Retire
+     * v2 because it could store a zero-exit group that printed SKIP; the
+     * environment digest distinguished skip modes but did not make a skip a
+     * proof. v2 already added the coverage-gating environment over v1. */
+    static const char DOMAIN[] = "zcl.testcache.key.v3";
     sha3_256_write(&ctx, (const unsigned char *)DOMAIN, sizeof(DOMAIN)); /* +NUL */
 
     const char *tk = ZCL_TESTCACHE_TOOLKEY;
