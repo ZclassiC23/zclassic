@@ -242,13 +242,9 @@ struct zcl_result build_fabric_package_prepare(
     if (!workspace || !datadir || !worker || !source_dir || !emit_dir ||
         !recipe_path || !profile || !task || !candidate || !out)
         return ZCL_ERR(-1, "package execution requires closed inputs");
-    bool quick = strcmp(profile, VCS_BUILD_PACKAGE_PROFILE_LEGACY_V1) == 0 ||
-                 strcmp(profile, VCS_BUILD_PACKAGE_PROFILE_QUICK_V1) == 0;
     bool standard =
         strcmp(profile, VCS_BUILD_PACKAGE_PROFILE_STANDARD_A_V1) == 0 ||
         strcmp(profile, VCS_BUILD_PACKAGE_PROFILE_STANDARD_B_V1) == 0;
-    if (!quick && !standard)
-        return ZCL_ERR(-1, "package execution profile is not registered");
     memset(out, 0, sizeof(*out));
     uint8_t *recipe_wire = NULL;
     size_t recipe_wire_len = 0;
