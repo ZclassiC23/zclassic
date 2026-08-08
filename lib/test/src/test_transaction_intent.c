@@ -4,6 +4,7 @@
 #include "test/test_core.h"
 
 #include "controllers/vault_intent_controller.h"
+#include "controllers/vault_intent_publish.h"
 #include "json/json.h"
 #include "models/database.h"
 #include "models/vault_intent.h"
@@ -14,6 +15,7 @@
 #include "services/vault_intent_async_service.h"
 #include "services/znam_transaction_intent_service.h"
 #include "services/zslp_transaction_intent_service.h"
+#include "validation/accept_to_mempool.h"
 #include "validation/main_state.h"
 #include "wallet/wallet_lock.h"
 
@@ -248,6 +250,28 @@ int test_transaction_intent(void)
 {
     int failures = 0;
     struct node_db ndb; memset(&ndb, 0, sizeof(ndb));
+
+    TEST("vault intents retain typed mempool rejection reasons") {
+        ASSERT_STR_EQ(vault_intent_mempool_error_code(
+            -100 - MEMPOOL_ACCEPT_INVALID,
+            "wallet commit: mempool admission rejected transaction "
+            "(invalid: shielded-requirements-missing)"),
+            "SHIELDED_REQUIREMENTS_MISSING");
+        ASSERT_STR_EQ(vault_intent_mempool_error_code(
+            -100 - MEMPOOL_ACCEPT_INVALID,
+            "wallet commit: mempool admission rejected transaction "
+            "(invalid: transparent-script-invalid)"),
+            "TRANSPARENT_SCRIPT_INVALID");
+        ASSERT_STR_EQ(vault_intent_mempool_error_code(
+            -100 - MEMPOOL_ACCEPT_BELOW_FEE, "below fee"),
+            "MEMPOOL_BELOW_FEE");
+        ASSERT_STR_EQ(vault_intent_mempool_error_code(
+            -100 - MEMPOOL_ACCEPT_MISSING_INPUTS, "missing inputs"),
+            "MEMPOOL_MISSING_INPUTS");
+        ASSERT_STR_EQ(vault_intent_mempool_error_code(-999, NULL),
+                      "MEMPOOL_REJECTED");
+        PASS();
+    }
 
     TEST("vault intent receipts render chain hashes in canonical display order") {
         struct vault_intent_row row;

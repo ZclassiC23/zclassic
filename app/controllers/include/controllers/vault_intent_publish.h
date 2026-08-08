@@ -10,6 +10,12 @@ struct json_value;
 struct wallet_rpc_context;
 struct wallet_tx;
 
+/* Convert wallet_commit_transaction()'s bounded mempool result into a stable,
+ * public status code.  The free-form diagnostic remains log-only; agents can
+ * branch on this code without parsing prose. */
+const char *vault_intent_mempool_error_code(int result_code,
+                                             const char *message);
+
 bool vault_intent_publish_prepared(struct wallet_rpc_context *ctx,
                                    const uint8_t id[32],
                                    struct wallet_tx *wtx, int64_t now,

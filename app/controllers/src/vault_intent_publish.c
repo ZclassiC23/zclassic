@@ -11,7 +11,40 @@
 #include "models/wallet_tx.h"
 #include "net/connman.h"
 #include "util/log_macros.h"
+#include "validation/accept_to_mempool.h"
 #include "wallet/wallet.h"
+
+#include <string.h>
+
+const char *vault_intent_mempool_error_code(int result_code,
+                                             const char *message)
+{
+    /* Detailed tokens originate in accept_to_mempool_detailed() and contain
+     * no transaction material.  Preserve the useful shielded/script cases
+     * before falling back to the stable result enum. */
+    if (message) {
+        if (strstr(message, "shielded-requirements-missing"))
+            return "SHIELDED_REQUIREMENTS_MISSING";
+        if (strstr(message, "transparent-script-invalid"))
+            return "TRANSPARENT_SCRIPT_INVALID";
+        if (strstr(message, "input-value-invalid"))
+            return "INPUT_VALUE_INVALID";
+        if (strstr(message, "value-balance-invalid"))
+            return "VALUE_BALANCE_INVALID";
+    }
+
+    switch (result_code) {
+    case -100 - MEMPOOL_ACCEPT_INVALID:        return "MEMPOOL_INVALID";
+    case -100 - MEMPOOL_ACCEPT_DUPLICATE:      return "MEMPOOL_DUPLICATE";
+    case -100 - MEMPOOL_ACCEPT_CONFLICT:       return "MEMPOOL_CONFLICT";
+    case -100 - MEMPOOL_ACCEPT_BELOW_FEE:      return "MEMPOOL_BELOW_FEE";
+    case -100 - MEMPOOL_ACCEPT_MISSING_INPUTS: return "MEMPOOL_MISSING_INPUTS";
+    case -100 - MEMPOOL_ACCEPT_NONFINAL:       return "MEMPOOL_NONFINAL";
+    case -100 - MEMPOOL_ACCEPT_EXPIRING_SOON:  return "MEMPOOL_EXPIRING_SOON";
+    case -100 - MEMPOOL_ACCEPT_INTERNAL_ERROR: return "MEMPOOL_INTERNAL_ERROR";
+    default:                                   return "MEMPOOL_REJECTED";
+    }
+}
 
 static void vipub_error(struct json_value *out, const char *code,
                         const char *message)
@@ -71,9 +104,15 @@ bool vault_intent_publish_prepared(struct wallet_rpc_context *ctx,
     if (!already_durable) {
         struct zcl_result r = wallet_commit_from_context(ctx, wtx);
         if (!r.ok) {
+            const char *error_code =
+                vault_intent_mempool_error_code(r.code, r.message);
+            LOG_ERROR("vault_intent",
+                      "prepared transaction mempool admission failed "
+                      "(code=%d status=%s): %s",
+                      r.code, error_code, r.message);
             (void)vault_intent_set_state(ctx->node_db, id,
-                VAULT_INTENT_FAILED, NULL, "MEMPOOL_REJECTED", now);
-            vipub_error(result, "MEMPOOL_REJECTED", r.message);
+                VAULT_INTENT_FAILED, NULL, error_code, now);
+            vipub_error(result, error_code, r.message);
             return false;
         }
         r = wallet_persist_commit_before_relay(ctx, wtx);

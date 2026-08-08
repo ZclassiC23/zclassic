@@ -353,6 +353,13 @@ nullifier as an available wallet note or an idempotent reservation by that same
 transaction. A missing nullifier becomes `PREPARED_NOTE_MISMATCH`; a note owned
 by another transaction becomes `PREPARED_NOTE_CONFLICT`. Both are terminal and
 require a fresh plan—neither may loop forever or generate replacement bytes.
+Mempool refusal is also typed durably. In particular,
+`SHIELDED_REQUIREMENTS_MISSING` means the transaction's anchor or nullifier is
+not present in the node's current shielded view; refresh/reconcile wallet
+witnesses and create a fresh plan. Other stable codes distinguish invalid
+proof/script data, transparent missing inputs, conflicts, insufficient relay
+fee, non-final locktime, near expiry, and internal admission failure. Agents
+must branch on `error_code`, never parse log prose or resubmit a terminal plan.
 
 Report states literally. `proving` means background construction or retry is
 active; `mempool_accepted` means the node admitted the transaction;
