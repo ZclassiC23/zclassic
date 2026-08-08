@@ -78,6 +78,11 @@ bool vcs_toolchain_capsule_v1_root(
  * No mtime participates. */
 bool vcs_toolchain_capsule_v1_capture_gcc(
     struct vcs_toolchain_capsule_v1 *out);
+#ifdef ZCL_TESTING
+void vcs_toolchain_capsule_v1_cache_reset_for_test(void);
+void vcs_toolchain_capsule_v1_cache_stats_for_test(
+    uint64_t *fresh_captures, uint64_t *cache_hits);
+#endif
 void vcs_build_action_v1_fixed_flags_root(uint8_t out[32]);
 void vcs_build_action_v1_fixed_environment_root(uint8_t out[32]);
 /* Closed fixed-action registry. The returned work kind uses the canonical

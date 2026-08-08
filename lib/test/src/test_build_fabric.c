@@ -593,6 +593,50 @@ static int test_bf_confined_worker(void)
     return failures;
 }
 
+static int test_bf_toolchain_capture_cache(void)
+{
+    int failures = 0;
+    TEST("build_fabric: unchanged GCC capsule is captured once per process") {
+        struct vcs_toolchain_capsule_v1 first, second, changed_environment;
+        uint8_t first_root[32], second_root[32], changed_root[32];
+        uint64_t fresh = 0, hits = 0;
+        const char *old_lc_all = getenv("LC_ALL");
+        char *saved_lc_all = old_lc_all ? strdup(old_lc_all) : NULL;
+        ASSERT(!old_lc_all || saved_lc_all != NULL);
+        vcs_toolchain_capsule_v1_cache_reset_for_test();
+        ASSERT(vcs_toolchain_capsule_v1_capture_gcc(&first));
+        ASSERT(vcs_toolchain_capsule_v1_capture_gcc(&second));
+        ASSERT(vcs_toolchain_capsule_v1_root(&first, first_root));
+        ASSERT(vcs_toolchain_capsule_v1_root(&second, second_root));
+        ASSERT(memcmp(first_root, second_root, sizeof(first_root)) == 0);
+        vcs_toolchain_capsule_v1_cache_stats_for_test(&fresh, &hits);
+        ASSERT_EQ(fresh, 1u);
+        ASSERT_EQ(hits, 1u);
+        bool changed_ok = setenv(
+            "LC_ALL", old_lc_all && strcmp(old_lc_all, "C") == 0
+                ? "POSIX" : "C", 1) == 0;
+        changed_ok = changed_ok &&
+            vcs_toolchain_capsule_v1_capture_gcc(&changed_environment) &&
+            vcs_toolchain_capsule_v1_root(&changed_environment,
+                                           changed_root) &&
+            memcmp(first_root, changed_root, sizeof(first_root)) == 0;
+        vcs_toolchain_capsule_v1_cache_stats_for_test(&fresh, &hits);
+        bool restored = false;
+        if (saved_lc_all) {
+            restored = setenv("LC_ALL", saved_lc_all, 1) == 0;
+            free(saved_lc_all);
+        } else {
+            restored = unsetenv("LC_ALL") == 0;
+        }
+        vcs_toolchain_capsule_v1_cache_reset_for_test();
+        ASSERT(changed_ok && restored);
+        ASSERT_EQ(fresh, 2u);
+        ASSERT_EQ(hits, 1u);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_bf_confined_test_worker(void)
 {
     int failures = 0;
@@ -907,6 +951,7 @@ int test_build_fabric(void)
     failures += test_bf_validation();
     failures += test_bf_service();
     failures += test_bf_leases();
+    failures += test_bf_toolchain_capture_cache();
     failures += test_bf_confined_worker();
     failures += test_bf_confined_test_worker();
     failures += test_bf_native();
