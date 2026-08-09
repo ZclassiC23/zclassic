@@ -323,6 +323,8 @@ static int test_v2_truthful_activation_status(void)
                       ZCODE_C23_ECONOMICS_SERVICE_ID);
         ASSERT_EQ(json_get_int(json_get(&reply.data, "service_generation")),
                   0);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "category_order")),
+                      "zero_root=0;else_first=(root[0]+1)%8;then=cyclic");
         zcl_command_reply_free(&reply);
         json_free(&input);
 
