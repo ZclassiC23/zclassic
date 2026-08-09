@@ -7,7 +7,7 @@
 #define ZCODE_C23_ECONOMICS_QUEUE_ORDER \
     "maturity_height,maturity_mtp,claim_root"
 #define ZCODE_C23_ECONOMICS_CATEGORY_ORDER \
-    "previous-epoch-root rotation, cyclic"
+    "zero_root=0;else_first=(root[0]+1)%8;then=cyclic"
 #define ZCODE_C23_ECONOMICS_CONCENTRATION_CAP \
     "min(epoch_capacity,max(1 ZC23,floor(epoch_capacity/100)))"
 

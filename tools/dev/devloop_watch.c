@@ -372,9 +372,18 @@ static int open_singleton_lock(const char *repo_root,
         return -1;
     }
     if (ftruncate(fd, 0) == 0)
-        dprintf(fd, "%ld %s\n", (long)getpid(),
+        dprintf(fd, "%ld %s starting\n", (long)getpid(),
                 zcl_devloop_publish_mode_name(publish_mode));
     return fd;
+}
+
+static bool mark_singleton_ready(
+    int fd, enum zcl_devloop_publish_mode publish_mode)
+{
+    if (fd < 0 || ftruncate(fd, 0) != 0 || lseek(fd, 0, SEEK_SET) < 0)
+        return false;
+    return dprintf(fd, "%ld %s ready\n", (long)getpid(),
+                   zcl_devloop_publish_mode_name(publish_mode)) > 0;
 }
 
 int zcl_devloop_watch_mode(const char *repo_root,
@@ -416,6 +425,13 @@ int zcl_devloop_watch_mode(const char *repo_root,
     if (!prime_source_snapshot(&ctx)) {
         fprintf(stderr,
                 "[devloop] watch: source snapshot reconciliation failed\n");
+        close(ctx.fd);
+        close(lock_fd);
+        return 1;
+    }
+    if (!mark_singleton_ready(lock_fd, publish_mode)) {
+        fprintf(stderr,
+                "[devloop] watch: could not publish ready ownership\n");
         close(ctx.fd);
         close(lock_fd);
         return 1;

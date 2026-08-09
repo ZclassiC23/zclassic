@@ -505,6 +505,16 @@ static int test_ic_incomplete_dimension_refuses_proof(void)
         ASSERT(n > 0 && n < sizeof(body));
         ASSERT(strstr(body, "\"proof_admissible\":false") != NULL);
         ASSERT(strstr(body, "\"proof_refusal\":\"closure-truncated\"") != NULL);
+        ASSERT(strstr(body, "\"live_eligible\":false") != NULL);
+        ASSERT(strstr(body,
+                      "\"why_not_live\":\"state_or_abi_contract_requires_process_reload\"")
+               != NULL);
+        ASSERT(strstr(body,
+                      "\"why_not_live_path\":\"lib/net/src/tor_integration.c\"")
+               != NULL);
+        ASSERT(strstr(body,
+                      "\"agent_next_action\":\"zclassic23-dev dev loop ensure")
+               != NULL);
 
         system("rm -rf " IC_FIX_TRUNC);
         system("rm -rf " IC_FIX_MACRO);
@@ -752,6 +762,33 @@ static int test_ic_dimension_applicability_and_exact_execution(void)
         why = "unset";
         ASSERT(!zcl_devloop_plan_proof_admissible(&gap, &why));
         ASSERT(strcmp(why, "unmapped-code-change") == 0);
+
+        /* Pure C23 service islands are product code, not harness internals.
+         * Their direct path floor must name the product proof even when the
+         * reverse-call graph happens to find infrastructure coverage. */
+        const char *c23_services[] = {
+            "app/services/src/zcode_c23_corpus_service.c",
+            "app/services/src/zcode_c23_economics_service.c",
+        };
+        for (size_t i = 0;
+             i < sizeof(c23_services) / sizeof(c23_services[0]); i++) {
+            const char *service_files[] = { c23_services[i] };
+            struct zcl_devloop_plan service;
+            ASSERT(zcl_devloop_plan_files(service_files, 1, &service));
+            ASSERT(service.action == ZCL_DEVLOOP_HOTSWAP);
+            ASSERT(ic_group_in(service.path_groups,
+                               service.path_groups_len,
+                               "zcode_commons_v2"));
+
+            char service_body[ZCL_DEVLOOP_PLAN_WIRE_MAX + 1];
+            size_t service_n = zcl_devloop_plan_json(
+                service_files, 1, service_body, sizeof(service_body));
+            ASSERT(service_n > 0);
+            ASSERT(strstr(service_body, "\"live_eligible\":true") != NULL);
+            ASSERT(strstr(service_body, "\"why_not_live\":\"\"") != NULL);
+            ASSERT(strstr(service_body, "\"why_not_live_path\":\"\"")
+                   != NULL);
+        }
 
         struct agent_impact_acc executor = {0};
         (void)agent_impact_apply_shared_rules(

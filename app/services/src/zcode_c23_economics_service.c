@@ -18,14 +18,19 @@ static bool render_status(struct zcode_c23_economics_status_result_v1 *out)
     memset(out, 0, sizeof(*out));
     out->challenge_blocks = VCS_ZCODE_COMMONS_CHALLENGE_BLOCKS;
     out->challenge_seconds = VCS_ZCODE_COMMONS_CHALLENGE_SECONDS;
+    /* Frozen policy: claims are all-or-nothing and unused epoch capacity
+     * expires. Set both explicitly so a status consumer never has to infer
+     * policy from zero-initialization. */
+    out->partial_claim_issuance = false;
+    out->unused_capacity_carries = false;
     for (uint16_t i = 0; i < VCS_ZCODE_COMMONS_CATEGORY_COUNT; i++)
         out->award_atoms[i] = vcs_zcode_creation_award_atoms_v2(i);
-    (void)snprintf(out->queue_order, sizeof(out->queue_order),
+    (void)snprintf(out->queue_order, sizeof(out->queue_order), "%s",
                    ZCODE_C23_ECONOMICS_QUEUE_ORDER);
-    (void)snprintf(out->category_order, sizeof(out->category_order),
+    (void)snprintf(out->category_order, sizeof(out->category_order), "%s",
                    ZCODE_C23_ECONOMICS_CATEGORY_ORDER);
     (void)snprintf(out->concentration_cap, sizeof(out->concentration_cap),
-                   ZCODE_C23_ECONOMICS_CONCENTRATION_CAP);
+                   "%s", ZCODE_C23_ECONOMICS_CONCENTRATION_CAP);
     return true;
 }
 

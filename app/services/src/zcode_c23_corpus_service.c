@@ -63,7 +63,7 @@ static bool render_status(
     zcl_hex_encode(root, sizeof(root), out->rules_root);
     if (!checkpoint) {
         (void)snprintf(out->blocker, sizeof(out->blocker),
-            "no verified corpus checkpoint projection has been committed");
+            "checkpoint_missing: commit a verified corpus checkpoint projection");
         return true;
     }
     if (vcs_zcode_c23_corpus_checkpoint_v1_validate(checkpoint) !=
