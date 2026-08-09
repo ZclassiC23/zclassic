@@ -34,3 +34,6 @@ HOTSWAP_PROBE_CASE("service.corpus.show.rules.v1", "service",
 HOTSWAP_PROBE_CASE("service.economics.status.default.v1", "service",
     "zcode.commons.economics.status", "{}",
     "zcl.zcode_commons_economics_status.v2", 4096)
+HOTSWAP_PROBE_CASE("service.market.purchase.guide.default.v1", "service",
+    "app.market.purchase.guide", "{}",
+    "zcl.app_market_purchase_guide.v1", 4096)

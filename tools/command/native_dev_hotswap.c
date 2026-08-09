@@ -33,6 +33,7 @@
 #include "kernel/command_registry.h"
 #include "services/zcode_c23_corpus_service.h"
 #include "services/zcode_c23_economics_service.h"
+#include "services/market_purchase_view_service.h"
 #include "controllers/rpc_client.h"
 #include "rpc/protocol.h"
 #include "rpc/server.h"
@@ -415,6 +416,8 @@ static void service_resident_observation_append(struct json_value *out,
         zcl_native_handle_zcode_commons_economics_status(&request, &reply);
     } else if (strcmp(operation, "zcode.commons.corpus.show") == 0) {
         zcl_native_handle_zcode_commons_corpus_show(&request, &reply);
+    } else if (strcmp(operation, "app.market.purchase.guide") == 0) {
+        zcl_native_handle_market_purchase_guide(&request, &reply);
     } else {
         zcl_command_reply_fail(&reply, ZCL_COMMAND_STATUS_BLOCKED,
             ZCL_COMMAND_EXIT_BLOCKED, "UNKNOWN_SERVICE_PROBE", "probe",
@@ -490,6 +493,7 @@ static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
     const struct zcl_hotswap_service_contract *service_contracts[] = {
         zcl_native_zcode_corpus_service_contract(),
         zcl_native_zcode_economics_service_contract(),
+        zcl_native_market_purchase_view_service_contract(),
     };
     struct zcl_hotswap_service_report service_report;
     bool service_ok = zcl_hotswap_service_activate_so_any(
@@ -639,6 +643,7 @@ void zcl_native_handle_dev_hotswap_probe(
     const struct zcl_hotswap_service_contract *service_contracts[] = {
         zcl_native_zcode_corpus_service_contract(),
         zcl_native_zcode_economics_service_contract(),
+        zcl_native_market_purchase_view_service_contract(),
     };
     struct zcl_hotswap_service_report service_report;
     (void)zcl_hotswap_service_activate_so_any(

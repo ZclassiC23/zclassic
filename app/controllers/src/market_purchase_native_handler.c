@@ -8,6 +8,8 @@
 #include "command/native_command.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
+#include "hotswap/hotswap_service.h"
+#include "services/market_purchase_view_service.h"
 #include "util/log_macros.h"
 
 #include <stdbool.h>
@@ -25,45 +27,6 @@
  * (RPC_MARKET_DELIVERY_TIMEOUT_MS) — if the server is tighter, its
  * watchdog kills the socket first and the reply below never arrives. */
 #define MPN_RETRIEVE_DEADLINE_MS 300000L
-
-struct mpn_code_map {
-    const char *code;
-    enum zcl_command_status status;
-    enum zcl_command_exit exit_code;
-};
-
-static const struct mpn_code_map k_codes[] = {
-    { "MONEY_STATE_NOT_CURRENT", ZCL_COMMAND_STATUS_BLOCKED,
-      ZCL_COMMAND_EXIT_TRANSIENT },
-    { "IDEMPOTENCY_CONFLICT", ZCL_COMMAND_STATUS_FAILED,
-      ZCL_COMMAND_EXIT_INVALID },
-    { "CUSTODY_ALLOCATION_EXCEEDED", ZCL_COMMAND_STATUS_BLOCKED,
-      ZCL_COMMAND_EXIT_DENIED },
-    { "COMMIT_UNCERTAIN", ZCL_COMMAND_STATUS_BLOCKED,
-      ZCL_COMMAND_EXIT_BLOCKED },
-    { "MONEY_SNAPSHOT_CHANGED", ZCL_COMMAND_STATUS_BLOCKED,
-      ZCL_COMMAND_EXIT_TRANSIENT },
-    { "OFFER_CONTRACT_CHANGED", ZCL_COMMAND_STATUS_BLOCKED,
-      ZCL_COMMAND_EXIT_BLOCKED },
-    { "COMMIT_BUSY", ZCL_COMMAND_STATUS_BLOCKED,
-      ZCL_COMMAND_EXIT_TRANSIENT },
-    { "COMMIT_STATE_UNCERTAIN", ZCL_COMMAND_STATUS_BLOCKED,
-      ZCL_COMMAND_EXIT_BLOCKED },
-    { "DESTINATION_INVALID", ZCL_COMMAND_STATUS_FAILED,
-      ZCL_COMMAND_EXIT_INVALID },
-    { "DOWNLOAD_BINDING_CONFLICT", ZCL_COMMAND_STATUS_BLOCKED,
-      ZCL_COMMAND_EXIT_BLOCKED },
-    { "DESTINATION_CONFLICT", ZCL_COMMAND_STATUS_BLOCKED,
-      ZCL_COMMAND_EXIT_BLOCKED },
-    { "MANIFEST_VERIFICATION_FAILED", ZCL_COMMAND_STATUS_FAILED,
-      ZCL_COMMAND_EXIT_FAILED },
-    { "STAGING_VERIFICATION_FAILED", ZCL_COMMAND_STATUS_FAILED,
-      ZCL_COMMAND_EXIT_FAILED },
-    { "DELIVERY_NOT_READY", ZCL_COMMAND_STATUS_BLOCKED,
-      ZCL_COMMAND_EXIT_TRANSIENT },
-    { "ONION_DELIVERY_UNAVAILABLE", ZCL_COMMAND_STATUS_BLOCKED,
-      ZCL_COMMAND_EXIT_DENIED },
-};
 
 static void mpn_fail(struct zcl_command_reply *reply,
                      enum zcl_command_status status,
@@ -85,6 +48,34 @@ static void mpn_merge(struct json_value *dst, const struct json_value *src)
             strcmp(key, "code") == 0 || strcmp(key, "message") == 0)
             continue;
         (void)json_push_kv(dst, key, &src->children[i]);
+    }
+}
+
+static void mpn_error_class_to_command(
+    enum market_purchase_error_class_v1 error_class,
+    enum zcl_command_status *status, enum zcl_command_exit *exit_code)
+{
+    *status = ZCL_COMMAND_STATUS_FAILED;
+    *exit_code = ZCL_COMMAND_EXIT_FAILED;
+    switch (error_class) {
+    case MARKET_PURCHASE_ERROR_INVALID:
+        *exit_code = ZCL_COMMAND_EXIT_INVALID;
+        break;
+    case MARKET_PURCHASE_ERROR_DENIED:
+        *status = ZCL_COMMAND_STATUS_BLOCKED;
+        *exit_code = ZCL_COMMAND_EXIT_DENIED;
+        break;
+    case MARKET_PURCHASE_ERROR_TRANSIENT:
+        *status = ZCL_COMMAND_STATUS_BLOCKED;
+        *exit_code = ZCL_COMMAND_EXIT_TRANSIENT;
+        break;
+    case MARKET_PURCHASE_ERROR_BLOCKED:
+        *status = ZCL_COMMAND_STATUS_BLOCKED;
+        *exit_code = ZCL_COMMAND_EXIT_BLOCKED;
+        break;
+    case MARKET_PURCHASE_ERROR_FAILED:
+    default:
+        break;
     }
 }
 
@@ -160,15 +151,16 @@ static bool mpn_call(struct zcl_command_reply *reply, const char *method,
 
     const char *code = json_get_str(json_get(body, "code"));
     const char *message = json_get_str(json_get(body, "message"));
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct market_purchase_view_service_v1 *service =
+        zcl_hotswap_service_acquire(MARKET_PURCHASE_VIEW_SERVICE_ID, &lease);
+    if (!service) service = market_purchase_view_service_builtin();
+    struct market_purchase_error_result_v1 classified = {0};
     enum zcl_command_status status = ZCL_COMMAND_STATUS_FAILED;
     enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_FAILED;
-    for (size_t i = 0; i < sizeof(k_codes) / sizeof(k_codes[0]); i++) {
-        if (code && strcmp(code, k_codes[i].code) == 0) {
-            status = k_codes[i].status;
-            exit_code = k_codes[i].exit_code;
-            break;
-        }
-    }
+    if (service->classify_error(code, &classified))
+        mpn_error_class_to_command(classified.error_class, &status, &exit_code);
+    zcl_hotswap_service_release(&lease);
     char code_copy[64], message_copy[320];
     (void)snprintf(code_copy, sizeof(code_copy), "%s",
                    code && code[0] ? code : "PURCHASE_REFUSED");
@@ -179,6 +171,125 @@ static bool mpn_call(struct zcl_command_reply *reply, const char *method,
     mpn_fail(reply, status, exit_code, code_copy, "execute", message_copy,
              method, false);
     return false;
+}
+
+static bool market_purchase_view_frozen_kat(const void *opaque, char *why,
+                                            size_t why_sz)
+{
+    const struct market_purchase_view_service_v1 *service = opaque;
+    struct market_purchase_error_result_v1 classified;
+    struct market_purchase_guide_result_v1 guide;
+    char commit[192];
+    const char *plan =
+        "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
+    static const struct {
+        const char *code;
+        enum market_purchase_error_class_v1 error_class;
+    } vectors[] = {
+        {"MONEY_STATE_NOT_CURRENT", MARKET_PURCHASE_ERROR_TRANSIENT},
+        {"IDEMPOTENCY_CONFLICT", MARKET_PURCHASE_ERROR_INVALID},
+        {"CUSTODY_ALLOCATION_EXCEEDED", MARKET_PURCHASE_ERROR_DENIED},
+        {"COMMIT_UNCERTAIN", MARKET_PURCHASE_ERROR_BLOCKED},
+        {"MONEY_SNAPSHOT_CHANGED", MARKET_PURCHASE_ERROR_TRANSIENT},
+        {"OFFER_CONTRACT_CHANGED", MARKET_PURCHASE_ERROR_BLOCKED},
+        {"COMMIT_BUSY", MARKET_PURCHASE_ERROR_TRANSIENT},
+        {"COMMIT_STATE_UNCERTAIN", MARKET_PURCHASE_ERROR_BLOCKED},
+        {"DESTINATION_INVALID", MARKET_PURCHASE_ERROR_INVALID},
+        {"DOWNLOAD_BINDING_CONFLICT", MARKET_PURCHASE_ERROR_BLOCKED},
+        {"DESTINATION_CONFLICT", MARKET_PURCHASE_ERROR_BLOCKED},
+        {"MANIFEST_VERIFICATION_FAILED", MARKET_PURCHASE_ERROR_FAILED},
+        {"STAGING_VERIFICATION_FAILED", MARKET_PURCHASE_ERROR_FAILED},
+        {"DELIVERY_NOT_READY", MARKET_PURCHASE_ERROR_TRANSIENT},
+        {"ONION_DELIVERY_UNAVAILABLE", MARKET_PURCHASE_ERROR_DENIED},
+    };
+    if (!service || !service->classify_error ||
+        !service->render_commit_input || !service->render_guide) {
+        if (why && why_sz) (void)snprintf(why, why_sz,
+            "frozen marketplace service shape vector failed");
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(vectors) / sizeof(vectors[0]); i++) {
+        if (!service->classify_error(vectors[i].code, &classified) ||
+            !classified.known || classified.error_class != vectors[i].error_class) {
+            if (why && why_sz) (void)snprintf(why, why_sz,
+                "frozen marketplace error vector %zu failed", i);
+            return false;
+        }
+    }
+    if (!service->classify_error("UNKNOWN", &classified) || classified.known ||
+        classified.error_class != MARKET_PURCHASE_ERROR_FAILED ||
+        !service->render_commit_input("dev", plan, commit, sizeof(commit)) ||
+        strcmp(commit,
+            "{\"wallet_scope\":\"dev\",\"plan_id\":\"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789\",\"confirm\":true}") != 0 ||
+        service->render_commit_input("other", plan, commit, sizeof(commit)) ||
+        !service->render_guide(&guide) || guide.classified_error_count != 15 ||
+        guide.effects_swappable || !guide.payment_authority_static ||
+        strcmp(guide.flow, "plan->commit->status->retrieve") != 0) {
+        if (why && why_sz) (void)snprintf(why, why_sz,
+            "frozen marketplace error/commit/guide vector failed");
+        return false;
+    }
+    return true;
+}
+
+static const struct zcl_hotswap_service_contract k_market_view_contract = {
+    .service_id = MARKET_PURCHASE_VIEW_SERVICE_ID,
+    .source_tu = "app/services/src/market_purchase_view_service.c",
+    .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+    .vtable_size = sizeof(struct market_purchase_view_service_v1),
+    .abi_fingerprint = MARKET_PURCHASE_VIEW_ABI_FINGERPRINT,
+    .schema_fingerprint = MARKET_PURCHASE_VIEW_SCHEMA_FINGERPRINT,
+    .wire_fingerprint = MARKET_PURCHASE_VIEW_WIRE_FINGERPRINT,
+    .kat_fingerprint = MARKET_PURCHASE_VIEW_KAT_FINGERPRINT,
+    .frozen_kat = market_purchase_view_frozen_kat,
+};
+
+const struct zcl_hotswap_service_contract *
+zcl_native_market_purchase_view_service_contract(void)
+{
+    return &k_market_view_contract;
+}
+
+void zcl_native_handle_market_purchase_guide(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !request->input || !reply ||
+        request->input->type != JSON_OBJ || request->input->num_children != 0) {
+        if (reply) mpn_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_INVALID, "BAD_MARKET_PURCHASE_GUIDE_INPUT",
+            "validate", "app market purchase guide accepts no input keys",
+            "app.market.purchase.guide", false);
+        return;
+    }
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct market_purchase_view_service_v1 *service =
+        zcl_hotswap_service_acquire(MARKET_PURCHASE_VIEW_SERVICE_ID, &lease);
+    if (!service) service = market_purchase_view_service_builtin();
+    struct market_purchase_guide_result_v1 guide;
+    if (!service->render_guide(&guide)) {
+        zcl_hotswap_service_release(&lease);
+        mpn_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+            "MARKET_PURCHASE_VIEW_FAILED", "render",
+            "the pure marketplace view service refused workflow rendering",
+            "app.market.purchase.guide", false);
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "service_id",
+                           MARKET_PURCHASE_VIEW_SERVICE_ID);
+    (void)json_push_kv_int(&reply->data, "service_generation",
+                           zcl_hotswap_service_generation());
+    (void)json_push_kv_str(&reply->data, "flow", guide.flow);
+    (void)json_push_kv_int(&reply->data, "classified_error_count",
+                           guide.classified_error_count);
+    (void)json_push_kv_bool(&reply->data, "effects_swappable",
+                            guide.effects_swappable);
+    (void)json_push_kv_bool(&reply->data, "payment_authority_static",
+                            guide.payment_authority_static);
+    (void)json_push_kv_str(&reply->data, "live_surface", guide.live_surface);
+    (void)json_push_kv_str(&reply->data, "static_boundary",
+                           guide.static_boundary);
+    (void)json_push_kv_str(&reply->data, "next_command", guide.next_command);
+    zcl_hotswap_service_release(&lease);
 }
 
 void zcl_native_handle_market_purchase_plan(
@@ -208,10 +319,22 @@ void zcl_native_handle_market_purchase_plan(
     mpn_merge(&reply->data, &body);
     const char *plan = json_get_str(json_get(&body, "plan_id"));
     bool replay = json_get_bool_or(&body, "idempotent_replay", false);
-    char commit[192];
-    (void)snprintf(commit, sizeof(commit),
-                   "{\"wallet_scope\":\"%s\",\"plan_id\":\"%s\","
-                   "\"confirm\":true}", scope, plan ? plan : "");
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct market_purchase_view_service_v1 *service =
+        zcl_hotswap_service_acquire(MARKET_PURCHASE_VIEW_SERVICE_ID, &lease);
+    if (!service) service = market_purchase_view_service_builtin();
+    char commit[192] = {0};
+    bool commit_rendered = service->render_commit_input(
+        scope, plan ? plan : "", commit, sizeof(commit));
+    zcl_hotswap_service_release(&lease);
+    if (!commit_rendered) {
+        json_free(&body);
+        mpn_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+                 "COMMIT_HINT_FAILED", "render",
+                 "the pure marketplace view service refused the commit hint",
+                 "app.market.purchase.plan", reply->error.mutated);
+        return;
+    }
     (void)json_push_kv_str(&reply->data, "stage", "plan");
     (void)json_push_kv_bool(&reply->data, "committed", false);
     (void)json_push_kv_bool(&reply->data, "spends_funds", false);

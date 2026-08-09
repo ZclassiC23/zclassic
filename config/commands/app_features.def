@@ -492,6 +492,23 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_market_content_register)
 
+ZCL_COMMAND_READY_READ(
+    "app.market.purchase.guide", "app.market.purchase", "",
+    "Show the paid-file purchase workflow",
+    "Renders the exact plan, commit, status, and retrieve sequence plus the "
+    "live-calculation/static-authority boundary. It reads no wallet, storage, "
+    "network, offer, payment, or purchase state.", ZCL_COMMAND_LIST_BUDGET,
+    "market,buy,purchase,guide,workflow,hotswap,boundary",
+    "zcl.app_market_purchase_guide.input.v1",
+    "zcl.app_market_purchase_guide.v1", "", "",
+    "zclassic23 app market purchase guide",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_market_purchase_guide)
+
 ZCL_COMMAND_READY_COMMAND(
     "app.market.purchase.plan", "app.market.purchase", "",
     "Reserve one exact paid chunk range",
