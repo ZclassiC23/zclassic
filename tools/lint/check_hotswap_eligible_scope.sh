@@ -20,12 +20,17 @@ cd "$ROOT"
 . tools/lint/gate_lib.sh
 
 MANIFEST="${ZCL_HOTSWAP_MANIFEST:-config/hotswap_eligible.def}"
+PROBE_CASES="${ZCL_HOTSWAP_PROBE_CASES:-config/hotswap_probe_cases.def}"
 
 echo "══ LINT: hot-swap eligibility manifest scope (app-layer only) ══"
 
 if [ ! -r "$MANIFEST" ]; then
     echo "check_hotswap_eligible_scope: FATAL — manifest '$MANIFEST' missing/unreadable." >&2
     echo "  Refusing to report 'clean' with no manifest to scan." >&2
+    exit 2
+fi
+if [ ! -r "$PROBE_CASES" ]; then
+    echo "check_hotswap_eligible_scope: FATAL — probe cases '$PROBE_CASES' missing/unreadable." >&2
     exit 2
 fi
 
@@ -61,6 +66,10 @@ for pair in "${PAIRS[@]}"; do
             violations="${violations}  $p (invalid canonical probe '$probe')"$'\n'
             ;;
     esac
+    case_count="$(grep -Fc "\"$probe\"," "$PROBE_CASES" || true)"
+    if [ "$case_count" -ne 1 ]; then
+        violations="${violations}  $p (probe '$probe' resolves to $case_count resident cases, expected exactly one)"$'\n'
+    fi
     [ -n "$probe_key" ] || probe_key="__empty__:$p"
     if [ -n "${seen_paths[$p]:-}" ]; then
         violations="${violations}  $p (duplicate eligibility row)"$'\n'

@@ -34,6 +34,8 @@
 #define V2_TU_STATUS "app/controllers/src/status_native_handlers.c"
 #define V2_TU_META   "app/controllers/src/meta_native_handlers.c"
 #define V2_TU_METAVERSE "app/controllers/src/metaverse_controller.c"
+#define V2_TU_DIAGNOSTICS \
+    "app/controllers/src/diagnostics_native_handlers.c"
 
 static void v2_handler(const struct zcl_command_request *request,
                        struct zcl_command_reply *reply)
@@ -490,12 +492,34 @@ static int t_allowlist_is_per_file(void)
     return failures;
 }
 
+static int t_parameterized_probe_catalog_is_host_owned(void)
+{
+    int failures = 0;
+    TEST("host-owned probe catalog binds diagnostics input/schema/budget") {
+        const struct zcl_hotswap_probe_case *probe =
+            hotswap_module_probe_case(V2_TU_DIAGNOSTICS);
+        ASSERT(probe != NULL);
+        ASSERT_STR_EQ(probe->case_id, "command.ops.logs.bounded.v1");
+        ASSERT_STR_EQ(probe->operation, "ops.logs");
+        ASSERT_STR_EQ(probe->canonical_input_json,
+                      "{\"level\":\"all\",\"max_lines\":1,"
+                      "\"pattern\":\"hotswap\",\"since_secs\":1}");
+        ASSERT_STR_EQ(probe->expected_schema, "zcl.ops_logs.v1");
+        ASSERT_EQ((unsigned)probe->byte_budget, 2048u);
+        ASSERT_STR_EQ(hotswap_module_probe_leaf(V2_TU_DIAGNOSTICS),
+                      "ops.logs");
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_hotswap_module_v2(void);
 
 int test_hotswap_module_v2(void)
 {
     int failures = 0;
     failures += t_allowlist_is_per_file();
+    failures += t_parameterized_probe_catalog_is_host_owned();
     failures += t_partial_admit_publishes_nothing();
     failures += t_duplicate_leaf_refused();
     failures += t_old_abi_refused();

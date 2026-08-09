@@ -183,6 +183,17 @@ typedef bool (*hotswap_probe_leaf_cb)(void *ctx, const char *leaf,
                                       zcl_hotswap_handler_fn fn,
                                       char *why, size_t why_sz);
 
+/* Compiled into the resident host. A candidate supplies only its immutable
+ * source identity; it cannot select or weaken these qualification inputs. */
+struct zcl_hotswap_probe_case {
+    const char *case_id;
+    const char *kind;
+    const char *operation;
+    const char *canonical_input_json;
+    const char *expected_schema;
+    size_t byte_budget;
+};
+
 /* Return true iff every RETIRED override snapshot has drained — i.e. no
  * in-flight dispatch can still enter a superseded handler, so the previous
  * module .so is safe to dlclose. Polled with a bounded backoff after commit. */
@@ -304,6 +315,10 @@ const char *hotswap_island_members_for_source(const char *source_tu);
 /* The probe leaf config/hotswap_eligible.def declares for `source_tu`, or NULL
  * when that file declares none. The module does NOT choose its own probe. */
 const char *hotswap_module_probe_leaf(const char *source_tu);
+const struct zcl_hotswap_probe_case *hotswap_module_probe_case(
+    const char *source_tu);
+const struct zcl_hotswap_probe_case *hotswap_probe_case_for_operation(
+    const char *operation);
 
 /* Append the activation subsystem's telemetry into an already-open object.
  * Called by hotswap_dump_state_json() so `zclassic23 dumpstate hotswap` shows

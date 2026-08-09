@@ -4,7 +4,8 @@
  *   HOTSWAP_ELIGIBLE(path) HOTSWAP_PROBE(tool)
  *
  * `path` is the repo-relative .c translation unit and `tool` is one
- * parameter-free, non-destructive command leaf owned by that TU. Keep the pair on
+ * non-destructive command leaf owned by that TU. Its canonical input, expected
+ * schema, and byte budget live in hotswap_probe_cases.def. Keep the pair on
  * one line: this file is the single source of truth consumed by the native
  * planner, shell watcher, demo, loader allowlist, and lint gates.
  *
@@ -38,11 +39,8 @@
  * staging {dotted_leaf_path, trampoline} pairs — a trampoline calls
  * zcl_native_bridge_run(request, <this TU's freshly-compiled body fn>,
  * reply), the same composition the resident bridge already uses.
- * The resident native command router dispatches the manifest's declared
- * probe leaf with NO input before committing the batch, so the probe for a
- * native TU MUST be a leaf whose body TOLERATES EMPTY ARGS — verified per-TU
- * by reading the body function (and its backing RPC handler's param-arity
- * check), not assumed from the leaf name. */
+ * The resident native command router dispatches the manifest's declared,
+ * host-owned probe case before committing the batch. */
 HOTSWAP_ELIGIBLE("app/controllers/src/status_native_handlers.c") HOTSWAP_PROBE("core.status")
 HOTSWAP_ELIGIBLE("app/controllers/src/wallet_native_handlers.c") HOTSWAP_PROBE("core.wallet.address.list")
 HOTSWAP_ELIGIBLE("app/controllers/src/net_native_handlers.c") HOTSWAP_PROBE("core.network.peers.incidents")
@@ -50,13 +48,7 @@ HOTSWAP_ELIGIBLE("app/controllers/src/meta_native_handlers.c") HOTSWAP_PROBE("op
 HOTSWAP_ELIGIBLE("app/controllers/src/chain_native_handlers.c") HOTSWAP_PROBE("core.consensus.utxo.audit")
 HOTSWAP_ELIGIBLE("app/controllers/src/app_native_handlers.c") HOTSWAP_PROBE("app.names.list")
 HOTSWAP_ELIGIBLE("app/controllers/src/metaverse_controller.c") HOTSWAP_PROBE("metaverse.property.list")
-/* app/controllers/src/diagnostics_native_handlers.c: eligible-pending, NOT
- * listed above. Its two leaves (core.storage.query -> zcl_native_sql_body,
- * ops.logs -> zcl_native_node_log_body) both require a caller-supplied
- * required argument (sql / pattern) and reject an empty-args dispatch with
- * a top-level RPC error ("dbquery: missing sql" / "getnodelog: missing
- * pattern") — no param-free probe leaf exists for this TU today. See the
- * matching note in app/controllers/src/diagnostics_native_handlers.c. */
+HOTSWAP_ELIGIBLE("app/controllers/src/diagnostics_native_handlers.c") HOTSWAP_PROBE("ops.logs")
 
 /* Still reload-required (NOT eligible), by design:
  *   - REST (app/controllers/src/api_controller_routes.c) and diagnostics
