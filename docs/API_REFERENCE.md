@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 622 |
+| Registry entries (branches + leaves) | 623 |
 | Top-level roots | 11 |
 | Branches | 147 |
-| Leaves (dispatchable command paths) | 475 |
-| … `ready` (live handler in this build) | 427 |
+| Leaves (dispatchable command paths) | 476 |
+| … `ready` (live handler in this build) | 428 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -93,7 +93,7 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 118 | 29 | 89 |
 | `config/commands/apps.def` | 16 | 3 | 13 |
-| `config/commands/app_features.def` | 56 | 15 | 41 |
+| `config/commands/app_features.def` | 57 | 15 | 42 |
 | `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 46 | 11 | 35 |
@@ -502,6 +502,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
+| `app market purchase guide` | ready | read / read / public · instant/tiny | none | `zcl.app_market_purchase_guide.v1` | `zclassic23 app market purchase guide` | Show the paid-file purchase workflow |
 | `app market purchase plan` | ready | mutate / wallet / **owner** · foreground/moderate | **`wallet_scope`**, **`offer_id`**, **`source_address`**, **`chunk_start`**, **`chunks_paid`**, **`idempotency_key`** | `zcl.market_purchase.v1` | `printf '%s' '{"wallet_scope":"dev","offer_id":"<64hex>","source_address":"<owned-address>","chunk_start":0,"chunks_paid":1,"idempotency_key":"lab-001"}' \| zclassic23 app market purchase plan --input=-` | Reserve one exact paid chunk range |
 | `app market purchase commit` | ready | mutate / wallet / **owner**, idempotency · foreground/high | **`wallet_scope`**, **`plan_id`**, **`confirm`** | `zcl.market_purchase.v1` | `zclassic23 app market purchase commit --input='{"wallet_scope":"dev","plan_id":"<64hex>","confirm":true}'` | Commit one exact reserved market payment |
 | `app market purchase status` | ready | read / read / **owner** · fast/low | **`plan_id`** | `zcl.market_purchase.v1` | `zclassic23 app market purchase status --input='{"plan_id":"<64hex>"}'` | Read one durable market purchase state |

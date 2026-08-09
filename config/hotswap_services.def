@@ -29,3 +29,15 @@ HOTSWAP_SERVICE(
     "zc23-policy+claim+epoch-selection.v2",
     "8fc1df9547d1842004e86c1a06714829965693c031f8e3a16dd2fe38ee6f6ad9",
     "zcode.commons.economics.status")
+
+HOTSWAP_SERVICE(
+    "app.market.purchase.view.v1",
+    "app/services/src/market_purchase_view_service.c",
+    "-",
+    "app/services/include/services/market_purchase_view_service.h",
+    "-",
+    "app.market.purchase.view.abi.v1:1f17fa01",
+    "zcl.app_market_purchase_guide.v1",
+    "market-purchase-error-map+commit-hint+guide.v1",
+    "59a6e2f7944682cb4707701e59a7fa960c054c6f76b40821aeb3c02f24ea1ba5",
+    "app.market.purchase.guide")

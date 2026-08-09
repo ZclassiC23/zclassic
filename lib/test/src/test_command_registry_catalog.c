@@ -2719,6 +2719,14 @@ static int test_app_features_leaves(void)
                   ZCL_COMMAND_CONFIRM_NONE);
         const struct zcl_command_spec *purchase_status =
             find_spec(reg, "app.market.purchase.status");
+        const struct zcl_command_spec *purchase_guide =
+            find_spec(reg, "app.market.purchase.guide");
+        ASSERT(purchase_guide != NULL);
+        ASSERT_EQ(purchase_guide->availability, ZCL_COMMAND_READY);
+        ASSERT_EQ(purchase_guide->effect, ZCL_COMMAND_EFFECT_READ);
+        ASSERT_EQ(purchase_guide->authority, ZCL_COMMAND_AUTH_PUBLIC);
+        ASSERT(purchase_guide->handler ==
+               zcl_native_handle_market_purchase_guide);
         ASSERT(purchase_status != NULL);
         ASSERT_EQ(purchase_status->availability, ZCL_COMMAND_READY);
         ASSERT_EQ(purchase_status->effect, ZCL_COMMAND_EFFECT_READ);
