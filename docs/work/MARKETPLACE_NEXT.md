@@ -45,9 +45,12 @@ reverse-mapping gate covers the new leaf.
 - [x] B2. Seller offer wired end-to-end: `app market offer`
   plan/commit (content-addressed idempotent), sealed offer, content
   binding, `zfileoffer` origin flood; 11 new tests; pushed
-- [ ] B3. Two-node regtest acceptance script (same shape as
-  `tools/dev/zcode_dht_acceptance.sh`): seller offers, buyer pays,
-  bytes arrive and re-derive the content root — IN PROGRESS
+- [x] B3. Two-node regtest acceptance script (`tools/dev/market_acceptance.sh`,
+  `make test-market-acceptance`): seller offer gossip, real Sapling purchase,
+  pre-confirmation retrieve refused, authorized delivery byte-identical to the
+  offer root, seller claim CONFIRMED, idempotent replays — pushed `d8caa412c`.
+  It exposed and we fixed four product bugs (native list body shape, missing
+  chunk range validators, fetch-transport wiring, txid byte order)
 - [x] B4. `make lint` + pre-push CI green on the pushed tree (919 ran,
   0 failed); docs updated (`FILE_MARKET_PROTOCOL.md`, two-laptop runbook,
   cookbook)
@@ -66,8 +69,10 @@ ZC23 is simulation-only by design. Before any real distribution or
 picks them. Nothing here touches consensus; mining/distribution stays
 simulation until the owner explicitly promotes it.
 
-- [ ] C1. Options doc: distribution shape, participation rules, supply,
-  earning ZC23 for hosting code/content
+- [x] C1. Options doc: [`ZC23_DISTRIBUTION_OPTIONS.md`](./ZC23_DISTRIBUTION_OPTIONS.md)
+  — PoP naming (A/B/C), distribution model (evidence-scheduled vs genesis
+  pool vs hybrid), earn-for-publishing mechanics, supply shape, and the
+  six-point decision list for C2
 - [ ] C2. Owner picks the rules
 - [ ] C3. Implementation plan written (simulation-first, no consensus path)
 
