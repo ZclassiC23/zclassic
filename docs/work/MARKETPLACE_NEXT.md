@@ -38,6 +38,13 @@ the buy RPC → payment → transfer glue is missing.
   `tools/dev/zcode_dht_acceptance.sh`): seller offers, buyer pays,
   bytes arrive and re-derive the content root
 - [ ] B4. `make lint` + `make test-parallel` + pre-push CI green; docs updated
+- [ ] B5. **Onion-routed chunk delivery** — today the offer carries the
+  seller's file-service endpoint as clearnet `peer_ip:peer_port` and the
+  buyer connects directly, exposing the seller IP to the buyer (and the
+  buyer's connect to the seller). For the "buyer/seller IP never exposed"
+  bar, the delivery endpoint must be reachable via the onion service
+  (onion address in the offer, delivery requests routed through the
+  embedded Tor, same authorize-before-read gate unchanged)
 
 ## Phase C — ZC23 design (owner decision first, then code)
 
