@@ -246,6 +246,9 @@ ZCL_COMMAND_BRANCH("zcode.commons.economics", "zcode.commons",
 ZCL_COMMAND_BRANCH("zcode.commons.corpus", "zcode.commons",
                    "Verified C23 corpus lower-bound projection",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.corpus.shard", "zcode.commons.corpus",
+                   "Bounded C23 corpus shard verification",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("zcode.commons.impact", "zcode.commons",
                    "Locally rendered productivity evidence",
                    ZCL_COMMAND_LAYER_APP)
@@ -311,6 +314,25 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE,
     zcl_native_handle_zcode_commons_corpus_verify)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.corpus.shard.verify", "zcode.commons.corpus.shard", "",
+    "Verify one bounded C23 corpus shard",
+    "Decodes and verifies one canonical c23_corpus_shard.v1 wire through the "
+    "resident pure corpus service. Inline input is bounded to 28 entries; "
+    "the result proves only the supplied shard, never global completeness.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,commons,corpus,c23,shard,verify,counts,simulation",
+    "zcl.zcode_commons_corpus_shard_verify.input.v1",
+    "zcl.zcode_commons_corpus_shard_verify.v1", "shard", "",
+    "zclassic23 zcode commons corpus shard verify --shard=<lowercase-hex-wire>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_corpus_shard_verify)
 
 ZCL_COMMAND_READY_READ(
     "zcode.commons.corpus.status", "zcode.commons.corpus", "",

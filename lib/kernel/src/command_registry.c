@@ -883,6 +883,9 @@ size_t zcl_command_registry_input_str_max(const char *key)
      * checkpoint nor silently widen the handler. */
     if (strcmp(key, "checkpoint") == 0)
         return ZCL_COMMAND_MAX_INPUT;
+    /* Canonical hex of the bounded inline c23_corpus_shard.v1 read. */
+    if (strcmp(key, "shard") == 0)
+        return ZCL_COMMAND_MAX_INPUT;
     /* transaction_controller.c uses a 2,000,000-byte canonical transaction
      * buffer for create/sign. Hex doubles the wire size. */
     if (strcmp(key, "raw_hex") == 0)

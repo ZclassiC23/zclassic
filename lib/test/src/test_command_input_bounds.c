@@ -169,6 +169,20 @@ static int t_key_edges(void)
                            why, sizeof(why)) &&
               strstr(why, "checkpoint") != NULL &&
               strstr(why, "limit") != NULL);
+    const char *shard_verify = "zcode.commons.corpus.shard.verify";
+    size_t shard_hex_max = ZCL_COMMAND_MAX_INPUT;
+    CIB_CHECK("shard bound carries 28 whole inline entries",
+              zcl_command_registry_input_str_max("shard") == shard_hex_max &&
+              (shard_hex_max / 2u - VCS_ZCODE_C23_SHARD_HEADER_WIRE_BYTES) /
+                  VCS_ZCODE_C23_SHARD_ENTRY_WIRE_BYTES == 28u);
+    CIB_CHECK("shard at its canonical inline bound is deliverable",
+              cib_accepts(shard_verify, "shard", shard_hex_max, why,
+                          sizeof(why)));
+    CIB_CHECK("shard one character over its bound is refused",
+              !cib_accepts(shard_verify, "shard", shard_hex_max + 1u,
+                           why, sizeof(why)) &&
+              strstr(why, "shard") != NULL &&
+              strstr(why, "limit") != NULL);
     return failures;
 }
 
@@ -184,14 +198,19 @@ static int t_frame_budget(void)
         zcl_command_registry_find(reg, "core.storage.query", NULL);
     const struct zcl_command_spec *verify =
         zcl_command_registry_find(reg, "zcode.commons.corpus.verify", NULL);
+    const struct zcl_command_spec *shard_verify = zcl_command_registry_find(
+        reg, "zcode.commons.corpus.shard.verify", NULL);
 
-    CIB_CHECK("all fixture leaves resolve", plan && query && verify);
-    if (!plan || !query || !verify)
+    CIB_CHECK("all fixture leaves resolve",
+              plan && query && verify && shard_verify);
+    if (!plan || !query || !verify || !shard_verify)
         return failures;
 
     size_t plan_budget = zcl_command_registry_input_budget_bytes(plan);
     size_t query_budget = zcl_command_registry_input_budget_bytes(query);
     size_t verify_budget = zcl_command_registry_input_budget_bytes(verify);
+    size_t shard_verify_budget =
+        zcl_command_registry_input_budget_bytes(shard_verify);
 
     /* A reader that stopped before the validator's ceiling would truncate a
      * legal document — the exact second wall this change had to clear. */
@@ -210,6 +229,9 @@ static int t_frame_budget(void)
     CIB_CHECK("the checkpoint read frame includes JSON overhead above its wire hex",
               verify_budget >
                   zcl_command_registry_input_str_max("checkpoint"));
+    CIB_CHECK("the shard read frame includes JSON overhead above its wire hex",
+              shard_verify_budget >
+                  zcl_command_registry_input_str_max("shard"));
 
     /* NULL is answered with the floor rather than a crash or a zero frame
      * (a zero frame would refuse every input on an unresolved leaf). */

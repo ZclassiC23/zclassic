@@ -34,6 +34,58 @@ static void corpus_kat_fill(uint8_t root[32], uint8_t value)
     memset(root, value, 32);
 }
 
+static bool corpus_shard_frozen_kat(
+    const struct zcode_c23_corpus_service_v1 *service, char *why,
+    size_t why_sz)
+{
+    struct vcs_zcode_c23_corpus_entry_v1 entry = {
+        .release_sequence = 1,
+        .production_loc = 2,
+        .test_loc = 1,
+        .physical_lines = 4,
+        .unique_semantic_units = 2,
+        .evidence_mask = VCS_ZCODE_C23_EVIDENCE_REQUIRED_MASK,
+        .flags = VCS_ZCODE_C23_ENTRY_COUNTED |
+                 VCS_ZCODE_C23_ENTRY_DURABLE,
+    };
+    corpus_kat_fill(entry.semantic_lineage_root, 0x51);
+    corpus_kat_fill(entry.release_root, 0x52);
+    corpus_kat_fill(entry.passport_root, 0x53);
+    corpus_kat_fill(entry.proof_root, 0x54);
+    corpus_kat_fill(entry.source_assignment_root, 0x55);
+    corpus_kat_fill(entry.admission_root, 0x56);
+    corpus_kat_fill(entry.possession_root, 0x57);
+    struct vcs_zcode_c23_corpus_shard_v1 shard = {
+        .schema_version = 1,
+        .flags = VCS_ZCODE_C23_CORPUS_REQUIRED_FLAGS,
+        .entries = &entry,
+        .entry_count = 1,
+    };
+    struct vcs_zcode_c23_corpus_rules_v1 rules;
+    vcs_zcode_c23_corpus_rules_v1_default(&rules);
+    if (vcs_zcode_c23_corpus_rules_v1_root(&rules, shard.rules_root) !=
+            VCS_ZCODE_C23_OK) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz, "frozen shard rules-root vector failed");
+        return false;
+    }
+    corpus_kat_fill(shard.family_policy_root, 0x58);
+    corpus_kat_fill(shard.moderation_set_root, 0x59);
+    if (service->shard_validate(&shard) != VCS_ZCODE_C23_OK) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz, "frozen valid shard vector failed");
+        return false;
+    }
+    entry.flags |= UINT32_C(0x80000000);
+    if (service->shard_validate(&shard) != VCS_ZCODE_C23_FLAGS) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen invalid shard rejection vector failed");
+        return false;
+    }
+    return true;
+}
+
 static bool corpus_checkpoint_frozen_kat(
     const struct zcode_c23_corpus_service_v1 *service, char *why,
     size_t why_sz)
@@ -163,6 +215,8 @@ static bool corpus_service_frozen_kat(const void *opaque, char *why,
                            "frozen exact-root rules rendering vector failed");
         return false;
     }
+    if (!corpus_shard_frozen_kat(service, why, why_sz))
+        return false;
     if (!corpus_checkpoint_frozen_kat(service, why, why_sz))
         return false;
     if (!corpus_productivity_frozen_kat(service, why, why_sz))
@@ -349,6 +403,209 @@ static bool corpus_checkpoint_renderable(
 static size_t corpus_checkpoint_inline_wire_max(void)
 {
     return zcl_command_registry_input_str_max("checkpoint") / 2u;
+}
+
+static size_t corpus_shard_inline_wire_max(void)
+{
+    return zcl_command_registry_input_str_max("shard") / 2u;
+}
+
+static size_t corpus_shard_inline_entry_max(void)
+{
+    size_t wire_max = corpus_shard_inline_wire_max();
+    return wire_max > VCS_ZCODE_C23_SHARD_HEADER_WIRE_BYTES
+        ? (wire_max - VCS_ZCODE_C23_SHARD_HEADER_WIRE_BYTES) /
+              VCS_ZCODE_C23_SHARD_ENTRY_WIRE_BYTES
+        : 0;
+}
+
+struct corpus_shard_metrics {
+    uint64_t counted_entries;
+    uint64_t durable_entries;
+    uint64_t excluded_entries;
+    uint64_t production_loc;
+    uint64_t test_loc;
+    uint64_t total_loc;
+    uint64_t durable_loc;
+    uint64_t physical_lines;
+    uint64_t unique_semantic_units;
+};
+
+static bool corpus_shard_metrics_collect(
+    const struct vcs_zcode_c23_corpus_shard_v1 *shard,
+    struct corpus_shard_metrics *metrics)
+{
+    if (!shard || !metrics) return false;
+    memset(metrics, 0, sizeof(*metrics));
+    for (size_t i = 0; i < shard->entry_count; i++) {
+        const struct vcs_zcode_c23_corpus_entry_v1 *entry =
+            &shard->entries[i];
+        uint64_t entry_loc = 0;
+        if (!zcl_u64_add(entry->production_loc, entry->test_loc,
+                         &entry_loc) ||
+            !zcl_u64_add(metrics->production_loc, entry->production_loc,
+                         &metrics->production_loc) ||
+            !zcl_u64_add(metrics->test_loc, entry->test_loc,
+                         &metrics->test_loc) ||
+            !zcl_u64_add(metrics->total_loc, entry_loc,
+                         &metrics->total_loc) ||
+            !zcl_u64_add(metrics->physical_lines, entry->physical_lines,
+                         &metrics->physical_lines) ||
+            !zcl_u64_add(metrics->unique_semantic_units,
+                         entry->unique_semantic_units,
+                         &metrics->unique_semantic_units))
+            return false;
+        if (entry->flags & VCS_ZCODE_C23_ENTRY_COUNTED)
+            metrics->counted_entries++;
+        else
+            metrics->excluded_entries++;
+        if (entry->flags & VCS_ZCODE_C23_ENTRY_DURABLE) {
+            metrics->durable_entries++;
+            if (!zcl_u64_add(metrics->durable_loc, entry_loc,
+                             &metrics->durable_loc))
+                return false;
+        }
+    }
+    const uint64_t values[] = {
+        (uint64_t)shard->entry_count, metrics->counted_entries,
+        metrics->durable_entries, metrics->excluded_entries,
+        metrics->production_loc, metrics->test_loc, metrics->total_loc,
+        metrics->durable_loc, metrics->physical_lines,
+        metrics->unique_semantic_units,
+    };
+    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++)
+        if (values[i] > INT64_MAX) return false;
+    return true;
+}
+
+void zcl_native_handle_zcode_commons_corpus_shard_verify(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    const struct json_value *value =
+        request && request->input ? json_get(request->input, "shard") : NULL;
+    const char *hex = json_get_str(value);
+    size_t hex_len = hex ? strlen(hex) : 0;
+    if (!request || !reply || !request->input ||
+        request->input->type != JSON_OBJ ||
+        request->input->num_children != 1 || !hex_len ||
+        (hex_len & 1u) != 0 ||
+        hex_len > corpus_shard_inline_wire_max() * 2u) {
+        if (reply) corpus_fail(reply, "BAD_CORPUS_SHARD_INPUT",
+            "shard must be one nonempty lowercase even-length hex wire within the 8192-byte inline bound");
+        return;
+    }
+
+    size_t wire_len = hex_len / 2u;
+    if (wire_len < VCS_ZCODE_C23_SHARD_HEADER_WIRE_BYTES ||
+        (wire_len - VCS_ZCODE_C23_SHARD_HEADER_WIRE_BYTES) %
+            VCS_ZCODE_C23_SHARD_ENTRY_WIRE_BYTES != 0) {
+        corpus_fail(reply, "BAD_CORPUS_SHARD_INPUT",
+                    "shard wire length is not a canonical header plus whole entries");
+        return;
+    }
+    size_t entry_capacity =
+        (wire_len - VCS_ZCODE_C23_SHARD_HEADER_WIRE_BYTES) /
+        VCS_ZCODE_C23_SHARD_ENTRY_WIRE_BYTES;
+    if (!entry_capacity || entry_capacity > corpus_shard_inline_entry_max()) {
+        corpus_fail(reply, "BAD_CORPUS_SHARD_INPUT",
+                    "shard must contain between 1 and 28 inline entries");
+        return;
+    }
+
+    uint8_t *wire = zcl_malloc(wire_len, "corpus.shard.wire");
+    struct vcs_zcode_c23_corpus_entry_v1 *entries = zcl_malloc(
+        entry_capacity * sizeof(*entries), "corpus.shard.entries");
+    if (!wire || !entries) {
+        free(entries);
+        free(wire);
+        corpus_fail(reply, "CORPUS_SHARD_MEMORY",
+                    "bounded shard verification allocation failed");
+        return;
+    }
+    if (!zcl_hex_decode_lower(hex, wire, wire_len)) {
+        free(entries);
+        free(wire);
+        corpus_fail(reply, "BAD_CORPUS_SHARD_INPUT",
+                    "shard must use canonical lowercase hexadecimal");
+        return;
+    }
+
+    struct vcs_zcode_c23_corpus_shard_v1 shard;
+    enum vcs_zcode_c23_error error = vcs_zcode_c23_corpus_shard_v1_decode(
+        &shard, entries, entry_capacity, wire, wire_len);
+    free(wire);
+    if (error != VCS_ZCODE_C23_OK) {
+        free(entries);
+        corpus_fail(reply, "CORPUS_SHARD_INVALID",
+                    vcs_zcode_c23_error_string(error));
+        return;
+    }
+
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_c23_corpus_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_C23_CORPUS_SERVICE_ID, &lease);
+    if (!service) service = zcode_c23_corpus_service_builtin();
+    error = service->shard_validate(&shard);
+    if (error != VCS_ZCODE_C23_OK) {
+        zcl_hotswap_service_release(&lease);
+        free(entries);
+        corpus_fail(reply, "CORPUS_SHARD_INVALID",
+                    vcs_zcode_c23_error_string(error));
+        return;
+    }
+
+    uint8_t shard_root[32];
+    struct corpus_shard_metrics metrics;
+    error = vcs_zcode_c23_corpus_shard_v1_root(&shard, shard_root);
+    if (error != VCS_ZCODE_C23_OK ||
+        !corpus_shard_metrics_collect(&shard, &metrics)) {
+        zcl_hotswap_service_release(&lease);
+        free(entries);
+        corpus_fail(reply, "CORPUS_SHARD_RENDER_RANGE",
+                    "verified shard counts exceed the bounded JSON integer renderer");
+        return;
+    }
+
+    (void)json_push_kv_bool(&reply->data, "verified", true);
+    (void)json_push_kv_bool(&reply->data, "simulation_only", true);
+    (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
+    (void)json_push_kv_bool(&reply->data, "global_completeness_claimed",
+                            false);
+    (void)json_push_kv_str(&reply->data, "kind", "c23_corpus_shard.v1");
+    (void)json_push_kv_str(&reply->data, "service_id",
+                           ZCODE_C23_CORPUS_SERVICE_ID);
+    (void)json_push_kv_int(&reply->data, "service_generation",
+                           zcl_hotswap_service_generation());
+    corpus_push_root(&reply->data, "shard_root", shard_root);
+    corpus_push_root(&reply->data, "rules_root", shard.rules_root);
+    corpus_push_root(&reply->data, "family_policy_root",
+                     shard.family_policy_root);
+    corpus_push_root(&reply->data, "moderation_set_root",
+                     shard.moderation_set_root);
+    (void)json_push_kv_int(&reply->data, "entry_count",
+                           (int64_t)shard.entry_count);
+    (void)json_push_kv_int(&reply->data, "inline_entry_limit",
+                           (int64_t)corpus_shard_inline_entry_max());
+    (void)json_push_kv_int(&reply->data, "counted_entries",
+                           (int64_t)metrics.counted_entries);
+    (void)json_push_kv_int(&reply->data, "durable_entries",
+                           (int64_t)metrics.durable_entries);
+    (void)json_push_kv_int(&reply->data, "excluded_entries",
+                           (int64_t)metrics.excluded_entries);
+    (void)json_push_kv_int(&reply->data, "production_loc",
+                           (int64_t)metrics.production_loc);
+    (void)json_push_kv_int(&reply->data, "test_loc",
+                           (int64_t)metrics.test_loc);
+    (void)json_push_kv_int(&reply->data, "total_loc",
+                           (int64_t)metrics.total_loc);
+    (void)json_push_kv_int(&reply->data, "durably_hosted_loc",
+                           (int64_t)metrics.durable_loc);
+    (void)json_push_kv_int(&reply->data, "physical_lines",
+                           (int64_t)metrics.physical_lines);
+    (void)json_push_kv_int(&reply->data, "unique_semantic_units",
+                           (int64_t)metrics.unique_semantic_units);
+    zcl_hotswap_service_release(&lease);
+    free(entries);
 }
 
 static size_t corpus_checkpoint_inline_shard_max(void)
