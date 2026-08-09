@@ -653,7 +653,10 @@ translation unit must:
 - export one native-leaf table;
 - contain no mutable file-scope state;
 - live in the app layer, outside every consensus and state root; and
-- declare a canonical probe leaf whose body accepts an empty request.
+- declare a canonical probe operation with exactly one resident-owned case in
+  `config/hotswap_probe_cases.def`. The case freezes bounded canonical JSON,
+  expected output schema, and a byte ceiling; candidate code cannot choose or
+  weaken any of them.
 
 | Native translation unit | Probe leaf |
 |---|---|
@@ -663,12 +666,14 @@ translation unit must:
 | `app/controllers/src/meta_native_handlers.c` | `ops.metrics` |
 | `app/controllers/src/chain_native_handlers.c` | `core.consensus.utxo.audit` |
 | `app/controllers/src/metaverse_controller.c` | `metaverse.property.list` |
+| `app/controllers/src/diagnostics_native_handlers.c` | `ops.logs` with a fixed one-row, one-second case |
 
-`app/controllers/src/diagnostics_native_handlers.c` is not listed. Its current
-leaves require non-empty input (`sql` or `pattern`), so an empty-request
-generation self-test would fail every load. Before listing any new translation
-unit, read the probe body and its argument checks; do not infer empty-input
-support from the command name.
+Parameterized cases are parsed and validated by the resident immediately
+before candidate dispatch. The public registry must still identify the exact
+operation as READY/read-only, accept the frozen input, and declare the frozen
+schema and an equal-or-larger response budget. Any drift publishes nothing.
+`ops.logs` is the first non-empty case; filesystem access remains in its static
+RPC handler while the island owns only request composition.
 
 ### Tests
 

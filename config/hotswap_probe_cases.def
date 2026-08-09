@@ -1,0 +1,36 @@
+/* Resident-owned hot-swap probe cases.
+ *
+ * Consumer defines:
+ *   HOTSWAP_PROBE_CASE(case_id, kind, operation, canonical_input_json,
+ *                      expected_schema, byte_budget)
+ *
+ * Candidates name neither a case nor any of its limits. The resident maps a
+ * candidate's owning source/service through the eligibility manifests and
+ * resolves that fixed operation here. JSON object keys stay lexicographically
+ * ordered so byte identity is reviewable and cacheable. */
+
+HOTSWAP_PROBE_CASE("command.core.status.default.v1", "command",
+    "core.status", "{}", "zcl.core_status.v2", 4096)
+HOTSWAP_PROBE_CASE("command.wallet.address.list.default.v1", "command",
+    "core.wallet.address.list", "{}", "zcl.wallet_addresses.v1", 8192)
+HOTSWAP_PROBE_CASE("command.network.incidents.default.v1", "command",
+    "core.network.peers.incidents", "{}", "zcl.peer_incidents.v2", 8192)
+HOTSWAP_PROBE_CASE("command.ops.metrics.default.v1", "command",
+    "ops.metrics", "{}", "zcl.ops_metrics.v1", 8192)
+HOTSWAP_PROBE_CASE("command.utxo.audit.default.v1", "command",
+    "core.consensus.utxo.audit", "{}", "zcl.utxo_audit.v1", 4096)
+HOTSWAP_PROBE_CASE("command.names.list.default.v1", "command",
+    "app.names.list", "{}", "zcl.app_name_index.v1", 8192)
+HOTSWAP_PROBE_CASE("command.metaverse.property.list.default.v1", "command",
+    "metaverse.property.list", "{}", "zcl.metaverse_property_list.v1", 8192)
+HOTSWAP_PROBE_CASE("command.ops.logs.bounded.v1", "command",
+    "ops.logs",
+    "{\"level\":\"all\",\"max_lines\":1,\"pattern\":\"hotswap\",\"since_secs\":1}",
+    "zcl.ops_logs.v1", 2048)
+HOTSWAP_PROBE_CASE("service.corpus.show.rules.v1", "service",
+    "zcode.commons.corpus.show",
+    "{\"root\":\"ae0c059c8c925464a7d9376b17687b207027833f5337dc49944bcd1b55d3be23\"}",
+    "zcl.zcode_commons_corpus_show.v1", 2048)
+HOTSWAP_PROBE_CASE("service.economics.status.default.v1", "service",
+    "zcode.commons.economics.status", "{}",
+    "zcl.zcode_commons_economics_status.v2", 4096)

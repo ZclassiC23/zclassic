@@ -244,8 +244,8 @@ static int count_skip_markers(const char *path)
  * That group is `make_lint_gates`. Its ~114 sibling checks live in
  * `make_lint_gates_shard_NN` and `make_lint_gates_realroot`, which never touch
  * the real tree and MUST stay pool-eligible — the whole point of the split.
- * The pre-pass ordering is also what lets the shards build their `cp -al`
- * sandboxes from a quiet tree.
+ * The pre-pass ordering is also what lets the shards build their private
+ * reflink-or-copy sandboxes from a quiet tree.
  *
  * The policy itself lives in test_make_lint_gates.c next to the entry table
  * that makes it true, and is asserted in both directions by the

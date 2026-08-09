@@ -97,6 +97,16 @@ const char *zcl_hotswap_service_probe_for_source(const char *source)
     return NULL;
 }
 
+const char *zcl_hotswap_service_probe_for_id(const char *service_id)
+{
+    if (!service_id) return NULL;
+    for (size_t i = 0; i < sizeof(k_service_manifest) /
+                            sizeof(k_service_manifest[0]); i++)
+        if (strcmp(service_id, k_service_manifest[i].service_id) == 0)
+            return k_service_manifest[i].probe;
+    return NULL;
+}
+
 static void service_lock(void)
 {
     while (atomic_flag_test_and_set_explicit(&g_service_write_lock,

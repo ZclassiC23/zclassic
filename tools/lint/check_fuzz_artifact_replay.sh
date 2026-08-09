@@ -345,7 +345,7 @@ consider_path() {
 
 # git is the preferred enumerator because it can tell a committed finding from
 # an uncommitted one. It is not always safe to trust: the lint-gate selftest
-# runs every sandbox-lane gate inside a `cp -al` hardlink copy that
+# runs every sandbox-lane gate inside an inode-independent private clone that
 # deliberately omits .git (so a tarball checkout would look the same), but
 # that copy typically lives under a runtime directory (e.g.
 # .claude/worktrees/<name>.lint_sb_<pid>/w<n>) that is itself nested inside a

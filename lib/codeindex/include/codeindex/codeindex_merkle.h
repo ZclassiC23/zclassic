@@ -27,10 +27,10 @@
  * ── Ground truth ──
  * The files on disk are authoritative; this is a CACHE and an IDENTITY. Nodes
  * are persisted at <root>/.codeindex/source_tree.merkle purely so a refresh
- * after editing N files re-reads N files instead of all of them. A snapshot
- * that is missing, truncated, of an older format, or simply wrong is DISCARDED
- * and recomputed — there is no repair path, no reconciliation, and no drift
- * alarm, because a content-keyed cache has nothing to reconcile against.
+ * after editing N files re-reads N files instead of all of them. The complete
+ * image is SHA3-sealed. A snapshot that is missing, truncated, of an older
+ * source-policy format, or simply wrong is DISCARDED and recomputed. Every
+ * refresh still enumerates and stats the live inventory before reusing bytes.
  * Deleting source_tree.merkle is always safe and costs only one full pass.
  */
 
@@ -74,6 +74,8 @@ struct ci_merkle_cost {
     uint32_t nodes_reused;   /* directory nodes served from the snapshot */
     bool     snapshot_used;  /* a usable snapshot was found and read */
     bool     snapshot_saved; /* a new snapshot was published this refresh */
+    bool     inventory_changed; /* sorted live paths differ from snapshot */
+    bool     full_rescan;     /* no snapshot, invalid/policy, or inventory drift */
 };
 
 /* An immutable in-memory Merkle tree. */
@@ -85,6 +87,13 @@ struct ci_merkle;
  * `cost` (may be NULL) receives the accounting above. NULL on hard failure
  * (unreadable source root); a bad snapshot is never a failure. */
 struct ci_merkle *ci_merkle_refresh(const char *root, struct ci_merkle_cost *cost);
+
+/* Authority path for resident source epochs. Like refresh, but an inventory
+ * change discards the just-updated cache and performs one complete byte pass.
+ * This makes missing/invalid/policy/inventory cases share one explicit cold
+ * fallback while the normal unchanged startup reads zero source bytes. */
+struct ci_merkle *ci_merkle_refresh_reconciled(
+    const char *root, struct ci_merkle_cost *cost);
 
 /* Same, but never reads or writes the snapshot: every leaf is re-read. This is
  * the from-scratch reference path — determinism and incrementality are both

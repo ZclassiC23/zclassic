@@ -150,9 +150,9 @@ static bool registry_commit_batch_cb(void *ctx,
  * The candidate's declared probe leaf is dispatched against the PUBLIC command
  * registry's contract for that leaf: the registry-resolved spec (which must
  * still be a READY, read-only, non-alias leaf), the registry's own input
- * validation of a bounded EMPTY request, and the registry reply envelope. The
- * reply is then checked against the leaf's DECLARED output schema and response
- * budget. Any mismatch returns false and the loader publishes NOTHING.
+ * validation of the resident-owned bounded canonical request, and the registry
+ * reply envelope. The reply is checked against the case's frozen schema and
+ * tighter byte budget. Any mismatch returns false and publishes NOTHING.
  *
  * This runs the candidate body, which for a native bridge leaf issues one
  * loopback RPC. In the resident node that is a self-call served by a sibling
@@ -172,6 +172,15 @@ static bool registry_probe_cb(void *ctx, const char *leaf,
     if (!leaf || !leaf[0] || !fn)
         PROBE_FAIL("probe leaf or candidate handler missing");
 
+    const struct zcl_hotswap_probe_case *probe =
+        hotswap_probe_case_for_operation(leaf);
+    if (!probe)
+        PROBE_FAIL("probe leaf '%s' has no resident-owned case", leaf);
+    if (!probe->canonical_input_json || !probe->expected_schema ||
+        probe->byte_budget == 0 || probe->byte_budget > ZCL_COMMAND_LIST_BUDGET)
+        PROBE_FAIL("probe case '%s' has an invalid resident contract",
+                   probe->case_id ? probe->case_id : "(unnamed)");
+
     const struct zcl_command_registry *reg = zcl_command_catalog();
     bool was_alias = false;
     const struct zcl_command_spec *spec =
@@ -187,20 +196,35 @@ static bool registry_probe_cb(void *ctx, const char *leaf,
         PROBE_FAIL("probe leaf '%s' is not read-only", leaf);
     if (!spec->output_schema || !spec->output_schema[0])
         PROBE_FAIL("probe leaf '%s' declares no output schema", leaf);
+    if (strcmp(spec->output_schema, probe->expected_schema) != 0)
+        PROBE_FAIL("probe case '%s' expected schema '%s' but registry declares '%s'",
+                   probe->case_id, probe->expected_schema,
+                   spec->output_schema);
+    if (spec->budget_bytes > 0 &&
+        probe->byte_budget > (size_t)spec->budget_bytes)
+        PROBE_FAIL("probe case '%s' budget %zu exceeds registry budget %zu",
+                   probe->case_id, probe->byte_budget,
+                   (size_t)spec->budget_bytes);
 
     struct json_value input;
     json_init(&input);
-    json_set_object(&input);
+    if (!json_read(&input, probe->canonical_input_json,
+                   strlen(probe->canonical_input_json)) ||
+        input.type != JSON_OBJ) {
+        json_free(&input);
+        PROBE_FAIL("probe case '%s' canonical input is not a JSON object",
+                   probe->case_id);
+    }
     char vwhy[192] = {0};
     if (!zcl_command_registry_input_validate(spec, &input, vwhy,
                                              sizeof(vwhy))) {
         json_free(&input);
-        PROBE_FAIL("bounded empty request rejected for '%s': %s", leaf,
+        PROBE_FAIL("bounded probe case '%s' rejected for '%s': %s",
+                   probe->case_id, leaf,
                    vwhy[0] ? vwhy : "input validation failed");
     }
 
-    size_t budget = spec->budget_bytes > 0 ? (size_t)spec->budget_bytes
-                                           : ZCL_COMMAND_RESULT_BUDGET;
+    size_t budget = probe->byte_budget;
     struct zcl_command_context context = {
         .registry = reg,
         .authority_ceiling = spec->authority,
@@ -214,7 +238,7 @@ static bool registry_probe_cb(void *ctx, const char *leaf,
         .invoked_name = spec->path,
     };
     struct zcl_command_reply reply;
-    zcl_command_reply_init(&reply, spec->output_schema);
+    zcl_command_reply_init(&reply, probe->expected_schema);
     fn(&request, &reply);
 
     bool ok = true;
@@ -366,25 +390,55 @@ static void service_report_to_reply(
 static void service_resident_observation_append(struct json_value *out,
                                                 const char *service_id)
 {
+    const char *operation = zcl_hotswap_service_probe_for_id(service_id);
+    const struct zcl_hotswap_probe_case *probe =
+        hotswap_probe_case_for_operation(operation);
+    if (!probe || strcmp(probe->kind, "service") != 0) {
+        (void)json_push_kv_str(out, "resident_observation_error",
+                              "service has no resident-owned probe case");
+        return;
+    }
     struct json_value input;
     json_init(&input);
-    json_set_object(&input);
+    if (!json_read(&input, probe->canonical_input_json,
+                   strlen(probe->canonical_input_json)) ||
+        input.type != JSON_OBJ) {
+        json_free(&input);
+        (void)json_push_kv_str(out, "resident_observation_error",
+                              "service probe input is not canonical JSON");
+        return;
+    }
     struct zcl_command_request request = { .input = &input };
     struct zcl_command_reply reply;
-    if (service_id &&
-        strcmp(service_id, ZCODE_C23_ECONOMICS_SERVICE_ID) == 0) {
-        zcl_command_reply_init(&reply,
-                               ZCODE_C23_ECONOMICS_SCHEMA_FINGERPRINT);
+    zcl_command_reply_init(&reply, probe->expected_schema);
+    if (strcmp(operation, "zcode.commons.economics.status") == 0) {
         zcl_native_handle_zcode_commons_economics_status(&request, &reply);
+    } else if (strcmp(operation, "zcode.commons.corpus.show") == 0) {
+        zcl_native_handle_zcode_commons_corpus_show(&request, &reply);
     } else {
-        zcl_command_reply_init(&reply, ZCODE_C23_CORPUS_SCHEMA_FINGERPRINT);
-        zcl_native_handle_zcode_commons_corpus_status(&request, &reply);
+        zcl_command_reply_fail(&reply, ZCL_COMMAND_STATUS_BLOCKED,
+            ZCL_COMMAND_EXIT_BLOCKED, "UNKNOWN_SERVICE_PROBE", "probe",
+            false, false, "service probe operation is not statically bound",
+            operation);
     }
-    if (reply.exit_code == ZCL_COMMAND_EXIT_OK)
+    char *rendered = NULL;
+    size_t rendered_len = 0;
+    if (reply.exit_code == ZCL_COMMAND_EXIT_OK && reply.data_schema &&
+        strcmp(reply.data_schema, probe->expected_schema) == 0) {
+        rendered = zcl_malloc(probe->byte_budget + 1,
+                              "hotswap.service.probe.render");
+        if (rendered)
+            rendered_len = json_write(&reply.data, rendered,
+                                      probe->byte_budget + 1);
+    }
+    if (rendered_len > 0 && rendered_len <= probe->byte_budget) {
         (void)json_push_kv(out, "resident_observation", &reply.data);
-    else
+        (void)json_push_kv_str(out, "probe_case", probe->case_id);
+    } else {
         (void)json_push_kv_str(out, "resident_observation_error",
                               "static service status handler refused observation");
+    }
+    free(rendered);
     zcl_command_reply_free(&reply);
     json_free(&input);
 }

@@ -12,10 +12,15 @@ cd "$ROOT"
 . tools/lint/gate_lib.sh
 
 MANIFEST="${ZCL_HOTSWAP_SERVICE_MANIFEST:-config/hotswap_services.def}"
+PROBE_CASES="${ZCL_HOTSWAP_PROBE_CASES:-config/hotswap_probe_cases.def}"
 FIXTURE_MODE="${ZCL_HOTSWAP_SERVICE_FIXTURE:-0}"
 echo "══ LINT: pure hot-swap service islands ══"
 if [ ! -r "$MANIFEST" ]; then
     echo "check_hotswap_service_islands: FATAL — manifest '$MANIFEST' missing" >&2
+    exit 2
+fi
+if [ ! -r "$PROBE_CASES" ]; then
+    echo "check_hotswap_service_islands: FATAL — probe cases '$PROBE_CASES' missing" >&2
     exit 2
 fi
 
@@ -83,7 +88,14 @@ for row in "${ROWS[@]}"; do
     for stamp in "$abi" "$schema" "$wire" "$kat"; do
         if [ -z "$stamp" ]; then violations+="  $source (empty frozen contract fingerprint)"$'\n'; fi
     done
-    if [ -z "$probe" ]; then violations+="  $source (empty resident-owned probe leaf)"$'\n'; fi
+    if [ -z "$probe" ]; then
+        violations+="  $source (empty resident-owned probe leaf)"$'\n'
+    else
+        case_count="$(grep -Fc "\"$probe\"," "$PROBE_CASES" || true)"
+        if [ "$case_count" -ne 1 ]; then
+            violations+="  $source (probe '$probe' resolves to $case_count resident cases, expected exactly one)"$'\n'
+        fi
+    fi
 
     # Ownership/state constructs that would create a second mutable world.
     hits="$(awk '

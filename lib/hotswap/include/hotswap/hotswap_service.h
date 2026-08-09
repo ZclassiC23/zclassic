@@ -121,6 +121,7 @@ bool zcl_hotswap_service_activate_so_any(
 const char *zcl_hotswap_service_source_for_path(const char *path);
 const char *zcl_hotswap_service_contract_source_for_path(const char *path);
 const char *zcl_hotswap_service_probe_for_source(const char *source);
+const char *zcl_hotswap_service_probe_for_id(const char *service_id);
 
 #ifdef __cplusplus
 }

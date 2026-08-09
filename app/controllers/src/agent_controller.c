@@ -6,13 +6,13 @@
 
 #include "controllers/agent_controller.h"
 #include "controllers/agent_background_quality.h"
+#include "controllers/agent_build_status_collector.h"
 #include "controllers/agent_impact_rules.h"
 #include "controllers/strong_params.h"
 
 #include "json/json.h"
 #include "rpc/server.h"
 #include "util/clientversion.h"
-#include "util/spawn.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -54,43 +54,6 @@ static void agent_push_build_knob(struct json_value *arr, const char *name,
     json_push_kv_str(&knob, "purpose", purpose);
     json_push_back(arr, &knob);
     json_free(&knob);
-}
-
-/* Read-only optional tooling status. Missing scripts/artifacts are normal on
- * installed binaries, so failures become a typed unavailable object rather
- * than making agentbuild itself fail. */
-static void agent_collect_optional_status(struct json_value *out,
-                                          const char *command,
-                                          const char *schema)
-{
-    /* Split the trusted command on whitespace into argv; run no-shell spawn. */
-    char buf[65536];
-    char cmdcopy[1024];
-    const char *argv[64];
-    size_t argc = 0;
-    buf[0] = '\0';
-    if (snprintf(cmdcopy, sizeof(cmdcopy), "%s", command ? command : "")
-            < (int)sizeof(cmdcopy))
-        argc = zcl_argv_split(cmdcopy, argv, 64);
-    int rc = argc ? zcl_spawn_capture(argv, buf, sizeof(buf), 30000) : -1;
-    size_t used = strlen(buf);
-
-    struct json_value parsed = {0};
-    if (argc &&
-        json_read(&parsed, buf, used) && parsed.type == JSON_OBJ &&
-        strcmp(json_get_str(json_get(&parsed, "schema")), schema) == 0) {
-        *out = parsed;
-        json_push_kv_int(out, "collector_status", rc);
-        return;
-    }
-    json_free(&parsed);
-    json_set_object(out);
-    json_push_kv_str(out, "schema", schema);
-    json_push_kv_str(out, "status", "unavailable");
-    json_push_kv_str(out, "collector_command", command);
-    json_push_kv_int(out, "collector_status", rc);
-    json_push_kv_str(out, "agent_next_action",
-                     "run the corresponding make target from the repository");
 }
 
 bool rpc_agent_dev_status(const struct json_value *params, bool help,

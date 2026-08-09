@@ -246,6 +246,9 @@ ZCL_COMMAND_BRANCH("zcode.commons.economics", "zcode.commons",
 ZCL_COMMAND_BRANCH("zcode.commons.corpus", "zcode.commons",
                    "Verified C23 corpus lower-bound projection",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.corpus.shard", "zcode.commons.corpus",
+                   "Bounded C23 corpus shard verification",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("zcode.commons.impact", "zcode.commons",
                    "Locally rendered productivity evidence",
                    ZCL_COMMAND_LAYER_APP)
@@ -275,6 +278,63 @@ ZCL_COMMAND_READY_READ(
     zcl_native_handle_zcode_commons_economics_status)
 
 ZCL_COMMAND_READY_READ(
+    "zcode.commons.corpus.show", "zcode.commons.corpus", "",
+    "Show one exact C23 corpus object",
+    "Shows the resident-frozen C23 corpus rules only when the required exact "
+    "root matches. Unknown roots return found:false and are never fetched, "
+    "previewed, or treated as a global completeness claim.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,commons,corpus,c23,rules,root,show,simulation",
+    "zcl.zcode_commons_corpus_show.input.v1",
+    "zcl.zcode_commons_corpus_show.v1", "root", "root",
+    "zclassic23 zcode commons corpus show --root=<64-hex>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_corpus_show)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.corpus.verify", "zcode.commons.corpus", "",
+    "Verify one bounded C23 corpus checkpoint",
+    "Decodes and verifies one canonical signed c23_corpus_checkpoint.v1 wire "
+    "through the resident pure corpus service. Inline input is bounded to 54 "
+    "shards and proves only the supplied lower-bound set, never global "
+    "completeness.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,commons,corpus,c23,checkpoint,verify,signature,simulation",
+    "zcl.zcode_commons_corpus_verify.input.v1",
+    "zcl.zcode_commons_corpus_verify.v1", "checkpoint", "",
+    "zclassic23 zcode commons corpus verify --checkpoint=<lowercase-hex-wire>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_corpus_verify)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.corpus.shard.verify", "zcode.commons.corpus.shard", "",
+    "Verify one bounded C23 corpus shard",
+    "Decodes and verifies one canonical c23_corpus_shard.v1 wire through the "
+    "resident pure corpus service. Inline input is bounded to 28 entries; "
+    "the result proves only the supplied shard, never global completeness.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,commons,corpus,c23,shard,verify,counts,simulation",
+    "zcl.zcode_commons_corpus_shard_verify.input.v1",
+    "zcl.zcode_commons_corpus_shard_verify.v1", "shard", "",
+    "zclassic23 zcode commons corpus shard verify --shard=<lowercase-hex-wire>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_corpus_shard_verify)
+
+ZCL_COMMAND_READY_READ(
     "zcode.commons.corpus.status", "zcode.commons.corpus", "",
     "Show the verified C23 corpus lower bound",
     "Shows admitted and durably hosted production/test C23 LOC separately, "
@@ -292,6 +352,25 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE,
     zcl_native_handle_zcode_commons_corpus_status)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.impact.verify", "zcode.commons.impact", "",
+    "Verify one signed productivity receipt",
+    "Verifies the canonical signed productivity_receipt.v1 structure through "
+    "the resident pure corpus service. Structural validity never authorizes "
+    "sharing without an independent current chain proof.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,commons,impact,productivity,receipt,verify,signature,simulation",
+    "zcl.zcode_commons_impact_verify.input.v1",
+    "zcl.zcode_commons_impact_verify.v1", "receipt", "",
+    "zclassic23 zcode commons impact verify --receipt=<lowercase-hex-wire>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_impact_verify)
 
 ZCL_COMMAND_READY_READ(
     "zcode.commons.impact.status", "zcode.commons.impact", "",

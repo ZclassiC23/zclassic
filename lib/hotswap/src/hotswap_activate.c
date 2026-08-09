@@ -66,6 +66,13 @@ static const struct {
 #undef HOTSWAP_PROBE
 };
 
+static const struct zcl_hotswap_probe_case g_probe_cases[] = {
+#define HOTSWAP_PROBE_CASE(case_id_, kind_, operation_, input_, schema_, budget_) \
+    { (case_id_), (kind_), (operation_), (input_), (schema_), (budget_) },
+#include "../../../config/hotswap_probe_cases.def"
+#undef HOTSWAP_PROBE_CASE
+};
+
 #define SWAPPABLE_COUNT (sizeof(g_swappable) / sizeof(g_swappable[0]))
 #define PROBE_COUNT (sizeof(g_probes) / sizeof(g_probes[0]))
 
@@ -116,15 +123,35 @@ static const char *swappable_leaves_for_source(const char *source_tu)
     return NULL;
 }
 
-const char *hotswap_module_probe_leaf(const char *source_tu)
+const struct zcl_hotswap_probe_case *hotswap_probe_case_for_operation(
+    const char *operation)
+{
+    if (!operation || !operation[0])
+        return NULL;
+    for (size_t i = 0; i < sizeof(g_probe_cases) /
+                            sizeof(g_probe_cases[0]); i++)
+        if (strcmp(operation, g_probe_cases[i].operation) == 0)
+            return &g_probe_cases[i];
+    return NULL;
+}
+
+const struct zcl_hotswap_probe_case *hotswap_module_probe_case(
+    const char *source_tu)
 {
     if (!source_tu || !source_tu[0])
         return NULL;
     for (size_t i = 0; i < PROBE_COUNT; i++) {
         if (strcmp(source_tu, g_probes[i].source) == 0)
-            return g_probes[i].probe;
+            return hotswap_probe_case_for_operation(g_probes[i].probe);
     }
     return NULL;
+}
+
+const char *hotswap_module_probe_leaf(const char *source_tu)
+{
+    const struct zcl_hotswap_probe_case *probe =
+        hotswap_module_probe_case(source_tu);
+    return probe ? probe->operation : NULL;
 }
 
 static void act_copy(char *dst, size_t cap, const char *src)

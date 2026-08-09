@@ -139,7 +139,7 @@ CLAIM_RE='(^|[^[:alnum:]/_-])[0-9]+\+?[[:space:]]+(defensive[- ]coding([[:space:
 # whenever they differ.
 list_docs() {
     # Two lanes found this independently and wrote the same test; the sandbox
-    # is a hardlink copy at <root>.lint_sb_<pid>, so the gate was hollow
+    # is a private clone at <root>.lint_sb_<pid>, so the gate was hollow
     # exactly where its own plant/trip/recover proof runs.
     local top=""
     top=$(git rev-parse --show-toplevel 2>/dev/null || true)
@@ -151,7 +151,7 @@ list_docs() {
         git ls-files -z -- '*.md'
         git ls-files -z --others --exclude-standard -- '*.md'
     else
-        # Tarball / vendored checkout / hardlink sandbox: same scan without git.
+        # Tarball / vendored checkout / private sandbox: same scan without git.
         find . \( -name .git -o -name vendor -o -name build -o -name node_modules \) \
              -prune -o -name '*.md' -type f -print0
     fi

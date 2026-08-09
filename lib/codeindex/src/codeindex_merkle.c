@@ -9,12 +9,13 @@
  * child order comes from — see `merkle_child_key` below, the single statement of
  * the ordering rule.
  *
- * The snapshot at <root>/.codeindex/source_tree.merkle exists for exactly one
+ * The SHA3-sealed snapshot at <root>/.codeindex/source_tree.merkle exists for exactly one
  * reason: to let a refresh re-read only the files whose (dev,ino,size,mtime,
  * ctime) cache key moved, and to let a directory whose children are all
  * unchanged keep its digest without hashing. It is derived, content-keyed, and
- * discarded whole on any doubt — there is no repair, no reconciliation, and no
- * freshness alarm, because the files on disk are the only authority.
+ * discarded whole on any doubt. Its format version is also the source inventory
+ * policy version: changing ci_enumerate_sources() must bump it and force one
+ * cold pass. The files on disk remain the only authority.
  */
 
 #include "codeindex_priv.h"
@@ -50,8 +51,10 @@ enum {
 };
 
 static const char merkle_snapshot_format[] =
-    "zcl.codeindex.source_tree.merkle.v1";
+    "zcl.codeindex.source_tree.merkle.v2";
 static const char merkle_snapshot_name[] = "source_tree.merkle";
+static const char merkle_snapshot_seal_domain[] =
+    "zcl.codeindex.source_tree.merkle.seal.v1";
 
 /* ── records ─────────────────────────────────────────────────────────── */
 
@@ -255,6 +258,18 @@ struct merkle_cursor {
     bool                 bad;
 };
 
+static void merkle_snapshot_seal(const unsigned char *image, size_t len,
+                                 unsigned char out[32])
+{
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    sha3_256_write(&sha,
+                   (const unsigned char *)merkle_snapshot_seal_domain,
+                   sizeof(merkle_snapshot_seal_domain));
+    sha3_256_write(&sha, image, len);
+    sha3_256_finalize(&sha, out);
+}
+
 static bool merkle_take(struct merkle_cursor *c, void *dst, size_t n)
 {
     if (c->bad || c->left < n) { c->bad = true; return false; }
@@ -385,7 +400,21 @@ static bool merkle_snapshot_load(const char *root, struct merkle_snapshot *out,
         return true; /* unreadable cache == no cache */
     }
 
-    struct merkle_cursor c = { .p = img, .left = len, .bad = false };
+    if (len <= 32) {
+        free(img);
+        return true;
+    }
+    size_t payload_len = len - 32;
+    unsigned char expected_seal[32];
+    merkle_snapshot_seal(img, payload_len, expected_seal);
+    if (memcmp(expected_seal, img + payload_len, 32) != 0) {
+        free(img);
+        return true;
+    }
+
+    struct merkle_cursor c = {
+        .p = img, .left = payload_len, .bad = false
+    };
     char format[256];
     if (!merkle_take_path(&c, format) ||
         strcmp(format, merkle_snapshot_format) != 0) {
@@ -442,7 +471,7 @@ static bool merkle_snapshot_load(const char *root, struct merkle_snapshot *out,
         if (i > 0 && strcmp(nodes[i - 1].path, nd->path) >= 0) c.bad = true;
     }
     free(img);
-    if (c.bad || nodes[0].path[0] != '\0' ||
+    if (c.bad || c.left != 0 || nodes[0].path[0] != '\0' ||
         memcmp(nodes[0].digest.bytes, root_digest, 32) != 0) {
         free(leaves);
         free(nodes);
@@ -463,7 +492,7 @@ static _Atomic uint64_t g_merkle_tmp_seq = 1;
  * way the next refresh is correct — only slower. */
 static bool merkle_snapshot_save(const char *root, const struct ci_merkle *m)
 {
-    size_t need = sizeof(merkle_snapshot_format) + 2 + 4 + 4 + 32;
+    size_t need = sizeof(merkle_snapshot_format) + 2 + 4 + 4 + 32 + 32;
     for (uint32_t i = 0; i < m->nleaves; i++)
         need += 2 + strlen(m->leaves[i].path) + 32 + 8 * 8;
     for (uint32_t i = 0; i < m->nnodes; i++)
@@ -498,6 +527,9 @@ static bool merkle_snapshot_save(const char *root, const struct ci_merkle *m)
         merkle_put_u32(&w, nd->dir_count);
         merkle_put_u64(&w, nd->total_bytes);
     }
+    size_t payload_len = (size_t)(w - img);
+    merkle_snapshot_seal(img, payload_len, w);
+    w += 32;
     size_t total = (size_t)(w - img);
 
     int dirfd = merkle_open_dir(root, true);
@@ -805,6 +837,8 @@ static bool merkle_file_cb(const char *relpath, const struct stat *st,
     const struct merkle_leaf_rec *prev =
         b->use_prev ? merkle_find_leaf(b->prev.leaves, b->prev.nleaves, relpath)
                     : NULL;
+    if (b->use_prev && !prev)
+        b->cost.inventory_changed = true;
     if (prev && memcmp(&prev->key, &live, sizeof(live)) == 0) {
         leaf.digest = prev->digest;
         leaf.size = prev->size;
@@ -886,6 +920,8 @@ static struct ci_merkle *merkle_run(const char *root, bool use_snapshot,
         free(b.nodes);
         LOG_NULL("codeindex", "merkle source enumeration failed root=%s", root);
     }
+    if (b.use_prev && b.nleaves != b.prev.nleaves)
+        b.cost.inventory_changed = true;
     while (b.depth > 1) {
         if (!merkle_pop_frame(&b)) {
             merkle_build_release(&b);
@@ -944,6 +980,36 @@ static struct ci_merkle *merkle_run(const char *root, bool use_snapshot,
 struct ci_merkle *ci_merkle_refresh(const char *root, struct ci_merkle_cost *cost)
 {
     return merkle_run(root, true, cost);
+}
+
+struct ci_merkle *ci_merkle_refresh_reconciled(
+    const char *root, struct ci_merkle_cost *cost)
+{
+    struct ci_merkle_cost first_cost = {0};
+    struct ci_merkle *first = merkle_run(root, true, &first_cost);
+    if (!first)
+        return NULL;
+    if (!first_cost.snapshot_used) {
+        first_cost.full_rescan = true;
+        if (cost) *cost = first_cost;
+        return first;
+    }
+    if (!first_cost.inventory_changed) {
+        if (cost) *cost = first_cost;
+        return first;
+    }
+
+    ci_merkle_free(first);
+    if (!ci_merkle_forget(root))
+        return NULL;
+    struct ci_merkle_cost cold_cost = {0};
+    struct ci_merkle *cold = merkle_run(root, true, &cold_cost);
+    if (!cold)
+        return NULL;
+    cold_cost.inventory_changed = true;
+    cold_cost.full_rescan = true;
+    if (cost) *cost = cold_cost;
+    return cold;
 }
 
 struct ci_merkle *ci_merkle_build_cold(const char *root,

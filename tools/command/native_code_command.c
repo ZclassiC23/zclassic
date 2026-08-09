@@ -1496,6 +1496,9 @@ void zcl_native_handle_code_merkle(const struct zcl_command_request *request,
     (void)json_push_kv_int(&build, "nodes_reused", (int64_t)cost.nodes_reused);
     (void)json_push_kv_bool(&build, "snapshot_used", cost.snapshot_used);
     (void)json_push_kv_bool(&build, "snapshot_saved", cost.snapshot_saved);
+    (void)json_push_kv_bool(&build, "inventory_changed",
+                            cost.inventory_changed);
+    (void)json_push_kv_bool(&build, "full_rescan", cost.full_rescan);
     (void)json_push_kv(&reply->data, "build", &build);
     json_free(&build);
 

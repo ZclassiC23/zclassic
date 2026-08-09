@@ -253,7 +253,7 @@ static int test_change_classification(void)
         };
         ASSERT(zcl_devloop_plan_files(service_source, 1, &plan));
         ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
-        ASSERT(strcmp(plan.probe_tool, "zcode.commons.corpus.status") == 0);
+        ASSERT(strcmp(plan.probe_tool, "zcode.commons.corpus.show") == 0);
         const char *service_header[] = {
             "app/services/include/services/zcode_c23_corpus_service.h",
         };

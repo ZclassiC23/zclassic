@@ -78,12 +78,41 @@ static bool render_status(
     return true;
 }
 
+static bool render_rules(const char *requested_root,
+                         struct zcode_c23_corpus_rules_result_v1 *out)
+{
+    if (!requested_root || !out) return false;
+    memset(out, 0, sizeof(*out));
+    struct vcs_zcode_c23_corpus_rules_v1 rules;
+    uint8_t root[32];
+    vcs_zcode_c23_corpus_rules_v1_default(&rules);
+    if (vcs_zcode_c23_corpus_rules_v1_validate(&rules) != VCS_ZCODE_C23_OK ||
+        vcs_zcode_c23_corpus_rules_v1_root(&rules, root) != VCS_ZCODE_C23_OK)
+        return false;
+    zcl_hex_encode(root, sizeof(root), out->root);
+    out->found = strcmp(requested_root, out->root) == 0;
+    if (!out->found) return true;
+    out->overlap_threshold_bps = rules.overlap_threshold_bps;
+    out->shard_entry_max = rules.shard_entry_max;
+    out->checkpoint_shard_max = rules.checkpoint_shard_max;
+    out->page_max = rules.page_max;
+    out->publication_batch_max = rules.publication_batch_max;
+    out->durable_ack_count = rules.durable_ack_count;
+    out->durable_operator_group_count =
+        rules.durable_operator_group_count;
+    out->max_file_bytes = rules.max_file_bytes;
+    out->first_milestone_loc = rules.first_milestone_loc;
+    out->second_milestone_loc = rules.second_milestone_loc;
+    return true;
+}
+
 static const struct zcode_c23_corpus_service_v1 k_builtin = {
     .rules_validate = rules_validate,
     .shard_validate = shard_validate,
     .checkpoint_validate = checkpoint_validate,
     .productivity_validate = productivity_validate,
     .render_status = render_status,
+    .render_rules = render_rules,
 };
 
 ZCL_HOTSWAP_SERVICE_EXPORT(

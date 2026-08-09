@@ -34,8 +34,8 @@
  * The fix is the lane split below. Each entry declares what it actually needs:
  *
  *   LINT_LANE_SANDBOX    plants fixtures, but runs entirely inside a private
- *                        `cp -al` hardlink copy of the worktree, so nothing it
- *                        does is visible outside its own tree. Pool-eligible;
+ *                        reflink-or-copy clone of the worktree, so neither
+ *                        bytes nor metadata change in the live tree. Pool-eligible;
  *                        spread over LINT_GATE_SHARD_COUNT shard groups.
  *   LINT_LANE_REALROOT   needs the real .git (git grep / git ls-files /
  *                        .git/hooks) or is hermetic (its own mktemp sandbox),
@@ -64,7 +64,7 @@
 
 /* How many pool-eligible shard groups the sandbox lane is spread over. Each
  * one is a registered catalog row (see LINT_SHARD_LIST below) and builds its
- * own sandbox, so this is also the number of concurrent `cp -al` copies. */
+ * own sandbox, so this is also the number of concurrent private clones. */
 #define LINT_GATE_SHARD_COUNT 8
 
 /* Which of this family's registered group names must run alone.
@@ -90,7 +90,7 @@ bool lint_gates_group_is_exclusive(const char *group_name)
 #include "platform/time_compat.h"
 
 /* Per-process sandbox-root override. A shard group chdir()s into its own
- * hardlink sandbox and calls repo_root_set_override() with that path; from
+ * private sandbox and calls repo_root_set_override() with that path; from
  * then on every repo_path()/run_gate_script()/fixture-plant in that process
  * resolves INTO the sandbox (fixtures planted there, and the sandbox's own
  * copy of the gate script is exec'd, so `dirname $0/../..` roots the scan at
@@ -473,10 +473,12 @@ static int lint_run_owned(int owner)
     return failures;
 }
 
-/* Build a hardlink copy ("sandbox") of the worktree at sb_root. Everything
- * except build/.git/.cache/test-tmp/.claude is `cp -al`'d (metadata-only, so
- * fast even for the whole tree); test-tmp is created fresh so gate scratch
- * output never writes through a shared inode. Returns 0 on success.
+/* Build an inode-independent clone ("sandbox") of the worktree at sb_root.
+ * Everything except build/.git/.cache/test-tmp/.claude is copied with
+ * --reflink=auto: CoW on supporting filesystems, a safe regular copy
+ * elsewhere. Hardlinks are forbidden because merely creating/removing one
+ * changes the live inode ctime and falsely supersedes source proof epochs;
+ * fixture chmod/write would be worse. test-tmp is created fresh. Returns 0.
  *
  * Uses fork_with_retry(), not a bare fork(): this runs once per shard (up to
  * LINT_GATE_SHARD_COUNT times concurrently) from the same large test_zcl
@@ -501,7 +503,7 @@ static int lint_sandbox_build(const char *real_root, const char *sb_root)
             "  [ -e \"$e\" ] || continue\n"
             "  b=${e##*/}\n"
             "  case \"$b\" in build|.git|.cache|test-tmp|.claude) continue;; esac\n"
-            "  cp -al \"$e\" \"$2\"/\n"
+            "  cp -a --reflink=auto \"$e\" \"$2\"/\n"
             "done\n"
             "mkdir -p \"$2\"/test-tmp\n";
         execl("/bin/sh", "sh", "-c", script, "sh",
@@ -824,6 +826,40 @@ static int t_partition_only_base_group_is_exclusive(void)
     return failures;
 }
 
+static int t_sandbox_preserves_live_source_metadata(void)
+{
+    int failures = 0;
+    TEST("[lint-gate] sandbox construction does not mutate live source metadata") {
+        char real_root[PATH_MAX];
+        char makefile[PATH_MAX];
+        char sb_base[PATH_MAX];
+        char sb_root[PATH_MAX];
+        struct stat before;
+        struct stat after;
+        ASSERT(lint_resolve_real_root(real_root, sizeof(real_root)) == 0);
+        ASSERT(snprintf(makefile, sizeof(makefile), "%s/Makefile", real_root) <
+               (int)sizeof(makefile));
+        ASSERT(snprintf(sb_base, sizeof(sb_base), "%s.lint_meta_%d",
+                        real_root, (int)getpid()) < (int)sizeof(sb_base));
+        ASSERT(snprintf(sb_root, sizeof(sb_root), "%s/w0", sb_base) <
+               (int)sizeof(sb_root));
+        ASSERT(stat(makefile, &before) == 0);
+        ASSERT(lint_sandbox_build(real_root, sb_root) == 0);
+        ASSERT(test_rm_rf_recursive(sb_base) == 0);
+        ASSERT(stat(makefile, &after) == 0);
+        ASSERT(before.st_dev == after.st_dev);
+        ASSERT(before.st_ino == after.st_ino);
+        ASSERT(before.st_mode == after.st_mode);
+        ASSERT(before.st_size == after.st_size);
+        ASSERT(before.st_mtim.tv_sec == after.st_mtim.tv_sec);
+        ASSERT(before.st_mtim.tv_nsec == after.st_mtim.tv_nsec);
+        ASSERT(before.st_ctim.tv_sec == after.st_ctim.tv_sec);
+        ASSERT(before.st_ctim.tv_nsec == after.st_ctim.tv_nsec);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_make_lint_gates_partition(void)
 {
     printf("\n=== make_lint_gates partition tests ===\n");
@@ -831,6 +867,7 @@ int test_make_lint_gates_partition(void)
     failures += t_partition_covers_every_check();
     failures += t_partition_shards_all_carry_work();
     failures += t_partition_only_base_group_is_exclusive();
+    failures += t_sandbox_preserves_live_source_metadata();
     return failures;
 }
 

@@ -68,16 +68,24 @@ char *zcl_native_node_log_body(const struct json_value *args,
     return out;
 }
 
-/* ── Tier-1 hot-swap: NOT YET ELIGIBLE ─────────────────────────
- * No ZCL_HOTSWAP_EXPORT_LEAVES here on purpose. A native.leaves generation
- * self-test dispatches the manifest's declared probe leaf with NO input
- * (see zcl_hotswap_default_self_test / hotswap_commit_probe_candidate),
- * and BOTH leaves this controller owns reject that:
- *   - core.storage.query  -> zcl_native_sql_body:      diag_rpc_dbquery
- *     requires a non-empty `sql` (returns "dbquery: missing sql").
- *   - ops.logs             -> zcl_native_node_log_body: diag_rpc_getnodelog
- *     requires a non-empty `pattern` (returns "getnodelog: missing pattern").
- * Both surface as a top-level RPC error, which would make the generation
- * self-test spuriously fail on every load attempt. Revisit if a param-free
- * probe leaf becomes available for this controller (see the "Still
- * reload-required" note in config/hotswap_eligible.def). */
+/* Tier-1 hot-swap. The resident-owned ops.logs probe case supplies a fixed,
+ * bounded pattern/window/row limit. Parsing, authentication and log I/O remain
+ * in static RPC code; this replacement owns request composition only. */
+#ifdef ZCL_HOTSWAP_GEN
+#define ZCL_HOTSWAP_PROBE_LEAF "ops.logs"
+#include "hotswap/hotswap.h"
+#include "kernel/command_registry.h"
+#include "command/native_command.h"
+
+static void tramp_node_logs(const struct zcl_command_request *request,
+                            struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_node_log_body, reply);
+}
+
+static const struct zcl_hotswap_leaf_replacement k_leaves[] = {
+    { "ops.logs", tramp_node_logs },
+};
+
+ZCL_HOTSWAP_EXPORT_LEAVES(k_leaves, sizeof(k_leaves) / sizeof(k_leaves[0]))
+#endif

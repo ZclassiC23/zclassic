@@ -303,6 +303,50 @@ static bool collect_events(struct watch_context *ctx)
     return saw;
 }
 
+/* Watches are armed before this runs. The reconciled refresh validates the
+ * SHA3 seal, enumerates and stats the current policy inventory, and performs a
+ * complete byte pass only when the prior image is absent/invalid or its
+ * inventory moved. Any mutation racing that work is already queued in inotify
+ * and is drained before the image can be described as trusted. */
+static bool prime_source_snapshot(struct watch_context *ctx)
+{
+    int64_t started_us = platform_time_monotonic_us();
+    struct ci_merkle_cost cost = {0};
+    struct ci_merkle *tree =
+        ci_merkle_refresh_reconciled(ctx->root, &cost);
+    if (!tree)
+        return false;
+    struct ci_merkle_node root = {0};
+    bool ok = ci_merkle_root(tree, &root);
+    char root_hex[65] = {0};
+    if (ok)
+        ci_merkle_hex(&root.digest, root_hex);
+    ci_merkle_free(tree);
+    if (!ok)
+        return false;
+
+    (void)collect_events(ctx);
+    int64_t elapsed_us = platform_time_monotonic_us() - started_us;
+    printf("{\"schema\":\"zcl.dev_source_snapshot.v1\","
+           "\"status\":\"reconciled\",\"inotify_armed\":true,"
+           "\"seal_verified\":%s,\"snapshot_used\":%s,"
+           "\"full_rescan\":%s,\"inventory_changed\":%s,"
+           "\"files_total\":%u,\"files_read\":%u,"
+           "\"bytes_read\":%llu,\"queued_paths\":%zu,"
+           "\"mutation_sequence\":%llu,\"elapsed_us\":%lld,"
+           "\"source_root\":\"%s\"}\n",
+           cost.snapshot_used ? "true" : "false",
+           cost.snapshot_used ? "true" : "false",
+           cost.full_rescan ? "true" : "false",
+           cost.inventory_changed ? "true" : "false",
+           (unsigned)cost.files_total, (unsigned)cost.files_read,
+           (unsigned long long)cost.bytes_read, ctx->changed_count,
+           (unsigned long long)ctx->mutation_sequence,
+           (long long)elapsed_us, root_hex);
+    fflush(stdout);
+    return true;
+}
+
 static bool watch_cancel_poll(void *opaque)
 {
     struct watch_context *ctx = opaque;
@@ -369,11 +413,13 @@ int zcl_devloop_watch_mode(const char *repo_root,
         close(lock_fd);
         return 1;
     }
-    /* A restarted resident process cannot inherit certainty from an earlier
-     * process's watch coverage. Keep the snapshot as a cache only after this
-     * generation has forced one complete byte pass. Watchers are already
-     * established, so edits during that pass are queued for the next epoch. */
-    ctx.force_full_source_rescan = true;
+    if (!prime_source_snapshot(&ctx)) {
+        fprintf(stderr,
+                "[devloop] watch: source snapshot reconciliation failed\n");
+        close(ctx.fd);
+        close(lock_fd);
+        return 1;
+    }
 
     g_watch_stop = 0;
     zcl_devloop_process_cancel_clear();
