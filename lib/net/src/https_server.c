@@ -294,14 +294,16 @@ static void handle_https_client(SSL *ssl)
     /* App MVC mounts — expanded from net/site_routes.def in registry
      * order. This listener is GET/HEAD-only (checked above), so every
      * row's POST surface (the store's order mints, the names register,
-     * the yardsale ceremony) stays onion-only; the store mount itself is
-     * onion-only and expands to nothing here. PLAIN rows prefix-match
+     * the yardsale ceremony) stays onion-only; the store and market_chunk
+     * mounts are onion-only and expand to nothing here. PLAIN rows prefix-match
      * with no boundary guard; DATADIR and FAILCLOSED rows keep their
      * path[N] ∈ {NUL, '/', '?'} guard; DATADIR passes NULL for the
      * datadir (the handler resolves GetDataDir(true) itself — this
      * listener carries no datadir context); FAILCLOSED turns a handler 0
      * into a 503 carrying the row's fail_body. */
 #define ZCL_HTTPS_DISPATCH_STORE(id, prefix, handler, fail_body) \
+    /* onion-only mount — this listener never serves it */
+#define ZCL_HTTPS_DISPATCH_ONIONCLOSED(id, prefix, handler, fail_body) \
     /* onion-only mount — this listener never serves it */
 #define ZCL_HTTPS_DISPATCH_PLAIN(id, prefix, handler, fail_body) \
     if (strncmp(path, prefix, sizeof(prefix) - 1) == 0) { \
@@ -357,6 +359,7 @@ static void handle_https_client(SSL *ssl)
 #include "net/site_routes.def"
 #undef SITE_ROUTE
 #undef ZCL_HTTPS_DISPATCH_FAILCLOSED
+#undef ZCL_HTTPS_DISPATCH_ONIONCLOSED
 #undef ZCL_HTTPS_DISPATCH_DATADIR
 #undef ZCL_HTTPS_DISPATCH_PLAIN
 #undef ZCL_HTTPS_DISPATCH_STORE

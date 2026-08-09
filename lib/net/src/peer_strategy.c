@@ -8,6 +8,7 @@
 #include "net/nat.h"
 #include "net/onion_service.h"
 #include "net/tor_integration.h"
+#include "net/version.h"
 #include "chain/chainparams.h"
 #include "util/log_macros.h"
 
@@ -98,9 +99,23 @@ bool peer_strategy_discover_self(struct node_profile *profile,
      * watchdog has SIGABRT'd this node for. Now the round reads a cache
      * and never dials, and the cache is written here rather than by a
      * caller who has to remember to. A no-public-IP result publishes the
-     * absence, so the row simply carries no clearnet endpoint. */
+     * absence, so the row simply carries no clearnet endpoint.
+     *
+     * B5 gate (docs/work/MARKET_ONION_DELIVERY.md item 6): the probed IP
+     * is published only under the explicit public-endpoint opt-in
+     * (-externalip). The signed-offer endpoint contract already treats
+     * -externalip as the one address this node may claim as its own; a
+     * NAT-discovered address the operator never confirmed is exactly the
+     * leak an onion-first seller must not emit, and the same rule now
+     * covers the directory self row. */
+    char ext_ip[64];
+    uint16_t ext_port = 0;
+    bool operator_endpoint =
+        msg_version_get_external_ip(ext_ip, sizeof(ext_ip), &ext_port);
     onion_directory_set_self_clearnet(
-        profile->has_public_ip ? profile->public_ip : NULL, listen_port);
+        profile->has_public_ip && operator_endpoint
+            ? profile->public_ip : NULL,
+        listen_port);
 
     return profile->has_public_ip || profile->tor_available;
 }

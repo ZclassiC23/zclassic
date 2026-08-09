@@ -3,11 +3,13 @@
 
 #include "test/test_core.h"
 
+#include "base/hex.h"
 #include "chain/chainparams.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 #include "net/file_market_delivery.h"
 #include "net/file_service.h"
+#include "net/onion_v3_address.h"
 #include "util/safe_alloc.h"
 
 #include <errno.h>
@@ -147,6 +149,78 @@ static void *delivery_endpoint_server_main(void *opaque)
             &session, client_ip, payload, payload_len);
     close(fd);
     return NULL;
+}
+
+/* > 2 * FILE_MARKET_ONION_SLICE_BYTES, so onion delivery slices it three
+ * ways: two full slices and one remainder. */
+#define DELIVERY_BIG_CHUNK_BYTES 130000u
+
+static bool delivery_load_big(
+    const uint8_t offer_id[32], uint32_t chunk_index,
+    struct file_market_delivery_chunk *out, void *ctx)
+{
+    struct delivery_fixture *fixture = ctx;
+    fixture->load_calls++;
+    if (!fixture->load_ok || !offer_id || chunk_index != 7 || !out)
+        return false;
+    out->data = zcl_malloc(DELIVERY_BIG_CHUNK_BYTES, "delivery_test_big");
+    if (!out->data)
+        return false;
+    for (uint32_t i = 0; i < DELIVERY_BIG_CHUNK_BYTES; i++)
+        out->data[i] = (uint8_t)(i * 31u + (i >> 8));
+    out->size = DELIVERY_BIG_CHUNK_BYTES;
+    sha3_256(out->data, out->size, out->sha3);
+    return true;
+}
+
+struct onion_loopback {
+    char expected_address[ONION_V3_ADDRESS_LEN + 1];
+    int calls;
+    bool corrupt_path;
+};
+
+/* In-process stand-in for the production onion GET port: routes the GET
+ * into the site-route handler and unwraps the HTTP envelope the same way
+ * onion_tor_get does (non-200 is a transport failure; the body follows the
+ * header split). */
+static bool onion_loopback_get(void *ctx, const char *onion_address,
+                               const char *path, uint8_t *body_out,
+                               size_t body_cap, size_t *body_len)
+{
+    struct onion_loopback *loop = ctx;
+    loop->calls++;
+    if (strcmp(onion_address, loop->expected_address) != 0)
+        return false;
+    char routed[sizeof(FILE_MARKET_ONION_PATH_PREFIX) +
+                2u * FILE_MARKET_DELIVERY_WIRE_BYTES + 16];
+    if (loop->corrupt_path) {
+        if (strlen(path) >= sizeof(routed))
+            return false;
+        memcpy(routed, path, strlen(path) + 1);
+        routed[sizeof(FILE_MARKET_ONION_PATH_PREFIX) - 1] = '!';
+        path = routed;
+    }
+    uint8_t response[FILE_MARKET_ONION_REPLY_MAX + 256];
+    size_t written = file_market_delivery_onion_handle_request(
+        "GET", path, NULL, 0, response, sizeof(response));
+    if (written < 13 || memcmp(response, "HTTP/1.1 200 ", 13) != 0)
+        return false;
+    const uint8_t *split = NULL;
+    for (size_t i = 0; i + 4 <= written; i++) {
+        if (memcmp(response + i, "\r\n\r\n", 4) == 0) {
+            split = response + i + 4;
+            break;
+        }
+    }
+    if (!split)
+        return false;
+    size_t len = written - (size_t)(split - response);
+    if (len > body_cap)
+        return false;
+    if (len > 0)
+        memcpy(body_out, split, len);
+    *body_len = len;
+    return true;
 }
 
 int file_market_delivery_tests(void)
@@ -376,6 +450,150 @@ int file_market_delivery_tests(void)
                sizeof("paid-chunk-proof")) == 0);
     free(endpoint_chunk.data);
     if (listen_fd >= 0) close(listen_fd);
+
+    /* ── Phase B5 onion delivery (docs/work/MARKET_ONION_DELIVERY.md) ── */
+
+    /* Tor spec example pair, verified against independent sha3/base32
+     * implementations before being pinned here. */
+    uint8_t vector_pubkey[32];
+    bool vector_ok = zcl_hex_decode(
+        "adadec040be047f9658668b11a504f3155001f231a37f54c4476c07fb4cc139e",
+        vector_pubkey, 32);
+    char vector_address[ONION_V3_ADDRESS_LEN + 1];
+    uint8_t vector_recovered[32];
+    vector_ok = vector_ok &&
+        onion_v3_address_from_pubkey(vector_pubkey, vector_address) &&
+        strlen(vector_address) == ONION_V3_ADDRESS_LEN &&
+        strcmp(vector_address,
+               "vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd"
+               ".onion") == 0 &&
+        onion_v3_pubkey_from_address(vector_address, vector_recovered) &&
+        memcmp(vector_recovered, vector_pubkey, 32) == 0 &&
+        onion_v3_pubkey_from_address(
+            "vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd",
+            vector_recovered) &&
+        memcmp(vector_recovered, vector_pubkey, 32) == 0;
+    DELIVERY_CHECK("onion v3 address codec matches the Tor spec example",
+        vector_ok);
+
+    char flipped_address[ONION_V3_ADDRESS_LEN + 1];
+    memcpy(flipped_address, vector_address, sizeof(flipped_address));
+    flipped_address[10] = flipped_address[10] == 'a' ? 'b' : 'a';
+    uint8_t zero_pubkey[32] = {0};
+    char zero_address[ONION_V3_ADDRESS_LEN + 1];
+    DELIVERY_CHECK("onion v3 address rejects bad checksum and zero pubkey",
+        !onion_v3_pubkey_from_address(flipped_address, vector_recovered) &&
+        vector_recovered[0] == 0 &&
+        !onion_v3_address_from_pubkey(zero_pubkey, zero_address));
+
+    uint8_t onion_session[32];
+    file_market_delivery_onion_session_id(
+        request.network_genesis, request.offer_id, buyer_public,
+        onion_session);
+    struct file_market_delivery_request onion_request;
+    memset(&onion_request, 0, sizeof(onion_request));
+    onion_request.version = FILE_MARKET_DELIVERY_VERSION;
+    memcpy(onion_request.network_genesis, request.network_genesis, 32);
+    memcpy(onion_request.offer_id, request.offer_id, 32);
+    onion_request.chunk_index = 7;
+    memcpy(onion_request.buyer_pubkey, buyer_public, 32);
+    memcpy(onion_request.session_id, onion_session, 32);
+    uint8_t onion_wire[FILE_MARKET_DELIVERY_WIRE_BYTES];
+    bool onion_made =
+        file_market_delivery_request_seal(&onion_request, buyer_seed) ==
+            FILE_MARKET_DELIVERY_OK &&
+        file_market_delivery_request_encode(&onion_request, onion_wire) ==
+            FILE_MARKET_DELIVERY_OK;
+    DELIVERY_CHECK("onion session-bound request verifies",
+        onion_made && file_market_delivery_request_verify(
+            &onion_request, request.network_genesis, onion_session) ==
+            FILE_MARKET_DELIVERY_OK);
+    DELIVERY_CHECK("onion request cannot move to a clearnet session",
+        onion_made && file_market_delivery_request_verify(
+            &onion_request, request.network_genesis, expected_session) ==
+            FILE_MARKET_DELIVERY_ERR_SESSION);
+
+    struct file_market_delivery_reply onion_reply;
+    struct file_market_delivery_chunk onion_chunk;
+    enum file_market_delivery_status onion_serve_status =
+        file_market_delivery_prepare_onion(wire, sizeof(wire), &onion_reply,
+                                           &onion_chunk);
+    DELIVERY_CHECK("clearnet-bound request fails onion authentication",
+        onion_serve_status == FILE_MARKET_DELIVERY_UNAUTHENTICATED &&
+        onion_chunk.data == NULL);
+
+    uint8_t seller_onion_pubkey[32];
+    memset(seller_onion_pubkey, 0xa7, sizeof(seller_onion_pubkey));
+    struct onion_loopback loop;
+    memset(&loop, 0, sizeof(loop));
+    bool onion_address_ok = onion_v3_address_from_pubkey(
+        seller_onion_pubkey, loop.expected_address);
+
+    fixture.authorization = FILE_MARKET_DELIVERY_AUTHORIZED;
+    fixture.load_ok = true;
+    fixture.corrupt_hash = false;
+    file_market_delivery_set_handlers(
+        request.network_genesis, delivery_authorize, delivery_load,
+        &fixture);
+    struct file_market_delivery_chunk single = {0};
+    enum file_market_delivery_status single_status = onion_address_ok
+        ? file_market_delivery_fetch_onion_with(
+            onion_loopback_get, &loop, seller_onion_pubkey,
+            request.network_genesis, request.offer_id, 7,
+            buyer_public, buyer_seed, &single)
+        : FILE_MARKET_DELIVERY_MALFORMED;
+    DELIVERY_CHECK("onion fetch serves one verified slice",
+        single_status == FILE_MARKET_DELIVERY_READY && single.data &&
+        single.size == sizeof("paid-chunk-proof") &&
+        memcmp(single.data, "paid-chunk-proof",
+               sizeof("paid-chunk-proof")) == 0 && loop.calls == 1);
+    free(single.data);
+
+    file_market_delivery_set_handlers(
+        request.network_genesis, delivery_authorize, delivery_load_big,
+        &fixture);
+    loop.calls = 0;
+    struct file_market_delivery_chunk multi = {0};
+    enum file_market_delivery_status multi_status =
+        file_market_delivery_fetch_onion_with(
+            onion_loopback_get, &loop, seller_onion_pubkey,
+            request.network_genesis, request.offer_id, 7,
+            buyer_public, buyer_seed, &multi);
+    bool multi_exact = multi_status == FILE_MARKET_DELIVERY_READY &&
+        multi.data && multi.size == DELIVERY_BIG_CHUNK_BYTES;
+    for (uint32_t i = 0; multi_exact && i < DELIVERY_BIG_CHUNK_BYTES; i++)
+        multi_exact = multi.data[i] == (uint8_t)(i * 31u + (i >> 8));
+    DELIVERY_CHECK("onion fetch reassembles three verified slices",
+        multi_exact && loop.calls == 3);
+    free(multi.data);
+
+    int loads_before = fixture.load_calls;
+    fixture.authorization = FILE_MARKET_DELIVERY_PENDING;
+    loop.calls = 0;
+    struct file_market_delivery_chunk pending = {0};
+    enum file_market_delivery_status pending_status =
+        file_market_delivery_fetch_onion_with(
+            onion_loopback_get, &loop, seller_onion_pubkey,
+            request.network_genesis, request.offer_id, 7,
+            buyer_public, buyer_seed, &pending);
+    DELIVERY_CHECK("pending onion payment never invokes content reader",
+        pending_status == FILE_MARKET_DELIVERY_PAYMENT_PENDING &&
+        loop.calls == 1 && fixture.load_calls == loads_before &&
+        pending.data == NULL);
+
+    fixture.authorization = FILE_MARKET_DELIVERY_AUTHORIZED;
+    loop.calls = 0;
+    loop.corrupt_path = true;
+    struct file_market_delivery_chunk corrupt = {0};
+    enum file_market_delivery_status corrupt_status =
+        file_market_delivery_fetch_onion_with(
+            onion_loopback_get, &loop, seller_onion_pubkey,
+            request.network_genesis, request.offer_id, 7,
+            buyer_public, buyer_seed, &corrupt);
+    DELIVERY_CHECK("malformed onion path surfaces as unknown payment",
+        corrupt_status == FILE_MARKET_DELIVERY_PAYMENT_UNKNOWN &&
+        corrupt.data == NULL);
+    loop.corrupt_path = false;
 
     file_market_delivery_reset_handlers();
     return failures;

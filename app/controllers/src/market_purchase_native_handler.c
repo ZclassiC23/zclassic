@@ -52,6 +52,8 @@ static const struct mpn_code_map k_codes[] = {
       ZCL_COMMAND_EXIT_FAILED },
     { "DELIVERY_NOT_READY", ZCL_COMMAND_STATUS_BLOCKED,
       ZCL_COMMAND_EXIT_TRANSIENT },
+    { "ONION_DELIVERY_UNAVAILABLE", ZCL_COMMAND_STATUS_BLOCKED,
+      ZCL_COMMAND_EXIT_DENIED },
 };
 
 static void mpn_fail(struct zcl_command_reply *reply,

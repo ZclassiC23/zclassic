@@ -670,7 +670,8 @@ int test_file_market(void)
                 "last_seen INTEGER, ttl INTEGER, auth_version INTEGER,"
                 "network_genesis BLOB, seller_pubkey BLOB, nonce INTEGER,"
                 "issued_unix INTEGER, expires_unix INTEGER,"
-                "seller_signature BLOB, offer_id BLOB)",
+                "seller_signature BLOB, offer_id BLOB,"
+                "endpoint_type INTEGER, onion_pubkey BLOB)",
                 NULL, NULL, NULL);
 
             struct node_db ndb = { .db = db, .open = true };

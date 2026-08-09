@@ -60,15 +60,17 @@ bool db_market_payment_claim_save(
     struct node_db *ndb, const struct market_payment_claim_record *record)
 {
     uint8_t claim_wire[FILE_MARKET_PAYMENT_WIRE_BYTES];
-    uint8_t offer_wire[FILE_MARKET_OFFER_WIRE_BYTES];
+    uint8_t offer_wire[FILE_MARKET_OFFER_WIRE_BYTES_MAX];
+    size_t offer_wire_len = 0;
     if (!ndb || !ndb->open)
         LOG_FAIL("market", "payment claim save: database is not open");
     if (!record)
         LOG_FAIL("market", "payment claim save: record is NULL");
     if (file_payment_auth_encode(&record->payment, claim_wire) !=
             FILE_PAYMENT_AUTH_OK ||
-        file_offer_auth_encode(&record->offer, offer_wire) !=
-            FILE_OFFER_AUTH_OK)
+        file_offer_auth_encode_into(&record->offer, offer_wire,
+                                    sizeof(offer_wire),
+                                    &offer_wire_len) != FILE_OFFER_AUTH_OK)
         LOG_FAIL("market", "payment claim save: canonical wire encode failed");
 
     sqlite3_stmt *s = NULL;
@@ -95,7 +97,7 @@ bool db_market_payment_claim_save(
         AR_BIND_INT(s, 6, record->payment.chunks_paid);
         AR_BIND_INT(s, 7, record->payment.amount_zat);
         AR_BIND_BLOB(s, 8, claim_wire, sizeof(claim_wire));
-        AR_BIND_BLOB(s, 9, offer_wire, sizeof(offer_wire));
+        AR_BIND_BLOB(s, 9, offer_wire, (int)offer_wire_len);
         AR_BIND_TEXT(s, 10, record->status);
         AR_BIND_TEXT(s, 11, record->status_reason);
         AR_BIND_INT(s, 12, record->output_index);
@@ -113,7 +115,9 @@ static bool market_payment_claim_read_row(
     int claim_len = sqlite3_column_bytes(s, 0);
     int offer_len = sqlite3_column_bytes(s, 1);
     if (!claim_wire || claim_len != (int)FILE_MARKET_PAYMENT_WIRE_BYTES ||
-        !offer_wire || offer_len != (int)FILE_MARKET_OFFER_WIRE_BYTES)
+        !offer_wire ||
+        (offer_len != (int)FILE_MARKET_OFFER_WIRE_BYTES &&
+         offer_len != (int)FILE_MARKET_OFFER_WIRE_BYTES_V2))
         LOG_FAIL("market", "payment claim row has malformed wire lengths");
 
     memset(out, 0, sizeof(*out));

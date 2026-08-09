@@ -1,5 +1,11 @@
 # Onion-routed market chunk delivery — design record (2026-08-09)
 
+> Status: **implemented** (offer v2 wire, `/market/chunk` onion-only route,
+> buyer onion branch, node-level prefer-onion default with refuse-not-downgrade,
+> `/directory.json` clearnet suppression). Remaining named gap: no
+> two-daemon onion acceptance (Tor in the test harness); the clearnet
+> acceptance `make test-market-acceptance` stays green as the regression floor.
+
 Phase B5 of [`MARKETPLACE_NEXT.md`](./MARKETPLACE_NEXT.md). Goal: buyer and
 seller complete the SAME authorized, payment-gated chunk exchange with
 neither side's IP exposed. This is a design record from a full read of the

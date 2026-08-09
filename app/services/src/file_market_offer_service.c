@@ -29,6 +29,7 @@ enum market_offer_error {
     MARKET_OFFER_ERR_SAVE = -11,
     MARKET_OFFER_ERR_CONTENT_BIND = -12,
     MARKET_OFFER_ERR_WIRE = -13,
+    MARKET_OFFER_ERR_ONION_ENDPOINT = -14,
 };
 
 static struct zcl_result offer_runtime_validate(
@@ -42,6 +43,9 @@ static struct zcl_result offer_runtime_validate(
     if (committing && (!rt->endpoint || !rt->payee || !rt->announce))
         return ZCL_ERR(MARKET_OFFER_ERR_ARGS,
                        "offer commit requires endpoint, payee, and announce ports");
+    if (committing && rt->prefer_onion && !rt->onion_endpoint)
+        return ZCL_ERR(MARKET_OFFER_ERR_ARGS,
+                       "onion-endpoint offer commit requires the onion endpoint port");
     return ZCL_OK;
 }
 
@@ -119,6 +123,7 @@ static void offer_view_fill(const struct file_offer *offer, int64_t total_zat,
     out->price_per_mb = offer->price_per_mb;
     out->total_zat = total_zat;
     out->expires_unix = offer->expires_unix;
+    out->endpoint_type = offer->endpoint_type;
 }
 
 struct zcl_result file_market_offer_plan(
@@ -144,17 +149,22 @@ struct zcl_result file_market_offer_plan(
 }
 
 /* A live replay exists only when the durable offer for this exact content is
- * still valid, prices identically, belongs to this owner's seller key, and
- * its private content binding survived. */
+ * still valid, prices identically, belongs to this owner's seller key,
+ * commits the same endpoint kind, and its private content binding survived.
+ * The endpoint-kind clause is what keeps an onion-preferring node from
+ * silently replaying a stale clearnet offer (or vice versa). */
 static bool offer_replay(struct node_db *ndb,
                          const struct market_offer_runtime *rt,
                          const uint8_t root[32], int64_t price_per_mb,
                          const uint8_t seller_pubkey[32],
                          struct file_offer *existing)
 {
+    uint8_t want_endpoint = rt->prefer_onion
+        ? FILE_MARKET_ENDPOINT_ONION : FILE_MARKET_ENDPOINT_CLEARNET;
     struct market_content_chunk_record binding;
     return db_file_offer_find(ndb, root, existing) &&
-        existing->auth_version == FILE_MARKET_OFFER_VERSION &&
+        file_offer_auth_version_supported(existing->auth_version) &&
+        existing->endpoint_type == want_endpoint &&
         existing->price_per_mb == price_per_mb &&
         memcmp(existing->seller_pubkey, seller_pubkey, 32) == 0 &&
         file_offer_auth_verify_at(existing, rt->network_genesis,
@@ -200,13 +210,29 @@ struct zcl_result file_market_offer_commit(
 
     uint8_t peer_ip[16];
     uint16_t peer_port = 0;
-    struct zcl_result endpoint = rt->endpoint(rt->endpoint_ctx, peer_ip,
-                                              &peer_port);
-    if (!endpoint.ok) {
-        memory_cleanse(seed, sizeof(seed));
-        return ZCL_ERR(MARKET_OFFER_ERR_ENDPOINT,
-                       "own reachable file endpoint is unknown: %s",
-                       endpoint.message);
+    uint8_t onion_pubkey[32];
+    memset(peer_ip, 0, sizeof(peer_ip));
+    memset(onion_pubkey, 0, sizeof(onion_pubkey));
+    if (rt->prefer_onion) {
+        /* The node-level default chose onion (see the runtime contract):
+         * sign a v2 onion-endpoint offer or refuse — never downgrade. */
+        struct zcl_result onion = rt->onion_endpoint(
+            rt->onion_endpoint_ctx, onion_pubkey);
+        if (!onion.ok) {
+            memory_cleanse(seed, sizeof(seed));
+            return ZCL_ERR(MARKET_OFFER_ERR_ONION_ENDPOINT,
+                           "own onion endpoint is unavailable: %s",
+                           onion.message);
+        }
+    } else {
+        struct zcl_result endpoint = rt->endpoint(rt->endpoint_ctx, peer_ip,
+                                                  &peer_port);
+        if (!endpoint.ok) {
+            memory_cleanse(seed, sizeof(seed));
+            return ZCL_ERR(MARKET_OFFER_ERR_ENDPOINT,
+                           "own reachable file endpoint is unknown: %s",
+                           endpoint.message);
+        }
     }
     uint8_t z_addr[43];
     struct zcl_result payee = rt->payee(rt->payee_ctx, z_addr);
@@ -228,9 +254,19 @@ struct zcl_result file_market_offer_commit(
     memcpy(offer.z_addr, z_addr, sizeof(offer.z_addr));
     memcpy(offer.peer_ip, peer_ip, sizeof(offer.peer_ip));
     offer.peer_port = peer_port;
+    if (rt->prefer_onion) {
+        offer.auth_version = FILE_MARKET_OFFER_VERSION_V2;
+        offer.endpoint_type = FILE_MARKET_ENDPOINT_ONION;
+        memcpy(offer.onion_pubkey, onion_pubkey,
+               sizeof(offer.onion_pubkey));
+    } else {
+        /* Clearnet stays on the v1 wire so pre-v2 nodes keep relaying and
+         * buying these offers unchanged. */
+        offer.auth_version = FILE_MARKET_OFFER_VERSION;
+        offer.endpoint_type = FILE_MARKET_ENDPOINT_CLEARNET;
+    }
     offer.last_seen = rt->now_unix;
     offer.ttl = FILE_MARKET_MAX_TTL;
-    offer.auth_version = FILE_MARKET_OFFER_VERSION;
     uint8_t nonce_bytes[8];
     if (RAND_bytes(nonce_bytes, sizeof(nonce_bytes)) != 1) {
         memory_cleanse(seed, sizeof(seed));
@@ -269,12 +305,15 @@ struct zcl_result file_market_offer_commit(
     }
     (void)file_market_add_offer(&offer);
 
-    uint8_t wire[FILE_MARKET_OFFER_WIRE_BYTES];
-    if (file_offer_auth_encode(&offer, wire) != FILE_OFFER_AUTH_OK)
+    uint8_t wire[FILE_MARKET_OFFER_WIRE_BYTES_MAX];
+    size_t wire_len = 0;
+    if (file_offer_auth_encode_into(&offer, wire, sizeof(wire),
+                                    &wire_len) != FILE_OFFER_AUTH_OK ||
+        wire_len == 0)
         return ZCL_ERR(MARKET_OFFER_ERR_WIRE,
                        "persisted offer failed its own wire encoding");
 
     offer_view_fill(&offer, total_zat, out);
-    out->announced = rt->announce(rt->announce_ctx, wire, sizeof(wire));
+    out->announced = rt->announce(rt->announce_ctx, wire, wire_len);
     return ZCL_OK;
 }

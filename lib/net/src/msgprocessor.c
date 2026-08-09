@@ -1157,15 +1157,20 @@ static bool handle_zfileoffer(struct msg_processor *mp,
                               struct p2p_node *node,
                               struct byte_stream *s)
 {
-    if (s->size - s->read_pos != FILE_MARKET_OFFER_WIRE_BYTES)
+    /* One message carries exactly one signed offer wire: v1 (535) or v2
+     * (568). Any other size is drop-and-ignore (never disconnect a peer
+     * over an application-gossip payload). */
+    size_t remaining = s->size - s->read_pos;
+    if (remaining != FILE_MARKET_OFFER_WIRE_BYTES &&
+        remaining != FILE_MARKET_OFFER_WIRE_BYTES_V2)
         return true;
-    uint8_t wire[FILE_MARKET_OFFER_WIRE_BYTES];
-    if (!stream_read(s, wire, sizeof(wire)) || !mp->params)
+    uint8_t wire[FILE_MARKET_OFFER_WIRE_BYTES_MAX];
+    if (!stream_read(s, wire, remaining) || !mp->params)
         return true;
 
     struct file_offer offer;
     enum file_market_offer_ingest result = file_market_ingest_offer_wire(
-        wire, sizeof(wire), mp->params->consensus.hashGenesisBlock.data,
+        wire, remaining, mp->params->consensus.hashGenesisBlock.data,
         (int64_t)node->id, (int64_t)platform_time_wall_time_t(), &offer);
     if (result != FILE_MARKET_INGEST_NEW &&
         result != FILE_MARKET_INGEST_DEDUP)
@@ -1174,7 +1179,7 @@ static bool handle_zfileoffer(struct msg_processor *mp,
     if (mp->file_offer_save)
         (void)mp->file_offer_save(&offer, mp->file_offer_save_ctx);
     if (result == FILE_MARKET_INGEST_NEW && mp->net_mgr)
-        mp_flood_wire(mp, MSG_FILE_OFFER, wire, sizeof(wire),
+        mp_flood_wire(mp, MSG_FILE_OFFER, wire, remaining,
                       (int64_t)node->id);
     return true;
 }

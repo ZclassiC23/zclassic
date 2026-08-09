@@ -61,6 +61,7 @@ struct purchase_fixture {
     struct uint256 funding_txid;
     int payment_height;
     bool chain_confirmed;
+    size_t sapling_tree_size;
 };
 
 static const uint8_t k_purchase_content[] =
@@ -190,8 +191,10 @@ static struct zcl_result purchase_send(
     f->sends++;
     f->payment_height = simnet_tip_height(&f->sim);
     f->chain_confirmed =
-        simnet_sapling_tree_size(&f->sim) == 1 &&
+        simnet_sapling_tree_size(&f->sim) == f->sapling_tree_size + 1 &&
         !simnet_coin_value(&f->sim, &f->funding_txid, 0, NULL);
+    if (f->chain_confirmed)
+        f->sapling_tree_size = simnet_sapling_tree_size(&f->sim);
     return f->chain_confirmed
         ? ZCL_OK : ZCL_ERR(-8, "isolated payment chain state is incomplete");
 }
@@ -523,6 +526,84 @@ int file_market_purchase_tests(void)
     PURCHASE_CHECK("unknown money reader never collapses to a zero-balance plan",
         !market_purchase_plan(&runtime, &request, &replay).ok);
     fixture.money_current = true;
+
+    /* ── Phase B5: an onion-endpoint signed offer refuses delivery outright
+     * when no embedded Tor client is running — never a clearnet fallback. ── */
+    struct file_offer onion_offer;
+    bool onion_ready = purchase_offer(&onion_offer, now);
+    if (onion_ready) {
+        uint8_t onion_seed[32];
+        memset(onion_seed, 0x57, sizeof(onion_seed));
+        memset(onion_offer.peer_ip, 0, sizeof(onion_offer.peer_ip));
+        onion_offer.peer_port = 0;
+        onion_offer.auth_version = FILE_MARKET_OFFER_VERSION_V2;
+        onion_offer.endpoint_type = FILE_MARKET_ENDPOINT_ONION;
+        memset(onion_offer.onion_pubkey, 0xab,
+               sizeof(onion_offer.onion_pubkey));
+        onion_ready = file_offer_auth_seal(&onion_offer, onion_seed) ==
+            FILE_OFFER_AUTH_OK && db_file_offer_save(&ndb, &onion_offer);
+    }
+    if (onion_ready) {
+        struct script onion_funding_script;
+        script_init(&onion_funding_script);
+        static const uint8_t onion_funding_prefix[] = {0x76, 0xa9, 0x14};
+        script_set(&onion_funding_script, onion_funding_prefix,
+                   sizeof(onion_funding_prefix));
+        int onion_funding_height = simnet_tip_height(&fixture.sim) + 1;
+        onion_ready = simnet_mint_coinbase_to(
+            &fixture.sim, &onion_funding_script,
+            fixture.expected_amount + runtime.maximum_fee_zat,
+            &fixture.funding_txid) &&
+            simnet_mint_to_height(
+                &fixture.sim, onion_funding_height + COINBASE_MATURITY);
+    }
+    struct market_purchase_view onion_plan, onion_committed;
+    struct zcl_result onion_planned = ZCL_OK, onion_commit = ZCL_OK;
+    if (onion_ready) {
+        memcpy(request.offer_id, onion_offer.offer_id, 32);
+        request.idempotency_key[9] = '8';
+        fixture.money_reads = 1;
+        onion_planned = market_purchase_plan(&runtime, &request,
+                                             &onion_plan);
+        struct file_payment onion_memo;
+        memset(&onion_memo, 0, sizeof(onion_memo));
+        onion_memo.version = FILE_MARKET_PAYMENT_VERSION;
+        memcpy(onion_memo.network_genesis, onion_offer.network_genesis, 32);
+        memcpy(onion_memo.offer_id, onion_offer.offer_id, 32);
+        memcpy(onion_memo.txid, onion_plan.plan_id, 32);
+        onion_memo.chunk_start = request.chunk_start;
+        onion_memo.chunks_paid = request.chunks_paid;
+        onion_memo.amount_zat = fixture.expected_amount;
+        memcpy(onion_memo.buyer_pubkey, onion_plan.buyer_pubkey, 32);
+        onion_ready = onion_planned.ok && file_payment_memo_encode(
+            &onion_memo, fixture.expected_memo) == FILE_PAYMENT_AUTH_OK;
+    }
+    if (onion_ready)
+        onion_commit = market_purchase_commit(
+            &runtime, "dev", onion_plan.plan_id, &onion_committed);
+    char onion_destination[MARKET_DOWNLOAD_PATH_MAX];
+    snprintf(onion_destination, sizeof(onion_destination),
+             "%s/onion-purchased.bin", absolute_dir);
+    int fetches_before_onion = fixture.fetches;
+    struct market_purchase_view onion_download;
+    struct zcl_result onion_retrieved = onion_ready
+        ? market_purchase_retrieve(&runtime, onion_plan.plan_id,
+                                   onion_destination, &onion_download)
+        : ZCL_ERR(-1, "onion fixture could not be built");
+    if (!(onion_planned.ok && onion_commit.ok && !onion_retrieved.ok &&
+          onion_retrieved.code == -78 &&
+          fixture.fetches == fetches_before_onion))
+        printf("file_market purchase: onion detail planned=%d(%d %s) "
+               "commit=%d(%d %s) retrieve=%d code=%d msg=%s fetches=%d/%d\n",
+               onion_planned.ok, onion_planned.code, onion_planned.message,
+               onion_commit.ok, onion_commit.code, onion_commit.message,
+               onion_retrieved.ok, onion_retrieved.code,
+               onion_retrieved.message, fixture.fetches,
+               fetches_before_onion);
+    PURCHASE_CHECK("onion-endpoint offer refuses delivery without a Tor client",
+        onion_planned.ok && onion_commit.ok && !onion_retrieved.ok &&
+        onion_retrieved.code == -78 &&
+        fixture.fetches == fetches_before_onion);
 
 cleanup:
     if (ndb.open) node_db_close(&ndb);

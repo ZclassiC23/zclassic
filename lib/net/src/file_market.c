@@ -278,7 +278,7 @@ enum file_market_offer_ingest file_market_ingest_offer_wire(
 
     pthread_mutex_lock(&g_market_mutex);
     for (int i = 0; i < g_offer_count; i++) {
-        if (g_offers[i].auth_version == FILE_MARKET_OFFER_VERSION &&
+        if (file_offer_auth_version_supported(g_offers[i].auth_version) &&
             memcmp(g_offers[i].offer_id, offer.offer_id, 32) == 0) {
             g_offers[i].last_seen = now_unix;
             if (out_offer)

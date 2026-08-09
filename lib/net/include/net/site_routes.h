@@ -46,6 +46,10 @@
                                    ZCL_SITE_F_DATADIR)
 #define ZCL_SITE_FLAGS_FAILCLOSED (ZCL_SITE_F_HTTPS | ZCL_SITE_F_PREFIX_GUARD | \
                                    ZCL_SITE_F_FAIL_CLOSED)
+/* Onion-only FAILCLOSED: the prefix guard and the 503-on-0 contract of
+ * FAILCLOSED, but — like STORE — never dispatched on the HTTPS listener. */
+#define ZCL_SITE_FLAGS_ONIONCLOSED (ZCL_SITE_F_PREFIX_GUARD | \
+                                    ZCL_SITE_F_FAIL_CLOSED)
 
 /* ── Cost-tier aliases (expanded only where the enum is compiled) ────── */
 
@@ -63,6 +67,7 @@
                     uint8_t *, size_t);
 #define ZCL_SITE_EXTERN_DATADIR(h)    ZCL_SITE_EXTERN_STORE(h)
 #define ZCL_SITE_EXTERN_FAILCLOSED(h) ZCL_SITE_EXTERN_PLAIN(h)
+#define ZCL_SITE_EXTERN_ONIONCLOSED(h) ZCL_SITE_EXTERN_PLAIN(h)
 
 /* ── Fixed-position table slots ─────────────────────────────────────────
  *

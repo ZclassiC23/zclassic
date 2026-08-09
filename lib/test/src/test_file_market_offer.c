@@ -34,8 +34,10 @@ struct offer_fixture {
     bool endpoint_ok;
     bool payee_ok;
     bool announce_ok;
+    bool onion_ok;
     int announcements;
-    uint8_t wire[FILE_MARKET_OFFER_WIRE_BYTES];
+    uint8_t onion_pubkey[32];
+    uint8_t wire[FILE_MARKET_OFFER_WIRE_BYTES_MAX];
     size_t wire_len;
 };
 
@@ -89,10 +91,20 @@ static struct zcl_result offer_payee(void *opaque, uint8_t z_addr_out[43])
     return ZCL_OK;
 }
 
+static struct zcl_result offer_onion_endpoint(void *opaque,
+                                              uint8_t onion_pubkey_out[32])
+{
+    struct offer_fixture *f = opaque;
+    if (!f || !f->onion_ok)
+        return ZCL_ERR(-1, "fixture onion endpoint unavailable");
+    memcpy(onion_pubkey_out, f->onion_pubkey, 32);
+    return ZCL_OK;
+}
+
 static bool offer_announce(void *opaque, const uint8_t *wire, size_t wire_len)
 {
     struct offer_fixture *f = opaque;
-    if (!f || !f->announce_ok || wire_len != sizeof(f->wire))
+    if (!f || !f->announce_ok || wire_len > sizeof(f->wire))
         return false;
     memcpy(f->wire, wire, wire_len);
     f->wire_len = wire_len;
@@ -112,6 +124,9 @@ static void offer_runtime(struct market_offer_runtime *rt,
     rt->payee_ctx = f;
     rt->announce = offer_announce;
     rt->announce_ctx = f;
+    rt->onion_endpoint = offer_onion_endpoint;
+    rt->onion_endpoint_ctx = f;
+    rt->prefer_onion = false;
     memcpy(rt->network_genesis, genesis, 32);
     rt->now_unix = now_unix;
 }
@@ -268,6 +283,99 @@ int file_market_offer_tests(void)
     wallet_lock_note_encrypted_at_rest();
     ZCL_IGNORE_RESULT(wallet_lock_unlock(NULL, NULL, "market-offer-test"),
         "post-custody-gate re-unlock; a failure surfaces in the next use");
+
+    /* ── v2 onion-endpoint offers ─────────────────────────────── */
+    OFFER_CHECK("clearnet commit reports the clearnet endpoint kind",
+        committed.endpoint_type == FILE_MARKET_ENDPOINT_CLEARNET);
+
+    memset(fixture.onion_pubkey, 0xAB, sizeof(fixture.onion_pubkey));
+    fixture.onion_ok = true;
+    rt.prefer_onion = true;
+    struct market_offer_view onion_view;
+    r = file_market_offer_commit(&rt, &request, &onion_view);
+    OFFER_CHECK("onion-preferred commit signs a fresh v2 onion-endpoint offer",
+        r.ok && !onion_view.idempotent_replay &&
+        onion_view.endpoint_type == FILE_MARKET_ENDPOINT_ONION &&
+        memcmp(onion_view.offer_id, committed.offer_id, 32) != 0 &&
+        fixture.wire_len == FILE_MARKET_OFFER_WIRE_BYTES_V2);
+    if (!r.ok)
+        goto cleanup;
+
+    struct file_offer v2_decoded;
+    OFFER_CHECK("v2 wire round-trips with the onion endpoint committed",
+        file_offer_auth_decode(fixture.wire, fixture.wire_len,
+                               &v2_decoded) == FILE_OFFER_AUTH_OK &&
+        v2_decoded.auth_version == FILE_MARKET_OFFER_VERSION_V2 &&
+        v2_decoded.endpoint_type == FILE_MARKET_ENDPOINT_ONION &&
+        memcmp(v2_decoded.onion_pubkey, fixture.onion_pubkey, 32) == 0 &&
+        v2_decoded.peer_port == 0 &&
+        memcmp(v2_decoded.offer_id, onion_view.offer_id, 32) == 0 &&
+        file_offer_auth_verify_at(&v2_decoded, genesis, now) ==
+            FILE_OFFER_AUTH_OK);
+
+    struct file_offer v2_persisted;
+    OFFER_CHECK("v2 offer persists and reloads by offer_id",
+        db_file_offer_find_by_id(&ndb, onion_view.offer_id,
+                                 &v2_persisted) &&
+        v2_persisted.auth_version == FILE_MARKET_OFFER_VERSION_V2 &&
+        v2_persisted.endpoint_type == FILE_MARKET_ENDPOINT_ONION &&
+        memcmp(v2_persisted.onion_pubkey, fixture.onion_pubkey, 32) == 0);
+
+    uint8_t v1_wire[FILE_MARKET_OFFER_WIRE_BYTES];
+    struct file_offer v1_roundtrip;
+    OFFER_CHECK("v1 wires keep decoding beside v2 (dual decode)",
+        file_offer_auth_encode(&persisted, v1_wire) ==
+            FILE_OFFER_AUTH_OK &&
+        file_offer_auth_decode(v1_wire, sizeof(v1_wire), &v1_roundtrip) ==
+            FILE_OFFER_AUTH_OK &&
+        v1_roundtrip.auth_version == FILE_MARKET_OFFER_VERSION &&
+        v1_roundtrip.endpoint_type == FILE_MARKET_ENDPOINT_CLEARNET &&
+        memcmp(v1_roundtrip.offer_id, persisted.offer_id, 32) == 0);
+
+    uint8_t v3_wire[FILE_MARKET_OFFER_WIRE_BYTES_V2];
+    memcpy(v3_wire, fixture.wire, sizeof(v3_wire));
+    v3_wire[8] = 3; /* auth_version LE at offset 8 */
+    struct file_offer dropped;
+    OFFER_CHECK("unknown offer version drops with the named version error",
+        file_offer_auth_decode(v3_wire, sizeof(v3_wire), &dropped) ==
+            FILE_OFFER_AUTH_ERR_VERSION);
+    OFFER_CHECK("old nodes drop the longer v2 wire by size",
+        file_offer_auth_decode(fixture.wire, FILE_MARKET_OFFER_WIRE_BYTES,
+                               &dropped) == FILE_OFFER_AUTH_ERR_WIRE_SIZE);
+
+    struct file_offer v2_ingested;
+    enum file_market_offer_ingest v2_ingest = file_market_ingest_offer_wire(
+        fixture.wire, fixture.wire_len, genesis, 100, now, &v2_ingested);
+    OFFER_CHECK("v2 wire ingests from gossip with its identity intact",
+        (v2_ingest == FILE_MARKET_INGEST_NEW ||
+         v2_ingest == FILE_MARKET_INGEST_DEDUP) &&
+        memcmp(v2_ingested.offer_id, onion_view.offer_id, 32) == 0);
+
+    struct market_offer_view onion_replay;
+    r = file_market_offer_commit(&rt, &request, &onion_replay);
+    OFFER_CHECK("re-commit of the live onion offer replays idempotently",
+        r.ok && onion_replay.idempotent_replay &&
+        memcmp(onion_replay.offer_id, onion_view.offer_id, 32) == 0);
+
+    struct market_offer_view clearnet_again;
+    rt.prefer_onion = false;
+    r = file_market_offer_commit(&rt, &request, &clearnet_again);
+    OFFER_CHECK("flipping back to clearnet never replays the onion offer",
+        r.ok && !clearnet_again.idempotent_replay &&
+        clearnet_again.endpoint_type == FILE_MARKET_ENDPOINT_CLEARNET &&
+        memcmp(clearnet_again.offer_id, onion_view.offer_id, 32) != 0 &&
+        fixture.wire_len == FILE_MARKET_OFFER_WIRE_BYTES);
+
+    rt.prefer_onion = true;
+    fixture.onion_ok = false;
+    int announcements_before = fixture.announcements;
+    struct market_offer_view onion_refused;
+    r = file_market_offer_commit(&rt, &request, &onion_refused);
+    OFFER_CHECK("onion endpoint outage refuses by name, never downgrades",
+        !r.ok && r.code == -14 /* ONION_ENDPOINT_UNAVAILABLE */ &&
+        fixture.announcements == announcements_before);
+    fixture.onion_ok = true;
+    rt.prefer_onion = false;
 
 cleanup:
     node_db_close(&ndb);

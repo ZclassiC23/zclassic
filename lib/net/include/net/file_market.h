@@ -29,9 +29,19 @@
 #define FILE_MARKET_CHALLENGES     3     /* random chunks to challenge */
 #define FILE_MARKET_BATCH_SIZE     10    /* chunks per payment batch */
 #define FILE_MARKET_OFFER_VERSION  1u
+#define FILE_MARKET_OFFER_VERSION_V2 2u
+#define FILE_MARKET_OFFER_VERSION_LATEST FILE_MARKET_OFFER_VERSION_V2
 #define FILE_MARKET_OFFER_MAX_LIFETIME_SECS 3600LL
 #define FILE_MARKET_OFFER_BODY_BYTES 471u
 #define FILE_MARKET_OFFER_WIRE_BYTES 535u
+/* v2 appends endpoint_type u8 + onion_pubkey[32] to the v1 body. */
+#define FILE_MARKET_OFFER_BODY_BYTES_V2 504u
+#define FILE_MARKET_OFFER_WIRE_BYTES_V2 568u
+#define FILE_MARKET_OFFER_WIRE_BYTES_MAX FILE_MARKET_OFFER_WIRE_BYTES_V2
+
+/* Signed offer endpoint kinds (v2 endpoint_type). v1 wires imply CLEARNET. */
+#define FILE_MARKET_ENDPOINT_CLEARNET 0u
+#define FILE_MARKET_ENDPOINT_ONION    1u
 #define FILE_MARKET_PAYMENT_VERSION  1u
 #define FILE_MARKET_PAYMENT_BODY_BYTES 154u
 #define FILE_MARKET_PAYMENT_WIRE_BYTES 218u
@@ -57,6 +67,11 @@ struct file_offer {
     uint8_t  z_addr[43];         /* seeder's Sapling payment address (raw) */
     uint8_t  peer_ip[16];        /* seeder's IP */
     uint16_t peer_port;          /* seeder's file service port */
+    /* v2 endpoint: CLEARNET uses peer_ip/peer_port (onion_pubkey zero);
+     * ONION uses onion_pubkey (peer_ip/peer_port zero). v1 wires decode as
+     * CLEARNET with a zero onion_pubkey. */
+    uint8_t  endpoint_type;
+    uint8_t  onion_pubkey[32];   /* seeder's Tor v3 ed25519 key (ONION) */
     int64_t  last_seen;          /* unix timestamp */
     uint8_t  ttl;                /* remaining gossip hops */
     /* Paid offers are self-authenticating v1 contracts. These fields are
@@ -98,6 +113,12 @@ enum file_offer_auth_error {
 };
 
 const char *file_offer_auth_error_string(enum file_offer_auth_error error);
+/* Versions this binary verifies: v1 (535-byte wire) and v2 (568-byte wire).
+ * Anything else is FILE_OFFER_AUTH_ERR_VERSION on decode/validate, which is
+ * also how old nodes drop v2 wires cleanly. */
+bool file_offer_auth_version_supported(uint16_t version);
+/* Exact signed wire size for a supported version, 0 otherwise. */
+size_t file_offer_auth_wire_size(uint16_t version);
 /* Exact seller amount: ceil(size_bytes * price_per_mb / 1 MiB), bounded to
  * ZClassic MAX_MONEY. No floating point is permitted in settlement logic. */
 bool file_market_offer_total_zat(const struct file_offer *offer,
@@ -116,6 +137,12 @@ enum file_offer_auth_error file_offer_auth_validate_at(
 enum file_offer_auth_error file_offer_auth_encode(
     const struct file_offer *offer,
     uint8_t out[FILE_MARKET_OFFER_WIRE_BYTES]);
+/* Capacity-taking encode: v1 produces exactly 535 bytes, v2 exactly 568.
+ * Callers handling both versions size out with
+ * FILE_MARKET_OFFER_WIRE_BYTES_MAX. */
+enum file_offer_auth_error file_offer_auth_encode_into(
+    const struct file_offer *offer, uint8_t *out, size_t out_cap,
+    size_t *out_len);
 enum file_offer_auth_error file_offer_auth_decode(
     const uint8_t *wire, size_t wire_len, struct file_offer *out);
 enum file_offer_auth_error file_offer_auth_body_root(

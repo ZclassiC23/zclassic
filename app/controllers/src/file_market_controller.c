@@ -98,9 +98,9 @@ static bool rpc_zmarket_list(const struct json_value *params, bool help,
         json_push_kv_int(&entry, "ttl", offers[i].ttl);
         json_push_kv_int(&entry, "last_seen", offers[i].last_seen);
         json_push_kv_bool(&entry, "authenticated",
-                          offers[i].auth_version ==
-                              FILE_MARKET_OFFER_VERSION);
-        if (offers[i].auth_version == FILE_MARKET_OFFER_VERSION) {
+                          file_offer_auth_version_supported(
+                              offers[i].auth_version));
+        if (file_offer_auth_version_supported(offers[i].auth_version)) {
             char offer_hex[65];
             HexStr(offers[i].offer_id, 32, false,
                    offer_hex, sizeof(offer_hex));
@@ -200,6 +200,7 @@ static const char *market_purchase_code(const struct zcl_result *r)
     case -69: return "DESTINATION_CONFLICT";
     case -75: return "STAGING_VERIFICATION_FAILED";
     case -76: return "DELIVERY_NOT_READY";
+    case -78: return "ONION_DELIVERY_UNAVAILABLE";
     default:  return "PURCHASE_REFUSED";
     }
 }

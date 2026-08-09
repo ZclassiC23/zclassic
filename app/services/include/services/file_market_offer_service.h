@@ -8,6 +8,7 @@
 #define ZCL_SERVICES_FILE_MARKET_OFFER_SERVICE_H
 
 #include "base/result.h"
+#include "net/file_market.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -24,6 +25,9 @@ typedef struct zcl_result (*market_offer_payee_fn)(
     void *ctx, uint8_t z_addr_out[43]);
 typedef bool (*market_offer_announce_fn)(
     void *ctx, const uint8_t *wire, size_t wire_len);
+/* The node's own Tor v3 ed25519 identity, for onion-endpoint offers. */
+typedef struct zcl_result (*market_offer_onion_endpoint_fn)(
+    void *ctx, uint8_t onion_pubkey_out[32]);
 
 struct market_offer_runtime {
     struct node_db *node_db;
@@ -33,6 +37,17 @@ struct market_offer_runtime {
     void *payee_ctx;
     market_offer_announce_fn announce;
     void *announce_ctx;
+    market_offer_onion_endpoint_fn onion_endpoint;
+    void *onion_endpoint_ctx;
+    /* Endpoint preference, decided by the wiring layer (the declared input
+     * schema zcl.app_market_offer.input.v1 carries no endpoint field, so
+     * the default is node-level: onion when the embedded Tor service is up
+     * with a live onion address AND the operator did not set -externalip;
+     * clearnet otherwise). When true the commit signs a v2 onion-endpoint
+     * offer and refuses ONION_ENDPOINT_UNAVAILABLE if the onion identity is
+     * unavailable — it NEVER silently downgrades to clearnet. When false
+     * the commit signs exactly the v1 clearnet offer it always has. */
+    bool prefer_onion;
     uint8_t network_genesis[32];
     int64_t now_unix;
 };
@@ -52,6 +67,9 @@ struct market_offer_view {
     int64_t price_per_mb;
     int64_t total_zat;
     int64_t expires_unix;
+    /* commit only: FILE_MARKET_ENDPOINT_CLEARNET (v1 wire) or
+     * FILE_MARKET_ENDPOINT_ONION (v2 wire) */
+    uint8_t endpoint_type;
     bool idempotent_replay;
     /* True means the exact signed wire was handed to the node's gossip
      * transport. Propagation and paid delivery remain separate. */
@@ -71,9 +89,10 @@ struct zcl_result file_market_offer_plan(
  * under the wallet metadata DEK), endpoint + fresh wallet payee, seal,
  * db_file_offer_save, content binding, in-memory cache, then origin
  * announcement of the exact signed wire. Re-commit of the same live offer
- * (same content, price, and owner key, still inside its validity window
- * with its content binding intact) replays idempotently. Additional
- * refusals: ENDPOINT_UNKNOWN/PAYEE_UNAVAILABLE/SELLER_KEY_UNAVAILABLE/
+ * (same content, price, endpoint kind, and owner key, still inside its
+ * validity window with its content binding intact) replays idempotently.
+ * Additional refusals: ENDPOINT_UNKNOWN/ONION_ENDPOINT_UNAVAILABLE/
+ * PAYEE_UNAVAILABLE/SELLER_KEY_UNAVAILABLE/
  * SEAL_FAILED/OFFER_SAVE_FAILED/CONTENT_BIND_FAILED/WIRE_FAILED. */
 struct zcl_result file_market_offer_commit(
     const struct market_offer_runtime *runtime,

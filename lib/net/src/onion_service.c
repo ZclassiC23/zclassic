@@ -1107,7 +1107,8 @@ size_t onion_service_handle_request(const char *method,
      * with no boundary guard; DATADIR and FAILCLOSED require
      * path[N] ∈ {NUL, '/', '?'}; STORE and DATADIR also require the node
      * datadir; FAILCLOSED turns a handler 0 into a 503 carrying the row's
-     * fail_body rather than falling through. */
+     * fail_body rather than falling through; ONIONCLOSED is FAILCLOSED
+     * restricted to this listener (the HTTPS expansion emits nothing). */
 #define ZCL_SITE_DISPATCH_STORE(prefix, handler, fail_body) \
     if (strncmp(path, prefix, sizeof(prefix) - 1) == 0 && \
         onion_ctx()->datadir) \
@@ -1140,6 +1141,8 @@ size_t onion_service_handle_request(const char *method,
             "Cache-Control: no-store\r\n" \
             "Connection: close\r\n\r\n" fail_body); \
     }
+#define ZCL_SITE_DISPATCH_ONIONCLOSED(prefix, handler, fail_body) \
+    ZCL_SITE_DISPATCH_FAILCLOSED(prefix, handler, fail_body)
 #define SITE_ROUTE(id, prefix, handler, flavor, methods, cost, rkey, \
                    nav_app, nav_onion, grid, nav_label, nav_href, nav_id, \
                    grid_desc, fail_body, app_id) \
@@ -1147,6 +1150,7 @@ size_t onion_service_handle_request(const char *method,
 #include "net/site_routes.def"
 #undef SITE_ROUTE
 #undef ZCL_SITE_DISPATCH_FAILCLOSED
+#undef ZCL_SITE_DISPATCH_ONIONCLOSED
 #undef ZCL_SITE_DISPATCH_DATADIR
 #undef ZCL_SITE_DISPATCH_PLAIN
 #undef ZCL_SITE_DISPATCH_STORE

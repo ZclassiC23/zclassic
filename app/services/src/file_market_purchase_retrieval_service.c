@@ -10,6 +10,7 @@
 #include "models/file_offer.h"
 #include "models/market_download.h"
 #include "models/vault_intent.h"
+#include "net/tor_integration.h"
 #include "support/cleanse.h"
 #include "util/safe_alloc.h"
 
@@ -345,13 +346,29 @@ struct zcl_result market_purchase_retrieve(
     }
 
     struct zcl_result result = ZCL_OK;
+    /* The signed offer picks the delivery transport. An onion endpoint
+     * requires a running embedded Tor and refuses outright — there is
+     * never an automatic clearnet fallback against a signed onion offer. */
+    bool onion_endpoint =
+        offer.endpoint_type == FILE_MARKET_ENDPOINT_ONION;
+    if (onion_endpoint && offer.num_chunks > download.chunks_received &&
+        !tor_integration_is_ready()) {
+        close(fd);
+        memory_cleanse(plain, sizeof(plain));
+        memory_cleanse(&payload, sizeof(payload));
+        return ZCL_ERR(-78, "signed offer names an onion endpoint but the embedded Tor client is not running (start the node with -tor)");
+    }
     for (uint32_t i = download.chunks_received; i < offer.num_chunks; i++) {
         struct file_market_delivery_chunk chunk;
         memset(&chunk, 0, sizeof(chunk));
-        enum file_market_delivery_status status = rt->fetch(
-            rt->fetch_ctx, offer.peer_ip, offer.peer_port,
-            offer.network_genesis, offer.offer_id, i,
-            payload.buyer_pubkey, payload.buyer_seed, &chunk);
+        enum file_market_delivery_status status = onion_endpoint
+            ? file_market_delivery_fetch_onion_endpoint(
+                offer.onion_pubkey, offer.network_genesis, offer.offer_id, i,
+                payload.buyer_pubkey, payload.buyer_seed, &chunk)
+            : rt->fetch(
+                rt->fetch_ctx, offer.peer_ip, offer.peer_port,
+                offer.network_genesis, offer.offer_id, i,
+                payload.buyer_pubkey, payload.buyer_seed, &chunk);
         uint32_t expected = mp_chunk_size(&offer, i);
         uint8_t actual[32];
         bool exact = status == FILE_MARKET_DELIVERY_READY && chunk.data &&

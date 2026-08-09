@@ -179,6 +179,61 @@ bool file_market_offer_range_zat(const struct file_offer *offer,
                            out_total_zat);
 }
 
+bool file_offer_auth_version_supported(uint16_t version)
+{
+    return version == FILE_MARKET_OFFER_VERSION ||
+           version == FILE_MARKET_OFFER_VERSION_V2;
+}
+
+size_t file_offer_auth_wire_size(uint16_t version)
+{
+    if (version == FILE_MARKET_OFFER_VERSION)
+        return FILE_MARKET_OFFER_WIRE_BYTES;
+    if (version == FILE_MARKET_OFFER_VERSION_V2)
+        return FILE_MARKET_OFFER_WIRE_BYTES_V2;
+    return 0;
+}
+
+static size_t offer_body_size(uint16_t version)
+{
+    if (version == FILE_MARKET_OFFER_VERSION)
+        return FILE_MARKET_OFFER_BODY_BYTES;
+    if (version == FILE_MARKET_OFFER_VERSION_V2)
+        return FILE_MARKET_OFFER_BODY_BYTES_V2;
+    return 0;
+}
+
+static bool bytes_all_zero(const uint8_t *bytes, size_t len)
+{
+    return !bytes_nonzero(bytes, len);
+}
+
+/* The endpoint half of field validation. v1 wires carry only the clearnet
+ * pair; v2 makes the kind explicit and requires the unused half to be
+ * zeroed so one signed meaning has exactly one encoding. */
+static enum file_offer_auth_error offer_endpoint_fields(
+    const struct file_offer *offer)
+{
+    if (offer->auth_version == FILE_MARKET_OFFER_VERSION)
+        return bytes_nonzero(offer->peer_ip, sizeof(offer->peer_ip)) &&
+                   offer->peer_port != 0
+                   ? FILE_OFFER_AUTH_OK : FILE_OFFER_AUTH_ERR_ENDPOINT;
+    /* v2 */
+    if (offer->endpoint_type == FILE_MARKET_ENDPOINT_CLEARNET)
+        return bytes_nonzero(offer->peer_ip, sizeof(offer->peer_ip)) &&
+                   offer->peer_port != 0 &&
+                   bytes_all_zero(offer->onion_pubkey,
+                                  sizeof(offer->onion_pubkey))
+                   ? FILE_OFFER_AUTH_OK : FILE_OFFER_AUTH_ERR_ENDPOINT;
+    if (offer->endpoint_type == FILE_MARKET_ENDPOINT_ONION)
+        return bytes_nonzero(offer->onion_pubkey,
+                             sizeof(offer->onion_pubkey)) &&
+                   bytes_all_zero(offer->peer_ip, sizeof(offer->peer_ip)) &&
+                   offer->peer_port == 0
+                   ? FILE_OFFER_AUTH_OK : FILE_OFFER_AUTH_ERR_ENDPOINT;
+    return FILE_OFFER_AUTH_ERR_ENDPOINT;
+}
+
 static enum file_offer_auth_error offer_fields(const struct file_offer *offer,
                                                 bool require_signature)
 {
@@ -188,7 +243,7 @@ static enum file_offer_auth_error offer_fields(const struct file_offer *offer,
     size_t name_len;
     if (!offer)
         return FILE_OFFER_AUTH_ERR_NULL;
-    if (offer->auth_version != FILE_MARKET_OFFER_VERSION)
+    if (!file_offer_auth_version_supported(offer->auth_version))
         return FILE_OFFER_AUTH_ERR_VERSION;
     if (!bytes_nonzero(offer->network_genesis, 32))
         return FILE_OFFER_AUTH_ERR_NETWORK;
@@ -215,9 +270,9 @@ static enum file_offer_auth_error offer_fields(const struct file_offer *offer,
         !jub_from_bytes(&payment_key, offer->z_addr + 11) ||
         jub_is_identity(&payment_key))
         return FILE_OFFER_AUTH_ERR_PAYMENT_ADDRESS;
-    if (!bytes_nonzero(offer->peer_ip, sizeof(offer->peer_ip)) ||
-        offer->peer_port == 0)
-        return FILE_OFFER_AUTH_ERR_ENDPOINT;
+    enum file_offer_auth_error endpoint = offer_endpoint_fields(offer);
+    if (endpoint != FILE_OFFER_AUTH_OK)
+        return endpoint;
     if (offer->issued_unix <= 0 || offer->expires_unix <= offer->issued_unix)
         return FILE_OFFER_AUTH_ERR_TIME;
     if (offer->expires_unix - offer->issued_unix >
@@ -251,10 +306,10 @@ enum file_offer_auth_error file_offer_auth_validate_at(
 
 static enum file_offer_auth_error offer_body(
     const struct file_offer *offer,
-    uint8_t out[FILE_MARKET_OFFER_BODY_BYTES])
+    uint8_t out[FILE_MARKET_OFFER_BODY_BYTES_V2], size_t *out_len)
 {
     enum file_offer_auth_error error = offer_fields(offer, false);
-    if (!out)
+    if (!out || !out_len)
         return FILE_OFFER_AUTH_ERR_NULL;
     if (error != FILE_OFFER_AUTH_OK)
         return error;
@@ -280,24 +335,50 @@ static enum file_offer_auth_error offer_body(
     memset(out + off, 0, 255);
     memcpy(out + off, offer->filename, name_len);
     off += 255;
-    return off == FILE_MARKET_OFFER_BODY_BYTES
-        ? FILE_OFFER_AUTH_OK : FILE_OFFER_AUTH_ERR_WIRE_SIZE;
+    if (offer->auth_version == FILE_MARKET_OFFER_VERSION_V2) {
+        out[off++] = offer->endpoint_type;
+        put_bytes(out, &off, offer->onion_pubkey,
+                  sizeof(offer->onion_pubkey));
+    }
+    if (off != offer_body_size(offer->auth_version))
+        return FILE_OFFER_AUTH_ERR_WIRE_SIZE;
+    *out_len = off;
+    return FILE_OFFER_AUTH_OK;
+}
+
+enum file_offer_auth_error file_offer_auth_encode_into(
+    const struct file_offer *offer, uint8_t *out, size_t out_cap,
+    size_t *out_len)
+{
+    if (!out || !out_len)
+        return FILE_OFFER_AUTH_ERR_NULL;
+    *out_len = 0;
+    enum file_offer_auth_error error = file_offer_auth_validate(offer);
+    if (error != FILE_OFFER_AUTH_OK)
+        return error;
+    if (out_cap < file_offer_auth_wire_size(offer->auth_version))
+        return FILE_OFFER_AUTH_ERR_WIRE_SIZE;
+    size_t body_len = 0;
+    error = offer_body(offer, out, &body_len);
+    if (error != FILE_OFFER_AUTH_OK)
+        return error;
+    memcpy(out + body_len, offer->seller_signature,
+           sizeof(offer->seller_signature));
+    *out_len = body_len + sizeof(offer->seller_signature);
+    return FILE_OFFER_AUTH_OK;
 }
 
 enum file_offer_auth_error file_offer_auth_encode(
     const struct file_offer *offer,
     uint8_t out[FILE_MARKET_OFFER_WIRE_BYTES])
 {
-    if (!out)
-        return FILE_OFFER_AUTH_ERR_NULL;
-    enum file_offer_auth_error error = file_offer_auth_validate(offer);
+    size_t out_len = 0;
+    enum file_offer_auth_error error = file_offer_auth_encode_into(
+        offer, out, FILE_MARKET_OFFER_WIRE_BYTES, &out_len);
     if (error != FILE_OFFER_AUTH_OK)
         return error;
-    error = offer_body(offer, out);
-    if (error != FILE_OFFER_AUTH_OK)
-        return error;
-    memcpy(out + FILE_MARKET_OFFER_BODY_BYTES, offer->seller_signature, 64);
-    return FILE_OFFER_AUTH_OK;
+    return out_len == FILE_MARKET_OFFER_WIRE_BYTES
+        ? FILE_OFFER_AUTH_OK : FILE_OFFER_AUTH_ERR_WIRE_SIZE;
 }
 
 enum file_offer_auth_error file_offer_auth_decode(
@@ -309,10 +390,15 @@ enum file_offer_auth_error file_offer_auth_decode(
     if (!wire || !out)
         return FILE_OFFER_AUTH_ERR_NULL;
     memset(out, 0, sizeof(*out));
-    if (wire_len != FILE_MARKET_OFFER_WIRE_BYTES)
+    if (wire_len < sizeof(k_offer_magic) + 2)
         return FILE_OFFER_AUTH_ERR_WIRE_SIZE;
     if (memcmp(wire, k_offer_magic, sizeof(k_offer_magic)) != 0)
         return FILE_OFFER_AUTH_ERR_WIRE_MAGIC;
+    uint16_t version = zcl_read_u16_le(wire + sizeof(k_offer_magic));
+    if (!file_offer_auth_version_supported(version))
+        return FILE_OFFER_AUTH_ERR_VERSION;
+    if (wire_len != file_offer_auth_wire_size(version))
+        return FILE_OFFER_AUTH_ERR_WIRE_SIZE;
 
     off = sizeof(k_offer_magic);
     out->auth_version = get_u16(wire, &off);
@@ -338,8 +424,13 @@ enum file_offer_auth_error file_offer_auth_decode(
     memcpy(out->filename, wire + off, name_len);
     out->filename[name_len] = '\0';
     off += 255;
+    if (version == FILE_MARKET_OFFER_VERSION_V2) {
+        out->endpoint_type = wire[off++];
+        get_bytes(wire, &off, out->onion_pubkey,
+                  sizeof(out->onion_pubkey));
+    }
     get_bytes(wire, &off, out->seller_signature, 64);
-    if (off != FILE_MARKET_OFFER_WIRE_BYTES) {
+    if (off != wire_len) {
         memset(out, 0, sizeof(*out));
         return FILE_OFFER_AUTH_ERR_WIRE_SIZE;
     }
@@ -357,26 +448,29 @@ enum file_offer_auth_error file_offer_auth_decode(
 enum file_offer_auth_error file_offer_auth_body_root(
     const struct file_offer *offer, uint8_t out[32])
 {
-    uint8_t body[FILE_MARKET_OFFER_BODY_BYTES];
+    uint8_t body[FILE_MARKET_OFFER_BODY_BYTES_V2];
+    size_t body_len = 0;
     if (!out)
         return FILE_OFFER_AUTH_ERR_NULL;
-    enum file_offer_auth_error error = offer_body(offer, body);
+    enum file_offer_auth_error error = offer_body(offer, body, &body_len);
     if (error != FILE_OFFER_AUTH_OK)
         return error;
-    domain_hash(k_body_domain, sizeof(k_body_domain), body, sizeof(body), out);
+    domain_hash(k_body_domain, sizeof(k_body_domain), body, body_len, out);
     return FILE_OFFER_AUTH_OK;
 }
 
 enum file_offer_auth_error file_offer_auth_offer_id(
     const struct file_offer *offer, uint8_t out[32])
 {
-    uint8_t wire[FILE_MARKET_OFFER_WIRE_BYTES];
+    uint8_t wire[FILE_MARKET_OFFER_WIRE_BYTES_MAX];
+    size_t wire_len = 0;
     if (!out)
         return FILE_OFFER_AUTH_ERR_NULL;
-    enum file_offer_auth_error error = file_offer_auth_encode(offer, wire);
+    enum file_offer_auth_error error = file_offer_auth_encode_into(
+        offer, wire, sizeof(wire), &wire_len);
     if (error != FILE_OFFER_AUTH_OK)
         return error;
-    domain_hash(k_id_domain, sizeof(k_id_domain), wire, sizeof(wire), out);
+    domain_hash(k_id_domain, sizeof(k_id_domain), wire, wire_len, out);
     return FILE_OFFER_AUTH_OK;
 }
 

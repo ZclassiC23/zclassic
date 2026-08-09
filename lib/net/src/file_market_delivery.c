@@ -157,6 +157,29 @@ void file_market_delivery_session_id(
     sha3_256_finalize(&sha, out);
 }
 
+void file_market_delivery_onion_session_id(
+    const uint8_t network_genesis[32],
+    const uint8_t offer_id[32],
+    const uint8_t buyer_pubkey[32], uint8_t out[32])
+{
+    static const char k_onion_marker[] = "onion";
+    if (!out)
+        return;
+    memset(out, 0, 32);
+    if (!network_genesis || !offer_id || !buyer_pubkey)
+        return;
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    sha3_256_write(&sha, (const uint8_t *)k_session_domain,
+                   sizeof(k_session_domain));
+    sha3_256_write(&sha, network_genesis, 32);
+    sha3_256_write(&sha, (const uint8_t *)k_onion_marker,
+                   sizeof(k_onion_marker));
+    sha3_256_write(&sha, offer_id, 32);
+    sha3_256_write(&sha, buyer_pubkey, 32);
+    sha3_256_finalize(&sha, out);
+}
+
 enum file_market_delivery_error file_market_delivery_request_encode(
     const struct file_market_delivery_request *request,
     uint8_t out[FILE_MARKET_DELIVERY_WIRE_BYTES])
@@ -406,6 +429,78 @@ enum file_market_delivery_status file_market_delivery_prepare(
     file_market_delivery_session_id(handlers.network_genesis,
                                     session->peer_nonce, session->our_nonce,
                                     session_id);
+    enum file_market_delivery_error verified =
+        file_market_delivery_request_verify(
+            &request, handlers.network_genesis, session_id);
+    memory_cleanse(session_id, sizeof(session_id));
+    if (verified != FILE_MARKET_DELIVERY_OK) {
+        out_reply->status = FILE_MARKET_DELIVERY_UNAUTHENTICATED;
+        return out_reply->status;
+    }
+
+    out_reply->status = delivery_auth_status(handlers.authorize(
+        request.offer_id, request.buyer_pubkey, request.chunk_index,
+        handlers.ctx));
+    if (out_reply->status != FILE_MARKET_DELIVERY_READY)
+        return out_reply->status;
+    if (!handlers.load || !handlers.load(request.offer_id,
+                                         request.chunk_index, out_chunk,
+                                         handlers.ctx) ||
+        !out_chunk->data || out_chunk->size == 0 ||
+        out_chunk->size > FILE_MARKET_CHUNK_SIZE) {
+        free(out_chunk->data);
+        memset(out_chunk, 0, sizeof(*out_chunk));
+        out_reply->status = FILE_MARKET_DELIVERY_CONTENT_UNAVAILABLE;
+        return out_reply->status;
+    }
+
+    uint8_t actual_sha3[32];
+    sha3_256(out_chunk->data, out_chunk->size, actual_sha3);
+    if (memcmp(actual_sha3, out_chunk->sha3, 32) != 0) {
+        free(out_chunk->data);
+        memset(out_chunk, 0, sizeof(*out_chunk));
+        out_reply->status = FILE_MARKET_DELIVERY_CONTENT_UNAVAILABLE;
+        return out_reply->status;
+    }
+    out_reply->size = out_chunk->size;
+    memcpy(out_reply->sha3, actual_sha3, 32);
+    return out_reply->status;
+}
+
+enum file_market_delivery_status file_market_delivery_prepare_onion(
+    const uint8_t *payload, uint32_t plen,
+    struct file_market_delivery_reply *out_reply,
+    struct file_market_delivery_chunk *out_chunk)
+{
+    if (!out_reply || !out_chunk)
+        return FILE_MARKET_DELIVERY_MALFORMED;
+    memset(out_reply, 0, sizeof(*out_reply));
+    memset(out_chunk, 0, sizeof(*out_chunk));
+    out_reply->version = FILE_MARKET_DELIVERY_VERSION;
+    out_reply->status = FILE_MARKET_DELIVERY_MALFORMED;
+    if (!payload)
+        return out_reply->status;
+
+    struct file_market_delivery_request request;
+    if (file_market_delivery_request_decode(payload, plen, &request) !=
+        FILE_MARKET_DELIVERY_OK)
+        return out_reply->status;
+    memcpy(out_reply->offer_id, request.offer_id, 32);
+    out_reply->chunk_index = request.chunk_index;
+
+    struct file_market_delivery_handlers handlers;
+    pthread_mutex_lock(&g_handlers_mutex);
+    handlers = g_handlers;
+    pthread_mutex_unlock(&g_handlers_mutex);
+    if (!handlers.configured || !handlers.authorize) {
+        out_reply->status = FILE_MARKET_DELIVERY_PAYMENT_UNKNOWN;
+        return out_reply->status;
+    }
+
+    uint8_t session_id[32];
+    file_market_delivery_onion_session_id(handlers.network_genesis,
+                                          request.offer_id,
+                                          request.buyer_pubkey, session_id);
     enum file_market_delivery_error verified =
         file_market_delivery_request_verify(
             &request, handlers.network_genesis, session_id);

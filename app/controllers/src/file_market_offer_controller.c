@@ -15,6 +15,9 @@
 #include "net/file_service.h"
 #include "net/msgprocessor.h"
 #include "net/netaddr.h"
+#include "net/onion_service.h"
+#include "net/onion_v3_address.h"
+#include "net/tor_integration.h"
 #include "net/version.h"
 #include "services/file_market_offer_service.h"
 #include "util/log_macros.h"
@@ -43,6 +46,7 @@ static const char *market_offer_code(const struct zcl_result *r)
     case -11: return "OFFER_SAVE_FAILED";
     case -12: return "CONTENT_BIND_FAILED";
     case -13: return "WIRE_FAILED";
+    case -14: return "ONION_ENDPOINT_UNAVAILABLE";
     default:  return "OFFER_REFUSED";
     }
 }
@@ -92,6 +96,39 @@ static struct zcl_result market_offer_endpoint(void *opaque,
     return ZCL_OK;
 }
 
+static struct zcl_result market_offer_onion_endpoint(
+    void *opaque, uint8_t onion_pubkey_out[32])
+{
+    (void)opaque;
+    /* The signed v2 offer body commits the seller's Tor v3 identity, so it
+     * may only name the onion this node is actually serving: the live
+     * embedded-Tor address, decoded back to its ed25519 pubkey (the
+     * address IS base32(pubkey || checksum || 0x03), so no key file needs
+     * to be read). A stub build or a still-bootstrapping Tor has no
+     * address and refuses — the service layer turns this into
+     * ONION_ENDPOINT_UNAVAILABLE and never downgrades. */
+    const char *address = onion_service_get_address();
+    if (!address || !address[0])
+        return ZCL_ERR(-1, "the embedded Tor onion service has no live "
+                           "address (stub build or Tor not ready)");
+    if (!onion_v3_pubkey_from_address(address, onion_pubkey_out))
+        return ZCL_ERR(-2, "the live onion address failed v3 decode");
+    return ZCL_OK;
+}
+
+/* Node-level endpoint default (the offer input schema carries no endpoint
+ * field): onion when the embedded Tor service is up with a live address
+ * AND the operator did not set -externalip — the explicit public-endpoint
+ * opt-in. Clearnet otherwise, exactly as before. */
+static bool market_offer_prefer_onion(void)
+{
+    const char *address = onion_service_get_address();
+    char ext_ip[64];
+    uint16_t ext_port = 0;
+    return tor_integration_is_ready() && address && address[0] &&
+        !msg_version_get_external_ip(ext_ip, sizeof(ext_ip), &ext_port);
+}
+
 static struct zcl_result market_offer_payee(void *opaque,
                                             uint8_t z_addr_out[43])
 {
@@ -116,7 +153,8 @@ static bool market_offer_announce(void *opaque, const uint8_t *wire,
                                   size_t wire_len)
 {
     struct msg_processor *mp = opaque;
-    if (!mp || !wire || wire_len != FILE_MARKET_OFFER_WIRE_BYTES)
+    if (!mp || !wire || (wire_len != FILE_MARKET_OFFER_WIRE_BYTES &&
+                         wire_len != FILE_MARKET_OFFER_WIRE_BYTES_V2))
         return false;
     msg_processor_flood_message(mp, MSG_FILE_OFFER, wire, wire_len);
     return true;
@@ -150,7 +188,9 @@ static bool market_offer_render(const struct market_offer_view *view,
         json_push_kv_bool(result, "idempotent_replay",
                           view->idempotent_replay);
         json_push_kv_bool(result, "announced", view->announced);
-        json_push_kv_str(result, "endpoint_source", "-externalip");
+        json_push_kv_str(result, "endpoint_source",
+                         view->endpoint_type == FILE_MARKET_ENDPOINT_ONION
+                             ? "onion" : "-externalip");
     }
     return true;
 }
@@ -189,6 +229,8 @@ static bool rpc_zmarket_offer_publish(const struct json_value *params,
     runtime.payee_ctx = ctx;
     runtime.announce = market_offer_announce;
     runtime.announce_ctx = rpc_net_get_msg_processor();
+    runtime.onion_endpoint = market_offer_onion_endpoint;
+    runtime.prefer_onion = market_offer_prefer_onion();
     memcpy(runtime.network_genesis,
            params_chain->consensus.hashGenesisBlock.data, 32);
     runtime.now_unix = (int64_t)platform_time_wall_time_t();

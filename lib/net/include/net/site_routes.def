@@ -33,6 +33,9 @@
  *               FAILCLOSED both transports, prefix guard, 6-arg handler,
  *                          and a handler return of 0 becomes a 503 carrying
  *                          fail_body — never a fall-through
+ *               ONIONCLOSED onion-only FAILCLOSED: same guard + 503
+ *                          contract, but (like STORE) never dispatched on
+ *                          the HTTPS listener
  *   methods   — method flags: 0 for a GET/HEAD-only surface, or
  *               ZCL_SITE_F_POST_ONION when the family also answers POSTs.
  *               POST is honored ONLY on the onion transport: the HTTPS
@@ -140,3 +143,20 @@ SITE_ROUTE(yardsale, "/yardsale", yardsale_site_handle_request, FAILCLOSED,
            "Signed for-sale-by-owner token signs; buyers settle directly "
            "with sellers.",
            "Yardsale storage is unavailable.\n", "yardsale")
+
+/* ZCL Market — paid file chunk delivery over the onion transport
+ * (docs/work/MARKET_ONION_DELIVERY.md). Onion-only by construction: the
+ * whole point is that neither side's IP appears, so the HTTPS listener
+ * expands this row to nothing. GET with the signed zfileget request
+ * hex-encoded in the path; the handler verifies the buyer signature
+ * against the onion-derived session id, re-checks chain-confirmed payment
+ * via the injected delivery ports, and serves one <=60 KiB chunk slice.
+ * The handler is a lib/net symbol (the one deliberate exception to the
+ * app/-handler convention above): the serve logic reuses lib/net's
+ * injected authorize/load ports and has no app dependency. */
+SITE_ROUTE(market_chunk, "/market/chunk",
+           file_market_delivery_onion_handle_request, ONIONCLOSED,
+           0, ZCL_SITE_COST_CHEAP, "",
+           NONE, NONE, NONE,
+           NULL, NULL, NULL, NULL,
+           "Paid file chunk delivery is unavailable.\n", NULL)

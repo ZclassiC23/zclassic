@@ -599,6 +599,77 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 63) {
+        /* v63: file-offer wire v2 (onion-routed delivery endpoint). The
+         * signed offer gains endpoint_type (0=clearnet, 1=onion) and the
+         * seller's Tor v3 onion_pubkey; auth_version 2 marks v2 wires.
+         * SQLite cannot ALTER the v55 CHECK(auth_version IN (0,1)), so
+         * rebuild the table atomically and preserve every offer and index
+         * (the unique indexes widen to IN (1,2)). */
+        if (!node_db_exec(ndb,
+            "PRAGMA foreign_keys=OFF;"
+            "BEGIN IMMEDIATE;"
+            "CREATE TABLE file_offers_v63 ("
+            "root_hash BLOB NOT NULL PRIMARY KEY,"
+            "filename TEXT NOT NULL,"
+            "size_bytes INTEGER NOT NULL,"
+            "num_chunks INTEGER NOT NULL,"
+            "price_per_mb INTEGER NOT NULL,"
+            "z_addr BLOB,peer_ip BLOB,peer_port INTEGER,"
+            "last_seen INTEGER,ttl INTEGER DEFAULT 4,"
+            "auth_version INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(auth_version IN (0,1,2)),"
+            "network_genesis BLOB NOT NULL "
+            "DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000' "
+            "CHECK(length(network_genesis)=32),"
+            "seller_pubkey BLOB NOT NULL "
+            "DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000' "
+            "CHECK(length(seller_pubkey)=32),"
+            "nonce INTEGER NOT NULL DEFAULT 0 CHECK(nonce>=0),"
+            "issued_unix INTEGER NOT NULL DEFAULT 0 CHECK(issued_unix>=0),"
+            "expires_unix INTEGER NOT NULL DEFAULT 0 CHECK(expires_unix>=0),"
+            "seller_signature BLOB NOT NULL "
+            "DEFAULT X'00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "
+            "CHECK(length(seller_signature)=64),"
+            "offer_id BLOB NOT NULL "
+            "DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000' "
+            "CHECK(length(offer_id)=32),"
+            "endpoint_type INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(endpoint_type IN (0,1)),"
+            "onion_pubkey BLOB NOT NULL "
+            "DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000' "
+            "CHECK(length(onion_pubkey)=32));"
+            "INSERT INTO file_offers_v63 "
+            "SELECT root_hash,filename,size_bytes,num_chunks,price_per_mb,"
+            "z_addr,peer_ip,peer_port,last_seen,ttl,auth_version,"
+            "network_genesis,seller_pubkey,nonce,issued_unix,expires_unix,"
+            "seller_signature,offer_id,0,"
+            "X'0000000000000000000000000000000000000000000000000000000000000000' "
+            "FROM file_offers;"
+            "DROP TABLE file_offers;"
+            "ALTER TABLE file_offers_v63 RENAME TO file_offers;"
+            "CREATE INDEX idx_file_offers_last_seen "
+            "ON file_offers(last_seen DESC);"
+            "CREATE UNIQUE INDEX idx_file_offers_offer_id "
+            "ON file_offers(offer_id) WHERE auth_version IN (1,2);"
+            "CREATE UNIQUE INDEX idx_file_offers_seller_nonce "
+            "ON file_offers(seller_pubkey,nonce) WHERE auth_version IN (1,2);"
+            "CREATE INDEX idx_file_offers_expires "
+            "ON file_offers(expires_unix) WHERE auth_version IN (1,2);"
+            "COMMIT;"
+            "PRAGMA foreign_keys=ON;")) {
+            (void)node_db_exec(ndb, "ROLLBACK;PRAGMA foreign_keys=ON;");
+            LOG_ERR("db", "migrate v63: atomic file-offer rebuild failed");
+        }
+        if (!node_db_exec(ndb,
+                "INSERT OR IGNORE INTO schema_migrations(version) "
+                "VALUES('063')"))
+            LOG_ERR("db", "migrate v63: migration stamp failed");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 63);
+        current_ver = 63;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

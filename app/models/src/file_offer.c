@@ -95,8 +95,8 @@ bool db_file_offer_save(struct node_db *ndb,
         "(root_hash,filename,size_bytes,num_chunks,price_per_mb,"
         "z_addr,peer_ip,peer_port,last_seen,ttl,auth_version,"
         "network_genesis,seller_pubkey,nonce,issued_unix,expires_unix,"
-        "seller_signature,offer_id)"
-        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        "seller_signature,offer_id,endpoint_type,onion_pubkey)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
         " ON CONFLICT(root_hash) DO UPDATE SET "
         "filename=excluded.filename,size_bytes=excluded.size_bytes,"
         "num_chunks=excluded.num_chunks,price_per_mb=excluded.price_per_mb,"
@@ -106,7 +106,9 @@ bool db_file_offer_save(struct node_db *ndb,
         "network_genesis=excluded.network_genesis,"
         "seller_pubkey=excluded.seller_pubkey,nonce=excluded.nonce,"
         "issued_unix=excluded.issued_unix,expires_unix=excluded.expires_unix,"
-        "seller_signature=excluded.seller_signature,offer_id=excluded.offer_id",
+        "seller_signature=excluded.seller_signature,offer_id=excluded.offer_id,"
+        "endpoint_type=excluded.endpoint_type,"
+        "onion_pubkey=excluded.onion_pubkey",
         cbs, "file_offer", offer, db_file_offer_validate,
         AR_BIND_BLOB(s, 1, offer->root_hash, 32);
         AR_BIND_TEXT(s, 2, offer->filename);
@@ -126,7 +128,9 @@ bool db_file_offer_save(struct node_db *ndb,
         AR_BIND_INT(s, 15, offer->issued_unix);
         AR_BIND_INT(s, 16, offer->expires_unix);
         AR_BIND_BLOB(s, 17, offer->seller_signature, 64);
-        AR_BIND_BLOB(s, 18, offer->offer_id, 32));
+        AR_BIND_BLOB(s, 18, offer->offer_id, 32);
+        AR_BIND_INT(s, 19, offer->endpoint_type);
+        AR_BIND_BLOB(s, 20, offer->onion_pubkey, 32));
 }
 
 static bool row_to_file_offer(sqlite3_stmt *s, struct file_offer *out)
@@ -166,6 +170,9 @@ static bool row_to_file_offer(sqlite3_stmt *s, struct file_offer *out)
         LOG_FAIL("market", "file_offers.seller_signature rejected");
     if (!read_file_offer_blob(s, 17, out->offer_id, 32, "offer_id"))
         LOG_FAIL("market", "file_offers.offer_id rejected");
+    out->endpoint_type = (uint8_t)sqlite3_column_int(s, 18);
+    if (!read_file_offer_blob(s, 19, out->onion_pubkey, 32, "onion_pubkey"))
+        LOG_FAIL("market", "file_offers.onion_pubkey rejected");
     return true;
 }
 
@@ -181,7 +188,7 @@ int db_file_offer_list(struct node_db *ndb,
         "SELECT root_hash,filename,size_bytes,num_chunks,price_per_mb,"
         "z_addr,peer_ip,peer_port,last_seen,ttl,auth_version,"
         "network_genesis,seller_pubkey,nonce,issued_unix,expires_unix,"
-        "seller_signature,offer_id"
+        "seller_signature,offer_id,endpoint_type,onion_pubkey"
         " FROM file_offers ORDER BY last_seen DESC LIMIT ?",
         out, max,
         AR_BIND_INT(s, 1, (int)max),
@@ -203,7 +210,7 @@ bool db_file_offer_find(struct node_db *ndb,
         "SELECT root_hash,filename,size_bytes,num_chunks,price_per_mb,"
         "z_addr,peer_ip,peer_port,last_seen,ttl,auth_version,"
         "network_genesis,seller_pubkey,nonce,issued_unix,expires_unix,"
-        "seller_signature,offer_id"
+        "seller_signature,offer_id,endpoint_type,onion_pubkey"
         " FROM file_offers WHERE root_hash=?",
         AR_BIND_BLOB(s, 1, root_hash, 32),
         struct ar_errors errors;
@@ -230,8 +237,8 @@ bool db_file_offer_find_by_id(struct node_db *ndb,
         "SELECT root_hash,filename,size_bytes,num_chunks,price_per_mb,"
         "z_addr,peer_ip,peer_port,last_seen,ttl,auth_version,"
         "network_genesis,seller_pubkey,nonce,issued_unix,expires_unix,"
-        "seller_signature,offer_id"
-        " FROM file_offers WHERE offer_id=? AND auth_version=1",
+        "seller_signature,offer_id,endpoint_type,onion_pubkey"
+        " FROM file_offers WHERE offer_id=? AND auth_version IN (1,2)",
         AR_BIND_BLOB(s, 1, offer_id, 32),
         struct ar_errors errors;
         if (!row_to_file_offer(s, out) ||
