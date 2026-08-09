@@ -1208,6 +1208,20 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
              * 21M-ZCL supply so a nonsense price is refused up front. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
                       json_get_int(value) <= 2100000000000000LL;
+        } else if (strcmp(key, "chunk_start") == 0 ||
+                   strcmp(key, "chunks_paid") == 0) {
+            /* app.market.purchase.plan paid chunk range (uint32 in struct
+             * market_purchase_request, services/file_market_purchase_internal.h).
+             * Without this rule the default branch demands a string and
+             * rejects the leaf's OWN declared example
+             * (`"chunk_start":0,"chunks_paid":1`), so the leaf is uninvokable
+             * from the shell; the RPC handler (rpc_zmarket_purchase_plan)
+             * demands JSON_INT, so a string can never reach it either.
+             * chunk_start=0 names the first chunk; chunks_paid must pay for
+             * at least one. The service owns the exact in-offer range check. */
+            type_ok = value->type == JSON_INT &&
+                      json_get_int(value) >= (strcmp(key, "chunks_paid") == 0) &&
+                      json_get_int(value) <= 4294967295LL;
         } else if (strcmp(key, "recipient_value_zat") == 0) {
             /* Aggregate metaverse liquidity planning uses exact zatoshi.
              * Keep the transport range aligned with the handler: positive,

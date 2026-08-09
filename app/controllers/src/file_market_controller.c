@@ -15,6 +15,7 @@
 #include "controllers/wallet_helpers.h"
 #include "controllers/wallet_shielded_controller.h"
 #include "core/serialize.h"
+#include "core/uint256.h"
 #include "net/file_market.h"
 #include "net/msgprocessor.h"
 #include "net/rom_seed.h"
@@ -334,7 +335,12 @@ static struct zcl_result market_purchase_send(
     struct json_value sent = {0};
     bool ok = rpc_z_sendmany(&params, false, &sent);
     const char *answer = json_get_str(&sent);
-    bool exact = ok && answer && zcl_hex_decode(answer, txid_out, 32);
+    /* z_sendmany returns display-order hex (uint256_get_hex); vault and
+     * market rows key internal byte order — set_hex reverses back. */
+    struct uint256 parsed;
+    bool exact = ok && answer && strlen(answer) == 64;
+    if (exact) uint256_set_hex(&parsed, answer);
+    if (exact) memcpy(txid_out, parsed.data, 32);
     char reason[192];
     (void)snprintf(reason, sizeof(reason), "%s",
                    answer && answer[0] ? answer
@@ -381,6 +387,9 @@ static struct zcl_result market_purchase_runtime(
     struct wallet_rpc_context *ctx = wallet_rpc_context_current();
     runtime->node_db = ctx ? ctx->node_db : NULL;
     runtime->now_unix = (int64_t)platform_time_wall_time_t();
+    /* The fetch transport owes nothing to the money runtime — wire it
+     * before the !money early return or retrieve can never run. */
+    runtime->fetch = market_purchase_fetch;
     if (!money) return runtime->node_db && runtime->node_db->open
         ? ZCL_OK : ZCL_ERR(-2, "market database is unavailable");
     if (!ctx || !ctx->wallet || !ctx->main_state || !ctx->node_db ||
@@ -396,7 +405,6 @@ static struct zcl_result market_purchase_runtime(
     runtime->send_ctx = ctx;
     runtime->notify = market_purchase_notify;
     runtime->notify_ctx = rpc_net_get_msg_processor();
-    runtime->fetch = market_purchase_fetch;
     runtime->tip_height = tip->nHeight;
     memcpy(runtime->tip_hash, tip->hashBlock.data, 32);
     runtime->maximum_fee_zat = ctx->wallet->default_fee;

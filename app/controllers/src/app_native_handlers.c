@@ -125,7 +125,38 @@ char *zcl_native_zmarket_list_body(const struct json_value *args,
                                    struct zcl_native_body_err *err)
 {
     (void)args;
-    return app_native_rpc_noargs("zmarket_list", err);
+    char *raw = app_native_rpc_noargs("zmarket_list", err);
+    if (!raw)
+        return NULL;
+    /* The RPC answers a bare array, but the native body contract requires
+     * an object — wrap it as {"files":[...]} (the zslp_listtokens "tokens"
+     * convention). The RPC/REST shape is unchanged. A non-array body (the
+     * legacy string error convention) passes through untouched so the
+     * bridge surfaces the handler's own message. */
+    struct json_value doc;
+    if (!json_read(&doc, raw, strlen(raw)) || doc.type != JSON_ARR) {
+        json_free(&doc);
+        return raw;
+    }
+    free(raw);
+    struct json_value wrapped;
+    json_init(&wrapped);
+    json_set_object(&wrapped);
+    (void)json_push_kv(&wrapped, "files", &doc);
+    json_free(&doc);
+    size_t need = json_write(&wrapped, NULL, 0);
+    char *out = zcl_malloc(need + 1, "native.market_list");
+    if (out)
+        (void)json_write(&wrapped, out, need + 1);
+    json_free(&wrapped);
+    if (!out) {
+        err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
+        snprintf(err->message, sizeof(err->message),
+                 "could not serialize the wrapped market index");
+        LOG_NULL("native.app", "market.list wrap alloc failed (%zu bytes)",
+                 need + 1);
+    }
+    return out;
 }
 
 char *zcl_native_zmarket_status_body(const struct json_value *args,

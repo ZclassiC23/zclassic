@@ -1211,7 +1211,8 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         fuzz-ci-leaks \
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
         test-reindex-smoke test-reindex-killmid \
-        test-two-node-peer-tip test-science-acceptance chaos chaos-clean \
+        test-two-node-peer-tip test-science-acceptance test-market-acceptance \
+        chaos chaos-clean \
         replay-canary-anchor replay-canary-genesis \
         soak-evidence-report soak-evidence-selftest \
         install-slo-probe slo-probe-status slo-probe-selftest \
@@ -3924,12 +3925,24 @@ test-two-node-peer-tip: zclassic23 zcl-rpc
 # DELIBERATELY opt-in (NOT in `make ci`) — it spawns two real nodes and
 # depends on the host Landlock/seccomp sandbox for the confined executor.
 .PHONY: test-zcode-dht-acceptance test-science-acceptance \
-	zcode-reproduction-acceptance
+	test-market-acceptance zcode-reproduction-acceptance
 test-zcode-dht-acceptance: zclassic23 zcl-rpc
 	@bash tools/dev/zcode_dht_acceptance.sh
 
 test-science-acceptance: test-zcode-dht-acceptance
 	@bash tools/dev/science_acceptance.sh
+
+# B3 file-market trade acceptance: two isolated regtest daemons (395xx
+# quads + 20030/20031, loopback only). The seller (-externalip + file
+# service) plans then commits a signed paid offer; it gossips to the buyer,
+# which plans/commits a real Sapling payment, is refused delivery before
+# confirmation (authorize-before-read), then retrieves the file after one
+# mined block into an atomically published, byte-identical destination.
+# Closes with idempotent offer/plan/commit replays and the seller-side
+# CONFIRMED payment-claim row. DELIBERATELY opt-in (NOT in `make ci`) —
+# it spawns two real nodes and needs ~/.zcash-params for the prover.
+test-market-acceptance: zclassic23 zcl-rpc
+	@bash tools/dev/market_acceptance.sh
 
 # ── metaverse-tour / metaverse-verify (docs/METAVERSE_MVP.md, MM1 + MM7) ──
 #
