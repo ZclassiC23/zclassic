@@ -7,6 +7,7 @@
 #include "controllers/agent_impact_rules.h"
 #include "crypto/sha3.h"
 #include "hotswap/hotswap_module.h"
+#include "hotswap/hotswap_service.h"
 #include "test_group_catalog.h"
 #include "util/safe_alloc.h"
 
@@ -30,6 +31,13 @@ static const struct hotswap_eligible_entry g_hotswap_eligible[] = {
 #undef HOTSWAP_ELIGIBLE
 };
 
+static const struct hotswap_eligible_entry g_hotswap_services[] = {
+#define HOTSWAP_SERVICE(id_, source_, headers_, contract_headers_, imports_, abi_, schema_, wire_, kat_, probe_) \
+    { .path = source_, .probe = probe_ },
+#include "../../config/hotswap_services.def"
+#undef HOTSWAP_SERVICE
+};
+
 static bool path_is_safe(const char *path)
 {
     if (!path || !path[0] || path[0] == '/' || strstr(path, ".."))
@@ -44,6 +52,13 @@ static bool path_is_safe(const char *path)
 static const struct hotswap_eligible_entry *hotswap_entry(const char *path)
 {
     const char *owner = hotswap_island_owner_for_path(path);
+    if (!owner) {
+        owner = zcl_hotswap_service_source_for_path(path);
+        for (size_t i = 0; owner && i < sizeof(g_hotswap_services) /
+                                      sizeof(g_hotswap_services[0]); i++)
+            if (strcmp(owner, g_hotswap_services[i].path) == 0)
+                return &g_hotswap_services[i];
+    }
     if (!owner)
         return NULL;
     for (size_t i = 0; i < sizeof(g_hotswap_eligible) /

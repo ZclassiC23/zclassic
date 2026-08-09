@@ -2672,7 +2672,7 @@ HOTSWAP_MODULE_LDFLAGS = -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
 # BUILD_SOURCE_ID/CLEAN/MUTATION themselves are ordinary parse-time variables
 # and remain available regardless.
 $(HOTSWAP_ACTION_PLAN): Makefile config/hotswap_swappable.def \
-		config/hotswap_islands.def
+		config/hotswap_islands.def config/hotswap_services.def
 	@set -eu; \
 	mkdir -p "$(dir $@)"; \
 	tmp="$$(mktemp "$(dir $@).flags.XXXXXX")"; \
@@ -6593,6 +6593,12 @@ check-hotswap-eligible-scope:
 check-hotswap-static-state:
 	@tools/lint/check_hotswap_static_state.sh
 
+# Pure calculation service islands may own no ambient state or effects and may
+# import only the stable symbols declared beside their frozen ABI/schema/wire/
+# KAT fingerprints in config/hotswap_services.def.
+check-hotswap-service-islands:
+	@tools/lint/check_hotswap_service_islands.sh
+
 # THE HARD LINE for the REAL (activatable) module ABI, both halves: every
 # swappable source_tu (config/hotswap_swappable.def) must be owned by a
 # controller/view/condition LEAF — never a reducer/consensus/storage/supervisor
@@ -7874,6 +7880,7 @@ LINT_GATES := \
     check-hotswap-dev-only \
     check-hotswap-eligible-scope \
     check-hotswap-static-state \
+    check-hotswap-service-islands \
     check-hotswap-swappable-shape \
     check-release-no-dev-symbols \
     check-stable-publish-contained \

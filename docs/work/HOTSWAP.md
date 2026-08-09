@@ -91,6 +91,25 @@ self-test produces a typed refusal and never publishes anything.
 every build and have direct unit coverage with fabricated module descriptors
 (no `dlopen`, no dev build needed).
 
+### Pure service islands
+
+`config/hotswap_services.def` separately admits versioned calculation vtables.
+These islands receive caller-owned values and buffers only; the static host
+keeps parsing, authentication, storage, networking and every external effect.
+Publication is an immutable snapshot swap with reader leases and quiescent
+retirement. The resident contract—not the candidate—fixes ABI, schema, wire,
+KAT and the observation operation. A candidate passes that frozen KAT before
+publication; the ordinary static handler then supplies a bounded
+post-publication observation in the activation receipt.
+
+`check-hotswap-service-islands` rejects mutable file-scope state, TLS,
+constructors/destructors, filesystem/SQLite/socket/clock/RNG/process calls,
+wallet/node-global/consensus/raw-storage access, and project calls outside the
+manifest's stable-import list. Private island headers may join a future atomic
+island closure. Public contract headers are deliberately distinct: changing
+one emits a process-free `DEV_RESTART` selection with no proof claimed and can
+never fall through to live publication or the legacy Make/shell save path.
+
 ### All-or-nothing, and probe before publish
 
 The publish order is fixed:

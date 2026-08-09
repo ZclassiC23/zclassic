@@ -89,6 +89,7 @@ gate_command() {
         check-hotswap-dev-only)            echo './tools/lint/check_hotswap_dev_only.sh' ;;
         check-hotswap-eligible-scope)      echo 'tools/lint/check_hotswap_eligible_scope.sh' ;;
         check-hotswap-static-state)        echo 'tools/lint/check_hotswap_static_state.sh' ;;
+        check-hotswap-service-islands)     echo 'tools/lint/check_hotswap_service_islands.sh' ;;
         check-hotswap-swappable-shape)     echo 'tools/lint/check_hotswap_swappable_shape.sh' ;;
         check-release-no-dev-symbols)      echo 'tools/lint/check_release_no_dev_symbols.sh' ;;
         check-stable-publish-contained)    echo 'bash tools/scripts/check_stable_publish_containment.sh --self-test && bash tools/scripts/check_stable_publish_containment.sh' ;;

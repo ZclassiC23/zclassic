@@ -248,6 +248,18 @@ static int test_change_classification(void)
         ASSERT(strcmp(plan.proof_group, "hotswap_simnet") == 0);
         ASSERT(strcmp(plan.probe_tool, "metaverse.property.list") == 0);
 
+        const char *service_source[] = {
+            "app/services/src/zcode_c23_corpus_service.c",
+        };
+        ASSERT(zcl_devloop_plan_files(service_source, 1, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
+        ASSERT(strcmp(plan.probe_tool, "zcode.commons.corpus.status") == 0);
+        const char *service_header[] = {
+            "app/services/include/services/zcode_c23_corpus_service.h",
+        };
+        ASSERT(zcl_devloop_plan_files(service_header, 1, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_RELOAD);
+
         const char *multi_hot[] = {
             hot[0].path, hot[1].path,
         };
@@ -1996,10 +2008,14 @@ static bool dp_hotswap_cache_fixture_init(const char *root,
     if (!dp_mk_write(root, "Makefile", "# fixture\n") ||
         !dp_mk_write(root, "config/hotswap_swappable.def", "/* fixture */\n") ||
         !dp_mk_write(root, "config/hotswap_islands.def", "/* fixture */\n") ||
+        !dp_mk_write(root, "config/hotswap_services.def", "/* fixture */\n") ||
         !dp_mk_write(root, "app/controllers/src/status_native_handlers.c",
                      owner_v1) ||
         !dp_mk_write(root, "app/controllers/src/status_native_helpers.c",
-                     "int zcl_hotswap_fixture_helper(void) { return 2; }\n"))
+                     "int zcl_hotswap_fixture_helper(void) { return 2; }\n") ||
+        !dp_mk_write(root,
+                     "app/services/src/zcode_c23_corpus_service.c",
+                     "int zcl_hotswap_fixture_service(void) { return 3; }\n"))
         return false;
     char canonical_root[PATH_MAX];
     if (!realpath(root, canonical_root))
@@ -2025,19 +2041,24 @@ static bool run_hotswap_artifact_cache_fixture(void)
     static const char fake_compiler[] =
         "#!/usr/bin/env bash\n"
         "set -eu\n"
-        "out= dep= compile=0\n"
+        "out= dep= source= compile=0\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  case \"$1\" in\n"
         "    -o) out=$2; shift 2 ;;\n"
         "    -MF) dep=$2; shift 2 ;;\n"
         "    -c) compile=1; shift ;;\n"
+        "    *.c) source=$1; shift ;;\n"
         "    *) shift ;;\n"
         "  esac\n"
         "done\n"
         "[ -n \"$out\" ]\n"
         "if [ \"$compile\" -eq 1 ]; then\n"
         "  printf 'fixture-object-v1\\n' >\"$out\"\n"
-        "  printf '%s: app/controllers/src/status_native_helpers.c app/controllers/src/status_native_handlers.c\\n' \"$out\" >\"$dep\"\n"
+        "  if [ \"$source\" = app/services/src/zcode_c23_corpus_service.c ]; then\n"
+        "    printf '%s: %s\\n' \"$out\" \"$source\" >\"$dep\"\n"
+        "  else\n"
+        "    printf '%s: app/controllers/src/status_native_helpers.c app/controllers/src/status_native_handlers.c\\n' \"$out\" >\"$dep\"\n"
+        "  fi\n"
         "else\n"
         "  printf 'fixture-module-v1\\n' >\"$out\"\n"
         "fi\n";
@@ -2075,6 +2096,8 @@ static bool run_hotswap_artifact_cache_fixture(void)
     struct zcl_devloop_hotswap_build_receipt first = {0}, built = {0};
     struct zcl_devloop_hotswap_build_receipt hit = {0}, edited = {0};
     struct zcl_devloop_hotswap_build_receipt reverted = {0}, cross = {0};
+    struct zcl_devloop_hotswap_build_receipt service_first = {0};
+    struct zcl_devloop_hotswap_build_receipt service_built = {0};
     struct zcl_devloop_process_result process = {0};
     char why[256] = {0};
     const char *owner = "app/controllers/src/status_native_handlers.c";
@@ -2127,6 +2150,24 @@ static bool run_hotswap_artifact_cache_fixture(void)
         cross.linker_processes != 0 ||
         strcmp(cross.artifact_cache_key, built.artifact_cache_key) != 0 ||
         strcmp(cross.artifact_sha256, built.artifact_sha256) != 0)
+        goto out;
+
+    /* A pure service island compiles its owner directly; it has no command
+     * unity-member list.  Requiring one here made every service save reject
+     * before starting the compiler. */
+    const char *service =
+        "app/services/src/zcode_c23_corpus_service.c";
+    if (zcl_devloop_hotswap_build(root_a, service, &service_first, &process,
+                                  why, sizeof(why)) ||
+        strcmp(why,
+               "dependency baseline initialized; save once more to activate") != 0 ||
+        service_first.compiler_processes != 1 ||
+        service_first.linker_processes != 0 ||
+        !zcl_devloop_hotswap_build(root_a, service, &service_built, &process,
+                                   why, sizeof(why)) ||
+        service_built.compiler_processes != 1 ||
+        service_built.linker_processes != 1 ||
+        strcmp(service_built.source_tu, service) != 0)
         goto out;
     ok = true;
 

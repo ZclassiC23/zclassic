@@ -15,6 +15,7 @@
 #include "crypto/sha256.h"
 #include "controllers/rpc_client.h"
 #include "hotswap/hotswap_module.h"
+#include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "util/safe_alloc.h"
@@ -118,7 +119,7 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
 {
     int64_t started = platform_time_monotonic_us();
     char flags_path[PATH_MAX], makefile[PATH_MAX], manifest[PATH_MAX];
-    char islands[PATH_MAX];
+    char islands[PATH_MAX], services[PATH_MAX];
     if (snprintf(flags_path, sizeof(flags_path),
                  "%s/build/hotswap/fast/flags.env", root) >=
             (int)sizeof(flags_path) ||
@@ -129,11 +130,14 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
             (int)sizeof(manifest) ||
         snprintf(islands, sizeof(islands),
                  "%s/config/hotswap_islands.def", root) >=
-            (int)sizeof(islands)) {
+            (int)sizeof(islands) ||
+        snprintf(services, sizeof(services),
+                 "%s/config/hotswap_services.def", root) >=
+            (int)sizeof(services)) {
         hs_why(why, why_len, "action plan path overflow");
         return false;
     }
-    struct stat stamp, make_st, manifest_st, islands_st;
+    struct stat stamp, make_st, manifest_st, islands_st, services_st;
     if (!hs_regular(flags_path, &stamp)) {
         hs_why(why, why_len,
                "resident action plan absent; run make dev-bin once");
@@ -141,6 +145,7 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
     }
     if (!hs_regular(makefile, &make_st) || !hs_regular(manifest, &manifest_st) ||
         !hs_regular(islands, &islands_st) ||
+        !hs_regular(services, &services_st) ||
         make_st.st_mtim.tv_sec > stamp.st_mtim.tv_sec ||
         (make_st.st_mtim.tv_sec == stamp.st_mtim.tv_sec &&
          make_st.st_mtim.tv_nsec > stamp.st_mtim.tv_nsec) ||
@@ -149,7 +154,10 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
          manifest_st.st_mtim.tv_nsec > stamp.st_mtim.tv_nsec) ||
         islands_st.st_mtim.tv_sec > stamp.st_mtim.tv_sec ||
         (islands_st.st_mtim.tv_sec == stamp.st_mtim.tv_sec &&
-         islands_st.st_mtim.tv_nsec > stamp.st_mtim.tv_nsec)) {
+         islands_st.st_mtim.tv_nsec > stamp.st_mtim.tv_nsec) ||
+        services_st.st_mtim.tv_sec > stamp.st_mtim.tv_sec ||
+        (services_st.st_mtim.tv_sec == stamp.st_mtim.tv_sec &&
+         services_st.st_mtim.tv_nsec > stamp.st_mtim.tv_nsec)) {
         hs_why(why, why_len,
                "resident action plan stale; refresh after build-system change");
         return false;
@@ -572,18 +580,23 @@ static bool hs_run_compile(const struct hs_action_plan *plan,
     size_t argc = zcl_argv_split(cc, argv, HS_ARG_MAX);
     const char *flagv[HS_ARG_MAX];
     size_t flagc = zcl_argv_split(flags, flagv, HS_ARG_MAX);
-    if (!argc || argc + flagc + 12 >= HS_ARG_MAX) {
+    if (!argc || argc + flagc + 14 >= HS_ARG_MAX) {
         hs_why(why, why_len, "resident compile action exceeds argv bound");
         return false;
     }
     for (size_t i = 0; i < flagc; i++)
         argv[argc++] = flagv[i];
     char source_define[320];
+    char service_source_define[320];
     (void)snprintf(source_define, sizeof(source_define),
                    "-DZCL_HOTSWAP_MODULE_SOURCE_TU=\"%s\"", source_tu);
+    (void)snprintf(service_source_define, sizeof(service_source_define),
+                   "-DZCL_HOTSWAP_SERVICE_SOURCE_TU=\"%s\"", source_tu);
     argv[argc++] = "-fPIC";
     argv[argc++] = "-DZCL_HOTSWAP_MODULE_GEN";
+    argv[argc++] = "-DZCL_HOTSWAP_SERVICE_GEN";
     argv[argc++] = source_define;
+    argv[argc++] = service_source_define;
     argv[argc++] = "-MD";
     argv[argc++] = "-MF";
     argv[argc++] = dep;
@@ -732,6 +745,11 @@ bool zcl_devloop_hotswap_build(
     int64_t started = platform_time_monotonic_us();
     if (why && why_len) why[0] = 0;
     const char *owner = hotswap_island_owner_for_path(source_tu);
+    bool service_island = false;
+    if (!owner) {
+        owner = zcl_hotswap_service_source_for_path(source_tu);
+        service_island = owner != NULL;
+    }
     if (!repo_root || !source_tu || !receipt || !process ||
         source_tu[0] == '/' || strstr(source_tu, "..") || !owner) {
         hs_why(why, why_len, "source is outside the compiled swappable allowlist");
@@ -783,11 +801,14 @@ bool zcl_devloop_hotswap_build(
         hs_why(why, why_len, "could not allocate confined build temporaries");
         goto fail;
     }
-    const char *members = hotswap_island_members_for_source(owner);
-    if (!members || !hs_unity_source(root, owner, members, safe, unity,
-                                     why, why_len))
+    const char *members = service_island ? NULL
+        : hotswap_island_members_for_source(owner);
+    if (!service_island &&
+        (!members || !hs_unity_source(root, owner, members, safe, unity,
+                                      why, why_len)))
         goto fail;
-    const char *compile_input = unity[0] ? unity : owner;
+    const char *compile_input = service_island ? owner
+                                               : (unity[0] ? unity : owner);
 
     struct hs_dep *before = zcl_malloc(sizeof(*before) * HS_DEP_MAX,
                                        "hotswap dependency baseline");
@@ -1095,7 +1116,9 @@ static bool hs_emit_event(const char *root, const char *source,
 int zcl_devloop_hotswap_event(const char *repo_root, const char *source_tu,
                               enum zcl_devloop_publish_mode publish_mode)
 {
-    if (!repo_root || !source_tu || !hotswap_island_owner_for_path(source_tu))
+    if (!repo_root || !source_tu ||
+        (!hotswap_island_owner_for_path(source_tu) &&
+         !zcl_hotswap_service_source_for_path(source_tu)))
         return 0;
     int64_t started = platform_time_monotonic_us();
     struct zcl_devloop_hotswap_build_receipt build = {0};

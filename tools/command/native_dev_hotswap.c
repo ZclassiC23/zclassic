@@ -27,9 +27,11 @@
 #include "crypto/sha256.h"
 #include "hotswap/hotswap.h"
 #include "hotswap/hotswap_module.h"
+#include "hotswap/hotswap_service.h"
 #include "config/command_catalog.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
+#include "services/zcode_c23_corpus_service.h"
 #include "controllers/rpc_client.h"
 #include "rpc/protocol.h"
 #include "rpc/server.h"
@@ -321,6 +323,63 @@ static void report_to_reply(struct zcl_command_reply *reply,
     }
 }
 
+static void service_report_to_reply(
+    struct zcl_command_reply *reply,
+    const struct zcl_hotswap_service_report *report)
+{
+    json_free(&reply->data);
+    json_init(&reply->data);
+    json_set_object(&reply->data);
+    json_push_kv_str(&reply->data, "schema",
+                     "zcl.hotswap_service_activate.v1");
+    json_push_kv_bool(&reply->data, "ok", report->ok);
+    json_push_kv_bool(&reply->data, "verify_only", report->verify_only);
+    json_push_kv_bool(&reply->data, "activated", report->activated);
+    json_push_kv_bool(&reply->data, "rolled_back", report->rolled_back);
+    json_push_kv_bool(&reply->data, "probed", report->probed);
+    json_push_kv_bool(&reply->data, "dev_restart", report->dev_restart);
+    json_push_kv_int(&reply->data, "generation",
+                     (int64_t)report->generation);
+    json_push_kv_str(&reply->data, "service_id", report->service_id);
+    json_push_kv_str(&reply->data, "stage", report->stage);
+    if (report->error[0])
+        json_push_kv_str(&reply->data, "error", report->error);
+    if (report->ok) {
+        reply->status = ZCL_COMMAND_STATUS_PASSED;
+        reply->exit_code = ZCL_COMMAND_EXIT_OK;
+    } else {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+            report->dev_restart ? "DEV_RESTART" : "HOTSWAP_REFUSED",
+            report->stage[0] ? report->stage : "activate", false, false,
+            report->error[0] ? report->error : "service hot-swap refused",
+            report->service_id);
+    }
+}
+
+/* After a service candidate has passed the frozen host-owned KAT and been
+ * published, observe it through the ordinary static corpus handler.  The
+ * candidate cannot choose this operation or its input, and the handler keeps
+ * ownership of parsing/rendering.  This makes the resident activation receipt
+ * a direct edit-to-visible proof rather than only a generation assertion. */
+static void corpus_resident_observation_append(struct json_value *out)
+{
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    struct zcl_command_request request = { .input = &input };
+    struct zcl_command_reply reply;
+    zcl_command_reply_init(&reply, ZCODE_C23_CORPUS_SCHEMA_FINGERPRINT);
+    zcl_native_handle_zcode_commons_corpus_status(&request, &reply);
+    if (reply.exit_code == ZCL_COMMAND_EXIT_OK)
+        (void)json_push_kv(out, "resident_observation", &reply.data);
+    else
+        (void)json_push_kv_str(out, "resident_observation_error",
+                              "static corpus status handler refused observation");
+    zcl_command_reply_free(&reply);
+    json_free(&input);
+}
+
 /* Resident RPC: perform the swap IN this (running node) process.
  * Positional params: [so_path, (activate_bool)]. activate defaults false
  * (verify-only). A true activate is still gated by hotswap_activation_authorized
@@ -359,6 +418,35 @@ static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
         return false;
     }
     bool activate = act_v && act_v->type == JSON_BOOL && json_get_bool(act_v);
+
+    /* Service islands carry a distinct descriptor. Try that symbol first;
+     * an ordinary command module is unrecognized and falls through to the
+     * existing v2 command path. A recognized-but-invalid service NEVER falls
+     * through: contract/KAT drift must route to DEV_RESTART, not be
+     * reinterpreted under another ABI. */
+    struct zcl_hotswap_service_report service_report;
+    bool service_ok = zcl_hotswap_service_activate_so(
+        so_path, g_resident_datadir, activate,
+        zcl_native_zcode_corpus_service_contract(), &service_report);
+    if (service_report.recognized) {
+        json_set_object(result);
+        json_push_kv_str(result, "schema", "zcl.hotswap_service_activate.v1");
+        json_push_kv_bool(result, "ok", service_report.ok);
+        json_push_kv_bool(result, "verify_only", service_report.verify_only);
+        json_push_kv_bool(result, "activated", service_report.activated);
+        json_push_kv_bool(result, "rolled_back", service_report.rolled_back);
+        json_push_kv_bool(result, "probed", service_report.probed);
+        json_push_kv_bool(result, "dev_restart", service_report.dev_restart);
+        json_push_kv_int(result, "generation",
+                         (int64_t)service_report.generation);
+        json_push_kv_str(result, "service_id", service_report.service_id);
+        json_push_kv_str(result, "stage", service_report.stage);
+        if (service_report.error[0])
+            json_push_kv_str(result, "error", service_report.error);
+        if (service_ok && service_report.activated)
+            corpus_resident_observation_append(result);
+        return service_ok;
+    }
 
     struct hotswap_publish_hooks hooks;
     zcl_native_hotswap_publish_hooks(&hooks, /*with_quiesce=*/true);
@@ -477,6 +565,14 @@ void zcl_native_handle_dev_hotswap_probe(
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
             ZCL_COMMAND_EXIT_INVALID, "HOTSWAP_BAD_INPUT", "validate", false,
             false, "so_path (absolute) is required", "dev.hotswap.probe");
+        return;
+    }
+    struct zcl_hotswap_service_report service_report;
+    (void)zcl_hotswap_service_activate_so(
+        so_path, node_rpc_client_datadir(), false,
+        zcl_native_zcode_corpus_service_contract(), &service_report);
+    if (service_report.recognized) {
+        service_report_to_reply(reply, &service_report);
         return;
     }
     struct hotswap_publish_hooks hooks;
