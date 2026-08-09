@@ -158,6 +158,39 @@ static int test_v2_truthful_activation_status(void)
         zcl_command_reply_free(&reply);
         json_free(&input);
 
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_str(&input, "root",
+                         ZCODE_C23_CORPUS_KAT_FINGERPRINT);
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.corpus_show.v1");
+        zcl_native_handle_zcode_commons_corpus_show(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&reply.data, "found")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "root")),
+                      ZCODE_C23_CORPUS_KAT_FINGERPRINT);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "kind")),
+                      "c23_corpus_rules.v1");
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                       "global_completeness_claimed")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_str(&input, "root",
+            "0000000000000000000000000000000000000000000000000000000000000000");
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.corpus_show.v1");
+        zcl_native_handle_zcode_commons_corpus_show(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(!json_get_bool(json_get(&reply.data, "found")));
+        ASSERT(json_get(&reply.data, "blocker") != NULL);
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                       "global_completeness_claimed")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
         struct zcode_c23_corpus_service_v1 candidate_vtable =
             *zcode_c23_corpus_service_builtin();
         candidate_vtable.render_status = cv2_candidate_render_status;

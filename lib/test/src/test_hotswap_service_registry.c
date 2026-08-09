@@ -127,7 +127,7 @@ static int t_manifest_mapping(void)
                    "app/services/src/zcode_c23_corpus_service.c") == NULL);
         ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
                           "app/services/src/zcode_c23_corpus_service.c"),
-                      "zcode.commons.corpus.status");
+                      "zcode.commons.corpus.show");
         ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
                           "app/services/src/zcode_c23_economics_service.c"),
                       "app/services/src/zcode_c23_economics_service.c");

@@ -413,8 +413,8 @@ static void service_resident_observation_append(struct json_value *out,
     zcl_command_reply_init(&reply, probe->expected_schema);
     if (strcmp(operation, "zcode.commons.economics.status") == 0) {
         zcl_native_handle_zcode_commons_economics_status(&request, &reply);
-    } else if (strcmp(operation, "zcode.commons.corpus.status") == 0) {
-        zcl_native_handle_zcode_commons_corpus_status(&request, &reply);
+    } else if (strcmp(operation, "zcode.commons.corpus.show") == 0) {
+        zcl_native_handle_zcode_commons_corpus_show(&request, &reply);
     } else {
         zcl_command_reply_fail(&reply, ZCL_COMMAND_STATUS_BLOCKED,
             ZCL_COMMAND_EXIT_BLOCKED, "UNKNOWN_SERVICE_PROBE", "probe",

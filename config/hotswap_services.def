@@ -12,11 +12,11 @@ HOTSWAP_SERVICE(
     "-",
     "app/services/include/services/zcode_c23_corpus_service.h",
     "vcs_zcode_c23_corpus_rules_v1_validate vcs_zcode_c23_corpus_shard_v1_validate vcs_zcode_c23_corpus_checkpoint_v1_validate vcs_zcode_productivity_receipt_v1_validate vcs_zcode_c23_corpus_rules_v1_default vcs_zcode_c23_corpus_rules_v1_root zcl_hex_encode zcl_u64_add",
-    "zcode.c23.corpus.abi.v1:7f0c2a1e",
-    "zcl.zcode_commons_corpus_status.v1",
+    "zcode.c23.corpus.abi.v1:9c81e40b",
+    "zcode.c23.corpus.schemas.v2:status.v1+show.v1",
     "c23-rules+shard+checkpoint+productivity.v1",
     "ae0c059c8c925464a7d9376b17687b207027833f5337dc49944bcd1b55d3be23",
-    "zcode.commons.corpus.status")
+    "zcode.commons.corpus.show")
 
 HOTSWAP_SERVICE(
     "zcode.c23.economics.v1",

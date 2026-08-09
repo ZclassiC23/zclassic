@@ -10,8 +10,9 @@
 #include <stdint.h>
 
 #define ZCODE_C23_CORPUS_SERVICE_ID "zcode.c23.corpus.v1"
-#define ZCODE_C23_CORPUS_ABI_FINGERPRINT "zcode.c23.corpus.abi.v1:7f0c2a1e"
-#define ZCODE_C23_CORPUS_SCHEMA_FINGERPRINT "zcl.zcode_commons_corpus_status.v1"
+#define ZCODE_C23_CORPUS_ABI_FINGERPRINT "zcode.c23.corpus.abi.v1:9c81e40b"
+#define ZCODE_C23_CORPUS_SCHEMA_FINGERPRINT \
+    "zcode.c23.corpus.schemas.v2:status.v1+show.v1"
 #define ZCODE_C23_CORPUS_WIRE_FINGERPRINT "c23-rules+shard+checkpoint+productivity.v1"
 #define ZCODE_C23_CORPUS_KAT_FINGERPRINT \
     "ae0c059c8c925464a7d9376b17687b207027833f5337dc49944bcd1b55d3be23"
@@ -30,6 +31,22 @@ struct zcode_c23_corpus_status_result_v1 {
     char blocker[160];
 };
 
+struct zcode_c23_corpus_rules_result_v1 {
+    bool found;
+    bool global_completeness_claimed;
+    uint16_t overlap_threshold_bps;
+    uint16_t shard_entry_max;
+    uint16_t checkpoint_shard_max;
+    uint16_t page_max;
+    uint16_t publication_batch_max;
+    uint8_t durable_ack_count;
+    uint8_t durable_operator_group_count;
+    uint64_t max_file_bytes;
+    uint64_t first_milestone_loc;
+    uint64_t second_milestone_loc;
+    char root[65];
+};
+
 struct zcode_c23_corpus_service_v1 {
     enum vcs_zcode_c23_error (*rules_validate)(
         const struct vcs_zcode_c23_corpus_rules_v1 *rules);
@@ -42,6 +59,8 @@ struct zcode_c23_corpus_service_v1 {
     bool (*render_status)(
         const struct vcs_zcode_c23_corpus_checkpoint_v1 *checkpoint,
         struct zcode_c23_corpus_status_result_v1 *out);
+    bool (*render_rules)(const char *requested_root,
+                         struct zcode_c23_corpus_rules_result_v1 *out);
 };
 
 const struct zcode_c23_corpus_service_v1 *zcode_c23_corpus_service_builtin(void);

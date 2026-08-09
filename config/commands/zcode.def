@@ -275,6 +275,25 @@ ZCL_COMMAND_READY_READ(
     zcl_native_handle_zcode_commons_economics_status)
 
 ZCL_COMMAND_READY_READ(
+    "zcode.commons.corpus.show", "zcode.commons.corpus", "",
+    "Show one exact C23 corpus object",
+    "Shows the resident-frozen C23 corpus rules only when the required exact "
+    "root matches. Unknown roots return found:false and are never fetched, "
+    "previewed, or treated as a global completeness claim.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,commons,corpus,c23,rules,root,show,simulation",
+    "zcl.zcode_commons_corpus_show.input.v1",
+    "zcl.zcode_commons_corpus_show.v1", "root", "root",
+    "zclassic23 zcode commons corpus show --root=<64-hex>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_corpus_show)
+
+ZCL_COMMAND_READY_READ(
     "zcode.commons.corpus.status", "zcode.commons.corpus", "",
     "Show the verified C23 corpus lower bound",
     "Shows admitted and durably hosted production/test C23 LOC separately, "

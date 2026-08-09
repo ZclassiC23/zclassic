@@ -508,6 +508,17 @@ static int t_parameterized_probe_catalog_is_host_owned(void)
         ASSERT_EQ((unsigned)probe->byte_budget, 2048u);
         ASSERT_STR_EQ(hotswap_module_probe_leaf(V2_TU_DIAGNOSTICS),
                       "ops.logs");
+        probe = hotswap_probe_case_for_operation(
+            "zcode.commons.corpus.show");
+        ASSERT(probe != NULL);
+        ASSERT_STR_EQ(probe->case_id, "service.corpus.show.rules.v1");
+        ASSERT_STR_EQ(probe->kind, "service");
+        ASSERT_STR_EQ(probe->expected_schema,
+                      "zcl.zcode_commons_corpus_show.v1");
+        ASSERT(strstr(probe->canonical_input_json,
+                      "ae0c059c8c925464a7d9376b17687b207027833f5337dc49944bcd1b55d3be23")
+               != NULL);
+        ASSERT_EQ((unsigned)probe->byte_budget, 2048u);
         PASS();
     } _test_next:;
     return failures;

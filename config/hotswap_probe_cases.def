@@ -27,9 +27,10 @@ HOTSWAP_PROBE_CASE("command.ops.logs.bounded.v1", "command",
     "ops.logs",
     "{\"level\":\"all\",\"max_lines\":1,\"pattern\":\"hotswap\",\"since_secs\":1}",
     "zcl.ops_logs.v1", 2048)
-HOTSWAP_PROBE_CASE("service.corpus.status.default.v1", "service",
-    "zcode.commons.corpus.status", "{}",
-    "zcl.zcode_commons_corpus_status.v1", 4096)
+HOTSWAP_PROBE_CASE("service.corpus.show.rules.v1", "service",
+    "zcode.commons.corpus.show",
+    "{\"root\":\"ae0c059c8c925464a7d9376b17687b207027833f5337dc49944bcd1b55d3be23\"}",
+    "zcl.zcode_commons_corpus_show.v1", 2048)
 HOTSWAP_PROBE_CASE("service.economics.status.default.v1", "service",
     "zcode.commons.economics.status", "{}",
     "zcl.zcode_commons_economics_status.v2", 4096)
