@@ -559,7 +559,7 @@ enum zcl_devloop_publish_mode zcl_devloop_default_watch_publish_mode(void);
  * idempotent command whether it starts a watcher or reports an existing one. */
 const char *zcl_devloop_watcher_freshness(bool active, bool ready);
 const char *zcl_devloop_watcher_next_action(
-    bool active, enum zcl_devloop_publish_mode publish_mode);
+    bool active, bool ready, enum zcl_devloop_publish_mode publish_mode);
 /* Pure path builder shared by the native watcher's flock acquisition and its
  * regression tests.  repo_root must already identify the worktree whose lane
  * is being watched; distinct worktrees consequently receive distinct locks. */

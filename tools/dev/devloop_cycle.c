@@ -1054,11 +1054,14 @@ const char *zcl_devloop_watcher_freshness(bool active, bool ready)
 }
 
 const char *zcl_devloop_watcher_next_action(
-    bool active, enum zcl_devloop_publish_mode publish_mode)
+    bool active, bool ready, enum zcl_devloop_publish_mode publish_mode)
 {
-    if (!active || publish_mode == ZCL_DEVLOOP_PUBLISH_APPLY)
+    (void)publish_mode;
+    if (!active)
         return "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'";
-    return "zclassic23-dev dev loop ensure --input='{\"mode\":\"verify\"}'";
+    if (!ready)
+        return "zclassic23-dev dev loop status";
+    return "edit one C23 file";
 }
 
 int zcl_devloop_run_cycle_mode(const char *repo_root,

@@ -474,16 +474,19 @@ static int test_watcher_publication_containment(void)
         ASSERT(strcmp(zcl_devloop_watcher_freshness(true, true), "current")
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
-                          false, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
+                          false, false, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
                       "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'")
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
-                          true, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
-                      "zclassic23-dev dev loop ensure --input='{\"mode\":\"verify\"}'")
+                          true, false, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
+                      "zclassic23-dev dev loop status") == 0);
+        ASSERT(strcmp(zcl_devloop_watcher_next_action(
+                          true, true, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
+                      "edit one C23 file")
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
-                          true, ZCL_DEVLOOP_PUBLISH_APPLY),
-                      "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'")
+                          true, true, ZCL_DEVLOOP_PUBLISH_APPLY),
+                      "edit one C23 file")
                == 0);
 
         char why_not_live[512], next_command[256];
