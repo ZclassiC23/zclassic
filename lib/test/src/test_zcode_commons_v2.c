@@ -3,6 +3,10 @@
 #include "test/test_core.h"
 
 #include "base/hex.h"
+#include "command/native_command.h"
+#include "crypto/ed25519.h"
+#include "json/json.h"
+#include "vcs/zcode_c23_corpus.h"
 #include "vcs/zcode_commons_v2.h"
 
 #include <string.h>
@@ -17,6 +21,10 @@ static const char asset_root_kat[] =
     "696e2ec2105c03754627c18991ed351b134ffe9942795e4626410e6c43f3ee61";
 static const char workspace_root_kat[] =
     "3053aad90f975aa7d6548784bc80d90f9b51364afec4c5593a44e2d019ee4128";
+static const char source_assignment_root_kat[] =
+    "3c6d904fd178e8e888fc3479ff087f4e2a579412185232aa3feecb9d99d95be7";
+static const char c23_corpus_rules_root_kat[] =
+    "ae0c059c8c925464a7d9376b17687b207027833f5337dc49944bcd1b55d3be23";
 
 static void cv2_fill(uint8_t root[32], uint8_t value)
 {
@@ -76,6 +84,160 @@ static int test_v2_policy_kats(void)
         weakened.excluded_reason_mask &= ~VCS_ZCODE_FAMILY_TARGETED_HATE;
         ASSERT_EQ(vcs_zcode_family_policy_v1_validate(&weakened),
                   VCS_ZCODE_COMMONS_V2_POLICY);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_v2_truthful_activation_status(void)
+{
+    int failures = 0;
+    TEST("Family policy selection is not reported as effective enforcement") {
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        struct zcl_command_request request = {.input = &input};
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.test.moderation_status.v1");
+        zcl_native_handle_zcode_moderation_status(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&reply.data,
+                                      "policy_selected_as_default")));
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                       "enforcement_complete")));
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                       "effective_default")));
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                       "default_public_view")));
+        ASSERT(strcmp(json_get_str(json_get(&reply.data,
+                                            "official_surface_policy")),
+                      "legacy_v1_unchanged") == 0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input);
+        json_set_object(&input);
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.corpus_status.v1");
+        zcl_native_handle_zcode_commons_corpus_status(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(!json_get_bool(json_get(&reply.data, "projection_ready")));
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "admitted_total_loc")),
+                  0);
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                       "global_completeness_claimed")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input);
+        json_set_object(&input);
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.impact_share.v1");
+        zcl_native_handle_zcode_commons_impact_share(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(!json_get_bool(json_get(&reply.data, "shareable")));
+        ASSERT(json_get(&reply.data, "slogan") == NULL);
+        ASSERT(!json_get_bool(json_get(&reply.data, "slogan_emitted")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_v2_c23_corpus_objects(void)
+{
+    int failures = 0;
+    TEST("source assignments and c23 rules have canonical fail-closed wires") {
+        {
+        struct vcs_zcode_source_assignment_v1 assignment = {
+            .schema_version = 1,
+            .flags = VCS_ZCODE_C23_CORPUS_REQUIRED_FLAGS,
+            .source_kind = VCS_ZCODE_SOURCE_CANONICAL_IMPORT,
+            .sequence = 7,
+            .assigned_height = 9000,
+            .assigned_mtp = 8000,
+        };
+        cv2_fill(assignment.source_root, 0x11);
+        cv2_fill(assignment.author_binding_root, 0x12);
+        cv2_fill(assignment.upstream_source_root, 0x13);
+        cv2_fill(assignment.upstream_author_root, 0x14);
+        cv2_fill(assignment.license_root, 0x15);
+        cv2_fill(assignment.assignment_evidence_root, 0x16);
+        uint8_t seed[32]; cv2_fill(seed, 0x17);
+        ASSERT_EQ(vcs_zcode_source_assignment_v1_sign(&assignment, seed),
+                  VCS_ZCODE_C23_OK);
+        uint8_t wire[VCS_ZCODE_SOURCE_ASSIGNMENT_WIRE_BYTES];
+        size_t wire_len = 0;
+        ASSERT_EQ(vcs_zcode_source_assignment_v1_encode(
+                      &assignment, wire, sizeof(wire), &wire_len),
+                  VCS_ZCODE_C23_OK);
+        ASSERT_EQ(wire_len, VCS_ZCODE_SOURCE_ASSIGNMENT_WIRE_BYTES);
+        struct vcs_zcode_source_assignment_v1 decoded;
+        ASSERT_EQ(vcs_zcode_source_assignment_v1_decode(
+                      &decoded, wire, wire_len), VCS_ZCODE_C23_OK);
+        ASSERT(memcmp(&assignment, &decoded, sizeof(assignment)) == 0);
+        uint8_t first_root[32], second_root[32];
+        ASSERT_EQ(vcs_zcode_source_assignment_v1_root(
+                      &assignment, first_root), VCS_ZCODE_C23_OK);
+        ASSERT_EQ(vcs_zcode_source_assignment_v1_root(
+                      &decoded, second_root), VCS_ZCODE_C23_OK);
+        ASSERT(memcmp(first_root, second_root, 32) == 0);
+        char assignment_hex[65];
+        zcl_hex_encode(first_root, 32, assignment_hex);
+        printf("source_assignment.v1=%s\n", assignment_hex);
+        uint8_t expected[32];
+        ASSERT(zcl_hex_decode(source_assignment_root_kat, expected, 32));
+        ASSERT(memcmp(first_root, expected, 32) == 0);
+        wire[40] ^= 1u;
+        ASSERT_EQ(vcs_zcode_source_assignment_v1_decode(
+                      &decoded, wire, wire_len), VCS_ZCODE_C23_SIGNATURE);
+        ASSERT(vcs_zcode_source_kind_counts_v1(
+            VCS_ZCODE_SOURCE_HUMAN_AUTHORED));
+        ASSERT(vcs_zcode_source_kind_counts_v1(
+            VCS_ZCODE_SOURCE_AI_AUTHORED));
+        ASSERT(vcs_zcode_source_kind_counts_v1(
+            VCS_ZCODE_SOURCE_CANONICAL_IMPORT));
+        ASSERT(!vcs_zcode_source_kind_counts_v1(
+            VCS_ZCODE_SOURCE_MECHANICAL_GENERATION));
+        ASSERT(!vcs_zcode_source_kind_counts_v1(
+            VCS_ZCODE_SOURCE_VENDOR_MATERIAL));
+        }
+        {
+        struct vcs_zcode_c23_corpus_rules_v1 rules;
+        vcs_zcode_c23_corpus_rules_v1_default(&rules);
+        ASSERT_EQ(vcs_zcode_c23_corpus_rules_v1_validate(&rules),
+                  VCS_ZCODE_C23_OK);
+        ASSERT_EQ(rules.overlap_threshold_bps, 8000);
+        ASSERT_EQ(rules.shard_entry_max, 4096);
+        ASSERT_EQ(rules.checkpoint_shard_max, 4096);
+        ASSERT_EQ(rules.page_max, 256);
+        ASSERT_EQ(rules.publication_batch_max, 256);
+        ASSERT_EQ(rules.durable_ack_count, 5);
+        ASSERT_EQ(rules.durable_operator_group_count, 3);
+        ASSERT_EQ(rules.first_milestone_loc, UINT64_C(50000000));
+        ASSERT_EQ(rules.second_milestone_loc, UINT64_C(100000000));
+        uint8_t wire[VCS_ZCODE_C23_CORPUS_RULES_WIRE_BYTES];
+        size_t wire_len = 0;
+        ASSERT_EQ(vcs_zcode_c23_corpus_rules_v1_encode(
+                      &rules, wire, sizeof(wire), &wire_len),
+                  VCS_ZCODE_C23_OK);
+        ASSERT_EQ(wire_len, VCS_ZCODE_C23_CORPUS_RULES_WIRE_BYTES);
+        struct vcs_zcode_c23_corpus_rules_v1 decoded;
+        ASSERT_EQ(vcs_zcode_c23_corpus_rules_v1_decode(
+                      &decoded, wire, wire_len), VCS_ZCODE_C23_OK);
+        ASSERT(memcmp(&rules, &decoded, sizeof(rules)) == 0);
+        uint8_t root[32], expected[32];
+        ASSERT_EQ(vcs_zcode_c23_corpus_rules_v1_root(&rules, root),
+                  VCS_ZCODE_C23_OK);
+        char hex[65]; zcl_hex_encode(root, 32, hex);
+        printf("c23_corpus_rules.v1=%s\n", hex);
+        ASSERT(zcl_hex_decode(c23_corpus_rules_root_kat, expected, 32));
+        ASSERT(memcmp(root, expected, 32) == 0);
+        rules.page_max++;
+        ASSERT_EQ(vcs_zcode_c23_corpus_rules_v1_validate(&rules),
+                  VCS_ZCODE_C23_POLICY);
+        }
         PASS();
     } _test_next:;
     return failures;
@@ -481,7 +643,10 @@ static int test_v2_panels(void)
 
 int test_zcode_commons_v2(void)
 {
-    int failures = test_v2_policy_kats() + test_v2_epoch_selection() +
+    int failures = test_v2_policy_kats() +
+                   test_v2_truthful_activation_status() +
+                   test_v2_c23_corpus_objects() +
+                   test_v2_epoch_selection() +
                    test_v2_workspace_objects() +
                    test_v2_coverage_and_receipt() + test_v2_panels();
     TEST("Commons v2 authorities fail closed and remain simulation-only") {

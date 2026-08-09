@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 599 |
+| Registry entries (branches + leaves) | 605 |
 | Top-level roots | 11 |
-| Branches | 139 |
-| Leaves (dispatchable command paths) | 460 |
-| … `ready` (live handler in this build) | 412 |
+| Branches | 141 |
+| Leaves (dispatchable command paths) | 464 |
+| … `ready` (live handler in this build) | 416 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 159 | 37 | 122 |
+| `config/commands/zcode.def` | 165 | 39 | 126 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -977,6 +977,25 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode commons economics status` | ready | read / read / public · instant/tiny | none | `zcl.zcode_commons_economics_status.v2` | `zclassic23 zcode commons economics status` | Show simulation-only v2 evidence economics |
+
+#### `zcode.commons.corpus` — Verified C23 corpus lower-bound projection
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode commons corpus status` | ready | read / read / public · instant/tiny | none | `zcl.zcode_commons_corpus_status.v1` | `zclassic23 zcode commons corpus status` | Show the verified C23 corpus lower bound |
+
+#### `zcode.commons.impact` — Locally rendered productivity evidence
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode commons impact status` | ready | read / read / public · instant/tiny | none | `zcl.zcode_commons_impact_status.v1` | `zclassic23 zcode commons impact status` | Show whether a productivity basis is shareable |
+| `zcode commons impact share` | ready | read / read / public · instant/tiny | none | `zcl.zcode_commons_impact_share.v1` | `zclassic23 zcode commons impact share` | Render a locally shareable productivity statement |
+
+#### `zcode.moderation` — Decentralized Family Commons moderation
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode moderation status` | ready | read / read / public · instant/tiny | none | `zcl.zcode_moderation_status.v1` | `zclassic23 zcode moderation status` | Show Family moderation activation status |
 
 #### `zcode.moderation.policy` — Immutable family policy profiles
 
