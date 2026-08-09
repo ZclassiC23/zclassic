@@ -1046,6 +1046,19 @@ enum zcl_devloop_publish_mode zcl_devloop_default_watch_publish_mode(void)
     return ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY;
 }
 
+const char *zcl_devloop_watcher_freshness(bool active)
+{
+    return active ? "current" : "watcher_not_running";
+}
+
+const char *zcl_devloop_watcher_next_action(
+    bool active, enum zcl_devloop_publish_mode publish_mode)
+{
+    if (!active || publish_mode == ZCL_DEVLOOP_PUBLISH_APPLY)
+        return "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'";
+    return "zclassic23-dev dev loop ensure --input='{\"mode\":\"verify\"}'";
+}
+
 int zcl_devloop_run_cycle_mode(const char *repo_root,
                                const char *const *files,
                                size_t file_count,

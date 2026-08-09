@@ -467,6 +467,21 @@ static int test_watcher_publication_containment(void)
                       "auto") == 0);
         ASSERT(zcl_devloop_publish_mode_name(
                    (enum zcl_devloop_publish_mode)99) == NULL);
+        ASSERT(strcmp(zcl_devloop_watcher_freshness(false),
+                      "watcher_not_running") == 0);
+        ASSERT(strcmp(zcl_devloop_watcher_freshness(true), "current") == 0);
+        ASSERT(strcmp(zcl_devloop_watcher_next_action(
+                          false, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
+                      "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'")
+               == 0);
+        ASSERT(strcmp(zcl_devloop_watcher_next_action(
+                          true, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
+                      "zclassic23-dev dev loop ensure --input='{\"mode\":\"verify\"}'")
+               == 0);
+        ASSERT(strcmp(zcl_devloop_watcher_next_action(
+                          true, ZCL_DEVLOOP_PUBLISH_APPLY),
+                      "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'")
+               == 0);
 
         char lock_path[ZCL_DEVLOOP_PATH_MAX];
         ASSERT(zcl_devloop_watch_lock_path("/tmp/zcl-wt-main", lock_path,

@@ -766,6 +766,11 @@ static void dev_emit_loop_status(const char *repo_root,
     (void)json_push_kv_bool(
         &reply->data, "runtime_publication",
         active && zcl_devloop_publish_mode_applies(info.publish_mode));
+    (void)json_push_kv_str(&reply->data, "freshness",
+                           zcl_devloop_watcher_freshness(active));
+    (void)json_push_kv_str(
+        &reply->data, "agent_next_action",
+        zcl_devloop_watcher_next_action(active, info.publish_mode));
     int64_t epoch = 0;
     struct json_value cycle;
     char why[160] = {0};

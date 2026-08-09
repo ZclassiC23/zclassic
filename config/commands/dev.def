@@ -357,8 +357,9 @@ ZCL_COMMAND_DEV_READ(
     "dev.loop.status", "dev.loop", "dev.loop.heartbeat",
     "Read watcher identity, epoch, and latest verdict",
     "The native watcher's live identity (active, pid, mode) read from its "
-    "lock file, plus the latest persisted cycle verdict; freshness "
-    "matches the watcher's own tick, not this call.", 0,
+    "lock file, plus the latest persisted cycle verdict. Top-level freshness "
+    "is current only while that singleton lock is held; when absent, the "
+    "same idempotent ensure command is the one exact next action.", 0,
     "loop,status,heartbeat,epoch", "zcl.command.empty_input.v1",
     "zcl.dev_loop_status.v1", "", "", "zclassic23 dev loop status",
     ZCL_COMMAND_SCOPE_LOCAL,
