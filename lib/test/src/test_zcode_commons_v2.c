@@ -232,6 +232,9 @@ static int test_v2_truthful_activation_status(void)
                       ZCODE_C23_CORPUS_SERVICE_ID) == 0);
         ASSERT_EQ(json_get_int(json_get(&reply.data, "service_generation")),
                   0);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "blocker")),
+                      "checkpoint_missing: commit a verified corpus "
+                      "checkpoint projection");
         zcl_command_reply_free(&reply);
         json_free(&input);
 
