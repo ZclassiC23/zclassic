@@ -63,6 +63,31 @@ The v2 foundation defines separate root domains for:
   `.h`, `.def` input set, 80% overlap threshold, 4,096-entry shard/checkpoint
   caps, 256-item pages/batches, 50M/100M milestones, and 5-ACK/3-group durable
   hosting predicate. Its canonical root is KAT-bound.
+- `c23_corpus_shard.v1`: up to 4,096 strictly lineage-sorted entries binding
+  releases, Passports, proofs, source assignments, Family admissions and
+  possession evidence. Counted production/test LOC and diagnostic physical
+  lines/semantic units remain separate. Excluded entries carry a closed reason
+  and contribute zero counted LOC. Stable cursors bind the exact shard root and
+  cap every page at 256 entries.
+- `c23_corpus_checkpoint.v1`: a signed sequence of at most 4,096 ordered,
+  non-overlapping shard ranges with exact aggregate counts, census/policy/
+  moderation roots, cutoff coordinates and replication evidence. A 50M or
+  100M milestone requires the same amount to be durably hosted, and successor
+  verification carries the verified 50M root through the chain before a 100M
+  milestone can pass.
+- `productivity_receipt.v1`: a signed fixed-size basis binding PROVEN work,
+  human acceptance, signed release, independent Family admission, retrievable
+  package and checkpoint roots. Structural validity alone is not shareability:
+  the caller must provide a current external proof-chain verifier.
+
+The current KAT roots for the canonical fixtures are:
+
+```text
+c23_corpus_rules.v1          ae0c059c8c925464a7d9376b17687b207027833f5337dc49944bcd1b55d3be23
+c23_corpus_shard.v1          75b6c0fc6e6affe282a9ae3baeeb6424c36d95add766fd29ad2f0a42c872dcd7
+c23_corpus_checkpoint.v1     7528b88dc8793b2ac150cb2de15e0930ea72883d131512b1a3534fa5fc655dca
+productivity_receipt.v1      311f144c37b719d74cea628b9b6613262d1c7f8e838683ac1f54342236e7422a
+```
 
 These objects compose the existing package CAS and its 64 MiB package bound;
 they do not introduce another package store or database authority.

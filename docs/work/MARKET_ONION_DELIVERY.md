@@ -28,7 +28,7 @@ IP there too unless that row is suppressed.
   `tor_integration_fetch_onion_blocking()` (`lib/net/src/tor_integration.c:515`)
   over weak-linked `dynhost_client_fetch` — used today for the
   `/directory.json` seed fetch (`lib/net/src/connman.c:357`). **GET-only**
-  (literal `GET %s HTTP/1.0`, `vendor/tor/src/feature/dynhost/dynhost_client.c:125`), <!-- doc-path-ok: vendor/tor submodule content is not in git ls-files -->
+  (literal `GET %s HTTP/1.0`, `vendor/tor/src/feature/dynhost/dynhost_client.c:125`), <!-- doc-path-ok: optional vendor/tor submodule source is absent from the default checkout -->
   1 MiB response ceiling (`ONION_FETCH_BODY_MAX`, `tor_integration.c:461`).
 - **Transport-independent authorization**: the buyer ed25519 request
   signature (`file_market_delivery_request_seal/verify`) and the
