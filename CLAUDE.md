@@ -405,11 +405,11 @@ Two-mode messaging: off-chain (instant, free) and on-chain (permanent, shielded)
 
 ### ZCL Market — Crypto-Incentivized File Sharing
 
-File marketplace: offer gossip with price metadata, proof-of-possession challenges, and a working file service that streams chunk bytes (`file_service.c` → `fs_send_chunk_fast`) with chunk unlock gated on a mempool-verified payment txid (`handle_zfilepay`, `msgprocessor.c`). On-chain payment settlement and the buy/offer RPC-to-transfer glue are not yet wired end-to-end.
+File marketplace: signed self-authenticating paid offers (ed25519, network-bound) gossiped P2P, proof-of-possession challenges, and a working file service that streams chunk bytes (`file_service.c` → `fs_send_chunk_fast`) with chunk unlock gated on a chain-confirmed Sapling payment claim (`handle_zfilepay`, `msgprocessor.c` → `file_market_payment_service.c`). The trade is wired end-to-end on both sides: seller `app market offer` (seal → persist → content-bind → `zfileoffer` flood; refuses `ENDPOINT_UNKNOWN` without `-externalip` + file-service port) and buyer `app market purchase plan/commit/status/retrieve` (fee-previewed Sapling payment → confirmed-claim authorization → per-chunk signed requests → full-file root re-derivation → atomic publish). Chunk delivery still uses the seller's clearnet `peer_ip:peer_port` endpoint — onion-routed delivery is the named follow-up (`docs/work/MARKETPLACE_NEXT.md` B5).
 
 - P2P gossip of file offers with price per MB
 - Chunk challenges for sybil resistance (prove you have the data)
-- RPC: `zmarket_list`, `zmarket_offer`, `zmarket_buy`, `zmarket_status`
+- Native: `app market offer`, `app market list`, `app market status`, `app market content register/list`, `app market purchase plan/commit/status/retrieve`; legacy `zmarket_offer`/`zmarket_buy` RPCs are contained stubs by design (use the native leaves)
 
 ### Atomic Swaps (ZSWP) — Cross-Chain HTLC Trading
 
