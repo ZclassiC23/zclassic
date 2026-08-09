@@ -20,7 +20,7 @@
 
 app/conditions/src/reducer_frontier_reconcile_light.c 923
 app/controllers/src/agent_anchor_status_controller.c 847
-app/controllers/src/agent_controller.c 842
+app/controllers/src/agent_controller.c 805
 app/controllers/src/api_controller_status.c 894
 app/controllers/src/name_controller.c 1017
 app/controllers/src/swap_controller.c 1027

@@ -837,18 +837,46 @@ int syncdiag_cases_agent_ops(void)
             strcmp(json_get_str(json_get(indexing, "schema")),
                    "zcl.agent_index_runtime.v1") == 0;
         ok = ok && indexing &&
+            json_get(indexing, "collector_complete") != NULL;
+        ok = ok && indexing &&
+            json_get(indexing, "collector_deferred") != NULL;
+        bool indexing_complete = indexing &&
+            json_get_bool(json_get(indexing, "collector_complete"));
+        ok = ok && indexing &&
+            json_get_bool(json_get(indexing, "collector_deferred")) ==
+                !indexing_complete;
+        ok = ok && indexing &&
             strcmp(json_get_str(json_get(indexing, "command")),
                    "make agent-index") == 0;
         ok = ok && indexing &&
-            strcmp(json_get_str(json_get(indexing, "generator")),
-                   "tools/dev/generate-compdb.sh") == 0;
+            (!indexing_complete ||
+             strcmp(json_get_str(json_get(indexing, "generator")),
+                    "tools/dev/generate-compdb.sh") == 0);
         ok = ok && indexing && json_get(indexing, "freshness") != NULL;
         ok = ok && indexing && json_get(indexing, "clangd_optional") != NULL;
         ok = ok && dev_loop_benchmark &&
             strcmp(json_get_str(json_get(dev_loop_benchmark, "schema")),
                    "zcl.dev_loop_bench.v1") == 0;
         ok = ok && dev_loop_benchmark &&
-            json_get(dev_loop_benchmark, "slo") != NULL;
+            json_get(dev_loop_benchmark, "collector_complete") != NULL;
+        ok = ok && dev_loop_benchmark &&
+            json_get(dev_loop_benchmark, "collector_deferred") != NULL;
+        bool benchmark_complete = dev_loop_benchmark &&
+            json_get_bool(json_get(dev_loop_benchmark,
+                                    "collector_complete"));
+        ok = ok && dev_loop_benchmark &&
+            json_get_bool(json_get(dev_loop_benchmark,
+                                   "collector_deferred")) ==
+                !benchmark_complete;
+        ok = ok && dev_loop_benchmark &&
+            (benchmark_complete
+                ? json_get(dev_loop_benchmark, "slo") != NULL
+                : (strcmp(json_get_str(json_get(dev_loop_benchmark,
+                                                "status")),
+                          "unavailable") == 0 &&
+                   json_get(dev_loop_benchmark, "slo") == NULL &&
+                   json_get(dev_loop_benchmark, "collector_blocker") !=
+                       NULL));
         ok = ok && find_object_with_str(commands, "name", "agent_index") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                          "dev_loop_benchmark") != NULL;
@@ -1002,6 +1030,43 @@ int syncdiag_cases_agent_ops(void)
         ok = ok && coverage_lane &&
             strcmp(json_get_str(json_get(coverage_lane, "commit_freshness")),
                    "no_verdict") == 0;
+
+        /* Installed binaries and bounded collectors may not have repository
+         * scripts available. That is an explicit deferred proof state, never
+         * a passing or silently absent benchmark. */
+        char saved_cwd[4096];
+        bool moved_outside_repo = quality_root &&
+            getcwd(saved_cwd, sizeof(saved_cwd)) != NULL &&
+            chdir(quality_root) == 0;
+        struct json_value deferred_build;
+        json_init(&deferred_build);
+        bool deferred_read = moved_outside_repo &&
+            rpc_table_execute(&tbl, "agentbuild", &params, &deferred_build);
+        bool restored_cwd = !moved_outside_repo || chdir(saved_cwd) == 0;
+        const struct json_value *deferred_index =
+            json_get(&deferred_build, "indexing");
+        const struct json_value *deferred_benchmark =
+            json_get(&deferred_build, "dev_loop_benchmark");
+        ok = ok && moved_outside_repo && deferred_read && restored_cwd;
+        ok = ok && deferred_index &&
+            !json_get_bool(json_get(deferred_index, "collector_complete"));
+        ok = ok && deferred_index &&
+            json_get_bool(json_get(deferred_index, "collector_deferred"));
+        ok = ok && deferred_index &&
+            strcmp(json_get_str(json_get(deferred_index, "status")),
+                   "unavailable") == 0;
+        ok = ok && deferred_benchmark &&
+            !json_get_bool(json_get(deferred_benchmark,
+                                    "collector_complete"));
+        ok = ok && deferred_benchmark &&
+            json_get_bool(json_get(deferred_benchmark,
+                                   "collector_deferred"));
+        ok = ok && deferred_benchmark &&
+            strcmp(json_get_str(json_get(deferred_benchmark, "status")),
+                   "unavailable") == 0;
+        ok = ok && deferred_benchmark &&
+            json_get(deferred_benchmark, "slo") == NULL;
+        json_free(&deferred_build);
 
         const char *old_dev_status_cmd = getenv("ZCL_AGENT_DEV_STATUS_CMD");
         char old_dev_status_cmd_buf[4096];
