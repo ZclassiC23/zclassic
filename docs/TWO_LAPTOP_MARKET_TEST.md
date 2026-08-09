@@ -30,11 +30,23 @@ make -j"$(nproc)"   # build/bin/zclassic23
 
 ## 2. Boot both nodes with Tor
 
-On each machine:
+The wallet must be encrypted at rest or the seller offer commit refuses
+(`SELLER_KEY_UNAVAILABLE`) and the buyer money gate refuses — so both
+nodes boot with a wallet-passphrase credential (once per machine):
 
 ```bash
-build/bin/zclassic23 -tor -datadir=$HOME/.zcl-market-test
+mkdir -p -m 700 $HOME/.zcl-market-cred
+printf '%s\n' 'pick-a-test-passphrase' > $HOME/.zcl-market-cred/wallet-passphrase
+chmod 600 $HOME/.zcl-market-cred/wallet-passphrase
+
+env CREDENTIALS_DIRECTORY=$HOME/.zcl-market-cred \
+  build/bin/zclassic23 -tor -datadir=$HOME/.zcl-market-test
 ```
+
+Gotcha: the passphrase is the file's exact bytes **including the
+trailing newline** — a manual `walletunlock` must pass `"pass\n"`, and a
+*wrong*-passphrase unlock wipes the daemon's RAM keystore until the
+correct unlock reloads it.
 
 The onion address appears in:
 
@@ -49,8 +61,8 @@ Tor is disabled, you built the stub — go back to `make tor-full`.
 
 ## 3. Connect B → A
 
-Each node serves `/directory.json` on its onion. Point B at A (either
-form works; clearnet addnode is fine for the first run — see the privacy
+Each node serves `/directory.json` on its onion. Point B at A
+(clearnet addnode is fine for the first run — see the privacy
 note in step 7):
 
 ```bash
@@ -68,12 +80,17 @@ Confirm on B: `build/bin/zclassic23 core network peers` lists A.
 
 ## 4. Free coins for the test (regtest variant)
 
-For a no-real-money first run, boot both with `-regtest` instead and mine
-spendable coins on B (regtest mining is CPU-instant):
+For a no-real-money first run, boot both with `-regtest
+-regtestshielded` instead (shielded active from genesis — without the
+second flag mining silently returns `[]`), then mine spendable coins on
+B in chunks of 5 (regtest mining is CPU-instant; a single big call can
+return an empty batch):
 
 ```bash
 ADDR=$(ZCL_DATADIR=$HOME/.zcl-market-test build/bin/zclassic23 getnewaddress)
-ZCL_DATADIR=$HOME/.zcl-market-test build/bin/zclassic23 generatetoaddress 101 "$ADDR"
+n=101; while [ $n -gt 0 ]; do c=5; [ $n -lt 5 ] && c=$n
+  ZCL_DATADIR=$HOME/.zcl-market-test build/bin/zclassic23 generatetoaddress $c "$ADDR"
+  n=$((n-c)); sleep 1; done
 ```
 
 On mainnet the same flow works with real ZCL in B's shielded wallet —
@@ -90,18 +107,31 @@ printf '%s' '{"filepath":"/home/alice/demo.bin","price_per_mb_zat":1000,"confirm
 This builds the content manifest, signs the self-authenticating offer
 (ed25519, network-bound), persists it, registers the content binding so
 chunks can be served, and floods `zfileoffer` to every peer. The seller
-signs the endpoint it actually knows: `-externalip` supplies the IP (the
-buyer connects to `peer_ip:peer_port` directly — see step 7), the file
-service supplies the port. Without `-externalip` the commit refuses with
-ENDPOINT_UNKNOWN instead of signing a guess. Calling without
-`confirm:true` first returns the non-mutating plan (root hash, size,
-exact total) plus the commit input.
+signs the endpoint it actually knows: booted with `-tor` (and no
+`-externalip`) the offer commits its **onion endpoint** automatically —
+the buyer's chunks ride Tor (see step 7); `-externalip` supplies a
+clearnet IP instead (buyer connects to `peer_ip:peer_port` directly).
+With neither, the commit refuses with ENDPOINT_UNKNOWN instead of
+signing a guess. Calling without `confirm:true` first returns the
+non-mutating plan (root hash, size, exact total) plus the commit input.
 
 ## 6. Buyer: find it, pay for it, download it (machine B)
 
 ```bash
 build/bin/zclassic23 app market list        # → offers; note offer_id + price
+```
 
+Heads-up (community content moderation): every node boots on the
+`general-audience.v1` default profile, so a freshly gossiped offer
+arrives `unreviewed` and is **hidden from the default list** — with an
+honest `hidden_count`. To see it, either take the open view
+(`app market list --input '{"profile":"open"}'`) or mark it on YOUR
+node only (`app market moderation review set --input
+'{"offer_id":"<64hex>","review_state":"reviewed_ok"}'`). Nothing is
+ever banned or deleted network-wide — this is your node's own view of
+the same gossip (see §10).
+
+```bash
 printf '%s' '{"wallet_scope":"dev","offer_id":"<64hex>","source_address":"<B-owned-address>","chunk_start":0,"chunks_paid":<num_chunks>,"idempotency_key":"laptop-test-001"}' \
   | build/bin/zclassic23 app market purchase plan --input=-
 # → fee preview + plan_id; nothing has moved
@@ -190,3 +220,32 @@ Recipe differences from the laptop path above:
   commit's `source address is not a wallet spending key` /
   `Insufficient funds from specified address` pair will send you
   debugging the keypool.
+
+## 10. Moderation: two laptops, two opinions about the same file
+
+Per-node listing moderation means the buyer and seller can legitimately
+disagree about the same offer: each node's own profile decides what its
+`app market list` shows, and nothing is ever deleted or banned
+network-wide. On the laptops above, try it by hand — B boots on the
+immutable `general-audience.v1` default, so a fresh offer ingests as
+`unreviewed` and is hidden from B's default list (watch the honest
+`hidden_count`); `app market list --input '{"profile":"open"}'` is the
+explicit opt-in that shows everything annotated with its local
+`review_state`; `app market moderation profile set` (plan, then commit
+with the minted `plan_token`) switches B's node default to `open-view`;
+`app market moderation review set` is B's own curation mark
+(`reviewed_ok` shows, `sensitive` hides). A's view is unchanged
+throughout — the mark never leaves B.
+
+The one-command proof is the acceptance:
+
+```bash
+make test-market-moderation-acceptance
+```
+
+It runs the whole disagreement on two loopback regtest daemons (no Tor
+needed — moderation is transport-independent): same signed offer,
+different profiles, hidden ≠ rejected (one gossip-stored row on both
+nodes), and the signed wire bytes byte-identical on both sides after
+every moderation action. No payment is made — this is a visibility
+proof, not a trade.

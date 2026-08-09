@@ -1212,6 +1212,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
         test-reindex-smoke test-reindex-killmid \
         test-two-node-peer-tip test-science-acceptance test-market-acceptance \
+        test-market-moderation-acceptance \
         chaos chaos-clean \
         replay-canary-anchor replay-canary-genesis \
         soak-evidence-report soak-evidence-selftest \
@@ -3940,6 +3941,7 @@ test-two-node-peer-tip: zclassic23 zcl-rpc
 # depends on the host Landlock/seccomp sandbox for the confined executor.
 .PHONY: test-zcode-dht-acceptance test-science-acceptance \
 	test-market-acceptance test-market-onion-acceptance \
+	test-market-moderation-acceptance \
 	zcode-reproduction-acceptance
 test-zcode-dht-acceptance: zclassic23 zcl-rpc
 	@bash tools/dev/zcode_dht_acceptance.sh
@@ -3973,6 +3975,25 @@ test-market-acceptance: zclassic23 zcl-rpc
 # prover, and it FAILS with a named reason when the host cannot bootstrap.
 test-market-onion-acceptance: zclassic23 zcl-rpc
 	@bash tools/dev/market_onion_acceptance.sh
+
+# Moderation acceptance: two isolated regtest daemons (397xx quads +
+# 20050/20051 + 39997, loopback P2P only, no Tor — moderation is
+# transport-independent). The seller commits one signed paid offer; it
+# gossips to the buyer, and the two nodes then apply DIFFERENT
+# moderation profiles to the SAME offer_id: the boot-default
+# general-audience.v1 hides the unreviewed offer with an honest
+# hidden_count, the explicit {"profile":"open"} opt-in and an open-view
+# node default (plan/commit) show it annotated, reviewed_ok/sensitive
+# review marks drive per-node visibility, and A and B legitimately
+# disagree while file_offers keeps exactly one gossip-stored row on
+# both (hidden != rejected). Closes with the protocol-validity
+# separation proof: the signed wire columns are byte-identical on both
+# nodes and untouched by every moderation action. DELIBERATELY opt-in
+# (NOT in `make ci`) — it spawns two real nodes; no payment is planned
+# or paid (visibility acceptance, not a trade), so ~/.zcash-params is
+# not needed beyond what regtestshielded mining already loads.
+test-market-moderation-acceptance: zclassic23 zcl-rpc
+	@bash tools/dev/market_moderation_acceptance.sh
 
 # ── metaverse-tour / metaverse-verify (docs/METAVERSE_MVP.md, MM1 + MM7) ──
 #
