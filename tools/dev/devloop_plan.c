@@ -858,6 +858,30 @@ static bool append_execution_set(const struct zcl_devloop_plan *plan,
                    valid ? "true" : "false", digest_string);
 }
 
+static const char *plan_first_non_live_path(const struct zcl_devloop_plan *plan,
+                                            const char *const *files,
+                                            size_t file_count)
+{
+    if (!plan || !files || file_count == 0)
+        return "";
+    if (plan->consensus_risk) {
+        for (size_t i = 0; i < file_count; i++)
+            if (zcl_devloop_path_is_sealed_core(files[i]) ||
+                path_is_consensus_risk(files[i]))
+                return files[i];
+    }
+    const struct hotswap_eligible_entry *owner = hotswap_entry(files[0]);
+    for (size_t i = 0; i < file_count; i++) {
+        const struct hotswap_eligible_entry *entry = hotswap_entry(files[i]);
+        if (!entry || (owner && entry != owner))
+            return files[i];
+    }
+    /* Proof-closure refusal is a property of the exact batch rather than one
+     * classifier path. `files` already carries that whole batch; choose its
+     * first stable member as the diagnostic anchor. */
+    return files[0];
+}
+
 /* Shared serializer for a fully-computed plan. When `include_closure` is set,
  * the closure_groups + closure_truncated fields are emitted too; path_groups is
  * always emitted (additive; existing readers ignore unknown keys). */
@@ -866,6 +890,8 @@ static size_t plan_json_body(const struct zcl_devloop_plan *plan,
                              bool include_closure, char *out, size_t out_sz)
 {
     size_t pos = 0;
+    bool proof_admissible = true;
+    const char *proof_why = "";
     /* Render against the SMALLER of the caller's buffer and the wire ceiling
      * the serving leaf declares (ZCL_DEVLOOP_PLAN_WIRE_MAX). The native
      * dev.test.plan handler hands us a 16 KB stack buffer, but the command
@@ -985,11 +1011,12 @@ static size_t plan_json_body(const struct zcl_devloop_plan *plan,
         /* C4: the one field a caller that needs PROOF must read. False means
          * the groups listed above still RUN, but they are not evidence that
          * the change is covered. */
-        const char *why = "";
-        bool admissible = zcl_devloop_plan_proof_admissible(plan, &why);
+        proof_admissible = zcl_devloop_plan_proof_admissible(plan,
+                                                              &proof_why);
         if (!appendf(out, out_sz, &pos, "],\"proof_admissible\":%s,"
-                     "\"proof_refusal\":", admissible ? "true" : "false") ||
-            !append_json_string(out, out_sz, &pos, why))
+                     "\"proof_refusal\":",
+                     proof_admissible ? "true" : "false") ||
+            !append_json_string(out, out_sz, &pos, proof_why))
             return 0;
     }
     /* Render this bounded, abridgable list after all mandatory closure and
@@ -998,8 +1025,36 @@ static size_t plan_json_body(const struct zcl_devloop_plan *plan,
      * earlier optional execution listing consumed space needed by closure. */
     if (!append_execution_set(plan, out, out_sz, &pos))
         return 0;
-    if (!appendf(out, out_sz, &pos,
-                 ",\"agent_next_action\":\"edit code; the native loop owns execution\"}"))
+
+    /* Make the classification actionable without asking a new agent to infer
+     * whether `action=hotswap` was later refused by proof admission. A
+     * path-only document reports classification eligibility; the native
+     * acting path always requests closure and therefore also binds this bit to
+     * proof_admissible. Every refusal carries its stable code plus the exact
+     * first changed path (the complete batch remains in `files`). */
+    bool live_eligible = plan->action == ZCL_DEVLOOP_HOTSWAP &&
+                         (!include_closure || proof_admissible);
+    const char *why_not_live = live_eligible
+        ? ""
+        : (plan->action == ZCL_DEVLOOP_HOTSWAP && include_closure
+            ? proof_why
+            : plan->reason);
+    const char *why_not_live_path = live_eligible
+        ? ""
+        : plan_first_non_live_path(plan, files, file_count);
+    const char *next_action = file_count == 0
+        ? "edit one C23 file"
+        : (plan->docs_only
+            ? "make lint"
+            : "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'");
+    if (!appendf(out, out_sz, &pos, ",\"live_eligible\":%s,\"why_not_live\":",
+                 live_eligible ? "true" : "false") ||
+        !append_json_string(out, out_sz, &pos, why_not_live) ||
+        !appendf(out, out_sz, &pos, ",\"why_not_live_path\":") ||
+        !append_json_string(out, out_sz, &pos, why_not_live_path) ||
+        !appendf(out, out_sz, &pos, ",\"agent_next_action\":") ||
+        !append_json_string(out, out_sz, &pos, next_action) ||
+        !appendf(out, out_sz, &pos, "}"))
         return 0;
     return pos;
 }
