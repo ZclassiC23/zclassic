@@ -144,7 +144,7 @@ done < "$BASELINE"
 # ── measured graph ───────────────────────────────────────────────────────
 # ZCL_LINKGRAPH_OBJ_DIR is the test/diagnostic seam: point the gate at a
 # synthetic object tree instead of build/obj. test_make_lint_gates uses it to
-# plant a violation and prove this gate fires (the hardlink sandbox those
+# plant a violation and prove this gate fires (the private sandbox those
 # checks run in has no build/ at all). Setting it is always EXPLICIT — the
 # hazard this gate was fixed for was an implicit fall-through to whatever tree
 # happened to be warm, not a deliberate override.

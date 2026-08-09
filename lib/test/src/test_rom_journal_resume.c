@@ -204,6 +204,21 @@ static int64_t seed_chunks_served(void)
     return n;
 }
 
+/* fs_send_chunk_fast() returns once the reply bytes are handed off; the
+ * server worker increments its authoritative counter immediately afterward.
+ * A fast client can therefore observe the reply a scheduler quantum before
+ * the counter under heavy parallel-suite load. Wait only for that one-sided
+ * handoff, then retain the exact-count assertion at every call site. */
+static int64_t seed_chunks_served_wait_at_least(int64_t expected)
+{
+    int64_t observed = seed_chunks_served();
+    for (int i = 0; observed < expected && i < 2000; i++) {
+        platform_sleep_ms(1);
+        observed = seed_chunks_served();
+    }
+    return observed;
+}
+
 /* ── (a) Kill-9-mid-download resume: byte accounting ────────────────────── */
 
 static int test_rom_journal_kill9_resume(void)
@@ -291,7 +306,8 @@ static int test_rom_journal_kill9_resume(void)
         ASSERT(rom_fetch_download_verified("127.0.0.1", port, &m, chunk_sha3,
                                            manifest_chunks, cdir, NULL, NULL));
 
-        int64_t served_after = seed_chunks_served();
+        int64_t served_after =
+            seed_chunks_served_wait_at_least(served_before + 1);
         /* THE assertion: exactly ONE chunk crossed the wire on resume. */
         ASSERT(served_after - served_before == 1);
 
@@ -392,7 +408,8 @@ static int test_rom_journal_header_mismatch_discard(void)
         ASSERT(rom_fetch_download_verified("127.0.0.1", port, &m, chunk_sha3,
                                            manifest_chunks, cdir, NULL, NULL));
 
-        int64_t served_after = seed_chunks_served();
+        int64_t served_after = seed_chunks_served_wait_at_least(
+            served_before + (int64_t)m.num_chunks);
         /* Nothing carried over from the stale state: every chunk of the
          * real artifact crossed the wire fresh. */
         ASSERT(served_after - served_before == (int64_t)m.num_chunks);
@@ -500,7 +517,8 @@ static int test_rom_journal_bad_chunk_then_recovery(void)
         int64_t served_before = seed_chunks_served();
         ASSERT(!rom_fetch_download_verified("127.0.0.1", port, &m, bad_sha3,
                                             manifest_chunks, cdir, NULL, NULL));
-        int64_t served_after = seed_chunks_served();
+        int64_t served_after =
+            seed_chunks_served_wait_at_least(served_before + 1);
         /* Chunk 1 was fetched over the wire (the server has no notion of
          * client-side digest correctness) but chunk 0 was NOT re-served. */
         ASSERT(served_after - served_before == 1);
@@ -526,7 +544,7 @@ static int test_rom_journal_bad_chunk_then_recovery(void)
         served_before = seed_chunks_served();
         ASSERT(rom_fetch_download_verified("127.0.0.1", port, &m, good_sha3,
                                            manifest_chunks, cdir, NULL, NULL));
-        served_after = seed_chunks_served();
+        served_after = seed_chunks_served_wait_at_least(served_before + 1);
         ASSERT(served_after - served_before == 1);
 
         char final_path[1200];
