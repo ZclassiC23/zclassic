@@ -48,6 +48,10 @@ const char *vcs_zcode_c23_error_string(enum vcs_zcode_c23_error error)
     case VCS_ZCODE_C23_POLICY: return "census-policy";
     case VCS_ZCODE_C23_TIME: return "chain-time";
     case VCS_ZCODE_C23_SIGNATURE: return "signature";
+    case VCS_ZCODE_C23_OVERFLOW: return "arithmetic-overflow";
+    case VCS_ZCODE_C23_CURSOR: return "root-cursor";
+    case VCS_ZCODE_C23_ANCESTRY: return "checkpoint-ancestry";
+    case VCS_ZCODE_C23_PROOF: return "external-proof";
     }
     return "unknown-c23-corpus-error";
 }
