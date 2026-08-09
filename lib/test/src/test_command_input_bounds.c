@@ -200,10 +200,12 @@ static int t_frame_budget(void)
         zcl_command_registry_find(reg, "zcode.commons.corpus.verify", NULL);
     const struct zcl_command_spec *shard_verify = zcl_command_registry_find(
         reg, "zcode.commons.corpus.shard.verify", NULL);
+    const struct zcl_command_spec *shard_page = zcl_command_registry_find(
+        reg, "zcode.commons.corpus.shard.page", NULL);
 
     CIB_CHECK("all fixture leaves resolve",
-              plan && query && verify && shard_verify);
-    if (!plan || !query || !verify || !shard_verify)
+              plan && query && verify && shard_verify && shard_page);
+    if (!plan || !query || !verify || !shard_verify || !shard_page)
         return failures;
 
     size_t plan_budget = zcl_command_registry_input_budget_bytes(plan);

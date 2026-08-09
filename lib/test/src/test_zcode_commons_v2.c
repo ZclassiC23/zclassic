@@ -83,6 +83,34 @@ static enum vcs_zcode_c23_error cv2_candidate_shard_selective(
         ? VCS_ZCODE_C23_PROOF : error;
 }
 
+static enum vcs_zcode_c23_error cv2_candidate_shard_page_accept_all(
+    const struct vcs_zcode_c23_corpus_shard_v1 *shard,
+    const struct vcs_zcode_c23_page_cursor_v1 *cursor, size_t page_size,
+    size_t *first_index, size_t *item_count,
+    struct vcs_zcode_c23_page_cursor_v1 *next_cursor, bool *has_more)
+{
+    (void)shard; (void)cursor; (void)page_size;
+    if (first_index) *first_index = 0;
+    if (item_count) *item_count = 1;
+    if (next_cursor) memset(next_cursor, 0, sizeof(*next_cursor));
+    if (has_more) *has_more = false;
+    return VCS_ZCODE_C23_OK;
+}
+
+static enum vcs_zcode_c23_error cv2_candidate_shard_page_selective(
+    const struct vcs_zcode_c23_corpus_shard_v1 *shard,
+    const struct vcs_zcode_c23_page_cursor_v1 *cursor, size_t page_size,
+    size_t *first_index, size_t *item_count,
+    struct vcs_zcode_c23_page_cursor_v1 *next_cursor, bool *has_more)
+{
+    enum vcs_zcode_c23_error error =
+        zcode_c23_corpus_service_builtin()->shard_page(
+            shard, cursor, page_size, first_index, item_count, next_cursor,
+            has_more);
+    return error == VCS_ZCODE_C23_OK && page_size == 2
+        ? VCS_ZCODE_C23_PROOF : error;
+}
+
 static enum vcs_zcode_c23_error cv2_candidate_productivity_accept_all(
     const struct vcs_zcode_productivity_receipt_v1 *receipt)
 {
@@ -488,6 +516,13 @@ static int test_v2_c23_checkpoint_verify_command(void)
         ASSERT_EQ(vcs_zcode_c23_corpus_checkpoint_v1_sign(&checkpoint, seed),
                   VCS_ZCODE_C23_OK);
 
+        struct zcode_c23_corpus_status_result_v1 status;
+        ASSERT(zcode_c23_corpus_service_builtin()->render_status(
+            &checkpoint, &status));
+        ASSERT(status.projection_ready);
+        ASSERT_EQ(status.admitted_total_loc, 15);
+        ASSERT(strstr(status.blocker, "50000000") != NULL);
+
         uint8_t wire[VCS_ZCODE_C23_CHECKPOINT_HEADER_WIRE_BYTES +
                      VCS_ZCODE_C23_CHECKPOINT_BINDING_WIRE_BYTES];
         size_t wire_len = 0;
@@ -696,6 +731,159 @@ static int test_v2_c23_shard_verify_command(void)
         ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
         ASSERT_STR_EQ(reply.error.code, "CORPUS_SHARD_INVALID");
         ASSERT(!json_get_bool(json_get(&reply.data, "verified")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_v2_c23_shard_page_command(void)
+{
+    int failures = 0;
+    TEST("corpus shard pages bind cursors to exact roots through the pure service") {
+        struct vcs_zcode_c23_corpus_entry_v1 entries[3];
+        memset(entries, 0, sizeof(entries));
+        for (size_t i = 0; i < 3; i++) {
+            entries[i].release_sequence = 800 + i;
+            entries[i].production_loc = 10 + i;
+            entries[i].test_loc = 1;
+            entries[i].physical_lines = 15 + i;
+            entries[i].unique_semantic_units = 8 + i;
+            entries[i].evidence_mask = VCS_ZCODE_C23_EVIDENCE_REQUIRED_MASK;
+            entries[i].flags = VCS_ZCODE_C23_ENTRY_COUNTED |
+                               VCS_ZCODE_C23_ENTRY_DURABLE;
+            cv2_fill(entries[i].semantic_lineage_root, (uint8_t)(0x21 + i));
+            cv2_fill(entries[i].release_root, (uint8_t)(0x31 + i));
+            cv2_fill(entries[i].passport_root, (uint8_t)(0x41 + i));
+            cv2_fill(entries[i].proof_root, (uint8_t)(0x51 + i));
+            cv2_fill(entries[i].source_assignment_root,
+                     (uint8_t)(0x61 + i));
+            cv2_fill(entries[i].admission_root, (uint8_t)(0x71 + i));
+            cv2_fill(entries[i].possession_root, (uint8_t)(0x81 + i));
+        }
+        struct vcs_zcode_c23_corpus_rules_v1 rules;
+        struct vcs_zcode_c23_corpus_shard_v1 shard = {
+            .schema_version = 1,
+            .flags = VCS_ZCODE_C23_CORPUS_REQUIRED_FLAGS,
+            .entries = entries,
+            .entry_count = 3,
+        };
+        vcs_zcode_c23_corpus_rules_v1_default(&rules);
+        ASSERT_EQ(vcs_zcode_c23_corpus_rules_v1_root(&rules,
+                                                     shard.rules_root),
+                  VCS_ZCODE_C23_OK);
+        cv2_fill(shard.family_policy_root, 0x91);
+        cv2_fill(shard.moderation_set_root, 0x92);
+
+        uint8_t wire[VCS_ZCODE_C23_SHARD_HEADER_WIRE_BYTES +
+                     3u * VCS_ZCODE_C23_SHARD_ENTRY_WIRE_BYTES];
+        size_t wire_len = 0;
+        ASSERT_EQ(vcs_zcode_c23_corpus_shard_v1_encode(
+                      &shard, wire, sizeof(wire), &wire_len),
+                  VCS_ZCODE_C23_OK);
+        char wire_hex[sizeof(wire) * 2u + 1u];
+        zcl_hex_encode(wire, wire_len, wire_hex);
+
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        json_push_kv_str(&input, "shard", wire_hex);
+        json_push_kv_int(&input, "limit", 2);
+        struct zcl_command_request request = {.input = &input};
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.test.corpus_shard_page.v1");
+        zcl_native_handle_zcode_commons_corpus_shard_page(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "kind")),
+                      "c23_corpus_shard.page.v1");
+        ASSERT(json_get_bool(json_get(&reply.data, "verified")));
+        ASSERT(json_get_bool(json_get(&reply.data, "has_more")));
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "first_index")), 0);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "item_count")), 2);
+        const struct json_value *page_entries = json_get(&reply.data,
+                                                         "entries");
+        ASSERT(page_entries && page_entries->type == JSON_ARR);
+        ASSERT_EQ(page_entries->num_children, 2);
+        ASSERT_EQ(json_get_int(json_get(&page_entries->children[0],
+                                        "release_sequence")), 800);
+        const char *cursor_value = json_get_str(json_get(&reply.data,
+                                                         "next_cursor"));
+        ASSERT(cursor_value && strlen(cursor_value) == 68);
+        char cursor[69];
+        (void)snprintf(cursor, sizeof(cursor), "%s", cursor_value);
+        const char *root = json_get_str(json_get(&reply.data, "shard_root"));
+        ASSERT(root && memcmp(cursor, root, 64) == 0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        struct zcode_c23_corpus_service_v1 weak_vtable =
+            *zcode_c23_corpus_service_builtin();
+        weak_vtable.shard_page = cv2_candidate_shard_page_accept_all;
+        struct zcl_hotswap_service_candidate candidate = {
+            .service_id = ZCODE_C23_CORPUS_SERVICE_ID,
+            .source_tu = "app/services/src/zcode_c23_corpus_service.c",
+            .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+            .vtable_size = sizeof(weak_vtable),
+            .abi_fingerprint = ZCODE_C23_CORPUS_ABI_FINGERPRINT,
+            .schema_fingerprint = ZCODE_C23_CORPUS_SCHEMA_FINGERPRINT,
+            .wire_fingerprint = ZCODE_C23_CORPUS_WIRE_FINGERPRINT,
+            .kat_fingerprint = ZCODE_C23_CORPUS_KAT_FINGERPRINT,
+            .vtable = &weak_vtable,
+        };
+        struct zcl_hotswap_service_report report = {0};
+        ASSERT(!zcl_hotswap_service_publish(
+            zcl_native_zcode_corpus_service_contract(), &candidate, true,
+            &report));
+        ASSERT_STR_EQ(report.stage, "kat");
+        ASSERT(strstr(report.error, "cursor") != NULL);
+
+        struct zcode_c23_corpus_service_v1 selective_vtable =
+            *zcode_c23_corpus_service_builtin();
+        selective_vtable.shard_page = cv2_candidate_shard_page_selective;
+        candidate.vtable = &selective_vtable;
+        ASSERT(zcl_hotswap_service_publish(
+            zcl_native_zcode_corpus_service_contract(), &candidate, true,
+            &report));
+        json_init(&input); json_set_object(&input);
+        json_push_kv_str(&input, "shard", wire_hex);
+        json_push_kv_int(&input, "limit", 2);
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.corpus_shard_page.v1");
+        zcl_native_handle_zcode_commons_corpus_shard_page(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "CORPUS_SHARD_INVALID");
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        zcl_hotswap_service_reset();
+
+        json_init(&input); json_set_object(&input);
+        json_push_kv_str(&input, "shard", wire_hex);
+        json_push_kv_str(&input, "cursor", cursor);
+        json_push_kv_int(&input, "limit", 2);
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.corpus_shard_page.v1");
+        zcl_native_handle_zcode_commons_corpus_shard_page(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(!json_get_bool(json_get(&reply.data, "has_more")));
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "first_index")), 2);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "item_count")), 1);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "next_cursor")), "");
+        page_entries = json_get(&reply.data, "entries");
+        ASSERT(page_entries && page_entries->num_children == 1);
+        ASSERT_EQ(json_get_int(json_get(&page_entries->children[0],
+                                        "release_sequence")), 802);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        cursor[0] = cursor[0] == '0' ? '1' : '0';
+        json_init(&input); json_set_object(&input);
+        json_push_kv_str(&input, "shard", wire_hex);
+        json_push_kv_str(&input, "cursor", cursor);
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.corpus_shard_page.v1");
+        zcl_native_handle_zcode_commons_corpus_shard_page(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "CORPUS_SHARD_CURSOR_INVALID");
         zcl_command_reply_free(&reply);
         json_free(&input);
         PASS();
@@ -1224,6 +1412,7 @@ int test_zcode_commons_v2(void)
                    test_v2_c23_corpus_objects() +
                    test_v2_c23_checkpoint_verify_command() +
                    test_v2_c23_shard_verify_command() +
+                   test_v2_c23_shard_page_command() +
                    test_v2_productivity_verify_command() +
                    test_v2_epoch_selection() +
                    test_v2_workspace_objects() +

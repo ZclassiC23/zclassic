@@ -10,9 +10,9 @@
 #include <stdint.h>
 
 #define ZCODE_C23_CORPUS_SERVICE_ID "zcode.c23.corpus.v1"
-#define ZCODE_C23_CORPUS_ABI_FINGERPRINT "zcode.c23.corpus.abi.v1:9c81e40b"
+#define ZCODE_C23_CORPUS_ABI_FINGERPRINT "zcode.c23.corpus.abi.v1:50d4d388"
 #define ZCODE_C23_CORPUS_SCHEMA_FINGERPRINT \
-    "zcode.c23.corpus.schemas.v2:status.v1+show.v1"
+    "zcode.c23.corpus.schemas.v3:status.v1+show.v1+shard-page.v1"
 #define ZCODE_C23_CORPUS_WIRE_FINGERPRINT "c23-rules+shard+checkpoint+productivity.v1"
 #define ZCODE_C23_CORPUS_KAT_FINGERPRINT \
     "ae0c059c8c925464a7d9376b17687b207027833f5337dc49944bcd1b55d3be23"
@@ -52,6 +52,11 @@ struct zcode_c23_corpus_service_v1 {
         const struct vcs_zcode_c23_corpus_rules_v1 *rules);
     enum vcs_zcode_c23_error (*shard_validate)(
         const struct vcs_zcode_c23_corpus_shard_v1 *shard);
+    enum vcs_zcode_c23_error (*shard_page)(
+        const struct vcs_zcode_c23_corpus_shard_v1 *shard,
+        const struct vcs_zcode_c23_page_cursor_v1 *cursor, size_t page_size,
+        size_t *first_index, size_t *item_count,
+        struct vcs_zcode_c23_page_cursor_v1 *next_cursor, bool *has_more);
     enum vcs_zcode_c23_error (*checkpoint_validate)(
         const struct vcs_zcode_c23_corpus_checkpoint_v1 *checkpoint);
     enum vcs_zcode_c23_error (*productivity_validate)(

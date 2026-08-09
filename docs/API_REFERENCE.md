@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 614 |
+| Registry entries (branches + leaves) | 615 |
 | Top-level roots | 11 |
 | Branches | 144 |
-| Leaves (dispatchable command paths) | 470 |
-| … `ready` (live handler in this build) | 422 |
+| Leaves (dispatchable command paths) | 471 |
+| … `ready` (live handler in this build) | 423 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 174 | 42 | 132 |
+| `config/commands/zcode.def` | 175 | 42 | 133 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -998,6 +998,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode commons corpus shard verify` | ready | read / read / public · instant/low | `shard` | `zcl.zcode_commons_corpus_shard_verify.v1` | `zclassic23 zcode commons corpus shard verify --shard=<lowercase-hex-wire>` | Verify one bounded C23 corpus shard |
+| `zcode commons corpus shard page` | ready | read / read / public · instant/low | **`shard`**, `cursor`, `limit` | `zcl.zcode_commons_corpus_shard_page.v1` | `zclassic23 zcode commons corpus shard page --input='{"shard":"<lowercase-hex-wire>","limit":256}'` | Read one stable-root page from a bounded C23 corpus shard |
 
 #### `zcode.commons.impact` — Locally rendered productivity evidence
 

@@ -9,6 +9,7 @@
 #include "base/hex.h"
 #include "hotswap/hotswap_service.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -22,6 +23,17 @@ static enum vcs_zcode_c23_error shard_validate(
     const struct vcs_zcode_c23_corpus_shard_v1 *shard)
 {
     return vcs_zcode_c23_corpus_shard_v1_validate(shard);
+}
+
+static enum vcs_zcode_c23_error shard_page(
+    const struct vcs_zcode_c23_corpus_shard_v1 *shard,
+    const struct vcs_zcode_c23_page_cursor_v1 *cursor, size_t page_size,
+    size_t *first_index, size_t *item_count,
+    struct vcs_zcode_c23_page_cursor_v1 *next_cursor, bool *has_more)
+{
+    return vcs_zcode_c23_corpus_shard_v1_page(
+        shard, cursor, page_size, first_index, item_count, next_cursor,
+        has_more);
 }
 
 static enum vcs_zcode_c23_error checkpoint_validate(
@@ -75,6 +87,22 @@ static bool render_status(
     out->durably_hosted_loc = checkpoint->durable_loc;
     out->physical_lines = checkpoint->physical_lines;
     out->unique_semantic_units = checkpoint->unique_semantic_units;
+    if (total < VCS_ZCODE_C23_FIRST_MILESTONE_LOC) {
+        (void)snprintf(out->blocker, sizeof(out->blocker),
+            "verified lower bound is %" PRIu64
+            " LOC; next milestone requires %" PRIu64 " LOC",
+            total, (uint64_t)VCS_ZCODE_C23_FIRST_MILESTONE_LOC);
+    } else if (checkpoint->durable_loc < total) {
+        (void)snprintf(out->blocker, sizeof(out->blocker),
+            "durable hosting covers %" PRIu64 " of %" PRIu64
+            " admitted LOC",
+            checkpoint->durable_loc, total);
+    } else if (total < VCS_ZCODE_C23_SECOND_MILESTONE_LOC) {
+        (void)snprintf(out->blocker, sizeof(out->blocker),
+            "verified durable lower bound is %" PRIu64
+            " LOC; next milestone requires %" PRIu64 " LOC",
+            total, (uint64_t)VCS_ZCODE_C23_SECOND_MILESTONE_LOC);
+    }
     return true;
 }
 
@@ -109,6 +137,7 @@ static bool render_rules(const char *requested_root,
 static const struct zcode_c23_corpus_service_v1 k_builtin = {
     .rules_validate = rules_validate,
     .shard_validate = shard_validate,
+    .shard_page = shard_page,
     .checkpoint_validate = checkpoint_validate,
     .productivity_validate = productivity_validate,
     .render_status = render_status,

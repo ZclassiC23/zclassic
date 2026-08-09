@@ -494,14 +494,20 @@ int t_hotswap_static_state_covers_swappable(void)
 int t_hotswap_service_island_gate(void)
 {
     int failures = 0;
-    TEST("hot-swap service gate rejects state and ambient SQLite authority") {
-        char bad_abs[PATH_MAX];
+    TEST("hot-swap service gate rejects state, SQLite and stale contracts") {
+        char bad_abs[PATH_MAX], stale_abs[PATH_MAX];
         ASSERT(run_gate_script(HOTSWAP_SERVICE_SCRIPT_REL, NULL) == 0);
         ASSERT(repo_path(bad_abs, sizeof(bad_abs),
                          HOTSWAP_SERVICE_BAD_MANIFEST_REL) == 0);
         ASSERT(run_gate_script_with_env2(
                    HOTSWAP_SERVICE_SCRIPT_REL,
                    "ZCL_HOTSWAP_SERVICE_MANIFEST", bad_abs,
+                   "ZCL_HOTSWAP_SERVICE_FIXTURE", "1") == 1);
+        ASSERT(repo_path(stale_abs, sizeof(stale_abs),
+                         HOTSWAP_SERVICE_STALE_CONTRACT_REL) == 0);
+        ASSERT(run_gate_script_with_env2(
+                   HOTSWAP_SERVICE_SCRIPT_REL,
+                   "ZCL_HOTSWAP_SERVICE_MANIFEST", stale_abs,
                    "ZCL_HOTSWAP_SERVICE_FIXTURE", "1") == 1);
         ASSERT(run_gate_script(HOTSWAP_SERVICE_SCRIPT_REL, NULL) == 0);
         PASS();
