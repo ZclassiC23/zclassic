@@ -81,12 +81,31 @@ for row in "${ROWS[@]}"; do
             scan_files+=("$h")
         fi
     done
+    contract_files=()
     for h in $contract_headers; do
         [ "$h" = "-" ] && continue
-        if [ ! -f "$h" ]; then violations+="  $source -> $h (missing service contract header)"$'\n'; fi
+        if [ ! -f "$h" ]; then
+            violations+="  $source -> $h (missing service contract header)"$'\n'
+        else
+            contract_files+=("$h")
+        fi
     done
-    for stamp in "$abi" "$schema" "$wire" "$kat"; do
-        if [ -z "$stamp" ]; then violations+="  $source (empty frozen contract fingerprint)"$'\n'; fi
+    for stamped in "abi:$abi" "schema:$schema" "wire:$wire" "kat:$kat"; do
+        label="${stamped%%:*}"
+        stamp="${stamped#*:}"
+        if [ -z "$stamp" ]; then
+            violations+="  $source (empty frozen $label fingerprint)"$'\n'
+            continue
+        fi
+        matches=0
+        for h in "${contract_files[@]}"; do
+            if grep -Fq "\"$stamp\"" "$h"; then
+                matches=$((matches + 1))
+            fi
+        done
+        if [ "$matches" -ne 1 ]; then
+            violations+="  $source ($label fingerprint '$stamp' resolves to $matches contract headers, expected exactly one)"$'\n'
+        fi
     done
     if [ -z "$probe" ]; then
         violations+="  $source (empty resident-owned probe leaf)"$'\n'

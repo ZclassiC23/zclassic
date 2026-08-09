@@ -80,6 +80,8 @@
     "tools/lint/check_hotswap_service_islands.sh"
 #define HOTSWAP_SERVICE_BAD_MANIFEST_REL \
     "lib/test/fixtures/hotswap_services_bad.def"
+#define HOTSWAP_SERVICE_STALE_CONTRACT_REL \
+    "lib/test/fixtures/hotswap_services_stale_contract.def"
 #define HOTSWAP_MANIFEST_REL "config/hotswap_eligible.def"
 #define HOTSWAP_BAD_SCOPE_MANIFEST_REL \
     "lib/test/fixtures/hotswap_manifest_bad_scope.def"
