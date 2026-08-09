@@ -79,6 +79,24 @@ The v2 foundation defines separate root domains for:
   human acceptance, signed release, independent Family admission, retrievable
   package and checkpoint roots. Structural validity alone is not shareability:
   the caller must provide a current external proof-chain verifier.
+- `commons_admission.v1`: a signed fixed-size decision binding the exact
+  content and dependency-closure roots, Family policy, moderation set, panel,
+  evidence, chain time, expiry and predecessor. Pass states must match their
+  roster tier and require complete content and closure coverage.
+
+The CAS-derived `family_admission_projection` verifies every admission root
+and signature, reconstructs each predecessor chain, selects the highest exact
+sequence, and fails conflicts, missing ancestry, stale tips, expiry and roster
+ratchets closed. Its entries are sorted by `(content_root, closure_root)` and
+its immutable root is published behind an atomic process generation.
+
+The composite access seam first calls the existing local-sovereignty policy,
+then accepts exactly one closed intent: admitted `FAMILY_PUBLIC`, byte/root/
+provider/expiry-bound `MODERATION_INTAKE`, operator-authorized redacted
+`EXACT_ROOT_DIAGNOSTIC`, or a bounded closed-kind `PROTOCOL_CONTROL` frame.
+It is inactive by default and no consumer is wired yet. Activation and every
+new projection increment the admission generation; queued work binds that
+generation and an immediate recheck observes a later restriction.
 
 The current KAT roots for the canonical fixtures are:
 
@@ -87,6 +105,8 @@ c23_corpus_rules.v1          ae0c059c8c925464a7d9376b17687b207027833f5337dc49944
 c23_corpus_shard.v1          75b6c0fc6e6affe282a9ae3baeeb6424c36d95add766fd29ad2f0a42c872dcd7
 c23_corpus_checkpoint.v1     7528b88dc8793b2ac150cb2de15e0930ea72883d131512b1a3534fa5fc655dca
 productivity_receipt.v1      311f144c37b719d74cea628b9b6613262d1c7f8e838683ac1f54342236e7422a
+commons_admission.v1         6acb9bf015d3aec35bd5db76e9a14e7713ecde291a29456593b0d2eecb1c196f
+family_admission_projection  69cbb7b4cf90120d01d09074bc72ce61fdcb06f8409a46181fa9c7c5683fde4f
 ```
 
 These objects compose the existing package CAS and its 64 MiB package bound;
@@ -187,12 +207,13 @@ zcode moderation policy list
 zcode moderation policy show --input='{"profile":"family-c23.v1"}'
 ```
 
-The package/workspace plan-commit, asynchronous classification, panel,
-challenge, appeal, admission projection, REST resources and cross-surface
-Family enforcement remain later additive slices. Until those slices land,
-no command claims a package is admitted and existing v1 package behavior is
-not reinterpreted. This is a deliberate fail-closed delivery boundary, not a
-live moderation service. The policy readers therefore report
+The package/workspace plan-commit, asynchronous classification, durable panel,
+challenge, appeal, REST resources and cross-surface Family enforcement remain
+later additive slices. The admission projection and access-decision seam exist
+only as an inactive library boundary; no command claims a package is admitted
+and existing v1 package behavior is not reinterpreted. This is a deliberate
+fail-closed delivery boundary, not a live moderation service. The policy
+readers therefore report
 `policy_selected_as_default:true`, `enforcement_complete:false`, and
 `effective_default:false`; `default_public_view` remains false until the
 cross-surface gate passes.
@@ -211,6 +232,12 @@ caps, backlog/expiry, input-order invariance, reorg exclusion, incomplete
 coverage, contextual science, malicious labels, one-operator grouping,
 future-hash selection, diversity, 1/2/3/5/7/15-service ratchets, 5/7 and 8/11
 quorums, stale visibility and the self-screen issuance prohibition.
+
+`test_zcode_family_admission` freezes the admission/projection KATs and covers
+signed wire tamper, input-order invariance, exact content/closure lookup,
+missing ancestry, restriction reversal, stale roster ratchets, local-policy
+precedence, closed intake/diagnostic/control intents, inactive-default
+compatibility and a queued-action generation reversal before execution.
 
 Consensus parity remains untouched: no file under `core/` or the sealed
 block-connection ordering layer is changed by this protocol.
