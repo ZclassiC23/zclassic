@@ -5,14 +5,14 @@ other and trade one file — the seller announces a paid offer, the buyer
 pays, the bytes arrive and re-derive the content root. Neither machine
 needs open ports; the nodes rendezvous over Tor.
 
-Status honesty (2026-08-09): the **buyer** pipeline (purchase
-plan/commit/status/retrieve, payment-gated chunk delivery) is shipped, and
-the **seller** `app market offer` command (Phase B2 of
-[`docs/work/MARKETPLACE_NEXT.md`](./work/MARKETPLACE_NEXT.md)) now signs,
-binds, and announces from the origin — step 5 is live. The signed offer
-commits the seller endpoint, so the seller node must know its own address:
-boot A with `-externalip=<A-public-ip>` or step 5 refuses with
-ENDPOINT_UNKNOWN.
+Status honesty (2026-08-09): the full trade is shipped end-to-end —
+seller `app market offer` (sign → bind → announce), buyer purchase
+plan/commit/status/retrieve, and (B5) onion-routed delivery. The seller
+endpoint comes from one of two places: boot A with `-tor` (real-Tor
+build) and the offer commits its onion endpoint automatically — nothing
+else needed; or pass `-externalip=<A-public-ip>` for an explicit
+clearnet endpoint. With neither, step 5 refuses ENDPOINT_UNKNOWN rather
+than signing a guess.
 
 ## 0. What you need
 
@@ -120,12 +120,18 @@ Success = `sha3(demo.bin)` on B matches the offer `root_hash`, and
 - P2P rendezvous over Tor: yes — steps 2–3 hide the nodes' IPs from each
   other and from the network when you use the onion (not clearnet
   `-addnode`).
-- Chunk delivery: today the offer carries the seller's file-service
-  endpoint as `peer_ip:peer_port`, and the buyer connects to it directly.
-  **On a clearnet endpoint that exposes the seller's IP to the buyer.**
-  Routing delivery over the onion service is the named follow-up seam in
-  MARKETPLACE_NEXT.md; until it lands, use this test on machines whose
-  IPs may see each other, or through a network namespace/VPN you control.
+- Chunk delivery over Tor: yes (2026-08-09, B5). When the seller boots
+  with `-tor` (real-Tor build) and does NOT pass `-externalip`, the
+  offer commits as endpoint_type=onion (wire v2) and the buyer retrieves
+  chunks through the seller's onion service — neither side's IP appears
+  on the delivery leg. On a stub build or unready Tor the commit refuses
+  instead of silently downgrading. Passing `-externalip` is the explicit
+  public-clearnet opt-in (v1 behavior, including publishing your IP in
+  `/directory.json`).
+- What still shows: offer gossip rides plaintext P2P (the first hop that
+  injects an offer hints at the seller), and timing/slice sizes are
+  visible to Tor guards. The full non-goals list is in
+  `docs/work/MARKET_ONION_DELIVERY.md`.
 
 ## 8. Friction log
 

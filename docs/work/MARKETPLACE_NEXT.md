@@ -54,13 +54,14 @@ reverse-mapping gate covers the new leaf.
 - [x] B4. `make lint` + pre-push CI green on the pushed tree (919 ran,
   0 failed); docs updated (`FILE_MARKET_PROTOCOL.md`, two-laptop runbook,
   cookbook)
-- [ ] B5. **Onion-routed chunk delivery** — design record:
-  [`MARKET_ONION_DELIVERY.md`](./MARKET_ONION_DELIVERY.md) (offer v2 with
-  `endpoint_type=onion` + 32-byte onion pubkey, `/market/chunk` onion route
-  reusing the authorize-before-read gate, GET-hex transport, fail-closed
-  stub policy, `/directory.json` clearnet suppression). Today the offer
-  carries the seller's clearnet `peer_ip:peer_port` and the buyer connects
-  directly, exposing both IPs
+- [x] B5. **Onion-routed chunk delivery** — implemented and pushed
+  (`6dcd7dafa` + `50bf175d6`): offer v2 (`endpoint_type=onion` + 32-byte
+  onion pubkey, dual-version decode), onion-only FAILCLOSED
+  `/market/chunk` route with the same authorize-before-read gate, buyer
+  SOCKS-less onion fetch with slice reassembly, node-level prefer-onion
+  default that refuses rather than downgrades, `/directory.json` clearnet
+  suppression. Design record: [`MARKET_ONION_DELIVERY.md`](./MARKET_ONION_DELIVERY.md).
+  Named gap: onion-path two-daemon acceptance (Tor in the test harness)
 
 ## Phase C — ZC23 design (owner decision first, then code)
 
