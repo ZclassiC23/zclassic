@@ -164,7 +164,8 @@ Ground-truth references this file was built from: `examples/04_zslp_token.c`,
   mempool-verified payment txid (`handle_zfilepay` in
   `lib/net/src/msgprocessor.c`) — the same "pay, then receive" shape as
   this example's direct sale, at the byte-transport layer instead of the
-  token layer. The buy/offer command-to-transfer glue (`zclassic23 app market
-  buy` / `zclassic23 app market offer`) is not yet wired end to end to on-chain settlement —
-  see the Vision section of `CLAUDE.md` for the current Market coverage
+  token layer. The seller offer command (`zclassic23 app market offer`)
+  signs, binds, and announces paid offers; the optional one-shot buy
+  coordinator (`zclassic23 app market buy`) remains planned — see the
+  Vision section of `CLAUDE.md` for the current Market coverage
   boundary.

@@ -78,9 +78,9 @@ zclassic23 discover schema <path> --side=input|output
 | Top-level roots | 11 |
 | Branches | 136 |
 | Leaves (dispatchable command paths) | 457 |
-| … `ready` (live handler in this build) | 408 |
+| … `ready` (live handler in this build) | 409 |
 | … `compat` (metadata only, names a fallback) | 18 |
-| … `planned` (fail-closed BLOCKED, exit 3) | 31 |
+| … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
 | Leaves with `effect=mutate` | 152 |
 | Leaves with `effect=destructive` | 4 |
@@ -488,7 +488,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `app market list` | ready | read / read / public · fast/low | none | `zcl.app_market_index.v1` | `zclassic23 app market list` | List files on the ZCL Market |
 | `app market status` | ready | read / read / operator · fast/low | none | `zcl.app_market_status.v1` | `zclassic23 app market status` | ZCL Market status |
-| `app market offer` | planned | mutate / app-write / **owner**, plan-commit · foreground/moderate | `filepath`, `price_per_mb_zat`, `confirm` | `zcl.app_market_offer_result.v1` | `zclassic23 app market offer --input='{"filepath":"/data/f","price_per_mb_zat":1000}'` | Announce a file for sale — *signed zfileoffer.v1 ingress is implemented, but local creation still needs a canonical content manifest, an owner-controlled seller signer, and origin announcement. The legacy zmarket_offer placeholder now refuses without changing cache, database, filesystem, or network state* |
+| `app market offer` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | `filepath`, `price_per_mb_zat`, `confirm` | `zcl.app_market_offer_result.v1` | `zclassic23 app market offer --input='{"filepath":"/data/f","price_per_mb_zat":1000}'` | Announce a file for sale |
 | `app market buy` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, **`root_hash`**, `confirm` | `zcl.app_market_buy_result.v1` | `zclassic23 app market buy --input='{"root_hash":"<64hex>"}'` | Buy and download a market file — *the explicit app.market.purchase plan, commit, status, and retrieve commands implement the complete reviewed workflow; the optional one-shot coordinator still needs an owner-review-preserving design. The legacy zmarket_buy placeholder refuses without starting a session* |
 
 #### `app.market.content` — Seller content

@@ -10,6 +10,7 @@
 
 #include "platform/time_compat.h"
 #include "base/hex.h"
+#include "controllers/file_market_controller.h"
 #include "controllers/network_controller.h"
 #include "controllers/wallet_helpers.h"
 #include "controllers/wallet_shielded_controller.h"
@@ -127,8 +128,8 @@ static bool rpc_zmarket_offer(const struct json_value *params, bool help,
             "1. filepath         (string, required) Path to file to share\n"
             "2. price_per_mb_zat (number, required) Price per MB in zatoshis\n"
             "3. z_addr           (string, optional) Payment z-address\n"
-            "\nUse romseed_register for verified free artifacts. The typed "
-            "signed paid-offer service is not available yet.\n");
+            "\nUse romseed_register for verified free artifacts. Signed paid "
+            "offers use the typed native command `app market offer`.\n");
         return true;
     }
 
@@ -144,13 +145,13 @@ static bool rpc_zmarket_offer(const struct json_value *params, bool help,
     (void)arg1;
 
     /* This compatibility RPC never hashed the file manifest and never
-     * announced an authenticated origin. Refuse both free and paid calls:
-     * free recovery artifacts use romseed_register; paid offers will use the
-     * typed market-offer plan/commit service once local signing is wired. */
+     * announced an authenticated origin. The working paid-offer path is the
+     * typed native leaf `app market offer` (plan/commit over
+     * zmarket_offer_publish); free recovery artifacts use romseed_register. */
     json_set_str(result,
-        "zmarket_offer is contained: use romseed_register for verified free "
-        "recovery artifacts; paid offers require the signed market-offer "
-        "plan/commit service");
+        "zmarket_offer is contained: use the typed native command "
+        "`app market offer` for signed paid offers, or romseed_register for "
+        "verified free recovery artifacts");
     return false;
 }
 
@@ -786,4 +787,5 @@ void register_market_rpc_commands(struct rpc_table *t)
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);
+    register_market_offer_rpc_commands(t);
 }

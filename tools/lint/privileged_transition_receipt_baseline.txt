@@ -65,7 +65,7 @@ app.messaging.send         exempt: peer-socket write (p2p) or shielded send (onc
 app.messaging.send-named   exempt: PLANNED fail-closed, no artifact install (no outbound delivery path exists)
 app.messaging.read         exempt: flips one message's read bit, rebuildable projection
 app.tokens.burn            exempt: signs+broadcasts a ZSLP burn transaction, no privileged datadir install
-app.market.offer           exempt: PLANNED fail-closed, no artifact install (no origin announce path exists)
+app.market.offer           exempt: signs a local offer + floods gossip (p2p), persists app-local AR rows (file_offers/market_contents), no executable or consensus artifact install
 app.market.buy             exempt: PLANNED fail-closed, no artifact install (buyer retrieval and publication are absent)
 app.market.content.register exempt: app-local AR content binding, no executable or consensus artifact install
 app.market.purchase.plan   exempt: encrypted wallet-local reservation row, no privileged artifact install

@@ -45,4 +45,8 @@ bool db_file_offer_find_by_id(struct node_db *ndb,
                               struct file_offer *out);
 int db_file_offer_prune(struct node_db *ndb, int64_t max_age);
 
+/* Compensating delete for a locally created offer whose later atomic step
+ * failed (e.g. private content binding). Returns false on a DB error. */
+bool db_file_offer_delete(struct node_db *ndb, const uint8_t root_hash[32]);
+
 #endif

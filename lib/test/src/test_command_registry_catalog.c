@@ -2683,7 +2683,8 @@ static int test_app_features_leaves(void)
             "app.names.register", "app.names.update", "app.names.transfer",
             "app.names.renew", "app.names.set-record", "app.names.set-text",
             "app.messaging.send", "app.messaging.read",
-            "app.market.content.register", "app.market.purchase.plan",
+            "app.market.content.register", "app.market.offer",
+            "app.market.purchase.plan",
             "app.market.purchase.commit", "app.market.purchase.retrieve",
             "app.swap.initiate", "app.swap.participate",
         };
@@ -2724,11 +2725,17 @@ static int test_app_features_leaves(void)
         ASSERT_EQ(purchase_status->authority, ZCL_COMMAND_AUTH_OWNER);
         ASSERT(purchase_status->handler ==
                zcl_native_handle_market_purchase_status);
+        const struct zcl_command_spec *market_offer =
+            find_spec(reg, "app.market.offer");
+        ASSERT(market_offer != NULL);
+        ASSERT_EQ(market_offer->availability, ZCL_COMMAND_READY);
+        ASSERT_EQ(market_offer->confirmation, ZCL_COMMAND_CONFIRM_PLAN_COMMIT);
+        ASSERT(market_offer->handler == zcl_native_handle_market_offer);
 
         /* Still-closed surface: PLANNED, no handler, honest reason, blocks
          * with exit 3 rather than reporting work the node never performs. */
         const char *writes[] = {
-            "app.messaging.send-named", "app.market.offer", "app.market.buy",
+            "app.messaging.send-named", "app.market.buy",
         };
         char out[ZCL_COMMAND_RESULT_BUDGET + 1];
         for (size_t i = 0; i < sizeof(writes) / sizeof(writes[0]); i++) {

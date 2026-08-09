@@ -510,6 +510,9 @@ AGENT_IMPACT_RULE("lib/net/include/net/file_market.h|lib/net/include/net/file_ma
 /* Paid seller-content resource: private persistence, verified reader, owner
  * native/RPC mutation, private REST index, and delivery composition. */
 AGENT_IMPACT_RULE("app/models/src/market_content.c|app/models/include/models/market_content.h|app/services/src/file_market_content_service.c|app/services/include/services/file_market_content_service.h|app/controllers/src/file_market_controller.c|app/controllers/include/controllers/file_market_controller.h|app/controllers/src/api_controller_routes.c|app/controllers/src/app_native_handlers.c|app/controllers/include/controllers/app_native_handlers.h|app/controllers/src/market_content_native_handler.c|config/src/boot_file_market_delivery.c|config/commands/app_features.def|tools/command/native_command.c|tools/command/native_command.h|lib/test/src/test_file_market_content.c", "file_market db_migration_idempotent native_api_contract command_registry_catalog api make_lint_gates")
+/* Seller paid-offer origin: offer plan/commit service, owner signing-key
+ * custody (v62 market_seller_key), native leaf, and origin announcement. */
+AGENT_IMPACT_RULE("app/models/src/market_seller_key.c|app/models/include/models/market_seller_key.h|app/models/src/database_migrate_features_v49_up.c|app/services/src/file_market_offer_service.c|app/services/include/services/file_market_offer_service.h|app/controllers/src/file_market_offer_controller.c|app/controllers/src/market_offer_native_handler.c|lib/test/src/test_file_market_offer.c", "file_market db_migration_idempotent schema_migration native_api_contract command_registry_catalog make_lint_gates")
 
 /* Wave 3: golden UTXO-ladder live tripwire. */
 AGENT_IMPACT_RULE("app/jobs/src/utxo_root_ladder_tripwire.c|app/jobs/src/utxo_root_ladder_tripwire.h|app/jobs/src/tip_finalize_post_step.h|lib/test/src/test_utxo_root_ladder_tripwire.c", "utxo_root_ladder_tripwire sha3_windows make_lint_gates")

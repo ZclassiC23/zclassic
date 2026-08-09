@@ -581,6 +581,24 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 62) {
+        /* v62: singleton owner file-market seller signing key. The seed rests
+         * only as a wallet_metadata_encrypt envelope (passphrase-wrapped DEK,
+         * public key as AAD); the public key column is the non-secret signer
+         * identity every local paid offer carries. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS market_seller_key ("
+            "id INTEGER PRIMARY KEY CHECK(id=1),"
+            "encrypted_seed BLOB NOT NULL,"
+            "seller_pubkey BLOB NOT NULL CHECK(length(seller_pubkey)=32),"
+            "created_at INTEGER NOT NULL CHECK(created_at>0))");
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('062')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 62);
+        current_ver = 62;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

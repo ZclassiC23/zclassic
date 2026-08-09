@@ -253,3 +253,18 @@ int db_file_offer_prune(struct node_db *ndb, int64_t max_age)
     AR_FINALIZE_STEP_DONE(s, ok);
     return ok ? sqlite3_changes(ndb->db) : 0;
 }
+
+bool db_file_offer_delete(struct node_db *ndb, const uint8_t root_hash[32])
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("market", "db_file_offer_delete: db not open");
+    if (!root_hash)
+        LOG_FAIL("market", "db_file_offer_delete: root_hash is NULL");
+
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_RET(ndb, s, "DELETE FROM file_offers WHERE root_hash=?", false);
+    AR_BIND_BLOB(s, 1, root_hash, 32);
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(s, ok);
+    return ok;
+}

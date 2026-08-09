@@ -16,6 +16,7 @@
 
 void rpc_market_set_state(struct node_db *ndb);
 void register_market_rpc_commands(struct rpc_table *t);
+void register_market_offer_rpc_commands(struct rpc_table *t);
 
 #include "json/json.h"
 bool api_market_list(struct json_value *result);

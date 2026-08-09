@@ -21,7 +21,7 @@
  *   write answering status="ready" because the node carries no wallet) is
  *   reported BLOCKED, never PASSED.
  *
- *   PLANNED — the three whose backing RPC stops short of its own summary. Each
+ *   PLANNED — the two whose backing RPC stops short of its own summary. Each
  *   availability_reason below names the exact missing code path, not a generic
  *   "not implemented"; opening a native door onto them would mint a PASSED
  *   reply for work the node never performs.
@@ -568,11 +568,19 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_market_purchase_retrieve)
 
-ZCL_COMMAND_PLANNED_COMMAND(
+ZCL_COMMAND_READY_COMMAND(
     "app.market.offer", "app.market", "", "Announce a file for sale",
-    "Will announce a file for sale after canonical manifest construction, "
-    "owner-controlled signing, and the local origin-send path are connected. "
-    "Today both native and legacy write surfaces fail closed.", 0,
+    "Builds the canonical chunk manifest from a private local file, mints or "
+    "loads the owner-controlled seller signing key (encrypted under the "
+    "wallet metadata DEK, same custody as purchase plans), binds a fresh "
+    "wallet Sapling payee address, signs the self-authenticating "
+    "zfileoffer.v1 contract, persists it, binds the private content for paid "
+    "chunk serving, and floods the exact signed wire from the origin. A "
+    "first call without confirm:true hashes and prices the file without "
+    "mutating anything; only the confirmed call persists, binds, and "
+    "announces. Requires -externalip so the signed endpoint is reachable. "
+    "Re-commit of the same live offer replays idempotently without "
+    "re-announcing. The private filepath is absent from results and logs.", 0,
     "market,offer,sell", "zcl.app_market_offer.input.v1",
     "zcl.app_market_offer_result.v1", "filepath,price_per_mb_zat,confirm", "",
     "zclassic23 app market offer --input='{\"filepath\":\"/data/f\",\"price_per_mb_zat\":1000}'",
@@ -581,11 +589,8 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
-    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_NONE,
-    "signed zfileoffer.v1 ingress is implemented, but local creation still "
-    "needs a canonical content manifest, an owner-controlled seller signer, "
-    "and origin announcement. The legacy zmarket_offer placeholder now "
-    "refuses without changing cache, database, filesystem, or network state")
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_market_offer)
 
 ZCL_COMMAND_PLANNED_COMMAND(
     "app.market.buy", "app.market", "", "Buy and download a market file",

@@ -73,20 +73,15 @@ static bool market_content_manifest(int fd, uint64_t size_bytes,
     return true;
 }
 
-struct zcl_result file_market_content_register(
-    struct node_db *ndb, const uint8_t offer_id[32], const char *content_path,
-    int64_t now_unix, struct market_content_public_record *out)
+struct zcl_result file_market_content_manifest_build(
+    const char *content_path, char canonical_out[MARKET_CONTENT_PATH_MAX],
+    uint8_t **hashes_out, uint64_t *size_out, uint32_t *chunks_out,
+    uint8_t root_out[32])
 {
-    if (!ndb || !ndb->open || !offer_id || !content_path ||
-        !content_path[0] || !out || now_unix <= 0)
+    if (!content_path || !content_path[0] || !canonical_out || !size_out ||
+        !chunks_out || !root_out)
         return ZCL_ERR(MARKET_CONTENT_ERR_ARGS,
-                       "database, offer id, content reference, time, and output are required");
-    memset(out, 0, sizeof(*out));
-
-    struct file_offer offer;
-    if (!db_file_offer_find_by_id(ndb, offer_id, &offer))
-        return ZCL_ERR(MARKET_CONTENT_ERR_OFFER,
-                       "authenticated current paid offer not found");
+                       "content reference and manifest outputs are required");
 
     int source_fd = open(content_path,
                          O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
@@ -123,12 +118,10 @@ struct zcl_result file_market_content_register(
 
     uint64_t size_bytes = (uint64_t)canonical_stat.st_size;
     uint32_t num_chunks = 0;
-    if (size_bytes != offer.size_bytes ||
-        !file_market_num_chunks_for_size(size_bytes, &num_chunks) ||
-        num_chunks != offer.num_chunks) {
+    if (!file_market_num_chunks_for_size(size_bytes, &num_chunks)) {
         close(fd);
         return ZCL_ERR(MARKET_CONTENT_ERR_SIZE,
-                       "content size does not match the signed offer");
+                       "content size overflows the chunk manifest");
     }
     if (num_chunks > MARKET_CONTENT_MAX_CHUNKS) {
         close(fd);
@@ -156,6 +149,48 @@ struct zcl_result file_market_content_register(
         free(hashes);
         return ZCL_ERR(MARKET_CONTENT_ERR_IO,
                        "content changed or became unreadable while hashing");
+    }
+
+    snprintf(canonical_out, MARKET_CONTENT_PATH_MAX, "%s", canonical);
+    *size_out = size_bytes;
+    *chunks_out = num_chunks;
+    memcpy(root_out, root, 32);
+    if (hashes_out)
+        *hashes_out = hashes;
+    else
+        free(hashes);
+    return ZCL_OK;
+}
+
+struct zcl_result file_market_content_register(
+    struct node_db *ndb, const uint8_t offer_id[32], const char *content_path,
+    int64_t now_unix, struct market_content_public_record *out)
+{
+    if (!ndb || !ndb->open || !offer_id || !content_path ||
+        !content_path[0] || !out || now_unix <= 0)
+        return ZCL_ERR(MARKET_CONTENT_ERR_ARGS,
+                       "database, offer id, content reference, time, and output are required");
+    memset(out, 0, sizeof(*out));
+
+    struct file_offer offer;
+    if (!db_file_offer_find_by_id(ndb, offer_id, &offer))
+        return ZCL_ERR(MARKET_CONTENT_ERR_OFFER,
+                       "authenticated current paid offer not found");
+
+    char canonical[MARKET_CONTENT_PATH_MAX];
+    uint8_t *hashes = NULL;
+    uint64_t size_bytes = 0;
+    uint32_t num_chunks = 0;
+    uint8_t root[32];
+    struct zcl_result manifest = file_market_content_manifest_build(
+        content_path, canonical, &hashes, &size_bytes, &num_chunks, root);
+    if (!manifest.ok)
+        return manifest;
+    size_t hashes_len = (size_t)num_chunks * 32u;
+    if (size_bytes != offer.size_bytes || num_chunks != offer.num_chunks) {
+        free(hashes);
+        return ZCL_ERR(MARKET_CONTENT_ERR_SIZE,
+                       "content size does not match the signed offer");
     }
     if (memcmp(root, offer.root_hash, 32) != 0) {
         free(hashes);

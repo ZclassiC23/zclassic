@@ -338,7 +338,8 @@ A paid offer enters cache or persistence only when all of these hold:
   content root, and both verification attempts and fresh offers are bounded
   per peer.
 
-Private seller seeds exist only at a future owner-controlled signing boundary.
+Private seller seeds exist only at the owner-controlled signing boundary
+(the `market_seller_key` singleton, encrypted under the wallet metadata DEK).
 They must never enter offer structs, P2P messages, database rows, command
 responses, logs, receipts, fixtures intended as public evidence, or agent
 context.
@@ -355,7 +356,7 @@ context.
 | `app market purchase commit` | ready/owner-wallet-write | Revalidates identity, genesis, tip, snapshot, offer, range, output, fee and source ownership; broadcasts at most once and returns txid/claim ID. |
 | `app market purchase status` | ready/owner-read | Reconstructs a path/address/key-free durable state across restart. |
 | `app market purchase retrieve` | ready/owner-write | Requires a confirmed full-file payment, retrieves from the exact signed endpoint, durably resumes verified chunks, verifies the manifest, and atomically publishes without exposing private paths. |
-| `app market offer` | planned/fail-closed | Awaits local manifest construction, owner signing, and origin announcement. |
+| `app market offer` | ready/owner-write | Hashes the private file into the canonical manifest, signs the self-authenticating offer with the owner seller key, persists it, binds the content for paid serving, and floods the exact signed wire. Plan stage mutates nothing; requires `-externalip` for a reachable signed endpoint. |
 | `app market buy` | planned/fail-closed | Optional one-shot coordinator is absent; use the explicit reviewed plan/commit/status/retrieve workflow. |
 | `romseed_register` | ready/operator | Registers verified price-zero recovery artifacts; it is not a paid offer. |
 | `app transaction-types show --type=market_purchase` | ready/read-only | Canonical machine-readable readiness and proof record. |

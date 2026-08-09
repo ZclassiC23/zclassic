@@ -5,12 +5,14 @@ other and trade one file — the seller announces a paid offer, the buyer
 pays, the bytes arrive and re-derive the content root. Neither machine
 needs open ports; the nodes rendezvous over Tor.
 
-Status honesty (2026-08-08): the **buyer** pipeline (purchase
-plan/commit/status/retrieve, payment-gated chunk delivery) is shipped.
-The **seller** `app market offer` command is being wired in Phase B2 of
-[`docs/work/MARKETPLACE_NEXT.md`](./work/MARKETPLACE_NEXT.md) — until that
-lands, step 5 fails closed by design. Run steps 1–4 today; run 5–7 once
-`app market offer` no longer returns PLANNED_COMMAND.
+Status honesty (2026-08-09): the **buyer** pipeline (purchase
+plan/commit/status/retrieve, payment-gated chunk delivery) is shipped, and
+the **seller** `app market offer` command (Phase B2 of
+[`docs/work/MARKETPLACE_NEXT.md`](./work/MARKETPLACE_NEXT.md)) now signs,
+binds, and announces from the origin — step 5 is live. The signed offer
+commits the seller endpoint, so the seller node must know its own address:
+boot A with `-externalip=<A-public-ip>` or step 5 refuses with
+ENDPOINT_UNKNOWN.
 
 ## 0. What you need
 
@@ -79,7 +81,13 @@ printf '%s' '{"filepath":"/home/alice/demo.bin","price_per_mb_zat":1000,"confirm
 
 This builds the content manifest, signs the self-authenticating offer
 (ed25519, network-bound), persists it, registers the content binding so
-chunks can be served, and floods `zfileoffer` to every peer.
+chunks can be served, and floods `zfileoffer` to every peer. The seller
+signs the endpoint it actually knows: `-externalip` supplies the IP (the
+buyer connects to `peer_ip:peer_port` directly — see step 7), the file
+service supplies the port. Without `-externalip` the commit refuses with
+ENDPOINT_UNKNOWN instead of signing a guess. Calling without
+`confirm:true` first returns the non-mutating plan (root hash, size,
+exact total) plus the commit input.
 
 ## 6. Buyer: find it, pay for it, download it (machine B)
 
