@@ -243,6 +243,12 @@ ZCL_COMMAND_BRANCH("zcode.commons.reproduction", "zcode.commons",
 ZCL_COMMAND_BRANCH("zcode.commons.economics", "zcode.commons",
                    "Simulation-only v2 evidence economics",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.corpus", "zcode.commons",
+                   "Verified C23 corpus lower-bound projection",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.impact", "zcode.commons",
+                   "Locally rendered productivity evidence",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("zcode.moderation", "zcode",
                    "Decentralized Family Commons moderation",
                    ZCL_COMMAND_LAYER_APP)
@@ -267,6 +273,81 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE,
     zcl_native_handle_zcode_commons_economics_status)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.corpus.status", "zcode.commons.corpus", "",
+    "Show the verified C23 corpus lower bound",
+    "Shows admitted and durably hosted production/test C23 LOC separately, "
+    "the frozen census-rules root, milestones, and projection blocker. A "
+    "checkpoint is a verifiable lower bound and never a global completeness "
+    "claim.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,corpus,c23,loc,checkpoint,status,simulation",
+    "zcl.zcode_commons_corpus_status.input.v1",
+    "zcl.zcode_commons_corpus_status.v1", "", "",
+    "zclassic23 zcode commons corpus status",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_corpus_status)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.impact.status", "zcode.commons.impact", "",
+    "Show whether a productivity basis is shareable",
+    "Fails closed unless a current signed basis proves PROVEN work through "
+    "human acceptance, signed release, independent Family admission, and a "
+    "complete retrievable package. Never posts externally.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,impact,productivity,status,simulation",
+    "zcl.zcode_commons_impact_status.input.v1",
+    "zcl.zcode_commons_impact_status.v1", "", "",
+    "zclassic23 zcode commons impact status",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_impact_status)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.impact.share", "zcode.commons.impact", "",
+    "Render a locally shareable productivity statement",
+    "Returns shareable:false without the slogan until the complete signed "
+    "basis is current. When shareable, the output is exact and is never "
+    "posted externally by this command.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,impact,productivity,share,simulation",
+    "zcl.zcode_commons_impact_share.input.v1",
+    "zcl.zcode_commons_impact_share.v1", "", "",
+    "zclassic23 zcode commons impact share",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_impact_share)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.moderation.status", "zcode.moderation", "",
+    "Show Family moderation activation status",
+    "Separates the selected immutable policy from cross-surface enforcement "
+    "and the effective public default. The Family view remains ineffective "
+    "until the full enforcement matrix passes.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,moderation,family,status,enforcement,simulation",
+    "zcl.zcode_moderation_status.input.v1",
+    "zcl.zcode_moderation_status.v1", "", "",
+    "zclassic23 zcode moderation status",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_moderation_status)
 
 ZCL_COMMAND_READY_READ(
     "zcode.moderation.policy.list", "zcode.moderation.policy", "",

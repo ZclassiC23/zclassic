@@ -55,6 +55,14 @@ The v2 foundation defines separate root domains for:
 - `contribution_split.v1`: up to 64 sorted recipient bindings, exact atom
   amounts, and every participant signature. Checked addition must equal the
   frozen claim award exactly.
+- `source_assignment.v1`: a fixed-size signed canonical wire distinguishing
+  human, AI, canonical-import, mechanical-generation and vendor sources.
+  Imports and vendor material must preserve upstream source and author roots;
+  AI source counts normally, while mechanical and vendor source never count.
+- `c23_corpus_rules.v1`: the immutable metric constants, including the `.c`,
+  `.h`, `.def` input set, 80% overlap threshold, 4,096-entry shard/checkpoint
+  caps, 256-item pages/batches, 50M/100M milestones, and 5-ACK/3-group durable
+  hosting predicate. Its canonical root is KAT-bound.
 
 These objects compose the existing package CAS and its 64 MiB package bound;
 they do not introduce another package store or database authority.
@@ -146,6 +154,10 @@ The shipped non-creating v2 readers are:
 
 ```text
 zcode commons economics status
+zcode commons corpus status
+zcode commons impact status
+zcode commons impact share
+zcode moderation status
 zcode moderation policy list
 zcode moderation policy show --input='{"profile":"family-c23.v1"}'
 ```
@@ -155,7 +167,15 @@ challenge, appeal, admission projection, REST resources and cross-surface
 Family enforcement remain later additive slices. Until those slices land,
 no command claims a package is admitted and existing v1 package behavior is
 not reinterpreted. This is a deliberate fail-closed delivery boundary, not a
-live moderation service.
+live moderation service. The policy readers therefore report
+`policy_selected_as_default:true`, `enforcement_complete:false`, and
+`effective_default:false`; `default_public_view` remains false until the
+cross-surface gate passes.
+
+The corpus reader currently reports a zero verified lower bound and names the
+missing checkpoint projection. Impact readers similarly fail closed:
+`shareable:false` contains no slogan until the complete signed proof chain is
+available, and neither reader posts externally.
 
 ## Mechanical evidence
 

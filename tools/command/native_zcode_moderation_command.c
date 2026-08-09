@@ -39,7 +39,10 @@ static void render_family_policy(struct json_value *data)
     (void)json_push_kv_str(data, "profile", "family-c23.v1");
     moderation_hex(data, "policy_root", root);
     (void)json_push_kv_bool(data, "immutable", true);
-    (void)json_push_kv_bool(data, "default_public_view", true);
+    (void)json_push_kv_bool(data, "policy_selected_as_default", true);
+    (void)json_push_kv_bool(data, "enforcement_complete", false);
+    (void)json_push_kv_bool(data, "effective_default", false);
+    (void)json_push_kv_bool(data, "default_public_view", false);
     (void)json_push_kv_bool(data, "simulation_only", true);
     (void)json_push_kv_bool(data, "owner_can_rewrite", false);
     (void)json_push_kv_int(data, "excluded_reason_mask",
@@ -53,6 +56,27 @@ static void render_family_policy(struct json_value *data)
     (void)json_push_kv_str(data, "pass_behaviors", "BENIGN|DUAL_USE");
     (void)json_push_kv_str(data, "incomplete_result", "UNKNOWN");
     (void)json_push_kv_str(data, "new_content_state", "PENDING");
+}
+
+void zcl_native_handle_zcode_moderation_status(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply || !moderation_no_keys(request->input)) {
+        if (reply) moderation_fail(reply, "BAD_MODERATION_STATUS_INPUT",
+            "zcode moderation status accepts no input keys");
+        return;
+    }
+    render_family_policy(&reply->data);
+    (void)json_push_kv_str(&reply->data, "phase",
+                           "protocol_foundation");
+    (void)json_push_kv_bool(&reply->data, "admission_projection_ready",
+                            false);
+    (void)json_push_kv_bool(&reply->data, "cross_surface_gate_passed",
+                            false);
+    (void)json_push_kv_str(&reply->data, "official_surface_policy",
+                           "legacy_v1_unchanged");
+    (void)json_push_kv_str(&reply->data, "activation_blocker",
+        "family admission projection and cross-surface enforcement are incomplete");
 }
 
 void zcl_native_handle_zcode_moderation_policy_list(
