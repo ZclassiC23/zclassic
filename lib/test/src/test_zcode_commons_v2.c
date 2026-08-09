@@ -66,6 +66,22 @@ static enum vcs_zcode_c23_error cv2_candidate_checkpoint_selective(
         ? VCS_ZCODE_C23_PROOF : error;
 }
 
+static enum vcs_zcode_c23_error cv2_candidate_productivity_accept_all(
+    const struct vcs_zcode_productivity_receipt_v1 *receipt)
+{
+    (void)receipt;
+    return VCS_ZCODE_C23_OK;
+}
+
+static enum vcs_zcode_c23_error cv2_candidate_productivity_selective(
+    const struct vcs_zcode_productivity_receipt_v1 *receipt)
+{
+    enum vcs_zcode_c23_error error =
+        zcode_c23_corpus_service_builtin()->productivity_validate(receipt);
+    return error == VCS_ZCODE_C23_OK && receipt->completed_height == 700
+        ? VCS_ZCODE_C23_PROOF : error;
+}
+
 static void cv2_fill(uint8_t root[32], uint8_t value)
 {
     memset(root, value, 32);
@@ -538,6 +554,122 @@ static int test_v2_c23_checkpoint_verify_command(void)
     return failures;
 }
 
+static int test_v2_productivity_verify_command(void)
+{
+    int failures = 0;
+    TEST("productivity verify checks signed structure but cannot authorize sharing") {
+        struct vcs_zcode_productivity_receipt_v1 receipt = {
+            .schema_version = 1,
+            .flags = VCS_ZCODE_C23_CORPUS_REQUIRED_FLAGS,
+            .evidence_mask = VCS_ZCODE_PRODUCTIVITY_REQUIRED_MASK,
+            .completed_height = 700,
+            .completed_mtp = 800,
+        };
+        cv2_fill(receipt.work_root, 0x71);
+        cv2_fill(receipt.acceptance_root, 0x72);
+        cv2_fill(receipt.release_root, 0x73);
+        cv2_fill(receipt.admission_root, 0x74);
+        cv2_fill(receipt.package_root, 0x75);
+        cv2_fill(receipt.checkpoint_root, 0x76);
+        uint8_t seed[32];
+        cv2_fill(seed, 0x77);
+        ASSERT_EQ(vcs_zcode_productivity_receipt_v1_sign(&receipt, seed),
+                  VCS_ZCODE_C23_OK);
+
+        uint8_t wire[VCS_ZCODE_PRODUCTIVITY_RECEIPT_WIRE_BYTES];
+        size_t wire_len = 0;
+        ASSERT_EQ(vcs_zcode_productivity_receipt_v1_encode(
+                      &receipt, wire, sizeof(wire), &wire_len),
+                  VCS_ZCODE_C23_OK);
+        ASSERT_EQ(wire_len, sizeof(wire));
+        char wire_hex[sizeof(wire) * 2u + 1u];
+        zcl_hex_encode(wire, wire_len, wire_hex);
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_str(&input, "receipt", wire_hex);
+        struct zcl_command_request request = {.input = &input};
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.test.productivity_verify.v1");
+        zcl_native_handle_zcode_commons_impact_verify(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "kind")),
+                      "productivity_receipt.v1");
+        ASSERT(json_get_bool(json_get(&reply.data, "structurally_verified")));
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                       "external_chain_proof_present")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "shareable")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "slogan_emitted")));
+        ASSERT(json_get(&reply.data, "slogan") == NULL);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "completed_height")),
+                  700);
+        ASSERT(strlen(json_get_str(json_get(&reply.data, "receipt_root"))) ==
+               64);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        struct zcode_c23_corpus_service_v1 weak_vtable =
+            *zcode_c23_corpus_service_builtin();
+        weak_vtable.productivity_validate =
+            cv2_candidate_productivity_accept_all;
+        struct zcl_hotswap_service_candidate candidate = {
+            .service_id = ZCODE_C23_CORPUS_SERVICE_ID,
+            .source_tu = "app/services/src/zcode_c23_corpus_service.c",
+            .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+            .vtable_size = sizeof(weak_vtable),
+            .abi_fingerprint = ZCODE_C23_CORPUS_ABI_FINGERPRINT,
+            .schema_fingerprint = ZCODE_C23_CORPUS_SCHEMA_FINGERPRINT,
+            .wire_fingerprint = ZCODE_C23_CORPUS_WIRE_FINGERPRINT,
+            .kat_fingerprint = ZCODE_C23_CORPUS_KAT_FINGERPRINT,
+            .vtable = &weak_vtable,
+        };
+        struct zcl_hotswap_service_report report = {0};
+        ASSERT(!zcl_hotswap_service_publish(
+            zcl_native_zcode_corpus_service_contract(), &candidate, true,
+            &report));
+        ASSERT_STR_EQ(report.stage, "kat");
+        ASSERT(strstr(report.error, "productivity") != NULL);
+
+        struct zcode_c23_corpus_service_v1 selective_vtable =
+            *zcode_c23_corpus_service_builtin();
+        selective_vtable.productivity_validate =
+            cv2_candidate_productivity_selective;
+        candidate.vtable = &selective_vtable;
+        ASSERT(zcl_hotswap_service_publish(
+            zcl_native_zcode_corpus_service_contract(), &candidate, true,
+            &report));
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_str(&input, "receipt", wire_hex);
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.productivity_verify.v1");
+        zcl_native_handle_zcode_commons_impact_verify(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "PRODUCTIVITY_RECEIPT_INVALID");
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        zcl_hotswap_service_reset();
+
+        wire[wire_len - 1u] ^= 1u;
+        zcl_hex_encode(wire, wire_len, wire_hex);
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_str(&input, "receipt", wire_hex);
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.productivity_verify.v1");
+        zcl_native_handle_zcode_commons_impact_verify(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "PRODUCTIVITY_RECEIPT_INVALID");
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                       "structurally_verified")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static void cv2_claim(struct vcs_zcode_creation_claim_v2 *claim,
                       uint8_t id, uint16_t category)
 {
@@ -942,6 +1074,7 @@ int test_zcode_commons_v2(void)
                    test_v2_truthful_activation_status() +
                    test_v2_c23_corpus_objects() +
                    test_v2_c23_checkpoint_verify_command() +
+                   test_v2_productivity_verify_command() +
                    test_v2_epoch_selection() +
                    test_v2_workspace_objects() +
                    test_v2_coverage_and_receipt() + test_v2_panels();

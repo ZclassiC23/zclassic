@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 607 |
+| Registry entries (branches + leaves) | 608 |
 | Top-level roots | 11 |
 | Branches | 141 |
-| Leaves (dispatchable command paths) | 466 |
-| … `ready` (live handler in this build) | 418 |
+| Leaves (dispatchable command paths) | 467 |
+| … `ready` (live handler in this build) | 419 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 167 | 39 | 128 |
+| `config/commands/zcode.def` | 168 | 39 | 129 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -990,6 +990,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
+| `zcode commons impact verify` | ready | read / read / public · instant/tiny | `receipt` | `zcl.zcode_commons_impact_verify.v1` | `zclassic23 zcode commons impact verify --receipt=<lowercase-hex-wire>` | Verify one signed productivity receipt |
 | `zcode commons impact status` | ready | read / read / public · instant/tiny | none | `zcl.zcode_commons_impact_status.v1` | `zclassic23 zcode commons impact status` | Show whether a productivity basis is shareable |
 | `zcode commons impact share` | ready | read / read / public · instant/tiny | none | `zcl.zcode_commons_impact_share.v1` | `zclassic23 zcode commons impact share` | Render a locally shareable productivity statement |
 

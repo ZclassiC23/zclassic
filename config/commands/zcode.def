@@ -332,6 +332,25 @@ ZCL_COMMAND_READY_READ(
     zcl_native_handle_zcode_commons_corpus_status)
 
 ZCL_COMMAND_READY_READ(
+    "zcode.commons.impact.verify", "zcode.commons.impact", "",
+    "Verify one signed productivity receipt",
+    "Verifies the canonical signed productivity_receipt.v1 structure through "
+    "the resident pure corpus service. Structural validity never authorizes "
+    "sharing without an independent current chain proof.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,commons,impact,productivity,receipt,verify,signature,simulation",
+    "zcl.zcode_commons_impact_verify.input.v1",
+    "zcl.zcode_commons_impact_verify.v1", "receipt", "",
+    "zclassic23 zcode commons impact verify --receipt=<lowercase-hex-wire>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_impact_verify)
+
+ZCL_COMMAND_READY_READ(
     "zcode.commons.impact.status", "zcode.commons.impact", "",
     "Show whether a productivity basis is shareable",
     "Fails closed unless a current signed basis proves PROVEN work through "

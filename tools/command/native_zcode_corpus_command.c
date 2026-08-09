@@ -98,6 +98,44 @@ static bool corpus_checkpoint_frozen_kat(
     return true;
 }
 
+static bool corpus_productivity_frozen_kat(
+    const struct zcode_c23_corpus_service_v1 *service, char *why,
+    size_t why_sz)
+{
+    struct vcs_zcode_productivity_receipt_v1 receipt = {
+        .schema_version = 1,
+        .flags = VCS_ZCODE_C23_CORPUS_REQUIRED_FLAGS,
+        .evidence_mask = VCS_ZCODE_PRODUCTIVITY_REQUIRED_MASK,
+        .completed_height = 1,
+        .completed_mtp = 1,
+    };
+    corpus_kat_fill(receipt.work_root, 0x71);
+    corpus_kat_fill(receipt.acceptance_root, 0x72);
+    corpus_kat_fill(receipt.release_root, 0x73);
+    corpus_kat_fill(receipt.admission_root, 0x74);
+    corpus_kat_fill(receipt.package_root, 0x75);
+    corpus_kat_fill(receipt.checkpoint_root, 0x76);
+    uint8_t seed[32];
+    corpus_kat_fill(seed, 0x77);
+    if (vcs_zcode_productivity_receipt_v1_sign(&receipt, seed) !=
+            VCS_ZCODE_C23_OK ||
+        service->productivity_validate(&receipt) != VCS_ZCODE_C23_OK) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen signed productivity validation vector failed");
+        return false;
+    }
+    receipt.signature[0] ^= 1u;
+    if (service->productivity_validate(&receipt) !=
+        VCS_ZCODE_C23_SIGNATURE) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen tampered productivity rejection vector failed");
+        return false;
+    }
+    return true;
+}
+
 static bool corpus_service_frozen_kat(const void *opaque, char *why,
                                       size_t why_sz)
 {
@@ -126,6 +164,8 @@ static bool corpus_service_frozen_kat(const void *opaque, char *why,
         return false;
     }
     if (!corpus_checkpoint_frozen_kat(service, why, why_sz))
+        return false;
+    if (!corpus_productivity_frozen_kat(service, why, why_sz))
         return false;
     return true;
 }
@@ -471,6 +511,92 @@ static void render_impact_unshareable(struct json_value *data)
         "PROVEN work -> human acceptance -> signed release -> independent Family admission -> complete retrievable package");
     (void)json_push_kv_str(data, "blocker",
         "no current signed productivity basis satisfies the complete chain");
+}
+
+void zcl_native_handle_zcode_commons_impact_verify(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    const struct json_value *value =
+        request && request->input ? json_get(request->input, "receipt") : NULL;
+    const char *hex = json_get_str(value);
+    uint8_t wire[VCS_ZCODE_PRODUCTIVITY_RECEIPT_WIRE_BYTES];
+    if (!request || !reply || !request->input ||
+        request->input->type != JSON_OBJ ||
+        request->input->num_children != 1 || !hex ||
+        strlen(hex) != sizeof(wire) * 2u ||
+        !zcl_hex_decode_lower(hex, wire, sizeof(wire))) {
+        if (reply) corpus_fail(reply, "BAD_PRODUCTIVITY_RECEIPT_INPUT",
+            "receipt must be exactly one canonical lowercase 648-hex productivity_receipt.v1 wire");
+        return;
+    }
+
+    struct vcs_zcode_productivity_receipt_v1 receipt;
+    enum vcs_zcode_c23_error error =
+        vcs_zcode_productivity_receipt_v1_decode(
+            &receipt, wire, sizeof(wire));
+    if (error != VCS_ZCODE_C23_OK) {
+        corpus_fail(reply, "PRODUCTIVITY_RECEIPT_INVALID",
+                    vcs_zcode_c23_error_string(error));
+        return;
+    }
+
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_c23_corpus_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_C23_CORPUS_SERVICE_ID, &lease);
+    if (!service) service = zcode_c23_corpus_service_builtin();
+    error = service->productivity_validate(&receipt);
+    if (error != VCS_ZCODE_C23_OK) {
+        zcl_hotswap_service_release(&lease);
+        corpus_fail(reply, "PRODUCTIVITY_RECEIPT_INVALID",
+                    vcs_zcode_c23_error_string(error));
+        return;
+    }
+
+    uint8_t receipt_root[32];
+    error = vcs_zcode_productivity_receipt_v1_root(&receipt, receipt_root);
+    if (error != VCS_ZCODE_C23_OK || receipt.completed_height > INT64_MAX) {
+        zcl_hotswap_service_release(&lease);
+        corpus_fail(reply, "PRODUCTIVITY_RECEIPT_RENDER_RANGE",
+                    "verified receipt values exceed the bounded JSON integer renderer");
+        return;
+    }
+
+    (void)json_push_kv_bool(&reply->data, "structurally_verified", true);
+    (void)json_push_kv_bool(&reply->data, "simulation_only", true);
+    (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
+    (void)json_push_kv_str(&reply->data, "kind",
+                           "productivity_receipt.v1");
+    (void)json_push_kv_str(&reply->data, "service_id",
+                           ZCODE_C23_CORPUS_SERVICE_ID);
+    (void)json_push_kv_int(&reply->data, "service_generation",
+                           zcl_hotswap_service_generation());
+    corpus_push_root(&reply->data, "receipt_root", receipt_root);
+    corpus_push_root(&reply->data, "work_root", receipt.work_root);
+    corpus_push_root(&reply->data, "acceptance_root", receipt.acceptance_root);
+    corpus_push_root(&reply->data, "release_root", receipt.release_root);
+    corpus_push_root(&reply->data, "admission_root", receipt.admission_root);
+    corpus_push_root(&reply->data, "package_root", receipt.package_root);
+    corpus_push_root(&reply->data, "checkpoint_root", receipt.checkpoint_root);
+    corpus_push_root(&reply->data, "signer_pubkey", receipt.signer_pubkey);
+    (void)json_push_kv_int(&reply->data, "completed_height",
+                           (int64_t)receipt.completed_height);
+    (void)json_push_kv_int(&reply->data, "completed_mtp",
+                           receipt.completed_mtp);
+    (void)json_push_kv_bool(&reply->data, "proven_work_present", true);
+    (void)json_push_kv_bool(&reply->data, "human_acceptance_present", true);
+    (void)json_push_kv_bool(&reply->data, "signed_release_present", true);
+    (void)json_push_kv_bool(&reply->data, "family_admission_present", true);
+    (void)json_push_kv_bool(&reply->data, "package_reference_present", true);
+    (void)json_push_kv_bool(&reply->data, "external_chain_proof_present",
+                            false);
+    (void)json_push_kv_bool(&reply->data, "shareable", false);
+    (void)json_push_kv_bool(&reply->data, "slogan_emitted", false);
+    (void)json_push_kv_bool(&reply->data, "posted_externally", false);
+    (void)json_push_kv_str(&reply->data, "required_chain",
+        "PROVEN work -> human acceptance -> signed release -> independent Family admission -> complete retrievable package");
+    (void)json_push_kv_str(&reply->data, "blocker",
+        "structural receipt verification is not independent current chain proof");
+    zcl_hotswap_service_release(&lease);
 }
 
 void zcl_native_handle_zcode_commons_impact_status(
