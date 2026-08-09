@@ -32,6 +32,7 @@
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "services/zcode_c23_corpus_service.h"
+#include "services/zcode_c23_economics_service.h"
 #include "controllers/rpc_client.h"
 #include "rpc/protocol.h"
 #include "rpc/server.h"
@@ -358,24 +359,32 @@ static void service_report_to_reply(
 }
 
 /* After a service candidate has passed the frozen host-owned KAT and been
- * published, observe it through the ordinary static corpus handler.  The
+ * published, observe it through the service's ordinary static status handler. The
  * candidate cannot choose this operation or its input, and the handler keeps
  * ownership of parsing/rendering.  This makes the resident activation receipt
  * a direct edit-to-visible proof rather than only a generation assertion. */
-static void corpus_resident_observation_append(struct json_value *out)
+static void service_resident_observation_append(struct json_value *out,
+                                                const char *service_id)
 {
     struct json_value input;
     json_init(&input);
     json_set_object(&input);
     struct zcl_command_request request = { .input = &input };
     struct zcl_command_reply reply;
-    zcl_command_reply_init(&reply, ZCODE_C23_CORPUS_SCHEMA_FINGERPRINT);
-    zcl_native_handle_zcode_commons_corpus_status(&request, &reply);
+    if (service_id &&
+        strcmp(service_id, ZCODE_C23_ECONOMICS_SERVICE_ID) == 0) {
+        zcl_command_reply_init(&reply,
+                               ZCODE_C23_ECONOMICS_SCHEMA_FINGERPRINT);
+        zcl_native_handle_zcode_commons_economics_status(&request, &reply);
+    } else {
+        zcl_command_reply_init(&reply, ZCODE_C23_CORPUS_SCHEMA_FINGERPRINT);
+        zcl_native_handle_zcode_commons_corpus_status(&request, &reply);
+    }
     if (reply.exit_code == ZCL_COMMAND_EXIT_OK)
         (void)json_push_kv(out, "resident_observation", &reply.data);
     else
         (void)json_push_kv_str(out, "resident_observation_error",
-                              "static corpus status handler refused observation");
+                              "static service status handler refused observation");
     zcl_command_reply_free(&reply);
     json_free(&input);
 }
@@ -424,10 +433,15 @@ static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
      * existing v2 command path. A recognized-but-invalid service NEVER falls
      * through: contract/KAT drift must route to DEV_RESTART, not be
      * reinterpreted under another ABI. */
+    const struct zcl_hotswap_service_contract *service_contracts[] = {
+        zcl_native_zcode_corpus_service_contract(),
+        zcl_native_zcode_economics_service_contract(),
+    };
     struct zcl_hotswap_service_report service_report;
-    bool service_ok = zcl_hotswap_service_activate_so(
-        so_path, g_resident_datadir, activate,
-        zcl_native_zcode_corpus_service_contract(), &service_report);
+    bool service_ok = zcl_hotswap_service_activate_so_any(
+        so_path, g_resident_datadir, activate, service_contracts,
+        sizeof(service_contracts) / sizeof(service_contracts[0]),
+        &service_report);
     if (service_report.recognized) {
         json_set_object(result);
         json_push_kv_str(result, "schema", "zcl.hotswap_service_activate.v1");
@@ -444,7 +458,8 @@ static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
         if (service_report.error[0])
             json_push_kv_str(result, "error", service_report.error);
         if (service_ok && service_report.activated)
-            corpus_resident_observation_append(result);
+            service_resident_observation_append(
+                result, service_report.service_id);
         return service_ok;
     }
 
@@ -567,10 +582,15 @@ void zcl_native_handle_dev_hotswap_probe(
             false, "so_path (absolute) is required", "dev.hotswap.probe");
         return;
     }
+    const struct zcl_hotswap_service_contract *service_contracts[] = {
+        zcl_native_zcode_corpus_service_contract(),
+        zcl_native_zcode_economics_service_contract(),
+    };
     struct zcl_hotswap_service_report service_report;
-    (void)zcl_hotswap_service_activate_so(
-        so_path, node_rpc_client_datadir(), false,
-        zcl_native_zcode_corpus_service_contract(), &service_report);
+    (void)zcl_hotswap_service_activate_so_any(
+        so_path, node_rpc_client_datadir(), false, service_contracts,
+        sizeof(service_contracts) / sizeof(service_contracts[0]),
+        &service_report);
     if (service_report.recognized) {
         service_report_to_reply(reply, &service_report);
         return;

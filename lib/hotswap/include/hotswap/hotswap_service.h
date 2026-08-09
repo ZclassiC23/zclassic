@@ -109,6 +109,14 @@ bool zcl_hotswap_service_activate_so(
     const struct zcl_hotswap_service_contract *contract,
     struct zcl_hotswap_service_report *report);
 
+/* Select exactly one resident-frozen contract by the candidate's immutable
+ * service id. Unknown service descriptors are recognized and route to a
+ * bounded restart; they never fall through to the command-module ABI. */
+bool zcl_hotswap_service_activate_so_any(
+    const char *so_path, const char *resolved_datadir, bool request_activate,
+    const struct zcl_hotswap_service_contract *const *contracts,
+    size_t contract_count, struct zcl_hotswap_service_report *report);
+
 /* Manifest-derived build/classification authority. */
 const char *zcl_hotswap_service_source_for_path(const char *path);
 const char *zcl_hotswap_service_contract_source_for_path(const char *path);

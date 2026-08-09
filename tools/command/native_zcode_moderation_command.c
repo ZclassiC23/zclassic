@@ -4,9 +4,12 @@
 #include "command/native_command.h"
 
 #include "base/hex.h"
+#include "hotswap/hotswap_service.h"
 #include "json/json.h"
+#include "services/zcode_c23_economics_service.h"
 #include "vcs/zcode_commons_v2.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static void moderation_fail(struct zcl_command_reply *reply,
@@ -114,6 +117,76 @@ void zcl_native_handle_zcode_moderation_policy_show(
                             "separate_from_accuracy_quality_security", true);
 }
 
+static bool economics_service_frozen_kat(const void *opaque, char *why,
+                                         size_t why_sz)
+{
+    const struct zcode_c23_economics_service_v1 *service = opaque;
+    struct vcs_zcode_family_policy_v1 family;
+    uint8_t family_root[32], network[32], qualification[32], backlog[32];
+    struct vcs_zcode_policy_candidate_v2 policy;
+    struct zcode_c23_economics_status_result_v1 status;
+    memset(network, 0x21, sizeof(network));
+    memset(qualification, 0x22, sizeof(qualification));
+    memset(backlog, 0x23, sizeof(backlog));
+    vcs_zcode_family_policy_v1_default(&family);
+    if (!service || !service->award_atoms || !service->policy_init ||
+        !service->policy_validate || !service->policy_root ||
+        !service->epoch_select || !service->render_status ||
+        vcs_zcode_family_policy_v1_root(&family, family_root) !=
+            VCS_ZCODE_COMMONS_V2_OK) {
+        if (why && why_sz) (void)snprintf(why, why_sz,
+            "frozen economics service shape/family-root vector failed");
+        return false;
+    }
+    service->policy_init(&policy, network, family_root, qualification, backlog);
+    uint8_t root[32], expected[32];
+    if (service->policy_validate(&policy) != VCS_ZCODE_COMMONS_V2_OK ||
+        service->policy_root(&policy, root) != VCS_ZCODE_COMMONS_V2_OK ||
+        !zcl_hex_decode(ZCODE_C23_ECONOMICS_KAT_FINGERPRINT, expected, 32) ||
+        memcmp(root, expected, 32) != 0 || !service->render_status(&status) ||
+        status.award_atoms[VCS_ZCODE_CREATION_V2_MODULE_PUBLICATION] !=
+            UINT64_C(100000000) ||
+        status.award_atoms[VCS_ZCODE_CREATION_V2_PRESERVATION] !=
+            UINT64_C(12500000) || status.partial_claim_issuance ||
+        status.unused_capacity_carries) {
+        if (why && why_sz) (void)snprintf(why, why_sz,
+            "frozen policy-root/award/status vector failed");
+        return false;
+    }
+    struct vcs_zcode_epoch_selection_v2 input = {
+        .epoch = 7, .cutoff_height = 2000, .cutoff_mtp = 4000,
+        .epoch_capacity_atoms = UINT64_C(300000000),
+    };
+    struct vcs_zcode_epoch_selection_result_v2 selected;
+    if (service->epoch_select(&input, &policy, &selected) !=
+            VCS_ZCODE_COMMONS_V2_OK || selected.selected_count != 0 ||
+        selected.expired_capacity_atoms != UINT64_C(300000000) ||
+        selected.recipient_cap_atoms != UINT64_C(100000000)) {
+        if (why && why_sz) (void)snprintf(why, why_sz,
+            "frozen empty-epoch selection vector failed");
+        return false;
+    }
+    return true;
+}
+
+static const struct zcl_hotswap_service_contract k_economics_contract = {
+    .service_id = ZCODE_C23_ECONOMICS_SERVICE_ID,
+    .source_tu = "app/services/src/zcode_c23_economics_service.c",
+    .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+    .vtable_size = sizeof(struct zcode_c23_economics_service_v1),
+    .abi_fingerprint = ZCODE_C23_ECONOMICS_ABI_FINGERPRINT,
+    .schema_fingerprint = ZCODE_C23_ECONOMICS_SCHEMA_FINGERPRINT,
+    .wire_fingerprint = ZCODE_C23_ECONOMICS_WIRE_FINGERPRINT,
+    .kat_fingerprint = ZCODE_C23_ECONOMICS_KAT_FINGERPRINT,
+    .frozen_kat = economics_service_frozen_kat,
+};
+
+const struct zcl_hotswap_service_contract *
+zcl_native_zcode_economics_service_contract(void)
+{
+    return &k_economics_contract;
+}
+
 void zcl_native_handle_zcode_commons_economics_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -122,47 +195,57 @@ void zcl_native_handle_zcode_commons_economics_status(
             "zcode commons economics status accepts no input keys");
         return;
     }
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_c23_economics_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_C23_ECONOMICS_SERVICE_ID, &lease);
+    if (!service) service = zcode_c23_economics_service_builtin();
+    struct zcode_c23_economics_status_result_v1 status;
+    if (!service->render_status(&status)) {
+        zcl_hotswap_service_release(&lease);
+        moderation_fail(reply, "ECONOMICS_SERVICE_FAILED",
+                        "the pure economics service refused status rendering");
+        return;
+    }
     (void)json_push_kv_str(&reply->data, "policy_object",
                            "zc23_policy_candidate.v2");
+    (void)json_push_kv_str(&reply->data, "service_id",
+                           ZCODE_C23_ECONOMICS_SERVICE_ID);
+    (void)json_push_kv_int(&reply->data, "service_generation",
+                           zcl_hotswap_service_generation());
     (void)json_push_kv_bool(&reply->data, "simulation_only", true);
     (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
     (void)json_push_kv_bool(&reply->data, "token_exists", false);
     (void)json_push_kv_bool(&reply->data, "funds_moved", false);
     (void)json_push_kv_bool(&reply->data, "ordinary_activity_mints", false);
     (void)json_push_kv_int(&reply->data, "challenge_blocks",
-                           VCS_ZCODE_COMMONS_CHALLENGE_BLOCKS);
+                           (int64_t)status.challenge_blocks);
     (void)json_push_kv_int(&reply->data, "challenge_seconds",
-                           VCS_ZCODE_COMMONS_CHALLENGE_SECONDS);
+                           status.challenge_seconds);
     (void)json_push_kv_int(&reply->data, "module_publication_atoms",
-        (int64_t)vcs_zcode_creation_award_atoms_v2(
-            VCS_ZCODE_CREATION_V2_MODULE_PUBLICATION));
+        (int64_t)status.award_atoms[VCS_ZCODE_CREATION_V2_MODULE_PUBLICATION]);
     (void)json_push_kv_int(&reply->data, "defect_repair_atoms",
-        (int64_t)vcs_zcode_creation_award_atoms_v2(
-            VCS_ZCODE_CREATION_V2_DEFECT_REPAIR));
+        (int64_t)status.award_atoms[VCS_ZCODE_CREATION_V2_DEFECT_REPAIR]);
     (void)json_push_kv_int(&reply->data, "security_finding_atoms",
-        (int64_t)vcs_zcode_creation_award_atoms_v2(
-            VCS_ZCODE_CREATION_V2_SECURITY_FINDING));
+        (int64_t)status.award_atoms[VCS_ZCODE_CREATION_V2_SECURITY_FINDING]);
     (void)json_push_kv_int(&reply->data, "independent_test_atoms",
-        (int64_t)vcs_zcode_creation_award_atoms_v2(
-            VCS_ZCODE_CREATION_V2_INDEPENDENT_TEST));
+        (int64_t)status.award_atoms[VCS_ZCODE_CREATION_V2_INDEPENDENT_TEST]);
     (void)json_push_kv_int(&reply->data, "reproduction_atoms",
-        (int64_t)vcs_zcode_creation_award_atoms_v2(
-            VCS_ZCODE_CREATION_V2_REPRODUCTION));
+        (int64_t)status.award_atoms[VCS_ZCODE_CREATION_V2_REPRODUCTION]);
     (void)json_push_kv_int(&reply->data, "performance_frontier_atoms",
-        (int64_t)vcs_zcode_creation_award_atoms_v2(
-            VCS_ZCODE_CREATION_V2_PERFORMANCE_FRONTIER));
+        (int64_t)status.award_atoms[VCS_ZCODE_CREATION_V2_PERFORMANCE_FRONTIER]);
     (void)json_push_kv_int(&reply->data, "compatibility_proof_atoms",
-        (int64_t)vcs_zcode_creation_award_atoms_v2(
-            VCS_ZCODE_CREATION_V2_COMPATIBILITY_PROOF));
+        (int64_t)status.award_atoms[VCS_ZCODE_CREATION_V2_COMPATIBILITY_PROOF]);
     (void)json_push_kv_int(&reply->data, "preservation_atoms",
-        (int64_t)vcs_zcode_creation_award_atoms_v2(
-            VCS_ZCODE_CREATION_V2_PRESERVATION));
+        (int64_t)status.award_atoms[VCS_ZCODE_CREATION_V2_PRESERVATION]);
     (void)json_push_kv_str(&reply->data, "queue_order",
-                           "maturity_height,maturity_mtp,claim_root");
+                           status.queue_order);
     (void)json_push_kv_str(&reply->data, "category_order",
-                           "previous-epoch-root rotation, cyclic");
+                           status.category_order);
     (void)json_push_kv_str(&reply->data, "concentration_cap",
-        "min(epoch_capacity,max(1 ZC23,floor(epoch_capacity/100)))");
-    (void)json_push_kv_bool(&reply->data, "partial_claim_issuance", false);
-    (void)json_push_kv_bool(&reply->data, "unused_capacity_carries", false);
+        status.concentration_cap);
+    (void)json_push_kv_bool(&reply->data, "partial_claim_issuance",
+                            status.partial_claim_issuance);
+    (void)json_push_kv_bool(&reply->data, "unused_capacity_carries",
+                            status.unused_capacity_carries);
+    zcl_hotswap_service_release(&lease);
 }

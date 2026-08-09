@@ -330,9 +330,10 @@ static void service_close_after_quiesce(void *handle)
     LOG_WARN("hotswap.service", "retaining superseded mapping: readers did not quiesce");
 }
 
-bool zcl_hotswap_service_activate_so(
+bool zcl_hotswap_service_activate_so_any(
     const char *so_path, const char *resolved_datadir, bool request_activate,
-    const struct zcl_hotswap_service_contract *contract,
+    const struct zcl_hotswap_service_contract *const *contracts,
+    size_t contract_count,
     struct zcl_hotswap_service_report *report)
 {
     if (!report)
@@ -358,6 +359,21 @@ bool zcl_hotswap_service_activate_so(
                       "artifact does not export a service descriptor");
     }
     report->recognized = true;
+    const struct zcl_hotswap_service_contract *contract = NULL;
+    for (size_t i = 0; i < contract_count; i++)
+        if (contracts && contracts[i] && contracts[i]->service_id &&
+            candidate->service_id &&
+            strcmp(contracts[i]->service_id, candidate->service_id) == 0) {
+            contract = contracts[i];
+            break;
+        }
+    if (!contract) {
+        copy_text(report->service_id, sizeof(report->service_id),
+                  candidate->service_id);
+        (void)dlclose(handle);
+        return reject(report, "service", true,
+                      "service id has no resident frozen contract; select DEV_RESTART");
+    }
     if (!zcl_hotswap_service_publish(contract, candidate, request_activate,
                                      report)) {
         report->recognized = true;
@@ -396,18 +412,39 @@ bool zcl_hotswap_service_activate_so(
     service_close_after_quiesce(old_handle);
     return true;
 }
-#else
+
 bool zcl_hotswap_service_activate_so(
     const char *so_path, const char *resolved_datadir, bool request_activate,
     const struct zcl_hotswap_service_contract *contract,
     struct zcl_hotswap_service_report *report)
 {
+    const struct zcl_hotswap_service_contract *contracts[] = {contract};
+    return zcl_hotswap_service_activate_so_any(
+        so_path, resolved_datadir, request_activate, contracts, 1, report);
+}
+#else
+bool zcl_hotswap_service_activate_so_any(
+    const char *so_path, const char *resolved_datadir, bool request_activate,
+    const struct zcl_hotswap_service_contract *const *contracts,
+    size_t contract_count,
+    struct zcl_hotswap_service_report *report)
+{
     (void)so_path; (void)resolved_datadir; (void)request_activate;
-    (void)contract;
+    (void)contracts; (void)contract_count;
     if (!report)
         LOG_FAIL("hotswap.service", "activation report is NULL");
     memset(report, 0, sizeof(*report));
     return reject(report, "unavailable", false,
                   "service activation is unavailable in release builds");
+}
+
+bool zcl_hotswap_service_activate_so(
+    const char *so_path, const char *resolved_datadir, bool request_activate,
+    const struct zcl_hotswap_service_contract *contract,
+    struct zcl_hotswap_service_report *report)
+{
+    const struct zcl_hotswap_service_contract *contracts[] = {contract};
+    return zcl_hotswap_service_activate_so_any(
+        so_path, resolved_datadir, request_activate, contracts, 1, report);
 }
 #endif

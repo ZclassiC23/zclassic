@@ -102,6 +102,12 @@ KAT and the observation operation. A candidate passes that frozen KAT before
 publication; the ordinary static handler then supplies a bounded
 post-publication observation in the activation receipt.
 
+The initial frozen contracts are `zcode.c23.corpus.v1` and
+`zcode.c23.economics.v1`. The loader resolves the candidate's immutable service
+ID against that closed resident set before admission. An unknown descriptor is
+therefore a recognized service that selects `DEV_RESTART`; it cannot be tested
+against another island's ABI or fall through to the command-module loader.
+
 `check-hotswap-service-islands` rejects mutable file-scope state, TLS,
 constructors/destructors, filesystem/SQLite/socket/clock/RNG/process calls,
 wallet/node-global/consensus/raw-storage access, and project calls outside the
