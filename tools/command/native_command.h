@@ -460,6 +460,9 @@ void zcl_native_handle_zcode_commons_corpus_verify(
 void zcl_native_handle_zcode_commons_corpus_shard_verify(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_corpus_shard_page(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_commons_impact_verify(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

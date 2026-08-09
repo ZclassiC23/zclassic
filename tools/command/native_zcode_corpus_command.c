@@ -5,12 +5,14 @@
 
 #include "base/checked.h"
 #include "base/hex.h"
+#include "base/serialize_le.h"
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "services/zcode_c23_corpus_service.h"
 #include "util/safe_alloc.h"
 #include "vcs/zcode_c23_corpus.h"
 
+#include <inttypes.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,6 +76,26 @@ static bool corpus_shard_frozen_kat(
     if (service->shard_validate(&shard) != VCS_ZCODE_C23_OK) {
         if (why && why_sz)
             (void)snprintf(why, why_sz, "frozen valid shard vector failed");
+        return false;
+    }
+    size_t first = SIZE_MAX, count = SIZE_MAX;
+    struct vcs_zcode_c23_page_cursor_v1 next;
+    bool more = true;
+    if (service->shard_page(&shard, NULL, 1, &first, &count, &next,
+                            &more) != VCS_ZCODE_C23_OK ||
+        first != 0 || count != 1 || more) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen first shard-page vector failed");
+        return false;
+    }
+    struct vcs_zcode_c23_page_cursor_v1 wrong = {.next_index = 1};
+    corpus_kat_fill(wrong.shard_root, 0xa5);
+    if (service->shard_page(&shard, &wrong, 1, &first, &count, &next,
+                            &more) != VCS_ZCODE_C23_CURSOR) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen shard-page cursor rejection vector failed");
         return false;
     }
     entry.flags |= UINT32_C(0x80000000);
@@ -194,6 +216,7 @@ static bool corpus_service_frozen_kat(const void *opaque, char *why,
     const struct zcode_c23_corpus_service_v1 *service = opaque;
     struct zcode_c23_corpus_status_result_v1 status;
     if (!service || !service->rules_validate || !service->shard_validate ||
+        !service->shard_page ||
         !service->checkpoint_validate || !service->productivity_validate ||
         !service->render_status || !service->render_rules ||
         !service->render_status(NULL, &status) ||
@@ -478,30 +501,25 @@ static bool corpus_shard_metrics_collect(
     return true;
 }
 
-void zcl_native_handle_zcode_commons_corpus_shard_verify(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+static bool corpus_shard_decode_hex(
+    const char *hex, struct vcs_zcode_c23_corpus_shard_v1 *shard,
+    struct vcs_zcode_c23_corpus_entry_v1 **entries_out,
+    struct zcl_command_reply *reply)
 {
-    const struct json_value *value =
-        request && request->input ? json_get(request->input, "shard") : NULL;
-    const char *hex = json_get_str(value);
     size_t hex_len = hex ? strlen(hex) : 0;
-    if (!request || !reply || !request->input ||
-        request->input->type != JSON_OBJ ||
-        request->input->num_children != 1 || !hex_len ||
-        (hex_len & 1u) != 0 ||
+    if (!shard || !entries_out || !hex_len || (hex_len & 1u) != 0 ||
         hex_len > corpus_shard_inline_wire_max() * 2u) {
-        if (reply) corpus_fail(reply, "BAD_CORPUS_SHARD_INPUT",
+        corpus_fail(reply, "BAD_CORPUS_SHARD_INPUT",
             "shard must be one nonempty lowercase even-length hex wire within the 8192-byte inline bound");
-        return;
+        return false;
     }
-
     size_t wire_len = hex_len / 2u;
     if (wire_len < VCS_ZCODE_C23_SHARD_HEADER_WIRE_BYTES ||
         (wire_len - VCS_ZCODE_C23_SHARD_HEADER_WIRE_BYTES) %
             VCS_ZCODE_C23_SHARD_ENTRY_WIRE_BYTES != 0) {
         corpus_fail(reply, "BAD_CORPUS_SHARD_INPUT",
                     "shard wire length is not a canonical header plus whole entries");
-        return;
+        return false;
     }
     size_t entry_capacity =
         (wire_len - VCS_ZCODE_C23_SHARD_HEADER_WIRE_BYTES) /
@@ -509,9 +527,8 @@ void zcl_native_handle_zcode_commons_corpus_shard_verify(
     if (!entry_capacity || entry_capacity > corpus_shard_inline_entry_max()) {
         corpus_fail(reply, "BAD_CORPUS_SHARD_INPUT",
                     "shard must contain between 1 and 28 inline entries");
-        return;
+        return false;
     }
-
     uint8_t *wire = zcl_malloc(wire_len, "corpus.shard.wire");
     struct vcs_zcode_c23_corpus_entry_v1 *entries = zcl_malloc(
         entry_capacity * sizeof(*entries), "corpus.shard.entries");
@@ -520,32 +537,50 @@ void zcl_native_handle_zcode_commons_corpus_shard_verify(
         free(wire);
         corpus_fail(reply, "CORPUS_SHARD_MEMORY",
                     "bounded shard verification allocation failed");
-        return;
+        return false;
     }
     if (!zcl_hex_decode_lower(hex, wire, wire_len)) {
         free(entries);
         free(wire);
         corpus_fail(reply, "BAD_CORPUS_SHARD_INPUT",
                     "shard must use canonical lowercase hexadecimal");
-        return;
+        return false;
     }
-
-    struct vcs_zcode_c23_corpus_shard_v1 shard;
     enum vcs_zcode_c23_error error = vcs_zcode_c23_corpus_shard_v1_decode(
-        &shard, entries, entry_capacity, wire, wire_len);
+        shard, entries, entry_capacity, wire, wire_len);
     free(wire);
     if (error != VCS_ZCODE_C23_OK) {
         free(entries);
         corpus_fail(reply, "CORPUS_SHARD_INVALID",
                     vcs_zcode_c23_error_string(error));
+        return false;
+    }
+    *entries_out = entries;
+    return true;
+}
+
+void zcl_native_handle_zcode_commons_corpus_shard_verify(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    const struct json_value *value =
+        request && request->input ? json_get(request->input, "shard") : NULL;
+    const char *hex = json_get_str(value);
+    if (!request || !reply || !request->input ||
+        request->input->type != JSON_OBJ ||
+        request->input->num_children != 1 || !hex) {
+        if (reply) corpus_fail(reply, "BAD_CORPUS_SHARD_INPUT",
+            "shard must be one nonempty lowercase even-length hex wire within the 8192-byte inline bound");
         return;
     }
+    struct vcs_zcode_c23_corpus_shard_v1 shard;
+    struct vcs_zcode_c23_corpus_entry_v1 *entries = NULL;
+    if (!corpus_shard_decode_hex(hex, &shard, &entries, reply)) return;
 
     struct zcl_hotswap_service_lease lease = {0};
     const struct zcode_c23_corpus_service_v1 *service =
         zcl_hotswap_service_acquire(ZCODE_C23_CORPUS_SERVICE_ID, &lease);
     if (!service) service = zcode_c23_corpus_service_builtin();
-    error = service->shard_validate(&shard);
+    enum vcs_zcode_c23_error error = service->shard_validate(&shard);
     if (error != VCS_ZCODE_C23_OK) {
         zcl_hotswap_service_release(&lease);
         free(entries);
@@ -604,6 +639,167 @@ void zcl_native_handle_zcode_commons_corpus_shard_verify(
                            (int64_t)metrics.physical_lines);
     (void)json_push_kv_int(&reply->data, "unique_semantic_units",
                            (int64_t)metrics.unique_semantic_units);
+    zcl_hotswap_service_release(&lease);
+    free(entries);
+}
+
+static bool corpus_shard_entry_json_range(
+    const struct vcs_zcode_c23_corpus_entry_v1 *entry)
+{
+    return entry && entry->release_sequence <= INT64_MAX &&
+           entry->production_loc <= INT64_MAX && entry->test_loc <= INT64_MAX &&
+           entry->physical_lines <= INT64_MAX &&
+           entry->unique_semantic_units <= INT64_MAX;
+}
+
+static void corpus_shard_entry_push_json(
+    struct json_value *rows,
+    const struct vcs_zcode_c23_corpus_entry_v1 *entry)
+{
+    struct json_value row;
+    json_init(&row);
+    json_set_object(&row);
+    corpus_push_root(&row, "semantic_lineage_root",
+                     entry->semantic_lineage_root);
+    corpus_push_root(&row, "release_root", entry->release_root);
+    corpus_push_root(&row, "passport_root", entry->passport_root);
+    corpus_push_root(&row, "proof_root", entry->proof_root);
+    corpus_push_root(&row, "source_assignment_root",
+                     entry->source_assignment_root);
+    corpus_push_root(&row, "admission_root", entry->admission_root);
+    corpus_push_root(&row, "possession_root", entry->possession_root);
+    (void)json_push_kv_int(&row, "release_sequence",
+                           (int64_t)entry->release_sequence);
+    (void)json_push_kv_int(&row, "production_loc",
+                           (int64_t)entry->production_loc);
+    (void)json_push_kv_int(&row, "test_loc", (int64_t)entry->test_loc);
+    (void)json_push_kv_int(&row, "physical_lines",
+                           (int64_t)entry->physical_lines);
+    (void)json_push_kv_int(&row, "unique_semantic_units",
+                           (int64_t)entry->unique_semantic_units);
+    char evidence[19];
+    (void)snprintf(evidence, sizeof(evidence), "0x%016" PRIx64,
+                   entry->evidence_mask);
+    (void)json_push_kv_str(&row, "evidence_mask", evidence);
+    (void)json_push_kv_int(&row, "exclusion_mask",
+                           (int64_t)entry->exclusion_mask);
+    (void)json_push_kv_int(&row, "flags", (int64_t)entry->flags);
+    (void)json_push_back(rows, &row);
+    json_free(&row);
+}
+
+void zcl_native_handle_zcode_commons_corpus_shard_page(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    const struct json_value *input = request ? request->input : NULL;
+    const struct json_value *shard_value = input ? json_get(input, "shard") : NULL;
+    const struct json_value *cursor_value = input ? json_get(input, "cursor") : NULL;
+    const struct json_value *limit_value = input ? json_get(input, "limit") : NULL;
+    size_t known_keys = 1u + (cursor_value ? 1u : 0u) +
+                        (limit_value ? 1u : 0u);
+    const char *hex = json_get_str(shard_value);
+    int64_t limit = limit_value ? json_get_int(limit_value) :
+                                  (int64_t)VCS_ZCODE_C23_PAGE_MAX;
+    if (!request || !reply || !input || input->type != JSON_OBJ || !hex ||
+        input->num_children != known_keys ||
+        (limit_value && limit_value->type != JSON_INT) || limit < 1 ||
+        limit > VCS_ZCODE_C23_PAGE_MAX) {
+        if (reply) corpus_fail(reply, "BAD_CORPUS_SHARD_PAGE_INPUT",
+            "shard is required; cursor must be a 68-character lowercase root cursor and limit must be 1..256");
+        return;
+    }
+
+    struct vcs_zcode_c23_page_cursor_v1 cursor;
+    const struct vcs_zcode_c23_page_cursor_v1 *cursor_ptr = NULL;
+    if (cursor_value) {
+        const char *cursor_hex = json_get_str(cursor_value);
+        uint8_t cursor_wire[34];
+        if (!cursor_hex || strlen(cursor_hex) != sizeof(cursor_wire) * 2u ||
+            !zcl_hex_decode_lower(cursor_hex, cursor_wire,
+                                  sizeof(cursor_wire))) {
+            corpus_fail(reply, "BAD_CORPUS_SHARD_PAGE_INPUT",
+                        "cursor must be exactly 68 lowercase hexadecimal characters");
+            return;
+        }
+        memcpy(cursor.shard_root, cursor_wire, 32);
+        cursor.next_index = zcl_read_u16_le(cursor_wire + 32);
+        cursor_ptr = &cursor;
+    }
+
+    struct vcs_zcode_c23_corpus_shard_v1 shard;
+    struct vcs_zcode_c23_corpus_entry_v1 *entries = NULL;
+    if (!corpus_shard_decode_hex(hex, &shard, &entries, reply)) return;
+
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_c23_corpus_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_C23_CORPUS_SERVICE_ID, &lease);
+    if (!service) service = zcode_c23_corpus_service_builtin();
+    size_t first = 0, count = 0;
+    struct vcs_zcode_c23_page_cursor_v1 next;
+    bool has_more = false;
+    enum vcs_zcode_c23_error error = service->shard_page(
+        &shard, cursor_ptr, (size_t)limit, &first, &count, &next, &has_more);
+    if (error != VCS_ZCODE_C23_OK) {
+        zcl_hotswap_service_release(&lease);
+        free(entries);
+        corpus_fail(reply,
+                    error == VCS_ZCODE_C23_CURSOR
+                        ? "CORPUS_SHARD_CURSOR_INVALID"
+                        : "CORPUS_SHARD_INVALID",
+                    vcs_zcode_c23_error_string(error));
+        return;
+    }
+    for (size_t i = first; i < first + count; i++) {
+        if (!corpus_shard_entry_json_range(&shard.entries[i])) {
+            zcl_hotswap_service_release(&lease);
+            free(entries);
+            corpus_fail(reply, "CORPUS_SHARD_RENDER_RANGE",
+                        "page entry exceeds the bounded JSON integer renderer");
+            return;
+        }
+    }
+    uint8_t shard_root[32];
+    error = vcs_zcode_c23_corpus_shard_v1_root(&shard, shard_root);
+    if (error != VCS_ZCODE_C23_OK) {
+        zcl_hotswap_service_release(&lease);
+        free(entries);
+        corpus_fail(reply, "CORPUS_SHARD_INVALID",
+                    vcs_zcode_c23_error_string(error));
+        return;
+    }
+
+    (void)json_push_kv_bool(&reply->data, "verified", true);
+    (void)json_push_kv_bool(&reply->data, "simulation_only", true);
+    (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
+    (void)json_push_kv_bool(&reply->data, "global_completeness_claimed",
+                            false);
+    (void)json_push_kv_str(&reply->data, "kind", "c23_corpus_shard.page.v1");
+    (void)json_push_kv_str(&reply->data, "service_id",
+                           ZCODE_C23_CORPUS_SERVICE_ID);
+    (void)json_push_kv_int(&reply->data, "service_generation",
+                           zcl_hotswap_service_generation());
+    corpus_push_root(&reply->data, "shard_root", shard_root);
+    (void)json_push_kv_int(&reply->data, "first_index", (int64_t)first);
+    (void)json_push_kv_int(&reply->data, "item_count", (int64_t)count);
+    (void)json_push_kv_int(&reply->data, "limit", limit);
+    (void)json_push_kv_int(&reply->data, "page_limit",
+                           VCS_ZCODE_C23_PAGE_MAX);
+    (void)json_push_kv_bool(&reply->data, "has_more", has_more);
+    char next_hex[69] = {0};
+    if (has_more) {
+        uint8_t next_wire[34];
+        memcpy(next_wire, next.shard_root, 32);
+        zcl_write_u16_le(next_wire + 32, next.next_index);
+        zcl_hex_encode(next_wire, sizeof(next_wire), next_hex);
+    }
+    (void)json_push_kv_str(&reply->data, "next_cursor", next_hex);
+    struct json_value rows;
+    json_init(&rows);
+    json_set_array(&rows);
+    for (size_t i = first; i < first + count; i++)
+        corpus_shard_entry_push_json(&rows, &shard.entries[i]);
+    (void)json_push_kv(&reply->data, "entries", &rows);
+    json_free(&rows);
     zcl_hotswap_service_release(&lease);
     free(entries);
 }

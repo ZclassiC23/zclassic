@@ -24,6 +24,17 @@ static enum vcs_zcode_c23_error shard_validate(
     return vcs_zcode_c23_corpus_shard_v1_validate(shard);
 }
 
+static enum vcs_zcode_c23_error shard_page(
+    const struct vcs_zcode_c23_corpus_shard_v1 *shard,
+    const struct vcs_zcode_c23_page_cursor_v1 *cursor, size_t page_size,
+    size_t *first_index, size_t *item_count,
+    struct vcs_zcode_c23_page_cursor_v1 *next_cursor, bool *has_more)
+{
+    return vcs_zcode_c23_corpus_shard_v1_page(
+        shard, cursor, page_size, first_index, item_count, next_cursor,
+        has_more);
+}
+
 static enum vcs_zcode_c23_error checkpoint_validate(
     const struct vcs_zcode_c23_corpus_checkpoint_v1 *checkpoint)
 {
@@ -109,6 +120,7 @@ static bool render_rules(const char *requested_root,
 static const struct zcode_c23_corpus_service_v1 k_builtin = {
     .rules_validate = rules_validate,
     .shard_validate = shard_validate,
+    .shard_page = shard_page,
     .checkpoint_validate = checkpoint_validate,
     .productivity_validate = productivity_validate,
     .render_status = render_status,

@@ -335,6 +335,27 @@ ZCL_COMMAND_READY_READ(
     zcl_native_handle_zcode_commons_corpus_shard_verify)
 
 ZCL_COMMAND_READY_READ(
+    "zcode.commons.corpus.shard.page", "zcode.commons.corpus.shard", "",
+    "Read one stable-root page from a bounded C23 corpus shard",
+    "Decodes one canonical c23_corpus_shard.v1 wire, validates it through "
+    "the resident pure corpus service, and returns at most 256 sorted entries. "
+    "The optional cursor is bound to the exact shard root, so it cannot be "
+    "reused against changed bytes. Inline transport currently carries at most "
+    "28 entries and never claims global completeness.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,commons,corpus,c23,shard,page,cursor,read,simulation",
+    "zcl.zcode_commons_corpus_shard_page.input.v1",
+    "zcl.zcode_commons_corpus_shard_page.v1", "shard,cursor,limit", "shard",
+    "zclassic23 zcode commons corpus shard page --input='{\"shard\":\"<lowercase-hex-wire>\",\"limit\":256}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_corpus_shard_page)
+
+ZCL_COMMAND_READY_READ(
     "zcode.commons.corpus.status", "zcode.commons.corpus", "",
     "Show the verified C23 corpus lower bound",
     "Shows admitted and durably hosted production/test C23 LOC separately, "
