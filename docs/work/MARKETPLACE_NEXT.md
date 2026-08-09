@@ -51,13 +51,13 @@ reverse-mapping gate covers the new leaf.
 - [x] B4. `make lint` + pre-push CI green on the pushed tree (919 ran,
   0 failed); docs updated (`FILE_MARKET_PROTOCOL.md`, two-laptop runbook,
   cookbook)
-- [ ] B5. **Onion-routed chunk delivery** — today the offer carries the
-  seller's file-service endpoint as clearnet `peer_ip:peer_port` and the
-  buyer connects directly, exposing the seller IP to the buyer (and the
-  buyer's connect to the seller). For the "buyer/seller IP never exposed"
-  bar, the delivery endpoint must be reachable via the onion service
-  (onion address in the offer, delivery requests routed through the
-  embedded Tor, same authorize-before-read gate unchanged)
+- [ ] B5. **Onion-routed chunk delivery** — design record:
+  [`MARKET_ONION_DELIVERY.md`](./MARKET_ONION_DELIVERY.md) (offer v2 with
+  `endpoint_type=onion` + 32-byte onion pubkey, `/market/chunk` onion route
+  reusing the authorize-before-read gate, GET-hex transport, fail-closed
+  stub policy, `/directory.json` clearnet suppression). Today the offer
+  carries the seller's clearnet `peer_ip:peer_port` and the buyer connects
+  directly, exposing both IPs
 
 ## Phase C — ZC23 design (owner decision first, then code)
 
