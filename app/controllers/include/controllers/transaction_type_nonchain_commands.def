@@ -55,3 +55,5 @@ TX_NONCHAIN_COMMAND("zcode.commons.shadow.attribution.commit", "commons_simulati
     "Stores one verified creation-attribution wire in an explicit scratch CAS; it creates, signs, submits, and confirms no chain transaction.")
 TX_NONCHAIN_COMMAND("zcode.commons.shadow.epoch.commit", "commons_simulation",
     "Stores one verified epoch-accounting wire in an explicit scratch CAS; it creates, signs, submits, and confirms no chain transaction.")
+TX_NONCHAIN_COMMAND("app.market.offer", "p2p_market_offer",
+    "Builds, signs, persists, and gossips one self-authenticating paid file offer; settlement is the buyer's separate payment transaction, so this command creates no chain transaction.")
