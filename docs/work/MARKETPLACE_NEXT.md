@@ -26,18 +26,31 @@ is two real machines finding each other over Tor and trading a file.
 
 ## Phase B — file-market settlement wiring (code)
 
-`zmarket_buy` is not wired end-to-end today: chunk unlock is gated on a
-mempool-verified payment txid (`handle_zfilepay`, `msgprocessor.c`), but
-the buy RPC → payment → transfer glue is missing.
+The marketplace trade is wired end-to-end: seller `app market offer`
+(sign → persist → content-bind → gossip) and buyer `app market purchase
+plan/commit/status/retrieve` (payment → chain-verified claim →
+authorize-before-read chunk delivery → root re-derivation). The legacy
+`zmarket_offer`/`zmarket_buy` RPCs stay contained stubs by design.
 
-- [ ] B1. Map the exact unwired seams (buy command → payment tx build →
-  mempool verify → chunk unlock → download) — one page, named files/lines
-- [ ] B2. Wire the buy flow end-to-end: plan/commit with fee preview,
-  fail-closed on every custody gate
+**2026-08-09 update — B1 finding flipped Phase B:** the buyer side was
+already wired end-to-end (`app market purchase plan/commit/status/retrieve`,
+payment-gated chunk delivery, restart-safe retrieval). The genuine gap was
+the seller side. B2 (landed in `c4bf1cb40` + `aff7ecf12`) closed it:
+`app market offer` seals/persists/binds/announces a signed paid offer
+(fail-closed without `-externalip` + file-service port), and the purchase
+reverse-mapping gate covers the new leaf.
+
+- [x] B1. Map the exact unwired seams — done; buyer pipeline already
+  shipped, seller offer creation was the one real gap
+- [x] B2. Seller offer wired end-to-end: `app market offer`
+  plan/commit (content-addressed idempotent), sealed offer, content
+  binding, `zfileoffer` origin flood; 11 new tests; pushed
 - [ ] B3. Two-node regtest acceptance script (same shape as
   `tools/dev/zcode_dht_acceptance.sh`): seller offers, buyer pays,
-  bytes arrive and re-derive the content root
-- [ ] B4. `make lint` + `make test-parallel` + pre-push CI green; docs updated
+  bytes arrive and re-derive the content root — IN PROGRESS
+- [x] B4. `make lint` + pre-push CI green on the pushed tree (919 ran,
+  0 failed); docs updated (`FILE_MARKET_PROTOCOL.md`, two-laptop runbook,
+  cookbook)
 - [ ] B5. **Onion-routed chunk delivery** — today the offer carries the
   seller's file-service endpoint as clearnet `peer_ip:peer_port` and the
   buyer connects directly, exposing the seller IP to the buyer (and the
