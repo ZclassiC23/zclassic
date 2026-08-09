@@ -1297,6 +1297,13 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
              * before the handler ever runs, making the leaf uninvokable from
              * the shell exactly as zcode.package.publish.plan once was. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "epoch") == 0) {
+            /* ZC23 epoch selectors (zcode.commons.epoch, the shadow epoch
+             * pair, the schedule propose pair) are non-negative integer
+             * epochs; every handler re-validates its own range. Without this
+             * rule the default branch demands a STRING and the leaves are
+             * uninvokable from the shell. */
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
         } else if (strcmp(key, "limit") == 0 || strcmp(key, "depth") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
                       json_get_int(value) <= 1000000;

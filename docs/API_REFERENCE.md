@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 610 |
+| Registry entries (branches + leaves) | 614 |
 | Top-level roots | 11 |
-| Branches | 142 |
-| Leaves (dispatchable command paths) | 468 |
-| … `ready` (live handler in this build) | 420 |
+| Branches | 144 |
+| Leaves (dispatchable command paths) | 470 |
+| … `ready` (live handler in this build) | 422 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 152 |
+| Leaves with `effect=mutate` | 153 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 98 |
 
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 170 | 40 | 130 |
+| `config/commands/zcode.def` | 174 | 42 | 132 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -965,6 +965,13 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode commons shadow protocol verify` | ready | read / read / operator · fast/low | **`workspace`**, **`policy_candidate_root`**, **`epoch_0_root`**, **`epoch_1_root`**, **`epoch_2_root`**, **`epoch_3_root`**, **`branch_0_root`**, **`branch_1_root`**, **`branch_2_root`**, **`branch_3_root`**, **`now_unix`** | `zcl.zcode_commons_shadow_protocol.v1` | `zclassic23 zcode commons shadow protocol verify --input='{...}'` | Verify four linked protocol shadow simulations |
 
+#### `zcode.commons.schedule.propose` — Evidence-scheduled epoch emission proposals
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode commons schedule propose plan` | ready | read / read / operator · fast/low | **`workspace`**, **`epoch`**, **`previous_proposal_root`** | `zcl.zcode_commons_schedule_propose.v1` | `zclassic23 zcode commons schedule propose plan --input='{...}'` | Plan one Proof-of-Participation epoch proposal |
+| `zcode commons schedule propose commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`epoch`**, **`previous_proposal_root`** | `zcl.zcode_commons_schedule_propose.v1` | `zclassic23 zcode commons schedule propose commit --input='{...}'` | Store one epoch schedule proposal in scratch CAS |
+
 #### `zcode.commons.reproduction` — Portable simulation-only reproduction challenges
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
@@ -1426,6 +1433,7 @@ promise the same document shape.
 | `zcl.zcode_reproduction_challenge.v1` | `zcode.commons.reproduction.challenge.plan`, `zcode.commons.reproduction.challenge.commit` |
 | `zcl.zcode_commons_shadow_attribution.v1` | `zcode.commons.shadow.attribution.plan`, `zcode.commons.shadow.attribution.commit` |
 | `zcl.zcode_commons_shadow_epoch.v1` | `zcode.commons.shadow.epoch.plan`, `zcode.commons.shadow.epoch.commit` |
+| `zcl.zcode_commons_schedule_propose.v1` | `zcode.commons.schedule.propose.plan`, `zcode.commons.schedule.propose.commit` |
 | `zcl.zcode_patronage_offer.v1` | `zcode.patronage.offer.plan`, `zcode.patronage.offer.commit` |
 | `zcl.zcode_patronage_funding.v1` | `zcode.patronage.fund.plan`, `zcode.patronage.fund.commit` |
 | `zcl.zcode_continuity_policy.view.v1` | `zcode.continuity.plan`, `zcode.continuity.commit`, `zcode.continuity.status` |

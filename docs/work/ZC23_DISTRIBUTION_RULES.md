@@ -98,3 +98,16 @@ simulation-only). C3, in order:
 3. Availability-proof challenge loop for the preservation class.
 4. Public schedule file + epoch receipts anyone can re-derive ("verified
    by acceptance proofs, never trusted" applies to the money too).
+
+## 8. Codified in (C2 proposer slice, 2026-08-09)
+
+Step 1 above landed as a simulation-only proposer, alongside the frozen era
+curve (never inside it): `lib/vcs/src/zcode_epoch_schedule.c` (header
+`lib/vcs/include/vcs/zcode_epoch_schedule.h`) encodes the 21,000,000 cap,
+the `(cap − already_emitted) / 1040` weekly budget, and the 100/40/20/5
+class weights, reading `already_emitted` from the commons projection's
+minted totals. The native pair `zcode commons schedule propose plan|commit`
+previews / persists a root-addressed proposal wire in the scratch CAS — a
+reviewable schedule proposal, not a mint. Preservation evidence is counted
+and skipped with the named reason `preservation_availability_proof_unavailable`
+until step 3 lands. Tests: `test_zcode_epoch_schedule`.

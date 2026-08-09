@@ -237,6 +237,12 @@ ZCL_COMMAND_BRANCH("zcode.commons.shadow.epoch", "zcode.commons.shadow",
 ZCL_COMMAND_BRANCH("zcode.commons.shadow.protocol", "zcode.commons.shadow",
                    "Four linked protocol shadow simulations",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.schedule", "zcode.commons",
+                   "Simulation-only Proof-of-Participation schedule",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.schedule.propose", "zcode.commons.schedule",
+                   "Evidence-scheduled epoch emission proposals",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("zcode.commons.reproduction", "zcode.commons",
                    "Portable simulation-only reproduction challenges",
                    ZCL_COMMAND_LAYER_APP)
@@ -654,6 +660,52 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE,
     zcl_native_handle_zcode_commons_shadow_protocol_verify)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.schedule.propose.plan",
+    "zcode.commons.schedule.propose", "",
+    "Plan one Proof-of-Participation epoch proposal",
+    "Rebuilds the Commons projection, takes its minted totals as "
+    "already_emitted, computes the decided (cap - emitted) / 1040 weekly "
+    "budget against the 21,000,000 ZC23 cap and splits it pro-rata by the "
+    "100/40/20/5 class weights over the epoch's verified evidence. "
+    "Preservation evidence is counted and skipped (no availability-proof "
+    "source yet). It writes nothing and grants no mint authority.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,schedule,epoch,propose,plan,simulation",
+    "zcl.zcode_commons_schedule_propose.input.v1",
+    "zcl.zcode_commons_schedule_propose.v1",
+    "workspace,epoch,previous_proposal_root",
+    "workspace,epoch,previous_proposal_root",
+    "zclassic23 zcode commons schedule propose plan --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_schedule_propose_plan)
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.commons.schedule.propose.commit",
+    "zcode.commons.schedule.propose", "",
+    "Store one epoch schedule proposal in scratch CAS",
+    "Repeats the schedule proposal derivation and stores only the canonical "
+    "proposal wire in the explicit scratch CAS. The root-addressed write is "
+    "idempotent and is a reviewable schedule proposal, not a MINT: no token, "
+    "custody or live funds are created.", 0,
+    "zcode,commons,schedule,epoch,propose,commit,simulation,cas",
+    "zcl.zcode_commons_schedule_propose.input.v1",
+    "zcl.zcode_commons_schedule_propose.v1",
+    "workspace,epoch,previous_proposal_root",
+    "workspace,epoch,previous_proposal_root",
+    "zclassic23 zcode commons schedule propose commit --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_commons_schedule_propose_commit)
 
 ZCL_COMMAND_READY_READ(
     "zcode.commons.status", "zcode.commons", "", "Show Living Commons status",
