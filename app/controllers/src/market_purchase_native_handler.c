@@ -17,6 +17,15 @@
 
 #define MPN_TAG "native.market.purchase"
 
+/* Retrieve runs the whole buyer download inside one RPC: one blocking
+ * embedded-Tor fetch per 60 KiB slice on the onion path (~10 s cold per
+ * fetch, each bounded at 60 s), so the generic 10 s loopback deadline
+ * would give up mid-download. Must stay aligned with the server-side
+ * slot budget for zmarket_purchase_retrieve
+ * (RPC_MARKET_DELIVERY_TIMEOUT_MS) — if the server is tighter, its
+ * watchdog kills the socket first and the reply below never arrives. */
+#define MPN_RETRIEVE_DEADLINE_MS 300000L
+
 struct mpn_code_map {
     const char *code;
     enum zcl_command_status status;
@@ -80,7 +89,8 @@ static void mpn_merge(struct json_value *dst, const struct json_value *src)
 }
 
 static bool mpn_call(struct zcl_command_reply *reply, const char *method,
-                     const struct json_value *input, struct json_value *body)
+                     const struct json_value *input, struct json_value *body,
+                     long total_ms)
 {
     struct rpc_arg_builder args;
     rpc_arg_builder_init(&args);
@@ -93,7 +103,13 @@ static bool mpn_call(struct zcl_command_reply *reply, const char *method,
         return false;
     }
     zcl_native_bridge_ensure_rpc();
-    char *raw = node_rpc_call(method, params);
+    /* total_ms > 0 overrides the generic 10 s loopback deadline for methods
+     * whose server-side work legitimately exceeds it (see the retrieve
+     * handler below); the server slot budget must be at least as generous
+     * or the watchdog kills the socket first. */
+    char *raw = total_ms > 0
+        ? node_rpc_call_deadline(method, params, 2000, total_ms)
+        : node_rpc_call(method, params);
     free(params);
     if (!raw) {
         mpn_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
@@ -103,13 +119,41 @@ static bool mpn_call(struct zcl_command_reply *reply, const char *method,
         return false;
     }
     bool parsed = json_read(body, raw, strlen(raw));
-    free(raw);
     if (!parsed || body->type != JSON_OBJ) {
+        /* Name what the daemon actually sent (bounded): a watchdog-killed
+         * or otherwise truncated reply is diagnosable from this line
+         * alone, without a packet capture. */
+        LOG_ERROR(MPN_TAG, "%s: unparseable node reply body: %.200s",
+                  method, raw);
+        free(raw);
         json_free(body);
         mpn_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
                  "BAD_RPC_BODY", "serialize",
                  "the node returned an invalid purchase document", method,
                  false);
+        return false;
+    }
+    free(raw);
+    /* A transport-level ({"error":{code,message}} from the loopback client)
+     * or JSON-RPC-level ({code:int,message} from the server) failure is an
+     * error envelope, not a purchase document — neither carries the
+     * purchase "code" string, so without this branch they fall through to
+     * the misleading PURCHASE_REFUSED default. Purchase refusals render
+     * "code" as a STRING; the JSON-RPC error object renders it as an int,
+     * which is what distinguishes the two shapes. */
+    const struct json_value *envelope = json_get(body, "error");
+    const char *env_message = envelope
+        ? json_get_str(json_get(envelope, "message")) : NULL;
+    const struct json_value *rpc_code = json_get(body, "code");
+    if (!env_message && rpc_code && rpc_code->type == JSON_INT)
+        env_message = json_get_str(json_get(body, "message"));
+    if (env_message) {
+        char message_copy[320];
+        (void)snprintf(message_copy, sizeof(message_copy), "%s", env_message);
+        json_free(body);
+        mpn_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                 ZCL_COMMAND_EXIT_TRANSIENT, "NODE_UNAVAILABLE", "dispatch",
+                 message_copy, method, false);
         return false;
     }
     if (json_get_bool_or(body, "ok", false)) return true;
@@ -159,7 +203,7 @@ void zcl_native_handle_market_purchase_plan(
     }
     struct json_value body;
     json_init(&body);
-    if (!mpn_call(reply, "zmarket_purchase_plan", request->input, &body))
+    if (!mpn_call(reply, "zmarket_purchase_plan", request->input, &body, 0))
         return;
     mpn_merge(&reply->data, &body);
     const char *plan = json_get_str(json_get(&body, "plan_id"));
@@ -198,7 +242,7 @@ void zcl_native_handle_market_purchase_commit(
     json_push_kv_str(&input, "plan_id", plan);
     struct json_value body;
     json_init(&body);
-    if (!mpn_call(reply, "zmarket_purchase_commit", &input, &body)) {
+    if (!mpn_call(reply, "zmarket_purchase_commit", &input, &body, 0)) {
         json_free(&input);
         return;
     }
@@ -230,7 +274,7 @@ void zcl_native_handle_market_purchase_status(
     json_push_kv_str(&input, "plan_id", plan);
     struct json_value body;
     json_init(&body);
-    if (!mpn_call(reply, "zmarket_purchase_status", &input, &body)) {
+    if (!mpn_call(reply, "zmarket_purchase_status", &input, &body, 0)) {
         json_free(&input);
         return;
     }
@@ -261,7 +305,7 @@ void zcl_native_handle_market_purchase_retrieve(
     struct json_value body;
     json_init(&body);
     if (!mpn_call(reply, "zmarket_purchase_retrieve", request->input,
-                  &body))
+                  &body, MPN_RETRIEVE_DEADLINE_MS))
         return;
     mpn_merge(&reply->data, &body);
     (void)json_push_kv_str(&reply->data, "stage", "retrieved");

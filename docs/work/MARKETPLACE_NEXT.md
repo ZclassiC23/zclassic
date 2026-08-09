@@ -61,7 +61,19 @@ reverse-mapping gate covers the new leaf.
   SOCKS-less onion fetch with slice reassembly, node-level prefer-onion
   default that refuses rather than downgrades, `/directory.json` clearnet
   suppression. Design record: [`MARKET_ONION_DELIVERY.md`](./MARKET_ONION_DELIVERY.md).
-  Named gap: onion-path two-daemon acceptance (Tor in the test harness)
+  Onion-path two-daemon acceptance proven:
+  `make test-market-onion-acceptance` — a real public-Tor two-node trade
+  (offer gossip, Sapling payment, authorize-before-read refusal through the
+  onion route, no-Tor refusal by name, byte-identical 3×60 KiB sliced
+  delivery witnessed in both tor.logs). The acceptance caught and we fixed:
+  the vendored dynhost client never engaging the rendezvous machinery
+  (onion_traffic + rewrite/attach on internal AP links, dedicated
+  DIR_PURPOSE_DYNHOST_FETCH, 512-byte path buffer, single pending-mark),
+  the tor monitor's permanent ~120 s give-up race, the retrieve RPC's 10 s
+  loopback deadline vs multi-slice onion downloads (now 300 s + error
+  envelope detection), and schema v64 widening market_payment_claims'
+  offer_wire CHECK for the 568-byte v2 wire (claims silently failed to
+  persist → delivery PENDING forever)
 
 ## Phase C — ZC23 design (owner decision first, then code)
 

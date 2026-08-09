@@ -57,6 +57,16 @@ extern "C" {
  * active, so keep the proof-specific client and server budgets aligned at a
  * bounded five minutes.  Generic RPC remains on its much shorter deadline. */
 #define RPC_PROOF_BUILD_TIMEOUT_MS 300000
+/* Onion market retrieval runs the buyer's whole download inside one RPC:
+ * one blocking embedded-Tor fetch per 60 KiB slice (rendezvous circuit
+ * build included — ~10 s cold per fetch on the public network), each
+ * fetch itself bounded at 60 s. A multi-slice file therefore exceeds the
+ * generic 10 s ceiling by minutes on a cold path; align the server budget
+ * with the proof-building one (bounded five minutes) rather than kill the
+ * socket mid-reply, which surfaces to the caller as a truncated,
+ * unparseable body. Clearnet retrieval is unaffected: it completes well
+ * under the generic ceiling. */
+#define RPC_MARKET_DELIVERY_TIMEOUT_MS 300000
 
 struct rpc_timeout_slot {
     bool     in_use;

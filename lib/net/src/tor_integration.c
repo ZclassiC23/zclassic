@@ -39,8 +39,8 @@ static _Atomic bool g_monitor_started = false;
  * (read_onion_address, called synchronously from tor_onion_monitor): a
  * successful poll iteration there is evidence Tor is alive. Both
  * liveness-only (no deadline / no progress gate) — the monitor polls on a
- * bounded bootstrap loop, and once bootstrap completes it does no further
- * polling for the rest of the boot. */
+ * bootstrap loop bounded by g_tor_running, and once the address is found
+ * it does no further polling for the rest of the boot. */
 static struct thread_liveness_child g_tor_liveness = { .id = SUPERVISOR_INVALID_ID };
 static struct thread_liveness_child g_tor_monitor_liveness = { .id = SUPERVISOR_INVALID_ID };
 static _Atomic uint64_t g_tor_monitor_poll_count = 0;
@@ -215,13 +215,23 @@ static bool read_onion_from_hostname_file(const char *datadir)
 }
 
 /* Wait for .onion address: check hostname file first (persistent key),
- * fall back to parsing Tor log (ephemeral service). */
+ * fall back to parsing Tor log (ephemeral service).
+ *
+ * Polls until the address appears or Tor dies — deliberately NO fixed
+ * attempt cap. A slow public-network bootstrap (e.g. a ~120 s guard
+ * retry before the first circuit) legitimately delays the dynhost
+ * ephemeral-service line past any small cap, and the old 120-attempt
+ * cap gave up permanently seconds before the address landed: the
+ * monitor exited, g_tor_ready never set, and the node ran the rest of
+ * the boot with no .onion and no further polling. The poll is bounded
+ * by g_tor_running (Tor's own lifetime), so shutdown still exits it. */
 static bool read_onion_address(const char *datadir)
 {
     char log_path[1024];
     snprintf(log_path, sizeof(log_path), "%s/tor.log", datadir);
 
-    for (int attempt = 0; attempt < 120; attempt++) {
+    int waited = 0;
+    for (;;) {
         /* g_tor is opaque vendored code and is never beaten from inside
          * its own loop — this poll iteration is the proxy for "Tor is
          * alive" instead (see the file-header comment). */
@@ -243,9 +253,14 @@ static bool read_onion_address(const char *datadir)
             ensure_onion_suffix();
             return true;
         }
+
+        /* Slow bootstrap is a named state, not a silent hang. */
+        if (++waited % 60 == 0)
+            fprintf(stderr,  // obs-ok:bootstrap-progress-named
+                    "Tor: still waiting for .onion address after %ds "
+                    "(bootstrap may be slow)\n", waited);
         sleep(1);
     }
-    LOG_FAIL("tor", "timed out waiting for .onion address after 120 attempts");
 }
 
 /* Tor embedding API */

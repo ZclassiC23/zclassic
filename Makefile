@@ -3925,7 +3925,8 @@ test-two-node-peer-tip: zclassic23 zcl-rpc
 # DELIBERATELY opt-in (NOT in `make ci`) — it spawns two real nodes and
 # depends on the host Landlock/seccomp sandbox for the confined executor.
 .PHONY: test-zcode-dht-acceptance test-science-acceptance \
-	test-market-acceptance zcode-reproduction-acceptance
+	test-market-acceptance test-market-onion-acceptance \
+	zcode-reproduction-acceptance
 test-zcode-dht-acceptance: zclassic23 zcl-rpc
 	@bash tools/dev/zcode_dht_acceptance.sh
 
@@ -3943,6 +3944,21 @@ test-science-acceptance: test-zcode-dht-acceptance
 # it spawns two real nodes and needs ~/.zcash-params for the prover.
 test-market-acceptance: zclassic23 zcl-rpc
 	@bash tools/dev/market_acceptance.sh
+
+# B5 onion-delivery acceptance: two isolated regtest daemons (396xx quads +
+# 20040/20041 + 39998, loopback P2P only), BOTH booted with -tor and NEITHER
+# with -externalip. The seller commits a v2 onion-endpoint signed offer; the
+# buyer pays with a real Sapling transaction, is refused delivery before
+# confirmation through the onion route, is refused BY NAME
+# (ONION_DELIVERY_UNAVAILABLE) when restarted without -tor, then retrieves
+# the fixture as 60 KiB slices over real Tor circuits — witnessed by the
+# /market/chunk lines in BOTH tor.log files and a byte-identical
+# republication of the offer root. DELIBERATELY opt-in (NOT in `make ci` or
+# any aggregate) — it needs public Tor network reachability (Tor bootstrap
+# to the real network twice, ~10-60 s per node) and ~/.zcash-params for the
+# prover, and it FAILS with a named reason when the host cannot bootstrap.
+test-market-onion-acceptance: zclassic23 zcl-rpc
+	@bash tools/dev/market_onion_acceptance.sh
 
 # ── metaverse-tour / metaverse-verify (docs/METAVERSE_MVP.md, MM1 + MM7) ──
 #

@@ -670,6 +670,73 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 64) {
+        /* v64: widen the market_payment_claims offer_wire CHECK for v2
+         * (onion-endpoint) offers. v56 pinned length(offer_wire)=535 —
+         * the v1 wire — before v2 wires existed; v63 introduced the 568-byte
+         * v2 offer wire (FILE_MARKET_OFFER_WIRE_BYTES_V2) but only rebuilt
+         * file_offers, so every claim INSERT for an onion offer failed the
+         * CHECK and the seller silently never persisted the claim (delivery
+         * authorization then sat at PENDING forever: no claim candidates).
+         * SQLite cannot ALTER a CHECK, so rebuild atomically, preserving
+         * every row and index (no stored row can violate the new CHECK:
+         * the old one was strictly tighter). */
+        if (!node_db_exec(ndb,
+            "PRAGMA foreign_keys=OFF;"
+            "BEGIN IMMEDIATE;"
+            "CREATE TABLE market_payment_claims_v64 ("
+            "claim_id BLOB NOT NULL PRIMARY KEY CHECK(length(claim_id)=32),"
+            "offer_id BLOB NOT NULL CHECK(length(offer_id)=32),"
+            "txid BLOB NOT NULL CHECK(length(txid)=32),"
+            "buyer_pubkey BLOB NOT NULL CHECK(length(buyer_pubkey)=32),"
+            "chunk_start INTEGER NOT NULL CHECK(chunk_start>=0),"
+            "chunks_paid INTEGER NOT NULL CHECK(chunks_paid>0),"
+            "amount_zat INTEGER NOT NULL CHECK(amount_zat>0 AND "
+            "amount_zat<=2100000000000000),"
+            "claim_wire BLOB NOT NULL CHECK(length(claim_wire)=218),"
+            "offer_wire BLOB NOT NULL "
+            "CHECK(length(offer_wire) IN (535,568)),"
+            "status TEXT NOT NULL CHECK(status IN "
+            "('PENDING','CONFIRMED','UNKNOWN','CONFLICTED','REJECTED')),"
+            "status_reason TEXT NOT NULL,"
+            "output_index INTEGER NOT NULL DEFAULT -1 "
+            "CHECK(output_index>=-1),"
+            "block_height INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(block_height>=0),"
+            "confirmations INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(confirmations>=0),"
+            "observed_at INTEGER NOT NULL CHECK(observed_at>0),"
+            "reconciled_at INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(reconciled_at>=0));"
+            "INSERT INTO market_payment_claims_v64 "
+            "SELECT claim_id,offer_id,txid,buyer_pubkey,chunk_start,"
+            "chunks_paid,amount_zat,claim_wire,offer_wire,status,"
+            "status_reason,output_index,block_height,confirmations,"
+            "observed_at,reconciled_at FROM market_payment_claims;"
+            "DROP TABLE market_payment_claims;"
+            "ALTER TABLE market_payment_claims_v64 "
+            "RENAME TO market_payment_claims;"
+            "CREATE UNIQUE INDEX idx_market_payment_claim_contract "
+            "ON market_payment_claims(offer_id,txid,chunk_start,chunks_paid,"
+            "buyer_pubkey);"
+            "CREATE INDEX idx_market_payment_claim_buyer "
+            "ON market_payment_claims(offer_id,buyer_pubkey,status);"
+            "CREATE INDEX idx_market_payment_claim_txid "
+            "ON market_payment_claims(txid);"
+            "COMMIT;"
+            "PRAGMA foreign_keys=ON;")) {
+            (void)node_db_exec(ndb, "ROLLBACK;PRAGMA foreign_keys=ON;");
+            LOG_ERR("db", "migrate v64: atomic payment-claim rebuild failed");
+        }
+        if (!node_db_exec(ndb,
+                "INSERT OR IGNORE INTO schema_migrations(version) "
+                "VALUES('064')"))
+            LOG_ERR("db", "migrate v64: migration stamp failed");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 64);
+        current_ver = 64;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

@@ -335,6 +335,46 @@ int file_market_payment_tests(void)
                   restored && result.ok &&
                   strcmp(record.status, "CONFIRMED") == 0);
 
+    /* Regression: a claim against a v2 (onion-endpoint) signed offer
+     * carries the 568-byte v2 offer wire (FILE_MARKET_OFFER_WIRE_BYTES_V2).
+     * The v56 market_payment_claims schema pinned
+     * CHECK(length(offer_wire)=535) — the v1 wire — so every onion-offer
+     * claim INSERT failed the CHECK, the seller never persisted the claim,
+     * and per-chunk authorization sat at PENDING forever (no candidates).
+     * v64 widens the CHECK to IN (535,568); this saves through the real
+     * ingest path on a freshly migrated database. */
+    struct file_offer onion_offer = offer;
+    uint8_t seller_seed[32];
+    memset(seller_seed, 0x51, sizeof(seller_seed));
+    memset(onion_offer.root_hash, 0x72, sizeof(onion_offer.root_hash));
+    onion_offer.auth_version = FILE_MARKET_OFFER_VERSION_V2;
+    onion_offer.endpoint_type = FILE_MARKET_ENDPOINT_ONION;
+    memset(onion_offer.onion_pubkey, 0x66, sizeof(onion_offer.onion_pubkey));
+    /* The v2 onion contract forbids a usable clearnet endpoint
+     * (file_offer_auth_validate): peer_ip must be all-zero, peer_port 0. */
+    memset(onion_offer.peer_ip, 0, sizeof(onion_offer.peer_ip));
+    onion_offer.peer_port = 0;
+    onion_offer.nonce = 9002;
+    struct file_payment onion_payment;
+    bool onion_fixture =
+        file_offer_auth_seal(&onion_offer, seller_seed) ==
+            FILE_OFFER_AUTH_OK &&
+        db_file_offer_save(&ndb, &onion_offer) &&
+        payment_test_claim(&onion_payment, &onion_offer);
+    PAYMENT_CHECK("v2 onion-endpoint offer + claim fixture", onion_fixture);
+    result = onion_fixture
+        ? market_payment_claim_ingest(&ndb, &main_state, false, -1,
+                                      &onion_payment, now_unix, &record)
+        : ZCL_ERR(-1, "fixture failed");
+    PAYMENT_CHECK("v2 onion-endpoint claim persists (568-byte offer wire)",
+                  onion_fixture && result.ok &&
+                  strcmp(record.status, "UNKNOWN") == 0);
+    struct market_payment_claim_record found;
+    PAYMENT_CHECK("v2 onion claim survives durable readback",
+        onion_fixture &&
+        db_market_payment_claim_find(&ndb, onion_payment.claim_id, &found) &&
+        found.offer.endpoint_type == FILE_MARKET_ENDPOINT_ONION);
+
     node_db_close(&ndb);
     main_state_free(&main_state);
     test_cleanup_tmpdir(dir);

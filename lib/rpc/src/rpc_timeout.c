@@ -189,6 +189,12 @@ void rpc_timeout_set_method(struct rpc_timeout_mgr *mgr,
             mgr->proof_timeout_ms > mgr->slots[slot].timeout_ms) {
             mgr->slots[slot].timeout_ms = mgr->proof_timeout_ms;
         }
+        /* Onion market retrieval is sequential blocking embedded-Tor
+         * fetches inside one RPC (see RPC_MARKET_DELIVERY_TIMEOUT_MS). */
+        if (strcmp(method, "zmarket_purchase_retrieve") == 0 &&
+            RPC_MARKET_DELIVERY_TIMEOUT_MS > mgr->slots[slot].timeout_ms) {
+            mgr->slots[slot].timeout_ms = RPC_MARKET_DELIVERY_TIMEOUT_MS;
+        }
     }
     pthread_mutex_unlock(&mgr->lock);
 }
