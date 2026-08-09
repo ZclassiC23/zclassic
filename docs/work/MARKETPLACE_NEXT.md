@@ -85,6 +85,11 @@ simulation until the owner explicitly promotes it.
 - [x] C1. Options doc: [`ZC23_DISTRIBUTION_OPTIONS.md`](./ZC23_DISTRIBUTION_OPTIONS.md)
   — PoP naming (A/B/C), distribution model (evidence-scheduled vs genesis
   pool vs hybrid), earn-for-publishing mechanics, supply shape, and the
+- [x] C2. **Owner decided** (2026-08-09): Proof of Participation name,
+  evidence-scheduled emission only (no genesis pool), 21M hard cap with
+  self-tapering weekly budget, owner earns under the same rules, hosting
+  earns ZC23 as the preservation class — guiding principle: incentivize
+  the P2P ecosystem. Rules: [`ZC23_DISTRIBUTION_RULES.md`](./ZC23_DISTRIBUTION_RULES.md)
   six-point decision list for C2
 - [ ] C2. Owner picks the rules
 - [ ] C3. Implementation plan written (simulation-first, no consensus path)
