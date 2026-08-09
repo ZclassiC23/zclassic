@@ -21,7 +21,7 @@ HOTSWAP_SERVICE(
 HOTSWAP_SERVICE(
     "zcode.c23.economics.v1",
     "app/services/src/zcode_c23_economics_service.c",
-    "-",
+    "app/services/src/zcode_c23_economics_internal.h",
     "app/services/include/services/zcode_c23_economics_service.h",
     "vcs_zcode_creation_award_atoms_v2 vcs_zcode_policy_candidate_v2_init vcs_zcode_policy_candidate_v2_validate vcs_zcode_policy_candidate_v2_root vcs_zcode_epoch_select_v2",
     "zcode.c23.economics.abi.v1:41d0b92c",

@@ -260,6 +260,23 @@ static int test_change_classification(void)
         ASSERT(zcl_devloop_plan_files(service_header, 1, &plan));
         ASSERT(plan.action == ZCL_DEVLOOP_RELOAD);
 
+        const char *service_batch[] = {
+            "app/services/src/zcode_c23_economics_service.c",
+            "app/services/src/zcode_c23_economics_internal.h",
+        };
+        ASSERT(zcl_devloop_plan_files(service_batch, 2, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
+        ASSERT(strcmp(plan.probe_tool,
+                      "zcode.commons.economics.status") == 0);
+        ASSERT(strcmp(plan.reason, "single_service_island_batch") == 0);
+
+        const char *cross_service_batch[] = {
+            "app/services/src/zcode_c23_economics_service.c",
+            "app/services/src/zcode_c23_corpus_service.c",
+        };
+        ASSERT(zcl_devloop_plan_files(cross_service_batch, 2, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_RELOAD);
+
         const char *multi_hot[] = {
             hot[0].path, hot[1].path,
         };
@@ -2015,7 +2032,14 @@ static bool dp_hotswap_cache_fixture_init(const char *root,
                      "int zcl_hotswap_fixture_helper(void) { return 2; }\n") ||
         !dp_mk_write(root,
                      "app/services/src/zcode_c23_corpus_service.c",
-                     "int zcl_hotswap_fixture_service(void) { return 3; }\n"))
+                     "int zcl_hotswap_fixture_service(void) { return 3; }\n") ||
+        !dp_mk_write(root,
+                     "app/services/src/zcode_c23_economics_service.c",
+                     "#include \"zcode_c23_economics_internal.h\"\n"
+                     "int zcl_hotswap_fixture_economics(void) { return 4; }\n") ||
+        !dp_mk_write(root,
+                     "app/services/src/zcode_c23_economics_internal.h",
+                     "#define ZCL_ECONOMICS_FIXTURE 4\n"))
         return false;
     char canonical_root[PATH_MAX];
     if (!realpath(root, canonical_root))
@@ -2056,6 +2080,8 @@ static bool run_hotswap_artifact_cache_fixture(void)
         "  printf 'fixture-object-v1\\n' >\"$out\"\n"
         "  if [ \"$source\" = app/services/src/zcode_c23_corpus_service.c ]; then\n"
         "    printf '%s: %s\\n' \"$out\" \"$source\" >\"$dep\"\n"
+        "  elif [ \"$source\" = app/services/src/zcode_c23_economics_service.c ]; then\n"
+        "    printf '%s: %s app/services/src/zcode_c23_economics_internal.h\\n' \"$out\" \"$source\" >\"$dep\"\n"
         "  else\n"
         "    printf '%s: app/controllers/src/status_native_helpers.c app/controllers/src/status_native_handlers.c\\n' \"$out\" >\"$dep\"\n"
         "  fi\n"
@@ -2098,6 +2124,11 @@ static bool run_hotswap_artifact_cache_fixture(void)
     struct zcl_devloop_hotswap_build_receipt reverted = {0}, cross = {0};
     struct zcl_devloop_hotswap_build_receipt service_first = {0};
     struct zcl_devloop_hotswap_build_receipt service_built = {0};
+    struct zcl_devloop_hotswap_build_receipt batch_first = {0};
+    struct zcl_devloop_hotswap_build_receipt batch_built = {0};
+    struct zcl_devloop_hotswap_build_receipt batch_edited = {0};
+    struct zcl_devloop_hotswap_build_receipt batch_cross_first = {0};
+    struct zcl_devloop_hotswap_build_receipt batch_cross = {0};
     struct zcl_devloop_process_result process = {0};
     char why[256] = {0};
     const char *owner = "app/controllers/src/status_native_handlers.c";
@@ -2168,6 +2199,46 @@ static bool run_hotswap_artifact_cache_fixture(void)
         service_built.compiler_processes != 1 ||
         service_built.linker_processes != 1 ||
         strcmp(service_built.source_tu, service) != 0)
+        goto out;
+
+    /* A source + private-header epoch maps back to one owner, compiles that
+     * exact dependency closure once, and yields one candidate artifact. */
+    const char *economics_source =
+        "app/services/src/zcode_c23_economics_service.c";
+    const char *economics_header =
+        "app/services/src/zcode_c23_economics_internal.h";
+    if (zcl_devloop_hotswap_build(root_a, economics_header, &batch_first,
+                                  &process, why, sizeof(why)) ||
+        batch_first.compiler_processes != 1 ||
+        !zcl_devloop_hotswap_build(root_a, economics_header, &batch_built,
+                                   &process, why, sizeof(why)) ||
+        batch_built.compiler_processes != 1 ||
+        batch_built.linker_processes != 1 ||
+        strcmp(batch_built.source_tu, economics_source) != 0 ||
+        !dp_mk_write(root_a, economics_source,
+                     "#include \"zcode_c23_economics_internal.h\"\n"
+                     "int zcl_hotswap_fixture_economics(void) { return 5; }\n") ||
+        !dp_mk_write(root_a, economics_header,
+                     "#define ZCL_ECONOMICS_FIXTURE 5\n") ||
+        !zcl_devloop_hotswap_build(root_a, economics_header, &batch_edited,
+                                   &process, why, sizeof(why)) ||
+        batch_edited.compiler_processes != 1 ||
+        batch_edited.linker_processes != 1 ||
+        strcmp(batch_edited.artifact_cache_key,
+               batch_built.artifact_cache_key) == 0)
+        goto out;
+    if (zcl_devloop_hotswap_build(root_b, economics_header,
+                                  &batch_cross_first, &process, why,
+                                  sizeof(why)) ||
+        !zcl_devloop_hotswap_build(root_b, economics_header, &batch_cross,
+                                   &process, why, sizeof(why)) ||
+        !batch_cross.artifact_cache_hit ||
+        batch_cross.compiler_processes != 0 ||
+        batch_cross.linker_processes != 0 ||
+        strcmp(batch_cross.artifact_cache_key,
+               batch_built.artifact_cache_key) != 0 ||
+        strcmp(batch_cross.artifact_sha256,
+               batch_built.artifact_sha256) != 0)
         goto out;
     ok = true;
 

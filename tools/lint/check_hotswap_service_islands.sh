@@ -67,9 +67,14 @@ for row in "${ROWS[@]}"; do
     if [ ! -f "$source" ]; then
         violations+="  $source (missing source)"$'\n'; continue
     fi
+    scan_files=("$source")
     for h in $headers; do
         [ "$h" = "-" ] && continue
-        if [ ! -f "$h" ]; then violations+="  $source -> $h (missing private/public header)"$'\n'; fi
+        if [ ! -f "$h" ]; then
+            violations+="  $source -> $h (missing private/public header)"$'\n'
+        else
+            scan_files+=("$h")
+        fi
     done
     for h in $contract_headers; do
         [ "$h" = "-" ] && continue
@@ -90,14 +95,14 @@ for row in "${ROWS[@]}"; do
         if ($0 ~ /=/ || $0 ~ /\[/ || $0 ~ /\{[[:space:]]*$/) print FILENAME ":" FNR ": mutable: " $0
       }
       /^[[:space:]]*extern[[:space:]]/ { print FILENAME ":" FNR ": extern: " $0 }
-    ' "$source")"
+    ' "${scan_files[@]}")"
     if [ -n "$hits" ]; then violations+="$hits"$'\n'; fi
 
     # Calls that imply effects/ambient authority. Match call tokens, not prose.
     forbidden='(^|[^A-Za-z0-9_])(sqlite3_[A-Za-z0-9_]*|fopen|freopen|open|openat|close|read|write|pread|pwrite|stat|lstat|fstat|opendir|readdir|unlink|rename|mkdir|socket|connect|bind|listen|accept|send|recv|clock_gettime|gettimeofday|time|rand|random|getrandom|fork|vfork|exec[A-Za-z0-9_]*|system|popen|posix_spawn)[[:space:]]*\('
-    bad_calls="$(grep -nE "$forbidden" "$source" || true)"
+    bad_calls="$(grep -nE "$forbidden" "${scan_files[@]}" || true)"
     if [ -n "$bad_calls" ]; then violations+="$source:$bad_calls"$'\n'; fi
-    bad_includes="$(grep -nE '^#[[:space:]]*include[[:space:]]*[<"]([^>"]*/)?(wallet|storage|consensus|validation|net|coins|chain|mining|rpc)/' "$source" || true)"
+    bad_includes="$(grep -nE '^#[[:space:]]*include[[:space:]]*[<"]([^>"]*/)?(wallet|storage|consensus|validation|net|coins|chain|mining|rpc)/' "${scan_files[@]}" || true)"
     if [ -n "$bad_includes" ]; then violations+="$source:$bad_includes"$'\n'; fi
 
     # Every project-prefixed call must be an explicitly declared stable host

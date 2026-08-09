@@ -134,6 +134,9 @@ static int t_manifest_mapping(void)
         ASSERT_STR_EQ(zcl_hotswap_service_contract_source_for_path(
                           "app/services/include/services/zcode_c23_economics_service.h"),
                       "app/services/src/zcode_c23_economics_service.c");
+        ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
+                          "app/services/src/zcode_c23_economics_internal.h"),
+                      "app/services/src/zcode_c23_economics_service.c");
         ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
                           "app/services/src/zcode_c23_economics_service.c"),
                       "zcode.commons.economics.status");

@@ -348,6 +348,13 @@ int zcl_devloop_restart_event(const char *repo_root,
 int zcl_devloop_hotswap_event(const char *repo_root, const char *source_tu,
                               enum zcl_devloop_publish_mode publish_mode);
 
+/* Admit one debounced edit batch only when every path maps to the exact same
+ * island owner. The owner is compiled once and one generation is published;
+ * a cross-island or public-contract batch returns 0 for DEV_RESTART. */
+int zcl_devloop_hotswap_batch_event(
+    const char *repo_root, const char *const *paths, size_t path_count,
+    enum zcl_devloop_publish_mode publish_mode);
+
 /* Complete current source identity: byte inventory plus the ABA mutation
  * token. Shared by the watcher/cycle and focused native execution so neither
  * can admit an artifact built from a superseded checkout. */

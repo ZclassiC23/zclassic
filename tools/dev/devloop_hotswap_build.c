@@ -1022,6 +1022,7 @@ static bool hs_resident_call(const char *artifact, bool activate,
 }
 
 static bool hs_emit_event(const char *root, const char *source,
+                          size_t changed_path_count,
                           const char *status, const char *phase,
                           bool published, int64_t elapsed_us,
                           const struct zcl_devloop_hotswap_build_receipt *build,
@@ -1037,9 +1038,19 @@ static bool hs_emit_event(const char *root, const char *source,
     (void)json_push_kv_str(&doc, "producer", "resident-build-authority");
     (void)json_push_kv_str(&doc, "status", status);
     (void)json_push_kv_str(&doc, "action", "hotswap");
-    (void)json_push_kv_str(&doc, "reason", "single_stateless_provider");
+    const bool service_island =
+        zcl_hotswap_service_source_for_path(source) != NULL;
+    (void)json_push_kv_str(
+        &doc, "reason", changed_path_count > 1
+            ? (service_island ? "single_service_island_batch"
+                              : "single_stateless_island_batch")
+            : "single_stateless_provider");
     (void)json_push_kv_str(&doc, "phase", phase);
     (void)json_push_kv_bool(&doc, "runtime_published", published);
+    (void)json_push_kv_int(&doc, "changed_path_count",
+                           (int64_t)changed_path_count);
+    (void)json_push_kv_bool(&doc, "atomic_batch_generation",
+                            changed_path_count > 1 && published);
     (void)json_push_kv_int(&doc, "elapsed_us", elapsed_us);
     (void)json_push_kv_int(&doc, "elapsed_ms", elapsed_us / 1000);
     (void)json_push_kv_str(&doc, "source_tu", source);
@@ -1113,22 +1124,35 @@ static bool hs_emit_event(const char *root, const char *source,
     return true;
 }
 
-int zcl_devloop_hotswap_event(const char *repo_root, const char *source_tu,
-                              enum zcl_devloop_publish_mode publish_mode)
+static const char *hs_owner_for_path(const char *path)
 {
-    if (!repo_root || !source_tu ||
-        (!hotswap_island_owner_for_path(source_tu) &&
-         !zcl_hotswap_service_source_for_path(source_tu)))
+    const char *owner = hotswap_island_owner_for_path(path);
+    return owner ? owner : zcl_hotswap_service_source_for_path(path);
+}
+
+int zcl_devloop_hotswap_batch_event(
+    const char *repo_root, const char *const *paths, size_t path_count,
+    enum zcl_devloop_publish_mode publish_mode)
+{
+    if (!repo_root || !paths || path_count == 0 ||
+        path_count > ZCL_DEVLOOP_MAX_FILES)
         return 0;
+    const char *owner = hs_owner_for_path(paths[0]);
+    if (!owner) return 0;
+    for (size_t i = 1; i < path_count; i++) {
+        const char *next = hs_owner_for_path(paths[i]);
+        if (!next || strcmp(next, owner) != 0) return 0;
+    }
     int64_t started = platform_time_monotonic_us();
     struct zcl_devloop_hotswap_build_receipt build = {0};
     struct zcl_devloop_process_result process = {0};
     char why[512] = {0};
-    if (!zcl_devloop_hotswap_build(repo_root, source_tu, &build, &process,
+    if (!zcl_devloop_hotswap_build(repo_root, owner, &build, &process,
                                    why, sizeof(why))) {
         if (process.cancelled || zcl_devloop_process_cancel_requested())
             return 2;
-        return hs_emit_event(repo_root, source_tu, "rejected", "compile",
+        return hs_emit_event(repo_root, owner, path_count,
+                             "rejected", "compile",
                              false, platform_time_monotonic_us() - started,
                              &build, 0, NULL, &process, why) ? 1 : -1;
     }
@@ -1145,10 +1169,18 @@ int zcl_devloop_hotswap_event(const char *repo_root, const char *source_tu,
     const char *phase = ok ? (activate ? "resident_commit" : "resident_probe")
                            : "resident_probe";
     bool emitted = hs_emit_event(
-        repo_root, source_tu, ok ? "passed" : "rejected", phase,
+        repo_root, owner, path_count, ok ? "passed" : "rejected", phase,
         ok && activate, platform_time_monotonic_us() - started, &build,
         activation_us, resident.type == JSON_OBJ ? &resident : NULL,
         &process, why);
     json_free(&resident);
     return emitted ? 1 : -1;
+}
+
+int zcl_devloop_hotswap_event(const char *repo_root, const char *source_tu,
+                              enum zcl_devloop_publish_mode publish_mode)
+{
+    const char *paths[] = {source_tu};
+    return zcl_devloop_hotswap_batch_event(repo_root, paths, 1,
+                                           publish_mode);
 }

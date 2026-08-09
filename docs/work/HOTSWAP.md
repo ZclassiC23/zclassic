@@ -111,9 +111,13 @@ against another island's ABI or fall through to the command-module loader.
 `check-hotswap-service-islands` rejects mutable file-scope state, TLS,
 constructors/destructors, filesystem/SQLite/socket/clock/RNG/process calls,
 wallet/node-global/consensus/raw-storage access, and project calls outside the
-manifest's stable-import list. Private island headers may join a future atomic
-island closure. Public contract headers are deliberately distinct: changing
-one emits a process-free `DEV_RESTART` selection with no proof claimed and can
+manifest's stable-import list. A 15 ms debounced batch publishes live only when
+every changed `.c` and private header resolves to one exact island owner. The
+owner and its compiler-reported dependency closure compile once, then one
+module and one registry generation publish; receipts bind the changed-path
+count and label multi-path publication as atomic. A second owner refuses the
+fast lane. Public contract headers are deliberately distinct: changing one
+emits a process-free `DEV_RESTART` selection with no proof claimed and can
 never fall through to live publication or the legacy Make/shell save path.
 
 ### All-or-nothing, and probe before publish

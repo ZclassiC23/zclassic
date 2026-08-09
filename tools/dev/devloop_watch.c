@@ -445,8 +445,8 @@ int zcl_devloop_watch_mode(const char *repo_root,
         printf("}\n");
         fflush(stdout);
         zcl_devloop_process_cancel_poll_set(watch_cancel_poll, &ctx);
-        int fast = epoch_count == 1
-            ? zcl_devloop_hotswap_event(ctx.root, files[0], publish_mode) : 0;
+        int fast = zcl_devloop_hotswap_batch_event(
+            ctx.root, files, epoch_count, publish_mode);
         if (fast == 0)
             fast = service_contract_restart_event(ctx.root, files,
                                                   epoch_count);

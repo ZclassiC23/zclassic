@@ -5,6 +5,8 @@
 
 #include "services/zcode_c23_economics_service.h"
 
+#include "zcode_c23_economics_internal.h"
+
 #include "hotswap/hotswap_service.h"
 
 #include <stdio.h>
@@ -19,11 +21,11 @@ static bool render_status(struct zcode_c23_economics_status_result_v1 *out)
     for (uint16_t i = 0; i < VCS_ZCODE_COMMONS_CATEGORY_COUNT; i++)
         out->award_atoms[i] = vcs_zcode_creation_award_atoms_v2(i);
     (void)snprintf(out->queue_order, sizeof(out->queue_order),
-                   "maturity_height,maturity_mtp,claim_root");
+                   ZCODE_C23_ECONOMICS_QUEUE_ORDER);
     (void)snprintf(out->category_order, sizeof(out->category_order),
-                   "previous-epoch-root rotation, cyclic");
+                   ZCODE_C23_ECONOMICS_CATEGORY_ORDER);
     (void)snprintf(out->concentration_cap, sizeof(out->concentration_cap),
-                   "min(epoch_capacity,max(1 ZC23,floor(epoch_capacity/100)))");
+                   ZCODE_C23_ECONOMICS_CONCENTRATION_CAP);
     return true;
 }
 
