@@ -9,6 +9,7 @@
 #include "base/hex.h"
 #include "hotswap/hotswap_service.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -86,6 +87,22 @@ static bool render_status(
     out->durably_hosted_loc = checkpoint->durable_loc;
     out->physical_lines = checkpoint->physical_lines;
     out->unique_semantic_units = checkpoint->unique_semantic_units;
+    if (total < VCS_ZCODE_C23_FIRST_MILESTONE_LOC) {
+        (void)snprintf(out->blocker, sizeof(out->blocker),
+            "verified lower bound is %" PRIu64
+            " LOC; next milestone requires %" PRIu64 " LOC",
+            total, (uint64_t)VCS_ZCODE_C23_FIRST_MILESTONE_LOC);
+    } else if (checkpoint->durable_loc < total) {
+        (void)snprintf(out->blocker, sizeof(out->blocker),
+            "durable hosting covers %" PRIu64 " of %" PRIu64
+            " admitted LOC",
+            checkpoint->durable_loc, total);
+    } else if (total < VCS_ZCODE_C23_SECOND_MILESTONE_LOC) {
+        (void)snprintf(out->blocker, sizeof(out->blocker),
+            "verified durable lower bound is %" PRIu64
+            " LOC; next milestone requires %" PRIu64 " LOC",
+            total, (uint64_t)VCS_ZCODE_C23_SECOND_MILESTONE_LOC);
+    }
     return true;
 }
 

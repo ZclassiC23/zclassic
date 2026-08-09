@@ -516,6 +516,13 @@ static int test_v2_c23_checkpoint_verify_command(void)
         ASSERT_EQ(vcs_zcode_c23_corpus_checkpoint_v1_sign(&checkpoint, seed),
                   VCS_ZCODE_C23_OK);
 
+        struct zcode_c23_corpus_status_result_v1 status;
+        ASSERT(zcode_c23_corpus_service_builtin()->render_status(
+            &checkpoint, &status));
+        ASSERT(status.projection_ready);
+        ASSERT_EQ(status.admitted_total_loc, 15);
+        ASSERT(strstr(status.blocker, "50000000") != NULL);
+
         uint8_t wire[VCS_ZCODE_C23_CHECKPOINT_HEADER_WIRE_BYTES +
                      VCS_ZCODE_C23_CHECKPOINT_BINDING_WIRE_BYTES];
         size_t wire_len = 0;
