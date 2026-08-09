@@ -56,6 +56,22 @@ static bool cm_write(const char *dir, const char *rel, const char *content)
     return ok;
 }
 
+static bool cm_flip_last_byte(const char *path)
+{
+    FILE *f = fopen(path, "r+b");
+    if (!f || fseek(f, -1, SEEK_END) != 0) {
+        if (f) fclose(f);
+        return false;
+    }
+    int byte = fgetc(f);
+    if (byte == EOF || fseek(f, -1, SEEK_CUR) != 0 ||
+        fputc(byte ^ 0x01, f) == EOF) {
+        fclose(f);
+        return false;
+    }
+    return fclose(f) == 0;
+}
+
 /* Two library modules so locality is observable, each with a src/ and an
  * include/ arm so the directory tree has real depth. */
 static bool cm_fixture(const char *dir)
@@ -280,8 +296,8 @@ static int test_cm_incremental(void)
 static int test_cm_cache_is_derived(void)
 {
     int failures = 0;
-    TEST("code_merkle: deleting or truncating the snapshot changes no answer, "
-         "and a bare touch re-reads without moving a digest") {
+    TEST("code_merkle: a seal mismatch, deletion, or truncation discards the "
+         "snapshot, and a bare touch re-reads without moving a digest") {
         cm_reset();
         ASSERT(cm_fixture(CM_FIX));
 
@@ -290,6 +306,22 @@ static int test_cm_cache_is_derived(void)
         struct ci_merkle_node r1;
         ASSERT(ci_merkle_root(warm, &r1));
         ci_merkle_free(warm);
+
+        /* A syntactically valid image with one changed byte must not be
+         * trusted. The old unsealed format accepted a flip in the final
+         * cached node metadata and reused every source digest. */
+        ASSERT(cm_flip_last_byte(
+            CM_FIX "/.codeindex/source_tree.merkle"));
+        struct ci_merkle_cost unsealed;
+        struct ci_merkle *after_seal_mismatch =
+            ci_merkle_refresh(CM_FIX, &unsealed);
+        ASSERT(after_seal_mismatch);
+        ASSERT(!unsealed.snapshot_used);
+        ASSERT(unsealed.files_read == 5);
+        struct ci_merkle_node sealed_root;
+        ASSERT(ci_merkle_root(after_seal_mismatch, &sealed_root));
+        ASSERT(memcmp(r1.digest.bytes, sealed_root.digest.bytes, 32) == 0);
+        ci_merkle_free(after_seal_mismatch);
 
         /* touch: mtime moves, content does not. The leaf is re-read (the cache
          * key moved) but nothing is dirty, so no node is rehashed. */
@@ -329,6 +361,46 @@ static int test_cm_cache_is_derived(void)
         ASSERT(ci_merkle_root(after_bad, &r4));
         ASSERT(memcmp(r1.digest.bytes, r4.digest.bytes, 32) == 0);
         ci_merkle_free(after_bad);
+
+        cm_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_cm_inventory_reconciliation(void)
+{
+    int failures = 0;
+    TEST("code_merkle: added and removed source paths are reported as inventory "
+         "changes while unchanged file bytes remain reusable") {
+        cm_reset();
+        ASSERT(cm_fixture(CM_FIX));
+        struct ci_merkle *initial = ci_merkle_refresh(CM_FIX, NULL);
+        ASSERT(initial);
+        ci_merkle_free(initial);
+
+        ASSERT(cm_write(CM_FIX, "lib/net/src/cm_added.c",
+                        "int cm_added(void)\n{\n    return 5;\n}\n"));
+        struct ci_merkle_cost added = {0};
+        struct ci_merkle *with_added = ci_merkle_refresh(CM_FIX, &added);
+        ASSERT(with_added);
+        ASSERT(added.snapshot_used);
+        ASSERT(added.inventory_changed);
+        ASSERT(added.files_total == 6 && added.files_read == 1);
+        ASSERT(added.leaves_reused == 5);
+        ci_merkle_free(with_added);
+
+        ASSERT(remove(CM_FIX "/lib/net/src/cm_added.c") == 0);
+        struct ci_merkle_cost removed = {0};
+        struct ci_merkle *without_added =
+            ci_merkle_refresh_reconciled(CM_FIX, &removed);
+        ASSERT(without_added);
+        ASSERT(!removed.snapshot_used);
+        ASSERT(removed.inventory_changed);
+        ASSERT(removed.full_rescan);
+        ASSERT(removed.files_total == 5 && removed.files_read == 5);
+        ASSERT(removed.leaves_reused == 0);
+        ci_merkle_free(without_added);
 
         cm_reset();
         PASS();
@@ -466,6 +538,7 @@ int test_code_merkle(void)
     failures += test_cm_sensitivity_and_locality();
     failures += test_cm_incremental();
     failures += test_cm_cache_is_derived();
+    failures += test_cm_inventory_reconciliation();
     failures += test_cm_command();
     return failures;
 }

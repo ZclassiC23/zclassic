@@ -89,7 +89,7 @@ bool zcl_dev_source_cas_capture(const char *repo_root,
         return false;
     int64_t started_us = platform_time_monotonic_us();
     struct ci_merkle_cost cost = {0};
-    struct ci_merkle *tree = ci_merkle_refresh(repo_root, &cost);
+    struct ci_merkle *tree = ci_merkle_refresh_reconciled(repo_root, &cost);
     if (!tree) {
         out->cas_elapsed_us = platform_time_monotonic_us() - started_us;
         return false;
