@@ -107,6 +107,17 @@ historical fixture passes, then deploy/restart intentionally.
   headers and the target-specific `-Og`/hot-bucket `-O2` split, then records
   hash/freshness metadata. clangd is optional and its absence is not an index
   generation failure.
+- **node_db teardown after a migration-refusal FATAL double-frees
+  (pre-existing, latent).** When `node_db_migrate` refuses a newer datadir
+  ("schema_version=N but this binary only knows up to M", returns -2 at
+  `app/models/src/database_migrate.c`), teardown of the partially-opened
+  `node_db` can print `double free or corruption (!prev)`. Surfaced
+  2026-08-09 when the v65 migration landed before `NODE_DB_SCHEMA_LATEST`
+  was bumped (test_file_market "restart reconstructs verified content
+  reader"); the cap bump silenced it, but the underlying open/close bug in
+  `app/models/src/database.c` is still live and will resurface on the next
+  stale-binary-vs-newer-datadir boot. Fix = audit the refusal path's
+  ownership, not a test tweak.
 
 ---
 
