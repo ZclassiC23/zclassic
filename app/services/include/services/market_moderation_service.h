@@ -68,29 +68,6 @@ static inline bool market_moderation_profile_valid(int profile)
     return profile >= 0 && profile < MARKET_MODERATION_PROFILE_COUNT;
 }
 
-/* The one listing-visibility predicate: does this profile show an
- * offer with this local review_state on listing surfaces? Pure — the
- * fallible surfaces below return struct zcl_result. */
-static inline bool market_moderation_profile_visible(int profile,
-                                                     int review_state)
-{
-    if (!market_moderation_profile_valid(profile) ||
-        !market_review_state_valid(review_state))
-        return false;
-    if (profile == MARKET_MODERATION_PROFILE_OPEN)
-        return true;
-    /* general-audience.v1: hide unreviewed and sensitive offers from
-     * listing surfaces; only the node's own reviewed_ok marks show. */
-    return review_state == MARKET_REVIEW_REVIEWED_OK;
-}
-
-/* Resolve one explicit view override (CLI --input profile / REST
- * ?profile=): "open" or "open-view" -> OPEN, "general" or
- * "general-audience.v1" -> DEFAULT, NULL/empty/"default" -> the node's
- * active profile. -1 for an unknown override. */
-int market_moderation_resolve_view_profile(const char *override_name,
-                                           int active_profile);
-
 /* Per-datadir policy persistence. Load never creates directories and
  * answers the boot default (general-audience.v1) when the file is
  * absent; it fails (ok_out=false) on unreadable/corrupt content so an

@@ -1574,6 +1574,9 @@ void zcl_native_handle_market_content_register(
 void zcl_native_handle_market_moderation_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_market_moderation_guide(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_market_moderation_profile_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

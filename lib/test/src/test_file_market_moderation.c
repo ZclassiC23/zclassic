@@ -12,6 +12,7 @@
 #include "models/file_offer.h"
 #include "net/file_market.h"
 #include "services/market_moderation_service.h"
+#include "services/market_moderation_view_service.h"
 #include "base/hex.h"
 #include "json/json.h"
 #include "rpc/server.h"
@@ -96,21 +97,27 @@ static int test_mmt_profile_matrix(void)
 {
     int failures = 0;
     TEST("market moderation: immutable profile visibility matrix") {
-        ASSERT(!market_moderation_profile_visible(
-                   MARKET_MODERATION_PROFILE_DEFAULT,
-                   MARKET_REVIEW_UNREVIEWED));
-        ASSERT(!market_moderation_profile_visible(
-                   MARKET_MODERATION_PROFILE_DEFAULT,
-                   MARKET_REVIEW_SENSITIVE));
-        ASSERT(market_moderation_profile_visible(
-                   MARKET_MODERATION_PROFILE_DEFAULT,
-                   MARKET_REVIEW_REVIEWED_OK));
-        for (int s = 0; s < MARKET_REVIEW_STATE_COUNT; s++)
-            ASSERT(market_moderation_profile_visible(
-                       MARKET_MODERATION_PROFILE_OPEN, s));
-        ASSERT(!market_moderation_profile_visible(99, MARKET_REVIEW_REVIEWED_OK));
-        ASSERT(!market_moderation_profile_visible(
-                   MARKET_MODERATION_PROFILE_OPEN, 99));
+        const struct market_moderation_view_service_v1 *view =
+            market_moderation_view_service_builtin();
+        struct market_moderation_decision_result_v1 decision;
+        ASSERT(view->decide(MARKET_MODERATION_PROFILE_DEFAULT,
+                            MARKET_REVIEW_UNREVIEWED, &decision));
+        ASSERT(decision.valid && !decision.visible);
+        ASSERT(view->decide(MARKET_MODERATION_PROFILE_DEFAULT,
+                            MARKET_REVIEW_SENSITIVE, &decision));
+        ASSERT(decision.valid && !decision.visible);
+        ASSERT(view->decide(MARKET_MODERATION_PROFILE_DEFAULT,
+                            MARKET_REVIEW_REVIEWED_OK, &decision));
+        ASSERT(decision.valid && decision.visible);
+        for (int s = 0; s < MARKET_REVIEW_STATE_COUNT; s++) {
+            ASSERT(view->decide(MARKET_MODERATION_PROFILE_OPEN, s,
+                                &decision));
+            ASSERT(decision.valid && decision.visible);
+        }
+        ASSERT(view->decide(99, MARKET_REVIEW_REVIEWED_OK, &decision));
+        ASSERT(!decision.valid && !decision.visible);
+        ASSERT(view->decide(MARKET_MODERATION_PROFILE_OPEN, 99, &decision));
+        ASSERT(!decision.valid && !decision.visible);
 
         ASSERT(market_moderation_profile_from_string(
                    "general-audience.v1") == MARKET_MODERATION_PROFILE_DEFAULT);
@@ -125,20 +132,25 @@ static int test_mmt_profile_matrix(void)
                MARKET_REVIEW_SENSITIVE);
         ASSERT(market_review_state_from_string("banned") == -1);
 
-        ASSERT(market_moderation_resolve_view_profile(
-                   NULL, MARKET_MODERATION_PROFILE_DEFAULT) ==
-               MARKET_MODERATION_PROFILE_DEFAULT);
-        ASSERT(market_moderation_resolve_view_profile(
-                   "open", MARKET_MODERATION_PROFILE_DEFAULT) ==
-               MARKET_MODERATION_PROFILE_OPEN);
-        ASSERT(market_moderation_resolve_view_profile(
-                   "open-view", MARKET_MODERATION_PROFILE_DEFAULT) ==
-               MARKET_MODERATION_PROFILE_OPEN);
-        ASSERT(market_moderation_resolve_view_profile(
-                   "general", MARKET_MODERATION_PROFILE_OPEN) ==
-               MARKET_MODERATION_PROFILE_DEFAULT);
-        ASSERT(market_moderation_resolve_view_profile(
-                   "bogus", MARKET_MODERATION_PROFILE_DEFAULT) == -1);
+        int resolved = -1;
+        ASSERT(view->resolve_profile(NULL, MARKET_MODERATION_PROFILE_DEFAULT,
+                                     &resolved));
+        ASSERT(resolved == MARKET_MODERATION_PROFILE_DEFAULT);
+        ASSERT(view->resolve_profile("open",
+                                     MARKET_MODERATION_PROFILE_DEFAULT,
+                                     &resolved));
+        ASSERT(resolved == MARKET_MODERATION_PROFILE_OPEN);
+        ASSERT(view->resolve_profile("open-view",
+                                     MARKET_MODERATION_PROFILE_DEFAULT,
+                                     &resolved));
+        ASSERT(resolved == MARKET_MODERATION_PROFILE_OPEN);
+        ASSERT(view->resolve_profile("general",
+                                     MARKET_MODERATION_PROFILE_OPEN,
+                                     &resolved));
+        ASSERT(resolved == MARKET_MODERATION_PROFILE_DEFAULT);
+        ASSERT(!view->resolve_profile("bogus",
+                                      MARKET_MODERATION_PROFILE_DEFAULT,
+                                      &resolved));
         PASS();
     }
     _test_next:;

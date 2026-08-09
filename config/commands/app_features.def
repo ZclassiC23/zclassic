@@ -624,6 +624,23 @@ ZCL_COMMAND_READY_COMMAND(
 /* ── Per-node listing moderation (view filtering only) ─────────────── */
 
 ZCL_COMMAND_READY_READ(
+    "app.market.moderation.guide", "app.market.moderation", "",
+    "Show the marketplace moderation boundary",
+    "Renders the live pure-calculation surface and the static authority "
+    "boundary. It reads no profile file, review mark, offer cache, storage, "
+    "network, or signed-wire state.", ZCL_COMMAND_LIST_BUDGET,
+    "market,moderation,guide,workflow,hotswap,boundary",
+    "zcl.app_market_moderation_guide.input.v1",
+    "zcl.app_market_moderation_guide.v1", "", "",
+    "zclassic23 app market moderation guide",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_market_moderation_guide)
+
+ZCL_COMMAND_READY_READ(
     "app.market.moderation.status", "app.market.moderation", "",
     "Show this node's market moderation posture",
     "The node's own listing-visibility state: the active immutable profile, "

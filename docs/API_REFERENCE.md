@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 623 |
+| Registry entries (branches + leaves) | 624 |
 | Top-level roots | 11 |
 | Branches | 147 |
-| Leaves (dispatchable command paths) | 476 |
-| … `ready` (live handler in this build) | 428 |
+| Leaves (dispatchable command paths) | 477 |
+| … `ready` (live handler in this build) | 429 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -93,7 +93,7 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 118 | 29 | 89 |
 | `config/commands/apps.def` | 16 | 3 | 13 |
-| `config/commands/app_features.def` | 57 | 15 | 42 |
+| `config/commands/app_features.def` | 58 | 15 | 43 |
 | `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 46 | 11 | 35 |
@@ -512,6 +512,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
+| `app market moderation guide` | ready | read / read / public · instant/tiny | none | `zcl.app_market_moderation_guide.v1` | `zclassic23 app market moderation guide` | Show the marketplace moderation boundary |
 | `app market moderation status` | ready | read / read / operator · fast/low | none | `zcl.market_moderation_status.v1` | `zclassic23 app market moderation status` | Show this node's market moderation posture |
 
 #### `app.market.moderation.profile` — Profiles

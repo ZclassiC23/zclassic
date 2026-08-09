@@ -68,19 +68,6 @@ int market_moderation_profile_from_string(const char *name)
     return -1; // raw-return-ok:unknown-profile-name-is-a-sentinel-caller-logs
 }
 
-int market_moderation_resolve_view_profile(const char *override_name,
-                                           int active_profile)
-{
-    if (!override_name || !override_name[0] ||
-        strcmp(override_name, "default") == 0)
-        return active_profile;
-    if (strcmp(override_name, "open") == 0)
-        return MARKET_MODERATION_PROFILE_OPEN;
-    if (strcmp(override_name, "general") == 0)
-        return MARKET_MODERATION_PROFILE_DEFAULT;
-    return market_moderation_profile_from_string(override_name);
-}
-
 /* ── Per-datadir policy persistence ─────────────────────────────── */
 
 static bool mm_policy_paths(const char *datadir, char directory[1400],

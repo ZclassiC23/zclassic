@@ -30,6 +30,8 @@
 #include "services/file_market_content_service.h"
 #include "services/file_market_purchase_service.h"
 #include "services/market_moderation_service.h"
+#include "services/market_moderation_view_service.h"
+#include "hotswap/hotswap_service.h"
 #include "validation/main_state.h"
 #include "wallet/wallet.h"
 #include "config/runtime.h"
@@ -72,34 +74,35 @@ static bool market_list_json(const char *profile_override,
                              struct json_value *result)
 {
     int active = market_moderation_active_profile();
-    int profile = market_moderation_resolve_view_profile(profile_override,
-                                                         active);
-    if (profile < 0) {
+    struct zcl_hotswap_service_lease moderation_lease = {0};
+    const struct market_moderation_view_service_v1 *moderation_view =
+        zcl_hotswap_service_acquire(MARKET_MODERATION_VIEW_SERVICE_ID, &moderation_lease);
+    if (!moderation_view) moderation_view = market_moderation_view_service_builtin();
+    int profile = -1;
+    if (!moderation_view->resolve_profile(profile_override, active, &profile)) {
+        zcl_hotswap_service_release(&moderation_lease);
         json_set_str(result,
             "unknown market moderation profile override — use \"open\", "
             "\"open-view\", \"general\", or \"general-audience.v1\"");
         return false;
     }
-
     json_set_object(result);
     json_push_kv_str(result, "profile",
-                     market_moderation_profile_string(
-                         (enum market_moderation_profile)profile));
+        market_moderation_profile_string((enum market_moderation_profile)profile));
     json_push_kv_bool(result, "profile_override",
                       profile_override != NULL && profile_override[0]);
-
     struct file_offer offers[FILE_MARKET_MAX_OFFERS];
     int count = file_market_get_offers(offers, FILE_MARKET_MAX_OFFERS);
-
     struct json_value rows;
     json_init(&rows);
     json_set_array(&rows);
     int64_t hidden = 0;
-
     for (int i = 0; i < count; i++) {
         int review = market_moderation_review_state_for_root(
             offers[i].root_hash);
-        if (!market_moderation_profile_visible(profile, review)) {
+        struct market_moderation_decision_result_v1 decision;
+        if (!moderation_view->decide(profile, review, &decision) ||
+            !decision.valid || !decision.visible) {
             hidden++;
             continue;
         }
@@ -158,6 +161,7 @@ static bool market_list_json(const char *profile_override,
     json_free(&rows);
     json_push_kv_int(result, "offer_count", count - hidden);
     json_push_kv_int(result, "hidden_count", hidden);
+    zcl_hotswap_service_release(&moderation_lease);
     return true;
 }
 
@@ -952,27 +956,23 @@ static bool rpc_zmarket_moderation_profile_show(
             "general-audience.v1, open-view");
         return false;
     }
-
-    json_set_object(result);
-    json_push_kv_str(result, "profile",
-                     market_moderation_profile_string(
-                         (enum market_moderation_profile)profile));
-    json_push_kv_bool(result, "immutable", true);
-    json_push_kv_bool(result, "active",
-                      (int)market_moderation_active_profile() == profile);
-    if (profile == MARKET_MODERATION_PROFILE_OPEN) {
-        json_push_kv_str(result, "shows",
-                         "every offer the node ingested, each annotated "
-                         "with its local review_state");
-        json_push_kv_str(result, "hides", "nothing");
-    } else {
-        json_push_kv_str(result, "shows",
-                         "offers the node itself marked reviewed_ok");
-        json_push_kv_str(result, "hides",
-                         "unreviewed and sensitive offers (still stored, "
-                         "served, and tradable — view filtering only)");
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct market_moderation_view_service_v1 *service = zcl_hotswap_service_acquire(MARKET_MODERATION_VIEW_SERVICE_ID, &lease);
+    if (!service) service = market_moderation_view_service_builtin();
+    struct market_moderation_profile_result_v1 rendered;
+    if (!service->render_profile(profile, &rendered) || !rendered.valid) {
+        zcl_hotswap_service_release(&lease);
+        json_set_str(result, "market moderation profile rendering failed");
+        return false;
     }
+    json_set_object(result);
+    json_push_kv_str(result, "profile", rendered.profile);
+    json_push_kv_bool(result, "immutable", true);
+    json_push_kv_bool(result, "active", (int)market_moderation_active_profile() == profile);
+    json_push_kv_str(result, "shows", rendered.shows);
+    json_push_kv_str(result, "hides", rendered.hides);
     json_push_kv_str(result, "policy_file", MARKET_MODERATION_POLICY_FILE);
+    zcl_hotswap_service_release(&lease);
     return true;
 }
 

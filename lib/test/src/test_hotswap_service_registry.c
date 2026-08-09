@@ -7,6 +7,7 @@
 #include "command/native_command.h"
 #include "json/json.h"
 #include "services/market_purchase_view_service.h"
+#include "services/market_moderation_view_service.h"
 
 #include <stdatomic.h>
 #include <string.h>
@@ -155,6 +156,21 @@ static int t_manifest_mapping(void)
         ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
                           "app/services/src/market_purchase_view_service.c"),
                       "app.market.purchase.guide");
+        ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
+                          "app/services/src/market_moderation_view_service.c"),
+                      "app/services/src/market_moderation_view_service.c");
+        ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
+                          "app/services/src/market_moderation_view_internal.h"),
+                      "app/services/src/market_moderation_view_service.c");
+        ASSERT(zcl_hotswap_service_source_for_path(
+                   "app/services/include/services/market_moderation_view_service.h")
+               == NULL);
+        ASSERT_STR_EQ(zcl_hotswap_service_contract_source_for_path(
+                          "app/services/include/services/market_moderation_view_service.h"),
+                      "app/services/src/market_moderation_view_service.c");
+        ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
+                          "app/services/src/market_moderation_view_service.c"),
+                      "app.market.moderation.guide");
         ASSERT(zcl_hotswap_service_source_for_path(
                    "lib/storage/src/storage.c") == NULL);
         PASS();
@@ -235,10 +251,83 @@ static int t_market_purchase_view(void)
     return failures;
 }
 
+static bool candidate_moderation_guide(
+    struct market_moderation_guide_result_v1 *out)
+{
+    if (!market_moderation_view_service_builtin()->render_guide(out))
+        return false;
+    snprintf(out->next_command, sizeof(out->next_command), "%s",
+             "candidate moderation service generation is active");
+    return true;
+}
+
+static int t_market_moderation_view(void)
+{
+    int failures = 0;
+    TEST("market moderation visibility swaps while policy authority stays static") {
+        zcl_hotswap_service_reset();
+        const struct market_moderation_view_service_v1 *builtin =
+            market_moderation_view_service_builtin();
+        struct market_moderation_decision_result_v1 decision;
+        ASSERT(builtin->decide(MARKET_MODERATION_PROFILE_DEFAULT,
+                               MARKET_REVIEW_REVIEWED_OK, &decision));
+        ASSERT(decision.valid);
+        ASSERT(decision.visible);
+        ASSERT(decision.local_view_only);
+        ASSERT(decision.wire_unchanged);
+        ASSERT(builtin->decide(MARKET_MODERATION_PROFILE_DEFAULT,
+                               MARKET_REVIEW_SENSITIVE, &decision));
+        ASSERT(decision.valid);
+        ASSERT(!decision.visible);
+
+        struct market_moderation_view_service_v1 candidate_service = *builtin;
+        candidate_service.render_guide = candidate_moderation_guide;
+        struct zcl_hotswap_service_candidate service_candidate = {
+            .service_id = MARKET_MODERATION_VIEW_SERVICE_ID,
+            .source_tu =
+                "app/services/src/market_moderation_view_service.c",
+            .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+            .vtable_size = sizeof(candidate_service),
+            .abi_fingerprint = MARKET_MODERATION_VIEW_ABI_FINGERPRINT,
+            .schema_fingerprint = MARKET_MODERATION_VIEW_SCHEMA_FINGERPRINT,
+            .wire_fingerprint = MARKET_MODERATION_VIEW_WIRE_FINGERPRINT,
+            .kat_fingerprint = MARKET_MODERATION_VIEW_KAT_FINGERPRINT,
+            .vtable = &candidate_service,
+        };
+        struct zcl_hotswap_service_report report = {0};
+        ASSERT(zcl_hotswap_service_publish(
+            zcl_native_market_moderation_view_service_contract(),
+            &service_candidate, true, &report));
+        ASSERT(report.probed);
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        struct zcl_command_request request = {.input = &input};
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply,
+                               "zcl.app_market_moderation_guide.v1");
+        zcl_native_handle_market_moderation_guide(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "service_generation")),
+                  1);
+        ASSERT(json_get_bool(json_get(&reply.data, "policy_authority_static")));
+        ASSERT(json_get_bool(json_get(&reply.data, "wire_unchanged")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "next_command")),
+                      "candidate moderation service generation is active");
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        zcl_hotswap_service_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_hotswap_service_registry(void)
 {
     int failures = t_publish_and_lease() + t_contract_drift_restarts() +
-                   t_manifest_mapping() + t_market_purchase_view();
+                   t_manifest_mapping() + t_market_purchase_view() +
+                   t_market_moderation_view();
     zcl_hotswap_service_reset();
     printf("=== hotswap_service_registry: %d failures ===\n", failures);
     return failures;

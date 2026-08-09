@@ -41,3 +41,15 @@ HOTSWAP_SERVICE(
     "market-purchase-error-map+commit-hint+guide.v1",
     "59a6e2f7944682cb4707701e59a7fa960c054c6f76b40821aeb3c02f24ea1ba5",
     "app.market.purchase.guide")
+
+HOTSWAP_SERVICE(
+    "app.market.moderation.view.v1",
+    "app/services/src/market_moderation_view_service.c",
+    "app/services/src/market_moderation_view_internal.h",
+    "app/services/include/services/market_moderation_view_service.h",
+    "-",
+    "app.market.moderation.view.abi.v1:74ac9e20",
+    "zcl.app_market_moderation_guide.v1+zcl.market_moderation_profile.v1",
+    "profile-resolve+visibility+description+guide.v1",
+    "b3bb4162ded56964518aca6175fba41521ed9b121029a5eb38dd893267f80f26",
+    "app.market.moderation.guide")

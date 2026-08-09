@@ -11,8 +11,10 @@
 #include "controllers/rpc_client.h"
 #include "controllers/rpc_params.h"
 #include "command/native_command.h"
+#include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
+#include "services/market_moderation_view_service.h"
 #include "util/log_macros.h"
 
 #include <stdio.h>
@@ -20,6 +22,86 @@
 #include <string.h>
 
 #define MMN_TAG "native.market.moderation"
+
+static bool market_moderation_view_frozen_kat(const void *opaque, char *why,
+                                               size_t why_sz)
+{
+    const struct market_moderation_view_service_v1 *service = opaque;
+    struct market_moderation_decision_result_v1 decision;
+    struct market_moderation_profile_result_v1 profile;
+    struct market_moderation_guide_result_v1 guide;
+    int resolved = -1;
+    static const bool visible[MARKET_MODERATION_PROFILE_COUNT]
+                             [MARKET_REVIEW_STATE_COUNT] = {
+        {false, true, false},
+        {true, true, true},
+    };
+    if (!service || !service->resolve_profile || !service->decide ||
+        !service->render_profile || !service->render_guide) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen moderation service shape vector failed");
+        return false;
+    }
+    for (int p = 0; p < MARKET_MODERATION_PROFILE_COUNT; p++) {
+        for (int s = 0; s < MARKET_REVIEW_STATE_COUNT; s++) {
+            if (!service->decide(p, s, &decision) || !decision.valid ||
+                decision.visible != visible[p][s] ||
+                !decision.local_view_only || !decision.wire_unchanged) {
+                if (why && why_sz) (void)snprintf(
+                    why, why_sz,
+                    "frozen moderation visibility vector %d/%d failed", p,
+                    s);
+                return false;
+            }
+        }
+    }
+    if (!service->decide(99, MARKET_REVIEW_REVIEWED_OK, &decision) ||
+        decision.valid || !decision.local_view_only ||
+        !decision.wire_unchanged ||
+        !service->resolve_profile("default", MARKET_MODERATION_PROFILE_OPEN,
+                                  &resolved) ||
+        resolved != MARKET_MODERATION_PROFILE_OPEN ||
+        !service->resolve_profile("general", MARKET_MODERATION_PROFILE_OPEN,
+                                  &resolved) ||
+        resolved != MARKET_MODERATION_PROFILE_DEFAULT ||
+        !service->resolve_profile("open", MARKET_MODERATION_PROFILE_DEFAULT,
+                                  &resolved) ||
+        resolved != MARKET_MODERATION_PROFILE_OPEN ||
+        service->resolve_profile("unknown", MARKET_MODERATION_PROFILE_DEFAULT,
+                                 &resolved) ||
+        !service->render_profile(MARKET_MODERATION_PROFILE_DEFAULT, &profile) ||
+        !profile.valid || !profile.immutable ||
+        strcmp(profile.profile,
+               MARKET_MODERATION_PROFILE_GENERAL_AUDIENCE_V1) != 0 ||
+        !service->render_profile(MARKET_MODERATION_PROFILE_OPEN, &profile) ||
+        !profile.valid || strcmp(profile.hides, "nothing") != 0 ||
+        !service->render_guide(&guide) || !guide.policy_authority_static ||
+        !guide.persistence_static || !guide.network_authority_static ||
+        !guide.wire_unchanged) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen moderation resolve/profile/guide vector failed");
+        return false;
+    }
+    return true;
+}
+
+static const struct zcl_hotswap_service_contract k_market_moderation_contract = {
+    .service_id = MARKET_MODERATION_VIEW_SERVICE_ID,
+    .source_tu = "app/services/src/market_moderation_view_service.c",
+    .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+    .vtable_size = sizeof(struct market_moderation_view_service_v1),
+    .abi_fingerprint = MARKET_MODERATION_VIEW_ABI_FINGERPRINT,
+    .schema_fingerprint = MARKET_MODERATION_VIEW_SCHEMA_FINGERPRINT,
+    .wire_fingerprint = MARKET_MODERATION_VIEW_WIRE_FINGERPRINT,
+    .kat_fingerprint = MARKET_MODERATION_VIEW_KAT_FINGERPRINT,
+    .frozen_kat = market_moderation_view_frozen_kat,
+};
+
+const struct zcl_hotswap_service_contract *
+zcl_native_market_moderation_view_service_contract(void)
+{
+    return &k_market_moderation_contract;
+}
 
 static void mmn_fail(struct zcl_command_reply *reply,
                      enum zcl_command_status status,
@@ -127,6 +209,49 @@ static void mmn_copy_bool(struct json_value *data,
     const struct json_value *v = json_get(body, key);
     if (v && v->type == JSON_BOOL)
         (void)json_push_kv_bool(data, key, json_get_bool(v));
+}
+
+void zcl_native_handle_market_moderation_guide(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !request->input || !reply ||
+        request->input->type != JSON_OBJ || request->input->num_children != 0) {
+        if (reply) mmn_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_INVALID, "BAD_MARKET_MODERATION_GUIDE_INPUT",
+            "validate", "app market moderation guide accepts no input keys",
+            "app.market.moderation.guide");
+        return;
+    }
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct market_moderation_view_service_v1 *service =
+        zcl_hotswap_service_acquire(MARKET_MODERATION_VIEW_SERVICE_ID, &lease);
+    if (!service) service = market_moderation_view_service_builtin();
+    struct market_moderation_guide_result_v1 guide;
+    if (!service->render_guide(&guide)) {
+        zcl_hotswap_service_release(&lease);
+        mmn_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+                 "MARKET_MODERATION_VIEW_FAILED", "render",
+                 "the pure moderation view service refused guide rendering",
+                 "app.market.moderation.guide");
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "service_id",
+                           MARKET_MODERATION_VIEW_SERVICE_ID);
+    (void)json_push_kv_int(&reply->data, "service_generation",
+                           zcl_hotswap_service_generation());
+    (void)json_push_kv_bool(&reply->data, "policy_authority_static",
+                            guide.policy_authority_static);
+    (void)json_push_kv_bool(&reply->data, "persistence_static",
+                            guide.persistence_static);
+    (void)json_push_kv_bool(&reply->data, "network_authority_static",
+                            guide.network_authority_static);
+    (void)json_push_kv_bool(&reply->data, "wire_unchanged",
+                            guide.wire_unchanged);
+    (void)json_push_kv_str(&reply->data, "live_surface", guide.live_surface);
+    (void)json_push_kv_str(&reply->data, "static_boundary",
+                           guide.static_boundary);
+    (void)json_push_kv_str(&reply->data, "next_command", guide.next_command);
+    zcl_hotswap_service_release(&lease);
 }
 
 void zcl_native_handle_market_moderation_status(
