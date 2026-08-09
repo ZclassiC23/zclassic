@@ -92,7 +92,7 @@ static bool render_guide(struct market_purchase_guide_result_v1 *out)
     (void)snprintf(out->live_surface, sizeof(out->live_surface), "%s",
         "pure refusal classification, canonical commit hint, workflow rendering");
     (void)snprintf(out->static_boundary, sizeof(out->static_boundary), "%s",
-        "input parsing, authentication, RPC, wallet, storage, network, payment, retrieval, publication");
+        "input parsing, moderation admission, authentication, RPC, wallet, storage, network, payment, retrieval, publication");
     (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
         "zclassic23 discover schema app.market.purchase.plan");
     return true;

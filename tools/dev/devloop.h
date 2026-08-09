@@ -246,6 +246,17 @@ bool zcl_devloop_hotswap_build(
     struct zcl_devloop_process_result *process,
     char *why, size_t why_len);
 
+/* Pure fallback diagnosis for one resident hot-swap receipt. `why_not_live`
+ * preserves the exact bounded refusal; `next_command` names one deterministic
+ * action instead of the old generic "repair the refusal" instruction. */
+void zcl_devloop_hotswap_guidance(
+    const char *status, const char *phase, const char *why,
+    char *why_not_live, size_t why_not_live_size,
+    char *next_command, size_t next_command_size);
+struct json_value;
+bool zcl_devloop_hotswap_response_error(
+    const struct json_value *response, char *out, size_t out_size);
+
 /* One non-LTO process-restart candidate produced directly by the resident
  * watcher from Make's frozen action plan. This is a candidate command-runtime
  * proof, never release/deployment authority and never a live-node restart. */

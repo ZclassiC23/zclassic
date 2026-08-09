@@ -68,6 +68,61 @@ static void hs_why(char *why, size_t why_len, const char *message)
         (void)snprintf(why, why_len, "%s", message ? message : "unknown");
 }
 
+void zcl_devloop_hotswap_guidance(
+    const char *status, const char *phase, const char *why,
+    char *why_not_live, size_t why_not_live_size,
+    char *next_command, size_t next_command_size)
+{
+    bool passed = status && strcmp(status, "passed") == 0;
+    if (why_not_live && why_not_live_size) {
+        const char *exact = passed ? "" : why;
+        if (!passed && (!exact || !exact[0])) {
+            exact = phase && strcmp(phase, "compile") == 0
+                ? "candidate compilation did not produce a publishable artifact"
+                : "resident dev node did not publish the candidate";
+        }
+        (void)snprintf(why_not_live, why_not_live_size, "%s", exact);
+    }
+    if (!next_command || next_command_size == 0) return;
+    const char *next =
+        "zclassic23-dev dev status --view=full";
+    if (passed) {
+        next = "keep editing; the resident authority owns the next module epoch";
+    } else if ((why && strstr(why, "DEV_RESTART")) ||
+               (why && strstr(why, "service ABI changed")) ||
+               (why && strstr(why, "service schema changed")) ||
+               (why && strstr(why, "service wire contract changed")) ||
+               (why && strstr(why, "frozen KAT identity changed"))) {
+        next = "make -j\"$(nproc)\" dev-bin";
+    } else if (phase && strcmp(phase, "compile") == 0) {
+        next = "zclassic23-dev dev diagnose latest";
+    } else if ((why && strstr(why, "cannot read RPC auth cookie")) ||
+               (why && strstr(why, "returned no activation body"))) {
+        next = "zclassic23-dev dev generation current";
+    }
+    (void)snprintf(next_command, next_command_size, "%s", next);
+}
+
+bool zcl_devloop_hotswap_response_error(
+    const struct json_value *response, char *out, size_t out_size)
+{
+    if (!response || response->type != JSON_OBJ || !out || out_size == 0)
+        return false;
+    const struct json_value *message_v = json_get(response, "message");
+    const struct json_value *error_v = json_get(response, "error");
+    if ((!message_v || message_v->type != JSON_STR) && error_v &&
+        error_v->type == JSON_OBJ)
+        message_v = json_get(error_v, "message");
+    if ((!message_v || message_v->type != JSON_STR) && error_v &&
+        error_v->type == JSON_STR)
+        message_v = error_v;
+    const char *message = message_v && message_v->type == JSON_STR
+        ? json_get_str(message_v) : NULL;
+    if (!message || !message[0]) return false;
+    (void)snprintf(out, out_size, "%s", message);
+    return true;
+}
+
 static bool hs_regular(const char *path, struct stat *out)
 {
     struct stat st;
@@ -1004,11 +1059,12 @@ static bool hs_resident_call(const char *artifact, bool activate,
     }
     const struct json_value *ok_v = json_get(response, "ok");
     if (!ok_v || ok_v->type != JSON_BOOL || !json_get_bool(ok_v)) {
-        const struct json_value *message_v = json_get(response, "message");
-        if (!message_v) message_v = json_get(response, "error");
-        const char *message = message_v && message_v->type == JSON_STR
-            ? json_get_str(message_v) : "resident refused the candidate";
-        hs_why(why, why_len, message);
+        char response_error[512];
+        if (zcl_devloop_hotswap_response_error(
+                response, response_error, sizeof(response_error)))
+            hs_why(why, why_len, response_error);
+        else
+            hs_why(why, why_len, "resident refused the candidate");
         return false;
     }
     const struct json_value *activated_v = json_get(response, "activated");
@@ -1099,11 +1155,12 @@ static bool hs_emit_event(const char *root, const char *source,
     }
     if (resident && resident->type == JSON_OBJ)
         (void)json_push_kv(&doc, "resident", resident);
-    (void)json_push_kv_str(
-        &doc, "agent_next_action",
-        strcmp(status, "passed") == 0
-            ? "keep editing; the resident authority owns the next module epoch"
-            : "repair the named fast-lane refusal; no old handler was replaced");
+    char why_not_live[512], next_command[256];
+    zcl_devloop_hotswap_guidance(
+        status, phase, why, why_not_live, sizeof(why_not_live),
+        next_command, sizeof(next_command));
+    (void)json_push_kv_str(&doc, "why_not_live", why_not_live);
+    (void)json_push_kv_str(&doc, "agent_next_action", next_command);
 
     char wire[16384];
     size_t n = json_write(&doc, wire, sizeof(wire) - 1);

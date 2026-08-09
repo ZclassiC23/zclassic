@@ -486,6 +486,48 @@ static int test_watcher_publication_containment(void)
                       "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'")
                == 0);
 
+        char why_not_live[512], next_command[256];
+        zcl_devloop_hotswap_guidance(
+            "rejected", "resident_probe",
+            "cannot read RPC auth cookie at /tmp/dev/.cookie",
+            why_not_live, sizeof(why_not_live),
+            next_command, sizeof(next_command));
+        ASSERT(strcmp(why_not_live,
+                      "cannot read RPC auth cookie at /tmp/dev/.cookie") == 0);
+        ASSERT(strcmp(next_command,
+                      "zclassic23-dev dev generation current") == 0);
+        zcl_devloop_hotswap_guidance(
+            "rejected", "compile", "candidate did not compile",
+            why_not_live, sizeof(why_not_live),
+            next_command, sizeof(next_command));
+        ASSERT(strcmp(why_not_live, "candidate did not compile") == 0);
+        ASSERT(strcmp(next_command,
+                      "zclassic23-dev dev diagnose latest") == 0);
+        zcl_devloop_hotswap_guidance(
+            "rejected", "resident_probe",
+            "service ABI changed; select DEV_RESTART",
+            why_not_live, sizeof(why_not_live),
+            next_command, sizeof(next_command));
+        ASSERT(strcmp(next_command, "make -j\"$(nproc)\" dev-bin") == 0);
+        zcl_devloop_hotswap_guidance(
+            "passed", "resident_commit", "",
+            why_not_live, sizeof(why_not_live),
+            next_command, sizeof(next_command));
+        ASSERT(why_not_live[0] == '\0');
+        ASSERT(strcmp(next_command,
+            "keep editing; the resident authority owns the next module epoch")
+            == 0);
+        struct json_value resident_error;
+        json_init(&resident_error);
+        ASSERT(json_read(&resident_error,
+            "{\"error\":{\"code\":-32603,\"message\":\"cannot read RPC auth cookie at /tmp/dev/.cookie\"}}",
+            strlen("{\"error\":{\"code\":-32603,\"message\":\"cannot read RPC auth cookie at /tmp/dev/.cookie\"}}")));
+        ASSERT(zcl_devloop_hotswap_response_error(
+            &resident_error, why_not_live, sizeof(why_not_live)));
+        ASSERT(strcmp(why_not_live,
+                      "cannot read RPC auth cookie at /tmp/dev/.cookie") == 0);
+        json_free(&resident_error);
+
         char lock_path[ZCL_DEVLOOP_PATH_MAX];
         ASSERT(zcl_devloop_watch_lock_path("/tmp/zcl-wt-main", lock_path,
                                            sizeof(lock_path)));
