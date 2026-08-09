@@ -33,6 +33,7 @@
 #include "vcs/package_manifest.h"
 #include "vcs/package_recipe.h"
 #include "vcs/package_release.h"
+#include "vcs/zcode_c23_corpus.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -151,6 +152,23 @@ static int t_key_edges(void)
     CIB_CHECK("recipe bound tracks VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES",
               zcl_command_registry_input_str_max("recipe_hex") ==
                   2u * (size_t)VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES);
+
+    const char *verify = "zcode.commons.corpus.verify";
+    size_t checkpoint_hex_max = ZCL_COMMAND_MAX_INPUT;
+    CIB_CHECK("checkpoint bound carries the 54-shard inline wire",
+              zcl_command_registry_input_str_max("checkpoint") ==
+                  checkpoint_hex_max &&
+              (checkpoint_hex_max / 2u -
+               VCS_ZCODE_C23_CHECKPOINT_HEADER_WIRE_BYTES) /
+                  VCS_ZCODE_C23_CHECKPOINT_BINDING_WIRE_BYTES == 54u);
+    CIB_CHECK("checkpoint at its canonical inline bound is deliverable",
+              cib_accepts(verify, "checkpoint", checkpoint_hex_max, why,
+                          sizeof(why)));
+    CIB_CHECK("checkpoint one character over its bound is refused",
+              !cib_accepts(verify, "checkpoint", checkpoint_hex_max + 1u,
+                           why, sizeof(why)) &&
+              strstr(why, "checkpoint") != NULL &&
+              strstr(why, "limit") != NULL);
     return failures;
 }
 
@@ -164,13 +182,16 @@ static int t_frame_budget(void)
         zcl_command_registry_find(reg, "zcode.package.publish.plan", NULL);
     const struct zcl_command_spec *query =
         zcl_command_registry_find(reg, "core.storage.query", NULL);
+    const struct zcl_command_spec *verify =
+        zcl_command_registry_find(reg, "zcode.commons.corpus.verify", NULL);
 
-    CIB_CHECK("both fixture leaves resolve", plan && query);
-    if (!plan || !query)
+    CIB_CHECK("all fixture leaves resolve", plan && query && verify);
+    if (!plan || !query || !verify)
         return failures;
 
     size_t plan_budget = zcl_command_registry_input_budget_bytes(plan);
     size_t query_budget = zcl_command_registry_input_budget_bytes(query);
+    size_t verify_budget = zcl_command_registry_input_budget_bytes(verify);
 
     /* A reader that stopped before the validator's ceiling would truncate a
      * legal document — the exact second wall this change had to clear. */
@@ -186,6 +207,9 @@ static int t_frame_budget(void)
               query_budget == ZCL_COMMAND_MAX_INPUT);
     CIB_CHECK("the floor is a floor, never a ceiling",
               plan_budget > ZCL_COMMAND_MAX_INPUT);
+    CIB_CHECK("the checkpoint read frame includes JSON overhead above its wire hex",
+              verify_budget >
+                  zcl_command_registry_input_str_max("checkpoint"));
 
     /* NULL is answered with the floor rather than a crash or a zero frame
      * (a zero frame would refuse every input on an unresolved leaf). */

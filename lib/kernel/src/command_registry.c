@@ -877,6 +877,12 @@ size_t zcl_command_registry_input_str_max(const char *key)
     /* Hex of a declarative build recipe (zcode.package.recipe wire). */
     if (strcmp(key, "recipe_hex") == 0)
         return 2u * (size_t)VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES;
+    /* Canonical hex of the bounded inline c23_corpus_checkpoint.v1 read.
+     * The static verifier derives its wire and shard ceilings by querying
+     * this same rule, so the transport can neither truncate an admitted
+     * checkpoint nor silently widen the handler. */
+    if (strcmp(key, "checkpoint") == 0)
+        return ZCL_COMMAND_MAX_INPUT;
     /* transaction_controller.c uses a 2,000,000-byte canonical transaction
      * buffer for create/sign. Hex doubles the wire size. */
     if (strcmp(key, "raw_hex") == 0)

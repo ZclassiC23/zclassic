@@ -294,6 +294,25 @@ ZCL_COMMAND_READY_READ(
     zcl_native_handle_zcode_commons_corpus_show)
 
 ZCL_COMMAND_READY_READ(
+    "zcode.commons.corpus.verify", "zcode.commons.corpus", "",
+    "Verify one bounded C23 corpus checkpoint",
+    "Decodes and verifies one canonical signed c23_corpus_checkpoint.v1 wire "
+    "through the resident pure corpus service. Inline input is bounded to 54 "
+    "shards and proves only the supplied lower-bound set, never global "
+    "completeness.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,commons,corpus,c23,checkpoint,verify,signature,simulation",
+    "zcl.zcode_commons_corpus_verify.input.v1",
+    "zcl.zcode_commons_corpus_verify.v1", "checkpoint", "",
+    "zclassic23 zcode commons corpus verify --checkpoint=<lowercase-hex-wire>",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_corpus_verify)
+
+ZCL_COMMAND_READY_READ(
     "zcode.commons.corpus.status", "zcode.commons.corpus", "",
     "Show the verified C23 corpus lower bound",
     "Shows admitted and durably hosted production/test C23 LOC separately, "

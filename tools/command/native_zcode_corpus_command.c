@@ -3,12 +3,17 @@
 
 #include "command/native_command.h"
 
+#include "base/checked.h"
+#include "base/hex.h"
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "services/zcode_c23_corpus_service.h"
+#include "util/safe_alloc.h"
 #include "vcs/zcode_c23_corpus.h"
 
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static bool corpus_no_keys(const struct json_value *input)
@@ -22,6 +27,75 @@ static void corpus_fail(struct zcl_command_reply *reply, const char *code,
     zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                            ZCL_COMMAND_EXIT_INVALID, code, "validate", false,
                            false, detail, "zcode.commons.corpus");
+}
+
+static void corpus_kat_fill(uint8_t root[32], uint8_t value)
+{
+    memset(root, value, 32);
+}
+
+static bool corpus_checkpoint_frozen_kat(
+    const struct zcode_c23_corpus_service_v1 *service, char *why,
+    size_t why_sz)
+{
+    struct vcs_zcode_c23_checkpoint_shard_v1 binding = {
+        .entry_count = 1,
+        .production_loc = 2,
+        .test_loc = 1,
+        .durable_loc = 3,
+        .physical_lines = 4,
+        .unique_semantic_units = 2,
+    };
+    corpus_kat_fill(binding.shard_root, 0x61);
+    corpus_kat_fill(binding.first_lineage_root, 0x62);
+    corpus_kat_fill(binding.last_lineage_root, 0x63);
+    struct vcs_zcode_c23_corpus_checkpoint_v1 checkpoint = {
+        .schema_version = 1,
+        .flags = VCS_ZCODE_C23_CORPUS_REQUIRED_FLAGS,
+        .milestone = VCS_ZCODE_C23_MILESTONE_NONE,
+        .sequence = 1,
+        .cutoff_height = 1,
+        .cutoff_mtp = 1,
+        .total_entries = binding.entry_count,
+        .production_loc = binding.production_loc,
+        .test_loc = binding.test_loc,
+        .durable_loc = binding.durable_loc,
+        .physical_lines = binding.physical_lines,
+        .unique_semantic_units = binding.unique_semantic_units,
+        .shards = &binding,
+        .shard_count = 1,
+    };
+    struct vcs_zcode_c23_corpus_rules_v1 rules;
+    vcs_zcode_c23_corpus_rules_v1_default(&rules);
+    if (vcs_zcode_c23_corpus_rules_v1_root(
+            &rules, checkpoint.rules_root) != VCS_ZCODE_C23_OK) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen checkpoint rules-root vector failed");
+        return false;
+    }
+    corpus_kat_fill(checkpoint.family_policy_root, 0x64);
+    corpus_kat_fill(checkpoint.moderation_set_root, 0x65);
+    corpus_kat_fill(checkpoint.replication_evidence_root, 0x66);
+    uint8_t seed[32];
+    corpus_kat_fill(seed, 0x67);
+    if (vcs_zcode_c23_corpus_checkpoint_v1_sign(&checkpoint, seed) !=
+            VCS_ZCODE_C23_OK ||
+        service->checkpoint_validate(&checkpoint) != VCS_ZCODE_C23_OK) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen signed checkpoint validation vector failed");
+        return false;
+    }
+    checkpoint.signature[0] ^= 1u;
+    if (service->checkpoint_validate(&checkpoint) !=
+        VCS_ZCODE_C23_SIGNATURE) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen tampered checkpoint rejection vector failed");
+        return false;
+    }
+    return true;
 }
 
 static bool corpus_service_frozen_kat(const void *opaque, char *why,
@@ -51,6 +125,8 @@ static bool corpus_service_frozen_kat(const void *opaque, char *why,
                            "frozen exact-root rules rendering vector failed");
         return false;
     }
+    if (!corpus_checkpoint_frozen_kat(service, why, why_sz))
+        return false;
     return true;
 }
 
@@ -200,6 +276,190 @@ void zcl_native_handle_zcode_commons_corpus_show(
             "the requested root is not the resident frozen C23 corpus rules root");
     }
     zcl_hotswap_service_release(&lease);
+}
+
+static void corpus_push_root(struct json_value *out, const char *key,
+                             const uint8_t root[32])
+{
+    char hex[65];
+    zcl_hex_encode(root, 32, hex);
+    (void)json_push_kv_str(out, key, hex);
+}
+
+static bool corpus_checkpoint_renderable(
+    const struct vcs_zcode_c23_corpus_checkpoint_v1 *checkpoint,
+    uint64_t *total_loc)
+{
+    if (!checkpoint || !total_loc ||
+        !zcl_u64_add(checkpoint->production_loc, checkpoint->test_loc,
+                     total_loc))
+        return false;
+    const uint64_t values[] = {
+        checkpoint->sequence, checkpoint->cutoff_height,
+        checkpoint->total_entries, checkpoint->production_loc,
+        checkpoint->test_loc, checkpoint->durable_loc,
+        checkpoint->physical_lines, checkpoint->unique_semantic_units,
+        checkpoint->excluded_entries, *total_loc,
+    };
+    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++)
+        if (values[i] > INT64_MAX) return false;
+    return true;
+}
+
+static size_t corpus_checkpoint_inline_wire_max(void)
+{
+    return zcl_command_registry_input_str_max("checkpoint") / 2u;
+}
+
+static size_t corpus_checkpoint_inline_shard_max(void)
+{
+    size_t wire_max = corpus_checkpoint_inline_wire_max();
+    return wire_max > VCS_ZCODE_C23_CHECKPOINT_HEADER_WIRE_BYTES
+        ? (wire_max - VCS_ZCODE_C23_CHECKPOINT_HEADER_WIRE_BYTES) /
+              VCS_ZCODE_C23_CHECKPOINT_BINDING_WIRE_BYTES
+        : 0;
+}
+
+void zcl_native_handle_zcode_commons_corpus_verify(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    const struct json_value *value =
+        request && request->input ? json_get(request->input, "checkpoint")
+                                  : NULL;
+    const char *hex = json_get_str(value);
+    size_t hex_len = hex ? strlen(hex) : 0;
+    if (!request || !reply || !request->input ||
+        request->input->type != JSON_OBJ ||
+        request->input->num_children != 1 || !hex_len ||
+        (hex_len & 1u) != 0 ||
+        hex_len > corpus_checkpoint_inline_wire_max() * 2u) {
+        if (reply) corpus_fail(reply, "BAD_CORPUS_CHECKPOINT_INPUT",
+            "checkpoint must be one nonempty lowercase even-length hex wire within the 8192-byte inline bound");
+        return;
+    }
+
+    size_t wire_len = hex_len / 2u;
+    if (wire_len < VCS_ZCODE_C23_CHECKPOINT_HEADER_WIRE_BYTES ||
+        (wire_len - VCS_ZCODE_C23_CHECKPOINT_HEADER_WIRE_BYTES) %
+            VCS_ZCODE_C23_CHECKPOINT_BINDING_WIRE_BYTES != 0) {
+        corpus_fail(reply, "BAD_CORPUS_CHECKPOINT_INPUT",
+                    "checkpoint wire length is not a canonical header plus whole shard bindings");
+        return;
+    }
+    size_t shard_capacity =
+        (wire_len - VCS_ZCODE_C23_CHECKPOINT_HEADER_WIRE_BYTES) /
+        VCS_ZCODE_C23_CHECKPOINT_BINDING_WIRE_BYTES;
+    if (!shard_capacity ||
+        shard_capacity > corpus_checkpoint_inline_shard_max()) {
+        corpus_fail(reply, "BAD_CORPUS_CHECKPOINT_INPUT",
+                    "checkpoint must contain between 1 and 54 inline shard bindings");
+        return;
+    }
+
+    uint8_t *wire = zcl_malloc(wire_len, "corpus.checkpoint.wire");
+    struct vcs_zcode_c23_checkpoint_shard_v1 *shards = zcl_malloc(
+        shard_capacity * sizeof(*shards), "corpus.checkpoint.shards");
+    if (!wire || !shards) {
+        free(shards);
+        free(wire);
+        corpus_fail(reply, "CORPUS_CHECKPOINT_MEMORY",
+                    "bounded checkpoint verification allocation failed");
+        return;
+    }
+    if (!zcl_hex_decode_lower(hex, wire, wire_len)) {
+        free(shards);
+        free(wire);
+        corpus_fail(reply, "BAD_CORPUS_CHECKPOINT_INPUT",
+                    "checkpoint must use canonical lowercase hexadecimal");
+        return;
+    }
+
+    struct vcs_zcode_c23_corpus_checkpoint_v1 checkpoint;
+    enum vcs_zcode_c23_error error =
+        vcs_zcode_c23_corpus_checkpoint_v1_decode(
+            &checkpoint, shards, shard_capacity, wire, wire_len);
+    free(wire);
+    if (error != VCS_ZCODE_C23_OK) {
+        free(shards);
+        corpus_fail(reply, "CORPUS_CHECKPOINT_INVALID",
+                    vcs_zcode_c23_error_string(error));
+        return;
+    }
+
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_c23_corpus_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_C23_CORPUS_SERVICE_ID, &lease);
+    if (!service) service = zcode_c23_corpus_service_builtin();
+    error = service->checkpoint_validate(&checkpoint);
+    if (error != VCS_ZCODE_C23_OK) {
+        zcl_hotswap_service_release(&lease);
+        free(shards);
+        corpus_fail(reply, "CORPUS_CHECKPOINT_INVALID",
+                    vcs_zcode_c23_error_string(error));
+        return;
+    }
+
+    uint8_t checkpoint_root[32];
+    uint64_t total_loc = 0;
+    error = vcs_zcode_c23_corpus_checkpoint_v1_root(
+        &checkpoint, checkpoint_root);
+    if (error != VCS_ZCODE_C23_OK ||
+        !corpus_checkpoint_renderable(&checkpoint, &total_loc)) {
+        zcl_hotswap_service_release(&lease);
+        free(shards);
+        corpus_fail(reply, "CORPUS_CHECKPOINT_RENDER_RANGE",
+                    "verified checkpoint counts exceed the bounded JSON integer renderer");
+        return;
+    }
+
+    (void)json_push_kv_bool(&reply->data, "verified", true);
+    (void)json_push_kv_bool(&reply->data, "simulation_only", true);
+    (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
+    (void)json_push_kv_bool(&reply->data, "global_completeness_claimed",
+                            false);
+    (void)json_push_kv_str(&reply->data, "kind",
+                           "c23_corpus_checkpoint.v1");
+    (void)json_push_kv_str(&reply->data, "service_id",
+                           ZCODE_C23_CORPUS_SERVICE_ID);
+    (void)json_push_kv_int(&reply->data, "service_generation",
+                           zcl_hotswap_service_generation());
+    corpus_push_root(&reply->data, "checkpoint_root", checkpoint_root);
+    corpus_push_root(&reply->data, "rules_root", checkpoint.rules_root);
+    corpus_push_root(&reply->data, "family_policy_root",
+                     checkpoint.family_policy_root);
+    corpus_push_root(&reply->data, "moderation_set_root",
+                     checkpoint.moderation_set_root);
+    corpus_push_root(&reply->data, "replication_evidence_root",
+                     checkpoint.replication_evidence_root);
+    corpus_push_root(&reply->data, "signer_pubkey", checkpoint.signer_pubkey);
+    (void)json_push_kv_int(&reply->data, "sequence",
+                           (int64_t)checkpoint.sequence);
+    (void)json_push_kv_int(&reply->data, "cutoff_height",
+                           (int64_t)checkpoint.cutoff_height);
+    (void)json_push_kv_int(&reply->data, "cutoff_mtp",
+                           checkpoint.cutoff_mtp);
+    (void)json_push_kv_int(&reply->data, "milestone", checkpoint.milestone);
+    (void)json_push_kv_int(&reply->data, "shard_count",
+                           (int64_t)checkpoint.shard_count);
+    (void)json_push_kv_int(&reply->data, "inline_shard_limit",
+                           (int64_t)corpus_checkpoint_inline_shard_max());
+    (void)json_push_kv_int(&reply->data, "total_entries",
+                           (int64_t)checkpoint.total_entries);
+    (void)json_push_kv_int(&reply->data, "production_loc",
+                           (int64_t)checkpoint.production_loc);
+    (void)json_push_kv_int(&reply->data, "test_loc",
+                           (int64_t)checkpoint.test_loc);
+    (void)json_push_kv_int(&reply->data, "total_loc", (int64_t)total_loc);
+    (void)json_push_kv_int(&reply->data, "durably_hosted_loc",
+                           (int64_t)checkpoint.durable_loc);
+    (void)json_push_kv_int(&reply->data, "physical_lines",
+                           (int64_t)checkpoint.physical_lines);
+    (void)json_push_kv_int(&reply->data, "unique_semantic_units",
+                           (int64_t)checkpoint.unique_semantic_units);
+    (void)json_push_kv_int(&reply->data, "excluded_entries",
+                           (int64_t)checkpoint.excluded_entries);
+    zcl_hotswap_service_release(&lease);
+    free(shards);
 }
 
 static void render_impact_unshareable(struct json_value *data)
