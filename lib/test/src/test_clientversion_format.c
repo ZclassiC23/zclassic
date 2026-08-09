@@ -69,6 +69,8 @@ int test_clientversion_format(void)
     CVF_CHECK("dev/test build bakes exact lowercase ABA receipt",
               cvf_source_id_shape_valid(
                   zcl_build_source_mutation_sha256()));
+    CVF_CHECK("ordinary build does not claim resident source-CAS authority",
+              strcmp(zcl_build_source_cas_sha3(), "unknown") == 0);
     CVF_CHECK("bundle exporter accepts canonical SHA-256 source authority",
               bundle_exporter_source_identity_is_exact_for_test(
                   zcl_build_source_id_sha256()));

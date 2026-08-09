@@ -40,6 +40,7 @@
 #define RR_TEXT_MAX 16384
 #define RR_ARG_MAX 512
 #define RR_SOURCE_MAX 32
+#define RR_OVERLAY_MAX (RR_SOURCE_MAX + 1)
 #define RR_EXACT_GROUP_MAX 128
 #define RR_IMMEDIATE_GROUP_MAX 32
 
@@ -617,6 +618,8 @@ static bool rr_source_is_c(const char *path)
 
 static bool rr_compile_one(const struct rr_plan *plan, const char *root,
                            struct rr_overlay *overlay,
+                           const char *const *extra_flags,
+                           size_t extra_flag_count,
                            struct zcl_devloop_process_result *process,
                            int64_t *elapsed_us, char *why, size_t why_len)
 {
@@ -648,12 +651,14 @@ static bool rr_compile_one(const struct rr_plan *plan, const char *root,
     const char *argv[RR_ARG_MAX], *flagv[RR_ARG_MAX];
     size_t argc = zcl_argv_split(cc, argv, RR_ARG_MAX);
     size_t flagc = zcl_argv_split(flags, flagv, RR_ARG_MAX);
-    if (!argc || argc + flagc + 9 >= RR_ARG_MAX) {
+    if (!argc || argc + flagc + extra_flag_count + 9 >= RR_ARG_MAX) {
         (void)unlink(temp_o); (void)unlink(temp_d);
         rr_why(why, why_len, "restart compile action exceeds argv bound");
         return false;
     }
     for (size_t i = 0; i < flagc; i++) argv[argc++] = flagv[i];
+    for (size_t i = 0; i < extra_flag_count; i++)
+        argv[argc++] = extra_flags[i];
     argv[argc++] = "-MD"; argv[argc++] = "-MF"; argv[argc++] = temp_d;
     argv[argc++] = "-c"; argv[argc++] = "-o"; argv[argc++] = temp_o;
     argv[argc++] = overlay->source; argv[argc] = NULL;
@@ -770,7 +775,7 @@ static bool rr_write_response(const struct rr_plan *plan, const char *root,
         rr_why(why, why_len, "could not open restart link response");
         return false;
     }
-    bool seen[RR_SOURCE_MAX] = {0};
+    bool seen[RR_OVERLAY_MAX] = {0};
     char token[PATH_MAX];
     bool ok = true;
     while (ok && fscanf(in, "%4095s", token) == 1) {
@@ -924,11 +929,116 @@ static bool rr_link_cached(const struct rr_plan *plan, const char *root,
     return ok;
 }
 
+static bool rr_source_record_valid(const struct dev_source_record *source)
+{
+    return source && source->cas_present &&
+           rr_hex64(source->cas_root_sha3) && rr_hex64(source->source_id) &&
+           rr_hex64(source->mutation_id);
+}
+
+static bool rr_overlay_init(const struct rr_plan *plan, const char *root,
+                            const char *source, const char *overlay_prefix,
+                            struct rr_overlay *overlay, char *why,
+                            size_t why_len)
+{
+    size_t n = source ? strlen(source) : 0;
+    if (!rr_source_is_c(source) || n >= ZCL_DEVLOOP_PATH_MAX) {
+        rr_why(why, why_len, "restart overlay source is invalid");
+        return false;
+    }
+    (void)snprintf(overlay->source, sizeof(overlay->source), "%s", source);
+    char stem[ZCL_DEVLOOP_PATH_MAX];
+    (void)snprintf(stem, sizeof(stem), "%s", source);
+    stem[n - 1] = 'o';
+    if (snprintf(overlay->base_object, sizeof(overlay->base_object),
+                 "%s/%s", plan->obj_dir, stem) >=
+            (int)sizeof(overlay->base_object) ||
+        snprintf(overlay->overlay_object, sizeof(overlay->overlay_object),
+                 "%s/%s/%s", root, overlay_prefix, stem) >=
+            (int)sizeof(overlay->overlay_object)) {
+        rr_why(why, why_len, "restart object path overflow");
+        return false;
+    }
+    return true;
+}
+
+static bool rr_identity_flags(const struct dev_source_record *source,
+                              char source_flag[96], char mutation_flag[104],
+                              char cas_flag[104], char clean_flag[24])
+{
+    if (!rr_source_record_valid(source))
+        return false;
+    int source_n = snprintf(source_flag, 96,
+                            "-DZCL_BUILD_SOURCE_ID=\"%s\"",
+                            source->source_id);
+    int mutation_n = snprintf(mutation_flag, 104,
+                              "-DZCL_BUILD_SOURCE_MUTATION=\"%s\"",
+                              source->mutation_id);
+    int cas_n = snprintf(cas_flag, 104,
+                         "-DZCL_BUILD_SOURCE_CAS_SHA3=\"%s\"",
+                         source->cas_root_sha3);
+    int clean_n = snprintf(clean_flag, 24, "-DZCL_BUILD_CLEAN=1");
+    return source_n > 0 && source_n < 96 &&
+           mutation_n > 0 && mutation_n < 104 && cas_n > 0 && cas_n < 104 &&
+           clean_n > 0 && clean_n < 24;
+}
+
+static bool rr_prepare_overlays(
+    const struct rr_plan *plan, const char *root,
+    const char *const *source_tus, size_t source_count,
+    const struct dev_source_record *epoch_source, const char *overlay_prefix,
+    struct rr_overlay *overlays, size_t *overlay_count,
+    struct zcl_devloop_process_result *process, uint32_t *compiler_processes,
+    int64_t *compile_us, char *why, size_t why_len)
+{
+    static const char identity_source[] = "lib/util/src/clientversion.c";
+    char source_flag[96], mutation_flag[104], cas_flag[104], clean_flag[24];
+    if (!rr_identity_flags(epoch_source, source_flag, mutation_flag, cas_flag,
+                           clean_flag)) {
+        rr_why(why, why_len,
+               "restart epoch source CAS record is missing or malformed");
+        return false;
+    }
+    const char *identity_flags[] = {
+        source_flag, mutation_flag, cas_flag, clean_flag,
+    };
+    bool identity_seen = false;
+    size_t count = 0;
+    for (size_t i = 0; i < source_count; i++) {
+        bool identity = strcmp(source_tus[i], identity_source) == 0;
+        if (!rr_overlay_init(plan, root, source_tus[i], overlay_prefix,
+                             &overlays[count], why, why_len))
+            return false;
+        (*compiler_processes)++;
+        if (!rr_compile_one(plan, root, &overlays[count],
+                            identity ? identity_flags : NULL,
+                            identity ? 4 : 0, process, compile_us,
+                            why, why_len))
+            return false;
+        identity_seen = identity_seen || identity;
+        count++;
+    }
+    if (!identity_seen) {
+        if (count >= RR_OVERLAY_MAX ||
+            !rr_overlay_init(plan, root, identity_source, overlay_prefix,
+                             &overlays[count], why, why_len))
+            return false;
+        (*compiler_processes)++;
+        if (!rr_compile_one(plan, root, &overlays[count], identity_flags, 4,
+                            process, compile_us, why, why_len))
+            return false;
+        count++;
+    }
+    *overlay_count = count;
+    return true;
+}
+
 static bool rr_restart_build(
     const char *repo_root, const char *const *source_tus, size_t source_count,
     struct zcl_devloop_restart_build_receipt *receipt,
     struct zcl_devloop_process_result *process,
-    char *why, size_t why_len, bool guard_source)
+    char *why, size_t why_len, bool guard_source,
+    const struct dev_source_record *epoch_source)
 {
     int64_t started = platform_time_monotonic_us();
     if (why && why_len) why[0] = 0;
@@ -978,40 +1088,31 @@ static bool rr_restart_build(
         return false;
     }
 
-    struct rr_overlay *overlays = zcl_calloc(source_count, sizeof(*overlays),
+    const struct dev_source_record *identity =
+        epoch_source ? epoch_source : &source_before;
+    if (!rr_source_record_valid(identity)) {
+        rr_why(why, why_len,
+               "restart epoch source CAS record is unavailable");
+        return false;
+    }
+    (void)snprintf(receipt->source_cas_sha3,
+                   sizeof(receipt->source_cas_sha3), "%s",
+                   identity->cas_root_sha3);
+
+    struct rr_overlay *overlays = zcl_calloc(RR_OVERLAY_MAX, sizeof(*overlays),
                                               "restart overlays");
     if (!overlays) {
         rr_why(why, why_len, "restart overlay allocation failed");
         return false;
     }
-    bool ok = true;
-    for (size_t i = 0; i < source_count; i++) {
-        size_t n = strlen(source_tus[i]);
-        (void)snprintf(overlays[i].source, sizeof(overlays[i].source), "%s",
-                       source_tus[i]);
-        char stem[ZCL_DEVLOOP_PATH_MAX];
-        (void)snprintf(stem, sizeof(stem), "%s", source_tus[i]);
-        stem[n - 1] = 'o';
-        if (snprintf(overlays[i].base_object,
-                     sizeof(overlays[i].base_object), "%s/%s", plan.obj_dir,
-                     stem) >= (int)sizeof(overlays[i].base_object) ||
-            snprintf(overlays[i].overlay_object,
-                     sizeof(overlays[i].overlay_object),
-                     "%s/build/dev-loop/restart-objects/%s", root, stem) >=
-                (int)sizeof(overlays[i].overlay_object)) {
-            rr_why(why, why_len, "restart object path overflow");
-            ok = false;
-            break;
-        }
-        receipt->compiler_processes++;
-        if (!rr_compile_one(&plan, root, &overlays[i], process,
-                            &receipt->compile_us, why, why_len)) {
-            ok = false;
-            break;
-        }
-    }
+    size_t overlay_count = 0;
+    bool ok = rr_prepare_overlays(
+        &plan, root, source_tus, source_count, identity,
+        "build/dev-loop/restart-objects", overlays, &overlay_count, process,
+        &receipt->compiler_processes, &receipt->compile_us, why, why_len);
+    receipt->source_identity_overlay = ok;
     char rsp[PATH_MAX] = {0};
-    if (ok && !rr_write_response(&plan, root, overlays, source_count,
+    if (ok && !rr_write_response(&plan, root, overlays, overlay_count,
                                  "build/dev-loop/restart-objects", rsp,
                                  why, why_len))
         ok = false;
@@ -1071,7 +1172,7 @@ bool zcl_devloop_restart_build(
     char *why, size_t why_len)
 {
     return rr_restart_build(repo_root, source_tus, source_count, receipt,
-                            process, why, why_len, true);
+                            process, why, why_len, true, NULL);
 }
 
 static bool rr_append_group(char out[4096], const char *group)
@@ -1180,7 +1281,8 @@ static bool rr_restart_prove(
     const struct zcl_devloop_plan *proof_plan,
     struct zcl_devloop_restart_proof_receipt *receipt,
     struct zcl_devloop_process_result *process,
-    char *why, size_t why_len, bool immediate_only, bool guard_source)
+    char *why, size_t why_len, bool immediate_only, bool guard_source,
+    const struct dev_source_record *epoch_source)
 {
     int64_t started = platform_time_monotonic_us();
     if (why && why_len) why[0] = 0;
@@ -1257,41 +1359,31 @@ static bool rr_restart_prove(
                "proof source snapshot could not be captured before compile");
         return false;
     }
-    struct rr_overlay *overlays = zcl_calloc(source_count, sizeof(*overlays),
+    const struct dev_source_record *identity =
+        epoch_source ? epoch_source : &source_before;
+    if (!rr_source_record_valid(identity)) {
+        rr_why(why, why_len, "proof epoch source CAS record is unavailable");
+        return false;
+    }
+    (void)snprintf(receipt->source_cas_sha3,
+                   sizeof(receipt->source_cas_sha3), "%s",
+                   identity->cas_root_sha3);
+    struct rr_overlay *overlays = zcl_calloc(RR_OVERLAY_MAX,
+                                              sizeof(*overlays),
                                               "restart proof overlays");
     if (!overlays) {
         rr_why(why, why_len, "restart proof overlay allocation failed");
         return false;
     }
-    bool ok = true;
-    for (size_t i = 0; i < source_count; i++) {
-        size_t n = strlen(source_tus[i]);
-        (void)snprintf(overlays[i].source, sizeof(overlays[i].source), "%s",
-                       source_tus[i]);
-        char stem[ZCL_DEVLOOP_PATH_MAX];
-        (void)snprintf(stem, sizeof(stem), "%s", source_tus[i]);
-        stem[n - 1] = 'o';
-        if (snprintf(overlays[i].base_object,
-                     sizeof(overlays[i].base_object), "%s/%s",
-                     plan.obj_dir, stem) >=
-                (int)sizeof(overlays[i].base_object) ||
-            snprintf(overlays[i].overlay_object,
-                     sizeof(overlays[i].overlay_object),
-                     "%s/build/dev-loop/restart-test-objects/%s", root,
-                     stem) >= (int)sizeof(overlays[i].overlay_object)) {
-            rr_why(why, why_len, "restart proof object path overflow");
-            ok = false;
-            break;
-        }
-        receipt->compiler_processes++;
-        if (!rr_compile_one(&plan, root, &overlays[i], process,
-                            &receipt->compile_us, why, why_len)) {
-            ok = false;
-            break;
-        }
-    }
+    size_t overlay_count = 0;
+    bool ok = rr_prepare_overlays(
+        &plan, root, source_tus, source_count, identity,
+        "build/dev-loop/restart-test-objects", overlays, &overlay_count,
+        process, &receipt->compiler_processes, &receipt->compile_us,
+        why, why_len);
+    receipt->source_identity_overlay = ok;
     char rsp[PATH_MAX] = {0};
-    if (ok && !rr_write_response(&plan, root, overlays, source_count,
+    if (ok && !rr_write_response(&plan, root, overlays, overlay_count,
                                  "build/dev-loop/restart-test-objects", rsp,
                                  why, why_len))
         ok = false;
@@ -1382,7 +1474,7 @@ bool zcl_devloop_restart_prove(
     char *why, size_t why_len)
 {
     return rr_restart_prove(repo_root, source_tus, source_count, proof_plan,
-                            receipt, process, why, why_len, false, true);
+                            receipt, process, why, why_len, false, true, NULL);
 }
 
 bool zcl_devloop_restart_prove_immediate(
@@ -1393,7 +1485,7 @@ bool zcl_devloop_restart_prove_immediate(
     char *why, size_t why_len)
 {
     return rr_restart_prove(repo_root, source_tus, source_count, proof_plan,
-                            receipt, process, why, why_len, true, true);
+                            receipt, process, why, why_len, true, true, NULL);
 }
 
 static void rr_output_preview(const struct zcl_devloop_process_result *process,
@@ -1504,6 +1596,11 @@ static bool rr_emit_event(
         if (build->artifact_cache_key[0])
             (void)json_push_kv_str(&receipt, "artifact_cache_key",
                                    build->artifact_cache_key);
+        if (build->source_cas_sha3[0])
+            (void)json_push_kv_str(&receipt, "source_cas_sha3",
+                                   build->source_cas_sha3);
+        (void)json_push_kv_bool(&receipt, "source_identity_overlay",
+                                build->source_identity_overlay);
         (void)json_push_kv_str(&receipt, "probe", build->probe);
         (void)json_push_kv_bool(&receipt, "candidate_probe_passed",
                                 build->candidate_probe_passed);
@@ -1545,6 +1642,11 @@ static bool rr_emit_event(
         if (proof->artifact_cache_key[0])
             (void)json_push_kv_str(&receipt, "artifact_cache_key",
                                    proof->artifact_cache_key);
+        if (proof->source_cas_sha3[0])
+            (void)json_push_kv_str(&receipt, "source_cas_sha3",
+                                   proof->source_cas_sha3);
+        (void)json_push_kv_bool(&receipt, "source_identity_overlay",
+                                proof->source_identity_overlay);
         if (proof->groups_sha256[0])
             (void)json_push_kv_str(&receipt, "exact_groups_sha256",
                                    proof->groups_sha256);
@@ -1613,6 +1715,7 @@ struct rr_build_job {
     size_t source_count;
     struct zcl_devloop_restart_build_receipt *receipt;
     struct zcl_devloop_process_result *process;
+    const struct dev_source_record *epoch_source;
     char why[512];
     bool ok;
 };
@@ -1623,7 +1726,7 @@ static void *rr_build_worker(void *opaque)
     job->ok = rr_restart_build(job->repo_root, job->sources,
                                job->source_count, job->receipt,
                                job->process, job->why, sizeof(job->why),
-                               false);
+                               false, job->epoch_source);
     return NULL;
 }
 
@@ -1673,6 +1776,7 @@ int zcl_devloop_restart_event(const char *repo_root,
         .source_count = source_count,
         .receipt = &build,
         .process = &build_process,
+        .epoch_source = &source_before,
     };
     pthread_t build_thread;
     /* thread-supervision-ok: bounded candidate branch joined below before
@@ -1682,7 +1786,8 @@ int zcl_devloop_restart_event(const char *repo_root,
                               &build_job, &build_thread) == 0;
     if (ok && !feedback_parallel)
         ok = rr_restart_build(repo_root, source_tus, source_count, &build,
-                              &build_process, why, sizeof(why), false);
+                              &build_process, why, sizeof(why), false,
+                              &source_before);
     int64_t closure_started = platform_time_monotonic_us();
     if (ok) {
         const char *closure_reason = "";
@@ -1704,7 +1809,7 @@ int zcl_devloop_restart_event(const char *repo_root,
     if (ok)
         ok = rr_restart_prove(repo_root, source_tus, source_count, &plan,
                               &proof, &proof_process, why, sizeof(why), true,
-                              false);
+                              false, &source_before);
     if (feedback_parallel) {
         (void)pthread_join(build_thread, NULL);
         if (!build_job.ok) {

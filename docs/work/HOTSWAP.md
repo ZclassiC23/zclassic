@@ -362,12 +362,14 @@ Every group passed with zero self-skips. This misses the five-second proof
 target because the selected `make_lint_gates` heavy family dominates; compiler
 and linker latency is no longer the limiting stage.
 
-One closure remains explicitly incomplete: tooling edits that select
-`code_capsule` can reach an otherwise unchanged `clientversion` object whose
-embedded source identity belongs to the setup epoch. The resident refuses that
-stale identity instead of blessing it. Rebuilding that generated identity in
-the resident proof epoch is required before this edit class can report
-`proof_complete=true`.
+The generated source-identity object is part of every restart epoch rather than
+the frozen base. The candidate and proof branches share the same already
+captured native source-CAS record, compile `clientversion.c` with that record,
+and substitute the resulting object ahead of the base. This is resident-only
+proof identity: the full v2 source record remains publication authority. A
+permanent fixture maps a `native_code_command.c` batch through `code_capsule`
+and requires `proof_complete=true`, so the former setup-epoch stale-identity
+refusal cannot return unnoticed.
 
 The watcher also owns cancellation. `SIGTERM` records an async-signal-safe
 cancellation request; the bounded process runner terminates and reaps the

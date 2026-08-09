@@ -4,6 +4,8 @@
 #include "devloop.h"
 
 #include "codeindex/codeindex_merkle.h"
+#include "base/hex.h"
+#include "crypto/sha256.h"
 #include "platform/time_compat.h"
 
 #include <ctype.h>
@@ -32,6 +34,19 @@ static bool lower_hex64(const char *input, char out[65])
     }
     out[64] = '\0';
     return true;
+}
+
+static void source_cas_record_digest(const char *domain,
+                                     const char cas_root_sha3[65],
+                                     char out[65])
+{
+    struct sha256_ctx sha;
+    unsigned char digest[SHA256_OUTPUT_SIZE];
+    sha256_init(&sha);
+    sha256_write(&sha, (const unsigned char *)domain, strlen(domain) + 1);
+    sha256_write(&sha, (const unsigned char *)cas_root_sha3, 64);
+    sha256_finalize(&sha, digest);
+    zcl_hex_encode(digest, sizeof(digest), out);
 }
 
 static bool parse_source_record(const struct zcl_devloop_process_result *result,
@@ -83,6 +98,18 @@ bool zcl_dev_source_cas_capture(const char *repo_root,
     bool ok = ci_merkle_root(tree, &root);
     if (ok) {
         ci_merkle_hex(&root.digest, out->cas_root_sha3);
+        /* Resident candidates are not publication artifacts, but their
+         * generated clientversion object still needs one exact, inspectable
+         * identity for the source epoch it proves. Derive two SHA-256 values
+         * from the already-captured native CAS root: no second tree walk and
+         * no shell oracle in the save path. The distinct domains prevent the
+         * content identity and exact-revert token from being interchangeable. */
+        if (!out->source_id[0])
+            source_cas_record_digest("zcl.dev_source_cas_identity.v1",
+                                     out->cas_root_sha3, out->source_id);
+        if (!out->mutation_id[0])
+            source_cas_record_digest("zcl.dev_source_cas_mutation.v1",
+                                     out->cas_root_sha3, out->mutation_id);
         out->cas_files_total = cost.files_total;
         out->cas_files_read = cost.files_read;
         out->cas_nodes_hashed = cost.nodes_hashed;

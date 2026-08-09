@@ -48,6 +48,11 @@ const char *zcl_build_source_id_sha256(void);
  * must never become consensus, publication, or executable-byte authority. */
 const char *zcl_build_source_mutation_sha256(void);
 
+/* Native Merkle/CAS root bound into resident DEV_RESTART candidates. Normal
+ * build/release artifacts return "unknown"; their publication identity
+ * remains zcl_build_source_id_sha256(). */
+const char *zcl_build_source_cas_sha3(void);
+
 void FormatVersion(int nVersion, char *out, size_t out_size);
 
 #endif /* WINDRES_PREPROC */
