@@ -275,3 +275,73 @@ bool db_file_offer_delete(struct node_db *ndb, const uint8_t root_hash[32])
     AR_FINALIZE_STEP_DONE(s, ok);
     return ok;
 }
+
+/* ── Local-only listing moderation (v65 review_state) ─────────────── */
+
+bool db_file_offer_get_review_state(struct node_db *ndb,
+                                    const uint8_t root_hash[32],
+                                    char *out, size_t out_len)
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("market", "db_file_offer_get_review_state: db not open");
+    if (!root_hash)
+        LOG_FAIL("market", "db_file_offer_get_review_state: root_hash NULL");
+    if (!out || out_len < 16)
+        LOG_FAIL("market", "db_file_offer_get_review_state: out too small");
+
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_RET(ndb, s,
+        "SELECT review_state FROM file_offers WHERE root_hash=?", false);
+    AR_BIND_BLOB(s, 1, root_hash, 32);
+    if (!AR_STEP_ROW(s)) {
+        AR_FINALIZE(s);
+        return false; /* row-ok: absent offer is locally unreviewed */
+    }
+    const char *text = AR_COL_TEXT(s, 0);
+    snprintf(out, out_len, "%s", text ? text : "unreviewed");
+    AR_FINALIZE(s);
+    return true;
+}
+
+bool db_file_offer_set_review_state(struct node_db *ndb,
+                                    const uint8_t offer_id[32],
+                                    const char *review_state)
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("market", "db_file_offer_set_review_state: db not open");
+    if (!offer_id)
+        LOG_FAIL("market", "db_file_offer_set_review_state: offer_id NULL");
+    if (!review_state || !review_state[0])
+        LOG_FAIL("market", "db_file_offer_set_review_state: state empty");
+
+    sqlite3_stmt *s = NULL;
+    AR_EXEC_CHANGED_BOOL(ndb, s,
+        "UPDATE file_offers SET review_state=? "
+        "WHERE offer_id=? AND auth_version IN (1,2)",
+        AR_BIND_TEXT(s, 1, review_state);
+        AR_BIND_BLOB(s, 2, offer_id, 32));
+}
+
+bool db_file_offer_review_counts(struct node_db *ndb, int64_t counts[3])
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("market", "db_file_offer_review_counts: db not open");
+    if (!counts)
+        LOG_FAIL("market", "db_file_offer_review_counts: counts is NULL");
+    counts[0] = counts[1] = counts[2] = 0;
+
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_RET(ndb, s,
+        "SELECT review_state,COUNT(*) FROM file_offers "
+        "GROUP BY review_state", false);
+    bool ok = true;
+    while (ok && AR_STEP_ROW(s)) {
+        const char *state = AR_COL_TEXT(s, 0);
+        int64_t n = AR_COL_INT(s, 1);
+        if (state && strcmp(state, "unreviewed") == 0) counts[0] = n;
+        else if (state && strcmp(state, "reviewed_ok") == 0) counts[1] = n;
+        else if (state && strcmp(state, "sensitive") == 0) counts[2] = n;
+    }
+    AR_FINALIZE(s);
+    return ok;
+}

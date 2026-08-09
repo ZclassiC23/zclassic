@@ -1080,6 +1080,7 @@ int main(int argc, char **argv)
     failures += test_htlc();
     failures += test_swap_settlement();
     failures += test_file_market();
+    failures += test_file_market_moderation();
     failures += test_strong_params();
     { extern int test_wallet_funds_safety(void);
       failures += test_wallet_funds_safety(); }

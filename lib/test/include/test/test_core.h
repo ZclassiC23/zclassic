@@ -416,6 +416,7 @@ int test_proof_chain(void);
 int test_htlc(void);
 int test_swap_settlement(void);
 int test_file_market(void);
+int test_file_market_moderation(void);
 int file_market_payment_tests(void);
 int file_market_delivery_tests(void);
 int file_market_content_tests(void);

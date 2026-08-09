@@ -41,6 +41,12 @@ ZCL_COMMAND_BRANCH("app.market.content", "app.market", "Seller content",
                    ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.market.purchase", "app.market", "Buyer purchase",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.market.moderation", "app.market", "Moderation",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.market.moderation.profile", "app.market.moderation",
+                   "Profiles", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.market.moderation.review", "app.market.moderation",
+                   "Review marks", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.store", "app", "Store", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.swap", "app", "Swaps", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.qr", "app", "QR", ZCL_COMMAND_LAYER_APP)
@@ -421,12 +427,18 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_READ(
     "app.market.list", "app.market", "", "List files on the ZCL Market",
-    "Every admitted file offer in the bounded live cache. Paid rows have a "
-    "seller-verified, network-bound offer_id, exact integer total, and expiry; "
-    "legacy unsigned rows are price-zero recovery artifacts only.",
+    "The admitted file offers in the bounded live cache, filtered through "
+    "this node's own listing-visibility profile (per-node moderation, view "
+    "filtering only — hidden offers stay stored, served, and tradable). "
+    "Every row carries its local review_state; the reply carries an honest "
+    "hidden_count. The optional profile key (\"open\") is the explicit "
+    "per-request override showing everything ingested. Paid rows have a "
+    "seller-verified, network-bound offer_id, exact integer total, and "
+    "expiry; legacy unsigned rows are price-zero recovery artifacts only.",
     ZCL_COMMAND_LIST_BUDGET,
-    "market,files,list", "zcl.command.empty_input.v1", "zcl.app_market_index.v1",
-    "", "", "zclassic23 app market list",
+    "market,files,list,moderation", "zcl.app_market_list.input.v1",
+    "zcl.app_market_index.v1",
+    "profile", "", "zclassic23 app market list",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -591,6 +603,88 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_market_offer)
+
+/* ── Per-node listing moderation (view filtering only) ─────────────── */
+
+ZCL_COMMAND_READY_READ(
+    "app.market.moderation.status", "app.market.moderation", "",
+    "Show this node's market moderation posture",
+    "The node's own listing-visibility state: the active immutable profile, "
+    "the available profiles, and local review_state counts over stored "
+    "offers. Moderation filters listing views only — there are no "
+    "network-wide bans and no deletion authority; hidden offers stay "
+    "stored, served, and tradable.", 0,
+    "market,moderation,status,profile,review",
+    "zcl.command.empty_input.v1", "zcl.market_moderation_status.v1",
+    "", "", "zclassic23 app market moderation status",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_market_moderation_status)
+
+ZCL_COMMAND_READY_READ(
+    "app.market.moderation.profile.show", "app.market.moderation.profile",
+    "", "Describe one immutable moderation profile",
+    "What one named per-node listing-visibility profile shows and hides, "
+    "and whether it is the active one here. Profiles are immutable and "
+    "named — the node picks one; it never edits one.", 0,
+    "market,moderation,profile,show",
+    "zcl.app_market_moderation_profile_show.input.v1",
+    "zcl.market_moderation_profile.v1", "profile", "profile",
+    "zclassic23 app market moderation profile show --input='{\"profile\":\"open-view\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_market_moderation_profile_show)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.market.moderation.profile.set", "app.market.moderation.profile",
+    "", "Set this node's listing-visibility profile",
+    "Exact plan/commit over the node's own moderation profile, persisted "
+    "to <datadir>/market/moderation.v1. mode=plan mints a plan_token bound "
+    "to the current active profile and the target; mode=commit requires "
+    "that token (STALE_PLAN after any concurrent change). Boot default is "
+    "the immutable general-audience.v1 (hides unreviewed and sensitive "
+    "offers from listing surfaces); open-view is the named opt-in showing "
+    "everything ingested. Local view filtering only.", 0,
+    "market,moderation,profile,set,policy",
+    "zcl.app_market_moderation_profile_set.input.v1",
+    "zcl.market_moderation_profile_set.v1",
+    "profile,mode,plan_token", "profile,mode",
+    "zclassic23 app market moderation profile set --input='{\"profile\":\"open-view\",\"mode\":\"plan\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_market_moderation_profile_set)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.market.moderation.review.set", "app.market.moderation.review", "",
+    "Mark one offer's local review_state",
+    "The node's OWN curation mark on one signed offer: sets the local-only "
+    "review_state (unreviewed / reviewed_ok / sensitive) and writes one "
+    "audit log line per mark. The mark is never gossiped, never enters the "
+    "signed wire, and never deletes anything — the offer stays stored, "
+    "served, and tradable; only this node's listing view changes.", 0,
+    "market,moderation,review,mark,curation",
+    "zcl.app_market_moderation_review_set.input.v1",
+    "zcl.market_review_set.v1",
+    "offer_id,review_state", "offer_id,review_state",
+    "zclassic23 app market moderation review set --input='{\"offer_id\":\"<64hex>\",\"review_state\":\"reviewed_ok\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_P2P_TOPIC, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_market_moderation_review_set)
 
 ZCL_COMMAND_PLANNED_COMMAND(
     "app.market.buy", "app.market", "", "Buy and download a market file",

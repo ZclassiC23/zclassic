@@ -737,6 +737,28 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 65) {
+        /* v65: per-node listing moderation. review_state is LOCAL-ONLY
+         * curation metadata (unreviewed at ingest, reviewed_ok / sensitive
+         * after the node's own zmarket_review_set). It is never gossiped
+         * and never enters the signed offer wire — a hidden offer is still
+         * stored, served, and tradable. ADD COLUMN is enough (no CHECK
+         * widening), so no table rebuild; the constant default backfills
+         * every existing row as unreviewed. */
+        if (!node_db_exec(ndb,
+                "ALTER TABLE file_offers ADD COLUMN review_state TEXT "
+                "NOT NULL DEFAULT 'unreviewed' CHECK(review_state IN "
+                "('unreviewed','reviewed_ok','sensitive'))"))
+            LOG_ERR("db", "migrate v65: file_offers review_state failed");
+        if (!node_db_exec(ndb,
+                "INSERT OR IGNORE INTO schema_migrations(version) "
+                "VALUES('065')"))
+            LOG_ERR("db", "migrate v65: migration stamp failed");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 65);
+        current_ver = 65;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

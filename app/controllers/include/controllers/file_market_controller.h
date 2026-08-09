@@ -20,6 +20,11 @@ void register_market_offer_rpc_commands(struct rpc_table *t);
 
 #include "json/json.h"
 bool api_market_list(struct json_value *result);
+/* The listing view with an explicit per-request profile override
+ * ("open"/"open-view"/"general"/"general-audience.v1", NULL = the node's
+ * active profile). Backs zmarket_list, app market list, and /api/market. */
+bool api_market_list_profile(const char *profile_override,
+                             struct json_value *result);
 bool api_market_content_list(struct json_value *result);
 
 #endif

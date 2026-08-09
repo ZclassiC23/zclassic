@@ -1,0 +1,472 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Tests for per-node marketplace listing moderation: immutable visibility
+ * profiles, policy-file persistence, the local-only review_state store,
+ * the listing view filter (hidden_count), and the signed-wire-untouched
+ * invariant. Moderation is view filtering only — ingest, hosting, and
+ * trading are asserted unaffected. */
+
+#include "platform/time_compat.h"
+#include "test/test_core.h"
+#include "controllers/file_market_controller.h"
+#include "models/database.h"
+#include "models/file_offer.h"
+#include "net/file_market.h"
+#include "services/market_moderation_service.h"
+#include "base/hex.h"
+#include "json/json.h"
+#include "rpc/server.h"
+#include "crypto/ed25519.h"
+#include "sapling/sapling.h"
+
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static bool mmt_signed_offer(struct file_offer *offer, uint8_t root_byte,
+                             uint64_t nonce, int64_t now_unix)
+{
+    struct jub_point payment_key;
+    uint8_t seed[32], secret[32];
+    memset(offer, 0, sizeof(*offer));
+    memset(seed, (int)(root_byte ^ 0x5a), sizeof(seed));
+    memset(offer->root_hash, root_byte, sizeof(offer->root_hash));
+    memset(offer->network_genesis, 0x42, sizeof(offer->network_genesis));
+    ed25519_keypair(offer->seller_pubkey, secret, seed);
+    snprintf(offer->filename, sizeof(offer->filename), "mmt-%02x.dat",
+             root_byte);
+    offer->size_bytes = FILE_MARKET_CHUNK_SIZE + 1u;
+    offer->num_chunks = 2;
+    offer->price_per_mb = 1200;
+    for (uint8_t d = 1; ; d++) {
+        memset(offer->z_addr, 0, sizeof(offer->z_addr));
+        offer->z_addr[0] = d;
+        if (sapling_diversifier_to_gd(&payment_key, offer->z_addr))
+            break;
+        if (d == UINT8_MAX)
+            return false;
+    }
+    jub_to_bytes(offer->z_addr + 11, &payment_key);
+    offer->peer_ip[15] = root_byte ? root_byte : 1;
+    offer->peer_port = 18034;
+    offer->ttl = FILE_MARKET_MAX_TTL;
+    offer->last_seen = now_unix;
+    offer->auth_version = FILE_MARKET_OFFER_VERSION;
+    offer->nonce = nonce;
+    offer->issued_unix = now_unix;
+    offer->expires_unix = now_unix + 600;
+    return file_offer_auth_seal(offer, seed) == FILE_OFFER_AUTH_OK;
+}
+
+static int mmt_offer_rows(const struct json_value *listing)
+{
+    const struct json_value *offers = json_get(listing, "offers");
+    return offers && offers->type == JSON_ARR ? (int)offers->num_children
+                                              : -1;
+}
+
+static int64_t mmt_kv_int(const struct json_value *obj, const char *key)
+{
+    const struct json_value *v = json_get(obj, key);
+    return v && v->type == JSON_INT ? json_get_int(v) : -1;
+}
+
+static const char *mmt_row_review(const struct json_value *listing,
+                                  const char *offer_id_hex)
+{
+    const struct json_value *offers = json_get(listing, "offers");
+    if (!offers || offers->type != JSON_ARR)
+        return NULL;
+    for (size_t i = 0; i < offers->num_children; i++) {
+        const struct json_value *row = &offers->children[i];
+        const struct json_value *id = json_get(row, "offer_id");
+        if (id && id->type == JSON_STR &&
+            strcmp(json_get_str(id), offer_id_hex) == 0) {
+            const struct json_value *rs = json_get(row, "review_state");
+            return rs && rs->type == JSON_STR ? json_get_str(rs) : NULL;
+        }
+    }
+    return NULL;
+}
+
+/* ── 1. Immutable profile matrix ─────────────────────────────────── */
+
+static int test_mmt_profile_matrix(void)
+{
+    int failures = 0;
+    TEST("market moderation: immutable profile visibility matrix") {
+        ASSERT(!market_moderation_profile_visible(
+                   MARKET_MODERATION_PROFILE_DEFAULT,
+                   MARKET_REVIEW_UNREVIEWED));
+        ASSERT(!market_moderation_profile_visible(
+                   MARKET_MODERATION_PROFILE_DEFAULT,
+                   MARKET_REVIEW_SENSITIVE));
+        ASSERT(market_moderation_profile_visible(
+                   MARKET_MODERATION_PROFILE_DEFAULT,
+                   MARKET_REVIEW_REVIEWED_OK));
+        for (int s = 0; s < MARKET_REVIEW_STATE_COUNT; s++)
+            ASSERT(market_moderation_profile_visible(
+                       MARKET_MODERATION_PROFILE_OPEN, s));
+        ASSERT(!market_moderation_profile_visible(99, MARKET_REVIEW_REVIEWED_OK));
+        ASSERT(!market_moderation_profile_visible(
+                   MARKET_MODERATION_PROFILE_OPEN, 99));
+
+        ASSERT(market_moderation_profile_from_string(
+                   "general-audience.v1") == MARKET_MODERATION_PROFILE_DEFAULT);
+        ASSERT(market_moderation_profile_from_string("open-view") ==
+               MARKET_MODERATION_PROFILE_OPEN);
+        ASSERT(market_moderation_profile_from_string("anything-else") == -1);
+        ASSERT(market_review_state_from_string("unreviewed") ==
+               MARKET_REVIEW_UNREVIEWED);
+        ASSERT(market_review_state_from_string("reviewed_ok") ==
+               MARKET_REVIEW_REVIEWED_OK);
+        ASSERT(market_review_state_from_string("sensitive") ==
+               MARKET_REVIEW_SENSITIVE);
+        ASSERT(market_review_state_from_string("banned") == -1);
+
+        ASSERT(market_moderation_resolve_view_profile(
+                   NULL, MARKET_MODERATION_PROFILE_DEFAULT) ==
+               MARKET_MODERATION_PROFILE_DEFAULT);
+        ASSERT(market_moderation_resolve_view_profile(
+                   "open", MARKET_MODERATION_PROFILE_DEFAULT) ==
+               MARKET_MODERATION_PROFILE_OPEN);
+        ASSERT(market_moderation_resolve_view_profile(
+                   "open-view", MARKET_MODERATION_PROFILE_DEFAULT) ==
+               MARKET_MODERATION_PROFILE_OPEN);
+        ASSERT(market_moderation_resolve_view_profile(
+                   "general", MARKET_MODERATION_PROFILE_OPEN) ==
+               MARKET_MODERATION_PROFILE_DEFAULT);
+        ASSERT(market_moderation_resolve_view_profile(
+                   "bogus", MARKET_MODERATION_PROFILE_DEFAULT) == -1);
+        PASS();
+    }
+    _test_next:;
+    return failures;
+}
+
+/* ── 2. Policy-file persistence across reload ────────────────────── */
+
+static void mmt_cleanup_datadir(const char *datadir)
+{
+    char path[512];
+    (void)snprintf(path, sizeof(path), "%s/%s", datadir,
+                   MARKET_MODERATION_POLICY_FILE);
+    (void)unlink(path);
+    (void)snprintf(path, sizeof(path), "%s/market", datadir);
+    (void)rmdir(path);
+    (void)rmdir(datadir);
+}
+
+static int test_mmt_profile_persistence(void)
+{
+    int failures = 0;
+    TEST("market moderation: profile persists across policy-file reload") {
+        char datadir[] = "test-tmp/market_moderation_XXXXXX";
+        ASSERT(mkdtemp(datadir) != NULL);
+        char error[192] = {0};
+        bool ok = false;
+
+        /* Absent file: the immutable boot default, no directories made. */
+        ASSERT(market_moderation_profile_load(datadir, &ok, error,
+                                              sizeof(error)) ==
+               MARKET_MODERATION_PROFILE_DEFAULT);
+        ASSERT(ok);
+        char probe[512];
+        (void)snprintf(probe, sizeof(probe), "%s/market", datadir);
+        struct stat st;
+        ASSERT(stat(probe, &st) != 0);
+
+        /* Opt-in profile survives a reload. */
+        ASSERT(market_moderation_profile_save(
+                   datadir, MARKET_MODERATION_PROFILE_OPEN).ok);
+        ok = false;
+        ASSERT(market_moderation_profile_load(datadir, &ok, error,
+                                              sizeof(error)) ==
+               MARKET_MODERATION_PROFILE_OPEN);
+        ASSERT(ok);
+        char path[512];
+        (void)snprintf(path, sizeof(path), "%s/%s", datadir,
+                       MARKET_MODERATION_POLICY_FILE);
+        ASSERT(stat(path, &st) == 0 && (st.st_mode & 0777) == 0600);
+
+        /* Tamper: a hand-edit to an unknown profile is loud, never
+         * silently widened — load fails and reports the default. */
+        int fd = open(path, O_RDWR | O_CLOEXEC);
+        ASSERT(fd >= 0);
+        char byte = 0;
+        ASSERT(pread(fd, &byte, 1, (off_t)(st.st_size - 3)) == 1);
+        byte ^= 1;
+        ASSERT(pwrite(fd, &byte, 1, (off_t)(st.st_size - 3)) == 1);
+        ASSERT(close(fd) == 0);
+        ok = true;
+        ASSERT(market_moderation_profile_load(datadir, &ok, error,
+                                              sizeof(error)) ==
+               MARKET_MODERATION_PROFILE_DEFAULT);
+        ASSERT(!ok);
+
+        /* Recovery: a canonical save reloads cleanly. */
+        ASSERT(market_moderation_profile_save(
+                   datadir, MARKET_MODERATION_PROFILE_DEFAULT).ok);
+        ok = false;
+        ASSERT(market_moderation_profile_load(datadir, &ok, error,
+                                              sizeof(error)) ==
+               MARKET_MODERATION_PROFILE_DEFAULT);
+        ASSERT(ok);
+        mmt_cleanup_datadir(datadir);
+        PASS();
+    }
+    _test_next:;
+    return failures;
+}
+
+/* ── 3. View filter + review marks + wire untouched ──────────────── */
+
+static bool mmt_rpc(struct rpc_table *t, const char *method,
+                    const char *params_json, struct json_value *result)
+{
+    json_init(result);
+    struct json_value params;
+    bool parsed = params_json
+                      ? json_read(&params, params_json,
+                                  strlen(params_json))
+                      : false;
+    if (params_json && !parsed)
+        return false;
+    bool ok = rpc_table_execute(t, method,
+                                params_json ? &params : NULL, result);
+    if (params_json)
+        json_free(&params);
+    return ok;
+}
+
+static int test_mmt_view_filter(void)
+{
+    int failures = 0;
+    TEST("market moderation: default profile hides, open-view annotates, "
+         "wire untouched") {
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        ASSERT(node_db_open(&ndb, ":memory:") && ndb.open);
+        rpc_market_set_state(&ndb);
+        ASSERT(market_moderation_set_active_profile(
+                   MARKET_MODERATION_PROFILE_DEFAULT).ok);
+
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        struct file_offer offer_a, offer_b, offer_c;
+        ASSERT(mmt_signed_offer(&offer_a, 0xa1, 11, now));
+        ASSERT(mmt_signed_offer(&offer_b, 0xb2, 22, now));
+        ASSERT(mmt_signed_offer(&offer_c, 0xc3, 33, now));
+        char id_a[65], id_b[65], id_c[65];
+        zcl_hex_encode(offer_a.offer_id, 32, id_a);
+        zcl_hex_encode(offer_b.offer_id, 32, id_b);
+        zcl_hex_encode(offer_c.offer_id, 32, id_c);
+
+        /* The signed wire BEFORE any local mark — the reference for the
+         * wire-untouched invariant. */
+        uint8_t wire_b_before[FILE_MARKET_OFFER_WIRE_BYTES_MAX];
+        size_t wire_b_len = 0;
+        ASSERT(file_offer_auth_encode_into(&offer_b, wire_b_before,
+                                           sizeof(wire_b_before),
+                                           &wire_b_len) == FILE_OFFER_AUTH_OK);
+
+        /* Ingest is untouched: offers enter cache AND persistence while
+         * still hidden from the default listing view. */
+        ASSERT(file_market_add_offer(&offer_a));
+        ASSERT(file_market_add_offer(&offer_b));
+        ASSERT(file_market_add_offer(&offer_c));
+        ASSERT(db_file_offer_save(&ndb, &offer_a));
+        ASSERT(db_file_offer_save(&ndb, &offer_b));
+        ASSERT(db_file_offer_save(&ndb, &offer_c));
+
+        struct rpc_table table;
+        rpc_table_init(&table);
+        register_market_rpc_commands(&table);
+        set_rpc_warmup_finished();
+
+        struct json_value listing;
+        ASSERT(mmt_rpc(&table, "zmarket_list", NULL, &listing));
+        ASSERT_EQ(mmt_kv_int(&listing, "offer_count"), 0);
+        ASSERT_EQ(mmt_kv_int(&listing, "hidden_count"), 3);
+        ASSERT_EQ(mmt_offer_rows(&listing), 0);
+        const struct json_value *profile = json_get(&listing, "profile");
+        ASSERT(profile && profile->type == JSON_STR &&
+               strcmp(json_get_str(profile), "general-audience.v1") == 0);
+        json_free(&listing);
+
+        /* The node's own curation marks: A reviewed_ok, B sensitive. */
+        struct json_value mark;
+        char params[160];
+        snprintf(params, sizeof(params), "[\"%s\",\"reviewed_ok\"]", id_a);
+        ASSERT(mmt_rpc(&table, "zmarket_review_set", params, &mark));
+        const struct json_value *prev = json_get(&mark,
+                                                 "previous_review_state");
+        ASSERT(prev && prev->type == JSON_STR &&
+               strcmp(json_get_str(prev), "unreviewed") == 0);
+        const struct json_value *local = json_get(&mark, "local_only");
+        ASSERT(local && local->type == JSON_BOOL && json_get_bool(local));
+        const struct json_value *gossiped = json_get(&mark, "gossiped");
+        ASSERT(gossiped && gossiped->type == JSON_BOOL &&
+               !json_get_bool(gossiped));
+        json_free(&mark);
+        snprintf(params, sizeof(params), "[\"%s\",\"sensitive\"]", id_b);
+        ASSERT(mmt_rpc(&table, "zmarket_review_set", params, &mark));
+        json_free(&mark);
+
+        /* Unknown ids and bad states are honest errors. */
+        snprintf(params, sizeof(params), "[\"%s\",\"banned\"]", id_a);
+        ASSERT(!mmt_rpc(&table, "zmarket_review_set", params, &mark));
+        json_free(&mark);
+        char unknown_id[65];
+        memset(unknown_id, 'f', 64);
+        unknown_id[64] = '\0';
+        snprintf(params, sizeof(params), "[\"%s\",\"sensitive\"]",
+                 unknown_id);
+        ASSERT(!mmt_rpc(&table, "zmarket_review_set", params, &mark));
+        json_free(&mark);
+
+        /* Default view: only reviewed_ok shows; hidden_count is honest. */
+        ASSERT(mmt_rpc(&table, "zmarket_list", NULL, &listing));
+        ASSERT_EQ(mmt_kv_int(&listing, "offer_count"), 1);
+        ASSERT_EQ(mmt_kv_int(&listing, "hidden_count"), 2);
+        ASSERT_EQ(mmt_offer_rows(&listing), 1);
+        const char *rs = mmt_row_review(&listing, id_a);
+        ASSERT(rs && strcmp(rs, "reviewed_ok") == 0);
+        json_free(&listing);
+
+        /* Open view: everything ingested, annotated per row. */
+        ASSERT(mmt_rpc(&table, "zmarket_list", "[\"open\"]", &listing));
+        ASSERT_EQ(mmt_kv_int(&listing, "offer_count"), 3);
+        ASSERT_EQ(mmt_kv_int(&listing, "hidden_count"), 0);
+        ASSERT_EQ(mmt_offer_rows(&listing), 3);
+        rs = mmt_row_review(&listing, id_a);
+        ASSERT(rs && strcmp(rs, "reviewed_ok") == 0);
+        rs = mmt_row_review(&listing, id_b);
+        ASSERT(rs && strcmp(rs, "sensitive") == 0);
+        rs = mmt_row_review(&listing, id_c);
+        ASSERT(rs && strcmp(rs, "unreviewed") == 0);
+        json_free(&listing);
+        ASSERT(mmt_rpc(&table, "zmarket_list", "[{\"profile\":\"open-view\"}]",
+                       &listing));
+        ASSERT_EQ(mmt_kv_int(&listing, "offer_count"), 3);
+        json_free(&listing);
+        ASSERT(!mmt_rpc(&table, "zmarket_list", "[\"bogus\"]", &listing));
+        json_free(&listing);
+
+        /* Counts by review_state, service-side and RPC-side. */
+        int64_t counts[MARKET_REVIEW_STATE_COUNT] = {0, 0, 0};
+        ASSERT(market_moderation_review_counts(counts).ok);
+        ASSERT_EQ(counts[MARKET_REVIEW_UNREVIEWED], 1);
+        ASSERT_EQ(counts[MARKET_REVIEW_REVIEWED_OK], 1);
+        ASSERT_EQ(counts[MARKET_REVIEW_SENSITIVE], 1);
+        struct json_value status;
+        ASSERT(mmt_rpc(&table, "zmarket_moderation_status", NULL, &status));
+        const struct json_value *rc = json_get(&status, "review_counts");
+        ASSERT(rc && rc->type == JSON_OBJ);
+        ASSERT_EQ(mmt_kv_int(rc, "unreviewed"), 1);
+        ASSERT_EQ(mmt_kv_int(rc, "reviewed_ok"), 1);
+        ASSERT_EQ(mmt_kv_int(rc, "sensitive"), 1);
+        const struct json_value *ap = json_get(&status, "active_profile");
+        ASSERT(ap && ap->type == JSON_STR &&
+               strcmp(json_get_str(ap), "general-audience.v1") == 0);
+        json_free(&status);
+
+        /* Ingest unaffected: every hidden offer is still stored. */
+        struct file_offer refetched;
+        ASSERT(db_file_offer_find(&ndb, offer_b.root_hash, &refetched));
+        ASSERT(db_file_offer_find(&ndb, offer_c.root_hash, &refetched));
+
+        /* Signed wire untouched: re-encoding the sensitive-marked offer
+         * reproduces the exact pre-mark wire and still verifies. */
+        uint8_t wire_b_after[FILE_MARKET_OFFER_WIRE_BYTES_MAX];
+        size_t wire_b_after_len = 0;
+        ASSERT(file_offer_auth_encode_into(&offer_b, wire_b_after,
+                                           sizeof(wire_b_after),
+                                           &wire_b_after_len) ==
+               FILE_OFFER_AUTH_OK);
+        ASSERT(wire_b_after_len == wire_b_len &&
+               memcmp(wire_b_before, wire_b_after, wire_b_len) == 0);
+        ASSERT(file_offer_auth_verify_signature(&offer_b) ==
+               FILE_OFFER_AUTH_OK);
+
+        /* Profile set: exact plan/commit. A stale token is rejected. */
+        struct json_value plan;
+        ASSERT(mmt_rpc(&table, "zmarket_moderation_profile_set",
+                       "[\"open-view\",\"plan\"]", &plan));
+        const struct json_value *token = json_get(&plan, "plan_token");
+        ASSERT(token && token->type == JSON_STR &&
+               strlen(json_get_str(token)) == 64);
+        const struct json_value *committed = json_get(&plan, "committed");
+        ASSERT(committed && committed->type == JSON_BOOL &&
+               !json_get_bool(committed));
+        char commit_params[256];
+        snprintf(commit_params, sizeof(commit_params),
+                 "[\"open-view\",\"commit\",\"%s\"]", json_get_str(token));
+        json_free(&plan);
+        struct json_value commit;
+        ASSERT(!mmt_rpc(&table, "zmarket_moderation_profile_set",
+                        "[\"open-view\",\"commit\","
+                        "\"00000000000000000000000000000000"
+                        "00000000000000000000000000000000\"]",
+                        &commit));
+        json_free(&commit);
+        ASSERT(mmt_rpc(&table, "zmarket_moderation_profile_set",
+                       commit_params, &commit));
+        committed = json_get(&commit, "committed");
+        ASSERT(committed && committed->type == JSON_BOOL &&
+               json_get_bool(committed));
+        json_free(&commit);
+        ASSERT(market_moderation_active_profile() ==
+               MARKET_MODERATION_PROFILE_OPEN);
+
+        /* The active profile now shows everything by default. */
+        ASSERT(mmt_rpc(&table, "zmarket_list", NULL, &listing));
+        ASSERT_EQ(mmt_kv_int(&listing, "offer_count"), 3);
+        ASSERT_EQ(mmt_kv_int(&listing, "hidden_count"), 0);
+        json_free(&listing);
+
+        /* Back to the boot default; unreviewed/sensitive hide again. */
+        ASSERT(mmt_rpc(&table, "zmarket_moderation_profile_set",
+                       "[\"general-audience.v1\",\"plan\"]", &plan));
+        token = json_get(&plan, "plan_token");
+        snprintf(commit_params, sizeof(commit_params),
+                 "[\"general-audience.v1\",\"commit\",\"%s\"]",
+                 json_get_str(token));
+        json_free(&plan);
+        ASSERT(mmt_rpc(&table, "zmarket_moderation_profile_set",
+                       commit_params, &commit));
+        json_free(&commit);
+        ASSERT(mmt_rpc(&table, "zmarket_list", NULL, &listing));
+        ASSERT_EQ(mmt_kv_int(&listing, "offer_count"), 1);
+        ASSERT_EQ(mmt_kv_int(&listing, "hidden_count"), 2);
+        json_free(&listing);
+
+        /* dumpstate dumper reflects the same posture. */
+        struct json_value dump;
+        json_init(&dump);
+        ASSERT(market_moderation_dump_state_json(&dump, NULL));
+        const struct json_value *dap = json_get(&dump, "active_profile");
+        ASSERT(dap && dap->type == JSON_STR &&
+               strcmp(json_get_str(dap), "general-audience.v1") == 0);
+        const struct json_value *drc = json_get(&dump, "review_counts");
+        ASSERT(drc && drc->type == JSON_OBJ &&
+               mmt_kv_int(drc, "sensitive") == 1);
+        json_free(&dump);
+
+        node_db_close(&ndb);
+        PASS();
+    }
+    _test_next:;
+    return failures;
+}
+
+int test_file_market_moderation(void)
+{
+    int failures = 0;
+    printf("\n=== File Market Moderation Tests ===\n");
+    failures += test_mmt_profile_matrix();
+    failures += test_mmt_profile_persistence();
+    failures += test_mmt_view_filter();
+    printf("=== file_market_moderation: %d failures ===\n", failures);
+    return failures;
+}

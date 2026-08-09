@@ -146,8 +146,6 @@ static const struct api_json_resource_route k_api_json_resource_routes[] = {
       "static", "", false },
     { "GET", "/api/names", "names", "index", api_name_list,
       "zcl.names.index.v1", "", "znam_projection", "", false },
-    { "GET", "/api/market", "market", "index", api_market_list,
-      "zcl.market.index.v1", "", "market_projection", "", false },
     { "GET", "/api/market-contents", "market_contents", "index", api_market_content_list, "zcl.market_contents.index.v1", "", "market_content_registry", "", true },
     { "GET", "/api/swaps", "swaps", "index", api_swap_list,
       "zcl.swaps.index.v1", "", "swap_projection", "", true },
@@ -178,6 +176,7 @@ enum api_dynamic_dispatch_kind {
     API_DYN_SERVICE_OPERATIONS_INDEX,
     API_DYN_SERVICE_OPERATION_SHOW,
     API_DYN_BUILD_SHOW, API_DYN_BUILD_ACTIONS_INDEX, API_DYN_BUILD_RECEIPT_SHOW,
+    API_DYN_MARKET_INDEX,
 };
 
 struct api_dynamic_resource_route {
@@ -265,6 +264,8 @@ static const struct api_dynamic_resource_route k_api_dynamic_resource_routes[] =
       "", "build_ledger", "", true, API_DYN_BUILD_SHOW },
     { "GET", "/api/build_receipts/{receipt_id}", "build_receipts", "show",
       "zcl.build_receipts.show.v1", "", "build_ledger", "", true, API_DYN_BUILD_RECEIPT_SHOW },
+    { "GET", "/api/market", "market", "index", "zcl.market.index.v1",
+      "profile", "market_projection", "", false, API_DYN_MARKET_INDEX },
 };
 
 static size_t api_dynamic_resource_route_count_internal(void) {
@@ -578,6 +579,39 @@ static size_t api_dynamic_route_dispatch(
     case API_DYN_BUILD_SHOW: return api_serve_build(param, response, response_max);
     case API_DYN_BUILD_ACTIONS_INDEX: return api_serve_build_actions(param, response, response_max);
     case API_DYN_BUILD_RECEIPT_SHOW: return api_serve_build_receipt(param, response, response_max);
+    case API_DYN_MARKET_INDEX: {
+        /* Per-node listing moderation: ?profile=open is the explicit
+         * per-request view override; absent means the node's active
+         * profile. Parsing mirrors api_parse_collection_limit. */
+        char profile[40] = "";
+        const char *q = path ? strchr(path, '?') : NULL;
+        if (q) {
+            const char *pp = strstr(q, "profile=");
+            if (pp) {
+                pp += 8;
+                size_t n = 0;
+                while (pp[n] && pp[n] != '&' && n < sizeof(profile) - 1) {
+                    profile[n] = pp[n];
+                    n++;
+                }
+                if (pp[n] && pp[n] != '&')
+                    return api_json_error(response, response_max,
+                                          JSON_404_HEADERS,
+                                          "Invalid profile parameter");
+                profile[n] = '\0';
+            }
+        }
+        struct json_value jr = {0};
+        if (api_market_list_profile(profile[0] ? profile : NULL, &jr)) {
+            api_json_add_freshness(&jr, route->freshness, -1);
+            size_t n = api_json_ok(response, response_max, &jr);
+            json_free(&jr);
+            return n;
+        }
+        json_free(&jr);
+        return api_json_error(response, response_max, JSON_404_HEADERS,
+                              "Invalid profile parameter");
+    }
     }
 
     return api_json_error(response, response_max, JSON_500_HEADERS,

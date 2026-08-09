@@ -162,6 +162,15 @@
                  "per-IP admission table (active_ips/concurrent_serves/cap)",
                  "lib/net/src/file_service.c",
                  "lib/test/src/test_file_service_pow_gate.c"),
+    DIAG_SERVICE("market_moderation", market_moderation_dump_state_json,
+                 "per-node marketplace listing moderation (view filtering "
+                 "ONLY — no network bans, no deletion): active immutable "
+                 "profile (general-audience.v1 default / open-view opt-in), "
+                 "available profiles, datadir/policy-file binding, and live "
+                 "local review_state counts (unreviewed/reviewed_ok/"
+                 "sensitive). Hidden offers stay stored, served, tradable",
+                 "app/services/src/market_moderation_service.c",
+                 "lib/test/src/test_file_market_moderation.c"),
     DIAG_SERVICE("zswap_yardsale", zswap_dump_state_json,
                  "atomic ZSLP/ZCL swap yardsale (signed for-sale-by-owner "
                  "zswapquote gossip ads; a cache of remembered signs, never "

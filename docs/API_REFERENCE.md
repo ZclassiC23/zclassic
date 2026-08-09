@@ -74,17 +74,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 615 |
+| Registry entries (branches + leaves) | 622 |
 | Top-level roots | 11 |
-| Branches | 144 |
-| Leaves (dispatchable command paths) | 471 |
-| … `ready` (live handler in this build) | 423 |
+| Branches | 147 |
+| Leaves (dispatchable command paths) | 475 |
+| … `ready` (live handler in this build) | 427 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 153 |
+| Leaves with `effect=mutate` | 155 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 98 |
+| Leaves requiring **owner** authority | 100 |
 
 Per source file:
 
@@ -93,7 +93,7 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 118 | 29 | 89 |
 | `config/commands/apps.def` | 16 | 3 | 13 |
-| `config/commands/app_features.def` | 49 | 12 | 37 |
+| `config/commands/app_features.def` | 56 | 15 | 41 |
 | `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 46 | 11 | 35 |
@@ -486,7 +486,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `app market list` | ready | read / read / public · fast/low | none | `zcl.app_market_index.v1` | `zclassic23 app market list` | List files on the ZCL Market |
+| `app market list` | ready | read / read / public · fast/low | `profile` | `zcl.app_market_index.v1` | `zclassic23 app market list` | List files on the ZCL Market |
 | `app market status` | ready | read / read / operator · fast/low | none | `zcl.app_market_status.v1` | `zclassic23 app market status` | ZCL Market status |
 | `app market offer` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | `filepath`, `price_per_mb_zat`, `confirm` | `zcl.app_market_offer_result.v1` | `zclassic23 app market offer --input='{"filepath":"/data/f","price_per_mb_zat":1000}'` | Announce a file for sale |
 | `app market buy` | planned | mutate / wallet / **owner**, plan-commit · foreground/moderate | `wallet_scope`, **`root_hash`**, `confirm` | `zcl.app_market_buy_result.v1` | `zclassic23 app market buy --input='{"root_hash":"<64hex>"}'` | Buy and download a market file — *the explicit app.market.purchase plan, commit, status, and retrieve commands implement the complete reviewed workflow; the optional one-shot coordinator still needs an owner-review-preserving design. The legacy zmarket_buy placeholder refuses without starting a session* |
@@ -506,6 +506,25 @@ represented by its children's sections.
 | `app market purchase commit` | ready | mutate / wallet / **owner**, idempotency · foreground/high | **`wallet_scope`**, **`plan_id`**, **`confirm`** | `zcl.market_purchase.v1` | `zclassic23 app market purchase commit --input='{"wallet_scope":"dev","plan_id":"<64hex>","confirm":true}'` | Commit one exact reserved market payment |
 | `app market purchase status` | ready | read / read / **owner** · fast/low | **`plan_id`** | `zcl.market_purchase.v1` | `zclassic23 app market purchase status --input='{"plan_id":"<64hex>"}'` | Read one durable market purchase state |
 | `app market purchase retrieve` | ready | mutate / app-write / **owner** · foreground/high | **`plan_id`**, **`destination_path`** | `zcl.market_purchase.v1` | `printf '%s' '{"plan_id":"<64hex>","destination_path":"/private/output.bin"}' \| zclassic23 app market purchase retrieve --input=-` | Retrieve and atomically publish a paid file |
+
+#### `app.market.moderation` — Moderation
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app market moderation status` | ready | read / read / operator · fast/low | none | `zcl.market_moderation_status.v1` | `zclassic23 app market moderation status` | Show this node's market moderation posture |
+
+#### `app.market.moderation.profile` — Profiles
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app market moderation profile show` | ready | read / read / operator · fast/low | **`profile`** | `zcl.market_moderation_profile.v1` | `zclassic23 app market moderation profile show --input='{"profile":"open-view"}'` | Describe one immutable moderation profile |
+| `app market moderation profile set` | ready | mutate / app-write / **owner**, plan-commit · fast/low | **`profile`**, **`mode`**, `plan_token` | `zcl.market_moderation_profile_set.v1` | `zclassic23 app market moderation profile set --input='{"profile":"open-view","mode":"plan"}'` | Set this node's listing-visibility profile |
+
+#### `app.market.moderation.review` — Review marks
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app market moderation review set` | ready | mutate / app-write / **owner** · fast/low | **`offer_id`**, **`review_state`** | `zcl.market_review_set.v1` | `zclassic23 app market moderation review set --input='{"offer_id":"<64hex>","review_state":"reviewed_ok"}'` | Mark one offer's local review_state |
 
 #### `app.store` — Store
 

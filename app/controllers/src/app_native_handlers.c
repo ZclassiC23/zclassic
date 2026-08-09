@@ -124,37 +124,33 @@ char *zcl_native_msg_inbox_body(const struct json_value *args,
 char *zcl_native_zmarket_list_body(const struct json_value *args,
                                    struct zcl_native_body_err *err)
 {
-    (void)args;
-    char *raw = app_native_rpc_noargs("zmarket_list", err);
-    if (!raw)
-        return NULL;
-    /* The RPC answers a bare array, but the native body contract requires
-     * an object — wrap it as {"files":[...]} (the zslp_listtokens "tokens"
-     * convention). The RPC/REST shape is unchanged. A non-array body (the
-     * legacy string error convention) passes through untouched so the
-     * bridge surfaces the handler's own message. */
-    struct json_value doc;
-    if (!json_read(&doc, raw, strlen(raw)) || doc.type != JSON_ARR) {
-        json_free(&doc);
-        return raw;
+    /* Optional per-request view override {"profile":"open"} (the def row
+     * admits the profile key): forwarded as the RPC's first positional
+     * argument. The RPC answers the filtered listing object {offers,
+     * offer_count, hidden_count, profile} — already an object, so the
+     * native body contract needs no wrapper. A non-object body (the legacy
+     * string error convention) passes through untouched so the bridge
+     * surfaces the handler's own message. */
+    const char *profile = NULL;
+    if (args) {
+        const struct json_value *p = json_get(args, "profile");
+        if (p && p->type == JSON_STR)
+            profile = json_get_str(p);
     }
-    free(raw);
-    struct json_value wrapped;
-    json_init(&wrapped);
-    json_set_object(&wrapped);
-    (void)json_push_kv(&wrapped, "files", &doc);
-    json_free(&doc);
-    size_t need = json_write(&wrapped, NULL, 0);
-    char *out = zcl_malloc(need + 1, "native.market_list");
-    if (out)
-        (void)json_write(&wrapped, out, need + 1);
-    json_free(&wrapped);
+    if (!profile || !profile[0])
+        return app_native_rpc_noargs("zmarket_list", err);
+    struct rpc_arg_builder params;
+    rpc_arg_builder_init(&params);
+    rpc_arg_builder_push_str(&params, profile);
+    char *params_json = rpc_arg_builder_to_json(&params);
+    char *out = params_json ? node_rpc_call("zmarket_list", params_json)
+                            : NULL;
+    free(params_json);
     if (!out) {
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),
-                 "could not serialize the wrapped market index");
-        LOG_NULL("native.app", "market.list wrap alloc failed (%zu bytes)",
-                 need + 1);
+                 "RPC %s returned null", "zmarket_list");
+        LOG_NULL("native.app", "RPC zmarket_list returned null");
     }
     return out;
 }
