@@ -467,9 +467,12 @@ static int test_watcher_publication_containment(void)
                       "auto") == 0);
         ASSERT(zcl_devloop_publish_mode_name(
                    (enum zcl_devloop_publish_mode)99) == NULL);
-        ASSERT(strcmp(zcl_devloop_watcher_freshness(false),
+        ASSERT(strcmp(zcl_devloop_watcher_freshness(false, false),
                       "watcher_not_running") == 0);
-        ASSERT(strcmp(zcl_devloop_watcher_freshness(true), "current") == 0);
+        ASSERT(strcmp(zcl_devloop_watcher_freshness(true, false),
+                      "watcher_starting") == 0);
+        ASSERT(strcmp(zcl_devloop_watcher_freshness(true, true), "current")
+               == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
                           false, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
                       "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'")

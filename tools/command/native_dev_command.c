@@ -621,6 +621,7 @@ struct dev_watcher_info {
     pid_t pid;
     enum zcl_devloop_publish_mode publish_mode;
     char mode_name[16];
+    bool ready;
 };
 
 /* A busy advisory lock is the ownership proof; the PID is diagnostic and is
@@ -662,6 +663,7 @@ static bool dev_watcher_active_at(const char *lock,
         end++;
     enum zcl_devloop_publish_mode publish_mode = ZCL_DEVLOOP_PUBLISH_APPLY;
     const char *mode_name = "legacy-auto";
+    bool ready = true;
     if (*end != '\n' && *end != 0) {
         char *mode_end = end;
         while (*mode_end && *mode_end != '\n' && *mode_end != ' ' &&
@@ -681,13 +683,31 @@ static bool dev_watcher_active_at(const char *lock,
         }
         while (*mode_end == ' ' || *mode_end == '\t')
             mode_end++;
-        if (*mode_end != '\n' && *mode_end != 0)
-            return false;
+        if (*mode_end != '\n' && *mode_end != 0) {
+            char *state_end = mode_end;
+            while (*state_end && *state_end != '\n' &&
+                   *state_end != ' ' && *state_end != '\t')
+                state_end++;
+            size_t state_len = (size_t)(state_end - mode_end);
+            if (state_len == strlen("starting") &&
+                memcmp(mode_end, "starting", state_len) == 0)
+                ready = false;
+            else if (state_len == strlen("ready") &&
+                     memcmp(mode_end, "ready", state_len) == 0)
+                ready = true;
+            else
+                return false;
+            while (*state_end == ' ' || *state_end == '\t')
+                state_end++;
+            if (*state_end != '\n' && *state_end != 0)
+                return false;
+        }
     }
     pid_t pid = (pid_t)value;
     if (info_out) {
         info_out->pid = pid;
         info_out->publish_mode = publish_mode;
+        info_out->ready = ready;
         (void)snprintf(info_out->mode_name, sizeof(info_out->mode_name), "%s",
                        mode_name);
     }
@@ -763,11 +783,14 @@ static void dev_emit_loop_status(const char *repo_root,
     (void)json_push_kv_int(&reply->data, "watcher_id", (int64_t)info.pid);
     (void)json_push_kv_str(&reply->data, "mode",
                            active ? info.mode_name : "");
+    (void)json_push_kv_bool(&reply->data, "watcher_ready",
+                            active && info.ready);
     (void)json_push_kv_bool(
         &reply->data, "runtime_publication",
-        active && zcl_devloop_publish_mode_applies(info.publish_mode));
+        active && info.ready &&
+        zcl_devloop_publish_mode_applies(info.publish_mode));
     (void)json_push_kv_str(&reply->data, "freshness",
-                           zcl_devloop_watcher_freshness(active));
+                           zcl_devloop_watcher_freshness(active, info.ready));
     (void)json_push_kv_str(
         &reply->data, "agent_next_action",
         zcl_devloop_watcher_next_action(active, info.publish_mode));
@@ -882,9 +905,25 @@ void zcl_native_handle_dev_loop_ensure(
                 evidence);
             return;
         }
-        dev_emit_loop_status(root, reply);
-        (void)json_push_kv_bool(&reply->data, "created", false);
-        return;
+        for (int i = 0; i < 250 && !existing.ready; i++) {
+            usleep(20000);
+            if (!dev_watcher_active(root, &existing))
+                break;
+        }
+        if (existing.pid > 1 && existing.ready) {
+            dev_emit_loop_status(root, reply);
+            (void)json_push_kv_bool(&reply->data, "created", false);
+            return;
+        }
+        if (existing.pid > 1) {
+            dev_emit_loop_status(root, reply);
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+                "WATCH_STARTING", "start", true, false,
+                "watcher did not finish source reconciliation within 5 seconds",
+                "watcher_ready=false");
+            return;
+        }
     }
     char state_dir[PATH_MAX];
     if (!dev_state_dir(state_dir) || !dev_mkdirs(state_dir)) {
@@ -919,9 +958,11 @@ void zcl_native_handle_dev_loop_ensure(
         _exit(rc == 0 ? 0 : 1);
     }
     struct dev_watcher_info started = {0};
-    for (int i = 0; i < 100 && !dev_watcher_active(root, &started); i++)
+    for (int i = 0; i < 250 &&
+         (!dev_watcher_active(root, &started) || !started.ready); i++)
         usleep(20000);
-    if (started.pid <= 1 || started.publish_mode != requested_mode ||
+    if (started.pid <= 1 || !started.ready ||
+        started.publish_mode != requested_mode ||
         !dev_pid_is_watcher(started.pid)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "WATCH_START_FAILED",

@@ -1046,9 +1046,11 @@ enum zcl_devloop_publish_mode zcl_devloop_default_watch_publish_mode(void)
     return ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY;
 }
 
-const char *zcl_devloop_watcher_freshness(bool active)
+const char *zcl_devloop_watcher_freshness(bool active, bool ready)
 {
-    return active ? "current" : "watcher_not_running";
+    if (!active)
+        return "watcher_not_running";
+    return ready ? "current" : "watcher_starting";
 }
 
 const char *zcl_devloop_watcher_next_action(

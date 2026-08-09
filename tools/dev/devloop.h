@@ -546,7 +546,7 @@ enum zcl_devloop_publish_mode zcl_devloop_default_watch_publish_mode(void);
 /* Stable watcher-status vocabulary shared by the native status/ensure
  * surface and its tests. The returned next action is deliberately the same
  * idempotent command whether it starts a watcher or reports an existing one. */
-const char *zcl_devloop_watcher_freshness(bool active);
+const char *zcl_devloop_watcher_freshness(bool active, bool ready);
 const char *zcl_devloop_watcher_next_action(
     bool active, enum zcl_devloop_publish_mode publish_mode);
 /* Pure path builder shared by the native watcher's flock acquisition and its
