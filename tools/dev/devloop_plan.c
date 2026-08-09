@@ -7,6 +7,7 @@
 #include "controllers/agent_impact_rules.h"
 #include "crypto/sha3.h"
 #include "hotswap/hotswap_module.h"
+#include "hotswap/hotswap_service.h"
 #include "test_group_catalog.h"
 #include "util/safe_alloc.h"
 
@@ -30,6 +31,13 @@ static const struct hotswap_eligible_entry g_hotswap_eligible[] = {
 #undef HOTSWAP_ELIGIBLE
 };
 
+static const struct hotswap_eligible_entry g_hotswap_services[] = {
+#define HOTSWAP_SERVICE(id_, source_, headers_, contract_headers_, imports_, abi_, schema_, wire_, kat_, probe_) \
+    { .path = source_, .probe = probe_ },
+#include "../../config/hotswap_services.def"
+#undef HOTSWAP_SERVICE
+};
+
 static bool path_is_safe(const char *path)
 {
     if (!path || !path[0] || path[0] == '/' || strstr(path, ".."))
@@ -44,6 +52,13 @@ static bool path_is_safe(const char *path)
 static const struct hotswap_eligible_entry *hotswap_entry(const char *path)
 {
     const char *owner = hotswap_island_owner_for_path(path);
+    if (!owner) {
+        owner = zcl_hotswap_service_source_for_path(path);
+        for (size_t i = 0; owner && i < sizeof(g_hotswap_services) /
+                                      sizeof(g_hotswap_services[0]); i++)
+            if (strcmp(owner, g_hotswap_services[i].path) == 0)
+                return &g_hotswap_services[i];
+    }
     if (!owner)
         return NULL;
     for (size_t i = 0; i < sizeof(g_hotswap_eligible) /
@@ -367,7 +382,8 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
 
     bool all_docs = true;
     bool all_hotswap = true;
-    const struct hotswap_eligible_entry *single_hotswap = NULL;
+    const struct hotswap_eligible_entry *batch_hotswap = NULL;
+    bool one_hotswap_owner = true;
     const char *consensus_via = NULL;
     struct agent_impact_acc impact = {0};
     for (size_t i = 0; i < file_count; i++) {
@@ -376,8 +392,10 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
         all_docs = all_docs && path_is_docs(files[i]);
         const struct hotswap_eligible_entry *entry = hotswap_entry(files[i]);
         all_hotswap = all_hotswap && entry != NULL;
-        if (file_count == 1)
-            single_hotswap = entry;
+        if (i == 0)
+            batch_hotswap = entry;
+        else if (entry != batch_hotswap)
+            one_hotswap_owner = false;
         bool sealed = zcl_devloop_path_is_sealed_core(files[i]);
         out->sealed_core = out->sealed_core || sealed;
         /* A sealed-core file is always heaviest-proof: even core/math (not in
@@ -457,12 +475,16 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
         out->reason = "documentation_only";
         return true;
     }
-    if (file_count == 1 && all_hotswap && single_hotswap) {
+    if (all_hotswap && one_hotswap_owner && batch_hotswap) {
         out->action = ZCL_DEVLOOP_HOTSWAP;
         out->action_name = "hotswap";
-        out->reason = "single_stateless_provider";
+        out->reason = file_count == 1
+            ? "single_stateless_provider"
+            : (zcl_hotswap_service_source_for_path(files[0])
+                ? "single_service_island_batch"
+                : "single_stateless_island_batch");
         out->proof_group = "hotswap_simnet";
-        out->probe_tool = single_hotswap->probe;
+        out->probe_tool = batch_hotswap->probe;
         return true;
     }
 

@@ -983,6 +983,13 @@ int main(int argc, char **argv)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "hotswap_service_registry") == 0) {
+        printf("[test] ZCL_TEST_ONLY=hotswap_service_registry — running pure service registry only\n");
+        failures += test_hotswap_service_registry();
+        printf("\n=== hotswap_service_registry subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     { extern int test_base_foundation(void);
       failures += test_base_foundation(); }
     { extern int test_codec_cursor(void); failures += test_codec_cursor(); }
@@ -1251,6 +1258,7 @@ int main(int argc, char **argv)
     failures += test_hotswap_simnet();
     failures += test_hotswap_module();
     failures += test_hotswap_module_v2();
+    failures += test_hotswap_service_registry();
     failures += test_dev_platform();
     failures += test_command_registry_catalog();
     failures += test_command_registry_latency();

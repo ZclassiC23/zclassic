@@ -311,6 +311,7 @@ static const struct lint_gate_entry g_lint_gate_entries[] = {
     S_(t_hotswap_swappable_leaf_contract_gate),
     S_(t_hotswap_static_state_gate),
     S_(t_hotswap_static_state_covers_swappable),
+    S_(t_hotswap_service_island_gate),
     S_(t_privileged_transition_receipt_gate),
     S_(t_blocker_escape_registered_gate),
     /* Plants app/services/src/_trust_order_fixture_tmp.c into the REAL tree
@@ -389,6 +390,7 @@ static int lint_entry_weight(lint_gate_fn fn)
     if (fn == t_no_uncited_victory)                      return 607;
     if (fn == t_hotswap_swappable_shape_gate)            return 540;
     if (fn == t_hotswap_swappable_leaf_contract_gate)    return 519;
+    if (fn == t_hotswap_service_island_gate)             return 100;
     return 100;
 }
 

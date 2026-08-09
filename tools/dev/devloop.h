@@ -253,6 +253,7 @@ struct zcl_devloop_restart_build_receipt {
     char artifact_path[4096];
     char artifact_sha256[65];
     char artifact_cache_key[65];
+    char source_cas_sha3[65];
     char probe[64];
     int64_t plan_load_us;
     int64_t compile_us;
@@ -267,6 +268,7 @@ struct zcl_devloop_restart_build_receipt {
     uint32_t source_guard_captures;
     bool plan_cache_hit;
     bool artifact_cache_hit;
+    bool source_identity_overlay;
     bool candidate_probe_passed;
 };
 
@@ -279,6 +281,7 @@ struct zcl_devloop_restart_proof_receipt {
     char artifact_path[4096];
     char artifact_sha256[65];
     char artifact_cache_key[65];
+    char source_cas_sha3[65];
     char groups[4096];
     char groups_sha256[65];
     char deferred_groups[4096];
@@ -298,6 +301,7 @@ struct zcl_devloop_restart_proof_receipt {
     uint32_t test_processes;
     uint32_t source_guard_captures;
     bool artifact_cache_hit;
+    bool source_identity_overlay;
     bool bounded_proof_deferred;
     bool immediate_proof_complete;
     bool integration_proof_deferred;
@@ -344,15 +348,23 @@ int zcl_devloop_restart_event(const char *repo_root,
 int zcl_devloop_hotswap_event(const char *repo_root, const char *source_tu,
                               enum zcl_devloop_publish_mode publish_mode);
 
+/* Admit one debounced edit batch only when every path maps to the exact same
+ * island owner. The owner is compiled once and one generation is published;
+ * a cross-island or public-contract batch returns 0 for DEV_RESTART. */
+int zcl_devloop_hotswap_batch_event(
+    const char *repo_root, const char *const *paths, size_t path_count,
+    enum zcl_devloop_publish_mode publish_mode);
+
 /* Complete current source identity: byte inventory plus the ABA mutation
  * token. Shared by the watcher/cycle and focused native execution so neither
  * can admit an artifact built from a superseded checkout. */
 struct dev_source_record {
     char source_id[65];
     char mutation_id[65];
-    /* Native, content-addressed shadow identity for the public C23 source
-     * roots. SHA-256 above remains publication authority during differential
-     * rollout; this root is the resident Merkle/CAS identity. */
+    /* Native, content-addressed identity for the public C23 source roots.
+     * A CAS-only capture derives source_id/mutation_id as domain-separated
+     * SHA-256 records for isolated resident candidates. A full capture
+     * overwrites those two fields with publication-authoritative v2 values. */
     char cas_root_sha3[65];
     uint32_t cas_files_total;
     uint32_t cas_files_read;

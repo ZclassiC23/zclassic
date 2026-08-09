@@ -4,6 +4,7 @@
 #include "devloop.h"
 
 #include "codeindex/codeindex_merkle.h"
+#include "hotswap/hotswap_service.h"
 #include "platform/time_compat.h"
 
 #include <dirent.h>
@@ -43,6 +44,57 @@ struct watch_context {
 };
 
 static volatile sig_atomic_t g_watch_stop;
+
+/* A public service contract header is intentionally outside the live island:
+ * changing ABI/schema/wire/KAT bytes invalidates the resident frozen contract.
+ * Persist a typed DEV_RESTART selection without falling through to the legacy
+ * make/shell proof path.  No proof is claimed and no node is restarted here. */
+static int service_contract_restart_event(
+    const char *root, const char *const *files, size_t count)
+{
+    const char *contract_path = NULL;
+    const char *service_source = NULL;
+    for (size_t i = 0; i < count && !service_source; i++) {
+        service_source =
+            zcl_hotswap_service_contract_source_for_path(files[i]);
+        if (service_source) contract_path = files[i];
+    }
+    if (!service_source)
+        return 0;
+    char body[4096];
+    int n = snprintf(
+        body, sizeof(body),
+        "{\"schema\":\"zcl.dev_cycle.v1\","
+        "\"producer\":\"resident-build-authority\","
+        "\"status\":\"blocked\",\"action\":\"reload\","
+        "\"reload_lane\":\"DEV_RESTART\","
+        "\"reason\":\"service_contract_changed\","
+        "\"phase\":\"dev_restart_selected\","
+        "\"runtime_published\":false,\"dev_restart\":true,"
+        "\"proof_complete\":false,\"immediate_proof_complete\":false,"
+        "\"integration_proof_deferred\":true,"
+        "\"bounded_proof_deferred\":true,"
+        "\"make_processes\":0,\"shell_processes\":0,"
+        "\"lto_processes\":0,\"compiler_processes\":0,"
+        "\"linker_processes\":0,\"test_processes\":0,"
+        "\"contract_path\":\"%s\",\"service_source\":\"%s\","
+        "\"failure_capsule\":\"frozen ABI/schema/wire/KAT contract changed; live service publication refused\","
+        "\"agent_next_action\":\"run make dev-bin to refresh the bounded DEV_RESTART plan, then rerun mapped proofs\"}",
+        contract_path, service_source);
+    if (n <= 0 || n >= (int)sizeof(body))
+        return -1;
+    char why[160] = {0};
+    if (!zcl_devloop_cycle_state_write(root, body, (size_t)n, why,
+                                       sizeof(why))) {
+        fprintf(stderr, "[devloop] contract restart receipt failed: %s\n",
+                why[0] ? why : "unknown");
+        return -1;
+    }
+    (void)fwrite(body, 1, (size_t)n, stdout);
+    (void)fputc('\n', stdout);
+    (void)fflush(stdout);
+    return 1;
+}
 
 static void mutation_sequence_advance(struct watch_context *ctx)
 {
@@ -393,8 +445,11 @@ int zcl_devloop_watch_mode(const char *repo_root,
         printf("}\n");
         fflush(stdout);
         zcl_devloop_process_cancel_poll_set(watch_cancel_poll, &ctx);
-        int fast = epoch_count == 1
-            ? zcl_devloop_hotswap_event(ctx.root, files[0], publish_mode) : 0;
+        int fast = zcl_devloop_hotswap_batch_event(
+            ctx.root, files, epoch_count, publish_mode);
+        if (fast == 0)
+            fast = service_contract_restart_event(ctx.root, files,
+                                                  epoch_count);
         if (fast == 0)
             fast = zcl_devloop_restart_event(ctx.root, files,
                                              epoch_count, publish_mode);

@@ -21,6 +21,9 @@ const char CLIENT_NAME[] = "ZClassic23";
 #ifndef ZCL_BUILD_SOURCE_MUTATION
 #define ZCL_BUILD_SOURCE_MUTATION "unknown"
 #endif
+#ifndef ZCL_BUILD_SOURCE_CAS_SHA3
+#define ZCL_BUILD_SOURCE_CAS_SHA3 "unknown"
+#endif
 
 const char *zcl_build_commit(void)
 {
@@ -40,6 +43,11 @@ const char *zcl_build_source_id_sha256(void)
 const char *zcl_build_source_mutation_sha256(void)
 {
     return ZCL_BUILD_SOURCE_MUTATION;
+}
+
+const char *zcl_build_source_cas_sha3(void)
+{
+    return ZCL_BUILD_SOURCE_CAS_SHA3;
 }
 
 void FormatVersion(int nVersion, char *out, size_t out_size)

@@ -1,0 +1,31 @@
+/* Pure service islands. Consumer defines:
+ * HOTSWAP_SERVICE(id, source_tu, private_headers, contract_headers, stable_imports,
+ *                 abi_fingerprint, schema_fingerprint, wire_fingerprint,
+ *                 kat_fingerprint, probe_leaf)
+ *
+ * Static callers retain parsing, authentication, persistence and effects.
+ * Listed sources may calculate only over caller-owned values/buffers. */
+
+HOTSWAP_SERVICE(
+    "zcode.c23.corpus.v1",
+    "app/services/src/zcode_c23_corpus_service.c",
+    "-",
+    "app/services/include/services/zcode_c23_corpus_service.h",
+    "vcs_zcode_c23_corpus_rules_v1_validate vcs_zcode_c23_corpus_shard_v1_validate vcs_zcode_c23_corpus_checkpoint_v1_validate vcs_zcode_productivity_receipt_v1_validate vcs_zcode_c23_corpus_rules_v1_default vcs_zcode_c23_corpus_rules_v1_root zcl_hex_encode zcl_u64_add",
+    "zcode.c23.corpus.abi.v1:7f0c2a1e",
+    "zcl.zcode_commons_corpus_status.v1",
+    "c23-rules+shard+checkpoint+productivity.v1",
+    "ae0c059c8c925464a7d9376b17687b207027833f5337dc49944bcd1b55d3be23",
+    "zcode.commons.corpus.status")
+
+HOTSWAP_SERVICE(
+    "zcode.c23.economics.v1",
+    "app/services/src/zcode_c23_economics_service.c",
+    "app/services/src/zcode_c23_economics_internal.h",
+    "app/services/include/services/zcode_c23_economics_service.h",
+    "vcs_zcode_creation_award_atoms_v2 vcs_zcode_policy_candidate_v2_init vcs_zcode_policy_candidate_v2_validate vcs_zcode_policy_candidate_v2_root vcs_zcode_epoch_select_v2",
+    "zcode.c23.economics.abi.v1:41d0b92c",
+    "zcl.zcode_commons_economics_status.v2",
+    "zc23-policy+claim+epoch-selection.v2",
+    "8fc1df9547d1842004e86c1a06714829965693c031f8e3a16dd2fe38ee6f6ad9",
+    "zcode.commons.economics.status")

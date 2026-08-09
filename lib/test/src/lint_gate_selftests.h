@@ -76,6 +76,10 @@
 #define RAW_MALLOC_SCRIPT_REL "tools/scripts/check_raw_malloc.sh"
 #define HOTSWAP_SCOPE_SCRIPT_REL  "tools/lint/check_hotswap_eligible_scope.sh"
 #define HOTSWAP_STATIC_SCRIPT_REL "tools/lint/check_hotswap_static_state.sh"
+#define HOTSWAP_SERVICE_SCRIPT_REL \
+    "tools/lint/check_hotswap_service_islands.sh"
+#define HOTSWAP_SERVICE_BAD_MANIFEST_REL \
+    "lib/test/fixtures/hotswap_services_bad.def"
 #define HOTSWAP_MANIFEST_REL "config/hotswap_eligible.def"
 #define HOTSWAP_BAD_SCOPE_MANIFEST_REL \
     "lib/test/fixtures/hotswap_manifest_bad_scope.def"
@@ -440,6 +444,7 @@ int t_hotswap_swappable_shape_gate(void);
 int t_hotswap_swappable_leaf_contract_gate(void);
 int t_hotswap_static_state_gate(void);
 int t_hotswap_static_state_covers_swappable(void);
+int t_hotswap_service_island_gate(void);
 int t_privileged_transition_receipt_gate(void);
 int t_dumper_never_blocks_gate(void);
 int t_no_trust_state_ordering_gate(void);

@@ -5,7 +5,10 @@
 #include "base/hex.h"
 #include "command/native_command.h"
 #include "crypto/ed25519.h"
+#include "hotswap/hotswap_service.h"
 #include "json/json.h"
+#include "services/zcode_c23_corpus_service.h"
+#include "services/zcode_c23_economics_service.h"
 #include "vcs/zcode_c23_corpus.h"
 #include "vcs/zcode_commons_v2.h"
 
@@ -25,6 +28,27 @@ static const char source_assignment_root_kat[] =
     "3c6d904fd178e8e888fc3479ff087f4e2a579412185232aa3feecb9d99d95be7";
 static const char c23_corpus_rules_root_kat[] =
     "ae0c059c8c925464a7d9376b17687b207027833f5337dc49944bcd1b55d3be23";
+
+static bool cv2_candidate_render_status(
+    const struct vcs_zcode_c23_corpus_checkpoint_v1 *checkpoint,
+    struct zcode_c23_corpus_status_result_v1 *out)
+{
+    if (!zcode_c23_corpus_service_builtin()->render_status(checkpoint, out))
+        return false;
+    (void)snprintf(out->blocker, sizeof(out->blocker),
+                   "candidate corpus service generation is active");
+    return true;
+}
+
+static bool cv2_candidate_render_economics_status(
+    struct zcode_c23_economics_status_result_v1 *out)
+{
+    if (!zcode_c23_economics_service_builtin()->render_status(out))
+        return false;
+    (void)snprintf(out->category_order, sizeof(out->category_order),
+                   "candidate economics service generation is active");
+    return true;
+}
 
 static void cv2_fill(uint8_t root[32], uint8_t value)
 {
@@ -93,6 +117,7 @@ static int test_v2_truthful_activation_status(void)
 {
     int failures = 0;
     TEST("Family policy selection is not reported as effective enforcement") {
+        zcl_hotswap_service_reset();
         struct json_value input;
         json_init(&input);
         json_set_object(&input);
@@ -126,8 +151,89 @@ static int test_v2_truthful_activation_status(void)
                   0);
         ASSERT(!json_get_bool(json_get(&reply.data,
                                        "global_completeness_claimed")));
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "service_id")),
+                      ZCODE_C23_CORPUS_SERVICE_ID) == 0);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "service_generation")),
+                  0);
         zcl_command_reply_free(&reply);
         json_free(&input);
+
+        struct zcode_c23_corpus_service_v1 candidate_vtable =
+            *zcode_c23_corpus_service_builtin();
+        candidate_vtable.render_status = cv2_candidate_render_status;
+        struct zcl_hotswap_service_candidate candidate = {
+            .service_id = ZCODE_C23_CORPUS_SERVICE_ID,
+            .source_tu = "app/services/src/zcode_c23_corpus_service.c",
+            .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+            .vtable_size = sizeof(candidate_vtable),
+            .abi_fingerprint = ZCODE_C23_CORPUS_ABI_FINGERPRINT,
+            .schema_fingerprint = ZCODE_C23_CORPUS_SCHEMA_FINGERPRINT,
+            .wire_fingerprint = ZCODE_C23_CORPUS_WIRE_FINGERPRINT,
+            .kat_fingerprint = ZCODE_C23_CORPUS_KAT_FINGERPRINT,
+            .vtable = &candidate_vtable,
+        };
+        struct zcl_hotswap_service_report service_report = {0};
+        ASSERT(zcl_hotswap_service_publish(
+            zcl_native_zcode_corpus_service_contract(), &candidate, true,
+            &service_report));
+        ASSERT(service_report.probed);
+
+        json_init(&input);
+        json_set_object(&input);
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.corpus_status.v1");
+        zcl_native_handle_zcode_commons_corpus_status(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "service_generation")),
+                  1);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "blocker")),
+                      "candidate corpus service generation is active") == 0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        zcl_hotswap_service_reset();
+
+        json_init(&input);
+        json_set_object(&input);
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.economics_status.v2");
+        zcl_native_handle_zcode_commons_economics_status(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "service_id")),
+                      ZCODE_C23_ECONOMICS_SERVICE_ID);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "service_generation")),
+                  0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        struct zcode_c23_economics_service_v1 economics_candidate =
+            *zcode_c23_economics_service_builtin();
+        economics_candidate.render_status =
+            cv2_candidate_render_economics_status;
+        struct zcl_hotswap_service_candidate economics_descriptor = {
+            .service_id = ZCODE_C23_ECONOMICS_SERVICE_ID,
+            .source_tu = "app/services/src/zcode_c23_economics_service.c",
+            .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+            .vtable_size = sizeof(economics_candidate),
+            .abi_fingerprint = ZCODE_C23_ECONOMICS_ABI_FINGERPRINT,
+            .schema_fingerprint = ZCODE_C23_ECONOMICS_SCHEMA_FINGERPRINT,
+            .wire_fingerprint = ZCODE_C23_ECONOMICS_WIRE_FINGERPRINT,
+            .kat_fingerprint = ZCODE_C23_ECONOMICS_KAT_FINGERPRINT,
+            .vtable = &economics_candidate,
+        };
+        ASSERT(zcl_hotswap_service_publish(
+            zcl_native_zcode_economics_service_contract(),
+            &economics_descriptor, true, &service_report));
+        json_init(&input);
+        json_set_object(&input);
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.economics_status.v2");
+        zcl_native_handle_zcode_commons_economics_status(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "category_order")),
+                      "candidate economics service generation is active");
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        zcl_hotswap_service_reset();
 
         json_init(&input);
         json_set_object(&input);

@@ -203,6 +203,7 @@ int test_hotswap_loader(void);
 int test_hotswap_simnet(void);
 int test_hotswap_module(void);
 int test_hotswap_module_v2(void);
+int test_hotswap_service_registry(void);
 int test_dev_platform(void);
 int test_command_registry_catalog(void);
 int test_command_registry_latency(void);

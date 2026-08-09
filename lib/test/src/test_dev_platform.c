@@ -248,6 +248,35 @@ static int test_change_classification(void)
         ASSERT(strcmp(plan.proof_group, "hotswap_simnet") == 0);
         ASSERT(strcmp(plan.probe_tool, "metaverse.property.list") == 0);
 
+        const char *service_source[] = {
+            "app/services/src/zcode_c23_corpus_service.c",
+        };
+        ASSERT(zcl_devloop_plan_files(service_source, 1, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
+        ASSERT(strcmp(plan.probe_tool, "zcode.commons.corpus.status") == 0);
+        const char *service_header[] = {
+            "app/services/include/services/zcode_c23_corpus_service.h",
+        };
+        ASSERT(zcl_devloop_plan_files(service_header, 1, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_RELOAD);
+
+        const char *service_batch[] = {
+            "app/services/src/zcode_c23_economics_service.c",
+            "app/services/src/zcode_c23_economics_internal.h",
+        };
+        ASSERT(zcl_devloop_plan_files(service_batch, 2, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
+        ASSERT(strcmp(plan.probe_tool,
+                      "zcode.commons.economics.status") == 0);
+        ASSERT(strcmp(plan.reason, "single_service_island_batch") == 0);
+
+        const char *cross_service_batch[] = {
+            "app/services/src/zcode_c23_economics_service.c",
+            "app/services/src/zcode_c23_corpus_service.c",
+        };
+        ASSERT(zcl_devloop_plan_files(cross_service_batch, 2, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_RELOAD);
+
         const char *multi_hot[] = {
             hot[0].path, hot[1].path,
         };
@@ -1996,10 +2025,21 @@ static bool dp_hotswap_cache_fixture_init(const char *root,
     if (!dp_mk_write(root, "Makefile", "# fixture\n") ||
         !dp_mk_write(root, "config/hotswap_swappable.def", "/* fixture */\n") ||
         !dp_mk_write(root, "config/hotswap_islands.def", "/* fixture */\n") ||
+        !dp_mk_write(root, "config/hotswap_services.def", "/* fixture */\n") ||
         !dp_mk_write(root, "app/controllers/src/status_native_handlers.c",
                      owner_v1) ||
         !dp_mk_write(root, "app/controllers/src/status_native_helpers.c",
-                     "int zcl_hotswap_fixture_helper(void) { return 2; }\n"))
+                     "int zcl_hotswap_fixture_helper(void) { return 2; }\n") ||
+        !dp_mk_write(root,
+                     "app/services/src/zcode_c23_corpus_service.c",
+                     "int zcl_hotswap_fixture_service(void) { return 3; }\n") ||
+        !dp_mk_write(root,
+                     "app/services/src/zcode_c23_economics_service.c",
+                     "#include \"zcode_c23_economics_internal.h\"\n"
+                     "int zcl_hotswap_fixture_economics(void) { return 4; }\n") ||
+        !dp_mk_write(root,
+                     "app/services/src/zcode_c23_economics_internal.h",
+                     "#define ZCL_ECONOMICS_FIXTURE 4\n"))
         return false;
     char canonical_root[PATH_MAX];
     if (!realpath(root, canonical_root))
@@ -2025,19 +2065,26 @@ static bool run_hotswap_artifact_cache_fixture(void)
     static const char fake_compiler[] =
         "#!/usr/bin/env bash\n"
         "set -eu\n"
-        "out= dep= compile=0\n"
+        "out= dep= source= compile=0\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  case \"$1\" in\n"
         "    -o) out=$2; shift 2 ;;\n"
         "    -MF) dep=$2; shift 2 ;;\n"
         "    -c) compile=1; shift ;;\n"
+        "    *.c) source=$1; shift ;;\n"
         "    *) shift ;;\n"
         "  esac\n"
         "done\n"
         "[ -n \"$out\" ]\n"
         "if [ \"$compile\" -eq 1 ]; then\n"
         "  printf 'fixture-object-v1\\n' >\"$out\"\n"
-        "  printf '%s: app/controllers/src/status_native_helpers.c app/controllers/src/status_native_handlers.c\\n' \"$out\" >\"$dep\"\n"
+        "  if [ \"$source\" = app/services/src/zcode_c23_corpus_service.c ]; then\n"
+        "    printf '%s: %s\\n' \"$out\" \"$source\" >\"$dep\"\n"
+        "  elif [ \"$source\" = app/services/src/zcode_c23_economics_service.c ]; then\n"
+        "    printf '%s: %s app/services/src/zcode_c23_economics_internal.h\\n' \"$out\" \"$source\" >\"$dep\"\n"
+        "  else\n"
+        "    printf '%s: app/controllers/src/status_native_helpers.c app/controllers/src/status_native_handlers.c\\n' \"$out\" >\"$dep\"\n"
+        "  fi\n"
         "else\n"
         "  printf 'fixture-module-v1\\n' >\"$out\"\n"
         "fi\n";
@@ -2075,6 +2122,13 @@ static bool run_hotswap_artifact_cache_fixture(void)
     struct zcl_devloop_hotswap_build_receipt first = {0}, built = {0};
     struct zcl_devloop_hotswap_build_receipt hit = {0}, edited = {0};
     struct zcl_devloop_hotswap_build_receipt reverted = {0}, cross = {0};
+    struct zcl_devloop_hotswap_build_receipt service_first = {0};
+    struct zcl_devloop_hotswap_build_receipt service_built = {0};
+    struct zcl_devloop_hotswap_build_receipt batch_first = {0};
+    struct zcl_devloop_hotswap_build_receipt batch_built = {0};
+    struct zcl_devloop_hotswap_build_receipt batch_edited = {0};
+    struct zcl_devloop_hotswap_build_receipt batch_cross_first = {0};
+    struct zcl_devloop_hotswap_build_receipt batch_cross = {0};
     struct zcl_devloop_process_result process = {0};
     char why[256] = {0};
     const char *owner = "app/controllers/src/status_native_handlers.c";
@@ -2128,6 +2182,64 @@ static bool run_hotswap_artifact_cache_fixture(void)
         strcmp(cross.artifact_cache_key, built.artifact_cache_key) != 0 ||
         strcmp(cross.artifact_sha256, built.artifact_sha256) != 0)
         goto out;
+
+    /* A pure service island compiles its owner directly; it has no command
+     * unity-member list.  Requiring one here made every service save reject
+     * before starting the compiler. */
+    const char *service =
+        "app/services/src/zcode_c23_corpus_service.c";
+    if (zcl_devloop_hotswap_build(root_a, service, &service_first, &process,
+                                  why, sizeof(why)) ||
+        strcmp(why,
+               "dependency baseline initialized; save once more to activate") != 0 ||
+        service_first.compiler_processes != 1 ||
+        service_first.linker_processes != 0 ||
+        !zcl_devloop_hotswap_build(root_a, service, &service_built, &process,
+                                   why, sizeof(why)) ||
+        service_built.compiler_processes != 1 ||
+        service_built.linker_processes != 1 ||
+        strcmp(service_built.source_tu, service) != 0)
+        goto out;
+
+    /* A source + private-header epoch maps back to one owner, compiles that
+     * exact dependency closure once, and yields one candidate artifact. */
+    const char *economics_source =
+        "app/services/src/zcode_c23_economics_service.c";
+    const char *economics_header =
+        "app/services/src/zcode_c23_economics_internal.h";
+    if (zcl_devloop_hotswap_build(root_a, economics_header, &batch_first,
+                                  &process, why, sizeof(why)) ||
+        batch_first.compiler_processes != 1 ||
+        !zcl_devloop_hotswap_build(root_a, economics_header, &batch_built,
+                                   &process, why, sizeof(why)) ||
+        batch_built.compiler_processes != 1 ||
+        batch_built.linker_processes != 1 ||
+        strcmp(batch_built.source_tu, economics_source) != 0 ||
+        !dp_mk_write(root_a, economics_source,
+                     "#include \"zcode_c23_economics_internal.h\"\n"
+                     "int zcl_hotswap_fixture_economics(void) { return 5; }\n") ||
+        !dp_mk_write(root_a, economics_header,
+                     "#define ZCL_ECONOMICS_FIXTURE 5\n") ||
+        !zcl_devloop_hotswap_build(root_a, economics_header, &batch_edited,
+                                   &process, why, sizeof(why)) ||
+        batch_edited.compiler_processes != 1 ||
+        batch_edited.linker_processes != 1 ||
+        strcmp(batch_edited.artifact_cache_key,
+               batch_built.artifact_cache_key) == 0)
+        goto out;
+    if (zcl_devloop_hotswap_build(root_b, economics_header,
+                                  &batch_cross_first, &process, why,
+                                  sizeof(why)) ||
+        !zcl_devloop_hotswap_build(root_b, economics_header, &batch_cross,
+                                   &process, why, sizeof(why)) ||
+        !batch_cross.artifact_cache_hit ||
+        batch_cross.compiler_processes != 0 ||
+        batch_cross.linker_processes != 0 ||
+        strcmp(batch_cross.artifact_cache_key,
+               batch_built.artifact_cache_key) != 0 ||
+        strcmp(batch_cross.artifact_sha256,
+               batch_built.artifact_sha256) != 0)
+        goto out;
     ok = true;
 
 out:
@@ -2164,7 +2276,7 @@ static bool run_resident_restart_fixture(void)
     static const char fake_compiler[] =
         "#!/usr/bin/env bash\n"
         "set -eu\n"
-        "out= dep= compile=0 rsp= source= base= allow=0 overlay_first=0\n"
+        "out= dep= compile=0 rsp= source= base= allow=0 overlay_first=0 identity=0\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  case \"$1\" in\n"
         "    -o) out=$2; shift 2 ;;\n"
@@ -2173,6 +2285,9 @@ static bool run_resident_restart_fixture(void)
         "    @*) rsp=${1#@}; overlay_first=1; shift ;;\n"
         "    *restart-base.o) [ \"$overlay_first\" -eq 1 ]; base=$1; shift ;;\n"
         "    -Wl,--allow-multiple-definition) allow=1; shift ;;\n"
+        "    -DZCL_BUILD_SOURCE_ID=*) identity=$((identity+1)); shift ;;\n"
+        "    -DZCL_BUILD_SOURCE_MUTATION=*) identity=$((identity+1)); shift ;;\n"
+        "    -DZCL_BUILD_SOURCE_CAS_SHA3=*) identity=$((identity+1)); shift ;;\n"
         "    *.c) source=$1; shift ;;\n"
         "    *) shift ;;\n"
         "  esac\n"
@@ -2180,6 +2295,7 @@ static bool run_resident_restart_fixture(void)
         "[ -n \"$out\" ]\n"
         "if [ \"$compile\" -eq 1 ]; then\n"
         "  [ -n \"$source\" ]\n"
+        "  case \"$source\" in lib/util/src/clientversion.c) [ \"$identity\" -eq 3 ];; esac\n"
         "  cp \"$source\" \"$out\"\n"
         "  printf '%s: tools/dev/restart_fixture.c\\n' \"$out\" >\"$dep\"\n"
         "else\n"
@@ -2189,12 +2305,16 @@ static bool run_resident_restart_fixture(void)
         "  if grep -q 'restart-test-objects' \"$rsp\"; then\n"
         "    case \"$base\" in *test-obj/fixture/restart-base.o) :;; *) exit 9;; esac\n"
         "    grep -q 'build/dev-loop/restart-test-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "    grep -q 'build/dev-loop/restart-test-objects/lib/util/src/clientversion.o' \"$rsp\"\n"
         "    ! grep -q 'build/test-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "    ! grep -q 'build/test-obj/fixture/lib/util/src/clientversion.o' \"$rsp\"\n"
         "    printf '#!/usr/bin/env bash\\nset -eu\\ngroups= cache=0 snapshot=0 changed=\\nfor arg in \"$@\"; do case \"$arg\" in --exact=*) groups=${arg#--exact=};; --cache) cache=1;; --cache-snapshot) snapshot=1;; --changed-source=*) changed=${arg#--changed-source=};; esac; done\\n[ -n \"$groups\" ]\\n[ \"$cache\" -eq 1 ]\\n[ \"$snapshot\" -eq 1 ]\\n[ \"$changed\" = tools/dev/restart_fixture.c ]\\ncount=1\\nrest=$groups\\nwhile [ \"${rest#*,}\" != \"$rest\" ]; do count=$((count+1)); rest=${rest#*,}; done\\nran=$((count-1))\\nprintf \"SUITE VERDICT mode=cached groups_total=921 groups_ran=%%s groups_cached=1 groups_gated=0 groups_failed=0 self_skips=0\\\\n\" \"$ran\"\\nexit 0\\n' >\"$out\"\n"
         "  else\n"
         "    case \"$base\" in *dev-obj/fixture/restart-base.o) :;; *) exit 9;; esac\n"
         "    grep -q 'build/dev-loop/restart-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "    grep -q 'build/dev-loop/restart-objects/lib/util/src/clientversion.o' \"$rsp\"\n"
         "    ! grep -q 'build/dev-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
+        "    ! grep -q 'build/dev-obj/fixture/lib/util/src/clientversion.o' \"$rsp\"\n"
         "    ! grep -q 'build/dev-obj/fixture/lib/base/src/other.o' \"$rsp\"\n"
         "    printf '#!/usr/bin/env bash\\nexit 0\\n' >\"$out\"\n"
         "  fi\n"
@@ -2228,25 +2348,39 @@ static bool run_resident_restart_fixture(void)
                      "int restart_fixture(void) { return 7; }\n") ||
         !dp_mk_write(root, "tools/dev/restart_second.c",
                      "int restart_second(void) { return 8; }\n") ||
+        !dp_mk_write(root, "tools/command/native_code_command.c",
+                     "int native_code_fixture(void) { return 23; }\n") ||
+        !dp_mk_write(root, "lib/util/src/clientversion.c",
+                     "const char *resident_identity_fixture(void) { return \"identity\"; }\n") ||
         !dp_mk_write(root,
                      "build/dev-obj/fixture/tools/dev/restart_fixture.o",
                      "old-object\n") ||
         !dp_mk_write(root,
                      "build/dev-obj/fixture/tools/dev/restart_second.o",
                      "old-second-object\n") ||
+        !dp_mk_write(root,
+                     "build/dev-obj/fixture/tools/command/native_code_command.o",
+                     "old-code-object\n") ||
         !dp_mk_write(root, "build/dev-obj/fixture/lib/base/src/other.o",
                      "other-object\n") ||
+        !dp_mk_write(root, "build/dev-obj/fixture/lib/util/src/clientversion.o",
+                     "stale-dev-identity\n") ||
         !dp_mk_write(root, "build/dev-obj/fixture/link-inputs.rsp",
-                     "build/dev-obj/fixture/tools/dev/restart_fixture.o build/dev-obj/fixture/tools/dev/restart_second.o build/dev-obj/fixture/lib/base/src/other.o\n") ||
+                     "build/dev-obj/fixture/tools/dev/restart_fixture.o build/dev-obj/fixture/tools/dev/restart_second.o build/dev-obj/fixture/tools/command/native_code_command.o build/dev-obj/fixture/lib/util/src/clientversion.o build/dev-obj/fixture/lib/base/src/other.o\n") ||
         !dp_mk_write(root, "build/dev-obj/fixture/restart-base.o",
                      "frozen-dev-base\n") ||
         !dp_mk_write(root,
                      "build/test-obj/fixture/tools/dev/restart_fixture.o",
                      "old-test-object\n") ||
+        !dp_mk_write(root,
+                     "build/test-obj/fixture/tools/command/native_code_command.o",
+                     "old-test-code-object\n") ||
         !dp_mk_write(root, "build/test-obj/fixture/lib/base/src/other.o",
                      "other-test-object\n") ||
+        !dp_mk_write(root, "build/test-obj/fixture/lib/util/src/clientversion.o",
+                     "stale-test-identity\n") ||
         !dp_mk_write(root, "build/test-obj/fixture/link-inputs.rsp",
-                     "build/test-obj/fixture/tools/dev/restart_fixture.o build/test-obj/fixture/lib/base/src/other.o\n") ||
+                     "build/test-obj/fixture/tools/dev/restart_fixture.o build/test-obj/fixture/tools/command/native_code_command.o build/test-obj/fixture/lib/util/src/clientversion.o build/test-obj/fixture/lib/base/src/other.o\n") ||
         !dp_mk_write(root, "build/test-obj/fixture/restart-base.o",
                      "frozen-test-base\n") ||
         setenv("ZCL_DEV_ARTIFACT_CACHE", cache, 1) != 0)
@@ -2281,11 +2415,13 @@ static bool run_resident_restart_fixture(void)
     if (!zcl_devloop_restart_build(root, changed, 1, &receipt, &process,
                                    why, sizeof(why)) ||
         !receipt.candidate_probe_passed || receipt.changed_sources != 1 ||
-        receipt.artifact_cache_hit || receipt.compiler_processes != 1 ||
+        receipt.artifact_cache_hit || receipt.compiler_processes != 2 ||
         receipt.linker_processes != 1 ||
         receipt.complete_graph_linker_processes != 0 ||
         receipt.probe_processes != 1 || receipt.source_guard_captures != 2 ||
         strcmp(receipt.probe, "discover.help") != 0 ||
+        !receipt.source_identity_overlay ||
+        strlen(receipt.source_cas_sha3) != 64 ||
         strlen(receipt.artifact_sha256) != 64 ||
         strlen(receipt.artifact_cache_key) != 64)
         goto out;
@@ -2310,13 +2446,41 @@ static bool run_resident_restart_fixture(void)
         proof.self_skips != 0 ||
         !strstr(proof.groups, "test_dev_platform") ||
         !strstr(proof.groups, "test_make_lint_gates_heavy_02") ||
-        proof.artifact_cache_hit || proof.compiler_processes != 1 ||
+        proof.artifact_cache_hit || proof.compiler_processes != 2 ||
         proof.linker_processes != 1 ||
         proof.complete_graph_linker_processes != 0 ||
         proof.test_processes != 1 || proof.source_guard_captures != 2 ||
         strlen(proof.artifact_sha256) != 64 ||
         strlen(proof.artifact_cache_key) != 64 ||
+        !proof.source_identity_overlay ||
+        strlen(proof.source_cas_sha3) != 64 ||
         strlen(proof.groups_sha256) != 64)
+        goto out;
+
+    /* Born-red P0 regression: a tooling edit whose mapped closure includes
+     * code_capsule must carry the epoch-generated clientversion overlay all
+     * the way through a complete resident proof. The second source keeps the
+     * fixture runner's fixed bounded changed-source probe deterministic. */
+    const char *code_changed[] = {
+        "tools/command/native_code_command.c",
+        "tools/dev/restart_fixture.c",
+    };
+    struct zcl_devloop_plan code_plan = {0};
+    if (!zcl_devloop_plan_files(code_changed, 2, &code_plan))
+        goto out;
+    for (size_t d = 0; d < ZCL_DEVLOOP_DIM__COUNT; d++)
+        code_plan.dims[d].status = ZCL_DEVLOOP_DIM_NOT_APPLICABLE;
+    memset(&proof, 0, sizeof(proof));
+    memset(&process, 0, sizeof(process));
+    if (!zcl_devloop_restart_prove(root, code_changed, 2, &code_plan, &proof,
+                                   &process, why, sizeof(why)) ||
+        !proof.proof_complete || !proof.immediate_proof_complete ||
+        proof.integration_proof_deferred ||
+        !strstr(proof.groups, "test_code_capsule") ||
+        !proof.source_identity_overlay ||
+        strlen(proof.source_cas_sha3) != 64 ||
+        proof.compiler_processes != 3 || proof.linker_processes != 1 ||
+        proof.test_processes != 1)
         goto out;
 
     memset(&proof, 0, sizeof(proof));
@@ -2329,7 +2493,7 @@ static bool run_resident_restart_fixture(void)
         proof.deferred_group_count != 13 ||
         proof.groups_ran != 4 || proof.groups_cached != 1 ||
         proof.self_skips != 0 ||
-        !proof.artifact_cache_hit || proof.compiler_processes != 1 ||
+        !proof.artifact_cache_hit || proof.compiler_processes != 2 ||
         proof.linker_processes != 0 ||
         strstr(proof.groups, "test_make_lint_gates") ||
         !strstr(proof.deferred_groups,
@@ -2342,7 +2506,7 @@ static bool run_resident_restart_fixture(void)
     memset(&receipt, 0, sizeof(receipt));
     if (!zcl_devloop_restart_build(root, changed, 1, &receipt, &process,
                                    why, sizeof(why)) ||
-        !receipt.artifact_cache_hit || receipt.compiler_processes != 1 ||
+        !receipt.artifact_cache_hit || receipt.compiler_processes != 2 ||
         receipt.linker_processes != 0 ||
         strcmp(receipt.artifact_cache_key, first_build_key) != 0 ||
         strcmp(receipt.artifact_sha256, first_build_hash) != 0)
@@ -2353,7 +2517,7 @@ static bool run_resident_restart_fixture(void)
     memset(&receipt, 0, sizeof(receipt));
     if (!zcl_devloop_restart_build(root, changed, 1, &receipt, &process,
                                    why, sizeof(why)) ||
-        receipt.artifact_cache_hit || receipt.compiler_processes != 1 ||
+        receipt.artifact_cache_hit || receipt.compiler_processes != 2 ||
         receipt.linker_processes != 1 ||
         receipt.complete_graph_linker_processes != 0 ||
         strcmp(receipt.artifact_cache_key, first_build_key) == 0)
@@ -2364,7 +2528,7 @@ static bool run_resident_restart_fixture(void)
     memset(&receipt, 0, sizeof(receipt));
     if (!zcl_devloop_restart_build(root, changed, 1, &receipt, &process,
                                    why, sizeof(why)) ||
-        !receipt.artifact_cache_hit || receipt.compiler_processes != 1 ||
+        !receipt.artifact_cache_hit || receipt.compiler_processes != 2 ||
         receipt.linker_processes != 0 ||
         strcmp(receipt.artifact_cache_key, first_build_key) != 0 ||
         strcmp(receipt.artifact_sha256, first_build_hash) != 0)
@@ -2389,7 +2553,7 @@ static bool run_resident_restart_fixture(void)
         strstr(proof.groups, "test_wallet") || strstr(proof.groups, "test_net") ||
         !strstr(proof.deferred_groups, "test_wallet") ||
         !strstr(proof.deferred_groups, "test_net") ||
-        proof.compiler_processes != 1 || proof.linker_processes != 0 ||
+        proof.compiler_processes != 2 || proof.linker_processes != 0 ||
         proof.test_processes != 1)
         goto out;
 
@@ -2413,7 +2577,7 @@ static bool run_resident_restart_fixture(void)
     memset(&receipt, 0, sizeof(receipt));
     if (!zcl_devloop_restart_build(root, second, 1, &receipt, &process,
                                    why, sizeof(why)) ||
-        !receipt.candidate_probe_passed || receipt.compiler_processes != 1 ||
+        !receipt.candidate_probe_passed || receipt.compiler_processes != 2 ||
         receipt.linker_processes != 1 ||
         receipt.complete_graph_linker_processes != 0 ||
         receipt.probe_processes != 1)
@@ -2427,7 +2591,7 @@ static bool run_resident_restart_fixture(void)
                                   why, sizeof(why)) ||
         strcmp(why,
                "overlay link input is missing, unreadable, or owns process initialization") != 0 ||
-        receipt.compiler_processes != 1 || receipt.linker_processes != 0 ||
+        receipt.compiler_processes != 2 || receipt.linker_processes != 0 ||
         receipt.complete_graph_linker_processes != 0 ||
         receipt.probe_processes != 0)
         goto out;
@@ -2593,6 +2757,8 @@ static int test_native_source_cas_shadow(void)
         ASSERT(zcl_dev_source_cas_capture(fixture, &first));
         ASSERT(first.cas_present);
         ASSERT(strlen(first.cas_root_sha3) == 64);
+        ASSERT(strlen(first.source_id) == 64);
+        ASSERT(strlen(first.mutation_id) == 64);
         ASSERT(first.cas_files_total == 2);
         ASSERT(first.cas_files_read == 2);
         ASSERT(first.cas_bytes_total == 61);
@@ -2601,6 +2767,8 @@ static int test_native_source_cas_shadow(void)
         ASSERT(zcl_dev_source_cas_capture(fixture, &warm));
         ASSERT(warm.cas_present);
         ASSERT(strcmp(first.cas_root_sha3, warm.cas_root_sha3) == 0);
+        ASSERT(strcmp(first.source_id, warm.source_id) == 0);
+        ASSERT(strcmp(first.mutation_id, warm.mutation_id) == 0);
         ASSERT(warm.cas_files_total == 2);
         ASSERT(warm.cas_files_read == 0);
         ASSERT(warm.cas_nodes_hashed == 0);
@@ -2615,6 +2783,19 @@ static int test_native_source_cas_shadow(void)
         ASSERT(edited.cas_bytes_total == 61);
         ASSERT(edited.cas_bytes_read == 37);
         ASSERT(strcmp(first.cas_root_sha3, edited.cas_root_sha3) != 0);
+        ASSERT(strcmp(first.source_id, edited.source_id) != 0);
+        ASSERT(strcmp(first.mutation_id, edited.mutation_id) != 0);
+
+        struct dev_source_record authoritative = {0};
+        memset(authoritative.source_id, 'a', 64);
+        authoritative.source_id[64] = 0;
+        memset(authoritative.mutation_id, 'b', 64);
+        authoritative.mutation_id[64] = 0;
+        ASSERT(zcl_dev_source_cas_capture(fixture, &authoritative));
+        ASSERT(strcmp(authoritative.source_id,
+                      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == 0);
+        ASSERT(strcmp(authoritative.mutation_id,
+                      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") == 0);
         ASSERT(system("rm -rf test-tmp/dev_source_cas_shadow") == 0);
         PASS();
     } _test_next:;
