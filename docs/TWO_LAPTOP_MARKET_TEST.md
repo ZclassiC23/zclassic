@@ -39,8 +39,10 @@ build/bin/zclassic23 -tor -datadir=$HOME/.zcl-market-test
 The onion address appears in:
 
 ```bash
-build/bin/zclassic23 core status    # → health.checks.onion_address
+build/bin/zclassic23 ops state --subsystem=explorer   # → data.state.onion_address
 ```
+
+(`core status` does not carry the onion address; the explorer dump does.)
 
 Tor bootstrap takes ~10 s. If `onion_address` is null and the log says
 Tor is disabled, you built the stub — go back to `make tor-full`.
@@ -53,8 +55,14 @@ note in step 7):
 
 ```bash
 # on B, add to the boot flags or use the running node:
--addnode=<A-onion-or-ip>:8033
+-addnode=<A-ip>:8033
 ```
+
+Clearnet only: `-addnode=<A-onion>` does NOT work — the addnode path
+resolves the host with getaddrinfo, which cannot resolve `.onion`
+("Failed to resolve addnode" in the log). For an onion-only rendezvous
+use the `/directory.json` seed mechanism instead; for a first run use
+A's clearnet IP (the trade bytes still ride Tor — see step 7).
 
 Confirm on B: `build/bin/zclassic23 core network peers` lists A.
 
@@ -139,3 +147,46 @@ Every snag — unclear error, missing hint, surprising refusal — goes in
 the checklist's A7 item: file it in `docs/HANDOFF.md` or straight into a
 fix. The UX rule for this test: a first-time operator should never have
 to read source to complete steps 1–6.
+
+## 9. Proven two-server regtest run (2026-08-09)
+
+The full trade was executed between two real servers (seller A on a
+remote VPS, buyer B on a local server) with delivery witnessed in both
+`tor.log` files. Final state: payment confirmed on-chain at height 207,
+seller decrypted its exact Sapling note, buyer retrieved the file in
+~10 s and the SHA-256 matched the seller's fixture byte-for-byte; the
+pre-confirmation retrieve was refused by name (`DELIVERY_NOT_READY`).
+
+Recipe differences from the laptop path above:
+
+- **Boot flags**: both nodes need `-regtest -regtestshielded -tor
+  -packagehost=0 -operator-lane=dev -wallet-no-phrase-backup
+  -nobgvalidation -nolegacyimport -showmetrics=0`. Without
+  `-regtestshielded`, `generatetoaddress` silently returns `[]` (Sapling
+  must be active from genesis).
+- **Wallets must be encrypted at rest** or the offer commit refuses
+  `SELLER_KEY_UNAVAILABLE`: boot with `CREDENTIALS_DIRECTORY` pointing at
+  a dir holding a mode-600 `wallet-passphrase` file. The passphrase is
+  the file's exact bytes **including the trailing newline** — if you
+  call `walletunlock` by hand, pass `"pass\n"` with the newline.
+  Warning: a *wrong-passphrase* `walletunlock` wipes the daemon's RAM
+  keystore (it reloads on the correct unlock); `validateaddress
+  ismine=false` / `dumpprivkey "not known"` are the symptoms.
+- **Peering when B is behind NAT**: two SSH tunnels reproduce the
+  loopback acceptance topology exactly —
+  `ssh -L 20441:127.0.0.1:20440 -N <A>` (B dials `127.0.0.1:20441`) and
+  `ssh -R 20451:127.0.0.1:20450 -N <A>` (A dials `127.0.0.1:20451`).
+  Both nodes must own an outbound link; a listen-only node never
+  reaches `at_tip` and the seller's paid-chunk gate fails closed.
+- **Sequence**: mine 101 to B in chunks of 5 → A syncs → restart B so
+  the forward-folded coins set stamps authority → re-link both ways →
+  `getnewaddress` top-up + `z_getnewaddress` on A → offer (plan, then
+  `confirm:true`) → gossip → purchase plan/commit (retry on
+  `MONEY_STATE_NOT_CURRENT` — it is transient tip-freshness, not a
+  refusal) → wait A mempool → mine 1 → poll status `confirmed` →
+  retrieve.
+- **Mining maturity**: regtest coinbase matures after 100 blocks; mine
+  to an address created in the *current* session (post-unlock), or the
+  commit's `source address is not a wallet spending key` /
+  `Insufficient funds from specified address` pair will send you
+  debugging the keypool.
