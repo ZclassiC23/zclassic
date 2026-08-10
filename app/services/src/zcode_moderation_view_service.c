@@ -41,8 +41,47 @@ static bool render_policy(const struct vcs_zcode_family_policy_v1 *policy,
     return true;
 }
 
+static bool render_service_status(
+    const struct zcode_moderation_service_status_input_v1 *input,
+    struct zcode_moderation_service_status_result_v1 *out)
+{
+    if (!input || !out ||
+        input->eligible_service_count > input->registered_service_count)
+        return false;
+    memset(out, 0, sizeof(*out));
+    out->valid = true;
+    out->ready = input->projection_ready &&
+        input->registered_service_count > 0 &&
+        input->eligible_service_count > 0 && input->roster_finalized &&
+        input->classification_enabled && input->advertisement_enabled &&
+        input->chain_selection_enabled &&
+        input->operator_group_diversity_declared;
+    if (out->ready) {
+        (void)snprintf(out->bootstrap_label, sizeof(out->bootstrap_label),
+                       "%s", "ready:signed_service_roster");
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       "zcode moderation classify plan");
+    } else if (input->registered_service_count == 0) {
+        (void)snprintf(out->bootstrap_label, sizeof(out->bootstrap_label),
+                       "%s", "unavailable:no_signed_service_roster");
+        (void)snprintf(out->blocker, sizeof(out->blocker), "%s",
+                       "signed service registration and finalized roster projection are not implemented");
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       "zcode moderation status");
+    } else {
+        (void)snprintf(out->bootstrap_label, sizeof(out->bootstrap_label),
+                       "%s", "bootstrap:roster_incomplete");
+        (void)snprintf(out->blocker, sizeof(out->blocker), "%s",
+                       "the signed roster exists but projection, eligibility, diversity, or service activation is incomplete");
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       "zcode moderation service status");
+    }
+    return true;
+}
+
 static const struct zcode_moderation_view_service_v1 k_builtin = {
     .render_policy = render_policy,
+    .render_service_status = render_service_status,
 };
 
 ZCL_HOTSWAP_SERVICE_EXPORT(

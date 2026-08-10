@@ -396,6 +396,9 @@ void zcl_native_handle_zcode_project_status(
 void zcl_native_handle_zcode_work_start(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_work_context(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_work_run(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
@@ -464,6 +467,33 @@ void zcl_native_handle_zcode_commons_corpus_show(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_commons_corpus_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_passport_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_passport_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_passport_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_passport_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_workspace_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_workspace_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_workspace_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_workspace_manifest_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_workspace_manifest_commit(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_commons_corpus_shard_verify(
@@ -693,6 +723,9 @@ void zcl_native_handle_zcode_accept(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_lane(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_lane_guide(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_tasks(
@@ -1045,6 +1078,7 @@ void zcl_native_handle_network_graph(
  * captured by zcl_native_command_main, or "" when none was given). Read-only
  * accessor for handlers that open a datadir-relative store directly. */
 const char *zcl_native_command_datadir(void);
+int zcl_native_command_rpc_port(void);
 
 /* Bind the native controller bridge to an explicit node RPC context.  The
  * resident dev host uses this at boot so a hot-loaded controller cannot

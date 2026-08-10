@@ -3066,19 +3066,17 @@ int test_net(void)
     /* ── BitTorrent-style parallel chunk sync tests ──────── */
 
     /* Helper: create a test UTXO database with N entries */
-    #define TEST_SYNC_DIR "test_sync_data"
-    #define TEST_SYNC_DB  TEST_SYNC_DIR "/node.db"
-
-    /* Clean up and create test directory */
-    {
-        test_cleanup_tmpdir(TEST_SYNC_DIR);
-        mkdir(TEST_SYNC_DIR, 0755);
-    }
+    char test_sync_dir[256];
+    char test_sync_db[320];
+    test_make_tmpdir(test_sync_dir, sizeof(test_sync_dir),
+                     "net", "parallel_sync");
+    snprintf(test_sync_db, sizeof(test_sync_db), "%s/node.db",
+             test_sync_dir);
 
     /* Create test database with 100 UTXOs */
     sqlite3 *test_db = NULL;
     {
-        int rc = sqlite3_open(TEST_SYNC_DB, &test_db);
+        int rc = sqlite3_open(test_sync_db, &test_db);
         if (rc != SQLITE_OK) {
             printf("parallel_sync: SKIP (cannot create test db)\n");
             goto skip_parallel_tests;
@@ -3320,7 +3318,7 @@ int test_net(void)
     {
         struct sync_manifest m;
         memset(&m, 0, sizeof(m));
-        bool ok = fast_sync_build_manifest(TEST_SYNC_DIR, &m);
+        bool ok = fast_sync_build_manifest(test_sync_dir, &m);
         ok = ok && (m.num_chunks == 1);
         ok = ok && (m.num_utxos == 100);
 
@@ -3332,7 +3330,7 @@ int test_net(void)
     printf("parallel_sync: serve_chunk from file path... ");
     {
         struct utxo_chunk *c = zcl_calloc(1, sizeof(struct utxo_chunk), "test_chunk");
-        bool ok = fast_sync_serve_chunk(TEST_SYNC_DIR, 0, c);
+        bool ok = fast_sync_serve_chunk(test_sync_dir, 0, c);
         ok = ok && (c->num_entries == 100);
 
         if (ok) printf("OK\n");
@@ -3469,7 +3467,7 @@ int test_net(void)
             memset(m.chunk_hashes[i], (int)(i + 1), 32);
 
         struct swarm_sync ss;
-        bool ok = swarm_sync_init(&ss, &m, TEST_SYNC_DIR);
+        bool ok = swarm_sync_init(&ss, &m, test_sync_dir);
         ok = ok && (ss.manifest.num_chunks == 10);
         ok = ok && (ss.chunks_complete == 0);
         ok = ok && (ss.chunks_inflight == 0);
@@ -3497,7 +3495,7 @@ int test_net(void)
             memset(m.chunk_hashes[i], (int)(i + 1), 32);
 
         struct swarm_sync ss;
-        swarm_sync_init(&ss, &m, TEST_SYNC_DIR);
+        swarm_sync_init(&ss, &m, test_sync_dir);
 
         int32_t c0 = swarm_sync_assign_chunk(&ss, 100);
         int32_t c1 = swarm_sync_assign_chunk(&ss, 200);
@@ -3649,9 +3647,9 @@ int test_net(void)
     /* ── per-chunk SHA3 verification gates chainstate writes ── */
     printf("swarm_sync: corrupted chunk rejected and not applied... ");
     {
-        const char *p24_dir = "test_sync_p24";
-        test_cleanup_tmpdir(p24_dir);
-        mkdir(p24_dir, 0755);
+        char p24_dir[256];
+        test_make_tmpdir(p24_dir, sizeof(p24_dir),
+                         "net", "swarm_corrupt");
 
         /* Bootstrap an empty node.db with the schema fast_sync_apply_chunk
          * expects. We close it again so the swarm path can re-open it. */
@@ -4006,7 +4004,7 @@ int test_net(void)
 
     /* Clean up test database */
     sqlite3_close(test_db);
-    test_cleanup_tmpdir(TEST_SYNC_DIR);
+    test_cleanup_tmpdir(test_sync_dir);
 
 skip_parallel_tests:
 

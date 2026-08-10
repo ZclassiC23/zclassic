@@ -36,11 +36,13 @@
  * Bound in config/commands/store.def. Tests: lib/test/src/test_shop_want.c.
  */
 #include "controllers/shop_native_handler.h"
+#include "controllers/shop_native_want_view.h"
 #include "controllers/native_handler_body.h" /* json_get_bool_or/json_get_str_or */
 #include "command/native_command.h"
 #include "base/cleanse.h"
 #include "base/hex.h"
 #include "crypto/ed25519.h"
+#include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "models/database.h"
@@ -56,14 +58,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #define SHW_TAG "native.app.shop.want"
-
 /* The board page rendered by `list`: bounded so the reply stays inside
  * the registry LIST budget even at the criteria cap (16 rows x ~450 B
  * worst case vs the 8192-byte budget), with the criteria preview
  * truncated — the full text is one `status` call away. */
 #define SHW_BOARD_PAGE 16u
-#define SHW_CRITERIA_PREVIEW 160u
-
 #define SHW_TERMS_NOTE \
     "a want is declared terms inside a signed advertisement — not an " \
     "escrow, not a payment channel; posting moves and promises no value " \
@@ -122,13 +121,6 @@ static bool shw_now(const struct zcl_command_request *request,
 static bool shw_hex32(const char *hex, uint8_t out[32])
 {
     return hex && strlen(hex) == 64 && zcl_hex_decode_lower(hex, out, 32);
-}
-
-static bool shw_bytes_nonzero(const uint8_t *bytes, size_t len)
-{
-    uint8_t any = 0;
-    for (size_t i = 0; i < len; i++) any |= bytes[i];
-    return any != 0;
 }
 
 /* The Ed25519 public key derived from a 32-byte seed (the seed copy the
@@ -270,8 +262,15 @@ static bool shw_resolve_profile(const struct zcl_command_request *request,
     const char *override =
         json_get_str_or(request->input, "profile", NULL);
     int profile = -1;
-    if (!market_moderation_view_service_builtin()->resolve_profile(
-            override, (int)active, &profile)) {
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct market_moderation_view_service_v1 *view =
+        zcl_hotswap_service_acquire(MARKET_MODERATION_VIEW_SERVICE_ID,
+                                    &lease);
+    if (!view)
+        view = market_moderation_view_service_builtin();
+    bool resolved = view->resolve_profile(override, (int)active, &profile);
+    zcl_hotswap_service_release(&lease);
+    if (!resolved) {
         shw_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
                  "BAD_PROFILE", "validate",
                  "unknown moderation profile override — use \"open\", "
@@ -284,50 +283,7 @@ static bool shw_resolve_profile(const struct zcl_command_request *request,
     return true;
 }
 
-/* ── rendering ──────────────────────────────────────────────────────── */
-static void shw_push_want(struct json_value *into, const struct shop_want *row,
-                          int64_t now_unix, bool full)
-{
-    char hex[65];
-    zcl_hex_encode(row->want_id, 32, hex);
-    (void)json_push_kv_str(into, "want_id", hex);
-    zcl_hex_encode(row->want.buyer_pubkey, 32, hex);
-    (void)json_push_kv_str(into, "buyer_pubkey", hex);
-    (void)json_push_kv_int(into, "amount_zatoshi",
-                           (int64_t)row->want.amount_zatoshi);
-    if (full) {
-        char criteria[SHOP_WANT_CRITERIA_MAX + 1u];
-        memcpy(criteria, row->want.criteria, row->want.criteria_len);
-        criteria[row->want.criteria_len] = '\0';
-        (void)json_push_kv_str(into, "criteria", criteria);
-    } else {
-        size_t n = row->want.criteria_len;
-        bool truncated = n > SHW_CRITERIA_PREVIEW;
-        if (truncated) n = SHW_CRITERIA_PREVIEW;
-        char preview[SHW_CRITERIA_PREVIEW + 1u];
-        memcpy(preview, row->want.criteria, n);
-        preview[n] = '\0';
-        (void)json_push_kv_str(into, "criteria_preview", preview);
-        (void)json_push_kv_bool(into, "criteria_truncated", truncated);
-    }
-    if (shw_bytes_nonzero(row->want.spec_hash, 32)) {
-        zcl_hex_encode(row->want.spec_hash, 32, hex);
-        (void)json_push_kv_str(into, "spec_hash", hex);
-    }
-    (void)json_push_kv_int(into, "issued_unix", row->want.issued_unix);
-    (void)json_push_kv_int(into, "expires_unix", row->want.expires_unix);
-    (void)json_push_kv_bool(into, "expired",
-                            row->want.expires_unix <= now_unix);
-    (void)json_push_kv_str(into, "review_state",
-        market_review_state_string((enum market_review_state)row->review_state));
-    if (row->cancelled_unix > 0)
-        (void)json_push_kv_int(into, "cancelled_unix", row->cancelled_unix);
-    if (full)
-        (void)json_push_kv_int(into, "posted_unix", row->posted_unix);
-}
-
 /* ── app shop want post (plan/commit) ───────────────────────────────── */
-
 /* Parse + seal + verify the want from the input. On success `row` holds
  * the verified document and its id. */
 static bool shw_build_want(const struct zcl_command_request *request,
@@ -475,6 +431,14 @@ void zcl_native_handle_shop_want_post(
     struct shop_want row;
     if (!shw_build_want(request, now_unix, &row, reply))
         return;
+    struct shop_want_view_result_v1 rendered_want;
+    if (!zcl_shop_want_view_render(&row, now_unix, true, &rendered_want)) {
+        shw_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+                 "WANT_VIEW_FAILED", "render",
+                 "the pure buyer-want view refused a freshly verified want",
+                 "app.shop.want.view.v1");
+        return;
+    }
 
     char id_hex[65];
     zcl_hex_encode(row.want_id, 32, id_hex);
@@ -485,7 +449,7 @@ void zcl_native_handle_shop_want_post(
         struct json_value want;
         json_init(&want);
         json_set_object(&want);
-        shw_push_want(&want, &row, now_unix, true);
+        zcl_shop_want_view_push_json(&want, &rendered_want);
         (void)json_push_kv(&reply->data, "want", &want);
         json_free(&want);
         (void)json_push_kv_str(&reply->data, "terms_note", SHW_TERMS_NOTE);
@@ -517,7 +481,7 @@ void zcl_native_handle_shop_want_post(
     struct json_value want;
     json_init(&want);
     json_set_object(&want);
-    shw_push_want(&want, &row, now_unix, true);
+    zcl_shop_want_view_push_json(&want, &rendered_want);
     (void)json_push_kv(&reply->data, "want", &want);
     json_free(&want);
     (void)json_push_kv_str(&reply->data, "terms_note", SHW_TERMS_NOTE);
@@ -571,8 +535,12 @@ void zcl_native_handle_shop_want_list(
                             override != NULL);
     (void)json_push_kv_bool(&reply->data, "include_closed", include_closed);
 
+    struct zcl_hotswap_service_lease moderation_lease = {0};
     const struct market_moderation_view_service_v1 *view =
-        market_moderation_view_service_builtin();
+        zcl_hotswap_service_acquire(MARKET_MODERATION_VIEW_SERVICE_ID,
+                                    &moderation_lease);
+    if (!view)
+        view = market_moderation_view_service_builtin();
     struct json_value wants;
     json_init(&wants);
     json_set_array(&wants);
@@ -592,11 +560,24 @@ void zcl_native_handle_shop_want_list(
         struct json_value entry;
         json_init(&entry);
         json_set_object(&entry);
-        shw_push_want(&entry, &rows[i], now_unix, false);
+        struct shop_want_view_result_v1 rendered_want;
+        if (!zcl_shop_want_view_render(&rows[i], now_unix, false,
+                                       &rendered_want)) {
+            json_free(&entry);
+            json_free(&wants);
+            zcl_hotswap_service_release(&moderation_lease);
+            shw_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                     ZCL_COMMAND_EXIT_INTERNAL, "WANT_VIEW_FAILED", "render",
+                     "the pure buyer-want view refused a verified board row",
+                     "app.shop.want.view.v1");
+            return;
+        }
+        zcl_shop_want_view_push_json(&entry, &rendered_want);
         (void)json_push_back(&wants, &entry);
         json_free(&entry);
         rendered++;
     }
+    zcl_hotswap_service_release(&moderation_lease);
     (void)json_push_kv(&reply->data, "wants", &wants);
     json_free(&wants);
     (void)json_push_kv_int(&reply->data, "rendered", (int64_t)rendered);
@@ -652,17 +633,28 @@ void zcl_native_handle_shop_want_status(
     }
     /* Re-verify stored signed-wire evidence at read time. */
     bool signature_valid = shop_want_verify(&row.want) == SHOP_WANT_OK;
-    const char *state = row.cancelled_unix > 0 ? "cancelled"
-        : row.want.expires_unix <= now_unix ? "expired" : "open";
+    struct shop_want_view_result_v1 rendered_want;
+    if (!zcl_shop_want_view_render(&row, now_unix, true, &rendered_want)) {
+        shw_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+                 "WANT_VIEW_FAILED", "render",
+                 "the pure buyer-want view refused a verified stored row",
+                 "app.shop.want.view.v1");
+        return;
+    }
     struct market_moderation_decision_result_v1 decision;
-    bool visible =
-        market_moderation_view_service_builtin()->decide(
-            profile, row.review_state, &decision) &&
+    struct zcl_hotswap_service_lease moderation_lease = {0};
+    const struct market_moderation_view_service_v1 *moderation =
+        zcl_hotswap_service_acquire(MARKET_MODERATION_VIEW_SERVICE_ID,
+                                    &moderation_lease);
+    if (!moderation)
+        moderation = market_moderation_view_service_builtin();
+    bool visible = moderation->decide(profile, row.review_state, &decision) &&
         decision.valid && decision.visible;
+    zcl_hotswap_service_release(&moderation_lease);
 
     (void)json_push_kv_str(&reply->data, "datadir", datadir);
     (void)json_push_kv_int(&reply->data, "now_unix", now_unix);
-    (void)json_push_kv_str(&reply->data, "state", state);
+    (void)json_push_kv_str(&reply->data, "state", rendered_want.state);
     (void)json_push_kv_bool(&reply->data, "signature_valid", signature_valid);
     (void)json_push_kv_int(&reply->data, "fulfillment_count", fulfillment_count);
     (void)json_push_kv_bool(&reply->data, "fulfillment_count_available",
@@ -670,7 +662,7 @@ void zcl_native_handle_shop_want_status(
     struct json_value want;
     json_init(&want);
     json_set_object(&want);
-    shw_push_want(&want, &row, now_unix, true);
+    zcl_shop_want_view_push_json(&want, &rendered_want);
     (void)json_push_kv(&reply->data, "want", &want);
     json_free(&want);
     (void)json_push_kv_str(&reply->data, "profile",
@@ -733,10 +725,20 @@ void zcl_native_handle_shop_want_cancel(
         (void)json_push_kv_str(&reply->data, "want_id", id_hex);
         (void)json_push_kv_bool(&reply->data, "found", found);
         if (found) {
+            struct shop_want_view_result_v1 rendered_want;
+            if (!zcl_shop_want_view_render(&row, now_unix, true,
+                                           &rendered_want)) {
+                shw_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                         ZCL_COMMAND_EXIT_INTERNAL, "WANT_VIEW_FAILED",
+                         "render", "the pure buyer-want view refused a "
+                         "verified cancellation-plan row",
+                         "app.shop.want.view.v1");
+                return;
+            }
             struct json_value want;
             json_init(&want);
             json_set_object(&want);
-            shw_push_want(&want, &row, now_unix, true);
+            zcl_shop_want_view_push_json(&want, &rendered_want);
             (void)json_push_kv(&reply->data, "want", &want);
             json_free(&want);
             (void)json_push_kv_bool(&reply->data, "already_cancelled",

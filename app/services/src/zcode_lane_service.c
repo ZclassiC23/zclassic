@@ -4,9 +4,11 @@
 #include "services/zcode_lane_service.h"
 
 #include "base/hex.h"
+#include "hotswap/hotswap_service.h"
 #include "models/build_fabric.h"
 #include "models/zcode_lane.h"
 #include "services/build_fabric_service.h"
+#include "services/zcode_lane_view_service.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_lane.h"
@@ -81,13 +83,33 @@ static bool lane_load_receipt(
     return ok;
 }
 
-static void lane_status_from_row(const struct db_zcode_lane_receipt *row,
-                                 struct zcode_lane_status *out)
+static bool lane_view_resolve(int lane, struct zcode_lane_view_result_v1 *view,
+                              uint32_t *generation)
+{
+    if (!view || !generation || lane < VCS_ZCODE_LANE_FRONTIER ||
+        lane > VCS_ZCODE_LANE_PROVEN)
+        return false;
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_lane_view_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_LANE_VIEW_SERVICE_ID, &lease);
+    if (!service) service = zcode_lane_view_service_builtin();
+    *generation = zcl_hotswap_service_generation();
+    bool rendered = service->render((uint8_t)lane, view) && view->valid &&
+        view->lane_name[0] && view->capability[0] && view->next_action[0];
+    zcl_hotswap_service_release(&lease);
+    return rendered &&
+        strcmp(view->lane_name, vcs_zcode_lane_name((uint8_t)lane)) == 0;
+}
+
+static void lane_status_from_row(
+    const struct db_zcode_lane_receipt *row,
+    const struct zcode_lane_view_result_v1 *view, uint32_t generation,
+    struct zcode_lane_status *out)
 {
     memset(out, 0, sizeof(*out));
     out->lane = row->lane;
     (void)snprintf(out->lane_name, sizeof(out->lane_name), "%s",
-                   vcs_zcode_lane_name((uint8_t)row->lane));
+                   view->lane_name);
     (void)snprintf(out->source_root_sha3, sizeof(out->source_root_sha3),
                    "%s", row->source_root_sha3);
     (void)snprintf(out->task_root_sha3, sizeof(out->task_root_sha3),
@@ -108,6 +130,11 @@ static void lane_status_from_row(const struct db_zcode_lane_receipt *row,
     (void)snprintf(out->signer_pubkey, sizeof(out->signer_pubkey), "%s",
                    row->signer_pubkey);
     out->created_at = row->created_at;
+    out->view_service_generation = generation;
+    (void)snprintf(out->capability, sizeof(out->capability), "%s",
+                   view->capability);
+    (void)snprintf(out->next_action, sizeof(out->next_action), "%s",
+                   view->next_action);
 }
 
 static bool lane_row_matches_receipt(
@@ -153,7 +180,11 @@ struct zcl_result zcode_lane_find(
     if (!lane_load_receipt(workspace, row.receipt_id, &receipt) ||
         !lane_row_matches_receipt(&row, &receipt))
         return ZCL_ERR(-1, "zcode-lane-projection-or-cas-corrupt");
-    lane_status_from_row(&row, out);
+    struct zcode_lane_view_result_v1 view;
+    uint32_t generation = 0;
+    if (!lane_view_resolve(row.lane, &view, &generation))
+        return ZCL_ERR(-1, "zcode-lane-view-mismatch");
+    lane_status_from_row(&row, &view, generation, out);
     return ZCL_OK;
 }
 
@@ -186,6 +217,10 @@ struct zcl_result zcode_lane_advance(
         target_lane < VCS_ZCODE_LANE_FRONTIER ||
         target_lane > VCS_ZCODE_LANE_PROVEN)
         return ZCL_ERR(-1, "lane-advance-input-invalid");
+    struct zcode_lane_view_result_v1 target_view;
+    uint32_t view_generation = 0;
+    if (!lane_view_resolve(target_lane, &target_view, &view_generation))
+        return ZCL_ERR(-1, "lane-view-mismatch");
     struct db_build_action action;
     if (!db_build_action_find(ndb, action_id, &action) ||
         !action.task_root_sha3[0])
@@ -213,7 +248,7 @@ struct zcl_result zcode_lane_advance(
             return ZCL_ERR(-1, "lane-idempotency-context-mismatch");
         ZCL_CHECK(lane_prior_validate(
             workspace, &prior, &task, &candidate, &policy, signer_pubkey));
-        lane_status_from_row(&prior, out);
+        lane_status_from_row(&prior, &target_view, view_generation, out);
         return ZCL_OK;
     }
     if ((!have_prior && target_lane != VCS_ZCODE_LANE_FRONTIER) ||
@@ -303,6 +338,64 @@ struct zcl_result zcode_lane_advance(
     if (!db_zcode_lane_receipt_find(ndb, root_hex, &stored) ||
         !lane_row_matches_receipt(&stored, &receipt))
         return ZCL_ERR(-1, "lane-receipt-projection-verify-failed");
-    lane_status_from_row(&stored, out);
+    lane_status_from_row(&stored, &target_view, view_generation, out);
     return ZCL_OK;
+}
+
+static bool lane_view_frozen_kat(const void *opaque, char *why,
+                                 size_t why_sz)
+{
+    const struct zcode_lane_view_service_v1 *service = opaque;
+    struct zcode_lane_view_result_v1 view;
+    static const struct {
+        uint8_t lane;
+        const char *name;
+        const char *next_action;
+    } cases[] = {
+        {ZCODE_LANE_VIEW_GUIDE, "FRONTIER -> CANDIDATE -> PROVEN",
+         "zcode package dev lane --input='{\"workspace\":\"<path>\",\"source_root\":\"<64hex>\",\"datadir\":\"/tmp/zclassic23-lane\"}'"},
+        {VCS_ZCODE_LANE_FRONTIER, "FRONTIER",
+         "zcode accept --input='<action_id and lane CANDIDATE>'"},
+        {VCS_ZCODE_LANE_CANDIDATE, "CANDIDATE",
+         "zcode accept --input='<action_id and lane PROVEN>'"},
+        {VCS_ZCODE_LANE_PROVEN, "PROVEN", "zcode publish plan"},
+    };
+    if (!service || !service->render) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen lane view service shape failed");
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        if (!service->render(cases[i].lane, &view) || !view.valid ||
+            strcmp(view.lane_name, cases[i].name) != 0 ||
+            strcmp(view.next_action, cases[i].next_action) != 0) {
+            if (why && why_sz) (void)snprintf(
+                why, why_sz, "frozen lane view vector %zu failed", i);
+            return false;
+        }
+    }
+    if (service->render(UINT8_MAX, &view)) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen unknown lane rejection failed");
+        return false;
+    }
+    return true;
+}
+
+static const struct zcl_hotswap_service_contract k_lane_view_contract = {
+    .service_id = ZCODE_LANE_VIEW_SERVICE_ID,
+    .source_tu = "app/services/src/zcode_lane_view_service.c",
+    .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+    .vtable_size = sizeof(struct zcode_lane_view_service_v1),
+    .abi_fingerprint = ZCODE_LANE_VIEW_ABI_FINGERPRINT,
+    .schema_fingerprint = ZCODE_LANE_VIEW_SCHEMA_FINGERPRINT,
+    .wire_fingerprint = ZCODE_LANE_VIEW_WIRE_FINGERPRINT,
+    .kat_fingerprint = ZCODE_LANE_VIEW_KAT_FINGERPRINT,
+    .frozen_kat = lane_view_frozen_kat,
+};
+
+const struct zcl_hotswap_service_contract *
+zcode_lane_view_service_contract(void)
+{
+    return &k_lane_view_contract;
 }

@@ -746,6 +746,12 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
         !append_string(out, out_sz, &pos, capsule_preview) ||
         (capsule_truncated &&
          !appendf(out, out_sz, &pos, ",\"failure_capsule_truncated\":true")) ||
+        !appendf(out, out_sz, &pos, ",\"why_not_live\":") ||
+        !append_string(out, out_sz, &pos,
+                       strcmp(status, "passed") == 0
+                           ? ""
+                           : (capsule_preview[0] ? capsule_preview
+                                                 : plan->reason)) ||
         !appendf(out, out_sz, &pos, ",\"agent_next_action\":") ||
         !append_string(
             out, out_sz, &pos,
@@ -973,6 +979,10 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
             !append_string(body, sizeof(body) - 2, &pos,
                            state_why[0] ? state_why : "unknown") ||
             !appendf(body, sizeof(body) - 2, &pos,
+                     ",\"why_not_live\":") ||
+            !append_string(body, sizeof(body) - 2, &pos,
+                           state_why[0] ? state_why : "unknown") ||
+            !appendf(body, sizeof(body) - 2, &pos,
                      ",\"agent_next_action\":"
                      "\"repair workspace state storage and rerun the cycle\"}")) {
             fprintf(stderr, "[devloop] state failure envelope overflow\n");
@@ -1046,21 +1056,32 @@ enum zcl_devloop_publish_mode zcl_devloop_default_watch_publish_mode(void)
     return ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY;
 }
 
-const char *zcl_devloop_watcher_freshness(bool active, bool ready)
+bool zcl_devloop_publication_target_port_supported(int rpc_port)
+{
+    return rpc_port == 18252;
+}
+
+const char *zcl_devloop_watcher_freshness(bool active, bool source_ready,
+                                          bool runtime_ready)
 {
     if (!active)
         return "watcher_not_running";
-    return ready ? "current" : "watcher_starting";
+    if (!source_ready)
+        return "watcher_starting";
+    return runtime_ready ? "current" : "runtime_starting";
 }
 
 const char *zcl_devloop_watcher_next_action(
-    bool active, bool ready, enum zcl_devloop_publish_mode publish_mode)
+    bool active, bool source_ready, bool runtime_ready,
+    enum zcl_devloop_publish_mode publish_mode)
 {
-    (void)publish_mode;
     if (!active)
         return "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'";
-    if (!ready)
+    if (!source_ready)
         return "zclassic23-dev dev loop status";
+    if (zcl_devloop_publish_mode_applies(publish_mode) && !runtime_ready)
+        return "start or wait for the isolated dev node on RPC 18252, then "
+               "rerun zclassic23-dev dev loop status";
     return "edit one C23 file";
 }
 

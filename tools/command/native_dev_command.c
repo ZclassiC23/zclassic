@@ -16,6 +16,7 @@
 #define _GNU_SOURCE
 #include "command/native_command.h"
 
+#include "controllers/rpc_client.h"
 #include "dev_activation.h"
 #include "dev_failure_store.h"
 #include "devloop.h"
@@ -757,6 +758,24 @@ static enum zcl_devloop_state_lookup dev_read_cycle(
     return ZCL_DEVLOOP_STATE_FOUND;
 }
 
+static bool dev_publication_target_ready(void)
+{
+    if (!zcl_devloop_publication_target_port_supported(
+            zcl_native_command_rpc_port()))
+        return false;
+    zcl_native_bridge_ensure_rpc();
+    char *raw = node_rpc_call_deadline("getblockcount", NULL, 15, 40);
+    if (!raw)
+        return false;
+    struct json_value value;
+    json_init(&value);
+    bool ready = json_read(&value, raw, strlen(raw)) &&
+                 value.type == JSON_INT && json_get_int(&value) >= 0;
+    json_free(&value);
+    free(raw);
+    return ready;
+}
+
 /* `dev.loop.wait` declares zcl.dev_cycle.v1, so return that cycle directly.
  * Loop identity belongs to `dev.loop.status`; nesting the cycle in a
  * zcl.dev_loop_status.v1 document made callers violate the declared schema
@@ -778,22 +797,38 @@ static void dev_emit_loop_status(const char *repo_root,
 {
     struct dev_watcher_info info = {0};
     bool active = dev_watcher_active(repo_root, &info);
+    bool publication_required = active && info.ready &&
+        zcl_devloop_publish_mode_applies(info.publish_mode);
+    bool publication_target_ready = publication_required
+        ? dev_publication_target_ready() : active && info.ready;
+    bool watcher_ready = active && info.ready && publication_target_ready;
     (void)json_push_kv_str(&reply->data, "schema", "zcl.dev_loop_status.v1");
     (void)json_push_kv_bool(&reply->data, "active", active);
     (void)json_push_kv_int(&reply->data, "watcher_id", (int64_t)info.pid);
     (void)json_push_kv_str(&reply->data, "mode",
                            active ? info.mode_name : "");
-    (void)json_push_kv_bool(&reply->data, "watcher_ready",
+    (void)json_push_kv_bool(&reply->data, "source_snapshot_ready",
                             active && info.ready);
+    (void)json_push_kv_bool(&reply->data, "publication_target_required",
+                            publication_required);
+    (void)json_push_kv_int(&reply->data, "publication_target_rpc_port",
+                           zcl_native_command_rpc_port());
+    (void)json_push_kv_int(&reply->data, "required_publication_rpc_port",
+                           18252);
+    (void)json_push_kv_bool(&reply->data, "publication_target_ready",
+                            publication_target_ready);
+    (void)json_push_kv_bool(&reply->data, "watcher_ready", watcher_ready);
     (void)json_push_kv_bool(
         &reply->data, "runtime_publication",
-        active && info.ready &&
+        watcher_ready &&
         zcl_devloop_publish_mode_applies(info.publish_mode));
     (void)json_push_kv_str(&reply->data, "freshness",
-                           zcl_devloop_watcher_freshness(active, info.ready));
+                           zcl_devloop_watcher_freshness(
+                               active, info.ready, publication_target_ready));
     (void)json_push_kv_str(
         &reply->data, "agent_next_action",
         zcl_devloop_watcher_next_action(active, info.ready,
+                                        publication_target_ready,
                                         info.publish_mode));
     int64_t epoch = 0;
     struct json_value cycle;
@@ -825,6 +860,7 @@ static void dev_emit_loop_status(const char *repo_root,
             "source_guard_captures", "source_guard_bytes_read",
             "source_bytes_total", "changed_source_bytes",
             "source_byte_accounting_complete", "closure_us", "failure_capsule",
+            "why_not_live", "contract_path", "service_source",
             "agent_next_action",
         };
         struct json_value summary;

@@ -473,6 +473,8 @@ static int test_watcher_publication_containment(void)
     TEST("dev platform: watchers verify by default and auto is island-only") {
         ASSERT(zcl_devloop_default_watch_publish_mode() ==
                ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY);
+        ASSERT(zcl_devloop_publication_target_port_supported(18252));
+        ASSERT(!zcl_devloop_publication_target_port_supported(29352));
         ASSERT(!zcl_devloop_publish_mode_applies(
             ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY));
         ASSERT(zcl_devloop_publish_mode_applies(ZCL_DEVLOOP_PUBLISH_APPLY));
@@ -483,25 +485,34 @@ static int test_watcher_publication_containment(void)
                       "auto") == 0);
         ASSERT(zcl_devloop_publish_mode_name(
                    (enum zcl_devloop_publish_mode)99) == NULL);
-        ASSERT(strcmp(zcl_devloop_watcher_freshness(false, false),
+        ASSERT(strcmp(zcl_devloop_watcher_freshness(false, false, false),
                       "watcher_not_running") == 0);
-        ASSERT(strcmp(zcl_devloop_watcher_freshness(true, false),
+        ASSERT(strcmp(zcl_devloop_watcher_freshness(true, false, false),
                       "watcher_starting") == 0);
-        ASSERT(strcmp(zcl_devloop_watcher_freshness(true, true), "current")
+        ASSERT(strcmp(zcl_devloop_watcher_freshness(true, true, false),
+                      "runtime_starting") == 0);
+        ASSERT(strcmp(zcl_devloop_watcher_freshness(true, true, true), "current")
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
-                          false, false, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
+                          false, false, false,
+                          ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
                       "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'")
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
-                          true, false, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
+                          true, false, false,
+                          ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
                       "zclassic23-dev dev loop status") == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
-                          true, true, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
+                          true, true, true,
+                          ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
                       "edit one C23 file")
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
-                          true, true, ZCL_DEVLOOP_PUBLISH_APPLY),
+                          true, true, false, ZCL_DEVLOOP_PUBLISH_APPLY),
+                      "start or wait for the isolated dev node on RPC 18252, then rerun zclassic23-dev dev loop status")
+               == 0);
+        ASSERT(strcmp(zcl_devloop_watcher_next_action(
+                          true, true, true, ZCL_DEVLOOP_PUBLISH_APPLY),
                       "edit one C23 file")
                == 0);
 
@@ -613,6 +624,9 @@ static int test_core_refusal_envelope(void)
                       "refused") == 0);
         ASSERT(strcmp(json_get_str(json_get(&root, "reason")),
                       "sealed_consensus_core") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&root, "why_not_live")),
+                      "sealed consensus core requires the owner-gated "
+                      "unseal and elevated proof procedure") == 0);
         ASSERT(strcmp(json_get_str(json_get(&root, "manifest")),
                       "core/MANIFEST.sha3") == 0);
         ASSERT(strcmp(json_get_str(json_get(&root, "law")),

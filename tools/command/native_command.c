@@ -394,6 +394,11 @@ const char *zcl_native_command_datadir(void)
     return g_bridge_datadir;
 }
 
+int zcl_native_command_rpc_port(void)
+{
+    return g_bridge_rpc_port;
+}
+
 void zcl_native_bridge_bind_rpc(const char *datadir, int rpc_port)
 {
     (void)snprintf(g_bridge_datadir, sizeof(g_bridge_datadir), "%s",

@@ -1811,7 +1811,12 @@ static int test_zd_improve_command(void)
         ASSERT(zcode_lane_find(&ndb, workspace, candidate_source_saved,
                                &frontier_status).ok);
         ASSERT_EQ(frontier_status.lane, VCS_ZCODE_LANE_FRONTIER);
+        ASSERT_STR_EQ(frontier_status.lane_name, "FRONTIER");
         ASSERT_STR_EQ(frontier_status.receipt_root_sha3, frontier_receipt);
+        ASSERT(frontier_status.capability[0] != '\0');
+        ASSERT_STR_EQ(
+            frontier_status.next_action,
+            "zcode accept --input='<action_id and lane CANDIDATE>'");
         struct db_build_action action;
         ASSERT(db_build_action_find(&ndb, action_id, &action));
         ASSERT_STR_EQ(action.state, "QUEUED");

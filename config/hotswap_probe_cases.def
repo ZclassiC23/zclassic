@@ -46,9 +46,23 @@ HOTSWAP_PROBE_CASE("service.package.guide.default.v1", "service",
 HOTSWAP_PROBE_CASE("service.zcode.moderation.status.default.v1", "service",
     "zcode.moderation.status", "{}",
     "zcl.zcode_moderation_status.v1", 4096)
+HOTSWAP_PROBE_CASE("service.zcode.passport.status.default.v1", "service",
+    "zcode.passport.status", "{}",
+    "zcl.zcode_passport_status.v1", 2048)
+HOTSWAP_PROBE_CASE("service.zcode.work.context.default.v1", "service",
+    "zcode.work.context", "{}",
+    "zcl.zcode_work_context.v1", 2048)
+HOTSWAP_PROBE_CASE("service.zcode.lane.guide.default.v1", "service",
+    "zcode.package.dev.promotion-guide", "{}",
+    "zcl.zcode_lane_guide.v1", 2048)
+HOTSWAP_PROBE_CASE("service.zcode.workspace.status.default.v1", "service",
+    "zcode.workspace.status", "{}",
+    "zcl.zcode_workspace_status.v1", 2048)
 HOTSWAP_PROBE_CASE("service.shop.reputation.empty.v1", "service",
     "app.shop.reputation",
     "{\"publisher\":\"020000000000000000000000000000000000000000000000000000000000000000\"}",
     "zcl.shop_reputation.v1", 16384)
 HOTSWAP_PROBE_CASE("service.shop.status.default.v1", "service",
     "app.shop.status", "{}", "zcl.shop_status.v1", 16384)
+HOTSWAP_PROBE_CASE("service.shop.want.list.default.v1", "service",
+    "app.shop.want.list", "{}", "zcl.shop_want_list.v1", 8192)

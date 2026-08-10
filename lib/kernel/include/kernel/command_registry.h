@@ -129,7 +129,7 @@ enum zcl_command_latency {
 /* >= the compiled catalog's leaf count; sized with headroom for the per-leaf
  * latency-sample ring (OS-B2 §2). config/src/command_catalog.c asserts against
  * this at compile time (size guard). */
-#define ZCL_COMMAND_LATENCY_TABLE_MAX 672U
+#define ZCL_COMMAND_LATENCY_TABLE_MAX 768U
 
 /* Maps a leaf's declared `latency` enum to its dispatch budget in ms. Pure,
  * total: an out-of-range value falls back to the PERSISTENT/900ms ceiling,

@@ -37,8 +37,13 @@
 #include "services/market_moderation_view_service.h"
 #include "services/zcode_package_view_service.h"
 #include "services/zcode_moderation_view_service.h"
+#include "services/zcode_passport_view_service.h"
+#include "services/zcode_goal_context_calc_service.h"
+#include "services/zcode_lane_view_service.h"
+#include "services/zcode_workspace_view_service.h"
 #include "services/shop_reputation_view_service.h"
 #include "services/shop_status_view_service.h"
+#include "services/shop_want_view_service.h"
 #include "controllers/rpc_client.h"
 #include "rpc/protocol.h"
 #include "rpc/server.h"
@@ -429,10 +434,20 @@ static void service_resident_observation_append(struct json_value *out,
         zcl_native_handle_zcode_package_guide(&request, &reply);
     } else if (strcmp(operation, "zcode.moderation.status") == 0) {
         zcl_native_handle_zcode_moderation_status(&request, &reply);
+    } else if (strcmp(operation, "zcode.passport.status") == 0) {
+        zcl_native_handle_zcode_passport_status(&request, &reply);
+    } else if (strcmp(operation, "zcode.work.context") == 0) {
+        zcl_native_handle_zcode_work_context(&request, &reply);
+    } else if (strcmp(operation, "zcode.package.dev.promotion-guide") == 0) {
+        zcl_native_handle_zcode_lane_guide(&request, &reply);
+    } else if (strcmp(operation, "zcode.workspace.status") == 0) {
+        zcl_native_handle_zcode_workspace_status(&request, &reply);
     } else if (strcmp(operation, "app.shop.reputation") == 0) {
         zcl_native_handle_shop_reputation(&request, &reply);
     } else if (strcmp(operation, "app.shop.status") == 0) {
         zcl_native_handle_shop_status(&request, &reply);
+    } else if (strcmp(operation, "app.shop.want.list") == 0) {
+        zcl_native_handle_shop_want_list(&request, &reply);
     } else {
         zcl_command_reply_fail(&reply, ZCL_COMMAND_STATUS_BLOCKED,
             ZCL_COMMAND_EXIT_BLOCKED, "UNKNOWN_SERVICE_PROBE", "probe",
@@ -512,8 +527,13 @@ static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
         zcl_native_market_moderation_view_service_contract(),
         zcl_native_zcode_package_view_service_contract(),
         zcl_native_zcode_moderation_view_service_contract(),
+        zcl_native_zcode_passport_view_service_contract(),
+        zcode_goal_context_calc_service_contract(),
+        zcode_lane_view_service_contract(),
+        zcl_native_zcode_workspace_view_service_contract(),
         zcl_native_shop_reputation_view_service_contract(),
         zcl_native_shop_status_view_service_contract(),
+        zcl_native_shop_want_view_service_contract(),
     };
     struct zcl_hotswap_service_report service_report;
     bool service_ok = zcl_hotswap_service_activate_so_any(
@@ -667,8 +687,13 @@ void zcl_native_handle_dev_hotswap_probe(
         zcl_native_market_moderation_view_service_contract(),
         zcl_native_zcode_package_view_service_contract(),
         zcl_native_zcode_moderation_view_service_contract(),
+        zcl_native_zcode_passport_view_service_contract(),
+        zcode_goal_context_calc_service_contract(),
+        zcode_lane_view_service_contract(),
+        zcl_native_zcode_workspace_view_service_contract(),
         zcl_native_shop_reputation_view_service_contract(),
         zcl_native_shop_status_view_service_contract(),
+        zcl_native_shop_want_view_service_contract(),
     };
     struct zcl_hotswap_service_report service_report;
     (void)zcl_hotswap_service_activate_so_any(

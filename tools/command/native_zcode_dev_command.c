@@ -7,6 +7,7 @@
 #include "base/serialize_le.h"
 #include "crypto/sha256.h"
 #include "crypto/sha3.h"
+#include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
@@ -14,6 +15,7 @@
 #include "services/build_fabric_worker.h"
 #include "services/zcode_agent_context_service.h"
 #include "services/zcode_lane_service.h"
+#include "services/zcode_lane_view_service.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "vcs/build_action.h"
@@ -372,6 +374,58 @@ static void zdev_push_lane(struct json_value *out,
                            status->prior_receipt_root_sha3);
     (void)json_push_kv_str(out, "signer_pubkey", status->signer_pubkey);
     (void)json_push_kv_int(out, "created_unix", status->created_at);
+    (void)json_push_kv_str(out, "lane_view_service_id",
+                           ZCODE_LANE_VIEW_SERVICE_ID);
+    (void)json_push_kv_int(out, "lane_view_service_generation",
+                           status->view_service_generation);
+    (void)json_push_kv_str(out, "capability", status->capability);
+    (void)json_push_kv_str(out, "agent_next_action", status->next_action);
+}
+
+void zcl_native_handle_zcode_lane_guide(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply || !request->input ||
+        request->input->type != JSON_OBJ || request->input->num_children != 0) {
+        if (reply) zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "BAD_LANE_GUIDE_INPUT", "guide", false, false,
+            "zcode package dev promotion-guide accepts no input keys",
+            "zcode.package.dev.promotion-guide");
+        return;
+    }
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_lane_view_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_LANE_VIEW_SERVICE_ID, &lease);
+    if (!service) service = zcode_lane_view_service_builtin();
+    struct zcode_lane_view_result_v1 view;
+    uint32_t generation = zcl_hotswap_service_generation();
+    bool rendered = service->render(ZCODE_LANE_VIEW_GUIDE, &view) &&
+        view.valid && view.lane_name[0] && view.capability[0] &&
+        view.next_action[0];
+    zcl_hotswap_service_release(&lease);
+    if (!rendered) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "LANE_GUIDE_VIEW_FAILED", "render", false, false,
+            "the pure lane view refused its frozen guide",
+            "zcode.package.dev.promotion-guide");
+        return;
+    }
+    (void)json_push_kv_bool(&reply->data, "ready", true);
+    (void)json_push_kv_str(&reply->data, "lanes", view.lane_name);
+    (void)json_push_kv_str(&reply->data, "capability", view.capability);
+    (void)json_push_kv_str(&reply->data, "lane_view_service_id",
+                           ZCODE_LANE_VIEW_SERVICE_ID);
+    (void)json_push_kv_int(&reply->data, "lane_view_service_generation",
+                           generation);
+    (void)json_push_kv_bool(&reply->data, "cas_reads_static", true);
+    (void)json_push_kv_bool(&reply->data, "database_projection_static", true);
+    (void)json_push_kv_bool(&reply->data, "signature_verification_static", true);
+    (void)json_push_kv_bool(&reply->data, "proof_evaluation_static", true);
+    (void)json_push_kv_bool(&reply->data, "promotion_writes_swappable", false);
+    (void)json_push_kv_str(&reply->data, "agent_next_action",
+                           view.next_action);
 }
 
 static void zdev_push_agent_context(

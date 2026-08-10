@@ -100,8 +100,7 @@ static bool p11_5_attach_blob_to_product(struct node_db *ndb,
 
 static void p11_5_setup_datadir(char *datadir, size_t datadir_size)
 {
-    snprintf(datadir, datadir_size, ".zcl_test_store_e2e_%d", (int)getpid());
-    mkdir(datadir, 0755);
+    test_make_tmpdir(datadir, datadir_size, "store_e2e", "gate");
 }
 
 static void p11_5_cleanup_datadir(const char *datadir)
@@ -682,8 +681,7 @@ int test_store_e2e_shielded(void)
     uint8_t to_d[ZC_DIVERSIFIER_SIZE];
     uint8_t to_pk_d[32];
 
-    snprintf(datadir, sizeof(datadir), ".zcl_test_store_e2e_sh_%d", (int)getpid());
-    mkdir(datadir, 0755);
+    test_make_tmpdir(datadir, sizeof(datadir), "store_e2e", "shielded");
     snprintf(dbpath, sizeof(dbpath), "%s/node.db", datadir);
     memset(&ndb, 0, sizeof(ndb));
     memset(&order, 0, sizeof(order));

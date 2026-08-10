@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 644 |
+| Registry entries (branches + leaves) | 659 |
 | Top-level roots | 11 |
-| Branches | 151 |
-| Leaves (dispatchable command paths) | 493 |
-| … `ready` (live handler in this build) | 445 |
+| Branches | 154 |
+| Leaves (dispatchable command paths) | 505 |
+| … `ready` (live handler in this build) | 457 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 179 | 43 | 136 |
+| `config/commands/zcode.def` | 194 | 46 | 148 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -963,12 +963,38 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
+| `zcode work context` | ready | read / read / public · instant/tiny | none | `zcl.zcode_work_context.v1` | `zclassic23 zcode work context` | Show goal-context selection readiness |
 | `zcode work start` | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`goal`**, `profile`, `context_symbol` | `zcl.zcode_work_start.v1` | `zclassic23-dev zcode work start --input='{"workspace":".","goal":"Make the parser reject overflowing lengths","profile":"standard"}'` | Start one bounded C23 change |
 | `zcode work status` | ready | read / read / operator · fast/low | `workspace`, `work` | `zcl.zcode_work_status.v1` | `zclassic23-dev zcode work status --input='{"work":"latest"}'` | Show one human-first work status |
 | `zcode work show` | ready | read / read / operator · fast/low | `workspace`, `work` | `zcl.zcode_work_status.v1` | `zclassic23-dev zcode work show --input='{"work":"latest"}'` | Show one human-first work result |
 | `zcode work run` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `adapter` | `zcl.zcode_work_run.v1` | `zclassic23-dev zcode work run --input='{"work":"latest","adapter":"manual"}'` | Run one contained adapter handoff |
 | `zcode work accept` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work` | `zcl.zcode_work_accept.v1` | `zclassic23-dev zcode work accept --input='{"work":"latest"}'` | Accept one exact proven candidate |
 | `zcode work review` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `adapter`, **`verdict`**, **`findings`** | `zcl.zcode_work_review.v1` | `zclassic23-dev zcode work review --input='{"work":"latest","adapter":"manual","verdict":"approve","findings":"No blocking findings."}'` | Review one exact candidate |
+
+#### `zcode.passport` — Signed C23 module Passports
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode passport status` | ready | read / read / public · instant/tiny | none | `zcl.zcode_passport_status.v1` | `zclassic23 zcode passport status` | Show signed module Passport readiness |
+| `zcode passport plan` | ready | read / read / public · instant/tiny | **`stable_api_root`**, **`recipe_root`**, **`toolchain_root`**, **`tests_root`**, **`license_root`**, **`semantic_fingerprint_root`**, **`workspace_lineage_root`**, **`source_assignment_root`**, **`quality_profiles_root`**, **`signer_pubkey`** | `zcl.zcode_passport_plan.v1` | `zclassic23 zcode passport plan --input='<exact evidence roots and signer_pubkey>'` | Plan an offline-signed C23 module Passport |
+| `zcode passport commit` | ready | read / read / public · instant/tiny | **`stable_api_root`**, **`recipe_root`**, **`toolchain_root`**, **`tests_root`**, **`license_root`**, **`semantic_fingerprint_root`**, **`workspace_lineage_root`**, **`source_assignment_root`**, **`quality_profiles_root`**, **`signer_pubkey`**, **`signature`** | `zcl.zcode_passport_commit.v1` | `zclassic23 zcode passport commit --input='<same roots, signer_pubkey, external signature>'` | Materialize an externally signed C23 module Passport |
+| `zcode passport verify` | ready | read / read / public · instant/tiny | **`passport`** | `zcl.zcode_passport_verify.v1` | `zclassic23 zcode passport verify --passport=<lowercase-hex-wire>` | Verify one signed C23 module Passport |
+
+#### `zcode.workspace` — Exact C23 workspace evidence bindings
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode workspace status` | ready | read / read / public · instant/tiny | none | `zcl.zcode_workspace_status.v1` | `zclassic23 zcode workspace status` | Show Passport-bound workspace readiness |
+| `zcode workspace plan` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root` | `zcl.zcode_workspace_plan.v1` | `zclassic23 zcode workspace plan --input='<passport, release root, sequence>'` | Plan one Passport-bound workspace entry |
+| `zcode workspace verify` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root`, **`binding_root`** | `zcl.zcode_workspace_verify.v1` | `zclassic23 zcode workspace verify --input='<plan input plus binding_root>'` | Verify one Passport-bound workspace entry |
+| `zcode workspace show` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root`, **`binding_root`** | `zcl.zcode_workspace_verify.v1` | `zclassic23 zcode workspace show --input='<verified binding input>'` | Show one verified Passport-bound workspace entry |
+
+#### `zcode.workspace.manifest` — Externally signed C23 workspace manifests
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode workspace manifest plan` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root`, **`workspace_sequence`**, `predecessor_workspace_root`, **`signer_root`** | `zcl.zcode_workspace_manifest_plan.v1` | `zclassic23 zcode workspace manifest plan --input='<verified Passport binding and signer public key>'` | Plan one externally signed workspace manifest |
+| `zcode workspace manifest commit` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root`, **`workspace_sequence`**, `predecessor_workspace_root`, **`signer_root`**, **`signature`** | `zcl.zcode_workspace_manifest_commit.v1` | `zclassic23 zcode workspace manifest commit --input='<same plan plus external signature>'` | Verify one externally signed workspace manifest |
 
 #### `zcode.commons` — Read-only ZC23 Living Commons projection
 
@@ -1131,7 +1157,8 @@ represented by its children's sections.
 | `zcode package dev improve` (aliases: `zcode.improve`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, `candidate_workspace`, `datadir`, `mode`, `planned_task_root`, `planned_context_root`, `candidate_source_sha256`, `source_root`, `dependency_lock_root`, **`dependency_lock_hex`**, `write_scope_root`, **`write_scope_csv`**, `acceptance_tests_root`, **`acceptance_recipe_hex`**, **`model_policy_root`**, **`goal`**, **`proof_policy_hex`**, `action_kind`, `fixed_input_path`, `fixed_input_relpath`, `preprocessed_path`, `patch_root`, `candidate_source_root`, `adapter_policy_root`, `author_pubkey`, `candidate_sequence`, `candidate_created_unix`, `profile`, **`expires_unix`**, `max_changed_files`, `max_patch_bytes`, `max_context_bytes`, `max_cpu_seconds`, `max_memory_bytes`, `max_output_bytes`, `context_symbol`, `remote_peer` | `zcl.zcode_improve.v1` | `zclassic23 zcode improve --input='{"mode":"plan","workspace":"/src/project","dependency_lock_hex":"<canonical wire hex>","write_scope_csv":"src,include","acceptance_recipe_hex":"<canonical wire hex>","model_policy_root":"<64hex>","goal":"fix seeded bug","proof_policy_hex":"<wire hex>","context_symbol":"buggy_function","expires_unix":123}'` | Improve code candidate |
 | `zcode package dev evidence` (aliases: `zcode.evidence`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, `datadir`, **`action_id`** | `zcl.zcode_evidence.v1` | `zclassic23 zcode evidence --input='{"workspace":"/src/project","action_id":"<64hex>"}'` | Evaluate candidate evidence |
 | `zcode package dev accept` (aliases: `zcode.accept`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`action_id`**, **`lane`**, `datadir` | `zcl.zcode_accept.v1` | `zclassic23 zcode accept --input='{"workspace":"/src/project","action_id":"<64hex>","lane":"CANDIDATE"}'` | Accept candidate lane |
-| `zcode package dev lane` (aliases: `zcode.lane`) | ready | read / read / operator · foreground/low | **`workspace`**, **`source_root`**, `datadir` | `zcl.zcode_lane.v1` | `zclassic23 zcode lane --input='{"workspace":"/src/project","source_root":"<64hex>"}'` | Inspect source lane |
+| `zcode package dev lane` (aliases: `zcode.lane`) | ready | read / read / operator · foreground/low | **`workspace`**, **`source_root`**, `datadir` | `zcl.zcode_lane.v1` | `zclassic23 zcode lane --input='{"workspace":"/src/project","source_root":"<64hex>","datadir":"/tmp/zclassic23-lane"}'` | Inspect source lane |
+| `zcode package dev promotion-guide` | ready | read / read / public · instant/tiny | none | `zcl.zcode_lane_guide.v1` | `zclassic23 zcode package dev promotion-guide` | Show signed lane workflow readiness |
 | `zcode package dev tasks` (aliases: `zcode.tasks`) | ready | read / read / operator · foreground/low | **`workspace`**, `task_root`, `source_root`, `author`, `state`, `limit` | `zcl.zcode_tasks.v1` | `zclassic23 zcode tasks --input='{"workspace":"/src/project"}'` | List local dev tasks |
 
 #### `zcode.package.dev.score` — Evidence-derived signed ZC23 Score receipts
@@ -1487,6 +1514,7 @@ promise the same document shape.
 | `zcl.dev_loop_status.v1` | `dev.loop.ensure`, `dev.loop.status`, `dev.loop.stop` |
 | `zcl.account.v1` | `app.account.show`, `app.account.whoami`, `app.account.add`, `app.account.role`, `app.account.suspend`, `app.account.unsuspend` |
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
+| `zcl.zcode_workspace_verify.v1` | `zcode.workspace.verify`, `zcode.workspace.show` |
 | `zcl.zcode_work_status.v1` | `zcode.work.status`, `zcode.work.show` |
 | `zcl.zcode_reproduction_challenge.v1` | `zcode.commons.reproduction.challenge.plan`, `zcode.commons.reproduction.challenge.commit` |
 | `zcl.zcode_commons_shadow_attribution.v1` | `zcode.commons.shadow.attribution.plan`, `zcode.commons.shadow.attribution.commit` |

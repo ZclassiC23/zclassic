@@ -3,75 +3,17 @@
 
 #include "services/zcode_goal_context_service.h"
 
+#include "hotswap/hotswap_service.h"
 #include "platform/time_compat.h"
+#include "services/zcode_goal_context_calc_service.h"
 
-#include <ctype.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #define ZGOAL_HITS_PER_TOKEN 16
 #define ZGOAL_FALLBACK_GROUPS 128
 #define ZGOAL_FALLBACK_FILES 64
 #define ZGOAL_FALLBACK_SYMBOLS 32
-
-static bool zgoal_stopword(const char *word)
-{
-    static const char *const words[] = {
-        "a", "add", "an", "and", "ensure", "fix", "make", "or",
-        "repair", "the", "to", "with", "without",
-    };
-    for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); i++)
-        if (strcmp(word, words[i]) == 0) return true;
-    return false;
-}
-
-static void zgoal_stem(char *word)
-{
-    size_t n = strlen(word);
-    if (n > 5 && strcmp(word + n - 3u, "ing") == 0)
-        word[n - 3u] = '\0';
-    else if (n > 4 && strcmp(word + n - 2u, "ed") == 0)
-        word[n - 2u] = '\0';
-    else if (n > 4 && word[n - 1u] == 's')
-        word[n - 1u] = '\0';
-}
-
-static size_t zgoal_tokenize(const char *goal,
-                             char out[ZCODE_GOAL_MAX_TOKENS]
-                                     [ZCODE_GOAL_TOKEN_MAX + 1u],
-                             bool *exhausted)
-{
-    size_t count = 0, used = 0;
-    char word[ZCODE_GOAL_TOKEN_MAX + 1u];
-    *exhausted = false;
-    for (const unsigned char *p = (const unsigned char *)goal;; p++) {
-        if (isalnum(*p) || *p == '_') {
-            if (used < ZCODE_GOAL_TOKEN_MAX)
-                word[used++] = (char)tolower(*p);
-            else
-                *exhausted = true;
-            continue;
-        }
-        if (used != 0) {
-            word[used] = '\0';
-            zgoal_stem(word);
-            bool duplicate = false;
-            for (size_t i = 0; i < count; i++)
-                if (strcmp(out[i], word) == 0) duplicate = true;
-            if (!zgoal_stopword(word) && !duplicate && word[0]) {
-                if (count < ZCODE_GOAL_MAX_TOKENS)
-                    (void)snprintf(out[count++],
-                                   ZCODE_GOAL_TOKEN_MAX + 1u, "%s", word);
-                else
-                    *exhausted = true;
-            }
-            used = 0;
-        }
-        if (*p == '\0') break;
-    }
-    return count;
-}
 
 static void zgoal_why(uint32_t mask, char out[64])
 {
@@ -98,17 +40,6 @@ static bool zgoal_same(const struct zcode_goal_candidate *candidate,
     return strcmp(candidate->symbol.name, symbol->name) == 0 &&
            strcmp(candidate->symbol.def_path, symbol->def_path) == 0 &&
            strcmp(candidate->symbol.decl_path, symbol->decl_path) == 0;
-}
-
-static int zgoal_candidate_cmp(const void *a, const void *b)
-{
-    const struct zcode_goal_candidate *ca = a, *cb = b;
-    if (ca->score != cb->score) return ca->score > cb->score ? -1 : 1;
-    int by_name = strcmp(ca->symbol.name, cb->symbol.name);
-    if (by_name) return by_name;
-    int by_def = strcmp(ca->symbol.def_path, cb->symbol.def_path);
-    return by_def ? by_def : strcmp(ca->symbol.decl_path,
-                                    cb->symbol.decl_path);
 }
 
 static bool zgoal_add(struct zcode_goal_selection *out,
@@ -248,12 +179,23 @@ struct zcl_result zcode_goal_context_select(
     int64_t started = platform_time_monotonic_us();
     struct codeindex *index = codeindex_open(workspace);
     if (!index) return ZCL_ERR(-1, "code index could not open for goal selection");
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_goal_context_calc_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_GOAL_CONTEXT_CALC_SERVICE_ID, &lease);
+    if (!service) service = zcode_goal_context_calc_service_builtin();
+    out->service_generation = zcl_hotswap_service_generation();
     struct zcl_result result = ZCL_OK;
     if (exact_symbol && exact_symbol[0]) {
         result = zgoal_exact(index, exact_symbol, out);
     } else {
-        out->token_count = zgoal_tokenize(goal, out->tokens,
-                                          &out->budget_exhausted);
+        struct zcode_goal_tokens_v1 tokens;
+        if (!service->tokenize(goal, &tokens) || !tokens.valid) {
+            result = ZCL_ERR(-1, "pure goal tokenization refused bounded input");
+        } else {
+            out->token_count = tokens.count;
+            out->budget_exhausted = tokens.budget_exhausted;
+            memcpy(out->tokens, tokens.values, sizeof(out->tokens));
+        }
         for (size_t i = 0; i < out->token_count && result.ok; i++) {
             struct ci_search_hit hits[ZGOAL_HITS_PER_TOKEN];
             int count = codeindex_search_text(index, out->tokens[i], hits,
@@ -273,8 +215,11 @@ struct zcl_result zcode_goal_context_select(
         if (result.ok && out->candidate_count == 0)
             result = zgoal_project_fallback(index, out);
         if (result.ok) {
-            qsort(out->candidates, out->candidate_count,
-                  sizeof(out->candidates[0]), zgoal_candidate_cmp);
+            if (!service->rank(out->candidates, out->candidate_count))
+                result = ZCL_ERR(-1,
+                                 "pure candidate ranking refused bounded input");
+        }
+        if (result.ok) {
             out->selected = out->candidates[0].symbol;
             (void)snprintf(out->selected_symbol_id,
                            sizeof(out->selected_symbol_id), "%s",
@@ -289,9 +234,72 @@ struct zcl_result zcode_goal_context_select(
                                out->candidates[0].why);
         }
     }
+    zcl_hotswap_service_release(&lease);
     codeindex_close(index);
     int64_t elapsed = platform_time_monotonic_us() - started;
     out->generation_us = elapsed > 0 ? (uint64_t)elapsed : 1u;
     if (!result.ok) memset(&out->selected, 0, sizeof(out->selected));
     return result;
+}
+
+static bool zgoal_calc_frozen_kat(const void *opaque, char *why,
+                                  size_t why_sz)
+{
+    const struct zcode_goal_context_calc_service_v1 *service = opaque;
+    struct zcode_goal_tokens_v1 tokens;
+    if (!service || !service->tokenize || !service->rank ||
+        !service->render_status ||
+        !service->tokenize("Repair repairs repairing checksum and data data",
+                           &tokens) || !tokens.valid || tokens.count != 2 ||
+        strcmp(tokens.values[0], "checksum") != 0 ||
+        strcmp(tokens.values[1], "data") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen goal tokenization vector failed");
+        return false;
+    }
+    struct zcode_goal_candidate candidates[3] = {
+        {.score = 7}, {.score = 9}, {.score = 9},
+    };
+    (void)snprintf(candidates[0].symbol.name,
+                   sizeof(candidates[0].symbol.name), "%s", "zeta");
+    (void)snprintf(candidates[1].symbol.name,
+                   sizeof(candidates[1].symbol.name), "%s", "beta");
+    (void)snprintf(candidates[2].symbol.name,
+                   sizeof(candidates[2].symbol.name), "%s", "alpha");
+    if (!service->rank(candidates, 3) ||
+        strcmp(candidates[0].symbol.name, "alpha") != 0 ||
+        strcmp(candidates[1].symbol.name, "beta") != 0 ||
+        strcmp(candidates[2].symbol.name, "zeta") != 0 ||
+        service->rank(candidates, 0)) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen goal ranking vector failed");
+        return false;
+    }
+    struct zcode_goal_context_view_v1 view;
+    if (!service->render_status(&view) || !view.valid ||
+        strcmp(view.next_action,
+               "zcode work start --input='<workspace and goal>'") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen goal context status vector failed");
+        return false;
+    }
+    return true;
+}
+
+static const struct zcl_hotswap_service_contract k_zgoal_calc_contract = {
+    .service_id = ZCODE_GOAL_CONTEXT_CALC_SERVICE_ID,
+    .source_tu = "app/services/src/zcode_goal_context_calc_service.c",
+    .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+    .vtable_size = sizeof(struct zcode_goal_context_calc_service_v1),
+    .abi_fingerprint = ZCODE_GOAL_CONTEXT_CALC_ABI_FINGERPRINT,
+    .schema_fingerprint = ZCODE_GOAL_CONTEXT_CALC_SCHEMA_FINGERPRINT,
+    .wire_fingerprint = ZCODE_GOAL_CONTEXT_CALC_WIRE_FINGERPRINT,
+    .kat_fingerprint = ZCODE_GOAL_CONTEXT_CALC_KAT_FINGERPRINT,
+    .frozen_kat = zgoal_calc_frozen_kat,
+};
+
+const struct zcl_hotswap_service_contract *
+zcode_goal_context_calc_service_contract(void)
+{
+    return &k_zgoal_calc_contract;
 }

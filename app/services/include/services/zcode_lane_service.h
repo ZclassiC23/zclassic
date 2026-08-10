@@ -21,6 +21,9 @@ struct zcode_lane_status {
     char prior_receipt_root_sha3[65];
     char signer_pubkey[65];
     int64_t created_at;
+    uint32_t view_service_generation;
+    char capability[160];
+    char next_action[160];
 };
 
 /* target_lane is FRONTIER, CANDIDATE, or PROVEN. FRONTIER is idempotent

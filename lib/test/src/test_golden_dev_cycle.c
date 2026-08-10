@@ -165,6 +165,10 @@ static int t_sealed_refusal(void)
         ASSERT_STR_EQ(json_get_str(json_get(&v, "phase")),
                       "publication_contained");
         ASSERT(!json_get_bool(json_get(&v, "runtime_published")));
+        ASSERT_STR_EQ(json_get_str(json_get(&v, "why_not_live")),
+                      "runtime publication is contained until the source "
+                      "epoch, proof receipts, resident CAS, and rollback are "
+                      "durably bound");
         json_free(&v);
 
         /* The envelope itself: only the sealed member names in "paths". */

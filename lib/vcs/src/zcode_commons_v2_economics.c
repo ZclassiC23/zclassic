@@ -58,6 +58,9 @@ const char *vcs_zcode_commons_v2_error_string(
     case VCS_ZCODE_COMMONS_V2_COVERAGE: return "coverage";
     case VCS_ZCODE_COMMONS_V2_QUORUM: return "quorum";
     case VCS_ZCODE_COMMONS_V2_OVERFLOW: return "arithmetic-overflow";
+    case VCS_ZCODE_COMMONS_V2_SIZE: return "wire-size";
+    case VCS_ZCODE_COMMONS_V2_MAGIC: return "wire-magic";
+    case VCS_ZCODE_COMMONS_V2_SIGNATURE: return "signature";
     }
     return "unknown-commons-v2-error";
 }

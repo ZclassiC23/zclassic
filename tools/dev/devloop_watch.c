@@ -96,6 +96,7 @@ static int service_contract_restart_event(
         "\"linker_processes\":0,\"test_processes\":0,"
         "\"contract_path\":\"%s\",\"service_source\":\"%s\","
         "\"failure_capsule\":\"frozen ABI/schema/wire/KAT contract changed; live service publication refused\","
+        "\"why_not_live\":\"frozen ABI/schema/wire/KAT contract changed; live service publication refused\","
         "\"agent_next_action\":\"run make dev-bin to refresh the bounded DEV_RESTART plan, then rerun mapped proofs\"}",
         contract_path, service_source);
     if (n <= 0 || n >= (int)sizeof(body))

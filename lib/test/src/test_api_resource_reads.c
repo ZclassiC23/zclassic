@@ -22,8 +22,7 @@ int api_resource_reads_focused_tests(void)
         memset(txid, 0x44, sizeof(txid));
         memset(token_id, 0x55, sizeof(token_id));
         memset(addr_hash, 0x66, sizeof(addr_hash));
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_zslp_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "api_resources", "zslp");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
 
         bool ok = node_db_open(&ndb, dbpath);
@@ -111,8 +110,7 @@ int api_resource_reads_focused_tests(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_onion_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "api_resources", "onion");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
@@ -175,8 +173,8 @@ int api_resource_reads_focused_tests(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_file_services_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir),
+                         "api_resources", "file_services");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
@@ -232,11 +230,10 @@ int api_resource_reads_focused_tests(void)
         char dbdir[256];
         char blocksdir[320];
         char blkpath[384];
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_manifest_%d",
-                 (int)getpid());
+        test_make_tmpdir(dbdir, sizeof(dbdir),
+                         "api_resources", "manifest");
         snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", dbdir);
         snprintf(blkpath, sizeof(blkpath), "%s/blk00000.dat", blocksdir);
-        mkdir(dbdir, 0755);
         mkdir(blocksdir, 0755);
 
         FILE *f = fopen(blkpath, "wb");
@@ -304,8 +301,7 @@ int api_resource_reads_focused_tests(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_peers_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "api_resources", "peers");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
