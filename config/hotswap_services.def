@@ -53,3 +53,15 @@ HOTSWAP_SERVICE(
     "profile-resolve+visibility+description+guide.v1",
     "b3bb4162ded56964518aca6175fba41521ed9b121029a5eb38dd893267f80f26",
     "app.market.moderation.guide")
+
+HOTSWAP_SERVICE(
+    "zcode.package.view.v1",
+    "app/services/src/zcode_package_view_service.c",
+    "-",
+    "app/services/include/services/zcode_package_view_service.h",
+    "-",
+    "zcode.package.view.abi.v1:6cf12b80",
+    "zcl.zcode_package_guide.v1+zcl.zcode_package_search.v1+zcl.zcode_package_show.v1",
+    "package-index-entry+bounded-view+guide.v1",
+    "fa9b02a7fd52948c536fdb4894eae780e818a5fe2221871c63568130640d6728",
+    "zcode.package.guide")

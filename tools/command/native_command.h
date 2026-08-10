@@ -372,6 +372,9 @@ void zcl_native_handle_zcode_package_publish_plan(
 void zcl_native_handle_zcode_package_publish_commit(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_guide(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_package_dev_prepare(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

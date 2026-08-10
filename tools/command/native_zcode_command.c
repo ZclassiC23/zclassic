@@ -67,7 +67,9 @@
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
 #include "chain/chainparams.h"
+#include "hotswap/hotswap_service.h"
 #include "json/json.h"
+#include "services/zcode_package_view_service.h"
 #include "platform/time_compat.h"
 #include "vcs/package_attest.h"
 #include "vcs/package_index.h"
@@ -1288,17 +1290,17 @@ void zcl_native_handle_zcode_package_verify(
 /* ── zcode package search ───────────────────────────────────────────── */
 
 static void zc_search_row_json(struct json_value *row,
-                               const struct vcs_package_index_entry *e)
+                               const struct zcode_package_view_entry_v1 *e)
 {
     json_set_object(row);
     (void)json_push_kv_str(row, "name", e->name);
     (void)json_push_kv_str(row, "semver", e->semver);
     (void)json_push_kv_str(row, "license", e->license);
-    (void)json_push_kv_str(row, "publisher", e->publisher_hex);
+    (void)json_push_kv_str(row, "publisher", e->publisher);
     (void)json_push_kv_int(row, "publisher_sequence",
                            (int64_t)e->publisher_sequence);
-    (void)json_push_kv_str(row, "release_id", e->release_id_hex);
-    (void)json_push_kv_str(row, "package_root", e->package_root_hex);
+    (void)json_push_kv_str(row, "release_id", e->release_id);
+    (void)json_push_kv_str(row, "package_root", e->package_root);
     (void)json_push_kv_bool(row, "manifest_present", e->manifest_present);
     (void)json_push_kv_int(row, "files", (int64_t)e->file_count);
     (void)json_push_kv_int(row, "bytes", (int64_t)e->total_bytes);
@@ -1359,12 +1361,35 @@ void zcl_native_handle_zcode_package_search(
     struct json_value arr;
     json_init(&arr);
     json_set_array(&arr);
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_package_view_service_v1 *view_service =
+        zcl_hotswap_service_acquire(ZCODE_PACKAGE_VIEW_SERVICE_ID, &lease);
+    if (!view_service)
+        view_service = zcode_package_view_service_builtin();
+    bool view_ok = true;
     for (size_t i = 0; i < rendered; i++) {
+        struct zcode_package_view_entry_v1 view;
+        if (!view_service->render_entry(rows[i], &view) || !view.valid) {
+            view_ok = false;
+            break;
+        }
         struct json_value row;
         json_init(&row);
-        zc_search_row_json(&row, rows[i]);
+        zc_search_row_json(&row, &view);
         (void)json_push_back(&arr, &row);
         json_free(&row);
+    }
+    zcl_hotswap_service_release(&lease);
+    if (!view_ok) {
+        json_free(&arr);
+        vcs_package_index_free(index);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL,
+                               "PACKAGE_VIEW_FAILED", "render", false,
+                               false,
+                               "the pure package view service refused a search row",
+                               "zcode.package.search");
+        return;
     }
     (void)json_push_kv(&reply->data, "results", &arr);
     json_free(&arr);
@@ -1437,45 +1462,64 @@ void zcl_native_handle_zcode_package_show(
         return;
     }
 
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_package_view_service_v1 *view_service =
+        zcl_hotswap_service_acquire(ZCODE_PACKAGE_VIEW_SERVICE_ID, &lease);
+    if (!view_service)
+        view_service = zcode_package_view_service_builtin();
+    struct zcode_package_view_entry_v1 view;
+    if (!view_service->render_entry(e, &view) || !view.valid) {
+        zcl_hotswap_service_release(&lease);
+        vcs_package_index_free(index);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL,
+                               "PACKAGE_VIEW_FAILED", "render", false,
+                               false,
+                               "the pure package view service refused the release summary",
+                               "zcode.package.show");
+        return;
+    }
+
     struct json_value rel;
     json_init(&rel);
     json_set_object(&rel);
-    (void)json_push_kv_str(&rel, "release_id", e->release_id_hex);
-    (void)json_push_kv_str(&rel, "name", e->name);
-    (void)json_push_kv_str(&rel, "semver", e->semver);
-    (void)json_push_kv_str(&rel, "license", e->license);
-    (void)json_push_kv_str(&rel, "publisher", e->publisher_hex);
+    (void)json_push_kv_str(&rel, "release_id", view.release_id);
+    (void)json_push_kv_str(&rel, "name", view.name);
+    (void)json_push_kv_str(&rel, "semver", view.semver);
+    (void)json_push_kv_str(&rel, "license", view.license);
+    (void)json_push_kv_str(&rel, "publisher", view.publisher);
     (void)json_push_kv_int(&rel, "publisher_sequence",
-                           (int64_t)e->publisher_sequence);
-    (void)json_push_kv_str(&rel, "chain_id", e->chain_id);
-    (void)json_push_kv_str(&rel, "reward_address", e->reward_address);
-    (void)json_push_kv_bool(&rel, "has_parent", e->has_parent);
-    if (e->has_parent)
-        (void)json_push_kv_str(&rel, "parent_root", e->parent_root_hex);
-    (void)json_push_kv_bool(&rel, "has_znam", e->has_znam);
-    if (e->has_znam)
-        (void)json_push_kv_str(&rel, "znam", e->znam);
+                           (int64_t)view.publisher_sequence);
+    (void)json_push_kv_str(&rel, "chain_id", view.chain_id);
+    (void)json_push_kv_str(&rel, "reward_address", view.reward_address);
+    (void)json_push_kv_bool(&rel, "has_parent", view.has_parent);
+    if (view.has_parent)
+        (void)json_push_kv_str(&rel, "parent_root", view.parent_root);
+    (void)json_push_kv_bool(&rel, "has_znam", view.has_znam);
+    if (view.has_znam)
+        (void)json_push_kv_str(&rel, "znam", view.znam);
     (void)json_push_kv(&reply->data, "release", &rel);
     json_free(&rel);
 
     (void)json_push_kv_str(&reply->data, "package_root",
-                           e->package_root_hex);
+                           view.package_root);
     (void)json_push_kv_bool(&reply->data, "manifest_present",
-                            e->manifest_present);
-    (void)json_push_kv_int(&reply->data, "files", (int64_t)e->file_count);
-    (void)json_push_kv_int(&reply->data, "bytes", (int64_t)e->total_bytes);
-    (void)json_push_kv_int(&reply->data, "chunks", (int64_t)e->chunk_total);
+                            view.manifest_present);
+    (void)json_push_kv_int(&reply->data, "files", (int64_t)view.file_count);
+    (void)json_push_kv_int(&reply->data, "bytes", (int64_t)view.total_bytes);
+    (void)json_push_kv_int(&reply->data, "chunks", (int64_t)view.chunk_total);
     (void)json_push_kv_bool(&reply->data, "license_present",
-                            e->license_present);
+                            view.license_present);
     (void)json_push_kv_int(&reply->data, "executable_files",
-                           (int64_t)e->executable_count);
+                           (int64_t)view.executable_count);
+    zcl_hotswap_service_release(&lease);
 
     /* The bounded file page: parse the persisted manifest again (the index
      * projects summaries only; the CAS wire stays the truth). */
-    if (e->manifest_present) {
+    if (view.manifest_present) {
         char path[4400];
         n = snprintf(path, sizeof(path), "%s/manifests/%s", zcode_dir,
-                     e->package_root_hex);
+                     view.package_root);
         uint8_t *wire = (n > 0 && (size_t)n < sizeof(path))
             ? zcl_malloc(VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES,
                          "zc_show_manifest")

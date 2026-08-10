@@ -8,6 +8,7 @@
 #include "json/json.h"
 #include "services/market_purchase_view_service.h"
 #include "services/market_moderation_view_service.h"
+#include "services/zcode_package_view_service.h"
 
 #include <stdatomic.h>
 #include <string.h>
@@ -171,6 +172,18 @@ static int t_manifest_mapping(void)
         ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
                           "app/services/src/market_moderation_view_service.c"),
                       "app.market.moderation.guide");
+        ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
+                          "app/services/src/zcode_package_view_service.c"),
+                      "app/services/src/zcode_package_view_service.c");
+        ASSERT(zcl_hotswap_service_source_for_path(
+                   "app/services/include/services/zcode_package_view_service.h")
+               == NULL);
+        ASSERT_STR_EQ(zcl_hotswap_service_contract_source_for_path(
+                          "app/services/include/services/zcode_package_view_service.h"),
+                      "app/services/src/zcode_package_view_service.c");
+        ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
+                          "app/services/src/zcode_package_view_service.c"),
+                      "zcode.package.guide");
         ASSERT(zcl_hotswap_service_source_for_path(
                    "lib/storage/src/storage.c") == NULL);
         PASS();
@@ -323,11 +336,82 @@ static int t_market_moderation_view(void)
     return failures;
 }
 
+static bool candidate_package_guide(
+    struct zcode_package_guide_result_v1 *out)
+{
+    if (!zcode_package_view_service_builtin()->render_guide(out))
+        return false;
+    snprintf(out->next_command, sizeof(out->next_command), "%s",
+             "candidate package service generation is active");
+    return true;
+}
+
+static int t_zcode_package_view(void)
+{
+    int failures = 0;
+    TEST("package presentation swaps while package authority stays static") {
+        zcl_hotswap_service_reset();
+        const struct zcode_package_view_service_v1 *builtin =
+            zcode_package_view_service_builtin();
+        struct vcs_package_index_entry entry = {0};
+        snprintf(entry.release_id_hex, sizeof(entry.release_id_hex), "%064x",
+                 1);
+        snprintf(entry.package_root_hex, sizeof(entry.package_root_hex),
+                 "%064x", 2);
+        snprintf(entry.name, sizeof(entry.name), "%s", "alice/ring");
+        struct zcode_package_view_entry_v1 rendered;
+        ASSERT(builtin->render_entry(&entry, &rendered));
+        ASSERT(rendered.valid);
+        ASSERT_STR_EQ(rendered.name, "alice/ring");
+
+        struct zcode_package_view_service_v1 candidate_service = *builtin;
+        candidate_service.render_guide = candidate_package_guide;
+        struct zcl_hotswap_service_candidate service_candidate = {
+            .service_id = ZCODE_PACKAGE_VIEW_SERVICE_ID,
+            .source_tu = "app/services/src/zcode_package_view_service.c",
+            .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+            .vtable_size = sizeof(candidate_service),
+            .abi_fingerprint = ZCODE_PACKAGE_VIEW_ABI_FINGERPRINT,
+            .schema_fingerprint = ZCODE_PACKAGE_VIEW_SCHEMA_FINGERPRINT,
+            .wire_fingerprint = ZCODE_PACKAGE_VIEW_WIRE_FINGERPRINT,
+            .kat_fingerprint = ZCODE_PACKAGE_VIEW_KAT_FINGERPRINT,
+            .vtable = &candidate_service,
+        };
+        struct zcl_hotswap_service_report report = {0};
+        ASSERT(zcl_hotswap_service_publish(
+            zcl_native_zcode_package_view_service_contract(),
+            &service_candidate, true, &report));
+        ASSERT(report.probed);
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        struct zcl_command_request request = {.input = &input};
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.zcode_package_guide.v1");
+        zcl_native_handle_zcode_package_guide(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "service_generation")),
+                  1);
+        ASSERT(json_get_bool(json_get(&reply.data, "cas_authority_static")));
+        ASSERT(json_get_bool(json_get(&reply.data, "index_reads_static")));
+        ASSERT(json_get_bool(json_get(&reply.data, "publication_static")));
+        ASSERT(json_get_bool(json_get(&reply.data, "execution_static")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "next_command")),
+                      "candidate package service generation is active");
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        zcl_hotswap_service_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_hotswap_service_registry(void)
 {
     int failures = t_publish_and_lease() + t_contract_drift_restarts() +
                    t_manifest_mapping() + t_market_purchase_view() +
-                   t_market_moderation_view();
+                   t_market_moderation_view() + t_zcode_package_view();
     zcl_hotswap_service_reset();
     printf("=== hotswap_service_registry: %d failures ===\n", failures);
     return failures;

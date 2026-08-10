@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 624 |
+| Registry entries (branches + leaves) | 625 |
 | Top-level roots | 11 |
 | Branches | 147 |
-| Leaves (dispatchable command paths) | 477 |
-| … `ready` (live handler in this build) | 429 |
+| Leaves (dispatchable command paths) | 478 |
+| … `ready` (live handler in this build) | 430 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 175 | 42 | 133 |
+| `config/commands/zcode.def` | 176 | 42 | 134 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -1118,6 +1118,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
+| `zcode package guide` | ready | read / read / public · instant/tiny | none | `zcl.zcode_package_guide.v1` | `zclassic23 zcode package guide` | Show package read and authority boundaries |
 | `zcode package search` | ready | read / read / operator · fast/low | `publisher`, `name_prefix`, `license`, `keyword`, `limit`, `datadir` | `zcl.zcode_package_search.v1` | `zclassic23 zcode package search --input='{"keyword":"ring"}'` | Search locally published packages |
 | `zcode package show` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_show.v1` | `zclassic23 zcode package show --input='{"root":"<64hex>"}'` | Release record and manifest summary for one package root |
 | `zcode package recipe` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_recipe.v1` | `zclassic23 zcode package recipe --input='{"root":"<64hex>"}'` | Declarative build recipe for one package root |

@@ -1473,6 +1473,22 @@ ZCL_COMMAND_READY_COMMAND(
     zcl_native_handle_zcode_package_publish_commit)
 
 ZCL_COMMAND_READY_READ(
+    "zcode.package.guide", "zcode.package", "",
+    "Show package read and authority boundaries",
+    "Renders the pure live package-view surface and the resident static "
+    "boundary. It reads no CAS, index, signature, publication, fetch, "
+    "install, build, execution, storage, or network state.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,package,guide,workflow,hotswap,boundary",
+    "zcl.zcode_package_guide.input.v1", "zcl.zcode_package_guide.v1",
+    "", "", "zclassic23 zcode package guide",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_INSTANT, ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_guide)
+
+ZCL_COMMAND_READY_READ(
     "zcode.package.search", "zcode.package", "",
     "Search locally published packages",
     "Bounded rows over the package index — a projection rebuilt from the "
