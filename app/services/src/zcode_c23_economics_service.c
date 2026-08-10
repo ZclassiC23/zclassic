@@ -34,6 +34,71 @@ static bool render_status(struct zcode_c23_economics_status_result_v1 *out)
     return true;
 }
 
+static bool render_schedule_proposal(
+    const struct vcs_zcode_epoch_schedule_proposal_v1 *proposal,
+    bool persisted, struct zcode_c23_schedule_proposal_view_v1 *out)
+{
+    /* The caller owns proposal and output storage for the entire lease. */
+    if (!proposal || !out ||
+        vcs_zcode_epoch_schedule_validate(proposal) !=
+            VCS_ZCODE_EPOCH_SCHEDULE_OK)
+        return false;
+    memset(out, 0, sizeof(*out));
+    out->cap_atoms = VCS_ZC23_SCHEDULE_CAP_ATOMS;
+    out->total_epochs = VCS_ZC23_SCHEDULE_TOTAL_EPOCHS;
+    out->epoch = proposal->epoch;
+    out->budget_atoms = proposal->budget_atoms;
+    out->already_emitted_atoms = proposal->already_emitted_atoms;
+    out->proposed_mint_atoms = proposal->proposed_mint_atoms;
+    out->unissued_atoms = proposal->unissued_atoms;
+    out->evidence_count = proposal->evidence_count;
+    out->eligible_count = proposal->eligible_count;
+    out->preservation_skipped = proposal->preservation_skipped;
+    for (uint16_t schedule_class = VCS_ZCODE_EPOCH_SCHEDULE_CLASS_CREATION;
+         schedule_class <= VCS_ZCODE_EPOCH_SCHEDULE_CLASS_PRESERVATION;
+         schedule_class++) {
+        if (!vcs_zcode_epoch_schedule_class_weight(
+                schedule_class, &out->class_weights[schedule_class - 1]))
+            return false;
+    }
+    out->simulated = true;
+    out->persisted = persisted;
+    out->schedule_proposal = true;
+    out->mint = false;
+    out->token_exists = false;
+    out->funds_moved = false;
+    out->custody_used = false;
+    out->genesis_gate_satisfied = false;
+    out->balance_used_for_truth = false;
+    (void)snprintf(out->preservation_skip_reason,
+                   sizeof(out->preservation_skip_reason), "%s",
+                   VCS_ZCODE_EPOCH_SCHEDULE_PRESERVATION_SKIP_REASON);
+    (void)snprintf(out->mint_authority, sizeof(out->mint_authority), "%s",
+                   "simulation_only;no_issuance_authority");
+    return true;
+}
+
+static bool schedule_class_name(uint16_t schedule_class,
+                                char *out, size_t out_size)
+{
+    const char *name = NULL;
+    switch (schedule_class) {
+    case VCS_ZCODE_EPOCH_SCHEDULE_CLASS_CREATION: name = "creation"; break;
+    case VCS_ZCODE_EPOCH_SCHEDULE_CLASS_REPRODUCTION:
+        name = "reproduction";
+        break;
+    case VCS_ZCODE_EPOCH_SCHEDULE_CLASS_REPAIR: name = "repair"; break;
+    case VCS_ZCODE_EPOCH_SCHEDULE_CLASS_PRESERVATION:
+        name = "preservation";
+        break;
+    default: return false;
+    }
+    if (!out || out_size == 0 || strlen(name) + 1 > out_size)
+        return false;
+    (void)snprintf(out, out_size, "%s", name);
+    return true;
+}
+
 static const struct zcode_c23_economics_service_v1 k_builtin = {
     .award_atoms = vcs_zcode_creation_award_atoms_v2,
     .policy_init = vcs_zcode_policy_candidate_v2_init,
@@ -41,6 +106,8 @@ static const struct zcode_c23_economics_service_v1 k_builtin = {
     .policy_root = vcs_zcode_policy_candidate_v2_root,
     .epoch_select = vcs_zcode_epoch_select_v2,
     .render_status = render_status,
+    .render_schedule_proposal = render_schedule_proposal,
+    .schedule_class_name = schedule_class_name,
 };
 
 ZCL_HOTSWAP_SERVICE_EXPORT(

@@ -337,6 +337,9 @@ static int test_v2_truthful_activation_status(void)
                   0);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "category_order")),
                       "zero_root=0;else_first=(root[0]+1)%8;then=cyclic");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
+                                            "concentration_cap")),
+            "per-recipient cap=min(epoch_capacity,max(1 ZC23,floor(epoch_capacity/100)))");
         zcl_command_reply_free(&reply);
         json_free(&input);
 

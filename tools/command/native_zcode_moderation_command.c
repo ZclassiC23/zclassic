@@ -210,6 +210,7 @@ static bool economics_service_frozen_kat(const void *opaque, char *why,
     if (!service || !service->award_atoms || !service->policy_init ||
         !service->policy_validate || !service->policy_root ||
         !service->epoch_select || !service->render_status ||
+        !service->render_schedule_proposal || !service->schedule_class_name ||
         vcs_zcode_family_policy_v1_root(&family, family_root) !=
             VCS_ZCODE_COMMONS_V2_OK) {
         if (why && why_sz) (void)snprintf(why, why_sz,
@@ -220,7 +221,7 @@ static bool economics_service_frozen_kat(const void *opaque, char *why,
     uint8_t root[32], expected[32];
     if (service->policy_validate(&policy) != VCS_ZCODE_COMMONS_V2_OK ||
         service->policy_root(&policy, root) != VCS_ZCODE_COMMONS_V2_OK ||
-        !zcl_hex_decode(ZCODE_C23_ECONOMICS_KAT_FINGERPRINT, expected, 32) ||
+        !zcl_hex_decode(ZCODE_C23_ECONOMICS_POLICY_KAT_ROOT, expected, 32) ||
         memcmp(root, expected, 32) != 0 || !service->render_status(&status) ||
         status.award_atoms[VCS_ZCODE_CREATION_V2_MODULE_PUBLICATION] !=
             UINT64_C(100000000) ||
@@ -242,6 +243,32 @@ static bool economics_service_frozen_kat(const void *opaque, char *why,
         selected.recipient_cap_atoms != UINT64_C(100000000)) {
         if (why && why_sz) (void)snprintf(why, why_sz,
             "frozen empty-epoch selection vector failed");
+        return false;
+    }
+    struct vcs_zcode_epoch_schedule_proposal_v1 proposal;
+    vcs_zcode_epoch_schedule_proposal_init(&proposal);
+    proposal.schema_version = VCS_ZCODE_EPOCH_SCHEDULE_VERSION;
+    proposal.epoch = 1;
+    proposal.budget_atoms =
+        VCS_ZC23_SCHEDULE_CAP_ATOMS / VCS_ZC23_SCHEDULE_TOTAL_EPOCHS;
+    proposal.unissued_atoms = proposal.budget_atoms;
+    struct zcode_c23_schedule_proposal_view_v1 proposal_view;
+    char class_name[16];
+    if (!service->render_schedule_proposal(&proposal, false, &proposal_view) ||
+        proposal_view.epoch != 1 ||
+        proposal_view.budget_atoms != UINT64_C(2019230769230) ||
+        proposal_view.class_weights[0] != 100 ||
+        proposal_view.class_weights[1] != 40 ||
+        proposal_view.class_weights[2] != 20 ||
+        proposal_view.class_weights[3] != 5 || !proposal_view.simulated ||
+        proposal_view.persisted || proposal_view.mint ||
+        strcmp(proposal_view.mint_authority,
+               "simulation_only;no_issuance_authority") != 0 ||
+        !service->schedule_class_name(
+            VCS_ZCODE_EPOCH_SCHEDULE_CLASS_REPRODUCTION, class_name,
+            sizeof(class_name)) || strcmp(class_name, "reproduction") != 0) {
+        if (why && why_sz) (void)snprintf(why, why_sz,
+            "frozen schedule-proposal view vector failed");
         return false;
     }
     return true;

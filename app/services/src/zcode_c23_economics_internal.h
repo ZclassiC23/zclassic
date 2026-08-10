@@ -9,6 +9,6 @@
 #define ZCODE_C23_ECONOMICS_CATEGORY_ORDER \
     "zero_root=0;else_first=(root[0]+1)%8;then=cyclic"
 #define ZCODE_C23_ECONOMICS_CONCENTRATION_CAP \
-    "min(epoch_capacity,max(1 ZC23,floor(epoch_capacity/100)))"
+    "per-recipient cap=min(epoch_capacity,max(1 ZC23,floor(epoch_capacity/100)))"
 
 #endif /* ZCL_ZCODE_C23_ECONOMICS_INTERNAL_H */

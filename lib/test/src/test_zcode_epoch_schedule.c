@@ -680,6 +680,13 @@ static int schedule_command_plan_commit_test(void)
         schedule_call(zcl_native_handle_zcode_commons_schedule_propose_plan,
                       "zcode.commons.schedule.propose.plan", &input, &reply);
         ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "service_id")),
+                      "zcode.c23.economics.v1");
+        ASSERT(json_get_int(json_get(&reply.data, "service_generation")) ==
+               0);
+        ASSERT(json_get_bool(json_get(&reply.data, "pure_calculation")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "mint_authority")),
+                      "simulation_only;no_issuance_authority");
         ASSERT(json_get_bool(json_get(&reply.data, "simulated")));
         ASSERT(!json_get_bool(json_get(&reply.data, "persisted")));
         ASSERT(json_get_bool(json_get(&reply.data, "schedule_proposal")));

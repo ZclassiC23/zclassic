@@ -23,11 +23,11 @@ HOTSWAP_SERVICE(
     "app/services/src/zcode_c23_economics_service.c",
     "app/services/src/zcode_c23_economics_internal.h",
     "app/services/include/services/zcode_c23_economics_service.h",
-    "vcs_zcode_creation_award_atoms_v2 vcs_zcode_policy_candidate_v2_init vcs_zcode_policy_candidate_v2_validate vcs_zcode_policy_candidate_v2_root vcs_zcode_epoch_select_v2",
-    "zcode.c23.economics.abi.v1:41d0b92c",
-    "zcl.zcode_commons_economics_status.v2",
+    "vcs_zcode_creation_award_atoms_v2 vcs_zcode_policy_candidate_v2_init vcs_zcode_policy_candidate_v2_validate vcs_zcode_policy_candidate_v2_root vcs_zcode_epoch_select_v2 vcs_zcode_epoch_schedule_validate vcs_zcode_epoch_schedule_class_weight",
+    "zcode.c23.economics.abi.v1:9a8ca728",
+    "zcl.zcode_commons_economics_status.v2+schedule_proposal_view.v2",
     "zc23-policy+claim+epoch-selection.v2",
-    "8fc1df9547d1842004e86c1a06714829965693c031f8e3a16dd2fe38ee6f6ad9",
+    "bce1d18fafb5e968122594c7bba2deb5c56f97d62f74595e6b844581c944f020",
     "zcode.commons.economics.status")
 
 HOTSWAP_SERVICE(

@@ -5,6 +5,8 @@
 
 #include "base/hex.h"
 #include "json/json.h"
+#include "hotswap/hotswap_service.h"
+#include "services/zcode_c23_economics_service.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_epoch_schedule.h"
 
@@ -63,19 +65,6 @@ static void zep_hex(struct json_value *data, const char *key,
     (void)json_push_kv_str(data, key, hex);
 }
 
-static void zep_safety(struct json_value *data, bool persisted)
-{
-    (void)json_push_kv_bool(data, "simulated", true);
-    (void)json_push_kv_bool(data, "persisted", persisted);
-    (void)json_push_kv_bool(data, "schedule_proposal", true);
-    (void)json_push_kv_bool(data, "mint", false);
-    (void)json_push_kv_bool(data, "token_exists", false);
-    (void)json_push_kv_bool(data, "funds_moved", false);
-    (void)json_push_kv_bool(data, "custody_used", false);
-    (void)json_push_kv_bool(data, "genesis_gate_satisfied", false);
-    (void)json_push_kv_bool(data, "balance_used_for_truth", false);
-}
-
 static bool zep_workspace(const char *workspace,
                           struct zcl_command_reply *reply)
 {
@@ -86,61 +75,70 @@ static bool zep_workspace(const char *workspace,
     return false;
 }
 
-static const char *zep_class_name(uint16_t schedule_class)
-{
-    switch (schedule_class) {
-    case VCS_ZCODE_EPOCH_SCHEDULE_CLASS_CREATION: return "creation";
-    case VCS_ZCODE_EPOCH_SCHEDULE_CLASS_REPRODUCTION: return "reproduction";
-    case VCS_ZCODE_EPOCH_SCHEDULE_CLASS_REPAIR: return "repair";
-    case VCS_ZCODE_EPOCH_SCHEDULE_CLASS_PRESERVATION: return "preservation";
-    }
-    return "unknown";
-}
-
-static void zep_render_proposal(
+static bool zep_render_proposal(
     struct json_value *data,
     const struct vcs_zcode_epoch_schedule_proposal_v1 *proposal,
-    const uint8_t proposal_root[32], bool persisted)
+    const uint8_t proposal_root[32],
+    const struct zcode_c23_economics_service_v1 *service,
+    uint64_t service_generation, bool persisted)
 {
+    struct zcode_c23_schedule_proposal_view_v1 view;
+    if (!service || !service->render_schedule_proposal ||
+        !service->schedule_class_name ||
+        !service->render_schedule_proposal(proposal, persisted, &view))
+        return false;
+    (void)json_push_kv_str(data, "service_id",
+                           ZCODE_C23_ECONOMICS_SERVICE_ID);
+    (void)json_push_kv_int(data, "service_generation",
+                           (int64_t)service_generation);
+    (void)json_push_kv_bool(data, "pure_calculation", true);
     zep_hex(data, "schedule_proposal_root", proposal_root);
     zep_hex(data, "previous_proposal_root",
             proposal->previous_proposal_root);
-    (void)json_push_kv_int(data, "epoch", (int64_t)proposal->epoch);
-    (void)json_push_kv_int(data, "cap_atoms",
-                           (int64_t)VCS_ZC23_SCHEDULE_CAP_ATOMS);
+    (void)json_push_kv_int(data, "epoch", (int64_t)view.epoch);
+    (void)json_push_kv_int(data, "cap_atoms", (int64_t)view.cap_atoms);
     (void)json_push_kv_int(data, "total_epochs",
-                           (int64_t)VCS_ZC23_SCHEDULE_TOTAL_EPOCHS);
-    (void)json_push_kv_int(data, "budget_atoms",
-                           (int64_t)proposal->budget_atoms);
+                           (int64_t)view.total_epochs);
+    (void)json_push_kv_int(data, "budget_atoms", (int64_t)view.budget_atoms);
     (void)json_push_kv_int(data, "already_emitted_atoms",
-                           (int64_t)proposal->already_emitted_atoms);
+                           (int64_t)view.already_emitted_atoms);
     (void)json_push_kv_int(data, "proposed_mint_atoms",
-                           (int64_t)proposal->proposed_mint_atoms);
+                           (int64_t)view.proposed_mint_atoms);
     (void)json_push_kv_int(data, "unissued_atoms",
-                           (int64_t)proposal->unissued_atoms);
+                           (int64_t)view.unissued_atoms);
     (void)json_push_kv_int(data, "evidence_count",
-                           (int64_t)proposal->evidence_count);
+                           (int64_t)view.evidence_count);
     (void)json_push_kv_int(data, "eligible_count",
-                           (int64_t)proposal->eligible_count);
+                           (int64_t)view.eligible_count);
     (void)json_push_kv_int(data, "preservation_skipped",
-                           (int64_t)proposal->preservation_skipped);
+                           (int64_t)view.preservation_skipped);
     (void)json_push_kv_str(data, "preservation_skip_reason",
-        VCS_ZCODE_EPOCH_SCHEDULE_PRESERVATION_SKIP_REASON);
-    (void)json_push_kv_int(data, "class_weight_creation", 100);
-    (void)json_push_kv_int(data, "class_weight_reproduction", 40);
-    (void)json_push_kv_int(data, "class_weight_repair", 20);
-    (void)json_push_kv_int(data, "class_weight_preservation", 5);
+                           view.preservation_skip_reason);
+    (void)json_push_kv_int(data, "class_weight_creation",
+                           (int64_t)view.class_weights[0]);
+    (void)json_push_kv_int(data, "class_weight_reproduction",
+                           (int64_t)view.class_weights[1]);
+    (void)json_push_kv_int(data, "class_weight_repair",
+                           (int64_t)view.class_weights[2]);
+    (void)json_push_kv_int(data, "class_weight_preservation",
+                           (int64_t)view.class_weights[3]);
     struct json_value allocations;
     json_init(&allocations); json_set_array(&allocations);
     for (size_t i = 0; i < proposal->allocation_count; i++) {
         const struct vcs_zcode_epoch_schedule_allocation *allocation =
             &proposal->allocations[i];
         struct json_value row;
+        char class_name[16];
         json_init(&row); json_set_object(&row);
         zep_hex(&row, "contributor_binding_root",
                 allocation->contributor_binding_root);
-        (void)json_push_kv_str(&row, "class",
-                               zep_class_name(allocation->schedule_class));
+        if (!service->schedule_class_name(allocation->schedule_class,
+                                          class_name, sizeof(class_name))) {
+            json_free(&row);
+            json_free(&allocations);
+            return false;
+        }
+        (void)json_push_kv_str(&row, "class", class_name);
         (void)json_push_kv_int(&row, "award_atoms",
                                (int64_t)allocation->award_atoms);
         (void)json_push_back(&allocations, &row);
@@ -148,9 +146,20 @@ static void zep_render_proposal(
     }
     (void)json_push_kv(data, "allocations", &allocations);
     json_free(&allocations);
-    (void)json_push_kv_str(data, "mint_authority",
-                           "schedule_proposal_simulation_only");
-    zep_safety(data, persisted);
+    (void)json_push_kv_str(data, "mint_authority", view.mint_authority);
+    (void)json_push_kv_bool(data, "simulated", view.simulated);
+    (void)json_push_kv_bool(data, "persisted", view.persisted);
+    (void)json_push_kv_bool(data, "schedule_proposal",
+                            view.schedule_proposal);
+    (void)json_push_kv_bool(data, "mint", view.mint);
+    (void)json_push_kv_bool(data, "token_exists", view.token_exists);
+    (void)json_push_kv_bool(data, "funds_moved", view.funds_moved);
+    (void)json_push_kv_bool(data, "custody_used", view.custody_used);
+    (void)json_push_kv_bool(data, "genesis_gate_satisfied",
+                            view.genesis_gate_satisfied);
+    (void)json_push_kv_bool(data, "balance_used_for_truth",
+                            view.balance_used_for_truth);
+    return true;
 }
 
 static bool zep_parse_propose(
@@ -215,7 +224,21 @@ static void zep_propose_handle(
         free(wire);
         return;
     }
-    zep_render_proposal(&reply->data, &proposal, proposal_root, persist);
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_c23_economics_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_C23_ECONOMICS_SERVICE_ID, &lease);
+    if (!service) service = zcode_c23_economics_service_builtin();
+    uint64_t service_generation = zcl_hotswap_service_generation();
+    if (!zep_render_proposal(&reply->data, &proposal, proposal_root, service,
+                             service_generation, persist)) {
+        zcl_hotswap_service_release(&lease);
+        zep_fail(reply, "EPOCH_SCHEDULE_VIEW_REFUSED",
+                 "the pure economics service refused the validated proposal view");
+        vcs_zcode_epoch_schedule_proposal_free(&proposal);
+        free(wire);
+        return;
+    }
+    zcl_hotswap_service_release(&lease);
     vcs_zcode_epoch_schedule_proposal_free(&proposal);
     free(wire);
 }
