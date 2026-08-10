@@ -823,6 +823,14 @@ int main(int argc, char **argv)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "shop") == 0) {
+        printf("[test] ZCL_TEST_ONLY=shop - running shop command subset\n");
+        { extern int test_shop(void);
+          failures += test_shop(); }
+        printf("\n=== shop subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "fast_sync") == 0) {
         printf("[test] ZCL_TEST_ONLY=fast_sync — running fast sync subset\n");
         failures += test_fast_sync();
@@ -1143,6 +1151,8 @@ int main(int argc, char **argv)
     failures += test_store_listing();
     failures += test_store_buyer();
     failures += test_store_transparent_pay();
+    { extern int test_shop(void);
+      failures += test_shop(); }
     failures += test_blog();
     failures += test_api();
     failures += test_explorer();

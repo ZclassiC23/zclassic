@@ -585,7 +585,50 @@ static size_t self_apps_csv(char *out, size_t out_len)
             continue;
         cur = odir_apps_csv_add(out, out_len, cur, id, strlen(id));
     }
+
+    /* Operator-declared extras (ONION_DIR_EXTRA_APPS_REL — `app shop init`
+     * writes "shop" there): re-read every round so initializing a shop
+     * lands on the self row without a restart, and deleting the file
+     * un-announces. The extra file passed the same normalize rule on the
+     * way out of onion_directory_extra_apps_csv, so these tokens are
+     * already bounded and valid; odir_apps_csv_add re-checks regardless. */
+    char extra[ONION_DIR_APPS_CSV_MAX + 1];
+    if (onion_directory_extra_apps_csv(onion_service_datadir(), extra,
+                                       sizeof(extra)) > 0) {
+        const char *p = extra;
+        while (*p) {
+            const char *comma = strchr(p, ',');
+            size_t tl = comma ? (size_t)(comma - p) : strlen(p);
+            cur = odir_apps_csv_add(out, out_len, cur, p, tl);
+            p += tl + (comma ? 1 : 0);
+        }
+    }
     return cur;
+}
+
+size_t onion_directory_extra_apps_csv(const char *datadir,
+                                      char *out, size_t out_len)
+{
+    if (!out || out_len == 0)
+        return 0;
+    out[0] = '\0';
+    if (!datadir || !datadir[0])
+        return 0;
+    char path[1024];
+    int n = snprintf(path, sizeof(path), "%s/%s", datadir,
+                     ONION_DIR_EXTRA_APPS_REL);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        return 0;
+    char buf[ONION_DIR_APPS_CSV_MAX + 1];
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return 0;               /* absent is the common case, not an error */
+    size_t len = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[len] = '\0';
+    /* A trailing newline or a junk token cannot smuggle anything in:
+     * normalize drops whatever fails onion_directory_app_id_valid. */
+    return onion_directory_apps_normalize(buf, out, out_len);
 }
 
 void onion_directory_reset_self_clearnet(void)

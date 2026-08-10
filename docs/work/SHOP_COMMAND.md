@@ -67,6 +67,23 @@ or a new store-adjacent def, following existing patterns).
 `app shop status` (read): the same verification block on demand, plus
 each unmet prerequisite named with its remedy (never a silent partial).
 
+Landed 2026-08-10: `app.shop.init` (READY_COMMAND, plan/commit) and
+`app.shop.status` (READY_READ) in `config/commands/store.def`, handlers in
+`app/controllers/src/shop_native_handler.c` with the datadir-local
+probe/provision half in `shop_native_probes.c`. Commit refuses by name on
+a non-encrypted wallet (WKS1/WKD1 envelope probe) before the Tor check,
+and on the stub-Tor build; it ensures the slice-A identity, copies
+`--input` products.json to `<datadir>/store/products.json`, runs
+`store_ensure_schema` against the live `<datadir>/node.db`, and announces
+via the new `<datadir>/directory/apps.csv` (ONION_DIR_EXTRA_APPS_REL),
+which lib/net's register_self() folds into the node's own
+`/directory.json` apps row each round. Test group: `test_shop`. (Fix
+2026-08-10: the plan's commit instruction rides in `commit_input` /
+`commit_command` data fields — a self-referential `next[]` entry made the
+envelope's push_next_array drop the whole bare-plan reply to an empty
+RESPONSE_BUDGET_EXCEEDED; both leaves declare ZCL_COMMAND_LIST_BUDGET for
+remedy-string headroom, pinned by a registry-level budget regression.)
+
 ### C. `app shop reputation` (provable facts only)
 
 Fold the existing commons projection per publisher: reproductions,

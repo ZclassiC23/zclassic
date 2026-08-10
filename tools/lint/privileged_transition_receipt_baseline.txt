@@ -154,3 +154,4 @@ yardsale.seller.disarm   exempt: clears the process-memory seller profile (clean
 yardsale.buy             exempt: floods a signed accept through the existing ceremony + relay gates behind an exact expiring plan/commit; persists only a plan row and installs no privileged artifact
 vault.intent.submit      exempt: schedules an already reserved wallet intent through the existing identity, snapshot, exact-byte, admission, durability and relay gates; installs no privileged artifact
 vault.intent.cancel      exempt: atomically terminates only an unclaimed planned wallet intent and releases its reservation; installs no privileged artifact
+app.shop.init  exempt: provisions datadir-local storefront state (persistent onion identity seed, products.json, directory/apps.csv) behind an exact plan/commit; installs no privileged runtime artifact and changes no running binary

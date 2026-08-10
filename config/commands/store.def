@@ -126,3 +126,68 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_store_collect)
+
+/* ── Shop orchestration (docs/work/SHOP_COMMAND.md, slice B) ──────────
+ * The storefront side of the store: one plan/commit command that composes
+ * the persistent onion identity, wallet custody, the store schema, and
+ * the directory announcement into "your shop is live", and one read leaf
+ * that renders the same verification block with every gap named.
+ *
+ * WHY THE LIST BUDGET AND NOT THE RESULT DEFAULT. The plan reply carries
+ * the snapshot, the verification block, every named gap WITH its full
+ * remedy string (the wallet custody recipe alone is ~430 bytes), and the
+ * seven plan steps; measured at ~2.8 KB on a fresh datadir and growing
+ * with every gap that names a remedy, it rides close enough to the
+ * 4096-byte RESULT default that the next long remedy would tip it over —
+ * and an over-budget reply here is an EMPTY RESPONSE_BUDGET_EXCEEDED
+ * rather than a truncation, exactly the wrong answer at the feature's
+ * front door (bare `app shop init`). Held honest by test_shop's budget
+ * regression, which serializes the bare plan through the real registry
+ * into the CLI's own out-buffer size (ZCL_COMMAND_LIST_BUDGET + 1). */
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.shop.init", "app.shop", "", "Initialize a live private shop",
+    "Takes this node from \"has a store table\" to a live private shop in "
+    "one command. Without confirm:true, a non-mutating plan naming every "
+    "check, every unmet prerequisite, and the commit input. The commit "
+    "refuses by name on a plaintext or absent wallet (with the exact "
+    "credential recipe — never silently minting plaintext keys) and on a "
+    "stub-Tor build (with the make tor-full remedy); otherwise it ensures "
+    "the persistent onion identity (minted once, reused after), provisions "
+    "an optional --input products.json through the existing store loader, "
+    "ensures the store schema, registers \"shop\" on the node's "
+    "/directory.json apps row, and prints the verification block: the "
+    "onion /store URL, product count, wallet and discovery state, and the "
+    "buyer's next command. Idempotent: re-running reuses the identity and "
+    "never double-announces.", ZCL_COMMAND_LIST_BUDGET,
+    "shop,init,store,onion,storefront,directory",
+    "zcl.shop_init.input.v1", "zcl.shop_init.v1",
+    "confirm,input,datadir", "",
+    "zclassic23 app shop init --input='{\"confirm\":true,\"input\":\"/data/products.json\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_shop_init)
+
+ZCL_COMMAND_READY_READ(
+    "app.shop.status", "app.shop", "", "Show this node's shop posture",
+    "The shop verification block on demand, read-only: Tor build and "
+    "persistent-identity state (with the address re-derived from the "
+    "identity seed), wallet at-rest posture, store schema version and "
+    "product count, products.json presence, and the /directory.json apps "
+    "announcement state. Every unmet prerequisite is a named gap carrying "
+    "the exact command or flag that fixes it — never a silent partial. "
+    "Mutates nothing.", ZCL_COMMAND_LIST_BUDGET,
+    "shop,status,store,onion,storefront,directory",
+    "zcl.command.empty_input.v1", "zcl.shop_status.v1",
+    "datadir", "",
+    "zclassic23 app shop status",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_shop_status)

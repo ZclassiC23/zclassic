@@ -147,7 +147,7 @@ page changing with it.
 <!--   app_shape_folders    = directories directly under app/                        -->
 <!-- Fix a mismatch with `tools/scripts/check_doc_counts.sh --fix`, never by hand.  -->
 
-test_groups: 934
+test_groups: 935
 port_interfaces: 13
 persistence_adapters: 14
 condition_registrations: 52
@@ -269,6 +269,13 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
 4. `tools/lint/check_command_contract.sh` HARD-fails any leaf whose
    `semantics` argument is empty. Write a real one-line semantics string or
    `make lint` rejects the command.
+
+   Worked example of a plan/commit mutating leaf plus its read leaf, with
+   the probe half split into a second TU under the file-size ceiling:
+   `app shop init` / `app shop status` — leaf rows in
+   `config/commands/store.def` (branch row in `app_features.def`),
+   handlers in `app/controllers/src/shop_native_handler.c`, datadir-local
+   probes in `app/controllers/src/shop_native_probes.c`.
 
 ### Add a reducer stage (Job)
 1. `app/jobs/src/STAGE_stage.c` with `stage_exec()` returning <!-- doc-path-ok: STAGE is a placeholder -->

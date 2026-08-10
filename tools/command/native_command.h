@@ -1626,6 +1626,20 @@ void zcl_native_handle_store_products(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* app.shop.* — the storefront orchestration
+ * (app/controllers/src/shop_native_handler.c, docs/work/SHOP_COMMAND.md
+ * slice B). `init` composes the slice-A persistent onion identity, the
+ * wallet at-rest custody probe, the existing store schema/products.json
+ * loader, and the directory apps-row announcement into one plan/commit
+ * command; `status` renders the same verification block read-only with
+ * every unmet prerequisite named. Bound in config/commands/store.def. */
+void zcl_native_handle_shop_init(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* app.store.* — the BUYING half of the store
  * (app/controllers/src/store_buyer_native_handlers.c). Each proxies one
  * storebuy_* RPC, because placing an order mints a one-time Sapling payment

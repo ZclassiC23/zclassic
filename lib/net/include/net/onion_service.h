@@ -224,6 +224,28 @@ size_t onion_directory_apps_normalize(const char *csv,
 size_t onion_directory_apps_for_onion(const char *body, const char *onion,
                                       char *out, size_t out_len);
 
+/* Operator-declared extra self-app advertisement.
+ *
+ * The compile-time app-catalog mounts (net/site_routes.def) cannot express
+ * a conditional app: a storefront only exists on nodes whose operator
+ * initialized one. `<datadir>/directory/apps.csv` closes that gap — a CSV
+ * of additional app ids this node announces on the apps array of its own
+ * /directory.json row (`app shop init` writes "shop" there). register_self()
+ * re-reads the file every round and runs it through the same
+ * validate+normalize rule every apps string obeys, so a hand-edited file
+ * can only ever add bounded lowercase ids, and deleting the file
+ * un-announces on the next round. The mechanism lives in the directory
+ * layer — not the app — so a future isolated storefront worker announces
+ * itself the same way the main process does. */
+#define ONION_DIR_EXTRA_APPS_REL "directory/apps.csv"
+
+/* Read and normalize `<datadir>/` ONION_DIR_EXTRA_APPS_REL into CSV form.
+ * Returns the CSV length (0 when the file is absent, unreadable, or holds
+ * nothing that validates). File I/O is the only side effect. Exposed for
+ * the shop command and its tests. */
+size_t onion_directory_extra_apps_csv(const char *datadir,
+                                      char *out, size_t out_len);
+
 struct onion_relay_hint {
     char    hostname[64];
     int     port;
