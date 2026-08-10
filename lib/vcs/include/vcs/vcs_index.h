@@ -66,6 +66,11 @@ bool vcs_index_anchor_put_in_tx(struct vcs_index *idx, const uint8_t commit_id[3
 bool vcs_index_meta_set_in_tx(struct vcs_index *idx, const char *key,
                               const void *value, size_t value_len);
 bool vcs_index_meta_delete_in_tx(struct vcs_index *idx, const char *key);
+/* Rebuildable accelerator: one ZVCS blob root maps to one immutable
+ * VCS_TAG_PACKAGE_BLOB_MAP object. Writes require an open transaction. */
+bool vcs_index_package_map_put_in_tx(
+    struct vcs_index *idx, const uint8_t blob_root[32],
+    const uint8_t mapping_root[32]);
 
 /* Reads — take the handle lock themselves; do not require an open txn. */
 bool vcs_index_ref_get(struct vcs_index *idx, const char *name,
@@ -74,6 +79,9 @@ bool vcs_index_seal_pin_get(struct vcs_index *idx, uint8_t sealset_hash[32],
                             bool *found);
 bool vcs_index_meta_get(struct vcs_index *idx, const char *key, void *out_buf,
                         size_t out_cap, size_t *out_len, bool *found);
+bool vcs_index_package_map_get(
+    struct vcs_index *idx, const uint8_t blob_root[32],
+    uint8_t mapping_root[32], bool *found);
 
 /* ── in-memory stat-cache snapshot ──
  * The whole stat_cache in one query, sorted by path for bsearch. This is the

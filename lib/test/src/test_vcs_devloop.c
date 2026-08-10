@@ -21,11 +21,15 @@
 
 #include "test/test_core.h"
 
+#include "command/native_command.h"
+#include "base/hex.h"
 #include "crypto/ed25519.h"
+#include "json/json.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_devloop.h"
 #include "vcs/vcs_index.h"
 #include "vcs/vcs_object.h"
+#include "vcs/package_mapping.h"
 #include "vcs/zcode_lane.h"
 
 #include <stdio.h>
@@ -432,6 +436,120 @@ static int t_publication_enqueue(const char *dir)
     VD_CHECK("publication: accepted-lane retry reuses receipt", reused);
     VD_CHECK("publication: accepted-lane retry preserves root",
              memcmp(accepted_progress_root, accepted_retry_root, 32) == 0);
+
+    struct vcs_package_mapping_metrics first_map, warm_map;
+    uint8_t mapping_root[32], warm_mapping_root[32];
+    VD_CHECK("publication: worker derives content mapping cache",
+             vcs_package_mapping_set_build(
+                 dir, job.source_tree_root, lane_root,
+                 &first_map, mapping_root));
+    VD_CHECK("publication: cold mapping scans source bytes",
+             first_map.bytes_scanned > 0);
+    VD_CHECK("publication: cold mapping creates chunk hashes",
+             first_map.new_chunks > 0 && first_map.reused_chunks == 0);
+    VD_CHECK("publication: exact mapping retry uses immutable cache",
+             vcs_package_mapping_set_build(
+                 dir, job.source_tree_root, lane_root,
+                 &warm_map, warm_mapping_root));
+    VD_CHECK("publication: warm mapping scans zero source bytes",
+             warm_map.bytes_scanned == 0 && warm_map.new_chunks == 0);
+    VD_CHECK("publication: warm mapping reuses every cold chunk",
+             warm_map.reused_chunks == first_map.new_chunks);
+    VD_CHECK("publication: warm mapping root is byte-stable",
+             memcmp(mapping_root, warm_mapping_root, 32) == 0);
+    struct vcs_package_mapping_set loaded_mapping;
+    VD_CHECK("publication: mapping set reloads by exact root",
+             vcs_package_mapping_set_load(
+                 dir, mapping_root, &loaded_mapping));
+    VD_CHECK("publication: mapping set binds source tree",
+             memcmp(loaded_mapping.source_tree_root,
+                    job.source_tree_root, 32) == 0);
+    VD_CHECK("publication: mapping set binds accepted lane",
+             memcmp(loaded_mapping.lane_receipt_root, lane_root, 32) == 0);
+    vcs_package_mapping_set_free(&loaded_mapping);
+
+    uint8_t wrong_mapping_root[32], wrong_lane[32];
+    memcpy(wrong_lane, lane_root, 32);
+    wrong_lane[0] ^= 0x80u;
+    VD_CHECK("publication: wrong-lane mapping set can be represented",
+             vcs_package_mapping_set_build(
+                 dir, job.source_tree_root, wrong_lane,
+                 &warm_map, wrong_mapping_root));
+    reused = true;
+    VD_CHECK("publication: wrong-lane mapping cannot advance job",
+             !vcs_devloop_publication_advance_package_mapping(
+                 dir, ar.publication_job_root, wrong_mapping_root,
+                 warm_map.bytes_scanned, warm_map.new_chunks,
+                 warm_map.reused_chunks, rejected_progress_root, &reused));
+    VD_CHECK("publication: wrong mapping refusal is not reuse", !reused);
+
+    uint8_t mapped_progress_root[32];
+    reused = true;
+    VD_CHECK("publication: worker records mapping-ready phase",
+             vcs_devloop_publication_advance_package_mapping(
+                 dir, ar.publication_job_root, mapping_root,
+                 first_map.bytes_scanned, first_map.new_chunks,
+                 first_map.reused_chunks, mapped_progress_root, &reused));
+    VD_CHECK("publication: first mapping phase is new", !reused);
+    VD_CHECK("publication: mapping phase reloads",
+             vcs_devloop_publication_progress_load(
+                 dir, ar.publication_job_root, &progress,
+                 loaded_progress_root));
+    VD_CHECK("publication: mapping-ready phase named",
+             progress.phase ==
+                 VCS_DEVLOOP_PUBLICATION_PHASE_PACKAGE_MAPPING_READY);
+    VD_CHECK("publication: mapping phase binds exact set",
+             memcmp(progress.artifact_root, mapping_root, 32) == 0);
+    VD_CHECK("publication: mapping phase preserves accepted predecessor",
+             memcmp(progress.predecessor_receipt_root,
+                    accepted_progress_root, 32) == 0);
+    VD_CHECK("publication: mapping receipt reports cold byte scan",
+             progress.bytes_scanned == first_map.bytes_scanned);
+    reused = false;
+    VD_CHECK("publication: mapping phase retry succeeds",
+             vcs_devloop_publication_advance_package_mapping(
+                 dir, ar.publication_job_root, mapping_root,
+                 warm_map.bytes_scanned, warm_map.new_chunks,
+                 warm_map.reused_chunks, accepted_retry_root, &reused));
+    VD_CHECK("publication: mapping phase retry reuses receipt", reused);
+    VD_CHECK("publication: mapping retry preserves receipt root",
+             memcmp(mapped_progress_root, accepted_retry_root, 32) == 0);
+    char job_hex[65], mapping_hex[65];
+    zcl_hex_encode(ar.publication_job_root, 32, job_hex);
+    zcl_hex_encode(mapping_root, 32, mapping_hex);
+    struct json_value advance_input;
+    json_init(&advance_input);
+    json_set_object(&advance_input);
+    (void)json_push_kv_str(&advance_input, "job_root", job_hex);
+    struct zcl_command_context command_context = {
+        .source_root = dir,
+        .authority_ceiling = ZCL_COMMAND_AUTH_OPERATOR,
+        .dev_build = true,
+    };
+    struct zcl_command_request advance_request = {
+        .context = &command_context,
+        .input = &advance_input,
+    };
+    struct zcl_command_reply advance_reply;
+    zcl_command_reply_init(&advance_reply,
+                           "zcl.dev_publication_advance.v1");
+    zcl_native_handle_dev_publication_advance(
+        &advance_request, &advance_reply);
+    VD_CHECK("publication: native worker resumes mapped job",
+             advance_reply.exit_code == ZCL_COMMAND_EXIT_OK);
+    VD_CHECK("publication: native worker reports mapping phase",
+             strcmp(json_get_str(json_get(&advance_reply.data, "status")),
+                    "PACKAGE_MAPPING_READY") == 0);
+    VD_CHECK("publication: native worker reports exact mapping root",
+             strcmp(json_get_str(json_get(
+                        &advance_reply.data, "package_mapping_root")),
+                    mapping_hex) == 0);
+    VD_CHECK("publication: native worker reports durable cold scan",
+             (uint64_t)json_get_int(json_get(
+                 &advance_reply.data, "bytes_scanned")) ==
+                 first_map.bytes_scanned);
+    zcl_command_reply_free(&advance_reply);
+    json_free(&advance_input);
     memset(signer_secret, 0, sizeof(signer_secret));
 
     vd_write(dir, "src/main.c", "int main(void){return 1;}\n");

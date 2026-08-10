@@ -18,6 +18,7 @@
 #include "services/zcode_lane_service.h"
 #include "util/safe_alloc.h"
 #include "vcs/package_manifest.h"
+#include "vcs/package_mapping.h"
 #include "vcs/package_index.h"
 #include "vcs/package_deps.h"
 #include "vcs/package_recipe.h"
@@ -2726,6 +2727,29 @@ static int test_zd_improve_command(void)
         (void)snprintf(accepted_receipt_saved,
                        sizeof(accepted_receipt_saved), "%s",
                        accepted_receipt);
+        uint8_t accepted_source_root[32], accepted_lane_root[32];
+        ASSERT(zcl_hex_decode_lower(candidate_source_saved,
+                                    accepted_source_root, 32));
+        ASSERT(zcl_hex_decode_lower(accepted_receipt_saved,
+                                    accepted_lane_root, 32));
+        struct vcs_package_mapping_metrics cold_mapping, warm_mapping;
+        uint8_t package_mapping_root[32], warm_package_mapping_root[32];
+        ASSERT(vcs_package_mapping_set_build(
+            workspace, accepted_source_root, accepted_lane_root,
+            &cold_mapping, package_mapping_root));
+        ASSERT(cold_mapping.bytes_scanned > 0);
+        ASSERT(cold_mapping.new_chunks > 0);
+        ASSERT_EQ(cold_mapping.reused_chunks, 0u);
+        ASSERT(vcs_package_mapping_set_build(
+            workspace, accepted_source_root, accepted_lane_root,
+            &warm_mapping, warm_package_mapping_root));
+        ASSERT_EQ(warm_mapping.bytes_scanned, 0u);
+        ASSERT_EQ(warm_mapping.new_chunks, 0u);
+        ASSERT_EQ(warm_mapping.reused_chunks, cold_mapping.new_chunks);
+        ASSERT(memcmp(package_mapping_root,
+                      warm_package_mapping_root, 32) == 0);
+        char package_mapping_hex[65];
+        zcl_hex_encode(package_mapping_root, 32, package_mapping_hex);
         char zcode_store_path[4352];
         (void)snprintf(zcode_store_path, sizeof(zcode_store_path),
                        "%s/zcode", workspace);
@@ -2751,6 +2775,9 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_str(&publish_plan_input, "task_root", task_hex);
         (void)json_push_kv_str(&publish_plan_input, "lane_receipt_root",
                                roots[9]);
+        (void)json_push_kv_str(&publish_plan_input,
+                               "package_mapping_root",
+                               package_mapping_hex);
         struct zcl_command_request publish_plan_request = {
             .input = &publish_plan_input,
         };
@@ -2781,6 +2808,17 @@ static int test_zd_improve_command(void)
         ASSERT_STR_EQ(json_get_str(json_get(
                           &publish_plan_reply.data, "lane")),
                       "CANDIDATE");
+        ASSERT_EQ(json_get_int(json_get(
+                      &publish_plan_reply.data, "bytes_scanned")), 0);
+        ASSERT_EQ(json_get_int(json_get(
+                      &publish_plan_reply.data, "new_chunks")), 0);
+        ASSERT_EQ((uint32_t)json_get_int(json_get(
+                      &publish_plan_reply.data, "reused_chunks")),
+                  cold_mapping.new_chunks);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &publish_plan_reply.data,
+                          "package_mapping_root")),
+                      package_mapping_hex);
         pre_publish_index = vcs_package_index_build(zcode_store_path);
         ASSERT(pre_publish_index != NULL);
         ASSERT_EQ(vcs_package_index_count(pre_publish_index), 0);
@@ -2848,6 +2886,9 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_str(&publish_commit_input,
                                "lane_receipt_root",
                                accepted_receipt_saved);
+        (void)json_push_kv_str(&publish_commit_input,
+                               "package_mapping_root",
+                               package_mapping_hex);
         (void)json_push_kv_int(&publish_commit_input, "day", 20000);
         struct zcl_command_request publish_commit_request = {
             .input = &publish_commit_input,

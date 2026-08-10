@@ -27,6 +27,7 @@
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_lane.h"
 #include "vcs/package_manifest.h"
+#include "vcs/package_mapping.h"
 #include "vcs/package_deps.h"
 #include "vcs/package_recipe.h"
 #include "vcs/package_store.h"
@@ -1662,29 +1663,49 @@ static bool zpub_stage_file(const char *dir, const char *relpath,
  * bytes for the existing commit lifecycle's chunk verification. */
 static bool zpub_source_entry(const char *workspace, const char *dir,
                               const struct vcs_entry *entry,
-                              struct vcs_package_manifest *package)
+                              struct vcs_package_manifest *package,
+                              const struct vcs_package_mapping_set *mapping,
+                              struct vcs_package_mapping_metrics *metrics)
 {
     if (!S_ISREG(entry->mode) || entry->size > SIZE_MAX ||
         !vcs_package_path_valid(entry->path))
         return false;
-    uint8_t *bytes = NULL;
+    uint8_t *bytes = NULL, *hashes = NULL;
     size_t len = 0;
-    bool ok = vcs_object_get(workspace, entry->blob, VCS_TAG_BLOB,
-                             &bytes, &len) == 0 &&
-              len == (size_t)entry->size;
-    uint32_t chunks = ok
-        ? (uint32_t)((len + VCS_PACKAGE_CHUNK_BYTES - 1u) /
-                     VCS_PACKAGE_CHUNK_BYTES) : 0;
-    uint8_t *hashes = chunks > 0
-        ? zcl_malloc((size_t)chunks * 32u, "zcode.publish.hashes") : NULL;
-    if (ok && chunks > 0 && !hashes)
-        ok = false;
-    for (uint32_t i = 0; ok && i < chunks; i++) {
+    uint32_t chunks = 0;
+    bool mapped = mapping && vcs_package_mapping_set_find(
+        workspace, mapping, entry->blob, entry->size, &hashes, &chunks);
+    bool ok = !mapping || mapped;
+    if (mapped) {
+        ok = !metrics || UINT32_MAX - metrics->reused_chunks >= chunks;
+        if (ok && metrics) metrics->reused_chunks += chunks;
+    } else if (ok) {
+        ok = vcs_object_get(workspace, entry->blob, VCS_TAG_BLOB,
+                            &bytes, &len) == 0 &&
+             len == (size_t)entry->size;
+        uint64_t count = len == 0 ? 0 :
+            1u + ((uint64_t)len - 1u) / VCS_PACKAGE_CHUNK_BYTES;
+        ok = ok && count <= UINT32_MAX;
+        chunks = ok ? (uint32_t)count : 0;
+        if (ok && chunks > 0)
+            hashes = zcl_malloc((size_t)chunks * 32u,
+                                "zcode.publish.hashes");
+        if (ok && chunks > 0 && !hashes) ok = false;
+    }
+    for (uint32_t i = 0; ok && !mapped && i < chunks; i++) {
         size_t off = (size_t)i * VCS_PACKAGE_CHUNK_BYTES;
         size_t take = len - off;
         if (take > VCS_PACKAGE_CHUNK_BYTES)
             take = VCS_PACKAGE_CHUNK_BYTES;
         ok = vcs_package_chunk_hash(bytes + off, take, hashes + i * 32u);
+    }
+    if (ok && !mapped && metrics) {
+        ok = UINT64_MAX - metrics->bytes_scanned >= entry->size &&
+            UINT32_MAX - metrics->new_chunks >= chunks;
+        if (ok) {
+            metrics->bytes_scanned += entry->size;
+            metrics->new_chunks += chunks;
+        }
     }
     if (ok && package)
         ok = vcs_package_manifest_add(
@@ -1692,6 +1713,18 @@ static bool zpub_source_entry(const char *workspace, const char *dir,
             (entry->mode & 0111u) != 0 ? VCS_PACKAGE_MODE_EXECUTABLE
                                        : VCS_PACKAGE_MODE_FILE,
             entry->size, hashes, chunks);
+    if (ok && dir && !bytes)
+        ok = vcs_object_get(workspace, entry->blob, VCS_TAG_BLOB,
+                            &bytes, &len) == 0 &&
+             len == (size_t)entry->size;
+    for (uint32_t i = 0; ok && dir && mapped && i < chunks; i++) {
+        size_t off = (size_t)i * VCS_PACKAGE_CHUNK_BYTES;
+        size_t take = len - off;
+        uint8_t checked[32];
+        if (take > VCS_PACKAGE_CHUNK_BYTES) take = VCS_PACKAGE_CHUNK_BYTES;
+        ok = vcs_package_chunk_hash(bytes + off, take, checked) &&
+            memcmp(checked, hashes + i * 32u, 32) == 0;
+    }
     if (ok && dir)
         ok = zpub_stage_file(dir, entry->path, bytes, len);
     free(hashes);
@@ -1777,6 +1810,10 @@ struct zpub_accepted_bundle {
     size_t manifest_wire_len;
     uint8_t *recipe_wire;
     size_t recipe_wire_len;
+    bool have_mapping;
+    uint8_t mapping_root[32];
+    struct vcs_package_mapping_set mapping;
+    struct vcs_package_mapping_metrics mapping_metrics;
 };
 
 static void zpub_bundle_free(struct zpub_accepted_bundle *bundle)
@@ -1785,7 +1822,9 @@ static void zpub_bundle_free(struct zpub_accepted_bundle *bundle)
     free(bundle->recipe_wire);
     free(bundle->manifest_wire);
     vcs_manifest_free(&bundle->tree);
+    vcs_package_mapping_set_free(&bundle->mapping);
     memset(bundle, 0, sizeof(*bundle));
+    vcs_package_mapping_set_init(&bundle->mapping);
 }
 
 static bool zpub_push_hex(struct json_value *out, const char *key,
@@ -1847,6 +1886,23 @@ static bool zpub_normalize(
                   "workspace and datadir must resolve to existing directories "
                   "and source_root must be 64 lowercase hex");
         return false;
+    }
+    const char *mapping_arg = zdev_str(
+        request->input, "package_mapping_root");
+    if (mapping_arg && mapping_arg[0]) {
+        bundle->have_mapping =
+            zcl_hex_decode_lower(mapping_arg, bundle->mapping_root, 32) &&
+            vcs_package_mapping_set_load(
+                bundle->workspace, bundle->mapping_root, &bundle->mapping) &&
+            memcmp(bundle->mapping.source_tree_root,
+                   bundle->source_root, 32) == 0;
+        if (!bundle->have_mapping) {
+            zpub_bundle_free(bundle);
+            zpub_fail(reply, "PACKAGE_MAPPING_INVALID",
+                      "package_mapping_root must be one complete immutable "
+                      "mapping set for the exact accepted source tree");
+            return false;
+        }
     }
     return true;
 }
@@ -1961,6 +2017,17 @@ static bool zpub_prepare_accepted_objects(
                   "verified acceptance");
         return false;
     }
+    uint8_t lane_receipt_root[32];
+    if (bundle->have_mapping &&
+        (!zcl_hex_decode_lower(bundle->lane.receipt_root_sha3,
+                               lane_receipt_root, 32) ||
+         memcmp(bundle->mapping.lane_receipt_root,
+                lane_receipt_root, 32) != 0)) {
+        zpub_bundle_free(bundle);
+        zpub_fail(reply, "PACKAGE_MAPPING_LANE_MISMATCH",
+                  "package_mapping_root does not bind the verified accepted lane");
+        return false;
+    }
 
     if (!vcs_tree_load(bundle->workspace, bundle->source_root,
                        &bundle->tree) ||
@@ -1977,7 +2044,9 @@ static bool zpub_prepare_accepted_objects(
     bool built = true;
     for (size_t i = 0; built && i < bundle->tree.count; i++)
         built = zpub_source_entry(bundle->workspace, NULL,
-                                  &bundle->tree.entries[i], &package);
+                                  &bundle->tree.entries[i], &package,
+                                  bundle->have_mapping ? &bundle->mapping : NULL,
+                                  &bundle->mapping_metrics);
     if (built)
         built = zpub_package_add_bytes(
             &package, ZPUB_LANE_RECEIPT_PATH, bundle->receipt_wire,
@@ -2213,6 +2282,19 @@ void zcl_native_handle_zcode_publish_plan(
                                  release.parent_root, 32);
     if (rendered)
         zpub_common_output(&reply->data, &bundle);
+    if (rendered) {
+        (void)json_push_kv_int(&reply->data, "bytes_scanned",
+                               (int64_t)bundle.mapping_metrics.bytes_scanned);
+        (void)json_push_kv_int(&reply->data, "new_chunks",
+                               bundle.mapping_metrics.new_chunks);
+        (void)json_push_kv_int(&reply->data, "reused_chunks",
+                               bundle.mapping_metrics.reused_chunks);
+        (void)json_push_kv_int(&reply->data, "synthetic_bytes_hashed",
+                               VCS_ZCODE_LANE_WIRE_BYTES);
+        if (bundle.have_mapping)
+            zdev_push_root(&reply->data, "package_mapping_root",
+                           bundle.mapping_root);
+    }
     free(release_body);
     zpub_bundle_free(&bundle);
     if (!rendered)
@@ -2273,7 +2355,9 @@ void zcl_native_handle_zcode_publish_commit(
     bool staged = stage_created;
     for (size_t i = 0; staged && i < bundle.tree.count; i++)
         staged = zpub_source_entry(bundle.workspace, staging,
-                                   &bundle.tree.entries[i], NULL);
+                                   &bundle.tree.entries[i], NULL,
+                                   bundle.have_mapping ? &bundle.mapping : NULL,
+                                   NULL);
     if (staged)
         staged = zpub_stage_file(
             staging, ZPUB_LANE_RECEIPT_PATH, bundle.receipt_wire,

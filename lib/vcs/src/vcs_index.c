@@ -85,7 +85,10 @@ static bool ensure_schema(sqlite3 *db)
         "  bound_at INTEGER NOT NULL);"
         "CREATE TABLE IF NOT EXISTS meta ("
         "  key TEXT PRIMARY KEY,"
-        "  value BLOB NOT NULL);";
+        "  value BLOB NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS package_blob_map ("
+        "  blob_hash BLOB PRIMARY KEY,"
+        "  mapping_root BLOB NOT NULL);";
     char *err = NULL;
     if (sqlite3_exec(db, ddl, NULL, NULL, &err) != SQLITE_OK) {
         fprintf(stderr, "[vcs] schema failed: %s\n",  // obs-ok:vcs-index-open-failure
@@ -259,6 +262,27 @@ bool vcs_index_stat_prune_in_tx(struct vcs_index *idx,
         if (err) sqlite3_free(err);
         LOG_FAIL("vcs", "delete stale stat rows");
     }
+    return true;
+}
+
+bool vcs_index_package_map_put_in_tx(
+    struct vcs_index *idx, const uint8_t blob_root[32],
+    const uint8_t mapping_root[32])
+{
+    if (!idx || !blob_root || !mapping_root)
+        LOG_FAIL("vcs", "null arg to package_map_put");
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(idx->db,
+        "INSERT OR REPLACE INTO package_blob_map(blob_hash,mapping_root)"
+        " VALUES(?,?)", -1, &stmt, NULL) != SQLITE_OK)
+        LOG_FAIL("vcs", "prepare package_map_put: %s",
+                 sqlite3_errmsg(idx->db));
+    sqlite3_bind_blob(stmt, 1, blob_root, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt, 2, mapping_root, 32, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);  // raw-sql-ok:vcs-index-kernel-store
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE)
+        LOG_FAIL("vcs", "step package_map_put rc=%d", rc);
     return true;
 }
 
@@ -457,6 +481,44 @@ bool vcs_index_meta_get(struct vcs_index *idx, const char *key, void *out_buf,
     return true;
 }
 
+bool vcs_index_package_map_get(
+    struct vcs_index *idx, const uint8_t blob_root[32],
+    uint8_t mapping_root[32], bool *found)
+{
+    if (found) *found = false;
+    if (!idx || !blob_root || !mapping_root)
+        LOG_FAIL("vcs", "null arg to package_map_get");
+    memset(mapping_root, 0, 32);
+    pthread_mutex_lock(&idx->lock);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(
+            idx->db,
+            "SELECT mapping_root FROM package_blob_map WHERE blob_hash=?",
+            -1, &stmt, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&idx->lock);
+        LOG_FAIL("vcs", "prepare package_map_get");
+    }
+    sqlite3_bind_blob(stmt, 1, blob_root, 32, SQLITE_TRANSIENT);
+    bool ok = true;
+    int rc = sqlite3_step(stmt);  // raw-sql-ok:vcs-index-kernel-store
+    if (rc == SQLITE_ROW) {
+        const void *bytes = sqlite3_column_blob(stmt, 0);
+        int len = sqlite3_column_bytes(stmt, 0);
+        if (!bytes || len != 32)
+            ok = false;
+        else {
+            memcpy(mapping_root, bytes, 32);
+            if (found) *found = true;
+        }
+    } else if (rc != SQLITE_DONE) {
+        ok = false;
+    }
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&idx->lock);
+    if (!ok) LOG_FAIL("vcs", "step package_map_get");
+    return true;
+}
+
 /* ── in-memory stat-cache snapshot ───────────────────────────────── */
 
 bool vcs_stat_cache_load(struct vcs_index *idx, struct vcs_stat_cache *out)
@@ -602,7 +664,8 @@ bool vcs_index_rebuild(struct vcs_index *idx, const char *repo_root)
     char *err = NULL;
     if (sqlite3_exec(idx->db,
         "DELETE FROM stat_cache; DELETE FROM refs; DELETE FROM seal_pin;"
-        " DELETE FROM anchor;", NULL, NULL, &err) != SQLITE_OK) {
+        " DELETE FROM anchor; DELETE FROM package_blob_map;",
+        NULL, NULL, &err) != SQLITE_OK) {
         if (err) sqlite3_free(err);
         vcs_index_rollback(idx);
         LOG_FAIL("vcs", "rebuild: clear tables");

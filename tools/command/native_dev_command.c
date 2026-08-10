@@ -27,6 +27,7 @@
 #include "platform/time_compat.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_devloop.h"
+#include "vcs/package_mapping.h"
 #include "vcs/vcs_seal.h"
 
 #include "encoding/utilstrencodings.h"
@@ -322,8 +323,23 @@ void zcl_native_handle_dev_publication_status(
     uint8_t progress_root[32];
     bool advanced = queued && vcs_devloop_publication_progress_load(
         root, job_root, &progress, progress_root);
-    bool accepted = advanced && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND;
+    bool mapping_ready = advanced && progress.phase ==
+        VCS_DEVLOOP_PUBLICATION_PHASE_PACKAGE_MAPPING_READY;
+    bool accepted = advanced &&
+        (progress.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND ||
+         mapping_ready);
+    struct vcs_package_mapping_set mapping;
+    vcs_package_mapping_set_init(&mapping);
+    if (mapping_ready && !vcs_package_mapping_set_load(
+            root, progress.artifact_root, &mapping)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "PUBLICATION_MAPPING_UNAVAILABLE", "load", true, false,
+            "the durable mapping phase references missing or corrupt evidence",
+            job_hex);
+        return;
+    }
     char hex[65], next_command[256];
     int next_len = snprintf(
         next_command, sizeof(next_command),
@@ -342,6 +358,7 @@ void zcl_native_handle_dev_publication_status(
                            "zcl.dev_publication_status.v1");
     (void)json_push_kv_str(
         &reply->data, "status",
+        mapping_ready ? "PACKAGE_MAPPING_READY" :
         accepted ? "ACCEPTED_LANE_BOUND" :
         advanced ? "WAITING_ACCEPTANCE" : queued ? "QUEUED" : "NOT_QUEUED");
     (void)json_push_kv_bool(&reply->data, "proof_complete", true);
@@ -361,7 +378,19 @@ void zcl_native_handle_dev_publication_status(
     if (advanced)
         DEV_PUBLICATION_ROOT("progress_receipt_root", progress_root);
     if (accepted)
-        DEV_PUBLICATION_ROOT("lane_receipt_root", progress.artifact_root);
+        DEV_PUBLICATION_ROOT(
+            "lane_receipt_root",
+            mapping_ready ? mapping.lane_receipt_root
+                          : progress.artifact_root);
+    if (mapping_ready) {
+        DEV_PUBLICATION_ROOT("package_mapping_root", progress.artifact_root);
+        (void)json_push_kv_int(&reply->data, "bytes_scanned",
+                               (int64_t)progress.bytes_scanned);
+        (void)json_push_kv_int(&reply->data, "new_chunks",
+                               progress.new_chunks);
+        (void)json_push_kv_int(&reply->data, "reused_chunks",
+                               progress.reused_chunks);
+    }
 #undef DEV_PUBLICATION_ROOT
     (void)json_push_kv_str(&reply->data, "workspace_state", "not_created");
     (void)json_push_kv_str(&reply->data, "p2p", "not_announced");
@@ -371,14 +400,17 @@ void zcl_native_handle_dev_publication_status(
     (void)json_push_kv_str(&reply->data, "github_mirror", "not_recorded");
     (void)json_push_kv_str(
         &reply->data, "blocker",
-        accepted ? "offline_publisher_metadata_and_signature_required" :
+        mapping_ready ? "offline_publisher_metadata_and_signature_required" :
+        accepted ? "package_mapping_worker_advance_required" :
         queued ? "accepted_lane_and_offline_publisher_signature_required"
                : "durable_publication_queue_record_missing");
     (void)json_push_kv_str(
         &reply->data, "next_command",
-        accepted ?
+        mapping_ready ?
             "zclassic23 discover schema zcode.package.dev.publish.plan" :
+        accepted ? next_command :
         advanced ? "zclassic23 zcode guide" : queued ? next_command : "dev ff");
+    vcs_package_mapping_set_free(&mapping);
 }
 
 static bool dev_publication_lane_lookup(
@@ -453,8 +485,12 @@ void zcl_native_handle_dev_publication_advance(
     const char *datadir = json_get_str(json_get(request->input, "datadir"));
     uint8_t lane_root[32];
     char proof_set_hex[65] = "", lane_name[16] = "";
-    bool lane_bound = have_progress && progress.phase ==
-        VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND;
+    bool mapping_ready = have_progress && progress.phase ==
+        VCS_DEVLOOP_PUBLICATION_PHASE_PACKAGE_MAPPING_READY;
+    bool lane_bound = have_progress &&
+        (progress.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND ||
+         mapping_ready);
     if (!lane_bound && datadir && datadir[0] && have_job) {
         char workspace[PATH_MAX];
         bool lane_found = realpath(repo_root, workspace) &&
@@ -469,12 +505,44 @@ void zcl_native_handle_dev_publication_advance(
                     repo_root, job_root, &progress, loaded_progress_root);
         }
     }
+    bool mapping_failed = false;
+    if (lane_bound && !mapping_ready && have_job && have_progress) {
+        uint8_t mapping_root[32];
+        struct vcs_package_mapping_metrics metrics;
+        bool mapped = vcs_package_mapping_set_build(
+            repo_root, job.source_tree_root, progress.artifact_root,
+            &metrics, mapping_root);
+        if (mapped)
+            mapping_ready =
+                vcs_devloop_publication_advance_package_mapping(
+                    repo_root, job_root, mapping_root,
+                    metrics.bytes_scanned, metrics.new_chunks,
+                    metrics.reused_chunks, receipt_root, &reused);
+        mapping_failed = !mapped || !mapping_ready;
+        have_progress = !mapping_failed &&
+            vcs_devloop_publication_progress_load(
+                repo_root, job_root, &progress, loaded_progress_root);
+    }
     char receipt_hex[65];
     zcl_hex_encode(have_progress ? loaded_progress_root : receipt_root,
                    32, receipt_hex);
+    char retry_command[256];
+    int retry_len = snprintf(
+        retry_command, sizeof(retry_command),
+        "zclassic23-dev dev publication advance --input='"
+        "{\"job_root\":\"%s\"}'", job_hex);
+    if (retry_len <= 0 || (size_t)retry_len >= sizeof(retry_command)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+            "PUBLICATION_ADVANCE_RENDER_FAILED", "render", false, false,
+            "the exact retry command exceeded its fixed output bound",
+            job_hex);
+        return;
+    }
     (void)json_push_kv_str(&reply->data, "schema",
                            "zcl.dev_publication_advance.v1");
     (void)json_push_kv_str(&reply->data, "status",
+                           mapping_ready ? "PACKAGE_MAPPING_READY" :
                            lane_bound ? "ACCEPTED_LANE_BOUND"
                                       : "WAITING_ACCEPTANCE");
     (void)json_push_kv_str(&reply->data, "publication_job_root", job_hex);
@@ -482,26 +550,60 @@ void zcl_native_handle_dev_publication_advance(
                            receipt_hex);
     (void)json_push_kv_bool(&reply->data, "receipt_reused", reused);
     if (lane_bound) {
+        struct vcs_package_mapping_set mapping;
+        vcs_package_mapping_set_init(&mapping);
+        bool mapping_loaded = mapping_ready &&
+            vcs_package_mapping_set_load(
+                repo_root, progress.artifact_root, &mapping);
+        if (mapping_ready && !mapping_loaded) {
+            vcs_package_mapping_set_free(&mapping);
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "PUBLICATION_MAPPING_UNAVAILABLE", "load", true, false,
+                "the durable mapping phase references missing or corrupt evidence",
+                job_hex);
+            return;
+        }
+        const uint8_t *lane_receipt = mapping_loaded
+            ? mapping.lane_receipt_root : progress.artifact_root;
         char lane_hex[65];
-        zcl_hex_encode(progress.artifact_root, 32, lane_hex);
+        zcl_hex_encode(lane_receipt, 32, lane_hex);
         (void)json_push_kv_str(&reply->data, "lane_receipt_root", lane_hex);
+        if (mapping_ready) {
+            char mapping_hex[65];
+            zcl_hex_encode(progress.artifact_root, 32, mapping_hex);
+            (void)json_push_kv_str(&reply->data, "package_mapping_root",
+                                   mapping_hex);
+            (void)json_push_kv_int(&reply->data, "bytes_scanned",
+                                   (int64_t)progress.bytes_scanned);
+            (void)json_push_kv_int(&reply->data, "new_chunks",
+                                   progress.new_chunks);
+            (void)json_push_kv_int(&reply->data, "reused_chunks",
+                                   progress.reused_chunks);
+        }
         if (lane_name[0])
             (void)json_push_kv_str(&reply->data, "lane", lane_name);
         if (proof_set_hex[0])
             (void)json_push_kv_str(&reply->data, "proof_set_root",
                                    proof_set_hex);
+        vcs_package_mapping_set_free(&mapping);
     }
     (void)json_push_kv_str(
         &reply->data, "blocker",
-        lane_bound ? "offline_publisher_metadata_and_signature_required"
+        mapping_ready ? "offline_publisher_metadata_and_signature_required" :
+        mapping_failed ? "package_mapping_retry_required" :
+        lane_bound ? "package_mapping_worker_advance_required"
                    : "accepted_lane_and_offline_publisher_signature_required");
     (void)json_push_kv_bool(&reply->data, "package_written", false);
+    (void)json_push_kv_bool(&reply->data, "mapping_cache_written",
+                            mapping_ready && !reused);
     (void)json_push_kv_bool(&reply->data, "network_called", false);
     (void)json_push_kv_bool(&reply->data, "wallet_called", false);
     (void)json_push_kv_str(
         &reply->data, "next_command",
-        lane_bound ?
+        mapping_ready ?
             "zclassic23 discover schema zcode.package.dev.publish.plan" :
+        lane_bound ? retry_command :
             "zclassic23 zcode guide");
 }
 

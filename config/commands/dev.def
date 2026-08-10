@@ -57,9 +57,13 @@ ZCL_COMMAND_DEV_COMMAND(
     "dev.publication.advance", "dev.publication", "",
     "Advance one proven-source job to its next durable blocker",
     "Appends or reuses one immutable local scheduling receipt for the exact "
-    "job. The first phase is WAITING_ACCEPTANCE: it performs no package, "
-    "signature, network, wallet, Git or canonical-node action and cannot "
-    "substitute for the existing signed accepted-lane publisher.", 0,
+    "job. WAITING_ACCEPTANCE performs no package action. Once the existing "
+    "signed lane owner reports CANDIDATE or PROVEN, the background worker "
+    "builds one root-addressed ZVCS-blob to content.v2 chunk mapping set: "
+    "only cache misses read source bytes, and the receipt reports scanned "
+    "bytes plus new and reused chunks. It performs no release signature, "
+    "network, wallet, Git or canonical-node action and cannot substitute "
+    "for the existing accepted-lane publisher.", 0,
     "dev,publication,advance,receipt,resume,idempotent",
     "zcl.dev_publication_advance_input.v1",
     "zcl.dev_publication_advance.v1", "job_root,datadir", "job_root",
@@ -67,8 +71,8 @@ ZCL_COMMAND_DEV_COMMAND(
     "{\"job_root\":\"<64-lowercase-hex>\"}'",
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
-    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FAST,
-    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_BACKGROUND,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_NONE,
     ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_WRITE,
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_dev_publication_advance,

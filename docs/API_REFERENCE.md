@@ -628,7 +628,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `dev publication status` | ready | read / read / operator · fast/low | **`job_root`** | `zcl.dev_publication_status.v1` | `zclassic23-dev dev publication status --input='{"job_root":"<64-lowercase-hex>"}'` | Show one durable proof-to-publication job |
-| `dev publication advance` | compat 🔧 → `zclassic23-dev dev publication status` | mutate / dev-mutation / **owner** · fast/low | **`job_root`**, `datadir` | `zcl.dev_publication_advance.v1` | `zclassic23-dev dev publication advance --input='{"job_root":"<64-lowercase-hex>"}'` | Advance one proven-source job to its next durable blocker — *publication scheduling receipts require a dev checkout* |
+| `dev publication advance` | compat 🔧 → `zclassic23-dev dev publication status` | mutate / dev-mutation / **owner** · background/moderate | **`job_root`**, `datadir` | `zcl.dev_publication_advance.v1` | `zclassic23-dev dev publication advance --input='{"job_root":"<64-lowercase-hex>"}'` | Advance one proven-source job to its next durable blocker — *publication scheduling receipts require a dev checkout* |
 
 #### `dev.core` — Core boundary and proof lanes
 
@@ -1197,8 +1197,8 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode package dev publish plan` (aliases: `zcode.publish.plan`) | ready | read / read / operator · foreground/moderate | **`workspace`**, **`datadir`**, **`source_root`**, **`publisher_pubkey`**, **`name`**, **`semver`**, **`license`**, `reward_address`, `znam`, `task_root`, `lane_receipt_root`, `publisher_sequence`, `parent_release_root` | `zcl.zcode_publish_plan.v1` | `zclassic23 zcode publish plan --input='{"workspace":"/src/project","datadir":"/tmp/zcode-dev","source_root":"<64hex>","publisher_pubkey":"<66hex>","name":"publisher/package","semver":"1.0.0","license":"MIT"}'` | Prepare an accepted lane for offline release signing |
-| `zcode package dev publish commit` (aliases: `zcode.publish`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`datadir`**, **`source_root`**, **`release_hex`**, `task_root`, `lane_receipt_root`, `day` | `zcl.zcode_publish_commit.v1` | `zclassic23 zcode publish --input='{"workspace":"/src/project","datadir":"/tmp/zcode-dev","source_root":"<64hex>","release_hex":"<hex>"}'` | Publish one offline-signed accepted-lane release |
+| `zcode package dev publish plan` (aliases: `zcode.publish.plan`) | ready | read / read / operator · foreground/moderate | **`workspace`**, **`datadir`**, **`source_root`**, **`publisher_pubkey`**, **`name`**, **`semver`**, **`license`**, `reward_address`, `znam`, `task_root`, `lane_receipt_root`, `publisher_sequence`, `parent_release_root`, `package_mapping_root` | `zcl.zcode_publish_plan.v1` | `zclassic23 zcode publish plan --input='{"workspace":"/src/project","datadir":"/tmp/zcode-dev","source_root":"<64hex>","publisher_pubkey":"<66hex>","name":"publisher/package","semver":"1.0.0","license":"MIT"}'` | Prepare an accepted lane for offline release signing |
+| `zcode package dev publish commit` (aliases: `zcode.publish`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`datadir`**, **`source_root`**, **`release_hex`**, `task_root`, `lane_receipt_root`, `day`, `package_mapping_root` | `zcl.zcode_publish_commit.v1` | `zclassic23 zcode publish --input='{"workspace":"/src/project","datadir":"/tmp/zcode-dev","source_root":"<64hex>","release_hex":"<hex>"}'` | Publish one offline-signed accepted-lane release |
 
 #### `zcode.package` — Published packages
 
