@@ -545,9 +545,8 @@ int test_explorer(void)
         char dbdir[256];
         char dbpath[320];
         sqlite3 *db = NULL;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_explorer_factoids_cache_%d",
-                 (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "explorer",
+                         "factoids_cache");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
 
         bool ok = sqlite3_open(dbpath, &db) == SQLITE_OK;
@@ -647,9 +646,7 @@ int test_explorer(void)
         }
         free(out);
 
-        char cmd[384];
-        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+        test_rm_rf_recursive(dbdir);
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

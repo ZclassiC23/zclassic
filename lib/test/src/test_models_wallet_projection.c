@@ -349,9 +349,8 @@ int test_model_wallet_projection(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir),
-                 ".zcl_test_tx_index_bulk_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "wallet_projection",
+                         "tx_index_bulk");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
@@ -380,9 +379,7 @@ int test_model_wallet_projection(void)
             node_db_close(&ndb);
         }
 
-        char cmd[384];
-        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+        test_rm_rf_recursive(dbdir);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

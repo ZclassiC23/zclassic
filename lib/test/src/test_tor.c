@@ -82,11 +82,8 @@ static int test_tor_write_torrc_bootstrap_port(void)
     int failures = 0;
     printf("test_tor_write_torrc_bootstrap_port: ");
 
-    char tmpdir[] = "zcl_torrc_nosocks_XXXXXX";
-    if (!mkdtemp(tmpdir)) {
-        printf("SKIP (mkdtemp failed)\n");
-        return 0;
-    }
+    char tmpdir[512];
+    test_make_tmpdir(tmpdir, sizeof(tmpdir), "torrc", "nosocks");
 
     char td[512];
     snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
@@ -139,12 +136,10 @@ static int test_tor_write_torrc_no_collision(void)
     int failures = 0;
     printf("test_tor_write_torrc_no_collision: ");
 
-    char tmpdir1[] = "zcl_torrc_coll1_XXXXXX";
-    char tmpdir2[] = "zcl_torrc_coll2_XXXXXX";
-    if (!mkdtemp(tmpdir1) || !mkdtemp(tmpdir2)) {
-        printf("SKIP (mkdtemp failed)\n");
-        return 0;
-    }
+    char tmpdir1[512];
+    char tmpdir2[512];
+    test_make_tmpdir(tmpdir1, sizeof(tmpdir1), "torrc", "collision1");
+    test_make_tmpdir(tmpdir2, sizeof(tmpdir2), "torrc", "collision2");
 
     char td[512];
     snprintf(td, sizeof(td), "%s/tor_data", tmpdir1);
@@ -188,11 +183,8 @@ static int test_tor_write_torrc_datadir(void)
     int failures = 0;
     printf("test_tor_write_torrc_datadir: ");
 
-    char tmpdir[] = "zcl_torrc_dir_XXXXXX";
-    if (!mkdtemp(tmpdir)) {
-        printf("SKIP (mkdtemp failed)\n");
-        return 0;
-    }
+    char tmpdir[512];
+    test_make_tmpdir(tmpdir, sizeof(tmpdir), "torrc", "datadir");
 
     char td[512];
     snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
@@ -234,11 +226,8 @@ static int test_tor_write_torrc_idempotent(void)
     int failures = 0;
     printf("test_tor_write_torrc_idempotent: ");
 
-    char tmpdir[] = "zcl_torrc_idem_XXXXXX";
-    if (!mkdtemp(tmpdir)) {
-        printf("SKIP (mkdtemp failed)\n");
-        return 0;
-    }
+    char tmpdir[512];
+    test_make_tmpdir(tmpdir, sizeof(tmpdir), "torrc", "idempotent");
 
     char td[512];
     snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
@@ -287,11 +276,8 @@ static int test_tor_persistent_hostname_read(void)
     int failures = 0;
     printf("test_tor_persistent_hostname_read: ");
 
-    char tmpdir[] = "zcl_hostname_XXXXXX";
-    if (!mkdtemp(tmpdir)) {
-        printf("SKIP (mkdtemp failed)\n");
-        return 0;
-    }
+    char tmpdir[512];
+    test_make_tmpdir(tmpdir, sizeof(tmpdir), "torrc", "hostname");
 
     char td[512];
     snprintf(td, sizeof(td), "%s/tor_data", tmpdir);
@@ -336,11 +322,8 @@ static int test_tor_address_persists_across_restarts(void)
     int failures = 0;
     printf("test_tor_address_persists_across_restarts: ");
 
-    char tmpdir[] = "zcl_persist_XXXXXX";
-    if (!mkdtemp(tmpdir)) {
-        printf("SKIP (mkdtemp failed)\n");
-        return 0;
-    }
+    char tmpdir[512];
+    test_make_tmpdir(tmpdir, sizeof(tmpdir), "torrc", "persist");
 
     char td[512];
     snprintf(td, sizeof(td), "%s/tor_data", tmpdir);

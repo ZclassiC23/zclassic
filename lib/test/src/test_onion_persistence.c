@@ -78,11 +78,8 @@ static int test_onion_identity_stable_across_boots(void)
     int failures = 0;
     printf("test_onion_identity_stable_across_boots: ");
 
-    char tmpdir[] = "zcl_onionid_boot_XXXXXX";
-    if (!mkdtemp(tmpdir)) {
-        printf("SKIP (mkdtemp failed)\n");
-        return 0;
-    }
+    char tmpdir[512];
+    test_make_tmpdir(tmpdir, sizeof(tmpdir), "onion_identity", "boot");
 
     uint8_t seed1[32], seed2[32];
     char addr1[64], addr2[64];
@@ -140,11 +137,8 @@ static int test_onion_identity_corrupt_seed_refused(void)
     int failures = 0;
     printf("test_onion_identity_corrupt_seed_refused: ");
 
-    char tmpdir[] = "zcl_onionid_corrupt_XXXXXX";
-    if (!mkdtemp(tmpdir)) {
-        printf("SKIP (mkdtemp failed)\n");
-        return 0;
-    }
+    char tmpdir[512];
+    test_make_tmpdir(tmpdir, sizeof(tmpdir), "onion_identity", "corrupt");
 
     char dir[1152];
     snprintf(dir, sizeof(dir), "%s/tor_data/onion_service", tmpdir);
@@ -190,11 +184,8 @@ static int test_onion_identity_rotation(void)
     int failures = 0;
     printf("test_onion_identity_rotation: ");
 
-    char tmpdir[] = "zcl_onionid_rotate_XXXXXX";
-    if (!mkdtemp(tmpdir)) {
-        printf("SKIP (mkdtemp failed)\n");
-        return 0;
-    }
+    char tmpdir[512];
+    test_make_tmpdir(tmpdir, sizeof(tmpdir), "onion_identity", "rotate");
 
     uint8_t seed1[32], seed2[32];
     char addr1[64], addr2[64];
@@ -233,11 +224,9 @@ static int test_onion_identity_rotation(void)
     remove_tree(tmpdir);
 
     printf("test_onion_identity_rotation_empty_dir: ");
-    char tmpdir2[] = "zcl_onionid_rotempty_XXXXXX";
-    if (!mkdtemp(tmpdir2)) {
-        printf("SKIP (mkdtemp failed)\n");
-        return failures;
-    }
+    char tmpdir2[512];
+    test_make_tmpdir(tmpdir2, sizeof(tmpdir2), "onion_identity",
+                     "rotate_empty");
     char old2[64];
     bool noop = !onion_identity_rotate(tmpdir2, old2, sizeof(old2));
     /* The named no-op must not mint anything implicitly. */

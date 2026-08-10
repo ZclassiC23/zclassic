@@ -666,9 +666,8 @@ int api_health_gate_focused_tests(void)
         struct node_db ndb;
         uint8_t stats_resp[65536];
         memset(&ndb, 0, sizeof(ndb));
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_deep_stats_%d",
-                 (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "api_health",
+                         "deep_stats");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
 
         progress_store_close();
@@ -699,9 +698,7 @@ int api_health_gate_focused_tests(void)
         reducer_frontier_provable_tip_reset();
         node_db_close(&ndb);
 
-        char cmd[384];
-        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
-        system(cmd);
+        test_rm_rf_recursive(dbdir);
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
