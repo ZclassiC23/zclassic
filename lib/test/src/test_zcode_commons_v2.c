@@ -343,6 +343,22 @@ static int test_v2_truthful_activation_status(void)
         zcl_command_reply_free(&reply);
         json_free(&input);
 
+        json_init(&input);
+        json_set_object(&input);
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.commons_backlog.v1");
+        zcl_native_handle_zcode_commons_backlog(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(!json_get_bool(json_get(&reply.data, "projection_ready")));
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "claim_count")), 0);
+        ASSERT(!json_get_bool(json_get(&reply.data, "issuance_enabled")));
+        ASSERT(json_get_bool(json_get(&reply.data,
+                                      "unused_capacity_expires")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "queue_order")),
+            "strict-oldest-first:maturity_height,maturity_mtp,claim_root");
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
         struct zcode_c23_economics_service_v1 economics_candidate =
             *zcode_c23_economics_service_builtin();
         economics_candidate.render_status =

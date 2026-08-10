@@ -354,3 +354,49 @@ void zcl_native_handle_zcode_commons_economics_status(
                             status.unused_capacity_carries);
     zcl_hotswap_service_release(&lease);
 }
+
+void zcl_native_handle_zcode_commons_backlog(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply || !moderation_no_keys(request->input)) {
+        if (reply) moderation_fail(reply, "BAD_COMMONS_BACKLOG_INPUT",
+            "zcode commons backlog accepts no input keys");
+        return;
+    }
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_c23_economics_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_C23_ECONOMICS_SERVICE_ID, &lease);
+    if (!service) service = zcode_c23_economics_service_builtin();
+    struct zcode_c23_economics_status_result_v1 status;
+    if (!service->render_status(&status)) {
+        zcl_hotswap_service_release(&lease);
+        moderation_fail(reply, "BACKLOG_SERVICE_FAILED",
+                        "the pure economics service refused backlog rendering");
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "service_id",
+                           ZCODE_C23_ECONOMICS_SERVICE_ID);
+    (void)json_push_kv_int(&reply->data, "service_generation",
+                           zcl_hotswap_service_generation());
+    (void)json_push_kv_bool(&reply->data, "simulation_only", true);
+    (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
+    (void)json_push_kv_bool(&reply->data, "projection_ready", false);
+    (void)json_push_kv_int(&reply->data, "claim_count", 0);
+    (void)json_push_kv_bool(&reply->data, "issuance_enabled", false);
+    (void)json_push_kv_bool(&reply->data, "funds_moved", false);
+    (void)json_push_kv_str(&reply->data, "queue_order",
+                           status.queue_order);
+    (void)json_push_kv_str(&reply->data, "category_rotation",
+                           status.category_order);
+    (void)json_push_kv_bool(&reply->data, "partial_claim_issuance",
+                            status.partial_claim_issuance);
+    (void)json_push_kv_bool(&reply->data, "unused_capacity_carries",
+                            status.unused_capacity_carries);
+    (void)json_push_kv_bool(&reply->data, "unused_capacity_expires",
+                            !status.unused_capacity_carries);
+    (void)json_push_kv_str(&reply->data, "blocker",
+        "claim/backlog projection is not implemented; issuance selection is unavailable");
+    (void)json_push_kv_str(&reply->data, "next_command",
+                           "zcode commons economics status");
+    zcl_hotswap_service_release(&lease);
+}

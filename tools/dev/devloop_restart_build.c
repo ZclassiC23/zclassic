@@ -754,9 +754,16 @@ static bool rr_overlay_for_base(const struct rr_plan *plan, const char *root,
            rr_sha256_file(source_full, actual) && strcmp(actual, expected) == 0;
 }
 
+static bool rr_source_is_test_only(const char *source)
+{
+    static const char prefix[] = "lib/test/";
+    return source && strncmp(source, prefix, sizeof(prefix) - 1) == 0;
+}
+
 static bool rr_write_response(const struct rr_plan *plan, const char *root,
                               const struct rr_overlay *overlays,
                               size_t overlay_count, const char *overlay_prefix,
+                              bool allow_test_only_omission,
                               char out[PATH_MAX],
                               char *why, size_t why_len)
 {
@@ -802,7 +809,9 @@ static bool rr_write_response(const struct rr_plan *plan, const char *root,
     }
     ok = ok && !ferror(in) && fflush(dst) == 0 && fsync(fileno(dst)) == 0;
     fclose(in); fclose(dst);
-    for (size_t i = 0; i < overlay_count; i++) ok = ok && seen[i];
+    for (size_t i = 0; i < overlay_count; i++)
+        ok = ok && (seen[i] || (allow_test_only_omission &&
+                                rr_source_is_test_only(overlays[i].source)));
     if (!ok) {
         (void)unlink(out);
         rr_why(why, why_len,
@@ -1113,7 +1122,7 @@ static bool rr_restart_build(
     receipt->source_identity_overlay = ok;
     char rsp[PATH_MAX] = {0};
     if (ok && !rr_write_response(&plan, root, overlays, overlay_count,
-                                 "build/dev-loop/restart-objects", rsp,
+                                 "build/dev-loop/restart-objects", true, rsp,
                                  why, why_len))
         ok = false;
     if (ok) {
@@ -1384,7 +1393,8 @@ static bool rr_restart_prove(
     receipt->source_identity_overlay = ok;
     char rsp[PATH_MAX] = {0};
     if (ok && !rr_write_response(&plan, root, overlays, overlay_count,
-                                 "build/dev-loop/restart-test-objects", rsp,
+                                 "build/dev-loop/restart-test-objects", false,
+                                 rsp,
                                  why, why_len))
         ok = false;
     if (ok) {

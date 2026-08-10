@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 625 |
+| Registry entries (branches + leaves) | 626 |
 | Top-level roots | 11 |
 | Branches | 147 |
-| Leaves (dispatchable command paths) | 478 |
-| … `ready` (live handler in this build) | 430 |
+| Leaves (dispatchable command paths) | 479 |
+| … `ready` (live handler in this build) | 431 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 176 | 42 | 134 |
+| `config/commands/zcode.def` | 177 | 42 | 135 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -946,6 +946,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
+| `zcode commons backlog` | ready | read / read / public · instant/tiny | none | `zcl.zcode_commons_backlog.v1` | `zclassic23 zcode commons backlog` | Show the simulation-only claim backlog |
 | `zcode commons status` | ready | read / read / operator · fast/low | **`workspace`**, `expected_network_genesis_root`, `expected_zc23_policy_root`, `expected_epoch`, `expected_award_atoms`, `active_height`, `active_mtp`, `anchor_opening_height`, `anchor_opening_hash`, `anchor_maturity_height`, `anchor_maturity_hash`, `now_unix` | `zcl.zcode_commons_status.v1` | `zclassic23 zcode commons status --input='{"workspace":"/tmp/zclassic23-zcode-scratch"}'` | Show Living Commons status |
 | `zcode commons epoch` | ready | read / read / operator · fast/low | **`workspace`**, **`epoch`** | `zcl.zcode_commons_epoch.v1` | `zclassic23 zcode commons epoch --input='{"workspace":"/tmp/zclassic23-zcode-scratch","epoch":1}'` | Show one creation epoch |
 | `zcode commons lineage` | ready | read / read / operator · fast/low | **`workspace`**, **`package_root`** | `zcl.zcode_commons_lineage.v1` | `zclassic23 zcode commons lineage --input='{"workspace":"/tmp/zclassic23-zcode-scratch","package_root":"<64hex>"}'` | Show package continuity lineage |

@@ -284,6 +284,25 @@ ZCL_COMMAND_READY_READ(
     zcl_native_handle_zcode_commons_economics_status)
 
 ZCL_COMMAND_READY_READ(
+    "zcode.commons.backlog", "zcode.commons", "",
+    "Show the simulation-only claim backlog",
+    "Shows the frozen queue ordering, category rotation and expiry posture. "
+    "Until a signed claim projection exists it reports zero claims and keeps "
+    "issuance disabled; it never reads wallet balances or moves funds.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,commons,backlog,claims,economics,simulation,expiry",
+    "zcl.zcode_commons_backlog.input.v1",
+    "zcl.zcode_commons_backlog.v1", "", "",
+    "zclassic23 zcode commons backlog",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_backlog)
+
+ZCL_COMMAND_READY_READ(
     "zcode.commons.corpus.show", "zcode.commons.corpus", "",
     "Show one exact C23 corpus object",
     "Shows the resident-frozen C23 corpus rules only when the required exact "
