@@ -15,7 +15,7 @@
 
 static const uint8_t passport_magic[8] = {'Z','C','M','P','1',0,0,0};
 static const char passport_signature_domain[] =
-    "zcl.zcode.module_passport.signature.v1";
+    VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_DOMAIN;
 
 static bool workspace_nonzero_n(const uint8_t *bytes, size_t count)
 {
@@ -201,21 +201,38 @@ static size_t passport_write_unsigned(
     return off;
 }
 
+enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_signing_payload(
+    const struct vcs_zcode_module_passport_v1 *passport,
+    uint8_t *payload, size_t payload_capacity, size_t *payload_len)
+{
+    if (payload_len) *payload_len = 0;
+    if (!passport || !payload || !payload_len)
+        return VCS_ZCODE_COMMONS_V2_NULL;
+    enum vcs_zcode_commons_v2_error error = passport_shape(passport, false);
+    if (error != VCS_ZCODE_COMMONS_V2_OK) return error;
+    if (payload_capacity < VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_PAYLOAD_BYTES)
+        return VCS_ZCODE_COMMONS_V2_SIZE;
+    const size_t domain_len = sizeof(passport_signature_domain) - 1u;
+    memcpy(payload, passport_signature_domain, domain_len);
+    size_t unsigned_len = passport_write_unsigned(passport,
+                                                   payload + domain_len);
+    *payload_len = domain_len + unsigned_len;
+    return *payload_len == VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_PAYLOAD_BYTES
+        ? VCS_ZCODE_COMMONS_V2_OK : VCS_ZCODE_COMMONS_V2_SIZE;
+}
+
 static bool passport_signature_valid(
     const struct vcs_zcode_module_passport_v1 *passport)
 {
-    uint8_t wire[VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES];
-    uint8_t preimage[sizeof(passport_signature_domain) - 1u +
-                     VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES];
-    size_t unsigned_len = passport_write_unsigned(passport, wire);
-    size_t domain_len = sizeof(passport_signature_domain) - 1u;
-    memcpy(preimage, passport_signature_domain, domain_len);
-    memcpy(preimage + domain_len, wire, unsigned_len);
-    bool valid = ed25519_verify(passport->signature, preimage,
-                                domain_len + unsigned_len,
+    uint8_t payload[VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_PAYLOAD_BYTES];
+    size_t payload_len = 0;
+    if (vcs_zcode_module_passport_v1_signing_payload(
+            passport, payload, sizeof(payload), &payload_len) !=
+        VCS_ZCODE_COMMONS_V2_OK)
+        return false;
+    bool valid = ed25519_verify(passport->signature, payload, payload_len,
                                 passport->signer_root);
-    memory_cleanse(preimage, sizeof(preimage));
-    memory_cleanse(wire, sizeof(wire));
+    memory_cleanse(payload, sizeof(payload));
     return valid;
 }
 
@@ -241,18 +258,16 @@ enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_sign(
         memory_cleanse(secret, sizeof(secret));
         return error;
     }
-    uint8_t wire[VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES];
-    uint8_t preimage[sizeof(passport_signature_domain) - 1u +
-                     VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES];
-    size_t unsigned_len = passport_write_unsigned(passport, wire);
-    size_t domain_len = sizeof(passport_signature_domain) - 1u;
-    memcpy(preimage, passport_signature_domain, domain_len);
-    memcpy(preimage + domain_len, wire, unsigned_len);
-    ed25519_sign(passport->signature, preimage, domain_len + unsigned_len,
-                 secret, passport->signer_root);
+    uint8_t payload[VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_PAYLOAD_BYTES];
+    size_t payload_len = 0;
+    error = vcs_zcode_module_passport_v1_signing_payload(
+        passport, payload, sizeof(payload), &payload_len);
+    if (error == VCS_ZCODE_COMMONS_V2_OK)
+        ed25519_sign(passport->signature, payload, payload_len,
+                     secret, passport->signer_root);
     memory_cleanse(secret, sizeof(secret));
-    memory_cleanse(preimage, sizeof(preimage));
-    memory_cleanse(wire, sizeof(wire));
+    memory_cleanse(payload, sizeof(payload));
+    if (error != VCS_ZCODE_COMMONS_V2_OK) return error;
     return vcs_zcode_module_passport_v1_verify(passport);
 }
 

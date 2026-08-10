@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 640 |
+| Registry entries (branches + leaves) | 642 |
 | Top-level roots | 11 |
 | Branches | 151 |
-| Leaves (dispatchable command paths) | 489 |
-| … `ready` (live handler in this build) | 441 |
+| Leaves (dispatchable command paths) | 491 |
+| … `ready` (live handler in this build) | 443 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 181 | 44 | 137 |
+| `config/commands/zcode.def` | 183 | 44 | 139 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -964,6 +964,8 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
+| `zcode passport plan` | ready | read / read / public · instant/tiny | **`stable_api_root`**, **`recipe_root`**, **`toolchain_root`**, **`tests_root`**, **`license_root`**, **`semantic_fingerprint_root`**, **`workspace_lineage_root`**, **`source_assignment_root`**, **`quality_profiles_root`**, **`signer_pubkey`** | `zcl.zcode_passport_plan.v1` | `zclassic23 zcode passport plan --input='<exact evidence roots and signer_pubkey>'` | Plan an offline-signed C23 module Passport |
+| `zcode passport commit` | ready | read / read / public · instant/tiny | **`stable_api_root`**, **`recipe_root`**, **`toolchain_root`**, **`tests_root`**, **`license_root`**, **`semantic_fingerprint_root`**, **`workspace_lineage_root`**, **`source_assignment_root`**, **`quality_profiles_root`**, **`signer_pubkey`**, **`signature`** | `zcl.zcode_passport_commit.v1` | `zclassic23 zcode passport commit --input='<same roots, signer_pubkey, external signature>'` | Materialize an externally signed C23 module Passport |
 | `zcode passport verify` | ready | read / read / public · instant/tiny | **`passport`** | `zcl.zcode_passport_verify.v1` | `zclassic23 zcode passport verify --passport=<lowercase-hex-wire>` | Verify one signed C23 module Passport |
 
 #### `zcode.commons` — Read-only ZC23 Living Commons projection

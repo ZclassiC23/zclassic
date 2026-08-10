@@ -120,6 +120,12 @@ struct vcs_zcode_module_passport_v1 {
 };
 
 #define VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES 396u
+#define VCS_ZCODE_MODULE_PASSPORT_V1_UNSIGNED_WIRE_BYTES 332u
+#define VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_DOMAIN \
+    "zcl.zcode.module_passport.signature.v1"
+#define VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_PAYLOAD_BYTES \
+    ((sizeof(VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_DOMAIN) - 1u) + \
+     VCS_ZCODE_MODULE_PASSPORT_V1_UNSIGNED_WIRE_BYTES)
 
 struct vcs_zcode_workspace_entry_v1 {
     uint8_t module_release_root[32];
@@ -438,6 +444,9 @@ enum vcs_zcode_commons_v2_error vcs_zcode_quality_profile_v1_root(
     const struct vcs_zcode_quality_profile_v1 *profile, uint8_t out[32]);
 enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_validate(
     const struct vcs_zcode_module_passport_v1 *passport);
+enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_signing_payload(
+    const struct vcs_zcode_module_passport_v1 *passport,
+    uint8_t *payload, size_t payload_capacity, size_t *payload_len);
 enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_sign(
     struct vcs_zcode_module_passport_v1 *passport,
     const uint8_t signer_seed[32]);

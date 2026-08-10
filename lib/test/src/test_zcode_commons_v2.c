@@ -1207,13 +1207,32 @@ static int test_v2_workspace_objects(void)
         cv2_fill(passport.signature, 0x3f);
         ASSERT_EQ(vcs_zcode_module_passport_v1_validate(&passport),
                   VCS_ZCODE_COMMONS_V2_OK);
-        uint8_t passport_seed[32], passport_wire[
+        uint8_t passport_seed[32], passport_secret[32], passport_wire[
             VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES];
+        uint8_t passport_payload[
+            VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_PAYLOAD_BYTES];
         cv2_fill(passport_seed, 0x40);
-        memset(passport.signer_root, 0, sizeof(passport.signer_root));
         memset(passport.signature, 0, sizeof(passport.signature));
-        ASSERT_EQ(vcs_zcode_module_passport_v1_sign(&passport, passport_seed),
-                  VCS_ZCODE_COMMONS_V2_OK);
+        ed25519_keypair(passport.signer_root, passport_secret, passport_seed);
+        size_t passport_payload_len = 0;
+        ASSERT_EQ(vcs_zcode_module_passport_v1_signing_payload(
+                      &passport, passport_payload, sizeof(passport_payload),
+                      &passport_payload_len), VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT_EQ(passport_payload_len,
+                  VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_PAYLOAD_BYTES);
+        ASSERT(memcmp(passport_payload,
+                      VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_DOMAIN,
+                      sizeof(VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_DOMAIN) - 1u)
+               == 0);
+        size_t refused_payload_len = 99;
+        ASSERT_EQ(vcs_zcode_module_passport_v1_signing_payload(
+                      &passport, passport_payload,
+                      sizeof(passport_payload) - 1u, &refused_payload_len),
+                  VCS_ZCODE_COMMONS_V2_SIZE);
+        ASSERT_EQ(refused_payload_len, 0u);
+        ed25519_sign(passport.signature, passport_payload,
+                     passport_payload_len, passport_secret,
+                     passport.signer_root);
         ASSERT_EQ(vcs_zcode_module_passport_v1_verify(&passport),
                   VCS_ZCODE_COMMONS_V2_OK);
         size_t passport_wire_len = 0;
@@ -1224,6 +1243,66 @@ static int test_v2_workspace_objects(void)
                   VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES);
         char passport_hex[VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES * 2u + 1u];
         zcl_hex_encode(passport_wire, passport_wire_len, passport_hex);
+
+        static const char *passport_root_keys[] = {
+            "stable_api_root", "recipe_root", "toolchain_root", "tests_root",
+            "license_root", "semantic_fingerprint_root",
+            "workspace_lineage_root", "source_assignment_root",
+            "quality_profiles_root", "signer_pubkey",
+        };
+        struct json_value passport_plan_input;
+        json_init(&passport_plan_input);
+        json_set_object(&passport_plan_input);
+        for (size_t i = 0; i < 10; i++) {
+            char root_hex[65];
+            zcl_hex_encode(passport_roots[i], 32, root_hex);
+            ASSERT(json_push_kv_str(&passport_plan_input,
+                                    passport_root_keys[i], root_hex));
+        }
+        struct zcl_command_request passport_plan_request = {
+            .input = &passport_plan_input,
+        };
+        struct zcl_command_reply passport_plan_reply;
+        zcl_command_reply_init(&passport_plan_reply,
+                               "zcl.zcode_passport_plan.v1");
+        zcl_native_handle_zcode_passport_plan(&passport_plan_request,
+                                              &passport_plan_reply);
+        ASSERT_EQ(passport_plan_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&passport_plan_reply.data,
+                                      "ready_to_sign")));
+        ASSERT(json_get(&passport_plan_reply.data, "private_key") == NULL);
+        ASSERT(json_get(&passport_plan_reply.data, "signer_seed") == NULL);
+        const char *planned_payload = json_get_str(json_get(
+            &passport_plan_reply.data, "signing_payload"));
+        char expected_payload_hex[
+            VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_PAYLOAD_BYTES * 2u + 1u];
+        zcl_hex_encode(passport_payload, passport_payload_len,
+                       expected_payload_hex);
+        ASSERT_STR_EQ(planned_payload, expected_payload_hex);
+        zcl_command_reply_free(&passport_plan_reply);
+
+        char passport_signature_hex[129];
+        zcl_hex_encode(passport.signature, sizeof(passport.signature),
+                       passport_signature_hex);
+        ASSERT(json_push_kv_str(&passport_plan_input, "signature",
+                                passport_signature_hex));
+        struct zcl_command_reply passport_commit_reply;
+        zcl_command_reply_init(&passport_commit_reply,
+                               "zcl.zcode_passport_commit.v1");
+        zcl_native_handle_zcode_passport_commit(&passport_plan_request,
+                                                &passport_commit_reply);
+        ASSERT_EQ(passport_commit_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&passport_commit_reply.data,
+                                      "verified")));
+        ASSERT_STR_EQ(json_get_str(json_get(&passport_commit_reply.data,
+                                            "passport")), passport_hex);
+        ASSERT(!json_get_bool(json_get(&passport_commit_reply.data,
+                                       "persisted")));
+        ASSERT(!json_get_bool(json_get(&passport_commit_reply.data,
+                                       "published")));
+        zcl_command_reply_free(&passport_commit_reply);
+        json_free(&passport_plan_input);
+
         struct json_value passport_input;
         json_init(&passport_input);
         json_set_object(&passport_input);
