@@ -191,3 +191,35 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_shop_status)
+
+/* ── Publisher evidence readout (docs/work/SHOP_COMMAND.md, slice C) ──
+ * The provable-facts table for one ZCODE publisher key: each row is a fact
+ * the node can prove from records under <datadir>/zcode, carrying its
+ * evidence class and counting window; absent evidence reads "no_record"
+ * (or "unavailable" when no data source exists at all), never a zero and
+ * never an adjective. Read-only: the collectors are the same scans the
+ * package leaves already run. */
+
+ZCL_COMMAND_READY_READ(
+    "app.shop.reputation", "app.shop", "",
+    "Show the provable evidence for a publisher",
+    "The evidence table for one ZCODE publisher key (the publisher column "
+    "of zcode package search): signed releases and packages published, "
+    "days first observed in this node's store, reproductions across "
+    "distinct build receipts (receipts carry no signer identity — distinct "
+    "recorded build events, nothing more), distinct signature-verified "
+    "attestation signer keys, dependent packages from root-committed "
+    "dependency declarations, and simulated reward settlements. Every row "
+    "states its evidence class and window; absent evidence reads "
+    "'no_record', classes with no data source read 'unavailable' — never "
+    "a zero and never an adjective the records cannot prove. Mutates "
+    "nothing.", ZCL_COMMAND_LIST_BUDGET,
+    "shop,reputation,evidence,publisher,reproduction,attestation",
+    "zcl.shop_reputation.input.v1", "zcl.shop_reputation.v1",
+    "publisher,datadir,now_unix", "publisher",
+    "zclassic23 app shop reputation --input='{\"publisher\":\"02ab...\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_shop_reputation)

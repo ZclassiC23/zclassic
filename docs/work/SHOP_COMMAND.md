@@ -93,6 +93,34 @@ packages, paid fulfillments (when patronage settle lands), availability
 challenge pass rate (when the challenge loop lands). Rule: never claim
 more than the cryptography proves.
 
+Landed 2026-08-10: `app.shop.reputation` (READY_READ) in
+`config/commands/store.def`, handler in
+`app/controllers/src/shop_native_reputation.c`. The subject is one ZCODE
+publisher key (66-hex; the join key across signed releases, attestation
+signers, and the reward ledger's contributor key). Each evidence row
+carries fact/state/evidence_class/window/detail over the real
+`<datadir>/zcode` stores: signed releases/packages
+(`vcs_package_publish_load_releases`), days observed (local envelope
+mtime, labeled unsigned), reproductions
+(`vcs_package_reproduce_scan` over `zcode/receipts` — distinct build
+events, receipts carry no signer identity), distinct signing identities
+(signature-verified `zcode/attestations` verifier pubkeys), dependent
+packages (root-committed `zcode-package.json` declarations, manifest
+root + chunk hash re-verified), simulated settlements (reward ledger
+`vcs_reward_contributor_totals`, placeholder token). Absent evidence is
+`no_record`; the two classes with no datadir-local source (paid
+fulfillments — patronage settle lives on the scratch-workspace lane;
+availability — the chunk-challenge loop keeps counts in per-download
+memory) render `unavailable` with the gap named. A present-but-not-a-
+directory store refuses `ZCODE_STORE_UNREADABLE` (absent ≠ unreadable).
+The commons projection itself is workspace-scoped (scratch lane,
+`.zvcs/objects`) and keyed by contributor-binding roots, so no
+datadir-local fold exists — noted as a gap, not fabricated. Test group:
+`test_shop_reputation` (populated rows, empty-history `no_record`,
+forbidden-vocabulary scan of the serialized reply, reply-budget
+regression); the leaf is also registered in
+`test_read_leaf_no_datadir_write` with `zcode` as its payload store.
+
 ### D. Buyer-posted needs (follow-on, designed-for now)
 
 No bounty/want-ad exists (`bounty` grep: zero). Closest shape:

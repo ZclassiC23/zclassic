@@ -1639,6 +1639,13 @@ void zcl_native_handle_shop_init(
 void zcl_native_handle_shop_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* `reputation` (slice C) is the evidence readout for one ZCODE publisher
+ * key over <datadir>/zcode: provable facts only, each with its evidence
+ * class and counting window; absent evidence reads 'no_record', never a
+ * zero (app/controllers/src/shop_native_reputation.c). */
+void zcl_native_handle_shop_reputation(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 /* app.store.* — the BUYING half of the store
  * (app/controllers/src/store_buyer_native_handlers.c). Each proxies one

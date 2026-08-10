@@ -217,6 +217,28 @@ static const struct rlw_leaf g_rlw_leaves[] = {
     { "core.sync.frontier.offline",
       zcl_native_handle_core_sync_frontier_offline,
       NULL, NULL,               NULL, NULL, NULL },
+    /* The shop posture read, exercised the day coverage was demanded of it.
+     * Its payload is node.db (wallet at-rest posture + store schema), read
+     * through the same guarded zcl_native_node_db_open_readonly as every
+     * sqlite leaf above — the probe's own first cut opened the database
+     * with a hand-rolled open_v2(READONLY), which on a WAL node.db with no
+     * live wal-index CREATES the -shm/-wal sidecars it cannot unlink — so
+     * payload_dir stays NULL. The identity seed and directory/apps.csv are
+     * presence disclosures whose absence is a named gap, not the payload
+     * store. Over a present-but-unreadable node.db the leaf refuses by
+     * name (NODE_DB_UNREADABLE) rather than answering ok with every field
+     * "unknown". */
+    { "app.shop.status",        zcl_native_handle_shop_status,
+      NULL, NULL,               NULL, NULL, NULL },
+    /* The slice-C evidence readout. Its payload is the <datadir>/zcode
+     * file store — releases, receipts, attestations, declarations, the
+     * reward ledger — and it opens no database at all, so case 5 breaks
+     * the same zcode/manifests directory the property leaves disclose:
+     * a present-but-unreadable store member must be the named
+     * ZCODE_STORE_UNREADABLE refusal, never an empty-looking "no_record"
+     * answer (absent and unreadable are not the same). */
+    { "app.shop.reputation",    zcl_native_handle_shop_reputation,
+      "publisher", RLW_PUBKEY,  NULL, NULL, "zcode/manifests" },
     /* Six of the pre-existing gaps, moved off the uncovered list because
      * they now have an on-disk proof rather than a promise. All six already
      * opened correctly; what was missing was anyone checking. They are

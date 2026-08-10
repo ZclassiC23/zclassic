@@ -84,5 +84,9 @@ void zcl_native_handle_shop_init(const struct zcl_command_request *request,
                                  struct zcl_command_reply *reply);
 void zcl_native_handle_shop_status(const struct zcl_command_request *request,
                                    struct zcl_command_reply *reply);
+/* The slice-C evidence readout (shop_native_reputation.c). */
+void zcl_native_handle_shop_reputation(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 #endif /* ZCL_CONTROLLERS_SHOP_NATIVE_HANDLER_H */
