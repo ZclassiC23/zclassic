@@ -52,3 +52,5 @@ HOTSWAP_PROBE_CASE("service.shop.reputation.empty.v1", "service",
     "zcl.shop_reputation.v1", 16384)
 HOTSWAP_PROBE_CASE("service.shop.status.default.v1", "service",
     "app.shop.status", "{}", "zcl.shop_status.v1", 16384)
+HOTSWAP_PROBE_CASE("service.shop.want.list.default.v1", "service",
+    "app.shop.want.list", "{}", "zcl.shop_want_list.v1", 8192)

@@ -13,6 +13,7 @@
 #include "services/zcode_moderation_view_service.h"
 #include "services/shop_reputation_view_service.h"
 #include "services/shop_status_view_service.h"
+#include "services/shop_want_view_service.h"
 
 #include <stdatomic.h>
 #include <string.h>
@@ -215,6 +216,18 @@ static int t_manifest_mapping(void)
         ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
                           "app/services/src/shop_status_view_service.c"),
                       "app.shop.status");
+        ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
+                          "app/services/src/shop_want_view_service.c"),
+                      "app/services/src/shop_want_view_service.c");
+        ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
+                          "app/services/src/shop_want_view_internal.h"),
+                      "app/services/src/shop_want_view_service.c");
+        ASSERT_STR_EQ(zcl_hotswap_service_contract_source_for_path(
+                          "app/services/include/services/shop_want_view_service.h"),
+                      "app/services/src/shop_want_view_service.c");
+        ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
+                          "app/services/src/shop_want_view_service.c"),
+                      "app.shop.want.list");
         ASSERT(zcl_hotswap_service_source_for_path(
                    "lib/storage/src/storage.c") == NULL);
         PASS();
@@ -629,13 +642,100 @@ static int t_shop_status_view(void)
     return failures;
 }
 
+static bool candidate_shop_want(
+    const struct shop_want_view_input_v1 *input,
+    struct shop_want_view_result_v1 *out)
+{
+    if (!shop_want_view_service_builtin()->render(input, out))
+        return false;
+    if (input->amount_zatoshi == 777u)
+        snprintf(out->next_action, sizeof(out->next_action), "%s",
+                 "candidate buyer-want generation is active; this ad moves no value");
+    return true;
+}
+
+static int t_shop_want_view(void)
+{
+    int failures = 0;
+    TEST("buyer-want rendering swaps while signatures, storage, and value stay static") {
+        zcl_hotswap_service_reset();
+        struct shop_want_view_input_v1 input = {
+            .amount_zatoshi = 777u,
+            .criteria_len = 4u,
+            .issued_unix = 100,
+            .expires_unix = 200,
+            .now_unix = 150,
+            .review_state = 1,
+            .full = true,
+        };
+        input.want_id[0] = 1;
+        input.buyer_pubkey[0] = 2;
+        memcpy(input.criteria, "test", 4);
+        struct shop_want_view_service_v1 candidate = {
+            .render = candidate_shop_want,
+        };
+        struct zcl_hotswap_service_candidate publication = {
+            .service_id = SHOP_WANT_VIEW_SERVICE_ID,
+            .source_tu = "app/services/src/shop_want_view_service.c",
+            .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+            .vtable_size = sizeof(candidate),
+            .abi_fingerprint = SHOP_WANT_VIEW_ABI_FINGERPRINT,
+            .schema_fingerprint = SHOP_WANT_VIEW_SCHEMA_FINGERPRINT,
+            .wire_fingerprint = SHOP_WANT_VIEW_WIRE_FINGERPRINT,
+            .kat_fingerprint = SHOP_WANT_VIEW_KAT_FINGERPRINT,
+            .vtable = &candidate,
+        };
+        struct zcl_hotswap_service_report report = {0};
+        ASSERT(zcl_hotswap_service_publish(
+            zcl_native_shop_want_view_service_contract(), &publication,
+            true, &report));
+        ASSERT(report.probed);
+
+        struct zcl_hotswap_service_lease lease = {0};
+        const struct shop_want_view_service_v1 *active =
+            zcl_hotswap_service_acquire(SHOP_WANT_VIEW_SERVICE_ID, &lease);
+        struct shop_want_view_result_v1 out;
+        ASSERT(active && active->render(&input, &out));
+        ASSERT_STR_EQ(out.state, "open");
+        ASSERT_STR_EQ(out.next_action,
+                      "candidate buyer-want generation is active; this ad moves no value");
+        zcl_hotswap_service_release(&lease);
+
+        struct json_value request_input;
+        json_init(&request_input);
+        json_set_object(&request_input);
+        ASSERT(json_push_kv_str(&request_input, "datadir",
+                                "./test-tmp/shop-want-view-no-db"));
+        ASSERT(json_push_kv_str(
+            &request_input, "buyer_secret",
+            "0101010101010101010101010101010101010101010101010101010101010101"));
+        ASSERT(json_push_kv_int(&request_input, "amount_zatoshi", 777));
+        ASSERT(json_push_kv_str(&request_input, "criteria", "test"));
+        ASSERT(json_push_kv_int(&request_input, "now_unix", 100));
+        ASSERT(json_push_kv_int(&request_input, "expires_unix", 200));
+        struct zcl_command_request request = {.input = &request_input};
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.shop_want_post.v1");
+        zcl_native_handle_shop_want_post(&request, &reply);
+        const struct json_value *want = json_get(&reply.data, "want");
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(want, "next_action")),
+                      "candidate buyer-want generation is active; this ad moves no value");
+        zcl_command_reply_free(&reply);
+        json_free(&request_input);
+        zcl_hotswap_service_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_hotswap_service_registry(void)
 {
     int failures = t_publish_and_lease() + t_contract_drift_restarts() +
                    t_manifest_mapping() + t_market_purchase_view() +
                    t_market_moderation_view() + t_zcode_package_view();
     failures += t_zcode_moderation_view() + t_shop_reputation_view() +
-                t_shop_status_view();
+                t_shop_status_view() + t_shop_want_view();
     zcl_hotswap_service_reset();
     printf("=== hotswap_service_registry: %d failures ===\n", failures);
     return failures;

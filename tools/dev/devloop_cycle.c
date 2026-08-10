@@ -1046,6 +1046,11 @@ enum zcl_devloop_publish_mode zcl_devloop_default_watch_publish_mode(void)
     return ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY;
 }
 
+bool zcl_devloop_publication_target_port_supported(int rpc_port)
+{
+    return rpc_port == 18252;
+}
+
 const char *zcl_devloop_watcher_freshness(bool active, bool source_ready,
                                           bool runtime_ready)
 {
@@ -1065,7 +1070,8 @@ const char *zcl_devloop_watcher_next_action(
     if (!source_ready)
         return "zclassic23-dev dev loop status";
     if (zcl_devloop_publish_mode_applies(publish_mode) && !runtime_ready)
-        return "wait for node RPC, then rerun zclassic23-dev dev loop status";
+        return "start or wait for the isolated dev node on RPC 18252, then "
+               "rerun zclassic23-dev dev loop status";
     return "edit one C23 file";
 }
 

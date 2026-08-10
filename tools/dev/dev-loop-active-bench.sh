@@ -102,7 +102,8 @@ extract_active_session_samples()
             ($rows[$at].state//"")=="running") then
         $rows[($at+1):][] |
         select(.schema=="zcl.dev_cycle.v1" and
-               ((.source_tu//"")|test("zcode|c23|market|shop")))
+               ((.source_tu//.service_source//"")|
+                test("zcode|c23|market|shop")))
       else empty end' "$native_window" >"$samples"
 }
 
@@ -120,7 +121,8 @@ aggregate_samples()
                   .schema == "zcl.dev_active_sample.v1"))) as $s |
       [$s[] | select((.action // "") == "hotswap" and
                      (.status // "") == "passed" and
-                     (.runtime_published // false) == true) |
+                     (.runtime_published // false) == true and
+                     (.changed_path_count // 1) <= 1) |
         (.elapsed_us // ((.elapsed_ms // 0)*1000))] as $hot |
       [$s[] | select((.action // "") == "restart" and
                      ((.status // "") == "passed" or
@@ -166,7 +168,7 @@ aggregate_samples()
             ((.why_not_live//"")|length)==0)]|length),
           reasons:([$s[]|select((.status//"")!="passed" and
             (.status//"")!="feedback_ready")|
-            {status,action,source_tu:(.source_tu//null),
+            {status,action,source_tu:(.source_tu//.service_source//null),
              why_not_live:(.why_not_live//null)}])}}' \
       "$samples" >"$output"
 }
@@ -199,11 +201,12 @@ self_test()
       '{"schema":"zcl.dev_cycle.v1","status":"rejected","action":"hotswap","elapsed_us":800000,"runtime_published":false,"source_tu":"app/services/src/zcode_c23_corpus_service.c"}' \
       '{"schema":"zcl.dev_cycle.v1","status":"passed","action":"hotswap","elapsed_us":100000,"runtime_published":true,"source_tu":"app/services/src/zcode_c23_corpus_service.c"}' \
       '{"schema":"zcl.dev_cycle.v1","status":"passed","action":"hotswap","elapsed_us":120000,"runtime_published":true,"source_tu":"app/services/src/shop_reputation_view_service.c"}' \
+      '{"schema":"zcl.dev_cycle.v1","status":"blocked","action":"reload","runtime_published":false,"service_source":"app/services/src/shop_want_view_service.c","why_not_live":"frozen service contract changed"}' \
       >"$native_log"
     extract_active_session_samples "$native_log" "$samples" "$session"
     jq -e '.status == "watching" and .pid == 202' "$session" >/dev/null ||
         fail 'active watcher session selection regressed'
-    [ "$(wc -l <"$samples")" -eq 3 ] ||
+    [ "$(wc -l <"$samples")" -eq 4 ] ||
         fail 'stale watcher samples leaked into the active session'
     printf '%s\n' \
       '{"schema":"zcl.dev_active_sample.v1","status":"passed","action":"hotswap","elapsed_us":100000,"runtime_published":true,"changed_path_count":1,"source_guard_bytes_read":10,"build_receipt":{"compiler_processes":1,"linker_processes":1,"artifact_cache_hit":false}}' \
@@ -213,15 +216,15 @@ self_test()
       >>"$samples"
     aggregate_samples "$samples" "$receipt"
     jq -e '
-      .sample_count == 7 and .hot_swap.count == 4 and
+      .sample_count == 8 and .hot_swap.count == 3 and
       .hot_swap.p50_us == 100000 and
-      .hot_swap.p95_us == 800000 and
+      .hot_swap.p95_us == 120000 and
       .same_island_multi_file.p95_us == 800000 and
       .same_island_multi_file.target_pass == true and
-      .hot_swap.target_pass == false and
+      .hot_swap.target_pass == true and
       .processes.compiler == 3 and .processes.linker == 2 and
       .source_bytes.complete == false and .source_bytes.read == 65 and
-      .cache_hits == 1 and .deferred_groups == 3 and .refusals == 3 and
+      .cache_hits == 1 and .deferred_groups == 3 and .refusals == 4 and
       .refusal_explanations.complete == false and
       .refusal_explanations.missing == 3' \
       "$receipt" >/dev/null || fail 'sample aggregation contract regressed'

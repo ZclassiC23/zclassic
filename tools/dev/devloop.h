@@ -570,6 +570,7 @@ bool zcl_devloop_publish_mode_applies(
 const char *zcl_devloop_publish_mode_name(
     enum zcl_devloop_publish_mode publish_mode);
 enum zcl_devloop_publish_mode zcl_devloop_default_watch_publish_mode(void);
+bool zcl_devloop_publication_target_port_supported(int rpc_port);
 /* Stable watcher-status vocabulary shared by the native status/ensure
  * surface and its tests. The returned next action is deliberately the same
  * idempotent command whether it starts a watcher or reports an existing one. */

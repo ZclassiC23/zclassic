@@ -473,6 +473,8 @@ static int test_watcher_publication_containment(void)
     TEST("dev platform: watchers verify by default and auto is island-only") {
         ASSERT(zcl_devloop_default_watch_publish_mode() ==
                ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY);
+        ASSERT(zcl_devloop_publication_target_port_supported(18252));
+        ASSERT(!zcl_devloop_publication_target_port_supported(29352));
         ASSERT(!zcl_devloop_publish_mode_applies(
             ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY));
         ASSERT(zcl_devloop_publish_mode_applies(ZCL_DEVLOOP_PUBLISH_APPLY));
@@ -507,7 +509,7 @@ static int test_watcher_publication_containment(void)
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
                           true, true, false, ZCL_DEVLOOP_PUBLISH_APPLY),
-                      "wait for node RPC, then rerun zclassic23-dev dev loop status")
+                      "start or wait for the isolated dev node on RPC 18252, then rerun zclassic23-dev dev loop status")
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
                           true, true, true, ZCL_DEVLOOP_PUBLISH_APPLY),

@@ -1045,6 +1045,7 @@ void zcl_native_handle_network_graph(
  * captured by zcl_native_command_main, or "" when none was given). Read-only
  * accessor for handlers that open a datadir-relative store directly. */
 const char *zcl_native_command_datadir(void);
+int zcl_native_command_rpc_port(void);
 
 /* Bind the native controller bridge to an explicit node RPC context.  The
  * resident dev host uses this at boot so a hot-loaded controller cannot

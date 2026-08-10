@@ -760,6 +760,9 @@ static enum zcl_devloop_state_lookup dev_read_cycle(
 
 static bool dev_publication_target_ready(void)
 {
+    if (!zcl_devloop_publication_target_port_supported(
+            zcl_native_command_rpc_port()))
+        return false;
     zcl_native_bridge_ensure_rpc();
     char *raw = node_rpc_call_deadline("getblockcount", NULL, 15, 40);
     if (!raw)
@@ -808,6 +811,10 @@ static void dev_emit_loop_status(const char *repo_root,
                             active && info.ready);
     (void)json_push_kv_bool(&reply->data, "publication_target_required",
                             publication_required);
+    (void)json_push_kv_int(&reply->data, "publication_target_rpc_port",
+                           zcl_native_command_rpc_port());
+    (void)json_push_kv_int(&reply->data, "required_publication_rpc_port",
+                           18252);
     (void)json_push_kv_bool(&reply->data, "publication_target_ready",
                             publication_target_ready);
     (void)json_push_kv_bool(&reply->data, "watcher_ready", watcher_ready);
@@ -853,6 +860,7 @@ static void dev_emit_loop_status(const char *repo_root,
             "source_guard_captures", "source_guard_bytes_read",
             "source_bytes_total", "changed_source_bytes",
             "source_byte_accounting_complete", "closure_us", "failure_capsule",
+            "why_not_live", "contract_path", "service_source",
             "agent_next_action",
         };
         struct json_value summary;
