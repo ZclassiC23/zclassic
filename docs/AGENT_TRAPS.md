@@ -107,17 +107,24 @@ historical fixture passes, then deploy/restart intentionally.
   headers and the target-specific `-Og`/hot-bucket `-O2` split, then records
   hash/freshness metadata. clangd is optional and its absence is not an index
   generation failure.
-- **node_db teardown after a migration-refusal FATAL double-frees
-  (pre-existing, latent).** When `node_db_migrate` refuses a newer datadir
-  ("schema_version=N but this binary only knows up to M", returns -2 at
-  `app/models/src/database_migrate.c`), teardown of the partially-opened
-  `node_db` can print `double free or corruption (!prev)`. Surfaced
-  2026-08-09 when the v65 migration landed before `NODE_DB_SCHEMA_LATEST`
-  was bumped (test_file_market "restart reconstructs verified content
-  reader"); the cap bump silenced it, but the underlying open/close bug in
-  `app/models/src/database.c` is still live and will resurface on the next
-  stale-binary-vs-newer-datadir boot. Fix = audit the refusal path's
-  ownership, not a test tweak.
+- **FIXED 2026-08-10 (c8b5dae0b) — node_db newer-schema refusal used to
+  fire only AFTER the open ceremony had already written to the datadir.**
+  The old order ran quick_check (whose failure path quarantines/renames
+  node.db and rebuilds it empty), create_schema() (re-creating baseline
+  tables a newer schema may have deliberately dropped), and the
+  schema_migrations bootstrap INSERT before `node_db_migrate`'s -2
+  refusal — a "refused" open mutated the file it claimed to protect, and
+  teardown of that half-opened `node_db` could print
+  `double free or corruption (!prev)` (surfaced 2026-08-09 in
+  test_file_market "restart reconstructs verified content reader"). The
+  fix moves the refusal to a read-only `db_peek_schema_version()`
+  preflight immediately after `db_open_raw`, before anything that can
+  write/rename/quarantine, and makes `node_db_open_abort()` leave the
+  struct close-harmless (db NULL, open false, state destroyed) so
+  repeated refusal + unconditional close is a guarded no-op. Pinned by
+  the strengthened `test_db_migration_idempotent` subtest: 8 refused
+  open/close rounds, datadir SHA3+size unchanged, no WAL/SHM residue,
+  clean under ASan+UBSan. Do not reintroduce writes before the refusal.
 
 ---
 
