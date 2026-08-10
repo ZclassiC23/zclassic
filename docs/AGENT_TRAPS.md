@@ -125,6 +125,21 @@ historical fixture passes, then deploy/restart intentionally.
   the strengthened `test_db_migration_idempotent` subtest: 8 refused
   open/close rounds, datadir SHA3+size unchanged, no WAL/SHM residue,
   clean under ASan+UBSan. Do not reintroduce writes before the refusal.
+- **FIXED 2026-08-10 (82f94e65d) — a group that passes isolated but fails
+  in the monolithic suite is not always a poisoned victim; check
+  context-dependent OUTPUT SIZE first.** `test_test_group_selector`
+  asserted on the tail of a `make -n t-fast-exact` dry run through a
+  128 KiB head-truncating capture. The dry run's size depends on
+  session-scoped build freshness: warm (isolated `make t-fast`) it is a
+  few KB; cold (the parallel suite, a direct runner process, an expired
+  session lease) every stale session/link/stamp recipe prints (~0.6 MB
+  measured) and the tail evidence falls off the buffer. Deterministic
+  cold repro: `test_parallel_fast --jobs=1
+  --exact=test_test_group_selector --no-cache` directly, not via make.
+  Fixed by sizing the capture past the all-stale bound (8 MiB static),
+  not by touching any assertion. When bisecting "contamination", diff
+  the victim's captured bytes between contexts before blaming another
+  group.
 
 ---
 
