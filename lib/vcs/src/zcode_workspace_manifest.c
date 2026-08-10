@@ -3,13 +3,19 @@
 
 #include "vcs/zcode_commons_v2.h"
 
+#include "base/cleanse.h"
 #include "base/checked.h"
 #include "base/safe_alloc.h"
 #include "base/serialize_le.h"
+#include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 
 #include <stdlib.h>
 #include <string.h>
+
+static const uint8_t passport_magic[8] = {'Z','C','M','P','1',0,0,0};
+static const char passport_signature_domain[] =
+    "zcl.zcode.module_passport.signature.v1";
 
 static bool workspace_nonzero_n(const uint8_t *bytes, size_t count)
 {
@@ -152,8 +158,9 @@ enum vcs_zcode_commons_v2_error vcs_zcode_quality_profile_v1_root(
     return VCS_ZCODE_COMMONS_V2_OK;
 }
 
-enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_validate(
-    const struct vcs_zcode_module_passport_v1 *passport)
+static enum vcs_zcode_commons_v2_error passport_shape(
+    const struct vcs_zcode_module_passport_v1 *passport,
+    bool require_signature)
 {
     if (!passport) return VCS_ZCODE_COMMONS_V2_NULL;
     if (passport->schema_version != 1)
@@ -170,8 +177,123 @@ enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_validate(
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++)
         if (!workspace_nonzero_n(roots[i], 32))
             return VCS_ZCODE_COMMONS_V2_ROOT;
-    return workspace_nonzero_n(passport->signature, 64)
-        ? VCS_ZCODE_COMMONS_V2_OK : VCS_ZCODE_COMMONS_V2_ROOT;
+    if (require_signature && !workspace_nonzero_n(passport->signature, 64))
+        return VCS_ZCODE_COMMONS_V2_ROOT;
+    return VCS_ZCODE_COMMONS_V2_OK;
+}
+
+enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_validate(
+    const struct vcs_zcode_module_passport_v1 *passport)
+{
+    return passport_shape(passport, true);
+}
+
+static size_t passport_write_unsigned(
+    const struct vcs_zcode_module_passport_v1 *passport, uint8_t *wire)
+{
+    size_t off = 0;
+    memcpy(wire + off, passport_magic, sizeof(passport_magic));
+    off += sizeof(passport_magic);
+    zcl_write_u16_le(wire + off, passport->schema_version); off += 2;
+    zcl_write_u16_le(wire + off, passport->flags); off += 2;
+    memcpy(wire + off, passport->stable_api_root, 32u * 10u);
+    off += 32u * 10u;
+    return off;
+}
+
+static bool passport_signature_valid(
+    const struct vcs_zcode_module_passport_v1 *passport)
+{
+    uint8_t wire[VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES];
+    uint8_t preimage[sizeof(passport_signature_domain) - 1u +
+                     VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES];
+    size_t unsigned_len = passport_write_unsigned(passport, wire);
+    size_t domain_len = sizeof(passport_signature_domain) - 1u;
+    memcpy(preimage, passport_signature_domain, domain_len);
+    memcpy(preimage + domain_len, wire, unsigned_len);
+    bool valid = ed25519_verify(passport->signature, preimage,
+                                domain_len + unsigned_len,
+                                passport->signer_root);
+    memory_cleanse(preimage, sizeof(preimage));
+    memory_cleanse(wire, sizeof(wire));
+    return valid;
+}
+
+enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_verify(
+    const struct vcs_zcode_module_passport_v1 *passport)
+{
+    enum vcs_zcode_commons_v2_error error = passport_shape(passport, true);
+    if (error != VCS_ZCODE_COMMONS_V2_OK) return error;
+    return passport_signature_valid(passport)
+        ? VCS_ZCODE_COMMONS_V2_OK : VCS_ZCODE_COMMONS_V2_SIGNATURE;
+}
+
+enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_sign(
+    struct vcs_zcode_module_passport_v1 *passport,
+    const uint8_t signer_seed[32])
+{
+    if (!passport || !signer_seed) return VCS_ZCODE_COMMONS_V2_NULL;
+    uint8_t secret[32];
+    ed25519_keypair(passport->signer_root, secret, signer_seed);
+    memset(passport->signature, 0, sizeof(passport->signature));
+    enum vcs_zcode_commons_v2_error error = passport_shape(passport, false);
+    if (error != VCS_ZCODE_COMMONS_V2_OK) {
+        memory_cleanse(secret, sizeof(secret));
+        return error;
+    }
+    uint8_t wire[VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES];
+    uint8_t preimage[sizeof(passport_signature_domain) - 1u +
+                     VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES];
+    size_t unsigned_len = passport_write_unsigned(passport, wire);
+    size_t domain_len = sizeof(passport_signature_domain) - 1u;
+    memcpy(preimage, passport_signature_domain, domain_len);
+    memcpy(preimage + domain_len, wire, unsigned_len);
+    ed25519_sign(passport->signature, preimage, domain_len + unsigned_len,
+                 secret, passport->signer_root);
+    memory_cleanse(secret, sizeof(secret));
+    memory_cleanse(preimage, sizeof(preimage));
+    memory_cleanse(wire, sizeof(wire));
+    return vcs_zcode_module_passport_v1_verify(passport);
+}
+
+enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_encode(
+    const struct vcs_zcode_module_passport_v1 *passport,
+    uint8_t *wire, size_t wire_capacity, size_t *wire_len)
+{
+    if (wire_len) *wire_len = 0;
+    if (!passport || !wire || !wire_len) return VCS_ZCODE_COMMONS_V2_NULL;
+    enum vcs_zcode_commons_v2_error error =
+        vcs_zcode_module_passport_v1_verify(passport);
+    if (error != VCS_ZCODE_COMMONS_V2_OK) return error;
+    if (wire_capacity < VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES)
+        return VCS_ZCODE_COMMONS_V2_SIZE;
+    size_t off = passport_write_unsigned(passport, wire);
+    memcpy(wire + off, passport->signature, 64); off += 64;
+    *wire_len = off;
+    return off == VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES
+        ? VCS_ZCODE_COMMONS_V2_OK : VCS_ZCODE_COMMONS_V2_SIZE;
+}
+
+enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_decode(
+    struct vcs_zcode_module_passport_v1 *out,
+    const uint8_t *wire, size_t wire_len)
+{
+    if (!out || !wire) return VCS_ZCODE_COMMONS_V2_NULL;
+    memset(out, 0, sizeof(*out));
+    if (wire_len != VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES)
+        return VCS_ZCODE_COMMONS_V2_SIZE;
+    if (memcmp(wire, passport_magic, sizeof(passport_magic)) != 0)
+        return VCS_ZCODE_COMMONS_V2_MAGIC;
+    size_t off = sizeof(passport_magic);
+    out->schema_version = zcl_read_u16_le(wire + off); off += 2;
+    out->flags = zcl_read_u16_le(wire + off); off += 2;
+    memcpy(out->stable_api_root, wire + off, 32u * 10u); off += 32u * 10u;
+    memcpy(out->signature, wire + off, 64); off += 64;
+    enum vcs_zcode_commons_v2_error error =
+        off == wire_len ? vcs_zcode_module_passport_v1_verify(out)
+                        : VCS_ZCODE_COMMONS_V2_SIZE;
+    if (error != VCS_ZCODE_COMMONS_V2_OK) memset(out, 0, sizeof(*out));
+    return error;
 }
 
 enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_root(

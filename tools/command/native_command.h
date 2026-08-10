@@ -466,6 +466,9 @@ void zcl_native_handle_zcode_commons_corpus_show(
 void zcl_native_handle_zcode_commons_corpus_verify(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_passport_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_commons_corpus_shard_verify(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

@@ -1207,6 +1207,60 @@ static int test_v2_workspace_objects(void)
         cv2_fill(passport.signature, 0x3f);
         ASSERT_EQ(vcs_zcode_module_passport_v1_validate(&passport),
                   VCS_ZCODE_COMMONS_V2_OK);
+        uint8_t passport_seed[32], passport_wire[
+            VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES];
+        cv2_fill(passport_seed, 0x40);
+        memset(passport.signer_root, 0, sizeof(passport.signer_root));
+        memset(passport.signature, 0, sizeof(passport.signature));
+        ASSERT_EQ(vcs_zcode_module_passport_v1_sign(&passport, passport_seed),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT_EQ(vcs_zcode_module_passport_v1_verify(&passport),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        size_t passport_wire_len = 0;
+        ASSERT_EQ(vcs_zcode_module_passport_v1_encode(
+                      &passport, passport_wire, sizeof(passport_wire),
+                      &passport_wire_len), VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT_EQ(passport_wire_len,
+                  VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES);
+        char passport_hex[VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES * 2u + 1u];
+        zcl_hex_encode(passport_wire, passport_wire_len, passport_hex);
+        struct json_value passport_input;
+        json_init(&passport_input);
+        json_set_object(&passport_input);
+        ASSERT(json_push_kv_str(&passport_input, "passport", passport_hex));
+        struct zcl_command_request passport_request = {
+            .input = &passport_input,
+        };
+        struct zcl_command_reply passport_reply;
+        zcl_command_reply_init(&passport_reply, "zcl.zcode_passport_verify.v1");
+        zcl_native_handle_zcode_passport_verify(&passport_request,
+                                                &passport_reply);
+        ASSERT_EQ(passport_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&passport_reply.data, "verified")));
+        ASSERT_STR_EQ(json_get_str(json_get(&passport_reply.data, "kind")),
+                      "module_passport.v1");
+        zcl_command_reply_free(&passport_reply);
+        json_free(&passport_input);
+        struct vcs_zcode_module_passport_v1 passport_decoded;
+        ASSERT_EQ(vcs_zcode_module_passport_v1_decode(
+                      &passport_decoded, passport_wire, passport_wire_len),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT(memcmp(&passport, &passport_decoded, sizeof(passport)) == 0);
+        ASSERT_EQ(vcs_zcode_module_passport_v1_decode(
+                      &passport_decoded, passport_wire,
+                      passport_wire_len - 1u), VCS_ZCODE_COMMONS_V2_SIZE);
+        passport_wire[0] ^= 1u;
+        ASSERT_EQ(vcs_zcode_module_passport_v1_decode(
+                      &passport_decoded, passport_wire, passport_wire_len),
+                  VCS_ZCODE_COMMONS_V2_MAGIC);
+        passport_wire[0] ^= 1u;
+        passport_wire[40] ^= 1u;
+        ASSERT_EQ(vcs_zcode_module_passport_v1_decode(
+                      &passport_decoded, passport_wire, passport_wire_len),
+                  VCS_ZCODE_COMMONS_V2_SIGNATURE);
+        struct vcs_zcode_module_passport_v1 empty_passport = {0};
+        ASSERT(memcmp(&passport_decoded, &empty_passport,
+                      sizeof(passport_decoded)) == 0);
         memset(passport.tests_root, 0, 32);
         ASSERT_EQ(vcs_zcode_module_passport_v1_validate(&passport),
                   VCS_ZCODE_COMMONS_V2_ROOT);

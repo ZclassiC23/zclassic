@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 638 |
+| Registry entries (branches + leaves) | 640 |
 | Top-level roots | 11 |
-| Branches | 150 |
-| Leaves (dispatchable command paths) | 488 |
-| … `ready` (live handler in this build) | 440 |
+| Branches | 151 |
+| Leaves (dispatchable command paths) | 489 |
+| … `ready` (live handler in this build) | 441 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 179 | 43 | 136 |
+| `config/commands/zcode.def` | 181 | 44 | 137 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -959,6 +959,12 @@ represented by its children's sections.
 | `zcode work run` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `adapter` | `zcl.zcode_work_run.v1` | `zclassic23-dev zcode work run --input='{"work":"latest","adapter":"manual"}'` | Run one contained adapter handoff |
 | `zcode work accept` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work` | `zcl.zcode_work_accept.v1` | `zclassic23-dev zcode work accept --input='{"work":"latest"}'` | Accept one exact proven candidate |
 | `zcode work review` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `adapter`, **`verdict`**, **`findings`** | `zcl.zcode_work_review.v1` | `zclassic23-dev zcode work review --input='{"work":"latest","adapter":"manual","verdict":"approve","findings":"No blocking findings."}'` | Review one exact candidate |
+
+#### `zcode.passport` — Signed C23 module Passports
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode passport verify` | ready | read / read / public · instant/tiny | **`passport`** | `zcl.zcode_passport_verify.v1` | `zclassic23 zcode passport verify --passport=<lowercase-hex-wire>` | Verify one signed C23 module Passport |
 
 #### `zcode.commons` — Read-only ZC23 Living Commons projection
 
