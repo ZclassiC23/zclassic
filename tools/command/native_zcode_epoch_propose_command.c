@@ -711,3 +711,143 @@ void zcl_native_handle_zcode_commons_schedule_claim_verify(
     vcs_zcode_commons_projection_free(projection);
     vcs_zcode_claim_epoch_free(&proposal);
 }
+
+void zcl_native_handle_zcode_commons_schedule_claim_show(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    static const char command[] = "zcode.commons.schedule.claim.show";
+    static const char *const keys[] = {"workspace", "root"};
+    const char *workspace = request
+        ? zep_str(request->input, "workspace") : NULL;
+    uint8_t requested_root[32], derived_root[32];
+    if (!request || !reply || !workspace ||
+        !zep_keys(request->input, keys, sizeof(keys) / sizeof(keys[0])) ||
+        !zep_root(request->input, "root", requested_root)) {
+        zep_claim_fail(reply, "BAD_CLAIM_EPOCH_SHOW_INPUT",
+                       "closed input requires scratch workspace and one exact lowercase root",
+                       command);
+        return;
+    }
+    if (!zcl_native_zcode_workspace_is_explicit_scratch(workspace)) {
+        zep_claim_fail(reply, "UNSAFE_SHOW_WORKSPACE",
+                       "workspace must explicitly name an isolated tmp, test-tmp, or scratch path",
+                       command);
+        return;
+    }
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    int load_error = vcs_object_load_raw_bounded(
+        workspace, requested_root, VCS_ZCODE_CLAIM_EPOCH_MAX_WIRE_BYTES,
+        &wire, &wire_len);
+    if (load_error != 0) {
+        zep_claim_fail(
+            reply, "CLAIM_EPOCH_SHOW_LOAD_REFUSED",
+            load_error == -2
+                ? "proposal exceeds the canonical bounded wire maximum"
+                : "proposal is missing, unreadable, or outside the exact scratch CAS",
+            command);
+        return;
+    }
+    struct vcs_zcode_claim_epoch_proposal_v2 proposal;
+    enum vcs_zcode_claim_epoch_error error =
+        vcs_zcode_claim_epoch_decode(&proposal, wire, wire_len);
+    free(wire);
+    if (error == VCS_ZCODE_CLAIM_EPOCH_OK)
+        error = vcs_zcode_claim_epoch_root(&proposal, derived_root);
+    if (error != VCS_ZCODE_CLAIM_EPOCH_OK ||
+        memcmp(derived_root, requested_root, 32) != 0) {
+        vcs_zcode_claim_epoch_free(&proposal);
+        zep_claim_fail(reply, "CLAIM_EPOCH_SHOW_VERIFY_REFUSED",
+                       error == VCS_ZCODE_CLAIM_EPOCH_OK
+                           ? "canonical proposal bytes do not rederive the requested CAS address"
+                           : vcs_zcode_claim_epoch_error_string(error),
+                       command);
+        return;
+    }
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_c23_economics_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_C23_ECONOMICS_SERVICE_ID, &lease);
+    if (!service) service = zcode_c23_economics_service_builtin();
+    struct zcode_c23_claim_epoch_view_v1 view;
+    if (!service->render_claim_epoch(
+            &proposal, true, false, &view)) {
+        zcl_hotswap_service_release(&lease);
+        vcs_zcode_claim_epoch_free(&proposal);
+        zep_claim_fail(reply, "CLAIM_EPOCH_SHOW_RENDER_REFUSED",
+                       "the pure economics service refused the canonical proposal view",
+                       command);
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "service_id",
+                           ZCODE_C23_ECONOMICS_SERVICE_ID);
+    (void)json_push_kv_int(&reply->data, "service_generation",
+                           (int64_t)zcl_hotswap_service_generation());
+    (void)json_push_kv_bool(&reply->data, "pure_calculation", true);
+    (void)json_push_kv_bool(&reply->data, "valid", view.valid);
+    (void)json_push_kv_bool(&reply->data, "persisted", view.persisted);
+    (void)json_push_kv_bool(&reply->data, "canonical_proposal",
+                            view.canonical_proposal);
+    (void)json_push_kv_bool(&reply->data, "current_selection_verified",
+                            view.current_selection_verified);
+    (void)json_push_kv_bool(&reply->data, "simulation_only",
+                            view.simulation_only);
+    (void)json_push_kv_bool(&reply->data, "issuance_enabled",
+                            view.issuance_enabled);
+    (void)json_push_kv_bool(&reply->data, "wallet_used", view.wallet_used);
+    (void)json_push_kv_bool(&reply->data, "funds_moved", view.funds_moved);
+    (void)json_push_kv_str(&reply->data, "verification_state",
+                           view.verification_state);
+    (void)json_push_kv_str(&reply->data, "next_command", view.next_command);
+    zep_hex(&reply->data, "claim_epoch_proposal_root", requested_root);
+    zep_hex(&reply->data, "previous_epoch_root", proposal.previous_epoch_root);
+    zep_hex(&reply->data, "policy_root", proposal.policy_root);
+    zep_hex(&reply->data, "claim_projection_root",
+            proposal.claim_projection_root);
+    zep_hex(&reply->data, "epoch_selection_root",
+            proposal.epoch_selection_root);
+    (void)json_push_kv_int(&reply->data, "proposal_bytes",
+                           (int64_t)wire_len);
+    (void)json_push_kv_int(&reply->data, "epoch", (int64_t)view.epoch);
+    (void)json_push_kv_int(&reply->data, "cutoff_height",
+                           (int64_t)view.cutoff_height);
+    (void)json_push_kv_int(&reply->data, "cutoff_mtp", view.cutoff_mtp);
+    (void)json_push_kv_int(&reply->data, "epoch_capacity_atoms",
+                           (int64_t)view.epoch_capacity_atoms);
+    (void)json_push_kv_int(&reply->data, "selected_atoms",
+                           (int64_t)view.selected_atoms);
+    (void)json_push_kv_int(&reply->data, "expired_capacity_atoms",
+                           (int64_t)view.expired_capacity_atoms);
+    (void)json_push_kv_int(&reply->data, "recipient_cap_atoms",
+                           (int64_t)view.recipient_cap_atoms);
+    (void)json_push_kv_int(&reply->data, "lineage_cap_atoms",
+                           (int64_t)view.lineage_cap_atoms);
+    (void)json_push_kv_int(&reply->data, "claim_count",
+                           (int64_t)view.claim_count);
+    (void)json_push_kv_int(&reply->data, "selected_count",
+                           (int64_t)view.selected_count);
+    (void)json_push_kv_int(&reply->data, "deferred_count",
+                           (int64_t)view.deferred_count);
+    (void)json_push_kv_int(&reply->data, "invalid_count",
+                           (int64_t)view.invalid_count);
+    (void)json_push_kv_int(&reply->data, "first_category",
+                           view.first_category);
+    const size_t inline_limit = 16;
+    size_t inline_count = proposal.selected_count < inline_limit
+        ? proposal.selected_count : inline_limit;
+    struct json_value selected;
+    json_init(&selected); json_set_array(&selected);
+    for (size_t i = 0; i < inline_count; i++) {
+        struct json_value item;
+        char root_hex[65];
+        zcl_hex_encode(proposal.selected_claim_roots[i], 32, root_hex);
+        json_init(&item); json_set_str(&item, root_hex);
+        (void)json_push_back(&selected, &item);
+        json_free(&item);
+    }
+    (void)json_push_kv(&reply->data, "selected_claim_roots", &selected);
+    json_free(&selected);
+    (void)json_push_kv_bool(&reply->data, "selected_claim_roots_complete",
+                            inline_count == proposal.selected_count);
+    zcl_hotswap_service_release(&lease);
+    vcs_zcode_claim_epoch_free(&proposal);
+}

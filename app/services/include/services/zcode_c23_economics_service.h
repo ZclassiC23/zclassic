@@ -5,6 +5,7 @@
 #define ZCL_SERVICES_ZCODE_C23_ECONOMICS_SERVICE_H
 
 #include "vcs/zcode_commons_v2.h"
+#include "vcs/zcode_claim_epoch.h"
 #include "vcs/zcode_epoch_schedule.h"
 
 #include <stdbool.h>
@@ -12,15 +13,15 @@
 
 #define ZCODE_C23_ECONOMICS_SERVICE_ID "zcode.c23.economics.v1"
 #define ZCODE_C23_ECONOMICS_ABI_FINGERPRINT \
-    "zcode.c23.economics.abi.v2:backlog-status"
+    "zcode.c23.economics.abi.v3:claim-epoch-view"
 #define ZCODE_C23_ECONOMICS_SCHEMA_FINGERPRINT \
-    "zcl.zcode_commons_economics_status.v2+schedule_proposal_view.v2+backlog-readiness.v1"
+    "zcl.zcode_commons_economics_status.v2+schedule_proposal_view.v2+backlog-readiness.v1+claim_epoch_view.v2"
 #define ZCODE_C23_ECONOMICS_WIRE_FINGERPRINT \
-    "zc23-policy+claim+backlog-readiness+epoch-selection.v2"
+    "zc23-policy+claim+backlog-readiness+epoch-selection+claim-epoch-proposal.v2"
 #define ZCODE_C23_ECONOMICS_POLICY_KAT_ROOT \
     "8fc1df9547d1842004e86c1a06714829965693c031f8e3a16dd2fe38ee6f6ad9"
 #define ZCODE_C23_ECONOMICS_KAT_FINGERPRINT \
-    "dbc50951a0d956bfb05c958e6d905a3b8935bd53f565416af4fcd441c5323bfb"
+    "988f572ab350e79e76515506025f3db334809c8f2a89d397274c542f26580016"
 
 struct zcode_c23_economics_status_result_v1 {
     uint64_t challenge_blocks;
@@ -74,6 +75,32 @@ struct zcode_c23_backlog_status_result_v1 {
     char next_command[64];
 };
 
+struct zcode_c23_claim_epoch_view_v1 {
+    uint64_t epoch;
+    uint64_t cutoff_height;
+    int64_t cutoff_mtp;
+    uint64_t epoch_capacity_atoms;
+    uint64_t selected_atoms;
+    uint64_t expired_capacity_atoms;
+    uint64_t recipient_cap_atoms;
+    uint64_t lineage_cap_atoms;
+    uint32_t claim_count;
+    uint32_t selected_count;
+    uint32_t deferred_count;
+    uint32_t invalid_count;
+    uint8_t first_category;
+    bool valid;
+    bool persisted;
+    bool canonical_proposal;
+    bool current_selection_verified;
+    bool simulation_only;
+    bool issuance_enabled;
+    bool wallet_used;
+    bool funds_moved;
+    char verification_state[64];
+    char next_command[64];
+};
+
 struct zcode_c23_economics_service_v1 {
     uint64_t (*award_atoms)(uint16_t category);
     void (*policy_init)(struct vcs_zcode_policy_candidate_v2 *policy,
@@ -97,6 +124,10 @@ struct zcode_c23_economics_service_v1 {
     bool (*render_backlog_status)(
         const struct zcode_c23_backlog_status_input_v1 *input,
         struct zcode_c23_backlog_status_result_v1 *out);
+    bool (*render_claim_epoch)(
+        const struct vcs_zcode_claim_epoch_proposal_v2 *proposal,
+        bool persisted, bool current_selection_verified,
+        struct zcode_c23_claim_epoch_view_v1 *out);
     bool (*schedule_class_name)(uint16_t schedule_class,
                                 char *out, size_t out_size);
 };

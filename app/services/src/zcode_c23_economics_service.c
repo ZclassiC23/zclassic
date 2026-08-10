@@ -121,6 +121,49 @@ static bool render_backlog_status(
     return true;
 }
 
+static bool render_claim_epoch(
+    const struct vcs_zcode_claim_epoch_proposal_v2 *proposal,
+    bool persisted, bool current_selection_verified,
+    struct zcode_c23_claim_epoch_view_v1 *out)
+{
+    if (!proposal || !out ||
+        vcs_zcode_claim_epoch_validate(proposal) !=
+            VCS_ZCODE_CLAIM_EPOCH_OK)
+        return false;
+    memset(out, 0, sizeof(*out));
+    out->epoch = proposal->epoch;
+    out->cutoff_height = proposal->cutoff_height;
+    out->cutoff_mtp = proposal->cutoff_mtp;
+    out->epoch_capacity_atoms = proposal->epoch_capacity_atoms;
+    out->selected_atoms = proposal->selected_atoms;
+    out->expired_capacity_atoms = proposal->expired_capacity_atoms;
+    out->recipient_cap_atoms = proposal->recipient_cap_atoms;
+    out->lineage_cap_atoms = proposal->lineage_cap_atoms;
+    out->claim_count = proposal->claim_count;
+    out->selected_count = proposal->selected_count;
+    out->deferred_count = proposal->deferred_count;
+    out->invalid_count = proposal->invalid_count;
+    out->first_category = proposal->first_category;
+    out->valid = true;
+    out->persisted = persisted;
+    out->canonical_proposal = true;
+    out->current_selection_verified = current_selection_verified;
+    out->simulation_only = true;
+    out->issuance_enabled = false;
+    out->wallet_used = false;
+    out->funds_moved = false;
+    (void)snprintf(out->verification_state,
+                   sizeof(out->verification_state), "%s",
+                   current_selection_verified
+                       ? "verified:current_selection"
+                       : "canonical:selection_not_reconstructed");
+    (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                   current_selection_verified
+                       ? "zcode commons backlog"
+                       : "zcode commons schedule claim verify");
+    return true;
+}
+
 static bool schedule_class_name(uint16_t schedule_class,
                                 char *out, size_t out_size)
 {
@@ -151,6 +194,7 @@ static const struct zcode_c23_economics_service_v1 k_builtin = {
     .render_status = render_status,
     .render_schedule_proposal = render_schedule_proposal,
     .render_backlog_status = render_backlog_status,
+    .render_claim_epoch = render_claim_epoch,
     .schedule_class_name = schedule_class_name,
 };
 

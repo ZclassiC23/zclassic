@@ -23,11 +23,11 @@ HOTSWAP_SERVICE(
     "app/services/src/zcode_c23_economics_service.c",
     "app/services/src/zcode_c23_economics_internal.h",
     "app/services/include/services/zcode_c23_economics_service.h",
-    "vcs_zcode_creation_award_atoms_v2 vcs_zcode_policy_candidate_v2_init vcs_zcode_policy_candidate_v2_validate vcs_zcode_policy_candidate_v2_root vcs_zcode_epoch_select_v2 vcs_zcode_epoch_schedule_validate vcs_zcode_epoch_schedule_class_weight",
-    "zcode.c23.economics.abi.v2:backlog-status",
-    "zcl.zcode_commons_economics_status.v2+schedule_proposal_view.v2+backlog-readiness.v1",
-    "zc23-policy+claim+backlog-readiness+epoch-selection.v2",
-    "dbc50951a0d956bfb05c958e6d905a3b8935bd53f565416af4fcd441c5323bfb",
+    "vcs_zcode_creation_award_atoms_v2 vcs_zcode_policy_candidate_v2_init vcs_zcode_policy_candidate_v2_validate vcs_zcode_policy_candidate_v2_root vcs_zcode_epoch_select_v2 vcs_zcode_epoch_schedule_validate vcs_zcode_epoch_schedule_class_weight vcs_zcode_claim_epoch_validate",
+    "zcode.c23.economics.abi.v3:claim-epoch-view",
+    "zcl.zcode_commons_economics_status.v2+schedule_proposal_view.v2+backlog-readiness.v1+claim_epoch_view.v2",
+    "zc23-policy+claim+backlog-readiness+epoch-selection+claim-epoch-proposal.v2",
+    "988f572ab350e79e76515506025f3db334809c8f2a89d397274c542f26580016",
     "zcode.commons.economics.status")
 
 HOTSWAP_SERVICE(

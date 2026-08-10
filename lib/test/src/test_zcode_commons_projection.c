@@ -526,6 +526,37 @@ static int commons_claim_projection_test(void)
         ASSERT(vcs_object_has(workspace, epoch_proposal_root));
         zcl_command_reply_free(&reply);
 
+        struct json_value show_input;
+        json_init(&show_input); json_set_object(&show_input);
+        json_push_kv_str(&show_input, "workspace", workspace);
+        json_push_kv_str(&show_input, "root", epoch_proposal_root_hex);
+        const struct zcl_command_spec *epoch_show_spec =
+            zcl_command_registry_find(
+                zcl_command_catalog(),
+                "zcode.commons.schedule.claim.show", NULL);
+        ASSERT(epoch_show_spec);
+        ASSERT(zcl_command_registry_input_validate(
+            epoch_show_spec, &show_input, input_why, sizeof(input_why)));
+        request.input = &show_input;
+        zcl_command_reply_init(&reply, "zcl.test.commons_claim_epoch_show.v2");
+        zcl_native_handle_zcode_commons_schedule_claim_show(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&reply.data, "pure_calculation")));
+        ASSERT(json_get_bool(json_get(&reply.data, "canonical_proposal")));
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                       "current_selection_verified")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "issuance_enabled")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
+                                            "verification_state")),
+                      "canonical:selection_not_reconstructed");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "next_command")),
+                      "zcode commons schedule claim verify");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &reply.data, "claim_epoch_proposal_root")),
+                      epoch_proposal_root_hex);
+        zcl_command_reply_free(&reply);
+        json_free(&show_input);
+
         /* Verification reloads the committed bytes and reproduces every
          * projection, policy and selection binding from current CAS state. */
         struct json_value verify_input;

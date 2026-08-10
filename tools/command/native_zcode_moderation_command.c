@@ -419,7 +419,8 @@ static bool economics_service_frozen_kat(const void *opaque, char *why,
         !service->policy_validate || !service->policy_root ||
         !service->epoch_select || !service->render_status ||
         !service->render_schedule_proposal ||
-        !service->render_backlog_status || !service->schedule_class_name ||
+        !service->render_backlog_status || !service->render_claim_epoch ||
+        !service->schedule_class_name ||
         vcs_zcode_family_policy_v1_root(&family, family_root) !=
             VCS_ZCODE_COMMONS_V2_OK) {
         if (why && why_sz) (void)snprintf(why, why_sz,
@@ -454,6 +455,32 @@ static bool economics_service_frozen_kat(const void *opaque, char *why,
             "frozen empty-epoch selection vector failed");
         return false;
     }
+    uint8_t projection_root[32];
+    memset(projection_root, 0x24, sizeof(projection_root));
+    struct vcs_zcode_claim_epoch_proposal_v2 claim_epoch;
+    struct zcode_c23_claim_epoch_view_v1 claim_epoch_view;
+    if (vcs_zcode_claim_epoch_from_selection(
+            &input, root, projection_root, &selected, &claim_epoch) !=
+            VCS_ZCODE_CLAIM_EPOCH_OK ||
+        !service->render_claim_epoch(&claim_epoch, true, false,
+                                     &claim_epoch_view) ||
+        !claim_epoch_view.valid || !claim_epoch_view.persisted ||
+        !claim_epoch_view.canonical_proposal ||
+        claim_epoch_view.current_selection_verified ||
+        !claim_epoch_view.simulation_only ||
+        claim_epoch_view.issuance_enabled || claim_epoch_view.wallet_used ||
+        claim_epoch_view.funds_moved || claim_epoch_view.epoch != 7 ||
+        claim_epoch_view.expired_capacity_atoms != UINT64_C(300000000) ||
+        strcmp(claim_epoch_view.verification_state,
+               "canonical:selection_not_reconstructed") != 0 ||
+        strcmp(claim_epoch_view.next_command,
+               "zcode commons schedule claim verify") != 0) {
+        vcs_zcode_claim_epoch_free(&claim_epoch);
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen claim-epoch view vector failed");
+        return false;
+    }
+    vcs_zcode_claim_epoch_free(&claim_epoch);
     struct vcs_zcode_epoch_schedule_proposal_v1 proposal;
     vcs_zcode_epoch_schedule_proposal_init(&proposal);
     proposal.schema_version = VCS_ZCODE_EPOCH_SCHEDULE_VERSION;

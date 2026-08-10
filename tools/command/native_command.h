@@ -559,6 +559,9 @@ void zcl_native_handle_zcode_commons_schedule_claim_commit(
 void zcl_native_handle_zcode_commons_schedule_claim_verify(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_schedule_claim_show(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_reproduction_challenge_plan(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
