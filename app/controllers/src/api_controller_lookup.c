@@ -478,6 +478,9 @@ static char    g_lookup_param[512];
 static uint8_t g_lookup_result[262144];
 static size_t  g_lookup_result_len = 0;
 static _Atomic int g_lookup_thread_running = 0;
+static bool g_lookup_thread_active = false;
+static pthread_mutex_t g_lookup_lifecycle_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_lookup_lifecycle_cond = PTHREAD_COND_INITIALIZER;
 
 /* ── #13: supervision for the detached lookup-worker thread ────────────
  * Previously an unsupervised infinite loop: a DB-lock hang inside
@@ -521,8 +524,12 @@ static void api_lookup_on_stall(struct liveness_contract *c)
 
 static void api_lookup_register_supervisor(void)
 {
-    if (atomic_load(&g_api_lookup_sup_id) != SUPERVISOR_INVALID_ID)
-        return;  /* idempotent */
+    supervisor_child_id existing = atomic_load(&g_api_lookup_sup_id);
+    if (existing != SUPERVISOR_INVALID_ID) {
+        api_lookup_supervisor_heartbeat();
+        supervisor_set_deadline(existing, API_LOOKUP_SUPERVISOR_DEADLINE_SEC);
+        return;
+    }
     if (!supervisor_start()) {
         LOG_WARN("api", "[api] lookup: supervisor_start failed");
         return;
@@ -541,6 +548,13 @@ static void api_lookup_register_supervisor(void)
     }
     atomic_store(&g_api_lookup_sup_id, id);
     api_lookup_supervisor_heartbeat();
+}
+
+void api_lookup_supervisor_quiesce(void)
+{
+    supervisor_child_id id = atomic_load(&g_api_lookup_sup_id);
+    if (id != SUPERVISOR_INVALID_ID)
+        supervisor_set_deadline(id, 0);
 }
 
 /* Background thread that processes lookup requests one at a time */
@@ -594,22 +608,36 @@ static void *api_lookup_thread(void *arg)
 
     printf("API lookup: background thread stopped\n");
     fflush(stdout);
+    pthread_mutex_lock(&g_lookup_lifecycle_mutex);
+    g_lookup_thread_active = false;
+    pthread_cond_broadcast(&g_lookup_lifecycle_cond);
+    pthread_mutex_unlock(&g_lookup_lifecycle_mutex);
     return NULL;
 }
 
 static bool ensure_lookup_thread(void)
 {
-    int expected = 0;
     pthread_t t;
 
-    if (!atomic_compare_exchange_strong(&g_lookup_thread_running,
-                                        &expected, 1))
-        return expected == 1;
+    pthread_mutex_lock(&g_api_worker_generation_mutex);
+    pthread_mutex_lock(&g_lookup_lifecycle_mutex);
+    if (g_lookup_thread_active) {
+        pthread_mutex_unlock(&g_lookup_lifecycle_mutex);
+        pthread_mutex_unlock(&g_api_worker_generation_mutex);
+        return true;
+    }
+    atomic_store(&g_lookup_thread_running, 1);
+    g_lookup_thread_active = true;
     api_lookup_register_supervisor();
     if (!api_start_detached_thread(&t, api_lookup_thread, NULL)) {
         atomic_store(&g_lookup_thread_running, 0);
+        g_lookup_thread_active = false;
+        pthread_mutex_unlock(&g_lookup_lifecycle_mutex);
+        pthread_mutex_unlock(&g_api_worker_generation_mutex);
         LOG_FAIL("api", "ensure_lookup_thread: failed to start lookup thread");
     }
+    pthread_mutex_unlock(&g_lookup_lifecycle_mutex);
+    pthread_mutex_unlock(&g_api_worker_generation_mutex);
     return true;
 }
 
@@ -663,7 +691,30 @@ size_t do_lookup(enum lookup_type type, const char *param,
     return api_json_error(response, response_max, JSON_500_HEADERS, "RPC unavailable");
 }
 
+void api_lookup_stop(void)
+{
+    api_lookup_supervisor_quiesce();
+    pthread_mutex_lock(&g_lookup_lifecycle_mutex);
+    atomic_store(&g_lookup_thread_running, 0);
+    pthread_mutex_lock(&g_lookup_mutex);
+    pthread_cond_broadcast(&g_lookup_request_cond);
+    pthread_cond_broadcast(&g_lookup_done_cond);
+    pthread_mutex_unlock(&g_lookup_mutex);
+    while (g_lookup_thread_active)
+        pthread_cond_wait(&g_lookup_lifecycle_cond,
+                          &g_lookup_lifecycle_mutex);
+    pthread_mutex_unlock(&g_lookup_lifecycle_mutex);
+}
+
 #ifdef ZCL_TESTING
+bool api_lookup_test_worker_alive(void)
+{
+    pthread_mutex_lock(&g_lookup_lifecycle_mutex);
+    bool alive = g_lookup_thread_active;
+    pthread_mutex_unlock(&g_lookup_lifecycle_mutex);
+    return alive;
+}
+
 /* #13 test seams — see the "supervision for the detached lookup-worker
  * thread" block comment near g_api_lookup_sup_id above. Registers the
  * liveness contract WITHOUT spawning the real detached thread, so the

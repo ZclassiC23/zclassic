@@ -204,10 +204,17 @@ void csr_set_db_service(struct chain_state_repository *csr,
  * csr_init(csr_instance(), ...). Any commit attempt before that
  * returns CSR_REJECTED_NOT_INITIALIZED with no side effects.
  *
- * Never pass this pointer to csr_free() in normal operation — the
- * singleton lives for the entire process. csr_free is a no-op on
- * the singleton in any case (its mutex is owned by pthread_once). */
+ * Never pass this pointer to csr_free() in normal operation — the singleton
+ * lives for the entire process and its pthread_once-owned mutex is never
+ * destroyed. */
 struct chain_state_repository *csr_instance(void);
+
+#ifdef ZCL_TESTING
+/* Monolithic-test isolation only. The caller must ensure all repository users
+ * are quiescent; detaches every borrowed singleton binding without changing
+ * the production lifecycle or destroying the pthread_once-owned mutex. */
+void csr_test_reset_singleton(void);
+#endif
 
 /* ── Mutation entry point ─────────────────────────────────────── */
 enum csr_result csr_commit_tip(struct chain_state_repository *csr,

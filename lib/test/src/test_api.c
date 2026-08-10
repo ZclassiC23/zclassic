@@ -9,10 +9,17 @@
  * the sequence is part of the contract. */
 
 #include "test/api_test_fixtures.h"
+#include "services/chain_state_service.h"
 
 int test_api(void)
 {
     int failures = 0;
+
+    /* The monolithic coverage runner may inherit a singleton repository bound
+     * to stack-owned state from an earlier group. Detach it before the first
+     * API case starts cache/lookup threads; the reset is a
+     * deliberately quiescent test-only operation. */
+    csr_test_reset_singleton();
 
     failures += api_query_filters_focused_tests();
     failures += api_controller_supervision_focused_tests();
@@ -28,6 +35,15 @@ int test_api(void)
     failures += api_supply_focused_tests();
     failures += api_resource_reads_focused_tests();
     failures += api_access_focused_tests();
+
+    bool workers_stopped = api_test_stop_background_workers();
+    printf("api: detached background workers stop before group return... %s\n",
+           workers_stopped ? "OK" : "FAIL");
+    if (!workers_stopped)
+        failures++;
+    /* No worker can observe the singleton after a successful stop proof. */
+    if (workers_stopped)
+        csr_test_reset_singleton();
 
     return failures;
 }

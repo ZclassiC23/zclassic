@@ -1420,17 +1420,37 @@ static int t_singleton_init_wires_fixture(void)
            && (atomic_load(&g_commit_events) == before_events + 1);
     CSR_RUN("csr: singleton wired via csr_init commits cleanly", ok);
 
-    /* Unwire: csr_free on the singleton clears `initialized` without
-     * touching its pthread_once-owned mutex. Also null the dangling
-     * field pointers so any post-test access is obviously wrong
-     * rather than quietly reading freed fixture memory. */
-    csr_free(csr);
-    csr->block_map = NULL;
-    csr->chain_active = NULL;
-    csr->pindex_best_hdr = NULL;
-    csr->coins_tip = NULL;
-    csr->ndb = NULL;
-    csr->wallet_scan_h = NULL;
+    /* Unwire: the test reset must clear every borrowed binding without
+     * touching its pthread_once-owned mutex, remain idempotent, and permit a
+     * later init to bind a fresh node lifetime. This is the behavior the
+     * monolithic test reset relies on to avoid dangling fixture pointers. */
+    struct node_db sentinel_ndb = {0};
+    struct db_service sentinel_db_service = {0};
+    int64_t sentinel_wallet_scan = 0;
+    csr_init(csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip,
+             &sentinel_ndb, &sentinel_wallet_scan);
+    csr_set_db_service(csr, &sentinel_db_service);
+    csr_test_reset_singleton();
+    struct chain_state_view detached_view;
+    csr_snapshot(csr, &detached_view);
+    bool detached = !csr->initialized && !csr->block_map &&
+                    !csr->chain_active && !csr->pindex_best_hdr &&
+                    !csr->coins_tip && !csr->ndb && !csr->db_service &&
+                    !csr->wallet_scan_h && detached_view.tip_height == -1 &&
+                    detached_view.header_height == -1;
+    CSR_RUN("csr: singleton test reset detaches every borrowed binding",
+            detached);
+
+    csr_test_reset_singleton();
+    CSR_RUN("csr: singleton test reset is idempotent", !csr->initialized);
+
+    csr_init(csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    bool rebound = csr->initialized && csr->block_map == &f.bm &&
+                   csr->chain_active == &f.chain &&
+                   csr->pindex_best_hdr == &f.header_tip &&
+                   csr->coins_tip == &f.coins_tip;
+    CSR_RUN("csr: singleton can rebind after test detach", rebound);
+    csr_test_reset_singleton();
 
     csr_fix_free(&f);
     return failures;
@@ -1493,13 +1513,7 @@ static int t_p71_update_tip_propagates_csr_rejection(void)
     CSR_RUN("csr/p7.1: update_tip propagates csr rejection (was silent)",
             ok);
 
-    csr_free(csr);
-    csr->block_map = NULL;
-    csr->chain_active = NULL;
-    csr->pindex_best_hdr = NULL;
-    csr->coins_tip = NULL;
-    csr->ndb = NULL;
-    csr->wallet_scan_h = NULL;
+    csr_test_reset_singleton();
 
     csr_fix_free(&f);
     return failures;

@@ -39,6 +39,7 @@
 
 #include "test/test_core.h"
 
+#include "chain/chainparams.h"
 #include "jobs/reducer_frontier.h"
 #include "storage/block_index_projection.h"
 #include "storage/event_log.h"
@@ -359,6 +360,12 @@ int test_boot_odelta_scan(void)
     int failures = 0;
     const char *const CTR = "reducer_frontier.contiguity_rows";
 
+    /* This fixture proves the compiled MAINNET checkpoint delta. Earlier
+     * monolith groups may intentionally select regtest and leave it active;
+     * make the network premise explicit and drop the per-boot tag watermark. */
+    chain_params_select(CHAIN_MAIN);
+    reducer_frontier_provable_tip_reset();
+
     sqlite3 *db = NULL;
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) {
         printf("boot_odelta_scan: open :memory:... FAIL\n");
@@ -436,6 +443,10 @@ int test_boot_odelta_scan(void)
 
     /* Second, independent ratchet across a DIFFERENT boot data-scanner. */
     failures += projection_catch_up_ratchet();
+
+    /* Do not export this fixture's high verification watermark to the next
+     * group in the single-process coverage runner. */
+    reducer_frontier_provable_tip_reset();
 
     return failures;
 }

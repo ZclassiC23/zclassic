@@ -123,6 +123,15 @@ int test_block_status_event_restart_proof(void);
 #define RP_BUDGET_SEC   60
 #define RP_CURSOR_NAME  "rp_status_event_restart"
 
+static void rp_event_log_close(event_log_t *log)
+{
+    if (!log)
+        return;
+    if (event_log_singleton() == log)
+        event_log_set_singleton(NULL);
+    event_log_close(log);
+}
+
 #define RP_CHECK(name, expr) do {                                     \
     printf("  block_status_event_restart_proof: %s... ", (name));     \
     if ((expr)) printf("OK\n");                                       \
@@ -266,7 +275,7 @@ static void rp_child_worker(const char *log_path, const char *bip_path,
 
     progress_store_close();
     block_index_projection_close(bip);
-    event_log_close(log);
+    rp_event_log_close(log);
     _exit(0);
 }
 
@@ -318,7 +327,7 @@ static int rp_one_cycle(const char *log_path, const char *bip_path,
     block_index_projection_t *bip = block_index_projection_open(bip_path, log);
     if (!bip) {
         printf("FAIL (cycle %d: projection reopen failed)\n", cycle_idx);
-        event_log_close(log);
+        rp_event_log_close(log);
         return 1;
     }
     if (block_index_projection_catch_up(bip) == UINT64_MAX) {
@@ -330,7 +339,7 @@ static int rp_one_cycle(const char *log_path, const char *bip_path,
         printf("FAIL (cycle %d: progress_store reopen failed)\n", cycle_idx);
         failures++;
         block_index_projection_close(bip);
-        event_log_close(log);
+        rp_event_log_close(log);
         return failures;
     }
 
@@ -477,7 +486,7 @@ static int rp_one_cycle(const char *log_path, const char *bip_path,
 
     progress_store_close();
     block_index_projection_close(bip);
-    event_log_close(log);
+    rp_event_log_close(log);
     return failures;
 }
 
@@ -565,7 +574,7 @@ int test_block_status_event_restart_proof(void)
             RP_CHECK("terminal drain: reopen succeeded", false);
         }
         if (bip) block_index_projection_close(bip);
-        if (log) event_log_close(log);
+        rp_event_log_close(log);
     }
 
     RP_CHECK("fixture fully folded (kill cycles + terminal drain)", all_done);

@@ -485,17 +485,16 @@ int test_reducer_forward_progress_gate(void)
             uint64_t fin = tip_finalize_stage_finalized_total();
 
             /* Forward-progress invariant (post-67062bbf6 "publish each block on
-             * arrival"): the tip must FINALIZE block h (hh >= h) without ever
-             * running past the visible window tip (the lookahead successor at
-             * h+1, so hh <= h+1), finalized_total must strictly increase (a
-             * stall would freeze it), and the tip must never retreat (an
-             * oscillation would). The retired convention held the served tip
-             * exactly at h with h+1 pending; since the reducer now publishes the
-             * successor on first arrival, the served tip legitimately sits at
-             * h+1. A stall (hh stuck below h) or oscillation (hh < reached_height
-             * / fin not increasing) is still reproduced — only the over-strict
-             * `hh == h` was calibrated to the dead +1-lattice. */
-            bool advanced  = (hh >= h) && (hh <= h + 1);
+             * arrival"): the tip must FINALIZE block h (hh >= h),
+             * finalized_total must strictly increase (a stall would freeze it),
+             * and the tip must never retreat (an oscillation would). Ordinarily
+             * the visible lookahead permits hh <= h+1. All fixture bodies are
+             * already persisted, though, so one reducer kick may legitimately
+             * drain the complete N-block run; accept that terminal convergence
+             * and leave the loop before the next iteration can mistake an
+             * already-complete run for a frozen finalized_total. */
+            bool completed = hh >= RFP_N && hh <= RFP_N + 1;
+            bool advanced  = (hh >= h) && (hh <= h + 1 || completed);
             bool monotone  = (hh >= reached_height) && (fin >= prev_finalized);
             bool fin_up    = (fin > prev_finalized);
             if (!advanced || !monotone || !fin_up) {
@@ -518,6 +517,8 @@ int test_reducer_forward_progress_gate(void)
             }
             reached_height = hh;
             prev_finalized = fin;
+            if (completed)
+                break;
         }
 
         printf("reducer_forward_progress_gate: PART1 reached tip height %d/%d "

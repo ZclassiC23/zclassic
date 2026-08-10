@@ -29,6 +29,12 @@ void api_set_rpc_backend(const char *rpc_user, const char *rpc_pass,
 void api_start_cache(void);
 void api_stop_cache(void);
 
+#ifdef ZCL_TESTING
+/* Monolithic-test isolation: stop both detached API workers and wait until
+ * neither can retain a borrowed database/repository binding. */
+bool api_test_stop_background_workers(void);
+#endif
+
 /* Operator-private surface classifier. The answer comes from the REST route
  * registry's private_route metadata, with path-boundary matching for private
  * resource prefixes and explicit public subresource overrides such as

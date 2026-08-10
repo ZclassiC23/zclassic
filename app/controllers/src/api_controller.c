@@ -73,6 +73,7 @@ struct api_rpc_backend g_api_rpc = {
     .pass = "zclpass",
     .port = 18232,
 };
+pthread_mutex_t g_api_worker_generation_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #ifdef ZCL_TESTING
 static api_test_rpc_call_fn g_api_test_rpc_call;
@@ -110,6 +111,9 @@ static char   g_api_deep_stats_cache[API_DEEP_STATS_CACHE_SIZE];
 static size_t g_api_deep_stats_cache_len = 0;
 
 static _Atomic int g_api_cache_thread_running = 0;
+static bool g_api_cache_thread_active = false;
+static pthread_mutex_t g_api_cache_lifecycle_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_api_cache_lifecycle_cond = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t g_api_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* #13: the cache-refresh thread's supervisor liveness contract lives in
@@ -336,8 +340,10 @@ static void *api_cache_refresh_thread(void *arg)
 {
     (void)arg;
 
-    /* Wait for RPC server to start */
-    sleep(5);
+    /* Wait for RPC server to start, but let shutdown/test isolation interrupt
+     * the startup delay instead of retaining borrowed state for five seconds. */
+    for (int s = 0; s < 5 && g_api_cache_thread_running; s++)
+        sleep(1);
 
     printf("API cache: background refresh thread started\n");
     fflush(stdout);
@@ -454,6 +460,10 @@ static void *api_cache_refresh_thread(void *arg)
 
     printf("API cache: background refresh thread stopped\n");
     fflush(stdout);
+    pthread_mutex_lock(&g_api_cache_lifecycle_mutex);
+    g_api_cache_thread_active = false;
+    pthread_cond_broadcast(&g_api_cache_lifecycle_cond);
+    pthread_mutex_unlock(&g_api_cache_lifecycle_mutex);
     return NULL;
 }
 
@@ -484,17 +494,27 @@ cleanup:
 
 static bool ensure_cache_thread(void)
 {
-    int expected = 0;
     pthread_t t;
 
-    if (!atomic_compare_exchange_strong(&g_api_cache_thread_running,
-                                        &expected, 1))
-        return expected == 1;
+    pthread_mutex_lock(&g_api_worker_generation_mutex);
+    pthread_mutex_lock(&g_api_cache_lifecycle_mutex);
+    if (g_api_cache_thread_active) {
+        pthread_mutex_unlock(&g_api_cache_lifecycle_mutex);
+        pthread_mutex_unlock(&g_api_worker_generation_mutex);
+        return true;
+    }
+    atomic_store(&g_api_cache_thread_running, 1);
+    g_api_cache_thread_active = true;
     api_cache_register_supervisor();
     if (!api_start_detached_thread(&t, api_cache_refresh_thread, NULL)) {
         atomic_store(&g_api_cache_thread_running, 0);
+        g_api_cache_thread_active = false;
+        pthread_mutex_unlock(&g_api_cache_lifecycle_mutex);
+        pthread_mutex_unlock(&g_api_worker_generation_mutex);
         LOG_FAIL("api", "ensure_cache_thread: failed to start cache refresh thread");
     }
+    pthread_mutex_unlock(&g_api_cache_lifecycle_mutex);
+    pthread_mutex_unlock(&g_api_worker_generation_mutex);
     return true;
 }
 
@@ -525,9 +545,28 @@ void api_start_cache(void)
 
 void api_stop_cache(void)
 {
+    pthread_mutex_lock(&g_api_worker_generation_mutex);
     api_cache_supervisor_quiesce();
+    pthread_mutex_lock(&g_api_cache_lifecycle_mutex);
     atomic_store(&g_api_cache_thread_running, 0);
+    while (g_api_cache_thread_active)
+        pthread_cond_wait(&g_api_cache_lifecycle_cond,
+                          &g_api_cache_lifecycle_mutex);
+    pthread_mutex_unlock(&g_api_cache_lifecycle_mutex);
+    api_lookup_stop();
+    pthread_mutex_unlock(&g_api_worker_generation_mutex);
 }
+
+#ifdef ZCL_TESTING
+bool api_test_stop_background_workers(void)
+{
+    api_stop_cache();
+    pthread_mutex_lock(&g_api_cache_lifecycle_mutex);
+    bool cache_stopped = !g_api_cache_thread_active;
+    pthread_mutex_unlock(&g_api_cache_lifecycle_mutex);
+    return cache_stopped && !api_lookup_test_worker_alive();
+}
+#endif
 
 /* ── Serve from cache helpers ────────────────────────────── */
 

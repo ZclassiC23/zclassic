@@ -106,5 +106,26 @@ int api_controller_supervision_focused_tests(void)
                   ok);
     }
 
+    /* Stop/restart reuses the registered children. Prove that quiesce's
+     * deadline=0 is temporary and each next generation re-arms supervision. */
+    {
+        bool ok = true;
+        api_cache_supervisor_quiesce();
+        api_lookup_supervisor_quiesce();
+        struct supervisor_snapshot cache_snap, lookup_snap;
+        ok = ok && find_snapshot("op.api_cache_refresh", &cache_snap) &&
+             cache_snap.deadline_secs == 0;
+        ok = ok && find_snapshot("op.api_lookup", &lookup_snap) &&
+             lookup_snap.deadline_secs == 0;
+
+        api_cache_test_register_supervisor();
+        api_lookup_test_register_supervisor();
+        ok = ok && find_snapshot("op.api_cache_refresh", &cache_snap) &&
+             cache_snap.deadline_secs == 120;
+        ok = ok && find_snapshot("op.api_lookup", &lookup_snap) &&
+             lookup_snap.deadline_secs == 60;
+        ACS_CHECK("stop/restart re-arms both existing supervisor children", ok);
+    }
+
     return failures;
 }

@@ -51,8 +51,15 @@ static void api_cache_on_stall(struct liveness_contract *c)
 
 void api_cache_register_supervisor(void)
 {
-    if (atomic_load(&g_api_cache_sup_id) != SUPERVISOR_INVALID_ID)
-        return;  /* idempotent */
+    supervisor_child_id existing = atomic_load(&g_api_cache_sup_id);
+    if (existing != SUPERVISOR_INVALID_ID) {
+        /* stop() deliberately disarms the deadline. A later worker generation
+         * must re-arm and heartbeat the existing child, not merely reuse its
+         * id while remaining silently unsupervised. */
+        api_cache_supervisor_tick();
+        supervisor_set_deadline(existing, API_CACHE_SUPERVISOR_DEADLINE_SEC);
+        return;
+    }
     if (!supervisor_start()) {
         LOG_WARN("api", "[api] cache-refresh: supervisor_start failed");
         return;

@@ -53,6 +53,8 @@ struct api_rpc_backend {
 
 extern struct api_context g_api_ctx;
 extern struct api_rpc_backend g_api_rpc;
+/* Serializes detached-worker generation start/stop across controller TUs. */
+extern pthread_mutex_t g_api_worker_generation_mutex;
 
 /* ── Versioned REST contract ── */
 
@@ -294,6 +296,7 @@ bool api_start_detached_thread(pthread_t *thread_out,
 void api_cache_register_supervisor(void);
 void api_cache_supervisor_tick(void);
 void api_cache_supervisor_quiesce(void);
+void api_lookup_supervisor_quiesce(void);
 
 #ifdef ZCL_TESTING
 /* #13 supervision-coverage test seams (chain_integrity/api-controller
@@ -437,6 +440,10 @@ size_t compute_address(const char *param, uint8_t *r, size_t max);
 
 size_t do_lookup(enum lookup_type type, const char *param,
                  uint8_t *response, size_t response_max);
+void api_lookup_stop(void);
+#ifdef ZCL_TESTING
+bool api_lookup_test_worker_alive(void);
+#endif
 
 /* ── Resource collection handlers (defined in api_controller_resources.c) ── */
 

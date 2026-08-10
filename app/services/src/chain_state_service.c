@@ -588,6 +588,24 @@ void csr_free(struct chain_state_repository *csr)
     csr->wallet_scan_h = NULL;
 }
 
+#ifdef ZCL_TESTING
+void csr_test_reset_singleton(void)
+{
+    struct chain_state_repository *csr = csr_instance();
+    /* Quiescent test-only reset: deliberately does not imply a concurrent
+     * production teardown contract for the singleton. */
+    csr->initialized = false;
+    csr_header_generation_bump(csr);
+    csr->block_map = NULL;
+    csr->chain_active = NULL;
+    csr->pindex_best_hdr = NULL;
+    csr->coins_tip = NULL;
+    csr->ndb = NULL;
+    csr->db_service = NULL;
+    csr->wallet_scan_h = NULL;
+}
+#endif
+
 void csr_set_db_service(struct chain_state_repository *csr,
                         struct db_service *db_service)
 {
