@@ -15,8 +15,7 @@
 #define ZCODE_C23_BACKLOG_EMPTY "ready:empty_projection"
 #define ZCODE_C23_BACKLOG_INELIGIBLE "waiting:claims_ineligible"
 #define ZCODE_C23_BACKLOG_EPOCH_READY "ready:epoch_plan"
-#define ZCODE_C23_BACKLOG_ECONOMICS_NEXT \
-    "zcode commons economics status"
+#define ZCODE_C23_BACKLOG_CLAIM_NEXT "zcode commons claim plan"
 #define ZCODE_C23_BACKLOG_STATUS_NEXT "zcode commons backlog"
 #define ZCODE_C23_BACKLOG_EPOCH_NEXT \
     "zcode commons schedule propose plan"

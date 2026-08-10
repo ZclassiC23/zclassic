@@ -97,14 +97,14 @@ static bool render_backlog_status(
         (void)snprintf(out->reason, sizeof(out->reason), "%s",
                        "the verified claim projection is unavailable or incomplete; issuance selection is unavailable");
         (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
-                       ZCODE_C23_BACKLOG_ECONOMICS_NEXT);
+                       ZCODE_C23_BACKLOG_CLAIM_NEXT);
     } else if (input->claim_count == 0) {
         (void)snprintf(out->readiness, sizeof(out->readiness), "%s",
                        ZCODE_C23_BACKLOG_EMPTY);
         (void)snprintf(out->reason, sizeof(out->reason), "%s",
                        "the verified claim projection is current and empty");
         (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
-                       ZCODE_C23_BACKLOG_ECONOMICS_NEXT);
+                       ZCODE_C23_BACKLOG_CLAIM_NEXT);
     } else if (input->eligible_claim_count == 0) {
         (void)snprintf(out->readiness, sizeof(out->readiness), "%s",
                        ZCODE_C23_BACKLOG_INELIGIBLE);

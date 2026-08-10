@@ -460,6 +460,15 @@ void zcl_native_handle_zcode_commons_economics_status(
 void zcl_native_handle_zcode_commons_backlog(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_claim_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_claim_commit(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_claim_show(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_commons_corpus_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

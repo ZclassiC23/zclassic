@@ -212,6 +212,74 @@ static int commons_claim_projection_test(void)
         commons_claim_fixture(&retracted, 13, 200, 2000,
                               VCS_ZCODE_CLAIM_V2_REQUIRED_FLAGS |
                               VCS_ZCODE_CLAIM_V2_RETRACTED);
+        uint8_t command_wire[VCS_ZCODE_CREATION_CLAIM_WIRE_BYTES];
+        size_t command_wire_len = 0;
+        ASSERT_EQ(vcs_zcode_creation_claim_wire_v2_encode(
+                      &mature, command_wire, sizeof(command_wire),
+                      &command_wire_len),
+                  VCS_ZCODE_CREATION_CLAIM_OK);
+        char command_hex[VCS_ZCODE_CREATION_CLAIM_WIRE_BYTES * 2u + 1u];
+        zcl_hex_encode(command_wire, command_wire_len, command_hex);
+        struct json_value claim_input;
+        json_init(&claim_input);
+        json_set_object(&claim_input);
+        json_push_kv_str(&claim_input, "workspace", workspace);
+        json_push_kv_str(&claim_input, "claim", command_hex);
+        const struct zcl_command_spec *claim_plan_spec =
+            zcl_command_registry_find(zcl_command_catalog(),
+                                      "zcode.commons.claim.plan", NULL);
+        char claim_why[160] = {0};
+        ASSERT(claim_plan_spec);
+        ASSERT(zcl_command_registry_input_validate(
+            claim_plan_spec, &claim_input, claim_why, sizeof(claim_why)));
+        struct zcl_command_request claim_request = {.input = &claim_input};
+        struct zcl_command_reply claim_reply;
+        zcl_command_reply_init(&claim_reply, "zcl.test.commons_claim.v2");
+        zcl_native_handle_zcode_commons_claim_plan(
+            &claim_request, &claim_reply);
+        ASSERT_EQ(claim_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(!json_get_bool(json_get(&claim_reply.data, "persisted")));
+        ASSERT(json_get_bool(json_get(&claim_reply.data,
+                                      "signature_verified")));
+        ASSERT_STR_EQ(json_get_str(json_get(&claim_reply.data,
+                                            "next_command")),
+                      "zcode commons claim commit");
+        const char *planned_root =
+            json_get_str(json_get(&claim_reply.data, "claim_root"));
+        ASSERT(planned_root && strlen(planned_root) == 64);
+        char planned_root_copy[65];
+        memcpy(planned_root_copy, planned_root, sizeof(planned_root_copy));
+        zcl_command_reply_free(&claim_reply);
+
+        zcl_command_reply_init(&claim_reply, "zcl.test.commons_claim.v2");
+        zcl_native_handle_zcode_commons_claim_commit(
+            &claim_request, &claim_reply);
+        ASSERT_EQ(claim_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&claim_reply.data, "persisted")));
+        ASSERT(!json_get_bool(json_get(&claim_reply.data,
+                                       "issuance_enabled")));
+        ASSERT_STR_EQ(json_get_str(json_get(&claim_reply.data,
+                                            "next_command")),
+                      "zcode commons backlog");
+        zcl_command_reply_free(&claim_reply);
+        json_free(&claim_input);
+
+        json_init(&claim_input);
+        json_set_object(&claim_input);
+        json_push_kv_str(&claim_input, "workspace", workspace);
+        json_push_kv_str(&claim_input, "root", planned_root_copy);
+        claim_request.input = &claim_input;
+        zcl_command_reply_init(&claim_reply, "zcl.test.commons_claim.v2");
+        zcl_native_handle_zcode_commons_claim_show(
+            &claim_request, &claim_reply);
+        ASSERT_EQ(claim_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&claim_reply.data, "persisted")));
+        ASSERT(json_get_bool(json_get(&claim_reply.data,
+                                      "selection_flags_eligible")));
+        ASSERT_STR_EQ(json_get_str(json_get(&claim_reply.data, "claim_root")),
+                      planned_root_copy);
+        zcl_command_reply_free(&claim_reply);
+        json_free(&claim_input);
         uint8_t roots[3][32];
         ASSERT(commons_store_claim(workspace, &future, roots[0]));
         ASSERT(commons_store_claim(workspace, &mature, roots[1]));

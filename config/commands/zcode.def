@@ -436,6 +436,9 @@ ZCL_COMMAND_BRANCH("zcode.commons", "zcode",
 ZCL_COMMAND_BRANCH("zcode.commons.creation", "zcode.commons",
                    "Creation-attribution inspection",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.commons.claim", "zcode.commons",
+                   "Signed simulation-only creation claims",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("zcode.commons.shadow", "zcode.commons",
                    "Read-only pre-genesis shadow-epoch proof",
                    ZCL_COMMAND_LAYER_APP)
@@ -518,6 +521,62 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE,
     zcl_native_handle_zcode_commons_backlog)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.claim.plan", "zcode.commons.claim", "",
+    "Validate one externally signed creation claim",
+    "Verifies exact canonical creation_claim.v2 bytes and derives their CAS "
+    "root without writing. Signing remains outside the node; no key, wallet, "
+    "issuance or custody authority is used.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,commons,claim,plan,signature,simulation,cas",
+    "zcl.zcode_commons_claim_inline.input.v2",
+    "zcl.zcode_commons_claim.v2", "workspace,claim", "workspace,claim",
+    "zclassic23 zcode commons claim plan --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"claim\":\"<signed-claim-hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_claim_plan)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.commons.claim.commit", "zcode.commons.claim", "",
+    "Store one externally signed creation claim",
+    "Repeats exact signature/root validation and stores only the canonical "
+    "creation_claim.v2 bytes in explicit scratch CAS. The root-addressed "
+    "write is idempotent and never issues or moves funds.", 0,
+    "zcode,commons,claim,commit,signature,simulation,cas",
+    "zcl.zcode_commons_claim_inline.input.v2",
+    "zcl.zcode_commons_claim.v2", "workspace,claim", "workspace,claim",
+    "zclassic23 zcode commons claim commit --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"claim\":\"<signed-claim-hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_commons_claim_commit)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.commons.claim.show", "zcode.commons.claim", "",
+    "Show one exact signed creation claim",
+    "Loads one exact scratch-CAS root, then re-verifies canonical bytes, "
+    "signature and address before rendering selection facts. It does not "
+    "enable issuance or treat the claim as wallet authority.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,commons,claim,show,signature,simulation,cas",
+    "zcl.zcode_commons_claim_show.input.v2",
+    "zcl.zcode_commons_claim.v2", "workspace,root", "workspace,root",
+    "zclassic23 zcode commons claim show --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"root\":\"<claim-root>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_claim_show)
 
 ZCL_COMMAND_READY_READ(
     "zcode.commons.corpus.show", "zcode.commons.corpus", "",

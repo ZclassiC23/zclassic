@@ -409,7 +409,7 @@ static int test_v2_truthful_activation_status(void)
                                             "backlog_readiness")),
                       "blocked:claim_projection_missing");
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "next_command")),
-                      "zcode commons economics status");
+                      "zcode commons claim plan");
         zcl_command_reply_free(&reply);
         json_free(&input);
 

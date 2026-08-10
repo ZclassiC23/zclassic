@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 659 |
+| Registry entries (branches + leaves) | 663 |
 | Top-level roots | 11 |
-| Branches | 154 |
-| Leaves (dispatchable command paths) | 505 |
-| … `ready` (live handler in this build) | 457 |
+| Branches | 155 |
+| Leaves (dispatchable command paths) | 508 |
+| … `ready` (live handler in this build) | 460 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 162 |
+| Leaves with `effect=mutate` | 163 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 107 |
 
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 194 | 46 | 148 |
+| `config/commands/zcode.def` | 198 | 47 | 151 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -1013,6 +1013,14 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode commons creation show` | ready | read / read / operator · fast/low | **`workspace`**, **`root`** | `zcl.zcode_commons_creation_show.v1` | `zclassic23 zcode commons creation show --input='{"workspace":"/tmp/zclassic23-zcode-scratch","root":"<64hex>"}'` | Show one creation attribution |
 
+#### `zcode.commons.claim` — Signed simulation-only creation claims
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode commons claim plan` | ready | read / read / operator · instant/tiny | **`workspace`**, **`claim`** | `zcl.zcode_commons_claim.v2` | `zclassic23 zcode commons claim plan --input='{"workspace":"/tmp/zclassic23-zcode-scratch","claim":"<signed-claim-hex>"}'` | Validate one externally signed creation claim |
+| `zcode commons claim commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`claim`** | `zcl.zcode_commons_claim.v2` | `zclassic23 zcode commons claim commit --input='{"workspace":"/tmp/zclassic23-zcode-scratch","claim":"<signed-claim-hex>"}'` | Store one externally signed creation claim |
+| `zcode commons claim show` | ready | read / read / operator · instant/tiny | **`workspace`**, **`root`** | `zcl.zcode_commons_claim.v2` | `zclassic23 zcode commons claim show --input='{"workspace":"/tmp/zclassic23-zcode-scratch","root":"<claim-root>"}'` | Show one exact signed creation claim |
+
 #### `zcode.commons.shadow` — Read-only pre-genesis shadow-epoch proof
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
@@ -1516,6 +1524,7 @@ promise the same document shape.
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
 | `zcl.zcode_workspace_verify.v1` | `zcode.workspace.verify`, `zcode.workspace.show` |
 | `zcl.zcode_work_status.v1` | `zcode.work.status`, `zcode.work.show` |
+| `zcl.zcode_commons_claim.v2` | `zcode.commons.claim.plan`, `zcode.commons.claim.commit`, `zcode.commons.claim.show` |
 | `zcl.zcode_reproduction_challenge.v1` | `zcode.commons.reproduction.challenge.plan`, `zcode.commons.reproduction.challenge.commit` |
 | `zcl.zcode_commons_shadow_attribution.v1` | `zcode.commons.shadow.attribution.plan`, `zcode.commons.shadow.attribution.commit` |
 | `zcl.zcode_commons_shadow_epoch.v1` | `zcode.commons.shadow.epoch.plan`, `zcode.commons.shadow.epoch.commit` |

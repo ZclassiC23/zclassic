@@ -489,7 +489,7 @@ static bool economics_service_frozen_kat(const void *opaque, char *why,
         strcmp(backlog_view.readiness,
                "blocked:claim_projection_missing") != 0 ||
         strcmp(backlog_view.next_command,
-               "zcode commons economics status") != 0) {
+               "zcode commons claim plan") != 0) {
         if (why && why_sz) (void)snprintf(
             why, why_sz, "frozen missing-backlog projection vector failed");
         return false;
