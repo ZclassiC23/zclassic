@@ -567,6 +567,10 @@ int zcl_devloop_run_cycle_mode(const char *repo_root,
                                enum zcl_devloop_publish_mode publish_mode);
 bool zcl_devloop_publish_mode_applies(
     enum zcl_devloop_publish_mode publish_mode);
+/* True only for a completed conservative source-wide verify cycle. A
+ * deferred, superseded, rejected, probe-only, or publication cycle is never
+ * reusable proof. Kept public so the receipt contract has a tiny KAT. */
+bool zcl_devloop_cycle_proof_complete(const char *status, const char *phase);
 const char *zcl_devloop_publish_mode_name(
     enum zcl_devloop_publish_mode publish_mode);
 enum zcl_devloop_publish_mode zcl_devloop_default_watch_publish_mode(void);

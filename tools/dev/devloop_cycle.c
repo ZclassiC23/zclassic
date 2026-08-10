@@ -690,6 +690,12 @@ static bool cycle_text_preview(const char *input, size_t max_bytes,
     return true;
 }
 
+bool zcl_devloop_cycle_proof_complete(const char *status, const char *phase)
+{
+    return status && phase && strcmp(status, "passed") == 0 &&
+           strcmp(phase, "verify") == 0;
+}
+
 static size_t cycle_json(const struct zcl_devloop_plan *plan,
                          const char *const *files, size_t file_count,
                          const char *status, const char *phase,
@@ -701,6 +707,8 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
     char files_digest[65];
     char capsule_preview[CYCLE_CAPSULE_PREVIEW_BYTES + 1];
     bool capsule_truncated = false;
+    bool proof_complete =
+        zcl_devloop_cycle_proof_complete(status, phase);
     cycle_files_sha3(files, file_count, files_digest);
     if (!cycle_text_preview(capsule ? capsule : "",
                             CYCLE_CAPSULE_PREVIEW_BYTES,
@@ -717,12 +725,18 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
         !appendf(out, out_sz, &pos, ",\"phase\":") ||
         !append_string(out, out_sz, &pos, phase) ||
         !appendf(out, out_sz, &pos,
-                 ",\"runtime_published\":%s,\"elapsed_ms\":%lld,"
+                 ",\"runtime_published\":%s,\"proof_complete\":%s,"
+                 "\"proof_scope\":\"%s\","
+                 "\"proof_reuse_scope\":\"%s\",\"elapsed_ms\":%lld,"
                  "\"file_count\":%zu,\"files_sha3\":\"%s\",\"files\":[",
                  strcmp(status, "passed") == 0 &&
                          (strcmp(phase, "resident_commit") == 0 ||
                           strcmp(phase, "transactional_reload") == 0)
                      ? "true" : "false",
+                 proof_complete ? "true" : "false",
+                 proof_complete
+                     ? "source_wide_compile_tests_lint_fast" : "none",
+                 proof_complete ? "exact_source_id_sha256" : "none",
                  (long long)elapsed_ms, file_count, files_digest))
         return 0;
     size_t preview_count = file_count < CYCLE_FILE_PREVIEW_MAX
@@ -762,8 +776,10 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
 #endif
             strcmp(status, "passed") != 0
                 ? "inspect this cycle's failure capsule; no durable compiler failure ID was issued"
-                : strcmp(plan->action_name, "verify") == 0
-                    ? "verification complete; runtime publication remains owner-contained"
+                : proof_complete
+                    ? "edit code; this exact source epoch already has complete compile, source-wide test, and lint-fast proof"
+                    : strcmp(plan->action_name, "verify") == 0
+                        ? "verification finished without reusable complete proof; inspect proof_complete and phase"
                     : "keep editing; native watch owns the next cycle"))
         return 0;
 #ifdef ZCL_DEV_BUILD

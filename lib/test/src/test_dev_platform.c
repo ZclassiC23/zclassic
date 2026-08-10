@@ -2979,6 +2979,25 @@ static int test_native_source_cas_shadow(void)
     return failures;
 }
 
+static int test_cycle_proof_reuse_contract(void)
+{
+    int failures = 0;
+    TEST("dev platform: only a passed source-wide verify is reusable proof") {
+        ASSERT(zcl_devloop_cycle_proof_complete("passed", "verify"));
+        ASSERT(!zcl_devloop_cycle_proof_complete("deferred", "verify"));
+        ASSERT(!zcl_devloop_cycle_proof_complete("superseded", "verify"));
+        ASSERT(!zcl_devloop_cycle_proof_complete("rejected", "verify"));
+        ASSERT(!zcl_devloop_cycle_proof_complete("passed",
+                                                 "precommit_probe"));
+        ASSERT(!zcl_devloop_cycle_proof_complete("passed",
+                                                 "resident_commit"));
+        ASSERT(!zcl_devloop_cycle_proof_complete(NULL, "verify"));
+        ASSERT(!zcl_devloop_cycle_proof_complete("passed", NULL));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_dev_platform(void)
 {
     int failures = 0;
@@ -2989,6 +3008,7 @@ int test_dev_platform(void)
     failures += test_resident_process_cancellation();
     failures += test_resident_process_supersession();
     failures += test_native_source_cas_shadow();
+    failures += test_cycle_proof_reuse_contract();
     failures += test_menu_and_search();
     failures += test_change_classification();
     failures += test_change_plan_closure();
