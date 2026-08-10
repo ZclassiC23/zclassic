@@ -31,6 +31,12 @@
     } \
 } while (0)
 
+/* Log the Campaign-C3 newer-schema refusal banner. Defined in
+ * database_migrate.c; called by the open-time preflight in database.c
+ * (before anything writes to the datadir) and by node_db_migrate()'s
+ * own recheck. */
+void node_db_log_newer_schema_refusal(int current_ver);
+
 /* Apply the app-feature migration blocks (schema v14+): store products
  * and orders, ZCL Market file offers, ZNAM name registry, ZMSG
  * messaging, ZSWP atomic-swap contracts, HODL wave history, and the

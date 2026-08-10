@@ -23,6 +23,15 @@
 
 #define NODE_DB_DETACHED_BUSY_TIMEOUT_MS 30000
 
+/* The Campaign-C3 newer-schema refusal banner, shared by the open-time
+ * preflight in database.c (which fires before anything writes to the
+ * datadir) and the migration-runner recheck in node_db_migrate() below. */
+void node_db_log_newer_schema_refusal(int current_ver)
+{
+    LOG_WARN("model", "\nFATAL: node.db schema_version=%d but this binary only knows up to %d.\n" "       Refusing to open a database written by a newer binary —\n" "       writes through this layer would silently corrupt the data.\n" "       Either run a binary that supports schema v%d+,\n" "       or restore node.db from a backup taken before the upgrade.\n", current_ver, NODE_DB_MAX_SCHEMA, current_ver);
+    fflush(stderr);
+}
+
 bool node_db_state_set(struct node_db *ndb, const char *key,
                        const void *value, size_t len)
 {
@@ -244,8 +253,7 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
      * or restore from a backup taken before the upgrade. There is no
      * automatic downgrade path. */
     if (current_ver > NODE_DB_MAX_SCHEMA) {
-        LOG_WARN("model", "\nFATAL: node.db schema_version=%d but this binary only knows up to %d.\n" "       Refusing to open a database written by a newer binary —\n" "       writes through this layer would silently corrupt the data.\n" "       Either run a binary that supports schema v%d+,\n" "       or restore node.db from a backup taken before the upgrade.\n", current_ver, NODE_DB_MAX_SCHEMA, current_ver);
-        fflush(stderr);
+        node_db_log_newer_schema_refusal(current_ver);
         return -2;
     }
 

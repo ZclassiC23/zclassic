@@ -11,8 +11,10 @@
 
 #include "test/test_core.h"
 #include "models/database.h"
+#include "sha3/sha3.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -24,6 +26,42 @@ static int mkdir_p(const char *p)
     if (mkdir(p, 0700) == 0) return 0;
     if (errno == EEXIST) return 0;
     return -1;
+}
+
+static bool db_mig_hash_file(const char *path, uint8_t out[32],
+                             off_t *size_out)
+{
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return false;
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        close(fd);
+        return false;
+    }
+
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    uint8_t buf[8192];
+    for (;;) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n > 0) {
+            sha3_256_write(&sha, buf, (size_t)n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n < 0) {
+            close(fd);
+            return false;
+        }
+        break;
+    }
+    close(fd);
+    sha3_256_finalize(&sha, out);
+    if (size_out)
+        *size_out = st.st_size;
+    return true;
 }
 
 /* cwd-relative tmpdir to comply with the "no /tmp" project convention. */
@@ -374,16 +412,43 @@ static int t_newer_schema_refuses_open_before_staging_cleanup(void)
         sqlite3 *raw = NULL;
         ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
         ASSERT(db_mig_stamp_schema(raw, NODE_DB_MAX_SCHEMA + 1));
+        /* A future schema need not contain every table this older binary
+         * knows.  Refusal must happen before create_schema() can add one. */
+        ASSERT(db_mig_exec_raw(raw, "DROP TABLE peers"));
         sqlite3_close(raw);
         raw = NULL;
 
-        struct node_db newer;
-        bool opened = node_db_open(&newer, dbpath);
-        ASSERT(!opened);
-        ASSERT(!newer.open);
-        ASSERT(newer.db == NULL);
+        uint8_t before_sha3[32], after_sha3[32];
+        off_t before_size = -1, after_size = -1;
+        ASSERT(db_mig_hash_file(dbpath, before_sha3, &before_size));
+
+        for (int i = 0; i < 8; i++) {
+            struct node_db newer;
+            bool opened = node_db_open(&newer, dbpath);
+            ASSERT(!opened);
+            ASSERT(!newer.open);
+            ASSERT(newer.db == NULL);
+            /* A caller may unconditionally close its output on every failure.
+             * Both the first close and repeated close must be harmless. */
+            node_db_close(&newer);
+            node_db_close(&newer);
+            ASSERT(!newer.open);
+            ASSERT(newer.db == NULL);
+        }
+
+        ASSERT(db_mig_hash_file(dbpath, after_sha3, &after_size));
+        ASSERT_EQ(before_size, after_size);
+        ASSERT(memcmp(before_sha3, after_sha3, sizeof(before_sha3)) == 0);
+        char wal_path[560], shm_path[560];
+        snprintf(wal_path, sizeof(wal_path), "%s-wal", dbpath);
+        snprintf(shm_path, sizeof(shm_path), "%s-shm", dbpath);
+        ASSERT(access(wal_path, F_OK) != 0);
+        ASSERT(access(shm_path, F_OK) != 0);
 
         ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM sqlite_master "
+            "WHERE type='table' AND name='peers'") == 0);
         ASSERT(db_mig_count(raw,
             "SELECT count(*) FROM snapshot_staging_utxos") == 1);
         ASSERT(db_mig_count(raw,
