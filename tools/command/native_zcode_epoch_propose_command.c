@@ -9,6 +9,7 @@
 #include "hotswap/hotswap_service.h"
 #include "services/zcode_c23_economics_service.h"
 #include "vcs/vcs_object.h"
+#include "vcs/zcode_claim_epoch.h"
 #include "vcs/zcode_commons_projection.h"
 #include "vcs/zcode_epoch_schedule.h"
 
@@ -369,6 +370,23 @@ void zcl_native_handle_zcode_commons_schedule_claim_plan(
                        vcs_zcode_commons_v2_error_string(error));
         return;
     }
+    struct vcs_zcode_claim_epoch_proposal_v2 claim_epoch;
+    uint8_t claim_epoch_root[32];
+    enum vcs_zcode_claim_epoch_error claim_epoch_error =
+        vcs_zcode_claim_epoch_from_selection(
+            &input, policy_root, projection_root, &result, &claim_epoch);
+    if (claim_epoch_error == VCS_ZCODE_CLAIM_EPOCH_OK)
+        claim_epoch_error = vcs_zcode_claim_epoch_root(
+            &claim_epoch, claim_epoch_root);
+    if (claim_epoch_error != VCS_ZCODE_CLAIM_EPOCH_OK) {
+        vcs_zcode_claim_epoch_free(&claim_epoch);
+        zcl_hotswap_service_release(&lease);
+        free(claims);
+        vcs_zcode_commons_projection_free(projection);
+        zep_claim_fail(reply, "CLAIM_EPOCH_OBJECT_REFUSED",
+                       vcs_zcode_claim_epoch_error_string(claim_epoch_error));
+        return;
+    }
 
     (void)json_push_kv_str(&reply->data, "service_id",
                            ZCODE_C23_ECONOMICS_SERVICE_ID);
@@ -386,6 +404,11 @@ void zcl_native_handle_zcode_commons_schedule_claim_plan(
     zep_hex(&reply->data, "previous_epoch_root", input.previous_epoch_root);
     zep_hex(&reply->data, "epoch_selection_root",
             result.epoch_creation_root);
+    zep_hex(&reply->data, "claim_epoch_proposal_root", claim_epoch_root);
+    (void)json_push_kv_int(
+        &reply->data, "claim_epoch_proposal_bytes",
+        (int64_t)(VCS_ZCODE_CLAIM_EPOCH_HEADER_BYTES +
+                  result.selected_count * 32u));
     (void)json_push_kv_int(&reply->data, "epoch", (int64_t)input.epoch);
     (void)json_push_kv_int(&reply->data, "cutoff_height",
                            (int64_t)input.cutoff_height);
@@ -436,6 +459,7 @@ void zcl_native_handle_zcode_commons_schedule_claim_plan(
                            (int64_t)inline_count);
     (void)json_push_kv_bool(&reply->data, "selected_claims_complete",
                             inline_count == result.selected_count);
+    vcs_zcode_claim_epoch_free(&claim_epoch);
     zcl_hotswap_service_release(&lease);
     free(claims);
     vcs_zcode_commons_projection_free(projection);

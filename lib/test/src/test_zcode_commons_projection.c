@@ -8,6 +8,7 @@
 #include "config/command_catalog.h"
 #include "json/json.h"
 #include "vcs/vcs_object.h"
+#include "vcs/zcode_claim_epoch.h"
 #include "vcs/zcode_commons_projection.h"
 #include "vcs/zcode_creation_claim.h"
 #include "vcs/zcode_creation_attribution.h"
@@ -191,6 +192,109 @@ static int creation_claim_object_test(void)
                   VCS_ZCODE_CREATION_CLAIM_SIGNATURE);
         struct vcs_zcode_creation_claim_wire_v2 zero = {0};
         ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int claim_epoch_object_test(void)
+{
+    int failures = 0;
+    TEST("signed-claim epoch proposal has canonical fail-closed bytes") {
+        struct vcs_zcode_creation_claim_wire_v2 wires[2];
+        struct vcs_zcode_creation_claim_v2 claims[2];
+        uint8_t claim_roots[2][32];
+        for (size_t i = 0; i < 2; i++) {
+            commons_claim_fixture(&wires[i], (uint8_t)(9u + i),
+                                  (uint64_t)(100u + i), 1000 + (int64_t)i,
+                                  VCS_ZCODE_CLAIM_V2_REQUIRED_FLAGS);
+            ASSERT_EQ(vcs_zcode_creation_claim_wire_v2_root(
+                          &wires[i], claim_roots[i]),
+                      VCS_ZCODE_CREATION_CLAIM_OK);
+            vcs_zcode_creation_claim_wire_v2_selection(
+                &wires[i], claim_roots[i], &claims[i]);
+        }
+        uint8_t policy_inputs[4][32];
+        for (size_t i = 0; i < 4; i++)
+            commons_fill(policy_inputs[i], (uint8_t)(0xd0u + i));
+        struct vcs_zcode_policy_candidate_v2 policy;
+        vcs_zcode_policy_candidate_v2_init(
+            &policy, policy_inputs[0], policy_inputs[1], policy_inputs[2],
+            policy_inputs[3]);
+        uint8_t projection_root[32];
+        commons_fill(projection_root, 0xe1);
+        struct vcs_zcode_epoch_selection_v2 input = {
+            .epoch = 1,
+            .cutoff_height = 500,
+            .cutoff_mtp = 5000,
+            .epoch_capacity_atoms = 1000000000,
+            .claims = claims,
+            .claim_count = 2,
+        };
+        struct vcs_zcode_epoch_selection_result_v2 result;
+        ASSERT_EQ(vcs_zcode_epoch_select_v2(&input, &policy, &result),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT_EQ(result.selected_count, 2);
+        uint8_t policy_root[32];
+        ASSERT_EQ(vcs_zcode_policy_candidate_v2_root(&policy, policy_root),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        struct vcs_zcode_claim_epoch_proposal_v2 proposal;
+        ASSERT_EQ(vcs_zcode_claim_epoch_from_selection(
+                      &input, policy_root, projection_root, &result, &proposal),
+                  VCS_ZCODE_CLAIM_EPOCH_OK);
+        ASSERT_EQ(vcs_zcode_claim_epoch_validate(&proposal),
+                  VCS_ZCODE_CLAIM_EPOCH_OK);
+        uint8_t *wire = NULL, *second = NULL;
+        size_t wire_len = 0, second_len = 0;
+        ASSERT_EQ(vcs_zcode_claim_epoch_encode(&proposal, &wire, &wire_len),
+                  VCS_ZCODE_CLAIM_EPOCH_OK);
+        ASSERT_EQ(wire_len, VCS_ZCODE_CLAIM_EPOCH_HEADER_BYTES + 64u);
+        struct vcs_zcode_claim_epoch_proposal_v2 parsed, zero;
+        vcs_zcode_claim_epoch_init(&zero);
+        for (size_t cut = 0; cut < wire_len; cut++) {
+            ASSERT(vcs_zcode_claim_epoch_decode(&parsed, wire, cut) !=
+                   VCS_ZCODE_CLAIM_EPOCH_OK);
+            ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        }
+        ASSERT_EQ(vcs_zcode_claim_epoch_decode(&parsed, wire, wire_len),
+                  VCS_ZCODE_CLAIM_EPOCH_OK);
+        ASSERT_EQ(vcs_zcode_claim_epoch_encode(&parsed, &second, &second_len),
+                  VCS_ZCODE_CLAIM_EPOCH_OK);
+        ASSERT(second_len == wire_len && memcmp(second, wire, wire_len) == 0);
+        uint8_t root_a[32], root_b[32]; char root_hex[65];
+        ASSERT_EQ(vcs_zcode_claim_epoch_root(&proposal, root_a),
+                  VCS_ZCODE_CLAIM_EPOCH_OK);
+        ASSERT_EQ(vcs_zcode_claim_epoch_root(&parsed, root_b),
+                  VCS_ZCODE_CLAIM_EPOCH_OK);
+        ASSERT(memcmp(root_a, root_b, 32) == 0);
+        zcl_hex_encode(root_a, sizeof(root_a), root_hex);
+        printf("claim_epoch_proposal.v2=%s\n", root_hex);
+        uint8_t kat_root[32];
+        ASSERT(zcl_hex_decode_lower(VCS_ZCODE_CLAIM_EPOCH_KAT_ROOT,
+                                    kat_root, sizeof(kat_root)));
+        ASSERT(memcmp(root_a, kat_root, sizeof(root_a)) == 0);
+
+        wire[0] ^= 1u;
+        ASSERT_EQ(vcs_zcode_claim_epoch_decode(&zero, wire, wire_len),
+                  VCS_ZCODE_CLAIM_EPOCH_MAGIC);
+        wire[0] ^= 1u;
+        wire[93] = 1u;
+        ASSERT_EQ(vcs_zcode_claim_epoch_decode(&zero, wire, wire_len),
+                  VCS_ZCODE_CLAIM_EPOCH_RESERVED);
+        wire[93] = 0;
+        struct vcs_zcode_claim_epoch_proposal_v2 mutated = proposal;
+        memcpy(mutated.selected_claim_roots[1],
+               mutated.selected_claim_roots[0], 32);
+        ASSERT_EQ(vcs_zcode_claim_epoch_validate(&mutated),
+                  VCS_ZCODE_CLAIM_EPOCH_DUPLICATE);
+        memcpy(mutated.selected_claim_roots[1], claim_roots[1], 32);
+        mutated.invalid_count++;
+        ASSERT_EQ(vcs_zcode_claim_epoch_validate(&mutated),
+                  VCS_ZCODE_CLAIM_EPOCH_COUNT);
+        free(second);
+        free(wire);
+        vcs_zcode_claim_epoch_free(&parsed);
+        vcs_zcode_claim_epoch_free(&proposal);
         PASS();
     } _test_next:;
     return failures;
@@ -381,6 +485,11 @@ static int commons_claim_projection_test(void)
                                       "selected_claims_complete")));
         ASSERT(strlen(json_get_str(json_get(&reply.data,
                                             "epoch_selection_root"))) == 64);
+        ASSERT(strlen(json_get_str(json_get(&reply.data,
+                                        "claim_epoch_proposal_root"))) == 64);
+        ASSERT_EQ(json_get_int(json_get(
+                      &reply.data, "claim_epoch_proposal_bytes")),
+                  VCS_ZCODE_CLAIM_EPOCH_HEADER_BYTES + 32);
         const struct json_value *selected =
             json_get(&reply.data, "selected_claims");
         ASSERT(selected && selected->type == JSON_ARR &&
@@ -899,6 +1008,7 @@ static int commons_accounting_failures_test(void)
 int test_zcode_commons_projection(void)
 {
     return creation_claim_object_test() +
+           claim_epoch_object_test() +
            commons_claim_projection_test() +
            epoch_creation_accounting_test() +
            epoch_creation_verify_failclosed_test() +
