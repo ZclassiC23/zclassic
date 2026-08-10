@@ -10,5 +10,15 @@
     "zero_root=0;else_first=(root[0]+1)%8;then=cyclic"
 #define ZCODE_C23_ECONOMICS_CONCENTRATION_CAP \
     "per-recipient cap=min(epoch_capacity,max(1 ZC23,floor(epoch_capacity/100)))"
+#define ZCODE_C23_BACKLOG_PROJECTION_MISSING \
+    "blocked:claim_projection_missing"
+#define ZCODE_C23_BACKLOG_EMPTY "ready:empty_projection"
+#define ZCODE_C23_BACKLOG_INELIGIBLE "waiting:claims_ineligible"
+#define ZCODE_C23_BACKLOG_EPOCH_READY "ready:epoch_plan"
+#define ZCODE_C23_BACKLOG_ECONOMICS_NEXT \
+    "zcode commons economics status"
+#define ZCODE_C23_BACKLOG_STATUS_NEXT "zcode commons backlog"
+#define ZCODE_C23_BACKLOG_EPOCH_NEXT \
+    "zcode commons schedule propose plan"
 
 #endif /* ZCL_ZCODE_C23_ECONOMICS_INTERNAL_H */

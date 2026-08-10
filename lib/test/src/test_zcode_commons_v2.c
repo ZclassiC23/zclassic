@@ -53,6 +53,19 @@ static bool cv2_candidate_render_economics_status(
     return true;
 }
 
+static bool cv2_candidate_render_backlog_status(
+    const struct zcode_c23_backlog_status_input_v1 *input,
+    struct zcode_c23_backlog_status_result_v1 *out)
+{
+    if (!zcode_c23_economics_service_builtin()->render_backlog_status(
+            input, out))
+        return false;
+    if (!input->projection_ready)
+        (void)snprintf(out->reason, sizeof(out->reason),
+                       "candidate backlog generation is active");
+    return true;
+}
+
 static enum vcs_zcode_c23_error cv2_candidate_checkpoint_accept_all(
     const struct vcs_zcode_c23_corpus_checkpoint_v1 *checkpoint)
 {
@@ -382,6 +395,11 @@ static int test_v2_truthful_activation_status(void)
                                       "unused_capacity_expires")));
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "queue_order")),
             "strict-oldest-first:maturity_height,maturity_mtp,claim_root");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
+                                            "backlog_readiness")),
+                      "blocked:claim_projection_missing");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "next_command")),
+                      "zcode commons economics status");
         zcl_command_reply_free(&reply);
         json_free(&input);
 
@@ -389,6 +407,8 @@ static int test_v2_truthful_activation_status(void)
             *zcode_c23_economics_service_builtin();
         economics_candidate.render_status =
             cv2_candidate_render_economics_status;
+        economics_candidate.render_backlog_status =
+            cv2_candidate_render_backlog_status;
         struct zcl_hotswap_service_candidate economics_descriptor = {
             .service_id = ZCODE_C23_ECONOMICS_SERVICE_ID,
             .source_tu = "app/services/src/zcode_c23_economics_service.c",
@@ -411,6 +431,17 @@ static int test_v2_truthful_activation_status(void)
         ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "category_order")),
                       "candidate economics service generation is active");
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input);
+        json_set_object(&input);
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.commons_backlog.v1");
+        zcl_native_handle_zcode_commons_backlog(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "blocker")),
+                      "candidate backlog generation is active");
         zcl_command_reply_free(&reply);
         json_free(&input);
         zcl_hotswap_service_reset();

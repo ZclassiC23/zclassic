@@ -78,6 +78,49 @@ static bool render_schedule_proposal(
     return true;
 }
 
+static bool render_backlog_status(
+    const struct zcode_c23_backlog_status_input_v1 *input,
+    struct zcode_c23_backlog_status_result_v1 *out)
+{
+    if (!input || !out || input->eligible_claim_count > input->claim_count ||
+        (!input->projection_ready &&
+         (input->claim_count != 0 || input->eligible_claim_count != 0)))
+        return false;
+    memset(out, 0, sizeof(*out));
+    out->valid = true;
+    out->backlog_ready = input->projection_ready;
+    out->issuance_enabled = false;
+    out->unused_capacity_expires = true;
+    if (!input->projection_ready) {
+        (void)snprintf(out->readiness, sizeof(out->readiness), "%s",
+                       ZCODE_C23_BACKLOG_PROJECTION_MISSING);
+        (void)snprintf(out->reason, sizeof(out->reason), "%s",
+                       "claim/backlog projection is not implemented; issuance selection is unavailable");
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       ZCODE_C23_BACKLOG_ECONOMICS_NEXT);
+    } else if (input->claim_count == 0) {
+        (void)snprintf(out->readiness, sizeof(out->readiness), "%s",
+                       ZCODE_C23_BACKLOG_EMPTY);
+        (void)snprintf(out->reason, sizeof(out->reason), "%s",
+                       "the verified claim projection is current and empty");
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       ZCODE_C23_BACKLOG_ECONOMICS_NEXT);
+    } else if (input->eligible_claim_count == 0) {
+        (void)snprintf(out->readiness, sizeof(out->readiness), "%s",
+                       ZCODE_C23_BACKLOG_INELIGIBLE);
+        (void)snprintf(out->reason, sizeof(out->reason), "%s",
+                       "claims exist but none is eligible at the current cutoff");
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       ZCODE_C23_BACKLOG_STATUS_NEXT);
+    } else {
+        (void)snprintf(out->readiness, sizeof(out->readiness), "%s",
+                       ZCODE_C23_BACKLOG_EPOCH_READY);
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       ZCODE_C23_BACKLOG_EPOCH_NEXT);
+    }
+    return true;
+}
+
 static bool schedule_class_name(uint16_t schedule_class,
                                 char *out, size_t out_size)
 {
@@ -107,6 +150,7 @@ static const struct zcode_c23_economics_service_v1 k_builtin = {
     .epoch_select = vcs_zcode_epoch_select_v2,
     .render_status = render_status,
     .render_schedule_proposal = render_schedule_proposal,
+    .render_backlog_status = render_backlog_status,
     .schedule_class_name = schedule_class_name,
 };
 

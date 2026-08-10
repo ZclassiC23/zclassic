@@ -12,15 +12,15 @@
 
 #define ZCODE_C23_ECONOMICS_SERVICE_ID "zcode.c23.economics.v1"
 #define ZCODE_C23_ECONOMICS_ABI_FINGERPRINT \
-    "zcode.c23.economics.abi.v1:9a8ca728"
+    "zcode.c23.economics.abi.v2:backlog-status"
 #define ZCODE_C23_ECONOMICS_SCHEMA_FINGERPRINT \
-    "zcl.zcode_commons_economics_status.v2+schedule_proposal_view.v2"
+    "zcl.zcode_commons_economics_status.v2+schedule_proposal_view.v2+backlog-readiness.v1"
 #define ZCODE_C23_ECONOMICS_WIRE_FINGERPRINT \
-    "zc23-policy+claim+epoch-selection.v2"
+    "zc23-policy+claim+backlog-readiness+epoch-selection.v2"
 #define ZCODE_C23_ECONOMICS_POLICY_KAT_ROOT \
     "8fc1df9547d1842004e86c1a06714829965693c031f8e3a16dd2fe38ee6f6ad9"
 #define ZCODE_C23_ECONOMICS_KAT_FINGERPRINT \
-    "bce1d18fafb5e968122594c7bba2deb5c56f97d62f74595e6b844581c944f020"
+    "dbc50951a0d956bfb05c958e6d905a3b8935bd53f565416af4fcd441c5323bfb"
 
 struct zcode_c23_economics_status_result_v1 {
     uint64_t challenge_blocks;
@@ -58,6 +58,22 @@ struct zcode_c23_schedule_proposal_view_v1 {
     char mint_authority[48];
 };
 
+struct zcode_c23_backlog_status_input_v1 {
+    bool projection_ready;
+    uint32_t claim_count;
+    uint32_t eligible_claim_count;
+};
+
+struct zcode_c23_backlog_status_result_v1 {
+    bool valid;
+    bool backlog_ready;
+    bool issuance_enabled;
+    bool unused_capacity_expires;
+    char readiness[64];
+    char reason[192];
+    char next_command[64];
+};
+
 struct zcode_c23_economics_service_v1 {
     uint64_t (*award_atoms)(uint16_t category);
     void (*policy_init)(struct vcs_zcode_policy_candidate_v2 *policy,
@@ -78,6 +94,9 @@ struct zcode_c23_economics_service_v1 {
     bool (*render_schedule_proposal)(
         const struct vcs_zcode_epoch_schedule_proposal_v1 *proposal,
         bool persisted, struct zcode_c23_schedule_proposal_view_v1 *out);
+    bool (*render_backlog_status)(
+        const struct zcode_c23_backlog_status_input_v1 *input,
+        struct zcode_c23_backlog_status_result_v1 *out);
     bool (*schedule_class_name)(uint16_t schedule_class,
                                 char *out, size_t out_size);
 };

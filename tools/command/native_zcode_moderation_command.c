@@ -387,7 +387,8 @@ static bool economics_service_frozen_kat(const void *opaque, char *why,
     if (!service || !service->award_atoms || !service->policy_init ||
         !service->policy_validate || !service->policy_root ||
         !service->epoch_select || !service->render_status ||
-        !service->render_schedule_proposal || !service->schedule_class_name ||
+        !service->render_schedule_proposal ||
+        !service->render_backlog_status || !service->schedule_class_name ||
         vcs_zcode_family_policy_v1_root(&family, family_root) !=
             VCS_ZCODE_COMMONS_V2_OK) {
         if (why && why_sz) (void)snprintf(why, why_sz,
@@ -446,6 +447,50 @@ static bool economics_service_frozen_kat(const void *opaque, char *why,
             sizeof(class_name)) || strcmp(class_name, "reproduction") != 0) {
         if (why && why_sz) (void)snprintf(why, why_sz,
             "frozen schedule-proposal view vector failed");
+        return false;
+    }
+    struct zcode_c23_backlog_status_input_v1 backlog_input = {0};
+    struct zcode_c23_backlog_status_result_v1 backlog_view;
+    if (!service->render_backlog_status(&backlog_input, &backlog_view) ||
+        !backlog_view.valid || backlog_view.backlog_ready ||
+        backlog_view.issuance_enabled ||
+        !backlog_view.unused_capacity_expires ||
+        strcmp(backlog_view.readiness,
+               "blocked:claim_projection_missing") != 0 ||
+        strcmp(backlog_view.next_command,
+               "zcode commons economics status") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen missing-backlog projection vector failed");
+        return false;
+    }
+    backlog_input.projection_ready = true;
+    if (!service->render_backlog_status(&backlog_input, &backlog_view) ||
+        !backlog_view.backlog_ready ||
+        strcmp(backlog_view.readiness, "ready:empty_projection") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen empty-backlog projection vector failed");
+        return false;
+    }
+    backlog_input.claim_count = 3;
+    if (!service->render_backlog_status(&backlog_input, &backlog_view) ||
+        strcmp(backlog_view.readiness, "waiting:claims_ineligible") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen ineligible-backlog vector failed");
+        return false;
+    }
+    backlog_input.eligible_claim_count = 2;
+    if (!service->render_backlog_status(&backlog_input, &backlog_view) ||
+        strcmp(backlog_view.readiness, "ready:epoch_plan") != 0 ||
+        strcmp(backlog_view.next_command,
+               "zcode commons schedule propose plan") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen eligible-backlog vector failed");
+        return false;
+    }
+    backlog_input.eligible_claim_count = 4;
+    if (service->render_backlog_status(&backlog_input, &backlog_view)) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen invalid-backlog subset rejection failed");
         return false;
     }
     return true;
@@ -545,7 +590,10 @@ void zcl_native_handle_zcode_commons_backlog(
         zcl_hotswap_service_acquire(ZCODE_C23_ECONOMICS_SERVICE_ID, &lease);
     if (!service) service = zcode_c23_economics_service_builtin();
     struct zcode_c23_economics_status_result_v1 status;
-    if (!service->render_status(&status)) {
+    const struct zcode_c23_backlog_status_input_v1 input = {0};
+    struct zcode_c23_backlog_status_result_v1 view;
+    if (!service->render_status(&status) ||
+        !service->render_backlog_status(&input, &view) || !view.valid) {
         zcl_hotswap_service_release(&lease);
         moderation_fail(reply, "BACKLOG_SERVICE_FAILED",
                         "the pure economics service refused backlog rendering");
@@ -557,9 +605,13 @@ void zcl_native_handle_zcode_commons_backlog(
                            zcl_hotswap_service_generation());
     (void)json_push_kv_bool(&reply->data, "simulation_only", true);
     (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
-    (void)json_push_kv_bool(&reply->data, "projection_ready", false);
-    (void)json_push_kv_int(&reply->data, "claim_count", 0);
-    (void)json_push_kv_bool(&reply->data, "issuance_enabled", false);
+    (void)json_push_kv_bool(&reply->data, "projection_ready",
+                            input.projection_ready);
+    (void)json_push_kv_int(&reply->data, "claim_count", input.claim_count);
+    (void)json_push_kv_int(&reply->data, "eligible_claim_count",
+                           input.eligible_claim_count);
+    (void)json_push_kv_bool(&reply->data, "issuance_enabled",
+                            view.issuance_enabled);
     (void)json_push_kv_bool(&reply->data, "funds_moved", false);
     (void)json_push_kv_str(&reply->data, "queue_order",
                            status.queue_order);
@@ -570,10 +622,10 @@ void zcl_native_handle_zcode_commons_backlog(
     (void)json_push_kv_bool(&reply->data, "unused_capacity_carries",
                             status.unused_capacity_carries);
     (void)json_push_kv_bool(&reply->data, "unused_capacity_expires",
-                            !status.unused_capacity_carries);
-    (void)json_push_kv_str(&reply->data, "blocker",
-        "claim/backlog projection is not implemented; issuance selection is unavailable");
-    (void)json_push_kv_str(&reply->data, "next_command",
-                           "zcode commons economics status");
+                            view.unused_capacity_expires);
+    (void)json_push_kv_str(&reply->data, "backlog_readiness",
+                           view.readiness);
+    (void)json_push_kv_str(&reply->data, "blocker", view.reason);
+    (void)json_push_kv_str(&reply->data, "next_command", view.next_command);
     zcl_hotswap_service_release(&lease);
 }
