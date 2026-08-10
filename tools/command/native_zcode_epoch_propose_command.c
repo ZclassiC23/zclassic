@@ -679,15 +679,39 @@ void zcl_native_handle_zcode_commons_schedule_claim_verify(
         return;
     }
 
+    struct zcode_c23_claim_epoch_view_v1 view;
+    if (!service->render_claim_epoch(&rebuilt, true, true, &view)) {
+        vcs_zcode_claim_epoch_free(&rebuilt);
+        zcl_hotswap_service_release(&lease);
+        free(claims);
+        vcs_zcode_commons_projection_free(projection);
+        vcs_zcode_claim_epoch_free(&proposal);
+        zep_claim_fail(reply, "CLAIM_EPOCH_VERIFY_RENDER_REFUSED",
+                       "the pure economics service refused the reconstructed proposal view",
+                       command);
+        return;
+    }
+
     (void)json_push_kv_bool(&reply->data, "verified", true);
     (void)json_push_kv_bool(&reply->data, "restart_reconstructed", true);
     (void)json_push_kv_bool(&reply->data, "bounded_load", true);
     (void)json_push_kv_bool(&reply->data, "pure_calculation", true);
-    (void)json_push_kv_bool(&reply->data, "simulation_only", true);
+    (void)json_push_kv_bool(&reply->data, "valid", view.valid);
+    (void)json_push_kv_bool(&reply->data, "persisted", view.persisted);
+    (void)json_push_kv_bool(&reply->data, "canonical_proposal",
+                            view.canonical_proposal);
+    (void)json_push_kv_bool(&reply->data, "current_selection_verified",
+                            view.current_selection_verified);
+    (void)json_push_kv_bool(&reply->data, "simulation_only",
+                            view.simulation_only);
     (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
-    (void)json_push_kv_bool(&reply->data, "issuance_enabled", false);
-    (void)json_push_kv_bool(&reply->data, "wallet_used", false);
-    (void)json_push_kv_bool(&reply->data, "funds_moved", false);
+    (void)json_push_kv_bool(&reply->data, "issuance_enabled",
+                            view.issuance_enabled);
+    (void)json_push_kv_bool(&reply->data, "wallet_used", view.wallet_used);
+    (void)json_push_kv_bool(&reply->data, "funds_moved", view.funds_moved);
+    (void)json_push_kv_str(&reply->data, "verification_state",
+                           view.verification_state);
+    (void)json_push_kv_str(&reply->data, "next_command", view.next_command);
     (void)json_push_kv_str(&reply->data, "service_id",
                            ZCODE_C23_ECONOMICS_SERVICE_ID);
     (void)json_push_kv_int(&reply->data, "service_generation",
@@ -700,11 +724,11 @@ void zcl_native_handle_zcode_commons_schedule_claim_verify(
     (void)json_push_kv_int(&reply->data, "proposal_bytes",
                            (int64_t)wire_len);
     (void)json_push_kv_int(&reply->data, "claim_count",
-                           (int64_t)selection.claim_count);
+                           (int64_t)view.claim_count);
     (void)json_push_kv_int(&reply->data, "selected_count",
-                           (int64_t)result.selected_count);
+                           (int64_t)view.selected_count);
     (void)json_push_kv_int(&reply->data, "selected_atoms",
-                           (int64_t)result.selected_atoms);
+                           (int64_t)view.selected_atoms);
     vcs_zcode_claim_epoch_free(&rebuilt);
     zcl_hotswap_service_release(&lease);
     free(claims);

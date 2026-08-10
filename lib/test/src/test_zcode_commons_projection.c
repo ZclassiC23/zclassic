@@ -583,6 +583,15 @@ static int commons_claim_projection_test(void)
         ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
         ASSERT(json_get_bool(json_get(&reply.data, "verified")));
         ASSERT(json_get_bool(json_get(&reply.data,
+                                      "current_selection_verified")));
+        ASSERT(json_get_bool(json_get(&reply.data, "canonical_proposal")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "issuance_enabled")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
+                                            "verification_state")),
+                      "verified:current_selection");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "next_command")),
+                      "zcode commons backlog");
+        ASSERT(json_get_bool(json_get(&reply.data,
                                       "restart_reconstructed")));
         ASSERT(json_get_bool(json_get(&reply.data, "bounded_load")));
         ASSERT(!json_get_bool(json_get(&reply.data, "issuance_enabled")));
