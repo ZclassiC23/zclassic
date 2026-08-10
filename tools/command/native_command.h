@@ -481,6 +481,9 @@ void zcl_native_handle_zcode_workspace_plan(
 void zcl_native_handle_zcode_workspace_verify(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_workspace_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_commons_corpus_shard_verify(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

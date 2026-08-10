@@ -11,6 +11,7 @@
 #include "services/market_moderation_view_service.h"
 #include "services/zcode_package_view_service.h"
 #include "services/zcode_moderation_view_service.h"
+#include "services/zcode_workspace_view_service.h"
 #include "services/shop_reputation_view_service.h"
 #include "services/shop_status_view_service.h"
 #include "services/shop_want_view_service.h"
@@ -201,6 +202,18 @@ static int t_manifest_mapping(void)
         ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
                           "app/services/src/zcode_moderation_view_service.c"),
                       "zcode.moderation.status");
+        ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
+                          "app/services/src/zcode_workspace_view_service.c"),
+                      "app/services/src/zcode_workspace_view_service.c");
+        ASSERT(zcl_hotswap_service_source_for_path(
+                   "app/services/include/services/zcode_workspace_view_service.h")
+               == NULL);
+        ASSERT_STR_EQ(zcl_hotswap_service_contract_source_for_path(
+                          "app/services/include/services/zcode_workspace_view_service.h"),
+                      "app/services/src/zcode_workspace_view_service.c");
+        ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
+                          "app/services/src/zcode_workspace_view_service.c"),
+                      "zcode.workspace.status");
         ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
                           "app/services/src/shop_reputation_view_service.c"),
                       "app/services/src/shop_reputation_view_service.c");
@@ -563,6 +576,66 @@ static bool candidate_shop_reputation(
     return true;
 }
 
+static bool candidate_workspace_status(
+    struct zcode_workspace_view_result_v1 *out)
+{
+    if (!zcode_workspace_view_service_builtin()->render_status(out))
+        return false;
+    snprintf(out->capability, sizeof(out->capability), "%s",
+             "candidate workspace view generation is active");
+    return true;
+}
+
+static int t_zcode_workspace_view(void)
+{
+    int failures = 0;
+    TEST("workspace views swap while signatures and root authority stay static") {
+        zcl_hotswap_service_reset();
+        struct zcode_workspace_view_service_v1 candidate =
+            *zcode_workspace_view_service_builtin();
+        candidate.render_status = candidate_workspace_status;
+        struct zcl_hotswap_service_candidate publication = {
+            .service_id = ZCODE_WORKSPACE_VIEW_SERVICE_ID,
+            .source_tu = "app/services/src/zcode_workspace_view_service.c",
+            .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+            .vtable_size = sizeof(candidate),
+            .abi_fingerprint = ZCODE_WORKSPACE_VIEW_ABI_FINGERPRINT,
+            .schema_fingerprint = ZCODE_WORKSPACE_VIEW_SCHEMA_FINGERPRINT,
+            .wire_fingerprint = ZCODE_WORKSPACE_VIEW_WIRE_FINGERPRINT,
+            .kat_fingerprint = ZCODE_WORKSPACE_VIEW_KAT_FINGERPRINT,
+            .vtable = &candidate,
+        };
+        struct zcl_hotswap_service_report report = {0};
+        ASSERT(zcl_hotswap_service_publish(
+            zcl_native_zcode_workspace_view_service_contract(), &publication,
+            true, &report));
+        ASSERT(report.probed);
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        struct zcl_command_request request = {.input = &input};
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.zcode_workspace_status.v1");
+        zcl_native_handle_zcode_workspace_status(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_EQ(json_get_int(json_get(&reply.data,
+                                       "view_service_generation")), 1);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "capability")),
+                      "candidate workspace view generation is active");
+        ASSERT(json_get_bool(json_get(&reply.data,
+                                      "signature_verification_static")));
+        ASSERT(json_get_bool(json_get(&reply.data,
+                                      "root_confirmation_static")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "effects_swappable")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        zcl_hotswap_service_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int t_shop_reputation_view(void)
 {
     int failures = 0;
@@ -762,7 +835,8 @@ int test_hotswap_service_registry(void)
                    t_manifest_mapping() + t_market_purchase_view() +
                    t_market_moderation_view() + t_zcode_package_view();
     failures += t_zcode_moderation_view() + t_shop_reputation_view() +
-                t_shop_status_view() + t_shop_want_view();
+                t_zcode_workspace_view() + t_shop_status_view() +
+                t_shop_want_view();
     zcl_hotswap_service_reset();
     printf("=== hotswap_service_registry: %d failures ===\n", failures);
     return failures;

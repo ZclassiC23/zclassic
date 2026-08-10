@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 646 |
+| Registry entries (branches + leaves) | 647 |
 | Top-level roots | 11 |
 | Branches | 152 |
-| Leaves (dispatchable command paths) | 494 |
-| … `ready` (live handler in this build) | 446 |
+| Leaves (dispatchable command paths) | 495 |
+| … `ready` (live handler in this build) | 447 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 187 | 45 | 142 |
+| `config/commands/zcode.def` | 188 | 45 | 143 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -972,6 +972,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
+| `zcode workspace status` | ready | read / read / public · instant/tiny | none | `zcl.zcode_workspace_status.v1` | `zclassic23 zcode workspace status` | Show Passport-bound workspace readiness |
 | `zcode workspace plan` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root` | `zcl.zcode_workspace_plan.v1` | `zclassic23 zcode workspace plan --input='<passport, release root, sequence>'` | Plan one Passport-bound workspace entry |
 | `zcode workspace verify` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root`, **`binding_root`** | `zcl.zcode_workspace_verify.v1` | `zclassic23 zcode workspace verify --input='<plan input plus binding_root>'` | Verify one Passport-bound workspace entry |
 | `zcode workspace show` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root`, **`binding_root`** | `zcl.zcode_workspace_verify.v1` | `zclassic23 zcode workspace show --input='<verified binding input>'` | Show one verified Passport-bound workspace entry |

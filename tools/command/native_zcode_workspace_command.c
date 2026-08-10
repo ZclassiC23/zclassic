@@ -4,9 +4,12 @@
 #include "command/native_command.h"
 
 #include "base/hex.h"
+#include "hotswap/hotswap_service.h"
 #include "json/json.h"
+#include "services/zcode_workspace_view_service.h"
 #include "vcs/zcode_commons_v2.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static void workspace_binding_fail(struct zcl_command_reply *reply,
@@ -30,9 +33,9 @@ static bool workspace_binding_parse(
     struct zcl_command_reply *reply,
     struct vcs_zcode_module_passport_v1 *passport,
     struct vcs_zcode_workspace_entry_v1 *entry,
-    bool require_binding, uint8_t binding_root[32], const char *phase)
+    bool verify_request, uint8_t binding_root[32], const char *phase)
 {
-    const size_t min_fields = require_binding ? 4u : 3u;
+    const size_t min_fields = verify_request ? 4u : 3u;
     if (!request || !reply || !passport || !entry || !binding_root ||
         !request->input || request->input->type != JSON_OBJ ||
         request->input->num_children < min_fields ||
@@ -94,30 +97,46 @@ static bool workspace_binding_parse(
             "sequence one must not declare a predecessor release root");
         return false;
     }
+    struct zcode_workspace_binding_input_v1 service_input = {
+        .passport = *passport,
+        .sequence = entry->sequence,
+    };
+    memcpy(service_input.module_release_root, entry->module_release_root, 32);
+    memcpy(service_input.predecessor_release_root,
+           entry->predecessor_release_root, 32);
+    struct vcs_zcode_workspace_entry_v1 expected = *entry;
     enum vcs_zcode_commons_v2_error error =
         vcs_zcode_module_passport_v1_root(
-            passport, entry->module_passport_root);
-    memcpy(entry->semantic_fingerprint_root,
+            passport, expected.module_passport_root);
+    memcpy(expected.semantic_fingerprint_root,
            passport->semantic_fingerprint_root, 32);
-    memcpy(entry->source_assignment_root,
+    memcpy(expected.source_assignment_root,
            passport->source_assignment_root, 32);
+    uint8_t expected_root[32];
     if (error == VCS_ZCODE_COMMONS_V2_OK)
-        error = vcs_zcode_workspace_entry_v1_root(entry, binding_root);
+        error = vcs_zcode_workspace_entry_v1_root(&expected, expected_root);
     if (error != VCS_ZCODE_COMMONS_V2_OK) {
         workspace_binding_fail(reply, "WORKSPACE_BINDING_INVALID", phase,
                                vcs_zcode_commons_v2_error_string(error));
         return false;
     }
-    if (require_binding) {
-        uint8_t expected[32];
-        if (!workspace_decode_root(request->input, "binding_root", expected) ||
-            memcmp(expected, binding_root, 32) != 0) {
-            workspace_binding_fail(
-                reply, "WORKSPACE_BINDING_ROOT_MISMATCH", phase,
-                "binding_root does not match the Passport and workspace entry");
-            return false;
-        }
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_workspace_view_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_WORKSPACE_VIEW_SERVICE_ID, &lease);
+    if (!service) service = zcode_workspace_view_service_builtin();
+    struct zcode_workspace_binding_result_v1 derived;
+    bool derived_ok = service->derive_binding(&service_input, &derived) &&
+        derived.valid && memcmp(&derived.entry, &expected, sizeof(expected)) == 0 &&
+        memcmp(derived.binding_root, expected_root, 32) == 0;
+    zcl_hotswap_service_release(&lease);
+    if (!derived_ok) {
+        workspace_binding_fail(
+            reply, "WORKSPACE_VIEW_DERIVATION_MISMATCH", phase,
+            "the pure workspace view disagreed with resident root confirmation");
+        return false;
     }
+    *entry = derived.entry;
+    memcpy(binding_root, derived.binding_root, 32);
     return true;
 }
 
@@ -129,16 +148,35 @@ static void workspace_push_root(struct json_value *data, const char *key,
     (void)json_push_kv_str(data, key, hex);
 }
 
-static void workspace_binding_render(
+static bool workspace_binding_render(
     struct zcl_command_reply *reply,
     const struct vcs_zcode_workspace_entry_v1 *entry,
     const uint8_t binding_root[32], bool verified)
 {
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_workspace_view_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_WORKSPACE_VIEW_SERVICE_ID, &lease);
+    if (!service) service = zcode_workspace_view_service_builtin();
+    struct zcode_workspace_view_result_v1 view;
+    bool rendered = service->render_binding(verified, &view) && view.valid &&
+        view.kind[0] && view.capability[0] && view.next_action[0];
+    zcl_hotswap_service_release(&lease);
+    if (!rendered) {
+        workspace_binding_fail(
+            reply, "WORKSPACE_VIEW_RENDER_FAILED", "render",
+            "the pure workspace view refused a resident-confirmed binding");
+        return false;
+    }
     (void)json_push_kv_bool(&reply->data, "verified_passport", true);
     (void)json_push_kv_bool(&reply->data,
                            verified ? "binding_verified" : "ready_to_bind",
                            true);
-    (void)json_push_kv_str(&reply->data, "kind", "workspace_entry.v1");
+    (void)json_push_kv_str(&reply->data, "kind", view.kind);
+    (void)json_push_kv_str(&reply->data, "capability", view.capability);
+    (void)json_push_kv_str(&reply->data, "view_service_id",
+                           ZCODE_WORKSPACE_VIEW_SERVICE_ID);
+    (void)json_push_kv_int(&reply->data, "view_service_generation",
+                           zcl_hotswap_service_generation());
     workspace_push_root(&reply->data, "binding_root", binding_root);
     workspace_push_root(&reply->data, "module_release_root",
                         entry->module_release_root);
@@ -157,10 +195,9 @@ static void workspace_binding_render(
     (void)json_push_kv_bool(&reply->data, "published", false);
     (void)json_push_kv_bool(&reply->data, "simulation_only", true);
     (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
-    (void)json_push_kv_str(
-        &reply->data, "agent_next_action",
-        verified ? "include this exact entry in a signed workspace manifest"
-                 : "zcode workspace verify --input='<plan input plus binding_root>'");
+    (void)json_push_kv_str(&reply->data, "agent_next_action",
+                           view.next_action);
+    return true;
 }
 
 void zcl_native_handle_zcode_workspace_plan(
@@ -172,7 +209,7 @@ void zcl_native_handle_zcode_workspace_plan(
     if (!workspace_binding_parse(request, reply, &passport, &entry, false,
                                  binding_root, "plan"))
         return;
-    workspace_binding_render(reply, &entry, binding_root, false);
+    (void)workspace_binding_render(reply, &entry, binding_root, false);
 }
 
 void zcl_native_handle_zcode_workspace_verify(
@@ -184,5 +221,137 @@ void zcl_native_handle_zcode_workspace_verify(
     if (!workspace_binding_parse(request, reply, &passport, &entry, true,
                                  binding_root, "verify"))
         return;
-    workspace_binding_render(reply, &entry, binding_root, true);
+    uint8_t expected_root[32];
+    if (!workspace_decode_root(request->input, "binding_root", expected_root) ||
+        memcmp(expected_root, binding_root, 32) != 0) {
+        workspace_binding_fail(
+            reply, "WORKSPACE_BINDING_ROOT_MISMATCH", "verify",
+            "binding_root does not match the Passport and workspace entry");
+        return;
+    }
+    (void)workspace_binding_render(reply, &entry, binding_root, true);
+}
+
+void zcl_native_handle_zcode_workspace_status(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply || !request->input ||
+        request->input->type != JSON_OBJ || request->input->num_children != 0) {
+        if (reply) workspace_binding_fail(
+            reply, "BAD_WORKSPACE_STATUS_INPUT", "status",
+            "zcode workspace status accepts no input keys");
+        return;
+    }
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_workspace_view_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_WORKSPACE_VIEW_SERVICE_ID, &lease);
+    if (!service) service = zcode_workspace_view_service_builtin();
+    struct zcode_workspace_view_result_v1 view;
+    bool rendered = service->render_status(&view) && view.valid &&
+        view.kind[0] && view.capability[0] && view.next_action[0];
+    zcl_hotswap_service_release(&lease);
+    if (!rendered) {
+        workspace_binding_fail(reply, "WORKSPACE_STATUS_VIEW_FAILED", "status",
+                               "the pure workspace status view refused output");
+        return;
+    }
+    (void)json_push_kv_bool(&reply->data, "ready", true);
+    (void)json_push_kv_str(&reply->data, "kind", view.kind);
+    (void)json_push_kv_str(&reply->data, "capability", view.capability);
+    (void)json_push_kv_str(&reply->data, "view_service_id",
+                           ZCODE_WORKSPACE_VIEW_SERVICE_ID);
+    (void)json_push_kv_int(&reply->data, "view_service_generation",
+                           zcl_hotswap_service_generation());
+    (void)json_push_kv_bool(&reply->data, "signature_verification_static", true);
+    (void)json_push_kv_bool(&reply->data, "root_confirmation_static", true);
+    (void)json_push_kv_bool(&reply->data, "effects_swappable", false);
+    (void)json_push_kv_bool(&reply->data, "simulation_only", true);
+    (void)json_push_kv_str(&reply->data, "agent_next_action",
+                           view.next_action);
+}
+
+static bool workspace_view_frozen_kat(const void *opaque, char *why,
+                                      size_t why_sz)
+{
+    const struct zcode_workspace_view_service_v1 *service = opaque;
+    struct zcode_workspace_binding_input_v1 input = {
+        .sequence = 1,
+        .passport = {
+            .schema_version = 1,
+            .flags = VCS_ZCODE_COMMONS_V2_REQUIRED_FLAGS,
+        },
+    };
+    memset(input.module_release_root, 0x41, 32);
+    uint8_t *passport_roots[] = {
+        input.passport.stable_api_root,
+        input.passport.recipe_root,
+        input.passport.toolchain_root,
+        input.passport.tests_root,
+        input.passport.license_root,
+        input.passport.semantic_fingerprint_root,
+        input.passport.workspace_lineage_root,
+        input.passport.source_assignment_root,
+        input.passport.quality_profiles_root,
+        input.passport.signer_root,
+    };
+    for (size_t i = 0; i < sizeof(passport_roots) / sizeof(passport_roots[0]);
+         i++)
+        memset(passport_roots[i], (int)(0x21u + i), 32);
+    memset(input.passport.signature, 0x31, 64);
+    struct zcode_workspace_binding_result_v1 actual;
+    struct vcs_zcode_workspace_entry_v1 expected = {.sequence = 1};
+    memcpy(expected.module_release_root, input.module_release_root, 32);
+    memcpy(expected.semantic_fingerprint_root,
+           input.passport.semantic_fingerprint_root, 32);
+    memcpy(expected.source_assignment_root,
+           input.passport.source_assignment_root, 32);
+    uint8_t expected_root[32];
+    if (!service || !service->derive_binding || !service->render_binding ||
+        !service->render_status ||
+        vcs_zcode_module_passport_v1_root(
+            &input.passport, expected.module_passport_root) !=
+            VCS_ZCODE_COMMONS_V2_OK ||
+        vcs_zcode_workspace_entry_v1_root(&expected, expected_root) !=
+            VCS_ZCODE_COMMONS_V2_OK ||
+        !service->derive_binding(&input, &actual) || !actual.valid ||
+        memcmp(&actual.entry, &expected, sizeof(expected)) != 0 ||
+        memcmp(actual.binding_root, expected_root, 32) != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen workspace binding vector failed");
+        return false;
+    }
+    struct zcode_workspace_view_result_v1 view;
+    if (!service->render_binding(false, &view) || !view.valid ||
+        strcmp(view.kind, "workspace_entry.v1") != 0 ||
+        !service->render_status(&view) || !view.valid ||
+        strcmp(view.next_action, "zcode workspace plan") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen workspace view/status vector failed");
+        return false;
+    }
+    input.sequence = 2;
+    if (service->derive_binding(&input, &actual)) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen missing-predecessor rejection vector failed");
+        return false;
+    }
+    return true;
+}
+
+static const struct zcl_hotswap_service_contract k_workspace_view_contract = {
+    .service_id = ZCODE_WORKSPACE_VIEW_SERVICE_ID,
+    .source_tu = "app/services/src/zcode_workspace_view_service.c",
+    .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+    .vtable_size = sizeof(struct zcode_workspace_view_service_v1),
+    .abi_fingerprint = ZCODE_WORKSPACE_VIEW_ABI_FINGERPRINT,
+    .schema_fingerprint = ZCODE_WORKSPACE_VIEW_SCHEMA_FINGERPRINT,
+    .wire_fingerprint = ZCODE_WORKSPACE_VIEW_WIRE_FINGERPRINT,
+    .kat_fingerprint = ZCODE_WORKSPACE_VIEW_KAT_FINGERPRINT,
+    .frozen_kat = workspace_view_frozen_kat,
+};
+
+const struct zcl_hotswap_service_contract *
+zcl_native_zcode_workspace_view_service_contract(void)
+{
+    return &k_workspace_view_contract;
 }
