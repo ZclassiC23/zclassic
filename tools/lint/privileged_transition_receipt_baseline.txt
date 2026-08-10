@@ -73,6 +73,9 @@ app.market.purchase.commit exempt: signs+broadcasts an exact Sapling-memo paymen
 app.market.moderation.profile.set exempt: rewrites only the node-local market/moderation.v1 view-policy file (per-datadir operator preference), no privileged artifact install
 app.market.moderation.review.set exempt: flips one node-local file_offers.review_state column + appends an audit line; local curation metadata only, never gossiped, no privileged artifact install
 app.store.list-product     exempt: app-local AR write (one products row + one content-addressed store_blobs row) into node.db; the payload is merchant-supplied storefront content the store re-hashes on every read, never an artifact the node executes or trusts
+app.shop.want.post         exempt: app-local AR write (one shop_wants row, buyer-signed want ad) into node.db; declares terms only, broadcasts nothing, no executable or consensus artifact install
+app.shop.want.cancel       exempt: flips one node-local shop_wants.cancelled_unix column after a buyer-key check; local board metadata only, never gossiped, no privileged artifact install
+app.shop.want.review       exempt: flips one node-local shop_wants.review_state column; local curation metadata only, never gossiped, no privileged artifact install
 app.swap.initiate          exempt: mints a local HTLC contract row, broadcasts nothing
 app.swap.participate       exempt: mints a local HTLC contract row, broadcasts nothing
 ops.debug.rom_seed.enable  exempt: in-process policy flag flip + JSON persist, no artifact install

@@ -239,6 +239,20 @@ static const struct rlw_leaf g_rlw_leaves[] = {
      * answer (absent and unreadable are not the same). */
     { "app.shop.reputation",    zcl_native_handle_shop_reputation,
       "publisher", RLW_PUBKEY,  NULL, NULL, "zcode/manifests" },
+    /* The slice-D want board's two read leaves. Their payload is the
+     * shop_wants table in node.db, read through the same guarded
+     * zcl_native_node_db_require_readonly as every sqlite leaf above (so
+     * payload_dir stays NULL), preceded by a table-presence probe: a
+     * pre-v66 node.db is the named WANT_STORE_NOT_MIGRATED refusal, never
+     * an empty-looking board over a store that does not exist. The
+     * moderation policy file is a presence disclosure whose absence is
+     * the boot default, not the payload store. status gets a well-formed
+     * id so the handler reaches the datadir (WANT_NOT_FOUND is the
+     * exercised answer); list needs nothing. */
+    { "app.shop.want.list",     zcl_native_handle_shop_want_list,
+      NULL, NULL,               NULL, NULL, NULL },
+    { "app.shop.want.status",   zcl_native_handle_shop_want_status,
+      "want_id", RLW_ZID_PUBKEY, NULL, NULL, NULL },
     /* Six of the pre-existing gaps, moved off the uncovered list because
      * they now have an on-disk proof rather than a promise. All six already
      * opened correctly; what was missing was anyone checking. They are

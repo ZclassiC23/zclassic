@@ -27,6 +27,7 @@
 #define ZCL_SERVICES_MARKET_MODERATION_SERVICE_H
 
 #include "base/result.h"
+#include "models/review_state.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -36,32 +37,16 @@
 #define MARKET_MODERATION_PROFILE_GENERAL_AUDIENCE_V1 "general-audience.v1"
 #define MARKET_MODERATION_PROFILE_OPEN_VIEW "open-view"
 
-enum market_review_state {
-    MARKET_REVIEW_UNREVIEWED = 0,   /* ingest default — never set on wire */
-    MARKET_REVIEW_REVIEWED_OK = 1,
-    MARKET_REVIEW_SENSITIVE = 2,
-    MARKET_REVIEW_STATE_COUNT = 3
-};
-
 enum market_moderation_profile {
     MARKET_MODERATION_PROFILE_DEFAULT = 0, /* general-audience.v1 */
     MARKET_MODERATION_PROFILE_OPEN = 1,
     MARKET_MODERATION_PROFILE_COUNT = 2
 };
 
-const char *market_review_state_string(enum market_review_state state);
-/* -1 when the text is not one of the three canonical states. */
-int market_review_state_from_string(const char *text);
-
 const char *market_moderation_profile_string(
     enum market_moderation_profile profile);
 /* -1 when the name is not a known immutable profile. */
 int market_moderation_profile_from_string(const char *name);
-
-static inline bool market_review_state_valid(int state)
-{
-    return state >= 0 && state < MARKET_REVIEW_STATE_COUNT;
-}
 
 static inline bool market_moderation_profile_valid(int profile)
 {

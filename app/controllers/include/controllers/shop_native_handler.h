@@ -88,5 +88,21 @@ void zcl_native_handle_shop_status(const struct zcl_command_request *request,
 void zcl_native_handle_shop_reputation(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* The slice-D buyer-posted demand board (shop_native_want.c). */
+void zcl_native_handle_shop_want_post(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_cancel(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_review(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 #endif /* ZCL_CONTROLLERS_SHOP_NATIVE_HANDLER_H */

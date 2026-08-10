@@ -1652,6 +1652,28 @@ void zcl_native_handle_shop_status(
 void zcl_native_handle_shop_reputation(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* `want.*` (slice D) is the buyer-posted demand board: signed want ads
+ * (Ed25519 shop_want.v1, the zswap quote shape with the terms reversed)
+ * persisted to the shop_wants projection, browsed under the node's own
+ * community content moderation profile, cancelled by the posting key,
+ * and curated by the local review mark
+ * (app/controllers/src/shop_native_want.c). Declared terms only — no
+ * escrow, no payment channel. */
+void zcl_native_handle_shop_want_post(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_cancel(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_review(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 /* app.store.* — the BUYING half of the store
  * (app/controllers/src/store_buyer_native_handlers.c). Each proxies one

@@ -147,7 +147,7 @@ page changing with it.
 <!--   app_shape_folders    = directories directly under app/                        -->
 <!-- Fix a mismatch with `tools/scripts/check_doc_counts.sh --fix`, never by hand.  -->
 
-test_groups: 936
+test_groups: 937
 port_interfaces: 13
 persistence_adapters: 14
 condition_registrations: 52
@@ -278,7 +278,13 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
    probes in `app/controllers/src/shop_native_probes.c`. The slice-C
    evidence readout `app shop reputation` (provable facts only over
    `<datadir>/zcode`; absent evidence reads `no_record`, never a zero)
-   lives in `app/controllers/src/shop_native_reputation.c`.
+   lives in `app/controllers/src/shop_native_reputation.c`. The slice-D
+   buyer demand board `app shop want post|list|status|cancel|review`
+   (signed shop_want.v1 ads — declared terms, never escrow; the
+   `shop_wants` projection from schema v66; moderation visibility
+   identical to moderated market offers) lives in
+   `app/controllers/src/shop_native_want.c` with the codec + AR model in
+   `app/models/src/shop_want.c`.
 
 ### Add a reducer stage (Job)
 1. `app/jobs/src/STAGE_stage.c` with `stage_exec()` returning <!-- doc-path-ok: STAGE is a placeholder -->

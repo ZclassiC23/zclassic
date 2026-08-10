@@ -128,6 +128,38 @@ No bounty/want-ad exists (`bounty` grep: zero). Closest shape:
 a "wanted" ad is the same shape with reversed terms. Shop surfaces must
 leave room for a buyer-side request board; do not build it in A–C.
 
+Landed 2026-08-10: the demand board `app.shop.want.*` (branch row in
+`config/commands/app_features.def`, leaf rows in
+`config/commands/store.def`, handlers in
+`app/controllers/src/shop_native_want.c`). A want is a signed,
+discoverable WANT advertisement with terms — "I will pay amount_zatoshi
+for a digital result satisfying these objectively checkable criteria" —
+NOT an escrow, NOT a payment channel: posting moves and promises no
+value (ZC23/ZCL transfer stays simulation/plan-only). The signed shape
+clones zswap_quote.v1 with the terms reversed (Ed25519 over the
+domain-separated body root; the want id commits the full signed wire;
+codec + AR model in `app/models/src/shop_want.c`), so the stored wire is
+relay-ready even though this slice adds no wire-protocol message.
+Surface: `post` (plan/commit; the buyer's Ed25519 secret signs, the
+pubkey is re-derived, terms = amount + 1..1024-byte criteria + optional
+spec_hash + expiry capped at 30 days), `list` (read; the open board,
+filtered by the node's active community content moderation profile with
+the identical visibility rule moderated market offers use — hidden wants
+are counted, never deleted), `status` (read; full text, signature
+re-verified at read time, open/expired/cancelled), `cancel`
+(plan/commit; key-checked — the secret must derive the row's buyer
+pubkey; the row is kept as evidence), `review` (plan/commit; the local
+curation mark, the zmarket_review_set equivalent for the demand side).
+Storage is the `shop_wants` projection (schema v66): the exact signed
+wire plus LOCAL-ONLY columns (review_state with the same semantics as
+the v65 file_offers column, cancelled_unix) that never enter the wire.
+Read leaves refuse by name on a missing node.db
+(WANT_STORE_NOT_INITIALISED) or a pre-v66 one (WANT_STORE_NOT_MIGRATED),
+never an empty-looking board over a store that does not exist. Named
+follow-ups: P2P gossip relay of the signed wire (the zswapquote shape's
+demand twin) and fulfillment/award. Test group: `test_shop_want`; the
+read leaves are registered in `test_read_leaf_no_datadir_write`.
+
 ## Constraints
 
 - ZC23 issuance stays simulation-only.

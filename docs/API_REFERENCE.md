@@ -74,17 +74,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 632 |
+| Registry entries (branches + leaves) | 638 |
 | Top-level roots | 11 |
-| Branches | 149 |
-| Leaves (dispatchable command paths) | 483 |
-| … `ready` (live handler in this build) | 435 |
+| Branches | 150 |
+| Leaves (dispatchable command paths) | 488 |
+| … `ready` (live handler in this build) | 440 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 156 |
+| Leaves with `effect=mutate` | 159 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 101 |
+| Leaves requiring **owner** authority | 104 |
 
 Per source file:
 
@@ -93,8 +93,8 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 118 | 29 | 89 |
 | `config/commands/apps.def` | 16 | 3 | 13 |
-| `config/commands/app_features.def` | 59 | 16 | 43 |
-| `config/commands/store.def` | 8 | 0 | 8 |
+| `config/commands/app_features.def` | 60 | 17 | 43 |
+| `config/commands/store.def` | 13 | 0 | 13 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 46 | 11 | 35 |
 | `config/commands/code.def` | 16 | 2 | 14 |
@@ -547,6 +547,16 @@ represented by its children's sections.
 | `app shop init` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | `confirm`, `input`, `datadir` | `zcl.shop_init.v1` | `zclassic23 app shop init --input='{"confirm":true,"input":"/data/products.json"}'` | Initialize a live private shop |
 | `app shop status` | ready | read / read / operator · fast/low | `datadir` | `zcl.shop_status.v1` | `zclassic23 app shop status` | Show this node's shop posture |
 | `app shop reputation` | ready | read / read / operator · fast/low | **`publisher`**, `datadir`, `now_unix` | `zcl.shop_reputation.v1` | `zclassic23 app shop reputation --input='{"publisher":"02ab..."}'` | Show the provable evidence for a publisher |
+
+#### `app.shop.want` — Buyer wants
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app shop want post` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`buyer_secret`**, **`amount_zatoshi`**, **`criteria`**, `spec_hash`, **`expires_unix`**, `nonce`, `issued_unix`, `now_unix`, `datadir`, `confirm` | `zcl.shop_want_post.v1` | `zclassic23 app shop want post --input='{"buyer_secret":"ab01...","amount_zatoshi":500000,"criteria":"a CSV of every ZCL block hash 0..100, sha3-verified","expires_unix":1780000000,"confirm":true}'` | Post a buyer want |
+| `app shop want list` | ready | read / read / operator · fast/low | `datadir`, `now_unix`, `profile`, `all` | `zcl.shop_want_list.v1` | `zclassic23 app shop want list` | Browse this node's want board |
+| `app shop want status` | ready | read / read / operator · fast/low | **`want_id`**, `datadir`, `now_unix`, `profile` | `zcl.shop_want_status.v1` | `zclassic23 app shop want status --input='{"want_id":"ab01..."}'` | Show one want in full |
+| `app shop want cancel` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`want_id`**, **`buyer_secret`**, `datadir`, `now_unix`, `confirm` | `zcl.shop_want_cancel.v1` | `zclassic23 app shop want cancel --input='{"want_id":"ab01...","buyer_secret":"ab01...","confirm":true}'` | Cancel a want you posted |
+| `app shop want review` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`want_id`**, **`review_state`**, `datadir`, `confirm` | `zcl.shop_want_review.v1` | `zclassic23 app shop want review --input='{"want_id":"ab01...","review_state":"reviewed_ok","confirm":true}'` | Set the local review mark on a want |
 
 #### `app.swap` — Swaps
 

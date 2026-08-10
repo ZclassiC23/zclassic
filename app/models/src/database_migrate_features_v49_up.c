@@ -759,6 +759,54 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 66) {
+        /* v66: shop WANT ads (docs/work/SHOP_COMMAND.md slice D) — the
+         * demand-side mirror of the signed offer: a buyer-posted,
+         * Ed25519-signed "I will pay amount_zatoshi for a digital result
+         * satisfying these criteria" advertisement. want_id commits the
+         * full signed wire; wire is the exact bytes the buyer signed
+         * (stored because they verified at ingress). Declared terms only —
+         * no escrow, no payment channel, ZC23/ZCL transfer stays
+         * simulation/plan-only. review_state is LOCAL-ONLY curation
+         * metadata with the identical semantics of the v65 file_offers
+         * column (community content moderation; never gossiped, never part
+         * of the signed wire, a hidden want stays stored); cancelled_unix
+         * marks the buyer's own key-checked cancellation. Closed rows are
+         * filtered from the open board, never deleted. */
+        if (!node_db_exec(ndb,
+                "CREATE TABLE IF NOT EXISTS shop_wants("
+                "want_id BLOB PRIMARY KEY CHECK(length(want_id)=32),"
+                "wire BLOB NOT NULL,"
+                "buyer_pubkey BLOB NOT NULL CHECK(length(buyer_pubkey)=32),"
+                "amount_zatoshi INTEGER NOT NULL CHECK(amount_zatoshi>0),"
+                "criteria TEXT NOT NULL,"
+                "spec_hash BLOB NOT NULL CHECK(length(spec_hash)=32),"
+                "issued_unix INTEGER NOT NULL CHECK(issued_unix>0),"
+                "expires_unix INTEGER NOT NULL CHECK(expires_unix>issued_unix),"
+                "review_state TEXT NOT NULL DEFAULT 'unreviewed' "
+                "CHECK(review_state IN "
+                "('unreviewed','reviewed_ok','sensitive')),"
+                "cancelled_unix INTEGER NOT NULL DEFAULT 0 "
+                "CHECK(cancelled_unix>=0),"
+                "posted_unix INTEGER NOT NULL CHECK(posted_unix>0))"))
+            LOG_ERR("db", "migrate v66: shop_wants table failed");
+        if (!node_db_exec(ndb,
+                "CREATE INDEX IF NOT EXISTS idx_shop_wants_buyer "
+                "ON shop_wants(buyer_pubkey)"))
+            LOG_ERR("db", "migrate v66: shop_wants buyer index failed");
+        if (!node_db_exec(ndb,
+                "CREATE INDEX IF NOT EXISTS idx_shop_wants_board "
+                "ON shop_wants(expires_unix,cancelled_unix,posted_unix)"))
+            LOG_ERR("db", "migrate v66: shop_wants board index failed");
+        if (!node_db_exec(ndb,
+                "INSERT OR IGNORE INTO schema_migrations(version) "
+                "VALUES('066')"))
+            LOG_ERR("db", "migrate v66: migration stamp failed");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 66);
+        current_ver = 66;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

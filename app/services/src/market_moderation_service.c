@@ -26,26 +26,6 @@
 #define MM_POLICY_MAGIC "zcl.market.moderation.v1"
 #define MM_POLICY_MAX_BYTES 4096
 
-const char *market_review_state_string(enum market_review_state state)
-{
-    switch (state) {
-    case MARKET_REVIEW_UNREVIEWED: return "unreviewed";
-    case MARKET_REVIEW_REVIEWED_OK: return "reviewed_ok";
-    case MARKET_REVIEW_SENSITIVE: return "sensitive";
-    default: return "unknown";
-    }
-}
-
-int market_review_state_from_string(const char *text)
-{
-    if (!text) return -1; // raw-return-ok:null-parse-input-is-a-sentinel-not-an-error
-    for (int i = 0; i < MARKET_REVIEW_STATE_COUNT; i++)
-        if (strcmp(text, market_review_state_string(
-                             (enum market_review_state)i)) == 0)
-            return i;
-    return -1; // raw-return-ok:unknown-state-name-is-a-sentinel-caller-logs
-}
-
 const char *market_moderation_profile_string(
     enum market_moderation_profile profile)
 {

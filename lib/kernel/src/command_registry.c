@@ -978,7 +978,11 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                    strcmp(key, "confirm") == 0 ||
                    strcmp(key, "enabled") == 0 ||
                    strcmp(key, "relink_generation") == 0 ||
+                   strcmp(key, "all") == 0 ||
                    strcmp(key, "allow_high_fees") == 0) {
+            /* `all` is app.shop.want.list's "include expired and cancelled
+             * rows" flag — a bool in its declared schema; the default
+             * string branch made it uninvokable from the shell. */
             type_ok = value->type == JSON_BOOL;
         } else if (strcmp(key, "effects") == 0) {
             /* vault.intent.plan owns the strict nested effect contract. The
@@ -1109,14 +1113,39 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
         } else if (strcmp(key, "now_unix") == 0 ||
                    strcmp(key, "created_at") == 0 ||
                    strcmp(key, "expires_at") == 0 ||
+                   strcmp(key, "issued_unix") == 0 ||
                    strcmp(key, "expires_unix") == 0) {
             /* Explicit Unix timestamps. now_unix is the deterministic
              * submission-window pin used by zcode.science; created_at and
              * expires_at are the ZPAY envelope bounds (and existing build
-             * worker fields). Without this rule the default branch demands a
-             * string while every handler reads JSON_INT, making the declared
-             * commands uninvokable through the CLI. */
+             * worker fields); issued_unix and expires_unix bound the
+             * app.shop.want.post advertisement window. Without this rule the
+             * default branch demands a string while every handler reads
+             * JSON_INT, making the declared commands uninvokable through
+             * the CLI. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "amount_zatoshi") == 0) {
+            /* app.shop.want.post declared payment terms (uint64 in struct
+             * shop_want_v1, app/models/include/models/shop_want.h). Without
+             * this rule the default branch demands a string and rejects the
+             * leaf's OWN declared example (`"amount_zatoshi":500000`), so
+             * the leaf is uninvokable from the shell. Capped at the 21M-ZCL
+             * supply so a nonsense amount is refused up front; the handler
+             * owns the exact >0 rule as BAD_AMOUNT. */
+            type_ok = value->type == JSON_INT && json_get_int(value) > 0 &&
+                      json_get_int(value) <= 2100000000000000LL;
+        } else if (strcmp(key, "nonce") == 0) {
+            /* app.shop.want.post's replay nonce is a positive integer, but
+             * app.auth.verify's nonce is an opaque server-issued STRING that
+             * already passed the default branch. Admit both shapes and let
+             * each handler own its strict rule (BAD_NONCE / the auth flow's
+             * own refusal) so the same mistake reports the same code over
+             * every transport. */
+            type_ok = (value->type == JSON_INT && json_get_int(value) >= 1) ||
+                      (value->type == JSON_STR && json_get_str(value) &&
+                       json_get_str(value)[0] &&
+                       strlen(json_get_str(value)) <=
+                           zcl_command_registry_input_str_max(key));
         } else if (strcmp(key, "sequence") == 0 ||
                    strcmp(key, "not_before") == 0 ||
                    strcmp(key, "expiry") == 0 ||

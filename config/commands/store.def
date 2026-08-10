@@ -223,3 +223,135 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_shop_reputation)
+
+/* ── Buyer-posted wants (docs/work/SHOP_COMMAND.md, slice D) ──────────
+ * The demand-side mirror of the signed offer: a buyer posts "I will pay
+ * amount_zatoshi for a digital result satisfying these objectively
+ * checkable criteria" — a signed, discoverable WANT advertisement with
+ * terms and an expiry, NOT an escrow and NOT a payment channel (ZC23/ZCL
+ * value transfer stays simulation/plan-only). The signed shape clones
+ * zswap_quote.v1 with the terms reversed; storage is the shop_wants
+ * projection (schema v66), and listing rides the same per-node community
+ * content moderation visibility rule as moderated market offers. P2P
+ * relay of the signed wire and fulfillment/award are the follow-ups.
+ * Handlers: app/controllers/src/shop_native_want.c. */
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.shop.want.post", "app.shop.want", "", "Post a buyer want",
+    "Build, sign (Ed25519, key re-derived from buyer_secret), verify and "
+    "persist one shop_want.v1 on this node's board: amount_zatoshi of "
+    "declared terms, 1..1024 bytes of objectively checkable criteria, an "
+    "optional spec_hash committing an external spec document, and an "
+    "explicit expiry at most 30 days out. Without confirm:true, a "
+    "non-mutating plan rendering the exact signed document and its id; "
+    "the commit persists it (idempotent on want_id). Refused by name on "
+    "bad terms, an already-expired window, or a missing node.db.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "shop,want,bounty,buyer,demand,criteria,post",
+    "zcl.shop_want_post.input.v1", "zcl.shop_want_post.v1",
+    "buyer_secret,amount_zatoshi,criteria,spec_hash,expires_unix,nonce,"
+    "issued_unix,now_unix,datadir,confirm",
+    "buyer_secret,amount_zatoshi,criteria,expires_unix",
+    "zclassic23 app shop want post --input='{\"buyer_secret\":\"ab01...\","
+    "\"amount_zatoshi\":500000,\"criteria\":\"a CSV of every ZCL block "
+    "hash 0..100, sha3-verified\",\"expires_unix\":1780000000,"
+    "\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_shop_want_post)
+
+ZCL_COMMAND_READY_READ(
+    "app.shop.want.list", "app.shop.want", "",
+    "Browse this node's want board",
+    "The open wants this node stores (expired and cancelled rows filtered "
+    "unless all:true), newest first, each with its id, buyer pubkey, "
+    "declared amount, criteria preview (truncated — status carries the "
+    "full text) and expiry. Visibility rides the node's active community "
+    "content moderation profile exactly as moderated market offers: the "
+    "default general-audience.v1 shows reviewed_ok wants only, open-view "
+    "shows everything; hidden wants are counted in hidden_by_profile, "
+    "never deleted. profile overrides the active profile for the call. "
+    "Mutates nothing.", ZCL_COMMAND_LIST_BUDGET,
+    "shop,want,bounty,buyer,demand,list,board,moderation",
+    "zcl.shop_want_list.input.v1", "zcl.shop_want_list.v1",
+    "datadir,now_unix,profile,all", "",
+    "zclassic23 app shop want list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_shop_want_list)
+
+ZCL_COMMAND_READY_READ(
+    "app.shop.want.status", "app.shop.want", "",
+    "Show one want in full",
+    "One want by id: the full criteria text, spec_hash when committed, "
+    "issue/expiry, the Ed25519 signature re-verified at read time, its "
+    "open/expired/cancelled state, its local review mark, and whether the "
+    "node's active moderation profile shows it. An unknown id is the "
+    "named WANT_NOT_FOUND refusal. Mutates nothing.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "shop,want,bounty,buyer,demand,status",
+    "zcl.shop_want_status.input.v1", "zcl.shop_want_status.v1",
+    "want_id,datadir,now_unix,profile", "want_id",
+    "zclassic23 app shop want status --input='{\"want_id\":\"ab01...\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_shop_want_status)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.shop.want.cancel", "app.shop.want", "",
+    "Cancel a want you posted",
+    "Key-checked local cancellation: the presented buyer_secret must "
+    "derive the same Ed25519 pubkey that signed the want (a mismatch is "
+    "the WRONG_BUYER_KEY refusal), then the row is marked cancelled — "
+    "kept stored as evidence, removed from the open board. Without "
+    "confirm:true, a non-mutating plan naming the want and what "
+    "cancellation does. Idempotent: re-cancelling reports "
+    "already_cancelled. Refused by name for an unknown id.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "shop,want,bounty,buyer,demand,cancel,withdraw",
+    "zcl.shop_want_cancel.input.v1", "zcl.shop_want_cancel.v1",
+    "want_id,buyer_secret,datadir,now_unix,confirm", "want_id,buyer_secret",
+    "zclassic23 app shop want cancel --input='{\"want_id\":\"ab01...\","
+    "\"buyer_secret\":\"ab01...\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_shop_want_cancel)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.shop.want.review", "app.shop.want", "",
+    "Set the local review mark on a want",
+    "This node's own curation mark on one stored want — the "
+    "zmarket_review_set equivalent for the demand side: review_state is "
+    "unreviewed, reviewed_ok or sensitive, decides visibility under the "
+    "node's community content moderation profile, and is local-only "
+    "(never gossiped, never part of the signed wire; a hidden want stays "
+    "stored). Without confirm:true, a non-mutating plan naming the "
+    "current and requested marks. Refused by name for an unknown id or a "
+    "non-canonical state.", ZCL_COMMAND_LIST_BUDGET,
+    "shop,want,bounty,buyer,demand,review,moderation,curation",
+    "zcl.shop_want_review.input.v1", "zcl.shop_want_review.v1",
+    "want_id,review_state,datadir,confirm", "want_id,review_state",
+    "zclassic23 app shop want review --input='{\"want_id\":\"ab01...\","
+    "\"review_state\":\"reviewed_ok\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_shop_want_review)
