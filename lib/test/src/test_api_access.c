@@ -69,9 +69,7 @@ int api_access_focused_tests(void)
         char dbpath[320];
         struct node_db ndb;
         memset(&ndb, 0, sizeof(ndb));
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_wallet_%d",
-                 (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "api_access", "wallet");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
 
         bool ok = node_db_open(&ndb, dbpath);
