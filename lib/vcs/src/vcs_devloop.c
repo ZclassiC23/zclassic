@@ -8,6 +8,7 @@
 #include "vcs/vcs_commit.h"
 #include "vcs/vcs_index.h"
 #include "vcs/vcs_object.h"
+#include "vcs/zcode_lane.h"
 
 #include "base/hex.h"
 #include "base/serialize_le.h"
@@ -238,9 +239,14 @@ static bool publication_receipt_serialize(
 {
     if (!receipt || !wire ||
         receipt->version != VCS_DEVLOOP_PUBLICATION_RECEIPT_VERSION ||
-        receipt->phase !=
-            VCS_DEVLOOP_PUBLICATION_PHASE_WAITING_ACCEPTANCE ||
-        !publication_root_nonzero(receipt->job_root)) {
+        (receipt->phase !=
+             VCS_DEVLOOP_PUBLICATION_PHASE_WAITING_ACCEPTANCE &&
+         receipt->phase !=
+             VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND) ||
+        !publication_root_nonzero(receipt->job_root) ||
+        (receipt->phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND &&
+         !publication_root_nonzero(receipt->artifact_root))) {
         LOG_WARN("vcs.devloop", "publication receipt serialize: invalid");
         return false;
     }
@@ -398,8 +404,11 @@ bool vcs_devloop_publication_advance_waiting_acceptance(
     uint8_t current_root[32];
     bool have_current = vcs_devloop_publication_progress_load(
         repo_root, job_root, &current, current_root);
-    if (have_current && current.phase ==
-            VCS_DEVLOOP_PUBLICATION_PHASE_WAITING_ACCEPTANCE) {
+    if (have_current &&
+        (current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_WAITING_ACCEPTANCE ||
+         current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND)) {
         memcpy(receipt_root_out, current_root, 32);
         if (reused_out) *reused_out = true;
         (void)flock(lock_fd, LOCK_UN);
@@ -413,6 +422,103 @@ bool vcs_devloop_publication_advance_waiting_acceptance(
     memcpy(receipt.job_root, job_root, 32);
     if (have_current)
         memcpy(receipt.predecessor_receipt_root, current_root, 32);
+    uint8_t wire[VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES];
+    bool ok = publication_receipt_serialize(&receipt, wire) &&
+        vcs_object_put(repo_root, wire, sizeof(wire),
+                       VCS_TAG_PUBLICATION_RECEIPT, receipt_root_out);
+    event_log_t *log = ok ? event_log_open(log_path) : NULL;
+    if (ok)
+        ok = log && event_log_append(
+            log, EV_VCS_PUBLICATION_RECEIPT, receipt_root_out, 32) !=
+            UINT64_MAX;
+    if (log) event_log_close(log);
+    (void)flock(lock_fd, LOCK_UN);
+    close(lock_fd);
+    return ok;
+}
+
+static bool publication_accepted_lane_valid(
+    const char *repo_root,
+    const struct vcs_devloop_publication_job *job,
+    const uint8_t lane_receipt_root[32])
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    struct vcs_zcode_lane_receipt_v1 lane;
+    uint8_t checked[32];
+    bool ok = vcs_object_load_raw(repo_root, lane_receipt_root,
+                                  &wire, &wire_len) == 0 &&
+        vcs_zcode_lane_receipt_parse(wire, wire_len, &lane) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_lane_receipt_validate(&lane) == VCS_ZCODE_DEV_OK &&
+        vcs_zcode_lane_receipt_verify(&lane, lane.signer_pubkey) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_lane_receipt_id(&lane, checked) == VCS_ZCODE_DEV_OK &&
+        memcmp(checked, lane_receipt_root, 32) == 0 &&
+        memcmp(lane.source_root, job->source_tree_root, 32) == 0 &&
+        (lane.lane == VCS_ZCODE_LANE_CANDIDATE ||
+         lane.lane == VCS_ZCODE_LANE_PROVEN) &&
+        publication_root_nonzero(lane.proof_set_root) &&
+        publication_root_nonzero(lane.prior_receipt_root);
+    free(wire);
+    return ok;
+}
+
+bool vcs_devloop_publication_advance_accepted_lane(
+    const char *repo_root, const uint8_t job_root[32],
+    const uint8_t lane_receipt_root[32],
+    uint8_t receipt_root_out[32], bool *reused_out)
+{
+    if (reused_out) *reused_out = false;
+    if (!repo_root || !repo_root[0] || !job_root || !lane_receipt_root ||
+        !receipt_root_out)
+        return false;
+    struct vcs_devloop_publication_job job;
+    if (!vcs_devloop_publication_job_load(repo_root, job_root, &job) ||
+        !vcs_devloop_publication_job_is_queued(repo_root, job_root) ||
+        !publication_accepted_lane_valid(
+            repo_root, &job, lane_receipt_root))
+        return false;
+    char lock_path[PATH_MAX], log_path[PATH_MAX];
+    if (!publication_queue_path(repo_root, "publication.lock", lock_path,
+                                sizeof(lock_path)) ||
+        !publication_queue_path(repo_root, "publication.receipts.log",
+                                log_path, sizeof(log_path)))
+        return false;
+    int lock_fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lock_fd < 0 || flock(lock_fd, LOCK_EX) != 0) {
+        if (lock_fd >= 0) close(lock_fd);
+        return false;
+    }
+    struct vcs_devloop_publication_receipt current;
+    uint8_t current_root[32];
+    bool have_current = vcs_devloop_publication_progress_load(
+        repo_root, job_root, &current, current_root);
+    if (have_current && current.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND) {
+        bool same = memcmp(current.artifact_root,
+                           lane_receipt_root, 32) == 0;
+        if (same) {
+            memcpy(receipt_root_out, current_root, 32);
+            if (reused_out) *reused_out = true;
+        }
+        (void)flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        return same;
+    }
+    if (!have_current || current.phase !=
+            VCS_DEVLOOP_PUBLICATION_PHASE_WAITING_ACCEPTANCE) {
+        (void)flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        return false;
+    }
+    struct vcs_devloop_publication_receipt receipt = {
+        .version = VCS_DEVLOOP_PUBLICATION_RECEIPT_VERSION,
+        .phase = VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND,
+    };
+    memcpy(receipt.job_root, job_root, 32);
+    memcpy(receipt.predecessor_receipt_root, current_root, 32);
+    memcpy(receipt.artifact_root, lane_receipt_root, 32);
     uint8_t wire[VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES];
     bool ok = publication_receipt_serialize(&receipt, wire) &&
         vcs_object_put(repo_root, wire, sizeof(wire),

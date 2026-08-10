@@ -21,9 +21,12 @@
 
 #include "test/test_core.h"
 
+#include "crypto/ed25519.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_devloop.h"
 #include "vcs/vcs_index.h"
+#include "vcs/vcs_object.h"
+#include "vcs/zcode_lane.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -333,6 +336,103 @@ static int t_publication_enqueue(const char *dir)
     VD_CHECK("publication: phase retry is idempotent", reused);
     VD_CHECK("publication: phase retry preserves exact receipt root",
              memcmp(progress_root, retried_progress_root, 32) == 0);
+
+    struct vcs_zcode_lane_receipt_v1 lane = {
+        .schema_version = VCS_ZCODE_DEV_VERSION,
+        .lane = VCS_ZCODE_LANE_CANDIDATE,
+        .created_unix = 1700000000,
+    };
+    memset(lane.source_root, 0x60, 32);
+    memset(lane.task_root, 0x61, 32);
+    memset(lane.candidate_root, 0x62, 32);
+    memset(lane.proof_policy_root, 0x63, 32);
+    memset(lane.proof_set_root, 0x64, 32);
+    memset(lane.prior_receipt_root, 0x65, 32);
+    uint8_t seed[32], signer_secret[32], signer_pubkey[32];
+    memset(seed, 0x66, sizeof(seed));
+    ed25519_keypair(signer_pubkey, signer_secret, seed);
+    uint8_t lane_wire[VCS_ZCODE_LANE_WIRE_BYTES], wrong_lane_root[32];
+    VD_CHECK("publication: wrong-source lane fixture seals",
+             vcs_zcode_lane_receipt_seal(
+                 &lane, signer_secret, signer_pubkey) == VCS_ZCODE_DEV_OK &&
+             vcs_zcode_lane_receipt_serialize(&lane, lane_wire) ==
+                 VCS_ZCODE_DEV_OK &&
+             vcs_zcode_lane_receipt_id(&lane, wrong_lane_root) ==
+                 VCS_ZCODE_DEV_OK &&
+             vcs_object_put_addressed(
+                 dir, wrong_lane_root, lane_wire, sizeof(lane_wire)));
+    uint8_t rejected_progress_root[32];
+    reused = true;
+    VD_CHECK("publication: wrong-source accepted lane is refused",
+             !vcs_devloop_publication_advance_accepted_lane(
+                 dir, ar.publication_job_root, wrong_lane_root,
+                 rejected_progress_root, &reused));
+    VD_CHECK("publication: refusal is not reported as reuse", !reused);
+
+    memcpy(lane.source_root, job.source_tree_root, 32);
+    lane.lane = VCS_ZCODE_LANE_FRONTIER;
+    memset(lane.proof_set_root, 0, 32);
+    memset(lane.prior_receipt_root, 0, 32);
+    uint8_t frontier_lane_root[32];
+    VD_CHECK("publication: frontier lane fixture seals",
+             vcs_zcode_lane_receipt_seal(
+                 &lane, signer_secret, signer_pubkey) == VCS_ZCODE_DEV_OK &&
+             vcs_zcode_lane_receipt_serialize(&lane, lane_wire) ==
+                 VCS_ZCODE_DEV_OK &&
+             vcs_zcode_lane_receipt_id(&lane, frontier_lane_root) ==
+                 VCS_ZCODE_DEV_OK &&
+             vcs_object_put_addressed(
+                 dir, frontier_lane_root, lane_wire, sizeof(lane_wire)));
+    reused = true;
+    VD_CHECK("publication: frontier lane is not acceptance",
+             !vcs_devloop_publication_advance_accepted_lane(
+                 dir, ar.publication_job_root, frontier_lane_root,
+                 rejected_progress_root, &reused));
+    VD_CHECK("publication: frontier refusal is not reuse", !reused);
+
+    lane.lane = VCS_ZCODE_LANE_CANDIDATE;
+    memset(lane.proof_set_root, 0x64, 32);
+    memset(lane.prior_receipt_root, 0x65, 32);
+    VD_CHECK("publication: accepted lane fixture seals",
+             vcs_zcode_lane_receipt_seal(
+                 &lane, signer_secret, signer_pubkey) == VCS_ZCODE_DEV_OK);
+    uint8_t lane_root[32];
+    VD_CHECK("publication: accepted lane fixture serializes",
+             vcs_zcode_lane_receipt_serialize(&lane, lane_wire) ==
+                 VCS_ZCODE_DEV_OK &&
+             vcs_zcode_lane_receipt_id(&lane, lane_root) ==
+                 VCS_ZCODE_DEV_OK &&
+             vcs_object_put_addressed(
+                 dir, lane_root, lane_wire, sizeof(lane_wire)));
+    uint8_t accepted_progress_root[32];
+    reused = true;
+    VD_CHECK("publication: worker binds existing signed accepted lane",
+             vcs_devloop_publication_advance_accepted_lane(
+                 dir, ar.publication_job_root, lane_root,
+                 accepted_progress_root, &reused));
+    VD_CHECK("publication: accepted-lane phase is new", !reused);
+    VD_CHECK("publication: accepted-lane phase reloads",
+             vcs_devloop_publication_progress_load(
+                 dir, ar.publication_job_root, &progress,
+                 loaded_progress_root));
+    VD_CHECK("publication: accepted-lane phase named",
+             progress.phase ==
+                 VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND);
+    VD_CHECK("publication: scheduler binds authoritative lane receipt",
+             memcmp(progress.artifact_root, lane_root, 32) == 0);
+    VD_CHECK("publication: receipt chain preserves waiting phase",
+             memcmp(progress.predecessor_receipt_root,
+                    progress_root, 32) == 0);
+    reused = false;
+    uint8_t accepted_retry_root[32];
+    VD_CHECK("publication: accepted-lane retry succeeds",
+             vcs_devloop_publication_advance_accepted_lane(
+                 dir, ar.publication_job_root, lane_root,
+                 accepted_retry_root, &reused));
+    VD_CHECK("publication: accepted-lane retry reuses receipt", reused);
+    VD_CHECK("publication: accepted-lane retry preserves root",
+             memcmp(accepted_progress_root, accepted_retry_root, 32) == 0);
+    memset(signer_secret, 0, sizeof(signer_secret));
 
     vd_write(dir, "src/main.c", "int main(void){return 1;}\n");
     v.proof_complete = false;

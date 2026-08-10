@@ -628,7 +628,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `dev publication status` | ready | read / read / operator · fast/low | **`job_root`** | `zcl.dev_publication_status.v1` | `zclassic23-dev dev publication status --input='{"job_root":"<64-lowercase-hex>"}'` | Show one durable proof-to-publication job |
-| `dev publication advance` | compat 🔧 → `zclassic23-dev dev publication status` | mutate / dev-mutation / **owner** · fast/low | **`job_root`** | `zcl.dev_publication_advance.v1` | `zclassic23-dev dev publication advance --input='{"job_root":"<64-lowercase-hex>"}'` | Advance one proven-source job to its next durable blocker — *publication scheduling receipts require a dev checkout* |
+| `dev publication advance` | compat 🔧 → `zclassic23-dev dev publication status` | mutate / dev-mutation / **owner** · fast/low | **`job_root`**, `datadir` | `zcl.dev_publication_advance.v1` | `zclassic23-dev dev publication advance --input='{"job_root":"<64-lowercase-hex>"}'` | Advance one proven-source job to its next durable blocker — *publication scheduling receipts require a dev checkout* |
 
 #### `dev.core` — Core boundary and proof lanes
 

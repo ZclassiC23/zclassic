@@ -84,6 +84,7 @@ struct vcs_devloop_publication_job {
 
 enum vcs_devloop_publication_phase {
     VCS_DEVLOOP_PUBLICATION_PHASE_WAITING_ACCEPTANCE = 1,
+    VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND = 2,
 };
 
 #define VCS_DEVLOOP_PUBLICATION_RECEIPT_VERSION 1u
@@ -184,6 +185,10 @@ bool vcs_devloop_publication_progress_load(
     uint8_t receipt_root_out[32]);
 bool vcs_devloop_publication_advance_waiting_acceptance(
     const char *repo_root, const uint8_t job_root[32],
+    uint8_t receipt_root_out[32], bool *reused_out);
+bool vcs_devloop_publication_advance_accepted_lane(
+    const char *repo_root, const uint8_t job_root[32],
+    const uint8_t lane_receipt_root[32],
     uint8_t receipt_root_out[32], bool *reused_out);
 
 #endif /* ZCL_VCS_DEVLOOP_H */
