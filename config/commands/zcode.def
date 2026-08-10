@@ -264,6 +264,9 @@ ZCL_COMMAND_BRANCH("zcode.moderation", "zcode",
 ZCL_COMMAND_BRANCH("zcode.moderation.policy", "zcode.moderation",
                    "Immutable family policy profiles",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.moderation.service", "zcode.moderation",
+                   "Moderation service roster",
+                   ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
     "zcode.commons.economics.status", "zcode.commons.economics", "",
@@ -473,6 +476,25 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE,
     zcl_native_handle_zcode_moderation_status)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.moderation.service.status", "zcode.moderation.service", "",
+    "Show moderation service roster readiness",
+    "Reports the exact signed-roster projection state and keeps classification, "
+    "advertisement and chain-bound selection disabled until it exists. This "
+    "read never registers a service or grants moderation authority.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,moderation,service,status,roster,simulation,bootstrap",
+    "zcl.zcode_moderation_service_status.input.v1",
+    "zcl.zcode_moderation_service_status.v1", "", "",
+    "zclassic23 zcode moderation service status",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_moderation_service_status)
 
 ZCL_COMMAND_READY_READ(
     "zcode.moderation.policy.list", "zcode.moderation.policy", "",

@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 626 |
+| Registry entries (branches + leaves) | 628 |
 | Top-level roots | 11 |
-| Branches | 147 |
-| Leaves (dispatchable command paths) | 479 |
-| … `ready` (live handler in this build) | 431 |
+| Branches | 148 |
+| Leaves (dispatchable command paths) | 480 |
+| … `ready` (live handler in this build) | 432 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 177 | 42 | 135 |
+| `config/commands/zcode.def` | 179 | 43 | 136 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -1042,6 +1042,12 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode moderation policy list` | ready | read / read / public · instant/tiny | none | `zcl.zcode_moderation_policy_list.v1` | `zclassic23 zcode moderation policy list` | List immutable Family Commons policies |
 | `zcode moderation policy show` | ready | read / read / public · instant/tiny | **`profile`** | `zcl.zcode_moderation_policy_show.v1` | `zclassic23 zcode moderation policy show --input='{"profile":"family-c23.v1"}'` | Show one immutable Family Commons policy |
+
+#### `zcode.moderation.service` — Moderation service roster
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode moderation service status` | ready | read / read / public · instant/tiny | none | `zcl.zcode_moderation_service_status.v1` | `zclassic23 zcode moderation service status` | Show moderation service roster readiness |
 
 #### `zcode.patronage` — Simulated patronage
 

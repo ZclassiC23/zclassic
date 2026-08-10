@@ -448,6 +448,9 @@ void zcl_native_handle_zcode_moderation_policy_show(
 void zcl_native_handle_zcode_moderation_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_moderation_service_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_commons_economics_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

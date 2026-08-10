@@ -110,6 +110,33 @@ void zcl_native_handle_zcode_moderation_status(
         "family admission projection and cross-surface enforcement are incomplete");
 }
 
+void zcl_native_handle_zcode_moderation_service_status(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply || !moderation_no_keys(request->input)) {
+        if (reply) moderation_fail(reply, "BAD_MODERATION_SERVICE_INPUT",
+            "zcode moderation service status accepts no input keys");
+        return;
+    }
+    if (!render_family_policy(reply))
+        return;
+    (void)json_push_kv_bool(&reply->data, "projection_ready", false);
+    (void)json_push_kv_int(&reply->data, "registered_service_count", 0);
+    (void)json_push_kv_int(&reply->data, "eligible_service_count", 0);
+    (void)json_push_kv_bool(&reply->data, "roster_finalized", false);
+    (void)json_push_kv_bool(&reply->data, "classification_enabled", false);
+    (void)json_push_kv_bool(&reply->data, "advertisement_enabled", false);
+    (void)json_push_kv_bool(&reply->data, "chain_selection_enabled", false);
+    (void)json_push_kv_bool(&reply->data,
+                            "operator_group_diversity_declared", false);
+    (void)json_push_kv_str(&reply->data, "bootstrap_label",
+                           "unavailable:no_signed_service_roster");
+    (void)json_push_kv_str(&reply->data, "blocker",
+        "signed service registration and finalized roster projection are not implemented");
+    (void)json_push_kv_str(&reply->data, "next_command",
+                           "zcode moderation status");
+}
+
 void zcl_native_handle_zcode_moderation_policy_list(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {

@@ -34,7 +34,7 @@ static bool render_policy(const struct vcs_zcode_family_policy_v1 *policy,
                    "neutral scientific, medical, historical, cybersecurity and dual-use education");
     out->separate_from_accuracy_quality_security = true;
     (void)snprintf(out->policy_summary, sizeof(out->policy_summary), "%s",
-                   "immutable Family policy status presentation; enforcement remains resident and incomplete");
+                   "immutable Family policy and service-roster presentation; enforcement remains resident and incomplete");
     out->valid = strlen(out->policy_root) == 64 &&
                  out->max_dependency_objects > 0 &&
                  out->max_extracted_bytes > 0;
