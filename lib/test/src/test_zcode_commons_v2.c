@@ -225,6 +225,11 @@ static int test_v2_truthful_activation_status(void)
         ASSERT(strcmp(json_get_str(json_get(&reply.data,
                                             "official_surface_policy")),
                       "legacy_v1_unchanged") == 0);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
+                                            "admission_readiness")),
+                      "blocked:projection_missing");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "next_command")),
+                      "zcode moderation service status");
         zcl_command_reply_free(&reply);
         json_free(&input);
 

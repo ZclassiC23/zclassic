@@ -26,7 +26,9 @@ static bool moderation_no_keys(const struct json_value *input)
     return input && input->type == JSON_OBJ && input->num_children == 0;
 }
 
-static bool render_family_policy(struct zcl_command_reply *reply)
+static bool render_family_policy_with_service(
+    struct zcl_command_reply *reply, bool include_current_activation_status,
+    const struct zcode_moderation_view_service_v1 *service)
 {
     struct vcs_zcode_family_policy_v1 policy;
     uint8_t root[32];
@@ -39,14 +41,8 @@ static bool render_family_policy(struct zcl_command_reply *reply)
         return false;
     }
     zcl_hex_encode(root, sizeof(root), root_hex);
-    struct zcl_hotswap_service_lease lease = {0};
-    const struct zcode_moderation_view_service_v1 *service =
-        zcl_hotswap_service_acquire(ZCODE_MODERATION_VIEW_SERVICE_ID, &lease);
-    if (!service)
-        service = zcode_moderation_view_service_builtin();
     struct zcode_moderation_policy_view_v1 view;
     if (!service->render_policy(&policy, root_hex, &view) || !view.valid) {
-        zcl_hotswap_service_release(&lease);
         moderation_fail(reply, "MODERATION_VIEW_FAILED",
                         "the pure moderation view refused the Family policy");
         return false;
@@ -59,10 +55,12 @@ static bool render_family_policy(struct zcl_command_reply *reply)
     (void)json_push_kv_int(data, "view_service_generation",
                            zcl_hotswap_service_generation());
     (void)json_push_kv_bool(data, "immutable", true);
-    (void)json_push_kv_bool(data, "policy_selected_as_default", true);
-    (void)json_push_kv_bool(data, "enforcement_complete", false);
-    (void)json_push_kv_bool(data, "effective_default", false);
-    (void)json_push_kv_bool(data, "default_public_view", false);
+    if (include_current_activation_status) {
+        (void)json_push_kv_bool(data, "policy_selected_as_default", true);
+        (void)json_push_kv_bool(data, "enforcement_complete", false);
+        (void)json_push_kv_bool(data, "effective_default", false);
+        (void)json_push_kv_bool(data, "default_public_view", false);
+    }
     (void)json_push_kv_bool(data, "simulation_only", true);
     (void)json_push_kv_bool(data, "owner_can_rewrite", false);
     (void)json_push_kv_int(data, "excluded_reason_mask",
@@ -84,8 +82,21 @@ static bool render_family_policy(struct zcl_command_reply *reply)
                             "separate_from_accuracy_quality_security",
                             view.separate_from_accuracy_quality_security);
     (void)json_push_kv_str(data, "policy_summary", view.policy_summary);
-    zcl_hotswap_service_release(&lease);
     return true;
+}
+
+static bool render_family_policy(struct zcl_command_reply *reply,
+                                 bool include_current_activation_status)
+{
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_moderation_view_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_MODERATION_VIEW_SERVICE_ID, &lease);
+    if (!service)
+        service = zcode_moderation_view_service_builtin();
+    bool rendered = render_family_policy_with_service(
+        reply, include_current_activation_status, service);
+    zcl_hotswap_service_release(&lease);
+    return rendered;
 }
 
 void zcl_native_handle_zcode_moderation_status(
@@ -96,18 +107,52 @@ void zcl_native_handle_zcode_moderation_status(
             "zcode moderation status accepts no input keys");
         return;
     }
-    if (!render_family_policy(reply))
+    const struct zcode_moderation_admission_status_input_v1 input = {
+        .policy_selected_as_default = true,
+        .admission_projection_ready = false,
+        .dependency_closure_complete = false,
+        .cross_surface_gate_passed = false,
+    };
+    struct zcode_moderation_admission_status_result_v1 view;
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_moderation_view_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_MODERATION_VIEW_SERVICE_ID, &lease);
+    if (!service)
+        service = zcode_moderation_view_service_builtin();
+    bool policy_rendered =
+        render_family_policy_with_service(reply, false, service);
+    bool rendered = policy_rendered &&
+        service->render_admission_status(&input, &view) && view.valid;
+    zcl_hotswap_service_release(&lease);
+    if (!policy_rendered)
         return;
-    (void)json_push_kv_str(&reply->data, "phase",
-                           "protocol_foundation");
+    if (!rendered) {
+        moderation_fail(reply, "MODERATION_ADMISSION_VIEW_FAILED",
+                        "the pure moderation view refused admission facts");
+        return;
+    }
+    (void)json_push_kv_bool(&reply->data, "policy_selected_as_default",
+                            input.policy_selected_as_default);
     (void)json_push_kv_bool(&reply->data, "admission_projection_ready",
-                            false);
+                            input.admission_projection_ready);
+    (void)json_push_kv_bool(&reply->data, "dependency_closure_complete",
+                            input.dependency_closure_complete);
     (void)json_push_kv_bool(&reply->data, "cross_surface_gate_passed",
-                            false);
+                            input.cross_surface_gate_passed);
+    (void)json_push_kv_bool(&reply->data, "enforcement_complete",
+                            view.enforcement_complete);
+    (void)json_push_kv_bool(&reply->data, "effective_default",
+                            view.effective_default);
+    (void)json_push_kv_bool(&reply->data, "default_public_view",
+                            view.default_public_view);
+    (void)json_push_kv_str(&reply->data, "phase", view.phase);
+    (void)json_push_kv_str(&reply->data, "admission_readiness",
+                           view.admission_readiness);
     (void)json_push_kv_str(&reply->data, "official_surface_policy",
-                           "legacy_v1_unchanged");
+                           view.official_surface_policy);
     (void)json_push_kv_str(&reply->data, "activation_blocker",
-        "family admission projection and cross-surface enforcement are incomplete");
+                           view.activation_blocker);
+    (void)json_push_kv_str(&reply->data, "next_command", view.next_command);
 }
 
 void zcl_native_handle_zcode_moderation_service_status(
@@ -118,8 +163,6 @@ void zcl_native_handle_zcode_moderation_service_status(
             "zcode moderation service status accepts no input keys");
         return;
     }
-    if (!render_family_policy(reply))
-        return;
     const struct zcode_moderation_service_status_input_v1 input = {0};
     struct zcode_moderation_service_status_result_v1 view;
     struct zcl_hotswap_service_lease lease = {0};
@@ -127,9 +170,13 @@ void zcl_native_handle_zcode_moderation_service_status(
         zcl_hotswap_service_acquire(ZCODE_MODERATION_VIEW_SERVICE_ID, &lease);
     if (!service)
         service = zcode_moderation_view_service_builtin();
-    bool rendered = service->render_service_status(&input, &view) &&
-        view.valid;
+    bool policy_rendered =
+        render_family_policy_with_service(reply, true, service);
+    bool rendered = policy_rendered &&
+        service->render_service_status(&input, &view) && view.valid;
     zcl_hotswap_service_release(&lease);
+    if (!policy_rendered)
+        return;
     if (!rendered) {
         moderation_fail(reply, "MODERATION_SERVICE_VIEW_FAILED",
                         "the pure moderation view refused service readiness facts");
@@ -168,7 +215,7 @@ void zcl_native_handle_zcode_moderation_policy_list(
         return;
     }
     (void)json_push_kv_int(&reply->data, "count", 1);
-    if (!render_family_policy(reply))
+    if (!render_family_policy(reply, true))
         return;
     (void)json_push_kv_str(&reply->data, "future_policy_rule",
                            "a new profile and root; never rewrite v1");
@@ -188,7 +235,7 @@ void zcl_native_handle_zcode_moderation_policy_show(
             "profile must be exactly family-c23.v1");
         return;
     }
-    if (!render_family_policy(reply))
+    if (!render_family_policy(reply, true))
         return;
 }
 
@@ -203,6 +250,7 @@ static bool moderation_view_frozen_kat(const void *opaque, char *why,
     vcs_zcode_family_policy_v1_default(&policy);
     if (!service || !service->render_policy ||
         !service->render_service_status ||
+        !service->render_admission_status ||
         vcs_zcode_family_policy_v1_root(&policy, root) !=
             VCS_ZCODE_COMMONS_V2_OK) {
         if (why && why_sz) (void)snprintf(
@@ -248,6 +296,59 @@ static bool moderation_view_frozen_kat(const void *opaque, char *why,
                "zcode moderation classify plan") != 0) {
         if (why && why_sz) (void)snprintf(
             why, why_sz, "frozen moderation ready-roster vector failed");
+        return false;
+    }
+    struct zcode_moderation_admission_status_input_v1 admission_input = {0};
+    struct zcode_moderation_admission_status_result_v1 admission_view;
+    if (!service->render_admission_status(&admission_input, &admission_view) ||
+        !admission_view.valid || admission_view.enforcement_complete ||
+        admission_view.effective_default ||
+        strcmp(admission_view.admission_readiness,
+               "blocked:policy_not_selected") != 0 ||
+        strcmp(admission_view.next_command,
+               "zcode moderation policy list") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen unselected-policy admission vector failed");
+        return false;
+    }
+    admission_input.policy_selected_as_default = true;
+    if (!service->render_admission_status(&admission_input, &admission_view) ||
+        strcmp(admission_view.admission_readiness,
+               "blocked:projection_missing") != 0 ||
+        strcmp(admission_view.next_command,
+               "zcode moderation service status") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen missing-projection admission vector failed");
+        return false;
+    }
+    admission_input.admission_projection_ready = true;
+    if (!service->render_admission_status(&admission_input, &admission_view) ||
+        strcmp(admission_view.admission_readiness,
+               "blocked:closure_incomplete") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen incomplete-closure admission vector failed");
+        return false;
+    }
+    admission_input.dependency_closure_complete = true;
+    if (!service->render_admission_status(&admission_input, &admission_view) ||
+        strcmp(admission_view.admission_readiness,
+               "blocked:cross_surface_gate") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen cross-surface admission vector failed");
+        return false;
+    }
+    admission_input.cross_surface_gate_passed = true;
+    if (!service->render_admission_status(&admission_input, &admission_view) ||
+        !admission_view.enforcement_complete ||
+        !admission_view.effective_default ||
+        !admission_view.default_public_view ||
+        strcmp(admission_view.admission_readiness,
+               "ready:family_default") != 0 ||
+        strcmp(admission_view.official_surface_policy,
+               "family-c23.v1") != 0 ||
+        admission_view.activation_blocker[0] != '\0') {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen effective-Family admission vector failed");
         return false;
     }
     return true;

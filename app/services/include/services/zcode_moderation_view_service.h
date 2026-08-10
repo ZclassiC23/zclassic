@@ -1,5 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Pure presentation projection for the immutable Family moderation policy. */
+// blocker-ok:pure_admission_status_presentation
+/* This island renders caller-owned admission facts; it cannot raise or own a
+ * runtime blocker. The static command caller publishes the bounded explanation. */
 
 #ifndef ZCL_SERVICES_ZCODE_MODERATION_VIEW_SERVICE_H
 #define ZCL_SERVICES_ZCODE_MODERATION_VIEW_SERVICE_H
@@ -12,13 +15,13 @@
 
 #define ZCODE_MODERATION_VIEW_SERVICE_ID "zcode.moderation.view.v1"
 #define ZCODE_MODERATION_VIEW_ABI_FINGERPRINT \
-    "zcode.moderation.view.abi.v1:a7163e2d"
+    "zcode.moderation.view.abi.v2:admission-status"
 #define ZCODE_MODERATION_VIEW_SCHEMA_FINGERPRINT \
-    "zcl.zcode_moderation_status.v1+service-status.v1+policy-list.v1+policy-show.v1"
+    "zcl.zcode_moderation_status.v1:admission-readiness+service-status.v1+policy-list.v1+policy-show.v1"
 #define ZCODE_MODERATION_VIEW_WIRE_FINGERPRINT \
-    "family-policy+service-readiness-caller-owned-view.v1"
+    "family-policy+service-readiness+admission-readiness-caller-owned-view.v2"
 #define ZCODE_MODERATION_VIEW_KAT_FINGERPRINT \
-    "6b82ad2e6786c41076bdba5acb8050cbaef01c8d3cdb94dfbf6e99874e027ab3"
+    "09fa2911b1af51e7b919ee61d09819f5bdc810f5b4f7d0a22573c5353f8ca3b5"
 
 struct zcode_moderation_policy_view_v1 {
     bool valid;
@@ -54,6 +57,25 @@ struct zcode_moderation_service_status_result_v1 {
     char next_command[64];
 };
 
+struct zcode_moderation_admission_status_input_v1 {
+    bool policy_selected_as_default;
+    bool admission_projection_ready;
+    bool dependency_closure_complete;
+    bool cross_surface_gate_passed;
+};
+
+struct zcode_moderation_admission_status_result_v1 {
+    bool valid;
+    bool enforcement_complete;
+    bool effective_default;
+    bool default_public_view;
+    char phase[48];
+    char admission_readiness[64];
+    char official_surface_policy[32];
+    char activation_blocker[192];
+    char next_command[64];
+};
+
 struct zcode_moderation_view_service_v1 {
     bool (*render_policy)(const struct vcs_zcode_family_policy_v1 *policy,
                           const char *policy_root_hex,
@@ -61,6 +83,9 @@ struct zcode_moderation_view_service_v1 {
     bool (*render_service_status)(
         const struct zcode_moderation_service_status_input_v1 *input,
         struct zcode_moderation_service_status_result_v1 *out);
+    bool (*render_admission_status)(
+        const struct zcode_moderation_admission_status_input_v1 *input,
+        struct zcode_moderation_admission_status_result_v1 *out);
 };
 
 const struct zcode_moderation_view_service_v1 *

@@ -79,9 +79,83 @@ static bool render_service_status(
     return true;
 }
 
+static bool render_admission_status(
+    const struct zcode_moderation_admission_status_input_v1 *input,
+    struct zcode_moderation_admission_status_result_v1 *out)
+{
+    if (!input || !out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    out->valid = true;
+    out->enforcement_complete = input->admission_projection_ready &&
+        input->dependency_closure_complete &&
+        input->cross_surface_gate_passed;
+    out->effective_default = input->policy_selected_as_default &&
+        out->enforcement_complete;
+    out->default_public_view = out->effective_default;
+    (void)snprintf(out->official_surface_policy,
+                   sizeof(out->official_surface_policy), "%s",
+                   out->effective_default ? "family-c23.v1" :
+                                            "legacy_v1_unchanged");
+    if (!input->policy_selected_as_default) {
+        (void)snprintf(out->phase, sizeof(out->phase), "%s",
+                       "policy_unselected");
+        (void)snprintf(out->admission_readiness,
+                       sizeof(out->admission_readiness), "%s",
+                       "blocked:policy_not_selected");
+        (void)snprintf(out->activation_blocker,
+                       sizeof(out->activation_blocker), "%s",
+                       "no immutable Family policy is selected as the default");
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       "zcode moderation policy list");
+    } else if (!input->admission_projection_ready) {
+        (void)snprintf(out->phase, sizeof(out->phase), "%s",
+                       "protocol_foundation");
+        (void)snprintf(out->admission_readiness,
+                       sizeof(out->admission_readiness), "%s",
+                       "blocked:projection_missing");
+        (void)snprintf(out->activation_blocker,
+                       sizeof(out->activation_blocker), "%s",
+                       "family admission projection is incomplete");
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       "zcode moderation service status");
+    } else if (!input->dependency_closure_complete) {
+        (void)snprintf(out->phase, sizeof(out->phase), "%s",
+                       "projection_incomplete");
+        (void)snprintf(out->admission_readiness,
+                       sizeof(out->admission_readiness), "%s",
+                       "blocked:closure_incomplete");
+        (void)snprintf(out->activation_blocker,
+                       sizeof(out->activation_blocker), "%s",
+                       "Family admission lacks a complete dependency closure");
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       "zcode moderation service status");
+    } else if (!input->cross_surface_gate_passed) {
+        (void)snprintf(out->phase, sizeof(out->phase), "%s",
+                       "enforcement_incomplete");
+        (void)snprintf(out->admission_readiness,
+                       sizeof(out->admission_readiness), "%s",
+                       "blocked:cross_surface_gate");
+        (void)snprintf(out->activation_blocker,
+                       sizeof(out->activation_blocker), "%s",
+                       "cross-surface Family enforcement matrix has not passed");
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       "zcode moderation status");
+    } else {
+        (void)snprintf(out->phase, sizeof(out->phase), "%s", "effective");
+        (void)snprintf(out->admission_readiness,
+                       sizeof(out->admission_readiness), "%s",
+                       "ready:family_default");
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       "zcode package search");
+    }
+    return true;
+}
+
 static const struct zcode_moderation_view_service_v1 k_builtin = {
     .render_policy = render_policy,
     .render_service_status = render_service_status,
+    .render_admission_status = render_admission_status,
 };
 
 ZCL_HOTSWAP_SERVICE_EXPORT(

@@ -529,6 +529,19 @@ static bool candidate_moderation_service_status(
     return true;
 }
 
+static bool candidate_moderation_admission_status(
+    const struct zcode_moderation_admission_status_input_v1 *input,
+    struct zcode_moderation_admission_status_result_v1 *out)
+{
+    if (!zcode_moderation_view_service_builtin()->render_admission_status(
+            input, out))
+        return false;
+    if (!out->effective_default)
+        snprintf(out->activation_blocker, sizeof(out->activation_blocker),
+                 "%s", "candidate admission-readiness generation is active");
+    return true;
+}
+
 static int t_zcode_moderation_view(void)
 {
     int failures = 0;
@@ -557,6 +570,8 @@ static int t_zcode_moderation_view(void)
         candidate_service.render_policy = candidate_moderation_policy;
         candidate_service.render_service_status =
             candidate_moderation_service_status;
+        candidate_service.render_admission_status =
+            candidate_moderation_admission_status;
         struct zcl_hotswap_service_candidate service_candidate = {
             .service_id = ZCODE_MODERATION_VIEW_SERVICE_ID,
             .source_tu = "app/services/src/zcode_moderation_view_service.c",
@@ -589,6 +604,9 @@ static int t_zcode_moderation_view(void)
         ASSERT(!json_get_bool(json_get(&reply.data, "effective_default")));
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "policy_summary")),
                       "candidate moderation view generation is active");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
+                                            "activation_blocker")),
+                      "candidate admission-readiness generation is active");
         zcl_command_reply_free(&reply);
 
         zcl_command_reply_init(&reply,
