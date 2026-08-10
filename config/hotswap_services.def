@@ -89,3 +89,15 @@ HOTSWAP_SERVICE(
     "publisher-evidence-rows+local-window.v1",
     "21f8f1dfcc3f10c53af1299c283b15624a8e8d17c3c7d16869a31c5d318872de",
     "app.shop.reputation")
+
+HOTSWAP_SERVICE(
+    "app.shop.status.view.v1",
+    "app/services/src/shop_status_view_service.c",
+    "-",
+    "app/services/include/services/shop_status_view_service.h",
+    "-",
+    "app.shop.status.view.abi.v1:6bb63120",
+    "zcl.shop_status.v1",
+    "shop-posture+verification+named-gaps.v1",
+    "6ca6c3464c42512173ab79649d15964fd0c296b20c93c792c1fcaa93a01280a1",
+    "app.shop.status")

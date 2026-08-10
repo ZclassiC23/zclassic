@@ -12,6 +12,7 @@
 #include "services/zcode_package_view_service.h"
 #include "services/zcode_moderation_view_service.h"
 #include "services/shop_reputation_view_service.h"
+#include "services/shop_status_view_service.h"
 
 #include <stdatomic.h>
 #include <string.h>
@@ -208,6 +209,12 @@ static int t_manifest_mapping(void)
         ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
                           "app/services/src/shop_reputation_view_service.c"),
                       "app.shop.reputation");
+        ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
+                          "app/services/src/shop_status_view_service.c"),
+                      "app/services/src/shop_status_view_service.c");
+        ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
+                          "app/services/src/shop_status_view_service.c"),
+                      "app.shop.status");
         ASSERT(zcl_hotswap_service_source_for_path(
                    "lib/storage/src/storage.c") == NULL);
         PASS();
@@ -565,12 +572,70 @@ static int t_shop_reputation_view(void)
     return failures;
 }
 
+static bool candidate_shop_status(const struct shop_status_view_input_v1 *input,
+                                  struct shop_status_view_result_v1 *out)
+{
+    if (!shop_status_view_service_builtin()->render(input, out))
+        return false;
+    if (out->shop_live)
+        snprintf(out->shop_url, sizeof(out->shop_url), "%s",
+                 "http://live-generation.invalid/store");
+    return true;
+}
+
+static int t_shop_status_view(void)
+{
+    int failures = 0;
+    TEST("shop posture rendering swaps while probes and init effects stay static") {
+        zcl_hotswap_service_reset();
+        struct shop_status_view_input_v1 input = {
+            .tor_real = true,
+            .identity_present = true,
+            .wallet = SHOP_STATUS_WALLET_ENCRYPTED,
+            .node_db_present = true,
+            .store_schema = true,
+            .announced = true,
+        };
+        snprintf(input.address, sizeof(input.address), "%s", "fixture");
+        struct shop_status_view_service_v1 candidate = {
+            .render = candidate_shop_status,
+        };
+        struct zcl_hotswap_service_candidate publication = {
+            .service_id = SHOP_STATUS_VIEW_SERVICE_ID,
+            .source_tu = "app/services/src/shop_status_view_service.c",
+            .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+            .vtable_size = sizeof(candidate),
+            .abi_fingerprint = SHOP_STATUS_VIEW_ABI_FINGERPRINT,
+            .schema_fingerprint = SHOP_STATUS_VIEW_SCHEMA_FINGERPRINT,
+            .wire_fingerprint = SHOP_STATUS_VIEW_WIRE_FINGERPRINT,
+            .kat_fingerprint = SHOP_STATUS_VIEW_KAT_FINGERPRINT,
+            .vtable = &candidate,
+        };
+        struct zcl_hotswap_service_report report = {0};
+        ASSERT(zcl_hotswap_service_publish(
+            zcl_native_shop_status_view_service_contract(), &publication,
+            true, &report));
+        struct zcl_hotswap_service_lease lease = {0};
+        const struct shop_status_view_service_v1 *active =
+            zcl_hotswap_service_acquire(SHOP_STATUS_VIEW_SERVICE_ID, &lease);
+        struct shop_status_view_result_v1 out;
+        ASSERT(active && active->render(&input, &out));
+        ASSERT(out.shop_live && out.gap_count == 0);
+        ASSERT_STR_EQ(out.shop_url, "http://live-generation.invalid/store");
+        zcl_hotswap_service_release(&lease);
+        zcl_hotswap_service_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_hotswap_service_registry(void)
 {
     int failures = t_publish_and_lease() + t_contract_drift_restarts() +
                    t_manifest_mapping() + t_market_purchase_view() +
                    t_market_moderation_view() + t_zcode_package_view();
-    failures += t_zcode_moderation_view() + t_shop_reputation_view();
+    failures += t_zcode_moderation_view() + t_shop_reputation_view() +
+                t_shop_status_view();
     zcl_hotswap_service_reset();
     printf("=== hotswap_service_registry: %d failures ===\n", failures);
     return failures;

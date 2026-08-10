@@ -40,6 +40,7 @@
 #include "controllers/native_handler_body.h" /* json_get_bool_or/json_get_str_or */
 #include "controllers/store_controller_internal.h" /* store_ensure_schema */
 #include "command/native_command.h"
+#include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "models/activerecord.h"        /* AR_STEP_ROW */
@@ -47,6 +48,7 @@
 #include "models/store.h"
 #include "net/onion_service.h"
 #include "net/tor_integration.h"
+#include "services/shop_status_view_service.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
@@ -59,23 +61,10 @@
 
 /* The named custody recipe, one string so the refusal, the plan gap, and
  * the status gap never drift apart. */
-#define SHOP_WALLET_RECIPE \
-    "encrypt the wallet before opening a shop. Existing plaintext wallet: " \
-    "run the walletencrypt RPC (zcl-rpc walletencrypt \"<passphrase>\") — " \
-    "it wraps every plaintext secret under the passphrase and locks. New " \
-    "wallet: boot with the systemd wallet-passphrase credential (or " \
-    "ZCL_WALLET_PASSPHRASE set at first boot) so keys are wrapped before " \
-    "they hit disk. -allow-plaintext-wallet is refused on the shop lane."
-
-#define SHOP_REMEDY_INIT \
-    "zclassic23 app shop init --input='{\"confirm\":true}'"
-
-#define SHOP_REMEDY_TOR \
-    "rebuild against the vendored Tor (make tor-full), then boot with -tor"
-
-#define SHOP_REMEDY_PERSIST \
-    "boot with -tor -onion-persist so the node installs the persistent " \
-    "identity as its onion service (the identity itself is already ensured)"
+#define SHOP_WALLET_RECIPE SHOP_STATUS_WALLET_RECIPE
+#define SHOP_REMEDY_INIT SHOP_STATUS_REMEDY_INIT
+#define SHOP_REMEDY_TOR SHOP_STATUS_REMEDY_TOR
+#define SHOP_REMEDY_PERSIST SHOP_STATUS_REMEDY_PERSIST
 
 /* ── failures ───────────────────────────────────────────────────────── */
 static void sh_fail(struct zcl_command_reply *reply,
@@ -190,11 +179,81 @@ static void shop_snapshot_collect(const char *datadir,
     }
 }
 
-static bool shop_snapshot_live(const struct shop_snapshot *snap)
+static enum shop_status_wallet_v1
+shop_status_wallet(enum shop_wallet_posture wallet)
 {
-    return snap->tor_real && snap->identity_present &&
-           snap->wallet == SHOP_WALLET_ENCRYPTED &&
-           snap->node_db_present && snap->store_schema && snap->announced;
+    switch (wallet) {
+    case SHOP_WALLET_PLAINTEXT: return SHOP_STATUS_WALLET_PLAINTEXT;
+    case SHOP_WALLET_ENCRYPTED: return SHOP_STATUS_WALLET_ENCRYPTED;
+    case SHOP_WALLET_UNREADABLE: return SHOP_STATUS_WALLET_UNREADABLE;
+    case SHOP_WALLET_ABSENT: return SHOP_STATUS_WALLET_ABSENT;
+    }
+    return SHOP_STATUS_WALLET_UNREADABLE;
+}
+
+static bool shop_status_render(const struct shop_snapshot *snap,
+                               struct shop_status_view_result_v1 *out)
+{
+    struct shop_status_view_input_v1 input = {
+        .tor_real = snap->tor_real,
+        .identity_present = snap->identity_present,
+        .wallet = shop_status_wallet(snap->wallet),
+        .node_db_present = snap->node_db_present,
+        .store_schema = snap->store_schema,
+        .schema_version = snap->schema_version,
+        .product_count = snap->product_count,
+        .products_json_present = snap->products_json_present,
+        .announced = snap->announced,
+    };
+    (void)snprintf(input.address, sizeof(input.address), "%s", snap->address);
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct shop_status_view_service_v1 *service =
+        zcl_hotswap_service_acquire(SHOP_STATUS_VIEW_SERVICE_ID, &lease);
+    if (!service)
+        service = shop_status_view_service_builtin();
+    bool ok = service->render(&input, out);
+    zcl_hotswap_service_release(&lease);
+    return ok;
+}
+
+static bool shop_status_frozen_kat(const void *opaque, char *why,
+                                   size_t why_sz)
+{
+    const struct shop_status_view_service_v1 *service = opaque;
+    struct shop_status_view_input_v1 input = {
+        .wallet = SHOP_STATUS_WALLET_ABSENT,
+        .schema_version = -1,
+        .product_count = -1,
+    };
+    struct shop_status_view_result_v1 out;
+    if (!service || !service->render || !service->render(&input, &out) ||
+        out.shop_live || out.gap_count != 5 ||
+        strcmp(out.gaps[0].gap, "tor_stub_build") != 0 ||
+        strcmp(out.gaps[4].gap, "shop_not_announced") != 0) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen storefront posture vector failed");
+        return false;
+    }
+    return true;
+}
+
+static const struct zcl_hotswap_service_contract k_shop_status_contract = {
+    .service_id = SHOP_STATUS_VIEW_SERVICE_ID,
+    .source_tu = "app/services/src/shop_status_view_service.c",
+    .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+    .vtable_size = sizeof(struct shop_status_view_service_v1),
+    .abi_fingerprint = SHOP_STATUS_VIEW_ABI_FINGERPRINT,
+    .schema_fingerprint = SHOP_STATUS_VIEW_SCHEMA_FINGERPRINT,
+    .wire_fingerprint = SHOP_STATUS_VIEW_WIRE_FINGERPRINT,
+    .kat_fingerprint = SHOP_STATUS_VIEW_KAT_FINGERPRINT,
+    .frozen_kat = shop_status_frozen_kat,
+};
+
+const struct zcl_hotswap_service_contract *
+zcl_native_shop_status_view_service_contract(void)
+{
+    return &k_shop_status_contract;
 }
 
 /* A present-but-unreadable node.db is a named refusal in both leaves,
@@ -221,16 +280,16 @@ static bool sh_refuse_unreadable_db(const struct shop_snapshot *snap,
 
 /* ── rendering ──────────────────────────────────────────────────────── */
 static void shop_push_snapshot(struct json_value *into,
-                               const struct shop_snapshot *snap)
+                               const struct shop_status_view_result_v1 *view)
 {
     struct json_value tor;
     json_init(&tor);
     json_set_object(&tor);
     (void)json_push_kv_str(&tor, "build",
-                           snap->tor_real ? "real_tor" : "tor_stub");
-    (void)json_push_kv_bool(&tor, "identity_present", snap->identity_present);
-    if (snap->identity_present)
-        (void)json_push_kv_str(&tor, "address", snap->address);
+                           view->tor_build);
+    (void)json_push_kv_bool(&tor, "identity_present", view->address[0] != 0);
+    if (view->address[0])
+        (void)json_push_kv_str(&tor, "address", view->address);
     (void)json_push_kv_str(&tor, "persistence_flag", "-onion-persist");
     (void)json_push_kv_str(&tor, "persistence_note",
         "the CLI cannot read the running node's boot flags; the identity "
@@ -242,31 +301,31 @@ static void shop_push_snapshot(struct json_value *into,
     json_init(&wallet);
     json_set_object(&wallet);
     (void)json_push_kv_str(&wallet, "posture",
-                           shop_wallet_posture_name(snap->wallet));
+                           view->wallet_posture);
     (void)json_push_kv_bool(&wallet, "encrypted_at_rest",
-                            snap->wallet == SHOP_WALLET_ENCRYPTED);
+                            view->wallet_encrypted);
     (void)json_push_kv(into, "wallet", &wallet);
     json_free(&wallet);
 
     struct json_value store;
     json_init(&store);
     json_set_object(&store);
-    (void)json_push_kv_bool(&store, "node_db_present", snap->node_db_present);
-    (void)json_push_kv_bool(&store, "schema_present", snap->store_schema);
-    if (snap->schema_version >= 0)
+    (void)json_push_kv_bool(&store, "node_db_present", view->node_db_present);
+    (void)json_push_kv_bool(&store, "schema_present", view->store_schema);
+    if (view->schema_version >= 0)
         (void)json_push_kv_int(&store, "schema_version",
-                               snap->schema_version);
-    if (snap->product_count >= 0)
-        (void)json_push_kv_int(&store, "products", snap->product_count);
+                               view->schema_version);
+    if (view->product_count >= 0)
+        (void)json_push_kv_int(&store, "products", view->product_count);
     (void)json_push_kv_bool(&store, "products_json_present",
-                            snap->products_json_present);
+                            view->products_json_present);
     (void)json_push_kv(into, "store", &store);
     json_free(&store);
 
     struct json_value discovery;
     json_init(&discovery);
     json_set_object(&discovery);
-    (void)json_push_kv_bool(&discovery, "announced", snap->announced);
+    (void)json_push_kv_bool(&discovery, "announced", view->announced);
     (void)json_push_kv_str(&discovery, "app_id", SHOP_DIRECTORY_APP_ID);
     (void)json_push_kv_str(&discovery, "apps_file",
                            ONION_DIR_EXTRA_APPS_REL);
@@ -290,41 +349,13 @@ static void shop_push_gap(struct json_value *gaps, const char *gap,
 }
 
 static void shop_push_gaps(struct json_value *into,
-                           const struct shop_snapshot *snap)
+                           const struct shop_status_view_result_v1 *view)
 {
     struct json_value gaps;
     json_init(&gaps);
     json_set_array(&gaps);
-    if (!snap->tor_real)
-        shop_push_gap(&gaps, "tor_stub_build", SHOP_REMEDY_TOR);
-    if (!snap->identity_present)
-        shop_push_gap(&gaps, "no_persistent_onion_identity",
-                      SHOP_REMEDY_INIT " mints the persistent identity; "
-                      "then " SHOP_REMEDY_PERSIST);
-    switch (snap->wallet) {
-    case SHOP_WALLET_PLAINTEXT:
-        shop_push_gap(&gaps, "wallet_plaintext_at_rest", SHOP_WALLET_RECIPE);
-        break;
-    case SHOP_WALLET_ABSENT:
-        shop_push_gap(&gaps, "wallet_absent", SHOP_WALLET_RECIPE);
-        break;
-    case SHOP_WALLET_UNREADABLE:
-        shop_push_gap(&gaps, "wallet_unreadable",
-                      "boot the node once to create node.db, then re-run "
-                      "zclassic23 app shop status");
-        break;
-    case SHOP_WALLET_ENCRYPTED:
-        break;
-    }
-    if (!snap->node_db_present)
-        shop_push_gap(&gaps, "node_db_missing",
-                      "boot the node once: node.db and the store schema are "
-                      "created on first boot");
-    else if (!snap->store_schema)
-        shop_push_gap(&gaps, "store_schema_missing", SHOP_REMEDY_INIT);
-    if (!snap->announced)
-        shop_push_gap(&gaps, "shop_not_announced",
-                      SHOP_REMEDY_INIT " writes " ONION_DIR_EXTRA_APPS_REL);
+    for (size_t i = 0; i < view->gap_count; i++)
+        shop_push_gap(&gaps, view->gaps[i].gap, view->gaps[i].remedy);
     (void)json_push_kv(into, "gaps", &gaps);
     json_free(&gaps);
 }
@@ -332,15 +363,11 @@ static void shop_push_gaps(struct json_value *into,
 /* The printed "your shop is live" verification block, shared by the
  * successful commit and (with shop_live false) by plan/status. */
 static void shop_push_verification(struct json_value *into,
-                                   const struct shop_snapshot *snap)
+                                   const struct shop_status_view_result_v1 *view)
 {
-    (void)json_push_kv_bool(into, "shop_live", shop_snapshot_live(snap));
-    if (snap->identity_present) {
-        char url[128];
-        (void)snprintf(url, sizeof(url), "http://%s.onion/store",
-                       snap->address);
-        (void)json_push_kv_str(into, "shop_url", url);
-    }
+    (void)json_push_kv_bool(into, "shop_live", view->shop_live);
+    if (view->shop_url[0])
+        (void)json_push_kv_str(into, "shop_url", view->shop_url);
     (void)json_push_kv_str(into, "buyer_next_command",
                            "zclassic23 app store catalog");
     (void)json_push_kv_str(into, "buyer_note",
@@ -367,11 +394,21 @@ void zcl_native_handle_shop_status(const struct zcl_command_request *request,
     shop_snapshot_collect(datadir, &snap);
     if (sh_refuse_unreadable_db(&snap, datadir, reply))
         return;
+    struct shop_status_view_result_v1 view;
+    if (!shop_status_render(&snap, &view)) {
+        sh_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+                "SHOP_STATUS_VIEW_FAILED", "render",
+                "the pure storefront view refused the caller-owned posture",
+                datadir);
+        return;
+    }
 
     (void)json_push_kv_str(&reply->data, "datadir", datadir);
-    shop_push_snapshot(&reply->data, &snap);
-    shop_push_verification(&reply->data, &snap);
-    shop_push_gaps(&reply->data, &snap);
+    (void)json_push_kv_int(&reply->data, "view_service_generation",
+                           zcl_hotswap_service_generation());
+    shop_push_snapshot(&reply->data, &view);
+    shop_push_verification(&reply->data, &view);
+    shop_push_gaps(&reply->data, &view);
 }
 
 /* ── app shop init (plan/commit) ────────────────────────────────────── */
@@ -379,11 +416,19 @@ static void shop_init_plan(const char *datadir,
                            const struct shop_snapshot *snap,
                            struct zcl_command_reply *reply)
 {
+    struct shop_status_view_result_v1 view;
+    if (!shop_status_render(snap, &view)) {
+        sh_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+                "SHOP_STATUS_VIEW_FAILED", "render",
+                "the pure storefront view refused the caller-owned posture",
+                datadir);
+        return;
+    }
     (void)json_push_kv_str(&reply->data, "mode", "plan");
     (void)json_push_kv_str(&reply->data, "datadir", datadir);
-    shop_push_snapshot(&reply->data, snap);
-    shop_push_verification(&reply->data, snap);
-    shop_push_gaps(&reply->data, snap);
+    shop_push_snapshot(&reply->data, &view);
+    shop_push_verification(&reply->data, &view);
+    shop_push_gaps(&reply->data, &view);
 
     struct json_value plan;
     json_init(&plan);
@@ -553,6 +598,14 @@ void zcl_native_handle_shop_init(const struct zcl_command_request *request,
      * re-collect rather than trusting the pre-mutation snapshot. */
     struct shop_snapshot after;
     shop_snapshot_collect(datadir, &after);
+    struct shop_status_view_result_v1 view;
+    if (!shop_status_render(&after, &view)) {
+        sh_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+                "SHOP_STATUS_VIEW_FAILED", "render",
+                "the pure storefront view refused the committed posture",
+                datadir);
+        return;
+    }
     (void)json_push_kv_str(&reply->data, "mode", "commit");
     (void)json_push_kv_str(&reply->data, "datadir", datadir);
     (void)json_push_kv_bool(&reply->data, "identity_created",
@@ -567,7 +620,7 @@ void zcl_native_handle_shop_init(const struct zcl_command_request *request,
     if (!snap.identity_present)
         (void)json_push_kv_str(&reply->data, "persistence_note",
             SHOP_REMEDY_PERSIST);
-    shop_push_snapshot(&reply->data, &after);
-    shop_push_verification(&reply->data, &after);
+    shop_push_snapshot(&reply->data, &view);
+    shop_push_verification(&reply->data, &view);
     reply->error.mutated = true;
 }
