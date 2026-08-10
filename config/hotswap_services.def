@@ -77,3 +77,15 @@ HOTSWAP_SERVICE(
     "family-policy-caller-owned-view.v1",
     "d22bedb12602e7523805ce0b4a0890e778c2e9c0e012c95318af3ed3ee39c70a",
     "zcode.moderation.status")
+
+HOTSWAP_SERVICE(
+    "app.shop.reputation.view.v1",
+    "app/services/src/shop_reputation_view_service.c",
+    "-",
+    "app/services/include/services/shop_reputation_view_service.h",
+    "-",
+    "app.shop.reputation.view.abi.v1:1f33b720",
+    "zcl.shop_reputation.v1",
+    "publisher-evidence-rows+local-window.v1",
+    "21f8f1dfcc3f10c53af1299c283b15624a8e8d17c3c7d16869a31c5d318872de",
+    "app.shop.reputation")
