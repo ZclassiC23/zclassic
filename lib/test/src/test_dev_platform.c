@@ -2371,7 +2371,7 @@ static bool run_resident_restart_fixture(void)
         "    grep -q 'build/dev-loop/restart-test-objects/lib/util/src/clientversion.o' \"$rsp\"\n"
         "    ! grep -q 'build/test-obj/fixture/tools/dev/restart_fixture.o' \"$rsp\"\n"
         "    ! grep -q 'build/test-obj/fixture/lib/util/src/clientversion.o' \"$rsp\"\n"
-        "    printf '#!/usr/bin/env bash\\nset -eu\\ngroups= cache=0 snapshot=0 changed=\\nfor arg in \"$@\"; do case \"$arg\" in --exact=*) groups=${arg#--exact=};; --cache) cache=1;; --cache-snapshot) snapshot=1;; --changed-source=*) changed=${arg#--changed-source=};; esac; done\\n[ -n \"$groups\" ]\\n[ \"$cache\" -eq 1 ]\\n[ \"$snapshot\" -eq 1 ]\\n[ \"$changed\" = tools/dev/restart_fixture.c ]\\ncount=1\\nrest=$groups\\nwhile [ \"${rest#*,}\" != \"$rest\" ]; do count=$((count+1)); rest=${rest#*,}; done\\nran=$((count-1))\\nprintf \"SUITE VERDICT mode=cached groups_total=921 groups_ran=%%s groups_cached=1 groups_gated=0 groups_failed=0 self_skips=0\\\\n\" \"$ran\"\\nexit 0\\n' >\"$out\"\n"
+        "    printf '#!/usr/bin/env bash\\nset -eu\\ngroups= cache=0 snapshot=0 changed=\\nfor arg in \"$@\"; do case \"$arg\" in --exact=*) groups=${arg#--exact=};; --cache) cache=1;; --cache-snapshot) snapshot=1;; --changed-source=*) changed=${arg#--changed-source=};; esac; done\\n[ -n \"$groups\" ]\\n[ \"$cache\" -eq 1 ]\\n[ \"$snapshot\" -eq 1 ]\\n[ \"$changed\" = tools/dev/restart_fixture.c ]\\ncount=1\\nrest=$groups\\nwhile [ \"${rest#*,}\" != \"$rest\" ]; do count=$((count+1)); rest=${rest#*,}; done\\nran=$((count-1))\\nfailed=$ZCL_DEVLOOP_TEST_FAIL_GROUPS\\nprintf \"SUITE VERDICT mode=cached groups_total=921 groups_ran=%%s groups_cached=1 groups_gated=0 groups_failed=%%s self_skips=0\\\\n\" \"$ran\" \"$failed\"\\n[ \"$failed\" -eq 0 ]\\n' >\"$out\"\n"
         "  else\n"
         "    case \"$base\" in *dev-obj/fixture/restart-base.o) :;; *) exit 9;; esac\n"
         "    grep -q 'build/dev-loop/restart-objects/tools/dev/restart_fixture.o' \"$rsp\"\n"
@@ -2468,7 +2468,8 @@ static bool run_resident_restart_fixture(void)
         compiler);
     if (n <= 0 || n >= (int)sizeof(plan) ||
         !dp_mk_write(root, "build/dev-loop/restart.env", plan) ||
-        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0)
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0 ||
+        setenv("ZCL_DEVLOOP_TEST_FAIL_GROUPS", "0", 1) != 0)
         goto out;
 
     const char *changed[] = { "tools/dev/restart_fixture.c" };
@@ -2518,6 +2519,22 @@ static bool run_resident_restart_fixture(void)
         !proof.source_identity_overlay ||
         strlen(proof.source_cas_sha3) != 64 ||
         strlen(proof.groups_sha256) != 64)
+        goto out;
+
+    /* Born red: a real exact-group failure must not be collapsed into the
+     * runner-accounting fallback. The next action needs the failing count. */
+    if (setenv("ZCL_DEVLOOP_TEST_FAIL_GROUPS", "2", 1) != 0)
+        goto out;
+    memset(&proof, 0, sizeof(proof));
+    memset(&process, 0, sizeof(process));
+    if (zcl_devloop_restart_prove(root, changed, 1, &proof_plan, &proof,
+                                  &process, why, sizeof(why)) ||
+        strcmp(why,
+               "affected proofs failed: 2 of 18 exact groups failed; see process_output") != 0 ||
+        proof.groups_failed != 2 ||
+        proof.immediate_proof_complete || proof.proof_complete)
+        goto out;
+    if (setenv("ZCL_DEVLOOP_TEST_FAIL_GROUPS", "0", 1) != 0)
         goto out;
 
     /* Born-red P0 regression: a tooling edit whose mapped closure includes
@@ -2670,6 +2687,7 @@ static bool run_resident_restart_fixture(void)
     ok = true;
 
 out:
+    (void)unsetenv("ZCL_DEVLOOP_TEST_FAIL_GROUPS");
     if (had_cache)
         (void)setenv("ZCL_DEV_ARTIFACT_CACHE", saved_cache, 1);
     else

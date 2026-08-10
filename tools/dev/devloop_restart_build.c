@@ -1439,27 +1439,64 @@ static bool rr_restart_prove(
     int64_t test_started = platform_time_monotonic_us();
     bool ran = zcl_devloop_process_run_test(root, test_argv, 300000, process);
     receipt->test_us = platform_time_monotonic_us() - test_started;
-    uint32_t groups_failed = 0;
-    receipt->immediate_proof_complete = ran && !process->timed_out &&
-        !process->term_signal && process->exit_code == 0 &&
+    bool summary_ok = ran &&
         rr_summary_value(process->output, "groups_ran=",
                          &receipt->groups_ran) &&
         rr_summary_value(process->output, "groups_cached=",
                          &receipt->groups_cached) &&
-        rr_summary_value(process->output, "groups_failed=", &groups_failed) &&
+        rr_summary_value(process->output, "groups_failed=",
+                         &receipt->groups_failed) &&
         rr_summary_value(process->output, "self_skips=",
-                         &receipt->self_skips) &&
+                         &receipt->self_skips);
+    bool accounted = summary_ok &&
         receipt->groups_ran <= receipt->group_count &&
         receipt->groups_cached ==
-            receipt->group_count - receipt->groups_ran &&
-        groups_failed == 0 && receipt->self_skips == 0;
+            receipt->group_count - receipt->groups_ran;
+    receipt->immediate_proof_complete = ran && !process->timed_out &&
+        !process->term_signal && process->exit_code == 0 && accounted &&
+        receipt->groups_failed == 0 && receipt->self_skips == 0;
     receipt->integration_proof_deferred = receipt->deferred_group_count > 0;
     receipt->proof_complete = receipt->immediate_proof_complete &&
         !receipt->integration_proof_deferred;
     receipt->total_us = platform_time_monotonic_us() - started;
     if (!receipt->immediate_proof_complete) {
-        rr_why(why, why_len,
-               "affected proof runner did not account for every exact group");
+        char detail[256];
+        if (!ran) {
+            rr_why(why, why_len,
+                   "affected proof runner could not be executed");
+        } else if (process->timed_out) {
+            rr_why(why, why_len,
+                   "affected proof runner exceeded the 300000 ms bound");
+        } else if (process->term_signal) {
+            (void)snprintf(detail, sizeof(detail),
+                           "affected proof runner terminated by signal %d",
+                           process->term_signal);
+            rr_why(why, why_len, detail);
+        } else if (summary_ok && receipt->groups_failed > 0) {
+            (void)snprintf(
+                detail, sizeof(detail),
+                "affected proofs failed: %u of %u exact groups failed; see process_output",
+                receipt->groups_failed, receipt->group_count);
+            rr_why(why, why_len, detail);
+        } else if (summary_ok && receipt->self_skips > 0) {
+            (void)snprintf(
+                detail, sizeof(detail),
+                "affected proofs incomplete: %u exact groups self-skipped; see process_output",
+                receipt->self_skips);
+            rr_why(why, why_len, detail);
+        } else if (!summary_ok) {
+            rr_why(why, why_len,
+                   "affected proof runner omitted the canonical suite summary");
+        } else if (!accounted) {
+            rr_why(why, why_len,
+                   "affected proof runner did not account for every exact group");
+        } else {
+            (void)snprintf(
+                detail, sizeof(detail),
+                "affected proof runner exited %d despite a zero-failure summary",
+                process->exit_code);
+            rr_why(why, why_len, detail);
+        }
         return false;
     }
     return true;
@@ -1670,6 +1707,8 @@ static bool rr_emit_event(
         (void)json_push_kv_int(&receipt, "groups_ran", proof->groups_ran);
         (void)json_push_kv_int(&receipt, "groups_cached",
                                proof->groups_cached);
+        (void)json_push_kv_int(&receipt, "groups_failed",
+                               proof->groups_failed);
         (void)json_push_kv_int(&receipt, "self_skips", proof->self_skips);
         (void)json_push_kv_int(&receipt, "compiler_processes",
                                proof->compiler_processes);

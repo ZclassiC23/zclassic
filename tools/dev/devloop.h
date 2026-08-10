@@ -305,6 +305,7 @@ struct zcl_devloop_restart_proof_receipt {
     uint32_t deferred_group_count;
     uint32_t groups_ran;
     uint32_t groups_cached;
+    uint32_t groups_failed;
     uint32_t self_skips;
     uint32_t compiler_processes;
     uint32_t linker_processes;
