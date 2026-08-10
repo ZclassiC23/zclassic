@@ -1674,6 +1674,24 @@ void zcl_native_handle_shop_want_cancel(
 void zcl_native_handle_shop_want_review(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* `want.fulfill.*` (slice E) stores signed seller claims bound to
+ * independently re-hashed content.v2 CAS bytes and optional re-verified
+ * build/fuzz/benchmark receipts. It has no award or value movement. */
+void zcl_native_handle_shop_want_fulfill_post(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_fulfill_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_fulfill_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_fulfill_withdraw(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_fulfill_review(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 /* app.store.* — the BUYING half of the store
  * (app/controllers/src/store_buyer_native_handlers.c). Each proxies one

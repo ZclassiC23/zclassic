@@ -158,3 +158,6 @@ yardsale.buy             exempt: floods a signed accept through the existing cer
 vault.intent.submit      exempt: schedules an already reserved wallet intent through the existing identity, snapshot, exact-byte, admission, durability and relay gates; installs no privileged artifact
 vault.intent.cancel      exempt: atomically terminates only an unclaimed planned wallet intent and releases its reservation; installs no privileged artifact
 app.shop.init  exempt: provisions datadir-local storefront state (persistent onion identity seed, products.json, directory/apps.csv) behind an exact plan/commit; installs no privileged runtime artifact and changes no running binary
+app.shop.want.fulfill.post  exempt: persists a signed evidence claim over already-registered CAS bytes; installs no executable or privileged artifact and moves no value
+app.shop.want.fulfill.withdraw  exempt: marks only the signer-owned local evidence projection withdrawn; installs no artifact and moves no value
+app.shop.want.fulfill.review  exempt: changes only this node's local moderation view metadata; the signed claim is unchanged and no artifact or value moves

@@ -104,5 +104,21 @@ void zcl_native_handle_shop_want_cancel(
 void zcl_native_handle_shop_want_review(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* Slice E: signed, CAS-bound seller fulfillment claims. */
+void zcl_native_handle_shop_want_fulfill_post(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_fulfill_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_fulfill_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_fulfill_withdraw(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_shop_want_fulfill_review(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 #endif /* ZCL_CONTROLLERS_SHOP_NATIVE_HANDLER_H */

@@ -74,17 +74,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 638 |
+| Registry entries (branches + leaves) | 644 |
 | Top-level roots | 11 |
-| Branches | 150 |
-| Leaves (dispatchable command paths) | 488 |
-| … `ready` (live handler in this build) | 440 |
+| Branches | 151 |
+| Leaves (dispatchable command paths) | 493 |
+| … `ready` (live handler in this build) | 445 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 159 |
+| Leaves with `effect=mutate` | 162 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 104 |
+| Leaves requiring **owner** authority | 107 |
 
 Per source file:
 
@@ -93,8 +93,8 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 118 | 29 | 89 |
 | `config/commands/apps.def` | 16 | 3 | 13 |
-| `config/commands/app_features.def` | 60 | 17 | 43 |
-| `config/commands/store.def` | 13 | 0 | 13 |
+| `config/commands/app_features.def` | 61 | 18 | 43 |
+| `config/commands/store.def` | 18 | 0 | 18 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 46 | 11 | 35 |
 | `config/commands/code.def` | 16 | 2 | 14 |
@@ -557,6 +557,16 @@ represented by its children's sections.
 | `app shop want status` | ready | read / read / operator · fast/low | **`want_id`**, `datadir`, `now_unix`, `profile` | `zcl.shop_want_status.v1` | `zclassic23 app shop want status --input='{"want_id":"ab01..."}'` | Show one want in full |
 | `app shop want cancel` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`want_id`**, **`buyer_secret`**, `datadir`, `now_unix`, `confirm` | `zcl.shop_want_cancel.v1` | `zclassic23 app shop want cancel --input='{"want_id":"ab01...","buyer_secret":"ab01...","confirm":true}'` | Cancel a want you posted |
 | `app shop want review` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`want_id`**, **`review_state`**, `datadir`, `confirm` | `zcl.shop_want_review.v1` | `zclassic23 app shop want review --input='{"want_id":"ab01...","review_state":"reviewed_ok","confirm":true}'` | Set the local review mark on a want |
+
+#### `app.shop.want.fulfill` — Fulfillments
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app shop want fulfill post` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`want_id`**, **`seller_secret`**, **`artifact_root`**, **`content_root`**, `build_receipt_id`, `fuzz_receipt_id`, `bench_receipt_id`, **`expires_unix`**, **`nonce`**, **`issued_unix`**, `now_unix`, `datadir`, `confirm` | `zcl.shop_fulfill_post.v1` | `zclassic23 app shop want fulfill post --input='{"want_id":"ab01...","seller_secret":"cd02...","artifact_root":"ef03...","content_root":"1204...","expires_unix":1780003600,"nonce":7,"issued_unix":1780000000}'` | Post a signed fulfillment claim |
+| `app shop want fulfill list` | ready | read / read / operator · fast/moderate | **`want_id`**, `datadir`, `now_unix`, `all`, `profile` | `zcl.shop_fulfill_list.v1` | `zclassic23 app shop want fulfill list --input='{"want_id":"ab01..."}'` | Compare fulfillment evidence for one want |
+| `app shop want fulfill status` | ready | read / read / operator · fast/moderate | **`fulfill_id`**, `datadir`, `now_unix`, `profile` | `zcl.shop_fulfill_status.v1` | `zclassic23 app shop want fulfill status --input='{"fulfill_id":"ab01..."}'` | Re-verify one fulfillment claim |
+| `app shop want fulfill withdraw` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | **`fulfill_id`**, **`seller_secret`**, `datadir`, `now_unix`, `confirm` | `zcl.shop_fulfill_withdraw.v1` | `zclassic23 app shop want fulfill withdraw --input='{"fulfill_id":"ab01...","seller_secret":"cd02...","confirm":true}'` | Withdraw a fulfillment you signed |
+| `app shop want fulfill review` | ready | mutate / app-write / **owner**, plan-commit · foreground/low | **`fulfill_id`**, **`review_state`**, `datadir`, `confirm` | `zcl.shop_fulfill_review.v1` | `zclassic23 app shop want fulfill review --input='{"fulfill_id":"ab01...","review_state":"reviewed_ok"}'` | Set this node's fulfillment curation mark |
 
 #### `app.swap` — Swaps
 

@@ -160,6 +160,44 @@ follow-ups: P2P gossip relay of the signed wire (the zswapquote shape's
 demand twin) and fulfillment/award. Test group: `test_shop_want`; the
 read leaves are registered in `test_read_leaf_no_datadir_write`.
 
+### E. Seller fulfillment evidence (landed; award remains out of scope)
+
+Landed 2026-08-10:
+`app.shop.want.fulfill.{post,list,status,withdraw,review}`.
+`post` seals `zcl.shop.fulfill.v1` with a seller Ed25519 key and binds the
+want id, replay nonce, direct `SHA3-256(delivered bytes)`, the bytes'
+single-object `content.v2` manifest root, optional build/fuzz/benchmark
+receipt ids, and an expiry no later than the want's. Before persistence,
+the node opens the existing CAS read-only, re-derives the manifest root,
+re-hashes the stored bytes, and re-verifies each claimed receipt. Build/fuzz
+ids currently accept only the local outer build-fabric authority: canonical
+id and signature, currently approved signer, exact action/job/lease binding,
+successful exit, expected action kind, and `LOCAL_ACCEPTED` trust state.
+Benchmark ids route exclusively through the admitted science projection plus
+the full transitive benchmark CAS proof and must report `OBSERVED`. Typed
+build/candidate roots are domain-separated objects,
+so their association with the raw artifact hash is reported honestly as
+seller-signature-bound, never fabricated as hash equality. No caller-supplied
+pass boolean exists.
+
+Schema v67 stores the exact 322-byte signed wire in `shop_fulfills` with a
+seller+nonce replay boundary. `review_state`, `withdrawn_unix`, and
+`posted_unix` are local projection facts only and never enter the signed or
+gossiped shape. `list --want_id` renders bounded comparison facts, re-checks
+current evidence, and filters local review state through the selected
+moderation profile; `status` reports visibility under that profile; `review`
+is the local-only plan/commit curation transition; `withdraw` is key-checked
+and idempotent. Want status reports `fulfillment_count` and explicitly marks
+it unavailable on a pre-v67 projection rather than fabricating zero.
+There is deliberately no accept/award operation, escrow, payment, ZCL
+movement, or ZC23 issuance in this slice. Test group: `test_shop_fulfill`
+(frozen wire root, seal/verify, wrong want, nonce replay, expiry, idempotent
+repost, plan/commit, moderation, positive build/fuzz authorities, cross-kind,
+failed/revoked/expired/remote receipt refusals, benchmark authority routing,
+and wrong-seller withdrawal); the benchmark executor group additionally proves
+positive admitted/OBSERVED and non-OBSERVED science evidence. Both read leaves
+also participate in `test_read_leaf_no_datadir_write`.
+
 ## Constraints
 
 - ZC23 issuance stays simulation-only.

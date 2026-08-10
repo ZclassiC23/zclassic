@@ -47,6 +47,7 @@
 #include "platform/os_sandbox.h"
 #include "services/zcode_benchmark_executor.h"
 #include "services/zcode_science_service.h"
+#include "services/shop_fulfill_evidence_service.h"
 #include "vcs/build_action.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_benchmark_receipt.h"
@@ -99,6 +100,16 @@ static void zbex_teardown(struct node_db *ndb, const char *dir)
     int n = snprintf(cmd, sizeof(cmd), "rm -rf '%s'", dir);
     if (n > 0 && (size_t)n < sizeof(cmd))
         (void)system(cmd);
+}
+
+/* The shop surface receives a node datadir and resolves its science
+ * workspace at <datadir>/zcode. These executor fixtures use the datadir
+ * itself as the workspace, so this local alias preserves identical bytes. */
+static bool zbex_shop_workspace_alias(const char *dir)
+{
+    char path[ZBEX_DIR_CAP + 16];
+    int n = snprintf(path, sizeof(path), "%s/zcode", dir);
+    return n > 0 && (size_t)n < sizeof(path) && symlink(".", path) == 0;
 }
 
 /* Count files under <dir>/.zvcs/objects/<shard>/. */
@@ -669,6 +680,13 @@ static int test_zbex_execute_happy(void)
         ASSERT(vcs_object_has(dir, out1.run.hardware_profile_root));
         /* The receipt verifier re-derives every root and binding. */
         ASSERT(zcode_benchmark_executor_verify_receipt(dir, root_hex).ok);
+        ASSERT(zbex_shop_workspace_alias(dir));
+        struct shop_fulfill_receipt_fact shop_fact;
+        ASSERT(shop_fulfill_receipt_verify(
+            &ndb, dir, out1.run.result_root, SHOP_FULFILL_RECEIPT_BENCH,
+            ZBEX_NOW, &shop_fact).ok);
+        ASSERT(shop_fact.passed);
+        ASSERT(!shop_fact.artifact_binding_valid);
         /* Deterministic envelope: a second identical run differs ONLY in
          * the raw-sample carrier and the evidence bundle that references
          * it — the sample values are the observation, everything else in
@@ -888,6 +906,21 @@ static int test_zbex_null_negative(void)
                                               ZBEX_NOW, &negative_out).ok);
         ASSERT(negative_out.committed);
         ASSERT(negative_out.commit.result_root[0] != '\0');
+        ASSERT(zbex_shop_workspace_alias(dir));
+        struct shop_fulfill_receipt_fact shop_fact;
+        ASSERT(!shop_fulfill_receipt_verify(
+            &ndb, dir, null_out.run.result_root,
+            SHOP_FULFILL_RECEIPT_BENCH, ZBEX_NOW, &shop_fact).ok);
+        ASSERT_STR_EQ(shop_fact.reason, "benchmark-result-not-observed");
+        uint8_t negative_root[32];
+        ASSERT(zcl_hex_decode_lower(negative_out.commit.result_root,
+                                    negative_root, sizeof(negative_root)));
+        ASSERT(!shop_fulfill_receipt_verify(
+            &ndb, dir, negative_root, SHOP_FULFILL_RECEIPT_BENCH,
+            ZBEX_NOW, &shop_fact).ok);
+        /* This synthetic NEGATIVE_RESULT reuses NULL_RESULT evidence, so the
+         * transitive verifier rejects its binding before the status gate. */
+        ASSERT_STR_EQ(shop_fact.reason, "receipt-evidence-binding-mismatch");
         zbex_teardown(&ndb, dir);
         PASS();
     } _test_next:;

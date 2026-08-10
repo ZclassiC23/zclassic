@@ -355,3 +355,121 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_shop_want_review)
+
+/* ── Seller fulfillment claims (docs/work/SHOP_COMMAND.md, slice E) ──
+ * Signed answers to buyer wants, bound to directly hashed CAS bytes.
+ * Optional receipts are independently re-verified. There is deliberately
+ * no award, escrow, payment, ZCL movement, or ZC23 issuance in this slice. */
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.shop.want.fulfill.post", "app.shop.want.fulfill", "",
+    "Post a signed fulfillment claim",
+    "Build, sign, verify and persist one zcl.shop.fulfill.v1 claim for an "
+    "open want. artifact_root is SHA3-256 of the delivered bytes and "
+    "content_root is their single-object content.v2 CAS manifest; both are "
+    "re-derived from this datadir. Optional build/fuzz/benchmark receipt "
+    "ids are re-verified against approved workers, canonical signatures, "
+    "successful actions, or the admitted ZCODE benchmark-result authority. "
+    "Their association is seller-signature-bound and is not misreported as "
+    "typed-root equality with the raw artifact hash. Without confirm:true this is "
+    "a non-mutating plan. No award, payment, ZCL movement or ZC23 issuance.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "shop,want,fulfill,seller,artifact,cas,evidence,receipt,post",
+    "zcl.shop_fulfill_post.input.v1", "zcl.shop_fulfill_post.v1",
+    "want_id,seller_secret,artifact_root,content_root,build_receipt_id,"
+    "fuzz_receipt_id,bench_receipt_id,expires_unix,nonce,issued_unix,"
+    "now_unix,datadir,confirm",
+    "want_id,seller_secret,artifact_root,content_root,expires_unix,nonce,"
+    "issued_unix",
+    "zclassic23 app shop want fulfill post --input='{\"want_id\":\"ab01...\","
+    "\"seller_secret\":\"cd02...\",\"artifact_root\":\"ef03...\","
+    "\"content_root\":\"1204...\",\"expires_unix\":1780003600,"
+    "\"nonce\":7,\"issued_unix\":1780000000}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_shop_want_fulfill_post)
+
+ZCL_COMMAND_READY_READ(
+    "app.shop.want.fulfill.list", "app.shop.want.fulfill", "",
+    "Compare fulfillment evidence for one want",
+    "List active claims for one want (or include expired/withdrawn rows with "
+    "all:true), newest first. Each row re-verifies its signature, direct "
+    "artifact hash, CAS manifest, and claimed receipts so operators compare "
+    "facts rather than seller assertions. Mutates nothing and awards nobody.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "shop,want,fulfill,compare,artifact,evidence,receipt,list",
+    "zcl.shop_fulfill_list.input.v1", "zcl.shop_fulfill_list.v1",
+    "want_id,datadir,now_unix,all,profile", "want_id",
+    "zclassic23 app shop want fulfill list --input='{\"want_id\":\"ab01...\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_shop_want_fulfill_list)
+
+ZCL_COMMAND_READY_READ(
+    "app.shop.want.fulfill.status", "app.shop.want.fulfill", "",
+    "Re-verify one fulfillment claim",
+    "Show one signed fulfillment and re-verify its signature, CAS bytes, "
+    "manifest root, direct artifact SHA3, and every optional receipt against "
+    "current node evidence. Local review and withdrawal state are shown but "
+    "are never signed or gossiped. Mutates nothing.", ZCL_COMMAND_LIST_BUDGET,
+    "shop,want,fulfill,status,artifact,evidence,receipt,verify",
+    "zcl.shop_fulfill_status.input.v1", "zcl.shop_fulfill_status.v1",
+    "fulfill_id,datadir,now_unix,profile", "fulfill_id",
+    "zclassic23 app shop want fulfill status --input='{\"fulfill_id\":\"ab01...\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_shop_want_fulfill_status)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.shop.want.fulfill.withdraw", "app.shop.want.fulfill", "",
+    "Withdraw a fulfillment you signed",
+    "Key-checked local withdrawal: seller_secret must derive the Ed25519 "
+    "pubkey in the signed claim. The wire remains stored as evidence and "
+    "only local withdrawn_unix changes. Without confirm:true this is a "
+    "non-mutating plan; repeat commits are idempotent. No value moves.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "shop,want,fulfill,seller,withdraw,cancel",
+    "zcl.shop_fulfill_withdraw.input.v1", "zcl.shop_fulfill_withdraw.v1",
+    "fulfill_id,seller_secret,datadir,now_unix,confirm",
+    "fulfill_id,seller_secret",
+    "zclassic23 app shop want fulfill withdraw --input='{\"fulfill_id\":\"ab01...\","
+    "\"seller_secret\":\"cd02...\",\"confirm\":true}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_shop_want_fulfill_withdraw)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.shop.want.fulfill.review", "app.shop.want.fulfill", "",
+    "Set this node's fulfillment curation mark",
+    "Plan or commit a local-only review_state transition. The mark controls "
+    "visibility under this node's moderation profile, never changes the "
+    "signed fulfillment wire, and is never gossiped.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "shop,want,fulfill,review,moderation,local",
+    "zcl.shop_fulfill_review.input.v1", "zcl.shop_fulfill_review.v1",
+    "fulfill_id,review_state,datadir,confirm",
+    "fulfill_id,review_state",
+    "zclassic23 app shop want fulfill review --input='{\"fulfill_id\":\"ab01...\","
+    "\"review_state\":\"reviewed_ok\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_shop_want_fulfill_review)

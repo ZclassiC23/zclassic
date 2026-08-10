@@ -35,9 +35,7 @@
  * (services/market_moderation_*), and the CLI's guarded node.db openers.
  * Bound in config/commands/store.def. Tests: lib/test/src/test_shop_want.c.
  */
-
 #include "controllers/shop_native_handler.h"
-
 #include "controllers/native_handler_body.h" /* json_get_bool_or/json_get_str_or */
 #include "command/native_command.h"
 #include "base/cleanse.h"
@@ -46,18 +44,17 @@
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "models/database.h"
+#include "models/shop_fulfill.h"
 #include "models/shop_want.h"
 #include "platform/clock.h"
 #include "services/market_moderation_service.h"
 #include "services/market_moderation_view_service.h"
 #include "util/log_macros.h"
-
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
-
 #define SHW_TAG "native.app.shop.want"
 
 /* The board page rendered by `list`: bounded so the reply stays inside
@@ -231,9 +228,7 @@ static bool shw_open_board_readonly(const char *datadir,
     return true;
 }
 
-/* The write-side open: node.db must already exist (never mint one), then
- * the runtime open migrates it to v66 — creating shop_wants on first
- * contact. */
+/* Write open never mints node.db; runtime open applies pending migrations. */
 static bool shw_open_board_write(const char *datadir, struct node_db *ndb,
                                  struct zcl_command_reply *reply)
 {
@@ -643,6 +638,8 @@ void zcl_native_handle_shop_want_status(
         return;
     struct shop_want row;
     bool found = db_shop_want_find(&ndb, want_id, &row);
+    int64_t fulfillment_count = found
+        ? db_shop_fulfill_count_for_want(&ndb, want_id) : 0;
     zcl_native_node_db_close_readonly(&db, &ndb);
     if (!found) {
         char id_hex[65];
@@ -653,9 +650,7 @@ void zcl_native_handle_shop_want_status(
                  id_hex);
         return;
     }
-
-    /* The stored row is evidence: re-verify the signed wire at read time
-     * rather than trusting the projection. */
+    /* Re-verify stored signed-wire evidence at read time. */
     bool signature_valid = shop_want_verify(&row.want) == SHOP_WANT_OK;
     const char *state = row.cancelled_unix > 0 ? "cancelled"
         : row.want.expires_unix <= now_unix ? "expired" : "open";
@@ -669,6 +664,9 @@ void zcl_native_handle_shop_want_status(
     (void)json_push_kv_int(&reply->data, "now_unix", now_unix);
     (void)json_push_kv_str(&reply->data, "state", state);
     (void)json_push_kv_bool(&reply->data, "signature_valid", signature_valid);
+    (void)json_push_kv_int(&reply->data, "fulfillment_count", fulfillment_count);
+    (void)json_push_kv_bool(&reply->data, "fulfillment_count_available",
+                            fulfillment_count >= 0);
     struct json_value want;
     json_init(&want);
     json_set_object(&want);

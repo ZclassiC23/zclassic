@@ -51,6 +51,8 @@ ZCL_COMMAND_BRANCH("app.store", "app", "Store", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.shop", "app", "Shop", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.shop.want", "app.shop", "Buyer wants",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.shop.want.fulfill", "app.shop.want", "Fulfillments",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.swap", "app", "Swaps", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.qr", "app", "QR", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.blog", "app", "Blog", ZCL_COMMAND_LAYER_APP)

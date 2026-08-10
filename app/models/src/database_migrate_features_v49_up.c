@@ -808,5 +808,5 @@ int node_db_migrate_features_v49_up(struct node_db *ndb, int *version)
     }
 
     *version = current_ver;
-    return applied;
+    return applied + node_db_migrate_features_v67_up(ndb, version);
 }

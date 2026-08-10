@@ -253,6 +253,14 @@ static const struct rlw_leaf g_rlw_leaves[] = {
       NULL, NULL,               NULL, NULL, NULL },
     { "app.shop.want.status",   zcl_native_handle_shop_want_status,
       "want_id", RLW_ZID_PUBKEY, NULL, NULL, NULL },
+    /* Slice-E reads use the guarded node.db projection and inspect CAS
+     * evidence without opening the mutable package store. */
+    { "app.shop.want.fulfill.list",
+      zcl_native_handle_shop_want_fulfill_list,
+      "want_id", RLW_ZID_PUBKEY, NULL, NULL, NULL },
+    { "app.shop.want.fulfill.status",
+      zcl_native_handle_shop_want_fulfill_status,
+      "fulfill_id", RLW_ZID_PUBKEY, NULL, NULL, NULL },
     /* Six of the pre-existing gaps, moved off the uncovered list because
      * they now have an on-disk proof rather than a promise. All six already
      * opened correctly; what was missing was anyone checking. They are
