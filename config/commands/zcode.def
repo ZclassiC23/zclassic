@@ -208,6 +208,22 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_project_init_plan)
 
+ZCL_COMMAND_READY_READ(
+    "zcode.work.context", "zcode.work", "",
+    "Show goal-context selection readiness",
+    "Reports the active pure goal tokenization/ranking generation. Code-index "
+    "reads, clocks, workspace writes and task creation remain resident and "
+    "non-swappable.", ZCL_COMMAND_LIST_BUDGET,
+    "zcode,work,context,goal,ranking,hotswap,c23",
+    "zcl.zcode_work_context.input.v1", "zcl.zcode_work_context.v1",
+    "", "", "zclassic23 zcode work context",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_work_context)
+
 ZCL_COMMAND_READY_COMMAND(
     "zcode.project.init.commit", "zcode.project", "", "Initialize one C23 project",
     "Re-derives the exact plan, refuses stale input and overwrite, and creates "

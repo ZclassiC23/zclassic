@@ -7,12 +7,14 @@
 #include "base/cleanse.h"
 #include "base/hex.h"
 #include "crypto/ed25519.h"
+#include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "models/build_fabric.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
+#include "services/zcode_goal_context_calc_service.h"
 #include "services/zcode_goal_context_service.h"
 #include "sha3/sha3.h"
 #include "util/safe_alloc.h"
@@ -217,7 +219,50 @@ static bool zwork_render_selection(
         json_push_kv_bool(out, "budget_exhausted",
                           selection->budget_exhausted) &&
         json_push_kv_int(out, "generation_us",
-                         (int64_t)selection->generation_us);
+                         (int64_t)selection->generation_us) &&
+        json_push_kv_int(out, "context_service_generation",
+                         selection->service_generation);
+}
+
+void zcl_native_handle_zcode_work_context(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply || !request->input ||
+        request->input->type != JSON_OBJ || request->input->num_children != 0) {
+        if (reply) zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "BAD_WORK_CONTEXT_INPUT", "status", false, false,
+            "zcode work context accepts no input keys", "zcode.work.context");
+        return;
+    }
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_goal_context_calc_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_GOAL_CONTEXT_CALC_SERVICE_ID, &lease);
+    if (!service) service = zcode_goal_context_calc_service_builtin();
+    struct zcode_goal_context_view_v1 view;
+    bool rendered = service->render_status(&view) && view.valid &&
+        view.capability[0] && view.next_action[0];
+    zcl_hotswap_service_release(&lease);
+    if (!rendered) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "WORK_CONTEXT_VIEW_FAILED", "render", false, false,
+            "the pure goal-context view refused bounded status",
+            "zcode.work.context");
+        return;
+    }
+    (void)json_push_kv_bool(&reply->data, "ready", true);
+    (void)json_push_kv_str(&reply->data, "capability", view.capability);
+    (void)json_push_kv_str(&reply->data, "service_id",
+                           ZCODE_GOAL_CONTEXT_CALC_SERVICE_ID);
+    (void)json_push_kv_int(&reply->data, "service_generation",
+                           zcl_hotswap_service_generation());
+    (void)json_push_kv_bool(&reply->data, "codeindex_reads_static", true);
+    (void)json_push_kv_bool(&reply->data, "clock_measurement_static", true);
+    (void)json_push_kv_bool(&reply->data, "workspace_writes_swappable", false);
+    (void)json_push_kv_bool(&reply->data, "task_creation_swappable", false);
+    (void)json_push_kv_str(&reply->data, "agent_next_action",
+                           view.next_action);
 }
 
 void zcl_native_handle_zcode_work_start(

@@ -12,6 +12,7 @@
 #include "services/zcode_package_view_service.h"
 #include "services/zcode_moderation_view_service.h"
 #include "services/zcode_passport_view_service.h"
+#include "services/zcode_goal_context_calc_service.h"
 #include "services/zcode_workspace_view_service.h"
 #include "services/shop_reputation_view_service.h"
 #include "services/shop_status_view_service.h"
@@ -227,6 +228,18 @@ static int t_manifest_mapping(void)
         ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
                           "app/services/src/zcode_passport_view_service.c"),
                       "zcode.passport.status");
+        ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
+                          "app/services/src/zcode_goal_context_calc_service.c"),
+                      "app/services/src/zcode_goal_context_calc_service.c");
+        ASSERT(zcl_hotswap_service_source_for_path(
+                   "app/services/include/services/zcode_goal_context_calc_service.h")
+               == NULL);
+        ASSERT_STR_EQ(zcl_hotswap_service_contract_source_for_path(
+                          "app/services/include/services/zcode_goal_context_calc_service.h"),
+                      "app/services/src/zcode_goal_context_calc_service.c");
+        ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
+                          "app/services/src/zcode_goal_context_calc_service.c"),
+                      "zcode.work.context");
         ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
                           "app/services/src/shop_reputation_view_service.c"),
                       "app/services/src/shop_reputation_view_service.c");
@@ -712,6 +725,66 @@ static int t_zcode_passport_view(void)
     return failures;
 }
 
+static bool candidate_goal_context_status(
+    struct zcode_goal_context_view_v1 *out)
+{
+    if (!zcode_goal_context_calc_service_builtin()->render_status(out))
+        return false;
+    snprintf(out->capability, sizeof(out->capability), "%s",
+             "candidate goal-context generation is active");
+    return true;
+}
+
+static int t_zcode_goal_context_calc(void)
+{
+    int failures = 0;
+    TEST("goal-context calculation swaps while index reads and task effects stay static") {
+        zcl_hotswap_service_reset();
+        struct zcode_goal_context_calc_service_v1 candidate =
+            *zcode_goal_context_calc_service_builtin();
+        candidate.render_status = candidate_goal_context_status;
+        struct zcl_hotswap_service_candidate publication = {
+            .service_id = ZCODE_GOAL_CONTEXT_CALC_SERVICE_ID,
+            .source_tu = "app/services/src/zcode_goal_context_calc_service.c",
+            .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+            .vtable_size = sizeof(candidate),
+            .abi_fingerprint = ZCODE_GOAL_CONTEXT_CALC_ABI_FINGERPRINT,
+            .schema_fingerprint = ZCODE_GOAL_CONTEXT_CALC_SCHEMA_FINGERPRINT,
+            .wire_fingerprint = ZCODE_GOAL_CONTEXT_CALC_WIRE_FINGERPRINT,
+            .kat_fingerprint = ZCODE_GOAL_CONTEXT_CALC_KAT_FINGERPRINT,
+            .vtable = &candidate,
+        };
+        struct zcl_hotswap_service_report report = {0};
+        ASSERT(zcl_hotswap_service_publish(
+            zcode_goal_context_calc_service_contract(), &publication, true,
+            &report));
+        ASSERT(report.probed);
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        struct zcl_command_request request = {.input = &input};
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_context.v1");
+        zcl_native_handle_zcode_work_context(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "service_generation")), 1);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "capability")),
+                      "candidate goal-context generation is active");
+        ASSERT(json_get_bool(json_get(&reply.data, "codeindex_reads_static")));
+        ASSERT(json_get_bool(json_get(&reply.data, "clock_measurement_static")));
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                       "workspace_writes_swappable")));
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                       "task_creation_swappable")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        zcl_hotswap_service_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int t_shop_reputation_view(void)
 {
     int failures = 0;
@@ -912,7 +985,7 @@ int test_hotswap_service_registry(void)
                    t_market_moderation_view() + t_zcode_package_view();
     failures += t_zcode_moderation_view() + t_shop_reputation_view() +
                 t_zcode_workspace_view() + t_zcode_passport_view() +
-                t_shop_status_view() +
+                t_zcode_goal_context_calc() + t_shop_status_view() +
                 t_shop_want_view();
     zcl_hotswap_service_reset();
     printf("=== hotswap_service_registry: %d failures ===\n", failures);

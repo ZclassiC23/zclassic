@@ -34,6 +34,7 @@ struct zcode_goal_selection {
     char selected_symbol_id[400];
     char why[64];
     uint64_t generation_us;
+    uint32_t service_generation;
 };
 
 /* Select a bounded ranked symbol from goal text. exact_symbol may name an

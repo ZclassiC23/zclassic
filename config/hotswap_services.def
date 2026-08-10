@@ -103,6 +103,18 @@ HOTSWAP_SERVICE(
     "zcode.passport.status")
 
 HOTSWAP_SERVICE(
+    "zcode.goal-context.calc.v1",
+    "app/services/src/zcode_goal_context_calc_service.c",
+    "-",
+    "app/services/include/services/zcode_goal_context_calc_service.h",
+    "-",
+    "zcode.goal-context.calc.abi.v1:8683e1da",
+    "zcl.zcode_work_context.v1+goal-tokens.v1+candidate-rank.v1",
+    "goal-tokenization+candidate-ranking.v1",
+    "1f7706241e21a6a0630abe43242a44101d059739bd45f5a64f62a5adc16e2a66",
+    "zcode.work.context")
+
+HOTSWAP_SERVICE(
     "app.shop.reputation.view.v1",
     "app/services/src/shop_reputation_view_service.c",
     "-",
