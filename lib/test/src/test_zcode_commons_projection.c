@@ -487,6 +487,11 @@ static int commons_claim_projection_test(void)
                                             "epoch_selection_root"))) == 64);
         ASSERT(strlen(json_get_str(json_get(&reply.data,
                                         "claim_epoch_proposal_root"))) == 64);
+        char epoch_proposal_root_hex[65];
+        memcpy(epoch_proposal_root_hex,
+               json_get_str(json_get(&reply.data,
+                                     "claim_epoch_proposal_root")),
+               sizeof(epoch_proposal_root_hex));
         ASSERT_EQ(json_get_int(json_get(
                       &reply.data, "claim_epoch_proposal_bytes")),
                   VCS_ZCODE_CLAIM_EPOCH_HEADER_BYTES + 32);
@@ -497,6 +502,40 @@ static int commons_claim_projection_test(void)
         ASSERT_STR_EQ(json_get_str(json_get(json_at(selected, 0),
                                             "claim_root")),
                       planned_root_copy);
+        zcl_command_reply_free(&reply);
+
+        const struct zcl_command_spec *epoch_commit_spec =
+            zcl_command_registry_find(
+                zcl_command_catalog(),
+                "zcode.commons.schedule.claim.commit", NULL);
+        ASSERT(epoch_commit_spec);
+        ASSERT(zcl_command_registry_input_validate(
+            epoch_commit_spec, &input, input_why, sizeof(input_why)));
+        zcl_command_reply_init(&reply, "zcl.test.commons_claim_epoch.v2");
+        zcl_native_handle_zcode_commons_schedule_claim_commit(
+            &request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&reply.data, "persisted")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "issuance_enabled")));
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &reply.data, "claim_epoch_proposal_root")),
+                      epoch_proposal_root_hex);
+        uint8_t epoch_proposal_root[32];
+        ASSERT(zcl_hex_decode_lower(epoch_proposal_root_hex,
+                                    epoch_proposal_root, 32));
+        ASSERT(vcs_object_has(workspace, epoch_proposal_root));
+        zcl_command_reply_free(&reply);
+
+        /* A commit refusal identifies the action the agent actually ran. */
+        json_set_str((struct json_value *)json_get(&input, "workspace"),
+                     "/var/lib/zclassic23");
+        zcl_command_reply_init(&reply, "zcl.test.commons_claim_epoch.v2");
+        zcl_native_handle_zcode_commons_schedule_claim_commit(
+            &request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "UNSAFE_PROPOSE_WORKSPACE");
+        ASSERT_STR_EQ(reply.error.evidence,
+                      "zcode.commons.schedule.claim.commit");
         zcl_command_reply_free(&reply);
         json_free(&input);
         uint8_t first_root[32], rebuilt_root[32];

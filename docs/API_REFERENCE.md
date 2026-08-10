@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 665 |
+| Registry entries (branches + leaves) | 666 |
 | Top-level roots | 11 |
 | Branches | 156 |
-| Leaves (dispatchable command paths) | 509 |
-| … `ready` (live handler in this build) | 461 |
+| Leaves (dispatchable command paths) | 510 |
+| … `ready` (live handler in this build) | 462 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 163 |
+| Leaves with `effect=mutate` | 164 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 107 |
 
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 200 | 48 | 152 |
+| `config/commands/zcode.def` | 201 | 48 | 153 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -1061,6 +1061,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode commons schedule claim plan` | ready | read / read / operator · fast/low | **`workspace`**, **`epoch`**, **`cutoff_height`**, **`cutoff_mtp`**, **`epoch_capacity_atoms`**, **`previous_epoch_root`**, **`network_genesis_root`**, **`moderation_policy_root`**, **`qualification_predicates_root`**, **`backlog_algorithm_root`** | `zcl.zcode_commons_claim_epoch_plan.v2` | `zclassic23 zcode commons schedule claim plan --input='{...}'` | Plan one signed-claim epoch selection |
+| `zcode commons schedule claim commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`epoch`**, **`cutoff_height`**, **`cutoff_mtp`**, **`epoch_capacity_atoms`**, **`previous_epoch_root`**, **`network_genesis_root`**, **`moderation_policy_root`**, **`qualification_predicates_root`**, **`backlog_algorithm_root`** | `zcl.zcode_commons_claim_epoch_plan.v2` | `zclassic23 zcode commons schedule claim commit --input='{...}'` | Store one signed-claim epoch proposal |
 
 #### `zcode.commons.reproduction` — Portable simulation-only reproduction challenges
 
@@ -1535,6 +1536,7 @@ promise the same document shape.
 | `zcl.zcode_commons_shadow_attribution.v1` | `zcode.commons.shadow.attribution.plan`, `zcode.commons.shadow.attribution.commit` |
 | `zcl.zcode_commons_shadow_epoch.v1` | `zcode.commons.shadow.epoch.plan`, `zcode.commons.shadow.epoch.commit` |
 | `zcl.zcode_commons_schedule_propose.v1` | `zcode.commons.schedule.propose.plan`, `zcode.commons.schedule.propose.commit` |
+| `zcl.zcode_commons_claim_epoch_plan.v2` | `zcode.commons.schedule.claim.plan`, `zcode.commons.schedule.claim.commit` |
 | `zcl.zcode_patronage_offer.v1` | `zcode.patronage.offer.plan`, `zcode.patronage.offer.commit` |
 | `zcl.zcode_patronage_funding.v1` | `zcode.patronage.fund.plan`, `zcode.patronage.fund.commit` |
 | `zcl.zcode_continuity_policy.view.v1` | `zcode.continuity.plan`, `zcode.continuity.commit`, `zcode.continuity.status` |

@@ -61,12 +61,11 @@ static void zep_fail(struct zcl_command_reply *reply, const char *code,
 }
 
 static void zep_claim_fail(struct zcl_command_reply *reply, const char *code,
-                           const char *detail)
+                           const char *detail, const char *command)
 {
     zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                            ZCL_COMMAND_EXIT_INVALID, code, "validate", false,
-                           false, detail,
-                           "zcode.commons.schedule.claim.plan");
+                           false, detail, command);
 }
 
 static void zep_hex(struct json_value *data, const char *key,
@@ -272,8 +271,9 @@ void zcl_native_handle_zcode_commons_schedule_propose_commit(
  * consumer of the signed creation_claim.v2 projection and the frozen v2
  * selector.  Static code retains parsing and projection ownership; only the
  * pure calculation crosses the hot-swappable economics ABI. */
-void zcl_native_handle_zcode_commons_schedule_claim_plan(
-    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+static void zep_claim_handle(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply,
+    bool persist)
 {
     static const char *const keys[] = {
         "workspace", "epoch", "cutoff_height", "cutoff_mtp",
@@ -286,6 +286,9 @@ void zcl_native_handle_zcode_commons_schedule_claim_plan(
     struct vcs_zcode_epoch_selection_result_v2 result;
     uint8_t roots[5][32], policy_root[32], projection_root[32];
     uint64_t cutoff_mtp_u64 = 0;
+    const char *command = persist
+        ? "zcode.commons.schedule.claim.commit"
+        : "zcode.commons.schedule.claim.plan";
     memset(&input, 0, sizeof(input));
     const char *workspace = request
         ? zep_str(request->input, "workspace") : NULL;
@@ -304,12 +307,14 @@ void zcl_native_handle_zcode_commons_schedule_claim_plan(
         !zep_root(request->input, "qualification_predicates_root", roots[3]) ||
         !zep_root(request->input, "backlog_algorithm_root", roots[4])) {
         zep_claim_fail(reply, "BAD_CLAIM_EPOCH_INPUT",
-                       "closed input requires scratch workspace, positive epoch/cutoffs/capacity and five exact lowercase roots");
+                       "closed input requires scratch workspace, positive epoch/cutoffs/capacity and five exact lowercase roots",
+                       command);
         return;
     }
     if (!zcl_native_zcode_workspace_is_explicit_scratch(workspace)) {
         zep_claim_fail(reply, "UNSAFE_PROPOSE_WORKSPACE",
-                       "workspace must explicitly name an isolated tmp, test-tmp, or scratch path");
+                       "workspace must explicitly name an isolated tmp, test-tmp, or scratch path",
+                       command);
         return;
     }
     input.cutoff_mtp = (int64_t)cutoff_mtp_u64;
@@ -323,7 +328,8 @@ void zcl_native_handle_zcode_commons_schedule_claim_plan(
                                                  projection_root)) {
         vcs_zcode_commons_projection_free(projection);
         zep_claim_fail(reply, "CLAIM_PROJECTION_NOT_READY",
-                       "the bounded signed-claim projection is unavailable or contains a recognized corrupt object");
+                       "the bounded signed-claim projection is unavailable or contains a recognized corrupt object",
+                       command);
         return;
     }
     input.claim_count = vcs_zcode_commons_projection_claim_count(projection);
@@ -334,7 +340,8 @@ void zcl_native_handle_zcode_commons_schedule_claim_plan(
         if (!claims) {
             vcs_zcode_commons_projection_free(projection);
             zep_claim_fail(reply, "CLAIM_EPOCH_ALLOC",
-                           "bounded caller-owned claim buffer allocation failed");
+                           "bounded caller-owned claim buffer allocation failed",
+                           command);
             return;
         }
         for (size_t i = 0; i < input.claim_count; i++) {
@@ -344,7 +351,8 @@ void zcl_native_handle_zcode_commons_schedule_claim_plan(
                 free(claims);
                 vcs_zcode_commons_projection_free(projection);
                 zep_claim_fail(reply, "CLAIM_PROJECTION_TORN",
-                               "the immutable projection refused an indexed claim");
+                               "the immutable projection refused an indexed claim",
+                               command);
                 return;
             }
             claims[i] = *claim;
@@ -367,7 +375,7 @@ void zcl_native_handle_zcode_commons_schedule_claim_plan(
         free(claims);
         vcs_zcode_commons_projection_free(projection);
         zep_claim_fail(reply, "CLAIM_EPOCH_SELECTION_REFUSED",
-                       vcs_zcode_commons_v2_error_string(error));
+                       vcs_zcode_commons_v2_error_string(error), command);
         return;
     }
     struct vcs_zcode_claim_epoch_proposal_v2 claim_epoch;
@@ -384,8 +392,33 @@ void zcl_native_handle_zcode_commons_schedule_claim_plan(
         free(claims);
         vcs_zcode_commons_projection_free(projection);
         zep_claim_fail(reply, "CLAIM_EPOCH_OBJECT_REFUSED",
-                       vcs_zcode_claim_epoch_error_string(claim_epoch_error));
+                       vcs_zcode_claim_epoch_error_string(claim_epoch_error),
+                       command);
         return;
+    }
+    uint8_t *claim_epoch_wire = NULL;
+    size_t claim_epoch_wire_len = 0;
+    if (persist) {
+        claim_epoch_error = vcs_zcode_claim_epoch_encode(
+            &claim_epoch, &claim_epoch_wire, &claim_epoch_wire_len);
+        if (claim_epoch_error != VCS_ZCODE_CLAIM_EPOCH_OK ||
+            !vcs_object_store_init(workspace) ||
+            !vcs_object_put_addressed(workspace, claim_epoch_root,
+                                      claim_epoch_wire,
+                                      claim_epoch_wire_len)) {
+            free(claim_epoch_wire);
+            vcs_zcode_claim_epoch_free(&claim_epoch);
+            zcl_hotswap_service_release(&lease);
+            free(claims);
+            vcs_zcode_commons_projection_free(projection);
+            zep_claim_fail(reply, "CLAIM_EPOCH_STORE_REFUSED",
+                           claim_epoch_error == VCS_ZCODE_CLAIM_EPOCH_OK
+                               ? "scratch CAS refused the canonical proposal bytes"
+                               : vcs_zcode_claim_epoch_error_string(
+                                     claim_epoch_error),
+                           command);
+            return;
+        }
     }
 
     (void)json_push_kv_str(&reply->data, "service_id",
@@ -395,7 +428,7 @@ void zcl_native_handle_zcode_commons_schedule_claim_plan(
     (void)json_push_kv_bool(&reply->data, "pure_calculation", true);
     (void)json_push_kv_bool(&reply->data, "simulation_only", true);
     (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
-    (void)json_push_kv_bool(&reply->data, "persisted", false);
+    (void)json_push_kv_bool(&reply->data, "persisted", persist);
     (void)json_push_kv_bool(&reply->data, "issuance_enabled", false);
     (void)json_push_kv_bool(&reply->data, "funds_moved", false);
     (void)json_push_kv_bool(&reply->data, "wallet_used", false);
@@ -459,8 +492,21 @@ void zcl_native_handle_zcode_commons_schedule_claim_plan(
                            (int64_t)inline_count);
     (void)json_push_kv_bool(&reply->data, "selected_claims_complete",
                             inline_count == result.selected_count);
+    free(claim_epoch_wire);
     vcs_zcode_claim_epoch_free(&claim_epoch);
     zcl_hotswap_service_release(&lease);
     free(claims);
     vcs_zcode_commons_projection_free(projection);
+}
+
+void zcl_native_handle_zcode_commons_schedule_claim_plan(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    zep_claim_handle(request, reply, false);
+}
+
+void zcl_native_handle_zcode_commons_schedule_claim_commit(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    zep_claim_handle(request, reply, true);
 }

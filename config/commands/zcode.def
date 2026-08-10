@@ -1068,6 +1068,29 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE,
     zcl_native_handle_zcode_commons_schedule_claim_plan)
 
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.commons.schedule.claim.commit", "zcode.commons.schedule.claim", "",
+    "Store one signed-claim epoch proposal",
+    "Repeats the complete signed-claim projection and hot economics selection, "
+    "then stores only the canonical claim_epoch_proposal.v2 bytes in explicit "
+    "scratch CAS. The root-addressed write is idempotent and remains a "
+    "simulation proposal: it creates no token, issuance, wallet or funds.", 0,
+    "zcode,commons,schedule,claim,epoch,commit,simulation,cas",
+    "zcl.zcode_commons_claim_epoch_plan.input.v2",
+    "zcl.zcode_commons_claim_epoch_plan.v2",
+    "workspace,epoch,cutoff_height,cutoff_mtp,epoch_capacity_atoms,previous_epoch_root,network_genesis_root,moderation_policy_root,qualification_predicates_root,backlog_algorithm_root",
+    "workspace,epoch,cutoff_height,cutoff_mtp,epoch_capacity_atoms,previous_epoch_root,network_genesis_root,moderation_policy_root,qualification_predicates_root,backlog_algorithm_root",
+    "zclassic23 zcode commons schedule claim commit --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_commons_schedule_claim_commit)
+
 ZCL_COMMAND_READY_READ(
     "zcode.commons.status", "zcode.commons", "", "Show Living Commons status",
     "Rebuilds an ephemeral view from canonical workspace CAS objects. A "
