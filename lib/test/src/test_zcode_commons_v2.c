@@ -9,6 +9,7 @@
 #include "json/json.h"
 #include "services/zcode_c23_corpus_service.h"
 #include "services/zcode_c23_economics_service.h"
+#include "services/zcode_moderation_view_service.h"
 #include "vcs/zcode_c23_corpus.h"
 #include "vcs/zcode_commons_v2.h"
 
@@ -211,6 +212,14 @@ static int test_v2_truthful_activation_status(void)
                                        "effective_default")));
         ASSERT(!json_get_bool(json_get(&reply.data,
                                        "default_public_view")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "view_service_id")),
+                      ZCODE_MODERATION_VIEW_SERVICE_ID);
+        ASSERT_EQ(json_get_int(json_get(&reply.data,
+                                       "view_service_generation")), 0);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "policy_root")),
+                      family_root_kat);
+        ASSERT(strstr(json_get_str(json_get(&reply.data, "policy_summary")),
+                      "enforcement remains resident and incomplete") != NULL);
         ASSERT(strcmp(json_get_str(json_get(&reply.data,
                                             "official_surface_policy")),
                       "legacy_v1_unchanged") == 0);

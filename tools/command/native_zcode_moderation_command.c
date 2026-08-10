@@ -7,6 +7,7 @@
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "services/zcode_c23_economics_service.h"
+#include "services/zcode_moderation_view_service.h"
 #include "vcs/zcode_commons_v2.h"
 
 #include <stdio.h>
@@ -25,22 +26,38 @@ static bool moderation_no_keys(const struct json_value *input)
     return input && input->type == JSON_OBJ && input->num_children == 0;
 }
 
-static void moderation_hex(struct json_value *data, const char *key,
-                           const uint8_t root[32])
-{
-    char hex[65];
-    zcl_hex_encode(root, 32, hex);
-    (void)json_push_kv_str(data, key, hex);
-}
-
-static void render_family_policy(struct json_value *data)
+static bool render_family_policy(struct zcl_command_reply *reply)
 {
     struct vcs_zcode_family_policy_v1 policy;
     uint8_t root[32];
+    char root_hex[65];
     vcs_zcode_family_policy_v1_default(&policy);
-    (void)vcs_zcode_family_policy_v1_root(&policy, root);
+    if (vcs_zcode_family_policy_v1_root(&policy, root) !=
+            VCS_ZCODE_COMMONS_V2_OK) {
+        moderation_fail(reply, "MODERATION_POLICY_ROOT",
+                        "the immutable Family policy root could not be derived");
+        return false;
+    }
+    zcl_hex_encode(root, sizeof(root), root_hex);
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_moderation_view_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_MODERATION_VIEW_SERVICE_ID, &lease);
+    if (!service)
+        service = zcode_moderation_view_service_builtin();
+    struct zcode_moderation_policy_view_v1 view;
+    if (!service->render_policy(&policy, root_hex, &view) || !view.valid) {
+        zcl_hotswap_service_release(&lease);
+        moderation_fail(reply, "MODERATION_VIEW_FAILED",
+                        "the pure moderation view refused the Family policy");
+        return false;
+    }
+    struct json_value *data = &reply->data;
     (void)json_push_kv_str(data, "profile", "family-c23.v1");
-    moderation_hex(data, "policy_root", root);
+    (void)json_push_kv_str(data, "policy_root", view.policy_root);
+    (void)json_push_kv_str(data, "view_service_id",
+                           ZCODE_MODERATION_VIEW_SERVICE_ID);
+    (void)json_push_kv_int(data, "view_service_generation",
+                           zcl_hotswap_service_generation());
     (void)json_push_kv_bool(data, "immutable", true);
     (void)json_push_kv_bool(data, "policy_selected_as_default", true);
     (void)json_push_kv_bool(data, "enforcement_complete", false);
@@ -49,16 +66,26 @@ static void render_family_policy(struct json_value *data)
     (void)json_push_kv_bool(data, "simulation_only", true);
     (void)json_push_kv_bool(data, "owner_can_rewrite", false);
     (void)json_push_kv_int(data, "excluded_reason_mask",
-                           policy.excluded_reason_mask);
+                           view.excluded_reason_mask);
     (void)json_push_kv_int(data, "max_dependency_objects",
-                           policy.max_dependency_objects);
+                           view.max_dependency_objects);
     (void)json_push_kv_int(data, "max_extracted_bytes",
-                           (int64_t)policy.max_extracted_bytes);
+                           (int64_t)view.max_extracted_bytes);
     (void)json_push_kv_str(data, "pass_audiences",
-                           "GENERAL|CONTEXTUAL_SCIENCE");
-    (void)json_push_kv_str(data, "pass_behaviors", "BENIGN|DUAL_USE");
-    (void)json_push_kv_str(data, "incomplete_result", "UNKNOWN");
-    (void)json_push_kv_str(data, "new_content_state", "PENDING");
+                           view.pass_audiences);
+    (void)json_push_kv_str(data, "pass_behaviors", view.pass_behaviors);
+    (void)json_push_kv_str(data, "incomplete_result",
+                           view.incomplete_result);
+    (void)json_push_kv_str(data, "new_content_state",
+                           view.new_content_state);
+    (void)json_push_kv_str(data, "contextual_eligibility",
+                           view.contextual_eligibility);
+    (void)json_push_kv_bool(data,
+                            "separate_from_accuracy_quality_security",
+                            view.separate_from_accuracy_quality_security);
+    (void)json_push_kv_str(data, "policy_summary", view.policy_summary);
+    zcl_hotswap_service_release(&lease);
+    return true;
 }
 
 void zcl_native_handle_zcode_moderation_status(
@@ -69,7 +96,8 @@ void zcl_native_handle_zcode_moderation_status(
             "zcode moderation status accepts no input keys");
         return;
     }
-    render_family_policy(&reply->data);
+    if (!render_family_policy(reply))
+        return;
     (void)json_push_kv_str(&reply->data, "phase",
                            "protocol_foundation");
     (void)json_push_kv_bool(&reply->data, "admission_projection_ready",
@@ -91,7 +119,8 @@ void zcl_native_handle_zcode_moderation_policy_list(
         return;
     }
     (void)json_push_kv_int(&reply->data, "count", 1);
-    render_family_policy(&reply->data);
+    if (!render_family_policy(reply))
+        return;
     (void)json_push_kv_str(&reply->data, "future_policy_rule",
                            "a new profile and root; never rewrite v1");
 }
@@ -110,11 +139,60 @@ void zcl_native_handle_zcode_moderation_policy_show(
             "profile must be exactly family-c23.v1");
         return;
     }
-    render_family_policy(&reply->data);
-    (void)json_push_kv_str(&reply->data, "contextual_eligibility",
-        "neutral scientific, medical, historical, cybersecurity and dual-use education");
-    (void)json_push_kv_bool(&reply->data,
-                            "separate_from_accuracy_quality_security", true);
+    if (!render_family_policy(reply))
+        return;
+}
+
+static bool moderation_view_frozen_kat(const void *opaque, char *why,
+                                       size_t why_sz)
+{
+    const struct zcode_moderation_view_service_v1 *service = opaque;
+    struct vcs_zcode_family_policy_v1 policy;
+    struct zcode_moderation_policy_view_v1 view;
+    uint8_t root[32];
+    char root_hex[65];
+    vcs_zcode_family_policy_v1_default(&policy);
+    if (!service || !service->render_policy ||
+        vcs_zcode_family_policy_v1_root(&policy, root) !=
+            VCS_ZCODE_COMMONS_V2_OK) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen moderation service shape/root vector failed");
+        return false;
+    }
+    zcl_hex_encode(root, sizeof(root), root_hex);
+    if (!service->render_policy(&policy, root_hex, &view) || !view.valid ||
+        strcmp(view.policy_root, root_hex) != 0 ||
+        view.excluded_reason_mask != policy.excluded_reason_mask ||
+        view.max_dependency_objects != policy.max_dependency_objects ||
+        view.max_extracted_bytes != policy.max_extracted_bytes ||
+        strcmp(view.pass_audiences, "GENERAL|CONTEXTUAL_SCIENCE") != 0 ||
+        strcmp(view.pass_behaviors, "BENIGN|DUAL_USE") != 0 ||
+        strcmp(view.incomplete_result, "UNKNOWN") != 0 ||
+        strcmp(view.new_content_state, "PENDING") != 0 ||
+        !view.separate_from_accuracy_quality_security) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen Family policy presentation vector failed");
+        return false;
+    }
+    return true;
+}
+
+static const struct zcl_hotswap_service_contract k_moderation_view_contract = {
+    .service_id = ZCODE_MODERATION_VIEW_SERVICE_ID,
+    .source_tu = "app/services/src/zcode_moderation_view_service.c",
+    .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+    .vtable_size = sizeof(struct zcode_moderation_view_service_v1),
+    .abi_fingerprint = ZCODE_MODERATION_VIEW_ABI_FINGERPRINT,
+    .schema_fingerprint = ZCODE_MODERATION_VIEW_SCHEMA_FINGERPRINT,
+    .wire_fingerprint = ZCODE_MODERATION_VIEW_WIRE_FINGERPRINT,
+    .kat_fingerprint = ZCODE_MODERATION_VIEW_KAT_FINGERPRINT,
+    .frozen_kat = moderation_view_frozen_kat,
+};
+
+const struct zcl_hotswap_service_contract *
+zcl_native_zcode_moderation_view_service_contract(void)
+{
+    return &k_moderation_view_contract;
 }
 
 static bool economics_service_frozen_kat(const void *opaque, char *why,

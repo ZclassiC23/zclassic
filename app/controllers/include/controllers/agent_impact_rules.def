@@ -866,6 +866,9 @@ AGENT_IMPACT_RULE("app/services/src/zcode_c23_corpus_service.c|app/services/incl
  * host continues to own CAS/index reads and every publication or execution
  * effect, while the package suite proves byte-compatible rendered results. */
 AGENT_IMPACT_RULE("app/services/src/zcode_package_view_service.c|app/services/include/services/zcode_package_view_service.h|tools/command/native_zcode_package_view_command.c|tools/command/native_zcode_command.c|lib/test/src/test_zcode_publish.c", "zcode_publish hotswap_service_registry command_registry_catalog make_lint_gates")
+/* Family policy presentation is live; immutable policy derivation and every
+ * admission/enforcement decision remain resident static authority. */
+AGENT_IMPACT_RULE("app/services/src/zcode_moderation_view_service.c|app/services/include/services/zcode_moderation_view_service.h|tools/command/native_zcode_moderation_command.c", "zcode_commons_v2 hotswap_service_registry command_registry_catalog make_lint_gates")
 /* The service registry and its purity/contract checker are harness ownership,
  * separate from any product island named by a row. */
 AGENT_IMPACT_RULE("config/hotswap_services.def|lib/hotswap/src/hotswap_service_registry.c|lib/hotswap/include/hotswap/hotswap_service_registry.h|tools/lint/check_hotswap_service_islands.sh|lib/test/src/test_hotswap_service_registry.c|lib/test/fixtures/hotswap_service_*.def|lib/test/fixtures/hotswap_service_*.c|lib/test/fixtures/hotswap_service_*.h", "hotswap_service_registry dev_platform make_lint_gates")

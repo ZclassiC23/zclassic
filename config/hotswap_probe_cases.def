@@ -43,3 +43,6 @@ HOTSWAP_PROBE_CASE("service.market.moderation.guide.default.v1", "service",
 HOTSWAP_PROBE_CASE("service.package.guide.default.v1", "service",
     "zcode.package.guide", "{}",
     "zcl.zcode_package_guide.v1", 4096)
+HOTSWAP_PROBE_CASE("service.zcode.moderation.status.default.v1", "service",
+    "zcode.moderation.status", "{}",
+    "zcl.zcode_moderation_status.v1", 4096)

@@ -3,12 +3,14 @@
 
 #include "test/test_helpers.h"
 
+#include "base/hex.h"
 #include "hotswap/hotswap_service.h"
 #include "command/native_command.h"
 #include "json/json.h"
 #include "services/market_purchase_view_service.h"
 #include "services/market_moderation_view_service.h"
 #include "services/zcode_package_view_service.h"
+#include "services/zcode_moderation_view_service.h"
 
 #include <stdatomic.h>
 #include <string.h>
@@ -184,6 +186,18 @@ static int t_manifest_mapping(void)
         ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
                           "app/services/src/zcode_package_view_service.c"),
                       "zcode.package.guide");
+        ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
+                          "app/services/src/zcode_moderation_view_service.c"),
+                      "app/services/src/zcode_moderation_view_service.c");
+        ASSERT(zcl_hotswap_service_source_for_path(
+                   "app/services/include/services/zcode_moderation_view_service.h")
+               == NULL);
+        ASSERT_STR_EQ(zcl_hotswap_service_contract_source_for_path(
+                          "app/services/include/services/zcode_moderation_view_service.h"),
+                      "app/services/src/zcode_moderation_view_service.c");
+        ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
+                          "app/services/src/zcode_moderation_view_service.c"),
+                      "zcode.moderation.status");
         ASSERT(zcl_hotswap_service_source_for_path(
                    "lib/storage/src/storage.c") == NULL);
         PASS();
@@ -407,11 +421,86 @@ static int t_zcode_package_view(void)
     return failures;
 }
 
+static bool candidate_moderation_policy(
+    const struct vcs_zcode_family_policy_v1 *policy,
+    const char *policy_root_hex,
+    struct zcode_moderation_policy_view_v1 *out)
+{
+    if (!zcode_moderation_view_service_builtin()->render_policy(
+            policy, policy_root_hex, out))
+        return false;
+    snprintf(out->policy_summary, sizeof(out->policy_summary), "%s",
+             "candidate moderation view generation is active");
+    return true;
+}
+
+static int t_zcode_moderation_view(void)
+{
+    int failures = 0;
+    TEST("Family policy presentation swaps while enforcement stays static") {
+        zcl_hotswap_service_reset();
+        const struct zcode_moderation_view_service_v1 *builtin =
+            zcode_moderation_view_service_builtin();
+        struct vcs_zcode_family_policy_v1 policy;
+        struct zcode_moderation_policy_view_v1 view;
+        uint8_t root[32];
+        char root_hex[65];
+        vcs_zcode_family_policy_v1_default(&policy);
+        ASSERT_EQ(vcs_zcode_family_policy_v1_root(&policy, root),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        zcl_hex_encode(root, sizeof(root), root_hex);
+        ASSERT(builtin->render_policy(&policy, root_hex, &view));
+        ASSERT(view.valid);
+        ASSERT_STR_EQ(view.policy_root, root_hex);
+
+        struct zcode_moderation_view_service_v1 candidate_service = *builtin;
+        candidate_service.render_policy = candidate_moderation_policy;
+        struct zcl_hotswap_service_candidate service_candidate = {
+            .service_id = ZCODE_MODERATION_VIEW_SERVICE_ID,
+            .source_tu = "app/services/src/zcode_moderation_view_service.c",
+            .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+            .vtable_size = sizeof(candidate_service),
+            .abi_fingerprint = ZCODE_MODERATION_VIEW_ABI_FINGERPRINT,
+            .schema_fingerprint = ZCODE_MODERATION_VIEW_SCHEMA_FINGERPRINT,
+            .wire_fingerprint = ZCODE_MODERATION_VIEW_WIRE_FINGERPRINT,
+            .kat_fingerprint = ZCODE_MODERATION_VIEW_KAT_FINGERPRINT,
+            .vtable = &candidate_service,
+        };
+        struct zcl_hotswap_service_report report = {0};
+        ASSERT(zcl_hotswap_service_publish(
+            zcl_native_zcode_moderation_view_service_contract(),
+            &service_candidate, true, &report));
+        ASSERT(report.probed);
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        struct zcl_command_request request = {.input = &input};
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.zcode_moderation_status.v1");
+        zcl_native_handle_zcode_moderation_status(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_EQ(json_get_int(json_get(&reply.data,
+                                       "view_service_generation")), 1);
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                      "enforcement_complete")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "effective_default")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "policy_summary")),
+                      "candidate moderation view generation is active");
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        zcl_hotswap_service_reset();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_hotswap_service_registry(void)
 {
     int failures = t_publish_and_lease() + t_contract_drift_restarts() +
                    t_manifest_mapping() + t_market_purchase_view() +
                    t_market_moderation_view() + t_zcode_package_view();
+    failures += t_zcode_moderation_view();
     zcl_hotswap_service_reset();
     printf("=== hotswap_service_registry: %d failures ===\n", failures);
     return failures;
