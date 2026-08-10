@@ -14,7 +14,9 @@
 
 #include "controllers/shop_native_handler.h"
 
+#include "command/native_command.h"     /* zcl_native_node_db_open_readonly */
 #include "models/activerecord.h"        /* AR_STEP_ROW */
+#include "models/database.h"            /* struct node_db */
 #include "net/onion_service.h"
 #include "net/tor_integration.h"
 #include "util/ar_step_readonly.h"      /* AR_STEP_ROW_READONLY */
@@ -157,23 +159,26 @@ static bool shp_row_has_envelope(sqlite3_stmt *s)
 
 enum shop_wallet_posture shop_probe_wallet_posture(const char *datadir)
 {
-    char path[1024];
-    if (!shop_internal_path_join(path, sizeof(path), datadir, "node.db"))
-        LOG_RETURN(SHOP_WALLET_UNREADABLE, SHOP_TAG,
-                   "datadir path too long for node.db");
-    struct stat st;
-    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
-        return SHOP_WALLET_UNREADABLE;  /* no node.db: nothing to probe */
-
+    /* The open is the shared guarded read-only one
+     * (zcl_native_node_db_open_readonly, tools/command/native_node_db_ro.c).
+     * A hand-rolled open_v2(READONLY) against a WAL node.db whose wal-index
+     * is not live CREATES the -shm/-wal sidecars it then cannot unlink —
+     * two files added to a datadir a READ probe was only asked about. The
+     * helper picks the side-effect-free open for the state the database is
+     * actually in, and it touches the header, so a present non-database is
+     * UNREADABLE here instead of "scanned, found nothing" — the exact
+     * conflation test_read_leaf_no_datadir_write's case 5 refuses. */
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK
-            || !db) {
-        if (db)
-            sqlite3_close(db);
+    struct node_db ndb;
+    enum zcl_node_db_ro_status ro =
+        zcl_native_node_db_open_readonly(datadir, &db, &ndb, NULL, 0);
+    if (ro == ZCL_NODE_DB_RO_ABSENT || ro == ZCL_NODE_DB_RO_NO_DATADIR ||
+        ro == ZCL_NODE_DB_RO_PATH_TOO_LONG)
+        return SHOP_WALLET_UNREADABLE;  /* no node.db: nothing to probe */
+    if (ro != ZCL_NODE_DB_RO_OK)
         LOG_RETURN(SHOP_WALLET_UNREADABLE, SHOP_TAG,
-                   "node.db will not open read-only: %s", path);
-    }
-    sqlite3_busy_timeout(db, 2000);
+                   "node.db exists but is not a readable database "
+                   "(read-only open status %d)", (int)ro);
 
     bool any_rows = false, encrypted = false, scan_complete = true;
     static const char *const tables[] = {
@@ -206,7 +211,7 @@ enum shop_wallet_posture shop_probe_wallet_posture(const char *datadir)
         }
         sqlite3_finalize(s);
         if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
-            sqlite3_close(db);
+            zcl_native_node_db_close_readonly(&db, &ndb);
             LOG_RETURN(SHOP_WALLET_UNREADABLE, SHOP_TAG,
                        "wallet table %s scan failed mid-probe", tables[t]);
         }
@@ -226,7 +231,7 @@ enum shop_wallet_posture shop_probe_wallet_posture(const char *datadir)
             sqlite3_finalize(s);
         }
     }
-    sqlite3_close(db);
+    zcl_native_node_db_close_readonly(&db, &ndb);
 
     if (encrypted)
         return SHOP_WALLET_ENCRYPTED;

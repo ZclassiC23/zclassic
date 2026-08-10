@@ -108,6 +108,7 @@ struct shop_snapshot {
     char address[64];            /* 56 chars + NUL, "" when absent */
     enum shop_wallet_posture wallet;
     bool node_db_present;
+    bool node_db_unreadable;     /* present, and not a readable database */
     bool store_schema;           /* the products table exists */
     int schema_version;          /* -1 when unknown */
     int product_count;           /* -1 when unknown */
@@ -116,7 +117,11 @@ struct shop_snapshot {
 };
 
 /* The read-only node.db facts: schema version, whether the store schema
- * exists, and the product count when it does. */
+ * exists, and the product count when it does. A present-but-unreadable
+ * node.db is flagged, never read past: both leaves then refuse by name
+ * (sh_refuse_unreadable_db) instead of rendering "unknown" fields over a
+ * store they could not read — absent and unreadable are not the same
+ * answer. */
 static void sh_read_store_state(const char *datadir,
                                 struct shop_snapshot *snap)
 {
@@ -131,8 +136,10 @@ static void sh_read_store_state(const char *datadir,
     sqlite3 *db = NULL;
     struct node_db ndb;
     if (zcl_native_node_db_open_readonly(datadir, &db, &ndb, NULL, 0)
-            != ZCL_NODE_DB_RO_OK)
-        return;         /* unreadable db: every field stays "unknown" */
+            != ZCL_NODE_DB_RO_OK) {
+        snap->node_db_unreadable = true;
+        return;
+    }
 
     snap->schema_version = node_db_schema_version(&ndb);
 
@@ -188,6 +195,28 @@ static bool shop_snapshot_live(const struct shop_snapshot *snap)
     return snap->tor_real && snap->identity_present &&
            snap->wallet == SHOP_WALLET_ENCRYPTED &&
            snap->node_db_present && snap->store_schema && snap->announced;
+}
+
+/* A present-but-unreadable node.db is a named refusal in both leaves,
+ * never an ok answer over a store that could not be read (the wallet
+ * probe's UNREADABLE over garbage would otherwise render as the
+ * "wallet_unreadable" gap with a remedy that sends the operator to boot a
+ * node — the wrong instruction for a corrupt file). The read touches
+ * nothing: no rename, no repair, no fresh install. */
+static bool sh_refuse_unreadable_db(const struct shop_snapshot *snap,
+                                    const char *datadir,
+                                    struct zcl_command_reply *reply)
+{
+    if (!snap->node_db_unreadable)
+        return false;
+    sh_fail(reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+            "NODE_DB_UNREADABLE", "read",
+            "<datadir>/node.db exists but is not a readable database — "
+            "the shop leaves it untouched (never renamed, never repaired, "
+            "never reinstalled); restore it from a known-good copy before "
+            "asking about the shop",
+            datadir);
+    return true;
 }
 
 /* ── rendering ──────────────────────────────────────────────────────── */
@@ -336,6 +365,8 @@ void zcl_native_handle_shop_status(const struct zcl_command_request *request,
 
     struct shop_snapshot snap;
     shop_snapshot_collect(datadir, &snap);
+    if (sh_refuse_unreadable_db(&snap, datadir, reply))
+        return;
 
     (void)json_push_kv_str(&reply->data, "datadir", datadir);
     shop_push_snapshot(&reply->data, &snap);
@@ -408,6 +439,8 @@ void zcl_native_handle_shop_init(const struct zcl_command_request *request,
 
     struct shop_snapshot snap;
     shop_snapshot_collect(datadir, &snap);
+    if (sh_refuse_unreadable_db(&snap, datadir, reply))
+        return;
 
     if (!json_get_bool_or(request->input, "confirm", false)) {
         shop_init_plan(datadir, &snap, reply);
