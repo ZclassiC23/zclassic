@@ -246,6 +246,74 @@ static int t_initial_anchor_deferred(const char *dir)
     return failures;
 }
 
+/* A complete source-wide proof becomes a small durable publication job. The
+ * queue stores only immutable roots; package/network/wallet work is strictly
+ * out of the foreground anchor path. */
+static int t_publication_enqueue(const char *dir)
+{
+    int failures = 0;
+    vd_write(dir, "src/main.c", "int main(void){return 0;}\n");
+
+    char source_id[65], source_cas[65], generation[65];
+    make_hex64(source_id, 0x11);
+    make_hex64(source_cas, 0x31);
+    make_hex64(generation, 0x51);
+    struct vcs_devloop_verdict v = {
+        .verdict_status = 0,
+        .phase = "verify",
+        .elapsed_ms = 17,
+        .generation_hex = generation,
+        .proof_complete = true,
+        .proof_scope = "source_wide_compile_tests_lint_fast",
+        .source_identity_hex = source_id,
+        .source_cas_hex = source_cas,
+    };
+    struct vcs_devloop_anchor_result ar = {0};
+    vcs_devloop_anchor_cycle(dir, &v, &ar);
+    VD_CHECK("publication: source anchor committed",
+             ar.status == VCS_DEVLOOP_ANCHOR_OK);
+    VD_CHECK("publication: durable job queued",
+             ar.publication_status == VCS_DEVLOOP_PUBLICATION_QUEUED);
+    VD_CHECK("publication: enqueue latency measured",
+             ar.publication_enqueue_us >= 0);
+
+    struct vcs_devloop_publication_job job;
+    VD_CHECK("publication: job reloads after writer closes",
+             vcs_devloop_publication_job_load(
+                 dir, ar.publication_job_root, &job));
+    VD_CHECK("publication: job binds ZVCS commit",
+             memcmp(job.vcs_commit_root, ar.commit_id, 32) == 0);
+    VD_CHECK("publication: job binds proof receipt",
+             memcmp(job.proof_receipt_root, ar.proof_receipt_root, 32) == 0);
+    uint8_t expected_source[32], expected_cas[32];
+    vcs_devloop_hex32_decode(source_id, expected_source);
+    vcs_devloop_hex32_decode(source_cas, expected_cas);
+    VD_CHECK("publication: job binds exact source identity",
+             memcmp(job.source_identity_sha256, expected_source, 32) == 0);
+    VD_CHECK("publication: job binds source CAS",
+             memcmp(job.source_cas_sha3, expected_cas, 32) == 0);
+    VD_CHECK("publication: queue survives reopen",
+             vcs_devloop_publication_job_is_queued(
+                 dir, ar.publication_job_root));
+
+    bool reused = false;
+    VD_CHECK("publication: exact retry succeeds",
+             vcs_devloop_publication_job_requeue(
+                 dir, ar.publication_job_root, &reused));
+    VD_CHECK("publication: exact retry is idempotent", reused);
+
+    vd_write(dir, "src/main.c", "int main(void){return 1;}\n");
+    v.proof_complete = false;
+    struct vcs_devloop_anchor_result incomplete = {0};
+    vcs_devloop_anchor_cycle(dir, &v, &incomplete);
+    VD_CHECK("publication: incomplete proof still anchors",
+             incomplete.status == VCS_DEVLOOP_ANCHOR_OK);
+    VD_CHECK("publication: incomplete proof never queues",
+             incomplete.publication_status == VCS_DEVLOOP_PUBLICATION_NONE);
+
+    return failures;
+}
+
 /* ── test: fail-open when .zvcs/ cannot be created ─────────────────── */
 static int t_fail_open(const char *dir)
 {
@@ -334,6 +402,10 @@ int test_vcs_devloop(void)
 
     test_make_tmpdir(dir, sizeof(dir), "vcs_devloop", "deferred");
     failures += t_initial_anchor_deferred(dir);
+    test_rm_rf_recursive(dir);
+
+    test_make_tmpdir(dir, sizeof(dir), "vcs_devloop", "publication");
+    failures += t_publication_enqueue(dir);
     test_rm_rf_recursive(dir);
 
     test_make_tmpdir(dir, sizeof(dir), "vcs_devloop", "failopen");

@@ -119,6 +119,9 @@ enum event_log_type {
      * every status bump. block_index_projection consumes these against the
      * row the prior EV_BLOCK_HEADER created (storage/block_index_projection.c). */
     EV_BLOCK_STATUS         = 30,
+    /* ZVCS proof-to-publication queue. Payload is one immutable 32-byte
+     * VCS_TAG_PUBLICATION_JOB root; job state advances in separate receipts. */
+    EV_VCS_PUBLICATION_JOB  = 31,
     /* Add cautiously — every entry is a permanent wire surface. */
 };
 

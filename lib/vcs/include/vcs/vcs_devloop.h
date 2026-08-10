@@ -46,6 +46,14 @@ struct vcs_devloop_verdict {
      * baseline out of band and return DEFERRED instead of blocking the edit
      * verdict. Existing repositories still anchor synchronously. */
     bool        defer_initial_snapshot;
+    /* Only a complete source-wide VERIFY proof may enqueue publication.
+     * These exact identities are captured before proof and rechecked by the
+     * resident dev authority; queueing never grants acceptance or network,
+     * package, wallet, or Git authority. */
+    bool        proof_complete;
+    const char *proof_scope;
+    const char *source_identity_hex;
+    const char *source_cas_hex;
 };
 
 enum vcs_devloop_anchor_status {
@@ -53,6 +61,25 @@ enum vcs_devloop_anchor_status {
     VCS_DEVLOOP_ANCHOR_ERROR   = 1,  /* vcs failure; fail-open, see out->error */
     VCS_DEVLOOP_ANCHOR_REFUSED = 2,  /* sealed-path change refused (advisory) */
     VCS_DEVLOOP_ANCHOR_DEFERRED = 3, /* generation-neutral baseline queued */
+};
+
+enum vcs_devloop_publication_status {
+    VCS_DEVLOOP_PUBLICATION_NONE = 0,
+    VCS_DEVLOOP_PUBLICATION_QUEUED = 1,
+    VCS_DEVLOOP_PUBLICATION_ERROR = 2,
+};
+
+#define VCS_DEVLOOP_PUBLICATION_JOB_VERSION 1u
+
+struct vcs_devloop_publication_job {
+    uint32_t version;
+    uint8_t vcs_commit_root[32];
+    uint8_t source_tree_root[32];
+    uint8_t proof_receipt_root[32];
+    uint8_t source_identity_sha256[32];
+    uint8_t source_cas_sha3[32];
+    uint8_t generation_sha256[32];
+    uint8_t parent_workspace_root[32];
 };
 
 struct vcs_devloop_anchor_result {
@@ -70,6 +97,12 @@ struct vcs_devloop_anchor_result {
      * some earlier caller is already in flight; this cycle just stays
      * unanchored until it finishes. */
     bool    baseline_needed;
+    enum vcs_devloop_publication_status publication_status;
+    uint8_t proof_receipt_root[32];
+    uint8_t publication_job_root[32];
+    int64_t publication_enqueue_us;
+    bool publication_reused;
+    char publication_error[256];
 };
 
 /* Anchor one green dev-loop cycle: open (creating if absent) the ZVCS repo
@@ -108,5 +141,16 @@ void vcs_devloop_run_initial_baseline(const char *repo_root,
  * false — and leaves *out unmodified — on a wrong length or any non-hex
  * character; never crashes on a malformed or NULL input. */
 bool vcs_devloop_hex32_decode(const char *hex, uint8_t out[32]);
+
+/* Bounded restart-safe publication queue readers. Loading recomputes the
+ * VCS object address; queue membership means an fsync-complete append exists.
+ * Requeue is idempotent for an exact immutable job root. */
+bool vcs_devloop_publication_job_load(
+    const char *repo_root, const uint8_t job_root[32],
+    struct vcs_devloop_publication_job *out);
+bool vcs_devloop_publication_job_is_queued(
+    const char *repo_root, const uint8_t job_root[32]);
+bool vcs_devloop_publication_job_requeue(
+    const char *repo_root, const uint8_t job_root[32], bool *reused_out);
 
 #endif /* ZCL_VCS_DEVLOOP_H */

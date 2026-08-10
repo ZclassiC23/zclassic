@@ -28,6 +28,31 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_ff)
 
+ZCL_COMMAND_BRANCH("dev.publication", "dev",
+                   "Inspect asynchronous proven-source publication",
+                   ZCL_COMMAND_LAYER_DEV)
+
+ZCL_COMMAND_READY_READ(
+    "dev.publication.status", "dev.publication", "",
+    "Show one durable proof-to-publication job",
+    "The immutable ZVCS source, proof and generation roots bound by one "
+    "publication job, its durable local queue membership, and truthful "
+    "blockers for workspace, P2P, replication and optional mirror phases. "
+    "This read grants no publication, signing, network, wallet or acceptance "
+    "authority.", 0,
+    "dev,publication,status,zvcs,proof,queue",
+    "zcl.dev_publication_status_input.v1",
+    "zcl.dev_publication_status.v1", "job_root", "job_root",
+    "zclassic23-dev dev publication status --input='"
+    "{\"job_root\":\"<64-lowercase-hex>\"}'",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_dev_publication_status)
+
 ZCL_COMMAND_DEV_READ(
     "dev.verify-change", "dev", "",
     "Compile affected code and run mapped focused proofs with compact output",

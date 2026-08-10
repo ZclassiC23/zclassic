@@ -29,6 +29,8 @@ enum vcs_object_tag {
     VCS_TAG_COMMIT   = 0x23,  /* a commit preimage (addressed by commit_id) */
     VCS_TAG_SEALSET  = 0x24,  /* the sealed-path set commitment */
     VCS_TAG_ANCHOR   = 0x25,  /* an anchor binding (reserved for later waves) */
+    VCS_TAG_DEV_PROOF = 0x26, /* complete dev-cycle proof receipt */
+    VCS_TAG_PUBLICATION_JOB = 0x27, /* proof-to-publication job spec */
 };
 
 /* Ensure the object store directory tree exists under <repo_root>/.zvcs/

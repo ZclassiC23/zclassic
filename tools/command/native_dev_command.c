@@ -16,6 +16,7 @@
 #define _GNU_SOURCE
 #include "command/native_command.h"
 
+#include "base/hex.h"
 #include "controllers/rpc_client.h"
 #include "dev_activation.h"
 #include "dev_failure_store.h"
@@ -25,6 +26,7 @@
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "vcs/vcs.h"
+#include "vcs/vcs_devloop.h"
 #include "vcs/vcs_seal.h"
 
 #include "encoding/utilstrencodings.h"
@@ -144,6 +146,18 @@ void zcl_native_handle_dev_ff(const struct zcl_command_request *request,
                                "could not resolve the checkout root", src_root);
         return;
     }
+    struct dev_source_record source_before = {0};
+    char source_why[256] = {0};
+    if (!zcl_dev_source_identity_capture(root, &source_before,
+                                         source_why,
+                                         sizeof(source_why))) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+            "SOURCE_IDENTITY_FAILED", "capture", true, false,
+            "could not capture the exact source identity before proof",
+            source_why);
+        return;
+    }
     const char *argv[] = { "make", "--no-print-directory", "ff", NULL };
     struct zcl_devloop_process_result result;
     if (!zcl_devloop_process_run(root, argv, 600000, &result)) {
@@ -155,11 +169,90 @@ void zcl_native_handle_dev_ff(const struct zcl_command_request *request,
     }
     bool ok = result.exit_code == 0 && result.term_signal == 0 &&
               !result.timed_out;
+    if (ok && !zcl_dev_source_identity_verify(
+                  root, &source_before, source_why,
+                  sizeof(source_why))) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "SOURCE_EPOCH_SUPERSEDED", "verify", true, false,
+            "source changed during the complete proof; no ZVCS commit or publication job was created",
+            source_why);
+        return;
+    }
     (void)json_push_kv_str(&reply->data, "schema", "zcl.dev_ff.v1");
     (void)json_push_kv_bool(&reply->data, "passed", ok);
+    (void)json_push_kv_bool(&reply->data, "proof_complete", ok);
     (void)json_push_kv_int(&reply->data, "elapsed_ms", result.elapsed_ms);
     (void)json_push_kv_int(&reply->data, "exit_code", result.exit_code);
     (void)json_push_kv_bool(&reply->data, "timed_out", result.timed_out);
+    if (ok) {
+        struct vcs_devloop_verdict verdict = {
+            .verdict_status = 0,
+            .phase = "verify",
+            .elapsed_ms = result.elapsed_ms,
+            .defer_initial_snapshot = true,
+            .proof_complete = true,
+            .proof_scope = "source_wide_compile_tests_lint_fast",
+            .source_identity_hex = source_before.source_id,
+            .source_cas_hex = source_before.cas_present
+                ? source_before.cas_root_sha3 : NULL,
+        };
+        struct vcs_devloop_anchor_result anchor;
+        vcs_devloop_anchor_cycle(root, &verdict, &anchor);
+        if (anchor.status == VCS_DEVLOOP_ANCHOR_OK) {
+            char hex[65];
+            zcl_hex_encode(anchor.commit_id, 32, hex);
+            (void)json_push_kv_str(&reply->data, "vcs_commit", hex);
+            const char *publication =
+                anchor.publication_status == VCS_DEVLOOP_PUBLICATION_QUEUED
+                    ? "QUEUED"
+                    : anchor.publication_status ==
+                          VCS_DEVLOOP_PUBLICATION_ERROR
+                        ? "ERROR" : "NOT_ELIGIBLE";
+            (void)json_push_kv_str(&reply->data, "publication_status",
+                                   publication);
+            if (anchor.publication_status ==
+                VCS_DEVLOOP_PUBLICATION_QUEUED) {
+                zcl_hex_encode(anchor.proof_receipt_root, 32, hex);
+                (void)json_push_kv_str(&reply->data,
+                                       "proof_receipt_root", hex);
+                zcl_hex_encode(anchor.publication_job_root, 32, hex);
+                (void)json_push_kv_str(&reply->data,
+                                       "publication_job_root", hex);
+                (void)json_push_kv_int(&reply->data,
+                                       "publication_enqueue_us",
+                                       anchor.publication_enqueue_us);
+                (void)json_push_kv_bool(&reply->data,
+                                        "publication_reused",
+                                        anchor.publication_reused);
+                char next_command[256];
+                (void)snprintf(
+                    next_command, sizeof(next_command),
+                    "zclassic23-dev dev publication status --input='"
+                    "{\"job_root\":\"%s\"}'",
+                    hex);
+                (void)json_push_kv_str(
+                    &reply->data, "publication_next_command",
+                    next_command);
+            }
+            if (anchor.publication_error[0])
+                (void)json_push_kv_str(&reply->data, "publication_error",
+                                       anchor.publication_error);
+        } else {
+            (void)json_push_kv_str(&reply->data, "vcs_error",
+                                   anchor.error[0]
+                                       ? anchor.error
+                                       : "ZVCS anchor unavailable");
+            (void)json_push_kv_bool(&reply->data, "vcs_deferred",
+                                    anchor.status ==
+                                        VCS_DEVLOOP_ANCHOR_DEFERRED);
+        }
+        (void)json_push_kv_str(&reply->data, "source_identity_sha256",
+                               source_before.source_id);
+        if (source_before.cas_present)
+            (void)json_push_kv_str(&reply->data, "source_cas_sha3",
+                                   source_before.cas_root_sha3);
+    }
     if (!ok) {
         const char *tail = result.output;
         if (result.output_len > 2048)
@@ -195,6 +288,70 @@ void zcl_native_handle_dev_ff(const struct zcl_command_request *request,
 }
 
 /* ── dev.core.boundary ─────────────────────────────────────────────────── */
+/* Read-only, bounded view of one immutable proof-to-publication job. The
+ * queue grants no package, signing, network, wallet, or acceptance authority;
+ * later phases remain explicit blockers until their existing owners produce
+ * durable receipts. */
+void zcl_native_handle_dev_publication_status(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    const char *job_hex = json_get_str(json_get(request->input, "job_root"));
+    uint8_t job_root[32];
+    if (!job_hex || strlen(job_hex) != 64 ||
+        !zcl_hex_decode_lower(job_hex, job_root, sizeof(job_root))) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "INVALID_JOB_ROOT", "normalize", false, false,
+            "job_root must be exactly 64 lowercase hexadecimal characters",
+            job_hex ? job_hex : "missing job_root");
+        return;
+    }
+
+    struct vcs_devloop_publication_job job;
+    const char *root = dev_source_root(request);
+    if (!vcs_devloop_publication_job_load(root, job_root, &job)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "PUBLICATION_JOB_UNAVAILABLE", "load", false, false,
+            "the immutable publication job is absent or noncanonical",
+            job_hex);
+        return;
+    }
+    bool queued = vcs_devloop_publication_job_is_queued(root, job_root);
+    char hex[65];
+    (void)json_push_kv_str(&reply->data, "schema",
+                           "zcl.dev_publication_status.v1");
+    (void)json_push_kv_str(&reply->data, "status",
+                           queued ? "QUEUED" : "NOT_QUEUED");
+    (void)json_push_kv_bool(&reply->data, "proof_complete", true);
+    (void)json_push_kv_str(&reply->data, "publication_job_root", job_hex);
+#define DEV_PUBLICATION_ROOT(key_, field_)                                  \
+    do {                                                                     \
+        zcl_hex_encode((field_), 32, hex);                                   \
+        (void)json_push_kv_str(&reply->data, (key_), hex);                   \
+    } while (0)
+    DEV_PUBLICATION_ROOT("zvcs_commit_root", job.vcs_commit_root);
+    DEV_PUBLICATION_ROOT("source_tree_root", job.source_tree_root);
+    DEV_PUBLICATION_ROOT("proof_receipt_root", job.proof_receipt_root);
+    DEV_PUBLICATION_ROOT("source_identity_sha256",
+                         job.source_identity_sha256);
+    DEV_PUBLICATION_ROOT("source_cas_sha3", job.source_cas_sha3);
+    DEV_PUBLICATION_ROOT("generation_sha256", job.generation_sha256);
+#undef DEV_PUBLICATION_ROOT
+    (void)json_push_kv_str(&reply->data, "workspace_state", "not_created");
+    (void)json_push_kv_str(&reply->data, "p2p", "not_announced");
+    (void)json_push_kv_int(&reply->data, "providers", 0);
+    (void)json_push_kv_str(&reply->data, "storage_ack", "0/2");
+    (void)json_push_kv_str(&reply->data, "reproduced", "no_record");
+    (void)json_push_kv_str(&reply->data, "github_mirror", "not_recorded");
+    (void)json_push_kv_str(
+        &reply->data, "blocker",
+        queued ? "accepted_lane_and_offline_publisher_signature_required"
+               : "durable_publication_queue_record_missing");
+    (void)json_push_kv_str(&reply->data, "next_command",
+                           queued ? "zcode publish plan" : "dev ff");
+}
+
 void zcl_native_handle_dev_core_boundary(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {

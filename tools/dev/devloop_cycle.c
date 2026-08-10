@@ -637,6 +637,12 @@ struct vcs_anchor_fields {
     char error[256];      /* set iff attempted and not committed */
     bool sealed_refusal;  /* true iff refused for touching a sealed path */
     bool deferred;        /* generation-neutral first baseline is out of band */
+    enum vcs_devloop_publication_status publication_status;
+    char proof_receipt_hex[65];
+    char publication_job_hex[65];
+    int64_t publication_enqueue_us;
+    bool publication_reused;
+    char publication_error[256];
 };
 
 #define CYCLE_FILE_PREVIEW_MAX 2
@@ -851,6 +857,46 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
         if (vcs->deferred &&
             !appendf(out, out_sz, &pos, ",\"vcs_deferred\":true"))
             return 0;
+        const char *publication_status =
+            vcs->publication_status == VCS_DEVLOOP_PUBLICATION_QUEUED
+                ? "QUEUED"
+                : vcs->publication_status == VCS_DEVLOOP_PUBLICATION_ERROR
+                    ? "ERROR" : "NOT_ELIGIBLE";
+        if (!appendf(out, out_sz, &pos, ",\"publication_status\":") ||
+            !append_string(out, out_sz, &pos, publication_status))
+            return 0;
+        if (vcs->proof_receipt_hex[0] &&
+            (!appendf(out, out_sz, &pos, ",\"proof_receipt_root\":") ||
+             !append_string(out, out_sz, &pos,
+                            vcs->proof_receipt_hex)))
+            return 0;
+        if (vcs->publication_job_hex[0] &&
+            vcs->publication_status == VCS_DEVLOOP_PUBLICATION_QUEUED) {
+            char next_command[256];
+            int next_len = snprintf(
+                next_command, sizeof(next_command),
+                "zclassic23-dev dev publication status --input='"
+                "{\"job_root\":\"%s\"}'",
+                vcs->publication_job_hex);
+            if (next_len <= 0 || (size_t)next_len >= sizeof(next_command) ||
+                !appendf(out, out_sz, &pos,
+                         ",\"publication_job_root\":") ||
+                !append_string(out, out_sz, &pos,
+                               vcs->publication_job_hex) ||
+                !appendf(out, out_sz, &pos,
+                         ",\"publication_enqueue_us\":%lld,"
+                         "\"publication_reused\":%s,"
+                         "\"publication_next_command\":",
+                         (long long)vcs->publication_enqueue_us,
+                         vcs->publication_reused ? "true" : "false") ||
+                !append_string(out, out_sz, &pos, next_command))
+                return 0;
+        }
+        if (vcs->publication_error[0] &&
+            (!appendf(out, out_sz, &pos, ",\"publication_error\":") ||
+             !append_string(out, out_sz, &pos,
+                            vcs->publication_error)))
+            return 0;
     }
     if (!appendf(out, out_sz, &pos, "}"))
         return 0;
@@ -921,6 +967,15 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
         v.session_id = getenv("ZCL_SESSION_ID");
         v.task_ref = getenv("ZCL_TASK_REF");
         v.defer_initial_snapshot = true;
+        v.proof_complete =
+            zcl_devloop_cycle_proof_complete(status, phase);
+        v.proof_scope = v.proof_complete
+            ? "source_wide_compile_tests_lint_fast" : NULL;
+        v.source_identity_hex = g_cycle_failure.source_ready
+            ? g_cycle_failure.source.source_id : NULL;
+        v.source_cas_hex = g_cycle_failure.source_ready &&
+                g_cycle_failure.source.cas_present
+            ? g_cycle_failure.source.cas_root_sha3 : NULL;
 
         struct vcs_devloop_anchor_result ar;
         vcs_devloop_anchor_cycle(repo_root, &v, &ar);
@@ -928,6 +983,18 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
         switch (ar.status) {
         case VCS_DEVLOOP_ANCHOR_OK:
             zcl_hex_encode(ar.commit_id, 32, vcsf.commit_hex);
+            vcsf.publication_status = ar.publication_status;
+            vcsf.publication_enqueue_us = ar.publication_enqueue_us;
+            vcsf.publication_reused = ar.publication_reused;
+            if (ar.publication_status == VCS_DEVLOOP_PUBLICATION_QUEUED) {
+                zcl_hex_encode(ar.proof_receipt_root, 32,
+                               vcsf.proof_receipt_hex);
+                zcl_hex_encode(ar.publication_job_root, 32,
+                               vcsf.publication_job_hex);
+            }
+            (void)snprintf(vcsf.publication_error,
+                           sizeof(vcsf.publication_error), "%s",
+                           ar.publication_error);
             break;
         case VCS_DEVLOOP_ANCHOR_REFUSED:
             vcsf.sealed_refusal = true;
