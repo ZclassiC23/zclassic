@@ -28,8 +28,7 @@ int test_model_zslp(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_models_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "models_zslp", "balances");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
@@ -80,8 +79,7 @@ int test_model_zslp(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_zslp_tokens_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "models_zslp", "tokens");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
@@ -141,8 +139,7 @@ int test_model_zslp(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_zslp_xfers_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "models_zslp", "transfers");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);

@@ -166,8 +166,7 @@ int test_model_app(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_contacts_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "models_app", "contacts");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
@@ -214,8 +213,7 @@ int test_model_app(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_contact_trim_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "models_app", "contact_trim");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
@@ -257,8 +255,7 @@ int test_model_app(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_onion_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "models_app", "onion");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
@@ -293,8 +290,7 @@ int test_model_app(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_onion_recent_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "models_app", "onion_recent");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
@@ -350,8 +346,7 @@ int test_model_app(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_store_models_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "models_app", "store");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
@@ -454,8 +449,7 @@ int test_model_app(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_file_services_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "models_app", "file_services");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
@@ -498,8 +492,7 @@ int test_model_app(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_peers_%d", (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "models_app", "peers");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
@@ -570,9 +563,7 @@ int test_model_app(void)
         char dbpath[320];
         struct node_db ndb;
         bool ok;
-        snprintf(dbdir, sizeof(dbdir), ".zcl_test_wallet_label_%d",
-                 (int)getpid());
-        mkdir(dbdir, 0755);
+        test_make_tmpdir(dbdir, sizeof(dbdir), "models_app", "wallet_label");
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
         memset(&ndb, 0, sizeof(ndb));
         ok = node_db_open(&ndb, dbpath);
