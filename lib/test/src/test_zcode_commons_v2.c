@@ -1320,6 +1320,109 @@ static int test_v2_workspace_objects(void)
                       "module_passport.v1");
         zcl_command_reply_free(&passport_reply);
         json_free(&passport_input);
+
+        uint8_t workspace_release_root[32], workspace_binding_root[32];
+        cv2_fill(workspace_release_root, 0x45);
+        struct vcs_zcode_workspace_entry_v1 passport_entry = {
+            .sequence = 1,
+        };
+        memcpy(passport_entry.module_release_root, workspace_release_root, 32);
+        ASSERT_EQ(vcs_zcode_module_passport_v1_root(
+                      &passport, passport_entry.module_passport_root),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        memcpy(passport_entry.semantic_fingerprint_root,
+               passport.semantic_fingerprint_root, 32);
+        memcpy(passport_entry.source_assignment_root,
+               passport.source_assignment_root, 32);
+        ASSERT_EQ(vcs_zcode_workspace_entry_v1_validate(&passport_entry),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT_EQ(vcs_zcode_workspace_entry_v1_root(
+                      &passport_entry, workspace_binding_root),
+                  VCS_ZCODE_COMMONS_V2_OK);
+
+        char workspace_release_hex[65], workspace_binding_hex[65];
+        zcl_hex_encode(workspace_release_root, 32, workspace_release_hex);
+        zcl_hex_encode(workspace_binding_root, 32, workspace_binding_hex);
+        struct json_value workspace_plan_input;
+        json_init(&workspace_plan_input);
+        json_set_object(&workspace_plan_input);
+        ASSERT(json_push_kv_str(&workspace_plan_input, "passport",
+                                passport_hex));
+        ASSERT(json_push_kv_str(&workspace_plan_input, "module_release_root",
+                                workspace_release_hex));
+        ASSERT(json_push_kv_int(&workspace_plan_input, "sequence", 1));
+        struct zcl_command_request workspace_request = {
+            .input = &workspace_plan_input,
+        };
+        struct zcl_command_reply workspace_reply;
+        zcl_command_reply_init(&workspace_reply,
+                               "zcl.zcode_workspace_plan.v1");
+        zcl_native_handle_zcode_workspace_plan(&workspace_request,
+                                               &workspace_reply);
+        ASSERT_EQ(workspace_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&workspace_reply.data,
+                                      "verified_passport")));
+        ASSERT_STR_EQ(json_get_str(json_get(&workspace_reply.data,
+                                            "binding_root")),
+                      workspace_binding_hex);
+        zcl_command_reply_free(&workspace_reply);
+
+        ASSERT(json_push_kv_str(&workspace_plan_input, "binding_root",
+                                workspace_binding_hex));
+        zcl_command_reply_init(&workspace_reply,
+                               "zcl.zcode_workspace_verify.v1");
+        zcl_native_handle_zcode_workspace_verify(&workspace_request,
+                                                 &workspace_reply);
+        ASSERT_EQ(workspace_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&workspace_reply.data,
+                                      "binding_verified")));
+        ASSERT_STR_EQ(json_get_str(json_get(&workspace_reply.data,
+                                            "module_passport_root")),
+                      json_get_str(json_get(&workspace_reply.data,
+                                            "passport_root")));
+        zcl_command_reply_free(&workspace_reply);
+
+        struct json_value bad_workspace_input;
+        json_init(&bad_workspace_input);
+        json_set_object(&bad_workspace_input);
+        ASSERT(json_push_kv_str(&bad_workspace_input, "passport",
+                                passport_hex));
+        ASSERT(json_push_kv_str(&bad_workspace_input, "module_release_root",
+                                workspace_release_hex));
+        ASSERT(json_push_kv_int(&bad_workspace_input, "sequence", 1));
+        ASSERT(json_push_kv_str(&bad_workspace_input, "binding_root",
+            "0000000000000000000000000000000000000000000000000000000000000000"));
+        struct zcl_command_request bad_workspace_request = {
+            .input = &bad_workspace_input,
+        };
+        zcl_command_reply_init(&workspace_reply,
+                               "zcl.zcode_workspace_verify.v1");
+        zcl_native_handle_zcode_workspace_verify(&bad_workspace_request,
+                                                 &workspace_reply);
+        ASSERT_EQ(workspace_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(workspace_reply.error.code,
+                      "WORKSPACE_BINDING_ROOT_MISMATCH");
+        zcl_command_reply_free(&workspace_reply);
+        json_free(&bad_workspace_input);
+
+        json_init(&bad_workspace_input);
+        json_set_object(&bad_workspace_input);
+        ASSERT(json_push_kv_str(&bad_workspace_input, "passport",
+                                passport_hex));
+        ASSERT(json_push_kv_str(&bad_workspace_input, "module_release_root",
+                                workspace_release_hex));
+        ASSERT(json_push_kv_int(&bad_workspace_input, "sequence", 2));
+        zcl_command_reply_init(&workspace_reply,
+                               "zcl.zcode_workspace_plan.v1");
+        zcl_native_handle_zcode_workspace_plan(&bad_workspace_request,
+                                               &workspace_reply);
+        ASSERT_EQ(workspace_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(workspace_reply.error.code,
+                      "WORKSPACE_PREDECESSOR_REQUIRED");
+        zcl_command_reply_free(&workspace_reply);
+        json_free(&bad_workspace_input);
+        json_free(&workspace_plan_input);
+
         struct vcs_zcode_module_passport_v1 passport_decoded;
         ASSERT_EQ(vcs_zcode_module_passport_v1_decode(
                       &passport_decoded, passport_wire, passport_wire_len),

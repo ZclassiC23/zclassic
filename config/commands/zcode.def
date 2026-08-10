@@ -27,6 +27,64 @@ ZCL_COMMAND_BRANCH("zcode.work", "zcode",
 ZCL_COMMAND_BRANCH("zcode.passport", "zcode",
                    "Signed C23 module Passports",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.workspace", "zcode",
+                   "Exact C23 workspace evidence bindings",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.workspace.plan", "zcode.workspace", "",
+    "Plan one Passport-bound workspace entry",
+    "Verifies one signed Passport, derives its exact Passport, semantic and "
+    "source-assignment roots, and binds them to one release lineage entry. "
+    "It writes and publishes nothing and cannot substitute evidence roots.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,workspace,passport,c23,plan,binding,evidence,simulation",
+    "zcl.zcode_workspace_plan.input.v1", "zcl.zcode_workspace_plan.v1",
+    "passport,module_release_root,sequence,predecessor_release_root",
+    "passport,module_release_root,sequence",
+    "zclassic23 zcode workspace plan --input='<passport, release root, sequence>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_workspace_plan)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.workspace.verify", "zcode.workspace", "",
+    "Verify one Passport-bound workspace entry",
+    "Re-verifies the signed Passport and exact release lineage entry, then "
+    "requires the supplied binding root to match. It does not verify or claim "
+    "a complete signed workspace manifest.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,workspace,passport,c23,verify,binding,evidence,simulation",
+    "zcl.zcode_workspace_verify.input.v1", "zcl.zcode_workspace_verify.v1",
+    "passport,module_release_root,sequence,predecessor_release_root,binding_root",
+    "passport,module_release_root,sequence,binding_root",
+    "zclassic23 zcode workspace verify --input='<plan input plus binding_root>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_workspace_verify)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.workspace.show", "zcode.workspace", "",
+    "Show one verified Passport-bound workspace entry",
+    "A discoverable read alias for workspace verify. It re-derives every root "
+    "from the signed Passport and exact release lineage input; no display "
+    "projection becomes publication authority.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,workspace,passport,c23,show,binding,evidence,simulation",
+    "zcl.zcode_workspace_verify.input.v1", "zcl.zcode_workspace_verify.v1",
+    "passport,module_release_root,sequence,predecessor_release_root,binding_root",
+    "passport,module_release_root,sequence,binding_root",
+    "zclassic23 zcode workspace show --input='<verified binding input>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_workspace_verify)
 
 ZCL_COMMAND_READY_READ(
     "zcode.passport.plan", "zcode.passport", "",

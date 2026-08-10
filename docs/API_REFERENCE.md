@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 642 |
+| Registry entries (branches + leaves) | 646 |
 | Top-level roots | 11 |
-| Branches | 151 |
-| Leaves (dispatchable command paths) | 491 |
-| … `ready` (live handler in this build) | 443 |
+| Branches | 152 |
+| Leaves (dispatchable command paths) | 494 |
+| … `ready` (live handler in this build) | 446 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 183 | 44 | 139 |
+| `config/commands/zcode.def` | 187 | 45 | 142 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -968,6 +968,14 @@ represented by its children's sections.
 | `zcode passport commit` | ready | read / read / public · instant/tiny | **`stable_api_root`**, **`recipe_root`**, **`toolchain_root`**, **`tests_root`**, **`license_root`**, **`semantic_fingerprint_root`**, **`workspace_lineage_root`**, **`source_assignment_root`**, **`quality_profiles_root`**, **`signer_pubkey`**, **`signature`** | `zcl.zcode_passport_commit.v1` | `zclassic23 zcode passport commit --input='<same roots, signer_pubkey, external signature>'` | Materialize an externally signed C23 module Passport |
 | `zcode passport verify` | ready | read / read / public · instant/tiny | **`passport`** | `zcl.zcode_passport_verify.v1` | `zclassic23 zcode passport verify --passport=<lowercase-hex-wire>` | Verify one signed C23 module Passport |
 
+#### `zcode.workspace` — Exact C23 workspace evidence bindings
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode workspace plan` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root` | `zcl.zcode_workspace_plan.v1` | `zclassic23 zcode workspace plan --input='<passport, release root, sequence>'` | Plan one Passport-bound workspace entry |
+| `zcode workspace verify` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root`, **`binding_root`** | `zcl.zcode_workspace_verify.v1` | `zclassic23 zcode workspace verify --input='<plan input plus binding_root>'` | Verify one Passport-bound workspace entry |
+| `zcode workspace show` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root`, **`binding_root`** | `zcl.zcode_workspace_verify.v1` | `zclassic23 zcode workspace show --input='<verified binding input>'` | Show one verified Passport-bound workspace entry |
+
 #### `zcode.commons` — Read-only ZC23 Living Commons projection
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
@@ -1485,6 +1493,7 @@ promise the same document shape.
 | `zcl.dev_loop_status.v1` | `dev.loop.ensure`, `dev.loop.status`, `dev.loop.stop` |
 | `zcl.account.v1` | `app.account.show`, `app.account.whoami`, `app.account.add`, `app.account.role`, `app.account.suspend`, `app.account.unsuspend` |
 | `zcl.vault_swap_settle.v1` | `vault.swap.redeem`, `vault.swap.refund` |
+| `zcl.zcode_workspace_verify.v1` | `zcode.workspace.verify`, `zcode.workspace.show` |
 | `zcl.zcode_work_status.v1` | `zcode.work.status`, `zcode.work.show` |
 | `zcl.zcode_reproduction_challenge.v1` | `zcode.commons.reproduction.challenge.plan`, `zcode.commons.reproduction.challenge.commit` |
 | `zcl.zcode_commons_shadow_attribution.v1` | `zcode.commons.shadow.attribution.plan`, `zcode.commons.shadow.attribution.commit` |

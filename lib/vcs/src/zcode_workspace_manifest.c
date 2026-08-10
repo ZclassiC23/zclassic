@@ -335,12 +335,9 @@ static enum vcs_zcode_commons_v2_error workspace_entries_validate(
     for (size_t i = 0; i < workspace->entry_count; i++) {
         const struct vcs_zcode_workspace_entry_v1 *entry =
             &workspace->entries[i];
-        if (!workspace_nonzero_n(entry->module_release_root, 32) ||
-            !workspace_nonzero_n(entry->module_passport_root, 32) ||
-            !workspace_nonzero_n(entry->semantic_fingerprint_root, 32) ||
-            !workspace_nonzero_n(entry->source_assignment_root, 32) ||
-            entry->sequence == 0)
-            return VCS_ZCODE_COMMONS_V2_ROOT;
+        enum vcs_zcode_commons_v2_error error =
+            vcs_zcode_workspace_entry_v1_validate(entry);
+        if (error != VCS_ZCODE_COMMONS_V2_OK) return error;
         if (i > 0 && memcmp(workspace->entries[i - 1u].module_release_root,
                             entry->module_release_root, 32) >= 0)
             return VCS_ZCODE_COMMONS_V2_ORDER;
@@ -349,6 +346,35 @@ static enum vcs_zcode_commons_v2_error workspace_entries_validate(
                        entry->semantic_fingerprint_root, 32) == 0)
                 return VCS_ZCODE_COMMONS_V2_DUPLICATE;
     }
+    return VCS_ZCODE_COMMONS_V2_OK;
+}
+
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_entry_v1_validate(
+    const struct vcs_zcode_workspace_entry_v1 *entry)
+{
+    if (!entry) return VCS_ZCODE_COMMONS_V2_NULL;
+    if (!workspace_nonzero_n(entry->module_release_root, 32) ||
+        !workspace_nonzero_n(entry->module_passport_root, 32) ||
+        !workspace_nonzero_n(entry->semantic_fingerprint_root, 32) ||
+        !workspace_nonzero_n(entry->source_assignment_root, 32) ||
+        entry->sequence == 0)
+        return VCS_ZCODE_COMMONS_V2_ROOT;
+    return VCS_ZCODE_COMMONS_V2_OK;
+}
+
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_entry_v1_root(
+    const struct vcs_zcode_workspace_entry_v1 *entry, uint8_t out[32])
+{
+    if (out) memset(out, 0, 32);
+    if (!entry || !out) return VCS_ZCODE_COMMONS_V2_NULL;
+    enum vcs_zcode_commons_v2_error error =
+        vcs_zcode_workspace_entry_v1_validate(entry);
+    if (error != VCS_ZCODE_COMMONS_V2_OK) return error;
+    struct sha3_256_ctx sha;
+    workspace_hash_start(&sha, VCS_ZCODE_WORKSPACE_ENTRY_V1_DOMAIN);
+    sha3_256_write(&sha, entry->module_release_root, 32u * 5u);
+    workspace_hash_u64(&sha, entry->sequence);
+    sha3_256_finalize(&sha, out);
     return VCS_ZCODE_COMMONS_V2_OK;
 }
 
