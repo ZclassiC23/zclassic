@@ -1000,7 +1000,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode commons backlog` | ready | read / read / public · instant/tiny | none | `zcl.zcode_commons_backlog.v1` | `zclassic23 zcode commons backlog` | Show the simulation-only claim backlog |
+| `zcode commons backlog` | ready | read / read / public · instant/tiny | **`workspace`**, **`cutoff_height`**, **`cutoff_mtp`** | `zcl.zcode_commons_backlog.v2` | `zclassic23 zcode commons backlog --input='{"workspace":"/tmp/zclassic23-zcode-scratch","cutoff_height":1,"cutoff_mtp":1}'` | Show the simulation-only claim backlog |
 | `zcode commons status` | ready | read / read / operator · fast/low | **`workspace`**, `expected_network_genesis_root`, `expected_zc23_policy_root`, `expected_epoch`, `expected_award_atoms`, `active_height`, `active_mtp`, `anchor_opening_height`, `anchor_opening_hash`, `anchor_maturity_height`, `anchor_maturity_hash`, `now_unix` | `zcl.zcode_commons_status.v1` | `zclassic23 zcode commons status --input='{"workspace":"/tmp/zclassic23-zcode-scratch"}'` | Show Living Commons status |
 | `zcode commons epoch` | ready | read / read / operator · fast/low | **`workspace`**, **`epoch`** | `zcl.zcode_commons_epoch.v1` | `zclassic23 zcode commons epoch --input='{"workspace":"/tmp/zclassic23-zcode-scratch","epoch":1}'` | Show one creation epoch |
 | `zcode commons lineage` | ready | read / read / operator · fast/low | **`workspace`**, **`package_root`** | `zcl.zcode_commons_lineage.v1` | `zclassic23 zcode commons lineage --input='{"workspace":"/tmp/zclassic23-zcode-scratch","package_root":"<64hex>"}'` | Show package continuity lineage |

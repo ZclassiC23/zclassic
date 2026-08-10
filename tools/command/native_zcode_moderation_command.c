@@ -8,6 +8,7 @@
 #include "json/json.h"
 #include "services/zcode_c23_economics_service.h"
 #include "services/zcode_moderation_view_service.h"
+#include "vcs/zcode_commons_projection.h"
 #include "vcs/zcode_commons_v2.h"
 
 #include <stdio.h>
@@ -24,6 +25,36 @@ static void moderation_fail(struct zcl_command_reply *reply,
 static bool moderation_no_keys(const struct json_value *input)
 {
     return input && input->type == JSON_OBJ && input->num_children == 0;
+}
+
+static bool moderation_backlog_input(
+    const struct json_value *input, const char **workspace,
+    uint64_t *cutoff_height, int64_t *cutoff_mtp)
+{
+    if (!input || input->type != JSON_OBJ || input->num_children != 3 ||
+        !workspace || !cutoff_height || !cutoff_mtp)
+        return false;
+    static const char *const allowed[] = {
+        "workspace", "cutoff_height", "cutoff_mtp",
+    };
+    for (size_t i = 0; i < input->num_children; i++) {
+        bool known = false;
+        for (size_t j = 0; j < sizeof(allowed) / sizeof(allowed[0]); j++)
+            known = known || strcmp(input->keys[i], allowed[j]) == 0;
+        if (!known) return false;
+    }
+    const struct json_value *workspace_value = json_get(input, "workspace");
+    const struct json_value *height_value = json_get(input, "cutoff_height");
+    const struct json_value *mtp_value = json_get(input, "cutoff_mtp");
+    if (!workspace_value || workspace_value->type != JSON_STR ||
+        !height_value || height_value->type != JSON_INT ||
+        !mtp_value || mtp_value->type != JSON_INT ||
+        json_get_int(height_value) <= 0 || json_get_int(mtp_value) <= 0)
+        return false;
+    *workspace = json_get_str(workspace_value);
+    *cutoff_height = (uint64_t)json_get_int(height_value);
+    *cutoff_mtp = json_get_int(mtp_value);
+    return zcl_native_zcode_workspace_is_explicit_scratch(*workspace);
 }
 
 static bool render_family_policy_with_service(
@@ -580,21 +611,43 @@ void zcl_native_handle_zcode_commons_economics_status(
 void zcl_native_handle_zcode_commons_backlog(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
-    if (!request || !reply || !moderation_no_keys(request->input)) {
+    const char *workspace = NULL;
+    uint64_t cutoff_height = 0;
+    int64_t cutoff_mtp = 0;
+    if (!request || !reply || !moderation_backlog_input(
+            request->input, &workspace, &cutoff_height, &cutoff_mtp)) {
         if (reply) moderation_fail(reply, "BAD_COMMONS_BACKLOG_INPUT",
-            "zcode commons backlog accepts no input keys");
+            "zcode commons backlog requires an explicit scratch workspace and positive cutoff_height/cutoff_mtp integers");
         return;
     }
+    struct vcs_zcode_commons_projection *projection =
+        vcs_zcode_commons_projection_build(workspace);
+    if (!projection) {
+        moderation_fail(reply, "COMMONS_BACKLOG_REBUILD_FAILED",
+                        "bounded read-only claim projection rebuild failed");
+        return;
+    }
+    size_t claim_count =
+        vcs_zcode_commons_projection_claim_count(projection);
+    size_t eligible_claim_count =
+        vcs_zcode_commons_projection_eligible_claim_count(
+            projection, cutoff_height, cutoff_mtp);
     struct zcl_hotswap_service_lease lease = {0};
     const struct zcode_c23_economics_service_v1 *service =
         zcl_hotswap_service_acquire(ZCODE_C23_ECONOMICS_SERVICE_ID, &lease);
     if (!service) service = zcode_c23_economics_service_builtin();
     struct zcode_c23_economics_status_result_v1 status;
-    const struct zcode_c23_backlog_status_input_v1 input = {0};
+    const struct zcode_c23_backlog_status_input_v1 input = {
+        .projection_ready =
+            vcs_zcode_commons_claim_projection_ready(projection),
+        .claim_count = (uint32_t)claim_count,
+        .eligible_claim_count = (uint32_t)eligible_claim_count,
+    };
     struct zcode_c23_backlog_status_result_v1 view;
     if (!service->render_status(&status) ||
         !service->render_backlog_status(&input, &view) || !view.valid) {
         zcl_hotswap_service_release(&lease);
+        vcs_zcode_commons_projection_free(projection);
         moderation_fail(reply, "BACKLOG_SERVICE_FAILED",
                         "the pure economics service refused backlog rendering");
         return;
@@ -605,6 +658,19 @@ void zcl_native_handle_zcode_commons_backlog(
                            zcl_hotswap_service_generation());
     (void)json_push_kv_bool(&reply->data, "simulation_only", true);
     (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
+    (void)json_push_kv_str(&reply->data, "projection_authority",
+                           "canonical_workspace_cas");
+    uint8_t projection_root[32]; char projection_hex[65];
+    if (vcs_zcode_commons_claim_projection_root(
+            projection, projection_root)) {
+        zcl_hex_encode(projection_root, sizeof(projection_root),
+                       projection_hex);
+        (void)json_push_kv_str(&reply->data, "claim_projection_root",
+                               projection_hex);
+    }
+    (void)json_push_kv_int(&reply->data, "cutoff_height",
+                           (int64_t)cutoff_height);
+    (void)json_push_kv_int(&reply->data, "cutoff_mtp", cutoff_mtp);
     (void)json_push_kv_bool(&reply->data, "projection_ready",
                             input.projection_ready);
     (void)json_push_kv_int(&reply->data, "claim_count", input.claim_count);
@@ -628,4 +694,5 @@ void zcl_native_handle_zcode_commons_backlog(
     (void)json_push_kv_str(&reply->data, "blocker", view.reason);
     (void)json_push_kv_str(&reply->data, "next_command", view.next_command);
     zcl_hotswap_service_release(&lease);
+    vcs_zcode_commons_projection_free(projection);
 }

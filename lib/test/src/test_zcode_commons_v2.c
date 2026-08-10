@@ -210,6 +210,9 @@ static int test_v2_truthful_activation_status(void)
 {
     int failures = 0;
     TEST("Family policy selection is not reported as effective enforcement") {
+        char backlog_workspace[256];
+        test_make_tmpdir(backlog_workspace, sizeof(backlog_workspace),
+                         "zcode_commons_v2", "backlog");
         zcl_hotswap_service_reset();
         struct json_value input;
         json_init(&input);
@@ -388,6 +391,9 @@ static int test_v2_truthful_activation_status(void)
 
         json_init(&input);
         json_set_object(&input);
+        json_push_kv_str(&input, "workspace", backlog_workspace);
+        json_push_kv_int(&input, "cutoff_height", 1);
+        json_push_kv_int(&input, "cutoff_mtp", 1);
         request.input = &input;
         zcl_command_reply_init(&reply, "zcl.test.commons_backlog.v1");
         zcl_native_handle_zcode_commons_backlog(&request, &reply);
@@ -440,6 +446,9 @@ static int test_v2_truthful_activation_status(void)
 
         json_init(&input);
         json_set_object(&input);
+        json_push_kv_str(&input, "workspace", backlog_workspace);
+        json_push_kv_int(&input, "cutoff_height", 1);
+        json_push_kv_int(&input, "cutoff_mtp", 1);
         request.input = &input;
         zcl_command_reply_init(&reply, "zcl.test.commons_backlog.v1");
         zcl_native_handle_zcode_commons_backlog(&request, &reply);
@@ -466,6 +475,7 @@ static int test_v2_truthful_activation_status(void)
                       "zcode guide");
         zcl_command_reply_free(&reply);
         json_free(&input);
+        test_rm_rf(backlog_workspace);
         PASS();
     } _test_next:;
     return failures;

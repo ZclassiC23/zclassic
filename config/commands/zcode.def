@@ -501,13 +501,16 @@ ZCL_COMMAND_READY_READ(
     "zcode.commons.backlog", "zcode.commons", "",
     "Show the simulation-only claim backlog",
     "Shows the frozen queue ordering, category rotation and expiry posture. "
-    "Until a signed claim projection exists it reports zero claims and keeps "
-    "issuance disabled; it never reads wallet balances or moves funds.",
+    "Rebuilds signed claims from an explicit scratch-workspace CAS at a "
+    "caller-supplied cutoff and keeps issuance disabled; it never reads "
+    "wallet balances or moves funds.",
     ZCL_COMMAND_LIST_BUDGET,
     "zcode,commons,backlog,claims,economics,simulation,expiry",
-    "zcl.zcode_commons_backlog.input.v1",
-    "zcl.zcode_commons_backlog.v1", "", "",
-    "zclassic23 zcode commons backlog",
+    "zcl.zcode_commons_backlog.input.v2",
+    "zcl.zcode_commons_backlog.v2",
+    "workspace,cutoff_height,cutoff_mtp",
+    "workspace,cutoff_height,cutoff_mtp",
+    "zclassic23 zcode commons backlog --input='{\"workspace\":\"/tmp/zclassic23-zcode-scratch\",\"cutoff_height\":1,\"cutoff_mtp\":1}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_TINY,

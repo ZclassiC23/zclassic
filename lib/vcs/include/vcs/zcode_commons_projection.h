@@ -7,8 +7,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "vcs/zcode_commons_v2.h"
+
 #define VCS_ZCODE_COMMONS_PROJECTION_DOMAIN \
     "zcl.zcode.commons_projection.v1"
+#define VCS_ZCODE_COMMONS_CLAIM_PROJECTION_DOMAIN \
+    "zcl.zcode.commons_claim_projection.v1"
 #define VCS_ZCODE_COMMONS_PROJECTION_MAX_OBJECTS 4096u
 
 enum vcs_zcode_commons_verification_status {
@@ -54,6 +58,16 @@ size_t vcs_zcode_commons_projection_creation_count(
     const struct vcs_zcode_commons_projection *projection);
 size_t vcs_zcode_commons_projection_epoch_count(
     const struct vcs_zcode_commons_projection *projection);
+bool vcs_zcode_commons_claim_projection_ready(
+    const struct vcs_zcode_commons_projection *projection);
+size_t vcs_zcode_commons_projection_claim_count(
+    const struct vcs_zcode_commons_projection *projection);
+size_t vcs_zcode_commons_projection_eligible_claim_count(
+    const struct vcs_zcode_commons_projection *projection,
+    uint64_t cutoff_height, int64_t cutoff_mtp);
+const struct vcs_zcode_creation_claim_v2 *
+vcs_zcode_commons_projection_claim_at(
+    const struct vcs_zcode_commons_projection *projection, size_t index);
 const struct vcs_zcode_commons_creation_entry *
 vcs_zcode_commons_projection_creation_at(
     const struct vcs_zcode_commons_projection *projection, size_t index);
@@ -67,6 +81,8 @@ uint64_t vcs_zcode_commons_projection_minted_atoms(
 uint64_t vcs_zcode_commons_projection_unissued_atoms(
     const struct vcs_zcode_commons_projection *projection);
 bool vcs_zcode_commons_projection_root(
+    const struct vcs_zcode_commons_projection *projection, uint8_t out[32]);
+bool vcs_zcode_commons_claim_projection_root(
     const struct vcs_zcode_commons_projection *projection, uint8_t out[32]);
 bool vcs_zcode_commons_projection_first_failure(
     const struct vcs_zcode_commons_projection *projection,

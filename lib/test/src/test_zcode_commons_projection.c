@@ -3,8 +3,13 @@
  * rebuild-from-CAS of the Living Commons projection. */
 #include "test/test_core.h"
 
+#include "base/hex.h"
+#include "command/native_command.h"
+#include "config/command_catalog.h"
+#include "json/json.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_commons_projection.h"
+#include "vcs/zcode_creation_claim.h"
 #include "vcs/zcode_creation_attribution.h"
 #include "vcs/zcode_epoch_creation.h"
 
@@ -101,6 +106,203 @@ static bool commons_store_epoch(
                                            wire_len);
     free(wire);
     return stored;
+}
+
+static void commons_claim_fixture(
+    struct vcs_zcode_creation_claim_wire_v2 *claim, uint8_t value,
+    uint64_t maturity_height, int64_t maturity_mtp, uint16_t flags)
+{
+    uint8_t seed[32];
+    memset(claim, 0, sizeof(*claim));
+    memset(seed, (uint8_t)(value + 31u), sizeof(seed));
+    claim->schema_version = VCS_ZCODE_CREATION_CLAIM_V2_VERSION;
+    claim->flags = flags;
+    claim->category = value % VCS_ZCODE_COMMONS_CATEGORY_COUNT;
+    commons_fill(claim->recipient_binding_root, value);
+    commons_fill(claim->workspace_lineage_root, (uint8_t)(value + 1u));
+    commons_fill(claim->semantic_lineage_root, (uint8_t)(value + 2u));
+    commons_fill(claim->evidence_root, (uint8_t)(value + 3u));
+    commons_fill(claim->commons_admission_root, (uint8_t)(value + 4u));
+    claim->maturity_height = maturity_height;
+    claim->maturity_mtp = maturity_mtp;
+    (void)vcs_zcode_creation_claim_wire_v2_sign(claim, seed);
+}
+
+static bool commons_store_claim(
+    const char *workspace,
+    const struct vcs_zcode_creation_claim_wire_v2 *claim,
+    uint8_t root_out[32])
+{
+    uint8_t wire[VCS_ZCODE_CREATION_CLAIM_WIRE_BYTES];
+    size_t wire_len = 0;
+    return vcs_zcode_creation_claim_wire_v2_encode(
+               claim, wire, sizeof(wire), &wire_len) ==
+               VCS_ZCODE_CREATION_CLAIM_OK &&
+           vcs_zcode_creation_claim_wire_v2_root(claim, root_out) ==
+               VCS_ZCODE_CREATION_CLAIM_OK &&
+           vcs_object_put_addressed(workspace, root_out, wire, wire_len);
+}
+
+static int creation_claim_object_test(void)
+{
+    int failures = 0;
+    TEST("signed creation claim has canonical bytes and fails closed") {
+        struct vcs_zcode_creation_claim_wire_v2 claim;
+        commons_claim_fixture(&claim, 9, 1234, 5678,
+                              VCS_ZCODE_CLAIM_V2_REQUIRED_FLAGS);
+        ASSERT_EQ(vcs_zcode_creation_claim_wire_v2_validate(&claim),
+                  VCS_ZCODE_CREATION_CLAIM_OK);
+        uint8_t first[VCS_ZCODE_CREATION_CLAIM_WIRE_BYTES];
+        uint8_t second[VCS_ZCODE_CREATION_CLAIM_WIRE_BYTES];
+        size_t first_len = 0, second_len = 0;
+        ASSERT_EQ(vcs_zcode_creation_claim_wire_v2_encode(
+                      &claim, first, sizeof(first), &first_len),
+                  VCS_ZCODE_CREATION_CLAIM_OK);
+        ASSERT_EQ(first_len, VCS_ZCODE_CREATION_CLAIM_WIRE_BYTES);
+        struct vcs_zcode_creation_claim_wire_v2 parsed;
+        ASSERT_EQ(vcs_zcode_creation_claim_wire_v2_decode(
+                      &parsed, first, first_len),
+                  VCS_ZCODE_CREATION_CLAIM_OK);
+        ASSERT_EQ(vcs_zcode_creation_claim_wire_v2_encode(
+                      &parsed, second, sizeof(second), &second_len),
+                  VCS_ZCODE_CREATION_CLAIM_OK);
+        ASSERT(first_len == second_len &&
+               memcmp(first, second, first_len) == 0);
+        uint8_t root_a[32], root_b[32];
+        ASSERT_EQ(vcs_zcode_creation_claim_wire_v2_root(&claim, root_a),
+                  VCS_ZCODE_CREATION_CLAIM_OK);
+        ASSERT_EQ(vcs_zcode_creation_claim_wire_v2_root(&parsed, root_b),
+                  VCS_ZCODE_CREATION_CLAIM_OK);
+        ASSERT(memcmp(root_a, root_b, sizeof(root_a)) == 0);
+        uint8_t expected_root[32];
+        char claim_root_hex[65];
+        zcl_hex_encode(root_a, sizeof(root_a), claim_root_hex);
+        printf("creation_claim.v2=%s\n", claim_root_hex);
+        ASSERT(zcl_hex_decode(VCS_ZCODE_CREATION_CLAIM_KAT_ROOT,
+                              expected_root, sizeof(expected_root)));
+        ASSERT(memcmp(root_a, expected_root, sizeof(root_a)) == 0);
+        for (size_t cut = 0; cut < first_len; cut++)
+            ASSERT_EQ(vcs_zcode_creation_claim_wire_v2_decode(
+                          &parsed, first, cut),
+                      VCS_ZCODE_CREATION_CLAIM_WIRE_SIZE);
+        first[first_len - 1u] ^= 1u;
+        ASSERT_EQ(vcs_zcode_creation_claim_wire_v2_decode(
+                      &parsed, first, first_len),
+                  VCS_ZCODE_CREATION_CLAIM_SIGNATURE);
+        struct vcs_zcode_creation_claim_wire_v2 zero = {0};
+        ASSERT(memcmp(&parsed, &zero, sizeof(parsed)) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int commons_claim_projection_test(void)
+{
+    int failures = 0;
+    TEST("signed claim projection rebuilds, orders and filters by cutoff") {
+        char workspace[256];
+        test_make_tmpdir(workspace, sizeof(workspace),
+                         "zcode_commons_claim_projection", "valid");
+        ASSERT(vcs_object_store_init(workspace));
+        struct vcs_zcode_creation_claim_wire_v2 mature, future, retracted;
+        commons_claim_fixture(&future, 12, 300, 3000,
+                              VCS_ZCODE_CLAIM_V2_REQUIRED_FLAGS);
+        commons_claim_fixture(&mature, 11, 100, 1000,
+                              VCS_ZCODE_CLAIM_V2_REQUIRED_FLAGS);
+        commons_claim_fixture(&retracted, 13, 200, 2000,
+                              VCS_ZCODE_CLAIM_V2_REQUIRED_FLAGS |
+                              VCS_ZCODE_CLAIM_V2_RETRACTED);
+        uint8_t roots[3][32];
+        ASSERT(commons_store_claim(workspace, &future, roots[0]));
+        ASSERT(commons_store_claim(workspace, &mature, roots[1]));
+        ASSERT(commons_store_claim(workspace, &retracted, roots[2]));
+
+        struct vcs_zcode_commons_projection *first =
+            vcs_zcode_commons_projection_build(workspace);
+        ASSERT(first);
+        ASSERT(vcs_zcode_commons_claim_projection_ready(first));
+        ASSERT_EQ(vcs_zcode_commons_projection_claim_count(first), 3);
+        ASSERT_EQ(vcs_zcode_commons_projection_eligible_claim_count(
+                      first, 250, 2500), 1);
+        ASSERT_EQ(vcs_zcode_commons_projection_claim_at(first, 0)
+                      ->maturity_height, 100);
+        ASSERT_EQ(vcs_zcode_commons_projection_claim_at(first, 1)
+                      ->maturity_height, 200);
+        ASSERT_EQ(vcs_zcode_commons_projection_claim_at(first, 2)
+                      ->maturity_height, 300);
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        json_push_kv_str(&input, "workspace", workspace);
+        json_push_kv_int(&input, "cutoff_height", 250);
+        json_push_kv_int(&input, "cutoff_mtp", 2500);
+        const struct zcl_command_spec *backlog_spec =
+            zcl_command_registry_find(zcl_command_catalog(),
+                                      "zcode.commons.backlog", NULL);
+        char input_why[160] = {0};
+        ASSERT(backlog_spec);
+        ASSERT(zcl_command_registry_input_validate(
+            backlog_spec, &input, input_why, sizeof(input_why)));
+        struct zcl_command_request request = {.input = &input};
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.test.commons_backlog.v2");
+        zcl_native_handle_zcode_commons_backlog(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&reply.data, "projection_ready")));
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "claim_count")), 3);
+        ASSERT_EQ(json_get_int(json_get(&reply.data,
+                                        "eligible_claim_count")), 1);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
+                                            "backlog_readiness")),
+                      "ready:epoch_plan");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "next_command")),
+                      "zcode commons schedule propose plan");
+        ASSERT(!json_get_bool(json_get(&reply.data, "issuance_enabled")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "funds_moved")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        uint8_t first_root[32], rebuilt_root[32];
+        ASSERT(vcs_zcode_commons_claim_projection_root(first, first_root));
+        vcs_zcode_commons_projection_free(first);
+
+        struct vcs_zcode_commons_projection *rebuilt =
+            vcs_zcode_commons_projection_build(workspace);
+        ASSERT(rebuilt);
+        ASSERT(vcs_zcode_commons_claim_projection_root(rebuilt,
+                                                       rebuilt_root));
+        ASSERT(memcmp(first_root, rebuilt_root, sizeof(first_root)) == 0);
+        vcs_zcode_commons_projection_free(rebuilt);
+        test_rm_rf(workspace);
+
+        char corrupt_workspace[256];
+        test_make_tmpdir(corrupt_workspace, sizeof(corrupt_workspace),
+                         "zcode_commons_claim_projection", "corrupt");
+        ASSERT(vcs_object_store_init(corrupt_workspace));
+        uint8_t wire[VCS_ZCODE_CREATION_CLAIM_WIRE_BYTES];
+        size_t wire_len = 0;
+        ASSERT_EQ(vcs_zcode_creation_claim_wire_v2_encode(
+                      &mature, wire, sizeof(wire), &wire_len),
+                  VCS_ZCODE_CREATION_CLAIM_OK);
+        uint8_t address[32];
+        ASSERT_EQ(vcs_zcode_creation_claim_wire_v2_root(&mature, address),
+                  VCS_ZCODE_CREATION_CLAIM_OK);
+        wire[wire_len - 1u] ^= 1u;
+        ASSERT(vcs_object_put_addressed(corrupt_workspace, address, wire,
+                                        wire_len));
+        rebuilt = vcs_zcode_commons_projection_build(corrupt_workspace);
+        ASSERT(rebuilt);
+        ASSERT(!vcs_zcode_commons_claim_projection_ready(rebuilt));
+        ASSERT_EQ(vcs_zcode_commons_projection_claim_count(rebuilt), 0);
+        uint8_t failure_root[32]; const char *failure_reason = NULL;
+        ASSERT(vcs_zcode_commons_projection_first_failure(
+            rebuilt, failure_root, &failure_reason));
+        ASSERT(memcmp(failure_root, address, sizeof(address)) == 0);
+        ASSERT_STR_EQ(failure_reason, "claim-root-wire-or-signature");
+        vcs_zcode_commons_projection_free(rebuilt);
+        test_rm_rf(corrupt_workspace);
+        PASS();
+    } _test_next:;
+    return failures;
 }
 
 static int epoch_creation_accounting_test(void)
@@ -567,7 +769,9 @@ static int commons_accounting_failures_test(void)
 
 int test_zcode_commons_projection(void)
 {
-    return epoch_creation_accounting_test() +
+    return creation_claim_object_test() +
+           commons_claim_projection_test() +
+           epoch_creation_accounting_test() +
            epoch_creation_verify_failclosed_test() +
            commons_rebuild_identity_test() +
            commons_accounting_failures_test();

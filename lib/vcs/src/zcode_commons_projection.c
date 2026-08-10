@@ -10,6 +10,7 @@
 #include "crypto/sha3.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_creation_attribution.h"
+#include "vcs/zcode_creation_claim.h"
 #include "vcs/zcode_epoch_creation.h"
 
 #include <dirent.h>
@@ -23,18 +24,23 @@ static const uint8_t creation_magic[8] =
     {'Z','C','C','R','E','A','\r','\n'};
 static const uint8_t epoch_magic[8] =
     {'Z','C','E','P','O','C','\r','\n'};
+static const uint8_t claim_magic[8] =
+    {'Z','C','C','L','M','2',0,0};
 
 struct vcs_zcode_commons_projection {
     struct vcs_zcode_commons_creation_entry *creations;
     size_t creation_count;
     struct vcs_zcode_commons_epoch_entry *epochs;
     size_t epoch_count;
+    struct vcs_zcode_creation_claim_v2 *claims;
+    size_t claim_count;
     struct commons_epoch_ref *refs;
     size_t ref_count;
     uint64_t attributed_atoms;
     uint64_t minted_atoms;
     uint64_t unissued_atoms;
     enum vcs_zcode_commons_verification_status status;
+    bool scan_complete;
     bool has_failure;
     uint8_t failure_root[32];
     char failure_reason[48];
@@ -79,6 +85,39 @@ static int commons_epoch_cmp(const void *left, const void *right)
     return memcmp(((const struct vcs_zcode_commons_epoch_entry *)left)->root,
                   ((const struct vcs_zcode_commons_epoch_entry *)right)->root,
                   32);
+}
+
+static int commons_claim_cmp(const void *left, const void *right)
+{
+    const struct vcs_zcode_creation_claim_v2 *a = left;
+    const struct vcs_zcode_creation_claim_v2 *b = right;
+    if (a->maturity_height != b->maturity_height)
+        return a->maturity_height < b->maturity_height ? -1 : 1;
+    if (a->maturity_mtp != b->maturity_mtp)
+        return a->maturity_mtp < b->maturity_mtp ? -1 : 1;
+    return memcmp(a->claim_root, b->claim_root, 32);
+}
+
+static void commons_consider_claim(
+    struct vcs_zcode_commons_projection *projection, const uint8_t address[32],
+    const uint8_t *wire, size_t wire_len)
+{
+    struct vcs_zcode_creation_claim_wire_v2 claim;
+    uint8_t root[32];
+    if (vcs_zcode_creation_claim_wire_v2_decode(&claim, wire, wire_len) !=
+            VCS_ZCODE_CREATION_CLAIM_OK ||
+        vcs_zcode_creation_claim_wire_v2_root(&claim, root) !=
+            VCS_ZCODE_CREATION_CLAIM_OK || memcmp(root, address, 32) != 0) {
+        commons_failure(projection, address,
+                        "claim-root-wire-or-signature");
+        return;
+    }
+    if (projection->claim_count >= VCS_ZCODE_COMMONS_PROJECTION_MAX_OBJECTS) {
+        commons_failure(projection, address, "claim-cap");
+        return;
+    }
+    vcs_zcode_creation_claim_wire_v2_selection(
+        &claim, address, &projection->claims[projection->claim_count++]);
 }
 
 static void commons_consider_creation(
@@ -251,6 +290,9 @@ static void commons_consider(struct vcs_zcode_commons_projection *projection,
     if (wire_len == VCS_ZCODE_CREATION_ATTRIBUTION_WIRE_BYTES &&
         memcmp(wire, creation_magic, 8) == 0)
         commons_consider_creation(projection, address, wire, wire_len);
+    else if (wire_len == VCS_ZCODE_CREATION_CLAIM_WIRE_BYTES &&
+             memcmp(wire, claim_magic, 8) == 0)
+        commons_consider_claim(projection, address, wire, wire_len);
     else if (wire_len >= VCS_ZCODE_EPOCH_CREATION_HEADER_BYTES &&
              memcmp(wire, epoch_magic, 8) == 0)
         commons_consider_epoch(projection, address, wire, wire_len);
@@ -295,10 +337,14 @@ struct vcs_zcode_commons_projection *vcs_zcode_commons_projection_build(
     projection->epochs = zcl_calloc(
         VCS_ZCODE_COMMONS_PROJECTION_MAX_OBJECTS,
         sizeof(*projection->epochs), "zcode_commons_epochs");
+    projection->claims = zcl_calloc(
+        VCS_ZCODE_COMMONS_PROJECTION_MAX_OBJECTS,
+        sizeof(*projection->claims), "zcode_commons_claims");
     projection->refs = zcl_calloc(
         VCS_ZCODE_COMMONS_PROJECTION_MAX_OBJECTS,
         sizeof(*projection->refs), "zcode_commons_attribution_refs");
-    if (!projection->creations || !projection->epochs || !projection->refs) {
+    if (!projection->creations || !projection->epochs ||
+        !projection->claims || !projection->refs) {
         vcs_zcode_commons_projection_free(projection);
         return NULL;
     }
@@ -316,10 +362,13 @@ struct vcs_zcode_commons_projection *vcs_zcode_commons_projection_build(
         if (commons_hex(entry->d_name, 2))
             commons_scan_shard(projection, workspace, objects, entry->d_name);
     closedir(directory);
+    projection->scan_complete = true;
     qsort(projection->creations, projection->creation_count,
           sizeof(*projection->creations), commons_creation_cmp);
     qsort(projection->epochs, projection->epoch_count,
           sizeof(*projection->epochs), commons_epoch_cmp);
+    qsort(projection->claims, projection->claim_count,
+          sizeof(*projection->claims), commons_claim_cmp);
     commons_check_accounting(projection);
     projection->status = projection->has_failure
         ? VCS_ZCODE_COMMONS_PARTIAL
@@ -333,6 +382,7 @@ void vcs_zcode_commons_projection_free(
 {
     if (!projection) return;
     free(projection->refs);
+    free(projection->claims);
     free(projection->epochs);
     free(projection->creations);
     free(projection);
@@ -350,6 +400,41 @@ size_t vcs_zcode_commons_projection_creation_count(
 size_t vcs_zcode_commons_projection_epoch_count(
     const struct vcs_zcode_commons_projection *projection)
 { return projection ? projection->epoch_count : 0; }
+
+bool vcs_zcode_commons_claim_projection_ready(
+    const struct vcs_zcode_commons_projection *projection)
+{ return projection && projection->scan_complete && !projection->has_failure; }
+
+size_t vcs_zcode_commons_projection_claim_count(
+    const struct vcs_zcode_commons_projection *projection)
+{ return projection ? projection->claim_count : 0; }
+
+size_t vcs_zcode_commons_projection_eligible_claim_count(
+    const struct vcs_zcode_commons_projection *projection,
+    uint64_t cutoff_height, int64_t cutoff_mtp)
+{
+    if (!vcs_zcode_commons_claim_projection_ready(projection) ||
+        cutoff_height == 0 || cutoff_mtp <= 0)
+        return 0;
+    size_t eligible = 0;
+    for (size_t i = 0; i < projection->claim_count; i++) {
+        const struct vcs_zcode_creation_claim_v2 *claim =
+            &projection->claims[i];
+        if ((claim->flags & VCS_ZCODE_CLAIM_V2_REQUIRED_FLAGS) ==
+                VCS_ZCODE_CLAIM_V2_REQUIRED_FLAGS &&
+            (claim->flags & VCS_ZCODE_CLAIM_V2_INVALIDATING_FLAGS) == 0 &&
+            claim->maturity_height <= cutoff_height &&
+            claim->maturity_mtp <= cutoff_mtp)
+            eligible++;
+    }
+    return eligible;
+}
+
+const struct vcs_zcode_creation_claim_v2 *
+vcs_zcode_commons_projection_claim_at(
+    const struct vcs_zcode_commons_projection *projection, size_t index)
+{ return projection && index < projection->claim_count
+    ? &projection->claims[index] : NULL; }
 
 const struct vcs_zcode_commons_creation_entry *
 vcs_zcode_commons_projection_creation_at(
@@ -392,6 +477,26 @@ bool vcs_zcode_commons_projection_root(
         sha3_256_write(&sha, projection->epochs[i].root, 32);
     uint8_t status = (uint8_t)projection->status;
     sha3_256_write(&sha, &status, sizeof(status));
+    sha3_256_write(&sha, projection->failure_root, 32);
+    sha3_256_finalize(&sha, out);
+    return true;
+}
+
+bool vcs_zcode_commons_claim_projection_root(
+    const struct vcs_zcode_commons_projection *projection, uint8_t out[32])
+{
+    if (!projection || !out) return false;
+    struct sha3_256_ctx sha; uint8_t le[8];
+    sha3_256_init(&sha);
+    sha3_256_write(&sha,
+        (const uint8_t *)VCS_ZCODE_COMMONS_CLAIM_PROJECTION_DOMAIN,
+        sizeof(VCS_ZCODE_COMMONS_CLAIM_PROJECTION_DOMAIN));
+    zcl_write_u64_le(le, projection->claim_count);
+    sha3_256_write(&sha, le, sizeof(le));
+    for (size_t i = 0; i < projection->claim_count; i++)
+        sha3_256_write(&sha, projection->claims[i].claim_root, 32);
+    uint8_t ready = vcs_zcode_commons_claim_projection_ready(projection);
+    sha3_256_write(&sha, &ready, sizeof(ready));
     sha3_256_write(&sha, projection->failure_root, 32);
     sha3_256_finalize(&sha, out);
     return true;

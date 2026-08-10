@@ -95,7 +95,7 @@ static bool render_backlog_status(
         (void)snprintf(out->readiness, sizeof(out->readiness), "%s",
                        ZCODE_C23_BACKLOG_PROJECTION_MISSING);
         (void)snprintf(out->reason, sizeof(out->reason), "%s",
-                       "claim/backlog projection is not implemented; issuance selection is unavailable");
+                       "the verified claim projection is unavailable or incomplete; issuance selection is unavailable");
         (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
                        ZCODE_C23_BACKLOG_ECONOMICS_NEXT);
     } else if (input->claim_count == 0) {
