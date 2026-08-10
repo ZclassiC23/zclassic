@@ -36,6 +36,27 @@
  * (before anything writes to the datadir) and by node_db_migrate()'s
  * own recheck. */
 void node_db_log_newer_schema_refusal(int current_ver);
+void node_db_log_unknown_schema_refusal(const char *detail);
+
+/* Existing-file schema preflight. This runs before database.c opens a
+ * write-capable handle or applies journal_mode=WAL. FRESH includes a missing
+ * path and a genuinely empty SQLite store; SUPPORTED means an exact, readable
+ * 4-byte schema marker in this binary's supported range. */
+enum node_db_schema_preflight_state {
+    NODE_DB_SCHEMA_PREFLIGHT_FRESH = 0,
+    NODE_DB_SCHEMA_PREFLIGHT_SUPPORTED,
+    NODE_DB_SCHEMA_PREFLIGHT_NEWER,
+    NODE_DB_SCHEMA_PREFLIGHT_UNKNOWN,
+};
+
+struct node_db_schema_preflight {
+    enum node_db_schema_preflight_state state;
+    int32_t version;
+    const char *detail;
+};
+
+struct node_db_schema_preflight node_db_schema_preflight_existing(
+    const char *path);
 
 /* Apply the app-feature migration blocks (schema v14+): store products
  * and orders, ZCL Market file offers, ZNAM name registry, ZMSG

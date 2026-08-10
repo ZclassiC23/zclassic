@@ -32,6 +32,17 @@ void node_db_log_newer_schema_refusal(int current_ver)
     fflush(stderr);
 }
 
+void node_db_log_unknown_schema_refusal(const char *detail)
+{
+    LOG_WARN("model",
+        "\nFATAL: SCHEMA_VERSION_UNKNOWN for node.db (%s).\n"
+        "       Refusing before any write-capable open because this existing\n"
+        "       database cannot be proved fresh or supported. Restore a known\n"
+        "       database family or use a binary that understands its schema.\n",
+        detail ? detail : "no detail");
+    fflush(stderr);
+}
+
 bool node_db_state_set(struct node_db *ndb, const char *key,
                        const void *value, size_t len)
 {

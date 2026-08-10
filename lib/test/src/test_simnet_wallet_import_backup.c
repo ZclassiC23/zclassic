@@ -51,6 +51,7 @@
 #include "wallet/wallet_sqlite.h"
 
 #include "services/wallet_backup_service.h"
+#include "services/wallet_restore_service.h"
 
 #include "storage/disk_block_io.h"
 #include "validation/main_state.h"
@@ -660,17 +661,36 @@ static int part2_backup_restore(void)
         wallet_backup_encrypt_file(plainpath, encpath, passphrase).ok;
     IB_CHECK("part2: encrypt the backup", enc_ok);
 
-    /* ── Restore into a FRESH datadir ── */
+    /* ── Restore into a FRESH datadir through the real merge lifecycle ──
+     *
+     * A wallet backup is deliberately a partial SQLite store: its CTAS
+     * wallet tables are evidence to merge, not a complete node.db schema.
+     * Installing the decrypted file directly as node.db used to rely on the
+     * open ceremony mistaking missing node_state for fresh schema 0. The
+     * fail-closed schema preflight correctly rejects that shape. Exercise the
+     * production restore service, which inspects the partial artifact and
+     * merges it into a freshly initialized target node.db. */
     char restored_db[576];
     snprintf(restored_db, sizeof(restored_db), "%s/node.db", restoredir);
-    bool dec_ok = enc_ok &&
-        wallet_backup_decrypt_file(encpath, restored_db, passphrase).ok;
-    IB_CHECK("part2: decrypt with the correct passphrase restores a file",
-             dec_ok);
+    struct wallet_restore_request restore_req = {
+        .backup_path = encpath,
+        .datadir = restoredir,
+        .password = passphrase,
+        .dry_run = false,
+    };
+    struct wallet_restore_report restore_rep;
+    struct zcl_result restore_r = enc_ok
+        ? wallet_restore_run(&restore_req, &restore_rep)
+        : ZCL_ERR(-1, "encrypted backup was not produced");
+    bool restore_ok = restore_r.ok && restore_rep.source_was_encrypted &&
+                      restore_rep.target_created;
+    IB_CHECK("part2: explicit restore lifecycle decrypts and merges backup",
+             restore_ok);
 
     struct node_db ndb_restored;
     memset(&ndb_restored, 0, sizeof(ndb_restored));
-    bool opened_restored = dec_ok && node_db_open(&ndb_restored, restored_db);
+    bool opened_restored = restore_ok &&
+                           node_db_open(&ndb_restored, restored_db);
     IB_CHECK("part2: restored node.db opens", opened_restored);
 
     if (opened_restored) {

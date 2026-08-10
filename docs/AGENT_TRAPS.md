@@ -107,7 +107,7 @@ historical fixture passes, then deploy/restart intentionally.
   headers and the target-specific `-Og`/hot-bucket `-O2` split, then records
   hash/freshness metadata. clangd is optional and its absence is not an index
   generation failure.
-- **FIXED 2026-08-10 (c8b5dae0b) — node_db newer-schema refusal used to
+- **FIXED 2026-08-10 (d032f1c36, integrated commit) — node_db newer-schema refusal used to
   fire only AFTER the open ceremony had already written to the datadir.**
   The old order ran quick_check (whose failure path quarantines/renames
   node.db and rebuilds it empty), create_schema() (re-creating baseline
@@ -117,14 +117,22 @@ historical fixture passes, then deploy/restart intentionally.
   teardown of that half-opened `node_db` could print
   `double free or corruption (!prev)` (surfaced 2026-08-09 in
   test_file_market "restart reconstructs verified content reader"). The
-  fix moves the refusal to a read-only `db_peek_schema_version()`
-  preflight immediately after `db_open_raw`, before anything that can
-  write/rename/quarantine, and makes `node_db_open_abort()` leave the
-  struct close-harmless (db NULL, open false, state destroyed) so
-  repeated refusal + unconditional close is a guarded no-op. Pinned by
-  the strengthened `test_db_migration_idempotent` subtest: 8 refused
-  open/close rounds, datadir SHA3+size unchanged, no WAL/SHM residue,
-  clean under ASan+UBSan. Do not reintroduce writes before the refusal.
+  integrated first fix moved the refusal ahead of quick_check/schema/migration.
+  The completed guard now runs `node_db_schema_preflight_existing()` before
+  `db_open_raw` itself, so READWRITE|CREATE and `journal_mode=WAL` are still
+  unreachable until the existing marker is proved readable and supported.
+  It distinguishes absent/empty, supported, newer, and
+  `SCHEMA_VERSION_UNKNOWN`; a malformed, missing, wrong-width, contradictory,
+  unsupported, or unreadable marker fails closed. WAL selection matters:
+  immutable inode-bound inspection is used only for a quiet WAL with no
+  wal-index, while an existing WAL+SHM pair is read normally so committed
+  uncheckpointed frames remain authoritative. Pinned by
+  `test_db_migration_idempotent`: DELETE, clean-WAL and uncheckpointed-WAL
+  refusals; malformed/missing/contradictory stores; 8 refused open/close
+  rounds; and complete node.db/WAL/SHM/journal family SHA3, size, existence and
+  metadata equality. `node_db_open_abort()` leaves the struct close-harmless
+  (db NULL, open false, state destroyed), including double-close. Do not
+  reintroduce any write-capable open before this preflight.
 - **FIXED 2026-08-10 (82f94e65d) — a group that passes isolated but fails
   in the monolithic suite is not always a poisoned victim; check
   context-dependent OUTPUT SIZE first.** `test_test_group_selector`

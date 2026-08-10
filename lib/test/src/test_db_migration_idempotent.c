@@ -13,10 +13,12 @@
 #include "models/database.h"
 #include "sha3/sha3.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -62,6 +64,150 @@ static bool db_mig_hash_file(const char *path, uint8_t out[32],
     if (size_out)
         *size_out = st.st_size;
     return true;
+}
+
+#define DB_MIG_FAMILY_MAX 16
+
+struct db_mig_family_file {
+    char name[256];
+    off_t size;
+    mode_t mode;
+    struct timespec mtime;
+    struct timespec ctime;
+    uint8_t sha3[32];
+};
+
+struct db_mig_family_snapshot {
+    size_t count;
+    struct timespec dir_mtime;
+    struct timespec dir_ctime;
+    struct db_mig_family_file files[DB_MIG_FAMILY_MAX];
+};
+
+static int db_mig_family_file_cmp(const void *a, const void *b)
+{
+    const struct db_mig_family_file *fa = a;
+    const struct db_mig_family_file *fb = b;
+    return strcmp(fa->name, fb->name);
+}
+
+/* Snapshot every directory entry in the SQLite database family, not merely
+ * node.db.  A refusal that creates/deletes/changes WAL, SHM, rollback-journal
+ * or master-journal state has mutated the database even when node.db itself
+ * still hashes the same.  atime is deliberately excluded: hashing the input
+ * is itself a read, while mtime/ctime and directory timestamps are avoidable. */
+static bool db_mig_snapshot_family(const char *dbpath,
+                                   struct db_mig_family_snapshot *out)
+{
+    if (!dbpath || !out)
+        return false;
+    memset(out, 0, sizeof(*out));
+
+    const char *slash = strrchr(dbpath, '/');
+    if (!slash || slash == dbpath || slash[1] == '\0')
+        return false;
+    char dir[512];
+    size_t dir_len = (size_t)(slash - dbpath);
+    if (dir_len >= sizeof(dir))
+        return false;
+    memcpy(dir, dbpath, dir_len);
+    dir[dir_len] = '\0';
+    const char *base = slash + 1;
+    size_t base_len = strlen(base);
+
+    struct stat dst;
+    if (stat(dir, &dst) != 0)
+        return false;
+    out->dir_mtime = dst.st_mtim;
+    out->dir_ctime = dst.st_ctim;
+
+    DIR *d = opendir(dir);
+    if (!d)
+        return false;
+    bool ok = true;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (strncmp(de->d_name, base, base_len) != 0)
+            continue;
+        char next = de->d_name[base_len];
+        if (next != '\0' && next != '-' && next != '.')
+            continue;
+        if (out->count >= DB_MIG_FAMILY_MAX) {
+            ok = false;
+            break;
+        }
+        struct db_mig_family_file *f = &out->files[out->count];
+        if (snprintf(f->name, sizeof(f->name), "%s", de->d_name) <= 0) {
+            ok = false;
+            break;
+        }
+        char path[800];
+        int n = snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+        struct stat st;
+        if (n <= 0 || (size_t)n >= sizeof(path) || stat(path, &st) != 0 ||
+            !S_ISREG(st.st_mode) ||
+            !db_mig_hash_file(path, f->sha3, &f->size)) {
+            ok = false;
+            break;
+        }
+        f->mode = st.st_mode;
+        f->mtime = st.st_mtim;
+        f->ctime = st.st_ctim;
+        out->count++;
+    }
+    closedir(d);
+    if (!ok)
+        return false;
+    qsort(out->files, out->count, sizeof(out->files[0]),
+          db_mig_family_file_cmp);
+    return true;
+}
+
+static bool db_mig_family_same(const struct db_mig_family_snapshot *a,
+                               const struct db_mig_family_snapshot *b)
+{
+    if (!a || !b || a->count != b->count ||
+        a->dir_mtime.tv_sec != b->dir_mtime.tv_sec ||
+        a->dir_mtime.tv_nsec != b->dir_mtime.tv_nsec ||
+        a->dir_ctime.tv_sec != b->dir_ctime.tv_sec ||
+        a->dir_ctime.tv_nsec != b->dir_ctime.tv_nsec)
+        return false;
+    for (size_t i = 0; i < a->count; i++) {
+        const struct db_mig_family_file *fa = &a->files[i];
+        const struct db_mig_family_file *fb = &b->files[i];
+        if (strcmp(fa->name, fb->name) != 0 || fa->size != fb->size ||
+            fa->mode != fb->mode ||
+            fa->mtime.tv_sec != fb->mtime.tv_sec ||
+            fa->mtime.tv_nsec != fb->mtime.tv_nsec ||
+            fa->ctime.tv_sec != fb->ctime.tv_sec ||
+            fa->ctime.tv_nsec != fb->ctime.tv_nsec ||
+            memcmp(fa->sha3, fb->sha3, sizeof(fa->sha3)) != 0)
+            return false;
+    }
+    return true;
+}
+
+static bool db_mig_refuse_close_twice(const char *dbpath)
+{
+    struct node_db rejected;
+    bool opened = node_db_open(&rejected, dbpath);
+    bool ok = !opened && !rejected.open && rejected.db == NULL;
+    node_db_close(&rejected);
+    node_db_close(&rejected);
+    return ok && !rejected.open && rejected.db == NULL;
+}
+
+static bool db_mig_refusal_preserves_family(const char *dbpath, int rounds)
+{
+    struct db_mig_family_snapshot before, after;
+    if (!db_mig_snapshot_family(dbpath, &before))
+        return false;
+    for (int i = 0; i < rounds; i++) {
+        if (!db_mig_refuse_close_twice(dbpath))
+            return false;
+    }
+    return db_mig_snapshot_family(dbpath, &after) &&
+           db_mig_family_same(&before, &after);
 }
 
 /* cwd-relative tmpdir to comply with the "no /tmp" project convention. */
@@ -127,6 +273,67 @@ static bool db_mig_column_exists(sqlite3 *db, const char *table,
     }
     sqlite3_finalize(st);
     return found;
+}
+
+static bool db_mig_is_wal_file(const char *path)
+{
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return false;
+    unsigned char hdr[20] = { 0 };
+    ssize_t got = read(fd, hdr, sizeof(hdr));
+    close(fd);
+    return got == (ssize_t)sizeof(hdr) &&
+           memcmp(hdr, "SQLite format 3", 16) == 0 && hdr[18] == 2;
+}
+
+static bool db_mig_raw_schema(sqlite3 *db, int32_t *version_out)
+{
+    sqlite3_stmt *st = NULL;
+    if (!db || !version_out || sqlite3_prepare_v2(db,
+            "SELECT value FROM node_state WHERE key='schema_version'",
+            -1, &st, NULL) != SQLITE_OK || !st)
+        return false;
+    int rc = sqlite3_step(st);
+    bool ok = rc == SQLITE_ROW &&
+              sqlite3_column_bytes(st, 0) == (int)sizeof(*version_out);
+    if (ok)
+        memcpy(version_out, sqlite3_column_blob(st, 0),
+               sizeof(*version_out));
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool db_mig_replace_schema_blob(sqlite3 *db, const char *hex_blob)
+{
+    char sql[256];
+    int n = snprintf(sql, sizeof(sql),
+                     "UPDATE node_state SET value=X'%s' "
+                     "WHERE key='schema_version'", hex_blob);
+    return n > 0 && (size_t)n < sizeof(sql) && db_mig_exec_raw(db, sql) &&
+           sqlite3_changes(db) == 1;
+}
+
+static bool db_mig_write_junk(const char *path)
+{
+    int fd = open(path, O_WRONLY | O_TRUNC | O_CLOEXEC);
+    if (fd < 0)
+        return false;
+    static const unsigned char junk[] =
+        "not a SQLite database carrying a readable schema marker";
+    size_t off = 0;
+    while (off < sizeof(junk)) {
+        ssize_t n = write(fd, junk + off, sizeof(junk) - off);
+        if (n > 0) {
+            off += (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR)
+            continue;
+        close(fd);
+        return false;
+    }
+    return close(fd) == 0;
 }
 
 static bool db_mig_seed_v20_wallet_notes_db(const char *dbpath)
@@ -389,7 +596,7 @@ static int t_turbo_mode_roundtrip(void)
     return failures;
 }
 
-static int t_newer_schema_refuses_open_before_staging_cleanup(void)
+static int t_newer_schema_delete_refusal_is_zero_mutation(void)
 {
     int failures = 0;
     char dir[256];
@@ -398,7 +605,7 @@ static int t_newer_schema_refuses_open_before_staging_cleanup(void)
     char dbpath[512];
     snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
 
-    TEST("db_mig: newer schema fails closed before staging cleanup") {
+    TEST("db_mig: DELETE-mode newer schema refusal preserves whole family") {
         struct node_db seed;
         ASSERT(node_db_open(&seed, dbpath));
         ASSERT(node_db_exec(&seed,
@@ -411,6 +618,7 @@ static int t_newer_schema_refuses_open_before_staging_cleanup(void)
 
         sqlite3 *raw = NULL;
         ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_exec_raw(raw, "PRAGMA journal_mode=DELETE"));
         ASSERT(db_mig_stamp_schema(raw, NODE_DB_MAX_SCHEMA + 1));
         /* A future schema need not contain every table this older binary
          * knows.  Refusal must happen before create_schema() can add one. */
@@ -418,32 +626,10 @@ static int t_newer_schema_refuses_open_before_staging_cleanup(void)
         sqlite3_close(raw);
         raw = NULL;
 
-        uint8_t before_sha3[32], after_sha3[32];
-        off_t before_size = -1, after_size = -1;
-        ASSERT(db_mig_hash_file(dbpath, before_sha3, &before_size));
-
-        for (int i = 0; i < 8; i++) {
-            struct node_db newer;
-            bool opened = node_db_open(&newer, dbpath);
-            ASSERT(!opened);
-            ASSERT(!newer.open);
-            ASSERT(newer.db == NULL);
-            /* A caller may unconditionally close its output on every failure.
-             * Both the first close and repeated close must be harmless. */
-            node_db_close(&newer);
-            node_db_close(&newer);
-            ASSERT(!newer.open);
-            ASSERT(newer.db == NULL);
-        }
-
-        ASSERT(db_mig_hash_file(dbpath, after_sha3, &after_size));
-        ASSERT_EQ(before_size, after_size);
-        ASSERT(memcmp(before_sha3, after_sha3, sizeof(before_sha3)) == 0);
-        char wal_path[560], shm_path[560];
-        snprintf(wal_path, sizeof(wal_path), "%s-wal", dbpath);
-        snprintf(shm_path, sizeof(shm_path), "%s-shm", dbpath);
-        ASSERT(access(wal_path, F_OK) != 0);
-        ASSERT(access(shm_path, F_OK) != 0);
+        /* Eight complete failure lifecycles, each followed by two unconditional
+         * closes.  The full node.db family and directory metadata must remain
+         * byte-for-byte and entry-for-entry identical. */
+        ASSERT(db_mig_refusal_preserves_family(dbpath, 8));
 
         ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
         ASSERT(db_mig_count(raw,
@@ -458,6 +644,256 @@ static int t_newer_schema_refuses_open_before_staging_cleanup(void)
             "SELECT count(*) FROM node_state "
             "WHERE key='schema_version'") == 1);
         sqlite3_close(raw);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int t_newer_schema_wal_refusal_is_zero_mutation(void)
+{
+    int failures = 0;
+    char dir[256];
+    db_mig_path(dir, sizeof(dir), "newer_wal");
+    mkdir_p(dir);
+    char dbpath[512];
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("db_mig: clean-WAL newer schema refusal preserves whole family") {
+        struct node_db seed;
+        ASSERT(node_db_open(&seed, dbpath));
+        node_db_close(&seed);
+
+        sqlite3 *raw = NULL;
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_exec_raw(raw, "PRAGMA journal_mode=WAL"));
+        ASSERT(db_mig_stamp_schema(raw, NODE_DB_MAX_SCHEMA + 1));
+        sqlite3_close(raw);
+        raw = NULL;
+
+        ASSERT(db_mig_is_wal_file(dbpath));
+        ASSERT(db_mig_refusal_preserves_family(dbpath, 1));
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int t_newer_schema_only_in_uncheckpointed_wal(void)
+{
+    int failures = 0;
+    char dir[256];
+    db_mig_path(dir, sizeof(dir), "newer_live_wal");
+    mkdir_p(dir);
+    char dbpath[512];
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    sqlite3 *writer = NULL;
+    TEST("db_mig: newer marker only in uncheckpointed WAL is refused unchanged") {
+        struct node_db seed;
+        ASSERT(node_db_open(&seed, dbpath));
+        node_db_close(&seed);
+
+        ASSERT(sqlite3_open(dbpath, &writer) == SQLITE_OK);
+        ASSERT(db_mig_exec_raw(writer,
+            "PRAGMA journal_mode=WAL;PRAGMA wal_autocheckpoint=0;"
+            "BEGIN IMMEDIATE"));
+        ASSERT(db_mig_stamp_schema(writer, NODE_DB_MAX_SCHEMA + 1));
+        ASSERT(db_mig_exec_raw(writer, "COMMIT"));
+
+        char wal[560], shm[560];
+        snprintf(wal, sizeof(wal), "%s-wal", dbpath);
+        snprintf(shm, sizeof(shm), "%s-shm", dbpath);
+        struct stat wal_st;
+        ASSERT(stat(wal, &wal_st) == 0 && wal_st.st_size > 0);
+        ASSERT(access(shm, F_OK) == 0);
+
+        /* Anti-vacuous: the ordinary live view sees the future marker, while
+         * immutable=1 (main file only) still sees the supported old marker. */
+        int32_t live_ver = 0, main_ver = 0;
+        ASSERT(db_mig_raw_schema(writer, &live_ver));
+        ASSERT_EQ(live_ver, NODE_DB_MAX_SCHEMA + 1);
+        char uri[640];
+        snprintf(uri, sizeof(uri), "file:%s?mode=ro&immutable=1", dbpath);
+        sqlite3 *main_only = NULL;
+        ASSERT(sqlite3_open_v2(uri, &main_only,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, NULL) == SQLITE_OK);
+        ASSERT(db_mig_raw_schema(main_only, &main_ver));
+        ASSERT(main_ver <= NODE_DB_MAX_SCHEMA);
+        sqlite3_close(main_only);
+
+        ASSERT(db_mig_refusal_preserves_family(dbpath, 1));
+        sqlite3_close(writer);
+        writer = NULL;
+        PASS();
+    } _test_next:;
+    if (writer)
+        sqlite3_close(writer);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int t_wrong_width_schema_marker_refuses_unchanged(void)
+{
+    int failures = 0;
+    char dir[256];
+    char dbpath[512];
+    sqlite3 *raw = NULL;
+
+    db_mig_path(dir, sizeof(dir), "schema_wrong_width");
+    mkdir_p(dir);
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+    TEST("db_mig: malformed wrong-width schema marker refuses unchanged") {
+        struct node_db seed;
+        ASSERT(node_db_open(&seed, dbpath));
+        node_db_close(&seed);
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_replace_schema_blob(raw, "43"));
+        sqlite3_close(raw); raw = NULL;
+        ASSERT(db_mig_refusal_preserves_family(dbpath, 1));
+        PASS();
+    } _test_next:;
+    if (raw) sqlite3_close(raw);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int t_unsupported_schema_marker_refuses_unchanged(void)
+{
+    int failures = 0;
+    char dir[256];
+    char dbpath[512];
+    sqlite3 *raw = NULL;
+    db_mig_path(dir, sizeof(dir), "schema_unsupported");
+    mkdir_p(dir);
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+    TEST("db_mig: unsupported schema marker zero refuses unchanged") {
+        struct node_db seed;
+        ASSERT(node_db_open(&seed, dbpath));
+        node_db_close(&seed);
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_replace_schema_blob(raw, "00000000"));
+        sqlite3_close(raw); raw = NULL;
+        ASSERT(db_mig_refusal_preserves_family(dbpath, 1));
+        PASS();
+    } _test_next:;
+    if (raw) sqlite3_close(raw);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int t_contradictory_schema_markers_refuse_unchanged(void)
+{
+    int failures = 0;
+    char dir[256];
+    char dbpath[512];
+    sqlite3 *raw = NULL;
+    db_mig_path(dir, sizeof(dir), "schema_contradictory");
+    mkdir_p(dir);
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+    TEST("db_mig: contradictory duplicate schema markers refuse unchanged") {
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_exec_raw(raw,
+            "CREATE TABLE node_state(key TEXT,value BLOB);"
+            "INSERT INTO node_state VALUES('schema_version',X'01000000');"
+            "INSERT INTO node_state VALUES('schema_version',X'02000000')"));
+        sqlite3_close(raw); raw = NULL;
+        ASSERT(db_mig_refusal_preserves_family(dbpath, 1));
+        PASS();
+    } _test_next:;
+    if (raw) sqlite3_close(raw);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int t_unreadable_schema_store_refuses_unchanged(void)
+{
+    int failures = 0;
+    char dir[256];
+    char dbpath[512];
+    sqlite3 *raw = NULL;
+    db_mig_path(dir, sizeof(dir), "schema_unreadable");
+    mkdir_p(dir);
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+    TEST("db_mig: unreadable schema store refuses without quarantine") {
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_exec_raw(raw,
+            "CREATE TABLE node_state(key TEXT PRIMARY KEY,value BLOB);"
+            "INSERT INTO node_state VALUES('schema_version',X'01000000')"));
+        sqlite3_close(raw); raw = NULL;
+        ASSERT(db_mig_write_junk(dbpath));
+        ASSERT(db_mig_refusal_preserves_family(dbpath, 1));
+        PASS();
+    } _test_next:;
+    if (raw) sqlite3_close(raw);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int t_missing_node_state_refuses_unchanged(void)
+{
+    int failures = 0;
+    char dir[256];
+    char dbpath[512];
+    sqlite3 *raw = NULL;
+
+    db_mig_path(dir, sizeof(dir), "missing_node_state");
+    mkdir_p(dir);
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+    TEST("db_mig: recognized tables without node_state refuse unchanged") {
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_exec_raw(raw,
+            "CREATE TABLE blocks(hash BLOB PRIMARY KEY,height INTEGER)"));
+        sqlite3_close(raw); raw = NULL;
+        ASSERT(db_mig_refusal_preserves_family(dbpath, 1));
+        PASS();
+    } _test_next:;
+    if (raw) sqlite3_close(raw);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int t_existing_empty_database_may_initialize(void)
+{
+    int failures = 0;
+    char dir[256];
+    char dbpath[512];
+    sqlite3 *raw = NULL;
+    db_mig_path(dir, sizeof(dir), "existing_empty");
+    mkdir_p(dir);
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+    TEST("db_mig: genuinely empty existing SQLite database may initialize") {
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        sqlite3_close(raw); raw = NULL;
+        struct node_db fresh;
+        ASSERT(node_db_open(&fresh, dbpath));
+        ASSERT_EQ(node_db_schema_version(&fresh), NODE_DB_SCHEMA_LATEST);
+        node_db_close(&fresh);
+        PASS();
+    } _test_next:;
+    if (raw) sqlite3_close(raw);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int t_supported_current_schema_reopens_normally(void)
+{
+    int failures = 0;
+    char dir[256];
+    db_mig_path(dir, sizeof(dir), "supported_current");
+    mkdir_p(dir);
+    char dbpath[512];
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("db_mig: supported current schema passes preflight and remains writable") {
+        struct node_db first;
+        ASSERT(node_db_open(&first, dbpath));
+        ASSERT_EQ(node_db_schema_version(&first), NODE_DB_SCHEMA_LATEST);
+        node_db_close(&first);
+        struct node_db reopened;
+        ASSERT(node_db_open(&reopened, dbpath));
+        ASSERT(node_db_state_set(&reopened, "preflight_supported", "yes", 3));
+        node_db_close(&reopened);
         PASS();
     } _test_next:;
     test_cleanup_tmpdir(dir);
@@ -520,7 +956,16 @@ int test_db_migration_idempotent(void)
     failures += t_market_content_registry_schema();
     failures += t_memory_open();
     failures += t_turbo_mode_roundtrip();
-    failures += t_newer_schema_refuses_open_before_staging_cleanup();
+    failures += t_newer_schema_delete_refusal_is_zero_mutation();
+    failures += t_newer_schema_wal_refusal_is_zero_mutation();
+    failures += t_newer_schema_only_in_uncheckpointed_wal();
+    failures += t_wrong_width_schema_marker_refuses_unchanged();
+    failures += t_unsupported_schema_marker_refuses_unchanged();
+    failures += t_contradictory_schema_markers_refuse_unchanged();
+    failures += t_unreadable_schema_store_refuses_unchanged();
+    failures += t_missing_node_state_refuses_unchanged();
+    failures += t_existing_empty_database_may_initialize();
+    failures += t_supported_current_schema_reopens_normally();
     failures += t_v29_incompatible_schema_fails_without_stamp();
     return failures;
 }

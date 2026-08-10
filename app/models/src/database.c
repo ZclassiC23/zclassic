@@ -503,26 +503,6 @@ static void finalize_statements(struct node_db *ndb)
     sqlite3_finalize(ndb->stmt_vint_insert);
 }
 
-/* Read the persisted schema_version straight off the raw handle, BEFORE the
- * open ceremony touches the file. Read-only and tolerant: a fresh datadir
- * has no node_state table yet and reports 0 (unmigrated), exactly like
- * node_db_schema_version(); a file too corrupt to prepare against also
- * reports 0 — the quick_check/quarantine path below owns that case. */
-static int32_t db_peek_schema_version(sqlite3 *db)
-{
-    sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT value FROM node_state WHERE key='schema_version'",
-            -1, &stmt, NULL) != SQLITE_OK || !stmt)
-        return 0;  // raw-return-ok:no-node_state-yet-means-fresh-datadir
-    int32_t ver = 0;
-    if (sqlite3_step(stmt) == SQLITE_ROW &&  // raw-sql-ok:read-only-introspection
-        sqlite3_column_bytes(stmt, 0) == (int)sizeof(ver))
-        memcpy(&ver, sqlite3_column_blob(stmt, 0), sizeof(ver));
-    sqlite3_finalize(stmt);
-    return ver;
-}
-
 /* Close the half-open handle and return false (uniform open-failure exit).
  * Leaves the struct harmless to node_db_close(): db NULLed, open false, and
  * the state mutex destroyed — a caller may close unconditionally on any open
@@ -552,24 +532,23 @@ static bool node_db_open_impl(struct node_db *ndb, const char *path,
         LOG_INFO("db", "db: runtime reopen (reason=%s) path=%s",
                  reason ? reason : "(unnamed)", path ? path : "(null)");
 
-    if (!db_open_raw(&ndb->db, path))
-        return node_db_open_abort(ndb);
-
-    /* Campaign C3 preflight: refuse a NEWER-schema datadir before anything
-     * in this open writes to it. Every later stage takes write ownership of
-     * the file — quick_check's failure path quarantines (renames) node.db
-     * and rebuilds it fresh, create_schema() would re-create baseline
-     * tables the newer schema may have deliberately dropped, and the
-     * schema_migrations bootstrap in node_db_migrate() writes a row. The
-     * pragmas applied by db_open_raw are connection-local (journal_mode=WAL
-     * is a no-op on an already-WAL datadir). node_db_migrate() rechecks
-     * after create_schema() for its direct callers; the open must already
-     * have refused by then. */
-    int32_t on_disk_schema = db_peek_schema_version(ndb->db);
-    if (on_disk_schema > NODE_DB_MAX_SCHEMA) {
-        node_db_log_newer_schema_refusal((int)on_disk_schema);
+    /* Existing-file preflight happens before db_open_raw's
+     * READWRITE|CREATE open and journal_mode=WAL pragma.  UNKNOWN is distinct
+     * from fresh: a malformed/missing/contradictory marker on an existing
+     * store must never be interpreted as schema 0 and migrated in place. */
+    struct node_db_schema_preflight preflight =
+        node_db_schema_preflight_existing(path);
+    if (preflight.state == NODE_DB_SCHEMA_PREFLIGHT_NEWER) {
+        node_db_log_newer_schema_refusal((int)preflight.version);
         return node_db_open_abort(ndb);
     }
+    if (preflight.state == NODE_DB_SCHEMA_PREFLIGHT_UNKNOWN) {
+        node_db_log_unknown_schema_refusal(preflight.detail);
+        return node_db_open_abort(ndb);
+    }
+
+    if (!db_open_raw(&ndb->db, path))
+        return node_db_open_abort(ndb);
 
     if (boot_ceremony) {
         /* Tier-2 fast restart: skip-probe reads the PRISTINE file; true = prior
