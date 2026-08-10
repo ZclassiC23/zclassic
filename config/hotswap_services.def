@@ -115,6 +115,18 @@ HOTSWAP_SERVICE(
     "zcode.work.context")
 
 HOTSWAP_SERVICE(
+    "zcode.lane.view.v1",
+    "app/services/src/zcode_lane_view_service.c",
+    "-",
+    "app/services/include/services/zcode_lane_view_service.h",
+    "-",
+    "zcode.lane.view.abi.v1:08a820c2",
+    "zcl.zcode_lane.v1+zcl.zcode_lane_guide.v1",
+    "frontier-candidate-proven-presentation.v1",
+    "19dad045fa86101caf2fd07b39c89c76bf54fb736e9b4105103adea56cb28b57",
+    "zcode.package.dev.promotion-guide")
+
+HOTSWAP_SERVICE(
     "app.shop.reputation.view.v1",
     "app/services/src/shop_reputation_view_service.c",
     "-",

@@ -719,6 +719,9 @@ void zcl_native_handle_zcode_accept(
 void zcl_native_handle_zcode_lane(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_lane_guide(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_tasks(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

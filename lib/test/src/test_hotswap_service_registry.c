@@ -13,10 +13,12 @@
 #include "services/zcode_moderation_view_service.h"
 #include "services/zcode_passport_view_service.h"
 #include "services/zcode_goal_context_calc_service.h"
+#include "services/zcode_lane_view_service.h"
 #include "services/zcode_workspace_view_service.h"
 #include "services/shop_reputation_view_service.h"
 #include "services/shop_status_view_service.h"
 #include "services/shop_want_view_service.h"
+#include "vcs/zcode_lane.h"
 
 #include <stdatomic.h>
 #include <string.h>
@@ -240,6 +242,18 @@ static int t_manifest_mapping(void)
         ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
                           "app/services/src/zcode_goal_context_calc_service.c"),
                       "zcode.work.context");
+        ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
+                          "app/services/src/zcode_lane_view_service.c"),
+                      "app/services/src/zcode_lane_view_service.c");
+        ASSERT(zcl_hotswap_service_source_for_path(
+                   "app/services/include/services/zcode_lane_view_service.h")
+               == NULL);
+        ASSERT_STR_EQ(zcl_hotswap_service_contract_source_for_path(
+                          "app/services/include/services/zcode_lane_view_service.h"),
+                      "app/services/src/zcode_lane_view_service.c");
+        ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
+                          "app/services/src/zcode_lane_view_service.c"),
+                      "zcode.package.dev.promotion-guide");
         ASSERT_STR_EQ(zcl_hotswap_service_source_for_path(
                           "app/services/src/shop_reputation_view_service.c"),
                       "app/services/src/shop_reputation_view_service.c");
@@ -785,6 +799,85 @@ static int t_zcode_goal_context_calc(void)
     return failures;
 }
 
+static bool candidate_lane_render(
+    uint8_t lane, struct zcode_lane_view_result_v1 *out)
+{
+    if (!zcode_lane_view_service_builtin()->render(lane, out)) return false;
+    if (lane == ZCODE_LANE_VIEW_GUIDE)
+        snprintf(out->capability, sizeof(out->capability), "%s",
+                 "candidate lane view generation is active");
+    return true;
+}
+
+static bool candidate_lane_wrong_name(
+    uint8_t lane, struct zcode_lane_view_result_v1 *out)
+{
+    if (!zcode_lane_view_service_builtin()->render(lane, out)) return false;
+    if (lane == VCS_ZCODE_LANE_FRONTIER)
+        snprintf(out->lane_name, sizeof(out->lane_name), "%s", "PROVEN");
+    return true;
+}
+
+static int t_zcode_lane_view(void)
+{
+    int failures = 0;
+    TEST("lane views swap while CAS, signatures, proofs and promotions stay static") {
+        zcl_hotswap_service_reset();
+        struct zcode_lane_view_service_v1 candidate =
+            *zcode_lane_view_service_builtin();
+        candidate.render = candidate_lane_render;
+        struct zcl_hotswap_service_candidate publication = {
+            .service_id = ZCODE_LANE_VIEW_SERVICE_ID,
+            .source_tu = "app/services/src/zcode_lane_view_service.c",
+            .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+            .vtable_size = sizeof(candidate),
+            .abi_fingerprint = ZCODE_LANE_VIEW_ABI_FINGERPRINT,
+            .schema_fingerprint = ZCODE_LANE_VIEW_SCHEMA_FINGERPRINT,
+            .wire_fingerprint = ZCODE_LANE_VIEW_WIRE_FINGERPRINT,
+            .kat_fingerprint = ZCODE_LANE_VIEW_KAT_FINGERPRINT,
+            .vtable = &candidate,
+        };
+        struct zcl_hotswap_service_report report = {0};
+        ASSERT(zcl_hotswap_service_publish(
+            zcode_lane_view_service_contract(), &publication, true, &report));
+        ASSERT(report.probed);
+
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        struct zcl_command_request request = {.input = &input};
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.zcode_lane_guide.v1");
+        zcl_native_handle_zcode_lane_guide(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_EQ(json_get_int(json_get(&reply.data,
+                                       "lane_view_service_generation")), 1);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "capability")),
+                      "candidate lane view generation is active");
+        ASSERT(json_get_bool(json_get(&reply.data, "cas_reads_static")));
+        ASSERT(json_get_bool(json_get(&reply.data,
+                                      "database_projection_static")));
+        ASSERT(json_get_bool(json_get(&reply.data,
+                                      "signature_verification_static")));
+        ASSERT(json_get_bool(json_get(&reply.data, "proof_evaluation_static")));
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                       "promotion_writes_swappable")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        zcl_hotswap_service_reset();
+
+        candidate.render = candidate_lane_wrong_name;
+        publication.vtable = &candidate;
+        memset(&report, 0, sizeof(report));
+        ASSERT(!zcl_hotswap_service_publish(
+            zcode_lane_view_service_contract(), &publication, true, &report));
+        ASSERT_STR_EQ(report.stage, "kat");
+        ASSERT(!report.activated);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int t_shop_reputation_view(void)
 {
     int failures = 0;
@@ -985,7 +1078,8 @@ int test_hotswap_service_registry(void)
                    t_market_moderation_view() + t_zcode_package_view();
     failures += t_zcode_moderation_view() + t_shop_reputation_view() +
                 t_zcode_workspace_view() + t_zcode_passport_view() +
-                t_zcode_goal_context_calc() + t_shop_status_view() +
+                t_zcode_goal_context_calc() + t_zcode_lane_view() +
+                t_shop_status_view() +
                 t_shop_want_view();
     zcl_hotswap_service_reset();
     printf("=== hotswap_service_registry: %d failures ===\n", failures);

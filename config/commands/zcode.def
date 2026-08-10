@@ -1522,7 +1522,7 @@ ZCL_COMMAND_READY_READ(
     0, "zcode,lane,frontier,candidate,proven,receipt",
     "zcl.zcode_lane.input.v1", "zcl.zcode_lane.v1",
     "workspace,source_root,datadir", "workspace,source_root",
-    "zclassic23 zcode lane --input='{\"workspace\":\"/src/project\",\"source_root\":\"<64hex>\"}'",
+    "zclassic23 zcode lane --input='{\"workspace\":\"/src/project\",\"source_root\":\"<64hex>\",\"datadir\":\"/tmp/zclassic23-lane\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_LOW,
@@ -1530,6 +1530,23 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE,
     zcl_native_handle_zcode_lane)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.dev.promotion-guide", "zcode.package.dev", "",
+    "Show signed lane workflow readiness",
+    "Reports the active pure lane-view generation and sequential next action. "
+    "CAS reads, database projections, signature checks, proof evaluation and "
+    "promotion writes remain resident and non-swappable.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,lane,frontier,candidate,proven,guide,hotswap",
+    "zcl.zcode_lane_guide.input.v1", "zcl.zcode_lane_guide.v1",
+    "", "", "zclassic23 zcode package dev promotion-guide",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_lane_guide)
 
 ZCL_COMMAND_READY_READ(
     "zcode.package.dev.tasks", "zcode.package.dev", "zcode.tasks",
