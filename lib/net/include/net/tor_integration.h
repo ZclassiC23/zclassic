@@ -79,6 +79,57 @@ bool tor_write_torrc(const char *datadir, uint16_t p2p_port);
 bool tor_log_last_ephemeral_address(const char *log_path, long scan_from,
                                     char *out, size_t out_size);
 
+/* ── Persistent onion identity (-onion-persist / -onion-rotate) ──
+ *
+ * Default stays ephemeral: dynhost mints a throwaway service every boot.
+ * With -onion-persist the node instead keeps a seed-backed identity under
+ * <datadir>/tor_data/onion_service/ (identity_seed, mode 0600, plus the
+ * standard Tor hostname file) and installs it as the dynhost service, so
+ * the .onion address is stable across boots. -onion-rotate (requires
+ * -onion-persist) archives the current identity into
+ * <datadir>/tor_data/onion_service/archive/ and mints a fresh one on the
+ * same boot, logging the old and new addresses. Rotation is deliberate —
+ * it never happens without the flag. */
+
+/* Configure identity behavior before tor_integration_start(). rotate
+ * without persist is named and ignored. Normally called once by the boot
+ * service from app_context; exposed for testing. */
+void tor_integration_configure_identity(bool persist, bool rotate);
+
+/* True when -onion-persist is in effect for the next/current boot.
+ * Exposed for testing. */
+bool tor_integration_persistence_enabled(void);
+
+/* Derive the v3 (prop224) .onion address for a 32-byte ed25519 seed,
+ * without any Tor dependency: base32lower(pubkey || checksum || 0x03)
+ * where checksum = SHA3-256(".onion checksum" || pubkey || 0x03)[0..1].
+ * out receives exactly 56 chars + NUL (out_size must be >= 57); the
+ * ".onion" suffix is NOT appended. Exposed for testing. */
+bool onion_identity_address_from_seed(const uint8_t seed[32],
+                                      char *out, size_t out_size);
+
+/* Load-or-create the persistent identity under
+ * <datadir>/tor_data/onion_service/: reads identity_seed when present
+ * (a short/corrupt seed is a named refusal, never a silent remint),
+ * otherwise mints one from the CSPRNG (mode 0600), then (re)writes the
+ * standard hostname file. seed_out receives the 32-byte seed; addr_out
+ * (may be NULL) receives the 56-char address without suffix; created_out
+ * (may be NULL) is set true when a fresh seed was minted. Pure file/crypto
+ * layer — no Tor required. Exposed for testing. */
+bool onion_identity_ensure(const char *datadir, uint8_t seed_out[32],
+                           char *addr_out, size_t addr_out_size,
+                           bool *created_out);
+
+/* Archive the current identity (identity_seed + hostname move to
+ * <datadir>/tor_data/onion_service/archive/ (files suffixed with the old
+ * address) so the next
+ * onion_identity_ensure() mints a fresh one. old_addr_out receives the
+ * archived identity's 56-char address without suffix. Returns false (with
+ * a named log line) when no persistent identity exists. Exposed for
+ * testing. */
+bool onion_identity_rotate(const char *datadir, char *old_addr_out,
+                           size_t old_addr_size);
+
 /* ── Outbound .onion fetch API ─────────────────────────────── */
 
 /* Callback for onion fetch results. Invoked from Tor's thread —

@@ -330,10 +330,17 @@ static bool boot_onion_tor_start(void *ctx)
     bool has_onion_keys = (stat(onion_dir, &onion_st) == 0);
 
     if (!boot_profile_has_onion(svc->app_ctx) && !has_onion_keys) {
+        if (svc->app_ctx->onion_persist || svc->app_ctx->onion_rotate)
+            fprintf(stderr,
+                    "Warning: -onion-persist/-onion-rotate have no effect: "
+                    "Tor is not enabled (use -tor or "
+                    "-profile=onion-node)\n");
         printf("Tor: skipped (use -tor or -profile=onion-node to enable)\n");
         return true;
     }
 
+    tor_integration_configure_identity(svc->app_ctx->onion_persist,
+                                       svc->app_ctx->onion_rotate);
     onion_service_start(svc->datadir);
     tor_integration_set_handler(onion_request_adapter, NULL);
     printf("Starting embedded Tor...\n");

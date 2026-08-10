@@ -10,6 +10,7 @@
 #include "platform/time_compat.h"
 #include "net/tor_integration.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -18,6 +19,9 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include "crypto/ed25519.h"
+#include "crypto/random_secret.h"
+#include "sha3/sha3.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 #include "util/thread_liveness.h"
@@ -47,9 +51,22 @@ static _Atomic uint64_t g_tor_monitor_poll_count = 0;
 static char g_onion_address[128];
 static char g_tor_datadir[512];
 /* tor.log size at THIS boot's Tor start. The log is append-mode across
- * boots and dynhost mints a fresh ephemeral service every start, so any
- * address line below this offset names a dead service. */
+ * boots and (in default mode) dynhost mints a fresh ephemeral service
+ * every start, so any address line below this offset names a dead
+ * service. */
 static long g_tor_log_scan_from = 0;
+
+/* Persistent identity (-onion-persist / -onion-rotate). Set once by
+ * tor_integration_configure_identity() before tor_integration_start();
+ * read by the monitor thread after spawn. */
+static _Atomic bool g_onion_persist = false;
+static _Atomic bool g_onion_rotate = false;
+/* 0 = install pending, 1 = persistent service registered with dynhost,
+ * -1 = install failed (already named via LOG_ERR). */
+static _Atomic int g_persist_install_state = 0;
+/* Old identity's address ("<56 chars>.onion") when -onion-rotate archived
+ * one this boot; printed next to the new address after install. */
+static char g_rotated_old_address[128];
 
 static tor_request_handler_fn g_request_handler = NULL;
 static void *g_request_handler_ctx = NULL;
@@ -182,6 +199,405 @@ bool tor_log_last_ephemeral_address(const char *log_path, long scan_from,
     return found;
 }
 
+/* ── Persistent onion identity ─────────────────────────────────
+ *
+ * Two layers:
+ *
+ * 1. PURE layer (no Tor): the identity is a 32-byte ed25519 seed at
+ *    <datadir>/tor_data/onion_service/identity_seed (mode 0600) plus the
+ *    standard Tor HiddenServiceDir-style hostname file. The v3 address is
+ *    derived with the project's own ed25519 + SHA3-256, so the whole
+ *    create/reuse/rotate lifecycle is unit-testable without a linked Tor.
+ *
+ * 2. INSTALL layer (real-Tor builds only): the vendored dynhost fork only
+ *    routes .onion connections to the registered external handler for the
+ *    ONE service whose identity key matches dynhost's global hs_service
+ *    (dynhost_intercept_service_connection), and by default that service
+ *    is a throwaway ephemeral key minted every boot. So persistence cannot
+ *    come from a torrc HiddenServiceDir (such a service would fall through
+ *    to a real-port connect and die). Instead the monitor thread waits for
+ *    the dynhost subsystem to appear inside the Tor thread, registers an
+ *    ephemeral service built from OUR persisted seed via
+ *    hs_service_add_ephemeral, and points dynhost's global hs_service at
+ *    it before dynhost_check_and_activate can mint its throwaway (that
+ *    activation is gated on a live consensus + completed circuit, which
+ *    takes seconds after the 1s poll here sees the subsystem). If the race
+ *    is ever lost, dynhost's throwaway stays registered but unreferenced
+ *    (harmless): the pointer swap below still retargets interception at
+ *    our persistent service because the comparison reads
+ *    dynhost->hs_service at connection time. */
+
+/* RFC 4648 base32, lowercase, no padding (the prop224 alphabet). */
+static void base32_lower_encode(const uint8_t *data, size_t len, char *out)
+{
+    static const char alpha[] = "abcdefghijklmnopqrstuvwxyz234567";
+    unsigned int buffer = 0;
+    int bits = 0;
+    char *p = out;
+    for (size_t i = 0; i < len; i++) {
+        buffer = (buffer << 8) | data[i];
+        bits += 8;
+        while (bits >= 5) {
+            *p++ = alpha[(buffer >> (bits - 5)) & 31u];
+            bits -= 5;
+        }
+    }
+    if (bits > 0)
+        *p++ = alpha[(buffer << (5 - bits)) & 31u];
+    *p = '\0';
+}
+
+bool onion_identity_address_from_seed(const uint8_t seed[32],
+                                      char *out, size_t out_size)
+{
+    if (!seed || !out || out_size < 57)
+        LOG_FAIL("tor", "onion_identity_address_from_seed: bad args "
+                        "(out_size=%zu)", out_size);
+
+    uint8_t pk[32], sk[32];
+    ed25519_keypair(pk, sk, seed);
+
+    /* prop224: checksum = SHA3-256(".onion checksum" || pubkey || version)
+     * [0..1]; address = base32(pubkey || checksum || version), version 3. */
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    static const char prefix[] = ".onion checksum";
+    sha3_256_write(&ctx, (const unsigned char *)prefix, sizeof(prefix) - 1);
+    sha3_256_write(&ctx, pk, sizeof(pk));
+    const uint8_t version = 3;
+    sha3_256_write(&ctx, &version, 1);
+    uint8_t digest[SHA3_256_OUTPUT_SIZE];
+    sha3_256_finalize(&ctx, digest);
+
+    uint8_t blob[35];
+    memcpy(blob, pk, 32);
+    blob[32] = digest[0];
+    blob[33] = digest[1];
+    blob[34] = version;
+    base32_lower_encode(blob, sizeof(blob), out);   /* exactly 56 chars */
+    return true;
+}
+
+/* Resolve <datadir>/tor_data/onion_service, creating it (and tor_data) with
+ * mode 0700 when missing. */
+static bool onion_identity_dir(const char *datadir, char *dir_out,
+                               size_t dir_size)
+{
+    if (!datadir || !dir_out)
+        LOG_FAIL("tor", "onion_identity_dir: missing datadir or dir_out");
+    int n = snprintf(dir_out, dir_size, "%s/tor_data/onion_service", datadir);
+    if (n < 0 || (size_t)n >= dir_size)
+        LOG_FAIL("tor", "onion identity path too long for datadir: %s",
+                 datadir);
+
+    char td[1024];
+    snprintf(td, sizeof(td), "%s/tor_data", datadir);
+    if (mkdir(td, 0700) != 0 && errno != EEXIST)
+        LOG_FAIL("tor", "mkdir %s failed: %s", td, strerror(errno));
+    if (mkdir(dir_out, 0700) != 0 && errno != EEXIST)
+        LOG_FAIL("tor", "mkdir %s failed: %s", dir_out, strerror(errno));
+    return true;
+}
+
+bool onion_identity_ensure(const char *datadir, uint8_t seed_out[32],
+                           char *addr_out, size_t addr_out_size,
+                           bool *created_out)
+{
+    if (!datadir || !seed_out)
+        LOG_FAIL("tor", "onion_identity_ensure: missing datadir or seed_out");
+
+    char dir[1024];
+    if (!onion_identity_dir(datadir, dir, sizeof(dir)))
+        return false;
+
+    char seed_path[1152], hostname_path[1152];
+    snprintf(seed_path, sizeof(seed_path), "%s/identity_seed", dir);
+    snprintf(hostname_path, sizeof(hostname_path), "%s/hostname", dir);
+
+    bool created = false;
+    int fd = open(seed_path, O_RDONLY);
+    if (fd >= 0) {
+        ssize_t got = read(fd, seed_out, 32);
+        close(fd);
+        if (got != 32)
+            LOG_FAIL("tor", "onion identity seed corrupt (%zd bytes, want "
+                            "32): %s — refusing to silently remint (that "
+                            "would change the shop's address); restore the "
+                            "file or pass -onion-rotate", got, seed_path);
+    } else {
+        if (errno != ENOENT)
+            LOG_FAIL("tor", "cannot open onion identity seed %s: %s",
+                     seed_path, strerror(errno));
+        if (!zcl_random_secret_bytes(seed_out, 32, "onion_identity_seed"))
+            LOG_FAIL("tor", "CSPRNG refused the onion identity seed");
+        fd = open(seed_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        if (fd < 0)
+            LOG_FAIL("tor", "cannot write onion identity seed %s: %s",
+                     seed_path, strerror(errno));
+        ssize_t put = write(fd, seed_out, 32);
+        close(fd);
+        if (put != 32)
+            LOG_FAIL("tor", "short write on onion identity seed %s",
+                     seed_path);
+        created = true;
+    }
+
+    char addr[57];
+    if (!onion_identity_address_from_seed(seed_out, addr, sizeof(addr)))
+        return false;
+
+    /* Standard Tor hostname-file semantics: "<addr>.onion\n". Rewritten
+     * every boot (idempotent content) so a lost hostname file self-heals. */
+    int hfd = open(hostname_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (hfd < 0)
+        LOG_FAIL("tor", "cannot write onion hostname file %s: %s",
+                 hostname_path, strerror(errno));
+    char hline[80];
+    int hlen = snprintf(hline, sizeof(hline), "%s.onion\n", addr);
+    ssize_t hput = write(hfd, hline, (size_t)hlen);
+    close(hfd);
+    if (hput != hlen)
+        LOG_FAIL("tor", "short write on onion hostname file %s",
+                 hostname_path);
+
+    if (addr_out) {
+        if (addr_out_size < 57)
+            LOG_FAIL("tor", "addr_out too small (%zu, want 57)",
+                     addr_out_size);
+        memcpy(addr_out, addr, 57);
+    }
+    if (created_out)
+        *created_out = created;
+    return true;
+}
+
+bool onion_identity_rotate(const char *datadir, char *old_addr_out,
+                           size_t old_addr_size)
+{
+    if (!datadir || !old_addr_out || old_addr_size < 57)
+        LOG_FAIL("tor", "onion_identity_rotate: bad args");
+
+    char dir[1024];
+    if (!onion_identity_dir(datadir, dir, sizeof(dir)))
+        return false;
+
+    char seed_path[1152], hostname_path[1152];
+    snprintf(seed_path, sizeof(seed_path), "%s/identity_seed", dir);
+    snprintf(hostname_path, sizeof(hostname_path), "%s/hostname", dir);
+
+    uint8_t seed[32];
+    int fd = open(seed_path, O_RDONLY);
+    if (fd < 0) {
+        if (errno == ENOENT) {
+            LOG_WARN("tor", "-onion-rotate: no persistent identity at %s — "
+                            "nothing to archive", seed_path);
+            return false;
+        }
+        LOG_FAIL("tor", "cannot open onion identity seed %s: %s",
+                 seed_path, strerror(errno));
+    }
+    ssize_t got = read(fd, seed, sizeof(seed));
+    close(fd);
+    if (got != (ssize_t)sizeof(seed))
+        LOG_FAIL("tor", "onion identity seed corrupt (%zd bytes, want 32): "
+                        "%s — refusing to rotate a corrupt identity; restore "
+                        "or delete the file deliberately", got, seed_path);
+
+    char addr[57];
+    if (!onion_identity_address_from_seed(seed, addr, sizeof(addr)))
+        return false;
+
+    char archive[1280];
+    snprintf(archive, sizeof(archive), "%s/archive", dir);
+    if (mkdir(archive, 0700) != 0 && errno != EEXIST)
+        LOG_FAIL("tor", "mkdir %s failed: %s", archive, strerror(errno));
+
+    /* Archive under the old address: each rotated identity lands at a
+     * unique, self-describing path. */
+    char seed_arch[1408], host_arch[1408];
+    snprintf(seed_arch, sizeof(seed_arch), "%s/identity_seed.%s",
+             archive, addr);
+    snprintf(host_arch, sizeof(host_arch), "%s/hostname.%s", archive, addr);
+    if (rename(seed_path, seed_arch) != 0)
+        LOG_FAIL("tor", "failed to archive onion identity seed to %s: %s",
+                 seed_arch, strerror(errno));
+    if (rename(hostname_path, host_arch) != 0 && errno != ENOENT)
+        LOG_FAIL("tor", "failed to archive onion hostname to %s: %s",
+                 host_arch, strerror(errno));
+
+    memcpy(old_addr_out, addr, 57);
+    return true;
+}
+
+/* ── Persistent identity install (real-Tor builds only) ────────
+ *
+ * Layout mirrors of the vendored dynhost/HS types. tor_integration.c
+ * declares the Tor embedding API locally (the same style as
+ * tor_main_configuration_* above) because vendor/tor headers are not on
+ * the include path; the fork is pinned, and the boot-time cross-check
+ * below (pure-derived address vs Tor-derived) fails loudly if these ever
+ * drift. All weak: NULL under the Tor stub. */
+typedef struct { uint8_t seckey[64]; } tor_ed25519_secret_key_t;
+typedef struct { uint8_t pubkey[32]; } tor_ed25519_public_key_t;
+typedef struct smartlist_t tor_smartlist_t;
+
+struct tor_addr_compat {                 /* tor_addr_t (linux layout) */
+    uint16_t family;                     /* sa_family_t; 0 == AF_UNSPEC */
+    union {
+        uint32_t dummy_;
+        uint8_t in_addr[4];
+        uint8_t in6_addr[16];
+    } addr;
+};
+typedef struct {                         /* hs_port_config_t */
+    uint16_t virtual_port;
+    unsigned int is_unix_addr : 1;
+    uint16_t real_port;
+    struct tor_addr_compat real_addr;
+    char unix_addr[];
+} tor_hs_port_config_t;
+
+/* dynhost_service_t: only the first member is ever touched. */
+struct dynhost_service_head_compat {
+    void *hs_service;
+};
+
+extern void *dynhost_get_global_service(void) __attribute__((weak));
+/* Tor names the real symbol tor_malloc_zero_ (tor_malloc_zero is a macro
+ * over it); the weak extern must use the underscored name or it resolves
+ * NULL against libtor.a and reads as "stub build". */
+extern void *tor_malloc_zero_(size_t n) __attribute__((weak));
+extern void tor_free_(void *ptr) __attribute__((weak));
+extern tor_smartlist_t *smartlist_new(void) __attribute__((weak));
+extern void smartlist_free_(tor_smartlist_t *sl) __attribute__((weak));
+extern void smartlist_add(tor_smartlist_t *sl, void *element)
+    __attribute__((weak));
+extern int ed25519_secret_key_from_seed(tor_ed25519_secret_key_t *out,
+                                        const uint8_t *seed)
+    __attribute__((weak));
+extern int hs_service_add_ephemeral(tor_ed25519_secret_key_t *sk,
+    tor_smartlist_t *ports, int max_streams_per_rdv_circuit,
+    int max_streams_close_circuit, int pow_defenses_enabled,
+    uint32_t pow_queue_rate, uint32_t pow_queue_burst,
+    tor_smartlist_t *auth_clients_v3, char **address_out)
+    __attribute__((weak));
+extern int hs_parse_address(const char *address,
+    tor_ed25519_public_key_t *key_out, uint8_t *checksum_out,
+    uint8_t *version_out) __attribute__((weak));
+extern void *hs_service_find(const tor_ed25519_public_key_t *identity_pk)
+    __attribute__((weak));
+
+/* True when every Tor/dynhost symbol the install path needs is linked. */
+static bool tor_persist_symbols_available(void)
+{
+    return dynhost_get_global_service && tor_malloc_zero_ && tor_free_ &&
+           smartlist_new && smartlist_free_ && smartlist_add &&
+           ed25519_secret_key_from_seed && hs_service_add_ephemeral &&
+           hs_parse_address && hs_service_find;
+}
+
+/* One install attempt from the monitor poll loop.
+ * Returns 1 once the persistent service is registered with dynhost,
+ * 0 while the dynhost subsystem is not up yet (retry next poll — not an
+ * error), -1 on a named hard failure. */
+static int tor_try_install_persistent_identity(const char *datadir)
+{
+    void *global = dynhost_get_global_service();
+    if (!global)
+        return 0;   /* Tor thread still in early startup; retried */
+
+    uint8_t seed[32];
+    char addr[57];
+    bool created = false;
+    if (!onion_identity_ensure(datadir, seed, addr, sizeof(addr), &created))
+        LOG_ERR("tor", "persistent onion identity ensure failed for %s",
+                datadir);
+
+    /* Build the Tor-side service key from the SAME persisted seed. */
+    tor_ed25519_secret_key_t *sk = tor_malloc_zero_(sizeof(*sk));
+    if (!sk)
+        LOG_ERR("tor", "tor_malloc_zero_ failed for service key");
+    if (ed25519_secret_key_from_seed(sk, seed) != 0) {
+        tor_free_(sk);
+        LOG_ERR("tor", "ed25519_secret_key_from_seed rejected the "
+                       "persisted onion identity seed");
+    }
+
+    /* Virtual port 80 with NO real port — exactly how dynhost.c configures
+     * its own service: interception happens before any real-port mapping
+     * is consulted, so real_addr stays AF_UNSPEC. */
+    tor_smartlist_t *ports = smartlist_new();
+    tor_hs_port_config_t *pc = NULL;
+    if (ports)
+        pc = tor_malloc_zero_(sizeof(*pc) + 1);
+    if (!ports || !pc) {
+        if (pc) tor_free_(pc);
+        if (ports) smartlist_free_(ports);
+        tor_free_(sk);
+        LOG_ERR("tor", "allocation failed for persistent onion ports");
+    }
+    pc->virtual_port = 80;
+    smartlist_add(ports, pc);
+
+    char *address_out = NULL;
+    /* Ownership of sk and ports passes to Tor on EVERY path below. */
+    int status = hs_service_add_ephemeral(sk, ports, 0, 0, 0, 0, 0, NULL,
+                                          &address_out);
+    if (status != 0 || !address_out)
+        LOG_ERR("tor", "hs_service_add_ephemeral failed (status=%d) for "
+                       "the persistent onion identity", status);
+
+    /* Cross-check: Tor's derivation MUST equal the pure layer's (the unit
+     * vector pins the pure layer to prop224). A mismatch means the
+     * vendored fork drifted under us — fail loudly, never report one
+     * address while serving another. */
+    if (strcmp(address_out, addr) != 0) {
+        tor_free_(address_out);
+        LOG_ERR("tor", "Tor-derived persistent address does not match the "
+                       "pure prop224 derivation — vendored fork drift");
+    }
+
+    tor_ed25519_public_key_t pk;
+    void *service = NULL;
+    if (hs_parse_address(address_out, &pk, NULL, NULL) == 0)
+        service = hs_service_find(&pk);
+    if (!service) {
+        tor_free_(address_out);
+        LOG_ERR("tor", "persistent onion service missing right after "
+                       "registration: %s", address_out);
+    }
+
+    /* Become the dynhost service (see the layer-2 comment above). */
+    ((struct dynhost_service_head_compat *)global)->hs_service = service;
+
+    printf("Tor: persistent onion identity %s: %s.onion\n",
+           created ? "minted" : "loaded", address_out);
+    fflush(stdout);
+    if (g_rotated_old_address[0]) {
+        printf("Tor: onion identity rotated: old=%s new=%s.onion\n",
+               g_rotated_old_address, address_out);
+        fflush(stdout);
+    }
+    tor_free_(address_out);
+    return 1;
+}
+
+void tor_integration_configure_identity(bool persist, bool rotate)
+{
+    if (rotate && !persist)
+        fprintf(stderr,  // obs-ok:flag-combo-named
+                "Warning: -onion-rotate requires -onion-persist; "
+                "ignoring -onion-rotate\n");
+    atomic_store(&g_onion_persist, persist);
+    atomic_store(&g_onion_rotate, persist && rotate);
+}
+
+bool tor_integration_persistence_enabled(void)
+{
+    return atomic_load(&g_onion_persist);
+}
+
+
 /* Read .onion address from persistent hostname file (HiddenServiceDir).
  * Returns true if address was read successfully. */
 static bool read_onion_from_hostname_file(const char *datadir)
@@ -214,8 +630,10 @@ static bool read_onion_from_hostname_file(const char *datadir)
     return true;
 }
 
-/* Wait for .onion address: check hostname file first (persistent key),
- * fall back to parsing Tor log (ephemeral service).
+/* Wait for the .onion address. Default (ephemeral) mode: parse the
+ * dynhost log for THIS start's ephemeral service. -onion-persist mode:
+ * install our persisted identity into dynhost, then read the hostname
+ * file it (re)wrote.
  *
  * Polls until the address appears or Tor dies — deliberately NO fixed
  * attempt cap. A slow public-network bootstrap (e.g. a ~120 s guard
@@ -242,16 +660,33 @@ static bool read_onion_address(const char *datadir)
         if (!atomic_load(&g_tor_running))
             return false;
 
-        /* Persistent key: Tor writes hostname file after bootstrap */
-        if (read_onion_from_hostname_file(datadir))
-            return true;
-
-        /* Fallback: parse ephemeral address from dynhost log */
-        if (tor_log_last_ephemeral_address(log_path, g_tor_log_scan_from,
-                                           g_onion_address,
-                                           sizeof(g_onion_address))) {
-            ensure_onion_suffix();
-            return true;
+        if (atomic_load(&g_onion_persist)) {
+            /* -onion-persist: the address comes from OUR persisted
+             * identity, registered with dynhost by the install step. The
+             * ephemeral log-scan fallback is deliberately skipped here —
+             * in persist mode an ephemeral line would name dynhost's
+             * throwaway race-loser service, not this node's identity.
+             * Install failure is already a named LOG_ERR; the poll's
+             * "still waiting" line keeps the stall named. */
+            if (atomic_load(&g_persist_install_state) == 0) {
+                int rc = tor_try_install_persistent_identity(datadir);
+                if (rc != 0)
+                    atomic_store(&g_persist_install_state, rc);
+            }
+            if (atomic_load(&g_persist_install_state) == 1 &&
+                read_onion_from_hostname_file(datadir))
+                return true;
+        } else {
+            /* Default ephemeral mode: a hostname file left by a previous
+             * -onion-persist boot is deliberately NOT read here — no
+             * service is registered for that identity this boot. */
+            if (tor_log_last_ephemeral_address(log_path,
+                                               g_tor_log_scan_from,
+                                               g_onion_address,
+                                               sizeof(g_onion_address))) {
+                ensure_onion_suffix();
+                return true;
+            }
         }
 
         /* Slow bootstrap is a named state, not a silent hang. */
@@ -358,6 +793,27 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
 
     snprintf(g_tor_datadir, sizeof(g_tor_datadir), "%s", datadir);
     g_onion_address[0] = '\0';
+    g_rotated_old_address[0] = '\0';
+    atomic_store(&g_persist_install_state, 0);
+
+    if (atomic_load(&g_onion_persist) && !tor_persist_symbols_available()) {
+        LOG_WARN("tor", "-onion-persist requested but Tor is disabled "
+                        "(stub build) — the .onion identity will NOT "
+                        "persist across boots");
+        atomic_store(&g_onion_persist, false);
+        atomic_store(&g_onion_rotate, false);
+    }
+    if (atomic_load(&g_onion_rotate)) {
+        char old[128];
+        if (onion_identity_rotate(datadir, old, sizeof(old))) {
+            snprintf(g_rotated_old_address, sizeof(g_rotated_old_address),
+                     "%s.onion", old);
+        } else {
+            fprintf(stderr,  // obs-ok:rotation-named-noop
+                    "Tor: -onion-rotate found no existing persistent "
+                    "identity to archive; a fresh one will be minted\n");
+        }
+    }
 
     char path[1024];
     snprintf(path, sizeof(path), "%s/tor_data", datadir);

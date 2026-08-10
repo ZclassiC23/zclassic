@@ -210,6 +210,15 @@ struct app_context {
                                  * writer, then exits before services. Populate
                                  * only: no consensus predicate changes. */
     bool tor;
+    bool onion_persist;          /* -onion-persist : with -tor, use a
+                                  * persistent seed-backed .onion identity at
+                                  * <datadir>/tor_data/onion_service instead
+                                  * of dynhost's per-boot ephemeral service */
+    bool onion_rotate;           /* -onion-rotate : with -onion-persist,
+                                  * archive the current persistent identity
+                                  * and mint a fresh one (logs old+new
+                                  * addresses). Ignored without
+                                  * -onion-persist. */
     const char *defer_proof_validation_below;  /* block hash: defer Groth16 at/below this height */
     bool no_services;          /* skip P2P, RPC, Tor — boot only (speedrun) */
     const char *file_service_peer; /* -fileservice=addr : download from this peer */

@@ -814,6 +814,15 @@ int main(int argc, char **argv)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "onion_persistence") == 0) {
+        printf("[test] ZCL_TEST_ONLY=onion_persistence - running persistent "
+               "onion identity subset\n");
+        { extern int test_onion_persistence(void);
+          failures += test_onion_persistence(); }
+        printf("\n=== onion_persistence subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "fast_sync") == 0) {
         printf("[test] ZCL_TEST_ONLY=fast_sync — running fast sync subset\n");
         failures += test_fast_sync();
@@ -1177,6 +1186,8 @@ int main(int argc, char **argv)
       failures += test_onion_bootstrap(); }
     { extern int test_onion_directory(void);
       failures += test_onion_directory(); }
+    { extern int test_onion_persistence(void);
+      failures += test_onion_persistence(); }
     { extern int test_cold_start_sync(void);
       failures += test_cold_start_sync(); }
     { extern int test_kill9_recovery(void);

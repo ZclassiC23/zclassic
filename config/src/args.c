@@ -47,6 +47,12 @@ void print_usage(const char *prog)
     printf("  -gen                Enable mining\n");
     printf("  -txindex            Transaction index\n");
     printf("  -tor                Start Tor hidden service (dynhost blog)\n");
+    printf("  -onion-persist      With -tor: keep a persistent .onion identity in\n");
+    printf("                      <datadir>/tor_data/onion_service (default:\n");
+    printf("                      ephemeral — new address every boot)\n");
+    printf("  -onion-rotate       With -onion-persist: archive the current\n");
+    printf("                      identity and mint a fresh one (logs old+new\n");
+    printf("                      addresses)\n");
     printf("  -gui                Launch the WebKit wallet GUI instead of the\n");
     printf("                      headless node (needs a display; default is\n");
     printf("                      headless node + REST/onion)\n");
@@ -351,6 +357,8 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
         else if (strcmp(argv[i], "-allow-degraded") == 0) ctx->allow_degraded = true;
         else if (strncmp(argv[i], "-showmetrics=", 13) == 0) *show_metrics = atoi(argv[i]+13) != 0;
         else if (strcmp(argv[i], "-tor") == 0) ctx->tor = true;
+        else if (strcmp(argv[i], "-onion-persist") == 0) ctx->onion_persist = true;
+        else if (strcmp(argv[i], "-onion-rotate") == 0) ctx->onion_rotate = true;
         else if (strncmp(argv[i], "-profile=", 9) == 0) {
             if (!app_runtime_profile_parse(argv[i] + 9,
                                            &ctx->runtime_profile)) {
