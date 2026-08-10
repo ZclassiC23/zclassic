@@ -474,6 +474,12 @@ static int t_plan_happy(void)
     ZP_CHECK("plan: valid candidate passes",
              c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
              json_get_bool(json_get(&c.reply.data, "valid")));
+    ZP_CHECK("plan: verified chunks are ready for one commit action",
+             json_get_bool(json_get(&c.reply.data, "ready_to_commit")) &&
+             strcmp(json_get_str(json_get(&c.reply.data, "readiness")),
+                    "ready_to_commit") == 0 &&
+             strcmp(json_get_str(json_get(&c.reply.data, "next_action")),
+                    "zcode package publish commit") == 0);
     uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
     ZP_CHECK("plan: release id computes",
              vcs_package_release_id(&r, id) == VCS_PACKAGE_RELEASE_OK);
@@ -505,6 +511,12 @@ static int t_plan_happy(void)
              c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
              json_get_bool(json_get(&c.reply.data, "valid")) &&
              pkg && !json_get_bool(json_get(pkg, "chunks_checked")));
+    ZP_CHECK("plan: no dir names the one missing-source action",
+             !json_get_bool(json_get(&c.reply.data, "ready_to_commit")) &&
+             strcmp(json_get_str(json_get(&c.reply.data, "readiness")),
+                    "needs_chunk_source") == 0 &&
+             strcmp(json_get_str(json_get(&c.reply.data, "next_action")),
+                    "rerun zcode package publish plan with dir") == 0);
     zp_cmd_free(&c);
 
     free(release_hex);
@@ -556,6 +568,13 @@ static int t_license_rules(void)
                     "release-wire-not-canonical") == 0 &&
              zp_failure_detail(&c.reply, 0) &&
              strcmp(zp_failure_detail(&c.reply, 0), "spdx-license") == 0);
+    ZP_CHECK("license: blocked plan names one repair action",
+             !json_get_bool(json_get(&c.reply.data, "ready_to_commit")) &&
+             strcmp(json_get_str(json_get(&c.reply.data, "readiness")),
+                    "blocked") == 0 &&
+             strcmp(json_get_str(json_get(&c.reply.data, "next_action")),
+                    "fix the first reported failure, then rerun zcode package publish plan") ==
+                 0);
     zp_cmd_free(&c);
     free(bad_hex);
 

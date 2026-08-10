@@ -12,13 +12,13 @@
 
 #define ZCODE_PACKAGE_VIEW_SERVICE_ID "zcode.package.view.v1"
 #define ZCODE_PACKAGE_VIEW_ABI_FINGERPRINT \
-    "zcode.package.view.abi.v1:6cf12b80"
+    "zcode.package.view.abi.v2:publish-plan"
 #define ZCODE_PACKAGE_VIEW_SCHEMA_FINGERPRINT \
-    "zcl.zcode_package_guide.v1+zcl.zcode_package_search.v1+zcl.zcode_package_show.v1"
+    "zcl.zcode_package_guide.v1+zcl.zcode_package_search.v1+zcl.zcode_package_show.v1+zcl.zcode_publish_plan.v1"
 #define ZCODE_PACKAGE_VIEW_WIRE_FINGERPRINT \
-    "package-index-entry+bounded-view+guide.v1"
+    "package-index-entry+bounded-view+guide+publish-plan-readiness.v1"
 #define ZCODE_PACKAGE_VIEW_KAT_FINGERPRINT \
-    "fa9b02a7fd52948c536fdb4894eae780e818a5fe2221871c63568130640d6728"
+    "d6f4333f02a190347c7d3b22a9bd934d9c5f9634589021151477c49de18c4641"
 
 struct zcode_package_view_entry_v1 {
     bool valid;
@@ -53,10 +53,27 @@ struct zcode_package_guide_result_v1 {
     char next_command[192];
 };
 
+struct zcode_package_publish_plan_input_v1 {
+    bool validation_complete;
+    bool chunks_checked;
+    uint32_t failure_count;
+};
+
+struct zcode_package_publish_plan_result_v1 {
+    bool valid;
+    bool ready_to_commit;
+    char stage[16];
+    char readiness[32];
+    char next_action[128];
+};
+
 struct zcode_package_view_service_v1 {
     bool (*render_entry)(const struct vcs_package_index_entry *entry,
                          struct zcode_package_view_entry_v1 *out);
     bool (*render_guide)(struct zcode_package_guide_result_v1 *out);
+    bool (*render_publish_plan)(
+        const struct zcode_package_publish_plan_input_v1 *input,
+        struct zcode_package_publish_plan_result_v1 *out);
 };
 
 const struct zcode_package_view_service_v1 *

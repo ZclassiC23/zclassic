@@ -50,7 +50,7 @@ static bool render_guide(struct zcode_package_guide_result_v1 *out)
     out->publication_static = true;
     out->execution_static = true;
     (void)snprintf(out->live_surface, sizeof(out->live_surface), "%s",
-                   "bounded deterministic package search results, release metadata views, workflow text");
+                   "bounded package search, release metadata, publication readiness and workflow text");
     (void)snprintf(out->static_boundary, sizeof(out->static_boundary), "%s",
                    "CAS/index reads, signatures, publication, fetch, install, build, execution, storage and network effects");
     (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
@@ -58,9 +58,38 @@ static bool render_guide(struct zcode_package_guide_result_v1 *out)
     return true;
 }
 
+static bool render_publish_plan(
+    const struct zcode_package_publish_plan_input_v1 *input,
+    struct zcode_package_publish_plan_result_v1 *out)
+{
+    if (!input || !out || !input->validation_complete) return false;
+    memset(out, 0, sizeof(*out));
+    (void)snprintf(out->stage, sizeof(out->stage), "%s", "plan");
+    out->valid = input->failure_count == 0;
+    out->ready_to_commit = out->valid && input->chunks_checked;
+    if (!out->valid) {
+        (void)snprintf(out->readiness, sizeof(out->readiness), "%s",
+                       "blocked");
+        (void)snprintf(out->next_action, sizeof(out->next_action), "%s",
+                       "fix the first reported failure, then rerun zcode package publish plan");
+    } else if (!input->chunks_checked) {
+        (void)snprintf(out->readiness, sizeof(out->readiness), "%s",
+                       "needs_chunk_source");
+        (void)snprintf(out->next_action, sizeof(out->next_action), "%s",
+                       "rerun zcode package publish plan with dir");
+    } else {
+        (void)snprintf(out->readiness, sizeof(out->readiness), "%s",
+                       "ready_to_commit");
+        (void)snprintf(out->next_action, sizeof(out->next_action), "%s",
+                       "zcode package publish commit");
+    }
+    return true;
+}
+
 static const struct zcode_package_view_service_v1 k_builtin = {
     .render_entry = render_entry,
     .render_guide = render_guide,
+    .render_publish_plan = render_publish_plan,
 };
 
 ZCL_HOTSWAP_SERVICE_EXPORT(

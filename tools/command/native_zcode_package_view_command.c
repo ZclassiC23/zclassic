@@ -17,6 +17,7 @@ static bool package_view_frozen_kat(const void *opaque, char *why,
     struct vcs_package_index_entry entry = {0};
     struct zcode_package_view_entry_v1 rendered;
     struct zcode_package_guide_result_v1 guide;
+    struct zcode_package_publish_plan_result_v1 plan;
     (void)snprintf(entry.release_id_hex, sizeof(entry.release_id_hex), "%064x",
                    1);
     (void)snprintf(entry.package_root_hex, sizeof(entry.package_root_hex),
@@ -35,6 +36,7 @@ static bool package_view_frozen_kat(const void *opaque, char *why,
     entry.license_present = true;
     entry.executable_count = 1;
     if (!service || !service->render_entry || !service->render_guide ||
+        !service->render_publish_plan ||
         !service->render_entry(&entry, &rendered) || !rendered.valid ||
         strcmp(rendered.name, "alice/ring") != 0 ||
         strcmp(rendered.semver, "1.2.3") != 0 ||
@@ -48,6 +50,53 @@ static bool package_view_frozen_kat(const void *opaque, char *why,
         !guide.execution_static) {
         if (why && why_sz) (void)snprintf(
             why, why_sz, "frozen package entry/authority vector failed");
+        return false;
+    }
+    const struct zcode_package_publish_plan_input_v1 ready = {
+        .validation_complete = true,
+        .chunks_checked = true,
+        .failure_count = 0,
+    };
+    if (!service->render_publish_plan(&ready, &plan) || !plan.valid ||
+        !plan.ready_to_commit || strcmp(plan.stage, "plan") != 0 ||
+        strcmp(plan.readiness, "ready_to_commit") != 0 ||
+        strcmp(plan.next_action, "zcode package publish commit") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen ready-to-commit plan vector failed");
+        return false;
+    }
+    const struct zcode_package_publish_plan_input_v1 needs_source = {
+        .validation_complete = true,
+        .chunks_checked = false,
+        .failure_count = 0,
+    };
+    if (!service->render_publish_plan(&needs_source, &plan) || !plan.valid ||
+        plan.ready_to_commit ||
+        strcmp(plan.readiness, "needs_chunk_source") != 0 ||
+        strcmp(plan.next_action,
+               "rerun zcode package publish plan with dir") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen missing-chunk-source plan vector failed");
+        return false;
+    }
+    const struct zcode_package_publish_plan_input_v1 blocked = {
+        .validation_complete = true,
+        .chunks_checked = true,
+        .failure_count = 2,
+    };
+    if (!service->render_publish_plan(&blocked, &plan) || plan.valid ||
+        plan.ready_to_commit || strcmp(plan.readiness, "blocked") != 0 ||
+        strcmp(plan.next_action,
+               "fix the first reported failure, then rerun zcode package publish plan") !=
+            0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen blocked plan vector failed");
+        return false;
+    }
+    const struct zcode_package_publish_plan_input_v1 incomplete = {0};
+    if (service->render_publish_plan(&incomplete, &plan)) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "incomplete validation plan vector was accepted");
         return false;
     }
     entry.release_id_hex[0] = '\0';

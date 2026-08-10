@@ -469,9 +469,35 @@ void zcl_native_handle_zcode_package_publish_plan(
         return; /* hard failure: error body already set */
     }
 
-    bool valid = report.failure_count == 0;
-    (void)json_push_kv_str(&reply->data, "stage", "plan");
-    (void)json_push_kv_bool(&reply->data, "valid", valid);
+    const struct zcode_package_publish_plan_input_v1 plan_input = {
+        .validation_complete = true,
+        .chunks_checked = report.chunks_checked,
+        .failure_count = (uint32_t)report.failure_count,
+    };
+    struct zcode_package_publish_plan_result_v1 plan;
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_package_view_service_v1 *view_service =
+        zcl_hotswap_service_acquire(ZCODE_PACKAGE_VIEW_SERVICE_ID, &lease);
+    if (!view_service)
+        view_service = zcode_package_view_service_builtin();
+    bool rendered = view_service->render_publish_plan(&plan_input, &plan);
+    zcl_hotswap_service_release(&lease);
+    if (!rendered) {
+        zc_candidate_free(&cand);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL,
+                               "PACKAGE_VIEW_FAILED", "render", false,
+                               false,
+                               "the pure package view service refused the publication plan",
+                               "zcode.package.publish.plan");
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "stage", plan.stage);
+    (void)json_push_kv_bool(&reply->data, "valid", plan.valid);
+    (void)json_push_kv_bool(&reply->data, "ready_to_commit",
+                            plan.ready_to_commit);
+    (void)json_push_kv_str(&reply->data, "readiness", plan.readiness);
+    (void)json_push_kv_str(&reply->data, "next_action", plan.next_action);
     if (report.release_ok) {
         char token[65];
         zcl_hex_encode(report.release_id, 32, token);
