@@ -513,7 +513,7 @@ static bool economics_service_frozen_kat(const void *opaque, char *why,
     if (!service->render_backlog_status(&backlog_input, &backlog_view) ||
         strcmp(backlog_view.readiness, "ready:epoch_plan") != 0 ||
         strcmp(backlog_view.next_command,
-               "zcode commons schedule propose plan") != 0) {
+               "zcode commons schedule claim plan") != 0) {
         if (why && why_sz) (void)snprintf(
             why, why_sz, "frozen eligible-backlog vector failed");
         return false;

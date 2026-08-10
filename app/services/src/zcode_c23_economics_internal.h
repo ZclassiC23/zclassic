@@ -18,6 +18,6 @@
 #define ZCODE_C23_BACKLOG_CLAIM_NEXT "zcode commons claim plan"
 #define ZCODE_C23_BACKLOG_STATUS_NEXT "zcode commons backlog"
 #define ZCODE_C23_BACKLOG_EPOCH_NEXT \
-    "zcode commons schedule propose plan"
+    "zcode commons schedule claim plan"
 
 #endif /* ZCL_ZCODE_C23_ECONOMICS_INTERNAL_H */

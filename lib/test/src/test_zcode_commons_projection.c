@@ -324,9 +324,70 @@ static int commons_claim_projection_test(void)
                                             "backlog_readiness")),
                       "ready:epoch_plan");
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "next_command")),
-                      "zcode commons schedule propose plan");
+                      "zcode commons schedule claim plan");
         ASSERT(!json_get_bool(json_get(&reply.data, "issuance_enabled")));
         ASSERT(!json_get_bool(json_get(&reply.data, "funds_moved")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        /* The next action consumes these exact signed claims through the pure
+         * v2 selector. It remains a plan: no CAS object or wallet state is
+         * written, and future/retracted claims are named as invalid. */
+        char root_hex[5][65];
+        uint8_t policy_inputs[4][32];
+        memset(root_hex[0], '0', 64); root_hex[0][64] = 0;
+        for (size_t i = 0; i < 4; i++) {
+            commons_fill(policy_inputs[i], (uint8_t)(0x70u + i));
+            zcl_hex_encode(policy_inputs[i], 32, root_hex[i + 1u]);
+        }
+        json_init(&input); json_set_object(&input);
+        json_push_kv_str(&input, "workspace", workspace);
+        json_push_kv_int(&input, "epoch", 1);
+        json_push_kv_int(&input, "cutoff_height", 250);
+        json_push_kv_int(&input, "cutoff_mtp", 2500);
+        json_push_kv_int(&input, "epoch_capacity_atoms", 1000000000);
+        json_push_kv_str(&input, "previous_epoch_root", root_hex[0]);
+        json_push_kv_str(&input, "network_genesis_root", root_hex[1]);
+        json_push_kv_str(&input, "moderation_policy_root", root_hex[2]);
+        json_push_kv_str(&input, "qualification_predicates_root",
+                         root_hex[3]);
+        json_push_kv_str(&input, "backlog_algorithm_root", root_hex[4]);
+        const struct zcl_command_spec *epoch_plan_spec =
+            zcl_command_registry_find(
+                zcl_command_catalog(),
+                "zcode.commons.schedule.claim.plan", NULL);
+        memset(input_why, 0, sizeof(input_why));
+        ASSERT(epoch_plan_spec);
+        ASSERT(zcl_command_registry_input_validate(
+            epoch_plan_spec, &input, input_why, sizeof(input_why)));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.commons_claim_epoch.v2");
+        zcl_native_handle_zcode_commons_schedule_claim_plan(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&reply.data, "pure_calculation")));
+        ASSERT(json_get_bool(json_get(&reply.data, "simulation_only")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "persisted")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "issuance_enabled")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "wallet_used")));
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "claim_count")), 3);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "selected_count")), 1);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "invalid_count")), 2);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "selected_atoms")),
+                  25000000);
+        ASSERT_EQ(json_get_int(json_get(&reply.data,
+                                        "expired_capacity_atoms")),
+                  975000000);
+        ASSERT(json_get_bool(json_get(&reply.data,
+                                      "selected_claims_complete")));
+        ASSERT(strlen(json_get_str(json_get(&reply.data,
+                                            "epoch_selection_root"))) == 64);
+        const struct json_value *selected =
+            json_get(&reply.data, "selected_claims");
+        ASSERT(selected && selected->type == JSON_ARR &&
+               selected->num_children == 1);
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(selected, 0),
+                                            "claim_root")),
+                      planned_root_copy);
         zcl_command_reply_free(&reply);
         json_free(&input);
         uint8_t first_root[32], rebuilt_root[32];

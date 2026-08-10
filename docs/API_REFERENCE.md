@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 663 |
+| Registry entries (branches + leaves) | 665 |
 | Top-level roots | 11 |
-| Branches | 155 |
-| Leaves (dispatchable command paths) | 508 |
-| … `ready` (live handler in this build) | 460 |
+| Branches | 156 |
+| Leaves (dispatchable command paths) | 509 |
+| … `ready` (live handler in this build) | 461 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 198 | 47 | 151 |
+| `config/commands/zcode.def` | 200 | 48 | 152 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -1055,6 +1055,12 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode commons schedule propose plan` | ready | read / read / operator · fast/low | **`workspace`**, **`epoch`**, **`previous_proposal_root`** | `zcl.zcode_commons_schedule_propose.v1` | `zclassic23 zcode commons schedule propose plan --input='{...}'` | Plan one Proof-of-Participation epoch proposal |
 | `zcode commons schedule propose commit` | ready | mutate / app-write / operator, plan-commit · fast/low | **`workspace`**, **`epoch`**, **`previous_proposal_root`** | `zcl.zcode_commons_schedule_propose.v1` | `zclassic23 zcode commons schedule propose commit --input='{...}'` | Store one epoch schedule proposal in scratch CAS |
+
+#### `zcode.commons.schedule.claim` — Signed-claim epoch selection proposals
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode commons schedule claim plan` | ready | read / read / operator · fast/low | **`workspace`**, **`epoch`**, **`cutoff_height`**, **`cutoff_mtp`**, **`epoch_capacity_atoms`**, **`previous_epoch_root`**, **`network_genesis_root`**, **`moderation_policy_root`**, **`qualification_predicates_root`**, **`backlog_algorithm_root`** | `zcl.zcode_commons_claim_epoch_plan.v2` | `zclassic23 zcode commons schedule claim plan --input='{...}'` | Plan one signed-claim epoch selection |
 
 #### `zcode.commons.reproduction` — Portable simulation-only reproduction challenges
 

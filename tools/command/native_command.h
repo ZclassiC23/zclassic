@@ -550,6 +550,9 @@ void zcl_native_handle_zcode_commons_schedule_propose_plan(
 void zcl_native_handle_zcode_commons_schedule_propose_commit(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_commons_schedule_claim_plan(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_reproduction_challenge_plan(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
