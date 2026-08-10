@@ -5,7 +5,7 @@
 #define ZCL_ZCODE_C23_ECONOMICS_INTERNAL_H
 
 #define ZCODE_C23_ECONOMICS_QUEUE_ORDER \
-    "maturity_height,maturity_mtp,claim_root"
+    "strict-oldest-first:maturity_height,maturity_mtp,claim_root"
 #define ZCODE_C23_ECONOMICS_CATEGORY_ORDER \
     "zero_root=0;else_first=(root[0]+1)%8;then=cyclic"
 #define ZCODE_C23_ECONOMICS_CONCENTRATION_CAP \

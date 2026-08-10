@@ -74,17 +74,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 629 |
+| Registry entries (branches + leaves) | 628 |
 | Top-level roots | 11 |
 | Branches | 148 |
-| Leaves (dispatchable command paths) | 481 |
-| … `ready` (live handler in this build) | 433 |
+| Leaves (dispatchable command paths) | 480 |
+| … `ready` (live handler in this build) | 432 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 156 |
+| Leaves with `effect=mutate` | 155 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 101 |
+| Leaves requiring **owner** authority | 100 |
 
 Per source file:
 
@@ -93,14 +93,14 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 118 | 29 | 89 |
 | `config/commands/apps.def` | 16 | 3 | 13 |
-| `config/commands/app_features.def` | 59 | 16 | 43 |
-| `config/commands/store.def` | 8 | 0 | 8 |
+| `config/commands/app_features.def` | 58 | 15 | 43 |
+| `config/commands/store.def` | 5 | 0 | 5 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 46 | 11 | 35 |
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 176 | 42 | 134 |
+| `config/commands/zcode.def` | 179 | 43 | 136 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -540,14 +540,6 @@ represented by its children's sections.
 | `app store purchases` | ready | read / read / operator · fast/low | **`purchase_id`** | `zcl.store_purchases.v1` | `zclassic23 app store purchases` | Show purchases and what is still owed |
 | `app store collect` | ready | mutate / app-write / **owner** · foreground/moderate | **`purchase_id`**, `output_path` | `zcl.store_collect.v1` | `zclassic23 app store collect --input='{"purchase_id":1,"output_path":"/tmp/bought.bin"}'` | Download a purchase you paid for |
 
-#### `app.shop` — Shop
-
-| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
-|---|---|---|---|---|---|---|
-| `app shop init` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | `confirm`, `input`, `datadir` | `zcl.shop_init.v1` | `zclassic23 app shop init --input='{"confirm":true,"input":"/data/products.json"}'` | Initialize a live private shop |
-| `app shop status` | ready | read / read / operator · fast/low | `datadir` | `zcl.shop_status.v1` | `zclassic23 app shop status` | Show this node's shop posture |
-| `app shop reputation` | ready | read / read / operator · fast/low | **`publisher`**, `datadir`, `now_unix` | `zcl.shop_reputation.v1` | `zclassic23 app shop reputation --input='{"publisher":"02ab..."}'` | Show the provable evidence for a publisher |
-
 #### `app.swap` — Swaps
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
@@ -954,6 +946,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
+| `zcode commons backlog` | ready | read / read / public · instant/tiny | none | `zcl.zcode_commons_backlog.v1` | `zclassic23 zcode commons backlog` | Show the simulation-only claim backlog |
 | `zcode commons status` | ready | read / read / operator · fast/low | **`workspace`**, `expected_network_genesis_root`, `expected_zc23_policy_root`, `expected_epoch`, `expected_award_atoms`, `active_height`, `active_mtp`, `anchor_opening_height`, `anchor_opening_hash`, `anchor_maturity_height`, `anchor_maturity_hash`, `now_unix` | `zcl.zcode_commons_status.v1` | `zclassic23 zcode commons status --input='{"workspace":"/tmp/zclassic23-zcode-scratch"}'` | Show Living Commons status |
 | `zcode commons epoch` | ready | read / read / operator · fast/low | **`workspace`**, **`epoch`** | `zcl.zcode_commons_epoch.v1` | `zclassic23 zcode commons epoch --input='{"workspace":"/tmp/zclassic23-zcode-scratch","epoch":1}'` | Show one creation epoch |
 | `zcode commons lineage` | ready | read / read / operator · fast/low | **`workspace`**, **`package_root`** | `zcl.zcode_commons_lineage.v1` | `zclassic23 zcode commons lineage --input='{"workspace":"/tmp/zclassic23-zcode-scratch","package_root":"<64hex>"}'` | Show package continuity lineage |
@@ -1049,6 +1042,12 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode moderation policy list` | ready | read / read / public · instant/tiny | none | `zcl.zcode_moderation_policy_list.v1` | `zclassic23 zcode moderation policy list` | List immutable Family Commons policies |
 | `zcode moderation policy show` | ready | read / read / public · instant/tiny | **`profile`** | `zcl.zcode_moderation_policy_show.v1` | `zclassic23 zcode moderation policy show --input='{"profile":"family-c23.v1"}'` | Show one immutable Family Commons policy |
+
+#### `zcode.moderation.service` — Moderation service roster
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode moderation service status` | ready | read / read / public · instant/tiny | none | `zcl.zcode_moderation_service_status.v1` | `zclassic23 zcode moderation service status` | Show moderation service roster readiness |
 
 #### `zcode.patronage` — Simulated patronage
 
