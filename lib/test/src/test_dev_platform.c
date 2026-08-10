@@ -270,6 +270,22 @@ static int test_change_classification(void)
                       "zcode.commons.economics.status") == 0);
         ASSERT(strcmp(plan.reason, "single_service_island_batch") == 0);
 
+        struct zcl_devloop_restart_source_set restart_set = {0};
+        ASSERT(zcl_devloop_restart_source_set_add(
+            &restart_set, service_batch, 2));
+        ASSERT(restart_set.count == 1);
+        ASSERT_STR_EQ(restart_set.sources[0],
+                      "app/services/src/zcode_c23_economics_service.c");
+        const char *later_static[] = {
+            "lib/test/src/test_zcode_commons_v2.c",
+            "app/services/src/zcode_c23_economics_internal.h",
+        };
+        ASSERT(zcl_devloop_restart_source_set_add(
+            &restart_set, later_static, 2));
+        ASSERT(restart_set.count == 2);
+        ASSERT_STR_EQ(restart_set.sources[1],
+                      "lib/test/src/test_zcode_commons_v2.c");
+
         const char *cross_service_batch[] = {
             "app/services/src/zcode_c23_economics_service.c",
             "app/services/src/zcode_c23_corpus_service.c",

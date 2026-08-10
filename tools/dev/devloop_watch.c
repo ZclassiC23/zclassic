@@ -39,11 +39,28 @@ struct watch_context {
     size_t dir_count;
     char changed[ZCL_DEVLOOP_MAX_FILES][ZCL_DEVLOOP_PATH_MAX];
     size_t changed_count;
+    struct zcl_devloop_restart_source_set restart_sources;
     bool force_full_source_rescan;
     uint64_t mutation_sequence;
 };
 
 static volatile sig_atomic_t g_watch_stop;
+
+static bool watch_c_source(const char *path)
+{
+    size_t n = path ? strlen(path) : 0;
+    return n > 2 && path[n - 2] == '.' && path[n - 1] == 'c';
+}
+
+static bool watch_epoch_all_c(const char *const *paths, size_t path_count)
+{
+    if (!paths || path_count == 0)
+        return false;
+    for (size_t i = 0; i < path_count; i++)
+        if (!watch_c_source(paths[i]))
+            return false;
+    return true;
+}
 
 /* A public service contract header is intentionally outside the live island:
  * changing ABI/schema/wire/KAT bytes invalidates the resident frozen contract.
@@ -507,14 +524,27 @@ int zcl_devloop_watch_mode(const char *repo_root,
         printf("}\n");
         fflush(stdout);
         zcl_devloop_process_cancel_poll_set(watch_cancel_poll, &ctx);
+        bool restart_union_ok = zcl_devloop_restart_source_set_add(
+            &ctx.restart_sources, files, epoch_count);
         int fast = zcl_devloop_hotswap_batch_event(
             ctx.root, files, epoch_count, publish_mode);
         if (fast == 0)
             fast = service_contract_restart_event(ctx.root, files,
                                                   epoch_count);
-        if (fast == 0)
-            fast = zcl_devloop_restart_event(ctx.root, files,
-                                             epoch_count, publish_mode);
+        if (fast == 0) {
+            const char *restart_files[ZCL_DEVLOOP_RESTART_SOURCE_MAX];
+            const char *const *selected_files = files;
+            size_t selected_count = epoch_count;
+            if (restart_union_ok && watch_epoch_all_c(files, epoch_count) &&
+                ctx.restart_sources.count > 0) {
+                selected_count = ctx.restart_sources.count;
+                for (size_t i = 0; i < selected_count; i++)
+                    restart_files[i] = ctx.restart_sources.sources[i];
+                selected_files = restart_files;
+            }
+            fast = zcl_devloop_restart_event(
+                ctx.root, selected_files, selected_count, publish_mode);
+        }
         if (fast == 0) {
             /* APPLY authority is intentionally narrower than the generic
              * cycle: only one compiled-allowlist island may publish live.

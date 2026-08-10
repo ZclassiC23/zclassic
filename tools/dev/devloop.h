@@ -14,6 +14,7 @@ extern "C" {
 #define ZCL_DEVLOOP_MAX_FILES 256
 #define ZCL_DEVLOOP_PATH_MAX 1024
 #define ZCL_DEVLOOP_OUTPUT_MAX 65536
+#define ZCL_DEVLOOP_RESTART_SOURCE_MAX 32
 /* Proof-group set bounds for a plan (mirrors ZCL_AGENT_IMPACT_* so a plan can
  * hold the full path floor plus its symbol-closure additions). */
 #define ZCL_DEVLOOP_MAX_PLAN_GROUPS 32
@@ -478,6 +479,20 @@ size_t zcl_devloop_plan_json_closure(const char *repo_root,
  * the watcher must ignore them. Pure: no I/O. Shared by the watcher and its
  * unit test. */
 bool zcl_devloop_path_is_relevant(const char *path);
+
+/* Accumulated C translation units whose source bytes have diverged from the
+ * resident restart base during this watcher lifetime. Service-private header
+ * edits map to their one island owner. Overflow fails closed so a later
+ * restart cannot silently link stale base objects. */
+struct zcl_devloop_restart_source_set {
+    char sources[ZCL_DEVLOOP_RESTART_SOURCE_MAX][ZCL_DEVLOOP_PATH_MAX];
+    size_t count;
+    bool overflow;
+};
+
+bool zcl_devloop_restart_source_set_add(
+    struct zcl_devloop_restart_source_set *set,
+    const char *const *paths, size_t path_count);
 
 /* True iff `path` is under the sealed consensus core (the `core/` prefix —
  * the exact surface `core/MANIFEST.sha3` seals). Broader than the

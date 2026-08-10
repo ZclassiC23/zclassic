@@ -76,6 +76,42 @@ static bool has_suffix(const char *path, const char *suffix)
     return plen >= slen && memcmp(path + plen - slen, suffix, slen) == 0;
 }
 
+bool zcl_devloop_restart_source_set_add(
+    struct zcl_devloop_restart_source_set *set,
+    const char *const *paths, size_t path_count)
+{
+    if (!set || !paths || path_count == 0 || set->overflow)
+        return false;
+    for (size_t i = 0; i < path_count; i++) {
+        const char *source = zcl_hotswap_service_source_for_path(paths[i]);
+        if (!source && has_suffix(paths[i], ".c"))
+            source = paths[i];
+        if (!source)
+            continue;
+        size_t source_len = strlen(source);
+        if (source_len == 0 || source_len >= ZCL_DEVLOOP_PATH_MAX) {
+            set->overflow = true;
+            return false;
+        }
+        bool present = false;
+        for (size_t j = 0; j < set->count; j++)
+            if (strcmp(set->sources[j], source) == 0) {
+                present = true;
+                break;
+            }
+        if (present)
+            continue;
+        if (set->count >= ZCL_DEVLOOP_RESTART_SOURCE_MAX) {
+            set->overflow = true;
+            return false;
+        }
+        (void)snprintf(set->sources[set->count],
+                       sizeof(set->sources[set->count]), "%s", source);
+        set->count++;
+    }
+    return true;
+}
+
 static bool path_is_docs(const char *path)
 {
     return path &&
