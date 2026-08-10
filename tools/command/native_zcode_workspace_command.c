@@ -33,13 +33,15 @@ static bool workspace_binding_parse(
     struct zcl_command_reply *reply,
     struct vcs_zcode_module_passport_v1 *passport,
     struct vcs_zcode_workspace_entry_v1 *entry,
-    bool verify_request, uint8_t binding_root[32], const char *phase)
+    bool verify_request, bool allow_manifest_fields,
+    uint8_t binding_root[32], const char *phase)
 {
     const size_t min_fields = verify_request ? 4u : 3u;
     if (!request || !reply || !passport || !entry || !binding_root ||
         !request->input || request->input->type != JSON_OBJ ||
-        request->input->num_children < min_fields ||
-        request->input->num_children > min_fields + 1u) {
+        (!allow_manifest_fields &&
+         (request->input->num_children < min_fields ||
+          request->input->num_children > min_fields + 1u))) {
         if (reply) workspace_binding_fail(
             reply, "BAD_WORKSPACE_BINDING_INPUT", phase,
             "provide passport, module_release_root and positive sequence; "
@@ -207,7 +209,7 @@ void zcl_native_handle_zcode_workspace_plan(
     struct vcs_zcode_workspace_entry_v1 entry;
     uint8_t binding_root[32];
     if (!workspace_binding_parse(request, reply, &passport, &entry, false,
-                                 binding_root, "plan"))
+                                 false, binding_root, "plan"))
         return;
     (void)workspace_binding_render(reply, &entry, binding_root, false);
 }
@@ -219,7 +221,7 @@ void zcl_native_handle_zcode_workspace_verify(
     struct vcs_zcode_workspace_entry_v1 entry;
     uint8_t binding_root[32];
     if (!workspace_binding_parse(request, reply, &passport, &entry, true,
-                                 binding_root, "verify"))
+                                 false, binding_root, "verify"))
         return;
     uint8_t expected_root[32];
     if (!workspace_decode_root(request->input, "binding_root", expected_root) ||
@@ -230,6 +232,230 @@ void zcl_native_handle_zcode_workspace_verify(
         return;
     }
     (void)workspace_binding_render(reply, &entry, binding_root, true);
+}
+
+static void workspace_manifest_fail(struct zcl_command_reply *reply,
+                                    const char *code, const char *phase,
+                                    const char *detail)
+{
+    zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                           ZCL_COMMAND_EXIT_INVALID, code, phase, false,
+                           false, detail,
+                           "zcode.workspace.manifest.plan");
+}
+
+static bool workspace_manifest_key_allowed(const char *key, bool commit)
+{
+    static const char *const keys[] = {
+        "passport", "module_release_root", "sequence",
+        "predecessor_release_root", "workspace_sequence",
+        "predecessor_workspace_root", "signer_root",
+    };
+    if (!key) return false;
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+        if (strcmp(key, keys[i]) == 0) return true;
+    return commit && strcmp(key, "signature") == 0;
+}
+
+static bool workspace_manifest_parse(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply,
+    struct vcs_zcode_workspace_entry_v1 *entry,
+    struct vcs_zcode_workspace_manifest_v1 *manifest,
+    uint8_t binding_root[32], bool commit)
+{
+    if (!request || !reply || !entry || !manifest || !binding_root ||
+        !request->input || request->input->type != JSON_OBJ) {
+        if (reply) workspace_manifest_fail(
+            reply, "BAD_WORKSPACE_MANIFEST_INPUT", "parse",
+            "provide one verified Passport binding, workspace sequence and "
+            "offline signer public key");
+        return false;
+    }
+    const struct json_value *input = request->input;
+    for (size_t i = 0; i < input->num_children; i++) {
+        if (!workspace_manifest_key_allowed(input->keys[i], commit)) {
+            workspace_manifest_fail(
+                reply, "WORKSPACE_MANIFEST_UNKNOWN_FIELD", "parse",
+                "manifest input contains an undeclared field");
+            return false;
+        }
+    }
+    if (!json_get(input, "passport") ||
+        !json_get(input, "module_release_root") ||
+        !json_get(input, "sequence") ||
+        !json_get(input, "workspace_sequence") ||
+        !json_get(input, "signer_root") ||
+        (commit && !json_get(input, "signature"))) {
+        workspace_manifest_fail(
+            reply, "BAD_WORKSPACE_MANIFEST_INPUT", "parse",
+            "passport, module_release_root, sequence, workspace_sequence and "
+            "signer_root are required; commit also requires signature");
+        return false;
+    }
+    struct vcs_zcode_module_passport_v1 passport;
+    if (!workspace_binding_parse(request, reply, &passport, entry, false,
+                                 true, binding_root, "manifest"))
+        return false;
+
+    const struct json_value *sequence = json_get(input, "workspace_sequence");
+    if (!sequence || sequence->type != JSON_INT || sequence->val.i <= 0) {
+        workspace_manifest_fail(
+            reply, "WORKSPACE_MANIFEST_SEQUENCE_INVALID", "parse",
+            "workspace_sequence must be a positive integer");
+        return false;
+    }
+    memset(manifest, 0, sizeof(*manifest));
+    manifest->schema_version = 1;
+    manifest->flags = VCS_ZCODE_COMMONS_V2_REQUIRED_FLAGS;
+    manifest->sequence = (uint64_t)sequence->val.i;
+    manifest->entries = entry;
+    manifest->entry_count = 1;
+    if (!workspace_decode_root(input, "signer_root",
+                               manifest->signer_root)) {
+        workspace_manifest_fail(
+            reply, "WORKSPACE_MANIFEST_SIGNER_INVALID", "parse",
+            "signer_root must be one canonical lowercase Ed25519 public key");
+        return false;
+    }
+    const struct json_value *predecessor =
+        json_get(input, "predecessor_workspace_root");
+    if (manifest->sequence > 1u) {
+        if (!predecessor || !workspace_decode_root(
+                input, "predecessor_workspace_root",
+                manifest->predecessor_workspace_root)) {
+            workspace_manifest_fail(
+                reply, "WORKSPACE_MANIFEST_PREDECESSOR_REQUIRED", "parse",
+                "workspace_sequence above one requires its exact predecessor root");
+            return false;
+        }
+    } else if (predecessor) {
+        workspace_manifest_fail(
+            reply, "WORKSPACE_MANIFEST_PREDECESSOR_FORBIDDEN", "parse",
+            "workspace_sequence one must not declare a predecessor root");
+        return false;
+    }
+    if (commit) {
+        const char *signature = json_get_str(json_get(input, "signature"));
+        if (!signature || strlen(signature) != 128u ||
+            !zcl_hex_decode_lower(signature, manifest->signature, 64)) {
+            workspace_manifest_fail(
+                reply, "WORKSPACE_MANIFEST_SIGNATURE_INVALID", "verify",
+                "signature must be canonical lowercase 64-byte Ed25519 hex");
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool workspace_manifest_render_service(
+    struct zcl_command_reply *reply, bool verified)
+{
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_workspace_view_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_WORKSPACE_VIEW_SERVICE_ID, &lease);
+    if (!service) service = zcode_workspace_view_service_builtin();
+    struct zcode_workspace_view_result_v1 view;
+    bool rendered = service->render_binding(verified, &view) && view.valid &&
+        view.capability[0];
+    zcl_hotswap_service_release(&lease);
+    if (!rendered) {
+        workspace_manifest_fail(
+            reply, "WORKSPACE_MANIFEST_VIEW_FAILED", "render",
+            "the pure workspace view refused the verified manifest binding");
+        return false;
+    }
+    (void)json_push_kv_str(&reply->data, "binding_capability",
+                           view.capability);
+    (void)json_push_kv_str(&reply->data, "view_service_id",
+                           ZCODE_WORKSPACE_VIEW_SERVICE_ID);
+    (void)json_push_kv_int(&reply->data, "view_service_generation",
+                           zcl_hotswap_service_generation());
+    return true;
+}
+
+void zcl_native_handle_zcode_workspace_manifest_plan(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    struct vcs_zcode_workspace_entry_v1 entry;
+    struct vcs_zcode_workspace_manifest_v1 manifest;
+    uint8_t binding_root[32];
+    if (!workspace_manifest_parse(request, reply, &entry, &manifest,
+                                  binding_root, false))
+        return;
+    uint8_t unsigned_root[32];
+    uint8_t payload[
+        VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_PAYLOAD_BYTES];
+    size_t payload_len = 0;
+    enum vcs_zcode_commons_v2_error error =
+        vcs_zcode_workspace_manifest_v1_unsigned_root(
+            &manifest, unsigned_root);
+    if (error == VCS_ZCODE_COMMONS_V2_OK)
+        error = vcs_zcode_workspace_manifest_v1_signing_payload(
+            &manifest, payload, sizeof(payload), &payload_len);
+    if (error != VCS_ZCODE_COMMONS_V2_OK) {
+        workspace_manifest_fail(reply, "WORKSPACE_MANIFEST_PLAN_INVALID",
+                                "plan",
+                                vcs_zcode_commons_v2_error_string(error));
+        return;
+    }
+    if (!workspace_manifest_render_service(reply, false)) return;
+    char payload_hex[
+        VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_PAYLOAD_BYTES * 2u + 1u];
+    zcl_hex_encode(payload, payload_len, payload_hex);
+    (void)json_push_kv_str(&reply->data, "kind", "workspace_manifest.v1");
+    (void)json_push_kv_bool(&reply->data, "ready_for_signature", true);
+    workspace_push_root(&reply->data, "unsigned_root", unsigned_root);
+    workspace_push_root(&reply->data, "binding_root", binding_root);
+    (void)json_push_kv_str(&reply->data, "signing_payload", payload_hex);
+    (void)json_push_kv_int(&reply->data, "entry_count", 1);
+    (void)json_push_kv_bool(&reply->data, "persisted", false);
+    (void)json_push_kv_bool(&reply->data, "published", false);
+    (void)json_push_kv_bool(&reply->data, "simulation_only", true);
+    (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
+    (void)json_push_kv_str(
+        &reply->data, "agent_next_action",
+        "sign signing_payload with the matching offline Ed25519 key, then run zcode workspace manifest commit with the same input and signature");
+}
+
+void zcl_native_handle_zcode_workspace_manifest_commit(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    struct vcs_zcode_workspace_entry_v1 entry;
+    struct vcs_zcode_workspace_manifest_v1 manifest;
+    uint8_t binding_root[32];
+    if (!workspace_manifest_parse(request, reply, &entry, &manifest,
+                                  binding_root, true))
+        return;
+    enum vcs_zcode_commons_v2_error error =
+        vcs_zcode_workspace_manifest_v1_verify(&manifest);
+    if (error != VCS_ZCODE_COMMONS_V2_OK) {
+        workspace_manifest_fail(
+            reply, "WORKSPACE_MANIFEST_SIGNATURE_INVALID", "verify",
+            "the external signature does not verify the exact manifest plan");
+        return;
+    }
+    uint8_t manifest_root[32];
+    error = vcs_zcode_workspace_manifest_v1_root(&manifest, manifest_root);
+    if (error != VCS_ZCODE_COMMONS_V2_OK) {
+        workspace_manifest_fail(reply, "WORKSPACE_MANIFEST_ROOT_FAILED",
+                                "root",
+                                vcs_zcode_commons_v2_error_string(error));
+        return;
+    }
+    if (!workspace_manifest_render_service(reply, true)) return;
+    (void)json_push_kv_str(&reply->data, "kind", "workspace_manifest.v1");
+    (void)json_push_kv_bool(&reply->data, "verified", true);
+    workspace_push_root(&reply->data, "manifest_root", manifest_root);
+    workspace_push_root(&reply->data, "binding_root", binding_root);
+    (void)json_push_kv_int(&reply->data, "entry_count", 1);
+    (void)json_push_kv_bool(&reply->data, "persisted", false);
+    (void)json_push_kv_bool(&reply->data, "published", false);
+    (void)json_push_kv_bool(&reply->data, "simulation_only", true);
+    (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
+    (void)json_push_kv_str(
+        &reply->data, "agent_next_action",
+        "retain this manifest root as evidence; publication remains a separate human action");
 }
 
 void zcl_native_handle_zcode_workspace_status(

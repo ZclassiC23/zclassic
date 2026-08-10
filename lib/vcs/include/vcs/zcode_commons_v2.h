@@ -31,6 +31,12 @@
     "zcl.zcode.commons_admission.v1"
 #define VCS_ZCODE_WORKSPACE_MANIFEST_V1_DOMAIN \
     "zcl.zcode.workspace_manifest.v1"
+#define VCS_ZCODE_WORKSPACE_MANIFEST_V1_UNSIGNED_DOMAIN \
+    "zcl.zcode.workspace_manifest.unsigned.v1"
+#define VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_DOMAIN \
+    "zcl.zcode.workspace_manifest.signature.v1"
+#define VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_PAYLOAD_BYTES \
+    ((sizeof(VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_DOMAIN) - 1u) + 32u)
 #define VCS_ZCODE_WORKSPACE_ENTRY_V1_DOMAIN \
     "zcl.zcode.workspace_entry.v1"
 #define VCS_ZCODE_TYPED_ASSET_MANIFEST_V1_DOMAIN \
@@ -463,6 +469,14 @@ enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_decode(
 enum vcs_zcode_commons_v2_error vcs_zcode_module_passport_v1_root(
     const struct vcs_zcode_module_passport_v1 *passport, uint8_t out[32]);
 enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_validate(
+    const struct vcs_zcode_workspace_manifest_v1 *workspace);
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_unsigned_root(
+    const struct vcs_zcode_workspace_manifest_v1 *workspace,
+    uint8_t out[32]);
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_signing_payload(
+    const struct vcs_zcode_workspace_manifest_v1 *workspace,
+    uint8_t *payload, size_t payload_capacity, size_t *payload_len);
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_verify(
     const struct vcs_zcode_workspace_manifest_v1 *workspace);
 enum vcs_zcode_commons_v2_error vcs_zcode_workspace_entry_v1_validate(
     const struct vcs_zcode_workspace_entry_v1 *entry);

@@ -16,6 +16,8 @@
 static const uint8_t passport_magic[8] = {'Z','C','M','P','1',0,0,0};
 static const char passport_signature_domain[] =
     VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_DOMAIN;
+static const char workspace_manifest_signature_domain[] =
+    VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_DOMAIN;
 
 static bool workspace_nonzero_n(const uint8_t *bytes, size_t count)
 {
@@ -426,8 +428,9 @@ done:
     return error;
 }
 
-enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_validate(
-    const struct vcs_zcode_workspace_manifest_v1 *workspace)
+static enum vcs_zcode_commons_v2_error workspace_manifest_shape(
+    const struct vcs_zcode_workspace_manifest_v1 *workspace,
+    bool require_signature)
 {
     if (!workspace) return VCS_ZCODE_COMMONS_V2_NULL;
     if (workspace->schema_version != 1)
@@ -447,7 +450,8 @@ enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_validate(
         (workspace->sequence > 1 &&
          workspace_zero(workspace->predecessor_workspace_root)) ||
         !workspace_nonzero_n(workspace->signer_root, 32) ||
-        !workspace_nonzero_n(workspace->signature, 64))
+        (require_signature &&
+         !workspace_nonzero_n(workspace->signature, 64)))
         return VCS_ZCODE_COMMONS_V2_ROOT;
     enum vcs_zcode_commons_v2_error error =
         workspace_entries_validate(workspace);
@@ -462,6 +466,99 @@ enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_validate(
     return workspace_edges_validate(workspace);
 }
 
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_validate(
+    const struct vcs_zcode_workspace_manifest_v1 *workspace)
+{
+    return workspace_manifest_shape(workspace, true);
+}
+
+static void workspace_manifest_hash_fields(
+    struct sha3_256_ctx *sha,
+    const struct vcs_zcode_workspace_manifest_v1 *workspace)
+{
+    workspace_hash_u16(sha, workspace->schema_version);
+    workspace_hash_u16(sha, workspace->flags);
+    workspace_hash_u64(sha, workspace->sequence);
+    sha3_256_write(sha, workspace->predecessor_workspace_root, 32);
+    workspace_hash_u64(sha, workspace->entry_count);
+    workspace_hash_u64(sha, workspace->edge_count);
+    workspace_hash_u64(sha, workspace->typed_asset_count);
+    for (size_t i = 0; i < workspace->entry_count; i++) {
+        const struct vcs_zcode_workspace_entry_v1 *entry =
+            &workspace->entries[i];
+        sha3_256_write(sha, entry->module_release_root, 32u * 5u);
+        workspace_hash_u64(sha, entry->sequence);
+    }
+    for (size_t i = 0; i < workspace->edge_count; i++) {
+        workspace_hash_u16(sha, workspace->edges[i].from_entry);
+        workspace_hash_u16(sha, workspace->edges[i].to_entry);
+        workspace_hash_u32(sha, workspace->edges[i].reserved);
+    }
+    for (size_t i = 0; i < workspace->typed_asset_count; i++)
+        sha3_256_write(sha, workspace->typed_asset_roots[i], 32);
+    sha3_256_write(sha, workspace->signer_root, 32);
+}
+
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_unsigned_root(
+    const struct vcs_zcode_workspace_manifest_v1 *workspace,
+    uint8_t out[32])
+{
+    if (out) memset(out, 0, 32);
+    if (!workspace || !out) return VCS_ZCODE_COMMONS_V2_NULL;
+    enum vcs_zcode_commons_v2_error error =
+        workspace_manifest_shape(workspace, false);
+    if (error != VCS_ZCODE_COMMONS_V2_OK) return error;
+    struct sha3_256_ctx sha;
+    workspace_hash_start(
+        &sha, VCS_ZCODE_WORKSPACE_MANIFEST_V1_UNSIGNED_DOMAIN);
+    workspace_manifest_hash_fields(&sha, workspace);
+    sha3_256_finalize(&sha, out);
+    return VCS_ZCODE_COMMONS_V2_OK;
+}
+
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_signing_payload(
+    const struct vcs_zcode_workspace_manifest_v1 *workspace,
+    uint8_t *payload, size_t payload_capacity, size_t *payload_len)
+{
+    if (payload_len) *payload_len = 0;
+    if (!workspace || !payload || !payload_len)
+        return VCS_ZCODE_COMMONS_V2_NULL;
+    if (payload_capacity <
+        VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_PAYLOAD_BYTES)
+        return VCS_ZCODE_COMMONS_V2_SIZE;
+    const size_t domain_len =
+        sizeof(workspace_manifest_signature_domain) - 1u;
+    memcpy(payload, workspace_manifest_signature_domain, domain_len);
+    enum vcs_zcode_commons_v2_error error =
+        vcs_zcode_workspace_manifest_v1_unsigned_root(
+            workspace, payload + domain_len);
+    if (error != VCS_ZCODE_COMMONS_V2_OK) return error;
+    *payload_len = domain_len + 32u;
+    return *payload_len ==
+            VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_PAYLOAD_BYTES
+        ? VCS_ZCODE_COMMONS_V2_OK : VCS_ZCODE_COMMONS_V2_SIZE;
+}
+
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_verify(
+    const struct vcs_zcode_workspace_manifest_v1 *workspace)
+{
+    enum vcs_zcode_commons_v2_error error =
+        workspace_manifest_shape(workspace, true);
+    if (error != VCS_ZCODE_COMMONS_V2_OK) return error;
+    uint8_t payload[
+        VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_PAYLOAD_BYTES];
+    size_t payload_len = 0;
+    error = vcs_zcode_workspace_manifest_v1_signing_payload(
+        workspace, payload, sizeof(payload), &payload_len);
+    bool valid = error == VCS_ZCODE_COMMONS_V2_OK &&
+        ed25519_verify(workspace->signature, payload, payload_len,
+                       workspace->signer_root);
+    memory_cleanse(payload, sizeof(payload));
+    if (error != VCS_ZCODE_COMMONS_V2_OK) return error;
+    return valid ? VCS_ZCODE_COMMONS_V2_OK
+                 : VCS_ZCODE_COMMONS_V2_SIGNATURE;
+}
+
 enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_root(
     const struct vcs_zcode_workspace_manifest_v1 *workspace,
     uint8_t out[32])
@@ -473,27 +570,7 @@ enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_root(
     if (error != VCS_ZCODE_COMMONS_V2_OK) return error;
     struct sha3_256_ctx sha;
     workspace_hash_start(&sha, VCS_ZCODE_WORKSPACE_MANIFEST_V1_DOMAIN);
-    workspace_hash_u16(&sha, workspace->schema_version);
-    workspace_hash_u16(&sha, workspace->flags);
-    workspace_hash_u64(&sha, workspace->sequence);
-    sha3_256_write(&sha, workspace->predecessor_workspace_root, 32);
-    workspace_hash_u64(&sha, workspace->entry_count);
-    workspace_hash_u64(&sha, workspace->edge_count);
-    workspace_hash_u64(&sha, workspace->typed_asset_count);
-    for (size_t i = 0; i < workspace->entry_count; i++) {
-        const struct vcs_zcode_workspace_entry_v1 *entry =
-            &workspace->entries[i];
-        sha3_256_write(&sha, entry->module_release_root, 32u * 5u);
-        workspace_hash_u64(&sha, entry->sequence);
-    }
-    for (size_t i = 0; i < workspace->edge_count; i++) {
-        workspace_hash_u16(&sha, workspace->edges[i].from_entry);
-        workspace_hash_u16(&sha, workspace->edges[i].to_entry);
-        workspace_hash_u32(&sha, workspace->edges[i].reserved);
-    }
-    for (size_t i = 0; i < workspace->typed_asset_count; i++)
-        sha3_256_write(&sha, workspace->typed_asset_roots[i], 32);
-    sha3_256_write(&sha, workspace->signer_root, 32);
+    workspace_manifest_hash_fields(&sha, workspace);
     sha3_256_write(&sha, workspace->signature, 64);
     sha3_256_finalize(&sha, out);
     return VCS_ZCODE_COMMONS_V2_OK;

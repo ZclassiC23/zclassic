@@ -30,6 +30,9 @@ ZCL_COMMAND_BRANCH("zcode.passport", "zcode",
 ZCL_COMMAND_BRANCH("zcode.workspace", "zcode",
                    "Exact C23 workspace evidence bindings",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.workspace.manifest", "zcode.workspace",
+                   "Externally signed C23 workspace manifests",
+                   ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
     "zcode.passport.status", "zcode.passport", "",
@@ -118,6 +121,48 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_workspace_verify)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.workspace.manifest.plan", "zcode.workspace.manifest", "",
+    "Plan one externally signed workspace manifest",
+    "Builds a bounded one-entry workspace_manifest.v1 from a verified "
+    "Passport binding and returns its domain-separated signing payload. It "
+    "does not access keys, persist, publish or authorize the manifest.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,workspace,manifest,c23,plan,signature,evidence,simulation",
+    "zcl.zcode_workspace_manifest_plan.input.v1",
+    "zcl.zcode_workspace_manifest_plan.v1",
+    "passport,module_release_root,sequence,predecessor_release_root,workspace_sequence,predecessor_workspace_root,signer_root",
+    "passport,module_release_root,sequence,workspace_sequence,signer_root",
+    "zclassic23 zcode workspace manifest plan --input='<verified Passport binding and signer public key>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_workspace_manifest_plan)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.workspace.manifest.commit", "zcode.workspace.manifest", "",
+    "Verify one externally signed workspace manifest",
+    "Rebuilds the exact planned one-entry workspace_manifest.v1 and verifies "
+    "the supplied Ed25519 signature before returning its canonical root. It "
+    "does not persist, publish, accept or admit the manifest.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,workspace,manifest,c23,commit,signature,evidence,simulation",
+    "zcl.zcode_workspace_manifest_commit.input.v1",
+    "zcl.zcode_workspace_manifest_commit.v1",
+    "passport,module_release_root,sequence,predecessor_release_root,workspace_sequence,predecessor_workspace_root,signer_root,signature",
+    "passport,module_release_root,sequence,workspace_sequence,signer_root,signature",
+    "zclassic23 zcode workspace manifest commit --input='<same plan plus external signature>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_workspace_manifest_commit)
 
 ZCL_COMMAND_READY_READ(
     "zcode.passport.plan", "zcode.passport", "",

@@ -74,11 +74,11 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 650 |
+| Registry entries (branches + leaves) | 653 |
 | Top-level roots | 11 |
-| Branches | 152 |
-| Leaves (dispatchable command paths) | 498 |
-| … `ready` (live handler in this build) | 450 |
+| Branches | 153 |
+| Leaves (dispatchable command paths) | 500 |
+| … `ready` (live handler in this build) | 452 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 191 | 45 | 146 |
+| `config/commands/zcode.def` | 194 | 46 | 148 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -978,6 +978,13 @@ represented by its children's sections.
 | `zcode workspace plan` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root` | `zcl.zcode_workspace_plan.v1` | `zclassic23 zcode workspace plan --input='<passport, release root, sequence>'` | Plan one Passport-bound workspace entry |
 | `zcode workspace verify` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root`, **`binding_root`** | `zcl.zcode_workspace_verify.v1` | `zclassic23 zcode workspace verify --input='<plan input plus binding_root>'` | Verify one Passport-bound workspace entry |
 | `zcode workspace show` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root`, **`binding_root`** | `zcl.zcode_workspace_verify.v1` | `zclassic23 zcode workspace show --input='<verified binding input>'` | Show one verified Passport-bound workspace entry |
+
+#### `zcode.workspace.manifest` — Externally signed C23 workspace manifests
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode workspace manifest plan` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root`, **`workspace_sequence`**, `predecessor_workspace_root`, **`signer_root`** | `zcl.zcode_workspace_manifest_plan.v1` | `zclassic23 zcode workspace manifest plan --input='<verified Passport binding and signer public key>'` | Plan one externally signed workspace manifest |
+| `zcode workspace manifest commit` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root`, **`workspace_sequence`**, `predecessor_workspace_root`, **`signer_root`**, **`signature`** | `zcl.zcode_workspace_manifest_commit.v1` | `zclassic23 zcode workspace manifest commit --input='<same plan plus external signature>'` | Verify one externally signed workspace manifest |
 
 #### `zcode.commons` — Read-only ZC23 Living Commons projection
 

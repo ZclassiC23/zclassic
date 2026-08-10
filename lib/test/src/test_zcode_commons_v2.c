@@ -25,6 +25,8 @@ static const char asset_root_kat[] =
     "696e2ec2105c03754627c18991ed351b134ffe9942795e4626410e6c43f3ee61";
 static const char workspace_root_kat[] =
     "3053aad90f975aa7d6548784bc80d90f9b51364afec4c5593a44e2d019ee4128";
+static const char workspace_unsigned_root_kat[] =
+    "657c51479ea5b6f95fb34b7659b570cb65a2509d3f87289541f6d893bd565acc";
 static const char source_assignment_root_kat[] =
     "3c6d904fd178e8e888fc3479ff087f4e2a579412185232aa3feecb9d99d95be7";
 static const char c23_corpus_rules_root_kat[] =
@@ -1423,6 +1425,78 @@ static int test_v2_workspace_objects(void)
         json_free(&bad_workspace_input);
         json_free(&workspace_plan_input);
 
+        uint8_t manifest_seed[32], manifest_secret[32], manifest_pubkey[32];
+        memset(manifest_seed, 0xb4, sizeof(manifest_seed));
+        ed25519_keypair(manifest_pubkey, manifest_secret, manifest_seed);
+        char manifest_pubkey_hex[65];
+        zcl_hex_encode(manifest_pubkey, sizeof(manifest_pubkey),
+                       manifest_pubkey_hex);
+        struct json_value manifest_plan_input;
+        json_init(&manifest_plan_input);
+        json_set_object(&manifest_plan_input);
+        ASSERT(json_push_kv_str(&manifest_plan_input, "passport",
+                                passport_hex));
+        ASSERT(json_push_kv_str(&manifest_plan_input, "module_release_root",
+                                workspace_release_hex));
+        ASSERT(json_push_kv_int(&manifest_plan_input, "sequence", 1));
+        ASSERT(json_push_kv_int(&manifest_plan_input, "workspace_sequence", 1));
+        ASSERT(json_push_kv_str(&manifest_plan_input, "signer_root",
+                                manifest_pubkey_hex));
+        struct zcl_command_request manifest_request = {
+            .input = &manifest_plan_input,
+        };
+        struct zcl_command_reply manifest_reply;
+        zcl_command_reply_init(&manifest_reply,
+                               "zcl.zcode_workspace_manifest_plan.v1");
+        zcl_native_handle_zcode_workspace_manifest_plan(&manifest_request,
+                                                        &manifest_reply);
+        ASSERT_EQ(manifest_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        const char *manifest_payload_hex = json_get_str(json_get(
+            &manifest_reply.data, "signing_payload"));
+        ASSERT(manifest_payload_hex);
+        uint8_t manifest_payload[
+            VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_PAYLOAD_BYTES];
+        ASSERT(zcl_hex_decode_lower(manifest_payload_hex, manifest_payload,
+                                    sizeof(manifest_payload)));
+        uint8_t manifest_signature[64];
+        ed25519_sign(manifest_signature, manifest_payload,
+                     sizeof(manifest_payload), manifest_secret,
+                     manifest_pubkey);
+        zcl_command_reply_free(&manifest_reply);
+        char manifest_signature_hex[129];
+        zcl_hex_encode(manifest_signature, sizeof(manifest_signature),
+                       manifest_signature_hex);
+        ASSERT(json_push_kv_str(&manifest_plan_input, "signature",
+                                manifest_signature_hex));
+        zcl_command_reply_init(&manifest_reply,
+                               "zcl.zcode_workspace_manifest_commit.v1");
+        zcl_native_handle_zcode_workspace_manifest_commit(&manifest_request,
+                                                          &manifest_reply);
+        ASSERT_EQ(manifest_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&manifest_reply.data, "verified")));
+        ASSERT_EQ(json_get_int(json_get(&manifest_reply.data, "entry_count")),
+                  1);
+        ASSERT(!json_get_bool(json_get(&manifest_reply.data, "persisted")));
+        ASSERT(!json_get_bool(json_get(&manifest_reply.data, "published")));
+        ASSERT(json_get_str(json_get(&manifest_reply.data, "manifest_root")));
+        zcl_command_reply_free(&manifest_reply);
+        manifest_signature[0] ^= 1u;
+        zcl_hex_encode(manifest_signature, sizeof(manifest_signature),
+                       manifest_signature_hex);
+        for (size_t i = 0; i < manifest_plan_input.num_children; i++)
+            if (strcmp(manifest_plan_input.keys[i], "signature") == 0)
+                json_set_str(&manifest_plan_input.children[i],
+                             manifest_signature_hex);
+        zcl_command_reply_init(&manifest_reply,
+                               "zcl.zcode_workspace_manifest_commit.v1");
+        zcl_native_handle_zcode_workspace_manifest_commit(&manifest_request,
+                                                          &manifest_reply);
+        ASSERT_EQ(manifest_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(manifest_reply.error.code,
+                      "WORKSPACE_MANIFEST_SIGNATURE_INVALID");
+        zcl_command_reply_free(&manifest_reply);
+        json_free(&manifest_plan_input);
+
         struct vcs_zcode_module_passport_v1 passport_decoded;
         ASSERT_EQ(vcs_zcode_module_passport_v1_decode(
                       &passport_decoded, passport_wire, passport_wire_len),
@@ -1491,6 +1565,47 @@ static int test_v2_workspace_objects(void)
         ASSERT(memcmp(asset_root, expected, 32) == 0);
         ASSERT(zcl_hex_decode(workspace_root_kat, expected, 32));
         ASSERT(memcmp(workspace_root, expected, 32) == 0);
+
+        struct vcs_zcode_workspace_manifest_v1 signed_workspace = workspace;
+        uint8_t workspace_seed[32], workspace_secret[32];
+        memset(workspace_seed, 0xa7, sizeof(workspace_seed));
+        ed25519_keypair(signed_workspace.signer_root, workspace_secret,
+                        workspace_seed);
+        memset(signed_workspace.signature, 0,
+               sizeof(signed_workspace.signature));
+        uint8_t workspace_unsigned_root[32];
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_unsigned_root(
+                      &signed_workspace, workspace_unsigned_root),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        uint8_t workspace_payload[
+            VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_PAYLOAD_BYTES];
+        size_t workspace_payload_len = 0;
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_signing_payload(
+                      &signed_workspace, workspace_payload,
+                      sizeof(workspace_payload), &workspace_payload_len),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT_EQ(workspace_payload_len, sizeof(workspace_payload));
+        ASSERT(memcmp(workspace_payload + workspace_payload_len - 32u,
+                      workspace_unsigned_root, 32) == 0);
+        char workspace_unsigned_hex[65];
+        zcl_hex_encode(workspace_unsigned_root, 32, workspace_unsigned_hex);
+        printf(" workspace_manifest.v1.unsigned=%s\n",
+               workspace_unsigned_hex);
+        ASSERT(zcl_hex_decode(workspace_unsigned_root_kat, expected, 32));
+        ASSERT(memcmp(workspace_unsigned_root, expected, 32) == 0);
+        ed25519_sign(signed_workspace.signature, workspace_payload,
+                     workspace_payload_len, workspace_secret,
+                     signed_workspace.signer_root);
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_verify(&signed_workspace),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        signed_workspace.signature[0] ^= 1u;
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_verify(&signed_workspace),
+                  VCS_ZCODE_COMMONS_V2_SIGNATURE);
+        signed_workspace.signature[0] ^= 1u;
+        entries[0].sequence++;
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_verify(&signed_workspace),
+                  VCS_ZCODE_COMMONS_V2_SIGNATURE);
+        entries[0].sequence--;
 
         struct vcs_zcode_workspace_edge_v1 cycle[2] = {
             {.from_entry = 0, .to_entry = 1},
