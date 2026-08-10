@@ -72,10 +72,35 @@ static bool render_status(struct zcode_workspace_view_result_v1 *out)
     return true;
 }
 
+static bool render_manifest(enum zcode_workspace_manifest_view_mode_v1 mode,
+                            struct zcode_workspace_view_result_v1 *out)
+{
+    if (!out || (mode != ZCODE_WORKSPACE_MANIFEST_VIEW_PLAN &&
+                 mode != ZCODE_WORKSPACE_MANIFEST_VIEW_COMMIT))
+        return false;
+    memset(out, 0, sizeof(*out));
+    (void)snprintf(out->kind, sizeof(out->kind), "%s",
+                   "workspace_manifest.v1");
+    if (mode == ZCODE_WORKSPACE_MANIFEST_VIEW_PLAN) {
+        (void)snprintf(out->capability, sizeof(out->capability), "%s",
+                       "exact manifest commitment is ready for offline signature");
+        (void)snprintf(out->next_action, sizeof(out->next_action), "%s",
+                       "offline-sign payload, then zcode workspace manifest commit");
+    } else {
+        (void)snprintf(out->capability, sizeof(out->capability), "%s",
+                       "external signature verifies the exact workspace manifest");
+        (void)snprintf(out->next_action, sizeof(out->next_action), "%s",
+                       "retain manifest root; human publication stays separate");
+    }
+    out->valid = true;
+    return true;
+}
+
 static const struct zcode_workspace_view_service_v1 k_builtin = {
     .derive_binding = derive_binding,
     .render_binding = render_binding,
     .render_status = render_status,
+    .render_manifest = render_manifest,
 };
 
 ZCL_HOTSWAP_SERVICE_EXPORT(

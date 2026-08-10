@@ -626,14 +626,28 @@ static bool candidate_workspace_status(
     return true;
 }
 
+static bool candidate_workspace_manifest(
+    enum zcode_workspace_manifest_view_mode_v1 mode,
+    struct zcode_workspace_view_result_v1 *out)
+{
+    if (!zcode_workspace_view_service_builtin()->render_manifest(mode, out))
+        return false;
+    if (mode == ZCODE_WORKSPACE_MANIFEST_VIEW_PLAN)
+        snprintf(out->capability, sizeof(out->capability), "%s",
+                 "candidate manifest presentation generation is active");
+    return true;
+}
+
 static int t_zcode_workspace_view(void)
 {
     int failures = 0;
     TEST("workspace views swap while signatures and root authority stay static") {
         zcl_hotswap_service_reset();
+        ASSERT(zcode_workspace_view_service_builtin()->render_manifest);
         struct zcode_workspace_view_service_v1 candidate =
             *zcode_workspace_view_service_builtin();
         candidate.render_status = candidate_workspace_status;
+        candidate.render_manifest = candidate_workspace_manifest;
         struct zcl_hotswap_service_candidate publication = {
             .service_id = ZCODE_WORKSPACE_VIEW_SERVICE_ID,
             .source_tu = "app/services/src/zcode_workspace_view_service.c",
@@ -668,6 +682,17 @@ static int t_zcode_workspace_view(void)
         ASSERT(json_get_bool(json_get(&reply.data,
                                       "root_confirmation_static")));
         ASSERT(!json_get_bool(json_get(&reply.data, "effects_swappable")));
+        struct zcl_hotswap_service_lease lease = {0};
+        const struct zcode_workspace_view_service_v1 *active =
+            zcl_hotswap_service_acquire(ZCODE_WORKSPACE_VIEW_SERVICE_ID,
+                                        &lease);
+        struct zcode_workspace_view_result_v1 manifest_view;
+        ASSERT(active);
+        ASSERT(active->render_manifest(ZCODE_WORKSPACE_MANIFEST_VIEW_PLAN,
+                                       &manifest_view));
+        ASSERT_STR_EQ(manifest_view.capability,
+                      "candidate manifest presentation generation is active");
+        zcl_hotswap_service_release(&lease);
         zcl_command_reply_free(&reply);
         json_free(&input);
         zcl_hotswap_service_reset();

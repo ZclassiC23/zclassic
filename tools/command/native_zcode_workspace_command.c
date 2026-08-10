@@ -349,15 +349,17 @@ static bool workspace_manifest_parse(
 }
 
 static bool workspace_manifest_render_service(
-    struct zcl_command_reply *reply, bool verified)
+    struct zcl_command_reply *reply,
+    enum zcode_workspace_manifest_view_mode_v1 mode,
+    struct zcode_workspace_view_result_v1 *view)
 {
     struct zcl_hotswap_service_lease lease = {0};
     const struct zcode_workspace_view_service_v1 *service =
         zcl_hotswap_service_acquire(ZCODE_WORKSPACE_VIEW_SERVICE_ID, &lease);
     if (!service) service = zcode_workspace_view_service_builtin();
-    struct zcode_workspace_view_result_v1 view;
-    bool rendered = service->render_binding(verified, &view) && view.valid &&
-        view.capability[0];
+    bool rendered = service->render_manifest &&
+        service->render_manifest(mode, view) && view->valid &&
+        view->kind[0] && view->capability[0] && view->next_action[0];
     zcl_hotswap_service_release(&lease);
     if (!rendered) {
         workspace_manifest_fail(
@@ -366,7 +368,7 @@ static bool workspace_manifest_render_service(
         return false;
     }
     (void)json_push_kv_str(&reply->data, "binding_capability",
-                           view.capability);
+                           view->capability);
     (void)json_push_kv_str(&reply->data, "view_service_id",
                            ZCODE_WORKSPACE_VIEW_SERVICE_ID);
     (void)json_push_kv_int(&reply->data, "view_service_generation",
@@ -399,11 +401,14 @@ void zcl_native_handle_zcode_workspace_manifest_plan(
                                 vcs_zcode_commons_v2_error_string(error));
         return;
     }
-    if (!workspace_manifest_render_service(reply, false)) return;
+    struct zcode_workspace_view_result_v1 view;
+    if (!workspace_manifest_render_service(
+            reply, ZCODE_WORKSPACE_MANIFEST_VIEW_PLAN, &view))
+        return;
     char payload_hex[
         VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_PAYLOAD_BYTES * 2u + 1u];
     zcl_hex_encode(payload, payload_len, payload_hex);
-    (void)json_push_kv_str(&reply->data, "kind", "workspace_manifest.v1");
+    (void)json_push_kv_str(&reply->data, "kind", view.kind);
     (void)json_push_kv_bool(&reply->data, "ready_for_signature", true);
     workspace_push_root(&reply->data, "unsigned_root", unsigned_root);
     workspace_push_root(&reply->data, "binding_root", binding_root);
@@ -413,9 +418,8 @@ void zcl_native_handle_zcode_workspace_manifest_plan(
     (void)json_push_kv_bool(&reply->data, "published", false);
     (void)json_push_kv_bool(&reply->data, "simulation_only", true);
     (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
-    (void)json_push_kv_str(
-        &reply->data, "agent_next_action",
-        "sign signing_payload with the matching offline Ed25519 key, then run zcode workspace manifest commit with the same input and signature");
+    (void)json_push_kv_str(&reply->data, "agent_next_action",
+                           view.next_action);
 }
 
 void zcl_native_handle_zcode_workspace_manifest_commit(
@@ -443,8 +447,11 @@ void zcl_native_handle_zcode_workspace_manifest_commit(
                                 vcs_zcode_commons_v2_error_string(error));
         return;
     }
-    if (!workspace_manifest_render_service(reply, true)) return;
-    (void)json_push_kv_str(&reply->data, "kind", "workspace_manifest.v1");
+    struct zcode_workspace_view_result_v1 view;
+    if (!workspace_manifest_render_service(
+            reply, ZCODE_WORKSPACE_MANIFEST_VIEW_COMMIT, &view))
+        return;
+    (void)json_push_kv_str(&reply->data, "kind", view.kind);
     (void)json_push_kv_bool(&reply->data, "verified", true);
     workspace_push_root(&reply->data, "manifest_root", manifest_root);
     workspace_push_root(&reply->data, "binding_root", binding_root);
@@ -453,9 +460,8 @@ void zcl_native_handle_zcode_workspace_manifest_commit(
     (void)json_push_kv_bool(&reply->data, "published", false);
     (void)json_push_kv_bool(&reply->data, "simulation_only", true);
     (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
-    (void)json_push_kv_str(
-        &reply->data, "agent_next_action",
-        "retain this manifest root as evidence; publication remains a separate human action");
+    (void)json_push_kv_str(&reply->data, "agent_next_action",
+                           view.next_action);
 }
 
 void zcl_native_handle_zcode_workspace_status(
@@ -533,7 +539,7 @@ static bool workspace_view_frozen_kat(const void *opaque, char *why,
            input.passport.source_assignment_root, 32);
     uint8_t expected_root[32];
     if (!service || !service->derive_binding || !service->render_binding ||
-        !service->render_status ||
+        !service->render_status || !service->render_manifest ||
         vcs_zcode_module_passport_v1_root(
             &input.passport, expected.module_passport_root) !=
             VCS_ZCODE_COMMONS_V2_OK ||
@@ -553,6 +559,21 @@ static bool workspace_view_frozen_kat(const void *opaque, char *why,
         strcmp(view.next_action, "zcode workspace plan") != 0) {
         if (why && why_sz) (void)snprintf(
             why, why_sz, "frozen workspace view/status vector failed");
+        return false;
+    }
+    if (!service->render_manifest(
+            ZCODE_WORKSPACE_MANIFEST_VIEW_PLAN, &view) || !view.valid ||
+        strcmp(view.kind, "workspace_manifest.v1") != 0 ||
+        strcmp(view.next_action,
+               "offline-sign payload, then zcode workspace manifest commit") != 0 ||
+        !service->render_manifest(
+            ZCODE_WORKSPACE_MANIFEST_VIEW_COMMIT, &view) || !view.valid ||
+        strcmp(view.next_action,
+               "retain manifest root; human publication stays separate") != 0 ||
+        service->render_manifest(
+            (enum zcode_workspace_manifest_view_mode_v1)99, &view)) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen workspace manifest view vector failed");
         return false;
     }
     input.sequence = 2;

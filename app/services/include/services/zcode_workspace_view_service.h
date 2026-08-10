@@ -11,13 +11,18 @@
 
 #define ZCODE_WORKSPACE_VIEW_SERVICE_ID "zcode.workspace.view.v1"
 #define ZCODE_WORKSPACE_VIEW_ABI_FINGERPRINT \
-    "zcode.workspace.view.abi.v1:d1cb9368"
+    "zcode.workspace.view.abi.v2:manifest-render"
 #define ZCODE_WORKSPACE_VIEW_SCHEMA_FINGERPRINT \
-    "zcl.zcode_workspace_status.v1+plan.v1+verify.v1"
+    "zcl.zcode_workspace_status.v1+plan.v1+verify.v1+manifest-plan.v1+manifest-commit.v1"
 #define ZCODE_WORKSPACE_VIEW_WIRE_FINGERPRINT \
-    "module-passport+workspace-entry-binding.v1"
+    "module-passport+workspace-entry-binding+manifest-unsigned.v1"
 #define ZCODE_WORKSPACE_VIEW_KAT_FINGERPRINT \
-    "0f0cf74e7231e05f4378ce771233c0b3850084e6c5d63eb6ab4021413025e911"
+    "a027432310c2e02e8460b2757159fc0d40a24c176d6935fffd1de2d2b765e84b"
+
+enum zcode_workspace_manifest_view_mode_v1 {
+    ZCODE_WORKSPACE_MANIFEST_VIEW_PLAN = 1,
+    ZCODE_WORKSPACE_MANIFEST_VIEW_COMMIT = 2,
+};
 
 struct zcode_workspace_binding_input_v1 {
     struct vcs_zcode_module_passport_v1 passport;
@@ -46,6 +51,8 @@ struct zcode_workspace_view_service_v1 {
     bool (*render_binding)(bool verified,
                            struct zcode_workspace_view_result_v1 *out);
     bool (*render_status)(struct zcode_workspace_view_result_v1 *out);
+    bool (*render_manifest)(enum zcode_workspace_manifest_view_mode_v1 mode,
+                            struct zcode_workspace_view_result_v1 *out);
 };
 
 const struct zcode_workspace_view_service_v1 *

@@ -84,10 +84,10 @@ HOTSWAP_SERVICE(
     "-",
     "app/services/include/services/zcode_workspace_view_service.h",
     "vcs_zcode_module_passport_v1_root vcs_zcode_workspace_entry_v1_root",
-    "zcode.workspace.view.abi.v1:d1cb9368",
-    "zcl.zcode_workspace_status.v1+plan.v1+verify.v1",
-    "module-passport+workspace-entry-binding.v1",
-    "0f0cf74e7231e05f4378ce771233c0b3850084e6c5d63eb6ab4021413025e911",
+    "zcode.workspace.view.abi.v2:manifest-render",
+    "zcl.zcode_workspace_status.v1+plan.v1+verify.v1+manifest-plan.v1+manifest-commit.v1",
+    "module-passport+workspace-entry-binding+manifest-unsigned.v1",
+    "a027432310c2e02e8460b2757159fc0d40a24c176d6935fffd1de2d2b765e84b",
     "zcode.workspace.status")
 
 HOTSWAP_SERVICE(
