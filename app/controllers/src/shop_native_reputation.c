@@ -43,8 +43,10 @@
 
 #include "base/hex.h"
 #include "command/native_command.h"
+#include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "platform/clock.h"
+#include "services/shop_reputation_view_service.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "vcs/package_attest.h"
@@ -75,31 +77,6 @@ struct shop_rep_pair {          /* one (package, recipe) reproduction key */
     uint8_t recipe_root[32];
 };
 
-struct shop_rep_evidence {
-    bool store_present;
-    /* signed publication */
-    uint32_t releases;
-    uint32_t packages;
-    uint64_t max_publisher_sequence;
-    /* local observation window (unsigned, labeled on the row) */
-    bool observed;
-    int64_t first_observed_unix;
-    int64_t days_observed;
-    /* reproduction (distinct build events, unsigned-by-whom unknown) */
-    uint32_t matching_receipts;
-    uint32_t reproduced_packages;
-    /* attestations */
-    uint32_t valid_attestations;
-    uint32_t distinct_verifiers;
-    bool attestations_truncated;
-    /* dependent packages */
-    uint32_t dependent_packages;
-    uint32_t declarations_read;
-    uint32_t declarations_unavailable;
-    /* simulated settlements (placeholder token) */
-    uint32_t settled_entries;
-};
-
 /* ── small set helpers (bounded linear scans over 32-byte roots) ────── */
 static bool rep_root_seen(const uint8_t (*set)[32], size_t count,
                           const uint8_t root[32])
@@ -124,7 +101,7 @@ static bool rep_pair_seen(const struct shop_rep_pair *set, size_t count,
 /* ── publication + the local observation window ─────────────────────── */
 static void rep_collect_publication(const char *zcode_dir,
                                     const uint8_t publisher[33],
-                                    struct shop_rep_evidence *ev,
+                                    struct shop_reputation_view_input_v1 *ev,
                                     uint8_t (*subject_pkgs)[32],
                                     size_t *subject_pkg_count,
                                     struct shop_rep_pair *pairs,
@@ -192,7 +169,7 @@ static void rep_collect_publication(const char *zcode_dir,
 static void rep_collect_reproduction(const char *zcode_dir,
                                      const struct shop_rep_pair *pairs,
                                      size_t pair_count,
-                                     struct shop_rep_evidence *ev)
+                                     struct shop_reputation_view_input_v1 *ev)
 {
     char dir[4400];
     int n = snprintf(dir, sizeof(dir), "%s/receipts", zcode_dir);
@@ -217,7 +194,7 @@ static void rep_collect_reproduction(const char *zcode_dir,
 static void rep_collect_attestations(const char *zcode_dir,
                                      const uint8_t (*subject_pkgs)[32],
                                      size_t subject_pkg_count,
-                                     struct shop_rep_evidence *ev)
+                                     struct shop_reputation_view_input_v1 *ev)
 {
     char dir[4400];
     int n = snprintf(dir, sizeof(dir), "%s/attestations", zcode_dir);
@@ -368,7 +345,7 @@ static void rep_collect_dependents(const char *zcode_dir,
                                    size_t subject_pkg_count,
                                    const uint8_t (*all_pkgs)[32],
                                    size_t all_pkg_count,
-                                   struct shop_rep_evidence *ev)
+                                   struct shop_reputation_view_input_v1 *ev)
 {
     uint8_t *text = zcl_malloc(VCS_PACKAGE_DEPS_META_MAX_BYTES + 1u,
                                "shop_rep_deps_text");
@@ -405,7 +382,7 @@ static void rep_collect_dependents(const char *zcode_dir,
 /* ── simulated settlements: the reward ledger's settled facts ───────── */
 static void rep_collect_settlements(const char *zcode_dir,
                                     const uint8_t publisher[33],
-                                    struct shop_rep_evidence *ev)
+                                    struct shop_reputation_view_input_v1 *ev)
 {
     struct vcs_reward_ledger *ledger = vcs_reward_ledger_load(zcode_dir);
     if (!ledger)
@@ -417,168 +394,108 @@ static void rep_collect_settlements(const char *zcode_dir,
 }
 
 /* ── rendering ──────────────────────────────────────────────────────── */
-static void rep_row(struct json_value *rows, const char *fact,
-                    const char *state, bool has_value, int64_t value,
-                    const char *evidence_class, const char *window,
-                    const char *detail)
+static bool reputation_view_frozen_kat(const void *opaque, char *why,
+                                       size_t why_sz)
+{
+    const struct shop_reputation_view_service_v1 *service = opaque;
+    struct shop_reputation_view_input_v1 input = {
+        .store_present = true,
+        .releases = 2,
+        .packages = 1,
+        .observed = true,
+        .first_observed_unix = 86400,
+        .days_observed = 2,
+        .matching_receipts = 3,
+        .reproduced_packages = 1,
+        .valid_attestations = 4,
+        .distinct_verifiers = 2,
+        .dependent_packages = 1,
+        .declarations_read = 3,
+        .settled_entries = 1,
+    };
+    struct shop_reputation_view_result_v1 result;
+    if (!service || !service->render || !service->render(&input, &result) ||
+        result.row_count != SHOP_REPUTATION_VIEW_ROW_COUNT ||
+        strcmp(result.rows[0].fact, "releases_published") != 0 ||
+        !result.rows[0].has_value || result.rows[0].value != 2 ||
+        strcmp(result.rows[2].fact, "days_observed") != 0 ||
+        result.rows[2].value != 2 ||
+        strcmp(result.rows[7].state, "unavailable") != 0 ||
+        strcmp(result.rows[8].fact, "paid_fulfillments") != 0) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen marketplace evidence-row vector failed");
+        return false;
+    }
+    return true;
+}
+
+static const struct zcl_hotswap_service_contract k_reputation_view_contract = {
+    .service_id = SHOP_REPUTATION_VIEW_SERVICE_ID,
+    .source_tu = "app/services/src/shop_reputation_view_service.c",
+    .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+    .vtable_size = sizeof(struct shop_reputation_view_service_v1),
+    .abi_fingerprint = SHOP_REPUTATION_VIEW_ABI_FINGERPRINT,
+    .schema_fingerprint = SHOP_REPUTATION_VIEW_SCHEMA_FINGERPRINT,
+    .wire_fingerprint = SHOP_REPUTATION_VIEW_WIRE_FINGERPRINT,
+    .kat_fingerprint = SHOP_REPUTATION_VIEW_KAT_FINGERPRINT,
+    .frozen_kat = reputation_view_frozen_kat,
+};
+
+const struct zcl_hotswap_service_contract *
+zcl_native_shop_reputation_view_service_contract(void)
+{
+    return &k_reputation_view_contract;
+}
+
+static void rep_row_json(struct json_value *rows,
+                         const struct shop_reputation_view_row_v1 *view)
 {
     struct json_value row;
     json_init(&row);
     json_set_object(&row);
-    (void)json_push_kv_str(&row, "fact", fact);
-    (void)json_push_kv_str(&row, "state", state);
-    if (has_value)
-        (void)json_push_kv_int(&row, "value", value);
-    (void)json_push_kv_str(&row, "evidence_class", evidence_class);
-    (void)json_push_kv_str(&row, "window", window);
-    (void)json_push_kv_str(&row, "detail", detail);
+    (void)json_push_kv_str(&row, "fact", view->fact);
+    (void)json_push_kv_str(&row, "state", view->state);
+    if (view->has_value)
+        (void)json_push_kv_int(&row, "value", view->value);
+    (void)json_push_kv_str(&row, "evidence_class", view->evidence_class);
+    (void)json_push_kv_str(&row, "window", view->window);
+    (void)json_push_kv_str(&row, "detail", view->detail);
     (void)json_push_back(rows, &row);
     json_free(&row);
 }
 
-static void rep_render(struct json_value *data, const char *publisher_hex,
+static bool rep_render(struct json_value *data, const char *publisher_hex,
                        const char *datadir, int64_t now_unix,
-                       const struct shop_rep_evidence *ev)
+                       const struct shop_reputation_view_input_v1 *ev)
 {
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct shop_reputation_view_service_v1 *service =
+        zcl_hotswap_service_acquire(SHOP_REPUTATION_VIEW_SERVICE_ID, &lease);
+    if (!service)
+        service = shop_reputation_view_service_builtin();
+    struct shop_reputation_view_result_v1 result;
+    if (!service->render(ev, &result)) {
+        zcl_hotswap_service_release(&lease);
+        return false;
+    }
+    zcl_hotswap_service_release(&lease);
+
     (void)json_push_kv_str(data, "publisher", publisher_hex);
     (void)json_push_kv_str(data, "datadir", datadir);
     (void)json_push_kv_int(data, "now_unix", now_unix);
     (void)json_push_kv_bool(data, "zcode_store_present", ev->store_present);
-
-    static const char *const LOCAL_STORE = "this node's local zcode store";
+    (void)json_push_kv_int(data, "view_service_generation",
+                           zcl_hotswap_service_generation());
     struct json_value rows;
     json_init(&rows);
     json_set_array(&rows);
-
-    rep_row(&rows, "releases_published",
-            ev->releases > 0 ? "recorded" : "no_record",
-            ev->releases > 0, ev->releases,
-            "secp256k1-signed release envelopes, verified at publication",
-            LOCAL_STORE,
-            ev->releases > 0
-                ? "release envelopes naming this publisher key held locally"
-                : "no release envelope naming this publisher key is held");
-
-    rep_row(&rows, "packages_published",
-            ev->packages > 0 ? "recorded" : "no_record",
-            ev->packages > 0, ev->packages,
-            "distinct package roots across the signed release envelopes",
-            LOCAL_STORE,
-            ev->packages > 0
-                ? "distinct package roots this publisher has released locally"
-                : "no package root released by this publisher is held");
-
-    if (ev->observed && now_unix >= ev->first_observed_unix) {
-        char detail[160];
-        (void)snprintf(detail, sizeof(detail),
-                       "oldest release envelope first recorded locally at "
-                       "unix %lld; file mtimes are this node's own "
-                       "observation record, not a signed timestamp",
-                       (long long)ev->first_observed_unix);
-        rep_row(&rows, "days_observed", "recorded", true, ev->days_observed,
-                "local store file mtime (unsigned local observation)",
-                "this node only; says nothing about anyone else", detail);
-    } else {
-        rep_row(&rows, "days_observed", "no_record", false, 0,
-                "local store file mtime (unsigned local observation)",
-                "this node only", "no release envelope is held locally");
-    }
-
-    {
-        char detail[224];
-        (void)snprintf(detail, sizeof(detail),
-                       "%u build receipt(s) name this publisher's "
-                       "package+recipe pairs, %u package(s) reproduced "
-                       "byte-identically across distinct receipt ids; "
-                       "receipts carry no signer identity, so these are "
-                       "distinct recorded build events and nothing about "
-                       "who built them is established",
-                       ev->matching_receipts, ev->reproduced_packages);
-        rep_row(&rows, "reproductions",
-                ev->matching_receipts > 0 ? "recorded" : "no_record",
-                ev->matching_receipts > 0, ev->matching_receipts,
-                "build receipts filed under <datadir>/zcode/receipts with "
-                "byte-identical output sets (distinct receipt ids)",
-                LOCAL_STORE,
-                ev->matching_receipts > 0 ? detail
-                : "no build receipt naming this publisher's packages is filed");
-    }
-
-    {
-        char detail[224];
-        (void)snprintf(detail, sizeof(detail),
-                       "%u signature-verified attestation(s) from %u "
-                       "distinct verifier pubkey(s); a verified signature "
-                       "proves authorship of the exact bytes only — who "
-                       "the signer is, or whether any two signers are the "
-                       "same operator, is not established%s",
-                       ev->valid_attestations, ev->distinct_verifiers,
-                       ev->attestations_truncated
-                           ? "; the attestation scan hit its cap, so these "
-                             "counts are a lower bound" : "");
-        rep_row(&rows, "distinct_signing_identities",
-                ev->distinct_verifiers > 0 ? "recorded" : "no_record",
-                ev->distinct_verifiers > 0, ev->distinct_verifiers,
-                "distinct secp256k1 verifier pubkeys over attestations "
-                "whose signature verifies at read time",
-                LOCAL_STORE,
-                ev->distinct_verifiers > 0 ? detail
-                : "no valid attestation naming this publisher's packages "
-                  "is filed");
-    }
-
-    {
-        char detail[224];
-        (void)snprintf(detail, sizeof(detail),
-                       "%u declaration(s) read, %u unreadable locally "
-                       "(manifest or member bytes not held — counted as "
-                       "unavailable, never as no-dependency)",
-                       ev->declarations_read, ev->declarations_unavailable);
-        rep_row(&rows, "dependent_packages",
-                ev->dependent_packages > 0 ? "recorded" : "no_record",
-                ev->dependent_packages > 0, ev->dependent_packages,
-                "root-committed dependency declarations (zcode-package.json "
-                "is a manifest member; the package root commits it)",
-                LOCAL_STORE,
-                ev->dependent_packages > 0 ? detail
-                : "no locally readable declaration names one of this "
-                  "publisher's package roots");
-    }
-
-    rep_row(&rows, "simulated_settlements",
-            ev->settled_entries > 0 ? "recorded" : "no_record",
-            ev->settled_entries > 0, ev->settled_entries,
-            "settled facts in the simulated reward ledger under "
-            "<datadir>/zcode/rewards (placeholder token; ZC23 issuance "
-            "stays simulation-only)",
-            LOCAL_STORE,
-            ev->settled_entries > 0
-                ? "simulated reward entries settled to this contributor key"
-                : "no simulated settlement to this contributor key is "
-                  "recorded");
-
-    rep_row(&rows, "availability_challenges", "unavailable", false, 0,
-            "none: no durable challenge record exists",
-            "n/a",
-            "the file-market chunk-challenge loop keeps pass/fail counts in "
-            "per-download memory only; a durable record lands with the "
-            "challenge loop (docs/work/SHOP_COMMAND.md slice C)");
-
-    rep_row(&rows, "paid_fulfillments", "unavailable", false, 0,
-            "none: no datadir-local settlement source exists",
-            "n/a",
-            "patronage settlement lives on the scratch-workspace simulation "
-            "lane (zcode.patronage.*), not in the datadir store; the row "
-            "appears when patronage settle lands on this lane");
-
+    for (size_t i = 0; i < result.row_count; i++)
+        rep_row_json(&rows, &result.rows[i]);
     (void)json_push_kv(data, "evidence", &rows);
     json_free(&rows);
-
-    (void)json_push_kv_str(data, "doctrine",
-        "every row is a fact this node can prove from its own records, with "
-        "the evidence class and counting window stated on the row; absent "
-        "evidence reads 'no_record' or 'unavailable', never a zero; "
-        "nothing here measures intent, quality, or honesty");
+    (void)json_push_kv_str(data, "doctrine", result.doctrine);
+    return true;
 }
 
 /* ── the handler ────────────────────────────────────────────────────── */
@@ -637,7 +554,7 @@ void zcl_native_handle_shop_reputation(
         return;
     }
 
-    struct shop_rep_evidence ev;
+    struct shop_reputation_view_input_v1 ev;
     memset(&ev, 0, sizeof(ev));
     struct stat st;
     /* Absent and unreadable are not the same answer: a present
@@ -703,8 +620,18 @@ void zcl_native_handle_shop_reputation(
     free(all_pkgs);
     free(subject_pkgs);
 
-    if (ev.observed && now_unix >= ev.first_observed_unix)
+    if (ev.observed && now_unix >= ev.first_observed_unix) {
         ev.days_observed = (now_unix - ev.first_observed_unix) / 86400;
+    } else {
+        ev.observed = false;
+    }
 
-    rep_render(&reply->data, publisher_hex, datadir, now_unix, &ev);
+    if (!rep_render(&reply->data, publisher_hex, datadir, now_unix, &ev))
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL,
+                               "REPUTATION_VIEW_FAILED", "render", false,
+                               false,
+                               "the pure marketplace evidence view refused "
+                               "the caller-owned evidence snapshot",
+                               "app.shop.reputation");
 }
