@@ -166,6 +166,49 @@ static bool render_rules(const char *requested_root,
     return true;
 }
 
+static bool render_impact_readiness(
+    const struct zcode_c23_impact_readiness_input_v1 *input,
+    struct zcode_c23_impact_readiness_result_v1 *out)
+{
+    if (!input || !out) return false;
+    memset(out, 0, sizeof(*out));
+    out->valid = true;
+    const char *readiness = ZCODE_C23_IMPACT_READY;
+    const char *reason = "the current signed basis proves the complete chain";
+    const char *next = "zcode commons impact share";
+    if (!input->proven_work) {
+        readiness = ZCODE_C23_IMPACT_MISSING_WORK;
+        reason = "no current PROVEN work is bound to the productivity basis";
+        next = "zcode guide";
+    } else if (!input->human_acceptance) {
+        readiness = ZCODE_C23_IMPACT_MISSING_ACCEPTANCE;
+        reason = "human acceptance is not proven by the current basis";
+        next = "zcode work status";
+    } else if (!input->signed_release) {
+        readiness = ZCODE_C23_IMPACT_MISSING_RELEASE;
+        reason = "a signed release is not proven by the current basis";
+        next = "zcode package publish plan";
+    } else if (!input->independent_family_admission) {
+        readiness = ZCODE_C23_IMPACT_MISSING_ADMISSION;
+        reason = "independent current Family admission is not proven";
+        next = "zcode moderation status";
+    } else if (!input->complete_retrievable_package) {
+        readiness = ZCODE_C23_IMPACT_MISSING_PACKAGE;
+        reason = "the complete package is not currently retrievable";
+        next = "zcode storage status";
+    } else if (!input->basis_current) {
+        readiness = ZCODE_C23_IMPACT_STALE;
+        reason = "the signed productivity basis is stale";
+        next = "zcode commons impact verify";
+    } else {
+        out->shareable = true;
+    }
+    (void)snprintf(out->readiness, sizeof(out->readiness), "%s", readiness);
+    (void)snprintf(out->reason, sizeof(out->reason), "%s", reason);
+    (void)snprintf(out->next_command, sizeof(out->next_command), "%s", next);
+    return true;
+}
+
 static const struct zcode_c23_corpus_service_v1 k_builtin = {
     .rules_validate = rules_validate,
     .shard_validate = shard_validate,
@@ -174,6 +217,7 @@ static const struct zcode_c23_corpus_service_v1 k_builtin = {
     .productivity_validate = productivity_validate,
     .render_status = render_status,
     .render_rules = render_rules,
+    .render_impact_readiness = render_impact_readiness,
 };
 
 ZCL_HOTSWAP_SERVICE_EXPORT(

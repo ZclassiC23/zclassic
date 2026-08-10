@@ -272,6 +272,7 @@ static bool corpus_service_frozen_kat(const void *opaque, char *why,
         !service->shard_page ||
         !service->checkpoint_validate || !service->productivity_validate ||
         !service->render_status || !service->render_rules ||
+        !service->render_impact_readiness ||
         !service->render_status(NULL, &status) ||
         status.projection_ready || status.admitted_total_loc != 0 ||
         strcmp(status.rules_root, ZCODE_C23_CORPUS_KAT_FINGERPRINT) != 0 ||
@@ -280,6 +281,37 @@ static bool corpus_service_frozen_kat(const void *opaque, char *why,
         if (why && why_sz)
             (void)snprintf(why, why_sz,
                            "frozen empty-projection/rules-root vector failed");
+        return false;
+    }
+    struct zcode_c23_impact_readiness_input_v1 impact = {0};
+    struct zcode_c23_impact_readiness_result_v1 impact_view;
+    if (!service->render_impact_readiness(&impact, &impact_view) ||
+        !impact_view.valid || impact_view.shareable ||
+        strcmp(impact_view.readiness, "blocked:proven_work_missing") != 0 ||
+        strcmp(impact_view.next_command, "zcode guide") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen missing-work impact vector failed");
+        return false;
+    }
+    impact.proven_work = true;
+    impact.human_acceptance = true;
+    impact.signed_release = true;
+    impact.independent_family_admission = true;
+    impact.complete_retrievable_package = true;
+    if (!service->render_impact_readiness(&impact, &impact_view) ||
+        strcmp(impact_view.readiness, "blocked:basis_stale") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen stale-basis impact vector failed");
+        return false;
+    }
+    impact.basis_current = true;
+    if (!service->render_impact_readiness(&impact, &impact_view) ||
+        !impact_view.shareable ||
+        strcmp(impact_view.readiness, "ready:shareable") != 0 ||
+        strcmp(impact_view.next_command,
+               "zcode commons impact share") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen complete-chain impact vector failed");
         return false;
     }
     struct zcode_c23_corpus_rules_result_v1 rules;
@@ -1014,15 +1046,27 @@ void zcl_native_handle_zcode_commons_corpus_verify(
     free(shards);
 }
 
-static void render_impact_unshareable(struct json_value *data)
+static bool render_impact_unshareable(struct json_value *data)
 {
+    const struct zcode_c23_impact_readiness_input_v1 input = {0};
+    struct zcode_c23_impact_readiness_result_v1 view;
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_c23_corpus_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_C23_CORPUS_SERVICE_ID, &lease);
+    if (!service) service = zcode_c23_corpus_service_builtin();
+    bool rendered = service->render_impact_readiness(&input, &view) &&
+        view.valid && !view.shareable;
+    zcl_hotswap_service_release(&lease);
+    if (!rendered) return false;
     (void)json_push_kv_bool(data, "simulation_only", true);
-    (void)json_push_kv_bool(data, "shareable", false);
+    (void)json_push_kv_bool(data, "shareable", view.shareable);
     (void)json_push_kv_bool(data, "posted_externally", false);
     (void)json_push_kv_str(data, "required_chain",
         "PROVEN work -> human acceptance -> signed release -> independent Family admission -> complete retrievable package");
-    (void)json_push_kv_str(data, "blocker",
-        "no current signed productivity basis satisfies the complete chain");
+    (void)json_push_kv_str(data, "impact_readiness", view.readiness);
+    (void)json_push_kv_str(data, "blocker", view.reason);
+    (void)json_push_kv_str(data, "next_command", view.next_command);
+    return true;
 }
 
 void zcl_native_handle_zcode_commons_impact_verify(
@@ -1119,7 +1163,9 @@ void zcl_native_handle_zcode_commons_impact_status(
             "zcode commons impact status accepts no input keys");
         return;
     }
-    render_impact_unshareable(&reply->data);
+    if (!render_impact_unshareable(&reply->data))
+        corpus_fail(reply, "IMPACT_SERVICE_FAILED",
+                    "the pure corpus service refused impact readiness facts");
 }
 
 void zcl_native_handle_zcode_commons_impact_share(
@@ -1130,6 +1176,10 @@ void zcl_native_handle_zcode_commons_impact_share(
             "zcode commons impact share accepts no input keys");
         return;
     }
-    render_impact_unshareable(&reply->data);
+    if (!render_impact_unshareable(&reply->data)) {
+        corpus_fail(reply, "IMPACT_SERVICE_FAILED",
+                    "the pure corpus service refused impact readiness facts");
+        return;
+    }
     (void)json_push_kv_bool(&reply->data, "slogan_emitted", false);
 }

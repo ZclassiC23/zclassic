@@ -459,6 +459,11 @@ static int test_v2_truthful_activation_status(void)
         ASSERT(!json_get_bool(json_get(&reply.data, "shareable")));
         ASSERT(json_get(&reply.data, "slogan") == NULL);
         ASSERT(!json_get_bool(json_get(&reply.data, "slogan_emitted")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
+                                            "impact_readiness")),
+                      "blocked:proven_work_missing");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "next_command")),
+                      "zcode guide");
         zcl_command_reply_free(&reply);
         json_free(&input);
         PASS();

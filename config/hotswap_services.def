@@ -12,9 +12,9 @@ HOTSWAP_SERVICE(
     "app/services/src/zcode_c23_corpus_internal.h",
     "app/services/include/services/zcode_c23_corpus_service.h",
     "vcs_zcode_c23_corpus_rules_v1_validate vcs_zcode_c23_corpus_shard_v1_validate vcs_zcode_c23_corpus_shard_v1_page vcs_zcode_c23_corpus_checkpoint_v1_validate vcs_zcode_productivity_receipt_v1_validate vcs_zcode_c23_corpus_rules_v1_default vcs_zcode_c23_corpus_rules_v1_root zcl_hex_encode zcl_u64_add",
-    "zcode.c23.corpus.abi.v2:status-next-action",
-    "zcode.c23.corpus.schemas.v4:status-ux.v2+show.v1+shard-page.v1",
-    "c23-rules+shard+checkpoint+productivity+status-ux.v1",
+    "zcode.c23.corpus.abi.v3:impact-readiness",
+    "zcode.c23.corpus.schemas.v5:status-ux.v2+impact-readiness.v1+show.v1+shard-page.v1",
+    "c23-rules+shard+checkpoint+productivity+status-ux+impact-readiness.v1",
     "ae0c059c8c925464a7d9376b17687b207027833f5337dc49944bcd1b55d3be23",
     "zcode.commons.corpus.show")
 

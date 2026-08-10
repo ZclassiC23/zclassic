@@ -14,5 +14,12 @@
 #define ZCODE_C23_CORPUS_NEXT_CREATE "zcode package guide"
 #define ZCODE_C23_CORPUS_NEXT_HOST "zcode storage status"
 #define ZCODE_C23_CORPUS_NEXT_IMPACT "zcode commons impact status"
+#define ZCODE_C23_IMPACT_MISSING_WORK "blocked:proven_work_missing"
+#define ZCODE_C23_IMPACT_MISSING_ACCEPTANCE "blocked:acceptance_missing"
+#define ZCODE_C23_IMPACT_MISSING_RELEASE "blocked:signed_release_missing"
+#define ZCODE_C23_IMPACT_MISSING_ADMISSION "blocked:family_admission_missing"
+#define ZCODE_C23_IMPACT_MISSING_PACKAGE "blocked:package_unavailable"
+#define ZCODE_C23_IMPACT_STALE "blocked:basis_stale"
+#define ZCODE_C23_IMPACT_READY "ready:shareable"
 
 #endif /* ZCL_ZCODE_C23_CORPUS_INTERNAL_H */

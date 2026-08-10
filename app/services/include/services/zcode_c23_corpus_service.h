@@ -11,11 +11,11 @@
 
 #define ZCODE_C23_CORPUS_SERVICE_ID "zcode.c23.corpus.v1"
 #define ZCODE_C23_CORPUS_ABI_FINGERPRINT \
-    "zcode.c23.corpus.abi.v2:status-next-action"
+    "zcode.c23.corpus.abi.v3:impact-readiness"
 #define ZCODE_C23_CORPUS_SCHEMA_FINGERPRINT \
-    "zcode.c23.corpus.schemas.v4:status-ux.v2+show.v1+shard-page.v1"
+    "zcode.c23.corpus.schemas.v5:status-ux.v2+impact-readiness.v1+show.v1+shard-page.v1"
 #define ZCODE_C23_CORPUS_WIRE_FINGERPRINT \
-    "c23-rules+shard+checkpoint+productivity+status-ux.v1"
+    "c23-rules+shard+checkpoint+productivity+status-ux+impact-readiness.v1"
 #define ZCODE_C23_CORPUS_KAT_FINGERPRINT \
     "ae0c059c8c925464a7d9376b17687b207027833f5337dc49944bcd1b55d3be23"
 
@@ -51,6 +51,23 @@ struct zcode_c23_corpus_rules_result_v1 {
     char root[65];
 };
 
+struct zcode_c23_impact_readiness_input_v1 {
+    bool proven_work;
+    bool human_acceptance;
+    bool signed_release;
+    bool independent_family_admission;
+    bool complete_retrievable_package;
+    bool basis_current;
+};
+
+struct zcode_c23_impact_readiness_result_v1 {
+    bool valid;
+    bool shareable;
+    char readiness[64];
+    char reason[192];
+    char next_command[64];
+};
+
 struct zcode_c23_corpus_service_v1 {
     enum vcs_zcode_c23_error (*rules_validate)(
         const struct vcs_zcode_c23_corpus_rules_v1 *rules);
@@ -70,6 +87,9 @@ struct zcode_c23_corpus_service_v1 {
         struct zcode_c23_corpus_status_result_v1 *out);
     bool (*render_rules)(const char *requested_root,
                          struct zcode_c23_corpus_rules_result_v1 *out);
+    bool (*render_impact_readiness)(
+        const struct zcode_c23_impact_readiness_input_v1 *input,
+        struct zcode_c23_impact_readiness_result_v1 *out);
 };
 
 const struct zcode_c23_corpus_service_v1 *zcode_c23_corpus_service_builtin(void);
