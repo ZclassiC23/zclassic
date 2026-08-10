@@ -283,6 +283,10 @@ static int test_v2_truthful_activation_status(void)
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "blocker")),
                       "checkpoint_missing: commit a verified corpus "
                       "checkpoint projection");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "progress_stage")),
+                      "checkpoint_missing");
+        ASSERT(strstr(json_get_str(json_get(&reply.data, "next_command")),
+                      ZCODE_C23_CORPUS_KAT_FINGERPRINT) != NULL);
         zcl_command_reply_free(&reply);
         json_free(&input);
 

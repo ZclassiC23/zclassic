@@ -10,10 +10,12 @@
 #include <stdint.h>
 
 #define ZCODE_C23_CORPUS_SERVICE_ID "zcode.c23.corpus.v1"
-#define ZCODE_C23_CORPUS_ABI_FINGERPRINT "zcode.c23.corpus.abi.v1:50d4d388"
+#define ZCODE_C23_CORPUS_ABI_FINGERPRINT \
+    "zcode.c23.corpus.abi.v2:status-next-action"
 #define ZCODE_C23_CORPUS_SCHEMA_FINGERPRINT \
-    "zcode.c23.corpus.schemas.v3:status.v1+show.v1+shard-page.v1"
-#define ZCODE_C23_CORPUS_WIRE_FINGERPRINT "c23-rules+shard+checkpoint+productivity.v1"
+    "zcode.c23.corpus.schemas.v4:status-ux.v2+show.v1+shard-page.v1"
+#define ZCODE_C23_CORPUS_WIRE_FINGERPRINT \
+    "c23-rules+shard+checkpoint+productivity+status-ux.v1"
 #define ZCODE_C23_CORPUS_KAT_FINGERPRINT \
     "ae0c059c8c925464a7d9376b17687b207027833f5337dc49944bcd1b55d3be23"
 
@@ -29,6 +31,8 @@ struct zcode_c23_corpus_status_result_v1 {
     uint64_t unique_semantic_units;
     char rules_root[65];
     char blocker[160];
+    char progress_stage[64];
+    char next_command[192];
 };
 
 struct zcode_c23_corpus_rules_result_v1 {

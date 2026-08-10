@@ -5,6 +5,8 @@
 
 #include "services/zcode_c23_corpus_service.h"
 
+#include "zcode_c23_corpus_internal.h"
+
 #include "base/checked.h"
 #include "base/hex.h"
 #include "hotswap/hotswap_service.h"
@@ -64,12 +66,21 @@ static bool render_status(
     if (!checkpoint) {
         (void)snprintf(out->blocker, sizeof(out->blocker),
             "checkpoint_missing: commit a verified corpus checkpoint projection");
+        (void)snprintf(out->progress_stage, sizeof(out->progress_stage), "%s",
+                       ZCODE_C23_CORPUS_STAGE_MISSING);
+        (void)snprintf(out->next_command, sizeof(out->next_command),
+                       "zcode commons corpus show --root=%s",
+                       out->rules_root);
         return true;
     }
     if (vcs_zcode_c23_corpus_checkpoint_v1_validate(checkpoint) !=
         VCS_ZCODE_C23_OK) {
         (void)snprintf(out->blocker, sizeof(out->blocker),
                        "the selected corpus checkpoint is invalid");
+        (void)snprintf(out->progress_stage, sizeof(out->progress_stage), "%s",
+                       ZCODE_C23_CORPUS_STAGE_INVALID);
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       ZCODE_C23_CORPUS_NEXT_VERIFY);
         return true;
     }
     uint64_t total = 0;
@@ -77,6 +88,10 @@ static bool render_status(
                      &total)) {
         (void)snprintf(out->blocker, sizeof(out->blocker),
                        "the selected corpus checkpoint count overflows");
+        (void)snprintf(out->progress_stage, sizeof(out->progress_stage), "%s",
+                       ZCODE_C23_CORPUS_STAGE_INVALID);
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       ZCODE_C23_CORPUS_NEXT_VERIFY);
         return true;
     }
     out->projection_ready = true;
@@ -88,20 +103,37 @@ static bool render_status(
     out->physical_lines = checkpoint->physical_lines;
     out->unique_semantic_units = checkpoint->unique_semantic_units;
     if (total < VCS_ZCODE_C23_FIRST_MILESTONE_LOC) {
+        (void)snprintf(out->progress_stage, sizeof(out->progress_stage), "%s",
+                       ZCODE_C23_CORPUS_STAGE_BELOW_50M);
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       ZCODE_C23_CORPUS_NEXT_CREATE);
         (void)snprintf(out->blocker, sizeof(out->blocker),
             "verified lower bound is %" PRIu64
             " LOC; next milestone requires %" PRIu64 " LOC",
             total, (uint64_t)VCS_ZCODE_C23_FIRST_MILESTONE_LOC);
     } else if (checkpoint->durable_loc < total) {
+        (void)snprintf(out->progress_stage, sizeof(out->progress_stage), "%s",
+                       ZCODE_C23_CORPUS_STAGE_HOSTING);
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       ZCODE_C23_CORPUS_NEXT_HOST);
         (void)snprintf(out->blocker, sizeof(out->blocker),
             "durable hosting covers %" PRIu64 " of %" PRIu64
             " admitted LOC",
             checkpoint->durable_loc, total);
     } else if (total < VCS_ZCODE_C23_SECOND_MILESTONE_LOC) {
+        (void)snprintf(out->progress_stage, sizeof(out->progress_stage), "%s",
+                       ZCODE_C23_CORPUS_STAGE_DURABLE_50M);
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       ZCODE_C23_CORPUS_NEXT_CREATE);
         (void)snprintf(out->blocker, sizeof(out->blocker),
             "verified durable lower bound is %" PRIu64
             " LOC; next milestone requires %" PRIu64 " LOC",
             total, (uint64_t)VCS_ZCODE_C23_SECOND_MILESTONE_LOC);
+    } else {
+        (void)snprintf(out->progress_stage, sizeof(out->progress_stage), "%s",
+                       ZCODE_C23_CORPUS_STAGE_DURABLE_100M);
+        (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
+                       ZCODE_C23_CORPUS_NEXT_IMPACT);
     }
     return true;
 }

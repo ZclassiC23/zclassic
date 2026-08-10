@@ -161,6 +161,59 @@ static bool corpus_checkpoint_frozen_kat(
                            "frozen signed checkpoint validation vector failed");
         return false;
     }
+    struct zcode_c23_corpus_status_result_v1 status;
+    if (!service->render_status(&checkpoint, &status) ||
+        strcmp(status.progress_stage, "below_50m") != 0 ||
+        strcmp(status.next_command, "zcode package guide") != 0) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen below-50m status vector failed");
+        return false;
+    }
+    binding.production_loc = VCS_ZCODE_C23_FIRST_MILESTONE_LOC;
+    binding.test_loc = 0;
+    binding.durable_loc = VCS_ZCODE_C23_FIRST_MILESTONE_LOC - 1u;
+    checkpoint.production_loc = binding.production_loc;
+    checkpoint.test_loc = binding.test_loc;
+    checkpoint.durable_loc = binding.durable_loc;
+    if (vcs_zcode_c23_corpus_checkpoint_v1_sign(&checkpoint, seed) !=
+            VCS_ZCODE_C23_OK ||
+        !service->render_status(&checkpoint, &status) ||
+        strcmp(status.progress_stage, "hosting_incomplete") != 0 ||
+        strcmp(status.next_command, "zcode storage status") != 0) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen incomplete-hosting status vector failed");
+        return false;
+    }
+    binding.durable_loc = VCS_ZCODE_C23_FIRST_MILESTONE_LOC;
+    checkpoint.durable_loc = binding.durable_loc;
+    if (vcs_zcode_c23_corpus_checkpoint_v1_sign(&checkpoint, seed) !=
+            VCS_ZCODE_C23_OK ||
+        !service->render_status(&checkpoint, &status) ||
+        strcmp(status.progress_stage, "durable_50m_lower_bound") != 0 ||
+        strcmp(status.next_command, "zcode package guide") != 0) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen durable-50m status vector failed");
+        return false;
+    }
+    binding.production_loc = VCS_ZCODE_C23_SECOND_MILESTONE_LOC;
+    binding.durable_loc = VCS_ZCODE_C23_SECOND_MILESTONE_LOC;
+    checkpoint.production_loc = binding.production_loc;
+    checkpoint.durable_loc = binding.durable_loc;
+    checkpoint.milestone = VCS_ZCODE_C23_MILESTONE_100M;
+    corpus_kat_fill(checkpoint.verified_50m_ancestor_root, 0x68);
+    if (vcs_zcode_c23_corpus_checkpoint_v1_sign(&checkpoint, seed) !=
+            VCS_ZCODE_C23_OK ||
+        !service->render_status(&checkpoint, &status) ||
+        strcmp(status.progress_stage, "durable_100m_lower_bound") != 0 ||
+        strcmp(status.next_command, "zcode commons impact status") != 0) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen durable-100m status vector failed");
+        return false;
+    }
     checkpoint.signature[0] ^= 1u;
     if (service->checkpoint_validate(&checkpoint) !=
         VCS_ZCODE_C23_SIGNATURE) {
@@ -221,7 +274,9 @@ static bool corpus_service_frozen_kat(const void *opaque, char *why,
         !service->render_status || !service->render_rules ||
         !service->render_status(NULL, &status) ||
         status.projection_ready || status.admitted_total_loc != 0 ||
-        strcmp(status.rules_root, ZCODE_C23_CORPUS_KAT_FINGERPRINT) != 0) {
+        strcmp(status.rules_root, ZCODE_C23_CORPUS_KAT_FINGERPRINT) != 0 ||
+        strcmp(status.progress_stage, "checkpoint_missing") != 0 ||
+        strstr(status.next_command, ZCODE_C23_CORPUS_KAT_FINGERPRINT) == NULL) {
         if (why && why_sz)
             (void)snprintf(why, why_sz,
                            "frozen empty-projection/rules-root vector failed");
@@ -316,6 +371,10 @@ void zcl_native_handle_zcode_commons_corpus_status(
                             status.global_completeness_claimed);
     if (status.blocker[0])
         (void)json_push_kv_str(&reply->data, "blocker", status.blocker);
+    (void)json_push_kv_str(&reply->data, "progress_stage",
+                           status.progress_stage);
+    (void)json_push_kv_str(&reply->data, "next_command",
+                           status.next_command);
     zcl_hotswap_service_release(&lease);
 }
 
