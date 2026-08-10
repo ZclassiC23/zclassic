@@ -534,6 +534,96 @@ static bool hs_read_hash(const char *path, char out[65])
     return ok;
 }
 
+static bool hs_force_cache_copy_for_test(void)
+{
+    const char *test_process = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+    const char *force_copy = getenv("ZCL_DEVLOOP_TEST_FORCE_CACHE_COPY");
+    return test_process && strcmp(test_process, "1") == 0 && force_copy &&
+           strcmp(force_copy, "1") == 0;
+}
+
+static bool hs_copy_publish(const char *source, const char *target,
+                            const char expected_sha256[65])
+{
+    char temp[PATH_MAX];
+    int n = snprintf(temp, sizeof(temp), "%s.tmp.XXXXXX", target);
+    if (n <= 0 || n >= (int)sizeof(temp))
+        return false;
+    int source_fd = open(source, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat source_st;
+    if (source_fd < 0 || fstat(source_fd, &source_st) != 0 ||
+        !S_ISREG(source_st.st_mode)) {
+        if (source_fd >= 0) close(source_fd);
+        return false;
+    }
+    int temp_fd = mkostemp(temp, O_CLOEXEC);
+    if (temp_fd < 0) {
+        close(source_fd);
+        return false;
+    }
+    unsigned char buffer[32u * 1024u];
+    bool ok = true;
+    for (;;) {
+        ssize_t got = read(source_fd, buffer, sizeof(buffer));
+        if (got == 0)
+            break;
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            ok = false;
+            break;
+        }
+        size_t written = 0;
+        while (written < (size_t)got) {
+            ssize_t put = write(temp_fd, buffer + written,
+                                (size_t)got - written);
+            if (put < 0 && errno == EINTR)
+                continue;
+            if (put <= 0) {
+                ok = false;
+                break;
+            }
+            written += (size_t)put;
+        }
+        if (!ok) break;
+    }
+    if (close(source_fd) != 0)
+        ok = false;
+    if (ok && (fchmod(temp_fd, 0444) != 0 || fsync(temp_fd) != 0))
+        ok = false;
+    if (close(temp_fd) != 0)
+        ok = false;
+    char actual[65];
+    if (ok && (!hs_sha256_file(temp, actual) ||
+               strcmp(actual, expected_sha256) != 0))
+        ok = false;
+    if (ok && link(temp, target) != 0) {
+        if (errno != EEXIST || !hs_regular(target, NULL) ||
+            !hs_sha256_file(target, actual) ||
+            strcmp(actual, expected_sha256) != 0 ||
+            chmod(target, 0444) != 0)
+            ok = false;
+    }
+    (void)unlink(temp);
+    return ok;
+}
+
+static bool hs_link_or_copy_publish(const char *source, const char *target,
+                                    const char expected_sha256[65])
+{
+    if (!hs_force_cache_copy_for_test() && link(source, target) == 0)
+        return chmod(target, 0444) == 0;
+    int link_errno = hs_force_cache_copy_for_test() ? EXDEV : errno;
+    if (link_errno == EEXIST) {
+        char actual[65];
+        return hs_regular(target, NULL) && hs_sha256_file(target, actual) &&
+               strcmp(actual, expected_sha256) == 0 &&
+               chmod(target, 0444) == 0;
+    }
+    if (link_errno != EXDEV)
+        return false;
+    return hs_copy_publish(source, target, expected_sha256);
+}
+
 static bool hs_publish_artifact_path(const char *root, const char *safe,
                                      const char *source_so,
                                      const char artifact_sha256[65],
@@ -542,14 +632,7 @@ static bool hs_publish_artifact_path(const char *root, const char *safe,
     if (snprintf(out, 4096, "%s/build/hotswap/%s-%s.so", root, safe,
                  artifact_sha256) >= 4096)
         return false;
-    if (link(source_so, out) != 0) {
-        char existing[65];
-        if (errno != EEXIST || !hs_regular(out, NULL) ||
-            !hs_sha256_file(out, existing) ||
-            strcmp(existing, artifact_sha256) != 0)
-            return false;
-    }
-    return chmod(out, 0444) == 0;
+    return hs_link_or_copy_publish(source_so, out, artifact_sha256);
 }
 
 static bool hs_cache_lookup(const char *root, const char *safe,
@@ -570,14 +653,7 @@ static bool hs_cache_lookup(const char *root, const char *safe,
 static bool hs_cache_publish(const char *cache_so, const char *cache_hash,
                              const char *built_so, const char hash[65])
 {
-    if (link(built_so, cache_so) != 0) {
-        char existing[65];
-        if (errno != EEXIST || !hs_regular(cache_so, NULL) ||
-            !hs_sha256_file(cache_so, existing) ||
-            strcmp(existing, hash) != 0)
-            return false;
-    }
-    if (chmod(cache_so, 0444) != 0)
+    if (!hs_link_or_copy_publish(built_so, cache_so, hash))
         return false;
     char temp[PATH_MAX];
     int n = snprintf(temp, sizeof(temp), "%s.tmp.%ld", cache_hash,

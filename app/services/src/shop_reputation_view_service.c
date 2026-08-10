@@ -137,8 +137,8 @@ static bool render(const struct shop_reputation_view_input_v1 *ev,
         "every row is a fact this node can prove from its own records, with "
         "the evidence class and counting window stated on the row; absent "
         "evidence reads 'no_record' or 'unavailable', never a zero; nothing "
-        "here measures intent, quality, or honesty; presentation can swap live, "
-        "while evidence collection and authority stay static");
+        "here measures intent, quality, or honesty; presentation remains "
+        "live-swappable; evidence collection and authority stay static");
     return out->row_count == SHOP_REPUTATION_VIEW_ROW_COUNT;
 }
 

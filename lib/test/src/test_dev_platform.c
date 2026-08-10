@@ -2168,18 +2168,27 @@ static bool run_hotswap_artifact_cache_fixture(void)
         "  printf 'fixture-module-v1\\n' >\"$out\"\n"
         "fi\n";
     bool ok = false;
+    const char *stage = "setup";
+    char why[256] = {0};
     char cwd[PATH_MAX], cache[PATH_MAX], compiler[PATH_MAX];
     char saved_cache[PATH_MAX] = {0};
     char saved_process[32] = {0};
+    char saved_force_copy[32] = {0};
     const char *prior_cache = getenv("ZCL_DEV_ARTIFACT_CACHE");
     const char *prior_process = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+    const char *prior_force_copy =
+        getenv("ZCL_DEVLOOP_TEST_FORCE_CACHE_COPY");
     bool had_cache = prior_cache && prior_cache[0];
     bool had_process = prior_process && prior_process[0];
+    bool had_force_copy = prior_force_copy && prior_force_copy[0];
     if (had_cache)
         (void)snprintf(saved_cache, sizeof(saved_cache), "%s", prior_cache);
     if (had_process)
         (void)snprintf(saved_process, sizeof(saved_process), "%s",
                        prior_process);
+    if (had_force_copy)
+        (void)snprintf(saved_force_copy, sizeof(saved_force_copy), "%s",
+                       prior_force_copy);
     if (!getcwd(cwd, sizeof(cwd)) ||
         snprintf(cache, sizeof(cache), "%s/%s", cwd, cache_rel) >=
             (int)sizeof(cache) ||
@@ -2195,7 +2204,8 @@ static bool run_hotswap_artifact_cache_fixture(void)
         !dp_hotswap_cache_fixture_init(root_a, compiler) ||
         !dp_hotswap_cache_fixture_init(root_b, compiler) ||
         setenv("ZCL_DEV_ARTIFACT_CACHE", cache, 1) != 0 ||
-        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0)
+        setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0 ||
+        setenv("ZCL_DEVLOOP_TEST_FORCE_CACHE_COPY", "1", 1) != 0)
         goto out;
 
     struct zcl_devloop_hotswap_build_receipt first = {0}, built = {0};
@@ -2209,20 +2219,47 @@ static bool run_hotswap_artifact_cache_fixture(void)
     struct zcl_devloop_hotswap_build_receipt batch_cross_first = {0};
     struct zcl_devloop_hotswap_build_receipt batch_cross = {0};
     struct zcl_devloop_process_result process = {0};
-    char why[256] = {0};
     const char *owner = "app/controllers/src/status_native_handlers.c";
 
+    stage = "dependency-baseline";
     if (zcl_devloop_hotswap_build(root_a, owner, &first, &process,
                                   why, sizeof(why)) ||
         strcmp(why,
                "dependency baseline initialized; save once more to activate") != 0 ||
         first.compiler_processes != 1 || first.linker_processes != 0)
         goto out;
+    stage = "cross-device-publish";
     if (!zcl_devloop_hotswap_build(root_a, owner, &built, &process,
                                    why, sizeof(why)) ||
         built.artifact_cache_hit || built.compiler_processes != 1 ||
         built.linker_processes != 1 || strlen(built.artifact_cache_key) != 64)
         goto out;
+    stage = "cross-device-inode-proof";
+    char cache_artifact[PATH_MAX];
+    struct stat cache_st = {0}, published_st = {0};
+    int cache_n = snprintf(cache_artifact, sizeof(cache_artifact),
+                           "%s/hotswap-v1/%s.so", cache,
+                           built.artifact_cache_key);
+    int cache_stat_rc = cache_n < (int)sizeof(cache_artifact)
+        ? stat(cache_artifact, &cache_st) : -1;
+    int published_stat_rc = stat(built.artifact_path, &published_st);
+    if (cache_n >= (int)sizeof(cache_artifact) || cache_stat_rc != 0 ||
+        published_stat_rc != 0 ||
+        (cache_st.st_dev == published_st.st_dev &&
+         cache_st.st_ino == published_st.st_ino)) {
+        fprintf(stderr,
+                "cross-device proof cache=%s artifact=%s stat=%d/%d "
+                "identity=%llu:%llu/%llu:%llu\n",
+                cache_artifact, built.artifact_path, cache_stat_rc,
+                published_stat_rc, (unsigned long long)cache_st.st_dev,
+                (unsigned long long)cache_st.st_ino,
+                (unsigned long long)published_st.st_dev,
+                (unsigned long long)published_st.st_ino);
+        goto out;
+    }
+    if (unsetenv("ZCL_DEVLOOP_TEST_FORCE_CACHE_COPY") != 0)
+        goto out;
+    stage = "same-worktree-cache-hit";
     if (!zcl_devloop_hotswap_build(root_a, owner, &hit, &process,
                                    why, sizeof(why)) ||
         !hit.artifact_cache_hit || hit.compiler_processes != 0 ||
@@ -2240,6 +2277,7 @@ static bool run_hotswap_artifact_cache_fixture(void)
         edited.linker_processes != 1 ||
         strcmp(edited.artifact_cache_key, built.artifact_cache_key) == 0)
         goto out;
+    stage = "exact-revert";
     if (!dp_mk_write(root_a,
                      "app/controllers/src/status_native_handlers.c",
                      "int zcl_hotswap_fixture_owner(void) { return 1; }\n") ||
@@ -2267,6 +2305,7 @@ static bool run_hotswap_artifact_cache_fixture(void)
      * before starting the compiler. */
     const char *service =
         "app/services/src/zcode_c23_corpus_service.c";
+    stage = "service-island";
     if (zcl_devloop_hotswap_build(root_a, service, &service_first, &process,
                                   why, sizeof(why)) ||
         strcmp(why,
@@ -2286,6 +2325,7 @@ static bool run_hotswap_artifact_cache_fixture(void)
         "app/services/src/zcode_c23_economics_service.c";
     const char *economics_header =
         "app/services/src/zcode_c23_economics_internal.h";
+    stage = "multi-file-island";
     if (zcl_devloop_hotswap_build(root_a, economics_header, &batch_first,
                                   &process, why, sizeof(why)) ||
         batch_first.compiler_processes != 1 ||
@@ -2322,6 +2362,9 @@ static bool run_hotswap_artifact_cache_fixture(void)
     ok = true;
 
 out:
+    if (!ok)
+        fprintf(stderr, "hotswap cache fixture failed at %s: %s\n", stage,
+                why[0] ? why : "no build reason");
     if (had_cache)
         (void)setenv("ZCL_DEV_ARTIFACT_CACHE", saved_cache, 1);
     else
@@ -2330,6 +2373,10 @@ out:
         (void)setenv("ZCL_DEVLOOP_TEST_PROCESS", saved_process, 1);
     else
         (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    if (had_force_copy)
+        (void)setenv("ZCL_DEVLOOP_TEST_FORCE_CACHE_COPY", saved_force_copy, 1);
+    else
+        (void)unsetenv("ZCL_DEVLOOP_TEST_FORCE_CACHE_COPY");
     test_rm_rf_recursive(root_a);
     test_rm_rf_recursive(root_b);
     test_rm_rf_recursive(cache_rel);
