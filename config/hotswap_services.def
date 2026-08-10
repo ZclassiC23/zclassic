@@ -156,8 +156,8 @@ HOTSWAP_SERVICE(
     "app/services/src/shop_want_view_internal.h",
     "app/services/include/services/shop_want_view_service.h",
     "zcl_hex_encode",
-    "app.shop.want.view.abi.v1:d04c4366",
-    "zcl.shop_want_post.v1+zcl.shop_want_list.v1+zcl.shop_want_status.v1",
-    "buyer-want-state+preview+next-action.v1",
-    "91d4f525b704de0c9939e85543dc09edf34f0bdcf30324853aeda0a131792635",
+    "app.shop.want.view.abi.v2:fulfillment-status",
+    "zcl.shop_want_post.v1+zcl.shop_want_list.v1+zcl.shop_want_status.v1+zcl.shop_want_fulfill_status.v1",
+    "buyer-want-state+preview+fulfillment-readiness+next-action.v1",
+    "0a9a13ce03b8588002b63e8553350a62cbe948bb7b79b8f1df83765943c5ea72",
     "app.shop.want.list")

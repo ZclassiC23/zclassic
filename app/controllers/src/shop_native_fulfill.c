@@ -16,11 +16,13 @@
 #include "command/native_command.h"
 #include "controllers/native_handler_body.h"
 #include "crypto/ed25519.h"
+#include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "models/review_state.h"
 #include "models/shop_fulfill.h"
 #include "models/shop_want.h"
 #include "services/shop_fulfill_evidence_service.h"
+#include "services/shop_want_view_service.h"
 #include "services/market_moderation_service.h"
 #include "services/market_moderation_view_service.h"
 
@@ -538,7 +540,30 @@ void zcl_native_handle_shop_want_fulfill_status(
     bool visible = market_moderation_view_service_builtin()->decide(
         profile, row.review_state, &decision) && decision.valid &&
         decision.visible;
+    const struct shop_fulfill_status_view_input_v1 view_input = {
+        .signature_valid =
+            shop_fulfill_verify(&row.fulfill) == SHOP_FULFILL_OK,
+        .evidence_valid = evidence_valid,
+        .visible = visible,
+        .withdrawn = row.withdrawn_unix > 0,
+        .expired = row.fulfill.expires_unix <= now,
+    };
+    struct shop_fulfill_status_view_result_v1 view;
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct shop_want_view_service_v1 *view_service =
+        zcl_hotswap_service_acquire(SHOP_WANT_VIEW_SERVICE_ID, &lease);
+    if (!view_service) view_service = shop_want_view_service_builtin();
+    bool view_ok = view_service->render_fulfillment_status(&view_input,
+                                                           &view);
+    zcl_hotswap_service_release(&lease);
     zcl_native_node_db_close_readonly(&db, &ndb);
+    if (!view_ok) {
+        shf_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+                 "FULFILLMENT_VIEW_FAILED", "render",
+                 "the pure fulfillment status view refused verified facts",
+                 "app.shop.want.fulfill.status");
+        return;
+    }
     struct json_value claim;
     json_init(&claim);
     json_set_object(&claim);
@@ -551,6 +576,8 @@ void zcl_native_handle_shop_want_fulfill_status(
         market_moderation_profile_string(
             (enum market_moderation_profile)profile));
     (void)json_push_kv_bool(&reply->data, "visible_under_profile", visible);
+    (void)json_push_kv_str(&reply->data, "readiness", view.readiness);
+    (void)json_push_kv_str(&reply->data, "next_action", view.next_action);
     (void)json_push_kv_str(&reply->data, "terms_note", SHF_TERMS_NOTE);
 }
 

@@ -88,7 +88,8 @@ static bool shop_want_view_frozen_kat(const void *opaque, char *why,
     input.buyer_pubkey[0] = 2;
     memset(input.criteria, 'x', input.criteria_len);
     struct shop_want_view_result_v1 out;
-    if (!service || !service->render || !service->render(&input, &out) ||
+    if (!service || !service->render || !service->render_fulfillment_status ||
+        !service->render(&input, &out) ||
         strcmp(out.state, "open") != 0 || out.expired ||
         strcmp(out.review_state, "reviewed_ok") != 0 ||
         !out.criteria_truncated ||
@@ -98,6 +99,43 @@ static bool shop_want_view_frozen_kat(const void *opaque, char *why,
         if (why && why_sz)
             (void)snprintf(why, why_sz,
                            "frozen buyer-want open/preview vector failed");
+        return false;
+    }
+    struct shop_fulfill_status_view_input_v1 status = {
+        .signature_valid = true,
+        .evidence_valid = true,
+    };
+    struct shop_fulfill_status_view_result_v1 status_out;
+    if (!service->render_fulfillment_status(&status, &status_out) ||
+        strcmp(status_out.readiness, "hidden_by_profile") != 0 ||
+        strcmp(status_out.next_action, "app shop want fulfill review") != 0) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen fulfillment hidden vector failed");
+        return false;
+    }
+    status.visible = true;
+    if (!service->render_fulfillment_status(&status, &status_out) ||
+        strcmp(status_out.readiness, "ready_for_human_review") != 0) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen fulfillment visible vector failed");
+        return false;
+    }
+    status.evidence_valid = false;
+    if (!service->render_fulfillment_status(&status, &status_out) ||
+        strcmp(status_out.readiness, "blocked_by_evidence") != 0) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen fulfillment evidence vector failed");
+        return false;
+    }
+    status.withdrawn = true;
+    if (!service->render_fulfillment_status(&status, &status_out) ||
+        strcmp(status_out.readiness, "closed") != 0) {
+        if (why && why_sz)
+            (void)snprintf(why, why_sz,
+                           "frozen fulfillment closed vector failed");
         return false;
     }
     input.full = true;

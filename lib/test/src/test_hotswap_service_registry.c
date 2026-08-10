@@ -1038,9 +1038,9 @@ static int t_shop_want_view(void)
         input.want_id[0] = 1;
         input.buyer_pubkey[0] = 2;
         memcpy(input.criteria, "test", 4);
-        struct shop_want_view_service_v1 candidate = {
-            .render = candidate_shop_want,
-        };
+        struct shop_want_view_service_v1 candidate =
+            *shop_want_view_service_builtin();
+        candidate.render = candidate_shop_want;
         struct zcl_hotswap_service_candidate publication = {
             .service_id = SHOP_WANT_VIEW_SERVICE_ID,
             .source_tu = "app/services/src/shop_want_view_service.c",

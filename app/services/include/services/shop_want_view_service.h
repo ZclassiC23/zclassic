@@ -10,13 +10,13 @@
 
 #define SHOP_WANT_VIEW_SERVICE_ID "app.shop.want.view.v1"
 #define SHOP_WANT_VIEW_ABI_FINGERPRINT \
-    "app.shop.want.view.abi.v1:d04c4366"
+    "app.shop.want.view.abi.v2:fulfillment-status"
 #define SHOP_WANT_VIEW_SCHEMA_FINGERPRINT \
-    "zcl.shop_want_post.v1+zcl.shop_want_list.v1+zcl.shop_want_status.v1"
+    "zcl.shop_want_post.v1+zcl.shop_want_list.v1+zcl.shop_want_status.v1+zcl.shop_want_fulfill_status.v1"
 #define SHOP_WANT_VIEW_WIRE_FINGERPRINT \
-    "buyer-want-state+preview+next-action.v1"
+    "buyer-want-state+preview+fulfillment-readiness+next-action.v1"
 #define SHOP_WANT_VIEW_KAT_FINGERPRINT \
-    "91d4f525b704de0c9939e85543dc09edf34f0bdcf30324853aeda0a131792635"
+    "0a9a13ce03b8588002b63e8553350a62cbe948bb7b79b8f1df83765943c5ea72"
 
 #define SHOP_WANT_VIEW_CRITERIA_MAX 1024u
 #define SHOP_WANT_VIEW_CRITERIA_PREVIEW 160u
@@ -58,9 +58,25 @@ struct shop_want_view_result_v1 {
     char next_action[SHOP_WANT_VIEW_NEXT_ACTION_MAX];
 };
 
+struct shop_fulfill_status_view_input_v1 {
+    bool signature_valid;
+    bool evidence_valid;
+    bool visible;
+    bool withdrawn;
+    bool expired;
+};
+
+struct shop_fulfill_status_view_result_v1 {
+    char readiness[32];
+    char next_action[SHOP_WANT_VIEW_NEXT_ACTION_MAX];
+};
+
 struct shop_want_view_service_v1 {
     bool (*render)(const struct shop_want_view_input_v1 *input,
                    struct shop_want_view_result_v1 *out);
+    bool (*render_fulfillment_status)(
+        const struct shop_fulfill_status_view_input_v1 *input,
+        struct shop_fulfill_status_view_result_v1 *out);
 };
 
 const struct shop_want_view_service_v1 *shop_want_view_service_builtin(void);

@@ -603,6 +603,11 @@ static int sf_flow(void)
              json_get_bool(json_get(&reply.data, "evidence_valid_now")) &&
              !json_get_bool(json_get(&reply.data,
                                      "visible_under_profile")));
+    SF_CHECK("hidden status names one local review action",
+             strcmp(sf_str(&reply.data, "readiness"),
+                    "hidden_by_profile") == 0 &&
+             strcmp(sf_str(&reply.data, "next_action"),
+                    "app shop want fulfill review") == 0);
     zcl_command_reply_free(&reply);
     json_free(&input);
 

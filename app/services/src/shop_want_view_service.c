@@ -87,7 +87,36 @@ static bool render(const struct shop_want_view_input_v1 *input,
     return true;
 }
 
-static const struct shop_want_view_service_v1 k_builtin = {.render = render};
+static bool render_fulfillment_status(
+    const struct shop_fulfill_status_view_input_v1 *input,
+    struct shop_fulfill_status_view_result_v1 *out)
+{
+    if (!input || !out) return false;
+    memset(out, 0, sizeof(*out));
+    const char *readiness;
+    const char *next;
+    if (input->withdrawn || input->expired) {
+        readiness = "closed";
+        next = "retain the signed claim as evidence; no value moved";
+    } else if (!input->signature_valid || !input->evidence_valid) {
+        readiness = "blocked_by_evidence";
+        next = "repair evidence, then rerun app shop want fulfill status";
+    } else if (!input->visible) {
+        readiness = "hidden_by_profile";
+        next = "app shop want fulfill review";
+    } else {
+        readiness = "ready_for_human_review";
+        next = "human reviews the claim; acceptance and settlement stay separate";
+    }
+    (void)snprintf(out->readiness, sizeof(out->readiness), "%s", readiness);
+    (void)snprintf(out->next_action, sizeof(out->next_action), "%s", next);
+    return true;
+}
+
+static const struct shop_want_view_service_v1 k_builtin = {
+    .render = render,
+    .render_fulfillment_status = render_fulfillment_status,
+};
 
 ZCL_HOTSWAP_SERVICE_EXPORT(
     SHOP_WANT_VIEW_SERVICE_ID, k_builtin, SHOP_WANT_VIEW_ABI_FINGERPRINT,
