@@ -1173,6 +1173,8 @@ size_t zcl_devloop_refusal_json(const char *const *files, size_t file_count,
                  "(owner-gated; see core/UNSEAL.md)\","
                  "\"elevated_procedure\":\"full make ci + copy-prove + "
                  "owner-gated deploy\","
+                 "\"why_not_live\":\"sealed consensus core requires the "
+                 "owner-gated unseal and elevated proof procedure\","
                  "\"agent_next_action\":\"edit outside core/, or run the "
                  "owner-gated unseal ritual (make core-unseal) for a "
                  "consensus-parity fix\"}"))

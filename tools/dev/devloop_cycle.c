@@ -746,6 +746,12 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
         !append_string(out, out_sz, &pos, capsule_preview) ||
         (capsule_truncated &&
          !appendf(out, out_sz, &pos, ",\"failure_capsule_truncated\":true")) ||
+        !appendf(out, out_sz, &pos, ",\"why_not_live\":") ||
+        !append_string(out, out_sz, &pos,
+                       strcmp(status, "passed") == 0
+                           ? ""
+                           : (capsule_preview[0] ? capsule_preview
+                                                 : plan->reason)) ||
         !appendf(out, out_sz, &pos, ",\"agent_next_action\":") ||
         !append_string(
             out, out_sz, &pos,
@@ -970,6 +976,10 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
                      "\"phase\":\"state_publish\","
                      "\"runtime_published\":false,"
                      "\"state_persisted\":false,\"failure_capsule\":") ||
+            !append_string(body, sizeof(body) - 2, &pos,
+                           state_why[0] ? state_why : "unknown") ||
+            !appendf(body, sizeof(body) - 2, &pos,
+                     ",\"why_not_live\":") ||
             !append_string(body, sizeof(body) - 2, &pos,
                            state_why[0] ? state_why : "unknown") ||
             !appendf(body, sizeof(body) - 2, &pos,

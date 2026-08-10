@@ -198,7 +198,7 @@ self_test()
       '{"schema":"zcl.dev_watch_heartbeat.v1","status":"stopped","pid":101}' \
       '{"schema":"zcl.dev_watch_heartbeat.v1","status":"watching","pid":202}' \
       'not-json' \
-      '{"schema":"zcl.dev_cycle.v1","status":"rejected","action":"hotswap","elapsed_us":800000,"runtime_published":false,"source_tu":"app/services/src/zcode_c23_corpus_service.c"}' \
+      '{"schema":"zcl.dev_cycle.v1","status":"rejected","action":"hotswap","elapsed_us":800000,"runtime_published":false,"source_tu":"app/services/src/zcode_c23_corpus_service.c","why_not_live":"candidate KAT refused publication"}' \
       '{"schema":"zcl.dev_cycle.v1","status":"passed","action":"hotswap","elapsed_us":100000,"runtime_published":true,"source_tu":"app/services/src/zcode_c23_corpus_service.c"}' \
       '{"schema":"zcl.dev_cycle.v1","status":"passed","action":"hotswap","elapsed_us":120000,"runtime_published":true,"source_tu":"app/services/src/shop_reputation_view_service.c"}' \
       '{"schema":"zcl.dev_cycle.v1","status":"blocked","action":"reload","runtime_published":false,"service_source":"app/services/src/shop_want_view_service.c","why_not_live":"frozen service contract changed"}' \
@@ -211,8 +211,8 @@ self_test()
     printf '%s\n' \
       '{"schema":"zcl.dev_active_sample.v1","status":"passed","action":"hotswap","elapsed_us":100000,"runtime_published":true,"changed_path_count":1,"source_guard_bytes_read":10,"build_receipt":{"compiler_processes":1,"linker_processes":1,"artifact_cache_hit":false}}' \
       '{"schema":"zcl.dev_active_sample.v1","status":"passed","action":"hotswap","elapsed_us":800000,"runtime_published":true,"changed_path_count":2,"source_guard_bytes_read":20,"build_receipt":{"compiler_processes":1,"linker_processes":1,"artifact_cache_hit":true}}' \
-      '{"schema":"zcl.dev_active_sample.v1","status":"rejected","action":"hotswap","elapsed_us":900000,"runtime_published":false,"changed_path_count":1,"source_guard_bytes_read":5,"build_receipt":{"compiler_processes":1,"linker_processes":0,"artifact_cache_hit":false}}' \
-      '{"schema":"zcl.dev_active_sample.v1","status":"blocked","action":"restart","elapsed_us":4000000,"changed_path_count":1,"source_guard_bytes_read":30,"build_receipt":{"compiler_processes":0,"linker_processes":0,"artifact_cache_hit":false},"proof_receipt":{"deferred_group_count":3}}' \
+      '{"schema":"zcl.dev_active_sample.v1","status":"rejected","action":"hotswap","elapsed_us":900000,"runtime_published":false,"changed_path_count":1,"source_guard_bytes_read":5,"why_not_live":"candidate compile failed","build_receipt":{"compiler_processes":1,"linker_processes":0,"artifact_cache_hit":false}}' \
+      '{"schema":"zcl.dev_active_sample.v1","status":"blocked","action":"restart","elapsed_us":4000000,"changed_path_count":1,"source_guard_bytes_read":30,"why_not_live":"restart proof group cap exceeded","build_receipt":{"compiler_processes":0,"linker_processes":0,"artifact_cache_hit":false},"proof_receipt":{"deferred_group_count":3}}' \
       >>"$samples"
     aggregate_samples "$samples" "$receipt"
     jq -e '
@@ -225,8 +225,8 @@ self_test()
       .processes.compiler == 3 and .processes.linker == 2 and
       .source_bytes.complete == false and .source_bytes.read == 65 and
       .cache_hits == 1 and .deferred_groups == 3 and .refusals == 4 and
-      .refusal_explanations.complete == false and
-      .refusal_explanations.missing == 3' \
+      .refusal_explanations.complete == true and
+      .refusal_explanations.missing == 0' \
       "$receipt" >/dev/null || fail 'sample aggregation contract regressed'
     printf 'dev-loop-active-bench: self-test PASS\n'
 }
