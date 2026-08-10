@@ -76,6 +76,36 @@ classify_path()
     fi
 }
 
+extract_active_session_samples()
+{
+    local native_window="$1" samples="$2" session="$3"
+    jq -Rs '
+      split("\n") | map(fromjson? | select(type=="object")) as $rows |
+      ([range(0; $rows|length) as $i |
+        select($rows[$i].schema=="zcl.dev_watch_heartbeat.v1") | $i] |
+       last // -1) as $at |
+      if $at < 0 then
+        {schema:"zcl.dev_active_watcher_session.v1",status:"not_observed",
+         selection:"latest_heartbeat",log_record_index:null}
+      else
+        $rows[$at] +
+        {schema:"zcl.dev_active_watcher_session.v1",
+         selection:"latest_heartbeat",log_record_index:$at}
+      end' "$native_window" >"$session"
+    jq -cRs '
+      split("\n") | map(fromjson? | select(type=="object")) as $rows |
+      ([range(0; $rows|length) as $i |
+        select($rows[$i].schema=="zcl.dev_watch_heartbeat.v1") | $i] |
+       last // -1) as $at |
+      if $at < 0 then empty
+      elif (($rows[$at].status//"")=="watching" or
+            ($rows[$at].state//"")=="running") then
+        $rows[($at+1):][] |
+        select(.schema=="zcl.dev_cycle.v1" and
+               ((.source_tu//"")|test("zcode|c23")))
+      else empty end' "$native_window" >"$samples"
+}
+
 aggregate_samples()
 {
     local samples="$1" output="$2"
@@ -88,15 +118,26 @@ aggregate_samples()
       map(select(type == "object" and
                  (.schema == "zcl.dev_cycle.v1" or
                   .schema == "zcl.dev_active_sample.v1"))) as $s |
-      [$s[] | select((.action // "") == "hotswap") |
+      [$s[] | select((.action // "") == "hotswap" and
+                     (.status // "") == "passed" and
+                     (.runtime_published // false) == true) |
         (.elapsed_us // ((.elapsed_ms // 0)*1000))] as $hot |
-      [$s[] | select((.action // "") == "restart") |
+      [$s[] | select((.action // "") == "restart" and
+                     ((.status // "") == "passed" or
+                      (.status // "") == "feedback_ready")) |
         (.elapsed_us // ((.elapsed_ms // 0)*1000))] as $restart |
-      [$s[] | select((.changed_path_count // 0) > 1) |
+      [$s[] | select((.action // "") == "hotswap" and
+                     (.status // "") == "passed" and
+                     (.runtime_published // false) == true and
+                     (.changed_path_count // 0) > 1) |
         (.elapsed_us // ((.elapsed_ms // 0)*1000))] as $multi |
       {sample_count:($s|length),
+       published_sample_count:([$s[]|select(
+          (.status//"")=="passed" and (.runtime_published//false))]|length),
        hot_swap:{count:($hot|length),p50_us:percentile($hot;50),
-                 p95_us:percentile($hot;95)},
+                 p95_us:percentile($hot;95),target_us:250000,
+                 target_pass:(if ($hot|length)>0
+                              then percentile($hot;95)<250000 else null end)},
        restart:{count:($restart|length),p50_us:percentile($restart;50),
                 p95_us:percentile($restart;95)},
        same_island_multi_file:{count:($multi|length),
@@ -116,7 +157,17 @@ aggregate_samples()
        cache_hits:([$s[]|select(.build_receipt.artifact_cache_hit//false)]|length),
        deferred_groups:([$s[]|(.proof_receipt.deferred_group_count//0)]|add//0),
        refusals:([$s[]|select((.status//"") != "passed" and
-                              (.status//"") != "feedback_ready")]|length)}' \
+                              (.status//"") != "feedback_ready")]|length),
+       refusal_explanations:{complete:all($s[];
+          ((.status//"")=="passed" or (.status//"")=="feedback_ready") or
+          ((.why_not_live//"")|length)>0),
+          missing:([$s[]|select((.status//"")!="passed" and
+            (.status//"")!="feedback_ready" and
+            ((.why_not_live//"")|length)==0)]|length),
+          reasons:([$s[]|select((.status//"")!="passed" and
+            (.status//"")!="feedback_ready")|
+            {status,action,source_tu:(.source_tu//null),
+             why_not_live:(.why_not_live//null)}])}}' \
       "$samples" >"$output"
 }
 
@@ -132,25 +183,46 @@ self_test()
     [ "$(classify_path core/consensus/src/check_block.c)" = forbidden ] ||
         fail 'consensus path is not forbidden'
 
-    local scratch samples receipt
+    local scratch native_log samples receipt session
     scratch="$(mktemp -d "${TMPDIR:-/tmp}/zcl-active-selftest.XXXXXX")"
     trap "rm -rf -- '$scratch'" EXIT INT TERM
     samples="$scratch/samples.jsonl"
     receipt="$scratch/receipt.json"
+    native_log="$scratch/native-watch.log"
+    session="$scratch/session.json"
     printf '%s\n' \
-      '{"schema":"zcl.dev_active_sample.v1","status":"passed","action":"hotswap","elapsed_us":100000,"changed_path_count":1,"source_guard_bytes_read":10,"build_receipt":{"compiler_processes":1,"linker_processes":1,"artifact_cache_hit":false}}' \
-      '{"schema":"zcl.dev_active_sample.v1","status":"passed","action":"hotswap","elapsed_us":800000,"changed_path_count":2,"source_guard_bytes_read":20,"build_receipt":{"compiler_processes":1,"linker_processes":1,"artifact_cache_hit":true}}' \
+      '{"schema":"zcl.dev_watch_heartbeat.v1","status":"watching","pid":101}' \
+      '{"schema":"zcl.dev_cycle.v1","status":"passed","action":"hotswap","elapsed_us":900000,"runtime_published":true,"source_tu":"app/services/src/zcode_c23_corpus_service.c"}' \
+      '{"schema":"zcl.dev_watch_heartbeat.v1","status":"stopped","pid":101}' \
+      '{"schema":"zcl.dev_watch_heartbeat.v1","status":"watching","pid":202}' \
+      'not-json' \
+      '{"schema":"zcl.dev_cycle.v1","status":"rejected","action":"hotswap","elapsed_us":800000,"runtime_published":false,"source_tu":"app/services/src/zcode_c23_corpus_service.c"}' \
+      '{"schema":"zcl.dev_cycle.v1","status":"passed","action":"hotswap","elapsed_us":100000,"runtime_published":true,"source_tu":"app/services/src/zcode_c23_corpus_service.c"}' \
+      >"$native_log"
+    extract_active_session_samples "$native_log" "$samples" "$session"
+    jq -e '.status == "watching" and .pid == 202' "$session" >/dev/null ||
+        fail 'active watcher session selection regressed'
+    [ "$(wc -l <"$samples")" -eq 2 ] ||
+        fail 'stale watcher samples leaked into the active session'
+    printf '%s\n' \
+      '{"schema":"zcl.dev_active_sample.v1","status":"passed","action":"hotswap","elapsed_us":100000,"runtime_published":true,"changed_path_count":1,"source_guard_bytes_read":10,"build_receipt":{"compiler_processes":1,"linker_processes":1,"artifact_cache_hit":false}}' \
+      '{"schema":"zcl.dev_active_sample.v1","status":"passed","action":"hotswap","elapsed_us":800000,"runtime_published":true,"changed_path_count":2,"source_guard_bytes_read":20,"build_receipt":{"compiler_processes":1,"linker_processes":1,"artifact_cache_hit":true}}' \
+      '{"schema":"zcl.dev_active_sample.v1","status":"rejected","action":"hotswap","elapsed_us":900000,"runtime_published":false,"changed_path_count":1,"source_guard_bytes_read":5,"build_receipt":{"compiler_processes":1,"linker_processes":0,"artifact_cache_hit":false}}' \
       '{"schema":"zcl.dev_active_sample.v1","status":"blocked","action":"restart","elapsed_us":4000000,"changed_path_count":1,"source_guard_bytes_read":30,"build_receipt":{"compiler_processes":0,"linker_processes":0,"artifact_cache_hit":false},"proof_receipt":{"deferred_group_count":3}}' \
-      >"$samples"
+      >>"$samples"
     aggregate_samples "$samples" "$receipt"
     jq -e '
-      .sample_count == 3 and .hot_swap.p50_us == 100000 and
+      .sample_count == 6 and .hot_swap.count == 3 and
+      .hot_swap.p50_us == 100000 and
       .hot_swap.p95_us == 800000 and
       .same_island_multi_file.p95_us == 800000 and
       .same_island_multi_file.target_pass == true and
-      .processes.compiler == 2 and .processes.linker == 2 and
-      .source_bytes.complete == true and .source_bytes.read == 60 and
-      .cache_hits == 1 and .deferred_groups == 3 and .refusals == 1' \
+      .hot_swap.target_pass == false and
+      .processes.compiler == 3 and .processes.linker == 2 and
+      .source_bytes.complete == false and .source_bytes.read == 65 and
+      .cache_hits == 1 and .deferred_groups == 3 and .refusals == 3 and
+      .refusal_explanations.complete == false and
+      .refusal_explanations.missing == 3' \
       "$receipt" >/dev/null || fail 'sample aggregation contract regressed'
     printf 'dev-loop-active-bench: self-test PASS\n'
 }
@@ -162,14 +234,16 @@ run_benchmark()
     command -v jq >/dev/null || fail 'jq is required'
     load_live_paths
 
-    local scratch rows commits_file samples metrics entries head diff_digest
-    local snapshot linker_receipt
+    local scratch rows commits_file native_window samples metrics entries
+    local head diff_digest snapshot session linker_receipt
     scratch="$(mktemp -d "${TMPDIR:-/tmp}/zcl-active-bench.XXXXXX")"
     trap "rm -rf -- '$scratch'" EXIT INT TERM
     rows="$scratch/rows.tsv"
     commits_file="$scratch/commits"
     samples="$scratch/samples.jsonl"
+    native_window="$scratch/native-watch.jsonl"
     metrics="$scratch/metrics.json"
+    session="$scratch/session.json"
     entries="$scratch/entries.json"
     : >"$rows"
     : >"$samples"
@@ -200,16 +274,17 @@ run_benchmark()
       <"$rows" >"$entries"
 
     if [ -r "$NATIVE_LOG" ]; then
-        tail -n 4096 "$NATIVE_LOG" | jq -Rc '
-          fromjson? | select(type=="object" and
-            .schema=="zcl.dev_cycle.v1" and
-            ((.source_tu//"")|test("zcode|c23")))' >"$samples" || true
-        snapshot="$(tail -n 4096 "$NATIVE_LOG" | jq -Rs '
+        tail -n 4096 "$NATIVE_LOG" >"$native_window"
+        extract_active_session_samples "$native_window" "$samples" "$session"
+        snapshot="$(jq -Rs '
           split("\n") | map(fromjson? | select(type=="object" and
             .schema=="zcl.dev_source_snapshot.v1")) | last //
-          {status:"not_observed"}')"
+          {status:"not_observed"}' "$native_window")"
     else
         snapshot='{"status":"not_observed"}'
+        printf '%s\n' \
+          '{"schema":"zcl.dev_active_watcher_session.v1","status":"not_observed","selection":"latest_heartbeat","log_record_index":null}' \
+          >"$session"
     fi
     aggregate_samples "$samples" "$metrics"
     if [ -r "$LINKER" ] && jq -e '
@@ -225,6 +300,7 @@ run_benchmark()
     mkdir -p "$(dirname "$OUTPUT")"
     jq -n --arg head "$head" --arg diff "$diff_digest" \
       --argjson commits "$COMMITS" --argjson snapshot "$snapshot" \
+      --argjson session "$(<"$session")" \
       --argjson linker "$linker_receipt" --slurpfile entries "$entries" \
       --slurpfile metrics "$metrics" '
       ($entries[0]) as $e | ($metrics[0]) as $m |
@@ -247,7 +323,8 @@ run_benchmark()
            (10000*($zchot|length)/($zc|length)|round/100) else 0 end),
          target_percent:70,
          target_pass:(($zc|length)>0 and (($zchot|length)*100 >= ($zc|length)*70))},
-       observations:($m+{watcher_source_snapshot:$snapshot}),
+       observations:($m+{watcher_session:$session,
+                          watcher_source_snapshot:$snapshot}),
        linker_shootout:$linker,
        frozen_history:{path:"build/dev-loop/history-benchmark.json",
          status:"preserved_separate"},entries:$e}' >"$OUTPUT"
