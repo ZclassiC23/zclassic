@@ -483,25 +483,34 @@ static int test_watcher_publication_containment(void)
                       "auto") == 0);
         ASSERT(zcl_devloop_publish_mode_name(
                    (enum zcl_devloop_publish_mode)99) == NULL);
-        ASSERT(strcmp(zcl_devloop_watcher_freshness(false, false),
+        ASSERT(strcmp(zcl_devloop_watcher_freshness(false, false, false),
                       "watcher_not_running") == 0);
-        ASSERT(strcmp(zcl_devloop_watcher_freshness(true, false),
+        ASSERT(strcmp(zcl_devloop_watcher_freshness(true, false, false),
                       "watcher_starting") == 0);
-        ASSERT(strcmp(zcl_devloop_watcher_freshness(true, true), "current")
+        ASSERT(strcmp(zcl_devloop_watcher_freshness(true, true, false),
+                      "runtime_starting") == 0);
+        ASSERT(strcmp(zcl_devloop_watcher_freshness(true, true, true), "current")
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
-                          false, false, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
+                          false, false, false,
+                          ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
                       "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'")
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
-                          true, false, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
+                          true, false, false,
+                          ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
                       "zclassic23-dev dev loop status") == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
-                          true, true, ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
+                          true, true, true,
+                          ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
                       "edit one C23 file")
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
-                          true, true, ZCL_DEVLOOP_PUBLISH_APPLY),
+                          true, true, false, ZCL_DEVLOOP_PUBLISH_APPLY),
+                      "wait for node RPC, then rerun zclassic23-dev dev loop status")
+               == 0);
+        ASSERT(strcmp(zcl_devloop_watcher_next_action(
+                          true, true, true, ZCL_DEVLOOP_PUBLISH_APPLY),
                       "edit one C23 file")
                == 0);
 

@@ -1046,21 +1046,26 @@ enum zcl_devloop_publish_mode zcl_devloop_default_watch_publish_mode(void)
     return ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY;
 }
 
-const char *zcl_devloop_watcher_freshness(bool active, bool ready)
+const char *zcl_devloop_watcher_freshness(bool active, bool source_ready,
+                                          bool runtime_ready)
 {
     if (!active)
         return "watcher_not_running";
-    return ready ? "current" : "watcher_starting";
+    if (!source_ready)
+        return "watcher_starting";
+    return runtime_ready ? "current" : "runtime_starting";
 }
 
 const char *zcl_devloop_watcher_next_action(
-    bool active, bool ready, enum zcl_devloop_publish_mode publish_mode)
+    bool active, bool source_ready, bool runtime_ready,
+    enum zcl_devloop_publish_mode publish_mode)
 {
-    (void)publish_mode;
     if (!active)
         return "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'";
-    if (!ready)
+    if (!source_ready)
         return "zclassic23-dev dev loop status";
+    if (zcl_devloop_publish_mode_applies(publish_mode) && !runtime_ready)
+        return "wait for node RPC, then rerun zclassic23-dev dev loop status";
     return "edit one C23 file";
 }
 

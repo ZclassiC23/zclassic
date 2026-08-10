@@ -88,7 +88,7 @@ static bool render(const struct shop_status_view_input_v1 *input,
     if (!input->announced &&
         !add_gap(out, "shop_not_announced",
                  SHOP_STATUS_REMEDY_INIT
-                 " writes <datadir>/directory/apps.csv predictably and "
+                 " writes <datadir>/directory/apps.csv atomically and "
                  "idempotently."))
         return false;
     return true;
