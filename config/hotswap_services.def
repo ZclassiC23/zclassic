@@ -72,10 +72,10 @@ HOTSWAP_SERVICE(
     "-",
     "app/services/include/services/zcode_moderation_view_service.h",
     "-",
-    "zcode.moderation.view.abi.v1:1dc47e86",
-    "zcl.zcode_moderation_status.v1+policy-list.v1+policy-show.v1",
-    "family-policy-caller-owned-view.v1",
-    "d22bedb12602e7523805ce0b4a0890e778c2e9c0e012c95318af3ed3ee39c70a",
+    "zcode.moderation.view.abi.v1:a7163e2d",
+    "zcl.zcode_moderation_status.v1+service-status.v1+policy-list.v1+policy-show.v1",
+    "family-policy+service-readiness-caller-owned-view.v1",
+    "6b82ad2e6786c41076bdba5acb8050cbaef01c8d3cdb94dfbf6e99874e027ab3",
     "zcode.moderation.status")
 
 HOTSWAP_SERVICE(

@@ -120,21 +120,43 @@ void zcl_native_handle_zcode_moderation_service_status(
     }
     if (!render_family_policy(reply))
         return;
-    (void)json_push_kv_bool(&reply->data, "projection_ready", false);
-    (void)json_push_kv_int(&reply->data, "registered_service_count", 0);
-    (void)json_push_kv_int(&reply->data, "eligible_service_count", 0);
-    (void)json_push_kv_bool(&reply->data, "roster_finalized", false);
-    (void)json_push_kv_bool(&reply->data, "classification_enabled", false);
-    (void)json_push_kv_bool(&reply->data, "advertisement_enabled", false);
-    (void)json_push_kv_bool(&reply->data, "chain_selection_enabled", false);
+    const struct zcode_moderation_service_status_input_v1 input = {0};
+    struct zcode_moderation_service_status_result_v1 view;
+    struct zcl_hotswap_service_lease lease = {0};
+    const struct zcode_moderation_view_service_v1 *service =
+        zcl_hotswap_service_acquire(ZCODE_MODERATION_VIEW_SERVICE_ID, &lease);
+    if (!service)
+        service = zcode_moderation_view_service_builtin();
+    bool rendered = service->render_service_status(&input, &view) &&
+        view.valid;
+    zcl_hotswap_service_release(&lease);
+    if (!rendered) {
+        moderation_fail(reply, "MODERATION_SERVICE_VIEW_FAILED",
+                        "the pure moderation view refused service readiness facts");
+        return;
+    }
+    (void)json_push_kv_bool(&reply->data, "projection_ready",
+                            input.projection_ready);
+    (void)json_push_kv_int(&reply->data, "registered_service_count",
+                           input.registered_service_count);
+    (void)json_push_kv_int(&reply->data, "eligible_service_count",
+                           input.eligible_service_count);
+    (void)json_push_kv_bool(&reply->data, "roster_finalized",
+                            input.roster_finalized);
+    (void)json_push_kv_bool(&reply->data, "classification_enabled",
+                            input.classification_enabled);
+    (void)json_push_kv_bool(&reply->data, "advertisement_enabled",
+                            input.advertisement_enabled);
+    (void)json_push_kv_bool(&reply->data, "chain_selection_enabled",
+                            input.chain_selection_enabled);
     (void)json_push_kv_bool(&reply->data,
-                            "operator_group_diversity_declared", false);
+                            "operator_group_diversity_declared",
+                            input.operator_group_diversity_declared);
+    (void)json_push_kv_bool(&reply->data, "service_ready", view.ready);
     (void)json_push_kv_str(&reply->data, "bootstrap_label",
-                           "unavailable:no_signed_service_roster");
-    (void)json_push_kv_str(&reply->data, "blocker",
-        "signed service registration and finalized roster projection are not implemented");
-    (void)json_push_kv_str(&reply->data, "next_command",
-                           "zcode moderation status");
+                           view.bootstrap_label);
+    (void)json_push_kv_str(&reply->data, "blocker", view.blocker);
+    (void)json_push_kv_str(&reply->data, "next_command", view.next_command);
 }
 
 void zcl_native_handle_zcode_moderation_policy_list(
@@ -180,6 +202,7 @@ static bool moderation_view_frozen_kat(const void *opaque, char *why,
     char root_hex[65];
     vcs_zcode_family_policy_v1_default(&policy);
     if (!service || !service->render_policy ||
+        !service->render_service_status ||
         vcs_zcode_family_policy_v1_root(&policy, root) !=
             VCS_ZCODE_COMMONS_V2_OK) {
         if (why && why_sz) (void)snprintf(
@@ -199,6 +222,32 @@ static bool moderation_view_frozen_kat(const void *opaque, char *why,
         !view.separate_from_accuracy_quality_security) {
         if (why && why_sz) (void)snprintf(
             why, why_sz, "frozen Family policy presentation vector failed");
+        return false;
+    }
+    struct zcode_moderation_service_status_input_v1 status_input = {0};
+    struct zcode_moderation_service_status_result_v1 status_view;
+    if (!service->render_service_status(&status_input, &status_view) ||
+        !status_view.valid || status_view.ready ||
+        strcmp(status_view.bootstrap_label,
+               "unavailable:no_signed_service_roster") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen moderation service-readiness vector failed");
+        return false;
+    }
+    status_input.projection_ready = true;
+    status_input.registered_service_count = 3;
+    status_input.eligible_service_count = 3;
+    status_input.roster_finalized = true;
+    status_input.classification_enabled = true;
+    status_input.advertisement_enabled = true;
+    status_input.chain_selection_enabled = true;
+    status_input.operator_group_diversity_declared = true;
+    if (!service->render_service_status(&status_input, &status_view) ||
+        !status_view.ready ||
+        strcmp(status_view.next_command,
+               "zcode moderation classify plan") != 0) {
+        if (why && why_sz) (void)snprintf(
+            why, why_sz, "frozen moderation ready-roster vector failed");
         return false;
     }
     return true;

@@ -12,13 +12,13 @@
 
 #define ZCODE_MODERATION_VIEW_SERVICE_ID "zcode.moderation.view.v1"
 #define ZCODE_MODERATION_VIEW_ABI_FINGERPRINT \
-    "zcode.moderation.view.abi.v1:1dc47e86"
+    "zcode.moderation.view.abi.v1:a7163e2d"
 #define ZCODE_MODERATION_VIEW_SCHEMA_FINGERPRINT \
-    "zcl.zcode_moderation_status.v1+policy-list.v1+policy-show.v1"
+    "zcl.zcode_moderation_status.v1+service-status.v1+policy-list.v1+policy-show.v1"
 #define ZCODE_MODERATION_VIEW_WIRE_FINGERPRINT \
-    "family-policy-caller-owned-view.v1"
+    "family-policy+service-readiness-caller-owned-view.v1"
 #define ZCODE_MODERATION_VIEW_KAT_FINGERPRINT \
-    "d22bedb12602e7523805ce0b4a0890e778c2e9c0e012c95318af3ed3ee39c70a"
+    "6b82ad2e6786c41076bdba5acb8050cbaef01c8d3cdb94dfbf6e99874e027ab3"
 
 struct zcode_moderation_policy_view_v1 {
     bool valid;
@@ -35,10 +35,32 @@ struct zcode_moderation_policy_view_v1 {
     char policy_summary[160];
 };
 
+struct zcode_moderation_service_status_input_v1 {
+    bool projection_ready;
+    uint32_t registered_service_count;
+    uint32_t eligible_service_count;
+    bool roster_finalized;
+    bool classification_enabled;
+    bool advertisement_enabled;
+    bool chain_selection_enabled;
+    bool operator_group_diversity_declared;
+};
+
+struct zcode_moderation_service_status_result_v1 {
+    bool valid;
+    bool ready;
+    char bootstrap_label[64];
+    char blocker[192];
+    char next_command[64];
+};
+
 struct zcode_moderation_view_service_v1 {
     bool (*render_policy)(const struct vcs_zcode_family_policy_v1 *policy,
                           const char *policy_root_hex,
                           struct zcode_moderation_policy_view_v1 *out);
+    bool (*render_service_status)(
+        const struct zcode_moderation_service_status_input_v1 *input,
+        struct zcode_moderation_service_status_result_v1 *out);
 };
 
 const struct zcode_moderation_view_service_v1 *

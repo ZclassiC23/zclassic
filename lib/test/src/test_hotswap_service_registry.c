@@ -464,6 +464,18 @@ static bool candidate_moderation_policy(
     return true;
 }
 
+static bool candidate_moderation_service_status(
+    const struct zcode_moderation_service_status_input_v1 *input,
+    struct zcode_moderation_service_status_result_v1 *out)
+{
+    if (!zcode_moderation_view_service_builtin()->render_service_status(
+            input, out))
+        return false;
+    snprintf(out->blocker, sizeof(out->blocker), "%s",
+             "candidate moderation readiness generation is active");
+    return true;
+}
+
 static int t_zcode_moderation_view(void)
 {
     int failures = 0;
@@ -482,9 +494,16 @@ static int t_zcode_moderation_view(void)
         ASSERT(builtin->render_policy(&policy, root_hex, &view));
         ASSERT(view.valid);
         ASSERT_STR_EQ(view.policy_root, root_hex);
+        struct zcode_moderation_service_status_input_v1 status_input = {0};
+        struct zcode_moderation_service_status_result_v1 status_view;
+        ASSERT(builtin->render_service_status(&status_input, &status_view));
+        ASSERT_STR_EQ(status_view.bootstrap_label,
+                      "unavailable:no_signed_service_roster");
 
         struct zcode_moderation_view_service_v1 candidate_service = *builtin;
         candidate_service.render_policy = candidate_moderation_policy;
+        candidate_service.render_service_status =
+            candidate_moderation_service_status;
         struct zcl_hotswap_service_candidate service_candidate = {
             .service_id = ZCODE_MODERATION_VIEW_SERVICE_ID,
             .source_tu = "app/services/src/zcode_moderation_view_service.c",
@@ -517,6 +536,14 @@ static int t_zcode_moderation_view(void)
         ASSERT(!json_get_bool(json_get(&reply.data, "effective_default")));
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "policy_summary")),
                       "candidate moderation view generation is active");
+        zcl_command_reply_free(&reply);
+
+        zcl_command_reply_init(&reply,
+                               "zcl.zcode_moderation_service_status.v1");
+        zcl_native_handle_zcode_moderation_service_status(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "blocker")),
+                      "candidate moderation readiness generation is active");
         zcl_command_reply_free(&reply);
         json_free(&input);
         zcl_hotswap_service_reset();
