@@ -279,9 +279,20 @@ static int test_runner_exact_selection(void)
 {
     int failures = 0;
     TEST("test group selector: runner exact mode executes exactly one id") {
-        /* Strict-profile make -n output includes the full link source list;
-         * retain its tail where the exact selector is emitted. */
-        char out[131072];
+        /* The make -n dry runs below print the full out-of-date recipe
+         * chain, and that chain's SIZE is context-dependent: invoked from a
+         * parent make that just built this profile's epoch chain (isolated
+         * t-fast) the dry run is a few KB, but invoked cold (the parallel
+         * suite, a direct runner process, or after the session lease
+         * expires) every stale session/link/stamp recipe prints — measured
+         * ~0.6 MB with most objects fresh, bounded by ~2 MB with every
+         * object in every chained profile stale. The two `make -n`
+         * assertions need BOTH the parse-time admission line (head of
+         * output) and the recipe's exact selector (tail), so no head- or
+         * tail-truncating capture can work; the buffer must simply exceed
+         * the worst case. Static storage: 8 MiB dwarfs the bound, costs no
+         * stack, and cannot leak on an assertion-failure exit. */
+        static char out[8 * 1024 * 1024];
         char exe[PATH_MAX];
         ASSERT(os_proc_exe_path(exe, sizeof(exe)));
         ASSERT(exe[0] != '\0');
