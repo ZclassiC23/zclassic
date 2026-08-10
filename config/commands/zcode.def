@@ -1092,6 +1092,29 @@ ZCL_COMMAND_READY_COMMAND(
     zcl_native_handle_zcode_commons_schedule_claim_commit)
 
 ZCL_COMMAND_READY_READ(
+    "zcode.commons.schedule.claim.verify", "zcode.commons.schedule.claim", "",
+    "Reconstruct one signed-claim epoch proposal",
+    "Loads one exact bounded claim_epoch_proposal.v2 from scratch CAS, then "
+    "rebuilds the current signed-claim projection and reruns the resident pure "
+    "economics selector from four explicit policy bindings. Success requires "
+    "the canonical proposal, projection, policy, selection and address roots "
+    "to reproduce exactly after restart; no issuance, wallet or funds exist.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,commons,schedule,claim,epoch,verify,restart,simulation,cas",
+    "zcl.zcode_commons_claim_epoch_verify.input.v2",
+    "zcl.zcode_commons_claim_epoch_verify.v2",
+    "workspace,proposal_root,network_genesis_root,moderation_policy_root,qualification_predicates_root,backlog_algorithm_root",
+    "workspace,proposal_root,network_genesis_root,moderation_policy_root,qualification_predicates_root,backlog_algorithm_root",
+    "zclassic23 zcode commons schedule claim verify --input='{...}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_commons_schedule_claim_verify)
+
+ZCL_COMMAND_READY_READ(
     "zcode.commons.status", "zcode.commons", "", "Show Living Commons status",
     "Rebuilds an ephemeral view from canonical workspace CAS objects. A "
     "missing workspace remains absent. When the caller pins the immutable "

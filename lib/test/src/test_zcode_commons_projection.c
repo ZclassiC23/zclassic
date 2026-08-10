@@ -526,7 +526,55 @@ static int commons_claim_projection_test(void)
         ASSERT(vcs_object_has(workspace, epoch_proposal_root));
         zcl_command_reply_free(&reply);
 
+        /* Verification reloads the committed bytes and reproduces every
+         * projection, policy and selection binding from current CAS state. */
+        struct json_value verify_input;
+        json_init(&verify_input); json_set_object(&verify_input);
+        json_push_kv_str(&verify_input, "workspace", workspace);
+        json_push_kv_str(&verify_input, "proposal_root",
+                         epoch_proposal_root_hex);
+        json_push_kv_str(&verify_input, "network_genesis_root", root_hex[1]);
+        json_push_kv_str(&verify_input, "moderation_policy_root", root_hex[2]);
+        json_push_kv_str(&verify_input, "qualification_predicates_root",
+                         root_hex[3]);
+        json_push_kv_str(&verify_input, "backlog_algorithm_root", root_hex[4]);
+        const struct zcl_command_spec *epoch_verify_spec =
+            zcl_command_registry_find(
+                zcl_command_catalog(),
+                "zcode.commons.schedule.claim.verify", NULL);
+        ASSERT(epoch_verify_spec);
+        ASSERT(zcl_command_registry_input_validate(
+            epoch_verify_spec, &verify_input, input_why, sizeof(input_why)));
+        request.input = &verify_input;
+        zcl_command_reply_init(&reply, "zcl.test.commons_claim_epoch_verify.v2");
+        zcl_native_handle_zcode_commons_schedule_claim_verify(
+            &request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&reply.data, "verified")));
+        ASSERT(json_get_bool(json_get(&reply.data,
+                                      "restart_reconstructed")));
+        ASSERT(json_get_bool(json_get(&reply.data, "bounded_load")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "issuance_enabled")));
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &reply.data, "claim_epoch_proposal_root")),
+                      epoch_proposal_root_hex);
+        zcl_command_reply_free(&reply);
+
+        json_set_str((struct json_value *)json_get(
+                         &verify_input, "moderation_policy_root"),
+                     root_hex[1]);
+        zcl_command_reply_init(&reply, "zcl.test.commons_claim_epoch_verify.v2");
+        zcl_native_handle_zcode_commons_schedule_claim_verify(
+            &request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "CLAIM_EPOCH_POLICY_MISMATCH");
+        ASSERT_STR_EQ(reply.error.evidence,
+                      "zcode.commons.schedule.claim.verify");
+        zcl_command_reply_free(&reply);
+        json_free(&verify_input);
+
         /* A commit refusal identifies the action the agent actually ran. */
+        request.input = &input;
         json_set_str((struct json_value *)json_get(&input, "workspace"),
                      "/var/lib/zclassic23");
         zcl_command_reply_init(&reply, "zcl.test.commons_claim_epoch.v2");
@@ -549,6 +597,31 @@ static int commons_claim_projection_test(void)
                                                        rebuilt_root));
         ASSERT(memcmp(first_root, rebuilt_root, sizeof(first_root)) == 0);
         vcs_zcode_commons_projection_free(rebuilt);
+
+        /* A newly admitted signed claim changes the projection root, so the
+         * old proposal becomes explicitly stale instead of false-passing. */
+        struct vcs_zcode_creation_claim_wire_v2 added;
+        uint8_t added_root[32];
+        commons_claim_fixture(&added, 14, 150, 1500,
+                              VCS_ZCODE_CLAIM_V2_REQUIRED_FLAGS);
+        ASSERT(commons_store_claim(workspace, &added, added_root));
+        json_init(&verify_input); json_set_object(&verify_input);
+        json_push_kv_str(&verify_input, "workspace", workspace);
+        json_push_kv_str(&verify_input, "proposal_root",
+                         epoch_proposal_root_hex);
+        json_push_kv_str(&verify_input, "network_genesis_root", root_hex[1]);
+        json_push_kv_str(&verify_input, "moderation_policy_root", root_hex[2]);
+        json_push_kv_str(&verify_input, "qualification_predicates_root",
+                         root_hex[3]);
+        json_push_kv_str(&verify_input, "backlog_algorithm_root", root_hex[4]);
+        request.input = &verify_input;
+        zcl_command_reply_init(&reply, "zcl.test.commons_claim_epoch_verify.v2");
+        zcl_native_handle_zcode_commons_schedule_claim_verify(
+            &request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "CLAIM_EPOCH_PROJECTION_STALE");
+        zcl_command_reply_free(&reply);
+        json_free(&verify_input);
         test_rm_rf(workspace);
 
         char corrupt_workspace[256];
