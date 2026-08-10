@@ -32,6 +32,23 @@ ZCL_COMMAND_BRANCH("zcode.workspace", "zcode",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
+    "zcode.passport.status", "zcode.passport", "",
+    "Show signed module Passport readiness",
+    "Reports the active pure Passport-view generation and next useful command. "
+    "Parsing, signing payloads, signature verification, canonical roots, "
+    "persistence and publication remain resident and non-swappable.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,passport,module,c23,status,hotswap,signature,simulation",
+    "zcl.zcode_passport_status.input.v1", "zcl.zcode_passport_status.v1",
+    "", "", "zclassic23 zcode passport status",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_passport_status)
+
+ZCL_COMMAND_READY_READ(
     "zcode.workspace.status", "zcode.workspace", "",
     "Show Passport-bound workspace readiness",
     "Reports the active pure workspace-view generation and the next useful "

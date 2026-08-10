@@ -872,6 +872,7 @@ AGENT_IMPACT_RULE("app/controllers/src/shop_native_handler.c|app/services/src/sh
  * admission/enforcement decision remain resident static authority. */
 AGENT_IMPACT_RULE("app/services/src/zcode_moderation_view_service.c|app/services/include/services/zcode_moderation_view_service.h|tools/command/native_zcode_moderation_command.c", "zcode_commons_v2 hotswap_service_registry command_registry_catalog make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/zcode_workspace_view_service.c|app/services/include/services/zcode_workspace_view_service.h|tools/command/native_zcode_workspace_command.c", "zcode_commons_v2 hotswap_service_registry command_registry_catalog native_api_contract make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/zcode_passport_view_service.c|app/services/include/services/zcode_passport_view_service.h|tools/command/native_zcode_passport_command.c", "zcode_commons_v2 hotswap_service_registry command_registry_catalog native_api_contract make_lint_gates")
 /* The service registry and its purity/contract checker are harness ownership,
  * separate from any product island named by a row. */
 AGENT_IMPACT_RULE("config/hotswap_services.def|lib/hotswap/src/hotswap_service_registry.c|lib/hotswap/include/hotswap/hotswap_service_registry.h|tools/lint/check_hotswap_service_islands.sh|lib/test/src/test_hotswap_service_registry.c|lib/test/fixtures/hotswap_service_*.def|lib/test/fixtures/hotswap_service_*.c|lib/test/fixtures/hotswap_service_*.h", "hotswap_service_registry dev_platform make_lint_gates")

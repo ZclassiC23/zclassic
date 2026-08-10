@@ -46,6 +46,9 @@ HOTSWAP_PROBE_CASE("service.package.guide.default.v1", "service",
 HOTSWAP_PROBE_CASE("service.zcode.moderation.status.default.v1", "service",
     "zcode.moderation.status", "{}",
     "zcl.zcode_moderation_status.v1", 4096)
+HOTSWAP_PROBE_CASE("service.zcode.passport.status.default.v1", "service",
+    "zcode.passport.status", "{}",
+    "zcl.zcode_passport_status.v1", 2048)
 HOTSWAP_PROBE_CASE("service.zcode.workspace.status.default.v1", "service",
     "zcode.workspace.status", "{}",
     "zcl.zcode_workspace_status.v1", 2048)

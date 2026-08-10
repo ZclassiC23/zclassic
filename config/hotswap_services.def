@@ -91,6 +91,18 @@ HOTSWAP_SERVICE(
     "zcode.workspace.status")
 
 HOTSWAP_SERVICE(
+    "zcode.passport.view.v1",
+    "app/services/src/zcode_passport_view_service.c",
+    "-",
+    "app/services/include/services/zcode_passport_view_service.h",
+    "-",
+    "zcode.passport.view.abi.v1:0b2ee4ac",
+    "zcl.zcode_passport_status.v1+plan.v1+commit.v1+verify.v1",
+    "module-passport-presentation.v1",
+    "8e03105430bec13a6766e00ab21bc1ac6f5f234ee4d17f08f8be6943d8e4140f",
+    "zcode.passport.status")
+
+HOTSWAP_SERVICE(
     "app.shop.reputation.view.v1",
     "app/services/src/shop_reputation_view_service.c",
     "-",

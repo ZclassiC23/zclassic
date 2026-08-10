@@ -475,6 +475,9 @@ void zcl_native_handle_zcode_passport_plan(
 void zcl_native_handle_zcode_passport_commit(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_passport_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_workspace_plan(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
