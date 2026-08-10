@@ -74,17 +74,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 628 |
+| Registry entries (branches + leaves) | 632 |
 | Top-level roots | 11 |
-| Branches | 148 |
-| Leaves (dispatchable command paths) | 480 |
-| … `ready` (live handler in this build) | 432 |
+| Branches | 149 |
+| Leaves (dispatchable command paths) | 483 |
+| … `ready` (live handler in this build) | 435 |
 | … `compat` (metadata only, names a fallback) | 18 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 155 |
+| Leaves with `effect=mutate` | 156 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 100 |
+| Leaves requiring **owner** authority | 101 |
 
 Per source file:
 
@@ -93,8 +93,8 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 118 | 29 | 89 |
 | `config/commands/apps.def` | 16 | 3 | 13 |
-| `config/commands/app_features.def` | 58 | 15 | 43 |
-| `config/commands/store.def` | 5 | 0 | 5 |
+| `config/commands/app_features.def` | 59 | 16 | 43 |
+| `config/commands/store.def` | 8 | 0 | 8 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 46 | 11 | 35 |
 | `config/commands/code.def` | 16 | 2 | 14 |
@@ -539,6 +539,14 @@ represented by its children's sections.
 | `app store pay` | ready | mutate / wallet / **owner**, plan-commit · foreground/high | `purchase_id`, `from_address`, `confirm` | `zcl.store_pay.v1` | `zclassic23 app store pay --input='{"purchase_id":1,"from_address":"t1...","confirm":true}'` | Pay a placed order |
 | `app store purchases` | ready | read / read / operator · fast/low | **`purchase_id`** | `zcl.store_purchases.v1` | `zclassic23 app store purchases` | Show purchases and what is still owed |
 | `app store collect` | ready | mutate / app-write / **owner** · foreground/moderate | **`purchase_id`**, `output_path` | `zcl.store_collect.v1` | `zclassic23 app store collect --input='{"purchase_id":1,"output_path":"/tmp/bought.bin"}'` | Download a purchase you paid for |
+
+#### `app.shop` — Shop
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app shop init` | ready | mutate / app-write / **owner**, plan-commit · foreground/moderate | `confirm`, `input`, `datadir` | `zcl.shop_init.v1` | `zclassic23 app shop init --input='{"confirm":true,"input":"/data/products.json"}'` | Initialize a live private shop |
+| `app shop status` | ready | read / read / operator · fast/low | `datadir` | `zcl.shop_status.v1` | `zclassic23 app shop status` | Show this node's shop posture |
+| `app shop reputation` | ready | read / read / operator · fast/low | **`publisher`**, `datadir`, `now_unix` | `zcl.shop_reputation.v1` | `zclassic23 app shop reputation --input='{"publisher":"02ab..."}'` | Show the provable evidence for a publisher |
 
 #### `app.swap` — Swaps
 
