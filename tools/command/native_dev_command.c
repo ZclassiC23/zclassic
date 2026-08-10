@@ -318,11 +318,29 @@ void zcl_native_handle_dev_publication_status(
         return;
     }
     bool queued = vcs_devloop_publication_job_is_queued(root, job_root);
-    char hex[65];
+    struct vcs_devloop_publication_receipt progress;
+    uint8_t progress_root[32];
+    bool advanced = queued && vcs_devloop_publication_progress_load(
+        root, job_root, &progress, progress_root);
+    char hex[65], next_command[256];
+    int next_len = snprintf(
+        next_command, sizeof(next_command),
+        "zclassic23-dev dev publication advance --input='"
+        "{\"job_root\":\"%s\"}'",
+        job_hex);
+    if (next_len <= 0 || (size_t)next_len >= sizeof(next_command)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+            "PUBLICATION_STATUS_RENDER_FAILED", "render", false, false,
+            "the exact next command exceeded its fixed output bound",
+            job_hex);
+        return;
+    }
     (void)json_push_kv_str(&reply->data, "schema",
                            "zcl.dev_publication_status.v1");
-    (void)json_push_kv_str(&reply->data, "status",
-                           queued ? "QUEUED" : "NOT_QUEUED");
+    (void)json_push_kv_str(
+        &reply->data, "status",
+        advanced ? "WAITING_ACCEPTANCE" : queued ? "QUEUED" : "NOT_QUEUED");
     (void)json_push_kv_bool(&reply->data, "proof_complete", true);
     (void)json_push_kv_str(&reply->data, "publication_job_root", job_hex);
 #define DEV_PUBLICATION_ROOT(key_, field_)                                  \
@@ -337,6 +355,8 @@ void zcl_native_handle_dev_publication_status(
                          job.source_identity_sha256);
     DEV_PUBLICATION_ROOT("source_cas_sha3", job.source_cas_sha3);
     DEV_PUBLICATION_ROOT("generation_sha256", job.generation_sha256);
+    if (advanced)
+        DEV_PUBLICATION_ROOT("progress_receipt_root", progress_root);
 #undef DEV_PUBLICATION_ROOT
     (void)json_push_kv_str(&reply->data, "workspace_state", "not_created");
     (void)json_push_kv_str(&reply->data, "p2p", "not_announced");
@@ -348,8 +368,53 @@ void zcl_native_handle_dev_publication_status(
         &reply->data, "blocker",
         queued ? "accepted_lane_and_offline_publisher_signature_required"
                : "durable_publication_queue_record_missing");
+    (void)json_push_kv_str(
+        &reply->data, "next_command",
+        advanced ? "zclassic23 zcode guide" : queued ? next_command : "dev ff");
+}
+
+void zcl_native_handle_dev_publication_advance(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    const char *job_hex = json_get_str(json_get(request->input, "job_root"));
+    uint8_t job_root[32];
+    if (!job_hex || strlen(job_hex) != 64 ||
+        !zcl_hex_decode_lower(job_hex, job_root, sizeof(job_root))) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "INVALID_JOB_ROOT", "normalize", false, false,
+            "job_root must be exactly 64 lowercase hexadecimal characters",
+            job_hex ? job_hex : "missing job_root");
+        return;
+    }
+    uint8_t receipt_root[32];
+    bool reused = false;
+    if (!vcs_devloop_publication_advance_waiting_acceptance(
+            dev_source_root(request), job_root, receipt_root, &reused)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "PUBLICATION_ADVANCE_FAILED", "advance", true, false,
+            "the immutable job or durable queue record is unavailable",
+            job_hex);
+        return;
+    }
+    char receipt_hex[65];
+    zcl_hex_encode(receipt_root, 32, receipt_hex);
+    (void)json_push_kv_str(&reply->data, "schema",
+                           "zcl.dev_publication_advance.v1");
+    (void)json_push_kv_str(&reply->data, "status", "WAITING_ACCEPTANCE");
+    (void)json_push_kv_str(&reply->data, "publication_job_root", job_hex);
+    (void)json_push_kv_str(&reply->data, "progress_receipt_root",
+                           receipt_hex);
+    (void)json_push_kv_bool(&reply->data, "receipt_reused", reused);
+    (void)json_push_kv_str(
+        &reply->data, "blocker",
+        "accepted_lane_and_offline_publisher_signature_required");
+    (void)json_push_kv_bool(&reply->data, "package_written", false);
+    (void)json_push_kv_bool(&reply->data, "network_called", false);
+    (void)json_push_kv_bool(&reply->data, "wallet_called", false);
     (void)json_push_kv_str(&reply->data, "next_command",
-                           queued ? "zcode publish plan" : "dev ff");
+                           "zclassic23 zcode guide");
 }
 
 void zcl_native_handle_dev_core_boundary(

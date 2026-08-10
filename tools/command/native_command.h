@@ -115,6 +115,9 @@ void zcl_native_handle_dev_ff(
 void zcl_native_handle_dev_publication_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_dev_publication_advance(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_dev_verify_change(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

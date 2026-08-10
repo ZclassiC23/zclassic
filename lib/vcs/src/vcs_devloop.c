@@ -33,10 +33,14 @@ bool vcs_devloop_hex32_decode(const char *hex, uint8_t out[32])
 
 #define VCS_DEV_PROOF_WIRE_BYTES 268u
 #define VCS_DEV_PUBLICATION_JOB_WIRE_BYTES 236u
+#define VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES 132u
+#define VCS_DEV_PUBLICATION_PROGRESS_MAX 4096u
 
 static const uint8_t dev_proof_magic[8] = {'Z','D','P','F','1',0,0,0};
 static const uint8_t publication_job_magic[8] =
     {'Z','P','J','B','1',0,0,0};
+static const uint8_t publication_receipt_magic[8] =
+    {'Z','P','R','C','1',0,0,0};
 
 static bool publication_root_nonzero(const uint8_t root[32])
 {
@@ -226,6 +230,202 @@ bool vcs_devloop_publication_job_requeue(
     }
     if (reused_out) *reused_out = scan.found;
     return true;
+}
+
+static bool publication_receipt_serialize(
+    const struct vcs_devloop_publication_receipt *receipt,
+    uint8_t wire[VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES])
+{
+    if (!receipt || !wire ||
+        receipt->version != VCS_DEVLOOP_PUBLICATION_RECEIPT_VERSION ||
+        receipt->phase !=
+            VCS_DEVLOOP_PUBLICATION_PHASE_WAITING_ACCEPTANCE ||
+        !publication_root_nonzero(receipt->job_root)) {
+        LOG_WARN("vcs.devloop", "publication receipt serialize: invalid");
+        return false;
+    }
+    size_t off = 0;
+    memcpy(wire + off, publication_receipt_magic, 8); off += 8;
+    zcl_write_u32_le(wire + off, receipt->version); off += 4;
+    zcl_write_u32_le(wire + off, (uint32_t)receipt->phase); off += 4;
+    memcpy(wire + off, receipt->job_root, 32); off += 32;
+    memcpy(wire + off, receipt->predecessor_receipt_root, 32); off += 32;
+    memcpy(wire + off, receipt->artifact_root, 32); off += 32;
+    zcl_write_u64_le(wire + off, receipt->bytes_scanned); off += 8;
+    zcl_write_u32_le(wire + off, receipt->new_chunks); off += 4;
+    zcl_write_u32_le(wire + off, receipt->reused_chunks); off += 4;
+    zcl_write_u16_le(wire + off, receipt->providers); off += 2;
+    zcl_write_u16_le(wire + off, receipt->storage_acks); off += 2;
+    return off == VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES;
+}
+
+static bool publication_receipt_parse(
+    const uint8_t *wire, size_t wire_len,
+    struct vcs_devloop_publication_receipt *out)
+{
+    if (!wire || !out ||
+        wire_len != VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES ||
+        memcmp(wire, publication_receipt_magic, 8) != 0)
+        return false;
+    struct vcs_devloop_publication_receipt receipt = {0};
+    size_t off = 8;
+    receipt.version = zcl_read_u32_le(wire + off); off += 4;
+    receipt.phase = (enum vcs_devloop_publication_phase)
+        zcl_read_u32_le(wire + off); off += 4;
+    memcpy(receipt.job_root, wire + off, 32); off += 32;
+    memcpy(receipt.predecessor_receipt_root, wire + off, 32); off += 32;
+    memcpy(receipt.artifact_root, wire + off, 32); off += 32;
+    receipt.bytes_scanned = zcl_read_u64_le(wire + off); off += 8;
+    receipt.new_chunks = zcl_read_u32_le(wire + off); off += 4;
+    receipt.reused_chunks = zcl_read_u32_le(wire + off); off += 4;
+    receipt.providers = zcl_read_u16_le(wire + off); off += 2;
+    receipt.storage_acks = zcl_read_u16_le(wire + off); off += 2;
+    uint8_t checked[VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES];
+    if (off != wire_len ||
+        !publication_receipt_serialize(&receipt, checked) ||
+        memcmp(checked, wire, wire_len) != 0)
+        return false;
+    *out = receipt;
+    return true;
+}
+
+static bool publication_receipt_load(
+    const char *repo_root, const uint8_t receipt_root[32],
+    struct vcs_devloop_publication_receipt *out)
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    if (vcs_object_get(repo_root, receipt_root,
+                       VCS_TAG_PUBLICATION_RECEIPT,
+                       &wire, &wire_len) != 0)
+        return false;
+    bool ok = publication_receipt_parse(wire, wire_len, out);
+    free(wire);
+    return ok;
+}
+
+struct publication_progress_scan {
+    const char *repo_root;
+    const uint8_t *job_root;
+    struct vcs_devloop_publication_receipt latest;
+    uint8_t latest_root[32];
+    size_t count;
+    bool found;
+    bool failed;
+};
+
+static bool publication_progress_scan_cb(
+    uint64_t offset, enum event_log_type type,
+    const void *payload, size_t len, void *user)
+{
+    (void)offset;
+    struct publication_progress_scan *scan = user;
+    if (type != EV_VCS_PUBLICATION_RECEIPT)
+        return true;
+    if (++scan->count > VCS_DEV_PUBLICATION_PROGRESS_MAX ||
+        len != 32 || !payload) {
+        scan->failed = true;
+        return false;
+    }
+    struct vcs_devloop_publication_receipt receipt;
+    if (!publication_receipt_load(scan->repo_root, payload, &receipt)) {
+        scan->failed = true;
+        return false;
+    }
+    if (memcmp(receipt.job_root, scan->job_root, 32) == 0) {
+        scan->latest = receipt;
+        memcpy(scan->latest_root, payload, 32);
+        scan->found = true;
+    }
+    return true;
+}
+
+bool vcs_devloop_publication_progress_load(
+    const char *repo_root, const uint8_t job_root[32],
+    struct vcs_devloop_publication_receipt *out,
+    uint8_t receipt_root_out[32])
+{
+    if (!repo_root || !repo_root[0] || !job_root || !out ||
+        !receipt_root_out)
+        return false;
+    char path[PATH_MAX];
+    if (!publication_queue_path(repo_root, "publication.receipts.log",
+                                path, sizeof(path)))
+        return false;
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return false;
+    event_log_t *log = event_log_open(path);
+    if (!log)
+        return false;
+    struct publication_progress_scan scan = {
+        .repo_root = repo_root,
+        .job_root = job_root,
+    };
+    bool streamed = event_log_stream(
+        log, 0, publication_progress_scan_cb, &scan) == 0;
+    event_log_close(log);
+    if (!streamed || scan.failed || !scan.found)
+        return false;
+    *out = scan.latest;
+    memcpy(receipt_root_out, scan.latest_root, 32);
+    return true;
+}
+
+bool vcs_devloop_publication_advance_waiting_acceptance(
+    const char *repo_root, const uint8_t job_root[32],
+    uint8_t receipt_root_out[32], bool *reused_out)
+{
+    if (reused_out) *reused_out = false;
+    if (!repo_root || !repo_root[0] || !job_root || !receipt_root_out)
+        return false;
+    struct vcs_devloop_publication_job job;
+    if (!vcs_devloop_publication_job_load(repo_root, job_root, &job) ||
+        !vcs_devloop_publication_job_is_queued(repo_root, job_root))
+        return false;
+    char lock_path[PATH_MAX], log_path[PATH_MAX];
+    if (!publication_queue_path(repo_root, "publication.lock", lock_path,
+                                sizeof(lock_path)) ||
+        !publication_queue_path(repo_root, "publication.receipts.log",
+                                log_path, sizeof(log_path)))
+        return false;
+    int lock_fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lock_fd < 0 || flock(lock_fd, LOCK_EX) != 0) {
+        if (lock_fd >= 0) close(lock_fd);
+        return false;
+    }
+    struct vcs_devloop_publication_receipt current;
+    uint8_t current_root[32];
+    bool have_current = vcs_devloop_publication_progress_load(
+        repo_root, job_root, &current, current_root);
+    if (have_current && current.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_WAITING_ACCEPTANCE) {
+        memcpy(receipt_root_out, current_root, 32);
+        if (reused_out) *reused_out = true;
+        (void)flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        return true;
+    }
+    struct vcs_devloop_publication_receipt receipt = {
+        .version = VCS_DEVLOOP_PUBLICATION_RECEIPT_VERSION,
+        .phase = VCS_DEVLOOP_PUBLICATION_PHASE_WAITING_ACCEPTANCE,
+    };
+    memcpy(receipt.job_root, job_root, 32);
+    if (have_current)
+        memcpy(receipt.predecessor_receipt_root, current_root, 32);
+    uint8_t wire[VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES];
+    bool ok = publication_receipt_serialize(&receipt, wire) &&
+        vcs_object_put(repo_root, wire, sizeof(wire),
+                       VCS_TAG_PUBLICATION_RECEIPT, receipt_root_out);
+    event_log_t *log = ok ? event_log_open(log_path) : NULL;
+    if (ok)
+        ok = log && event_log_append(
+            log, EV_VCS_PUBLICATION_RECEIPT, receipt_root_out, 32) !=
+            UINT64_MAX;
+    if (log) event_log_close(log);
+    (void)flock(lock_fd, LOCK_UN);
+    close(lock_fd);
+    return ok;
 }
 
 static bool publication_enqueue_from_commit(

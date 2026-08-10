@@ -302,6 +302,38 @@ static int t_publication_enqueue(const char *dir)
                  dir, ar.publication_job_root, &reused));
     VD_CHECK("publication: exact retry is idempotent", reused);
 
+    struct vcs_devloop_publication_receipt progress;
+    uint8_t progress_root[32], loaded_progress_root[32];
+    VD_CHECK("publication: no phase receipt before worker advances",
+             !vcs_devloop_publication_progress_load(
+                 dir, ar.publication_job_root, &progress,
+                 loaded_progress_root));
+    reused = true;
+    VD_CHECK("publication: worker durably records waiting acceptance",
+             vcs_devloop_publication_advance_waiting_acceptance(
+                 dir, ar.publication_job_root, progress_root, &reused));
+    VD_CHECK("publication: first phase receipt is new", !reused);
+    VD_CHECK("publication: phase receipt reloads after writer closes",
+             vcs_devloop_publication_progress_load(
+                 dir, ar.publication_job_root, &progress,
+                 loaded_progress_root));
+    VD_CHECK("publication: phase root survives restart",
+             memcmp(progress_root, loaded_progress_root, 32) == 0);
+    VD_CHECK("publication: worker names accepted-lane blocker",
+             progress.phase ==
+                 VCS_DEVLOOP_PUBLICATION_PHASE_WAITING_ACCEPTANCE);
+    VD_CHECK("publication: phase receipt binds immutable job",
+             memcmp(progress.job_root, ar.publication_job_root, 32) == 0);
+    reused = false;
+    uint8_t retried_progress_root[32];
+    VD_CHECK("publication: phase retry succeeds",
+             vcs_devloop_publication_advance_waiting_acceptance(
+                 dir, ar.publication_job_root, retried_progress_root,
+                 &reused));
+    VD_CHECK("publication: phase retry is idempotent", reused);
+    VD_CHECK("publication: phase retry preserves exact receipt root",
+             memcmp(progress_root, retried_progress_root, 32) == 0);
+
     vd_write(dir, "src/main.c", "int main(void){return 1;}\n");
     v.proof_complete = false;
     struct vcs_devloop_anchor_result incomplete = {0};

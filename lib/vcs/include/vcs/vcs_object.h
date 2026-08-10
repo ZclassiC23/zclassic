@@ -31,6 +31,7 @@ enum vcs_object_tag {
     VCS_TAG_ANCHOR   = 0x25,  /* an anchor binding (reserved for later waves) */
     VCS_TAG_DEV_PROOF = 0x26, /* complete dev-cycle proof receipt */
     VCS_TAG_PUBLICATION_JOB = 0x27, /* proof-to-publication job spec */
+    VCS_TAG_PUBLICATION_RECEIPT = 0x28, /* append-only scheduler progress */
 };
 
 /* Ensure the object store directory tree exists under <repo_root>/.zvcs/

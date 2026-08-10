@@ -74,17 +74,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 670 |
+| Registry entries (branches + leaves) | 671 |
 | Top-level roots | 11 |
 | Branches | 157 |
-| Leaves (dispatchable command paths) | 513 |
+| Leaves (dispatchable command paths) | 514 |
 | … `ready` (live handler in this build) | 465 |
-| … `compat` (metadata only, names a fallback) | 18 |
+| … `compat` (metadata only, names a fallback) | 19 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
-| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 17 |
-| Leaves with `effect=mutate` | 164 |
+| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 18 |
+| Leaves with `effect=mutate` | 165 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 107 |
+| Leaves requiring **owner** authority | 108 |
 
 Per source file:
 
@@ -96,7 +96,7 @@ Per source file:
 | `config/commands/app_features.def` | 61 | 18 | 43 |
 | `config/commands/store.def` | 18 | 0 | 18 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
-| `config/commands/dev.def` | 48 | 12 | 36 |
+| `config/commands/dev.def` | 49 | 12 | 37 |
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
@@ -628,6 +628,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `dev publication status` | ready | read / read / operator · fast/low | **`job_root`** | `zcl.dev_publication_status.v1` | `zclassic23-dev dev publication status --input='{"job_root":"<64-lowercase-hex>"}'` | Show one durable proof-to-publication job |
+| `dev publication advance` | compat 🔧 → `zclassic23-dev dev publication status` | mutate / dev-mutation / **owner** · fast/low | **`job_root`** | `zcl.dev_publication_advance.v1` | `zclassic23-dev dev publication advance --input='{"job_root":"<64-lowercase-hex>"}'` | Advance one proven-source job to its next durable blocker — *publication scheduling receipts require a dev checkout* |
 
 #### `dev.core` — Core boundary and proof lanes
 

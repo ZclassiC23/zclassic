@@ -82,6 +82,28 @@ struct vcs_devloop_publication_job {
     uint8_t parent_workspace_root[32];
 };
 
+enum vcs_devloop_publication_phase {
+    VCS_DEVLOOP_PUBLICATION_PHASE_WAITING_ACCEPTANCE = 1,
+};
+
+#define VCS_DEVLOOP_PUBLICATION_RECEIPT_VERSION 1u
+
+/* Local scheduling evidence only. Signed releases, workspace manifests,
+ * provider announcements and storage ACKs remain authoritative in their
+ * existing protocols; future phases bind those roots through artifact_root. */
+struct vcs_devloop_publication_receipt {
+    uint32_t version;
+    enum vcs_devloop_publication_phase phase;
+    uint8_t job_root[32];
+    uint8_t predecessor_receipt_root[32];
+    uint8_t artifact_root[32];
+    uint64_t bytes_scanned;
+    uint32_t new_chunks;
+    uint32_t reused_chunks;
+    uint16_t providers;
+    uint16_t storage_acks;
+};
+
 struct vcs_devloop_anchor_result {
     enum vcs_devloop_anchor_status status;
     uint8_t commit_id[32];  /* valid iff status == VCS_DEVLOOP_ANCHOR_OK */
@@ -152,5 +174,16 @@ bool vcs_devloop_publication_job_is_queued(
     const char *repo_root, const uint8_t job_root[32]);
 bool vcs_devloop_publication_job_requeue(
     const char *repo_root, const uint8_t job_root[32], bool *reused_out);
+
+/* Load the latest append-only scheduler receipt for one job. False means no
+ * receipt or a corrupt/over-budget progress log. The advance operation is an
+ * idempotent worker step and never grants accepted-lane authority. */
+bool vcs_devloop_publication_progress_load(
+    const char *repo_root, const uint8_t job_root[32],
+    struct vcs_devloop_publication_receipt *out,
+    uint8_t receipt_root_out[32]);
+bool vcs_devloop_publication_advance_waiting_acceptance(
+    const char *repo_root, const uint8_t job_root[32],
+    uint8_t receipt_root_out[32], bool *reused_out);
 
 #endif /* ZCL_VCS_DEVLOOP_H */

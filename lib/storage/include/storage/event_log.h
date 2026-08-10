@@ -122,6 +122,10 @@ enum event_log_type {
     /* ZVCS proof-to-publication queue. Payload is one immutable 32-byte
      * VCS_TAG_PUBLICATION_JOB root; job state advances in separate receipts. */
     EV_VCS_PUBLICATION_JOB  = 31,
+    /* Append-only scheduler progress. Payload is one immutable 32-byte
+     * VCS_TAG_PUBLICATION_RECEIPT root; authoritative package/workspace/P2P
+     * objects remain under their existing signed owners. */
+    EV_VCS_PUBLICATION_RECEIPT = 32,
     /* Add cautiously — every entry is a permanent wire surface. */
 };
 
