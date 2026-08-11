@@ -442,6 +442,97 @@ static bool rr_read_hash(const char *path, char out[65])
     return ok;
 }
 
+static bool rr_force_cache_copy_for_test(void)
+{
+    const char *force_copy = getenv("ZCL_DEVLOOP_TEST_FORCE_CACHE_COPY");
+    return force_copy && strcmp(force_copy, "1") == 0;
+}
+
+/* The operator may place the shared cache on a different filesystem from
+ * the worktree. Publish an immutable, rehashed copy when hard links cannot
+ * cross that boundary. */
+static bool rr_copy_publish(const char *source, const char *target,
+                            const char expected_sha256[65])
+{
+    char temp[PATH_MAX];
+    int n = snprintf(temp, sizeof(temp), "%s.tmp.XXXXXX", target);
+    if (n <= 0 || n >= (int)sizeof(temp))
+        return false;
+    int source_fd = open(source, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat source_st;
+    if (source_fd < 0 || fstat(source_fd, &source_st) != 0 ||
+        !S_ISREG(source_st.st_mode)) {
+        if (source_fd >= 0) close(source_fd);
+        return false;
+    }
+    int temp_fd = mkostemp(temp, O_CLOEXEC);
+    if (temp_fd < 0) {
+        close(source_fd);
+        return false;
+    }
+    unsigned char buffer[32u * 1024u];
+    bool ok = true;
+    for (;;) {
+        ssize_t got = read(source_fd, buffer, sizeof(buffer));
+        if (got == 0)
+            break;
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            ok = false;
+            break;
+        }
+        size_t written = 0;
+        while (written < (size_t)got) {
+            ssize_t put = write(temp_fd, buffer + written,
+                                (size_t)got - written);
+            if (put < 0 && errno == EINTR)
+                continue;
+            if (put <= 0) {
+                ok = false;
+                break;
+            }
+            written += (size_t)put;
+        }
+        if (!ok) break;
+    }
+    if (close(source_fd) != 0)
+        ok = false;
+    if (ok && (fchmod(temp_fd, 0555) != 0 || fsync(temp_fd) != 0))
+        ok = false;
+    if (close(temp_fd) != 0)
+        ok = false;
+    char actual[65];
+    if (ok && (!rr_sha256_file(temp, actual) ||
+               strcmp(actual, expected_sha256) != 0))
+        ok = false;
+    if (ok && link(temp, target) != 0) {
+        if (errno != EEXIST || !rr_regular(target, NULL) ||
+            !rr_sha256_file(target, actual) ||
+            strcmp(actual, expected_sha256) != 0 ||
+            chmod(target, 0555) != 0)
+            ok = false;
+    }
+    (void)unlink(temp);
+    return ok;
+}
+
+static bool rr_link_or_copy_publish(const char *source, const char *target,
+                                    const char expected_sha256[65])
+{
+    if (!rr_force_cache_copy_for_test() && link(source, target) == 0)
+        return chmod(target, 0555) == 0;
+    int link_errno = rr_force_cache_copy_for_test() ? EXDEV : errno;
+    if (link_errno == EEXIST) {
+        char actual[65];
+        return rr_regular(target, NULL) && rr_sha256_file(target, actual) &&
+               strcmp(actual, expected_sha256) == 0 &&
+               chmod(target, 0555) == 0;
+    }
+    if (link_errno != EXDEV)
+        return false;
+    return rr_copy_publish(source, target, expected_sha256);
+}
+
 static int rr_cache_lock(const char *cache_root, const char key[65],
                          char binary[PATH_MAX], char hash[PATH_MAX])
 {
@@ -472,13 +563,7 @@ static bool rr_publish_candidate(const char *root, const char *candidate_dir,
         snprintf(out, PATH_MAX, "%s/%s-zclassic23-dev", candidates,
                  hash) >= PATH_MAX)
         return false;
-    if (link(source, out) != 0) {
-        char existing[65];
-        if (errno != EEXIST || !rr_regular(out, NULL) ||
-            !rr_sha256_file(out, existing) || strcmp(existing, hash) != 0)
-            return false;
-    }
-    return chmod(out, 0555) == 0;
+    return rr_link_or_copy_publish(source, out, hash);
 }
 
 static bool rr_cache_lookup(const char *root, const char *candidate_dir,
@@ -496,14 +581,7 @@ static bool rr_cache_lookup(const char *root, const char *candidate_dir,
 static bool rr_cache_publish(const char *cache_binary, const char *cache_hash,
                              const char *built, const char hash[65])
 {
-    if (link(built, cache_binary) != 0) {
-        char existing[65];
-        if (errno != EEXIST || !rr_regular(cache_binary, NULL) ||
-            !rr_sha256_file(cache_binary, existing) ||
-            strcmp(existing, hash) != 0)
-            return false;
-    }
-    if (chmod(cache_binary, 0555) != 0)
+    if (!rr_link_or_copy_publish(built, cache_binary, hash))
         return false;
     char temp[PATH_MAX];
     int n = snprintf(temp, sizeof(temp), "%s.tmp.%ld", cache_hash,
@@ -621,7 +699,8 @@ static bool rr_compile_one(const struct rr_plan *plan, const char *root,
                            const char *const *extra_flags,
                            size_t extra_flag_count,
                            struct zcl_devloop_process_result *process,
-                           int64_t *elapsed_us, char *why, size_t why_len)
+                           int64_t *elapsed_us, int64_t *startup_us,
+                           int64_t *body_us, char *why, size_t why_len)
 {
     char source_full[PATH_MAX], before_hash[65], after_hash[65];
     if (!rr_join_root(root, overlay->source, source_full) ||
@@ -665,6 +744,8 @@ static bool rr_compile_one(const struct rr_plan *plan, const char *root,
     int64_t started = platform_time_monotonic_us();
     bool ran = zcl_devloop_process_run(root, argv, 30000, process);
     *elapsed_us += platform_time_monotonic_us() - started;
+    *startup_us += process->startup_us;
+    *body_us += process->body_us;
     bool ok = ran && !process->timed_out && !process->term_signal &&
               process->exit_code == 0 && rr_regular(temp_o, NULL) &&
               rr_regular(temp_d, NULL) && rr_sha256_file(source_full, after_hash) &&
@@ -825,7 +906,8 @@ static bool rr_link(const struct rr_plan *plan, const char *root,
                     char binary[PATH_MAX],
                     uint32_t *linker_processes,
                     struct zcl_devloop_process_result *process,
-                    int64_t *elapsed_us, char *why, size_t why_len)
+                    int64_t *elapsed_us, int64_t *startup_us,
+                    int64_t *body_us, char *why, size_t why_len)
 {
     char dir[PATH_MAX], temp[PATH_MAX];
     if (snprintf(dir, sizeof(dir), "%s/build/dev-loop", root) >=
@@ -869,6 +951,8 @@ static bool rr_link(const struct rr_plan *plan, const char *root,
     int64_t started = platform_time_monotonic_us();
     bool ran = zcl_devloop_process_run(root, argv, 30000, process);
     *elapsed_us = platform_time_monotonic_us() - started;
+    *startup_us = process->startup_us;
+    *body_us = process->body_us;
     (void)unlink(overlay_rsp);
     if (!ran || process->timed_out || process->term_signal ||
         process->exit_code != 0 || !rr_regular(temp, NULL)) {
@@ -892,7 +976,8 @@ static bool rr_link_cached(const struct rr_plan *plan, const char *root,
                            char binary[PATH_MAX], char cache_key[65],
                            bool *cache_hit, uint32_t *linker_processes,
                            struct zcl_devloop_process_result *process,
-                           int64_t *elapsed_us, char *why, size_t why_len)
+                           int64_t *elapsed_us, int64_t *startup_us,
+                           int64_t *body_us, char *why, size_t why_len)
 {
     *cache_hit = false;
     if (!rr_cache_key(plan, root, rsp, cache_key)) {
@@ -922,7 +1007,7 @@ static bool rr_link_cached(const struct rr_plan *plan, const char *root,
     }
     bool ok = rr_link(plan, root, rsp, candidate_dir, binary,
                       linker_processes, process,
-                      elapsed_us, why, why_len);
+                      elapsed_us, startup_us, body_us, why, why_len);
     if (ok && cache_fd >= 0) {
         char hash[65];
         ok = rr_sha256_file(binary, hash) &&
@@ -998,7 +1083,8 @@ static bool rr_prepare_overlays(
     const struct dev_source_record *epoch_source, const char *overlay_prefix,
     struct rr_overlay *overlays, size_t *overlay_count,
     struct zcl_devloop_process_result *process, uint32_t *compiler_processes,
-    int64_t *compile_us, char *why, size_t why_len)
+    int64_t *compile_us, int64_t *startup_us, int64_t *body_us,
+    char *why, size_t why_len)
 {
     static const char identity_source[] = "lib/util/src/clientversion.c";
     char source_flag[96], mutation_flag[104], cas_flag[104], clean_flag[24];
@@ -1022,6 +1108,7 @@ static bool rr_prepare_overlays(
         if (!rr_compile_one(plan, root, &overlays[count],
                             identity ? identity_flags : NULL,
                             identity ? 4 : 0, process, compile_us,
+                            startup_us, body_us,
                             why, why_len))
             return false;
         identity_seen = identity_seen || identity;
@@ -1034,7 +1121,8 @@ static bool rr_prepare_overlays(
             return false;
         (*compiler_processes)++;
         if (!rr_compile_one(plan, root, &overlays[count], identity_flags, 4,
-                            process, compile_us, why, why_len))
+                            process, compile_us, startup_us, body_us,
+                            why, why_len))
             return false;
         count++;
     }
@@ -1129,7 +1217,9 @@ static bool rr_restart_build(
     bool ok = rr_prepare_overlays(
         &plan, root, runtime_sources, runtime_source_count, identity,
         "build/dev-loop/restart-objects", overlays, &overlay_count, process,
-        &receipt->compiler_processes, &receipt->compile_us, why, why_len);
+        &receipt->compiler_processes, &receipt->compile_us,
+        &receipt->compile_startup_us, &receipt->compile_body_us,
+        why, why_len);
     receipt->source_identity_overlay = ok;
     char rsp[PATH_MAX] = {0};
     if (ok && !rr_write_response(&plan, root, overlays, overlay_count,
@@ -1143,7 +1233,8 @@ static bool rr_restart_build(
                             receipt->artifact_cache_key,
                             &receipt->artifact_cache_hit,
                             &receipt->linker_processes, process,
-                            &receipt->link_us, why, why_len);
+                            &receipt->link_us, &receipt->link_startup_us,
+                            &receipt->link_body_us, why, why_len);
     }
     if (rsp[0]) (void)unlink(rsp);
     free(overlays);
@@ -1172,6 +1263,8 @@ static bool rr_restart_build(
     int64_t probe_started = platform_time_monotonic_us();
     bool probed = zcl_devloop_process_run(root, probe_argv, 5000, process);
     receipt->probe_us = platform_time_monotonic_us() - probe_started;
+    receipt->probe_startup_us = process->startup_us;
+    receipt->probe_body_us = process->body_us;
     receipt->candidate_probe_passed = probed && !process->timed_out &&
         !process->term_signal && process->exit_code == 0;
     (void)snprintf(receipt->probe, sizeof(receipt->probe), "%s",
@@ -1313,6 +1406,7 @@ static bool rr_restart_prove(
     }
     memset(receipt, 0, sizeof(*receipt));
     memset(process, 0, sizeof(*process));
+    int64_t selection_started = platform_time_monotonic_us();
     if (!rr_plan_matches_sources(proof_plan, source_tus, source_count)) {
         rr_why(why, why_len,
                "affected proof plan does not match the changed source set");
@@ -1344,6 +1438,8 @@ static bool rr_restart_prove(
             return false;
         }
     }
+    receipt->selection_us =
+        platform_time_monotonic_us() - selection_started;
     char root[PATH_MAX];
     if (!realpath(repo_root, root)) {
         rr_why(why, why_len, "restart proof checkout root could not be resolved");
@@ -1400,6 +1496,7 @@ static bool rr_restart_prove(
         &plan, root, source_tus, source_count, identity,
         "build/dev-loop/restart-test-objects", overlays, &overlay_count,
         process, &receipt->compiler_processes, &receipt->compile_us,
+        &receipt->compile_startup_us, &receipt->compile_body_us,
         why, why_len);
     receipt->source_identity_overlay = ok;
     char rsp[PATH_MAX] = {0};
@@ -1415,7 +1512,8 @@ static bool rr_restart_prove(
                             receipt->artifact_cache_key,
                             &receipt->artifact_cache_hit,
                             &receipt->linker_processes, process,
-                            &receipt->link_us, why, why_len);
+                            &receipt->link_us, &receipt->link_startup_us,
+                            &receipt->link_body_us, why, why_len);
     }
     if (rsp[0]) (void)unlink(rsp);
     free(overlays);
@@ -1460,6 +1558,8 @@ static bool rr_restart_prove(
     int64_t test_started = platform_time_monotonic_us();
     bool ran = zcl_devloop_process_run_test(root, test_argv, 300000, process);
     receipt->test_us = platform_time_monotonic_us() - test_started;
+    receipt->test_startup_us = process->startup_us;
+    receipt->test_body_us = process->body_us;
     bool summary_ok = ran &&
         rr_summary_value(process->output, "groups_ran=",
                          &receipt->groups_ran) &&
@@ -1565,7 +1665,7 @@ static bool rr_emit_event(
     int64_t source_guard_us, uint32_t source_guard_captures,
     uint64_t source_guard_bytes_read, uint64_t source_bytes_total,
     bool source_byte_accounting_complete,
-    int64_t closure_us, bool closure_refresh_deferred,
+    int64_t impact_us, int64_t closure_us, bool closure_refresh_deferred,
     bool feedback_parallel)
 {
     struct json_value doc, files, receipt;
@@ -1595,6 +1695,7 @@ static bool rr_emit_event(
     (void)json_push_kv_int(&doc, "source_guard_us", source_guard_us);
     (void)json_push_kv_int(&doc, "source_guard_captures",
                            source_guard_captures);
+    (void)json_push_kv_int(&doc, "impact_us", impact_us);
     uint64_t changed_source_bytes = 0;
     bool changed_bytes_complete = true;
     for (size_t i = 0; i < source_count; i++) {
@@ -1641,6 +1742,13 @@ static bool rr_emit_event(
                                 process->output_len > 1024 ||
                                 process->output_truncated);
     }
+    if (process) {
+        (void)json_push_kv_int(&doc, "process_startup_us",
+                               process->startup_us);
+        (void)json_push_kv_int(&doc, "process_body_us", process->body_us);
+        (void)json_push_kv_int(&doc, "process_first_output_us",
+                               process->first_output_us);
+    }
     if (build) {
         json_init(&receipt); json_set_object(&receipt);
         (void)json_push_kv_str(&receipt, "schema",
@@ -1681,8 +1789,20 @@ static bool rr_emit_event(
         (void)json_push_kv_int(&receipt, "plan_load_us",
                                build->plan_load_us);
         (void)json_push_kv_int(&receipt, "compile_us", build->compile_us);
+        (void)json_push_kv_int(&receipt, "compile_startup_us",
+                               build->compile_startup_us);
+        (void)json_push_kv_int(&receipt, "compile_body_us",
+                               build->compile_body_us);
         (void)json_push_kv_int(&receipt, "link_us", build->link_us);
+        (void)json_push_kv_int(&receipt, "link_startup_us",
+                               build->link_startup_us);
+        (void)json_push_kv_int(&receipt, "link_body_us",
+                               build->link_body_us);
         (void)json_push_kv_int(&receipt, "probe_us", build->probe_us);
+        (void)json_push_kv_int(&receipt, "probe_startup_us",
+                               build->probe_startup_us);
+        (void)json_push_kv_int(&receipt, "probe_body_us",
+                               build->probe_body_us);
         (void)json_push_kv_int(&receipt, "build_total_us", build->total_us);
         (void)json_push_kv(&doc, "build_receipt", &receipt);
         json_free(&receipt);
@@ -1741,9 +1861,23 @@ static bool rr_emit_event(
                                proof->test_processes);
         (void)json_push_kv_int(&receipt, "source_guard_captures",
                                proof->source_guard_captures);
+        (void)json_push_kv_int(&receipt, "selection_us",
+                               proof->selection_us);
         (void)json_push_kv_int(&receipt, "compile_us", proof->compile_us);
+        (void)json_push_kv_int(&receipt, "compile_startup_us",
+                               proof->compile_startup_us);
+        (void)json_push_kv_int(&receipt, "compile_body_us",
+                               proof->compile_body_us);
         (void)json_push_kv_int(&receipt, "link_us", proof->link_us);
+        (void)json_push_kv_int(&receipt, "link_startup_us",
+                               proof->link_startup_us);
+        (void)json_push_kv_int(&receipt, "link_body_us",
+                               proof->link_body_us);
         (void)json_push_kv_int(&receipt, "test_us", proof->test_us);
+        (void)json_push_kv_int(&receipt, "test_startup_us",
+                               proof->test_startup_us);
+        (void)json_push_kv_int(&receipt, "test_body_us",
+                               proof->test_body_us);
         (void)json_push_kv_int(&receipt, "proof_total_us", proof->total_us);
         (void)json_push_kv(&doc, "proof_receipt", &receipt);
         json_free(&receipt);
@@ -1752,6 +1886,10 @@ static bool rr_emit_event(
         &doc, "agent_next_action",
         strcmp(status, "feedback_ready") == 0
             ? "candidate runtime and immediate affected proofs are green; run integration proofs before acceptance"
+            : strcmp(status, "reflex_ready") == 0
+                ? "candidate compile, link, and probe are green; affected proof is running asynchronously"
+            : strcmp(status, "impact_ready") == 0
+                ? "impact is classified; source identity and candidate diagnostics are running"
             : strcmp(status, "fallback_ready") == 0
                 ? "resident proof was unavailable; conservative integration proof is running"
             : "repair the named restart refusal; no service or source was replaced");
@@ -1771,27 +1909,6 @@ static bool rr_emit_event(
     return true;
 }
 
-struct rr_build_job {
-    const char *repo_root;
-    const char *const *sources;
-    size_t source_count;
-    struct zcl_devloop_restart_build_receipt *receipt;
-    struct zcl_devloop_process_result *process;
-    const struct dev_source_record *epoch_source;
-    char why[512];
-    bool ok;
-};
-
-static void *rr_build_worker(void *opaque)
-{
-    struct rr_build_job *job = opaque;
-    job->ok = rr_restart_build(job->repo_root, job->sources,
-                               job->source_count, job->receipt,
-                               job->process, job->why, sizeof(job->why),
-                               false, job->epoch_source);
-    return NULL;
-}
-
 int zcl_devloop_restart_event(const char *repo_root,
                               const char *const *source_tus,
                               size_t source_count,
@@ -1800,10 +1917,13 @@ int zcl_devloop_restart_event(const char *repo_root,
     if (!repo_root || !source_tus || source_count == 0 ||
         source_count > RR_SOURCE_MAX)
         return 0;
+    int64_t started = platform_time_monotonic_us();
+    int64_t impact_started = started;
     struct zcl_devloop_plan plan;
     if (!zcl_devloop_plan_files(source_tus, source_count, &plan) ||
         plan.docs_only || plan.consensus_risk)
         return 0;
+    int64_t impact_us = platform_time_monotonic_us() - impact_started;
     for (size_t i = 0; i < source_count; i++)
         if (!rr_source_is_c(source_tus[i]))
             return 0;
@@ -1813,7 +1933,12 @@ int zcl_devloop_restart_event(const char *repo_root,
             !rr_source_is_test_only(source_tus[i]);
     if (!has_runtime_source)
         return 0;
-    int64_t started = platform_time_monotonic_us();
+    if (!rr_emit_event(
+            repo_root, source_tus, source_count, "impact_ready",
+            "IMPACT_READY", platform_time_monotonic_us() - started,
+            publish_mode, NULL, NULL, NULL, "", 0, 0, 0, 0, false,
+            impact_us, 0, false, false))
+        return ZCL_DEVLOOP_RESTART_EVENT_ERROR;
     int64_t source_guard_us = 0;
     uint64_t source_guard_bytes_read = 0;
     uint64_t source_bytes_total = 0;
@@ -1838,24 +1963,6 @@ int zcl_devloop_restart_event(const char *repo_root,
     if (!ok)
         rr_why(why, sizeof(why),
                "restart epoch source snapshot could not be captured");
-    struct rr_build_job build_job = {
-        .repo_root = repo_root,
-        .sources = source_tus,
-        .source_count = source_count,
-        .receipt = &build,
-        .process = &build_process,
-        .epoch_source = &source_before,
-    };
-    pthread_t build_thread;
-    /* thread-supervision-ok: bounded candidate branch joined below before
-     * the resident save epoch can emit or return. */
-    bool feedback_parallel = ok &&
-        thread_registry_spawn("zcl_dev_candidate", rr_build_worker,
-                              &build_job, &build_thread) == 0;
-    if (ok && !feedback_parallel)
-        ok = rr_restart_build(repo_root, source_tus, source_count, &build,
-                              &build_process, why, sizeof(why), false,
-                              &source_before);
     int64_t closure_started = platform_time_monotonic_us();
     if (ok) {
         const char *closure_reason = "";
@@ -1875,18 +1982,9 @@ int zcl_devloop_restart_event(const char *repo_root,
     }
     closure_us = platform_time_monotonic_us() - closure_started;
     if (ok)
-        ok = rr_restart_prove(repo_root, source_tus, source_count, &plan,
-                              &proof, &proof_process, why, sizeof(why), true,
-                              false, &source_before);
-    if (feedback_parallel) {
-        (void)pthread_join(build_thread, NULL);
-        if (!build_job.ok) {
-            if (ok)
-                rr_why(why, sizeof(why), build_job.why[0]
-                    ? build_job.why : "restart candidate build failed");
-            ok = false;
-        }
-    }
+        ok = rr_restart_build(repo_root, source_tus, source_count, &build,
+                              &build_process, why, sizeof(why), false,
+                              &source_before);
     if (ok) {
         guard_started = platform_time_monotonic_us();
         source_guard_captures++;
@@ -1904,16 +2002,78 @@ int zcl_devloop_restart_event(const char *repo_root,
             source_guard_bytes_read = combined_bytes;
         if (!ok)
             rr_why(why, sizeof(why),
-                   "restart epoch source changed during feedback build");
+                   "restart epoch source changed during reflex build");
     }
-    if (build_process.cancelled || proof_process.cancelled ||
-        zcl_devloop_process_cancel_requested())
+    if (build_process.cancelled || zcl_devloop_process_cancel_requested())
         return 2;
-    const struct zcl_devloop_process_result *display_process =
-        proof_process.output_len ? &proof_process : &build_process;
     bool fallback_pending = !ok &&
         (strstr(why, "proof closure refused:") ||
          strstr(why, "proof plan is incomplete") ||
+         strstr(why, "proof set exceeds resident bound") ||
+         strstr(why, "action plan stale"));
+    if (fallback_pending) {
+        proof.integration_proof_deferred = true;
+        proof.bounded_proof_deferred = true;
+    }
+    if (!ok) {
+        bool emitted = rr_emit_event(
+            repo_root, source_tus, source_count,
+            fallback_pending ? "fallback_ready" : "rejected",
+            fallback_pending ? "conservative_proof_selected"
+                             : "compile_link_probe",
+            platform_time_monotonic_us() - started, publish_mode,
+            build.changed_sources ? &build : NULL, &proof, &build_process,
+            why, source_guard_us, source_guard_captures,
+            source_guard_bytes_read, source_bytes_total,
+            source_byte_accounting_complete, impact_us, closure_us,
+            plan.closure_snapshot, false);
+        if (!emitted)
+            return ZCL_DEVLOOP_RESTART_EVENT_ERROR;
+        return fallback_pending ? ZCL_DEVLOOP_RESTART_EVENT_FALLBACK_PENDING
+                                : ZCL_DEVLOOP_RESTART_EVENT_FINAL;
+    }
+
+    /* REFLEX ends at a source-bound candidate probe. Affected tests are a
+     * separate proof stage and may be slow; persist the useful candidate
+     * result first so `dev drive` never waits on them. */
+    if (!rr_emit_event(
+            repo_root, source_tus, source_count, "reflex_ready",
+            "candidate_probe", platform_time_monotonic_us() - started,
+            publish_mode, &build, NULL, &build_process, "",
+            source_guard_us, source_guard_captures,
+            source_guard_bytes_read, source_bytes_total,
+            source_byte_accounting_complete, impact_us, closure_us,
+            plan.closure_snapshot, false))
+        return ZCL_DEVLOOP_RESTART_EVENT_ERROR;
+
+    why[0] = 0;
+    ok = rr_restart_prove(repo_root, source_tus, source_count, &plan,
+                          &proof, &proof_process, why, sizeof(why), true,
+                          false, &source_before);
+    if (ok) {
+        guard_started = platform_time_monotonic_us();
+        source_guard_captures++;
+        ok = zcl_dev_source_cas_capture(repo_root, &source_after) &&
+             source_after.cas_present &&
+             strcmp(source_before.cas_root_sha3,
+                    source_after.cas_root_sha3) == 0;
+        source_guard_us += platform_time_monotonic_us() - guard_started;
+        uint64_t combined_bytes = 0;
+        source_byte_accounting_complete = ok &&
+            source_byte_accounting_complete &&
+            source_after.cas_bytes_total == source_bytes_total &&
+            zcl_u64_add(source_guard_bytes_read,
+                        source_after.cas_bytes_read, &combined_bytes);
+        if (source_byte_accounting_complete)
+            source_guard_bytes_read = combined_bytes;
+        if (!ok)
+            rr_why(why, sizeof(why),
+                   "restart epoch source changed during affected proof");
+    }
+    if (proof_process.cancelled || zcl_devloop_process_cancel_requested())
+        return ZCL_DEVLOOP_RESTART_EVENT_CANCELLED;
+    fallback_pending = !ok &&
+        (strstr(why, "proof plan is incomplete") ||
          strstr(why, "proof set exceeds resident bound") ||
          strstr(why, "action plan stale"));
     if (fallback_pending) {
@@ -1926,12 +2086,13 @@ int zcl_devloop_restart_event(const char *repo_root,
              fallback_pending ? "fallback_ready" : "rejected",
         ok ? "immediate_affected_proofs" :
              fallback_pending ? "conservative_proof_selected"
-                              : "compile_link_probe",
+                              : "affected_proofs",
         platform_time_monotonic_us() - started, publish_mode, &build,
-        &proof, display_process, why, source_guard_us, source_guard_captures,
+        &proof, proof_process.output_len ? &proof_process : &build_process,
+        why, source_guard_us, source_guard_captures,
         source_guard_bytes_read, source_bytes_total,
-        source_byte_accounting_complete,
-        closure_us, plan.closure_snapshot, feedback_parallel);
+        source_byte_accounting_complete, impact_us, closure_us,
+        plan.closure_snapshot, false);
     if (!emitted)
         return ZCL_DEVLOOP_RESTART_EVENT_ERROR;
     if (ok)

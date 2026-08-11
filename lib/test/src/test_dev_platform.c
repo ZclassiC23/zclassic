@@ -2464,15 +2464,22 @@ static bool run_resident_restart_fixture(void)
     char cwd[PATH_MAX], cache[PATH_MAX], compiler[PATH_MAX], plan[PATH_MAX * 4];
     char saved_cache[PATH_MAX] = {0};
     char saved_process[32] = {0};
+    char saved_force_copy[32] = {0};
     const char *prior_cache = getenv("ZCL_DEV_ARTIFACT_CACHE");
     const char *prior_process = getenv("ZCL_DEVLOOP_TEST_PROCESS");
+    const char *prior_force_copy =
+        getenv("ZCL_DEVLOOP_TEST_FORCE_CACHE_COPY");
     bool had_cache = prior_cache && prior_cache[0];
     bool had_process = prior_process && prior_process[0];
+    bool had_force_copy = prior_force_copy && prior_force_copy[0];
     if (had_cache)
         (void)snprintf(saved_cache, sizeof(saved_cache), "%s", prior_cache);
     if (had_process)
         (void)snprintf(saved_process, sizeof(saved_process), "%s",
                        prior_process);
+    if (had_force_copy)
+        (void)snprintf(saved_force_copy, sizeof(saved_force_copy), "%s",
+                       prior_force_copy);
     test_rm_rf_recursive(root);
     test_rm_rf_recursive(cache_rel);
     (void)unlink(compiler_rel);
@@ -2548,6 +2555,7 @@ static bool run_resident_restart_fixture(void)
     if (n <= 0 || n >= (int)sizeof(plan) ||
         !dp_mk_write(root, "build/dev-loop/restart.env", plan) ||
         setenv("ZCL_DEVLOOP_TEST_PROCESS", "1", 1) != 0 ||
+        setenv("ZCL_DEVLOOP_TEST_FORCE_CACHE_COPY", "1", 1) != 0 ||
         setenv("ZCL_DEVLOOP_TEST_FAIL_GROUPS", "0", 1) != 0)
         goto out;
 
@@ -2562,11 +2570,25 @@ static bool run_resident_restart_fixture(void)
         receipt.linker_processes != 1 ||
         receipt.complete_graph_linker_processes != 0 ||
         receipt.probe_processes != 1 || receipt.source_guard_captures != 2 ||
+        receipt.compile_startup_us <= 0 || receipt.compile_body_us <= 0 ||
+        receipt.link_startup_us <= 0 || receipt.link_body_us <= 0 ||
+        receipt.probe_startup_us <= 0 || receipt.probe_body_us <= 0 ||
         strcmp(receipt.probe, "discover.help") != 0 ||
         !receipt.source_identity_overlay ||
         strlen(receipt.source_cas_sha3) != 64 ||
         strlen(receipt.artifact_sha256) != 64 ||
         strlen(receipt.artifact_cache_key) != 64)
+        goto out;
+    char cache_artifact[PATH_MAX];
+    struct stat cache_st = {0}, published_st = {0};
+    int cache_n = snprintf(cache_artifact, sizeof(cache_artifact),
+                           "%s/restart-v1/%s.bin", cache,
+                           receipt.artifact_cache_key);
+    if (cache_n <= 0 || cache_n >= (int)sizeof(cache_artifact) ||
+        stat(cache_artifact, &cache_st) != 0 ||
+        stat(receipt.artifact_path, &published_st) != 0 ||
+        (cache_st.st_dev == published_st.st_dev &&
+         cache_st.st_ino == published_st.st_ino))
         goto out;
 
     /* A test edit following a resident service publication carries both TUs
@@ -2584,6 +2606,8 @@ static bool run_resident_restart_fixture(void)
         !receipt.candidate_probe_passed || receipt.changed_sources != 2 ||
         receipt.compiler_processes != 2 || !receipt.artifact_cache_hit ||
         receipt.linker_processes != 0 || receipt.probe_processes != 1)
+        goto out;
+    if (unsetenv("ZCL_DEVLOOP_TEST_FORCE_CACHE_COPY") != 0)
         goto out;
     char first_build_key[65], first_build_hash[65];
     (void)snprintf(first_build_key, sizeof(first_build_key), "%s",
@@ -2610,6 +2634,10 @@ static bool run_resident_restart_fixture(void)
         proof.linker_processes != 1 ||
         proof.complete_graph_linker_processes != 0 ||
         proof.test_processes != 1 || proof.source_guard_captures != 2 ||
+        proof.selection_us <= 0 ||
+        proof.compile_startup_us <= 0 || proof.compile_body_us <= 0 ||
+        proof.link_startup_us <= 0 || proof.link_body_us <= 0 ||
+        proof.test_startup_us <= 0 || proof.test_body_us <= 0 ||
         strlen(proof.artifact_sha256) != 64 ||
         strlen(proof.artifact_cache_key) != 64 ||
         !proof.source_identity_overlay ||
@@ -2792,6 +2820,10 @@ out:
         (void)setenv("ZCL_DEVLOOP_TEST_PROCESS", saved_process, 1);
     else
         (void)unsetenv("ZCL_DEVLOOP_TEST_PROCESS");
+    if (had_force_copy)
+        (void)setenv("ZCL_DEVLOOP_TEST_FORCE_CACHE_COPY", saved_force_copy, 1);
+    else
+        (void)unsetenv("ZCL_DEVLOOP_TEST_FORCE_CACHE_COPY");
     test_rm_rf_recursive(root);
     test_rm_rf_recursive(cache_rel);
     (void)unlink(compiler_rel);

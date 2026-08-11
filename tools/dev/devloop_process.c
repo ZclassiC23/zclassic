@@ -226,7 +226,9 @@ static bool process_run_impl(const char *cwd, int exec_fd,
         char ready = '1';
         if (write(ready_fds[1], &ready, 1) != 1)
             _exit(126);
-        close(ready_fds[1]);
+        /* Keep the CLOEXEC descriptor open through setup. The parent sees
+         * EOF exactly when exec succeeds (or the child exits), separating
+         * process startup from command body time without a wrapper. */
         close(fds[0]);
         if (raise_stack) {
             struct rlimit limit;
@@ -260,12 +262,24 @@ static bool process_run_impl(const char *cwd, int exec_fd,
     do {
         ready_got = read(ready_fds[0], &ready, 1);
     } while (ready_got < 0 && errno == EINTR);
-    close(ready_fds[0]);
     if (ready_got != 1 || ready != '1') {
+        close(ready_fds[0]);
         (void)kill(pid, SIGKILL);
         (void)waitpid(pid, NULL, 0);
         close(fds[0]);
         fprintf(stderr, "[devloop] process: child session setup failed\n");
+        return false;
+    }
+    do {
+        ready_got = read(ready_fds[0], &ready, 1);
+    } while (ready_got < 0 && errno == EINTR);
+    out->startup_us = platform_time_monotonic_us() - started_us;
+    close(ready_fds[0]);
+    if (ready_got != 0) {
+        (void)kill(pid, SIGKILL);
+        (void)waitpid(pid, NULL, 0);
+        close(fds[0]);
+        fprintf(stderr, "[devloop] process: exec boundary failed\n");
         return false;
     }
     int flags = fcntl(fds[0], F_GETFL, 0);
@@ -285,7 +299,11 @@ static bool process_run_impl(const char *cwd, int exec_fd,
             pthread_mutex_unlock(&g_process_cancel_poll_mu);
             if (requested) zcl_devloop_process_cancel_request();
         }
+        size_t output_before = out->output_len;
         drain_output(fds[0], out);
+        if (out->first_output_us == 0 && out->output_len > output_before)
+            out->first_output_us =
+                platform_time_monotonic_us() - started_us;
         pid_t waited = waitpid(pid, &status, WNOHANG);
         if (waited == pid) {
             finished = true;
@@ -326,14 +344,20 @@ static bool process_run_impl(const char *cwd, int exec_fd,
     signal_session_members(pid, SIGTERM);
     usleep(10000);
     signal_session_members(pid, SIGKILL);
+    size_t output_before = out->output_len;
     drain_output(fds[0], out);
+    if (out->first_output_us == 0 && out->output_len > output_before)
+        out->first_output_us = platform_time_monotonic_us() - started_us;
     close(fds[0]);
 
     if (WIFEXITED(status))
         out->exit_code = WEXITSTATUS(status);
     else if (WIFSIGNALED(status))
         out->term_signal = WTERMSIG(status);
-    out->elapsed_ms = (platform_time_monotonic_us() - started_us) / 1000;
+    int64_t elapsed_us = platform_time_monotonic_us() - started_us;
+    out->elapsed_ms = elapsed_us / 1000;
+    out->body_us = elapsed_us > out->startup_us
+        ? elapsed_us - out->startup_us : 0;
     return true;
 #endif
 }

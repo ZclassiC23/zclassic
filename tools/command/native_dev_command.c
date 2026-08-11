@@ -1705,6 +1705,11 @@ void zcl_native_handle_dev_drive(
     const char *cycle_status = json_get_str(json_get(&cycle, "status"));
     (void)json_push_kv_str(
         &compact, "lane", live ? "LIVE" :
+        cycle_status &&
+            (strcmp(cycle_status, "edit_seen") == 0 ||
+             strcmp(cycle_status, "impact_ready") == 0 ||
+             strcmp(cycle_status, "reflex_ready") == 0)
+            ? "REFLEX" :
         cycle_status && strcmp(cycle_status, "fallback_ready") == 0
             ? "VERIFY" :
         action && strcmp(action, "restart") == 0 ? "FAST_RESTART" :
@@ -1712,6 +1717,8 @@ void zcl_native_handle_dev_drive(
     (void)dev_drive_copy(&cycle, &compact, "status", "status");
     (void)dev_drive_copy(&cycle, &compact, "action", "action");
     (void)dev_drive_copy(&cycle, &compact, "elapsed_ms", "feedback_ms");
+    (void)dev_drive_copy(&cycle, &compact, "impact_us", "impact_us");
+    (void)dev_drive_copy(&cycle, &compact, "closure_us", "closure_us");
     (void)json_push_kv_bool(&compact, "runtime_published", live);
     (void)json_push_kv_bool(
         &compact, "proof_complete",
@@ -1747,24 +1754,34 @@ void zcl_native_handle_dev_drive(
     } else {
         const char *status = json_get_str(json_get(&cycle, "status"));
         bool passed = status && strcmp(status, "passed") == 0;
-        bool proof_pending = status &&
-            ((strcmp(status, "feedback_ready") == 0 &&
-              json_get_bool(json_get(&cycle,
-                                     "immediate_proof_complete"))) ||
-             strcmp(status, "fallback_ready") == 0) &&
-            json_get_bool(json_get(&cycle, "integration_proof_deferred"));
+        bool edit_seen = status && strcmp(status, "edit_seen") == 0;
+        bool impact_ready = status && strcmp(status, "impact_ready") == 0;
+        bool reflex_ready = status && strcmp(status, "reflex_ready") == 0;
+        bool reactor_pending = edit_seen || impact_ready;
+        bool proof_pending = reflex_ready ||
+            (status &&
+             ((strcmp(status, "feedback_ready") == 0 &&
+               json_get_bool(json_get(&cycle,
+                                      "immediate_proof_complete"))) ||
+              strcmp(status, "fallback_ready") == 0) &&
+             json_get_bool(json_get(&cycle, "integration_proof_deferred")));
         bool proof_complete =
             json_get_bool(json_get(&cycle, "proof_complete"));
         (void)json_push_kv_str(
             &compact, "publication_stage",
+            reactor_pending ? "REFLEX" :
+            reflex_ready ? "ASYNC_PROOF" :
             proof_pending ? "PROOF_PENDING" : "NOT_QUEUED");
         (void)json_push_kv_str(
             &compact, "blocker",
+            edit_seen ? "impact_analysis_running" :
+            impact_ready ? "candidate_diagnostics_running" :
+            reflex_ready ? "affected_proof_running" :
             proof_pending ? "integration_proof_pending" :
             proof_complete ? "publication_job_missing" :
             passed ? "complete_reusable_proof_required" : "proof_failed");
         char next[192];
-        if (proof_pending)
+        if (reactor_pending || proof_pending)
             (void)snprintf(
                 next, sizeof(next),
                 "zclassic23-dev dev drive --input='{\"after_epoch\":%lld}'",

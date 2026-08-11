@@ -5,6 +5,7 @@
 
 #include "codeindex/codeindex_merkle.h"
 #include "hotswap/hotswap_service.h"
+#include "json/json.h"
 #include "platform/time_compat.h"
 
 #include <dirent.h>
@@ -140,6 +141,53 @@ static void print_json_string(FILE *stream, const char *value)
             (void)fputc(*p, stream);
     }
     (void)fputc('"', stream);
+}
+
+static bool watch_emit_edit_seen(const struct watch_context *ctx)
+{
+    if (!ctx || ctx->changed_count == 0)
+        return false;
+    struct json_value doc, files;
+    json_init(&doc); json_set_object(&doc);
+    json_init(&files); json_set_array(&files);
+    bool ok = json_push_kv_str(&doc, "schema", "zcl.dev_cycle.v1") &&
+        json_push_kv_str(&doc, "producer", "reflex-reactor") &&
+        json_push_kv_str(&doc, "status", "edit_seen") &&
+        json_push_kv_str(&doc, "action", "reflex") &&
+        json_push_kv_str(&doc, "reason", "source_mutation_observed") &&
+        json_push_kv_str(&doc, "phase", "EDIT_SEEN") &&
+        json_push_kv_bool(&doc, "runtime_published", false) &&
+        json_push_kv_bool(&doc, "proof_complete", false) &&
+        json_push_kv_int(&doc, "elapsed_us", 0) &&
+        json_push_kv_int(&doc, "file_count",
+                         (int64_t)ctx->changed_count);
+    for (size_t i = 0; ok && i < ctx->changed_count; i++) {
+        struct json_value item;
+        json_init(&item); json_set_str(&item, ctx->changed[i]);
+        ok = json_push_back(&files, &item);
+        json_free(&item);
+    }
+    ok = ok && json_push_kv(&doc, "files", &files) &&
+        json_push_kv_str(&doc, "agent_next_action",
+                         "impact analysis is running in the resident reactor");
+    json_free(&files);
+    char body[16384];
+    size_t n = ok ? json_write(&doc, body, sizeof(body) - 1) : 0;
+    json_free(&doc);
+    if (!n)
+        return false;
+    body[n] = 0;
+    char why[160] = {0};
+    if (!zcl_devloop_cycle_state_write(ctx->root, body, n, why,
+                                       sizeof(why))) {
+        fprintf(stderr, "[devloop] EDIT_SEEN persistence failed: %s\n",
+                why[0] ? why : "unknown");
+        return false;
+    }
+    (void)fwrite(body, 1, n, stdout);
+    (void)fputc('\n', stdout);
+    (void)fflush(stdout);
+    return true;
 }
 
 static bool mkdirs(const char *path)
@@ -485,6 +533,9 @@ int zcl_devloop_watch_mode(const char *repo_root,
             if (!collect_events(&ctx) || ctx.changed_count == 0)
                 continue;
         }
+
+        if (!watch_emit_edit_seen(&ctx))
+            break;
 
         /* Coalesce editor temp-file renames and multi-file saves into one
          * source epoch. Each newly observed event extends the quiet window. */

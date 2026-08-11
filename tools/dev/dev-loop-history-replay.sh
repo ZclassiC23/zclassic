@@ -23,6 +23,12 @@ fail()
     exit 2
 }
 
+monotonic_ns()
+{
+    perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e \
+      'printf "%.0f\n", clock_gettime(CLOCK_MONOTONIC) * 1000000000'
+}
+
 aggregate()
 {
     local samples="$1" output="$2" source_head="${3:-selftest}"
@@ -36,12 +42,16 @@ aggregate()
         (.path|type) == "string" and
         (.class|type) == "string" and
         (.frequency|type) == "number" and .frequency > 0 and
+        (.reflex_us|type) == "number" and .reflex_us >= 0 and
         (.feedback_us|type) == "number" and .feedback_us >= 0 and
         (.result_bound|type) == "boolean" and
         (.feedback_green|type) == "boolean" and
         (.failure_capsule|type) == "string";
       def weighted($field):
         [.[] | . as $s | range(0; $s.frequency) | $s[$field]];
+      def weighted_observed($field):
+        [.[] | . as $s | range(0; $s.frequency) |
+          select(($s[$field] // 0) > 0) | $s[$field]];
       def percentile($values; $percent):
         if ($values|length) == 0 then null
         else ($values|sort) as $ordered |
@@ -51,6 +61,9 @@ aggregate()
         error("invalid or empty replay sample set")
       else
         . as $samples |
+        (weighted_observed("edit_seen_us")) as $edit_seen_latencies |
+        (weighted_observed("impact_ready_us")) as $impact_latencies |
+        (weighted_observed("reflex_us")) as $reflex_latencies |
         (weighted("feedback_us")) as $latencies |
         ([$samples[] | . as $s | range(0; $s.frequency) |
           select($s.feedback_green and $s.feedback_us <= 5000000)]|length)
@@ -63,10 +76,21 @@ aggregate()
          representative_paths:($samples|length),
          weighted_edit_occurrences:$weighted_count,
          latency:{
+           edit_seen_p50_us:percentile($edit_seen_latencies; 50),
+           edit_seen_p95_us:percentile($edit_seen_latencies; 95),
+           impact_ready_p50_us:percentile($impact_latencies; 50),
+           impact_ready_p95_us:percentile($impact_latencies; 95),
+           reflex_p50_us:percentile($reflex_latencies; 50),
+           reflex_p95_us:percentile($reflex_latencies; 95),
+           reflex_max_us:(if ($reflex_latencies|length) > 0
+                          then ($reflex_latencies|max) else null end),
            feedback_p50_us:percentile($latencies; 50),
            feedback_p95_us:percentile($latencies; 95),
            feedback_max_us:($latencies|max)},
          coverage:{
+           edit_seen_observed_occurrences:($edit_seen_latencies|length),
+           impact_ready_observed_occurrences:($impact_latencies|length),
+           reflex_observed_occurrences:($reflex_latencies|length),
            trustworthy_under_5s_occurrences:$under_five,
            trustworthy_under_5s_percent:
              ((10000 * $under_five / $weighted_count)|round/100)},
@@ -92,6 +116,15 @@ aggregate()
            paths_with_cache_hits:
              ([$samples[]|select((.tests_cached // 0) > 0)]|length)},
          gates:{
+           edit_seen_p95_under_10ms:
+             (percentile($edit_seen_latencies; 95) != null and
+              percentile($edit_seen_latencies; 95) < 10000),
+           impact_ready_p95_under_50ms:
+             (percentile($impact_latencies; 95) != null and
+              percentile($impact_latencies; 95) < 50000),
+           reflex_p95_under_2s:
+             (percentile($reflex_latencies; 95) != null and
+              percentile($reflex_latencies; 95) < 2000000),
            feedback_p95_under_5s:(percentile($latencies; 95) < 5000000),
            feedback_95pct_under_5s:
              ($under_five * 100 >= $weighted_count * 95),
@@ -123,15 +156,17 @@ self_test()
     samples="$scratch/samples.jsonl"
     receipt="$scratch/receipt.json"
     printf '%s\n' \
-      '{"path":"a.c","class":"requires_fast_restart","frequency":2,"feedback_us":1000000,"result_bound":true,"feedback_green":true,"failure_capsule":"","compiler_processes":2,"linker_processes":2,"test_processes":1,"probe_processes":1,"make_processes":0,"shell_processes":0,"lto_invocations":0,"complete_graph_links":2,"source_byte_accounting_complete":true,"source_guard_bytes_read":100,"source_bytes_total":1000,"changed_source_bytes":10}' \
-      '{"path":"b.c","class":"requires_fast_restart","frequency":1,"feedback_us":4000000,"result_bound":true,"feedback_green":true,"failure_capsule":"","compiler_processes":2,"linker_processes":2,"test_processes":1,"probe_processes":1,"make_processes":0,"shell_processes":0,"lto_invocations":0,"complete_graph_links":2,"source_byte_accounting_complete":true,"source_guard_bytes_read":200,"source_bytes_total":1000,"changed_source_bytes":20}' \
-      '{"path":"c.c","class":"requires_fast_restart","frequency":1,"feedback_us":6000000,"result_bound":false,"feedback_green":false,"failure_capsule":"WAIT_TIMEOUT","compiler_processes":1,"linker_processes":0,"test_processes":0,"probe_processes":0,"make_processes":0,"shell_processes":0,"lto_invocations":0,"complete_graph_links":0,"source_byte_accounting_complete":true,"source_guard_bytes_read":300,"source_bytes_total":1000,"changed_source_bytes":30}' \
+      '{"path":"a.c","class":"requires_fast_restart","frequency":2,"reflex_us":200000,"feedback_us":1000000,"result_bound":true,"feedback_green":true,"failure_capsule":"","compiler_processes":2,"linker_processes":2,"test_processes":1,"probe_processes":1,"make_processes":0,"shell_processes":0,"lto_invocations":0,"complete_graph_links":2,"source_byte_accounting_complete":true,"source_guard_bytes_read":100,"source_bytes_total":1000,"changed_source_bytes":10}' \
+      '{"path":"b.c","class":"requires_fast_restart","frequency":1,"reflex_us":400000,"feedback_us":4000000,"result_bound":true,"feedback_green":true,"failure_capsule":"","compiler_processes":2,"linker_processes":2,"test_processes":1,"probe_processes":1,"make_processes":0,"shell_processes":0,"lto_invocations":0,"complete_graph_links":2,"source_byte_accounting_complete":true,"source_guard_bytes_read":200,"source_bytes_total":1000,"changed_source_bytes":20}' \
+      '{"path":"c.c","class":"requires_fast_restart","frequency":1,"reflex_us":600000,"feedback_us":6000000,"result_bound":false,"feedback_green":false,"failure_capsule":"WAIT_TIMEOUT","compiler_processes":1,"linker_processes":0,"test_processes":0,"probe_processes":0,"make_processes":0,"shell_processes":0,"lto_invocations":0,"complete_graph_links":0,"source_byte_accounting_complete":true,"source_guard_bytes_read":300,"source_bytes_total":1000,"changed_source_bytes":30}' \
       >"$samples"
     aggregate "$samples" "$receipt"
     jq -e '
       .schema == "zcl.dev_loop_history_replay.v1" and
       .status == "partial" and .representative_paths == 3 and
       .weighted_edit_occurrences == 4 and
+      .latency.reflex_p50_us == 200000 and
+      .latency.reflex_p95_us == 600000 and
       .latency.feedback_p50_us == 1000000 and
       .latency.feedback_p95_us == 6000000 and
       .coverage.trustworthy_under_5s_occurrences == 3 and
@@ -295,13 +330,13 @@ while IFS= read -r row; do
     printf '\n/* ZCL_DEV_HISTORY_REPLAY:%02d:%s */\n' \
       "$sample_no" "$$" >>"$staged"
     chmod --reference="$source" "$staged"
-    start_ns="$(date +%s%N)"
+    start_ns="$(monotonic_ns)"
     mv -f -- "$staged" "$source"
     wait_input="$(jq -cn --argjson epoch "$epoch" --argjson timeout "$WAIT_MS" \
       '{after_epoch:$epoch,timeout_ms:$timeout}')"
     wait_rc=0
     verdict="$(native dev loop wait --input="$wait_input")" || wait_rc=$?
-    end_ns="$(date +%s%N)"
+    end_ns="$(monotonic_ns)"
     feedback_us=$(((end_ns - start_ns) / 1000))
     data="$(jq -c '.data // {}' <<<"$verdict" 2>/dev/null || printf '{}')"
     next_epoch="$(jq -r '.epoch // 0' <<<"$data")"
@@ -314,6 +349,40 @@ while IFS= read -r row; do
         result_bound=true
         epoch="$next_epoch"
     fi
+    edit_seen_us=0
+    impact_ready_us=0
+    reflex_us=0
+    reflex_cycle_elapsed_us=0
+    while [ "$result_bound" = true ]; do
+        stage="$(jq -r '.status // ""' <<<"$data")"
+        case "$stage" in
+            edit_seen) edit_seen_us="$feedback_us" ;;
+            impact_ready) impact_ready_us="$feedback_us" ;;
+            reflex_ready)
+                reflex_us="$feedback_us"
+                reflex_cycle_elapsed_us="$(jq -r '.elapsed_us // 0' <<<"$data")"
+                ;;
+            *) break ;;
+        esac
+        wait_input="$(jq -cn --argjson epoch "$epoch" \
+          --argjson timeout "$WAIT_MS" \
+          '{after_epoch:$epoch,timeout_ms:$timeout}')"
+        wait_rc=0
+        verdict="$(native dev loop wait --input="$wait_input")" || wait_rc=$?
+        end_ns="$(monotonic_ns)"
+        feedback_us=$(((end_ns - start_ns) / 1000))
+        data="$(jq -c '.data // {}' <<<"$verdict" 2>/dev/null || printf '{}')"
+        next_epoch="$(jq -r '.epoch // 0' <<<"$data")"
+        result_bound=false
+        if [ "$wait_rc" -eq 0 ] && [[ "$next_epoch" =~ ^[0-9]+$ ]] &&
+           [ "$next_epoch" -gt "$epoch" ] &&
+           jq -e --arg path "$path" '
+             (.source_tu == $path) or
+             ((.files // []) | index($path) != null)' <<<"$data" >/dev/null; then
+            result_bound=true
+            epoch="$next_epoch"
+        fi
+    done
     action="$(jq -r '.action // "timeout"' <<<"$data")"
     status="$(jq -r '.status // "blocked"' <<<"$data")"
     feedback_green=false
@@ -352,6 +421,10 @@ while IFS= read -r row; do
       --arg path "$path" --arg class "$class" --arg action "$action" \
       --arg status "$status" --argjson frequency "$frequency" \
       --argjson feedback_us "$feedback_us" \
+      --argjson edit_seen_us "$edit_seen_us" \
+      --argjson impact_ready_us "$impact_ready_us" \
+      --argjson reflex_us "$reflex_us" \
+      --argjson reflex_cycle_elapsed_us "$reflex_cycle_elapsed_us" \
       --argjson cycle_elapsed_us "$cycle_elapsed_us" \
       --argjson result_bound "$result_bound" \
       --argjson feedback_green "$feedback_green" \
@@ -369,7 +442,17 @@ while IFS= read -r row; do
       --arg process_output_tail "$(jq -r '.process_output // ""' <<<"$data")" \
       '{path:$path,class:$class,frequency:$frequency,action:$action,
         status:$status,result_bound:$result_bound,
-        feedback_green:$feedback_green,feedback_us:$feedback_us,
+        feedback_green:$feedback_green,
+        edit_seen_us:$edit_seen_us,
+        edit_seen_observed:($edit_seen_us > 0),
+        impact_ready_us:$impact_ready_us,
+        impact_ready_observed:($impact_ready_us > 0),
+        reflex_us:$reflex_us,
+        reflex_observed:($reflex_us > 0),
+        reflex_cycle_elapsed_us:$reflex_cycle_elapsed_us,
+        reflex_detection_and_return_us:
+          ([$reflex_us-$reflex_cycle_elapsed_us,0]|max),
+        feedback_us:$feedback_us,
         cycle_elapsed_us:$cycle_elapsed_us,
         detection_and_return_us:([$feedback_us-$cycle_elapsed_us,0]|max),
         source_guard_us:0,
@@ -382,13 +465,29 @@ while IFS= read -r row; do
         test_group_timings:$test_group_timings,
         failure_capsule:$failure,process_output_tail:$process_output_tail}' \
       | jq --argjson cycle "$data" '
+          .impact_us=($cycle.impact_us // 0) |
           .source_guard_us=($cycle.source_guard_us // 0) |
           .closure_us=($cycle.closure_us // 0) |
+          .test_selection_us=($cycle.proof_receipt.selection_us // 0) |
           .compile_us=(($cycle.build_receipt.compile_us // 0) +
                        ($cycle.proof_receipt.compile_us // 0)) |
+          .compile_startup_us=
+            (($cycle.build_receipt.compile_startup_us // 0) +
+             ($cycle.proof_receipt.compile_startup_us // 0)) |
+          .compile_body_us=
+            (($cycle.build_receipt.compile_body_us // 0) +
+             ($cycle.proof_receipt.compile_body_us // 0)) |
           .link_us=(($cycle.build_receipt.link_us // 0) +
                     ($cycle.proof_receipt.link_us // 0)) |
+          .link_startup_us=
+            (($cycle.build_receipt.link_startup_us // 0) +
+             ($cycle.proof_receipt.link_startup_us // 0)) |
+          .link_body_us=
+            (($cycle.build_receipt.link_body_us // 0) +
+             ($cycle.proof_receipt.link_body_us // 0)) |
           .test_us=($cycle.proof_receipt.test_us // 0) |
+          .test_startup_us=($cycle.proof_receipt.test_startup_us // 0) |
+          .test_body_us=($cycle.proof_receipt.test_body_us // 0) |
           .tests_selected=($cycle.proof_receipt.group_count // 0) |
           .tests_run=($cycle.proof_receipt.groups_ran // 0) |
           .tests_cached=($cycle.proof_receipt.groups_cached // 0) |
