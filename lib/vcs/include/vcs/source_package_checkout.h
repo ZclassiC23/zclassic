@@ -67,4 +67,15 @@ vcs_source_package_checkout_accepted(
     const char *workspace, const char *destination,
     struct vcs_source_package_checkout_metrics *metrics);
 
+/* Re-derive the self-describing PROVEN carrier identity, reconstruct it in
+ * fresh private scratch, verify the complete accepted-work authority chain,
+ * and remove the scratch tree before returning. This is the proof primitive
+ * for source-reproduction evidence; it grants no execution, install,
+ * acceptance, network, wallet, or deployment authority. */
+enum vcs_source_package_checkout_result
+vcs_source_package_reconstruct_verify(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    uint8_t source_root_out[32], uint8_t accepted_work_root_out[32],
+    struct vcs_source_package_checkout_metrics *metrics);
+
 #endif /* ZCL_VCS_SOURCE_PACKAGE_CHECKOUT_H */

@@ -195,9 +195,11 @@ static void rf_record(struct record_fixture *f,
   record->not_before = 1200;
   record->expiry = 1800;
   record->delegation = f->delegation;
-  if (kind == VCS_ZCODE_DHT_RECORD_POINTER)
+  if (kind == VCS_ZCODE_DHT_RECORD_POINTER ||
+      kind == VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK)
     rf_fill(record->semantic_root, 32, 0x61);
-  if (kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK)
+  if (kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK ||
+      kind == VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK)
     rf_fill(record->owner_group, 32, 0x81);
 }
 
@@ -209,7 +211,7 @@ static int test_record_roundtrip(void)
     int chain_calls = 0;
     ASSERT(rf_init(&f, &chain_calls));
     for (int kind = VCS_ZCODE_DHT_RECORD_PROVIDER;
-         kind <= VCS_ZCODE_DHT_RECORD_STORAGE_ACK; kind++) {
+         kind <= VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK; kind++) {
       struct vcs_zcode_dht_record record, parsed;
       rf_record(&f, &record, (enum vcs_zcode_dht_record_kind)kind);
       ASSERT_EQ(vcs_zcode_dht_record_sign(&record, f.online_seed),
@@ -258,7 +260,7 @@ static int test_record_roundtrip(void)
       ASSERT(memcmp(parsed.provider_node_id, f.node_id, 32) == 0);
       ASSERT(strcmp(parsed.namespace_name, "science.study") == 0);
     }
-    ASSERT_EQ(chain_calls, 3);
+    ASSERT_EQ(chain_calls, 4);
     PASS();
   }
   _test_next:;
@@ -288,6 +290,12 @@ static int test_record_key(void)
     ASSERT(vcs_zcode_dht_record_key(
         network, VCS_ZCODE_DHT_RECORD_POINTER, namespace_name, root, changed));
     ASSERT(memcmp(key, changed, sizeof(key)) != 0);
+    memcpy(same, changed, sizeof(same));
+    ASSERT(vcs_zcode_dht_record_key(
+        network, VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK,
+        namespace_name, root, changed));
+    ASSERT(memcmp(key, changed, sizeof(key)) != 0);
+    ASSERT(memcmp(same, changed, sizeof(same)) != 0);
     namespace_name[0] = 'x';
     ASSERT(vcs_zcode_dht_record_key(
         network, VCS_ZCODE_DHT_RECORD_PROVIDER, namespace_name, root, changed));
@@ -336,6 +344,20 @@ static int test_record_shape_and_windows(void)
     memset(record.owner_group, 0, 32);
     ASSERT_EQ(vcs_zcode_dht_record_sign(&record, f.online_seed),
               VCS_ZCODE_DHT_RECORD_OWNER_GROUP);
+    rf_record(&f, &record,
+              VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK);
+    memset(record.semantic_root, 0, 32);
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&record, f.online_seed),
+              VCS_ZCODE_DHT_RECORD_ROOT);
+    rf_record(&f, &record,
+              VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK);
+    memset(record.owner_group, 0, 32);
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&record, f.online_seed),
+              VCS_ZCODE_DHT_RECORD_OWNER_GROUP);
+    rf_record(&f, &record,
+              VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK);
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&record, f.online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
     rf_record(&f, &record, VCS_ZCODE_DHT_RECORD_PROVIDER);
     (void)snprintf(record.namespace_name, sizeof(record.namespace_name),
                    "Science.Bad");

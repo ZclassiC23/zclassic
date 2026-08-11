@@ -326,14 +326,36 @@ void zcl_native_handle_dev_publication_status(
     uint8_t progress_root[32];
     bool advanced = queued && vcs_devloop_publication_progress_load(
         root, job_root, &progress, progress_root);
+    bool source_reproduced = advanced && progress.phase ==
+        VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED;
+    struct vcs_devloop_publication_receipt storage_receipt = {0};
     bool storage_acknowledged = advanced && progress.phase ==
         VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED;
+    if (source_reproduced) {
+        storage_acknowledged = vcs_devloop_publication_receipt_load(
+                root, progress.predecessor_receipt_root,
+                &storage_receipt) &&
+            storage_receipt.phase ==
+                VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED &&
+            memcmp(storage_receipt.job_root, job_root, 32) == 0;
+        if (!storage_acknowledged) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "PUBLICATION_REPRODUCTION_CHAIN_INVALID", "load", true,
+                false,
+                "the source reproduction phase has no verified storage ACK predecessor",
+                job_hex);
+            return;
+        }
+    } else if (storage_acknowledged) {
+        storage_receipt = progress;
+    }
     struct vcs_devloop_publication_receipt provider_receipt = {0};
     bool provider_announced = advanced && progress.phase ==
         VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED;
     if (storage_acknowledged) {
         provider_announced = vcs_devloop_publication_receipt_load(
-                root, progress.predecessor_receipt_root,
+                root, storage_receipt.predecessor_receipt_root,
                 &provider_receipt) &&
             provider_receipt.phase ==
                 VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED &&
@@ -435,7 +457,7 @@ void zcl_native_handle_dev_publication_status(
              VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND ||
          mapping_ready || release_published || passport_published ||
          workspace_published || provider_announced ||
-         storage_acknowledged);
+         storage_acknowledged || source_reproduced);
     struct vcs_package_mapping_set mapping;
     vcs_package_mapping_set_init(&mapping);
     const uint8_t *mapping_root = release_published
@@ -502,6 +524,7 @@ void zcl_native_handle_dev_publication_status(
                            "zcl.dev_publication_status.v1");
     (void)json_push_kv_str(
         &reply->data, "status",
+        source_reproduced ? "SOURCE_REPRODUCED" :
         storage_acknowledged ? "STORAGE_ACKNOWLEDGED" :
         provider_announced ? "PROVIDER_ANNOUNCED" :
         workspace_published ? "WORKSPACE_PUBLISHED" :
@@ -552,6 +575,11 @@ void zcl_native_handle_dev_publication_status(
                              provider_receipt.artifact_root);
     if (storage_acknowledged)
         DEV_PUBLICATION_ROOT("storage_ack_set_root",
+                             source_reproduced
+                                 ? storage_receipt.artifact_root
+                                 : progress.artifact_root);
+    if (source_reproduced)
+        DEV_PUBLICATION_ROOT("source_reproduction_record_root",
                              progress.artifact_root);
 #undef DEV_PUBLICATION_ROOT
     (void)json_push_kv_str(
@@ -574,7 +602,12 @@ void zcl_native_handle_dev_publication_status(
         (size_t)storage_ack_len < sizeof(storage_ack_status))
         (void)json_push_kv_str(&reply->data, "storage_ack",
                                storage_ack_status);
-    (void)json_push_kv_str(&reply->data, "reproduced", "no_record");
+    (void)json_push_kv_str(
+        &reply->data, "reproduced",
+        source_reproduced ? "signed_distinct_source_reconstruction"
+                          : "no_record");
+    (void)json_push_kv_bool(&reply->data,
+                            "physical_independence_attested", false);
     (void)json_push_kv_str(
         &reply->data, "github_mirror",
         mirror_lookup == VCS_DEVLOOP_MIRROR_FOUND
@@ -589,6 +622,7 @@ void zcl_native_handle_dev_publication_status(
     }
     (void)json_push_kv_str(
         &reply->data, "blocker",
+        source_reproduced ? "physical_off_host_attestation_not_represented" :
         storage_acknowledged ? "remote_reproduction_required" :
         provider_announced ? "storage_ack_required" :
         workspace_published ? "provider_announcement_required" :
@@ -600,8 +634,8 @@ void zcl_native_handle_dev_publication_status(
                : "durable_publication_queue_record_missing");
     (void)json_push_kv_str(
         &reply->data, "next_command",
-        storage_acknowledged ?
-            "zclassic23 discover search source fetch" :
+        source_reproduced ? next_command :
+        storage_acknowledged ? collect_command :
         provider_announced ?
             collect_command :
         workspace_published ?
@@ -680,14 +714,36 @@ void zcl_native_handle_dev_publication_advance(
     const char *datadir = json_get_str(json_get(request->input, "datadir"));
     uint8_t lane_root[32];
     char proof_set_hex[65] = "", lane_name[16] = "";
+    bool source_reproduced = have_progress && progress.phase ==
+        VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED;
+    struct vcs_devloop_publication_receipt storage_receipt = {0};
     bool storage_acknowledged = have_progress && progress.phase ==
         VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED;
+    if (source_reproduced) {
+        storage_acknowledged = vcs_devloop_publication_receipt_load(
+                repo_root, progress.predecessor_receipt_root,
+                &storage_receipt) &&
+            storage_receipt.phase ==
+                VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED &&
+            memcmp(storage_receipt.job_root, job_root, 32) == 0;
+        if (!storage_acknowledged) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "PUBLICATION_REPRODUCTION_CHAIN_INVALID", "load", true,
+                false,
+                "the source reproduction phase has no verified storage ACK predecessor",
+                job_hex);
+            return;
+        }
+    } else if (storage_acknowledged) {
+        storage_receipt = progress;
+    }
     struct vcs_devloop_publication_receipt provider_receipt = {0};
     bool provider_announced = have_progress && progress.phase ==
         VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED;
     if (storage_acknowledged) {
         provider_announced = vcs_devloop_publication_receipt_load(
-                repo_root, progress.predecessor_receipt_root,
+                repo_root, storage_receipt.predecessor_receipt_root,
                 &provider_receipt) &&
             provider_receipt.phase ==
                 VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED &&
@@ -789,7 +845,7 @@ void zcl_native_handle_dev_publication_advance(
              VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND ||
          mapping_ready || release_published || passport_published ||
          workspace_published || provider_announced ||
-         storage_acknowledged);
+         storage_acknowledged || source_reproduced);
     bool acceptance_verified = false;
     if (datadir && datadir[0] && have_job) {
         char workspace[PATH_MAX];
@@ -864,6 +920,7 @@ void zcl_native_handle_dev_publication_advance(
     (void)json_push_kv_str(&reply->data, "schema",
                            "zcl.dev_publication_advance.v1");
     (void)json_push_kv_str(&reply->data, "status",
+                           source_reproduced ? "SOURCE_REPRODUCED" :
                            storage_acknowledged ? "STORAGE_ACKNOWLEDGED" :
                            provider_announced ? "PROVIDER_ANNOUNCED" :
                            workspace_published ? "WORKSPACE_PUBLISHED" :
@@ -947,11 +1004,26 @@ void zcl_native_handle_dev_publication_advance(
         }
         if (storage_acknowledged) {
             char ack_set_hex[65];
-            zcl_hex_encode(progress.artifact_root, 32, ack_set_hex);
+            zcl_hex_encode(source_reproduced
+                               ? storage_receipt.artifact_root
+                               : progress.artifact_root,
+                           32, ack_set_hex);
             (void)json_push_kv_str(&reply->data, "storage_ack_set_root",
                                    ack_set_hex);
             (void)json_push_kv_int(&reply->data, "storage_acks",
                                    progress.storage_acks);
+        }
+        if (source_reproduced) {
+            char reproduction_hex[65];
+            zcl_hex_encode(progress.artifact_root, 32, reproduction_hex);
+            (void)json_push_kv_str(
+                &reply->data, "source_reproduction_record_root",
+                reproduction_hex);
+            (void)json_push_kv_str(
+                &reply->data, "reproduced",
+                "signed_distinct_source_reconstruction");
+            (void)json_push_kv_bool(
+                &reply->data, "physical_independence_attested", false);
         }
         if (lane_name[0])
             (void)json_push_kv_str(&reply->data, "lane", lane_name);
@@ -964,6 +1036,7 @@ void zcl_native_handle_dev_publication_advance(
         &reply->data, "blocker",
         lane_bound && !acceptance_verified
             ? "proven_work_datadir_reverification_required" :
+        source_reproduced ? "physical_off_host_attestation_not_represented" :
         storage_acknowledged ? "remote_reproduction_required" :
         provider_announced ? "storage_ack_required" :
         workspace_published ? "provider_announcement_required" :
@@ -982,8 +1055,8 @@ void zcl_native_handle_dev_publication_advance(
         &reply->data, "next_command",
         lane_bound && !acceptance_verified
             ? "zclassic23 discover schema dev.publication.advance" :
-        storage_acknowledged ?
-            "zclassic23 discover search source fetch" :
+        source_reproduced ? retry_command :
+        storage_acknowledged ? collect_command :
         provider_announced ?
             collect_command :
         workspace_published ?
@@ -1026,7 +1099,11 @@ void zcl_native_handle_dev_publication_collect(
     }
     const char *repo_root = dev_source_root(request);
     struct vcs_devloop_publication_ack_target target;
-    if (!vcs_devloop_publication_storage_ack_target(
+    bool collecting_reproduction =
+        vcs_devloop_publication_source_reproduction_target(
+            repo_root, job_root, &verify, &target);
+    if (!collecting_reproduction &&
+        !vcs_devloop_publication_storage_ack_target(
             repo_root, job_root, &verify, &target)) {
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
@@ -1041,23 +1118,30 @@ void zcl_native_handle_dev_publication_collect(
     (void)json_push_kv_str(&reply->data, "publication_job_root", job_hex);
     (void)json_push_kv_int(&reply->data, "required_storage_acks",
                            VCS_DEVLOOP_PUBLICATION_ACK_MIN);
+    (void)json_push_kv_int(&reply->data,
+                           "required_source_reproduction_acks", 1);
     (void)json_push_kv_bool(&reply->data, "network_called", true);
     (void)json_push_kv_bool(&reply->data, "discovery_called",
-                            !target.already_acknowledged);
+                            collecting_reproduction
+                                ? !target.already_reproduced
+                                : !target.already_acknowledged);
     (void)json_push_kv_str(
         &reply->data, "chain_authority",
         "authenticated_local_node_discovery_plus_local_signature_recheck");
-    if (target.already_acknowledged) {
+    if (collecting_reproduction && target.already_reproduced) {
         (void)json_push_kv_str(&reply->data, "status",
-                               "STORAGE_ACKNOWLEDGED");
+                               "SOURCE_REPRODUCED");
         (void)json_push_kv_int(&reply->data, "storage_acks",
                                target.existing_acks);
+        (void)json_push_kv_str(
+            &reply->data, "reproduced",
+            "signed_distinct_source_reconstruction");
+        (void)json_push_kv_bool(
+            &reply->data, "physical_independence_attested", false);
         (void)json_push_kv_bool(&reply->data, "receipt_reused", true);
         (void)json_push_kv_bool(&reply->data, "receipt_written", false);
         (void)json_push_kv_str(&reply->data, "blocker",
-                               "remote_reproduction_required");
-        (void)json_push_kv_str(&reply->data, "next_command",
-                               "zclassic23 discover search source fetch");
+                               "physical_off_host_attestation_not_represented");
         return;
     }
 
@@ -1066,7 +1150,9 @@ void zcl_native_handle_dev_publication_collect(
     struct json_value input;
     json_init(&input);
     json_set_object(&input);
-    (void)json_push_kv_str(&input, "kind", "storage_ack");
+    (void)json_push_kv_str(
+        &input, "kind", collecting_reproduction
+                            ? "source_reproduction_ack" : "storage_ack");
     (void)json_push_kv_str(&input, "namespace", target.namespace_name);
     (void)json_push_kv_str(&input, "transport_root", transport_hex);
     (void)json_push_kv_bool(&input, "include_evidence_wires", true);
@@ -1080,12 +1166,16 @@ void zcl_native_handle_dev_publication_collect(
         zcl_command_reply_fail(
             reply, discovery.status, discovery.exit_code,
             discovery.error.code[0] ? discovery.error.code
-                                    : "STORAGE_ACK_DISCOVERY_FAILED",
+                                    : collecting_reproduction
+                                        ? "SOURCE_REPRODUCTION_DISCOVERY_FAILED"
+                                        : "STORAGE_ACK_DISCOVERY_FAILED",
             discovery.error.phase[0] ? discovery.error.phase : "network",
             discovery.error.retryable, false,
             discovery.error.message[0]
                 ? discovery.error.message
-                : "storage ACK discovery failed",
+                : collecting_reproduction
+                    ? "source reproduction discovery failed"
+                    : "storage ACK discovery failed",
             discovery.error.evidence);
         zcl_command_reply_free(&discovery);
         return;
@@ -1115,53 +1205,115 @@ void zcl_native_handle_dev_publication_collect(
     (void)json_push_kv_int(&reply->data, "records_seen", (int64_t)row_count);
     (void)json_push_kv_int(&reply->data, "evidence_wires",
                            (int64_t)wire_count);
-    if (wire_count < VCS_DEVLOOP_PUBLICATION_ACK_MIN) {
-        (void)json_push_kv_str(&reply->data, "status", "ACKS_PENDING");
+    size_t required = collecting_reproduction
+        ? 1u : VCS_DEVLOOP_PUBLICATION_ACK_MIN;
+    if (wire_count < required) {
+        (void)json_push_kv_str(
+            &reply->data, "status",
+            collecting_reproduction
+                ? "SOURCE_REPRODUCTION_PENDING" : "ACKS_PENDING");
         (void)json_push_kv_int(&reply->data, "storage_acks",
-                               (int64_t)wire_count);
+                               collecting_reproduction
+                                   ? target.existing_acks
+                                   : (int64_t)wire_count);
         (void)json_push_kv_bool(&reply->data, "receipt_reused", false);
         (void)json_push_kv_bool(&reply->data, "receipt_written", false);
-        (void)json_push_kv_str(&reply->data, "blocker",
-                               "independent_storage_acks_required");
+        (void)json_push_kv_str(
+            &reply->data, "blocker",
+            collecting_reproduction
+                ? "distinct_signed_source_reconstruction_required"
+                : "independent_storage_acks_required");
         char next[256];
         int n = snprintf(
             next, sizeof(next),
             "zclassic23-dev dev publication collect --input='"
             "{\"job_root\":\"%s\"}'", job_hex);
-        if (n > 0 && (size_t)n < sizeof(next))
+        if (collecting_reproduction && n > 0 &&
+            (size_t)n < sizeof(next))
+            (void)json_push_kv_str(
+                &reply->data, "after_reproduction_command", next);
+        if (collecting_reproduction) {
+            char reproduce[384];
+            int rn = snprintf(
+                reproduce, sizeof(reproduce),
+                "zclassic23 zcode package source reproduce --input='"
+                "{\"mode\":\"plan\",\"root\":\"%s\","
+                "\"namespace\":\"%s\"}'",
+                transport_hex, target.namespace_name);
+            if (rn > 0 && (size_t)rn < sizeof(reproduce))
+                (void)json_push_kv_str(
+                    &reply->data, "next_command", reproduce);
+        } else if (n > 0 && (size_t)n < sizeof(next)) {
             (void)json_push_kv_str(&reply->data, "next_command", next);
+        }
         zcl_command_reply_free(&discovery);
         return;
     }
 
     uint8_t receipt_root[32];
     bool reused = false;
-    bool advanced = vcs_devloop_publication_advance_storage_acks(
-        repo_root, job_root, wire_ptrs, wire_lengths, wire_count, &verify,
-        receipt_root, &reused);
+    bool advanced = false;
+    if (collecting_reproduction) {
+        for (size_t i = 0; i < wire_count && !advanced; i++)
+            advanced =
+                vcs_devloop_publication_advance_source_reproduction_ack(
+                    repo_root, job_root, wire_ptrs[i], wire_lengths[i],
+                    &verify, receipt_root, &reused);
+    } else {
+        advanced = vcs_devloop_publication_advance_storage_acks(
+            repo_root, job_root, wire_ptrs, wire_lengths, wire_count,
+            &verify, receipt_root, &reused);
+    }
     zcl_command_reply_free(&discovery);
     if (!advanced) {
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
-            "STORAGE_ACK_BIND_FAILED", "verify", true, false,
-            "discovered ACK wires failed exact job/package/diversity verification",
+            collecting_reproduction ? "SOURCE_REPRODUCTION_BIND_FAILED"
+                                   : "STORAGE_ACK_BIND_FAILED",
+            "verify", true, false,
+            collecting_reproduction
+                ? "the signed reconstruction failed exact source/package/witness-distinct verification"
+                : "discovered ACK wires failed exact job/package/diversity verification",
             job_hex);
         return;
     }
     char receipt_hex[65];
     zcl_hex_encode(receipt_root, 32, receipt_hex);
-    (void)json_push_kv_str(&reply->data, "status",
-                           "STORAGE_ACKNOWLEDGED");
+    (void)json_push_kv_str(
+        &reply->data, "status",
+        collecting_reproduction ? "SOURCE_REPRODUCED"
+                               : "STORAGE_ACKNOWLEDGED");
     (void)json_push_kv_int(&reply->data, "storage_acks",
-                           (int64_t)wire_count);
+                           collecting_reproduction
+                               ? target.existing_acks
+                               : (int64_t)wire_count);
     (void)json_push_kv_str(&reply->data, "progress_receipt_root",
                            receipt_hex);
     (void)json_push_kv_bool(&reply->data, "receipt_reused", reused);
     (void)json_push_kv_bool(&reply->data, "receipt_written", !reused);
-    (void)json_push_kv_str(&reply->data, "blocker",
-                           "remote_reproduction_required");
-    (void)json_push_kv_str(&reply->data, "next_command",
-                           "zclassic23 discover search source fetch");
+    if (collecting_reproduction) {
+        (void)json_push_kv_str(
+            &reply->data, "reproduced",
+            "signed_distinct_source_reconstruction");
+        (void)json_push_kv_bool(
+            &reply->data, "physical_independence_attested", false);
+        (void)json_push_kv_str(
+            &reply->data, "blocker",
+            "physical_off_host_attestation_not_represented");
+    } else {
+        char reproduce[384];
+        int rn = snprintf(
+            reproduce, sizeof(reproduce),
+            "zclassic23 zcode package source reproduce --input='"
+            "{\"mode\":\"plan\",\"root\":\"%s\","
+            "\"namespace\":\"%s\"}'",
+            transport_hex, target.namespace_name);
+        (void)json_push_kv_str(&reply->data, "blocker",
+                               "remote_reproduction_required");
+        if (rn > 0 && (size_t)rn < sizeof(reproduce))
+            (void)json_push_kv_str(
+                &reply->data, "next_command", reproduce);
+    }
 }
 
 void zcl_native_handle_dev_core_boundary(

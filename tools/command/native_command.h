@@ -882,6 +882,9 @@ void zcl_native_handle_zcode_network_publish(
 void zcl_native_handle_zcode_network_storage_ack(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_source_reproduce(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_network_policy_list(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

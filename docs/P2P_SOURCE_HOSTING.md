@@ -76,8 +76,8 @@ The wallet broker signs the release id; private keys never enter an App. A
 signature establishes authorship, not safety. Downloaded source remains inert
 until a separate explicit inspect/build/install transaction passes policy.
 
-Provider, pointer, and storage-ACK DHT records also expose a canonical
-`record_root`: SHA3-256 over the complete signed wire under the
+Provider, pointer, storage-ACK, and source-reproduction-ACK DHT records also
+expose a canonical `record_root`: SHA3-256 over the complete signed wire under the
 `zcl.zcode.dht.record-id.v1\0` domain. It is an immutable evidence coordinate,
 not a routing key or possession claim; consumers still parse and verify the
 record before using any field. Publication plan/commit replies also return the
@@ -94,6 +94,25 @@ wire. The wire is stored at `record_root`; the append-only scheduling receipt
 binds that root and reports one provider. This step records evidence produced
 by the existing DHT owner and grants no network, wallet, or transaction
 authority.
+
+After two distinct signed storage witnesses are bound, the publication job
+requires one `SOURCE_REPRODUCTION_ACK`. The reproducer starts with the exact
+`content.v2` package root, fetches it through the authenticated package route,
+re-derives the self-describing source and accepted-work roots, reconstructs the
+carrier in fresh private scratch, and verifies the complete accepted-work
+authority chain before signing. `zcode package source reproduce` exposes this
+as plan/commit: plan returns structured commit input, and commit repeats the
+full reconstruction before publishing the one-shot record. The developer
+collector rechecks the exact signed wire and requires its node id, master-key
+lineage, and declared owner group to differ from the publisher and both
+storage witnesses before appending `SOURCE_REPRODUCED` evidence.
+
+That ACK proves exact source-carrier reproduction by a distinct signing
+lineage. It is not a byte-identical build receipt, human approval, acceptance,
+installation, deployment, wallet or consensus authority. It also reports
+`physical_independence_attested=false`: process ids, paths, IP addresses, and
+declared owner groups cannot prove that the reproducer ran on another physical
+host.
 
 After that P2P phase, `dev publication mirror record` may append one optional
 `vcs_devloop_mirror_receipt.v1`. The receipt re-derives the exact ZVCS commit,

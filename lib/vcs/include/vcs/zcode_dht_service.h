@@ -408,6 +408,21 @@ vcs_zcode_dht_storage_ack_commit_verified(
     const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
     struct vcs_zcode_dht_record *record_out);
 
+/* SOURCE_REPRODUCTION_ACK has the same plan/commit integrity boundary, but
+ * callers reach these only after reconstructing the complete accepted source
+ * carrier outside the DHT lock. It is historical one-shot evidence, not a
+ * renewable possession claim. */
+bool vcs_zcode_dht_source_reproduction_ack_plan_verified(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
+    struct vcs_zcode_dht_record *record_out);
+enum vcs_zcode_dht_record_store_result
+vcs_zcode_dht_source_reproduction_ack_commit_verified(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_publish_spec *spec,
+    const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record *record_out);
+
 /* Snapshot/apply the proof state around a composition-root lock. The caller
  * performs the full package-store byte proof with no DHT lock held, then
  * applies the result before the scheduler is driven. */

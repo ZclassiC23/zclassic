@@ -126,15 +126,19 @@ ZCL_COMMAND_DEV_COMMAND(
 
 ZCL_COMMAND_DEV_COMMAND(
     "dev.publication.collect", "dev.publication", "",
-    "Discover and bind independent storage ACK evidence",
+    "Bind independent storage and source-reproduction evidence",
     "Loads the exact provider-announced package target from one immutable "
     "publication job, asks the authenticated local node for verified "
     "STORAGE_ACK records, and appends one receipt only after locally "
     "rechecking canonical wires, network genesis, validity windows, "
     "signatures, package root, and distinct provider/owner groups. At least "
-    "two ACKs are required. It never signs, publishes, spends, deploys, or "
-    "grants human acceptance authority.", 0,
-    "dev,publication,storage-ack,p2p,collect,replication,evidence",
+    "two storage ACKs are required. It then discovers one signed "
+    "SOURCE_REPRODUCTION_ACK that binds the exact source and package roots "
+    "and requires a signer lineage and owner group distinct from the "
+    "publisher and storage witnesses. It never signs, publishes, spends, "
+    "deploys, infers physical off-host independence, or grants human "
+    "acceptance authority.", 0,
+    "dev,publication,storage-ack,reproduction,p2p,collect,evidence",
     "zcl.dev_publication_status_input.v1",
     "zcl.dev_publication_collect.v1", "job_root", "job_root",
     "zclassic23-dev dev publication collect --input='"
@@ -148,7 +152,7 @@ ZCL_COMMAND_DEV_COMMAND(
         ZCL_COMMAND_CAP_P2P_TOPIC,
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_dev_publication_collect,
-    "storage ACK collection requires the dev-only ZVCS receipt writer",
+    "publication evidence collection requires the dev-only ZVCS receipt writer",
     "zclassic23-dev dev publication status")
 
 ZCL_COMMAND_DEV_COMMAND(

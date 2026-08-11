@@ -152,6 +152,8 @@ static enum vcs_zcode_dht_record_kind input_record_kind(
     return VCS_ZCODE_DHT_RECORD_POINTER;
   if (kind && strcmp(kind, "storage_ack") == 0)
     return VCS_ZCODE_DHT_RECORD_STORAGE_ACK;
+  if (kind && strcmp(kind, "source_reproduction_ack") == 0)
+    return VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK;
   return 0;
 }
 
@@ -160,7 +162,10 @@ static const char *record_kind_name(enum vcs_zcode_dht_record_kind kind) {
     return "provider";
   if (kind == VCS_ZCODE_DHT_RECORD_POINTER)
     return "pointer";
-  return kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK ? "storage_ack" : "unknown";
+  if (kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK)
+    return "storage_ack";
+  return kind == VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK
+      ? "source_reproduction_ack" : "unknown";
 }
 
 static void record_json(struct json_value *row,
@@ -285,14 +290,11 @@ static bool parse_capability(const struct json_value *in,
          zcl_hex_decode_lower(owner, owner_token, DHT_PUBLIC_TOKEN_BYTES);
 }
 
-static bool rpc_records(const struct json_value *params, bool help,
-                        struct json_value *result);
-static bool rpc_publish(const struct json_value *params, bool help,
-                        struct json_value *result);
-static bool rpc_storage_ack(const struct json_value *params, bool help,
-                            struct json_value *result);
-static bool rpc_provider_route(const struct json_value *params, bool help,
-                               struct json_value *result);
+static bool rpc_records(const struct json_value *, bool, struct json_value *);
+static bool rpc_publish(const struct json_value *, bool, struct json_value *);
+static bool rpc_storage_ack(const struct json_value *, bool, struct json_value *);
+static bool rpc_source_reproduction_ack(const struct json_value *, bool, struct json_value *);
+static bool rpc_provider_route(const struct json_value *, bool, struct json_value *);
 
 static bool rpc_status(const struct json_value *params, bool help,
                        struct json_value *result) {
@@ -309,6 +311,8 @@ static bool rpc_status(const struct json_value *params, bool help,
     return rpc_publish(params, false, result);
   if (operation && strcmp(operation, "storage_ack") == 0)
     return rpc_storage_ack(params, false, result);
+  if (operation && strcmp(operation, "source_reproduction_ack") == 0)
+    return rpc_source_reproduction_ack(params, false, result);
   if (operation) {
     rpc_error(result, "INVALID_OPERATION", "unknown bounded DHT operation");
     return true;
@@ -597,8 +601,9 @@ static bool parse_publish_spec(const struct json_value *in,
   return true;
 }
 
-static bool rpc_publish_impl(const struct json_value *params, bool help,
-                             struct json_value *result, bool storage_ack) {
+static bool rpc_publish_impl(
+    const struct json_value *params, bool help, struct json_value *result,
+    enum vcs_zcode_dht_record_kind evidence_kind) {
   if (help) {
     json_set_str(result, "zcode_dht_publish {mode,kind,namespace,roots,sequence,not_before,expiry,plan_token?}");
     return true;
@@ -607,30 +612,40 @@ static bool rpc_publish_impl(const struct json_value *params, bool help,
   const char *mode = input_str(in, "mode");
   struct vcs_zcode_dht_publish_spec spec;
   if (!mode || (strcmp(mode, "plan") != 0 && strcmp(mode, "commit") != 0) ||
-      !parse_publish_spec(
-          in, &spec, storage_ack ? VCS_ZCODE_DHT_RECORD_STORAGE_ACK : 0)) {
+      !parse_publish_spec(in, &spec, evidence_kind)) {
     rpc_error(result, "INVALID_PUBLISH",
               "exact mode, kind, namespace, roots, sequence and window required");
     return true;
   }
-  if ((!storage_ack && spec.kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK) ||
-      (storage_ack && spec.kind != VCS_ZCODE_DHT_RECORD_STORAGE_ACK)) {
-    rpc_error(result, "POSSESSION_REQUIRED",
-              "STORAGE_ACK uses the dedicated pinned full-byte proof path");
+  bool special = spec.kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK ||
+                 spec.kind == VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK;
+  if ((!evidence_kind && special) ||
+      (evidence_kind && spec.kind != evidence_kind)) {
+    rpc_error(result, "DEDICATED_PROOF_REQUIRED",
+              "ACK evidence uses its dedicated byte-proof path");
     return true;
   }
   uint8_t token[32];
   struct vcs_zcode_dht_record record;
   if (strcmp(mode, "plan") == 0) {
-    bool planned = storage_ack
-                       ? boot_zcode_dht_storage_ack_plan(&spec, token, &record)
-                       : boot_zcode_dht_record_publish_plan(
-                             &spec, token, &record);
+    bool planned = evidence_kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK
+        ? boot_zcode_dht_storage_ack_plan(&spec, token, &record)
+        : evidence_kind == VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK
+          ? boot_zcode_dht_source_reproduction_ack_plan(
+                &spec, token, &record)
+          : boot_zcode_dht_record_publish_plan(&spec, token, &record);
     if (!planned) {
-      rpc_error(result, storage_ack ? "POSSESSION_REQUIRED" : "DHT_DISABLED",
-                storage_ack
-                    ? "complete pinned bytes failed full possession proof"
-                    : "authenticated DHT is disabled");
+      rpc_error(
+          result,
+          evidence_kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK
+              ? "POSSESSION_REQUIRED"
+              : evidence_kind == VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK
+                ? "SOURCE_RECONSTRUCTION_REQUIRED" : "DHT_DISABLED",
+          evidence_kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK
+              ? "complete pinned bytes failed full possession proof"
+              : evidence_kind == VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK
+                ? "complete accepted source carrier failed exact reconstruction"
+                : "authenticated DHT is disabled");
       return true;
     }
   } else {
@@ -641,11 +656,14 @@ static bool rpc_publish_impl(const struct json_value *params, bool help,
       return true;
     }
     enum vcs_zcode_dht_record_store_result stored =
-        storage_ack
+        evidence_kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK
             ? boot_zcode_dht_storage_ack_commit(
                   &spec, token, public_now(), &record)
-            : boot_zcode_dht_record_publish_commit(
-                  &spec, token, public_now(), &record);
+        : evidence_kind == VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK
+          ? boot_zcode_dht_source_reproduction_ack_commit(
+                &spec, token, public_now(), &record)
+          : boot_zcode_dht_record_publish_commit(
+                &spec, token, public_now(), &record);
     if (stored != VCS_ZCODE_DHT_RECORD_STORE_ADDED &&
         stored != VCS_ZCODE_DHT_RECORD_STORE_DUPLICATE &&
         stored != VCS_ZCODE_DHT_RECORD_STORE_CONFLICT) {
@@ -671,14 +689,18 @@ static bool rpc_publish_impl(const struct json_value *params, bool help,
   return true;
 }
 
-static bool rpc_publish(const struct json_value *params, bool help,
-                        struct json_value *result) {
-  return rpc_publish_impl(params, help, result, false);
+static bool rpc_publish(const struct json_value *params, bool help, struct json_value *result) {
+  return rpc_publish_impl(params, help, result, 0);
+}
+static bool rpc_storage_ack(const struct json_value *params, bool help, struct json_value *result) {
+  return rpc_publish_impl(
+      params, help, result, VCS_ZCODE_DHT_RECORD_STORAGE_ACK);
 }
 
-static bool rpc_storage_ack(const struct json_value *params, bool help,
-                            struct json_value *result) {
-  return rpc_publish_impl(params, help, result, true);
+static bool rpc_source_reproduction_ack(const struct json_value *params, bool help,
+                                        struct json_value *result) {
+  return rpc_publish_impl(params, help, result,
+                          VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK);
 }
 
 static void provider_route_json(
@@ -768,6 +790,7 @@ void boot_zcode_dht_register_rpc(struct rpc_table *table) {
       {"zcode", "zcode_dht_find_poll", rpc_find_poll, true},
       {"zcode", "zcode_dht_find_cancel", rpc_find_cancel, true},
       {"zcode", "zcode_dht_storage_ack", rpc_storage_ack, true},
+      {"zcode", "zcode_dht_source_reproduction_ack", rpc_source_reproduction_ack, true},
       {"zcode", "zcode_dht_provider_route", rpc_provider_route, true},
   };
   for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)

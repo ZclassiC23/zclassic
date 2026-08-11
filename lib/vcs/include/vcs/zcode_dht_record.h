@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: Canonical signed provider, pointer, and storage-ack DHT records. */
+ * purpose: Canonical signed discovery and evidence DHT records. */
 
 #ifndef ZCL_VCS_ZCODE_DHT_RECORD_H
 #define ZCL_VCS_ZCODE_DHT_RECORD_H
@@ -21,6 +21,7 @@
 #define VCS_ZCODE_DHT_PROVIDER_MAX_SECONDS UINT64_C(7200)
 #define VCS_ZCODE_DHT_POINTER_MAX_SECONDS UINT64_C(604800)
 #define VCS_ZCODE_DHT_STORAGE_ACK_MAX_SECONDS UINT64_C(604800)
+#define VCS_ZCODE_DHT_SOURCE_REPRODUCTION_ACK_MAX_SECONDS UINT64_C(604800)
 #define VCS_ZCODE_DHT_RECORD_SIGNATURE_DOMAIN "zcl.zcode.dht.record.v1"
 #define VCS_ZCODE_DHT_RECORD_KEY_DOMAIN "zcl.zcode.dht.record-key.v1"
 #define VCS_ZCODE_DHT_RECORD_ID_DOMAIN "zcl.zcode.dht.record-id.v1"
@@ -29,6 +30,7 @@ enum vcs_zcode_dht_record_kind {
   VCS_ZCODE_DHT_RECORD_PROVIDER = 1,
   VCS_ZCODE_DHT_RECORD_POINTER = 2,
   VCS_ZCODE_DHT_RECORD_STORAGE_ACK = 3,
+  VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK = 4,
 };
 
 enum vcs_zcode_dht_record_error {
@@ -58,8 +60,10 @@ const char *vcs_zcode_dht_record_error_string(
 
 /* namespace is canonical lower-case ASCII with a zero tail. PROVIDER and
  * STORAGE_ACK address transport_root directly and require semantic_root=0.
- * POINTER binds semantic_root -> transport_root. owner_group is present only
- * on STORAGE_ACK and is explicitly declared diversity, never operator proof. */
+ * POINTER binds semantic_root -> transport_root. SOURCE_REPRODUCTION_ACK
+ * binds the re-derived source semantic_root to its complete transport_root.
+ * owner_group is present on both ACK kinds and is explicitly declared
+ * diversity, never physical-host or separate-operator proof. */
 struct vcs_zcode_dht_record {
   enum vcs_zcode_dht_record_kind kind;
   char namespace_name[VCS_ZCODE_DHT_RECORD_NAMESPACE_BYTES];
@@ -83,7 +87,7 @@ struct vcs_zcode_dht_record_verify_context {
 };
 
 /* Derive the Kademlia routing target for one logical record stream. `root`
- * is semantic_root for POINTER and transport_root for PROVIDER/STORAGE_ACK.
+ * is semantic_root for POINTER and transport_root for every other kind.
  * The fixed-size canonical namespace prevents alternate encodings from
  * routing the same stream to different responsible nodes. */
 bool vcs_zcode_dht_record_key(

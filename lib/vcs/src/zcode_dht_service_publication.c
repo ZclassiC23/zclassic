@@ -33,9 +33,10 @@ static uint64_t publication_max_window(enum vcs_zcode_dht_record_kind kind)
     return VCS_ZCODE_DHT_PROVIDER_MAX_SECONDS;
   if (kind == VCS_ZCODE_DHT_RECORD_POINTER)
     return VCS_ZCODE_DHT_POINTER_MAX_SECONDS;
-  return kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK
-             ? VCS_ZCODE_DHT_STORAGE_ACK_MAX_SECONDS
-             : 0;
+  if (kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK)
+    return VCS_ZCODE_DHT_STORAGE_ACK_MAX_SECONDS;
+  return kind == VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK
+             ? VCS_ZCODE_DHT_SOURCE_REPRODUCTION_ACK_MAX_SECONDS : 0;
 }
 
 static void publication_mark_dirty(struct vcs_zcode_dht_service *service,
@@ -55,7 +56,9 @@ static bool publication_build(
 {
   if (!service || !service->enabled || !service->record_store || !spec ||
       !record || !token ||
-      (spec->kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK && !allow_ack))
+      ((spec->kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK ||
+        spec->kind == VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK) &&
+       !allow_ack))
     return false;
   memset(record, 0, sizeof(*record));
   record->kind = spec->kind;
@@ -157,6 +160,46 @@ bool vcs_zcode_dht_storage_ack_plan_verified(
   return publication_build(service, spec, record_out, plan_token, true);
 }
 
+static bool publication_owner_group_is_zero(const uint8_t owner_group[32])
+{
+  uint8_t any = 0;
+  for (size_t i = 0; i < 32; i++) any |= owner_group[i];
+  return any == 0;
+}
+
+static bool publication_evidence_spec(
+    const struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_publish_spec *spec,
+    enum vcs_zcode_dht_record_kind expected,
+    struct vcs_zcode_dht_publish_spec *normalized)
+{
+  if (!service || !spec || !normalized || spec->kind != expected)
+    return false;
+  *normalized = *spec;
+  if (publication_owner_group_is_zero(normalized->owner_group)) {
+    static const char domain[] = "zcl.zcode.owner-group.signer-lineage.v1";
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
+    sha3_256_write(&sha, service->delegation.doc.master_pubkey, 32);
+    sha3_256_finalize(&sha, normalized->owner_group);
+  }
+  return true;
+}
+
+bool vcs_zcode_dht_source_reproduction_ack_plan_verified(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
+    struct vcs_zcode_dht_record *record_out)
+{
+  struct vcs_zcode_dht_publish_spec normalized;
+  return publication_evidence_spec(
+             service, spec, VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK,
+             &normalized) &&
+      publication_build(
+          service, &normalized, record_out, plan_token, true);
+}
+
 struct storage_ack_plan_apply {
   struct vcs_zcode_dht_service *service;
   const struct vcs_zcode_dht_publish_spec *spec;
@@ -230,6 +273,49 @@ vcs_zcode_dht_storage_ack_commit_verified(
     publication->renewal_proof_ready = false;
     publication->possession_proof_epoch =
         publication_next_proof_epoch(service);
+    publication->record = record;
+    publication->lifetime_s = record.expiry - record.not_before;
+    publication->backoff_s = PUBLICATION_RETRY_MIN_S;
+    publication_mark_dirty(service, now.monotonic_s);
+    vcs_zcode_dht_service_publication_schedule(service, now);
+  }
+  return result;
+}
+
+enum vcs_zcode_dht_record_store_result
+vcs_zcode_dht_source_reproduction_ack_commit_verified(
+    struct vcs_zcode_dht_service *service,
+    const struct vcs_zcode_dht_publish_spec *spec,
+    const uint8_t plan_token[32], struct vcs_zcode_dht_time now,
+    struct vcs_zcode_dht_record *record_out)
+{
+  uint8_t expected[32], difference = 0;
+  struct vcs_zcode_dht_record record;
+  struct vcs_zcode_dht_publish_spec normalized;
+  struct service_publication *publication = publication_slot(service);
+  if (!publication)
+    return VCS_ZCODE_DHT_RECORD_STORE_GLOBAL_CAP;
+  if (!plan_token ||
+      !publication_evidence_spec(
+          service, spec, VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK,
+          &normalized) ||
+      !publication_build(
+          service, &normalized, &record, expected, true))
+    return VCS_ZCODE_DHT_RECORD_STORE_INVALID;
+  for (size_t i = 0; i < 32; i++)
+    difference |= expected[i] ^ plan_token[i];
+  if (difference)
+    return VCS_ZCODE_DHT_RECORD_STORE_STALE;
+  enum vcs_zcode_dht_record_store_result result =
+      vcs_zcode_dht_service_record_admit(service, &record, now);
+  if (record_out && (result == VCS_ZCODE_DHT_RECORD_STORE_ADDED ||
+                     result == VCS_ZCODE_DHT_RECORD_STORE_DUPLICATE ||
+                     result == VCS_ZCODE_DHT_RECORD_STORE_CONFLICT))
+    *record_out = record;
+  if (result == VCS_ZCODE_DHT_RECORD_STORE_ADDED ||
+      result == VCS_ZCODE_DHT_RECORD_STORE_CONFLICT) {
+    memset(publication, 0, sizeof(*publication));
+    publication->used = true;
     publication->record = record;
     publication->lifetime_s = record.expiry - record.not_before;
     publication->backoff_s = PUBLICATION_RETRY_MIN_S;
@@ -555,6 +641,28 @@ static void publication_drive(struct vcs_zcode_dht_service *service,
                               struct vcs_zcode_dht_time now)
 {
   uint64_t renew_at = publication_renew_at(publication);
+  if (publication->record.kind ==
+          VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK &&
+      now.wall_unix >= publication->record.expiry) {
+    publication_cancel_active(service, publication);
+    memset(publication, 0, sizeof(*publication));
+    publication_mark_dirty(service, now.monotonic_s);
+    return;
+  }
+  if (publication->record.kind ==
+          VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK &&
+      now.wall_unix >= renew_at) {
+    bool quiescent = publication->phase == SERVICE_PUBLICATION_WAITING &&
+        !publication->lookup_id && !publication->active_children &&
+        !publication->next_attempt_mono;
+    if (!quiescent) {
+      publication_cancel_active(service, publication);
+      publication->phase = SERVICE_PUBLICATION_WAITING;
+      publication->next_attempt_mono = 0;
+      publication_mark_dirty(service, now.monotonic_s);
+    }
+    return;
+  }
   if (publication->record.kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK &&
       now.wall_unix >= renew_at && !publication->renewal_proof_ready) {
     if (!publication->renewal_proof_required)

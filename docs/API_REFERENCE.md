@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 685 |
+| Registry entries (branches + leaves) | 686 |
 | Top-level roots | 11 |
 | Branches | 161 |
-| Leaves (dispatchable command paths) | 524 |
-| … `ready` (live handler in this build) | 471 |
+| Leaves (dispatchable command paths) | 525 |
+| … `ready` (live handler in this build) | 472 |
 | … `compat` (metadata only, names a fallback) | 23 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 22 |
-| Leaves with `effect=mutate` | 173 |
+| Leaves with `effect=mutate` | 174 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 111 |
 
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 212 | 51 | 161 |
+| `config/commands/zcode.def` | 213 | 51 | 162 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -631,7 +631,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `dev publication status` | ready | read / read / operator · fast/low | **`job_root`** | `zcl.dev_publication_status.v1` | `zclassic23-dev dev publication status --input='{"job_root":"<64-lowercase-hex>"}'` | Show one durable proof-to-publication job |
 | `dev publication advance` | compat 🔧 → `zclassic23-dev dev publication status` | mutate / dev-mutation / **owner** · background/moderate | **`job_root`**, `datadir` | `zcl.dev_publication_advance.v1` | `zclassic23-dev dev publication advance --input='{"job_root":"<64-lowercase-hex>"}'` | Advance one proven-source job to its next durable blocker — *publication scheduling receipts require a dev checkout* |
-| `dev publication collect` | compat 🔧 → `zclassic23-dev dev publication status` | mutate / dev-mutation / **owner** · foreground/moderate | **`job_root`** | `zcl.dev_publication_collect.v1` | `zclassic23-dev dev publication collect --input='{"job_root":"<64-lowercase-hex>"}'` | Discover and bind independent storage ACK evidence — *storage ACK collection requires the dev-only ZVCS receipt writer* |
+| `dev publication collect` | compat 🔧 → `zclassic23-dev dev publication status` | mutate / dev-mutation / **owner** · foreground/moderate | **`job_root`** | `zcl.dev_publication_collect.v1` | `zclassic23-dev dev publication collect --input='{"job_root":"<64-lowercase-hex>"}'` | Bind independent storage and source-reproduction evidence — *publication evidence collection requires the dev-only ZVCS receipt writer* |
 
 #### `dev.publication.mirror` — Record optional non-authoritative mirror evidence
 
@@ -1241,6 +1241,7 @@ represented by its children's sections.
 | `zcode package verify` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_verify.v1` | `zclassic23 zcode package verify --input='{"root":"<64hex>"}'` | Verifier attestation quorum for one package root |
 | `zcode package resolve` | ready | read / read / operator · fast/low | **`name`**, `datadir` | `zcl.zcode_package_resolve.v1` | `zclassic23 zcode package resolve --input='{"name":"ringbuffer"}'` | Resolve a ZNAM package name to its release |
 | `zcode package fetch` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, `day`, `datadir`, `namespace`, `maximum_bytes` | `zcl.zcode_package_fetch.v1` | `zclassic23 zcode package fetch --input='{"root":"<64hex>","namespace":"zclassic23.source","maximum_bytes":268435456}'` | Fetch a package from the authenticated swarm |
+| `zcode package source reproduce` | ready | mutate / app-write / operator, plan-commit · foreground/high | **`mode`**, **`root`**, `namespace`, `sequence`, `not_before`, `expiry`, `plan_token`, `datadir` | `zcl.zcode_source_reproduce.v1` | `zclassic23 zcode package source reproduce --input='{"mode":"plan","root":"<64hex>"}'` | Fetch, reconstruct, and attest one exact source package |
 | `zcode package peers` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_peers.v1` | `zclassic23 zcode package peers --input='{"root":"<64hex>"}'` | Live swarm peers advertising one package root |
 | `zcode package pin` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`root`**, **`mode`**, `plan_token`, `datadir` | `zcl.zcode_package_pin.v1` | `zclassic23 zcode package pin --input='{"root":"<64hex>","mode":"plan"}'` | Pin a tracked package (PINS pool, never evicted) |
 | `zcode package unpin` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`root`**, **`mode`**, `plan_token`, `datadir` | `zcl.zcode_package_unpin.v1` | `zclassic23 zcode package unpin --input='{"root":"<64hex>","mode":"plan"}'` | Release an operator pin |

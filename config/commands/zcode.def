@@ -2813,6 +2813,33 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_zcode_package_fetch)
 
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.package.source.reproduce", "zcode.package", "",
+    "Fetch, reconstruct, and attest one exact source package",
+    "One job-root-derived package root is enough: plan first drives the "
+    "authenticated provider lookup/fetch, re-derives the self-describing "
+    "PROVEN source and accepted-work roots, reconstructs the complete source "
+    "carrier in fresh scratch, deletes that scratch, and returns commit_input "
+    "for one signed SOURCE_REPRODUCTION_ACK. Commit repeats the entire "
+    "reconstruction before publishing the evidence. The ACK is a one-shot "
+    "signed source-reconstruction fact, never storage, acceptance, execution, "
+    "deployment, wallet, consensus, or physical off-host proof.",
+    16384,
+    "zcode,package,source,fetch,reproduce,reconstruction,evidence,plan,commit",
+    "zcl.zcode_source_reproduce.input.v1",
+    "zcl.zcode_source_reproduce.v1",
+    "mode,root,namespace,sequence,not_before,expiry,plan_token,datadir",
+    "mode,root",
+    "zclassic23 zcode package source reproduce --input='{\"mode\":\"plan\",\"root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_package_source_reproduce)
+
 ZCL_COMMAND_READY_READ(
     "zcode.package.peers", "zcode.package", "",
     "Live swarm peers advertising one package root",

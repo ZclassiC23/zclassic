@@ -263,7 +263,9 @@ static bool publication_receipt_serialize(
          receipt->phase !=
              VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED &&
          receipt->phase !=
-             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED) ||
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED &&
+         receipt->phase !=
+             VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED) ||
         !publication_root_nonzero(receipt->job_root) ||
         (receipt->phase !=
              VCS_DEVLOOP_PUBLICATION_PHASE_WAITING_ACCEPTANCE &&
@@ -409,12 +411,14 @@ struct publication_artifact_chain {
     bool workspace_published;
     bool provider_announced;
     bool storage_acknowledged;
+    bool source_reproduced;
     struct vcs_devloop_publication_receipt mapping;
     struct vcs_devloop_publication_receipt release;
     struct vcs_devloop_publication_receipt passport;
     struct vcs_devloop_publication_receipt workspace;
     struct vcs_devloop_publication_receipt provider;
     struct vcs_devloop_publication_receipt storage_ack;
+    struct vcs_devloop_publication_receipt source_reproduction;
 };
 
 /* Resolve an additive artifact suffix back to its mapping receipt.  Every
@@ -429,9 +433,21 @@ static bool publication_artifact_chain_load(
     if (!repo_root || !latest || !out) return false;
     memset(out, 0, sizeof(*out));
     const struct vcs_devloop_publication_receipt *cursor = latest;
+    if (cursor->phase == VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED) {
+        out->source_reproduction = *cursor;
+        out->source_reproduced = true;
+        if (!vcs_devloop_publication_receipt_load(
+                repo_root, cursor->predecessor_receipt_root,
+                &out->storage_ack) ||
+            out->storage_ack.phase !=
+                VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED ||
+            memcmp(out->storage_ack.job_root, latest->job_root, 32) != 0)
+            return false;
+        cursor = &out->storage_ack;
+    }
     if (cursor->phase ==
             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED) {
-        out->storage_ack = *cursor;
+        if (!out->source_reproduced) out->storage_ack = *cursor;
         out->storage_acknowledged = true;
         if (!vcs_devloop_publication_receipt_load(
                 repo_root, cursor->predecessor_receipt_root,
@@ -544,7 +560,9 @@ bool vcs_devloop_publication_advance_waiting_acceptance(
          current.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED ||
          current.phase ==
-             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED)) {
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED ||
+         current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED)) {
         memcpy(receipt_root_out, current_root, 32);
         if (reused_out) *reused_out = true;
         (void)flock(lock_fd, LOCK_UN);
@@ -623,7 +641,9 @@ bool vcs_devloop_publication_advance_proven_work(
          current.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED ||
          current.phase ==
-             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED)) {
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED ||
+         current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED)) {
         struct publication_artifact_chain chain;
         struct vcs_package_mapping_set set;
         vcs_package_mapping_set_init(&set);
@@ -772,7 +792,9 @@ bool vcs_devloop_publication_advance_package_mapping(
          current.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED ||
          current.phase ==
-             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED)) {
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED ||
+         current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED)) {
         struct publication_artifact_chain chain;
         bool same = publication_artifact_chain_load(
                 repo_root, &current, &chain) &&
@@ -873,7 +895,9 @@ bool vcs_devloop_publication_advance_release(
          current.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED ||
          current.phase ==
-             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED)) {
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED ||
+         current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED)) {
         struct publication_artifact_chain chain;
         bool same = publication_artifact_chain_load(
                 repo_root, &current, &chain) &&
@@ -964,7 +988,9 @@ bool vcs_devloop_publication_advance_passport(
          current.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED ||
          current.phase ==
-             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED)) {
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED ||
+         current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED)) {
         struct publication_artifact_chain chain;
         bool same = publication_artifact_chain_load(
                 repo_root, &current, &chain) &&
@@ -1067,7 +1093,9 @@ bool vcs_devloop_publication_advance_workspace(
          current.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED ||
          current.phase ==
-             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED)) {
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED ||
+         current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED)) {
         bool same = chain.workspace_published &&
             chain.passport_published && chain.release_published &&
             chain.mapping_ready &&
@@ -1254,7 +1282,9 @@ bool vcs_devloop_publication_advance_provider(
          observed.phase !=
              VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED &&
          observed.phase !=
-             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED) ||
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED &&
+         observed.phase !=
+             VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED) ||
         !publication_artifact_chain_load(repo_root, &observed, &chain) ||
         !publication_workspace_release_load(repo_root, &chain, &release))
         return false;
@@ -1279,8 +1309,10 @@ bool vcs_devloop_publication_advance_provider(
     uint8_t current_root[32];
     bool have_current = vcs_devloop_publication_progress_load(
         repo_root, job_root, &current, current_root);
-    if (have_current && current.phase ==
-            VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED) {
+    if (have_current &&
+        (current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED ||
+         current.phase == VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED)) {
         bool same = memcmp(current_root, observed_root, 32) == 0 &&
             chain.provider_announced &&
             memcmp(chain.provider.artifact_root, record_root, 32) == 0;
@@ -1361,7 +1393,9 @@ bool vcs_devloop_publication_storage_ack_target(
         (progress.phase !=
              VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED &&
          progress.phase !=
-             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED) ||
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED &&
+         progress.phase !=
+             VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED) ||
         !publication_artifact_chain_load(repo_root, &progress, &chain) ||
         !chain.provider_announced ||
         !publication_workspace_release_load(repo_root, &chain, &release))
@@ -1392,6 +1426,7 @@ bool vcs_devloop_publication_storage_ack_target(
     memcpy(out->transport_root, release.package_root, 32);
     out->existing_acks = progress.storage_acks;
     out->already_acknowledged = chain.storage_acknowledged;
+    out->already_reproduced = chain.source_reproduced;
     return true;
 }
 
@@ -1479,7 +1514,9 @@ bool vcs_devloop_publication_advance_storage_acks(
         (observed.phase !=
              VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED &&
          observed.phase !=
-             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED) ||
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED &&
+         observed.phase !=
+             VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED) ||
         !publication_artifact_chain_load(repo_root, &observed, &chain) ||
         !chain.provider_announced ||
         !publication_workspace_release_load(repo_root, &chain, &release))
@@ -1505,10 +1542,15 @@ bool vcs_devloop_publication_advance_storage_acks(
     uint8_t current_root[32];
     bool have_current = vcs_devloop_publication_progress_load(
         repo_root, job_root, &current, current_root);
-    if (have_current && current.phase ==
-            VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED) {
+    if (have_current &&
+        (current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED ||
+         current.phase == VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED)) {
+        const uint8_t *current_ack_root = current.phase ==
+                VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED
+            ? chain.storage_ack.artifact_root : current.artifact_root;
         bool same = memcmp(current_root, observed_root, 32) == 0 &&
-            memcmp(current.artifact_root, ack_set_root, 32) == 0 &&
+            memcmp(current_ack_root, ack_set_root, 32) == 0 &&
             current.storage_acks == record_count;
         if (same) {
             memcpy(receipt_root_out, current_root, 32);
@@ -1538,6 +1580,232 @@ bool vcs_devloop_publication_advance_storage_acks(
     memcpy(receipt.job_root, job_root, 32);
     memcpy(receipt.predecessor_receipt_root, current_root, 32);
     memcpy(receipt.artifact_root, ack_set_root, 32);
+    uint8_t wire[VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES];
+    bool ok = publication_receipt_serialize(&receipt, wire) &&
+        vcs_object_put(repo_root, wire, sizeof(wire),
+                       VCS_TAG_PUBLICATION_RECEIPT, receipt_root_out);
+    event_log_t *log = ok ? event_log_open(log_path) : NULL;
+    if (ok)
+        ok = log && event_log_append(
+            log, EV_VCS_PUBLICATION_RECEIPT, receipt_root_out, 32) !=
+            UINT64_MAX;
+    if (log) event_log_close(log);
+    (void)flock(lock_fd, LOCK_UN);
+    close(lock_fd);
+    return ok;
+}
+
+static bool publication_record_load_persisted(
+    const char *repo_root, const uint8_t root[32],
+    const struct vcs_zcode_dht_record_verify_context *verify,
+    struct vcs_zcode_dht_record *record)
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    bool expired = false;
+    uint8_t checked[32];
+    bool ok = vcs_object_load_raw_bounded(
+            repo_root, root, VCS_ZCODE_DHT_RECORD_WIRE_BYTES,
+            &wire, &wire_len) == 0 &&
+        wire_len == VCS_ZCODE_DHT_RECORD_WIRE_BYTES &&
+        vcs_zcode_dht_record_parse_persisted(
+            wire, wire_len, verify, &expired, record) ==
+            VCS_ZCODE_DHT_RECORD_OK &&
+        vcs_zcode_dht_record_id(record, checked) ==
+            VCS_ZCODE_DHT_RECORD_OK &&
+        memcmp(checked, root, 32) == 0;
+    free(wire);
+    return ok;
+}
+
+static bool publication_reproducer_distinct(
+    const char *repo_root, const struct publication_artifact_chain *chain,
+    const struct vcs_zcode_dht_record_verify_context *verify,
+    const struct vcs_zcode_dht_record *reproduction)
+{
+    struct vcs_zcode_dht_record provider;
+    if (!chain || !chain->provider_announced ||
+        !chain->storage_acknowledged || !publication_record_load_persisted(
+            repo_root, chain->provider.artifact_root, verify, &provider) ||
+        provider.kind != VCS_ZCODE_DHT_RECORD_PROVIDER ||
+        strcmp(reproduction->namespace_name, provider.namespace_name) != 0 ||
+        memcmp(reproduction->transport_root,
+               provider.transport_root, 32) != 0 ||
+        memcmp(reproduction->provider_node_id,
+               provider.provider_node_id, 32) == 0 ||
+        memcmp(reproduction->owner_group,
+               provider.owner_group, 32) == 0 ||
+        memcmp(reproduction->delegation.doc.master_pubkey,
+               provider.delegation.doc.master_pubkey, 32) == 0)
+        return false;
+
+    uint8_t *set_wire = NULL;
+    size_t set_len = 0;
+    bool ok = vcs_object_get(
+            repo_root, chain->storage_ack.artifact_root,
+            VCS_TAG_PUBLICATION_ACK_SET, &set_wire, &set_len) == 0 &&
+        set_len >= VCS_DEV_PUBLICATION_ACK_SET_HEADER_BYTES &&
+        memcmp(set_wire, publication_ack_set_magic, 8) == 0 &&
+        zcl_read_u32_le(set_wire + 8) == 1u;
+    uint16_t count = ok ? zcl_read_u16_le(set_wire + 12) : 0;
+    ok = ok && count >= VCS_DEVLOOP_PUBLICATION_ACK_MIN &&
+        count <= VCS_DEVLOOP_PUBLICATION_ACK_MAX &&
+        set_len == VCS_DEV_PUBLICATION_ACK_SET_HEADER_BYTES +
+                       (size_t)count * 32u;
+    for (uint16_t i = 0; ok && i < count; i++) {
+        const uint8_t *root = set_wire +
+            VCS_DEV_PUBLICATION_ACK_SET_HEADER_BYTES + (size_t)i * 32u;
+        struct vcs_zcode_dht_record storage;
+        ok = publication_record_load_persisted(
+                repo_root, root, verify, &storage) &&
+            storage.kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK &&
+            strcmp(storage.namespace_name,
+                   reproduction->namespace_name) == 0 &&
+            memcmp(storage.transport_root,
+                   reproduction->transport_root, 32) == 0 &&
+            memcmp(reproduction->provider_node_id,
+                   storage.provider_node_id, 32) != 0 &&
+            memcmp(reproduction->owner_group,
+                   storage.owner_group, 32) != 0 &&
+            memcmp(reproduction->delegation.doc.master_pubkey,
+                   storage.delegation.doc.master_pubkey, 32) != 0;
+    }
+    free(set_wire);
+    return ok;
+}
+
+bool vcs_devloop_publication_source_reproduction_target(
+    const char *repo_root, const uint8_t job_root[32],
+    const struct vcs_zcode_dht_record_verify_context *verify,
+    struct vcs_devloop_publication_ack_target *out)
+{
+    if (!repo_root || !repo_root[0] || !job_root || !verify || !out ||
+        !vcs_devloop_publication_job_is_queued(repo_root, job_root))
+        return false;
+    memset(out, 0, sizeof(*out));
+    struct vcs_devloop_publication_job job;
+    struct vcs_devloop_publication_receipt progress;
+    uint8_t progress_root[32];
+    struct publication_artifact_chain chain;
+    struct vcs_package_release release;
+    if (!vcs_devloop_publication_job_load(repo_root, job_root, &job) ||
+        !vcs_devloop_publication_progress_load(
+            repo_root, job_root, &progress, progress_root) ||
+        (progress.phase !=
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED &&
+         progress.phase != VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED) ||
+        !publication_artifact_chain_load(repo_root, &progress, &chain) ||
+        !chain.storage_acknowledged || !chain.provider_announced ||
+        !publication_workspace_release_load(repo_root, &chain, &release))
+        return false;
+    struct vcs_zcode_dht_record provider;
+    if (!publication_record_load_persisted(
+            repo_root, chain.provider.artifact_root, verify, &provider) ||
+        provider.kind != VCS_ZCODE_DHT_RECORD_PROVIDER ||
+        memcmp(provider.transport_root, release.package_root, 32) != 0)
+        return false;
+    (void)snprintf(out->namespace_name, sizeof(out->namespace_name), "%s",
+                   provider.namespace_name);
+    memcpy(out->transport_root, release.package_root, 32);
+    memcpy(out->source_root, job.source_tree_root, 32);
+    out->existing_acks = progress.storage_acks;
+    out->already_acknowledged = true;
+    out->already_reproduced = chain.source_reproduced;
+    return true;
+}
+
+bool vcs_devloop_publication_advance_source_reproduction_ack(
+    const char *repo_root, const uint8_t job_root[32],
+    const uint8_t *record_wire, size_t record_wire_len,
+    const struct vcs_zcode_dht_record_verify_context *verify,
+    uint8_t receipt_root_out[32], bool *reused_out)
+{
+    if (reused_out) *reused_out = false;
+    if (!repo_root || !repo_root[0] || !job_root || !record_wire || !verify ||
+        !receipt_root_out ||
+        !vcs_devloop_publication_job_is_queued(repo_root, job_root))
+        return false;
+    struct vcs_devloop_publication_job job;
+    struct vcs_devloop_publication_receipt observed;
+    uint8_t observed_root[32];
+    struct publication_artifact_chain chain;
+    struct vcs_package_release release;
+    struct vcs_zcode_dht_record reproduction;
+    uint8_t record_root[32];
+    if (!vcs_devloop_publication_job_load(repo_root, job_root, &job) ||
+        !vcs_devloop_publication_progress_load(
+            repo_root, job_root, &observed, observed_root) ||
+        (observed.phase !=
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED &&
+         observed.phase != VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED) ||
+        !publication_artifact_chain_load(repo_root, &observed, &chain) ||
+        !chain.storage_acknowledged ||
+        !publication_workspace_release_load(repo_root, &chain, &release) ||
+        record_wire_len != VCS_ZCODE_DHT_RECORD_WIRE_BYTES ||
+        vcs_zcode_dht_record_parse(
+            record_wire, record_wire_len, verify, &reproduction) !=
+            VCS_ZCODE_DHT_RECORD_OK ||
+        reproduction.kind !=
+            VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK ||
+        memcmp(reproduction.semantic_root, job.source_tree_root, 32) != 0 ||
+        memcmp(reproduction.transport_root, release.package_root, 32) != 0 ||
+        !publication_reproducer_distinct(
+            repo_root, &chain, verify, &reproduction) ||
+        vcs_zcode_dht_record_id(&reproduction, record_root) !=
+            VCS_ZCODE_DHT_RECORD_OK)
+        return false;
+    bool repaired = false;
+    if (!vcs_object_store_init(repo_root) ||
+        !vcs_object_put_addressed_repair(
+            repo_root, record_root, record_wire, record_wire_len, &repaired))
+        return false;
+
+    char lock_path[PATH_MAX], log_path[PATH_MAX];
+    bool paths = publication_queue_path(
+            repo_root, "publication.lock", lock_path, sizeof(lock_path)) &&
+        publication_queue_path(repo_root, "publication.receipts.log",
+                               log_path, sizeof(log_path));
+    int lock_fd = paths
+        ? open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC, 0600) : -1;
+    if (lock_fd < 0 || flock(lock_fd, LOCK_EX) != 0) {
+        if (lock_fd >= 0) close(lock_fd);
+        return false;
+    }
+    struct vcs_devloop_publication_receipt current;
+    uint8_t current_root[32];
+    bool have_current = vcs_devloop_publication_progress_load(
+        repo_root, job_root, &current, current_root);
+    if (have_current && current.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED) {
+        bool same = memcmp(current_root, observed_root, 32) == 0 &&
+            memcmp(current.artifact_root, record_root, 32) == 0;
+        if (same) {
+            memcpy(receipt_root_out, current_root, 32);
+            if (reused_out) *reused_out = true;
+        }
+        (void)flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        return same;
+    }
+    if (!have_current || current.phase !=
+            VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED ||
+        memcmp(current_root, observed_root, 32) != 0) {
+        (void)flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        return false;
+    }
+    struct vcs_devloop_publication_receipt receipt = {
+        .version = VCS_DEVLOOP_PUBLICATION_RECEIPT_VERSION,
+        .phase = VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED,
+        .bytes_scanned = current.bytes_scanned,
+        .new_chunks = current.new_chunks,
+        .reused_chunks = current.reused_chunks,
+        .providers = current.providers,
+        .storage_acks = current.storage_acks,
+    };
+    memcpy(receipt.job_root, job_root, 32);
+    memcpy(receipt.predecessor_receipt_root, current_root, 32);
+    memcpy(receipt.artifact_root, record_root, 32);
     uint8_t wire[VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES];
     bool ok = publication_receipt_serialize(&receipt, wire) &&
         vcs_object_put(repo_root, wire, sizeof(wire),

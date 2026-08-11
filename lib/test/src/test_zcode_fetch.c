@@ -25,6 +25,7 @@
 
 #include "command/native_command.h"
 #include "command/native_zcode_discovery.h"
+#include "controllers/rpc_client.h"
 
 #include "chain/chainparams.h"
 #include "json/json.h"
@@ -32,6 +33,7 @@
 #include "vcs/package_reward.h"
 #include "vcs/package_store.h"
 #include "vcs/package_swarm_node.h"
+#include "util/safe_alloc.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -138,6 +140,52 @@ static bool zf_route_provider(struct json_value *selector,
     (void)json_push_kv_str(result, "fetch_result", "ok");
     (void)json_push_kv_bool(result, "restricted", true);
     return true;
+}
+
+static bool zf_route_reproduction_complete(struct json_value *selector,
+                                           struct json_value *result)
+{
+    if (!zf_route_provider(selector, result))
+        return false;
+    json_set_str((struct json_value *)json_get(result, "fetch_result"),
+                 "already-complete");
+    return true;
+}
+
+static char zf_reproduction_root[65];
+static unsigned zf_reproduction_plan_calls;
+static unsigned zf_reproduction_commit_calls;
+static bool zf_reproduction_rpc_exact;
+
+static char *zf_reproduction_rpc_hook(const char *method,
+                                      const char *params_json)
+{
+    static const char token[] =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    static const char source[] =
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    if (strcmp(method, "zcode_dht_source_reproduction_ack") != 0)
+        return zcl_strdup("{\"ok\":false,\"code\":\"UNEXPECTED_RPC\"}",
+                          "test.zcode_fetch.reproduction_unexpected");
+    bool plan = params_json && strstr(params_json, "\"mode\":\"plan\"");
+    bool commit = params_json &&
+        strstr(params_json, "\"mode\":\"commit\"");
+    zf_reproduction_plan_calls += plan;
+    zf_reproduction_commit_calls += commit;
+    zf_reproduction_rpc_exact = params_json &&
+        strstr(params_json, zf_reproduction_root) &&
+        strstr(params_json, "\"namespace\":\"zclassic23.source\"") &&
+        (!commit || strstr(params_json, token));
+    char body[512];
+    int n = snprintf(
+        body, sizeof(body),
+        "{\"ok\":true,\"mode\":\"%s\",\"committed\":%s,"
+        "\"plan_token\":\"%s\",\"record\":{"
+        "\"semantic_root\":\"%s\"}}",
+        commit ? "commit" : "plan", commit ? "true" : "false",
+        token, source);
+    return n > 0 && (size_t)n < sizeof(body)
+        ? zcl_strdup(body, "test.zcode_fetch.reproduction") : NULL;
 }
 
 static bool zf_store_package(struct vcs_package_store *store,
@@ -299,6 +347,123 @@ static int zf_t_fetch_complete(void)
     return failures;
 }
 
+static int zf_t_source_reproduction_loop(void)
+{
+    int failures = 0;
+    TEST("zcode source reproduce: one root drives fetch, plan and commit") {
+        char dd[1024];
+        test_make_tmpdir(dd, sizeof(dd), "zcode_fetch", "reproduce");
+        struct zf_pkg pkg;
+        ASSERT(zf_make_package(&pkg, 0x5a));
+        (void)snprintf(zf_reproduction_root,
+                       sizeof(zf_reproduction_root), "%s", pkg.root_hex);
+
+        struct zf_cmd c;
+        zf_cmd_init(&c, dd);
+        (void)json_push_kv_str(&c.input, "mode", "plan");
+        (void)json_push_kv_str(&c.input, "root", "not-a-root");
+        zcl_native_handle_zcode_package_source_reproduce(
+            &c.request, &c.reply);
+        ASSERT_EQ(c.reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(c.reply.error.code,
+                      "BAD_SOURCE_REPRODUCTION_INPUT");
+        zf_cmd_free(&c);
+
+        zcl_native_zcode_discovery_test_backend(
+            zf_discover_provider, zf_route_provider);
+        zf_cmd_init(&c, dd);
+        (void)json_push_kv_str(&c.input, "mode", "plan");
+        (void)json_push_kv_str(&c.input, "root", pkg.root_hex);
+        zcl_native_handle_zcode_package_source_reproduce(
+            &c.request, &c.reply);
+        if (c.reply.exit_code != ZCL_COMMAND_EXIT_OK)
+            printf("source reproduce pending failed: %s: %s\n",
+                   c.reply.error.code, c.reply.error.message);
+        ASSERT_EQ(c.reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&c.reply.data, "status")),
+                      "FETCH_PENDING");
+        ASSERT(!json_get_bool(json_get(
+            &c.reply.data, "reconstructed")));
+        ASSERT(!json_get_bool(json_get(
+            &c.reply.data, "evidence_signed")));
+        ASSERT(strstr(json_get_str(json_get(
+                          &c.reply.data, "next_command")),
+                      pkg.root_hex) != NULL);
+        zf_cmd_free(&c);
+
+        zcl_native_zcode_discovery_test_backend(
+            zf_discover_provider, zf_route_reproduction_complete);
+        zf_reproduction_plan_calls = 0;
+        zf_reproduction_commit_calls = 0;
+        zf_reproduction_rpc_exact = false;
+        node_rpc_client_set_test_hook(zf_reproduction_rpc_hook);
+        zf_cmd_init(&c, dd);
+        (void)json_push_kv_str(&c.input, "mode", "plan");
+        (void)json_push_kv_str(&c.input, "root", pkg.root_hex);
+        zcl_native_handle_zcode_package_source_reproduce(
+            &c.request, &c.reply);
+        if (c.reply.exit_code != ZCL_COMMAND_EXIT_OK)
+            printf("source reproduce plan failed: %s: %s\n",
+                   c.reply.error.code, c.reply.error.message);
+        ASSERT_EQ(c.reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&c.reply.data, "status")),
+                      "SOURCE_REPRODUCTION_PROVEN");
+        ASSERT(json_get_bool(json_get(
+            &c.reply.data, "reconstructed")));
+        ASSERT(json_get_bool(json_get(
+            &c.reply.data, "evidence_signed")));
+        ASSERT(!json_get_bool(json_get(
+            &c.reply.data, "physical_independence_attested")));
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &c.reply.data, "source_tree_root")),
+                      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        ASSERT_EQ(zf_reproduction_plan_calls, 1u);
+        ASSERT_EQ(zf_reproduction_commit_calls, 0u);
+        ASSERT(zf_reproduction_rpc_exact);
+        const struct json_value *planned_commit = json_get(
+            &c.reply.data, "commit_input");
+        ASSERT(planned_commit && planned_commit->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(planned_commit, "root")),
+                      pkg.root_hex);
+        ASSERT(json_get(planned_commit, "semantic_root") == NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          planned_commit, "plan_token")),
+                      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        struct json_value commit_input;
+        json_init(&commit_input);
+        json_copy(&commit_input, planned_commit);
+        zf_cmd_free(&c);
+
+        struct zcl_command_request commit_request = {
+            .input = &commit_input,
+        };
+        struct zcl_command_reply commit_reply;
+        zcl_command_reply_init(&commit_reply,
+                               "zcl.zcode_source_reproduce.v1");
+        zf_reproduction_rpc_exact = false;
+        zcl_native_handle_zcode_package_source_reproduce(
+            &commit_request, &commit_reply);
+        ASSERT_EQ(commit_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &commit_reply.data, "status")),
+                      "SOURCE_REPRODUCTION_PUBLISHED");
+        ASSERT(json_get_bool(json_get(
+            &commit_reply.data, "committed")));
+        ASSERT_EQ(zf_reproduction_plan_calls, 1u);
+        ASSERT_EQ(zf_reproduction_commit_calls, 1u);
+        ASSERT(zf_reproduction_rpc_exact);
+        zcl_command_reply_free(&commit_reply);
+        json_free(&commit_input);
+        node_rpc_client_set_test_hook(NULL);
+        zcl_native_zcode_discovery_test_backend(NULL, NULL);
+        zf_free_package(&pkg);
+        PASS();
+    } _test_next:;
+    node_rpc_client_set_test_hook(NULL);
+    zcl_native_zcode_discovery_test_backend(NULL, NULL);
+    return failures;
+}
+
 static int zf_t_peers_one_shot(void)
 {
     int failures = 0;
@@ -417,6 +582,7 @@ int test_zcode_fetch(void)
     failures += zf_t_fetch_bad_root();
     failures += zf_t_fetch_dht_routed_live();
     failures += zf_t_fetch_complete();
+    failures += zf_t_source_reproduction_loop();
     failures += zf_t_peers_one_shot();
     failures += zf_t_pin_roundtrip();
     return failures;

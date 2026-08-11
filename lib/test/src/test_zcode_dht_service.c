@@ -1556,6 +1556,46 @@ static int test_record_transport_and_restart(void) {
                   a, ack_store, &ack_spec, ack_token, test_time(1004),
                   &ack_record),
               VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+
+    /* Source-reproduction evidence is a separate, one-shot signed fact.
+     * Only the reconstruction-verified path may author it; the generic
+     * publisher refuses it, an omitted owner group is derived from the
+     * signing lineage, and the evidence is never renewed. */
+    struct vcs_zcode_dht_publish_spec reproduction_spec = ack_spec;
+    reproduction_spec.kind =
+        VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK;
+    memset(reproduction_spec.semantic_root, 0x6a, 32);
+    memset(reproduction_spec.owner_group, 0, 32);
+    uint8_t reproduction_token[32];
+    struct vcs_zcode_dht_record reproduction_record;
+    ASSERT(!vcs_zcode_dht_service_record_publish_plan(
+        a, &reproduction_spec, reproduction_token,
+        &reproduction_record));
+    ASSERT(vcs_zcode_dht_source_reproduction_ack_plan_verified(
+        a, &reproduction_spec, reproduction_token,
+        &reproduction_record));
+    ASSERT(reproduction_record.kind ==
+           VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK);
+    ASSERT(memcmp(reproduction_record.semantic_root,
+                  reproduction_spec.semantic_root, 32) == 0);
+    ASSERT(memcmp(reproduction_record.transport_root,
+                  reproduction_spec.transport_root, 32) == 0);
+    ASSERT(memcmp(reproduction_record.owner_group,
+                  (uint8_t[32]){0}, 32) != 0);
+    ASSERT_EQ(vcs_zcode_dht_source_reproduction_ack_commit_verified(
+                  a, &reproduction_spec, reproduction_token,
+                  test_time(1004), &reproduction_record),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    struct vcs_zcode_dht_record_selector reproduction_selector = {
+        .kind = VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK};
+    (void)snprintf(reproduction_selector.namespace_name,
+                   sizeof(reproduction_selector.namespace_name),
+                   "science");
+    memcpy(reproduction_selector.root, ack_root, 32);
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  a, 1004, &reproduction_selector, local, 1),
+              1);
+    ASSERT_EQ(local[0].sequence, 1);
     struct vcs_zcode_dht_storage_ack_proof_request proof_request;
     ASSERT_EQ(vcs_zcode_dht_service_storage_ack_proof_requests(
                   a, test_time(1500), &proof_request, 1),
@@ -1609,7 +1649,7 @@ static int test_record_transport_and_restart(void) {
     ASSERT(a != NULL);
     struct vcs_zcode_dht_service_status publication_status;
     vcs_zcode_dht_service_status(a, &publication_status);
-    ASSERT_EQ(publication_status.publication_intents, 2);
+    ASSERT_EQ(publication_status.publication_intents, 3);
     struct vcs_zcode_dht_record_selector published_selector = {
         .kind = VCS_ZCODE_DHT_RECORD_POINTER};
     snprintf(published_selector.namespace_name,
@@ -1629,9 +1669,19 @@ static int test_record_transport_and_restart(void) {
                   a, 1800, &ack_selector, local, 1),
               1);
     ASSERT_EQ(local[0].sequence, 2);
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  a, 1800, &reproduction_selector, local, 1),
+              1);
+    ASSERT_EQ(local[0].sequence, 1);
+    vcs_zcode_dht_service_tick(a, test_time(2001));
+    ASSERT_EQ(vcs_zcode_dht_service_record_local_query(
+                  a, 2001, &reproduction_selector, local, 1),
+              0);
+    vcs_zcode_dht_service_status(a, &publication_status);
+    ASSERT_EQ(publication_status.publication_intents, 2);
     vcs_package_store_close(ack_store);
     test_rm_rf_recursive(ack_dir);
-    vcs_zcode_dht_service_free(a, test_time(1800));
+    vcs_zcode_dht_service_free(a, test_time(2001));
     vcs_zcode_dht_service_free(b, test_time(1004));
     cleanup_fixture(adir);
     cleanup_fixture(bdir);
