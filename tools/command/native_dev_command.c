@@ -477,13 +477,20 @@ void zcl_native_handle_dev_publication_status(
             job_hex);
         return;
     }
-    char hex[65], next_command[256];
+    char hex[65], next_command[256], collect_command[256];
     int next_len = snprintf(
         next_command, sizeof(next_command),
         "zclassic23-dev dev publication advance --input='"
         "{\"job_root\":\"%s\"}'",
         job_hex);
-    if (next_len <= 0 || (size_t)next_len >= sizeof(next_command)) {
+    int collect_len = snprintf(
+        collect_command, sizeof(collect_command),
+        "zclassic23-dev dev publication collect --input='"
+        "{\"job_root\":\"%s\"}'",
+        job_hex);
+    if (next_len <= 0 || (size_t)next_len >= sizeof(next_command) ||
+        collect_len <= 0 ||
+        (size_t)collect_len >= sizeof(collect_command)) {
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
             "PUBLICATION_STATUS_RENDER_FAILED", "render", false, false,
@@ -596,7 +603,7 @@ void zcl_native_handle_dev_publication_status(
         storage_acknowledged ?
             "zclassic23 discover search source fetch" :
         provider_announced ?
-            "zclassic23 discover schema zcode.network.storage_ack" :
+            collect_command :
         workspace_published ?
             "zclassic23 discover search provider" :
         passport_published ?
@@ -834,12 +841,19 @@ void zcl_native_handle_dev_publication_advance(
     char receipt_hex[65];
     zcl_hex_encode(have_progress ? loaded_progress_root : receipt_root,
                    32, receipt_hex);
-    char retry_command[256];
+    char retry_command[256], collect_command[256];
     int retry_len = snprintf(
         retry_command, sizeof(retry_command),
         "zclassic23-dev dev publication advance --input='"
         "{\"job_root\":\"%s\"}'", job_hex);
-    if (retry_len <= 0 || (size_t)retry_len >= sizeof(retry_command)) {
+    int collect_len = snprintf(
+        collect_command, sizeof(collect_command),
+        "zclassic23-dev dev publication collect --input='"
+        "{\"job_root\":\"%s\"}'",
+        job_hex);
+    if (retry_len <= 0 || (size_t)retry_len >= sizeof(retry_command) ||
+        collect_len <= 0 ||
+        (size_t)collect_len >= sizeof(collect_command)) {
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
             "PUBLICATION_ADVANCE_RENDER_FAILED", "render", false, false,
@@ -971,7 +985,7 @@ void zcl_native_handle_dev_publication_advance(
         storage_acknowledged ?
             "zclassic23 discover search source fetch" :
         provider_announced ?
-            "zclassic23 discover schema zcode.network.storage_ack" :
+            collect_command :
         workspace_published ?
             "zclassic23 discover search provider" :
         passport_published ?
@@ -982,6 +996,172 @@ void zcl_native_handle_dev_publication_advance(
             "zclassic23 discover schema zcode.package.dev.publish.plan" :
         lane_bound ? retry_command :
             "zclassic23 zcode guide");
+}
+
+void zcl_native_handle_dev_publication_collect(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    const char *job_hex = json_get_str(json_get(request->input, "job_root"));
+    uint8_t job_root[32];
+    if (!job_hex || strlen(job_hex) != 64 ||
+        !zcl_hex_decode_lower(job_hex, job_root, sizeof(job_root))) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "INVALID_JOB_ROOT", "normalize", false, false,
+            "job_root must be exactly 64 lowercase hexadecimal characters",
+            job_hex ? job_hex : "missing job_root");
+        return;
+    }
+
+    struct vcs_zcode_dht_record_verify_context verify = {
+        .now_unix = (uint64_t)platform_time_wall_time_t(),
+    };
+    if (!zcl_native_zcode_network_genesis(verify.network_genesis)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+            "PUBLICATION_NODE_UNAVAILABLE", "network", true, false,
+            "the authenticated local node could not resolve network genesis",
+            "getblockhash(0)");
+        return;
+    }
+    const char *repo_root = dev_source_root(request);
+    struct vcs_devloop_publication_ack_target target;
+    if (!vcs_devloop_publication_storage_ack_target(
+            repo_root, job_root, &verify, &target)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+            "STORAGE_ACK_TARGET_UNAVAILABLE", "load", true, false,
+            "the job has no verified provider-announced package target",
+            job_hex);
+        return;
+    }
+
+    (void)json_push_kv_str(&reply->data, "schema",
+                           "zcl.dev_publication_collect.v1");
+    (void)json_push_kv_str(&reply->data, "publication_job_root", job_hex);
+    (void)json_push_kv_int(&reply->data, "required_storage_acks",
+                           VCS_DEVLOOP_PUBLICATION_ACK_MIN);
+    (void)json_push_kv_bool(&reply->data, "network_called", true);
+    (void)json_push_kv_bool(&reply->data, "discovery_called",
+                            !target.already_acknowledged);
+    (void)json_push_kv_str(
+        &reply->data, "chain_authority",
+        "authenticated_local_node_discovery_plus_local_signature_recheck");
+    if (target.already_acknowledged) {
+        (void)json_push_kv_str(&reply->data, "status",
+                               "STORAGE_ACKNOWLEDGED");
+        (void)json_push_kv_int(&reply->data, "storage_acks",
+                               target.existing_acks);
+        (void)json_push_kv_bool(&reply->data, "receipt_reused", true);
+        (void)json_push_kv_bool(&reply->data, "receipt_written", false);
+        (void)json_push_kv_str(&reply->data, "blocker",
+                               "remote_reproduction_required");
+        (void)json_push_kv_str(&reply->data, "next_command",
+                               "zclassic23 discover search source fetch");
+        return;
+    }
+
+    char transport_hex[65];
+    zcl_hex_encode(target.transport_root, 32, transport_hex);
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, "kind", "storage_ack");
+    (void)json_push_kv_str(&input, "namespace", target.namespace_name);
+    (void)json_push_kv_str(&input, "transport_root", transport_hex);
+    (void)json_push_kv_bool(&input, "include_evidence_wires", true);
+    struct zcl_command_request discovery_request = *request;
+    discovery_request.input = &input;
+    struct zcl_command_reply discovery;
+    zcl_command_reply_init(&discovery, "zcl.zcode_network_records.v1");
+    zcl_native_handle_zcode_network_records(&discovery_request, &discovery);
+    json_free(&input);
+    if (discovery.exit_code != ZCL_COMMAND_EXIT_OK) {
+        zcl_command_reply_fail(
+            reply, discovery.status, discovery.exit_code,
+            discovery.error.code[0] ? discovery.error.code
+                                    : "STORAGE_ACK_DISCOVERY_FAILED",
+            discovery.error.phase[0] ? discovery.error.phase : "network",
+            discovery.error.retryable, false,
+            discovery.error.message[0]
+                ? discovery.error.message
+                : "storage ACK discovery failed",
+            discovery.error.evidence);
+        zcl_command_reply_free(&discovery);
+        return;
+    }
+
+    uint8_t wires[VCS_DEVLOOP_PUBLICATION_ACK_MAX]
+                 [VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+    const uint8_t *wire_ptrs[VCS_DEVLOOP_PUBLICATION_ACK_MAX];
+    size_t wire_lengths[VCS_DEVLOOP_PUBLICATION_ACK_MAX];
+    size_t wire_count = 0;
+    const struct json_value *rows = json_get(&discovery.data, "records");
+    size_t row_count = rows && rows->type == JSON_ARR ? json_size(rows) : 0;
+    for (size_t i = 0;
+         i < row_count && wire_count < VCS_DEVLOOP_PUBLICATION_ACK_MAX; i++) {
+        const struct json_value *row = json_at(rows, i);
+        const char *wire_hex = row
+            ? json_get_str(json_get(row, "record_wire")) : NULL;
+        if (!wire_hex ||
+            strlen(wire_hex) != VCS_ZCODE_DHT_RECORD_WIRE_BYTES * 2u ||
+            !zcl_hex_decode_lower(
+                wire_hex, wires[wire_count], sizeof(wires[wire_count])))
+            continue;
+        wire_ptrs[wire_count] = wires[wire_count];
+        wire_lengths[wire_count] = sizeof(wires[wire_count]);
+        wire_count++;
+    }
+    (void)json_push_kv_int(&reply->data, "records_seen", (int64_t)row_count);
+    (void)json_push_kv_int(&reply->data, "evidence_wires",
+                           (int64_t)wire_count);
+    if (wire_count < VCS_DEVLOOP_PUBLICATION_ACK_MIN) {
+        (void)json_push_kv_str(&reply->data, "status", "ACKS_PENDING");
+        (void)json_push_kv_int(&reply->data, "storage_acks",
+                               (int64_t)wire_count);
+        (void)json_push_kv_bool(&reply->data, "receipt_reused", false);
+        (void)json_push_kv_bool(&reply->data, "receipt_written", false);
+        (void)json_push_kv_str(&reply->data, "blocker",
+                               "independent_storage_acks_required");
+        char next[256];
+        int n = snprintf(
+            next, sizeof(next),
+            "zclassic23-dev dev publication collect --input='"
+            "{\"job_root\":\"%s\"}'", job_hex);
+        if (n > 0 && (size_t)n < sizeof(next))
+            (void)json_push_kv_str(&reply->data, "next_command", next);
+        zcl_command_reply_free(&discovery);
+        return;
+    }
+
+    uint8_t receipt_root[32];
+    bool reused = false;
+    bool advanced = vcs_devloop_publication_advance_storage_acks(
+        repo_root, job_root, wire_ptrs, wire_lengths, wire_count, &verify,
+        receipt_root, &reused);
+    zcl_command_reply_free(&discovery);
+    if (!advanced) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "STORAGE_ACK_BIND_FAILED", "verify", true, false,
+            "discovered ACK wires failed exact job/package/diversity verification",
+            job_hex);
+        return;
+    }
+    char receipt_hex[65];
+    zcl_hex_encode(receipt_root, 32, receipt_hex);
+    (void)json_push_kv_str(&reply->data, "status",
+                           "STORAGE_ACKNOWLEDGED");
+    (void)json_push_kv_int(&reply->data, "storage_acks",
+                           (int64_t)wire_count);
+    (void)json_push_kv_str(&reply->data, "progress_receipt_root",
+                           receipt_hex);
+    (void)json_push_kv_bool(&reply->data, "receipt_reused", reused);
+    (void)json_push_kv_bool(&reply->data, "receipt_written", !reused);
+    (void)json_push_kv_str(&reply->data, "blocker",
+                           "remote_reproduction_required");
+    (void)json_push_kv_str(&reply->data, "next_command",
+                           "zclassic23 discover search source fetch");
 }
 
 void zcl_native_handle_dev_core_boundary(

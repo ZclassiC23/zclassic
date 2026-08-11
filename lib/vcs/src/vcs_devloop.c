@@ -42,7 +42,6 @@ bool vcs_devloop_hex32_decode(const char *hex, uint8_t out[32])
 #define VCS_DEV_PUBLICATION_JOB_WIRE_BYTES 236u
 #define VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES 132u
 #define VCS_DEV_PUBLICATION_PROGRESS_MAX 4096u
-#define VCS_DEV_PUBLICATION_ACK_MAX 16u
 #define VCS_DEV_PUBLICATION_ACK_SET_HEADER_BYTES 16u
 
 static const uint8_t dev_proof_magic[8] = {'Z','D','P','F','1',0,0,0};
@@ -1344,6 +1343,58 @@ static int publication_root_compare(const void *left, const void *right)
     return memcmp(left, right, 32);
 }
 
+bool vcs_devloop_publication_storage_ack_target(
+    const char *repo_root, const uint8_t job_root[32],
+    const struct vcs_zcode_dht_record_verify_context *verify,
+    struct vcs_devloop_publication_ack_target *out)
+{
+    if (!repo_root || !repo_root[0] || !job_root || !verify || !out ||
+        !vcs_devloop_publication_job_is_queued(repo_root, job_root))
+        return false;
+    memset(out, 0, sizeof(*out));
+    struct vcs_devloop_publication_receipt progress;
+    uint8_t progress_root[32];
+    struct publication_artifact_chain chain;
+    struct vcs_package_release release;
+    if (!vcs_devloop_publication_progress_load(
+            repo_root, job_root, &progress, progress_root) ||
+        (progress.phase !=
+             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED &&
+         progress.phase !=
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED) ||
+        !publication_artifact_chain_load(repo_root, &progress, &chain) ||
+        !chain.provider_announced ||
+        !publication_workspace_release_load(repo_root, &chain, &release))
+        return false;
+
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    struct vcs_zcode_dht_record provider;
+    uint8_t provider_root[32];
+    bool provider_expired = false;
+    bool ok = vcs_object_load_raw_bounded(
+            repo_root, chain.provider.artifact_root,
+            VCS_ZCODE_DHT_RECORD_WIRE_BYTES, &wire, &wire_len) == 0 &&
+        wire_len == VCS_ZCODE_DHT_RECORD_WIRE_BYTES &&
+        vcs_zcode_dht_record_parse_persisted(
+            wire, wire_len, verify, &provider_expired, &provider) ==
+                VCS_ZCODE_DHT_RECORD_OK &&
+        provider.kind == VCS_ZCODE_DHT_RECORD_PROVIDER &&
+        memcmp(provider.transport_root, release.package_root, 32) == 0 &&
+        vcs_zcode_dht_record_id(&provider, provider_root) ==
+            VCS_ZCODE_DHT_RECORD_OK &&
+        memcmp(provider_root, chain.provider.artifact_root, 32) == 0;
+    free(wire);
+    if (!ok)
+        return false;
+    (void)snprintf(out->namespace_name, sizeof(out->namespace_name), "%s",
+                   provider.namespace_name);
+    memcpy(out->transport_root, release.package_root, 32);
+    out->existing_acks = progress.storage_acks;
+    out->already_acknowledged = chain.storage_acknowledged;
+    return true;
+}
+
 static bool publication_storage_ack_set_store(
     const char *repo_root, const struct vcs_package_release *release,
     const uint8_t *const record_wires[], const size_t record_wire_lengths[],
@@ -1352,12 +1403,13 @@ static bool publication_storage_ack_set_store(
     uint8_t ack_set_root_out[32])
 {
     if (!repo_root || !release || !record_wires || !record_wire_lengths ||
-        record_count == 0 || record_count > VCS_DEV_PUBLICATION_ACK_MAX ||
+        record_count < VCS_DEVLOOP_PUBLICATION_ACK_MIN ||
+        record_count > VCS_DEVLOOP_PUBLICATION_ACK_MAX ||
         !verify || !ack_set_root_out)
         return false;
-    uint8_t roots[VCS_DEV_PUBLICATION_ACK_MAX][32];
-    uint8_t providers[VCS_DEV_PUBLICATION_ACK_MAX][32];
-    uint8_t groups[VCS_DEV_PUBLICATION_ACK_MAX][32];
+    uint8_t roots[VCS_DEVLOOP_PUBLICATION_ACK_MAX][32];
+    uint8_t providers[VCS_DEVLOOP_PUBLICATION_ACK_MAX][32];
+    uint8_t groups[VCS_DEVLOOP_PUBLICATION_ACK_MAX][32];
     for (size_t i = 0; i < record_count; i++) {
         struct vcs_zcode_dht_record record;
         if (!record_wires[i] ||
@@ -1385,7 +1437,7 @@ static bool publication_storage_ack_set_store(
     }
     qsort(roots, record_count, 32, publication_root_compare);
     uint8_t wire[VCS_DEV_PUBLICATION_ACK_SET_HEADER_BYTES +
-                 VCS_DEV_PUBLICATION_ACK_MAX * 32];
+                 VCS_DEVLOOP_PUBLICATION_ACK_MAX * 32];
     size_t wire_len = VCS_DEV_PUBLICATION_ACK_SET_HEADER_BYTES +
                       record_count * 32;
     memset(wire, 0, wire_len);

@@ -74,17 +74,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 684 |
+| Registry entries (branches + leaves) | 685 |
 | Top-level roots | 11 |
 | Branches | 161 |
-| Leaves (dispatchable command paths) | 523 |
+| Leaves (dispatchable command paths) | 524 |
 | … `ready` (live handler in this build) | 471 |
-| … `compat` (metadata only, names a fallback) | 22 |
+| … `compat` (metadata only, names a fallback) | 23 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
-| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 21 |
-| Leaves with `effect=mutate` | 172 |
+| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 22 |
+| Leaves with `effect=mutate` | 173 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 110 |
+| Leaves requiring **owner** authority | 111 |
 
 Per source file:
 
@@ -96,7 +96,7 @@ Per source file:
 | `config/commands/app_features.def` | 61 | 18 | 43 |
 | `config/commands/store.def` | 18 | 0 | 18 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
-| `config/commands/dev.def` | 53 | 13 | 40 |
+| `config/commands/dev.def` | 54 | 13 | 41 |
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
@@ -631,6 +631,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `dev publication status` | ready | read / read / operator · fast/low | **`job_root`** | `zcl.dev_publication_status.v1` | `zclassic23-dev dev publication status --input='{"job_root":"<64-lowercase-hex>"}'` | Show one durable proof-to-publication job |
 | `dev publication advance` | compat 🔧 → `zclassic23-dev dev publication status` | mutate / dev-mutation / **owner** · background/moderate | **`job_root`**, `datadir` | `zcl.dev_publication_advance.v1` | `zclassic23-dev dev publication advance --input='{"job_root":"<64-lowercase-hex>"}'` | Advance one proven-source job to its next durable blocker — *publication scheduling receipts require a dev checkout* |
+| `dev publication collect` | compat 🔧 → `zclassic23-dev dev publication status` | mutate / dev-mutation / **owner** · foreground/moderate | **`job_root`** | `zcl.dev_publication_collect.v1` | `zclassic23-dev dev publication collect --input='{"job_root":"<64-lowercase-hex>"}'` | Discover and bind independent storage ACK evidence — *storage ACK collection requires the dev-only ZVCS receipt writer* |
 
 #### `dev.publication.mirror` — Record optional non-authoritative mirror evidence
 
@@ -1334,10 +1335,10 @@ represented by its children's sections.
 | `zcode network find poll` | ready | read / read / operator · fast/low | **`lookup_id`**, **`owner_token`** | `zcl.zcode_network_find_poll.v1` | `zclassic23 zcode network find poll --input='{"lookup_id":"<32hex>","owner_token":"<32hex>"}'` | Poll a DHT lookup |
 | `zcode network find cancel` | ready | read / read / operator · fast/low | **`lookup_id`**, **`owner_token`** | `zcl.zcode_network_find_cancel.v1` | `zclassic23 zcode network find cancel --input='{"lookup_id":"<32hex>","owner_token":"<32hex>"}'` | Cancel a DHT lookup |
 | `zcode network find` | ready | read / read / operator · foreground/moderate | **`node_id`** | `zcl.zcode_network_find.v1` | `zclassic23 zcode network find --input='{"node_id":"<64hex>"}'` | Find closest DHT nodes |
-| `zcode network records begin` | ready | read / read / operator · fast/low | **`kind`**, **`namespace`**, `semantic_root`, `transport_root` | `zcl.zcode_network_records_begin.v1` | `zclassic23 zcode network records begin --input='{"kind":"provider","namespace":"science","transport_root":"<64hex>"}'` | Admit iterative record discovery |
+| `zcode network records begin` | ready | read / read / operator · fast/low | **`kind`**, **`namespace`**, `semantic_root`, `transport_root`, `include_evidence_wires` | `zcl.zcode_network_records_begin.v1` | `zclassic23 zcode network records begin --input='{"kind":"provider","namespace":"science","transport_root":"<64hex>"}'` | Admit iterative record discovery |
 | `zcode network records poll` | ready | read / read / operator · fast/low | **`lookup_id`**, **`owner_token`** | `zcl.zcode_network_records_poll.v1` | `zclassic23 zcode network records poll --input='{"lookup_id":"<32hex>","owner_token":"<32hex>"}'` | Poll iterative record discovery |
 | `zcode network records cancel` | ready | read / read / operator · fast/low | **`lookup_id`**, **`owner_token`** | `zcl.zcode_network_records_cancel.v1` | `zclassic23 zcode network records cancel --input='{"lookup_id":"<32hex>","owner_token":"<32hex>"}'` | Cancel iterative record discovery |
-| `zcode network records` | ready | read / read / operator · foreground/moderate | **`kind`**, **`namespace`**, `semantic_root`, `transport_root` | `zcl.zcode_network_records.v1` | `zclassic23 zcode network records --input='{"kind":"pointer","namespace":"science.study","semantic_root":"<64hex>"}'` | Discover signed DHT records |
+| `zcode network records` | ready | read / read / operator · foreground/moderate | **`kind`**, **`namespace`**, `semantic_root`, `transport_root`, `include_evidence_wires` | `zcl.zcode_network_records.v1` | `zclassic23 zcode network records --input='{"kind":"pointer","namespace":"science.study","semantic_root":"<64hex>"}'` | Discover signed DHT records |
 | `zcode network providers` | ready | read / read / operator · foreground/moderate | **`namespace`**, **`transport_root`** | `zcl.zcode_network_providers.v1` | `zclassic23 zcode network providers --input='{"namespace":"science","transport_root":"<64hex>"}'` | List provider hints |
 | `zcode network publish` | ready | mutate / app-write / operator, plan-commit · fast/low | **`mode`**, **`kind`**, **`namespace`**, `semantic_root`, **`transport_root`**, `owner_group`, **`sequence`**, **`not_before`**, **`expiry`**, `plan_token` | `zcl.zcode_network_publish.v1` | `zclassic23 zcode network publish --input='{"mode":"plan","kind":"provider","namespace":"science","transport_root":"<64hex>","sequence":1,"not_before":1,"expiry":2}'` | Publish a signed DHT record |
 | `zcode network storage_ack` | ready | mutate / app-write / operator, plan-commit · foreground/high | **`mode`**, **`namespace`**, `semantic_root`, **`transport_root`**, `owner_group`, **`sequence`**, **`not_before`**, **`expiry`**, `plan_token` | `zcl.zcode_network_storage_ack.v1` | `zclassic23 zcode network storage_ack --input='{"mode":"plan","namespace":"science","transport_root":"<64hex>","sequence":1,"not_before":1,"expiry":2}'` | Publish a possession-backed storage ACK |

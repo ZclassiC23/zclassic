@@ -2570,9 +2570,9 @@ static bool run_resident_restart_fixture(void)
         goto out;
 
     /* A test edit following a resident service publication carries both TUs
-     * into the proof epoch. The runtime candidate must link the service TU
-     * while recognizing that the test-only TU intentionally has no dev-link
-     * object; the exact test candidate still compiles and links both. */
+     * into the proof epoch. The runtime candidate compiles and links only the
+     * service TU; the exact test candidate later compiles and links both with
+     * TEST_CFLAGS, including APIs that exist only under ZCL_TESTING. */
     const char *runtime_and_test_changed[] = {
         "tools/dev/restart_fixture.c",
         "lib/test/src/restart_test_only.c",
@@ -2582,7 +2582,7 @@ static bool run_resident_restart_fixture(void)
     if (!zcl_devloop_restart_build(root, runtime_and_test_changed, 2,
                                    &receipt, &process, why, sizeof(why)) ||
         !receipt.candidate_probe_passed || receipt.changed_sources != 2 ||
-        receipt.compiler_processes != 3 || !receipt.artifact_cache_hit ||
+        receipt.compiler_processes != 2 || !receipt.artifact_cache_hit ||
         receipt.linker_processes != 0 || receipt.probe_processes != 1)
         goto out;
     char first_build_key[65], first_build_hash[65];

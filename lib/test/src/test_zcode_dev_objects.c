@@ -6,6 +6,7 @@
 #include "base/hex.h"
 #include "codeindex/codeindex_merkle.h"
 #include "command/native_command.h"
+#include "controllers/rpc_client.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
@@ -116,7 +117,8 @@ static bool zd_provider_record(
 
 static bool zd_storage_ack_record(
     const uint8_t transport_root[32], uint8_t identity_byte,
-    uint8_t owner_group_byte, struct vcs_zcode_dht_record *record,
+    uint8_t owner_group_byte, uint64_t now_unix,
+    struct vcs_zcode_dht_record *record,
     uint8_t wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES])
 {
     uint8_t online_seed[32], online_pub[32], online_secret[32];
@@ -138,11 +140,12 @@ static bool zd_storage_ack_record(
     memset(record->owner_group, owner_group_byte,
            sizeof(record->owner_group));
     record->sequence = 1;
-    record->not_before = 1200;
-    record->expiry = 1800;
+    record->not_before = now_unix > 60u ? now_unix - 60u : 0u;
+    record->expiry = now_unix + 3600u;
     bool ok = vcs_zcode_dht_delegation_sign(
             &record->delegation, genesis, online_pub, noise, 120, beacon,
-            1000, 3000, 1, master_seed) ==
+            now_unix > 120u ? now_unix - 120u : 0u,
+            now_unix + 7200u, 1, master_seed) ==
             VCS_ZCODE_DHT_DELEGATION_OK &&
         vcs_zcode_dht_delegation_node_id(
             record->provider_node_id, &record->delegation) &&
@@ -153,6 +156,70 @@ static bool zd_storage_ack_record(
     memset(online_seed, 0, sizeof(online_seed));
     memset(master_seed, 0, sizeof(master_seed));
     return ok;
+}
+
+static char zd_collect_ack_wires[2]
+    [VCS_ZCODE_DHT_RECORD_WIRE_BYTES * 2u + 1u];
+static char zd_collect_transport_hex[65];
+static size_t zd_collect_ack_wire_count;
+static unsigned zd_collect_genesis_calls;
+static unsigned zd_collect_begin_calls;
+static unsigned zd_collect_poll_calls;
+static unsigned zd_collect_cancel_calls;
+static bool zd_collect_selector_exact;
+
+static char *zd_collect_rpc_hook(const char *method, const char *params_json)
+{
+    if (strcmp(method, "getblockhash") == 0) {
+        zd_collect_genesis_calls++;
+        return zcl_strdup(
+            "\"0101010101010101010101010101010101010101010101010101010101010101\"",
+            "test.zcode_dev.collect_genesis");
+    }
+    if (strcmp(method, "zcode_dht_record_begin") == 0) {
+        zd_collect_begin_calls++;
+        zd_collect_selector_exact = params_json &&
+            strstr(params_json, "\"kind\":\"storage_ack\"") &&
+            strstr(params_json, "\"namespace\":\"zclassic23.source\"") &&
+            strstr(params_json, "\"include_evidence_wires\":true") &&
+            strstr(params_json, zd_collect_transport_hex);
+        return zcl_strdup(
+            "{\"ok\":true,\"state\":\"pending\","
+            "\"lookup_id\":\"11111111111111111111111111111111\","
+            "\"owner_token\":\"22222222222222222222222222222222\"}",
+            "test.zcode_dev.collect_begin");
+    }
+    if (strcmp(method, "zcode_dht_record_poll") == 0) {
+        zd_collect_poll_calls++;
+        size_t cap = 256u + zd_collect_ack_wire_count *
+            (VCS_ZCODE_DHT_RECORD_WIRE_BYTES * 2u + 32u);
+        char *body = zcl_malloc(cap, "test.zcode_dev.collect_poll");
+        if (!body)
+            return NULL;
+        int n = zd_collect_ack_wire_count == 1u
+            ? snprintf(body, cap,
+                       "{\"ok\":true,\"state\":\"complete\","
+                       "\"records\":[{\"record_wire\":\"%s\"}]}",
+                       zd_collect_ack_wires[0])
+            : snprintf(body, cap,
+                       "{\"ok\":true,\"state\":\"complete\","
+                       "\"records\":[{\"record_wire\":\"%s\"},"
+                       "{\"record_wire\":\"%s\"}]}",
+                       zd_collect_ack_wires[0],
+                       zd_collect_ack_wires[1]);
+        if (n <= 0 || (size_t)n >= cap) {
+            free(body);
+            return NULL;
+        }
+        return body;
+    }
+    if (strcmp(method, "zcode_dht_record_cancel") == 0) {
+        zd_collect_cancel_calls++;
+        return zcl_strdup("{\"ok\":true,\"canceled\":true}",
+                          "test.zcode_dev.collect_cancel");
+    }
+    return zcl_strdup("{\"ok\":false,\"code\":\"UNEXPECTED_RPC\"}",
+                      "test.zcode_dev.collect_unexpected");
 }
 
 static bool zd_secp_pubkey(secp256k1_context *ctx,
@@ -3768,6 +3835,15 @@ static int test_zd_improve_command(void)
         ASSERT(provider_reused);
         ASSERT(memcmp(provider_retry_root,
                       provider_progress_root, 32) == 0);
+        struct vcs_devloop_publication_ack_target ack_target;
+        ASSERT(vcs_devloop_publication_storage_ack_target(
+            workspace, publication_anchor.publication_job_root,
+            &provider_verify, &ack_target));
+        ASSERT_STR_EQ(ack_target.namespace_name, "zclassic23.source");
+        ASSERT(memcmp(ack_target.transport_root,
+                      provider_transport_root, 32) == 0);
+        ASSERT_EQ(ack_target.existing_acks, 0u);
+        ASSERT(!ack_target.already_acknowledged);
         struct json_value provider_status_input;
         json_init(&provider_status_input);
         json_set_object(&provider_status_input);
@@ -3906,11 +3982,12 @@ static int test_zd_improve_command(void)
 
         struct vcs_zcode_dht_record ack_records[2];
         uint8_t ack_wires[2][VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+        uint64_t ack_now = (uint64_t)platform_time_wall_time_t();
         ASSERT(zd_storage_ack_record(
-            provider_transport_root, 0x31, 0x41,
+            provider_transport_root, 0x31, 0x41, ack_now,
             &ack_records[0], ack_wires[0]));
         ASSERT(zd_storage_ack_record(
-            provider_transport_root, 0x32, 0x42,
+            provider_transport_root, 0x32, 0x42, ack_now,
             &ack_records[1], ack_wires[1]));
         const uint8_t *ack_wire_ptrs[2] = {ack_wires[0], ack_wires[1]};
         size_t ack_wire_lengths[2] = {
@@ -3919,11 +3996,136 @@ static int test_zd_improve_command(void)
         };
         uint8_t ack_progress_root[32];
         bool ack_reused = true;
-        ASSERT(vcs_devloop_publication_advance_storage_acks(
+        struct vcs_zcode_dht_record_verify_context ack_verify = {
+            .now_unix = ack_now,
+        };
+        memset(ack_verify.network_genesis, 0x01,
+               sizeof(ack_verify.network_genesis));
+        ASSERT(!vcs_devloop_publication_advance_storage_acks(
             workspace, publication_anchor.publication_job_root,
-            ack_wire_ptrs, ack_wire_lengths, 2, &provider_verify,
+            ack_wire_ptrs, ack_wire_lengths, 1, &ack_verify,
             ack_progress_root, &ack_reused));
         ASSERT(!ack_reused);
+
+        struct vcs_zcode_dht_record same_group_record;
+        uint8_t same_group_wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+        ASSERT(zd_storage_ack_record(
+            provider_transport_root, 0x33, 0x41, ack_now,
+            &same_group_record, same_group_wire));
+        const uint8_t *same_group_ptrs[2] = {
+            ack_wires[0], same_group_wire,
+        };
+        ASSERT(!vcs_devloop_publication_advance_storage_acks(
+            workspace, publication_anchor.publication_job_root,
+            same_group_ptrs, ack_wire_lengths, 2, &ack_verify,
+            ack_progress_root, &ack_reused));
+
+        uint8_t wrong_ack_transport[32];
+        memcpy(wrong_ack_transport, provider_transport_root, 32);
+        wrong_ack_transport[0] ^= 0x80u;
+        struct vcs_zcode_dht_record wrong_package_record;
+        uint8_t wrong_package_wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+        ASSERT(zd_storage_ack_record(
+            wrong_ack_transport, 0x34, 0x44, ack_now,
+            &wrong_package_record, wrong_package_wire));
+        const uint8_t *wrong_package_ptrs[2] = {
+            ack_wires[0], wrong_package_wire,
+        };
+        ASSERT(!vcs_devloop_publication_advance_storage_acks(
+            workspace, publication_anchor.publication_job_root,
+            wrong_package_ptrs, ack_wire_lengths, 2, &ack_verify,
+            ack_progress_root, &ack_reused));
+
+        struct vcs_zcode_dht_record_verify_context wrong_network_verify =
+            ack_verify;
+        memset(wrong_network_verify.network_genesis, 0x02,
+               sizeof(wrong_network_verify.network_genesis));
+        ASSERT(!vcs_devloop_publication_advance_storage_acks(
+            workspace, publication_anchor.publication_job_root,
+            ack_wire_ptrs, ack_wire_lengths, 2, &wrong_network_verify,
+            ack_progress_root, &ack_reused));
+        struct vcs_zcode_dht_record_verify_context expired_ack_verify =
+            ack_verify;
+        expired_ack_verify.now_unix = ack_now + 3601u;
+        ASSERT(!vcs_devloop_publication_advance_storage_acks(
+            workspace, publication_anchor.publication_job_root,
+            ack_wire_ptrs, ack_wire_lengths, 2, &expired_ack_verify,
+            ack_progress_root, &ack_reused));
+        ASSERT(vcs_devloop_publication_progress_load(
+            workspace, publication_anchor.publication_job_root,
+            &workspace_progress, workspace_progress_root));
+        ASSERT_EQ(workspace_progress.phase,
+                  VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED);
+
+        zcl_hex_encode(ack_wires[0], sizeof(ack_wires[0]),
+                       zd_collect_ack_wires[0]);
+        zcl_hex_encode(ack_wires[1], sizeof(ack_wires[1]),
+                       zd_collect_ack_wires[1]);
+        zcl_hex_encode(provider_transport_root, 32,
+                       zd_collect_transport_hex);
+        zd_collect_ack_wire_count = 1;
+        zd_collect_genesis_calls = 0;
+        zd_collect_begin_calls = 0;
+        zd_collect_poll_calls = 0;
+        zd_collect_cancel_calls = 0;
+        zd_collect_selector_exact = false;
+        node_rpc_client_set_test_hook(zd_collect_rpc_hook);
+        struct zcl_command_reply collect_reply;
+        zcl_command_reply_init(&collect_reply,
+                               "zcl.dev_publication_collect.v1");
+        zcl_native_handle_dev_publication_collect(
+            &provider_status_request, &collect_reply);
+        ASSERT_EQ(collect_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&collect_reply.data, "status")),
+                      "ACKS_PENDING");
+        ASSERT_EQ(json_get_int(json_get(
+                      &collect_reply.data, "records_seen")), 1);
+        ASSERT_EQ(json_get_int(json_get(
+                      &collect_reply.data, "evidence_wires")), 1);
+        ASSERT(!json_get_bool(json_get(
+            &collect_reply.data, "receipt_written")));
+        ASSERT(!json_get_bool(json_get(
+            &collect_reply.data, "receipt_reused")));
+        ASSERT(json_get_bool(json_get(
+            &collect_reply.data, "network_called")));
+        ASSERT(json_get_bool(json_get(
+            &collect_reply.data, "discovery_called")));
+        ASSERT_EQ(zd_collect_genesis_calls, 1u);
+        ASSERT_EQ(zd_collect_begin_calls, 1u);
+        ASSERT_EQ(zd_collect_poll_calls, 1u);
+        ASSERT_EQ(zd_collect_cancel_calls, 0u);
+        ASSERT(zd_collect_selector_exact);
+        zcl_command_reply_free(&collect_reply);
+        ASSERT(vcs_devloop_publication_progress_load(
+            workspace, publication_anchor.publication_job_root,
+            &workspace_progress, workspace_progress_root));
+        ASSERT_EQ(workspace_progress.phase,
+                  VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED);
+
+        zd_collect_ack_wire_count = 2;
+        zcl_command_reply_init(&collect_reply,
+                               "zcl.dev_publication_collect.v1");
+        zcl_native_handle_dev_publication_collect(
+            &provider_status_request, &collect_reply);
+        ASSERT_EQ(collect_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&collect_reply.data, "status")),
+                      "STORAGE_ACKNOWLEDGED");
+        ASSERT_EQ(json_get_int(json_get(
+                      &collect_reply.data, "records_seen")), 2);
+        ASSERT_EQ(json_get_int(json_get(
+                      &collect_reply.data, "evidence_wires")), 2);
+        ASSERT_EQ(json_get_int(json_get(
+                      &collect_reply.data, "storage_acks")), 2);
+        ASSERT(json_get_bool(json_get(
+            &collect_reply.data, "receipt_written")));
+        ASSERT(!json_get_bool(json_get(
+            &collect_reply.data, "receipt_reused")));
+        const char *ack_progress_hex = json_get_str(json_get(
+            &collect_reply.data, "progress_receipt_root"));
+        ASSERT(ack_progress_hex != NULL);
+        ASSERT(zcl_hex_decode_lower(ack_progress_hex,
+                                    ack_progress_root, 32));
+        zcl_command_reply_free(&collect_reply);
         struct vcs_devloop_publication_receipt ack_progress;
         uint8_t loaded_ack_progress_root[32];
         ASSERT(vcs_devloop_publication_progress_load(
@@ -3937,6 +4139,34 @@ static int test_zd_improve_command(void)
                       provider_progress_root, 32) == 0);
         ASSERT(memcmp(ack_progress_root,
                       loaded_ack_progress_root, 32) == 0);
+        ASSERT(vcs_devloop_publication_storage_ack_target(
+            workspace, publication_anchor.publication_job_root,
+            &provider_verify, &ack_target));
+        ASSERT_EQ(ack_target.existing_acks, 2u);
+        ASSERT(ack_target.already_acknowledged);
+
+        zd_collect_ack_wire_count = 0;
+        zd_collect_genesis_calls = 0;
+        zd_collect_begin_calls = 0;
+        zd_collect_poll_calls = 0;
+        zcl_command_reply_init(&collect_reply,
+                               "zcl.dev_publication_collect.v1");
+        zcl_native_handle_dev_publication_collect(
+            &provider_status_request, &collect_reply);
+        ASSERT_EQ(collect_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(
+            &collect_reply.data, "receipt_reused")));
+        ASSERT(!json_get_bool(json_get(
+            &collect_reply.data, "receipt_written")));
+        ASSERT(json_get_bool(json_get(
+            &collect_reply.data, "network_called")));
+        ASSERT(!json_get_bool(json_get(
+            &collect_reply.data, "discovery_called")));
+        ASSERT_EQ(zd_collect_genesis_calls, 1u);
+        ASSERT_EQ(zd_collect_begin_calls, 0u);
+        ASSERT_EQ(zd_collect_poll_calls, 0u);
+        zcl_command_reply_free(&collect_reply);
+        node_rpc_client_set_test_hook(NULL);
         zcl_command_reply_init(&provider_status_reply,
                                "zcl.dev_publication_status.v1");
         zcl_native_handle_dev_publication_status(
@@ -4027,6 +4257,7 @@ static int test_zd_improve_command(void)
         test_rm_rf(dir);
         PASS();
     } _test_next:;
+    node_rpc_client_set_test_hook(NULL);
     return failures;
 }
 

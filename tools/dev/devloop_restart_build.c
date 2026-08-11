@@ -1114,9 +1114,20 @@ static bool rr_restart_build(
         rr_why(why, why_len, "restart overlay allocation failed");
         return false;
     }
+    const char *runtime_sources[RR_SOURCE_MAX];
+    size_t runtime_source_count = 0;
+    for (size_t i = 0; i < source_count; i++)
+        if (!rr_source_is_test_only(source_tus[i]))
+            runtime_sources[runtime_source_count++] = source_tus[i];
+    if (runtime_source_count == 0) {
+        free(overlays);
+        rr_why(why, why_len,
+               "restart source set contains no runtime translation unit");
+        return false;
+    }
     size_t overlay_count = 0;
     bool ok = rr_prepare_overlays(
-        &plan, root, source_tus, source_count, identity,
+        &plan, root, runtime_sources, runtime_source_count, identity,
         "build/dev-loop/restart-objects", overlays, &overlay_count, process,
         &receipt->compiler_processes, &receipt->compile_us, why, why_len);
     receipt->source_identity_overlay = ok;
@@ -1796,6 +1807,12 @@ int zcl_devloop_restart_event(const char *repo_root,
     for (size_t i = 0; i < source_count; i++)
         if (!rr_source_is_c(source_tus[i]))
             return 0;
+    bool has_runtime_source = false;
+    for (size_t i = 0; i < source_count; i++)
+        has_runtime_source = has_runtime_source ||
+            !rr_source_is_test_only(source_tus[i]);
+    if (!has_runtime_source)
+        return 0;
     int64_t started = platform_time_monotonic_us();
     int64_t source_guard_us = 0;
     uint64_t source_guard_bytes_read = 0;

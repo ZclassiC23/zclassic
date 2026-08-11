@@ -86,7 +86,8 @@ void boot_zcode_dht_record_register_rpc(struct rpc_table *table);
 #ifdef ZCL_TESTING
 void boot_zcode_dht_record_test_render(
     struct json_value *result,
-    const struct vcs_zcode_dht_record_discovery_result *discovery);
+    const struct vcs_zcode_dht_record_discovery_result *discovery,
+    bool include_evidence_wires);
 void boot_zcode_dht_publication_record_test_render(
     struct json_value *result, const struct vcs_zcode_dht_record *record);
 void boot_zcode_dht_provider_route_test_render(

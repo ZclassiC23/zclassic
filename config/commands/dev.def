@@ -125,6 +125,33 @@ ZCL_COMMAND_DEV_COMMAND(
     "zclassic23-dev dev publication status")
 
 ZCL_COMMAND_DEV_COMMAND(
+    "dev.publication.collect", "dev.publication", "",
+    "Discover and bind independent storage ACK evidence",
+    "Loads the exact provider-announced package target from one immutable "
+    "publication job, asks the authenticated local node for verified "
+    "STORAGE_ACK records, and appends one receipt only after locally "
+    "rechecking canonical wires, network genesis, validity windows, "
+    "signatures, package root, and distinct provider/owner groups. At least "
+    "two ACKs are required. It never signs, publishes, spends, deploys, or "
+    "grants human acceptance authority.", 0,
+    "dev,publication,storage-ack,p2p,collect,replication,evidence",
+    "zcl.dev_publication_status_input.v1",
+    "zcl.dev_publication_collect.v1", "job_root", "job_root",
+    "zclassic23-dev dev publication collect --input='"
+    "{\"job_root\":\"<64-lowercase-hex>\"}'",
+    ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_DEV_STATE_WRITE | ZCL_COMMAND_CAP_CHAIN_READ |
+        ZCL_COMMAND_CAP_P2P_TOPIC,
+    ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_dev_publication_collect,
+    "storage ACK collection requires the dev-only ZVCS receipt writer",
+    "zclassic23-dev dev publication status")
+
+ZCL_COMMAND_DEV_COMMAND(
     "dev.publication.mirror.record", "dev.publication.mirror", "",
     "Record optional declared GitHub mirror evidence",
     "Creates or reuses one immutable local receipt only after the existing "

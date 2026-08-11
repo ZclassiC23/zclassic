@@ -871,8 +871,9 @@ static int test_record_projection_fields(void)
               VCS_ZCODE_DHT_RECORD_OK);
     struct json_value rendered;
     json_init(&rendered);
-    boot_zcode_dht_record_test_render(&rendered, &discovery);
+    boot_zcode_dht_record_test_render(&rendered, &discovery, false);
     ASSERT_EQ(json_get_int(json_get(&rendered, "usable_count")), 2);
+    ASSERT_EQ(json_get_int(json_get(&rendered, "evidence_wire_count")), 0);
     ASSERT_EQ(json_get_int(json_get(&rendered, "superseded_count")), 1);
     ASSERT_EQ(json_get_int(json_get(&rendered, "conflict_count")), 2);
     const struct json_value *rows = json_get(&rendered, "records");
@@ -887,6 +888,7 @@ static int test_record_projection_fields(void)
                   first_root_hex) == 0);
     ASSERT(!json_get_bool_or(json_at(rows, 0), "superseded", false));
     ASSERT(!json_get_bool_or(json_at(rows, 0), "conflicted", false));
+    ASSERT(json_get(json_at(rows, 0), "record_wire") == NULL);
     ASSERT(json_get_bool_or(json_at(rows, 1), "conflicted", false));
     ASSERT(json_get_bool_or(json_at(rows, 2), "conflicted", false));
     ASSERT(!json_get_bool_or(json_at(rows, 1),
@@ -894,6 +896,65 @@ static int test_record_projection_fields(void)
     ASSERT(json_get(json_at(rows, 1), "publisher_authenticated") == NULL);
     ASSERT(json_get_bool_or(json_at(rows, 3), "superseded", false));
     ASSERT(!json_get_bool_or(json_at(rows, 4), "superseded", false));
+    json_free(&rendered);
+    PASS();
+  }
+_test_next:;
+  return failures;
+}
+
+static int test_record_projection_evidence_wires(void)
+{
+  int failures = 0;
+  TEST("zcode record projection: usable ACK evidence is bounded and diverse") {
+    struct record_fixture fixtures[3];
+    int chain_calls[3] = {0};
+    ASSERT(rf_init_values(&fixtures[0], &chain_calls[0], 0x22, 0x55));
+    ASSERT(rf_init_values(&fixtures[1], &chain_calls[1], 0x23, 0x56));
+    ASSERT(rf_init_values(&fixtures[2], &chain_calls[2], 0x24, 0x57));
+    struct vcs_zcode_dht_record_discovery_result discovery;
+    memset(&discovery, 0, sizeof(discovery));
+    discovery.state = VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE;
+    discovery.record_count = 3;
+    for (size_t i = 0; i < discovery.record_count; i++) {
+      rf_record(&fixtures[i], &discovery.records[i],
+                VCS_ZCODE_DHT_RECORD_STORAGE_ACK);
+      memset(discovery.records[i].owner_group, (int)(0x81 + i), 32);
+      ASSERT_EQ(vcs_zcode_dht_record_sign(&discovery.records[i],
+                                          fixtures[i].online_seed),
+                VCS_ZCODE_DHT_RECORD_OK);
+    }
+    /* A distinct signer declaring the first group remains visible, but its
+     * wire is omitted from the bounded handoff because it adds no diversity. */
+    memset(discovery.records[2].owner_group, 0x81, 32);
+    ASSERT_EQ(vcs_zcode_dht_record_sign(&discovery.records[2],
+                                        fixtures[2].online_seed),
+              VCS_ZCODE_DHT_RECORD_OK);
+
+    struct json_value rendered;
+    json_init(&rendered);
+    boot_zcode_dht_record_test_render(&rendered, &discovery, true);
+    ASSERT_EQ(json_get_int(json_get(&rendered, "usable_count")), 3);
+    ASSERT_EQ(json_get_int(json_get(&rendered, "evidence_wire_count")), 2);
+    const struct json_value *rows = json_get(&rendered, "records");
+    ASSERT(rows != NULL);
+    ASSERT_EQ(json_size(rows), 3);
+    for (size_t i = 0; i < 2; i++) {
+      const char *wire_hex = json_get_str(json_get(json_at(rows, i),
+                                                   "record_wire"));
+      uint8_t rendered_wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+      uint8_t expected_wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+      ASSERT(wire_hex != NULL);
+      ASSERT_EQ(strlen(wire_hex), sizeof(rendered_wire) * 2u);
+      ASSERT(zcl_hex_decode_lower(wire_hex, rendered_wire,
+                                  sizeof(rendered_wire)));
+      ASSERT_EQ(vcs_zcode_dht_record_encode(&discovery.records[i],
+                                             expected_wire),
+                VCS_ZCODE_DHT_RECORD_OK);
+      ASSERT(memcmp(rendered_wire, expected_wire,
+                    sizeof(rendered_wire)) == 0);
+    }
+    ASSERT(json_get(json_at(rows, 2), "record_wire") == NULL);
     json_free(&rendered);
     PASS();
   }
@@ -1224,6 +1285,7 @@ int test_zcode_dht_record(void)
 #ifdef ZCL_TESTING
   failures += test_science_pointer_ranking();
   failures += test_record_projection_fields();
+  failures += test_record_projection_evidence_wires();
   failures += test_science_pointer_candidate_policy();
   failures += test_replication_public_lifecycle();
 #endif
