@@ -95,19 +95,26 @@ shard; unchanged shard files keep their existing content.v2 chunks.
 The PROVEN `zcode publish plan` path derives the carrier directly from the
 human-accepted root. It contains the exact top-level `LICENSE`,
 `zclassic23-source/manifest.zvsm`, the nonempty v2 shard files, the signed
-`zcode-lane-receipt.v1`, and an inert `zcode-source-transport.c` marker. It
+`zcode-lane-receipt.v1`, the closed
+`zcode-accepted-work-authority.v1` chain, and an inert
+`zcode-source-transport.c` marker. The authority bundle contains the exact
+task, candidate, proof policy, FRONTIER/CANDIDATE/PROVEN lane receipts, proof
+sets, signed work receipts, dependency lock, and task acceptance recipe. It
 also carries the five already-pinned upstream archives used by the default
 vendor build beneath `vendor/.cache/`; a fresh consumer can rebuild vendor
 inputs without GitHub or another source server, and `build_vendor.sh` still
 checks their pinned SHA-256 values before use. The signed release commits a
 declarative recipe that compiles only the marker; the independently
-reverified task acceptance recipe remains bound through the signed lane
-receipt and is reported separately as `acceptance_recipe_root`.
-Carrier construction and checkout both parse the embedded lane receipt,
-verify its Ed25519 signature against the expected signer derived from the
-accepted candidate/work authority (never a key trusted merely because the
-receipt embeds it), require the `PROVEN` lane, and require its source root to
-equal the separately supplied source authority.
+reverified task acceptance recipe remains bound through the complete carried
+authority and is reported separately as `acceptance_recipe_root`.
+
+Carrier construction and checkout both resolve that chain from immutable
+objects. Checkout first stages it in an isolated CAS, derives the expected
+Ed25519 signer from the candidate (never from a key trusted merely because a
+receipt embeds it), verifies every receipt and both proof sets, requires the
+`PROVEN` lane, checks task recipe membership against the reconstructed source,
+and only then imports authority into the destination workspace. The caller
+selects the exact `accepted_work_root`; it does not supply a signer.
 
 Creation reloads and rehashes every blob from ZVCS CAS. Verification
 decompresses under fixed manifest/source/wire limits, parses the canonical
@@ -132,9 +139,15 @@ A reconstructed carrier is built under two explicit trust inputs: the
 human-accepted ZVCS `source_root`, and a bootstrap `zclassic23` binary whose
 SHA3-256 came through an already trusted channel. The bootstrap does not grant
 acceptance; it only re-derives the complete source root before build admission
-and artifact publication. The acceptance signer supplied to carrier checkout
-must come from independently verified work authority, never from the receipt's
-embedded public key.
+and artifact publication. Carrier checkout additionally takes the immutable
+`accepted_work_root` and derives its acceptance signer from the carried,
+reverified candidate authority.
+
+Module Passports and signed workspace manifests are release-publication
+evidence created after the package root exists, so they cannot be bytes inside
+the package they name. A no-Git deployment must fetch those separately by
+their immutable CAS roots and verify their signatures and package/release
+bindings before treating the reconstructed build as the published candidate.
 
 With the carrier checked out into the current empty directory and its five
 pinned archives present under `vendor/.cache/`:

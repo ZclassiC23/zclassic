@@ -156,16 +156,17 @@ ZCL_COMMAND_READY_COMMAND(
     "Reads one complete ordinary content.v2 package by immutable root, "
     "rederives its exact carrier shape and every chunk, verifies all "
     "path-stable ZVCS shards against the separately supplied accepted source "
-    "root and the accepted_signer derived from verified work authority before "
-    "writing, then materializes source plus pinned offline vendor "
+    "root, imports the carried task/candidate/policy/proof/lane chain, derives "
+    "its signer from the candidate, and re-resolves PROVEN authority before "
+    "materializing source plus pinned offline vendor "
     "archives into an existing empty scratch destination. Retrieval never "
     "uses Git or executes downloaded source.", ZCL_COMMAND_RESULT_BUDGET,
     "zcode,source,package,content-v2,p2p,checkout,reconstruct,git-free,no-exec",
     "zcl.zcode_source_package_checkout.input.v1",
     "zcl.zcode_source_package_checkout.v1",
-    "datadir,package_root,source_root,accepted_signer,workspace,destination",
-    "datadir,package_root,source_root,accepted_signer,workspace,destination",
-    "zclassic23 zcode workspace source package checkout --input='{\"datadir\":\"/tmp/zclassic23-node\",\"package_root\":\"<64hex>\",\"source_root\":\"<64hex>\",\"accepted_signer\":\"<64hex>\",\"workspace\":\"/tmp/zvcs-scratch\",\"destination\":\"/tmp/source-scratch\"}'",
+    "datadir,package_root,source_root,accepted_work_root,workspace,destination",
+    "datadir,package_root,source_root,accepted_work_root,workspace,destination",
+    "zclassic23 zcode workspace source package checkout --input='{\"datadir\":\"/tmp/zclassic23-node\",\"package_root\":\"<64hex>\",\"source_root\":\"<64hex>\",\"accepted_work_root\":\"<64hex>\",\"workspace\":\"/tmp/zvcs-scratch\",\"destination\":\"/tmp/source-scratch\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
@@ -1933,7 +1934,8 @@ ZCL_COMMAND_READY_READ(
     "task/candidate/policy object, the canonical proof set, and every signed "
     "work receipt from the workspace CAS. Re-derives a path-sharded ZVCS "
     "carrier from the accepted source blobs, embeds it, the pinned offline "
-    "vendor inputs, and exact lane receipt in an ordinary content.v2 package, "
+    "vendor inputs, and a closed task/candidate/proof/lane authority bundle "
+    "in an ordinary content.v2 package, "
     "and binds its inert transport "
     "recipe, the task acceptance recipe, and current "
     "publisher lineage, and returns an unsigned release body plus signing "

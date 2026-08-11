@@ -9,6 +9,7 @@
 #include "vcs/package_store.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_object.h"
+#include "vcs/zcode_accepted_work_bundle.h"
 #include "vcs/zcode_lane.h"
 
 #include <errno.h>
@@ -71,6 +72,7 @@ void vcs_source_package_transport_free(
     free(transport->recipe_wire);
     free(transport->license_bytes);
     free(transport->lane_wire);
+    free(transport->authority_wire);
     vcs_source_bundle_sharded_free(&transport->source);
     for (size_t i = 0; i < transport->offline_input_count; i++)
         free(transport->offline_inputs[i].bytes);
@@ -86,8 +88,8 @@ const uint8_t *vcs_source_package_transport_marker(size_t *len_out)
 size_t vcs_source_package_transport_file_count(
     const struct vcs_source_package_transport *transport)
 {
-    return transport ? 4u + transport->source.shard_count +
-        transport->offline_input_count : 0;
+    return transport ? 4u + (transport->authority_wire_len > 0 ? 1u : 0u) +
+        transport->source.shard_count + transport->offline_input_count : 0;
 }
 
 bool vcs_source_package_transport_file_at(
@@ -137,6 +139,15 @@ bool vcs_source_package_transport_file_at(
         return true;
     }
     index -= 2u;
+    if (transport->authority_wire_len > 0) {
+        if (index == 0) {
+            *path_out = VCS_SOURCE_PACKAGE_AUTHORITY_PATH;
+            *bytes_out = transport->authority_wire;
+            *len_out = transport->authority_wire_len;
+            return true;
+        }
+        index--;
+    }
     if (index >= transport->offline_input_count) return false;
     *path_out = transport->offline_inputs[index].path;
     *bytes_out = transport->offline_inputs[index].bytes;
@@ -274,6 +285,36 @@ static bool source_package_recipe(
     return ok;
 }
 
+static bool source_package_manifest_build(
+    struct vcs_source_package_transport *transport)
+{
+    free(transport->manifest_wire);
+    transport->manifest_wire = NULL;
+    transport->manifest_wire_len = 0;
+    struct vcs_package_manifest manifest;
+    vcs_package_manifest_init(&manifest);
+    bool ok = true;
+    uint64_t total = 0;
+    size_t count = vcs_source_package_transport_file_count(transport);
+    for (size_t i = 0; ok && i < count; i++) {
+        const char *path = NULL;
+        const uint8_t *bytes = NULL;
+        size_t len = 0;
+        ok = vcs_source_package_transport_file_at(
+            transport, i, &path, &bytes, &len) &&
+            UINT64_MAX - total >= len;
+        if (ok) total += len;
+        if (ok) ok = source_package_add(&manifest, path, bytes, len);
+    }
+    ok = ok && total <= VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES &&
+        vcs_package_manifest_root(&manifest, transport->package_root) &&
+        vcs_package_manifest_serialize(
+            &manifest, &transport->manifest_wire,
+            &transport->manifest_wire_len);
+    vcs_package_manifest_free(&manifest);
+    return ok;
+}
+
 bool vcs_source_package_transport_build(
     const char *workspace, const uint8_t source_root[32],
     const uint8_t expected_signer[32],
@@ -317,27 +358,46 @@ bool vcs_source_package_transport_build(
                 transport->source.shards[i].wire_len;
     }
 
-    struct vcs_package_manifest manifest;
-    vcs_package_manifest_init(&manifest);
-    uint64_t total = 0;
-    size_t count = vcs_source_package_transport_file_count(transport);
-    for (size_t i = 0; ok && i < count; i++) {
-        const char *path = NULL;
-        const uint8_t *bytes = NULL;
-        size_t len = 0;
-        ok = vcs_source_package_transport_file_at(
-            transport, i, &path, &bytes, &len) &&
-            UINT64_MAX - total >= len;
-        if (ok) total += len;
-        if (ok) ok = source_package_add(&manifest, path, bytes, len);
-    }
-    ok = ok && total <= VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES &&
-        vcs_package_manifest_root(&manifest, transport->package_root) &&
-        vcs_package_manifest_serialize(
-            &manifest, &transport->manifest_wire,
-            &transport->manifest_wire_len);
-    vcs_package_manifest_free(&manifest);
+    ok = ok && source_package_manifest_build(transport);
     if (ok) ok = source_package_recipe(transport);
     if (!ok) vcs_source_package_transport_free(transport);
     return ok;
+}
+
+bool vcs_source_package_transport_build_accepted(
+    const char *workspace, const uint8_t source_root[32],
+    const uint8_t accepted_work_root[32], int64_t now_unix,
+    struct vcs_source_package_transport *transport)
+{
+    if (!workspace || !source_root || !accepted_work_root ||
+        now_unix <= 0 || !transport)
+        return false;
+    uint8_t *authority = NULL, *lane_wire = NULL;
+    size_t authority_len = 0, lane_len = 0;
+    struct vcs_zcode_accepted_work_v1 accepted;
+    bool ok = vcs_zcode_accepted_work_bundle_export(
+            workspace, accepted_work_root, now_unix,
+            &authority, &authority_len, &accepted) ==
+            VCS_ZCODE_ACCEPTED_WORK_BUNDLE_OK &&
+        memcmp(accepted.candidate.candidate_source_root,
+               source_root, 32) == 0 &&
+        vcs_object_load_raw_bounded(
+            workspace, accepted_work_root, VCS_ZCODE_LANE_WIRE_BYTES,
+            &lane_wire, &lane_len) == 0 &&
+        vcs_source_package_transport_build(
+            workspace, source_root, accepted.expected_signer,
+            lane_wire, lane_len, transport);
+    free(lane_wire);
+    if (!ok) {
+        free(authority);
+        return false;
+    }
+    transport->authority_wire = authority;
+    transport->authority_wire_len = authority_len;
+    memcpy(transport->accepted_work_root, accepted_work_root, 32);
+    if (!source_package_manifest_build(transport)) {
+        vcs_source_package_transport_free(transport);
+        return false;
+    }
+    return true;
 }

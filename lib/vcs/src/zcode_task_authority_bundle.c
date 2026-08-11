@@ -8,6 +8,7 @@
 #include "util/safe_alloc.h"
 #include "vcs/package_deps.h"
 #include "vcs/package_recipe.h"
+#include "vcs/vcs.h"
 #include "vcs/vcs_object.h"
 
 #include <stdlib.h>
@@ -91,4 +92,61 @@ enum vcs_zcode_task_authority_result vcs_zcode_task_authority_bundle_import(
     return memcmp(stored_lock, lock_root, 32) == 0 &&
            memcmp(stored_recipe, recipe_root, 32) == 0
         ? VCS_ZCODE_TASK_AUTHORITY_OK : VCS_ZCODE_TASK_AUTHORITY_CAS;
+}
+
+enum vcs_zcode_task_authority_result
+vcs_zcode_task_authority_bundle_validate_for_candidate(
+    const char *repo_root, const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_candidate_v1 *candidate,
+    const uint8_t *wire, size_t wire_len)
+{
+    if (!repo_root || !task || !candidate || !wire)
+        return VCS_ZCODE_TASK_AUTHORITY_NULL;
+    if (wire_len < VCS_ZCODE_TASK_AUTHORITY_BUNDLE_HEADER_BYTES ||
+        memcmp(wire, task_authority_magic, 8) != 0 ||
+        vcs_rd_u16le(wire + 8) != VCS_ZCODE_TASK_AUTHORITY_BUNDLE_VERSION ||
+        vcs_rd_u16le(wire + 10) != 0)
+        return VCS_ZCODE_TASK_AUTHORITY_CAS;
+    uint64_t lock_len64 = vcs_rd_u64le(wire + 12);
+    uint64_t recipe_len64 = vcs_rd_u64le(wire + 20);
+    if (lock_len64 > VCS_PACKAGE_LOCK_MAX_WIRE_BYTES ||
+        recipe_len64 > VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES ||
+        lock_len64 + recipe_len64 +
+                VCS_ZCODE_TASK_AUTHORITY_BUNDLE_HEADER_BYTES != wire_len)
+        return VCS_ZCODE_TASK_AUTHORITY_CAS;
+    size_t lock_len = (size_t)lock_len64;
+    const uint8_t *lock = wire + VCS_ZCODE_TASK_AUTHORITY_BUNDLE_HEADER_BYTES;
+    const uint8_t *recipe_wire = lock + lock_len;
+    uint8_t lock_root[32], recipe_root[32];
+    enum vcs_zcode_task_authority_result result =
+        vcs_zcode_task_authority_roots(
+            lock, lock_len, recipe_wire, (size_t)recipe_len64,
+            lock_root, recipe_root);
+    if (result != VCS_ZCODE_TASK_AUTHORITY_OK ||
+        memcmp(lock_root, task->dependency_lock_root, 32) != 0 ||
+        memcmp(recipe_root, task->acceptance_tests_root, 32) != 0)
+        return VCS_ZCODE_TASK_AUTHORITY_CAS;
+    struct vcs_package_recipe recipe;
+    if (vcs_package_recipe_parse(
+            recipe_wire, (size_t)recipe_len64, &recipe) !=
+            VCS_PACKAGE_RECIPE_OK)
+        return VCS_ZCODE_TASK_AUTHORITY_RECIPE;
+    const uint8_t *roots[] = { candidate->candidate_source_root };
+    char detail[160];
+    for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
+        struct vcs_manifest manifest;
+        if (!vcs_tree_load(repo_root, roots[i], &manifest)) {
+            vcs_package_recipe_free(&recipe);
+            return VCS_ZCODE_TASK_AUTHORITY_CAS;
+        }
+        bool present = vcs_package_recipe_files_in_vcs_manifest(
+            &recipe, &manifest, detail, sizeof(detail));
+        vcs_manifest_free(&manifest);
+        if (!present) {
+            vcs_package_recipe_free(&recipe);
+            return VCS_ZCODE_TASK_AUTHORITY_MEMBERSHIP;
+        }
+    }
+    vcs_package_recipe_free(&recipe);
+    return VCS_ZCODE_TASK_AUTHORITY_OK;
 }

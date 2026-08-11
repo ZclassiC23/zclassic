@@ -1015,7 +1015,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode workspace source package checkout` | ready | mutate / app-write / operator · foreground/high | **`datadir`**, **`package_root`**, **`source_root`**, **`accepted_signer`**, **`workspace`**, **`destination`** | `zcl.zcode_source_package_checkout.v1` | `zclassic23 zcode workspace source package checkout --input='{"datadir":"/tmp/zclassic23-node","package_root":"<64hex>","source_root":"<64hex>","accepted_signer":"<64hex>","workspace":"/tmp/zvcs-scratch","destination":"/tmp/source-scratch"}'` | Reconstruct an exact source carrier from the P2P store |
+| `zcode workspace source package checkout` | ready | mutate / app-write / operator · foreground/high | **`datadir`**, **`package_root`**, **`source_root`**, **`accepted_work_root`**, **`workspace`**, **`destination`** | `zcl.zcode_source_package_checkout.v1` | `zclassic23 zcode workspace source package checkout --input='{"datadir":"/tmp/zclassic23-node","package_root":"<64hex>","source_root":"<64hex>","accepted_work_root":"<64hex>","workspace":"/tmp/zvcs-scratch","destination":"/tmp/source-scratch"}'` | Reconstruct an exact source carrier from the P2P store |
 
 #### `zcode.workspace.manifest` — Externally signed C23 workspace manifests
 

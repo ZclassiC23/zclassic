@@ -8,6 +8,7 @@
 #include "vcs/package_manifest.h"
 #include "vcs/source_package_transport.h"
 #include "vcs/vcs.h"
+#include "vcs/zcode_accepted_work_bundle.h"
 #include "vcs/zcode_lane.h"
 
 #include <dirent.h>
@@ -27,6 +28,8 @@ struct source_checkout_loaded {
     struct vcs_source_bundle_sharded source;
     uint8_t *license;
     size_t license_len;
+    uint8_t *authority;
+    size_t authority_len;
     uint8_t *offline[VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX];
     size_t offline_len[VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX];
 };
@@ -60,6 +63,7 @@ static void source_checkout_loaded_free(struct source_checkout_loaded *loaded)
     vcs_package_manifest_free(&loaded->package);
     vcs_source_bundle_sharded_free(&loaded->source);
     free(loaded->license);
+    free(loaded->authority);
     for (size_t i = 0; i < VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX; i++)
         free(loaded->offline[i]);
     memset(loaded, 0, sizeof(*loaded));
@@ -173,6 +177,7 @@ static enum vcs_source_package_checkout_result source_checkout_manifest(
 static enum vcs_source_package_checkout_result source_checkout_load_fixed(
     struct vcs_package_store *store, const uint8_t package_root[32],
     const uint8_t source_root[32], const uint8_t expected_signer[32],
+    const uint8_t accepted_work_root[32],
     struct source_checkout_loaded *loaded)
 {
     const char *fixed[] = {
@@ -184,6 +189,12 @@ static enum vcs_source_package_checkout_result source_checkout_load_fixed(
     for (size_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++)
         if (source_checkout_file_index(&loaded->package, fixed[i]) < 0)
             return VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+    int authority_index = source_checkout_file_index(
+        &loaded->package, VCS_SOURCE_PACKAGE_AUTHORITY_PATH);
+    if (accepted_work_root && authority_index < 0)
+        return VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+    if (!accepted_work_root && authority_index >= 0)
+        return VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
     int manifest_index = source_checkout_file_index(
         &loaded->package, VCS_SOURCE_PACKAGE_MANIFEST_PATH);
     if (!source_checkout_read_file(
@@ -207,13 +218,18 @@ static enum vcs_source_package_checkout_result source_checkout_load_fixed(
     uint8_t *lane_wire = NULL;
     size_t lane_wire_len = 0;
     struct vcs_zcode_lane_receipt_v1 receipt;
+    uint8_t lane_root[32];
     bool proven = source_checkout_read_file(
             store, package_root, &loaded->package, (size_t)lane_index,
             &lane_wire, &lane_wire_len) &&
         vcs_zcode_lane_receipt_parse(lane_wire, lane_wire_len, &receipt) ==
             VCS_ZCODE_DEV_OK && receipt.lane == VCS_ZCODE_LANE_PROVEN &&
-        vcs_zcode_lane_receipt_verify(&receipt, expected_signer) ==
-            VCS_ZCODE_DEV_OK;
+        vcs_zcode_lane_receipt_id(&receipt, lane_root) == VCS_ZCODE_DEV_OK &&
+        ((!accepted_work_root && expected_signer &&
+          vcs_zcode_lane_receipt_verify(&receipt, expected_signer) ==
+              VCS_ZCODE_DEV_OK) ||
+         (accepted_work_root &&
+          memcmp(lane_root, accepted_work_root, 32) == 0));
     free(lane_wire);
     if (!proven) return VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
     if (memcmp(receipt.source_root, source_root, 32) != 0)
@@ -229,17 +245,23 @@ static enum vcs_source_package_checkout_result source_checkout_load_fixed(
             &marker, &marker_len) && marker_len == expected_marker_len &&
         memcmp(marker, expected_marker, marker_len) == 0;
     free(marker);
-    return marker_ok ? VCS_SOURCE_PACKAGE_CHECKOUT_OK
-                     : VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+    if (!marker_ok) return VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+    if (accepted_work_root &&
+        !source_checkout_read_file(
+            store, package_root, &loaded->package,
+            (size_t)authority_index, &loaded->authority,
+            &loaded->authority_len))
+        return VCS_SOURCE_PACKAGE_CHECKOUT_CHUNK;
+    return VCS_SOURCE_PACKAGE_CHECKOUT_OK;
 }
 
 static enum vcs_source_package_checkout_result source_checkout_load_variable(
     struct vcs_package_store *store, const uint8_t package_root[32],
-    struct source_checkout_loaded *loaded)
+    bool has_authority, struct source_checkout_loaded *loaded)
 {
     bool seen_shards[256] = {0};
     bool seen_offline[VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX] = {0};
-    size_t recognized = 4u;
+    size_t recognized = has_authority ? 5u : 4u;
     for (size_t i = 0; i < loaded->package.count; i++) {
         const char *path = loaded->package.files[i].path;
         uint16_t shard = 0;
@@ -336,16 +358,18 @@ static bool source_checkout_write_offline(
     return true;
 }
 
-enum vcs_source_package_checkout_result vcs_source_package_checkout(
+static enum vcs_source_package_checkout_result source_package_checkout_common(
     struct vcs_package_store *store, const uint8_t package_root[32],
     const uint8_t source_root[32], const uint8_t expected_signer[32],
+    const uint8_t accepted_work_root[32],
     const char *workspace,
     const char *destination,
     struct vcs_source_package_checkout_metrics *metrics)
 {
     if (metrics) memset(metrics, 0, sizeof(*metrics));
-    if (!store || !package_root || !source_root || !expected_signer ||
-        !workspace || !destination)
+    if (!store || !package_root || !source_root ||
+        (!expected_signer && !accepted_work_root) ||
+        (expected_signer && accepted_work_root) || !workspace || !destination)
         return VCS_SOURCE_PACKAGE_CHECKOUT_NULL;
     if (!source_checkout_empty_dir(destination))
         return VCS_SOURCE_PACKAGE_CHECKOUT_DESTINATION;
@@ -359,10 +383,11 @@ enum vcs_source_package_checkout_result vcs_source_package_checkout(
         source_checkout_manifest(store, package_root, &loaded);
     if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK)
         result = source_checkout_load_fixed(
-            store, package_root, source_root, expected_signer, &loaded);
+            store, package_root, source_root, expected_signer,
+            accepted_work_root, &loaded);
     if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK)
         result = source_checkout_load_variable(
-            store, package_root, &loaded);
+            store, package_root, accepted_work_root != NULL, &loaded);
     struct vcs_source_bundle_metrics source_metrics;
     if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK &&
         vcs_source_bundle_sharded_verify(
@@ -373,6 +398,15 @@ enum vcs_source_package_checkout_result vcs_source_package_checkout(
         vcs_source_bundle_sharded_import(
             &loaded.source, source_root, workspace, &source_metrics) !=
             VCS_SOURCE_BUNDLE_OK)
+        result = VCS_SOURCE_PACKAGE_CHECKOUT_SOURCE;
+    struct vcs_zcode_accepted_work_v1 accepted;
+    uint32_t authority_objects = 0, work_receipts = 0;
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK && accepted_work_root &&
+        vcs_zcode_accepted_work_bundle_import(
+            workspace, accepted_work_root, source_root,
+            loaded.authority, loaded.authority_len, &accepted,
+            &authority_objects, &work_receipts) !=
+                VCS_ZCODE_ACCEPTED_WORK_BUNDLE_OK)
         result = VCS_SOURCE_PACKAGE_CHECKOUT_SOURCE;
     uint64_t offline_bytes = 0;
     if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK &&
@@ -391,7 +425,35 @@ enum vcs_source_package_checkout_result vcs_source_package_checkout(
             (uint32_t)vcs_source_package_offline_input_count();
         metrics->source_shards = (uint32_t)loaded.source.shard_count;
         metrics->carrier_files = (uint32_t)loaded.package.count;
+        metrics->authority_objects = authority_objects;
+        metrics->work_receipts = work_receipts;
+        if (accepted_work_root)
+            memcpy(metrics->accepted_signer,
+                   accepted.expected_signer, 32);
     }
     source_checkout_loaded_free(&loaded);
     return result;
+}
+
+enum vcs_source_package_checkout_result vcs_source_package_checkout(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    const uint8_t source_root[32], const uint8_t expected_signer[32],
+    const char *workspace, const char *destination,
+    struct vcs_source_package_checkout_metrics *metrics)
+{
+    return source_package_checkout_common(
+        store, package_root, source_root, expected_signer, NULL,
+        workspace, destination, metrics);
+}
+
+enum vcs_source_package_checkout_result
+vcs_source_package_checkout_accepted(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    const uint8_t source_root[32], const uint8_t accepted_work_root[32],
+    const char *workspace, const char *destination,
+    struct vcs_source_package_checkout_metrics *metrics)
+{
+    return source_package_checkout_common(
+        store, package_root, source_root, NULL, accepted_work_root,
+        workspace, destination, metrics);
 }

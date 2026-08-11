@@ -26,6 +26,9 @@ struct vcs_source_package_checkout_metrics {
     uint32_t offline_input_files;
     uint32_t source_shards;
     uint32_t carrier_files;
+    uint32_t authority_objects;
+    uint32_t work_receipts;
+    uint8_t accepted_signer[32];
 };
 
 const char *vcs_source_package_checkout_result_string(
@@ -41,6 +44,16 @@ enum vcs_source_package_checkout_result vcs_source_package_checkout(
     const uint8_t source_root[32], const uint8_t expected_signer[32],
     const char *workspace,
     const char *destination,
+    struct vcs_source_package_checkout_metrics *metrics);
+
+/* Full publication consumer path. accepted_work_root selects the complete
+ * carried proof chain; the expected signer is derived from its candidate and
+ * is never accepted as an input or learned from a lone receipt. */
+enum vcs_source_package_checkout_result
+vcs_source_package_checkout_accepted(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    const uint8_t source_root[32], const uint8_t accepted_work_root[32],
+    const char *workspace, const char *destination,
     struct vcs_source_package_checkout_metrics *metrics);
 
 #endif /* ZCL_VCS_SOURCE_PACKAGE_CHECKOUT_H */

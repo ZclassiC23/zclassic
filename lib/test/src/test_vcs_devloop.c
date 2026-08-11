@@ -31,10 +31,15 @@
 #include "vcs/vcs_devloop.h"
 #include "vcs/vcs_index.h"
 #include "vcs/vcs_object.h"
+#include "vcs/package_deps.h"
 #include "vcs/package_mapping.h"
+#include "vcs/package_recipe.h"
+#include "vcs/source_bundle.h"
 #include "vcs/zcode_accepted_work.h"
+#include "vcs/zcode_accepted_work_bundle.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_lane.h"
+#include "vcs/zcode_task_authority.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -175,10 +180,42 @@ static bool vd_accepted_fixture_create(
     struct vcs_zcode_task_v1 *task = &fixture->accepted.task;
     task->schema_version = VCS_ZCODE_DEV_VERSION;
     memcpy(task->source_root, source_root, 32);
-    vd_root(task->dependency_lock_root, 0x11);
+    struct vcs_package_lock lock;
+    vcs_package_lock_init(&lock);
+    lock.count = 1;
+    memcpy(lock.nodes[0].root, source_root, 32);
+    (void)snprintf(lock.nodes[0].name, sizeof(lock.nodes[0].name),
+                   "test/source");
+    (void)snprintf(lock.nodes[0].semver, sizeof(lock.nodes[0].semver),
+                   "1.0.0");
+    uint8_t *lock_wire = NULL;
+    size_t lock_wire_len = 0;
+    struct vcs_package_recipe recipe;
+    vcs_package_recipe_init(&recipe);
+    enum vcs_package_recipe_error recipe_error = VCS_PACKAGE_RECIPE_OK;
+    bool task_authority =
+        vcs_package_lock_serialize(&lock, &lock_wire, &lock_wire_len) ==
+            VCS_PACKAGE_DEPS_OK &&
+        vcs_package_recipe_add_source(
+            &recipe, "src/main.c", &recipe_error);
+    vcs_package_recipe_set_test_limits(
+        &recipe, 0, 60, UINT64_C(64) * 1024u * 1024u);
+    uint8_t *recipe_wire = NULL;
+    size_t recipe_wire_len = 0;
+    task_authority = task_authority &&
+        vcs_package_recipe_serialize(
+            &recipe, &recipe_wire, &recipe_wire_len) ==
+            VCS_PACKAGE_RECIPE_OK &&
+        vcs_zcode_task_authority_store(
+            dir, lock_wire, lock_wire_len, recipe_wire, recipe_wire_len,
+            task->dependency_lock_root, task->acceptance_tests_root) ==
+            VCS_ZCODE_TASK_AUTHORITY_OK;
+    free(recipe_wire);
+    vcs_package_recipe_free(&recipe);
+    free(lock_wire);
+    if (!task_authority) return false;
     vd_root(task->toolchain_capsule_root, 0x21);
     vd_root(task->write_scope_root, 0x31);
-    vd_root(task->acceptance_tests_root, 0x41);
     memcpy(task->proof_policy_root,
            fixture->accepted.proof_policy_root, 32);
     vd_root(task->model_policy_root, 0x51);
@@ -569,6 +606,58 @@ static int t_publication_enqueue(const char *dir)
              vcs_zcode_accepted_work_resolve(
                  dir, fixture.accepted.accepted_work_root,
                  accepted_now, &resolved));
+    uint8_t *accepted_wire = NULL;
+    size_t accepted_wire_len = 0;
+    struct vcs_zcode_accepted_work_v1 exported;
+    VD_CHECK("publication: accepted work exports as closed authority bundle",
+             vcs_zcode_accepted_work_bundle_export(
+                 dir, fixture.accepted.accepted_work_root, accepted_now,
+                 &accepted_wire, &accepted_wire_len, &exported) ==
+                 VCS_ZCODE_ACCEPTED_WORK_BUNDLE_OK &&
+             accepted_wire_len > 0 &&
+             memcmp(exported.expected_signer,
+                    fixture.signer_pubkey, 32) == 0);
+    char accepted_consumer[512];
+    test_make_tmpdir(accepted_consumer, sizeof(accepted_consumer),
+                     "vcs_devloop", "accepted-authority-consumer");
+    struct vcs_source_bundle_sharded accepted_source;
+    vcs_source_bundle_sharded_init(&accepted_source);
+    VD_CHECK("publication: accepted source stages without Git",
+             vcs_source_bundle_sharded_create(
+                 dir, job.source_tree_root, &accepted_source) ==
+                 VCS_SOURCE_BUNDLE_OK &&
+             vcs_source_bundle_sharded_import(
+                 &accepted_source, job.source_tree_root, accepted_consumer,
+                 NULL) == VCS_SOURCE_BUNDLE_OK);
+    struct vcs_zcode_accepted_work_v1 imported;
+    uint32_t authority_objects = 0, authority_receipts = 0;
+    VD_CHECK("publication: fresh consumer rederives full accepted authority",
+             accepted_wire &&
+             vcs_zcode_accepted_work_bundle_import(
+                 accepted_consumer, fixture.accepted.accepted_work_root,
+                 job.source_tree_root, accepted_wire, accepted_wire_len,
+                 &imported, &authority_objects, &authority_receipts) ==
+                 VCS_ZCODE_ACCEPTED_WORK_BUNDLE_OK &&
+             authority_objects >= 9 && authority_receipts == 2 &&
+             memcmp(imported.expected_signer,
+                    fixture.signer_pubkey, 32) == 0);
+    uint8_t wrong_accepted_root[32];
+    memcpy(wrong_accepted_root, fixture.accepted.accepted_work_root, 32);
+    wrong_accepted_root[0] ^= 1u;
+    VD_CHECK("publication: caller-selected wrong accepted root is refused",
+             vcs_zcode_accepted_work_bundle_import(
+                 accepted_consumer, wrong_accepted_root,
+                 job.source_tree_root, accepted_wire, accepted_wire_len,
+                 NULL, NULL, NULL) ==
+                 VCS_ZCODE_ACCEPTED_WORK_BUNDLE_SHAPE);
+    if (accepted_wire_len > 0) accepted_wire[accepted_wire_len - 1u] ^= 1u;
+    VD_CHECK("publication: corrupt task authority is refused",
+             vcs_zcode_accepted_work_bundle_import(
+                 accepted_consumer, fixture.accepted.accepted_work_root,
+                 job.source_tree_root, accepted_wire, accepted_wire_len,
+                 NULL, NULL, NULL) != VCS_ZCODE_ACCEPTED_WORK_BUNDLE_OK);
+    free(accepted_wire);
+    vcs_source_bundle_sharded_free(&accepted_source);
     uint8_t rejected_progress_root[32];
     reused = true;
     VD_CHECK("publication: valid compile/test CANDIDATE remains waiting",

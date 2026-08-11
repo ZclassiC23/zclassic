@@ -13,6 +13,8 @@
 #define VCS_SOURCE_PACKAGE_MANIFEST_PATH \
     "zclassic23-source/manifest.zvsm"
 #define VCS_SOURCE_PACKAGE_LANE_PATH "zcode-lane-receipt.v1"
+#define VCS_SOURCE_PACKAGE_AUTHORITY_PATH \
+    "zcode-accepted-work-authority.v1"
 #define VCS_SOURCE_PACKAGE_MARKER_PATH "zcode-source-transport.c"
 #define VCS_SOURCE_PACKAGE_LICENSE_PATH "LICENSE"
 #define VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX 8u
@@ -34,6 +36,9 @@ struct vcs_source_package_transport {
     size_t license_len;
     uint8_t *lane_wire;
     size_t lane_wire_len;
+    uint8_t *authority_wire;
+    size_t authority_wire_len;
+    uint8_t accepted_work_root[32];
     struct vcs_source_bundle_sharded source;
     struct vcs_source_package_file
         offline_inputs[VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX];
@@ -57,6 +62,14 @@ bool vcs_source_package_transport_build(
     const char *workspace, const uint8_t source_root[32],
     const uint8_t expected_signer[32],
     const uint8_t *lane_wire, size_t lane_wire_len,
+    struct vcs_source_package_transport *transport);
+
+/* Publication path: derive the expected signer and PROVEN receipt only by
+ * resolving the complete accepted-work chain, then carry that closed chain
+ * beside the source. */
+bool vcs_source_package_transport_build_accepted(
+    const char *workspace, const uint8_t source_root[32],
+    const uint8_t accepted_work_root[32], int64_t now_unix,
     struct vcs_source_package_transport *transport);
 
 const uint8_t *vcs_source_package_transport_marker(size_t *len_out);

@@ -1943,26 +1943,31 @@ static bool zpub_prepare_accepted_objects(
         return false;
     }
     uint8_t lane_receipt_root[32];
+    if (!zcl_hex_decode_lower(bundle->lane.receipt_root_sha3,
+                              lane_receipt_root, 32)) {
+        zpub_bundle_free(bundle);
+        zpub_fail(reply, "LANE_ACCEPTANCE_INVALID",
+                  "the verified PROVEN accepted-work root is not canonical");
+        return false;
+    }
     if (bundle->have_mapping &&
-        (!zcl_hex_decode_lower(bundle->lane.receipt_root_sha3,
-                               lane_receipt_root, 32) ||
-         memcmp(bundle->mapping.lane_receipt_root,
-                lane_receipt_root, 32) != 0)) {
+        memcmp(bundle->mapping.lane_receipt_root,
+               lane_receipt_root, 32) != 0) {
         zpub_bundle_free(bundle);
         zpub_fail(reply, "PACKAGE_MAPPING_LANE_MISMATCH",
                   "package_mapping_root does not bind the verified PROVEN accepted work");
         return false;
     }
 
-    if (!vcs_source_package_transport_build(
+    if (!vcs_source_package_transport_build_accepted(
             bundle->workspace, bundle->source_root,
-            bundle->candidate.author_pubkey,
-            bundle->receipt_wire, sizeof(bundle->receipt_wire),
+            lane_receipt_root, (int64_t)platform_time_wall_unix(),
             &bundle->transport)) {
         zpub_bundle_free(bundle);
         zpub_fail(reply, "SOURCE_PACKAGE_FAILED",
-                  "the exact accepted ZVCS tree, LICENSE, lane receipt, or "
-                  "compressed source carrier could not be rederived as one "
+                  "the exact accepted ZVCS tree, LICENSE, complete accepted "
+                  "work authority, or compressed source carrier could not "
+                  "be rederived as one "
                   "bounded canonical content.v2 package");
         return false;
     }

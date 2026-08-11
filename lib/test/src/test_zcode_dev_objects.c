@@ -23,6 +23,8 @@
 #include "vcs/package_deps.h"
 #include "vcs/package_recipe.h"
 #include "vcs/package_store.h"
+#include "vcs/source_package_checkout.h"
+#include "vcs/source_package_transport.h"
 #include "vcs/vcs_devloop.h"
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
@@ -3149,6 +3151,52 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(published_entry->file_count,
                   (uint32_t)planned_carrier_files);
         vcs_package_index_free(published_index);
+
+        uint8_t published_package_root[32];
+        ASSERT(zcl_hex_decode_lower(
+            planned_package_saved, published_package_root, 32));
+        struct vcs_package_store *published_store = vcs_package_store_open(
+            workspace, UINT64_C(256) * 1024u * 1024u);
+        ASSERT(published_store != NULL);
+        uint8_t *published_manifest_wire = NULL;
+        size_t published_manifest_wire_len = 0;
+        struct vcs_package_manifest published_manifest;
+        ASSERT_EQ(vcs_package_store_get_manifest_wire(
+                      published_store, published_package_root,
+                      &published_manifest_wire,
+                      &published_manifest_wire_len),
+                  VCS_PACKAGE_STORE_OK);
+        ASSERT(vcs_package_manifest_parse(
+            published_manifest_wire, published_manifest_wire_len,
+            &published_manifest));
+        bool authority_carried = false;
+        for (size_t i = 0; i < published_manifest.count; i++)
+            if (strcmp(published_manifest.files[i].path,
+                       VCS_SOURCE_PACKAGE_AUTHORITY_PATH) == 0)
+                authority_carried = true;
+        ASSERT(authority_carried);
+        vcs_package_manifest_free(&published_manifest);
+        free(published_manifest_wire);
+        char carrier_workspace[512], carrier_destination[512];
+        test_make_tmpdir(carrier_workspace, sizeof(carrier_workspace),
+                         "zcode_dev", "published-carrier-workspace");
+        test_make_tmpdir(carrier_destination, sizeof(carrier_destination),
+                         "zcode_dev", "published-carrier-destination");
+        struct vcs_source_package_checkout_metrics carrier_metrics;
+        uint8_t candidate_source_root[32];
+        ASSERT(zcl_hex_decode_lower(
+            candidate_source_saved, candidate_source_root, 32));
+        ASSERT_EQ(vcs_source_package_checkout_accepted(
+                      published_store, published_package_root,
+                      candidate_source_root, accepted_lane_root,
+                      carrier_workspace, carrier_destination,
+                      &carrier_metrics),
+                  VCS_SOURCE_PACKAGE_CHECKOUT_OK);
+        ASSERT(carrier_metrics.authority_objects >= 9);
+        ASSERT(carrier_metrics.work_receipts >= 2);
+        ASSERT(memcmp(carrier_metrics.accepted_signer,
+                      admission_key, 32) == 0);
+        vcs_package_store_close(published_store);
 
         struct zcl_command_reply duplicate_publish_reply;
         zcl_command_reply_init(&duplicate_publish_reply,
