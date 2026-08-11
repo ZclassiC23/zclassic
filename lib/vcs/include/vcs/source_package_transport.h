@@ -55,6 +55,7 @@ void vcs_source_package_transport_free(
  * vcs_source_package_transport_init(). */
 bool vcs_source_package_transport_build(
     const char *workspace, const uint8_t source_root[32],
+    const uint8_t expected_signer[32],
     const uint8_t *lane_wire, size_t lane_wire_len,
     struct vcs_source_package_transport *transport);
 

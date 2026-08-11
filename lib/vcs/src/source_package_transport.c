@@ -34,14 +34,15 @@ static const char *const offline_input_paths[] = {
 };
 
 static bool source_package_proven_lane(
-    const uint8_t *wire, size_t wire_len, const uint8_t source_root[32])
+    const uint8_t *wire, size_t wire_len, const uint8_t source_root[32],
+    const uint8_t expected_signer[32])
 {
     struct vcs_zcode_lane_receipt_v1 lane;
     return vcs_zcode_lane_receipt_parse(wire, wire_len, &lane) ==
             VCS_ZCODE_DEV_OK &&
         lane.lane == VCS_ZCODE_LANE_PROVEN &&
         memcmp(lane.source_root, source_root, 32) == 0 &&
-        vcs_zcode_lane_receipt_verify(&lane, lane.signer_pubkey) ==
+        vcs_zcode_lane_receipt_verify(&lane, expected_signer) ==
             VCS_ZCODE_DEV_OK;
 }
 
@@ -275,12 +276,15 @@ static bool source_package_recipe(
 
 bool vcs_source_package_transport_build(
     const char *workspace, const uint8_t source_root[32],
+    const uint8_t expected_signer[32],
     const uint8_t *lane_wire, size_t lane_wire_len,
     struct vcs_source_package_transport *transport)
 {
-    if (!workspace || !source_root || !lane_wire || !transport ||
+    if (!workspace || !source_root || !expected_signer || !lane_wire ||
+        !transport ||
         lane_wire_len > SOURCE_PACKAGE_MAX_AUTHORITY_BYTES ||
-        !source_package_proven_lane(lane_wire, lane_wire_len, source_root))
+        !source_package_proven_lane(
+            lane_wire, lane_wire_len, source_root, expected_signer))
         return false;
     vcs_source_package_transport_free(transport);
     struct vcs_manifest tree;

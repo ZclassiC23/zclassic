@@ -1956,6 +1956,7 @@ static bool zpub_prepare_accepted_objects(
 
     if (!vcs_source_package_transport_build(
             bundle->workspace, bundle->source_root,
+            bundle->candidate.author_pubkey,
             bundle->receipt_wire, sizeof(bundle->receipt_wire),
             &bundle->transport)) {
         zpub_bundle_free(bundle);

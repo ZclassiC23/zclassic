@@ -284,6 +284,15 @@ static int t_source_bundle(void)
         vcs_zcode_lane_receipt_serialize(&lane, lane_wire) ==
             VCS_ZCODE_DEV_OK;
     memset(lane_secret, 0, sizeof(lane_secret));
+    uint8_t wrong_signer[32];
+    memset(wrong_signer, 0x77, sizeof(wrong_signer));
+    struct vcs_source_package_transport unauthorized_transport;
+    vcs_source_package_transport_init(&unauthorized_transport);
+    VC_CHECK("source package refuses a receipt outside accepted authority",
+             !vcs_source_package_transport_build(
+                 source, first_root, wrong_signer, lane_wire,
+                 sizeof(lane_wire), &unauthorized_transport));
+    vcs_source_package_transport_free(&unauthorized_transport);
     uint8_t refused_lane[VCS_ZCODE_LANE_WIRE_BYTES];
     memcpy(refused_lane, lane_wire, sizeof(refused_lane));
     refused_lane[sizeof(refused_lane) - 1u] ^= 1u;
@@ -291,14 +300,15 @@ static int t_source_bundle(void)
     vcs_source_package_transport_init(&refused_transport);
     VC_CHECK("source package refuses a forged PROVEN receipt",
              !vcs_source_package_transport_build(
-                 source, first_root, refused_lane, sizeof(refused_lane),
+                 source, first_root, lane_pubkey, refused_lane,
+                 sizeof(refused_lane),
                  &refused_transport));
     vcs_source_package_transport_free(&refused_transport);
     struct vcs_source_package_transport transport;
     vcs_source_package_transport_init(&transport);
     VC_CHECK("source package carries verified tree through content.v2",
              lane_ok && vcs_source_package_transport_build(
-                 source, first_root, lane_wire, sizeof(lane_wire),
+                 source, first_root, lane_pubkey, lane_wire, sizeof(lane_wire),
                  &transport) && transport.source.shard_count > 0 &&
              transport.offline_input_count == 5 &&
              transport.bundle_metrics.file_count == created.file_count);
@@ -360,7 +370,7 @@ static int t_source_bundle(void)
                  transport.manifest_wire_len, incomplete_root) ==
                  VCS_PACKAGE_STORE_OK &&
              vcs_source_package_checkout(
-                 incomplete_store, incomplete_root, first_root,
+                 incomplete_store, incomplete_root, first_root, lane_pubkey,
                  package_workspace, incomplete_destination, NULL) ==
                  VCS_SOURCE_PACKAGE_CHECKOUT_INCOMPLETE);
     if (incomplete_store) vcs_package_store_close(incomplete_store);
@@ -390,7 +400,7 @@ static int t_source_bundle(void)
     struct vcs_source_package_checkout_metrics checkout_metrics;
     VC_CHECK("source carrier reconstructs source and offline inputs without Git",
              vcs_source_package_checkout(
-                 carrier_store, transport.package_root, first_root,
+                 carrier_store, transport.package_root, first_root, lane_pubkey,
                  package_workspace, package_destination,
                  &checkout_metrics) == VCS_SOURCE_PACKAGE_CHECKOUT_OK &&
              checkout_metrics.source.file_count == created.file_count &&
@@ -407,6 +417,7 @@ static int t_source_bundle(void)
     VC_CHECK("source carrier refuses wrong source authority before checkout",
              vcs_source_package_checkout(
                  carrier_store, transport.package_root, refused_root,
+                 lane_pubkey,
                  package_workspace, refused_destination, NULL) ==
                  VCS_SOURCE_PACKAGE_CHECKOUT_SOURCE);
     if (stored_parsed) vcs_package_manifest_free(&stored_carrier);

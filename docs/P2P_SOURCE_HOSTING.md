@@ -104,8 +104,10 @@ declarative recipe that compiles only the marker; the independently
 reverified task acceptance recipe remains bound through the signed lane
 receipt and is reported separately as `acceptance_recipe_root`.
 Carrier construction and checkout both parse the embedded lane receipt,
-verify its Ed25519 signature, require the `PROVEN` lane, and require its
-source root to equal the separately supplied source authority.
+verify its Ed25519 signature against the expected signer derived from the
+accepted candidate/work authority (never a key trusted merely because the
+receipt embeds it), require the `PROVEN` lane, and require its source root to
+equal the separately supplied source authority.
 
 Creation reloads and rehashes every blob from ZVCS CAS. Verification
 decompresses under fixed manifest/source/wire limits, parses the canonical

@@ -38,7 +38,8 @@ const char *vcs_source_package_checkout_result_string(
  * executed. */
 enum vcs_source_package_checkout_result vcs_source_package_checkout(
     struct vcs_package_store *store, const uint8_t package_root[32],
-    const uint8_t source_root[32], const char *workspace,
+    const uint8_t source_root[32], const uint8_t expected_signer[32],
+    const char *workspace,
     const char *destination,
     struct vcs_source_package_checkout_metrics *metrics);
 

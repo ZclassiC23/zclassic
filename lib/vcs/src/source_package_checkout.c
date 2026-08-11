@@ -172,7 +172,8 @@ static enum vcs_source_package_checkout_result source_checkout_manifest(
 
 static enum vcs_source_package_checkout_result source_checkout_load_fixed(
     struct vcs_package_store *store, const uint8_t package_root[32],
-    const uint8_t source_root[32], struct source_checkout_loaded *loaded)
+    const uint8_t source_root[32], const uint8_t expected_signer[32],
+    struct source_checkout_loaded *loaded)
 {
     const char *fixed[] = {
         VCS_SOURCE_PACKAGE_LICENSE_PATH,
@@ -211,7 +212,7 @@ static enum vcs_source_package_checkout_result source_checkout_load_fixed(
             &lane_wire, &lane_wire_len) &&
         vcs_zcode_lane_receipt_parse(lane_wire, lane_wire_len, &receipt) ==
             VCS_ZCODE_DEV_OK && receipt.lane == VCS_ZCODE_LANE_PROVEN &&
-        vcs_zcode_lane_receipt_verify(&receipt, receipt.signer_pubkey) ==
+        vcs_zcode_lane_receipt_verify(&receipt, expected_signer) ==
             VCS_ZCODE_DEV_OK;
     free(lane_wire);
     if (!proven) return VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
@@ -337,12 +338,14 @@ static bool source_checkout_write_offline(
 
 enum vcs_source_package_checkout_result vcs_source_package_checkout(
     struct vcs_package_store *store, const uint8_t package_root[32],
-    const uint8_t source_root[32], const char *workspace,
+    const uint8_t source_root[32], const uint8_t expected_signer[32],
+    const char *workspace,
     const char *destination,
     struct vcs_source_package_checkout_metrics *metrics)
 {
     if (metrics) memset(metrics, 0, sizeof(*metrics));
-    if (!store || !package_root || !source_root || !workspace || !destination)
+    if (!store || !package_root || !source_root || !expected_signer ||
+        !workspace || !destination)
         return VCS_SOURCE_PACKAGE_CHECKOUT_NULL;
     if (!source_checkout_empty_dir(destination))
         return VCS_SOURCE_PACKAGE_CHECKOUT_DESTINATION;
@@ -356,7 +359,7 @@ enum vcs_source_package_checkout_result vcs_source_package_checkout(
         source_checkout_manifest(store, package_root, &loaded);
     if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK)
         result = source_checkout_load_fixed(
-            store, package_root, source_root, &loaded);
+            store, package_root, source_root, expected_signer, &loaded);
     if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK)
         result = source_checkout_load_variable(
             store, package_root, &loaded);

@@ -334,9 +334,10 @@ void zcl_native_handle_zcode_source_package_checkout(
     const char *workspace = zsb_str(request->input, "workspace");
     const char *destination = zsb_str(request->input, "destination");
     char workspace_real[ZSB_PATH_MAX], destination_real[ZSB_PATH_MAX];
-    uint8_t package_root[32], source_root[32];
+    uint8_t package_root[32], source_root[32], expected_signer[32];
     bool valid = datadir && workspace && destination &&
         zsb_named_root(request->input, "package_root", package_root) &&
+        zsb_named_root(request->input, "accepted_signer", expected_signer) &&
         zsb_root(request->input, source_root) &&
         zcl_native_zcode_workspace_is_explicit_scratch(workspace) &&
         zcl_native_zcode_workspace_is_explicit_scratch(destination) &&
@@ -346,7 +347,7 @@ void zcl_native_handle_zcode_source_package_checkout(
         zsb_empty_dir(destination_real);
     if (!valid) {
         zsb_fail(reply, "BAD_SOURCE_PACKAGE_CHECKOUT_INPUT", "validate",
-                 "datadir, package_root, source_root, a separate scratch CAS workspace, and an existing empty scratch destination are required");
+                 "datadir, package_root, source_root, accepted_signer from the verified work authority, a separate scratch CAS workspace, and an existing empty scratch destination are required");
         return;
     }
     struct vcs_package_store *store = vcs_package_store_open(
@@ -359,7 +360,7 @@ void zcl_native_handle_zcode_source_package_checkout(
     struct vcs_source_package_checkout_metrics metrics;
     enum vcs_source_package_checkout_result result =
         vcs_source_package_checkout(
-            store, package_root, source_root, workspace_real,
+            store, package_root, source_root, expected_signer, workspace_real,
             destination_real, &metrics);
     vcs_package_store_close(store);
     if (result != VCS_SOURCE_PACKAGE_CHECKOUT_OK) {
