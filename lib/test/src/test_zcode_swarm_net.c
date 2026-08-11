@@ -911,9 +911,42 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         struct zwn_node a, b, a2;
         ASSERT(zwn_node_init(&a, "sa", params));
         ASSERT(zwn_node_init(&a2, "sa2", params));
-        ASSERT(zwn_node_init(&b, "sb", params));
         ASSERT(zwn_store_source_transport(a.store, &transport));
-        ASSERT(zwn_store_source_transport(a2.store, &transport));
+        ASSERT(vcs_package_store_pin(
+                   a.store, transport.package_root, true) ==
+               VCS_PACKAGE_STORE_OK);
+        struct zwn_link a_a2, a2_a;
+        ASSERT(zwn_link(&a, &a_a2, 10, 1, 1, 2, "source-server-b"));
+        ASSERT(zwn_link(&a2, &a2_a, 10, 1, 1, 1, "source-server-a"));
+        ASSERT(zwn_meet_side(&a, &a_a2));
+        ASSERT(zwn_meet_side(&a2, &a2_a));
+        ASSERT(vcs_swarm_engine_fetch(
+                   a2.engine, transport.package_root, ZWN_DAY, ++a2.now) ==
+               VCS_SWARM_FETCH_OK);
+        enum vcs_swarm_download_state state = VCS_SWARM_DL_INACTIVE;
+        bool terminal = false;
+        for (int i = 0; i < 600 && !terminal; i++) {
+            ASSERT(zwn_round(&a_a2, &a2_a, params->pchMessageStart));
+            terminal = zwn_download_done(
+                &a2, transport.package_root, &state);
+        }
+        ASSERT(terminal && state == VCS_SWARM_DL_COMPLETE);
+        ASSERT(vcs_package_store_pin(
+                   a2.store, transport.package_root, true) ==
+               VCS_PACKAGE_STORE_OK);
+        struct vcs_package_store_status server_a_status, server_b_status;
+        ASSERT(vcs_package_store_package_status(
+                   a.store, transport.package_root, &server_a_status));
+        ASSERT(vcs_package_store_package_status(
+                   a2.store, transport.package_root, &server_b_status));
+        ASSERT(server_a_status.complete && server_a_status.pinned);
+        ASSERT(server_b_status.complete && server_b_status.pinned);
+        vcs_swarm_engine_peer_drop(a.engine, (uint64_t)a_a2.node->id);
+        vcs_swarm_engine_peer_drop(a2.engine, (uint64_t)a2_a.node->id);
+        zwn_link_free(&a_a2);
+        zwn_link_free(&a2_a);
+
+        ASSERT(zwn_node_init(&b, "sb", params));
         struct zwn_link a_b, b_a, a2_b, b_a2;
         ASSERT(zwn_link(&a, &a_b, 5, 6, 7, 8, "source-b"));
         ASSERT(zwn_link(&b, &b_a, 1, 2, 3, 4, "source-a"));
@@ -926,8 +959,8 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         ASSERT(vcs_swarm_engine_fetch(
                    b.engine, transport.package_root, ZWN_DAY, ++b.now) ==
                VCS_SWARM_FETCH_OK);
-        enum vcs_swarm_download_state state = VCS_SWARM_DL_INACTIVE;
-        bool terminal = false;
+        state = VCS_SWARM_DL_INACTIVE;
+        terminal = false;
         for (int i = 0; i < 600 && !terminal; i++) {
             ASSERT(zwn_round(&a_b, &b_a, params->pchMessageStart));
             ASSERT(zwn_round(&a2_b, &b_a2, params->pchMessageStart));
