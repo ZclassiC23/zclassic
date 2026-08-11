@@ -41,9 +41,11 @@ StartLimitIntervalSec=0
 # Restart=always would livelock it. Type=notify holds the watchdog
 # clock until READY=1 (emitted by boot_sd_watchdog_start), and
 # TimeoutStartSec bounds the boot itself with a cold-recovery-sized
-# budget instead of the 90s default.
+# budget instead of the 90s default. A real forced-unclean recovery with a
+# 55.3 GB WAL was still making named quick_check progress after 98 minutes;
+# four hours preserves that valid work without making the timeout infinite.
 Type=notify
-TimeoutStartSec=1800
+TimeoutStartSec=14400
 WatchdogSec=120
 NotifyAccess=main
 

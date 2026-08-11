@@ -11,6 +11,7 @@
 #include "vcs/build_action.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_recipe.h"
+#include "vcs/source_bundle.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_object.h"
 
@@ -103,12 +104,12 @@ static bool bfp_sha3_file(const char *path, uint8_t out[32],
 }
 
 static struct zcl_result bfp_materialize_tree(
-    const char *workspace, const struct vcs_zcode_task_v1 *task,
-    const struct vcs_zcode_candidate_v1 *candidate, const char *destination)
+    const char *workspace, const struct vcs_zcode_candidate_v1 *candidate,
+    const char *destination)
 {
     int result = vcs_tree_materialize(
         workspace, candidate->candidate_source_root, destination,
-        task->max_context_bytes, 0400u);
+        VCS_SOURCE_BUNDLE_MAX_SOURCE_BYTES, 0400u);
     return result == VCS_OK
         ? ZCL_OK : ZCL_ERR(-1, "candidate-tree-materialize-failed: %d", result);
 }
@@ -255,7 +256,7 @@ struct zcl_result build_fabric_package_prepare(
     if (!loaded.ok)
         return loaded;
     struct zcl_result tree = bfp_materialize_tree(
-        workspace, task, candidate, source_dir);
+        workspace, candidate, source_dir);
     if (!tree.ok || !bfp_write(recipe_path, recipe_wire, recipe_wire_len)) {
         bfp_free_recipe(&recipe_wire, &recipe_wire_len);
         return tree.ok ? ZCL_ERR(-1, "package-recipe-materialize-failed")

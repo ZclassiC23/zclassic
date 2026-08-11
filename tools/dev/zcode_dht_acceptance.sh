@@ -21,6 +21,8 @@ A_PORT=20022; A_RPC=39211; A_FS=39212; A_HTTPS=39213
 B_PORT=18033; B_RPC=39221; B_FS=39222; B_HTTPS=39223
 DEAD_SINK=39999
 DHT_WAIT="${DHT_WAIT:-90}"
+DHT_PACKAGEHOST="${DHT_PACKAGEHOST:-0}"
+DHT_AFTER_SPARSE_HOOK="${DHT_AFTER_SPARSE_HOOK:-}"
 DHT_WORK=""; DHT_DD_A=""; DHT_DD_B=""; DHT_PGID_A=""; DHT_PGID_B=""
 DHT_EXTRA_PGIDS=()
 DHT_CLEANED=0
@@ -112,9 +114,10 @@ dht_spawn() {
     # gate refuses a plaintext-at-rest wallet. The wallet-passphrase
     # credential (CREDENTIALS_DIRECTORY, exported below) encrypts key
     # writes at rest (WKS1); -operator-lane=dev arms the dev wallet scope.
+    case "$DHT_PACKAGEHOST" in 0|1) ;; *) dht_die "DHT_PACKAGEHOST must be 0 or 1" ;; esac
     setsid "$NODE_BIN" -datadir="$dd" -regtest -port="$p2p" \
         -rpcport="$rpc" -fsport="$fs" -httpsport="$https" \
-        "${args[@]}" -packagehost=0 -v2transport \
+        "${args[@]}" -packagehost="$DHT_PACKAGEHOST" -v2transport \
         -operator-lane=dev -wallet-no-phrase-backup \
         -nobgvalidation -nolegacyimport -showmetrics=0 \
         >>"$dd/node.log" 2>&1 &
@@ -473,7 +476,7 @@ install -m 600 /dev/null "$DHT_CRED_DIR/wallet-passphrase"
 printf '%s\n' "$DHT_WALLET_PASS" >"$DHT_CRED_DIR/wallet-passphrase"
 export CREDENTIALS_DIRECTORY="$DHT_CRED_DIR"
 
-dht_note "booting two clean packagehost-off regtest nodes"
+dht_note "booting two clean packagehost=$DHT_PACKAGEHOST regtest nodes"
 DHT_PGID_A="$(dht_spawn "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK")"
 dht_wait_rpc "$DHT_DD_A" "$A_RPC" "$DHT_PGID_A" || dht_die "node A RPC warmup failed"
 DHT_PGID_B="$(dht_spawn "$DHT_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$A_PORT")"
@@ -733,6 +736,7 @@ for pos in 0 1 2 3 4 5 6; do
         "${EXPECTED_AUTH[$pos]}" ||
         dht_die "sparse node $idx did not authenticate all declared edges"
 done
+
 NEXT="${ORDER[1]}"; BROKEN="${ORDER[2]}"; TARGET=6
 origin_status="$(dht_status "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}")"
 [ "$(printf '%s' "$origin_status" | dht_jget 'd["data"]["connected_authenticated"]')" -eq 1 ] ||
@@ -905,5 +909,25 @@ assert 2<=dials<=ar["entries"]-1,(br,ar)
 assert requests==dials,(br,ar)
 assert a["connected_authenticated"]>=1,a
 PY
+
+# Optional composition point for larger real-process acceptances. Run it only
+# after this owner's sparse/recovery assertions are complete: a composed proof
+# may legitimately publish records, dial discovered providers, and restart
+# roles, none of which may retroactively perturb the DHT fixture's topology
+# assertions. All seven independent identities are live and authenticated here,
+# so the hook still reuses the production DHT/Noise ceremony above. Restrict it
+# to this repository's tools/dev directory: an ambient path must never become
+# executable acceptance input.
+if [ -n "$DHT_AFTER_SPARSE_HOOK" ]; then
+    hook_real="$(readlink -f "$DHT_AFTER_SPARSE_HOOK" 2>/dev/null || true)"
+    case "$hook_real" in
+        "$REPO_ROOT"/tools/dev/*.sh) ;;
+        *) dht_die "after-sparse hook must be a tools/dev shell script" ;;
+    esac
+    [ -f "$hook_real" ] || dht_die "after-sparse hook is not a regular file"
+    dht_note "running composed after-sparse acceptance hook $(basename "$hook_real")"
+    # shellcheck source=/dev/null
+    . "$hook_real"
+fi
 
 dht_note "PASS: seven-node sparse lookup, true async admission, persistence, autonomous cold bootstrap"

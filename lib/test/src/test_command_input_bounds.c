@@ -490,6 +490,56 @@ static int t_package_prepare_sequence(void)
     return failures;
 }
 
+/* ── 7. Shared key names keep command-specific numeric bounds ──────────── */
+
+static int t_package_fetch_maximum_bytes(void)
+{
+    int failures = 0;
+    const struct zcl_command_spec *fetch = zcl_command_registry_find(
+        zcl_command_catalog(), "zcode.package.fetch", NULL);
+    const struct zcl_command_spec *scout = zcl_command_registry_find(
+        zcl_command_catalog(), "metaverse.space.scout.plan", NULL);
+    CIB_CHECK("package fetch and space scout resolve", fetch && scout);
+    if (!fetch || !scout)
+        return failures;
+
+    struct json_value input;
+    char why[192] = {0};
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_int(&input, "maximum_bytes", 256 * 1024 * 1024);
+    CIB_CHECK("package fetch admits one full 256 MiB source carrier",
+              zcl_command_registry_input_validate(fetch, &input, why,
+                                                  sizeof(why)));
+    json_free(&input);
+
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_int(&input, "maximum_bytes",
+                           256 * 1024 * 1024 + 1);
+    CIB_CHECK("package fetch refuses more than its 256 MiB carrier bound",
+              !zcl_command_registry_input_validate(fetch, &input, why,
+                                                   sizeof(why)));
+    json_free(&input);
+
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_int(&input, "maximum_bytes", 8 * 1024 * 1024);
+    CIB_CHECK("space scout retains its independent 8 MiB traversal bound",
+              zcl_command_registry_input_validate(scout, &input, why,
+                                                  sizeof(why)));
+    json_free(&input);
+
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_int(&input, "maximum_bytes", 8 * 1024 * 1024 + 1);
+    CIB_CHECK("package fetch widening does not widen space scout",
+              !zcl_command_registry_input_validate(scout, &input, why,
+                                                   sizeof(why)));
+    json_free(&input);
+    return failures;
+}
+
 int test_command_input_bounds(void)
 {
     printf("\n=== command_input_bounds: per-key input length rules ===\n");
@@ -500,6 +550,7 @@ int test_command_input_bounds(void)
     failures += t_vault_effects_array();
     failures += t_liquidity_numeric_input();
     failures += t_package_prepare_sequence();
+    failures += t_package_fetch_maximum_bytes();
     printf("=== command_input_bounds complete: %d failure(s) ===\n", failures);
     return failures;
 }

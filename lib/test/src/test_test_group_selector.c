@@ -268,6 +268,12 @@ static int test_process_sensitive_groups_are_catalog_exclusive(void)
          * parallel CPU/disk contention can invert its positive control. */
         ASSERT(zcl_test_group_requires_exclusive_run(
             "test_simnet_perf"));
+        /* The replay-canary identity fixture waits on a child/FIFO handshake.
+         * A saturated 32-worker parent can starve that child past the bounded
+         * five-second rendezvous and grade scheduler pressure as identity
+         * failure. */
+        ASSERT(zcl_test_group_requires_exclusive_run(
+            "test_replay_canary_verdict"));
         /* This group launches the current runner recursively to prove exact
          * selection.  Competing with the 32-worker parent pool can kill the
          * nested positive control under transient memory pressure, grading

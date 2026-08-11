@@ -167,6 +167,7 @@ int t_dev_lane_deploy_contract(void)
     char *live_unit = NULL;
     char *soak_unit = NULL;
     char *dev_unit = NULL;
+    char *standby_unit = NULL;
     char *boot_index = NULL;
     char *coldstart = NULL;
     char *coldstart_tip = NULL;
@@ -183,6 +184,7 @@ int t_dev_lane_deploy_contract(void)
         char live_unit_path[PATH_MAX];
         char soak_unit_path[PATH_MAX];
         char dev_unit_path[PATH_MAX];
+        char standby_unit_path[PATH_MAX];
         char boot_index_path[PATH_MAX];
         char coldstart_path[PATH_MAX];
         char coldstart_tip_path[PATH_MAX];
@@ -210,6 +212,8 @@ int t_dev_lane_deploy_contract(void)
                          "deploy/examples/zclassic23-soak-node.service") == 0);
         ASSERT(repo_path(dev_unit_path, sizeof(dev_unit_path),
                          "deploy/zcl23-dev.service") == 0);
+        ASSERT(repo_path(standby_unit_path, sizeof(standby_unit_path),
+                         "deploy/zclassic23-standby.service") == 0);
         ASSERT(repo_path(boot_index_path, sizeof(boot_index_path),
                          "config/src/boot_index.c") == 0);
         ASSERT(repo_path(coldstart_path, sizeof(coldstart_path),
@@ -228,6 +232,7 @@ int t_dev_lane_deploy_contract(void)
         ASSERT(read_entire_file(live_unit_path, &live_unit) == 0);
         ASSERT(read_entire_file(soak_unit_path, &soak_unit) == 0);
         ASSERT(read_entire_file(dev_unit_path, &dev_unit) == 0);
+        ASSERT(read_entire_file(standby_unit_path, &standby_unit) == 0);
         ASSERT(read_entire_file(boot_index_path, &boot_index) == 0);
         ASSERT(read_entire_file(coldstart_path, &coldstart) == 0);
         ASSERT(read_entire_file(coldstart_tip_path, &coldstart_tip) == 0);
@@ -419,6 +424,7 @@ int t_dev_lane_deploy_contract(void)
                                         "ZCL_LANE_RECOVERY_SELFTEST",
                                         "1") == 0);
         ASSERT(strstr(live_unit, "-operator-lane=canonical") != NULL);
+        ASSERT(strstr(live_unit, "TimeoutStartSec=14400") != NULL);
         ASSERT(strstr(soak_unit, "-operator-lane=soak") != NULL);
         ASSERT(strstr(dev_unit, "-operator-lane=dev") != NULL);
         ASSERT(strstr(soak_unit, "$ZCL_LANE_SNAPSHOT_LOADER_FLAG") != NULL);
@@ -513,6 +519,13 @@ int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(handoff, "role readiness") != NULL);
         ASSERT(strstr(handoff, "soak-evidence") != NULL);
         ASSERT(strstr(handoff, "soak_eligible=false") != NULL);
+        ASSERT(strstr(standby_unit, "Environment=STANDBY_FSPORT=18054")
+               != NULL);
+        ASSERT(strstr(standby_unit, "Environment=STANDBY_HTTPSPORT=18443")
+               != NULL);
+        ASSERT(strstr(standby_unit, "-fsport=${STANDBY_FSPORT}") != NULL);
+        ASSERT(strstr(standby_unit, "-httpsport=${STANDBY_HTTPSPORT}")
+               != NULL);
         PASS();
     } _test_next:;
     free(script);
@@ -527,6 +540,7 @@ int t_dev_lane_deploy_contract(void)
     free(live_unit);
     free(soak_unit);
     free(dev_unit);
+    free(standby_unit);
     free(boot_index);
     free(coldstart);
     free(coldstart_tip);

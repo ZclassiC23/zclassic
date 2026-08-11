@@ -1205,15 +1205,14 @@ static int t_swarm_serving_and_allowance(void)
     SW_CHECK("wrong-coords want: silent no-serve",
              res.penalty == VCS_SWARM_PENALTY_NONE && !res.reply);
 
-    /* Honest chunk WANTs through the burst window: the contributor
-     * burst allowance is 64/window, two WANTs already consumed (the
-     * manifest + the bad-coords WANT), so exactly 62 more are served
-     * before request-burst-limit is named. */
+    /* Honest chunk WANTs through the burst window: two WANTs were already
+     * consumed (the manifest + the bad-coords WANT), so exactly limit-2 more
+     * are served before request-burst-limit is named. */
     const uint32_t burst_limit = vcs_policy_limits_for(
         VCS_POLICY_TIER_EARNED_CONTRIBUTOR)->request_burst_per_window;
     uint32_t served_chunks = 0;
     bool flood_named = false;
-    for (uint32_t i = 0; i < 70; i++) {
+    for (uint32_t i = 0; i < burst_limit + 6u; i++) {
         struct vcs_package_swarm_message cw;
         memset(&cw, 0, sizeof(cw));
         cw.type = VCS_PACKAGE_SWARM_WANT;

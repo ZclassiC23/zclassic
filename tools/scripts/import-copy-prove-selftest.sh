@@ -84,11 +84,13 @@ fi
 datadir=""
 import_arg=""
 install_arg=""
+operator_lane=""
 for a in "$@"; do
     case "$a" in
         -datadir=*)                  datadir="${a#-datadir=}" ;;
         -import-complete-shielded=*)  import_arg="${a#-import-complete-shielded=}" ;;
         -install-consensus-bundle=*)  install_arg="${a#-install-consensus-bundle=}" ;;
+        -operator-lane=*)             operator_lane="${a#-operator-lane=}" ;;
     esac
 done
 if [ -n "$import_arg" ]; then
@@ -129,6 +131,11 @@ if [ -n "$install_arg" ]; then
     esac
 fi
 # Normal boot mode.
+if [ "${FAKE_REQUIRE_CANONICAL_LANE:-0}" = "1" ] &&
+   [ "$operator_lane" != "canonical" ]; then
+    echo "identity conflict: persisted lane=canonical does not match runtime lane=${operator_lane:-unknown}" >&2
+    exit 7
+fi
 mkdir -p "$datadir"
 : > "$datadir/.cookie"
 trap 'exit 0' TERM INT
@@ -167,7 +174,15 @@ case "$method" in
     dumpstate)
         case "$params" in
             *blocker*)          cat "${FAKE_BLOCKER_RESPONSE:-/dev/null}" ;;
-            *reducer_frontier*) cat "${FAKE_FRONTIER_RESPONSE:-/dev/null}" ;;
+            *reducer_frontier*)
+                if [ -n "${FAKE_FRONTIER_FIRST_RESPONSE:-}" ] &&
+                   [ ! -e "${FAKE_FRONTIER_FIRST_SEEN_FILE:-/dev/null}" ]; then
+                    cat "$FAKE_FRONTIER_FIRST_RESPONSE"
+                    : > "$FAKE_FRONTIER_FIRST_SEEN_FILE"
+                else
+                    cat "${FAKE_FRONTIER_RESPONSE:-/dev/null}"
+                fi
+                ;;
             *sovereignty*)
                 if [ -r "${FAKE_SOVEREIGNTY_RESPONSE:-}" ]; then
                     cat "$FAKE_SOVEREIGNTY_RESPONSE"
@@ -236,15 +251,19 @@ run_script() {
         FAKE_IMPORT_BEHAVIOR_FILE="$IMPORT_BEHAVIOR_FILE" \
         FAKE_INSTALL_BEHAVIOR_FILE="$INSTALL_BEHAVIOR_FILE" \
         FAKE_HEADER_REFRESH_BEHAVIOR_FILE="$HEADER_REFRESH_BEHAVIOR_FILE" \
+        FAKE_REQUIRE_CANONICAL_LANE=1 \
         FAKE_IMPORT_BOUNDARY="${TEST_IMPORT_BOUNDARY:-$WEDGE}" \
         FAKE_ZD_DIR="$ZD_FIXTURE" \
         FAKE_COPY_TIP="$TIP" \
         FAKE_ZD_TIP="$((TIP + 100))" \
         FAKE_BLOCKER_RESPONSE="${TEST_BLOCKER_RESPONSE:-$BLOCKER_CLEAR}" \
         FAKE_FRONTIER_RESPONSE="${TEST_FRONTIER_RESPONSE:-$FRONTIER_CONTINUOUS}" \
+        FAKE_FRONTIER_FIRST_RESPONSE="${TEST_FRONTIER_FIRST_RESPONSE:-}" \
+        FAKE_FRONTIER_FIRST_SEEN_FILE="$COPY_DIR/.frontier-first-seen" \
         FAKE_PROVENANCE_RESPONSE="${TEST_PROVENANCE_RESPONSE:-$PROVENANCE_BOTH}" \
         FAKE_COPY_HASHES="${TEST_COPY_HASHES:-$COPY_HASHES_MATCH}" \
         FAKE_ZD_HASHES="$ZD_HASHES_MATCH" \
+        ZCL_COPY_PROVE_CONTINUITY_RETRIES=2 \
         "$SCRIPT" --deadline=15 \
         --src="$SRC_FIXTURE" \
         --chainstate-src="$CHAINSTATE_FIXTURE" \
@@ -351,6 +370,8 @@ test_full_pass_all_gates_green() {
     assert_contains "$OUTPUT" "GATE (a) H\* climb:.*ok=1" "GATE (a) not reported ok"
     assert_contains "$OUTPUT" "GATE (b) continuity:.*ok=1" "GATE (b) not reported ok"
     assert_contains "$OUTPUT" "GATE (c) hash parity:.*ok=1" "GATE (c) not reported ok"
+    assert_contains "$OUTPUT" "cleanup: graceful node shutdown complete" \
+        "a green proof did not leave its candidate cleanly stopped"
     printf '[import-copy-prove-selftest] PASS: all three gates green yields overall PASS\n'
 }
 
@@ -413,6 +434,23 @@ test_continuity_gap_fails_gate_b() {
     assert_rc "$rc" 1 "a coins_applied/hstar continuity gap did not FAIL"
     assert_contains "$OUTPUT" "GATE (b) continuity:.*ok=0" "GATE (b) did not report not-ok"
     printf '[import-copy-prove-selftest] PASS: a continuity gap fails GATE (b)\n'
+}
+
+test_transient_continuity_publish_window_retries() {
+    OUTPUT="$SANDBOX/out-continuity-race"
+    COPY_DIR="$(fresh_copy_dir)"
+    echo ok > "$IMPORT_BEHAVIOR_FILE"
+    TEST_BLOCKER_RESPONSE="$BLOCKER_CLEAR"
+    TEST_FRONTIER_FIRST_RESPONSE="$FRONTIER_GAP"
+    TEST_FRONTIER_RESPONSE="$FRONTIER_CONTINUOUS"
+    TEST_COPY_HASHES="$COPY_HASHES_MATCH"
+    EXTRA_ARGS=(--expect-climb-past="$WEDGE")
+    local rc; rc="$(run_script)"
+    unset TEST_BLOCKER_RESPONSE TEST_FRONTIER_FIRST_RESPONSE TEST_FRONTIER_RESPONSE TEST_COPY_HASHES
+    assert_rc "$rc" 0 "a transient reducer publish window did not retry to a coherent observation"
+    assert_contains "$OUTPUT" "GATE (b) continuity:.*ok=1" \
+        "GATE (b) did not recover after the transient publish window"
+    printf '[import-copy-prove-selftest] PASS: a transient reducer publish window is retried without weakening continuity\n'
 }
 
 test_hash_mismatch_fails_gate_c() {
@@ -644,6 +682,7 @@ test_auto_parsed_boundary_passes
 test_no_boundary_and_no_override_fails_blind
 test_blocker_still_present_fails_gate_a
 test_continuity_gap_fails_gate_b
+test_transient_continuity_publish_window_retries
 test_hash_mismatch_fails_gate_c
 test_header_refresh_failure_fails_before_phase1
 test_skip_header_refresh_bypasses_step
