@@ -80,7 +80,11 @@ Provider, pointer, and storage-ACK DHT records also expose a canonical
 `record_root`: SHA3-256 over the complete signed wire under the
 `zcl.zcode.dht.record-id.v1\0` domain. It is an immutable evidence coordinate,
 not a routing key or possession claim; consumers still parse and verify the
-record before using any field.
+record before using any field. Publication plan/commit replies also return the
+bounded lower-case hexadecimal `record_wire`, allowing an asynchronous job to
+persist the exact signed bytes and independently reconstruct `record_root`
+after restart. Provider discovery does not expose the wire or its delegation;
+it remains a compact routing view.
 
 ## Whole-workspace ZVCS transport
 

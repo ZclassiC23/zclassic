@@ -3368,10 +3368,11 @@ ZCL_COMMAND_READY_COMMAND(
     "mode=plan returns a token binding the exact signed record and current "
     "record-store digest; mode=commit re-derives both and refuses stale plans. "
     "Both modes return the canonical signed record_root so durable jobs can "
-    "bind exact public evidence. "
+    "bind exact public evidence, plus the bounded canonical record_wire for "
+    "independent parse/signature/chain verification and restart-safe storage. "
     "STORAGE_ACK is refused here and must use storage_ack, whose package-store "
-    "proof cannot be supplied by the caller. The reply never "
-    "contains signing keys or delegation wire.",
+    "proof cannot be supplied by the caller. The reply contains no secret "
+    "key material.",
     16384, "zcode,network,dht,publish,provider,pointer,storage-ack,plan,commit",
     "zcl.zcode_network_publish.input.v1", "zcl.zcode_network_publish.v1",
     "mode,kind,namespace,semantic_root,transport_root,owner_group,sequence,not_before,expiry,plan_token",

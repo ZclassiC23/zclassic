@@ -164,13 +164,19 @@ static const char *record_kind_name(enum vcs_zcode_dht_record_kind kind) {
 }
 
 static void record_json(struct json_value *row,
-                        const struct vcs_zcode_dht_record *record) {
+                        const struct vcs_zcode_dht_record *record,
+                        bool include_wire) {
   char semantic[65], transport[65], provider[65], owner[65], publisher[65];
   char record_root[65] = "";
+  char record_wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES * 2u + 1u] = "";
   uint8_t record_id[32];
+  uint8_t wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
   if (vcs_zcode_dht_record_id(record, record_id) ==
       VCS_ZCODE_DHT_RECORD_OK)
     zcl_hex_encode(record_id, 32, record_root);
+  if (include_wire &&
+      vcs_zcode_dht_record_encode(record, wire) == VCS_ZCODE_DHT_RECORD_OK)
+    zcl_hex_encode(wire, sizeof(wire), record_wire);
   zcl_hex_encode(record->semantic_root, 32, semantic);
   zcl_hex_encode(record->transport_root, 32, transport);
   zcl_hex_encode(record->provider_node_id, 32, provider);
@@ -179,6 +185,8 @@ static void record_json(struct json_value *row,
   json_set_object(row);
   json_push_kv_str(row, "kind", record_kind_name(record->kind));
   json_push_kv_str(row, "record_root", record_root);
+  if (include_wire)
+    json_push_kv_str(row, "record_wire", record_wire);
   json_push_kv_str(row, "namespace", record->namespace_name);
   json_push_kv_str(row, "semantic_root", semantic);
   json_push_kv_str(row, "transport_root", transport);
@@ -195,7 +203,7 @@ static void record_json(struct json_value *row,
 #ifdef ZCL_TESTING
 void boot_zcode_dht_publication_record_test_render(
     struct json_value *result, const struct vcs_zcode_dht_record *record) {
-  record_json(result, record);
+  record_json(result, record, true);
 }
 #endif
 
@@ -560,7 +568,7 @@ static bool rpc_records(const struct json_value *params, bool help,
   for (size_t i = 0; i < count; i++) {
     struct json_value row;
     json_init(&row);
-    record_json(&row, &records[i]);
+    record_json(&row, &records[i], false);
     json_push_back(&rows, &row);
     json_free(&row);
   }
@@ -657,7 +665,7 @@ static bool rpc_publish_impl(const struct json_value *params, bool help,
   json_push_kv_str(result, "plan_token", token_hex);
   struct json_value row;
   json_init(&row);
-  record_json(&row, &record);
+  record_json(&row, &record, true);
   json_push_kv(result, "record", &row);
   json_free(&row);
   return true;

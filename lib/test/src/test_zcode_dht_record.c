@@ -223,9 +223,11 @@ static int test_record_roundtrip(void)
       if (kind == VCS_ZCODE_DHT_RECORD_PROVIDER) {
         uint8_t digest[32];
         char digest_hex[65], record_id_hex[65];
+        char wire_hex[VCS_ZCODE_DHT_RECORD_WIRE_BYTES * 2u + 1u];
         sha3_256(wire, sizeof(wire), digest);
         zcl_hex_encode(digest, sizeof(digest), digest_hex);
         zcl_hex_encode(record_id, sizeof(record_id), record_id_hex);
+        zcl_hex_encode(wire, sizeof(wire), wire_hex);
         ASSERT(strcmp(digest_hex,
                       "284d3f369bf3dd2644e4843f310b8bba1c4f64a4d081269f"
                       "5460dee197092839") == 0);
@@ -237,6 +239,11 @@ static int test_record_roundtrip(void)
         boot_zcode_dht_publication_record_test_render(&publication, &record);
         ASSERT(strcmp(json_get_str(json_get(&publication, "record_root")),
                       record_id_hex) == 0);
+        const char *published_wire =
+            json_get_str(json_get(&publication, "record_wire"));
+        ASSERT(published_wire != NULL);
+        ASSERT(strlen(published_wire) == VCS_ZCODE_DHT_RECORD_WIRE_BYTES * 2u);
+        ASSERT(strcmp(published_wire, wire_hex) == 0);
         json_free(&publication);
       }
       ASSERT_EQ(vcs_zcode_dht_record_parse(wire, sizeof(wire), &f.verify,
