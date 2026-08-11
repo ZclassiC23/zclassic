@@ -32,6 +32,7 @@
  *      in-flight work moves to the survivor and the download completes. */
 
 #include "test/test_core.h"
+#include "test/accepted_work_fixture.h"
 
 #include "base/hex.h"
 #include "chain/chainparams.h"
@@ -1144,31 +1145,21 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
 
         uint8_t source_root[32];
         ASSERT(vcs_tree_capture_path(publisher, source_root) == VCS_OK);
-        struct vcs_zcode_lane_receipt_v1 lane = {
-            .schema_version = VCS_ZCODE_DEV_VERSION,
-            .lane = VCS_ZCODE_LANE_PROVEN,
-            .created_unix = 1500,
-        };
-        memcpy(lane.source_root, source_root, 32);
-        memset(lane.task_root, 0x11, 32);
-        memset(lane.candidate_root, 0x22, 32);
-        memset(lane.proof_policy_root, 0x33, 32);
-        memset(lane.proof_set_root, 0x44, 32);
-        memset(lane.prior_receipt_root, 0x55, 32);
-        uint8_t seed[32], secret[32], signer[32];
-        memset(seed, 0x66, sizeof(seed));
-        ed25519_keypair(signer, secret, seed);
-        ASSERT(vcs_zcode_lane_receipt_seal(&lane, secret, signer) ==
-               VCS_ZCODE_DEV_OK);
-        memset(secret, 0, sizeof(secret));
-        uint8_t lane_wire[VCS_ZCODE_LANE_WIRE_BYTES];
-        ASSERT(vcs_zcode_lane_receipt_serialize(&lane, lane_wire) ==
-               VCS_ZCODE_DEV_OK);
+        const int64_t accepted_now = 1700000000;
+        struct test_accepted_work_fixture accepted;
+        ASSERT(test_accepted_work_fixture_create(
+            publisher, source_root, accepted_now, 0x66, &accepted));
+        struct vcs_zcode_accepted_work_v1 resolved_accepted;
+        ASSERT(vcs_zcode_accepted_work_resolve(
+            publisher, accepted.accepted.accepted_work_root, accepted_now,
+            &resolved_accepted));
+        uint8_t signer[32];
+        memcpy(signer, accepted.signer_pubkey, 32);
         struct vcs_source_package_transport transport;
         vcs_source_package_transport_init(&transport);
-        ASSERT(vcs_source_package_transport_build(
-            publisher, source_root, signer, lane_wire, sizeof(lane_wire),
-            &transport));
+        ASSERT(vcs_source_package_transport_build_accepted(
+            publisher, source_root, accepted.accepted.accepted_work_root,
+            accepted_now, &transport));
 
         struct zwn_node a, b, a2;
         ASSERT(zwn_node_init(&a, "sa", params));
@@ -1243,10 +1234,12 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         ASSERT(snprintf(path, sizeof(path), "%s/.git", checkout) > 0);
         ASSERT(access(path, F_OK) != 0 && errno == ENOENT);
         struct vcs_source_package_checkout_metrics metrics;
-        ASSERT(vcs_source_package_checkout(
-                   b.store, discovered_package_root, source_root, signer,
-                   consumer_cas, checkout, &metrics) ==
+        ASSERT(vcs_source_package_checkout_accepted(
+                   b.store, discovered_package_root, source_root,
+                   accepted.accepted.accepted_work_root, consumer_cas,
+                   checkout, &metrics) ==
                VCS_SOURCE_PACKAGE_CHECKOUT_OK);
+        ASSERT(metrics.authority_objects >= 9 && metrics.work_receipts == 2);
         ASSERT(metrics.source.file_count == 2);
         ASSERT(metrics.offline_input_files ==
                vcs_source_package_offline_input_count());
@@ -1300,28 +1293,20 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         ASSERT(unlink(publisher_source) == 0);
         ASSERT(zwn_write_file(publisher, "src/main.c", successor_program,
                               sizeof(successor_program) - 1u, 0644));
-        uint8_t successor_source_root[32], first_lane_root[32];
-        ASSERT(vcs_zcode_lane_receipt_id(&lane, first_lane_root) ==
-               VCS_ZCODE_DEV_OK);
+        uint8_t successor_source_root[32];
         ASSERT(vcs_tree_capture_path(publisher, successor_source_root) ==
                VCS_OK);
-        struct vcs_zcode_lane_receipt_v1 successor_lane = lane;
-        memcpy(successor_lane.source_root, successor_source_root, 32);
-        memcpy(successor_lane.prior_receipt_root, first_lane_root, 32);
-        successor_lane.created_unix++;
-        memset(successor_lane.signature, 0, sizeof(successor_lane.signature));
-        ed25519_keypair(signer, secret, seed);
-        ASSERT(vcs_zcode_lane_receipt_seal(
-                   &successor_lane, secret, signer) == VCS_ZCODE_DEV_OK);
-        memset(secret, 0, sizeof(secret));
-        uint8_t successor_lane_wire[VCS_ZCODE_LANE_WIRE_BYTES];
-        ASSERT(vcs_zcode_lane_receipt_serialize(
-                   &successor_lane, successor_lane_wire) == VCS_ZCODE_DEV_OK);
+        struct test_accepted_work_fixture successor_accepted;
+        ASSERT(test_accepted_work_fixture_create(
+            publisher, successor_source_root, accepted_now + 1, 0x67,
+            &successor_accepted));
+        memcpy(signer, successor_accepted.signer_pubkey, 32);
         struct vcs_source_package_transport successor_transport;
         vcs_source_package_transport_init(&successor_transport);
-        ASSERT(vcs_source_package_transport_build(
-            publisher, successor_source_root, signer, successor_lane_wire,
-            sizeof(successor_lane_wire), &successor_transport));
+        ASSERT(vcs_source_package_transport_build_accepted(
+            publisher, successor_source_root,
+            successor_accepted.accepted.accepted_work_root,
+            accepted_now + 1, &successor_transport));
         ASSERT(memcmp(successor_transport.package_root,
                       transport.package_root, 32) != 0);
         ASSERT(zwn_store_source_transport(a.store, &successor_transport));
@@ -1375,10 +1360,14 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         }
         ASSERT(terminal && state == VCS_SWARM_DL_COMPLETE);
         struct vcs_source_package_checkout_metrics successor_metrics;
-        ASSERT(vcs_source_package_checkout(
+        ASSERT(vcs_source_package_checkout_accepted(
                    b.store, discovered_successor_root,
-                   successor_source_root, signer, consumer_cas, checkout2,
-                   &successor_metrics) == VCS_SOURCE_PACKAGE_CHECKOUT_OK);
+                   successor_source_root,
+                   successor_accepted.accepted.accepted_work_root,
+                   consumer_cas, checkout2, &successor_metrics) ==
+               VCS_SOURCE_PACKAGE_CHECKOUT_OK);
+        ASSERT(successor_metrics.authority_objects >= 9 &&
+               successor_metrics.work_receipts == 2);
         char successor_consumer_source[1400], successor_publisher_binary[1400];
         char successor_consumer_binary[1400];
         ASSERT(snprintf(successor_consumer_source,
