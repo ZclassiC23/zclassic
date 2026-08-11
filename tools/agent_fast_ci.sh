@@ -11,7 +11,7 @@ cd "$ROOT"
 
 SCHEMA="zcl.agent_fast_ci.v1"
 PLAN_SCHEMA="zcl.agent_fast_plan.v1"
-CACHE_SCHEMA="zcl.agent_fast_ci.cache.v1"
+CACHE_SCHEMA="zcl.agent_fast_ci.cache.v3"
 FAST_CC="${ZCL_FAST_CC:-}"
 FAST_COMPILE="${ZCL_FAST_COMPILE:-changed}"
 CACHE_ROOT="${ZCL_FAST_CACHE_DIR:-$ROOT/.cache/zcl-agent-fast-ci}"
@@ -411,14 +411,10 @@ cache_manifest() {
     printf 'fast_jobs\t%s\n' "$FAST_JOBS"
     printf 'fast_compile\t%s\n' "$FAST_COMPILE"
     printf 'fast_tests_env\t%s\n' "${ZCL_FAST_TESTS:-}"
-    printf 'fast_changed_files_only\t%s\n' "${ZCL_FAST_CHANGED_FILES_ONLY:-0}"
-    printf 'fast_changed_files_file\t%s\n' "${ZCL_FAST_CHANGED_FILES_FILE:-}"
-    printf 'fast_changed_files_env\t%s\n' "${ZCL_FAST_CHANGED_FILES:-}"
     printf 'fast_strict_tests\t%s\n' "${ZCL_FAST_STRICT_TESTS:-0}"
     printf 'fast_live\t%s\n' "${ZCL_FAST_LIVE:-auto}"
     printf 'node_bin\t%s\n' "$NODE_BIN"
     printf 'impact_rules_file\t%s\n' "$IMPACT_RULES_FILE"
-    printf 'test_groups\t%s\n' "$TEST_GROUPS"
     printf 'make_version\t%s\n' "$(make --version 2>/dev/null | sed -n '1p' || echo unknown)"
     cc_version="$($FAST_CC --version 2>/dev/null | sed -n '1p' || true)"
     printf 'cc_version\t%s\n' "${cc_version:-unknown}"
@@ -459,15 +455,13 @@ cache_manifest() {
         cache_manifest_file "$file" "$file"
     done
 
-    changed_file_hints | sort -u |
-        while IFS= read -r file; do
-            [ -n "$file" ] || continue
-            cache_manifest_file "changed:$file" "$file"
-        done
+    # Changed paths and mapped groups are routing diagnostics only. The
+    # cached default lane compiles the full source inventory and runs the
+    # source-wide test proof, so hints must not fragment identical evidence.
 }
 
 cache_authority_selftest() {
-    local original_root="$ROOT" sandbox first second third
+    local original_root="$ROOT" sandbox first second hinted third
     local first_source third_source first_mutation third_mutation backup
     sandbox="$(mktemp -d "${TMPDIR:-/tmp}/zcl-fast-cache-selftest.XXXXXX")" ||
         return 1
@@ -510,6 +504,20 @@ cache_authority_selftest() {
         return 1
     fi
 
+    ZCL_FAST_CHANGED_FILES="source.txt"
+    TEST_GROUPS="routing_hint_only"
+    hinted="$(cache_manifest)" || {
+        rm -rf "$sandbox"
+        return 1
+    }
+    unset ZCL_FAST_CHANGED_FILES
+    TEST_GROUPS=""
+    if [ "$first" != "$hinted" ]; then
+        printf '%s\n' '[agent-fast-ci-selftest] FAIL: routing hints fragmented source-wide proof reuse' >&2
+        rm -rf "$sandbox"
+        return 1
+    fi
+
     cp source.txt "$backup"
     printf 'transient edit\n' >> source.txt
     cp "$backup" source.txt
@@ -542,7 +550,7 @@ cache_authority_selftest() {
         return 1
     fi
     rm -rf "$sandbox"
-    printf '%s\n' '[agent-fast-ci-selftest] PASS: exact cache authority is history-independent and ABA-safe; path hints cannot reduce source-wide compile scope'
+    printf '%s\n' '[agent-fast-ci-selftest] PASS: exact cache authority is history-independent and ABA-safe; routing hints neither reduce nor fragment source-wide proof scope'
 }
 
 compute_cache_key() {
@@ -781,6 +789,10 @@ run_shell_checks() {
     local script
     log "shell checks"
     git diff --check
+    # These source-wide authority gates are part of the cached proof.  They
+    # run before a v3 receipt can be written; an exact-source cache hit may
+    # therefore reattach without paying their cost on every warm interaction.
+    make_fast watcher-safety-gates
     for script in tools/agent_fast_ci.sh tools/githooks/pre-push \
         tools/deploy_guard.sh tools/deploy_verify.sh \
         tools/dev/deploy-dev-lane.sh tools/dev/agent-dev-status.sh \
@@ -1242,6 +1254,9 @@ main() {
         log "Before pushing main, keep the strict gate: make lint && make build-only && relevant tests; default pre-push runs make pre-push-ci. Full-suite/fuzz/coverage run through make install-quality-linger."
         return
     fi
+
+    verify_frozen_source_record ||
+        fail "exact source record was superseded before uncached proof"
 
     show_cache_stats
 

@@ -66,6 +66,7 @@ bool zcl_test_group_requires_exclusive_run(const char *full_id)
     if (!full_id || !zcl_test_group_catalog_contains(full_id))
         return false;
     return strcmp(full_id, "test_command_registry_latency") == 0 ||
+           strcmp(full_id, "test_simnet_perf") == 0 ||
            strcmp(full_id, "test_test_group_selector") == 0;
 }
 

@@ -264,6 +264,10 @@ static int test_process_sensitive_groups_are_catalog_exclusive(void)
             "test_command_registry_latency"));
         ASSERT(zcl_test_group_requires_exclusive_run(
             "test_command_registry_latency"));
+        /* The clean-vs-injected growth detector is a host-latency contract;
+         * parallel CPU/disk contention can invert its positive control. */
+        ASSERT(zcl_test_group_requires_exclusive_run(
+            "test_simnet_perf"));
         /* This group launches the current runner recursively to prove exact
          * selection.  Competing with the 32-worker parent pool can kill the
          * nested positive control under transient memory pressure, grading

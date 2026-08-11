@@ -437,7 +437,7 @@ int test_coin_reader_chain(void)
 
     printf("Coin read chain (coins_kv -> node.db utxos -> wallet/explorer)\n");
 
-    snprintf(dir, sizeof(dir), ".zcl_test_coin_reader_chain_%d", (int)getpid());
+    test_make_tmpdir(dir, sizeof(dir), "coin_reader_chain", "main");
     if (mkdir(dir, 0755) != 0 && access(dir, W_OK) != 0) {
         printf("  coin_reader_chain: fixture dir... FAIL\n");
         return 1;

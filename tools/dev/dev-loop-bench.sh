@@ -140,9 +140,10 @@ capture_benchmark_contract_fingerprint()
 
 default_safe_watch_command()
 {
-    local path="$1"
+    local path="$1" state_name
+    state_name="$(printf '%s' "$path" | tr '/.' '__')"
     printf '%s' \
-        "ZCL_DEV_WATCH_ONCE=1 ZCL_DEV_WATCH_MODE=check ZCL_DEV_WATCH_ONCE_FILES='$path' tools/dev/watch-dev-lane.sh --once"
+        "ZCL_FAST_CACHE=1 ZCL_DEV_WATCH_ONCE=1 ZCL_DEV_WATCH_MODE=check ZCL_DEV_WATCH_CHECK_WORKER=1 ZCL_DEV_WATCH_CHECK_SOURCE_RECORD='$CAMPAIGN_SOURCE_RECORD' ZCL_DEV_WATCH_STATE_DIR='$TMP_DIR/watch-state/$state_name' ZCL_DEV_WATCH_ONCE_FILES='$path' tools/dev/watch-dev-lane.sh --once"
 }
 
 configure_cases()

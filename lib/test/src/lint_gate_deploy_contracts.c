@@ -677,7 +677,7 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "zcl.agent_fast_ci.v1") != NULL);
         ASSERT(strstr(buf, "zcl.agent_fast_plan.v1") != NULL);
         ASSERT(strstr(buf, "zcl.agent_changed_compile_plan.v2") != NULL);
-        ASSERT(strstr(buf, "zcl.agent_fast_ci.cache.v1") != NULL);
+        ASSERT(strstr(buf, "zcl.agent_fast_ci.cache.v3") != NULL);
         ASSERT(strstr(buf, "emit_plan_json") != NULL);
         ASSERT(strstr(buf, "recommended_command") != NULL);
         ASSERT(strstr(buf, "native_shortcuts") != NULL);
@@ -687,11 +687,13 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "sccache cc") != NULL);
         ASSERT(strstr(buf, "ccache cc") != NULL);
         ASSERT(strstr(buf, "git diff --check") != NULL);
+        ASSERT(strstr(buf, "make_fast watcher-safety-gates") != NULL);
         ASSERT(strstr(buf, "git ls-files --others --exclude-standard")
                != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_FILE") != NULL);
-        ASSERT(strstr(buf, "fast_changed_files_file") != NULL);
-        ASSERT(strstr(buf, "fast_changed_files_only") != NULL);
+        ASSERT(strstr(buf, "hints must not fragment identical evidence")
+               != NULL);
+        ASSERT(strstr(buf, "printf 'fast_changed_files_file") == NULL);
         ASSERT(strstr(buf, "fast_changed_files_only()") != NULL);
         ASSERT(strstr(buf, "validate_changed_files_only") != NULL);
         ASSERT(strstr(buf, "impact_rules_file") != NULL);

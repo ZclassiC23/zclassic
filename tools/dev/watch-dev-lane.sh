@@ -22,6 +22,8 @@ BACKEND="${ZCL_DEV_WATCH_BACKEND:-auto}"
 RUN_ONCE="${ZCL_DEV_WATCH_ONCE:-0}"
 RUN_INITIAL="${ZCL_DEV_WATCH_INITIAL:-0}"
 WARM_CODEINDEX="${ZCL_DEV_WARM_CODEINDEX:-1}"
+CHECK_WORKER="${ZCL_DEV_WATCH_CHECK_WORKER:-0}"
+CHECK_SOURCE_RECORD="${ZCL_DEV_WATCH_CHECK_SOURCE_RECORD:-}"
 
 # Test/automation seams.  Empty means use the real in-tree command.
 CHECK_COMMAND="${ZCL_DEV_WATCH_CHECK_COMMAND:-}"
@@ -30,7 +32,8 @@ DEPLOY_COMMAND="${ZCL_DEV_WATCH_DEPLOY_COMMAND:-}"
 STAGE_COMMAND="${ZCL_DEV_WATCH_STAGE_COMMAND:-}"
 HOTSWAP_COMMAND="${ZCL_DEV_WATCH_HOTSWAP_COMMAND-$ROOT/tools/dev/hotswap-running-dev.sh}"
 HOTSWAP_MANIFEST="${ZCL_DEV_WATCH_HOTSWAP_MANIFEST:-$ROOT/config/hotswap_eligible.def}"
-STATE_DIR="${ZCL_DEV_WATCH_STATE_DIR:-$HOME/.local/state/zclassic23-dev}"
+DEFAULT_STATE_DIR="$HOME/.local/state/zclassic23-dev"
+STATE_DIR="${ZCL_DEV_WATCH_STATE_DIR:-$DEFAULT_STATE_DIR}"
 PREACTIVATE_COMMAND="${ZCL_DEV_WATCH_PREACTIVATE_COMMAND:-}"
 WATCH_LOCK_REL=".cache/zcl-dev-watch.lock"
 
@@ -108,6 +111,10 @@ Environment:
   ZCL_DEV_WATCH_ONCE_FILES_FILE=path  newline-delimited once-mode paths
   ZCL_DEV_WATCH_INITIAL=1             run one conservative all-input check first
   ZCL_DEV_WATCH_STATE_DIR=path        durable cycles + watcher heartbeat
+  ZCL_DEV_WATCH_CHECK_WORKER=1        bounded benchmark worker; requires
+                                      --once, check mode and isolated state
+  ZCL_DEV_WATCH_CHECK_SOURCE_RECORD=  already captured v2 record for a
+                                      bounded check worker; always reverified
   ZCL_DEV_WARM_CODEINDEX=1            warm lib/codeindex after each green
                                       cycle (default on); set 0 to disable
 
@@ -306,6 +313,27 @@ validate_options()
         /*) ;;
         *) fail "ZCL_DEV_WATCH_STATE_DIR must be absolute (got $STATE_DIR)" ;;
     esac
+    is_true "$CHECK_WORKER" >/dev/null || true
+    if is_true "$CHECK_WORKER"; then
+        is_true "$RUN_ONCE" ||
+            fail "ZCL_DEV_WATCH_CHECK_WORKER requires --once"
+        [ "$MODE" = "check" ] ||
+            fail "ZCL_DEV_WATCH_CHECK_WORKER requires check mode"
+        [ "$STATE_DIR" != "$DEFAULT_STATE_DIR" ] ||
+            fail "ZCL_DEV_WATCH_CHECK_WORKER requires an isolated ZCL_DEV_WATCH_STATE_DIR"
+        if [ -n "$CHECK_SOURCE_RECORD" ]; then
+            local check_id check_clean check_mutation check_extra
+            read -r check_id check_clean check_mutation check_extra \
+                <<< "$CHECK_SOURCE_RECORD"
+            [[ "$check_id" =~ ^[0-9a-f]{64}$ ]] &&
+            [ "$check_clean" = 1 ] &&
+            [[ "$check_mutation" =~ ^[0-9a-f]{64}$ ]] &&
+            [ -z "${check_extra:-}" ] ||
+                fail "ZCL_DEV_WATCH_CHECK_SOURCE_RECORD must be '<sha256> 1 <sha256>'"
+        fi
+    elif [ -n "$CHECK_SOURCE_RECORD" ]; then
+        fail "ZCL_DEV_WATCH_CHECK_SOURCE_RECORD requires ZCL_DEV_WATCH_CHECK_WORKER=1"
+    fi
 }
 
 sleep_ms()
@@ -364,12 +392,16 @@ capture_source_epoch()
     SOURCE_CLEAN=""
     SOURCE_MUTATION=""
     SOURCE_GATE_DETAIL=""
-    record="$(cd "$ROOT" && "$SCRIPT_DIR/source-identity.sh" capture-record \
-        2> "$WORK/source-identity.err")" || {
-        SOURCE_GATE_DETAIL="$(tr '\r\n' '  ' < "$WORK/source-identity.err")"
-        [ -n "$SOURCE_GATE_DETAIL" ] || SOURCE_GATE_DETAIL="source identity capture failed"
-        return 1
-    }
+    if is_true "$CHECK_WORKER" && [ -n "$CHECK_SOURCE_RECORD" ]; then
+        record="$CHECK_SOURCE_RECORD"
+    else
+        record="$(cd "$ROOT" && "$SCRIPT_DIR/source-identity.sh" capture-record \
+            2> "$WORK/source-identity.err")" || {
+            SOURCE_GATE_DETAIL="$(tr '\r\n' '  ' < "$WORK/source-identity.err")"
+            [ -n "$SOURCE_GATE_DETAIL" ] || SOURCE_GATE_DETAIL="source identity capture failed"
+            return 1
+        }
+    fi
     read -r SOURCE_ID SOURCE_CLEAN SOURCE_MUTATION <<< "$record"
     [[ "$SOURCE_ID" =~ ^[0-9a-f]{64}$ ]] &&
     [ "$SOURCE_CLEAN" = 1 ] &&
@@ -380,6 +412,14 @@ capture_source_epoch()
         SOURCE_MUTATION=""
         return 1
     }
+}
+
+check_lane_attests_source_epoch()
+{
+    # agent_fast_ci v3 verifies the frozen record before a cache hit and again
+    # before writing a new receipt.  The check lane has no activation or other
+    # side effect; its surrounding manifest compare catches a later save.
+    [ "$MODE" = "check" ] && [ -z "$CHECK_COMMAND" ]
 }
 
 verify_source_epoch()
@@ -616,14 +656,19 @@ wait_for_source_change()
 run_check_command()
 {
     local source_record="$SOURCE_ID $SOURCE_CLEAN $SOURCE_MUTATION"
-    # The wake list is not complete authority, so always run the two global
-    # safety gates before the mapped fast lane. Neither is inferred from paths.
-    (cd "$ROOT" && make --no-print-directory \
-        BUILD_SOURCE_RECORD="$source_record" \
-        watcher-safety-gates) || return $?
     if [ -n "$CHECK_COMMAND" ]; then
+        # Self-test command seams do not produce a reusable proof receipt, so
+        # retain the explicit global gates for them.
+        (cd "$ROOT" && make --no-print-directory \
+            BUILD_SOURCE_RECORD="$source_record" \
+            watcher-safety-gates) || return $?
         (cd "$ROOT" && /bin/sh -c "$CHECK_COMMAND")
     elif [ "$MODE" = "verify" ]; then
+        # The ff ladder is deliberately uncached. Neither safety gate may be
+        # inferred from its diagnostic wake list.
+        (cd "$ROOT" && make --no-print-directory \
+            BUILD_SOURCE_RECORD="$source_record" \
+            watcher-safety-gates) || return $?
         # Take the checkout lock DIRECTLY here rather than through the `ff`
         # target's own wrapper. The lock tool reports "a foreground build
         # holds this" as exit 99, but GNU make reports *any* failed recipe as
@@ -641,6 +686,9 @@ run_check_command()
             env ZCL_DEV_WATCH_LANE=1 make --no-print-directory \
             BUILD_SOURCE_RECORD="$source_record" ff)
     else
+        # The check lane's v3 cache receipt is written only after the same
+        # global gates pass. Exact-source hits reattach to that proof inside
+        # agent_fast_ci instead of rerunning the gates here.
         (cd "$ROOT" && tools/dev/checkout-lock.sh watcher \
             "$ROOT/build/.checkout.lock" -- tools/agent_fast_ci.sh)
     fi
@@ -868,7 +916,7 @@ run_cycle()
         log "cycle=$CYCLE superseded after checks; coalescing newest tree"
         return 3
     fi
-    if ! verify_source_epoch; then
+    if ! check_lane_attests_source_epoch && ! verify_source_epoch; then
         FAILURE_PHASE="source_epoch_cas"
         FAILURE_DETAIL="$SOURCE_GATE_DETAIL"
         AGENT_NEXT_ACTION="coalesce the newest exact source epoch and rerun verify"
@@ -908,7 +956,7 @@ run_cycle()
     if [ -n "$PREACTIVATE_COMMAND" ]; then
         (cd "$ROOT" && /bin/sh -c "$PREACTIVATE_COMMAND")
     fi
-    if ! verify_source_epoch; then
+    if ! check_lane_attests_source_epoch && ! verify_source_epoch; then
         FAILURE_PHASE="source_epoch_cas"
         FAILURE_DETAIL="$SOURCE_GATE_DETAIL"
         AGENT_NEXT_ACTION="coalesce the newest exact source epoch and rerun verify"
@@ -1000,6 +1048,14 @@ run_cycle()
 acquire_single_watcher_lock()
 {
     local lock_file="$ROOT/$WATCH_LOCK_REL" lock_parent
+    if is_true "$CHECK_WORKER"; then
+        # A benchmark worker never watches, publishes or activates.  Its
+        # compiler work still crosses checkout-lock.sh in run_check_command,
+        # while its records and lease stay outside the resident watcher's
+        # state.  This lets measurement observe the normal warm service
+        # without stopping or impersonating that service.
+        lock_file="$STATE_DIR/check-worker.lock"
+    fi
     lock_parent="${lock_file%/*}"
     mkdir -p "$lock_parent"
     command -v flock >/dev/null 2>&1 ||
@@ -1010,6 +1066,9 @@ acquire_single_watcher_lock()
     flock -n 9 || fail "another dev watcher already owns $lock_file"
     : > "$lock_file"
     printf '%s %s\n' "$$" "$MODE" >&9
+    if is_true "$CHECK_WORKER"; then
+        log "bounded check worker owns isolated lease $lock_file; resident watcher unchanged"
+    fi
 }
 
 cleanup()
@@ -1101,6 +1160,19 @@ self_test()
             rm -rf "$sandbox"; return 1;
         }
     fi
+    if ZCL_DEV_WATCH_ROOT="$ROOT" ZCL_DEV_WATCH_MODE=check \
+        ZCL_DEV_WATCH_CHECK_SOURCE_RECORD="$(printf '0%.0s' {1..64}) 1 $(printf '1%.0s' {1..64})" \
+        "$SCRIPT_DIR/watch-dev-lane.sh" --once \
+        >"$sandbox/public-source-record.out" 2>&1; then
+        selftest_fail "public watcher accepted a worker source record without the bounded-worker contract" || {
+            rm -rf "$sandbox"; return 1;
+        }
+    fi
+    grep -q 'CHECK_SOURCE_RECORD requires.*CHECK_WORKER' \
+        "$sandbox/public-source-record.out" ||
+        selftest_fail "source-record refusal omitted the bounded-worker reason" || {
+            rm -rf "$sandbox"; return 1;
+        }
     if HOME="$sandbox/home" "$SCRIPT_DIR/hotswap-running-dev.sh" \
         >"$sandbox/public-hotswap.out" 2>&1; then
         selftest_fail "direct resident hot-swap was not contained" || {
