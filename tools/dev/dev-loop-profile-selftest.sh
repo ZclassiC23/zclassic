@@ -5,7 +5,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-profiles="$(make -s -C "$ROOT" dev-loop-profile-flags)"
+profiles="$(MAKEFLAGS="${MAKEFLAGS:-} --no-print-directory" \
+    make -s --no-print-directory -C "$ROOT" dev-loop-profile-flags)"
 
 fail()
 {
@@ -104,7 +105,8 @@ git -C "$ROOT" grep -q 'resident action plan contains release-only LTO flags' --
     tools/dev/devloop_hotswap_build.c ||
     fail 'resident action-plan LTO refusal is missing'
 
-profile_dirs="$(make -s -C "$ROOT" --eval \
+profile_dirs="$(MAKEFLAGS="${MAKEFLAGS:-} --no-print-directory" \
+    make -s --no-print-directory -C "$ROOT" --eval \
     'print-dev-profile-dirs: ; @printf "%s\n" "$(DEV_OBJ_DIR)" "$(TEST_FAST_OBJ_DIR)"' \
     print-dev-profile-dirs)" ||
     fail 'cannot derive development profile directories'
@@ -114,11 +116,17 @@ while IFS= read -r profile_dir; do
             mkdir -p "$ROOT/$profile_dir" ||
                 fail "cannot create derived profile directory $profile_dir"
             ;;
+        make*:" Entering directory '$ROOT'"|make*:" Leaving directory '$ROOT'")
+            # Recursive GNU Make can emit its own directory banner into a
+            # parse-time $(shell ...) value before --no-print-directory takes
+            # effect. It is transport chatter, not a derived profile path.
+            ;;
         *) fail "unexpected development profile directory: $profile_dir" ;;
     esac
 done <<<"$profile_dirs"
 
-make -s -nB -C "$ROOT" dev-bin >"$scratch" ||
+MAKEFLAGS="${MAKEFLAGS:-} --no-print-directory" \
+    make -s -nB --no-print-directory -C "$ROOT" dev-bin >"$scratch" ||
     fail 'cannot expand the complete dev-bin recipe graph'
 if grep -Eq -- '(^|[[:space:]])-flto|(^|[[:space:]])-fuse-linker-plugin' \
         "$scratch"; then
