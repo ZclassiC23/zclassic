@@ -14,6 +14,44 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_status)
 
+ZCL_COMMAND_DEV_COMMAND(
+    "dev.begin", "dev", "", "Start or reattach to the warm C23 development service",
+    "Starts one checkout-local watcher in auto mode by default, or reattaches "
+    "idempotently to the existing watcher. The response names the resident "
+    "watcher and one next command; it grants no canonical-node, wallet, "
+    "network, storage, transaction, publication or deployment authority.", 0,
+    "dev,begin,warm,watcher,auto,hotswap",
+    "zcl.dev_begin_input.v1", "zcl.dev_begin.v1", "root,mode", "",
+    "zclassic23-dev dev begin", ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_DEV_STATE_WRITE,
+    ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_dev_begin,
+    "warm watcher ownership requires the dev-only executor",
+    "zclassic23-dev dev begin")
+
+ZCL_COMMAND_DEV_READ(
+    "dev.drive", "dev", "", "Wait for feedback and return one compact next action",
+    "The latest exact cycle newer than after_epoch, compacted with its live "
+    "or fallback latency, proof state, ZVCS root and restart-safe publication "
+    "phase. If a publication job exists, drive verifies and renders that "
+    "existing receipt chain without moving roots manually or granting any "
+    "signing, network, wallet, transaction or human-acceptance authority.", 0,
+    "dev,drive,feedback,proof,zvcs,publication,next",
+    "zcl.dev_drive_input.v1", "zcl.dev_drive.v1",
+    "after_epoch,timeout_ms", "",
+    "zclassic23-dev dev drive", ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_PERSISTENT,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_drive,
+    "bounded warm-service driving requires the dev binary",
+    "zclassic23-dev dev drive")
+
 ZCL_COMMAND_READY_READ(
     "dev.ff", "dev", "", "Fail-fast ladder: compile, test, lint",
     "Pass/fail result of a freshly executed compile+focused-test+lint "

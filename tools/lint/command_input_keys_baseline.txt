@@ -125,3 +125,4 @@ zcode.work.accept datadir # work accept derives the task-local scratch ledger fo
 zcode.work.accept source_root # work accept reloads the latest canonical candidate source for its private lane lookup; request->input never reaches it.
 zcode.work.accept action_id # work accept reloads the latest signed receipt action for private evidence/promotion calls; request->input never reaches it.
 zcode.workspace.manifest.plan signature # the shared manifest parser reads this only when the caller passes commit=true; plan fixes commit=false and rejects signature before that branch.
+dev.drive job_root # drive derives this from the SHA3-sealed cycle before privately invoking the existing publication-status verifier; request->input never reaches it.

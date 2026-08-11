@@ -24,6 +24,7 @@
 #include "command/native_command.h"
 #include "base/hex.h"
 #include "crypto/ed25519.h"
+#include "devloop.h"
 #include "json/json.h"
 #include "models/database.h"
 #include "services/zcode_lane_service.h"
@@ -595,6 +596,74 @@ static int t_publication_enqueue(const char *dir)
     VD_CHECK("publication: phase retry is idempotent", reused);
     VD_CHECK("publication: phase retry preserves exact receipt root",
              memcmp(progress_root, retried_progress_root, 32) == 0);
+
+    char drive_commit_hex[65], drive_proof_hex[65], drive_job_hex[65];
+    zcl_hex_encode(ar.commit_id, 32, drive_commit_hex);
+    zcl_hex_encode(ar.proof_receipt_root, 32, drive_proof_hex);
+    zcl_hex_encode(ar.publication_job_root, 32, drive_job_hex);
+    char drive_cycle[2048], drive_why[160] = {0};
+    int drive_cycle_len = snprintf(
+        drive_cycle, sizeof(drive_cycle),
+        "{\"schema\":\"zcl.dev_cycle.v1\",\"producer\":\"test\","
+        "\"status\":\"passed\",\"action\":\"verify\","
+        "\"reason\":\"fixture\",\"phase\":\"verify\","
+        "\"runtime_published\":false,\"elapsed_ms\":17,"
+        "\"proof_complete\":true,"
+        "\"proof_scope\":\"source_wide_compile_tests_lint_fast\","
+        "\"source_id_sha256\":\"%s\",\"vcs_commit\":\"%s\","
+        "\"proof_receipt_root\":\"%s\","
+        "\"publication_status\":\"QUEUED\","
+        "\"publication_job_root\":\"%s\","
+        "\"publication_enqueue_us\":41,\"files\":[]}",
+        source_id, drive_commit_hex, drive_proof_hex, drive_job_hex);
+    VD_CHECK("drive: exact cycle fixture renders within bound",
+             drive_cycle_len > 0 &&
+             (size_t)drive_cycle_len < sizeof(drive_cycle));
+    VD_CHECK("drive: exact cycle fixture persists",
+             drive_cycle_len > 0 &&
+             zcl_devloop_cycle_state_write(
+                 dir, drive_cycle, (size_t)drive_cycle_len,
+                 drive_why, sizeof(drive_why)));
+    struct json_value drive_input;
+    json_init(&drive_input);
+    json_set_object(&drive_input);
+    (void)json_push_kv_int(&drive_input, "after_epoch", 0);
+    (void)json_push_kv_int(&drive_input, "timeout_ms", 1);
+    struct zcl_command_context drive_context = {
+        .source_root = dir,
+        .authority_ceiling = ZCL_COMMAND_AUTH_OPERATOR,
+        .dev_build = true,
+    };
+    struct zcl_command_request drive_request = {
+        .context = &drive_context,
+        .input = &drive_input,
+    };
+    struct zcl_command_reply drive_reply;
+    zcl_command_reply_init(&drive_reply, "zcl.dev_drive.v1");
+    zcl_native_handle_dev_drive(&drive_request, &drive_reply);
+    VD_CHECK("drive: compact warm-service result passes",
+             drive_reply.exit_code == ZCL_COMMAND_EXIT_OK);
+    VD_CHECK("drive: exact proof is never dropped",
+             json_get_bool(json_get(&drive_reply.data, "proof_complete")));
+    VD_CHECK("drive: every fallback names why it was not live",
+             strcmp(json_get_str(json_get(
+                        &drive_reply.data, "why_not_live")),
+                    "fixture") == 0);
+    VD_CHECK("drive: exact ZVCS root is projected",
+             strcmp(json_get_str(json_get(
+                        &drive_reply.data, "zvcs_commit_root")),
+                    drive_commit_hex) == 0);
+    VD_CHECK("drive: job root moves without agent hash handling",
+             strcmp(json_get_str(json_get(
+                        &drive_reply.data, "publication_job_root")),
+                    drive_job_hex) == 0);
+    VD_CHECK("drive: restart-safe blocker is verified and compact",
+             strcmp(json_get_str(json_get(&drive_reply.data, "blocker")),
+                    "human_proven_work_and_offline_publisher_signature_required") == 0);
+    VD_CHECK("drive: one exact next action is present",
+             json_get_str(json_get(&drive_reply.data, "next_command")) != NULL);
+    zcl_command_reply_free(&drive_reply);
+    json_free(&drive_input);
 
     const int64_t accepted_now = 1700000000;
     struct vd_accepted_fixture fixture;

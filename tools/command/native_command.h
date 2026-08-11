@@ -1878,8 +1878,17 @@ void zcl_native_handle_rom_fetch_bundle(
 
 /* Dev-build-only executors.  The catalog binds these only when
  * ZCL_DEV_BUILD is set; release objects neither reference nor link them. */
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+void zcl_native_handle_dev_drive(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+#endif
+
 #ifdef ZCL_DEV_BUILD
 void zcl_native_handle_dev_change_apply(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_dev_begin(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_dev_loop_ensure(

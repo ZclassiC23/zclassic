@@ -40,6 +40,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #ifdef ZCL_DEV_BUILD
 #include <dirent.h>
@@ -49,7 +50,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
-#include <unistd.h>
 #endif
 
 /* Copy a produced JSON document (buffer producer output) into reply->data.
@@ -1093,6 +1093,232 @@ void zcl_native_handle_dev_change_plan(
     dev_reply_from_json(reply, body, n, "change.plan");
 }
 
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+
+static bool dev_drive_input_int(const struct json_value *input,
+                                const char *key, int64_t fallback,
+                                int64_t *out)
+{
+    const struct json_value *v = input ? json_get(input, key) : NULL;
+    if (!v || v->type == JSON_NULL) {
+        *out = fallback;
+        return true;
+    }
+    if (v->type != JSON_INT)
+        return false;
+    *out = json_get_int(v);
+    return true;
+}
+
+static bool dev_drive_copy(const struct json_value *from,
+                           struct json_value *to, const char *from_key,
+                           const char *to_key)
+{
+    const struct json_value *value = json_get(from, from_key);
+    return !value || json_push_kv(to, to_key, value);
+}
+
+static bool dev_drive_wait_cycle(
+    const struct zcl_command_request *request, struct json_value *cycle,
+    int64_t *epoch_out, struct zcl_command_reply *reply)
+{
+    int64_t after = 0, timeout_ms = 30000;
+    if (!dev_drive_input_int(request->input, "after_epoch", 0, &after) ||
+        after < 0 ||
+        !dev_drive_input_int(request->input, "timeout_ms", 30000,
+                             &timeout_ms) ||
+        timeout_ms < 1 || timeout_ms > 300000) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "INVALID_DRIVE", "normalize", false, false,
+            "after_epoch must be nonnegative and timeout_ms 1..300000",
+            "after_epoch,timeout_ms");
+        return false;
+    }
+    int64_t deadline_us = platform_time_monotonic_us() + timeout_ms * 1000;
+    int64_t current_epoch = 0;
+    for (;;) {
+        char body[16384], why[160] = {0};
+        size_t body_len = 0;
+        enum zcl_devloop_state_lookup lookup = zcl_devloop_cycle_state_read(
+            dev_source_root(request), body, sizeof(body), &body_len,
+            &current_epoch, why, sizeof(why));
+        if (lookup == ZCL_DEVLOOP_STATE_INVALID) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+                "DEV_CYCLE_STATE_INVALID", "read", false, false,
+                "workspace cycle state failed schema, SHA3, or inode validation",
+                why[0] ? why : "cycle_state_invalid");
+            return false;
+        }
+        if (lookup == ZCL_DEVLOOP_STATE_FOUND && current_epoch > after) {
+            if (!json_read(cycle, body, body_len) || cycle->type != JSON_OBJ) {
+                json_free(cycle);
+                zcl_command_reply_fail(
+                    reply, ZCL_COMMAND_STATUS_FAILED,
+                    ZCL_COMMAND_EXIT_INTERNAL, "DEV_CYCLE_STATE_INVALID",
+                    "decode", false, false,
+                    "workspace cycle state is not one canonical object",
+                    "cycle_state_decode_failed");
+                return false;
+            }
+            *epoch_out = current_epoch;
+            return true;
+        }
+        if (platform_time_monotonic_us() >= deadline_us)
+            break;
+        usleep(25000);
+    }
+    char evidence[128];
+    (void)snprintf(evidence, sizeof(evidence), "current_epoch=%lld",
+                   (long long)current_epoch);
+    zcl_command_reply_fail(
+        reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+        "DRIVE_TIMEOUT", "wait", true, false,
+        "no newer exact cycle verdict before timeout", evidence);
+    (void)zcl_command_reply_add_next(
+        reply, "dev.drive", "{}",
+        "reattach to the warm service and wait for the next edit verdict");
+    return false;
+}
+
+static void dev_drive_merge_publication(
+    const struct zcl_command_request *request, const char *job_root,
+    struct json_value *out)
+{
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    (void)json_push_kv_str(&input, "job_root", job_root);
+    struct zcl_command_request status_request = *request;
+    status_request.input = &input;
+    struct zcl_command_reply status_reply;
+    zcl_command_reply_init(&status_reply, "zcl.dev_publication_status.v1");
+    zcl_native_handle_dev_publication_status(&status_request, &status_reply);
+    if (status_reply.exit_code == ZCL_COMMAND_EXIT_OK) {
+        static const struct {
+            const char *from;
+            const char *to;
+        } fields[] = {
+            { "status", "publication_stage" },
+            { "progress_receipt_root", "progress_receipt_root" },
+            { "lane_receipt_root", "lane_receipt_root" },
+            { "package_mapping_root", "package_mapping_root" },
+            { "release_root", "release_root" },
+            { "passport_root", "passport_root" },
+            { "workspace_root", "workspace_root" },
+            { "provider_record_root", "provider_record_root" },
+            { "bytes_scanned", "bytes_scanned" },
+            { "new_chunks", "new_chunks" },
+            { "reused_chunks", "reused_chunks" },
+            { "p2p", "p2p" },
+            { "providers", "providers" },
+            { "storage_ack", "storage_ack" },
+            { "reproduced", "reproduced" },
+            { "github_mirror", "github_mirror" },
+            { "blocker", "blocker" },
+            { "next_command", "next_command" },
+        };
+        for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++)
+            (void)dev_drive_copy(&status_reply.data, out, fields[i].from,
+                                 fields[i].to);
+    } else {
+        char next[256];
+        (void)json_push_kv_str(out, "publication_stage", "ERROR");
+        (void)json_push_kv_str(
+            out, "blocker", status_reply.error.code[0]
+                ? status_reply.error.code : "publication_receipt_invalid");
+        int n = snprintf(
+            next, sizeof(next),
+            "zclassic23-dev dev publication status --input='"
+            "{\"job_root\":\"%s\"}'", job_root);
+        if (n > 0 && (size_t)n < sizeof(next))
+            (void)json_push_kv_str(out, "next_command", next);
+    }
+    zcl_command_reply_free(&status_reply);
+    json_free(&input);
+}
+
+void zcl_native_handle_dev_drive(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    struct json_value cycle;
+    json_init(&cycle);
+    int64_t epoch = 0;
+    if (!dev_drive_wait_cycle(request, &cycle, &epoch, reply))
+        return;
+
+    struct json_value compact;
+    json_init(&compact);
+    json_set_object(&compact);
+    (void)json_push_kv_str(&compact, "schema", "zcl.dev_drive.v1");
+    (void)json_push_kv_int(&compact, "epoch", epoch);
+    const bool live = json_get_bool(json_get(&cycle, "runtime_published"));
+    const char *action = json_get_str(json_get(&cycle, "action"));
+    (void)json_push_kv_str(
+        &compact, "lane", live ? "LIVE" :
+        action && strcmp(action, "restart") == 0 ? "FAST_RESTART" :
+        "VERIFY");
+    (void)dev_drive_copy(&cycle, &compact, "status", "status");
+    (void)dev_drive_copy(&cycle, &compact, "action", "action");
+    (void)dev_drive_copy(&cycle, &compact, "elapsed_ms", "feedback_ms");
+    (void)json_push_kv_bool(&compact, "runtime_published", live);
+    (void)json_push_kv_bool(
+        &compact, "proof_complete",
+        json_get_bool(json_get(&cycle, "proof_complete")));
+    (void)dev_drive_copy(&cycle, &compact, "proof_scope", "proof_scope");
+    const char *why_not_live =
+        json_get_str(json_get(&cycle, "why_not_live"));
+    if (!live) {
+        if (!why_not_live || !why_not_live[0])
+            why_not_live = json_get_str(json_get(&cycle, "failure_capsule"));
+        if (!why_not_live || !why_not_live[0])
+            why_not_live = json_get_str(json_get(&cycle, "reason"));
+        (void)json_push_kv_str(
+            &compact, "why_not_live",
+            why_not_live && why_not_live[0]
+                ? why_not_live : "runtime publication was not proven");
+    }
+    (void)dev_drive_copy(&cycle, &compact, "source_id_sha256",
+                         "source_identity_sha256");
+    (void)dev_drive_copy(&cycle, &compact, "vcs_commit",
+                         "zvcs_commit_root");
+    (void)dev_drive_copy(&cycle, &compact, "proof_receipt_root",
+                         "proof_receipt_root");
+    (void)dev_drive_copy(&cycle, &compact, "publication_job_root",
+                         "publication_job_root");
+    (void)dev_drive_copy(&cycle, &compact, "publication_enqueue_us",
+                         "publication_enqueue_us");
+
+    const char *job_root =
+        json_get_str(json_get(&cycle, "publication_job_root"));
+    if (job_root && job_root[0]) {
+        dev_drive_merge_publication(request, job_root, &compact);
+    } else {
+        const char *status = json_get_str(json_get(&cycle, "status"));
+        bool passed = status && strcmp(status, "passed") == 0;
+        bool proof_complete =
+            json_get_bool(json_get(&cycle, "proof_complete"));
+        (void)json_push_kv_str(
+            &compact, "publication_stage", "NOT_QUEUED");
+        (void)json_push_kv_str(
+            &compact, "blocker",
+            proof_complete ? "publication_job_missing" :
+            passed ? "complete_reusable_proof_required" : "proof_failed");
+        (void)json_push_kv_str(
+            &compact, "next_command",
+            passed ? "zclassic23-dev dev ff"
+                   : "zclassic23-dev dev diagnose latest");
+    }
+    json_free(&reply->data);
+    json_init(&reply->data);
+    json_copy(&reply->data, &compact);
+    json_free(&compact);
+    json_free(&cycle);
+}
+
+#endif /* ZCL_DEV_BUILD || ZCL_TESTING */
+
 #ifdef ZCL_DEV_BUILD
 
 /* The registry is the public grammar.  These helpers adapt the existing
@@ -1576,6 +1802,33 @@ static bool dev_requested_watch_mode(const struct json_value *input,
         return true;
     }
     return false;
+}
+
+void zcl_native_handle_dev_begin(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    struct json_value input;
+    json_init(&input);
+    if (request->input && request->input->type == JSON_OBJ)
+        json_copy(&input, request->input);
+    else
+        json_set_object(&input);
+    if (!json_get(&input, "mode"))
+        (void)json_push_kv_str(&input, "mode", "auto");
+    struct zcl_command_request ensure_request = *request;
+    ensure_request.input = &input;
+    zcl_native_handle_dev_loop_ensure(&ensure_request, reply);
+    json_free(&input);
+    if (reply->exit_code != ZCL_COMMAND_EXIT_OK)
+        return;
+    (void)json_push_kv_str(&reply->data, "begin_mode", "warm_service");
+    const char *action =
+        json_get_str(json_get(&reply->data, "agent_next_action"));
+    if (action && action[0])
+        (void)json_push_kv_str(&reply->data, "next_action", action);
+    (void)json_push_kv_str(
+        &reply->data, "next_command",
+        "edit source, then run zclassic23-dev dev drive");
 }
 
 void zcl_native_handle_dev_loop_ensure(

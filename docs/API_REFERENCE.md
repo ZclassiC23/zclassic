@@ -74,17 +74,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 680 |
+| Registry entries (branches + leaves) | 682 |
 | Top-level roots | 11 |
 | Branches | 160 |
-| Leaves (dispatchable command paths) | 520 |
+| Leaves (dispatchable command paths) | 522 |
 | … `ready` (live handler in this build) | 471 |
-| … `compat` (metadata only, names a fallback) | 19 |
+| … `compat` (metadata only, names a fallback) | 21 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
-| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 18 |
-| Leaves with `effect=mutate` | 170 |
+| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 20 |
+| Leaves with `effect=mutate` | 171 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 108 |
+| Leaves requiring **owner** authority | 109 |
 
 Per source file:
 
@@ -96,7 +96,7 @@ Per source file:
 | `config/commands/app_features.def` | 61 | 18 | 43 |
 | `config/commands/store.def` | 18 | 0 | 18 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
-| `config/commands/dev.def` | 49 | 12 | 37 |
+| `config/commands/dev.def` | 51 | 12 | 39 |
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
@@ -620,6 +620,8 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `dev status` | ready | read / read / operator · instant/low | none | `zcl.dev_cycle.v1` | `zclassic23 dev status` | Read the latest native cycle verdict |
+| `dev begin` | compat 🔧 → `zclassic23-dev dev begin` | mutate / dev-mutation / **owner** · fast/low | `root`, `mode` | `zcl.dev_begin.v1` | `zclassic23-dev dev begin` | Start or reattach to the warm C23 development service — *warm watcher ownership requires the dev-only executor* |
+| `dev drive` | compat 🔧 → `zclassic23-dev dev drive` | read / read / operator · persistent/low | `after_epoch`, `timeout_ms` | `zcl.dev_drive.v1` | `zclassic23-dev dev drive` | Wait for feedback and return one compact next action — *bounded warm-service driving requires the dev binary* |
 | `dev ff` | ready | read / read / operator · instant/low | none | `zcl.dev_ff.v1` | `zclassic23 dev ff` | Fail-fast ladder: compile, test, lint |
 | `dev verify-change` | compat 🔧 → `make dev-bin, then zclassic23-dev dev verify-change` | read / read / **owner** · background/high | none | `zcl.dev_verify_change.v1` | `zclassic23-dev dev verify-change` | Compile affected code and run mapped focused proofs with compact output — *changed-scope verification requires the dev-only process executor* |
 

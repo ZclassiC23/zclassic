@@ -1867,7 +1867,8 @@ static int test_dev_branch_leaves(void)
          * binary is a release-shaped catalog, so those leaves must remain
          * explicit COMPAT entries rather than falsely READY. */
         const char *compat[] = {
-            "dev.change.apply", "dev.loop.ensure", "dev.loop.status",
+            "dev.change.apply", "dev.begin", "dev.drive",
+            "dev.loop.ensure", "dev.loop.status",
             "dev.loop.wait", "dev.loop.stop", "dev.test.run",
             "dev.test.sim", "dev.generation.current",
             "dev.generation.history", "dev.diagnose.latest",
