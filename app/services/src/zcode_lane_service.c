@@ -4,6 +4,7 @@
 #include "services/zcode_lane_service.h"
 
 #include "base/hex.h"
+#include "crypto/sha3.h"
 #include "hotswap/hotswap_service.h"
 #include "models/build_fabric.h"
 #include "models/zcode_lane.h"
@@ -12,6 +13,7 @@
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_lane.h"
+#include "vcs/zcode_task_index.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -188,6 +190,182 @@ struct zcl_result zcode_lane_find(
     return ZCL_OK;
 }
 
+static void accepted_worker_id(
+    const uint8_t signer[32], uint8_t root[32], char hex[65])
+{
+    static const char domain[] = "zcl.build_worker.v1";
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
+    sha3_256_write(&sha, signer, 32);
+    sha3_256_finalize(&sha, root);
+    zcl_hex_encode(root, 32, hex);
+}
+
+static bool accepted_signer_current(
+    struct node_db *ndb, const uint8_t signer[32], int64_t now,
+    char worker_id_out[65])
+{
+    uint8_t worker_root[32];
+    char worker_id[65], signer_hex[65];
+    struct db_build_worker worker;
+    accepted_worker_id(signer, worker_root, worker_id);
+    zcl_hex_encode(signer, 32, signer_hex);
+    bool current = db_build_worker_find(ndb, worker_id, &worker) &&
+        strcmp(worker.signer_pubkey, signer_hex) == 0 &&
+        worker.approved && !worker.revoked &&
+        (worker.expires_at == 0 || now < worker.expires_at);
+    if (current && worker_id_out)
+        (void)snprintf(worker_id_out, 65, "%s", worker_id);
+    return current;
+}
+
+static void accepted_row_from_receipt(
+    const struct vcs_zcode_lane_receipt_v1 *receipt,
+    const uint8_t root[32], struct db_zcode_lane_receipt *row)
+{
+    memset(row, 0, sizeof(*row));
+    zcl_hex_encode(root, 32, row->receipt_id);
+    zcl_hex_encode(receipt->source_root, 32, row->source_root_sha3);
+    zcl_hex_encode(receipt->task_root, 32, row->task_root_sha3);
+    zcl_hex_encode(receipt->candidate_root, 32, row->candidate_root_sha3);
+    zcl_hex_encode(receipt->proof_policy_root, 32,
+                   row->proof_policy_root_sha3);
+    if (receipt->lane != VCS_ZCODE_LANE_FRONTIER) {
+        zcl_hex_encode(receipt->proof_set_root, 32,
+                       row->proof_set_root_sha3);
+        zcl_hex_encode(receipt->prior_receipt_root, 32,
+                       row->prior_receipt_root_sha3);
+    }
+    zcl_hex_encode(receipt->signer_pubkey, 32, row->signer_pubkey);
+    row->lane = receipt->lane;
+    row->created_at = receipt->created_unix;
+}
+
+static bool accepted_projection_row(
+    struct node_db *ndb, const struct vcs_zcode_lane_receipt_v1 *receipt,
+    const uint8_t root[32], bool save)
+{
+    struct db_zcode_lane_receipt expected, stored;
+    accepted_row_from_receipt(receipt, root, &expected);
+    if (save && !db_zcode_lane_receipt_save(ndb, &expected))
+        return false;
+    return db_zcode_lane_receipt_find(ndb, expected.receipt_id, &stored) &&
+        lane_row_matches_receipt(&stored, receipt);
+}
+
+static struct zcl_result accepted_projection_check(
+    struct node_db *ndb, const struct vcs_zcode_accepted_work_v1 *accepted,
+    bool rebuild, bool *rebuilt)
+{
+    const struct vcs_zcode_lane_receipt_v1 *receipts[] = {
+        &accepted->frontier, &accepted->candidate_lane, &accepted->proven,
+    };
+    const uint8_t *roots[] = {
+        accepted->frontier_root, accepted->candidate_lane_root,
+        accepted->accepted_work_root,
+    };
+    size_t present = 0;
+    for (size_t i = 0; i < 3; i++) {
+        char hex[65];
+        struct db_zcode_lane_receipt row;
+        zcl_hex_encode(roots[i], 32, hex);
+        if (db_zcode_lane_receipt_find(ndb, hex, &row)) present++;
+    }
+    if (present != 0 && present != 3)
+        return ZCL_ERR(-1, "accepted-lane-projection-partial");
+    if (present == 0 && !rebuild)
+        return ZCL_ERR(-1, "accepted-lane-projection-absent");
+    bool save = present == 0;
+    for (size_t i = 0; i < 3; i++)
+        if (!accepted_projection_row(ndb, receipts[i], roots[i], save))
+            return ZCL_ERR(-1, "accepted-lane-projection-cas-disagreement");
+    if (rebuilt) *rebuilt = save;
+    return ZCL_OK;
+}
+
+/* long-function-ok:accepted-work-authority-join -- one fail-closed join over
+ * immutable CAS acceptance and all live revocation/projection authorities. */
+struct zcl_result zcode_accepted_work_find(
+    struct node_db *ndb, const char *workspace,
+    const char *source_root_sha3, int64_t now,
+    bool rebuild_projection, struct zcode_accepted_work_status *out)
+{
+    uint8_t source_root[32];
+    if (!ndb || !ndb->open || !workspace || !source_root_sha3 ||
+        !zcl_hex_decode_lower(source_root_sha3, source_root, 32) ||
+        now <= 0 || !out)
+        return ZCL_ERR(-1, "accepted-work-input-invalid");
+    memset(out, 0, sizeof(*out));
+    struct vcs_zcode_task_index *index =
+        vcs_zcode_task_index_build(workspace, now);
+    if (!index) return ZCL_ERR(-1, "accepted-work-index-failed");
+    size_t matches = 0;
+    for (size_t i = 0; i < vcs_zcode_task_index_lane_count(index); i++) {
+        const struct vcs_zcode_task_lane_entry *lane =
+            vcs_zcode_task_index_lane_at(index, i);
+        uint8_t accepted_root[32];
+        struct vcs_zcode_accepted_work_v1 accepted;
+        if (!lane || lane->lane != VCS_ZCODE_LANE_PROVEN ||
+            strcmp(lane->source_root_hex, source_root_sha3) != 0 ||
+            !zcl_hex_decode_lower(
+                lane->receipt_root_hex, accepted_root, 32) ||
+            !vcs_zcode_accepted_work_resolve(
+                workspace, accepted_root, now, &accepted) ||
+            memcmp(accepted.proven.source_root, source_root, 32) != 0)
+            continue;
+        if (matches == 0) out->accepted = accepted;
+        matches++;
+    }
+    if (matches != 1) {
+        vcs_zcode_task_index_free(index);
+        return ZCL_ERR(-1, matches > 1
+            ? "accepted-work-source-ambiguous"
+            : "accepted-work-not-human-accepted");
+    }
+    char task_hex[65], candidate_hex[65], policy_hex[65], proof_hex[65];
+    zcl_hex_encode(out->accepted.task_root, 32, task_hex);
+    zcl_hex_encode(out->accepted.candidate_root, 32, candidate_hex);
+    zcl_hex_encode(out->accepted.proof_policy_root, 32, policy_hex);
+    zcl_hex_encode(out->accepted.proof_set_root, 32, proof_hex);
+    enum { ACCEPTED_ACTION_MAX = 64 };
+    struct db_build_action actions[ACCEPTED_ACTION_MAX + 1];
+    int action_count = db_build_candidate_actions(
+        ndb, task_hex, candidate_hex, policy_hex, actions,
+        ACCEPTED_ACTION_MAX + 1);
+    if (action_count <= 0 || action_count > ACCEPTED_ACTION_MAX) {
+        vcs_zcode_task_index_free(index);
+        return ZCL_ERR(-1, "accepted-work-action-projection-mismatch");
+    }
+    bool evaluated = false;
+    for (int i = 0; i < action_count; i++) {
+        struct build_fabric_proof_evaluation evaluation = {0};
+        if (build_fabric_proof_evaluate(
+                ndb, workspace, actions[i].action_id, now, &evaluation).ok &&
+            evaluation.policy_satisfied &&
+            strcmp(evaluation.proof_set_root_sha3, proof_hex) == 0) {
+            if (!evaluated)
+                (void)snprintf(out->action_id, sizeof(out->action_id), "%s",
+                               actions[i].action_id);
+            evaluated = true;
+        }
+    }
+    if (!evaluated) {
+        vcs_zcode_task_index_free(index);
+        return ZCL_ERR(-1, "accepted-work-proof-set-or-policy-mismatch");
+    }
+    if (!accepted_signer_current(
+            ndb, out->accepted.expected_signer, now, out->worker_id)) {
+        vcs_zcode_task_index_free(index);
+        return ZCL_ERR(-1, "accepted-work-signer-unapproved-expired-or-revoked");
+    }
+    struct zcl_result projection = accepted_projection_check(
+        ndb, &out->accepted, rebuild_projection,
+        &out->projection_rebuilt);
+    vcs_zcode_task_index_free(index);
+    return projection;
+}
+
 static struct zcl_result lane_prior_validate(
     const char *workspace, const struct db_zcode_lane_receipt *prior,
     const struct vcs_zcode_task_v1 *task,
@@ -230,6 +408,15 @@ struct zcl_result zcode_lane_advance(
     struct vcs_zcode_proof_policy_v1 policy;
     ZCL_CHECK(lane_load_context(
         workspace, &action, &task, &candidate, &policy));
+    if (memcmp(candidate.author_pubkey, signer_pubkey, 32) != 0)
+        return ZCL_ERR(-1, "lane-signer-is-not-candidate-work-authority");
+    /* FRONTIER admission precedes the first build-worker claim, so its
+     * candidate-author key is pinned above but is not live-ledger-approved
+     * until execution begins. Any proof-bearing promotion must use the
+     * current, non-revoked worker authority. */
+    if (target_lane != VCS_ZCODE_LANE_FRONTIER &&
+        !accepted_signer_current(ndb, signer_pubkey, now, NULL))
+        return ZCL_ERR(-1, "lane-signer-unapproved-expired-or-revoked");
     if (vcs_zcode_candidate_validate_for_task(&task, &candidate, now) !=
             VCS_ZCODE_DEV_OK)
         return ZCL_ERR(-1, "lane-candidate-stale-or-expired");
@@ -357,7 +544,7 @@ static bool lane_view_frozen_kat(const void *opaque, char *why,
         {VCS_ZCODE_LANE_FRONTIER, "FRONTIER",
          "zcode accept --input='<action_id and lane CANDIDATE>'"},
         {VCS_ZCODE_LANE_CANDIDATE, "CANDIDATE",
-         "zcode accept --input='<action_id and lane PROVEN>'"},
+         "zcode work accept --input='{\"work\":\"latest\"}'"},
         {VCS_ZCODE_LANE_PROVEN, "PROVEN", "zcode publish plan"},
     };
     if (!service || !service->render) {

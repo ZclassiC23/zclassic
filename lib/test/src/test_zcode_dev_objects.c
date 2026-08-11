@@ -1323,6 +1323,7 @@ static int test_zd_improve_command(void)
 
         struct vcs_zcode_proof_policy_v1 policy;
         zd_policy(&policy);
+        policy.flags &= (uint16_t)~VCS_ZCODE_POLICY_RELEASE_BYTE_IDENTITY;
         uint8_t policy_wire[VCS_ZCODE_PROOF_POLICY_WIRE_BYTES];
         char policy_hex[VCS_ZCODE_PROOF_POLICY_WIRE_BYTES * 2u + 1u];
         ASSERT_EQ(vcs_zcode_proof_policy_serialize(&policy, policy_wire),
@@ -1334,6 +1335,13 @@ static int test_zd_improve_command(void)
             zd_root(root, (uint8_t)(i + 1));
             zcl_hex_encode(root, 32, roots[i]);
         }
+        struct db_build_worker admission_worker;
+        uint8_t admission_secret[32], admission_key[32];
+        ASSERT(build_fabric_worker_identity_load(
+            workspace, &admission_worker,
+            admission_secret, admission_key).ok);
+        zcl_hex_encode(admission_key, 32, roots[8]);
+        memset(admission_secret, 0, sizeof(admission_secret));
         struct ci_merkle *source_tree = ci_merkle_build_cold(workspace, NULL);
         struct ci_merkle_node source_tree_root;
         char indexed_source_root[65];
@@ -2683,8 +2691,8 @@ static int test_zd_improve_command(void)
         ASSERT(complete.test_satisfied);
         ASSERT(complete.fuzz_satisfied);
         ASSERT(complete.review_satisfied);
-        ASSERT(!complete.release_identity_satisfied);
-        ASSERT(!complete.policy_satisfied);
+        ASSERT(complete.release_identity_satisfied);
+        ASSERT(complete.policy_satisfied);
         node_db_close(&ndb);
 
         struct json_value accept_input;
@@ -2812,15 +2820,11 @@ static int test_zd_improve_command(void)
             workspace, publication_anchor.publication_job_root,
             publication_progress, &publication_reused));
         ASSERT(!publication_reused);
-        ASSERT(vcs_devloop_publication_advance_accepted_lane(
+        ASSERT(!vcs_devloop_publication_advance_proven_work(
             workspace, publication_anchor.publication_job_root,
-            accepted_lane_root, publication_progress,
+            accepted_lane_root, (int64_t)platform_time_wall_unix(),
+            publication_progress,
             &publication_reused));
-        ASSERT(vcs_devloop_publication_advance_package_mapping(
-            workspace, publication_anchor.publication_job_root,
-            package_mapping_root, cold_mapping.bytes_scanned,
-            cold_mapping.new_chunks, cold_mapping.reused_chunks,
-            publication_progress, &publication_reused));
         char publication_job_hex[65];
         zcl_hex_encode(publication_anchor.publication_job_root, 32,
                        publication_job_hex);
@@ -2865,8 +2869,53 @@ static int test_zd_improve_command(void)
                                              &stale_publish_plan);
         ASSERT_EQ(stale_publish_plan.exit_code, ZCL_COMMAND_EXIT_INVALID);
         ASSERT_STR_EQ(stale_publish_plan.error.code,
-                      "CLAIMED_BINDING_MISMATCH");
+                      "LANE_NOT_ACCEPTED");
         zcl_command_reply_free(&stale_publish_plan);
+
+        ASSERT(node_db_open(&ndb, db_path));
+        struct db_build_worker proven_worker;
+        uint8_t proven_secret[32], proven_key[32];
+        ASSERT(build_fabric_worker_identity_load(
+            workspace, &proven_worker, proven_secret, proven_key).ok);
+        struct zcode_lane_status proven_status;
+        ASSERT(zcode_lane_advance(
+            &ndb, workspace, action_id, VCS_ZCODE_LANE_PROVEN,
+            (int64_t)platform_time_wall_unix(), proven_secret, proven_key,
+            &proven_status).ok);
+        memset(proven_secret, 0, sizeof(proven_secret));
+        node_db_close(&ndb);
+        (void)snprintf(accepted_receipt_saved,
+                       sizeof(accepted_receipt_saved), "%s",
+                       proven_status.receipt_root_sha3);
+        ASSERT(zcl_hex_decode_lower(accepted_receipt_saved,
+                                    accepted_lane_root, 32));
+        ASSERT(vcs_package_mapping_set_build(
+            workspace, accepted_source_root, accepted_lane_root,
+            &cold_mapping, package_mapping_root));
+        zcl_hex_encode(package_mapping_root, 32, package_mapping_hex);
+        publication_reused = true;
+        ASSERT(vcs_devloop_publication_advance_proven_work(
+            workspace, publication_anchor.publication_job_root,
+            accepted_lane_root, (int64_t)platform_time_wall_unix(),
+            publication_progress, &publication_reused));
+        ASSERT(!publication_reused);
+        ASSERT(vcs_devloop_publication_advance_package_mapping(
+            workspace, publication_anchor.publication_job_root,
+            package_mapping_root, cold_mapping.bytes_scanned,
+            cold_mapping.new_chunks, cold_mapping.reused_chunks,
+            publication_progress, &publication_reused));
+        json_set_str((struct json_value *)json_get(
+                         &publish_plan_input, "package_mapping_root"),
+                     package_mapping_hex);
+        struct zcl_command_reply stale_binding_plan;
+        zcl_command_reply_init(&stale_binding_plan,
+                               "zcl.zcode_publish_plan.v1");
+        zcl_native_handle_zcode_publish_plan(&publish_plan_request,
+                                             &stale_binding_plan);
+        ASSERT_EQ(stale_binding_plan.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(stale_binding_plan.error.code,
+                      "CLAIMED_BINDING_MISMATCH");
+        zcl_command_reply_free(&stale_binding_plan);
         json_set_str((struct json_value *)json_get(
                          &publish_plan_input, "lane_receipt_root"),
                      accepted_receipt_saved);
@@ -2884,14 +2933,14 @@ static int test_zd_improve_command(void)
                       "unsigned");
         ASSERT_STR_EQ(json_get_str(json_get(
                           &publish_plan_reply.data, "lane")),
-                      "CANDIDATE");
+                      "PROVEN");
         ASSERT_EQ(json_get_int(json_get(
                       &publish_plan_reply.data, "bytes_scanned")), 0);
         ASSERT_EQ(json_get_int(json_get(
                       &publish_plan_reply.data, "new_chunks")), 0);
         ASSERT_EQ((uint32_t)json_get_int(json_get(
                       &publish_plan_reply.data, "reused_chunks")),
-                  cold_mapping.new_chunks);
+                  cold_mapping.reused_chunks);
         ASSERT_STR_EQ(json_get_str(json_get(
                           &publish_plan_reply.data,
                           "package_mapping_root")),
@@ -3079,8 +3128,8 @@ static int test_zd_improve_command(void)
         struct zcl_command_reply proven_reply;
         zcl_command_reply_init(&proven_reply, "zcl.zcode_accept.v1");
         zcl_native_handle_zcode_accept(&accept_request, &proven_reply);
-        ASSERT_EQ(proven_reply.exit_code, ZCL_COMMAND_EXIT_FAILED);
-        ASSERT_STR_EQ(proven_reply.error.code, "LANE_PROMOTION_REFUSED");
+        ASSERT_EQ(proven_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(proven_reply.error.code, "BAD_ACCEPT_INPUT");
         zcl_command_reply_free(&proven_reply);
         zcl_command_reply_free(&lane_reply);
         json_free(&lane_input);
@@ -3113,10 +3162,10 @@ static int test_zd_improve_command(void)
                                       "fuzz_satisfied")));
         ASSERT(json_get_bool(json_get(&evidence_reply.data,
                                       "review_satisfied")));
-        ASSERT(!json_get_bool(json_get(&evidence_reply.data,
-                                       "release_identity_satisfied")));
-        ASSERT(!json_get_bool(json_get(&evidence_reply.data,
-                                       "policy_satisfied")));
+        ASSERT(json_get_bool(json_get(&evidence_reply.data,
+                                      "release_identity_satisfied")));
+        ASSERT(json_get_bool(json_get(&evidence_reply.data,
+                                      "policy_satisfied")));
         zcl_command_reply_free(&evidence_reply);
         json_free(&evidence_input);
         free(task_recipe_hex); free(task_recipe_wire);

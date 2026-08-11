@@ -16,6 +16,7 @@
 #include "services/build_fabric_worker.h"
 #include "services/zcode_goal_context_calc_service.h"
 #include "services/zcode_goal_context_service.h"
+#include "services/zcode_lane_service.h"
 #include "sha3/sha3.h"
 #include "util/safe_alloc.h"
 #include "util/file_tree_ops.h"
@@ -610,13 +611,14 @@ void zcl_native_handle_zcode_work_status(
     const char *state = entry->expired ? "BLOCKED" : entry->state;
     bool evidence_ready = strcmp(state, VCS_ZCODE_TASK_STATE_EVIDENCE_READY) == 0;
     bool repair_needed = strcmp(state, VCS_ZCODE_TASK_STATE_REPAIR_NEEDED) == 0;
-    bool accepted = strcmp(state, VCS_ZCODE_TASK_STATE_ACCEPTED_CANDIDATE) == 0 ||
-                    strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0;
-    bool build_passed = evidence_ready || accepted;
+    bool candidate_ready = strcmp(
+        state, VCS_ZCODE_TASK_STATE_CANDIDATE_PROOFS_READY) == 0;
+    bool accepted = strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0;
+    bool build_passed = evidence_ready || candidate_ready || accepted;
     const char *next_safe_command = entry->expired ? "zcode work start" :
         strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0
             ? "apply or reject the accepted patch in source control" :
-        evidence_ready ? "zcode work accept" :
+        (evidence_ready || candidate_ready) ? "zcode work accept" :
         repair_needed && entry->candidate_count >= 3u
             ? "zcode work start" : "zcode work run";
     struct zwork_patch_summary summary;
@@ -659,7 +661,7 @@ void zcl_native_handle_zcode_work_status(
         strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0
             ? "passed_asan_ubsan" :
         repair_needed ? "failed_or_unavailable" :
-        evidence_ready || accepted ? "awaiting_policy_verification" :
+        evidence_ready || candidate_ready ? "awaiting_human_acceptance" :
                                     "not_started";
     bool ok = paths_ok &&
         json_push_kv_str(&expert, "task_root", entry->task_root_hex) &&
@@ -710,7 +712,7 @@ void zcl_native_handle_zcode_work_status(
                          entry->expired ? "task expired" :
                          strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0
                             ? "accepted candidate is not automatically applied or published"
-                         : evidence_ready
+                         : (evidence_ready || candidate_ready)
                             ? "proof profile and independent review not yet evaluated"
                          : repair_needed
                             ? "latest candidate failed confined package build or tests"
@@ -731,21 +733,52 @@ static void zwork_accept_inner(const char *workspace, const char *datadir,
                                const char *action_id, const char *lane,
                                struct zcl_command_reply *reply)
 {
-    struct json_value input;
-    json_init(&input); json_set_object(&input);
-    bool ok = json_push_kv_str(&input, "workspace", workspace) &&
-        json_push_kv_str(&input, "datadir", datadir) &&
-        json_push_kv_str(&input, "action_id", action_id) &&
-        json_push_kv_str(&input, "lane", lane);
-    if (ok) {
-        struct zcl_command_request request = { .input = &input };
-        zcl_native_handle_zcode_accept(&request, reply);
+    int target = lane && strcmp(lane, "CANDIDATE") == 0
+        ? VCS_ZCODE_LANE_CANDIDATE
+        : lane && strcmp(lane, "PROVEN") == 0
+            ? VCS_ZCODE_LANE_PROVEN : 0;
+    char db_path[ZWORK_PATH_MAX];
+    int n = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    struct node_db ndb = {0};
+    struct db_build_worker signer;
+    uint8_t secret[32] = {0}, pubkey[32] = {0};
+    struct zcode_lane_status status;
+    bool opened = target != 0 && n > 0 && (size_t)n < sizeof(db_path) &&
+        node_db_open(&ndb, db_path);
+    struct zcl_result result = opened
+        ? build_fabric_worker_identity_load(
+              datadir, &signer, secret, pubkey)
+        : ZCL_ERR(-1, "human acceptance ledger could not be opened");
+    if (result.ok)
+        result = zcode_lane_advance(
+            &ndb, workspace, action_id, target,
+            (int64_t)platform_time_wall_unix(), secret, pubkey, &status);
+    memory_cleanse(secret, sizeof(secret));
+    if (opened) node_db_close(&ndb);
+    if (!result.ok) {
+        zwork_fail(reply, "LANE_PROMOTION_REFUSED", "accept",
+                   result.message, false, false);
+        return;
     }
-    json_free(&input);
-    if (!ok)
-        zwork_fail(reply, "ACCEPT_INPUT_FAILED", "compose",
-                   "existing lane acceptance input could not be composed",
-                   false, false);
+    (void)json_push_kv_str(&reply->data, "lane", status.lane_name);
+    (void)json_push_kv_str(&reply->data, "source_root",
+                           status.source_root_sha3);
+    (void)json_push_kv_str(&reply->data, "task_root",
+                           status.task_root_sha3);
+    (void)json_push_kv_str(&reply->data, "candidate_root",
+                           status.candidate_root_sha3);
+    (void)json_push_kv_str(&reply->data, "proof_policy_root",
+                           status.proof_policy_root_sha3);
+    (void)json_push_kv_str(&reply->data, "proof_set_root",
+                           status.proof_set_root_sha3);
+    (void)json_push_kv_str(&reply->data, "lane_receipt_root",
+                           status.receipt_root_sha3);
+    (void)json_push_kv_str(&reply->data, "prior_lane_receipt_root",
+                           status.prior_receipt_root_sha3);
+    (void)json_push_kv_str(&reply->data, "signer_pubkey",
+                           status.signer_pubkey);
+    reply->status = ZCL_COMMAND_STATUS_PASSED;
+    reply->exit_code = ZCL_COMMAND_EXIT_OK;
 }
 
 static void zwork_lane_inner(const char *workspace, const char *datadir,
@@ -1130,7 +1163,7 @@ void zcl_native_handle_zcode_work_accept(
     bool ready = entry && !entry->expired &&
         (strcmp(entry->state, VCS_ZCODE_TASK_STATE_EVIDENCE_READY) == 0 ||
          strcmp(entry->state,
-                VCS_ZCODE_TASK_STATE_ACCEPTED_CANDIDATE) == 0 ||
+                VCS_ZCODE_TASK_STATE_CANDIDATE_PROOFS_READY) == 0 ||
          strcmp(entry->state, VCS_ZCODE_TASK_STATE_PROVEN) == 0);
     if (!ready || !entry->latest_action_root_hex[0] ||
         !entry->latest_candidate_source_root_hex[0]) {

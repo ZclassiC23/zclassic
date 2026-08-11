@@ -15,7 +15,7 @@
 #define ZCODE_LANE_VIEW_WIRE_FINGERPRINT \
     "frontier-candidate-proven-presentation.v1"
 #define ZCODE_LANE_VIEW_KAT_FINGERPRINT \
-    "19dad045fa86101caf2fd07b39c89c76bf54fb736e9b4105103adea56cb28b57"
+    "d362c0ecd095ade5ec43eecfd0e5a00750d3b5ba4d2eef7848e8337163b1a8ae"
 
 #define ZCODE_LANE_VIEW_GUIDE 0u
 

@@ -45,7 +45,7 @@
 #define VCS_ZCODE_TASK_STATE_CANDIDATE_ADMITTED "CANDIDATE_ADMITTED"
 #define VCS_ZCODE_TASK_STATE_REPAIR_NEEDED "REPAIR_NEEDED"
 #define VCS_ZCODE_TASK_STATE_EVIDENCE_READY "EVIDENCE_READY"
-#define VCS_ZCODE_TASK_STATE_ACCEPTED_CANDIDATE "ACCEPTED_CANDIDATE"
+#define VCS_ZCODE_TASK_STATE_CANDIDATE_PROOFS_READY "CANDIDATE_PROOFS_READY"
 #define VCS_ZCODE_TASK_STATE_PROVEN "PROVEN"
 
 struct vcs_zcode_task_index_entry {
@@ -144,6 +144,13 @@ size_t vcs_zcode_task_index_candidate_count(
 const struct vcs_zcode_task_candidate_entry *
 vcs_zcode_task_index_candidate_at(const struct vcs_zcode_task_index *index,
                                   size_t i);
+
+/* Verified lane objects projected from CAS. Callers that assign authority
+ * must still resolve the complete chain with zcode_accepted_work. */
+size_t vcs_zcode_task_index_lane_count(
+    const struct vcs_zcode_task_index *index);
+const struct vcs_zcode_task_lane_entry *vcs_zcode_task_index_lane_at(
+    const struct vcs_zcode_task_index *index, size_t i);
 
 /* Return the one verified context bound to task_root_hex. Multiple distinct
  * contexts are ambiguous because task.v1 intentionally does not choose one. */

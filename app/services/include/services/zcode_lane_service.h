@@ -6,6 +6,7 @@
 
 #include "base/result.h"
 #include "models/database.h"
+#include "vcs/zcode_accepted_work.h"
 
 #include <stdint.h>
 
@@ -26,6 +27,13 @@ struct zcode_lane_status {
     char next_action[160];
 };
 
+struct zcode_accepted_work_status {
+    struct vcs_zcode_accepted_work_v1 accepted;
+    char action_id[65];
+    char worker_id[65];
+    bool projection_rebuilt;
+};
+
 /* target_lane is FRONTIER, CANDIDATE, or PROVEN. FRONTIER is idempotent
  * candidate admission. Later lanes require the exact previous receipt and
  * the proof evaluator's corresponding acceptance bar. */
@@ -37,5 +45,15 @@ struct zcl_result zcode_lane_advance(
 struct zcl_result zcode_lane_find(
     struct node_db *ndb, const char *workspace,
     const char *source_root_sha3, struct zcode_lane_status *out);
+
+/* Resolve exactly one current human-accepted work for source_root. The CAS
+ * chain is authoritative; the ZBuild action/worker and lane tables are
+ * cross-checked projections. An entirely absent lane projection may be
+ * rebuilt from the verified CAS chain when rebuild_projection is true;
+ * partial or disagreeing projections always fail closed. */
+struct zcl_result zcode_accepted_work_find(
+    struct node_db *ndb, const char *workspace,
+    const char *source_root_sha3, int64_t now,
+    bool rebuild_projection, struct zcode_accepted_work_status *out);
 
 #endif /* ZCL_SERVICES_ZCODE_LANE_SERVICE_H */

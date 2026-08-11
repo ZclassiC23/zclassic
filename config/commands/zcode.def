@@ -379,6 +379,8 @@ ZCL_COMMAND_READY_COMMAND(
     "This explicit human decision reloads the latest canonical candidate, "
     "signed work evidence and current signed lane, requires the exact proof "
     "policy, then advances the existing CANDIDATE and PROVEN lane receipts. "
+    "CANDIDATE remains proof readiness; only this command's PROVEN result is "
+    "human acceptance. "
     "It does not edit source files, publish a package, or give the adapter "
     "acceptance authority. Repeating an already-PROVEN acceptance is "
     "idempotent.", ZCL_COMMAND_RESULT_BUDGET,
@@ -1694,13 +1696,14 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.dev.accept", "zcode.package.dev", "zcode.accept",
-    "Accept candidate lane",
-    "Explicitly advances the exact candidate source through the signed "
-    "FRONTIER -> CANDIDATE -> PROVEN chain. CANDIDATE requires compile and "
-    "task-required tests; PROVEN requires the complete proof_policy.v1. "
-    "Transitions are sequential, immutable, CAS-addressed, operator-signed, "
-    "and refuse stale or changed task, candidate, toolchain, or proof state.",
-    0, "zcode,accept,candidate,proven,lane,promotion",
+    "Record candidate proof readiness",
+    "Advances the exact candidate source from FRONTIER to CANDIDATE after "
+    "compile and task-required tests. CANDIDATE is proof readiness, never "
+    "human acceptance and never publication authority. Only the ordinary "
+    "zcode work accept lifecycle may create the PROVEN accepted-work root. "
+    "The transition is immutable, CAS-addressed, operator-signed, and "
+    "refuses stale or changed task, candidate, toolchain, or proof state.",
+    0, "zcode,accept,candidate,lane,promotion",
     "zcl.zcode_accept.input.v1", "zcl.zcode_accept.v1",
     "workspace,action_id,lane,datadir", "workspace,action_id,lane",
     "zclassic23 zcode accept --input='{\"workspace\":\"/src/project\",\"action_id\":\"<64hex>\",\"lane\":\"CANDIDATE\"}'",
@@ -1771,14 +1774,15 @@ ZCL_COMMAND_READY_READ(
     zcl_native_handle_zcode_tasks)
 
 ZCL_COMMAND_BRANCH("zcode.package.dev.publish", "zcode.package.dev",
-                   "Publish an explicitly accepted lane",
+                   "Publish an explicitly human-accepted work",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_READY_READ(
     "zcode.package.dev.publish.plan", "zcode.package.dev.publish",
     "zcode.publish.plan",
-    "Prepare an accepted lane for offline release signing",
-    "Re-verifies the CANDIDATE or PROVEN signed lane receipt, every bound "
+    "Prepare a PROVEN work for offline release signing",
+    "Re-verifies the exact PROVEN receipt produced by zcode work accept, its "
+    "complete predecessor chain, every bound "
     "task/candidate/policy object, the canonical proof set, and every signed "
     "work receipt from the workspace CAS. Re-derives content.v2 from the "
     "accepted source blobs, embeds the exact lane receipt as "
@@ -1804,8 +1808,8 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.dev.publish.commit", "zcode.package.dev.publish",
     "zcode.publish",
-    "Publish one offline-signed accepted-lane release",
-    "Rebuilds the complete accepted-lane plan from CAS, verifies release_hex "
+    "Publish one offline-signed PROVEN-work release",
+    "Rebuilds the complete PROVEN-work plan from CAS, verifies release_hex "
     "as a canonical low-S secp256k1 envelope over the exact accepted package, "
     "task recipe, chain and current publisher lineage, then delegates to the "
     "existing zcode.package.publish commit lifecycle. The source is staged "

@@ -279,6 +279,9 @@ evaluator's compile bar plus any task-required test bar. PROVEN requires the
 entire `proof_policy.v1`, including fuzz, review, local reproduction/quorum,
 proof age, and release-byte identity when selected. A changed or expired task,
 candidate, policy, source, proof set, signer, or prior receipt is a refusal.
+CANDIDATE is proof readiness, not human acceptance. The expert `zcode accept`
+route can only create CANDIDATE; only the ordinary explicit `zcode work accept`
+lifecycle can create the PROVEN accepted-work root used by publication.
 
 ### `agent_context.v1`
 
@@ -434,8 +437,10 @@ bash-only authority:
   reusing `zcode package add` and its lock/install receipts.
 - [x] `zcode evidence` — reconstruct and evaluate the candidate-wide immutable
   proof set from canonical receipts.
-- [x] `zcode accept` — explicitly sign sequential CANDIDATE or PROVEN promotion
-  after the corresponding task-owned proof bar passes.
+- [x] `zcode accept` — record CANDIDATE proof readiness after the corresponding
+  task-owned fast proof bar passes; this expert route cannot create PROVEN.
+- [x] `zcode work accept` — make the explicit human decision and sign the exact
+  PROVEN accepted-work root after the complete proof policy passes.
 - [x] `zcode lane` — verify and inspect the latest signed CAS lane receipt by
   authoritative source root.
 - [ ] `zcode improve` — plan a task, build a bounded context, invoke a selected

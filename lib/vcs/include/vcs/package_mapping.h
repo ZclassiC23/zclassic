@@ -36,7 +36,7 @@ void vcs_package_mapping_set_free(struct vcs_package_mapping_set *set);
 /* Background-worker operation. Every cache miss is loaded from the bounded
  * ZVCS blob CAS, chunked once, stored as immutable mapping evidence, then
  * indexed in one short derived-index transaction. The returned set root
- * binds the exact source tree and accepted lane receipt. */
+ * binds the exact source tree and human-accepted PROVEN work root. */
 bool vcs_package_mapping_set_build(
     const char *repo_root, const uint8_t source_tree_root[32],
     const uint8_t lane_receipt_root[32],

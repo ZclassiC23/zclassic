@@ -11,8 +11,6 @@
 # uncallable-input bug — declare the key instead of listing it here.
 
 app.messaging.read confirm    # awn_run() (app/controllers/src/app_write_native_handlers.c) reads confirm only under `leaf->plan_commit`; the message-read leaf sets .plan_commit = false, so the read is dead here. The ZNAM write leaves that DO set it all declare confirm.
-dev.publication.advance workspace # handler injects the resolved checkout into a private zcode.package.dev.lane request; request->input never reaches that helper.
-dev.publication.advance source_root # handler injects the immutable job's ZVCS tree root into a private zcode.package.dev.lane request; request->input never reaches that helper.
 zcode.leaderboard.all day     # zl_leaderboard() (tools/command/native_zcode_leaderboard_command.c) reads day to pin "today" for the period window; the all-time period's window is unbounded, so day cannot move this leaf's answer. daily/weekly/monthly share the function and declare day.
 zcode.network.providers kind  # handler injects fixed kind=provider into a private RPC object; kind is never read from request->input.
 zcode.network.publish operation # handler injects fixed operation=publish into a private RPC object; operation is never read from request->input.
@@ -126,5 +124,4 @@ zcode.work.run remote_peer # the nested handler reads this only for opt-in P2P e
 zcode.work.accept datadir # work accept derives the task-local scratch ledger for private evidence/lane calls; request->input never reaches them.
 zcode.work.accept source_root # work accept reloads the latest canonical candidate source for its private lane lookup; request->input never reaches it.
 zcode.work.accept action_id # work accept reloads the latest signed receipt action for private evidence/promotion calls; request->input never reaches it.
-zcode.work.accept lane # work accept fixes sequential CANDIDATE then PROVEN transitions after private evidence evaluation; request->input never reaches it.
 zcode.workspace.manifest.plan signature # the shared manifest parser reads this only when the caller passes commit=true; plan fixes commit=false and rejects signature before that branch.

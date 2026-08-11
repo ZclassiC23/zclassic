@@ -180,7 +180,7 @@ bool vcs_devloop_publication_job_requeue(
 
 /* Load the latest append-only scheduler receipt for one job. False means no
  * receipt or a corrupt/over-budget progress log. The advance operation is an
- * idempotent worker step and never grants accepted-lane authority. */
+ * idempotent worker step and never grants human-acceptance authority. */
 bool vcs_devloop_publication_progress_load(
     const char *repo_root, const uint8_t job_root[32],
     struct vcs_devloop_publication_receipt *out,
@@ -191,9 +191,9 @@ bool vcs_devloop_publication_receipt_load(
 bool vcs_devloop_publication_advance_waiting_acceptance(
     const char *repo_root, const uint8_t job_root[32],
     uint8_t receipt_root_out[32], bool *reused_out);
-bool vcs_devloop_publication_advance_accepted_lane(
+bool vcs_devloop_publication_advance_proven_work(
     const char *repo_root, const uint8_t job_root[32],
-    const uint8_t lane_receipt_root[32],
+    const uint8_t accepted_work_root[32], int64_t now_unix,
     uint8_t receipt_root_out[32], bool *reused_out);
 bool vcs_devloop_publication_advance_package_mapping(
     const char *repo_root, const uint8_t job_root[32],

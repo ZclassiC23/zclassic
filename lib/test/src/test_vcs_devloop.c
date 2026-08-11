@@ -25,11 +25,15 @@
 #include "base/hex.h"
 #include "crypto/ed25519.h"
 #include "json/json.h"
+#include "models/database.h"
+#include "services/zcode_lane_service.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_devloop.h"
 #include "vcs/vcs_index.h"
 #include "vcs/vcs_object.h"
 #include "vcs/package_mapping.h"
+#include "vcs/zcode_accepted_work.h"
+#include "vcs/zcode_dev.h"
 #include "vcs/zcode_lane.h"
 
 #include <stdio.h>
@@ -70,6 +74,220 @@ static void make_hex64(char out[65], uint8_t seed)
     for (int i = 0; i < 32; i++)
         snprintf(out + 2 * i, 3, "%02x", (uint8_t)(seed + i));
     out[64] = 0;
+}
+
+static void vd_root(uint8_t out[32], uint8_t seed)
+{
+    for (size_t i = 0; i < 32; i++) out[i] = (uint8_t)(seed + i);
+}
+
+struct vd_accepted_fixture {
+    struct vcs_zcode_accepted_work_v1 accepted;
+    uint8_t signer_secret[32];
+    uint8_t signer_pubkey[32];
+};
+
+static bool vd_put_object(const char *dir, const uint8_t root[32],
+                          const uint8_t *wire, size_t len)
+{
+    return vcs_object_put_addressed(dir, root, wire, len);
+}
+
+static bool vd_put_work_receipt(
+    const char *dir, const struct vcs_zcode_task_v1 *task,
+    const struct vcs_zcode_candidate_v1 *candidate,
+    const uint8_t task_root[32], const uint8_t candidate_root[32],
+    const uint8_t policy_root[32], uint8_t kind, uint8_t seed_byte,
+    int64_t now, uint8_t root_out[32])
+{
+    struct vcs_zcode_work_receipt_v1 receipt = {
+        .schema_version = VCS_ZCODE_DEV_VERSION,
+        .work_kind = kind,
+        .status = VCS_ZCODE_WORK_PASS,
+        .started_unix = now - 20,
+        .finished_unix = now - 10,
+    };
+    memcpy(receipt.task_root, task_root, 32);
+    memcpy(receipt.candidate_root, candidate_root, 32);
+    memcpy(receipt.proof_policy_root, policy_root, 32);
+    memcpy(receipt.toolchain_capsule_root,
+           task->toolchain_capsule_root, 32);
+    vd_root(receipt.action_root, (uint8_t)(seed_byte + 1));
+    vd_root(receipt.input_root, (uint8_t)(seed_byte + 2));
+    vd_root(receipt.output_root, 0xa0);
+    vd_root(receipt.lease_id, (uint8_t)(seed_byte + 3));
+    vd_root(receipt.evidence_root, (uint8_t)(seed_byte + 4));
+    vd_root(receipt.confinement_root, (uint8_t)(seed_byte + 5));
+    uint8_t seed[32], secret[32], pubkey[32];
+    vd_root(seed, seed_byte);
+    ed25519_keypair(pubkey, secret, seed);
+    uint8_t wire[VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES];
+    bool ok = vcs_zcode_work_receipt_seal(
+            &receipt, secret, pubkey) == VCS_ZCODE_DEV_OK &&
+        vcs_zcode_work_receipt_serialize(&receipt, wire) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_work_receipt_id(&receipt, root_out) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_work_receipt_validate_for_candidate(
+            task, candidate, &receipt, now) == VCS_ZCODE_DEV_OK &&
+        vd_put_object(dir, root_out, wire, sizeof(wire));
+    memset(secret, 0, sizeof(secret));
+    return ok;
+}
+
+static bool vd_put_lane(
+    const char *dir, struct vcs_zcode_lane_receipt_v1 *lane,
+    const uint8_t secret[32], const uint8_t pubkey[32], uint8_t root[32])
+{
+    uint8_t wire[VCS_ZCODE_LANE_WIRE_BYTES];
+    memset(lane->signature, 0, sizeof(lane->signature));
+    return vcs_zcode_lane_receipt_seal(lane, secret, pubkey) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_lane_receipt_serialize(lane, wire) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_lane_receipt_id(lane, root) == VCS_ZCODE_DEV_OK &&
+        vd_put_object(dir, root, wire, sizeof(wire));
+}
+
+static bool vd_accepted_fixture_create(
+    const char *dir, const uint8_t source_root[32], int64_t now,
+    uint8_t signer_seed, struct vd_accepted_fixture *fixture)
+{
+    memset(fixture, 0, sizeof(*fixture));
+    struct vcs_zcode_proof_policy_v1 *policy = &fixture->accepted.policy;
+    *policy = (struct vcs_zcode_proof_policy_v1) {
+        .schema_version = VCS_ZCODE_DEV_VERSION,
+        .required_proofs = VCS_ZCODE_PROOF_COMPILE | VCS_ZCODE_PROOF_TEST,
+        .minimum_compile_receipts = 1,
+        .minimum_test_receipts = 1,
+        .minimum_matching_receipts = 1,
+        .maximum_proof_age_seconds = 3600,
+    };
+    uint8_t policy_wire[VCS_ZCODE_PROOF_POLICY_WIRE_BYTES];
+    if (vcs_zcode_proof_policy_serialize(policy, policy_wire) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_proof_policy_root(
+            policy, fixture->accepted.proof_policy_root) !=
+            VCS_ZCODE_DEV_OK ||
+        !vd_put_object(dir, fixture->accepted.proof_policy_root,
+                       policy_wire, sizeof(policy_wire)))
+        return false;
+    struct vcs_zcode_task_v1 *task = &fixture->accepted.task;
+    task->schema_version = VCS_ZCODE_DEV_VERSION;
+    memcpy(task->source_root, source_root, 32);
+    vd_root(task->dependency_lock_root, 0x11);
+    vd_root(task->toolchain_capsule_root, 0x21);
+    vd_root(task->write_scope_root, 0x31);
+    vd_root(task->acceptance_tests_root, 0x41);
+    memcpy(task->proof_policy_root,
+           fixture->accepted.proof_policy_root, 32);
+    vd_root(task->model_policy_root, 0x51);
+    vd_root(task->goal_root, signer_seed);
+    task->capabilities = VCS_ZCODE_TASK_CAP_V1_MASK;
+    task->max_changed_files = 8;
+    task->max_patch_bytes = 1024 * 1024;
+    task->max_context_bytes = 1024 * 1024;
+    task->max_cpu_seconds = 60;
+    task->max_memory_bytes = UINT64_C(256) * 1024 * 1024;
+    task->max_output_bytes = UINT64_C(16) * 1024 * 1024;
+    task->expires_unix = now + 3600;
+    uint8_t task_wire[VCS_ZCODE_TASK_WIRE_BYTES];
+    if (vcs_zcode_task_serialize(task, task_wire) != VCS_ZCODE_DEV_OK ||
+        vcs_zcode_task_root(task, fixture->accepted.task_root) !=
+            VCS_ZCODE_DEV_OK ||
+        !vd_put_object(dir, fixture->accepted.task_root,
+                       task_wire, sizeof(task_wire)))
+        return false;
+    uint8_t seed[32];
+    vd_root(seed, signer_seed);
+    ed25519_keypair(fixture->signer_pubkey,
+                    fixture->signer_secret, seed);
+    struct vcs_zcode_candidate_v1 *candidate = &fixture->accepted.candidate;
+    candidate->schema_version = VCS_ZCODE_DEV_VERSION;
+    memcpy(candidate->task_root, fixture->accepted.task_root, 32);
+    memcpy(candidate->base_source_root, source_root, 32);
+    vd_root(candidate->patch_root, 0x71);
+    memcpy(candidate->candidate_source_root, source_root, 32);
+    vd_root(candidate->adapter_policy_root, 0x81);
+    memcpy(candidate->author_pubkey, fixture->signer_pubkey, 32);
+    candidate->sequence = 1;
+    candidate->created_unix = now - 100;
+    uint8_t candidate_wire[VCS_ZCODE_CANDIDATE_WIRE_BYTES];
+    if (vcs_zcode_candidate_serialize(candidate, candidate_wire) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_candidate_root(
+            candidate, fixture->accepted.candidate_root) !=
+            VCS_ZCODE_DEV_OK ||
+        !vd_put_object(dir, fixture->accepted.candidate_root,
+                       candidate_wire, sizeof(candidate_wire)))
+        return false;
+    uint8_t receipt_roots[2][32];
+    if (!vd_put_work_receipt(
+            dir, task, candidate, fixture->accepted.task_root,
+            fixture->accepted.candidate_root,
+            fixture->accepted.proof_policy_root, VCS_ZCODE_WORK_BUILD,
+            0x91, now, receipt_roots[0]) ||
+        !vd_put_work_receipt(
+            dir, task, candidate, fixture->accepted.task_root,
+            fixture->accepted.candidate_root,
+            fixture->accepted.proof_policy_root, VCS_ZCODE_WORK_TEST,
+            0xb1, now, receipt_roots[1]))
+        return false;
+    if (memcmp(receipt_roots[0], receipt_roots[1], 32) > 0) {
+        uint8_t swap[32];
+        memcpy(swap, receipt_roots[0], 32);
+        memcpy(receipt_roots[0], receipt_roots[1], 32);
+        memcpy(receipt_roots[1], swap, 32);
+    }
+    uint8_t proof_wire[VCS_ZCODE_PROOF_SET_WIRE_MAX];
+    size_t proof_len = 0;
+    if (vcs_zcode_proof_set_serialize(
+            (const uint8_t (*)[32])receipt_roots, 2,
+            proof_wire, sizeof(proof_wire), &proof_len) !=
+            VCS_ZCODE_DEV_OK ||
+        vcs_zcode_proof_set_root(
+            (const uint8_t (*)[32])receipt_roots, 2,
+            fixture->accepted.proof_set_root) != VCS_ZCODE_DEV_OK ||
+        !vd_put_object(dir, fixture->accepted.proof_set_root,
+                       proof_wire, proof_len))
+        return false;
+    struct vcs_zcode_lane_receipt_v1 lane = {
+        .schema_version = VCS_ZCODE_DEV_VERSION,
+        .lane = VCS_ZCODE_LANE_FRONTIER,
+        .created_unix = now - 50,
+    };
+    memcpy(lane.source_root, source_root, 32);
+    memcpy(lane.task_root, fixture->accepted.task_root, 32);
+    memcpy(lane.candidate_root, fixture->accepted.candidate_root, 32);
+    memcpy(lane.proof_policy_root,
+           fixture->accepted.proof_policy_root, 32);
+    if (!vd_put_lane(dir, &lane, fixture->signer_secret,
+                     fixture->signer_pubkey,
+                     fixture->accepted.frontier_root))
+        return false;
+    fixture->accepted.frontier = lane;
+    lane.lane = VCS_ZCODE_LANE_CANDIDATE;
+    lane.created_unix = now - 40;
+    memcpy(lane.proof_set_root, fixture->accepted.proof_set_root, 32);
+    memcpy(lane.prior_receipt_root,
+           fixture->accepted.frontier_root, 32);
+    if (!vd_put_lane(dir, &lane, fixture->signer_secret,
+                     fixture->signer_pubkey,
+                     fixture->accepted.candidate_lane_root))
+        return false;
+    fixture->accepted.candidate_lane = lane;
+    lane.lane = VCS_ZCODE_LANE_PROVEN;
+    lane.created_unix = now - 30;
+    memcpy(lane.prior_receipt_root,
+           fixture->accepted.candidate_lane_root, 32);
+    if (!vd_put_lane(dir, &lane, fixture->signer_secret,
+                     fixture->signer_pubkey,
+                     fixture->accepted.accepted_work_root))
+        return false;
+    fixture->accepted.proven = lane;
+    memcpy(fixture->accepted.expected_signer,
+           fixture->signer_pubkey, 32);
+    return true;
 }
 
 struct captured_commit {
@@ -341,78 +559,93 @@ static int t_publication_enqueue(const char *dir)
     VD_CHECK("publication: phase retry preserves exact receipt root",
              memcmp(progress_root, retried_progress_root, 32) == 0);
 
-    struct vcs_zcode_lane_receipt_v1 lane = {
-        .schema_version = VCS_ZCODE_DEV_VERSION,
-        .lane = VCS_ZCODE_LANE_CANDIDATE,
-        .created_unix = 1700000000,
-    };
-    memset(lane.source_root, 0x60, 32);
-    memset(lane.task_root, 0x61, 32);
-    memset(lane.candidate_root, 0x62, 32);
-    memset(lane.proof_policy_root, 0x63, 32);
-    memset(lane.proof_set_root, 0x64, 32);
-    memset(lane.prior_receipt_root, 0x65, 32);
-    uint8_t seed[32], signer_secret[32], signer_pubkey[32];
-    memset(seed, 0x66, sizeof(seed));
-    ed25519_keypair(signer_pubkey, signer_secret, seed);
-    uint8_t lane_wire[VCS_ZCODE_LANE_WIRE_BYTES], wrong_lane_root[32];
-    VD_CHECK("publication: wrong-source lane fixture seals",
-             vcs_zcode_lane_receipt_seal(
-                 &lane, signer_secret, signer_pubkey) == VCS_ZCODE_DEV_OK &&
-             vcs_zcode_lane_receipt_serialize(&lane, lane_wire) ==
-                 VCS_ZCODE_DEV_OK &&
-             vcs_zcode_lane_receipt_id(&lane, wrong_lane_root) ==
-                 VCS_ZCODE_DEV_OK &&
-             vcs_object_put_addressed(
-                 dir, wrong_lane_root, lane_wire, sizeof(lane_wire)));
+    const int64_t accepted_now = 1700000000;
+    struct vd_accepted_fixture fixture;
+    VD_CHECK("publication: complete accepted-work fixture stores",
+             vd_accepted_fixture_create(
+                 dir, job.source_tree_root, accepted_now, 0x66, &fixture));
+    struct vcs_zcode_accepted_work_v1 resolved;
+    VD_CHECK("publication: PROVEN accepted-work chain reconstructs",
+             vcs_zcode_accepted_work_resolve(
+                 dir, fixture.accepted.accepted_work_root,
+                 accepted_now, &resolved));
     uint8_t rejected_progress_root[32];
     reused = true;
-    VD_CHECK("publication: wrong-source accepted lane is refused",
-             !vcs_devloop_publication_advance_accepted_lane(
-                 dir, ar.publication_job_root, wrong_lane_root,
+    VD_CHECK("publication: valid compile/test CANDIDATE remains waiting",
+             !vcs_devloop_publication_advance_proven_work(
+                 dir, ar.publication_job_root,
+                 fixture.accepted.candidate_lane_root, accepted_now,
                  rejected_progress_root, &reused));
-    VD_CHECK("publication: refusal is not reported as reuse", !reused);
+    VD_CHECK("publication: pre-human-accept refusal is not reuse", !reused);
 
-    memcpy(lane.source_root, job.source_tree_root, 32);
-    lane.lane = VCS_ZCODE_LANE_FRONTIER;
-    memset(lane.proof_set_root, 0, 32);
-    memset(lane.prior_receipt_root, 0, 32);
-    uint8_t frontier_lane_root[32];
-    VD_CHECK("publication: frontier lane fixture seals",
-             vcs_zcode_lane_receipt_seal(
-                 &lane, signer_secret, signer_pubkey) == VCS_ZCODE_DEV_OK &&
-             vcs_zcode_lane_receipt_serialize(&lane, lane_wire) ==
-                 VCS_ZCODE_DEV_OK &&
-             vcs_zcode_lane_receipt_id(&lane, frontier_lane_root) ==
-                 VCS_ZCODE_DEV_OK &&
-             vcs_object_put_addressed(
-                 dir, frontier_lane_root, lane_wire, sizeof(lane_wire)));
+    uint8_t attacker_seed[32], attacker_secret[32], attacker_pubkey[32];
+    vd_root(attacker_seed, 0xd1);
+    ed25519_keypair(attacker_pubkey, attacker_secret, attacker_seed);
+    struct vcs_zcode_lane_receipt_v1 forged = fixture.accepted.candidate_lane;
+    uint8_t forged_root[32];
+    VD_CHECK("publication: arbitrary self-signed CANDIDATE stores",
+             vd_put_lane(dir, &forged, attacker_secret, attacker_pubkey,
+                         forged_root));
     reused = true;
-    VD_CHECK("publication: frontier lane is not acceptance",
-             !vcs_devloop_publication_advance_accepted_lane(
-                 dir, ar.publication_job_root, frontier_lane_root,
+    VD_CHECK("publication: arbitrary self-signed CANDIDATE refused",
+             !vcs_devloop_publication_advance_proven_work(
+                 dir, ar.publication_job_root, forged_root, accepted_now,
                  rejected_progress_root, &reused));
-    VD_CHECK("publication: frontier refusal is not reuse", !reused);
+    forged = fixture.accepted.proven;
+    VD_CHECK("publication: arbitrary self-signed PROVEN stores",
+             vd_put_lane(dir, &forged, attacker_secret, attacker_pubkey,
+                         forged_root));
+    reused = true;
+    VD_CHECK("publication: arbitrary self-signed PROVEN refused",
+             !vcs_devloop_publication_advance_proven_work(
+                 dir, ar.publication_job_root, forged_root, accepted_now,
+                 rejected_progress_root, &reused));
+    VD_CHECK("publication: signer rotation inside chain refused",
+             !vcs_zcode_accepted_work_resolve(
+                 dir, forged_root, accepted_now, &resolved));
+    memset(attacker_secret, 0, sizeof(attacker_secret));
 
-    lane.lane = VCS_ZCODE_LANE_CANDIDATE;
-    memset(lane.proof_set_root, 0x64, 32);
-    memset(lane.prior_receipt_root, 0x65, 32);
-    VD_CHECK("publication: accepted lane fixture seals",
-             vcs_zcode_lane_receipt_seal(
-                 &lane, signer_secret, signer_pubkey) == VCS_ZCODE_DEV_OK);
+    static const char *const context_names[] = {
+        "correct source but different task refused",
+        "correct source but different candidate refused",
+        "changed proof policy refused",
+        "changed proof set refused",
+        "missing predecessor refused",
+        "forged predecessor root refused",
+    };
+    for (size_t i = 0; i < sizeof(context_names) / sizeof(context_names[0]);
+         i++) {
+        forged = fixture.accepted.proven;
+        if (i == 0) vd_root(forged.task_root, 0xe1);
+        if (i == 1) vd_root(forged.candidate_root, 0xe2);
+        if (i == 2) vd_root(forged.proof_policy_root, 0xe3);
+        if (i == 3) vd_root(forged.proof_set_root, 0xe4);
+        if (i == 4) vd_root(forged.prior_receipt_root, 0xe5);
+        if (i == 5)
+            memcpy(forged.prior_receipt_root,
+                   fixture.accepted.frontier_root, 32);
+        VD_CHECK("publication: forged-context receipt stores",
+                 vd_put_lane(dir, &forged, fixture.signer_secret,
+                             fixture.signer_pubkey, forged_root));
+        reused = true;
+        VD_CHECK(context_names[i],
+                 !vcs_devloop_publication_advance_proven_work(
+                     dir, ar.publication_job_root, forged_root, accepted_now,
+                     rejected_progress_root, &reused));
+    }
+    VD_CHECK("publication: stale accepted work refused",
+             !vcs_devloop_publication_advance_proven_work(
+                 dir, ar.publication_job_root,
+                 fixture.accepted.accepted_work_root, accepted_now + 4000,
+                 rejected_progress_root, &reused));
+
     uint8_t lane_root[32];
-    VD_CHECK("publication: accepted lane fixture serializes",
-             vcs_zcode_lane_receipt_serialize(&lane, lane_wire) ==
-                 VCS_ZCODE_DEV_OK &&
-             vcs_zcode_lane_receipt_id(&lane, lane_root) ==
-                 VCS_ZCODE_DEV_OK &&
-             vcs_object_put_addressed(
-                 dir, lane_root, lane_wire, sizeof(lane_wire)));
+    memcpy(lane_root, fixture.accepted.accepted_work_root, 32);
     uint8_t accepted_progress_root[32];
     reused = true;
-    VD_CHECK("publication: worker binds existing signed accepted lane",
-             vcs_devloop_publication_advance_accepted_lane(
-                 dir, ar.publication_job_root, lane_root,
+    VD_CHECK("publication: worker binds exact human PROVEN accepted work",
+             vcs_devloop_publication_advance_proven_work(
+                 dir, ar.publication_job_root, lane_root, accepted_now,
                  accepted_progress_root, &reused));
     VD_CHECK("publication: accepted-lane phase is new", !reused);
     VD_CHECK("publication: accepted-lane phase reloads",
@@ -422,16 +655,16 @@ static int t_publication_enqueue(const char *dir)
     VD_CHECK("publication: accepted-lane phase named",
              progress.phase ==
                  VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND);
-    VD_CHECK("publication: scheduler binds authoritative lane receipt",
+    VD_CHECK("publication: scheduler binds authoritative accepted-work root",
              memcmp(progress.artifact_root, lane_root, 32) == 0);
     VD_CHECK("publication: receipt chain preserves waiting phase",
              memcmp(progress.predecessor_receipt_root,
                     progress_root, 32) == 0);
     reused = false;
     uint8_t accepted_retry_root[32];
-    VD_CHECK("publication: accepted-lane retry succeeds",
-             vcs_devloop_publication_advance_accepted_lane(
-                 dir, ar.publication_job_root, lane_root,
+    VD_CHECK("publication: accepted-work retry succeeds",
+             vcs_devloop_publication_advance_proven_work(
+                 dir, ar.publication_job_root, lane_root, accepted_now,
                  accepted_retry_root, &reused));
     VD_CHECK("publication: accepted-lane retry reuses receipt", reused);
     VD_CHECK("publication: accepted-lane retry preserves root",
@@ -550,7 +783,6 @@ static int t_publication_enqueue(const char *dir)
                  first_map.bytes_scanned);
     zcl_command_reply_free(&advance_reply);
     json_free(&advance_input);
-
     uint8_t release_root[32], released_progress_root[32];
     memcpy(release_root, mapping_root, 32);
     release_root[0] ^= 0x5au;
@@ -624,7 +856,7 @@ static int t_publication_enqueue(const char *dir)
                     "zclassic23 discover schema zcode.passport.plan") == 0);
     zcl_command_reply_free(&advance_reply);
     json_free(&advance_input);
-    memset(signer_secret, 0, sizeof(signer_secret));
+    memset(fixture.signer_secret, 0, sizeof(fixture.signer_secret));
 
     vd_write(dir, "src/main.c", "int main(void){return 1;}\n");
     v.proof_complete = false;
@@ -664,6 +896,45 @@ static int t_fail_open(const char *dir)
     VD_CHECK("fail-open: error message set", ar.error[0] != '\0');
 
     unlink(blocker);
+    return failures;
+}
+
+static int t_accepted_work_ambiguity(const char *dir)
+{
+    int failures = 0;
+    vd_write(dir, "src/main.c", "int main(void){return 0;}\n");
+    uint8_t source_root[32];
+    VD_CHECK("ambiguity: source tree captures",
+             vcs_tree_capture_path(dir, source_root) == VCS_OK);
+    struct vd_accepted_fixture first, second;
+    const int64_t now = 1700000000;
+    VD_CHECK("ambiguity: first accepted work stores",
+             vd_accepted_fixture_create(
+                 dir, source_root, now, 0x52, &first));
+    VD_CHECK("ambiguity: distinct second accepted work stores",
+             vd_accepted_fixture_create(
+                 dir, source_root, now, 0x72, &second) &&
+             memcmp(first.accepted.task_root,
+                    second.accepted.task_root, 32) != 0);
+    char ledger[4096];
+    (void)snprintf(ledger, sizeof(ledger), "%s/ledger", dir);
+    VD_CHECK("ambiguity: ledger directory creates",
+             mkdir(ledger, 0700) == 0);
+    (void)snprintf(ledger, sizeof(ledger), "%s/ledger/node.db", dir);
+    struct node_db ndb = {0};
+    VD_CHECK("ambiguity: ledger opens", node_db_open(&ndb, ledger));
+    char source_hex[65];
+    zcl_hex_encode(source_root, 32, source_hex);
+    struct zcode_accepted_work_status accepted;
+    struct zcl_result result = zcode_accepted_work_find(
+        &ndb, dir, source_hex, now, true, &accepted);
+    VD_CHECK("ambiguity: two accepted works for one source fail closed",
+             !result.ok &&
+             strcmp(result.message,
+                    "accepted-work-source-ambiguous") == 0);
+    node_db_close(&ndb);
+    memset(first.signer_secret, 0, sizeof(first.signer_secret));
+    memset(second.signer_secret, 0, sizeof(second.signer_secret));
     return failures;
 }
 
@@ -730,6 +1001,10 @@ int test_vcs_devloop(void)
 
     test_make_tmpdir(dir, sizeof(dir), "vcs_devloop", "publication");
     failures += t_publication_enqueue(dir);
+    test_rm_rf_recursive(dir);
+
+    test_make_tmpdir(dir, sizeof(dir), "vcs_devloop", "ambiguity");
+    failures += t_accepted_work_ambiguity(dir);
     test_rm_rf_recursive(dir);
 
     test_make_tmpdir(dir, sizeof(dir), "vcs_devloop", "failopen");

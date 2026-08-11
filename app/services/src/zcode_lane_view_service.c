@@ -20,7 +20,7 @@ static bool render(uint8_t lane, struct zcode_lane_view_result_v1 *out)
                        "FRONTIER -> CANDIDATE -> PROVEN");
         (void)snprintf(
             out->capability, sizeof(out->capability), "%s",
-            "signed sequential acceptance lanes are available");
+            "signed admission, proof-readiness, and human-acceptance lanes are available");
         (void)snprintf(
             out->next_action, sizeof(out->next_action), "%s",
             "zcode package dev lane --input='{\"workspace\":\"<path>\",\"source_root\":\"<64hex>\",\"datadir\":\"/tmp/zclassic23-lane\"}'");
@@ -39,15 +39,15 @@ static bool render(uint8_t lane, struct zcode_lane_view_result_v1 *out)
                        "CANDIDATE");
         (void)snprintf(
             out->capability, sizeof(out->capability), "%s",
-            "the compile and task-required test policy is satisfied");
+            "compile and task-required tests are ready; this is not human acceptance");
         (void)snprintf(out->next_action, sizeof(out->next_action), "%s",
-                       "zcode accept --input='<action_id and lane PROVEN>'");
+                       "zcode work accept --input='{\"work\":\"latest\"}'");
         break;
     case VCS_ZCODE_LANE_PROVEN:
         (void)snprintf(out->lane_name, sizeof(out->lane_name), "%s", "PROVEN");
         (void)snprintf(
             out->capability, sizeof(out->capability), "%s",
-            "the complete committed proof policy is satisfied");
+            "the human accepted this exact work after the complete proof policy passed");
         (void)snprintf(out->next_action, sizeof(out->next_action), "%s",
                        "zcode publish plan");
         break;

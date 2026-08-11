@@ -10,6 +10,7 @@
 #include "vcs/vcs_manifest.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_lane.h"
+#include "vcs/zcode_accepted_work.h"
 #include "vcs/package_mapping.h"
 
 #include "base/hex.h"
@@ -450,47 +451,32 @@ bool vcs_devloop_publication_advance_waiting_acceptance(
     return ok;
 }
 
-static bool publication_accepted_lane_valid(
+static bool publication_accepted_work_valid(
     const char *repo_root,
     const struct vcs_devloop_publication_job *job,
-    const uint8_t lane_receipt_root[32])
+    const uint8_t accepted_work_root[32], int64_t now_unix)
 {
-    uint8_t *wire = NULL;
-    size_t wire_len = 0;
-    struct vcs_zcode_lane_receipt_v1 lane;
-    uint8_t checked[32];
-    bool ok = vcs_object_load_raw(repo_root, lane_receipt_root,
-                                  &wire, &wire_len) == 0 &&
-        vcs_zcode_lane_receipt_parse(wire, wire_len, &lane) ==
-            VCS_ZCODE_DEV_OK &&
-        vcs_zcode_lane_receipt_validate(&lane) == VCS_ZCODE_DEV_OK &&
-        vcs_zcode_lane_receipt_verify(&lane, lane.signer_pubkey) ==
-            VCS_ZCODE_DEV_OK &&
-        vcs_zcode_lane_receipt_id(&lane, checked) == VCS_ZCODE_DEV_OK &&
-        memcmp(checked, lane_receipt_root, 32) == 0 &&
-        memcmp(lane.source_root, job->source_tree_root, 32) == 0 &&
-        (lane.lane == VCS_ZCODE_LANE_CANDIDATE ||
-         lane.lane == VCS_ZCODE_LANE_PROVEN) &&
-        publication_root_nonzero(lane.proof_set_root) &&
-        publication_root_nonzero(lane.prior_receipt_root);
-    free(wire);
-    return ok;
+    struct vcs_zcode_accepted_work_v1 accepted;
+    return now_unix > 0 && vcs_zcode_accepted_work_resolve(
+            repo_root, accepted_work_root, now_unix, &accepted) &&
+        memcmp(accepted.proven.source_root,
+               job->source_tree_root, 32) == 0;
 }
 
-bool vcs_devloop_publication_advance_accepted_lane(
+bool vcs_devloop_publication_advance_proven_work(
     const char *repo_root, const uint8_t job_root[32],
-    const uint8_t lane_receipt_root[32],
+    const uint8_t accepted_work_root[32], int64_t now_unix,
     uint8_t receipt_root_out[32], bool *reused_out)
 {
     if (reused_out) *reused_out = false;
-    if (!repo_root || !repo_root[0] || !job_root || !lane_receipt_root ||
+    if (!repo_root || !repo_root[0] || !job_root || !accepted_work_root ||
         !receipt_root_out)
         return false;
     struct vcs_devloop_publication_job job;
     if (!vcs_devloop_publication_job_load(repo_root, job_root, &job) ||
         !vcs_devloop_publication_job_is_queued(repo_root, job_root) ||
-        !publication_accepted_lane_valid(
-            repo_root, &job, lane_receipt_root))
+        !publication_accepted_work_valid(
+            repo_root, &job, accepted_work_root, now_unix))
         return false;
     char lock_path[PATH_MAX], log_path[PATH_MAX];
     if (!publication_queue_path(repo_root, "publication.lock", lock_path,
@@ -519,7 +505,7 @@ bool vcs_devloop_publication_advance_accepted_lane(
                 VCS_DEVLOOP_PUBLICATION_PHASE_PACKAGE_MAPPING_READY &&
             vcs_package_mapping_set_load(
                 repo_root, mapping_receipt.artifact_root, &set) &&
-            memcmp(set.lane_receipt_root, lane_receipt_root, 32) == 0;
+            memcmp(set.lane_receipt_root, accepted_work_root, 32) == 0;
         if (same) {
             memcpy(receipt_root_out, current_root, 32);
             if (reused_out) *reused_out = true;
@@ -534,7 +520,7 @@ bool vcs_devloop_publication_advance_accepted_lane(
         struct vcs_package_mapping_set set;
         bool same = vcs_package_mapping_set_load(
                 repo_root, current.artifact_root, &set) &&
-            memcmp(set.lane_receipt_root, lane_receipt_root, 32) == 0;
+            memcmp(set.lane_receipt_root, accepted_work_root, 32) == 0;
         if (same) {
             memcpy(receipt_root_out, current_root, 32);
             if (reused_out) *reused_out = true;
@@ -547,7 +533,7 @@ bool vcs_devloop_publication_advance_accepted_lane(
     if (have_current && current.phase ==
             VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND) {
         bool same = memcmp(current.artifact_root,
-                           lane_receipt_root, 32) == 0;
+                           accepted_work_root, 32) == 0;
         if (same) {
             memcpy(receipt_root_out, current_root, 32);
             if (reused_out) *reused_out = true;
@@ -568,7 +554,7 @@ bool vcs_devloop_publication_advance_accepted_lane(
     };
     memcpy(receipt.job_root, job_root, 32);
     memcpy(receipt.predecessor_receipt_root, current_root, 32);
-    memcpy(receipt.artifact_root, lane_receipt_root, 32);
+    memcpy(receipt.artifact_root, accepted_work_root, 32);
     uint8_t wire[VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES];
     bool ok = publication_receipt_serialize(&receipt, wire) &&
         vcs_object_put(repo_root, wire, sizeof(wire),

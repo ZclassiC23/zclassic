@@ -144,6 +144,10 @@ int db_build_candidate_receipts(
     struct node_db *ndb, const char *task_root_sha3,
     const char *candidate_root_sha3, const char *proof_policy_root_sha3,
     struct db_build_receipt *out, size_t max);
+int db_build_candidate_actions(
+    struct node_db *ndb, const char *task_root_sha3,
+    const char *candidate_root_sha3, const char *proof_policy_root_sha3,
+    struct db_build_action *out, size_t max);
 
 /* Lease writes are compare-and-swap operations. A queued action can be
  * claimed once; every later mutation must present the exact lease id and

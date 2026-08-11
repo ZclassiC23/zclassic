@@ -123,7 +123,7 @@ HOTSWAP_SERVICE(
     "zcode.lane.view.abi.v1:08a820c2",
     "zcl.zcode_lane.v1+zcl.zcode_lane_guide.v1",
     "frontier-candidate-proven-presentation.v1",
-    "19dad045fa86101caf2fd07b39c89c76bf54fb736e9b4105103adea56cb28b57",
+    "d362c0ecd095ade5ec43eecfd0e5a00750d3b5ba4d2eef7848e8337163b1a8ae",
     "zcode.package.dev.promotion-guide")
 
 HOTSWAP_SERVICE(

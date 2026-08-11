@@ -11,6 +11,7 @@
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
 #include "vcs/vcs_object.h"
+#include "vcs/zcode_accepted_work.h"
 #include "vcs/zcode_agent_context.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_lane.h"
@@ -480,8 +481,19 @@ static void index_derive_states(struct vcs_zcode_task_index *index,
                        latest_candidate->candidate_source_root_hex) != 0 ||
                 strcmp(lane->proof_policy_root_hex,
                        e->proof_policy_root_hex) != 0 ||
+                strcmp(lane->signer_pubkey_hex,
+                       latest_candidate->author_pubkey_hex) != 0 ||
                 !index_lane_chain_valid(index, repo_root, lane, 1u))
                 continue;
+            if (lane->lane == VCS_ZCODE_LANE_PROVEN) {
+                uint8_t accepted_root[32];
+                struct vcs_zcode_accepted_work_v1 accepted;
+                if (!zcl_hex_decode_lower(
+                        lane->receipt_root_hex, accepted_root, 32) ||
+                    !vcs_zcode_accepted_work_resolve(
+                        repo_root, accepted_root, now_unix, &accepted))
+                    continue;
+            }
             if (!latest_lane || lane->lane > latest_lane->lane ||
                 (lane->lane == latest_lane->lane &&
                  (lane->created_unix > latest_lane->created_unix ||
@@ -504,7 +516,7 @@ static void index_derive_states(struct vcs_zcode_task_index *index,
             : e->latest_lane == VCS_ZCODE_LANE_PROVEN
                 ? VCS_ZCODE_TASK_STATE_PROVEN
             : e->latest_lane == VCS_ZCODE_LANE_CANDIDATE
-                ? VCS_ZCODE_TASK_STATE_ACCEPTED_CANDIDATE
+                ? VCS_ZCODE_TASK_STATE_CANDIDATE_PROOFS_READY
             : e->latest_work_receipt_hex[0] &&
               e->latest_receipt_status == VCS_ZCODE_WORK_PASS &&
               e->latest_receipt_exit_status == 0
@@ -622,6 +634,18 @@ vcs_zcode_task_index_candidate_at(const struct vcs_zcode_task_index *index,
     if (!index || i >= index->candidate_count)
         return NULL;
     return &index->candidates[i];
+}
+
+size_t vcs_zcode_task_index_lane_count(
+    const struct vcs_zcode_task_index *index)
+{
+    return index ? index->lane_count : 0;
+}
+
+const struct vcs_zcode_task_lane_entry *vcs_zcode_task_index_lane_at(
+    const struct vcs_zcode_task_index *index, size_t i)
+{
+    return index && i < index->lane_count ? &index->lanes[i] : NULL;
 }
 
 const struct vcs_zcode_task_context_entry *

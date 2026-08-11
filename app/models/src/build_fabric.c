@@ -622,6 +622,26 @@ int db_build_candidate_receipts(
         build_receipt_read(&out[count], st));
 }
 
+int db_build_candidate_actions(
+    struct node_db *ndb, const char *task_root_sha3,
+    const char *candidate_root_sha3, const char *proof_policy_root_sha3,
+    struct db_build_action *out, size_t max)
+{
+    sqlite3_stmt *st = NULL;
+    if (!ndb || !ndb->open || !task_root_sha3 || !candidate_root_sha3 ||
+        !proof_policy_root_sha3 || !out || max == 0)
+        return 0;
+    AR_QUERY_LIST(ndb, st,
+        "SELECT " BUILD_ACTION_COLS " FROM build_actions "
+        "WHERE task_root_sha3=? AND candidate_root_sha3=? "
+        "AND proof_policy_root_sha3=? ORDER BY action_id LIMIT ?", out, max,
+        AR_BIND_TEXT(st, 1, task_root_sha3);
+        AR_BIND_TEXT(st, 2, candidate_root_sha3);
+        AR_BIND_TEXT(st, 3, proof_policy_root_sha3);
+        AR_BIND_INT(st, 4, (int64_t)max),
+        build_action_read(&out[count], st));
+}
+
 int db_build_actions_queued(struct node_db *ndb,
                             struct db_build_action *out, size_t max)
 {

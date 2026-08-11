@@ -5,11 +5,17 @@
 #include "base/hex.h"
 #include "command/native_command.h"
 #include "json/json.h"
+#include "models/build_fabric.h"
+#include "models/database.h"
 #include "platform/time_compat.h"
+#include "services/build_fabric_service.h"
+#include "services/zcode_lane_service.h"
 #include "util/file_tree_ops.h"
 #include "vcs/package_capsule.h"
 #include "vcs/package_prepare.h"
+#include "vcs/package_mapping.h"
 #include "vcs/vcs.h"
+#include "vcs/vcs_devloop.h"
 
 #include <secp256k1.h>
 #include <stdio.h>
@@ -985,6 +991,24 @@ static int zpd_test_work_start(void)
         zcl_command_reply_free(&reply);
         json_free(&input);
 
+        uint8_t candidate_source_root[32];
+        char candidate_source_hex[65];
+        ASSERT(vcs_tree_capture_path(
+                   saved_candidate_workspace, candidate_source_root) ==
+               VCS_OK);
+        zcl_hex_encode(candidate_source_root, 32, candidate_source_hex);
+        char zbuild_db[4500];
+        (void)snprintf(zbuild_db, sizeof(zbuild_db), "%s/node.db",
+                       zbuild_datadir);
+        struct node_db acceptance_db = {0};
+        ASSERT(node_db_open(&acceptance_db, zbuild_db));
+        struct zcode_accepted_work_status accepted_status;
+        struct zcl_result before_accept = zcode_accepted_work_find(
+            &acceptance_db, root, candidate_source_hex,
+            (int64_t)platform_time_wall_unix(), false, &accepted_status);
+        ASSERT(!before_accept.ok);
+        node_db_close(&acceptance_db);
+
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "workspace", root));
         ASSERT(json_push_kv_str(&input, "work", saved_work_id));
@@ -994,12 +1018,148 @@ static int zpd_test_work_start(void)
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
                       "PROVEN") == 0);
-        ASSERT(json_get(json_get(&reply.data, "expert"),
-                        "lane_receipt_root") != NULL);
+        const char *accepted_root_text = json_get_str(json_get(
+            json_get(&reply.data, "expert"), "lane_receipt_root"));
+        ASSERT(accepted_root_text && strlen(accepted_root_text) == 64);
+        char accepted_root_hex[65];
+        (void)snprintf(accepted_root_hex, sizeof(accepted_root_hex), "%s",
+                       accepted_root_text);
         zcl_command_reply_free(&reply);
         json_free(&input);
         ASSERT(vcs_tree_capture_path(root, source_after) == VCS_OK);
         ASSERT(memcmp(source_before, source_after, sizeof(source_before)) == 0);
+
+        ASSERT(node_db_open(&acceptance_db, zbuild_db));
+        struct zcl_result accepted_found = zcode_accepted_work_find(
+            &acceptance_db, root, candidate_source_hex,
+            (int64_t)platform_time_wall_unix(), false, &accepted_status);
+        ASSERT(accepted_found.ok);
+        char resolved_acceptance_hex[65];
+        zcl_hex_encode(accepted_status.accepted.accepted_work_root, 32,
+                       resolved_acceptance_hex);
+        ASSERT(strcmp(resolved_acceptance_hex, accepted_root_hex) == 0);
+
+        char accepted_worker_id[65];
+        (void)snprintf(accepted_worker_id, sizeof(accepted_worker_id), "%s",
+                       accepted_status.worker_id);
+        ASSERT(build_fabric_worker_revoke(
+                   &acceptance_db, accepted_worker_id,
+                   (int64_t)platform_time_wall_unix()).ok);
+        ASSERT(!zcode_accepted_work_find(
+                    &acceptance_db, root, candidate_source_hex,
+                    (int64_t)platform_time_wall_unix(), false,
+                    &accepted_status).ok);
+        struct db_build_worker accepted_worker;
+        ASSERT(db_build_worker_find(
+            &acceptance_db, accepted_worker_id, &accepted_worker));
+        ASSERT(build_fabric_worker_approve(
+                   &acceptance_db, &accepted_worker,
+                   (int64_t)platform_time_wall_unix()).ok);
+
+        ASSERT(node_db_exec(&acceptance_db,
+            "UPDATE zcode_lane_receipts SET task_root_sha3="
+            "'0101010101010101010101010101010101010101010101010101010101010101' "
+            "WHERE lane=2"));
+        ASSERT(!zcode_accepted_work_find(
+                    &acceptance_db, root, candidate_source_hex,
+                    (int64_t)platform_time_wall_unix(), false,
+                    &accepted_status).ok);
+        ASSERT(node_db_exec(
+            &acceptance_db, "DELETE FROM zcode_lane_receipts"));
+        ASSERT(!zcode_accepted_work_find(
+                    &acceptance_db, root, candidate_source_hex,
+                    (int64_t)platform_time_wall_unix(), false,
+                    &accepted_status).ok);
+        ASSERT(zcode_accepted_work_find(
+                   &acceptance_db, root, candidate_source_hex,
+                   (int64_t)platform_time_wall_unix(), true,
+                   &accepted_status).ok);
+        ASSERT(accepted_status.projection_rebuilt);
+        zcl_hex_encode(accepted_status.accepted.accepted_work_root, 32,
+                       resolved_acceptance_hex);
+        ASSERT(strcmp(resolved_acceptance_hex, accepted_root_hex) == 0);
+        node_db_close(&acceptance_db);
+        ASSERT(node_db_open(&acceptance_db, zbuild_db));
+        ASSERT(zcode_accepted_work_find(
+                   &acceptance_db, root, candidate_source_hex,
+                   (int64_t)platform_time_wall_unix(), false,
+                   &accepted_status).ok);
+        zcl_hex_encode(accepted_status.accepted.accepted_work_root, 32,
+                       resolved_acceptance_hex);
+        ASSERT(strcmp(resolved_acceptance_hex, accepted_root_hex) == 0);
+        node_db_close(&acceptance_db);
+
+        char authoritative_source[4500];
+        (void)snprintf(authoritative_source, sizeof(authoritative_source),
+                       "%s/src/x.c", root);
+        ASSERT(zpd_write(authoritative_source,
+                         "int x(void) { return 2; }\n"));
+        ASSERT(vcs_tree_capture_path(root, source_after) == VCS_OK);
+        ASSERT(memcmp(source_after, candidate_source_root, 32) == 0);
+        char source_id_hex[65], source_cas_hex[65], generation_hex[65];
+        zcl_hex_encode(candidate_source_root, 32, source_id_hex);
+        zcl_hex_encode(candidate_source_root, 32, source_cas_hex);
+        memset(generation_hex, 'a', 64); generation_hex[64] = '\0';
+        struct vcs_devloop_verdict publication_verdict = {
+            .phase = "verify",
+            .elapsed_ms = 1,
+            .generation_hex = generation_hex,
+            .proof_complete = true,
+            .proof_scope = "source_wide_compile_tests_lint_fast",
+            .source_identity_hex = source_id_hex,
+            .source_cas_hex = source_cas_hex,
+        };
+        struct vcs_devloop_anchor_result publication_anchor = {0};
+        vcs_devloop_anchor_cycle(
+            root, &publication_verdict, &publication_anchor);
+        ASSERT(publication_anchor.status == VCS_DEVLOOP_ANCHOR_OK);
+        ASSERT(publication_anchor.publication_status ==
+               VCS_DEVLOOP_PUBLICATION_QUEUED);
+        uint8_t waiting_root[32]; bool waiting_reused = false;
+        ASSERT(vcs_devloop_publication_advance_waiting_acceptance(
+            root, publication_anchor.publication_job_root,
+            waiting_root, &waiting_reused));
+        ASSERT(!waiting_reused);
+        char publication_job_hex[65];
+        zcl_hex_encode(publication_anchor.publication_job_root, 32,
+                       publication_job_hex);
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "job_root", publication_job_hex));
+        ASSERT(json_push_kv_str(&input, "datadir", zbuild_datadir));
+        struct zcl_command_context publication_context = {
+            .source_root = root,
+            .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+            .dev_build = true,
+        };
+        request = (struct zcl_command_request) {
+            .context = &publication_context, .input = &input,
+        };
+        zcl_command_reply_init(
+            &reply, "zcl.dev_publication_advance_test.v1");
+        zcl_native_handle_dev_publication_advance(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "status")),
+                      "PACKAGE_MAPPING_READY") == 0);
+        ASSERT(json_get_bool(json_get(
+            &reply.data, "acceptance_reverified")));
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "lane_receipt_root")),
+                      accepted_root_hex) == 0);
+        const char *mapping_text = json_get_str(json_get(
+            &reply.data, "package_mapping_root"));
+        ASSERT(mapping_text && strlen(mapping_text) == 64);
+        uint8_t mapping_root[32];
+        ASSERT(zcl_hex_decode_lower(mapping_text, mapping_root, 32));
+        struct vcs_package_mapping_set mapping;
+        ASSERT(vcs_package_mapping_set_load(root, mapping_root, &mapping));
+        ASSERT(memcmp(mapping.lane_receipt_root,
+                      accepted_status.accepted.accepted_work_root, 32) == 0);
+        vcs_package_mapping_set_free(&mapping);
+        zcl_command_reply_free(&reply); json_free(&input);
+        ASSERT(zpd_write(authoritative_source,
+                         "int x(void) { return 1; }\n"));
+        ASSERT(vcs_tree_capture_path(root, source_after) == VCS_OK);
+        ASSERT(memcmp(source_before, source_after, 32) == 0);
 
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "workspace", root));
@@ -1014,9 +1174,6 @@ static int zpd_test_work_start(void)
         zcl_command_reply_free(&reply);
         json_free(&input);
 
-        char zbuild_db[4500];
-        (void)snprintf(zbuild_db, sizeof(zbuild_db), "%s/node.db",
-                       zbuild_datadir);
         ASSERT(unlink(zbuild_db) == 0);
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "workspace", root));

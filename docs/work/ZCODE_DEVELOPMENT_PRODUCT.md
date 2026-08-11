@@ -50,7 +50,7 @@ bind every authoritative fact required by v0.1:
 | evidence evaluation | `proof_set.v1` |
 | review | `review.v1` plus signed review work receipt |
 | lifecycle | FRONTIER, CANDIDATE, and PROVEN lane receipts |
-| human acceptance/publication | existing acceptance and accepted-lane owners |
+| human acceptance/publication | existing `zcode work accept` and PROVEN accepted-work/lane owners |
 
 Therefore v0.1 adds **no canonical domain**. Project summaries, proof-profile
 names, adapter packets, diagnostic capsules, human work IDs, and work-session
@@ -177,7 +177,7 @@ Add `zcode work start|run|show|status|cancel|accept` as a thin orchestration
 service over existing owners. Derive state from canonical objects rather than
 creating another workflow truth table: PLANNED, AWAITING_CANDIDATE,
 CANDIDATE_ADMITTED, BUILDING, REPAIR_NEEDED, EVIDENCE_READY,
-READY_FOR_ACCEPTANCE, ACCEPTED_CANDIDATE, PROVEN, BLOCKED, or CANCELLED.
+READY_FOR_ACCEPTANCE, CANDIDATE_PROOFS_READY, PROVEN, BLOCKED, or CANCELLED.
 
 ### P5 — model-neutral handoff
 

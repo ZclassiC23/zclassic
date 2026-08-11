@@ -105,8 +105,10 @@ zclassic23-dev zcode work accept \
   --input='{"workspace":".","work":"latest"}'
 ```
 
-Acceptance advances the existing signed CANDIDATE and PROVEN lane receipts; it
-does not apply the patch to the authoritative source tree and is idempotent.
+The command may first record CANDIDATE proof readiness, then creates the signed
+PROVEN accepted-work root as the explicit human decision. A plain CANDIDATE is
+not accepted. The command does not apply the patch to the authoritative source
+tree and is idempotent.
 Apply a reviewed accepted patch through the developer's normal source-control
 workflow. To reject a result today, do not run `accept`; retain its evidence or
 remove only its isolated scratch workspace. A durable task-level `work cancel`

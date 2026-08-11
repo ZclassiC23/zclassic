@@ -570,9 +570,7 @@ void zcl_native_handle_zcode_accept(
     const char *datadir = zdev_str(request->input, "datadir");
     if (!datadir || !datadir[0]) datadir = zcl_native_command_datadir();
     int target = lane && strcmp(lane, "CANDIDATE") == 0
-        ? VCS_ZCODE_LANE_CANDIDATE
-        : lane && strcmp(lane, "PROVEN") == 0
-            ? VCS_ZCODE_LANE_PROVEN : 0;
+        ? VCS_ZCODE_LANE_CANDIDATE : 0;
     char workspace[ZDEV_PATH_MAX];
     uint8_t action_root[32];
     if (!workspace_arg || !realpath(workspace_arg, workspace) ||
@@ -581,7 +579,7 @@ void zcl_native_handle_zcode_accept(
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
             "BAD_ACCEPT_INPUT", "validate", false, false,
-            "workspace and action_id are required; lane must be CANDIDATE or PROVEN",
+            "workspace and action_id are required; the expert lane may only be CANDIDATE; use zcode work accept for human PROVEN acceptance",
             "zcode.accept");
         return;
     }
@@ -1466,7 +1464,7 @@ void zcl_native_handle_zcode_improve(
 }
 
 
-/* ── zcode publish — publish an explicitly accepted lane as a signed release ──
+/* ── zcode publish — publish an explicit PROVEN accepted work as a signed release ──
  *
  * The signed lane receipt in the workspace CAS is the acceptance authority:
  * it is reloaded and re-verified (Ed25519 signature, cross-object
@@ -1540,11 +1538,12 @@ static bool zpub_load_policy(const char *workspace, const char *hex,
 }
 
 /* Load the signed lane receipt, re-derive its id, and verify its Ed25519
- * signature against the embedded signer. Keeps the exact CAS wire: it is
- * published as the canonical authority file. */
+ * signature against the candidate's pinned work-authority signer. Keeps the
+ * exact CAS wire: it is published as the canonical authority file. */
 static bool zpub_load_lane_receipt(
     const char *workspace, const char *hex,
     struct vcs_zcode_lane_receipt_v1 *out,
+    const uint8_t expected_signer[32],
     uint8_t wire_out[VCS_ZCODE_LANE_WIRE_BYTES])
 {
     uint8_t *wire = NULL, root[32], checked[32];
@@ -1554,7 +1553,7 @@ static bool zpub_load_lane_receipt(
         vcs_zcode_lane_receipt_parse(wire, len, out) == VCS_ZCODE_DEV_OK &&
         vcs_zcode_lane_receipt_id(out, checked) == VCS_ZCODE_DEV_OK &&
         memcmp(root, checked, 32) == 0 &&
-        vcs_zcode_lane_receipt_verify(out, out->signer_pubkey) ==
+        vcs_zcode_lane_receipt_verify(out, expected_signer) ==
             VCS_ZCODE_DEV_OK;
     if (ok)
         memcpy(wire_out, wire, len);
@@ -1916,11 +1915,10 @@ static bool zpub_lane_acceptable(
         zpub_fail(reply, "LANE_NOT_ACCEPTED", found.message);
         return false;
     }
-    if (bundle->lane.lane != VCS_ZCODE_LANE_CANDIDATE &&
-        bundle->lane.lane != VCS_ZCODE_LANE_PROVEN) {
+    if (bundle->lane.lane != VCS_ZCODE_LANE_PROVEN) {
         zpub_fail(reply, "LANE_NOT_ACCEPTED",
-                  "publication requires an explicit CANDIDATE or PROVEN lane "
-                  "receipt; FRONTIER admission is not acceptance");
+                  "publication requires the exact PROVEN root produced by "
+                  "zcode work accept; FRONTIER and CANDIDATE are not human acceptance");
         return false;
     }
     return true;
@@ -1935,9 +1933,14 @@ static bool zpub_find_lane_readonly(
     if (!zcl_native_node_db_require_readonly(
             bundle->datadir, reply, "the ZCODE lane ledger", &db, &ndb))
         return false;
-    struct zcl_result found = zcode_lane_find(
+    struct zcode_accepted_work_status accepted;
+    struct zcl_result found = zcode_accepted_work_find(
         &ndb, bundle->workspace, zdev_str(request->input, "source_root"),
-        &bundle->lane);
+        (int64_t)platform_time_wall_unix(), false, &accepted);
+    if (found.ok)
+        found = zcode_lane_find(
+            &ndb, bundle->workspace,
+            zdev_str(request->input, "source_root"), &bundle->lane);
     zcl_native_node_db_close_readonly(&db, &ndb);
     return zpub_lane_acceptable(reply, bundle, found);
 }
@@ -1956,9 +1959,14 @@ static bool zpub_find_lane_commit(
                                "zcode.publish");
         return false;
     }
-    struct zcl_result found = zcode_lane_find(
+    struct zcode_accepted_work_status accepted;
+    struct zcl_result found = zcode_accepted_work_find(
         &ndb, bundle->workspace, zdev_str(request->input, "source_root"),
-        &bundle->lane);
+        (int64_t)platform_time_wall_unix(), true, &accepted);
+    if (found.ok)
+        found = zcode_lane_find(
+            &ndb, bundle->workspace,
+            zdev_str(request->input, "source_root"), &bundle->lane);
     node_db_close(&ndb);
     return zpub_lane_acceptable(reply, bundle, found);
 }
@@ -1980,6 +1988,7 @@ static bool zpub_prepare_accepted_objects(
                          &bundle->policy) &&
         zpub_load_lane_receipt(bundle->workspace,
                                bundle->lane.receipt_root_sha3, &receipt,
+                               bundle->candidate.author_pubkey,
                                bundle->receipt_wire) &&
         zcl_hex_decode_lower(bundle->lane.proof_set_root_sha3,
                              proof_set_root, 32) &&
@@ -2026,7 +2035,7 @@ static bool zpub_prepare_accepted_objects(
                 lane_receipt_root, 32) != 0)) {
         zpub_bundle_free(bundle);
         zpub_fail(reply, "PACKAGE_MAPPING_LANE_MISMATCH",
-                  "package_mapping_root does not bind the verified accepted lane");
+                  "package_mapping_root does not bind the verified PROVEN accepted work");
         return false;
     }
 
