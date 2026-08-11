@@ -2911,9 +2911,12 @@ static int test_zd_improve_command(void)
         char publication_job_hex[65];
         zcl_hex_encode(publication_anchor.publication_job_root, 32,
                        publication_job_hex);
+        char publication_store[512];
+        test_make_tmpdir(publication_store, sizeof(publication_store),
+                         "zcode_dev", "accepted-publication-store");
         char zcode_store_path[4352];
         (void)snprintf(zcode_store_path, sizeof(zcode_store_path),
-                       "%s/zcode", workspace);
+                       "%s/zcode", publication_store);
         struct vcs_package_index *pre_publish_index =
             vcs_package_index_build(zcode_store_path);
         ASSERT(pre_publish_index != NULL);
@@ -2924,7 +2927,10 @@ static int test_zd_improve_command(void)
         json_init(&publish_plan_input);
         json_set_object(&publish_plan_input);
         (void)json_push_kv_str(&publish_plan_input, "workspace", workspace);
-        (void)json_push_kv_str(&publish_plan_input, "datadir", workspace);
+        (void)json_push_kv_str(&publish_plan_input, "datadir",
+                               publication_store);
+        (void)json_push_kv_str(&publish_plan_input,
+                               "acceptance_datadir", workspace);
         (void)json_push_kv_str(&publish_plan_input, "source_root",
                                candidate_source_saved);
         (void)json_push_kv_str(&publish_plan_input, "publisher_pubkey",
@@ -3110,7 +3116,10 @@ static int test_zd_improve_command(void)
         json_init(&publish_commit_input);
         json_set_object(&publish_commit_input);
         (void)json_push_kv_str(&publish_commit_input, "workspace", workspace);
-        (void)json_push_kv_str(&publish_commit_input, "datadir", workspace);
+        (void)json_push_kv_str(&publish_commit_input, "datadir",
+                               publication_store);
+        (void)json_push_kv_str(&publish_commit_input,
+                               "acceptance_datadir", workspace);
         (void)json_push_kv_str(&publish_commit_input, "source_root",
                                candidate_source_saved);
         (void)json_push_kv_str(&publish_commit_input, "release_hex",
@@ -3143,7 +3152,7 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(bad_publish_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
         ASSERT_STR_EQ(bad_publish_reply.error.code,
                       "SIGNED_RELEASE_INVALID");
-        ASSERT(zd_no_accept_publish_stage(workspace));
+        ASSERT(zd_no_accept_publish_stage(publication_store));
         zcl_command_reply_free(&bad_publish_reply);
         sealed_release_saved[sealed_len - 1u] = last;
         json_set_str(release_value, sealed_release_saved);
@@ -3188,7 +3197,7 @@ static int test_zd_improve_command(void)
                                     published_release, 32));
         ASSERT(memcmp(release_progress.artifact_root,
                       published_release, 32) == 0);
-        ASSERT(zd_no_accept_publish_stage(workspace));
+        ASSERT(zd_no_accept_publish_stage(publication_store));
         struct vcs_package_index *published_index =
             vcs_package_index_build(zcode_store_path);
         ASSERT(published_index != NULL);
@@ -3209,7 +3218,7 @@ static int test_zd_improve_command(void)
         ASSERT(zcl_hex_decode_lower(
             planned_package_saved, published_package_root, 32));
         struct vcs_package_store *published_store = vcs_package_store_open(
-            workspace, UINT64_C(256) * 1024u * 1024u);
+            publication_store, UINT64_C(256) * 1024u * 1024u);
         ASSERT(published_store != NULL);
         uint8_t *published_manifest_wire = NULL;
         size_t published_manifest_wire_len = 0;
@@ -3262,7 +3271,7 @@ static int test_zd_improve_command(void)
                       "duplicate");
         ASSERT(json_get_bool(json_get(
             &duplicate_publish_reply.data, "progress_reused")));
-        ASSERT(zd_no_accept_publish_stage(workspace));
+        ASSERT(zd_no_accept_publish_stage(publication_store));
         zcl_command_reply_free(&duplicate_publish_reply);
 
         struct vcs_zcode_module_passport_v1 publication_passport = {

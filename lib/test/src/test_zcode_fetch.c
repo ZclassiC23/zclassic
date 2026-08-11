@@ -24,6 +24,7 @@
 #include "base/hex.h"
 
 #include "command/native_command.h"
+#include "command/native_zcode_discovery.h"
 
 #include "chain/chainparams.h"
 #include "json/json.h"
@@ -106,6 +107,37 @@ static void zf_free_package(struct zf_pkg *p)
     vcs_package_manifest_free(&p->manifest);
     free(p->wire);
     p->wire = NULL;
+}
+
+static bool zf_discover_provider(struct json_value *selector,
+                                 struct json_value *result)
+{
+    const char *kind = json_get_str(json_get(selector, "kind"));
+    const char *ns = json_get_str(json_get(selector, "namespace"));
+    const char *root = json_get_str(json_get(selector, "transport_root"));
+    if (!kind || strcmp(kind, "provider") != 0 ||
+        !ns || strcmp(ns, "zclassic23.source") != 0 ||
+        !root || strlen(root) != 64)
+        return false;
+    json_set_object(result);
+    (void)json_push_kv_bool(result, "ok", true);
+    (void)json_push_kv_int(result, "count", 1);
+    return true;
+}
+
+static bool zf_route_provider(struct json_value *selector,
+                              struct json_value *result)
+{
+    const struct json_value *maximum = json_get(selector, "maximum_bytes");
+    if (!maximum || maximum->type != JSON_INT ||
+        json_get_int(maximum) != 268435456)
+        return false;
+    json_set_object(result);
+    (void)json_push_kv_bool(result, "ok", true);
+    (void)json_push_kv_int(result, "authenticated_providers", 1);
+    (void)json_push_kv_str(result, "fetch_result", "ok");
+    (void)json_push_kv_bool(result, "restricted", true);
+    return true;
 }
 
 static bool zf_store_package(struct vcs_package_store *store,
@@ -194,6 +226,41 @@ static int zf_t_fetch_bad_root(void)
         zf_cmd_free(&c);
         PASS();
     } _test_next:;
+    return failures;
+}
+
+static int zf_t_fetch_dht_routed_live(void)
+{
+    int failures = 0;
+    TEST("zcode package fetch: namespace routes through the daemon-owned authenticated swarm") {
+        char dd[1024];
+        test_make_tmpdir(dd, sizeof(dd), "zcode_fetch", "dht-route");
+        struct zf_pkg pkg;
+        ASSERT(zf_make_package(&pkg, 0x4a));
+        zcl_native_zcode_discovery_test_backend(
+            zf_discover_provider, zf_route_provider);
+        struct zf_cmd c;
+        zf_cmd_init(&c, dd);
+        (void)json_push_kv_str(&c.input, "root", pkg.root_hex);
+        (void)json_push_kv_str(&c.input, "namespace", "zclassic23.source");
+        (void)json_push_kv_int(&c.input, "maximum_bytes", 268435456);
+        zcl_native_handle_zcode_package_fetch(&c.request, &c.reply);
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(json_get_bool(json_get(&c.reply.data, "live")));
+        ASSERT(json_get_bool(json_get(&c.reply.data, "restricted")));
+        ASSERT_EQ(json_get_int(json_get(&c.reply.data,
+                                        "authenticated_providers")), 1);
+        ASSERT_EQ(json_get_int(json_get(&c.reply.data,
+                                        "provider_records")), 1);
+        ASSERT_STR_EQ(json_get_str(json_get(&c.reply.data,
+                                            "package_root")),
+                      pkg.root_hex);
+        zf_cmd_free(&c);
+        zcl_native_zcode_discovery_test_backend(NULL, NULL);
+        zf_free_package(&pkg);
+        PASS();
+    } _test_next:;
+    zcl_native_zcode_discovery_test_backend(NULL, NULL);
     return failures;
 }
 
@@ -348,6 +415,7 @@ int test_zcode_fetch(void)
     chain_params_select(CHAIN_MAIN);
     failures += zf_t_fetch_one_shot();
     failures += zf_t_fetch_bad_root();
+    failures += zf_t_fetch_dht_routed_live();
     failures += zf_t_fetch_complete();
     failures += zf_t_peers_one_shot();
     failures += zf_t_pin_roundtrip();

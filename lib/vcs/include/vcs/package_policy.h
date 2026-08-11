@@ -84,6 +84,11 @@ const char *vcs_policy_tier_string(enum vcs_policy_tier tier);
 #define VCS_POLICY_FREE_WEEKLY_DOWNLOAD_BYTES \
     (UINT64_C(256) * 1024u * 1024u) /* 256 MiB / week */
 #define VCS_POLICY_FREE_PUBLISH_PER_WEEK 1u
+#define VCS_POLICY_FREE_REQUEST_BURST_PER_WINDOW 512u
+/* 512 maximum-sized WANTs are at most 64 MiB per 10-minute window. The
+ * separate 256 MiB weekly byte allowance remains the absolute free cap; this
+ * request bound lets a path-sharded source carrier arrive without classifying
+ * its ordinary manifest/chunk fan-out as a flood. */
 /* The bounded announce bootstrap quota: a new user can announce the one
  * free weekly publication (and re-announce it to a few peers) so the free
  * publish is actually deliverable. Announces STILL never earn credit (the

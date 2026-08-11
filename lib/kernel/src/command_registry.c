@@ -1175,9 +1175,18 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
                       json_get_int(value) <= 64;
         } else if (strcmp(key, "maximum_bytes") == 0) {
-            /* Cap mirrors VCS_SPACE_SCOUT_BYTES_MAX (8 MiB). */
+            /* `maximum_bytes` is shared by two unrelated protocols. A source
+             * package fetch must admit the complete carrier (the publication
+             * contract caps it at 256 MiB), while space scouting keeps its
+             * much smaller traversal budget. A key-global 8 MiB cap made the
+             * documented zcode.package.fetch example uninvokable before its
+             * handler or authenticated DHT route could run. */
+            int64_t maximum =
+                spec->path && strcmp(spec->path, "zcode.package.fetch") == 0
+                    ? 256LL * 1024LL * 1024LL
+                    : 8LL * 1024LL * 1024LL;
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
-                      json_get_int(value) <= 8 * 1024 * 1024;
+                      json_get_int(value) <= maximum;
         } else if (strcmp(key, "deadline_ms") == 0) {
             /* Cap mirrors VCS_SPACE_SCOUT_DEADLINE_MS_MAX (60 s). */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&

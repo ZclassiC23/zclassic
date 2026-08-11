@@ -35,6 +35,7 @@
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
 #include "vcs/package_swarm_node.h"
+#include "command/native_zcode_discovery.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -137,6 +138,51 @@ void zcl_native_handle_zcode_package_fetch(
     /* Live engine first: a running hosting node downloads immediately. */
     struct vcs_swarm_engine *engine = vcs_swarm_engine_global();
     bool live = engine != NULL;
+
+    /* A command process cannot share the daemon's node-global engine. When
+     * the operator supplies a DHT namespace, route the exact root through
+     * the running node: provider discovery selects authenticated live peers
+     * and the daemon starts the bounded swarm fetch in-process. */
+    const char *namespace_name = zw_input_str(request->input, "namespace");
+    if (!live && namespace_name && namespace_name[0]) {
+        struct json_value selector, routed;
+        json_init(&selector);
+        json_init(&routed);
+        json_set_object(&selector);
+        char root_hex[65];
+        zcl_hex_encode(root, 32, root_hex);
+        bool selector_ok =
+            json_push_kv_str(&selector, "kind", "provider") &&
+            json_push_kv_str(&selector, "namespace", namespace_name) &&
+            json_push_kv_str(&selector, "transport_root", root_hex);
+        const struct json_value *maximum =
+            json_get(request->input, "maximum_bytes");
+        if (selector_ok && maximum)
+            selector_ok = maximum->type == JSON_INT &&
+                json_push_kv_int(&selector, "maximum_bytes",
+                                 json_get_int(maximum));
+        uint32_t records = 0;
+        bool routed_ok = selector_ok &&
+            zcl_native_zcode_provider_discover_and_route(
+                &selector, &routed, &records);
+        json_free(&selector);
+        if (!routed_ok) {
+            json_free(&routed);
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_BLOCKED,
+                ZCL_COMMAND_EXIT_TRANSIENT, "PROVIDER_DISCOVERY_FAILED",
+                "discover", true, false,
+                "no authenticated DHT provider could route the exact package root",
+                "zcode.package.fetch");
+            return;
+        }
+        json_copy(&reply->data, &routed);
+        json_free(&routed);
+        (void)json_push_kv_str(&reply->data, "package_root", root_hex);
+        (void)json_push_kv_bool(&reply->data, "live", true);
+        (void)json_push_kv_int(&reply->data, "provider_records", records);
+        return;
+    }
 
     /* One-shot fallback: open the datadir store + service book and build
      * a temporary engine whose ONLY lasting effect is the persisted,

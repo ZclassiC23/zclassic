@@ -960,6 +960,37 @@ static int t_package_manifest(void)
     VC_CHECK("package: overflow failure clears outputs",
              should_stay_null == NULL && should_stay_zero == 0);
 
+    /* The sovereign source carrier must be able to describe the complete
+     * Zclassic23 tree, not merely a small leaf package.  The tracked tree is
+     * already above 5,100 regular files; keep bounded headroom so an accepted
+     * full-node source cannot fail before it reaches publication. */
+    struct vcs_package_manifest node_source_scale;
+    vcs_package_manifest_init(&node_source_scale);
+    bool node_source_scale_ok = true;
+    for (unsigned i = 0; i < 6144u && node_source_scale_ok; i++) {
+        char path[64];
+        (void)snprintf(path, sizeof(path), "node/file-%04u.c", i);
+        node_source_scale_ok = vcs_package_manifest_add(
+            &node_source_scale, path, VCS_PACKAGE_MODE_FILE, 0, NULL, 0);
+    }
+    uint8_t *node_source_wire = NULL;
+    size_t node_source_wire_len = 0;
+    node_source_scale_ok = node_source_scale_ok &&
+        vcs_package_manifest_serialize(&node_source_scale,
+                                       &node_source_wire,
+                                       &node_source_wire_len);
+    struct vcs_package_manifest node_source_roundtrip;
+    vcs_package_manifest_init(&node_source_roundtrip);
+    node_source_scale_ok = node_source_scale_ok &&
+        vcs_package_manifest_parse(node_source_wire, node_source_wire_len,
+                                   &node_source_roundtrip) &&
+        node_source_roundtrip.count == 6144u;
+    VC_CHECK("package: full Zclassic23 source-scale manifest roundtrips",
+             node_source_scale_ok);
+    vcs_package_manifest_free(&node_source_roundtrip);
+    free(node_source_wire);
+    vcs_package_manifest_free(&node_source_scale);
+
     free(duplicate_wire);
     vcs_package_manifest_free(&duplicate_fixture);
     free(reversed_wire);

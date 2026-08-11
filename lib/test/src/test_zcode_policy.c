@@ -331,11 +331,12 @@ static int t_decisions(void)
                                          8).allow);
     ZPY_CHECK("burst: the request burst allowance is exact",
               vcs_policy_check_request_burst(VCS_POLICY_TIER_NEW_USER,
-                                             15).allow &&
+                                             VCS_POLICY_FREE_REQUEST_BURST_PER_WINDOW - 1u).allow &&
               !vcs_policy_check_request_burst(VCS_POLICY_TIER_NEW_USER,
-                                              16).allow &&
+                                              VCS_POLICY_FREE_REQUEST_BURST_PER_WINDOW).allow &&
               strcmp(vcs_policy_check_request_burst(
-                         VCS_POLICY_TIER_NEW_USER, 16).rule,
+                         VCS_POLICY_TIER_NEW_USER,
+                         VCS_POLICY_FREE_REQUEST_BURST_PER_WINDOW).rule,
                      "request-burst-limit") == 0);
 
     /* Verifier eligibility: self-verification first, then the score

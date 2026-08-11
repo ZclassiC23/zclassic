@@ -39,7 +39,8 @@ static const struct vcs_policy_limits
         0u,                                    /* queue_priority */
         0u,                                    /* pin_allowance_bytes */
         VCS_POLICY_FREE_ANNOUNCE_PER_HOUR,     /* announces_per_hour */
-        16u,                                   /* request_burst_per_window */
+        VCS_POLICY_FREE_REQUEST_BURST_PER_WINDOW,
+                                                /* request_burst_per_window */
     },
     /* EARNED_CONTRIBUTOR */
     {
@@ -49,7 +50,7 @@ static const struct vcs_policy_limits
         1u,                                        /* queue_priority */
         UINT64_C(256) * 1024u * 1024u,             /* pin allowance: 256 MiB */
         8u,                                        /* announces_per_hour */
-        64u,                                       /* request burst */
+        1024u,                                     /* request burst */
     },
     /* VERIFIED_SEEDER */
     {
@@ -59,7 +60,7 @@ static const struct vcs_policy_limits
         2u,                                        /* queue_priority */
         UINT64_C(1) * 1024u * 1024u * 1024u,       /* pin allowance: 1 GiB */
         32u,                                       /* announces_per_hour */
-        256u,                                      /* request burst */
+        2048u,                                     /* request burst */
     },
 };
 

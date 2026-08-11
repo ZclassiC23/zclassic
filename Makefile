@@ -3973,6 +3973,7 @@ test-two-node-peer-tip: zclassic23 zcl-rpc
 # DELIBERATELY opt-in (NOT in `make ci`) — it spawns two real nodes and
 # depends on the host Landlock/seccomp sandbox for the confined executor.
 .PHONY: test-zcode-dht-acceptance test-science-acceptance \
+	sovereign-source-network-acceptance \
 	test-market-acceptance test-market-onion-acceptance \
 	test-market-moderation-acceptance \
 	zcode-reproduction-acceptance
@@ -3981,6 +3982,13 @@ test-zcode-dht-acceptance: zclassic23 zcl-rpc
 
 test-science-acceptance: test-zcode-dht-acceptance
 	@bash tools/dev/science_acceptance.sh
+
+# Four-role, real-process sovereign source acceptance. It composes the proven
+# seven-identity DHT/Noise harness rather than inventing test-only networking;
+# the source hook assigns publisher, two independent hosts and a no-Git fresh
+# consumer after sparse authentication. Opt-in: real daemons and full builds.
+sovereign-source-network-acceptance: zclassic23 zcl-rpc tools/zcode_dev_signer
+	@bash tools/dev/sovereign_source_network_acceptance.sh
 
 # B3 file-market trade acceptance: two isolated regtest daemons (395xx
 # quads + 20030/20031, loopback only). The seller (-externalip + file

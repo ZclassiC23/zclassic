@@ -1721,6 +1721,7 @@ static bool zpub_lineage(const char *zcode_dir, const char *publisher_hex,
 struct zpub_accepted_bundle {
     char workspace[ZDEV_PATH_MAX];
     char datadir[ZPUB_PATH_MAX];
+    char acceptance_datadir[ZPUB_PATH_MAX];
     uint8_t source_root[32];
     struct zcode_lane_status lane;
     struct vcs_zcode_task_v1 task;
@@ -1792,14 +1793,20 @@ static bool zpub_normalize(
     memset(bundle, 0, sizeof(*bundle));
     const char *workspace_arg = zdev_str(request->input, "workspace");
     const char *datadir_arg = zdev_str(request->input, "datadir");
+    const char *acceptance_datadir_arg =
+        zdev_str(request->input, "acceptance_datadir");
     const char *source_root_arg = zdev_str(request->input, "source_root");
     if (!workspace_arg || !realpath(workspace_arg, bundle->workspace) ||
         !datadir_arg || !realpath(datadir_arg, bundle->datadir) ||
+        !realpath(acceptance_datadir_arg && acceptance_datadir_arg[0]
+                      ? acceptance_datadir_arg : datadir_arg,
+                  bundle->acceptance_datadir) ||
         !source_root_arg ||
         !zcl_hex_decode_lower(source_root_arg, bundle->source_root, 32)) {
         zpub_fail(reply, "BAD_PUBLISH_INPUT",
-                  "workspace and datadir must resolve to existing directories "
-                  "and source_root must be 64 lowercase hex");
+                  "workspace, datadir, and optional acceptance_datadir must "
+                  "resolve to existing directories and source_root must be "
+                  "64 lowercase hex");
         return false;
     }
     const char *mapping_arg = zdev_str(
@@ -1846,7 +1853,8 @@ static bool zpub_find_lane_readonly(
     sqlite3 *db = NULL;
     struct node_db ndb = {0};
     if (!zcl_native_node_db_require_readonly(
-            bundle->datadir, reply, "the ZCODE lane ledger", &db, &ndb))
+            bundle->acceptance_datadir, reply, "the ZCODE lane ledger",
+            &db, &ndb))
         return false;
     struct zcode_accepted_work_status accepted;
     struct zcl_result found = zcode_accepted_work_find(
@@ -1866,7 +1874,7 @@ static bool zpub_find_lane_commit(
 {
 
     struct node_db ndb = {0};
-    if (!zdev_open_db(bundle->datadir, &ndb)) {
+    if (!zdev_open_db(bundle->acceptance_datadir, &ndb)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "DATABASE_OPEN_FAILED",
                                "accept", true, false,
@@ -2261,12 +2269,12 @@ void zcl_native_handle_zcode_publish_plan(
                       digest, 32) &&
         zpub_push_hex(&reply->data, "release_body_hex",
                       release_body, release_body_len) &&
-        zpub_push_hex(&reply->data, "manifest_hex",
-                      bundle.transport.manifest_wire,
-                      bundle.transport.manifest_wire_len) &&
-        zpub_push_hex(&reply->data, "recipe_hex",
-                      bundle.transport.recipe_wire,
-                      bundle.transport.recipe_wire_len) &&
+        json_push_kv_int(&reply->data, "manifest_bytes",
+                         (int64_t)bundle.transport.manifest_wire_len) &&
+        json_push_kv_int(&reply->data, "recipe_bytes",
+                         (int64_t)bundle.transport.recipe_wire_len) &&
+        json_push_kv_str(&reply->data, "carrier_material",
+                         "rederived_from_accepted_source_at_commit") &&
         json_push_kv_int(&reply->data, "publisher_sequence",
                          (int64_t)release.publisher_sequence) &&
         json_push_kv_bool(&reply->data, "has_parent",
