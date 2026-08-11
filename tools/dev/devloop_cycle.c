@@ -1159,7 +1159,7 @@ const char *zcl_devloop_watcher_next_action(
     enum zcl_devloop_publish_mode publish_mode)
 {
     if (!active)
-        return "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'";
+        return "zclassic23-dev dev begin";
     if (!source_ready)
         return "zclassic23-dev dev loop status";
     if (zcl_devloop_publish_mode_applies(publish_mode) && !runtime_ready)

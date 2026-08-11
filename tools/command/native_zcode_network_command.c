@@ -135,6 +135,14 @@ static bool zdn_rpc_block_hash(int64_t height, struct uint256 *out) {
   return ok;
 }
 
+bool zcl_native_zcode_network_genesis(uint8_t out[32]) {
+  struct uint256 genesis;
+  if (!out || !zdn_rpc_block_hash(0, &genesis))
+    return false;
+  memcpy(out, genesis.data, 32);
+  return true;
+}
+
 enum zdn_existing_result {
   ZDN_EXISTING_ABSENT = 0,
   ZDN_EXISTING_VALID,

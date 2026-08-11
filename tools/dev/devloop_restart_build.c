@@ -1114,9 +1114,20 @@ static bool rr_restart_build(
         rr_why(why, why_len, "restart overlay allocation failed");
         return false;
     }
+    const char *runtime_sources[RR_SOURCE_MAX];
+    size_t runtime_source_count = 0;
+    for (size_t i = 0; i < source_count; i++)
+        if (!rr_source_is_test_only(source_tus[i]))
+            runtime_sources[runtime_source_count++] = source_tus[i];
+    if (runtime_source_count == 0) {
+        free(overlays);
+        rr_why(why, why_len,
+               "restart source set contains no runtime translation unit");
+        return false;
+    }
     size_t overlay_count = 0;
     bool ok = rr_prepare_overlays(
-        &plan, root, source_tus, source_count, identity,
+        &plan, root, runtime_sources, runtime_source_count, identity,
         "build/dev-loop/restart-objects", overlays, &overlay_count, process,
         &receipt->compiler_processes, &receipt->compile_us, why, why_len);
     receipt->source_identity_overlay = ok;
@@ -1741,6 +1752,8 @@ static bool rr_emit_event(
         &doc, "agent_next_action",
         strcmp(status, "feedback_ready") == 0
             ? "candidate runtime and immediate affected proofs are green; run integration proofs before acceptance"
+            : strcmp(status, "fallback_ready") == 0
+                ? "resident proof was unavailable; conservative integration proof is running"
             : "repair the named restart refusal; no service or source was replaced");
     char wire[16384];
     size_t n = json_write(&doc, wire, sizeof(wire) - 1);
@@ -1794,6 +1807,12 @@ int zcl_devloop_restart_event(const char *repo_root,
     for (size_t i = 0; i < source_count; i++)
         if (!rr_source_is_c(source_tus[i]))
             return 0;
+    bool has_runtime_source = false;
+    for (size_t i = 0; i < source_count; i++)
+        has_runtime_source = has_runtime_source ||
+            !rr_source_is_test_only(source_tus[i]);
+    if (!has_runtime_source)
+        return 0;
     int64_t started = platform_time_monotonic_us();
     int64_t source_guard_us = 0;
     uint64_t source_guard_bytes_read = 0;
@@ -1892,14 +1911,31 @@ int zcl_devloop_restart_event(const char *repo_root,
         return 2;
     const struct zcl_devloop_process_result *display_process =
         proof_process.output_len ? &proof_process : &build_process;
+    bool fallback_pending = !ok &&
+        (strstr(why, "proof closure refused:") ||
+         strstr(why, "proof plan is incomplete") ||
+         strstr(why, "proof set exceeds resident bound") ||
+         strstr(why, "action plan stale"));
+    if (fallback_pending) {
+        proof.integration_proof_deferred = true;
+        proof.bounded_proof_deferred = true;
+    }
     bool emitted = rr_emit_event(
         repo_root, source_tus, source_count,
-        ok ? "feedback_ready" : "rejected",
-        ok ? "immediate_affected_proofs" : "compile_link_probe",
+        ok ? "feedback_ready" :
+             fallback_pending ? "fallback_ready" : "rejected",
+        ok ? "immediate_affected_proofs" :
+             fallback_pending ? "conservative_proof_selected"
+                              : "compile_link_probe",
         platform_time_monotonic_us() - started, publish_mode, &build,
         &proof, display_process, why, source_guard_us, source_guard_captures,
         source_guard_bytes_read, source_bytes_total,
         source_byte_accounting_complete,
         closure_us, plan.closure_snapshot, feedback_parallel);
-    return emitted ? 1 : -1;
+    if (!emitted)
+        return ZCL_DEVLOOP_RESTART_EVENT_ERROR;
+    if (ok)
+        return ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING;
+    return fallback_pending ? ZCL_DEVLOOP_RESTART_EVENT_FALLBACK_PENDING
+                            : ZCL_DEVLOOP_RESTART_EVENT_FINAL;
 }

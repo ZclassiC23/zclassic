@@ -118,6 +118,9 @@ void zcl_native_handle_dev_publication_status(
 void zcl_native_handle_dev_publication_advance(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_dev_publication_collect(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_dev_publication_mirror_record(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
@@ -860,6 +863,7 @@ void zcl_native_handle_zcode_network_find_cancel(
 void zcl_native_handle_zcode_network_records(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+bool zcl_native_zcode_network_genesis(uint8_t out[32]);
 void zcl_native_handle_zcode_network_records_begin(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

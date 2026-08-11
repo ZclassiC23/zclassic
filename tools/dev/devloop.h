@@ -345,9 +345,18 @@ bool zcl_devloop_restart_prove_immediate(
     struct zcl_devloop_process_result *process,
     char *why, size_t why_len);
 
+enum zcl_devloop_restart_event_result {
+    ZCL_DEVLOOP_RESTART_EVENT_ERROR = -1,
+    ZCL_DEVLOOP_RESTART_EVENT_NOT_APPLICABLE = 0,
+    ZCL_DEVLOOP_RESTART_EVENT_FINAL = 1,
+    ZCL_DEVLOOP_RESTART_EVENT_CANCELLED = 2,
+    ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING = 3,
+    ZCL_DEVLOOP_RESTART_EVENT_FALLBACK_PENDING = 4,
+};
+
 /* Try the resident process-candidate lane for a bounded set of changed C TUs.
- * Returns 0 when the set belongs on the conservative path, 1 after persisting
- * a candidate-ready/refusal cycle, and -1 on receipt persistence failure. */
+ * The result distinguishes final failures from green affected feedback and
+ * from resident-cap fallbacks that still require conservative proof. */
 int zcl_devloop_restart_event(const char *repo_root,
                               const char *const *source_tus,
                               size_t source_count,

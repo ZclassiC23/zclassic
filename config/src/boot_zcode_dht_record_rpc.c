@@ -17,9 +17,10 @@
 #define RECORD_PUBLIC_TOKEN_BYTES 16u
 #define RECORD_PUBLIC_ACTIVE_GRACE_S 5u
 #define RECORD_PUBLIC_RESULT_RETENTION_S 30u
+#define RECORD_PUBLIC_EVIDENCE_WIRES_MAX 16u
 
 struct public_record_lookup {
-  bool used, cached;
+  bool used, cached, include_evidence_wires;
   uint8_t lookup_token[RECORD_PUBLIC_TOKEN_BYTES];
   uint8_t owner_token[RECORD_PUBLIC_TOKEN_BYTES];
   uint64_t service_operation_id, service_generation, expires_mono;
@@ -194,7 +195,8 @@ static const char *record_kind_name(enum vcs_zcode_dht_record_kind kind) {
 static void record_row_json(struct json_value *row,
                             const struct vcs_zcode_dht_record *record,
                             bool conflicted, bool superseded,
-                            bool provider_authenticated) {
+                            bool provider_authenticated,
+                            bool include_evidence_wire) {
   char semantic[65], transport[65], provider[65], owner[65], publisher[65];
   char record_root[65] = "";
   uint8_t record_id[32];
@@ -224,6 +226,15 @@ static void record_row_json(struct json_value *row,
   json_push_kv_bool(row, "superseded", superseded);
   json_push_kv_bool(row, "provider_authenticated",
                     provider_authenticated);
+  if (include_evidence_wire) {
+    uint8_t wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+    char wire_hex[VCS_ZCODE_DHT_RECORD_WIRE_BYTES * 2u + 1u];
+    if (vcs_zcode_dht_record_encode(record, wire) ==
+        VCS_ZCODE_DHT_RECORD_OK) {
+      zcl_hex_encode(wire, sizeof(wire), wire_hex);
+      json_push_kv_str(row, "record_wire", wire_hex);
+    }
+  }
 }
 
 static bool record_provider_authenticated(
@@ -249,7 +260,8 @@ static const char *record_state_name(
 
 static void record_result_json(
     struct json_value *result,
-    const struct vcs_zcode_dht_record_discovery_result *discovery) {
+    const struct vcs_zcode_dht_record_discovery_result *discovery,
+    bool include_evidence_wires) {
   bool successful =
       discovery->state == VCS_ZCODE_DHT_RECORD_OPERATION_PENDING ||
       discovery->state == VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE;
@@ -291,16 +303,43 @@ static void record_result_json(
   }
   json_push_kv_int(result, "usable_count", usable_count);
   json_push_kv_int(result, "superseded_count", superseded_count);
+  uint8_t evidence_providers[RECORD_PUBLIC_EVIDENCE_WIRES_MAX][32];
+  uint8_t evidence_groups[RECORD_PUBLIC_EVIDENCE_WIRES_MAX][32];
+  uint32_t evidence_wire_count = 0;
   struct json_value rows;
   json_init(&rows);
   json_set_array(&rows);
   for (uint32_t i = 0; i < discovery->record_count; i++) {
+    bool include_wire = false;
+    if (include_evidence_wires && !conflicted[i] && !superseded[i] &&
+        (discovery->records[i].kind == VCS_ZCODE_DHT_RECORD_PROVIDER ||
+         discovery->records[i].kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK) &&
+        evidence_wire_count < RECORD_PUBLIC_EVIDENCE_WIRES_MAX) {
+      include_wire = true;
+      for (uint32_t j = 0; j < evidence_wire_count; j++)
+        if (memcmp(discovery->records[i].provider_node_id,
+                   evidence_providers[j], 32) == 0 ||
+            (discovery->records[i].kind ==
+                 VCS_ZCODE_DHT_RECORD_STORAGE_ACK &&
+             memcmp(discovery->records[i].owner_group,
+                    evidence_groups[j], 32) == 0)) {
+          include_wire = false;
+          break;
+        }
+      if (include_wire) {
+        memcpy(evidence_providers[evidence_wire_count],
+               discovery->records[i].provider_node_id, 32);
+        memcpy(evidence_groups[evidence_wire_count],
+               discovery->records[i].owner_group, 32);
+        evidence_wire_count++;
+      }
+    }
     struct json_value row;
     json_init(&row);
     record_row_json(
         &row, &discovery->records[i], conflicted[i], superseded[i],
         record_provider_authenticated(&discovery->records[i], peers,
-                                      peer_count));
+                                      peer_count), include_wire);
     json_push_back(&rows, &row);
     json_free(&row);
   }
@@ -317,11 +356,12 @@ static void record_result_json(
     record_row_json(
         &row, &discovery->records[i], true, false,
         record_provider_authenticated(&discovery->records[i], peers,
-                                      peer_count));
+                                      peer_count), false);
     json_push_back(&conflicts, &row);
     json_free(&row);
   }
   json_push_kv_int(result, "conflict_count", conflict_count);
+  json_push_kv_int(result, "evidence_wire_count", evidence_wire_count);
   json_push_kv(result, "conflicts", &conflicts);
   json_free(&conflicts);
 }
@@ -329,8 +369,9 @@ static void record_result_json(
 #ifdef ZCL_TESTING
 void boot_zcode_dht_record_test_render(
     struct json_value *result,
-    const struct vcs_zcode_dht_record_discovery_result *discovery) {
-  record_result_json(result, discovery);
+    const struct vcs_zcode_dht_record_discovery_result *discovery,
+    bool include_evidence_wires) {
+  record_result_json(result, discovery, include_evidence_wires);
 }
 #endif
 
@@ -386,6 +427,11 @@ static bool rpc_record_begin(const struct json_value *params, bool help,
          RECORD_PUBLIC_TOKEN_BYTES);
   entry->service_operation_id = internal_id;
   entry->service_generation = generation;
+  const struct json_value *include_wires =
+      json_get(in, "include_evidence_wires");
+  entry->include_evidence_wires =
+      include_wires && include_wires->type == JSON_BOOL &&
+      json_get_bool(include_wires);
   entry->expires_mono = now.monotonic_s + VCS_ZCODE_DHT_LOOKUP_CEILING_S +
                         VCS_ZCODE_DHT_SERVICE_QUERY_TIMEOUT_S +
                         RECORD_PUBLIC_ACTIVE_GRACE_S;
@@ -449,8 +495,9 @@ static bool rpc_record_poll(const struct json_value *params, bool help,
         now.monotonic_s + RECORD_PUBLIC_RESULT_RETENTION_S;
   }
   struct vcs_zcode_dht_record_discovery_result snapshot = entry->result;
+  bool include_evidence_wires = entry->include_evidence_wires;
   zcl_mutex_unlock(&g_record_public_lock);
-  record_result_json(result, &snapshot);
+  record_result_json(result, &snapshot, include_evidence_wires);
   return true;
 }
 

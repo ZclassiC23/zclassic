@@ -22,6 +22,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "vcs/zcode_dht_record.h"
+
 /* The subset of a dev-cycle verdict this glue needs, deliberately narrow —
  * every field is something tools/dev/devloop_cycle.c:finish_cycle() already
  * has in scope or can read from state it already touches (the
@@ -219,7 +221,15 @@ bool vcs_devloop_publication_advance_workspace(
     const uint8_t passport_root[32], const uint8_t workspace_root[32],
     uint8_t receipt_root_out[32], bool *reused_out);
 
-struct vcs_zcode_dht_record_verify_context;
+#define VCS_DEVLOOP_PUBLICATION_ACK_MIN 2u
+#define VCS_DEVLOOP_PUBLICATION_ACK_MAX 16u
+
+struct vcs_devloop_publication_ack_target {
+    char namespace_name[VCS_ZCODE_DHT_RECORD_NAMESPACE_BYTES];
+    uint8_t transport_root[32];
+    uint16_t existing_acks;
+    bool already_acknowledged;
+};
 
 /* Persist one exact signed PROVIDER wire and append its canonical record root
  * only after re-verifying the job's signed workspace -> release chain and
@@ -230,6 +240,15 @@ bool vcs_devloop_publication_advance_provider(
     const uint8_t *record_wire, size_t record_wire_len,
     const struct vcs_zcode_dht_record_verify_context *verify,
     uint8_t receipt_root_out[32], bool *reused_out);
+
+/* Resolve a provider-announced job to the exact DHT selector needed for
+ * STORAGE_ACK discovery. The stored PROVIDER wire (including ordinary
+ * historical expiry), signed release chain and content.v2 package root are
+ * all reloaded and reverified first. Current ACK wires are verified later. */
+bool vcs_devloop_publication_storage_ack_target(
+    const char *repo_root, const uint8_t job_root[32],
+    const struct vcs_zcode_dht_record_verify_context *verify,
+    struct vcs_devloop_publication_ack_target *out);
 
 /* Bind a bounded, provider/group-distinct set of existing signed STORAGE_ACK
  * wires to the exact release package behind a provider-announced job. The

@@ -545,6 +545,20 @@ int zcl_devloop_watch_mode(const char *repo_root,
             }
             fast = zcl_devloop_restart_event(
                 ctx.root, selected_files, selected_count, publish_mode);
+            /* A green resident restart event is intentionally only the
+             * low-latency affected-test receipt.  Keep the same warm owner
+             * moving through the conservative complete proof so a stable
+             * edit reaches ZVCS/publication without requiring the operator
+             * to notice the deferred flag and launch a second command.
+             * New filesystem activity cancels this proof through the poll
+             * callback already armed above; stale epochs never anchor. */
+            if (fast == ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING ||
+                fast == ZCL_DEVLOOP_RESTART_EVENT_FALLBACK_PENDING) {
+                (void)zcl_devloop_run_cycle_mode(
+                    ctx.root, selected_files, selected_count,
+                    ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY);
+                fast = ZCL_DEVLOOP_RESTART_EVENT_FINAL;
+            }
         }
         if (fast == 0) {
             /* APPLY authority is intentionally narrower than the generic

@@ -16,11 +16,11 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_DEV_COMMAND(
     "dev.begin", "dev", "", "Start or reattach to the warm C23 development service",
-    "Starts one checkout-local watcher in auto mode by default, or reattaches "
+    "Starts one checkout-local verify watcher by default, or reattaches "
     "idempotently to the existing watcher. The response names the resident "
     "watcher and one next command; it grants no canonical-node, wallet, "
     "network, storage, transaction, publication or deployment authority.", 0,
-    "dev,begin,warm,watcher,auto,hotswap",
+    "dev,begin,warm,watcher,verify,proof",
     "zcl.dev_begin_input.v1", "zcl.dev_begin.v1", "root,mode", "",
     "zclassic23-dev dev begin", ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_LOCAL,
@@ -122,6 +122,33 @@ ZCL_COMMAND_DEV_COMMAND(
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_dev_publication_advance,
     "publication scheduling receipts require a dev checkout",
+    "zclassic23-dev dev publication status")
+
+ZCL_COMMAND_DEV_COMMAND(
+    "dev.publication.collect", "dev.publication", "",
+    "Discover and bind independent storage ACK evidence",
+    "Loads the exact provider-announced package target from one immutable "
+    "publication job, asks the authenticated local node for verified "
+    "STORAGE_ACK records, and appends one receipt only after locally "
+    "rechecking canonical wires, network genesis, validity windows, "
+    "signatures, package root, and distinct provider/owner groups. At least "
+    "two ACKs are required. It never signs, publishes, spends, deploys, or "
+    "grants human acceptance authority.", 0,
+    "dev,publication,storage-ack,p2p,collect,replication,evidence",
+    "zcl.dev_publication_status_input.v1",
+    "zcl.dev_publication_collect.v1", "job_root", "job_root",
+    "zclassic23-dev dev publication collect --input='"
+    "{\"job_root\":\"<64-lowercase-hex>\"}'",
+    ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_DEV_STATE_WRITE | ZCL_COMMAND_CAP_CHAIN_READ |
+        ZCL_COMMAND_CAP_P2P_TOPIC,
+    ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_dev_publication_collect,
+    "storage ACK collection requires the dev-only ZVCS receipt writer",
     "zclassic23-dev dev publication status")
 
 ZCL_COMMAND_DEV_COMMAND(
@@ -326,8 +353,8 @@ ZCL_COMMAND_PLANNED_COMMAND(
 ZCL_COMMAND_READY_READ(
     "dev.change.plan", "dev.change", "", "Classify files and select the smallest proof",
     "A deterministic classification of the given file list into the "
-    "smallest sufficient proof lane, computed from static path rules; no "
-    "live checkout scan is performed.", 0,
+    "smallest sufficient proof lane, unioning static path rules with the "
+    "bounded source-index closure when available.", ZCL_COMMAND_LIST_BUDGET,
     "change,impact,classify,proof,hotswap,reload", "zcl.dev_change_input.v1",
     "zcl.dev_plan.v1", "files", "", "zclassic23 dev change plan --input='{\"files\":[\"apps/social/app.def\"]}'",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,

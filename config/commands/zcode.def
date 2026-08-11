@@ -3278,11 +3278,13 @@ ZCL_COMMAND_READY_READ(
     "Admit iterative record discovery",
     "Derives the deterministic DHT key from kind, namespace and matching "
     "root, then admits a bounded asynchronous S6 lookup. Returns opaque "
-    "lookup_id and owner_token capabilities; no peer ID is accepted.",
+    "lookup_id and owner_token capabilities; no peer ID is accepted. Exact "
+    "signed wires are opt-in with include_evidence_wires and remain bounded.",
     4096, "zcode,network,dht,records,lookup,begin,async",
     "zcl.zcode_network_records_begin.input.v1",
     "zcl.zcode_network_records_begin.v1",
-    "kind,namespace,semantic_root,transport_root", "kind,namespace",
+    "kind,namespace,semantic_root,transport_root,include_evidence_wires",
+    "kind,namespace",
     "zclassic23 zcode network records begin --input='{\"kind\":\"provider\",\"namespace\":\"science\",\"transport_root\":\"<64hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
@@ -3331,11 +3333,15 @@ ZCL_COMMAND_READY_READ(
     "Discover signed DHT records",
     "Convenience wrapper over records.begin/poll/cancel. The daemon remains "
     "nonblocking while the calling CLI waits for stable closest-set, bounded "
-    "deadline, or the 64-record verified-result cap.",
+    "deadline, or the 64-record verified-result cap. When explicitly "
+    "requested, up to 16 usable, provider/group-distinct PROVIDER or "
+    "STORAGE_ACK rows include their canonical signed record_wire so a "
+    "durable consumer can bind exact evidence without reconstructing roots.",
     65536, "zcode,network,dht,records,lookup,root,async",
     "zcl.zcode_network_records.input.v1",
     "zcl.zcode_network_records.v1",
-    "kind,namespace,semantic_root,transport_root", "kind,namespace",
+    "kind,namespace,semantic_root,transport_root,include_evidence_wires",
+    "kind,namespace",
     "zclassic23 zcode network records --input='{\"kind\":\"pointer\",\"namespace\":\"science.study\",\"semantic_root\":\"<64hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
