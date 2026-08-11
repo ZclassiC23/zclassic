@@ -1545,8 +1545,20 @@ static enum vcs_swarm_fetch_result swarm_fetch(
     }
     struct swarm_download *dl = dl_find(engine, package_root);
     if (dl && dl->state == VCS_SWARM_DL_COMPLETE) {
-        pthread_mutex_unlock(&engine->lock);
-        return VCS_SWARM_FETCH_ALREADY_COMPLETE;
+        struct vcs_package_store_status complete_status;
+        memset(&complete_status, 0, sizeof(complete_status));
+        if (vcs_package_store_package_status(
+                engine->store, package_root, &complete_status) &&
+            complete_status.complete) {
+            pthread_mutex_unlock(&engine->lock);
+            return VCS_SWARM_FETCH_ALREADY_COMPLETE;
+        }
+        /* COMPLETE is a possession cache, never authority. A verified read
+         * may have quarantined a corrupt CAS object since this slot last ran;
+         * discard the stale scheduler state so the tracked manifest can
+         * rebuild its have-bitmap and fetch the missing coordinate. */
+        dl_reset(dl);
+        dl = NULL;
     }
     if (dl && dl->state == VCS_SWARM_DL_FAILED) {
         /* Operator retry after a named failure: start clean. */

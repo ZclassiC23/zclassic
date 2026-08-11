@@ -33,6 +33,7 @@
 
 #include "test/test_core.h"
 
+#include "base/hex.h"
 #include "chain/chainparams.h"
 #include "coins/coins_view.h"
 #include "core/serialize.h"
@@ -767,6 +768,100 @@ static int zwn_t_malicious(const struct chain_params *params)
     return failures;
 }
 
+/* A completed download is only a cache of verified possession. If a later
+ * read quarantines one address-mismatched CAS object, a retry must re-open
+ * the completed engine slot and obtain the exact chunk from a surviving
+ * provider. This is the sovereign checkout recovery path: no source-tree or
+ * Git fallback is available to the buyer. */
+static int zwn_t_corrupt_local_repair(const struct chain_params *params)
+{
+    int failures = 0;
+    TEST("corrupt local chunk: quarantine then repair from the surviving "
+         "provider over real zpkgswm frames") {
+        struct zwn_pkg pkg;
+        ASSERT(zwn_make_package(&pkg, 6, 0x2a));
+
+        struct zwn_node a, b, a2;
+        ASSERT(zwn_node_init(&a, "ca", params));
+        ASSERT(zwn_node_init(&a2, "ca2", params));
+        ASSERT(zwn_node_init(&b, "cb", params));
+        ASSERT(zwn_store_package(a.store, &pkg));
+        ASSERT(zwn_store_package(a2.store, &pkg));
+
+        struct zwn_link a_b, b_a, a2_b, b_a2;
+        ASSERT(zwn_link(&a, &a_b, 5, 6, 7, 8, "peer-b"));
+        ASSERT(zwn_link(&b, &b_a, 1, 2, 3, 4, "peer-a"));
+        ASSERT(zwn_link(&a2, &a2_b, 9, 9, 9, 9, "peer-b"));
+        ASSERT(zwn_link(&b, &b_a2, 8, 8, 8, 8, "peer-a2"));
+        ASSERT(zwn_meet_side(&a, &a_b));
+        ASSERT(zwn_meet_side(&b, &b_a));
+        ASSERT(zwn_meet_side(&a2, &a2_b));
+        ASSERT(zwn_meet_side(&b, &b_a2));
+
+        ASSERT(vcs_swarm_engine_fetch(b.engine, pkg.root, ZWN_DAY,
+                                      ++b.now) == VCS_SWARM_FETCH_OK);
+        enum vcs_swarm_download_state state = VCS_SWARM_DL_INACTIVE;
+        bool terminal = false;
+        for (int i = 0; i < 400 && !terminal; i++) {
+            ASSERT(zwn_round(&a_b, &b_a, params->pchMessageStart));
+            ASSERT(zwn_round(&a2_b, &b_a2, params->pchMessageStart));
+            terminal = zwn_download_done(&b, pkg.root, &state);
+        }
+        ASSERT(terminal && state == VCS_SWARM_DL_COMPLETE);
+        ASSERT(zwn_store_matches(b.store, &pkg));
+
+        /* Provider A disappears after the first complete checkout. */
+        atomic_store(&b_a.node->disconnect, true);
+        zwn_drain_quiet(&a_b);
+        zwn_drain_quiet(&b_a);
+        vcs_swarm_engine_peer_drop(b.engine, (uint64_t)b_a.node->id);
+
+        char hash_hex[65], cas_path[1400];
+        zcl_hex_encode(pkg.manifest.files[0].chunk_hashes, 32, hash_hex);
+        int cas_path_len = snprintf(cas_path, sizeof(cas_path),
+                                    "%s/cas/sha3/%.2s/%s", b.zcode_dir,
+                                    hash_hex, hash_hex);
+        ASSERT(cas_path_len > 0 && (size_t)cas_path_len < sizeof(cas_path));
+        FILE *corrupt = fopen(cas_path, "r+b");
+        ASSERT(corrupt != NULL);
+        int first = fgetc(corrupt);
+        ASSERT(first != EOF);
+        rewind(corrupt);
+        ASSERT(fputc(first ^ 0x80, corrupt) != EOF);
+        ASSERT(fclose(corrupt) == 0);
+        uint8_t *rejected = NULL;
+        size_t rejected_len = 0;
+        ASSERT(vcs_package_store_get_chunk_at(
+                   b.store, pkg.root, 0, 0, &rejected, &rejected_len) ==
+               VCS_PACKAGE_STORE_ERR_CHUNK_HASH);
+        ASSERT(rejected == NULL && rejected_len == 0);
+        ASSERT(!vcs_package_store_chunk_present(b.store, pkg.root, 0, 0));
+
+        ASSERT(vcs_swarm_engine_fetch(b.engine, pkg.root, ZWN_DAY,
+                                      ++b.now) == VCS_SWARM_FETCH_OK);
+        terminal = false;
+        state = VCS_SWARM_DL_INACTIVE;
+        for (int i = 0; i < 400 && !terminal; i++) {
+            ASSERT(zwn_round(&a2_b, &b_a2, params->pchMessageStart));
+            terminal = zwn_download_done(&b, pkg.root, &state);
+        }
+        ASSERT(terminal && state == VCS_SWARM_DL_COMPLETE);
+        ASSERT(zwn_store_matches(b.store, &pkg));
+        ASSERT(b_a2.node->misbehavior == 0);
+
+        zwn_link_free(&a_b);
+        zwn_link_free(&b_a);
+        zwn_link_free(&a2_b);
+        zwn_link_free(&b_a2);
+        zwn_node_free(&a);
+        zwn_node_free(&a2);
+        zwn_node_free(&b);
+        zwn_free_package(&pkg);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 3: unrequested bytes ───────────────────────────────────────────── */
 
 static int zwn_t_unrequested(const struct chain_params *params)
@@ -839,6 +934,7 @@ int test_zcode_swarm_net(void)
     failures += zwn_test_golden(ZWN_GOLDEN_RESTART, params);
     failures += zwn_test_golden(ZWN_GOLDEN_DISCONNECT, params);
     failures += zwn_t_malicious(params);
+    failures += zwn_t_corrupt_local_repair(params);
     failures += zwn_t_unrequested(params);
     return failures;
 }
