@@ -56,6 +56,7 @@
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
 #include "vcs/package_service.h"
+#include "vcs/package_mapping.h"
 #include "vcs/package_release.h"
 #include "vcs/package_store.h"
 #include "vcs/package_swarm.h"
@@ -63,6 +64,7 @@
 #include "vcs/source_package_checkout.h"
 #include "vcs/source_package_transport.h"
 #include "vcs/vcs.h"
+#include "vcs/vcs_devloop.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_c23_corpus.h"
 #include "vcs/zcode_commons_v2.h"
@@ -128,6 +130,10 @@ struct zwn_sovereign_receipt {
     uint8_t successor_binary_sha3[32];
     uint8_t storage_ack_roots[2][32];
     uint16_t storage_ack_count;
+    uint8_t publication_job_root[32];
+    uint8_t publication_progress_root[32];
+    int64_t publication_enqueue_us;
+    struct vcs_package_mapping_metrics publication_metrics;
     struct vcs_source_bundle_metrics source_metrics;
 };
 
@@ -179,19 +185,30 @@ static void zwn_print_sovereign_receipt(void)
                         r->successor_binary_sha3);
     zwn_print_root_json("storage_ack_a_root", r->storage_ack_roots[0]);
     zwn_print_root_json("storage_ack_b_root", r->storage_ack_roots[1]);
+    zwn_print_root_json("publication_job_root", r->publication_job_root);
+    zwn_print_root_json("publication_progress_root",
+                        r->publication_progress_root);
     printf(",\"source_bytes\":%" PRIu64
            ",\"new_source_blobs\":%u,\"reused_source_blobs\":%u"
+           ",\"publication_enqueue_us\":%" PRId64
+           ",\"publication_bytes_scanned\":%" PRIu64
+           ",\"publication_new_chunks\":%u"
+           ",\"publication_reused_chunks\":%u"
            ",\"serving_providers\":2,\"pinned_providers\":2"
            ",\"storage_acknowledgements\":%u"
            ",\"storage_ack_status\":\"2/2\""
            ",\"reproduced\":true,\"provider_failover\":true"
            ",\"corrupt_chunk_recovery\":true"
            ",\"previous_release_fetchable\":true"
-           ",\"publication_job\":\"not_exercised\""
+           ",\"publication_job\":\"workspace_published\""
            ",\"github_mirror\":\"not_applicable_fixture\"}\n",
            r->source_metrics.source_bytes,
            r->source_metrics.new_blobs,
            r->source_metrics.reused_blobs,
+           r->publication_enqueue_us,
+           r->publication_metrics.bytes_scanned,
+           r->publication_metrics.new_chunks,
+           r->publication_metrics.reused_chunks,
            r->storage_ack_count);
 }
 
@@ -1530,21 +1547,60 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
             publisher, source_root, accepted.accepted.accepted_work_root,
             accepted_now, &transport));
 
-        struct vcs_snapshot_meta snapshot_meta = {
+        char source_hex[65], package_hex[65], generation_hex[65];
+        zcl_hex_encode(source_root, 32, source_hex);
+        zcl_hex_encode(transport.package_root, 32, package_hex);
+        zcl_hex_encode(publisher_sha256, 32, generation_hex);
+        struct vcs_devloop_verdict dev_verdict = {
             .verdict_status = 0,
             .phase = "verify",
             .elapsed_ms = 23,
-            .generation_sha256 = publisher_sha256,
+            .generation_hex = generation_hex,
             .agent_id = "fixture-agent",
             .session_id = "sovereign-roundtrip",
             .task_ref = "c23/source",
+            .proof_complete = true,
+            .proof_scope = "source_wide_compile_tests_lint_fast",
+            .source_identity_hex = source_hex,
+            .source_cas_hex = package_hex,
         };
-        struct vcs_repo *publisher_repo = vcs_open(publisher);
-        ASSERT(publisher_repo != NULL);
+        struct vcs_devloop_anchor_result publication_anchor = {0};
+        vcs_devloop_anchor_cycle(
+            publisher, &dev_verdict, &publication_anchor);
+        ASSERT(publication_anchor.status == VCS_DEVLOOP_ANCHOR_OK);
+        ASSERT(publication_anchor.publication_status ==
+               VCS_DEVLOOP_PUBLICATION_QUEUED);
+        ASSERT(publication_anchor.publication_enqueue_us >= 0);
         uint8_t commit_root[32];
-        ASSERT(vcs_snapshot(publisher_repo, &snapshot_meta, commit_root) ==
-               VCS_OK);
-        vcs_close(publisher_repo);
+        memcpy(commit_root, publication_anchor.commit_id, 32);
+        struct vcs_devloop_publication_job publication_job;
+        ASSERT(vcs_devloop_publication_job_load(
+            publisher, publication_anchor.publication_job_root,
+            &publication_job));
+        ASSERT(memcmp(publication_job.vcs_commit_root, commit_root, 32) == 0);
+        ASSERT(memcmp(publication_job.source_tree_root, source_root, 32) == 0);
+        uint8_t publication_progress_root[32];
+        bool publication_reused = true;
+        ASSERT(vcs_devloop_publication_advance_waiting_acceptance(
+            publisher, publication_anchor.publication_job_root,
+            publication_progress_root, &publication_reused));
+        ASSERT(!publication_reused);
+        ASSERT(vcs_devloop_publication_advance_proven_work(
+            publisher, publication_anchor.publication_job_root,
+            accepted.accepted.accepted_work_root, accepted_now,
+            publication_progress_root, &publication_reused));
+        ASSERT(!publication_reused);
+        struct vcs_package_mapping_metrics publication_metrics;
+        uint8_t publication_mapping_root[32];
+        ASSERT(vcs_package_mapping_set_build(
+            publisher, source_root, accepted.accepted.accepted_work_root,
+            &publication_metrics, publication_mapping_root));
+        ASSERT(vcs_devloop_publication_advance_package_mapping(
+            publisher, publication_anchor.publication_job_root,
+            publication_mapping_root, publication_metrics.bytes_scanned,
+            publication_metrics.new_chunks, publication_metrics.reused_chunks,
+            publication_progress_root, &publication_reused));
+        ASSERT(!publication_reused);
         uint8_t *commit_wire = NULL;
         size_t commit_wire_len = 0;
         ASSERT(vcs_object_get(
@@ -1598,6 +1654,14 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         ASSERT(vcs_package_release_serialize(
                    &first_release, &first_release_wire,
                    &first_release_wire_len) == VCS_PACKAGE_RELEASE_OK);
+        ASSERT(vcs_object_put_addressed(
+            publisher, first_release_root, first_release_wire,
+            first_release_wire_len));
+        ASSERT(vcs_devloop_publication_advance_release(
+            publisher, publication_anchor.publication_job_root,
+            publication_mapping_root, first_release_root,
+            publication_progress_root, &publication_reused));
+        ASSERT(!publication_reused);
 
         struct vcs_zcode_module_passport_v1 passport = {
             .schema_version = 1,
@@ -1627,6 +1691,13 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
                    &passport_wire_len) == VCS_ZCODE_COMMONS_V2_OK);
         ASSERT(vcs_zcode_module_passport_v1_root(
                    &passport, passport_root) == VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT(vcs_object_put_addressed(
+            publisher, passport_root, passport_wire, passport_wire_len));
+        ASSERT(vcs_devloop_publication_advance_passport(
+            publisher, publication_anchor.publication_job_root,
+            publication_mapping_root, first_release_root, passport_root,
+            publication_progress_root, &publication_reused));
+        ASSERT(!publication_reused);
 
         struct vcs_zcode_workspace_entry_v1 workspace_entry = {
             .sequence = 1,
@@ -1677,6 +1748,32 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         ASSERT(vcs_zcode_workspace_manifest_v1_root(
                    &workspace_manifest, workspace_root) ==
                VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT(vcs_object_put_addressed(
+            publisher, workspace_root, workspace_wire, workspace_wire_len));
+        ASSERT(vcs_devloop_publication_advance_workspace(
+            publisher, publication_anchor.publication_job_root,
+            publication_mapping_root, first_release_root, passport_root,
+            workspace_root, publication_progress_root,
+            &publication_reused));
+        ASSERT(!publication_reused);
+        struct vcs_devloop_publication_receipt publication_progress;
+        uint8_t loaded_publication_progress_root[32];
+        ASSERT(vcs_devloop_publication_progress_load(
+            publisher, publication_anchor.publication_job_root,
+            &publication_progress, loaded_publication_progress_root));
+        ASSERT(publication_progress.phase ==
+               VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED);
+        ASSERT(memcmp(publication_progress.artifact_root,
+                      workspace_root, 32) == 0);
+        ASSERT(memcmp(publication_progress_root,
+                      loaded_publication_progress_root, 32) == 0);
+        publication_reused = false;
+        ASSERT(vcs_devloop_publication_advance_workspace(
+            publisher, publication_anchor.publication_job_root,
+            publication_mapping_root, first_release_root, passport_root,
+            workspace_root, publication_progress_root,
+            &publication_reused));
+        ASSERT(publication_reused);
 
         const uint8_t *evidence_wires[5] = {
             passport_wire, first_release_wire, assignment_wire,
@@ -2080,6 +2177,13 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         memcpy(g_zwn_sovereign_receipt.storage_ack_roots,
                storage_ack_roots, sizeof(storage_ack_roots));
         g_zwn_sovereign_receipt.storage_ack_count = 2;
+        memcpy(g_zwn_sovereign_receipt.publication_job_root,
+               publication_anchor.publication_job_root, 32);
+        memcpy(g_zwn_sovereign_receipt.publication_progress_root,
+               publication_progress_root, 32);
+        g_zwn_sovereign_receipt.publication_enqueue_us =
+            publication_anchor.publication_enqueue_us;
+        g_zwn_sovereign_receipt.publication_metrics = publication_metrics;
         g_zwn_sovereign_receipt.source_metrics = transport.bundle_metrics;
         ASSERT(vcs_package_store_package_status(
                    a2.store, workspace_carrier.root,
