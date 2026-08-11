@@ -143,7 +143,7 @@ default_safe_watch_command()
     local path="$1" state_name
     state_name="$(printf '%s' "$path" | tr '/.' '__')"
     printf '%s' \
-        "ZCL_FAST_CACHE=1 ZCL_DEV_WATCH_ONCE=1 ZCL_DEV_WATCH_MODE=check ZCL_DEV_WATCH_CHECK_WORKER=1 ZCL_DEV_WATCH_CHECK_SOURCE_RECORD='$CAMPAIGN_SOURCE_RECORD' ZCL_DEV_WATCH_STATE_DIR='$TMP_DIR/watch-state/$state_name' ZCL_DEV_WATCH_ONCE_FILES='$path' tools/dev/watch-dev-lane.sh --once"
+        "ZCL_FAST_CACHE=1 ZCL_FAST_COMPILE=strict ZCL_DEV_WATCH_ONCE=1 ZCL_DEV_WATCH_MODE=check ZCL_DEV_WATCH_CHECK_WORKER=1 ZCL_DEV_WATCH_CHECK_SOURCE_RECORD='$CAMPAIGN_SOURCE_RECORD' ZCL_DEV_WATCH_STATE_DIR='$TMP_DIR/watch-state/$state_name' ZCL_DEV_WATCH_ONCE_FILES='$path' tools/dev/watch-dev-lane.sh --once"
 }
 
 configure_cases()
@@ -531,7 +531,7 @@ self_test()
     local failure_runs failure_marker fresh_status stale_status legacy_status
     local source_tool source_backup record_before record_after record_aba
     local source_before source_after source_aba clean_before clean_after clean_aba
-    local mutation_before mutation_after mutation_aba
+    local mutation_before mutation_after mutation_aba default_command
     source_tool="$SCRIPT_DIR/source-identity.sh"
     sandbox="$(mktemp -d "${TMPDIR:-/tmp}/zcl-dev-loop-selftest.XXXXXX")" ||
         return 1
@@ -595,6 +595,17 @@ self_test()
         rm -rf "$sandbox"
         return 1
     }
+    TMP_DIR="$sandbox/default-state"
+    CAMPAIGN_SOURCE_RECORD="$record_after"
+    default_command="$(default_safe_watch_command source.txt)"
+    case "$default_command" in
+        *"ZCL_FAST_COMPILE=strict"*) ;;
+        *)
+            printf '[dev-loop-bench-selftest] FAIL: default warm proof is not reusable by strict pre-push\n' >&2
+            rm -rf "$sandbox"
+            return 1
+            ;;
+    esac
     ITERATIONS=3
     WARMUP=1
     ACTIVATE=0
