@@ -37,6 +37,10 @@
     "zcl.zcode.workspace_manifest.signature.v1"
 #define VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_PAYLOAD_BYTES \
     ((sizeof(VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_DOMAIN) - 1u) + 32u)
+#define VCS_ZCODE_WORKSPACE_MANIFEST_V1_WIRE_BASE_BYTES 160u
+#define VCS_ZCODE_WORKSPACE_MANIFEST_V1_ENTRY_WIRE_BYTES 168u
+#define VCS_ZCODE_WORKSPACE_MANIFEST_V1_EDGE_WIRE_BYTES 8u
+#define VCS_ZCODE_WORKSPACE_MANIFEST_V1_ASSET_WIRE_BYTES 32u
 #define VCS_ZCODE_WORKSPACE_ENTRY_V1_DOMAIN \
     "zcl.zcode.workspace_entry.v1"
 #define VCS_ZCODE_TYPED_ASSET_MANIFEST_V1_DOMAIN \
@@ -163,6 +167,16 @@ struct vcs_zcode_workspace_manifest_v1 {
     size_t typed_asset_count;
     uint8_t signer_root[32];
     uint8_t signature[64];
+};
+
+/* Owning decode result for the variable-length canonical wire.  The public
+ * manifest keeps caller-owned views so existing v1 roots remain unchanged;
+ * this wrapper owns only arrays allocated while decoding hostile CAS bytes. */
+struct vcs_zcode_workspace_manifest_v1_decoded {
+    struct vcs_zcode_workspace_manifest_v1 manifest;
+    struct vcs_zcode_workspace_entry_v1 *entries;
+    struct vcs_zcode_workspace_edge_v1 *edges;
+    uint8_t (*typed_asset_roots)[32];
 };
 
 struct vcs_zcode_mission_v1 {
@@ -478,6 +492,17 @@ enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_signing_payload(
     uint8_t *payload, size_t payload_capacity, size_t *payload_len);
 enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_verify(
     const struct vcs_zcode_workspace_manifest_v1 *workspace);
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_wire_size(
+    const struct vcs_zcode_workspace_manifest_v1 *workspace,
+    size_t *wire_size);
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_encode(
+    const struct vcs_zcode_workspace_manifest_v1 *workspace,
+    uint8_t *wire, size_t wire_capacity, size_t *wire_len);
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_decode(
+    struct vcs_zcode_workspace_manifest_v1_decoded *out,
+    const uint8_t *wire, size_t wire_len);
+void vcs_zcode_workspace_manifest_v1_decoded_free(
+    struct vcs_zcode_workspace_manifest_v1_decoded *decoded);
 enum vcs_zcode_commons_v2_error vcs_zcode_workspace_entry_v1_validate(
     const struct vcs_zcode_workspace_entry_v1 *entry);
 enum vcs_zcode_commons_v2_error vcs_zcode_workspace_entry_v1_root(

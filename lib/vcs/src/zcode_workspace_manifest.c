@@ -14,6 +14,9 @@
 #include <string.h>
 
 static const uint8_t passport_magic[8] = {'Z','C','M','P','1',0,0,0};
+static const uint8_t workspace_manifest_magic[8] = {
+    'Z','C','W','M','1',0,0,0,
+};
 static const char passport_signature_domain[] =
     VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_DOMAIN;
 static const char workspace_manifest_signature_domain[] =
@@ -557,6 +560,180 @@ enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_verify(
     if (error != VCS_ZCODE_COMMONS_V2_OK) return error;
     return valid ? VCS_ZCODE_COMMONS_V2_OK
                  : VCS_ZCODE_COMMONS_V2_SIGNATURE;
+}
+
+static bool workspace_manifest_wire_add(size_t *total, size_t count,
+                                        size_t item_size)
+{
+    size_t bytes = 0;
+    return total && zcl_size_mul(count, item_size, &bytes) &&
+        zcl_size_add(*total, bytes, total);
+}
+
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_wire_size(
+    const struct vcs_zcode_workspace_manifest_v1 *workspace,
+    size_t *wire_size)
+{
+    if (wire_size) *wire_size = 0;
+    if (!workspace || !wire_size) return VCS_ZCODE_COMMONS_V2_NULL;
+    enum vcs_zcode_commons_v2_error error =
+        vcs_zcode_workspace_manifest_v1_verify(workspace);
+    if (error != VCS_ZCODE_COMMONS_V2_OK) return error;
+    size_t total = VCS_ZCODE_WORKSPACE_MANIFEST_V1_WIRE_BASE_BYTES;
+    if (!workspace_manifest_wire_add(
+            &total, workspace->entry_count,
+            VCS_ZCODE_WORKSPACE_MANIFEST_V1_ENTRY_WIRE_BYTES) ||
+        !workspace_manifest_wire_add(
+            &total, workspace->edge_count,
+            VCS_ZCODE_WORKSPACE_MANIFEST_V1_EDGE_WIRE_BYTES) ||
+        !workspace_manifest_wire_add(
+            &total, workspace->typed_asset_count,
+            VCS_ZCODE_WORKSPACE_MANIFEST_V1_ASSET_WIRE_BYTES))
+        return VCS_ZCODE_COMMONS_V2_OVERFLOW;
+    *wire_size = total;
+    return VCS_ZCODE_COMMONS_V2_OK;
+}
+
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_encode(
+    const struct vcs_zcode_workspace_manifest_v1 *workspace,
+    uint8_t *wire, size_t wire_capacity, size_t *wire_len)
+{
+    if (wire_len) *wire_len = 0;
+    if (!workspace || !wire || !wire_len)
+        return VCS_ZCODE_COMMONS_V2_NULL;
+    size_t expected = 0;
+    enum vcs_zcode_commons_v2_error error =
+        vcs_zcode_workspace_manifest_v1_wire_size(workspace, &expected);
+    if (error != VCS_ZCODE_COMMONS_V2_OK) return error;
+    if (wire_capacity < expected) return VCS_ZCODE_COMMONS_V2_SIZE;
+    size_t off = 0;
+    memcpy(wire + off, workspace_manifest_magic,
+           sizeof(workspace_manifest_magic));
+    off += sizeof(workspace_manifest_magic);
+    zcl_write_u16_le(wire + off, workspace->schema_version); off += 2;
+    zcl_write_u16_le(wire + off, workspace->flags); off += 2;
+    zcl_write_u64_le(wire + off, workspace->sequence); off += 8;
+    memcpy(wire + off, workspace->predecessor_workspace_root, 32); off += 32;
+    zcl_write_u32_le(wire + off, (uint32_t)workspace->entry_count); off += 4;
+    zcl_write_u32_le(wire + off, (uint32_t)workspace->edge_count); off += 4;
+    zcl_write_u32_le(wire + off,
+                     (uint32_t)workspace->typed_asset_count); off += 4;
+    memcpy(wire + off, workspace->signer_root, 32); off += 32;
+    for (size_t i = 0; i < workspace->entry_count; i++) {
+        const struct vcs_zcode_workspace_entry_v1 *entry =
+            &workspace->entries[i];
+        memcpy(wire + off, entry->module_release_root, 32u * 5u);
+        off += 32u * 5u;
+        zcl_write_u64_le(wire + off, entry->sequence); off += 8;
+    }
+    for (size_t i = 0; i < workspace->edge_count; i++) {
+        zcl_write_u16_le(wire + off, workspace->edges[i].from_entry); off += 2;
+        zcl_write_u16_le(wire + off, workspace->edges[i].to_entry); off += 2;
+        zcl_write_u32_le(wire + off, workspace->edges[i].reserved); off += 4;
+    }
+    for (size_t i = 0; i < workspace->typed_asset_count; i++) {
+        memcpy(wire + off, workspace->typed_asset_roots[i], 32); off += 32;
+    }
+    memcpy(wire + off, workspace->signature, 64); off += 64;
+    if (off != expected) return VCS_ZCODE_COMMONS_V2_SIZE;
+    *wire_len = off;
+    return VCS_ZCODE_COMMONS_V2_OK;
+}
+
+void vcs_zcode_workspace_manifest_v1_decoded_free(
+    struct vcs_zcode_workspace_manifest_v1_decoded *decoded)
+{
+    if (!decoded) return;
+    free(decoded->entries);
+    free(decoded->edges);
+    free(decoded->typed_asset_roots);
+    memset(decoded, 0, sizeof(*decoded));
+}
+
+enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_decode(
+    struct vcs_zcode_workspace_manifest_v1_decoded *out,
+    const uint8_t *wire, size_t wire_len)
+{
+    if (!out || !wire) return VCS_ZCODE_COMMONS_V2_NULL;
+    memset(out, 0, sizeof(*out));
+    if (wire_len < VCS_ZCODE_WORKSPACE_MANIFEST_V1_WIRE_BASE_BYTES)
+        return VCS_ZCODE_COMMONS_V2_SIZE;
+    if (memcmp(wire, workspace_manifest_magic,
+               sizeof(workspace_manifest_magic)) != 0)
+        return VCS_ZCODE_COMMONS_V2_MAGIC;
+    size_t off = sizeof(workspace_manifest_magic);
+    struct vcs_zcode_workspace_manifest_v1 *workspace = &out->manifest;
+    workspace->schema_version = zcl_read_u16_le(wire + off); off += 2;
+    workspace->flags = zcl_read_u16_le(wire + off); off += 2;
+    workspace->sequence = zcl_read_u64_le(wire + off); off += 8;
+    memcpy(workspace->predecessor_workspace_root, wire + off, 32); off += 32;
+    workspace->entry_count = zcl_read_u32_le(wire + off); off += 4;
+    workspace->edge_count = zcl_read_u32_le(wire + off); off += 4;
+    workspace->typed_asset_count = zcl_read_u32_le(wire + off); off += 4;
+    memcpy(workspace->signer_root, wire + off, 32); off += 32;
+    if (workspace->entry_count == 0 ||
+        workspace->entry_count > VCS_ZCODE_COMMONS_MAX_CLAIMS ||
+        workspace->edge_count > VCS_ZCODE_COMMONS_MAX_CLAIMS ||
+        workspace->typed_asset_count > VCS_ZCODE_COMMONS_MAX_CLAIMS) {
+        memset(out, 0, sizeof(*out));
+        return VCS_ZCODE_COMMONS_V2_LIMIT;
+    }
+    size_t expected = VCS_ZCODE_WORKSPACE_MANIFEST_V1_WIRE_BASE_BYTES;
+    if (!workspace_manifest_wire_add(
+            &expected, workspace->entry_count,
+            VCS_ZCODE_WORKSPACE_MANIFEST_V1_ENTRY_WIRE_BYTES) ||
+        !workspace_manifest_wire_add(
+            &expected, workspace->edge_count,
+            VCS_ZCODE_WORKSPACE_MANIFEST_V1_EDGE_WIRE_BYTES) ||
+        !workspace_manifest_wire_add(
+            &expected, workspace->typed_asset_count,
+            VCS_ZCODE_WORKSPACE_MANIFEST_V1_ASSET_WIRE_BYTES)) {
+        memset(out, 0, sizeof(*out));
+        return VCS_ZCODE_COMMONS_V2_OVERFLOW;
+    }
+    if (wire_len != expected) {
+        memset(out, 0, sizeof(*out));
+        return VCS_ZCODE_COMMONS_V2_SIZE;
+    }
+    out->entries = zcl_calloc(
+        workspace->entry_count, sizeof(*out->entries),
+        "workspace_manifest_v1_entries");
+    if (workspace->edge_count > 0)
+        out->edges = zcl_calloc(
+            workspace->edge_count, sizeof(*out->edges),
+            "workspace_manifest_v1_edges");
+    if (workspace->typed_asset_count > 0)
+        out->typed_asset_roots = zcl_calloc(
+            workspace->typed_asset_count, sizeof(*out->typed_asset_roots),
+            "workspace_manifest_v1_assets");
+    if (!out->entries || (workspace->edge_count > 0 && !out->edges) ||
+        (workspace->typed_asset_count > 0 && !out->typed_asset_roots)) {
+        vcs_zcode_workspace_manifest_v1_decoded_free(out);
+        return VCS_ZCODE_COMMONS_V2_LIMIT;
+    }
+    workspace->entries = out->entries;
+    workspace->edges = out->edges;
+    workspace->typed_asset_roots = out->typed_asset_roots;
+    for (size_t i = 0; i < workspace->entry_count; i++) {
+        memcpy(out->entries[i].module_release_root, wire + off, 32u * 5u);
+        off += 32u * 5u;
+        out->entries[i].sequence = zcl_read_u64_le(wire + off); off += 8;
+    }
+    for (size_t i = 0; i < workspace->edge_count; i++) {
+        out->edges[i].from_entry = zcl_read_u16_le(wire + off); off += 2;
+        out->edges[i].to_entry = zcl_read_u16_le(wire + off); off += 2;
+        out->edges[i].reserved = zcl_read_u32_le(wire + off); off += 4;
+    }
+    for (size_t i = 0; i < workspace->typed_asset_count; i++) {
+        memcpy(out->typed_asset_roots[i], wire + off, 32); off += 32;
+    }
+    memcpy(workspace->signature, wire + off, 64); off += 64;
+    enum vcs_zcode_commons_v2_error error = off == wire_len
+        ? vcs_zcode_workspace_manifest_v1_verify(workspace)
+        : VCS_ZCODE_COMMONS_V2_SIZE;
+    if (error != VCS_ZCODE_COMMONS_V2_OK)
+        vcs_zcode_workspace_manifest_v1_decoded_free(out);
+    return error;
 }
 
 enum vcs_zcode_commons_v2_error vcs_zcode_workspace_manifest_v1_root(

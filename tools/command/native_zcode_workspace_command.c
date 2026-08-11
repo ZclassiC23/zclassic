@@ -7,9 +7,14 @@
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "services/zcode_workspace_view_service.h"
+#include "vcs/package_mapping.h"
+#include "vcs/vcs_devloop.h"
+#include "vcs/vcs_object.h"
 #include "vcs/zcode_commons_v2.h"
 
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void workspace_binding_fail(struct zcl_command_reply *reply,
@@ -250,6 +255,7 @@ static bool workspace_manifest_key_allowed(const char *key, bool commit)
         "passport", "module_release_root", "sequence",
         "predecessor_release_root", "workspace_sequence",
         "predecessor_workspace_root", "signer_root",
+        "workspace", "publication_job_root",
     };
     if (!key) return false;
     for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
@@ -348,6 +354,140 @@ static bool workspace_manifest_parse(
     return true;
 }
 
+struct workspace_manifest_job_binding {
+    bool requested;
+    bool workspace_already_published;
+    char workspace[PATH_MAX];
+    uint8_t job_root[32];
+    uint8_t mapping_root[32];
+    uint8_t release_root[32];
+    uint8_t passport_root[32];
+    uint8_t existing_workspace_root[32];
+};
+
+static bool workspace_root_is_zero(const uint8_t root[32])
+{
+    uint8_t any = 0;
+    for (size_t i = 0; i < 32; i++) any |= root[i];
+    return any == 0;
+}
+
+static bool workspace_manifest_job_preflight(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply,
+    const struct vcs_zcode_workspace_manifest_v1 *manifest,
+    const struct vcs_zcode_workspace_entry_v1 *entry,
+    struct workspace_manifest_job_binding *binding)
+{
+    memset(binding, 0, sizeof(*binding));
+    const char *workspace = json_get_str(json_get(request->input,
+                                                   "workspace"));
+    const char *job_hex = json_get_str(json_get(request->input,
+                                                 "publication_job_root"));
+    bool have_workspace = workspace && workspace[0];
+    bool have_job = job_hex && job_hex[0];
+    if (!have_workspace && !have_job) return true;
+    binding->requested = true;
+    struct vcs_devloop_publication_job job = {0};
+    struct vcs_devloop_publication_receipt progress = {0};
+    struct vcs_devloop_publication_receipt passport = {0};
+    struct vcs_devloop_publication_receipt release = {0};
+    struct vcs_devloop_publication_receipt mapping = {0};
+    uint8_t progress_root[32];
+    bool valid = have_workspace && have_job &&
+        realpath(workspace, binding->workspace) != NULL &&
+        strlen(job_hex) == 64u &&
+        zcl_hex_decode_lower(job_hex, binding->job_root, 32) &&
+        vcs_devloop_publication_job_load(
+            binding->workspace, binding->job_root, &job) &&
+        vcs_devloop_publication_job_is_queued(
+            binding->workspace, binding->job_root) &&
+        vcs_devloop_publication_progress_load(
+            binding->workspace, binding->job_root, &progress,
+            progress_root);
+    if (valid && progress.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED) {
+        binding->workspace_already_published = true;
+        memcpy(binding->existing_workspace_root,
+               progress.artifact_root, 32);
+        valid = vcs_devloop_publication_receipt_load(
+                binding->workspace, progress.predecessor_receipt_root,
+                &passport) &&
+            passport.phase ==
+                VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED;
+    } else if (valid && progress.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED) {
+        passport = progress;
+    } else {
+        valid = false;
+    }
+    valid = valid && memcmp(passport.job_root, binding->job_root, 32) == 0 &&
+        vcs_devloop_publication_receipt_load(
+            binding->workspace, passport.predecessor_receipt_root,
+            &release) &&
+        release.phase == VCS_DEVLOOP_PUBLICATION_PHASE_RELEASE_PUBLISHED &&
+        memcmp(release.job_root, binding->job_root, 32) == 0 &&
+        vcs_devloop_publication_receipt_load(
+            binding->workspace, release.predecessor_receipt_root,
+            &mapping) &&
+        mapping.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_PACKAGE_MAPPING_READY &&
+        memcmp(mapping.job_root, binding->job_root, 32) == 0;
+    struct vcs_package_mapping_set mapping_set;
+    vcs_package_mapping_set_init(&mapping_set);
+    valid = valid && vcs_package_mapping_set_load(
+            binding->workspace, mapping.artifact_root, &mapping_set) &&
+        memcmp(mapping_set.source_tree_root, job.source_tree_root, 32) == 0 &&
+        memcmp(entry->module_passport_root,
+               passport.artifact_root, 32) == 0 &&
+        memcmp(entry->module_release_root,
+               release.artifact_root, 32) == 0;
+    bool parent_zero = workspace_root_is_zero(job.parent_workspace_root);
+    valid = valid &&
+        ((parent_zero && manifest->sequence == 1u &&
+          workspace_root_is_zero(manifest->predecessor_workspace_root)) ||
+         (!parent_zero && manifest->sequence > 1u &&
+          memcmp(manifest->predecessor_workspace_root,
+                 job.parent_workspace_root, 32) == 0));
+    if (valid) {
+        memcpy(binding->mapping_root, mapping.artifact_root, 32);
+        memcpy(binding->release_root, release.artifact_root, 32);
+        memcpy(binding->passport_root, passport.artifact_root, 32);
+    }
+    vcs_package_mapping_set_free(&mapping_set);
+    if (!valid) {
+        workspace_manifest_fail(
+            reply, "WORKSPACE_MANIFEST_JOB_BINDING_INVALID", "bind",
+            "publication_job_root must be queued at PASSPORT_PUBLISHED and the manifest must bind its exact Passport, release and parent workspace");
+        return false;
+    }
+    return true;
+}
+
+static bool workspace_manifest_store_verified(
+    const char *workspace, const uint8_t root[32],
+    const uint8_t *wire, size_t wire_len)
+{
+    if (!vcs_object_store_init(workspace) ||
+        !vcs_object_put_addressed(workspace, root, wire, wire_len))
+        return false;
+    uint8_t *stored = NULL;
+    size_t stored_len = 0;
+    struct vcs_zcode_workspace_manifest_v1_decoded decoded = {0};
+    uint8_t checked_root[32];
+    bool ok = vcs_object_load_raw_bounded(
+            workspace, root, wire_len, &stored, &stored_len) == 0 &&
+        stored_len == wire_len && memcmp(stored, wire, wire_len) == 0 &&
+        vcs_zcode_workspace_manifest_v1_decode(
+            &decoded, stored, stored_len) == VCS_ZCODE_COMMONS_V2_OK &&
+        vcs_zcode_workspace_manifest_v1_root(
+            &decoded.manifest, checked_root) == VCS_ZCODE_COMMONS_V2_OK &&
+        memcmp(checked_root, root, 32) == 0;
+    vcs_zcode_workspace_manifest_v1_decoded_free(&decoded);
+    free(stored);
+    return ok;
+}
+
 static bool workspace_manifest_render_service(
     struct zcl_command_reply *reply,
     enum zcode_workspace_manifest_view_mode_v1 mode,
@@ -385,6 +525,10 @@ void zcl_native_handle_zcode_workspace_manifest_plan(
     if (!workspace_manifest_parse(request, reply, &entry, &manifest,
                                   binding_root, false))
         return;
+    struct workspace_manifest_job_binding binding;
+    if (!workspace_manifest_job_preflight(
+            request, reply, &manifest, &entry, &binding))
+        return;
     uint8_t unsigned_root[32];
     uint8_t payload[
         VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_PAYLOAD_BYTES];
@@ -418,6 +562,18 @@ void zcl_native_handle_zcode_workspace_manifest_plan(
     (void)json_push_kv_bool(&reply->data, "published", false);
     (void)json_push_kv_bool(&reply->data, "simulation_only", true);
     (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
+    if (binding.requested) {
+        workspace_push_root(&reply->data, "publication_job_root",
+                            binding.job_root);
+        workspace_push_root(&reply->data, "package_mapping_root",
+                            binding.mapping_root);
+        workspace_push_root(&reply->data, "release_root",
+                            binding.release_root);
+        workspace_push_root(&reply->data, "passport_root",
+                            binding.passport_root);
+        (void)json_push_kv_bool(&reply->data,
+                                "will_persist_on_commit", true);
+    }
     (void)json_push_kv_str(&reply->data, "agent_next_action",
                            view.next_action);
 }
@@ -430,6 +586,10 @@ void zcl_native_handle_zcode_workspace_manifest_commit(
     uint8_t binding_root[32];
     if (!workspace_manifest_parse(request, reply, &entry, &manifest,
                                   binding_root, true))
+        return;
+    struct workspace_manifest_job_binding binding;
+    if (!workspace_manifest_job_preflight(
+            request, reply, &manifest, &entry, &binding))
         return;
     enum vcs_zcode_commons_v2_error error =
         vcs_zcode_workspace_manifest_v1_verify(&manifest);
@@ -447,19 +607,70 @@ void zcl_native_handle_zcode_workspace_manifest_commit(
                                 vcs_zcode_commons_v2_error_string(error));
         return;
     }
+    uint8_t wire[VCS_ZCODE_WORKSPACE_MANIFEST_V1_WIRE_BASE_BYTES +
+                 VCS_ZCODE_WORKSPACE_MANIFEST_V1_ENTRY_WIRE_BYTES];
+    size_t wire_len = 0;
+    error = vcs_zcode_workspace_manifest_v1_encode(
+        &manifest, wire, sizeof(wire), &wire_len);
+    if (error != VCS_ZCODE_COMMONS_V2_OK || wire_len != sizeof(wire)) {
+        workspace_manifest_fail(reply, "WORKSPACE_MANIFEST_ENCODE_FAILED",
+                                "encode",
+                                vcs_zcode_commons_v2_error_string(error));
+        return;
+    }
     struct zcode_workspace_view_result_v1 view;
     if (!workspace_manifest_render_service(
             reply, ZCODE_WORKSPACE_MANIFEST_VIEW_COMMIT, &view))
         return;
+    uint8_t progress_root[32];
+    bool progress_reused = false;
+    if (binding.requested &&
+        ((binding.workspace_already_published &&
+          memcmp(binding.existing_workspace_root,
+                 manifest_root, 32) != 0) ||
+         !workspace_manifest_store_verified(
+             binding.workspace, manifest_root, wire, wire_len) ||
+         !vcs_devloop_publication_advance_workspace(
+             binding.workspace, binding.job_root, binding.mapping_root,
+             binding.release_root, binding.passport_root, manifest_root,
+             progress_root, &progress_reused))) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "WORKSPACE_MANIFEST_PROGRESS_FAILED", "persist", true, true,
+            "the verified workspace manifest could not be durably bound to its publication job; retry the exact commit",
+            "dev publication status");
+        return;
+    }
+    char wire_hex[sizeof(wire) * 2u + 1u];
+    zcl_hex_encode(wire, wire_len, wire_hex);
     (void)json_push_kv_str(&reply->data, "kind", view.kind);
     (void)json_push_kv_bool(&reply->data, "verified", true);
+    (void)json_push_kv_str(&reply->data, "manifest", wire_hex);
     workspace_push_root(&reply->data, "manifest_root", manifest_root);
     workspace_push_root(&reply->data, "binding_root", binding_root);
     (void)json_push_kv_int(&reply->data, "entry_count", 1);
-    (void)json_push_kv_bool(&reply->data, "persisted", false);
+    (void)json_push_kv_bool(&reply->data, "persisted", binding.requested);
     (void)json_push_kv_bool(&reply->data, "published", false);
     (void)json_push_kv_bool(&reply->data, "simulation_only", true);
     (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
+    if (binding.requested) {
+        workspace_push_root(&reply->data, "publication_job_root",
+                            binding.job_root);
+        workspace_push_root(&reply->data, "progress_receipt_root",
+                            progress_root);
+        workspace_push_root(&reply->data, "package_mapping_root",
+                            binding.mapping_root);
+        workspace_push_root(&reply->data, "release_root",
+                            binding.release_root);
+        workspace_push_root(&reply->data, "passport_root",
+                            binding.passport_root);
+        (void)json_push_kv_str(&reply->data, "publication_status",
+                               "WORKSPACE_PUBLISHED");
+        (void)json_push_kv_bool(&reply->data, "progress_reused",
+                                progress_reused);
+        (void)json_push_kv_bool(&reply->data, "network_called", false);
+        (void)json_push_kv_bool(&reply->data, "wallet_called", false);
+    }
     (void)json_push_kv_str(&reply->data, "agent_next_action",
                            view.next_action);
 }
