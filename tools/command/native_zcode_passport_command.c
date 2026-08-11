@@ -182,7 +182,8 @@ static bool passport_job_preflight(
         return true;
     binding->requested = true;
     struct vcs_devloop_publication_job job;
-    struct vcs_devloop_publication_receipt progress, release, mapping;
+    struct vcs_devloop_publication_receipt progress, passport_receipt;
+    struct vcs_devloop_publication_receipt release, mapping;
     uint8_t progress_root[32];
     bool valid = workspace && job_hex && realpath(
             workspace, binding->workspace) != NULL &&
@@ -200,11 +201,33 @@ static bool passport_job_preflight(
         release = progress;
     } else if (valid && progress.phase ==
             VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED) {
+        passport_receipt = progress;
         valid = vcs_devloop_publication_receipt_load(
-                binding->workspace, progress.predecessor_receipt_root,
+                binding->workspace, passport_receipt.predecessor_receipt_root,
                 &release) &&
             release.phase ==
                 VCS_DEVLOOP_PUBLICATION_PHASE_RELEASE_PUBLISHED;
+    } else if (valid && progress.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED) {
+        uint8_t expected_passport_root[32];
+        bool loaded_passport = vcs_devloop_publication_receipt_load(
+                binding->workspace, progress.predecessor_receipt_root,
+                &passport_receipt);
+        bool passport_phase = loaded_passport && passport_receipt.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED;
+        bool rooted = vcs_zcode_module_passport_v1_root(
+                passport, expected_passport_root) ==
+                VCS_ZCODE_COMMONS_V2_OK;
+        bool same_passport = rooted && loaded_passport &&
+            memcmp(passport_receipt.artifact_root,
+                   expected_passport_root, 32) == 0;
+        bool loaded_release = same_passport &&
+            vcs_devloop_publication_receipt_load(
+                binding->workspace,
+                passport_receipt.predecessor_receipt_root,
+                &release);
+        valid = passport_phase && same_passport && loaded_release &&
+            release.phase == VCS_DEVLOOP_PUBLICATION_PHASE_RELEASE_PUBLISHED;
     } else {
         valid = false;
     }
@@ -259,9 +282,9 @@ static bool passport_job_preflight(
     if (!valid) {
         passport_fail_action(
             reply, "MODULE_PASSPORT_JOB_BINDING_INVALID", "bind",
-            "publication_job_root must be queued at RELEASE_PUBLISHED and "
-            "the Passport must bind its exact signed release recipe, ZVCS "
-            "commit, and accepted proof set",
+            "publication_job_root must be queued at RELEASE_PUBLISHED or a "
+            "later matching phase and the Passport must bind its exact signed "
+            "release recipe, ZVCS commit, and accepted proof set",
             "dev publication status");
         return false;
     }
@@ -367,8 +390,6 @@ void zcl_native_handle_zcode_passport_commit(
     struct vcs_zcode_module_passport_v1 passport;
     if (!passport_parse_roots(request, reply, &passport, true, "commit"))
         return;
-    struct passport_job_binding binding;
-    if (!passport_job_preflight(request, reply, &passport, &binding)) return;
     const char *signature = json_get_str(json_get(request->input, "signature"));
     if (!signature || strlen(signature) != 128u ||
         !zcl_hex_decode_lower(signature, passport.signature, 64)) {
@@ -388,6 +409,8 @@ void zcl_native_handle_zcode_passport_commit(
                              "zcode.passport.plan");
         return;
     }
+    struct passport_job_binding binding;
+    if (!passport_job_preflight(request, reply, &passport, &binding)) return;
     uint8_t wire[VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES], root[32];
     size_t wire_len = 0;
     error = vcs_zcode_module_passport_v1_encode(

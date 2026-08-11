@@ -3329,6 +3329,15 @@ static int test_zd_improve_command(void)
         const char *published_passport_wire = json_get_str(json_get(
             &passport_commit_reply.data, "passport"));
         ASSERT(published_passport_root && published_passport_wire);
+        char published_passport_root_saved[65];
+        char published_passport_wire_saved[
+            VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES * 2u + 1u];
+        (void)snprintf(published_passport_root_saved,
+                       sizeof(published_passport_root_saved), "%s",
+                       published_passport_root);
+        (void)snprintf(published_passport_wire_saved,
+                       sizeof(published_passport_wire_saved), "%s",
+                       published_passport_wire);
         uint8_t passport_root[32], *stored_passport = NULL;
         size_t stored_passport_len = 0;
         ASSERT(zcl_hex_decode_lower(published_passport_root,
@@ -3362,6 +3371,173 @@ static int test_zd_improve_command(void)
         ASSERT(json_get_bool(json_get(&passport_commit_reply.data,
                                       "progress_reused")));
         zcl_command_reply_free(&passport_commit_reply);
+
+        uint8_t workspace_manifest_seed[32], workspace_manifest_secret[32];
+        uint8_t workspace_manifest_pubkey[32];
+        zd_root(workspace_manifest_seed, 0x91);
+        ed25519_keypair(workspace_manifest_pubkey,
+                        workspace_manifest_secret,
+                        workspace_manifest_seed);
+        char workspace_manifest_pubkey_hex[65];
+        zcl_hex_encode(workspace_manifest_pubkey, 32,
+                       workspace_manifest_pubkey_hex);
+        struct json_value workspace_manifest_input;
+        json_init(&workspace_manifest_input);
+        json_set_object(&workspace_manifest_input);
+        ASSERT(json_push_kv_str(&workspace_manifest_input, "passport",
+                                published_passport_wire_saved));
+        ASSERT(json_push_kv_str(&workspace_manifest_input,
+                                "module_release_root",
+                                published_release_root));
+        ASSERT(json_push_kv_int(&workspace_manifest_input, "sequence", 1));
+        ASSERT(json_push_kv_int(&workspace_manifest_input,
+                                "workspace_sequence", 1));
+        ASSERT(json_push_kv_str(&workspace_manifest_input, "signer_root",
+                                workspace_manifest_pubkey_hex));
+        ASSERT(json_push_kv_str(&workspace_manifest_input, "workspace",
+                                workspace));
+        ASSERT(json_push_kv_str(&workspace_manifest_input,
+                                "publication_job_root",
+                                publication_job_hex));
+        struct zcl_command_request workspace_manifest_request = {
+            .input = &workspace_manifest_input,
+        };
+        struct json_value *workspace_release_value =
+            (struct json_value *)json_get(&workspace_manifest_input,
+                                           "module_release_root");
+        char correct_workspace_release[65], wrong_workspace_release[65];
+        (void)snprintf(correct_workspace_release,
+                       sizeof(correct_workspace_release), "%s",
+                       published_release_root);
+        (void)snprintf(wrong_workspace_release,
+                       sizeof(wrong_workspace_release), "%s",
+                       correct_workspace_release);
+        wrong_workspace_release[0] =
+            wrong_workspace_release[0] == '0' ? '1' : '0';
+        json_set_str(workspace_release_value, wrong_workspace_release);
+        struct zcl_command_reply wrong_workspace_manifest_reply;
+        zcl_command_reply_init(
+            &wrong_workspace_manifest_reply,
+            "zcl.zcode_workspace_manifest_plan.v1");
+        zcl_native_handle_zcode_workspace_manifest_plan(
+            &workspace_manifest_request, &wrong_workspace_manifest_reply);
+        ASSERT_EQ(wrong_workspace_manifest_reply.exit_code,
+                  ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(wrong_workspace_manifest_reply.error.code,
+                      "WORKSPACE_MANIFEST_JOB_BINDING_INVALID");
+        zcl_command_reply_free(&wrong_workspace_manifest_reply);
+        json_set_str(workspace_release_value, correct_workspace_release);
+        struct zcl_command_reply workspace_manifest_plan_reply;
+        zcl_command_reply_init(
+            &workspace_manifest_plan_reply,
+            "zcl.zcode_workspace_manifest_plan.v1");
+        zcl_native_handle_zcode_workspace_manifest_plan(
+            &workspace_manifest_request, &workspace_manifest_plan_reply);
+        ASSERT_EQ(workspace_manifest_plan_reply.exit_code,
+                  ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&workspace_manifest_plan_reply.data,
+                                      "will_persist_on_commit")));
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &workspace_manifest_plan_reply.data,
+                          "passport_root")),
+                      published_passport_root_saved);
+        const char *workspace_signing_payload_hex = json_get_str(json_get(
+            &workspace_manifest_plan_reply.data, "signing_payload"));
+        ASSERT(workspace_signing_payload_hex != NULL);
+        uint8_t workspace_signing_payload[
+            VCS_ZCODE_WORKSPACE_MANIFEST_V1_SIGNING_PAYLOAD_BYTES];
+        ASSERT(zcl_hex_decode_lower(
+            workspace_signing_payload_hex, workspace_signing_payload,
+            sizeof(workspace_signing_payload)));
+        uint8_t workspace_manifest_signature[64];
+        ed25519_sign(workspace_manifest_signature,
+                     workspace_signing_payload,
+                     sizeof(workspace_signing_payload),
+                     workspace_manifest_secret,
+                     workspace_manifest_pubkey);
+        memset(workspace_manifest_secret, 0,
+               sizeof(workspace_manifest_secret));
+        zcl_command_reply_free(&workspace_manifest_plan_reply);
+        char workspace_manifest_signature_hex[129];
+        zcl_hex_encode(workspace_manifest_signature,
+                       sizeof(workspace_manifest_signature),
+                       workspace_manifest_signature_hex);
+        ASSERT(json_push_kv_str(&workspace_manifest_input, "signature",
+                                workspace_manifest_signature_hex));
+        struct zcl_command_reply workspace_manifest_commit_reply;
+        zcl_command_reply_init(
+            &workspace_manifest_commit_reply,
+            "zcl.zcode_workspace_manifest_commit.v1");
+        zcl_native_handle_zcode_workspace_manifest_commit(
+            &workspace_manifest_request, &workspace_manifest_commit_reply);
+        ASSERT_EQ(workspace_manifest_commit_reply.exit_code,
+                  ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&workspace_manifest_commit_reply.data,
+                                      "persisted")));
+        ASSERT(!json_get_bool(json_get(
+            &workspace_manifest_commit_reply.data, "published")));
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &workspace_manifest_commit_reply.data,
+                          "publication_status")),
+                      "WORKSPACE_PUBLISHED");
+        ASSERT(!json_get_bool(json_get(
+            &workspace_manifest_commit_reply.data, "progress_reused")));
+        const char *published_workspace_root = json_get_str(json_get(
+            &workspace_manifest_commit_reply.data, "manifest_root"));
+        const char *published_workspace_wire = json_get_str(json_get(
+            &workspace_manifest_commit_reply.data, "manifest"));
+        ASSERT(published_workspace_root && published_workspace_wire);
+        uint8_t workspace_root[32], *stored_workspace = NULL;
+        size_t stored_workspace_len = 0;
+        ASSERT(zcl_hex_decode_lower(published_workspace_root,
+                                    workspace_root, 32));
+        ASSERT_EQ(vcs_object_load_raw_bounded(
+                      workspace, workspace_root,
+                      VCS_ZCODE_WORKSPACE_MANIFEST_V1_WIRE_BASE_BYTES +
+                          VCS_ZCODE_WORKSPACE_MANIFEST_V1_ENTRY_WIRE_BYTES,
+                      &stored_workspace, &stored_workspace_len), 0);
+        struct vcs_zcode_workspace_manifest_v1_decoded stored_manifest = {0};
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_decode(
+                      &stored_manifest, stored_workspace,
+                      stored_workspace_len), VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT(memcmp(stored_manifest.manifest.entries[0].module_passport_root,
+                      passport_root, 32) == 0);
+        vcs_zcode_workspace_manifest_v1_decoded_free(&stored_manifest);
+        free(stored_workspace);
+        struct vcs_devloop_publication_receipt workspace_progress;
+        uint8_t workspace_progress_root[32];
+        ASSERT(vcs_devloop_publication_progress_load(
+            workspace, publication_anchor.publication_job_root,
+            &workspace_progress, workspace_progress_root));
+        ASSERT_EQ(workspace_progress.phase,
+                  VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED);
+        ASSERT(memcmp(workspace_progress.artifact_root,
+                      workspace_root, 32) == 0);
+        zcl_command_reply_free(&workspace_manifest_commit_reply);
+        zcl_command_reply_init(
+            &workspace_manifest_commit_reply,
+            "zcl.zcode_workspace_manifest_commit.v1");
+        zcl_native_handle_zcode_workspace_manifest_commit(
+            &workspace_manifest_request, &workspace_manifest_commit_reply);
+        ASSERT_EQ(workspace_manifest_commit_reply.exit_code,
+                  ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(
+            &workspace_manifest_commit_reply.data, "progress_reused")));
+        zcl_command_reply_free(&workspace_manifest_commit_reply);
+        zcl_command_reply_init(&passport_commit_reply,
+                               "zcl.zcode_passport_commit.v1");
+        zcl_native_handle_zcode_passport_commit(&passport_plan_request,
+                                                &passport_commit_reply);
+        ASSERT_EQ(passport_commit_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&passport_commit_reply.data,
+                                      "progress_reused")));
+        ASSERT(vcs_devloop_publication_progress_load(
+            workspace, publication_anchor.publication_job_root,
+            &workspace_progress, workspace_progress_root));
+        ASSERT_EQ(workspace_progress.phase,
+                  VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED);
+        zcl_command_reply_free(&passport_commit_reply);
+        json_free(&workspace_manifest_input);
         json_free(&passport_plan_input);
         zcl_command_reply_free(&publish_commit_reply);
         json_free(&publish_commit_input);

@@ -3,6 +3,7 @@
 #include "test/test_core.h"
 
 #include "base/hex.h"
+#include "base/safe_alloc.h"
 #include "command/native_command.h"
 #include "crypto/ed25519.h"
 #include "hotswap/hotswap_service.h"
@@ -1653,6 +1654,63 @@ static int test_v2_workspace_objects(void)
                      signed_workspace.signer_root);
         ASSERT_EQ(vcs_zcode_workspace_manifest_v1_verify(&signed_workspace),
                   VCS_ZCODE_COMMONS_V2_OK);
+        size_t workspace_wire_size = 0, workspace_wire_len = 0;
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_wire_size(
+                      &signed_workspace, &workspace_wire_size),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT_EQ(workspace_wire_size,
+                  VCS_ZCODE_WORKSPACE_MANIFEST_V1_WIRE_BASE_BYTES +
+                  3u * VCS_ZCODE_WORKSPACE_MANIFEST_V1_ENTRY_WIRE_BYTES +
+                  2u * VCS_ZCODE_WORKSPACE_MANIFEST_V1_EDGE_WIRE_BYTES +
+                  VCS_ZCODE_WORKSPACE_MANIFEST_V1_ASSET_WIRE_BYTES);
+        uint8_t *workspace_wire = zcl_malloc(
+            workspace_wire_size, "test_workspace_manifest_wire");
+        ASSERT(workspace_wire != NULL);
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_encode(
+                      &signed_workspace, workspace_wire,
+                      workspace_wire_size, &workspace_wire_len),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT_EQ(workspace_wire_len, workspace_wire_size);
+        ASSERT(memcmp(workspace_wire, "ZCWM1\0\0\0", 8) == 0);
+        struct vcs_zcode_workspace_manifest_v1_decoded decoded_workspace = {0};
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_decode(
+                      &decoded_workspace, workspace_wire,
+                      workspace_wire_len), VCS_ZCODE_COMMONS_V2_OK);
+        uint8_t signed_workspace_root[32], decoded_workspace_root[32];
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_root(
+                      &signed_workspace, signed_workspace_root),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_root(
+                      &decoded_workspace.manifest, decoded_workspace_root),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT(memcmp(signed_workspace_root, decoded_workspace_root, 32) == 0);
+        uint8_t *workspace_reencoded = zcl_malloc(
+            workspace_wire_size, "test_workspace_manifest_reencode");
+        ASSERT(workspace_reencoded != NULL);
+        size_t workspace_reencoded_len = 0;
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_encode(
+                      &decoded_workspace.manifest, workspace_reencoded,
+                      workspace_wire_size, &workspace_reencoded_len),
+                  VCS_ZCODE_COMMONS_V2_OK);
+        ASSERT_EQ(workspace_reencoded_len, workspace_wire_len);
+        ASSERT(memcmp(workspace_reencoded, workspace_wire,
+                      workspace_wire_len) == 0);
+        vcs_zcode_workspace_manifest_v1_decoded_free(&decoded_workspace);
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_decode(
+                      &decoded_workspace, workspace_wire,
+                      workspace_wire_len - 1u), VCS_ZCODE_COMMONS_V2_SIZE);
+        workspace_wire[0] ^= 1u;
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_decode(
+                      &decoded_workspace, workspace_wire,
+                      workspace_wire_len), VCS_ZCODE_COMMONS_V2_MAGIC);
+        workspace_wire[0] ^= 1u;
+        workspace_wire[100] ^= 1u;
+        ASSERT_EQ(vcs_zcode_workspace_manifest_v1_decode(
+                      &decoded_workspace, workspace_wire,
+                      workspace_wire_len), VCS_ZCODE_COMMONS_V2_SIGNATURE);
+        workspace_wire[100] ^= 1u;
+        free(workspace_reencoded);
+        free(workspace_wire);
         signed_workspace.signature[0] ^= 1u;
         ASSERT_EQ(vcs_zcode_workspace_manifest_v1_verify(&signed_workspace),
                   VCS_ZCODE_COMMONS_V2_SIGNATURE);

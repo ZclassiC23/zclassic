@@ -885,6 +885,55 @@ static int t_publication_enqueue(const char *dir)
     VD_CHECK("publication: release retry preserves Passport phase",
              memcmp(passport_progress_root,
                     accepted_retry_root, 32) == 0);
+    uint8_t workspace_root[32], workspace_progress_root[32];
+    memcpy(workspace_root, passport_root, 32);
+    workspace_root[2] ^= 0x3cu;
+    reused = true;
+    VD_CHECK("publication: workspace refuses wrong Passport predecessor",
+             !vcs_devloop_publication_advance_workspace(
+                 dir, ar.publication_job_root, mapping_root,
+                 release_root, wrong_mapping_root, workspace_root,
+                 rejected_progress_root, &reused));
+    VD_CHECK("publication: wrong workspace predecessor is not reuse", !reused);
+    reused = true;
+    VD_CHECK("publication: signed workspace advances durable job",
+             vcs_devloop_publication_advance_workspace(
+                 dir, ar.publication_job_root, mapping_root,
+                 release_root, passport_root, workspace_root,
+                 workspace_progress_root, &reused));
+    VD_CHECK("publication: first workspace phase is new", !reused);
+    VD_CHECK("publication: workspace phase reloads",
+             vcs_devloop_publication_progress_load(
+                 dir, ar.publication_job_root, &progress,
+                 loaded_progress_root));
+    VD_CHECK("publication: workspace phase named",
+             progress.phase ==
+                 VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED);
+    VD_CHECK("publication: workspace phase binds authoritative root",
+             memcmp(progress.artifact_root, workspace_root, 32) == 0);
+    VD_CHECK("publication: workspace phase preserves Passport predecessor",
+             memcmp(progress.predecessor_receipt_root,
+                    passport_progress_root, 32) == 0);
+    reused = false;
+    VD_CHECK("publication: workspace retry succeeds",
+             vcs_devloop_publication_advance_workspace(
+                 dir, ar.publication_job_root, mapping_root,
+                 release_root, passport_root, workspace_root,
+                 accepted_retry_root, &reused));
+    VD_CHECK("publication: workspace retry reuses receipt", reused);
+    VD_CHECK("publication: workspace retry preserves receipt root",
+             memcmp(workspace_progress_root,
+                    accepted_retry_root, 32) == 0);
+    reused = false;
+    VD_CHECK("publication: Passport retry cannot regress workspace phase",
+             vcs_devloop_publication_advance_passport(
+                 dir, ar.publication_job_root, mapping_root,
+                 release_root, passport_root, accepted_retry_root,
+                 &reused));
+    VD_CHECK("publication: Passport retry returns workspace receipt", reused);
+    VD_CHECK("publication: Passport retry preserves workspace phase",
+             memcmp(workspace_progress_root,
+                    accepted_retry_root, 32) == 0);
     zcl_hex_encode(release_root, 32, mapping_hex);
     json_init(&advance_input);
     json_set_object(&advance_input);
@@ -893,11 +942,11 @@ static int t_publication_enqueue(const char *dir)
                            "zcl.dev_publication_status.v1");
     zcl_native_handle_dev_publication_status(
         &advance_request, &advance_reply);
-    VD_CHECK("publication: native status preserves Passport phase",
+    VD_CHECK("publication: native status preserves workspace phase",
              advance_reply.exit_code == ZCL_COMMAND_EXIT_OK &&
              strcmp(json_get_str(json_get(
                         &advance_reply.data, "status")),
-                    "PASSPORT_PUBLISHED") == 0);
+                    "WORKSPACE_PUBLISHED") == 0);
     VD_CHECK("publication: native status reports exact release root",
              strcmp(json_get_str(json_get(
                         &advance_reply.data, "release_root")),
@@ -907,10 +956,15 @@ static int t_publication_enqueue(const char *dir)
              strcmp(json_get_str(json_get(
                         &advance_reply.data, "passport_root")),
                     mapping_hex) == 0);
-    VD_CHECK("publication: native status names workspace next step",
+    zcl_hex_encode(workspace_root, 32, mapping_hex);
+    VD_CHECK("publication: native status reports exact workspace root",
+             strcmp(json_get_str(json_get(
+                        &advance_reply.data, "workspace_root")),
+                    mapping_hex) == 0);
+    VD_CHECK("publication: native status names P2P next step",
              strcmp(json_get_str(json_get(
                         &advance_reply.data, "next_command")),
-                    "zclassic23 discover schema zcode.workspace.manifest.plan") == 0);
+                    "zclassic23 discover search provider") == 0);
     zcl_command_reply_free(&advance_reply);
     json_free(&advance_input);
     memset(fixture.signer_secret, 0, sizeof(fixture.signer_secret));
