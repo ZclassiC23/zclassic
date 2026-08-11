@@ -37,7 +37,8 @@ ZCL_COMMAND_READY_READ(
     "Show one durable proof-to-publication job",
     "The immutable ZVCS source, proof and generation roots bound by one "
     "publication job, its durable local queue membership, and truthful "
-    "blockers for workspace, P2P, replication and optional mirror phases. "
+    "blockers for workspace, exact signed provider evidence, replication and "
+    "optional mirror phases. "
     "This read grants no publication, signing, network, wallet or acceptance "
     "authority.", 0,
     "dev,publication,status,zvcs,proof,queue",
@@ -58,12 +59,14 @@ ZCL_COMMAND_DEV_COMMAND(
     "Advance one proven-source job to its next durable blocker",
     "Appends or reuses one immutable local scheduling receipt for the exact "
     "job. WAITING_ACCEPTANCE performs no package action. Once the existing "
-    "existing accepted-work owner reports the exact PROVEN root produced by "
+    "accepted-work owner reports the exact PROVEN root produced by "
     "zcode work accept, the background worker "
     "builds one root-addressed ZVCS-blob to content.v2 chunk mapping set: "
     "only cache misses read source bytes, and the receipt reports scanned "
     "bytes plus new and reused chunks. It performs no release signature, "
-    "network, wallet, Git or canonical-node action and cannot substitute "
+    "network, wallet, Git or canonical-node action. A separately verified "
+    "provider record may advance the same append-only job without granting "
+    "network authority, and cannot substitute "
     "for the existing PROVEN-work publisher.", 0,
     "dev,publication,advance,receipt,resume,idempotent",
     "zcl.dev_publication_advance_input.v1",

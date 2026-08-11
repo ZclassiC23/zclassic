@@ -325,14 +325,35 @@ void zcl_native_handle_dev_publication_status(
     uint8_t progress_root[32];
     bool advanced = queued && vcs_devloop_publication_progress_load(
         root, job_root, &progress, progress_root);
+    bool provider_announced = advanced && progress.phase ==
+        VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED;
+    struct vcs_devloop_publication_receipt workspace_receipt = {0};
     bool workspace_published = advanced && progress.phase ==
         VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED;
+    if (provider_announced) {
+        workspace_published = vcs_devloop_publication_receipt_load(
+                root, progress.predecessor_receipt_root,
+                &workspace_receipt) &&
+            workspace_receipt.phase ==
+                VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED &&
+            memcmp(workspace_receipt.job_root, job_root, 32) == 0;
+        if (!workspace_published) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "PUBLICATION_PROVIDER_CHAIN_INVALID", "load", true, false,
+                "the provider phase has no verified workspace predecessor",
+                job_hex);
+            return;
+        }
+    } else if (workspace_published) {
+        workspace_receipt = progress;
+    }
     struct vcs_devloop_publication_receipt passport_receipt = {0};
     bool passport_published = advanced && progress.phase ==
         VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED;
     if (workspace_published) {
         passport_published = vcs_devloop_publication_receipt_load(
-                root, progress.predecessor_receipt_root,
+                root, workspace_receipt.predecessor_receipt_root,
                 &passport_receipt) &&
             passport_receipt.phase ==
                 VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED &&
@@ -391,7 +412,7 @@ void zcl_native_handle_dev_publication_status(
         (progress.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND ||
          mapping_ready || release_published || passport_published ||
-         workspace_published);
+         workspace_published || provider_announced);
     struct vcs_package_mapping_set mapping;
     vcs_package_mapping_set_init(&mapping);
     const uint8_t *mapping_root = release_published
@@ -423,6 +444,7 @@ void zcl_native_handle_dev_publication_status(
                            "zcl.dev_publication_status.v1");
     (void)json_push_kv_str(
         &reply->data, "status",
+        provider_announced ? "PROVIDER_ANNOUNCED" :
         workspace_published ? "WORKSPACE_PUBLISHED" :
         passport_published ? "PASSPORT_PUBLISHED" :
         release_published ? "RELEASE_PUBLISHED" :
@@ -464,21 +486,30 @@ void zcl_native_handle_dev_publication_status(
     if (passport_published)
         DEV_PUBLICATION_ROOT("passport_root", passport_receipt.artifact_root);
     if (workspace_published)
-        DEV_PUBLICATION_ROOT("workspace_root", progress.artifact_root);
+        DEV_PUBLICATION_ROOT("workspace_root",
+                             workspace_receipt.artifact_root);
+    if (provider_announced)
+        DEV_PUBLICATION_ROOT("provider_record_root",
+                             progress.artifact_root);
 #undef DEV_PUBLICATION_ROOT
     (void)json_push_kv_str(
         &reply->data, "workspace_state",
+        provider_announced ? "manifest_persisted_announced" :
         workspace_published ? "manifest_persisted_not_announced" :
         passport_published ? "passport_published_manifest_not_created" :
         release_published ? "release_published_manifest_not_created"
                           : "not_created");
-    (void)json_push_kv_str(&reply->data, "p2p", "not_announced");
-    (void)json_push_kv_int(&reply->data, "providers", 0);
+    (void)json_push_kv_str(&reply->data, "p2p",
+                           provider_announced ? "announced"
+                                              : "not_announced");
+    (void)json_push_kv_int(&reply->data, "providers",
+                           provider_announced ? progress.providers : 0);
     (void)json_push_kv_str(&reply->data, "storage_ack", "0/2");
     (void)json_push_kv_str(&reply->data, "reproduced", "no_record");
     (void)json_push_kv_str(&reply->data, "github_mirror", "not_recorded");
     (void)json_push_kv_str(
         &reply->data, "blocker",
+        provider_announced ? "storage_ack_required" :
         workspace_published ? "provider_announcement_required" :
         passport_published ? "workspace_manifest_signature_required" :
         release_published ? "passport_and_workspace_manifest_signature_required" :
@@ -488,6 +519,8 @@ void zcl_native_handle_dev_publication_status(
                : "durable_publication_queue_record_missing");
     (void)json_push_kv_str(
         &reply->data, "next_command",
+        provider_announced ?
+            "zclassic23 discover schema zcode.network.storage_ack" :
         workspace_published ?
             "zclassic23 discover search provider" :
         passport_published ?
@@ -564,14 +597,35 @@ void zcl_native_handle_dev_publication_advance(
     const char *datadir = json_get_str(json_get(request->input, "datadir"));
     uint8_t lane_root[32];
     char proof_set_hex[65] = "", lane_name[16] = "";
+    bool provider_announced = have_progress && progress.phase ==
+        VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED;
+    struct vcs_devloop_publication_receipt workspace_receipt = {0};
     bool workspace_published = have_progress && progress.phase ==
         VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED;
+    if (provider_announced) {
+        workspace_published = vcs_devloop_publication_receipt_load(
+                repo_root, progress.predecessor_receipt_root,
+                &workspace_receipt) &&
+            workspace_receipt.phase ==
+                VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED &&
+            memcmp(workspace_receipt.job_root, job_root, 32) == 0;
+        if (!workspace_published) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "PUBLICATION_PROVIDER_CHAIN_INVALID", "load", true, false,
+                "the provider phase has no verified workspace predecessor",
+                job_hex);
+            return;
+        }
+    } else if (workspace_published) {
+        workspace_receipt = progress;
+    }
     struct vcs_devloop_publication_receipt passport_receipt = {0};
     bool passport_published = have_progress && progress.phase ==
         VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED;
     if (workspace_published) {
         passport_published = vcs_devloop_publication_receipt_load(
-                repo_root, progress.predecessor_receipt_root,
+                repo_root, workspace_receipt.predecessor_receipt_root,
                 &passport_receipt) &&
             passport_receipt.phase ==
                 VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED &&
@@ -630,7 +684,7 @@ void zcl_native_handle_dev_publication_advance(
         (progress.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND ||
          mapping_ready || release_published || passport_published ||
-         workspace_published);
+         workspace_published || provider_announced);
     bool acceptance_verified = false;
     if (datadir && datadir[0] && have_job) {
         char workspace[PATH_MAX];
@@ -698,6 +752,7 @@ void zcl_native_handle_dev_publication_advance(
     (void)json_push_kv_str(&reply->data, "schema",
                            "zcl.dev_publication_advance.v1");
     (void)json_push_kv_str(&reply->data, "status",
+                           provider_announced ? "PROVIDER_ANNOUNCED" :
                            workspace_published ? "WORKSPACE_PUBLISHED" :
                            passport_published ? "PASSPORT_PUBLISHED" :
                            release_published ? "RELEASE_PUBLISHED" :
@@ -764,9 +819,18 @@ void zcl_native_handle_dev_publication_advance(
         }
         if (workspace_published) {
             char workspace_hex[65];
-            zcl_hex_encode(progress.artifact_root, 32, workspace_hex);
+            zcl_hex_encode(workspace_receipt.artifact_root, 32,
+                           workspace_hex);
             (void)json_push_kv_str(&reply->data, "workspace_root",
                                    workspace_hex);
+        }
+        if (provider_announced) {
+            char provider_hex[65];
+            zcl_hex_encode(progress.artifact_root, 32, provider_hex);
+            (void)json_push_kv_str(&reply->data, "provider_record_root",
+                                   provider_hex);
+            (void)json_push_kv_int(&reply->data, "providers",
+                                   progress.providers);
         }
         if (lane_name[0])
             (void)json_push_kv_str(&reply->data, "lane", lane_name);
@@ -779,6 +843,7 @@ void zcl_native_handle_dev_publication_advance(
         &reply->data, "blocker",
         lane_bound && !acceptance_verified
             ? "proven_work_datadir_reverification_required" :
+        provider_announced ? "storage_ack_required" :
         workspace_published ? "provider_announcement_required" :
         passport_published ? "workspace_manifest_signature_required" :
         release_published ? "passport_and_workspace_manifest_signature_required" :
@@ -795,6 +860,8 @@ void zcl_native_handle_dev_publication_advance(
         &reply->data, "next_command",
         lane_bound && !acceptance_verified
             ? "zclassic23 discover schema dev.publication.advance" :
+        provider_announced ?
+            "zclassic23 discover schema zcode.network.storage_ack" :
         workspace_published ?
             "zclassic23 discover search provider" :
         passport_published ?

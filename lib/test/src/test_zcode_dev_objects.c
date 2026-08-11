@@ -32,6 +32,7 @@
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_commons_v2.h"
+#include "vcs/zcode_dht_record.h"
 #include "vcs/zcode_agent_context.h"
 #include "vcs/zcode_lane.h"
 #include "vcs/zcode_work_context.h"
@@ -59,6 +60,57 @@
 static void zd_root(uint8_t out[32], uint8_t value)
 {
     memset(out, value, 32);
+}
+
+static bool zd_provider_chain_accept(
+    void *context, const struct vcs_zcode_dht_delegation *delegation)
+{
+    unsigned *calls = context;
+    (*calls)++;
+    return delegation->beacon_height == 120u;
+}
+
+static bool zd_provider_record(
+    const uint8_t transport_root[32],
+    struct vcs_zcode_dht_record_verify_context *verify,
+    struct vcs_zcode_dht_record *record,
+    uint8_t wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES], unsigned *chain_calls)
+{
+    uint8_t online_seed[32], online_pub[32], online_secret[32];
+    uint8_t noise[32], beacon[32], master_seed[32];
+    zd_root(online_seed, 0x22);
+    zd_root(noise, 0x33);
+    zd_root(beacon, 0x44);
+    zd_root(master_seed, 0x55);
+    ed25519_keypair(online_pub, online_secret, online_seed);
+    memset(online_secret, 0, sizeof(online_secret));
+    memset(verify, 0, sizeof(*verify));
+    zd_root(verify->network_genesis, 0x01);
+    verify->now_unix = 1500;
+    verify->chain_verify = zd_provider_chain_accept;
+    verify->chain_ctx = chain_calls;
+    memset(record, 0, sizeof(*record));
+    record->kind = VCS_ZCODE_DHT_RECORD_PROVIDER;
+    (void)snprintf(record->namespace_name, sizeof(record->namespace_name),
+                   "zclassic23.source");
+    memcpy(record->network_genesis, verify->network_genesis, 32);
+    memcpy(record->transport_root, transport_root, 32);
+    record->sequence = 1;
+    record->not_before = 1200;
+    record->expiry = 1800;
+    bool ok = vcs_zcode_dht_delegation_sign(
+            &record->delegation, verify->network_genesis, online_pub, noise,
+            120, beacon, 1000, 3000, 1, master_seed) ==
+            VCS_ZCODE_DHT_DELEGATION_OK &&
+        vcs_zcode_dht_delegation_node_id(
+            record->provider_node_id, &record->delegation) &&
+        vcs_zcode_dht_record_sign(record, online_seed) ==
+            VCS_ZCODE_DHT_RECORD_OK &&
+        vcs_zcode_dht_record_encode(record, wire) ==
+            VCS_ZCODE_DHT_RECORD_OK;
+    memset(online_seed, 0, sizeof(online_seed));
+    memset(master_seed, 0, sizeof(master_seed));
+    return ok;
 }
 
 static bool zd_secp_pubkey(secp256k1_context *ctx,
@@ -3585,6 +3637,126 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(workspace_progress.phase,
                   VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED);
         zcl_command_reply_free(&passport_commit_reply);
+
+        uint8_t provider_transport_root[32];
+        ASSERT(zcl_hex_decode_lower(planned_package_saved,
+                                    provider_transport_root, 32));
+        struct vcs_zcode_dht_record_verify_context provider_verify;
+        struct vcs_zcode_dht_record provider_record;
+        uint8_t provider_wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+        unsigned provider_chain_calls = 0;
+        ASSERT(zd_provider_record(
+            provider_transport_root, &provider_verify, &provider_record,
+            provider_wire, &provider_chain_calls));
+        uint8_t wrong_provider_transport[32];
+        memcpy(wrong_provider_transport, provider_transport_root, 32);
+        wrong_provider_transport[0] ^= 0x80u;
+        struct vcs_zcode_dht_record_verify_context wrong_provider_verify;
+        struct vcs_zcode_dht_record wrong_provider_record;
+        uint8_t wrong_provider_wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+        unsigned wrong_provider_chain_calls = 0;
+        ASSERT(zd_provider_record(
+            wrong_provider_transport, &wrong_provider_verify,
+            &wrong_provider_record, wrong_provider_wire,
+            &wrong_provider_chain_calls));
+        uint8_t refused_provider_root[32];
+        bool refused_provider_reused = true;
+        ASSERT(!vcs_devloop_publication_advance_provider(
+            workspace, publication_anchor.publication_job_root,
+            wrong_provider_wire, sizeof(wrong_provider_wire),
+            &wrong_provider_verify, refused_provider_root,
+            &refused_provider_reused));
+        ASSERT(!refused_provider_reused);
+        ASSERT(vcs_devloop_publication_progress_load(
+            workspace, publication_anchor.publication_job_root,
+            &workspace_progress, workspace_progress_root));
+        ASSERT_EQ(workspace_progress.phase,
+                  VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED);
+        uint8_t provider_progress_root[32];
+        bool provider_reused = true;
+        ASSERT(vcs_devloop_publication_advance_provider(
+            workspace, publication_anchor.publication_job_root,
+            provider_wire, sizeof(provider_wire), &provider_verify,
+            provider_progress_root, &provider_reused));
+        ASSERT(!provider_reused);
+        ASSERT(provider_chain_calls > 0);
+        struct vcs_devloop_publication_receipt provider_progress;
+        uint8_t loaded_provider_progress_root[32];
+        ASSERT(vcs_devloop_publication_progress_load(
+            workspace, publication_anchor.publication_job_root,
+            &provider_progress, loaded_provider_progress_root));
+        ASSERT_EQ(provider_progress.phase,
+                  VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED);
+        ASSERT_EQ(provider_progress.providers, 1u);
+        ASSERT_EQ(provider_progress.storage_acks, 0u);
+        ASSERT(memcmp(provider_progress.predecessor_receipt_root,
+                      workspace_progress_root, 32) == 0);
+        uint8_t provider_record_root[32];
+        ASSERT_EQ(vcs_zcode_dht_record_id(
+                      &provider_record, provider_record_root),
+                  VCS_ZCODE_DHT_RECORD_OK);
+        ASSERT(memcmp(provider_progress.artifact_root,
+                      provider_record_root, 32) == 0);
+        uint8_t *stored_provider_wire = NULL;
+        size_t stored_provider_wire_len = 0;
+        ASSERT_EQ(vcs_object_load_raw_bounded(
+                      workspace, provider_record_root,
+                      VCS_ZCODE_DHT_RECORD_WIRE_BYTES,
+                      &stored_provider_wire, &stored_provider_wire_len), 0);
+        ASSERT_EQ(stored_provider_wire_len,
+                  VCS_ZCODE_DHT_RECORD_WIRE_BYTES);
+        ASSERT(memcmp(stored_provider_wire, provider_wire,
+                      sizeof(provider_wire)) == 0);
+        free(stored_provider_wire);
+        provider_reused = false;
+        uint8_t provider_retry_root[32];
+        ASSERT(vcs_devloop_publication_advance_provider(
+            workspace, publication_anchor.publication_job_root,
+            provider_wire, sizeof(provider_wire), &provider_verify,
+            provider_retry_root, &provider_reused));
+        ASSERT(provider_reused);
+        ASSERT(memcmp(provider_retry_root,
+                      provider_progress_root, 32) == 0);
+        struct json_value provider_status_input;
+        json_init(&provider_status_input);
+        json_set_object(&provider_status_input);
+        ASSERT(json_push_kv_str(&provider_status_input, "job_root",
+                                publication_job_hex));
+        struct zcl_command_context provider_status_context = {
+            .source_root = workspace,
+            .authority_ceiling = ZCL_COMMAND_AUTH_OPERATOR,
+            .dev_build = true,
+        };
+        struct zcl_command_request provider_status_request = {
+            .context = &provider_status_context,
+            .input = &provider_status_input,
+        };
+        struct zcl_command_reply provider_status_reply;
+        zcl_command_reply_init(&provider_status_reply,
+                               "zcl.dev_publication_status.v1");
+        zcl_native_handle_dev_publication_status(
+            &provider_status_request, &provider_status_reply);
+        ASSERT_EQ(provider_status_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &provider_status_reply.data, "status")),
+                      "PROVIDER_ANNOUNCED");
+        char provider_record_hex[65];
+        zcl_hex_encode(provider_record_root, 32, provider_record_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &provider_status_reply.data,
+                          "provider_record_root")),
+                      provider_record_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &provider_status_reply.data, "p2p")),
+                      "announced");
+        ASSERT_EQ(json_get_int(json_get(
+                      &provider_status_reply.data, "providers")), 1);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &provider_status_reply.data, "blocker")),
+                      "storage_ack_required");
+        zcl_command_reply_free(&provider_status_reply);
+        json_free(&provider_status_input);
+
         json_free(&workspace_manifest_input);
         json_free(&passport_plan_input);
         zcl_command_reply_free(&publish_commit_reply);

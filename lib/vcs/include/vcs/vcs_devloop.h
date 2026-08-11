@@ -89,6 +89,7 @@ enum vcs_devloop_publication_phase {
     VCS_DEVLOOP_PUBLICATION_PHASE_RELEASE_PUBLISHED = 4,
     VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED = 5,
     VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED = 6,
+    VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED = 7,
 };
 
 #define VCS_DEVLOOP_PUBLICATION_RECEIPT_VERSION 1u
@@ -215,6 +216,18 @@ bool vcs_devloop_publication_advance_workspace(
     const char *repo_root, const uint8_t job_root[32],
     const uint8_t mapping_set_root[32], const uint8_t release_root[32],
     const uint8_t passport_root[32], const uint8_t workspace_root[32],
+    uint8_t receipt_root_out[32], bool *reused_out);
+
+struct vcs_zcode_dht_record_verify_context;
+
+/* Persist one exact signed PROVIDER wire and append its canonical record root
+ * only after re-verifying the job's signed workspace -> release chain and
+ * proving that the record addresses that release's content.v2 package root.
+ * This records network evidence; it does not perform or authorize network IO. */
+bool vcs_devloop_publication_advance_provider(
+    const char *repo_root, const uint8_t job_root[32],
+    const uint8_t *record_wire, size_t record_wire_len,
+    const struct vcs_zcode_dht_record_verify_context *verify,
     uint8_t receipt_root_out[32], bool *reused_out);
 
 #endif /* ZCL_VCS_DEVLOOP_H */

@@ -86,6 +86,15 @@ persist the exact signed bytes and independently reconstruct `record_root`
 after restart. Provider discovery does not expose the wire or its delegation;
 it remains a compact routing view.
 
+The asynchronous developer publication job records an additive
+`PROVIDER_ANNOUNCED` phase only after reloading the signed workspace manifest
+and signed package release from ZVCS, deriving the release's `content.v2`
+package root, and independently parsing and chain-verifying the exact provider
+wire. The wire is stored at `record_root`; the append-only scheduling receipt
+binds that root and reports one provider. This step records evidence produced
+by the existing DHT owner and grants no network, wallet, or transaction
+authority.
+
 ## Whole-workspace ZVCS transport
 
 A complete ZClassic23 workspace is larger than the package store's deliberately
