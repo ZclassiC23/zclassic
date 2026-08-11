@@ -124,7 +124,7 @@ void test_make_tmpdir(char *buf, size_t n, const char *prefix,
                       const char *tag)
 {
     test_fmt_tmpdir(buf, n, prefix, tag);
-    test_cleanup_tmpdir(buf);
+    test_rm_rf_recursive(buf);
     mkdir("test-tmp", 0755);
     mkdir(buf, 0755);
 }

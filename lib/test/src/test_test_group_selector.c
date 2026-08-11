@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -61,6 +62,31 @@ static int test_selector_predicate(void)
             "test_api", "test_hex_codec,test_api"));
         ASSERT(!test_group_selector_matches_exact_set(
             "test_native_api_contract", "test_hex_codec,test_api"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_tmpdir_recursive_cleanup(void)
+{
+    int failures = 0;
+    TEST("test tmpdir: repeated PID/tag removes nested stale state") {
+        char root[PATH_MAX], nested[PATH_MAX], stale[PATH_MAX];
+        test_make_tmpdir(root, sizeof(root), "tmpdir_cleanup", "nested");
+        int n = snprintf(nested, sizeof(nested), "%s/one", root);
+        ASSERT(n > 0 && (size_t)n < sizeof(nested));
+        ASSERT(mkdir(nested, 0755) == 0);
+        n = snprintf(stale, sizeof(stale), "%s/stale", nested);
+        ASSERT(n > 0 && (size_t)n < sizeof(stale));
+        FILE *fixture = fopen(stale, "wb");
+        ASSERT(fixture != NULL);
+        ASSERT(fputs("stale", fixture) >= 0);
+        ASSERT(fclose(fixture) == 0);
+
+        test_make_tmpdir(root, sizeof(root), "tmpdir_cleanup", "nested");
+        ASSERT(access(root, F_OK) == 0);
+        ASSERT(access(nested, F_OK) != 0);
+        ASSERT(test_rm_rf_recursive(root) == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -421,6 +447,7 @@ static int test_runner_exact_selection(void)
 int test_test_group_selector(void)
 {
     int failures = 0;
+    failures += test_tmpdir_recursive_cleanup();
     failures += test_selector_predicate();
     failures += test_registry_exact_resolution();
     failures += test_native_catalog_resolution();
