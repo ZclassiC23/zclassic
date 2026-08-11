@@ -371,8 +371,23 @@ rm -f "$COPY_DIR"/*.pid "$COPY_DIR"/.lock 2>/dev/null || true
 cleanup() {
     if [ -n "${NODE_PID:-}" ] && kill -0 "$NODE_PID" 2>/dev/null; then
         kill -TERM "$NODE_PID" 2>/dev/null || true
-        sleep 2
-        kill -KILL "$NODE_PID" 2>/dev/null || true
+        # A proven copy is the object an operator promotes.  Give it the same
+        # five-minute WAL/checkpoint drain budget as the canonical service;
+        # the old two-second grace always converted a green proof into a
+        # forced-unclean artifact and made the next HDD boot repeat a full
+        # integrity recovery.
+        shutdown_wait=0
+        while kill -0 "$NODE_PID" 2>/dev/null && [ "$shutdown_wait" -lt 300 ]; do
+            sleep 1
+            shutdown_wait=$((shutdown_wait + 1))
+        done
+        if kill -0 "$NODE_PID" 2>/dev/null; then
+            echo "[import-copy-prove] cleanup: graceful shutdown exceeded 300s — forcing PID $NODE_PID" >&2
+            kill -KILL "$NODE_PID" 2>/dev/null || true
+        else
+            echo "[import-copy-prove] cleanup: graceful node shutdown complete"
+        fi
+        wait "$NODE_PID" 2>/dev/null || true
     fi
     if [ "$CLEAN_COPY" = "1" ] && [ -e "$COPY_DIR" ]; then
         # Re-assert the safety invariant right before an rm -rf: never delete
@@ -403,7 +418,13 @@ if [ "$MODE" = "import" ] && [ -n "$TAIL_PEER" ]; then
 else
     BOOT_PEER_ARGS="-connect=127.0.0.1:39999"
 fi
-NODE_ISO_ARGS="-fsport=$FSPORT -httpsport=$HTTPSPORT $BOOT_PEER_ARGS -nolegacyimport -nofilesync"
+# The canonical source datadir persists wallet_identity.operator_lane=canonical.
+# A throwaway path is still the canonical lane's COPY; booting it as the argv
+# default "unknown" makes wallet_identity_ensure() refuse before H* can be
+# observed, which defeats the copy proof without protecting anything.  Keep
+# the persisted identity stable while the -COPY- path/port guards provide the
+# isolation boundary.
+NODE_ISO_ARGS="-fsport=$FSPORT -httpsport=$HTTPSPORT $BOOT_PEER_ARGS -operator-lane=canonical -nolegacyimport -nofilesync"
 
 # ── shared rpc helpers ──────────────────────────────────────────────────
 
@@ -578,15 +599,28 @@ while [ "$(date +%s)" -lt "$deadline_epoch" ]; do
 done
 
 # ── continuity (shared): coins_applied_height == hstar + 1 ─────────────
-
-frontier_json="$(rpc dumpstate '"reducer_frontier"')"
-coins_applied="$(printf '%s' "$frontier_json" | sed -n 's/.*"coins_applied_height":\([0-9-]*\).*/\1/p' | head -1)"
-hstar_now="$(printf '%s' "$frontier_json" | sed -n 's/.*"hstar":\([0-9-]*\).*/\1/p' | head -1)"
+# The reducer can advance between the H* poll and this observation.  During
+# that brief publish window coins_applied is legitimately one fact ahead of
+# the durable H* cursor.  Require one coherent observation, but allow the
+# moving pipeline a bounded interval to expose it; a persistent gap still
+# fails closed.
 continuity_ok=0
-if [ -n "${coins_applied:-}" ] && [ -n "${hstar_now:-}" ] && \
-   [ "$coins_applied" = "$((hstar_now + 1))" ] 2>/dev/null; then
-    continuity_ok=1
-fi
+continuity_attempt=0
+continuity_retries="${ZCL_COPY_PROVE_CONTINUITY_RETRIES:-15}"
+coins_applied=""
+hstar_now=""
+while [ "$continuity_attempt" -lt "$continuity_retries" ]; do
+    continuity_attempt=$((continuity_attempt + 1))
+    frontier_json="$(rpc dumpstate '"reducer_frontier"')"
+    coins_applied="$(printf '%s' "$frontier_json" | sed -n 's/.*"coins_applied_height":\([0-9-]*\).*/\1/p' | head -1)"
+    hstar_now="$(printf '%s' "$frontier_json" | sed -n 's/.*"hstar":\([0-9-]*\).*/\1/p' | head -1)"
+    if [ -n "${coins_applied:-}" ] && [ -n "${hstar_now:-}" ] && \
+       [ "$coins_applied" = "$((hstar_now + 1))" ] 2>/dev/null; then
+        continuity_ok=1
+        break
+    fi
+    [ "$continuity_attempt" -lt "$continuity_retries" ] && sleep 1
+done
 
 DURATION_SECS=$(( $(date +%s) - RUN_START_EPOCH ))
 
