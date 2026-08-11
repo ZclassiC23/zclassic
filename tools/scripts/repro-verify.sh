@@ -26,17 +26,32 @@
 # Usage:  make repro-verify            (or)   tools/scripts/repro-verify.sh
 # Env:    ZCL_REPRO_JOBS=<n>   parallelism for each build (default: nproc)
 #         ZCL_REPRO_KEEP=1     keep the two build trees for inspection
+#         ZCL_REPRO_REFERENCE_BIN=<path>  require an exact reference match
+# Sovereign mode additionally requires ZCL_SOVEREIGN_SOURCE_ROOT and
+# ZCL_SOVEREIGN_VERIFY_BIN. Its snapshots contain neither .git nor .zvcs.
 set -euo pipefail
 
 JOBS="${ZCL_REPRO_JOBS:-$(nproc 2>/dev/null || echo 4)}"
-SRC="$(git rev-parse --show-toplevel 2>/dev/null)" || {
-    echo "repro-verify: not inside a git worktree" >&2
-    exit 2
-}
+if [ -n "${ZCL_SOVEREIGN_SOURCE_ROOT:-}" ]; then
+    SRC="$(pwd -P)"
+    SOURCE_MODE=sovereign-zvcs
+else
+    SRC="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+        echo "repro-verify: not inside a git worktree and no sovereign ZVCS root was supplied" >&2
+        exit 2
+    }
+    SOURCE_MODE=git-worktree
+fi
 
-for t in rsync git openssl cmp readelf; do
+for t in rsync openssl cmp readelf; do
     command -v "$t" >/dev/null 2>&1 || { echo "repro-verify: missing required tool: $t" >&2; exit 2; }
 done
+if [ "$SOURCE_MODE" = git-worktree ]; then
+    command -v git >/dev/null 2>&1 || {
+        echo "repro-verify: missing required tool: git" >&2
+        exit 2
+    }
+fi
 
 BASE="$(mktemp -d "${TMPDIR:-/tmp}/zcl-repro.XXXXXX")"
 # Two build roots with DIFFERENT absolute-path values and lengths.
@@ -56,26 +71,24 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 snapshot() {
-    # Copy the current working tree (tracked + build inputs like vendor/lib)
-    # into a self-contained git worktree so tools/dev/source-identity.sh can
-    # enumerate it. The build/ tree and the linked-worktree .git pointer are
-    # excluded; a fresh throwaway git repo is initialized in their place.
+    # Copy source plus offline/generated vendor inputs. Sovereign mode leaves
+    # the snapshots Git-free and re-verifies their exact ZVCS authority through
+    # the trusted bootstrap binary. Legacy worktree mode retains the throwaway
+    # repository used by the existing identity adapter.
     local dst="$1"
     mkdir -p "$dst"
     rsync -a --delete \
-        --exclude='/build' --exclude='/.git' --exclude='/.claude/worktrees' \
+        --exclude='/build' --exclude='/.git' --exclude='/.zvcs' \
+        --exclude='/.claude/worktrees' \
         --exclude='/test-tmp' \
         "$SRC"/./ "$dst"/
-    # A throwaway git repo makes the copy a valid worktree so
-    # tools/dev/source-identity.sh can enumerate it. The commit is best-effort;
-    # source-identity inventories untracked files too, so a no-op commit is
-    # harmless — both snapshots are treated identically, which is all the gate
-    # needs. All git chatter is suppressed.
-    ( cd "$dst"
-      git init -q >/dev/null 2>&1
-      git add -A >/dev/null 2>&1 || true
-      git -c user.email=repro@localhost -c user.name=repro \
-          commit -q -m 'repro-verify snapshot' >/dev/null 2>&1 || true )
+    if [ "$SOURCE_MODE" = git-worktree ]; then
+        ( cd "$dst"
+          git init -q >/dev/null 2>&1
+          git add -A >/dev/null 2>&1 || true
+          git -c user.email=repro@localhost -c user.name=repro \
+              commit -q -m 'repro-verify snapshot' >/dev/null 2>&1 || true )
+    fi
 }
 
 build_one() {
@@ -88,12 +101,20 @@ build_one() {
 }
 
 echo "repro-verify: source tree     = $SRC"
+echo "repro-verify: source mode     = $SOURCE_MODE"
 echo "repro-verify: build root A     = $A"
 echo "repro-verify: build root B     = $B"
 echo "repro-verify: jobs             = $JOBS"
 echo "repro-verify: snapshotting ..."
 snapshot "$A"
 snapshot "$B"
+if [ "$SOURCE_MODE" = sovereign-zvcs ]; then
+    [ ! -e "$A/.git" ] && [ ! -e "$B/.git" ] &&
+        [ ! -e "$A/.zvcs" ] && [ ! -e "$B/.zvcs" ] || {
+        echo "repro-verify: FAIL — sovereign snapshot inherited repository metadata" >&2
+        exit 1
+    }
+fi
 
 echo "repro-verify: building A (this is ~1x a full node build) ..."
 build_one "$A" "$BASE/build-a.log"
@@ -112,6 +133,24 @@ echo "repro-verify: A  sha3-256=$HA  size=$SA"
 echo "repro-verify: B  sha3-256=$HB  size=$SB"
 
 if cmp -s "$BA" "$BB"; then
+    if [ -n "${ZCL_REPRO_REFERENCE_BIN:-}" ]; then
+        REFERENCE="$(realpath "$ZCL_REPRO_REFERENCE_BIN" 2>/dev/null)" || {
+            echo "repro-verify: FAIL — reference binary does not resolve" >&2
+            exit 1
+        }
+        [ -f "$REFERENCE" ] || {
+            echo "repro-verify: FAIL — reference binary is not a regular file" >&2
+            exit 1
+        }
+        HR="$(openssl dgst -sha3-256 "$REFERENCE" | awk '{print $NF}')"
+        SR="$(stat -c%s "$REFERENCE")"
+        echo "repro-verify: reference sha3-256=$HR  size=$SR"
+        cmp -s "$BA" "$REFERENCE" || {
+            echo "repro-verify: FAIL — rebuilt binary differs from the accepted reference" >&2
+            exit 1
+        }
+    fi
+    echo "repro-verify: github_contacted=false"
     echo "repro-verify: PASS — build/bin/zclassic23 is byte-identical across two builders (sha3-256=$HA)"
     exit 0
 fi

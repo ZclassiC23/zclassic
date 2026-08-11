@@ -1003,6 +1003,7 @@ $(VENDOR_BOOTSTRAP_MK): vendor-ready
 	trap - EXIT HUP INT TERM
 check-vendor-provenance:
 	@tools/scripts/test_vendor_provenance.sh
+	@tools/scripts/build_vendor_offline_selftest.sh
 	@sha256sum --check vendor/rgfw/SHA256SUMS
 	@sha256sum --check vendor/qrcodegen/SHA256SUMS
 	@sha256sum --check vendor/typography/SHA256SUMS
@@ -6650,6 +6651,7 @@ check-vcs-no-sha1:
 	@echo "══ LINT: ZVCS/producer-source authority does not inherit Git SHA-1 ══"
 	@tools/scripts/check_vcs_no_sha1.sh
 	@tools/dev/source-identity-selftest.sh
+	@tools/dev/sovereign-source-identity-selftest.sh
 
 # Release purity for the Tier-1 hot-swap loader (HARD). Two invariants:
 #   (1) no dlopen/dlsym/dlclose CALL in any .c outside lib/hotswap/ + vendor/;
@@ -8348,13 +8350,18 @@ help:
 # Idempotent, and it announces every file it touches: nothing should appear
 # on disk that the operator did not see named first.
 setup:
-	@echo "══ setup: arming this clone ══"
-	@$(MAKE) --no-print-directory install-hooks
-	@echo "  wrote  .git/config          core.hooksPath = tools/githooks"
+	@if [ -n "$(ZCL_SOVEREIGN_SOURCE_ROOT)" ]; then \
+	    echo "══ setup: preparing Git-free sovereign source ══"; \
+	    echo "  skipped Git hooks           no .git authority or metadata required"; \
+	else \
+	    echo "══ setup: arming this clone ══"; \
+	    $(MAKE) --no-print-directory install-hooks; \
+	    echo "  wrote  .git/config          core.hooksPath = tools/githooks"; \
+	fi
 	@$(MAKE) --no-print-directory compdb
 	@echo "  wrote  compile_commands.json  (clangd/LSP; regenerate with make compdb)"
 	@echo "  wrote  .cache/               (gitignored tool caches, created on demand)"
-	@echo "setup: done — nothing else was created. Next: make doctor"
+	@echo "setup: done. Next: make doctor"
 
 # What is missing on THIS host, and the one command that installs it.
 # Source of truth is tools/scripts/vendor_prereqs.tsv; the script fails if

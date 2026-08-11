@@ -28,6 +28,9 @@ NEED_DIRTY_PATHS=0
 [ "$MODE" = paths ] && NEED_DIRTY_PATHS=1
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 2
 SELF="$SELF_DIR/$(basename "${BASH_SOURCE[0]}")"
+if [ -n "${ZCL_SOVEREIGN_SOURCE_ROOT:-}" ]; then
+    exec "$SELF_DIR/sovereign-source-identity.sh" "$@"
+fi
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
     echo "source-identity: not inside a Git worktree" >&2
     exit 2

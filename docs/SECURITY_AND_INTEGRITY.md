@@ -204,6 +204,15 @@ prints one `PASS`/`FAIL` line. It is opt-in (two full whole-program LTO links,
 ~2x a normal build) and is intentionally NOT on the `make lint` / `make ci`
 path.
 
+For a P2P-reconstructed source carrier, the same gate has a Git-free mode.
+`ZCL_SOVEREIGN_SOURCE_ROOT` names the independently accepted ZVCS authority and
+`ZCL_SOVEREIGN_VERIFY_BIN` names a pretrusted bootstrap binary that re-derives
+that root through the native source-capture implementation. Snapshots exclude
+both `.git` and `.zvcs`; `ZCL_REPRO_REFERENCE_BIN` adds a required byte compare
+against the exact accepted candidate. This proves reconstruction/build
+identity, not human acceptance of a signer: acceptance authority must already
+have been resolved from the signed task/candidate/proof/lane chain.
+
 **Proven now (full byte identity):** two builders in different absolute
 directories produce an identical `build/bin/zclassic23` — identical SHA3-256,
 identical `.note.gnu.build-id`, identical bytes. `.text`/`.rodata`/`.data` were

@@ -126,6 +126,37 @@ carrier already fetched into the ordinary node package store. Capture explicitly
 `accepted:false`: only the existing proof chain and explicit `zcode work
 accept` lifecycle can grant PROVEN publication authority.
 
+### Git-free consumer build
+
+A reconstructed carrier is built under two explicit trust inputs: the
+human-accepted ZVCS `source_root`, and a bootstrap `zclassic23` binary whose
+SHA3-256 came through an already trusted channel. The bootstrap does not grant
+acceptance; it only re-derives the complete source root before build admission
+and artifact publication. The acceptance signer supplied to carrier checkout
+must come from independently verified work authority, never from the receipt's
+embedded public key.
+
+With the carrier checked out into the current empty directory and its five
+pinned archives present under `vendor/.cache/`:
+
+```bash
+export ZCL_SOVEREIGN_SOURCE_ROOT=<accepted-64-hex-ZVCS-root>
+export ZCL_SOVEREIGN_VERIFY_BIN=/trusted/bootstrap/zclassic23
+export ZCL_VENDOR_OFFLINE=1
+make setup
+make -j"$(nproc)"
+ZCL_REPRO_REFERENCE_BIN=/trusted/accepted/zclassic23 make repro-verify
+```
+
+This mode needs no `.git`, remote, GitHub credentials, or copied fallback
+tree. `make setup` skips Git-hook installation. Every vendor cache hit is
+checked against the existing pinned SHA-256; a missing or corrupt archive
+fails before `curl` or `wget` can run. `repro-verify` creates two additional
+Git-free, `.zvcs`-free snapshots, re-derives their ZVCS roots through the
+bootstrap, byte-compares their binaries, and—when
+`ZCL_REPRO_REFERENCE_BIN` is set—requires both to equal the accepted candidate.
+Its success report states `github_contacted=false`.
+
 ## Swarm flow
 
 1. A peer gossips a bounded announcement containing the package root and

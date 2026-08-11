@@ -105,7 +105,16 @@ build. To build them explicitly:
 make vendor         # build every missing vendor/lib/*.a (idempotent — no-op if present)
 make vendor-force   # rebuild all of them from scratch
 tools/scripts/build_vendor.sh libz.a libsqlite3.a   # a subset
+ZCL_VENDOR_OFFLINE=1 make vendor  # cached pinned sources only; network refused
 ```
+
+`ZCL_VENDOR_OFFLINE=1` turns a missing or checksum-invalid source archive into
+an immediate named failure before either downloader is invoked. P2P source
+carriers include the five default-build archives under `vendor/.cache/`, so a
+Git-free consumer can prove it did not fall back to GitHub while retaining the
+same pin checks and source-build recipes. See
+[`P2P_SOURCE_HOSTING.md`](./P2P_SOURCE_HOSTING.md#git-free-consumer-build) for
+the complete trust inputs and commands.
 
 The exact source identity also recursively covers generated headers under
 `vendor/include/`, including ignored SQLite, OpenSSL, and zlib headers used by

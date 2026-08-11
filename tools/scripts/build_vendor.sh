@@ -48,8 +48,13 @@ LIBEVENT_PATCH="$VENDOR/patches/libevent-2.1.12-secure-rng-abi.patch"
 
 JOBS="$(nproc 2>/dev/null || echo 4)"
 FORCE="${VENDOR_FORCE:-0}"
+OFFLINE="${ZCL_VENDOR_OFFLINE:-0}"
 VENDOR_LOCK_DIR="${VENDOR_LOCK_DIR:-$VENDOR/.build.lock}"
 VENDOR_LOCK_TIMEOUT_SEC="${VENDOR_LOCK_TIMEOUT_SEC:-600}"
+[[ "$OFFLINE" == "0" || "$OFFLINE" == "1" ]] || {
+    printf '\033[31m[vendor] ERROR:\033[0m ZCL_VENDOR_OFFLINE must be 0 or 1\n' >&2
+    exit 1
+}
 
 # --- pinned versions + SHA256 (verified upstream-published hashes) ----------
 SQLITE_YEAR="2025"
@@ -135,6 +140,8 @@ fetch() {
     if [[ -f "$dest" ]] && echo "$sha  $dest" | sha256sum -c - >/dev/null 2>&1; then
         say "cached  $(basename "$dest")"
     else
+        [[ "$OFFLINE" == "1" ]] &&
+            die "offline cache miss or checksum failure: $(basename "$dest")"
         say "fetch   $url"
         if command -v curl >/dev/null 2>&1; then
             curl -fsSL --retry 3 -o "$dest.tmp" "$url"
