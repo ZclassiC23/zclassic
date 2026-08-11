@@ -34,6 +34,17 @@ struct vcs_source_package_checkout_metrics {
 const char *vcs_source_package_checkout_result_string(
     enum vcs_source_package_checkout_result result);
 
+/* Discover the exact accepted-work root carried by a complete source
+ * package.  This re-verifies the content.v2 manifest and PROVEN lane receipt
+ * and requires the closed authority bundle to be present; it does not accept
+ * the receipt as sufficient proof.  Pass the returned root to
+ * vcs_source_package_checkout_accepted(), which imports and verifies the full
+ * task/candidate/policy/receipt chain before materializing source. */
+enum vcs_source_package_checkout_result
+vcs_source_package_accepted_work_discover(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    const uint8_t source_root[32], uint8_t accepted_work_root[32]);
+
 /* Read one complete content.v2 package from the existing store, rederive its
  * root and exact source-carrier shape, verify every source shard before any
  * write, import the ZVCS tree, then materialize source and pinned vendor

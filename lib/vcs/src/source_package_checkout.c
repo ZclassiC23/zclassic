@@ -358,6 +358,61 @@ static bool source_checkout_write_offline(
     return true;
 }
 
+enum vcs_source_package_checkout_result
+vcs_source_package_accepted_work_discover(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    const uint8_t source_root[32], uint8_t accepted_work_root[32])
+{
+    if (accepted_work_root)
+        memset(accepted_work_root, 0, 32);
+    if (!store || !package_root || !source_root || !accepted_work_root)
+        return VCS_SOURCE_PACKAGE_CHECKOUT_NULL;
+    struct vcs_package_store_status status;
+    if (!vcs_package_store_package_status(store, package_root, &status) ||
+        !status.complete)
+        return VCS_SOURCE_PACKAGE_CHECKOUT_INCOMPLETE;
+    struct source_checkout_loaded loaded;
+    source_checkout_loaded_init(&loaded);
+    enum vcs_source_package_checkout_result result =
+        source_checkout_manifest(store, package_root, &loaded);
+    int lane_index = -1;
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK) {
+        lane_index = source_checkout_file_index(
+            &loaded.package, VCS_SOURCE_PACKAGE_LANE_PATH);
+        int authority_index = source_checkout_file_index(
+            &loaded.package, VCS_SOURCE_PACKAGE_AUTHORITY_PATH);
+        if (lane_index < 0 || authority_index < 0 ||
+            loaded.package.files[lane_index].size !=
+                VCS_ZCODE_LANE_WIRE_BYTES ||
+            loaded.package.files[authority_index].size == 0 ||
+            loaded.package.files[authority_index].size >
+                SOURCE_CHECKOUT_AUTHORITY_MAX)
+            result = VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+    }
+    uint8_t *lane_wire = NULL;
+    size_t lane_wire_len = 0;
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK &&
+        !source_checkout_read_file(
+            store, package_root, &loaded.package, (size_t)lane_index,
+            &lane_wire, &lane_wire_len))
+        result = VCS_SOURCE_PACKAGE_CHECKOUT_CHUNK;
+    struct vcs_zcode_lane_receipt_v1 receipt;
+    uint8_t discovered[32];
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK &&
+        (vcs_zcode_lane_receipt_parse(
+             lane_wire, lane_wire_len, &receipt) != VCS_ZCODE_DEV_OK ||
+         receipt.lane != VCS_ZCODE_LANE_PROVEN ||
+         memcmp(receipt.source_root, source_root, 32) != 0 ||
+         vcs_zcode_lane_receipt_id(&receipt, discovered) !=
+             VCS_ZCODE_DEV_OK))
+        result = VCS_SOURCE_PACKAGE_CHECKOUT_SOURCE;
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK)
+        memcpy(accepted_work_root, discovered, 32);
+    free(lane_wire);
+    source_checkout_loaded_free(&loaded);
+    return result;
+}
+
 static enum vcs_source_package_checkout_result source_package_checkout_common(
     struct vcs_package_store *store, const uint8_t package_root[32],
     const uint8_t source_root[32], const uint8_t expected_signer[32],
