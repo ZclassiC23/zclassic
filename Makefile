@@ -653,8 +653,18 @@ RELEASE_LDFLAGS := $(LDFLAGS)
 # profile (FUZZ_CFLAGS below): the serialization/crypto paths perform
 # deliberate unaligned loads that the fuzz lane already found too noisy to
 # keep the UBSan signal usable. An alignment-specific audit is a follow-up.
-ASAN_COMMON_SAN_FLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer \
+override ASAN_COMMON_SAN_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer \
 	-fno-sanitize=alignment
+# The shared Montgomery inline assembly needs one additional general-purpose
+# register when the compiler reserves a frame pointer.  Keep this exception
+# closed over the two translation units that instantiate it; ASan+UBSan remain
+# enabled because these flags are appended to the full sanitizer profile.
+# check-no-adx-overclaim validates the exact allowlist, both object rules, and
+# the compile-epoch bindings below (including a mutation self-test).
+override ASAN_ADX_FRAME_POINTER_EXCEPTION_SRCS := \
+	lib/sapling/src/bn254_accel.c \
+	lib/sapling/src/fr_avx512.c
+override ASAN_ADX_FRAME_POINTER_EXCEPTION_FLAGS := -fomit-frame-pointer
 # dev-asan: the dev node profile (-Og, -g3, -DZCL_DEV_BUILD, non-LTO, dev
 # linker) plus ASan+UBSan. Uniform optimization for every TU — no DEV_HOT
 # split — because sanitizer signal fidelity matters more here than
@@ -804,7 +814,9 @@ DEV_ACTIVE_BIN = $(DEV_CANDIDATE_BIN)
 # Own object root (build/dev-asan-obj) and own candidate dir, mirroring the
 # coverage profile's self-contained derivation; the shared *_EPOCHS_VALID
 # asserts above stay untouched.
-DEV_ASAN_EPOCH_COMPILE_FLAGS := $(strip $(DEV_ASAN_CFLAGS) deps=-MD,-MP)
+DEV_ASAN_EPOCH_COMPILE_FLAGS := $(strip $(DEV_ASAN_CFLAGS) \
+	adx-exception=$(ASAN_ADX_FRAME_POINTER_EXCEPTION_SRCS):$(ASAN_ADX_FRAME_POINTER_EXCEPTION_FLAGS) \
+	deps=-MD,-MP)
 DEV_ASAN_EPOCH_LINK_FLAGS := $(strip $(DEV_ASAN_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 ifneq ($(filter dev-asan,$(ZCL_EPOCH_PROFILES)),)
 DEV_ASAN_COMPILE_EPOCH := $(call zcl_compile_epoch,dev-asan-v2,DEV_ASAN_EPOCH_COMPILE_FLAGS,DEV_ASAN_EPOCH_LINK_FLAGS)
@@ -1363,7 +1375,9 @@ TEST_ASAN_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CACHED_CFLAGS)) -O1 -g 
 	$(ASAN_COMMON_SAN_FLAGS) \
 	-Wno-deprecated-declarations -Wno-format-truncation -Wno-maybe-uninitialized
 TEST_ASAN_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS)) $(ASAN_COMMON_SAN_FLAGS)
-TEST_ASAN_EPOCH_COMPILE_FLAGS := $(strip $(TEST_ASAN_CFLAGS) deps=-MD,-MP)
+TEST_ASAN_EPOCH_COMPILE_FLAGS := $(strip $(TEST_ASAN_CFLAGS) \
+	adx-exception=$(ASAN_ADX_FRAME_POINTER_EXCEPTION_SRCS):$(ASAN_ADX_FRAME_POINTER_EXCEPTION_FLAGS) \
+	deps=-MD,-MP)
 TEST_ASAN_EPOCH_LINK_FLAGS := $(strip $(TEST_ASAN_LDFLAGS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS) cxx=$(CXX))
 ifneq ($(filter test-asan,$(ZCL_EPOCH_PROFILES)),)
 TEST_ASAN_COMPILE_EPOCH := $(call zcl_compile_epoch,test-asan-v2,TEST_ASAN_EPOCH_COMPILE_FLAGS,TEST_ASAN_EPOCH_LINK_FLAGS)
@@ -1744,31 +1758,35 @@ test-parallel: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
 # ONLY cannot contain a redirection, a quote, a space, or any other shell
 # metacharacter. `<substring>` never reaches sh at all.
 T_LIST_TOOL := tools/dev/test-group-list.sh
-ONLY_REQUIRED_GOALS := t t-fast t-asan t-tsan
-ONLY_ACTIVE_GOALS := $(filter $(ONLY_REQUIRED_GOALS),$(MAKECMDGOALS))
+ONLY_REQUIRED_GOALS := t t-fast t-tsan
+ONLY_SELECTOR_GOALS := $(ONLY_REQUIRED_GOALS) t-asan
+ONLY_ACTIVE_GOALS := $(filter $(ONLY_SELECTOR_GOALS),$(MAKECMDGOALS))
 ifneq ($(ONLY_ACTIVE_GOALS),)
   ONLY_GOAL := $(firstword $(ONLY_ACTIVE_GOALS))
   ifeq ($(strip $(ONLY)),)
-    $(error make $(ONLY_GOAL): ONLY= is required and must name a test group. \
-      usage: make $(ONLY_GOAL) ONLY=<group-substr>   e.g. make $(ONLY_GOAL) ONLY=boot_phase. \
-      List every registered group with: make t-list)
-  endif
-  # A single quote in ONLY= would break the quoting below; reject it rather
-  # than let it reach a shell.
-  ifneq ($(findstring ',$(ONLY)),)
-    $(error make $(ONLY_GOAL): ONLY= must not contain a single quote)
-  endif
-  ONLY_MATCHED := $(shell $(T_LIST_TOOL) --match '$(ONLY)' 2>/dev/null)
-  ifeq ($(strip $(ONLY_MATCHED)),)
-    ONLY_NEAR := $(shell $(T_LIST_TOOL) --suggest '$(ONLY)' 2>/dev/null | tr '\n' ' ')
-    ifeq ($(strip $(ONLY_NEAR)),)
-      ONLY_NEAR := (none — see `make t-list`)
+    ifneq ($(filter $(ONLY_REQUIRED_GOALS),$(ONLY_ACTIVE_GOALS)),)
+      $(error make $(ONLY_GOAL): ONLY= is required and must name a test group. \
+        usage: make $(ONLY_GOAL) ONLY=<group-substr>   e.g. make $(ONLY_GOAL) ONLY=boot_phase. \
+        List every registered group with: make t-list)
     endif
-    $(error make $(ONLY_GOAL): ONLY='$(ONLY)' matches NO registered test group — \
-      refusing before the test binary is built. \
-      Closest candidates: $(ONLY_NEAR))
+  else
+    # A single quote in ONLY= would break the quoting below; reject it rather
+    # than let it reach a shell.
+    ifneq ($(findstring ',$(ONLY)),)
+      $(error make $(ONLY_GOAL): ONLY= must not contain a single quote)
+    endif
+    ONLY_MATCHED := $(shell $(T_LIST_TOOL) --match '$(ONLY)' 2>/dev/null)
+    ifeq ($(strip $(ONLY_MATCHED)),)
+      ONLY_NEAR := $(shell $(T_LIST_TOOL) --suggest '$(ONLY)' 2>/dev/null | tr '\n' ' ')
+      ifeq ($(strip $(ONLY_NEAR)),)
+        ONLY_NEAR := (none — see `make t-list`)
+      endif
+      $(error make $(ONLY_GOAL): ONLY='$(ONLY)' matches NO registered test group — \
+        refusing before the test binary is built. \
+        Closest candidates: $(ONLY_NEAR))
+    endif
+    $(info $(ONLY_GOAL): ONLY='$(ONLY)' selects $(words $(ONLY_MATCHED)) group(s): $(ONLY_MATCHED))
   endif
-  $(info $(ONLY_GOAL): ONLY='$(ONLY)' selects $(words $(ONLY_MATCHED)) group(s): $(ONLY_MATCHED))
 endif
 
 # Proof automation never dispatches a substring selector. Canonicalize every
@@ -2010,7 +2028,6 @@ zcode-package-asan: $(ZCODE_PACKAGE_BASE_ASAN_BIN) \
 	    echo "zcode-package-asan: --- $$t ---"; "$$t"; \
 	  done'
 	@$(MAKE) --no-print-directory asan-ci \
-	  ASAN_COMMON_SAN_FLAGS='-fsanitize=address,undefined -fomit-frame-pointer -O2' \
 	  ASAN_CI_GROUPS='$(ZCODE_PACKAGE_ASAN_GROUPS)'
 	@echo "zcode-package-asan: OK (isolated base/sha3/codec + signed package lifecycle)"
 
@@ -2142,11 +2159,6 @@ endif
 # measured ~11/15 failures here at unlimited, 0/15 at 1 GiB). 1 GiB keeps
 # the deep-recursion headroom the suite needs.
 # Checkout-locked — see the `test-parallel` target above for why.
-t-asan: $(TEST_ASAN_CANDIDATE) dev-package-verifier-ensure
-	@mkdir -p "$(BUILD_DIR)"
-	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
-	  sh -c 'ulimit -s 1048576 && exec $(TEST_ASAN_ACTIVE) --only=$(ONLY)'
-
 # Opt-in sanitizer smoke: a small set of fast, params-free groups under
 # test-asan. Deliberately NOT wired into `make ci` — instrumented runs are
 # several times slower than the plain fast harness and push times must stay
@@ -2157,7 +2169,23 @@ t-asan: $(TEST_ASAN_CANDIDATE) dev-package-verifier-ensure
 # finding print yet stay green); ASan already halts by default. Every group
 # in the default set is verified clean under this posture — a red asan-ci
 # run is a real finding to fix, never an expected failure.
-ASAN_CI_GROUPS ?= test_bloom test_json test_parse_num test_zcl_result test_supervisor test_encoding test_zcode_site
+ASAN_CI_GROUPS ?= test_bloom test_json test_parse_num test_zcl_result test_supervisor test_encoding test_zcode_site \
+	test_bn254_accel test_fr_mont_parity test_fr_accel test_mont_adx_honest
+T_ASAN_GROUPS = $(if $(strip $(ONLY)),$(ONLY),$(ASAN_CI_GROUPS))
+
+# With ONLY=, run the requested substring exactly as before.  With no selector,
+# run the params-free smoke set plus the positive/negative ADX differential
+# oracles.  This is the public, flagless sanitizer front door.
+t-asan: $(TEST_ASAN_CANDIDATE) dev-package-verifier-ensure
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
+	  sh -c 'set -e; ulimit -s 1048576; \
+	  export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1; \
+	  for g in $(T_ASAN_GROUPS); do \
+	    echo "t-asan: --- $$g ---"; \
+	    $(TEST_ASAN_ACTIVE) --only=$$g; \
+	  done'
+
 asan-ci: $(TEST_ASAN_CANDIDATE) dev-package-verifier-ensure
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
@@ -2172,14 +2200,11 @@ asan-ci: $(TEST_ASAN_CANDIDATE) dev-package-verifier-ensure
 # S6 DHT memory/UB gate.  Unlike the broad historical sanitizer profile this
 # focused lane has no sanitizer exclusions: codec, routing, service, lookup,
 # scale-model and lock-lifecycle code all run with the complete ASan+UBSan
-# instrumentation set.  -O2 plus an available frame-pointer register are
-# required by the register-constrained ADX assembly TU linked into the
-# monolithic test harness; neither changes sanitizer coverage, and the epoch
-# key records both.
+# instrumentation set.  The monolithic harness uses the same two-TU ADX
+# frame-pointer exception as every other ASan target; the epoch key records it.
 .PHONY: zcode-dht-asan
 zcode-dht-asan:
 	@$(MAKE) asan-ci \
-	  ASAN_COMMON_SAN_FLAGS='-fsanitize=address,undefined -fomit-frame-pointer -O2' \
 	  ASAN_CI_GROUPS='test_zcode_dht test_zcode_dht_msgs test_zcode_dht_service test_zcode_dht_lookup test_zcode_dht_model'
 
 # TSan variant of `t-asan`: one group per invocation under the
@@ -5547,6 +5572,8 @@ $(TEST_REL_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 # ASAN_COMMON_SAN_FLAGS (see the TEST_ASAN_* block above). -MD -MP records
 # the complete include closure inside the exact epoch — no false green.
 TEST_ASAN_OBJECT_CFLAGS = $(TEST_ASAN_CFLAGS)
+TEST_ASAN_ADX_FRAME_POINTER_EXCEPTION_OBJS := $(addprefix $(TEST_ASAN_OBJ_DIR)/,$(ASAN_ADX_FRAME_POINTER_EXCEPTION_SRCS:.c=.o))
+$(TEST_ASAN_ADX_FRAME_POINTER_EXCEPTION_OBJS): TEST_ASAN_OBJECT_CFLAGS += $(ASAN_ADX_FRAME_POINTER_EXCEPTION_FLAGS)
 $(TEST_ASAN_OBJ_DIR)/lib/util/src/clientversion.o: TEST_ASAN_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS) $(DEV_SOURCE_RECEIPT_CPPFLAGS)
 # The ASan tree needs its OWN testcache keyspace, by design rather than by
 # accident: without this the -D is absent and testcache.c falls back to
@@ -5565,6 +5592,8 @@ $(TEST_ASAN_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_IDENTITY_STAMP)
 # ASan/UBSan dev node object tree: uniform DEV_ASAN_CFLAGS for every TU (no
 # hot-path split — sanitizer fidelity over optimizer-sensitivity coverage).
 DEV_ASAN_OBJECT_CFLAGS = $(DEV_ASAN_CFLAGS)
+DEV_ASAN_ADX_FRAME_POINTER_EXCEPTION_OBJS := $(addprefix $(DEV_ASAN_OBJ_DIR)/,$(ASAN_ADX_FRAME_POINTER_EXCEPTION_SRCS:.c=.o))
+$(DEV_ASAN_ADX_FRAME_POINTER_EXCEPTION_OBJS): DEV_ASAN_OBJECT_CFLAGS += $(ASAN_ADX_FRAME_POINTER_EXCEPTION_FLAGS)
 $(DEV_ASAN_OBJ_DIR)/lib/util/src/clientversion.o: DEV_ASAN_OBJECT_CFLAGS += $(BUILD_IDENTITY_CPPFLAGS) $(DEV_SOURCE_RECEIPT_CPPFLAGS)
 $(DEV_ASAN_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS) $(BUILD_EPOCH_OBJECT_TOOL) | $(DEV_ASAN_LEASE)
 	@$(BUILD_EPOCH_OBJECT_TOOL) dep "$@" "$<" \
@@ -6850,6 +6879,8 @@ check-accel-oracle-pinned:
 check-no-adx-overclaim:
 	@echo "══ LINT: no ADCX/ADOX carry-chain overclaim ══"
 	@./tools/lint/check_no_adx_overclaim.sh
+	@./tools/lint/check_asan_adx_exception.sh --selftest
+	@./tools/lint/check_asan_adx_exception.sh
 
 # SIMD OS-support: CPUID reports what the silicon decodes, not whether the OS
 # agreed to save the register state. A dispatch predicate that reads only the

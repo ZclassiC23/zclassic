@@ -164,7 +164,11 @@ static enum vcs_zcode_discovery_rank_error rank_normalize(
             return VCS_ZCODE_DISCOVERY_RANK_ERR_EDGE_NODE_MISSING;
         }
     }
-    qsort(out->edges, edge_count, sizeof(*out->edges), rank_edge_cmp);
+    /* ISO C permits a zero-element qsort, but glibc annotates base nonnull
+     * and UBSan correctly reports passing our intentionally-NULL empty
+     * allocation.  There is no ordering work until two elements exist. */
+    if (edge_count > 1)
+        qsort(out->edges, edge_count, sizeof(*out->edges), rank_edge_cmp);
     for (size_t i = 1; i < edge_count; i++) {
         if (rank_edge_cmp(&out->edges[i - 1], &out->edges[i]) == 0) {
             rank_normalized_free(out);
@@ -199,7 +203,8 @@ static enum vcs_zcode_discovery_rank_error rank_normalize(
         out->seeds[i].weight = seeds[i].weight;
         out->seed_weight_total += seeds[i].weight;
     }
-    qsort(out->seeds, seed_count, sizeof(*out->seeds), rank_seed_cmp);
+    if (seed_count > 1)
+        qsort(out->seeds, seed_count, sizeof(*out->seeds), rank_seed_cmp);
     for (size_t i = 1; i < seed_count; i++) {
         if (out->seeds[i - 1].node == out->seeds[i].node) {
             rank_normalized_free(out);

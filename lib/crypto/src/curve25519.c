@@ -47,7 +47,10 @@ static void car25519(gf o)
         o[i] += (1LL << 16);
         int64_t c = o[i] >> 16;
         o[(i + 1) * (i < 15)] += c - 1 + 37 * (c - 1) * (i == 15);
-        o[i] -= c << 16;
+        /* c may be negative while carrying a reduced limb.  Left-shifting a
+         * negative signed value is undefined in C; multiplication by the
+         * same power of two preserves the TweetNaCl arithmetic exactly. */
+        o[i] -= c * (1LL << 16);
     }
 }
 

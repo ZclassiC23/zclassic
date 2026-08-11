@@ -432,13 +432,16 @@ struct zcl_result pkgl_verify_package(const struct pkgl_ctx *ctx,
             bool good = vcs_package_verify_chunk(f, c, bytes, bytes_len);
             free(bytes);
             if (!good) {
-                vcs_package_manifest_free(&manifest);
                 if (rule_out)
                     (void)snprintf(rule_out, rule_cap, "chunk-hash-mismatch");
-                return ZCL_ERR(-1,
-                               "chunk %s#%u of %s does not match its "
-                               "committed SHA3 — refusing to build tampered "
-                               "content", f->path, c, hex);
+                /* Format while f->path is still owned by manifest; the
+                 * zcl_result copies the message into its fixed buffer. */
+                struct zcl_result result = ZCL_ERR(
+                    -1, "chunk %s#%u of %s does not match its committed "
+                        "SHA3 — refusing to build tampered content",
+                    f->path, c, hex);
+                vcs_package_manifest_free(&manifest);
+                return result;
             }
         }
     }

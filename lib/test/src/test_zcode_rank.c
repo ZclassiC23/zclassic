@@ -1120,8 +1120,11 @@ static int t_commands(void)
                  json_get_bool(json_get(&c.reply.data,
                                         "items_truncated")));
         const struct json_value *rows = json_get(&c.reply.data, "rows");
-        const char *first =
+        const char *first_value =
             json_get_str(json_get(json_at(rows, 0), "contributor"));
+        char first[128] = { 0 };
+        if (first_value)
+            (void)snprintf(first, sizeof(first), "%s", first_value);
         zk_cmd_free(&c);
 
         struct zk_cmd c2;
@@ -1134,7 +1137,7 @@ static int t_commands(void)
             json_get_str(json_get(json_at(rows2, 0), "contributor"));
         ZK_CHECK("commands: offset continues the page",
                  json_get_int(json_get(&c2.reply.data, "rendered")) == 1 &&
-                 first && second && strcmp(first, second) != 0 &&
+                 first[0] && second && strcmp(first, second) != 0 &&
                  json_get_int(json_get(json_at(rows2, 0), "rank")) == 2);
         zk_cmd_free(&c2);
     }
