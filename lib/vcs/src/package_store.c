@@ -689,11 +689,37 @@ enum vcs_package_store_result vcs_package_store_get_chunk(
     char cas_path[STORE_PATH_MAX];
     store_cas_path(store, hash, cas_path, sizeof(cas_path));
     struct stat st;
-    if (stat(cas_path, &st) != 0 || st.st_size <= 0 ||
-        (uint64_t)st.st_size > VCS_PACKAGE_CHUNK_BYTES) {
+    if (stat(cas_path, &st) != 0) {
+        int saved_errno = errno;
+        if (saved_errno == ENOENT) {
+            store_cas_remove(store, hash);
+            store_packages_touch_hash(store, hash);
+            pthread_mutex_unlock(&store->lock);
+            LOG_RETURN(VCS_PACKAGE_STORE_ERR_CHUNK_MISSING, STORE_LOG,
+                       "CAS index named missing object %s", cas_path);
+        }
         pthread_mutex_unlock(&store->lock);
         LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
-                   "CAS object %s stat/size: %s", cas_path, strerror(errno));
+                   "CAS object %s stat: %s", cas_path,
+                   strerror(saved_errno));
+    }
+    if (st.st_size <= 0 ||
+        (uint64_t)st.st_size > VCS_PACKAGE_CHUNK_BYTES) {
+        int remove_errno = 0;
+        if (unlink(cas_path) != 0 && errno != ENOENT)
+            remove_errno = errno;
+        if (!remove_errno) {
+            store_cas_remove(store, hash);
+            store_packages_touch_hash(store, hash);
+        }
+        pthread_mutex_unlock(&store->lock);
+        if (remove_errno)
+            LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                       "quarantine corrupt CAS object %s: %s", cas_path,
+                       strerror(remove_errno));
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_CHUNK_HASH, STORE_LOG,
+                   "quarantined corrupt CAS object %s with invalid size %lld",
+                   cas_path, (long long)st.st_size);
     }
     size_t len = (size_t)st.st_size;
     uint8_t *buf = zcl_malloc(len, "vcs_store_get_chunk");
@@ -712,6 +738,24 @@ enum vcs_package_store_result vcs_package_store_get_chunk(
                    "read CAS object %s", cas_path);
     }
     fclose(f);
+    if (!vcs_package_verify_chunk(file, chunk_index, buf, len)) {
+        free(buf);
+        int remove_errno = 0;
+        if (unlink(cas_path) != 0 && errno != ENOENT)
+            remove_errno = errno;
+        if (!remove_errno) {
+            store_cas_remove(store, hash);
+            store_packages_touch_hash(store, hash);
+        }
+        pthread_mutex_unlock(&store->lock);
+        if (remove_errno)
+            LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
+                       "quarantine corrupt CAS object %s: %s", cas_path,
+                       strerror(remove_errno));
+        LOG_RETURN(VCS_PACKAGE_STORE_ERR_CHUNK_HASH, STORE_LOG,
+                   "quarantined CAS object whose bytes do not match address %s",
+                   cas_path);
+    }
     pkg->access_count++;
     pkg->last_access = ++store->logical_clock;
     *out = buf;

@@ -223,8 +223,11 @@ enum vcs_package_store_result vcs_package_store_put_chunk(
     const char *path, uint32_t chunk_index, const uint8_t *chunk,
     size_t chunk_len);
 
-/* Read one chunk back (allocates *out; caller frees). Counts as a logical
- * access: it bumps the package's access_count/last_access, the
+/* Read one chunk back (allocates *out; caller frees). The CAS bytes are
+ * re-hashed before return. A missing or corrupt object is removed from the
+ * presence index so a swarm fetch can repair the coordinate; corrupt bytes
+ * return VCS_PACKAGE_STORE_ERR_CHUNK_HASH. A successful read counts as a
+ * logical access: it bumps the package's access_count/last_access, the
  * "frequently-requested" signal the HOT pool evicts by. */
 enum vcs_package_store_result vcs_package_store_get_chunk(
     struct vcs_package_store *store, const uint8_t package_root[32],

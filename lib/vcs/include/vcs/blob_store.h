@@ -29,11 +29,10 @@
  * manifest limits, the 2 MiB swarm frame ceiling) is inherited
  * unchanged; nothing here raises any of them.
  *
- * Reads re-verify. The store verifies before it writes, but
- * vcs_package_store_get_chunk_at() hands back CAS bytes without
- * re-hashing, so vcs_blob_get re-parses the stored manifest, re-derives
- * the root, and re-hashes the chunk: a corrupted CAS object fails
- * VCS_BLOB_ERR_CORRUPT instead of being returned as content. */
+ * Reads re-verify at both layers. The package store hashes CAS bytes before
+ * return and quarantines a corrupt object; vcs_blob_get also re-parses the
+ * stored manifest, re-derives the root, and re-hashes the chunk. Corruption
+ * fails VCS_BLOB_ERR_CORRUPT instead of being returned as content. */
 
 #ifndef ZCL_VCS_BLOB_STORE_H
 #define ZCL_VCS_BLOB_STORE_H

@@ -244,12 +244,14 @@ enum vcs_blob_result vcs_blob_get_from(struct vcs_package_store *store,
         if (sr == VCS_PACKAGE_STORE_ERR_UNKNOWN_PACKAGE ||
             sr == VCS_PACKAGE_STORE_ERR_CHUNK_MISSING)
             return VCS_BLOB_ERR_ABSENT;
+        if (sr == VCS_PACKAGE_STORE_ERR_CHUNK_HASH)
+            return VCS_BLOB_ERR_CORRUPT;
         LOG_RETURN(VCS_BLOB_ERR_STORE, BLOB_LOG, "blob chunk read: %s",
                    vcs_package_store_result_string(sr));
     }
 
-    /* The store verifies before it WRITES; it does not re-hash on read.
-     * A CAS object corrupted on disk must fail here, not be returned. */
+    /* Defense in depth for adapters whose store implementation predates
+     * verified reads: corrupt bytes must never escape this semantic layer. */
     uint8_t actual[32];
     sha3_256(chunk, chunk_len, actual);
     if (chunk_len != blob_len || memcmp(actual, chunk_hash, 32) != 0) {

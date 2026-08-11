@@ -15,7 +15,8 @@
  *   4. Dedup: shared chunk stored once, per-package accounting, shared
  *      chunk survives eviction of the other package.
  *   5. Crash recovery: resumable staging, temp sweep, orphan GC,
- *      commit-at-open sweep, completion rebuilt from the CAS.
+ *      commit-at-open sweep, completion rebuilt from the CAS, and a corrupt
+ *      local CAS object quarantined on read then repaired by a verified put.
  *   6. Quota: staging pool exhaustion (in-flight work preserved),
  *      deterministic HOT (LRU) and RARE (replicas desc) eviction,
  *      pins never evicted + pins budget, pre-existing pin markers.
@@ -735,6 +736,82 @@ static int t_store_recovery(void)
         vcs_package_store_close(s);
     }
 
+    zs_free_package(&p);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+/* A content-addressed filename is a claim, not proof. A same-sized local
+ * corruption must become a missing swarm coordinate after the first read so
+ * a surviving provider can repair it; leaving it in the presence set wedges
+ * restart/resume forever. */
+static int t_store_corrupt_read_repair(void)
+{
+    int failures = 0;
+    char dd[256];
+    struct vcs_package_store *s =
+        zs_open(dd, sizeof(dd), "corrupt-repair", 1000000u);
+    ZS_CHECK("corrupt repair: store opens", s != NULL);
+    if (!s)
+        return failures;
+
+    const char *paths[] = { "source/carrier.bin" };
+    const size_t lens[] = { 512 };
+    struct zs_pkg p;
+    ZS_CHECK("corrupt repair: fixture builds",
+             zs_make_package(&p, 1, paths, lens, 0x9a));
+    ZS_CHECK("corrupt repair: package completes",
+             vcs_package_store_put_manifest(s, p.wire, p.wire_len, NULL) ==
+                     VCS_PACKAGE_STORE_OK &&
+                 zs_put_all(s, &p) == VCS_PACKAGE_STORE_OK);
+    vcs_package_store_close(s);
+
+    char hash_hex[65], suffix[160], cas_path[512];
+    zs_hex32(p.manifest.files[0].chunk_hashes, hash_hex);
+    snprintf(suffix, sizeof(suffix), "cas/sha3/%.2s/%s", hash_hex,
+             hash_hex);
+    zs_store_path(cas_path, sizeof(cas_path), dd, suffix);
+    FILE *corrupt = fopen(cas_path, "r+b");
+    ZS_CHECK("corrupt repair: CAS object opens for fault injection",
+             corrupt != NULL);
+    if (corrupt) {
+        int first = fgetc(corrupt);
+        rewind(corrupt);
+        bool wrote = first != EOF && fputc(first ^ 0x80, corrupt) != EOF;
+        bool closed = fclose(corrupt) == 0;
+        ZS_CHECK("corrupt repair: same-size byte corruption lands",
+                 wrote && closed);
+    }
+
+    s = vcs_package_store_open(dd, 1000000u);
+    ZS_CHECK("corrupt repair: store reopens", s != NULL);
+    uint8_t *got = NULL;
+    size_t got_len = 0;
+    ZS_CHECK("corrupt repair: read refuses address-mismatched bytes",
+             s && vcs_package_store_get_chunk(
+                      s, p.root, paths[0], 0, &got, &got_len) ==
+                      VCS_PACKAGE_STORE_ERR_CHUNK_HASH &&
+                 got == NULL && got_len == 0);
+    struct vcs_package_store_status st;
+    ZS_CHECK("corrupt repair: bad object becomes a missing coordinate",
+             s && !zs_path_exists(cas_path) &&
+                 !vcs_package_store_chunk_present(s, p.root, 0, 0) &&
+                 vcs_package_store_package_status(s, p.root, &st) &&
+                 !st.complete && st.present_chunks == 0);
+    ZS_CHECK("corrupt repair: verified provider bytes repair the package",
+             s && vcs_package_store_put_chunk(
+                      s, p.root, paths[0], 0, p.contents[0], p.lens[0]) ==
+                      VCS_PACKAGE_STORE_OK &&
+                 vcs_package_store_package_status(s, p.root, &st) &&
+                 st.complete && st.present_chunks == 1);
+    ZS_CHECK("corrupt repair: repaired bytes read identically",
+             s && vcs_package_store_get_chunk(
+                 s, p.root, paths[0], 0, &got, &got_len) ==
+                     VCS_PACKAGE_STORE_OK &&
+                 got_len == p.lens[0] &&
+                 memcmp(got, p.contents[0], got_len) == 0);
+    free(got);
+    vcs_package_store_close(s);
     zs_free_package(&p);
     test_rm_rf_recursive(dd);
     return failures;
@@ -1653,6 +1730,7 @@ int test_zcode_store(void)
     failures += t_store_chunk_flow();
     failures += t_store_dedup();
     failures += t_store_recovery();
+    failures += t_store_corrupt_read_repair();
     failures += t_store_staging_quota();
     failures += t_store_hot_eviction();
     failures += t_store_rare_eviction();
