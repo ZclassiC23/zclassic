@@ -513,7 +513,7 @@ static int test_ic_incomplete_dimension_refuses_proof(void)
                       "\"why_not_live_path\":\"lib/net/src/tor_integration.c\"")
                != NULL);
         ASSERT(strstr(body,
-                      "\"agent_next_action\":\"zclassic23-dev dev loop ensure")
+                      "\"agent_next_action\":\"zclassic23-dev dev begin\"")
                != NULL);
 
         system("rm -rf " IC_FIX_TRUNC);
@@ -630,6 +630,12 @@ static int test_ic_every_selection_has_a_reason(void)
                                       NULL);
         ASSERT(plan_spec != NULL);
         ASSERT(plan_spec->budget_bytes >= ZCL_DEVLOOP_PLAN_WIRE_MAX + 512);
+        const struct zcl_command_spec *change_plan_spec =
+            zcl_command_registry_find(zcl_command_catalog(),
+                                      "dev.change.plan", NULL);
+        ASSERT(change_plan_spec != NULL);
+        ASSERT(change_plan_spec->budget_bytes >=
+               ZCL_DEVLOOP_PLAN_WIRE_MAX + 512);
         /* …and the renderer must actually honour that ceiling regardless of
          * how large a buffer it is handed. */
         ASSERT(n <= ZCL_DEVLOOP_PLAN_WIRE_MAX);

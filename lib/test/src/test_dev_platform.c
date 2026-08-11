@@ -496,7 +496,7 @@ static int test_watcher_publication_containment(void)
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
                           false, false, false,
                           ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
-                      "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'")
+                      "zclassic23-dev dev begin")
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
                           true, false, false,

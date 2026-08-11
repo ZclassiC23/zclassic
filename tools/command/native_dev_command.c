@@ -1286,9 +1286,12 @@ static bool dev_drive_wait_cycle(
         reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
         "DRIVE_TIMEOUT", "wait", true, false,
         "no newer exact cycle verdict before timeout", evidence);
+    /* Never point a command's next[] back to itself: the registry rejects
+     * self-loops and would replace this useful timeout with the generic
+     * RESPONSE_BUDGET_EXCEEDED fallback. */
     (void)zcl_command_reply_add_next(
-        reply, "dev.drive", "{}",
-        "reattach to the warm service and wait for the next edit verdict");
+        reply, "dev.loop.status", "{}",
+        "confirm the warm service state before waiting for another edit");
     return false;
 }
 
@@ -1367,8 +1370,11 @@ void zcl_native_handle_dev_drive(
     (void)json_push_kv_int(&compact, "epoch", epoch);
     const bool live = json_get_bool(json_get(&cycle, "runtime_published"));
     const char *action = json_get_str(json_get(&cycle, "action"));
+    const char *cycle_status = json_get_str(json_get(&cycle, "status"));
     (void)json_push_kv_str(
         &compact, "lane", live ? "LIVE" :
+        cycle_status && strcmp(cycle_status, "fallback_ready") == 0
+            ? "VERIFY" :
         action && strcmp(action, "restart") == 0 ? "FAST_RESTART" :
         "VERIFY");
     (void)dev_drive_copy(&cycle, &compact, "status", "status");
@@ -1409,18 +1415,34 @@ void zcl_native_handle_dev_drive(
     } else {
         const char *status = json_get_str(json_get(&cycle, "status"));
         bool passed = status && strcmp(status, "passed") == 0;
+        bool proof_pending = status &&
+            ((strcmp(status, "feedback_ready") == 0 &&
+              json_get_bool(json_get(&cycle,
+                                     "immediate_proof_complete"))) ||
+             strcmp(status, "fallback_ready") == 0) &&
+            json_get_bool(json_get(&cycle, "integration_proof_deferred"));
         bool proof_complete =
             json_get_bool(json_get(&cycle, "proof_complete"));
         (void)json_push_kv_str(
-            &compact, "publication_stage", "NOT_QUEUED");
+            &compact, "publication_stage",
+            proof_pending ? "PROOF_PENDING" : "NOT_QUEUED");
         (void)json_push_kv_str(
             &compact, "blocker",
+            proof_pending ? "integration_proof_pending" :
             proof_complete ? "publication_job_missing" :
             passed ? "complete_reusable_proof_required" : "proof_failed");
-        (void)json_push_kv_str(
-            &compact, "next_command",
-            passed ? "zclassic23-dev dev ff"
-                   : "zclassic23-dev dev diagnose latest");
+        char next[192];
+        if (proof_pending)
+            (void)snprintf(
+                next, sizeof(next),
+                "zclassic23-dev dev drive --input='{\"after_epoch\":%lld}'",
+                (long long)epoch);
+        else
+            (void)snprintf(
+                next, sizeof(next), "%s",
+                passed ? "zclassic23-dev dev ff"
+                       : "zclassic23-dev dev diagnose latest");
+        (void)json_push_kv_str(&compact, "next_command", next);
     }
     json_free(&reply->data);
     json_init(&reply->data);
@@ -1925,8 +1947,15 @@ void zcl_native_handle_dev_begin(
         json_copy(&input, request->input);
     else
         json_set_object(&input);
-    if (!json_get(&input, "mode"))
-        (void)json_push_kv_str(&input, "mode", "auto");
+    /* The one-command warm-feedback path inherits the fail-closed default.
+     * Runtime publication remains an explicit request, never an accidental
+     * consequence of asking for warm feedback. */
+    if (!json_get(&input, "mode")) {
+        const char *default_mode = zcl_devloop_publish_mode_name(
+            zcl_devloop_default_watch_publish_mode());
+        (void)json_push_kv_str(&input, "mode",
+                               default_mode ? default_mode : "verify");
+    }
     struct zcl_command_request ensure_request = *request;
     ensure_request.input = &input;
     zcl_native_handle_dev_loop_ensure(&ensure_request, reply);
