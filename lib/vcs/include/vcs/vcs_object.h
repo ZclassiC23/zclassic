@@ -69,6 +69,18 @@ bool vcs_object_has(const char *repo_root, const uint8_t hash[32]);
 bool vcs_object_put_addressed(const char *repo_root, const uint8_t address[32],
                               const uint8_t *content, size_t len);
 
+/* Verified-recovery variants for an exact known address. They preserve an
+ * existing byte-identical object and atomically replace only a corrupt object
+ * at that same address. The caller supplies the authoritative bytes; the
+ * tagged form derives and checks its own address. */
+bool vcs_object_put_repair(const char *repo_root, const uint8_t *content,
+                           size_t len, uint8_t tag, uint8_t out_hash[32],
+                           bool *repaired);
+bool vcs_object_put_addressed_repair(const char *repo_root,
+                                     const uint8_t address[32],
+                                     const uint8_t *content, size_t len,
+                                     bool *repaired);
+
 /* Load the raw bytes of the object at address, WITHOUT verifying any hash —
  * the caller MUST verify (e.g. the manifest layer re-derives tree_hash from
  * the parsed content and checks it equals the address). Allocates

@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 671 |
+| Registry entries (branches + leaves) | 678 |
 | Top-level roots | 11 |
-| Branches | 157 |
-| Leaves (dispatchable command paths) | 514 |
-| … `ready` (live handler in this build) | 465 |
+| Branches | 159 |
+| Leaves (dispatchable command paths) | 519 |
+| … `ready` (live handler in this build) | 470 |
 | … `compat` (metadata only, names a fallback) | 19 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 18 |
-| Leaves with `effect=mutate` | 165 |
+| Leaves with `effect=mutate` | 169 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 108 |
 
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 203 | 48 | 155 |
+| `config/commands/zcode.def` | 210 | 50 | 160 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -995,6 +995,21 @@ represented by its children's sections.
 | `zcode workspace plan` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root` | `zcl.zcode_workspace_plan.v1` | `zclassic23 zcode workspace plan --input='<passport, release root, sequence>'` | Plan one Passport-bound workspace entry |
 | `zcode workspace verify` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root`, **`binding_root`** | `zcl.zcode_workspace_verify.v1` | `zclassic23 zcode workspace verify --input='<plan input plus binding_root>'` | Verify one Passport-bound workspace entry |
 | `zcode workspace show` | ready | read / read / public · instant/tiny | **`passport`**, **`module_release_root`**, **`sequence`**, `predecessor_release_root`, **`binding_root`** | `zcl.zcode_workspace_verify.v1` | `zclassic23 zcode workspace show --input='<verified binding input>'` | Show one verified Passport-bound workspace entry |
+
+#### `zcode.workspace.source` — Git-free source
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode workspace source capture` | ready | mutate / app-write / operator · foreground/high | **`workspace`** | `zcl.zcode_source_capture.v1` | `zclassic23 zcode workspace source capture --input='{"workspace":"/src/project"}'` | Capture one exact source tree into ZVCS |
+
+#### `zcode.workspace.source.bundle` — Compressed ZVCS transport
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `zcode workspace source bundle create` | ready | mutate / app-write / operator · foreground/high | **`workspace`**, **`source_root`**, **`output`** | `zcl.zcode_source_bundle_create.v1` | `zclassic23 zcode workspace source bundle create --input='{"workspace":"/src","source_root":"<64hex>","output":"/tmp/source.zvsb"}'` | Create a compressed bundle from one captured ZVCS tree |
+| `zcode workspace source bundle verify` | ready | read / read / public · foreground/high | **`bundle`**, **`source_root`** | `zcl.zcode_source_bundle_verify.v1` | `zclassic23 zcode workspace source bundle verify --input='{"bundle":"/tmp/source.zvsb","source_root":"<64hex>"}'` | Verify and rederive a compressed ZVCS source bundle |
+| `zcode workspace source bundle import` | ready | mutate / app-write / operator · foreground/high | **`bundle`**, **`source_root`**, **`workspace`** | `zcl.zcode_source_bundle_import.v1` | `zclassic23 zcode workspace source bundle import --input='{"bundle":"/tmp/source.zvsb","source_root":"<64hex>","workspace":"/tmp/zvcs-scratch"}'` | Import a verified source bundle into the existing ZVCS CAS |
+| `zcode workspace source bundle checkout` | ready | mutate / app-write / operator · foreground/high | **`bundle`**, **`source_root`**, **`workspace`**, **`destination`** | `zcl.zcode_source_bundle_checkout.v1` | `zclassic23 zcode workspace source bundle checkout --input='{"bundle":"/tmp/source.zvsb","source_root":"<64hex>","workspace":"/tmp/zvcs-scratch","destination":"/tmp/source-scratch"}'` | Reconstruct an exact source tree without Git |
 
 #### `zcode.workspace.manifest` — Externally signed C23 workspace manifests
 

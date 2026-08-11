@@ -116,13 +116,14 @@ bool vcs_object_has(const char *repo_root, const uint8_t hash[32])
 /* Write content[0..len) into the object addressed by addr, atomically and
  * idempotently. Shared by the content-addressed put and the manifest's
  * structural-address put. */
-static bool object_write(const char *repo_root, const uint8_t addr[32],
-                         const uint8_t *content, size_t len)
+static bool object_write_mode(const char *repo_root, const uint8_t addr[32],
+                              const uint8_t *content, size_t len,
+                              bool replace)
 {
     char final[VCS_OBJECT_PATH_MAX];
     if (!object_path(repo_root, addr, final, sizeof(final)))
         LOG_FAIL("vcs", "object path too long");
-    if (access(final, F_OK) == 0)
+    if (!replace && access(final, F_OK) == 0)
         return true;  /* dedup */
 
     char hex[65];
@@ -179,6 +180,12 @@ static bool object_write(const char *repo_root, const uint8_t addr[32],
     return true;
 }
 
+static bool object_write(const char *repo_root, const uint8_t addr[32],
+                         const uint8_t *content, size_t len)
+{
+    return object_write_mode(repo_root, addr, content, len, false);
+}
+
 bool vcs_object_put(const char *repo_root, const uint8_t *content, size_t len,
                     uint8_t tag, uint8_t out_hash[32])
 {
@@ -196,6 +203,54 @@ bool vcs_object_put_addressed(const char *repo_root, const uint8_t address[32],
     if (!repo_root || !address || (len > 0 && !content))
         LOG_FAIL("vcs", "null arg to object_put_addressed");
     return object_write(repo_root, address, content, len);
+}
+
+bool vcs_object_put_repair(const char *repo_root, const uint8_t *content,
+                           size_t len, uint8_t tag, uint8_t out_hash[32],
+                           bool *repaired)
+{
+    if (repaired) *repaired = false;
+    if (!repo_root || !out_hash || (len > 0 && !content))
+        LOG_FAIL("vcs", "null arg to object_put_repair");
+    vcs_sha3_tag(tag, content, len, out_hash);
+    bool existed = vcs_object_has(repo_root, out_hash);
+    uint8_t *existing = NULL;
+    size_t existing_len = 0;
+    if (existed && vcs_object_get(repo_root, out_hash, tag, &existing,
+                       &existing_len) == 0) {
+        bool same = existing_len == len &&
+            (len == 0 || memcmp(existing, content, len) == 0);
+        free(existing);
+        return same;
+    }
+    bool ok = object_write_mode(repo_root, out_hash, content, len, existed);
+    if (ok && repaired) *repaired = existed;
+    return ok;
+}
+
+bool vcs_object_put_addressed_repair(const char *repo_root,
+                                     const uint8_t address[32],
+                                     const uint8_t *content, size_t len,
+                                     bool *repaired)
+{
+    if (repaired) *repaired = false;
+    if (!repo_root || !address || (len > 0 && !content))
+        LOG_FAIL("vcs", "null arg to object_put_addressed_repair");
+    bool existed = vcs_object_has(repo_root, address);
+    uint8_t *existing = NULL;
+    size_t existing_len = 0;
+    int loaded = existed
+        ? vcs_object_load_raw(repo_root, address, &existing, &existing_len)
+        : -1;
+    if (loaded == 0 && existing_len == len &&
+        (len == 0 || memcmp(existing, content, len) == 0)) {
+        free(existing);
+        return true;
+    }
+    free(existing);
+    bool ok = object_write_mode(repo_root, address, content, len, existed);
+    if (ok && repaired) *repaired = existed;
+    return ok;
 }
 
 /* Read the whole object file at addr into *out (caller frees). No hash

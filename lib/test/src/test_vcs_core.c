@@ -32,8 +32,10 @@
 #include "vcs/vcs_object.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_swarm.h"
+#include "vcs/source_bundle.h"
 #include "vcs/vcs_seal.h"
 
+#include "base/hex.h"
 #include "crypto/sha3.h"
 #include "platform/time_compat.h"
 
@@ -90,6 +92,151 @@ static char *vc_read(const char *dir, const char *rel, size_t *out_len)
     buf[rd] = '\0';
     if (out_len) *out_len = rd;
     return buf;
+}
+
+static bool vc_write_bytes(const char *path, const uint8_t *bytes, size_t len)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    bool ok = len == 0 || fwrite(bytes, 1, len, f) == len;
+    return fclose(f) == 0 && ok;
+}
+
+static bool vc_corrupt_object(const char *workspace, const uint8_t root[32])
+{
+    char hex[65], path[4096];
+    zcl_hex_encode(root, 32, hex);
+    int n = snprintf(path, sizeof(path), "%s/.zvcs/objects/%c%c/%s",
+                     workspace, hex[0], hex[1], hex + 2);
+    static const uint8_t corrupt[] = {0xde, 0xad, 0xbe, 0xef};
+    return n > 0 && (size_t)n < sizeof(path) &&
+        vc_write_bytes(path, corrupt, sizeof(corrupt));
+}
+
+static int t_source_bundle(void)
+{
+    int failures = 0;
+    char source[512], consumer[512], materialized[512], marker[512];
+    test_make_tmpdir(source, sizeof(source), "vcs_core", "bundle-source");
+    test_make_tmpdir(consumer, sizeof(consumer), "vcs_core", "bundle-consumer");
+    test_make_tmpdir(materialized, sizeof(materialized), "vcs_core",
+                     "bundle-materialized");
+    (void)snprintf(marker, sizeof(marker), "%s/should-not-exist", consumer);
+
+    VC_CHECK("source bundle fixture files",
+             vc_write(source, "LICENSE", "Apache-2.0\n") &&
+             vc_write(source, "src/a.c", "int a(void) { return 1; }\n") &&
+             vc_write(source, "include/a.h", "int a(void);\n") &&
+             vc_write(source, "run.sh", "#!/bin/sh\ntouch should-not-exist\n"));
+    char executable[1024];
+    (void)snprintf(executable, sizeof(executable), "%s/run.sh", source);
+    VC_CHECK("source bundle executable mode fixture",
+             chmod(executable, 0755) == 0);
+
+    uint8_t first_root[32];
+    VC_CHECK("source bundle captures authoritative tree",
+             vcs_tree_capture_path(source, first_root) == VCS_OK);
+    uint8_t *first_wire = NULL;
+    size_t first_wire_len = 0;
+    struct vcs_source_bundle_metrics created;
+    VC_CHECK("source bundle creates compressed transport",
+             vcs_source_bundle_create(source, first_root, &first_wire,
+                                      &first_wire_len, &created) ==
+                 VCS_SOURCE_BUNDLE_OK &&
+             first_wire && first_wire_len > VCS_SOURCE_BUNDLE_HEADER_BYTES &&
+             created.file_count == 4 && created.source_bytes > 0);
+    struct vcs_source_bundle_metrics verified;
+    VC_CHECK("source bundle verifies without writes",
+             vcs_source_bundle_verify(first_wire, first_wire_len, first_root,
+                                      &verified) == VCS_SOURCE_BUNDLE_OK &&
+             verified.file_count == created.file_count &&
+             !vcs_object_store_initialized(consumer));
+
+    uint8_t wrong_root[32];
+    memcpy(wrong_root, first_root, sizeof(wrong_root));
+    wrong_root[0] ^= 1u;
+    VC_CHECK("source bundle wrong immutable root refused",
+             vcs_source_bundle_verify(first_wire, first_wire_len, wrong_root,
+                                      NULL) == VCS_SOURCE_BUNDLE_ERR_ROOT);
+    VC_CHECK("source bundle interrupted wire refused before CAS writes",
+             vcs_source_bundle_import(first_wire, first_wire_len - 1u,
+                                      first_root, consumer, NULL) !=
+                 VCS_SOURCE_BUNDLE_OK &&
+             !vcs_object_store_initialized(consumer));
+
+    uint8_t *corrupt_wire = malloc(first_wire_len);
+    VC_CHECK("source bundle corruption fixture allocated",
+             corrupt_wire != NULL);
+    if (corrupt_wire) {
+        memcpy(corrupt_wire, first_wire, first_wire_len);
+        corrupt_wire[first_wire_len - 1u] ^= 0x80u;
+        VC_CHECK("source bundle corrupt compressed bytes refused",
+                 vcs_source_bundle_verify(corrupt_wire, first_wire_len,
+                                          first_root, NULL) !=
+                     VCS_SOURCE_BUNDLE_OK);
+    }
+    free(corrupt_wire);
+
+    struct vcs_source_bundle_metrics imported;
+    VC_CHECK("source bundle complete retry imports verified CAS",
+             vcs_source_bundle_import(first_wire, first_wire_len, first_root,
+                                      consumer, &imported) ==
+                 VCS_SOURCE_BUNDLE_OK &&
+             imported.new_blobs == 4 && imported.reused_blobs == 0 &&
+             !imported.repaired && access(marker, F_OK) != 0);
+    VC_CHECK("source bundle materializes without Git",
+             vcs_tree_materialize(consumer, first_root, materialized,
+                                  VCS_SOURCE_BUNDLE_MAX_SOURCE_BYTES, 0) ==
+                 VCS_OK);
+    size_t source_len = 0, materialized_len = 0;
+    char *source_a = vc_read(source, "src/a.c", &source_len);
+    char *materialized_a = vc_read(materialized, "src/a.c",
+                                   &materialized_len);
+    VC_CHECK("source bundle reconstructed bytes match",
+             source_a && materialized_a && source_len == materialized_len &&
+             memcmp(source_a, materialized_a, source_len) == 0);
+    free(materialized_a); free(source_a);
+
+    struct vcs_manifest first_manifest;
+    bool loaded = vcs_tree_load(consumer, first_root, &first_manifest);
+    VC_CHECK("source bundle imported manifest reloads", loaded);
+    if (loaded && first_manifest.count > 0) {
+        VC_CHECK("source bundle corrupt cache fixture",
+                 vc_corrupt_object(consumer, first_manifest.entries[0].blob));
+        struct vcs_source_bundle_metrics repaired;
+        VC_CHECK("source bundle verified retry repairs exact corrupt blob",
+                 vcs_source_bundle_import(first_wire, first_wire_len,
+                                          first_root, consumer, &repaired) ==
+                     VCS_SOURCE_BUNDLE_OK && repaired.repaired &&
+                 repaired.new_blobs == 1 && repaired.reused_blobs == 3);
+        vcs_manifest_free(&first_manifest);
+    }
+
+    VC_CHECK("source bundle successor fixture changed one file",
+             vc_write(source, "src/a.c", "int a(void) { return 2; }\n"));
+    uint8_t second_root[32];
+    VC_CHECK("source bundle successor captures new tree",
+             vcs_tree_capture_path(source, second_root) == VCS_OK &&
+             memcmp(second_root, first_root, 32) != 0);
+    uint8_t *second_wire = NULL;
+    size_t second_wire_len = 0;
+    VC_CHECK("source bundle successor creates transport",
+             vcs_source_bundle_create(source, second_root, &second_wire,
+                                      &second_wire_len, NULL) ==
+                 VCS_SOURCE_BUNDLE_OK);
+    struct vcs_source_bundle_metrics successor;
+    VC_CHECK("source bundle successor reuses unchanged CAS blobs",
+             vcs_source_bundle_import(second_wire, second_wire_len,
+                                      second_root, consumer, &successor) ==
+                 VCS_SOURCE_BUNDLE_OK &&
+             successor.new_blobs == 1 && successor.reused_blobs == 3 &&
+             successor.new_bytes < successor.reused_bytes);
+
+    free(second_wire); free(first_wire);
+    test_rm_rf_recursive(materialized);
+    test_rm_rf_recursive(consumer);
+    test_rm_rf_recursive(source);
+    return failures;
 }
 
 static bool vc_file_matches(const char *dir, const char *rel, const char *expect)
@@ -1451,6 +1598,7 @@ int test_vcs_core(void)
     failures += t_manifest_fixedpoint();
     failures += t_package_manifest();
     failures += t_package_swarm();
+    failures += t_source_bundle();
     failures += t_commit_record();
 
     char dir[512];

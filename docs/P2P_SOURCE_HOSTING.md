@@ -76,6 +76,34 @@ The wallet broker signs the release id; private keys never enter an App. A
 signature establishes authorship, not safety. Downloaded source remains inert
 until a separate explicit inspect/build/install transaction passes policy.
 
+## Whole-workspace ZVCS transport
+
+A complete ZClassic23 workspace is larger than the package store's deliberately
+conservative 64 MiB per-release admission bound when represented as loose
+files. It is therefore carried without weakening that bound by
+`vcs_source_bundle.v1`
+(`lib/vcs/{include/vcs/source_bundle.h,src/source_bundle.c}`): a
+zlib-compressed transport
+containing the existing canonical ZVCS manifest followed by its verified blob
+bytes in manifest order. This is not another source identity or VCS. The
+accepted ZVCS tree root remains authoritative, and the surrounding
+`content.v2` package/release authenticates the compressed transport bytes.
+
+Creation reloads and rehashes every blob from ZVCS CAS. Verification
+decompresses under fixed manifest/source/wire limits, parses the canonical
+path-sorted manifest, rehashes every domain-tagged blob, and re-derives the
+expected tree root before any write. Import then deduplicates valid CAS objects
+and can atomically repair a corrupt object only at its exact committed address;
+the manifest is admitted last. Checkout materializes through the existing
+no-follow ZVCS materializer into an existing empty scratch directory. Neither
+verify, import, nor checkout executes downloaded source, and none requires
+Git.
+
+The typed leaves are `zcode workspace source capture`, `zcode workspace source bundle create`,
+`verify`, `import`, and `checkout`. Capture explicitly reports
+`accepted:false`: only the existing proof chain and explicit `zcode work
+accept` lifecycle can grant PROVEN publication authority.
+
 ## Swarm flow
 
 1. A peer gossips a bounded announcement containing the package root and

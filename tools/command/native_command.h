@@ -387,6 +387,21 @@ void zcl_native_handle_zcode_package_dev_prepare(
 void zcl_native_handle_zcode_package_dev_seal(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_source_bundle_create(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_source_capture(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_source_bundle_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_source_bundle_import(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_source_bundle_checkout(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_project_inspect(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

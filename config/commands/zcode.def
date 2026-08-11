@@ -30,9 +30,121 @@ ZCL_COMMAND_BRANCH("zcode.passport", "zcode",
 ZCL_COMMAND_BRANCH("zcode.workspace", "zcode",
                    "Exact C23 workspace evidence bindings",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.workspace.source", "zcode.workspace",
+                   "Git-free source",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.workspace.source.bundle", "zcode.workspace.source",
+                   "Compressed ZVCS transport",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("zcode.workspace.manifest", "zcode.workspace",
                    "Externally signed C23 workspace manifests",
                    ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.workspace.source.capture", "zcode.workspace.source", "",
+    "Capture one exact source tree into ZVCS",
+    "Performs the existing stable double scan and stores the canonical "
+    "manifest and domain-tagged blobs in the workspace's ZVCS CAS. It reads "
+    "no Git object or history and grants no acceptance or publication "
+    "authority; the ordinary proof and explicit zcode work accept lifecycle "
+    "remain mandatory.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,source,zvcs,capture,cas,git-free,unaccepted",
+    "zcl.zcode_source_capture.input.v1", "zcl.zcode_source_capture.v1",
+    "workspace", "workspace",
+    "zclassic23 zcode workspace source capture --input='{\"workspace\":\"/src/project\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_source_capture)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.workspace.source.bundle.create", "zcode.workspace.source.bundle", "",
+    "Create a compressed bundle from one captured ZVCS tree",
+    "Reloads the exact source manifest and every domain-tagged blob from the "
+    "existing ZVCS CAS, rehashes them, and writes one bounded compressed "
+    "transport file beneath an explicit scratch path. The ZVCS tree root, not "
+    "the compressed bytes, remains source authority. It does not read Git or "
+    "execute source.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,source,bundle,zvcs,create,git-free,transport",
+    "zcl.zcode_source_bundle_create.input.v1",
+    "zcl.zcode_source_bundle_create.v1",
+    "workspace,source_root,output", "workspace,source_root,output",
+    "zclassic23 zcode workspace source bundle create --input='{\"workspace\":\"/src\",\"source_root\":\"<64hex>\",\"output\":\"/tmp/source.zvsb\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_zcode_source_bundle_create)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.workspace.source.bundle.verify", "zcode.workspace.source.bundle", "",
+    "Verify and rederive a compressed ZVCS source bundle",
+    "Reads and decompresses the bounded bundle, parses the canonical ZVCS "
+    "manifest, rehashes every blob and the complete tree root, and writes "
+    "nothing. No source is materialized or executed.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,source,bundle,zvcs,verify,read-only,git-free",
+    "zcl.zcode_source_bundle_verify.input.v1",
+    "zcl.zcode_source_bundle_verify.v1",
+    "bundle,source_root", "bundle,source_root",
+    "zclassic23 zcode workspace source bundle verify --input='{\"bundle\":\"/tmp/source.zvsb\",\"source_root\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE,
+    zcl_native_handle_zcode_source_bundle_verify)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.workspace.source.bundle.import", "zcode.workspace.source.bundle", "",
+    "Import a verified source bundle into the existing ZVCS CAS",
+    "Fully verifies the bundle before any write, then admits its blobs and "
+    "manifest into an explicit scratch ZVCS workspace. Valid objects are "
+    "deduplicated and exact-address corrupt cache objects are atomically "
+    "repaired. It does not materialize or execute source.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,source,bundle,zvcs,import,resume,repair,git-free",
+    "zcl.zcode_source_bundle_import.input.v1",
+    "zcl.zcode_source_bundle_import.v1",
+    "bundle,source_root,workspace", "bundle,source_root,workspace",
+    "zclassic23 zcode workspace source bundle import --input='{\"bundle\":\"/tmp/source.zvsb\",\"source_root\":\"<64hex>\",\"workspace\":\"/tmp/zvcs-scratch\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_zcode_source_bundle_import)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.workspace.source.bundle.checkout", "zcode.workspace.source.bundle", "",
+    "Reconstruct an exact source tree without Git",
+    "Imports a fully verified bundle into a separate scratch ZVCS CAS and "
+    "materializes the exact committed paths, modes and bytes into an existing "
+    "empty scratch destination. Retrieval never executes source; build and "
+    "test remain separate explicit steps.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,source,bundle,zvcs,checkout,reconstruct,git-free,no-exec",
+    "zcl.zcode_source_bundle_checkout.input.v1",
+    "zcl.zcode_source_bundle_checkout.v1",
+    "bundle,source_root,workspace,destination",
+    "bundle,source_root,workspace,destination",
+    "zclassic23 zcode workspace source bundle checkout --input='{\"bundle\":\"/tmp/source.zvsb\",\"source_root\":\"<64hex>\",\"workspace\":\"/tmp/zvcs-scratch\",\"destination\":\"/tmp/source-scratch\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_zcode_source_bundle_checkout)
 
 ZCL_COMMAND_READY_READ(
     "zcode.passport.status", "zcode.passport", "",
