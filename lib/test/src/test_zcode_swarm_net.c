@@ -37,9 +37,12 @@
 #include "chain/chainparams.h"
 #include "coins/coins_view.h"
 #include "core/serialize.h"
+#include "core/uint256.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 #include "event/event.h"
+#include "keys/key.h"
+#include "keys/pubkey.h"
 #include "net/fast_sync.h"
 #include "net/msgprocessor.h"
 #include "net/net.h"
@@ -49,6 +52,7 @@
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
 #include "vcs/package_service.h"
+#include "vcs/package_release.h"
 #include "vcs/package_store.h"
 #include "vcs/package_swarm.h"
 #include "vcs/package_swarm_node.h"
@@ -278,6 +282,50 @@ static bool zwn_sha3_file(const char *path, uint8_t out[32])
     if (ok)
         sha3_256_finalize(&hash, out);
     return ok;
+}
+
+static bool zwn_release_make(
+    const uint8_t package_root[32], const uint8_t recipe_root[32],
+    const char *semver, uint64_t sequence, const uint8_t *parent_root,
+    struct vcs_package_release *release, uint8_t release_root[32])
+{
+    struct privkey key;
+    memset(&key, 0, sizeof(key));
+    memset(key.vch, 0x47, sizeof(key.vch));
+    key.fValid = true;
+    key.fCompressed = true;
+    struct pubkey pubkey;
+    if (!privkey_get_pubkey(&key, &pubkey) ||
+        pubkey.size != COMPRESSED_PUBLIC_KEY_SIZE)
+        return false;
+    memset(release, 0, sizeof(*release));
+    release->schema_version = VCS_PACKAGE_RELEASE_VERSION;
+    (void)snprintf(release->name, sizeof(release->name),
+                   "fixture/sovereign-source");
+    (void)snprintf(release->semver, sizeof(release->semver), "%s", semver);
+    memcpy(release->package_root, package_root, 32);
+    release->has_parent = parent_root != NULL;
+    if (parent_root)
+        memcpy(release->parent_root, parent_root, 32);
+    memcpy(release->publisher_pubkey, pubkey.vch,
+           COMPRESSED_PUBLIC_KEY_SIZE);
+    release->publisher_sequence = sequence;
+    (void)snprintf(release->license, sizeof(release->license),
+                   "Apache-2.0");
+    memcpy(release->recipe_root, recipe_root, 32);
+    (void)snprintf(release->chain_id, sizeof(release->chain_id),
+                   "zclassic-regtest");
+    if (vcs_package_release_id(release, release_root) !=
+        VCS_PACKAGE_RELEASE_OK)
+        return false;
+    struct uint256 hash;
+    memcpy(hash.data, release_root, 32);
+    unsigned char compact[COMPACT_SIGNATURE_SIZE];
+    if (!privkey_sign_compact(&key, &hash, compact))
+        return false;
+    memcpy(release->signature, compact + 1,
+           VCS_PACKAGE_RELEASE_SIGNATURE_BYTES);
+    return vcs_package_release_verify(release) == VCS_PACKAGE_RELEASE_OK;
 }
 
 /* ── the loopback node: msg_processor + engine + store + book ───────── */
@@ -1054,18 +1102,22 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
     int failures = 0;
     TEST("proven C23 source: two providers feed a fresh Git-free checkout "
          "whose rebuilt binary matches the publisher SHA3") {
-        char publisher[512], consumer_cas[512], checkout[512];
-        char publisher_build[512], consumer_build[512];
+        char publisher[512], consumer_cas[512], checkout[512], checkout2[512];
+        char publisher_build[512], consumer_build[512], consumer_build2[512];
         test_make_tmpdir(publisher, sizeof(publisher),
                          "zcode_swarm_net", "source-publisher");
         test_make_tmpdir(consumer_cas, sizeof(consumer_cas),
                          "zcode_swarm_net", "source-consumer-cas");
         test_make_tmpdir(checkout, sizeof(checkout),
                          "zcode_swarm_net", "source-checkout");
+        test_make_tmpdir(checkout2, sizeof(checkout2),
+                         "zcode_swarm_net", "source-checkout2");
         test_make_tmpdir(publisher_build, sizeof(publisher_build),
                          "zcode_swarm_net", "source-publisher-build");
         test_make_tmpdir(consumer_build, sizeof(consumer_build),
                          "zcode_swarm_net", "source-consumer-build");
+        test_make_tmpdir(consumer_build2, sizeof(consumer_build2),
+                         "zcode_swarm_net", "source-consumer-build2");
         char path[1400];
         ASSERT(snprintf(path, sizeof(path), "%s/src", publisher) > 0);
         ASSERT(mkdir(path, 0700) == 0);
@@ -1226,6 +1278,131 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         ASSERT(zwn_sha3_file(consumer_binary, consumer_sha3));
         ASSERT(memcmp(publisher_sha3, consumer_sha3, 32) == 0);
 
+        struct vcs_package_release first_release;
+        uint8_t first_release_root[32];
+        ASSERT(zwn_release_make(
+            transport.package_root, transport.recipe_root, "1.0.0", 1,
+            NULL, &first_release, first_release_root));
+        uint8_t *first_release_wire = NULL;
+        size_t first_release_wire_len = 0;
+        ASSERT(vcs_package_release_serialize(
+                   &first_release, &first_release_wire,
+                   &first_release_wire_len) == VCS_PACKAGE_RELEASE_OK);
+        ASSERT(vcs_object_put_addressed(
+            publisher, first_release_root, first_release_wire,
+            first_release_wire_len));
+        free(first_release_wire);
+
+        static const char successor_program[] =
+            "#include <stdint.h>\n"
+            "static uint32_t mix(uint32_t x) { return (x << 5) ^ (x >> 3); }\n"
+            "int main(void) { return mix(UINT32_C(24)) == 771 ? 0 : 1; }\n";
+        ASSERT(unlink(publisher_source) == 0);
+        ASSERT(zwn_write_file(publisher, "src/main.c", successor_program,
+                              sizeof(successor_program) - 1u, 0644));
+        uint8_t successor_source_root[32], first_lane_root[32];
+        ASSERT(vcs_zcode_lane_receipt_id(&lane, first_lane_root) ==
+               VCS_ZCODE_DEV_OK);
+        ASSERT(vcs_tree_capture_path(publisher, successor_source_root) ==
+               VCS_OK);
+        struct vcs_zcode_lane_receipt_v1 successor_lane = lane;
+        memcpy(successor_lane.source_root, successor_source_root, 32);
+        memcpy(successor_lane.prior_receipt_root, first_lane_root, 32);
+        successor_lane.created_unix++;
+        memset(successor_lane.signature, 0, sizeof(successor_lane.signature));
+        ed25519_keypair(signer, secret, seed);
+        ASSERT(vcs_zcode_lane_receipt_seal(
+                   &successor_lane, secret, signer) == VCS_ZCODE_DEV_OK);
+        memset(secret, 0, sizeof(secret));
+        uint8_t successor_lane_wire[VCS_ZCODE_LANE_WIRE_BYTES];
+        ASSERT(vcs_zcode_lane_receipt_serialize(
+                   &successor_lane, successor_lane_wire) == VCS_ZCODE_DEV_OK);
+        struct vcs_source_package_transport successor_transport;
+        vcs_source_package_transport_init(&successor_transport);
+        ASSERT(vcs_source_package_transport_build(
+            publisher, successor_source_root, signer, successor_lane_wire,
+            sizeof(successor_lane_wire), &successor_transport));
+        ASSERT(memcmp(successor_transport.package_root,
+                      transport.package_root, 32) != 0);
+        ASSERT(zwn_store_source_transport(a.store, &successor_transport));
+        ASSERT(vcs_package_store_pin(
+                   a.store, successor_transport.package_root, true) ==
+               VCS_PACKAGE_STORE_OK);
+
+        ASSERT(zwn_store_source_transport(a2.store, &successor_transport));
+        ASSERT(vcs_package_store_pin(
+                   a2.store, successor_transport.package_root, true) ==
+               VCS_PACKAGE_STORE_OK);
+        ASSERT(zwn_node_restart_engine(&a));
+        ASSERT(zwn_node_restart_engine(&a2));
+        ASSERT(zwn_meet_side(&a, &a_b));
+        ASSERT(zwn_meet_side(&a2, &a2_b));
+
+        struct vcs_package_release successor_release;
+        uint8_t successor_release_root[32], observed_parent[32];
+        ASSERT(zwn_release_make(
+            successor_transport.package_root,
+            successor_transport.recipe_root, "1.0.1", 2,
+            first_release_root, &successor_release,
+            successor_release_root));
+        ASSERT(vcs_package_release_parent(
+                   &successor_release, observed_parent) &&
+               memcmp(observed_parent, first_release_root, 32) == 0);
+        uint8_t *successor_release_wire = NULL;
+        size_t successor_release_wire_len = 0;
+        ASSERT(vcs_package_release_serialize(
+                   &successor_release, &successor_release_wire,
+                   &successor_release_wire_len) == VCS_PACKAGE_RELEASE_OK);
+        ASSERT(vcs_object_put_addressed(
+            publisher, successor_release_root, successor_release_wire,
+            successor_release_wire_len));
+        free(successor_release_wire);
+
+        uint8_t discovered_successor_root[32];
+        ASSERT(zwn_discover_source_transport(
+            &a, &a2, &b, successor_source_root,
+            successor_transport.package_root, discovered_successor_root));
+        ASSERT(vcs_swarm_engine_fetch(
+                   b.engine, discovered_successor_root, ZWN_DAY, ++b.now) ==
+               VCS_SWARM_FETCH_OK);
+        state = VCS_SWARM_DL_INACTIVE;
+        terminal = false;
+        for (int i = 0; i < 600 && !terminal; i++) {
+            ASSERT(zwn_round(&a_b, &b_a, params->pchMessageStart));
+            ASSERT(zwn_round(&a2_b, &b_a2, params->pchMessageStart));
+            terminal = zwn_download_done(
+                &b, discovered_successor_root, &state);
+        }
+        ASSERT(terminal && state == VCS_SWARM_DL_COMPLETE);
+        struct vcs_source_package_checkout_metrics successor_metrics;
+        ASSERT(vcs_source_package_checkout(
+                   b.store, discovered_successor_root,
+                   successor_source_root, signer, consumer_cas, checkout2,
+                   &successor_metrics) == VCS_SOURCE_PACKAGE_CHECKOUT_OK);
+        char successor_consumer_source[1400], successor_publisher_binary[1400];
+        char successor_consumer_binary[1400];
+        ASSERT(snprintf(successor_consumer_source,
+                        sizeof(successor_consumer_source), "%s/src/main.c",
+                        checkout2) > 0);
+        ASSERT(snprintf(successor_publisher_binary,
+                        sizeof(successor_publisher_binary), "%s/program2",
+                        publisher_build) > 0);
+        ASSERT(snprintf(successor_consumer_binary,
+                        sizeof(successor_consumer_binary), "%s/program",
+                        consumer_build2) > 0);
+        ASSERT(zwn_compile_c23(
+            publisher_source, successor_publisher_binary));
+        ASSERT(zwn_compile_c23(
+            successor_consumer_source, successor_consumer_binary));
+        ASSERT(zwn_run_fixture_binary(successor_publisher_binary));
+        ASSERT(zwn_run_fixture_binary(successor_consumer_binary));
+        ASSERT(zwn_sha3_file(successor_publisher_binary, publisher_sha3));
+        ASSERT(zwn_sha3_file(successor_consumer_binary, consumer_sha3));
+        ASSERT(memcmp(publisher_sha3, consumer_sha3, 32) == 0);
+        ASSERT(vcs_package_store_package_status(
+                   a2.store, transport.package_root, &server_b_status));
+        ASSERT(server_b_status.complete && server_b_status.pinned);
+
         zwn_link_free(&a_b);
         zwn_link_free(&b_a);
         zwn_link_free(&a2_b);
@@ -1233,12 +1410,15 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         zwn_node_free(&a);
         zwn_node_free(&a2);
         zwn_node_free(&b);
+        vcs_source_package_transport_free(&successor_transport);
         vcs_source_package_transport_free(&transport);
         test_rm_rf_recursive(publisher);
         test_rm_rf_recursive(consumer_cas);
         test_rm_rf_recursive(checkout);
+        test_rm_rf_recursive(checkout2);
         test_rm_rf_recursive(publisher_build);
         test_rm_rf_recursive(consumer_build);
+        test_rm_rf_recursive(consumer_build2);
         PASS();
     } _test_next:;
     return failures;
