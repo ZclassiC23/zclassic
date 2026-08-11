@@ -11,7 +11,7 @@ cd "$ROOT"
 
 SCHEMA="zcl.agent_fast_ci.v1"
 PLAN_SCHEMA="zcl.agent_fast_plan.v1"
-CACHE_SCHEMA="zcl.agent_fast_ci.cache.v3"
+CACHE_SCHEMA="zcl.agent_fast_ci.cache.v4"
 FAST_CC="${ZCL_FAST_CC:-}"
 FAST_COMPILE="${ZCL_FAST_COMPILE:-changed}"
 CACHE_ROOT="${ZCL_FAST_CACHE_DIR:-$ROOT/.cache/zcl-agent-fast-ci}"
@@ -396,7 +396,7 @@ cache_manifest_file() {
 }
 
 cache_manifest() {
-    local file status_line node_stat cc_version source_record clean
+    local file node_stat cc_version source_record clean
     source_record="$(cycle_source_identity_record)" || return 2
     read -r CACHE_SOURCE_ID clean CACHE_SOURCE_MUTATION <<< "$source_record"
     printf 'cache_schema\t%s\n' "$CACHE_SCHEMA"
@@ -425,11 +425,6 @@ cache_manifest() {
         node_stat="absent"
     fi
     printf 'node_bin_stat\t%s\n' "$node_stat"
-
-    git status --porcelain=v1 --untracked-files=normal |
-        while IFS= read -r status_line; do
-            printf 'git_status\t%s\n' "$status_line"
-        done
 
     for file in Makefile "$IMPACT_RULES_FILE" tools/agent_fast_ci.sh \
         tools/githooks/pre-push tools/deploy_guard.sh tools/deploy_verify.sh \
@@ -461,7 +456,7 @@ cache_manifest() {
 }
 
 cache_authority_selftest() {
-    local original_root="$ROOT" sandbox first second hinted third
+    local original_root="$ROOT" sandbox first second hinted dirty committed third
     local first_source third_source first_mutation third_mutation backup
     sandbox="$(mktemp -d "${TMPDIR:-/tmp}/zcl-fast-cache-selftest.XXXXXX")" ||
         return 1
@@ -518,6 +513,32 @@ cache_authority_selftest() {
         return 1
     fi
 
+    printf 'accepted edit\n' >> source.txt
+    FROZEN_SOURCE_RECORD="$(capture_source_identity_record)" || {
+        rm -rf "$sandbox"
+        return 1
+    }
+    dirty="$(cache_manifest)" || {
+        rm -rf "$sandbox"
+        return 1
+    }
+    git add source.txt
+    git commit -qm accepted-edit
+    FROZEN_SOURCE_RECORD="$(capture_source_identity_record)" || {
+        rm -rf "$sandbox"
+        return 1
+    }
+    committed="$(cache_manifest)" || {
+        rm -rf "$sandbox"
+        return 1
+    }
+    if [ "$dirty" != "$committed" ]; then
+        printf '%s\n' '[agent-fast-ci-selftest] FAIL: committing identical authoritative source fragmented proof reuse' >&2
+        rm -rf "$sandbox"
+        return 1
+    fi
+    first="$committed"
+
     cp source.txt "$backup"
     printf 'transient edit\n' >> source.txt
     cp "$backup" source.txt
@@ -550,7 +571,7 @@ cache_authority_selftest() {
         return 1
     fi
     rm -rf "$sandbox"
-    printf '%s\n' '[agent-fast-ci-selftest] PASS: exact cache authority is history-independent and ABA-safe; routing hints neither reduce nor fragment source-wide proof scope'
+    printf '%s\n' '[agent-fast-ci-selftest] PASS: exact cache authority is history/commit-transition independent and ABA-safe; routing hints neither reduce nor fragment source-wide proof scope'
 }
 
 compute_cache_key() {
