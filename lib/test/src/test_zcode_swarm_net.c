@@ -130,6 +130,7 @@ struct zwn_sovereign_receipt {
     uint8_t successor_binary_sha3[32];
     uint8_t storage_ack_roots[2][32];
     uint16_t storage_ack_count;
+    uint8_t provider_record_root[32];
     uint8_t publication_job_root[32];
     uint8_t publication_progress_root[32];
     int64_t publication_enqueue_us;
@@ -185,6 +186,7 @@ static void zwn_print_sovereign_receipt(void)
                         r->successor_binary_sha3);
     zwn_print_root_json("storage_ack_a_root", r->storage_ack_roots[0]);
     zwn_print_root_json("storage_ack_b_root", r->storage_ack_roots[1]);
+    zwn_print_root_json("provider_record_root", r->provider_record_root);
     zwn_print_root_json("publication_job_root", r->publication_job_root);
     zwn_print_root_json("publication_progress_root",
                         r->publication_progress_root);
@@ -200,7 +202,7 @@ static void zwn_print_sovereign_receipt(void)
            ",\"reproduced\":true,\"provider_failover\":true"
            ",\"corrupt_chunk_recovery\":true"
            ",\"previous_release_fetchable\":true"
-           ",\"publication_job\":\"workspace_published\""
+           ",\"publication_job\":\"provider_announced\""
            ",\"github_mirror\":\"not_applicable_fixture\"}\n",
            r->source_metrics.source_bytes,
            r->source_metrics.new_blobs,
@@ -597,7 +599,7 @@ static struct vcs_zcode_dht_service *zwn_dht_service(
 static bool zwn_dht_pump_half(
     struct vcs_zcode_dht_service *from,
     struct vcs_zcode_dht_service *to, uint64_t expected_outbound_peer,
-    uint64_t inbound_peer, bool *moved)
+    uint64_t inbound_peer, uint64_t now, bool *moved)
 {
     uint8_t wire[VCS_ZCODE_DHT_MAX_FRAME_BYTES];
     uint64_t peer = 0;
@@ -609,7 +611,7 @@ static bool zwn_dht_pump_half(
         if (peer != expected_outbound_peer)
             return false;
         if (!vcs_zcode_dht_service_handle_frame(
-                to, inbound_peer, wire, wire_len, zwn_dht_time(1002),
+                to, inbound_peer, wire, wire_len, zwn_dht_time(now),
                 &rejected)) {
             fprintf(stderr, "zwn DHT frame rejected: %s\n",
                     vcs_zcode_dht_reject_reason_string(rejected));
@@ -622,12 +624,14 @@ static bool zwn_dht_pump_half(
 
 static bool zwn_dht_drive_pair(
     struct vcs_zcode_dht_service *publisher,
-    struct vcs_zcode_dht_service *consumer)
+    struct vcs_zcode_dht_service *consumer, uint64_t now)
 {
     for (size_t round = 0; round < 64; round++) {
         bool moved = false;
-        if (!zwn_dht_pump_half(publisher, consumer, 2, 1, &moved) ||
-            !zwn_dht_pump_half(consumer, publisher, 1, 2, &moved))
+        if (!zwn_dht_pump_half(
+                publisher, consumer, 2, 1, now, &moved) ||
+            !zwn_dht_pump_half(
+                consumer, publisher, 1, 2, now, &moved))
             return false;
         if (!moved)
             return true;
@@ -638,20 +642,22 @@ static bool zwn_dht_drive_pair(
 static bool zwn_dht_drive_record_query(
     struct vcs_zcode_dht_service *publisher,
     struct vcs_zcode_dht_service *consumer, uint64_t operation,
-    struct vcs_zcode_dht_record_operation_result *result)
+    uint64_t now, struct vcs_zcode_dht_record_operation_result *result)
 {
     for (size_t round = 0; round < 256; round++) {
         bool moved = false;
-        if (!zwn_dht_pump_half(publisher, consumer, 2, 1, &moved)) {
+        if (!zwn_dht_pump_half(
+                publisher, consumer, 2, 1, now, &moved)) {
             fprintf(stderr, "zwn DHT query: publisher frame rejected\n");
             return false;
         }
-        if (!zwn_dht_pump_half(consumer, publisher, 1, 2, &moved)) {
+        if (!zwn_dht_pump_half(
+                consumer, publisher, 1, 2, now, &moved)) {
             fprintf(stderr, "zwn DHT query: consumer frame rejected\n");
             return false;
         }
         if (!vcs_zcode_dht_service_record_operation_poll(
-                consumer, operation, zwn_dht_time(1002), result)) {
+                consumer, operation, zwn_dht_time(now), result)) {
             fprintf(stderr, "zwn DHT query: operation missing\n");
             return false;
         }
@@ -674,9 +680,10 @@ static bool zwn_discover_transport(
     const struct zwn_node *publisher, const struct zwn_node *mirror,
     const struct zwn_node *consumer, const char *namespace_name,
     const uint8_t semantic_root[32],
-    const uint8_t expected_transport_root[32], uint8_t transport_root[32])
+    const uint8_t expected_transport_root[32], uint8_t transport_root[32],
+    struct vcs_zcode_dht_record *provider_record_out, uint64_t now)
 {
-    if (!namespace_name)
+    if (!namespace_name || now < 2)
         return false;
     struct vcs_package_store_status publisher_status, mirror_status;
     if (!vcs_package_store_package_status(
@@ -686,6 +693,20 @@ static bool zwn_discover_transport(
         !publisher_status.complete || !publisher_status.pinned ||
         !mirror_status.complete || !mirror_status.pinned)
         return false;
+    char publisher_dht_dir[1200], consumer_dht_dir[1200];
+    int publisher_dir_len = snprintf(
+        publisher_dht_dir, sizeof(publisher_dht_dir), "%s/dht-%" PRIu64,
+        publisher->datadir, now);
+    int consumer_dir_len = snprintf(
+        consumer_dht_dir, sizeof(consumer_dht_dir), "%s/dht-%" PRIu64,
+        consumer->datadir, now);
+    if (publisher_dir_len <= 0 ||
+        (size_t)publisher_dir_len >= sizeof(publisher_dht_dir) ||
+        consumer_dir_len <= 0 ||
+        (size_t)consumer_dir_len >= sizeof(consumer_dht_dir) ||
+        (mkdir(publisher_dht_dir, 0700) != 0 && errno != EEXIST) ||
+        (mkdir(consumer_dht_dir, 0700) != 0 && errno != EEXIST))
+        return false;
     uint8_t genesis[32], publisher_noise[32], consumer_noise[32];
     uint8_t transcript[32];
     memset(genesis, 0x71, sizeof(genesis));
@@ -693,15 +714,15 @@ static bool zwn_discover_transport(
     memset(consumer_noise, 0x73, sizeof(consumer_noise));
     memset(transcript, 0x74, sizeof(transcript));
     if (!zwn_dht_identity(
-            publisher->datadir, 0x75, genesis, publisher_noise) ||
+            publisher_dht_dir, 0x75, genesis, publisher_noise) ||
         !zwn_dht_identity(
-            consumer->datadir, 0x76, genesis, consumer_noise))
+            consumer_dht_dir, 0x76, genesis, consumer_noise))
         return false;
 
     struct vcs_zcode_dht_service *publisher_dht =
-        zwn_dht_service(publisher->datadir, genesis, publisher_noise);
+        zwn_dht_service(publisher_dht_dir, genesis, publisher_noise);
     struct vcs_zcode_dht_service *consumer_dht =
-        zwn_dht_service(consumer->datadir, genesis, consumer_noise);
+        zwn_dht_service(consumer_dht_dir, genesis, consumer_noise);
     const char *stage = "service-create";
     bool ok = publisher_dht && consumer_dht;
     if (!ok)
@@ -719,30 +740,31 @@ static bool zwn_discover_transport(
     memcpy(consumer_session.transcript_hash, transcript, 32);
     stage = "session-open";
     ok = vcs_zcode_dht_service_session_open(
-             publisher_dht, 2, &publisher_session, zwn_dht_time(1001)) &&
+             publisher_dht, 2, &publisher_session, zwn_dht_time(now - 1)) &&
          vcs_zcode_dht_service_session_open(
-             consumer_dht, 1, &consumer_session, zwn_dht_time(1001)) &&
-         zwn_dht_drive_pair(publisher_dht, consumer_dht);
+             consumer_dht, 1, &consumer_session, zwn_dht_time(now - 1)) &&
+         zwn_dht_drive_pair(publisher_dht, consumer_dht, now);
     if (!ok)
         goto out;
 
-    struct vcs_zcode_dht_publish_spec spec;
-    memset(&spec, 0, sizeof(spec));
-    spec.kind = VCS_ZCODE_DHT_RECORD_POINTER;
-    (void)snprintf(spec.namespace_name, sizeof(spec.namespace_name),
+    struct vcs_zcode_dht_publish_spec pointer_spec;
+    memset(&pointer_spec, 0, sizeof(pointer_spec));
+    pointer_spec.kind = VCS_ZCODE_DHT_RECORD_POINTER;
+    (void)snprintf(pointer_spec.namespace_name,
+                   sizeof(pointer_spec.namespace_name),
                    "%s", namespace_name);
-    memcpy(spec.semantic_root, semantic_root, 32);
-    memcpy(spec.transport_root, expected_transport_root, 32);
-    spec.sequence = 1;
-    spec.not_before = 1000;
-    spec.expiry = 2000;
+    memcpy(pointer_spec.semantic_root, semantic_root, 32);
+    memcpy(pointer_spec.transport_root, expected_transport_root, 32);
+    pointer_spec.sequence = 1;
+    pointer_spec.not_before = 1000;
+    pointer_spec.expiry = 2000;
     uint8_t plan_token[32];
     struct vcs_zcode_dht_record record;
     stage = "publish";
     ok = vcs_zcode_dht_service_record_publish_plan(
-             publisher_dht, &spec, plan_token, &record) &&
+             publisher_dht, &pointer_spec, plan_token, &record) &&
          vcs_zcode_dht_service_record_publish_commit(
-             publisher_dht, &spec, plan_token, zwn_dht_time(1002),
+             publisher_dht, &pointer_spec, plan_token, zwn_dht_time(now),
              &record) == VCS_ZCODE_DHT_RECORD_STORE_ADDED;
     if (!ok)
         goto out;
@@ -756,26 +778,25 @@ static bool zwn_discover_transport(
     struct vcs_zcode_dht_record empty_cache[1];
     stage = "empty-local-query";
     if (vcs_zcode_dht_service_record_local_query(
-            consumer_dht, 1002, &selector, empty_cache, 1) != 0) {
+            consumer_dht, now, &selector, empty_cache, 1) != 0) {
         ok = false;
         goto out;
     }
     uint64_t operation = 0;
     stage = "query-begin";
     ok = vcs_zcode_dht_service_record_query_begin(
-        consumer_dht, 1, &selector, zwn_dht_time(1002), &operation);
+        consumer_dht, 1, &selector, zwn_dht_time(now), &operation);
     struct vcs_zcode_dht_record_operation_result result;
     memset(&result, 0, sizeof(result));
     if (ok) {
         stage = "query-drive";
         ok = zwn_dht_drive_record_query(
-            publisher_dht, consumer_dht, operation, &result);
+            publisher_dht, consumer_dht, operation, now, &result);
     }
     if (!ok)
         goto out;
     stage = "query-result";
-    ok =
-         result.state == VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE &&
+    ok = result.state == VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE &&
          result.record_count == 1 &&
          result.records[0].kind == VCS_ZCODE_DHT_RECORD_POINTER &&
          memcmp(result.records[0].semantic_root, semantic_root, 32) == 0 &&
@@ -783,14 +804,68 @@ static bool zwn_discover_transport(
                 expected_transport_root, 32) == 0;
     if (ok)
         memcpy(transport_root, result.records[0].transport_root, 32);
+    if (!ok || !provider_record_out)
+        goto out;
+
+    struct vcs_zcode_dht_publish_spec provider_spec;
+    memset(&provider_spec, 0, sizeof(provider_spec));
+    provider_spec.kind = VCS_ZCODE_DHT_RECORD_PROVIDER;
+    (void)snprintf(provider_spec.namespace_name,
+                   sizeof(provider_spec.namespace_name),
+                   "%s", namespace_name);
+    memcpy(provider_spec.transport_root, expected_transport_root, 32);
+    provider_spec.sequence = 1;
+    provider_spec.not_before = 1000;
+    provider_spec.expiry = 2000;
+    struct vcs_zcode_dht_record provider_record;
+    stage = "provider-publish";
+    ok = vcs_zcode_dht_service_record_publish_plan(
+             publisher_dht, &provider_spec, plan_token, &provider_record) &&
+         vcs_zcode_dht_service_record_publish_commit(
+             publisher_dht, &provider_spec, plan_token,
+             zwn_dht_time(now + 1),
+             &provider_record) == VCS_ZCODE_DHT_RECORD_STORE_ADDED;
+    if (!ok)
+        goto out;
+
+    struct vcs_zcode_dht_record_selector provider_selector = {
+        .kind = VCS_ZCODE_DHT_RECORD_PROVIDER,
+    };
+    (void)snprintf(provider_selector.namespace_name,
+                   sizeof(provider_selector.namespace_name),
+                   "%s", namespace_name);
+    memcpy(provider_selector.root, expected_transport_root, 32);
+    operation = 0;
+    stage = "provider-query-begin";
+    ok = vcs_zcode_dht_service_record_query_begin(
+        consumer_dht, 1, &provider_selector, zwn_dht_time(now + 1),
+        &operation);
+    memset(&result, 0, sizeof(result));
+    if (ok) {
+        stage = "provider-query-drive";
+        ok = zwn_dht_drive_record_query(
+            publisher_dht, consumer_dht, operation, now + 1, &result);
+    }
+    if (!ok)
+        goto out;
+    stage = "provider-query-result";
+    ok = result.state == VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE &&
+         result.record_count == 1 &&
+         result.records[0].kind == VCS_ZCODE_DHT_RECORD_PROVIDER &&
+         memcmp(result.records[0].transport_root,
+                expected_transport_root, 32) == 0 &&
+         memcmp(result.records[0].provider_node_id,
+                provider_record.provider_node_id, 32) == 0;
+    if (ok && provider_record_out)
+        *provider_record_out = result.records[0];
 
 out:
     if (!ok)
         fprintf(stderr, "zwn DHT: %s failed\n", stage);
     if (consumer_dht)
-        vcs_zcode_dht_service_free(consumer_dht, zwn_dht_time(1003));
+        vcs_zcode_dht_service_free(consumer_dht, zwn_dht_time(now + 2));
     if (publisher_dht)
-        vcs_zcode_dht_service_free(publisher_dht, zwn_dht_time(1003));
+        vcs_zcode_dht_service_free(publisher_dht, zwn_dht_time(now + 2));
     return ok;
 }
 
@@ -1851,7 +1926,8 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         uint8_t discovered_workspace_carrier[32];
         ASSERT(zwn_discover_transport(
             &a, &a2, &b, "zcode.workspace", workspace_root,
-            workspace_carrier.root, discovered_workspace_carrier));
+            workspace_carrier.root, discovered_workspace_carrier, NULL,
+            1002));
         ASSERT(memcmp(discovered_workspace_carrier,
                       workspace_carrier.root, 32) == 0);
         ASSERT(zwn_fetch_package_from_peers(
@@ -1942,12 +2018,51 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
                       consumer_assignment.source_root, 32) == 0);
 
         uint8_t discovered_package_root[32];
+        struct vcs_zcode_dht_record provider_record;
         ASSERT(zwn_discover_transport(
             &a, &a2, &b, "zcode.source",
             consumer_assignment.source_root, consumer_release.package_root,
-            discovered_package_root));
+            discovered_package_root, &provider_record, 1010));
         ASSERT(memcmp(discovered_package_root,
                       consumer_release.package_root, 32) == 0);
+        uint8_t provider_wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+        ASSERT(vcs_zcode_dht_record_encode(
+                   &provider_record, provider_wire) ==
+               VCS_ZCODE_DHT_RECORD_OK);
+        struct vcs_zcode_dht_record_verify_context provider_verify;
+        memset(&provider_verify, 0, sizeof(provider_verify));
+        memset(provider_verify.network_genesis, 0x71,
+               sizeof(provider_verify.network_genesis));
+        provider_verify.now_unix = 1011;
+        provider_verify.chain_verify = zwn_dht_chain_ok;
+        uint8_t provider_progress_root[32];
+        bool provider_progress_reused = true;
+        ASSERT(vcs_devloop_publication_advance_provider(
+            publisher, publication_anchor.publication_job_root,
+            provider_wire, sizeof(provider_wire), &provider_verify,
+            provider_progress_root, &provider_progress_reused));
+        ASSERT(!provider_progress_reused);
+        ASSERT(vcs_devloop_publication_progress_load(
+            publisher, publication_anchor.publication_job_root,
+            &publication_progress, loaded_publication_progress_root));
+        ASSERT(publication_progress.phase ==
+               VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED);
+        ASSERT(publication_progress.providers == 1);
+        ASSERT(publication_progress.storage_acks == 0);
+        ASSERT(memcmp(publication_progress_root,
+                      publication_progress.predecessor_receipt_root,
+                      32) == 0);
+        ASSERT(memcmp(provider_progress_root,
+                      loaded_publication_progress_root, 32) == 0);
+        provider_progress_reused = false;
+        ASSERT(vcs_devloop_publication_advance_provider(
+            publisher, publication_anchor.publication_job_root,
+            provider_wire, sizeof(provider_wire), &provider_verify,
+            loaded_publication_progress_root,
+            &provider_progress_reused));
+        ASSERT(provider_progress_reused);
+        ASSERT(memcmp(provider_progress_root,
+                      loaded_publication_progress_root, 32) == 0);
         ASSERT(zwn_fetch_package_from_peers(
             &b, discovered_package_root, &a_b, &b_a, &a2_b, &b_a2,
             params->pchMessageStart));
@@ -2080,7 +2195,8 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         uint8_t discovered_successor_root[32];
         ASSERT(zwn_discover_transport(
             &a, &a2, &b, "zcode.source", successor_source_root,
-            successor_transport.package_root, discovered_successor_root));
+            successor_transport.package_root, discovered_successor_root,
+            NULL, 1020));
         ASSERT(vcs_swarm_engine_fetch(
                    b.engine, discovered_successor_root, ZWN_DAY, ++b.now) ==
                VCS_SWARM_FETCH_OK);
@@ -2177,10 +2293,12 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         memcpy(g_zwn_sovereign_receipt.storage_ack_roots,
                storage_ack_roots, sizeof(storage_ack_roots));
         g_zwn_sovereign_receipt.storage_ack_count = 2;
+        memcpy(g_zwn_sovereign_receipt.provider_record_root,
+               publication_progress.artifact_root, 32);
         memcpy(g_zwn_sovereign_receipt.publication_job_root,
                publication_anchor.publication_job_root, 32);
         memcpy(g_zwn_sovereign_receipt.publication_progress_root,
-               publication_progress_root, 32);
+               provider_progress_root, 32);
         g_zwn_sovereign_receipt.publication_enqueue_us =
             publication_anchor.publication_enqueue_us;
         g_zwn_sovereign_receipt.publication_metrics = publication_metrics;
