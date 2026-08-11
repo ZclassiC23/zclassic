@@ -9,15 +9,52 @@
 #include "vcs/package_store.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_object.h"
+#include "vcs/zcode_lane.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define SOURCE_PACKAGE_MAX_AUTHORITY_BYTES 4096u
 
 static const uint8_t source_transport_marker[] =
-    "/* Inert source carrier. Product source is zclassic23-source.zvsb. */\n"
-    "const char zclassic23_source_transport_v1[] = \"vcs_source_bundle.v1\";\n";
+    "/* Inert source carrier. Product source is zclassic23-source/. */\n"
+    "const char zclassic23_source_transport_v2[] = \"vcs_source_bundle.v2\";\n";
+
+static const char *const offline_input_paths[] = {
+    "vendor/.cache/leveldb-1.23.tar.gz",
+    "vendor/.cache/libevent-2.1.12.tar.gz",
+    "vendor/.cache/openssl-3.0.16.tar.gz",
+    "vendor/.cache/sqlite-amalgamation-3490000.zip",
+    "vendor/.cache/zlib-1.3.1.tar.gz",
+};
+
+static bool source_package_proven_lane(
+    const uint8_t *wire, size_t wire_len, const uint8_t source_root[32])
+{
+    struct vcs_zcode_lane_receipt_v1 lane;
+    return vcs_zcode_lane_receipt_parse(wire, wire_len, &lane) ==
+            VCS_ZCODE_DEV_OK &&
+        lane.lane == VCS_ZCODE_LANE_PROVEN &&
+        memcmp(lane.source_root, source_root, 32) == 0 &&
+        vcs_zcode_lane_receipt_verify(&lane, lane.signer_pubkey) ==
+            VCS_ZCODE_DEV_OK;
+}
+
+size_t vcs_source_package_offline_input_count(void)
+{
+    return sizeof(offline_input_paths) / sizeof(offline_input_paths[0]);
+}
+
+const char *vcs_source_package_offline_input_path(size_t index)
+{
+    return index < vcs_source_package_offline_input_count()
+        ? offline_input_paths[index] : NULL;
+}
 
 void vcs_source_package_transport_init(
     struct vcs_source_package_transport *transport)
@@ -31,8 +68,11 @@ void vcs_source_package_transport_free(
     if (!transport) return;
     free(transport->manifest_wire);
     free(transport->recipe_wire);
-    free(transport->bundle_wire);
     free(transport->license_bytes);
+    free(transport->lane_wire);
+    vcs_source_bundle_sharded_free(&transport->source);
+    for (size_t i = 0; i < transport->offline_input_count; i++)
+        free(transport->offline_inputs[i].bytes);
     memset(transport, 0, sizeof(*transport));
 }
 
@@ -40,6 +80,67 @@ const uint8_t *vcs_source_package_transport_marker(size_t *len_out)
 {
     if (len_out) *len_out = sizeof(source_transport_marker) - 1u;
     return source_transport_marker;
+}
+
+size_t vcs_source_package_transport_file_count(
+    const struct vcs_source_package_transport *transport)
+{
+    return transport ? 4u + transport->source.shard_count +
+        transport->offline_input_count : 0;
+}
+
+bool vcs_source_package_transport_file_at(
+    const struct vcs_source_package_transport *transport, size_t index,
+    const char **path_out, const uint8_t **bytes_out, size_t *len_out)
+{
+    if (!transport || !path_out || !bytes_out || !len_out) return false;
+    size_t marker_len = 0;
+    const uint8_t *marker = vcs_source_package_transport_marker(&marker_len);
+    if (index == 0) {
+        *path_out = VCS_SOURCE_PACKAGE_LICENSE_PATH;
+        *bytes_out = transport->license_bytes;
+        *len_out = transport->license_len;
+        return true;
+    }
+    if (index == 1) {
+        *path_out = VCS_SOURCE_PACKAGE_MANIFEST_PATH;
+        *bytes_out = transport->source.manifest_wire;
+        *len_out = transport->source.manifest_wire_len;
+        return true;
+    }
+    index -= 2u;
+    if (index < transport->source.shard_count) {
+        static _Thread_local char shard_path[
+            VCS_SOURCE_BUNDLE_SHARD_PATH_MAX];
+        const struct vcs_source_bundle_shard *shard =
+            &transport->source.shards[index];
+        if (!vcs_source_bundle_shard_path(
+                shard->index, shard_path, sizeof(shard_path)))
+            return false;
+        *path_out = shard_path;
+        *bytes_out = shard->wire;
+        *len_out = shard->wire_len;
+        return true;
+    }
+    index -= transport->source.shard_count;
+    if (index == 0) {
+        *path_out = VCS_SOURCE_PACKAGE_LANE_PATH;
+        *bytes_out = transport->lane_wire;
+        *len_out = transport->lane_wire_len;
+        return true;
+    }
+    if (index == 1) {
+        *path_out = VCS_SOURCE_PACKAGE_MARKER_PATH;
+        *bytes_out = marker;
+        *len_out = marker_len;
+        return true;
+    }
+    index -= 2u;
+    if (index >= transport->offline_input_count) return false;
+    *path_out = transport->offline_inputs[index].path;
+    *bytes_out = transport->offline_inputs[index].bytes;
+    *len_out = transport->offline_inputs[index].len;
+    return true;
 }
 
 static bool source_package_add(struct vcs_package_manifest *manifest,
@@ -87,6 +188,72 @@ static bool source_package_load_license(
         *len_out == (size_t)license->size;
 }
 
+static bool source_package_read_file(const char *workspace, const char *path,
+                                     uint8_t **bytes_out, size_t *len_out)
+{
+    *bytes_out = NULL;
+    *len_out = 0;
+    char full[4096];
+    int n = snprintf(full, sizeof(full), "%s/%s", workspace, path);
+    struct stat before;
+    if (n <= 0 || (size_t)n >= sizeof(full) || lstat(full, &before) != 0 ||
+        !S_ISREG(before.st_mode) || before.st_size <= 0 ||
+        (uint64_t)before.st_size > VCS_PACKAGE_MAX_FILE_BYTES)
+        return false;
+    int fd = open(full, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return false;
+    size_t len = (size_t)before.st_size;
+    uint8_t *bytes = zcl_malloc(len, "vcs.source_package.offline_input");
+    size_t off = 0;
+    bool ok = bytes != NULL;
+    while (ok && off < len) {
+        ssize_t got = read(fd, bytes + off, len - off);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) ok = false;
+        else off += (size_t)got;
+    }
+    struct stat after;
+    ok = ok && fstat(fd, &after) == 0 &&
+        before.st_dev == after.st_dev && before.st_ino == after.st_ino &&
+        before.st_mode == after.st_mode &&
+        before.st_size == after.st_size &&
+        before.st_mtim.tv_sec == after.st_mtim.tv_sec &&
+        before.st_mtim.tv_nsec == after.st_mtim.tv_nsec &&
+        before.st_ctim.tv_sec == after.st_ctim.tv_sec &&
+        before.st_ctim.tv_nsec == after.st_ctim.tv_nsec;
+    if (close(fd) != 0) ok = false;
+    if (!ok) {
+        free(bytes);
+        return false;
+    }
+    *bytes_out = bytes;
+    *len_out = len;
+    return true;
+}
+
+static bool source_package_offline_inputs(
+    const char *workspace, struct vcs_source_package_transport *transport)
+{
+    size_t count = vcs_source_package_offline_input_count();
+    if (count > VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX) return false;
+    for (size_t i = 0; i < count; i++) {
+        struct vcs_source_package_file *file =
+            &transport->offline_inputs[transport->offline_input_count];
+        file->path = offline_input_paths[i];
+        if (!source_package_read_file(
+                workspace, file->path, &file->bytes, &file->len) ||
+            UINT64_MAX - transport->offline_input_bytes < file->len) {
+            free(file->bytes);
+            file->bytes = NULL;
+            file->len = 0;
+            return false;
+        }
+        transport->offline_input_bytes += file->len;
+        transport->offline_input_count++;
+    }
+    return true;
+}
+
 static bool source_package_recipe(
     struct vcs_source_package_transport *transport)
 {
@@ -111,8 +278,9 @@ bool vcs_source_package_transport_build(
     const uint8_t *lane_wire, size_t lane_wire_len,
     struct vcs_source_package_transport *transport)
 {
-    if (!workspace || !source_root || !lane_wire || lane_wire_len == 0 ||
-        lane_wire_len > SOURCE_PACKAGE_MAX_AUTHORITY_BYTES || !transport)
+    if (!workspace || !source_root || !lane_wire || !transport ||
+        lane_wire_len > SOURCE_PACKAGE_MAX_AUTHORITY_BYTES ||
+        !source_package_proven_lane(lane_wire, lane_wire_len, source_root))
         return false;
     vcs_source_package_transport_free(transport);
     struct vcs_manifest tree;
@@ -121,33 +289,46 @@ bool vcs_source_package_transport_build(
         workspace, &tree, &transport->license_bytes,
         &transport->license_len);
     vcs_manifest_free(&tree);
+    if (ok) {
+        transport->lane_wire = zcl_malloc(
+            lane_wire_len, "vcs.source_package.lane");
+        ok = transport->lane_wire != NULL;
+    }
+    if (ok) {
+        memcpy(transport->lane_wire, lane_wire, lane_wire_len);
+        transport->lane_wire_len = lane_wire_len;
+    }
     enum vcs_source_bundle_result bundle_result = ok
-        ? vcs_source_bundle_create(
-              workspace, source_root, &transport->bundle_wire,
-              &transport->bundle_wire_len, &transport->bundle_metrics)
+        ? vcs_source_bundle_sharded_create(
+              workspace, source_root, &transport->source)
         : VCS_SOURCE_BUNDLE_ERR_SOURCE;
-    ok = ok && bundle_result == VCS_SOURCE_BUNDLE_OK;
+    ok = ok && bundle_result == VCS_SOURCE_BUNDLE_OK &&
+        source_package_offline_inputs(workspace, transport);
+    if (ok) {
+        transport->bundle_metrics = transport->source.metrics;
+        transport->source_transport_bytes =
+            transport->source.manifest_wire_len;
+        for (size_t i = 0; i < transport->source.shard_count; i++)
+            transport->source_transport_bytes +=
+                transport->source.shards[i].wire_len;
+    }
 
-    size_t marker_len = 0;
-    const uint8_t *marker = vcs_source_package_transport_marker(&marker_len);
-    uint64_t total = (uint64_t)transport->license_len +
-        transport->bundle_wire_len + lane_wire_len + marker_len;
-    ok = ok && total <= VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES;
     struct vcs_package_manifest manifest;
     vcs_package_manifest_init(&manifest);
-    if (ok) ok = source_package_add(
-        &manifest, VCS_SOURCE_PACKAGE_LICENSE_PATH,
-        transport->license_bytes, transport->license_len);
-    if (ok) ok = source_package_add(
-        &manifest, VCS_SOURCE_PACKAGE_BUNDLE_PATH,
-        transport->bundle_wire, transport->bundle_wire_len);
-    if (ok) ok = source_package_add(
-        &manifest, VCS_SOURCE_PACKAGE_LANE_PATH,
-        lane_wire, lane_wire_len);
-    if (ok) ok = source_package_add(
-        &manifest, VCS_SOURCE_PACKAGE_MARKER_PATH, marker, marker_len);
-    if (ok) ok = vcs_package_manifest_root(
-        &manifest, transport->package_root) &&
+    uint64_t total = 0;
+    size_t count = vcs_source_package_transport_file_count(transport);
+    for (size_t i = 0; ok && i < count; i++) {
+        const char *path = NULL;
+        const uint8_t *bytes = NULL;
+        size_t len = 0;
+        ok = vcs_source_package_transport_file_at(
+            transport, i, &path, &bytes, &len) &&
+            UINT64_MAX - total >= len;
+        if (ok) total += len;
+        if (ok) ok = source_package_add(&manifest, path, bytes, len);
+    }
+    ok = ok && total <= VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES &&
+        vcs_package_manifest_root(&manifest, transport->package_root) &&
         vcs_package_manifest_serialize(
             &manifest, &transport->manifest_wire,
             &transport->manifest_wire_len);

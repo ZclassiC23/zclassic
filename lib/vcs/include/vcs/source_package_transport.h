@@ -10,10 +10,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define VCS_SOURCE_PACKAGE_BUNDLE_PATH "zclassic23-source.zvsb"
+#define VCS_SOURCE_PACKAGE_MANIFEST_PATH \
+    "zclassic23-source/manifest.zvsm"
 #define VCS_SOURCE_PACKAGE_LANE_PATH "zcode-lane-receipt.v1"
 #define VCS_SOURCE_PACKAGE_MARKER_PATH "zcode-source-transport.c"
 #define VCS_SOURCE_PACKAGE_LICENSE_PATH "LICENSE"
+#define VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX 8u
+
+struct vcs_source_package_file {
+    const char *path;
+    uint8_t *bytes;
+    size_t len;
+};
 
 struct vcs_source_package_transport {
     uint8_t package_root[32];
@@ -22,10 +30,16 @@ struct vcs_source_package_transport {
     size_t manifest_wire_len;
     uint8_t *recipe_wire;
     size_t recipe_wire_len;
-    uint8_t *bundle_wire;
-    size_t bundle_wire_len;
     uint8_t *license_bytes;
     size_t license_len;
+    uint8_t *lane_wire;
+    size_t lane_wire_len;
+    struct vcs_source_bundle_sharded source;
+    struct vcs_source_package_file
+        offline_inputs[VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX];
+    size_t offline_input_count;
+    uint64_t source_transport_bytes;
+    uint64_t offline_input_bytes;
     struct vcs_source_bundle_metrics bundle_metrics;
 };
 
@@ -45,5 +59,14 @@ bool vcs_source_package_transport_build(
     struct vcs_source_package_transport *transport);
 
 const uint8_t *vcs_source_package_transport_marker(size_t *len_out);
+
+size_t vcs_source_package_transport_file_count(
+    const struct vcs_source_package_transport *transport);
+bool vcs_source_package_transport_file_at(
+    const struct vcs_source_package_transport *transport, size_t index,
+    const char **path_out, const uint8_t **bytes_out, size_t *len_out);
+
+size_t vcs_source_package_offline_input_count(void);
+const char *vcs_source_package_offline_input_path(size_t index);
 
 #endif /* ZCL_VCS_SOURCE_PACKAGE_TRANSPORT_H */

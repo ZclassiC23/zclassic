@@ -36,6 +36,9 @@ ZCL_COMMAND_BRANCH("zcode.workspace.source", "zcode.workspace",
 ZCL_COMMAND_BRANCH("zcode.workspace.source.bundle", "zcode.workspace.source",
                    "Compressed ZVCS transport",
                    ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("zcode.workspace.source.package", "zcode.workspace.source",
+                   "P2P source carrier reconstruction",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("zcode.workspace.manifest", "zcode.workspace",
                    "Externally signed C23 workspace manifests",
                    ZCL_COMMAND_LAYER_APP)
@@ -145,6 +148,31 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_zcode_source_bundle_checkout)
+
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.workspace.source.package.checkout",
+    "zcode.workspace.source.package", "",
+    "Reconstruct an exact source carrier from the P2P store",
+    "Reads one complete ordinary content.v2 package by immutable root, "
+    "rederives its exact carrier shape and every chunk, verifies all "
+    "path-stable ZVCS shards against the separately supplied accepted source "
+    "root before writing, then materializes source plus pinned offline vendor "
+    "archives into an existing empty scratch destination. Retrieval never "
+    "uses Git or executes downloaded source.", ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,source,package,content-v2,p2p,checkout,reconstruct,git-free,no-exec",
+    "zcl.zcode_source_package_checkout.input.v1",
+    "zcl.zcode_source_package_checkout.v1",
+    "datadir,package_root,source_root,workspace,destination",
+    "datadir,package_root,source_root,workspace,destination",
+    "zclassic23 zcode workspace source package checkout --input='{\"datadir\":\"/tmp/zclassic23-node\",\"package_root\":\"<64hex>\",\"source_root\":\"<64hex>\",\"workspace\":\"/tmp/zvcs-scratch\",\"destination\":\"/tmp/source-scratch\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_zcode_source_package_checkout)
 
 ZCL_COMMAND_READY_READ(
     "zcode.passport.status", "zcode.passport", "",
@@ -1900,9 +1928,10 @@ ZCL_COMMAND_READY_READ(
     "Re-verifies the exact PROVEN receipt produced by zcode work accept, its "
     "complete predecessor chain, every bound "
     "task/candidate/policy object, the canonical proof set, and every signed "
-    "work receipt from the workspace CAS. Re-derives a compressed ZVCS "
-    "carrier from the accepted source blobs, embeds it and the exact lane "
-    "receipt in an ordinary content.v2 package, and binds its inert transport "
+    "work receipt from the workspace CAS. Re-derives a path-sharded ZVCS "
+    "carrier from the accepted source blobs, embeds it, the pinned offline "
+    "vendor inputs, and exact lane receipt in an ordinary content.v2 package, "
+    "and binds its inert transport "
     "recipe, the task acceptance recipe, and current "
     "publisher lineage, and returns an unsigned release body plus signing "
     "digest. The publisher secret never enters this command; sign the digest "

@@ -1,0 +1,394 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Purpose: Git-free reconstruction of verified PROVEN source carriers. */
+
+#include "vcs/source_package_checkout.h"
+
+#include "util/file_tree_ops.h"
+#include "util/safe_alloc.h"
+#include "vcs/package_manifest.h"
+#include "vcs/source_package_transport.h"
+#include "vcs/vcs.h"
+#include "vcs/zcode_lane.h"
+
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#define SOURCE_CHECKOUT_PATH_MAX 4400
+#define SOURCE_CHECKOUT_AUTHORITY_MAX 4096u
+
+struct source_checkout_loaded {
+    struct vcs_package_manifest package;
+    struct vcs_source_bundle_sharded source;
+    uint8_t *license;
+    size_t license_len;
+    uint8_t *offline[VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX];
+    size_t offline_len[VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX];
+};
+
+const char *vcs_source_package_checkout_result_string(
+    enum vcs_source_package_checkout_result result)
+{
+    switch (result) {
+    case VCS_SOURCE_PACKAGE_CHECKOUT_OK: return "ok";
+    case VCS_SOURCE_PACKAGE_CHECKOUT_NULL: return "null-argument";
+    case VCS_SOURCE_PACKAGE_CHECKOUT_INCOMPLETE: return "package-incomplete";
+    case VCS_SOURCE_PACKAGE_CHECKOUT_MANIFEST: return "package-manifest";
+    case VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE: return "source-carrier-shape";
+    case VCS_SOURCE_PACKAGE_CHECKOUT_CHUNK: return "package-chunk";
+    case VCS_SOURCE_PACKAGE_CHECKOUT_SOURCE: return "source-verification";
+    case VCS_SOURCE_PACKAGE_CHECKOUT_DESTINATION: return "destination";
+    }
+    return "unknown";
+}
+
+static void source_checkout_loaded_init(struct source_checkout_loaded *loaded)
+{
+    memset(loaded, 0, sizeof(*loaded));
+    vcs_package_manifest_init(&loaded->package);
+    vcs_source_bundle_sharded_init(&loaded->source);
+}
+
+static void source_checkout_loaded_free(struct source_checkout_loaded *loaded)
+{
+    if (!loaded) return;
+    vcs_package_manifest_free(&loaded->package);
+    vcs_source_bundle_sharded_free(&loaded->source);
+    free(loaded->license);
+    for (size_t i = 0; i < VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX; i++)
+        free(loaded->offline[i]);
+    memset(loaded, 0, sizeof(*loaded));
+}
+
+static int source_checkout_file_index(
+    const struct vcs_package_manifest *manifest, const char *path)
+{
+    size_t lo = 0, hi = manifest->count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2u;
+        int cmp = strcmp(manifest->files[mid].path, path);
+        if (cmp == 0) return (int)mid;
+        if (cmp < 0) lo = mid + 1u; else hi = mid;
+    }
+    return -1;
+}
+
+static bool source_checkout_read_file(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    const struct vcs_package_manifest *manifest, size_t index,
+    uint8_t **bytes_out, size_t *len_out)
+{
+    *bytes_out = NULL;
+    *len_out = 0;
+    if (index >= manifest->count || manifest->files[index].size > SIZE_MAX)
+        return false;
+    const struct vcs_package_file *file = &manifest->files[index];
+    size_t len = (size_t)file->size;
+    uint8_t *bytes = len > 0
+        ? zcl_malloc(len, "vcs.source_checkout.file") : NULL;
+    if (len > 0 && !bytes) return false;
+    size_t off = 0;
+    for (uint32_t i = 0; i < file->chunk_count; i++) {
+        uint8_t *chunk = NULL;
+        size_t chunk_len = 0;
+        enum vcs_package_store_result got = vcs_package_store_get_chunk_at(
+            store, package_root, (uint32_t)index, i, &chunk, &chunk_len);
+        bool ok = got == VCS_PACKAGE_STORE_OK &&
+            vcs_package_verify_chunk(file, i, chunk, chunk_len) &&
+            off <= len && chunk_len <= len - off;
+        if (!ok) {
+            free(chunk); free(bytes); return false;
+        }
+        memcpy(bytes + off, chunk, chunk_len);
+        off += chunk_len;
+        free(chunk);
+    }
+    if (off != len) { free(bytes); return false; }
+    *bytes_out = bytes;
+    *len_out = len;
+    return true;
+}
+
+static bool source_checkout_shard_index(const char *path, uint16_t *index_out)
+{
+    static const char prefix[] = "zclassic23-source/shard-";
+    size_t prefix_len = sizeof(prefix) - 1u;
+    if (!path || strlen(path) != prefix_len + 2u + 5u ||
+        strncmp(path, prefix, prefix_len) != 0 ||
+        strcmp(path + prefix_len + 2u, ".zvss") != 0)
+        return false;
+    unsigned value = 0;
+    for (size_t i = 0; i < 2u; i++) {
+        unsigned char c = (unsigned char)path[prefix_len + i];
+        unsigned digit = c >= (unsigned char)'0' &&
+                c <= (unsigned char)'9'
+            ? (unsigned)(c - (unsigned char)'0')
+            : c >= (unsigned char)'a' && c <= (unsigned char)'f'
+                ? (unsigned)(c - (unsigned char)'a') + 10u : 16u;
+        if (digit >= 16u) return false;
+        value = value * 16u + digit;
+    }
+    char canonical[VCS_SOURCE_BUNDLE_SHARD_PATH_MAX];
+    if (!vcs_source_bundle_shard_path(
+            (uint16_t)value, canonical, sizeof(canonical)) ||
+        strcmp(canonical, path) != 0)
+        return false;
+    *index_out = (uint16_t)value;
+    return true;
+}
+
+static int source_checkout_offline_index(const char *path)
+{
+    for (size_t i = 0; i < vcs_source_package_offline_input_count(); i++)
+        if (strcmp(path, vcs_source_package_offline_input_path(i)) == 0)
+            return (int)i;
+    return -1;
+}
+
+static enum vcs_source_package_checkout_result source_checkout_manifest(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    struct source_checkout_loaded *loaded)
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    if (vcs_package_store_get_manifest_wire(
+            store, package_root, &wire, &wire_len) != VCS_PACKAGE_STORE_OK)
+        return VCS_SOURCE_PACKAGE_CHECKOUT_MANIFEST;
+    bool parsed = vcs_package_manifest_parse(
+        wire, wire_len, &loaded->package);
+    free(wire);
+    uint8_t checked[32];
+    if (!parsed ||
+        !vcs_package_manifest_root(&loaded->package, checked) ||
+        memcmp(checked, package_root, 32) != 0)
+        return VCS_SOURCE_PACKAGE_CHECKOUT_MANIFEST;
+    return VCS_SOURCE_PACKAGE_CHECKOUT_OK;
+}
+
+static enum vcs_source_package_checkout_result source_checkout_load_fixed(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    const uint8_t source_root[32], struct source_checkout_loaded *loaded)
+{
+    const char *fixed[] = {
+        VCS_SOURCE_PACKAGE_LICENSE_PATH,
+        VCS_SOURCE_PACKAGE_MANIFEST_PATH,
+        VCS_SOURCE_PACKAGE_LANE_PATH,
+        VCS_SOURCE_PACKAGE_MARKER_PATH,
+    };
+    for (size_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); i++)
+        if (source_checkout_file_index(&loaded->package, fixed[i]) < 0)
+            return VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+    int manifest_index = source_checkout_file_index(
+        &loaded->package, VCS_SOURCE_PACKAGE_MANIFEST_PATH);
+    if (!source_checkout_read_file(
+            store, package_root, &loaded->package, (size_t)manifest_index,
+            &loaded->source.manifest_wire,
+            &loaded->source.manifest_wire_len))
+        return VCS_SOURCE_PACKAGE_CHECKOUT_CHUNK;
+    int license_index = source_checkout_file_index(
+        &loaded->package, VCS_SOURCE_PACKAGE_LICENSE_PATH);
+    if (!source_checkout_read_file(
+            store, package_root, &loaded->package, (size_t)license_index,
+            &loaded->license, &loaded->license_len) ||
+        loaded->license_len == 0)
+        return VCS_SOURCE_PACKAGE_CHECKOUT_CHUNK;
+    int lane_index = source_checkout_file_index(
+        &loaded->package, VCS_SOURCE_PACKAGE_LANE_PATH);
+    const struct vcs_package_file *lane = &loaded->package.files[lane_index];
+    if (lane->size != VCS_ZCODE_LANE_WIRE_BYTES ||
+        lane->size > SOURCE_CHECKOUT_AUTHORITY_MAX)
+        return VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+    uint8_t *lane_wire = NULL;
+    size_t lane_wire_len = 0;
+    struct vcs_zcode_lane_receipt_v1 receipt;
+    bool proven = source_checkout_read_file(
+            store, package_root, &loaded->package, (size_t)lane_index,
+            &lane_wire, &lane_wire_len) &&
+        vcs_zcode_lane_receipt_parse(lane_wire, lane_wire_len, &receipt) ==
+            VCS_ZCODE_DEV_OK && receipt.lane == VCS_ZCODE_LANE_PROVEN &&
+        vcs_zcode_lane_receipt_verify(&receipt, receipt.signer_pubkey) ==
+            VCS_ZCODE_DEV_OK;
+    free(lane_wire);
+    if (!proven) return VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+    if (memcmp(receipt.source_root, source_root, 32) != 0)
+        return VCS_SOURCE_PACKAGE_CHECKOUT_SOURCE;
+    int marker_index = source_checkout_file_index(
+        &loaded->package, VCS_SOURCE_PACKAGE_MARKER_PATH);
+    uint8_t *marker = NULL;
+    size_t marker_len = 0, expected_marker_len = 0;
+    const uint8_t *expected_marker =
+        vcs_source_package_transport_marker(&expected_marker_len);
+    bool marker_ok = source_checkout_read_file(
+            store, package_root, &loaded->package, (size_t)marker_index,
+            &marker, &marker_len) && marker_len == expected_marker_len &&
+        memcmp(marker, expected_marker, marker_len) == 0;
+    free(marker);
+    return marker_ok ? VCS_SOURCE_PACKAGE_CHECKOUT_OK
+                     : VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+}
+
+static enum vcs_source_package_checkout_result source_checkout_load_variable(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    struct source_checkout_loaded *loaded)
+{
+    bool seen_shards[256] = {0};
+    bool seen_offline[VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX] = {0};
+    size_t recognized = 4u;
+    for (size_t i = 0; i < loaded->package.count; i++) {
+        const char *path = loaded->package.files[i].path;
+        uint16_t shard = 0;
+        int offline = source_checkout_offline_index(path);
+        if (source_checkout_shard_index(path, &shard)) {
+            if (seen_shards[shard] ||
+                loaded->source.shard_count >= 256u)
+                return VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+            seen_shards[shard] = true;
+            struct vcs_source_bundle_shard *part =
+                &loaded->source.shards[loaded->source.shard_count];
+            part->index = shard;
+            if (!source_checkout_read_file(
+                    store, package_root, &loaded->package, i,
+                    &part->wire, &part->wire_len))
+                return VCS_SOURCE_PACKAGE_CHECKOUT_CHUNK;
+            loaded->source.shard_count++;
+            recognized++;
+        } else if (offline >= 0) {
+            if (seen_offline[offline] ||
+                !source_checkout_read_file(
+                    store, package_root, &loaded->package, i,
+                    &loaded->offline[offline],
+                    &loaded->offline_len[offline]))
+                return VCS_SOURCE_PACKAGE_CHECKOUT_CHUNK;
+            seen_offline[offline] = true;
+            recognized++;
+        }
+    }
+    for (size_t i = 0; i < vcs_source_package_offline_input_count(); i++)
+        if (!seen_offline[i]) return VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+    return recognized == loaded->package.count &&
+           loaded->source.shard_count > 0
+        ? VCS_SOURCE_PACKAGE_CHECKOUT_OK
+        : VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+}
+
+static bool source_checkout_empty_dir(const char *path)
+{
+    DIR *dir = opendir(path);
+    if (!dir) return false;
+    bool empty = true;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") != 0 &&
+            strcmp(entry->d_name, "..") != 0) {
+            empty = false; break;
+        }
+    }
+    return closedir(dir) == 0 && empty;
+}
+
+static bool source_checkout_write(const char *path, const uint8_t *bytes,
+                                  size_t len)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                  0400);
+    if (fd < 0) return false;
+    size_t off = 0;
+    while (off < len) {
+        ssize_t wrote = write(fd, bytes + off, len - off);
+        if (wrote < 0 && errno == EINTR) continue;
+        if (wrote <= 0) break;
+        off += (size_t)wrote;
+    }
+    bool ok = off == len && fsync(fd) == 0;
+    if (close(fd) != 0) ok = false;
+    if (!ok) (void)unlink(path);
+    return ok;
+}
+
+static bool source_checkout_write_offline(
+    const char *destination, const struct source_checkout_loaded *loaded,
+    uint64_t *bytes_out)
+{
+    char cache[SOURCE_CHECKOUT_PATH_MAX];
+    int n = snprintf(cache, sizeof(cache), "%s/vendor/.cache", destination);
+    if (n <= 0 || (size_t)n >= sizeof(cache) ||
+        !zcl_mkdir_p(cache, 0700).ok)
+        return false;
+    uint64_t total = 0;
+    for (size_t i = 0; i < vcs_source_package_offline_input_count(); i++) {
+        const char *relative = vcs_source_package_offline_input_path(i);
+        char path[SOURCE_CHECKOUT_PATH_MAX];
+        n = snprintf(path, sizeof(path), "%s/%s", destination, relative);
+        if (n <= 0 || (size_t)n >= sizeof(path) ||
+            UINT64_MAX - total < loaded->offline_len[i] ||
+            !source_checkout_write(
+                path, loaded->offline[i], loaded->offline_len[i]))
+            return false;
+        total += loaded->offline_len[i];
+    }
+    *bytes_out = total;
+    return true;
+}
+
+enum vcs_source_package_checkout_result vcs_source_package_checkout(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    const uint8_t source_root[32], const char *workspace,
+    const char *destination,
+    struct vcs_source_package_checkout_metrics *metrics)
+{
+    if (metrics) memset(metrics, 0, sizeof(*metrics));
+    if (!store || !package_root || !source_root || !workspace || !destination)
+        return VCS_SOURCE_PACKAGE_CHECKOUT_NULL;
+    if (!source_checkout_empty_dir(destination))
+        return VCS_SOURCE_PACKAGE_CHECKOUT_DESTINATION;
+    struct vcs_package_store_status status;
+    if (!vcs_package_store_package_status(store, package_root, &status) ||
+        !status.complete)
+        return VCS_SOURCE_PACKAGE_CHECKOUT_INCOMPLETE;
+    struct source_checkout_loaded loaded;
+    source_checkout_loaded_init(&loaded);
+    enum vcs_source_package_checkout_result result =
+        source_checkout_manifest(store, package_root, &loaded);
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK)
+        result = source_checkout_load_fixed(
+            store, package_root, source_root, &loaded);
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK)
+        result = source_checkout_load_variable(
+            store, package_root, &loaded);
+    struct vcs_source_bundle_metrics source_metrics;
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK &&
+        vcs_source_bundle_sharded_verify(
+            &loaded.source, source_root, &source_metrics) !=
+            VCS_SOURCE_BUNDLE_OK)
+        result = VCS_SOURCE_PACKAGE_CHECKOUT_SOURCE;
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK &&
+        vcs_source_bundle_sharded_import(
+            &loaded.source, source_root, workspace, &source_metrics) !=
+            VCS_SOURCE_BUNDLE_OK)
+        result = VCS_SOURCE_PACKAGE_CHECKOUT_SOURCE;
+    uint64_t offline_bytes = 0;
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK &&
+        vcs_tree_materialize(
+            workspace, source_root, destination,
+            VCS_SOURCE_BUNDLE_MAX_SOURCE_BYTES, 0) != VCS_OK)
+        result = VCS_SOURCE_PACKAGE_CHECKOUT_DESTINATION;
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK &&
+        !source_checkout_write_offline(
+            destination, &loaded, &offline_bytes))
+        result = VCS_SOURCE_PACKAGE_CHECKOUT_DESTINATION;
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK && metrics) {
+        metrics->source = source_metrics;
+        metrics->offline_input_bytes = offline_bytes;
+        metrics->offline_input_files =
+            (uint32_t)vcs_source_package_offline_input_count();
+        metrics->source_shards = (uint32_t)loaded.source.shard_count;
+        metrics->carrier_files = (uint32_t)loaded.package.count;
+    }
+    source_checkout_loaded_free(&loaded);
+    return result;
+}

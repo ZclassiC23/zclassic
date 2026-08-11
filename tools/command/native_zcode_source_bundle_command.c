@@ -7,6 +7,8 @@
 #include "json/json.h"
 #include "util/safe_alloc.h"
 #include "vcs/source_bundle.h"
+#include "vcs/source_package_checkout.h"
+#include "vcs/package_store.h"
 #include "vcs/vcs.h"
 
 #include <dirent.h>
@@ -38,6 +40,23 @@ static bool zsb_root(const struct json_value *input, uint8_t out[32])
 {
     const char *hex = zsb_str(input, "source_root");
     return hex && zcl_hex_decode_lower(hex, out, 32);
+}
+
+static bool zsb_named_root(const struct json_value *input, const char *key,
+                           uint8_t out[32])
+{
+    const char *hex = zsb_str(input, key);
+    return hex && zcl_hex_decode_lower(hex, out, 32);
+}
+
+static bool zsb_paths_disjoint(const char *left, const char *right)
+{
+    size_t left_len = strlen(left), right_len = strlen(right);
+    return strcmp(left, right) != 0 &&
+        !(left_len < right_len && strncmp(left, right, left_len) == 0 &&
+          right[left_len] == '/') &&
+        !(right_len < left_len && strncmp(right, left, right_len) == 0 &&
+          left[right_len] == '/');
 }
 
 static uint8_t *zsb_read(const char *path, size_t *len_out)
@@ -303,6 +322,63 @@ void zcl_native_handle_zcode_source_bundle_checkout(
         return;
     }
     zsb_render(&reply->data, root, &metrics);
+    (void)json_push_kv_bool(&reply->data, "checked_out", true);
+    (void)json_push_kv_str(&reply->data, "destination", destination_real);
+}
+
+void zcl_native_handle_zcode_source_package_checkout(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply) return;
+    const char *datadir = zsb_str(request->input, "datadir");
+    const char *workspace = zsb_str(request->input, "workspace");
+    const char *destination = zsb_str(request->input, "destination");
+    char workspace_real[ZSB_PATH_MAX], destination_real[ZSB_PATH_MAX];
+    uint8_t package_root[32], source_root[32];
+    bool valid = datadir && workspace && destination &&
+        zsb_named_root(request->input, "package_root", package_root) &&
+        zsb_root(request->input, source_root) &&
+        zcl_native_zcode_workspace_is_explicit_scratch(workspace) &&
+        zcl_native_zcode_workspace_is_explicit_scratch(destination) &&
+        realpath(workspace, workspace_real) &&
+        realpath(destination, destination_real) &&
+        zsb_paths_disjoint(workspace_real, destination_real) &&
+        zsb_empty_dir(destination_real);
+    if (!valid) {
+        zsb_fail(reply, "BAD_SOURCE_PACKAGE_CHECKOUT_INPUT", "validate",
+                 "datadir, package_root, source_root, a separate scratch CAS workspace, and an existing empty scratch destination are required");
+        return;
+    }
+    struct vcs_package_store *store = vcs_package_store_open(
+        datadir, vcs_package_store_quota_bytes());
+    if (!store) {
+        zsb_fail(reply, "SOURCE_PACKAGE_STORE_REFUSED", "open",
+                 "the existing content.v2 package store could not be opened");
+        return;
+    }
+    struct vcs_source_package_checkout_metrics metrics;
+    enum vcs_source_package_checkout_result result =
+        vcs_source_package_checkout(
+            store, package_root, source_root, workspace_real,
+            destination_real, &metrics);
+    vcs_package_store_close(store);
+    if (result != VCS_SOURCE_PACKAGE_CHECKOUT_OK) {
+        zsb_fail(reply, "SOURCE_PACKAGE_CHECKOUT_REFUSED", "checkout",
+                 vcs_source_package_checkout_result_string(result));
+        return;
+    }
+    zsb_render(&reply->data, source_root, &metrics.source);
+    char package_hex[65];
+    zcl_hex_encode(package_root, 32, package_hex);
+    (void)json_push_kv_str(&reply->data, "package_root", package_hex);
+    (void)json_push_kv_int(&reply->data, "source_shards",
+                           metrics.source_shards);
+    (void)json_push_kv_int(&reply->data, "offline_input_bytes",
+                           (int64_t)metrics.offline_input_bytes);
+    (void)json_push_kv_int(&reply->data, "offline_input_files",
+                           metrics.offline_input_files);
+    (void)json_push_kv_int(&reply->data, "carrier_files",
+                           metrics.carrier_files);
     (void)json_push_kv_bool(&reply->data, "checked_out", true);
     (void)json_push_kv_str(&reply->data, "destination", destination_real);
 }

@@ -81,20 +81,31 @@ until a separate explicit inspect/build/install transaction passes policy.
 A complete ZClassic23 workspace is larger than the package store's deliberately
 conservative 64 MiB per-release admission bound when represented as loose
 files. It is therefore carried without weakening that bound by
-`vcs_source_bundle.v1`
-(`lib/vcs/{include/vcs/source_bundle.h,src/source_bundle.c}`): a
-zlib-compressed transport
-containing the existing canonical ZVCS manifest followed by its verified blob
-bytes in manifest order. This is not another source identity or VCS. The
-accepted ZVCS tree root remains authoritative, and the surrounding
-`content.v2` package/release authenticates the compressed transport bytes.
-The PROVEN `zcode publish plan` path now derives this carrier directly from
-the human-accepted root. Its four files are the exact top-level `LICENSE`,
-`zclassic23-source.zvsb`, the signed `zcode-lane-receipt.v1`, and an inert
-`zcode-source-transport.c` marker. The signed release commits a declarative
-recipe that compiles only that marker; the independently reverified task
-acceptance recipe remains bound through the signed lane receipt and is
-reported separately as `acceptance_recipe_root`.
+the `vcs_source_bundle` family
+(`lib/vcs/{include/vcs/source_bundle.h,src/source_bundle*.c}`). The explicit
+create/verify/import/checkout leaves retain the original bounded v1 monolith.
+PROVEN publication uses v2: the canonical ZVCS manifest plus independently
+zlib-compressed, stable path-selected shards. This is not another source
+identity, VCS, package format, or network transport. The accepted ZVCS tree
+root remains authoritative, and the surrounding `content.v2` release
+authenticates every manifest and shard byte. Because an edited path stays in
+the same shard, a one-file successor changes only its manifest and affected
+shard; unchanged shard files keep their existing content.v2 chunks.
+
+The PROVEN `zcode publish plan` path derives the carrier directly from the
+human-accepted root. It contains the exact top-level `LICENSE`,
+`zclassic23-source/manifest.zvsm`, the nonempty v2 shard files, the signed
+`zcode-lane-receipt.v1`, and an inert `zcode-source-transport.c` marker. It
+also carries the five already-pinned upstream archives used by the default
+vendor build beneath `vendor/.cache/`; a fresh consumer can rebuild vendor
+inputs without GitHub or another source server, and `build_vendor.sh` still
+checks their pinned SHA-256 values before use. The signed release commits a
+declarative recipe that compiles only the marker; the independently
+reverified task acceptance recipe remains bound through the signed lane
+receipt and is reported separately as `acceptance_recipe_root`.
+Carrier construction and checkout both parse the embedded lane receipt,
+verify its Ed25519 signature, require the `PROVEN` lane, and require its
+source root to equal the separately supplied source authority.
 
 Creation reloads and rehashes every blob from ZVCS CAS. Verification
 decompresses under fixed manifest/source/wire limits, parses the canonical
@@ -106,8 +117,10 @@ no-follow ZVCS materializer into an existing empty scratch directory. Neither
 verify, import, nor checkout executes downloaded source, and none requires
 Git.
 
-The typed leaves are `zcode workspace source capture`, `zcode workspace source bundle create`,
-`verify`, `import`, and `checkout`. Capture explicitly reports
+The typed leaves are `zcode workspace source capture`, the v1 diagnostic
+`zcode workspace source bundle create` / `verify` / `import` / `checkout`
+set, and `zcode workspace source package checkout` for reconstructing a v2
+carrier already fetched into the ordinary node package store. Capture explicitly reports
 `accepted:false`: only the existing proof chain and explicit `zcode work
 accept` lifecycle can grant PROVEN publication authority.
 

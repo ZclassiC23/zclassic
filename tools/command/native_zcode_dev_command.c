@@ -1636,38 +1636,53 @@ static bool zpub_stage_file(const char *dir, const char *relpath,
 }
 
 static bool zpub_stage_transport(
-    const char *dir, const struct vcs_source_package_transport *transport,
-    const uint8_t *lane_wire, size_t lane_wire_len)
+    const char *dir, const struct vcs_source_package_transport *transport)
 {
-    size_t marker_len = 0;
-    const uint8_t *marker =
-        vcs_source_package_transport_marker(&marker_len);
-    return zpub_stage_file(
-               dir, VCS_SOURCE_PACKAGE_LICENSE_PATH,
-               transport->license_bytes, transport->license_len) &&
-        zpub_stage_file(dir, VCS_SOURCE_PACKAGE_BUNDLE_PATH,
-                        transport->bundle_wire,
-                        transport->bundle_wire_len) &&
-        zpub_stage_file(dir, VCS_SOURCE_PACKAGE_LANE_PATH,
-                        lane_wire, lane_wire_len) &&
-        zpub_stage_file(dir, VCS_SOURCE_PACKAGE_MARKER_PATH,
-                        marker, marker_len);
+    size_t count = vcs_source_package_transport_file_count(transport);
+    for (size_t i = 0; i < count; i++) {
+        const char *path = NULL;
+        const uint8_t *bytes = NULL;
+        size_t len = 0;
+        if (!vcs_source_package_transport_file_at(
+                transport, i, &path, &bytes, &len) ||
+            !zpub_stage_file(dir, path, bytes, len))
+            return false;
+    }
+    return true;
 }
 
-static void zpub_stage_cleanup(const char *dir)
+static void zpub_stage_cleanup(
+    const char *dir, const struct vcs_source_package_transport *transport)
 {
-    static const char *const paths[] = {
-        VCS_SOURCE_PACKAGE_LICENSE_PATH,
-        VCS_SOURCE_PACKAGE_BUNDLE_PATH,
-        VCS_SOURCE_PACKAGE_LANE_PATH,
-        VCS_SOURCE_PACKAGE_MARKER_PATH,
-    };
     char path[ZPUB_PATH_MAX];
-    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
-        int n = snprintf(path, sizeof(path), "%s/%s", dir, paths[i]);
+    size_t count = vcs_source_package_transport_file_count(transport);
+    size_t base = strlen(dir);
+    for (size_t i = 0; i < count; i++) {
+        const char *relative = NULL;
+        const uint8_t *bytes = NULL;
+        size_t len = 0;
+        if (!vcs_source_package_transport_file_at(
+                transport, i, &relative, &bytes, &len))
+            continue;
+        int n = snprintf(path, sizeof(path), "%s/%s", dir, relative);
         if (n <= 0 || (size_t)n >= sizeof(path))
             continue;
         (void)unlink(path);
+    }
+    for (size_t i = 0; i < count; i++) {
+        const char *relative = NULL;
+        const uint8_t *bytes = NULL;
+        size_t len = 0;
+        if (!vcs_source_package_transport_file_at(
+                transport, i, &relative, &bytes, &len))
+            continue;
+        int n = snprintf(path, sizeof(path), "%s/%s", dir, relative);
+        if (n <= 0 || (size_t)n >= sizeof(path)) continue;
+        for (char *p = strrchr(path, '/'); p && (size_t)(p - path) > base;
+             p = strrchr(path, '/')) {
+            *p = '\0';
+            (void)rmdir(path);
+        }
     }
     (void)rmdir(dir);
 }
@@ -2088,14 +2103,23 @@ static void zpub_common_output(
     (void)json_push_kv_str(
         out, "authority", "SIGNED_LANE_RECEIPT_AND_RELEASE_ENVELOPE");
     (void)json_push_kv_str(out, "source_transport",
-                           "vcs_source_bundle.v1");
+                           "vcs_source_bundle.v2");
     (void)json_push_kv_int(out, "source_bundle_bytes",
-                           (int64_t)bundle->transport.bundle_wire_len);
+                           (int64_t)bundle->transport.source_transport_bytes);
     (void)json_push_kv_int(
         out, "source_bytes",
         (int64_t)bundle->transport.bundle_metrics.source_bytes);
     (void)json_push_kv_int(out, "source_files",
                            bundle->transport.bundle_metrics.file_count);
+    (void)json_push_kv_int(out, "source_shards",
+                           bundle->transport.source.shard_count);
+    (void)json_push_kv_int(out, "offline_input_bytes",
+                           (int64_t)bundle->transport.offline_input_bytes);
+    (void)json_push_kv_int(out, "offline_input_files",
+                           bundle->transport.offline_input_count);
+    (void)json_push_kv_int(
+        out, "carrier_files",
+        vcs_source_package_transport_file_count(&bundle->transport));
 }
 
 struct zpub_job_binding {
@@ -2256,7 +2280,8 @@ void zcl_native_handle_zcode_publish_plan(
         (void)json_push_kv_int(&reply->data, "reused_chunks",
                                job_binding.reused_chunks);
         (void)json_push_kv_int(&reply->data, "synthetic_bytes_hashed",
-                               (int64_t)bundle.transport.bundle_wire_len +
+                               (int64_t)bundle.transport.source_transport_bytes +
+                               (int64_t)bundle.transport.offline_input_bytes +
                                VCS_ZCODE_LANE_WIRE_BYTES);
         if (bundle.have_mapping)
             zdev_push_root(&reply->data, "package_mapping_root",
@@ -2328,11 +2353,10 @@ void zcl_native_handle_zcode_publish_commit(
                  bundle.datadir);
     bool stage_created = n > 0 && (size_t)n < sizeof(staging) &&
         mkdtemp(staging) != NULL;
-    bool staged = stage_created && zpub_stage_transport(
-        staging, &bundle.transport, bundle.receipt_wire,
-        sizeof(bundle.receipt_wire));
+    bool staged = stage_created &&
+        zpub_stage_transport(staging, &bundle.transport);
     if (!staged) {
-        if (stage_created) zpub_stage_cleanup(staging);
+        if (stage_created) zpub_stage_cleanup(staging, &bundle.transport);
         free(release_wire);
         zpub_bundle_free(&bundle);
         zpub_fail(reply, "SOURCE_STAGE_FAILED",
@@ -2351,7 +2375,7 @@ void zcl_native_handle_zcode_publish_commit(
         zcl_malloc(bundle.transport.recipe_wire_len * 2u + 1u,
                    "zcode.publish.recipe_hex");
     if (!release_hex || !manifest_hex || !recipe_hex) {
-        zpub_stage_cleanup(staging);
+        zpub_stage_cleanup(staging, &bundle.transport);
         free(release_hex);
         free(manifest_hex);
         free(recipe_hex);
@@ -2386,7 +2410,7 @@ void zcl_native_handle_zcode_publish_commit(
     zcl_command_reply_init(&commit_reply, "zcl.zcode_publish_commit.v1");
     zcl_native_handle_zcode_package_publish_commit(
         &commit_request, &commit_reply);
-    zpub_stage_cleanup(staging);
+    zpub_stage_cleanup(staging, &bundle.transport);
     json_free(&commit_input);
     free(release_hex);
     free(manifest_hex);

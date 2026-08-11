@@ -93,6 +93,32 @@ static bool zd_write_text(const char *path, const char *text)
     return fclose(file) == 0 && ok;
 }
 
+static bool zd_seed_offline_vendor_inputs(const char *workspace)
+{
+    static const char *const names[] = {
+        "leveldb-1.23.tar.gz",
+        "libevent-2.1.12.tar.gz",
+        "openssl-3.0.16.tar.gz",
+        "sqlite-amalgamation-3490000.zip",
+        "zlib-1.3.1.tar.gz",
+    };
+    char vendor[1024], cache[1024], path[1200];
+    int vn = snprintf(vendor, sizeof(vendor), "%s/vendor", workspace);
+    int cn = snprintf(cache, sizeof(cache), "%s/.cache", vendor);
+    if (vn <= 0 || (size_t)vn >= sizeof(vendor) ||
+        cn <= 0 || (size_t)cn >= sizeof(cache) ||
+        (mkdir(vendor, 0700) != 0 && errno != EEXIST) ||
+        (mkdir(cache, 0700) != 0 && errno != EEXIST))
+        return false;
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        int n = snprintf(path, sizeof(path), "%s/%s", cache, names[i]);
+        if (n <= 0 || (size_t)n >= sizeof(path) ||
+            !zd_write_text(path, names[i]))
+            return false;
+    }
+    return true;
+}
+
 static bool zd_copy_tagged_object(
     const char *source_store, const char *destination_store,
     const uint8_t root[32], uint8_t tag)
@@ -2754,6 +2780,7 @@ static int test_zd_improve_command(void)
         uint8_t accepted_source_root[32], accepted_lane_root[32];
         ASSERT(zcl_hex_decode_lower(candidate_source_saved,
                                     accepted_source_root, 32));
+        ASSERT(zd_seed_offline_vendor_inputs(workspace));
         ASSERT(zcl_hex_decode_lower(accepted_receipt_saved,
                                     accepted_lane_root, 32));
         struct vcs_package_mapping_metrics cold_mapping, warm_mapping;
@@ -2979,11 +3006,18 @@ static int test_zd_improve_command(void)
                        planned_recipe_hex);
         ASSERT_STR_EQ(json_get_str(json_get(
                           &publish_plan_reply.data, "source_transport")),
-                      "vcs_source_bundle.v1");
+                      "vcs_source_bundle.v2");
         ASSERT_EQ(json_get_int(json_get(
                       &publish_plan_reply.data, "source_files")), 5);
         ASSERT(json_get_int(json_get(
                    &publish_plan_reply.data, "source_bundle_bytes")) > 0);
+        ASSERT(json_get_int(json_get(
+                   &publish_plan_reply.data, "source_shards")) > 0);
+        ASSERT_EQ(json_get_int(json_get(
+                      &publish_plan_reply.data, "offline_input_files")), 5);
+        int64_t planned_carrier_files = json_get_int(json_get(
+            &publish_plan_reply.data, "carrier_files"));
+        ASSERT(planned_carrier_files > 9);
         uint8_t signing_digest[32], publish_signature[64];
         ASSERT(zcl_hex_decode_lower(signing_digest_hex,
                                     signing_digest, 32));
@@ -3112,7 +3146,8 @@ static int test_zd_improve_command(void)
         ASSERT_STR_EQ(published_entry->name, "fixture/accepted");
         ASSERT(published_entry->manifest_present);
         ASSERT(published_entry->license_present);
-        ASSERT_EQ(published_entry->file_count, 4u);
+        ASSERT_EQ(published_entry->file_count,
+                  (uint32_t)planned_carrier_files);
         vcs_package_index_free(published_index);
 
         struct zcl_command_reply duplicate_publish_reply;
