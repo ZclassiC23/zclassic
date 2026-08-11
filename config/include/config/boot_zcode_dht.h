@@ -87,6 +87,8 @@ void boot_zcode_dht_record_register_rpc(struct rpc_table *table);
 void boot_zcode_dht_record_test_render(
     struct json_value *result,
     const struct vcs_zcode_dht_record_discovery_result *discovery);
+void boot_zcode_dht_publication_record_test_render(
+    struct json_value *result, const struct vcs_zcode_dht_record *record);
 void boot_zcode_dht_provider_route_test_render(
     struct json_value *result,
     const struct vcs_zcode_dht_provider_route *route, uint32_t fetch_result);

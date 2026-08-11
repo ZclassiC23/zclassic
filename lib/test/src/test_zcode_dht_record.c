@@ -217,18 +217,35 @@ static int test_record_roundtrip(void)
       uint8_t wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
       ASSERT_EQ(vcs_zcode_dht_record_encode(&record, wire),
                 VCS_ZCODE_DHT_RECORD_OK);
+      uint8_t record_id[32];
+      ASSERT_EQ(vcs_zcode_dht_record_id(&record, record_id),
+                VCS_ZCODE_DHT_RECORD_OK);
       if (kind == VCS_ZCODE_DHT_RECORD_PROVIDER) {
         uint8_t digest[32];
-        char digest_hex[65];
+        char digest_hex[65], record_id_hex[65];
         sha3_256(wire, sizeof(wire), digest);
         zcl_hex_encode(digest, sizeof(digest), digest_hex);
+        zcl_hex_encode(record_id, sizeof(record_id), record_id_hex);
         ASSERT(strcmp(digest_hex,
                       "284d3f369bf3dd2644e4843f310b8bba1c4f64a4d081269f"
                       "5460dee197092839") == 0);
+        ASSERT(strcmp(record_id_hex,
+                      "0dbad9e66c96e559946a778971bedd006da2dbfc896d58cd"
+                      "18bb17403679dff2") == 0);
+        struct json_value publication;
+        json_init(&publication);
+        boot_zcode_dht_publication_record_test_render(&publication, &record);
+        ASSERT(strcmp(json_get_str(json_get(&publication, "record_root")),
+                      record_id_hex) == 0);
+        json_free(&publication);
       }
       ASSERT_EQ(vcs_zcode_dht_record_parse(wire, sizeof(wire), &f.verify,
                                            &parsed),
                 VCS_ZCODE_DHT_RECORD_OK);
+      uint8_t parsed_id[32];
+      ASSERT_EQ(vcs_zcode_dht_record_id(&parsed, parsed_id),
+                VCS_ZCODE_DHT_RECORD_OK);
+      ASSERT(memcmp(parsed_id, record_id, sizeof(parsed_id)) == 0);
       ASSERT_EQ((int)parsed.kind, kind);
       ASSERT_EQ(parsed.sequence, 11);
       ASSERT(memcmp(parsed.provider_node_id, f.node_id, 32) == 0);
@@ -854,6 +871,13 @@ static int test_record_projection_fields(void)
     const struct json_value *rows = json_get(&rendered, "records");
     ASSERT(rows != NULL);
     ASSERT_EQ(json_size(rows), 5);
+    uint8_t first_root[32];
+    char first_root_hex[65];
+    ASSERT_EQ(vcs_zcode_dht_record_id(&discovery.records[0], first_root),
+              VCS_ZCODE_DHT_RECORD_OK);
+    zcl_hex_encode(first_root, sizeof(first_root), first_root_hex);
+    ASSERT(strcmp(json_get_str(json_get(json_at(rows, 0), "record_root")),
+                  first_root_hex) == 0);
     ASSERT(!json_get_bool_or(json_at(rows, 0), "superseded", false));
     ASSERT(!json_get_bool_or(json_at(rows, 0), "conflicted", false));
     ASSERT(json_get_bool_or(json_at(rows, 1), "conflicted", false));

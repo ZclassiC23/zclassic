@@ -3348,8 +3348,9 @@ ZCL_COMMAND_READY_READ(
     "Runs the same iterative records lifecycle for active PROVIDER records "
     "under one exact transport root and generic namespace. A "
     "claim is signed routing evidence, never possession proof; conflicting "
-    "valid sequence slots remain visible. No address, delegation or key is "
-    "returned.",
+    "valid sequence slots remain visible. Every row includes the canonical "
+    "signed record_root evidence coordinate. No address, delegation or key "
+    "is returned.",
     16384, "zcode,network,dht,provider,root,discovery",
     "zcl.zcode_network_providers.input.v1",
     "zcl.zcode_network_providers.v1", "namespace,transport_root",
@@ -3366,6 +3367,8 @@ ZCL_COMMAND_READY_COMMAND(
     "Plans or commits one canonical PROVIDER or POINTER record. "
     "mode=plan returns a token binding the exact signed record and current "
     "record-store digest; mode=commit re-derives both and refuses stale plans. "
+    "Both modes return the canonical signed record_root so durable jobs can "
+    "bind exact public evidence. "
     "STORAGE_ACK is refused here and must use storage_ack, whose package-store "
     "proof cannot be supplied by the caller. The reply never "
     "contains signing keys or delegation wire.",

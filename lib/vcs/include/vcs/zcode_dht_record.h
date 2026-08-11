@@ -23,6 +23,7 @@
 #define VCS_ZCODE_DHT_STORAGE_ACK_MAX_SECONDS UINT64_C(604800)
 #define VCS_ZCODE_DHT_RECORD_SIGNATURE_DOMAIN "zcl.zcode.dht.record.v1"
 #define VCS_ZCODE_DHT_RECORD_KEY_DOMAIN "zcl.zcode.dht.record-key.v1"
+#define VCS_ZCODE_DHT_RECORD_ID_DOMAIN "zcl.zcode.dht.record-id.v1"
 
 enum vcs_zcode_dht_record_kind {
   VCS_ZCODE_DHT_RECORD_PROVIDER = 1,
@@ -99,6 +100,12 @@ enum vcs_zcode_dht_record_error vcs_zcode_dht_record_sign(
 enum vcs_zcode_dht_record_error vcs_zcode_dht_record_encode(
     const struct vcs_zcode_dht_record *record,
     uint8_t wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES]);
+
+/* Root of the complete canonical signed wire. This is an evidence coordinate,
+ * not a routing key: callers must still parse/verify the record before using
+ * its claims. The domain includes its trailing NUL byte. */
+enum vcs_zcode_dht_record_error vcs_zcode_dht_record_id(
+    const struct vcs_zcode_dht_record *record, uint8_t out[32]);
 
 /* Bounds and canonical structure are checked before delegation/signature/chain
  * work. `out` is zero on every rejection. */

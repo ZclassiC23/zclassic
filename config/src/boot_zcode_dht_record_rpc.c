@@ -196,6 +196,11 @@ static void record_row_json(struct json_value *row,
                             bool conflicted, bool superseded,
                             bool provider_authenticated) {
   char semantic[65], transport[65], provider[65], owner[65], publisher[65];
+  char record_root[65] = "";
+  uint8_t record_id[32];
+  if (vcs_zcode_dht_record_id(record, record_id) ==
+      VCS_ZCODE_DHT_RECORD_OK)
+    zcl_hex_encode(record_id, 32, record_root);
   zcl_hex_encode(record->semantic_root, 32, semantic);
   zcl_hex_encode(record->transport_root, 32, transport);
   zcl_hex_encode(record->provider_node_id, 32, provider);
@@ -203,6 +208,7 @@ static void record_row_json(struct json_value *row,
   zcl_hex_encode(record->delegation.doc.master_pubkey, 32, publisher);
   json_set_object(row);
   json_push_kv_str(row, "kind", record_kind_name(record->kind));
+  json_push_kv_str(row, "record_root", record_root);
   json_push_kv_str(row, "namespace", record->namespace_name);
   json_push_kv_str(row, "semantic_root", semantic);
   json_push_kv_str(row, "transport_root", transport);

@@ -286,6 +286,27 @@ enum vcs_zcode_dht_record_error vcs_zcode_dht_record_encode(
                                                 : VCS_ZCODE_DHT_RECORD_SIZE;
 }
 
+enum vcs_zcode_dht_record_error vcs_zcode_dht_record_id(
+    const struct vcs_zcode_dht_record *record, uint8_t out[32])
+{
+  if (!record || !out)
+    return VCS_ZCODE_DHT_RECORD_NULL;
+  uint8_t wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+  enum vcs_zcode_dht_record_error error =
+      vcs_zcode_dht_record_encode(record, wire);
+  if (error != VCS_ZCODE_DHT_RECORD_OK) {
+    memset(out, 0, 32);
+    return error;
+  }
+  struct sha3_256_ctx sha;
+  sha3_256_init(&sha);
+  sha3_256_write(&sha, (const uint8_t *)VCS_ZCODE_DHT_RECORD_ID_DOMAIN,
+                 sizeof(VCS_ZCODE_DHT_RECORD_ID_DOMAIN));
+  sha3_256_write(&sha, wire, sizeof(wire));
+  sha3_256_finalize(&sha, out);
+  return VCS_ZCODE_DHT_RECORD_OK;
+}
+
 static enum vcs_zcode_dht_record_error record_read_unsigned(
     const uint8_t *wire, struct vcs_zcode_dht_record *record,
     size_t *unsigned_len)

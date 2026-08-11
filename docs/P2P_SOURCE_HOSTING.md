@@ -76,6 +76,12 @@ The wallet broker signs the release id; private keys never enter an App. A
 signature establishes authorship, not safety. Downloaded source remains inert
 until a separate explicit inspect/build/install transaction passes policy.
 
+Provider, pointer, and storage-ACK DHT records also expose a canonical
+`record_root`: SHA3-256 over the complete signed wire under the
+`zcl.zcode.dht.record-id.v1\0` domain. It is an immutable evidence coordinate,
+not a routing key or possession claim; consumers still parse and verify the
+record before using any field.
+
 ## Whole-workspace ZVCS transport
 
 A complete ZClassic23 workspace is larger than the package store's deliberately
