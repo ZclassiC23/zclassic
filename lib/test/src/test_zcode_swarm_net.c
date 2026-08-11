@@ -126,6 +126,8 @@ struct zwn_sovereign_receipt {
     uint8_t successor_release_root[32];
     uint8_t successor_package_root[32];
     uint8_t successor_binary_sha3[32];
+    uint8_t storage_ack_roots[2][32];
+    uint16_t storage_ack_count;
     struct vcs_source_bundle_metrics source_metrics;
 };
 
@@ -175,11 +177,13 @@ static void zwn_print_sovereign_receipt(void)
                         r->successor_package_root);
     zwn_print_root_json("successor_binary_sha3",
                         r->successor_binary_sha3);
+    zwn_print_root_json("storage_ack_a_root", r->storage_ack_roots[0]);
+    zwn_print_root_json("storage_ack_b_root", r->storage_ack_roots[1]);
     printf(",\"source_bytes\":%" PRIu64
            ",\"new_source_blobs\":%u,\"reused_source_blobs\":%u"
            ",\"serving_providers\":2,\"pinned_providers\":2"
-           ",\"storage_acknowledgements\":0"
-           ",\"storage_ack_status\":\"not_exercised\""
+           ",\"storage_acknowledgements\":%u"
+           ",\"storage_ack_status\":\"2/2\""
            ",\"reproduced\":true,\"provider_failover\":true"
            ",\"corrupt_chunk_recovery\":true"
            ",\"previous_release_fetchable\":true"
@@ -187,7 +191,8 @@ static void zwn_print_sovereign_receipt(void)
            ",\"github_mirror\":\"not_applicable_fixture\"}\n",
            r->source_metrics.source_bytes,
            r->source_metrics.new_blobs,
-           r->source_metrics.reused_blobs);
+           r->source_metrics.reused_blobs,
+           r->storage_ack_count);
 }
 
 static bool zwn_make_package(struct zwn_pkg *p, size_t count, uint8_t seed)
@@ -769,6 +774,71 @@ out:
         vcs_zcode_dht_service_free(consumer_dht, zwn_dht_time(1003));
     if (publisher_dht)
         vcs_zcode_dht_service_free(publisher_dht, zwn_dht_time(1003));
+    return ok;
+}
+
+static bool zwn_author_storage_ack(
+    const struct zwn_node *provider, const char *namespace_name,
+    const uint8_t transport_root[32], uint8_t identity_byte,
+    uint8_t owner_group_byte, struct vcs_zcode_dht_record *record_out,
+    uint8_t record_root_out[32])
+{
+    if (!provider || !namespace_name || !transport_root || !record_out ||
+        !record_root_out)
+        return false;
+    struct vcs_package_store_status status;
+    if (!vcs_package_store_package_status(
+            provider->store, transport_root, &status) ||
+        !status.complete || !status.pinned)
+        return false;
+
+    uint8_t genesis[32], noise[32];
+    memset(genesis, 0x71, sizeof(genesis));
+    memset(noise, identity_byte, sizeof(noise));
+    if (!zwn_dht_identity(
+            provider->datadir, identity_byte, genesis, noise))
+        return false;
+    struct vcs_zcode_dht_service *service =
+        zwn_dht_service(provider->datadir, genesis, noise);
+    if (!service)
+        return false;
+
+    struct vcs_zcode_dht_publish_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.kind = VCS_ZCODE_DHT_RECORD_STORAGE_ACK;
+    (void)snprintf(spec.namespace_name, sizeof(spec.namespace_name),
+                   "%s", namespace_name);
+    memcpy(spec.transport_root, transport_root, 32);
+    memset(spec.owner_group, owner_group_byte, sizeof(spec.owner_group));
+    spec.sequence = 1;
+    spec.not_before = 1000;
+    spec.expiry = 2000;
+    uint8_t plan_token[32];
+    struct vcs_zcode_dht_record generic_record;
+    bool ok = !vcs_zcode_dht_service_record_publish_plan(
+                  service, &spec, plan_token, &generic_record) &&
+        vcs_zcode_dht_service_storage_ack_plan(
+            service, provider->store, &spec, plan_token, record_out) &&
+        vcs_zcode_dht_service_storage_ack_commit(
+            service, provider->store, &spec, plan_token,
+            zwn_dht_time(1002), record_out) ==
+            VCS_ZCODE_DHT_RECORD_STORE_ADDED &&
+        record_out->kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK &&
+        memcmp(record_out->transport_root, transport_root, 32) == 0 &&
+        vcs_zcode_dht_record_id(record_out, record_root_out) ==
+            VCS_ZCODE_DHT_RECORD_OK;
+    struct vcs_zcode_dht_record_selector selector = {
+        .kind = VCS_ZCODE_DHT_RECORD_STORAGE_ACK,
+    };
+    (void)snprintf(selector.namespace_name, sizeof(selector.namespace_name),
+                   "%s", namespace_name);
+    memcpy(selector.root, transport_root, 32);
+    struct vcs_zcode_dht_record queried;
+    ok = ok && vcs_zcode_dht_service_record_local_query(
+                   service, 1002, &selector, &queried, 1) == 1 &&
+        memcmp(queried.provider_node_id, record_out->provider_node_id, 32) ==
+            0;
+    vcs_zcode_dht_service_free(service, zwn_dht_time(1003));
     return ok;
 }
 
@@ -1968,6 +2038,19 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         ASSERT(vcs_package_store_package_status(
                    a2.store, transport.package_root, &server_b_status));
         ASSERT(server_b_status.complete && server_b_status.pinned);
+        struct vcs_zcode_dht_record storage_ack_records[2];
+        uint8_t storage_ack_roots[2][32];
+        ASSERT(zwn_author_storage_ack(
+            &a, "zcode.source", transport.package_root, 0x81, 0x91,
+            &storage_ack_records[0], storage_ack_roots[0]));
+        ASSERT(zwn_author_storage_ack(
+            &a2, "zcode.source", transport.package_root, 0x82, 0x92,
+            &storage_ack_records[1], storage_ack_roots[1]));
+        ASSERT(memcmp(storage_ack_records[0].provider_node_id,
+                      storage_ack_records[1].provider_node_id, 32) != 0);
+        ASSERT(memcmp(storage_ack_records[0].owner_group,
+                      storage_ack_records[1].owner_group, 32) != 0);
+        ASSERT(memcmp(storage_ack_roots[0], storage_ack_roots[1], 32) != 0);
 
         memset(&g_zwn_sovereign_receipt, 0,
                sizeof(g_zwn_sovereign_receipt));
@@ -1994,6 +2077,9 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
                successor_transport.package_root, 32);
         memcpy(g_zwn_sovereign_receipt.successor_binary_sha3,
                publisher_sha3, 32);
+        memcpy(g_zwn_sovereign_receipt.storage_ack_roots,
+               storage_ack_roots, sizeof(storage_ack_roots));
+        g_zwn_sovereign_receipt.storage_ack_count = 2;
         g_zwn_sovereign_receipt.source_metrics = transport.bundle_metrics;
         ASSERT(vcs_package_store_package_status(
                    a2.store, workspace_carrier.root,
