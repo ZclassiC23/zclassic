@@ -2119,9 +2119,16 @@ t-fast-exact: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED)'
 
-.PHONY: zcode-development-acceptance
+.PHONY: zcode-development-acceptance sovereign-source-roundtrip
 zcode-development-acceptance:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY=test_zcode_package_dev
+
+# Hermetic P2P source-publication proof. The exact group emits one canonical
+# zcl.sovereign_source_roundtrip.v1 receipt only after workspace/release/
+# Passport/accepted-work verification, two-provider fetch, Git-free rebuild,
+# failover, corrupt-chunk recovery and successor ancestry all pass.
+sovereign-source-roundtrip:
+	@$(MAKE) --no-print-directory t-fast-exact ONLY=test_zcode_swarm_net
 
 # Regenerate the pinned Sapling SPEND reference ground-truth vector (H2 lane).
 # Runs the groth16_selfverify group's oracle in emit mode against

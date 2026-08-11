@@ -72,6 +72,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -109,6 +110,85 @@ struct zwn_pkg {
     size_t lens[ZWN_MAX_FILES];
     uint64_t total_bytes;
 };
+
+struct zwn_sovereign_receipt {
+    bool ready;
+    uint8_t source_root[32];
+    uint8_t accepted_work_root[32];
+    uint8_t proof_set_root[32];
+    uint8_t commit_root[32];
+    uint8_t release_root[32];
+    uint8_t passport_root[32];
+    uint8_t workspace_root[32];
+    uint8_t workspace_carrier_root[32];
+    uint8_t source_package_root[32];
+    uint8_t publisher_binary_sha3[32];
+    uint8_t successor_release_root[32];
+    uint8_t successor_package_root[32];
+    uint8_t successor_binary_sha3[32];
+    struct vcs_source_bundle_metrics source_metrics;
+};
+
+static struct zwn_sovereign_receipt g_zwn_sovereign_receipt;
+
+static bool zwn_hashes_match(const char *label,
+                             const uint8_t expected[32],
+                             const uint8_t actual[32])
+{
+    if (memcmp(expected, actual, 32) == 0)
+        return true;
+    char expected_hex[65], actual_hex[65];
+    zcl_hex_encode(expected, 32, expected_hex);
+    zcl_hex_encode(actual, 32, actual_hex);
+    printf("sovereign-source-roundtrip: DIVERGENCE first=%s expected=%s actual=%s\n",
+           label, expected_hex, actual_hex);
+    return false;
+}
+
+static void zwn_print_root_json(const char *key, const uint8_t root[32])
+{
+    char hex[65];
+    zcl_hex_encode(root, 32, hex);
+    printf(",\"%s\":\"%s\"", key, hex);
+}
+
+static void zwn_print_sovereign_receipt(void)
+{
+    const struct zwn_sovereign_receipt *r = &g_zwn_sovereign_receipt;
+    printf("{\"schema\":\"zcl.sovereign_source_roundtrip.v1\","
+           "\"status\":\"passed\"");
+    zwn_print_root_json("source_tree_root", r->source_root);
+    zwn_print_root_json("accepted_work_root", r->accepted_work_root);
+    zwn_print_root_json("proof_set_root", r->proof_set_root);
+    zwn_print_root_json("zvcs_commit_root", r->commit_root);
+    zwn_print_root_json("release_root", r->release_root);
+    zwn_print_root_json("passport_root", r->passport_root);
+    zwn_print_root_json("workspace_root", r->workspace_root);
+    zwn_print_root_json("workspace_carrier_root",
+                        r->workspace_carrier_root);
+    zwn_print_root_json("source_package_root", r->source_package_root);
+    zwn_print_root_json("publisher_binary_sha3",
+                        r->publisher_binary_sha3);
+    zwn_print_root_json("successor_release_root",
+                        r->successor_release_root);
+    zwn_print_root_json("successor_package_root",
+                        r->successor_package_root);
+    zwn_print_root_json("successor_binary_sha3",
+                        r->successor_binary_sha3);
+    printf(",\"source_bytes\":%" PRIu64
+           ",\"new_source_blobs\":%u,\"reused_source_blobs\":%u"
+           ",\"serving_providers\":2,\"pinned_providers\":2"
+           ",\"storage_acknowledgements\":0"
+           ",\"storage_ack_status\":\"not_exercised\""
+           ",\"reproduced\":true,\"provider_failover\":true"
+           ",\"corrupt_chunk_recovery\":true"
+           ",\"previous_release_fetchable\":true"
+           ",\"publication_job\":\"not_exercised\""
+           ",\"github_mirror\":\"not_applicable_fixture\"}\n",
+           r->source_metrics.source_bytes,
+           r->source_metrics.new_blobs,
+           r->source_metrics.reused_blobs);
+}
 
 static bool zwn_make_package(struct zwn_pkg *p, size_t count, uint8_t seed)
 {
@@ -1359,7 +1439,9 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         ASSERT(zwn_compile_c23(publisher_source, publisher_binary));
         ASSERT(zwn_run_fixture_binary(publisher_binary));
         uint8_t publisher_sha3[32], publisher_sha256[32];
+        uint8_t initial_publisher_sha3[32];
         ASSERT(zwn_sha3_file(publisher_binary, publisher_sha3));
+        memcpy(initial_publisher_sha3, publisher_sha3, 32);
         ASSERT(zwn_sha256_file(publisher_binary, publisher_sha256));
 
         uint8_t source_root[32];
@@ -1767,7 +1849,8 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         uint8_t consumer_sha3[32], consumer_sha256[32];
         ASSERT(zwn_sha3_file(consumer_binary, consumer_sha3));
         ASSERT(zwn_sha256_file(consumer_binary, consumer_sha256));
-        ASSERT(memcmp(publisher_sha3, consumer_sha3, 32) == 0);
+        ASSERT(zwn_hashes_match("publisher_binary_sha3",
+                                publisher_sha3, consumer_sha3));
         ASSERT(memcmp(consumer_commit.generation_sha256,
                       consumer_sha256, 32) == 0);
 
@@ -1880,10 +1963,38 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         ASSERT(zwn_run_fixture_binary(successor_consumer_binary));
         ASSERT(zwn_sha3_file(successor_publisher_binary, publisher_sha3));
         ASSERT(zwn_sha3_file(successor_consumer_binary, consumer_sha3));
-        ASSERT(memcmp(publisher_sha3, consumer_sha3, 32) == 0);
+        ASSERT(zwn_hashes_match("successor_binary_sha3",
+                                publisher_sha3, consumer_sha3));
         ASSERT(vcs_package_store_package_status(
                    a2.store, transport.package_root, &server_b_status));
         ASSERT(server_b_status.complete && server_b_status.pinned);
+
+        memset(&g_zwn_sovereign_receipt, 0,
+               sizeof(g_zwn_sovereign_receipt));
+        g_zwn_sovereign_receipt.ready = true;
+        memcpy(g_zwn_sovereign_receipt.source_root, source_root, 32);
+        memcpy(g_zwn_sovereign_receipt.accepted_work_root,
+               accepted.accepted.accepted_work_root, 32);
+        memcpy(g_zwn_sovereign_receipt.proof_set_root,
+               accepted.accepted.proof_set_root, 32);
+        memcpy(g_zwn_sovereign_receipt.commit_root, commit_root, 32);
+        memcpy(g_zwn_sovereign_receipt.release_root,
+               first_release_root, 32);
+        memcpy(g_zwn_sovereign_receipt.passport_root, passport_root, 32);
+        memcpy(g_zwn_sovereign_receipt.workspace_root, workspace_root, 32);
+        memcpy(g_zwn_sovereign_receipt.workspace_carrier_root,
+               workspace_carrier.root, 32);
+        memcpy(g_zwn_sovereign_receipt.source_package_root,
+               transport.package_root, 32);
+        memcpy(g_zwn_sovereign_receipt.publisher_binary_sha3,
+               initial_publisher_sha3, 32);
+        memcpy(g_zwn_sovereign_receipt.successor_release_root,
+               successor_release_root, 32);
+        memcpy(g_zwn_sovereign_receipt.successor_package_root,
+               successor_transport.package_root, 32);
+        memcpy(g_zwn_sovereign_receipt.successor_binary_sha3,
+               publisher_sha3, 32);
+        g_zwn_sovereign_receipt.source_metrics = transport.bundle_metrics;
         ASSERT(vcs_package_store_package_status(
                    a2.store, workspace_carrier.root,
                    &server_b_status));
@@ -2145,6 +2256,8 @@ static int zwn_t_unrequested(const struct chain_params *params)
 int test_zcode_swarm_net(void)
 {
     int failures = 0;
+    memset(&g_zwn_sovereign_receipt, 0,
+           sizeof(g_zwn_sovereign_receipt));
     chain_params_select(CHAIN_MAIN);
     const struct chain_params *params = chain_params_get();
 
@@ -2155,5 +2268,7 @@ int test_zcode_swarm_net(void)
     failures += zwn_t_malicious(params);
     failures += zwn_t_corrupt_local_repair(params);
     failures += zwn_t_unrequested(params);
+    if (failures == 0 && g_zwn_sovereign_receipt.ready)
+        zwn_print_sovereign_receipt();
     return failures;
 }
