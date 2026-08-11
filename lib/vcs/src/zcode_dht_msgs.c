@@ -147,7 +147,8 @@ static size_t selector_length(
 static bool selector_valid(const struct vcs_zcode_dht_record_selector *s)
 {
     if (!s || s->kind < VCS_ZCODE_DHT_RECORD_PROVIDER ||
-        s->kind > VCS_ZCODE_DHT_RECORD_STORAGE_ACK || !nonzero(s->root, 32))
+        s->kind > VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK ||
+        !nonzero(s->root, 32))
         return false;
     size_t length = selector_length(s->namespace_name);
     if (!length || length > VCS_ZCODE_DHT_RECORD_NAMESPACE_MAX)
@@ -394,7 +395,7 @@ static enum vcs_zcode_dht_error read_selector(
 {
     uint8_t kind = wire[0], length = wire[1];
     if (kind < VCS_ZCODE_DHT_RECORD_PROVIDER ||
-        kind > VCS_ZCODE_DHT_RECORD_STORAGE_ACK || !length ||
+        kind > VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK || !length ||
         length > VCS_ZCODE_DHT_RECORD_NAMESPACE_MAX)
         return VCS_ZCODE_DHT_ERR_WIRE_ORDER;
     selector->kind = (enum vcs_zcode_dht_record_kind)kind;

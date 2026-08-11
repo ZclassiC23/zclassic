@@ -31,6 +31,8 @@ zcode.science.publish operation # discovery helper injects operation into its pr
 zcode.package.dev.publish.commit dir # accepted-lane commit injects its unique verified-CAS staging directory into a private package-publish request; request->input never reaches that helper.
 zcode.package.dev.publish.commit manifest_hex # accepted-lane commit injects its CAS-rederived manifest into a private package-publish request; request->input never reaches that helper.
 zcode.package.dev.publish.commit recipe_hex # accepted-lane commit injects its task-bound CAS recipe into a private package-publish request; request->input never reaches that helper.
+zcode.package.source.reproduce day # nested package fetch reads this only from the private fetch object; reproduce does not copy request->input day into that object.
+zcode.package.source.reproduce maximum_bytes # reproduce injects the fixed source-carrier ceiling into its private package-fetch request; request->input never reaches that helper.
 metaverse.space.plan delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
 metaverse.space.commit delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.
 metaverse.space.show delegation_wire # delegation authorization serializes a private RPC object; request->input never reaches that helper.

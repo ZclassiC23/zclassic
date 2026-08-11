@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: Canonical signed provider, pointer, and storage-ack DHT records. */
+ * purpose: Canonical signed discovery and evidence DHT records. */
 
 #include "vcs/zcode_dht_record.h"
 
@@ -94,7 +94,7 @@ bool vcs_zcode_dht_record_key(
       !record_nonzero(network_genesis, 32) || !record_nonzero(root, 32) ||
       !namespace_valid(namespace_name, NULL) ||
       kind < VCS_ZCODE_DHT_RECORD_PROVIDER ||
-      kind > VCS_ZCODE_DHT_RECORD_STORAGE_ACK)
+      kind > VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK)
     return false;
   struct sha3_256_ctx hash;
   const uint8_t kind_byte = (uint8_t)kind;
@@ -119,6 +119,8 @@ static uint64_t max_window(enum vcs_zcode_dht_record_kind kind)
     return VCS_ZCODE_DHT_POINTER_MAX_SECONDS;
   case VCS_ZCODE_DHT_RECORD_STORAGE_ACK:
     return VCS_ZCODE_DHT_STORAGE_ACK_MAX_SECONDS;
+  case VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK:
+    return VCS_ZCODE_DHT_SOURCE_REPRODUCTION_ACK_MAX_SECONDS;
   }
   return 0;
 }
@@ -141,10 +143,15 @@ static enum vcs_zcode_dht_record_error record_shape(
       return record_nonzero(record->owner_group, 32)
                  ? VCS_ZCODE_DHT_RECORD_OWNER_GROUP
                  : VCS_ZCODE_DHT_RECORD_ROOT;
+  } else if (record->kind ==
+             VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK) {
+    if (!record_nonzero(record->semantic_root, 32))
+      return VCS_ZCODE_DHT_RECORD_ROOT;
   } else if (!record_zero(record->semantic_root, 32)) {
     return VCS_ZCODE_DHT_RECORD_ROOT;
   }
-  if (record->kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK) {
+  if (record->kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK ||
+      record->kind == VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK) {
     if (!record_nonzero(record->owner_group, 32))
       return VCS_ZCODE_DHT_RECORD_OWNER_GROUP;
   } else if (!record_zero(record->owner_group, 32)) {

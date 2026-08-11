@@ -146,7 +146,8 @@ static uint64_t publication_lifetime_max(
     return VCS_ZCODE_DHT_POINTER_MAX_SECONDS;
   return kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK
              ? VCS_ZCODE_DHT_STORAGE_ACK_MAX_SECONDS
-             : 0;
+         : kind == VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK
+             ? VCS_ZCODE_DHT_SOURCE_REPRODUCTION_ACK_MAX_SECONDS : 0;
 }
 
 bool vcs_zcode_dht_publications_load(struct vcs_zcode_dht_service *service,

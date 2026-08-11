@@ -43,6 +43,16 @@ Separate processes, workspaces, package stores, and signing keys on one
 physical machine prove protocol separation, not physical independence. They
 never clear the independent-reproduction unit or the real SHA3 gate.
 
+The source-publication path now has a narrower end-to-end adapter:
+`zcode package source reproduce` fetches one exact `content.v2` carrier,
+reconstructs it in fresh scratch, verifies its complete accepted-work chain,
+and publishes a signed one-shot `SOURCE_REPRODUCTION_ACK`. The developer
+publication collector can bind that immutable wire only when its signer
+lineage is distinct from the publisher and storage witnesses. This proves
+source-carrier reproduction only; it does not run the canonical build below,
+produce a `work_receipt.v1` REPRODUCE receipt, or attest a physical second
+host.
+
 ## Requester A: public challenge material
 
 A commits the simulation-only reproduction request to an explicit isolated
@@ -89,10 +99,11 @@ credit.
 B must next bind the exact request root, reproduced build-report root and
 artifact-manifest root in the existing signed `work_receipt.v1` REPRODUCE
 action, using B's already-approved contributor/ZID-bound worker key, and place
-that receipt in the existing proof-set path. The repository does not yet ship
-one end-to-end remote command that performs this receipt/admission handoff;
-until that small adapter exists, the genuine off-host gate remains blocked and
-must not be cleared by copying a fixture key or self-reporting a hostname.
+that receipt in the existing proof-set path. The source-reproduction command
+does not perform this build-receipt/admission handoff, and the repository does
+not yet ship one end-to-end remote command that does. Until that adapter
+exists, the genuine off-host build gate remains blocked and must not be
+cleared by copying a fixture key or self-reporting a hostname.
 
 ## Observer C: independent admission
 

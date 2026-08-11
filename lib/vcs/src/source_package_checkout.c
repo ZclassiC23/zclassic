@@ -386,7 +386,7 @@ vcs_source_package_accepted_work_discover(
                 VCS_ZCODE_LANE_WIRE_BYTES ||
             loaded.package.files[authority_index].size == 0 ||
             loaded.package.files[authority_index].size >
-                SOURCE_CHECKOUT_AUTHORITY_MAX)
+                VCS_ZCODE_ACCEPTED_WORK_BUNDLE_MAX_BYTES)
             result = VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
     }
     uint8_t *lane_wire = NULL;
@@ -511,4 +511,106 @@ vcs_source_package_checkout_accepted(
     return source_package_checkout_common(
         store, package_root, source_root, NULL, accepted_work_root,
         workspace, destination, metrics);
+}
+
+static enum vcs_source_package_checkout_result
+source_package_identity_discover(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    uint8_t source_root[32], uint8_t accepted_work_root[32])
+{
+    memset(source_root, 0, 32);
+    memset(accepted_work_root, 0, 32);
+    struct vcs_package_store_status status;
+    if (!vcs_package_store_package_status(store, package_root, &status) ||
+        !status.complete)
+        return VCS_SOURCE_PACKAGE_CHECKOUT_INCOMPLETE;
+    struct source_checkout_loaded loaded;
+    source_checkout_loaded_init(&loaded);
+    enum vcs_source_package_checkout_result result =
+        source_checkout_manifest(store, package_root, &loaded);
+    int lane_index = result == VCS_SOURCE_PACKAGE_CHECKOUT_OK
+        ? source_checkout_file_index(
+              &loaded.package, VCS_SOURCE_PACKAGE_LANE_PATH) : -1;
+    int authority_index = result == VCS_SOURCE_PACKAGE_CHECKOUT_OK
+        ? source_checkout_file_index(
+              &loaded.package, VCS_SOURCE_PACKAGE_AUTHORITY_PATH) : -1;
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK &&
+        (lane_index < 0 || authority_index < 0 ||
+         loaded.package.files[lane_index].size != VCS_ZCODE_LANE_WIRE_BYTES ||
+         loaded.package.files[authority_index].size == 0 ||
+         loaded.package.files[authority_index].size >
+             VCS_ZCODE_ACCEPTED_WORK_BUNDLE_MAX_BYTES))
+        result = VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+    uint8_t *lane_wire = NULL;
+    size_t lane_wire_len = 0;
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK &&
+        !source_checkout_read_file(
+            store, package_root, &loaded.package, (size_t)lane_index,
+            &lane_wire, &lane_wire_len))
+        result = VCS_SOURCE_PACKAGE_CHECKOUT_CHUNK;
+    struct vcs_zcode_lane_receipt_v1 lane;
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK &&
+        (vcs_zcode_lane_receipt_parse(lane_wire, lane_wire_len, &lane) !=
+             VCS_ZCODE_DEV_OK ||
+         lane.lane != VCS_ZCODE_LANE_PROVEN ||
+         vcs_zcode_lane_receipt_id(&lane, accepted_work_root) !=
+             VCS_ZCODE_DEV_OK))
+        result = VCS_SOURCE_PACKAGE_CHECKOUT_SOURCE;
+    if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK)
+        memcpy(source_root, lane.source_root, 32);
+    else {
+        memset(source_root, 0, 32);
+        memset(accepted_work_root, 0, 32);
+    }
+    free(lane_wire);
+    source_checkout_loaded_free(&loaded);
+    return result;
+}
+
+enum vcs_source_package_checkout_result
+vcs_source_package_reconstruct_verify(
+    struct vcs_package_store *store, const uint8_t package_root[32],
+    uint8_t source_root_out[32], uint8_t accepted_work_root_out[32],
+    struct vcs_source_package_checkout_metrics *metrics)
+{
+    if (source_root_out) memset(source_root_out, 0, 32);
+    if (accepted_work_root_out) memset(accepted_work_root_out, 0, 32);
+    if (metrics) memset(metrics, 0, sizeof(*metrics));
+    if (!store || !package_root || !source_root_out ||
+        !accepted_work_root_out)
+        return VCS_SOURCE_PACKAGE_CHECKOUT_NULL;
+    uint8_t source_root[32], accepted_work_root[32];
+    enum vcs_source_package_checkout_result result =
+        source_package_identity_discover(
+            store, package_root, source_root, accepted_work_root);
+    if (result != VCS_SOURCE_PACKAGE_CHECKOUT_OK)
+        return result;
+
+    char scratch[] = "/tmp/zcl-source-reconstruct.XXXXXX";
+    if (!mkdtemp(scratch))
+        return VCS_SOURCE_PACKAGE_CHECKOUT_DESTINATION;
+    char workspace[SOURCE_CHECKOUT_PATH_MAX];
+    char destination[SOURCE_CHECKOUT_PATH_MAX];
+    int wn = snprintf(workspace, sizeof(workspace), "%s/zvcs", scratch);
+    int dn = snprintf(destination, sizeof(destination), "%s/source", scratch);
+    bool dirs = wn > 0 && (size_t)wn < sizeof(workspace) &&
+        dn > 0 && (size_t)dn < sizeof(destination) &&
+        zcl_mkdir_p(workspace, 0700).ok &&
+        zcl_mkdir_p(destination, 0700).ok;
+    struct vcs_source_package_checkout_metrics checked;
+    if (dirs)
+        result = vcs_source_package_checkout_accepted(
+            store, package_root, source_root, accepted_work_root,
+            workspace, destination, &checked);
+    else
+        result = VCS_SOURCE_PACKAGE_CHECKOUT_DESTINATION;
+    struct zcl_result removed = zcl_tree_remove(scratch);
+    if (!removed.ok && result == VCS_SOURCE_PACKAGE_CHECKOUT_OK)
+        result = VCS_SOURCE_PACKAGE_CHECKOUT_DESTINATION;
+    if (result != VCS_SOURCE_PACKAGE_CHECKOUT_OK)
+        return result;
+    memcpy(source_root_out, source_root, 32);
+    memcpy(accepted_work_root_out, accepted_work_root, 32);
+    if (metrics) *metrics = checked;
+    return VCS_SOURCE_PACKAGE_CHECKOUT_OK;
 }

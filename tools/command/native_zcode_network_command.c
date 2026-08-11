@@ -16,6 +16,7 @@
 #include "vcs/zcode_dht.h"
 #include "vcs/zcode_dht_identity.h"
 #include "vcs/zcode_dht_service.h"
+#include "vcs/source_bundle.h"
 #include "json/json.h"
 
 #include <errno.h>
@@ -630,6 +631,164 @@ void zcl_native_handle_zcode_network_storage_ack(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply) {
   zdn_forward(request, reply, "zcode_dht_storage_ack");
+}
+
+void zcl_native_handle_zcode_package_source_reproduce(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply) {
+  if (!request || !reply)
+    return;
+  const char *mode = zdn_str(request->input, "mode");
+  const char *root_hex = zdn_str(request->input, "root");
+  const char *namespace_name = zdn_str(request->input, "namespace");
+  uint8_t root[32];
+  if (!mode || (strcmp(mode, "plan") != 0 && strcmp(mode, "commit") != 0) ||
+      !root_hex || strlen(root_hex) != 64 ||
+      !zcl_hex_decode_lower(root_hex, root, sizeof(root))) {
+    zdn_fail(reply, "BAD_SOURCE_REPRODUCTION_INPUT", "normalize",
+             "mode=plan|commit and one canonical lowercase package root are required",
+             "zcode.package.source.reproduce");
+    return;
+  }
+  if (!namespace_name || !namespace_name[0])
+    namespace_name = "zclassic23.source";
+
+  if (strcmp(mode, "plan") == 0) {
+    struct json_value fetch_input;
+    json_init(&fetch_input);
+    json_set_object(&fetch_input);
+    json_push_kv_str(&fetch_input, "root", root_hex);
+    json_push_kv_str(&fetch_input, "namespace", namespace_name);
+    const char *datadir = zdn_str(request->input, "datadir");
+    if (datadir && datadir[0])
+      json_push_kv_str(&fetch_input, "datadir", datadir);
+    json_push_kv_int(&fetch_input, "maximum_bytes",
+                     VCS_SOURCE_BUNDLE_MAX_SOURCE_BYTES);
+    struct zcl_command_request fetch_request = *request;
+    fetch_request.input = &fetch_input;
+    struct zcl_command_reply fetch;
+    zcl_command_reply_init(&fetch, "zcl.zcode_package_fetch.v1");
+    zcl_native_handle_zcode_package_fetch(&fetch_request, &fetch);
+    json_free(&fetch_input);
+    if (fetch.exit_code != ZCL_COMMAND_EXIT_OK) {
+      zcl_command_reply_fail(
+          reply, fetch.status, fetch.exit_code,
+          fetch.error.code[0] ? fetch.error.code : "SOURCE_FETCH_FAILED",
+          fetch.error.phase[0] ? fetch.error.phase : "fetch",
+          fetch.error.retryable, false,
+          fetch.error.message[0] ? fetch.error.message
+                                 : "source package fetch failed",
+          fetch.error.evidence);
+      zcl_command_reply_free(&fetch);
+      return;
+    }
+    const char *fetch_result = json_get_str(json_get(&fetch.data, "fetch_result"));
+    if (!fetch_result)
+      fetch_result = json_get_str(json_get(&fetch.data, "result"));
+    bool complete = json_get_bool_or(&fetch.data, "already_complete", false) ||
+        (fetch_result && strcmp(fetch_result, "already-complete") == 0);
+    zcl_command_reply_free(&fetch);
+    if (!complete) {
+      char retry[320];
+      int n = snprintf(
+          retry, sizeof(retry),
+          "zclassic23 zcode package source reproduce --input='"
+          "{\"mode\":\"plan\",\"root\":\"%s\","
+          "\"namespace\":\"%s\"}'",
+          root_hex, namespace_name);
+      json_push_kv_str(&reply->data, "schema",
+                       "zcl.zcode_source_reproduce.v1");
+      json_push_kv_str(&reply->data, "status", "FETCH_PENDING");
+      json_push_kv_str(&reply->data, "package_root", root_hex);
+      json_push_kv_bool(&reply->data, "network_called", true);
+      json_push_kv_bool(&reply->data, "reconstructed", false);
+      json_push_kv_bool(&reply->data, "evidence_signed", false);
+      json_push_kv_str(&reply->data, "blocker",
+                       "authenticated_package_fetch_incomplete");
+      if (n > 0 && (size_t)n < sizeof(retry))
+        json_push_kv_str(&reply->data, "next_command", retry);
+      return;
+    }
+  }
+
+  struct json_value normalized;
+  json_init(&normalized);
+  json_set_object(&normalized);
+  json_push_kv_str(&normalized, "mode", mode);
+  json_push_kv_str(&normalized, "namespace", namespace_name);
+  json_push_kv_str(&normalized, "transport_root", root_hex);
+  uint64_t sequence = 0, not_before = 0, expiry = 0;
+  bool present = false;
+  if (!zdn_u64(request->input, "sequence", &sequence, &present) ||
+      (strcmp(mode, "commit") == 0 && !present)) {
+    json_free(&normalized);
+    zdn_fail(reply, "BAD_SOURCE_REPRODUCTION_SEQUENCE", "normalize",
+             "commit requires the sequence returned by plan",
+             "zcode.package.source.reproduce");
+    return;
+  }
+  if (!present) sequence = (uint64_t)platform_time_wall_unix();
+  if (!zdn_u64(request->input, "not_before", &not_before, &present) ||
+      (strcmp(mode, "commit") == 0 && !present)) {
+    json_free(&normalized);
+    zdn_fail(reply, "BAD_SOURCE_REPRODUCTION_WINDOW", "normalize",
+             "commit requires the not_before returned by plan",
+             "zcode.package.source.reproduce");
+    return;
+  }
+  if (!present) not_before = (uint64_t)platform_time_wall_unix();
+  if (!zdn_u64(request->input, "expiry", &expiry, &present) ||
+      (strcmp(mode, "commit") == 0 && !present)) {
+    json_free(&normalized);
+    zdn_fail(reply, "BAD_SOURCE_REPRODUCTION_WINDOW", "normalize",
+             "commit requires the expiry returned by plan",
+             "zcode.package.source.reproduce");
+    return;
+  }
+  if (!present && not_before <= UINT64_MAX - 3600u)
+    expiry = not_before + 3600u;
+  json_push_kv_int(&normalized, "sequence", (int64_t)sequence);
+  json_push_kv_int(&normalized, "not_before", (int64_t)not_before);
+  json_push_kv_int(&normalized, "expiry", (int64_t)expiry);
+  const char *plan_token = zdn_str(request->input, "plan_token");
+  if (strcmp(mode, "commit") == 0 && plan_token)
+    json_push_kv_str(&normalized, "plan_token", plan_token);
+  struct zcl_command_request forwarded = *request;
+  forwarded.input = &normalized;
+  zdn_forward(&forwarded, reply, "zcode_dht_source_reproduction_ack");
+  if (reply->exit_code == ZCL_COMMAND_EXIT_OK) {
+    const struct json_value *record = json_get(&reply->data, "record");
+    const char *source_root = record
+        ? json_get_str(json_get(record, "semantic_root")) : NULL;
+    json_push_kv_str(&reply->data, "schema",
+                     "zcl.zcode_source_reproduce.v1");
+    json_push_kv_str(&reply->data, "status",
+                     strcmp(mode, "commit") == 0
+                         ? "SOURCE_REPRODUCTION_PUBLISHED"
+                         : "SOURCE_REPRODUCTION_PROVEN");
+    json_push_kv_str(&reply->data, "package_root", root_hex);
+    if (source_root)
+      json_push_kv_str(&reply->data, "source_tree_root", source_root);
+    json_push_kv_bool(&reply->data, "reconstructed", true);
+    json_push_kv_bool(&reply->data, "evidence_signed", true);
+    json_push_kv_bool(&reply->data, "physical_independence_attested", false);
+    if (strcmp(mode, "plan") == 0) {
+      const char *token = json_get_str(json_get(&reply->data, "plan_token"));
+      struct json_value commit;
+      json_init(&commit);
+      json_set_object(&commit);
+      json_push_kv_str(&commit, "mode", "commit");
+      json_push_kv_str(&commit, "root", root_hex);
+      json_push_kv_str(&commit, "namespace", namespace_name);
+      json_push_kv_int(&commit, "sequence", (int64_t)sequence);
+      json_push_kv_int(&commit, "not_before", (int64_t)not_before);
+      json_push_kv_int(&commit, "expiry", (int64_t)expiry);
+      if (token) json_push_kv_str(&commit, "plan_token", token);
+      json_push_kv(&reply->data, "commit_input", &commit);
+      json_free(&commit);
+    }
+  }
+  json_free(&normalized);
 }
 
 void zcl_native_handle_zcode_network_replication(

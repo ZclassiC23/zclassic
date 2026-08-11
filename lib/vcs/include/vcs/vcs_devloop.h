@@ -93,6 +93,7 @@ enum vcs_devloop_publication_phase {
     VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED = 6,
     VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED = 7,
     VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED = 8,
+    VCS_DEVLOOP_PUBLICATION_PHASE_SOURCE_REPRODUCED = 9,
 };
 
 #define VCS_DEVLOOP_PUBLICATION_RECEIPT_VERSION 1u
@@ -227,8 +228,10 @@ bool vcs_devloop_publication_advance_workspace(
 struct vcs_devloop_publication_ack_target {
     char namespace_name[VCS_ZCODE_DHT_RECORD_NAMESPACE_BYTES];
     uint8_t transport_root[32];
+    uint8_t source_root[32];
     uint16_t existing_acks;
     bool already_acknowledged;
+    bool already_reproduced;
 };
 
 /* Persist one exact signed PROVIDER wire and append its canonical record root
@@ -258,6 +261,22 @@ bool vcs_devloop_publication_advance_storage_acks(
     const char *repo_root, const uint8_t job_root[32],
     const uint8_t *const record_wires[], const size_t record_wire_lengths[],
     size_t record_count,
+    const struct vcs_zcode_dht_record_verify_context *verify,
+    uint8_t receipt_root_out[32], bool *reused_out);
+
+/* Resolve a storage-acknowledged publication to its exact source/package
+ * selector, then bind one current SOURCE_REPRODUCTION_ACK only when its
+ * signer and declared owner group are distinct from the publishing provider
+ * and every accepted storage witness. This proves signed source
+ * reconstruction; the record format intentionally makes no physical-host
+ * claim. */
+bool vcs_devloop_publication_source_reproduction_target(
+    const char *repo_root, const uint8_t job_root[32],
+    const struct vcs_zcode_dht_record_verify_context *verify,
+    struct vcs_devloop_publication_ack_target *out);
+bool vcs_devloop_publication_advance_source_reproduction_ack(
+    const char *repo_root, const uint8_t job_root[32],
+    const uint8_t *record_wire, size_t record_wire_len,
     const struct vcs_zcode_dht_record_verify_context *verify,
     uint8_t receipt_root_out[32], bool *reused_out);
 

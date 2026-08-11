@@ -145,6 +145,8 @@ static enum vcs_zcode_dht_record_kind record_input_kind(
     return VCS_ZCODE_DHT_RECORD_POINTER;
   if (kind && strcmp(kind, "storage_ack") == 0)
     return VCS_ZCODE_DHT_RECORD_STORAGE_ACK;
+  if (kind && strcmp(kind, "source_reproduction_ack") == 0)
+    return VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK;
   return 0;
 }
 
@@ -189,7 +191,10 @@ static const char *record_kind_name(enum vcs_zcode_dht_record_kind kind) {
     return "provider";
   if (kind == VCS_ZCODE_DHT_RECORD_POINTER)
     return "pointer";
-  return kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK ? "storage_ack" : "unknown";
+  if (kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK)
+    return "storage_ack";
+  return kind == VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK
+             ? "source_reproduction_ack" : "unknown";
 }
 
 static void record_row_json(struct json_value *row,
@@ -313,14 +318,18 @@ static void record_result_json(
     bool include_wire = false;
     if (include_evidence_wires && !conflicted[i] && !superseded[i] &&
         (discovery->records[i].kind == VCS_ZCODE_DHT_RECORD_PROVIDER ||
-         discovery->records[i].kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK) &&
+         discovery->records[i].kind == VCS_ZCODE_DHT_RECORD_STORAGE_ACK ||
+         discovery->records[i].kind ==
+             VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK) &&
         evidence_wire_count < RECORD_PUBLIC_EVIDENCE_WIRES_MAX) {
       include_wire = true;
       for (uint32_t j = 0; j < evidence_wire_count; j++)
         if (memcmp(discovery->records[i].provider_node_id,
                    evidence_providers[j], 32) == 0 ||
-            (discovery->records[i].kind ==
-                 VCS_ZCODE_DHT_RECORD_STORAGE_ACK &&
+            ((discovery->records[i].kind ==
+                  VCS_ZCODE_DHT_RECORD_STORAGE_ACK ||
+              discovery->records[i].kind ==
+                  VCS_ZCODE_DHT_RECORD_SOURCE_REPRODUCTION_ACK) &&
              memcmp(discovery->records[i].owner_group,
                     evidence_groups[j], 32) == 0)) {
           include_wire = false;
