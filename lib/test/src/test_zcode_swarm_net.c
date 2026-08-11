@@ -37,6 +37,7 @@
 #include "chain/chainparams.h"
 #include "coins/coins_view.h"
 #include "core/serialize.h"
+#include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 #include "event/event.h"
 #include "net/fast_sync.h"
@@ -51,11 +52,21 @@
 #include "vcs/package_store.h"
 #include "vcs/package_swarm.h"
 #include "vcs/package_swarm_node.h"
+#include "vcs/source_package_checkout.h"
+#include "vcs/source_package_transport.h"
+#include "vcs/vcs.h"
+#include "vcs/vcs_object.h"
+#include "vcs/zcode_lane.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #define ZWN_CHECK(name, expr) do {                                       \
     if (expr) { printf("  zcode_swarm_net: %s... OK\n", (name)); }       \
@@ -135,6 +146,136 @@ static bool zwn_store_package(struct vcs_package_store *store,
             return false;
     }
     return true;
+}
+
+static bool zwn_store_source_transport(
+    struct vcs_package_store *store,
+    const struct vcs_source_package_transport *transport)
+{
+    uint8_t root[32];
+    if (!store || !transport ||
+        vcs_package_store_put_manifest(
+            store, transport->manifest_wire, transport->manifest_wire_len,
+            root) != VCS_PACKAGE_STORE_OK ||
+        memcmp(root, transport->package_root, 32) != 0)
+        return false;
+    size_t count = vcs_source_package_transport_file_count(transport);
+    for (size_t i = 0; i < count; i++) {
+        const char *path = NULL;
+        const uint8_t *bytes = NULL;
+        size_t len = 0;
+        if (!vcs_source_package_transport_file_at(
+                transport, i, &path, &bytes, &len))
+            return false;
+        uint32_t chunk = 0;
+        for (size_t off = 0; off < len; chunk++) {
+            size_t take = len - off;
+            if (take > VCS_PACKAGE_CHUNK_BYTES)
+                take = VCS_PACKAGE_CHUNK_BYTES;
+            if (vcs_package_store_put_chunk(
+                    store, root, path, chunk, bytes + off, take) !=
+                VCS_PACKAGE_STORE_OK)
+                return false;
+            off += take;
+        }
+    }
+    struct vcs_package_store_status status;
+    return vcs_package_store_package_status(store, root, &status) &&
+           status.complete;
+}
+
+static bool zwn_write_file(const char *root, const char *relative,
+                           const void *bytes, size_t len, mode_t mode)
+{
+    char path[1400];
+    int n = snprintf(path, sizeof(path), "%s/%s", root, relative);
+    if (!bytes || n <= 0 || (size_t)n >= sizeof(path))
+        return false;
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+                  mode);
+    if (fd < 0)
+        return false;
+    size_t off = 0;
+    while (off < len) {
+        ssize_t wrote = write(fd, (const uint8_t *)bytes + off, len - off);
+        if (wrote < 0 && errno == EINTR)
+            continue;
+        if (wrote <= 0)
+            break;
+        off += (size_t)wrote;
+    }
+    bool ok = off == len && fsync(fd) == 0;
+    if (close(fd) != 0)
+        ok = false;
+    return ok;
+}
+
+static bool zwn_compile_c23(const char *source, const char *binary)
+{
+    pid_t child = fork();
+    if (child < 0)
+        return false;
+    if (child == 0) {
+        char *const argv[] = {
+            (char *)"cc", (char *)"-std=c2x", (char *)"-O2",
+            (char *)"-fno-ident", (char *)"-Wl,--build-id=none",
+            (char *)source, (char *)"-o", (char *)binary, NULL,
+        };
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR)
+            return false;
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+static bool zwn_run_fixture_binary(const char *binary)
+{
+    pid_t child = fork();
+    if (child < 0)
+        return false;
+    if (child == 0) {
+        char *const argv[] = {(char *)binary, NULL};
+        execv(binary, argv);
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR)
+            return false;
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+static bool zwn_sha3_file(const char *path, uint8_t out[32])
+{
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        return false;
+    struct sha3_256_ctx hash;
+    sha3_256_init(&hash);
+    uint8_t buffer[16384];
+    bool ok = true;
+    for (;;) {
+        ssize_t got = read(fd, buffer, sizeof(buffer));
+        if (got < 0 && errno == EINTR)
+            continue;
+        if (got < 0) {
+            ok = false;
+            break;
+        }
+        if (got == 0)
+            break;
+        sha3_256_write(&hash, buffer, (size_t)got);
+    }
+    if (close(fd) != 0)
+        ok = false;
+    if (ok)
+        sha3_256_finalize(&hash, out);
+    return ok;
 }
 
 /* ── the loopback node: msg_processor + engine + store + book ───────── */
@@ -696,6 +837,163 @@ static int zwn_test_golden(enum zwn_golden_mode mode,
     return failures;
 }
 
+/* ── proven source carrier: peer-only checkout + reproducible build ── */
+
+static int zwn_t_sovereign_source_build(const struct chain_params *params)
+{
+    int failures = 0;
+    TEST("proven C23 source: two providers feed a fresh Git-free checkout "
+         "whose rebuilt binary matches the publisher SHA3") {
+        char publisher[512], consumer_cas[512], checkout[512];
+        char publisher_build[512], consumer_build[512];
+        test_make_tmpdir(publisher, sizeof(publisher),
+                         "zcode_swarm_net", "source-publisher");
+        test_make_tmpdir(consumer_cas, sizeof(consumer_cas),
+                         "zcode_swarm_net", "source-consumer-cas");
+        test_make_tmpdir(checkout, sizeof(checkout),
+                         "zcode_swarm_net", "source-checkout");
+        test_make_tmpdir(publisher_build, sizeof(publisher_build),
+                         "zcode_swarm_net", "source-publisher-build");
+        test_make_tmpdir(consumer_build, sizeof(consumer_build),
+                         "zcode_swarm_net", "source-consumer-build");
+        char path[1400];
+        ASSERT(snprintf(path, sizeof(path), "%s/src", publisher) > 0);
+        ASSERT(mkdir(path, 0700) == 0);
+        ASSERT(snprintf(path, sizeof(path), "%s/vendor", publisher) > 0);
+        ASSERT(mkdir(path, 0700) == 0);
+        ASSERT(snprintf(path, sizeof(path), "%s/vendor/.cache", publisher) >
+               0);
+        ASSERT(mkdir(path, 0700) == 0);
+        static const char license[] = "Apache-2.0\n";
+        static const char program[] =
+            "#include <stdint.h>\n"
+            "static uint32_t mix(uint32_t x) { return (x << 5) ^ (x >> 3); }\n"
+            "int main(void) { return mix(UINT32_C(23)) == 738 ? 0 : 1; }\n";
+        ASSERT(zwn_write_file(publisher, "LICENSE", license,
+                              sizeof(license) - 1u, 0644));
+        ASSERT(zwn_write_file(publisher, "src/main.c", program,
+                              sizeof(program) - 1u, 0644));
+        static const char offline[] = "hermetic-offline-input\n";
+        for (size_t i = 0;
+             i < vcs_source_package_offline_input_count(); i++)
+            ASSERT(zwn_write_file(
+                publisher, vcs_source_package_offline_input_path(i),
+                offline, sizeof(offline) - 1u, 0600));
+
+        uint8_t source_root[32];
+        ASSERT(vcs_tree_capture_path(publisher, source_root) == VCS_OK);
+        struct vcs_zcode_lane_receipt_v1 lane = {
+            .schema_version = VCS_ZCODE_DEV_VERSION,
+            .lane = VCS_ZCODE_LANE_PROVEN,
+            .created_unix = 1500,
+        };
+        memcpy(lane.source_root, source_root, 32);
+        memset(lane.task_root, 0x11, 32);
+        memset(lane.candidate_root, 0x22, 32);
+        memset(lane.proof_policy_root, 0x33, 32);
+        memset(lane.proof_set_root, 0x44, 32);
+        memset(lane.prior_receipt_root, 0x55, 32);
+        uint8_t seed[32], secret[32], signer[32];
+        memset(seed, 0x66, sizeof(seed));
+        ed25519_keypair(signer, secret, seed);
+        ASSERT(vcs_zcode_lane_receipt_seal(&lane, secret, signer) ==
+               VCS_ZCODE_DEV_OK);
+        memset(secret, 0, sizeof(secret));
+        uint8_t lane_wire[VCS_ZCODE_LANE_WIRE_BYTES];
+        ASSERT(vcs_zcode_lane_receipt_serialize(&lane, lane_wire) ==
+               VCS_ZCODE_DEV_OK);
+        struct vcs_source_package_transport transport;
+        vcs_source_package_transport_init(&transport);
+        ASSERT(vcs_source_package_transport_build(
+            publisher, source_root, signer, lane_wire, sizeof(lane_wire),
+            &transport));
+
+        struct zwn_node a, b, a2;
+        ASSERT(zwn_node_init(&a, "sa", params));
+        ASSERT(zwn_node_init(&a2, "sa2", params));
+        ASSERT(zwn_node_init(&b, "sb", params));
+        ASSERT(zwn_store_source_transport(a.store, &transport));
+        ASSERT(zwn_store_source_transport(a2.store, &transport));
+        struct zwn_link a_b, b_a, a2_b, b_a2;
+        ASSERT(zwn_link(&a, &a_b, 5, 6, 7, 8, "source-b"));
+        ASSERT(zwn_link(&b, &b_a, 1, 2, 3, 4, "source-a"));
+        ASSERT(zwn_link(&a2, &a2_b, 9, 9, 9, 9, "source-b"));
+        ASSERT(zwn_link(&b, &b_a2, 8, 8, 8, 8, "source-a2"));
+        ASSERT(zwn_meet_side(&a, &a_b));
+        ASSERT(zwn_meet_side(&b, &b_a));
+        ASSERT(zwn_meet_side(&a2, &a2_b));
+        ASSERT(zwn_meet_side(&b, &b_a2));
+        ASSERT(vcs_swarm_engine_fetch(
+                   b.engine, transport.package_root, ZWN_DAY, ++b.now) ==
+               VCS_SWARM_FETCH_OK);
+        enum vcs_swarm_download_state state = VCS_SWARM_DL_INACTIVE;
+        bool terminal = false;
+        for (int i = 0; i < 600 && !terminal; i++) {
+            ASSERT(zwn_round(&a_b, &b_a, params->pchMessageStart));
+            ASSERT(zwn_round(&a2_b, &b_a2, params->pchMessageStart));
+            terminal = zwn_download_done(
+                &b, transport.package_root, &state);
+        }
+        ASSERT(terminal && state == VCS_SWARM_DL_COMPLETE);
+
+        ASSERT(vcs_object_store_init(consumer_cas));
+        ASSERT(access(checkout, F_OK) == 0);
+        ASSERT(snprintf(path, sizeof(path), "%s/.git", checkout) > 0);
+        ASSERT(access(path, F_OK) != 0 && errno == ENOENT);
+        struct vcs_source_package_checkout_metrics metrics;
+        ASSERT(vcs_source_package_checkout(
+                   b.store, transport.package_root, source_root, signer,
+                   consumer_cas, checkout, &metrics) ==
+               VCS_SOURCE_PACKAGE_CHECKOUT_OK);
+        ASSERT(metrics.source.file_count == 2);
+        ASSERT(metrics.offline_input_files ==
+               vcs_source_package_offline_input_count());
+        ASSERT(metrics.carrier_files ==
+               vcs_source_package_transport_file_count(&transport));
+
+        char publisher_source[1400], consumer_source[1400];
+        char publisher_binary[1400], consumer_binary[1400];
+        ASSERT(snprintf(publisher_source, sizeof(publisher_source),
+                        "%s/src/main.c", publisher) > 0);
+        ASSERT(snprintf(consumer_source, sizeof(consumer_source),
+                        "%s/src/main.c", checkout) > 0);
+        ASSERT(snprintf(publisher_binary, sizeof(publisher_binary),
+                        "%s/program", publisher_build) > 0);
+        ASSERT(snprintf(consumer_binary, sizeof(consumer_binary),
+                        "%s/program", consumer_build) > 0);
+        struct stat publisher_stat, consumer_stat;
+        ASSERT(stat(publisher_source, &publisher_stat) == 0);
+        ASSERT(stat(consumer_source, &consumer_stat) == 0);
+        ASSERT((publisher_stat.st_mode & 0777) ==
+               (consumer_stat.st_mode & 0777));
+        ASSERT(publisher_stat.st_size == consumer_stat.st_size);
+        ASSERT(zwn_compile_c23(publisher_source, publisher_binary));
+        ASSERT(zwn_compile_c23(consumer_source, consumer_binary));
+        ASSERT(zwn_run_fixture_binary(publisher_binary));
+        ASSERT(zwn_run_fixture_binary(consumer_binary));
+        uint8_t publisher_sha3[32], consumer_sha3[32];
+        ASSERT(zwn_sha3_file(publisher_binary, publisher_sha3));
+        ASSERT(zwn_sha3_file(consumer_binary, consumer_sha3));
+        ASSERT(memcmp(publisher_sha3, consumer_sha3, 32) == 0);
+
+        zwn_link_free(&a_b);
+        zwn_link_free(&b_a);
+        zwn_link_free(&a2_b);
+        zwn_link_free(&b_a2);
+        zwn_node_free(&a);
+        zwn_node_free(&a2);
+        zwn_node_free(&b);
+        vcs_source_package_transport_free(&transport);
+        test_rm_rf_recursive(publisher);
+        test_rm_rf_recursive(consumer_cas);
+        test_rm_rf_recursive(checkout);
+        test_rm_rf_recursive(publisher_build);
+        test_rm_rf_recursive(consumer_build);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 2: the malicious server ────────────────────────────────────────── */
 
 static int zwn_t_malicious(const struct chain_params *params)
@@ -933,6 +1231,7 @@ int test_zcode_swarm_net(void)
     failures += zwn_test_golden(ZWN_GOLDEN_PLAIN, params);
     failures += zwn_test_golden(ZWN_GOLDEN_RESTART, params);
     failures += zwn_test_golden(ZWN_GOLDEN_DISCONNECT, params);
+    failures += zwn_t_sovereign_source_build(params);
     failures += zwn_t_malicious(params);
     failures += zwn_t_corrupt_local_repair(params);
     failures += zwn_t_unrequested(params);
