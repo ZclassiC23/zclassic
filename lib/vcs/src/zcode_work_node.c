@@ -73,6 +73,7 @@ const char *vcs_zcode_work_node_result_string(
     case VCS_ZCODE_WORK_NODE_MALFORMED: return "malformed-frame";
     case VCS_ZCODE_WORK_NODE_UNKNOWN_PEER: return "unknown-peer";
     case VCS_ZCODE_WORK_NODE_CAPABILITY_STALE: return "capability-stale";
+    case VCS_ZCODE_WORK_NODE_LEASE_EXPIRED: return "work-lease-expired";
     case VCS_ZCODE_WORK_NODE_CAPABILITY_MISMATCH: return "capability-mismatch";
     case VCS_ZCODE_WORK_NODE_REPLAY: return "replayed-work-frame";
     case VCS_ZCODE_WORK_NODE_UNREQUESTED: return "unrequested-result";
@@ -274,6 +275,25 @@ bool vcs_zcode_work_node_peer_capability(
     if (ok) *out = node->peers[slot].capability;
     pthread_mutex_unlock(&node->lock);
     return ok;
+}
+
+size_t vcs_zcode_work_node_capable_peers(
+    struct vcs_zcode_work_node *node, int64_t now, uint64_t *peers,
+    struct vcs_zcode_work_capability_v1 *capabilities, size_t max)
+{
+    if (!node || !peers || !capabilities || max == 0 || now < 0) return 0;
+    pthread_mutex_lock(&node->lock);
+    size_t count = 0;
+    for (size_t i = 0; i < VCS_ZCODE_WORK_NODE_MAX_PEERS && count < max; i++) {
+        if (!node->peers[i].used || !node->peers[i].has_capability ||
+            now >= node->peers[i].capability.expires_unix)
+            continue;
+        peers[count] = node->peers[i].id;
+        capabilities[count] = node->peers[i].capability;
+        count++;
+    }
+    pthread_mutex_unlock(&node->lock);
+    return count;
 }
 
 static bool work_capability_allows(
@@ -496,6 +516,8 @@ static enum vcs_zcode_work_node_result work_handle_result(
     struct work_track *track = work_find_track(
         node, peer, result_row->request_id, false);
     if (!track) return VCS_ZCODE_WORK_NODE_UNREQUESTED;
+    if (now >= track->request.deadline_unix)
+        return VCS_ZCODE_WORK_NODE_LEASE_EXPIRED;
     if (track->finished || track->cancelled)
         return VCS_ZCODE_WORK_NODE_REPLAY;
     if (!node->peers[peer_at].has_capability ||

@@ -12,6 +12,7 @@
 #include "models/database.h"
 #include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
+#include "services/build_fabric_async.h"
 #include "services/build_fabric_worker.h"
 #include "services/zcode_agent_context_service.h"
 #include "services/zcode_lane_service.h"
@@ -767,6 +768,7 @@ void zcl_native_handle_zcode_improve(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
     if (!request || !reply) return;
+    int64_t submit_started_us = platform_time_monotonic_us();
     const char *workspace_arg = zdev_str(request->input, "workspace");
     const char *datadir = zdev_str(request->input, "datadir");
     if (!datadir || !datadir[0]) datadir = zcl_native_command_datadir();
@@ -1201,11 +1203,11 @@ void zcl_native_handle_zcode_improve(
     struct db_build_job job = {0};
     struct db_build_action action = {0};
     int64_t remote_peer = zdev_int(request->input, "remote_peer", 0);
-    uint8_t context_root[32] = {0};
-    uint8_t context_action_root[32] = {0};
-    bool remote_requested = remote_peer > 0;
-    bool context_ready = false;
-    const char *context_reason = "package store unavailable";
+    if (remote_peer < 0) {
+        zdev_fail(reply, "BAD_REMOTE_PEER",
+                  "remote_peer must be zero for discovery or a positive peer hint");
+        return;
+    }
     (void)snprintf(job.source_sha256, sizeof(job.source_sha256), "%s",
                    source_sha256);
     zcl_hex_encode(candidate.candidate_source_root, 32, job.source_cas_sha3);
@@ -1246,72 +1248,10 @@ void zcl_native_handle_zcode_improve(
     (void)snprintf(action.resource_policy, sizeof(action.resource_policy),
                    "%s", resource);
     action.created_at = action.updated_at = now;
-    if (remote_requested) {
-        struct vcs_package_store *context_store = vcs_package_store_global();
-        uint8_t *context_input = NULL;
-        size_t context_input_len = 0;
-        if (context_store &&
-            vcs_object_load_raw(workspace, input_root, &context_input,
-                                &context_input_len) == 0) {
-            struct vcs_zcode_work_context_v1 context;
-            vcs_zcode_work_context_init(&context);
-            memcpy(context.source_sha256, source_sha_check, 32);
-            (void)snprintf(context.profile, sizeof(context.profile), "%s",
-                           job.profile);
-            context.task = task;
-            context.candidate = candidate;
-            context.proof_policy = policy;
-            context.fixed_input = context_input;
-            context.fixed_input_len = context_input_len;
-            enum vcs_zcode_candidate_bundle_result bundled =
-                vcs_zcode_candidate_bundle_export(
-                    workspace, &task, &candidate,
-                    &context.candidate_authority,
-                    &context.candidate_authority_len);
-            enum vcs_zcode_task_authority_result task_bundled =
-                bundled == VCS_ZCODE_CANDIDATE_BUNDLE_OK
-                    ? vcs_zcode_task_authority_bundle_export(
-                          workspace, &task, &context.task_authority,
-                          &context.task_authority_len)
-                    : VCS_ZCODE_TASK_AUTHORITY_CAS;
-            enum vcs_zcode_work_context_result packed =
-                bundled == VCS_ZCODE_CANDIDATE_BUNDLE_OK &&
-                task_bundled == VCS_ZCODE_TASK_AUTHORITY_OK
-                    ? vcs_zcode_work_context_put_for_kind_with_candidate(
-                          context_store, &context, action_kind, now,
-                          workspace, context_root, context_action_root)
-                    : VCS_ZCODE_WORK_CONTEXT_STALE;
-            context.fixed_input = NULL;
-            vcs_zcode_work_context_free(&context);
-            free(context_input);
-            if (packed == VCS_ZCODE_WORK_CONTEXT_OK) {
-                context_ready = true;
-                zcl_hex_encode(context_root, 32,
-                               action.context_root_sha3);
-            } else {
-                context_reason = bundled != VCS_ZCODE_CANDIDATE_BUNDLE_OK
-                    ? vcs_zcode_candidate_bundle_result_string(bundled)
-                    : task_bundled != VCS_ZCODE_TASK_AUTHORITY_OK
-                    ? vcs_zcode_task_authority_result_string(task_bundled)
-                    : vcs_zcode_work_context_result_string(packed);
-            }
-        } else if (context_store) {
-            free(context_input);
-            context_reason = "local input CAS could not be read";
-        }
-    }
     if (!build_fabric_action_id(&job, &action, action.action_id).ok ||
         !build_fabric_job_id(&job, action.action_id, job.job_id).ok) {
         zdev_fail(reply, "ACTION_ID_FAILED", "fixed build action identity refused");
         return;
-    }
-    uint8_t planned_action_root[32];
-    if (context_ready &&
-        (!zcl_hex_decode_lower(action.action_id, planned_action_root, 32) ||
-         memcmp(planned_action_root, context_action_root, 32) != 0)) {
-        context_ready = false;
-        context_reason = "context action identity mismatch";
-        action.context_root_sha3[0] = '\0';
     }
     (void)snprintf(action.job_id, sizeof(action.job_id), "%s", job.job_id);
     char db_path[ZDEV_PATH_MAX];
@@ -1338,14 +1278,24 @@ void zcl_native_handle_zcode_improve(
     memset(frontier_secret, 0, sizeof(frontier_secret));
     struct zcl_result submitted = admitted.ok
         ? build_fabric_submit(&ndb, job.job_id, now) : admitted;
+    struct db_build_proof_event proof_request = {0};
+    bool proof_request_created = false;
+    struct zcl_result proof_requested = submitted.ok
+        ? build_fabric_proof_request(
+              &ndb, action.action_id, workspace, (uint64_t)remote_peer, now,
+              &proof_request, &proof_request_created)
+        : submitted;
+    int64_t local_submit_us = platform_time_monotonic_us() - submit_started_us;
     node_db_close(&ndb);
-    if (!planned.ok || !admitted.ok || !submitted.ok) {
+    if (!planned.ok || !admitted.ok || !submitted.ok || !proof_requested.ok) {
         const char *code = !planned.ok ? "ZBUILD_PLAN_FAILED" :
             !admitted.ok ? "FRONTIER_ADMISSION_FAILED" :
-            "ZBUILD_SUBMIT_FAILED";
+            !submitted.ok ? "ZBUILD_SUBMIT_FAILED" :
+            "ASYNC_PROOF_REQUEST_FAILED";
         zdev_fail(reply, code,
                   !planned.ok ? planned.message :
-                  !admitted.ok ? admitted.message : submitted.message);
+                  !admitted.ok ? admitted.message :
+                  !submitted.ok ? submitted.message : proof_requested.message);
         return;
     }
     zdev_push_root(&reply->data, "task_root", task_root);
@@ -1384,81 +1334,18 @@ void zcl_native_handle_zcode_improve(
     if (agent_context_ready)
         zdev_push_agent_context(&reply->data, &agent_context);
     (void)json_push_kv_str(&reply->data, "mode", "admit");
-    if (remote_requested) {
-        const char *remote_outcome = "LOCAL_FALLBACK";
-        struct vcs_zcode_work_node *work = vcs_zcode_work_node_global();
-        struct vcs_package_store *store = vcs_package_store_global();
-        struct vcs_package_store_status package_status;
-        struct vcs_zcode_work_capability_v1 capability;
-        if (context_ready && work && store &&
-            vcs_package_store_package_status(store, context_root,
-                                              &package_status) &&
-            package_status.complete &&
-            vcs_zcode_work_node_peer_capability(
-                work, (uint64_t)remote_peer, now, &capability)) {
-            struct vcs_zcode_work_request_v1 remote = {
-                .target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3,
-                .work_kind = work_kind,
-            };
-            memcpy(remote.task_root, task_root, 32);
-            memcpy(remote.candidate_root, candidate_root, 32);
-            (void)zcl_hex_decode_lower(action.action_id,
-                                       remote.action_root, 32);
-            memcpy(remote.input_root, input_root, 32);
-            memcpy(remote.context_root, context_root, 32);
-            memcpy(remote.proof_policy_root, policy_root, 32);
-            memcpy(remote.toolchain_capsule_root,
-                   task.toolchain_capsule_root, 32);
-            remote.max_cpu_seconds = task.max_cpu_seconds <
-                    capability.max_cpu_seconds
-                ? task.max_cpu_seconds : capability.max_cpu_seconds;
-            remote.max_memory_bytes = task.max_memory_bytes <
-                    capability.max_memory_bytes
-                ? task.max_memory_bytes : capability.max_memory_bytes;
-            remote.max_output_bytes = task.max_output_bytes <
-                    capability.max_output_bytes
-                ? task.max_output_bytes : capability.max_output_bytes;
-            int64_t lease_end = now + capability.max_lease_seconds;
-            remote.deadline_unix = lease_end < task.expires_unix
-                ? lease_end : task.expires_unix - 1;
-            struct sha3_256_ctx request_sha;
-            uint8_t request_digest[32];
-            sha3_256_init(&request_sha);
-            static const char request_domain[] =
-                "zcl.zcode.local_request_id.v1";
-            sha3_256_write(&request_sha, (const uint8_t *)request_domain,
-                           sizeof(request_domain));
-            sha3_256_write(&request_sha, remote.action_root, 32);
-            sha3_256_write(&request_sha, remote.task_root, 32);
-            uint8_t now_le[8];
-            zcl_write_i64_le(now_le, now);
-            sha3_256_write(&request_sha, now_le, sizeof(now_le));
-            sha3_256_finalize(&request_sha, request_digest);
-            remote.request_id = zcl_read_u64_le(request_digest);
-            if (remote.request_id == 0) remote.request_id = 1;
-            struct db_build_worker requester_identity;
-            uint8_t requester_secret[32], requester_key[32];
-            if (build_fabric_worker_identity_load(
-                    datadir, &requester_identity, requester_secret,
-                    requester_key).ok &&
-                vcs_zcode_work_request_seal(
-                    &remote, requester_secret, requester_key) &&
-                vcs_zcode_work_node_submit(
-                    work, (uint64_t)remote_peer, &remote, now) ==
-                    VCS_ZCODE_WORK_NODE_OK) {
-                remote_outcome = "QUEUED_REMOTE";
-                (void)json_push_kv_int(&reply->data, "remote_request_id",
-                                       (int64_t)remote.request_id);
-            }
-            memset(requester_secret, 0, sizeof(requester_secret));
-        }
-        (void)json_push_kv_str(&reply->data, "remote_outcome", remote_outcome);
-        if (strcmp(remote_outcome, "LOCAL_FALLBACK") == 0)
-            (void)json_push_kv_str(&reply->data, "remote_reason",
-                context_ready
-                    ? "peer/capability unavailable; local queued action remains authoritative"
-                    : context_reason);
-    }
+    (void)json_push_kv_str(&reply->data, "async_proof_state",
+                           proof_request.state);
+    (void)json_push_kv_str(&reply->data, "async_proof_event_root",
+                           proof_request.event_root);
+    (void)json_push_kv_int(&reply->data, "remote_request_id",
+                           (int64_t)proof_request.request_id);
+    (void)json_push_kv_bool(&reply->data, "request_deduplicated",
+                            !proof_request_created);
+    (void)json_push_kv_int(&reply->data, "local_submit_us",
+                           local_submit_us < 0 ? 0 : local_submit_us);
+    (void)json_push_kv_str(&reply->data, "remote_outcome",
+                           "BACKGROUND_PENDING");
     (void)json_push_kv_str(
         &reply->data, "next",
         "an enabled local or P2P worker may produce the candidate-bound fixed-action receipt; evidence evaluation, explicit acceptance, and publication remain required");

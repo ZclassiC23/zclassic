@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: Supervision and diagnostics for build coordinator/worker runtime. */
+ * purpose: Supervision for equal-node requester and executor roles. */
 
 #ifndef ZCL_SERVICES_BUILD_FABRIC_RUNTIME_H
 #define ZCL_SERVICES_BUILD_FABRIC_RUNTIME_H

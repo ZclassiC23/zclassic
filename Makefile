@@ -2119,9 +2119,20 @@ t-fast-exact: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED)'
 
-.PHONY: zcode-development-acceptance sovereign-source-roundtrip
+.PHONY: zcode-development-acceptance zcode-async-proof-acceptance sovereign-source-roundtrip
 zcode-development-acceptance:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY=test_zcode_package_dev
+
+# Zero-wait development protocol acceptance. The exact groups jointly prove
+# three interchangeable signed work nodes, dead-peer retry/stale-result
+# refusal, the append-only requester ledger, and the user-facing local path.
+zcode-async-proof-acceptance: zclassic23 zcl-rpc
+	@$(MAKE) --no-print-directory t-fast-exact \
+	  ONLY='test_build_fabric,test_zcode_dev_objects,test_zcode_package_dev'
+	@$(MAKE) --no-print-directory check-vcs-no-git
+	@DHT_PACKAGEHOST=1 DHT_BUILDWORKERS=1 \
+	  DHT_AFTER_SPARSE_HOOK="$(CURDIR)/tools/dev/zcode_async_proof_acceptance_hook.sh" \
+	  bash tools/dev/zcode_dht_acceptance.sh
 
 # Hermetic P2P source-publication proof. The exact group emits one canonical
 # zcl.sovereign_source_roundtrip.v1 receipt only after workspace/release/

@@ -569,7 +569,8 @@ static struct zcl_result run_execute_action(
 }
 
 static bool run_admit(
-    const char *workspace, const char *candidate_workspace, const char *goal,
+    const char *workspace, const char *candidate_workspace,
+    const char *proof_datadir, const char *goal,
     const struct vcs_zcode_task_index_entry *entry,
     const struct vcs_zcode_task_context_entry *context_entry,
     const struct vcs_zcode_task_v1 *task,
@@ -579,11 +580,17 @@ static bool run_admit(
     struct zcl_command_reply *reply)
 {
     char datadir[ZWORK_RUN_PATH_MAX];
-    (void)snprintf(datadir, sizeof(datadir), "%s", candidate_workspace);
-    char *slash = strrchr(datadir, '/');
-    if (!slash) return false;
-    (void)snprintf(slash, (size_t)(datadir + sizeof(datadir) - slash),
-                   "/zbuild");
+    if (proof_datadir && proof_datadir[0]) {
+        int n = snprintf(datadir, sizeof(datadir), "%s", proof_datadir);
+        if (n <= 0 || (size_t)n >= sizeof(datadir))
+            return false;
+    } else {
+        (void)snprintf(datadir, sizeof(datadir), "%s", candidate_workspace);
+        char *slash = strrchr(datadir, '/');
+        if (!slash) return false;
+        (void)snprintf(slash, (size_t)(datadir + sizeof(datadir) - slash),
+                       "/zbuild");
+    }
     struct zcl_result made = zcl_mkdir_p(datadir, 0700);
     struct db_build_worker worker;
     uint8_t secret[32] = {0}, pubkey[32] = {0};
@@ -656,6 +663,14 @@ static bool run_admit(
         json_get(&inner.data, "candidate_source_root");
     const struct json_value *patch = json_get(&inner.data, "patch_root");
     const struct json_value *action = json_get(&inner.data, "action_id");
+    const struct json_value *proof_state =
+        json_get(&inner.data, "async_proof_state");
+    const struct json_value *proof_event =
+        json_get(&inner.data, "async_proof_event_root");
+    const struct json_value *proof_request =
+        json_get(&inner.data, "remote_request_id");
+    const struct json_value *submit_us =
+        json_get(&inner.data, "local_submit_us");
     struct db_build_receipt receipt;
     struct zcl_result executed = action && json_get_str(action)
         ? run_execute_action(workspace, datadir, json_get_str(action), &worker,
@@ -736,7 +751,8 @@ static bool run_admit(
          json_push_kv_str(&repair_packet, "prior_patch_root",
                           json_get_str(patch)) &&
          json_push_kv(&repair_packet, "diagnostic", &diagnostic));
-    bool ok = changed && candidate && patch && diagnostic_ok && expert_ok &&
+    bool ok = changed && candidate && patch && proof_state && proof_event &&
+        proof_request && submit_us && diagnostic_ok && expert_ok &&
         repair_packet_ok && receipt.work_receipt_sha3[0] &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
         json_push_kv_str(&reply->data, "state", passed ? "EVIDENCE_READY" :
@@ -748,6 +764,14 @@ static bool run_admit(
         json_push_kv_str(&reply->data, "patch_root", json_get_str(patch)) &&
         json_push_kv_str(&reply->data, "work_receipt_root",
                          receipt.work_receipt_sha3) &&
+        json_push_kv_str(&reply->data, "async_proof_state",
+                         json_get_str(proof_state)) &&
+        json_push_kv_str(&reply->data, "async_proof_event_root",
+                         json_get_str(proof_event)) &&
+        json_push_kv_int(&reply->data, "remote_request_id",
+                         json_get_int(proof_request)) &&
+        json_push_kv_int(&reply->data, "local_submit_us",
+                         json_get_int(submit_us)) &&
         json_push_kv_str(&reply->data, "build_result",
                          passed ? "passed" : "failed") &&
         json_push_kv_int(&reply->data, "compile_receipts",
@@ -788,6 +812,7 @@ void zcl_native_handle_zcode_work_run(
     const char *workspace_arg = run_str(request->input, "workspace");
     const char *work = run_str(request->input, "work");
     const char *adapter = run_str(request->input, "adapter");
+    const char *proof_datadir_arg = run_str(request->input, "datadir");
     if (!workspace_arg || !workspace_arg[0]) workspace_arg = ".";
     if (!adapter || !adapter[0]) adapter = "manual";
     bool codex_adapter = strcmp(adapter, "codex") == 0;
@@ -809,6 +834,14 @@ void zcl_native_handle_zcode_work_run(
         run_fail(reply, "BAD_WORKSPACE", "resolve",
                  "workspace must resolve to an existing directory", false,
                  false);
+        return;
+    }
+    char proof_datadir[ZWORK_RUN_PATH_MAX] = {0};
+    if (proof_datadir_arg && proof_datadir_arg[0] &&
+        !realpath(proof_datadir_arg, proof_datadir)) {
+        run_fail(reply, "BAD_DATADIR", "resolve",
+                 "datadir must resolve to an existing full-node data directory",
+                 false, false);
         return;
     }
     struct vcs_zcode_task_index *index = vcs_zcode_task_index_build(
@@ -918,7 +951,8 @@ void zcl_native_handle_zcode_work_run(
         }
         if (memcmp(candidate_root, materialize_root, 32) != 0) {
             bool handled = run_admit(
-                workspace, candidate_workspace, goal, entry, context_entry,
+                workspace, candidate_workspace, proof_datadir, goal,
+                entry, context_entry,
                 &task, &context, &scope, candidate_sequence, "manual", reply);
             if (!handled)
                 run_fail(reply, "CANDIDATE_ADMISSION_FAILED", "admit",
@@ -983,7 +1017,8 @@ void zcl_native_handle_zcode_work_run(
             vcs_zcode_task_index_free(index); return;
         }
         bool handled = run_admit(
-            workspace, candidate_workspace, goal, entry, context_entry,
+            workspace, candidate_workspace, proof_datadir, goal,
+            entry, context_entry,
             &task, &context, &scope, candidate_sequence, "codex", reply);
         if (handled && reply->status == ZCL_COMMAND_STATUS_PASSED)
             (void)json_push_kv_str(&reply->data, "adapter_output",

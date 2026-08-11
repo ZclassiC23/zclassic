@@ -28,12 +28,12 @@ enum { BF_RUNTIME_JOB_LIMIT = 100 };
 #define BF_RUNTIME_PERIOD_SECS 2
 #define BF_RUNTIME_MAX_QUIET_US ((int64_t)120 * 1000 * 1000)
 
-static struct liveness_contract g_coordinator_contract;
+static struct liveness_contract g_requester_contract;
 static struct liveness_contract g_worker_contract;
-static _Atomic supervisor_child_id g_coordinator_id = SUPERVISOR_INVALID_ID;
+static _Atomic supervisor_child_id g_requester_id = SUPERVISOR_INVALID_ID;
 static _Atomic supervisor_child_id g_worker_id = SUPERVISOR_INVALID_ID;
 static _Atomic bool g_worker_enabled;
-static _Atomic uint64_t g_coordinator_ticks;
+static _Atomic uint64_t g_requester_ticks;
 static _Atomic uint64_t g_worker_ticks;
 static _Atomic uint64_t g_jobs_active;
 static _Atomic uint64_t g_actions_active;
@@ -99,7 +99,7 @@ static void bf_runtime_snapshot(uint64_t *active_jobs,
     atomic_store(&g_accepted_or_cache, *accepted);
 }
 
-static void bf_coordinator_tick(struct liveness_contract *contract)
+static void bf_requester_tick(struct liveness_contract *contract)
 {
     (void)contract;
     struct node_db *ndb = app_runtime_node_db();
@@ -117,10 +117,10 @@ static void bf_coordinator_tick(struct liveness_contract *contract)
     }
     uint64_t active_jobs, active_actions, terminal_jobs, accepted;
     bf_runtime_snapshot(&active_jobs, &active_actions, &terminal_jobs, &accepted);
-    supervisor_child_id id = atomic_load(&g_coordinator_id);
+    supervisor_child_id id = atomic_load(&g_requester_id);
     if (active_jobs == 0) supervisor_progress_idle(id);
     else supervisor_progress(id, (int64_t)terminal_jobs);
-    atomic_fetch_add(&g_coordinator_ticks, 1);
+    atomic_fetch_add(&g_requester_ticks, 1);
     supervisor_tick(id);
 }
 
@@ -234,12 +234,12 @@ struct zcl_result build_fabric_runtime_register(bool worker_enabled,
         g_local_worker.last_seen_at = now;
         ZCL_CHECK(build_fabric_worker_approve(ndb, &g_local_worker, now));
     }
-    if (atomic_load(&g_coordinator_id) == SUPERVISOR_INVALID_ID) {
+    if (atomic_load(&g_requester_id) == SUPERVISOR_INVALID_ID) {
         supervisor_child_id id = bf_runtime_child(
-            &g_coordinator_contract, "build.coordinator", bf_coordinator_tick);
-        atomic_store(&g_coordinator_id, id);
+            &g_requester_contract, "build.requester", bf_requester_tick);
+        atomic_store(&g_requester_id, id);
         if (id == SUPERVISOR_INVALID_ID)
-            LOG_WARN("build_fabric", "coordinator supervisor registration failed");
+            LOG_WARN("build_fabric", "requester supervisor registration failed");
         else
             supervisor_set_progress_max_quiet(id, BF_RUNTIME_MAX_QUIET_US);
     }
@@ -259,7 +259,7 @@ struct zcl_result build_fabric_runtime_register(bool worker_enabled,
         else
             supervisor_set_progress_exempt(id, "-buildworker not enabled");
     }
-    if (atomic_load(&g_coordinator_id) == SUPERVISOR_INVALID_ID ||
+    if (atomic_load(&g_requester_id) == SUPERVISOR_INVALID_ID ||
         atomic_load(&g_worker_id) == SUPERVISOR_INVALID_ID)
         return ZCL_ERR(-1, "build runtime supervisor registration failed");
     if (worker_enabled && !atomic_exchange(&g_worker_started, true)) {
@@ -281,7 +281,7 @@ bool build_fabric_dump_state_json(struct json_value *out, const char *key)
     json_set_object(out);
     (void)json_push_kv_str(out, "schema", "zcl.build_fabric_state.v1");
     (void)json_push_kv_bool(out, "worker_enabled", atomic_load(&g_worker_enabled));
-    (void)json_push_kv_int(out, "coordinator_ticks", (int64_t)atomic_load(&g_coordinator_ticks));
+    (void)json_push_kv_int(out, "requester_ticks", (int64_t)atomic_load(&g_requester_ticks));
     (void)json_push_kv_int(out, "worker_ticks", (int64_t)atomic_load(&g_worker_ticks));
     (void)json_push_kv_int(out, "jobs_active", (int64_t)atomic_load(&g_jobs_active));
     (void)json_push_kv_int(out, "actions_active", (int64_t)atomic_load(&g_actions_active));
@@ -292,7 +292,7 @@ bool build_fabric_dump_state_json(struct json_value *out, const char *key)
     (void)json_push_kv_int(out, "worker_dispatches", (int64_t)atomic_load(&g_worker_dispatches));
     (void)json_push_kv_int(out, "worker_failures", (int64_t)atomic_load(&g_worker_failures));
     (void)json_push_kv_bool(out, "worker_thread_started", atomic_load(&g_worker_started));
-    (void)json_push_kv_int(out, "coordinator_deadline_s", 10);
+    (void)json_push_kv_int(out, "requester_deadline_s", 10);
     (void)json_push_kv_int(out, "worker_deadline_s", 10);
     (void)json_push_kv_int(out, "max_quiet_s", 120);
     (void)json_push_kv_int(out, "max_actions_per_job", 256);
@@ -302,7 +302,7 @@ bool build_fabric_dump_state_json(struct json_value *out, const char *key)
     (void)json_push_kv_bool(out, "worker_network_allowed", false);
     (void)json_push_kv_int(out, "supervisor_child_headroom",
                            supervisor_child_headroom());
-    bool supervised = atomic_load(&g_coordinator_id) != SUPERVISOR_INVALID_ID &&
+    bool supervised = atomic_load(&g_requester_id) != SUPERVISOR_INVALID_ID &&
                       atomic_load(&g_worker_id) != SUPERVISOR_INVALID_ID;
     diag_push_health(out, supervised, supervised ? "supervised" : "not_registered");
     return true;

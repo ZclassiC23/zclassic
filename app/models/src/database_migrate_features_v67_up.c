@@ -59,6 +59,60 @@ int node_db_migrate_features_v67_up(struct node_db *ndb, int *version)
         current_ver = 67;
         applied++;
     }
+    if (current_ver < 68) {
+        /* v68: append-only requester-local async proof events. Existing
+         * build_actions remain the exact work identity; signed work_receipts
+         * remain evidence authority. This table is a rebuildable, root-bound
+         * lifecycle projection and grants neither acceptance nor publication. */
+        if (!node_db_exec(ndb,
+                "CREATE TABLE IF NOT EXISTS build_proof_events("
+                "event_root TEXT NOT NULL UNIQUE CHECK(length(event_root)=64),"
+                "prior_event_root TEXT NOT NULL DEFAULT '' "
+                "CHECK(length(prior_event_root) IN (0,64)),"
+                "action_id TEXT NOT NULL REFERENCES build_actions(action_id) "
+                "ON DELETE CASCADE CHECK(length(action_id)=64),"
+                "task_root_sha3 TEXT NOT NULL CHECK(length(task_root_sha3)=64),"
+                "candidate_root_sha3 TEXT NOT NULL "
+                "CHECK(length(candidate_root_sha3)=64),"
+                "proof_policy_root_sha3 TEXT NOT NULL "
+                "CHECK(length(proof_policy_root_sha3)=64),"
+                "context_root_sha3 TEXT NOT NULL DEFAULT '' "
+                "CHECK(length(context_root_sha3) IN (0,64)),"
+                "receipt_root_sha3 TEXT NOT NULL DEFAULT '' "
+                "CHECK(length(receipt_root_sha3) IN (0,64)),"
+                "workspace TEXT NOT NULL CHECK(length(workspace) BETWEEN 1 AND 4095),"
+                "state TEXT NOT NULL CHECK(state IN ('REQUESTED',"
+                "'PEER_DISCOVERED','RUNNING','REMOTE_GREEN','REMOTE_RED',"
+                "'RECEIPT_VERIFIED','REPRODUCED','SUPERSEDED',"
+                "'READY_FOR_ACCEPTANCE')),"
+                "peer_id INTEGER NOT NULL CHECK(peer_id>=0),"
+                "request_id BLOB NOT NULL CHECK(length(request_id)=8),"
+                "deadline_at INTEGER NOT NULL CHECK(deadline_at>=0),"
+                "elapsed_us INTEGER NOT NULL CHECK(elapsed_us>=0),"
+                "created_at INTEGER NOT NULL CHECK(created_at>0))"))
+            LOG_ERR("db", "migrate v68: build_proof_events table failed");
+        if (!node_db_exec(ndb,
+                "CREATE INDEX IF NOT EXISTS idx_build_proof_events_action "
+                "ON build_proof_events(action_id,created_at,event_root)"))
+            LOG_ERR("db", "migrate v68: action event index failed");
+        if (!node_db_exec(ndb,
+                "CREATE INDEX IF NOT EXISTS idx_build_proof_events_task "
+                "ON build_proof_events(task_root_sha3,created_at)"))
+            LOG_ERR("db", "migrate v68: task event index failed");
+        if (!node_db_exec(ndb,
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "idx_build_proof_events_one_successor "
+                "ON build_proof_events(prior_event_root) "
+                "WHERE prior_event_root<>''"))
+            LOG_ERR("db", "migrate v68: event chain index failed");
+        if (!node_db_exec(ndb,
+                "INSERT OR IGNORE INTO schema_migrations(version) "
+                "VALUES('068')"))
+            LOG_ERR("db", "migrate v68: migration stamp failed");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 68);
+        current_ver = 68;
+        applied++;
+    }
     *version = current_ver;
     return applied;
 }

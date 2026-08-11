@@ -1340,6 +1340,12 @@ static int test_zd_work_node(void)
         ASSERT(vcs_zcode_work_node_peer_capability(
             requester, 11, 1000, &observed));
         ASSERT(memcmp(observed.signer_pubkey, worker_key, 32) == 0);
+        uint64_t capable_peers[2] = {0};
+        struct vcs_zcode_work_capability_v1 capable[2];
+        ASSERT_EQ(vcs_zcode_work_node_capable_peers(
+            requester, 1000, capable_peers, capable, 2), 1);
+        ASSERT_EQ(capable_peers[0], 11);
+        ASSERT(memcmp(capable[0].signer_pubkey, worker_key, 32) == 0);
 
         uint8_t requester_seed[32], requester_secret[32], requester_key[32];
         zd_root(requester_seed, 73);
@@ -1427,12 +1433,170 @@ static int test_zd_work_node(void)
         ASSERT(!vcs_zcode_work_node_next_outbound(
             requester, 11, &peer_out, frame, &frame_len));
         request.deadline_unix = 1150;
+        request.request_id = 703;
         ASSERT(vcs_zcode_work_request_seal(
             &request, requester_secret, requester_key));
         ASSERT_EQ(vcs_zcode_work_node_submit(requester, 11, &request, 1100),
                   VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            requester, 11, &peer_out, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            worker, 22, frame, frame_len, 1100), VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_request(
+            worker, &peer_out, &received));
+        zd_swarm_result(&result, &received, 81, 71);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            worker, 22, &peer_out, frame, &frame_len) == false);
+        struct vcs_zcode_work_swarm_message late = {
+            .type = VCS_ZCODE_WORK_SWARM_RESULT, .body.result = result,
+        };
+        ASSERT(vcs_zcode_work_swarm_serialize(
+            &late, frame, sizeof(frame), &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            requester, 11, frame, frame_len, 1150),
+            VCS_ZCODE_WORK_NODE_LEASE_EXPIRED);
         vcs_zcode_work_node_free(requester);
         vcs_zcode_work_node_free(worker);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zd_work_node_three(void)
+{
+    int failures = 0;
+    TEST("zcode_dev: three equal nodes retry a dead peer and refuse stale proof") {
+        struct vcs_zcode_work_node *a = vcs_zcode_work_node_create();
+        struct vcs_zcode_work_node *b = vcs_zcode_work_node_create();
+        struct vcs_zcode_work_node *c = vcs_zcode_work_node_create();
+        ASSERT(a && b && c);
+        ASSERT(vcs_zcode_work_node_peer_add(a, 11));
+        ASSERT(vcs_zcode_work_node_peer_add(a, 12));
+        ASSERT(vcs_zcode_work_node_peer_add(b, 21));
+        ASSERT(vcs_zcode_work_node_peer_add(b, 23));
+        ASSERT(vcs_zcode_work_node_peer_add(c, 31));
+        ASSERT(vcs_zcode_work_node_peer_add(c, 32));
+        uint8_t a_seed[32], a_secret[32], a_key[32];
+        uint8_t b_seed[32], b_secret[32], b_key[32];
+        uint8_t c_seed[32], c_secret[32], c_key[32];
+        zd_root(a_seed, 89); zd_root(b_seed, 90); zd_root(c_seed, 91);
+        ed25519_keypair(a_key, a_secret, a_seed);
+        ed25519_keypair(b_key, b_secret, b_seed);
+        ed25519_keypair(c_key, c_secret, c_seed);
+        struct vcs_zcode_work_capability_v1 cap_a = {0}, cap_b = {0},
+            cap_c = {0};
+        zd_root(cap_a.toolchain_capsule_root, 92);
+        cap_b = cap_a; cap_c = cap_a;
+        memcpy(cap_a.signer_pubkey, a_key, 32);
+        memcpy(cap_b.signer_pubkey, b_key, 32);
+        memcpy(cap_c.signer_pubkey, c_key, 32);
+        struct vcs_zcode_work_capability_v1 *caps[] = {
+            &cap_a, &cap_b, &cap_c,
+        };
+        for (size_t i = 0; i < 3; i++) {
+            caps[i]->work_kinds = UINT32_C(1) << VCS_ZCODE_WORK_BUILD;
+            caps[i]->target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3;
+            caps[i]->confinement = VCS_ZCODE_WORK_CONFINEMENT_V1_MASK;
+            caps[i]->max_cpu_seconds = 60;
+            caps[i]->max_memory_bytes = UINT64_C(512) * 1024 * 1024;
+            caps[i]->max_output_bytes = UINT64_C(64) * 1024 * 1024;
+            caps[i]->max_lease_seconds = 100;
+            caps[i]->slots = 2; caps[i]->queue_headroom = 2;
+            caps[i]->expires_unix = 2000;
+        }
+        ASSERT(vcs_zcode_work_capability_seal(&cap_a, a_secret, a_key));
+        ASSERT(vcs_zcode_work_capability_seal(&cap_b, b_secret, b_key));
+        ASSERT(vcs_zcode_work_capability_seal(&cap_c, c_secret, c_key));
+        ASSERT(vcs_zcode_work_node_set_local_capability(a, &cap_a));
+        ASSERT(vcs_zcode_work_node_set_local_capability(b, &cap_b));
+        ASSERT(vcs_zcode_work_node_set_local_capability(c, &cap_c));
+        uint8_t frame[VCS_ZCODE_WORK_SWARM_MAX_WIRE_BYTES];
+        uint64_t peer = 0; size_t frame_len = 0;
+#define ZD_DELIVER_CAP(from, filter, to, seen) do { \
+    ASSERT(vcs_zcode_work_node_next_outbound( \
+        (from), (filter), &peer, frame, &frame_len)); \
+    ASSERT_EQ(vcs_zcode_work_node_handle_frame( \
+        (to), (seen), frame, frame_len, 1000), VCS_ZCODE_WORK_NODE_OK); \
+} while (0)
+        ZD_DELIVER_CAP(a, 11, b, 21); ZD_DELIVER_CAP(a, 12, c, 31);
+        ZD_DELIVER_CAP(b, 21, a, 11); ZD_DELIVER_CAP(b, 23, c, 32);
+        ZD_DELIVER_CAP(c, 31, a, 12); ZD_DELIVER_CAP(c, 32, b, 23);
+#undef ZD_DELIVER_CAP
+        struct vcs_zcode_work_request_v1 request = {0};
+        request.request_id = 800;
+        zd_root(request.task_root, 93); zd_root(request.candidate_root, 94);
+        zd_root(request.action_root, 95); zd_root(request.input_root, 96);
+        zd_root(request.context_root, 97); zd_root(request.proof_policy_root, 98);
+        memcpy(request.toolchain_capsule_root,
+               cap_a.toolchain_capsule_root, 32);
+        request.work_kind = VCS_ZCODE_WORK_BUILD;
+        request.target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3;
+        request.max_cpu_seconds = 60;
+        request.max_memory_bytes = UINT64_C(512) * 1024 * 1024;
+        request.max_output_bytes = UINT64_C(64) * 1024 * 1024;
+        request.deadline_unix = 1100;
+        ASSERT(vcs_zcode_work_request_seal(&request, a_secret, a_key));
+        ASSERT_EQ(vcs_zcode_work_node_submit(a, 11, &request, 1000),
+                  VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            a, 11, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            b, 21, frame, frame_len, 1000), VCS_ZCODE_WORK_NODE_OK);
+        struct vcs_zcode_work_request_v1 stale_request;
+        ASSERT(vcs_zcode_work_node_next_request(b, &peer, &stale_request));
+        vcs_zcode_work_node_tick(a, 1100);
+        request.deadline_unix = 1200;
+        ASSERT(vcs_zcode_work_request_seal(&request, a_secret, a_key));
+        ASSERT_EQ(vcs_zcode_work_node_submit(a, 12, &request, 1100),
+                  VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            a, 12, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            c, 31, frame, frame_len, 1100), VCS_ZCODE_WORK_NODE_OK);
+        struct vcs_zcode_work_request_v1 c_request;
+        ASSERT(vcs_zcode_work_node_next_request(c, &peer, &c_request));
+        struct vcs_zcode_work_result_v1 result;
+        zd_swarm_result(&result, &c_request, 99, 91);
+        ASSERT_EQ(vcs_zcode_work_node_publish_result(c, 31, &result),
+                  VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            c, 31, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            a, 12, frame, frame_len, 1101), VCS_ZCODE_WORK_NODE_OK);
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            a, 12, frame, frame_len, 1101), VCS_ZCODE_WORK_NODE_REPLAY);
+        struct vcs_zcode_work_result_v1 accepted;
+        ASSERT(vcs_zcode_work_node_next_result(a, &peer, &accepted));
+        ASSERT(vcs_zcode_work_result_verify(&c_request, &accepted, c_key));
+        zd_swarm_result(&result, &stale_request, 100, 90);
+        struct vcs_zcode_work_swarm_message stale = {
+            .type = VCS_ZCODE_WORK_SWARM_RESULT, .body.result = result,
+        };
+        ASSERT(vcs_zcode_work_swarm_serialize(
+            &stale, frame, sizeof(frame), &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            a, 11, frame, frame_len, 1101),
+            VCS_ZCODE_WORK_NODE_UNREQUESTED);
+        vcs_zcode_work_node_free(a); /* A dies; B and C remain full peers. */
+        request.request_id = 801; request.deadline_unix = 1300;
+        ASSERT(vcs_zcode_work_request_seal(&request, b_secret, b_key));
+        ASSERT_EQ(vcs_zcode_work_node_submit(b, 23, &request, 1200),
+                  VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            b, 23, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            c, 32, frame, frame_len, 1200), VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_request(c, &peer, &c_request));
+        zd_swarm_result(&result, &c_request, 101, 91);
+        ASSERT_EQ(vcs_zcode_work_node_publish_result(c, 32, &result),
+                  VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            c, 32, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            b, 23, frame, frame_len, 1201), VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_result(b, &peer, &accepted));
+        ASSERT(vcs_zcode_work_result_verify(&c_request, &accepted, c_key));
+        vcs_zcode_work_node_free(b); vcs_zcode_work_node_free(c);
         PASS();
     } _test_next:;
     return failures;
@@ -1898,7 +2062,12 @@ static int test_zd_improve_command(void)
             &reply.data, "lane_receipt_root"));
         ASSERT(frontier_receipt && strlen(frontier_receipt) == 64);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "remote_outcome")),
-                      "LOCAL_FALLBACK");
+                      "BACKGROUND_PENDING");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &reply.data, "async_proof_state")), "REQUESTED");
+        const char *async_event = json_get_str(json_get(
+            &reply.data, "async_proof_event_root"));
+        ASSERT(async_event && strlen(async_event) == 64);
         uint8_t task_root[32], *task_wire = NULL;
         size_t task_wire_len = 0;
         ASSERT(zcl_hex_decode_lower(task_hex, task_root, 32));
@@ -4534,6 +4703,7 @@ int test_zcode_dev_objects(void)
     failures += test_zd_work_context();
     failures += test_zd_work_swarm();
     failures += test_zd_work_node();
+    failures += test_zd_work_node_three();
     failures += test_zd_improve_command();
     failures += test_zd_task_index();
     printf("=== zcode_dev_objects: %d failures ===\n", failures);

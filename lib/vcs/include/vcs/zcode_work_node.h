@@ -22,6 +22,7 @@ enum vcs_zcode_work_node_result {
     VCS_ZCODE_WORK_NODE_MALFORMED,
     VCS_ZCODE_WORK_NODE_UNKNOWN_PEER,
     VCS_ZCODE_WORK_NODE_CAPABILITY_STALE,
+    VCS_ZCODE_WORK_NODE_LEASE_EXPIRED,
     VCS_ZCODE_WORK_NODE_CAPABILITY_MISMATCH,
     VCS_ZCODE_WORK_NODE_REPLAY,
     VCS_ZCODE_WORK_NODE_UNREQUESTED,
@@ -54,6 +55,9 @@ bool vcs_zcode_work_node_set_local_capability(
 bool vcs_zcode_work_node_peer_capability(
     struct vcs_zcode_work_node *node, uint64_t peer, int64_t now,
     struct vcs_zcode_work_capability_v1 *out);
+size_t vcs_zcode_work_node_capable_peers(
+    struct vcs_zcode_work_node *node, int64_t now, uint64_t *peers,
+    struct vcs_zcode_work_capability_v1 *capabilities, size_t max);
 
 /* Requester coordination. No automatic peer selection exists: the requester
  * chooses one advertised peer and owns its deadline, cancellation, and quorum. */
