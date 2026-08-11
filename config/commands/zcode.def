@@ -168,12 +168,14 @@ ZCL_COMMAND_READY_READ(
     "zcode.passport.plan", "zcode.passport", "",
     "Plan an offline-signed C23 module Passport",
     "Builds the exact domain-separated Ed25519 signing payload from nine "
-    "evidence roots and a signer public key. It accepts no private key, reads "
-    "no wallet, writes nothing, and grants no publication authority.",
+    "evidence roots and a signer public key. An optional workspace/job pair "
+    "requires the ZVCS commit and accepted proof-set roots to match before "
+    "signing. It accepts no private key, reads no wallet, writes nothing, "
+    "and grants no publication authority.",
     ZCL_COMMAND_RESULT_BUDGET,
     "zcode,passport,module,c23,plan,offline,signature,evidence,simulation",
     "zcl.zcode_passport_plan.input.v1", "zcl.zcode_passport_plan.v1",
-    "stable_api_root,recipe_root,toolchain_root,tests_root,license_root,semantic_fingerprint_root,workspace_lineage_root,source_assignment_root,quality_profiles_root,signer_pubkey",
+    "stable_api_root,recipe_root,toolchain_root,tests_root,license_root,semantic_fingerprint_root,workspace_lineage_root,source_assignment_root,quality_profiles_root,signer_pubkey,workspace,publication_job_root",
     "stable_api_root,recipe_root,toolchain_root,tests_root,license_root,semantic_fingerprint_root,workspace_lineage_root,source_assignment_root,quality_profiles_root,signer_pubkey",
     "zclassic23 zcode passport plan --input='<exact evidence roots and signer_pubkey>'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
@@ -187,12 +189,14 @@ ZCL_COMMAND_READY_READ(
     "zcode.passport.commit", "zcode.passport", "",
     "Materialize an externally signed C23 module Passport",
     "Verifies an external Ed25519 signature over the exact planned roots and "
-    "returns canonical immutable Passport bytes and root. Despite its commit "
-    "name it persists and publishes nothing, accepts no private key, reads no "
-    "wallet, and grants no authority.", ZCL_COMMAND_RESULT_BUDGET,
+    "returns canonical immutable Passport bytes and root. With an optional "
+    "workspace/job pair it persists those verified bytes in existing CAS and "
+    "advances the restart-safe publication job; it never accesses a private "
+    "key, wallet or network and grants no new authority.",
+    ZCL_COMMAND_RESULT_BUDGET,
     "zcode,passport,module,c23,commit,offline,signature,evidence,simulation",
     "zcl.zcode_passport_commit.input.v1", "zcl.zcode_passport_commit.v1",
-    "stable_api_root,recipe_root,toolchain_root,tests_root,license_root,semantic_fingerprint_root,workspace_lineage_root,source_assignment_root,quality_profiles_root,signer_pubkey,signature",
+    "stable_api_root,recipe_root,toolchain_root,tests_root,license_root,semantic_fingerprint_root,workspace_lineage_root,source_assignment_root,quality_profiles_root,signer_pubkey,signature,workspace,publication_job_root",
     "stable_api_root,recipe_root,toolchain_root,tests_root,license_root,semantic_fingerprint_root,workspace_lineage_root,source_assignment_root,quality_profiles_root,signer_pubkey,signature",
     "zclassic23 zcode passport commit --input='<same roots, signer_pubkey, external signature>'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,

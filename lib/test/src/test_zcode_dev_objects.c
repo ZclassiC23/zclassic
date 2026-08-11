@@ -29,6 +29,7 @@
 #include "vcs/package_build.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
+#include "vcs/zcode_commons_v2.h"
 #include "vcs/zcode_agent_context.h"
 #include "vcs/zcode_lane.h"
 #include "vcs/zcode_work_context.h"
@@ -3114,6 +3115,181 @@ static int test_zd_improve_command(void)
             &duplicate_publish_reply.data, "progress_reused")));
         ASSERT(zd_no_accept_publish_stage(workspace));
         zcl_command_reply_free(&duplicate_publish_reply);
+
+        struct vcs_zcode_module_passport_v1 publication_passport = {
+            .schema_version = 1,
+            .flags = VCS_ZCODE_COMMONS_V2_REQUIRED_FLAGS,
+        };
+        uint8_t *accepted_lane_wire = NULL;
+        size_t accepted_lane_wire_len = 0;
+        struct vcs_zcode_lane_receipt_v1 accepted_lane;
+        ASSERT_EQ(vcs_object_load_raw_bounded(
+                      workspace, accepted_lane_root,
+                      VCS_ZCODE_LANE_WIRE_BYTES,
+                      &accepted_lane_wire, &accepted_lane_wire_len), 0);
+        ASSERT_EQ(vcs_zcode_lane_receipt_parse(
+                      accepted_lane_wire, accepted_lane_wire_len,
+                      &accepted_lane), VCS_ZCODE_DEV_OK);
+        free(accepted_lane_wire);
+        zd_root(publication_passport.stable_api_root, 0x81);
+        zd_root(publication_passport.recipe_root, 0x82);
+        zd_root(publication_passport.toolchain_root, 0x83);
+        memcpy(publication_passport.tests_root,
+               accepted_lane.proof_set_root, 32);
+        zd_root(publication_passport.license_root, 0x85);
+        zd_root(publication_passport.semantic_fingerprint_root, 0x86);
+        memcpy(publication_passport.workspace_lineage_root,
+               publication_job.vcs_commit_root, 32);
+        zd_root(publication_passport.source_assignment_root, 0x88);
+        zd_root(publication_passport.quality_profiles_root, 0x89);
+        uint8_t passport_seed[32], passport_secret[32];
+        zd_root(passport_seed, 0x8a);
+        ed25519_keypair(publication_passport.signer_root,
+                        passport_secret, passport_seed);
+        static const char *passport_keys[] = {
+            "stable_api_root", "recipe_root", "toolchain_root",
+            "tests_root", "license_root", "semantic_fingerprint_root",
+            "workspace_lineage_root", "source_assignment_root",
+            "quality_profiles_root", "signer_pubkey",
+        };
+        uint8_t *passport_roots[] = {
+            publication_passport.stable_api_root,
+            publication_passport.recipe_root,
+            publication_passport.toolchain_root,
+            publication_passport.tests_root,
+            publication_passport.license_root,
+            publication_passport.semantic_fingerprint_root,
+            publication_passport.workspace_lineage_root,
+            publication_passport.source_assignment_root,
+            publication_passport.quality_profiles_root,
+            publication_passport.signer_root,
+        };
+        struct json_value passport_plan_input;
+        json_init(&passport_plan_input);
+        json_set_object(&passport_plan_input);
+        for (size_t i = 0; i < 10; i++) {
+            char root_hex[65];
+            zcl_hex_encode(passport_roots[i], 32, root_hex);
+            ASSERT(json_push_kv_str(&passport_plan_input,
+                                    passport_keys[i], root_hex));
+        }
+        ASSERT(json_push_kv_str(&passport_plan_input, "workspace",
+                                workspace));
+        ASSERT(json_push_kv_str(&passport_plan_input,
+                                "publication_job_root",
+                                publication_job_hex));
+        struct zcl_command_request passport_plan_request = {
+            .input = &passport_plan_input,
+        };
+        struct json_value *passport_tests_value =
+            (struct json_value *)json_get(&passport_plan_input,
+                                           "tests_root");
+        char correct_passport_tests[65], wrong_passport_tests[65];
+        (void)snprintf(correct_passport_tests,
+                       sizeof(correct_passport_tests), "%s",
+                       json_get_str(passport_tests_value));
+        (void)snprintf(wrong_passport_tests,
+                       sizeof(wrong_passport_tests), "%s",
+                       correct_passport_tests);
+        wrong_passport_tests[0] = wrong_passport_tests[0] == '0' ? '1' : '0';
+        json_set_str(passport_tests_value, wrong_passport_tests);
+        struct zcl_command_reply wrong_passport_plan_reply;
+        zcl_command_reply_init(&wrong_passport_plan_reply,
+                               "zcl.zcode_passport_plan.v1");
+        zcl_native_handle_zcode_passport_plan(
+            &passport_plan_request, &wrong_passport_plan_reply);
+        ASSERT_EQ(wrong_passport_plan_reply.exit_code,
+                  ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(wrong_passport_plan_reply.error.code,
+                      "MODULE_PASSPORT_JOB_BINDING_INVALID");
+        zcl_command_reply_free(&wrong_passport_plan_reply);
+        json_set_str(passport_tests_value, correct_passport_tests);
+        struct zcl_command_reply passport_plan_reply;
+        zcl_command_reply_init(&passport_plan_reply,
+                               "zcl.zcode_passport_plan.v1");
+        zcl_native_handle_zcode_passport_plan(&passport_plan_request,
+                                              &passport_plan_reply);
+        ASSERT_EQ(passport_plan_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&passport_plan_reply.data,
+                                      "will_persist_on_commit")));
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &passport_plan_reply.data,
+                          "publication_job_root")),
+                      publication_job_hex);
+        const char *passport_payload_hex = json_get_str(json_get(
+            &passport_plan_reply.data, "signing_payload"));
+        ASSERT(passport_payload_hex != NULL);
+        uint8_t passport_payload[
+            VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_PAYLOAD_BYTES];
+        ASSERT(zcl_hex_decode_lower(passport_payload_hex,
+                                    passport_payload,
+                                    sizeof(passport_payload)));
+        ed25519_sign(publication_passport.signature, passport_payload,
+                     sizeof(passport_payload), passport_secret,
+                     publication_passport.signer_root);
+        memset(passport_secret, 0, sizeof(passport_secret));
+        zcl_command_reply_free(&passport_plan_reply);
+        char passport_signature_hex[129];
+        zcl_hex_encode(publication_passport.signature,
+                       sizeof(publication_passport.signature),
+                       passport_signature_hex);
+        ASSERT(json_push_kv_str(&passport_plan_input, "signature",
+                                passport_signature_hex));
+        struct zcl_command_reply passport_commit_reply;
+        zcl_command_reply_init(&passport_commit_reply,
+                               "zcl.zcode_passport_commit.v1");
+        zcl_native_handle_zcode_passport_commit(&passport_plan_request,
+                                                &passport_commit_reply);
+        ASSERT_EQ(passport_commit_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&passport_commit_reply.data,
+                                      "persisted")));
+        ASSERT(!json_get_bool(json_get(&passport_commit_reply.data,
+                                       "published")));
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &passport_commit_reply.data,
+                          "publication_status")),
+                      "PASSPORT_PUBLISHED");
+        ASSERT(!json_get_bool(json_get(&passport_commit_reply.data,
+                                       "progress_reused")));
+        const char *published_passport_root = json_get_str(json_get(
+            &passport_commit_reply.data, "passport_root"));
+        const char *published_passport_wire = json_get_str(json_get(
+            &passport_commit_reply.data, "passport"));
+        ASSERT(published_passport_root && published_passport_wire);
+        uint8_t passport_root[32], *stored_passport = NULL;
+        size_t stored_passport_len = 0;
+        ASSERT(zcl_hex_decode_lower(published_passport_root,
+                                    passport_root, 32));
+        ASSERT_EQ(vcs_object_load_raw_bounded(
+                      workspace, passport_root,
+                      VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES,
+                      &stored_passport, &stored_passport_len), 0);
+        ASSERT_EQ(stored_passport_len,
+                  VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES);
+        struct vcs_zcode_module_passport_v1 stored_passport_object;
+        ASSERT_EQ(vcs_zcode_module_passport_v1_decode(
+                      &stored_passport_object, stored_passport,
+                      stored_passport_len), VCS_ZCODE_COMMONS_V2_OK);
+        free(stored_passport);
+        struct vcs_devloop_publication_receipt passport_progress;
+        uint8_t passport_progress_root[32];
+        ASSERT(vcs_devloop_publication_progress_load(
+            workspace, publication_anchor.publication_job_root,
+            &passport_progress, passport_progress_root));
+        ASSERT_EQ(passport_progress.phase,
+                  VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED);
+        ASSERT(memcmp(passport_progress.artifact_root,
+                      passport_root, 32) == 0);
+        zcl_command_reply_free(&passport_commit_reply);
+        zcl_command_reply_init(&passport_commit_reply,
+                               "zcl.zcode_passport_commit.v1");
+        zcl_native_handle_zcode_passport_commit(&passport_plan_request,
+                                                &passport_commit_reply);
+        ASSERT_EQ(passport_commit_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(&passport_commit_reply.data,
+                                      "progress_reused")));
+        zcl_command_reply_free(&passport_commit_reply);
+        json_free(&passport_plan_input);
         zcl_command_reply_free(&publish_commit_reply);
         json_free(&publish_commit_input);
         zcl_command_reply_free(&seal_reply);

@@ -833,6 +833,58 @@ static int t_publication_enqueue(const char *dir)
     VD_CHECK("publication: mapping retry preserves release phase",
              memcmp(released_progress_root,
                     accepted_retry_root, 32) == 0);
+    uint8_t passport_root[32], passport_progress_root[32];
+    memcpy(passport_root, release_root, 32);
+    passport_root[1] ^= 0xa5u;
+    reused = true;
+    VD_CHECK("publication: Passport refuses the wrong release predecessor",
+             !vcs_devloop_publication_advance_passport(
+                 dir, ar.publication_job_root, mapping_root,
+                 wrong_mapping_root, passport_root,
+                 rejected_progress_root, &reused));
+    VD_CHECK("publication: wrong Passport predecessor is not reuse", !reused);
+    reused = true;
+    VD_CHECK("publication: signed Passport advances durable job",
+             vcs_devloop_publication_advance_passport(
+                 dir, ar.publication_job_root, mapping_root,
+                 release_root, passport_root, passport_progress_root,
+                 &reused));
+    VD_CHECK("publication: first Passport phase is new", !reused);
+    VD_CHECK("publication: Passport phase reloads",
+             vcs_devloop_publication_progress_load(
+                 dir, ar.publication_job_root, &progress,
+                 loaded_progress_root));
+    VD_CHECK("publication: Passport phase named",
+             progress.phase ==
+                 VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED);
+    VD_CHECK("publication: Passport phase binds authoritative root",
+             memcmp(progress.artifact_root, passport_root, 32) == 0);
+    VD_CHECK("publication: Passport phase preserves release predecessor",
+             memcmp(progress.predecessor_receipt_root,
+                    released_progress_root, 32) == 0);
+    VD_CHECK("publication: Passport phase preserves scan metrics",
+             progress.bytes_scanned == first_map.bytes_scanned &&
+             progress.new_chunks == first_map.new_chunks &&
+             progress.reused_chunks == first_map.reused_chunks);
+    reused = false;
+    VD_CHECK("publication: Passport retry succeeds",
+             vcs_devloop_publication_advance_passport(
+                 dir, ar.publication_job_root, mapping_root,
+                 release_root, passport_root, accepted_retry_root,
+                 &reused));
+    VD_CHECK("publication: Passport retry reuses receipt", reused);
+    VD_CHECK("publication: Passport retry preserves receipt root",
+             memcmp(passport_progress_root,
+                    accepted_retry_root, 32) == 0);
+    reused = false;
+    VD_CHECK("publication: release retry cannot regress Passport phase",
+             vcs_devloop_publication_advance_release(
+                 dir, ar.publication_job_root, mapping_root,
+                 release_root, accepted_retry_root, &reused));
+    VD_CHECK("publication: release retry returns Passport receipt", reused);
+    VD_CHECK("publication: release retry preserves Passport phase",
+             memcmp(passport_progress_root,
+                    accepted_retry_root, 32) == 0);
     zcl_hex_encode(release_root, 32, mapping_hex);
     json_init(&advance_input);
     json_set_object(&advance_input);
@@ -841,19 +893,24 @@ static int t_publication_enqueue(const char *dir)
                            "zcl.dev_publication_status.v1");
     zcl_native_handle_dev_publication_status(
         &advance_request, &advance_reply);
-    VD_CHECK("publication: native status preserves release phase",
+    VD_CHECK("publication: native status preserves Passport phase",
              advance_reply.exit_code == ZCL_COMMAND_EXIT_OK &&
              strcmp(json_get_str(json_get(
                         &advance_reply.data, "status")),
-                    "RELEASE_PUBLISHED") == 0);
+                    "PASSPORT_PUBLISHED") == 0);
     VD_CHECK("publication: native status reports exact release root",
              strcmp(json_get_str(json_get(
                         &advance_reply.data, "release_root")),
                     mapping_hex) == 0);
+    zcl_hex_encode(passport_root, 32, mapping_hex);
+    VD_CHECK("publication: native status reports exact Passport root",
+             strcmp(json_get_str(json_get(
+                        &advance_reply.data, "passport_root")),
+                    mapping_hex) == 0);
     VD_CHECK("publication: native status names workspace next step",
              strcmp(json_get_str(json_get(
                         &advance_reply.data, "next_command")),
-                    "zclassic23 discover schema zcode.passport.plan") == 0);
+                    "zclassic23 discover schema zcode.workspace.manifest.plan") == 0);
     zcl_command_reply_free(&advance_reply);
     json_free(&advance_input);
     memset(fixture.signer_secret, 0, sizeof(fixture.signer_secret));

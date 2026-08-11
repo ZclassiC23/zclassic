@@ -7,9 +7,15 @@
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "services/zcode_passport_view_service.h"
+#include "vcs/package_mapping.h"
+#include "vcs/vcs_devloop.h"
+#include "vcs/vcs_object.h"
 #include "vcs/zcode_commons_v2.h"
+#include "vcs/zcode_lane.h"
 
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void passport_fail_action(struct zcl_command_reply *reply,
@@ -30,6 +36,21 @@ static void passport_fail(struct zcl_command_reply *reply, const char *code,
 
 static void passport_push_root(struct json_value *data, const char *key,
                                const uint8_t root[32]);
+
+static bool passport_key_allowed(const char *key, bool commit)
+{
+    static const char *const keys[] = {
+        "stable_api_root", "recipe_root", "toolchain_root", "tests_root",
+        "license_root", "semantic_fingerprint_root",
+        "workspace_lineage_root", "source_assignment_root",
+        "quality_profiles_root", "signer_pubkey", "workspace",
+        "publication_job_root",
+    };
+    if (!key) return false;
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+        if (strcmp(key, keys[i]) == 0) return true;
+    return commit && strcmp(key, "signature") == 0;
+}
 
 static bool passport_view(
     struct zcl_command_reply *reply, enum zcode_passport_view_mode_v1 mode,
@@ -69,15 +90,39 @@ static bool passport_parse_roots(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply,
     struct vcs_zcode_module_passport_v1 *passport,
-    size_t expected_children, const char *phase)
+    bool commit, const char *phase)
 {
+    const size_t required_children = commit ? 11u : 10u;
     if (!request || !reply || !passport || !request->input ||
         request->input->type != JSON_OBJ ||
-        request->input->num_children != expected_children) {
+        (request->input->num_children != required_children &&
+         request->input->num_children != required_children + 2u)) {
         if (reply) passport_fail_action(
             reply, "BAD_MODULE_PASSPORT_INPUT", phase,
             "provide exactly the nine evidence roots and signer_pubkey as "
             "canonical lowercase 32-byte hexadecimal values",
+            "zcode.passport.plan");
+        return false;
+    }
+    for (size_t i = 0; i < request->input->num_children; i++) {
+        if (!passport_key_allowed(request->input->keys[i], commit)) {
+            passport_fail_action(
+                reply, "BAD_MODULE_PASSPORT_INPUT", phase,
+                "Passport input contains an undeclared field",
+                "zcode.passport.plan");
+            return false;
+        }
+    }
+    const char *workspace = json_get_str(json_get(request->input,
+                                                   "workspace"));
+    const char *job = json_get_str(json_get(request->input,
+                                             "publication_job_root"));
+    bool have_workspace = workspace && workspace[0];
+    bool have_job = job && job[0];
+    if (have_workspace != have_job) {
+        passport_fail_action(
+            reply, "BAD_MODULE_PASSPORT_JOB_BINDING", phase,
+            "workspace and publication_job_root must be provided together",
             "zcode.passport.plan");
         return false;
     }
@@ -113,6 +158,121 @@ static bool passport_parse_roots(
     return true;
 }
 
+struct passport_job_binding {
+    bool requested;
+    char workspace[PATH_MAX];
+    uint8_t job_root[32];
+    uint8_t mapping_root[32];
+    uint8_t release_root[32];
+};
+
+static bool passport_job_preflight(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply,
+    const struct vcs_zcode_module_passport_v1 *passport,
+    struct passport_job_binding *binding)
+{
+    memset(binding, 0, sizeof(*binding));
+    const char *workspace = json_get_str(json_get(request->input,
+                                                   "workspace"));
+    const char *job_hex = json_get_str(json_get(request->input,
+                                                 "publication_job_root"));
+    if ((!workspace || !workspace[0]) && (!job_hex || !job_hex[0]))
+        return true;
+    binding->requested = true;
+    struct vcs_devloop_publication_job job;
+    struct vcs_devloop_publication_receipt progress, release, mapping;
+    uint8_t progress_root[32];
+    bool valid = workspace && job_hex && realpath(
+            workspace, binding->workspace) != NULL &&
+        strlen(job_hex) == 64u &&
+        zcl_hex_decode_lower(job_hex, binding->job_root, 32) &&
+        vcs_devloop_publication_job_load(
+            binding->workspace, binding->job_root, &job) &&
+        vcs_devloop_publication_job_is_queued(
+            binding->workspace, binding->job_root) &&
+        vcs_devloop_publication_progress_load(
+            binding->workspace, binding->job_root, &progress,
+            progress_root);
+    if (valid && progress.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_RELEASE_PUBLISHED) {
+        release = progress;
+    } else if (valid && progress.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED) {
+        valid = vcs_devloop_publication_receipt_load(
+                binding->workspace, progress.predecessor_receipt_root,
+                &release) &&
+            release.phase ==
+                VCS_DEVLOOP_PUBLICATION_PHASE_RELEASE_PUBLISHED;
+    } else {
+        valid = false;
+    }
+    valid = valid && vcs_devloop_publication_receipt_load(
+            binding->workspace, release.predecessor_receipt_root,
+            &mapping) &&
+        mapping.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_PACKAGE_MAPPING_READY;
+    struct vcs_package_mapping_set mapping_set;
+    vcs_package_mapping_set_init(&mapping_set);
+    struct vcs_zcode_lane_receipt_v1 lane;
+    uint8_t *lane_wire = NULL;
+    size_t lane_wire_len = 0;
+    uint8_t lane_root[32];
+    valid = valid && vcs_package_mapping_set_load(
+            binding->workspace, mapping.artifact_root, &mapping_set) &&
+        vcs_object_load_raw_bounded(
+            binding->workspace, mapping_set.lane_receipt_root,
+            VCS_ZCODE_LANE_WIRE_BYTES, &lane_wire, &lane_wire_len) == 0 &&
+        vcs_zcode_lane_receipt_parse(lane_wire, lane_wire_len, &lane) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_lane_receipt_verify(&lane, lane.signer_pubkey) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_lane_receipt_id(&lane, lane_root) == VCS_ZCODE_DEV_OK &&
+        memcmp(lane_root, mapping_set.lane_receipt_root, 32) == 0 &&
+        memcmp(passport->workspace_lineage_root,
+               job.vcs_commit_root, 32) == 0 &&
+        memcmp(passport->tests_root, lane.proof_set_root, 32) == 0;
+    if (valid) {
+        memcpy(binding->mapping_root, mapping.artifact_root, 32);
+        memcpy(binding->release_root, release.artifact_root, 32);
+    }
+    free(lane_wire);
+    vcs_package_mapping_set_free(&mapping_set);
+    if (!valid) {
+        passport_fail_action(
+            reply, "MODULE_PASSPORT_JOB_BINDING_INVALID", "bind",
+            "publication_job_root must be queued at RELEASE_PUBLISHED and "
+            "the Passport must bind its exact ZVCS commit and accepted proof set",
+            "dev publication status");
+        return false;
+    }
+    return true;
+}
+
+static bool passport_store_verified(
+    const char *workspace, const uint8_t root[32],
+    const uint8_t *wire, size_t wire_len)
+{
+    if (!vcs_object_store_init(workspace) ||
+        !vcs_object_put_addressed(workspace, root, wire, wire_len))
+        return false;
+    uint8_t *stored = NULL;
+    size_t stored_len = 0;
+    struct vcs_zcode_module_passport_v1 decoded;
+    uint8_t checked_root[32];
+    bool ok = vcs_object_load_raw_bounded(
+            workspace, root, VCS_ZCODE_MODULE_PASSPORT_V1_WIRE_BYTES,
+            &stored, &stored_len) == 0 &&
+        stored_len == wire_len && memcmp(stored, wire, wire_len) == 0 &&
+        vcs_zcode_module_passport_v1_decode(
+            &decoded, stored, stored_len) == VCS_ZCODE_COMMONS_V2_OK &&
+        vcs_zcode_module_passport_v1_root(&decoded, checked_root) ==
+            VCS_ZCODE_COMMONS_V2_OK &&
+        memcmp(checked_root, root, 32) == 0;
+    free(stored);
+    return ok;
+}
+
 static void passport_render_evidence(
     struct json_value *data,
     const struct vcs_zcode_module_passport_v1 *passport)
@@ -137,7 +297,10 @@ void zcl_native_handle_zcode_passport_plan(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
     struct vcs_zcode_module_passport_v1 passport;
-    if (!passport_parse_roots(request, reply, &passport, 10u, "plan")) return;
+    if (!passport_parse_roots(request, reply, &passport, false, "plan"))
+        return;
+    struct passport_job_binding binding;
+    if (!passport_job_preflight(request, reply, &passport, &binding)) return;
     uint8_t payload[VCS_ZCODE_MODULE_PASSPORT_V1_SIGNING_PAYLOAD_BYTES];
     size_t payload_len = 0;
     enum vcs_zcode_commons_v2_error error =
@@ -167,14 +330,26 @@ void zcl_native_handle_zcode_passport_plan(
     (void)json_push_kv_bool(&reply->data, "private_key_accepted", false);
     (void)json_push_kv_bool(&reply->data, "wallet_accessed", false);
     passport_render_evidence(&reply->data, &passport);
+    if (binding.requested) {
+        passport_push_root(&reply->data, "publication_job_root",
+                           binding.job_root);
+        passport_push_root(&reply->data, "package_mapping_root",
+                           binding.mapping_root);
+        passport_push_root(&reply->data, "release_root",
+                           binding.release_root);
+        (void)json_push_kv_bool(&reply->data,
+                                "will_persist_on_commit", true);
+    }
 }
 
 void zcl_native_handle_zcode_passport_commit(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
     struct vcs_zcode_module_passport_v1 passport;
-    if (!passport_parse_roots(request, reply, &passport, 11u, "commit"))
+    if (!passport_parse_roots(request, reply, &passport, true, "commit"))
         return;
+    struct passport_job_binding binding;
+    if (!passport_job_preflight(request, reply, &passport, &binding)) return;
     const char *signature = json_get_str(json_get(request->input, "signature"));
     if (!signature || strlen(signature) != 128u ||
         !zcl_hex_decode_lower(signature, passport.signature, 64)) {
@@ -210,15 +385,46 @@ void zcl_native_handle_zcode_passport_commit(
     zcl_hex_encode(wire, wire_len, wire_hex);
     struct zcode_passport_view_result_v1 view;
     if (!passport_view(reply, ZCODE_PASSPORT_VIEW_COMMIT, &view)) return;
+    uint8_t progress_root[32];
+    bool progress_reused = false;
+    if (binding.requested &&
+        (!passport_store_verified(binding.workspace, root, wire, wire_len) ||
+         !vcs_devloop_publication_advance_passport(
+             binding.workspace, binding.job_root, binding.mapping_root,
+             binding.release_root, root, progress_root,
+             &progress_reused))) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "MODULE_PASSPORT_PROGRESS_FAILED", "persist", true, true,
+            "the verified Passport could not be durably bound to its publication job; retry the exact commit",
+            "dev publication status");
+        return;
+    }
     (void)json_push_kv_bool(&reply->data, "verified", true);
     passport_render_view(&reply->data, &view);
     (void)json_push_kv_str(&reply->data, "passport", wire_hex);
     passport_push_root(&reply->data, "passport_root", root);
-    (void)json_push_kv_bool(&reply->data, "persisted", false);
+    (void)json_push_kv_bool(&reply->data, "persisted", binding.requested);
     (void)json_push_kv_bool(&reply->data, "published", false);
     (void)json_push_kv_bool(&reply->data, "simulation_only", true);
     (void)json_push_kv_bool(&reply->data, "not_owner_approved", true);
     passport_render_evidence(&reply->data, &passport);
+    if (binding.requested) {
+        passport_push_root(&reply->data, "publication_job_root",
+                           binding.job_root);
+        passport_push_root(&reply->data, "progress_receipt_root",
+                           progress_root);
+        passport_push_root(&reply->data, "package_mapping_root",
+                           binding.mapping_root);
+        passport_push_root(&reply->data, "release_root",
+                           binding.release_root);
+        (void)json_push_kv_str(&reply->data, "publication_status",
+                               "PASSPORT_PUBLISHED");
+        (void)json_push_kv_bool(&reply->data, "progress_reused",
+                                progress_reused);
+        (void)json_push_kv_bool(&reply->data, "network_called", false);
+        (void)json_push_kv_bool(&reply->data, "wallet_called", false);
+    }
 }
 
 static void passport_push_root(struct json_value *data, const char *key,
