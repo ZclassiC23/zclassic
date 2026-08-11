@@ -31,6 +31,7 @@
 #include "vcs/package_deps.h"
 #include "vcs/package_recipe.h"
 #include "vcs/package_store.h"
+#include "vcs/vcs_devloop.h"
 #include "vcs/zcode_work_context.h"
 #include "vcs/zcode_work_node.h"
 #include "vcs/zcode_action_input.h"
@@ -2197,6 +2198,60 @@ static void zpub_common_output(
         out, "authority", "SIGNED_LANE_RECEIPT_AND_RELEASE_ENVELOPE");
 }
 
+struct zpub_job_binding {
+    bool requested;
+    uint8_t job_root[32];
+};
+
+static bool zpub_job_preflight(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply,
+    const struct zpub_accepted_bundle *bundle,
+    struct zpub_job_binding *binding)
+{
+    memset(binding, 0, sizeof(*binding));
+    const char *job_hex = zdev_str(request->input, "publication_job_root");
+    if (!job_hex || !job_hex[0])
+        return true;
+    binding->requested = true;
+    struct vcs_devloop_publication_job job;
+    struct vcs_devloop_publication_receipt progress, mapping = {0};
+    uint8_t progress_root[32];
+    bool valid = bundle->have_mapping &&
+        zcl_hex_decode_lower(job_hex, binding->job_root, 32) &&
+        vcs_devloop_publication_job_load(
+            bundle->workspace, binding->job_root, &job) &&
+        vcs_devloop_publication_job_is_queued(
+            bundle->workspace, binding->job_root) &&
+        memcmp(job.source_tree_root, bundle->source_root, 32) == 0 &&
+        vcs_devloop_publication_progress_load(
+            bundle->workspace, binding->job_root, &progress,
+            progress_root);
+    if (valid && progress.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_PACKAGE_MAPPING_READY) {
+        mapping = progress;
+    } else if (valid && progress.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_RELEASE_PUBLISHED) {
+        valid = vcs_devloop_publication_receipt_load(
+                bundle->workspace, progress.predecessor_receipt_root,
+                &mapping) &&
+            mapping.phase ==
+                VCS_DEVLOOP_PUBLICATION_PHASE_PACKAGE_MAPPING_READY;
+    } else {
+        valid = false;
+    }
+    valid = valid &&
+        memcmp(mapping.artifact_root, bundle->mapping_root, 32) == 0;
+    if (!valid) {
+        zpub_fail(
+            reply, "PUBLICATION_JOB_BINDING_INVALID",
+            "publication_job_root must be one queued exact-source job at "
+            "PACKAGE_MAPPING_READY (or its idempotent RELEASE_PUBLISHED "
+            "successor), bound to package_mapping_root");
+        return false;
+    }
+    return true;
+}
+
 void zcl_native_handle_zcode_publish_plan(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -2206,6 +2261,11 @@ void zcl_native_handle_zcode_publish_plan(
         !zpub_find_lane_readonly(request, reply, &bundle) ||
         !zpub_prepare_accepted_objects(request, reply, &bundle))
         return;
+    struct zpub_job_binding job_binding;
+    if (!zpub_job_preflight(request, reply, &bundle, &job_binding)) {
+        zpub_bundle_free(&bundle);
+        return;
+    }
 
     const char *pubkey_hex = zdev_str(request->input, "publisher_pubkey");
     const char *name = zdev_str(request->input, "name");
@@ -2294,6 +2354,9 @@ void zcl_native_handle_zcode_publish_plan(
         if (bundle.have_mapping)
             zdev_push_root(&reply->data, "package_mapping_root",
                            bundle.mapping_root);
+        if (job_binding.requested)
+            zdev_push_root(&reply->data, "publication_job_root",
+                           job_binding.job_root);
     }
     free(release_body);
     zpub_bundle_free(&bundle);
@@ -2311,6 +2374,11 @@ void zcl_native_handle_zcode_publish_commit(
         !zpub_find_lane_commit(request, reply, &bundle) ||
         !zpub_prepare_accepted_objects(request, reply, &bundle))
         return;
+    struct zpub_job_binding job_binding;
+    if (!zpub_job_preflight(request, reply, &bundle, &job_binding)) {
+        zpub_bundle_free(&bundle);
+        return;
+    }
 
     const char *release_hex_input = zdev_str(request->input, "release_hex");
     uint8_t *release_wire = NULL;
@@ -2440,8 +2508,38 @@ void zcl_native_handle_zcode_publish_commit(
         return;
     }
 
+    uint8_t progress_root[32];
+    bool progress_reused = false;
+    bool progressed = !job_binding.requested ||
+        vcs_devloop_publication_advance_release(
+            bundle.workspace, job_binding.job_root, bundle.mapping_root,
+            release_id, progress_root, &progress_reused);
+    if (!progressed) {
+        char release_id_hex[65];
+        zcl_hex_encode(release_id, 32, release_id_hex);
+        zcl_command_reply_free(&commit_reply);
+        zpub_bundle_free(&bundle);
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "PUBLICATION_PROGRESS_FAILED", "schedule", true, true,
+            "the signed package release was published, but its durable job "
+            "receipt could not advance; retry the exact idempotent commit",
+            release_id_hex);
+        return;
+    }
     json_copy(&reply->data, &commit_reply.data);
     zcl_command_reply_free(&commit_reply);
     zpub_common_output(&reply->data, &bundle);
+    if (job_binding.requested) {
+        zdev_push_root(&reply->data, "publication_job_root",
+                       job_binding.job_root);
+        zdev_push_root(&reply->data, "progress_receipt_root",
+                       progress_root);
+        zdev_push_root(&reply->data, "release_root", release_id);
+        (void)json_push_kv_str(&reply->data, "publication_status",
+                               "RELEASE_PUBLISHED");
+        (void)json_push_kv_bool(&reply->data, "progress_reused",
+                                progress_reused);
+    }
     zpub_bundle_free(&bundle);
 }

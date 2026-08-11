@@ -23,6 +23,7 @@
 #include "vcs/package_deps.h"
 #include "vcs/package_recipe.h"
 #include "vcs/package_store.h"
+#include "vcs/vcs_devloop.h"
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/package_build.h"
@@ -89,6 +90,20 @@ static bool zd_write_text(const char *path, const char *text)
     size_t len = strlen(text);
     bool ok = fwrite(text, 1, len, file) == len;
     return fclose(file) == 0 && ok;
+}
+
+static bool zd_copy_tagged_object(
+    const char *source_store, const char *destination_store,
+    const uint8_t root[32], uint8_t tag)
+{
+    uint8_t *wire = NULL, copied[32];
+    size_t wire_len = 0;
+    bool ok = vcs_object_get(source_store, root, tag,
+                             &wire, &wire_len) == 0 &&
+        vcs_object_put(destination_store, wire, wire_len, tag, copied) &&
+        memcmp(copied, root, 32) == 0;
+    free(wire);
+    return ok;
 }
 
 static bool zd_no_accept_publish_stage(const char *datadir)
@@ -2750,6 +2765,65 @@ static int test_zd_improve_command(void)
                       warm_package_mapping_root, 32) == 0);
         char package_mapping_hex[65];
         zcl_hex_encode(package_mapping_root, 32, package_mapping_hex);
+        char publication_seed[256];
+        test_make_tmpdir(publication_seed, sizeof(publication_seed),
+                         "zcode_dev", "publication_seed");
+        ASSERT_EQ(vcs_tree_materialize(
+                      workspace, accepted_source_root, publication_seed,
+                      VCS_PACKAGE_MAX_TOTAL_BYTES, 0), VCS_OK);
+        struct vcs_devloop_verdict publication_verdict = {
+            .verdict_status = 0,
+            .phase = "verify",
+            .elapsed_ms = 17,
+            .proof_complete = true,
+            .proof_scope = "source_wide_compile_tests_lint_fast",
+            .source_identity_hex = sha256_saved,
+            .source_cas_hex = candidate_source_saved,
+        };
+        struct vcs_devloop_anchor_result publication_anchor;
+        vcs_devloop_anchor_cycle(publication_seed, &publication_verdict,
+                                 &publication_anchor);
+        ASSERT_EQ(publication_anchor.status, VCS_DEVLOOP_ANCHOR_OK);
+        ASSERT_EQ(publication_anchor.publication_status,
+                  VCS_DEVLOOP_PUBLICATION_QUEUED);
+        struct vcs_devloop_publication_job publication_job;
+        ASSERT(vcs_devloop_publication_job_load(
+            publication_seed, publication_anchor.publication_job_root,
+            &publication_job));
+        ASSERT(memcmp(publication_job.source_tree_root,
+                      accepted_source_root, 32) == 0);
+        ASSERT(zd_copy_tagged_object(
+            publication_seed, workspace, publication_anchor.commit_id,
+            VCS_TAG_COMMIT));
+        ASSERT(zd_copy_tagged_object(
+            publication_seed, workspace,
+            publication_anchor.proof_receipt_root, VCS_TAG_DEV_PROOF));
+        ASSERT(zd_copy_tagged_object(
+            publication_seed, workspace,
+            publication_anchor.publication_job_root,
+            VCS_TAG_PUBLICATION_JOB));
+        bool publication_reused = true;
+        ASSERT(vcs_devloop_publication_job_requeue(
+            workspace, publication_anchor.publication_job_root,
+            &publication_reused));
+        ASSERT(!publication_reused);
+        uint8_t publication_progress[32];
+        ASSERT(vcs_devloop_publication_advance_waiting_acceptance(
+            workspace, publication_anchor.publication_job_root,
+            publication_progress, &publication_reused));
+        ASSERT(!publication_reused);
+        ASSERT(vcs_devloop_publication_advance_accepted_lane(
+            workspace, publication_anchor.publication_job_root,
+            accepted_lane_root, publication_progress,
+            &publication_reused));
+        ASSERT(vcs_devloop_publication_advance_package_mapping(
+            workspace, publication_anchor.publication_job_root,
+            package_mapping_root, cold_mapping.bytes_scanned,
+            cold_mapping.new_chunks, cold_mapping.reused_chunks,
+            publication_progress, &publication_reused));
+        char publication_job_hex[65];
+        zcl_hex_encode(publication_anchor.publication_job_root, 32,
+                       publication_job_hex);
         char zcode_store_path[4352];
         (void)snprintf(zcode_store_path, sizeof(zcode_store_path),
                        "%s/zcode", workspace);
@@ -2778,6 +2852,9 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_str(&publish_plan_input,
                                "package_mapping_root",
                                package_mapping_hex);
+        (void)json_push_kv_str(&publish_plan_input,
+                               "publication_job_root",
+                               publication_job_hex);
         struct zcl_command_request publish_plan_request = {
             .input = &publish_plan_input,
         };
@@ -2819,6 +2896,10 @@ static int test_zd_improve_command(void)
                           &publish_plan_reply.data,
                           "package_mapping_root")),
                       package_mapping_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &publish_plan_reply.data,
+                          "publication_job_root")),
+                      publication_job_hex);
         pre_publish_index = vcs_package_index_build(zcode_store_path);
         ASSERT(pre_publish_index != NULL);
         ASSERT_EQ(vcs_package_index_count(pre_publish_index), 0);
@@ -2889,6 +2970,9 @@ static int test_zd_improve_command(void)
         (void)json_push_kv_str(&publish_commit_input,
                                "package_mapping_root",
                                package_mapping_hex);
+        (void)json_push_kv_str(&publish_commit_input,
+                               "publication_job_root",
+                               publication_job_hex);
         (void)json_push_kv_int(&publish_commit_input, "day", 20000);
         struct zcl_command_request publish_commit_request = {
             .input = &publish_commit_input,
@@ -2927,6 +3011,31 @@ static int test_zd_improve_command(void)
         ASSERT_STR_EQ(json_get_str(json_get(
                           &publish_commit_reply.data, "authority")),
                       "SIGNED_LANE_RECEIPT_AND_RELEASE_ENVELOPE");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &publish_commit_reply.data,
+                          "publication_status")),
+                      "RELEASE_PUBLISHED");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &publish_commit_reply.data,
+                          "publication_job_root")),
+                      publication_job_hex);
+        ASSERT(!json_get_bool(json_get(
+            &publish_commit_reply.data, "progress_reused")));
+        struct vcs_devloop_publication_receipt release_progress;
+        uint8_t release_progress_root[32];
+        ASSERT(vcs_devloop_publication_progress_load(
+            workspace, publication_anchor.publication_job_root,
+            &release_progress, release_progress_root));
+        ASSERT_EQ(release_progress.phase,
+                  VCS_DEVLOOP_PUBLICATION_PHASE_RELEASE_PUBLISHED);
+        const char *published_release_root = json_get_str(json_get(
+            &publish_commit_reply.data, "release_root"));
+        ASSERT(published_release_root != NULL);
+        uint8_t published_release[32];
+        ASSERT(zcl_hex_decode_lower(published_release_root,
+                                    published_release, 32));
+        ASSERT(memcmp(release_progress.artifact_root,
+                      published_release, 32) == 0);
         ASSERT(zd_no_accept_publish_stage(workspace));
         struct vcs_package_index *published_index =
             vcs_package_index_build(zcode_store_path);
@@ -2952,6 +3061,8 @@ static int test_zd_improve_command(void)
         ASSERT_STR_EQ(json_get_str(json_get(
                           &duplicate_publish_reply.data, "result")),
                       "duplicate");
+        ASSERT(json_get_bool(json_get(
+            &duplicate_publish_reply.data, "progress_reused")));
         ASSERT(zd_no_accept_publish_stage(workspace));
         zcl_command_reply_free(&duplicate_publish_reply);
         zcl_command_reply_free(&publish_commit_reply);
@@ -2961,6 +3072,7 @@ static int test_zd_improve_command(void)
         zcl_command_reply_free(&publish_plan_reply);
         json_free(&publish_plan_input);
         secp256k1_context_destroy(publish_ctx);
+        test_rm_rf(publication_seed);
 
         json_set_str((struct json_value *)json_get(&accept_input, "lane"),
                      "PROVEN");

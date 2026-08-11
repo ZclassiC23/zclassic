@@ -550,6 +550,80 @@ static int t_publication_enqueue(const char *dir)
                  first_map.bytes_scanned);
     zcl_command_reply_free(&advance_reply);
     json_free(&advance_input);
+
+    uint8_t release_root[32], released_progress_root[32];
+    memcpy(release_root, mapping_root, 32);
+    release_root[0] ^= 0x5au;
+    reused = true;
+    VD_CHECK("publication: release refuses the wrong mapping predecessor",
+             !vcs_devloop_publication_advance_release(
+                 dir, ar.publication_job_root, wrong_mapping_root,
+                 release_root, rejected_progress_root, &reused));
+    VD_CHECK("publication: wrong release predecessor is not reuse", !reused);
+    reused = true;
+    VD_CHECK("publication: signed release advances durable job",
+             vcs_devloop_publication_advance_release(
+                 dir, ar.publication_job_root, mapping_root,
+                 release_root, released_progress_root, &reused));
+    VD_CHECK("publication: first release phase is new", !reused);
+    VD_CHECK("publication: release phase reloads",
+             vcs_devloop_publication_progress_load(
+                 dir, ar.publication_job_root, &progress,
+                 loaded_progress_root));
+    VD_CHECK("publication: release phase named",
+             progress.phase ==
+                 VCS_DEVLOOP_PUBLICATION_PHASE_RELEASE_PUBLISHED);
+    VD_CHECK("publication: release phase binds authoritative root",
+             memcmp(progress.artifact_root, release_root, 32) == 0);
+    VD_CHECK("publication: release phase preserves mapping predecessor",
+             memcmp(progress.predecessor_receipt_root,
+                    mapped_progress_root, 32) == 0);
+    VD_CHECK("publication: release phase preserves scan metrics",
+             progress.bytes_scanned == first_map.bytes_scanned &&
+             progress.new_chunks == first_map.new_chunks &&
+             progress.reused_chunks == first_map.reused_chunks);
+    reused = false;
+    VD_CHECK("publication: release retry succeeds",
+             vcs_devloop_publication_advance_release(
+                 dir, ar.publication_job_root, mapping_root,
+                 release_root, accepted_retry_root, &reused));
+    VD_CHECK("publication: release retry reuses receipt", reused);
+    VD_CHECK("publication: release retry preserves receipt root",
+             memcmp(released_progress_root,
+                    accepted_retry_root, 32) == 0);
+    reused = false;
+    VD_CHECK("publication: mapping retry cannot regress release phase",
+             vcs_devloop_publication_advance_package_mapping(
+                 dir, ar.publication_job_root, mapping_root,
+                 warm_map.bytes_scanned, warm_map.new_chunks,
+                 warm_map.reused_chunks, accepted_retry_root, &reused));
+    VD_CHECK("publication: mapping retry returns release receipt", reused);
+    VD_CHECK("publication: mapping retry preserves release phase",
+             memcmp(released_progress_root,
+                    accepted_retry_root, 32) == 0);
+    zcl_hex_encode(release_root, 32, mapping_hex);
+    json_init(&advance_input);
+    json_set_object(&advance_input);
+    (void)json_push_kv_str(&advance_input, "job_root", job_hex);
+    zcl_command_reply_init(&advance_reply,
+                           "zcl.dev_publication_status.v1");
+    zcl_native_handle_dev_publication_status(
+        &advance_request, &advance_reply);
+    VD_CHECK("publication: native status preserves release phase",
+             advance_reply.exit_code == ZCL_COMMAND_EXIT_OK &&
+             strcmp(json_get_str(json_get(
+                        &advance_reply.data, "status")),
+                    "RELEASE_PUBLISHED") == 0);
+    VD_CHECK("publication: native status reports exact release root",
+             strcmp(json_get_str(json_get(
+                        &advance_reply.data, "release_root")),
+                    mapping_hex) == 0);
+    VD_CHECK("publication: native status names workspace next step",
+             strcmp(json_get_str(json_get(
+                        &advance_reply.data, "next_command")),
+                    "zclassic23 discover schema zcode.passport.plan") == 0);
+    zcl_command_reply_free(&advance_reply);
+    json_free(&advance_input);
     memset(signer_secret, 0, sizeof(signer_secret));
 
     vd_write(dir, "src/main.c", "int main(void){return 1;}\n");
