@@ -1254,21 +1254,43 @@ static int test_disabled_diagnostics(void) {
     };
     memset(params.network_genesis, 0x11, 32);
     memset(params.local_noise_static, 0x22, 32);
-    struct vcs_zcode_dht_service *disabled =
-        vcs_zcode_dht_service_create(&params);
-    struct vcs_zcode_dht_service_status status;
-    ASSERT(disabled != NULL);
-    vcs_zcode_dht_service_status(disabled, &status);
-    ASSERT(!status.enabled);
-    ASSERT_STR_EQ(status.disabled_reason, "V2_TRANSPORT_DISABLED");
-    vcs_zcode_dht_service_free(disabled, test_time(1000));
-    params.transport_enabled = true;
-    disabled = vcs_zcode_dht_service_create(&params);
-    ASSERT(disabled != NULL);
-    vcs_zcode_dht_service_status(disabled, &status);
-    ASSERT(!status.enabled);
-    ASSERT_STR_EQ(status.disabled_reason, "IDENTITY_MATERIAL_UNAVAILABLE");
-    vcs_zcode_dht_service_free(disabled, test_time(1000));
+    const uint8_t zero_id[32] = {0};
+    /* Repeat both early-return paths so the sanitizer lane exercises allocator
+     * reuse.  Every public view must stop before routing-table traversal or
+     * delegation decoding and must leave caller output untouched. */
+    for (size_t round = 0; round < 256; round++) {
+      params.transport_enabled = (round & 1u) != 0;
+      struct vcs_zcode_dht_service *disabled =
+          vcs_zcode_dht_service_create(&params);
+      struct vcs_zcode_dht_service_status status;
+      struct vcs_zcode_dht_peer_view peers[2], peers_before[2];
+      struct vcs_zcode_dht_delegation delegations[2], delegations_before[2];
+      ASSERT(disabled != NULL);
+      memset(peers, 0xa5, sizeof(peers));
+      memcpy(peers_before, peers, sizeof(peers));
+      memset(delegations, 0x5a, sizeof(delegations));
+      memcpy(delegations_before, delegations, sizeof(delegations));
+      memset(&status, 0xcc, sizeof(status));
+      vcs_zcode_dht_service_status(disabled, &status);
+      ASSERT(!status.enabled);
+      ASSERT_STR_EQ(status.disabled_reason,
+                    params.transport_enabled
+                        ? "IDENTITY_MATERIAL_UNAVAILABLE"
+                        : "V2_TRANSPORT_DISABLED");
+      ASSERT(memcmp(status.local_node_id, zero_id, sizeof(zero_id)) == 0);
+      ASSERT_EQ(status.contacts, 0);
+      ASSERT_EQ(status.buckets_used, 0);
+      ASSERT_EQ(status.pending_probes, 0);
+      ASSERT_EQ(status.active_queries, 0);
+      ASSERT_EQ(status.signed_records, 0);
+      ASSERT_EQ(vcs_zcode_dht_service_peers(disabled, 1000, peers, 2, 0), 0);
+      ASSERT(memcmp(peers, peers_before, sizeof(peers)) == 0);
+      ASSERT_EQ(vcs_zcode_dht_service_delegations(disabled, delegations, 2),
+                0);
+      ASSERT(memcmp(delegations, delegations_before, sizeof(delegations)) ==
+             0);
+      vcs_zcode_dht_service_free(disabled, test_time(1000));
+    }
 
     struct json_value dump;
     json_init(&dump);

@@ -370,7 +370,10 @@ vcs_zcode_dht_service_create(const struct vcs_zcode_dht_service_params *p) {
       zcl_calloc(1, sizeof(*s), "zcode_dht_service");
   if (!s)
     return NULL;
-  s->table = zcl_malloc(sizeof(*s->table), "zcode_dht_table");
+  /* Disabled services are still observable through status/peer/delegation
+   * readers.  Keep their routing state deterministic even when creation
+   * returns before identity verification initializes the table. */
+  s->table = zcl_calloc(1, sizeof(*s->table), "zcode_dht_table");
   if (!s->table) {
     free(s);
     return NULL;

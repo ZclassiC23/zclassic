@@ -22,6 +22,14 @@ void vcs_zcode_dht_service_status(const struct vcs_zcode_dht_service *s,
     return;
   out->enabled = s->enabled;
   memcpy(out->local_node_id, s->self_id, 32);
+  (void)snprintf(out->disabled_reason, sizeof(out->disabled_reason), "%s",
+                 s->disabled_reason);
+  (void)snprintf(out->last_error, sizeof(out->last_error), "%s", s->last_error);
+  /* A missing transport or identity is an empty service, not a partially
+   * initialized routing table.  In particular, do not inspect table counts
+   * or discovery stores that were never admitted for use. */
+  if (!s->enabled)
+    return;
   out->contacts = vcs_zcode_dht_table_count(s->table);
   for (size_t i = 0; i < VCS_ZCODE_DHT_BUCKET_COUNT; i++)
     out->buckets_used += s->table->bucket_sizes[i] != 0;
@@ -68,9 +76,6 @@ void vcs_zcode_dht_service_status(const struct vcs_zcode_dht_service *s,
   out->persistence_dirty = s->persistence_dirty;
   out->persistence_load_count = s->persistence_load_count;
   out->persistence_save_count = s->persistence_save_count;
-  (void)snprintf(out->disabled_reason, sizeof(out->disabled_reason), "%s",
-                 s->disabled_reason);
-  (void)snprintf(out->last_error, sizeof(out->last_error), "%s", s->last_error);
   for (size_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_PEERS; i++)
     if (s->peers[i].used && s->peers[i].connected && s->peers[i].authenticated)
       out->connected_authenticated++;
@@ -93,7 +98,7 @@ size_t vcs_zcode_dht_service_peers(const struct vcs_zcode_dht_service *s,
                                    uint64_t now,
                                    struct vcs_zcode_dht_peer_view *out,
                                    size_t max, size_t offset) {
-  if (!s || !out || !max)
+  if (!s || !s->enabled || !out || !max)
     return 0;
   if (max > VCS_ZCODE_DHT_SERVICE_MAX_PEERS)
     max = VCS_ZCODE_DHT_SERVICE_MAX_PEERS;
@@ -136,7 +141,7 @@ size_t vcs_zcode_dht_service_peers(const struct vcs_zcode_dht_service *s,
 size_t vcs_zcode_dht_service_delegations(
     const struct vcs_zcode_dht_service *s,
     struct vcs_zcode_dht_delegation *out, size_t max) {
-  if (!s || !out || !max)
+  if (!s || !s->enabled || !out || !max)
     return 0;
   size_t count = 0;
   if (s->enabled && count < max)
