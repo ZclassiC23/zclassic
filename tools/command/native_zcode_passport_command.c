@@ -8,6 +8,7 @@
 #include "json/json.h"
 #include "services/zcode_passport_view_service.h"
 #include "vcs/package_mapping.h"
+#include "vcs/package_release.h"
 #include "vcs/vcs_devloop.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_commons_v2.h"
@@ -232,17 +233,35 @@ static bool passport_job_preflight(
         memcmp(passport->workspace_lineage_root,
                job.vcs_commit_root, 32) == 0 &&
         memcmp(passport->tests_root, lane.proof_set_root, 32) == 0;
+    uint8_t *release_wire = NULL;
+    size_t release_wire_len = 0;
+    struct vcs_package_release envelope;
+    uint8_t checked_release_root[32];
+    valid = valid && vcs_object_load_raw_bounded(
+            binding->workspace, release.artifact_root,
+            VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES,
+            &release_wire, &release_wire_len) == 0 &&
+        vcs_package_release_parse(
+            release_wire, release_wire_len, &envelope) ==
+            VCS_PACKAGE_RELEASE_OK &&
+        vcs_package_release_verify(&envelope) == VCS_PACKAGE_RELEASE_OK &&
+        vcs_package_release_id(
+            &envelope, checked_release_root) == VCS_PACKAGE_RELEASE_OK &&
+        memcmp(checked_release_root, release.artifact_root, 32) == 0 &&
+        memcmp(passport->recipe_root, envelope.recipe_root, 32) == 0;
     if (valid) {
         memcpy(binding->mapping_root, mapping.artifact_root, 32);
         memcpy(binding->release_root, release.artifact_root, 32);
     }
+    free(release_wire);
     free(lane_wire);
     vcs_package_mapping_set_free(&mapping_set);
     if (!valid) {
         passport_fail_action(
             reply, "MODULE_PASSPORT_JOB_BINDING_INVALID", "bind",
             "publication_job_root must be queued at RELEASE_PUBLISHED and "
-            "the Passport must bind its exact ZVCS commit and accepted proof set",
+            "the Passport must bind its exact signed release recipe, ZVCS "
+            "commit, and accepted proof set",
             "dev publication status");
         return false;
     }

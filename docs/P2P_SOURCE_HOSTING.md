@@ -88,6 +88,13 @@ containing the existing canonical ZVCS manifest followed by its verified blob
 bytes in manifest order. This is not another source identity or VCS. The
 accepted ZVCS tree root remains authoritative, and the surrounding
 `content.v2` package/release authenticates the compressed transport bytes.
+The PROVEN `zcode publish plan` path now derives this carrier directly from
+the human-accepted root. Its four files are the exact top-level `LICENSE`,
+`zclassic23-source.zvsb`, the signed `zcode-lane-receipt.v1`, and an inert
+`zcode-source-transport.c` marker. The signed release commits a declarative
+recipe that compiles only that marker; the independently reverified task
+acceptance recipe remains bound through the signed lane receipt and is
+reported separately as `acceptance_recipe_root`.
 
 Creation reloads and rehashes every blob from ZVCS CAS. Verification
 decompresses under fixed manifest/source/wire limits, parses the canonical

@@ -31,8 +31,10 @@
 #include "vcs/vcs_manifest.h"
 #include "vcs/vcs_object.h"
 #include "vcs/package_manifest.h"
+#include "vcs/package_recipe.h"
 #include "vcs/package_swarm.h"
 #include "vcs/source_bundle.h"
+#include "vcs/source_package_transport.h"
 #include "vcs/vcs_seal.h"
 
 #include "base/hex.h"
@@ -113,6 +115,14 @@ static bool vc_corrupt_object(const char *workspace, const uint8_t root[32])
         vc_write_bytes(path, corrupt, sizeof(corrupt));
 }
 
+static bool vc_package_has_path(const struct vcs_package_manifest *manifest,
+                                const char *path)
+{
+    for (size_t i = 0; manifest && i < manifest->count; i++)
+        if (strcmp(manifest->files[i].path, path) == 0) return true;
+    return false;
+}
+
 static int t_source_bundle(void)
 {
     int failures = 0;
@@ -151,6 +161,45 @@ static int t_source_bundle(void)
                                       &verified) == VCS_SOURCE_BUNDLE_OK &&
              verified.file_count == created.file_count &&
              !vcs_object_store_initialized(consumer));
+
+    uint8_t lane_wire[128];
+    memset(lane_wire, 0x5a, sizeof(lane_wire));
+    struct vcs_source_package_transport transport;
+    vcs_source_package_transport_init(&transport);
+    VC_CHECK("source package carries verified tree through content.v2",
+             vcs_source_package_transport_build(
+                 source, first_root, lane_wire, sizeof(lane_wire),
+                 &transport) && transport.bundle_wire_len == first_wire_len &&
+             memcmp(transport.bundle_wire, first_wire, first_wire_len) == 0);
+    struct vcs_package_manifest carrier;
+    VC_CHECK("source package manifest is canonical four-file carrier",
+             vcs_package_manifest_parse(
+                 transport.manifest_wire, transport.manifest_wire_len,
+                 &carrier) && carrier.count == 4 &&
+             vc_package_has_path(
+                 &carrier, VCS_SOURCE_PACKAGE_BUNDLE_PATH) &&
+             vc_package_has_path(
+                 &carrier, VCS_SOURCE_PACKAGE_LANE_PATH) &&
+             vc_package_has_path(
+                 &carrier, VCS_SOURCE_PACKAGE_MARKER_PATH) &&
+             vc_package_has_path(
+                 &carrier, VCS_SOURCE_PACKAGE_LICENSE_PATH));
+    vcs_package_manifest_free(&carrier);
+    struct vcs_package_recipe carrier_recipe;
+    uint8_t carrier_recipe_root[32];
+    VC_CHECK("source package recipe builds only inert carrier marker",
+             vcs_package_recipe_parse(
+                 transport.recipe_wire, transport.recipe_wire_len,
+                 &carrier_recipe) == VCS_PACKAGE_RECIPE_OK &&
+             carrier_recipe.sources.count == 1 &&
+             strcmp(carrier_recipe.sources.items[0],
+                    VCS_SOURCE_PACKAGE_MARKER_PATH) == 0 &&
+             vcs_package_recipe_root(
+                 &carrier_recipe, carrier_recipe_root) ==
+                 VCS_PACKAGE_RECIPE_OK &&
+             memcmp(carrier_recipe_root, transport.recipe_root, 32) == 0);
+    vcs_package_recipe_free(&carrier_recipe);
+    vcs_source_package_transport_free(&transport);
 
     uint8_t wrong_root[32];
     memcpy(wrong_root, first_root, sizeof(wrong_root));

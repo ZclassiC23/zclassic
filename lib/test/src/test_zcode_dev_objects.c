@@ -2960,17 +2960,30 @@ static int test_zd_improve_command(void)
             &publish_plan_reply.data, "release_signing_digest"));
         const char *planned_package_hex = json_get_str(json_get(
             &publish_plan_reply.data, "package_root"));
+        const char *planned_recipe_hex = json_get_str(json_get(
+            &publish_plan_reply.data, "recipe_root"));
         ASSERT(release_body_hex && signing_digest_hex &&
-               planned_package_hex && strlen(signing_digest_hex) == 64 &&
+               planned_package_hex && planned_recipe_hex &&
+               strlen(signing_digest_hex) == 64 &&
                strlen(planned_package_hex) == 64);
         char release_body_saved[2 * VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES + 1u];
-        char planned_package_saved[65];
+        char planned_package_saved[65], planned_recipe_saved[65];
         ASSERT(strlen(release_body_hex) < sizeof(release_body_saved));
         (void)snprintf(release_body_saved, sizeof(release_body_saved), "%s",
                        release_body_hex);
         (void)snprintf(planned_package_saved,
                        sizeof(planned_package_saved), "%s",
                        planned_package_hex);
+        (void)snprintf(planned_recipe_saved,
+                       sizeof(planned_recipe_saved), "%s",
+                       planned_recipe_hex);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &publish_plan_reply.data, "source_transport")),
+                      "vcs_source_bundle.v1");
+        ASSERT_EQ(json_get_int(json_get(
+                      &publish_plan_reply.data, "source_files")), 5);
+        ASSERT(json_get_int(json_get(
+                   &publish_plan_reply.data, "source_bundle_bytes")) > 0);
         uint8_t signing_digest[32], publish_signature[64];
         ASSERT(zcl_hex_decode_lower(signing_digest_hex,
                                     signing_digest, 32));
@@ -3099,7 +3112,7 @@ static int test_zd_improve_command(void)
         ASSERT_STR_EQ(published_entry->name, "fixture/accepted");
         ASSERT(published_entry->manifest_present);
         ASSERT(published_entry->license_present);
-        ASSERT_EQ(published_entry->file_count, 6u);
+        ASSERT_EQ(published_entry->file_count, 4u);
         vcs_package_index_free(published_index);
 
         struct zcl_command_reply duplicate_publish_reply;
@@ -3132,7 +3145,8 @@ static int test_zd_improve_command(void)
                       &accepted_lane), VCS_ZCODE_DEV_OK);
         free(accepted_lane_wire);
         zd_root(publication_passport.stable_api_root, 0x81);
-        zd_root(publication_passport.recipe_root, 0x82);
+        ASSERT(zcl_hex_decode_lower(planned_recipe_saved,
+                                    publication_passport.recipe_root, 32));
         zd_root(publication_passport.toolchain_root, 0x83);
         memcpy(publication_passport.tests_root,
                accepted_lane.proof_set_root, 32);
@@ -3181,6 +3195,30 @@ static int test_zd_improve_command(void)
         struct zcl_command_request passport_plan_request = {
             .input = &passport_plan_input,
         };
+        struct json_value *passport_recipe_value =
+            (struct json_value *)json_get(&passport_plan_input,
+                                           "recipe_root");
+        char correct_passport_recipe[65], wrong_passport_recipe[65];
+        (void)snprintf(correct_passport_recipe,
+                       sizeof(correct_passport_recipe), "%s",
+                       json_get_str(passport_recipe_value));
+        (void)snprintf(wrong_passport_recipe,
+                       sizeof(wrong_passport_recipe), "%s",
+                       correct_passport_recipe);
+        wrong_passport_recipe[0] =
+            wrong_passport_recipe[0] == '0' ? '1' : '0';
+        json_set_str(passport_recipe_value, wrong_passport_recipe);
+        struct zcl_command_reply wrong_recipe_passport_reply;
+        zcl_command_reply_init(&wrong_recipe_passport_reply,
+                               "zcl.zcode_passport_plan.v1");
+        zcl_native_handle_zcode_passport_plan(
+            &passport_plan_request, &wrong_recipe_passport_reply);
+        ASSERT_EQ(wrong_recipe_passport_reply.exit_code,
+                  ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(wrong_recipe_passport_reply.error.code,
+                      "MODULE_PASSPORT_JOB_BINDING_INVALID");
+        zcl_command_reply_free(&wrong_recipe_passport_reply);
+        json_set_str(passport_recipe_value, correct_passport_recipe);
         struct json_value *passport_tests_value =
             (struct json_value *)json_get(&passport_plan_input,
                                            "tests_root");

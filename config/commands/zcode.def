@@ -1900,9 +1900,10 @@ ZCL_COMMAND_READY_READ(
     "Re-verifies the exact PROVEN receipt produced by zcode work accept, its "
     "complete predecessor chain, every bound "
     "task/candidate/policy object, the canonical proof set, and every signed "
-    "work receipt from the workspace CAS. Re-derives content.v2 from the "
-    "accepted source blobs, embeds the exact lane receipt as "
-    "zcode-lane-receipt.v1, binds the task acceptance recipe and current "
+    "work receipt from the workspace CAS. Re-derives a compressed ZVCS "
+    "carrier from the accepted source blobs, embeds it and the exact lane "
+    "receipt in an ordinary content.v2 package, and binds its inert transport "
+    "recipe, the task acceptance recipe, and current "
     "publisher lineage, and returns an unsigned release body plus signing "
     "digest. The publisher secret never enters this command; sign the digest "
     "offline and pass the detached signature to zcode package dev seal. No "
@@ -1926,9 +1927,10 @@ ZCL_COMMAND_READY_COMMAND(
     "zcode.publish",
     "Publish one offline-signed PROVEN-work release",
     "Rebuilds the complete PROVEN-work plan from CAS, verifies release_hex "
-    "as a canonical low-S secp256k1 envelope over the exact accepted package, "
-    "task recipe, chain and current publisher lineage, then delegates to the "
-    "existing zcode.package.publish commit lifecycle. The source is staged "
+    "as a canonical low-S secp256k1 envelope over the exact accepted source "
+    "carrier, transport recipe, chain and current publisher lineage, then "
+    "delegates to the "
+    "existing zcode.package.publish commit lifecycle. The verified carrier is staged "
     "only after signature verification in a unique directory beneath the "
     "explicit datadir and is removed after commit. Duplicate delivery is "
     "idempotent. No secret, wallet, or second package store is accepted.",
