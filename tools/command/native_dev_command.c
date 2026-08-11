@@ -326,14 +326,35 @@ void zcl_native_handle_dev_publication_status(
     uint8_t progress_root[32];
     bool advanced = queued && vcs_devloop_publication_progress_load(
         root, job_root, &progress, progress_root);
+    bool storage_acknowledged = advanced && progress.phase ==
+        VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED;
+    struct vcs_devloop_publication_receipt provider_receipt = {0};
     bool provider_announced = advanced && progress.phase ==
         VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED;
+    if (storage_acknowledged) {
+        provider_announced = vcs_devloop_publication_receipt_load(
+                root, progress.predecessor_receipt_root,
+                &provider_receipt) &&
+            provider_receipt.phase ==
+                VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED &&
+            memcmp(provider_receipt.job_root, job_root, 32) == 0;
+        if (!provider_announced) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "PUBLICATION_ACK_CHAIN_INVALID", "load", true, false,
+                "the storage ACK phase has no verified provider predecessor",
+                job_hex);
+            return;
+        }
+    } else if (provider_announced) {
+        provider_receipt = progress;
+    }
     struct vcs_devloop_publication_receipt workspace_receipt = {0};
     bool workspace_published = advanced && progress.phase ==
         VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED;
     if (provider_announced) {
         workspace_published = vcs_devloop_publication_receipt_load(
-                root, progress.predecessor_receipt_root,
+                root, provider_receipt.predecessor_receipt_root,
                 &workspace_receipt) &&
             workspace_receipt.phase ==
                 VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED &&
@@ -413,7 +434,8 @@ void zcl_native_handle_dev_publication_status(
         (progress.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND ||
          mapping_ready || release_published || passport_published ||
-         workspace_published || provider_announced);
+         workspace_published || provider_announced ||
+         storage_acknowledged);
     struct vcs_package_mapping_set mapping;
     vcs_package_mapping_set_init(&mapping);
     const uint8_t *mapping_root = release_published
@@ -446,7 +468,7 @@ void zcl_native_handle_dev_publication_status(
           memcmp(mirror.workspace_root,
                  workspace_receipt.artifact_root, 32) != 0 ||
           memcmp(mirror.provider_record_root,
-                 progress.artifact_root, 32) != 0))) {
+                 provider_receipt.artifact_root, 32) != 0))) {
         vcs_package_mapping_set_free(&mapping);
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
@@ -473,6 +495,7 @@ void zcl_native_handle_dev_publication_status(
                            "zcl.dev_publication_status.v1");
     (void)json_push_kv_str(
         &reply->data, "status",
+        storage_acknowledged ? "STORAGE_ACKNOWLEDGED" :
         provider_announced ? "PROVIDER_ANNOUNCED" :
         workspace_published ? "WORKSPACE_PUBLISHED" :
         passport_published ? "PASSPORT_PUBLISHED" :
@@ -519,6 +542,9 @@ void zcl_native_handle_dev_publication_status(
                              workspace_receipt.artifact_root);
     if (provider_announced)
         DEV_PUBLICATION_ROOT("provider_record_root",
+                             provider_receipt.artifact_root);
+    if (storage_acknowledged)
+        DEV_PUBLICATION_ROOT("storage_ack_set_root",
                              progress.artifact_root);
 #undef DEV_PUBLICATION_ROOT
     (void)json_push_kv_str(
@@ -533,7 +559,14 @@ void zcl_native_handle_dev_publication_status(
                                               : "not_announced");
     (void)json_push_kv_int(&reply->data, "providers",
                            provider_announced ? progress.providers : 0);
-    (void)json_push_kv_str(&reply->data, "storage_ack", "0/2");
+    char storage_ack_status[16];
+    int storage_ack_len = snprintf(
+        storage_ack_status, sizeof(storage_ack_status), "%u/2",
+        advanced ? progress.storage_acks : 0u);
+    if (storage_ack_len > 0 &&
+        (size_t)storage_ack_len < sizeof(storage_ack_status))
+        (void)json_push_kv_str(&reply->data, "storage_ack",
+                               storage_ack_status);
     (void)json_push_kv_str(&reply->data, "reproduced", "no_record");
     (void)json_push_kv_str(
         &reply->data, "github_mirror",
@@ -549,6 +582,7 @@ void zcl_native_handle_dev_publication_status(
     }
     (void)json_push_kv_str(
         &reply->data, "blocker",
+        storage_acknowledged ? "remote_reproduction_required" :
         provider_announced ? "storage_ack_required" :
         workspace_published ? "provider_announcement_required" :
         passport_published ? "workspace_manifest_signature_required" :
@@ -559,6 +593,8 @@ void zcl_native_handle_dev_publication_status(
                : "durable_publication_queue_record_missing");
     (void)json_push_kv_str(
         &reply->data, "next_command",
+        storage_acknowledged ?
+            "zclassic23 discover search source fetch" :
         provider_announced ?
             "zclassic23 discover schema zcode.network.storage_ack" :
         workspace_published ?
@@ -637,14 +673,35 @@ void zcl_native_handle_dev_publication_advance(
     const char *datadir = json_get_str(json_get(request->input, "datadir"));
     uint8_t lane_root[32];
     char proof_set_hex[65] = "", lane_name[16] = "";
+    bool storage_acknowledged = have_progress && progress.phase ==
+        VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED;
+    struct vcs_devloop_publication_receipt provider_receipt = {0};
     bool provider_announced = have_progress && progress.phase ==
         VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED;
+    if (storage_acknowledged) {
+        provider_announced = vcs_devloop_publication_receipt_load(
+                repo_root, progress.predecessor_receipt_root,
+                &provider_receipt) &&
+            provider_receipt.phase ==
+                VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED &&
+            memcmp(provider_receipt.job_root, job_root, 32) == 0;
+        if (!provider_announced) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "PUBLICATION_ACK_CHAIN_INVALID", "load", true, false,
+                "the storage ACK phase has no verified provider predecessor",
+                job_hex);
+            return;
+        }
+    } else if (provider_announced) {
+        provider_receipt = progress;
+    }
     struct vcs_devloop_publication_receipt workspace_receipt = {0};
     bool workspace_published = have_progress && progress.phase ==
         VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED;
     if (provider_announced) {
         workspace_published = vcs_devloop_publication_receipt_load(
-                repo_root, progress.predecessor_receipt_root,
+                repo_root, provider_receipt.predecessor_receipt_root,
                 &workspace_receipt) &&
             workspace_receipt.phase ==
                 VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED &&
@@ -724,7 +781,8 @@ void zcl_native_handle_dev_publication_advance(
         (progress.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND ||
          mapping_ready || release_published || passport_published ||
-         workspace_published || provider_announced);
+         workspace_published || provider_announced ||
+         storage_acknowledged);
     bool acceptance_verified = false;
     if (datadir && datadir[0] && have_job) {
         char workspace[PATH_MAX];
@@ -792,6 +850,7 @@ void zcl_native_handle_dev_publication_advance(
     (void)json_push_kv_str(&reply->data, "schema",
                            "zcl.dev_publication_advance.v1");
     (void)json_push_kv_str(&reply->data, "status",
+                           storage_acknowledged ? "STORAGE_ACKNOWLEDGED" :
                            provider_announced ? "PROVIDER_ANNOUNCED" :
                            workspace_published ? "WORKSPACE_PUBLISHED" :
                            passport_published ? "PASSPORT_PUBLISHED" :
@@ -866,11 +925,19 @@ void zcl_native_handle_dev_publication_advance(
         }
         if (provider_announced) {
             char provider_hex[65];
-            zcl_hex_encode(progress.artifact_root, 32, provider_hex);
+            zcl_hex_encode(provider_receipt.artifact_root, 32, provider_hex);
             (void)json_push_kv_str(&reply->data, "provider_record_root",
                                    provider_hex);
             (void)json_push_kv_int(&reply->data, "providers",
                                    progress.providers);
+        }
+        if (storage_acknowledged) {
+            char ack_set_hex[65];
+            zcl_hex_encode(progress.artifact_root, 32, ack_set_hex);
+            (void)json_push_kv_str(&reply->data, "storage_ack_set_root",
+                                   ack_set_hex);
+            (void)json_push_kv_int(&reply->data, "storage_acks",
+                                   progress.storage_acks);
         }
         if (lane_name[0])
             (void)json_push_kv_str(&reply->data, "lane", lane_name);
@@ -883,6 +950,7 @@ void zcl_native_handle_dev_publication_advance(
         &reply->data, "blocker",
         lane_bound && !acceptance_verified
             ? "proven_work_datadir_reverification_required" :
+        storage_acknowledged ? "remote_reproduction_required" :
         provider_announced ? "storage_ack_required" :
         workspace_published ? "provider_announcement_required" :
         passport_published ? "workspace_manifest_signature_required" :
@@ -900,6 +968,8 @@ void zcl_native_handle_dev_publication_advance(
         &reply->data, "next_command",
         lane_bound && !acceptance_verified
             ? "zclassic23 discover schema dev.publication.advance" :
+        storage_acknowledged ?
+            "zclassic23 discover search source fetch" :
         provider_announced ?
             "zclassic23 discover schema zcode.network.storage_ack" :
         workspace_published ?

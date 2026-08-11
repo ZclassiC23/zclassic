@@ -202,7 +202,7 @@ static void zwn_print_sovereign_receipt(void)
            ",\"reproduced\":true,\"provider_failover\":true"
            ",\"corrupt_chunk_recovery\":true"
            ",\"previous_release_fetchable\":true"
-           ",\"publication_job\":\"provider_announced\""
+           ",\"publication_job\":\"storage_acknowledged\""
            ",\"github_mirror\":\"not_applicable_fixture\"}\n",
            r->source_metrics.source_bytes,
            r->source_metrics.new_blobs,
@@ -2029,6 +2029,10 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         ASSERT(vcs_zcode_dht_record_encode(
                    &provider_record, provider_wire) ==
                VCS_ZCODE_DHT_RECORD_OK);
+        uint8_t provider_record_root[32];
+        ASSERT(vcs_zcode_dht_record_id(
+                   &provider_record, provider_record_root) ==
+               VCS_ZCODE_DHT_RECORD_OK);
         struct vcs_zcode_dht_record_verify_context provider_verify;
         memset(&provider_verify, 0, sizeof(provider_verify));
         memset(provider_verify.network_genesis, 0x71,
@@ -2264,6 +2268,68 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         ASSERT(memcmp(storage_ack_records[0].owner_group,
                       storage_ack_records[1].owner_group, 32) != 0);
         ASSERT(memcmp(storage_ack_roots[0], storage_ack_roots[1], 32) != 0);
+        uint8_t storage_ack_wires[2][VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+        const uint8_t *storage_ack_wire_ptrs[2] = {
+            storage_ack_wires[0], storage_ack_wires[1],
+        };
+        size_t storage_ack_wire_lengths[2] = {
+            VCS_ZCODE_DHT_RECORD_WIRE_BYTES,
+            VCS_ZCODE_DHT_RECORD_WIRE_BYTES,
+        };
+        ASSERT(vcs_zcode_dht_record_encode(
+                   &storage_ack_records[0], storage_ack_wires[0]) ==
+               VCS_ZCODE_DHT_RECORD_OK);
+        ASSERT(vcs_zcode_dht_record_encode(
+                   &storage_ack_records[1], storage_ack_wires[1]) ==
+               VCS_ZCODE_DHT_RECORD_OK);
+        const uint8_t *duplicate_ack_wires[2] = {
+            storage_ack_wires[0], storage_ack_wires[0],
+        };
+        uint8_t storage_ack_progress_root[32];
+        bool storage_ack_progress_reused = true;
+        ASSERT(!vcs_devloop_publication_advance_storage_acks(
+            publisher, publication_anchor.publication_job_root,
+            duplicate_ack_wires, storage_ack_wire_lengths, 2,
+            &provider_verify, storage_ack_progress_root,
+            &storage_ack_progress_reused));
+        ASSERT(!storage_ack_progress_reused);
+        ASSERT(vcs_devloop_publication_advance_storage_acks(
+            publisher, publication_anchor.publication_job_root,
+            storage_ack_wire_ptrs, storage_ack_wire_lengths, 2,
+            &provider_verify, storage_ack_progress_root,
+            &storage_ack_progress_reused));
+        ASSERT(!storage_ack_progress_reused);
+        ASSERT(vcs_devloop_publication_progress_load(
+            publisher, publication_anchor.publication_job_root,
+            &publication_progress, loaded_publication_progress_root));
+        ASSERT(publication_progress.phase ==
+               VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED);
+        ASSERT(publication_progress.providers == 2);
+        ASSERT(publication_progress.storage_acks == 2);
+        ASSERT(memcmp(publication_progress.predecessor_receipt_root,
+                      provider_progress_root, 32) == 0);
+        ASSERT(memcmp(loaded_publication_progress_root,
+                      storage_ack_progress_root, 32) == 0);
+        const uint8_t *reversed_ack_wires[2] = {
+            storage_ack_wires[1], storage_ack_wires[0],
+        };
+        storage_ack_progress_reused = false;
+        ASSERT(vcs_devloop_publication_advance_storage_acks(
+            publisher, publication_anchor.publication_job_root,
+            reversed_ack_wires, storage_ack_wire_lengths, 2,
+            &provider_verify, loaded_publication_progress_root,
+            &storage_ack_progress_reused));
+        ASSERT(storage_ack_progress_reused);
+        ASSERT(memcmp(loaded_publication_progress_root,
+                      storage_ack_progress_root, 32) == 0);
+        provider_progress_reused = false;
+        ASSERT(vcs_devloop_publication_advance_provider(
+            publisher, publication_anchor.publication_job_root,
+            provider_wire, sizeof(provider_wire), &provider_verify,
+            loaded_publication_progress_root, &provider_progress_reused));
+        ASSERT(provider_progress_reused);
+        ASSERT(memcmp(loaded_publication_progress_root,
+                      storage_ack_progress_root, 32) == 0);
 
         memset(&g_zwn_sovereign_receipt, 0,
                sizeof(g_zwn_sovereign_receipt));
@@ -2294,11 +2360,11 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
                storage_ack_roots, sizeof(storage_ack_roots));
         g_zwn_sovereign_receipt.storage_ack_count = 2;
         memcpy(g_zwn_sovereign_receipt.provider_record_root,
-               publication_progress.artifact_root, 32);
+               provider_record_root, 32);
         memcpy(g_zwn_sovereign_receipt.publication_job_root,
                publication_anchor.publication_job_root, 32);
         memcpy(g_zwn_sovereign_receipt.publication_progress_root,
-               provider_progress_root, 32);
+               storage_ack_progress_root, 32);
         g_zwn_sovereign_receipt.publication_enqueue_us =
             publication_anchor.publication_enqueue_us;
         g_zwn_sovereign_receipt.publication_metrics = publication_metrics;

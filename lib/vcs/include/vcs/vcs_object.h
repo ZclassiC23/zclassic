@@ -35,6 +35,7 @@ enum vcs_object_tag {
     VCS_TAG_PACKAGE_BLOB_MAP = 0x29, /* ZVCS blob -> content.v2 chunks */
     VCS_TAG_PACKAGE_MAPPING_SET = 0x2a, /* source/lane mapping inventory */
     VCS_TAG_DEV_MIRROR_RECEIPT = 0x2b, /* optional declared Git mirror */
+    VCS_TAG_PUBLICATION_ACK_SET = 0x2c, /* sorted authoritative DHT ACK roots */
 };
 
 /* Ensure the object store directory tree exists under <repo_root>/.zvcs/

@@ -114,6 +114,47 @@ static bool zd_provider_record(
     return ok;
 }
 
+static bool zd_storage_ack_record(
+    const uint8_t transport_root[32], uint8_t identity_byte,
+    uint8_t owner_group_byte, struct vcs_zcode_dht_record *record,
+    uint8_t wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES])
+{
+    uint8_t online_seed[32], online_pub[32], online_secret[32];
+    uint8_t noise[32], beacon[32], master_seed[32], genesis[32];
+    memset(online_seed, identity_byte, sizeof(online_seed));
+    memset(noise, (uint8_t)(identity_byte + 1u), sizeof(noise));
+    memset(beacon, 0x44, sizeof(beacon));
+    memset(master_seed, (uint8_t)(identity_byte + 2u),
+           sizeof(master_seed));
+    memset(genesis, 0x01, sizeof(genesis));
+    ed25519_keypair(online_pub, online_secret, online_seed);
+    memset(online_secret, 0, sizeof(online_secret));
+    memset(record, 0, sizeof(*record));
+    record->kind = VCS_ZCODE_DHT_RECORD_STORAGE_ACK;
+    (void)snprintf(record->namespace_name, sizeof(record->namespace_name),
+                   "zclassic23.source");
+    memcpy(record->network_genesis, genesis, 32);
+    memcpy(record->transport_root, transport_root, 32);
+    memset(record->owner_group, owner_group_byte,
+           sizeof(record->owner_group));
+    record->sequence = 1;
+    record->not_before = 1200;
+    record->expiry = 1800;
+    bool ok = vcs_zcode_dht_delegation_sign(
+            &record->delegation, genesis, online_pub, noise, 120, beacon,
+            1000, 3000, 1, master_seed) ==
+            VCS_ZCODE_DHT_DELEGATION_OK &&
+        vcs_zcode_dht_delegation_node_id(
+            record->provider_node_id, &record->delegation) &&
+        vcs_zcode_dht_record_sign(record, online_seed) ==
+            VCS_ZCODE_DHT_RECORD_OK &&
+        vcs_zcode_dht_record_encode(record, wire) ==
+            VCS_ZCODE_DHT_RECORD_OK;
+    memset(online_seed, 0, sizeof(online_seed));
+    memset(master_seed, 0, sizeof(master_seed));
+    return ok;
+}
+
 static bool zd_secp_pubkey(secp256k1_context *ctx,
                            const uint8_t secret[32], uint8_t out[33])
 {
@@ -3852,6 +3893,64 @@ static int test_zd_improve_command(void)
         ASSERT_STR_EQ(json_get_str(json_get(
                           &provider_status_reply.data, "mirror_git_oid")),
                       mirror_git_hex);
+        zcl_command_reply_free(&provider_status_reply);
+
+        struct vcs_zcode_dht_record ack_records[2];
+        uint8_t ack_wires[2][VCS_ZCODE_DHT_RECORD_WIRE_BYTES];
+        ASSERT(zd_storage_ack_record(
+            provider_transport_root, 0x31, 0x41,
+            &ack_records[0], ack_wires[0]));
+        ASSERT(zd_storage_ack_record(
+            provider_transport_root, 0x32, 0x42,
+            &ack_records[1], ack_wires[1]));
+        const uint8_t *ack_wire_ptrs[2] = {ack_wires[0], ack_wires[1]};
+        size_t ack_wire_lengths[2] = {
+            VCS_ZCODE_DHT_RECORD_WIRE_BYTES,
+            VCS_ZCODE_DHT_RECORD_WIRE_BYTES,
+        };
+        uint8_t ack_progress_root[32];
+        bool ack_reused = true;
+        ASSERT(vcs_devloop_publication_advance_storage_acks(
+            workspace, publication_anchor.publication_job_root,
+            ack_wire_ptrs, ack_wire_lengths, 2, &provider_verify,
+            ack_progress_root, &ack_reused));
+        ASSERT(!ack_reused);
+        struct vcs_devloop_publication_receipt ack_progress;
+        uint8_t loaded_ack_progress_root[32];
+        ASSERT(vcs_devloop_publication_progress_load(
+            workspace, publication_anchor.publication_job_root,
+            &ack_progress, loaded_ack_progress_root));
+        ASSERT_EQ(ack_progress.phase,
+                  VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED);
+        ASSERT_EQ(ack_progress.providers, 2u);
+        ASSERT_EQ(ack_progress.storage_acks, 2u);
+        ASSERT(memcmp(ack_progress.predecessor_receipt_root,
+                      provider_progress_root, 32) == 0);
+        ASSERT(memcmp(ack_progress_root,
+                      loaded_ack_progress_root, 32) == 0);
+        zcl_command_reply_init(&provider_status_reply,
+                               "zcl.dev_publication_status.v1");
+        zcl_native_handle_dev_publication_status(
+            &provider_status_request, &provider_status_reply);
+        ASSERT_EQ(provider_status_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &provider_status_reply.data, "status")),
+                      "STORAGE_ACKNOWLEDGED");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &provider_status_reply.data, "storage_ack")),
+                      "2/2");
+        ASSERT_EQ(json_get_int(json_get(
+                      &provider_status_reply.data, "providers")), 2);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &provider_status_reply.data, "blocker")),
+                      "remote_reproduction_required");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &provider_status_reply.data, "github_mirror")),
+                      "recorded_declared");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &provider_status_reply.data,
+                          "provider_record_root")),
+                      provider_record_hex);
         zcl_command_reply_free(&provider_status_reply);
         json_free(&mirror_input);
         json_free(&provider_status_input);

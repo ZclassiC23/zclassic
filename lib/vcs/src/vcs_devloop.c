@@ -42,12 +42,16 @@ bool vcs_devloop_hex32_decode(const char *hex, uint8_t out[32])
 #define VCS_DEV_PUBLICATION_JOB_WIRE_BYTES 236u
 #define VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES 132u
 #define VCS_DEV_PUBLICATION_PROGRESS_MAX 4096u
+#define VCS_DEV_PUBLICATION_ACK_MAX 16u
+#define VCS_DEV_PUBLICATION_ACK_SET_HEADER_BYTES 16u
 
 static const uint8_t dev_proof_magic[8] = {'Z','D','P','F','1',0,0,0};
 static const uint8_t publication_job_magic[8] =
     {'Z','P','J','B','1',0,0,0};
 static const uint8_t publication_receipt_magic[8] =
     {'Z','P','R','C','1',0,0,0};
+static const uint8_t publication_ack_set_magic[8] =
+    {'Z','P','A','K','1',0,0,0};
 
 static bool publication_root_nonzero(const uint8_t root[32])
 {
@@ -258,7 +262,9 @@ static bool publication_receipt_serialize(
          receipt->phase !=
              VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED &&
          receipt->phase !=
-             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED) ||
+             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED &&
+         receipt->phase !=
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED) ||
         !publication_root_nonzero(receipt->job_root) ||
         (receipt->phase !=
              VCS_DEVLOOP_PUBLICATION_PHASE_WAITING_ACCEPTANCE &&
@@ -403,11 +409,13 @@ struct publication_artifact_chain {
     bool passport_published;
     bool workspace_published;
     bool provider_announced;
+    bool storage_acknowledged;
     struct vcs_devloop_publication_receipt mapping;
     struct vcs_devloop_publication_receipt release;
     struct vcs_devloop_publication_receipt passport;
     struct vcs_devloop_publication_receipt workspace;
     struct vcs_devloop_publication_receipt provider;
+    struct vcs_devloop_publication_receipt storage_ack;
 };
 
 /* Resolve an additive artifact suffix back to its mapping receipt.  Every
@@ -423,8 +431,21 @@ static bool publication_artifact_chain_load(
     memset(out, 0, sizeof(*out));
     const struct vcs_devloop_publication_receipt *cursor = latest;
     if (cursor->phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED) {
+        out->storage_ack = *cursor;
+        out->storage_acknowledged = true;
+        if (!vcs_devloop_publication_receipt_load(
+                repo_root, cursor->predecessor_receipt_root,
+                &out->provider) ||
+            out->provider.phase !=
+                VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED ||
+            memcmp(out->provider.job_root, latest->job_root, 32) != 0)
+            return false;
+        cursor = &out->provider;
+    }
+    if (cursor->phase ==
             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED) {
-        out->provider = *cursor;
+        if (!out->storage_acknowledged) out->provider = *cursor;
         out->provider_announced = true;
         if (!vcs_devloop_publication_receipt_load(
                 repo_root, cursor->predecessor_receipt_root,
@@ -522,7 +543,9 @@ bool vcs_devloop_publication_advance_waiting_acceptance(
          current.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED ||
          current.phase ==
-             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED)) {
+             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED ||
+         current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED)) {
         memcpy(receipt_root_out, current_root, 32);
         if (reused_out) *reused_out = true;
         (void)flock(lock_fd, LOCK_UN);
@@ -599,7 +622,9 @@ bool vcs_devloop_publication_advance_proven_work(
          current.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED ||
          current.phase ==
-             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED)) {
+             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED ||
+         current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED)) {
         struct publication_artifact_chain chain;
         struct vcs_package_mapping_set set;
         vcs_package_mapping_set_init(&set);
@@ -746,7 +771,9 @@ bool vcs_devloop_publication_advance_package_mapping(
          current.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED ||
          current.phase ==
-             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED)) {
+             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED ||
+         current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED)) {
         struct publication_artifact_chain chain;
         bool same = publication_artifact_chain_load(
                 repo_root, &current, &chain) &&
@@ -845,7 +872,9 @@ bool vcs_devloop_publication_advance_release(
          current.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED ||
          current.phase ==
-             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED)) {
+             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED ||
+         current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED)) {
         struct publication_artifact_chain chain;
         bool same = publication_artifact_chain_load(
                 repo_root, &current, &chain) &&
@@ -934,7 +963,9 @@ bool vcs_devloop_publication_advance_passport(
          current.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED ||
          current.phase ==
-             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED)) {
+             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED ||
+         current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED)) {
         struct publication_artifact_chain chain;
         bool same = publication_artifact_chain_load(
                 repo_root, &current, &chain) &&
@@ -1035,7 +1066,9 @@ bool vcs_devloop_publication_advance_workspace(
         (current.phase ==
              VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED ||
          current.phase ==
-             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED)) {
+             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED ||
+         current.phase ==
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED)) {
         bool same = chain.workspace_published &&
             chain.passport_published && chain.release_published &&
             chain.mapping_ready &&
@@ -1220,7 +1253,9 @@ bool vcs_devloop_publication_advance_provider(
         (observed.phase !=
              VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED &&
          observed.phase !=
-             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED) ||
+             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED &&
+         observed.phase !=
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED) ||
         !publication_artifact_chain_load(repo_root, &observed, &chain) ||
         !publication_workspace_release_load(repo_root, &chain, &release))
         return false;
@@ -1245,6 +1280,19 @@ bool vcs_devloop_publication_advance_provider(
     uint8_t current_root[32];
     bool have_current = vcs_devloop_publication_progress_load(
         repo_root, job_root, &current, current_root);
+    if (have_current && current.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED) {
+        bool same = memcmp(current_root, observed_root, 32) == 0 &&
+            chain.provider_announced &&
+            memcmp(chain.provider.artifact_root, record_root, 32) == 0;
+        if (same) {
+            memcpy(receipt_root_out, current_root, 32);
+            if (reused_out) *reused_out = true;
+        }
+        (void)flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        return same;
+    }
     if (have_current && current.phase ==
             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED) {
         bool same = memcmp(current_root, observed_root, 32) == 0 &&
@@ -1276,6 +1324,168 @@ bool vcs_devloop_publication_advance_provider(
     memcpy(receipt.job_root, job_root, 32);
     memcpy(receipt.predecessor_receipt_root, current_root, 32);
     memcpy(receipt.artifact_root, record_root, 32);
+    uint8_t wire[VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES];
+    bool ok = publication_receipt_serialize(&receipt, wire) &&
+        vcs_object_put(repo_root, wire, sizeof(wire),
+                       VCS_TAG_PUBLICATION_RECEIPT, receipt_root_out);
+    event_log_t *log = ok ? event_log_open(log_path) : NULL;
+    if (ok)
+        ok = log && event_log_append(
+            log, EV_VCS_PUBLICATION_RECEIPT, receipt_root_out, 32) !=
+            UINT64_MAX;
+    if (log) event_log_close(log);
+    (void)flock(lock_fd, LOCK_UN);
+    close(lock_fd);
+    return ok;
+}
+
+static int publication_root_compare(const void *left, const void *right)
+{
+    return memcmp(left, right, 32);
+}
+
+static bool publication_storage_ack_set_store(
+    const char *repo_root, const struct vcs_package_release *release,
+    const uint8_t *const record_wires[], const size_t record_wire_lengths[],
+    size_t record_count,
+    const struct vcs_zcode_dht_record_verify_context *verify,
+    uint8_t ack_set_root_out[32])
+{
+    if (!repo_root || !release || !record_wires || !record_wire_lengths ||
+        record_count == 0 || record_count > VCS_DEV_PUBLICATION_ACK_MAX ||
+        !verify || !ack_set_root_out)
+        return false;
+    uint8_t roots[VCS_DEV_PUBLICATION_ACK_MAX][32];
+    uint8_t providers[VCS_DEV_PUBLICATION_ACK_MAX][32];
+    uint8_t groups[VCS_DEV_PUBLICATION_ACK_MAX][32];
+    for (size_t i = 0; i < record_count; i++) {
+        struct vcs_zcode_dht_record record;
+        if (!record_wires[i] ||
+            record_wire_lengths[i] != VCS_ZCODE_DHT_RECORD_WIRE_BYTES ||
+            vcs_zcode_dht_record_parse(
+                record_wires[i], record_wire_lengths[i], verify, &record) !=
+                VCS_ZCODE_DHT_RECORD_OK ||
+            record.kind != VCS_ZCODE_DHT_RECORD_STORAGE_ACK ||
+            memcmp(record.transport_root, release->package_root, 32) != 0 ||
+            vcs_zcode_dht_record_id(&record, roots[i]) !=
+                VCS_ZCODE_DHT_RECORD_OK)
+            return false;
+        for (size_t j = 0; j < i; j++)
+            if (memcmp(record.provider_node_id, providers[j], 32) == 0 ||
+                memcmp(record.owner_group, groups[j], 32) == 0)
+                return false;
+        memcpy(providers[i], record.provider_node_id, 32);
+        memcpy(groups[i], record.owner_group, 32);
+        bool repaired = false;
+        if (!vcs_object_store_init(repo_root) ||
+            !vcs_object_put_addressed_repair(
+                repo_root, roots[i], record_wires[i],
+                record_wire_lengths[i], &repaired))
+            return false;
+    }
+    qsort(roots, record_count, 32, publication_root_compare);
+    uint8_t wire[VCS_DEV_PUBLICATION_ACK_SET_HEADER_BYTES +
+                 VCS_DEV_PUBLICATION_ACK_MAX * 32];
+    size_t wire_len = VCS_DEV_PUBLICATION_ACK_SET_HEADER_BYTES +
+                      record_count * 32;
+    memset(wire, 0, wire_len);
+    memcpy(wire, publication_ack_set_magic, 8);
+    zcl_write_u32_le(wire + 8, 1u);
+    zcl_write_u16_le(wire + 12, (uint16_t)record_count);
+    memcpy(wire + VCS_DEV_PUBLICATION_ACK_SET_HEADER_BYTES,
+           roots, record_count * 32);
+    if (!vcs_object_put(repo_root, wire, wire_len,
+                        VCS_TAG_PUBLICATION_ACK_SET, ack_set_root_out))
+        return false;
+    uint8_t *stored = NULL;
+    size_t stored_len = 0;
+    bool ok = vcs_object_get(
+            repo_root, ack_set_root_out, VCS_TAG_PUBLICATION_ACK_SET,
+            &stored, &stored_len) == 0 &&
+        stored_len == wire_len && memcmp(stored, wire, wire_len) == 0;
+    free(stored);
+    return ok;
+}
+
+bool vcs_devloop_publication_advance_storage_acks(
+    const char *repo_root, const uint8_t job_root[32],
+    const uint8_t *const record_wires[], const size_t record_wire_lengths[],
+    size_t record_count,
+    const struct vcs_zcode_dht_record_verify_context *verify,
+    uint8_t receipt_root_out[32], bool *reused_out)
+{
+    if (reused_out) *reused_out = false;
+    if (!repo_root || !repo_root[0] || !job_root || !receipt_root_out ||
+        !vcs_devloop_publication_job_is_queued(repo_root, job_root))
+        return false;
+    struct vcs_devloop_publication_receipt observed;
+    uint8_t observed_root[32];
+    struct publication_artifact_chain chain;
+    struct vcs_package_release release;
+    if (!vcs_devloop_publication_progress_load(
+            repo_root, job_root, &observed, observed_root) ||
+        (observed.phase !=
+             VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED &&
+         observed.phase !=
+             VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED) ||
+        !publication_artifact_chain_load(repo_root, &observed, &chain) ||
+        !chain.provider_announced ||
+        !publication_workspace_release_load(repo_root, &chain, &release))
+        return false;
+    uint8_t ack_set_root[32];
+    if (!publication_storage_ack_set_store(
+            repo_root, &release, record_wires, record_wire_lengths,
+            record_count, verify, ack_set_root))
+        return false;
+
+    char lock_path[PATH_MAX], log_path[PATH_MAX];
+    bool paths = publication_queue_path(
+            repo_root, "publication.lock", lock_path, sizeof(lock_path)) &&
+        publication_queue_path(repo_root, "publication.receipts.log",
+                               log_path, sizeof(log_path));
+    int lock_fd = paths
+        ? open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC, 0600) : -1;
+    if (lock_fd < 0 || flock(lock_fd, LOCK_EX) != 0) {
+        if (lock_fd >= 0) close(lock_fd);
+        return false;
+    }
+    struct vcs_devloop_publication_receipt current;
+    uint8_t current_root[32];
+    bool have_current = vcs_devloop_publication_progress_load(
+        repo_root, job_root, &current, current_root);
+    if (have_current && current.phase ==
+            VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED) {
+        bool same = memcmp(current_root, observed_root, 32) == 0 &&
+            memcmp(current.artifact_root, ack_set_root, 32) == 0 &&
+            current.storage_acks == record_count;
+        if (same) {
+            memcpy(receipt_root_out, current_root, 32);
+            if (reused_out) *reused_out = true;
+        }
+        (void)flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        return same;
+    }
+    if (!have_current || current.phase !=
+            VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED ||
+        memcmp(current_root, observed_root, 32) != 0) {
+        (void)flock(lock_fd, LOCK_UN);
+        close(lock_fd);
+        return false;
+    }
+    struct vcs_devloop_publication_receipt receipt = {
+        .version = VCS_DEVLOOP_PUBLICATION_RECEIPT_VERSION,
+        .phase = VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED,
+        .bytes_scanned = current.bytes_scanned,
+        .new_chunks = current.new_chunks,
+        .reused_chunks = current.reused_chunks,
+        .providers = current.providers > record_count
+            ? current.providers : (uint16_t)record_count,
+        .storage_acks = (uint16_t)record_count,
+    };
+    memcpy(receipt.job_root, job_root, 32);
+    memcpy(receipt.predecessor_receipt_root, current_root, 32);
+    memcpy(receipt.artifact_root, ack_set_root, 32);
     uint8_t wire[VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES];
     bool ok = publication_receipt_serialize(&receipt, wire) &&
         vcs_object_put(repo_root, wire, sizeof(wire),

@@ -90,6 +90,7 @@ enum vcs_devloop_publication_phase {
     VCS_DEVLOOP_PUBLICATION_PHASE_PASSPORT_PUBLISHED = 5,
     VCS_DEVLOOP_PUBLICATION_PHASE_WORKSPACE_PUBLISHED = 6,
     VCS_DEVLOOP_PUBLICATION_PHASE_PROVIDER_ANNOUNCED = 7,
+    VCS_DEVLOOP_PUBLICATION_PHASE_STORAGE_ACKNOWLEDGED = 8,
 };
 
 #define VCS_DEVLOOP_PUBLICATION_RECEIPT_VERSION 1u
@@ -227,6 +228,17 @@ struct vcs_zcode_dht_record_verify_context;
 bool vcs_devloop_publication_advance_provider(
     const char *repo_root, const uint8_t job_root[32],
     const uint8_t *record_wire, size_t record_wire_len,
+    const struct vcs_zcode_dht_record_verify_context *verify,
+    uint8_t receipt_root_out[32], bool *reused_out);
+
+/* Bind a bounded, provider/group-distinct set of existing signed STORAGE_ACK
+ * wires to the exact release package behind a provider-announced job. The
+ * DHT records remain authoritative; this is a rebuildable scheduler receipt
+ * and performs no network or wallet action. */
+bool vcs_devloop_publication_advance_storage_acks(
+    const char *repo_root, const uint8_t job_root[32],
+    const uint8_t *const record_wires[], const size_t record_wire_lengths[],
+    size_t record_count,
     const struct vcs_zcode_dht_record_verify_context *verify,
     uint8_t receipt_root_out[32], bool *reused_out);
 
