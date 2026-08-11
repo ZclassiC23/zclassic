@@ -163,3 +163,4 @@ app.shop.want.fulfill.post  exempt: persists a signed evidence claim over alread
 app.shop.want.fulfill.withdraw  exempt: marks only the signer-owned local evidence projection withdrawn; installs no artifact and moves no value
 app.shop.want.fulfill.review  exempt: changes only this node's local moderation view metadata; the signed claim is unchanged and no artifact or value moves
 dev.begin                   exempt: starts or reattaches only the checkout-local development watcher; installs no privileged artifact and changes no canonical node
+dev.publication.mirror.record exempt: appends optional declared mirror evidence after verified P2P publication; installs no artifact and grants no Git, network, source or publication authority

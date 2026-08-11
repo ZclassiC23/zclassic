@@ -29,6 +29,7 @@
 #include "services/zcode_lane_service.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_devloop.h"
+#include "vcs/vcs_devloop_mirror.h"
 #include "vcs/package_mapping.h"
 #include "vcs/vcs_seal.h"
 
@@ -426,6 +427,34 @@ void zcl_native_handle_dev_publication_status(
             job_hex);
         return;
     }
+    struct vcs_devloop_mirror_receipt mirror = {0};
+    uint8_t mirror_root[32] = {0};
+    enum vcs_devloop_mirror_lookup mirror_lookup = provider_announced
+        ? vcs_devloop_mirror_load_for_job(
+              root, job_root, &mirror, mirror_root)
+        : VCS_DEVLOOP_MIRROR_ABSENT;
+    if (mirror_lookup == VCS_DEVLOOP_MIRROR_INVALID ||
+        (mirror_lookup == VCS_DEVLOOP_MIRROR_FOUND &&
+         (memcmp(mirror.job_root, job_root, 32) != 0 ||
+          memcmp(mirror.vcs_commit_root, job.vcs_commit_root, 32) != 0 ||
+          memcmp(mirror.source_identity_sha256,
+                 job.source_identity_sha256, 32) != 0 ||
+          memcmp(mirror.proof_receipt_root,
+                 job.proof_receipt_root, 32) != 0 ||
+          memcmp(mirror.release_root,
+                 release_receipt.artifact_root, 32) != 0 ||
+          memcmp(mirror.workspace_root,
+                 workspace_receipt.artifact_root, 32) != 0 ||
+          memcmp(mirror.provider_record_root,
+                 progress.artifact_root, 32) != 0))) {
+        vcs_package_mapping_set_free(&mapping);
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "MIRROR_EVIDENCE_INVALID", "load", false, false,
+            "optional mirror evidence is corrupt, ambiguous, or disagrees with the verified P2P publication chain",
+            job_hex);
+        return;
+    }
     char hex[65], next_command[256];
     int next_len = snprintf(
         next_command, sizeof(next_command),
@@ -506,7 +535,18 @@ void zcl_native_handle_dev_publication_status(
                            provider_announced ? progress.providers : 0);
     (void)json_push_kv_str(&reply->data, "storage_ack", "0/2");
     (void)json_push_kv_str(&reply->data, "reproduced", "no_record");
-    (void)json_push_kv_str(&reply->data, "github_mirror", "not_recorded");
+    (void)json_push_kv_str(
+        &reply->data, "github_mirror",
+        mirror_lookup == VCS_DEVLOOP_MIRROR_FOUND
+            ? "recorded_declared" : "mirror_pending");
+    if (mirror_lookup == VCS_DEVLOOP_MIRROR_FOUND) {
+        zcl_hex_encode(mirror_root, 32, hex);
+        (void)json_push_kv_str(&reply->data, "mirror_receipt_root", hex);
+        if (mirror.git_oid_len > 0) {
+            zcl_hex_encode(mirror.git_oid, mirror.git_oid_len, hex);
+            (void)json_push_kv_str(&reply->data, "mirror_git_oid", hex);
+        }
+    }
     (void)json_push_kv_str(
         &reply->data, "blocker",
         provider_announced ? "storage_ack_required" :
@@ -1216,6 +1256,8 @@ static void dev_drive_merge_publication(
             { "storage_ack", "storage_ack" },
             { "reproduced", "reproduced" },
             { "github_mirror", "github_mirror" },
+            { "mirror_receipt_root", "mirror_receipt_root" },
+            { "mirror_git_oid", "mirror_git_oid" },
             { "blocker", "blocker" },
             { "next_command", "next_command" },
         };

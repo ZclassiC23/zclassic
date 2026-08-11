@@ -26,6 +26,7 @@
 #include "vcs/source_package_checkout.h"
 #include "vcs/source_package_transport.h"
 #include "vcs/vcs_devloop.h"
+#include "vcs/vcs_devloop_mirror.h"
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/package_build.h"
@@ -3754,7 +3755,105 @@ static int test_zd_improve_command(void)
         ASSERT_STR_EQ(json_get_str(json_get(
                           &provider_status_reply.data, "blocker")),
                       "storage_ack_required");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &provider_status_reply.data, "github_mirror")),
+                      "mirror_pending");
         zcl_command_reply_free(&provider_status_reply);
+
+        uint8_t mirror_git_oid[20];
+        for (size_t i = 0; i < sizeof(mirror_git_oid); i++)
+            mirror_git_oid[i] = (uint8_t)(0xb1u + i);
+        char mirror_git_hex[41];
+        zcl_hex_encode(mirror_git_oid, sizeof(mirror_git_oid),
+                       mirror_git_hex);
+        struct json_value mirror_input;
+        json_init(&mirror_input);
+        json_set_object(&mirror_input);
+        ASSERT(json_push_kv_str(&mirror_input, "job_root",
+                                publication_job_hex));
+        ASSERT(json_push_kv_str(&mirror_input, "git_oid", mirror_git_hex));
+        struct zcl_command_request mirror_request = {
+            .context = &provider_status_context,
+            .input = &mirror_input,
+        };
+        struct zcl_command_reply mirror_reply;
+        zcl_command_reply_init(
+            &mirror_reply, "zcl.dev_publication_mirror_record.v1");
+        zcl_native_handle_dev_publication_mirror_record(
+            &mirror_request, &mirror_reply);
+        ASSERT_EQ(mirror_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &mirror_reply.data, "status")),
+                      "RECORDED_DECLARED");
+        ASSERT(!json_get_bool(json_get(
+            &mirror_reply.data, "receipt_reused")));
+        ASSERT(!json_get_bool(json_get(&mirror_reply.data, "git_called")));
+        ASSERT(!json_get_bool(json_get(
+            &mirror_reply.data, "network_called")));
+        const char *mirror_receipt_hex = json_get_str(json_get(
+            &mirror_reply.data, "mirror_receipt_root"));
+        ASSERT(mirror_receipt_hex);
+        char mirror_receipt_saved[65];
+        ASSERT(snprintf(mirror_receipt_saved, sizeof(mirror_receipt_saved),
+                        "%s", mirror_receipt_hex) == 64);
+        uint8_t mirror_receipt_root[32], loaded_mirror_root[32];
+        ASSERT(zcl_hex_decode_lower(mirror_receipt_saved,
+                                    mirror_receipt_root, 32));
+        struct vcs_devloop_mirror_receipt mirror_receipt;
+        ASSERT_EQ(vcs_devloop_mirror_load_for_job(
+                      workspace, publication_anchor.publication_job_root,
+                      &mirror_receipt, loaded_mirror_root),
+                  VCS_DEVLOOP_MIRROR_FOUND);
+        ASSERT(memcmp(loaded_mirror_root, mirror_receipt_root, 32) == 0);
+        ASSERT(memcmp(mirror_receipt.vcs_commit_root,
+                      publication_anchor.commit_id, 32) == 0);
+        ASSERT(memcmp(mirror_receipt.proof_receipt_root,
+                      publication_anchor.proof_receipt_root, 32) == 0);
+        ASSERT(memcmp(mirror_receipt.release_root,
+                      published_release, 32) == 0);
+        ASSERT(memcmp(mirror_receipt.workspace_root,
+                      workspace_root, 32) == 0);
+        ASSERT(memcmp(mirror_receipt.provider_record_root,
+                      provider_record_root, 32) == 0);
+        ASSERT_EQ(mirror_receipt.git_oid_len, sizeof(mirror_git_oid));
+        ASSERT(memcmp(mirror_receipt.git_oid, mirror_git_oid,
+                      sizeof(mirror_git_oid)) == 0);
+        zcl_command_reply_free(&mirror_reply);
+        zcl_command_reply_init(
+            &mirror_reply, "zcl.dev_publication_mirror_record.v1");
+        zcl_native_handle_dev_publication_mirror_record(
+            &mirror_request, &mirror_reply);
+        ASSERT_EQ(mirror_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_get_bool(json_get(
+            &mirror_reply.data, "receipt_reused")));
+        zcl_command_reply_free(&mirror_reply);
+        uint8_t different_git_oid[20], refused_mirror_root[32];
+        memcpy(different_git_oid, mirror_git_oid, sizeof(different_git_oid));
+        different_git_oid[0] ^= 1u;
+        bool refused_mirror_reused = true;
+        ASSERT(!vcs_devloop_mirror_record(
+            workspace, publication_anchor.publication_job_root,
+            different_git_oid, sizeof(different_git_oid),
+            refused_mirror_root, &refused_mirror_reused));
+        ASSERT(!refused_mirror_reused);
+
+        zcl_command_reply_init(&provider_status_reply,
+                               "zcl.dev_publication_status.v1");
+        zcl_native_handle_dev_publication_status(
+            &provider_status_request, &provider_status_reply);
+        ASSERT_EQ(provider_status_reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &provider_status_reply.data, "github_mirror")),
+                      "recorded_declared");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &provider_status_reply.data,
+                          "mirror_receipt_root")),
+                      mirror_receipt_saved);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &provider_status_reply.data, "mirror_git_oid")),
+                      mirror_git_hex);
+        zcl_command_reply_free(&provider_status_reply);
+        json_free(&mirror_input);
         json_free(&provider_status_input);
 
         json_free(&workspace_manifest_input);

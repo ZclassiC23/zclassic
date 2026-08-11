@@ -1868,6 +1868,7 @@ static int test_dev_branch_leaves(void)
          * explicit COMPAT entries rather than falsely READY. */
         const char *compat[] = {
             "dev.change.apply", "dev.begin", "dev.drive",
+            "dev.publication.mirror.record",
             "dev.loop.ensure", "dev.loop.status",
             "dev.loop.wait", "dev.loop.stop", "dev.test.run",
             "dev.test.sim", "dev.generation.current",

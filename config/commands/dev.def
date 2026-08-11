@@ -69,6 +69,9 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_BRANCH("dev.publication", "dev",
                    "Inspect asynchronous proven-source publication",
                    ZCL_COMMAND_LAYER_DEV)
+ZCL_COMMAND_BRANCH("dev.publication.mirror", "dev.publication",
+                   "Record optional non-authoritative mirror evidence",
+                   ZCL_COMMAND_LAYER_DEV)
 
 ZCL_COMMAND_READY_READ(
     "dev.publication.status", "dev.publication", "",
@@ -120,6 +123,31 @@ ZCL_COMMAND_DEV_COMMAND(
     zcl_native_handle_dev_publication_advance,
     "publication scheduling receipts require a dev checkout",
     "zclassic23-dev dev publication status")
+
+ZCL_COMMAND_DEV_COMMAND(
+    "dev.publication.mirror.record", "dev.publication.mirror", "",
+    "Record optional declared GitHub mirror evidence",
+    "Creates or reuses one immutable local receipt only after the existing "
+    "job has a verified provider-announced workspace. It copies the exact "
+    "ZVCS, source identity, proof, release, workspace and provider roots from "
+    "that chain and optionally binds an opaque Git object ID. It never invokes "
+    "Git, GitHub, a network or an API; absence or refusal remains "
+    "mirror_pending and never blocks development or P2P publication.", 0,
+    "dev,publication,mirror,github,receipt,optional",
+    "zcl.dev_publication_mirror_record_input.v1",
+    "zcl.dev_publication_mirror_record.v1", "job_root,git_oid", "job_root",
+    "zclassic23-dev dev publication mirror record --input='"
+    "{\"job_root\":\"<64-lowercase-hex>\","
+    "\"git_oid\":\"<optional-40-or-64-lowercase-hex>\"}'",
+    ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_WRITE,
+    ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_dev_publication_mirror_record,
+    "optional mirror receipts require a dev checkout",
+    "zclassic23-dev dev publication mirror record")
 
 ZCL_COMMAND_DEV_READ(
     "dev.verify-change", "dev", "",

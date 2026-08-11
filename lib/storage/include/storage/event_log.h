@@ -126,6 +126,10 @@ enum event_log_type {
      * VCS_TAG_PUBLICATION_RECEIPT root; authoritative package/workspace/P2P
      * objects remain under their existing signed owners. */
     EV_VCS_PUBLICATION_RECEIPT = 32,
+    /* Optional mirror evidence. Payload is one immutable 32-byte
+     * VCS_TAG_DEV_MIRROR_RECEIPT root. It never gates or advances the
+     * authoritative proof-to-P2P publication receipt chain. */
+    EV_VCS_DEV_MIRROR_RECEIPT = 33,
     /* Add cautiously — every entry is a permanent wire surface. */
 };
 

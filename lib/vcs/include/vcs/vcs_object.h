@@ -34,6 +34,7 @@ enum vcs_object_tag {
     VCS_TAG_PUBLICATION_RECEIPT = 0x28, /* append-only scheduler progress */
     VCS_TAG_PACKAGE_BLOB_MAP = 0x29, /* ZVCS blob -> content.v2 chunks */
     VCS_TAG_PACKAGE_MAPPING_SET = 0x2a, /* source/lane mapping inventory */
+    VCS_TAG_DEV_MIRROR_RECEIPT = 0x2b, /* optional declared Git mirror */
 };
 
 /* Ensure the object store directory tree exists under <repo_root>/.zvcs/

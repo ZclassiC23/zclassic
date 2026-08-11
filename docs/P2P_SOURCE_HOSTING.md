@@ -95,6 +95,16 @@ binds that root and reports one provider. This step records evidence produced
 by the existing DHT owner and grants no network, wallet, or transaction
 authority.
 
+After that P2P phase, `dev publication mirror record` may append one optional
+`vcs_devloop_mirror_receipt.v1`. The receipt re-derives the exact ZVCS commit,
+source identity, proof, release, workspace and provider roots from the durable
+job and may bind an opaque 20- or 32-byte Git object ID. The command does not
+run Git, contact GitHub, or call any network/API; its result is explicitly
+`recorded_declared`, not independently verified hosting. Missing mirror
+evidence is `mirror_pending`, while corrupt or conflicting evidence fails the
+status read. Development and P2P publication never depend on this optional
+receipt.
+
 ## Whole-workspace ZVCS transport
 
 A complete ZClassic23 workspace is larger than the package store's deliberately
