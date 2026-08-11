@@ -44,6 +44,8 @@ NotifyAccess=main
 Environment=STANDBY_DATADIR=%h/.zclassic-c23-standby
 Environment=STANDBY_PORT=8053
 Environment=STANDBY_RPCPORT=18272
+Environment=STANDBY_FSPORT=18054
+Environment=STANDBY_HTTPSPORT=18443
 EnvironmentFile=-%h/.config/zclassic23/standby.env
 # Operator addnode seeds (same set the canonical unit uses) live alongside the
 # canonical env; sourcing it here keeps the standby following the same peers.
@@ -54,6 +56,8 @@ ExecStart=%h/zclassic23/build/bin/zclassic23 \
     -operator-lane=standby \
     -port=${STANDBY_PORT} \
     -rpcport=${STANDBY_RPCPORT} \
+    -fsport=${STANDBY_FSPORT} \
+    -httpsport=${STANDBY_HTTPSPORT} \
     -listen \
     -txindex \
     -addnode=127.0.0.1:8033 \

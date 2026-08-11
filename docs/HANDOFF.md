@@ -427,7 +427,10 @@ remain open:
    the health-gated pet sent no post-READY heartbeat, so the 10-minute systemd
    watchdog would have recreated the abort loop. The operator stopped that run
    before the deadline and restored `MemoryHigh=24G` plus the explicit
-   `WatchdogSec=0` incident drop-in. `TimeoutStartSec=30min` is restored.
+   `WatchdogSec=0` incident drop-in. The checked-in startup budget is now four
+   hours: a later forced-unclean recovery with a 55.3 GB WAL was still making
+   named `quick_check` progress after 98 minutes; the former 30-minute,
+   provisional one-hour, and two-hour limits were too tight for a safe margin.
 3. The standing non-consensus blocker is
    `catalog.sprout_anchor.lag_exceeded` (cursor frozen at 2,124,937). It does not
    block H* progress, but it remains named and visible.
