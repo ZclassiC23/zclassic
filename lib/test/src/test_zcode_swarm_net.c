@@ -56,6 +56,8 @@
 #include "vcs/source_package_transport.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_object.h"
+#include "vcs/zcode_dht_identity.h"
+#include "vcs/zcode_dht_service.h"
 #include "vcs/zcode_lane.h"
 
 #include <errno.h>
@@ -301,6 +303,214 @@ struct zwn_link {
     struct p2p_node *node; /* owner's connection object for the remote */
     struct send_segment *sentinel;
 };
+
+static struct vcs_zcode_dht_time zwn_dht_time(uint64_t now)
+{
+    return (struct vcs_zcode_dht_time){
+        .wall_unix = now,
+        .monotonic_s = now,
+    };
+}
+
+static bool zwn_dht_chain_ok(
+    void *ctx, const struct vcs_zcode_dht_delegation *delegation)
+{
+    (void)ctx;
+    return delegation && delegation->beacon_height == 120;
+}
+
+static bool zwn_dht_policy_allow(
+    void *ctx, enum vcs_zcode_sovereignty_action action,
+    const struct vcs_zcode_sovereignty_subject *subject)
+{
+    (void)ctx;
+    return action < VCS_ZCODE_SOVEREIGNTY_ACTION_COUNT && subject;
+}
+
+static bool zwn_dht_identity(
+    const char *datadir, uint8_t master_byte, const uint8_t genesis[32],
+    const uint8_t noise[32])
+{
+    uint8_t online_seed[32], online_pubkey[32], master_seed[32];
+    uint8_t beacon_hash[32];
+    char error[160];
+    memset(master_seed, master_byte, sizeof(master_seed));
+    memset(beacon_hash, 0x44, sizeof(beacon_hash));
+    if (!vcs_zcode_dht_online_key_load_or_create(
+            datadir, online_seed, online_pubkey, error, sizeof(error)))
+        return false;
+    struct vcs_zcode_dht_delegation delegation;
+    bool ok = vcs_zcode_dht_delegation_sign(
+                  &delegation, genesis, online_pubkey, noise, 120,
+                  beacon_hash, 1000, 90000, 1, master_seed) ==
+              VCS_ZCODE_DHT_DELEGATION_OK;
+    if (ok)
+        ok = vcs_zcode_dht_delegation_save(
+            datadir, &delegation, error, sizeof(error));
+    memset(online_seed, 0, sizeof(online_seed));
+    memset(master_seed, 0, sizeof(master_seed));
+    return ok;
+}
+
+static struct vcs_zcode_dht_service *zwn_dht_service(
+    const char *datadir, const uint8_t genesis[32], const uint8_t noise[32])
+{
+    struct vcs_zcode_dht_service_params params = {
+        .datadir = datadir,
+        .transport_enabled = true,
+        .now = {.wall_unix = 1000, .monotonic_s = 1000},
+        .chain_verify = zwn_dht_chain_ok,
+        .policy_decide = zwn_dht_policy_allow,
+    };
+    memcpy(params.network_genesis, genesis, 32);
+    memcpy(params.local_noise_static, noise, 32);
+    return vcs_zcode_dht_service_create(&params);
+}
+
+static bool zwn_dht_pump_half(
+    struct vcs_zcode_dht_service *from,
+    struct vcs_zcode_dht_service *to, uint64_t expected_outbound_peer,
+    uint64_t inbound_peer, bool *moved)
+{
+    uint8_t wire[VCS_ZCODE_DHT_MAX_FRAME_BYTES];
+    uint64_t peer = 0;
+    size_t wire_len = 0;
+    while (vcs_zcode_dht_service_next_outbound(
+               from, 0, &peer, wire, sizeof(wire), &wire_len)) {
+        enum vcs_zcode_dht_reject_reason rejected;
+        if (peer != expected_outbound_peer ||
+            !vcs_zcode_dht_service_handle_frame(
+                to, inbound_peer, wire, wire_len, zwn_dht_time(1002),
+                &rejected))
+            return false;
+        *moved = true;
+    }
+    return true;
+}
+
+static bool zwn_dht_drive_pair(
+    struct vcs_zcode_dht_service *publisher,
+    struct vcs_zcode_dht_service *consumer)
+{
+    for (size_t round = 0; round < 64; round++) {
+        bool moved = false;
+        if (!zwn_dht_pump_half(publisher, consumer, 2, 1, &moved) ||
+            !zwn_dht_pump_half(consumer, publisher, 1, 2, &moved))
+            return false;
+        if (!moved)
+            return true;
+    }
+    return false;
+}
+
+static bool zwn_discover_source_transport(
+    const struct zwn_node *publisher, const struct zwn_node *mirror,
+    const struct zwn_node *consumer, const uint8_t source_root[32],
+    const uint8_t expected_transport_root[32], uint8_t transport_root[32])
+{
+    struct vcs_package_store_status publisher_status, mirror_status;
+    if (!vcs_package_store_package_status(
+            publisher->store, expected_transport_root, &publisher_status) ||
+        !vcs_package_store_package_status(
+            mirror->store, expected_transport_root, &mirror_status) ||
+        !publisher_status.complete || !publisher_status.pinned ||
+        !mirror_status.complete || !mirror_status.pinned)
+        return false;
+    uint8_t genesis[32], publisher_noise[32], consumer_noise[32];
+    uint8_t transcript[32];
+    memset(genesis, 0x71, sizeof(genesis));
+    memset(publisher_noise, 0x72, sizeof(publisher_noise));
+    memset(consumer_noise, 0x73, sizeof(consumer_noise));
+    memset(transcript, 0x74, sizeof(transcript));
+    if (!zwn_dht_identity(
+            publisher->datadir, 0x75, genesis, publisher_noise) ||
+        !zwn_dht_identity(
+            consumer->datadir, 0x76, genesis, consumer_noise))
+        return false;
+
+    struct vcs_zcode_dht_service *publisher_dht =
+        zwn_dht_service(publisher->datadir, genesis, publisher_noise);
+    struct vcs_zcode_dht_service *consumer_dht =
+        zwn_dht_service(consumer->datadir, genesis, consumer_noise);
+    bool ok = publisher_dht && consumer_dht;
+    if (!ok)
+        goto out;
+    struct vcs_zcode_dht_session publisher_session = {
+        .established = true,
+        .generation = 1,
+        .connection_serial = 1,
+    };
+    struct vcs_zcode_dht_session consumer_session = publisher_session;
+    consumer_session.connection_serial = 2;
+    memcpy(publisher_session.remote_static, consumer_noise, 32);
+    memcpy(consumer_session.remote_static, publisher_noise, 32);
+    memcpy(publisher_session.transcript_hash, transcript, 32);
+    memcpy(consumer_session.transcript_hash, transcript, 32);
+    ok = vcs_zcode_dht_service_session_open(
+             publisher_dht, 2, &publisher_session, zwn_dht_time(1001)) &&
+         vcs_zcode_dht_service_session_open(
+             consumer_dht, 1, &consumer_session, zwn_dht_time(1001)) &&
+         zwn_dht_drive_pair(publisher_dht, consumer_dht);
+    if (!ok)
+        goto out;
+
+    struct vcs_zcode_dht_publish_spec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.kind = VCS_ZCODE_DHT_RECORD_POINTER;
+    (void)snprintf(spec.namespace_name, sizeof(spec.namespace_name),
+                   "zcode.source");
+    memcpy(spec.semantic_root, source_root, 32);
+    memcpy(spec.transport_root, expected_transport_root, 32);
+    spec.sequence = 1;
+    spec.not_before = 1000;
+    spec.expiry = 2000;
+    uint8_t plan_token[32];
+    struct vcs_zcode_dht_record record;
+    ok = vcs_zcode_dht_service_record_publish_plan(
+             publisher_dht, &spec, plan_token, &record) &&
+         vcs_zcode_dht_service_record_publish_commit(
+             publisher_dht, &spec, plan_token, zwn_dht_time(1002),
+             &record) == VCS_ZCODE_DHT_RECORD_STORE_ADDED;
+    if (!ok)
+        goto out;
+
+    struct vcs_zcode_dht_record_selector selector = {
+        .kind = VCS_ZCODE_DHT_RECORD_POINTER,
+    };
+    (void)snprintf(selector.namespace_name, sizeof(selector.namespace_name),
+                   "zcode.source");
+    memcpy(selector.root, source_root, 32);
+    struct vcs_zcode_dht_record empty_cache[1];
+    if (vcs_zcode_dht_service_record_local_query(
+            consumer_dht, 1002, &selector, empty_cache, 1) != 0) {
+        ok = false;
+        goto out;
+    }
+    uint64_t operation = 0;
+    ok = vcs_zcode_dht_service_record_query_begin(
+             consumer_dht, 1, &selector, zwn_dht_time(1002), &operation) &&
+         zwn_dht_drive_pair(publisher_dht, consumer_dht);
+    if (!ok)
+        goto out;
+    struct vcs_zcode_dht_record_operation_result result;
+    ok = vcs_zcode_dht_service_record_operation_poll(
+             consumer_dht, operation, zwn_dht_time(1002), &result) &&
+         result.state == VCS_ZCODE_DHT_RECORD_OPERATION_COMPLETE &&
+         result.record_count == 1 &&
+         result.records[0].kind == VCS_ZCODE_DHT_RECORD_POINTER &&
+         memcmp(result.records[0].semantic_root, source_root, 32) == 0 &&
+         memcmp(result.records[0].transport_root,
+                expected_transport_root, 32) == 0;
+    if (ok)
+        memcpy(transport_root, result.records[0].transport_root, 32);
+
+out:
+    if (consumer_dht)
+        vcs_zcode_dht_service_free(consumer_dht, zwn_dht_time(1003));
+    if (publisher_dht)
+        vcs_zcode_dht_service_free(publisher_dht, zwn_dht_time(1003));
+    return ok;
+}
 
 static uint64_t zwn_score(const uint8_t contributor[33], void *ctx)
 {
@@ -956,8 +1166,15 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         ASSERT(zwn_meet_side(&b, &b_a));
         ASSERT(zwn_meet_side(&a2, &a2_b));
         ASSERT(zwn_meet_side(&b, &b_a2));
+
+        uint8_t discovered_package_root[32];
+        ASSERT(zwn_discover_source_transport(
+            &a, &a2, &b, source_root, transport.package_root,
+            discovered_package_root));
+        ASSERT(memcmp(discovered_package_root, transport.package_root, 32) ==
+               0);
         ASSERT(vcs_swarm_engine_fetch(
-                   b.engine, transport.package_root, ZWN_DAY, ++b.now) ==
+                   b.engine, discovered_package_root, ZWN_DAY, ++b.now) ==
                VCS_SWARM_FETCH_OK);
         state = VCS_SWARM_DL_INACTIVE;
         terminal = false;
@@ -965,7 +1182,7 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
             ASSERT(zwn_round(&a_b, &b_a, params->pchMessageStart));
             ASSERT(zwn_round(&a2_b, &b_a2, params->pchMessageStart));
             terminal = zwn_download_done(
-                &b, transport.package_root, &state);
+                &b, discovered_package_root, &state);
         }
         ASSERT(terminal && state == VCS_SWARM_DL_COMPLETE);
 
@@ -975,7 +1192,7 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         ASSERT(access(path, F_OK) != 0 && errno == ENOENT);
         struct vcs_source_package_checkout_metrics metrics;
         ASSERT(vcs_source_package_checkout(
-                   b.store, transport.package_root, source_root, signer,
+                   b.store, discovered_package_root, source_root, signer,
                    consumer_cas, checkout, &metrics) ==
                VCS_SOURCE_PACKAGE_CHECKOUT_OK);
         ASSERT(metrics.source.file_count == 2);
