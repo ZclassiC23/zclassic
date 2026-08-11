@@ -343,9 +343,11 @@ and link actions, the ordered rewritten response, and the SHA-256 of every
 active overlay object. Candidate and test profiles therefore remain distinct.
 Each entry is process-locked and accepted only when the executable hashes to
 its separate marker; a partial or corrupt pair is removed and rebuilt. A hit
-is hard-linked into the worktree's content-addressed candidate directory and
-still runs the compiler, source guards, candidate probe and affected tests—it
-removes only an identical overlay link. Receipts expose
+is hard-linked into the worktree's content-addressed candidate directory when
+both live on one filesystem; `EXDEV` uses an immutable temporary copy whose
+SHA-256 is reverified before no-replace publication. It still runs the
+compiler, source guards, candidate probe and affected tests—it removes only an
+identical overlay link. Receipts expose
 `artifact_cache_key`, `artifact_cache_hit`, and exact process counts. Exact
 outputs and reverts may reuse an artifact; cache state grants no evidence or
 publication authority.
@@ -363,6 +365,12 @@ self-skips. Large-stack fixtures inherit the test profile's hard stack limit
 directly in the child—no `ulimit` shell wrapper. The durable receipt carries
 the exact-group count and selector SHA-256; `dev.test.plan` re-derives the
 inspectable list.
+
+The ordinary restart lane publishes a `reflex_ready` cycle immediately after
+the source-bound candidate compile/link/probe. Affected tests continue as a
+separate stage and publish `feedback_ready` later. See
+[`REFLEX_REACTOR.md`](./REFLEX_REACTOR.md) for the stage contract, exact trace,
+and reachability firewall.
 
 The save tier never silently truncates a caller closure. When the immediate
 union would exceed 32 exact groups, it runs the complete explicit path-owned
