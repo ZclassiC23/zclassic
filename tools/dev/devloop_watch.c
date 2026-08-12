@@ -1217,10 +1217,10 @@ int zcl_devloop_watch_mode(const char *repo_root,
         const char *restart_files[ZCL_DEVLOOP_RESTART_SOURCE_MAX];
         const char *const *proof_files = files;
         size_t proof_count = epoch_count;
-        int fast = zcl_devloop_hotswap_batch_event(
+        int fast = zcl_devloop_hotfork_batch_event(
             ctx.root, files, epoch_count, publish_mode);
         if (fast == 0)
-            fast = zcl_devloop_hotfork_batch_event(
+            fast = zcl_devloop_hotswap_batch_event(
                 ctx.root, files, epoch_count, publish_mode);
         if (fast == 0)
             fast = service_contract_restart_event(ctx.root, files,

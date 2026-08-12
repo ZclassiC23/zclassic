@@ -1375,19 +1375,134 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
                                    char story_root[65],
                                    char fixture_root[65])
 {
-    char story[768], fixture[768];
+    char story[768], fixture[1536];
     (void)snprintf(story, sizeof(story),
         "zcl.dev.hotfork.story.v1\n%s\n%s\n%s\n%s\n",
         def->owner_id, def->source_tu, def->story_id,
         def->exercised_surface);
-    (void)snprintf(fixture, sizeof(fixture),
-        "zcl.dev.hotfork.fixture.v1\n"
-        "result=ok,null-argument,package-incomplete,package-manifest,"
-        "source-carrier-shape,package-chunk,source-verification,destination\n"
-        "shard=0a,ff;reject=0A,100,missing-suffix\n%s\n",
-        def->story_id);
+    if (strcmp(def->story_id,
+               "native-dev-input-and-interrupt-policy.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "files=relative-valid,absolute-reject,traversal-reject\n"
+            "cursor=integer,fallback,string-reject\n"
+            "interrupt=STORY_RED,compile_red,proof_pending\n"
+            "group=canonical,dash-reject\n"
+            "generation=gen-lower64,legacy-lower64,uppercase-reject\n"
+            "failure-id=lower64,uppercase-reject,short-reject\n%s\n",
+            def->story_id);
+    } else {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "result=ok,null-argument,package-incomplete,package-manifest,"
+            "source-carrier-shape,package-chunk,source-verification,destination\n"
+            "shard=0a,ff;reject=0A,100,missing-suffix\n%s\n",
+            def->story_id);
+    }
     hs_sha3_root(story, story_root);
     hs_sha3_root(fixture, fixture_root);
+}
+
+static int hs_hotfork_unity_source(
+    const struct hs_hotfork_def *def, const char *source_path,
+    char *out, size_t out_size)
+{
+    if (strcmp(def->story_id,
+               "native-dev-input-and-interrupt-policy.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) { return false; } memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+            " #define HF_CHECK(x) do { out->checks_run++; if (x) out->checks_passed++; } while(0)\n"
+            " const char *files[ZCL_DEVLOOP_MAX_FILES]; size_t count=0; char why[160]={0};"
+            " struct json_value doc; json_init(&doc);\n"
+            " const char valid_files[]=\"{\\\"files\\\":[\\\"tools/dev/devloop.c\\\"]}\";"
+            " bool parsed=json_read(&doc,valid_files,strlen(valid_files));"
+            " HF_CHECK(parsed && dev_request_files(&doc,false,files,&count,why,sizeof(why))"
+            " && count==1 && strcmp(files[0],\"tools/dev/devloop.c\")==0); json_free(&doc);\n"
+            " const char abs_files[]=\"{\\\"files\\\":[\\\"/tmp/x.c\\\"]}\";"
+            " json_init(&doc); parsed=json_read(&doc,abs_files,strlen(abs_files));"
+            " HF_CHECK(parsed && !dev_request_files(&doc,false,files,&count,why,sizeof(why)));"
+            " json_free(&doc);\n"
+            " const char dotdot_files[]=\"{\\\"files\\\":[\\\"tools/../x.c\\\"]}\";"
+            " json_init(&doc); parsed=json_read(&doc,dotdot_files,strlen(dotdot_files));"
+            " HF_CHECK(parsed && !dev_request_files(&doc,false,files,&count,why,sizeof(why)));"
+            " json_free(&doc);\n"
+            " int64_t cursor=0; const char cursor_json[]=\"{\\\"after_epoch\\\":7}\";"
+            " json_init(&doc); parsed=json_read(&doc,cursor_json,strlen(cursor_json));"
+            " HF_CHECK(parsed && dev_drive_input_int(&doc,\"after_epoch\",3,&cursor) && cursor==7);"
+            " json_free(&doc);\n"
+            " const char empty_json[]=\"{}\"; json_init(&doc);"
+            " parsed=json_read(&doc,empty_json,strlen(empty_json));"
+            " HF_CHECK(parsed && dev_drive_input_int(&doc,\"after_epoch\",3,&cursor) && cursor==3);"
+            " json_free(&doc);\n"
+            " const char bad_cursor[]=\"{\\\"after_epoch\\\":\\\"7\\\"}\";"
+            " json_init(&doc); parsed=json_read(&doc,bad_cursor,strlen(bad_cursor));"
+            " HF_CHECK(parsed && !dev_drive_input_int(&doc,\"after_epoch\",3,&cursor));"
+            " json_free(&doc);\n"
+            " const char red_phase[]=\"{\\\"phase\\\":\\\"STORY_RED\\\"}\";"
+            " json_init(&doc); parsed=json_read(&doc,red_phase,strlen(red_phase));"
+            " HF_CHECK(parsed && dev_event_interrupting(&doc)); json_free(&doc);\n"
+            " const char red_status[]=\"{\\\"status\\\":\\\"compile_red\\\"}\";"
+            " json_init(&doc); parsed=json_read(&doc,red_status,strlen(red_status));"
+            " HF_CHECK(parsed && dev_event_interrupting(&doc)); json_free(&doc);\n"
+            " const char pending[]=\"{\\\"status\\\":\\\"proof_pending\\\"}\";"
+            " json_init(&doc); parsed=json_read(&doc,pending,strlen(pending));"
+            " HF_CHECK(parsed && !dev_event_interrupting(&doc)); json_free(&doc);\n"
+            " HF_CHECK(dev_group_valid(\"test_vcs_core\"));"
+            " HF_CHECK(!dev_group_valid(\"test-vcs-core\"));\n"
+            " char lower[65],upper[65],gen[80],legacy[80];"
+            " memset(lower,'a',64); lower[64]=0; memset(upper,'A',64); upper[64]=0;"
+            " snprintf(gen,sizeof(gen),\"gen-%%s\",lower);"
+            " snprintf(legacy,sizeof(legacy),\"legacy-%%s\",lower);"
+            " HF_CHECK(dev_generation_name_valid(gen));"
+            " HF_CHECK(dev_generation_name_valid(legacy));"
+            " snprintf(gen,sizeof(gen),\"gen-%%s\",upper);"
+            " HF_CHECK(!dev_generation_name_valid(gen));\n"
+            " HF_CHECK(dev_failure_id_valid(lower));"
+            " HF_CHECK(!dev_failure_id_valid(upper)); lower[63]=0;"
+            " HF_CHECK(!dev_failure_id_valid(lower));\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
+            " out->checks_passed,out->checks_run);"
+            " return out->checks_run==17 && out->checks_passed==17; }\n",
+            source_path, def->exercised_surface);
+    }
+    return snprintf(out, out_size,
+        "#define _GNU_SOURCE\n"
+        "#include \"hotswap/hotfork_capsule.h\"\n"
+        "#include \"%s\"\n"
+        "__attribute__((visibility(\"hidden\")))\n"
+        "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+        " static const char *const expected[] = {\"ok\",\"null-argument\","
+        "\"package-incomplete\",\"package-manifest\",\"source-carrier-shape\","
+        "\"package-chunk\",\"source-verification\",\"destination\"};\n"
+        " if (!out) { return false; } memset(out,0,sizeof(*out));"
+        " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+        " for (unsigned i=0;i<8;i++) { out->checks_run++;"
+        " if (strcmp(vcs_source_package_checkout_result_string("
+        "(enum vcs_source_package_checkout_result)i),expected[i])==0)"
+        " out->checks_passed++; }\n"
+        " uint16_t shard=0; out->checks_run++;"
+        " if (source_checkout_shard_index(\"zclassic23-source/shard-0a.zvss\",&shard)"
+        " && shard==10) out->checks_passed++;\n"
+        " out->checks_run++; if (source_checkout_shard_index("
+        "\"zclassic23-source/shard-ff.zvss\",&shard) && shard==255)"
+        " out->checks_passed++;\n"
+        " static const char *const bad[]={\"zclassic23-source/shard-0A.zvss\","
+        "\"zclassic23-source/shard-100.zvss\",\"zclassic23-source/shard-0a\"};\n"
+        " for(unsigned i=0;i<3;i++){out->checks_run++;"
+        " if(!source_checkout_shard_index(bad[i],&shard))out->checks_passed++;}\n"
+        " snprintf(out->exercised_surface,sizeof(out->exercised_surface),"
+        "\"%s\"); snprintf(out->detail,sizeof(out->detail),"
+        "\"checks=%%u/%%u\",out->checks_passed,out->checks_run);"
+        " return out->checks_run==13 && out->checks_passed==13; }\n",
+        source_path, def->exercised_surface);
 }
 
 static bool hs_hotfork_build(
@@ -1451,35 +1566,8 @@ static bool hs_hotfork_build(
         goto fail;
     }
     char unity_text[8192];
-    int unity_n = snprintf(unity_text, sizeof(unity_text),
-        "#include \"hotswap/hotfork_capsule.h\"\n"
-        "#include \"%s\"\n"
-        "__attribute__((visibility(\"hidden\")))\n"
-        "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
-        " static const char *const expected[] = {\"ok\",\"null-argument\","
-        "\"package-incomplete\",\"package-manifest\",\"source-carrier-shape\","
-        "\"package-chunk\",\"source-verification\",\"destination\"};\n"
-        " if (!out) { return false; } memset(out,0,sizeof(*out));"
-        " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
-        " for (unsigned i=0;i<8;i++) { out->checks_run++;"
-        " if (strcmp(vcs_source_package_checkout_result_string("
-        "(enum vcs_source_package_checkout_result)i),expected[i])==0)"
-        " out->checks_passed++; }\n"
-        " uint16_t shard=0; out->checks_run++;"
-        " if (source_checkout_shard_index(\"zclassic23-source/shard-0a.zvss\",&shard)"
-        " && shard==10) out->checks_passed++;\n"
-        " out->checks_run++; if (source_checkout_shard_index("
-        "\"zclassic23-source/shard-ff.zvss\",&shard) && shard==255)"
-        " out->checks_passed++;\n"
-        " static const char *const bad[]={\"zclassic23-source/shard-0A.zvss\","
-        "\"zclassic23-source/shard-100.zvss\",\"zclassic23-source/shard-0a\"};\n"
-        " for(unsigned i=0;i<3;i++){out->checks_run++;"
-        " if(!source_checkout_shard_index(bad[i],&shard))out->checks_passed++;}\n"
-        " snprintf(out->exercised_surface,sizeof(out->exercised_surface),"
-        "\"%s\"); snprintf(out->detail,sizeof(out->detail),"
-        "\"checks=%%u/%%u\",out->checks_passed,out->checks_run);"
-        " return out->checks_run==13 && out->checks_passed==13; }\n",
-        source_path, def->exercised_surface);
+    int unity_n = hs_hotfork_unity_source(
+        def, source_path, unity_text, sizeof(unity_text));
     if (unity_n <= 0 || unity_n >= (int)sizeof(unity_text) ||
         !hs_write_generated(unity, unity_text, why, why_len))
         goto fail;

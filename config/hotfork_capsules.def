@@ -9,3 +9,9 @@ HOTFORK_CAPSULE(
     "lib/vcs/src/source_package_checkout.c",
     "source-package-checkout-result-and-shard-shape.v1",
     "vcs_source_package_checkout_result_string+source_checkout_shard_index")
+
+HOTFORK_CAPSULE(
+    "dev.native-command-input-policy.v1",
+    "tools/command/native_dev_command.c",
+    "native-dev-input-and-interrupt-policy.v1",
+    "dev_request_files+dev_drive_input_int+dev_event_interrupting+dev_group_valid+dev_generation_name_valid+dev_failure_id_valid")

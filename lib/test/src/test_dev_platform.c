@@ -3297,6 +3297,16 @@ static int test_hotfork_descriptor_boundary(void)
             "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
         ASSERT(!zcl_devloop_hotfork_descriptor_validate(
             capsule.source_tu, object_root, &capsule));
+
+        capsule.owner_id = "dev.native-command-input-policy.v1";
+        capsule.source_tu = "tools/command/native_dev_command.c";
+        capsule.story_id = "native-dev-input-and-interrupt-policy.v1";
+        capsule.story_root =
+            "b39a0043fc2c3a85f5cda3785e1b78732b08e2d8b90fce46018391b34ab14578";
+        capsule.story_fixture_root =
+            "84a5a5c9cda8f565a1cc4ac6b8d7c24ad1cbf33e67a540cf929a271028a821a3";
+        ASSERT(zcl_devloop_hotfork_descriptor_validate(
+            capsule.source_tu, object_root, &capsule));
         PASS();
     } _test_next:;
     return failures;
