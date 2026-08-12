@@ -19,11 +19,6 @@ static bool store_csrf_verify(const char *context, const char *provided);
 static bool store_parse_access_query(const char *path,
                                      char *addr, size_t addr_max,
                                      char *token, size_t token_max);
-static bool store_mark_order_paid(const char *datadir,
-                                  int64_t order_id,
-                                  int status);
-
-
 /* POST /store/buy/:id — create order. This is a request action (it mints a
  * one-time payment address and writes the order row), so it lives in the
  * controller; it calls the store view's render helpers to build the response
@@ -272,32 +267,6 @@ static bool store_parse_access_query(const char *path,
 
     return store_validate_access_addr(addr) &&
            store_validate_access_token(token);
-}
-
-static bool store_mark_order_paid(const char *datadir,
-                                  int64_t order_id,
-                                  int status)
-{
-    char db_path[1024];
-    struct node_db ndb;
-    bool ok;
-
-    if (!datadir || order_id <= 0)
-        return false;
-
-    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
-    memset(&ndb, 0, sizeof(ndb));
-    if (!node_db_open_runtime(&ndb, db_path, "store.mark_order_paid"))
-        LOG_FAIL("store", "store_mark_order_paid: node_db_open failed path=%s order=%lld",
-                 db_path, (long long)order_id);
-
-    ok = db_store_order_mark_paid(&ndb, order_id, status);
-    if (!ok) {
-        const char *em = sqlite3_errmsg(ndb.db);
-        LOG_WARN("controller", "Store: failed to persist status=%d for order #%lld: %s", status, (long long)order_id, em ? em : "unknown");
-    }
-    node_db_close(&ndb);
-    return ok;
 }
 
 /* ── CSRF form token ─────────────────────────────────────
@@ -654,22 +623,13 @@ int64_t store_confirmed_payment(struct node_db *ndb, const char *pay_addr,
 
 /* Background payment processor — called periodically from boot.c.
  * Checks pending orders for payments, mints tokens when paid. */
-void store_process_payments(const char *datadir)
+void store_process_payments_with_db(struct node_db *ndb,
+                                    const char *datadir)
 {
-    if (!datadir) return;
-
-    char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
-    struct node_db ndb;
-    memset(&ndb, 0, sizeof(ndb));
-    /* Background 30 s scan — a runtime reopen, NOT a boot. Re-running the boot
-     * ceremony here every cycle (quick_check + staging DELETE + version banner)
-     * is what made a merely-stalled node look like a silent boot loop. */
-    if (!node_db_open_existing_runtime(&ndb, db_path,
-                                       "store.payment_scan")) return;
+    if (!ndb || !ndb->open || !datadir) return;
 
     struct db_store_pending_payment pending_orders[64];
-    int pending_count = db_store_order_list_pending_payments(&ndb,
+    int pending_count = db_store_order_list_pending_payments(ndb,
         pending_orders, sizeof(pending_orders) / sizeof(pending_orders[0]),
         (int64_t)platform_time_wall_time_t() - 3600);
 
@@ -691,10 +651,10 @@ void store_process_payments(const char *datadir)
          * legacy address-only finder over a REUSED address would.
          * Require minimum 3 confirmations to prevent reorg-based double-spend
          * (payment reversed but tokens already minted). */
-        int64_t tip_height = db_store_chain_tip_height(&ndb);
+        int64_t tip_height = db_store_chain_tip_height(ndb);
         int64_t min_height = tip_height - 3; /* 3 confirmations */
 
-        int64_t received = store_confirmed_payment(&ndb, pay_addr, order_id,
+        int64_t received = store_confirmed_payment(ndb, pay_addr, order_id,
                                                    min_height);
 
         if (received >= expected) {
@@ -717,7 +677,7 @@ void store_process_payments(const char *datadir)
                 fflush(stdout);
                 continue;
             }
-            if (!store_mark_order_paid(datadir, order_id, STORE_ORDER_SENT)) {
+            if (!db_store_order_mark_paid(ndb, order_id, STORE_ORDER_SENT)) {
                 printf("Store: order #%lld payment processed but status "
                        "persist failed\n", (long long)order_id);
                 fflush(stdout);
@@ -735,7 +695,7 @@ void store_process_payments(const char *datadir)
      * pending-order caps in store_handle_request only refuse NEW rows
      * once the pool fills — the table itself would still grow forever. */
     {
-        int pruned = db_store_order_prune_expired(&ndb,
+        int pruned = db_store_order_prune_expired(ndb,
             STORE_ORDER_PENDING_EXPIRE_SECS);
         if (pruned > 0) {
             printf("Store: pruned %d expired unpaid order(s)\n", pruned);
@@ -743,5 +703,18 @@ void store_process_payments(const char *datadir)
         }
     }
 
+}
+
+void store_process_payments(const char *datadir)
+{
+    if (!datadir) return;
+    char db_path[1024];
+    int n = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    struct node_db ndb = {0};
+    if (n <= 0 || (size_t)n >= sizeof(db_path) ||
+        !node_db_open_existing_runtime(&ndb, db_path,
+                                       "store.payment_fixture"))
+        return;
+    store_process_payments_with_db(&ndb, datadir);
     node_db_close(&ndb);
 }

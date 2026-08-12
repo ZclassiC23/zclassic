@@ -175,14 +175,24 @@ static bool peer_was_announced(const struct swarm_peer *peer,
     return false;
 }
 
+/* A provider-directed fetch is already bound to explicit authenticated
+ * transport handles by its caller.  Requiring those same handles to win the
+ * unrelated broadcast ANNOUNCE rate limit makes the restriction unusable:
+ * a newly published immutable root can sit forever behind older announces.
+ * Ordinary discovery still requires an advertisement. */
+static bool peer_offers_download(const struct swarm_download *dl,
+                                 const struct swarm_peer *peer)
+{
+    return peer->used && dl_peer_allowed(dl, peer->id) &&
+           (dl->provider_restricted || peer_advertises(peer, dl->root));
+}
+
 static uint32_t advertisers_of(const struct vcs_swarm_engine *engine,
                                const struct swarm_download *dl)
 {
     uint32_t n = 0;
     for (size_t i = 0; i < VCS_SWARM_MAX_PEERS; i++)
-        if (engine->peers[i].used && dl_peer_allowed(dl,
-                                                     engine->peers[i].id) &&
-            peer_advertises(&engine->peers[i], dl->root))
+        if (peer_offers_download(dl, &engine->peers[i]))
             n++;
     return n;
 }
@@ -617,9 +627,7 @@ static int pick_peer(const struct vcs_swarm_engine *engine,
     int best = -1;
     for (size_t i = 0; i < VCS_SWARM_MAX_PEERS; i++) {
         const struct swarm_peer *peer = &engine->peers[i];
-        if (!peer->used ||
-            !dl_peer_allowed(dl, peer->id) ||
-            !peer_advertises(peer, dl->root) ||
+        if (!peer_offers_download(dl, peer) ||
             peer->inflight >= VCS_SWARM_PEER_INFLIGHT_MAX ||
             peer->allowance_exhausted)
             continue;
@@ -687,9 +695,7 @@ static void schedule_locked(struct vcs_swarm_engine *engine, int64_t day,
                 if (advertisers_of(engine, dl) > 0) {
                     bool eligible = false;
                     for (size_t i = 0; i < VCS_SWARM_MAX_PEERS; i++)
-                        if (engine->peers[i].used &&
-                            dl_peer_allowed(dl, engine->peers[i].id) &&
-                            peer_advertises(&engine->peers[i], dl->root) &&
+                        if (peer_offers_download(dl, &engine->peers[i]) &&
                             !(dl->manifest_failed_mask &
                               (UINT64_C(1) << i)))
                             eligible = true;
@@ -730,9 +736,7 @@ static void schedule_locked(struct vcs_swarm_engine *engine, int64_t day,
                 continue;
             }
             for (size_t i = 0; i < VCS_SWARM_MAX_PEERS; i++)
-                if (engine->peers[i].used &&
-                    dl_peer_allowed(dl, engine->peers[i].id) &&
-                    peer_advertises(&engine->peers[i], dl->root) &&
+                if (peer_offers_download(dl, &engine->peers[i]) &&
                     !(dl->peer_failed[g] & (UINT64_C(1) << i))) {
                     assignable++;
                     break;

@@ -1135,6 +1135,16 @@ void zcl_native_handle_network_graph(
 const char *zcl_native_command_datadir(void);
 int zcl_native_command_rpc_port(void);
 
+/* A one-shot native handler which targets a resident node must submit the
+ * canonical input to that daemon instead of opening its live node.db. Returns
+ * true when a readable datadir cookie caused forwarding (success or named
+ * refusal), false for an in-process resident handler or an offline fixture. */
+bool zcl_native_forward_live_command(
+    const struct zcl_command_request *request, const char *datadir,
+    const char *rpc_method, const char *fallback_code,
+    const char *fallback_phase, const char *evidence,
+    struct zcl_command_reply *reply);
+
 /* Bind the native controller bridge to an explicit node RPC context.  The
  * resident dev host uses this at boot so a hot-loaded controller cannot
  * accidentally replace the live context with the empty one-shot CLI

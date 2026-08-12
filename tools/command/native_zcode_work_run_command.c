@@ -636,6 +636,23 @@ static bool run_render_async_admission(
         json_push_kv_str(&reply->data, "next_safe_command",
                          "zcode work status") &&
         json_push_kv(&reply->data, "expert", &expert);
+    static const char *const metric_keys[] = {
+        "foreground_request_creation_us",
+        "durable_action_lookup_dedup_us",
+        "live_rpc_encode_us",
+        "live_rpc_admission_us",
+        "live_rpc_decode_us",
+        "live_rpc_request_bytes",
+        "live_rpc_response_bytes",
+    };
+    for (size_t i = 0; ok && i < sizeof(metric_keys) / sizeof(metric_keys[0]);
+         i++) {
+        const struct json_value *value = json_get(
+            &inner->data, metric_keys[i]);
+        if (value && value->type == JSON_INT)
+            ok = json_push_kv_int(&reply->data, metric_keys[i],
+                                  json_get_int(value));
+    }
     json_free(&expert);
     return ok;
 }

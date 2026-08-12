@@ -439,6 +439,36 @@ struct pv_run {
     char stderr_buf[PV_STDERR_CAP];
 };
 
+struct pv_perf_metrics {
+    uint64_t processes;
+    uint64_t compiler_processes;
+    uint64_t test_processes;
+    uint64_t other_processes;
+    uint64_t child_wall_us;
+    uint64_t compiler_wall_us;
+    uint64_t test_wall_us;
+};
+
+static struct pv_perf_metrics g_pv_perf;
+
+static void pv_perf_record(const char *program, uint64_t elapsed_us)
+{
+    const char *base = program ? strrchr(program, '/') : NULL;
+    base = base ? base + 1 : program;
+    g_pv_perf.processes++;
+    g_pv_perf.child_wall_us += elapsed_us;
+    if (base && (strstr(base, "gcc") || strstr(base, "clang") ||
+                 strcmp(base, "cc") == 0)) {
+        g_pv_perf.compiler_processes++;
+        g_pv_perf.compiler_wall_us += elapsed_us;
+    } else if (base && (strstr(base, "test") || strstr(base, "fuzz"))) {
+        g_pv_perf.test_processes++;
+        g_pv_perf.test_wall_us += elapsed_us;
+    } else {
+        g_pv_perf.other_processes++;
+    }
+}
+
 /* Landlock grant set for every verifier child: the materialized source
  * (read), the build dir (full), the host toolchain (read+execute), and
  * the two harmless /dev nodes. Anything else — wallet, datadir, SSH — is
@@ -552,6 +582,7 @@ static struct pv_run pv_run_child(const char *const argv[],
 {
     struct pv_run r;
     memset(&r, 0, sizeof(r));
+    int64_t perf_started_ns = clock_now_monotonic_ns();
     /* Rebase absolute caps into "current usage + the caller's budget": NPROC
      * is session-wide per uid (see the PV_COMPILE_NPROC comment), and AS is
      * this very process's own mapping (see pv_process_vsize_bytes) — a fork
@@ -735,6 +766,9 @@ static struct pv_run pv_run_child(const char *const argv[],
             r.term_signal = WTERMSIG(status);
         }
     }
+    int64_t perf_elapsed_ns = clock_now_monotonic_ns() - perf_started_ns;
+    pv_perf_record(argv ? argv[0] : NULL,
+                   perf_elapsed_ns > 0 ? (uint64_t)perf_elapsed_ns / 1000u : 0);
     return r;
 }
 
@@ -2743,9 +2777,29 @@ int main(int argc, char **argv)
                rec.output_count,
                    vcs_package_build_isolation_string(
                    (enum vcs_package_build_isolation)rec.isolation));
-        if (candidate_mode)
+        if (candidate_mode) {
+            uint64_t source_bytes = 0, output_bytes = 0;
+            for (size_t i = 0; i < manifest.count; i++)
+                source_bytes += manifest.files[i].size;
+            for (size_t i = 0; i < rec.output_count; i++)
+                output_bytes += rec.outputs[i].bytes;
+            printf("zbuild-package-perf=v1 processes=%llu "
+                   "compiler_processes=%llu test_processes=%llu "
+                   "other_processes=%llu child_wall_us=%llu "
+                   "compiler_wall_us=%llu test_wall_us=%llu "
+                   "source_bytes=%llu output_bytes=%llu\n",
+                   (unsigned long long)g_pv_perf.processes,
+                   (unsigned long long)g_pv_perf.compiler_processes,
+                   (unsigned long long)g_pv_perf.test_processes,
+                   (unsigned long long)g_pv_perf.other_processes,
+                   (unsigned long long)g_pv_perf.child_wall_us,
+                   (unsigned long long)g_pv_perf.compiler_wall_us,
+                   (unsigned long long)g_pv_perf.test_wall_us,
+                   (unsigned long long)source_bytes,
+                   (unsigned long long)output_bytes);
             printf("zbuild-package-ok=1 source=cas recipe=canonical "
                    "network=0\n");
+        }
         vcs_package_recipe_free(&recipe);
         vcs_package_manifest_free(&manifest);
         return 0;

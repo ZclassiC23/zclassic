@@ -14,6 +14,7 @@
 
 #include "util/log_macros.h"
 #include "models/database.h"
+#include "models/database_lifetime.h"
 #include "models/database_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -222,6 +223,12 @@ bool node_db_wal_checkpoint(struct node_db *ndb)
     bool is_wal = false;
 
     if (!ndb || !ndb->open) return false;
+    struct db_lifetime_scope lifetime_scope;
+    db_lifetime_scope_enter(
+        &lifetime_scope, "node_db.checkpoint",
+        ndb->lifetime_backing_owner ? DB_LIFETIME_BACKING_OWNER
+                                    : DB_LIFETIME_HANDLE_OWNER,
+        ndb->lifetime_generation);
     if (sqlite3_prepare_v2(ndb->db, "PRAGMA journal_mode", -1, &stmt, NULL) == SQLITE_OK &&
         stmt && sqlite3_step(stmt) == SQLITE_ROW) {  // raw-sql-ok:read-only-introspection
         /* sqlite3_column_text points INTO the stmt; it is freed by
@@ -234,6 +241,7 @@ bool node_db_wal_checkpoint(struct node_db *ndb)
         sqlite3_finalize(stmt);
     if (!is_wal) {
         node_db_note_activity(ndb, "wal_checkpoint", SQLITE_OK);
+        db_lifetime_scope_leave(&lifetime_scope);
         return true;
     }
     /* TRUNCATE resets the WAL file to zero bytes but needs an exclusive
@@ -256,8 +264,10 @@ bool node_db_wal_checkpoint(struct node_db *ndb)
                                             SQLITE_CHECKPOINT_PASSIVE,
                                             NULL, NULL);
         node_db_note_activity(ndb, "wal_checkpoint_passive", prc);
+        db_lifetime_scope_leave(&lifetime_scope);
         return prc == SQLITE_OK;
     }
     node_db_note_activity(ndb, "wal_checkpoint", rc);
+    db_lifetime_scope_leave(&lifetime_scope);
     return rc == SQLITE_OK;
 }

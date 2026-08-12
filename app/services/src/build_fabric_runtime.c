@@ -49,7 +49,6 @@ static uint8_t g_local_secret[32];
 static uint8_t g_local_pubkey[32];
 static char g_worker_workspace[4096];
 static char g_worker_datadir[4096];
-static char g_worker_db_path[4096];
 static pthread_t g_worker_thread;
 static _Atomic bool g_worker_started;
 
@@ -175,16 +174,24 @@ static void bf_worker_tick(struct liveness_contract *contract)
 static void *bf_worker_loop(void *arg)
 {
     (void)arg;
-    struct node_db worker_db;
-    memset(&worker_db, 0, sizeof(worker_db));
-    if (!node_db_open_runtime(&worker_db, g_worker_db_path,
-                              "build_fabric.worker")) {
+    /* The daemon's node.db has one mutable owner.  A second long-lived
+     * sqlite connection in this thread used to look harmless, but its WAL
+     * lifetime was independent of the boot connection: closing/restarting
+     * peer workers could unlink the pathname while the canonical connection
+     * still held the old inode.  The next action then failed with SQLITE_IOERR
+     * even though both action and receipt identities were valid.
+     *
+     * The runtime handle is FULLMUTEX and remains alive until registered
+     * workers have joined, so consume it directly.  This makes worker states
+     * projections of the canonical action ledger and leaves exactly one WAL
+     * authority in the process. */
+    struct node_db *ndb = app_runtime_node_db();
+    if (!ndb || !app_runtime_node_db_handle_open(ndb)) {
         atomic_fetch_add(&g_worker_failures, 1);
         return NULL;
     }
     uint64_t completed = 0;
     while (!g_shutdown_requested) {
-        struct node_db *ndb = &worker_db;
         supervisor_child_id id = atomic_load(&g_worker_id);
         uint8_t lease_raw[32];
         char lease_id[65];
@@ -199,6 +206,7 @@ static void *bf_worker_loop(void *arg)
         memset(lease_raw, 0, sizeof(lease_raw));
         struct db_build_action action;
         bool claimed = false;
+        int64_t claim_started_us = platform_time_monotonic_us();
         struct zcl_result claim = build_fabric_claim(
             ndb, g_local_worker.worker_id, lease_id,
             (int64_t)platform_time_wall_unix(),
@@ -215,6 +223,17 @@ static void *bf_worker_loop(void *arg)
             platform_sleep_ms(250);
             continue;
         }
+        int64_t claimed_us = platform_time_realtime_us();
+        int64_t queue_us = action.created_at > 0
+            ? claimed_us - action.created_at * INT64_C(1000000) : 0;
+        LOG_INFO("zcode.proof_perf",
+                 "schema=zcl.async_proof_perf.v1 action=%s "
+                 "stage=worker_lease claim_us=%lld queue_us=%lld "
+                 "attempt=%lld",
+                 action.action_id,
+                 (long long)(platform_time_monotonic_us() - claim_started_us),
+                 (long long)(queue_us < 0 ? 0 : queue_us),
+                 (long long)action.attempt_count);
         atomic_fetch_add(&g_worker_dispatches, 1);
         char execution_workspace[4096];
         if (!bf_runtime_execution_workspace(
@@ -242,7 +261,6 @@ static void *bf_worker_loop(void *arg)
             atomic_fetch_add(&g_worker_failures, 1);
         supervisor_tick(id);
     }
-    node_db_close(&worker_db);
     return NULL;
 }
 
@@ -266,13 +284,10 @@ struct zcl_result build_fabric_runtime_register(bool worker_enabled,
         if (!datadir || !getcwd(g_worker_workspace,
                                 sizeof(g_worker_workspace)))
             return ZCL_ERR(-1, "build worker cannot resolve its workspace");
-        int dbn = snprintf(g_worker_db_path, sizeof(g_worker_db_path),
-                           "%s/node.db", datadir);
         int ddn = snprintf(g_worker_datadir, sizeof(g_worker_datadir),
                            "%s", datadir);
-        if (dbn <= 0 || (size_t)dbn >= sizeof(g_worker_db_path) ||
-            ddn <= 0 || (size_t)ddn >= sizeof(g_worker_datadir))
-            return ZCL_ERR(-1, "build worker database path is too long");
+        if (ddn <= 0 || (size_t)ddn >= sizeof(g_worker_datadir))
+            return ZCL_ERR(-1, "build worker datadir is too long");
         ZCL_CHECK(build_fabric_worker_identity_load(
             datadir, &g_local_worker, g_local_secret, g_local_pubkey));
         struct node_db *ndb = app_runtime_node_db();

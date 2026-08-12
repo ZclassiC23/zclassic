@@ -3,6 +3,7 @@
 
 #include "command/native_command.h"
 
+#include "config/runtime.h"
 #include "json/json.h"
 #include "models/build_fabric.h"
 #include "models/database.h"
@@ -12,6 +13,7 @@
 #include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 enum { BF_NATIVE_MAX_ACTIONS = 256, BF_NATIVE_MAX_WORKERS = 128 };
 
@@ -50,24 +52,68 @@ static void bf_fail(struct zcl_command_reply *reply, const char *code,
                            mutated, message, evidence ? evidence : "");
 }
 
+static bool bf_runtime_owns(const char *datadir)
+{
+    struct node_db *owned = app_runtime_node_db();
+    if (!datadir || !datadir[0] ||
+        !app_runtime_node_db_handle_open(owned))
+        return false;
+    char expected[1100];
+    int n = snprintf(expected, sizeof(expected), "%s/node.db", datadir);
+    return n > 0 && (size_t)n < sizeof(expected) &&
+           strcmp(expected, owned->path) == 0;
+}
+
+static bool bf_forward_live(const struct zcl_command_request *request,
+                            struct zcl_command_reply *reply,
+                            const char *rpc_method)
+{
+    const char *datadir = bf_datadir(request);
+    return zcl_native_forward_live_command(
+        request, datadir, rpc_method, "LIVE_BUILD_COMMAND_FAILED", "execute",
+        "metaverse.build", reply);
+}
+
 static bool bf_open_write(const struct zcl_command_request *request,
-                          struct zcl_command_reply *reply, struct node_db *ndb)
+                          struct zcl_command_reply *reply,
+                          struct node_db *local, struct node_db **out)
 {
     const char *datadir = bf_datadir(request);
     char path[1100];
+    if (out) *out = NULL;
     int n = datadir ? snprintf(path, sizeof(path), "%s/node.db", datadir) : -1;
-    if (n <= 0 || (size_t)n >= sizeof(path)) {
+    if (!local || !out || n <= 0 || (size_t)n >= sizeof(path)) {
         bf_fail(reply, "MISSING_DATADIR", "pass a valid node datadir",
                 "metaverse.build", false);
         return false;
     }
-    memset(ndb, 0, sizeof(*ndb));
-    if (!node_db_open(ndb, path) || !ndb->open) {
+    if (bf_runtime_owns(datadir)) {
+        *out = app_runtime_node_db();
+        return true;
+    }
+    char cookie[1100];
+    int cn = snprintf(cookie, sizeof(cookie), "%s/.cookie", datadir);
+    if (cn > 0 && (size_t)cn < sizeof(cookie) && access(cookie, R_OK) == 0) {
+        bf_fail(reply, "LIVE_DATABASE_OWNED",
+                "the resident node owns this database; submit the command "
+                "through its authenticated RPC boundary",
+                path, false);
+        return false;
+    }
+    memset(local, 0, sizeof(*local));
+    if (!node_db_open(local, path) || !local->open) {
         bf_fail(reply, "BUILD_STORE", "cannot open the build ledger",
                 path, false);
         return false;
     }
+    *out = local;
     return true;
+}
+
+static void bf_close_write(struct node_db *local, struct node_db *opened)
+{
+    if (local && opened == local)
+        node_db_close(local);
 }
 
 static bool bf_open_read(const struct zcl_command_request *request,
@@ -129,6 +175,7 @@ static void bf_render_worker(struct json_value *out,
 void zcl_native_handle_metaverse_build_plan(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
+    if (bf_forward_live(request, reply, "build_plan_owned")) return;
     const char *source_sha = bf_arg(request, "source_sha256");
     const char *source_cas = bf_arg(request, "source_cas_sha3");
     const char *toolchain = bf_arg(request, "toolchain_sha3");
@@ -171,14 +218,14 @@ void zcl_native_handle_metaverse_build_plan(
     if (result.ok)
         result = build_fabric_job_id(&job, action.action_id, job.job_id);
     (void)snprintf(action.job_id, sizeof(action.job_id), "%s", job.job_id);
-    struct node_db ndb;
-    if (result.ok && bf_open_write(request, reply, &ndb)) {
-        result = build_fabric_plan(&ndb, &job, &action);
+    struct node_db local, *ndb = NULL;
+    if (result.ok && bf_open_write(request, reply, &local, &ndb)) {
+        result = build_fabric_plan(ndb, &job, &action);
         if (result.ok &&
-            (!db_build_job_find(&ndb, job.job_id, &job) ||
-             !db_build_action_find(&ndb, action.action_id, &action)))
+            (!db_build_job_find(ndb, job.job_id, &job) ||
+             !db_build_action_find(ndb, action.action_id, &action)))
             result = ZCL_ERR(-1, "persisted build plan could not be re-read");
-        node_db_close(&ndb);
+        bf_close_write(&local, ndb);
     } else if (result.ok) {
         return;
     }
@@ -200,19 +247,22 @@ void zcl_native_handle_metaverse_build_plan(
 static void bf_job_transition(const struct zcl_command_request *request,
                               struct zcl_command_reply *reply, bool cancel)
 {
+    if (bf_forward_live(request, reply,
+                        cancel ? "build_cancel_owned" : "build_submit_owned"))
+        return;
     const char *job_id = bf_arg(request, "job_id");
     if (!job_id) {
         bf_fail(reply, "MISSING_JOB_ID", "job_id is required", "", false);
         return;
     }
-    struct node_db ndb;
-    if (!bf_open_write(request, reply, &ndb)) return;
+    struct node_db local, *ndb = NULL;
+    if (!bf_open_write(request, reply, &local, &ndb)) return;
     struct zcl_result result = cancel
-        ? build_fabric_cancel(&ndb, job_id, platform_time_wall_unix())
-        : build_fabric_submit(&ndb, job_id, platform_time_wall_unix());
+        ? build_fabric_cancel(ndb, job_id, platform_time_wall_unix())
+        : build_fabric_submit(ndb, job_id, platform_time_wall_unix());
     struct db_build_job job;
-    bool found = result.ok && db_build_job_find(&ndb, job_id, &job);
-    node_db_close(&ndb);
+    bool found = result.ok && db_build_job_find(ndb, job_id, &job);
+    bf_close_write(&local, ndb);
     if (!result.ok || !found) {
         bf_fail(reply, cancel ? "CANCEL_REJECTED" : "SUBMIT_REJECTED",
                 result.ok ? "updated job disappeared" : result.message,
@@ -308,6 +358,7 @@ void zcl_native_handle_metaverse_build_worker_list(
 void zcl_native_handle_metaverse_build_worker_approve(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
+    if (bf_forward_live(request, reply, "build_worker_approve_owned")) return;
     const char *worker_id = bf_arg(request, "worker_id");
     const char *pubkey = bf_arg(request, "signer_pubkey");
     if (!bf_hex_id(worker_id) || !bf_hex_id(pubkey)) { bf_fail(reply, "INVALID_INPUT", "worker_id and signer_pubkey must be lowercase 64-hex values", "", false); return; }
@@ -326,10 +377,11 @@ void zcl_native_handle_metaverse_build_worker_approve(
     const struct json_value *expiry = request->input ? json_get(request->input, "expires_at") : NULL;
     worker.expires_at = expiry ? json_get_int(expiry) : 0;
     worker.last_seen_at = now;
-    struct node_db ndb; if (!bf_open_write(request, reply, &ndb)) return;
-    struct zcl_result result = build_fabric_worker_approve(&ndb, &worker, now);
-    bool found = result.ok && db_build_worker_find(&ndb, worker_id, &worker);
-    node_db_close(&ndb);
+    struct node_db local, *ndb = NULL;
+    if (!bf_open_write(request, reply, &local, &ndb)) return;
+    struct zcl_result result = build_fabric_worker_approve(ndb, &worker, now);
+    bool found = result.ok && db_build_worker_find(ndb, worker_id, &worker);
+    bf_close_write(&local, ndb);
     if (!result.ok || !found) { bf_fail(reply, "APPROVAL_REJECTED", result.ok ? "approved worker disappeared" : result.message, worker_id, result.ok); return; }
     bf_render_worker(&reply->data, &worker);
 }
@@ -337,14 +389,16 @@ void zcl_native_handle_metaverse_build_worker_approve(
 void zcl_native_handle_metaverse_build_worker_revoke(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
+    if (bf_forward_live(request, reply, "build_worker_revoke_owned")) return;
     const char *worker_id = bf_arg(request, "worker_id");
     if (!worker_id) { bf_fail(reply, "MISSING_WORKER_ID", "worker_id is required", "", false); return; }
-    struct node_db ndb; if (!bf_open_write(request, reply, &ndb)) return;
+    struct node_db local, *ndb = NULL;
+    if (!bf_open_write(request, reply, &local, &ndb)) return;
     struct zcl_result result = build_fabric_worker_revoke(
-        &ndb, worker_id, platform_time_wall_unix());
+        ndb, worker_id, platform_time_wall_unix());
     struct db_build_worker worker;
-    bool found = result.ok && db_build_worker_find(&ndb, worker_id, &worker);
-    node_db_close(&ndb);
+    bool found = result.ok && db_build_worker_find(ndb, worker_id, &worker);
+    bf_close_write(&local, ndb);
     if (!result.ok || !found) { bf_fail(reply, "REVOCATION_REJECTED", result.ok ? "revoked worker disappeared" : result.message, worker_id, result.ok); return; }
     bf_render_worker(&reply->data, &worker);
 }

@@ -29,7 +29,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { ASYNC_PROOF_BATCH = 16 };
+enum {
+    ASYNC_PROOF_BATCH = 16,
+    /* Signed request lifetime covers context transport/admission in addition
+     * to the separately declared execution CPU ceiling. */
+    ASYNC_PROOF_TRANSPORT_SECONDS = 90,
+};
 
 static bool async_proof_rpc_run(
     const struct json_value *params, struct json_value *result,
@@ -98,11 +103,47 @@ static bool async_proof_rpc_evidence(
         zcl_native_handle_zcode_evidence, "EVIDENCE_FAILED", "evaluate");
 }
 
+#define ASYNC_OWNED_BUILD_RPC(name, method, schema, handler, fallback) \
+    static bool name(const struct json_value *params, bool help, \
+                     struct json_value *result) \
+    { \
+        RPC_HELP(help, result, method " {input}\n" \
+            "Execute one canonical build-ledger command through the live " \
+            "node's owned SQLite handle."); \
+        return async_proof_rpc_run(params, result, schema, handler, \
+                                   fallback, "execute"); \
+    }
+
+ASYNC_OWNED_BUILD_RPC(async_proof_rpc_build_plan, "build_plan_owned",
+    "zcl.build_plan.v1", zcl_native_handle_metaverse_build_plan,
+    "PLAN_REJECTED")
+ASYNC_OWNED_BUILD_RPC(async_proof_rpc_build_submit, "build_submit_owned",
+    "zcl.build_job.v1", zcl_native_handle_metaverse_build_submit,
+    "SUBMIT_REJECTED")
+ASYNC_OWNED_BUILD_RPC(async_proof_rpc_build_cancel, "build_cancel_owned",
+    "zcl.build_job.v1", zcl_native_handle_metaverse_build_cancel,
+    "CANCEL_REJECTED")
+ASYNC_OWNED_BUILD_RPC(async_proof_rpc_worker_approve,
+    "build_worker_approve_owned", "zcl.build_worker.v1",
+    zcl_native_handle_metaverse_build_worker_approve, "APPROVAL_REJECTED")
+ASYNC_OWNED_BUILD_RPC(async_proof_rpc_worker_revoke,
+    "build_worker_revoke_owned", "zcl.build_worker.v1",
+    zcl_native_handle_metaverse_build_worker_revoke, "REVOCATION_REJECTED")
+
+#undef ASYNC_OWNED_BUILD_RPC
+
 void boot_zcode_async_proof_register_rpc(struct rpc_table *table)
 {
     const struct rpc_command commands[] = {
         {"zcode", "zcode_work_admit", async_proof_rpc_admit, true},
         {"zcode", "zcode_work_evidence", async_proof_rpc_evidence, true},
+        {"zcode", "build_plan_owned", async_proof_rpc_build_plan, true},
+        {"zcode", "build_submit_owned", async_proof_rpc_build_submit, true},
+        {"zcode", "build_cancel_owned", async_proof_rpc_build_cancel, true},
+        {"zcode", "build_worker_approve_owned",
+         async_proof_rpc_worker_approve, true},
+        {"zcode", "build_worker_revoke_owned",
+         async_proof_rpc_worker_revoke, true},
     };
     for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
         rpc_table_must_append(table, &commands[i]);
@@ -168,10 +209,13 @@ static struct zcl_result async_context_build(
     struct node_db *ndb, const struct db_build_job *job,
     struct db_build_action *action, int64_t now,
     const char *workspace, struct vcs_zcode_task_v1 *task,
-    uint8_t context_root[32])
+    uint8_t context_root[32], bool *cache_hit, uint64_t *context_bytes)
 {
     struct vcs_package_store *store = vcs_package_store_global();
-    if (!store || !workspace || workspace[0] != '/')
+    if (cache_hit) *cache_hit = false;
+    if (context_bytes) *context_bytes = 0;
+    if (!store || !workspace || workspace[0] != '/' || !cache_hit ||
+        !context_bytes)
         return ZCL_ERR(-1, "package/CAS owners unavailable");
     if (!async_load_task(workspace, action, task))
         return ZCL_ERR(-1, "task object unavailable");
@@ -182,6 +226,8 @@ static struct zcl_result async_context_build(
             !vcs_package_store_package_status(store, context_root, &status) ||
             !status.complete)
             return ZCL_ERR(-1, "bound context package is incomplete");
+        *cache_hit = true;
+        *context_bytes = status.total_bytes;
         return ZCL_OK;
     }
     struct vcs_zcode_candidate_v1 candidate;
@@ -253,6 +299,11 @@ static struct zcl_result async_context_build(
         return ZCL_ERR(-1, "context root could not bind to the action");
     (void)snprintf(action->context_root_sha3,
                    sizeof(action->context_root_sha3), "%s", context_hex);
+    struct vcs_package_store_status status;
+    if (!vcs_package_store_package_status(store, context_root, &status) ||
+        !status.complete)
+        return ZCL_ERR(-1, "new context package status disappeared");
+    *context_bytes = status.total_bytes;
     return ZCL_OK;
 }
 
@@ -329,18 +380,28 @@ static void async_dispatch(
         return;
     struct vcs_zcode_task_v1 task;
     uint8_t context_root[32];
+    bool context_cache_hit = false;
+    uint64_t context_bytes = 0;
+    int64_t context_started_us = platform_time_monotonic_us();
     struct zcl_result packed = async_context_build(
-        ndb, &job, &action, now, event->workspace, &task, context_root);
+        ndb, &job, &action, now, event->workspace, &task, context_root,
+        &context_cache_hit, &context_bytes);
+    int64_t context_us = platform_time_monotonic_us() - context_started_us;
     if (!packed.ok) return;
     uint64_t peer = 0;
     struct vcs_zcode_work_capability_v1 capability;
+    int64_t selection_started_us = platform_time_monotonic_us();
     if (!async_select_peer(work, event, &job, work_kind, now,
                            &peer, &capability) ||
         !async_identity(svc))
         return;
-    uint32_t requested_lease = task.max_cpu_seconds < UINT32_MAX - 10u
-        ? task.max_cpu_seconds + 10u : task.max_cpu_seconds;
-    if (requested_lease < 15u) requested_lease = 15u;
+    int64_t selection_us = platform_time_monotonic_us() - selection_started_us;
+    uint32_t requested_lease =
+        task.max_cpu_seconds < UINT32_MAX - ASYNC_PROOF_TRANSPORT_SECONDS
+        ? task.max_cpu_seconds + ASYNC_PROOF_TRANSPORT_SECONDS
+        : task.max_cpu_seconds;
+    if (requested_lease < ASYNC_PROOF_TRANSPORT_SECONDS + 1u)
+        requested_lease = ASYNC_PROOF_TRANSPORT_SECONDS + 1u;
     if (requested_lease > capability.max_lease_seconds)
         requested_lease = capability.max_lease_seconds;
     bool active_discovery = strcmp(event->state, "PEER_DISCOVERED") == 0 &&
@@ -394,8 +455,23 @@ static void async_dispatch(
             request.request_id, context_hex, NULL, deadline,
             discovery_us, now, &next);
         if (!discovered.ok) return;
+        struct vcs_zcode_work_swarm_message message = {
+            .type = VCS_ZCODE_WORK_SWARM_REQUEST,
+            .body.request = request,
+        };
+        LOG_INFO("zcode.proof_perf",
+                 "schema=zcl.async_proof_perf.v1 action=%s "
+                 "stage=requester_dispatch context_prepare_us=%lld "
+                 "context_bytes=%llu context_cache_hit=%d "
+                 "peer_selection_us=%lld request_submit_us=%lld "
+                 "request_wire_bytes=%zu retry=%d",
+                 action.action_id, (long long)(context_us < 0 ? 0 : context_us),
+                 (unsigned long long)context_bytes, context_cache_hit ? 1 : 0,
+                 (long long)(selection_us < 0 ? 0 : selection_us),
+                 (long long)(submit_us < 0 ? 0 : submit_us),
+                 vcs_zcode_work_swarm_wire_size(&message),
+                 event->peer_id != 0 ? 1 : 0);
     }
-    (void)submit_us;
 }
 
 static int64_t async_elapsed_us(int64_t later, int64_t earlier)
@@ -500,9 +576,16 @@ static void async_reproduce(
     int64_t now)
 {
     struct build_fabric_proof_evaluation evaluation;
+    int64_t evaluation_started_us = platform_time_monotonic_us();
     struct zcl_result evaluated = build_fabric_proof_evaluate(
         ndb, event->workspace, event->action_id, now, &evaluation);
-    if (!evaluated.ok || !evaluation.local_reproduced) return;
+    int64_t evaluation_us =
+        platform_time_monotonic_us() - evaluation_started_us;
+    /* REPRODUCED is the derived statement that the canonical proof policy is
+     * satisfied. A policy may require requester-local reproduction, or may
+     * instead authorize an approved independent-signer quorum. Do not impose
+     * an undeclared local execution requirement that races peer work. */
+    if (!evaluated.ok || !evaluation.policy_satisfied) return;
     struct db_build_proof_event requested, reproduced, ready;
     if (!build_fabric_proof_transition(
             ndb, event->action_id, "REPRODUCED", event->peer_id,
@@ -512,11 +595,27 @@ static void async_reproduce(
     int64_t total_us = db_build_proof_event_requested(
         ndb, event->action_id, event->request_id, &requested)
         ? async_elapsed_us(now, requested.created_at) : 0;
-    ZCL_IGNORE_RESULT(build_fabric_proof_transition(
+    int64_t projection_started_us = platform_time_monotonic_us();
+    struct zcl_result readiness = build_fabric_proof_transition(
         ndb, event->action_id, "READY_FOR_ACCEPTANCE", event->peer_id,
         event->request_id, NULL, NULL, event->deadline_at, total_us, now,
-        &ready),
-        "REPRODUCED stays durable and the next async tick retries readiness");
+        &ready);
+    int64_t projection_us =
+        platform_time_monotonic_us() - projection_started_us;
+    if (!readiness.ok) {
+        LOG_WARN("net.zcode_async",
+                 "REPRODUCED durable; readiness retry required: %s",
+                 readiness.message);
+        return;
+    }
+    LOG_INFO("zcode.proof_perf",
+             "schema=zcl.async_proof_perf.v1 action=%s "
+             "stage=acceptance_ready local_verification_us=%lld "
+             "projection_us=%lld total_background_us=%lld",
+             event->action_id,
+             (long long)(evaluation_us < 0 ? 0 : evaluation_us),
+             (long long)(projection_us < 0 ? 0 : projection_us),
+             (long long)total_us);
 }
 
 void boot_zcode_async_proof_tick(

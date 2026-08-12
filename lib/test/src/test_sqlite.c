@@ -23,6 +23,8 @@
 #include "util/safe_alloc.h"
 #include "util/hw_profile.h"
 #include <pthread.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -591,6 +593,16 @@ int test_sqlite(void) {
             &ndb, db_path, "test.existing_reopen");
         ok = ok && node_db_state_get_int(&ndb, "existing_open_test", &value);
         ok = ok && value == 23;
+        sqlite3_stmt *mmap_stmt = NULL;
+        int64_t mmap_bytes = -1;
+        if (ok && sqlite3_prepare_v2(ndb.db, "PRAGMA mmap_size", -1,
+                                     &mmap_stmt, NULL) == SQLITE_OK &&
+            sqlite3_step(mmap_stmt) == SQLITE_ROW)
+            mmap_bytes = sqlite3_column_int64(mmap_stmt, 0);
+        else
+            ok = false;
+        sqlite3_finalize(mmap_stmt);
+        ok = ok && mmap_bytes == 0;
         if (ndb.open) node_db_close(&ndb);
 
         memset(&ndb, 0, sizeof(ndb));
@@ -610,6 +622,135 @@ int test_sqlite(void) {
             &ndb, db_path, "test.schema_mismatch");
 
         cleanup_temp_db_dir(dir_path);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    {
+        /* A live WAL has one filesystem identity. A helper that closes its own
+         * mutable handle must not unlink/recreate the canonical owner's WAL,
+         * which splits same-process readers across different WAL inodes and
+         * surfaces later as schema=0 / SQLITE_IOERR. */
+        printf("SQLite runtime helper preserves live WAL identity... ");
+        char dir_template[] = "/tmp/zclassic23-live-wal-owner-XXXXXX";
+        char *dir_path = mkdtemp(dir_template);
+        char db_path[1024], wal_path[1032];
+        struct node_db canonical = {0}, helper = {0};
+        struct stat before = {0}, after = {0};
+        bool ok = dir_path != NULL;
+        if (ok) {
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
+            snprintf(wal_path, sizeof(wal_path), "%s-wal", db_path);
+            ok = node_db_open(&canonical, db_path) &&
+                node_db_state_set_int(&canonical, "wal_owner_test", 23) &&
+                stat(wal_path, &before) == 0;
+        }
+        if (ok)
+            ok = node_db_open_existing_runtime(
+                &helper, db_path, "test.live_wal_helper");
+        if (helper.open) node_db_close(&helper);
+        ok = ok && stat(wal_path, &after) == 0 &&
+            before.st_dev == after.st_dev && before.st_ino == after.st_ino;
+        if (canonical.open) node_db_close(&canonical);
+        if (dir_path) cleanup_temp_db_dir(dir_path);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    {
+        /* Born-red reproduction for the live API/projection shape: a raw
+         * read-only SQLite connection is opened beside the canonical mutable
+         * owner, reads through the WAL, and closes while the owner continues
+         * transacting.  Its close must not remove or replace the owner's WAL
+         * pathname. */
+        printf("SQLite raw reader cannot retire canonical live WAL... ");
+        char dir_template[] = "/tmp/zclassic23-live-wal-reader-XXXXXX";
+        char *dir_path = mkdtemp(dir_template);
+        char db_path[1024], wal_path[1032];
+        struct node_db canonical = {0};
+        sqlite3 *reader = NULL;
+        sqlite3_stmt *stmt = NULL;
+        struct stat before = {0}, after = {0};
+        bool ok = dir_path != NULL;
+        if (ok) {
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
+            snprintf(wal_path, sizeof(wal_path), "%s-wal", db_path);
+            ok = node_db_open(&canonical, db_path) &&
+                node_db_state_set_int(&canonical, "wal_reader_test", 1) &&
+                stat(wal_path, &before) == 0;
+        }
+        if (ok)
+            ok = sqlite3_open_v2(db_path, &reader,
+                    SQLITE_OPEN_READONLY, NULL) == SQLITE_OK &&
+                sqlite3_prepare_v2(reader,
+                    "SELECT value FROM node_state WHERE key='wal_reader_test'",
+                    -1, &stmt, NULL) == SQLITE_OK &&
+                sqlite3_step(stmt) == SQLITE_ROW;
+        sqlite3_finalize(stmt);
+        stmt = NULL;
+        if (reader) {
+            ok = sqlite3_close(reader) == SQLITE_OK && ok;
+            reader = NULL;
+        }
+        int64_t read_back = 0;
+        ok = ok && stat(wal_path, &after) == 0 &&
+            before.st_dev == after.st_dev && before.st_ino == after.st_ino &&
+            node_db_state_set_int(&canonical, "wal_reader_test", 2) &&
+            node_db_state_get_int(&canonical, "wal_reader_test", &read_back) &&
+            read_back == 2;
+        if (canonical.open) node_db_close(&canonical);
+        if (dir_path) cleanup_temp_db_dir(dir_path);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    {
+        /* Exact ownership defect: a one-shot command used node_db_open() on
+         * the resident daemon's live path, then its shutdown retired the
+         * daemon's WAL/SHM.  The canonical lease must reject that second
+         * process before SQLite is opened, while the resident connection
+         * continues transacting throughout. */
+        printf("SQLite second process cannot boot-open a live node.db... ");
+        char dir_template[] = "/tmp/zclassic23-live-db-process-XXXXXX";
+        char *dir_path = mkdtemp(dir_template);
+        char db_path[1024], wal_path[1032];
+        struct node_db canonical = {0};
+        struct stat before = {0}, after = {0};
+        bool ok = dir_path != NULL;
+        if (ok) {
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
+            snprintf(wal_path, sizeof(wal_path), "%s-wal", db_path);
+            ok = node_db_open(&canonical, db_path) &&
+                node_db_state_set_int(&canonical, "process_owner_test", 0) &&
+                stat(wal_path, &before) == 0;
+        }
+        pid_t child = ok ? fork() : -1;
+        if (child == 0) {
+            struct node_db intruder = {0};
+            bool opened = node_db_open(&intruder, db_path);
+            if (opened) node_db_close(&intruder);
+            _exit(opened ? 1 : 0);
+        }
+        ok = ok && child > 0;
+        for (int64_t i = 1; ok && i <= 64; i++)
+            ok = node_db_state_set_int(
+                &canonical, "process_owner_test", i);
+        int status = -1;
+        if (child > 0)
+            ok = waitpid(child, &status, 0) == child && ok;
+        int64_t read_back = 0;
+        ok = ok && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+            stat(wal_path, &after) == 0 &&
+            before.st_dev == after.st_dev && before.st_ino == after.st_ino &&
+            node_db_state_get_int(&canonical, "process_owner_test",
+                                  &read_back) &&
+            read_back == 64 &&
+            node_db_state_set_int(&canonical, "process_owner_after", 23) &&
+            node_db_state_get_int(&canonical, "process_owner_after",
+                                  &read_back) &&
+            read_back == 23;
+        if (canonical.open) node_db_close(&canonical);
+        if (dir_path) cleanup_temp_db_dir(dir_path);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -1099,7 +1240,7 @@ int test_sqlite(void) {
 
     /* Projection hole audit cadence + isolated connection. */
     {
-        printf("SQLite projection hole scan is isolated and bounded... ");
+        printf("SQLite projection hole scan uses canonical owner and is bounded... ");
         char dir_template[] = "/tmp/zclassic23-projection-hole-XXXXXX";
         char *dir_path = mkdtemp(dir_template);
         char db_path[1024];
