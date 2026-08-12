@@ -1559,6 +1559,16 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=copied-snapshot,pure-service,no-files,no-db,no-tor,no-wallet\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "shop-reputation-view-contract.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "roots=present,absent,pair-exact,pair-mismatch\n"
+            "evidence=releases,packages,observation,reproduction,attestation\n"
+            "unavailable=availability,paid-fulfillment\n"
+            "contract=exact-service-id,frozen-kat\n"
+            "authority=copied-facts,pure-service,no-files,no-signatures,no-clock,no-ledger\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1805,6 +1815,59 @@ static int hs_hotfork_unity_source(
             " HF_CHECK(contract && strcmp(contract->service_id,SHOP_STATUS_VIEW_SERVICE_ID)==0"
             " && contract->frozen_kat && contract->frozen_kat("
             "shop_status_view_service_builtin(),why,sizeof(why)));\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),"
+            "\"checks=%%u/%%u;failed_mask=0x%%x\","
+            "out->checks_passed,out->checks_run,failed);"
+            " return out->checks_run==4 && out->checks_passed==4; }\n",
+            source_path, service_path, def->exercised_surface);
+    }
+    if (strcmp(def->story_id, "shop-reputation-view-contract.v1") == 0) {
+        size_t source_len = strlen(source_path);
+        size_t suffix_len = strlen(def->source_tu);
+        if (source_len < suffix_len ||
+            strcmp(source_path + source_len - suffix_len,
+                   def->source_tu) != 0)
+            return -1;
+        char service_path[PATH_MAX];
+        int service_n = snprintf(service_path, sizeof(service_path),
+            "%.*sapp/services/src/shop_reputation_view_service.c",
+            (int)(source_len - suffix_len), source_path);
+        if (service_n <= 0 || service_n >= (int)sizeof(service_path))
+            return -1;
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"hotswap/hotswap_service.h\"\n"
+            "#define zcl_hotswap_service_acquire(...) NULL\n"
+            "#define zcl_hotswap_service_release(...) ((void)0)\n"
+            "#define zcl_hotswap_service_generation(...) 0\n"
+            "#include \"%s\"\n"
+            "#undef zcl_hotswap_service_generation\n"
+            "#undef zcl_hotswap_service_release\n"
+            "#undef zcl_hotswap_service_acquire\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC; unsigned failed=0;\n"
+            " #define HF_CHECK(x) do { unsigned n=out->checks_run++;"
+            " if (x) out->checks_passed++; else failed|=1u<<n; } while(0)\n"
+            " uint8_t roots[2][32]={{0}}; roots[0][0]=1; roots[1][0]=2;"
+            " uint8_t one[32]={1},three[32]={3};"
+            " HF_CHECK(rep_root_seen(roots,2,one) && !rep_root_seen(roots,2,three));"
+            " struct shop_rep_pair pairs[1]; memset(pairs,0,sizeof(pairs));"
+            " pairs[0].package_root[0]=1; pairs[0].recipe_root[0]=2;"
+            " uint8_t two[32]={2};"
+            " HF_CHECK(rep_pair_seen(pairs,1,one,two)"
+            " && !rep_pair_seen(pairs,1,one,three));"
+            " const struct zcl_hotswap_service_contract *contract="
+            "zcl_native_shop_reputation_view_service_contract(); char why[160]={0};"
+            " HF_CHECK(contract && strcmp(contract->service_id,"
+            "SHOP_REPUTATION_VIEW_SERVICE_ID)==0 && contract->frozen_kat);"
+            " HF_CHECK(contract && contract->frozen_kat && contract->frozen_kat("
+            "shop_reputation_view_service_builtin(),why,sizeof(why)));\n"
             " #undef HF_CHECK\n"
             " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
             " snprintf(out->detail,sizeof(out->detail),"
