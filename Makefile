@@ -2119,7 +2119,7 @@ t-fast-exact: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED)'
 
-.PHONY: zcode-development-acceptance zcode-async-proof-acceptance sovereign-source-roundtrip
+.PHONY: zcode-development-acceptance zcode-async-proof-acceptance zcode-async-proof-scaling sovereign-source-roundtrip
 zcode-development-acceptance:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY=test_zcode_package_dev
 
@@ -2132,6 +2132,14 @@ zcode-async-proof-acceptance: zclassic23 zcl-rpc
 	@$(MAKE) --no-print-directory check-vcs-no-git
 	@DHT_PACKAGEHOST=1 DHT_BUILDWORKERS=1 \
 	  DHT_AFTER_SPARSE_HOOK="$(CURDIR)/tools/dev/zcode_async_proof_acceptance_hook.sh" \
+	  bash tools/dev/zcode_dht_acceptance.sh
+
+# Measurement-only scaling campaign over the same three interchangeable full
+# nodes.  It creates no lifecycle/cache authority beyond canonical immutable
+# task/action/receipt rows and emits an artifact-backed timing CSV/report.
+zcode-async-proof-scaling: zclassic23 zcl-rpc
+	@DHT_PACKAGEHOST=1 DHT_BUILDWORKERS=1 DHT_KEEP=1 \
+	  DHT_AFTER_SPARSE_HOOK="$(CURDIR)/tools/dev/zcode_async_proof_scaling_hook.sh" \
 	  bash tools/dev/zcode_dht_acceptance.sh
 
 # Hermetic P2P source-publication proof. The exact group emits one canonical

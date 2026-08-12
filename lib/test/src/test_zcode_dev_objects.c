@@ -1412,6 +1412,90 @@ static int test_zd_work_swarm(void)
     return failures;
 }
 
+static int test_zd_work_node_duplicate_sessions(void)
+{
+    int failures = 0;
+    TEST("zcode_dev: duplicate peer sessions cannot multiply worker slots") {
+        struct vcs_zcode_work_node *requester = vcs_zcode_work_node_create();
+        struct vcs_zcode_work_node *worker = vcs_zcode_work_node_create();
+        ASSERT(requester && worker);
+        ASSERT(vcs_zcode_work_node_peer_add(requester, 11));
+        ASSERT(vcs_zcode_work_node_peer_add(requester, 12));
+        ASSERT(vcs_zcode_work_node_peer_add(worker, 21));
+        ASSERT(vcs_zcode_work_node_peer_add(worker, 22));
+        uint8_t worker_seed[32], worker_secret[32], worker_key[32];
+        uint8_t requester_seed[32], requester_secret[32], requester_key[32];
+        zd_root(worker_seed, 61); zd_root(requester_seed, 62);
+        ed25519_keypair(worker_key, worker_secret, worker_seed);
+        ed25519_keypair(requester_key, requester_secret, requester_seed);
+        struct vcs_zcode_work_capability_v1 capability = {0};
+        memcpy(capability.signer_pubkey, worker_key, 32);
+        zd_root(capability.toolchain_capsule_root, 63);
+        capability.work_kinds = UINT32_C(1) << VCS_ZCODE_WORK_BUILD;
+        capability.target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3;
+        capability.confinement = VCS_ZCODE_WORK_CONFINEMENT_V1_MASK;
+        capability.max_cpu_seconds = 60;
+        capability.max_memory_bytes = UINT64_C(512) * 1024 * 1024;
+        capability.max_output_bytes = UINT64_C(64) * 1024 * 1024;
+        capability.max_lease_seconds = 120;
+        capability.slots = capability.queue_headroom = 1;
+        capability.expires_unix = 2000;
+        ASSERT(vcs_zcode_work_capability_seal(
+            &capability, worker_secret, worker_key));
+        ASSERT(vcs_zcode_work_node_set_local_capability(worker, &capability));
+        uint8_t frame[VCS_ZCODE_WORK_SWARM_MAX_WIRE_BYTES];
+        uint64_t peer = 0; size_t frame_len = 0;
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            worker, 21, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            requester, 11, frame, frame_len, 1000), VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            worker, 22, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            requester, 12, frame, frame_len, 1000), VCS_ZCODE_WORK_NODE_OK);
+
+        struct vcs_zcode_work_request_v1 request = {0};
+        request.request_id = 600;
+        zd_root(request.task_root, 64); zd_root(request.candidate_root, 65);
+        zd_root(request.action_root, 66); zd_root(request.input_root, 67);
+        zd_root(request.context_root, 68); zd_root(request.proof_policy_root, 69);
+        memcpy(request.toolchain_capsule_root,
+               capability.toolchain_capsule_root, 32);
+        request.work_kind = VCS_ZCODE_WORK_BUILD;
+        request.target = VCS_ZCODE_WORK_TARGET_LINUX_X86_64_V3;
+        request.max_cpu_seconds = 60;
+        request.max_memory_bytes = UINT64_C(512) * 1024 * 1024;
+        request.max_output_bytes = UINT64_C(64) * 1024 * 1024;
+        request.deadline_unix = 1100;
+        ASSERT(vcs_zcode_work_request_seal(
+            &request, requester_secret, requester_key));
+        ASSERT_EQ(vcs_zcode_work_node_submit(requester, 11, &request, 1000),
+                  VCS_ZCODE_WORK_NODE_OK);
+        struct vcs_zcode_work_capability_v1 effective;
+        ASSERT(vcs_zcode_work_node_peer_capability(
+            requester, 12, 1000, &effective));
+        ASSERT_EQ(effective.queue_headroom, 0);
+        vcs_zcode_work_node_peer_drop(requester, 11);
+        ASSERT(vcs_zcode_work_node_peer_capability(
+            requester, 12, 1000, &effective));
+        ASSERT_EQ(effective.queue_headroom, 0);
+        request.request_id = 601;
+        zd_root(request.action_root, 70);
+        ASSERT(vcs_zcode_work_request_seal(
+            &request, requester_secret, requester_key));
+        ASSERT_EQ(vcs_zcode_work_node_submit(requester, 12, &request, 1000),
+                  VCS_ZCODE_WORK_NODE_CAPABILITY_MISMATCH);
+        vcs_zcode_work_node_tick(requester, 1100);
+        ASSERT(vcs_zcode_work_node_peer_capability(
+            requester, 12, 1100, &effective));
+        ASSERT_EQ(effective.queue_headroom, 1);
+        vcs_zcode_work_node_free(requester);
+        vcs_zcode_work_node_free(worker);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_zd_work_node(void)
 {
     int failures = 0;
@@ -5105,6 +5189,7 @@ int test_zcode_dev_objects(void)
     failures += test_zd_receipt();
     failures += test_zd_work_context();
     failures += test_zd_work_swarm();
+    failures += test_zd_work_node_duplicate_sessions();
     failures += test_zd_work_node();
     failures += test_zd_work_node_three();
     failures += test_zd_improve_command();

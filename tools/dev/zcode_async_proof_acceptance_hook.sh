@@ -309,6 +309,14 @@ zap_connect() {
         dht_die "async proof nodes $from/$to did not authenticate"
 }
 
+# The scaling campaign sources these canonical helpers after the same seven-
+# identity bootstrap.  Returning here keeps one implementation of action,
+# receipt, responsiveness, and database-lifetime assertions without making
+# either harness a source of proof lifecycle truth.
+if [ "${ZAP_HELPERS_ONLY:-0}" = 1 ]; then
+    return 0
+fi
+
 # Collapse the prior seven-node discovery fixture to three equal full-node
 # processes. No role-specific binary or configuration is introduced.
 ZAP_A="$ORIGIN"; ZAP_B="$NEXT"; ZAP_C="$TARGET"
