@@ -20,6 +20,12 @@ if [[ "$OWNER_KIND" == cycle ]]; then
     STORY='devloop-cycle-diagnostic-policy.v1'
     MUTANT_OLD='strcmp(status, "passed") == 0'
     MUTANT_NEW='strcmp(status, "passed") != 0'
+elif [[ "$OWNER_KIND" == corpus ]]; then
+    SOURCE="$ROOT/tools/command/native_zcode_corpus_command.c"
+    OUTPUT="${ZCL_REFLEX_CORPUS_CORE_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-corpus-core-acceptance.json}"
+    STORY='zcode-corpus-command-core.v1'
+    MUTANT_OLD="root[i] >= 'a'"
+    MUTANT_NEW="root[i] > 'a'"
 fi
 
 fail() { printf 'reflex-hotfork-watch-core-acceptance: %s\n' "$*" >&2; exit 2; }

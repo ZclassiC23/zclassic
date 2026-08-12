@@ -1578,6 +1578,15 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=caller-owned-input,pure-normalization,no-files,no-db,no-cas,no-process\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "zcode-corpus-command-core.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "root=lowercase-64,uppercase-reject,length-reject\n"
+            "checkpoint=total-loc,overflow-reject,null-reject\n"
+            "shard=counted,durable,excluded,totals,overflow-reject\n"
+            "authority=caller-owned-structs,pure-aggregation,no-storage,no-clock,no-service-publication\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "devloop-watch-classification-core.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1634,6 +1643,60 @@ static int hs_hotfork_unity_source(
     const struct hs_hotfork_def *def, const char *source_path,
     char *out, size_t out_size)
 {
+    if (strcmp(def->story_id,
+               "zcode-corpus-command-core.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"hotswap/hotswap_service.h\"\n"
+            "#define zcl_hotswap_service_acquire(...) NULL\n"
+            "#define zcl_hotswap_service_release(...) ((void)0)\n"
+            "#define zcl_hotswap_service_generation(...) 0\n"
+            "#include \"%s\"\n"
+            "#undef zcl_hotswap_service_generation\n"
+            "#undef zcl_hotswap_service_release\n"
+            "#undef zcl_hotswap_service_acquire\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC; unsigned failed=0;\n"
+            " #define HF_CHECK(x) do { unsigned n=out->checks_run++;"
+            " if (x) out->checks_passed++; else failed|=1u<<n; } while(0)\n"
+            " const char *lower=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\";"
+            " const char *upper=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeF\";"
+            " HF_CHECK(lowercase_root(lower) && !lowercase_root(upper)"
+            " && !lowercase_root(\"abcd\") && !lowercase_root(NULL));"
+            " struct vcs_zcode_c23_corpus_checkpoint_v1 checkpoint={0};"
+            " checkpoint.production_loc=7; checkpoint.test_loc=5; uint64_t total=0;"
+            " HF_CHECK(corpus_checkpoint_renderable(&checkpoint,&total) && total==12);"
+            " checkpoint.production_loc=UINT64_MAX; checkpoint.test_loc=1;"
+            " HF_CHECK(!corpus_checkpoint_renderable(&checkpoint,&total)"
+            " && !corpus_checkpoint_renderable(NULL,&total));"
+            " struct vcs_zcode_c23_corpus_entry_v1 entries[2]={{0}};"
+            " entries[0].production_loc=3; entries[0].test_loc=2;"
+            " entries[0].physical_lines=6; entries[0].unique_semantic_units=2;"
+            " entries[0].flags=VCS_ZCODE_C23_ENTRY_COUNTED|VCS_ZCODE_C23_ENTRY_DURABLE;"
+            " entries[1].production_loc=4; entries[1].test_loc=1;"
+            " entries[1].physical_lines=8; entries[1].unique_semantic_units=3;"
+            " struct vcs_zcode_c23_corpus_shard_v1 shard={.entries=entries,.entry_count=2};"
+            " struct corpus_shard_metrics metrics;"
+            " HF_CHECK(corpus_shard_metrics_collect(&shard,&metrics)"
+            " && metrics.counted_entries==1 && metrics.durable_entries==1"
+            " && metrics.excluded_entries==1 && metrics.production_loc==7"
+            " && metrics.test_loc==3 && metrics.total_loc==10"
+            " && metrics.durable_loc==5 && metrics.physical_lines==14"
+            " && metrics.unique_semantic_units==5);"
+            " entries[1].production_loc=UINT64_MAX;"
+            " HF_CHECK(!corpus_shard_metrics_collect(&shard,&metrics)"
+            " && !corpus_shard_metrics_collect(NULL,&metrics));\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),"
+            "\"checks=%%u/%%u;failed_mask=0x%%x\","
+            "out->checks_passed,out->checks_run,failed);"
+            " return out->checks_run==5 && out->checks_passed==5; }\n",
+            source_path, def->exercised_surface);
+    }
     if (strcmp(def->story_id,
                "devloop-cycle-diagnostic-policy.v1") == 0) {
         return snprintf(out, out_size,
