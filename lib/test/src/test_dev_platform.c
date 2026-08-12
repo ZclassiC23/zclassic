@@ -3307,6 +3307,16 @@ static int test_hotfork_descriptor_boundary(void)
             "84a5a5c9cda8f565a1cc4ac6b8d7c24ad1cbf33e67a540cf929a271028a821a3";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
             capsule.source_tu, object_root, &capsule));
+
+        capsule.owner_id = "dev.native-hotswap-receipt-policy.v1";
+        capsule.source_tu = "tools/command/native_dev_hotswap.c";
+        capsule.story_id = "native-dev-hotswap-receipt-policy.v1";
+        capsule.story_root =
+            "4dcb2c98f1f5da6ba8467ef7da19eff734f66717c1beb537e5e31532d4ccc0f6";
+        capsule.story_fixture_root =
+            "0cde6a93be5a14e0a8b8c6087b30f57178d80baf832cd38f71a41d95d6579d5b";
+        ASSERT(zcl_devloop_hotfork_descriptor_validate(
+            capsule.source_tu, object_root, &capsule));
         PASS();
     } _test_next:;
     return failures;

@@ -15,3 +15,9 @@ HOTFORK_CAPSULE(
     "tools/command/native_dev_command.c",
     "native-dev-input-and-interrupt-policy.v1",
     "dev_request_files+dev_drive_input_int+dev_event_interrupting+dev_group_valid+dev_generation_name_valid+dev_failure_id_valid")
+
+HOTFORK_CAPSULE(
+    "dev.native-hotswap-receipt-policy.v1",
+    "tools/command/native_dev_hotswap.c",
+    "native-dev-hotswap-receipt-policy.v1",
+    "zcl_native_hotswap_publish_hooks+report_to_reply+service_report_to_reply+registry_commit_batch_cb+registry_probe_cb")
