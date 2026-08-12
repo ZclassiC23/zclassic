@@ -13,7 +13,8 @@
  *      and fires a typed error (corruption LOWERS the frontier, never raises it),
  *   3. the tag verify primitive returns MATCH / MISMATCH / ABSENT correctly,
  *   4. the schema migration backfills legacy rows and is idempotent,
- *   5. the per-boot watermark keeps a normal fold O(delta) (measured numbers).
+ *   5. the per-boot watermark keeps a normal fold O(delta) (measured numbers),
+ *   6. mutating a row below that watermark invalidates it and lowers H*.
  *
  * The fixture writes rows with plain sqlite3 INSERT — TEST scaffolding building
  * the durable image, not production reducer code. compute_hstar is the unit
@@ -564,6 +565,20 @@ static int case_fold_perf(void)
      * loaded parallel test host). */
     HI_CHECK("perf: warm fold cheaper than cold (watermark saves work)",
              warm_us <= cold_us);
+
+    /* The warm prefix is trusted only while immutable. A repair/corruption
+     * that changes it on the same connection must revoke the watermark; an
+     * append above H* remains O(delta). This is the lifecycle hole regression
+     * caught by the full parallel push gate. */
+    const int32_t hole = tip - 7;
+    char delete_sql[128];
+    snprintf(delete_sql, sizeof(delete_sql),
+             "DELETE FROM script_validate_log WHERE height=%d", hole);
+    HI_CHECK("perf: below-watermark hole punched",
+             sqlite3_exec(db, delete_sql, NULL, NULL, NULL) == SQLITE_OK);
+    hstar = -1;
+    bool ok3 = reducer_frontier_compute_hstar(db, &hstar, &served);
+    HI_CHECK("perf: mutation invalidates watermark", ok3 && hstar == hole - 1);
 
     sqlite3_close(db);
     return failures;

@@ -309,10 +309,11 @@ static bool log_contiguous_prefix(sqlite3 *db, const char *log_table,
                                   int32_t verify_above,
                                   int32_t *h_contiguous)
 {
-    *h_contiguous = anchor;
+    int64_t scan_floor =
+        reducer_frontier_itag_scan_floor(anchor, cursor, verify_above);
+    *h_contiguous = (int32_t)scan_floor;
     if (cursor <= (int64_t)anchor)
         return true;  /* nothing above the anchor to disprove the prefix */
-
     /* ONE ranged scan instead of a prepare+bind+step PER HEIGHT (measured
      * 53x cheaper; the walk runs full length precisely on HEALTHY nodes,
      * under the global progress lock). `height` is the table's PRIMARY KEY,
@@ -335,7 +336,7 @@ static bool log_contiguous_prefix(sqlite3 *db, const char *log_table,
     if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
         LOG_FAIL("reducer", "prepare %s ranged scan failed: %s",
                  log_table, sqlite3_errmsg(db));
-    sqlite3_bind_int64(st, 1, (sqlite3_int64)anchor);
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)scan_floor);
     sqlite3_bind_int64(st, 2, (sqlite3_int64)cursor);
 
     /* O(delta) witness: every row this walk streams from [anchor+1 .. cursor)
@@ -347,10 +348,9 @@ static bool log_contiguous_prefix(sqlite3 *db, const char *log_table,
      * per log invocation (8×/compute), NOT per row — the hot loop only bumps. */
     atomic_uint_least64_t *scan_ctr =
         boot_scan_counter("reducer_frontier.contiguity_rows");
-
     int itag_col = profile_bound ? 3 : 2;  /* only valid when have_itag */
     bool rc_ok = true;
-    int64_t expect = (int64_t)anchor + 1;
+    int64_t expect = scan_floor + 1;
     while (true) {
         int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
         if (rc == SQLITE_ROW) {
@@ -613,7 +613,7 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
     int32_t ua_contig = anchor;  /* utxo_apply's OWN contiguous frontier (C4) */
     /* Per-boot integrity-tag watermark: verify only the delta above it (rows
      * at/below were tag-verified earlier this boot). See reducer_frontier_itag.h. */
-    int32_t verify_wm = reducer_frontier_itag_watermark();
+    int32_t verify_wm = reducer_frontier_itag_watermark(progress_db);
     for (int i = 0; i < k_logs_n; i++) {
         int64_t raw_cursor = 0;
         if (!cursor_at(progress_db, k_logs[i].cursor_name, &raw_cursor))
@@ -702,7 +702,7 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
     /* Advance the watermark to the resolved H*: [anchor+1 .. hs] is now
      * tag-verified in every log (hs <= each log's verified prefix), so later
      * folds verify only the delta above it. See reducer_frontier_itag.h. */
-    reducer_frontier_itag_watermark_publish(hs);
+    reducer_frontier_itag_watermark_publish(progress_db, hs);
 
     *hstar = hs;
     return true;

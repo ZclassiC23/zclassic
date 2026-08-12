@@ -148,3 +148,14 @@ HOTFORK_CAPSULE(
     1000,
     "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
     "catalog_contains+exclusive+semantic_leaf+resolve_exact+plan_selects+integration_policy+expand_plan+expand_immediate")
+
+HOTFORK_CAPSULE(
+    "shop.want-view-contract.v1",
+    "HOT_FORK",
+    "app/controllers/src/shop_native_want_view_contract.c",
+    "shop-want-view-contract.v1",
+    "shop-want-view-contract.v1",
+    "shop-want-view-contract.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
+    "want_view_render+want_view_json+want_view_frozen_kat")

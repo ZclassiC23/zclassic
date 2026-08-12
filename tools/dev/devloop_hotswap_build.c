@@ -1528,6 +1528,17 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=read-only-catalog,no-process,no-filesystem,no-build\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "shop-want-view-contract.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "row=bounded-criteria,open,reviewed-ok,no-spec-hash\n"
+            "render=preview,amount,state,next-action\n"
+            "json=preview,truncation,amount,expiry\n"
+            "contract=exact-service-id,frozen-kat\n"
+            "fulfillment=hidden,ready,evidence-blocked,closed\n"
+            "authority=caller-owned-row,pure-service,no-store,no-clock,no-wallet\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1615,6 +1626,66 @@ static int hs_hotfork_unity_source(
             " out->checks_passed,out->checks_run,failed);"
             " return out->checks_run==10 && out->checks_passed==10; }\n",
             source_path, def->exercised_surface);
+    }
+    if (strcmp(def->story_id, "shop-want-view-contract.v1") == 0) {
+        size_t source_len = strlen(source_path);
+        size_t suffix_len = strlen(def->source_tu);
+        if (source_len < suffix_len ||
+            strcmp(source_path + source_len - suffix_len,
+                   def->source_tu) != 0)
+            return -1;
+        char service_path[PATH_MAX];
+        int service_n = snprintf(service_path, sizeof(service_path),
+            "%.*sapp/services/src/shop_want_view_service.c",
+            (int)(source_len - suffix_len), source_path);
+        if (service_n <= 0 || service_n >= (int)sizeof(service_path))
+            return -1;
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"hotswap/hotswap_service.h\"\n"
+            "#define zcl_hotswap_service_acquire(...) NULL\n"
+            "#define zcl_hotswap_service_release(...) ((void)0)\n"
+            "#include \"%s\"\n"
+            "#undef zcl_hotswap_service_release\n"
+            "#undef zcl_hotswap_service_acquire\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC; unsigned failed=0;\n"
+            " #define HF_CHECK(x) do { unsigned n=out->checks_run++;"
+            " if (x) out->checks_passed++; else failed|=1u<<n; } while(0)\n"
+            " struct shop_want row; memset(&row,0,sizeof(row));"
+            " row.want.amount_zatoshi=500000; row.want.criteria_len=5;"
+            " memcpy(row.want.criteria,\"proof\",5);"
+            " row.want.issued_unix=100; row.want.expires_unix=200;"
+            " row.review_state=1; row.want_id[0]=1; row.want.buyer_pubkey[0]=2;"
+            " struct shop_want_view_result_v1 view;"
+            " HF_CHECK(zcl_shop_want_view_render(&row,150,false,&view));"
+            " HF_CHECK(strcmp(view.state,\"open\")==0 && !view.expired"
+            " && strcmp(view.review_state,\"reviewed_ok\")==0);"
+            " HF_CHECK(strcmp(view.criteria_preview,\"proof\")==0"
+            " && view.amount_zatoshi==500000 && !view.spec_hash_present);"
+            " struct json_value doc; json_init(&doc); json_set_object(&doc);"
+            " zcl_shop_want_view_push_json(&doc,&view);"
+            " HF_CHECK(json_get_int(json_get(&doc,\"amount_zatoshi\"))==500000"
+            " && strcmp(json_get_str(json_get(&doc,\"criteria_preview\")),\"proof\")==0"
+            " && !json_get_bool(json_get(&doc,\"criteria_truncated\")));"
+            " json_free(&doc);"
+            " const struct zcl_hotswap_service_contract *contract="
+            "zcl_native_shop_want_view_service_contract(); char why[160]={0};"
+            " HF_CHECK(contract && strcmp(contract->service_id,"
+            "SHOP_WANT_VIEW_SERVICE_ID)==0 && contract->frozen_kat);"
+            " HF_CHECK(contract && contract->frozen_kat &&"
+            " contract->frozen_kat(shop_want_view_service_builtin(),why,sizeof(why)));\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),"
+            "\"checks=%%u/%%u;failed_mask=0x%%x\","
+            "out->checks_passed,out->checks_run,failed);"
+            " return out->checks_run==6 && out->checks_passed==6; }\n",
+            source_path, service_path, def->exercised_surface);
     }
     if (strcmp(def->story_id,
                "zcode-source-bundle-input-policy.v1") == 0) {

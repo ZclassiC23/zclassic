@@ -48,14 +48,22 @@ struct sqlite3;
  * H* and verify only the delta above it (the fold is hot — this keeps a normal
  * at-tip fold O(delta), not O(chain)). A reboot re-verifies from scratch.
  *
- *   _watermark()          — current watermark (-1 == nothing verified yet).
- *   _watermark_publish(h) — set it to the just-resolved H* (raise OR lower).
+ *   _watermark(db)          — this connection's watermark (-1 == none).
+ *   _watermark_publish(db,h)— set it to the resolved H* (raise OR lower).
  *   _watermark_reset()    — drop to -1 (refold/reorg: re-verify what we refold).
- * Lock-free atomics; the fold path is already serialized on progress_store's
- * tx lock, and a concurrent dump reader stays torn-safe regardless. */
-int32_t reducer_frontier_itag_watermark(void);
-void    reducer_frontier_itag_watermark_publish(int32_t hstar);
+ * State is connection-owned so one fixture/datadir cannot lend a trusted
+ * prefix to another. A write hook invalidates mutations at/below the trusted
+ * prefix while preserving append-only O(delta); the fold path is serialized
+ * on progress_store's lock. */
+int32_t reducer_frontier_itag_watermark(struct sqlite3 *db);
+void reducer_frontier_itag_watermark_publish(struct sqlite3 *db,
+                                             int32_t hstar);
 void    reducer_frontier_itag_watermark_reset(void);
+
+/* Bound the ranged scan to the unverified delta. The cursor is exclusive; a
+ * watermark above it is clamped to cursor-1 rather than manufacturing H*. */
+int64_t reducer_frontier_itag_scan_floor(int32_t anchor, int64_t cursor,
+                                         int32_t verify_above);
 
 /* Does `table` carry an `itag` column on `db`? Old fixtures / a pre-migration
  * datadir may not; when absent the fold skips tag verification (trusting ok,

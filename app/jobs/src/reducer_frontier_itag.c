@@ -9,33 +9,100 @@
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
 #include "util/log_throttle.h"
+#include "util/safe_alloc.h"
 
 #include <sqlite3.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-static _Atomic int_least32_t g_itag_verify_watermark = -1;  /* -1: nothing yet */
+struct itag_watermark_state {
+    uint64_t epoch;
+    int32_t height;
+};
+
+static _Atomic uint_least64_t g_itag_watermark_epoch = 1;
 
 /* Count of ABSENT (NULL-itag) rows the fold trusted-but-flagged this verify
  * epoch. Reset with the watermark so it reflects the current full re-verify, not
  * a process-lifetime accumulation. Surfaced via reducer_frontier_itag_null_count. */
 static _Atomic uint_least64_t g_itag_null_rows = 0;
 
-int32_t reducer_frontier_itag_watermark(void)
+static bool itag_log_table(const char *table)
 {
-    return (int32_t)atomic_load(&g_itag_verify_watermark);
+    static const char *const logs[] = {
+        "validate_headers_log", "script_validate_log", "body_persist_log",
+        "proof_validate_log", "utxo_apply_log", "tip_finalize_log",
+    };
+    for (size_t i = 0; i < sizeof(logs) / sizeof(logs[0]); i++)
+        if (table && strcmp(table, logs[i]) == 0)
+            return true;
+    return false;
 }
 
-void reducer_frontier_itag_watermark_publish(int32_t hstar)
+/* A watermark is a promise about exact rows, not merely this connection.
+ * Preserve append-only O(delta), but revoke the promise if a trusted-prefix
+ * row is inserted/deleted or any existing verdict row is rewritten. SQLite
+ * calls this synchronously on the mutating connection before the next fold. */
+static void itag_watermark_update(void *ctx, int op, const char *db_name,
+                                  const char *table, sqlite3_int64 rowid)
 {
-    atomic_store(&g_itag_verify_watermark, (int_least32_t)hstar);
+    (void)db_name;
+    struct itag_watermark_state *state = ctx;
+    if (!state || !itag_log_table(table) || state->height < 0)
+        return;
+    if (op == SQLITE_UPDATE || rowid <= (sqlite3_int64)state->height)
+        state->height = -1;
+}
+
+static struct itag_watermark_state *itag_watermark_state(sqlite3 *db,
+                                                         bool create)
+{
+    static const char key[] = "zcl.reducer_frontier.itag_watermark.v1";
+    if (!db) return NULL;
+    struct itag_watermark_state *state = sqlite3_get_clientdata(db, key);
+    if (state || !create) return state;
+    state = zcl_malloc(sizeof(*state), "reducer frontier itag watermark");
+    if (!state) return NULL;
+    state->epoch = 0;
+    state->height = -1;
+    if (sqlite3_set_clientdata(db, key, state, free) != SQLITE_OK)
+        return NULL; /* SQLite invokes the destructor on registration failure. */
+    sqlite3_update_hook(db, itag_watermark_update, state);
+    return state;
+}
+
+int32_t reducer_frontier_itag_watermark(sqlite3 *db)
+{
+    struct itag_watermark_state *state = itag_watermark_state(db, false);
+    uint64_t epoch = (uint64_t)atomic_load(&g_itag_watermark_epoch);
+    return state && state->epoch == epoch ? state->height : -1;
+}
+
+void reducer_frontier_itag_watermark_publish(sqlite3 *db, int32_t hstar)
+{
+    struct itag_watermark_state *state = itag_watermark_state(db, true);
+    if (!state) return;
+    state->height = hstar;
+    state->epoch = (uint64_t)atomic_load(&g_itag_watermark_epoch);
 }
 
 void reducer_frontier_itag_watermark_reset(void)
 {
-    atomic_store(&g_itag_verify_watermark, -1);
+    atomic_fetch_add(&g_itag_watermark_epoch, 1);
     atomic_store(&g_itag_null_rows, 0);
+}
+
+int64_t reducer_frontier_itag_scan_floor(int32_t anchor, int64_t cursor,
+                                         int32_t verify_above)
+{
+    int64_t floor = anchor;
+    if (cursor <= floor) return floor;
+    int64_t last = cursor - 1;
+    if ((int64_t)verify_above > floor)
+        floor = (int64_t)verify_above < last ? verify_above : last;
+    return floor;
 }
 
 uint64_t reducer_frontier_itag_null_count(void)
