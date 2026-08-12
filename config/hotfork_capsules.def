@@ -63,3 +63,9 @@ HOTFORK_CAPSULE(
     "tools/command/native_zcode_workspace_command.c",
     "zcode-workspace-input-policy.v1",
     "workspace_decode_root+workspace_manifest_key_allowed+workspace_root_is_zero")
+
+HOTFORK_CAPSULE(
+    "vcs.source-package-transport-shape.v1",
+    "lib/vcs/src/source_package_transport.c",
+    "source-package-transport-shape.v1",
+    "vcs_source_package_transport_marker+vcs_source_package_transport_file_count+vcs_source_package_transport_file_at+vcs_source_package_offline_input_path")

@@ -3394,6 +3394,16 @@ static int test_hotfork_descriptor_boundary(void)
             "1f2478bb32a61ceee86df7160130be132caf9bd808d37f155553cf8bcc306899";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
             capsule.source_tu, object_root, &capsule));
+
+        capsule.owner_id = "vcs.source-package-transport-shape.v1";
+        capsule.source_tu = "lib/vcs/src/source_package_transport.c";
+        capsule.story_id = "source-package-transport-shape.v1";
+        capsule.story_root =
+            "ab6f068c651e68164f8bef4c4d0694cc86712506bc1b560dead1fdfc287f3d00";
+        capsule.story_fixture_root =
+            "7f0099af65b52a8bb07058b75a5f5df74480825a4ad0ee35149eeac5a996e060";
+        ASSERT(zcl_devloop_hotfork_descriptor_validate(
+            capsule.source_tu, object_root, &capsule));
         PASS();
     } _test_next:;
     return failures;

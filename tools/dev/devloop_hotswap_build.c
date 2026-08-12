@@ -1451,6 +1451,16 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=validation-only,no-service,no-storage,no-publication\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "source-package-transport-shape.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "marker=exact-path,exact-bytes\n"
+            "files=license,manifest,shards,lane,marker,authority,offline-inputs\n"
+            "counts=no-authority,with-authority,null-zero\n"
+            "bounds=file-at-end-reject,offline-at-end-reject\n"
+            "authority=shape-only,no-filesystem,no-cas,no-signing,no-publication\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1812,6 +1822,72 @@ static int hs_hotfork_unity_source(
             " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
             " out->checks_passed,out->checks_run);"
             " return out->checks_run==10 && out->checks_passed==10; }\n",
+            source_path, def->exercised_surface);
+    }
+    if (strcmp(def->story_id,
+               "source-package-transport-shape.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+            " #define HF_CHECK(x) do { out->checks_run++; if (x) out->checks_passed++; } while(0)\n"
+            " size_t marker_len=0; const uint8_t *marker="
+            "vcs_source_package_transport_marker(&marker_len);"
+            " HF_CHECK(marker && marker_len==sizeof(source_transport_marker)-1"
+            " && memcmp(marker,source_transport_marker,marker_len)==0);\n"
+            " static uint8_t license[]={1},manifest[]={2},shard0[]={3},shard1[]={4},"
+            " lane[]={5},authority[]={6},offline0[]={7},offline1[]={8};"
+            " struct vcs_source_package_transport transport={0};"
+            " transport.license_bytes=license; transport.license_len=sizeof(license);"
+            " transport.source.manifest_wire=manifest; transport.source.manifest_wire_len=sizeof(manifest);"
+            " transport.source.shard_count=2;"
+            " transport.source.shards[0]=(struct vcs_source_bundle_shard){.index=0x0a,.wire=shard0,.wire_len=sizeof(shard0)};"
+            " transport.source.shards[1]=(struct vcs_source_bundle_shard){.index=0xff,.wire=shard1,.wire_len=sizeof(shard1)};"
+            " transport.lane_wire=lane; transport.lane_wire_len=sizeof(lane);"
+            " transport.offline_input_count=2;"
+            " transport.offline_inputs[0]=(struct vcs_source_package_file){.path=\"offline-a\",.bytes=offline0,.len=sizeof(offline0)};"
+            " transport.offline_inputs[1]=(struct vcs_source_package_file){.path=\"offline-b\",.bytes=offline1,.len=sizeof(offline1)};"
+            " HF_CHECK(vcs_source_package_transport_file_count(NULL)==0);"
+            " HF_CHECK(vcs_source_package_transport_file_count(&transport)==8);\n"
+            " const char *path=NULL; const uint8_t *bytes=NULL; size_t len=0;"
+            " HF_CHECK(vcs_source_package_transport_file_at(&transport,0,&path,&bytes,&len)"
+            " && strcmp(path,VCS_SOURCE_PACKAGE_LICENSE_PATH)==0 && bytes==license && len==1);"
+            " HF_CHECK(vcs_source_package_transport_file_at(&transport,1,&path,&bytes,&len)"
+            " && strcmp(path,VCS_SOURCE_PACKAGE_MANIFEST_PATH)==0 && bytes==manifest && len==1);"
+            " HF_CHECK(vcs_source_package_transport_file_at(&transport,2,&path,&bytes,&len)"
+            " && strcmp(path,\"zclassic23-source/shard-0a.zvss\")==0 && bytes==shard0 && len==1);"
+            " HF_CHECK(vcs_source_package_transport_file_at(&transport,3,&path,&bytes,&len)"
+            " && strcmp(path,\"zclassic23-source/shard-ff.zvss\")==0 && bytes==shard1 && len==1);"
+            " HF_CHECK(vcs_source_package_transport_file_at(&transport,4,&path,&bytes,&len)"
+            " && strcmp(path,VCS_SOURCE_PACKAGE_LANE_PATH)==0 && bytes==lane && len==1);"
+            " HF_CHECK(vcs_source_package_transport_file_at(&transport,5,&path,&bytes,&len)"
+            " && strcmp(path,VCS_SOURCE_PACKAGE_MARKER_PATH)==0 && bytes==marker && len==marker_len);"
+            " HF_CHECK(vcs_source_package_transport_file_at(&transport,6,&path,&bytes,&len)"
+            " && strcmp(path,\"offline-a\")==0 && bytes==offline0 && len==1);"
+            " HF_CHECK(vcs_source_package_transport_file_at(&transport,7,&path,&bytes,&len)"
+            " && strcmp(path,\"offline-b\")==0 && bytes==offline1 && len==1);"
+            " HF_CHECK(!vcs_source_package_transport_file_at(&transport,8,&path,&bytes,&len));\n"
+            " transport.authority_wire=authority; transport.authority_wire_len=sizeof(authority);"
+            " HF_CHECK(vcs_source_package_transport_file_count(&transport)==9);"
+            " HF_CHECK(vcs_source_package_transport_file_at(&transport,6,&path,&bytes,&len)"
+            " && strcmp(path,VCS_SOURCE_PACKAGE_AUTHORITY_PATH)==0 && bytes==authority && len==1);"
+            " HF_CHECK(vcs_source_package_transport_file_at(&transport,7,&path,&bytes,&len)"
+            " && strcmp(path,\"offline-a\")==0);"
+            " HF_CHECK(vcs_source_package_offline_input_count()==5);"
+            " HF_CHECK(strcmp(vcs_source_package_offline_input_path(0),"
+            " \"vendor/.cache/leveldb-1.23.tar.gz\")==0);"
+            " HF_CHECK(strcmp(vcs_source_package_offline_input_path(4),"
+            " \"vendor/.cache/zlib-1.3.1.tar.gz\")==0);"
+            " HF_CHECK(vcs_source_package_offline_input_path(5)==NULL);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
+            " out->checks_passed,out->checks_run);"
+            " return out->checks_run==19 && out->checks_passed==19; }\n",
             source_path, def->exercised_surface);
     }
     if (strcmp(def->story_id,
