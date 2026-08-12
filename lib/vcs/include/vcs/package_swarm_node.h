@@ -283,6 +283,16 @@ struct vcs_swarm_download_status {
     uint64_t present_bytes;
     uint64_t total_bytes;     /* manifest total; 0 until verified */
     uint64_t fetched_bytes;   /* verified bytes pulled by this download */
+    /* Volatile transfer accounting for this engine run. Request counters
+     * include retries; transferred counters include only verified DATA.
+     * Reused counters snapshot CAS hits immediately after the manifest is
+     * admitted, before any missing chunk is requested. */
+    uint64_t requested_bytes;
+    uint64_t transferred_bytes;
+    uint64_t reused_bytes;
+    uint32_t requested_objects;
+    uint32_t transferred_objects;
+    uint32_t reused_objects;
     uint64_t maximum_package_bytes; /* 0 unbounded; persisted fetch ceiling */
 };
 

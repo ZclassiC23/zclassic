@@ -533,6 +533,8 @@ struct zwn_package_scenario_result {
 
 static bool zwn_prepare_package_transport(
     const struct zwn_package_scenario *scenario,
+    const char *source_dir, uint64_t publisher_sequence,
+    const char *expected_package_root_hex,
     struct vcs_package_prepared *prepared,
     struct vcs_package_transport *transport)
 {
@@ -547,8 +549,8 @@ static bool zwn_prepare_package_transport(
         pubkey.size != COMPRESSED_PUBLIC_KEY_SIZE)
         return false;
     struct vcs_package_prepare_options options = {
-        .dir = scenario->source_dir,
-        .publisher_sequence = 1,
+        .dir = source_dir,
+        .publisher_sequence = publisher_sequence,
         .reward_address = "",
         .chain_id = "zclassic-main",
     };
@@ -562,9 +564,10 @@ static bool zwn_prepare_package_transport(
         return false;
     }
     uint8_t expected[32];
-    if (!zcl_hex_decode(scenario->expected_package_root_hex,
-                        expected, sizeof(expected)) ||
-        memcmp(expected, prepared->package_root, 32) != 0)
+    if (expected_package_root_hex &&
+        (!zcl_hex_decode(expected_package_root_hex,
+                         expected, sizeof(expected)) ||
+         memcmp(expected, prepared->package_root, 32) != 0))
         return false;
     struct uint256 digest;
     memcpy(digest.data, prepared->signing_digest, 32);
@@ -1425,6 +1428,113 @@ static bool zwn_read_package_file(
     }
     free(chunk);
     vcs_package_manifest_free(&manifest);
+    return ok;
+}
+
+static bool zwn_checkout_package(struct vcs_package_store *store,
+                                 const uint8_t package_root[32],
+                                 const char *checkout)
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    struct vcs_package_manifest manifest;
+    vcs_package_manifest_init(&manifest);
+    uint8_t checked[32];
+    bool ok = store && package_root && checkout &&
+        vcs_package_store_get_manifest_wire(
+            store, package_root, &wire, &wire_len) == VCS_PACKAGE_STORE_OK &&
+        vcs_package_manifest_parse(wire, wire_len, &manifest) &&
+        vcs_package_manifest_root(&manifest, checked) &&
+        memcmp(checked, package_root, 32) == 0;
+    free(wire);
+    for (size_t i = 0; ok && i < manifest.count; i++) {
+        const struct vcs_package_file *file = &manifest.files[i];
+        char path[1400];
+        int n = snprintf(path, sizeof(path), "%s/%s", checkout, file->path);
+        ok = n > 0 && (size_t)n < sizeof(path);
+        size_t prefix = strlen(checkout) + 1u;
+        for (size_t p = prefix; ok && path[p]; p++) {
+            if (path[p] != '/')
+                continue;
+            path[p] = '\0';
+            ok = mkdir(path, 0700) == 0 || errno == EEXIST;
+            path[p] = '/';
+        }
+        int fd = ok ? open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+                           file->mode == VCS_PACKAGE_MODE_EXECUTABLE
+                               ? 0755 : 0644) : -1;
+        ok = ok && fd >= 0;
+        for (uint32_t chunk = 0; ok && chunk < file->chunk_count; chunk++) {
+            uint8_t *bytes = NULL;
+            size_t len = 0;
+            ok = vcs_package_store_get_chunk_at(
+                     store, package_root, (uint32_t)i, chunk,
+                     &bytes, &len) == VCS_PACKAGE_STORE_OK &&
+                 vcs_package_verify_chunk(file, chunk, bytes, len);
+            size_t off = 0;
+            while (ok && off < len) {
+                ssize_t wrote = write(fd, bytes + off, len - off);
+                if (wrote < 0 && errno == EINTR)
+                    continue;
+                if (wrote <= 0)
+                    ok = false;
+                else
+                    off += (size_t)wrote;
+            }
+            free(bytes);
+        }
+        if (fd >= 0 && fsync(fd) != 0)
+            ok = false;
+        if (fd >= 0 && close(fd) != 0)
+            ok = false;
+    }
+    vcs_package_manifest_free(&manifest);
+    return ok;
+}
+
+static bool zwn_append_edit(const char *root, const char *relative,
+                            const char *marker, off_t *original_size)
+{
+    char path[1400];
+    int n = snprintf(path, sizeof(path), "%s/%s", root, relative);
+    if (n <= 0 || (size_t)n >= sizeof(path) || !marker || !original_size)
+        return false;
+    int fd = open(path, O_WRONLY | O_APPEND | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        return false;
+    struct stat st;
+    bool ok = fstat(fd, &st) == 0 && S_ISREG(st.st_mode);
+    if (ok)
+        *original_size = st.st_size;
+    size_t len = strlen(marker), off = 0;
+    while (ok && off < len) {
+        ssize_t wrote = write(fd, marker + off, len - off);
+        if (wrote < 0 && errno == EINTR)
+            continue;
+        if (wrote <= 0)
+            ok = false;
+        else
+            off += (size_t)wrote;
+    }
+    ok = ok && fsync(fd) == 0;
+    if (close(fd) != 0)
+        ok = false;
+    return ok;
+}
+
+static bool zwn_revert_edit(const char *root, const char *relative,
+                            off_t original_size)
+{
+    char path[1400];
+    int n = snprintf(path, sizeof(path), "%s/%s", root, relative);
+    if (n <= 0 || (size_t)n >= sizeof(path) || original_size < 0)
+        return false;
+    int fd = open(path, O_WRONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        return false;
+    bool ok = ftruncate(fd, original_size) == 0 && fsync(fd) == 0;
+    if (close(fd) != 0)
+        ok = false;
     return ok;
 }
 
@@ -2497,8 +2607,9 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
         struct vcs_package_prepared prepared;
         struct vcs_package_transport transport;
         vcs_package_transport_init(&transport);
-        ASSERT(zwn_prepare_package_transport(&scenario, &prepared,
-                                             &transport));
+        ASSERT(zwn_prepare_package_transport(
+            &scenario, scenario.source_dir, 1,
+            scenario.expected_package_root_hex, &prepared, &transport));
 
         struct zwn_node a, b, c;
         ASSERT(zwn_node_init(&a, "pkg-a", params));
@@ -2537,6 +2648,10 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
             b.engine, transport.transport_root, &cold));
         ASSERT(cold.state == VCS_SWARM_DL_COMPLETE);
         ASSERT(cold.fetched_bytes > 0);
+        ASSERT(cold.requested_bytes == cold.transferred_bytes);
+        ASSERT(cold.transferred_bytes == cold.fetched_bytes);
+        ASSERT(cold.requested_objects == cold.transferred_objects);
+        ASSERT(cold.reused_objects == 0);
 
         /* Fetch/verify is inert. The semantic package does not exist in B's
          * store until the separately explicit import reconstructs it. */
@@ -2595,6 +2710,116 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
                    c.engine, transport.transport_root, ZWN_DAY, ++c.now) ==
                VCS_SWARM_FETCH_ALREADY_COMPLETE);
 
+        /* B now becomes an author from bytes reconstructed out of the
+         * decentralized package itself. A one-source edit, a clean revert,
+         * then a one-header edit each flow through the same generic runner. */
+        char checkout[512];
+        test_make_tmpdir(checkout, sizeof(checkout),
+                         "zcode_swarm_net", "package-checkout");
+        ASSERT(zwn_checkout_package(b.store, transport.package_root,
+                                    checkout));
+        off_t source_size = 0;
+        ASSERT(zwn_append_edit(checkout, "src/result.c",
+                               "\n/* lifecycle source edit */\n",
+                               &source_size));
+        struct vcs_package_prepared source_prepared;
+        struct vcs_package_transport source_transport;
+        vcs_package_transport_init(&source_transport);
+        ASSERT(zwn_prepare_package_transport(
+            &scenario, checkout, 2, NULL,
+            &source_prepared, &source_transport));
+        ASSERT(memcmp(source_transport.package_root,
+                      transport.package_root, 32) != 0);
+        ASSERT(vcs_package_transport_store(
+                   b.store, &source_transport, checkout) ==
+               VCS_PACKAGE_TRANSPORT_OK);
+        ASSERT(vcs_package_store_pin(b.store,
+                                     source_transport.transport_root,
+                                     true) == VCS_PACKAGE_STORE_OK);
+        ASSERT(vcs_swarm_engine_announce_to(
+                   b.engine, (uint64_t)b_c.node->id) > 0);
+        ASSERT(zwn_fetch_package_from_peers(
+            &c, source_transport.transport_root,
+            &b_c, &c_b, NULL, NULL, params->pchMessageStart));
+        struct vcs_swarm_download_status source_edit;
+        memset(&source_edit, 0, sizeof(source_edit));
+        ASSERT(vcs_swarm_engine_download_status(
+            c.engine, source_transport.transport_root, &source_edit));
+        ASSERT(source_edit.state == VCS_SWARM_DL_COMPLETE);
+        ASSERT(source_edit.requested_bytes == source_edit.transferred_bytes);
+        ASSERT(source_edit.transferred_bytes == source_edit.fetched_bytes);
+        ASSERT(source_edit.requested_objects ==
+               source_edit.transferred_objects);
+        ASSERT(source_edit.reused_objects > 0);
+        ASSERT(source_edit.reused_bytes > 0);
+        struct vcs_package_transport_import source_import;
+        ASSERT(vcs_package_transport_import(
+                   c.store, source_transport.transport_root,
+                   &source_import) == VCS_PACKAGE_TRANSPORT_OK);
+
+        ASSERT(zwn_revert_edit(checkout, "src/result.c", source_size));
+        off_t header_size = 0;
+        ASSERT(zwn_append_edit(checkout, "include/base/result.h",
+                               "\n/* lifecycle header edit */\n",
+                               &header_size));
+        struct vcs_package_prepared header_prepared;
+        struct vcs_package_transport header_transport;
+        vcs_package_transport_init(&header_transport);
+        ASSERT(zwn_prepare_package_transport(
+            &scenario, checkout, 3, NULL,
+            &header_prepared, &header_transport));
+        ASSERT(memcmp(header_transport.package_root,
+                      transport.package_root, 32) != 0);
+        ASSERT(memcmp(header_transport.package_root,
+                      source_transport.package_root, 32) != 0);
+        ASSERT(vcs_package_transport_store(
+                   b.store, &header_transport, checkout) ==
+               VCS_PACKAGE_TRANSPORT_OK);
+        ASSERT(vcs_package_store_pin(b.store,
+                                     header_transport.transport_root,
+                                     true) == VCS_PACKAGE_STORE_OK);
+        ASSERT(vcs_swarm_engine_announce_to(
+                   b.engine, (uint64_t)b_c.node->id) > 0);
+        ASSERT(zwn_fetch_package_from_peers(
+            &c, header_transport.transport_root,
+            &b_c, &c_b, NULL, NULL, params->pchMessageStart));
+        struct vcs_swarm_download_status header_edit;
+        memset(&header_edit, 0, sizeof(header_edit));
+        ASSERT(vcs_swarm_engine_download_status(
+            c.engine, header_transport.transport_root, &header_edit));
+        ASSERT(header_edit.state == VCS_SWARM_DL_COMPLETE);
+        ASSERT(header_edit.requested_bytes == header_edit.transferred_bytes);
+        ASSERT(header_edit.transferred_bytes == header_edit.fetched_bytes);
+        ASSERT(header_edit.requested_objects ==
+               header_edit.transferred_objects);
+        ASSERT(header_edit.reused_objects > 0);
+        ASSERT(header_edit.reused_bytes > 0);
+        struct vcs_package_transport_import header_import;
+        ASSERT(vcs_package_transport_import(
+                   c.store, header_transport.transport_root,
+                   &header_import) == VCS_PACKAGE_TRANSPORT_OK);
+
+        /* Exact byte revert reproduces the original semantic and transport
+         * roots. C already owns it, so the swarm performs no transfer. */
+        ASSERT(zwn_revert_edit(checkout, "include/base/result.h",
+                               header_size));
+        struct vcs_package_prepared revert_prepared;
+        struct vcs_package_transport revert_transport;
+        vcs_package_transport_init(&revert_transport);
+        ASSERT(zwn_prepare_package_transport(
+            &scenario, checkout, 1,
+            scenario.expected_package_root_hex,
+            &revert_prepared, &revert_transport));
+        ASSERT(memcmp(revert_transport.package_root,
+                      transport.package_root, 32) == 0);
+        ASSERT(memcmp(revert_transport.release_id,
+                      transport.release_id, 32) == 0);
+        ASSERT(memcmp(revert_transport.transport_root,
+                      transport.transport_root, 32) == 0);
+        ASSERT(vcs_swarm_engine_fetch(
+                   c.engine, revert_transport.transport_root,
+                   ZWN_DAY, ++c.now) == VCS_SWARM_FETCH_ALREADY_COMPLETE);
+
         char package_hex[65], transport_hex[65], release_hex[65];
         zcl_hex_encode(transport.package_root, 32, package_hex);
         zcl_hex_encode(transport.transport_root, 32, transport_hex);
@@ -2604,14 +2829,40 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
                "\"transport_root\":\"%s\",\"release_id\":\"%s\","
                "\"cold_verified_bytes\":%" PRIu64 ","
                "\"repeat_verified_bytes\":0,"
+               "\"cold_requested_objects\":%u,"
+               "\"source_edit_requested_bytes\":%" PRIu64 ","
+               "\"source_edit_transferred_bytes\":%" PRIu64 ","
+               "\"source_edit_missing_objects\":%u,"
+               "\"source_edit_reused_objects\":%u,"
+               "\"header_edit_requested_bytes\":%" PRIu64 ","
+               "\"header_edit_transferred_bytes\":%" PRIu64 ","
+               "\"header_edit_missing_objects\":%u,"
+               "\"header_edit_reused_objects\":%u,"
+               "\"revert_transferred_bytes\":0,"
                "\"source_bytes\":%" PRIu64 ","
                "\"source_chunks\":%u,\"cas_objects_reused\":%u,"
                "\"publisher_disappeared\":true,"
                "\"onward_provider\":\"B\",\"github_contacted\":false}\n",
                scenario.name, package_hex, transport_hex, release_hex,
-               cold.fetched_bytes, imported_c.source_bytes,
+               cold.fetched_bytes, cold.requested_objects,
+               source_edit.requested_bytes,
+               source_edit.transferred_bytes,
+               source_edit.transferred_objects,
+               source_edit.reused_objects,
+               header_edit.requested_bytes,
+               header_edit.transferred_bytes,
+               header_edit.transferred_objects,
+               header_edit.reused_objects,
+               imported_c.source_bytes,
                imported_c.source_chunks, imported_c.cas_objects_reused);
 
+        test_rm_rf_recursive(checkout);
+        vcs_package_transport_free(&revert_transport);
+        vcs_package_prepared_free(&revert_prepared);
+        vcs_package_transport_free(&header_transport);
+        vcs_package_prepared_free(&header_prepared);
+        vcs_package_transport_free(&source_transport);
+        vcs_package_prepared_free(&source_prepared);
         zwn_link_free(&b_c);
         zwn_link_free(&c_b);
         zwn_node_free(&b);
