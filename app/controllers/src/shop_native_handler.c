@@ -33,7 +33,8 @@
  * non-mutating plan (every check, every gap, the commit input); only the
  * confirmed call mints, writes, or announces. `status` never mutates.
  *
- * Bound in config/commands/store.def. */
+ * Bound in config/commands/store.def. The closed HOT_FORK story executes the
+ * copied-snapshot posture core without granting it storefront authority. */
 
 #include "controllers/shop_native_handler.h"
 
