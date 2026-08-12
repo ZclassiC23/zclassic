@@ -3,8 +3,7 @@
 #include "vcs/zcode_patronage.h"
 
 #include "codec/cursor.h"
-#include "crypto/ed25519.h"
-#include "crypto/sha3.h"
+#include "vcs/signed_evidence.h"
 
 #include <string.h>
 
@@ -153,17 +152,6 @@ static enum vcs_zcode_patronage_error patronage_body(
         ? VCS_ZCODE_PATRONAGE_OK : VCS_ZCODE_PATRONAGE_WIRE_SIZE;
 }
 
-static void patronage_hash(const char *domain, size_t domain_len,
-                           const uint8_t *wire, size_t wire_len,
-                           uint8_t out[32])
-{
-    struct sha3_256_ctx sha;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, domain_len);
-    sha3_256_write(&sha, wire, wire_len);
-    sha3_256_finalize(&sha, out);
-}
-
 enum vcs_zcode_patronage_error vcs_zcode_patronage_intent_signing_root(
     const struct vcs_zcode_patronage_intent_v1 *intent, uint8_t out[32])
 {
@@ -172,8 +160,9 @@ enum vcs_zcode_patronage_error vcs_zcode_patronage_intent_signing_root(
     enum vcs_zcode_patronage_error error = patronage_body(intent, body);
     if (error != VCS_ZCODE_PATRONAGE_OK) return error;
     static const char domain[] = VCS_ZCODE_PATRONAGE_INTENT_DOMAIN;
-    patronage_hash(domain, sizeof(domain), body, sizeof(body), out);
-    return VCS_ZCODE_PATRONAGE_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), body, sizeof(body), out)
+        ? VCS_ZCODE_PATRONAGE_OK : VCS_ZCODE_PATRONAGE_NULL;
 }
 
 enum vcs_zcode_patronage_error vcs_zcode_patronage_intent_serialize(
@@ -247,8 +236,9 @@ enum vcs_zcode_patronage_error vcs_zcode_patronage_intent_root(
         vcs_zcode_patronage_intent_serialize(intent, wire);
     if (error != VCS_ZCODE_PATRONAGE_OK) return error;
     static const char domain[] = VCS_ZCODE_PATRONAGE_INTENT_ROOT_DOMAIN;
-    patronage_hash(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_PATRONAGE_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), wire, sizeof(wire), out)
+        ? VCS_ZCODE_PATRONAGE_OK : VCS_ZCODE_PATRONAGE_NULL;
 }
 
 enum vcs_zcode_patronage_error vcs_zcode_patronage_intent_seal(
@@ -262,8 +252,9 @@ enum vcs_zcode_patronage_error vcs_zcode_patronage_intent_seal(
     enum vcs_zcode_patronage_error error =
         vcs_zcode_patronage_intent_signing_root(intent, root);
     if (error != VCS_ZCODE_PATRONAGE_OK) return error;
-    ed25519_sign(intent->signature, root, sizeof(root), secret, pubkey);
-    return VCS_ZCODE_PATRONAGE_OK;
+    return vcs_signed_evidence_seal_root(
+               root, secret, pubkey, intent->signature)
+        ? VCS_ZCODE_PATRONAGE_OK : VCS_ZCODE_PATRONAGE_NULL;
 }
 
 enum vcs_zcode_patronage_error vcs_zcode_patronage_intent_verify(
@@ -276,7 +267,8 @@ enum vcs_zcode_patronage_error vcs_zcode_patronage_intent_verify(
     uint8_t root[32];
     error = vcs_zcode_patronage_intent_signing_root(intent, root);
     if (error != VCS_ZCODE_PATRONAGE_OK) return error;
-    return ed25519_verify(intent->signature, root, sizeof(root),
-                          intent->patron_zid_pubkey)
+    return vcs_signed_evidence_verify_root(
+               root, intent->signature, intent->patron_zid_pubkey,
+               intent->patron_zid_pubkey)
         ? VCS_ZCODE_PATRONAGE_OK : VCS_ZCODE_PATRONAGE_SIGNATURE;
 }

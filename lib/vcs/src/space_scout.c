@@ -5,9 +5,9 @@
 
 #include "base/serialize_le.h"
 #include "crypto/ed25519.h"
-#include "crypto/sha3.h"
 #include "base/safe_alloc.h"
 #include "support/cleanse.h"
+#include "vcs/signed_evidence.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -177,16 +177,6 @@ enum vcs_space_scout_result vcs_space_scout_mission_decode(
   return checked;
 }
 
-static void domain_hash(const char *domain, const uint8_t *wire,
-                        size_t wire_len, uint8_t out[32])
-{
-  struct sha3_256_ctx sha;
-  sha3_256_init(&sha);
-  sha3_256_write(&sha, (const uint8_t *)domain, strlen(domain));
-  sha3_256_write(&sha, wire, wire_len);
-  sha3_256_finalize(&sha, out);
-}
-
 enum vcs_space_scout_result vcs_space_scout_mission_root(
     const struct vcs_space_scout_mission_v1 *mission, uint8_t out[32])
 {
@@ -195,8 +185,10 @@ enum vcs_space_scout_result vcs_space_scout_mission_root(
     return VCS_SPACE_SCOUT_ERR_NULL;
   enum vcs_space_scout_result encoded =
       vcs_space_scout_mission_encode(mission, wire);
-  if (encoded == VCS_SPACE_SCOUT_OK)
-    domain_hash(mission_domain, wire, sizeof(wire), out);
+  if (encoded == VCS_SPACE_SCOUT_OK &&
+      !vcs_signed_evidence_root(mission_domain, strlen(mission_domain), wire,
+                                sizeof(wire), out))
+    return VCS_SPACE_SCOUT_ERR_NULL;
   return encoded;
 }
 
@@ -495,8 +487,10 @@ enum vcs_space_scout_result vcs_space_scout_map_root(
   if (!wire)
     return VCS_SPACE_SCOUT_ERR_SIZE;
   enum vcs_space_scout_result encoded = vcs_space_scout_map_encode(map, wire);
-  if (encoded == VCS_SPACE_SCOUT_OK)
-    domain_hash(map_domain, wire, VCS_SPACE_SCOUT_MAP_WIRE_BYTES, out);
+  if (encoded == VCS_SPACE_SCOUT_OK &&
+      !vcs_signed_evidence_root(map_domain, strlen(map_domain), wire,
+                                VCS_SPACE_SCOUT_MAP_WIRE_BYTES, out))
+    encoded = VCS_SPACE_SCOUT_ERR_NULL;
   free(wire);
   return encoded;
 }
@@ -661,8 +655,11 @@ enum vcs_space_scout_result vcs_space_scout_attestation_root(
     return VCS_SPACE_SCOUT_ERR_NULL;
   enum vcs_space_scout_result encoded =
       vcs_space_scout_attestation_encode(attestation, wire);
-  if (encoded == VCS_SPACE_SCOUT_OK)
-    domain_hash(attestation_domain, wire, sizeof(wire), out);
+  if (encoded == VCS_SPACE_SCOUT_OK &&
+      !vcs_signed_evidence_root(attestation_domain,
+                                strlen(attestation_domain), wire,
+                                sizeof(wire), out))
+    return VCS_SPACE_SCOUT_ERR_NULL;
   return encoded;
 }
 

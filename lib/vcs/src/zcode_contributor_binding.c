@@ -8,7 +8,7 @@
 #include "base/serialize_le.h"
 #include "core/hash.h"
 #include "crypto/ed25519.h"
-#include "crypto/sha3.h"
+#include "vcs/signed_evidence.h"
 
 #include <secp256k1.h>
 #include <string.h>
@@ -93,17 +93,6 @@ static uint64_t get_u64(const uint8_t *wire, size_t *off)
     uint64_t value = zcl_read_u64_le(wire + *off);
     *off += 8;
     return value;
-}
-
-static void binding_root_hash(const char *domain, size_t domain_len,
-                              const uint8_t *wire, size_t wire_len,
-                              uint8_t out[32])
-{
-    struct sha3_256_ctx sha;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, domain_len);
-    sha3_256_write(&sha, wire, wire_len);
-    sha3_256_finalize(&sha, out);
 }
 
 /* s (big-endian, second half of the compact signature) must be <= n/2. */
@@ -304,8 +293,9 @@ enum vcs_zcode_binding_error vcs_zcode_contributor_binding_body_root(
     if (error != VCS_ZCODE_BINDING_OK || !out)
         return out ? error : VCS_ZCODE_BINDING_ERR_NULL;
     static const char domain[] = VCS_ZCODE_CONTRIBUTOR_BINDING_DOMAIN;
-    binding_root_hash(domain, sizeof(domain), body, sizeof(body), out);
-    return VCS_ZCODE_BINDING_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), body,
+                                    sizeof(body), out)
+               ? VCS_ZCODE_BINDING_OK : VCS_ZCODE_BINDING_ERR_NULL;
 }
 
 enum vcs_zcode_binding_error vcs_zcode_contributor_binding_root(
@@ -317,8 +307,9 @@ enum vcs_zcode_binding_error vcs_zcode_contributor_binding_root(
     if (error != VCS_ZCODE_BINDING_OK || !out)
         return out ? error : VCS_ZCODE_BINDING_ERR_NULL;
     static const char domain[] = VCS_ZCODE_CONTRIBUTOR_BINDING_ROOT_DOMAIN;
-    binding_root_hash(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_BINDING_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), wire,
+                                    sizeof(wire), out)
+               ? VCS_ZCODE_BINDING_OK : VCS_ZCODE_BINDING_ERR_NULL;
 }
 
 enum vcs_zcode_binding_error vcs_zcode_contributor_binding_seal(
@@ -361,8 +352,9 @@ enum vcs_zcode_binding_error vcs_zcode_contributor_binding_seal(
     error = vcs_zcode_contributor_binding_body_root(binding, root);
     if (error != VCS_ZCODE_BINDING_OK) return error;
 
-    ed25519_sign(binding->zid_signature, root, sizeof(root), zid_secret,
-                 zid_pubkey);
+    if (!vcs_signed_evidence_seal_root(root, zid_secret, zid_pubkey,
+                                       binding->zid_signature))
+        return VCS_ZCODE_BINDING_ERR_SIGNATURE;
 
     secp256k1_ecdsa_signature signature;
     if (!secp256k1_ecdsa_sign(binding_ctx, &signature, root, zcl_secret,
@@ -387,8 +379,9 @@ static enum vcs_zcode_binding_error binding_verify_sigs(
         vcs_zcode_contributor_binding_body_root(binding, root);
     if (error != VCS_ZCODE_BINDING_OK) return error;
 
-    if (!ed25519_verify(binding->zid_signature, root, sizeof(root),
-                        binding->zid_pubkey))
+    if (!vcs_signed_evidence_verify_root(root, binding->zid_signature,
+                                         binding->zid_pubkey,
+                                         binding->zid_pubkey))
         return VCS_ZCODE_BINDING_ERR_SIGNATURE;
 
     if (!binding_signature_low_s(binding->zcl_signature))
@@ -709,8 +702,9 @@ enum vcs_zcode_binding_error vcs_zcode_contributor_binding_body_root_v2(
     if (error != VCS_ZCODE_BINDING_OK || !out)
         return out ? error : VCS_ZCODE_BINDING_ERR_NULL;
     static const char domain[] = VCS_ZCODE_CONTRIBUTOR_BINDING_V2_DOMAIN;
-    binding_root_hash(domain, sizeof(domain), body, sizeof(body), out);
-    return VCS_ZCODE_BINDING_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), body,
+                                    sizeof(body), out)
+               ? VCS_ZCODE_BINDING_OK : VCS_ZCODE_BINDING_ERR_NULL;
 }
 
 enum vcs_zcode_binding_error vcs_zcode_contributor_binding_root_v2(
@@ -722,8 +716,9 @@ enum vcs_zcode_binding_error vcs_zcode_contributor_binding_root_v2(
     if (error != VCS_ZCODE_BINDING_OK || !out)
         return out ? error : VCS_ZCODE_BINDING_ERR_NULL;
     static const char domain[] = VCS_ZCODE_CONTRIBUTOR_BINDING_V2_ROOT_DOMAIN;
-    binding_root_hash(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_BINDING_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), wire,
+                                    sizeof(wire), out)
+               ? VCS_ZCODE_BINDING_OK : VCS_ZCODE_BINDING_ERR_NULL;
 }
 
 enum vcs_zcode_binding_error vcs_zcode_contributor_binding_seal_v2(
@@ -795,8 +790,9 @@ enum vcs_zcode_binding_error vcs_zcode_contributor_binding_seal_v2(
     error = vcs_zcode_contributor_binding_body_root_v2(binding, root);
     if (error != VCS_ZCODE_BINDING_OK) return error;
 
-    ed25519_sign(binding->zid_signature, root, sizeof(root), zid_secret,
-                 zid_pubkey);
+    if (!vcs_signed_evidence_seal_root(root, zid_secret, zid_pubkey,
+                                       binding->zid_signature))
+        return VCS_ZCODE_BINDING_ERR_SIGNATURE;
 
     switch (binding->operation) {
     case VCS_ZCODE_BINDING_ACTIVE:
@@ -836,8 +832,9 @@ static enum vcs_zcode_binding_error binding_verify_sigs_v2(
         vcs_zcode_contributor_binding_body_root_v2(binding, root);
     if (error != VCS_ZCODE_BINDING_OK) return error;
 
-    if (!ed25519_verify(binding->zid_signature, root, sizeof(root),
-                        binding->zid_pubkey))
+    if (!vcs_signed_evidence_verify_root(root, binding->zid_signature,
+                                         binding->zid_pubkey,
+                                         binding->zid_pubkey))
         return VCS_ZCODE_BINDING_ERR_SIGNATURE;
 
     switch (binding->operation) {

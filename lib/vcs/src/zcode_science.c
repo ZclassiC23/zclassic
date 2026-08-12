@@ -4,9 +4,8 @@
 #include "vcs/zcode_science.h"
 
 #include "base/serialize_le.h"
-#include "crypto/ed25519.h"
-#include "crypto/sha3.h"
 #include "util/hw_profile.h"
+#include "vcs/signed_evidence.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,17 +89,6 @@ static uint64_t get_u64(const uint8_t *wire, size_t *off)
     uint64_t value = zcl_read_u64_le(wire + *off);
     *off += 8;
     return value;
-}
-
-static void science_root(const char *domain, size_t domain_len,
-                         const uint8_t *wire, size_t wire_len,
-                         uint8_t out[32])
-{
-    struct sha3_256_ctx sha;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, domain_len);
-    sha3_256_write(&sha, wire, wire_len);
-    sha3_256_finalize(&sha, out);
 }
 
 const char *vcs_zcode_science_error_string(enum vcs_zcode_science_error error)
@@ -262,8 +250,9 @@ enum vcs_zcode_science_error vcs_zcode_study_spec_root(
     if (error != VCS_ZCODE_SCIENCE_OK || !out)
         return out ? error : VCS_ZCODE_SCIENCE_ERR_NULL;
     static const char domain[] = VCS_ZCODE_STUDY_SPEC_DOMAIN;
-    science_root(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_SCIENCE_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), wire, sizeof(wire), out)
+        ? VCS_ZCODE_SCIENCE_OK : VCS_ZCODE_SCIENCE_ERR_NULL;
 }
 
 enum vcs_zcode_science_error vcs_zcode_benchmark_result_validate(
@@ -359,8 +348,9 @@ enum vcs_zcode_science_error vcs_zcode_benchmark_result_root(
     if (error != VCS_ZCODE_SCIENCE_OK || !out)
         return out ? error : VCS_ZCODE_SCIENCE_ERR_NULL;
     static const char domain[] = VCS_ZCODE_BENCHMARK_RESULT_DOMAIN;
-    science_root(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_SCIENCE_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), wire, sizeof(wire), out)
+        ? VCS_ZCODE_SCIENCE_OK : VCS_ZCODE_SCIENCE_ERR_NULL;
 }
 
 enum vcs_zcode_science_error vcs_zcode_reproduction_validate(
@@ -456,8 +446,9 @@ enum vcs_zcode_science_error vcs_zcode_reproduction_root(
     if (error != VCS_ZCODE_SCIENCE_OK || !out)
         return out ? error : VCS_ZCODE_SCIENCE_ERR_NULL;
     static const char domain[] = VCS_ZCODE_REPRODUCTION_DOMAIN;
-    science_root(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_SCIENCE_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), wire, sizeof(wire), out)
+        ? VCS_ZCODE_SCIENCE_OK : VCS_ZCODE_SCIENCE_ERR_NULL;
 }
 
 enum vcs_zcode_science_error vcs_zcode_science_findings_validate(
@@ -554,8 +545,9 @@ enum vcs_zcode_science_error vcs_zcode_science_findings_root(
     if (error != VCS_ZCODE_SCIENCE_OK || !out)
         return out ? error : VCS_ZCODE_SCIENCE_ERR_NULL;
     static const char domain[] = VCS_ZCODE_SCIENCE_FINDINGS_DOMAIN;
-    science_root(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_SCIENCE_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), wire, sizeof(wire), out)
+        ? VCS_ZCODE_SCIENCE_OK : VCS_ZCODE_SCIENCE_ERR_NULL;
 }
 
 static enum vcs_zcode_science_error curation_vote_fields(
@@ -665,8 +657,9 @@ enum vcs_zcode_science_error vcs_zcode_curation_vote_id(
     if (error != VCS_ZCODE_SCIENCE_OK || !out)
         return out ? error : VCS_ZCODE_SCIENCE_ERR_NULL;
     static const char domain[] = VCS_ZCODE_CURATION_VOTE_DOMAIN;
-    science_root(domain, sizeof(domain), body, sizeof(body), out);
-    return VCS_ZCODE_SCIENCE_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), body, sizeof(body), out)
+        ? VCS_ZCODE_SCIENCE_OK : VCS_ZCODE_SCIENCE_ERR_NULL;
 }
 
 enum vcs_zcode_science_error vcs_zcode_curation_vote_seal(
@@ -679,8 +672,9 @@ enum vcs_zcode_science_error vcs_zcode_curation_vote_seal(
     uint8_t id[32];
     enum vcs_zcode_science_error error = vcs_zcode_curation_vote_id(vote, id);
     if (error != VCS_ZCODE_SCIENCE_OK) return error;
-    ed25519_sign(vote->signature, id, sizeof(id), secret, pubkey);
-    return VCS_ZCODE_SCIENCE_OK;
+    return vcs_signed_evidence_seal_root(
+               id, secret, pubkey, vote->signature)
+        ? VCS_ZCODE_SCIENCE_OK : VCS_ZCODE_SCIENCE_ERR_NULL;
 }
 
 enum vcs_zcode_science_error vcs_zcode_curation_vote_verify(
@@ -696,14 +690,11 @@ enum vcs_zcode_science_error vcs_zcode_curation_vote_verify(
         return VCS_ZCODE_SCIENCE_ERR_NETWORK_MISMATCH;
     if (!expected_zid || memcmp(vote->voter_zid_root, expected_zid, 32) != 0)
         return VCS_ZCODE_SCIENCE_ERR_IDENTITY_MISMATCH;
-    if (!expected_signer ||
-        memcmp(vote->signer_pubkey, expected_signer, 32) != 0)
-        return VCS_ZCODE_SCIENCE_ERR_SIGNATURE;
     uint8_t id[32];
     error = vcs_zcode_curation_vote_id(vote, id);
     if (error != VCS_ZCODE_SCIENCE_OK) return error;
-    return ed25519_verify(vote->signature, id, sizeof(id),
-                          vote->signer_pubkey)
+    return vcs_signed_evidence_verify_root(
+               id, vote->signature, vote->signer_pubkey, expected_signer)
                ? VCS_ZCODE_SCIENCE_OK : VCS_ZCODE_SCIENCE_ERR_SIGNATURE;
 }
 
@@ -1010,8 +1001,9 @@ enum vcs_zcode_science_error vcs_zcode_hardware_profile_root(
     if (error != VCS_ZCODE_SCIENCE_OK || !out)
         return out ? error : VCS_ZCODE_SCIENCE_ERR_NULL;
     static const char domain[] = VCS_ZCODE_HARDWARE_PROFILE_DOMAIN;
-    science_root(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_SCIENCE_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), wire, sizeof(wire), out)
+        ? VCS_ZCODE_SCIENCE_OK : VCS_ZCODE_SCIENCE_ERR_NULL;
 }
 
 /* Copy a NUL-terminated string into a pre-zeroed fixed field, truncating to
@@ -1261,8 +1253,9 @@ enum vcs_zcode_science_error vcs_zcode_benchmark_method_root(
     if (error != VCS_ZCODE_SCIENCE_OK || !out)
         return out ? error : VCS_ZCODE_SCIENCE_ERR_NULL;
     static const char domain[] = VCS_ZCODE_BENCHMARK_METHOD_DOMAIN;
-    science_root(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_SCIENCE_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), wire, sizeof(wire), out)
+        ? VCS_ZCODE_SCIENCE_OK : VCS_ZCODE_SCIENCE_ERR_NULL;
 }
 
 /* ── benchmark_result.v2 ────────────────────────────────────────────── */
@@ -1370,8 +1363,9 @@ enum vcs_zcode_science_error vcs_zcode_benchmark_result_v2_root(
     if (error != VCS_ZCODE_SCIENCE_OK || !out)
         return out ? error : VCS_ZCODE_SCIENCE_ERR_NULL;
     static const char domain[] = VCS_ZCODE_BENCHMARK_RESULT_V2_DOMAIN;
-    science_root(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_SCIENCE_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), wire, sizeof(wire), out)
+        ? VCS_ZCODE_SCIENCE_OK : VCS_ZCODE_SCIENCE_ERR_NULL;
 }
 
 enum vcs_zcode_science_error vcs_zcode_benchmark_result_v2_validate_for_study(

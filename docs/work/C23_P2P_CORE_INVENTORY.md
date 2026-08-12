@@ -1,6 +1,6 @@
 # C23 P2P Core Consolidation Inventory
 
-Status: first consolidation slice, 2026-08-12. This is a code inventory, not a
+Status: reviewed consolidation slice, 2026-08-12. This is a code inventory, not a
 new architecture or authority plane. Consensus, wallet, node operation, and
 deployment are out of scope.
 
@@ -28,8 +28,8 @@ datadir, deployment authority, or command ownership.
 | Content-addressed bytes | `package_store` content.v2 chunk CAS for node-carried bytes; `vcs_object` for working-copy ZVCS objects | package/source swarm, blob facade, work contexts; ZVCS commits/manifests/evidence | Two stores are necessary today: different roots, locations, quotas, and lifecycle owners. `blob_store` is already a facade over content.v2, not a third CAS. | Do not merge stores. Remove any future raw node-byte store in favor of content.v2; keep explicit bridges such as package mappings. |
 | Manifests | `package_manifest` for transferable content; `vcs_manifest` for source-tree semantics | packages/blobs/work context; ZVCS tree/commit | Different commitments and path semantics are necessary. Candidate trees and action inputs bind these roots rather than redefining transfer manifests. | Keep both formats; delete ad-hoc transfer manifests if found. |
 | Missing-object transfer | `package_swarm` codec + `package_swarm_node` / engine | package hosting, source checkout, `blob_store`, `zcode_work_context` | This is already the shared ANNOUNCE/WANT/DATA/CANCEL path. Work control messages are not byte transfer. | Route new bounded objects through content.v2; no second object-transfer protocol. |
-| Signed evidence root | `signed_evidence` (this slice) | work/lane/score receipts plus work-swarm capability, request, cancel, and progress messages | The codecs repeated domain SHA3, Ed25519 seal, and signer-bound verification. Payload/domain differences are necessary; the crypto lifecycle was accidental. | Completed for these evidence/control objects: direct crypto paths removed without changing roots, signatures, or wires. Extend only when another codec has the exact root-signing contract. |
-| Signed preimage records | Domain codecs over Ed25519 (`zcode_dht_record`, delegation, work-swarm control, package attest/release) | DHT, async work, publication/reproduction | Some sign canonical preimages directly; some sign a 32-byte root; expected-signer rules differ. Those are wire-contract differences, not permission to duplicate common validation forever. | Inventory exact signing contract per codec, then adopt the foundation only where golden vectors prove byte identity. Do not rewrite formats merely to share code. |
+| Signed evidence root | `signed_evidence` (this slice) | work/lane/score and benchmark receipts; work-swarm control; continuity, creation, patronage, science, seed, contributor, C23 corpus, and space evidence | The codecs repeated domain SHA3, Ed25519 seal, and signer-bound verification. Payload/domain differences are necessary; the crypto lifecycle was accidental. | Completed for compatible root-based objects without changing roots, signatures, or wires. Extend only when another codec has the exact root-signing contract. |
+| Signed preimage records | Domain codecs over Ed25519 (`zcode_dht_record`, delegation, package attest/release, and selected C23/space records) | DHT, publication, reproduction, and discovery | Some contracts sign canonical preimages directly rather than a 32-byte root, and expected-signer rules differ. Those are wire-contract differences, not permission to duplicate common validation forever. | Keep the direct-preimage formats until an independent rule-of-two primitive can preserve their exact bytes and policy. Do not rewrite formats merely to share code. |
 | Identity | ZID master identity + DHT delegated online identity; explicit signer keys on evidence | DHT records, work capability/results, receipts | Master/online separation is necessary. Work signer provisioning and DHT online signer provisioning are separate local paths and may be accidental duplication, but authority equivalence is not established. | First define an explicit signer-role/key-source interface; never silently treat transport, DHT, worker, or promotion keys as interchangeable. |
 | Capability advertisement | `zcode_work_capability_v1` for remote work; DHT PROVIDER records for content reachability | work-node selection; DHT discovery | Work resources/slots and content availability are different capabilities. Both repeat expiry/signer/canonical-envelope mechanics. | Share envelope and bounded-selection utilities, not the domain payload or trust policy. |
 | Capacity / slots | Signer-owned effective slots in `zcode_work_node` | requester peer selection and admission | Transport sessions must not multiply signer capacity. Build-fabric queue limits and package-store quotas measure different resources. | Keep resource-specific bounds; extract signer-keyed slot accounting only when a second live scheduler can delete its own implementation. |
@@ -45,13 +45,16 @@ from an explicit domain byte span and canonical body, sign that 32-byte root,
 and verify it while binding the embedded signer to the caller's expected
 signer. It has no codec, storage, network, clock, key provisioning, or policy.
 
-The first consumers are:
+The consumers now include:
 
 - immutable work receipts (`zcode_dev.c`);
 - chained durability-lane receipts (`zcode_lane.c`);
-- evidence-bound score receipts (`zcode_score_receipt.c`).
+- evidence-bound score and benchmark receipts;
 - signed work-swarm capability, request, cancel, and progress objects
-  (`zcode_work_swarm.c`).
+  (`zcode_work_swarm.c`);
+- continuity, creation, patronage, funding, settlement, science, seed, and
+  contributor evidence;
+- C23 productivity/corpus objects and read-only space/scout roots.
 
 Existing golden receipt roots and rejection tests are the compatibility gate.
 The explicit domain length preserves the existing, format-specific decision
@@ -60,17 +63,17 @@ or public domain API changed.
 
 ## Next five deletion targets
 
-1. Classify the remaining direct Ed25519 codecs by exact signing contract and
-   migrate compatible root-signed evidence without changing wire bytes.
-2. Reconcile worker signer provisioning with delegated online identity through
+1. Reconcile worker signer provisioning with delegated online identity through
    explicit roles; delete duplicate key-file lifecycle code only if authority
    remains fail-closed.
-3. Isolate signer-keyed slot accounting from transport sessions and prove a
+2. Isolate signer-keyed slot accounting from transport sessions and prove a
    second scheduler can reuse it while deleting its local counter state.
-4. Remove caller-local missing-object and retry loops where the package swarm
+3. Remove caller-local missing-object and retry loops where the package swarm
    already provides the same bounded transfer state.
-5. Compare build-fabric, possession, and DHT maintenance wake/budget loops for
+4. Compare build-fabric, possession, and DHT maintenance wake/budget loops for
    a small caller-driven work cursor; extract it only when two loops disappear.
+5. Inventory the remaining direct-preimage records by signer policy and extract
+   a primitive only if two formats can delete their local mechanics unchanged.
 
 The success criterion for every follow-up is negative: fewer implementations,
 fewer lifecycle owners, and no new authority, protocol, scheduler, or CAS.

@@ -6,7 +6,7 @@
 #include "base/cleanse.h"
 #include "base/serialize_le.h"
 #include "crypto/ed25519.h"
-#include "crypto/sha3.h"
+#include "vcs/signed_evidence.h"
 
 #include <string.h>
 
@@ -77,13 +77,11 @@ static enum vcs_zcode_c23_error receipt_signing_root(
     if (error != VCS_ZCODE_C23_OK) return error;
     uint8_t wire[260];
     size_t wire_len = receipt_write_unsigned(receipt, wire);
-    struct sha3_256_ctx sha;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)receipt_signature_domain,
-                   sizeof(receipt_signature_domain) - 1u);
-    sha3_256_write(&sha, wire, wire_len);
-    sha3_256_finalize(&sha, out);
-    return VCS_ZCODE_C23_OK;
+    return vcs_signed_evidence_root(
+               receipt_signature_domain,
+               sizeof(receipt_signature_domain) - 1u,
+               wire, wire_len, out)
+        ? VCS_ZCODE_C23_OK : VCS_ZCODE_C23_NULL;
 }
 
 enum vcs_zcode_c23_error vcs_zcode_productivity_receipt_v1_validate(
@@ -94,8 +92,9 @@ enum vcs_zcode_c23_error vcs_zcode_productivity_receipt_v1_validate(
     uint8_t root[32];
     error = receipt_signing_root(receipt, root);
     if (error != VCS_ZCODE_C23_OK) return error;
-    bool valid = ed25519_verify(receipt->signature, root, sizeof(root),
-                                receipt->signer_pubkey);
+    bool valid = vcs_signed_evidence_verify_root(
+        root, receipt->signature, receipt->signer_pubkey,
+        receipt->signer_pubkey);
     memory_cleanse(root, sizeof(root));
     return valid ? VCS_ZCODE_C23_OK : VCS_ZCODE_C23_SIGNATURE;
 }
@@ -109,9 +108,10 @@ enum vcs_zcode_c23_error vcs_zcode_productivity_receipt_v1_sign(
     ed25519_keypair(receipt->signer_pubkey, secret, signer_seed);
     memset(receipt->signature, 0, sizeof(receipt->signature));
     enum vcs_zcode_c23_error error = receipt_signing_root(receipt, root);
-    if (error == VCS_ZCODE_C23_OK)
-        ed25519_sign(receipt->signature, root, sizeof(root), secret,
-                     receipt->signer_pubkey);
+    if (error == VCS_ZCODE_C23_OK &&
+        !vcs_signed_evidence_seal_root(
+            root, secret, receipt->signer_pubkey, receipt->signature))
+        error = VCS_ZCODE_C23_NULL;
     memory_cleanse(secret, sizeof(secret));
     memory_cleanse(root, sizeof(root));
     return error == VCS_ZCODE_C23_OK
@@ -180,13 +180,10 @@ enum vcs_zcode_c23_error vcs_zcode_productivity_receipt_v1_root(
         vcs_zcode_productivity_receipt_v1_encode(
             receipt, wire, sizeof(wire), &wire_len);
     if (error != VCS_ZCODE_C23_OK) return error;
-    struct sha3_256_ctx sha;
     static const char domain[] = VCS_ZCODE_PRODUCTIVITY_RECEIPT_V1_DOMAIN;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
-    sha3_256_write(&sha, wire, wire_len);
-    sha3_256_finalize(&sha, out);
-    return VCS_ZCODE_C23_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), wire, wire_len,
+                                    out)
+               ? VCS_ZCODE_C23_OK : VCS_ZCODE_C23_NULL;
 }
 
 bool vcs_zcode_productivity_receipt_v1_shareable(
