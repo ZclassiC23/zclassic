@@ -81,6 +81,8 @@ is_pure_candidate_root()
 }
 
 declare -A LIVE=()
+declare -A SHADOW=()
+declare -A HOT_EXECUTE=()
 load_live_manifest()
 {
     local value path
@@ -98,13 +100,52 @@ load_live_manifest()
         }
       }
     ' "$ROOT/config/hotswap_swappable.def" \
-      "$ROOT/config/hotswap_islands.def")
+      "$ROOT/config/hotswap_islands.def" \
+      "$ROOT/config/hotswap_services.def")
+}
+
+load_shadow_manifest()
+{
+    local owner service
+    while IFS=$'\t' read -r owner service; do
+        [[ -n "$owner" && -n "$service" ]] || continue
+        SHADOW["$owner"]="$service"
+    done < <(awk '
+      /^HOTSHADOW_OWNER\(/ { active=1; count=0 }
+      active {
+        rest=$0
+        while (match(rest,/"[^"]+"/)) {
+          value=substr(rest,RSTART+1,RLENGTH-2)
+          if (count==0) owner=value; else if (count==1) service=value
+          count++; rest=substr(rest,RSTART+RLENGTH)
+        }
+        if (active && count>=2) { print owner "\t" service; active=0 }
+      }
+    ' "$ROOT/config/hotswap_shadow_owners.def")
+    while IFS=$'\t' read -r service members; do
+        for owner in $members; do HOT_EXECUTE["$owner"]="$service"; done
+    done < <(awk '
+      /^HOTSHADOW_SERVICE_MEMBERS\(/ { active=1; count=0 }
+      active {
+        rest=$0
+        while (match(rest,/"[^"]+"/)) {
+          value=substr(rest,RSTART+1,RLENGTH-2)
+          if (count==0) service=value; else if (count==1) members=value
+          count++; rest=substr(rest,RSTART+RLENGTH)
+        }
+        if (active && count>=2) { print service "\t" members; active=0 }
+      }
+    ' "$ROOT/config/hotswap_shadow_owners.def")
 }
 
 classify()
 {
     local path="$1"
-    if [ -n "${LIVE[$path]:-}" ]; then
+    if [ -n "${HOT_EXECUTE[$path]:-}" ]; then
+        printf 'currently_hot_execute\tpure candidate implementation exercised by frozen service story'
+    elif [ -n "${SHADOW[$path]:-}" ]; then
+        printf 'currently_hot_shadow\tstatic authority shell + pure candidate decision core'
+    elif [ -n "${LIVE[$path]:-}" ]; then
         printf 'currently_live_reloaded\tcompiled allowlist island'
     elif is_forbidden_authority "$path"; then
         printf 'forbidden_authority_surface\tconsensus or durable-state owner'
@@ -127,6 +168,7 @@ classify()
 }
 
 load_live_manifest
+load_shadow_manifest
 
 if [ "$MODE" = "--self-test" ]; then
     [ "$(classify core/consensus/src/example.c | cut -f1)" = forbidden_authority_surface ] ||
@@ -135,6 +177,12 @@ if [ "$MODE" = "--self-test" ]; then
         fail 'pure codec classification regressed'
     [ "$(classify app/controllers/src/status_native_handlers.c | cut -f1)" = currently_live_reloaded ] ||
         fail 'compiled island classification regressed'
+    [ "$(classify app/services/src/zcode_c23_corpus_service.c | cut -f1)" = currently_live_reloaded ] ||
+        fail 'service island classification regressed'
+    [ "$(classify app/services/src/vault_intent_decision_service.c | cut -f1)" = currently_live_reloaded ] ||
+        fail 'shadow service classification regressed'
+    [ "$(classify tools/command/native_dev_command.c | cut -f1)" = currently_hot_shadow ] ||
+        fail 'static-shell shadow classification regressed'
     printf 'dev-loop-history-bench: self-test PASS\n'
     exit 0
 fi
@@ -187,7 +235,9 @@ jq -n \
   --slurpfile entries "$entries_file" '
   ($entries[0]) as $e |
   ($e | length) as $edits |
-  ($e | map(select(.class == "currently_live_reloaded")) | length) as $live |
+  ($e | map(select(.class == "currently_live_reloaded" or
+                   .class == "currently_hot_shadow" or
+                   .class == "currently_hot_execute")) | length) as $live |
   ($e | map(select(.class == "eligible_but_unregistered")) | length) as $eligible |
   ($e | map(select(.class != "forbidden_authority_surface")) | length) as $nonforbidden |
   {schema:$schema, source_head:$head,

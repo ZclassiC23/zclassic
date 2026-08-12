@@ -8,6 +8,7 @@
 #include "crypto/sha3.h"
 #include "hotswap/hotswap_module.h"
 #include "hotswap/hotswap_service.h"
+#include "services/dev_reflex_policy_service.h"
 #include "test_group_catalog.h"
 #include "util/safe_alloc.h"
 
@@ -41,35 +42,9 @@ static const struct hotswap_eligible_entry g_hotswap_services[] = {
 const char *zcl_devloop_progress_phase(const char *status,
                                        const char *detail)
 {
-    if (!status)
-        return detail ? detail : "";
-    if (strcmp(status, "edit_seen") == 0)
-        return "EDIT_SEEN";
-    if (strcmp(status, "impact_ready") == 0)
-        return "IMPACT_READY";
-    if (strcmp(status, "compile_green") == 0 ||
-        strcmp(status, "reflex_ready") == 0)
-        return "COMPILE_GREEN";
-    if (strcmp(status, "compile_red") == 0)
-        return "COMPILE_RED";
-    if (strcmp(status, "story_green") == 0)
-        return "STORY_GREEN";
-    if (strcmp(status, "story_red") == 0)
-        return "STORY_RED";
-    if (strcmp(status, "focused_green") == 0 ||
-        strcmp(status, "feedback_ready") == 0)
-        return "FOCUSED_GREEN";
-    if (strcmp(status, "focused_red") == 0)
-        return "FOCUSED_RED";
-    if (strcmp(status, "proof_pending") == 0 ||
-        strcmp(status, "fallback_ready") == 0)
-        return "PROOF_PENDING";
-    if (strcmp(status, "superseded") == 0)
-        return "SUPERSEDED";
-    if (strcmp(status, "rejected") == 0)
-        return detail && strcmp(detail, "affected_proofs") == 0
-            ? "FOCUSED_RED" : "COMPILE_RED";
-    return detail ? detail : status;
+    const struct dev_reflex_policy_service_v1 *service =
+        dev_reflex_policy_service_builtin();
+    return service->progress_phase(status, detail);
 }
 
 static bool path_is_safe(const char *path)

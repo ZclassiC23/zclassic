@@ -27,6 +27,7 @@
 #ifdef ZCL_DEV_BUILD
 #include "hotswap/hotswap_module.h"
 #include "command/native_dev_hotswap.h"
+#include "devloop.h"
 #endif
 
 #include "chain/chainparams.h"
@@ -2315,6 +2316,142 @@ static bool nc_ops_rom_try_watch(const char *const *words, size_t count,
     return true;
 }
 
+#ifdef ZCL_DEV_BUILD
+static void nc_print_error(const char *command, const char *code,
+                           const char *phase, const char *message,
+                           const char *evidence, const char *next_command,
+                           const char *next_key, const char *next_value);
+
+static bool nc_parse_i64_exact(const char *value, int64_t min, int64_t max,
+                               int64_t *out)
+{
+    if (!value || !value[0] || !out) return false;
+    errno = 0;
+    char *end = NULL;
+    long long parsed = strtoll(value, &end, 10);
+    if (errno || !end || *end || parsed < min || parsed > max) return false;
+    *out = (int64_t)parsed;
+    return true;
+}
+
+/* Persistent machine interface. The normal registry handler returns one
+ * resumable event; --format=jsonl keeps this one local process attached and
+ * advances the same cursor forever. It performs no build/proof/storage/network
+ * work and exits naturally when the subscriber closes stdout. */
+static bool nc_dev_events_try_stream(const char *const *words, size_t count,
+                                     size_t consumed, int *rc)
+{
+    bool jsonl = false;
+    int64_t after = 0, heartbeat_ms = 15000;
+    for (size_t i = consumed; i < count; i++) {
+        const char *word = words[i];
+        if (!word) continue;
+        if (strcmp(word, "--format=jsonl") == 0) {
+            jsonl = true;
+        } else if (strncmp(word, "--after=", 8) == 0) {
+            if (!nc_parse_i64_exact(word + 8, 0, INT64_MAX, &after)) {
+                nc_print_error("dev.loop.events", "INVALID_SUBSCRIPTION_CURSOR",
+                               "normalize", "--after must be nonnegative",
+                               "after", "", "", "");
+                *rc = ZCL_COMMAND_EXIT_INVALID;
+                return true;
+            }
+        } else if (strncmp(word, "--heartbeat-ms=", 15) == 0) {
+            if (!nc_parse_i64_exact(word + 15, 100, 300000,
+                                    &heartbeat_ms)) {
+                nc_print_error("dev.loop.events", "INVALID_SUBSCRIPTION_CURSOR",
+                               "normalize",
+                               "--heartbeat-ms must be 100..300000",
+                               "heartbeat_ms", "", "", "");
+                *rc = ZCL_COMMAND_EXIT_INVALID;
+                return true;
+            }
+        }
+    }
+    if (!jsonl) return false;
+    const char *root = getenv("ZCL_DEV_SOURCE_ROOT");
+    if (!root || !root[0]) root = ".";
+    for (;;) {
+        char body[16384], why[160] = {0};
+        size_t body_len = 0;
+        int64_t cursor = after;
+        enum zcl_devloop_state_lookup lookup =
+            zcl_devloop_cycle_state_wait_after(
+                root, after, (int)heartbeat_ms, body, sizeof(body),
+                &body_len, &cursor, why, sizeof(why));
+        if (lookup != ZCL_DEVLOOP_STATE_FOUND)
+            cursor = after;
+        if (lookup == ZCL_DEVLOOP_STATE_INVALID) {
+            nc_print_error("dev.loop.events", "DEV_EVENT_STREAM_INVALID",
+                           "read", "event cursor or SHA3 validation failed",
+                           why[0] ? why : "event_stream_invalid", "", "", "");
+            *rc = ZCL_COMMAND_EXIT_INTERNAL;
+            return true;
+        }
+        struct json_value line;
+        json_init(&line); json_set_object(&line);
+        bool ok = json_push_kv_str(&line, "schema", "zcl.dev_loop_event.v1") &&
+            json_push_kv_int(&line, "cursor", cursor);
+        if (lookup == ZCL_DEVLOOP_STATE_FOUND) {
+            struct json_value cycle;
+            json_init(&cycle);
+            ok = ok && json_read(&cycle, body, body_len) &&
+                 cycle.type == JSON_OBJ;
+            const char *phase = ok
+                ? json_get_str(json_get(&cycle, "phase")) : NULL;
+            const char *status = ok
+                ? json_get_str(json_get(&cycle, "status")) : NULL;
+            bool interrupting =
+                (phase && (strcmp(phase, "STORY_RED") == 0 ||
+                           strcmp(phase, "COMPILE_RED") == 0 ||
+                           strcmp(phase, "FOCUSED_RED") == 0)) ||
+                (status && (strcmp(status, "story_red") == 0 ||
+                            strcmp(status, "compile_red") == 0 ||
+                            strcmp(status, "focused_red") == 0 ||
+                            strcmp(status, "rejected") == 0));
+            ok = ok && json_push_kv_str(&line, "kind",
+                phase && phase[0] ? phase : "CYCLE_EVENT") &&
+                json_push_kv_bool(&line, "interrupting", interrupting);
+            if (ok && interrupting) {
+                struct json_value capsule;
+                json_init(&capsule); json_set_object(&capsule);
+                ok = json_push_kv_str(&capsule, "schema",
+                                      "zcl.dev_diagnostic_capsule.v1");
+                static const struct { const char *from; const char *to; } f[] = {
+                    {"phase", "phase"}, {"edit_epoch", "edit_epoch"},
+                    {"source_tu", "source_tu"},
+                    {"failure_capsule", "message"},
+                    {"compiler_output", "detail"},
+                };
+                for (size_t j = 0; ok && j < sizeof(f) / sizeof(f[0]); j++) {
+                    const struct json_value *v = json_get(&cycle, f[j].from);
+                    ok = !v || json_push_kv(&capsule, f[j].to, v);
+                }
+                if (ok) ok = json_push_kv(&line, "diagnostic", &capsule);
+                json_free(&capsule);
+            }
+            if (ok) ok = json_push_kv(&line, "event", &cycle);
+            json_free(&cycle);
+            after = cursor;
+        } else {
+            ok = ok && json_push_kv_str(&line, "kind", "HEARTBEAT") &&
+                json_push_kv_bool(&line, "interrupting", false);
+        }
+        char encoded[20000];
+        size_t encoded_len = ok ? json_write(&line, encoded,
+                                              sizeof(encoded) - 2) : 0;
+        json_free(&line);
+        if (!encoded_len || fwrite(encoded, 1, encoded_len, stdout) !=
+                                encoded_len ||
+            fputc('\n', stdout) == EOF || fflush(stdout) != 0) {
+            *rc = encoded_len ? ZCL_COMMAND_EXIT_OK
+                              : ZCL_COMMAND_EXIT_INTERNAL;
+            return true;
+        }
+    }
+}
+#endif
+
 /* ── core.node.bootstatus / core.node.bootwait native leaves ───────────────
  * Pre-RPC boot observability. Both read <datadir>/boot_status.json directly
  * off disk (util/boot_status.h) — NO node contact, NO RPC — so they answer
@@ -3288,6 +3425,14 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
         if (nc_ops_rom_try_watch(words, count, consumed, datadir, &rc))
             return rc;
     }
+
+#ifdef ZCL_DEV_BUILD
+    if (strcmp(spec->path, "dev.loop.events") == 0) {
+        int rc = 0;
+        if (nc_dev_events_try_stream(words, count, consumed, &rc))
+            return rc;
+    }
+#endif
 
     /* Collect the tokens the path did not consume: positionals in order and
      * value flags into a scratch object. */

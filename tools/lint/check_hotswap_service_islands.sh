@@ -13,6 +13,7 @@ cd "$ROOT"
 
 MANIFEST="${ZCL_HOTSWAP_SERVICE_MANIFEST:-config/hotswap_services.def}"
 PROBE_CASES="${ZCL_HOTSWAP_PROBE_CASES:-config/hotswap_probe_cases.def}"
+SHADOW_OWNERS="${ZCL_HOTSWAP_SHADOW_OWNERS:-config/hotswap_shadow_owners.def}"
 FIXTURE_MODE="${ZCL_HOTSWAP_SERVICE_FIXTURE:-0}"
 echo "══ LINT: pure hot-swap service islands ══"
 if [ ! -r "$MANIFEST" ]; then
@@ -21,6 +22,10 @@ if [ ! -r "$MANIFEST" ]; then
 fi
 if [ ! -r "$PROBE_CASES" ]; then
     echo "check_hotswap_service_islands: FATAL — probe cases '$PROBE_CASES' missing" >&2
+    exit 2
+fi
+if [ ! -r "$SHADOW_OWNERS" ]; then
+    echo "check_hotswap_service_islands: FATAL — manifest '$SHADOW_OWNERS' missing" >&2
     exit 2
 fi
 
@@ -148,6 +153,85 @@ for row in "${ROWS[@]}"; do
     done
 done
 
+# Static authority shells may route feedback to exactly one already-admitted
+# pure service. They remain ordinary whole-program sources: this mapping never
+# admits the shell to dlopen or runtime activation.
+declare -A seen_shadow_owners=()
+while IFS=$'\t' read -r owner service; do
+    [ -n "$owner" ] && [ -n "$service" ] || continue
+    scanned=$((scanned + 1))
+    if [ -n "${seen_shadow_owners[$owner]:-}" ]; then
+        violations+="  $owner (duplicate HOTSHADOW_OWNER)"$'\n'
+    fi
+    seen_shadow_owners[$owner]=1
+    case "$owner" in
+        tools/command/*.c|tools/dev/*.c|app/controllers/src/*.c|app/services/src/*.c|lib/vcs/src/vcs_devloop.c) ;;
+        *) violations+="  $owner (shadow shell is outside admitted static-shell roots)"$'\n';;
+    esac
+    [ -f "$owner" ] || violations+="  $owner (missing static authority shell)"$'\n'
+    if [ -z "${seen_sources[$service]:-}" ]; then
+        violations+="  $owner -> $service (target is not one pure service row)"$'\n'
+    fi
+    if [ "$owner" = "$service" ]; then
+        violations+="  $owner (service cannot be its own static shell)"$'\n'
+    fi
+done < <(awk '
+  /^HOTSHADOW_OWNER\(/ { active=1; count=0 }
+  active {
+    rest=$0
+    while (match(rest,/"[^"]+"/)) {
+      value=substr(rest,RSTART+1,RLENGTH-2)
+      if (count==0) owner=value; else if (count==1) service=value
+      count++; rest=substr(rest,RSTART+RLENGTH)
+    }
+    if (active && count>=2) { print owner "\t" service; active=0 }
+  }
+' "$SHADOW_OWNERS")
+
+while IFS=$'\t' read -r service members; do
+    [ -n "$service" ] && [ -n "$members" ] || continue
+    if [ -z "${seen_sources[$service]:-}" ]; then
+        violations+="  $service (HOTSHADOW_SERVICE_MEMBERS target is not a pure service)"$'\n'
+    fi
+    for member in $members; do
+        scanned=$((scanned + 1))
+        case "$member" in
+            lib/base/src/*.c|lib/codec/src/*.c|lib/json/src/*.c|lib/vcs/src/*.c) ;;
+            *) violations+="  $member (HOT_EXECUTE member is outside pure library roots)"$'\n';;
+        esac
+        if [ ! -f "$member" ]; then
+            violations+="  $member (missing HOT_EXECUTE member)"$'\n'
+            continue
+        fi
+        member_state="$(awk '
+          /hotswap-service-static-ok:/ { next }
+          /_Thread_local|__thread/ { print FILENAME ":" FNR ": TLS: " $0; next }
+          /__attribute__[[:space:]]*\(\([^)]*(constructor|destructor)/ { print FILENAME ":" FNR ": lifecycle: " $0; next }
+          /^[[:space:]]*static[[:space:]]/ {
+            if ($0 ~ /const/ || $0 ~ /\(/) next
+            if ($0 ~ /=/ || $0 ~ /\[/ || $0 ~ /\{[[:space:]]*$/) print FILENAME ":" FNR ": mutable: " $0
+          }
+          /^[[:space:]]*extern[[:space:]]/ { print FILENAME ":" FNR ": extern: " $0 }
+        ' "$member")"
+        [ -z "$member_state" ] || violations+="$member_state"$'\n'
+        member_effects="$(grep -nE "$forbidden" "$member" || true)"
+        [ -z "$member_effects" ] || violations+="$member:$member_effects"$'\n'
+        member_includes="$(grep -nE '^#[[:space:]]*include[[:space:]]*[<"]([^>"]*/)?(wallet|storage|consensus|validation|net|coins|chain|mining|rpc)/' "$member" || true)"
+        [ -z "$member_includes" ] || violations+="$member:$member_includes"$'\n'
+    done
+done < <(awk '
+  /^HOTSHADOW_SERVICE_MEMBERS\(/ { active=1; count=0 }
+  active {
+    rest=$0
+    while (match(rest,/"[^"]+"/)) {
+      value=substr(rest,RSTART+1,RLENGTH-2)
+      if (count==0) service=value; else if (count==1) members=value
+      count++; rest=substr(rest,RSTART+RLENGTH)
+    }
+    if (active && count>=2) { print service "\t" members; active=0 }
+  }
+' "$SHADOW_OWNERS")
+
 gate_require_scanned "$scanned" 1 check_hotswap_service_islands \
     "service scan population is empty"
 if [ -n "${violations//[[:space:]]/}" ]; then
@@ -155,4 +239,4 @@ if [ -n "${violations//[[:space:]]/}" ]; then
     echo "FAIL: a pure hot-swap service island owns state, effects, or an undeclared import."
     exit 1
 fi
-echo "  OK: $scanned pure service island(s), frozen contracts and stable imports only"
+echo "  OK: $scanned admitted service/shadow row(s), frozen contracts and stable imports only"

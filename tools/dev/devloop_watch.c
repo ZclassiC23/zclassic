@@ -60,6 +60,9 @@ struct watch_edit_epoch {
     uint64_t sequence;
     int64_t seen_us;
     int64_t impact_ready_us;
+    int64_t immutable_epoch_creation_us;
+    int64_t impact_calculation_us;
+    uint64_t changed_bytes_read;
     char id[65];
     char parent[65];
     char dependency_generation[65];
@@ -296,6 +299,7 @@ static bool watch_build_edit_epoch(struct watch_context *ctx,
     if (!ctx || !files || count == 0 ||
         count > DEVLOOP_EDIT_EPOCH_MAX_FILES || !epoch)
         return false;
+    const int64_t epoch_started_us = platform_time_monotonic_us();
     memset(epoch, 0, sizeof(*epoch));
     epoch->sequence = ctx->edit_epoch_sequence + 1;
     epoch->seen_us = seen_us;
@@ -310,8 +314,11 @@ static bool watch_build_edit_epoch(struct watch_context *ctx,
                    ctx->dependency_generation_kind);
 
     struct zcl_devloop_plan plan;
+    const int64_t impact_started_us = platform_time_monotonic_us();
     if (!zcl_devloop_plan_files(files, count, &plan))
         return false;
+    epoch->impact_calculation_us =
+        platform_time_monotonic_us() - impact_started_us;
     (void)snprintf(epoch->owner, sizeof(epoch->owner), "%s",
                    plan.proof_group ? plan.proof_group : "make_lint_gates");
     watch_component_for_files(files, count, epoch->component);
@@ -333,6 +340,7 @@ static bool watch_build_edit_epoch(struct watch_context *ctx,
         if (found) {
             blob->new_digest = current.digest;
             blob->new_size = current.size;
+            epoch->changed_bytes_read += current.size;
         }
         if (!watch_overlay_find(ctx, files[i]))
             new_overlay_slots++;
@@ -363,6 +371,8 @@ static bool watch_build_edit_epoch(struct watch_context *ctx,
     }
     watch_digest_hex(&sha, epoch->id);
     epoch->impact_ready_us = platform_time_monotonic_us();
+    epoch->immutable_epoch_creation_us =
+        epoch->impact_ready_us - epoch_started_us;
 
     /* Commit the already-complete immutable epoch to the resident overlay.
      * No repository discovery occurs here: one slot per known changed path. */
@@ -493,6 +503,12 @@ static bool watch_emit_impact_ready(struct watch_context *ctx,
         json_push_kv_bool(&doc, "proof_complete", false) &&
         json_push_kv_int(&doc, "elapsed_us",
                          epoch->impact_ready_us - epoch->seen_us) &&
+        json_push_kv_int(&doc, "immutable_epoch_creation_us",
+                         epoch->immutable_epoch_creation_us) &&
+        json_push_kv_int(&doc, "impact_calculation_us",
+                         epoch->impact_calculation_us) &&
+        json_push_kv_int(&doc, "changed_bytes_read",
+                         (int64_t)epoch->changed_bytes_read) &&
         json_push_kv_int(&doc, "file_count", (int64_t)epoch->blob_count) &&
         json_push_kv_str(&doc, "edit_epoch", epoch->id) &&
         json_push_kv_str(&doc, "parent_epoch", epoch->parent) &&
@@ -1018,6 +1034,21 @@ int zcl_devloop_watch_mode(const char *repo_root,
         fprintf(stderr, "[devloop] watch: cannot resolve repository root: %s\n",
                 strerror(errno));
         return 2;
+    }
+    /* The resident compiler must not share eviction/cleanup state with full
+     * builds on the host. A saturated global ccache inflated the protected
+     * story from ~90 ms to ~500 ms even though impact and the candidate were
+     * unchanged. This checkout-local bounded cache is warm-service state,
+     * outside Git and outside the immutable source epoch. */
+    char reflex_ccache[PATH_MAX];
+    int cache_n = snprintf(reflex_ccache, sizeof(reflex_ccache),
+                           "%s/.cache/devloop-ccache-v1", ctx.root);
+    if (cache_n <= 0 || (size_t)cache_n >= sizeof(reflex_ccache) ||
+        setenv("CCACHE_DIR", reflex_ccache, 1) != 0 ||
+        setenv("CCACHE_MAXSIZE", "512M", 1) != 0) {
+        fprintf(stderr,
+                "[devloop] watch: compiler cache isolation failed\n");
+        return 1;
     }
     char makefile[PATH_MAX];
     snprintf(makefile, sizeof(makefile), "%s/Makefile", ctx.root);

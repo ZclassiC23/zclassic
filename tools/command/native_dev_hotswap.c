@@ -32,6 +32,7 @@
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "services/zcode_c23_corpus_service.h"
+#include "services/dev_reflex_policy_service.h"
 #include "services/zcode_c23_economics_service.h"
 #include "services/market_purchase_view_service.h"
 #include "services/market_moderation_view_service.h"
@@ -61,6 +62,7 @@ static bool probe_service_any(const char *so_path,
                               struct zcl_hotswap_service_report *report)
 {
     const struct zcl_hotswap_service_contract *service_contracts[] = {
+        zcl_native_dev_reflex_policy_service_contract(),
         zcl_native_zcode_corpus_service_contract(),
         zcl_native_zcode_economics_service_contract(),
         zcl_native_market_purchase_view_service_contract(),

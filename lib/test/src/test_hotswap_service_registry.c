@@ -281,6 +281,19 @@ static int t_manifest_mapping(void)
         ASSERT_STR_EQ(zcl_hotswap_service_probe_for_source(
                           "app/services/src/shop_want_view_service.c"),
                       "app.shop.want.list");
+        ASSERT_STR_EQ(zcl_hotswap_shadow_service_for_owner(
+                          "tools/command/native_dev_command.c"),
+                      "app/services/src/dev_reflex_policy_service.c");
+        ASSERT(zcl_hotswap_shadow_path_is_static_owner(
+                   "tools/command/native_dev_command.c"));
+        ASSERT(!zcl_hotswap_shadow_path_is_static_owner(
+                   "app/services/src/dev_reflex_policy_service.c"));
+        ASSERT_STR_EQ(zcl_hotswap_shadow_service_for_owner(
+                          "lib/vcs/src/zcode_workspace_manifest.c"),
+                      "app/services/src/zcode_workspace_view_service.c");
+        ASSERT(strstr(zcl_hotswap_shadow_members_for_service(
+                          "app/services/src/zcode_workspace_view_service.c"),
+                      "lib/vcs/src/zcode_workspace_manifest.c") != NULL);
         ASSERT(zcl_hotswap_service_source_for_path(
                    "lib/storage/src/storage.c") == NULL);
         PASS();

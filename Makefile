@@ -2332,7 +2332,7 @@ fast-changed-compile:
 # import unrelated compiler depfiles.
 watcher-safety-gates: check-core-seal check-consensus-parity check-dev-loop-profiles
 
-.PHONY: check-dev-loop-profiles dev-loop-profile-flags dev-loop-history-bench dev-loop-history-bench-selftest dev-loop-history-replay dev-loop-history-replay-selftest reflex-reactor-bench
+.PHONY: check-dev-loop-profiles dev-loop-profile-flags dev-loop-history-bench dev-loop-history-bench-selftest dev-loop-history-replay dev-loop-history-replay-selftest reflex-reactor-bench reflex-coverage-audit reflex-coverage-audit-selftest
 dev-loop-profile-flags:
 	@printf 'DEV_LIVE\t%s\t%s\n' '$(DEV_LIVE_CFLAGS)' '$(HOTSWAP_MODULE_LDFLAGS)'
 	@printf 'DEV_RESTART\t%s\t%s\n' '$(DEV_RESTART_CFLAGS)' '$(DEV_RESTART_LDFLAGS)'
@@ -2358,6 +2358,16 @@ dev-loop-active-bench-selftest:
 
 reflex-reactor-bench: dev-bin
 	@tools/dev/reflex-reactor-bench.sh
+
+reflex-coverage-audit: dev-bin
+	@ZCL_DEV_HISTORY_BASE_REF=HEAD \
+	 ZCL_DEV_HISTORY_OUTPUT=build/dev-loop/substrate-history-benchmark.json \
+	 tools/dev/dev-loop-history-bench.sh run
+	@ZCL_REFLEX_HISTORY=build/dev-loop/substrate-history-benchmark.json \
+	 tools/dev/reflex-coverage-audit.sh run
+
+reflex-coverage-audit-selftest:
+	@tools/dev/reflex-coverage-audit.sh --self-test
 
 dev-linker-shootout:
 	@tools/dev/dev-linker-shootout.sh run
@@ -2734,7 +2744,8 @@ HOTSWAP_MODULE_LDFLAGS = -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
 # BUILD_SOURCE_ID/CLEAN/MUTATION themselves are ordinary parse-time variables
 # and remain available regardless.
 $(HOTSWAP_ACTION_PLAN): Makefile config/hotswap_swappable.def \
-		config/hotswap_islands.def config/hotswap_services.def
+		config/hotswap_islands.def config/hotswap_services.def \
+		config/hotswap_shadow_owners.def
 	@set -eu; \
 	mkdir -p "$(dir $@)"; \
 	tmp="$$(mktemp "$(dir $@).flags.XXXXXX")"; \

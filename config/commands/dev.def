@@ -542,18 +542,25 @@ ZCL_COMMAND_DEV_READ(
     "bounded verdict waiting is available through the dev binary",
     "zclassic23-dev dev loop wait")
 
-ZCL_COMMAND_PLANNED_READ(
+ZCL_COMMAND_DEV_READ(
     "dev.loop.events", "dev.loop", "", "Stream resumable source and cycle events",
-    "Will stream resumable NDJSON source and cycle events from a cursor; "
-    "today the handler is NULL and every call fails closed with exit 3.", 0,
+    "A resumable event subscription. The bounded native reply returns the "
+    "next event or heartbeat plus its cursor; --format=jsonl keeps one local "
+    "process attached and emits events continuously until the subscriber "
+    "disconnects. It reads the existing volatile/sealed stream and grants "
+    "no build, proof, storage, network or publication authority.",
+    ZCL_COMMAND_LIST_BUDGET,
     "loop,events,jsonl,cursor,epoch", "zcl.dev_loop_events_input.v1",
     "zcl.dev_loop_event.v1", "after,heartbeat_ms", "",
-    "zclassic23 dev loop events --format=jsonl",
-    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    "zclassic23-dev dev loop events --after=41 --format=jsonl",
+    ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_PERSISTENT,
     ZCL_COMMAND_COST_STREAM, ZCL_COMMAND_LANE_LOCAL,
     ZCL_COMMAND_CAP_DEV_STATE_READ,
-    "resumable NDJSON event journal is not implemented")
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_loop_events,
+    "resumable event subscription is available through the dev binary",
+    "zclassic23-dev dev loop events --format=jsonl")
 
 ZCL_COMMAND_DEV_COMMAND(
     "dev.loop.stop", "dev.loop", "", "Stop one identified native watcher",

@@ -79,9 +79,9 @@ zclassic23 discover schema <path> --side=input|output
 | Branches | 161 |
 | Leaves (dispatchable command paths) | 526 |
 | … `ready` (live handler in this build) | 472 |
-| … `compat` (metadata only, names a fallback) | 24 |
-| … `planned` (fail-closed BLOCKED, exit 3) | 30 |
-| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 23 |
+| … `compat` (metadata only, names a fallback) | 25 |
+| … `planned` (fail-closed BLOCKED, exit 3) | 29 |
+| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 24 |
 | Leaves with `effect=mutate` | 174 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 112 |
@@ -672,7 +672,7 @@ represented by its children's sections.
 | `dev loop ensure` (aliases: `dev.loop.watch`) | compat 🔧 → `zclassic23-dev dev loop ensure --input='{"mode":"auto"}'` | mutate / dev-mutation / **owner** · fast/low | `root`, `mode` | `zcl.dev_loop_status.v1` | `zclassic23 dev loop ensure --input='{"root":".","mode":"verify"}'` | Ensure one resident watcher; auto publishes only stateless islands — *watcher ownership requires the dev-only executor* |
 | `dev loop status` (aliases: `dev.loop.heartbeat`) | compat 🔧 → `zclassic23-dev dev loop heartbeat` | read / read / operator · instant/low | none | `zcl.dev_loop_status.v1` | `zclassic23 dev loop status` | Read watcher identity, epoch, and latest verdict — *watcher state is available through the dev binary* |
 | `dev loop wait` | compat 🔧 → `zclassic23-dev dev loop wait` | read / read / operator · persistent/low | `after_epoch`, `timeout_ms` | `zcl.dev_cycle.v1` | `zclassic23 dev loop wait --input='{"after_epoch":41}'` | Wait for one verdict after a cycle epoch — *bounded verdict waiting is available through the dev binary* |
-| `dev loop events` | planned | read / read / operator · persistent/stream | `after`, `heartbeat_ms` | `zcl.dev_loop_event.v1` | `zclassic23 dev loop events --format=jsonl` | Stream resumable source and cycle events — *resumable NDJSON event journal is not implemented* |
+| `dev loop events` | compat 🔧 → `zclassic23-dev dev loop events --format=jsonl` | read / read / operator · persistent/stream | `after`, `heartbeat_ms` | `zcl.dev_loop_event.v1` | `zclassic23-dev dev loop events --after=41 --format=jsonl` | Stream resumable source and cycle events — *resumable event subscription is available through the dev binary* |
 | `dev loop stop` | compat 🔧 → `zclassic23-dev dev loop stop` | mutate / dev-mutation / **owner** · fast/low | **`watcher_id`** | `zcl.dev_loop_status.v1` | `zclassic23 dev loop stop <watcher-id>` | Stop one identified native watcher — *watcher shutdown requires the dev-only executor* |
 
 #### `dev.test` — Focused proof selection

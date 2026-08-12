@@ -1855,7 +1855,7 @@ static int test_dev_branch_leaves(void)
          * discovery can never advertise a dev command that cannot dispatch. */
         const char *planned[] = {
             "dev.core.proof", "dev.app.inspect", "dev.test.replay",
-            "dev.generation.rollback", "dev.loop.events",
+            "dev.generation.rollback",
         };
         for (size_t i = 0; i < sizeof(planned) / sizeof(planned[0]); i++) {
             const struct zcl_command_spec *s = find_spec(reg, planned[i]);
@@ -1870,7 +1870,7 @@ static int test_dev_branch_leaves(void)
             "dev.change.apply", "dev.begin", "dev.drive",
             "dev.publication.mirror.record",
             "dev.loop.ensure", "dev.loop.status",
-            "dev.loop.wait", "dev.loop.stop", "dev.test.run",
+            "dev.loop.wait", "dev.loop.events", "dev.loop.stop", "dev.test.run",
             "dev.test.sim", "dev.generation.current",
             "dev.generation.history", "dev.diagnose.latest",
             "dev.diagnose.show",

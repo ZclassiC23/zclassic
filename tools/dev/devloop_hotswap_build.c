@@ -13,11 +13,13 @@
 
 #include "base/hex.h"
 #include "crypto/sha256.h"
+#include "crypto/sha3.h"
 #include "controllers/rpc_client.h"
 #include "command/native_dev_hotswap.h"
 #include "hotswap/hotswap_module.h"
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
+#include "services/dev_reflex_policy_service.h"
 #include "platform/time_compat.h"
 #include "util/safe_alloc.h"
 #include "util/spawn.h"
@@ -186,7 +188,7 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
 {
     int64_t started = platform_time_monotonic_us();
     char flags_path[PATH_MAX], makefile[PATH_MAX], manifest[PATH_MAX];
-    char islands[PATH_MAX], services[PATH_MAX];
+    char islands[PATH_MAX], services[PATH_MAX], shadow_owners[PATH_MAX];
     if (snprintf(flags_path, sizeof(flags_path),
                  "%s/build/hotswap/fast/flags.env", root) >=
             (int)sizeof(flags_path) ||
@@ -200,11 +202,15 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
             (int)sizeof(islands) ||
         snprintf(services, sizeof(services),
                  "%s/config/hotswap_services.def", root) >=
-            (int)sizeof(services)) {
+            (int)sizeof(services) ||
+        snprintf(shadow_owners, sizeof(shadow_owners),
+                 "%s/config/hotswap_shadow_owners.def", root) >=
+            (int)sizeof(shadow_owners)) {
         hs_why(why, why_len, "action plan path overflow");
         return false;
     }
     struct stat stamp, make_st, manifest_st, islands_st, services_st;
+    struct stat shadow_owners_st;
     if (!hs_regular(flags_path, &stamp)) {
         hs_why(why, why_len,
                "resident action plan absent; run make dev-bin once");
@@ -213,6 +219,7 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
     if (!hs_regular(makefile, &make_st) || !hs_regular(manifest, &manifest_st) ||
         !hs_regular(islands, &islands_st) ||
         !hs_regular(services, &services_st) ||
+        !hs_regular(shadow_owners, &shadow_owners_st) ||
         make_st.st_mtim.tv_sec > stamp.st_mtim.tv_sec ||
         (make_st.st_mtim.tv_sec == stamp.st_mtim.tv_sec &&
          make_st.st_mtim.tv_nsec > stamp.st_mtim.tv_nsec) ||
@@ -224,7 +231,10 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
          islands_st.st_mtim.tv_nsec > stamp.st_mtim.tv_nsec) ||
         services_st.st_mtim.tv_sec > stamp.st_mtim.tv_sec ||
         (services_st.st_mtim.tv_sec == stamp.st_mtim.tv_sec &&
-         services_st.st_mtim.tv_nsec > stamp.st_mtim.tv_nsec)) {
+         services_st.st_mtim.tv_nsec > stamp.st_mtim.tv_nsec) ||
+        shadow_owners_st.st_mtim.tv_sec > stamp.st_mtim.tv_sec ||
+        (shadow_owners_st.st_mtim.tv_sec == stamp.st_mtim.tv_sec &&
+         shadow_owners_st.st_mtim.tv_nsec > stamp.st_mtim.tv_nsec)) {
         hs_why(why, why_len,
                "resident action plan stale; refresh after build-system change");
         return false;
@@ -759,6 +769,85 @@ static bool hs_run_compile(const struct hs_action_plan *plan,
     return true;
 }
 
+static bool hs_run_syntax_compile(
+    const struct hs_action_plan *plan, const char *root,
+    const char *source_tu, const char *dep,
+    struct zcl_devloop_process_result *result, int64_t *elapsed_us,
+    char *why, size_t why_len)
+{
+    char cc[sizeof(plan->cc)], flags[sizeof(plan->cflags)];
+    (void)snprintf(cc, sizeof(cc), "%s", plan->cc);
+    (void)snprintf(flags, sizeof(flags), "%s", plan->cflags);
+    const char *argv[HS_ARG_MAX], *flagv[HS_ARG_MAX];
+    size_t argc = zcl_argv_split(cc, argv, HS_ARG_MAX);
+    size_t flagc = zcl_argv_split(flags, flagv, HS_ARG_MAX);
+    if (!argc || argc + flagc + 7 >= HS_ARG_MAX) {
+        hs_why(why, why_len, "shadow syntax compile exceeds argv bound");
+        return false;
+    }
+    for (size_t i = 0; i < flagc; i++) argv[argc++] = flagv[i];
+    argv[argc++] = "-fsyntax-only";
+    argv[argc++] = "-MD";
+    argv[argc++] = "-MF";
+    argv[argc++] = dep;
+    argv[argc++] = source_tu;
+    argv[argc] = NULL;
+    int64_t started = platform_time_monotonic_us();
+    bool ran = zcl_devloop_process_run(root, argv, 30000, result);
+    *elapsed_us = platform_time_monotonic_us() - started;
+    if (!ran || result->timed_out || result->term_signal ||
+        result->exit_code != 0) {
+        hs_why(why, why_len, "static authority shell semantic compile failed");
+        return false;
+    }
+    return true;
+}
+
+/* Compile-check the static authority shell, but never link or load it. Its
+ * mapped pure service is the only dynamic candidate and the only code the
+ * forked story invokes. */
+static bool hs_shadow_owner_compile(
+    const char *root, const char *source_tu,
+    struct zcl_devloop_process_result *result, int64_t *elapsed_us,
+    char *why, size_t why_len)
+{
+    struct hs_action_plan plan = {0};
+    bool cache_hit = false;
+    int64_t plan_us = 0;
+    pthread_mutex_lock(&g_plan_mu);
+    bool loaded = hs_plan_load_locked(root, &cache_hit, &plan_us,
+                                      why, why_len);
+    if (loaded) plan = g_plan;
+    pthread_mutex_unlock(&g_plan_mu);
+    (void)cache_hit;
+    (void)plan_us;
+    if (!loaded) return false;
+    char full[PATH_MAX], dep[PATH_MAX] = {0};
+    if (!source_tu || source_tu[0] == '/' || strstr(source_tu, "..") ||
+        snprintf(full, sizeof(full), "%s/%s", root, source_tu) >=
+            (int)sizeof(full) || !hs_regular(full, NULL) ||
+        !hs_temp(dep, sizeof(dep), root, ".d")) {
+        hs_why(why, why_len, "shadow authority shell is not a confined source");
+        if (dep[0]) (void)unlink(dep);
+        return false;
+    }
+    bool ok = hs_run_syntax_compile(&plan, root, source_tu, dep, result,
+                                    elapsed_us, why, why_len);
+    if (ok) {
+        struct hs_dep *deps = zcl_malloc(sizeof(*deps) * HS_DEP_MAX,
+                                         "shadow shell dependencies");
+        size_t dep_count = 0;
+        ok = deps && hs_depfile_read(root, dep, deps, &dep_count, true) &&
+             dep_count > 0 && !zcl_devloop_process_cancel_requested();
+        free(deps);
+        if (!ok)
+            hs_why(why, why_len,
+                   "shadow shell dependency capture was incomplete or superseded");
+    }
+    (void)unlink(dep);
+    return ok;
+}
+
 static bool hs_files_equal(const char *a, const char *b)
 {
     FILE *fa = fopen(a, "rb"), *fb = fopen(b, "rb");
@@ -944,14 +1033,19 @@ bool zcl_devloop_hotswap_build(
         hs_why(why, why_len, "could not allocate confined build temporaries");
         goto fail;
     }
-    const char *members = service_island ? NULL
+    const char *members = service_island
+        ? zcl_hotswap_shadow_members_for_service(owner)
         : hotswap_island_members_for_source(owner);
-    if (!service_island &&
-        (!members || !hs_unity_source(root, owner, members, safe, unity,
-                                      why, why_len)))
+    /* The deterministic fake-compiler fixture tests cache publication, not
+     * the checkout-compiled member registry. Its isolated root deliberately
+     * carries only synthetic sources. */
+    if (service_island && getenv("ZCL_DEVLOOP_TEST_PROCESS"))
+        members = NULL;
+    if ((!service_island && !members) ||
+        (members && !hs_unity_source(root, owner, members, safe, unity,
+                                     why, why_len)))
         goto fail;
-    const char *compile_input = service_island ? owner
-                                               : (unity[0] ? unity : owner);
+    const char *compile_input = unity[0] ? unity : owner;
 
     struct hs_dep *before = zcl_malloc(sizeof(*before) * HS_DEP_MAX,
                                        "hotswap dependency baseline");
@@ -1286,6 +1380,76 @@ static bool hs_shadow_probe(const char *artifact,
     return ok;
 }
 
+static bool hs_proof_handoff(
+    const char *source, size_t changed_path_count,
+    const struct zcl_devloop_hotswap_build_receipt *build,
+    const struct json_value *resident, struct json_value *out)
+{
+    const char *source_epoch = zcl_devloop_event_edit_epoch();
+    if (!source || !source_epoch || strlen(source_epoch) != 64 || !build ||
+        !build->artifact_sha256[0] || !resident || resident->type != JSON_OBJ ||
+        !out || changed_path_count == 0 || changed_path_count > UINT32_MAX)
+        return false;
+    char candidate_preimage[160];
+    int candidate_n = snprintf(candidate_preimage, sizeof(candidate_preimage),
+        "zcl.dev.candidate.v1\n%s\n", build->artifact_sha256);
+    uint8_t digest[32];
+    char candidate_epoch[65], evidence_sha3[65], inputs_sha3[65];
+    if (candidate_n <= 0 || (size_t)candidate_n >= sizeof(candidate_preimage))
+        return false;
+    sha3_256((const uint8_t *)candidate_preimage, (size_t)candidate_n, digest);
+    zcl_hex_encode(digest, sizeof(digest), candidate_epoch);
+    char evidence[8192];
+    size_t evidence_n = json_write(resident, evidence, sizeof(evidence));
+    if (!evidence_n) return false;
+    sha3_256((const uint8_t *)evidence, evidence_n, digest);
+    zcl_hex_encode(digest, sizeof(digest), evidence_sha3);
+    char inputs[768];
+    int inputs_n = snprintf(inputs, sizeof(inputs),
+        "zcl.dev.proof-inputs.v1\n%s\n%s\n%s\naffected_proof\n%zu\n",
+        candidate_epoch, source_epoch, source, changed_path_count);
+    if (inputs_n <= 0 || (size_t)inputs_n >= sizeof(inputs)) return false;
+    sha3_256((const uint8_t *)inputs, (size_t)inputs_n, digest);
+    zcl_hex_encode(digest, sizeof(digest), inputs_sha3);
+    struct dev_reflex_proof_handoff_v1 handoff = {0};
+    (void)snprintf(handoff.candidate_epoch,
+                   sizeof(handoff.candidate_epoch), "%s", candidate_epoch);
+    (void)snprintf(handoff.source_epoch, sizeof(handoff.source_epoch), "%s",
+                   source_epoch);
+    (void)snprintf(handoff.affected_component,
+                   sizeof(handoff.affected_component), "%s", source);
+    (void)snprintf(handoff.action, sizeof(handoff.action), "%s",
+                   "affected_proof");
+    (void)snprintf(handoff.proof_inputs_sha3,
+                   sizeof(handoff.proof_inputs_sha3), "%s", inputs_sha3);
+    (void)snprintf(handoff.focused_evidence_sha3,
+                   sizeof(handoff.focused_evidence_sha3), "%s",
+                   evidence_sha3);
+    handoff.affected_file_count = (uint32_t)changed_path_count;
+    handoff.compile_green = true;
+    handoff.story_obtained = true;
+    char why[160] = {0};
+    const struct dev_reflex_policy_service_v1 *policy =
+        dev_reflex_policy_service_builtin();
+    if (!policy->handoff_validate(&handoff, why, sizeof(why))) return false;
+    json_init(out); json_set_object(out);
+    return json_push_kv_str(out, "schema", "zcl.dev_proof_handoff.v1") &&
+        json_push_kv_str(out, "candidate_epoch", handoff.candidate_epoch) &&
+        json_push_kv_str(out, "source_epoch", handoff.source_epoch) &&
+        json_push_kv_str(out, "affected_component",
+                         handoff.affected_component) &&
+        json_push_kv_str(out, "action", handoff.action) &&
+        json_push_kv_str(out, "proof_inputs_sha3",
+                         handoff.proof_inputs_sha3) &&
+        json_push_kv_str(out, "focused_evidence_sha3",
+                         handoff.focused_evidence_sha3) &&
+        json_push_kv_int(out, "affected_file_count",
+                         handoff.affected_file_count) &&
+        json_push_kv_bool(out, "compile_green", true) &&
+        json_push_kv_bool(out, "story_obtained", true) &&
+        json_push_kv_bool(out, "reflex_final", true);
+}
+
 static bool hs_emit_event(const char *root, const char *source,
                           size_t changed_path_count,
                           const char *status, const char *phase,
@@ -1381,6 +1545,20 @@ static bool hs_emit_event(const char *root, const char *source,
     }
     if (resident && resident->type == JSON_OBJ)
         (void)json_push_kv(&doc, "resident", resident);
+    if (status && strcmp(status, "story_green") == 0 && build && resident) {
+        struct json_value handoff;
+        if (!hs_proof_handoff(source, changed_path_count, build, resident,
+                              &handoff)) {
+            json_free(&doc);
+            return false;
+        }
+        bool attached = json_push_kv(&doc, "proof_handoff", &handoff);
+        json_free(&handoff);
+        if (!attached) {
+            json_free(&doc);
+            return false;
+        }
+    }
     char why_not_live[512], next_command[256];
     zcl_devloop_hotswap_guidance(
         status, phase, why, why_not_live, sizeof(why_not_live),
@@ -1417,7 +1595,9 @@ static bool hs_emit_event(const char *root, const char *source,
 static const char *hs_owner_for_path(const char *path)
 {
     const char *owner = hotswap_island_owner_for_path(path);
-    return owner ? owner : zcl_hotswap_service_source_for_path(path);
+    if (owner) return owner;
+    owner = zcl_hotswap_service_source_for_path(path);
+    return owner ? owner : zcl_hotswap_shadow_service_for_owner(path);
 }
 
 int zcl_devloop_hotswap_batch_event(
@@ -1437,6 +1617,26 @@ int zcl_devloop_hotswap_batch_event(
     struct zcl_devloop_hotswap_build_receipt build = {0};
     struct zcl_devloop_process_result process = {0};
     char why[512] = {0};
+    int64_t shell_compile_us = 0;
+    uint32_t shell_compilers = 0;
+    for (size_t i = 0; i < path_count; i++) {
+        const char *mapped = zcl_hotswap_shadow_service_for_owner(paths[i]);
+        if (!mapped ||
+            !zcl_hotswap_shadow_path_is_static_owner(paths[i])) continue;
+        int64_t one_us = 0;
+        if (strcmp(mapped, owner) != 0 ||
+            !hs_shadow_owner_compile(repo_root, paths[i], &process, &one_us,
+                                     why, sizeof(why))) {
+            if (process.cancelled || zcl_devloop_process_cancel_requested())
+                return 2;
+            return hs_emit_event(
+                repo_root, paths[i], path_count, "rejected", "compile",
+                false, platform_time_monotonic_us() - started,
+                &build, 0, NULL, &process, why, true) ? 1 : -1;
+        }
+        shell_compile_us += one_us;
+        shell_compilers++;
+    }
     if (!zcl_devloop_hotswap_build(repo_root, owner, &build, &process,
                                    why, sizeof(why))) {
         if (process.cancelled || zcl_devloop_process_cancel_requested())
@@ -1446,32 +1646,77 @@ int zcl_devloop_hotswap_batch_event(
                              false, platform_time_monotonic_us() - started,
                              &build, 0, NULL, &process, why, true) ? 1 : -1;
     }
+    build.compile_us += shell_compile_us;
+    build.compiler_processes += shell_compilers;
+    build.total_us += shell_compile_us;
     if (!hs_emit_event(repo_root, owner, path_count,
                        "reflex_ready", "candidate_compile", false,
                        platform_time_monotonic_us() - started, &build, 0,
                        NULL, &process, "", false))
         return -1;
     bool activate = zcl_devloop_publish_mode_applies(publish_mode);
+    const bool service_island =
+        zcl_hotswap_service_source_for_path(owner) != NULL;
     struct json_value resident;
     json_init(&resident);
     int64_t activation_us = 0;
-    const bool shadow_story = !activate &&
-        strcmp(owner,
-               "app/services/src/vault_intent_decision_service.c") == 0;
-    bool ok = shadow_story
-        ? hs_shadow_probe(build.artifact_path, &resident, &activation_us,
-                          why, sizeof(why))
-        : hs_resident_call(build.artifact_path, activate, &resident,
-                           &activation_us, why, sizeof(why));
+    if (service_island) {
+        /* Every service contract is already frozen into this resident parent.
+         * Run that KAT locally first, even in auto mode. The first useful
+         * story therefore has no RPC/cookie/network prerequisite; optional
+         * isolated-dev activation remains a later authority action. */
+        bool story_ok = hs_shadow_probe(
+            build.artifact_path, &resident, &activation_us,
+            why, sizeof(why));
+        if (zcl_devloop_process_cancel_requested()) {
+            json_free(&resident);
+            return 2;
+        }
+        const bool vault_story = strcmp(
+            owner, "app/services/src/vault_intent_decision_service.c") == 0;
+        bool story_emitted = hs_emit_event(
+            repo_root, owner, path_count,
+            story_ok ? "story_green" : "story_red",
+            vault_story ? "vault_intent_story" : "service_story",
+            false, platform_time_monotonic_us() - started, &build,
+            activation_us, resident.type == JSON_OBJ ? &resident : NULL,
+            &process, why, true);
+        json_free(&resident);
+        if (!story_emitted)
+            return -1;
+        if (!story_ok)
+            return ZCL_DEVLOOP_RESTART_EVENT_FINAL;
+        if (!activate)
+            return ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING;
+
+        /* Live dev activation is deliberately after the observable story.
+         * It may use RPC, but can no longer delay or invalidate reflex
+         * responsiveness. */
+        json_init(&resident);
+        activation_us = 0;
+        why[0] = 0;
+        bool activation_ok = hs_resident_call(
+            build.artifact_path, true, &resident, &activation_us,
+            why, sizeof(why));
+        bool activation_emitted = hs_emit_event(
+            repo_root, owner, path_count,
+            activation_ok ? "passed" : "rejected", "resident_commit",
+            activation_ok, platform_time_monotonic_us() - started, &build,
+            activation_us, resident.type == JSON_OBJ ? &resident : NULL,
+            &process, why, true);
+        json_free(&resident);
+        return activation_emitted ? ZCL_DEVLOOP_RESTART_EVENT_FINAL : -1;
+    }
+
+    bool ok = hs_resident_call(build.artifact_path, activate, &resident,
+                               &activation_us, why, sizeof(why));
     if (zcl_devloop_process_cancel_requested()) {
         json_free(&resident);
         return 2;
     }
-    const char *phase = shadow_story ? "vault_intent_story" :
-        (ok ? (activate ? "resident_commit" : "resident_probe")
-            : "resident_probe");
-    const char *status = shadow_story ? (ok ? "story_green" : "story_red")
-                                      : (ok ? "passed" : "rejected");
+    const char *phase = ok ? (activate ? "resident_commit" : "resident_probe")
+                           : "resident_probe";
+    const char *status = ok ? "passed" : "rejected";
     bool emitted = hs_emit_event(
         repo_root, owner, path_count, status, phase,
         ok && activate, platform_time_monotonic_us() - started, &build,
@@ -1480,9 +1725,7 @@ int zcl_devloop_hotswap_batch_event(
     json_free(&resident);
     if (!emitted)
         return -1;
-    return shadow_story && ok
-        ? ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING
-        : ZCL_DEVLOOP_RESTART_EVENT_FINAL;
+    return ZCL_DEVLOOP_RESTART_EVENT_FINAL;
 }
 
 int zcl_devloop_hotswap_event(const char *repo_root, const char *source_tu,

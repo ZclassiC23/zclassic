@@ -51,6 +51,62 @@ static const struct service_manifest_row k_service_manifest[] = {
 #undef HOTSWAP_SERVICE
 };
 
+struct shadow_owner_row {
+    const char *owner;
+    const char *service;
+};
+
+static bool token_list_contains(const char *list, const char *token);
+
+static const struct shadow_owner_row k_shadow_owners[] = {
+#define HOTSHADOW_OWNER(owner_, service_) { (owner_), (service_) },
+#define HOTSHADOW_SERVICE_MEMBERS(service_, members_)
+#include "../../../config/hotswap_shadow_owners.def"
+#undef HOTSHADOW_SERVICE_MEMBERS
+#undef HOTSHADOW_OWNER
+};
+
+static const struct shadow_owner_row k_shadow_members[] = {
+#define HOTSHADOW_OWNER(owner_, service_)
+#define HOTSHADOW_SERVICE_MEMBERS(service_, members_) { (service_), (members_) },
+#include "../../../config/hotswap_shadow_owners.def"
+#undef HOTSHADOW_SERVICE_MEMBERS
+#undef HOTSHADOW_OWNER
+};
+
+const char *zcl_hotswap_shadow_service_for_owner(const char *path)
+{
+    if (!path) return NULL;
+    for (size_t i = 0; i < sizeof(k_shadow_owners) /
+                            sizeof(k_shadow_owners[0]); i++)
+        if (strcmp(path, k_shadow_owners[i].owner) == 0)
+            return k_shadow_owners[i].service;
+    for (size_t i = 0; i < sizeof(k_shadow_members) /
+                            sizeof(k_shadow_members[0]); i++)
+        if (token_list_contains(k_shadow_members[i].service, path))
+            return k_shadow_members[i].owner;
+    return NULL;
+}
+
+const char *zcl_hotswap_shadow_members_for_service(const char *service)
+{
+    if (!service) return NULL;
+    for (size_t i = 0; i < sizeof(k_shadow_members) /
+                            sizeof(k_shadow_members[0]); i++)
+        if (strcmp(service, k_shadow_members[i].owner) == 0)
+            return k_shadow_members[i].service;
+    return NULL;
+}
+
+bool zcl_hotswap_shadow_path_is_static_owner(const char *path)
+{
+    if (!path) return false;
+    for (size_t i = 0; i < sizeof(k_shadow_owners) /
+                            sizeof(k_shadow_owners[0]); i++)
+        if (strcmp(path, k_shadow_owners[i].owner) == 0) return true;
+    return false;
+}
+
 static bool token_list_contains(const char *list, const char *token)
 {
     if (!list || !token || !token[0] || strcmp(list, "-") == 0) return false;

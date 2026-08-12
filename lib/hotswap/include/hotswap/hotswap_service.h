@@ -122,6 +122,11 @@ const char *zcl_hotswap_service_source_for_path(const char *path);
 const char *zcl_hotswap_service_contract_source_for_path(const char *path);
 const char *zcl_hotswap_service_probe_for_source(const char *source);
 const char *zcl_hotswap_service_probe_for_id(const char *service_id);
+/* Static shell -> pure candidate core. The shell is compile-checked and is
+ * never itself loaded into the resident process. */
+const char *zcl_hotswap_shadow_service_for_owner(const char *path);
+const char *zcl_hotswap_shadow_members_for_service(const char *service);
+bool zcl_hotswap_shadow_path_is_static_owner(const char *path);
 
 #ifdef __cplusplus
 }

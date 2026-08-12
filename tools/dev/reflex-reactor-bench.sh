@@ -12,6 +12,16 @@ OUTPUT="${ZCL_REFLEX_BENCH_OUTPUT:-$ROOT/build/dev-loop/reflex-reactor-benchmark
 MARKER='ZCL_REFLEX_BENCH:'
 
 fail() { printf 'reflex-reactor-bench: %s\n' "$*" >&2; exit 2; }
+proc_cpu_ticks()
+{
+    local pid="$1"
+    [[ -r "/proc/$pid/stat" ]] || fail "watcher /proc/$pid/stat unavailable"
+    perl -e '
+      my $line = <>; $line =~ s/^.*\) // or die "bad stat";
+      my @f = split / /, $line;
+      print $f[11] + $f[12] + $f[13] + $f[14], "\n";
+    ' "/proc/$pid/stat"
+}
 [[ "$RUNS" =~ ^[0-9]+$ && "$RUNS" -ge 1 && "$RUNS" -le 99 ]] ||
     fail 'RUNS must be 1..99'
 [[ -x "$BIN" ]] || fail "missing dev binary: $BIN"
@@ -22,6 +32,7 @@ command -v jq >/dev/null || fail 'jq is required'
 backup="$(mktemp "${TMPDIR:-/tmp}/zcl-reflex-source.XXXXXX")"
 samples="$(mktemp "${TMPDIR:-/tmp}/zcl-reflex-samples.XXXXXX")"
 events="$(mktemp "${TMPDIR:-/tmp}/zcl-reflex-events.XXXXXX")"
+cache_samples="$(mktemp "${TMPDIR:-/tmp}/zcl-reflex-cache.XXXXXX")"
 watcher_id=0
 cleanup()
 {
@@ -30,7 +41,7 @@ cleanup()
             >/dev/null 2>&1 || true
     fi
     cp -p "$backup" "$SOURCE"
-    rm -f "$backup" "$samples" "$events"
+    rm -f "$backup" "$samples" "$events" "$cache_samples"
 }
 trap cleanup EXIT INT TERM
 cp -p "$SOURCE" "$backup"
@@ -42,6 +53,10 @@ after="$(jq -er '.data.epoch' <<<"$begin")" ||
     fail 'warm watcher did not return its event cursor'
 first_epoch="$after"
 nonce_base="$(( $(date +%s%N) % 99999900 ))"
+clock_ticks="$(getconf CLK_TCK)"
+[[ "$clock_ticks" =~ ^[1-9][0-9]*$ ]] || fail 'CLK_TCK unavailable'
+cpu_start_ticks="$(proc_cpu_ticks "$watcher_id")"
+main_start_ns="$(date +%s%N)"
 
 for ((i = 1; i <= RUNS; i++)); do
     nonce="$(printf '%08d' $(((nonce_base + i) % 100000000)))"
@@ -88,6 +103,55 @@ red_feedback_us="$(jq -er '.data.feedback_us' <<<"$red_result")"
 red_wall_us="$(((red_end_ns - red_start_ns) / 1000))"
 after="$(jq -r '.data.epoch' <<<"$red_result")"
 last_epoch="$after"
+main_end_ns="$(date +%s%N)"
+cpu_end_ticks="$(proc_cpu_ticks "$watcher_id")"
+cpu_time_us="$(((cpu_end_ticks - cpu_start_ticks) * 1000000 / clock_ticks))"
+main_wall_us="$(((main_end_ns - main_start_ns) / 1000))"
+
+# Measure exact edit/revert cache service on the same warm watcher. Two
+# distinct green candidates are admitted once, then alternated. Every timed
+# cycle must reuse the verified module with no compiler or linker child while
+# still running a fresh forked story.
+candidate_a="$(printf '%08d' $(((nonce_base + RUNS + 2) % 100000000)))"
+candidate_b="$(printf '%08d' $(((nonce_base + RUNS + 3) % 100000000)))"
+run_green_candidate()
+{
+    local nonce="$1" label="${2:-}" staged start_ns end_ns result raw epoch
+    staged="$(mktemp "$ROOT/app/services/src/.reflex-cache.XXXXXX")"
+    sed "s/${MARKER} 00000000/${MARKER} ${nonce}/" "$backup" >"$staged"
+    chmod --reference="$SOURCE" "$staged"
+    start_ns="$(date +%s%N)"
+    mv -f "$staged" "$SOURCE"
+    result="$($BIN dev drive --input="{\"after_epoch\":$after,\"wait_for_edit\":true,\"timeout_ms\":5000}")"
+    end_ns="$(date +%s%N)"
+    jq -e '.ok == true and .data.event == "STORY_GREEN" and
+           .data.runtime_published == false' <<<"$result" >/dev/null ||
+        fail "cache candidate $nonce did not return STORY_GREEN"
+    after="$(jq -er '.data.epoch' <<<"$result")"
+    [[ -z "$label" ]] && return 0
+    epoch="$after"
+    raw="$($BIN dev loop wait --input="{\"after_epoch\":$((epoch - 1)),\"timeout_ms\":100}")"
+    jq -e '.ok == true and .data.phase == "STORY_GREEN" and
+           .data.build_receipt.artifact_cache_hit == true and
+           .data.build_receipt.compiler_processes == 0 and
+           .data.build_receipt.linker_processes == 0 and
+           .data.resident.forked == true' <<<"$raw" >/dev/null ||
+        fail "$label did not use the exact verified cache"
+    jq -cn --arg label "$label" --argjson epoch "$epoch" \
+      --argjson feedback_us "$(jq -r '.data.elapsed_us' <<<"$raw")" \
+      --argjson runner_us "$(jq -r '.data.resident.elapsed_us' <<<"$raw")" \
+      --argjson wall_us "$(((end_ns - start_ns) / 1000))" \
+      '{label:$label,epoch:$epoch,feedback_us:$feedback_us,
+        runner_us:$runner_us,wall_us:$wall_us,
+        compiler_processes:0,linker_processes:0}' >>"$cache_samples"
+}
+
+run_green_candidate "$candidate_a"
+run_green_candidate "$candidate_b"
+for ((i = 1; i <= 10; i++)); do
+    run_green_candidate "$candidate_a" exact_revert
+    run_green_candidate "$candidate_b" exact_edit
+done
 
 # Freeze the event range before restoring the benchmark source. The sealed
 # journal remains readable after the watcher stops.
@@ -106,28 +170,74 @@ done
 
 mkdir -p "$(dirname "$OUTPUT")"
 jq -n --slurpfile samples "$samples" --slurpfile events "$events" \
+    --slurpfile cache_samples "$cache_samples" \
     --arg source_tu 'app/services/src/vault_intent_decision_service.c' \
     --argjson runs "$RUNS" \
     --argjson red_feedback_us "$red_feedback_us" \
-    --argjson red_wall_us "$red_wall_us" '
+    --argjson red_wall_us "$red_wall_us" \
+    --argjson cpu_time_us "$cpu_time_us" \
+    --argjson main_wall_us "$main_wall_us" '
   def pct($v; $p):
     ($v | sort) as $s |
     $s[((((($s|length)*$p)+99)/100|floor)-1)];
   def metric($v):
     {count:($v|length),min_us:($v|min),p50_us:pct($v;50),
      p95_us:pct($v;95),max_us:($v|max)};
+  def byte_metric($v):
+    {count:($v|length),min_bytes:($v|min),p50_bytes:pct($v;50),
+     p95_bytes:pct($v;95),max_bytes:($v|max)};
   [$events[]|select(.phase=="EDIT_SEEN")|.elapsed_us] as $edit |
   [$events[]|select(.phase=="IMPACT_READY")|.elapsed_us] as $impact |
+  [$events[]|select(.phase=="IMPACT_READY")|
+    .immutable_epoch_creation_us] as $epoch_create |
+  [$events[]|select(.phase=="IMPACT_READY")|
+    .impact_calculation_us] as $impact_calc |
+  [$events[]|select(.phase=="IMPACT_READY")|
+    .changed_bytes_read] as $bytes_read |
   [$events[]|select(.phase=="COMPILE_GREEN")|.elapsed_us] as $compile |
+  [$events[]|select(.phase=="COMPILE_GREEN")|
+    .build_receipt.compile_us] as $compiler |
   [$events[]|select(.phase=="STORY_GREEN")|.elapsed_us] as $story |
+  [$events[]|select(.phase=="STORY_GREEN")|
+    .resident.elapsed_us] as $shadow_runner |
+  [range(1; $events|length) as $i |
+    select($events[$i].phase=="IMPACT_READY" and
+           $events[$i-1].phase=="SUPERSEDED") |
+    $events[$i].elapsed_us] as $cancel |
   [$samples[]|.wall_us] as $wall |
   {schema:"zcl.reflex_reactor_benchmark.v1",source_tu:$source_tu,
    runs:$runs,
    latency:{edit_seen:metric($edit),impact_ready:metric($impact),
-            compile_diagnostic:metric($compile),hot_shadow_story:metric($story),
+            immutable_epoch_creation:metric($epoch_create),
+            impact_calculation:metric($impact_calc),
+            compile_diagnostic:metric($compile),compiler:metric($compiler),
+            hot_shadow_story:metric($story),
+            hot_shadow_runner:metric($shadow_runner),
+            cancellation_to_new_impact:metric($cancel),
             edit_to_drive_reply:metric($wall),
-            first_useful_red:{feedback_us:$red_feedback_us,
-                              edit_to_drive_reply_us:$red_wall_us}},
+            first_useful_red:(metric([$red_feedback_us]) +
+              {feedback_us:$red_feedback_us,
+               edit_to_drive_reply_us:$red_wall_us})},
+   resources:{cpu:{scope:"resident_watcher_plus_reaped_children",
+                  cpu_time_us:$cpu_time_us,wall_us:$main_wall_us,
+                  usage_percent:(100*$cpu_time_us/$main_wall_us)},
+              changed_bytes_read:byte_metric($bytes_read)},
+   exact_cache:{edit:{feedback:metric([$cache_samples[]|
+                       select(.label=="exact_edit")|.feedback_us]),
+                      runner:metric([$cache_samples[]|
+                       select(.label=="exact_edit")|.runner_us]),
+                      wall:metric([$cache_samples[]|
+                       select(.label=="exact_edit")|.wall_us])},
+                revert:{feedback:metric([$cache_samples[]|
+                         select(.label=="exact_revert")|.feedback_us]),
+                        runner:metric([$cache_samples[]|
+                         select(.label=="exact_revert")|.runner_us]),
+                        wall:metric([$cache_samples[]|
+                         select(.label=="exact_revert")|.wall_us])},
+                compiler_processes:([$cache_samples[]|
+                  .compiler_processes]|add),
+                linker_processes:([$cache_samples[]|
+                  .linker_processes]|add)},
    targets_us:{edit_seen_p95:10000,impact_ready_p95:50000,
                compile_diagnostic:250000,hot_shadow_story:1000000,
                first_useful_red:1000000},
@@ -166,6 +276,15 @@ jq -e --argjson runs "$RUNS" '
   .process_trace.module_linker_processes==($runs+1) and
   .process_trace.shadow_forks==($runs+1) and
   .process_trace.foreground_test_processes==0 and
+  .latency.immutable_epoch_creation.count==($runs+1) and
+  .latency.impact_calculation.count==($runs+1) and
+  .latency.cancellation_to_new_impact.count==$runs and
+  .resources.changed_bytes_read.count==($runs+1) and
+  .resources.cpu.wall_us>0 and .resources.cpu.cpu_time_us>0 and
+  .exact_cache.edit.feedback.count==10 and
+  .exact_cache.revert.feedback.count==10 and
+  .exact_cache.compiler_processes==0 and
+  .exact_cache.linker_processes==0 and
   (.target_pass|to_entries|all(.value==true)) and
   (.latency_firewall|to_entries|all(.value==0))' "$OUTPUT" >/dev/null ||
     fail 'latency, event-count, or firewall gate failed'

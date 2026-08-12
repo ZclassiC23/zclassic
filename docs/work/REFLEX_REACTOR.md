@@ -2,10 +2,19 @@
 
 North star: edit C23, receive the first exact result that can change the next
 action almost immediately, and keep working while stronger proof proceeds.
-One warm local service owns the loop:
+One warm local service owns the loop. `drive` is the compact human form:
 
 ```text
 begin -> edit -> drive
+```
+
+The machine form is attach once and never block the agent's edit loop:
+
+```text
+begin -> dev loop events --after=<cursor> --format=jsonl
+      -> edit -> continue thinking
+      <- IMPACT_READY / COMPILE_GREEN / STORY_GREEN
+      <- STORY_RED + zcl.dev_diagnostic_capsule.v1
 ```
 
 Git, Make, a database, network I/O, publication, full links, full scans and
@@ -137,6 +146,32 @@ publication, remote/network operations, storage-ack waits, SQLite, full-tree
 scans and full-program links. Local candidate artifacts are content-addressed
 inputs, not acceptance. The foreground has no call edge into ZVCS, DHT, P2P,
 wallet or runtime activation.
+
+## General development substrate
+
+Recent-edit coverage is measured, not inferred, by `make
+reflex-coverage-audit`. It freezes the most recent 100 production-C commits,
+weights repeated edits as repeated occurrences, applies two distinct safe edits
+to every registered fast owner, and records the first result-bound event plus
+every fallback reason. `config/hotswap_shadow_owners.def` is the coverage map:
+a static authority shell is compile-checked exactly, while only its declared
+pure service core runs as `HOT_SHADOW`. `HOTSHADOW_SERVICE_MEMBERS` admits a
+helper TU into executable candidate bytes only after the same no-state,
+no-effects lint as the service itself.
+
+Every `STORY_GREEN` contains a `zcl.dev_proof_handoff.v1` object with exactly:
+
+```text
+candidate_epoch + source_epoch
+affected_component + affected_file_count
+action + proof_inputs_sha3
+compile_green + story_obtained + focused_evidence_sha3
+```
+
+That immutable value is the entire handoff to later server-side proof. It
+carries no path capability, command handle, database handle, network handle,
+or publication authority. Remote proof may append receipts later; it cannot
+reach backward into the reflex lane or change an already emitted verdict.
 
 ## Reproducible measurement
 

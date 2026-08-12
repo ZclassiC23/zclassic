@@ -11,6 +11,7 @@
 #include "json/json.h"
 #include "keys/key.h"
 #include "platform/time_compat.h"
+#include "services/dev_reflex_policy_service.h"
 #include "sim/social_app_sim.h"
 #include "util/safe_alloc.h"
 #include "wallet/wallet.h"
@@ -2216,6 +2217,8 @@ static bool dp_hotswap_cache_fixture_init(const char *root,
         !dp_mk_write(root, "config/hotswap_swappable.def", "/* fixture */\n") ||
         !dp_mk_write(root, "config/hotswap_islands.def", "/* fixture */\n") ||
         !dp_mk_write(root, "config/hotswap_services.def", "/* fixture */\n") ||
+        !dp_mk_write(root, "config/hotswap_shadow_owners.def",
+                     "/* fixture */\n") ||
         !dp_mk_write(root, "app/controllers/src/status_native_handlers.c",
                      owner_v1) ||
         !dp_mk_write(root, "app/controllers/src/status_native_helpers.c",
@@ -3178,6 +3181,58 @@ static int test_progressive_event_vocabulary(void)
     return failures;
 }
 
+static int test_reflex_policy_boundary(void)
+{
+    int failures = 0;
+    TEST("dev platform: reflex policy projects feedback and seals proof inputs") {
+        const struct dev_reflex_policy_service_v1 *policy =
+            dev_reflex_policy_service_builtin();
+        ASSERT(policy != NULL);
+        ASSERT(!policy->action_changing("impact_ready", NULL));
+        ASSERT(policy->action_changing("story_red", NULL));
+
+        struct json_value cycle;
+        struct json_value compact;
+        json_init(&cycle);
+        json_set_object(&cycle);
+        ASSERT(json_push_kv_str(&cycle, "status", "story_green"));
+        ASSERT(json_push_kv_str(&cycle, "phase", "STORY_GREEN"));
+        ASSERT(json_push_kv_int(&cycle, "edit_epoch", 7));
+        ASSERT(json_push_kv_str(&cycle, "action", "hot_shadow"));
+        ASSERT(json_push_kv_int(&cycle, "elapsed_us", 90000));
+        ASSERT(policy->project_cycle(&cycle, 7, &compact));
+        ASSERT_STR_EQ(json_get_str(json_get(&compact, "lane")), "REFLEX");
+        ASSERT_STR_EQ(json_get_str(json_get(&compact, "event")),
+                      "STORY_GREEN");
+        ASSERT_EQ(json_get_int(json_get(&compact, "feedback_us")), 90000);
+        json_free(&compact);
+        json_free(&cycle);
+
+        struct dev_reflex_proof_handoff_v1 handoff = {
+            .candidate_epoch =
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            .source_epoch =
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            .affected_component = "app/services/src/example.c",
+            .action = "affected_proof",
+            .proof_inputs_sha3 =
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            .focused_evidence_sha3 =
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            .affected_file_count = 1,
+            .compile_green = true,
+            .story_obtained = true,
+        };
+        char why[128] = {0};
+        ASSERT(policy->handoff_validate(&handoff, why, sizeof(why)));
+        handoff.compile_green = false;
+        ASSERT(!policy->handoff_validate(&handoff, why, sizeof(why)));
+        ASSERT(strstr(why, "compile-green") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_dev_platform(void)
 {
     int failures = 0;
@@ -3190,6 +3245,7 @@ int test_dev_platform(void)
     failures += test_native_source_cas_shadow();
     failures += test_cycle_proof_reuse_contract();
     failures += test_progressive_event_vocabulary();
+    failures += test_reflex_policy_boundary();
     failures += test_menu_and_search();
     failures += test_change_classification();
     failures += test_change_plan_closure();

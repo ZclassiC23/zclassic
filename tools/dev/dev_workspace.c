@@ -1140,6 +1140,29 @@ enum zcl_devloop_state_lookup zcl_devloop_cycle_state_wait_after(
         set_why(why, why_len, "cycle_event_watch_unavailable");
         return ZCL_DEVLOOP_STATE_INVALID;
     }
+    /* Observe both producers directly. The reflex producer modifies the
+     * existing ring file, while its asynchronous evidence consumer creates
+     * sealed records below cycle-events. A parent-directory watch normally
+     * sees the ring write and native-cycle pointer move, but under sustained
+     * watcher turnover that indirect notification was once lost: the sealed
+     * story existed while drive slept to timeout. Direct watches make the
+     * producer/victim relationship explicit without polling or retries. */
+    char stream_path[PATH_MAX], events_path[PATH_MAX];
+    int stream_watch = -1, events_watch = -1;
+    int sn = snprintf(stream_path, sizeof(stream_path), "%s/%s", dir,
+                      CYCLE_STREAM_NAME);
+    int en = snprintf(events_path, sizeof(events_path), "%s/%s", dir,
+                      CYCLE_EVENTS_DIR);
+    if (sn > 0 && (size_t)sn < sizeof(stream_path))
+        stream_watch = inotify_add_watch(
+            notify_fd, stream_path,
+            IN_CLOSE_WRITE | IN_MODIFY | IN_ATTRIB | IN_DELETE_SELF |
+                IN_MOVE_SELF);
+    if (en > 0 && (size_t)en < sizeof(events_path))
+        events_watch = inotify_add_watch(
+            notify_fd, events_path,
+            IN_CREATE | IN_MOVED_TO | IN_CLOSE_WRITE | IN_MODIFY |
+                IN_DELETE_SELF | IN_MOVE_SELF);
 
     int64_t deadline = platform_time_monotonic_us() +
         (int64_t)timeout_ms * 1000;
@@ -1163,6 +1186,10 @@ enum zcl_devloop_state_lookup zcl_devloop_cycle_state_wait_after(
         char events[4096];
         while (read(notify_fd, events, sizeof(events)) > 0) {}
     }
+    if (events_watch >= 0)
+        (void)inotify_rm_watch(notify_fd, events_watch);
+    if (stream_watch >= 0)
+        (void)inotify_rm_watch(notify_fd, stream_watch);
     (void)inotify_rm_watch(notify_fd, watch);
     close(notify_fd);
     return result;

@@ -28,6 +28,7 @@
 #include "json/json.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
+#include "services/dev_reflex_policy_service.h"
 #include "services/zcode_lane_service.h"
 #include "services/vault_intent_decision_service.h"
 #include "vcs/vcs.h"
@@ -1650,14 +1651,9 @@ static bool dev_drive_wait_cycle(
             json_init(cycle);
             continue;
         }
-        bool prediagnostic = status &&
-            (strcmp(status, "edit_seen") == 0 ||
-             strcmp(status, "impact_ready") == 0);
-        bool decision_compile = status && source &&
-            strcmp(status, "reflex_ready") == 0 &&
-            strcmp(source,
-                   "app/services/src/vault_intent_decision_service.c") == 0;
-        if (!prediagnostic && !decision_compile) {
+        const struct dev_reflex_policy_service_v1 *policy =
+            dev_reflex_policy_service_builtin();
+        if (policy->action_changing(status, source)) {
             *epoch_out = current_epoch;
             return true;
         }
@@ -1753,61 +1749,16 @@ void zcl_native_handle_dev_drive(
         return;
 
     struct json_value compact;
-    json_init(&compact);
-    json_set_object(&compact);
-    (void)json_push_kv_str(&compact, "schema", "zcl.dev_drive.v1");
-    (void)json_push_kv_int(&compact, "epoch", epoch);
-    const bool live = json_get_bool(json_get(&cycle, "runtime_published"));
-    const char *action = json_get_str(json_get(&cycle, "action"));
-    const char *cycle_status = json_get_str(json_get(&cycle, "status"));
-    (void)json_push_kv_str(
-        &compact, "lane", live ? "LIVE" :
-        cycle_status &&
-            (strcmp(cycle_status, "edit_seen") == 0 ||
-             strcmp(cycle_status, "impact_ready") == 0 ||
-             strcmp(cycle_status, "reflex_ready") == 0 ||
-             strcmp(cycle_status, "story_green") == 0 ||
-             strcmp(cycle_status, "story_red") == 0)
-            ? "REFLEX" :
-        cycle_status && strcmp(cycle_status, "fallback_ready") == 0
-            ? "VERIFY" :
-        action && strcmp(action, "restart") == 0 ? "FAST_RESTART" :
-        "VERIFY");
-    (void)dev_drive_copy(&cycle, &compact, "status", "status");
-    (void)dev_drive_copy(&cycle, &compact, "phase", "event");
-    (void)dev_drive_copy(&cycle, &compact, "edit_epoch", "edit_epoch");
-    (void)dev_drive_copy(&cycle, &compact, "action", "action");
-    (void)dev_drive_copy(&cycle, &compact, "elapsed_us", "feedback_us");
-    (void)dev_drive_copy(&cycle, &compact, "elapsed_ms", "feedback_ms");
-    (void)dev_drive_copy(&cycle, &compact, "impact_us", "impact_us");
-    (void)dev_drive_copy(&cycle, &compact, "closure_us", "closure_us");
-    (void)json_push_kv_bool(&compact, "runtime_published", live);
-    (void)json_push_kv_bool(
-        &compact, "proof_complete",
-        json_get_bool(json_get(&cycle, "proof_complete")));
-    (void)dev_drive_copy(&cycle, &compact, "proof_scope", "proof_scope");
-    const char *why_not_live =
-        json_get_str(json_get(&cycle, "why_not_live"));
-    if (!live) {
-        if (!why_not_live || !why_not_live[0])
-            why_not_live = json_get_str(json_get(&cycle, "failure_capsule"));
-        if (!why_not_live || !why_not_live[0])
-            why_not_live = json_get_str(json_get(&cycle, "reason"));
-        (void)json_push_kv_str(
-            &compact, "why_not_live",
-            why_not_live && why_not_live[0]
-                ? why_not_live : "runtime publication was not proven");
+    const struct dev_reflex_policy_service_v1 *policy =
+        dev_reflex_policy_service_builtin();
+    if (!policy->project_cycle(&cycle, epoch, &compact)) {
+        json_free(&cycle);
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+            "DEV_DRIVE_PROJECTION_INVALID", "project", false, false,
+            "pure reflex policy could not project the cycle", "cycle");
+        return;
     }
-    (void)dev_drive_copy(&cycle, &compact, "source_id_sha256",
-                         "source_identity_sha256");
-    (void)dev_drive_copy(&cycle, &compact, "vcs_commit",
-                         "zvcs_commit_root");
-    (void)dev_drive_copy(&cycle, &compact, "proof_receipt_root",
-                         "proof_receipt_root");
-    (void)dev_drive_copy(&cycle, &compact, "publication_job_root",
-                         "publication_job_root");
-    (void)dev_drive_copy(&cycle, &compact, "publication_enqueue_us",
-                         "publication_enqueue_us");
 
     const char *job_root =
         json_get_str(json_get(&cycle, "publication_job_root"));
@@ -1871,6 +1822,90 @@ void zcl_native_handle_dev_drive(
 #endif /* ZCL_DEV_BUILD || ZCL_TESTING */
 
 #ifdef ZCL_DEV_BUILD
+
+static bool dev_reflex_policy_frozen_kat(const void *vtable,
+                                         char *why, size_t why_size)
+{
+    const struct dev_reflex_policy_service_v1 *service = vtable;
+    if (!service || !service->progress_phase || !service->action_changing ||
+        !service->project_cycle || !service->handoff_validate) {
+        if (why && why_size)
+            (void)snprintf(why, why_size, "%s", "reflex policy vtable incomplete");
+        return false;
+    }
+    if (strcmp(service->progress_phase("story_red", "service_story"),
+               "STORY_RED") != 0 ||
+        service->action_changing("impact_ready", NULL) ||
+        service->action_changing("reflex_ready", "candidate.c") ||
+        !service->action_changing("story_red", "candidate.c")) {
+        if (why && why_size)
+            (void)snprintf(why, why_size, "%s", "event policy vector changed");
+        return false;
+    }
+    struct json_value cycle, projected;
+    json_init(&cycle); json_set_object(&cycle);
+    bool built = json_push_kv_str(&cycle, "status", "story_green") &&
+        json_push_kv_str(&cycle, "phase", "STORY_GREEN") &&
+        json_push_kv_str(&cycle, "action", "hotswap") &&
+        json_push_kv_str(&cycle, "edit_epoch",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") &&
+        json_push_kv_int(&cycle, "elapsed_us", 73) &&
+        json_push_kv_bool(&cycle, "runtime_published", false) &&
+        json_push_kv_bool(&cycle, "proof_complete", false);
+    bool projected_ok = built && service->project_cycle(&cycle, 9, &projected);
+    const char *lane = projected_ok
+        ? json_get_str(json_get(&projected, "lane")) : NULL;
+    bool vector_ok = projected_ok && lane && strcmp(lane, "REFLEX") == 0 &&
+        json_get_int(json_get(&projected, "feedback_us")) == 73 &&
+        !json_get_bool(json_get(&projected, "runtime_published"));
+    if (projected_ok) json_free(&projected);
+    json_free(&cycle);
+    struct dev_reflex_proof_handoff_v1 handoff = {
+        .candidate_epoch =
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        .source_epoch =
+            "2222222222222222222222222222222222222222222222222222222222222222",
+        .affected_component = "tools/dev",
+        .action = "verify",
+        .proof_inputs_sha3 =
+            "3333333333333333333333333333333333333333333333333333333333333333",
+        .focused_evidence_sha3 =
+            "4444444444444444444444444444444444444444444444444444444444444444",
+        .affected_file_count = 1,
+        .compile_green = true,
+        .story_obtained = true,
+    };
+    if (!vector_ok || !service->handoff_validate(&handoff, why, why_size)) {
+        if (!vector_ok && why && why_size)
+            (void)snprintf(why, why_size, "%s", "projection vector changed");
+        return false;
+    }
+    handoff.compile_green = false;
+    if (service->handoff_validate(&handoff, NULL, 0)) {
+        if (why && why_size)
+            (void)snprintf(why, why_size, "%s", "red compile crossed proof boundary");
+        return false;
+    }
+    return true;
+}
+
+static const struct zcl_hotswap_service_contract k_dev_reflex_contract = {
+    .service_id = DEV_REFLEX_POLICY_SERVICE_ID,
+    .source_tu = "app/services/src/dev_reflex_policy_service.c",
+    .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+    .vtable_size = sizeof(struct dev_reflex_policy_service_v1),
+    .abi_fingerprint = DEV_REFLEX_POLICY_ABI,
+    .schema_fingerprint = DEV_REFLEX_POLICY_SCHEMA,
+    .wire_fingerprint = DEV_REFLEX_POLICY_WIRE,
+    .kat_fingerprint = DEV_REFLEX_POLICY_KAT,
+    .frozen_kat = dev_reflex_policy_frozen_kat,
+};
+
+const struct zcl_hotswap_service_contract *
+zcl_native_dev_reflex_policy_service_contract(void)
+{
+    return &k_dev_reflex_contract;
+}
 
 /* The registry is the public grammar.  These helpers adapt the existing
  * bounded native devloop engine without letting its legacy stdout document
@@ -2588,6 +2623,93 @@ void zcl_native_handle_dev_loop_wait(
     (void)zcl_command_reply_add_next(
         reply, "dev.loop.status", "{}",
         "inspect the latest epoch before deciding whether to wait again");
+}
+
+static bool dev_event_interrupting(const struct json_value *cycle)
+{
+    const char *phase = cycle && cycle->type == JSON_OBJ
+        ? json_get_str(json_get(cycle, "phase")) : NULL;
+    const char *status = cycle && cycle->type == JSON_OBJ
+        ? json_get_str(json_get(cycle, "status")) : NULL;
+    return (phase && (strcmp(phase, "STORY_RED") == 0 ||
+                      strcmp(phase, "COMPILE_RED") == 0 ||
+                      strcmp(phase, "FOCUSED_RED") == 0)) ||
+           (status && (strcmp(status, "story_red") == 0 ||
+                       strcmp(status, "compile_red") == 0 ||
+                       strcmp(status, "focused_red") == 0 ||
+                       strcmp(status, "rejected") == 0));
+}
+
+void zcl_native_handle_dev_loop_events(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    int64_t after = 0, heartbeat_ms = 15000;
+    if (!dev_input_int(request->input, "after", 0, &after) || after < 0 ||
+        !dev_input_int(request->input, "heartbeat_ms", 15000,
+                       &heartbeat_ms) ||
+        heartbeat_ms < 100 || heartbeat_ms > 300000) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "INVALID_SUBSCRIPTION_CURSOR", "normalize", false, false,
+            "after must be nonnegative and heartbeat_ms 100..300000",
+            "after,heartbeat_ms");
+        return;
+    }
+    char body[16384], why[160] = {0};
+    size_t body_len = 0;
+    int64_t cursor = after;
+    enum zcl_devloop_state_lookup lookup =
+        zcl_devloop_cycle_state_wait_after(
+            dev_source_root(request), after, (int)heartbeat_ms,
+            body, sizeof(body), &body_len, &cursor, why, sizeof(why));
+    if (lookup != ZCL_DEVLOOP_STATE_FOUND)
+        cursor = after;
+    if (lookup == ZCL_DEVLOOP_STATE_INVALID) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+            "DEV_EVENT_STREAM_INVALID", "read", false, false,
+            "event stream failed cursor, schema, SHA3, or inode validation",
+            why[0] ? why : "event_stream_invalid");
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "schema", "zcl.dev_loop_event.v1");
+    (void)json_push_kv_int(&reply->data, "cursor", cursor);
+    if (lookup != ZCL_DEVLOOP_STATE_FOUND) {
+        (void)json_push_kv_str(&reply->data, "kind", "HEARTBEAT");
+        (void)json_push_kv_bool(&reply->data, "interrupting", false);
+        (void)json_push_kv_str(&reply->data, "subscription", "attached");
+        return;
+    }
+    struct json_value cycle;
+    json_init(&cycle);
+    if (!json_read(&cycle, body, body_len) || cycle.type != JSON_OBJ) {
+        json_free(&cycle);
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+            "DEV_EVENT_STREAM_INVALID", "decode", false, false,
+            "event stream yielded a non-object cycle", "cycle_decode");
+        return;
+    }
+    const char *phase = json_get_str(json_get(&cycle, "phase"));
+    bool interrupting = dev_event_interrupting(&cycle);
+    (void)json_push_kv_str(&reply->data, "kind",
+                           phase && phase[0] ? phase : "CYCLE_EVENT");
+    (void)json_push_kv_bool(&reply->data, "interrupting", interrupting);
+    if (interrupting) {
+        struct json_value capsule;
+        json_init(&capsule); json_set_object(&capsule);
+        (void)json_push_kv_str(&capsule, "schema",
+                               "zcl.dev_diagnostic_capsule.v1");
+        (void)dev_drive_copy(&cycle, &capsule, "phase", "phase");
+        (void)dev_drive_copy(&cycle, &capsule, "edit_epoch", "edit_epoch");
+        (void)dev_drive_copy(&cycle, &capsule, "source_tu", "source_tu");
+        (void)dev_drive_copy(&cycle, &capsule, "failure_capsule", "message");
+        (void)dev_drive_copy(&cycle, &capsule, "compiler_output", "detail");
+        (void)json_push_kv(&reply->data, "diagnostic", &capsule);
+        json_free(&capsule);
+    }
+    (void)json_push_kv(&reply->data, "event", &cycle);
+    json_free(&cycle);
 }
 
 void zcl_native_handle_dev_loop_stop(

@@ -7,6 +7,18 @@
  * Listed sources may calculate only over caller-owned values/buffers. */
 
 HOTSWAP_SERVICE(
+    "dev.reflex.policy.v1",
+    "app/services/src/dev_reflex_policy_service.c",
+    "-",
+    "app/services/include/services/dev_reflex_policy_service.h",
+    "-",
+    "dev.reflex.policy.abi.v1:event-projection+proof-handoff",
+    "zcl.dev_cycle.v1+zcl.dev_drive.v1+zcl.dev_proof_handoff.v1",
+    "progress-phase+action-changing-event+immutable-proof-input.v1",
+    "8ed8430325e4fe3e9f432539f09d6a257e47f4f4c7e80d8bb0c37fb6245ed1e0",
+    "dev.test.story")
+
+HOTSWAP_SERVICE(
     "zcode.c23.corpus.v1",
     "app/services/src/zcode_c23_corpus_service.c",
     "app/services/src/zcode_c23_corpus_internal.h",

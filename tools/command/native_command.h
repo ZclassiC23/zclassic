@@ -1910,6 +1910,9 @@ void zcl_native_handle_dev_loop_status(
 void zcl_native_handle_dev_loop_wait(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_dev_loop_events(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_dev_loop_stop(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
