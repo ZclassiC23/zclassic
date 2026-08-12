@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * Purpose: human-first orchestration over existing ZCODE development owners. */
+ * Purpose: human-first orchestration over existing ZCODE development owners.
+ * HOT_FORK strictly exercises caller-owned input normalization and byte totals. */
 
 #include "command/native_command.h"
 
