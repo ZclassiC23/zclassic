@@ -88,7 +88,6 @@ zcode.work.start adapter_policy_root # the nested improve handler reads this onl
 zcode.work.start author_pubkey # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
 zcode.work.start remote_peer # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
 zcode.work.run mode # work run injects mode=admit into its private canonical admission request; request->input never reaches the nested handler.
-zcode.work.run datadir # work run derives a task-local scratch ZBuild directory for its private admission request; request->input never reaches it.
 zcode.work.run goal # work run reloads the canonical goal and injects it into its private admission request; request->input never reaches it.
 zcode.work.run proof_policy_hex # work run reloads the task-bound policy wire for its private admission request; request->input never reaches it.
 zcode.work.run dependency_lock_hex # work run reloads the task-bound lock wire for its private admission request; request->input never reaches it.

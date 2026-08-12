@@ -9,6 +9,7 @@
 #include "config/boot_internal.h"
 #include "config/runtime.h"
 #include "config/boot_zcode_work_authority.h"
+#include "config/boot_zcode_async_proof.h"
 #include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "vcs/package_reward.h"
@@ -45,7 +46,6 @@
  * key scopes the service book to a transport endpoint, survives a
  * reconnect of the same host, and is never a contributor identity. */
 #define ZCODE_SWARM_KEY_DOMAIN "zcl.zcode_swarm_peer.v1"
-
 /* Membership sync / scheduler-tick throttle (seconds). The swarm is
  * clock-driven: a supervisor child (net.zcode_swarm, 1 s period) runs the
  * periodic sync/tick/drain even when no peer has inbound traffic — the
@@ -55,7 +55,6 @@
  * the same throttled helpers below. */
 #define ZCODE_SWARM_SYNC_PERIOD_SEC 15
 #define ZCODE_SWARM_TICK_PERIOD_SEC 1
-
 static zcl_mutex_t s_lock;
 static bool s_lock_init;
 static struct vcs_swarm_engine *s_engine;   /* owned here */
@@ -73,13 +72,11 @@ static struct boot_svc_ctx *s_svc;          /* borrowed; set by wire() */
 static struct liveness_contract s_timer_contract;
 static supervisor_child_id s_timer_child = SUPERVISOR_INVALID_ID;
 static uint64_t s_frames_sent;              /* supervisor progress marker */
-
 static bool boot_zcode_work_workspace(void)
 {
     if (s_work_workspace[0]) return true;
     return getcwd(s_work_workspace, sizeof(s_work_workspace)) != NULL;
 }
-
 static bool boot_zcode_work_active_state(const char *state)
 {
     return state && (strcmp(state, "QUEUED") == 0 ||
@@ -89,7 +86,6 @@ static bool boot_zcode_work_active_state(const char *state)
                      strcmp(state, "ACCEPTED") == 0 ||
                      strcmp(state, "CACHE_HIT") == 0);
 }
-
 static const char *boot_zcode_work_action_kind(uint8_t work_kind, const uint8_t *input, size_t input_len)
 {
     struct vcs_zcode_package_action_input_v1 package_input;
@@ -103,7 +99,6 @@ static const char *boot_zcode_work_action_kind(uint8_t work_kind, const uint8_t 
         return VCS_BUILD_ACTION_KIND_FUZZ_V1;
     return NULL;
 }
-
 /* Rebuild content.v2 into the fixed action; only ZBuild state is mutable. */
 static struct zcl_result boot_zcode_work_admit(
     const struct vcs_zcode_work_request_v1 *request, int64_t now)
@@ -242,7 +237,6 @@ static struct zcl_result boot_zcode_work_admit(
         return ZCL_ERR(-1, "remote action is terminal: %s", current.state);
     return ZCL_OK;
 }
-
 static void boot_zcode_work_drain_admissions(int64_t now)
 {
     if (!s_work || !GetBoolArg("-buildworker", false)) return;
@@ -271,7 +265,6 @@ static void boot_zcode_work_drain_admissions(int64_t now)
                      admitted.message);
     }
 }
-
 static void boot_zcode_work_drain_cancels(int64_t now)
 {
     struct node_db *ndb = app_runtime_node_db();
@@ -298,7 +291,6 @@ static void boot_zcode_work_drain_cancels(int64_t now)
         }
     }
 }
-
 static void boot_zcode_work_publish_results(int64_t now)
 {
     (void)now;
@@ -357,7 +349,6 @@ static void boot_zcode_work_publish_results(int64_t now)
         }
     }
 }
-
 static void boot_zcode_work_observe_results(int64_t now)
 {
     struct node_db *ndb = app_runtime_node_db();
@@ -373,13 +364,23 @@ static void boot_zcode_work_observe_results(int64_t now)
             LOG_ERROR("net.zcode_swarm", "verified result lost its request");
             break;
         }
+        char async_workspace[4096];
+        const char *receipt_workspace = boot_zcode_async_proof_workspace(
+            ndb, &request, async_workspace) ? async_workspace : s_work_workspace;
         char receipt_id[65];
         struct zcl_result observed = build_fabric_receipt_observe_remote(
-            ndb, s_work_workspace, &request, &result, now, receipt_id);
+            ndb, receipt_workspace, &request, &result, now, receipt_id);
         if (!observed.ok) {
             LOG_WARN("net.zcode_swarm", "result %llu not durable: %s",
                      (unsigned long long)result.request_id,
                      observed.message);
+            break;
+        }
+        if (!boot_zcode_async_proof_observe_result(
+                ndb, peer, &request, &result, receipt_id, now)) {
+            LOG_WARN("net.zcode_swarm",
+                     "result %llu lost async lifecycle binding",
+                     (unsigned long long)result.request_id);
             break;
         }
         uint64_t drained_peer = 0;
@@ -394,7 +395,6 @@ static void boot_zcode_work_observe_results(int64_t now)
                  receipt_id);
     }
 }
-
 static bool boot_zcode_work_refresh(struct boot_svc_ctx *svc, int64_t wall)
 {
     if (!s_work || !GetBoolArg("-buildworker", false)) return true;
@@ -430,7 +430,6 @@ static bool boot_zcode_work_refresh(struct boot_svc_ctx *svc, int64_t wall)
         LOG_FAIL("net.zcode_swarm", "work capability signing failed");
     return true;
 }
-
 static void boot_zcode_swarm_lock(void)
 {
     if (!s_lock_init) {
@@ -732,6 +731,7 @@ static void boot_zcode_swarm_periodic(struct msg_processor *mp,
         s_last_tick = wall;
         vcs_swarm_engine_tick(engine, wall / 86400, (uint64_t)wall);
         vcs_zcode_work_node_tick(s_work, wall);
+        boot_zcode_async_proof_tick(svc, s_work, wall);
         boot_zcode_work_drain_admissions(wall);
         boot_zcode_work_drain_cancels(wall);
         boot_zcode_work_publish_results(wall);

@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Build-fabric application records. These tables are the durable coordinator
- * ledger; compiler outputs remain content-addressed CAS objects. They are
+ * Build-fabric application records. These tables are each full node's durable
+ * requester/executor ledger; compiler outputs remain content-addressed CAS objects. They are
  * operator/development state and are never consulted by consensus. */
 
 #ifndef ZCL_DB_MODEL_BUILD_FABRIC_H
@@ -162,5 +162,10 @@ bool db_build_action_save_leased(struct node_db *ndb,
                                  const struct db_build_action *next,
                                  const char *expected_state,
                                  const char *expected_lease_id);
+/* Bind the request-scoped content carrier after foreground admission. The
+ * immutable action identity excludes this root; a nonempty different root is
+ * never overwritten while an action is active. */
+bool db_build_action_bind_context(struct node_db *ndb, const char *action_id,
+                                  const char *context_root_sha3);
 
 #endif /* ZCL_DB_MODEL_BUILD_FABRIC_H */

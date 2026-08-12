@@ -581,7 +581,7 @@ Gate: C1,C4 PASS; C2 FAIL (probe); C3/C5/C6/C7/C8 BLOCKED to named proofs (by de
    Also recorded: op_return_index REFUSING legacy_v1 ERROR spam every pass on
    the canonical node (the 62645e2b8 binary writes op_return_index_state.v2,
    the datadir carries legacy_v1; remedy = owner runs `app oprindex rebuild`),
-   and build.coordinator/build.worker deadline stalls on the live node under
+   and build.requester/build.worker deadline stalls on the live node under
    host load (symptom, not cause).
 
 2. C2 GATE PROBE vs REALITY: onion IS up on this boot —

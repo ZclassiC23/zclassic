@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * purpose: Build coordinator lifecycle, trust, and receipt verification. */
+ * purpose: Requester-local build lifecycle, trust, and receipt verification. */
 
 #include "services/build_fabric_service.h"
 

@@ -511,7 +511,7 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,run,adapter,manual,codex,contained,candidate",
     "zcl.zcode_work_run.input.v1", "zcl.zcode_work_run.v1",
-    "workspace,work,adapter", "",
+    "workspace,work,adapter,datadir", "",
     "zclassic23-dev zcode work run --input='{\"work\":\"latest\",\"adapter\":\"manual\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
@@ -1791,18 +1791,14 @@ ZCL_COMMAND_READY_COMMAND(
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.dev.improve", "zcode.package.dev", "zcode.improve",
     "Improve code candidate",
-    "mode=plan captures the workspace in ZVCS CAS and returns immutable task, "
-    "agent_context.v1, and write_scope.v1 roots; it launches nothing. "
-    "mode=admit names the planned roots, same write_scope_csv, and "
-    "candidate_workspace. It derives the tree/patch, enforces scope/limits, "
-    "and queues ZBuild. The task binds source, lock/recipe, scope, policies, "
-    "limits, and expiry. action_kind selects fixed preprocessed compile, "
-    "recipe package, test, or deterministic fuzz. Package takes no path: its "
-    "input binds the full candidate, recipe, and dependency lock for confined "
-    "compile/test. Other actions select one captured .i or executable. No "
-    "wallet/node/network authority is granted, and adapter provenance cannot "
-    "grant acceptance. remote_peer sends the exact content.v2 context; a "
-    "missing/stale capability reports LOCAL_FALLBACK and keeps local work.", 0,
+    "mode=plan stores the workspace and returns immutable task, context, and "
+    "scope roots without launching work. mode=admit re-derives the candidate "
+    "tree/patch, enforces scope and limits, and queues the selected fixed "
+    "compile, package, test, or fuzz action. The task binds every input and "
+    "expiry; no adapter gains acceptance authority. Admission appends one "
+    "root-bound async proof request and returns before discovery, packaging, "
+    "transfer, or remote execution. remote_peer is an optional local hint; "
+    "zero permits later discovery of any eligible full-node peer.", 0,
     "zcode,improve,task,agent,zbuild,proof,compile,package,test,fuzz",
     "zcl.zcode_improve.input.v1", "zcl.zcode_improve.v1",
     "workspace,candidate_workspace,datadir,mode,planned_task_root,planned_context_root,candidate_source_sha256,source_root,dependency_lock_root,dependency_lock_hex,write_scope_root,write_scope_csv,acceptance_tests_root,acceptance_recipe_hex,model_policy_root,goal,proof_policy_hex,action_kind,fixed_input_path,fixed_input_relpath,preprocessed_path,patch_root,candidate_source_root,adapter_policy_root,author_pubkey,candidate_sequence,candidate_created_unix,profile,expires_unix,max_changed_files,max_patch_bytes,max_context_bytes,max_cpu_seconds,max_memory_bytes,max_output_bytes,context_symbol,remote_peer",

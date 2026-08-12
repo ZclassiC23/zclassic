@@ -528,6 +528,31 @@ bool db_build_action_find(struct node_db *ndb, const char *action_id,
         AR_BIND_TEXT(st, 1, action_id), build_action_read(out, st));
 }
 
+bool db_build_action_bind_context(struct node_db *ndb, const char *action_id,
+                                  const char *context_root_sha3)
+{
+    if (!ndb || !ndb->open || !action_id || !context_root_sha3)
+        LOG_FAIL("model", "db_build_action_bind_context: bad args");
+    struct db_build_action row;
+    if (!db_build_action_find(ndb, action_id, &row)) return false;
+    if (row.context_root_sha3[0])
+        return strcmp(row.context_root_sha3, context_root_sha3) == 0;
+    (void)snprintf(row.context_root_sha3, sizeof(row.context_root_sha3),
+                   "%s", context_root_sha3);
+    sqlite3_stmt *st = NULL;
+    AR_BEGIN_SAVE(build_action_callbacks_ready(), "build_action", &row,
+                  db_build_action_validate);
+    AR_PREPARE_BOOL(ndb, st,
+        "UPDATE build_actions SET context_root_sha3=?,updated_at=? "
+        "WHERE action_id=? AND context_root_sha3='' RETURNING action_id");
+    AR_BIND_TEXT(st, 1, row.context_root_sha3);
+    AR_BIND_INT(st, 2, row.updated_at);
+    AR_BIND_TEXT(st, 3, row.action_id);
+    bool ok = AR_STEP_ROW(st);
+    AR_FINALIZE(st);
+    AR_FINISH_SAVE(build_action_callbacks_ready(), &row, ok);
+}
+
 bool db_build_worker_find(struct node_db *ndb, const char *worker_id,
                           struct db_build_worker *out)
 {

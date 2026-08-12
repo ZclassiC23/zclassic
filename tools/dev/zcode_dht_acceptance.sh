@@ -22,6 +22,7 @@ B_PORT=18033; B_RPC=39221; B_FS=39222; B_HTTPS=39223
 DEAD_SINK=39999
 DHT_WAIT="${DHT_WAIT:-90}"
 DHT_PACKAGEHOST="${DHT_PACKAGEHOST:-0}"
+DHT_BUILDWORKERS="${DHT_BUILDWORKERS:-0}"
 DHT_AFTER_SPARSE_HOOK="${DHT_AFTER_SPARSE_HOOK:-}"
 DHT_WORK=""; DHT_DD_A=""; DHT_DD_B=""; DHT_PGID_A=""; DHT_PGID_B=""
 DHT_EXTRA_PGIDS=()
@@ -115,9 +116,13 @@ dht_spawn() {
     # credential (CREDENTIALS_DIRECTORY, exported below) encrypts key
     # writes at rest (WKS1); -operator-lane=dev arms the dev wallet scope.
     case "$DHT_PACKAGEHOST" in 0|1) ;; *) dht_die "DHT_PACKAGEHOST must be 0 or 1" ;; esac
+    case "$DHT_BUILDWORKERS" in 0|1) ;; *) dht_die "DHT_BUILDWORKERS must be 0 or 1" ;; esac
+    local worker_args=()
+    [ "$DHT_BUILDWORKERS" = 1 ] && worker_args+=("-buildworker")
     setsid "$NODE_BIN" -datadir="$dd" -regtest -port="$p2p" \
         -rpcport="$rpc" -fsport="$fs" -httpsport="$https" \
         "${args[@]}" -packagehost="$DHT_PACKAGEHOST" -v2transport \
+        "${worker_args[@]}" \
         -operator-lane=dev -wallet-no-phrase-backup \
         -nobgvalidation -nolegacyimport -showmetrics=0 \
         >>"$dd/node.log" 2>&1 &

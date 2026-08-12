@@ -4,8 +4,10 @@
 #include "test/test_core.h"
 
 #include "models/build_fabric.h"
+#include "models/build_proof_event.h"
 #include "models/database.h"
 #include "services/build_fabric_service.h"
+#include "services/build_fabric_async.h"
 #include "services/build_fabric_runtime.h"
 #include "services/build_fabric_worker.h"
 #include "base/hex.h"
@@ -162,10 +164,11 @@ static int test_bf_migration(void)
         sqlite3_stmt *st = NULL;
         ASSERT(sqlite3_prepare_v2(ndb.db,
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
-            "name IN ('build_jobs','build_actions','build_workers','build_receipts')",
+            "name IN ('build_jobs','build_actions','build_workers',"
+            "'build_receipts','build_proof_events')",
             -1, &st, NULL) == SQLITE_OK);
         ASSERT(sqlite3_step(st) == SQLITE_ROW); /* raw-sql-ok:test-readonly-count */
-        ASSERT_EQ(sqlite3_column_int(st, 0), 4);
+        ASSERT_EQ(sqlite3_column_int(st, 0), 5);
         sqlite3_finalize(st);
         ASSERT(sqlite3_prepare_v2(ndb.db,
             "SELECT count(*) FROM pragma_table_info('build_actions') WHERE "
@@ -264,6 +267,113 @@ static int test_bf_lifecycle(void)
         ASSERT_EQ(action.attempt_count, 2);
         ASSERT_EQ(action.finished_at, 490);
         ASSERT_EQ(db_build_job_receipts(&ndb, id_a, receipts, 4), 1);
+        node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_bf_async_proof_events(void)
+{
+    int failures = 0;
+    TEST("build_fabric: async proof events dedup and bind closed transitions") {
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path), "async"));
+        struct db_build_job job;
+        struct db_build_action action;
+        bf_job(&job); bf_action(&action);
+        (void)snprintf(action.task_root_sha3,
+                       sizeof(action.task_root_sha3), "%s", id_a);
+        (void)snprintf(action.candidate_root_sha3,
+                       sizeof(action.candidate_root_sha3), "%s", id_b);
+        (void)snprintf(action.proof_policy_root_sha3,
+                       sizeof(action.proof_policy_root_sha3), "%s", id_c);
+        ASSERT(bf_canonicalize(&job, &action));
+        ASSERT(build_fabric_plan(&ndb, &job, &action).ok);
+        struct db_build_proof_event requested, duplicate, event;
+        bool created = false;
+        ASSERT(build_fabric_proof_request(
+            &ndb, action.action_id, "/tmp/project", 0, 1000,
+            &requested, &created).ok);
+        ASSERT(created);
+        ASSERT_STR_EQ(requested.state, "REQUESTED");
+        ASSERT(requested.request_id ==
+               build_fabric_proof_request_id(action.action_id));
+        ASSERT(build_fabric_proof_request(
+            &ndb, action.action_id, "/tmp/project", 99, 2000,
+            &duplicate, &created).ok);
+        ASSERT(!created);
+        ASSERT_STR_EQ(duplicate.event_root, requested.event_root);
+        ASSERT(duplicate.request_id == requested.request_id);
+        ASSERT(!build_fabric_proof_transition(
+            &ndb, action.action_id, "RUNNING", 9, requested.request_id,
+            id_d, NULL, 1100, 10, 1001, &event).ok);
+        ASSERT(build_fabric_proof_transition(
+            &ndb, action.action_id, "PEER_DISCOVERED", 9,
+            requested.request_id, id_d, NULL, 1100, 10, 1001, &event).ok);
+        ASSERT_STR_EQ(event.prior_event_root, requested.event_root);
+        char checked[65];
+        ASSERT(db_build_proof_event_root(&event, checked));
+        ASSERT_STR_EQ(event.event_root, checked);
+        struct db_build_proof_event forked = event;
+        forked.peer_id++;
+        ASSERT(db_build_proof_event_root(&forked, forked.event_root));
+        ASSERT(!db_build_proof_event_save(&ndb, &forked));
+        struct db_build_proof_event tampered = event;
+        tampered.peer_id++;
+        struct ar_errors event_errors;
+        ASSERT(!db_build_proof_event_validate(&tampered, &event_errors));
+        ASSERT(build_fabric_proof_transition(
+            &ndb, action.action_id, "RUNNING", 9, requested.request_id,
+            NULL, NULL, 0, 20, 1002, &event).ok);
+        ASSERT(!build_fabric_proof_transition(
+            &ndb, action.action_id, "REMOTE_GREEN", 9,
+            requested.request_id, NULL, NULL, 0, 30, 1003, &event).ok);
+        ASSERT(build_fabric_proof_transition(
+            &ndb, action.action_id, "REMOTE_GREEN", 9,
+            requested.request_id, NULL, id_a, 0, 30, 1003, &event).ok);
+        ASSERT(build_fabric_proof_transition(
+            &ndb, action.action_id, "RECEIPT_VERIFIED", 9,
+            requested.request_id, NULL, NULL, 0, 40, 1004, &event).ok);
+        ASSERT(build_fabric_proof_transition(
+            &ndb, action.action_id, "REPRODUCED", 0,
+            requested.request_id, NULL, NULL, 0, 50, 1005, &event).ok);
+        ASSERT(build_fabric_proof_transition(
+            &ndb, action.action_id, "READY_FOR_ACCEPTANCE", 0,
+            requested.request_id, NULL, NULL, 0, 60, 1006, &event).ok);
+        struct db_build_proof_event latest;
+        ASSERT(db_build_proof_event_latest(&ndb, action.action_id, &latest));
+        ASSERT_STR_EQ(latest.state, "READY_FOR_ACCEPTANCE");
+        struct db_build_proof_event pending[4];
+        ASSERT_EQ(db_build_proof_events_pending(&ndb, pending, 4), 0);
+
+        struct db_build_job newer_job;
+        struct db_build_action newer_action;
+        bf_job(&newer_job); bf_action(&newer_action);
+        (void)snprintf(newer_job.source_cas_sha3,
+                       sizeof(newer_job.source_cas_sha3), "%s", id_d);
+        (void)snprintf(newer_action.input_root_sha3,
+                       sizeof(newer_action.input_root_sha3), "%s", id_d);
+        (void)snprintf(newer_action.task_root_sha3,
+                       sizeof(newer_action.task_root_sha3), "%s", id_a);
+        (void)snprintf(newer_action.candidate_root_sha3,
+                       sizeof(newer_action.candidate_root_sha3), "%s", id_d);
+        (void)snprintf(newer_action.proof_policy_root_sha3,
+                       sizeof(newer_action.proof_policy_root_sha3), "%s",
+                       id_c);
+        ASSERT(bf_canonicalize(&newer_job, &newer_action));
+        ASSERT(build_fabric_plan(&ndb, &newer_job, &newer_action).ok);
+        ASSERT(build_fabric_proof_request(
+            &ndb, newer_action.action_id, "/tmp/project", 0, 1010,
+            &requested, &created).ok);
+        ASSERT(created);
+        ASSERT(db_build_proof_event_latest(&ndb, action.action_id, &latest));
+        ASSERT_STR_EQ(latest.state, "SUPERSEDED");
+        ASSERT(db_build_proof_event_latest(
+            &ndb, newer_action.action_id, &latest));
+        ASSERT_STR_EQ(latest.state, "REQUESTED");
         node_db_close(&ndb);
         test_rm_rf(dir);
         PASS();
@@ -948,6 +1058,7 @@ int test_build_fabric(void)
     int failures = 0;
     failures += test_bf_migration();
     failures += test_bf_lifecycle();
+    failures += test_bf_async_proof_events();
     failures += test_bf_validation();
     failures += test_bf_service();
     failures += test_bf_leases();

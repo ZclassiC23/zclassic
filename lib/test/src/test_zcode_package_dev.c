@@ -901,6 +901,13 @@ static int zpd_test_work_start(void)
                       "EVIDENCE_READY") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "build_result")),
                       "passed") == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "async_proof_state")), "REQUESTED") == 0);
+        ASSERT(strlen(json_get_str(json_get(
+                          &reply.data, "async_proof_event_root"))) == 64);
+        ASSERT(json_get_int(json_get(
+                   &reply.data, "remote_request_id")) > 0);
+        ASSERT(json_get_int(json_get(&reply.data, "local_submit_us")) >= 0);
         const struct json_value *run_expert = json_get(&reply.data, "expert");
         const struct json_value *run_action = run_expert
             ? json_get(run_expert, "action_id") : NULL;

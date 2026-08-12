@@ -462,9 +462,8 @@ their own policy.
 `zcode improve mode=admit` derives the candidate tree and patch from
 `candidate_workspace`, admits the exact candidate-bound action input, captures
 the GCC capsule, and queues a candidate-bound preprocessed compile,
-recipe-derived package, exact-test, or deterministic-fuzz action. A remote
-request additionally packages the complete tree in its
-bounded content.v2 context. An explicit admit must carry `planned_task_root`,
+recipe-derived package, exact-test, or deterministic-fuzz action. An explicit
+admit must carry `planned_task_root`,
 `planned_context_root`, and the same `write_scope_csv`; source, task, context,
 scope, candidate, and patch are recomputed before ZBuild admission. Omitting
 `mode` retains the legacy one-shot form. Reusing `candidate_created_unix` with
@@ -472,10 +471,13 @@ the same immutable inputs schedules additional proof actions for the exact same
 candidate. Before submission it creates or re-verifies the exact candidate's
 signed FRONTIER receipt; evidence aggregation follows task/candidate/policy roots across
 their distinct durable jobs. A local worker emits the canonical signed work
-receipt. With `remote_peer`, it builds the action-neutral canonical context
-package itself and signs and queues the exact compile/package/test/fuzz
-request for that user-selected advertised peer; an unavailable package store, peer, or
-capability reports `LOCAL_FALLBACK` and preserves the local action. Adapter
+receipt. It also records the exact compile/package/test/fuzz request intent.
+It returns after the existing ZBuild action and a deterministic
+`REQUESTED` event are durable. The ordinary full-node swarm tick later builds
+the exact context package, discovers an eligible advertised peer under the
+requester's local policy, and sends the already-frozen work frame. `remote_peer`
+is only an optional hint; an unavailable package store, peer, or capability
+leaves the request durably pending and preserves the local action. Adapter
 invocation and fixed review execution remain separate missing stages. Explicit
 lane acceptance is live through `zcode accept`; an accepted PROVEN lane can now
 be planned and committed through the offline-signed publish workflow.
@@ -526,6 +528,41 @@ release-byte identity from a translation-unit object.
   or obtains the selected number of matching independent receipts.
 - Replayed, duplicate, revoked, expired, wrong-action, wrong-toolchain, and
   stale-source receipts are named refusals.
+
+The zero-wait lifecycle is an append-only projection inside that same build
+ledger: `REQUESTED`, `PEER_DISCOVERED`, `RUNNING`, `REMOTE_GREEN` or
+`REMOTE_RED`, `RECEIPT_VERIFIED`, `REPRODUCED`, and
+`READY_FOR_ACCEPTANCE`. A newer candidate appends `SUPERSEDED` to older active
+candidates without deleting their receipts. Each row has a deterministic event
+root binding the task, candidate, policy, action, context, receipt, peer,
+request, deadline, prior event, and timing. The request ID is derived from the
+immutable action root, so an exact repeat attaches to the first request rather
+than consuming another peer slot. These rows are lifecycle projection only:
+signed `work_receipt.v1` remains evidence, local reproduction remains trust,
+and the signed lane transition remains human acceptance.
+
+The architectural direction is one-way:
+
+```text
+REFLEX -> ASYNC PROOF -> ACCEPTANCE -> PUBLICATION / REPLICATION
+```
+
+Discovery, context packaging, package transfer, remote queueing, remote
+execution, and receipt verification run after the foreground response. The
+foreground result reports `local_submit_us`; background states record their
+own elapsed time so a remote slowdown cannot be hidden inside local feedback.
+`zcode work run` accepts the local full node's `datadir` as an optional ledger
+location; without it, the existing isolated scratch ledger remains the local-
+only default. The path is only a local locator: every dispatched byte and
+receipt is still re-derived and checked against the event's immutable roots.
+
+`make zcode-async-proof-acceptance` is the hermetic protocol gate. It runs the
+user-facing work path plus the durable ledger and three interchangeable signed
+work-node topology: B's expired lease is discarded, the same immutable request
+is retried on C, B's stale result and duplicate C delivery are refused, and
+after A disappears B originates fresh work to C. The existing frame tests in
+the same exact group reject malformed signatures and root mismatches; the
+no-Git gate proves this path has no GitHub/Git dependency.
 
 ### E. Durability lanes
 
